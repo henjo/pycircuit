@@ -484,7 +484,7 @@ def test_the_edge_jitter_of_a_linear_stage_matches_its_closed_form_and_the_grid_
     A single LINEAR stage does.
 
     ⚠ THE GAP THIS CLOSES WAS POINTED OUT BY THE PEER SESSION
-    (`test-pycircuit-spectre-e2`, 2026-09-16), and the point generalises: their
+    (the private comparison suite, 2026-09-16), and the point generalises: their
     sampled `kT/C` sits against an exact 1.0, so it cannot drift by tens of
     percent without announcing itself as disagreement with the PHYSICS rather
     than with another tool.  My grid-bound headline had no such anchor, which

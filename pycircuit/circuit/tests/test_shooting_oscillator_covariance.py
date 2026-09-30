@@ -1167,14 +1167,15 @@ def test_the_oscillator_edge_jitter_is_the_law_at_the_requested_instant():
     assert wrap < 1e-6, wrap
 
 
-def _vdp_colour_pair(kind, npts=200, slow=None):
+def _vdp_colour_pair(kind, npts=200, slow=None, diff=False):
     """van der Pol (Q = 8, radau) with ONE physical noise two ways: a
     Lorentzian `IS(noiseTau = 0.3 T)` on the tank ('coloured'), or white
     noise through an RC into a linear `BSource` on it ('filtered') -- the
     exact realisation (one added state).  With `slow` (in periods) the noise
     enters a SLOW RC node instead, which drives the tank through a unit
     transconductance: a transverse state with memory across periods (the
-    orbit is unchanged).  `(cir, pss, reduced index of the tank, its rising
+    orbit is unchanged).  `diff` (with `slow`) adds node 'd' = v - s
+    through an ideal VCVS.  `(cir, pss, reduced index of the tank, its rising
     mid-level crossing)`."""
     import warnings as _w
     circuit.default_toolkit = circuit.numeric
@@ -1193,6 +1194,9 @@ def _vdp_colour_pair(kind, npts=200, slow=None):
         c['cs'] = C('s', gnd, c=slow * T)
         c['gs'] = BSource('s', gnd, gnd, 'v', i_func=lambda u: 1.0 * u)
         tgt = 's'
+        if diff:
+            c.add_node('d')
+            c['E'] = VCVS('v', 's', 'd', gnd, g=1.0)
     if kind == 'coloured':
         c['n'] = IS(tgt, gnd, i=0.0, noisePSD=g * g * Pw * Rf * Rf,
                     noiseTau=Rf * Cf)
@@ -1479,3 +1483,44 @@ def test_the_oscillator_edge_jitter_takes_a_modulated_flicker_as_its_realisation
                / r['coloured_transverse_variance'] - 1.0) < 1e-8
     assert np.max(np.abs(e['coloured_phase_variance']
                          / r['coloured_phase_variance'] - 1.0)) < 1e-8
+
+
+def test_the_oscillator_edge_jitter_takes_a_differential_output():
+    """The review of 2026-09-30 (O1): `output_index` hands a differential
+    output on as a weight vector, and `oscillator_edge_jitter` did
+    `int(output)` at five sites -- a TypeError for any array.  The output is
+    now a weight vector throughout (`_output_row`): a unit vector gives the
+    node's own law bit for bit, and `v - s` gives the law of an ideal VCVS
+    node that IS `v - s` (the coloured source on the slow node, so the exact
+    coloured law runs too)."""
+    import warnings as _w
+    cir, pss, _red, _tc = _vdp_colour_pair('coloured', slow=0.5, diff=True)
+    names = [str(x) for x in cir.nodes]
+    irn = pss.irefnode
+
+    def red(nm):
+        k = names.index(nm)
+        return k - 1 if k > irn else k
+    m = cir.n - 1
+    Xw = np.asarray(pss.waveform[1], float)
+    grid = np.asarray(pss.factored_period().times, float)[:Xw.shape[1]]
+    y = Xw[names.index('d')]
+    mid = 0.5 * (y.max() + y.min())
+    j = next(k for k in range(2, len(y) - 2) if (y[k - 1] - mid) < 0 <= (y[k] - mid))
+    tc = grid[j - 1] + (mid - y[j - 1]) / (y[j] - y[j - 1]) * (grid[j] - grid[j - 1])
+    unit = np.zeros(m)
+    unit[red('d')] = 1.0
+    w = np.zeros(m)
+    w[red('v')], w[red('s')] = 1.0, -1.0
+    pac = PAC(cir, toolkit=circuit.numeric)
+    kw = {'colour_fmin': 1e-5 / float(pss.period), 'kmax': 4}
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        r_node = pac.oscillator_edge_jitter(pss, 'd', tc, **kw)
+        r_unit = pac.oscillator_edge_jitter(pss, unit, tc, **kw)
+        r_diff = pac.oscillator_edge_jitter(pss, w, tc, **kw)
+    assert np.array_equal(r_unit['k_cycle'], r_node['k_cycle'])
+    assert r_unit['sigma_t'] == r_node['sigma_t']
+    rel = np.max(np.abs(r_diff['k_cycle'] / r_node['k_cycle'] - 1.0))
+    assert rel < 1e-7, (r_diff['k_cycle'], r_node['k_cycle'])
+    assert abs(r_diff['slew'] / r_node['slew'] - 1.0) < 1e-7

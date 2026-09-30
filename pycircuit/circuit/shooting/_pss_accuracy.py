@@ -121,7 +121,11 @@ class _AccuracyChecks(object):
             except AttributeError:
                 pass
         tkv['method'] = method
-        twin = type(self)(self.cir, toolkit=self.toolkit, irefnode=None, **tkv)
+        ## (the SAME reference node: `None` is ground, and `solve` refuses a
+        ## `refnode` other than the constructed one -- a PSS on another
+        ## reference raised from `ppv()` until 2026-09-30)
+        twin = type(self)(self.cir, toolkit=self.toolkit,
+                          irefnode=self.cir.nodes[self.irefnode], **tkv)
         hs = np.asarray(hs, dtype=float)
         ## the same grid: its fractions when it is not uniform, else the
         ## uniform step (a one-step plain state can carry an `hs` whose
@@ -143,7 +147,9 @@ class _AccuracyChecks(object):
                 twin.solve(refnode=kw.get('refnode', gnd), period=float(T),
                            x0=x0r, timestep=float(T) / (len(hs) + 0.5),
                            grid=grid, maxiterations=_budget,
-                           matrix_free=bool(kw.get('matrix_free', False)))
+                           matrix_free=bool(kw.get('matrix_free', False)),
+                           state_events=bool(kw.get('state_events', True)),
+                           break_events=self.break_events)
             _ok = bool(twin.converged)
         except NoConvergenceError:
             _ok = False

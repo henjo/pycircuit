@@ -54,7 +54,7 @@ def test_noise_with_frequency_vector():
 
 
 def test_a_frequency_dependent_CY_sweeps():
-    """⚠ FOUND BY THE SPECTRE COMPARISON SUITE (2026-09-05): a compact
+    """⚠ FOUND BY THE PRIVATE COMPARISON SUITE (2026-09-05): a compact
     model's `CY` came out RAGGED under an array frequency -- the flicker
     entry array-valued, the thermal entries scalar, at `kf = 0` too since
     the term is emitted unconditionally -- and the small-signal analysis

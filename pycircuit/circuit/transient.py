@@ -730,7 +730,7 @@ class Transient(Analysis):
                    unit='A',
                    default=1e-12),
          ## What the RELATIVE part of the LTE tolerance is measured against --
-         ## A commercial simulator's parameter of the same name, and a commercial simulator's default.
+         ## a commercial simulator's parameter of the same name, and its default.
          ##
          ## `pointlocal` references each unknown to itself, at this instant.  On a
          ## node carrying no signal that reference tends to zero, so the tolerance
@@ -2500,7 +2500,7 @@ class Transient(Analysis):
     ## rather than re-derived, so the two paths cannot drift apart on tolerances.
 
     ## The LTE tolerance multiplier.  `TRTOL` in this module, `lteratio` in
-    ## A commercial simulator: the LTE estimate is deliberately conservative, so the allowed
+    ## a commercial simulator: the LTE estimate is deliberately conservative, so the allowed
     ## truncation error is this many times the Newton-solve tolerance.
     ## A property reading the `TRTOL` Parameter (the JAX backend's too, P2),
     ## so every `self.LTERATIO` read follows the Parameter and the two cannot

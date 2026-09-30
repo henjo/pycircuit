@@ -6120,7 +6120,7 @@ class BehaviouralMeta(type):
         def CY(self, x, w=0, epar=defaultepar):
             f_hz = np.abs(w) / (2 * np.pi)
             raw = funcs['CY'](x, *_args_of(self, epar), f_hz)
-            ## ⚠ RAGGED UNDER AN ARRAY FREQUENCY, FOUND BY THE SPECTRE
+            ## ⚠ RAGGED UNDER AN ARRAY FREQUENCY, FOUND BY THE PRIVATE
             ## COMPARISON SUITE (2026-09-05): a flicker entry comes out
             ## array-valued in `f_hz` while the thermal entries stay scalar
             ## -- at `kf = 0`, the default, too, since the term is emitted

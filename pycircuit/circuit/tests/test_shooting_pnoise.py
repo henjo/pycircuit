@@ -2411,3 +2411,72 @@ def test_a_count_above_the_grid_raises_and_the_knobs_share_their_names():
         assert np.all(np.isfinite(ms['total']))
         g = opac.coloured_diffusion_resolved(osc, offsets=[0.1 * f0])
     assert np.all(np.isfinite(g))
+
+
+def _review_mixer(npts=80):
+    circuit.default_toolkit = circuit.numeric
+    cir = _diode_mixer()
+    pss = PSS(cir, method='gear', reltol=1e-11)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-6, timestep=1e-6 / npts, maxiterations=40)
+    irn = pss.irefnode
+    k = cir.get_node_index(2)
+    return cir, pss, (k - 1 if k > irn else k)
+
+
+def test_a_zero_d_array_output_is_the_row_its_integer_names():
+    """The review of 2026-09-30 (F5): `output_index` accepts an index as a
+    0-d array, and the adjoint rows' weight vector tested `np.isscalar`,
+    which a 0-d array fails -- so index `np.array(k)` became a weight of `k`
+    on row 0.  One routine (`_output_vector`) now serves every surface."""
+    cir, pss, k = _review_mixer()
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        S_int, _u = pac.pnoise(pss, 3e5, k, maxsidebands=3)
+        S_arr, _u = pac.pnoise(pss, 3e5, np.array(k), maxsidebands=3)
+    assert S_int > 0.0
+    assert S_arr == S_int, (S_arr, S_int)
+
+
+def test_pnoise_names_a_cap_it_was_given_as_that_cap():
+    """The review of 2026-09-30 (X2): an explicit `maxsidebands` below the
+    grid's Nyquist that stops the sum was reported as "the grid's Nyquist"
+    (`alias_stop = 'bound'`), pointing the caller at the grid instead of at
+    their own cap.  It is 'cap' now, and the warning names the cap."""
+    cir, pss, k = _review_mixer()
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with pytest.warns(RuntimeWarning, match='maxsidebands=5'):
+        pac.pnoise(pss, 3e5, k, maxsidebands=5)
+    assert pac.alias_stop == 'cap'
+
+
+def test_the_dc_fold_guard_covers_every_sideband_the_fold_reaches():
+    """The review of 2026-09-30 (X1, X3): `pnoise`'s guard against folding a
+    1/f source onto DC scanned 8 harmonics (`maxsidebands or 8`) while the
+    fold ran to the grid's Nyquist, so the 10th harmonic of a clocked
+    circuit read the source ~1e-11 Hz from DC and returned the "finite,
+    absurd number" the guard exists to refuse; `am_pm_noise`, whose fold
+    reads the sources at `offset + p f0`, had no guard at all.  Both refuse
+    now, and a frequency beside the harmonic still runs."""
+    def els(c):
+        c['S0'] = _sw()
+        c['N0'] = IS('out', gnd, i=0.0, noisePSD=1e-26, noiseFc=1e6)
+    _cir, pss, io, pac, T = _sampler_fixture(els, npts=200)
+    f0 = 1.0 / T
+    for f in (10 * f0, 1e6):
+        with pytest.raises(ValueError, match='harmonic'), warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pac.pnoise(pss, f, io, cyclostationary=True)
+    for off in (0.0, f0):
+        with pytest.raises(ValueError, match='harmonic'), warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pac.am_pm_noise(pss, off, io, harmonic=1, sweeptype='relative',
+                            maxsidebands=12, modulated=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        am, pm, _b = pac.am_pm_noise(pss, 1e-3 * f0, io, harmonic=1,
+                                     sweeptype='relative', maxsidebands=12,
+                                     modulated=True)
+    assert np.isfinite(am) and np.isfinite(pm) and am + pm > 0.0, (am, pm)

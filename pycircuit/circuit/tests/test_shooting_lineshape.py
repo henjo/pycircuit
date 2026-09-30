@@ -2091,3 +2091,27 @@ def test_the_edge_increment_is_white_at_every_instant_and_stationary_on_average(
         slope = (lo - hi) / np.log(100.0)
         pred = (k * T) ** 2 * abs(V[4]) ** 2 / (2.0 * np.pi)
         assert abs(slope / pred - 1.0) < 1e-6, (k, slope, pred)
+
+
+def test_the_coloured_spectrum_checks_its_own_amplitude_pole():
+    """The review of 2026-09-30 (F4): the coloured `oscillator_spectrum`
+    checked the offsets against the amplitude-relaxation pole BEFORE the
+    colour fold read lambda_2 -- so on a fresh PAC the check was skipped
+    (above the pole, silently), and on a reused one it read the PREVIOUS
+    oscillator's lambda_2.  It runs after the fold now."""
+    import warnings as _w
+    ## (van der Pol, Q = 8, a Lorentzian source: lambda_2 = 0.88, the pole
+    ## at 0.02 f0)
+    _c, pss, _pac, ov = _coloured_vdp('coloured')
+    f0 = 1.0 / float(pss.period)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        lam2 = float(pss.ppv()[1]['second_multiplier'])
+    f_amp = -np.log(lam2) * f0 / (2.0 * np.pi)
+    assert 0.0 < f_amp < 0.2 * f0, (lam2, f_amp / f0)
+    pac = PAC(_c, toolkit=circuit.numeric)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        pac.oscillator_spectrum(pss, [2.0 * f_amp], ov, offset_fmin=1e-5 * f0)
+    msgs = [str(r.message) for r in rec]
+    assert any('amplitude-relaxation pole' in m_ for m_ in msgs), msgs

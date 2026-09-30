@@ -367,24 +367,30 @@ def sweep_offset(pss, freq, sweeptype, harmonic, what):
     return freq - int(harmonic) / float(pss.period)
 
 
-def _output_weights(output, width):
-    """The complex output functional of an adjoint row, `width` wide: an
-    index is a unit vector, an array its own entries, zero-padded."""
-    d = np.zeros(width, dtype=complex)
-    if np.isscalar(output):
-        d[int(output)] = 1.0
+def _output_vector(output, width, dtype):
+    """An output (as `output_index` returns it) as a weight vector `width`
+    wide: an index -- a Python or NumPy integer, or a 0-d array -- is a unit
+    vector, a weight vector its own entries, zero-padded (a pair map's
+    `(x_n, x_{n-1})` reads the first block).
+
+    ⚠ ONE ROUTINE FOR EVERY SURFACE.  Until 2026-09-30 there were two, and
+    the adjoint rows' tested `np.isscalar`, which a 0-d array fails: index
+    `np.array(3)` became a weight of 3 on row 0."""
+    d = np.zeros(width, dtype=dtype)
+    out = np.asarray(output)
+    if out.ndim == 0:
+        d[int(out)] = 1.0
     else:
-        out = np.asarray(output, dtype=complex).ravel()
+        out = np.asarray(out, dtype=dtype).ravel()[:width]
         d[:len(out)] = out
     return d
 
 
+def _output_weights(output, width):
+    """The complex output functional of an adjoint row (`_output_vector`)."""
+    return _output_vector(output, width, complex)
+
+
 def _output_row(output, m):
-    """The real output row of a spectrum: an index (a 0-d value) is a unit
-    vector of width `m`, an array its first `m` entries."""
-    d = np.asarray(output)
-    if d.ndim == 0:
-        row = np.zeros(m, dtype=float)
-        row[int(d)] = 1.0
-        return row
-    return np.asarray(d, dtype=float).ravel()[:m]
+    """The real output row of a spectrum or a sampled law (`_output_vector`)."""
+    return _output_vector(output, m, float)

@@ -1095,12 +1095,15 @@ class _PhaseNoise(object):
                 'PAC.oscillator_spectrum: need 0 < offset_fmin < offset_fmax '
                 '<= f0/2 (%.6g Hz); got offset_fmin=%r, offset_fmax=%r.'
                 % (0.5 * f0, fmin, fmax))
-        self._warn_above_amplitude_pole(offsets, f0)
         X = self._carrier_line(pss, output, i)
         ## the white part's `c` and the coloured part of `c(f)` from one fold
         ## (`_colour_fold`: every coloured component through its own
         ## columns, a stationary one the case whose columns do not move)
         fold = self._colour_fold(pss, fmin, None, 'oscillator_spectrum')
+        ## (after the fold, which reads THIS oscillator's lambda_2: before it
+        ## the check was skipped on a fresh PAC and read the previous
+        ## oscillator's on a reused one, until 2026-09-30)
+        self._warn_above_amplitude_pole(offsets, f0)
         c_w = fold.c_white
         cfun = lambda nus: np.maximum(fold.coloured(nus), 1e-300)
         pc, converged = _lineshape.refine(cfun, fmin, fmax)

@@ -1241,7 +1241,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         choose the formulation.  Returns the run's state."""
         self._solve_kwargs = dict(refnode=refnode, maxiterations=maxiterations,
                                   matrix_free=matrix_free, tstab=tstab,
-                                  period_seed=float(period))
+                                  period_seed=float(period),
+                                  state_events=bool(state_events))
         self._monodromy_twin = None
         self._twins = {}
         ## ⚠ HIDDEN STATE IS REFUSED, NOT INTEGRATED AND HOPED OVER.
@@ -1335,10 +1336,19 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                                 matrix_free=matrix_free,
                                 x0_unknown=x0_unknown, tstab=tstab,
                                 break_events=break_events,
-                                phase_rule=phase_rule)
+                                phase_rule=phase_rule,
+                                state_events=state_events)
 
         n = self.cir.n
         dt = timestep
+        ## ⚠ A PERIOD OF FEWER THAN TWO STEPS IS REFUSED: one step did not
+        ## converge and none raised an IndexError from deep in the grid
+        ## (measured 2026-09-30, every method); `grid` sets its own count.
+        if grid is None and not int(period / dt) >= 2:
+            raise ValueError(
+                f'PSS: timestep={timestep!r} leaves {int(period / dt)} step(s) '
+                f'in the period {period!r}; the shooting needs at least two '
+                '-- pass a timestep of at most half the period (or a grid).')
         if x0 is None:
             x = toolkit.zeros(n-1) #currently without reference node !
         else:
@@ -2439,7 +2449,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 kv[_p.name] = getattr(self.par, _p.name)
             except AttributeError:
                 pass
-        one = type(self)(self.cir, toolkit=self.toolkit, irefnode=None, **kv)
+        one = type(self)(self.cir, toolkit=self.toolkit,
+                         irefnode=self.cir.nodes[self.irefnode], **kv)
         ## (silent: its diagnoses are about a system no result comes from)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
@@ -2512,7 +2523,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                                   matrix_free=matrix_free,
                                   x0_unknown=x0_unknown, tstab=None,
                                   break_events=self.break_events,
-                                  phase_rule=phase_rule, trace=run.trace)
+                                  phase_rule=phase_rule,
+                                  state_events=run.state_events,
+                                  trace=run.trace)
             finally:
                 self._closing_second_pass = False
                 self._force_period_column = None

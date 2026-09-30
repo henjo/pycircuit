@@ -5410,3 +5410,68 @@ def test_a_pss_keeps_the_toolkit_it_was_given():
     c['R'] = R(1, gnd, r=1e3)
     assert PSS(c, toolkit=tk).toolkit is tk
     assert PSS(c).toolkit is circuit.default_toolkit
+
+
+def _review_vdp(method='trap', npts=100, ref=None, ac=False):
+    """van der Pol (Q = 8) solved autonomously, on ground or on its own node
+    `ref` as the reference; `ac` adds a small-signal current into the tank."""
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    if ac:
+        cir['ac'] = IS('v', gnd, i=0.0, iac=1.0)
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    rn = gnd if ref is None else cir.get_node(ref)
+    pss = PSS(cir, method=method, reltol=1e-12, irefnode=rn)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=T, timestep=T / npts, refnode=rn, maxiterations=200,
+                  x0=np.array([-2.0 if ref is not None else 2.0, 0.0]),
+                  state_events=False, break_events=False)
+    assert pss.converged
+    return cir, pss
+
+
+def test_every_re_solve_keeps_the_callers_event_settings(monkeypatch):
+    """The review of 2026-09-30 (F3): a re-solve of this analysis -- the
+    monodromy twin a trap/euler oscillator's PPV is read on, `grid_error`'s
+    refined runs -- is the same analysis on another grid or integrator, so
+    it takes the caller's `state_events` and `break_events`.  They took the
+    DEFAULTS (both True) until then: the twin of an unstaged solve was
+    staged, and `grid_error` compared a staged refinement with an unstaged
+    base."""
+    _cir, pss = _review_vdp()
+    seen = []
+    solve = PSS.solve
+
+    def recording(self, *a, **kw):
+        seen.append((kw.get('state_events', True), kw.get('break_events')))
+        return solve(self, *a, **kw)
+
+    monkeypatch.setattr(PSS, 'solve', recording)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.ppv()
+        pss.grid_error(lambda q: float(q.period), levels=2)
+    assert len(seen) >= 2, seen
+    assert all(se is False and be is False for se, be in seen), seen
+
+
+def test_a_period_of_fewer_than_two_steps_is_refused():
+    """The review of 2026-09-30 (F15): `timestep > period / 2` leaves fewer
+    than two steps; one step did not converge and none raised an IndexError
+    from inside the grid (measured, every method).  Refused up front."""
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c['V'] = VSin('in', gnd, va=1.0, freq=1e5)
+    c['R'] = R('in', 'out', r=1e3)
+    c['C'] = C('out', gnd, c=1e-9)
+    for frac in (2.0, 1.0, 0.51):
+        with pytest.raises(ValueError, match='at least two'):
+            PSS(c, method='trap').solve(period=1e-5, timestep=frac * 1e-5)

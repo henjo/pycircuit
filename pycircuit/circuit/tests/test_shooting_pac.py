@@ -105,7 +105,7 @@ def test_PAC():
     pac = PAC(cir)
     res = pac.solve(pss, freqs = fc + np.array([1e3, 2e3, 4e3]))
     
-    assert False, "Test should compare with spectre simulation"
+    assert False, "Test should compare with a reference simulation"
 
 
 def test_a_failed_inner_krylov_solve_says_so():
@@ -2520,3 +2520,49 @@ def test_trap_opened_at_x0_is_the_transpose_of_its_forward_replay():
         x = complex(X[io_full, k])
         h = complex(H[li] @ u_ac)
         assert abs(x - h) < 1e-10 * abs(h), (l, x, h)
+
+
+def test_a_twin_takes_the_analysis_reference_node():
+    """The review of 2026-09-30 (F1): the monodromy twin of a trap/euler
+    oscillator (and the staged fallback's one-stage solve) was built with
+    `irefnode=None` -- ground -- while `solve` refuses a `refnode` other than
+    the constructed one, so a PSS on another reference raised from `ppv()`.
+    The diffusion constant is gauge-free: on the tank node as the reference
+    it equals the ground-referenced one."""
+    from pycircuit.circuit.tests.test_shooting_pss import _review_vdp
+    cg, pg = _review_vdp()
+    cv, pv = _review_vdp(ref='v')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        c_v = PAC(cv, toolkit=circuit.numeric).diffusion_constant(pv)
+        c_g = PAC(cg, toolkit=circuit.numeric).diffusion_constant(pg)
+    assert pv.monodromy_twin().irefnode == pv.irefnode
+    assert abs(c_v / c_g - 1.0) < 1e-9, (c_v, c_g)
+
+
+def test_a_relative_sweep_offsets_from_the_carrier_of_the_map_it_solves_on():
+    """The review of 2026-09-30 (F2): on a trap oscillator the small-signal
+    surfaces solve on the monodromy twin's map, whose period differs from the
+    run's by O(h^2) (3.4e-4 here, 5.4e-5 Hz at f0 = 0.159 Hz); a relative
+    sweep read the RUN's carrier, so an offset of 1e-3 f0 sat 34 % off the
+    twin's pole and `pnoise` read 2.3x off.  The offset is now from the
+    carrier of the map the rows are solved on: `pnoise` at a relative
+    offset IS `pnoise` at the twin's carrier plus that offset, and
+    `PAC.solve`'s output frequencies are the twin's."""
+    from pycircuit.circuit.tests.test_shooting_pss import _review_vdp
+    cir, pss = _review_vdp(ac=True)
+    tw = pss.monodromy_twin()
+    f0r, f0t = 1.0 / float(pss.period), 1.0 / float(tw.period)
+    df = 1e-3 * f0t
+    ## (the poison is alive: the carriers are further apart than 10 % of df)
+    assert abs(f0r - f0t) > 0.1 * df, (f0r, f0t, df)
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        S_rel, _u = pac.pnoise(pss, df, 0, maxsidebands=3, sweeptype='relative')
+        S_abs, _u = pac.pnoise(pss, f0t + df, 0, maxsidebands=3,
+                               sweeptype='absolute')
+        res = pac.solve(pss, [df], sweeptype='relative')
+    assert abs(S_rel / S_abs - 1.0) < 1e-12, (S_rel, S_abs)
+    sv = np.asarray(res.sweep_values, dtype=float)
+    assert float(np.min(np.abs(sv - (f0t + df)))) < 1e-9 * f0t, sv

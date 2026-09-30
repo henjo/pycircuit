@@ -106,7 +106,8 @@ class _DrivenNoise(object):
         accumulation stops when a sideband pair adds less than `ratio_tol`
         of the running total -- and it can never pass `|l| <= N/2`, the
         grid's own Nyquist (Okumura eq. 32).  `alias_stop` says which
-        fired; ending on the bound warns.
+        fired: 'ratio', 'bound' (the Nyquist) or 'cap' (an explicit
+        `maxsidebands` below it); ending on either of the last two warns.
 
         ⚠ HARMONICS: folding puts a copy of a 1/f source's DC singularity
         at every harmonic.  A `freq` on a harmonic where the folded `CY` is
@@ -127,7 +128,6 @@ class _DrivenNoise(object):
         History: `doc/shooting_history.md`, `PAC.pnoise`.
         """
         output = output_index(pss, output)
-        freq = sweep_frequency(pss, freq, sweeptype, relharmnum, 'pnoise')
         self._check_circuit(pss)
         if modulated and cyclostationary:
             raise ValueError(
@@ -142,6 +142,12 @@ class _DrivenNoise(object):
         ## (`_sideband_forced_trbdf2`), so there is no Gear-2 fallback; a
         ## Gear-2 twin only if `monodromy='gear'` asks for one.
         pss = pss._adjoint_host()
+        ## ⚠ THE SWEEP ON THE HOST: a relative frequency is an offset from
+        ## the carrier of the operator the rows are solved on -- the twin's
+        ## on a trap/euler oscillator, whose period differs from the run's by
+        ## O(h^2).  Until 2026-09-30 it was read off the run's period, so an
+        ## offset below that gap landed on the wrong side of the pole.
+        freq = sweep_frequency(pss, freq, sweeptype, relharmnum, 'pnoise')
         fp = pss.factored_period()
         m = pss.cir.n - 1
         N = len(fp.steps)
@@ -203,58 +209,14 @@ class _DrivenNoise(object):
         ## this checks the SOURCES at the frequency actually used rather
         ## than refusing a harmonic on principle.
         f0_ = 1.0 / float(pss.period)
-        lscan = max(1, int(maxsidebands or 8))
+        ## ⚠ EVERY SIDEBAND THE FOLD USES (`lmax`): until 2026-09-30 the scan
+        ## stopped at 8 (`maxsidebands or 8`) while the fold ran to the
+        ## grid's Nyquist, so a harmonic above the 8th read a 1/f source
+        ## next to DC unrefused.
+        lscan = max(1, lmax)
         offs = np.abs(float(freq) - np.arange(-lscan, lscan + 1) * f0_)
-        near = float(np.min(offs))
-        if near <= self.HARMONIC_GUARD * f0_:
-            probe = cyfn(pss, 2.0 * np.pi * near)
-            if not np.all(np.isfinite(np.asarray(probe))):
-                raise ValueError(
-                    'PAC.pnoise: %.12g Hz sits on a harmonic of %.12g Hz, '
-                    'so a sideband folds the noise sources to DC -- and at '
-                    'DC this circuit\'s CY is not finite. A 1/f term is '
-                    'infinite there; a flicker term whose COEFFICIENT IS '
-                    'ZERO is 0/0 and gives nan, so disabling flicker does '
-                    'not avoid this. Offset from the harmonic: a commercial RF simulator\'s '
-                    'own advice is to cluster frequencies NEAR each '
-                    'harmonic and never place one ON it.'
-                    % (float(freq), f0_))
-            ## ⚠⚠ A FINITE PROBE IS NOT A SAFE ONE.  `1/T` rounds, so at
-            ## `f = f0` the folded band sits ~1e-11 Hz from DC, not ON it: a
-            ## 1/f source there is finite and enormous (6.3e-2 V^2/Hz against
-            ## 9.2e-15 at 0.1 % either side).  So a frequency-DEPENDENT CY at
-            ## the folded band refuses too; a white one stays allowed.
-            probe_ref = cyfn(pss, 2.0 * np.pi * max(abs(float(freq)) * 2.0, f0_))
-            if not np.allclose(np.asarray(probe), np.asarray(probe_ref),
-                               rtol=1e-9, atol=0.0):
-                raise ValueError(
-                    'PAC.pnoise: %.12g Hz sits on harmonic %d of %.12g Hz, so '
-                    'a sideband folds the noise sources to %.3g Hz -- DC up to '
-                    'rounding -- and this circuit\'s CY is frequency-dependent '
-                    'there: a 1/f source is read next to its singularity and '
-                    'the fold returns a finite, absurd number (measured '
-                    '6.3e-2 V^2/Hz against 9.2e-15 at 0.1 %% either side). '
-                    'Offset from the harmonic, or use PAC.sampled_variance, '
-                    'whose explicit fmin keeps every band off DC.'
-                    % (float(freq), int(round(abs(float(freq)) / f0_)), f0_,
-                       near))
-
-        ## ⚠ THE STEEP REGION BESIDE A HARMONIC IS A SWEEP HAZARD RATHER
-        ## THAN A WRONG NUMBER, so it warns instead of raising: the VALUE is
-        ## right (2 % above the plateau at `f0 + 0.01` Hz with a real flicker
-        ## source), but a grid that lands there by accident integrates a
-        ## spike it never resolved.
-        elif near < 1e-6 * f0_ and float(freq) > 0.0:
-            cy_hi = cyfn(pss, 2.0 * np.pi * max(float(freq) * 2.0, f0_))
-            if not np.allclose(cy, cy_hi, rtol=1e-9, atol=0.0):
-                warnings.warn(
-                    'PAC.pnoise: %.12g Hz is %.3g Hz from a harmonic of '
-                    '%.12g Hz and a source has a frequency-dependent CY, '
-                    'so the folded density varies steeply here. The VALUE '
-                    'is correct; a swept grid landing this close will '
-                    'misrepresent the integrated total. Cluster near each '
-                    'harmonic deliberately rather than by accident.'
-                    % (float(freq), near, f0_), RuntimeWarning, stacklevel=2)
+        self._dc_fold_guard(pss, cyfn, float(freq), float(np.min(offs)), f0_,
+                            cy, 'pnoise')
 
         total = 0.0
         used = []
@@ -291,7 +253,20 @@ class _DrivenNoise(object):
         ## number is a LOWER bound on the folded noise -- every sideband
         ## above the grid's own maximum frequency is missing, not small.
         ## A strongly switching circuit does this readily.
-        if self.alias_stop == 'bound' and lmax > 0:
+        ## ⚠ A CAP THE CALLER SET IS NAMED AS THAT CAP: until 2026-09-30 an
+        ## explicit `maxsidebands` was reported as "the grid's Nyquist".
+        if (self.alias_stop == 'bound' and maxsidebands is not None
+                and lmax < N // 2):
+            self.alias_stop = 'cap'
+            warnings.warn(
+                'PAC.pnoise: the sideband accumulation stopped at '
+                f'maxsidebands={lmax} (the grid resolves {N // 2} at {N} '
+                'points per period), not because the contributions became '
+                'negligible. Sidebands above the cap are MISSING rather '
+                'than small, so this is a lower bound on the folded noise. '
+                'Raise maxsidebands (or leave it None) and compare.',
+                RuntimeWarning, stacklevel=2)
+        elif self.alias_stop == 'bound' and lmax > 0:
             warnings.warn(
                 'PAC.pnoise: the sideband accumulation stopped at the '
                 "grid's Nyquist (|l| = %d at %d points per period), not "
@@ -302,6 +277,66 @@ class _DrivenNoise(object):
                 % (lmax, N),
                 RuntimeWarning, stacklevel=2)
         return total, used
+
+    def _dc_fold_guard(self, pss, cyfn, freq, near, f0_, cy, what):
+        """Refuse (or warn about) a fold that reads the sources next to DC.
+
+        `freq` the output frequency, `near` the smallest |source frequency|
+        the fold evaluates `cyfn` at, `cy` the sources at `freq` (None: read
+        here when needed).  `pnoise` and `am_pm_noise` (whose fold had no
+        guard until 2026-09-30).  See `pnoise` for the cases."""
+        if near <= self.HARMONIC_GUARD * f0_:
+            probe = cyfn(pss, 2.0 * np.pi * near)
+            if not np.all(np.isfinite(np.asarray(probe))):
+                raise ValueError(
+                    'PAC.%s: %.12g Hz sits on a harmonic of %.12g Hz, '
+                    'so a sideband folds the noise sources to DC -- and at '
+                    'DC this circuit\'s CY is not finite. A 1/f term is '
+                    'infinite there; a flicker term whose COEFFICIENT IS '
+                    'ZERO is 0/0 and gives nan, so disabling flicker does '
+                    'not avoid this. Offset from the harmonic: a commercial RF simulator\'s '
+                    'own advice is to cluster frequencies NEAR each '
+                    'harmonic and never place one ON it.'
+                    % (what, float(freq), f0_))
+            ## ⚠⚠ A FINITE PROBE IS NOT A SAFE ONE.  `1/T` rounds, so at
+            ## `f = f0` the folded band sits ~1e-11 Hz from DC, not ON it: a
+            ## 1/f source there is finite and enormous (6.3e-2 V^2/Hz against
+            ## 9.2e-15 at 0.1 % either side).  So a frequency-DEPENDENT CY at
+            ## the folded band refuses too; a white one stays allowed.
+            probe_ref = cyfn(pss, 2.0 * np.pi * max(abs(float(freq)) * 2.0, f0_))
+            if not np.allclose(np.asarray(probe), np.asarray(probe_ref),
+                               rtol=1e-9, atol=0.0):
+                raise ValueError(
+                    'PAC.%s: %.12g Hz sits on harmonic %d of %.12g Hz, so '
+                    'a sideband folds the noise sources to %.3g Hz -- DC up to '
+                    'rounding -- and this circuit\'s CY is frequency-dependent '
+                    'there: a 1/f source is read next to its singularity and '
+                    'the fold returns a finite, absurd number (measured '
+                    '6.3e-2 V^2/Hz against 9.2e-15 at 0.1 %% either side). '
+                    'Offset from the harmonic, or use PAC.sampled_variance, '
+                    'whose explicit fmin keeps every band off DC.'
+                    % (what, float(freq), int(round(abs(float(freq)) / f0_)),
+                       f0_, near))
+
+        ## ⚠ THE STEEP REGION BESIDE A HARMONIC IS A SWEEP HAZARD RATHER
+        ## THAN A WRONG NUMBER, so it warns instead of raising: the VALUE is
+        ## right (2 % above the plateau at `f0 + 0.01` Hz with a real flicker
+        ## source), but a grid that lands there by accident integrates a
+        ## spike it never resolved.
+        elif near < 1e-6 * f0_ and float(freq) > 0.0:
+            if cy is None:
+                cy = cyfn(pss, 2.0 * np.pi * float(freq))
+            cy_hi = cyfn(pss, 2.0 * np.pi * max(float(freq) * 2.0, f0_))
+            if not np.allclose(cy, cy_hi, rtol=1e-9, atol=0.0):
+                warnings.warn(
+                    'PAC.%s: %.12g Hz is %.3g Hz from a harmonic of '
+                    '%.12g Hz and a source has a frequency-dependent CY, '
+                    'so the folded density varies steeply here. The VALUE '
+                    'is correct; a swept grid landing this close will '
+                    'misrepresent the integrated total. Cluster near each '
+                    'harmonic deliberately rather than by accident.'
+                    % (what, float(freq), near, f0_), RuntimeWarning,
+                    stacklevel=3)
 
     def _cy_harmonics(self, pss, w):
         """`P_j`: the Fourier coefficient matrices of `CY(x(t), w)` over the
@@ -706,9 +741,10 @@ class _DrivenNoise(object):
         History: `doc/shooting_history.md`, `PAC.am_pm_noise`.
         """
         output = output_index(pss, output)
-        freq = sweep_offset(pss, freq, sweeptype, harmonic, 'am_pm_noise')
         self._check_circuit(pss)
         pss = pss._adjoint_host()
+        ## (the offset from the HOST's carrier, as in `pnoise`)
+        freq = sweep_offset(pss, freq, sweeptype, harmonic, 'am_pm_noise')
         fp = pss.factored_period()
         N = len(fp.steps)
         f0 = 1.0 / float(fp.T)
@@ -733,6 +769,11 @@ class _DrivenNoise(object):
                 'period) -- use a finer period grid, or leave it None.')
         lmax = cap if maxsidebands is None else int(maxsidebands)
         cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
+        ## the sources are read at `freq + p f0`: next to DC when the output
+        ## sits on a harmonic (`pnoise`'s guard)
+        gs = float(freq) + np.arange(-lmax, lmax + 1) * f0
+        self._dc_fold_guard(pss, cyfn, k * f0 + float(freq),
+                            float(np.min(np.abs(gs))), f0, None, 'am_pm_noise')
         ## ⚠⚠ THE SPLIT IS TAKEN IN THE CARRIER'S FRAME, NOT THE TIME
         ## ORIGIN'S.  AM is the envelope component ALONG the carrier phasor,
         ## so `a + conj(b)` is right only for a cosine-phased carrier;

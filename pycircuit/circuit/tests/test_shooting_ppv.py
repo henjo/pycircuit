@@ -679,7 +679,7 @@ def test_the_ppv_says_when_a_second_multiplier_is_near_one():
     treats the oscillator's frequency response as INSTANTANEOUS, so a slow
     node that filters a nearby device's noise is invisible to it and phase
     noise comes out OVER-ESTIMATED. Better extraction does not fix that —
-    Lai (Cadence) is explicit that the PPV "can be extracted correctly"
+    Lai is explicit that the PPV "can be extracted correctly"
     and the analysis is "still inaccurate". So the result is an upper
     bound, and the warning says so rather than implying a tolerance would
     help.

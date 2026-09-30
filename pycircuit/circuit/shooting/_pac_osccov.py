@@ -2,7 +2,7 @@
 edge jitter and the mode weights.
 """
 import numpy as np
-from ._numerics import edge_slope, output_index
+from ._numerics import _output_row, edge_slope, output_index
 import warnings
 from .events import EventColumns
 
@@ -562,8 +562,7 @@ class _OscillatorCovariance(object):
         L = N // 2 - 1
         ns = np.arange(-L, L + 1)
         fmin, fmax = float(col['fmin']), float(col['fmax'])
-        d = np.zeros(m)
-        d[int(output)] = 1.0
+        d = _output_row(output, m)
         tinj = self._stage_times(pss, fp) if stage else tms[1:N + 1]
 
         def couplings(lam0=None, seed=None, extra=None):
@@ -977,8 +976,8 @@ class _OscillatorCovariance(object):
             _v0, pinfo = pss.ppv()
         ## (the PPV samples cover nodes 0..N-1; node N is node 0)
         vs = [np.asarray(sv, dtype=float)[:m] for sv in pinfo['samples']]
-        e = np.zeros(m)
-        e[int(output)] = 1.0
+        ## the output as a weight vector (a node, or a differential output)
+        e = _output_row(output, m)
         white = float(d) > 0.0
         if not white and not coloured:
             raise ValueError(
@@ -1011,8 +1010,7 @@ class _OscillatorCovariance(object):
             _warnings.filterwarnings('ignore', message='PAC.covariance: the '
                                      'solve is staged on its state events')
             staged = self._event_closure(pss, As, Qs, M, _m, n)
-        ef = np.zeros(na)
-        ef[int(output)] = 1.0
+        ef = _output_row(e, na)
 
         def at_node(jn):
             """Node `jn`'s law over its own slope: `(Var_k for k = 1..kmax,
@@ -1082,10 +1080,10 @@ class _OscillatorCovariance(object):
             ## phase increment + ``2 A_col``, which omits the transverse
             ## part's memory and its cross term with the phase
             Pi = self._node_projectors(pss)
-            law = self._edge_coloured_law(pss, col, int(output), (a, b),
+            law = self._edge_coloured_law(pss, col, output, (a, b),
                                           int(kmax), projectors=(Pi[a], Pi[b]))
-            sa, sb = (float(np.asarray(info['tangent_samples'][jn],
-                                       dtype=float)[int(output)]) ** 2
+            sa, sb = (float(e @ np.asarray(info['tangent_samples'][jn],
+                                           dtype=float)[:m]) ** 2
                       for jn in (a, b))
             Vn = law['V']
             cvar = (1.0 - th) * Vn[0] / sa + th * Vn[1] / sb

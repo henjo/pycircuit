@@ -199,8 +199,12 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         History: `doc/shooting_history.md`, `PAC.solve`.
         """
         toolkit = self.toolkit
+        ## (a relative sweep offsets from the carrier of the map this solves
+        ## on -- `_state_map` reads the monodromy twin's; the run's period
+        ## until 2026-09-30, see `pnoise`)
         freqs = np.atleast_1d(np.asarray(
-            sweep_frequency(pss, np.asarray(freqs, dtype=float), sweeptype,
+            sweep_frequency(pss.monodromy_twin(),
+                            np.asarray(freqs, dtype=float), sweeptype,
                             relharmnum, 'solve'), dtype=float))
         ## the map on the state (a GLM's own, `_GLMPeriod.state_map`)
         fp = pss._state_map()
@@ -1082,7 +1086,9 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         History: `doc/shooting_history.md`, `PAC.am_pm`.
         """
         output = output_index(pss, output)
-        freq = sweep_offset(pss, freq, sweeptype, harmonic, 'am_pm')
+        ## (the offset from the carrier of the map the rows are solved on)
+        freq = sweep_offset(pss.monodromy_twin(), freq, sweeptype, harmonic,
+                            'am_pm')
         C = self.carrier_phasor(pss, output, harmonic)
         ## ⚠ RELATIVE TO THE SIGNAL, NOT AGAINST ZERO.  A harmonic the
         ## circuit does not produce still has a phasor of ~1e-16 rather
