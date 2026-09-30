@@ -4884,7 +4884,7 @@ truth is a convolution, and the PPV form is what you get by
 assuming the kernel is `v_1(t) delta(t - tau)`.  Real circuits have
 finite bandwidth, so a slow node FILTERS the noise of devices near
 it, the PPV cannot see the filtering, and phase noise is
-OVER-ESTIMATED.  Lai (Cadence) is explicit that better extraction
+OVER-ESTIMATED.  Lai is explicit that better extraction
 does not help: "although the PPV can be extracted correctly, the
 oscillator noise analysis is still inaccurate: the phase noise is
 always over-estimated."
@@ -5143,7 +5143,7 @@ evidence against it.
 MANUFACTURED IN TWO STEPS.  This used to render "larger than 1
 second" AS A QUOTATION.  The primary source IS on disk, at
 `~/docs/09-phase-macromodels-and-prc/Lai-2008-Frequency-Aware
-PPV ... (Cadence).pdf`, and p.4 reads, verbatim:
+PPV ... .pdf`, and p.4 reads, verbatim:
 
     "Since the RC time constants of the "off" gated capacitors is
      very large (LARGER THAN 1), it is safe to assume that these

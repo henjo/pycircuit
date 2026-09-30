@@ -122,8 +122,8 @@ ORDERS = (3, 5, 7, 9, 11, 13)
 ## previously used -- and at ~9 ns steps that is hours per amplitude.
 SETTLE = 5 * 208e-6
 MEASURE = 1.0 / FB
-## vabstol comes back DOWN here, well below the library default of 1e-6 (Spectre's
-## value, right for general use).  This measurement needs the integrator's residual
+## vabstol comes back DOWN here, well below the library default of 1e-6 (a commercial
+## simulator's value, right for general use).  This measurement needs the integrator's residual
 ## error under the ~1e-8 V IM3 amplitude at the output, and the default leaves
 ## etol = TRTOL*(reltol*|x| + 1e-6) ~ 7e-6 -- larger than the 6.7e-05 V signal's own
 ## precision requirement.  Measured on a fixed 2.5 us window, |vout| error against a

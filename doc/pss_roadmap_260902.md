@@ -140,8 +140,8 @@ organises this whole document is one we re-derived independently and ship at
 
 ⚠ **Read the count carefully, though: a field can stop publishing on something because it is
 FINISHED rather than because it is abandoned.** Nine citations since 2021 alone reads as
-abandonment; the same nine *plus* Cadence shipping shooting-adjacent PSS acceleration into
-**PSpice** in 2023 reads as settled — the vendor datum is the discriminator. And "cited once
+abandonment; the same nine *plus* a commercial vendor shipping shooting-adjacent PSS acceleration
+into its circuit simulator in 2023 reads as settled — the vendor datum is the discriminator. And "cited once
 ever" could mean nobody noticed *or* that everyone who needed it re-derived it. **We re-derived
 it independently**, which is one data point for the second reading. Treat that as a reason to
 state it carefully rather than as a reason to doubt it: we verified it numerically here
@@ -1738,7 +1738,7 @@ The phase equation `α' = v₁ᵀ(t+α) b(t)` treats the oscillator's frequency 
 **instantaneous**; the truth is a convolution, and the PPV form assumes the kernel is
 `v₁(t)δ(t−τ)`. Real circuits have finite bandwidth, so a **slow node filters the noise of
 devices near it**, the PPV cannot see the filtering, and phase noise comes out
-**over-estimated**. Lai (Cadence) is explicit that better extraction does not help: "although
+**over-estimated**. Lai is explicit that better extraction does not help: "although
 the PPV can be extracted correctly, the oscillator noise analysis is still inaccurate: the
 phase noise is always over-estimated."
 

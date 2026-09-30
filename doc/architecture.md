@@ -111,7 +111,7 @@ derivatives be computed for me?"* without naming a backend.
 ## 3. Layers
 
 ```
-  post/            results, waveforms, plotting, Cadence PSF readers
+  post/            results, waveforms, plotting, PSF readers
     ^
   analysis         AC, DC, Noise, Transient, TwoPort, PSS, Volterra, ...
     ^                                        (analysis.py, analysis_ss.py, ...)

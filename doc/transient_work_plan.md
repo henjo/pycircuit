@@ -365,7 +365,7 @@ cost:
 *PAC — withdraw.* Beyond the 420 GiB allocation, which is not a tuning problem but a
 consequence of forming the whole `(N*M)x(N*M)` operator densely, **it has never been
 validated against anything.** `test_PAC` is `@unittest.skip("Skip failing test")` *and* its
-last line is `assert False, "Test should compare with spectre simulation"` — so it is not a
+last line is `assert False, "Test should compare with [a commercial simulator] simulation"` — so it is not a
 test that broke, it is a test that was never finished. There is no evidence PAC has ever
 produced a correct number. Shipping it in the analysis inventory is the "thin advertised
 feature" the plan warns about in its purest form.
