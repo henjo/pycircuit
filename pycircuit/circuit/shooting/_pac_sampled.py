@@ -432,7 +432,8 @@ class _SampledNoise(object):
                     if _ev is not None:
                         g_theta = np.exp(-2j * np.pi * f * tms[k0]) * (_Pkf[k0].T @ d)
                         g = np.asarray(g) + _dth.T @ g_theta
-                    z = self._gmres_checked(A_, g, tol, 'the sampled adjoint solve')
+                    z = self._adjoint_solve(pss, fp, alpha, g, A_, tol,
+                                            'the sampled adjoint solve')
                     _l, cZ = self._stage_pass(pss, fp, z)
                     Sv = -(cA + alpha * cZ)                          # N s x m
                     if _ev is not None:
@@ -445,7 +446,8 @@ class _SampledNoise(object):
                     if _ev is not None:
                         g_theta = np.exp(-2j * np.pi * f * tms[k0]) * (_Pkf[k0].T @ d)
                         g = np.asarray(g) + _dth.T @ g_theta
-                    z = self._gmres_checked(A_, g, tol, 'the sampled adjoint solve')
+                    z = self._adjoint_solve(pss, fp, alpha, g, A_, tol,
+                                            'the sampled adjoint solve')
                     _e, t_z, _st = fp.matvec_transposed(z, collect=True)
                     Sv = -(np.asarray(t_inj) + alpha * np.asarray(t_z))  # N x m
                     if _ev is not None:

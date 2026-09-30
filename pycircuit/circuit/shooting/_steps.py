@@ -159,6 +159,17 @@ class _StageStep(object):
                 acc = acc - self.h * np.exp(jw * (ts + self.c[k] * self.h)) * cp
         return acc
 
+    def source_points(self, r, ts, _te):
+        """`source_adjoint` for EVERY frequency at once: the pairs
+        `(t_k, cp_k)` with ``source_adjoint(acc, r, jw, ...) = acc - sum_k
+        e^{jw t_k} cp_k`` (`PAC._sideband_family`)."""
+        out = []
+        for k in range(self.s):
+            cp = self.reach(r, k)
+            if cp is not None:
+                out.append((ts + self.c[k] * self.h, self.h * cp))
+        return out
+
     def source_response(self, i_src):
         """``d x_{n+1} / d u`` (`m x m`) for a unit source entering stage
         `i_src` alone -- the stage residuals carry it as ``-h A_{i,i_src} u``."""
@@ -312,6 +323,10 @@ class _LMMStep(object):
         """`acc` less the source's coupling to the transposed solve `t`: the
         forward source is ``P_n = -Jf^-1 (S + u e^{jw t_{n+1}})``."""
         return acc - np.exp(jw * float(te)) * np.asarray(t)
+
+    def source_points(self, t, _ts, te):
+        """`source_adjoint` for every frequency: one point, the step's end."""
+        return [(float(te), np.asarray(t))]
 
 
 class _GLMStep(object):
@@ -479,7 +494,7 @@ class _GLMStep(object):
             'not on its Nordsieck map: a source there enters the startup '
             'that opens the period as well.')
 
-    source_adjoint = sources
+    source_adjoint = source_points = sources
 
 
 class _GLMStartup(object):
@@ -637,6 +652,12 @@ class _GLMStartup(object):
                     jw * (ts + (j + float(self.c[l])) * self.hs)) * cp
         return acc
 
+    def source_points(self, subs, ts):
+        """`source_adjoint` for every frequency: `(t, h_s cp)` per substage."""
+        return [(ts + (j + float(self.c[l])) * self.hs, self.hs * cp)
+                for j, a in enumerate(subs)
+                for l, cp in enumerate(self._reach(a))]
+
     def couplings(self, subs):
         """Per substage, in `injection_times` order: ``h_s sum_i A_il
         a_i`` (the source sensitivity is minus that; `PAC._stage_pass`)."""
@@ -744,6 +765,16 @@ class _GLMStateStep(object):
         if r[2] is not None:
             acc = self.startup.source_adjoint(acc, r[2], jw, ts)
         return acc
+
+    def source_points(self, r, ts, _te):
+        """`source_adjoint` for every frequency: the stages, then the
+        opening startup's substages."""
+        rec = self.rec
+        out = [(ts + float(rec.c[k]) * rec.h, rec.h * cp)
+               for k, cp in enumerate(self._reach(r))]
+        if r[2] is not None:
+            out.extend(self.startup.source_points(r[2], ts))
+        return out
 
     def couplings(self, r):
         """Per injection point, in `injection_times` order: `h` times what

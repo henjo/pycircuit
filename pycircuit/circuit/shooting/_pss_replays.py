@@ -149,6 +149,47 @@ class _FactoredReplays(object):
             acc = steps[j].source_adjoint(acc, r, jw, tms[j], tms[j + 1])
         return acc
 
+    def _reverse_points(self, fp, f_out, d=None, extra=None, lam0=None):
+        """One reverse pass that COLLECTS the source coupling rather than
+        applying it at one frequency: `(times, cps, g)` with the forced part
+        of a row at ANY input frequency `fin` equal to ``-sum_p cps[p]
+        exp(2j pi fin times[p])`` (each step's `source_points`).  `d`, if
+        given, is the output functional injected at every node with phase
+        ``exp(-2j pi f_out t_n)`` times `1/N` or the quadrature weight, as
+        `_sideband_forced` injects it (`l w0 + w` IS `2 pi f_out` for every
+        row sharing that output frequency); `extra` a raw costate injection
+        per node; `lam0` a starting costate (the replay from `z`,
+        `_forced_replay_transposed`'s).  `g` is the final costate.
+
+        History: `doc/pss_log_260902.md`, 2026-09-30 (review batch 4)."""
+        tms = np.asarray(fp.times, dtype=float)
+        N = len(fp.steps)
+        if lam0 is None:
+            lam = fp.extract_T(np.zeros(fp.width, dtype=complex))
+        else:
+            lam = fp.extract_T(np.asarray(lam0, dtype=complex).ravel().copy())
+        if d is not None:
+            d = np.asarray(d, dtype=complex).ravel()
+            _wq = self._period_quadrature(fp)
+        times, cps = [], []
+        steps = fp.step_objects()
+        for j in range(N - 1, -1, -1):
+            st = steps[j]
+            ts = tms[j]
+            lam, r = st.adjoint(lam)
+            for t, cp in st.source_points(r, ts, tms[j + 1]):
+                times.append(t)
+                cps.append(cp)
+            if d is not None:
+                _e = np.exp(-2j * np.pi * float(f_out) * ts)
+                lam = fp.inject(lam, (_e / N if _wq is None else _e * _wq[j]) * d)
+            if extra is not None and j in extra:
+                lam = fp.inject(lam, np.asarray(extra[j], dtype=complex))
+        m = self.cir.n - 1
+        return (np.asarray(times, dtype=float),
+                np.asarray(cps, dtype=complex).reshape(len(times), m),
+                fp.seed_T(lam))
+
     def _sideband_forced(self, fp, freq, l, d, extra=None):
         """The forced (source-injected) part of sideband row `l`, and the
         final costate `g` for the closure: the transposed replay with the

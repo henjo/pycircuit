@@ -23,6 +23,7 @@ from pycircuit.circuit.analysis import Parameter
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import gnd
 import pycircuit.circuit.analysis as analysis
+from ._factored import dense_map
 from ._numerics import _arnoldi_gmres
 from ._numerics import _output_weights, output_index
 from ._numerics import sweep_frequency, sweep_offset
@@ -35,6 +36,38 @@ from ._pac_pnoise import _DrivenNoise
 from ._pac_sampled import _SampledNoise
 from ._pac_sources import _NoiseSources
 from .events import EventColumns
+
+
+class _SidebandFamily:
+    """The adjoint sideband rows sharing one OUTPUT frequency
+    (`PAC._sideband_family`): `parts` are `(times, couplings, scale)` from
+    its reverse passes, and the row of sideband `l` at input frequency
+    `fin` is ``-sum scale * exp(2j pi fin times) @ couplings``."""
+    __slots__ = ('_N', '_T', '_m', '_pac', '_parts', '_pss', 'f_out',
+                 'matvecs')
+
+    def __init__(self, pac, pss, f_out, T, N, m, parts, matvecs):
+        self._pac, self._pss, self.f_out = pac, pss, f_out
+        self._T, self._N, self._m = T, N, m
+        self._parts, self.matvecs = parts, matvecs
+
+    def row(self, l, fin=None):
+        """The row of sideband `l`: every source at `fin` (default
+        `f_out - l f0`) to the output's sideband `l`."""
+        fin = (self.f_out - float(l) / self._T) if fin is None else float(fin)
+        if abs(int(l)) > self._N // 2:
+            raise ValueError(
+                f'PAC: sideband {int(l)} is above the grid\'s Nyquist (|l| <= '
+                f'{self._N // 2} at {self._N} points per period). Nothing can '
+                'alias down from above the maximum frequency the grid '
+                'represents, so this is not a tolerance to relax -- use a '
+                'finer period grid.')
+        self._pac._check_harmonic(self._pss, fin, 'the sideband row')
+        out = np.zeros(self._m, dtype=complex)
+        for t, c, sc in self._parts:
+            if len(t):
+                out = out - sc * (np.exp(2j * np.pi * fin * t) @ c)
+        return out
 
 
 class SidebandResponse(object):
@@ -515,7 +548,28 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         if getattr(pss, 'autonomous', False):
             return self._deflated_solve(pss, alpha, rhs, transposed=True,
                                         tol=tol)
-        return self._gmres_checked(A, rhs, tol, what)
+        return self._adjoint_solve(pss, pss._state_map(), alpha, rhs, A,
+                                   tol, what, total=False)
+
+    def _dense_period(self, pss, fp, n, total=True):
+        """The period map as a dense matrix -- the TOTAL one on a staged
+        solve (`EventColumns.total_matrix`) unless `total=False` -- or None
+        above `FLOQUET_DENSE_LIMIT`, where the solves stay matrix-free."""
+        if n > pss.FLOQUET_DENSE_LIMIT:
+            return None
+        M = dense_map(fp, n)
+        _ev = EventColumns.of(pss, n) if total else None
+        return M if _ev is None else _ev.total_matrix(M)
+
+    def _adjoint_solve(self, pss, fp, alpha, b, A, tol, what, total=True):
+        """``(I - alpha M^T) x = b`` on a DRIVEN circuit (no pole): directly
+        from the dense map below `FLOQUET_DENSE_LIMIT` (2026-09-30; exact to
+        rounding), GMRES on `A` above it."""
+        b = np.asarray(b, dtype=complex).ravel()
+        Md = self._dense_period(pss, fp, len(b), total=total)
+        if Md is None:
+            return self._gmres_checked(A, b, tol, what)
+        return np.linalg.solve(np.eye(len(b)) - alpha * Md.T, b)
 
     def adjoint_sideband_row(self, pss, freq, output, sidebands=0):
         """`H_l` rows: every source to ONE output's sideband `l`.
@@ -550,7 +604,6 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         History: `doc/shooting_history.md`, `PAC.adjoint_sideband_row`.
         """
         output = output_index(pss, output)
-        import scipy.sparse.linalg as spla
         ## (one host, as `PAC.solve`: the twin's map WITH the twin's event
         ## columns and period -- the run's were read beside the twin's map
         ## until 2026-09-30)
@@ -560,12 +613,8 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         self._check_circuit(pss)
         self._check_harmonic(pss, freq, 'the sideband row')
         m = pss.cir.n - 1
-        n = fp.width
         T = float(fp.T)
-        tms = np.asarray(fp.times, dtype=float)
         N = len(fp.steps)
-        w0 = 2.0 * np.pi / T
-        alpha = np.exp(-2j * np.pi * float(freq) * T)
         ls = np.atleast_1d(np.asarray(sidebands, dtype=int))
 
         ## ⚠ A HARD BOUND, NOT A HEURISTIC.  Okumura et al. eq. (32): the
@@ -586,8 +635,47 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                 'is not a tolerance to relax -- use a finer period grid.'
                 % (bad.tolist(), lmax, N))
 
-        d = _output_weights(output, m)
+        rows = np.zeros((len(ls), m), dtype=complex)
+        nmv = 0
+        for li, l in enumerate(ls):
+            ## (one family per OUTPUT frequency `l f0 + freq`; `pnoise`,
+            ## `am_pm_noise` and `mixer_response` share one family across
+            ## every sideband of theirs -- `_sideband_family`)
+            fam = self._sideband_family(pss, float(l) / T + float(freq), output)
+            rows[li] = fam.row(int(l), float(freq))
+            nmv += fam.matvecs
+        self.matvecs = nmv
+        return rows
 
+    def _sideband_family(self, pss, f_out, output):
+        """Every adjoint sideband row with OUTPUT frequency `f_out` -- the row
+        of sideband `l` has input frequency `f_out - l f0` -- as a
+        `_SidebandFamily`, whose `row(l, fin)` is a phase-weighted sum.
+
+        ⚠ ONE PASS, ONE SOLVE, ONE PASS FOR THE WHOLE FAMILY.  The output
+        functional is injected with phase ``exp(-j (l w0 + w_in) t)`` =
+        ``exp(-2j pi f_out t)`` and ``alpha = exp(-2j pi f_in T)`` =
+        ``exp(-2j pi f_out T)`` -- neither depends on `l`, so the reverse
+        pass, its final costate `g`, the pole/bordered solve for `z` and
+        the event rows are the family's; only the SOURCE's phase at each
+        injection point is the row's, and each pass collects its couplings
+        (`_reverse_points`) instead of applying them at one frequency.
+        Until 2026-09-30 `pnoise` repeated all of it per sideband (83 % of
+        its time); the costate agreed across `l` to 9.4e-15.
+
+        History: `doc/shooting_history.md`, `PAC.adjoint_sideband_row`."""
+        import scipy.sparse.linalg as spla
+        output = output_index(pss, output)
+        pss = pss.monodromy_twin()
+        fp = pss._state_map()
+        self._check_circuit(pss)
+        m = pss.cir.n - 1
+        n = fp.width
+        T = float(fp.T)
+        tms = np.asarray(fp.times, dtype=float)
+        N = len(fp.steps)
+        alpha = np.exp(-2j * np.pi * float(f_out) * T)
+        d = _output_weights(output, m)
         count = [0]
 
         def _mv(v):
@@ -596,77 +684,77 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
 
         A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
         tol = max(self.KRYLOV_FACTOR * pss.par.reltol, 1e-14)
-
-        rows = np.zeros((len(ls), m), dtype=complex)
-        for li, l in enumerate(ls):
-            ## ⚠ THE PHASE OF THE INPUT COMES OUT FIRST, and getting this
-            ## wrong is self-consistent rather than loud.  What is
-            ## T-PERIODIC is `v(t) = y(t) exp(-j w t)`, not `y` -- so the
-            ## sideband set is the DFT of `v`, which is what `solve` takes.
-            ## Decomposing `y` instead gives a Dirichlet kernel smeared
-            ## across every `l` whenever `f` is not a multiple of `1/T`,
-            ## and it AGREES with a forward reference written the same way,
-            ## so only a check against a circuit whose answer is known
-            ## independently catches it.
-            ## the source couples through every stage/step it reaches (A (x) B
-            ## on a coupled tableau), and the output functional is injected at
-            ## every node -- one fold for every kind (`_sideband_forced`,
-            ## verified vs forward driven solves and the bespoke trbdf2 fold)
-            forced, g = pss._sideband_forced(fp, freq, l, d)
-            ## ⚠ ON AN OSCILLATOR THIS OPERATOR IS SINGULAR AT EVERY
-            ## HARMONIC and near-singular around them, which is exactly
-            ## where phase noise is measured.  The deflated route borders
-            ## the pole out and carries `1/(1 - alpha)` analytically; on a
-            ## driven circuit there is no pole and the plain solve is both
-            ## correct and cheaper.
-            ## ⚠ ON A STAGED SOLVE THE ROW IS BORDERED: the transpose of
-            ## `PAC.solve`'s bordered system, the output read at FIXED times
-            ## (`g_theta` over the fixed-time columns), and the event rows'
-            ## term -- `-zeta_k W_k` at node k, the source coupling of
-            ## `f_node_k` -- as a second reverse pass.  On a driven solve
-            ## `z, zeta` come from the block elimination
-            ## (`EventColumns.bordered_adjoint`); on an oscillator the system
-            ## collapses onto the TOTAL operator, deflated, with `zeta` read
-            ## off after it.  Radau/trbdf2 and gear's pair map alike, driven
-            ## or free period.  Verified by dual consistency against the
-            ## bordered forward solve; unbordered, pnoise on a staged gear
-            ## solve is 10-15 % off (driven) and the row misses the forward
-            ## solve by 8 % on gear's staged oscillator.
-            ## History: `doc/shooting_history.md`, `PAC.adjoint_sideband_row`.
-            ## ⚠ EVERY MAP KIND: the plain map (trap/euler) stayed unbordered
-            ## until 2026-09-30 -- the kinds were admitted one by one as each
-            ## was verified and the plain one never was -- and its row missed
-            ## the bordered forward solve by 1.9e-3 (trap) / 9e-3 (euler).
-            _autonomous = getattr(pss, 'autonomous', False)
-            _ev = EventColumns.of(pss)
-            if _ev is not None:
-                _wq = pss._period_quadrature(fp)
-                cn = np.array([np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * tms[j])
-                               * (1.0 / N if _wq is None else _wq[j]) for j in range(N)])
-                _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)   # the output is read at FIXED times
-                g_theta = EventColumns.g_theta(cn, _Pkf, d, N)
-                if _autonomous:
-                    z = self._deflated_solve(
-                        pss, alpha, np.asarray(g, dtype=complex)
-                        + np.asarray(_ev.dth, dtype=float).T @ g_theta,
-                        transposed=True, tol=tol)
-                    zeta = _ev.collapsed_zeta(g_theta, alpha, z)
-                else:
-                    def _solve_adj(b, k):
-                        return self._gmres_checked(
-                            A, b, tol, ('the adjoint solve at sideband %d' % l) if k is None
-                            else ('the bordered adjoint solve, event %d' % k))
-                    z, zeta = _ev.bordered_adjoint(_solve_adj, g, g_theta, alpha)
-                forced_ev, _g2 = pss._sideband_forced(
-                    fp, freq, l, np.zeros(m), extra=_ev.injection_dict(zeta))
-                forced = forced + forced_ev
+        ## ⚠ THE PHASE OF THE INPUT COMES OUT FIRST, and getting this
+        ## wrong is self-consistent rather than loud.  What is
+        ## T-PERIODIC is `v(t) = y(t) exp(-j w t)`, not `y` -- so the
+        ## sideband set is the DFT of `v`, which is what `solve` takes.
+        ## Decomposing `y` instead gives a Dirichlet kernel smeared
+        ## across every `l` whenever `f` is not a multiple of `1/T`,
+        ## and it AGREES with a forward reference written the same way,
+        ## so only a check against a circuit whose answer is known
+        ## independently catches it.
+        ## the source couples through every stage/step it reaches (A (x) B
+        ## on a coupled tableau), and the output functional is injected at
+        ## every node -- one fold for every kind (`_sideband_forced`,
+        ## verified vs forward driven solves and the bespoke trbdf2 fold)
+        t_f, c_f, g = pss._reverse_points(fp, f_out, d)
+        parts = [(t_f, c_f, 1.0)]
+        ## ⚠ ON AN OSCILLATOR THIS OPERATOR IS SINGULAR AT EVERY
+        ## HARMONIC and near-singular around them, which is exactly
+        ## where phase noise is measured.  The deflated route borders
+        ## the pole out and carries `1/(1 - alpha)` analytically; on a
+        ## driven circuit there is no pole and the plain solve is both
+        ## correct and cheaper.
+        ## ⚠ ON A STAGED SOLVE THE ROW IS BORDERED: the transpose of
+        ## `PAC.solve`'s bordered system, the output read at FIXED times
+        ## (`g_theta` over the fixed-time columns), and the event rows'
+        ## term -- `-zeta_k W_k` at node k, the source coupling of
+        ## `f_node_k` -- as a second reverse pass.  On a driven solve
+        ## `z, zeta` come from the block elimination
+        ## (`EventColumns.bordered_adjoint`); on an oscillator the system
+        ## collapses onto the TOTAL operator, deflated, with `zeta` read
+        ## off after it.  Radau/trbdf2 and gear's pair map alike, driven
+        ## or free period.  Verified by dual consistency against the
+        ## bordered forward solve; unbordered, pnoise on a staged gear
+        ## solve is 10-15 % off (driven) and the row misses the forward
+        ## solve by 8 % on gear's staged oscillator.
+        ## History: `doc/shooting_history.md`, `PAC.adjoint_sideband_row`.
+        ## ⚠ EVERY MAP KIND: the plain map (trap/euler) stayed unbordered
+        ## until 2026-09-30 -- the kinds were admitted one by one as each
+        ## was verified and the plain one never was -- and its row missed
+        ## the bordered forward solve by 1.9e-3 (trap) / 9e-3 (euler).
+        _autonomous = getattr(pss, 'autonomous', False)
+        _ev = EventColumns.of(pss)
+        if _ev is not None:
+            _wq = pss._period_quadrature(fp)
+            cn = np.array([np.exp(-2j * np.pi * float(f_out) * tms[j])
+                           * (1.0 / N if _wq is None else _wq[j]) for j in range(N)])
+            _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)   # the output is read at FIXED times
+            g_theta = EventColumns.g_theta(cn, _Pkf, d, N)
+            if _autonomous:
+                z = self._deflated_solve(
+                    pss, alpha, np.asarray(g, dtype=complex)
+                    + np.asarray(_ev.dth, dtype=float).T @ g_theta,
+                    transposed=True, tol=tol)
+                zeta = _ev.collapsed_zeta(g_theta, alpha, z)
             else:
-                z = self._pole_solve(pss, A, alpha, g, tol,
-                                     'the adjoint solve at sideband %d' % l)
-            rows[li] = forced + alpha * pss._forced_replay_transposed(
-                fp, freq, z)
-        self.matvecs = count[0]
-        return rows
+                def _solve_adj(b, k):
+                    return self._adjoint_solve(
+                        pss, fp, alpha, b, A, tol,
+                        ('the adjoint solve at %.6g Hz' % f_out) if k is None
+                        else ('the bordered adjoint solve, event %d' % k),
+                        total=False)
+                z, zeta = _ev.bordered_adjoint(_solve_adj, g, g_theta, alpha)
+            t_e, c_e, _g2 = pss._reverse_points(
+                fp, f_out, extra=_ev.injection_dict(zeta))
+            parts.append((t_e, c_e, 1.0))
+        else:
+            z = self._pole_solve(pss, A, alpha, g, tol,
+                                 'the adjoint solve at %.6g Hz' % f_out)
+        t_z, c_z, _g3 = pss._reverse_points(fp, f_out, lam0=z)
+        parts.append((t_z, c_z, alpha))
+        return _SidebandFamily(self, pss, float(f_out), T, N, m, parts,
+                               count[0])
 
     def mixer_response(self, pss, f_out, output, sidebands=(-1, 0, 1)):
         """Every input band landing on `f_out` — a `SidebandResponse`.
@@ -688,6 +776,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         f0 = 1.0 / float(pss.period)
         ls = [int(l) for l in sidebands]
         ins, rows = [], []
+        fam = None
         for l in ls:
             f_in = float(f_out) - l * f0
             if f_in < 0.0:
@@ -698,7 +787,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                     'label %d would attach a right magnitude to a wrong '
                     'name. Request sidebands whose input bands exist, or '
                     'move f_out.' % (l, f_in, abs(f_in), l))
-            row = self.adjoint_sideband_row(pss, f_in, output, sidebands=l)
+            ## (every band lands on `f_out`: one family, `_sideband_family`)
+            if fam is None:
+                fam = self._sideband_family(pss, float(f_out), output)
+            row = fam.row(int(l), f_in)
             ins.append(f_in)
             rows.append(np.asarray(row).reshape(-1))
         return SidebandResponse(f_out, f0, ls, ins, np.array(rows))
@@ -1226,7 +1318,19 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         rhs = np.concatenate((b, [0.0 + 0.0j]))
         rt = max(self.KRYLOV_FACTOR * pss.par.reltol if tol is None else tol,
                  1e-14)
-        z = self._gmres_checked(A, rhs, rt, 'the deflated solve')
+        Md = self._dense_period(pss, fp, n)
+        if Md is not None:
+            ## ⚠ DENSE BELOW THE LIMIT: the bordered system from the cached
+            ## map (`dense_map`), solved directly -- 0.14 ms against 0.55 s
+            ## of GMRES at the review's measurement (2026-09-30), and exact
+            ## to rounding rather than to the Krylov tolerance
+            Bd = np.zeros((n + 1, n + 1), dtype=complex)
+            Bd[:n, :n] = np.eye(n) - alpha * (Md.T if transposed else Md)
+            Bd[:n, n] = col
+            Bd[n, :n] = row
+            z = np.linalg.solve(Bd, rhs)
+        else:
+            z = self._gmres_checked(A, rhs, rt, 'the deflated solve')
         w, s = z[:n], z[n]
         denom = 1.0 - alpha
         if denom == 0:

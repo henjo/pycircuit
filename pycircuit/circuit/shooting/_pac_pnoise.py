@@ -223,11 +223,14 @@ class _DrivenNoise(object):
         quiet = 0
         self.alias_stop = 'bound'
         rows = {}
+        ## every row here has OUTPUT frequency `freq`: one family, one
+        ## adjoint solve for all the sidebands (`_sideband_family`)
+        fam = self._sideband_family(pss, float(freq), output)
         for l in range(0, lmax + 1):
             step = 0.0
             for sl in ((0,) if l == 0 else (l, -l)):
                 fin = float(freq) - sl * f0
-                h = self.adjoint_sideband_row(pss, fin, output, sl)[0]
+                h = fam.row(sl, fin)
                 rows[sl] = np.asarray(h, dtype=complex)
                 step += float(np.real(h @ cyfn(
                     pss, 2.0 * np.pi * fin) @ np.conj(h)))
@@ -798,10 +801,14 @@ class _DrivenNoise(object):
         S_am = 0.0
         S_pm = 0.0
         bands = []
+        ## the `a` rows share OUTPUT frequency `k f0 + freq`, the `b` rows
+        ## `k f0 - freq`: two families, two adjoint solves in all
+        fam_a = self._sideband_family(pss, k * f0 + float(freq), output)
+        fam_b = self._sideband_family(pss, k * f0 - float(freq), output)
         for p in range(-lmax, lmax + 1):
             g = float(freq) + p * f0
-            a = self.adjoint_sideband_row(pss, g, output, k - p)[0]
-            b = self.adjoint_sideband_row(pss, -g, output, k + p)[0]
+            a = fam_a.row(k - p, g)
+            b = fam_b.row(k + p, -g)
             cy = cyfn(pss, 2.0 * np.pi * g)
             a_r = a * _rot
             b_r = np.conj(b) * np.conj(_rot)
