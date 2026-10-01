@@ -812,7 +812,13 @@ class TestSolverParity(object):
             return c
 
         def wave():
-            res = Transient(build(), toolkit=numeric).solve(
+            ## ONE Newton on both backends: the 'auto' `chord_jacobian`
+            ## decides by the Jacobian's cost, and the C-bound model counts a
+            ## hundredth of the numpy one (`C_KERNEL_SHARE`: 57 KB against
+            ## 0.6 KB), so left to it the two runs take different Newtons
+            ## and agree to the Newton tolerance (9.4e-10), not to rounding
+            res = Transient(build(), toolkit=numeric,
+                            chord_jacobian=False).solve(
                 tend=2e-6, timestep=2e-8, fixed_timestep=True)
             return np.asarray(res.v('out', gnd), float)
 

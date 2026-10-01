@@ -3557,3 +3557,25 @@ of hand-written elements: van der Pol -6 / +18 %, the switching PWM loop
 +15 / +79 %.  The threshold, 10 KB, sits in the gap between 2.2 and 20 KB.
 The default became 'auto' for both; True / False force them, and only an
 ASKED-for transform is warned when PCNR takes precedence.
+
+### `C_KERNEL_SHARE`: 'auto' on the hdl C backend (2026-10-01)
+
+Andreas: "Do 1" (the gap left by 'auto': `compiled_jacobian_size` read a
+C-bound function by its Python bytecode).  On the C backend
+(`hdl.set_backend('c')`) a model's `G` costs 3.9 us (MosLevel1, from 206)
+to 49 us (PSP, from 14 ms).  Re-calibrated there, the same stages
+(predicted: PSP little gain, the mid-sized models break-even or a loss --
+half right):
+
+| device | gear chord | radau transform |
+|---|---|---|
+| PSP (small / switching) | -19 / -25 % | -64 / -15 % |
+| MosLevel3 (small / switching) | -3 / -6 % | -3 / +8 % |
+| MosLevel1 (small / switching) | -5 / -5 % | -5 / +11 % |
+| Gummel-Poon | -6 % | +10 % |
+| EKV | -6 % | -7 % |
+| SPICE diode | -7 % | -6 % |
+
+So a C-bound function counts `C_KERNEL_SHARE` (1/100) of its bytecode:
+PSP stays on (1.8 MB -> 18 KB), the mid-sized models go off (under 1 KB) --
+forgoing the chord's few per cent to avoid the transform's 8-11 % losses.

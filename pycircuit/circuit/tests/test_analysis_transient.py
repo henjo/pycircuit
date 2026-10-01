@@ -1213,6 +1213,28 @@ def test_the_newton_options_turn_on_where_the_compiled_jacobian_is_expensive():
     assert ga < gf, (ga, gf)
     assert np.max(np.abs(xa - xf)) / np.max(np.abs(xf)) < 1e-9
 
+    ## ON THE C BACKEND a model's Jacobian is cheap (MosLevel1's `G` 53x
+    ## faster), and it counts `C_KERNEL_SHARE` of its bytecode: MosLevel1
+    ## goes off (the transform measured +11 % there, switching); PSP, at
+    ## 1.8 MB, would stay on (-64 % measured) -- read off its bytecode, so
+    ## the test builds no PSP kernel
+    from pycircuit.circuit import compact, hdl
+    from pycircuit.circuit._tran_newton import C_KERNEL_SHARE
+    numpy_size = compiled_jacobian_size(mos())
+    hdl.set_backend('c', eh.MosLevel1Hdl)
+    try:
+        if eh.MosLevel1Hdl._hdl_backend_status != 'c':
+            pytest.skip('no C backend here: '
+                        f'{eh.MosLevel1Hdl._hdl_backend_status}')
+        c_size = compiled_jacobian_size(mos())
+        assert 0 < c_size < limit <= numpy_size, (c_size, numpy_size)
+        assert option(mos(), 'chord_jacobian') is False
+        assert option(mos(), 'radau_transform') is False
+    finally:
+        hdl.set_backend(None, eh.MosLevel1Hdl)
+    psp = stage(lambda: compact.PspMosLongChannel('d', 'g', gnd, gnd))
+    assert compiled_jacobian_size(psp) * C_KERNEL_SHARE >= limit
+
 def test_esdirk43_is_a_tableau_only_order4_dirk():
     """ESDIRK4(3)6 (KenCarp4) -- the refactor's test vehicle: a NEW DIRK method
     added as tableau-only runs at its proper order 4 through the generic RK

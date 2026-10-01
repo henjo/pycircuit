@@ -15,6 +15,12 @@ from pycircuit.circuit.analysis import (
 )
 from pycircuit.circuit.dcanalysis import refnode_removed
 
+#: A compiled function running as C (`hdl.set_backend('c')`) counts this
+#: fraction of its bytecode in `compiled_jacobian_size`: measured
+#: 2026-10-01, the C kernel evaluates `G` 53x (MosLevel1, 206 -> 3.9 us) to
+#: 290x (PSP, 14 ms -> 49 us) faster than the numpy path.
+C_KERNEL_SHARE = 1.0 / 100.0
+
 
 def compiled_jacobian_size(cir):
     """The bytecode, in bytes, of the compiled `G` and `C` of every hdl
@@ -22,9 +28,10 @@ def compiled_jacobian_size(cir):
     a deterministic measure of what one Jacobian evaluation costs, which
     tracks its time: `DiodeHdl` 0.2 KB, a HEMT 2.2 KB (8 us a `G`), the SPICE
     diode 20 KB, `MosLevel1Hdl` 26 KB (0.2 ms), `MosLevel3Hdl` 92 KB (1.2
-    ms), the PSP MOSFET 1.8 MB (14 ms).  Hand-written elements and
-    `BSource` count 0.  Read by the 'auto' Newton options
-    (`Transient._newton_option`)."""
+    ms), the PSP MOSFET 1.8 MB (14 ms).  A function bound to its C kernel
+    counts `C_KERNEL_SHARE` of that (PSP 18 KB, MosLevel3 0.9 KB).
+    Hand-written elements and `BSource` count 0.  Read by the 'auto' Newton
+    options (`Transient._newton_option`)."""
     total = 0
     stack = [cir]
     while stack:
@@ -37,9 +44,14 @@ def compiled_jacobian_size(cir):
             if not funcs:
                 continue
             for k in ('G', 'C'):
-                code = getattr(funcs.get(k), '__code__', None)
-                if code is not None:
-                    total += len(code.co_code)
+                fn = funcs.get(k)
+                code = getattr(fn, '__code__', None)
+                if code is None:
+                    continue
+                size = len(code.co_code)
+                if getattr(fn, '__dict__', {}).get('_hdl_c') is not None:
+                    size = int(size * C_KERNEL_SHARE)
+                total += size
     return total
 
 
@@ -123,6 +135,13 @@ class _StepNewton:
     ## KB) -8 / -2 %; and where the options LOST, every circuit was of
     ## hand-written elements (0 bytes): van der Pol (`BSource`) -6 / +18 %,
     ## a switching PWM loop -- built-in switches -- +15 / +79 %.
+    ## ⚠ ON THE hdl C BACKEND the Jacobian is cheap, and the two part ways:
+    ## the chord never lost (MosLevel1 / MosLevel3 / EKV / Gummel-Poon /
+    ## SPICE diode -3 to -7 %, PSP -19 / -25 %), the transform did on the
+    ## mid-sized models (switching MosLevel1 +11 %, MosLevel3 +8 %,
+    ## Gummel-Poon +10 %) while PSP kept -64 / -15 %.  A C-bound function
+    ## counts `C_KERNEL_SHARE` of its bytecode, so PSP stays on (18 KB) and
+    ## the mid-sized models go off (under 1 KB).
     ## History: `doc/transient_history.md`, `ChordNewton`.
     AUTO_JACOBIAN_CODE = 10000
 
