@@ -1016,7 +1016,8 @@ def test_pnoise_over_radau_matches_the_stationary_analysis_and_folds():
 
     A Radau step injects the source at THREE abscissae through the full
     ``A (x) B`` coupling (no two-vector shortcut), which
-    `_sideband_forced_radau` carries through all three stages.  Same two
+    the stage steps' `source_points` (read by `_reverse_points`) carry
+    through all three stages.  Same two
     end-to-end checks as the TR-BDF2 pnoise test:
 
     (1) LINEAR divider: no conversion, so the fold collapses to l=0 and pnoise

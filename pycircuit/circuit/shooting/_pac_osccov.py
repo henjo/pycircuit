@@ -900,7 +900,6 @@ class _OscillatorCovariance(object):
         History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         """
         output = output_index(pss, output)
-        import warnings as _warnings
         if intercept not in ('white', 'exact'):
             raise ValueError(
                 "PAC.oscillator_edge_jitter: intercept must be 'white' (the "
@@ -914,10 +913,10 @@ class _OscillatorCovariance(object):
         pss = pss._lyapunov_host()
         ## (the covariance in the MAP's own space: the exact law contracts
         ## it with the period map; the node block is `[:m, :m]` of it)
-        with _warnings.catch_warnings():
+        with warnings.catch_warnings():
             ## (its "K_orb, d and c_from_growth are the WHITE sources' alone"
             ## is what this method handles below)
-            _warnings.filterwarnings('ignore', message='PAC.oscillator_covariance: '
+            warnings.filterwarnings('ignore', message='PAC.oscillator_covariance: '
                                      'this circuit has a COLOURED source')
             ## (the WHITE part alone: the coloured one -- its transverse
             ## variance and phase included -- is `_edge_coloured_law`'s, one
@@ -962,8 +961,8 @@ class _OscillatorCovariance(object):
         b = a + 1
         th = float(np.clip((tc - tn[a]) / (tn[b] - tn[a]), 0.0, 1.0))
 
-        with _warnings.catch_warnings():
-            _warnings.simplefilter('ignore')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
             _v0, pinfo = pss.ppv()
         ## (the PPV samples cover nodes 0..N-1; node N is node 0)
         vs = [np.asarray(sv, dtype=float)[:m] for sv in pinfo['samples']]
@@ -996,9 +995,9 @@ class _OscillatorCovariance(object):
         ## crossings' motion, ``M_j^k = R_j M_tot^{k-1} S_j`` (`_event_closure`;
         ## no inverse -- the step maps of a DAE are singular), and the
         ## samples are its fixed-time ones; otherwise the step maps' product
-        with _warnings.catch_warnings():
+        with warnings.catch_warnings():
             ## (a host it cannot border, `oscillator_covariance` warned above)
-            _warnings.filterwarnings('ignore', message='PAC.covariance: the '
+            warnings.filterwarnings('ignore', message='PAC.covariance: the '
                                      'solve is staged on its state events')
             staged = self._event_closure(pss, As, Qs, M, _m, n)
         ef = _output_row(e, na)
@@ -1092,7 +1091,7 @@ class _OscillatorCovariance(object):
 
         A = A_prj if intercept == 'white' else A_prj + A_cx
         if np.isnan(A):
-            _warnings.warn(
+            warnings.warn(
                 'PAC.oscillator_edge_jitter: intercept=\'exact\' and a '
                 'coloured source here is a POWER LAW, whose phase grows faster '
                 'than linearly in k: the k-cycle law has no large-k intercept, '
@@ -1120,7 +1119,7 @@ class _OscillatorCovariance(object):
             ## through an RC into the tank reads X/A = -1.94) the intercept is
             ## negative while every `Var_k` is positive -- the walk dominates.
             ## There is then no additive variance; `k_cycle` is exact anyway.
-            _warnings.warn(
+            warnings.warn(
                 'PAC.oscillator_edge_jitter: the k-cycle law\'s intercept is '
                 'NEGATIVE here (A = %.3g s^2): the transverse and the phase '
                 'deviation at this edge are anti-correlated, so there is no '

@@ -155,11 +155,13 @@ class _FactoredReplays(object):
         of a row at ANY input frequency `fin` equal to ``-sum_p cps[p]
         exp(2j pi fin times[p])`` (each step's `source_points`).  `d`, if
         given, is the output functional injected at every node with phase
-        ``exp(-2j pi f_out t_n)`` times `1/N` or the quadrature weight, as
-        `_sideband_forced` injects it (`l w0 + w` IS `2 pi f_out` for every
-        row sharing that output frequency); `extra` a raw costate injection
-        per node; `lam0` a starting costate (the replay from `z`,
-        `_forced_replay_transposed`'s).  `g` is the final costate.
+        ``exp(-2j pi f_out t_n)`` times `1/N` or the quadrature weight
+        (`l w0 + w` IS `2 pi f_out` for every row sharing that output
+        frequency), AFTER the step's costate update -- so the output at
+        `t_n` couples to the sources of steps `< n` (causality), and the
+        state at `t_n` is the one step `n` enters from; `extra` a raw
+        costate injection per node; `lam0` a starting costate (the replay
+        from `z`, `_forced_replay_transposed`'s).  `g` is the final costate.
 
         History: `doc/pss_log_260902.md`, 2026-09-30 (review batch 4)."""
         tms = np.asarray(fp.times, dtype=float)
@@ -189,40 +191,6 @@ class _FactoredReplays(object):
         return (np.asarray(times, dtype=float),
                 np.asarray(cps, dtype=complex).reshape(len(times), m),
                 fp.seed_T(lam))
-
-    def _sideband_forced(self, fp, freq, l, d, extra=None):
-        """The forced (source-injected) part of sideband row `l`, and the
-        final costate `g` for the closure: the transposed replay with the
-        OUTPUT functional `d` injected at every node (weighted by
-        ``exp(-j(l w0 + w) t_n)/N``, or the period quadrature's weight) and
-        the source coupling read at every step.  ⚠ The injection is added
-        AFTER the step's costate update, so the output at `t_n` couples to
-        the sources of steps `< n` (causality); the state at `t_n` is the
-        one step `n` enters from.  `extra` is a raw costate injection per
-        node (the bordered adjoint's event-row term), at `d`'s position.
-        Returns `(forced, g)`.
-
-        History: `doc/shooting_history.md`, `_sideband_forced`."""
-        jw = 2j * np.pi * float(freq)
-        T = float(fp.T)
-        w0 = 2.0 * np.pi / T
-        N = len(fp.steps)
-        tms = np.asarray(fp.times, dtype=float)
-        d = np.asarray(d, dtype=complex).ravel()
-        lam = fp.extract_T(np.zeros(fp.width, dtype=complex))
-        forced = np.zeros(self.cir.n - 1, dtype=complex)
-        _wq = self._period_quadrature(fp)
-        steps = fp.step_objects()
-        for j in range(N - 1, -1, -1):
-            st = steps[j]
-            ts = tms[j]
-            lam, r = st.adjoint(lam)
-            forced = st.source_adjoint(forced, r, jw, ts, tms[j + 1])
-            _e = np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * ts)
-            lam = fp.inject(lam, (_e / N if _wq is None else _e * _wq[j]) * d)
-            if extra is not None and j in extra:
-                lam = fp.inject(lam, np.asarray(extra[j], dtype=complex))
-        return forced, fp.seed_T(lam)
 
     def _monodromy_matvec(self, C0, steps, v):
         """`M v` for gear's solved-history PAIR map from its raw steps --

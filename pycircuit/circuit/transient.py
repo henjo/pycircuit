@@ -14,6 +14,7 @@ from numpy.linalg import LinAlgError
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.dcanalysis import refnode_removed
+from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import (limit_sync, limiter_snapshot, state_restore,
                                          state_snapshot, stateful_limiters)
 ## The clamp the step controller applies to every accepted step, the force-accept
@@ -1180,7 +1181,6 @@ class Transient(Analysis):
         therefore possible and silence proves nothing; a fire has an actual
         second solution in hand.
         """
-        from pycircuit.circuit.nrsolver import NoConvergenceError
         xr = np.asarray(x_res, dtype=float)
         n = len(xr)
         if direction is None or len(direction) != n:
@@ -1489,7 +1489,6 @@ class Transient(Analysis):
         
         limiter_func = self._newton_limiter()
 
-        from pycircuit.circuit.nrsolver import NoConvergenceError
         solver = self._get_nrsolver()
         if getattr(self, '_continuation_rescue', False):
             solver = self._rescue_solver(solver)
@@ -2671,7 +2670,6 @@ class Transient(Analysis):
         """The PCNR augmented system at `(x, v_lim)` with the step's companion
         and sources folded in as `u_extra` / `J_extra` -- ``(g_mna, g_lim,
         J_mm, J_ml, J_lm, didv)``, see `pcnr.augmented_system`."""
-        from pycircuit.circuit import pcnr as _pcnr
         iq, Geq = self._companion_at(x)
         u = self._source_at(t, provided_function)
         return _pcnr.augmented_system(
@@ -2690,7 +2688,6 @@ class Transient(Analysis):
         ``dx_mna``, so handing `fang_timestep` ``(f_eff, J_eff)`` in place of
         ``(f, J)`` makes its existing solve work unchanged.
         """
-        from pycircuit.circuit import pcnr as _pcnr
         g_mna, g_lim, J_mm, J_ml, J_lm, didv = self._pcnr_augmented(
             x, v_lim, t, junctions, provided_function)
         f_eff, J_eff = _pcnr.schur_reduce(g_mna, g_lim, J_mm, J_ml, J_lm,
@@ -2803,7 +2800,6 @@ class Transient(Analysis):
 
         ## PCNR ON THE COUPLED PATH: `pcnr=True` is honoured here too.
         ## History: `doc/transient_history.md`, `Transient._fang_timestep_inner`.
-        from pycircuit.circuit import pcnr as _pcnr
         junctions = _pcnr.pcnr_devices(self.cir) if self.par.pcnr else []
 
         ## The increment flavour: `dx0` is a solution update, not a residual.
@@ -2867,7 +2863,6 @@ class Transient(Analysis):
 
         ## `v_lim` is per-time-point state, seeded from the incoming solution and
         ## carried across the iterations below.
-        from pycircuit.circuit import pcnr as _pcnr
         v_lim = _pcnr.v_lim_init(junctions, x)
 
         reltol = self.par.reltol
@@ -3371,7 +3366,6 @@ class Transient(Analysis):
         raises `NoConvergenceError` (`msg % (t, maxiter)`) otherwise.
 
         History: `doc/transient_history.md`, `Transient._pcnr_newton`."""
-        from pycircuit.circuit import pcnr as _pcnr
         irefnode = self.irefnode
         xtol = self._newton_xtol_vector()
         reltol = self.par.reltol
@@ -3418,7 +3412,6 @@ class Transient(Analysis):
         which produced it -- the step controller and history roll are downstream
         of both and must stay so.
         """
-        from pycircuit.circuit import pcnr as _pcnr
 
         junctions = _pcnr.pcnr_devices(self.cir)
         irefnode = self.irefnode
@@ -3524,7 +3517,6 @@ class Transient(Analysis):
         when ``pcnr`` is asked for and the circuit has a participating device."""
         if not self.par.pcnr:
             return False
-        from pycircuit.circuit import pcnr as _pcnr
         return bool(_pcnr.pcnr_devices(self.cir))
 
     def _rk_stage_pcnr(self, target, aii, h, ti, guess, provided_function=None):
@@ -3542,7 +3534,6 @@ class Transient(Analysis):
         Returns the converged full-size stage value ``Y``; raises
         `NoConvergenceError` if PCNR does not converge (the caller does not fall
         back -- PCNR is the chosen limiting)."""
-        from pycircuit.circuit import pcnr as _pcnr
         junctions = _pcnr.pcnr_devices(self.cir)
         tk = self.toolkit
         epar = self.epar
@@ -4089,8 +4080,6 @@ class Transient(Analysis):
         dependently), are limited JOINTLY here.  Same return and side-effect
         contract as :meth:`_rk_step_coupled`.
         """
-        from pycircuit.circuit import pcnr as _pcnr
-        from pycircuit.circuit.nrsolver import NoConvergenceError
         junctions = _pcnr.pcnr_devices(self.cir)
         ctx = self._coupled_stage_context(x0, t, provided_function)
         iref = ctx.iref
@@ -4390,7 +4379,6 @@ class Transient(Analysis):
                 if converged:
                     break
             if not converged:
-                from pycircuit.circuit.nrsolver import NoConvergenceError
                 raise NoConvergenceError(
                     'Radau IIA(3) coupled stage Newton did not converge'
                     + ('' if not gshunt else ' at gshunt=%g S' % gshunt))
@@ -4464,7 +4452,6 @@ class Transient(Analysis):
         `solve_timestep`, with ``J`` the last-stage operator, and leaves
         ``_iq``/``_q_cache`` set so the history push after the step is consistent.
         """
-        from pycircuit.circuit.nrsolver import NoConvergenceError
         ## ⚠ PCNR, WHERE ASKED FOR AND APPLICABLE, TAKES PRECEDENCE over the
         ## cost transform: it is a robustness the caller asked for, it has
         ## no transform variant, and run first the transform answered every
@@ -4515,9 +4502,8 @@ class Transient(Analysis):
             ## The warning says so, because that is the one case where a silent
             ## fallback would hand back a subtly different orbit.
             def _say(exc):
-                from pycircuit.circuit import pcnr as _pcnr_mod
                 _pairs = [(ra, rb) for _i, _e, ra, rb
-                          in _pcnr_mod.pcnr_junctions(self.cir)]
+                          in _pcnr.pcnr_junctions(self.cir)]
                 _parallel = len(_pairs) != len(set(_pairs))
                 logging.warning(
                     'transient pcnr=True: coupled PCNR failed at t=%g (%s: %s); '
@@ -4536,8 +4522,7 @@ class Transient(Analysis):
         self._memo_step()
         ctx, _stage_newton, _block_residual, seed0 = self._coupled_stage_solver(
             x0, t, provided_function)
-        from pycircuit.circuit.nrsolver import (NoConvergenceError,
-                                                _adaptive_conductance_ladder)
+        from pycircuit.circuit.nrsolver import _adaptive_conductance_ladder
         try:
             Y = _stage_newton(seed0)
         except NoConvergenceError:
@@ -4773,7 +4758,6 @@ class Transient(Analysis):
         full-Newton solve.  Sets the same downstream state (``_rk_Y``,
         ``_iq``, ``_q_cache``, ...) so every consumer is identical to the dense
         path."""
-        from pycircuit.circuit.nrsolver import NoConvergenceError
         ctx = self._coupled_stage_context(x0, t, provided_function)
         h, iref = ctx.h, ctx.iref
         arr, red, src, tstage, m = (ctx.arr, ctx.red, ctx.src, ctx.tstage,
@@ -4898,7 +4882,6 @@ class Transient(Analysis):
         ## through: there is nothing for the method to do, and refusing would be
         ## a worse answer than solving it the ordinary way.
         if self.par.pcnr:
-            from pycircuit.circuit import pcnr as _pcnr
             ## Gate PARTICIPATION on the device records, not on the
             ## pnj-only pair view: that view exists for the gmin ladders
             ## and is empty for a circuit of pure fetlim/limvds devices,

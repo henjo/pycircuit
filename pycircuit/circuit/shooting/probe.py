@@ -1,5 +1,7 @@
 """`ProbeShooting`: the probe (harmonic-balance-like) shooting of B5.
 """
+import warnings
+
 import numpy as np
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import gnd
@@ -123,7 +125,6 @@ class ProbeShooting:
         harmonics the solve is NOT nulling, which is what
         :meth:`even_harmonic_content` needs.
         """
-        import warnings as _w
         cir = self._build(f, amps, phases)
         row = self._probe_row(cir)
         pss = PSS(cir, method=self.method, reltol=self.reltol, **self._epar_kw())
@@ -138,8 +139,8 @@ class ProbeShooting:
         ## 2(n-1) pair against an n-length vector and raise on the shapes.
         x0 = self._x0 if (self.warm_start and self._x0 is not None
                           and len(self._x0) == cir.n - 1) else None
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
             pss.solve(period=T, timestep=T / self.npts, x0=x0,
                       maxiterations=self.maxiterations)
         self.evaluations += 1
@@ -203,14 +204,13 @@ class ProbeShooting:
         returns is already a periodic solution.  The signature is exactly that
         pairing -- a tiny periodicity error with `converged = False`.
         """
-        import warnings as _w
         n = len(self.tones)
         cir = self._build(f, [float(A)] + [0.0] * (n - 1),
                           [self.phase] * n)
         pss = PSS(cir, method=self.method, reltol=self.reltol, **self._epar_kw())
         T = 1.0 / float(f)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
             pss.solve(period=T, timestep=T / self.npts,
                       maxiterations=self.maxiterations)
         X = np.asarray(pss.waveform[1], dtype=float)
@@ -338,7 +338,6 @@ class ProbeShooting:
         new = self.unconverged - getattr(self, '_unconverged_seen', 0)
         self._unconverged_seen = self.unconverged
         if new > 0:
-            import warnings
             warnings.warn(
                 f'ProbeShooting: {new} inner PSS solve(s) did not report '
                 'convergence; their spectra were used as they stood. Raise '
@@ -499,7 +498,6 @@ class ProbeShooting:
 
         History: `doc/shooting_history.md`, `ProbeShooting.pac_jacobian`.
         """
-        import warnings as _w
         n = len(self.tones)
         ## ⚠ ONE PSS SOLVE FOR EVERY COLUMN.  `vac` is read ONLY under
         ## `analysis='ac'` -- it does not enter the transient residual, so it
@@ -511,8 +509,8 @@ class ProbeShooting:
         row = self._probe_row(cir)
         pss = PSS(cir, method=self.method, reltol=self.reltol, **self._epar_kw())
         T = 1.0 / float(f)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
             pss.solve(period=T, timestep=T / self.npts,
                       maxiterations=self.maxiterations)
         if not pss.converged:

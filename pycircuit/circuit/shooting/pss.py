@@ -582,7 +582,6 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## (second-order native monodromy) and ignore this.
         ## History: `doc/shooting_history.md`, `PSS.__init__`.
         self.monodromy = 'radau'
-        self._monodromy_twin = None
         self._twins = {}
         self._solve_kwargs = {}
         ## Set to None by `solve` on the tstab path only -- see there.
@@ -1294,7 +1293,6 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                                   matrix_free=matrix_free, tstab=tstab,
                                   period_seed=float(period),
                                   state_events=bool(state_events))
-        self._monodromy_twin = None
         self._twins = {}
         ## (caches keyed on the LAST solve's factored period: cleared, not
         ## left to pin it until the next use -- the review's M2)

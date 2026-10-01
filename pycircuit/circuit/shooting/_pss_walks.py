@@ -2,6 +2,8 @@
 `_walk_glm`), dense and/or factored, and their views.
 """
 from copy import copy
+from math import factorial
+
 import numpy as np
 from ._factored import _PeriodWalk
 from ._steps import _GLMStartup
@@ -736,7 +738,6 @@ class _PeriodWalks(object):
         `Transient._glm_startup` recorded -- the substep states and stages --
         with the point evaluations the rest of the map uses (`_C_at`,
         `_G_at`, `_k_at`)."""
-        from math import factorial
         trace = self._transient().last_step.startup if trace is None else trace
         if trace is None:
             raise ValueError(

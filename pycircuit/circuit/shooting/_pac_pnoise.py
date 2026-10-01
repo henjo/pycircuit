@@ -631,33 +631,32 @@ class _DrivenNoise(object):
                 raise ValueError(
                     f'PAC.band_spread: {k} is not a knob here -- the band is '
                     'an offset from `harmonic` for every quantity.')
-        import numpy as _np
         f0 = 1.0 / float(pss.period)
-        rs = _np.linspace(float(band[0]), float(band[1]), int(points))
+        rs = np.linspace(float(band[0]), float(band[1]), int(points))
         vals = []
         for r in rs:
             f = float(r) * f0
             if quantity == 'oscillator_spectrum':
-                Sv, _i = self.oscillator_spectrum(pss, _np.array([f]), output,
+                Sv, _i = self.oscillator_spectrum(pss, np.array([f]), output,
                                                   harmonic=harmonic, **kw)
-                v = float(_np.real(Sv[0]))
+                v = float(np.real(Sv[0]))
             elif quantity in ('S_pm', 'S_am'):
                 am, pm, _b = self.am_pm_noise(pss, f, output, harmonic=harmonic,
                                               sweeptype='relative', **kw)
-                v = float(_np.real(pm if quantity == 'S_pm' else am))
+                v = float(np.real(pm if quantity == 'S_pm' else am))
             else:
-                v = float(_np.real(self.pnoise(
+                v = float(np.real(self.pnoise(
                     pss, f, output, sweeptype='relative',
                     relharmnum=int(harmonic), **kw)[0]))
             vals.append(v * float(r) ** 2)
-        vals = _np.asarray(vals, dtype=float)
-        lo = float(_np.min(_np.abs(vals)))
-        spread = float(_np.max(_np.abs(vals)) / lo) if lo > 0.0 else _np.inf
-        mean = float(_np.mean(vals))
-        mid = float(_np.interp(0.5 * (rs[0] + rs[-1]), rs, vals))
+        vals = np.asarray(vals, dtype=float)
+        lo = float(np.min(np.abs(vals)))
+        spread = float(np.max(np.abs(vals)) / lo) if lo > 0.0 else np.inf
+        mean = float(np.mean(vals))
+        mid = float(np.interp(0.5 * (rs[0] + rs[-1]), rs, vals))
         return spread, {'offsets': rs, 'values': vals, 'band_mean': mean,
                         'midpoint': mid,
-                        'mean_over_point': (mean / mid) if mid != 0.0 else _np.inf}
+                        'mean_over_point': (mean / mid) if mid != 0.0 else np.inf}
 
     def am_pm_noise(self, pss, freq, output, harmonic=1, maxsidebands=None,
                     modulated=False, sweeptype=None):

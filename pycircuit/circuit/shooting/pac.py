@@ -705,7 +705,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## independently catches it.
         ## the source couples through every stage/step it reaches (A (x) B
         ## on a coupled tableau), and the output functional is injected at
-        ## every node -- one fold for every kind (`_sideband_forced`,
+        ## every node -- one fold for every kind (`_reverse_points`,
         ## verified vs forward driven solves and the bespoke trbdf2 fold)
         t_f, c_f, g = pss._reverse_points(fp, f_out, d)
         parts = [(t_f, c_f, 1.0)]
@@ -1051,7 +1051,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         vectors, one per injection point (`_stage_times`; `h sum_i A_ik p_i`
         per stage of a stage method) -- the sensitivity of the costate's
         functional to a unit source there is minus that (see
-        `_sideband_forced`, whose loop this is).  `seed = (k0, v)` adds `v`
+        `_reverse_points`, whose loop this is).  `seed = (k0, v)` adds `v`
         to the costate on the state after step `k0`'s update: the output at
         `t_{k0}` couples to the sources of earlier steps only."""
         steps = fp.step_objects()

@@ -129,7 +129,7 @@ class FactoredPeriod(object):
     ## is left per kind is how a direction seeds the per-step state, what the
     ## map reads out of it, and where a costate injection lands.  The replays
     ## (`PSS._replay`, `_replay_transposed`, `_forced_replay`,
-    ## `_forced_replay_transposed`, `_sideband_forced`) are one function each.
+    ## `_forced_replay_transposed`, `_reverse_points`) are one function each.
     ## (History: `doc/shooting_history.md`, `FactoredPeriod.step_objects`.)
     ## The interface, defined by `_PlainPeriod`, `_PairPeriod`,
     ## `_StagePeriod` and `_GLMPeriod`:
@@ -461,7 +461,7 @@ class _GLMStateMap(object):
     projections `ppv` reads).  The FactoredPeriod interface below --
     `_GLMStateStep`s on the per-step state ``(P, x)`` -- is what the generic
     replays run (`PSS._forced_replay`, `_forced_replay_transposed`,
-    `_sideband_forced`, `PAC._stage_pass`): the source enters the stages,
+    `_reverse_points`, `PAC._stage_pass`): the source enters the stages,
     the output rows and the startup that opens a step.  The two agree on
     `M v` and `M^T v` (to round-off, the suite's GLM PAC tests).  The
     covariance surfaces read a GLM run from a radau twin by default

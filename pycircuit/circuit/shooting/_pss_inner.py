@@ -3,6 +3,7 @@ at a point (C, G, the stage derivative).
 """
 import numpy as np
 from pycircuit.circuit.analysis import remove_row_col
+from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import devices_at
 
 
@@ -203,7 +204,6 @@ class _InnerTransient(object):
             self._sync_limit_at(xf)
             G = tr.cir.G(xf, tr.epar)
         else:
-            from pycircuit.circuit import pcnr as _pcnr
             xfa = np.asarray(xf, dtype=float)
             v_lim = _pcnr.v_lim_init(junctions, xfa)
             g_mna, g_lim, J_mm, _J_ml, _J_lm, didv = _pcnr.augmented_system(
@@ -248,7 +248,6 @@ class _InnerTransient(object):
         """
         junc = getattr(self, '_pcnr_junctions_cache', None)
         if junc is None:
-            from pycircuit.circuit import pcnr as _pcnr
             junc = _pcnr.pcnr_devices(self.cir)
             self._pcnr_junctions_cache = junc
         return junc

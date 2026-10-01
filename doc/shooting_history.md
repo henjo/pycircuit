@@ -12238,3 +12238,54 @@ object invites.
 _pac_sources.py   its noise sources: CY on the orbit, colour models, roots
 ```
 
+## `_pss_replays.py` -- `_FactoredReplays` (review O15, 2026-10-01)
+
+### `_sideband_forced`
+
+2026-10-01: DELETED -- no caller since review batch 4 (b72aa306), when
+`_reverse_points` (one reverse pass collecting the source coupling for
+every input frequency) replaced it in `pnoise`, `am_pm_noise`,
+`mixer_response` and `adjoint_sideband_row`.  Its causality note moved
+into `_reverse_points`' docstring.  The function before the deletion:
+
+```
+def _sideband_forced(self, fp, freq, l, d, extra=None):
+    """The forced (source-injected) part of sideband row `l`, and the
+    final costate `g` for the closure: the transposed replay with the
+    OUTPUT functional `d` injected at every node (weighted by
+    ``exp(-j(l w0 + w) t_n)/N``, or the period quadrature's weight) and
+    the source coupling read at every step.  ⚠ The injection is added
+    AFTER the step's costate update, so the output at `t_n` couples to
+    the sources of steps `< n` (causality); the state at `t_n` is the
+    one step `n` enters from.  `extra` is a raw costate injection per
+    node (the bordered adjoint's event-row term), at `d`'s position.
+    Returns `(forced, g)`.
+
+    History: `doc/shooting_history.md`, `_sideband_forced`."""
+    jw = 2j * np.pi * float(freq)
+    T = float(fp.T)
+    w0 = 2.0 * np.pi / T
+    N = len(fp.steps)
+    tms = np.asarray(fp.times, dtype=float)
+    d = np.asarray(d, dtype=complex).ravel()
+    lam = fp.extract_T(np.zeros(fp.width, dtype=complex))
+    forced = np.zeros(self.cir.n - 1, dtype=complex)
+    _wq = self._period_quadrature(fp)
+    steps = fp.step_objects()
+    for j in range(N - 1, -1, -1):
+        st = steps[j]
+        ts = tms[j]
+        lam, r = st.adjoint(lam)
+        forced = st.source_adjoint(forced, r, jw, ts, tms[j + 1])
+        _e = np.exp(-1j * (float(l) * w0 + 2.0 * np.pi * float(freq)) * ts)
+        lam = fp.inject(lam, (_e / N if _wq is None else _e * _wq[j]) * d)
+        if extra is not None and j in extra:
+            lam = fp.inject(lam, np.asarray(extra[j], dtype=complex))
+    return forced, fp.seed_T(lam)
+```
+
+### `PSS._monodromy_twin` (attribute) and `RungeKuttaIntegrator.is_explicit_first_stage`
+
+2026-10-01: DELETED (review O15) -- the attribute was written by
+`monodromy_twin()` and reset by `__init__` / `_solve_prepare` and never
+read (the twins live in `_twins`); the method had no caller.

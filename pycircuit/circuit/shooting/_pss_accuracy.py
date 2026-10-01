@@ -83,9 +83,7 @@ class _AccuracyChecks(object):
             return self
         if getattr(self, '_period_state', None) is None or not self.converged:
             return self
-        twin = self._solve_twin(mono)
-        self._monodromy_twin = twin
-        return twin
+        return self._solve_twin(mono)
 
     ## The iteration budget of a monodromy twin's re-solve.  A twin is a
     ## POLISH seeded at the converged orbit: a good seed converges in a
@@ -544,15 +542,14 @@ class _AccuracyChecks(object):
 
         History: `doc/shooting_history.md`, `_AccuracyChecks.warping_estimate`.
         """
-        import numpy as _np
         from scipy.interpolate import make_interp_spline
         if self.waveform is None:
             raise ValueError('warping_estimate needs a solved PSS -- call solve() first')
         T = float(self.period)
-        times = _np.asarray(self.waveform[0], dtype=float)
-        X = _np.asarray(self.waveform[1], dtype=float)         # (n, m)
+        times = np.asarray(self.waveform[0], dtype=float)
+        X = np.asarray(self.waveform[1], dtype=float)         # (n, m)
         if abs(times[-1] - T) > 1e-12 * T:
-            times = _np.r_[times, T]; X = _np.column_stack([X, X[:, 0]])
+            times = np.r_[times, T]; X = np.column_stack([X, X[:, 0]])
         X = X.copy(); X[:, -1] = X[:, 0]                        # close the orbit exactly
         method = str(self.par.method)
         k = int(self._idec_degree(method) if degree is None else degree)
@@ -564,9 +561,9 @@ class _AccuracyChecks(object):
         ## time function only when told which analysis is asking; without it
         ## every source VANISHES (zeros, DC value included), and the defect
         ## would omit the drive on a driven circuit.
-        _u = lambda t: _np.asarray(cir.u(t, epar, analysis='tran'), dtype=float)
+        _u = lambda t: np.asarray(cir.u(t, epar, analysis='tran'), dtype=float)
         u0 = _u(0.0)
-        autonomous = all(_np.allclose(u0, _u(f * T)) for f in (0.37, 0.71))
+        autonomous = all(np.allclose(u0, _u(f * T)) for f in (0.37, 0.71))
         n_per = X.shape[1] - 1
 
         _lims = stateful_limiters(cir)
@@ -581,44 +578,44 @@ class _AccuracyChecks(object):
             dp = p.derivative()
             def _defect_source(t):
                 tt = t % T
-                x = _np.asarray(p(tt), dtype=float); xd = _np.asarray(dp(tt), dtype=float)
+                x = np.asarray(p(tt), dtype=float); xd = np.asarray(dp(tt), dtype=float)
                 ## (the devices read AT the spline point, not at the running
                 ## transient's limiting state -- `devices_at`)
                 with devices_at(cir, x, epar, _lims):
-                    r = (_np.asarray(cir.C(x, epar), dtype=float) @ xd
-                         + _np.asarray(cir.i(x, epar), dtype=float) + _u(t))
+                    r = (np.asarray(cir.C(x, epar), dtype=float) @ xd
+                         + np.asarray(cir.i(x, epar), dtype=float) + _u(t))
                 return -r
             tr = self._new_transient(self._integrator_for(self.par.method))
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 res = tr.solve(tend=periods * T, x0=X_i[:, 0].copy(), timestep=T / n_per,
                                provided_function=_defect_source, fixed_timestep=True)
-            ty = _np.asarray(res.sweep_values, dtype=float)
-            Y = _np.asarray(res.x, dtype=float)                     # (n, steps+1)
+            ty = np.asarray(res.sweep_values, dtype=float)
+            Y = np.asarray(res.x, dtype=float)                     # (n, steps+1)
             if Y.shape[0] != X_i.shape[0]:
                 Y = Y.T
-            P = _np.asarray(p(ty % T), dtype=float).T; dP = _np.asarray(dp(ty % T), dtype=float).T
+            P = np.asarray(p(ty % T), dtype=float).T; dP = np.asarray(dp(ty % T), dtype=float).T
             E = Y - P
             lag = []; lag_c = []
             for j in range(periods):
                 sl = (ty >= j * T - 1e-12 * T) & (ty < (j + 1) * T - 1e-12 * T)
-                num = float(_np.sum(dP[:, sl] * E[:, sl])); den = float(_np.sum(dP[:, sl] ** 2))
-                lag.append(num / den if den > 0 else _np.nan)
+                num = float(np.sum(dP[:, sl] * E[:, sl])); den = float(np.sum(dP[:, sl] ** 2))
+                lag.append(num / den if den > 0 else np.nan)
             ## per component: the same projection restricted to one unknown.
                 ## A phase shift moves every component by the same lag, so on a
                 ## healthy estimate every row's slope equals the period error;
                 ## a row reading ~0 while the others read the period error is
                 ## the exactness-class collapse on THAT component (the DAE
                 ## caveat), invisible in the scalar `lag` above.
-                num_c = _np.sum(dP[:, sl] * E[:, sl], axis=1); den_c = _np.sum(dP[:, sl] ** 2, axis=1)
+                num_c = np.sum(dP[:, sl] * E[:, sl], axis=1); den_c = np.sum(dP[:, sl] ** 2, axis=1)
                 ## a RELATIVE threshold: a node pinned by a source has a
                 ## derivative of pure roundoff, and `den > 0` would print a
                 ## ratio where NaN is meant.
-                with _np.errstate(divide='ignore', invalid='ignore'):
-                    lag_c.append(_np.where(den_c > 1e-20 * den_c.max(), num_c / den_c, _np.nan))
-            lag = _np.asarray(lag); lag_c = _np.asarray(lag_c)
-            ok = _np.isfinite(lag)
-            slope = float(_np.polyfit(_np.arange(periods)[ok], lag[ok], 1)[0]) if ok.sum() >= 2 else _np.nan
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    lag_c.append(np.where(den_c > 1e-20 * den_c.max(), num_c / den_c, np.nan))
+            lag = np.asarray(lag); lag_c = np.asarray(lag_c)
+            ok = np.isfinite(lag)
+            slope = float(np.polyfit(np.arange(periods)[ok], lag[ok], 1)[0]) if ok.sum() >= 2 else np.nan
             return slope, lag, lag_c, E, ty
 
         slope, lag, lag_c, E, ty = _run(times, X)
@@ -626,7 +623,7 @@ class _AccuracyChecks(object):
         ## fall BEHIND, so the period error is minus the slope.
         period_error = -slope if autonomous else None
         last = ty >= (periods - 1) * T - 1e-12 * T
-        component_rms = _np.sqrt(_np.mean(E[:, last] ** 2, axis=1))
+        component_rms = np.sqrt(np.mean(E[:, last] ** 2, axis=1))
         ## THE SELF-DIAGNOSTIC (Part I's "only if"): the
         ## estimate is the method's error only while the interpolant's own
         ## defect is asymptotically smaller than it, and then it does NOT
@@ -638,12 +635,12 @@ class _AccuracyChecks(object):
         ## of returned as a number wrong by a factor nothing announces.
         check_ratio = None; trusted = None
         if check:
-            sub = _np.arange(0, n_per + 1, 2)
+            sub = np.arange(0, n_per + 1, 2)
             if sub[-1] != n_per:
-                sub = _np.r_[sub, n_per]
+                sub = np.r_[sub, n_per]
             if len(sub) > k + 1:
                 slope2 = _run(times[sub], X[:, sub])[0]
-                if _np.isfinite(slope) and _np.isfinite(slope2) and slope != 0.0:
+                if np.isfinite(slope) and np.isfinite(slope2) and slope != 0.0:
                     check_ratio = float(slope2 / slope)
                     trusted = bool(abs(check_ratio - 1.0) <= self.WARPING_CHECK_TOL)
                     if not trusted:

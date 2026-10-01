@@ -397,7 +397,6 @@ class _PeriodGrids(object):
 
         History: `doc/shooting_history.md`, `_PeriodGrids.lte_grid`.
         """
-        import warnings as _warnings
         T = float(period)
         if not T > 0.0:
             raise ValueError('lte_grid: period must be positive, got %g' % T)
@@ -415,8 +414,8 @@ class _PeriodGrids(object):
         tr = self._new_transient(
             self._integrator_for(self.par.method), frozen=False, reltol=rt,
             relref=self.par.relref if relref is None else relref)
-        with _warnings.catch_warnings():
-            _warnings.simplefilter('ignore')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
             res = tr.solve(refnode=refnode, tend=tstab + T, timestep=h0,
                            x0=x0)
         t = np.asarray(res.sweep_values, dtype=float).ravel()
@@ -435,7 +434,7 @@ class _PeriodGrids(object):
                  self._observed_period(t, xs, self.cir.get_node_index(refnode), T))
         if T_obs is not None:
             if abs(T_obs / T - 1.0) > 1e-2:
-                _warnings.warn(
+                warnings.warn(
                     'lte_grid: the adaptive run recurs every %.6g s but the '
                     'period passed was %.6g s (%.1f %% off); the grid is cut '
                     'at the observed period -- pass period=pss.lte_period to '
@@ -444,7 +443,7 @@ class _PeriodGrids(object):
                     RuntimeWarning, stacklevel=2)
             T = float(T_obs)
         else:
-            _warnings.warn(
+            warnings.warn(
                 'lte_grid: no consistent recurrence was found in the last '
                 'periods of the adaptive run (unsettled, or the period hint '
                 'is far off); the grid is cut at the period passed, %.6g s.'

@@ -15,6 +15,9 @@ from pycircuit.circuit._lte_kernels import (bdf2_alphas, bdf2_companion,
                                             bdf2_companion_dh)
 import math
 import warnings
+from math import factorial
+
+import numpy as np
 
 ## STAGE 4e -- the zero-stability bound on the step-size ratio for variable-step
 ## BDF-2.  Grigorieff's result is that the homogeneous recursion's parasitic root
@@ -810,7 +813,6 @@ class RungeKuttaIntegrator(Integrator):
         """``(A, B, C)`` as float ndarrays, cached."""
         cache = getattr(self, '_butcher_cache', None)
         if cache is None:
-            import numpy as np
             cache = (np.array(self.A, dtype=float),
                      np.array(self.B, dtype=float),
                      np.array(self.C, dtype=float))
@@ -819,20 +821,13 @@ class RungeKuttaIntegrator(Integrator):
 
     @property
     def stages(self) -> int:
-        import numpy as np
         return int(np.array(self.C).shape[0])
 
     def is_stiffly_accurate(self) -> bool:
         """``b == last row of A`` and ``c[-1] == 1`` -- the step lands ON the
         constraint manifold, so ``x_{n+1}`` is the last stage."""
-        import numpy as np
         A, B, C = self.butcher()
         return bool(np.allclose(B, A[-1]) and abs(C[-1] - 1.0) < 1e-14)
-
-    def is_explicit_first_stage(self) -> bool:
-        import numpy as np
-        A, _B, _C = self.butcher()
-        return bool(np.allclose(A[0], 0.0))
 
     def stage_structure(self):
         """Classify the tableau so the solver picks the cheapest correct path:
@@ -840,7 +835,6 @@ class RungeKuttaIntegrator(Integrator):
         diagonals -> one shared factorisation), ``SDIRK`` (lower-triangular,
         all diagonals equal), ``DIRK`` (lower-triangular), or ``FULL`` (fully
         implicit -> coupled solve or the eig(A^-1) cost transform)."""
-        import numpy as np
         A, _B, _C = self.butcher()
         s = A.shape[0]
         lower = np.allclose(np.triu(A, 1), 0.0)
@@ -1464,8 +1458,6 @@ class NordsieckGLMIntegrator(Integrator):
 
     @staticmethod
     def _nordsieck_matrices(p):
-        import numpy as np
-        from math import factorial
         r = p + 1
         K = np.zeros((r, r))
         for i in range(r - 1):
@@ -1481,8 +1473,6 @@ class NordsieckGLMIntegrator(Integrator):
         conditions, cached."""
         cache = getattr(self, '_glm_cache', None)
         if cache is None:
-            import numpy as np
-            from math import factorial
             A = np.array(self.A, dtype=float)
             c = np.array(self.C_ABSC, dtype=float)
             B = np.array(self.B, dtype=float)
@@ -1497,7 +1487,6 @@ class NordsieckGLMIntegrator(Integrator):
 
     @property
     def stages(self) -> int:
-        import numpy as np
         return int(np.array(self.C_ABSC).shape[0])
 
     @property
@@ -1505,7 +1494,6 @@ class NordsieckGLMIntegrator(Integrator):
         return int(self.P)
 
     def is_stiffly_accurate(self) -> bool:
-        import numpy as np
         A, U, B, V, c, p = self.tableau()
         return bool(np.allclose(B[0], A[-1]) and abs(c[-1] - 1.0) < 1e-12
                     and np.allclose(V[0], U[-1]))
@@ -1513,13 +1501,11 @@ class NordsieckGLMIntegrator(Integrator):
     def stability_function(self, z):
         """``M(z) = V + z B (I - z A)^-1 U``; its spectral radius on the left
         half-plane is the stability question for a GLM."""
-        import numpy as np
         A, U, B, V, c, p = self.tableau()
         s = A.shape[0]
         return V + z * B @ np.linalg.solve(np.eye(s) - z * A, U)
 
     def M_inf(self):
-        import numpy as np
         A, U, B, V, c, p = self.tableau()
         return V - B @ np.linalg.solve(A, U)
 
@@ -1529,8 +1515,6 @@ class NordsieckGLMIntegrator(Integrator):
         and NOT exact at ``k = p + 1``), stiff accuracy, ``eig(V)``,
         ``rho(M_inf)`` and the nilpotency residual ``|M_inf^r|``, and the worst
         ``rho(M(z))`` over a left-half-plane grid."""
-        import numpy as np
-        from math import factorial
         A, U, B, V, c, p = self.tableau()
         s = A.shape[0]
         r = p + 1
