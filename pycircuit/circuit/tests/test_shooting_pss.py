@@ -5433,6 +5433,9 @@ def test_pss_shares_the_transient_s_parameters():
     assert P['pcnr'] is not T['pcnr'] and 'inner transient' in P['pcnr'].desc
     assert (P['pcnr'].default, P['pcnr'].unit) == (T['pcnr'].default,
                                                    T['pcnr'].unit)
+    ## (and radau's cost transform, worded for the shooting)
+    assert P['radau_transform'] is not T['radau_transform']
+    assert P['radau_transform'].default is T['radau_transform'].default
 
 
 def test_the_converged_replay_is_the_factored_period():
@@ -5498,3 +5501,52 @@ def test_the_converged_replay_is_the_factored_period():
         p.solve(**skw)
     assert p.converged and p._factored_period_cache is None
     assert np.array_equal(dense(p.factored_period()), maps['vdp gear'])
+
+
+def test_pss_forwards_radau_s_cost_transform():
+    """The review's S15 (2026-10-01): a chord Jacobian for compact models was
+    measured first -- `G` and `C` are 92 % of a compact MOSFET's PSS solve --
+    and radau's already exists: `Transient`'s `radau_transform` (simplified
+    Newton through eig(A^-1)), 107 -> 34 s on that solve.  PSS forwards it
+    to every inner transient, off by default (it can be slower where the
+    Jacobian is cheap).  The inner steps take the transform; the orbit agrees with
+    the full Newton's to its tolerance; a changed setting rebuilds the
+    inner transient."""
+    from pycircuit.circuit.transient import Transient
+    circuit.default_toolkit = circuit.numeric
+    calls = []
+    orig = Transient._rk_step_transformed
+    had = '_rk_step_transformed' in Transient.__dict__
+
+    def counted(self, *a, **k):
+        calls.append(1)
+        return orig(self, *a, **k)
+
+    def solve(p):
+        x0 = np.zeros(p.cir.n - 1)
+        x0[0] = 2.0
+        with quiet(AccuracyWarning):
+            p.solve(period=6.6634, timestep=6.6634 / 100, x0=x0,
+                    maxiterations=60)
+        assert p.converged
+        return np.asarray(p.waveform[1], dtype=float)
+
+    Transient._rk_step_transformed = counted
+    try:
+        p = PSS(_vdp_with_noise(1e-6), method='radau', reltol=1e-10)
+        X0 = solve(p)
+        assert not calls and p._transient().par.radau_transform is False
+        X1 = solve(PSS(_vdp_with_noise(1e-6), method='radau', reltol=1e-10,
+                       radau_transform=True))
+        assert calls
+        assert np.max(np.abs(X1 - X0)) / np.max(np.abs(X0)) < 1e-8
+        ## a changed setting reaches the steps (`_settings_key`)
+        del calls[:]
+        p.par.radau_transform = True
+        solve(p)
+        assert calls and p._transient().par.radau_transform is True
+    finally:
+        if had:
+            Transient._rk_step_transformed = orig
+        else:
+            del Transient._rk_step_transformed

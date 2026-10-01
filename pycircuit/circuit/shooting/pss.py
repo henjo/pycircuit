@@ -414,6 +414,25 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
          _transient_parameter(
              'pcnr', desc='Use Predictor/Corrector Newton-Raphson instead of '
                           'limiting in the inner transient; off by default'),
+         ## RADAU'S COST TRANSFORM on the inner steps (`Transient`'s own:
+         ## simplified Newton, one Jacobian per step through eig(A^-1), the
+         ## full Newton where it stalls).  Off by default -- the full Newton
+         ## is the reference, and the trade is the circuit's.  Measured on
+         ## PSS solves (the review's S15, 2026-10-01): a compact MOSFET
+         ## common-source stage at 40 points 107 -> 34 s, its `G`
+         ## evaluations 4231 -> 881 (they are 92 % of its solve), the answer
+         ## 2e-11 apart; van der Pol at 400 points +18 %, a switching PWM
+         ## loop +79 % (57 stalled steps redone by the full Newton), the
+         ## comparator relaxation oscillator -6 %, a linear RLC level.
+         _transient_parameter(
+             'radau_transform',
+             desc="method='radau' only: solve each inner step by the "
+                  'eig(A^-1) cost transform -- simplified Newton, one '
+                  'Jacobian per step, the full Newton where it stalls. '
+                  'Pays where device Jacobians are expensive (a compact '
+                  'MOSFET PSS 3.1x faster); can be slower where they are '
+                  'cheap (van der Pol +18 %, a switching PWM loop +79 %). '
+                  'Off by default.'),
          ## How finely a switching window is resolved: the segment between
          ## a threshold switch's two landed edges (`state_events`) is cut into
          ## this many equal steps whenever it holds fewer -- see
