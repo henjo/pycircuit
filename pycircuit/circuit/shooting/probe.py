@@ -314,6 +314,12 @@ class ProbeShooting:
                         J[:, 2 * jx] = dA_col
                         J[:, 2 * jx + 1] = dP_col
             else:
+                ## ⚠ NOT BROYDEN, MEASURED (2026-10-01): the rank-one update
+                ## that saves 27 % on the single tone (`solve`) cost MORE here
+                ## -- 57 -> 121 solves on the asymmetric three-tone van der
+                ## Pol, landing on ANOTHER orbit 76 % off in frequency; not
+                ## converged in 97 on the symmetric one, where this takes 43;
+                ## 31 -> 32 on tones [1, 3].
                 for j in range(z.shape[0]):
                     dz = rel_step * max(abs(z[j]), 1e-3)
                     zz = z.copy()
@@ -348,32 +354,59 @@ class ProbeShooting:
         return new
 
     def solve(self, amp0, freq0, tol=1e-9, maxiter=20, damp=1.0,
-              rel_step=1e-4):
+              rel_step=1e-4, broyden=True):
         """Single-tone Newton on `(A, f)`.  Returns `(A, f, info)`.
 
         Kept as its own entry point because the one-tone case is the cheap
-        screen -- three solves an iteration -- and because its return shape is
-        two scalars rather than the vectors :meth:`solve_multitone` returns.
+        screen and because its return shape is two scalars rather than the
+        vectors :meth:`solve_multitone` returns.
+
+        `broyden` (the default): the 2x2 Jacobian is formed by finite
+        differences once -- two PSS solves -- and then updated rank-one from
+        each step's residual change (Broyden's good update), so an iteration
+        costs ONE solve; a step that does not reduce the residual forms it
+        again by finite differences at the new point.  Measured on seven van
+        der Pol starts (`mu` 0.1 to 3, an asymmetric one, near and far,
+        2026-10-01): the same answer within 3.5e-9 relative and 82 -> 60
+        inner solves (-27 %), up to 40 % on one.  `False`: the
+        finite-difference Newton, three solves an iteration.  `info`'s
+        `'jacobians'` counts the finite-difference Jacobians formed.
         """
         A, f = float(amp0), float(freq0)
         hist = []
         r = np.array([np.inf, np.inf])
+        J = dz = None
+        jacobians = 0
         for it in range(int(maxiter)):
             I0, _p = self.probe_current(A, f)
-            r = np.array([I0.real, I0.imag], dtype=float)
+            r_new = np.array([I0.real, I0.imag], dtype=float)
+            if J is not None:
+                ## BROYDEN'S GOOD UPDATE from the step just taken, or a fresh
+                ## finite-difference Jacobian where it did not reduce the
+                ## residual (then the secant direction is not to be trusted)
+                if np.linalg.norm(r_new) < np.linalg.norm(r):
+                    dr = r_new - r
+                    J = J + np.outer(dr - J @ dz, dz) / float(dz @ dz)
+                else:
+                    J = None
+            r = r_new
             hist.append((A, f, float(np.linalg.norm(r))))
             if np.linalg.norm(r) < tol:
                 return A, f, {'iterations': it,
                               'residual': float(np.linalg.norm(r)),
                               'history': hist, 'converged': True,
                               'evaluations': self.evaluations,
+                              'jacobians': jacobians,
                               'inner_unconverged': self._inner_report()}
-            dA = rel_step * max(abs(A), 1e-12)
-            df = rel_step * max(abs(f), 1e-12)
-            IA, _ = self.probe_current(A + dA, f)
-            IF, _ = self.probe_current(A, f + df)
-            J = np.array([[(IA.real - I0.real) / dA, (IF.real - I0.real) / df],
-                          [(IA.imag - I0.imag) / dA, (IF.imag - I0.imag) / df]])
+            if J is None:
+                dA = rel_step * max(abs(A), 1e-12)
+                df = rel_step * max(abs(f), 1e-12)
+                IA, _ = self.probe_current(A + dA, f)
+                IF, _ = self.probe_current(A, f + df)
+                J = np.array(
+                    [[(IA.real - I0.real) / dA, (IF.real - I0.real) / df],
+                     [(IA.imag - I0.imag) / dA, (IF.imag - I0.imag) / df]])
+                jacobians += 1
             ## (singular by its CONDITION on unit columns: the two columns
             ## are in different units, d/dA and d/df, so `|det J| < 1e-300`
             ## could not fire -- the review's X5, 2026-10-01)
@@ -385,13 +418,16 @@ class ProbeShooting:
                     'A=%.6g f=%.6g. Either the probe cannot see the '
                     'oscillation, or the placement leaves a state undetermined '
                     '-- check `degenerate_placement`.' % (A, f))
-            step = np.linalg.solve(J, -r)
-            A += damp * step[0]
-            f += damp * step[1]
+            dz = damp * np.linalg.solve(J, -r)
+            A += dz[0]
+            f += dz[1]
+            if not broyden:
+                J = None
         return A, f, {'iterations': maxiter,
                       'residual': float(np.linalg.norm(r)),
                       'history': hist, 'converged': False,
                       'evaluations': self.evaluations,
+                      'jacobians': jacobians,
                       'inner_unconverged': self._inner_report()}
 
     #: excitation offset as a fraction of `f`, so the folded sideband pair

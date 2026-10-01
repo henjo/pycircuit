@@ -607,3 +607,42 @@ def test_the_pac_jacobian_without_validation_is_the_same_matrix():
     assert 'validation_reldiff' not in out[False][1]
     assert out[True][1]['validated'] is True
     assert out[True][2] - out[False][2] == 2, (out[True][2], out[False][2])
+
+
+@pytest.mark.slow
+def test_the_single_tone_probe_updates_its_jacobian_by_broyden():
+    """The review's S20 (2026-10-01): `ProbeShooting.solve` forms its 2x2
+    Jacobian by finite differences once and updates it rank-one from each
+    step (`broyden=True`, the default), re-forming it where a step did not
+    reduce the residual.  Same answer as the finite-difference Newton to
+    the tolerance, fewer inner PSS solves -- 10 against 13 here, 82 against
+    60 over seven measured starts.  `broyden=False` is the finite-difference
+    Newton, iterate for iterate (checked bit for bit against the parent)."""
+    from pycircuit.circuit.shooting import ProbeShooting
+    circuit.default_toolkit = circuit.numeric
+
+    def build():
+        c = SubCircuit()
+        c.add_node('v')
+        c.add_node('x')
+        c['C'] = C('v', gnd, c=1.0)
+        c['RL'] = R('v', 'x', r=1e-2)
+        c['L'] = L('x', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: 0.1 * (u - u ** 3 / 3.0))
+        return c
+
+    got = {}
+    for broyden in (False, True):
+        ps = ProbeShooting(build, 'v', npts=150)
+        A, f, info = ps.solve(2.2, 1.02 / (2.0 * np.pi), tol=1e-8,
+                              maxiter=12, broyden=broyden)
+        assert info['converged'], (broyden, info)
+        got[broyden] = (A, f, ps.evaluations, info['jacobians'],
+                        info['iterations'])
+    (A0, f0, n0, j0, it0), (A1, f1, n1, j1, it1) = got[False], got[True]
+    assert abs(A1 - A0) / abs(A0) < 1e-8 and abs(f1 - f0) / f0 < 1e-8, got
+    assert n1 < n0, f'Broyden must cost fewer inner solves: {got!r}'
+    ## one finite-difference Jacobian per iteration without; with, only
+    ## where a step failed to reduce the residual
+    assert j0 == it0 and j1 < it1, got
