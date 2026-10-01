@@ -1205,11 +1205,11 @@ def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
     pac = PAC(cir, toolkit=circuit.numeric)
     with quiet():
         res = pac.solve(p, freqs=[fin])
-        H = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1]))
+        H = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1])[0])
         ev = p._event_columns
         p._event_columns = None
         try:
-            H0 = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1]))
+            H0 = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1])[0])
         finally:
             p._event_columns = ev
     fout = np.asarray(res.sweep_values, dtype=float)
@@ -1339,7 +1339,7 @@ def test_the_state_event_stage_runs_matrix_free(method):
                 pac = PAC(c, toolkit=circuit.numeric)
                 with quiet():
                     out[mf] = (np.asarray(pac.solve(q, [0.3 * f0]).x),
-                               pac.adjoint_sideband_row(q, 0.3 * f0, 1, sidebands=[0, 1]),
+                               pac.adjoint_sideband_row(q, 0.3 * f0, 1, sidebands=[0, 1])[0],
                                pac.covariance(q)[0])
             for a, b in zip(out[True], out[False]):
                 assert rel(a, b) < 1e-9, method
@@ -1476,7 +1476,7 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
             pac = PAC(cir, toolkit=circuit.numeric)
             with quiet():
                 res = pac.solve(q, [f], sweeptype='absolute')
-                h = complex(np.asarray(pac.adjoint_sideband_row(q, f, io, sidebands=[0]))[0] @ u_ac)
+                h = complex(np.asarray(pac.adjoint_sideband_row(q, f, io, sidebands=[0])[0])[0] @ u_ac)
             sv = np.asarray(res.sweep_values, dtype=float)
             X = np.asarray(res.x)[iv]
             ks = [k for k in range(len(sv)) if abs(sv[k] - f) < 1e-9 * f]

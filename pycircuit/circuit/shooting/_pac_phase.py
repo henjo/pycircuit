@@ -3,7 +3,7 @@ aware), phase_psd and the lineshape.
 """
 import numpy as np
 from ._noise_components import psd_sqrt
-from ._numerics import insert_ref, output_index
+from ._numerics import flag_arg, insert_ref, integer_arg, output_index
 from pycircuit.circuit.simwarnings import AccuracyWarning, ModelWarning, warn
 
 
@@ -45,15 +45,22 @@ class _PhaseNoise(object):
 
         History: `doc/shooting_history.md`, `PAC.diffusion_constant`.
         """
+        return self._diffusion_constant(pss)
+
+    def _diffusion_constant(self, pss, what='diffusion_constant', out=None):
+        """`diffusion_constant` for its callers in PAC: refusals naming
+        `PAC.<what>`, the method the user called; `out` as
+        `_white_diffusion_at`'s."""
         self._check_circuit(pss)
         self._refuse_coloured(
-            pss, 'diffusion_constant',
+            pss, what,
             'a coloured source has no diffusion constant; phase_psd and '
             'coloured_diffusion_resolved give its phase noise.')
-        self._refuse_driven(pss, 'diffusion_constant')
-        return self._white_diffusion_at(pss, 2.0 * np.pi / float(pss.period))
+        self._refuse_driven(pss, what)
+        return self._white_diffusion_at(pss, 2.0 * np.pi / float(pss.period),
+                                        out=out)
 
-    def _white_diffusion_at(self, pss, w, cy=None):
+    def _white_diffusion_at(self, pss, w, cy=None, out=None):
         """`(1/T) integral v_1^T (CY(w)/2) v_1 dt` with `CY` FROZEN at `w`.
 
         The white functional at one frequency, with no refusal: it is `c`
@@ -63,17 +70,20 @@ class _PhaseNoise(object):
         white-noise construct whatever the source's colour; the spectrum
         itself comes from `coloured_diffusion_resolved`.
 
+        `out` (a dict) gets `'second_multiplier'`, `(lambda_2, certified)`
+        from the PPV this reads: `oscillator_spectrum` needs it for its own
+        validity limit, and a second `ppv()` would be a full extra solve.
+        ⚠ Passed, not kept: until 2026-10-01 it was left on the PAC
+        (`_last_second_multiplier`) for a later call to read -- the PREVIOUS
+        oscillator's, where the order of the calls slipped (the review's F4).
+
         History: `doc/shooting_history.md`, `PAC._white_diffusion_at`.
         """
         v, info = pss.ppv()
-        ## `lambda_2` is computed here anyway; `oscillator_spectrum` needs it to
-        ## report its own validity limit and a second `ppv()` would be a full
-        ## extra solve.  Recorded, not returned, so this method's signature is
-        ## unchanged -- and read ONLY immediately after a call, which is how
-        ## `oscillator_spectrum` uses it.
-        self._last_second_multiplier = (
-            info.get('second_multiplier'),
-            info.get('second_multiplier_certified'))
+        if out is not None:
+            out['second_multiplier'] = (
+                info.get('second_multiplier'),
+                info.get('second_multiplier_certified'))
         m = pss.cir.n - 1
         ## ⚠ `samples_eq`, NOT `samples`.  `CY` is an EQUATION-ROW
         ## covariance and `samples` is `C^T v_1`; contracting that would make
@@ -264,6 +274,8 @@ class _PhaseNoise(object):
 
         History: `doc/shooting_history.md`, `PAC.coloured_diffusion`.
         """
+        self._check_circuit(pss)
+        self._refuse_driven(pss, 'coloured_diffusion')
         vbar, _ = self.colour_projection(pss)
         if self._modulated_present(pss):
             ## ⚠ A source that follows the orbit: the l = 0 term
@@ -281,7 +293,7 @@ class _PhaseNoise(object):
             out.append(float(vbar @ (0.5 * cy) @ vbar))
         return np.asarray(out)
 
-    def coloured_diffusion_resolved(self, pss, offsets, harmonics=None,
+    def coloured_diffusion_resolved(self, pss, offsets, maxharmonics=None,
                                     frequency_aware=True):
         """`c(f) = sum_l V_l^H (CY(2 pi |f - l f_0|)/2) V_l` — the fold PER HARMONIC.
 
@@ -307,9 +319,13 @@ class _PhaseNoise(object):
         `f << f_0` the `l != 0` terms read `CY(l f_0)` to `O(f/f_0)`, so
         the sum differs from `c + Gamma` only where `V_0` is not small.
 
-        `harmonics` caps `|l|`; by default every harmonic carrying more
-        than 1e-14 of the PPV's energy is kept, which is all of them that
-        can move the sum at double precision.
+        `maxharmonics` caps `|l|`, the harmonics `-L..L`, at most what the
+        grid resolves (`(n - 1)//2` for `n` PPV samples; above it raises);
+        by default every DFT bin of the grid, the Nyquist bin once, and of
+        those every harmonic carrying more than 1e-14 of the PPV's energy,
+        which is all of them that can move the sum at double precision.
+        (`harmonics` until 2026-10-01, whose default index set missed the
+        top bin on an odd grid.)
 
         ⚠ `frequency_aware` (default True): `V_l` from the
         frequency-aware PPV at each offset (`PSS.frequency_aware_ppv`, one
@@ -330,8 +346,10 @@ class _PhaseNoise(object):
         """
         self._check_circuit(pss)
         self._refuse_driven(pss, 'coloured_diffusion_resolved')
+        frequency_aware = flag_arg(frequency_aware, 'frequency_aware',
+                                   'coloured_diffusion_resolved')
         if self._modulated_present(pss):
-            return self._coloured_diffusion_modulated(pss, offsets, harmonics,
+            return self._coloured_diffusion_modulated(pss, offsets, maxharmonics,
                                                       frequency_aware)
         m = pss.cir.n - 1
         v0, info = pss.ppv()
@@ -350,8 +368,7 @@ class _PhaseNoise(object):
         t = tms[:n]
         h = self._period_weights(t, n, T, pss)
         w0 = 2.0 * np.pi / T
-        L = n // 2 if harmonics is None else int(harmonics)
-        ls = np.arange(-L, L + 1) if harmonics is not None else np.arange(-L, L)
+        ls = self._ppv_harmonics(n, maxharmonics, 'coloured_diffusion_resolved')
         E = np.exp(-1j * np.outer(ls, w0 * t)) * h[None, :]          # (nl, n)
         if frequency_aware:
             ## ⚠ THE FREQUENCY-AWARE PPV (the default): at each
@@ -414,7 +431,26 @@ class _PhaseNoise(object):
             hit = cache[key] = (fp, np.asarray(fi['samples_eq'])[:, :m])
         return hit[1]
 
-    def _coloured_diffusion_modulated(self, pss, freqs, harmonics=None,
+    @staticmethod
+    def _ppv_harmonics(n, maxharmonics, what):
+        """The harmonics `l` of an `n`-sample PPV a fold reads: every DFT
+        bin by default (`fftfreq`: `-n/2 .. n/2 - 1` on an even grid, the
+        Nyquist bin once, symmetric on an odd one), or `-L..L` for an
+        explicit `maxharmonics = L <= (n - 1)//2` -- above that the bins
+        alias, and it raises.  ⚠ The default was `arange(-n//2, n//2)`
+        until 2026-10-01: the same on an even grid, one bin short (`+L`) on
+        an odd one."""
+        if maxharmonics is None:
+            return np.fft.fftfreq(n, d=1.0 / n).astype(int)
+        L = integer_arg(maxharmonics, 'maxharmonics', what, minimum=0)
+        if L > (n - 1) // 2:
+            raise ValueError(
+                f'PAC.{what}: maxharmonics={L} is above what the grid '
+                f'resolves ({(n - 1) // 2} at {n} PPV samples per period) -- '
+                'use a finer period grid, or leave it None (every bin).')
+        return np.arange(-L, L + 1)
+
+    def _coloured_diffusion_modulated(self, pss, freqs, maxharmonics=None,
                                       frequency_aware=False):
         """`coloured_diffusion_resolved` for sources that follow the orbit.
         The phase moves as `v_1(t)^T G(t) xi(t)` for each
@@ -434,15 +470,16 @@ class _PhaseNoise(object):
         fr = np.atleast_1d(np.asarray(freqs, dtype=float))
         pos = np.abs(fr[fr != 0.0])
         fold = self._colour_fold(pss, float(pos.min()) if pos.size else None,
-                                 harmonics, 'coloured_diffusion_resolved')
+                                 maxharmonics, 'coloured_diffusion_resolved')
         if frequency_aware:
             return fold.resolved_fa(fr)
         return fold.coloured(fr, start=fold.c_white)
 
-    def _colour_fold(self, pss, flo, harmonics, what):
+    def _colour_fold(self, pss, flo, maxharmonics, what):
         """The pieces of `_coloured_diffusion_modulated`, built once: returns
         an object with `c_white` (Demir's `c` of the WHITE parts at the PPV's
-        states) and `coloured(freqs, start=0.0)`, the coloured part of
+        states), `second_multiplier` (`_white_diffusion_at`'s), and
+        `coloured(freqs, start=0.0)`, the coloured part of
         `c(f)` (vectorised over `freqs`, added to `start`).  A STATIONARY
         source is the case whose columns do not move.  `flo`: the lowest
         frequency the caller will ask (for the per-band classification)."""
@@ -456,8 +493,8 @@ class _PhaseNoise(object):
         h = self._period_weights(t, n, T, pss)
         f0 = 1.0 / T
         w0 = 2.0 * np.pi * f0
-        L = n // 2 if harmonics is None else int(harmonics)
-        ls = np.arange(-L, L + 1) if harmonics is not None else np.arange(-L, L)
+        ls = self._ppv_harmonics(n, maxharmonics, what)
+        L = int(np.max(np.abs(ls)))
         E = np.exp(-1j * np.outer(ls, w0 * t)) * h[None, :] / T      # (nl, n)
         states = self._ppv_states(pss)
         nc = self._noise_components(pss, states)
@@ -467,8 +504,9 @@ class _PhaseNoise(object):
                 'PAC.%s: this circuit\'s CY is not the sum of its elements\' '
                 'and, as a whole, not thermal-plus-power-law, so its white and '
                 'coloured parts cannot be separated.' % what)
+        _sm = {}
         c_white = float(self._white_diffusion_at(
-            pss, w0, cy=np.real(np.asarray(model.white))))
+            pss, w0, cy=np.real(np.asarray(model.white)), out=_sm))
         wlo = 2.0 * np.pi * float(flo) if flo else 1e-3 * w0
         fixed, band = [], []
         groups_all = nc.colour_groups(model, wlo, f0, L, what)
@@ -489,6 +527,7 @@ class _PhaseNoise(object):
             pass
         fold = _Fold()
         fold.c_white = c_white
+        fold.second_multiplier = _sm['second_multiplier']
         fold.has_colour = bool(fixed or band)
         ## the l = 0 row: `<v_1^T G>`, the PPV's time average through the
         ## columns -- `coloured_diffusion`'s `vbar^T (CY/2) vbar` when `G`
@@ -678,10 +717,12 @@ class _PhaseNoise(object):
         History: `doc/shooting_history.md`, `PAC.phase_psd`.
         """
         self._check_circuit(pss)
+        self._refuse_driven(pss, 'phase_psd')
         f0 = 1.0 / float(pss.period)
-        i = int(harmonic)
-        if i < 1:
-            raise ValueError('PAC.phase_psd: harmonic must be >= 1.')
+        i = integer_arg(harmonic, 'harmonic', 'phase_psd', minimum=1,
+                        why='the skirt is read about a carrier')
+        frequency_aware = flag_arg(frequency_aware, 'frequency_aware',
+                                   'phase_psd')
         offs = np.atleast_1d(np.asarray(offsets, dtype=float))
         if np.any(offs <= 0.0):
             raise ValueError(
@@ -813,9 +854,10 @@ class _PhaseNoise(object):
 
         The half-width is `π i² f₀² c` and the peak `1/(π² i² f₀² c)`, so a
         higher harmonic has a skirt scaling as `i²` and a corner as `i⁴` —
-        `20 log₁₀(i)` dB noisier far out.
+        `20 log₁₀(i)` dB noisier far out.  `harmonic` an integer >= 0 (the
+        DC line is a delta: zeros).
         """
-        i = int(harmonic)
+        i = integer_arg(harmonic, 'harmonic', 'lorentzian', minimum=0)
         if i == 0:
             return np.zeros_like(np.asarray(offsets, dtype=float))
         f = np.asarray(offsets, dtype=float)
@@ -858,12 +900,17 @@ class _PhaseNoise(object):
         argument for the split; the efficiency argument (Floquet is cheaper)
         is the weaker one.
 
-        Returns `(S_v, L_dBc)`.  `S_v` is the ONE-SIDED PSD of the output
-        voltage, as `pnoise`'s: the Lorentzian lineshape times the carrier's
-        one-sided power `2 |X_1|^2 = A^2/2` (`X_1 = A/2` the carrier phasor),
-        checked against a reference simulator at every offset over four
-        decades.  `L_dBc` is `S_v` over that carrier power, in dBc/Hz.
-        `output`: a reduced index, a weight vector, or a node name.
+        Returns `(S_v, L_dBc, info)`.  `S_v` is the ONE-SIDED PSD of the
+        output voltage, as `pnoise`'s: the Lorentzian lineshape times the
+        carrier's one-sided power `2 |X_1|^2 = A^2/2` (`X_1 = A/2` the carrier
+        phasor), checked against a reference simulator at every offset over
+        four decades.  `L_dBc` is `S_v` over that carrier power, in dBc/Hz.
+        `info` says which lineshape ran: `'frequency_aware'` None (the DC
+        line), 'first order' or 'all orders', with the estimate behind the
+        choice and the solves it took where there was one (below;
+        `self.lineshape_info` until 2026-10-01).  `output`: a reduced index,
+        a weight vector, or a node name; `harmonic` an integer >= 1;
+        `frequency_aware` True or False.
 
         ⚠ NO SWEEP AND NO PER-FREQUENCY SOLVE.  Once the PSS waveform's
         Fourier coefficients and the scalar `c` are known, "we have an
@@ -913,7 +960,7 @@ class _PhaseNoise(object):
         skirt's `i^2 f0^2 (c_fa - c_dc) / f^2` per offset) while that order's
         estimated error is below `FA_FIRST_ORDER_TOL`, and to ALL orders
         above it (the correction's own structure function inside `D`,
-        ~25 solves; `_fa_lineshape`, `self.lineshape_info` says which);
+        ~25 solves; `_fa_lineshape`, `info` says which);
         `False` is the DC lineshape.  Each offset takes the transform or the
         far skirt -- `phase_psd`'s linear skirt plus its SECOND-order
         correction (`_lineshape.second_order_skirt`) -- whichever estimates
@@ -931,12 +978,15 @@ class _PhaseNoise(object):
         at its corrected level.  It is OFF by default for a white source
         (~25 bordered solves).  For a
         coloured source None is the estimate's choice (above), True forces
-        all orders and False the first.  `self.lineshape_info` says which
-        ran.
+        all orders and False the first.  `info` says which ran.
 
         History: `doc/shooting_history.md`, `PAC.oscillator_spectrum`.
         """
         output = output_index(pss, output)
+        harmonic = integer_arg(harmonic, 'harmonic', 'oscillator_spectrum',
+                               minimum=1, why='the line is a carrier\'s')
+        frequency_aware = flag_arg(frequency_aware, 'frequency_aware',
+                                   'oscillator_spectrum')
         fmin, fmax = offset_fmin, offset_fmax     # (the names the internals use)
         if all_orders and frequency_aware is False:
             raise ValueError(
@@ -947,25 +997,22 @@ class _PhaseNoise(object):
         ## (the lineshape is built on the carrier PHASOR's square, `S_v / 2`;
         ## the one-sided PSD doubles it, exactly, and leaves `L_dBc` as is)
         if self._coloured_present(pss):
-            Sv, L = self._coloured_spectrum(
+            Sv, L, info = self._coloured_spectrum(
                 pss, offsets, output, harmonic, fmin, fmax,
-                frequency_aware=(frequency_aware is None
-                                 or bool(frequency_aware)),
-                all_orders=all_orders)
-            return 2.0 * np.asarray(Sv), L
-        if frequency_aware is None:
-            frequency_aware = True
-        c = self.diffusion_constant(pss)
+                frequency_aware=frequency_aware, all_orders=all_orders)
+            return 2.0 * np.asarray(Sv), L, info
+        sm = {}
+        c = self._diffusion_constant(pss, 'oscillator_spectrum', out=sm)
         f0 = 1.0 / float(pss.period)
-        self._warn_above_amplitude_pole(offsets, f0)
+        self._warn_above_amplitude_pole(offsets, f0, sm['second_multiplier'])
         X = self._carrier_line(pss, output, harmonic)
-        self.lineshape_info = {'frequency_aware': None}
+        info = {'frequency_aware': None}
         if frequency_aware and all_orders:
-            Sv = abs(X) ** 2 * self._white_all_orders(pss, offsets, harmonic,
-                                                      c, f0, fmax)
+            vals, info = self._white_all_orders(pss, offsets, harmonic, c, f0,
+                                                fmax)
+            Sv = abs(X) ** 2 * vals
         elif frequency_aware:
-            self.lineshape_info = {'frequency_aware': 'first order',
-                                   'estimate': None}
+            info = {'frequency_aware': 'first order', 'estimate': None}
             ## `c(f)` per offset -- one bordered adjoint solve each, cached on
             ## `|offset|` so a symmetric sweep pays once per magnitude.  `c(0)`
             ## is `c` exactly, so the near-carrier lineshape is unchanged.
@@ -985,7 +1032,7 @@ class _PhaseNoise(object):
         with np.errstate(divide='ignore'):
             L = 10.0 * np.log10(np.maximum(Sv / max(abs(X) ** 2, 1e-300),
                                            1e-300))
-        return 2.0 * Sv, L
+        return 2.0 * Sv, L, info
 
     def _white_all_orders(self, pss, offsets, harmonic, c, f0, fmax):
         """The WHITE line with the frequency-aware PPV to all orders
@@ -997,7 +1044,8 @@ class _PhaseNoise(object):
         series from where it dies away up to `fmax`, the change in `D` by
         signed quadrature, the white part held at its corrected level past
         `fmax`, and each offset from the transform or the linear skirt by
-        estimated error.  Normalised, as `lorentzian`.
+        estimated error.  Normalised, as `lorentzian`.  Returns `(values,
+        info)`, `info` the lineshape's (`_fa_orders`).
 
         History: `doc/shooting_history.md`, `PAC._white_all_orders`."""
         i = int(harmonic)
@@ -1011,11 +1059,11 @@ class _PhaseNoise(object):
         rho_at = lambda nu: np.array(
             [self.frequency_aware_diffusion(pss, nu) / c - 1.0, 0.0])
         off = np.asarray(offsets, dtype=float)
-        vals, errs, _shapes = self._fa_orders(
+        vals, errs, _shapes, info = self._fa_orders(
             rho_at, None, None, off, None, i, f0, c, a, pref, None, fmax, True)
         worst = max(errs) if errs else 0.0
         self._warn_lineshape('all-orders', worst, errs, off)
-        return np.asarray(vals).reshape(np.shape(off))
+        return np.asarray(vals).reshape(np.shape(off)), info
 
     def _warn_lineshape(self, which, worst, errs, off):
         """Warn when the `which` lineshape's estimated error passes
@@ -1078,7 +1126,7 @@ class _PhaseNoise(object):
     def _coloured_spectrum(self, pss, offsets, output, harmonic, fmin, fmax,
                            frequency_aware=True, all_orders=None):
         """`oscillator_spectrum` for a coloured source -- see there and
-        `_lineshape`."""
+        `_lineshape`.  Returns `(S_v / 2, L_dBc, info)`."""
         from . import _lineshape
         self._check_circuit(pss)
         self._refuse_driven(pss, 'oscillator_spectrum')
@@ -1110,7 +1158,7 @@ class _PhaseNoise(object):
         ## (after the fold, which reads THIS oscillator's lambda_2: before it
         ## the check was skipped on a fresh PAC and read the previous
         ## oscillator's on a reused one, until 2026-09-30)
-        self._warn_above_amplitude_pole(offsets, f0)
+        self._warn_above_amplitude_pole(offsets, f0, fold.second_multiplier)
         c_w = fold.c_white
         cfun = lambda nus: np.maximum(fold.coloured(nus), 1e-300)
         pc, converged = _lineshape.refine(cfun, fmin, fmax)
@@ -1168,13 +1216,13 @@ class _PhaseNoise(object):
                     i * i * f0 * f0 * cf / (ao * ao),)
             vals, errs = _lineshape.handover(shapes, off, skirt)
             return vals, errs, shapes
-        self.lineshape_info = {'frequency_aware': None}
         if frequency_aware:
-            vals, errs, shapes = self._fa_lineshape(
+            vals, errs, shapes, info = self._fa_lineshape(
                 pss, fold, pc, off, dc, i, f0, c_w, a, pref, fmin, fmax,
                 mode=all_orders)
         else:
             vals, errs, shapes = dc()
+            info = {'frequency_aware': None}
         S = np.asarray(vals).reshape(np.shape(off))
         worst = max(errs) if errs else 0.0
         self._warn_lineshape('coloured', worst, errs, off)
@@ -1188,7 +1236,7 @@ class _PhaseNoise(object):
         Sv = abs(X) ** 2 * S
         with np.errstate(divide='ignore'):
             L = 10.0 * np.log10(np.maximum(S, 1e-300))
-        return Sv, L
+        return Sv, L, info
 
     def _fa_lineshape(self, pss, fold, pc, off, dc, i, f0, c_w, a, pref,
                       fmin, fmax, mode=None):
@@ -1226,7 +1274,7 @@ class _PhaseNoise(object):
         corner is 7e6 linewidths out, the estimate ~1e-7, and the first
         order stands.
 
-        `self.lineshape_info` says which, and why.  `mode`: None the
+        Its `info` (returned last) says which, and why.  `mode`: None the
         estimate's choice, True all orders, False first order.
 
         History: `doc/shooting_history.md`, `PAC._fa_lineshape`."""
@@ -1249,7 +1297,8 @@ class _PhaseNoise(object):
         (`colour`, the DC coloured `c` on `[fmin, fmax]`) or a white one
         (`colour` None, `pc` None, `dc` None: `_white_all_orders`).
         `rho_at(nu)`: `(rho_w, rho_c)`, one bordered solve; `dc()` the DC
-        line `(vals, errs, shapes)`, which the first order corrects."""
+        line `(vals, errs, shapes)`, which the first order corrects.  Returns
+        `(vals, errs, shapes, info)`."""
         from . import _lineshape
         flat = np.atleast_1d(off).ravel()
         if colour is None:
@@ -1276,9 +1325,8 @@ class _PhaseNoise(object):
                 if o != 0.0:
                     ao = abs(float(o))
                     vals[k] += i * i * f0 * f0 * delta(ao) / ao ** 2
-            self.lineshape_info = {'frequency_aware': 'first order',
-                                   'estimate': None, 'solves': len(rhos)}
-            return vals, errs, shapes
+            return vals, errs, shapes, {'frequency_aware': 'first order',
+                                        'estimate': None, 'solves': len(rhos)}
         ## one probe a decade down from fmax, to where both parts have died
         ## away (the white one below fmin too); bounded at 20 decades below
         probes, nu, floored = [], fmax, False
@@ -1310,8 +1358,7 @@ class _PhaseNoise(object):
                     ao = abs(float(o))
                     vals[k] += i * i * f0 * f0 * delta(ao) / ao ** 2
             info.update(frequency_aware='first order', solves=len(rhos))
-            self.lineshape_info = info
-            return vals, errs, shapes
+            return vals, errs, shapes, info
         ## to all orders
         nu_lo = float(pn[0])
         if not floored:
@@ -1387,8 +1434,7 @@ class _PhaseNoise(object):
         vals, errs = _lineshape.handover(shapes, flat, skirt)
         info.update(frequency_aware='all orders', solves=len(rhos),
                     rho_fit=rho_fit, rho_err=cheb.err, cinf=shapes[1].cinf)
-        self.lineshape_info = info
-        return vals, errs, shapes
+        return vals, errs, shapes, info
 
     def frequency_aware_diffusion(self, pss, offset):
         """`c(f)` — the phase diffusion constant seen at modulation offset `f`.
@@ -1462,7 +1508,7 @@ class _PhaseNoise(object):
             quad = np.real(np.einsum('ij,ijk,ik->i', np.conj(S[:n]), cys, S[:n]))
         return float((quad * h[:n]).sum() / T)
 
-    def _warn_above_amplitude_pole(self, offsets, f0):
+    def _warn_above_amplitude_pole(self, offsets, f0, second_multiplier):
         """⚠ THE PHASE-ONLY SPECTRUM IS A LOWER BOUND ABOVE `f_amp`.
 
         `oscillator_spectrum` returns the PHASE contribution only.  A real
@@ -1490,10 +1536,12 @@ class _PhaseNoise(object):
         answer is UNDER-estimated.  Both are live and they are not the same
         effect.
 
+        `second_multiplier` the PPV's `(lambda_2, certified)`
+        (`_white_diffusion_at`'s `out`).
+
         History: `doc/shooting_history.md`, `PAC._warn_above_amplitude_pole`.
         """
-        lam2, certified = getattr(self, '_last_second_multiplier',
-                                  (None, None))
+        lam2, certified = second_multiplier
         if lam2 is None:
             return
         lam2 = float(lam2)

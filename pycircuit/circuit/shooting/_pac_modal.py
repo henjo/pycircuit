@@ -4,7 +4,7 @@ and correlation spectra, and the phase-mode split.
 import numpy as np
 import warnings
 from ._noise_components import orbit_states
-from ._numerics import _output_row, insert_ref, output_index
+from ._numerics import _output_row, insert_ref, integer_arg, output_index
 from pycircuit.circuit._limiting import devices_at
 from pycircuit.circuit.simwarnings import (
     AccuracyWarning,
@@ -34,13 +34,32 @@ class _ModalSpectra(object):
         cap = N // 2 - 1
         if maxharmonics is None:
             return min(self.ORBITAL_HARMONICS, cap)
-        if int(maxharmonics) > cap:
+        maxharmonics = integer_arg(maxharmonics, 'maxharmonics', what,
+                                   minimum=0)
+        if maxharmonics > cap:
             raise ValueError(
                 f'PAC.{what}: maxharmonics={maxharmonics} is above what the '
                 f'grid resolves ({cap} at {N} points per period) -- use a '
                 'finer period grid, or leave it None (the default, '
                 f'{self.ORBITAL_HARMONICS} capped by the grid).')
-        return int(maxharmonics)
+        return maxharmonics
+
+    def _sideband_count(self, maxsidebands, H, N, what):
+        """The input sidebands the modal sum folds, `|m| <= M`: `2 H` by
+        default, an explicit `maxsidebands` at most `2 (N//2 - 1)` -- the
+        most the default can reach -- above which it raises (it was taken
+        as given until 2026-10-01)."""
+        if maxsidebands is None:
+            return 2 * H
+        M = integer_arg(maxsidebands, 'maxsidebands', what, minimum=0)
+        cap = 2 * (N // 2 - 1)
+        if M > cap:
+            raise ValueError(
+                f'PAC.{what}: maxsidebands={M} is above what the grid '
+                f'resolves ({cap} at {N} points per period: twice the '
+                'harmonics it holds) -- use a finer period grid, or leave it '
+                'None (twice maxharmonics).')
+        return M
 
     def _orbit_asymmetry(self, pss):
         """Half-wave asymmetry of the orbit, in [0, ~1].
@@ -110,12 +129,20 @@ class _ModalSpectra(object):
 
         History: `doc/shooting_history.md`, `PAC.orbital_correlation`.
         """
+        return self._orbital_correlation(pss, maxharmonics,
+                                         'orbital_correlation')
+
+    def _orbital_correlation(self, pss, maxharmonics, what):
+        """`orbital_correlation`, its refusals naming `PAC.<what>`, the
+        method the user called."""
+        self._check_circuit(pss)
+        self._refuse_driven(pss, what)
         self._refuse_coloured(
-            pss, 'orbital_correlation',
+            pss, what,
             'eq (22) is a white-noise residue sum; modal_spectrum takes a '
             'stationary coloured source per sideband, and '
             'oscillator_covariance(colour_fmin=...) its transverse covariance.')
-        modes = pss.floquet_modes(pss)
+        modes = pss.floquet_modes()
         m = self.cir.n - 1
         Tp = float(pss.period)
         w0 = 2.0 * np.pi / Tp
@@ -123,10 +150,10 @@ class _ModalSpectra(object):
         ## the phase mode by its tangent alignment (see `_phase_mode_split`),
         ## and NEVER in the orbital sum: swept in with a near-zero exponent it
         ## blows up as 1/|mu|^2
-        _kph, orb = self._phase_mode_split(pss, modes, 'PAC.orbital_correlation')
+        _kph, orb = self._phase_mode_split(pss, modes, 'PAC.' + what)
         if not orb:
             raise ValueError(
-                'PAC.orbital_correlation: no orbital mode -- every non-null '
+                f'PAC.{what}: no orbital mode -- every non-null '
                 'multiplier is the phase mode.')
 
         def fcoef(P):
@@ -140,7 +167,7 @@ class _ModalSpectra(object):
         for k in orb:
             U[k], N = fcoef(modes[k]['p'])
             V[k], _ = fcoef(modes[k]['q'])
-        H = self._harmonic_count(maxharmonics, N, 'orbital_correlation')
+        H = self._harmonic_count(maxharmonics, N, what)
         hs = np.arange(-H, H + 1)
         idx = lambda k: k % N
 
@@ -244,9 +271,16 @@ class _ModalSpectra(object):
         `orbital_correlation`, which needs `CY` constant for eq (22)'s
         products to collapse.
 
+        A NOISELESS circuit has no lines at all and returns zeros (it was
+        refused as "no orbital line" until 2026-10-01).
+
         History: `doc/shooting_history.md`, `PAC.orbital_spectrum`.
         """
         output = output_index(pss, output)
+        self._check_circuit(pss)
+        self._refuse_driven(pss, 'orbital_spectrum')
+        harmonic = integer_arg(harmonic, 'harmonic', 'orbital_spectrum',
+                               minimum=1, why='the line is a carrier\'s')
         try:
             _asym = self._orbit_asymmetry(pss)
         except Exception:
@@ -270,9 +304,9 @@ class _ModalSpectra(object):
                 'correlation split that sums to the total, or PAC.pnoise for '
                 'the total.'
                 % (_asym,), ModelWarning)
-        R, C = self.orbital_correlation(pss, maxharmonics=maxharmonics)
-        modes = pss.floquet_modes(pss)
-        c = float(self.diffusion_constant(pss))
+        _R, C = self._orbital_correlation(pss, maxharmonics, 'orbital_spectrum')
+        modes = pss.floquet_modes()
+        c = float(self._diffusion_constant(pss, 'orbital_spectrum'))
         f0 = 1.0 / float(pss.period)
         m = pss.cir.n - 1
 
@@ -292,17 +326,20 @@ class _ModalSpectra(object):
         for (_l, _h, _j), _cl in C.items():
             _W[_j] = _W.get(_j, 0.0) + float(np.real(row @ _cl @ row))
         _Wtot = sum(abs(v_) for v_ in _W.values())
-        if abs(_W.get(int(harmonic), 0.0)) <= 1e-9 * max(_Wtot, 1e-300):
+        f = float(harmonic) * f0 + np.atleast_1d(
+            np.asarray(offsets, dtype=float))
+        if _Wtot == 0.0:
+            ## no source reaches the output: a density of zero, not a refusal
+            return np.zeros_like(f, dtype=float)
+        if abs(_W.get(harmonic, 0.0)) <= 1e-9 * _Wtot:
             raise ValueError(
                 'PAC.orbital_spectrum: no orbital line at harmonic %d for this '
                 'output (weight %.3e of %.3e), so the value here would be the '
                 'tails of other lines, not the noise at that frequency '
                 '(measured 3.2x low at 2 f0 on a symmetric van der Pol). Use '
-                'PAC.pnoise there.' % (int(harmonic), _W.get(int(harmonic), 0.0),
+                'PAC.pnoise there.' % (harmonic, _W.get(harmonic, 0.0),
                                        _Wtot))
 
-        f = float(harmonic) * f0 + np.atleast_1d(
-            np.asarray(offsets, dtype=float))
         S = np.zeros_like(f, dtype=float)
         for (l, h, j), Clhj in C.items():
             ## The weight is the output's own share of this term.  It is real
@@ -414,14 +451,21 @@ class _ModalSpectra(object):
 
         History: `doc/shooting_history.md`, `PAC.modal_spectrum`.
         """
+        return self._modal_spectrum(pss, offsets, output, harmonic,
+                                    maxharmonics, maxsidebands,
+                                    'modal_spectrum')
+
+    def _modal_spectrum(self, pss, offsets, output, harmonic, maxharmonics,
+                        maxsidebands, what):
+        """`modal_spectrum`, its refusals naming `PAC.<what>`, the method the
+        user called."""
         output = output_index(pss, output)
         self._check_circuit(pss)
         coloured = self._coloured_present(pss)
-        self._refuse_driven(pss, 'modal_spectrum')
-        if int(harmonic) < 1:
-            raise ValueError(
-                'PAC.modal_spectrum: harmonic must be >= 1 -- harmonic 0 was '
-                'never measured against pnoise. Use PAC.pnoise there.')
+        self._refuse_driven(pss, what)
+        harmonic = integer_arg(harmonic, 'harmonic', what,
+                               minimum=1, why='DC was never measured against '
+                               'pnoise; use PAC.pnoise there')
         offs = np.atleast_1d(np.asarray(offsets, dtype=float))
         ## ⚠ A MODULATED source (its `CY` follows the orbit) takes its own
         ## sum, `_modal_modulated`; a stationary circuit runs the code
@@ -430,32 +474,33 @@ class _ModalSpectra(object):
         if modulated:
             ## the band reach, for the per-band sources' classification
             N_ = len(self._ppv_states(pss))
-            H_ = self._harmonic_count(maxharmonics, N_, 'modal_spectrum')
-            M_ = 2 * H_ if maxsidebands is None else int(maxsidebands)
+            H_ = self._harmonic_count(maxharmonics, N_, what)
+            M_ = self._sideband_count(maxsidebands, H_, N_, what)
             c_mod, P2, groups = self._modal_modulated(
-                pss, offs, harmonic, coloured, M_ + int(harmonic),
-                'modal_spectrum')
+                pss, offs, harmonic, coloured, M_ + harmonic,
+                what)
         elif coloured:
             c_col, cy_at = self._modal_colour(pss, offs, harmonic,
-                                              'modal_spectrum')
-        modes = pss.floquet_modes(pss)
+                                              what)
+        modes = pss.floquet_modes()
         ## the phase mode by its tangent alignment, on any grid -- see
         ## `_phase_mode_split` (a 1e-6 window on |lam| - 1 refuses every gear
         ## solve on a non-uniform grid)
-        _kph, orb = self._phase_mode_split(pss, modes, 'PAC.modal_spectrum')
+        _kph, orb = self._phase_mode_split(pss, modes, 'PAC.' + what)
         ph = [_kph]
         m = pss.cir.n - 1
         row = _output_row(output, m)
         if modulated:
             c = c_mod
         else:
-            c = c_col if coloured else float(self.diffusion_constant(pss))
+            c = c_col if coloured else float(
+                self._diffusion_constant(pss, what))
         w0 = 2.0 * np.pi / float(pss.period)
         CY2 = (None if coloured or modulated
                else 0.5 * np.real(np.asarray(self._cy_reduced(pss, 0.0))))
         N = np.asarray(modes[ph[0]]['p']).shape[1] - 1
-        H = self._harmonic_count(maxharmonics, N, 'modal_spectrum')
-        M = 2 * H if maxsidebands is None else int(maxsidebands)
+        H = self._harmonic_count(maxharmonics, N, what)
+        M = self._sideband_count(maxsidebands, H, N, what)
         js = np.arange(-H, H + 1)
         ms = np.arange(-M, M + 1)
         a_j = 0.5 * js.astype(float) ** 2 * w0 ** 2 * c
@@ -668,10 +713,9 @@ class _ModalSpectra(object):
         coupling exists: -1.1 to -2.4x the orbital term on van der Pol at
         half-wave asymmetry 0.10.
         """
-        output = output_index(pss, output)
-        return self.modal_spectrum(pss, offsets, output, harmonic=harmonic,
-                                   maxharmonics=maxharmonics,
-                                   maxsidebands=maxsidebands)['correlation']
+        return self._modal_spectrum(pss, offsets, output, harmonic,
+                                    maxharmonics, maxsidebands,
+                                    'correlation_spectrum')['correlation']
 
     #: the phase mode may sit this far off the unit circle before it is refused
     PHASE_MODE_MAX_DEPARTURE = 1e-3

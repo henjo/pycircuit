@@ -2147,7 +2147,7 @@ def test_radaus_oscillator_surfaces_on_a_genuinely_non_uniform_grid_are_order_fi
             c = float(np.real(PAC(cir).diffusion_constant(p)))
             fp = p.factored_period()
             assert (p._period_quadrature(fp) is not None) == (fr is not None)
-            modes = p.floquet_modes(p)
+            modes = p.floquet_modes()
         lam0 = min(abs(abs(md['lam']) - 1.0) for md in modes)
         if fr is None:
             return c, lam0

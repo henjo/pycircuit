@@ -56,8 +56,8 @@ def _pnoise_at(cir, per, fout, node, npts, **kw):
     k = k - 1 if k > irn else k
     pac = PAC(cir, toolkit=circuit.numeric)
     with quiet(AccuracyWarning):
-        S, used = pac.pnoise(pss, fout, k, **kw)
-    return S, used, pac
+        S, info = pac.pnoise(pss, fout, k, **kw)
+    return S, info, pac
 
 
 def test_pnoise_reduces_to_the_stationary_analysis_on_a_linear_circuit():
@@ -87,7 +87,8 @@ def test_pnoise_reduces_to_the_stationary_analysis_on_a_linear_circuit():
         ref = complex(Noise(cir, inputsrc='vs',
                             outputnodes=(cir.get_node('net2'), gnd)
                             ).solve(fout)['Svnout']).real
-        S, used, _pac = _pnoise_at(cir, per, fout, cir.get_node('net2'), npts)
+        S, info, _pac = _pnoise_at(cir, per, fout, cir.get_node('net2'), npts)
+        used = info['sidebands']
         assert S > 0, 'pnoise returned %r' % S
         rels.append(abs(S - ref) / ref)
         assert 0 in used and len(used) > 1, \
@@ -112,7 +113,8 @@ def test_pnoise_folds_and_the_fold_is_not_a_rounding_term():
     there the fold is *supposed* to contribute nothing.
     """
     cir = _diode_mixer()
-    S_all, used, _p = _pnoise_at(cir, 1e-6, 3e5, 2, 80)
+    S_all, info, _p = _pnoise_at(cir, 1e-6, 3e5, 2, 80)
+    used = info['sidebands']
     S_l0, _u, _p2 = _pnoise_at(_diode_mixer(), 1e-6, 3e5, 2, 80,
                                maxsidebands=0)
     assert S_l0 > 0 and S_all > S_l0
@@ -148,13 +150,13 @@ def test_pnoise_says_when_the_grid_stopped_it_rather_than_the_series():
     k = k - 1 if k > irn else k
     pac = PAC(cir, toolkit=circuit.numeric)
     with pytest.warns(RuntimeWarning, match='Nyquist'):
-        pac.pnoise(pss, 3e5, k)
-    assert pac.alias_stop == 'bound'
+        _S, info = pac.pnoise(pss, 3e5, k)
+    assert info['stop'] == 'bound'
 
     ## the linear circuit's series does converge, and says so
-    _S, _u, pac2 = _pnoise_at(_divider(), 1e-3, 700.0,
-                              _divider().get_node('net2'), 100)
-    assert pac2.alias_stop == 'ratio', \
+    _S, info2, _pac2 = _pnoise_at(_divider(), 1e-3, 700.0,
+                                  _divider().get_node('net2'), 100)
+    assert info2['stop'] == 'ratio', \
         'a linear circuit folds nothing and must stop on the ratio test, ' \
         'not on the grid'
 
@@ -230,8 +232,8 @@ def test_pac_refuses_an_operating_point_from_another_circuit():
 
     pac_other = PAC(other, toolkit=circuit.numeric)
     for call in (lambda: pac_other.solve(pss, [700.0]),
-                 lambda: pac_other.adjoint_transfer_row(pss, 700.0, 1),
-                 lambda: pac_other.adjoint_sideband_row(pss, 700.0, 1, 0),
+                 lambda: pac_other.adjoint_transfer_row(pss, 700.0, 1)[0],
+                 lambda: pac_other.adjoint_sideband_row(pss, 700.0, 1, 0)[0],
                  lambda: pac_other.pnoise(pss, 700.0, 1)):
         with pytest.raises(ValueError, match='different circuit'):
             call()
@@ -282,8 +284,8 @@ def _hm_pnoise(cir, freq, modulated, per=1e-3, npts=200):
     d[k] = 1.0
     pac = PAC(cir, toolkit=circuit.numeric)
     with quiet():
-        S, used = pac.pnoise(pss, freq, d, modulated=modulated)
-    return S, used, np.asarray(pss.waveform[1], dtype=float)[k]
+        S, info = pac.pnoise(pss, freq, d, modulated=modulated)
+    return S, info['sidebands'], np.asarray(pss.waveform[1], dtype=float)[k]
 
 
 def test_the_modulated_path_reduces_to_the_stationary_one():
@@ -429,9 +431,9 @@ def test_the_sideband_sum_gives_three_eighths_and_not_one_quarter():
     _cir, pss, pac, d, gain2 = _cos2_mixer()
     psd = 1e-18
     for fout in (10.0, 50.0, 137.0):
-        S0, u0 = pac.pnoise(pss, fout, d, maxsidebands=0)
-        Sf, uf = pac.pnoise(pss, fout, d, maxsidebands=4)
-        assert sorted(u0) == [0]
+        S0, i0 = pac.pnoise(pss, fout, d, maxsidebands=0)
+        Sf, _if = pac.pnoise(pss, fout, d, maxsidebands=4)
+        assert sorted(i0['sidebands']) == [0]
         assert abs(S0 / (gain2 * psd) - 0.25) < 1e-3, \
             'f=%g: l=0 alone gives %.6f, not the 1/4 a stationary-only ' \
             'analysis returns' % (fout, S0 / (gain2 * psd))
@@ -1009,11 +1011,11 @@ def test_pnoise_over_trbdf2_matches_the_stationary_analysis_and_folds():
     k = k - 1 if k > pss.irefnode else k
     pac = PAC(cir, toolkit=circuit.numeric)
     with quiet():
-        S, used = pac.pnoise(pss, fout, k)
+        S, info = pac.pnoise(pss, fout, k)
     assert abs(S - ref) / ref < 1e-6, \
         'trbdf2 pnoise disagrees with AC noise by %.2e on a LINEAR circuit' \
         % (abs(S - ref) / ref)
-    assert pac.alias_stop == 'ratio', \
+    assert info['stop'] == 'ratio', \
         'a linear circuit folds nothing; trbdf2 must stop on the ratio test'
 
     ## (2) diode mixer: trbdf2 folds and lands on gear
@@ -1025,8 +1027,8 @@ def test_pnoise_over_trbdf2_matches_the_stationary_analysis_and_folds():
         kk = c.get_node_index(2)
         kk = kk - 1 if kk > p.irefnode else kk
         with quiet(AccuracyWarning):
-            s, u = PAC(c, toolkit=circuit.numeric).pnoise(p, 3e5, kk)
-        return s, max(abs(np.asarray(u)))
+            s, info = PAC(c, toolkit=circuit.numeric).pnoise(p, 3e5, kk)
+        return s, max(abs(np.asarray(info['sidebands'])))
     Sg, _lg = mix('gear')
     St, lt = mix('trbdf2')
     assert lt > 5, 'trbdf2 pnoise did not fold sidebands on the mixer (max l=%d)' % lt
@@ -1069,11 +1071,11 @@ def test_pnoise_over_radau_matches_the_stationary_analysis_and_folds():
     k = k - 1 if k > pss.irefnode else k
     pac = PAC(cir, toolkit=circuit.numeric)
     with quiet():
-        S, used = pac.pnoise(pss, fout, k)
+        S, info = pac.pnoise(pss, fout, k)
     assert abs(S - ref) / ref < 1e-6, \
         'radau pnoise disagrees with AC noise by %.2e on a LINEAR circuit' \
         % (abs(S - ref) / ref)
-    assert pac.alias_stop == 'ratio', \
+    assert info['stop'] == 'ratio', \
         'a linear circuit folds nothing; radau must stop on the ratio test'
 
     ## (2) diode mixer: radau folds and lands on gear
@@ -1085,8 +1087,8 @@ def test_pnoise_over_radau_matches_the_stationary_analysis_and_folds():
         kk = c.get_node_index(2)
         kk = kk - 1 if kk > p.irefnode else kk
         with quiet(AccuracyWarning):
-            s, u = PAC(c, toolkit=circuit.numeric).pnoise(p, 3e5, kk)
-        return s, max(abs(np.asarray(u)))
+            s, info = PAC(c, toolkit=circuit.numeric).pnoise(p, 3e5, kk)
+        return s, max(abs(np.asarray(info['sidebands'])))
     Sg, _lg = mix('gear')
     Sr, lr = mix('radau')
     assert lr > 5, 'radau pnoise did not fold sidebands on the mixer (max l=%d)' % lr
@@ -1229,8 +1231,8 @@ def test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity():
 
     ## 4. the CONJUGATE is load-bearing: the naive `a +- b` must differ
     with quiet():
-        a = pac.adjoint_sideband_row(pss, off, 2, 1)[0]
-        b = pac.adjoint_sideband_row(pss, -off, 2, 1)[0]
+        a = pac.adjoint_sideband_row(pss, off, 2, 1)[0][0]
+        b = pac.adjoint_sideband_row(pss, -off, 2, 1)[0][0]
         cy = pac._cy_reduced(pss, 2.0 * np.pi * off)
     good = float(np.real((a + np.conj(b)) @ cy @ np.conj(a + np.conj(b))))
     naive = float(np.real((a + b) @ cy @ np.conj(a + b)))
@@ -1824,10 +1826,10 @@ def test_pnoise_refuses_a_coloured_source_folded_onto_dc_at_a_clock_harmonic():
                 pac.pnoise(pss, f, io, maxsidebands=90, cyclostationary=True)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        v, _used = pac.pnoise(pss, 1.001 * f0, io, maxsidebands=90,
-                              cyclostationary=True)
+        v, info = pac.pnoise(pss, 1.001 * f0, io, maxsidebands=90,
+                             cyclostationary=True)
     msgs = [str(w.message) for w in caught]
-    assert pac.alias_stop == 'ratio', (pac.alias_stop, msgs)
+    assert info['stop'] == 'ratio', (info['stop'], msgs)
     assert not [m_ for m_ in msgs if 'invalid value' in m_ or 'Nyquist' in m_], msgs
     with quiet(AccuracyWarning):
         v0, _u = pac.pnoise(pss, 1.001 * f0, io, maxsidebands=90,
@@ -2164,7 +2166,9 @@ def test_am_pm_noise_runs_with_its_default_sideband_count():
     `carrier -+ p` the grid's Nyquist allows, `|p| <= N//2 - |carrier|`.  ⚠ It
     took `N//2`, asked for sideband `carrier + N//2`, and raised "above the
     grid's Nyquist" for every carrier >= 1 (found by the conventions review,
-    2026-09-28); every call in the suite passed `maxsidebands`."""
+    2026-09-28); every call in the suite passed `maxsidebands`.  (With
+    `ratio_tol=0`: since 2026-10-01 the sum stops on `pnoise`'s ratio test
+    first.)"""
     from pycircuit.circuit.elements import Diode
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
@@ -2178,11 +2182,14 @@ def test_am_pm_noise_runs_with_its_default_sideband_count():
         pss.solve(period=T, timestep=T / 40, maxiterations=40)
         pac = PAC(c, toolkit=circuit.numeric)
         N = len(pss._adjoint_host().factored_period().steps)
-        default = pac.am_pm_noise(pss, 0.13 / T, 2, harmonic=1, sweeptype='relative')
+        default = pac.am_pm_noise(pss, 0.13 / T, 2, harmonic=1,
+                                  sweeptype='relative', ratio_tol=0.0)
         explicit = pac.am_pm_noise(pss, 0.13 / T, 2, harmonic=1,
-                                   maxsidebands=N // 2 - 1, sweeptype='relative')
-    assert default[:2] == explicit[:2] and default[2] == explicit[2], (default, explicit)
-    assert max(abs(p_) for p_ in default[2]) == N // 2 - 1
+                                   maxsidebands=N // 2 - 1, sweeptype='relative',
+                                   ratio_tol=0.0)
+    assert default == explicit, (default, explicit)
+    assert max(abs(p_) for p_ in default[2]['bands']) == N // 2 - 1
+    assert default[2]['stop'] == 'bound', default[2]
 
 
 def test_output_takes_a_node_name():
@@ -2321,7 +2328,7 @@ def test_the_sweep_is_relative_on_an_oscillator_and_absolute_when_driven():
         with pytest.raises(ValueError, match='not a knob here'):
             pac.band_spread(pss, 0, (0.01, 0.02), points=2,
                             sweeptype='absolute')
-        with pytest.raises(TypeError, match='integer harmonic'):
+        with pytest.raises(TypeError, match='relharmnum must be an integer'):
             pac.pnoise(pss, df, 0, relharmnum=1.5)
 
     ## the driven circuit: absolute by default
@@ -2417,13 +2424,13 @@ def test_a_zero_d_array_output_is_the_row_its_integer_names():
 def test_pnoise_names_a_cap_it_was_given_as_that_cap():
     """The review of 2026-09-30 (X2): an explicit `maxsidebands` below the
     grid's Nyquist that stops the sum was reported as "the grid's Nyquist"
-    (`alias_stop = 'bound'`), pointing the caller at the grid instead of at
+    (`info['stop'] == 'bound'`), pointing the caller at the grid instead of at
     their own cap.  It is 'cap' now, and the warning names the cap."""
     cir, pss, k = _review_mixer()
     pac = PAC(cir, toolkit=circuit.numeric)
     with pytest.warns(RuntimeWarning, match='maxsidebands=5'):
-        pac.pnoise(pss, 3e5, k, maxsidebands=5)
-    assert pac.alias_stop == 'cap'
+        _S, info = pac.pnoise(pss, 3e5, k, maxsidebands=5)
+    assert info['stop'] == 'cap'
 
 
 def test_the_dc_fold_guard_covers_every_sideband_the_fold_reaches():
@@ -2446,7 +2453,8 @@ def test_the_dc_fold_guard_covers_every_sideband_the_fold_reaches():
         with pytest.raises(ValueError, match='harmonic'), quiet():
             pac.am_pm_noise(pss, off, io, harmonic=1, sweeptype='relative',
                             maxsidebands=12, modulated=True)
-    with quiet():
+    ## (the cap is said: a lower bound, `pnoise`'s stop rule since 2026-10-01)
+    with quiet(AccuracyWarning):
         am, pm, _b = pac.am_pm_noise(pss, 1e-3 * f0, io, harmonic=1,
                                      sweeptype='relative', maxsidebands=12,
                                      modulated=True)
@@ -2619,7 +2627,7 @@ def test_every_surface_gives_one_sign_blind_verdict_on_the_samples_and_the_step_
                 lambda: pac.pnoise(p, 0.13 * f0, o, maxsidebands=40,
                                    cyclostationary=True),
                 lambda: pac.sampled_noise(p, o, [0.3 * T], [0.13 * f0],
-                                          maxsidebands=40),
+                                          maxsidebands=40)[0],
                 lambda: pac.covariance(p, samples=True, colour_fmin=1e-4 * f0)):
             with warnings.catch_warnings(record=True) as rec:
                 warnings.simplefilter('always')

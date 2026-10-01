@@ -1218,7 +1218,7 @@ class _PPVFloquet(object):
     ## direction, not a mode -- see `floquet_modes`
     FLOQUET_NULL_TOL = 1e-12
 
-    def floquet_modes(self, pss_unused=None, nmodes=None, fp=None):
+    def floquet_modes(self, nmodes=None, fp=None):
         """⚠ THE MODES' ACCURACY IS THE METHOD'S.  Gear's adjoint modes are
         second order on a uniform grid.  On a non-uniform grid the transpose
         of a variable-step multistep method is first order and no rescaling
@@ -1285,13 +1285,12 @@ class _PPVFloquet(object):
         """
         _tw = self.monodromy_twin()
         if _tw is not self:
-            ## ⚠ the twin gets `None`, not `pss_unused`: it must read ITS OWN
-            ## factored period, which is the whole reason a twin exists.  An
-            ## explicit `fp` from the caller still wins.
-            return _tw.floquet_modes(None, nmodes, fp)
-        ## `pss_unused` IS IGNORED, AS ITS NAME SAYS (the modes are read from
-        ## `self`); the parameter stays in the signature because callers pass
-        ## it positionally.
+            ## ⚠ the twin reads ITS OWN factored period, which is the whole
+            ## reason a twin exists.  An explicit `fp` from the caller still
+            ## wins.
+            return _tw.floquet_modes(fp)
+        ## (a first parameter `pss_unused`, ignored, stood here until
+        ## 2026-10-01: callers passed the PSS into it positionally)
         fp = self._state_map() if fp is None else fp
         if getattr(fp, 'is_glm', False) and hasattr(fp, 'state_map'):
             ## a GLM's Nordsieck map handed in: its modes are read on the

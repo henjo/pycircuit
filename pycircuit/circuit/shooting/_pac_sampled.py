@@ -4,7 +4,7 @@ metrics.
 import numpy as np
 import weakref
 from ._noise_components import cached_root, psd_sqrt, warn_sign_blind
-from ._numerics import edge_slope, _output_weights, output_index
+from ._numerics import edge_slope, _output_weights, integer_arg, output_index
 from .events import EventColumns
 from pycircuit.circuit.simwarnings import AccuracyWarning, warn
 
@@ -18,11 +18,12 @@ class _SampledNoise(object):
         """The one-sided PSD of the SAMPLE SERIES `y(t0 + kT)` -- DRIVEN
         circuits, white AND coloured sources.
 
-        Returns `S` of shape `(len(times), len(freqs))` in `output`'s units
-        squared per Hz, for `0 < f <= f0/2`.  `sum` over the band of `S` is
-        the variance at `t0` that a sampler sees; see `sampled_variance`.
-        The instants actually used (the nearest period-grid points) are left
-        in `self.sampled_instants`.  ⚠ When comparing at a round instant,
+        Returns `(S, info)`: `S` of shape `(len(times), len(freqs))` in
+        `output`'s units squared per Hz, for `0 < f <= f0/2` -- `sum` over the
+        band of `S` is the variance at `t0` that a sampler sees, see
+        `sampled_variance` -- and `info['instants']`, the instants actually
+        used (the nearest period-grid points; `self.sampled_instants` until
+        2026-10-01).  ⚠ When comparing at a round instant,
         pass the grid's own times (`pss.factored_period().times`): the grid
         need not have the step count the `timestep` suggests (T/1000 can give
         999 steps), and with a 1/f source the held variance moves measurably
@@ -95,15 +96,20 @@ class _SampledNoise(object):
         History: `doc/shooting_history.md`, `PAC.sampled_noise`.
         """
         output = output_index(pss, output)
-        return self._sampled_series(pss, output, times, freqs, maxsidebands,
-                                    tail=tail)
+        info = {}
+        S = self._sampled_series(pss, output, times, freqs, maxsidebands,
+                                 tail=tail, what='sampled_noise', info=info)
+        return S, info
 
     def sampled_variance(self, pss, output, times, series_fmin, series_fmax,
-                         points_per_decade=40, maxsidebands=None, tail=False):
+                         *, points_per_decade=40, maxsidebands=None,
+                         tail=False):
         """The variance at sampling instants over the SERIES band
         `[series_fmin, series_fmax]`, `0 < series_fmin < series_fmax <= f0/2`: the integral of
         `sampled_noise` on a log grid of `points_per_decade`, nothing added
-        below `series_fmin`.  Returns an array over `times`.
+        below `series_fmin`.  Returns `(var, info)`: an array over `times`,
+        and `info['instants']` as `sampled_noise`'s.  The keywords after the
+        band are keyword-only.
 
         ⚠ POWER LAW BETWEEN THE POINTS (`_loglog_integral`): the density is
         interpolated linearly in log-log and each interval integrated
@@ -132,14 +138,14 @@ class _SampledNoise(object):
                 'ln(series_fmax/series_fmin) without limit.' % (0.5 * f0, fmin, fmax))
         nf = max(2, int(np.ceil(points_per_decade * np.log10(fmax / fmin))) + 1)
         fs = np.logspace(np.log10(fmin), np.log10(fmax), nf)
+        info = {}
         S = self._sampled_series(pss, output, times, fs, maxsidebands,
-                                 tail=tail)
-        return self._loglog_integral(np.asarray(S, dtype=float), fs)
+                                 tail=tail, what='sampled_variance', info=info)
+        return self._loglog_integral(np.asarray(S, dtype=float), fs), info
 
-    def jitter_metrics(self, pss, output, time, series_fmin, series_fmax,
-                       kmax=8,
-                       maxsidebands=None, nfreq=601, dc_rectangle=False,
-                       points_per_decade=40):
+    def jitter_metrics(self, pss, output, time, series_fmin, series_fmax, *,
+                       kmax=8, maxsidebands=None, nfreq=601,
+                       dc_rectangle=False, points_per_decade=40):
         """Edge jitter at ONE instant: `sigma_t`, the across-period
         correlation `rho_k`, and the three metrics that are functions of it.
         DRIVEN circuits (an oscillator is refused by `_sampled_series`; its
@@ -202,6 +208,9 @@ class _SampledNoise(object):
 
         Returns a dict: `sigma_t`, `rho` (k = 1..kmax), `k_cycle`
         (k = 1..kmax), `cycle_to_cycle`, `slew`, `R` (k = 0..kmax), `instant`.
+        The keywords after the band are keyword-only (their order drifted
+        across the jitter surfaces until 2026-10-01).  A noiseless circuit is
+        refused: `rho_k = R_k / R_0` has no value at `R_0 = 0`.
 
         History: `doc/shooting_history.md`, `PAC.jitter_metrics`.
         """
@@ -219,20 +228,22 @@ class _SampledNoise(object):
                 'As in sampled_variance, series_fmin has no default -- a 1/f '
                 'source makes R_0 grow as ln(series_fmax/series_fmin) without '
                 'limit.' % (0.5 * f0, fmin, fmax))
-        kmax = int(kmax)
-        if kmax < 2:
-            raise ValueError(
-                'PAC.jitter_metrics: kmax >= 2, because cycle-to-cycle jitter '
-                'is a SECOND difference and needs R_2; got %d.' % kmax)
+        kmax = integer_arg(kmax, 'kmax', 'jitter_metrics', minimum=2,
+                           why='cycle-to-cycle jitter is a SECOND difference '
+                           'and needs R_2')
+        nfreq = integer_arg(nfreq, 'nfreq', 'jitter_metrics', minimum=2)
 
-        fs = np.linspace(fmin, fmax, int(nfreq))
+        fs = np.linspace(fmin, fmax, nfreq)
+        info = {}
         S = np.asarray(self._sampled_series(pss, output, [time], fs,
-                                            maxsidebands), dtype=float)[0]
+                                            maxsidebands, what='jitter_metrics',
+                                            info=info), dtype=float)[0]
         nlog = max(2, int(np.ceil(points_per_decade
                                   * np.log10(fmax / fmin))) + 1)
         fg = np.logspace(np.log10(fmin), np.log10(fmax), nlog)
         Sg = np.asarray(self._sampled_series(pss, output, [time], fg,
-                                             maxsidebands), dtype=float)[0]
+                                             maxsidebands, what='jitter_metrics'),
+                        dtype=float)[0]
         rect = float(S[0]) * fmin if dc_rectangle else 0.0
         ## `int S df`, each grid where it is the finer: below the crossover
         ## `f*` (log spacing = linear spacing) a power law between the points
@@ -259,7 +270,7 @@ class _SampledNoise(object):
                 'PAC.jitter_metrics: R_0 = %.6g is not positive, so there is '
                 'no jitter to report -- are any sources noisy?' % R[0])
 
-        t0 = float(np.asarray(self.sampled_instants, dtype=float).ravel()[0])
+        t0 = float(np.asarray(info['instants'], dtype=float).ravel()[0])
         row = np.asarray(self._output_waveform_row(pss, output), dtype=float)
         times = np.asarray(fp.times, dtype=float)[:len(row)]
         slew, _j = edge_slope(times, row, t0)
@@ -299,12 +310,15 @@ class _SampledNoise(object):
         }
 
     def _sampled_series(self, pss, output, times, freqs, maxsidebands,
-                        tail=False):
+                        tail=False, what='sampled_noise', info=None):
+        """`sampled_noise`'s PSD, for the family: refusals and warnings name
+        `PAC.<what>`, the method the user called; `info` (a dict) gets the
+        instants used."""
         import scipy.sparse.linalg as spla
         self._check_circuit(pss)
         if getattr(pss, 'autonomous', False):
             raise ValueError(
-                'PAC.sampled_noise: an OSCILLATOR has no sampling instant '
+                f'PAC.{what}: an OSCILLATOR has no sampling instant '
                 'fixed to its own phase -- its phase diffuses, so there is no '
                 'cyclostationary sample series (see covariance()). Use '
                 'oscillator_spectrum or modal_spectrum.')
@@ -323,17 +337,18 @@ class _SampledNoise(object):
         fr = np.atleast_1d(np.asarray(freqs, dtype=float))
         if np.any(fr <= 0.0) or np.any(fr > 0.5 * f0 * (1.0 + 1e-12)):
             raise ValueError(
-                'PAC.sampled_noise: series frequencies must lie in (0, f0/2] '
-                '= (0, %.6g Hz]; the sample series has nothing above its '
-                'Nyquist and a 1/f source is singular at 0.' % (0.5 * f0))
+                f'PAC.{what}: series frequencies must lie in (0, f0/2] '
+                f'= (0, {0.5 * f0:.6g} Hz]; the sample series has nothing '
+                'above its Nyquist and a 1/f source is singular at 0.')
         lmax = N // 2 - 1
-        L = lmax if maxsidebands is None else int(maxsidebands)
+        L = (lmax if maxsidebands is None else
+             integer_arg(maxsidebands, 'maxsidebands', what, minimum=0))
         if L > lmax:
             raise ValueError(
-                "PAC.sampled_noise: maxsidebands = %d is above the grid's "
-                'Nyquist (%d at %d points per period). Nothing aliases down '
-                'from above what the grid represents -- use a finer period '
-                'grid.' % (L, lmax, N))
+                f"PAC.{what}: maxsidebands = {L} is above the grid's "
+                f'Nyquist ({lmax} at {N} points per period). Nothing aliases '
+                'down from above what the grid represents -- use a finer '
+                'period grid.')
         d = _output_weights(output, m)
         ts = np.atleast_1d(np.asarray(times, dtype=float))
         grid = tms[:N]
@@ -343,7 +358,8 @@ class _SampledNoise(object):
             dist = np.abs(grid - tt)
             dist = np.minimum(dist, T - dist)
             k0s.append(int(np.argmin(dist)))
-        self.sampled_instants = grid[k0s]
+        if info is not None:
+            info['instants'] = grid[k0s]
 
         ## History: `doc/shooting_history.md`, `PAC._sampled_series`.
         ## components, rolled to the INJECTION index: step j's source enters
@@ -375,15 +391,14 @@ class _SampledNoise(object):
             perband.append(cached_root(nc.cy_at_states))
             blind = nc.sign_blind(None, [nc.JOINT_KEY])
             if blind:
-                warn_sign_blind('sampled_noise', blind)
+                warn_sign_blind(what, blind)
         else:
             white = [psd_sqrt(A) for _key, A in model.white_parts]
             ## the coloured components as the modal spectra and the folds
             ## take them (`colour_groups`): a fixed column set with its power
             ## weight, or a root per band frequency
             groups = nc.colour_groups(
-                model, 2.0 * np.pi * float(np.min(fr)), f0, L,
-                'sampled_noise')
+                model, 2.0 * np.pi * float(np.min(fr)), f0, L, what)
             scaled = [(G, s) for kind, G, s in groups if kind == 'fixed']
             perband = [G for kind, G, _s in groups if kind == 'band']
 
@@ -405,16 +420,17 @@ class _SampledNoise(object):
             except TypeError:
                 self._sampled_res_warned = (lambda _p=pss: _p)
             warn(
-                'PAC.sampled_noise: the top sideband (|n| = %d, %.3g Hz) sits '
-                'at omega h = %.2f per step on this grid; a two-step method\'s '
+                f'PAC.{what}: the top sideband (|n| = {L}, '
+                f'{(L + 0.5) * f0:.3g} Hz) sits '
+                f'at omega h = {_wh:.2f} per step on this grid; a two-step method\'s '
                 'discrete transfer there is far from the continuous one, and '
                 'the held variance came out low by 3x the pure tail at '
                 'omega h = 3 (1.05x at 0.2) on a switched capacitor. Use '
                 'more points per period; tail=True closes the spectrum '
                 'beyond the covered edge, but only once that edge is well '
                 'above the spectrum\'s corner (measured: 0.71 x kT/C with the '
-                'edge inside the corner, 0.998 with it 12x beyond).'
-                % (L, (L + 0.5) * f0, _wh), AccuracyWarning)
+                'edge inside the corner, 0.998 with it 12x beyond).',
+                AccuracyWarning)
         S = np.zeros((len(ts), len(fr)))
         ## ⚠ ON A STAGED SOLVE THE SAMPLE'S ADJOINT IS BORDERED -- the dual
         ## of the bordered forward solve, as `adjoint_sideband_row`'s: the

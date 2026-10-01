@@ -81,7 +81,7 @@ def test_the_sample_series_evaluates_a_per_band_source_only_where_it_must():
     def sv(pss, pac):
         with quiet(AccuracyWarning, CostWarning):
             return pac.sampled_variance(pss, 1, [0.3 * T, 0.7 * T], 1e-4 / T,
-                                        0.5 / T, points_per_decade=10)
+                                        0.5 / T, points_per_decade=10)[0]
 
     calls = [0]
     orig_cy = _ModLorentzCtl.CY
@@ -155,10 +155,10 @@ def test_the_sampled_variance_is_the_covariance_at_that_instant_for_white_source
     fmin = 1e-6 * f0
     ## a hair off the grid points: the nearest ones are used and reported
     want = [grid[kh] + 1e-12 * T, grid[kt] - 1e-12 * T]
-    var = pac.sampled_variance(pss, io, want, fmin, 0.5 * f0,
-                               points_per_decade=10) / ktc
-    var = var / (1.0 - fmin / (0.5 * f0))
-    np.testing.assert_allclose(pac.sampled_instants, [grid[kh], grid[kt]],
+    var, info = pac.sampled_variance(pss, io, want, fmin, 0.5 * f0,
+                                     points_per_decade=10)
+    var = var / ktc / (1.0 - fmin / (0.5 * f0))
+    np.testing.assert_allclose(info['instants'], [grid[kh], grid[kt]],
                                rtol=0, atol=0)
     assert abs(var[0] / cov[kh] - 1.0) < 1e-5, (var[0], cov[kh])
     assert abs(var[1] / cov[kt] - 1.0) < 5e-4, (var[1], cov[kt])
@@ -178,7 +178,7 @@ def test_the_sampled_series_psd_is_the_pnoise_fold_on_an_lti_circuit_white_and_o
     cir, pss, io, pac, T = _sampler_fixture(els)
     f0 = 1.0 / T
     fs = np.array([0.137, 0.01]) * f0
-    S = pac.sampled_noise(pss, io, [0.37 * T], fs, maxsidebands=10)[0]
+    S = pac.sampled_noise(pss, io, [0.37 * T], fs, maxsidebands=10)[0][0]
     with quiet():
         ref = [sum(float(np.real(pac.pnoise(pss, abs(f + k * f0), io,
                                             maxsidebands=20)[0]))
@@ -229,9 +229,9 @@ def test_independent_noise_sources_add_in_the_coloured_folds():
     T = one[4]
     t_hold = 149 * T / 400
     v1 = one[3].sampled_variance(one[1], one[2], [t_hold], 1e-2 * f0, 0.5 * f0,
-                                 points_per_decade=20)[0] / ktc
+                                 points_per_decade=20)[0][0] / ktc
     v2 = two[3].sampled_variance(two[1], two[2], [t_hold], 1e-2 * f0, 0.5 * f0,
-                                 points_per_decade=20)[0] / ktc
+                                 points_per_decade=20)[0][0] / ktc
     assert abs(v1 / v2 - 1.0) < 1e-8, (v1, v2)
     assert v1 > 1.1, v1                  # the flicker is a visible share
 
@@ -274,7 +274,7 @@ def test_the_sampled_variance_grows_as_ln_fmin_with_flicker_and_refuses_what_it_
         c.__setitem__('F0', _Flicker('out', gnd, i=0.0, noisePSD=1e-22, fref=1.0))))
     f0 = 1.0 / T
     v = [pac.sampled_variance(pss, io, [149 * T / 400], r * f0, 0.5 * f0,
-                              points_per_decade=10)[0] / ktc
+                              points_per_decade=10)[0][0] / ktc
          for r in (1e-4, 1e-3, 1e-2)]
     inc = -np.diff(v)
     assert inc[0] > 0 and abs(inc[0] / inc[1] - 1.0) < 0.05, (v, inc)
@@ -357,7 +357,7 @@ def _a8_edge_variance(cir, npts, f0=1e6, method='radau', node='o2'):
             float(np.ptp(chk)), float(np.ptp(v)))
     var = float(np.asarray(pac.sampled_variance(pss, red, [grid[j]], 1e3,
                                                 0.5 * f0,
-                                                points_per_decade=5)).ravel()[0])
+                                                points_per_decade=5)[0]).ravel()[0])
     return var, slew, warned
 
 
@@ -846,7 +846,7 @@ def test_jitter_metrics_integrate_a_flicker_low_end_on_a_log_grid():
         m = pac.jitter_metrics(pss, io, th, fmin, fmax, kmax=4, nfreq=301)
         fine = pac.jitter_metrics(pss, io, th, fmin, fmax, kmax=4, nfreq=601,
                                   points_per_decade=80)
-        sv = pac.sampled_variance(pss, io, [th], fmin, fmax)[0]
+        sv = pac.sampled_variance(pss, io, [th], fmin, fmax)[0][0]
     assert abs(m['R'][0] / sv - 1.0) < 1e-4, (m['R'][0], sv)
     moved = np.abs(np.asarray(m['R']) / np.asarray(fine['R']) - 1.0)
     assert np.max(moved) < 3e-4, moved
@@ -873,7 +873,7 @@ def test_the_sampled_noise_runs_natively_under_the_stage_methods():
         cir, pss, io, pac, T = _sampler_fixture_method(els, method)
         f0 = 1.0 / T
         f = 0.137 * f0
-        S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0, 0]
+        S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0][0, 0]
         with quiet():
             ref = sum(float(np.real(pac.pnoise(pss, abs(f + k * f0), io,
                                                maxsidebands=20)[0]))
@@ -888,7 +888,7 @@ def test_the_sampled_noise_runs_natively_under_the_stage_methods():
         N = len(pss.factored_period().steps)
         fmin = 1e-6 * f0
         v = pac.sampled_variance(pss, io, [grid[int(0.375 * N)], grid[int(0.1 * N)]],
-                                 fmin, 0.5 * f0, points_per_decade=10) / ktc
+                                 fmin, 0.5 * f0, points_per_decade=10)[0] / ktc
         held[(method, npts)] = v / (1.0 - fmin / (0.5 * f0))
     assert abs(held[('radau', 400)][0] - 1.0) < 1e-4, held
     assert abs(held[('trbdf2', 400)][0] - 1.0) < 1e-4, held
@@ -948,7 +948,7 @@ def test_the_sampled_noise_runs_natively_under_a_glm():
         f0 = 1.0 / T
         f = 0.137 * f0
         with quiet(AccuracyWarning):
-            S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0, 0]
+            S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0][0, 0]
             ref = sum(float(np.real(pac.pnoise(pss, abs(f + k * f0), io,
                                                maxsidebands=20)[0]))
                       for k in range(-10, 11))
@@ -963,7 +963,7 @@ def test_the_sampled_noise_runs_natively_under_a_glm():
         fmin = 1e-6 * f0
         with quiet(AccuracyWarning):
             v = pac.sampled_variance(pss, io, [grid[int(0.375 * N)]], fmin,
-                                     0.5 * f0, points_per_decade=10) / ktc
+                                     0.5 * f0, points_per_decade=10)[0] / ktc
         held = float(v[0]) / (1.0 - fmin / (0.5 * f0))
         assert abs(held - 1.0) < 1e-4, (method, held)
 
@@ -1003,7 +1003,7 @@ def test_the_time_average_of_the_sampled_psd_is_the_fold_of_time_averaged_pnoise
     N = len(pss.factored_period().steps)
     grid = np.asarray(pss.factored_period().times, dtype=float)[:N]
     f = 0.37 * f0
-    mean = float(np.mean(pac.sampled_noise(pss, iy, grid, [f])[:, 0]))
+    mean = float(np.mean(pac.sampled_noise(pss, iy, grid, [f])[0][:, 0]))
     K = N // 2
     with quiet(AccuracyWarning):
         parts = {k: float(np.real(pac.pnoise(pss, abs(f + k * f0), iy,
@@ -1075,7 +1075,7 @@ def test_the_sampled_psd_of_a_reset_rc_is_sepke_eq_33_white_and_one_over_f():
         t0 = grid[np.argmin(np.abs(grid - (T / 4 - half - back * T) % T))]
         Tw = t0 - t_open if t0 > t_open else t0 + T - t_open
         with quiet():
-            S = pac.sampled_noise(pss, io, [t0], fs, maxsidebands=L)[0]
+            S = pac.sampled_noise(pss, io, [t0], fs, maxsidebands=L)[0][0]
         ref = fold(windowed(Tw))
         assert np.max(np.abs(S / ref - 1.0)) < 3e-3, (back, S / ref)
         assert np.min(np.abs(S / fold(windowed(Tw - T / npts)) - 1.0)) > 5e-4, back
@@ -1140,7 +1140,7 @@ def test_a_coloured_source_keeps_the_sign_of_its_scale_factor_through_the_period
             pac = PAC(c, toolkit=circuit.numeric)
             if sampled:
                 s = pac.sampled_noise(pss, o, [0.3 * T], np.array([1e-3 * f0]),
-                                      maxsidebands=16)[0, 0]
+                                      maxsidebands=16)[0][0, 0]
             else:
                 s, _ = pac.pnoise(pss, 1e-3 * f0, o, maxsidebands=16,
                                   cyclostationary=(kind != 'A'))
@@ -1233,7 +1233,7 @@ def test_the_sampler_takes_a_per_band_elements_signed_amplitudes():
         with quiet(AccuracyWarning, CostWarning, ModelWarning):
             sv[kind] = np.asarray(pac.sampled_variance(
                 pss, o, [0.3 * T, 0.7 * T], 1e-4 / T, 0.5 / T,
-                points_per_decade=10), dtype=float).ravel()
+                points_per_decade=10)[0], dtype=float).ravel()
     assert np.max(np.abs(sv['signed'] / sv['real'] - 1.0)) < 1e-9, sv
     assert np.min(sv['psd'] / sv['real'] - 1.0) > 1.0, sv
 
@@ -1282,7 +1282,7 @@ def test_a_moving_shape_takes_the_elements_signed_columns_on_every_surface():
         with quiet(AccuracyWarning, CostWarning):
             sv = np.asarray(pac.sampled_variance(
                 pss, o, [0.3 * T, 0.7 * T], 1e-2 / T, 0.5 / T,
-                points_per_decade=10), dtype=float).ravel()
+                points_per_decade=10)[0], dtype=float).ravel()
             _K0, _ci = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
                                      points_per_decade=10)
             Ks = _ci['samples']
@@ -1334,7 +1334,7 @@ def test_signed_columns_beside_a_white_source_of_the_same_element():
         with quiet(AccuracyWarning, CostWarning):
             sv = np.asarray(pac.sampled_variance(
                 pss, o, [0.3 * T, 0.7 * T], 1e-2 / T, 0.5 / T,
-                points_per_decade=10), dtype=float).ravel()
+                points_per_decade=10)[0], dtype=float).ravel()
             _K0, _ci = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
                                      points_per_decade=10)
             Ks = _ci['samples']
@@ -1385,7 +1385,7 @@ def test_signed_columns_of_a_mixed_slope_component_are_grouped_by_exponent():
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
             sv = [float(np.ravel(pac.sampled_variance(
-                pss, o, [0.3 * T], 1e-2 / T, 0.5 / T, points_per_decade=10))[0])
+                pss, o, [0.3 * T], 1e-2 / T, 0.5 / T, points_per_decade=10)[0])[0])
                 for o in (oa, ob)]
             _K0, _ci = pac.covariance(pss, samples=True, colour_fmin=1e-2 / T,
                                      points_per_decade=10)
@@ -1471,7 +1471,7 @@ def test_the_psp_sampled_flicker_has_the_notch_a_sign_blind_fold_cannot_produce(
                     if tag == 'blind':
                         _noise_seam(pac, signed_amplitudes=lambda *a_, **k_: {})
                     out[tag] = float(np.real(pac.sampled_noise(
-                        pss, k, [tq], np.array([10.0]), maxsidebands=40))[0, 0])
+                        pss, k, [tq], np.array([10.0]), maxsidebands=40)[0])[0, 0])
                 ## a FRESH PAC: `pac` above is the deliberately blinded one
                 model = PAC(cir, toolkit=circuit.numeric)._noise_components(
                     pss).model(10.0, F)
@@ -1549,7 +1549,7 @@ def test_the_sampled_noise_tail_closure_is_derived_and_the_resolution_limit_is_n
             v = float(pac.sampled_variance(p, out, [tms[npts // 2]],
                                            1e-3 * fclk, 0.5 * fclk,
                                            points_per_decade=40,
-                                           maxsidebands=100, tail=tail)[0])
+                                           maxsidebands=100, tail=tail)[0][0])
         warned = any('omega h' in str(w_.message) for w_ in rec)
         return v / ktc, warned
     fc = (goff + (gon - goff) / 2) / (2 * np.pi * cval)
@@ -1604,7 +1604,7 @@ def test_gears_euler_backstop_step_on_an_event_grid_replays_in_covariance_and_th
         with quiet(AccuracyWarning):
             _K0, _ci = pac.covariance(p, samples=True)
             Ks = _ci['samples']
-            sv = pac.sampled_variance(p, io, [0.8 * T], 1.0, 50e3)
+            sv = pac.sampled_variance(p, io, [0.8 * T], 1.0, 50e3)[0]
         ts = np.asarray(p.waveform[0], float)
         v = np.array([np.asarray(k, float)[io, io] for k in Ks]) / ktc
         tt = ts[:len(v)]
@@ -1670,11 +1670,11 @@ def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():
             warnings.simplefilter('always')
             _K0, _ci = pac.covariance(pss, samples=True, colour_fmin=1e-6 * f0)
             seq = _ci['samples']
-            sv = pac.sampled_variance(pss, io, [th], 1e-6 * f0, 0.5 * f0)[0]
+            sv = pac.sampled_variance(pss, io, [th], 1e-6 * f0, 0.5 * f0)[0][0]
         blind = sorted({str(r.message).split(':')[0] for r in rec
                         if 'touches zero along the orbit' in str(r.message)})
         assert blind == ([] if kind == 'amp' else
-                         ['PAC.covariance', 'PAC.sampled_noise']), (kind, blind)
+                         ['PAC.covariance', 'PAC.sampled_variance']), (kind, blind)
         out[kind] = seq[jh][io, io]
         assert abs(out[kind] / sv - 1.0 + 3.2e-5) < 1e-5, (kind, out[kind] / sv - 1)
     assert 5e-3 < abs(out['amp'] / out['psd'] - 1.0) < 2e-2, out
@@ -1694,7 +1694,7 @@ def test_a_coloured_covariance_takes_noise_correlated_across_elements():
             K[kind] = pac.covariance(pss, colour_fmin=1e3)[0]
             V[kind] = float(pac.sampled_variance(
                 pss, names.index('o2'), [0.3 * T], 0.01 / T, 0.5 / T,
-                points_per_decade=10)[0])
+                points_per_decade=10)[0][0])
     assert np.max(np.abs(K['xcorr'] - K['corr'])) <= \
         1e-12 * np.max(np.abs(K['corr'])), 'the joint split is not exact'
     assert abs(V['xcorr'] / V['corr'] - 1.0) <= 1e-12, V
@@ -1735,12 +1735,12 @@ def test_the_sampled_series_sees_the_crossings_motion_on_a_staged_solve():
         pac = PAC(cir, toolkit=circuit.numeric)
         with quiet(AccuracyWarning):
             V = pac.sampled_variance(p, io, [0.7 * T], 1e-3 * f0, 0.5 * f0,
-                                     points_per_decade=12)
+                                     points_per_decade=12)[0]
             ev = p._event_columns
             p._event_columns = None
             try:
                 V0 = pac.sampled_variance(p, io, [0.7 * T], 1e-3 * f0, 0.5 * f0,
-                                          points_per_decade=12)
+                                          points_per_decade=12)[0]
             finally:
                 p._event_columns = ev
         got[N] = float(V[0]) / exp_h
@@ -1832,16 +1832,16 @@ def test_theta_small_signal_surfaces_read_the_source_in_its_consistent_iq0_seed(
     f0 = 1.0 / T
     f = 0.137 * f0
     with quiet():
-        S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0, 0]
+        S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0][0, 0]
         fold = sum(float(np.real(pac.pnoise(pss, abs(f + k * f0), io,
                                             maxsidebands=20)[0]))
                    for k in range(-10, 11))
     assert abs(S / fold - 1.0) < 1e-12, (S, fold)
     t_near = float(np.asarray(pss.factored_period().times)[2])
     with quiet():
-        near = pac.sampled_noise(pss, io, [t_near], [f], maxsidebands=10)[0, 0]
+        near = pac.sampled_noise(pss, io, [t_near], [f], maxsidebands=10)[0][0, 0]
         _cr, pr, ior, pacr, _T = _lti_sampler('radau', 400)
-        near_r = pacr.sampled_noise(pr, ior, [t_near], [f], maxsidebands=10)[0, 0]
+        near_r = pacr.sampled_noise(pr, ior, [t_near], [f], maxsidebands=10)[0][0, 0]
     assert abs(near / near_r - 1.0) < 1e-3, (near, near_r)
 
 
@@ -1868,7 +1868,7 @@ def test_the_sampler_holds_kTC_under_theta_esdirk43_and_glm4(method, held_tol,
     fmin = 1e-6 * f0
     with quiet(AccuracyWarning):
         v = pac.sampled_variance(pss, io, [grid[int(0.375 * N)]], fmin,
-                                 0.5 * f0, points_per_decade=10) / ktc
+                                 0.5 * f0, points_per_decade=10)[0] / ktc
         _K, info = pac.covariance(pss, samples=True)
     held = float(v[0]) / (1.0 - fmin / (0.5 * f0))
     cov = float(np.asarray(info['samples'][int(0.375 * N)])[io, io]) / ktc
@@ -1878,7 +1878,7 @@ def test_the_sampler_holds_kTC_under_theta_esdirk43_and_glm4(method, held_tol,
         _cir, pss, io, pac, T = _lti_sampler(method, 400)
         f = 0.137 * f0
         with quiet():
-            S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0, 0]
+            S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0][0, 0]
             fold = sum(float(np.real(pac.pnoise(pss, abs(f + k * f0), io,
                                                 maxsidebands=20)[0]))
                        for k in range(-10, 11))

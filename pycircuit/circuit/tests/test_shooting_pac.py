@@ -83,10 +83,10 @@ def test_PAC_runs_on_a_nonlinear_circuit_without_forming_the_operator():
     assert N > 1 and fp.width <= 2 * m, \
         'the factored period should hold N per-step m x m factorisations, ' \
         'not one (N m) x (N m) matrix'
-    assert pac.matvecs < 4 * fp.width, \
+    assert res.info['matvecs'] < 4 * fp.width, \
         'PAC used %d matvecs for 2 frequencies on an m=%d circuit; forming ' \
         'the monodromy would take %d, and the point is not to' \
-        % (pac.matvecs, m, fp.width)
+        % (res.info['matvecs'], m, fp.width)
 
 
 @unittest.skip("Superseded by the PAC gate tests at the end of this file")
@@ -219,7 +219,7 @@ def test_pac_agrees_with_the_ac_analysis_on_a_linear_circuit():
     _pac = PAC(_pss.cir, toolkit=circuit.numeric)
     _oc = [str(n) for n in _pss.cir.nodes].index('c')
     _H = np.asarray(_pac.adjoint_sideband_row(_pss, 700.0, _oc,
-                                              sidebands=[0, 1]))
+                                              sidebands=[0, 1])[0])
     assert np.linalg.norm(_H[1]) < 1e-6 * np.linalg.norm(_H[0]), \
         'the l=1 sideband is %.3e of l=0 on a circuit that must not ' \
         'convert; AC is not the right reference if it does' \
@@ -342,7 +342,7 @@ def test_pac_recycling_matches_the_per_frequency_solve():
         pac = PAC(c, toolkit=circuit.numeric)
         with quiet():
             res = pac.solve(pss, freqs, recycle=rec)
-        out[rec] = (np.asarray(res.x, dtype=complex), pac.matvecs)
+        out[rec] = (np.asarray(res.x, dtype=complex), res.info['matvecs'])
 
     a, na = out[False]
     b, nb = out[True]
@@ -427,8 +427,8 @@ def test_the_adjoint_row_is_m_forward_solves_in_one():
     alpha = np.exp(-2j * np.pi * f * per)
 
     pac = PAC(cir, toolkit=circuit.numeric)
-    row = pac.adjoint_transfer_row(pss, f, 1)
-    adjoint_matvecs = pac.matvecs
+    row, row_info = pac.adjoint_transfer_row(pss, f, 1)
+    adjoint_matvecs = row_info['matvecs']
 
     ## the forward route: one solve per source
     d = np.zeros(n)
@@ -484,7 +484,7 @@ def test_the_adjoint_row_no_longer_refuses_the_plain_path():
         pss.solve(period=per, timestep=per / 120, maxiterations=40)
     assert pss.converged
     row = np.asarray(PAC(cir, toolkit=circuit.numeric)
-                     .adjoint_transfer_row(pss, 700.0, 1))
+                     .adjoint_transfer_row(pss, 700.0, 1)[0])
     assert row.shape == (cir.n - 1,), \
         'the adjoint row has the wrong width on the plain path: %r' \
         % (row.shape,)
@@ -527,7 +527,7 @@ def _sideband_pair(cir, per, freq, k, ls, npts=60, reltol=1e-11):
     M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
     A = np.eye(n) - alpha * M
     rows = PAC(cir, toolkit=circuit.numeric).adjoint_sideband_row(
-        pss, freq, k, ls)
+        pss, freq, k, ls)[0]
     fwds = np.array([_sideband_forward(pss, fp, freq, k, l, N, alpha, A)
                      for l in np.atleast_1d(ls)])
     return pss, rows, fwds
@@ -690,9 +690,9 @@ def test_the_sideband_row_costs_one_solve_per_sideband():
     with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / 60, maxiterations=40)
     pac = PAC(cir, toolkit=circuit.numeric)
-    rows = pac.adjoint_sideband_row(pss, freq, 1, [0, 1, 2])
+    rows, rows_info = pac.adjoint_sideband_row(pss, freq, 1, [0, 1, 2])
     assert rows.shape == (3, m)
-    per_sideband = pac.matvecs / 3.0
+    per_sideband = rows_info['matvecs'] / 3.0
     assert per_sideband < m, \
         'the sideband row took %.1f matvecs per sideband at m=%d; it is ' \
         'supposed to be independent of the number of sources' \
@@ -1068,7 +1068,7 @@ def test_the_sideband_row_is_indexed_by_SOURCE_not_by_the_output_direction():
         'confusion this test documents is not reproducible'
 
     rows = np.asarray(pac.adjoint_sideband_row(pss, 500.0, d,
-                                               sidebands=(0, 2)))
+                                               sidebands=(0, 2))[0])
     thru = np.abs(rows[:, i_in]) / g
     direct = np.abs(rows[:, i_out]) / g
     assert abs(thru[0] - 0.5) < 1e-6 and abs(thru[1] - 0.25) < 1e-6, \
@@ -1384,8 +1384,8 @@ def test_the_pac_adjoint_surfaces_run_under_every_integrator():
             ob = [str(nd) for nd in cir.nodes].index('b')
             pac = PAC(cir)
             with quiet():
-                ar = pac.adjoint_transfer_row(pss, freq, ob)
-                sr = pac.adjoint_sideband_row(pss, freq, ob, sidebands=0)
+                ar = pac.adjoint_transfer_row(pss, freq, ob)[0]
+                sr = pac.adjoint_sideband_row(pss, freq, ob, sidebands=0)[0]
             got[(method, npts)] = (float(np.linalg.norm(ar)),
                                    float(np.linalg.norm(sr)))
 
@@ -1472,7 +1472,7 @@ def test_pac_sweep_recycling_makes_matvecs_INDEPENDENT_of_sweep_length():
             pac = PAC(cir)
             with quiet():
                 res = pac.solve(pss, freqs, recycle=flag)
-            out[flag] = (pac.matvecs, np.asarray(res.x))
+            out[flag] = (res.info['matvecs'], np.asarray(res.x))
         ## the two routes must agree -- recycling minimises the TRUE
         ## residual over the shared span, so it is never the worse answer
         a, b = out[True][1], out[False][1]
@@ -1542,7 +1542,7 @@ def test_pac_reports_sidebands_at_the_right_frequencies_and_conjugates_the_fold(
                              circuit.numeric)
     u_ac = np.asarray(u_ac, dtype=complex).ravel()
     H = np.asarray(pac.adjoint_sideband_row(pss, fin, io,
-                                            sidebands=[0, 1, -1]))
+                                            sidebands=[0, 1, -1])[0])
     for li, l in enumerate((0, 1, -1)):
         f_phys = abs(fin + l * fclk)
         k = int(np.argmin(np.abs(fout - f_phys)))
@@ -1593,7 +1593,7 @@ def test_the_sideband_gate_rejects_the_endpoint_and_the_unconjugated_fold():
     u_ac = np.asarray(u_ac, dtype=complex).ravel()
     res = pac.solve(pss, freqs=[fin])
     fout = np.asarray(res.sweep_values, dtype=float)
-    H = np.asarray(pac.adjoint_sideband_row(pss, fin, io, sidebands=[1, -1]))
+    H = np.asarray(pac.adjoint_sideband_row(pss, fin, io, sidebands=[1, -1])[0])
     ## the FIX places l=+1 at 110 kHz and l=-1 at 90 kHz, and l=-1 equals
     ## conj(H_{-1}.u) -- the gate.  Confirm the gate is met, then that each
     ## mutation would break it.
@@ -1709,7 +1709,7 @@ def test_pac_solve_and_the_adjoint_transfer_row_take_the_deflated_route_on_an_os
         assert np.linalg.norm(y_defl - y_plain) < 1e-6 * np.linalg.norm(y_plain)   # measured 1.2e-8: the plain GMRES tolerance
         ## the sweep itself now takes that route
         res = pac.solve(pss, [(1.0 + 1e-3) * f0], sweeptype='absolute')
-        assert pac.deflated is True and pac.matvecs is None
+        assert res.info['deflated'] is True and res.info['matvecs'] is None
         ## the pole, carried analytically
         a9, b9 = rhs_and_alpha(1.0 + 1e-9); a10, b10 = rhs_and_alpha(1.0 + 1e-10)
         y9 = pac._deflated_solve(pss, a9, b9, transposed=False, tol=tol)
@@ -1726,8 +1726,8 @@ def test_pac_solve_and_the_adjoint_transfer_row_take_the_deflated_route_on_an_os
             assert np.linalg.norm(y10_plain - y10) > 1e-6 * np.linalg.norm(y10), \
                 'the plain solve should be off by eta/(2 pi r) here'
         ## the adjoint row takes it too
-        pac.adjoint_transfer_row(pss, (1.0 + 1e-3) * f0, 0)
-        assert pac.deflated is True
+        _row, row_info = pac.adjoint_transfer_row(pss, (1.0 + 1e-3) * f0, 0)
+        assert row_info['deflated'] is True
     ## driven: plain route, unchanged
     from pycircuit.circuit.elements import Diode
     c = SubCircuit()
@@ -1737,10 +1737,10 @@ def test_pac_solve_and_the_adjoint_transfer_row_take_the_deflated_route_on_an_os
     with quiet(AccuracyWarning):
         p2.solve(period=1e-6, timestep=1e-6 / 200, maxiterations=40)
         pac2 = PAC(c, toolkit=circuit.numeric)
-        pac2.solve(p2, [0.13e6])
-        assert pac2.deflated is False and pac2.matvecs is not None
-        pac2.adjoint_transfer_row(p2, 0.13e6, 2)
-        assert pac2.deflated is False
+        res2 = pac2.solve(p2, [0.13e6])
+        assert res2.info['deflated'] is False and res2.info['matvecs'] is not None
+        _row, row_info = pac2.adjoint_transfer_row(p2, 0.13e6, 2)
+        assert row_info['deflated'] is False
 
 
 def test_the_forward_pac_sidebands_equal_the_adjoint_rows_on_a_non_uniform_grid():
@@ -1779,7 +1779,7 @@ def test_the_forward_pac_sidebands_equal_the_adjoint_rows_on_a_non_uniform_grid(
     (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), pss.irefnode,
                              circuit.numeric)
     u_ac = np.asarray(u_ac, dtype=complex).ravel()
-    H = np.asarray(pac.adjoint_sideband_row(pss, fin, io, sidebands=[0, 1, -1]))
+    H = np.asarray(pac.adjoint_sideband_row(pss, fin, io, sidebands=[0, 1, -1])[0])
     for li, l in enumerate((0, 1, -1)):
         f_phys = abs(fin + l * fclk)
         k = int(np.argmin(np.abs(fout - f_phys)))
@@ -2022,13 +2022,13 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
         pac = PAC(cir, toolkit=circuit.numeric)
         with quiet():
             res = pac.solve(p0, [f0])
-        t_r, y_r = pac.time_response[0]
+        t_r, y_r = res.info['time_response'][0]
         assert np.max(np.abs(t_r - tms[:len(t_r)])) < 1e-5 * T      # the same nodes (fp rebuilds them from the fractions)
         rec = np.real(y_r / 1j).T                                          # the source's AC phase is 90 deg
         errs[bordered] = {nm: np.max(np.abs(rec[names.index(nm)] - d[names.index(nm)][:rec.shape[1]]))
                           / np.max(np.abs(d[names.index(nm)])) for nm in ('out', 'fb')}
         if bordered:
-            sh = np.real(np.asarray(pac.event_shifts[0]) / 1j)
+            sh = np.real(np.asarray(res.info['event_shifts'][0]) / 1j)
             assert np.max(np.abs(sh - dth_fd)) < 1e-6 * np.max(np.abs(dth_fd)), (sh, dth_fd)
     p0._event_columns = ev
     assert errs[True]['out'] < 1e-6 and errs[True]['fb'] < 1e-6, errs
@@ -2091,10 +2091,10 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
         res = pac.solve(p, freqs=[fin])
     fout = np.asarray(res.sweep_values, dtype=float)
     X = np.asarray(res.x)
-    H = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1, -1]))
+    H = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1, -1])[0])
     ev = p._event_columns
     p._event_columns = None
-    H0 = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1, -1]))
+    H0 = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1, -1])[0])
     p._event_columns = ev
     for li, l in enumerate((0, 1, -1)):
         f_phys = abs(fin + l * f0)
@@ -2141,12 +2141,12 @@ def test_the_adjoint_transfer_row_on_a_staged_solve_is_the_transpose_of_the_bord
     u_ac = np.asarray(u_ac, dtype=complex).ravel()
     pac = PAC(cir, toolkit=circuit.numeric)
     with quiet():
-        pac.solve(p, freqs=[fin], sweeptype='absolute')
-        y0 = complex(np.asarray(pac.time_response[0][1])[0][io])
-        h = complex(pac.adjoint_transfer_row(p, fin, io) @ u_ac)
+        res = pac.solve(p, freqs=[fin], sweeptype='absolute')
+        y0 = complex(np.asarray(res.info['time_response'][0][1])[0][io])
+        h = complex(pac.adjoint_transfer_row(p, fin, io)[0] @ u_ac)
         ev = p._event_columns
         p._event_columns = None
-        h0 = complex(pac.adjoint_transfer_row(p, fin, io) @ u_ac)
+        h0 = complex(pac.adjoint_transfer_row(p, fin, io)[0] @ u_ac)
         p._event_columns = ev
     assert abs(h - y0) < 1e-11 * abs(y0), (h, y0)
     assert abs(h0 - y0) > 1e-4 * abs(y0), (h0, y0)
@@ -2229,10 +2229,10 @@ def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
         try:
             pac = PAC(cir, toolkit=circuit.numeric)
             with quiet():
-                pac.solve(q, [0.3 / Tq], sweeptype='absolute')
+                res = pac.solve(q, [0.3 / Tq], sweeptype='absolute')
         finally:
             q._event_columns = ev
-        tt, yy = pac.time_response[0]
+        tt, yy = res.info['time_response'][0]
         worst[bordered] = max(
             float(np.max(np.abs(np.asarray(yy[j])[idx]
                                 - at((t_shift + float(tt[j])) % T_ex2)
@@ -2252,7 +2252,7 @@ def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
     pac = PAC(cir, toolkit=circuit.numeric)
     with quiet():
         res = pac.solve(q, freqs=[fin], sweeptype='absolute')
-        H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
+        H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1])[0])
     fout = np.asarray(res.sweep_values, dtype=float)
     Xr = np.asarray(res.x)
     for li, l in enumerate((0, 1)):
@@ -2371,8 +2371,8 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
             try:
                 pac = PAC(cir, toolkit=circuit.numeric)
                 with quiet():
-                    pac.solve(q, [f], sweeptype='absolute')
-                tt, yy = pac.time_response[0]
+                    res = pac.solve(q, [f], sweeptype='absolute')
+                tt, yy = res.info['time_response'][0]
             except RuntimeError:
                 ## the plain deflated solve borders the fixed-grid map with
                 ## the TOTAL map's null vectors: near a harmonic it does not
@@ -2413,7 +2413,7 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
     pac = PAC(cir, toolkit=circuit.numeric)
     with quiet():
         res = pac.solve(q, freqs=[fin], sweeptype='absolute')
-        H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
+        H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1])[0])
     fout = np.asarray(res.sweep_values, dtype=float)
     Xr = np.asarray(res.x)
     for li, l in enumerate((0, 1)):
@@ -2477,7 +2477,7 @@ def test_trap_opened_at_x0_is_the_transpose_of_its_forward_replay():
     pac = PAC(cir, toolkit=circuit.numeric)
     with quiet():
         res = pac.solve(q, freqs=[fin])
-        H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
+        H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1])[0])
     fout = np.asarray(res.sweep_values, dtype=float)
     X = np.asarray(res.x)
     for li, l in enumerate((0, 1)):
@@ -2559,7 +2559,7 @@ def test_pac_solve_on_a_trap_staged_oscillator_reads_one_host():
         with quiet():
             res = pac.solve(p, offs, sweeptype='relative')
             row = pac.adjoint_sideband_row(p, 1.0 / float(tw.period) + offs[1],
-                                           io, sidebands=[0, 1])
+                                           io, sidebands=[0, 1])[0]
         fo = np.asarray(res.sweep_values, float)
         X = np.asarray(res.x)
         f0p = 1.0 / float(p.monodromy_twin().period)
@@ -2575,7 +2575,8 @@ def test_pac_solve_on_a_trap_staged_oscillator_reads_one_host():
 
 
 def test_the_adjoint_transfer_row_tolerance_binds_on_the_iterative_path():
-    """The review's X9 (2026-10-01): `adjoint_transfer_row(recycle_tol=)` had
+    """The review's X9 (2026-10-01): `adjoint_transfer_row(tol=)` (`recycle_tol`
+    until batch 14) had
     no test -- and below `FLOQUET_DENSE_LIMIT` it CANNOT bind: the transposed
     solve is direct there (batch 4).  Forced onto the iterative path (the
     limit lowered on the PSS), it is the GMRES tolerance, monotone against
@@ -2590,14 +2591,14 @@ def test_the_adjoint_transfer_row_tolerance_binds_on_the_iterative_path():
     assert pss.converged
     pac = PAC(cir, toolkit=circuit.numeric)
     f = 0.13e3
-    direct = pac.adjoint_transfer_row(pss, f, 3)
-    assert pac.matvecs == 0
+    direct, info = pac.adjoint_transfer_row(pss, f, 3)
+    assert info['matvecs'] == 0
     pss.FLOQUET_DENSE_LIMIT = 0
 
     def err(tol):
-        r = pac.adjoint_transfer_row(pss, f, 3, recycle_tol=tol)
+        r, info = pac.adjoint_transfer_row(pss, f, 3, tol=tol)
         return (float(np.max(np.abs(r - direct)) / np.max(np.abs(direct))),
-                pac.matvecs)
+                info['matvecs'])
     loose, n_loose = err(1e-2)
     tight, n_tight = err(1e-12)
     assert loose > 1e-4 and tight < 1e-12 and n_loose < n_tight, \

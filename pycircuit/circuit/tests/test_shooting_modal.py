@@ -138,7 +138,7 @@ def test_orbital_correlation_is_gated_three_ways():
         R4, _ = pac.orbital_correlation(pss, maxharmonics=4)
         R, Cc = pac.orbital_correlation(pss, maxharmonics=32)
         Kf, info = pac.oscillator_covariance(pss, samples=True)
-        modes = pss.floquet_modes(pss)
+        modes = pss.floquet_modes()
     assert np.linalg.norm(R - R.T) < 1e-12 * np.linalg.norm(R), 'R not symmetric'
     assert np.linalg.norm(R - R4) < 1e-6 * np.linalg.norm(R), \
         'the harmonic sum has not converged by H=4 on van der Pol (%.3e)' \
@@ -401,7 +401,7 @@ def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
     asymmetric one, which is why the across case runs there."""
     c, pss, pac, ov = _orbit_modulated_vdp('white_ref', method='radau')
     with quiet():
-        modes = pss.floquet_modes(pss)
+        modes = pss.floquet_modes()
     names = [str(x) for x in c.nodes]
     irn = pss.irefnode
     kn = names.index('n') - (names.index('n') > irn)
@@ -723,7 +723,7 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
         with quiet(AccuracyWarning):
             CY2 = 0.5 * np.real(np.asarray(pac._cy_reduced(pss, 0.0)))
             R, _ = pac.orbital_correlation(pss, maxharmonics=8)
-            modes = pss.floquet_modes(pss)
+            modes = pss.floquet_modes()
             v0, info = pss.ppv()
             Kf, ci = pac.oscillator_covariance(pss, samples=True)
             d = ci['d']
@@ -876,7 +876,7 @@ def test_every_period_harmonic_is_a_fourier_integral_on_a_non_uniform_grid():
 
     _c, _p, lam_u = vdp(False)
     cir, pss, lam_n = vdp(True)
-    phase = min(abs(abs(m['lam']) - 1.0) for m in pss.floquet_modes(pss))
+    phase = min(abs(abs(m['lam']) - 1.0) for m in pss.floquet_modes())
     assert 1e-5 < phase < 1e-3, phase          # the premise: outside the window
     assert abs(lam_n / lam_u - 1.0) < 1e-3, (lam_n, lam_u)
     ## 2026-09-20: this used to pin a REFUSAL on the non-uniform gear grid;
@@ -939,7 +939,7 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
         return cir, pss
 
     def phase_off(pss):
-        return min(abs(abs(m['lam']) - 1.0) for m in pss.floquet_modes(pss))
+        return min(abs(abs(m['lam']) - 1.0) for m in pss.floquet_modes())
 
     def parts(cir, pss):
         pac = PAC(cir, toolkit=circuit.numeric)
@@ -993,7 +993,7 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
         cir, pss = solve(n, False, 'gear')
         W = np.delete(np.asarray(pss.waveform[1], dtype=float), pss.irefnode, axis=0)
         out = []
-        for md in pss.floquet_modes(pss):
+        for md in pss.floquet_modes():
             P, Q = np.asarray(md['p']), np.asarray(md['q'])
             K = min(P.shape[1], Q.shape[1], W.shape[1])   # the modes' own width
             a = np.abs([np.vdot(Q[:, j], np.asarray(pss._C_at(W[:, j]), dtype=float)
@@ -1051,7 +1051,7 @@ def test_gear_adjoint_modes_are_second_order_on_a_non_uniform_grid_and_orbital_c
     def drift(pss):
         W = np.delete(np.asarray(pss.waveform[1], dtype=float), pss.irefnode, axis=0)
         out = []
-        for md in pss.floquet_modes(pss):
+        for md in pss.floquet_modes():
             P, Q = np.asarray(md['p']), np.asarray(md['q'])
             K = min(P.shape[1], Q.shape[1], W.shape[1])
             a = np.abs([np.vdot(Q[:, j], np.asarray(pss._C_at(W[:, j]), dtype=float)
@@ -1068,8 +1068,11 @@ def test_gear_adjoint_modes_are_second_order_on_a_non_uniform_grid_and_orbital_c
     ## gear, trap and radau all RUN on the 3:1 grid now (the phase mode by its
     ## tangent alignment, never in the orbital sum): gear's R converges to
     ## radau's at ~x3.5 per doubling (2.3e-02 / 7.2e-03 / 2.0e-03 measured)
-    Rr, _c = PAC(*[solve(400, True, 'radau')[0]], toolkit=circuit.numeric).orbital_correlation(
-        solve(400, True, 'radau')[1], maxharmonics=8)
+    ## (one solve, its own circuit: the PAC was built on a SECOND solve's
+    ## circuit until 2026-10-01, which `orbital_correlation` did not check)
+    cir_r, pss_r = solve(400, True, 'radau')
+    Rr, _c = PAC(cir_r, toolkit=circuit.numeric).orbital_correlation(
+        pss_r, maxharmonics=8)
     for method in ('gear', 'trap'):
         cir, pss = solve(400, True, method)
         with quiet(AccuracyWarning):

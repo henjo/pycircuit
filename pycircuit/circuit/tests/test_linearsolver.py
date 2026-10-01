@@ -473,7 +473,7 @@ def test_a_sparse_factorisation_keeps_the_period_s_capacitances_sparse():
                                         sweeptype='absolute').x),
                    pac.pnoise(p, 0.13e6, 'n20', maxsidebands=4,
                               sweeptype='absolute')[0],
-                   pac.adjoint_transfer_row(p, 0.13e6, 'n20'),
+                   pac.adjoint_transfer_row(p, 0.13e6, 'n20')[0],
                    pac.covariance(p)[0]]
         return stored, out
     for method in ('gear', 'trap'):

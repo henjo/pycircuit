@@ -1984,10 +1984,10 @@ def test_floquet_modes_are_genuinely_periodic():
     ## ⚠ THE DEFAULT PATH FIRST. `nmodes=None` returns every non-null mode
     ## and is the documented default; it raised `int(None)` for an hour
     ## because this test only ever passed a number.
-    modes = pss.floquet_modes(pss)
+    modes = pss.floquet_modes()
     assert len(modes) == 2, \
         'the default (all non-null modes) returned %d, expected 2' % len(modes)
-    modes = pss.floquet_modes(pss, nmodes=2)
+    modes = pss.floquet_modes(nmodes=2)
     assert len(modes) == 2, 'expected two non-null modes, got %d' % len(modes)
 
     ## the phase mode is the unit multiplier, and it must come first
@@ -2100,7 +2100,7 @@ def test_floquet_modes_are_genuinely_periodic():
 
     ## ⚠ AND THE NULL MODES MUST BE ABSENT. A DAE monodromy has exact
     ## zeros; asked for more modes than exist, it must not pad with them.
-    many = pss.floquet_modes(pss, nmodes=10)
+    many = pss.floquet_modes(nmodes=10)
     assert all(abs(md['lam']) > 1e-12 for md in many), \
         'a null (annihilated algebraic) multiplier was returned as a mode'
 
@@ -2122,7 +2122,7 @@ def test_the_orbit_is_read_full_width_past_the_reference_node():
     Both now read `_orbit_states`, right whichever width it is given."""
     _c, pss, pac, ov = _orbit_modulated_vdp('lorentz')
     with quiet():
-        modes = pss.floquet_modes(pss)
+        modes = pss.floquet_modes()
     k, _orb = pac._phase_mode_split(pss, modes, 'test')
     assert abs(abs(complex(modes[k]['lam'])) - 1.0) < 1e-9
     w = 2.0 * np.pi / float(pss.period)
@@ -2900,7 +2900,7 @@ def test_floquet_modes_runs_under_the_stage_methods_and_conserves_qCp():
         with quiet():
             pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
                       maxiterations=300)
-            modes = pss.floquet_modes(pss)      # used to raise under trbdf2
+            modes = pss.floquet_modes()      # used to raise under trbdf2
         assert len(modes) == 2, '%s: expected 2 modes, got %d' % (
             method, len(modes))
         x0r = np.delete(np.asarray(pss.waveform[1], dtype=float)[:, 0],
@@ -3081,9 +3081,9 @@ def test_the_continuous_adjoints_arnoldi_path_equals_its_dense_path():
                   maxiterations=300, break_events=False, grid=fracs(400))
     assert pss.converged
     pss.CONTINUOUS_ADJOINT_DENSE_M = 8
-    dense = pss.floquet_modes(pss)
+    dense = pss.floquet_modes()
     pss.CONTINUOUS_ADJOINT_DENSE_M = 0          # force Arnoldi at m = 2
-    arn = pss.floquet_modes(pss)
+    arn = pss.floquet_modes()
     assert len(dense) == len(arn) >= 2
     for a, b in zip(dense, arn):
         qa, qb = np.asarray(a['q']), np.asarray(b['q'])

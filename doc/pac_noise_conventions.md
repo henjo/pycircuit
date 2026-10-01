@@ -81,12 +81,12 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 
 | method | arguments, in order | returns | frequency | key defaults |
 |---|---|---|---|---|
-| `pnoise` | `pss, freq, output, ratio_tol=None, maxsidebands=None, modulated=False, cyclostationary=False, sweeptype=None, relharmnum=None` | `(S, sidebands_used)`; also sets `self.alias_stop`, `self.sidebands_used` | `freq`, scalar, the OUTPUT frequency by the sweep rule: itself when absolute (the default on a driven PSS), `relharmnum f0 + freq` when relative (the default on an oscillator) | `maxsidebands` -> `N//2` (an explicit count above it raises; clamped silently until 2026-09-29); `ratio_tol` -> 1e-9, stops after two quiet pairs |
-| `am_pm_noise` | `pss, freq, output, harmonic=1, maxsidebands=None, modulated=False, sweeptype=None` | `(S_am, S_pm, bands)`, PER SIDEBAND (half the pair's total; it was the total until 2026-09-28) | `freq` by the sweep rule with `harmonic` the reference: an OFFSET from `harmonic f0` when relative (the default on an oscillator), the upper sideband's own frequency when absolute (the default on a driven PSS) | `maxsidebands` -> every pair within Nyquist, `N//2 - harmonic` (an explicit count above it raises) |
+| `pnoise` | `pss, freq, output, ratio_tol=None, maxsidebands=None, modulated=False, cyclostationary=False, sweeptype=None, relharmnum=None` | `(S, info)`: `info['sidebands']` (the `l` summed, in order), `'stop'` ('ratio', 'bound', 'cap', 'zero'), `'deflated'` | `freq`, scalar, the OUTPUT frequency by the sweep rule: itself when absolute (the default on a driven PSS), `relharmnum f0 + freq` when relative (the default on an oscillator) | `maxsidebands` -> `N//2` (an explicit count above it raises; clamped silently until 2026-09-29); `ratio_tol` -> 1e-9, stops after two quiet pairs |
+| `am_pm_noise` | `pss, freq, output, harmonic=1, ratio_tol=None, maxsidebands=None, modulated=False, sweeptype=None` | `(S_am, S_pm, info)`, PER SIDEBAND (half the pair's total; it was the total until 2026-09-28); `info['bands']`, `'stop'`, `'deflated'` as `pnoise`'s | `freq` by the sweep rule with `harmonic` the reference: an OFFSET from `harmonic f0` when relative (the default on an oscillator), the upper sideband's own frequency when absolute (the default on a driven PSS) | `maxsidebands` -> every pair within Nyquist, `N//2 - harmonic` (an explicit count above it raises); `ratio_tol` -> 1e-9, `pnoise`'s stop rule in `|p|` order |
 | `band_spread` | `pss, output, band, points=9, harmonic=1, quantity='pnoise', **kw` | `(spread, info)` | `band` in units of f0: an OFFSET from `harmonic f0` for every quantity (`**kw` takes no `sweeptype`) | `points=9` |
-| `sampled_noise` | `pss, output, times, freqs, maxsidebands=None, tail=False` | array `(len(times), len(freqs))` | `freqs`: SERIES frequency, `0 < f <= f0/2` | `maxsidebands` -> `N//2 - 1` (raises above) |
-| `sampled_variance` | `pss, output, times, series_fmin, series_fmax, points_per_decade=40, maxsidebands=None, tail=False` | array `(len(times),)` | `series_fmin`, `series_fmax`: the SERIES band, required; the band cuts white noise too | `ppd=40` |
-| `jitter_metrics` | `pss, output, time, series_fmin, series_fmax, kmax=8, maxsidebands=None, nfreq=601, dc_rectangle=False, points_per_decade=40` | dict: `sigma_t, rho, k_cycle` (exact), `cycle_to_cycle, slew` (`edge_slope`), `R, instant` | as `sampled_variance` | `kmax=8` (>= 2) |
+| `sampled_noise` | `pss, output, times, freqs, maxsidebands=None, tail=False` | `(S, info)`: `S` `(len(times), len(freqs))`, `info['instants']` the grid points used | `freqs`: SERIES frequency, `0 < f <= f0/2` | `maxsidebands` -> `N//2 - 1` (raises above) |
+| `sampled_variance` | `pss, output, times, series_fmin, series_fmax, *, points_per_decade=40, maxsidebands=None, tail=False` | `(var, info)`: `var` `(len(times),)`, `info['instants']` | `series_fmin`, `series_fmax`: the SERIES band, required; the band cuts white noise too | `ppd=40` |
+| `jitter_metrics` | `pss, output, time, series_fmin, series_fmax, *, kmax=8, maxsidebands=None, nfreq=601, dc_rectangle=False, points_per_decade=40` | dict: `sigma_t, rho, k_cycle` (exact), `cycle_to_cycle, slew` (`edge_slope`), `R, instant` | as `sampled_variance` | `kmax=8` (>= 2) |
 | `covariance` | `pss, samples=False, colour_fmin=None, colour_fmax=None, points_per_decade=40, pair=False` | `(K0, info)`: `info['samples']` at `info['times']` with `samples=True`, `info['K_coloured']` (+ `'coloured_samples'`) with a band; `m x m` whatever the method (a gear/trap pair map's `2m x 2m` with `pair=True`) | `colour_fmin`, `colour_fmax`: the SOURCE band of the COLOURED part only; `colour_fmax` -> the grid's Nyquist | `colour_fmin` required when a source is coloured |
 | `event_jitter` | `pss, colour_fmin=None, colour_fmax=None, points_per_decade=40` | dict: `sigma_t` (s), `cov_fraction`, `fractions`, `nodes` | as `covariance` | refuses a solve with no landed events |
 
@@ -94,29 +94,31 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
 
 | method | arguments, in order | returns | frequency | key defaults |
 |---|---|---|---|---|
-| `oscillator_spectrum` | `pss, offsets, output, harmonic=1, frequency_aware=True, offset_fmin=None, offset_fmax=None, all_orders=None` | `(S_v, L_dBc)`; sets `self.lineshape_info` | OFFSETS from `harmonic f0`, any sign, EVEN in them | `offset_fmin` needed only with colour; `offset_fmax` -> f0/2; `all_orders` with `frequency_aware=False` refused |
+| `oscillator_spectrum` | `pss, offsets, output, harmonic=1, frequency_aware=True, offset_fmin=None, offset_fmax=None, all_orders=None` | `(S_v, L_dBc, info)`: `info` the lineshape's (`'frequency_aware'`: None, 'first order', 'all orders'; the estimate and solves behind it) | OFFSETS from `harmonic f0`, any sign, EVEN in them | `offset_fmin` needed only with colour; `offset_fmax` -> f0/2; `all_orders` with `frequency_aware=False` refused |
 | `phase_psd` | `pss, offsets, harmonic=1, frequency_aware=True` | array, `L(f)` per Hz (the IEEE `S_phi` is `2 L`) | OFFSETS, `> 0` | refuses offsets at or below the Lorentzian corner |
-| `lorentzian` (static) | `offsets, c, f0, harmonic=1` | array, 1/Hz relative to the harmonic's power | OFFSETS, any sign, even in them | harmonic 0 returns zeros |
-| `modal_spectrum` | `pss, offsets, output, harmonic=1, maxharmonics=None, maxsidebands=None` | dict: `phase, orbital, correlation, total` | OFFSETS, negative = the lower sideband (not the upper's) | `maxharmonics` -> 32 capped by the grid (an explicit count above the grid raises), `maxsidebands` -> `2 maxharmonics` |
+| `lorentzian` (static) | `offsets, c, f0, harmonic=1` | array, 1/Hz relative to the harmonic's power | OFFSETS, any sign, even in them | harmonic an integer >= 0; 0 returns zeros |
+| `modal_spectrum` | `pss, offsets, output, harmonic=1, maxharmonics=None, maxsidebands=None` | dict: `phase, orbital, correlation, total` | OFFSETS, negative = the lower sideband (not the upper's) | `maxharmonics` -> 32 capped by the grid (an explicit count above the grid raises), `maxsidebands` -> `2 maxharmonics` (an explicit one above `2 (N//2 - 1)` raises) |
 | `orbital_spectrum`, `correlation_spectrum` | `pss, offsets, output, harmonic=1, maxharmonics=None` (+ `maxsidebands` for correlation) | array | as `modal_spectrum` | as `modal_spectrum` |
 | `orbital_correlation` | `pss, maxharmonics=None` | `(R, C)`: `R_yy(0)` `m x m`, `C[(l, h, j)]` | -- | refuses colour |
 | `oscillator_covariance` | `pss, samples=False, colour_fmin=None, colour_fmax=None, points_per_decade=40, pair=False` | `(K_orb, info)`: the growth `info['d']`, the bounded part per node `info['samples']`; `K_orb` `m x m` whatever the method (the pair with `pair=True`) | as `covariance` (colour enters the transverse part only) | |
-| `oscillator_edge_jitter` | `pss, output, time, kmax=8` | dict: `sigma_t, A` (the ONE-sided projection, the k-lag law's intercept / 2), `c, slew, k_cycle` (EXACT at every k, as `jitter_metrics`), `instant, d, projection_share` | -- | `kmax=8`; `output` an index or a name |
-| `orbital_mode_weights` | `pss, nmodes=None` | `(cw, info)`: `info['modes']`, `info['K']` | -- | |
+| `oscillator_edge_jitter` | `pss, output, time, *, kmax=8, colour_fmin=None, colour_fmax=None, points_per_decade=40, intercept='white'` | dict: `sigma_t, A` (the ONE-sided projection, the k-lag law's intercept / 2), `c, slew, k_cycle` (EXACT at every k, as `jitter_metrics`), `instant, d, projection_share` | -- | `kmax=8`; `output` an index or a name |
+| `orbital_mode_weights` | `pss, nmodes=None, colour_fmin=None, colour_fmax=None, points_per_decade=40` | `(cw, info)`: `info['modes']`, `info['K']` | -- | |
 | `diffusion_constant` | `pss` | `c`, s | -- | refuses colour |
 | `frequency_aware_diffusion` | `pss, offset` | `c(f)`, s | `offset` scalar, abs taken | refuses colour |
 | `colour_projection` | `pss` | `(vbar, info)`: `rms, symmetry, samples, times` | -- | |
 | `coloured_diffusion` | `pss, offsets` | `Gamma(f)`, the `l = 0` term ONLY | OFFSETS, any sign, even in them | do not add it to `c` (counts `l = 0` twice); use `coloured_diffusion_resolved` |
-| `coloured_diffusion_resolved` | `pss, offsets, harmonics=None, frequency_aware=True` | `c(f)` over all harmonics | OFFSETS, any sign, even in them | `harmonics` -> every `l` with > 1e-14 of the PPV energy |
+| `coloured_diffusion_resolved` | `pss, offsets, maxharmonics=None, frequency_aware=True` | `c(f)` over all harmonics | OFFSETS, any sign, even in them | `maxharmonics` -> every DFT bin with > 1e-14 of the PPV energy; an explicit `L` is `-L..L`, `L <= (n - 1)//2` |
 
 ## Transfers (not noise)
 
 | method | arguments | returns |
 |---|---|---|
-| `solve` | `pss, freqs, refnode=gnd, recycle=True, sweeptype=None, relharmnum=None` | a `CircuitResult` over the absolute OUTPUT frequencies; `freqs` the SOURCE frequencies by the sweep rule, as `pnoise`'s `freq` |
+| `solve` | `pss, freqs, refnode=gnd, recycle=True, sweeptype=None, relharmnum=None` | a `CircuitResult` over the absolute OUTPUT frequencies, `result.info` with `time_response`, `event_shifts`, `deflated`, `matvecs`; `freqs` the SOURCE frequencies by the sweep rule, as `pnoise`'s `freq` |
 | `am_pm` | `pss, freq, output, harmonic=1, sweeptype=None` | `(m_am, m_pm)` per unit source; `freq` by the sweep rule, as `am_pm_noise`'s; refuses a missing carrier |
 | `am_pm_indices` | `a, b` | `(a + conj(b), a - conj(b))` |
-| `carrier_phasor` | `pss, output, harmonic=1` | the complex Fourier coefficient (`A/2` for `A cos`) |
+| `carrier_phasor` | `pss, output, harmonic=1` | the complex Fourier coefficient (`A/2` for `A cos`); `harmonic` an integer >= 0 |
+| `adjoint_transfer_row` | `pss, freq, output, tol=None` | `(row, info)`: `info['deflated']`, `'matvecs'` (`tol` was `recycle_tol` until 2026-10-01) |
+| `adjoint_sideband_row` | `pss, freq, output, sidebands=0` | `(rows, info)`, as `adjoint_transfer_row`'s; each sideband an integer |
 
 ## Where the surfaces disagree
 
@@ -233,7 +235,7 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
     (cw, info)`; the jitter surfaces keep their metric dicts (as
     `jitter_metrics`).  The instance-attribute diagnostics belong to other
     surfaces (`pnoise`, `solve`, the lineshape, the sampled family) and are
-    left as they are.
+    left as they are -- taken on 2026-10-01, item 19.
 16. ~~The same refusal raises different exceptions: a missing lower band
     edge is a `NotImplementedError` in `covariance` (`colour_fmin`) and
     `oscillator_spectrum` (`offset_fmin`) but a `TypeError` in the sampled
@@ -263,3 +265,16 @@ small), and the modal total is `pnoise` at every offset (to its truncation).
     uses (it uses the monodromy twin).~~ CLOSED 2026-09-29: the key named;
     the three comments (and `_event_closure`'s host sentence) say what the
     hosts do.
+19. ~~The instance-attribute diagnostics; one misuse, several reactions;
+    names (the review's X6, X7, O19, X3).~~ CLOSED 2026-10-01 (review batch
+    14; `doc/pss_log_260902.md`): every surface with diagnostics returns its
+    value(s) and LAST an `info` dict (`pnoise`, `am_pm_noise`,
+    `oscillator_spectrum`, the sampled family, the adjoint rows;
+    `PAC.solve`'s `result.info`) and nothing is left on the PAC.  A harmonic
+    or sideband is an integer (>= 1 where a carrier is read), a count a
+    non-negative integer that raises above the grid everywhere; a zero
+    density is said silently and an undefined ratio raises; a refusal names
+    the method the user called.  `recycle_tol` -> `tol`, `harmonics` ->
+    `maxharmonics` (`-L..L`), keyword-only tails on the jitter surfaces and
+    `sampled_variance`, `frequency_aware` a bool, `floquet_modes`' dead
+    first parameter gone; `am_pm_noise` stops on `pnoise`'s rule.

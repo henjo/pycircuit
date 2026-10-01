@@ -94,8 +94,10 @@ class _NoiseSources(object):
                 'PAC: the orbit has no stored samples to average CY over.')
         return acc / float(hs[:nsamp].sum())
 
-    def _cy_reduced(self, pss, w):
-        """`CY` with the reference node removed, refusing a moving one.
+    def _cy_reduced(self, pss, w, what=None):
+        """`CY` with the reference node removed, refusing a moving one --
+        the refusal naming `PAC.<what>` and the routes past it that method
+        has (`am_pm_noise` has `modulated=True` only).
 
         ⚠ THE CHECK IS THE POINT.  A bias-dependent `CY` makes the sources
         CYCLOSTATIONARY, and then sidebands stop adding in power -- the
@@ -150,9 +152,38 @@ class _NoiseSources(object):
         for other in mats[1:]:
             drift = float(np.max(np.abs(other - mats[0]))) / scale
             if drift > 1e-9:
+                if what == 'am_pm_noise':
+                    routes = (
+                        'The route here is modulated=True: Hull & Meyer\'s '
+                        'cycle average (one stationary source per device at '
+                        'the cycle-averaged current, the modulation carried '
+                        'by the transfer), a MODEL CHOICE that drops the '
+                        'sideband correlation (it read 0.53 of the truth on '
+                        'a driven multiplier). The AM/PM split has no '
+                        'cyclostationary construction; '
+                        'PAC.pnoise(cyclostationary=True) gives the exact '
+                        'total.')
+                else:
+                    routes = (
+                        'The route out is the CYCLOSTATIONARY construction '
+                        'rather than a different device model -- BUILT: pass '
+                        'cyclostationary=True (the PSD\'s own harmonics, '
+                        'exact; modulated=True is the cycle average, which '
+                        'drops the sideband correlation and read 0.53 of the '
+                        'truth on a driven multiplier). Hull & Meyer (1993) '
+                        'make it affordable -- ONE stationary source per '
+                        'device at the CYCLE-AVERAGED current, with the '
+                        'modulation carried by the impulse response, valid '
+                        'while no large-signal state variable changes much '
+                        'over the impulse response decay time. ⚠ THAT ROUTE '
+                        'IS BUILT: pass modulated=True to use it. It is a '
+                        'MODEL CHOICE with the validity condition above, not '
+                        'a tolerance relaxation, which is why it is opt-in '
+                        'and why this refusal is the default.')
+                who = 'PAC' if what is None else 'PAC.' + what
                 raise NotImplementedError(
-                    'PAC: this circuit has a BIAS-DEPENDENT CY (varies by '
-                    '%.3g over the orbit), so its noise sources are '
+                    f'{who}: this circuit has a BIAS-DEPENDENT CY (varies by '
+                    f'{drift:.3g} over the orbit), so its noise sources are '
                     'cyclostationary. The sidebands are then correlated '
                     'through the window Fourier coefficients and no longer '
                     'add in power, so the stationary sum here would be the '
@@ -162,23 +193,7 @@ class _NoiseSources(object):
                     '4kT.gamma.gd0 with gd0 bias-dependent, flicker goes '
                     'as I_D^AF, gate shot noise as 2qI_G, and trap capture '
                     'and emission rates read the terminal voltages. So '
-                    'this is in effect a refusal of MOS pnoise, and the '
-                    'route out is the CYCLOSTATIONARY construction rather '
-                    'than a different device model -- BUILT: pass '
-                    'cyclostationary=True (the PSD\'s own harmonics, exact; '
-                    'modulated=True is the cycle average, which drops the '
-                    'sideband correlation and read 0.53 of the truth on a '
-                    'driven multiplier). Hull & Meyer (1993) '
-                    'make it affordable -- ONE stationary source per '
-                    'device at the CYCLE-AVERAGED current, with the '
-                    'modulation carried by the impulse response, valid '
-                    'while no large-signal state variable changes much '
-                    'over the impulse response decay time. ⚠ THAT ROUTE '
-                    'IS BUILT: pass modulated=True to use it. It is a '
-                    'MODEL CHOICE with the validity condition above, not '
-                    'a tolerance relaxation, which is why it is opt-in '
-                    'and why this refusal is the default.'
-                    % drift)
+                    'this is in effect a refusal of MOS pnoise. ' + routes)
         return mats[0]
 
     ## How close to a harmonic of `f0` counts as "on" it, as a fraction of

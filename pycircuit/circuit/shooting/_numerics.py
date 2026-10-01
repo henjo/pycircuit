@@ -1,6 +1,8 @@
 """Small numerical helpers of the shooting analyses: the DFT, the complex and
 transposed solves, GMRES by Arnoldi, the periodic spline weights.
 """
+import numbers
+
 import numpy as np
 
 
@@ -326,6 +328,41 @@ def output_index(pss, output):
     return k - 1 if k > irn else k
 
 
+def integer_arg(value, name, what, minimum=None, why=''):
+    """An INTEGER argument as every PAC surface takes it -- a harmonic or a
+    sideband (`minimum` None: any integer), or a count (`minimum` 0 or more):
+    an `int` or NumPy integer, or a float that IS one; anything else a
+    TypeError, below `minimum` a ValueError, both naming `PAC.<what>`, the
+    method the user called (`why` appended to the second).
+
+    ⚠ ONE MISUSE, ONE REACTION.  Until 2026-10-01 a non-integer `relharmnum`
+    raised while a non-integer `harmonic` was truncated by `int()` on some
+    surfaces and used as a float on others (a carrier at 1.5 f0), and a
+    negative count passed unchecked into an empty sum."""
+    if isinstance(value, np.ndarray) and value.ndim == 0:
+        value = value.item()
+    if isinstance(value, (bool, np.bool_)) or not (
+            isinstance(value, numbers.Integral)
+            or (isinstance(value, (float, np.floating))
+                and float(value).is_integer())):
+        raise TypeError(f'PAC.{what}: {name} must be an integer, not '
+                        f'{value!r}')
+    v = int(value)
+    if minimum is not None and v < minimum:
+        raise ValueError(f'PAC.{what}: {name} {v} is below {minimum}'
+                         + (f' -- {why}' if why else '.'))
+    return v
+
+
+def flag_arg(value, name, what):
+    """A True/False switch: a `bool` (or NumPy bool), nothing else -- until
+    2026-10-01 `frequency_aware=None` passed and meant True."""
+    if not isinstance(value, (bool, np.bool_)):
+        raise TypeError(f'PAC.{what}: {name} must be True or False, not '
+                        f'{value!r}')
+    return bool(value)
+
+
 def sweep_kind(pss, sweeptype, what):
     """The sweep a swept frequency is read on, by a commercial RF
     simulator's `sweeptype` rule: `'absolute'` (the frequency itself) or
@@ -365,11 +402,8 @@ def sweep_frequency(pss, freq, sweeptype, relharmnum, what):
                    ' (sweeptype=None on a driven PSS)')
                 + " -- pass sweeptype='relative', or drop relharmnum.")
         return freq
-    k = 1 if relharmnum is None else relharmnum
-    if int(k) != k:
-        raise TypeError(f'PAC.{what}: relharmnum must be an integer '
-                        f'harmonic, not {relharmnum!r}')
-    return int(k) / float(pss.period) + freq
+    k = 1 if relharmnum is None else integer_arg(relharmnum, 'relharmnum', what)
+    return k / float(pss.period) + freq
 
 
 def sweep_offset(pss, freq, sweeptype, harmonic, what):
@@ -380,7 +414,7 @@ def sweep_offset(pss, freq, sweeptype, harmonic, what):
     (`sweep_kind`)."""
     if sweep_kind(pss, sweeptype, what) == 'relative':
         return freq
-    return freq - int(harmonic) / float(pss.period)
+    return freq - integer_arg(harmonic, 'harmonic', what) / float(pss.period)
 
 
 def _output_vector(output, width, dtype):

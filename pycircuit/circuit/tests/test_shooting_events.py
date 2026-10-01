@@ -1758,8 +1758,8 @@ def test_gears_stage_stores_its_event_columns_and_its_bordered_pac_matches_radau
         try:
             pac = PAC(cir, toolkit=circuit.numeric)
             with quiet():
-                pac.solve(p, [f0])
-            tt, yy = pac.time_response[0]
+                res = pac.solve(p, [f0])
+            tt, yy = res.info['time_response'][0]
         finally:
             p._event_columns = ev
         return np.asarray(tt, dtype=float), np.asarray(yy)

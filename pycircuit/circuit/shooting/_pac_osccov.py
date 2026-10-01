@@ -3,7 +3,7 @@ edge jitter and the mode weights.
 """
 import numpy as np
 from ._factored import dense_map
-from ._numerics import _output_row, edge_slope, output_index
+from ._numerics import _output_row, edge_slope, integer_arg, output_index
 import warnings
 from .events import EventColumns
 from pycircuit.circuit.simwarnings import (
@@ -324,8 +324,10 @@ class _OscillatorCovariance(object):
 
     def _oscillator_covariance(self, pss, samples=False, colour_fmin=None,
                                colour_fmax=None, points_per_decade=40,
-                               pair=False, coloured=True, note=True):
-        """`oscillator_covariance` (see there), for its callers in PAC:
+                               pair=False, coloured=True, note=True,
+                               what='oscillator_covariance'):
+        """`oscillator_covariance` (see there), for its callers in PAC
+        (refusals naming `PAC.<what>`, the method the user called):
         `coloured=False` builds the white part alone (a caller that builds the
         coloured one itself, `oscillator_edge_jitter`), `note=False` leaves out
         the "WHITE sources' alone" warning (a caller that handles the colour
@@ -334,7 +336,7 @@ class _OscillatorCovariance(object):
         self._check_circuit(pss)
         if not getattr(pss, 'autonomous', False):
             raise ValueError(
-                'PAC.oscillator_covariance: this splits a covariance that '
+                f'PAC.{what}: this splits a covariance that '
                 'GROWS into a bounded part plus a random walk along the '
                 'orbit. A driven circuit has neither -- its covariance '
                 'settles, and I - M kron M is nonsingular. Use '
@@ -346,9 +348,9 @@ class _OscillatorCovariance(object):
         pss = pss._lyapunov_host()
         fmin, fmax = colour_fmin, colour_fmax     # (the names the internals use)
         col = self._coloured_prepare(pss, fmin, fmax, points_per_decade,
-                                     'oscillator_covariance')
+                                     what)
         As, Qs, K1, M, m, n = self._lyapunov_pieces(
-            pss, 'oscillator_covariance',
+            pss, what,
             white=None if col is None else col['white'])
         ## a staged oscillator closes on the TOTAL map with the crossings'
         ## noise-driven motion in the injection -- the same `_event_closure`
@@ -380,20 +382,20 @@ class _OscillatorCovariance(object):
         uu = float(u[:m] @ u[:m])
         if uu == 0.0:
             raise ValueError(
-                'PAC.oscillator_covariance: the tangent has no first '
+                f'PAC.{what}: the tangent has no first '
                 'block, so its scale cannot be pinned to xdot(0).')
         u = u * (float(u[:m] @ xdot) / uu)
 
         vu = float(v @ u)
         if vu == 0.0:
             raise ValueError(
-                'PAC.oscillator_covariance: the left and right null '
+                f'PAC.{what}: the left and right null '
                 'directions are orthogonal in the pair space, so the '
                 'bordered system is singular. That should not happen on a '
                 'converged limit cycle.')
         d_closed = float(v @ K1 @ v) / (vu * vu)
 
-        self._check_kron(n, 'oscillator_covariance')
+        self._check_kron(n, what)
         S = np.eye(n * n) - np.kron(M, M)
         uk = np.kron(u, u)
         vk = np.kron(v, v)
@@ -786,7 +788,7 @@ class _OscillatorCovariance(object):
         return {'V': V, 'alpha': np.asarray(alphas), 'gint': np.asarray(gints),
                 'settled': bool(settled), 'transverse': var_t, 'Vphase': Vph}
 
-    def oscillator_edge_jitter(self, pss, output, time, kmax=8,
+    def oscillator_edge_jitter(self, pss, output, time, *, kmax=8,
                                colour_fmin=None, colour_fmax=None,
                                points_per_decade=40, intercept='white'):
         """The ADDITIVE (non-accumulating) edge jitter of a FREE-RUNNING
@@ -916,11 +918,15 @@ class _OscillatorCovariance(object):
         `coloured_transverse_variance` (s^2), `c_coloured` (s; 0 when white),
         `coloured_phase_variance` (the coloured phase part's k-lag
         variance per k, s^2; zeros when white), `band` (the colour band, or
-        None).
+        None).  The keywords after `time` are keyword-only, `kmax` an integer
+        >= 1.  A NOISELESS circuit has no jitter: zeros (it was refused as
+        "is any source noisy?" until 2026-10-01, while a zero intercept with
+        a coloured source returned 0 -- one case, two reactions).
 
         History: `doc/shooting_history.md`, `PAC.oscillator_edge_jitter`.
         """
         output = output_index(pss, output)
+        kmax = integer_arg(kmax, 'kmax', 'oscillator_edge_jitter', minimum=1)
         if intercept not in ('white', 'exact'):
             raise ValueError(
                 "PAC.oscillator_edge_jitter: intercept must be 'white' (the "
@@ -944,7 +950,7 @@ class _OscillatorCovariance(object):
         _K_orb, info = self._oscillator_covariance(
             pss, samples=True, pair=True, colour_fmin=colour_fmin,
             colour_fmax=colour_fmax, points_per_decade=points_per_decade,
-            coloured=False, note=False)
+            coloured=False, note=False, what='oscillator_edge_jitter')
         coloured = bool(self._coloured_present(pss))
         d = info['d']
         m = self.cir.n - 1
@@ -988,10 +994,6 @@ class _OscillatorCovariance(object):
         ## the output as a weight vector (a node, or a differential output)
         e = _output_row(output, m)
         white = float(d) > 0.0
-        if not white and not coloured:
-            raise ValueError(
-                'PAC.oscillator_edge_jitter: the growth per period is zero and '
-                'no source is coloured -- is any source noisy?')
 
         c = float(info['c_from_growth'])
         col = None
@@ -1074,10 +1076,6 @@ class _OscillatorCovariance(object):
 
         la, lb = at_node(a), at_node(b)
         kc, A_prj, A_raw, A_col = ((1.0 - th) * x + th * y for x, y in zip(la, lb))
-        if not coloured and A_prj == 0.0:
-            raise ValueError(
-                'PAC.oscillator_edge_jitter: the projected variance is zero '
-                '-- there is no additive jitter to report.')
 
         inc = np.zeros(len(kc))
         cvar = np.zeros(len(kc))
@@ -1119,7 +1117,8 @@ class _OscillatorCovariance(object):
             sigma_t = float('nan')
         elif A == 0.0:
             ## (no white source, intercept='white': none of the jitter is
-            ## additive white jitter; the coloured part is in `k_cycle`)
+            ## additive white jitter, the coloured part is in `k_cycle`; or
+            ## no source at all)
             sigma_t = 0.0
         elif A > 0.0:
             sigma_t = float(np.sqrt(A))
@@ -1242,10 +1241,11 @@ class _OscillatorCovariance(object):
         ## filter on it until 2026-10-01)
         K_orb, _info = self._oscillator_covariance(
             pss, pair=True, colour_fmin=colour_fmin, colour_fmax=colour_fmax,
-            points_per_decade=points_per_decade, note=False)
+            points_per_decade=points_per_decade, note=False,
+            what='orbital_mode_weights')
         K = np.asarray(K_orb, dtype=float)
         n = K.shape[0]
-        modes = pss.floquet_modes(pss, nmodes=(n if nmodes is None
+        modes = pss.floquet_modes(nmodes=(n if nmodes is None
                                                else int(nmodes)))
         V = np.column_stack([m['v0'] for m in modes])
         cw = V.conj().T @ K @ V

@@ -25,7 +25,7 @@ from pycircuit.circuit.circuit import gnd
 import pycircuit.circuit.analysis as analysis
 from ._factored import dense_map
 from ._numerics import _arnoldi_gmres
-from ._numerics import _output_weights, output_index
+from ._numerics import _output_weights, integer_arg, output_index
 from ._numerics import sweep_frequency, sweep_offset
 from ._numerics import freq_analysis
 from ._pac_lyapunov import _LyapunovCovariance
@@ -233,11 +233,14 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         Returns a `CircuitResult` (also `self.result`) swept over the OUTPUT
         frequency: every sideband ``f + k f0`` of every sweep point, merged
         and sorted, a negative one folded to ``|f + k f0|`` with its
-        coefficient conjugated.  Also sets `self.time_response`, per sweep
-        point ``(times, y)`` the complex response at the grid's nodes (a
-        time-domain reading comes from here, not from summing sidebands),
-        and `self.event_shifts`, per sweep point the landed crossings'
-        small-signal shifts (None without state events).
+        coefficient conjugated.  Its `info` dict carries, per sweep point,
+        `'time_response'` ``(times, y)``, the complex response at the grid's
+        nodes (a time-domain reading comes from here, not from summing
+        sidebands), and `'event_shifts'`, the landed crossings' small-signal
+        shifts (None without state events); and for the sweep `'deflated'`
+        (the oscillator's bordered solves) and `'matvecs'` (the Krylov
+        products, None when deflated).  (Attributes of the PAC until
+        2026-10-01, which the next call overwrote.)
 
         History: `doc/shooting_history.md`, `PAC.solve`.
         """
@@ -308,8 +311,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         for f in freqs:
             self._check_harmonic(pss, f, 'a sweep point')
 
-        ys, dthetas = self._forced_responses(pss, fp, freqs, u_ac, recycle)
-        self.event_shifts = list(dthetas)
+        info = {}
+        ys, dthetas = self._forced_responses(pss, fp, freqs, u_ac, recycle,
+                                             info=info)
+        info['event_shifts'] = list(dthetas)
         outfreq, outV = [], []
         ## the complex time-domain response per frequency, `(times, y)` with
         ## `y` the response to the source `u_ac e^{j w t}` at the grid's
@@ -317,9 +322,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## periodic envelope's Fourier coefficients by the period quadrature,
         ## which on a strongly non-uniform grid is not an interpolating basis
         ## -- a time-domain reading comes from here, not from summing them
-        self.time_response = []
+        info['time_response'] = []
         for f, y in zip(freqs, ys):
-            self.time_response.append((np.asarray(fp.times, dtype=float)[:len(y)], y.copy()))
+            info['time_response'].append(
+                (np.asarray(fp.times, dtype=float)[:len(y)], y.copy()))
             ## `v(t) = y(t) exp(-j w t)` is T-periodic; its DFT is the
             ## sideband set
             tms = np.asarray(fp.times, dtype=float)[:len(y)]
@@ -363,10 +369,11 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         self.result = analysis.CircuitResult(
             self.cir, x=X.T, xdot=None, sweep_values=fout,
             sweep_label='freq', sweep_unit='Hz')
+        self.result.info = info
         return self.result
 
     def _forced_responses(self, pss, fp, freqs, u_ac, recycle=True,
-                          u_points=None):
+                          u_points=None, info=None):
         """The steady forced response to the source ``u_ac e^{j w t}`` (or a
         MODULATED one, `u_points`: `PSS._forced_replay`) at each frequency:
         per frequency the complex response at every node of the grid, `(N +
@@ -374,7 +381,8 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         The operator solves (deflated on an oscillator, recycled across the
         sweep otherwise), the bordered event rows on a staged solve and the
         fixed-time correction of the node responses -- `PAC.solve`'s core,
-        shared with `_coloured_covariance`.  Sets `deflated` and `matvecs`.
+        shared with `_coloured_covariance`.  `info` (a dict) gets
+        `'deflated'` and `'matvecs'`.
 
         History: `doc/shooting_history.md`, `PAC._forced_responses`."""
         T = float(fp.T)
@@ -394,9 +402,9 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## Under the radau default eta ~ 1e-12, so this is correctness
         ## hygiene; the subspace recycling across frequencies is given up on
         ## the autonomous path (one bordered solve per point).
-        self.deflated = bool(getattr(pss, 'autonomous', False))
+        deflated = bool(getattr(pss, 'autonomous', False))
         _dth_f = [None] * len(freqs)
-        if self.deflated:
+        if deflated:
             ## ⚠ ON A STAGED OSCILLATOR the bordered system collapses onto
             ## the total map: with `dtheta = dtheta/dx_0 y_0 + dtheta_f`,
             ## `dtheta_f = -Gt^-1 W f_node` the source's own motion of the
@@ -418,11 +426,13 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                     rhs[i] = np.asarray(rhs[i], dtype=complex) + a * (_Pthd @ _dth_f[i])
             ys = [self._deflated_solve(pss, a, b, transposed=False, tol=tol)
                   for a, b in zip(alphas, rhs)]
-            self.matvecs = None
+            matvecs = None
         elif recycle:
-            ys, self.matvecs = self._solve_subspace(fp, alphas, rhs, tol)
+            ys, matvecs = self._solve_subspace(fp, alphas, rhs, tol)
         else:
-            ys, self.matvecs = self._solve_each(fp, alphas, rhs, tol)
+            ys, matvecs = self._solve_each(fp, alphas, rhs, tol)
+        if info is not None:
+            info.update(deflated=deflated, matvecs=matvecs)
 
         ## one driven replay per frequency turns `y_0` into the period
         ## ⚠ THE BORDERED SIDEBAND RESPONSE.  On a solve whose grid was
@@ -438,7 +448,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## linearisation of the solve that produced the orbit.
         _ev = EventColumns.of(pss)
         dthetas = [None] * len(freqs)
-        if _ev is not None and not self.deflated:
+        if _ev is not None and not deflated:
             K = _ev['P_end'].shape[1]
             Wk, nodes = np.asarray(_ev['W']), _ev['nodes']
             for i, (f, a, y0) in enumerate(zip(freqs, alphas, ys)):
@@ -459,7 +469,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                 dth = -np.linalg.solve(S, r)
                 dthetas[i] = dth
                 ys[i] = np.asarray(y0, dtype=complex) + sum(Ycols[l] * dth[l] for l in range(K))
-        elif _ev is not None and self.deflated and _dth_f[0] is not None:
+        elif _ev is not None and deflated and _dth_f[0] is not None:
             ## the crossings' motion on the staged oscillator: the state's
             ## part through the total map's sensitivity plus the source's
             _dthx = np.asarray(_ev.dth, dtype=float)
@@ -487,13 +497,15 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
             out.append(y)
         return out, dthetas
 
-    def adjoint_transfer_row(self, pss, freq, output, recycle_tol=None):
+    def adjoint_transfer_row(self, pss, freq, output, tol=None):
         """Every source to ONE output, in a single transposed solve.
 
-        Returns a row `r` of length `m`: `r[i]` is the small-signal
+        Returns `(r, info)`: a row `r` of length `m`, `r[i]` the small-signal
         response at `output` (at `t = 0`) to a unit source injected at
-        reduced coordinate `i` at `freq`. Forward, that is `m` separate
-        solves; here it is one.
+        reduced coordinate `i` at `freq`, and `info` with `'deflated'` (the
+        oscillator's bordered solve) and `'matvecs'` (the Krylov products,
+        0 for a direct solve).  Forward, that is `m` separate solves; here it
+        is one.
 
         ⚠ THIS IS THE ASYMMETRY pnoise IS SHAPED BY, and the reason
         Okumura et al. (1993) reach for the adjoint at all: "it is
@@ -513,9 +525,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         every step: that is `adjoint_sideband_row`.  Runs under every
         method.
 
-        `recycle_tol` is the GMRES tolerance of the transposed solve
-        (default `KRYLOV_FACTOR * reltol`), and binds only above
-        `FLOQUET_DENSE_LIMIT`: below it the solve is direct.
+        `tol` is the GMRES tolerance of the transposed solve (default
+        `KRYLOV_FACTOR * reltol`), and binds only above
+        `FLOQUET_DENSE_LIMIT`: below it the solve is direct.  (`recycle_tol`
+        until 2026-10-01: nothing is recycled.)
 
         History: `doc/shooting_history.md`, `PAC.adjoint_transfer_row`.
         """
@@ -540,19 +553,17 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
             count[0] += 1
             return np.asarray(v) - alpha * fp.matvec_transposed(v)
 
-        tol = (self.KRYLOV_FACTOR * pss.par.reltol if recycle_tol is None
-               else recycle_tol)
-        tol = max(tol, 1e-14)
+        tol = max(self.KRYLOV_FACTOR * pss.par.reltol if tol is None
+                  else float(tol), 1e-14)
         A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
         ## the same pole as in `solve` and `adjoint_sideband_row`: deflated
         ## on an oscillator, plain (and cheaper) on a driven circuit
         _autonomous = bool(getattr(pss, 'autonomous', False))
-        self.deflated = _autonomous
         _ev = EventColumns.of(pss)
         if _ev is None:
             xa = self._pole_solve(pss, A, alpha, d, tol, 'the adjoint solve')
-            self.matvecs = count[0]
-            return alpha * pss._forced_replay_transposed(fp, freq, xa)
+            return (alpha * pss._forced_replay_transposed(fp, freq, xa),
+                    {'deflated': _autonomous, 'matvecs': count[0]})
         ## ⚠ ON A STAGED SOLVE THE ROW IS BORDERED, as `adjoint_sideband_row`'s
         ## (`_sideband_family`): the transpose of `PAC.solve`'s bordered
         ## system with the output `d . y_0` -- read at node 0, whose time the
@@ -580,13 +591,12 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                     else f'the bordered adjoint solve, event {k}',
                     total=False)
             z, zeta = _ev.bordered_adjoint(_solve_adj, d, g_theta, alpha)
-        self.matvecs = count[0]
         row = alpha * pss._forced_replay_transposed(fp, freq, z)
         t_e, c_e, _g = pss._reverse_points(fp, freq,
                                            extra=_ev.injection_dict(zeta))
         if len(t_e):
             row = row - np.exp(2j * np.pi * float(freq) * t_e) @ c_e
-        return row
+        return row, {'deflated': _autonomous, 'matvecs': count[0]}
 
     def _pole_solve(self, pss, A, alpha, rhs, tol, what):
         """The transposed solve ``(I - alpha M^T) x = rhs`` of an adjoint row:
@@ -624,9 +634,11 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
     def adjoint_sideband_row(self, pss, freq, output, sidebands=0):
         """`H_l` rows: every source to ONE output's sideband `l`.
 
-        Returns an array of shape `(len(sidebands), m)`. Entry `[li, i]` is
-        the coefficient at sideband `l` of the output at `output`, for a
-        unit source injected at reduced coordinate `i` at `freq`:
+        Returns `(rows, info)`: `rows` of shape `(len(sidebands), m)`, entry
+        `[li, i]` the coefficient at sideband `l` (an integer) of the output
+        at `output`, for a unit source injected at reduced coordinate `i` at
+        `freq`, and `info` with `'deflated'` and `'matvecs'` as
+        `adjoint_transfer_row`'s:
 
             H_l = (1/N) sum_n exp(-j l w0 t_n) d^T y_n
 
@@ -665,7 +677,11 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         m = pss.cir.n - 1
         T = float(fp.T)
         N = len(fp.steps)
-        ls = np.atleast_1d(np.asarray(sidebands, dtype=int))
+        ## (each an integer: `dtype=int` truncated 1.5 to 1 silently until
+        ## 2026-10-01)
+        ls = np.array([integer_arg(l, 'a sideband', 'adjoint_sideband_row')
+                       for l in np.atleast_1d(np.asarray(sidebands)).ravel()],
+                      dtype=int)
 
         ## ⚠ A HARD BOUND, NOT A HEURISTIC.  Okumura et al. eq. (32): the
         ## maximum frequency the analysis can speak about is the grid's own
@@ -694,8 +710,8 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
             fam = self._sideband_family(pss, float(l) / T + float(freq), output)
             rows[li] = fam.row(int(l), float(freq))
             nmv += fam.matvecs
-        self.matvecs = nmv
-        return rows
+        return rows, {'deflated': bool(getattr(pss, 'autonomous', False)),
+                      'matvecs': nmv}
 
     def _sideband_family(self, pss, f_out, output):
         """Every adjoint sideband row with OUTPUT frequency `f_out` -- the row
@@ -824,7 +840,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         output = output_index(pss, output)
         self._check_circuit(pss)
         f0 = 1.0 / float(pss.period)
-        ls = [int(l) for l in sidebands]
+        ls = [integer_arg(l, 'a sideband', 'mixer_response') for l in sidebands]
         ins, rows = [], []
         fam = None
         for l in ls:
@@ -1184,6 +1200,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         made of.
         """
         output = output_index(pss, output)
+        ## (an integer: a float was used as is -- the coefficient at 1.5 f0
+        ## -- until 2026-10-01)
+        harmonic = integer_arg(harmonic, 'harmonic', 'carrier_phasor',
+                               minimum=0)
         times, _X = pss.waveform
         row = self._output_waveform_row(pss, output)
         t = np.asarray(times, dtype=float)[:-1]
@@ -1246,6 +1266,9 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         History: `doc/shooting_history.md`, `PAC.am_pm`.
         """
         output = output_index(pss, output)
+        harmonic = integer_arg(harmonic, 'harmonic', 'am_pm', minimum=1,
+                               why='AM and PM are read against the carrier '
+                               'at that harmonic, and there is none at DC')
         ## (one host, as `am_pm_noise`: the carrier, its phasor and the rows
         ## all the map's the rows are solved on)
         pss = pss.monodromy_twin()
@@ -1265,8 +1288,8 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                 'by it would report a huge modulation of nothing. Pick a '
                 'harmonic the circuit actually produces.'
                 % (harmonic, abs(C), scale))
-        upper = self.adjoint_sideband_row(pss, freq, output, harmonic)[0]
-        lower = self.adjoint_sideband_row(pss, -freq, output, harmonic)[0]
+        upper = self.adjoint_sideband_row(pss, freq, output, harmonic)[0][0]
+        lower = self.adjoint_sideband_row(pss, -freq, output, harmonic)[0][0]
         return self.am_pm_indices(upper / C, lower / C)
 
     ## `|1 - alpha|` below which the deflated answer is left as recovered:

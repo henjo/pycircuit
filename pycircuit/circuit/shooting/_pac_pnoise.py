@@ -3,7 +3,7 @@ folds), its AM/PM split and the band spread.
 """
 import numpy as np
 from ._noise_components import warn_sign_blind
-from ._numerics import output_index, sweep_frequency, sweep_offset
+from ._numerics import integer_arg, output_index, sweep_frequency, sweep_offset
 from pycircuit.circuit.simwarnings import AccuracyWarning, warn
 
 
@@ -36,9 +36,12 @@ class _DrivenNoise(object):
         every source in the circuit, which is the whole reason this is
         affordable.
 
-        Returns `(S, sidebands_used)`.  `S` is the one-sided
-        **time-averaged** PSD at the output, in the same units as
-        `analysis_ss.Noise`'s `Svnout`.  Gated against `analysis_ss.Noise`
+        Returns `(S, info)`.  `S` is the one-sided **time-averaged** PSD at
+        the output, in the same units as `analysis_ss.Noise`'s `Svnout`;
+        `info` says how it was summed: `'sidebands'` the `l` folded, in the
+        order summed (`0, 1, -1, 2, -2, ...`), `'stop'` the rule that ended
+        it (below), `'deflated'` whether the rows took the deflated
+        (oscillator) solve.  Gated against `analysis_ss.Noise`
         on a linear circuit, where the sidebands vanish and this reduces
         to the stationary answer (Okumura's `p = 1` case).
 
@@ -103,9 +106,11 @@ class _DrivenNoise(object):
         ⚠ TWO STOPPING RULES, AND THE BOUND IS NOT THE RATIO TEST.  The
         accumulation stops when a sideband pair adds less than `ratio_tol`
         of the running total -- and it can never pass `|l| <= N/2`, the
-        grid's own Nyquist (Okumura eq. 32).  `alias_stop` says which
+        grid's own Nyquist (Okumura eq. 32).  `info['stop']` says which
         fired: 'ratio', 'bound' (the Nyquist) or 'cap' (an explicit
-        `maxsidebands` below it); ending on either of the last two warns.
+        `maxsidebands` below it), ending on either of the last two warns --
+        or 'zero', every sideband exactly zero (no source reaches the
+        output: the density is 0, said silently; `_sideband_stop`).
 
         ⚠ HARMONICS: folding puts a copy of a 1/f source's DC singularity
         at every harmonic.  A `freq` on a harmonic where the folded `CY` is
@@ -153,13 +158,16 @@ class _DrivenNoise(object):
         tol = self.ALIAS_RATIO_TOL if ratio_tol is None else float(ratio_tol)
         ## ⚠ A COUNT ABOVE THE GRID'S NYQUIST RAISES (as the sampled family
         ## does)
-        if maxsidebands is not None and int(maxsidebands) > N // 2:
+        if maxsidebands is not None:
+            maxsidebands = integer_arg(maxsidebands, 'maxsidebands', 'pnoise',
+                                       minimum=0)
+        if maxsidebands is not None and maxsidebands > N // 2:
             raise ValueError(
                 f'PAC.pnoise: maxsidebands={maxsidebands} is above the grid\'s '
                 f'Nyquist ({N // 2} sidebands at {N} points per period) -- '
                 'use a finer period grid, or leave it None (the default, '
                 'every sideband the grid resolves).')
-        lmax = N // 2 if maxsidebands is None else int(maxsidebands)
+        lmax = N // 2 if maxsidebands is None else maxsidebands
 
         w = 2.0 * np.pi * float(freq)
         ## ⚠ `modulated=True` IS HULL & MEYER'S ROUTE, NOT A TOLERANCE
@@ -193,7 +201,8 @@ class _DrivenNoise(object):
                     _h = self._period_weights(_t, ns, _T, pss_)
                     return np.einsum('k,kij->ij', _h[:ns], Cs[:ns]) / float(_h[:ns].sum())
         else:
-            cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
+            cyfn = (self._cy_cycle_averaged if modulated else
+                    (lambda pss_, w_: self._cy_reduced(pss_, w_, what='pnoise')))
         cy = cyfn(pss, w)
 
         ## ⚠⚠ ON A HARMONIC, A SIDEBAND FOLDS THE SOURCES TO DC -- AND
@@ -217,7 +226,7 @@ class _DrivenNoise(object):
         total = 0.0
         used = []
         quiet = 0
-        self.alias_stop = 'bound'
+        stop = 'bound'
         rows = {}
         ## every row here has OUTPUT frequency `freq`: one family, one
         ## adjoint solve for all the sidebands (`_sideband_family`)
@@ -239,44 +248,61 @@ class _DrivenNoise(object):
                 ## converged.
                 quiet += 1
                 if quiet >= 2:
-                    self.alias_stop = 'ratio'
+                    stop = 'ratio'
                     break
             else:
                 quiet = 0
-        self.sidebands_used = used
         if cyclostationary:
             total = self._cyclostationary_fold(pss, float(freq), rows, model=colour)
-        ## ⚠ WHICH RULE STOPPED IT IS PART OF THE ANSWER.  Ending on the
-        ## ratio test means the series converged; ending on the Nyquist
-        ## bound means the grid ran out before the series did, and the
-        ## number is a LOWER bound on the folded noise -- every sideband
-        ## above the grid's own maximum frequency is missing, not small.
-        ## A strongly switching circuit does this readily.
-        ## ⚠ A CAP THE CALLER SET IS NAMED AS THAT CAP, not as the grid's
-        ## Nyquist.
-        if (self.alias_stop == 'bound' and maxsidebands is not None
-                and lmax < N // 2):
-            self.alias_stop = 'cap'
+        stop = self._sideband_stop(stop, total, maxsidebands, lmax, N // 2,
+                                   N, 'pnoise')
+        return total, {'sidebands': used, 'stop': stop,
+                       'deflated': bool(getattr(pss, 'autonomous', False))}
+
+    def _sideband_stop(self, stop, total, maxsidebands, lmax, cap, N, what,
+                       at=''):
+        """The rule that ended a sideband accumulation, and its warning:
+        'ratio' (the series converged), 'bound' (the grid's Nyquist), 'cap'
+        (an explicit `maxsidebands` below it) or 'zero' (nothing reached the
+        output: the density is 0, not a bound, and nothing is said).  `cap`
+        the most the grid resolves; `at` names the harmonic it is counted
+        from.
+
+        ⚠ WHICH RULE STOPPED IT IS PART OF THE ANSWER.  Ending on the ratio
+        test means the series converged; ending on the Nyquist bound means
+        the grid ran out before the series did, and the number is a LOWER
+        bound on the folded noise -- every sideband above the grid's own
+        maximum frequency is missing, not small.  A strongly switching
+        circuit does this readily.  ⚠ A CAP THE CALLER SET IS NAMED AS THAT
+        CAP, not as the grid's Nyquist.  ⚠ A NOISELESS circuit (or an output
+        no source reaches) sums to zero at every sideband, which the ratio
+        test cannot see: until 2026-10-01 it ran to the Nyquist and warned
+        "lower bound" about an exact zero."""
+        if stop == 'bound' and total == 0.0:
+            return 'zero'
+        if stop == 'bound' and maxsidebands is not None and lmax < cap:
+            stop = 'cap'
         ## (an explicit `maxsidebands=0` asks for the unfolded term alone,
         ## and stays quiet, as it always did)
-        if self.alias_stop == 'cap' and lmax > 0:
+        if stop == 'cap' and lmax > 0:
             warn(
-                'PAC.pnoise: the sideband accumulation stopped at '
-                f'maxsidebands={lmax} (the grid resolves {N // 2} at {N} '
+                f'PAC.{what}: the sideband accumulation stopped at '
+                f'maxsidebands={lmax} (the grid resolves {cap}{at} at {N} '
                 'points per period), not because the contributions became '
                 'negligible. Sidebands above the cap are MISSING rather '
                 'than small, so this is a lower bound on the folded noise. '
-                'Raise maxsidebands (or leave it None) and compare.', AccuracyWarning)
-        elif self.alias_stop == 'bound' and lmax > 0:
+                'Raise maxsidebands (or leave it None) and compare.',
+                AccuracyWarning)
+        elif stop == 'bound' and lmax > 0:
             warn(
-                'PAC.pnoise: the sideband accumulation stopped at the '
-                "grid's Nyquist (|l| = %d at %d points per period), not "
-                'because the contributions became negligible. Sidebands '
-                'above the grid\'s maximum frequency are MISSING rather '
-                'than small, so this is a lower bound on the folded noise. '
-                'Re-solve the PSS on a finer period grid and compare.'
-                % (lmax, N), AccuracyWarning)
-        return total, used
+                f'PAC.{what}: the sideband accumulation stopped at the '
+                f"grid's Nyquist ({lmax} sidebands{at} at {N} points per "
+                'period), not because the contributions became negligible. '
+                "Sidebands above the grid's maximum frequency are MISSING "
+                'rather than small, so this is a lower bound on the folded '
+                'noise. Re-solve the PSS on a finer period grid and compare.',
+                AccuracyWarning)
+        return stop
 
     def _dc_fold_guard(self, pss, cyfn, freq, near, f0_, cy, what):
         """Refuse (or warn about) a fold that reads the sources next to DC.
@@ -593,41 +619,65 @@ class _DrivenNoise(object):
                 raise ValueError(
                     f'PAC.band_spread: {k} is not a knob here -- the band is '
                     'an offset from `harmonic` for every quantity.')
+        harmonic = integer_arg(harmonic, 'harmonic', 'band_spread', minimum=1,
+                               why='the band is an offset from a carrier')
+        points = integer_arg(points, 'points', 'band_spread', minimum=2,
+                             why='a spread needs two values')
         f0 = 1.0 / float(pss.period)
-        rs = np.linspace(float(band[0]), float(band[1]), int(points))
+        rs = np.linspace(float(band[0]), float(band[1]), points)
         vals = []
         for r in rs:
             f = float(r) * f0
             if quantity == 'oscillator_spectrum':
-                Sv, _i = self.oscillator_spectrum(pss, np.array([f]), output,
-                                                  harmonic=harmonic, **kw)
+                Sv, _L, _i = self.oscillator_spectrum(
+                    pss, np.array([f]), output, harmonic=harmonic, **kw)
                 v = float(np.real(Sv[0]))
             elif quantity in ('S_pm', 'S_am'):
-                am, pm, _b = self.am_pm_noise(pss, f, output, harmonic=harmonic,
+                am, pm, _i = self.am_pm_noise(pss, f, output, harmonic=harmonic,
                                               sweeptype='relative', **kw)
                 v = float(np.real(pm if quantity == 'S_pm' else am))
             else:
                 v = float(np.real(self.pnoise(
                     pss, f, output, sweeptype='relative',
-                    relharmnum=int(harmonic), **kw)[0]))
+                    relharmnum=harmonic, **kw)[0]))
             vals.append(v * float(r) ** 2)
         vals = np.asarray(vals, dtype=float)
         lo = float(np.min(np.abs(vals)))
-        spread = float(np.max(np.abs(vals)) / lo) if lo > 0.0 else np.inf
+        ## ⚠ A RATIO WITH A ZERO IN IT IS UNDEFINED, NOT INFINITE: a noiseless
+        ## circuit (or an output no source reaches) returned `spread = inf`
+        ## until 2026-10-01, which reads as "maximally spread"
+        if not lo > 0.0:
+            raise ValueError(
+                f'PAC.band_spread: the {quantity} density is zero at offset '
+                f'{float(rs[int(np.argmin(np.abs(vals)))]):.6g} f0 of the '
+                'band, so its spread (max/min) is undefined -- is any source '
+                'noisy, and does it reach this output?')
+        spread = float(np.max(np.abs(vals)) / lo)
         mean = float(np.mean(vals))
         mid = float(np.interp(0.5 * (rs[0] + rs[-1]), rs, vals))
         return spread, {'offsets': rs, 'values': vals, 'band_mean': mean,
-                        'midpoint': mid,
-                        'mean_over_point': (mean / mid) if mid != 0.0 else np.inf}
+                        'midpoint': mid, 'mean_over_point': mean / mid}
 
-    def am_pm_noise(self, pss, freq, output, harmonic=1, maxsidebands=None,
-                    modulated=False, sweeptype=None):
+    def am_pm_noise(self, pss, freq, output, harmonic=1, ratio_tol=None,
+                    maxsidebands=None, modulated=False, sweeptype=None):
         """Output NOISE split into its AM and PM parts at `freq` from `harmonic`.
 
-        Returns `(S_am, S_pm, bands_used)`: the AM and PM noise PER SIDEBAND,
+        Returns `(S_am, S_pm, info)`: the AM and PM noise PER SIDEBAND,
         one-sided densities in the units of :meth:`pnoise` -- half the pair
-        of sidebands they decompose, see the identity below.  `output`: a
-        reduced index, a weight vector, or a node name.
+        of sidebands they decompose, see the identity below -- and how they
+        were summed: `info['bands']` the source bands `p` (below) in the
+        order summed (`0, 1, -1, ...`), `info['stop']` the rule that ended it
+        and `info['deflated']`, as `pnoise`'s.  `output`: a reduced index, a
+        weight vector, or a node name; `harmonic` an integer >= 1.
+
+        ⚠ `pnoise`'S STOP RULE: band pairs `+-p` are added in `|p|` order
+        until two in a row add less than `ratio_tol` (default
+        `ALIAS_RATIO_TOL`) of the running total, never past `|p| = N//2 -
+        harmonic` (both sidebands of a pair within the grid's Nyquist); a sum
+        cut there or at an explicit `maxsidebands` warns, as `pnoise`'s
+        does.  A bias-dependent `CY` is refused unless `modulated=True`
+        (there is no cyclostationary split; `pnoise(cyclostationary=True)`
+        gives the total).
         History: `doc/shooting_history.md`, `PAC.am_pm_noise`.
 
         ⚠ THE SWEEP (`sweeptype`), a commercial RF simulator's rule with
@@ -673,7 +723,10 @@ class _DrivenNoise(object):
             2 (S_am + S_pm)  ==  pnoise(harmonic*f0 + freq) + pnoise(harmonic*f0 - freq)
 
         exactly, because `|a+c|^2 + |a-c|^2 = 2|a|^2 + 2|c|^2` leaves no cross
-        term.  A pairing error breaks it, which is what the test asserts.
+        term -- over the SAME bands: each side stops on its own ratio test,
+        so it holds to about `ratio_tol` unless both run the same count (an
+        explicit `maxsidebands`, or `ratio_tol=0`).  A pairing error breaks
+        it, which is what the test asserts.
 
         ⚠ ON A FREE-RUNNING OSCILLATOR this split sits on the SAME absolute
         scale as `pnoise` (the identity to 1e-12) and as the externally
@@ -704,31 +757,42 @@ class _DrivenNoise(object):
         """
         output = output_index(pss, output)
         self._check_circuit(pss)
+        k = integer_arg(harmonic, 'harmonic', 'am_pm_noise', minimum=1,
+                        why='AM and PM are split against the carrier at '
+                        'that harmonic, and there is none at DC')
         pss = pss._adjoint_host()
         ## (the offset from the HOST's carrier, as in `pnoise`)
-        freq = sweep_offset(pss, freq, sweeptype, harmonic, 'am_pm_noise')
+        freq = sweep_offset(pss, freq, sweeptype, k, 'am_pm_noise')
         fp = pss.factored_period()
         N = len(fp.steps)
         f0 = 1.0 / float(fp.T)
-        k = int(harmonic)
+        tol = self.ALIAS_RATIO_TOL if ratio_tol is None else float(ratio_tol)
         ## ⚠ BOTH SIDEBANDS OF A PAIR, `k - p` AND `k + p`, WITHIN THE GRID'S
         ## NYQUIST (`|l| <= N//2`, `adjoint_sideband_row`): so `|p|` up to
-        ## `N//2 - |k|`.
-        cap = N // 2 - abs(k)
+        ## `N//2 - k`.
+        cap = N // 2 - k
         if cap < 0:
             raise ValueError(
                 'PAC.am_pm_noise: harmonic %d is above the grid\'s Nyquist '
                 '(%d harmonics at %d points per period) -- use a finer period '
                 'grid.' % (k, N // 2, N))
         ## (an explicit count above that raises, as in `pnoise`)
-        if maxsidebands is not None and int(maxsidebands) > cap:
+        if maxsidebands is not None:
+            maxsidebands = integer_arg(maxsidebands, 'maxsidebands',
+                                       'am_pm_noise', minimum=0)
+        if maxsidebands is not None and maxsidebands > cap:
             raise ValueError(
                 f'PAC.am_pm_noise: maxsidebands={maxsidebands} is above what '
                 f'the grid resolves at harmonic {k} ({cap}: both sidebands of '
                 f'a pair within the Nyquist, {N // 2} at {N} points per '
                 'period) -- use a finer period grid, or leave it None.')
-        lmax = cap if maxsidebands is None else int(maxsidebands)
-        cyfn = (self._cy_cycle_averaged if modulated else self._cy_reduced)
+        lmax = cap if maxsidebands is None else maxsidebands
+        ## (the refusal of a bias-dependent CY names the routes THIS method
+        ## has: `modulated=True`, and `pnoise(cyclostationary=True)` for the
+        ## total -- it advised a `cyclostationary` keyword it does not take
+        ## until 2026-10-01)
+        cyfn = (self._cy_cycle_averaged if modulated else
+                (lambda pss_, w_: self._cy_reduced(pss_, w_, what='am_pm_noise')))
         ## the sources are read at `freq + p f0`: next to DC when the output
         ## sits on a harmonic (`pnoise`'s guard)
         gs = float(freq) + np.arange(-lmax, lmax + 1) * f0
@@ -755,21 +819,45 @@ class _DrivenNoise(object):
         S_am = 0.0
         S_pm = 0.0
         bands = []
+        quiet = 0
+        stop = 'bound'
         ## the `a` rows share OUTPUT frequency `k f0 + freq`, the `b` rows
         ## `k f0 - freq`: two families, two adjoint solves in all
         fam_a = self._sideband_family(pss, k * f0 + float(freq), output)
         fam_b = self._sideband_family(pss, k * f0 - float(freq), output)
-        for p in range(-lmax, lmax + 1):
-            g = float(freq) + p * f0
-            a = fam_a.row(k - p, g)
-            b = fam_b.row(k + p, -g)
-            cy = cyfn(pss, 2.0 * np.pi * g)
-            a_r = a * _rot
-            b_r = np.conj(b) * np.conj(_rot)
-            m_am = a_r + b_r
-            m_pm = a_r - b_r
-            S_am += 0.5 * float(np.real(m_am @ cy @ np.conj(m_am)))
-            S_pm += 0.5 * float(np.real(m_pm @ cy @ np.conj(m_pm)))
-            bands.append(p)
+        ## ⚠ `pnoise`'s STOP RULE, band pair by band pair in `|p|` order:
+        ## until 2026-10-01 every band to the cap was summed whatever its
+        ## size, so the cost was always the maximum and nothing said whether
+        ## the series had converged (the review's X3)
+        for q in range(lmax + 1):
+            step = 0.0
+            for p in ((0,) if q == 0 else (q, -q)):
+                g = float(freq) + p * f0
+                a = fam_a.row(k - p, g)
+                b = fam_b.row(k + p, -g)
+                cy = cyfn(pss, 2.0 * np.pi * g)
+                a_r = a * _rot
+                b_r = np.conj(b) * np.conj(_rot)
+                m_am = a_r + b_r
+                m_pm = a_r - b_r
+                d_am = 0.5 * float(np.real(m_am @ cy @ np.conj(m_am)))
+                d_pm = 0.5 * float(np.real(m_pm @ cy @ np.conj(m_pm)))
+                S_am += d_am
+                S_pm += d_pm
+                step += d_am + d_pm
+                bands.append(p)
+            total = S_am + S_pm
+            if total > 0 and abs(step) < tol * abs(total):
+                ## (two quiet pairs, as `pnoise`)
+                quiet += 1
+                if quiet >= 2:
+                    stop = 'ratio'
+                    break
+            else:
+                quiet = 0
+        stop = self._sideband_stop(stop, S_am + S_pm, maxsidebands, lmax, cap,
+                                   N, 'am_pm_noise', at=f' at harmonic {k}')
         ## the pair's totals, halved (exactly): per sideband
-        return 0.5 * S_am, 0.5 * S_pm, bands
+        return 0.5 * S_am, 0.5 * S_pm, {
+            'bands': bands, 'stop': stop,
+            'deflated': bool(getattr(pss, 'autonomous', False))}

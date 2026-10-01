@@ -403,7 +403,7 @@ def test_small_signal_surfaces_work_over_a_glm_operating_point_through_the_twin(
             v, _info = p.ppv()
             _K, _i2 = pac.oscillator_covariance(p)
             d = _i2['d']
-            Sv, _ = pac.oscillator_spectrum(p, np.array([0.05 / float(p.period)]), 0)
+            Sv, _, _ = pac.oscillator_spectrum(p, np.array([0.05 / float(p.period)]), 0)
         got[method] = (np.asarray(v)[:m], d / float(p.period), float(Sv[0]),
                        p.monodromy_twin())
     (v_r, c_r, s_r, tw_r), (v_g, c_g, s_g, tw_g) = got['radau'], got['glm3']
@@ -461,7 +461,7 @@ def test_floquet_modes_works_when_called_with_no_arguments(method):
         p.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
                 maxiterations=200)
     assert p.converged
-    with_arg = p.floquet_modes(p)
+    with_arg = p.floquet_modes()
     no_arg = p.floquet_modes()
     assert len(no_arg) == len(with_arg) and len(no_arg) >= 2
     for a, b in zip(with_arg, no_arg):
@@ -660,7 +660,7 @@ def test_sampled_noise_reads_a_glm_run_off_its_own_map():
         p.monodromy = mono
         with quiet(AccuracyWarning, ModelWarning):
             p.solve(period=per, timestep=per / 40, maxiterations=40)
-            got[(method, mono)] = float(PAC(cir).sampled_noise(p, ib, [0.0], [0.1 / per])[0, 0])
+            got[(method, mono)] = float(PAC(cir).sampled_noise(p, ib, [0.0], [0.1 / per])[0][0, 0])
     assert got[('glm3', 'radau')] == got[('glm3', 'native')] > 0.0, got
     assert got[('glm3', 'radau')] != got[('radau', 'radau')], got
 
