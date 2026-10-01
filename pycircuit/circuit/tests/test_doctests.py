@@ -161,5 +161,5 @@ def test_transient_module_doctests():
     results = doctest.testmod(transient_module, verbose=False)
     assert results.attempted > 0
     assert results.failed == 0, (
-        '%d of %d doctests in transient.py failed' %
-        (results.failed, results.attempted))
+        f'{results.failed} of {results.attempted} doctests in transient.py '
+        'failed')

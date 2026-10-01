@@ -191,7 +191,6 @@ class FactoredPeriod(object):
     def seed_source_T(self, w):
         """The transpose of `seed_source`: the costate a source at the
         period's start couples to, or None where it couples to none."""
-        return None
 
 
 class _LMMPeriod(FactoredPeriod):

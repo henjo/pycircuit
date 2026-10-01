@@ -1837,8 +1837,8 @@ def test_theta_small_signal_surfaces_read_the_source_in_its_consistent_iq0_seed(
     circuit.default_toolkit = circuit.numeric
 
     def transfer(method, npts):
-        cir, pss, io, pac, T = _lti_sampler(method, npts, vac=True,
-                                            flicker=False)
+        cir, pss, _io, pac, T = _lti_sampler(method, npts, vac=True,
+                                             flicker=False)
         f = 0.137 / T
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
@@ -1852,7 +1852,7 @@ def test_theta_small_signal_surfaces_read_the_source_in_its_consistent_iq0_seed(
     assert e4 < 1e-7 and e4 / e8 > 3.0, (e4, e8)
 
     ## the sampled series against the pnoise fold, and a sample near t_0
-    cir, pss, io, pac, T = _lti_sampler('theta', 400)
+    _cir, pss, io, pac, T = _lti_sampler('theta', 400)
     f0 = 1.0 / T
     f = 0.137 * f0
     with warnings.catch_warnings():
@@ -1866,7 +1866,7 @@ def test_theta_small_signal_surfaces_read_the_source_in_its_consistent_iq0_seed(
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         near = pac.sampled_noise(pss, io, [t_near], [f], maxsidebands=10)[0, 0]
-        cr, pr, ior, pacr, _T = _lti_sampler('radau', 400)
+        _cr, pr, ior, pacr, _T = _lti_sampler('radau', 400)
         near_r = pacr.sampled_noise(pr, ior, [t_near], [f], maxsidebands=10)[0, 0]
     assert abs(near / near_r - 1.0) < 1e-3, (near, near_r)
 
@@ -1886,7 +1886,7 @@ def test_the_sampler_holds_kTC_under_theta_esdirk43_and_glm4(method, held_tol,
     series and the pnoise fold: esdirk43 to rounding, glm4 3.7e-9."""
     import warnings
     ktc = _KB * _TEMP / 100e-12
-    cir, pss, io, pac, T = _sampler_fixture_method(
+    _cir, pss, io, pac, T = _sampler_fixture_method(
         lambda c: c.__setitem__('S0', _sw()), method, 400)
     f0 = 1.0 / T
     fp = pss.factored_period()
@@ -1903,7 +1903,7 @@ def test_the_sampler_holds_kTC_under_theta_esdirk43_and_glm4(method, held_tol,
     assert abs(held - 1.0) < held_tol, (method, held)
     assert abs(cov - 1.0) < cov_tol, (method, cov)
     if method != 'theta':
-        cir, pss, io, pac, T = _lti_sampler(method, 400)
+        _cir, pss, io, pac, T = _lti_sampler(method, 400)
         f = 0.137 * f0
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')

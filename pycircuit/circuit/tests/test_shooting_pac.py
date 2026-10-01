@@ -2659,7 +2659,6 @@ def test_pss_and_pac_run_under_the_jax_toolkit():
     assigns into a JAX array in place (element code, outside the shooting
     package) -- open."""
     pytest.importorskip('jax')
-    import warnings
     import pycircuit.circuit.circuit as _cm
     from pycircuit.circuit.toolkit import jaxtoolkit
 

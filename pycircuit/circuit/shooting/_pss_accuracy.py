@@ -106,7 +106,7 @@ class _AccuracyChecks(object):
         cache = self._twins
         if method in cache:
             return cache[method]
-        solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
+        _solved, _x0, _xm1, times, hs, T, _x0u = self._period_state
         kw = dict(self._solve_kwargs)
         ## EVERY setting of this analysis (its Parameters, `epar` among
         ## them) but the method, as `grid_error`'s refined twins take them:

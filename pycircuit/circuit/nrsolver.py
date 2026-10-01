@@ -129,7 +129,6 @@ class NonLinearSolver(ABC):
         iterations, naming the worst row, and `SingularMatrix` on a
         structurally singular `J`.
         """
-        pass
 
 
 class StandardNewton(NonLinearSolver):

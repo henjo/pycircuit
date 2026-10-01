@@ -2489,7 +2489,6 @@ def test_the_dc_fold_guard_covers_every_sideband_the_fold_reaches():
 def _ampm_diode_mixer(method):
     """`test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity`'s
     diode mixer under `method` (200 points)."""
-    import warnings
     from pycircuit.circuit.elements import Diode
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
@@ -2546,30 +2545,7 @@ def test_am_pm_noise_modulated_is_its_cycle_averaged_stationary_source():
     must equal that circuit's to rounding (measured 2e-15), keep the
     identity (exactly 0 here: the multiplier makes two sidebands), and be
     non-degenerate (PM/AM 0.41)."""
-    import warnings
-    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
-                                       white_noise)
-    from pycircuit.utilities.param import Parameter
     circuit.default_toolkit = circuit.numeric
-
-    class Mult(Behavioural):
-        params_as = 'p'
-        instparams = [Parameter(name='k', desc='gain', unit='A/V^2', default=1.0)]
-
-        @staticmethod
-        def analog(p, outp, outn, a, an, b, bn):
-            return Contribution(Branch(outp, outn).I,
-                                p.k * Branch(a, an).V * Branch(b, bn).V)
-
-    class ModNoise(Behavioural):
-        params_as = 'p'
-        instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
-
-        @staticmethod
-        def analog(p, outp, outn, b, bn):
-            return Contribution(Branch(outp, outn).I,
-                                white_noise((p.k * Branch(b, bn).V) ** 2))
-
     T = 1e-6
     f0 = 1.0 / T
     vo, va = 0.3, 1.0
@@ -2582,10 +2558,10 @@ def test_am_pm_noise_modulated_is_its_cycle_averaged_stationary_source():
         if stationary:
             c['src'] = IS('mid', gnd, i=0.0, noisePSD=vo ** 2 + va ** 2 / 2.0)
         else:
-            c['src'] = ModNoise('mid', gnd, 'lo', gnd, k=1.0)
+            c['src'] = _NuModNoise('mid', gnd, 'lo', gnd, k=1.0)
         c['Rm'] = R('mid', gnd, r=1.0)
         c['idc'] = IS(gnd, 'mid', i=0.5)
-        c['M2'] = Mult('out', gnd, 'mid', gnd, 'lo', gnd, k=0.3)
+        c['M2'] = _NuMult('out', gnd, 'mid', gnd, 'lo', gnd, k=0.3)
         c['Ro'] = R('out', gnd, r=1.0)
         c['Co'] = C('out', gnd, c=0.2e-6)
         pss = PSS(c, method='gear', reltol=1e-10)
@@ -2620,14 +2596,11 @@ def test_am_pm_noise_modulated_is_its_cycle_averaged_stationary_source():
 def _gated_lorentz(gfun, signed, P=1e-20, tau=0.3e-6):
     """A Lorentzian current p -> n whose level is ``g(V(cp, cn))``: `CY`
     only (the PSD, sign-blind) or with its SIGNED amplitude as well
-    (`Element.noise_amplitudes`)."""
-    from pycircuit.circuit.circuit import Circuit
-    from pycircuit.utilities.param import Parameter
+    (`Element.noise_amplitudes`).  `_ModLorentzCtl`'s terminals and
+    parameters (unread here), its `CY` replaced."""
+    from pycircuit.circuit.tests._shooting_fixtures import _ModLorentzCtl
 
-    class _Gated(Circuit):
-        terminals = ('p', 'n', 'cp', 'cn')
-        instparams = [Parameter(name='unused', desc='', unit='', default=0.0)]
-
+    class _Gated(_ModLorentzCtl):
         def CY(self, x, w, epar=None):
             g = gfun(float(x[2] - x[3]))
             pp = P * g * g / (1.0 + (float(w) * tau) ** 2)

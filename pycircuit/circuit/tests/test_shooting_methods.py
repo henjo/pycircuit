@@ -2320,7 +2320,6 @@ def test_grid_error_refines_by_any_factor_and_reports_the_methods_order():
     with no order and no power-law check; and the estimate is the ERROR:
     gear at 40 points refined 3x twice estimates its finest value 6.286e-4
     off, against 6.232e-4 from a radau reference (1.009)."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 0.2
     T = 2.0 * np.pi

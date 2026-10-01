@@ -3,8 +3,10 @@
 import warnings
 
 import numpy as np
+
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import gnd
+
 from .pac import PAC
 from .pss import PSS
 
