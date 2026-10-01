@@ -2116,3 +2116,31 @@ def test_the_coloured_spectrum_checks_its_own_amplitude_pole():
         pac.oscillator_spectrum(pss, [2.0 * f_amp], ov, offset_fmin=1e-5 * f0)
     msgs = [str(r.message) for r in rec]
     assert any('amplitude-relaxation pole' in m_ for m_ in msgs), msgs
+
+
+def test_the_coloured_lineshape_band_top_is_refused_past_half_f0_and_leaves_the_core():
+    """The review's X9 (2026-10-01): `oscillator_spectrum(offset_fmax=)` had
+    no test.  It is the top of the coloured part's structure-function
+    integral, default f0/2, the phase model's reach: above it the call is
+    refused, and the line CORE does not depend on it (phase noise far above
+    the linewidth barely moves `D(tau)` at the core's lags) -- at one
+    linewidth 1.4664e7 for f0/2 and f0/20 alike.  (Further out it moves a
+    little and not monotonically -- 3.2395e4 / 3.2036e4 / 3.2362e4 at 100
+    linewidths for f0/2 / f0/4 / f0/20 -- the quadrature, not the physics.)"""
+    import warnings as _w
+    _c, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, psd=1e-6,
+                           fref=1.0 / 6.66, white=1e-6)
+    ov = [str(n_) for n_ in _c.nodes].index('v')
+    f0 = 1.0 / float(pss.period)
+    fcore = np.pi * f0 * f0 * pac._colour_fold(pss, 1e-5 * f0, None, 'x').c_white
+    offs = np.array([1.0]) * fcore
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        with pytest.raises(ValueError, match='offset_fmax'):
+            pac.oscillator_spectrum(pss, offs, ov, offset_fmin=1e-5 * f0,
+                                    offset_fmax=0.6 * f0)
+        S = [float(pac.oscillator_spectrum(pss, offs, ov, offset_fmin=1e-5 * f0,
+                                           offset_fmax=fm,
+                                           frequency_aware=False)[0][0])
+             for fm in (0.5 * f0, 0.05 * f0)]
+    assert abs(S[1] / S[0] - 1.0) < 1e-3, S

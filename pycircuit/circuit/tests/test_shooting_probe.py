@@ -585,3 +585,34 @@ def test_the_probe_reports_inner_solves_that_did_not_converge():
         _w.simplefilter('ignore')
         _A, _f, info2 = ok.solve(2.0, 1.0 / (2.0 * np.pi), tol=1e-8, maxiter=2)
     assert info2['inner_unconverged'] == 0, info2
+
+
+def test_the_pac_jacobian_without_validation_is_the_same_matrix():
+    """The review's X9 (2026-10-01): `pac_jacobian(validate=False)` had no
+    test.  It is the same Jacobian, bit for bit, in either call order; it
+    skips the finite-difference column -- the two inner PSS solves the
+    validation costs -- and its `info` says it was not validated."""
+    from pycircuit.circuit.shooting import ProbeShooting
+    circuit.default_toolkit = circuit.numeric
+
+    def build():
+        c = SubCircuit()
+        c.add_node('v')
+        c.add_node('x')
+        c['C'] = C('v', gnd, c=1.0)
+        c['RL'] = R('v', 'x', r=1e-2)
+        c['L'] = L('x', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: (u - u ** 3 / 3.0))
+        return c
+    f_lc = 1.0 / (2.0 * np.pi)
+    ps = ProbeShooting(build, 'v', npts=250, harmonics=1)
+    out = {}
+    for v in (False, True):
+        e = ps.evaluations
+        J, info = ps.pac_jacobian(f_lc, [1.99], [90.0], validate=v)
+        out[v] = (J, info, ps.evaluations - e)
+    assert np.array_equal(out[False][0], out[True][0])
+    assert out[False][1]['validated'] is False
+    assert 'validation_reldiff' not in out[False][1]
+    assert out[True][1]['validated'] is True
+    assert out[True][2] - out[False][2] == 2, (out[True][2], out[False][2])

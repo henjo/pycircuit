@@ -2310,3 +2310,48 @@ def test_a_glm_reads_pac_off_its_own_map_at_its_order():
         _e, ys = p._forced_replay(sm, fq, u_red, y0=np.zeros(m, dtype=complex), collect=True)
         err = np.max(np.abs(np.real(np.array(ys)) - fd)) / np.max(np.abs(fd))
         assert err < 1e-6, (method, err)
+
+
+def test_grid_error_refines_by_any_factor_and_reports_the_methods_order():
+    """The review's X9 (2026-10-01): `grid_error(refine=, levels=)` ran at
+    its defaults only.  On van der Pol (mu = 0.2) the period's estimated
+    order is the method's at `refine=3` as at 2 -- gear 1.988 / 1.991, radau
+    5.25 / 5.22 -- on grids N, 3N, 9N; `levels=2` is the raw two-grid change
+    with no order and no power-law check; and the estimate is the ERROR:
+    gear at 40 points refined 3x twice estimates its finest value 6.286e-4
+    off, against 6.232e-4 from a radau reference (1.009)."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    mu = 0.2
+    T = 2.0 * np.pi
+
+    def solved(method, npts):
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        p = PSS(c, method=method, reltol=1e-12)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
+                    maxiterations=100)
+        assert p.converged
+        return p
+    period = lambda q: float(q.period)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        g = solved('gear', 40)
+        r3 = g.grid_error(period, refine=3, levels=3)
+        r2 = g.grid_error(period, refine=3, levels=2)
+        rr = solved('radau', 20).grid_error(period, refine=3, levels=3)
+        ref = float(solved('radau', 180).period)
+    assert list(r3['npts']) == [40, 120, 360] and abs(r3['order'] - 2.0) < 0.1
+    assert abs(rr['order'] - 5.0) < 0.5, rr['order']
+    assert list(r2['npts']) == [40, 120] and r2['order'] is None
+    assert r2['power_law'] is None
+    actual = abs(r3['values'][-1] - ref)
+    assert abs(r3['error'] / actual - 1.0) < 0.05, (r3['error'], actual)
+    with pytest.raises(ValueError, match='levels'):
+        g.grid_error(period, levels=4)

@@ -2615,3 +2615,75 @@ def test_pac_solve_on_a_trap_staged_oscillator_reads_one_host():
     assert np.max(np.abs(r_run / r_twin - 1.0)) < 1e-12, r_run / r_twin - 1.0
     assert np.max(np.abs(h_run - h_twin)) <= 1e-12 * np.max(np.abs(h_twin))
     assert np.max(np.abs(r_run / r_rad - 1.0)) < 1e-4, r_run / r_rad - 1.0
+
+
+def test_the_adjoint_transfer_row_tolerance_binds_on_the_iterative_path():
+    """The review's X9 (2026-10-01): `adjoint_transfer_row(recycle_tol=)` had
+    no test -- and below `FLOQUET_DENSE_LIMIT` it CANNOT bind: the transposed
+    solve is direct there (batch 4).  Forced onto the iterative path (the
+    limit lowered on the PSS), it is the GMRES tolerance, monotone against
+    the direct row on a 32-state ladder: 8.4e-3 / 3.4e-9 / 1.3e-15 at 1e-2 /
+    1e-6 / 1e-12, in 5 / 9 / 11 mat-vecs (the default, KRYLOV_FACTOR *
+    reltol: 1.4e-12)."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    cir = _adjoint_ladder(30)
+    pss = PSS(cir, method='gear', reltol=1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
+    assert pss.converged
+    pac = PAC(cir, toolkit=circuit.numeric)
+    f = 0.13e3
+    direct = pac.adjoint_transfer_row(pss, f, 3)
+    assert pac.matvecs == 0
+    pss.FLOQUET_DENSE_LIMIT = 0
+
+    def err(tol):
+        r = pac.adjoint_transfer_row(pss, f, 3, recycle_tol=tol)
+        return (float(np.max(np.abs(r - direct)) / np.max(np.abs(direct))),
+                pac.matvecs)
+    loose, n_loose = err(1e-2)
+    tight, n_tight = err(1e-12)
+    assert loose > 1e-4 and tight < 1e-12 and n_loose < n_tight, \
+        (loose, tight, n_loose, n_tight)
+
+
+def test_pss_and_pac_run_under_the_jax_toolkit():
+    """The review's X9 (2026-10-01): nothing ran the shooting stack under the
+    JAX toolkit.  A driven RC at 10 points: the PSS waveform matches the
+    numeric toolkit's to 1.2e-16 and the PAC sidebands exactly.  (Slow --
+    per-call JAX dispatch in every element evaluation: ~12 s here against
+    well under one numerically, and a diode mixer at 100 points did not
+    finish in 15 minutes.)  ⚠ `pnoise` does NOT run under it: `VSin.CY`
+    assigns into a JAX array in place (element code, outside the shooting
+    package) -- open."""
+    pytest.importorskip('jax')
+    import warnings
+    import pycircuit.circuit.circuit as _cm
+    from pycircuit.circuit.toolkit import jaxtoolkit
+
+    def run(tk):
+        saved = _cm.default_toolkit
+        _cm.default_toolkit = tk
+        try:
+            c = SubCircuit(toolkit=tk)
+            c.add_node('1')
+            c.add_node('2')
+            c['vs'] = VSin('1', gnd, vac=1.0, va=1.0, freq=1e6, toolkit=tk)
+            c['R'] = R('1', '2', r=1e3, toolkit=tk)
+            c['C'] = C('2', gnd, c=1e-10, toolkit=tk)
+            p = PSS(c, toolkit=tk, method='gear', reltol=1e-10)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                p.solve(period=1e-6, timestep=1e-6 / 10, maxiterations=20)
+                res = PAC(c, toolkit=tk).solve(p, freqs=[0.13e6],
+                                               sweeptype='absolute')
+            assert p.converged
+            return np.asarray(p.waveform[1], dtype=float), np.asarray(res.x)
+        finally:
+            _cm.default_toolkit = saved
+    Xn, Yn = run(circuit.numeric)
+    Xj, Yj = run(jaxtoolkit)
+    assert np.max(np.abs(Xj - Xn)) < 1e-12 * np.max(np.abs(Xn))
+    assert np.max(np.abs(Yj - Yn)) < 1e-12 * np.max(np.abs(Yn))

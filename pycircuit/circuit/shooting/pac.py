@@ -514,6 +514,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         every step: that is `adjoint_sideband_row`.  Runs under every
         method.
 
+        `recycle_tol` is the GMRES tolerance of the transposed solve
+        (default `KRYLOV_FACTOR * reltol`), and binds only above
+        `FLOQUET_DENSE_LIMIT`: below it the solve is direct.
+
         History: `doc/shooting_history.md`, `PAC.adjoint_transfer_row`.
         """
         output = output_index(pss, output)

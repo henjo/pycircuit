@@ -1977,3 +1977,39 @@ def test_a_staged_solve_that_stalls_falls_back_to_the_one_stage_orbit():
         q.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
                 maxiterations=100)
     assert q.converged and not q.staged_fallback
+
+
+def test_event_grid_snaps_within_min_sep_and_inserts_beyond_it():
+    """The review's X9 (2026-10-01): `event_grid(min_sep=)` ran at its
+    default only.  A pulse whose four edges sit 0.240 / 0.332 / 0.332 /
+    0.480 of a step from the nearest point of a 40-step grid: an edge
+    within `min_sep * h` SNAPS that point onto it (no step added), one
+    beyond is INSERTED -- so 44 steps at 0 and 0.05, 43 at 0.25 (one snap),
+    40 at 0.5 (all four) -- every edge on a node exactly, the fractions
+    summing to 1, the smallest step growing with `min_sep`."""
+    from pycircuit.circuit.elements import VPulse
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    c = SubCircuit()
+    c.add_node('in')
+    c.add_node('out')
+    c['V'] = VPulse('in', gnd, v1=0.0, v2=1.0, td=0.131 * T, tr=0.0107 * T,
+                    tf=0.0213 * T, pw=0.4 * T, per=T)
+    c['R'] = R('in', 'out', r=1e3)
+    c['C'] = C('out', gnd, c=1e-12)
+    p = PSS(c, method='gear')
+    h = 1.0 / 40
+    smallest, counts = [], []
+    for ms in (0.0, 0.05, 0.25, 0.5):
+        hs = np.asarray(p.event_grid(T, npts=40, min_sep=ms), dtype=float)
+        ev = np.asarray(p.event_times, dtype=float)
+        nodes = np.concatenate(([0.0], np.cumsum(hs)))
+        grid = np.arange(41) * h
+        snaps = sum(np.min(np.abs(grid - e)) < ms * h for e in ev)
+        assert len(ev) == 4 and len(hs) == 40 + 4 - snaps, (ms, len(hs))
+        assert max(np.min(np.abs(nodes - e)) for e in ev) < 1e-15
+        assert abs(hs.sum() - 1.0) < 1e-15
+        smallest.append(hs.min())
+        counts.append(len(hs))
+    assert counts == [44, 44, 43, 40], counts
+    assert smallest == sorted(smallest)
