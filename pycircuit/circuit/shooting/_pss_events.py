@@ -2,9 +2,13 @@
 them, and the bordered event stage.
 """
 import numpy as np
-import warnings
 import pycircuit.circuit.analysis as analysis
 from .events import EventColumns
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    ConvergenceWarning,
+    warn,
+)
 
 
 class _StateEvents(object):
@@ -242,9 +246,9 @@ class _StateEvents(object):
                 M = M + P_end @ ev.dth
         except (np.linalg.LinAlgError, ValueError, KeyError) as _exc:
             if attempt:
-                warnings.warn('PSS: the state-event stage could not assemble its event '
-                              'columns (%s); the bordered consumers run unbordered on '
-                              'this solve.' % _exc, RuntimeWarning, stacklevel=3)
+                warn('PSS: the state-event stage could not assemble its event '
+                     f'columns ({_exc}); the bordered consumers run unbordered '
+                     'on this solve.', AccuracyWarning)
         self._monodromy = M
         self.event_times = sorted(set([float(e) for e in self.event_times]
                                       + [float(t) for t in th]))
@@ -459,10 +463,10 @@ class _StateEvents(object):
                     abstol=abst, xtol=xt, toolkit=self.toolkit,
                     full_output=True, line_search=True, floor_detect=True)
         except (analysis.NoConvergenceError, np.linalg.LinAlgError) as _exc:
-            warnings.warn(
+            warn(
                 'PSS: the state-event stage failed (%s); the solve returns '
                 'the first stage, the crossings inside their steps.'
-                % str(_exc)[:160], RuntimeWarning, stacklevel=3)
+                % str(_exc)[:160], ConvergenceWarning)
             return z_ss, info, ier, mesg, period, times, hs
         zn = np.asarray(z_new[:wm], dtype=float)
         Tn = float(z_new[-1]) if autonomous else period

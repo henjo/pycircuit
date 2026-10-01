@@ -6,6 +6,7 @@ import warnings
 from ._factored import dense_map
 from ._steps import dense_c
 from .events import EventColumns
+from pycircuit.circuit.simwarnings import AccuracyWarning, CostWarning, warn
 
 
 class _LyapunovCovariance(object):
@@ -626,15 +627,14 @@ class _LyapunovCovariance(object):
         P_end = np.asarray(ev['P_end'], dtype=float)
         pair = (n == 2 * m and P_end.shape[0] == 2 * m)
         if (n != m and not pair) or Pk_nodes.shape[0] != N + 1:
-            warnings.warn(
+            warn(
                 'PAC.covariance: the solve is staged on its state events, '
                 'but this Floquet host (%s, %d steps for %d event-column '
                 'nodes) is not the one the event columns were built on -- '
                 'the closure runs UNBORDERED and its answer through the '
                 'switching instants is not to be trusted. Solve with '
                 'method=\'radau\' for the bordered closure.'
-                % (getattr(pss.par, 'method', '?'), N, Pk_nodes.shape[0] - 1),
-                RuntimeWarning, stacklevel=3)
+                % (getattr(pss.par, 'method', '?'), N, Pk_nodes.shape[0] - 1), AccuracyWarning)
             return None
         nodes = [int(j) for j in ev['nodes']]
         ## gear's PAIR form: the state is (x_j, x_{j-1}), the event row acts
@@ -852,9 +852,9 @@ class _LyapunovCovariance(object):
             ## (the per-band FOLD's caveat -- one root per element -- does not
             ## apply here: a per-band component enters through its `CY`
             ## itself, below, with no square root)
-            warnings.filterwarnings(
-                'ignore', message='PAC: the noise of .* is not '
-                'thermal-plus-power-law')
+            ## (`model`'s one cost note, by its category -- a text filter
+            ## until 2026-10-01)
+            warnings.simplefilter('ignore', CostWarning)
             model = nc.model(fmin, f0)
         if model is None:
             raise NotImplementedError(
@@ -881,8 +881,7 @@ class _LyapunovCovariance(object):
         ## History: `doc/shooting_history.md`, `PAC._coloured_prepare`.
         perband, separable, nonseparable = [], [], []
         groups = nc.colour_components(model, 2.0 * np.pi * fmin,
-                                      2.0 * np.pi * fmax, f0, what,
-                                      stacklevel=3)
+                                      2.0 * np.pi * fmax, f0, what)
         comps = [(key, W, ef) for key, W, ef, _B in groups.fixed]
         for band in groups.bands:
             if band.kind == 'stationary':
@@ -895,14 +894,13 @@ class _LyapunovCovariance(object):
                 nonseparable.append((band.key, lambda nu, root=band.exact_root:
                                      root(2.0 * np.pi * nu)))
                 if band.kind == 'moving':
-                    warnings.warn(
+                    warn(
                         'PAC.%s: the noise of %s is coloured, not a power law, '
                         'and its spectral SHAPE changes along the orbit, so it '
                         'is read at every point for every band frequency -- '
                         'the quasi-static model pnoise and sampled_variance '
                         'use per band, and costly here.'
-                        % (what, '.'.join(band.key)), RuntimeWarning,
-                        stacklevel=3)
+                        % (what, '.'.join(band.key)), CostWarning)
         ## the white part of each source, at the states the pieces read:
         ## the injection points from the batch model, any other state (a
         ## step end under the Van Loan fallback) fitted on demand
@@ -1214,13 +1212,12 @@ class _LyapunovCovariance(object):
                     2 * len(set().union(*[set(f) for f in five])) \
                     > self.COLOURED_REFINE_MAXPTS:
                 accepted += five
-                warnings.warn(
+                warn(
                     'PAC: the coloured band integral stopped with %d panels '
                     'short of its target error %.0e: a response line narrower '
                     'than the refinement can resolve, or a band too wide -- '
                     'raise points_per_decade.' % (len(active),
-                                                  self.COLOURED_REFINE_TOL),
-                    RuntimeWarning, stacklevel=3)
+                                                  self.COLOURED_REFINE_TOL), AccuracyWarning)
                 break
             evaluate(sorted({x for f in five for x in f}))
             nxt = []

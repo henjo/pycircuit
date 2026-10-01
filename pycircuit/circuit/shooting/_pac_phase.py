@@ -2,9 +2,9 @@
 aware), phase_psd and the lineshape.
 """
 import numpy as np
-import warnings
 from ._noise_components import psd_sqrt
 from ._numerics import insert_ref, output_index
+from pycircuit.circuit.simwarnings import AccuracyWarning, ModelWarning, warn
 
 
 class _PhaseNoise(object):
@@ -134,19 +134,22 @@ class _PhaseNoise(object):
                 if _dcy.ndim == 2:
                     _dcy = _dcy.max(axis=0)
                 _on_alg = [r for r in _arows if _dcy[r] > 0.0]
-                if _on_alg and float(np.max(_dcy)) > 0.0:
-                    warnings.warn(
-                        'PAC.diffusion_constant: this circuit is index >= 2 and '
-                        'a noise source sits on an algebraic row (%s). A '
-                        'perturbation of an index-2 constraint is a '
-                        'differentiated input -- a charge jump -- which the '
-                        'PPV projection cannot represent, and its share of c '
-                        'is 0 here whatever the source (measured: exactly 0 '
-                        'for every method). Only the differential rows\' '
-                        'sources are counted.' % (_on_alg,),
-                        RuntimeWarning, stacklevel=3)
+                if not (_on_alg and float(np.max(_dcy)) > 0.0):
+                    _on_alg = None
             except Exception:                                  # noqa: BLE001
-                pass
+                _on_alg = None
+            ## (warned AFTER the `try`: inside it, a warning made an error was
+            ## swallowed by the `except` -- the review's W3)
+            if _on_alg:
+                warn(
+                    'PAC.diffusion_constant: this circuit is index >= 2 and '
+                    f'a noise source sits on an algebraic row ({_on_alg}). A '
+                    'perturbation of an index-2 constraint is a '
+                    'differentiated input -- a charge jump -- which the '
+                    'PPV projection cannot represent, and its share of c '
+                    'is 0 here whatever the source (measured: exactly 0 '
+                    'for every method). Only the differential rows\' '
+                    'sources are counted.', ModelWarning)
         ## ⚠ `cy/2`, THE SAME ONE-SIDED-TO-TWO-SIDED CONVERSION `covariance`
         ## USES.  `CY` is a one-sided density (a resistor's `4kT/R`); an
         ## injection of `Var(i) = CY/h` per step reproduces `1.92x kT/C`, so
@@ -1016,15 +1019,14 @@ class _PhaseNoise(object):
 
     def _warn_lineshape(self, which, worst, errs, off):
         """Warn when the `which` lineshape's estimated error passes
-        `LINESHAPE_WARN`, at the offset where it is worst.  (`stacklevel`
-        4: the user's call, through `oscillator_spectrum` and its path.)"""
+        `LINESHAPE_WARN`, at the offset where it is worst."""
         if worst > self.LINESHAPE_WARN:
-            warnings.warn(
+            warn(
                 'PAC.oscillator_spectrum: the %s lineshape carries an '
                 'estimated relative error of %.1e at offset %.6g Hz (neither '
                 'the transform nor the linear skirt is resolved better '
                 'there).' % (which, worst, float(np.atleast_1d(off).ravel()[
-                    int(np.argmax(errs))])), RuntimeWarning, stacklevel=4)
+                    int(np.argmax(errs))])), AccuracyWarning)
 
     def _carrier_line(self, pss, output, harmonic):
         """The carrier phasor `X` at `harmonic`, refusing an output with no
@@ -1113,12 +1115,11 @@ class _PhaseNoise(object):
         cfun = lambda nus: np.maximum(fold.coloured(nus), 1e-300)
         pc, converged = _lineshape.refine(cfun, fmin, fmax)
         if not converged:
-            warnings.warn(
+            warn(
                 'PAC.oscillator_spectrum: the coloured c(f) was not resolved '
                 'to %.0e at every node within %d nodes; the lineshape is '
                 'accurate to about the largest midpoint mismatch.'
-                % (_lineshape.NODE_TOL, _lineshape.MAX_NODES),
-                RuntimeWarning, stacklevel=3)
+                % (_lineshape.NODE_TOL, _lineshape.MAX_NODES), AccuracyWarning)
         a = 2.0 * np.pi ** 2 * i * i * f0 * f0 * c_w
         pref = 4.0 * i * i * f0 * f0
         ## ⚠ THE FAR SKIRT IS A SKIRT, AND THE TRANSFORM CANNOT SAY SO: there
@@ -1179,11 +1180,11 @@ class _PhaseNoise(object):
         self._warn_lineshape('coloured', worst, errs, off)
         shape = shapes[1]
         if c_w == 0.0 and shape.line_weight > 1e-12:
-            warnings.warn(
+            warn(
                 'PAC.oscillator_spectrum: no WHITE source broadens the line, '
                 'so a coherent carrier of weight %.3e remains (exp(-D/2) at '
                 'infinite lag, set by offset_fmin); it is not in the returned '
-                'density.' % shape.line_weight, RuntimeWarning, stacklevel=3)
+                'density.' % shape.line_weight, ModelWarning)
         Sv = abs(X) ** 2 * S
         with np.errstate(divide='ignore'):
             L = 10.0 * np.log10(np.maximum(S, 1e-300))
@@ -1314,11 +1315,10 @@ class _PhaseNoise(object):
         ## to all orders
         nu_lo = float(pn[0])
         if not floored:
-            warnings.warn(
+            warn(
                 'PAC.oscillator_spectrum: the frequency-aware correction had '
                 'not died away (below %.0e) at %.6g Hz, the lowest probe; the '
-                'part below is left out.' % (self.FA_RHO_FLOOR, nu_lo),
-                RuntimeWarning, stacklevel=4)
+                'part below is left out.' % (self.FA_RHO_FLOOR, nu_lo), AccuracyWarning)
         ## `rho` as ONE rational from ~25 adaptive solves; any guard that
         ## refuses it (verification, a pole on the band, the budget) falls
         ## back to the Chebyshev series, which reuses every solve made
@@ -1337,12 +1337,11 @@ class _PhaseNoise(object):
             cheb = _lineshape.LogChebyshev(rho, nu_lo, fmax,
                                            tol=_lineshape.CHEB_TOL * w_min)
             if not cheb.converged:
-                warnings.warn(
+                warn(
                     'PAC.oscillator_spectrum: the frequency-aware correction '
                     'was resolved to %.1e only (Chebyshev degree %d); the '
                     'lineshape is no better than that.'
-                    % (cheb.err, cheb.c.shape[0] - 1), RuntimeWarning,
-                    stacklevel=4)
+                    % (cheb.err, cheb.c.shape[0] - 1), AccuracyWarning)
         tabs = []
         if c_w > 0.0:
             tabs.append(_lineshape.SignedTable(
@@ -1510,7 +1509,7 @@ class _PhaseNoise(object):
         worst = float(np.max(np.abs(off))) if off.size else 0.0
         if worst < f_amp:
             return
-        warnings.warn(
+        warn(
             'PAC.oscillator_spectrum: this is a PHASE-ONLY spectrum and %g Hz '
             'is above the amplitude-relaxation pole f_amp = %.4g Hz '
             '(lambda_2 = %.6f, f_amp = f0/(2*pi*Q)). Above f_amp the '
@@ -1530,5 +1529,4 @@ class _PhaseNoise(object):
                ('' if certified is not False else
                 'lambda_2 itself is NOT certified here (see '
                 "info['second_multiplier_certified']), so f_amp is uncertain "
-                'too. ')),
-            RuntimeWarning, stacklevel=3)
+                'too. ')), ModelWarning)

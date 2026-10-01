@@ -6,6 +6,12 @@ import warnings
 from ._noise_components import orbit_states
 from ._numerics import _output_row, insert_ref, output_index
 from pycircuit.circuit._limiting import devices_at
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    CostWarning,
+    ModelWarning,
+    warn,
+)
 
 
 class _ModalSpectra(object):
@@ -251,7 +257,7 @@ class _ModalSpectra(object):
             ## the sum this spectrum is meant for over-states the TOTAL on an
             ## asymmetric orbit, and no refinement changes it -- see the
             ## docstring.
-            warnings.warn(
+            warn(
                 'PAC.orbital_spectrum: this orbit has half-wave asymmetry '
                 '%.3f. On an asymmetric orbit S_ph + S_orb over-states the '
                 'total sideband noise above f_amp: x1.03 / x1.45 / x3.2 at '
@@ -263,8 +269,7 @@ class _ModalSpectra(object):
                 'there): use PAC.modal_spectrum for a phase/orbital/'
                 'correlation split that sums to the total, or PAC.pnoise for '
                 'the total.'
-                % (_asym,),
-                RuntimeWarning, stacklevel=2)
+                % (_asym,), ModelWarning)
         R, C = self.orbital_correlation(pss, maxharmonics=maxharmonics)
         modes = pss.floquet_modes(pss)
         c = float(self.diffusion_constant(pss))
@@ -606,9 +611,9 @@ class _ModalSpectra(object):
         irn = pss.irefnode
         x0f = insert_ref(x0r, irn)
         with warnings.catch_warnings():
-            warnings.filterwarnings(
-                'ignore', message='PAC: the noise of .* is not '
-                'thermal-plus-power-law')
+            ## (`model`'s one cost note, by its category -- a text filter
+            ## until 2026-10-01)
+            warnings.simplefilter('ignore', CostWarning)
             model = self._noise_components(pss, [x0f]).model(1e-3 * f0, f0)
         if model is None:
             raise NotImplementedError(
@@ -739,11 +744,11 @@ class _ModalSpectra(object):
                 'method=\'radau\' puts the phase multiplier at 1 to rounding.'
                 % (where, ', '.join('%.1e' % dep[j] for j in rival), dep[k]))
         if dep[k] > 1e-6:
-            warnings.warn(
+            warn(
                 '%s: the phase mode sits %.1e off the unit circle (alignment '
                 'with the orbit tangent %.4f); its exponent is forced to 0.  '
                 'On a non-uniform grid a multistep or trapezoidal solve leaves '
                 'it there at O(h^2); the modal parts are then the method\'s '
                 'order (measured second order for gear on a 3:1 grid).'
-                % (where, dep[k], cos[k]), RuntimeWarning, stacklevel=3)
+                % (where, dep[k], cos[k]), AccuracyWarning)
         return k, [j for j in range(len(modes)) if j != k]

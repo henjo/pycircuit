@@ -166,12 +166,19 @@ def refine(cfun, nu0, nuN, per_decade=NODES_PER_DECADE, tol=NODE_TOL,
     n = max(int(np.ceil(per_decade * np.log10(nuN / nu0))), 2)
     nus = np.geomspace(nu0, nuN, n + 1)
     cs = np.asarray(cfun(nus), dtype=float)
+    ## ⚠ A FLOOR RELATIVE TO THE COLOUR'S OWN SIZE: a power law cannot meet a
+    ## zero, so on a colour that dips to ~0 (a cancelling difference) the
+    ## halving ran to `maxpts` against an absolute 1e-300 (until 2026-10-01,
+    ## the review's X5).  An interval both of whose values are below 1e-12 of
+    ## the largest is taken as met; above it the test is unchanged.
+    floor = 1e-12 * float(np.max(cs)) if cs.size else 0.0
     converged = False
     while True:
         mid = np.sqrt(nus[:-1] * nus[1:])
         cm = np.asarray(cfun(mid), dtype=float)
         ci = np.sqrt(np.maximum(cs[:-1], 1e-300) * np.maximum(cs[1:], 1e-300))
-        bad = np.abs(cm / np.maximum(ci, 1e-300) - 1.0) > tol
+        bad = ((np.abs(cm / np.maximum(ci, 1e-300) - 1.0) > tol)
+               & ((ci > floor) | (cm > floor)))
         if not np.any(bad):
             converged = True
             break

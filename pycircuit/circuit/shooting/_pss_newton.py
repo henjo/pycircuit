@@ -2,10 +2,14 @@
 matrix-free Newton.
 """
 import numpy as np
-import warnings
 import pycircuit.circuit.analysis as analysis
 from ._numerics import insert_ref
 from pycircuit.circuit._limiting import devices_at
+from pycircuit.circuit.simwarnings import (
+    ConvergenceWarning,
+    ModelWarning,
+    warn,
+)
 
 
 class _ShootingNewton(object):
@@ -112,11 +116,10 @@ class _ShootingNewton(object):
             trivial_orbit = bool(np.abs(r_dc).max() <= self.TRIVIAL_ORBIT_FACTOR * tol)
         except Exception as exc:                                # noqa: BLE001
             ## (the guard did not run: said, not silent -- the review's F12)
-            warnings.warn(
+            warn(
                 'PSS: the collapsed-orbit guard could not evaluate the DC '
                 f'residual ({type(exc).__name__}: {str(exc)[:80]}); a solve '
-                'that converged onto the equilibrium would not be caught.',
-                RuntimeWarning, stacklevel=3)
+                'that converged onto the equilibrium would not be caught.', ModelWarning)
             trivial_orbit = False
         if trivial_orbit:
             ier = 5
@@ -124,7 +127,7 @@ class _ShootingNewton(object):
                 info['collapsed'] = True
             mesg = ('collapsed onto the EQUILIBRIUM (a trivial orbit, periodic '
                     'at every T) at T = %.6g s from a seed of %.6g s' % (T, seed_period))
-            warnings.warn(
+            warn(
                 'PSS: this autonomous solve returned an EQUILIBRIUM, not an '
                 'orbit: the state at t = 0 satisfies the DC equations to '
                 '%.1e (max |i(x) + u|), so the periodicity residual is zero '
@@ -133,8 +136,7 @@ class _ShootingNewton(object):
                 'entered from a seed below the fundamental (measured: 10 %% '
                 'low under radau); seed at or above the expected period, or '
                 'from a transient that is already on the orbit. '
-                '`converged` is False.' % (np.abs(r_dc).max(), T, seed_period),
-                RuntimeWarning, stacklevel=3)
+                '`converged` is False.' % (np.abs(r_dc).max(), T, seed_period), ConvergenceWarning)
         elif not np.isfinite(T) or abs(T) < self.DEGENERATE_PERIOD_FACTOR * abs(
                 seed_period):
             ## ⚠⚠ THE COLLAPSE MUST BE DEMOTED HERE: `self.converged` is
@@ -149,7 +151,7 @@ class _ShootingNewton(object):
                 info['collapsed'] = True
             mesg = ('collapsed onto the trivial root T = %.6g s from a seed '
                     'of %.6g s' % (T, seed_period))
-            warnings.warn(
+            warn(
                 'PSS: this autonomous solve collapsed onto the TRIVIAL root, '
                 'returning a period of %.6g s from a seed of %.6g s. `T = 0` '
                 'satisfies `x0 - phi_T(x0) = 0` identically and the phase '
@@ -166,7 +168,7 @@ class _ShootingNewton(object):
                 '"Probe Based Shooting Method ..."); it is not implemented '
                 'here, and it widens the basin rather than removing the '
                 'seed dependence.'
-                % (T, seed_period), RuntimeWarning, stacklevel=3)
+                % (T, seed_period), ConvergenceWarning)
         if (ier != 1 and not trivial_orbit and solver is None
                 and np.isfinite(T)
                 and abs(T) >= self.DEGENERATE_PERIOD_FACTOR * abs(seed_period)):
@@ -287,7 +289,7 @@ class _ShootingNewton(object):
                     '`state_events=True` (the default) the crossings become '
                     'Newton unknowns, and the stage runs even from a first '
                     'stage that did not converge.' % len(_ev))
-        warnings.warn(msg, RuntimeWarning, stacklevel=4)
+        warn(msg, ConvergenceWarning)
 
     ## How hard GMRES is asked to solve, relative to the shooting tolerance.
     ## An inexact Newton only needs the step accurate enough not to spoil the
@@ -399,7 +401,7 @@ class _ShootingNewton(object):
                 if _nF > 0.0 and _res <= self.KRYLOV_ACCEPT_RESIDUAL * _nF:
                     info = 0
             if info != 0:
-                warnings.warn(
+                warn(
                     'PSS: the matrix-free inner solve did not converge at '
                     'outer iteration %d -- GMRES returned info=%d (%s) on a '
                     '%d-unknown system, after at most %d matvecs, each a '
@@ -413,8 +415,7 @@ class _ShootingNewton(object):
                     % (_i, info,
                        'breakdown' if info < 0 else 'iteration limit',
                        n, min(n, self.KRYLOV_RESTART) * self.KRYLOV_MAX_CYCLES,
-                       min(n, self.KRYLOV_RESTART) * self.KRYLOV_MAX_CYCLES),
-                    RuntimeWarning, stacklevel=3)
+                       min(n, self.KRYLOV_RESTART) * self.KRYLOV_MAX_CYCLES), ConvergenceWarning)
                 return z, {}, 2, 'No convergence (inner Krylov solve failed)'
             if _d is not None:
                 xdiff = _d * xdiff

@@ -2,9 +2,15 @@
 the replay grid, and the period quadrature.
 """
 import numpy as np
-import warnings
 from pycircuit.circuit.circuit import gnd
 from ._numerics import periodic_spline_weights
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    ConvergenceWarning,
+    UsageWarning,
+    summarised,
+    warn,
+)
 
 
 class _PeriodGrids(object):
@@ -414,8 +420,9 @@ class _PeriodGrids(object):
         tr = self._new_transient(
             self._integrator_for(self.par.method), frozen=False, reltol=rt,
             relref=self.par.relref if relref is None else relref)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        ## (summarised, not silenced: the grid is built from this run's LTE
+        ## -- a blanket filter until 2026-10-01, the review's F13)
+        with summarised('PSS.lte_grid: its adaptive run'):
             res = tr.solve(refnode=refnode, tend=tstab + T, timestep=h0,
                            x0=x0)
         t = np.asarray(res.sweep_values, dtype=float).ravel()
@@ -434,20 +441,19 @@ class _PeriodGrids(object):
                  self._observed_period(t, xs, self.cir.get_node_index(refnode), T))
         if T_obs is not None:
             if abs(T_obs / T - 1.0) > 1e-2:
-                warnings.warn(
+                warn(
                     'lte_grid: the adaptive run recurs every %.6g s but the '
                     'period passed was %.6g s (%.1f %% off); the grid is cut '
                     'at the observed period -- pass period=pss.lte_period to '
                     'solve(), the grid\'s fractions are of it.'
-                    % (T_obs, T, 100.0 * abs(T_obs / T - 1.0)),
-                    RuntimeWarning, stacklevel=2)
+                    % (T_obs, T, 100.0 * abs(T_obs / T - 1.0)), UsageWarning)
             T = float(T_obs)
         else:
-            warnings.warn(
+            warn(
                 'lte_grid: no consistent recurrence was found in the last '
                 'periods of the adaptive run (unsettled, or the period hint '
                 'is far off); the grid is cut at the period passed, %.6g s.'
-                % T, RuntimeWarning, stacklevel=2)
+                % T, ConvergenceWarning)
         self.lte_period = float(T)
         ## ⚠ THE GRID COMES FROM EVERY SETTLED PERIOD, NOT THE LAST WINDOW:
         ## one window inherits whatever rejection-and-growth pattern its
@@ -588,22 +594,24 @@ class _PeriodGrids(object):
             bad = np.flatnonzero(ratios > ZERO_STABILITY_RATIO)
             rep = [i for i in bad
                    if np.sum((bad != i) & (np.abs(bad - i) <= self.RATIO_ISOLATION)) >= 2]
-            if rep:
+            ## (once a solve: `_period_grid` runs at every evaluation of the
+            ## free-period residual -- until 2026-10-01 a warning each time,
+            ## the review's X8)
+            if rep and not getattr(self, '_stepup_warned', False):
+                self._stepup_warned = True
                 worst = float(np.max(ratios[rep]))
-                warnings.warn(
-                    'PSS: this grid steps up by %.3fx where a two-step '
-                    'method is zero-stable only to %.3fx, at %d of %d '
-                    'interior ratios, and those up-steps REPEAT within %d '
-                    'steps of each other, which is what compounds: the '
-                    'answer can be far low while reporting converged -- '
-                    'measured 60%% low on a Q=20 resonator with an '
-                    'alternating 3:1 grid. Refining will NOT fix it: a '
-                    'refined 3:1 grid is still 3:1. Smooth the grid so '
-                    'adjacent steps stay within %.3fx, or use a one-step '
-                    "method (method='trap')."
-                    % (worst, ZERO_STABILITY_RATIO, len(rep), len(ratios),
-                       self.RATIO_ISOLATION, ZERO_STABILITY_RATIO),
-                    RuntimeWarning, stacklevel=3)
+                warn(
+                    f'PSS: this grid steps up by {worst:.3f}x where a two-step '
+                    f'method is zero-stable only to {ZERO_STABILITY_RATIO:.3f}x, '
+                    f'at {len(rep)} of {len(ratios)} interior ratios, and those '
+                    f'up-steps REPEAT within {self.RATIO_ISOLATION} steps of '
+                    'each other, which is what compounds: the answer can be '
+                    'far low while reporting converged -- measured 60% low on '
+                    'a Q=20 resonator with an alternating 3:1 grid. Refining '
+                    'will NOT fix it: a refined 3:1 grid is still 3:1. Smooth '
+                    'the grid so adjacent steps stay within '
+                    f"{ZERO_STABILITY_RATIO:.3f}x, or use a one-step method "
+                    "(method='trap').", AccuracyWarning)
 
         hs = fr * period
         ## ⚠ THE 'CLOSING' CONVENTION: on a caller's grid the inner steps keep
@@ -622,14 +630,13 @@ class _PeriodGrids(object):
                     hs = np.concatenate((inner, [last]))
                 elif not getattr(self, '_closing_warned', False):
                     self._closing_warned = True
-                    warnings.warn(
+                    warn(
                         'PSS: the closing step would collapse at this trial '
                         'period (%.6g s against inner steps summing to %.6g '
                         's); this evaluation scales the grid proportionally '
                         'instead. Seed the period closer, or pass '
                         "period_column='proportional'."
-                        % (float(period), float(np.sum(inner))),
-                        RuntimeWarning, stacklevel=3)
+                        % (float(period), float(np.sum(inner))), ConvergenceWarning)
         times = np.concatenate(([0.0], np.cumsum(hs)))
         return times, hs
 

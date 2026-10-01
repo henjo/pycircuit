@@ -612,7 +612,7 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
     assert s_off == 0 and p_off == 0, (s_off, p_off)
 
 
-def test_the_branch_check_reports_on_a_full_transient_solve(caplog):
+def test_the_branch_check_reports_on_a_full_transient_solve():
     """`branch_check` on the path a user takes -- `Transient.solve` -- and
     not only on the hand-driven marches the test above counts on.
 
@@ -631,10 +631,14 @@ def test_the_branch_check_reports_on_a_full_transient_solve(caplog):
     the repelling equilibrium is REPORTED (screens, confirmed points, and the
     logged warning), the attracting control whose `C` degenerates identically
     is screened and NOT confirmed, and the check is still on afterwards.
+    (A `ModelWarning` since 2026-10-01; until then a `logging.warning`,
+    outside the warnings machinery -- the review's X8.)
     """
-    import logging
     import os
     import sys
+    import warnings as _w
+
+    from pycircuit.circuit.simwarnings import ModelWarning
     from pycircuit.circuit.circuit import gnd as _gnd
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.integrator import (Gear2Integrator,
@@ -645,13 +649,14 @@ def test_the_branch_check_reports_on_a_full_transient_solve(caplog):
 
     for cls in (Gear2Integrator, RadauIIA3Integrator):
         for g in (-1.0, 1.0):
-            caplog.clear()
             tr = Transient(build(g), integrator=cls(), reltol=1e-10)
-            with caplog.at_level(logging.WARNING):
+            with _w.catch_warnings(record=True) as rec:
+                _w.simplefilter('always')
                 tr.solve(refnode=_gnd, tend=1.0, timestep=1.0 / 50,
                          fixed_timestep=True)
             st = tr.statistics
-            logged = [r.getMessage() for r in caplog.records]
+            logged = [str(r.message) for r in rec
+                      if issubclass(r.category, ModelWarning)]
             name = (cls.__name__, g)
             assert getattr(tr, '_branch_error', None) is None, (name, tr._branch_error)
             assert not any('branch check itself failed' in m for m in logged), name
@@ -697,9 +702,12 @@ def test_the_branch_check_reports_on_a_full_transient_solve(caplog):
     def boom(*a, **kw):
         raise RuntimeError('screen failed')
     tr._branch_screen = boom
-    with caplog.at_level(logging.WARNING):
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
         tr.solve(refnode=_gnd, tend=1.0, timestep=1.0 / 50, fixed_timestep=True)
     assert 'screen failed' in str(tr._branch_error)
+    assert any('branch check itself failed' in str(r.message)
+               and issubclass(r.category, ModelWarning) for r in rec)
     assert tr.statistics.branch_points == 0
     del tr._branch_screen
     tr.solve(refnode=_gnd, tend=1.0, timestep=1.0 / 50, fixed_timestep=True)

@@ -2,9 +2,9 @@
 folds), its AM/PM split and the band spread.
 """
 import numpy as np
-import warnings
 from ._noise_components import warn_sign_blind
 from ._numerics import output_index, sweep_frequency, sweep_offset
+from pycircuit.circuit.simwarnings import AccuracyWarning, warn
 
 
 class _DrivenNoise(object):
@@ -260,24 +260,22 @@ class _DrivenNoise(object):
         ## (an explicit `maxsidebands=0` asks for the unfolded term alone,
         ## and stays quiet, as it always did)
         if self.alias_stop == 'cap' and lmax > 0:
-            warnings.warn(
+            warn(
                 'PAC.pnoise: the sideband accumulation stopped at '
                 f'maxsidebands={lmax} (the grid resolves {N // 2} at {N} '
                 'points per period), not because the contributions became '
                 'negligible. Sidebands above the cap are MISSING rather '
                 'than small, so this is a lower bound on the folded noise. '
-                'Raise maxsidebands (or leave it None) and compare.',
-                RuntimeWarning, stacklevel=2)
+                'Raise maxsidebands (or leave it None) and compare.', AccuracyWarning)
         elif self.alias_stop == 'bound' and lmax > 0:
-            warnings.warn(
+            warn(
                 'PAC.pnoise: the sideband accumulation stopped at the '
                 "grid's Nyquist (|l| = %d at %d points per period), not "
                 'because the contributions became negligible. Sidebands '
                 'above the grid\'s maximum frequency are MISSING rather '
                 'than small, so this is a lower bound on the folded noise. '
                 'Re-solve the PSS on a finer period grid and compare.'
-                % (lmax, N),
-                RuntimeWarning, stacklevel=2)
+                % (lmax, N), AccuracyWarning)
         return total, used
 
     def _dc_fold_guard(self, pss, cyfn, freq, near, f0_, cy, what):
@@ -332,15 +330,14 @@ class _DrivenNoise(object):
                 cy = cyfn(pss, 2.0 * np.pi * float(freq))
             cy_hi = cyfn(pss, 2.0 * np.pi * max(float(freq) * 2.0, f0_))
             if not np.allclose(cy, cy_hi, rtol=1e-9, atol=0.0):
-                warnings.warn(
+                warn(
                     'PAC.%s: %.12g Hz is %.3g Hz from a harmonic of '
                     '%.12g Hz and a source has a frequency-dependent CY, '
                     'so the folded density varies steeply here. The VALUE '
                     'is correct; a swept grid landing this close will '
                     'misrepresent the integrated total. Cluster near each '
                     'harmonic deliberately rather than by accident.'
-                    % (what, float(freq), near, f0_), RuntimeWarning,
-                    stacklevel=3)
+                    % (what, float(freq), near, f0_), AccuracyWarning)
 
     def _cy_harmonics(self, pss, w):
         """`P_j`: the Fourier coefficient matrices of `CY(x(t), w)` over the
@@ -479,8 +476,7 @@ class _DrivenNoise(object):
             _ws = [wband(p) for p in range(pmin, pmax + 1)]
             comps = nc.colour_components(
                 model, max(min(w_ for w_ in _ws if w_ > 0.0), 2e-3 * np.pi * f0),
-                max(_ws), f0, 'pnoise(cyclostationary=True)', stacklevel=3,
-                shortcuts=False)
+                max(_ws), f0, 'pnoise(cyclostationary=True)', shortcuts=False)
             ## a power law's ONE root and its per-band weight `(w1/w)^EF`
             ## (`_band_resolved_pairs`' `scale2`): the root is not copied per
             ## band (it was, stacked, until 2026-10-01 -- the review's M4)
@@ -503,8 +499,7 @@ class _DrivenNoise(object):
         if model is None:
             blind = nc.sign_blind(None, rooted)
             if blind:
-                warn_sign_blind('pnoise(cyclostationary=True)', blind,
-                                stacklevel=3)
+                warn_sign_blind('pnoise(cyclostationary=True)', blind)
         for sqrt_at in groups:
             cache = {}
             ## every band the sum reaches, stacked once: BB[pi, k] =

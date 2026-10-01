@@ -104,6 +104,7 @@ def _arnoldi_gmres(matvec, b, rtol=1e-12, maxiter=None, reortho=True):
     H = np.zeros((kmax + 1, kmax), dtype=b.dtype)
     for j in range(kmax):
         w = np.asarray(matvec(Q[j]))
+        wn = float(np.linalg.norm(w))
         for i in range(j + 1):
             H[i, j] = np.vdot(Q[i], w)
             w = w - H[i, j] * Q[i]
@@ -117,7 +118,9 @@ def _arnoldi_gmres(matvec, b, rtol=1e-12, maxiter=None, reortho=True):
         rhs[0] = beta
         y, *_ = np.linalg.lstsq(H[:j + 2, :j + 1], rhs, rcond=None)
         relres = float(np.linalg.norm(H[:j + 2, :j + 1] @ y - rhs)) / beta
-        happy = H[j + 1, j] <= 1e-14 * max(beta, 1.0)
+        ## (the breakdown relative to `||A q_j||`, the operator's scale --
+        ## not the right-hand side's, as until 2026-10-01: the review's X5)
+        happy = H[j + 1, j] <= 1e-14 * wn
         if relres <= rtol or happy or j + 1 == kmax:
             x = np.zeros_like(b)
             for i in range(j + 1):

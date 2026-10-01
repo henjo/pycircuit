@@ -2,11 +2,11 @@
 metrics.
 """
 import numpy as np
-import warnings
 import weakref
 from ._noise_components import cached_root, psd_sqrt, warn_sign_blind
 from ._numerics import edge_slope, _output_weights, output_index
 from .events import EventColumns
+from pycircuit.circuit.simwarnings import AccuracyWarning, warn
 
 
 class _SampledNoise(object):
@@ -375,7 +375,7 @@ class _SampledNoise(object):
             perband.append(cached_root(nc.cy_at_states))
             blind = nc.sign_blind(None, [nc.JOINT_KEY])
             if blind:
-                warn_sign_blind('sampled_noise', blind, stacklevel=3)
+                warn_sign_blind('sampled_noise', blind)
         else:
             white = [psd_sqrt(A) for _key, A in model.white_parts]
             ## the coloured components as the modal spectra and the folds
@@ -404,7 +404,7 @@ class _SampledNoise(object):
                 self._sampled_res_warned = weakref.ref(pss)
             except TypeError:
                 self._sampled_res_warned = (lambda _p=pss: _p)
-            warnings.warn(
+            warn(
                 'PAC.sampled_noise: the top sideband (|n| = %d, %.3g Hz) sits '
                 'at omega h = %.2f per step on this grid; a two-step method\'s '
                 'discrete transfer there is far from the continuous one, and '
@@ -414,7 +414,7 @@ class _SampledNoise(object):
                 'beyond the covered edge, but only once that edge is well '
                 'above the spectrum\'s corner (measured: 0.71 x kT/C with the '
                 'edge inside the corner, 0.998 with it 12x beyond).'
-                % (L, (L + 0.5) * f0, _wh), RuntimeWarning, stacklevel=3)
+                % (L, (L + 0.5) * f0, _wh), AccuracyWarning)
         S = np.zeros((len(ts), len(fr)))
         ## ⚠ ON A STAGED SOLVE THE SAMPLE'S ADJOINT IS BORDERED -- the dual
         ## of the bordered forward solve, as `adjoint_sideband_row`'s: the

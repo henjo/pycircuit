@@ -17,7 +17,6 @@ noise themes from the `_pac_*` modules:
 History: `doc/shooting_history.md`, `pac` (module level).
 """
 import numpy as np
-import warnings
 import weakref
 from pycircuit.circuit.analysis import Analysis
 from pycircuit.circuit.analysis import Parameter
@@ -37,6 +36,7 @@ from ._pac_pnoise import _DrivenNoise
 from ._pac_sampled import _SampledNoise
 from ._pac_sources import _NoiseSources
 from .events import EventColumns
+from pycircuit.circuit.simwarnings import AccuracyWarning, warn
 
 
 class _SidebandFamily:
@@ -292,7 +292,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## solved-history path and has no manufacturing step.
         if (fp.is_plain and not fp.open_at_x0
                 and pss.par.method != 'euler'):
-            warnings.warn(
+            warn(
                 'PAC: this operating point was solved on the PLAIN path '
                 'with a manufacturing step (method=%r, x0_unknown=False). '
                 'The manufacturing step carries no small-signal source, so '
@@ -302,8 +302,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                 'not wrong, it is one order less accurate than the '
                 'trajectory it came from. Re-solve with x0_unknown=True, or '
                 "with method='gear', to get the method's own order."
-                % pss.par.method,
-                RuntimeWarning, stacklevel=2)
+                % pss.par.method, AccuracyWarning)
 
         self._check_circuit(pss)
         for f in freqs:
@@ -998,12 +997,11 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                 break
         if ok:
             return out
-        warnings.warn(
+        warn(
             'PAC._orbit_rate: the DAE derivative could not be assembled at a '
             'node (a singular differential/algebraic split -- an index above '
             'one?); falling back to the three-node stencil, which is second '
-            'order in the step and one-sided at a landed event.',
-            RuntimeWarning, stacklevel=3)
+            'order in the step and one-sided at a landed event.', AccuracyWarning)
         return self._orbit_rate_stencil(pss, event_nodes)
 
     def _orbit_rate_stencil(self, pss, event_nodes):
@@ -1347,7 +1345,9 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                    else weakref.ref(pss))
             self._deflation_border = (_pr, fp, v, u, _ppv_fn)
         vu = float(v @ u)
-        if abs(vu) < 1e-300:
+        ## (relative to the vectors' sizes: an absolute 1e-300 read nothing
+        ## -- the review's X5)
+        if abs(vu) <= 1e-14 * float(np.linalg.norm(v) * np.linalg.norm(u)):
             raise ValueError(
                 'PAC: the PPV is orthogonal to the orbit tangent, so the '
                 'bordering is singular and the pole cannot be removed.')

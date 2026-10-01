@@ -6,6 +6,12 @@ from ._factored import dense_map
 from ._numerics import _output_row, edge_slope, output_index
 import warnings
 from .events import EventColumns
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    ModelWarning,
+    UsageWarning,
+    warn,
+)
 
 
 class _OscillatorCovariance(object):
@@ -183,7 +189,7 @@ class _OscillatorCovariance(object):
     ## History: `doc/shooting_history.md`, `PAC.oscillator_covariance`.
     def oscillator_covariance(self, pss, samples=False, colour_fmin=None,
                               colour_fmax=None, points_per_decade=40,
-                              pair=False, _coloured=True):
+                              pair=False):
         """The state covariance of a FREE-RUNNING oscillator, split in two.
 
         Returns `(K_orb, info)`.  `K_orb` is the BOUNDED periodic
@@ -311,6 +317,20 @@ class _OscillatorCovariance(object):
 
         History: `doc/shooting_history.md`, `PAC.oscillator_covariance`.
         """
+        return self._oscillator_covariance(
+            pss, samples=samples, colour_fmin=colour_fmin,
+            colour_fmax=colour_fmax, points_per_decade=points_per_decade,
+            pair=pair)
+
+    def _oscillator_covariance(self, pss, samples=False, colour_fmin=None,
+                               colour_fmax=None, points_per_decade=40,
+                               pair=False, coloured=True, note=True):
+        """`oscillator_covariance` (see there), for its callers in PAC:
+        `coloured=False` builds the white part alone (a caller that builds the
+        coloured one itself, `oscillator_edge_jitter`), `note=False` leaves out
+        the "WHITE sources' alone" warning (a caller that handles the colour
+        itself, `orbital_mode_weights`) -- until 2026-10-01 a text filter on
+        it, and `_coloured` a keyword of the public signature."""
         self._check_circuit(pss)
         if not getattr(pss, 'autonomous', False):
             raise ValueError(
@@ -449,9 +469,9 @@ class _OscillatorCovariance(object):
             info['transverse_samples'] = [
                 Pi[j] @ Kj[:m, :m] @ Pi[j].T
                 for j, Kj in enumerate(info['samples'][:len(Pi)])]
-        ## (`_coloured=False`: the white part alone, for a caller that builds
+        ## (`coloured=False`: the white part alone, for a caller that builds
         ## the coloured part itself -- `oscillator_edge_jitter`)
-        if col is not None and _coloured:
+        if col is not None and coloured:
             try:
                 Kc, _none = self._coloured_covariance(
                     pss, col, m, m, responses=self._transverse_responses,
@@ -465,14 +485,15 @@ class _OscillatorCovariance(object):
                 info['coloured_samples'] = list(Kc)
                 info['transverse_samples'] = [
                     a + b for a, b in zip(info['transverse_samples'], Kc)]
-            warnings.warn(
-                'PAC.oscillator_covariance: this circuit has a COLOURED source. '
-                'K_orb, d and c_from_growth are the WHITE sources\' alone: a '
-                'coloured source\'s phase does not diffuse (1/f FM grows '
-                'faster than linearly) and has no growth rate -- its phase '
-                'noise is phase_psd\'s. Its transverse covariance is in '
-                "info['K_coloured'], and info['K_transverse'] holds both.",
-                RuntimeWarning, stacklevel=2)
+            if note:
+                warn(
+                    'PAC.oscillator_covariance: this circuit has a COLOURED '
+                    'source. K_orb, d and c_from_growth are the WHITE '
+                    'sources\' alone: a coloured source\'s phase does not '
+                    'diffuse (1/f FM grows faster than linearly) and has no '
+                    'growth rate -- its phase noise is phase_psd\'s. Its '
+                    "transverse covariance is in info['K_coloured'], and "
+                    "info['K_transverse'] holds both.", ModelWarning)
         ## ⚠ `m x m` WHATEVER THE METHOD, as `covariance`: a
         ## two-step method's pair space is its own, `pair=True` keeps it
         ## (`orbital_mode_weights` reads the Floquet modes there)
@@ -916,14 +937,14 @@ class _OscillatorCovariance(object):
         ## (the WHITE part alone: the coloured one -- its transverse
         ## variance and phase included -- is `_edge_coloured_law`'s, one
         ## folded solve; the covariance's coloured samples at every node
-        ## would cost 29 s of a 67 s call.  `_coloured=False` gives no
+        ## would cost 29 s of a 67 s call.  `coloured=False` gives no
         ## "WHITE sources' alone" warning, so there is none to filter: the
         ## filter that stood here could not match -- removed 2026-10-01, the
         ## review's W2)
-        K_orb, info = self.oscillator_covariance(
+        _K_orb, info = self._oscillator_covariance(
             pss, samples=True, pair=True, colour_fmin=colour_fmin,
             colour_fmax=colour_fmax, points_per_decade=points_per_decade,
-            _coloured=False)
+            coloured=False, note=False)
         coloured = bool(self._coloured_present(pss))
         d = info['d']
         m = self.cir.n - 1
@@ -994,9 +1015,10 @@ class _OscillatorCovariance(object):
         ## no inverse -- the step maps of a DAE are singular), and the
         ## samples are its fixed-time ones; otherwise the step maps' product
         with warnings.catch_warnings():
-            ## (a host it cannot border, `oscillator_covariance` warned above)
-            warnings.filterwarnings('ignore', message='PAC.covariance: the '
-                                     'solve is staged on its state events')
+            ## (a host it cannot border, `oscillator_covariance` warned above:
+            ## `_event_closure`'s one warning, by its category -- a text filter
+            ## until 2026-10-01)
+            warnings.simplefilter('ignore', AccuracyWarning)
             staged = self._event_closure(pss, As, Qs, M, _m, n)
         ef = _output_row(e, na)
 
@@ -1089,12 +1111,11 @@ class _OscillatorCovariance(object):
 
         A = A_prj if intercept == 'white' else A_prj + A_cx
         if np.isnan(A):
-            warnings.warn(
+            warn(
                 'PAC.oscillator_edge_jitter: intercept=\'exact\' and a '
                 'coloured source here is a POWER LAW, whose phase grows faster '
                 'than linearly in k: the k-cycle law has no large-k intercept, '
-                'so A and sigma_t are nan; k_cycle is exact.',
-                RuntimeWarning, stacklevel=2)
+                'so A and sigma_t are nan; k_cycle is exact.', UsageWarning)
             sigma_t = float('nan')
         elif A == 0.0:
             ## (no white source, intercept='white': none of the jitter is
@@ -1117,12 +1138,11 @@ class _OscillatorCovariance(object):
             ## through an RC into the tank reads X/A = -1.94) the intercept is
             ## negative while every `Var_k` is positive -- the walk dominates.
             ## There is then no additive variance; `k_cycle` is exact anyway.
-            warnings.warn(
+            warn(
                 'PAC.oscillator_edge_jitter: the k-cycle law\'s intercept is '
                 'NEGATIVE here (A = %.3g s^2): the transverse and the phase '
                 'deviation at this edge are anti-correlated, so there is no '
-                'additive variance (sigma_t is nan); k_cycle is exact.' % A,
-                RuntimeWarning, stacklevel=2)
+                'additive variance (sigma_t is nan); k_cycle is exact.' % A, ModelWarning)
             sigma_t = float('nan')
 
         return {
@@ -1218,13 +1238,11 @@ class _OscillatorCovariance(object):
         ## ONE ORBIT: the covariance's host (a GLM's or trap's twin) reads
         ## the modes too, or they would come from another discretisation
         pss = pss._lyapunov_host()
-        with warnings.catch_warnings():
-            ## (its "K_orb ... the WHITE sources' alone" is handled below)
-            warnings.filterwarnings('ignore', message='PAC.oscillator_covariance: '
-                                    'this circuit has a COLOURED source')
-            K_orb, _info = self.oscillator_covariance(
-                pss, pair=True, colour_fmin=colour_fmin,
-                colour_fmax=colour_fmax, points_per_decade=points_per_decade)
+        ## (no "K_orb ... the WHITE sources' alone": handled below -- a text
+        ## filter on it until 2026-10-01)
+        K_orb, _info = self._oscillator_covariance(
+            pss, pair=True, colour_fmin=colour_fmin, colour_fmax=colour_fmax,
+            points_per_decade=points_per_decade, note=False)
         K = np.asarray(K_orb, dtype=float)
         n = K.shape[0]
         modes = pss.floquet_modes(pss, nmodes=(n if nmodes is None

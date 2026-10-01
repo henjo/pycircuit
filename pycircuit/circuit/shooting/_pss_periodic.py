@@ -2,7 +2,7 @@
 residual and the jump across an output wrap.
 """
 import numpy as np
-import warnings
+from pycircuit.circuit.simwarnings import AccuracyWarning, warn
 
 
 class _PeriodicStates(object):
@@ -183,10 +183,9 @@ class _PeriodicStates(object):
         except np.linalg.LinAlgError:
             if not getattr(self, '_wrap_jump_warned', False):
                 self._wrap_jump_warned = True
-                warnings.warn(
+                warn(
                     'PSS: the orbit starts on an idtmod output wrap, and the '
                     'jump across it could not be resolved (the algebraic '
                     'block is singular there -- a capacitor on a wrapped '
-                    'node?); the solve may not converge.', RuntimeWarning,
-                    stacklevel=2)
+                    'node?); the solve may not converge.', AccuracyWarning)
             return np.zeros_like(x)

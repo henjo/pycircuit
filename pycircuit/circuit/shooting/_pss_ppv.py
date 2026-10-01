@@ -9,6 +9,12 @@ from ._factored import dense_map
 from ._steps import dense_c
 from ._numerics import _arnoldi_gmres, insert_ref
 from .events import EventColumns
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    ConvergenceWarning,
+    UsageWarning,
+    warn,
+)
 
 
 class _PPVFloquet(object):
@@ -172,12 +178,11 @@ class _PPVFloquet(object):
         try:
             out[diff] = np.linalg.solve(blkC, np.asarray(vblock)[nz])
         except np.linalg.LinAlgError:
-            warnings.warn(
+            warn(
                 'PSS.ppv: the differential block C[D, NZ] is singular, so '
                 'the equation-row adjoint cannot be recovered; falling back '
                 'to the state-perturbation vector, which is wrong by a '
-                'factor of the capacitance in any CY contraction.',
-                RuntimeWarning, stacklevel=2)
+                'factor of the capacitance in any CY contraction.', AccuracyWarning)
             return np.array(vblock, dtype=float, copy=True)
         if not rows:
             return out
@@ -284,13 +289,13 @@ class _PPVFloquet(object):
             return vblock
         m = self.cir.n - 1
         if len(rows) != len(cols):
-            warnings.warn(
+            warn(
                 'PSS.ppv: %d algebraic equations against %d algebraic '
                 'states, so the adjoint\'s algebraic entries are not '
                 'determined by a square solve -- this is an index > 1 '
                 'structure (roadmap B4). They are left at zero, and noise '
                 'entering those rows will be UNDER-COUNTED.'
-                % (len(rows), len(cols)), RuntimeWarning, stacklevel=2)
+                % (len(rows), len(cols)), AccuracyWarning)
             return vblock
         with self._devices_at(xf):
             Gr, = remove_row_col((np.asarray(self.cir.G(xf, epar=self.epar),
@@ -307,11 +312,11 @@ class _PPVFloquet(object):
         try:
             va = np.linalg.solve(blk, rhs)
         except np.linalg.LinAlgError:
-            warnings.warn(
+            warn(
                 'PSS.ppv: the algebraic block G[A, Z] is singular, so the '
                 'adjoint\'s algebraic entries cannot be recovered; they '
                 'are left at zero and noise entering those rows will be '
-                'UNDER-COUNTED.', RuntimeWarning, stacklevel=2)
+                'UNDER-COUNTED.', AccuracyWarning)
             return vblock
         ## complex for a Floquet mode's adjoint (`_floquet_mode`)
         out = np.array(vblock, dtype=np.result_type(np.asarray(vblock), float),
@@ -414,7 +419,7 @@ class _PPVFloquet(object):
                     except np.linalg.LinAlgError:
                         self._ppv_alg_fallback = True
                         if _j == 0:
-                            warnings.warn(
+                            warn(
                                 'PSS.ppv: the algebraic block G[A,Z] is '
                                 'singular (index > 1: an L-I cutset or a '
                                 'C-V loop), so the pair-consistent '
@@ -428,8 +433,7 @@ class _PPVFloquet(object):
                                 'a C-V loop through a bias rail): within 3e-4 '
                                 'of the index-1 object and second order on '
                                 'both, so at index 2 this fallback is the '
-                                'whole answer.',
-                                RuntimeWarning, stacklevel=2)
+                                'whole answer.', AccuracyWarning)
                         _Gred = _Gj[np.ix_(_D, _NZ)]
                     _corr = np.zeros(m, dtype=_dt)
                     _corr[_NZ] = (_Cj[np.ix_(_D, _NZ)]
@@ -717,7 +721,7 @@ class _PPVFloquet(object):
         if (getattr(self, 'autonomous', False) and _rho is not None
                 and np.isfinite(_rho)
                 and abs(float(_rho) - 1.0) > self.PPV_UNIT_MULTIPLIER_WARN):
-            warnings.warn(
+            warn(
                 'PSS.ppv: the discrete period map\'s unit multiplier sits '
                 '%.2e off the unit circle (spectral_radius %.6f). The PPV is '
                 'solved at exactly 1, so it cannot see this, and the '
@@ -726,8 +730,7 @@ class _PPVFloquet(object):
                 '1.0e-1 -> c 52 %% high). Refine the grid, or use a method '
                 'whose multiplier stays on the circle at this step count '
                 '(radau, or trbdf2 on the same grid).'
-                % (abs(float(_rho) - 1.0), float(_rho)), RuntimeWarning,
-                stacklevel=2)
+                % (abs(float(_rho) - 1.0), float(_rho)), AccuracyWarning)
         _alg_rows, _alg_cols = self._algebraic_adjoint_pattern(x0f)
         vx = float(v[:m] @ xdot)
         if vx == 0.0:
@@ -801,7 +804,7 @@ class _PPVFloquet(object):
             _key = (str(_w.message), _w.category)
             if _key not in _seen:
                 _seen.add(_key)
-                warnings.warn(str(_w.message), _w.category, stacklevel=2)
+                warn(str(_w.message), _w.category)
         ## ⚠ A SECOND MULTIPLIER NEAR 1 BREAKS THIS SILENTLY, and none of
         ## the residuals above can see it.  The border removes the PHASE
         ## mode's singularity and does nothing about any OTHER root
@@ -902,7 +905,7 @@ class _PPVFloquet(object):
                 ## warning on every truncated call is noise a caller learns
                 ## to ignore, which is worse than none: the point of the gate
                 ## is that silence now MEANS something.
-                warnings.warn(
+                warn(
                     'PSS.ppv: `second_multiplier` (%.6f) is NOT CERTIFIED. '
                     'n = %d exceeds FLOQUET_DENSE_LIMIT = %d, so it comes '
                     'from a truncated Arnoldi, and the selected pair\'s Ritz '
@@ -917,10 +920,9 @@ class _PPVFloquet(object):
                     'is what the loop above does; raise PPV_RITZ_MAX_BASIS '
                     'if the cost is acceptable.'
                     % (lam2, n, self.FLOQUET_DENSE_LIMIT, _resid,
-                       self.PPV_RITZ_RESIDUAL_TOL, kk, _budget),
-                    RuntimeWarning, stacklevel=2)
+                       self.PPV_RITZ_RESIDUAL_TOL, kk, _budget), AccuracyWarning)
         if lam2 > self.PPV_SECOND_MULTIPLIER_WARN:
-            warnings.warn(
+            warn(
                 'PSS.ppv: a SECOND Floquet multiplier sits at %.6f, near '
                 'the unit circle. The bordered extraction removes only the '
                 'phase mode, so its conditioning degrades as that root '
@@ -932,7 +934,7 @@ class _PPVFloquet(object):
                 'and phase noise is OVER-ESTIMATED. Neither a smaller '
                 'tolerance nor a better extraction fixes that; it needs a '
                 'frequency-aware PPV. Treat this result as an upper bound.'
-                % lam2, RuntimeWarning, stacklevel=2)
+                % lam2, AccuracyWarning)
         ## `Q = log(threshold)/log|lambda_2|` (Wang & Roychowdhury): an
         ## amplitude perturbation decays to `|lambda_2|` of its size each
         ## cycle, so the cycles needed to fall below a threshold IS the
@@ -1339,7 +1341,7 @@ class _PPVFloquet(object):
             ## orders in mu).  The caller who truncates owes the dropped
             ## weight as a gate; this says so at the call rather than only in
             ## the docstring.
-            warnings.warn(
+            warn(
                 'PSS.floquet_modes: nmodes=%d keeps %d of %d non-null modes, '
                 'selected by |lambda|. Orbital-noise weight does NOT follow '
                 'multiplier magnitude -- Traversa & Bonani (TCAS-I 2011, '
@@ -1348,8 +1350,7 @@ class _PPVFloquet(object):
                 'concentration (m/n = 0.97). A covariance or spectrum built '
                 'from a truncated set is missing weight you have not bounded; '
                 'pass nmodes=None for all modes.'
-                % (int(nmodes), int(nmodes), len(keep)),
-                RuntimeWarning, stacklevel=2)
+                % (int(nmodes), int(nmodes), len(keep)), UsageWarning)
         ## `None` means ALL non-null modes -- the default.
         for k in (keep if nmodes is None else keep[:int(nmodes)]):
             out.append(self._floquet_mode(
@@ -1406,24 +1407,23 @@ class _PPVFloquet(object):
         lam_l, V, res_l, kk_l = self._ritz_modes(mvT, n, k + 2)
         certified = [bool(r <= self.PPV_RITZ_RESIDUAL_TOL) for r in res_r]
         if not all(certified):
-            warnings.warn(
+            warn(
                 'PSS.floquet_modes: %d of %d dominant modes did not certify '
                 'within an Arnoldi of %d vectors (PPV_RITZ_MAX_BASIS; Ritz '
                 'residuals %s against PPV_RITZ_RESIDUAL_TOL = %.0e). They are '
                 "returned flagged 'certified': False -- read their multipliers "
                 'and shapes as estimates.'
                 % (certified.count(False), len(certified), kk_r,
-                   ', '.join('%.1e' % r for r in res_r), self.PPV_RITZ_RESIDUAL_TOL),
-                RuntimeWarning, stacklevel=3)
-        warnings.warn(
+                   ', '.join(f'{r:.1e}' for r in res_r),
+                   self.PPV_RITZ_RESIDUAL_TOL), ConvergenceWarning)
+        warn(
             'PSS.floquet_modes: nmodes=%d returns the %d DOMINANT modes (by '
             '|lambda|) of a %d-wide monodromy. Orbital-noise weight does NOT '
             'follow multiplier magnitude -- Traversa & Bonani (TCAS-I 2011, '
             'Sec. V) show the contribution ordering INVERTING across six '
             'orders in mu, and this repo measured no concentration (m/n = '
             '0.97). These modes are for stability and inspection; a spectrum '
-            'above the limit is PAC.pnoise\'s.' % (k, len(lam), n),
-            RuntimeWarning, stacklevel=3)
+            'above the limit is PAC.pnoise\'s.' % (k, len(lam), n), UsageWarning)
         times = np.asarray(fp.times, dtype=float)
         tol = max(self.PPV_RITZ_RESIDUAL_TOL * 10.0,
                   10.0 * max(max(res_r), max(res_l)))
@@ -1648,8 +1648,7 @@ class _PPVFloquet(object):
                                                 _irn, 0.0),
                             _arows, _acols)
                 for _msg in sorted({str(_w.message) for _w in _caught}):
-                    warnings.warn(_msg.replace('PSS.ppv', 'PSS.floquet_modes'),
-                                  RuntimeWarning, stacklevel=3)
+                    warn(_msg.replace('PSS.ppv', 'PSS.floquet_modes'), RuntimeWarning)
 
         ## ⚠⚠ RENORMALISE ON THE STATE BLOCK, WITH THE `C`-WEIGHTED INNER
         ## PRODUCT.  `v_k` was biorthonormalised against `u_k` at the map's

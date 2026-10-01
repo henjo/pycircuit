@@ -2,12 +2,17 @@
 `warping_estimate` and the Floquet spectral report.
 """
 import numpy as np
-import warnings
 from pycircuit.circuit.analysis import NoConvergenceError
 from pycircuit.circuit.circuit import gnd
 from pycircuit.circuit._limiting import devices_at, stateful_limiters
 
 from ._numerics import steps_in
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    ConvergenceWarning,
+    summarised,
+    warn,
+)
 
 
 class _AccuracyChecks(object):
@@ -152,8 +157,11 @@ class _AccuracyChecks(object):
         _asked = max(int(kw.get('maxiterations', 20)), 20)
         _budget = min(_asked, int(self.TWIN_MAXITER))
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            ## (its accuracy warnings once, summarised: the twin's orbit is
+            ## the one the small-signal surfaces read -- a blanket filter
+            ## until 2026-10-01, the review's F13; not converging raises below)
+            with summarised(f'PSS.monodromy_twin: the {method} re-solve',
+                            categories=(AccuracyWarning,)):
                 twin.solve(refnode=kw.get('refnode', gnd), period=float(T),
                            x0=x0r, timestep=float(T) / (len(times) - 1 + 0.5),
                            grid=grid, maxiterations=_budget,
@@ -164,15 +172,14 @@ class _AccuracyChecks(object):
         except NoConvergenceError:
             _ok = False
         if not _ok and _budget < _asked:
-            warnings.warn(
+            warn(
                 'PSS.monodromy_twin: the %s re-solve did not converge within '
                 'its capped iteration budget (PSS.TWIN_MAXITER = %d; the solve '
                 'itself allowed %d).  A twin is seeded at the converged orbit '
                 'and a good seed converges in a handful of iterations, so this '
                 'usually means the %s orbit is too poor to seed it; if the seed '
                 'is good but slow, raise PSS.TWIN_MAXITER.'
-                % (method, _budget, _asked, getattr(self.par, 'method', '?')),
-                RuntimeWarning, stacklevel=3)
+                % (method, _budget, _asked, getattr(self.par, 'method', '?')), ConvergenceWarning)
         if not _ok:
             raise RuntimeError(
                 'PSS.monodromy_twin: the %s re-solve from the converged '
@@ -410,7 +417,7 @@ class _AccuracyChecks(object):
             else:
                 order, power_law = None, False
             if not power_law:
-                warnings.warn(
+                warn(
                     'PSS.grid_error: the refinement does not follow a single '
                     'power law (changes %.3e then %.3e over %dx refinements, '
                     'implied order %s). The error estimate is WITHHELD -- '
@@ -420,8 +427,8 @@ class _AccuracyChecks(object):
                     'error, and when the finest grid has hit a roundoff '
                     'floor.'
                     % (d1, d2, refine,
-                       ('%.2f' % order) if order is not None else 'none'),
-                    RuntimeWarning, stacklevel=2)
+                       f'{order:.2f}' if order is not None else 'none'),
+                    AccuracyWarning)
 
         if power_law:
             err = deltas[-1] / (float(refine) ** order - 1.0)
@@ -594,8 +601,9 @@ class _AccuracyChecks(object):
                          + np.asarray(cir.i(x, epar), dtype=float) + _u(t))
                 return -r
             tr = self._new_transient(self._integrator_for(self.par.method))
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            ## (summarised, not silenced: the estimate is read off this run --
+            ## a blanket filter until 2026-10-01, the review's F13)
+            with summarised('PSS.warping_estimate: its defect run'):
                 res = tr.solve(tend=periods * T, x0=X_i[:, 0].copy(), timestep=T / n_per,
                                provided_function=_defect_source, fixed_timestep=True)
             ty = np.asarray(res.sweep_values, dtype=float)
@@ -652,9 +660,10 @@ class _AccuracyChecks(object):
                     check_ratio = float(slope2 / slope)
                     trusted = bool(abs(check_ratio - 1.0) <= self.WARPING_CHECK_TOL)
                     if not trusted:
-                        warnings.warn('warping_estimate: the interpolant, not the method, sets '
-                                      'this reading (half-grid pass / full-grid pass = %.3f); '
-                                      'refine the grid until the two agree' % check_ratio)
+                        warn('warping_estimate: the interpolant, not the method, sets '
+                             'this reading (half-grid pass / full-grid pass = '
+                             f'{check_ratio:.3f}); refine the grid until the two '
+                             'agree', AccuracyWarning)
         return dict(period_error=period_error,
                     ppm=(period_error / T * 1e6) if period_error is not None else None,
                     lag=lag, lag_components=lag_c, degree=k, periods=periods,
@@ -752,7 +761,7 @@ class _AccuracyChecks(object):
         ## spurious roots are a real part of what the analysis reports and
         ## the user is entitled to know before reading a stability verdict.
         if len(para) and para[0] > 0.1 * rho and rho > self.SPECTRAL_NOISE_FLOOR:
-            warnings.warn(
+            warn(
                 'PSS: this method\'s PARASITIC roots are no longer '
                 'negligible -- the largest is %.4g against a physical '
                 'spectral radius of %.4g. A k-step method contributes '
@@ -762,5 +771,5 @@ class _AccuracyChecks(object):
                 'structure). Treat the separation as load-bearing here '
                 'rather than cosmetic: check `floquet_multipliers` and '
                 '`parasitic_roots` before drawing a stability conclusion.'
-                % (para[0], rho), RuntimeWarning, stacklevel=3)
+                % (para[0], rho), AccuracyWarning)
         return rho, phys, para

@@ -1,10 +1,8 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import logging
 import contextlib
 import time
-import warnings
 from collections import namedtuple
 
 import numpy as np
@@ -17,6 +15,13 @@ from pycircuit.circuit.dcanalysis import refnode_removed
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import (limit_sync, limiter_snapshot, state_restore,
                                          state_snapshot, stateful_limiters)
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    ConvergenceWarning,
+    ModelWarning,
+    UsageWarning,
+    warn,
+)
 ## The clamp the step controller applies to every accepted step, the force-accept
 ## path in `solve()` included: one bound, named once.  `stepcontroller` imports
 ## nothing from this package, so this is import-safe at module level.
@@ -1105,11 +1110,10 @@ class Transient(Analysis):
             except Exception as exc:                           # noqa: BLE001
                 ## (the check switches itself off for this analysis: said
                 ## once, not silently -- the review's F11, 2026-10-01)
-                warnings.warn(
+                warn(
                     'transient: the branch check could not read the '
                     f'structural rank of C ({type(exc).__name__}: '
-                    f'{str(exc)[:80]}) and is OFF for this analysis.',
-                    RuntimeWarning, stacklevel=2)
+                    f'{str(exc)[:80]}) and is OFF for this analysis.', ModelWarning)
                 self._branch_rank0 = (0, 0.0)
                 return self._branch_rank0
             if C.size == 0:
@@ -1241,6 +1245,10 @@ class Transient(Analysis):
         `C` wants the full one, so the reference row goes back in before the
         screen and comes out again for the re-solve.
         """
+        ## ⚠ THE FINDING IS WARNED AFTER THE `try`, NOT IN IT: raised inside,
+        ## a warning made an error (`-W error`, the suite's own policy) was
+        ## swallowed and reported as the check failing (the review's W3)
+        found = None
         try:
             xf = self.toolkit.concatenate(
                 (x_res[:self.irefnode], self.toolkit.array([0.0]),
@@ -1271,17 +1279,8 @@ class Transient(Analysis):
             t = float(getattr(self.epar, 't', 0.0) or 0.0)
             if not getattr(self, '_branch_warned', False):
                 self._branch_warned = True
-                logging.warning(
-                    'transient: THE STEP EQUATION HAD MORE THAN ONE ROOT at '
-                    't=%.6g s. rank C fell below its structural value there, '
-                    'and re-solving the same step from a different seed '
-                    'converged to a DIFFERENT solution (largest component '
-                    'differs by %.3g). The answer returned is one of several '
-                    'valid ones and the choice was made by the Newton seed. '
-                    'See branch_points in the statistics; set '
-                    'branch_check="off" to skip this test.',
-                    t, float(np.max(np.abs(alt - np.asarray(x_res,
-                                                            dtype=float)))))
+                found = (t, float(np.max(np.abs(
+                    alt - np.asarray(x_res, dtype=float)))))
         except Exception as exc:                               # noqa: BLE001
             ## ⚠⚠ A DIAGNOSTIC MUST NOT BE ABLE TO FAIL A SOLVE -- it runs
             ## after the answer is in hand and only reports.  But a bare
@@ -1289,11 +1288,25 @@ class Transient(Analysis):
             ## do nothing while looking healthy), so the failure is recorded
             ## and announced ONCE.
             ## History: `doc/transient_history.md`, `Transient._branch_after_solve`.
-            if not getattr(self, '_branch_error', None):
-                self._branch_error = repr(exc)
-                logging.warning('transient: the branch check itself failed '
-                                '(%s); it is disabled for this run and the '
-                                'solve is unaffected', self._branch_error)
+            self._warn_branch_error(exc)
+        if found is not None:
+            warn(
+                f'transient: THE STEP EQUATION HAD MORE THAN ONE ROOT at '
+                f't={found[0]:.6g} s. rank C fell below its structural value '
+                'there, and re-solving the same step from a different seed '
+                'converged to a DIFFERENT solution (largest component '
+                f'differs by {found[1]:.3g}). The answer returned is one of '
+                'several valid ones and the choice was made by the Newton '
+                'seed. See branch_points in the statistics; set '
+                'branch_check="off" to skip this test.', ModelWarning)
+
+    def _warn_branch_error(self, exc):
+        """The branch check's own failure, warned ONCE a run."""
+        if not getattr(self, '_branch_error', None):
+            self._branch_error = repr(exc)
+            warn(f'transient: the branch check itself failed '
+                 f'({self._branch_error}); it is disabled for this run and the '
+                 'solve is unaffected', ModelWarning)
 
     def _branch_after_coupled(self, stage_newton, seed0, Y, residual,
                               build=None):
@@ -1306,6 +1319,8 @@ class Transient(Analysis):
         """
         if not self._branch_on():
             return
+        ## (the finding warned after the `try`, as `_branch_after_solve`'s)
+        found = None
         try:
             ## ⚠ "FIRED" AND "GAVE A DIRECTION" ARE DIFFERENT ANSWERS: when
             ## `C` collapses ENTIRELY the screen returns `(True, None)` --
@@ -1365,20 +1380,18 @@ class Transient(Analysis):
             self._branch_count('branch_points')
             if not getattr(self, '_branch_warned', False):
                 self._branch_warned = True
-                logging.warning(
-                    'transient: THE COUPLED STAGE SYSTEM HAD MORE THAN ONE '
-                    'ROOT at t=%.6g s. rank C fell below its structural value '
-                    'at one of the stages, and re-solving the block from a '
-                    'different seed converged to a DIFFERENT solution (largest '
-                    'component differs by %.3g). The answer returned is one of '
-                    'several valid ones. Set branch_check="off" to skip this '
-                    'test.', float(getattr(self.epar, 't', 0.0) or 0.0), gap)
+                found = (float(getattr(self.epar, 't', 0.0) or 0.0), gap)
         except Exception as exc:                               # noqa: BLE001
-            if not getattr(self, '_branch_error', None):
-                self._branch_error = repr(exc)
-                logging.warning('transient: the branch check itself failed '
-                                '(%s); it is disabled for this run and the '
-                                'solve is unaffected', self._branch_error)
+            self._warn_branch_error(exc)
+        if found is not None:
+            warn(
+                f'transient: THE COUPLED STAGE SYSTEM HAD MORE THAN ONE ROOT '
+                f'at t={found[0]:.6g} s. rank C fell below its structural '
+                'value at one of the stages, and re-solving the block from a '
+                'different seed converged to a DIFFERENT solution (largest '
+                f'component differs by {found[1]:.3g}). The answer returned is '
+                'one of several valid ones. Set branch_check="off" to skip '
+                'this test.', ModelWarning)
 
     def _branch_coupled_scan(self, stage_newton, seed0, base, d, scale,
                              residual):
@@ -3614,10 +3627,8 @@ class Transient(Analysis):
             Y, ok = self._pcnr_attempt(
                 lambda: self._rk_stage_pcnr(target, aii, h, ti, guess,
                                             provided_function),
-                lambda exc: logging.warning(
-                    'transient pcnr=True: %s PCNR failed at t=%g (%s: %s); '
-                    'device limiting for this stage', what, ti,
-                    type(exc).__name__, str(exc)[:80]))
+                lambda exc: self._pcnr_failed(f'{what} PCNR (a stage)',
+                                              ti, exc))
             if ok:
                 ## THE BRANCH CHECK, CONFIRMED on the stage equation `_newton`
                 ## would have solved
@@ -3825,7 +3836,10 @@ class Transient(Analysis):
         if prev is None:
             return None
         Yp, xp, hp, tp = prev
-        if len(Yp) != len(c) or abs(hp - h) > 1e-14 * max(h, 1.0) \
+        ## (the step compared RELATIVE to itself: `1e-14 max(h, 1)` read every
+        ## step below 1 s as the same to 1e-14 absolute -- a 1e-5 change at h
+        ## = 1 ns -- until 2026-10-01, the review's X5)
+        if len(Yp) != len(c) or abs(hp - h) > 1e-14 * h \
                 or abs(tp - tn) > 1e-12 * max(abs(tn), h):
             return None
 
@@ -4461,11 +4475,11 @@ class Transient(Analysis):
         if self.par.radau_transform and use_pcnr and \
                 not getattr(self, '_transform_pcnr_warned', False):
             self._transform_pcnr_warned = True
-            warnings.warn(
+            warn(
                 'Transient: radau_transform=True is not combined with '
                 'pcnr=True -- PCNR has no transform variant, and it takes '
                 'precedence: each step is solved by the dense coupled PCNR '
-                'Newton.', RuntimeWarning, stacklevel=2)
+                'Newton.', UsageWarning)
         if self.par.radau_transform and not use_pcnr:
             try:
                 return self._rk_step_transformed(
@@ -4505,10 +4519,8 @@ class Transient(Analysis):
                 _pairs = [(ra, rb) for _i, _e, ra, rb
                           in _pcnr.pcnr_junctions(self.cir)]
                 _parallel = len(_pairs) != len(set(_pairs))
-                logging.warning(
-                    'transient pcnr=True: coupled PCNR failed at t=%g (%s: %s); '
-                    'device limiting for this step%s', t, type(exc).__name__,
-                    str(exc)[:80],
+                self._pcnr_failed(
+                    'coupled PCNR', t, exc,
                     ' -- ⚠ THIS CIRCUIT HAS PARALLEL JUNCTIONS ON ONE BRANCH, '
                     'which is the case PCNR exists for; the fallback resolves '
                     'them order-dependently' if _parallel else '')
@@ -4896,10 +4908,7 @@ class Transient(Analysis):
                 ## `_pcnr_attempt`.
                 out, ok = self._pcnr_attempt(
                     lambda: self._solve_timestep_pcnr(x0, t, provided_function),
-                    lambda exc: logging.warning(
-                        'transient pcnr=True: PCNR failed at t=%g (%s: %s); '
-                        'ordinary solver for this step', t,
-                        type(exc).__name__, str(exc)[:80]))
+                    lambda exc: self._pcnr_failed('PCNR', t, exc))
                 if ok:
                     return out
             else:
@@ -5093,6 +5102,7 @@ class Transient(Analysis):
         self.pcnr_solves = 0
         self.pcnr_fallbacks = 0
         self.pcnr_status = 'off'
+        self._pcnr_first = None
         ## ⚠ FANG'S COUPLED PATH IS BUILT ON A LINEAR MULTISTEP COMPANION: it
         ## solves the step from eq (6), a solution-space LTE over the step
         ## history.  A stage method or a GLM judges its step by its own
@@ -5143,11 +5153,11 @@ class Transient(Analysis):
         ## provided_function gets neither breakpoint truncation nor an order
         ## drop: it must be smooth.
         if provided_function is not None and x0 is None and not self.par.uic:
-            warnings.warn(
+            warn(
                 'transient: provided_function adds a source the DC operating '
                 'point does not see, so the run opens from an inconsistent '
                 'state and integrates a spurious startup transient. Pass '
-                'uic=True or an explicit x0.', RuntimeWarning, stacklevel=3)
+                'uic=True or an explicit x0.', UsageWarning)
 
         X = []
         self.irefnode=self.cir.get_node_index(refnode)
@@ -5236,12 +5246,12 @@ class Transient(Analysis):
             ## the caller's fixed grid is.
             if fixed_timestep:
                 if timestep > element_cap:
-                    warnings.warn(
+                    warn(
                         'transient: fixed_timestep=%g exceeds the %g s cap a delay '
                         'element needs (TD/2). The propagation delay will come out too '
                         'long -- measured 4x at twice the cap -- and nothing else will '
                         'report it. Use a timestep <= %g, or drop fixed_timestep.'
-                        % (timestep, element_cap, element_cap), RuntimeWarning)
+                        % (timestep, element_cap, element_cap), AccuracyWarning)
             elif element_cap < max_step:
                 max_step = element_cap
 
@@ -5300,6 +5310,8 @@ class Transient(Analysis):
         ## retry of the same point.
         landing = order_drop = False
         rejects = point_retries = 0          # this time point's retries
+        ## the steps the run could not take as asked, warned once after it
+        fixed_fallbacks, forced = [], []
         ev_iter = 0                          # E7: secant cuts in flight
         imposed = False                      # the next attempt's size was imposed (an event cut, the excursion veto)
         ## F14 (doc/transient_review_260820.md): a lower-band GROWTH retry --
@@ -5369,12 +5381,11 @@ class Transient(Analysis):
                     if fixed_timestep:
                         ## STAGE 4h -- a fixed grid that cannot be honoured
                         ## must say so
-                        warnings.warn(
-                            'transient: Newton did not converge at t=%.6g s with '
-                            'the requested fixed timestep %.6g s; falling back to '
-                            '%.6g s for this step. The output grid is no longer '
-                            'uniform.' % (t, timestep, h * 0.25),
-                            RuntimeWarning, stacklevel=3)
+                        ## (counted; one warning a run, after the loop --
+                        ## until 2026-10-01 one per step, each with its own
+                        ## `t`, which Python's once-per-location filter
+                        ## cannot collapse; the review's X8)
+                        fixed_fallbacks.append((t, h * 0.25))
                     h = h * 0.25
                     ## a step whose size was imposed is retried smaller STILL
                     ## imposed: the coupled family then solves the circuit
@@ -5423,13 +5434,8 @@ class Transient(Analysis):
                             self.statistics.force_accepts += 1
                             order_drop = True
                             h_next = family.h_after_force(h, h_next)
-                            warnings.warn(
-                                'transient: local truncation error still above '
-                                'tolerance after %d rejections at t=%.6g s; '
-                                'accepting the step at h=%.6g s with an order '
-                                'drop. The accepted error is unbounded -- treat '
-                                'the waveform near this time with suspicion.'
-                                % (rejects, t, h), RuntimeWarning, stacklevel=3)
+                            ## (one warning a run, after the loop: X8)
+                            forced.append((t, h, rejects))
                     rejects = point_retries = 0
 
                 ## -- 4. a declared state event inside the step: cut to it ----
@@ -5471,8 +5477,54 @@ class Transient(Analysis):
                 h = min(h_next, max_step) if not fixed_timestep else timestep
         finally:
             family.finish()
-
+        self._warn_run_summary(fixed_fallbacks, forced, timestep)
         return self._finish_result(X, timelist, _t_run_start)
+
+    def _warn_run_summary(self, fixed_fallbacks, forced, timestep):
+        """One warning a run for each kind of step it could not take as
+        asked (the fixed grid's Newton fallbacks, the force-accepts), and
+        for its PCNR fallbacks (`_warn_pcnr_summary`)."""
+        if fixed_fallbacks:
+            t0, h0 = fixed_fallbacks[0]
+            warn(
+                f'transient: Newton did not converge at {len(fixed_fallbacks)} '
+                f'step(s) with the requested fixed timestep {timestep:.6g} s '
+                f'-- the first at t={t0:.6g} s, falling back to {h0:.6g} s for '
+                'that step (each a quarter of the step it replaced). The '
+                'output grid is no longer uniform.', ConvergenceWarning)
+        if forced:
+            t0, h0, r0 = forced[0]
+            warn(
+                'transient: local truncation error still above tolerance after '
+                f'the rejection budget at {len(forced)} step(s) -- the first at '
+                f't={t0:.6g} s (h={h0:.6g} s, {r0} rejections); those steps '
+                'were accepted with an order drop. The accepted error is '
+                'unbounded -- treat the waveform near those times with '
+                'suspicion (statistics: force_accepts).', AccuracyWarning)
+        self._warn_pcnr_summary('transient')
+
+    def _pcnr_failed(self, where, t, exc, note=''):
+        """A PCNR fallback, kept for the run's one warning
+        (`_warn_pcnr_summary`): until 2026-10-01 a `logging.warning` per
+        failed step (or stage), outside the warnings machinery altogether
+        (the review's X8)."""
+        if getattr(self, '_pcnr_first', None) is None:
+            self._pcnr_first = (where, float(t), type(exc).__name__,
+                                str(exc)[:80], note)
+
+    def _warn_pcnr_summary(self, who):
+        """The run's PCNR fallbacks, one warning: how many, and the first."""
+        first = getattr(self, '_pcnr_first', None)
+        if first is None or not self.pcnr_fallbacks:
+            return
+        where, t0, ename, emsg, note = first
+        total = self.pcnr_fallbacks + self.pcnr_solves
+        warn(
+            f'{who} pcnr=True: PCNR failed on {self.pcnr_fallbacks} solve(s) '
+            f'of {total} -- the first {where} at t={t0:g} ({ename}: {emsg}); '
+            'each fell back to device limiting or the ordinary solver '
+            f'(pcnr_status {self.pcnr_status!r}){note}', ConvergenceWarning)
+        self._pcnr_first = None
 
     def _attempt_step(self, family, X, t, h, hold, provided_function):
         """One attempt of the family's step, timed."""

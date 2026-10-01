@@ -25,6 +25,13 @@ from ._pss_replays import _FactoredReplays
 from ._pss_walks import _PeriodWalks
 from .diagnostics import algebraic_conditioning
 from .diagnostics import topological_index
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    ConvergenceWarning,
+    ModelWarning,
+    UsageWarning,
+    warn,
+)
 
 
 ## Autonomy is decided STRUCTURALLY, not spectrally: a circuit is autonomous
@@ -758,25 +765,24 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         try:
             idx, info = topological_index(self.cir)
         except Exception as exc:                                # noqa: BLE001
-            warnings.warn(
+            warn(
                 'PSS: the netlist\'s topological index could not be read '
                 f'({type(exc).__name__}: {str(exc)[:80]}), so an index-2 '
                 'netlist would keep the manufactured opening step; pass '
-                'x0_unknown=True if it is one.', RuntimeWarning, stacklevel=4)
+                'x0_unknown=True if it is one.', ModelWarning)
             return False
         if idx != 2 or info['provisional'] or info['ill_posed']:
             self._warn_if_the_block_disagrees(idx, info)
             return False
         where = (('C-V loop: ' + ', '.join(info['loop'])) if info['loop']
                  else ('L-I cutset: ' + ', '.join(info['cutset'])))
-        warnings.warn(
+        warn(
             'PSS: this netlist is index 2 (%s), where the manufactured '
             'opening step is INCONSISTENT -- it starts an algebraic variable '
             'at a value the constraint forbids, and trapezoidal carries that '
             'seed forever (exactly 2x on an L-I cutset, reported as CONVERGED '
             'on an even number of steps). Solving for x_0 directly instead; '
-            'pass x0_unknown=False to override.' % where,
-            RuntimeWarning, stacklevel=3)
+            'pass x0_unknown=False to override.' % where, ModelWarning)
         return True
 
     def _warn_if_the_block_disagrees(self, idx, info):
@@ -815,18 +821,6 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                          'class (%s), so the topological reading is partial.'
                          % (len(info['unclassified']),
                             ', '.join(info['unclassified'][:4])))
-            warnings.warn(
-                'PSS: the topological index reads %s for this netlist, but its '
-                'ALGEBRAIC BLOCK is numerically SINGULAR '
-                '(sigma_min(d g_2/d y) = 0), which means index >= 2.%s A '
-                'circuit like this solves cleanly and reports nothing, so the '
-                'disagreement is the only signal you get. If it has a C-V loop '
-                'or an L-I cutset through an element the classifier does not '
-                'recognise, the manufactured opening step may be INCONSISTENT; '
-                'pass x0_unknown=True explicitly to apply the index-2 remedy, '
-                'having checked that the index really is 2 and not 3 -- the '
-                'remedy is not known to apply at index 3.'
-                % (idx, extra), RuntimeWarning, stacklevel=4)
         except Exception:                                      # noqa: BLE001
             ## ⚠ Best-effort, like everything else on this path: a DIAGNOSTIC
             ## that raises inside a defaulting helper would change which
@@ -834,6 +828,19 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             ## comment above records.  The gates call the helper DIRECTLY so a
             ## bug in it cannot hide behind this.
             return
+        ## (warned AFTER the `try`: inside it, a warning made an error was
+        ## swallowed with the diagnostic's own failures -- the review's W3)
+        warn(
+            f'PSS: the topological index reads {idx} for this netlist, but its '
+            'ALGEBRAIC BLOCK is numerically SINGULAR '
+            f'(sigma_min(d g_2/d y) = 0), which means index >= 2.{extra} A '
+            'circuit like this solves cleanly and reports nothing, so the '
+            'disagreement is the only signal you get. If it has a C-V loop '
+            'or an L-I cutset through an element the classifier does not '
+            'recognise, the manufactured opening step may be INCONSISTENT; '
+            'pass x0_unknown=True explicitly to apply the index-2 remedy, '
+            'having checked that the index really is 2 and not 3 -- the '
+            'remedy is not known to apply at index 3.', ModelWarning)
 
     def _companion_reach(self):
         """How many charges back the chosen integrator's companion reads.
@@ -1278,6 +1285,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             if retried is not None:
                 return retried
         self._report_convergence(run)
+        self._report_pcnr()
         X, walk, lte_seen = self._replay_orbit(run)
         self._report_lte(run, lte_seen)
         self._check_fundamental(X, walk, run.period)
@@ -1286,6 +1294,14 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         if polished is not None:
             return polished
         return InternalResultDict({'tpss': tpss, 'fpss': fpss})
+
+    def _report_pcnr(self):
+        """The inner transient's PCNR fallbacks over this solve, one warning
+        (`Transient._warn_pcnr_summary`) -- until 2026-10-01 a
+        `logging.warning` per failed step (the review's X8)."""
+        tr = getattr(self, '_tran', None)
+        if tr is not None:
+            tr._warn_pcnr_summary('PSS')
 
     def _solve_prepare(self, refnode, period, x0, timestep, maxiterations,
                        grid, matrix_free, x0_unknown, tstab, break_events,
@@ -1531,14 +1547,13 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             _method_se = getattr(self.par, 'method', 'euler')
             if (_rows and self._map_kind() == 'plain'
                     and not self._open_at_x0):
-                warnings.warn(
+                warn(
                     'PSS: this circuit declares %d state event(s), and on the '
                     'plain map (method %r) the state-event stage needs the '
                     'map opened at x(0): with x0_unknown=False the crossings '
                     'stay inside their steps and the solve is first order '
                     'there. Pass x0_unknown=True (the default with state '
-                    "events), or use method='radau'." % (len(_rows), _method_se),
-                    RuntimeWarning, stacklevel=3)
+                    "events), or use method='radau'." % (len(_rows), _method_se), UsageWarning)
         ## the period-column convention for this solve (see the Parameter)
         _pc = str(getattr(self, '_force_period_column', None)
                   or getattr(self.par, 'period_column', 'auto'))
@@ -1563,6 +1578,12 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         self._period_column_requested = _pc
         self._closing_inner = None
         self._closing_warned = False
+        self._stepup_warned = False
+        ## (the inner transient's PCNR fallbacks are this solve's: counted from
+        ## zero, warned once after it -- `_report_pcnr`)
+        if getattr(self, '_tran', None) is not None:
+            self._tran.pcnr_solves = self._tran.pcnr_fallbacks = 0
+            self._tran._pcnr_first = None
         phase_k, phase_pin = 0, 0.0
         if phase_rule not in ('reselect', 'frozen'):
             raise ValueError("phase_rule must be 'reselect' or 'frozen', not %r"
@@ -2081,7 +2102,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                            if isinstance(_info, dict) else None)
         if not self.converged and self.step_floor:
             _sf = self.step_floor
-            warnings.warn(
+            warn(
                 'PSS: the shooting solve STOPPED MOVING AND STILL FAILED ITS STEP '
                 'TEST: the periodicity residual has met its tolerance since '
                 'iteration %d, but the Newton step of unknown %d stays at %.1e '
@@ -2097,8 +2118,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 'periodic solution is NOT UNIQUE and the step wanders along the '
                 'null direction; check `spectral_radius`.'
                 % (_sf['since'], _sf['index'], _sf['step'], _sf['tol'],
-                   _sf['ratio'], _sf['step']),
-                RuntimeWarning, stacklevel=3)
+                   _sf['ratio'], _sf['step']), ConvergenceWarning)
         self.shooting_iterations = maxiterations if not self.converged else None
         ## ⚠ AN AUTONOMOUS OSCILLATOR CANNOT BE SOLVED AT A FIXED PERIOD.  A
         ## self-sustaining oscillation (a VCO macromodel, an LC or ring
@@ -2134,14 +2154,13 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                            'solved-history formulation has an exact Jacobian '
                            'and converges quadratically where the plain path '
                            'is a contraction with a linear rate.')
-            warnings.warn(
+            warn(
                 'PSS: the shooting solve did not converge in %d iterations '
                 '(method=%r). ⚠ The returned waveform IS STILL A FULL '
                 'RESULT -- it is the last iterate, not a periodic steady '
                 'state -- so a reader who does not check `converged` gets '
                 'an array that looks like an answer and is not. %s'
-                % (maxiterations, method, _advice),
-                RuntimeWarning, stacklevel=3)
+                % (maxiterations, method, _advice), ConvergenceWarning)
         
 
     def _replay_orbit(self, run):
@@ -2282,7 +2301,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             ## ⚠ DO NOT ASSERT CONVERGENCE HERE: the LTE report is produced
             ## whether or not the solve converged, and must not contradict
             ## the non-convergence warning beside it.
-            warnings.warn(
+            warn(
                 'PSS: the shooting solve %s, and the periodic '
                 'solution is not resolved at this accuracy (method=%r, %d '
                 'points per period). Local truncation error reaches %.3g '
@@ -2299,8 +2318,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                    'n/a' if self.total_lte is None
                    else '%.3g' % self.total_lte,
                    'n/a' if self.max_lte_seam is None
-                   else '%.3g' % self.max_lte_seam),
-                RuntimeWarning, stacklevel=3)
+                   else f'{self.max_lte_seam:.3g}'), AccuracyWarning)
 
     def _check_fundamental(self, X, walk, period):
         """`solve`, phase 6: warn when an autonomous solve returned a
@@ -2379,7 +2397,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 ## not evenly spaced, and on the plain path `X[0]` sits one
                 ## step before `t = 0`
                 self.fundamental_period = float(np.sum(_h[:_j]))
-                warnings.warn(
+                warn(
                     'PSS: this autonomous solve returned a period that '
                     'is a MULTIPLE of the fundamental. The orbit comes '
                     'back within %.2g of its own diameter at t=%.6g s, '
@@ -2393,8 +2411,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                     % (_d[_j] / _diam, self.fundamental_period,
                        self.fundamental_period, period,
                        period / self.fundamental_period,
-                       self.fundamental_period),
-                    RuntimeWarning, stacklevel=3)
+                       self.fundamental_period), ConvergenceWarning)
 
     def _orbit_results(self, run, X):
         """`solve`, phase 7: the reported waveform (`self.waveform`) and the
@@ -2487,11 +2504,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 or getattr(self, '_closing_fallback_pass', False)
                 or getattr(self, '_closing_second_pass', False)):
             return None
-        warnings.warn(
+        warn(
             "PSS: the free-period solve on the caller's grid did not converge "
             "with the 'closing' period column (period_column='auto'); solving "
-            "again from the same seed with 'proportional' scaling.",
-            RuntimeWarning, stacklevel=3)
+            "again from the same seed with 'proportional' scaling.", ConvergenceWarning)
         self._closing_fallback_pass = True
         self._force_period_column = 'proportional'
         try:
@@ -2526,10 +2542,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 or getattr(self, '_staged_fallback_pass', False)
                 or getattr(self, '_closing_fallback_pass', False)):
             return None
-        warnings.warn(
+        warn(
             'PSS: the solve with the state events as Newton unknowns did not '
             'converge from this seed; solving the one-stage problem first and '
-            'staging from its orbit.', RuntimeWarning, stacklevel=3)
+            'staging from its orbit.', ConvergenceWarning)
         kv = {}
         for _p in self.parameters:
             try:
@@ -2588,13 +2604,13 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             _hs = np.asarray(hs, dtype=float)
             _r = float(_hs[-1] / _hs[-2])
             if _r > ZERO_STABILITY_RATIO or _r < 1.0 / ZERO_STABILITY_RATIO:
-                warnings.warn(
+                warn(
                     'PSS: the closing step ended %.2fx its neighbour after the '
                     'free-period solve moved the period from %.6g to %.6g s; '
                     'solving once more on that grid re-fractioned at the '
                     'solved period (proportional), from the converged state.'
                     % (_r, float(self._solve_kwargs.get('period_seed', period)),
-                       float(period)), RuntimeWarning, stacklevel=3)
+                       float(period)), AccuracyWarning)
             ## ⚠ ON THE CALLER'S FRACTIONS, not the closing-distorted grid:
             ## re-fractioning THAT grid keeps the giant last step.
             _fr_caller = (np.asarray(self._grid_fracs, dtype=float)

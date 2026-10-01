@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
-import warnings
 
 import numpy as np
+from pycircuit.circuit.simwarnings import AccuracyWarning, warn
 
 ## Valid values for `relref`, matching a commercial simulator's parameter of the same name.
 RELREF_MODES = ('pointlocal', 'alllocal', 'sigglobal')
@@ -66,6 +66,21 @@ class StepController(ABC):
     """
     Abstract Strategy Interface for deciding and predicting time steps.
     """
+
+    def _lte_solve_failed(self, exc):
+        """The LTE solve's fallback to the charge residual, warned ONCE per
+        controller: until 2026-10-01 at every step it happened, the text the
+        same in the integral and PI controllers (the review's X8)."""
+        if getattr(self, '_lte_fallback_warned', False):
+            return
+        self._lte_fallback_warned = True
+        warn(
+            f'transient step control: the LTE solve failed ({exc}), so the '
+            'charge-domain residual is being used in place of the '
+            'solution-domain error. These are different quantities -- the '
+            'first is a current, the second a voltage -- so the step size '
+            'from this point is not error-controlled in the usual sense.',
+            AccuracyWarning)
 
     ## ITEM 2+.3 -- what the RELATIVE part of the LTE tolerance is measured against.
     ##
@@ -307,13 +322,7 @@ class IntegralController(StepController):
             ## better.  Made loud instead: gate 4-D measured this firing ZERO
             ## times on a circuit with cond(J) = 1.0e12, so if it ever does fire
             ## that is news.
-            warnings.warn(
-                'transient step control: the LTE solve failed (%s), so the '
-                'charge-domain residual is being used in place of the '
-                'solution-domain error. These are different quantities -- the '
-                'first is a current, the second a voltage -- so the step size '
-                'from this point is not error-controlled in the usual sense.'
-                % exc, RuntimeWarning, stacklevel=2)
+            self._lte_solve_failed(exc)
             lte_reduced = Eg_reduced
             
         lte = toolkit.concatenate((lte_reduced[:irefnode], toolkit.array([0.0]), lte_reduced[irefnode:]))
@@ -506,13 +515,7 @@ class PIController(StepController):
             ## better.  Made loud instead: gate 4-D measured this firing ZERO
             ## times on a circuit with cond(J) = 1.0e12, so if it ever does fire
             ## that is news.
-            warnings.warn(
-                'transient step control: the LTE solve failed (%s), so the '
-                'charge-domain residual is being used in place of the '
-                'solution-domain error. These are different quantities -- the '
-                'first is a current, the second a voltage -- so the step size '
-                'from this point is not error-controlled in the usual sense.'
-                % exc, RuntimeWarning, stacklevel=2)
+            self._lte_solve_failed(exc)
             lte_reduced = Eg_reduced
             
         lte = toolkit.concatenate((lte_reduced[:irefnode], toolkit.array([0.0]), lte_reduced[irefnode:]))

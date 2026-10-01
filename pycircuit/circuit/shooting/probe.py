@@ -6,6 +6,7 @@ import numpy as np
 
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import gnd
+from pycircuit.circuit.simwarnings import ConvergenceWarning, warn
 
 from .pac import PAC
 from .pss import PSS
@@ -340,11 +341,10 @@ class ProbeShooting:
         new = self.unconverged - getattr(self, '_unconverged_seen', 0)
         self._unconverged_seen = self.unconverged
         if new > 0:
-            warnings.warn(
+            warn(
                 f'ProbeShooting: {new} inner PSS solve(s) did not report '
                 'convergence; their spectra were used as they stood. Raise '
-                'maxiterations if the answer matters.', RuntimeWarning,
-                stacklevel=3)
+                'maxiterations if the answer matters.', ConvergenceWarning)
         return new
 
     def solve(self, amp0, freq0, tol=1e-9, maxiter=20, damp=1.0,
@@ -374,7 +374,12 @@ class ProbeShooting:
             IF, _ = self.probe_current(A, f + df)
             J = np.array([[(IA.real - I0.real) / dA, (IF.real - I0.real) / df],
                           [(IA.imag - I0.imag) / dA, (IF.imag - I0.imag) / df]])
-            if abs(np.linalg.det(J)) < 1e-300:
+            ## (singular by its CONDITION on unit columns: the two columns
+            ## are in different units, d/dA and d/df, so `|det J| < 1e-300`
+            ## could not fire -- the review's X5, 2026-10-01)
+            cn = np.linalg.norm(J, axis=0)
+            if (not np.all(np.isfinite(J)) or not np.all(cn > 0.0)
+                    or np.linalg.cond(J / cn) > 1e14):
                 raise np.linalg.LinAlgError(
                     'ProbeShooting: the 2x2 probe Jacobian is singular at '
                     'A=%.6g f=%.6g. Either the probe cannot see the '

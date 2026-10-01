@@ -10,12 +10,12 @@ one on a subclass and hands that subclass to `PAC._noise_components`.
 
 History: `doc/shooting_history.md` (the members' old names on `PAC`).
 """
-import warnings
 
 import numpy as np
 
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import defaultepar
+from pycircuit.circuit.simwarnings import CostWarning, ModelWarning, warn
 
 from ._numerics import insert_ref
 
@@ -324,15 +324,14 @@ def warn_signed_unused(model, where):
             if key in signed and uniform_exponent(B, EF) is None
             and exponent_columns(B, EF, signed[key]) is None]
     if lost:
-        warnings.warn(
+        warn(
             '%s: %s states SIGNED coloured-noise amplitudes, but its '
             'power-law exponent is not uniform across its entries and its '
             'columns do not carry one exponent each, so the component is '
             'evaluated per band from sqrt(PSD) -- the SIGN-BLIND fold (the '
             '|m| process).  The result is the pre-2026-09-19 one for this '
             'component, not the signed physics.'
-            % (where, ', '.join('.'.join(k) for k in lost)),
-            RuntimeWarning, stacklevel=4)
+            % (where, ', '.join('.'.join(k) for k in lost)), ModelWarning)
 
 
 def psd_touches_zero(C):
@@ -346,27 +345,26 @@ def psd_touches_zero(C):
     return bool(np.any((dmax > 0) & (d.min(axis=0) <= 1e-2 * dmax)))
 
 
-def warn_sign_blind(what, keys, stacklevel):
+def warn_sign_blind(what, keys):
     """THE one warning for a component factored by the root of its PSD
     whose PSD touches zero (`psd_touches_zero`) and whose element states no
     signed amplitudes: the `|m|` process, exact if the modulation keeps its
     sign, wrong in either direction where it changes sign.  `what` names
-    the PAC surface; `stacklevel` as the caller's own would be.
+    the PAC surface.
 
     ⚠ Every surface that roots a coloured PSD gives it: the modal and
     lineshape spectra (`colour_groups`), the sample series (from
     2026-09-29; `warn_touch=False` kept it silent) and the covariance
     family (`_coloured_prepare`, from 2026-09-29: its power-law flicker was
     rooted without a word)."""
-    warnings.warn(
+    warn(
         'PAC.%s: the PSD of %s touches zero along the orbit and the '
         'element states no signed noise amplitudes, so it is factored '
         'by the root of its PSD -- the |m| process: exact if the '
         'modulation keeps its sign, wrong in either direction where it '
         'changes sign.  Only the element knows the sign '
         '(Element.noise_amplitudes).'
-        % (what, ', '.join('.'.join(k) for k in keys)),
-        RuntimeWarning, stacklevel=stacklevel + 1)
+        % (what, ', '.join('.'.join(k) for k in keys)), ModelWarning)
 
 
 def separable(Cs, tol=1e-9):
@@ -606,14 +604,13 @@ class NoiseComponents(object):
                         np.zeros_like(whole))
             scale = max(float(np.max(np.abs(whole))), 1e-300)
             if float(np.max(np.abs(parts - whole))) > 1e-9 * scale:
-                warnings.warn(
+                warn(
                     'PAC: this circuit\'s CY is not the sum of its elements\' '
                     '(an override: noise correlated across elements?), so its '
                     'sources cannot be split per element; the whole circuit is '
                     'taken as ONE white and ONE coloured component -- two '
                     'independent COLOURED sources under different modulations '
-                    'inside it then do not add (white ones do).',
-                    RuntimeWarning, stacklevel=3)
+                    'inside it then do not add (white ones do).', ModelWarning)
                 return self.colour_model(f, f0)
         white = np.zeros((N, m, m), dtype=complex)
         white_parts, flicker, perband = [], [], []
@@ -666,13 +663,12 @@ class NoiseComponents(object):
             modes[key] = mode
         rooted = [key for key in perband if modes[key] is None]
         if rooted:
-            warnings.warn(
+            warn(
                 'PAC: the noise of %s is not thermal-plus-power-law, so it is '
                 'evaluated per band with ONE square root per element: '
                 'independent sources INSIDE such an element are not split '
                 '(measured 4.2e-4 on an EKV stage, thermal + flicker).'
-                % ', '.join('.'.join(k) for k in rooted),
-                RuntimeWarning, stacklevel=3)
+                % ', '.join('.'.join(k) for k in rooted), CostWarning)
         w1 = ws[0]
 
         def model(w):
@@ -843,12 +839,12 @@ class NoiseComponents(object):
                 continue
             Rh = 0.5 * (R + np.conj(np.swapaxes(R, -1, -2)))
             if float(np.min(np.linalg.eigvalsh(Rh))) < -1e-6 * scale:
-                warnings.warn(
+                warn(
                     'PAC: %s states signed noise amplitudes (Element.'
                     'noise_amplitudes) whose W W^H exceeds its CY, so its PSD '
                     'is rooted instead -- SIGN-BLIND, and its independent '
                     'sources merged.  The two methods disagree.'
-                    % '.'.join(key), RuntimeWarning, stacklevel=3)
+                    % '.'.join(key), ModelWarning)
                 return None
             modes.append('white')
             Rs.append(R)
@@ -856,12 +852,12 @@ class NoiseComponents(object):
             return 'signed'
         if len(Rs) > 1 and max(float(np.max(np.abs(R_ - Rs[0]))) for R_ in Rs[1:]) \
                 > 1e-6 * max(float(np.max(np.abs(Rs[0]))), 1e-300):
-            warnings.warn(
+            warn(
                 'PAC: part of the noise of %s states no signed amplitude and '
                 'is COLOURED (it changes between band frequencies), so that '
                 'part is rooted beside the signed columns -- SIGN-BLIND where '
                 'its modulation changes sign (Element.noise_amplitudes '
-                'states the sign).' % '.'.join(key), RuntimeWarning, stacklevel=3)
+                'states the sign).' % '.'.join(key), ModelWarning)
         return 'white'
 
     def perband_amplitudes(self, key, w, mode, C=None):
@@ -960,8 +956,7 @@ class NoiseComponents(object):
         root.cache = cache
         return root
 
-    def colour_components(self, model, wlo, whi, f0, what, stacklevel=3,
-                          shortcuts=True):
+    def colour_components(self, model, wlo, whi, f0, what, shortcuts=True):
         """THE one grouping of `model`'s COLOURED components, for every
         noise surface (review O2, 2026-10-01: until then three copies -- the
         sample series' / modal / lineshape `colour_groups`, the covariance
@@ -1028,12 +1023,11 @@ class NoiseComponents(object):
                               B * (w1 / w) ** EF)
             band.root = band.exact_root = self.cached_root(band.exact_psd)
             out.bands.append(band)
-            warnings.warn(
+            warn(
                 f'PAC.{what}: the coloured noise of {".".join(key)} carries '
                 'different power-law exponents in different entries of one '
                 'block, so it has no one amplitude to replay; its density is '
-                'rooted at every point per band frequency -- costlier.',
-                RuntimeWarning, stacklevel=stacklevel + 1)
+                'rooted at every point per band frequency -- costlier.', CostWarning)
         probes = self.band_probes(wlo, whi, f0)
         w0 = 2.0 * np.pi * float(f0)
         sts = self.states if self.states is not None else self.xs
@@ -1077,7 +1071,7 @@ class NoiseComponents(object):
             out.bands.append(band)
         blind = self.sign_blind(model, rooted)
         if blind:
-            warn_sign_blind(what, blind, stacklevel=stacklevel + 1)
+            warn_sign_blind(what, blind)
         return out
 
     def colour_groups(self, model, wlo, f0, L, what):
@@ -1090,8 +1084,7 @@ class NoiseComponents(object):
         groups before the BAND ones is the order the sample series sums
         them in."""
         comps = self.colour_components(
-            model, wlo, 2.0 * np.pi * (float(L) + 0.5) * float(f0), f0, what,
-            stacklevel=5)
+            model, wlo, 2.0 * np.pi * (float(L) + 0.5) * float(f0), f0, what)
         groups = [('fixed', W, lambda nu, ef=ef, w1=comps.w1:
                    (w1 / np.asarray(nu, dtype=float)) ** ef)
                   for _key, W, ef, _B in comps.fixed]
