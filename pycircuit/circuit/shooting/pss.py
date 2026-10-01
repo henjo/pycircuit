@@ -414,34 +414,31 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
          _transient_parameter(
              'pcnr', desc='Use Predictor/Corrector Newton-Raphson instead of '
                           'limiting in the inner transient; off by default'),
-         ## RADAU'S COST TRANSFORM on the inner steps (`Transient`'s own:
-         ## simplified Newton, one Jacobian per step through eig(A^-1), the
-         ## full Newton where it stalls).  Off by default -- the full Newton
-         ## is the reference, and the trade is the circuit's.  Measured on
-         ## PSS solves (the review's S15, 2026-10-01): a compact MOSFET
-         ## common-source stage at 40 points 107 -> 34 s, its `G`
-         ## evaluations 4231 -> 881 (they are 92 % of its solve), the answer
-         ## 2e-11 apart; van der Pol at 400 points +18 %, a switching PWM
-         ## loop +79 % (57 stalled steps redone by the full Newton), the
-         ## comparator relaxation oscillator -6 %, a linear RLC level.
-         ## THE CHORD JACOBIAN on the multistep inner steps (`Transient`'s
-         ## `chord_jacobian`), forwarded as `radau_transform` is: off by
-         ## default, the trade the circuit's.
+         ## THE NEWTON OPTIONS OF THE INNER STEPS (`Transient`'s own,
+         ## forwarded): RADAU'S COST TRANSFORM (simplified Newton, one
+         ## Jacobian per step through eig(A^-1)) and the multistep CHORD
+         ## JACOBIAN (`ChordNewton`), each the full Newton where it stalls.
+         ## 'auto' by default: on where the circuit's compiled Jacobian is
+         ## expensive (`Transient.AUTO_JACOBIAN_CODE`, its measurements
+         ## there) -- a compact MOSFET's PSS 107 -> 34 s under radau, 23.7 ->
+         ## 15.5 s under gear, the answers 1e-13 to 4e-8 apart; off on
+         ## circuits of hand-written elements, where they lost (van der Pol
+         ## +18 % under radau, a switching PWM loop +79 % / +15 %).
          _transient_parameter(
              'chord_jacobian',
              desc="Multistep methods (gear, trap, euler, theta): each inner "
                   "step's Newton holds its Jacobian at the seed (the chord "
-                  "method), the full Newton where it stops contracting. Pays "
-                  "where device Jacobians are expensive. Off by default."),
+                  "method), the full Newton where it stops contracting. "
+                  "'auto' (default): on where the compiled device Jacobians "
+                  "are expensive; True / False force it."),
          _transient_parameter(
              'radau_transform',
              desc="method='radau' only: solve each inner step by the "
                   'eig(A^-1) cost transform -- simplified Newton, one '
                   'Jacobian per step, the full Newton where it stalls. '
-                  'Pays where device Jacobians are expensive (a compact '
-                  'MOSFET PSS 3.1x faster); can be slower where they are '
-                  'cheap (van der Pol +18 %, a switching PWM loop +79 %). '
-                  'Off by default.'),
+                  "'auto' (default): on where the compiled device "
+                  'Jacobians are expensive (a compact MOSFET PSS 3.1x '
+                  'faster); True / False force it.'),
          ## How finely a switching window is resolved: the segment between
          ## a threshold switch's two landed edges (`state_events`) is cut into
          ## this many equal steps whenever it holds fewer -- see

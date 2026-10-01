@@ -5512,8 +5512,8 @@ def test_pss_forwards_radau_s_cost_transform():
     measured first -- `G` and `C` are 92 % of a compact MOSFET's PSS solve --
     and radau's already exists: `Transient`'s `radau_transform` (simplified
     Newton through eig(A^-1)), 107 -> 34 s on that solve.  PSS forwards it
-    to every inner transient, off by default (it can be slower where the
-    Jacobian is cheap).  The inner steps take the transform; the orbit agrees with
+    to every inner transient ('auto' by default since 2026-10-01: on where the
+    compiled device Jacobians are expensive, so off here).  The inner steps take the transform; the orbit agrees with
     the full Newton's to its tolerance; a changed setting rebuilds the
     inner transient."""
     from pycircuit.circuit.transient import Transient
@@ -5539,7 +5539,9 @@ def test_pss_forwards_radau_s_cost_transform():
     try:
         p = PSS(_vdp_with_noise(1e-6), method='radau', reltol=1e-10)
         X0 = solve(p)
-        assert not calls and p._transient().par.radau_transform is False
+        ## (the default is 'auto', off on van der Pol's hand-written
+        ## elements)
+        assert not calls and p._transient().par.radau_transform == 'auto'
         X1 = solve(PSS(_vdp_with_noise(1e-6), method='radau', reltol=1e-10,
                        radau_transform=True))
         assert calls

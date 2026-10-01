@@ -51,10 +51,12 @@ class _CompanionModel:
         return iq, geq
 
     def _memo_clear(self):
-        """Forget the device-evaluation memo (`_memo_get`): at the start of
-        every solve, the one place a caller can change the circuit between
-        two steps."""
+        """Forget the device-evaluation memo (`_memo_get`) and the 'auto'
+        Newton options' verdict on the circuit (`_newton_option`): at the
+        start of every solve, the one place a caller can change the circuit
+        between two steps."""
         self._dev_memo = ({}, {})
+        self._jacobian_expensive = None
 
     def _memo_step(self):
         """A new step: the current generation becomes the previous one (the

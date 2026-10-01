@@ -1143,6 +1143,76 @@ def test_the_chord_jacobian_holds_the_step_s_jacobian_at_its_seed():
     assert g1 < g0, f'the chord must evaluate fewer Jacobians: {g1} vs {g0}'
     assert st0.chord_fallbacks == 0 and st1.chord_fallbacks >= 0
 
+
+def test_the_newton_options_turn_on_where_the_compiled_jacobian_is_expensive():
+    """'auto', the default of `chord_jacobian` and `radau_transform` since
+    2026-10-01: on where the circuit's compiled Jacobian reaches
+    `AUTO_JACOBIAN_CODE` bytes of bytecode (`compiled_jacobian_size`, a
+    deterministic stand-in for its cost), off otherwise.  Measured: every
+    compiled device from 20 KB up gained 17-68 % (MosLevel1 26 KB -17 / -31
+    %), the HEMT (2.2 KB) and `DiodeHdl` a few %, and the options LOST only
+    on circuits of hand-written elements (van der Pol +18 % under radau, a
+    switching PWM loop +79 / +15 %).  True / False force it; anything else
+    is refused.  On a MosLevel1 stage the default runs the chord: fewer `G`
+    evaluations than forced off, the same answer to the Newton tolerance."""
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit._tran_newton import compiled_jacobian_size
+    from pycircuit.circuit.elements import VS, Diode
+    circuit.default_toolkit = circuit.numeric
+    tk = circuit.numeric
+
+    def stage(device):
+        c = SubCircuit()
+        for n in ('g', 'd', 'vdd'):
+            c.add_node(n)
+        c['vdd'] = VS('vdd', gnd, v=1.2)
+        c['vg'] = VSin('g', gnd, v=0.7, va=2e-2, freq=1e6)
+        c['rl'] = R('vdd', 'd', r=5e3)
+        c['M'] = device()
+        return c
+
+    mos = lambda: stage(lambda: eh.MosLevel1Hdl('d', 'g', gnd, gnd))
+    dio = lambda: stage(lambda: Diode('d', gnd))
+    small = lambda: stage(lambda: eh.DiodeHdl('d', gnd))
+    limit = Transient.AUTO_JACOBIAN_CODE
+    assert compiled_jacobian_size(dio()) == 0
+    assert 0 < compiled_jacobian_size(small()) < limit
+    assert compiled_jacobian_size(mos()) >= limit
+
+    def option(c, name, **kw):
+        tr = Transient(c, toolkit=tk, **kw)
+        return tr._newton_option(getattr(tr.par, name), name)
+
+    for name in ('chord_jacobian', 'radau_transform'):
+        assert option(mos(), name) is True
+        assert option(dio(), name) is False
+        assert option(small(), name) is False
+        assert option(mos(), name, **{name: False}) is False
+        assert option(dio(), name, **{name: True}) is True
+        with pytest.raises(ValueError, match="True, False or 'auto'"):
+            option(dio(), name, **{name: 'yes'})
+    got = {}
+    orig_G = SubCircuit.G
+    for chord in ('auto', False):
+        calls = []
+
+        def G(self, *a, _c=calls, **k):
+            _c.append(1)
+            return orig_G(self, *a, **k)
+        SubCircuit.G = G
+        try:
+            c = mos()
+            tr = Transient(c, toolkit=tk, reltol=1e-10, chord_jacobian=chord)
+            with quiet():
+                res = tr.solve(tend=3e-6, timestep=3e-6 / 120,
+                               fixed_timestep=True)
+        finally:
+            SubCircuit.G = orig_G
+        got[chord] = (np.asarray(res.x, dtype=float), len(calls))
+    (xa, ga), (xf, gf) = got['auto'], got[False]
+    assert ga < gf, (ga, gf)
+    assert np.max(np.abs(xa - xf)) / np.max(np.abs(xf)) < 1e-9
+
 def test_esdirk43_is_a_tableau_only_order4_dirk():
     """ESDIRK4(3)6 (KenCarp4) -- the refactor's test vehicle: a NEW DIRK method
     added as tableau-only runs at its proper order 4 through the generic RK

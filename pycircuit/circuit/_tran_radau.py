@@ -494,7 +494,11 @@ class _RadauStages:
         ## step it converged on with device limiting, so `pcnr=True` did
         ## nothing and said nothing.
         use_pcnr = self._rk_use_pcnr()
-        if self.par.radau_transform and use_pcnr and \
+        transform = self._newton_option(self.par.radau_transform,
+                                        'radau_transform')
+        ## (warned only where the transform was ASKED for: 'auto' gives way
+        ## to PCNR silently)
+        if self.par.radau_transform is True and use_pcnr and \
                 not getattr(self, '_transform_pcnr_warned', False):
             self._transform_pcnr_warned = True
             warn(
@@ -502,7 +506,7 @@ class _RadauStages:
                 'pcnr=True -- PCNR has no transform variant, and it takes '
                 'precedence: each step is solved by the dense coupled PCNR '
                 'Newton.', UsageWarning)
-        if self.par.radau_transform and not use_pcnr:
+        if transform and not use_pcnr:
             try:
                 return self._rk_step_transformed(
                     x0, t, provided_function)

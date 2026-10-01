@@ -1017,19 +1017,25 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
          ## ladder: fixed step 1.74x at m = 102 and 3.05x at m = 402, the answer
          ## the same to the Newton tolerance (1.2e-5 at the defaults; the
          ## dense-vs-transform test pins 1e-9 at tight ones); adaptive 1.5x
-         ## (m = 52) to 3.1x (m = 402), at most one fallback per run.  Off by
-         ## default: simplified Newton can stall on a strongly nonlinear step,
-         ## and the dense solve is the correctness reference.
+         ## (m = 52) to 3.1x (m = 402), at most one fallback per run.
+         ## Simplified Newton can stall on a strongly nonlinear step, and the
+         ## dense solve is the correctness reference, so it is on where the
+         ## Jacobian is the expensive part: 'auto' (the default since
+         ## 2026-10-01) where the circuit's compiled Jacobian reaches
+         ## `AUTO_JACOBIAN_CODE` (the measurements are there).
          ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='radau_transform',
                    desc="Solve each Radau IIA step by the eig(A^-1) cost "
                         "transform: one real and one complex m x m solve per "
                         "iteration instead of the dense 3m one, falling back "
-                        "to the dense solve if it stalls. Measured 1.5-3x "
-                        "faster at m = 50-400. Off by default. With pcnr=True "
-                        "on a circuit PCNR applies to, PCNR's dense coupled "
-                        "solve is used instead (warned).",
-                   unit='', default=False),
+                        "to the dense solve if it stalls. 'auto' (default): "
+                        "on where the circuit's compiled device Jacobians are "
+                        "expensive (compact models: 20-68 % faster), off "
+                        "otherwise; True / False force it. With pcnr=True on a "
+                        "circuit PCNR applies to, PCNR's dense coupled solve is "
+                        "used instead (warned where the transform was asked "
+                        "for).",
+                   unit='', default='auto'),
          ## THE CHORD JACOBIAN on the multistep step's Newton (`ChordNewton`):
          ## the Jacobian -- `G` and the companion's `C` -- evaluated and
          ## factored once at the step's seed, the residual alone (`i`, `q`,
@@ -1037,8 +1043,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
          ## where it stops contracting.  The step ends at the converged point
          ## exactly as the full Newton's does (`jacobian_only`), so the step
          ## controller, the branch check and the shooting read the same
-         ## state.  Off by default: the full Newton is the reference, and
-         ## the trade is the circuit's.  Measured (2026-10-01): a compact
+         ## state.  'auto' (the default): on where the circuit's compiled
+         ## Jacobian reaches `AUTO_JACOBIAN_CODE`.  Measured (2026-10-01): a compact
          ## MOSFET (PSP) common-source stage, whose `G` and `C` are 92 % of
          ## the solve -- gear transient 5.5 -> 3.4 s, gear PSS 23.7 -> 15.5 s
          ## (`G` 3.18 -> 2.0 a step), the same iterations, the answers 1e-13
@@ -1051,9 +1057,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         "each step's Newton Jacobian at its seed (the chord "
                         "method), iterating on the residual alone, and fall "
                         "back to the full Newton where it stops contracting. "
-                        "Pays where device Jacobians are expensive (compact "
-                        "models). Off by default.",
-                   unit='', default=False),
+                        "'auto' (default): on where the circuit's compiled "
+                        "device Jacobians are expensive (compact models: "
+                        "17-47 % faster), off otherwise; True / False force "
+                        "it.",
+                   unit='', default='auto'),
          ## STAGE 13 -- PCNR instead of limiting, on the transient path too.
          ## Off by default for the same measured reason as on DC: gate 13-4 puts
          ## it at +60-80% per Newton iteration, for a consistency these circuits

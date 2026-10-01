@@ -3525,3 +3525,35 @@ On the compact model the iteration counts did not move: the predictor's
 seed is close enough that the held Jacobian contracts as fast as a fresh
 one.  Where the Jacobian is cheap or the steps switch it buys nothing or
 costs, hence opt-in.
+
+### `AUTO_JACOBIAN_CODE`: where 'auto' turns the options on (2026-10-01)
+
+Andreas: "Do 1 and 2" (2: `chord_jacobian` and `radau_transform` on where
+the Jacobian is expensive, without asking).  The criterion is STRUCTURAL --
+the bytecode of the circuit's compiled hdl `G` and `C`
+(`compiled_jacobian_size`) -- because a timing probe would make a run's
+last bits depend on the machine's load.  Per element it tracks the
+evaluation time: `DiodeHdl` 0.2 KB (1.6 us a `G`), HEMT 2.2 KB (8 us),
+SPICE diode 20 KB (0.13 ms), MosLevel1 26 KB (0.2 ms), MosLevel3 92 KB (1.2
+ms), PSP 1.8 MB (14 ms); hand-written elements and `BSource` count 0.
+
+Calibrated on a driven stage's PSS at 40 points, gear chord / radau
+transform against the full Newton (predicted: only PSP and MosLevel3
+would gain -- WRONG, every compiled device from 20 KB did):
+
+| device (code) | gear chord | radau transform | answer apart | fallbacks |
+|---|---|---|---|---|
+| PSP (1.8 MB), switching | -47 % | -43 % | 6e-11 / 4e-8 | 0 |
+| MosLevel3 (92 KB) | -27 % (-36 % switching) | -47 % (-42 %) | 0..2e-9 | 0 |
+| Gummel-Poon (57 KB) | -33 % | -28 % | 2e-11 / 2e-9 | 0 |
+| EKV (26 KB) | -19 % | -29 % | 0 / 2e-16 | 0 |
+| MosLevel1 (26 KB) | -17 % (-22 %) | -31 % (-20 %) | 0..2e-9 | 0 |
+| SPICE diode (20 KB) | -24 % | -30 % | 2e-12 / 6e-9 | 0 |
+| HEMT (2.2 KB) | -5 % | -7 % | -- | 0 |
+| `DiodeHdl` (0.2 KB) | -8 % | -2 % | -- | 0 |
+
+and where the options LOST (S15, the chord's own table) every circuit was
+of hand-written elements: van der Pol -6 / +18 %, the switching PWM loop
++15 / +79 %.  The threshold, 10 KB, sits in the gap between 2.2 and 20 KB.
+The default became 'auto' for both; True / False force them, and only an
+ASKED-for transform is warned when PCNR takes precedence.

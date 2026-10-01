@@ -16,6 +16,33 @@ from pycircuit.circuit.analysis import (
 from pycircuit.circuit.dcanalysis import refnode_removed
 
 
+def compiled_jacobian_size(cir):
+    """The bytecode, in bytes, of the compiled `G` and `C` of every hdl
+    element of `cir` at any depth (`Behavioural` classes: `_hdl_info`) --
+    a deterministic measure of what one Jacobian evaluation costs, which
+    tracks its time: `DiodeHdl` 0.2 KB, a HEMT 2.2 KB (8 us a `G`), the SPICE
+    diode 20 KB, `MosLevel1Hdl` 26 KB (0.2 ms), `MosLevel3Hdl` 92 KB (1.2
+    ms), the PSP MOSFET 1.8 MB (14 ms).  Hand-written elements and
+    `BSource` count 0.  Read by the 'auto' Newton options
+    (`Transient._newton_option`)."""
+    total = 0
+    stack = [cir]
+    while stack:
+        c = stack.pop()
+        for e in (getattr(c, 'elements', None) or {}).values():
+            if getattr(e, 'elements', None):
+                stack.append(e)
+            info = getattr(type(e), '_hdl_info', None)
+            funcs = info.get('funcs') if isinstance(info, dict) else None
+            if not funcs:
+                continue
+            for k in ('G', 'C'):
+                code = getattr(funcs.get(k), '__code__', None)
+                if code is not None:
+                    total += len(code.co_code)
+    return total
+
+
 class _StepNewton:
     """The per-step Newton, its continuation rescue and both tolerance flavours
     (the Newton residual and the LTE floor).  A theme of `Transient`
@@ -83,6 +110,40 @@ class _StepNewton:
         History: `doc/transient_history.md`, `Transient._honours_continuation_rescue`.
         """
         return True
+
+    ## WHERE THE 'auto' NEWTON OPTIONS TURN ON (`chord_jacobian`,
+    ## `radau_transform`): a circuit whose compiled Jacobian is at least this
+    ## many bytes (`compiled_jacobian_size`).  Measured 2026-10-01, a driven
+    ## stage's PSS at 40 points, gear chord / radau transform against the
+    ## full Newton: the PSP MOSFET (1.8 MB) -34 / -68 %, switching -47 /
+    ## -43 %; MosLevel3 (92 KB) -27 / -47 %; Gummel-Poon (57 KB) -33 / -28 %;
+    ## EKV and MosLevel1 (26 KB) -19 / -29 % and -17 / -31 %; the SPICE diode
+    ## (20 KB) -24 / -30 % -- the answers 0 to 4e-8 apart at reltol 1e-8,
+    ## no fallback.  Below: the HEMT (2.2 KB) -5 / -7 %, `DiodeHdl` (0.2
+    ## KB) -8 / -2 %; and where the options LOST, every circuit was of
+    ## hand-written elements (0 bytes): van der Pol (`BSource`) -6 / +18 %,
+    ## a switching PWM loop -- built-in switches -- +15 / +79 %.
+    ## History: `doc/transient_history.md`, `ChordNewton`.
+    AUTO_JACOBIAN_CODE = 10000
+
+    def _newton_option(self, value, name):
+        """The Newton option `name` (`chord_jacobian`, `radau_transform`),
+        given as `value`, as a bool: True / False as given, 'auto' where the
+        circuit's compiled Jacobian is expensive (`AUTO_JACOBIAN_CODE`;
+        decided once per circuit, again after `_memo_clear`)."""
+        if isinstance(value, str):
+            if value != 'auto':
+                raise ValueError(
+                    f"{name} must be True, False or 'auto', not {value!r}")
+            on = getattr(self, '_jacobian_expensive', None)
+            if on is None:
+                on = self._jacobian_expensive = (
+                    compiled_jacobian_size(self.cir) >= self.AUTO_JACOBIAN_CODE)
+            return on
+        if value in (True, False):
+            return bool(value)
+        raise ValueError(
+            f"{name} must be True, False or 'auto', not {value!r}")
 
     def _newton_abstol_vector_reduced(self):
         a = self._newton_abstol_vector()
@@ -152,8 +213,9 @@ class _StepNewton:
         chord = None
         if getattr(self, '_continuation_rescue', False):
             solver = self._rescue_solver(solver)
-        elif (residual is not None and self.par.chord_jacobian
-              and self.par.nrsolver is None):
+        elif (residual is not None and self.par.nrsolver is None
+              and self._newton_option(self.par.chord_jacobian,
+                                      'chord_jacobian')):
             from pycircuit.circuit.nrsolver import ChordNewton
             iref, tk = self.irefnode, self.toolkit
 
