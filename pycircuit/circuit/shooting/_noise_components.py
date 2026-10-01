@@ -39,6 +39,22 @@ def orbit_states(pss, states=None):
     return out
 
 
+def orbit_midpoints(pss):
+    """The full-width state HALFWAY through each step of the stored orbit,
+    ``(x(t_k) + x(t_{k+1})) / 2``, `k = 0..N-1` -- where `sign_blind` looks
+    besides the samples, so a modulation that changes sign BETWEEN two
+    samples is caught when its zero lies near the middle of the step."""
+    n = pss.cir.n
+    irn = pss.irefnode
+    xs = np.asarray(pss.waveform[1], dtype=float)
+    nsamp = len(pss.factored_period().steps)
+    out = []
+    for k in range(nsamp):
+        xm = 0.5 * (xs[:, k] + xs[:, (k + 1) % xs.shape[1]])
+        out.append(xm if xm.shape[0] == n else insert_ref(xm, irn))
+    return out
+
+
 def colour_fit_frequencies(f, f0):
     ## three to fit, two to verify: one BETWEEN the fit points and one
     ## at the FAR end of the band range the fold reaches (up to
@@ -621,6 +637,63 @@ class NoiseComponents(object):
         model.w1 = w1
         return model
 
+    def sign_blind(self, model, keys):
+        """The keys among `keys` -- the coloured components a surface
+        factors by the ROOT of their PSD -- whose PSD touches zero along the
+        orbit (`psd_touches_zero`), read at the orbit's samples AND halfway
+        through every step (`orbit_midpoints`), whatever states the surface
+        itself samples: one verdict per component and solve, the same on
+        every surface (cached on the PSS, `_sign_blind_cache`), warned by
+        `warn_sign_blind`.
+
+        What is read is what is rooted: a power-law component's coloured
+        part `B` (`colour_fit` at one fixed set of frequencies), a per-band
+        element's PSD at f0, the whole circuit's (`JOINT_KEY`; `model` None:
+        one root of the whole `CY`) at f0.
+
+        ⚠ A HEURISTIC, NECESSARY NOT SUFFICIENT, AND NO TEST ON THE PSD CAN
+        BE BOTH.  The PSD carries `|m|`: `m = t^2` (sign-definite, the root
+        exact) and `m = t |t|` (sign-changing, the root O(1) wrong) have ONE
+        PSD, so it warns on both.  A switch whose zero falls between the
+        points read (narrower than about a quarter step) passes unseen.
+        Measured on a Lorentzian into an RC under ``g(V_lo)``, unsigned over
+        signed for pnoise(cyclostationary) / sampled / covariance: g = V
+        3.44 / 1.050 / 1.040, V|V| 2.98 / 1.033 / 1.025, a tanh switch at
+        mid-step 5.06 / 1.117 / 1.101, V^2 and |V| exact on all three --
+        wrong or exact alike on every surface, so one verdict serves them
+        all (review O2, 2026-10-01; until then three tests, two of them
+        missing the V|V| case and a white floor on the same node).
+
+        History: `doc/pss_log_260902.md`, 2026-10-01 (review O2)."""
+        keys = list(dict.fromkeys(keys))
+        if not keys:
+            return []
+        pss = self.pss
+        cache = getattr(pss, '_sign_blind_cache', None)
+        if cache is None:
+            cache = {}
+            pss._sign_blind_cache = cache
+        flick = ({k for k, _B, _EF in model.flicker} if model is not None
+                 else set())
+        todo = [k for k in keys if (k, k in flick) not in cache]
+        if todo:
+            f0 = 1.0 / float(pss.period)
+            w0 = 2.0 * np.pi * f0
+            probe = self.at(orbit_states(pss) + orbit_midpoints(pss))
+            ws = self.colour_fit_frequencies(1e-3 * f0, f0)
+            for key in todo:
+                whole = key == self.JOINT_KEY or model is None
+                if key in flick:
+                    Cs = [probe.cy_at_states(w) if whole
+                          else probe.one_element_cy(key, w) for w in ws]
+                    fit = self.colour_fit(Cs, ws)
+                    C = fit[1] if fit is not None else Cs[0]
+                else:
+                    C = (probe.cy_at_states(w0) if whole
+                         else probe.one_element_cy(key, w0))
+                cache[(key, key in flick)] = psd_touches_zero(C)
+        return [k for k in keys if cache[(k, k in flick)]]
+
     def perband_mode(self, key, ws, Cs=None):
         """How the per-band element `key` is to be factored, decided over
         the frequencies `ws` (`Cs`: its `CY` there, if in hand):
@@ -797,24 +870,21 @@ class NoiseComponents(object):
         -- or `('band', root, None)`, the columns per band frequency (a
         power law whose exponent varies across its entries; a per-band
         colour, `perband_root_sampler`).  A component factored by the root
-        of its PSD whose PSD TOUCHES ZERO along the orbit is warned on: if
-        its modulation changes sign there, that root is the `|m|` process
-        -- by every consumer (the sample series did not warn it until
-        2026-09-29; its exposure is the same).  Every band
+        of its PSD whose PSD TOUCHES ZERO along the orbit is warned on
+        (`sign_blind`: one verdict for every surface): if its modulation
+        changes sign there, that root is the `|m|` process.  Every band
         root is cached per frequency (`cached_root`): the sample series
         reads the same `|f + n f0|` at every instant.  The FIXED groups
         before the BAND ones is the order the sample series sums them in."""
         signed = getattr(model, 'amplitude', None) or {}
         self.warn_signed_unused(model, 'PAC.%s' % what)
-        touches = psd_touches_zero
-        groups, blind = [], []
+        groups, rooted = [], []
         for key, Bc, EF in model.flicker:
             ef = self.uniform_exponent(Bc, EF)
             W = signed.get(key)
             if ef is not None:
                 if W is None:
-                    if touches(Bc):
-                        blind.append(key)
+                    rooted.append(key)
                     W = self.psd_sqrt(Bc)
                 groups.append(('fixed', np.asarray(W, dtype=complex),
                                lambda nu, ef=ef, w1=model.w1:
@@ -830,19 +900,16 @@ class NoiseComponents(object):
                                        lambda nu, ef=efg, w1=model.w1:
                                        (w1 / np.asarray(nu, dtype=float)) ** ef))
                     continue
-                if touches(Bc):
-                    blind.append(key)
+                rooted.append(key)
                 groups.append(('band', self.cached_root(
                     lambda w, Bc=Bc, EF=EF, w1=model.w1: Bc * (w1 / w) ** EF),
                     None))
         for key in model.perband:
             root = self.perband_root_sampler(key, wlo, f0, L)
-            ## (the test costs a CY evaluation per point: not where an
-            ## element's signed amplitudes carry the sign)
-            if not root.signed and touches(self.one_element_cy(
-                    key, 2.0 * np.pi * f0)):
-                blind.append(key)
+            if not root.signed:
+                rooted.append(key)
             groups.append(('band', root, None))
+        blind = self.sign_blind(model, rooted)
         if blind:
             warn_sign_blind(what, blind, stacklevel=4)
         return groups

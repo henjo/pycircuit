@@ -1302,6 +1302,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## left to pin it until the next use -- the review's M2)
         self._eq_row_cache = self._fa_ppv_base = None
         self._captured = {}
+        ## (the sign-blind verdicts are the last orbit's:
+        ## `NoiseComponents.sign_blind`)
+        self._sign_blind_cache = None
         ## ⚠ HIDDEN STATE IS REFUSED, NOT INTEGRATED AND HOPED OVER.
         ## `TLine.history` is filled by `cir.accept_step`, which the
         ## TRANSIENT calls at every accepted step and which this analysis

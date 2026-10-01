@@ -5,8 +5,8 @@ import numpy as np
 import warnings
 from ._factored import dense_map
 from ._noise_components import (exponent_columns, psd_sqrt,
-                               psd_touches_zero, uniform_exponent,
-                               warn_sign_blind, warn_signed_unused)
+                               uniform_exponent, warn_sign_blind,
+                               warn_signed_unused)
 from .events import EventColumns
 
 
@@ -881,6 +881,9 @@ class _LyapunovCovariance(object):
         wt = sorted({2.0 * np.pi * fmin, wref, 20.0 * np.pi * f0,
                      np.pi * fmax, 2.0 * np.pi * fmax})
         white_split = []
+        ## the coloured components factored by the ROOT of their PSD, for the
+        ## one sign-blind verdict every surface gives (`sign_blind`)
+        rooted = []
         for key in model.perband:
             ## classified from the element's signed amplitudes where it
             ## states them, else from its `CY` (`perband_classify`)
@@ -911,16 +914,12 @@ class _LyapunovCovariance(object):
             ## frequency (the quasi-static model `pnoise` and
             ## `sampled_variance` use, per band).  Either takes the element's
             ## SIGNED amplitudes where it states them, else the root of its
-            ## PSD, warned: the |m| process, and one column per point.
+            ## PSD: sign-tested below as every rooted component is (until
+            ## 2026-10-01 warned here on every modulated one, touch or not;
+            ## the merged sources inside such an element are `model`'s
+            ## warning).
             if Ws is None:
-                warnings.warn(
-                    'PAC.%s: the noise of %s is coloured, not a power law, and '
-                    'modulated by the orbit; it states no signed amplitudes, so '
-                    'it enters as the square root of its PSD -- the |m| '
-                    'process, SIGN-BLIND where the modulation changes sign, and '
-                    'independent sources inside the element merged into one '
-                    '(Element.noise_amplitudes states both).'
-                    % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
+                rooted.append(key)
             if kind == 'separable':
                 Cref = Cs[wt.index(wref)]
                 W0 = psd_sqrt(Cref) if Ws is None else Ws[wt.index(wref)]
@@ -941,7 +940,7 @@ class _LyapunovCovariance(object):
                     % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
         warn_signed_unused(model, 'PAC.%s' % what)
         amp = getattr(model, 'amplitude', None) or {}
-        comps, blind = [], []
+        comps = []
         for key, B, EF in model.flicker:
             ef = uniform_exponent(B, EF)
             split = (exponent_columns(B, EF, amp[key])
@@ -959,9 +958,8 @@ class _LyapunovCovariance(object):
                 ## node), are independent components: split exactly.
                 parts = self._split_by_exponent(B, EF)
                 if parts is not None:
+                    rooted.append(key)
                     for Bg, efg in parts:
-                        if psd_touches_zero(Bg) and key not in blind:
-                            blind.append(key)
                         comps.append((key, np.asarray(psd_sqrt(Bg),
                                                       dtype=complex), efg))
                     continue
@@ -969,6 +967,7 @@ class _LyapunovCovariance(object):
                 ## the density `B (w1/w)^EF` rooted at every point per band
                 ## frequency (its white part is already in `white`: the
                 ## element's own `CY` would count it twice)
+                rooted.append(key)
                 nonseparable.append((key, lambda nu, B=B, EF=EF, w1=model.w1:
                                      psd_sqrt(
                                          B * (w1 / (2.0 * np.pi * nu)) ** EF)))
@@ -976,21 +975,21 @@ class _LyapunovCovariance(object):
                     'PAC.%s: the coloured noise of %s carries different '
                     'power-law exponents in different entries, so it has no '
                     'one amplitude to replay; its density is rooted at every '
-                    'point per band frequency -- costlier, and SIGN-BLIND (a '
-                    'square root per point).' % (what, '.'.join(key)),
-                    RuntimeWarning, stacklevel=3)
+                    'point per band frequency -- costlier.'
+                    % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
                 continue
             ## ⚠ THE SIGN: the element's stated amplitudes where it has them
             ## (`W W^H = B` with the sign of the modulation); `sqrt(B)` is
             ## the sign-blind |m| process (`warn_signed_unused` said so)
             W = amp.get(key)
-            if W is None and psd_touches_zero(B):
-                blind.append(key)
+            if W is None:
+                rooted.append(key)
             W = np.asarray(W if W is not None else psd_sqrt(B), dtype=complex)
             comps.append((key, W, float(ef)))
         ## ⚠ ROOTED WHERE THE PSD TOUCHES ZERO: the |m| process, warned as
-        ## every surface that roots a PSD warns it (`warn_sign_blind`;
-        ## silent here until 2026-09-29)
+        ## every surface that roots a PSD warns it (`sign_blind`, one verdict
+        ## on the orbit's samples and step midpoints)
+        blind = nc.sign_blind(model, rooted)
         if blind:
             warn_sign_blind(what, blind, stacklevel=3)
         ## the white part of each source, at the states the pieces read:

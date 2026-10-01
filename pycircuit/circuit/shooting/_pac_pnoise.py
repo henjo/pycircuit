@@ -4,7 +4,7 @@ folds), its AM/PM split and the band spread.
 import numpy as np
 import warnings
 from ._noise_components import (exponent_columns, uniform_exponent,
-                               warn_signed_unused)
+                               warn_sign_blind, warn_signed_unused)
 from ._numerics import output_index, sweep_frequency, sweep_offset
 
 
@@ -436,58 +436,15 @@ class _DrivenNoise(object):
         ## its signed amplitudes (`Element.noise_amplitudes`) the folds use
         ## them and nothing below applies.  (White sources are untouched:
         ## uncorrelated across the period, no sign product survives.)
-        ## The sign is invisible here; its NECESSARY condition is a PSD that
-        ## touches zero along the orbit with a KINK in its square root, so
-        ## that is warned on.  The touch threshold: a zero crossing SAMPLED
-        ## on an N-point grid bottoms out near (pi/N)^2 of the maximum, a
-        ## sign-definite PSD with a ten-fold swing sits at 1e-2 -- so 1e-2;
-        ## a heuristic, and a warning for that reason.
-        ## ⚠ NOT WHEN EVERY COLOURED COMPONENT CARRIES ITS SIGN: then nothing
-        ## below takes a square root of a PSD and there is nothing to warn of
+        ## The sign is invisible here: a rooted component whose PSD touches
+        ## zero is warned by the one verdict every surface gives
+        ## (`NoiseComponents.sign_blind`, below; until 2026-10-01 this fold
+        ## had its own test -- a first-derivative KINK of the root of the
+        ## circuit's TOTAL `CY` -- which missed a crossing flatter than
+        ## linear (2.98x the signed physics, silent) and any touch a white
+        ## source on the same node filled in (1.67x, silent)).
         _signed = getattr(model, 'amplitude', None) or {}
         warn_signed_unused(model, 'PAC.pnoise(cyclostationary=True)')
-        _all_signed = (getattr(model, 'flicker', None) is not None
-                       and all(k_ in _signed and (
-                               uniform_exponent(B_, E_) is not None
-                               or exponent_columns(B_, E_, _signed[k_]) is not None)
-                               for k_, B_, E_ in model.flicker)
-                       and all(nc.perband_mode(k_, [2.0 * np.pi * f0])
-                               is not None for k_ in model.perband))
-        Cs0 = np.asarray([np.abs(np.diag(np.fft.ifft(Pa, axis=0)[k])) for k in range(Nn)])
-        dmax = Cs0.max(axis=0)
-        touches = (dmax > 0) & (Cs0.min(axis=0) <= 1e-2 * dmax)
-        ## ⚠ THE ORDER OF THE ZERO: a LINEAR sign crossing gives sqrt(PSD) a
-        ## first-derivative KINK, a sign-definite quadratic touch a smooth
-        ## minimum.  The circular second difference of sqrt(PSD) divided by
-        ## h/T and by the maximum is a DERIVATIVE JUMP: grid-independent at a
-        ## kink (~4 pi for a sinusoidal slope) and falling as h/T where
-        ## smooth, so 3 separates them down to ~50 points per period (a raw
-        ## threshold would encode the grid).  ⚠ STILL NECESSARY, NOT
-        ## SUFFICIENT, AND THE SENSITIVITY RUNS INVERSE TO THE EFFECT: a
-        ## crossing flatter than linear (an LO shaped v |v|^(p-1), p > 1)
-        ## stays O(1) wrong while the indicator falls by orders.  A quiet
-        ## warning is not evidence of a small discrepancy.
-        kinked = np.zeros_like(touches)
-        hT = 1.0 / float(Nn)
-        for jj in np.where(touches)[0]:
-            sq = np.sqrt(Cs0[:, jj])
-            d2 = np.abs(sq - 0.5 * (np.roll(sq, 1) + np.roll(sq, -1)))
-            kinked[jj] = bool(d2.max() / (sq.max() * hT) > 3.0)
-        if bool(np.any(kinked)) and not _all_signed:
-            warnings.warn(
-                'PAC.pnoise(cyclostationary=True): a COLOURED source whose PSD '
-                'touches zero along the orbit -- if its modulation changes sign '
-                '(a switching gain), no PSD-specified model can represent the '
-                'coloured process (Okumura eq. 23 in concrete form), and this '
-                'fold computes the |m| one (its square root has a first-derivative '
-                'kink at the zero, the signature of a LINEAR sign crossing; a '
-                'necessary condition -- a shallow crossing shows no kink and '
-                'errs MORE): measured 0.56x and 1.33x of the signed '
-                'physics at two offsets on a flicker source through a '
-                'zero-crossing gain -- EITHER direction, the sign of the '
-                'discrepancy is set by the offset, not the mechanism -- and '
-                'exact for a sign-definite one. Only the element knows the sign.',
-                RuntimeWarning, stacklevel=3)
         ks = np.fft.fftfreq(Nn, d=1.0 / Nn).astype(int)
         pmin = min(ls) + int(ks.min()); pmax = max(ls) + int(ks.max())
         wband = lambda p: 2.0 * np.pi * abs(f - p * f0)
@@ -501,10 +458,12 @@ class _DrivenNoise(object):
         ## the period's Fourier coefficients: the index DFT on a uniform grid,
         ## the trapezoid-weighted sum on a non-uniform one -- see `_period_dft`
         _dft = lambda B: self._period_dft(pss, B)
+        rooted = []
         if model is None:
             ## no component model (the whole `CY` is not thermal-plus-power-
             ## law and not the sum of its elements'): one root per band
             groups = [lambda p: self._cy_sqrt_harmonics(pss, wband(p))]
+            rooted.append(nc.JOINT_KEY)
         else:
             Pw = _dft(model.white)
             for l in ls:
@@ -518,6 +477,8 @@ class _DrivenNoise(object):
                     ## (any factor with `W W^dagger = B` serves the pair sum;
                     ## only this one knows the sign), else the PSD's root
                     _W = _signed.get(_key)
+                    if _W is None:
+                        rooted.append(_key)
                     groups.append(lambda p, SB=(_dft(_W) if _W is not None else
                                                 self._sqrt_harmonics_of(Bc, _dft)), ef=ef:
                                   (model.w1 / wband(p)) ** (0.5 * ef) * SB)
@@ -532,6 +493,7 @@ class _DrivenNoise(object):
                             groups.append(lambda p, SB=_SBg, ef=_efg:
                                           (model.w1 / wband(p)) ** (0.5 * ef) * SB)
                         continue
+                    rooted.append(_key)
                     groups.append(lambda p, Bc=Bc, EF=EF: self._sqrt_harmonics_of(
                         Bc * (model.w1 / wband(p)) ** EF, _dft))
             ## (the ONE element, `one_element_cy`; its SIGNED amplitudes
@@ -545,7 +507,12 @@ class _DrivenNoise(object):
             for key in model.perband:
                 ## (its columns where its amplitudes fit its CY at f0)
                 mode = nc.perband_mode(key, [2.0 * np.pi * f0])
+                if mode is None:
+                    rooted.append(key)
                 groups.append(lambda p, key=key, mode=mode: _perband_at(p, key, mode))
+        blind = nc.sign_blind(model, rooted)
+        if blind:
+            warn_sign_blind('pnoise(cyclostationary=True)', blind, stacklevel=3)
         for sqrt_at in groups:
             cache = {}
             ## every band the sum reaches, stacked once: BB[pi, k] =

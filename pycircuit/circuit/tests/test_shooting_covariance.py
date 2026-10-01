@@ -268,7 +268,10 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     -- replays one amplitude per point and weights each band frequency by
     `s`; with the SHAPE moving along the orbit the density is read at every
     point for every band frequency (the quasi-static model `pnoise` and
-    `sampled_variance` use), warned for its cost and its sign-blind root.
+    `sampled_variance` use), warned for its cost.  Its level here comes
+    from a POSITIVE clock, so its PSD never touches zero and the root of
+    it is exact: no sign warning (until 2026-10-01 the covariance warned
+    every modulated root, touch or not -- review O2).
 
     Measured (radau, a driven RC, the level from a positive clock):
       * separable, against the same noise realised as a white source
@@ -313,8 +316,11 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     fmin = 1e-6 / T
     ## separable, against its white-through-filter realisation
     pss, o, pac = build('element')
-    with pytest.warns(RuntimeWarning, match='SIGN-BLIND'):
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter('always')
         _K, _ci = pac.covariance(pss, samples=True, colour_fmin=fmin)
+    assert not any('touches zero' in str(r.message) for r in rec), \
+        [str(r.message)[:80] for r in rec]
     se = _ci['samples']
     pf, of, pacf = build('filtered')
     with warnings.catch_warnings():
@@ -1185,9 +1191,9 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
         pss.solve(period=T, timestep=T / 100, maxiterations=40)
         ## (refused until 2026-09-26; a level under a fixed shape is now the
         ## separable path -- see
-        ## `test_a_coloured_covariance_takes_a_modulated_non_power_law_source`)
-        with pytest.warns(RuntimeWarning, match='SIGN-BLIND'):
-            Km = PAC(c, toolkit=circuit.numeric).covariance(pss, colour_fmin=1e-6 / T)[0]
+        ## `test_a_coloured_covariance_takes_a_modulated_non_power_law_source`;
+        ## its level never reaches zero, so no sign warning since 2026-10-01)
+        Km = PAC(c, toolkit=circuit.numeric).covariance(pss, colour_fmin=1e-6 / T)[0]
         assert np.all(np.isfinite(Km)) and np.max(np.diag(Km)) > 0.0
 
 

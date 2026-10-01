@@ -1484,8 +1484,11 @@ def test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_t
         pacB1.pnoise(pB1, 0.13 * f0, oB1, maxsidebands=16, cyclostationary=True)
     assert any('touches zero' in str(x.message) for x in w), [str(x.message)[:80] for x in w]
     ## and the SIGN-DEFINITE squared gain (k V_lo^2, exact to nine digits)
-    ## does NOT warn: its sqrt(PSD) touches zero smoothly (the order of the
-    ## zero, peer) -- the warning's negative control
+    ## WARNS TOO, since 2026-10-01 (review O2, one sign test for every
+    ## surface): its PSD is V_lo^4, the PSD of a sign-CHANGING k V_lo |V_lo|
+    ## as well, whose root is 2.98x wrong -- no test on the PSD can tell the
+    ## two apart, and the old one here (a kink in the root) stayed silent on
+    ## both.  The warning says "exact if the modulation keeps its sign".
 
     class ModFlicker2(Behavioural):
         params_as = 'p'
@@ -1500,7 +1503,7 @@ def test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_t
     with warnings.catch_warnings(record=True) as w2:
         warnings.simplefilter('always')
         pacB2.pnoise(pB2, 0.13 * f0, oB2, maxsidebands=16, cyclostationary=True)
-    assert not any('touches zero' in str(x.message) for x in w2), [str(x.message)[:80] for x in w2]
+    assert any('touches zero' in str(x.message) for x in w2), [str(x.message)[:80] for x in w2]
 
 
 def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average_overstates_a_switched_stage():
@@ -2612,3 +2615,87 @@ def test_am_pm_noise_modulated_is_its_cycle_averaged_stationary_source():
                                          maxsidebands=16, sweeptype='relative')
     assert abs(am / am_s - 1.0) < 1e-12 and abs(pmn / pm_s - 1.0) < 1e-12, \
         (am, am_s, pmn, pm_s)
+
+
+def _gated_lorentz(gfun, signed, P=1e-20, tau=0.3e-6):
+    """A Lorentzian current p -> n whose level is ``g(V(cp, cn))``: `CY`
+    only (the PSD, sign-blind) or with its SIGNED amplitude as well
+    (`Element.noise_amplitudes`)."""
+    from pycircuit.circuit.circuit import Circuit
+    from pycircuit.utilities.param import Parameter
+
+    class _Gated(Circuit):
+        terminals = ('p', 'n', 'cp', 'cn')
+        instparams = [Parameter(name='unused', desc='', unit='', default=0.0)]
+
+        def CY(self, x, w, epar=None):
+            g = gfun(float(x[2] - x[3]))
+            pp = P * g * g / (1.0 + (float(w) * tau) ** 2)
+            out = np.zeros((4, 4))
+            out[0, 0] = out[1, 1] = pp
+            out[0, 1] = out[1, 0] = -pp
+            return self.toolkit.array(out)
+    if signed:
+        def noise_amplitudes(self, x, w=0, epar=None):
+            a = gfun(float(x[2] - x[3])) * np.sqrt(P / (1.0 + (float(w) * tau) ** 2))
+            return np.array([[a], [-a], [0.0], [0.0]])
+        _Gated.noise_amplitudes = noise_amplitudes
+    return _Gated
+
+
+def test_every_surface_gives_one_sign_blind_verdict_on_the_samples_and_the_step_midpoints():
+    """Review O2 (2026-10-01; Andreas: "merge them, and add the midpoint
+    check").  A coloured source factored by the ROOT of its PSD is the `|m|`
+    process -- exact where its modulation keeps its sign, wrong where it
+    changes sign, on EVERY surface alike (measured, a Lorentzian into an RC
+    under ``g(V_lo)``, unsigned over signed for pnoise(cyclostationary) /
+    sampled / covariance: V|V| 2.98 / 1.033 / 1.025, V with a white floor
+    on the node 1.67 / 1.021 / 1.016, a tanh switch at mid-step 5.06 /
+    1.117 / 1.101).  So every surface asks one verdict
+    (`NoiseComponents.sign_blind`: the component's own PSD at the orbit's
+    samples AND the step midpoints).  Until then three tests: pnoise's (a
+    kink in the root of the circuit's TOTAL `CY`) was silent on the first
+    two, it and the sample series' on the third (whose zero falls between
+    samples), and the covariance warned every modulated root, touch or
+    not.  Stated signed amplitudes silence it everywhere.  (A sign-definite
+    `V^2` warns too, and must: its PSD is `V|V|`'s.)"""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    f0 = 1.0 / T
+
+    def warned(gfun, signed, phase=0.0, white=False):
+        c = SubCircuit()
+        c.add_node('lo')
+        c.add_node('out')
+        c['vlo'] = VSin('lo', gnd, va=1.0, vo=0.0, freq=f0, phase=phase)
+        c['n'] = _gated_lorentz(gfun, signed)('out', gnd, 'lo', gnd)
+        c['R'] = R('out', gnd, r=1.0, noisy=False)
+        c['C'] = C('out', gnd, c=0.1 * T)
+        if white:
+            c['w'] = IS('out', gnd, i=0.0, noisePSD=0.3e-20)
+        p = PSS(c, method='gear', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=T, timestep=T / 200, maxiterations=40)
+        assert p.converged
+        pac = PAC(c, toolkit=circuit.numeric)
+        o = [str(n_) for n_ in c.nodes].index('out')
+        out = []
+        for call in (
+                lambda: pac.pnoise(p, 0.13 * f0, o, maxsidebands=40,
+                                   cyclostationary=True),
+                lambda: pac.sampled_noise(p, o, [0.3 * T], [0.13 * f0],
+                                          maxsidebands=40),
+                lambda: pac.covariance(p, samples=True, colour_fmin=1e-4 * f0)):
+            with warnings.catch_warnings(record=True) as rec:
+                warnings.simplefilter('always')
+                call()
+            out.append(any('touches zero along the orbit' in str(r.message)
+                           for r in rec))
+        return out
+    ## the zero between samples: the LO a half step on, a switch a hair wide
+    assert warned(lambda v: v * abs(v), False) == [True, True, True]
+    assert warned(lambda v: v, False, white=True) == [True, True, True]
+    assert warned(lambda v: np.tanh(v / 0.005), False, phase=0.9) == [True, True, True]
+    assert warned(lambda v: v * abs(v), True) == [False, False, False]

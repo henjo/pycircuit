@@ -4,7 +4,7 @@ metrics.
 import numpy as np
 import warnings
 import weakref
-from ._noise_components import cached_root, psd_sqrt
+from ._noise_components import cached_root, psd_sqrt, warn_sign_blind
 from ._numerics import edge_slope, _output_weights, output_index
 from .events import EventColumns
 
@@ -371,8 +371,11 @@ class _SampledNoise(object):
         if model is None:
             ## the elements do not sum to the circuit's CY (warned) and the
             ## whole is not thermal-plus-power-law: one root of the whole
-            ## circuit's CY per band
+            ## circuit's CY per band -- sign-tested as any rooted component
             perband.append(cached_root(nc.cy_at_states))
+            blind = nc.sign_blind(None, [nc.JOINT_KEY])
+            if blind:
+                warn_sign_blind('sampled_noise', blind, stacklevel=3)
         else:
             white = [psd_sqrt(A) for _key, A in model.white_parts]
             ## the coloured components as the modal spectra and the folds
