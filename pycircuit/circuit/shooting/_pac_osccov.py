@@ -126,7 +126,7 @@ class _OscillatorCovariance(object):
                 if Md is not None:
                     Md = np.asarray(_evd.total_matrix(Md), dtype=float)
                 staged = (_evd, np.asarray(_evd['P_end'], dtype=complex),
-                          np.asarray(pss._event_columns.dth, dtype=float),
+                          np.asarray(_evd.dth, dtype=float),
                           self._fixed_time_event_columns(pss)[0])
             cache = (fp, self._node_projectors(pss), vb, ub, Md, staged)
             self._transverse_cache = cache
@@ -1235,7 +1235,7 @@ class _OscillatorCovariance(object):
         cw = V.conj().T @ K @ V
         info = {'modes': modes, 'K': K}
         if 'K_coloured' in _info:
-            if getattr(pss, '_event_columns', None) is not None:
+            if EventColumns.of(pss) is not None:
                 raise NotImplementedError(
                     'PAC.orbital_mode_weights: a COLOURED source on a STAGED '
                     'solve -- the map-space crossing terms are not built.')

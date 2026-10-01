@@ -7,6 +7,7 @@ from ._factored import dense_map
 from ._noise_components import (exponent_columns, psd_sqrt,
                                psd_touches_zero, uniform_exponent,
                                warn_sign_blind, warn_signed_unused)
+from .events import EventColumns
 
 
 class _LyapunovCovariance(object):
@@ -620,7 +621,7 @@ class _LyapunovCovariance(object):
         or event columns built on another grid, runs UNBORDERED, warned.
 
         History: `doc/shooting_history.md`, `PAC._event_closure`."""
-        ev = getattr(pss, '_event_columns', None)
+        ev = EventColumns.of(pss)
         if ev is None:
             return None
         N = len(As)
@@ -756,7 +757,7 @@ class _LyapunovCovariance(object):
                 'phase and have no stationary jitter; use '
                 'oscillator_covariance() for the growth and the bounded '
                 'orbital part.')
-        if getattr(pss, '_event_columns', None) is None:
+        if EventColumns.of(pss) is None:
             raise ValueError(
                 'PAC.event_jitter: the solve has no landed state events -- '
                 'solve with state_events=True on a circuit that declares '

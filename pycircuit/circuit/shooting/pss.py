@@ -1254,10 +1254,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                      tstab=tstab, break_events=break_events,
                      phase_rule=phase_rule, state_events=state_events,
                      trace=trace)
-        run = self._solve_prepare(refnode, period, x0, timestep,
-                                  maxiterations, grid, matrix_free,
-                                  x0_unknown, tstab, break_events,
-                                  phase_rule, state_events, trace)
+        ## (the fallbacks re-solve from `_args`, whose `x0` is a copy the
+        ## first solve cannot touch)
+        run = self._solve_prepare(**dict(_args, x0=x0))
         try:
             self._shoot(run)
         except analysis.NoConvergenceError:

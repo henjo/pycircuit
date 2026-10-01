@@ -437,7 +437,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## saltation reads the dominant multiplier 28 % short of the exact
         ## total (see `_state_event_stage`); the bordered system IS the
         ## linearisation of the solve that produced the orbit.
-        _ev = getattr(pss, '_event_columns', None)
+        _ev = EventColumns.of(pss)
         dthetas = [None] * len(freqs)
         if _ev is not None and not self.deflated:
             K = _ev['P_end'].shape[1]
@@ -1008,7 +1008,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         sideband response along a staged oscillator's orbit is O(1) off
         the exact one while its period node is exact.  Returns
         ``(Pk_fixed, tau, xdot)``."""
-        ev = pss._event_columns
+        ev = EventColumns.of(pss)
         th = np.asarray(pss._state_event_fracs, dtype=float)
         _fr, hsens, _nd = pss._event_remap(
             np.asarray(pss._grid_fracs, dtype=float), th, th, float(pss.period))
