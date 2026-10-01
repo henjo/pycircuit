@@ -733,8 +733,17 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         try:
             if self._solves_history():
                 return False
+        except Exception:                                       # noqa: BLE001
+            ## a bad `method`: `solve` raises its own error next, unwarned
+            return False
+        try:
             idx, info = topological_index(self.cir)
-        except Exception:
+        except Exception as exc:                                # noqa: BLE001
+            warnings.warn(
+                'PSS: the netlist\'s topological index could not be read '
+                f'({type(exc).__name__}: {str(exc)[:80]}), so an index-2 '
+                'netlist would keep the manufactured opening step; pass '
+                'x0_unknown=True if it is one.', RuntimeWarning, stacklevel=4)
             return False
         if idx != 2 or info['provisional'] or info['ill_posed']:
             self._warn_if_the_block_disagrees(idx, info)

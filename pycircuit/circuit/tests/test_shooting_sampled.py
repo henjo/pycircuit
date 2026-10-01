@@ -1771,3 +1771,30 @@ def test_the_sampled_series_sees_the_crossings_motion_on_a_staged_solve():
         rel = abs(float(V[0]) - float(V0[0])) / float(V0[0])
         assert 1e-8 < rel < 1e-4, (N, rel)
     assert got[200] > got[100], got
+
+
+def test_the_sampled_resolution_warning_is_said_for_each_pss():
+    """The review of 2026-09-30 (F18): the sampled noise's resolution warning
+    was remembered for the PAC's whole life, so a second (as coarse) PSS on
+    the same PAC went unwarned.  It is said once per PSS."""
+    import warnings as _w
+
+    from pycircuit.circuit.tests._shooting_fixtures import _sampler_fixture, _sw
+
+    def els(c):
+        c['S0'] = _sw()
+        c['N0'] = IS('out', gnd, i=0.0, noisePSD=1e-26)
+    cir, pss1, io, pac, T = _sampler_fixture(els, npts=204)
+    pss2 = PSS(cir, method='gear', reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pss2.solve(period=T, timestep=T / 204, x0=np.zeros(cir.n - 1),
+                   maxiterations=100)
+    assert pss2.converged
+    for p in (pss1, pss2):
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            pac.sampled_variance(p, io, [0.3 * T], 1e-3 / T, 0.5 / T,
+                                 points_per_decade=5, maxsidebands=100)
+        assert any('omega h' in str(r.message) for r in rec), \
+            [str(r.message)[:60] for r in rec]

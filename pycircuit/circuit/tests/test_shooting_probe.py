@@ -550,3 +550,38 @@ def test_the_probe_analysis_builds_its_analyses_at_its_temperature(monkeypatch):
         ProbeShooting(factory, 'v', npts=50, epar=hot).degenerate_placement(
             0.5, 1e3)
     assert seen and set(seen) == {400.0}, seen
+
+
+def test_the_probe_reports_inner_solves_that_did_not_converge():
+    """The review of 2026-09-30 (F10): ProbeShooting silenced its inner PSS
+    solves and read their spectra whether or not they converged.  Measured,
+    a one-iteration inner budget flagged every inner solve while the probe's
+    answer was the converged one -- so the count is reported
+    (`inner_unconverged`) and warned once, never raised."""
+    import warnings as _w
+
+    from pycircuit.circuit.shooting import ProbeShooting
+    circuit.default_toolkit = circuit.numeric
+    mu = 0.1
+
+    def build():
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c.add_node('x')
+        c['RL'] = R('v', 'x', r=1e-2)
+        c['L'] = L('x', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        return c
+    ps = ProbeShooting(build, 'v', npts=100, maxiterations=1, warm_start=False)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        _A, _f, info = ps.solve(2.0, 1.0 / (2.0 * np.pi), tol=1e-8, maxiter=2)
+    assert info['inner_unconverged'] > 0, info
+    assert any('did not report convergence' in str(r.message) for r in rec)
+    ok = ProbeShooting(build, 'v', npts=100, maxiterations=30, warm_start=False)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        _A, _f, info2 = ok.solve(2.0, 1.0 / (2.0 * np.pi), tol=1e-8, maxiter=2)
+    assert info2['inner_unconverged'] == 0, info2

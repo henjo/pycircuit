@@ -71,6 +71,9 @@ class ProbeShooting:
         self.epar = epar
         self._x0 = None
         self.evaluations = 0
+        ## inner PSS solves that did not report convergence (their spectrum
+        ## is read either way: `inner_unconverged` in a solve's `info`)
+        self.unconverged = 0
 
     def _epar_kw(self):
         """`{'epar': ...}` for the analyses this builds, or nothing."""
@@ -140,6 +143,8 @@ class ProbeShooting:
             pss.solve(period=T, timestep=T / self.npts, x0=x0,
                       maxiterations=self.maxiterations)
         self.evaluations += 1
+        if not pss.converged:
+            self.unconverged += 1
         X = np.asarray(pss.waveform[1], dtype=float)
         if pss.converged:
             self._x0 = np.delete(X[:, 0], pss.irefnode).copy()
@@ -265,7 +270,8 @@ class ProbeShooting:
                 return f, amps, phases, {
                     'iterations': it, 'residual': float(np.linalg.norm(r)),
                     'history': hist, 'converged': True,
-                    'evaluations': self.evaluations}
+                    'evaluations': self.evaluations,
+                    'inner_unconverged': self._inner_report()}
             J = np.zeros((2 * n, z.shape[0]))
             if use_pac:
                 ## ⚠ The VOLTAGE block from K linear PAC solves; the FREQUENCY
@@ -320,7 +326,25 @@ class ProbeShooting:
             'iterations': maxiter,
             'residual': float(np.linalg.norm(r)) if r is not None else None,
             'history': hist, 'converged': False,
-            'evaluations': self.evaluations}
+            'evaluations': self.evaluations,
+            'inner_unconverged': self._inner_report()}
+
+    def _inner_report(self):
+        """The inner PSS solves that did not report convergence since the
+        last report, warned once -- the probe's residual and Jacobian read
+        their spectra either way (the review's F10, 2026-10-01; measured,
+        a one-iteration budget flagged every inner solve while the answer
+        was the converged one, so this warns, never raises)."""
+        new = self.unconverged - getattr(self, '_unconverged_seen', 0)
+        self._unconverged_seen = self.unconverged
+        if new > 0:
+            import warnings
+            warnings.warn(
+                f'ProbeShooting: {new} inner PSS solve(s) did not report '
+                'convergence; their spectra were used as they stood. Raise '
+                'maxiterations if the answer matters.', RuntimeWarning,
+                stacklevel=3)
+        return new
 
     def solve(self, amp0, freq0, tol=1e-9, maxiter=20, damp=1.0,
               rel_step=1e-4):
@@ -341,7 +365,8 @@ class ProbeShooting:
                 return A, f, {'iterations': it,
                               'residual': float(np.linalg.norm(r)),
                               'history': hist, 'converged': True,
-                              'evaluations': self.evaluations}
+                              'evaluations': self.evaluations,
+                              'inner_unconverged': self._inner_report()}
             dA = rel_step * max(abs(A), 1e-12)
             df = rel_step * max(abs(f), 1e-12)
             IA, _ = self.probe_current(A + dA, f)
@@ -360,7 +385,8 @@ class ProbeShooting:
         return A, f, {'iterations': maxiter,
                       'residual': float(np.linalg.norm(r)),
                       'history': hist, 'converged': False,
-                      'evaluations': self.evaluations}
+                      'evaluations': self.evaluations,
+                      'inner_unconverged': self._inner_report()}
 
     #: excitation offset as a fraction of `f`, so the folded sideband pair
     #: lands at distinguishable frequencies -- see `_pac_response`.

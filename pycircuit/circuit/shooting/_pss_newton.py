@@ -110,7 +110,13 @@ class _ShootingNewton(object):
             r_dc = np.delete(r_dc, irn)
             tol = float(getattr(self.par, 'iabstol', 1e-12))
             trivial_orbit = bool(np.abs(r_dc).max() <= self.TRIVIAL_ORBIT_FACTOR * tol)
-        except Exception:
+        except Exception as exc:                                # noqa: BLE001
+            ## (the guard did not run: said, not silent -- the review's F12)
+            warnings.warn(
+                'PSS: the collapsed-orbit guard could not evaluate the DC '
+                f'residual ({type(exc).__name__}: {str(exc)[:80]}); a solve '
+                'that converged onto the equilibrium would not be caught.',
+                RuntimeWarning, stacklevel=3)
             trivial_orbit = False
         if trivial_orbit:
             ier = 5

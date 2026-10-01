@@ -3,6 +3,7 @@ metrics.
 """
 import numpy as np
 import warnings
+import weakref
 from ._noise_components import cached_root, psd_sqrt
 from ._numerics import edge_slope, _output_weights, output_index
 from .events import EventColumns
@@ -386,8 +387,15 @@ class _SampledNoise(object):
         ## kernel constant.
         _hmax = float(np.max(np.diff(tms))) if len(tms) > 1 else T / max(N, 1)
         _wh = 2.0 * np.pi * (L + 0.5) * f0 * _hmax
-        if _wh > pss.SAMPLED_RESOLUTION_WARN and not getattr(self, '_sampled_res_warned', False):
-            self._sampled_res_warned = True
+        ## (once per PSS, not once per PAC: a second, coarser PSS on the same
+        ## PAC went unwarned -- the review's F18; held weakly)
+        _seen = getattr(self, '_sampled_res_warned', None)
+        if _wh > pss.SAMPLED_RESOLUTION_WARN and not (
+                callable(_seen) and _seen() is pss):
+            try:
+                self._sampled_res_warned = weakref.ref(pss)
+            except TypeError:
+                self._sampled_res_warned = (lambda _p=pss: _p)
             warnings.warn(
                 'PAC.sampled_noise: the top sideband (|n| = %d, %.3g Hz) sits '
                 'at omega h = %.2f per step on this grid; a two-step method\'s '

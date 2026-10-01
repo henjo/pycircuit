@@ -1121,7 +1121,14 @@ class Transient(Analysis):
             xr = rng.uniform(-1.0, 1.0, self.cir.n)
             try:
                 C = np.asarray(self.cir.C(xr, self.epar), dtype=float)
-            except Exception:                                  # noqa: BLE001
+            except Exception as exc:                           # noqa: BLE001
+                ## (the check switches itself off for this analysis: said
+                ## once, not silently -- the review's F11, 2026-10-01)
+                warnings.warn(
+                    'transient: the branch check could not read the '
+                    f'structural rank of C ({type(exc).__name__}: '
+                    f'{str(exc)[:80]}) and is OFF for this analysis.',
+                    RuntimeWarning, stacklevel=2)
                 self._branch_rank0 = (0, 0.0)
                 return self._branch_rank0
             if C.size == 0:
