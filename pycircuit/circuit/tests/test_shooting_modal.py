@@ -1186,3 +1186,29 @@ def test_the_modal_spectrum_reads_no_harmonic_past_the_grid_s_nyquist():
                 pss, np.array([1e-3, 1e-2, 0.1, 0.3]) * f0, 0)['total']
     rel = np.abs(out[64] / out[100] - 1.0)
     assert np.all(rel < 1e-5), rel
+
+
+def test_the_modulated_coloured_rows_read_no_harmonic_past_the_grid_s_nyquist():
+    """The same wrap in the per-band coloured rows (`coloured_rows`, the
+    modulated sum's `p - j` index), masked by the same fix (584e065c) but
+    until now pinned by nothing: the test above has a white source, which
+    never reaches them.  A Lorentzian whose level follows the orbit is a
+    per-band ('band') group.  Measured 2026-10-01 on the asymmetric van der
+    Pol (a = 0.2) at 0.3 / 1 / 3 / -3 f_amp with the default harmonic count:
+    N = 64 meets N = 100 to 4.9e-7 in every part; with this one mask
+    removed (`transfer`'s kept) the parts read ~1e-4 off and the total
+    2.7e-5 to 2.0e-4."""
+    out = {}
+    for npts in (64, 100):
+        _c, pss, pac, ov = _orbit_modulated_vdp('lorentz', method='radau',
+                                                a=0.2, npts=npts)
+        f0 = 1.0 / float(pss.period)
+        with quiet(AccuracyWarning, ModelWarning, CostWarning):
+            _v, info = pss.ppv()
+            f_amp = (-np.log(float(info['second_multiplier'])) * f0
+                     / (2.0 * np.pi))
+            out[npts] = pac.modal_spectrum(
+                pss, np.array([0.3, 1.0, 3.0, -3.0]) * f_amp, ov)
+    for k in ('phase', 'orbital', 'correlation', 'total'):
+        rel = np.abs(out[64][k] / out[100][k] - 1.0)
+        assert np.all(rel < 5e-6), (k, rel)
