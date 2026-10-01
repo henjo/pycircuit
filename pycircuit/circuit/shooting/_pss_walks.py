@@ -331,9 +331,7 @@ class _PeriodWalks(object):
                 ## shift of the step's START -- never `u_dot (tau + w)` on
                 ## top of `residual_dh`, which counts it twice.
                 dr_dhn_full = np.asarray(self._dfdh, dtype=float).ravel()
-                Ud = np.delete(np.asarray(self.cir.dudt(
-                    float(t), epar=self.epar, analysis=self.par.analysis),
-                    dtype=float), self.irefnode)
+                Ud = self._dudt_at(float(t))
                 dr_dhn_iq = dr_dhn_full - Ud
                 dt_prev = float(hs[_j - 1]) if _j > 0 else float(hs[-1])
                 dr_dhprev = (np.asarray(self._dfdT, dtype=float).ravel()
@@ -676,7 +674,6 @@ class _PeriodWalks(object):
         [dx_j/dtheta_k])`` at the nodes in `capture` into `_captured`.
         Returns ``(M, [dx_N/dtheta_k])``; without `dense`, the columns alone
         (`M` and the captured maps None: the matrix-free event stage)."""
-        iref = self.irefnode
         integ = self._transient().base_integrator
         c = np.asarray(integ.tableau()[4], dtype=float)
         K = hsens.shape[1]
@@ -691,10 +688,7 @@ class _PeriodWalks(object):
                 P, D = rec.forward(P)
             h = rec.h
             t0 = float(times[j])
-            Ud = [np.delete(np.asarray(self.cir.dudt(t0 + float(ci) * h,
-                                                      epar=self.epar,
-                                                      analysis=self.par.analysis),
-                                       dtype=float), iref) for ci in c]
+            Ud = [self._dudt_at(t0 + float(ci) * h) for ci in c]
             for k in range(K):
                 w = float(hsens[j, k])
                 drho = ((w - rec.rho * float(hsens[j - 1, k])) / steps[j - 1].h
@@ -784,9 +778,7 @@ class _PeriodWalks(object):
                  for l_ in range(s)]
             fT.append(np.concatenate([sum(A[i, l_] * K[l_] for l_ in range(s))
                                       for i in range(s)]))
-            Ud.append([red(self.cir.dudt(ts[l_], epar=self.epar,
-                                         analysis=self.par.analysis))
-                       for l_ in range(s)])
+            Ud.append([self._dudt_at(ts[l_]) for l_ in range(s)])
         Vd = np.array([[float(k) ** jj for jj in range(p + 1)]
                        for k in range(p + 1)])
         Vi = np.linalg.solve(Vd, np.eye(p + 1))
@@ -859,7 +851,6 @@ class _PeriodWalks(object):
         Amat = tab[0]
         s = Amat.shape[0]
         coupled = integ.is_fully_implicit()
-        iref = self.irefnode
         x = copy(x_in)
         x0 = copy(x_in)
         x_prev = copy(x_in)
@@ -887,10 +878,7 @@ class _PeriodWalks(object):
                 Ks = [np.asarray(self._k_at(Ys[jj], _t0 + float(_cabs[jj]) * h))
                       for jj in range(s)]
                 Ss = [sum(Amat[i, jj] * Ks[jj] for jj in range(s)) for i in range(s)]
-                Ud = [np.delete(np.asarray(self.cir.dudt(_t0 + float(_cabs[jj]) * h,
-                                                          epar=self.epar,
-                                                          analysis=self.par.analysis),
-                                           dtype=float), iref)
+                Ud = [self._dudt_at(_t0 + float(_cabs[jj]) * h)
                       for jj in range(s)]
                 for k in range(len(Pk)):
                     w = float(hsens[_j, k])

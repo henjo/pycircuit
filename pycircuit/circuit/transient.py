@@ -4197,6 +4197,33 @@ class Transient(Analysis):
         limit_sync(self.cir, Y[-1], epar)
         return self._finish_radau(ctx, x0, t, provided_function, Y)
 
+    def _stage_limiter_states(self, Y, lims, epar):
+        """Each coupled stage's own limiting state, `S[j]` (None per stage
+        without stateful limiters): the step's entering state synced to the
+        stage's seed `Y[j]`.  The full and the simplified (transformed)
+        coupled Newton's one set-up (written out in each until 2026-10-01,
+        the review's O13); why each stage owns one is at
+        `_coupled_stage_solver`."""
+        if not lims:
+            return [None] * 3
+        S0 = limiter_snapshot(lims)
+        S = []
+        for j in range(3):
+            state_restore(S0)
+            self.cir.limit(Y[j], Y[j], epar)
+            S.append(limiter_snapshot(lims))
+        return S
+
+    def _stages_converged(self, Y, S, lims, scale, reltol, abstol, red):
+        """The coupled Newton's convergence test: the largest stage update
+        `scale` within `reltol` of the largest reduced stage (`red`) plus
+        `abstol`, AND every stateful limiter at rest (`_limiters_at_rest`):
+        a small step is not a converged one while a limiter still holds a
+        stage short of its node voltage."""
+        ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
+        return scale <= reltol * ynorm + abstol and (
+            not lims or self._limiters_at_rest(Y, S, lims))
+
     def _limiters_at_rest(self, Y, S, lims):
         """Whether every stage's device current, read at the limiting state
         its Newton solved with (`S[j]`), is the device's EXACT current at
@@ -4276,15 +4303,7 @@ class Transient(Analysis):
             ## the sequential DIRK's Newton per stage, which met the exact
             ## solution to 5.6e-16 on the same circuit.  Each starts from the
             ## step's entering state, synced to its seed.
-            if lims:
-                S0 = limiter_snapshot(lims)
-                S = []
-                for j in range(3):
-                    state_restore(S0)
-                    self.cir.limit(Y[j], Y[j], epar)
-                    S.append(limiter_snapshot(lims))
-            else:
-                S = [None] * 3
+            S = self._stage_limiter_states(Y, lims, epar)
 
             def assemble(Y, S):
                 """Residual and block Jacobian at the stage vector `Y`, each
@@ -4369,12 +4388,10 @@ class Transient(Analysis):
                     ## a small step is not a converged one while a stateful
                     ## limiter still holds a stage short of its node voltage.
                     ## History: `doc/transient_history.md`, `Transient._coupled_stage_solver`.
-                    if alpha == 1.0:
-                        ynorm_t = max(np.max(np.abs(red(Y_trial[i]))) for i in range(3))
-                        if scale <= reltol * ynorm_t + abstol and (
-                                not lims or self._limiters_at_rest(Y_trial, S_t, lims)):
-                            converged = True
-                            break
+                    if alpha == 1.0 and self._stages_converged(
+                            Y_trial, S_t, lims, scale, reltol, abstol, red):
+                        converged = True
+                        break
                     if not damped:
                         break                      # the undamped Newton: the full step, always
                     if float(np.sum(np.abs(R_t))) <= Rnorm * (1.0 - 1e-4 * alpha):
@@ -4794,15 +4811,7 @@ class Transient(Analysis):
         ## reasons (`_coupled_stage_solver`): shared, the transform landed
         ## 1.09e-4 V off the exact solution on a diode driven to 0.85 V.
         lims = stateful_limiters(self.cir)
-        if lims:
-            S0 = limiter_snapshot(lims)
-            S = []
-            for j in range(3):
-                state_restore(S0)
-                self.cir.limit(Y[j], Y[j], epar)
-                S.append(limiter_snapshot(lims))
-        else:
-            S = [None] * 3
+        S = self._stage_limiter_states(Y, lims, epar)
         converged = False
         for _ in range(maxit):
             ## each stage's q and K read ONCE, at its own limiting state
@@ -4827,9 +4836,7 @@ class Transient(Analysis):
                     S[i] = limiter_snapshot(lims)
                 step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
                 scale = max(scale, np.max(np.abs(step_i)))
-            ynorm = max(np.max(np.abs(red(Y[i]))) for i in range(3))
-            if scale <= reltol * ynorm + abstol and (
-                    not lims or self._limiters_at_rest(Y, S, lims)):
+            if self._stages_converged(Y, S, lims, scale, reltol, abstol, red):
                 converged = True
                 break
         if not converged:

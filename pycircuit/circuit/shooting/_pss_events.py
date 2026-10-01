@@ -3,6 +3,7 @@ them, and the bordered event stage.
 """
 import numpy as np
 import pycircuit.circuit.analysis as analysis
+from ._factored import on_state
 from .events import EventColumns
 from pycircuit.circuit.simwarnings import (
     AccuracyWarning,
@@ -260,7 +261,7 @@ class _StateEvents(object):
         reverse replay each, the row injected at its node (the costate on
         the node's STATE, `FactoredPeriod.inject`; a GLM's map on the state
         takes it as its last stage's)."""
-        sm = fp.state_map() if fp.is_glm else fp
+        sm = on_state(fp)
         N = len(sm.steps)
         m = np.asarray(Wk).shape[1]
         G = []
@@ -388,7 +389,7 @@ class _StateEvents(object):
             z_end, w, Pkm = evmap(z, T, tms_, hs_, hsens, set(nodes),
                                   dense=False)
             fp = w.factored(self, times=tms_, T=T)
-            sm = fp.state_map() if fp.is_glm else fp
+            sm = on_state(fp)
             steps = sm.step_objects()
             F = np.zeros(wm + ncol)
             F[:wm] = self._close_periodic(z, z_end, tms_)

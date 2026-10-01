@@ -1319,3 +1319,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20261001T102207Z,03773758,no:cacheprovider 0 pycircuit/circuit/tests/test_shooting_pss.py::test_pss_shares_the_transient_s_parameters,0.6,1,pycircuit/circuit/tests/test_shooting_pss.py::test_pss_shares_the_transient_s_parameters,0.0
 20261001T104100Z,03773758,pycircuit no:cacheprovider tran_recorder,1122.4,3515,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,210.7
 20261001T104125Z,03773758,no:cacheprovider 0 pycircuit/circuit/tests/test_stepcontroller_units.py,0.5,8,pycircuit/circuit/tests/test_stepcontroller_units.py::test_integral_lower_band_growth_retry_and_its_three_guards,0.0
+20261001T110536Z,6b871c18,pycircuit no:cacheprovider tran_recorder,1168.0,3515,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,208.8

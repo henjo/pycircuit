@@ -981,7 +981,6 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         N = len(ts) - 1
         m = X.shape[0]
         out = np.zeros((N + 1, m))
-        analysis = getattr(pss.par, 'analysis', None)
         ok = True
         for j in range(N + 1):
             ## ⚠ NODE 0 IS EVALUATED AS NODE N.  A source's derivative at
@@ -1002,9 +1001,7 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                     G = np.asarray(pss._G_at(x), dtype=float)
                     ## (at the solve's `epar`, as `_k_at` reads `u`: a source
                     ## may depend on the temperature -- the review's D6)
-                    ud = np.delete(np.asarray(pss.cir.dudt(t, epar=pss.epar,
-                                                           analysis=analysis),
-                                              dtype=float).ravel(), pss.irefnode)
+                    ud = pss._dudt_at(t)
                     A[alg, :] = G[alg, :]
                     b[alg] = -ud[alg]
                 out[j] = np.linalg.solve(A, b)

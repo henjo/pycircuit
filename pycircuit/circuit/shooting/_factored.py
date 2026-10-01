@@ -30,6 +30,17 @@ def dense_map(fp, n=None):
     return M.copy()
 
 
+def on_state(fp):
+    """The period map on the STATE: `fp` itself, or a Nordsieck GLM's
+    `state_map()` -- its own acts on the Nordsieck vector, whose null
+    vector's first block holds the higher components fixed.  The rule of
+    `_PPVFloquet._state_map`, for a map in hand (written inline three times
+    until 2026-10-01)."""
+    if getattr(fp, 'is_glm', False) and hasattr(fp, 'state_map'):
+        return fp.state_map()
+    return fp
+
+
 class FactoredPeriod(object):
     """One converged period, kept FACTORED -- the hook PAC/PPV/pnoise share.
 

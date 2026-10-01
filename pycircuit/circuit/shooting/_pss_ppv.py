@@ -5,7 +5,7 @@ import numpy as np
 import warnings
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit._limiting import devices_at
-from ._factored import dense_map
+from ._factored import dense_map, on_state
 from ._steps import dense_c
 from ._numerics import _arnoldi_gmres, insert_ref
 from .events import EventColumns
@@ -475,8 +475,7 @@ class _PPVFloquet(object):
         block holds the higher components fixed.
 
         History: `doc/shooting_history.md`, `_PPVFloquet._state_map`."""
-        fp = self.factored_period()
-        return fp.state_map() if fp.is_glm else fp
+        return on_state(self.factored_period())
 
     def ppv(self, tol=None):
         """The perturbation projection vector at `t = 0` (Demir & Roychowdhury).
@@ -1291,11 +1290,9 @@ class _PPVFloquet(object):
             return _tw.floquet_modes(fp)
         ## (a first parameter `pss_unused`, ignored, stood here until
         ## 2026-10-01: callers passed the PSS into it positionally)
-        fp = self._state_map() if fp is None else fp
-        if getattr(fp, 'is_glm', False) and hasattr(fp, 'state_map'):
-            ## a GLM's Nordsieck map handed in: its modes are read on the
-            ## state (the Nordsieck eigenvectors are not state-space modes)
-            fp = fp.state_map()
+        ## (a GLM's Nordsieck map handed in: its modes are read on the state,
+        ## `on_state` -- the Nordsieck eigenvectors are not state-space modes)
+        fp = self._state_map() if fp is None else on_state(fp)
         n = fp.width
         T = float(fp.T)
         if n > self.FLOQUET_DENSE_LIMIT:

@@ -69,6 +69,16 @@ class _InnerTransient(object):
         iref = self.irefnode
         return self.toolkit.concatenate((k[:iref], k[iref + 1:]))
 
+    def _dudt_at(self, t):
+        """The reduced source derivative `du/dt` at `t`, at the solve's
+        `epar` and analysis name -- as `_k_at` reads `u` (a source may depend
+        on the temperature; the review's D6).  The period columns, the event
+        stages and the orbit rate read it here; written out five times until
+        2026-10-01 (the review's O14)."""
+        return np.delete(np.asarray(self.cir.dudt(t, epar=self.epar,
+                                                  analysis=self.par.analysis),
+                                    dtype=float), self.irefnode)
+
     def _install_history(self, x0_in, xm1_in, dt, h_prev=None):
         """Open a run ON a solved two-point history rather than a seed.
 

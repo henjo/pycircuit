@@ -2,7 +2,6 @@
 edge jitter and the mode weights.
 """
 import numpy as np
-from ._factored import dense_map
 from ._numerics import _output_row, edge_slope, integer_arg, output_index
 import warnings
 from .events import EventColumns
@@ -122,15 +121,16 @@ class _OscillatorCovariance(object):
             _v, info = pss.ppv()
             vb = np.asarray(_v, dtype=float).ravel()
             ub = np.asarray(info['tangent_pair'], dtype=float).ravel()
-            Md = (dense_map(fp, nw)
-                  if nw <= pss.FLOQUET_DENSE_LIMIT else None)
+            ## (the TOTAL map on a staged solve, as every dense period here:
+            ## `_dense_period`)
+            Md = self._dense_period(pss, fp, nw)
+            if Md is not None:
+                Md = np.asarray(Md, dtype=float)
             staged = None
             _evd = EventColumns.of(pss, nw)
             if _evd is not None:
-                ## the total map; the crossings' state sensitivity; the event
-                ## columns at fixed time
-                if Md is not None:
-                    Md = np.asarray(_evd.total_matrix(Md), dtype=float)
+                ## the crossings' state sensitivity; the event columns at
+                ## fixed time
                 staged = (_evd, np.asarray(_evd['P_end'], dtype=complex),
                           np.asarray(_evd.dth, dtype=float),
                           self._fixed_time_event_columns(pss)[0])
@@ -595,20 +595,26 @@ class _OscillatorCovariance(object):
         d = _output_row(output, m)
         tinj = self._stage_times(pss, fp) if stage else tms[1:N + 1]
 
-        def couplings(lam0=None, seed=None, extra=None):
-            ## one reverse pass: its couplings, one row per injection point
+        def reverse(lam0=None, seed=None, extra=None):
+            ## one reverse pass: its final costate and its couplings, one row
+            ## per injection point
             if stage:
                 lam = np.zeros(m, dtype=complex) if lam0 is None else lam0
-                return np.asarray(self._stage_pass(
-                    pss, fp, lam, seed if seed is not None else extra)[1])
+                out = self._stage_pass(
+                    pss, fp, lam, seed if seed is not None else extra)
+                return out[0], np.asarray(out[1])
             lam = np.zeros(n, dtype=complex) if lam0 is None else lam0
             if seed is not None:
                 inject = np.zeros((N, m), dtype=complex)
                 inject[seed[0]] = seed[1]
             else:
                 inject = extra
-            return np.asarray(fp.matvec_transposed(
-                np.asarray(lam, dtype=complex), collect=True, inject=inject)[1])
+            out = fp.matvec_transposed(np.asarray(lam, dtype=complex),
+                                       collect=True, inject=inject)
+            return out[0], np.asarray(out[1])
+
+        def couplings(lam0=None, seed=None, extra=None):
+            return reverse(lam0, seed, extra)[1]
 
         ## the dense transposed map, and the couplings of a unit costate
         eye = np.eye(n)
@@ -704,16 +710,12 @@ class _OscillatorCovariance(object):
             ## the reverse pass seeded at node k0 with the functional `dv`:
             ## its final costate (with the crossings' term on a staged
             ## solve), its couplings, and its theta-sensitivity
+            ## (ONE pass for both: until 2026-10-01 the same pass ran twice,
+            ## once for the couplings and once for the costate -- the
+            ## review's O3)
             dv = np.asarray(dv, dtype=complex)
-            cA = couplings(seed=(k0, dv))
-            if stage:
-                g_ = np.asarray(self._stage_pass(
-                    pss, fp, np.zeros(m, dtype=complex), (k0, dv))[0])
-            else:
-                inject = np.zeros((N, m), dtype=complex)
-                inject[k0] = dv
-                g_ = np.asarray(fp.matvec_transposed(
-                    np.zeros(n, dtype=complex), collect=True, inject=inject)[0])
+            g_, cA = reverse(seed=(k0, dv))
+            g_ = np.asarray(g_)
             gth = None
             if _ev is not None:
                 gth = Pkf[k0].T @ dv

@@ -14,7 +14,7 @@ from pycircuit.circuit.transient import Transient
 from pycircuit.post import InternalResultDict
 import pycircuit.circuit.analysis as analysis
 from ._numerics import freq_analysis
-from ._numerics import insert_ref, periodic_spline_weights, steps_in
+from ._numerics import insert_ref, steps_in
 from ._pss_accuracy import _AccuracyChecks
 from ._pss_events import _StateEvents
 from ._pss_grids import _PeriodGrids
@@ -2449,16 +2449,16 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## fold, taken as a weighted sum at the true times (uniform grids
         ## never reach this branch).
         ## History: `doc/shooting_history.md`, `PSS._orbit_results`.
-        _h = np.diff(np.asarray(times, dtype=float))
-        if len(_h) >= 2 and float(np.max(_h)) / float(np.min(_h)) - 1.0 \
-                > self.UNIFORM_GRID_TOL:
+        ## the SAME rule `_period_quadrature` gives every consumer
+        ## (`_times_quadrature`: None on a uniform grid; a periodic cubic
+        ## spline on an event-free grid, a piecewise one breaking at the
+        ## landed event nodes) -- `fpss` and `carrier_phasor` are pinned
+        ## equal to 1e-12.  (Its uniformity test and spline call were
+        ## written out here until 2026-10-01, the review's O10.)
+        _wq = self._times_quadrature(times)
+        if _wq is not None:
             _tt = np.asarray(times, dtype=float)
             _Tp = float(_tt[-1] - _tt[0])
-            ## the SAME rule `_period_quadrature` gives every consumer: a
-            ## periodic cubic spline on an event-free grid, a piecewise one
-            ## breaking at the landed event nodes -- `fpss` and
-            ## `carrier_phasor` are pinned equal to 1e-12
-            _wq = periodic_spline_weights(_tt[:-1], _Tp, self._event_nodes(_tt[:-1], _Tp)) / _Tp
             _ks = np.arange(len(freqs))
             freqs = _ks / _Tp
             _E = np.exp(-2j * np.pi * np.outer(_ks, (_tt[:-1] - _tt[0]) / _Tp)) \
