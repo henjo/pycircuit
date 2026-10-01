@@ -486,12 +486,16 @@ def test_trap_oscillator_covariance_goes_through_the_twin_default_radau():
                                dtype=float)
 
     ## default: trap hands off to the Radau twin.  Compared to a direct
-    ## Radau solve SEEDED FROM TRAP'S OWN x0 -- the covariance at t=0 is a
+    ## Radau solve SEEDED AT TRAP'S OWN x(0) -- the covariance at t=0 is a
     ## point on the orbit, so the two must be at the SAME PHASE to compare
     ## (seeding both elsewhere differs by O(h^2) of phase, ~1e-3 here, which
-    ## is the orbit's covariance variation, not an error).
+    ## is the orbit's covariance variation, not an error).  ⚠ x(0), the
+    ## first point of the run's waveform: the run's stored state is `x_in`,
+    ## a step earlier, and until 2026-10-01 the twin was seeded there and
+    ## ran a step ahead of the run (this test seeded its reference there
+    ## too, and pinned the shifted phase).
     tp, Kt = solve('trap', np.array([2.0, 0.0]))
-    x0t = np.asarray(tp._period_state[1], dtype=float)
+    x0t = np.delete(np.asarray(tp.waveform[1], dtype=float)[:, 0], tp.irefnode)
     _pd, Kd = solve('radau', x0t)
     assert np.linalg.norm(Kt - Kd) / np.linalg.norm(Kd) < 1e-6, \
         'the default trap twin and a direct Radau solve from the same ' \
@@ -503,7 +507,7 @@ def test_trap_oscillator_covariance_goes_through_the_twin_default_radau():
 
     ## gear is selectable and matches a direct Gear-2 solve from the same seed
     _pg, Kg = solve('trap', np.array([2.0, 0.0]), mono='gear')
-    x0g = np.asarray(_pg._period_state[1], dtype=float)
+    x0g = np.delete(np.asarray(_pg.waveform[1], dtype=float)[:, 0], _pg.irefnode)
     _pdg, Kdg = solve('gear', x0g)
     assert np.linalg.norm(Kg - Kdg) / np.linalg.norm(Kdg) < 1e-6, \
         'monodromy=gear should match a direct Gear-2 solve from the same seed'
@@ -1525,3 +1529,49 @@ def test_the_oscillator_edge_jitter_takes_a_differential_output():
     rel = np.max(np.abs(r_diff['k_cycle'] / r_node['k_cycle'] - 1.0))
     assert rel < 1e-7, (r_diff['k_cycle'], r_node['k_cycle'])
     assert abs(r_diff['slew'] / r_node['slew'] - 1.0) < 1e-7
+
+
+def test_the_monodromy_twin_starts_where_the_run_s_waveform_starts():
+    """Found by the review's coverage batch (2026-10-01): a trap/euler
+    oscillator's monodromy twin was seeded at the run's ENTERING state
+    `x_in` -- one manufactured Euler step BEFORE x(0) -- so the twin's orbit
+    ran a step ahead of the run's waveform (its x(0) was the run's x(T - h)
+    to 2.3e-4), and every instant read off that waveform landed a step off
+    on the twin: `oscillator_edge_jitter` at the trap run's own crossing
+    read k_cycle^2 = 1.486e-6 against radau's 1.518e-6 at its own (-2.1 %,
+    239 points).  Seeded at the run's x(0): 1.51838e-6 (1.2e-4), the twin's
+    x(0) the run's to 1.3e-4 -- the trap orbit's own O(h^2)."""
+    cir, pt, red, tc, _v = _a11_solved(method='trap', npts=239)
+    cr, pr, rr, tcr, _v2 = _a11_solved(method='radau', npts=239)
+    tw = pt.monodromy_twin()
+    assert tw is not pt
+    irn = pt.irefnode
+    x0_run = np.delete(np.asarray(pt.waveform[1], dtype=float)[:, 0], irn)
+    x0_twin = np.delete(np.asarray(tw.waveform[1], dtype=float)[:, 0], irn)
+    assert np.max(np.abs(x0_twin - x0_run)) < 1e-3, (x0_twin, x0_run)
+    kt = PAC(cir, toolkit=circuit.numeric).oscillator_edge_jitter(
+        pt, red, tc)['k_cycle'][0] ** 2
+    kr = PAC(cr, toolkit=circuit.numeric).oscillator_edge_jitter(
+        pr, rr, tcr)['k_cycle'][0] ** 2
+    assert abs(kt / kr - 1.0) < 1e-3, (kt, kr)
+
+
+def test_the_oscillator_edge_jitter_under_gear_meets_the_monte_carlo():
+    """The review's X9 (2026-10-01): the edge jitter ran under radau only.
+    Gear on the A11 chain against the committed Monte Carlo of
+    `test_the_oscillator_edge_jitter_is_the_exact_law_the_monte_carlo_measures`
+    (independent of any shooting method): within 1.5 sigma at every k at
+    239 and 479 points, and FIRST order against radau's law (-1.26 % /
+    -0.62 % at k = 1) -- gear's covariance injection, one per step, as the
+    method table says."""
+    mc = ((1, 1.5049e-6, 1.77e-8), (2, 2.1007e-6, 4.67e-8),
+          (4, 3.2000e-6, 1.14e-7), (8, 5.2888e-6, 3.42e-7))
+    errs = []
+    for npts in (239, 479):
+        cir, pss, red, tc, _v = _a11_solved(method='gear', npts=npts)
+        r = PAC(cir, toolkit=circuit.numeric).oscillator_edge_jitter(pss, red, tc)
+        kc2 = r['k_cycle'] ** 2
+        for k, m_, se in mc:
+            assert abs(kc2[k - 1] - m_) < 3.0 * se, (npts, k, kc2[k - 1], m_)
+        errs.append(kc2[0] / 1.51820e-6 - 1.0)
+    assert errs[0] < 0.0 and 1.6 < errs[0] / errs[1] < 2.5, errs

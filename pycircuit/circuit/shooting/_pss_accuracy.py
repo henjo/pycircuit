@@ -132,7 +132,15 @@ class _AccuracyChecks(object):
         ## sum is a trial period, so the fractions are the safe object)
         nonuniform = float(hs.max() / hs.min()) > 1.0 + 1e-9
         grid = (hs / float(hs.sum())) if nonuniform else None
-        x0r = np.asarray(x0, dtype=float)[:self.cir.n - 1]
+        ## ⚠ SEEDED AT THE RUN'S x(0), THE FIRST POINT OF ITS WAVEFORM, NOT
+        ## AT ITS ENTERING STATE: a plain map's stored `x0` is `x_in`, one
+        ## manufactured Euler step BEFORE x(0), and a twin seeded there runs
+        ## a step ahead of the run -- an instant read off the run's waveform
+        ## then lands a step off on the twin (`oscillator_edge_jitter` at a
+        ## trap run's own crossing: -2.1 % at 239 points; review batch 10,
+        ## 2026-10-01).  Every other map stores x(0) there already.
+        x0r = np.delete(np.asarray(self.waveform[1], dtype=float)[:, 0],
+                        self.irefnode)
         ## ⚠ THE STEP COUNT MUST SURVIVE `solve`'s floor (`steps_in`): half
         ## a step of slack lands it on N for every T whatever the rounding
         ## (the bare `int()` made `T / (T / N)` N - 1 until 2026-09-30).  N

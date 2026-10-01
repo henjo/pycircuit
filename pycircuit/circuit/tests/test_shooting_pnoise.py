@@ -2481,3 +2481,134 @@ def test_the_dc_fold_guard_covers_every_sideband_the_fold_reaches():
                                      sweeptype='relative', maxsidebands=12,
                                      modulated=True)
     assert np.isfinite(am) and np.isfinite(pm) and am + pm > 0.0, (am, pm)
+
+
+def _ampm_diode_mixer(method):
+    """`test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity`'s
+    diode mixer under `method` (200 points)."""
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c['vs'] = VSin(1, gnd, vac=1.0, va=2.0, freq=1e6, phase=20)
+    c['R'] = R(1, 2, r=1e4)
+    c['D'] = Diode(2, gnd)
+    c['C'] = C(2, gnd, c=1e-12)
+    pss = PSS(c, method=method, reltol=1e-10)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pss.solve(period=1e-6, timestep=1e-6 / 200, maxiterations=60)
+    assert pss.converged
+    return pss, PAC(c, toolkit=circuit.numeric)
+
+
+@pytest.mark.parametrize('method', ['radau', 'theta', 'glm3', 'esdirk43'])
+def test_am_pm_noise_obeys_its_identity_under_every_map_kind(method):
+    """The review's X9 (2026-10-01): `am_pm_noise` ran under gear only.  Its
+    gate is an identity -- ``2 (S_am + S_pm) == pnoise(f0 + off) +
+    pnoise(f0 - off)`` once the sideband sum has converged -- so it carries
+    to every map kind: the stage maps (radau, esdirk43), theta's plain map
+    and a Nordsieck GLM's map on the state.  Measured on the diode mixer at
+    96 / 32 sidebands: radau 2.5e-10 / 1.9e-5, theta 1.6e-9 / 1.7e-5, glm3
+    7.7e-9 / 2.0e-5, esdirk43 1.2e-10 / 1.9e-5 -- TRUNCATION, falling with
+    the count (gear's own test: 3.3e-11 at 64).  (Trap does not converge on
+    this mixer at 200 points.)"""
+    import warnings
+    pss, pac = _ampm_diode_mixer(method)
+    f0 = 1e6
+    off = 0.13 * f0
+
+    def residual(L):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            S_am, S_pm, _ = pac.am_pm_noise(pss, off, 2, harmonic=1,
+                                            maxsidebands=L, sweeptype='relative')
+            up, _ = pac.pnoise(pss, f0 + off, 2, maxsidebands=L)
+            lo, _ = pac.pnoise(pss, f0 - off, 2, maxsidebands=L)
+        return abs(2.0 * (S_am + S_pm) - (up + lo)) / (up + lo), S_pm / S_am
+    r96, ratio = residual(96)
+    r32, _ = residual(32)
+    assert r96 < 1e-7 and r32 > 100.0 * r96, (method, r32, r96)
+    assert abs(ratio - 1.0) > 0.1, (method, ratio)
+
+
+def test_am_pm_noise_modulated_is_its_cycle_averaged_stationary_source():
+    """The review's X9 (2026-10-01): `am_pm_noise(modulated=True)` had no
+    test.  A white source whose PSD follows the LO, ``(k V_lo(t))^2``, feeds
+    a mixer (the construction of
+    `test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_the_cycle_average_is_not`,
+    with a DC current giving the output a carrier to split against).  The default refuses the bias-dependent `CY`; `modulated=True`
+    takes Hull & Meyer's cycle average, which for this source is a
+    STATIONARY white current of PSD ``k^2 (vo^2 + va^2/2)`` -- so the split
+    must equal that circuit's to rounding (measured 2e-15), keep the
+    identity (exactly 0 here: the multiplier makes two sidebands), and be
+    non-degenerate (PM/AM 0.41)."""
+    import warnings
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       white_noise)
+    from pycircuit.utilities.param import Parameter
+    circuit.default_toolkit = circuit.numeric
+
+    class Mult(Behavioural):
+        params_as = 'p'
+        instparams = [Parameter(name='k', desc='gain', unit='A/V^2', default=1.0)]
+
+        @staticmethod
+        def analog(p, outp, outn, a, an, b, bn):
+            return Contribution(Branch(outp, outn).I,
+                                p.k * Branch(a, an).V * Branch(b, bn).V)
+
+    class ModNoise(Behavioural):
+        params_as = 'p'
+        instparams = [Parameter(name='k', desc='scale', unit='', default=1.0)]
+
+        @staticmethod
+        def analog(p, outp, outn, b, bn):
+            return Contribution(Branch(outp, outn).I,
+                                white_noise((p.k * Branch(b, bn).V) ** 2))
+
+    T = 1e-6
+    f0 = 1.0 / T
+    vo, va = 0.3, 1.0
+
+    def build(stationary):
+        c = SubCircuit()
+        for n_ in ('lo', 'mid', 'out'):
+            c.add_node(n_)
+        c['vlo'] = VSin('lo', gnd, va=va, vo=vo, freq=f0)
+        if stationary:
+            c['src'] = IS('mid', gnd, i=0.0, noisePSD=vo ** 2 + va ** 2 / 2.0)
+        else:
+            c['src'] = ModNoise('mid', gnd, 'lo', gnd, k=1.0)
+        c['Rm'] = R('mid', gnd, r=1.0)
+        c['idc'] = IS(gnd, 'mid', i=0.5)
+        c['M2'] = Mult('out', gnd, 'mid', gnd, 'lo', gnd, k=0.3)
+        c['Ro'] = R('out', gnd, r=1.0)
+        c['Co'] = C('out', gnd, c=0.2e-6)
+        pss = PSS(c, method='gear', reltol=1e-10)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            pss.solve(period=T, timestep=T / 200, maxiterations=40)
+        assert pss.converged
+        return pss, PAC(c, toolkit=circuit.numeric), \
+            [str(n_) for n_ in c.nodes].index('out')
+    off = 0.13 * f0
+    pm, pacm, om = build(False)
+    with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT'):
+        pacm.am_pm_noise(pm, off, om, harmonic=1, maxsidebands=16,
+                         sweeptype='relative')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        am, pmn, _ = pacm.am_pm_noise(pm, off, om, harmonic=1, maxsidebands=16,
+                                      sweeptype='relative', modulated=True)
+        up, _ = pacm.pnoise(pm, f0 + off, om, maxsidebands=16, modulated=True)
+        lo, _ = pacm.pnoise(pm, f0 - off, om, maxsidebands=16, modulated=True)
+    assert abs(2.0 * (am + pmn) - (up + lo)) < 1e-12 * (up + lo)
+    assert abs(pmn / am - 1.0) > 0.1, pmn / am
+    ps, pacs, os_ = build(True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        am_s, pm_s, _ = pacs.am_pm_noise(ps, off, os_, harmonic=1,
+                                         maxsidebands=16, sweeptype='relative')
+    assert abs(am / am_s - 1.0) < 1e-12 and abs(pmn / pm_s - 1.0) < 1e-12, \
+        (am, am_s, pmn, pm_s)
