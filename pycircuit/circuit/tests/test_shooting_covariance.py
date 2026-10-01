@@ -757,12 +757,14 @@ def test_covariance_on_a_staged_solve_borders_its_lyapunov_closure_with_the_movi
     ## 4.08 / 3.79 / 3.29 it read with the tanh was the tails.
     assert abs(sequ[j7][ih, ih] / exp_h - 1.0) < 5e-3, sequ[j7][ih, ih] / exp_h
     ## and the node-rate correction is what keeps the source silent
-    pac._orbit_rate = lambda p, nodes: np.zeros((len(p.waveform[0]), p.cir.n - 1))
+    ## (on the PSS class: the covariance may read a twin's orbit)
+    type(pss)._orbit_rate = lambda self, nodes: np.zeros(
+        (len(self.waveform[0]), self.cir.n - 1))
     try:
         _K0z, _ci = pac.covariance(pss, samples=True)
         seqz = _ci['samples']
     finally:
-        del pac._orbit_rate
+        del type(pss)._orbit_rate
     share = ((0.925 - ts[j7] / T) / (0.925 - 0.45)) ** 2
     assert abs(seqz[j7][isaw, isaw] / exp_n / share - 1.0) < 2e-2, (seqz[j7][isaw, isaw] / exp_n, share)
 

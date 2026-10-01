@@ -2,6 +2,7 @@
 edge jitter and the mode weights.
 """
 import numpy as np
+from ._factored import stage_pass, stage_times
 from ._numerics import _output_row, edge_slope, integer_arg, output_index
 import warnings
 from .events import EventColumns
@@ -29,7 +30,7 @@ class _OscillatorCovariance(object):
         m = pss.cir.n - 1
         _v, info = pss.ppv()
         S = np.asarray(info['samples'], dtype=float)[:, :m]
-        xd = np.asarray(self._orbit_rate(pss, []), dtype=float)[:, :m]
+        xd = np.asarray(pss._orbit_rate([]), dtype=float)[:, :m]
         ## (the PPV samples cover nodes 0..N-1; node N is node 0 a period on)
         I = np.eye(m)
         return np.array([I - np.outer(xd[j], S[j % S.shape[0]])
@@ -133,7 +134,7 @@ class _OscillatorCovariance(object):
                 ## fixed time
                 staged = (_evd, np.asarray(_evd['P_end'], dtype=complex),
                           np.asarray(_evd.dth, dtype=float),
-                          self._fixed_time_event_columns(pss)[0])
+                          pss._fixed_time_event_columns()[0])
             cache = (fp, self._node_projectors(pss), vb, ub, Md, staged)
             self._transverse_cache = cache
         _fp, Pi, vb, ub, Md, staged = cache
@@ -593,15 +594,14 @@ class _OscillatorCovariance(object):
         ns = np.arange(-L, L + 1)
         fmin, fmax = float(col['fmin']), float(col['fmax'])
         d = _output_row(output, m)
-        tinj = self._stage_times(pss, fp) if stage else tms[1:N + 1]
+        tinj = stage_times(fp) if stage else tms[1:N + 1]
 
         def reverse(lam0=None, seed=None, extra=None):
             ## one reverse pass: its final costate and its couplings, one row
             ## per injection point
             if stage:
                 lam = np.zeros(m, dtype=complex) if lam0 is None else lam0
-                out = self._stage_pass(
-                    pss, fp, lam, seed if seed is not None else extra)
+                out = stage_pass(fp, lam, seed if seed is not None else extra)
                 return out[0], np.asarray(out[1])
             lam = np.zeros(n, dtype=complex) if lam0 is None else lam0
             if seed is not None:
@@ -628,7 +628,7 @@ class _OscillatorCovariance(object):
             MT = MT + D.T @ P.T                      # the TOTAL map's
             Z1 = np.linalg.inv(np.asarray(_ev['Gt'], dtype=float).T)
             Z2 = Z1 @ P.T
-            Pkf = self._fixed_time_event_columns(pss)[0]
+            Pkf = pss._fixed_time_event_columns()[0]
             K = Z1.shape[0]
             Tev = np.array([couplings(extra=(
                 _ev.injection_dict(np.eye(K)[k]) if stage

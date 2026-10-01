@@ -1141,7 +1141,7 @@ def test_the_oscillator_edge_jitter_is_the_law_at_the_requested_instant():
     ## the propagated tangent IS the orbit's rate at every node
     _K, info = pac.oscillator_covariance(pss, samples=True)
     U = np.asarray(info['tangent_samples'], dtype=float)
-    xd = np.asarray(pac._orbit_rate(pss, []), dtype=float)
+    xd = np.asarray(pss._orbit_rate([]), dtype=float)
     err = np.max(np.abs(U - xd[:len(U)])) / np.max(np.abs(xd))
     assert err < 1e-6, err
     ## the wrap: periodic, and continuous through t = T

@@ -37,9 +37,6 @@ UNUSED_ARG_ALLOWLIST = {
     ('shooting/_pac_lyapunov.py', '_lyapunov_pieces_glm', 'what'):
         'signature uniformity (_lyapunov_pieces_stage/_plain read it)',
     ('shooting/_pac_phase.py', '_fa_lineshape', 'pss'): 'signature uniformity',
-    ('shooting/pac.py', '_stage_times', 'pss'): 'signature uniformity',
-    ('shooting/pac.py', '_stage_states', 'pss'): 'signature uniformity',
-    ('shooting/pac.py', '_stage_pass', 'pss'): 'signature uniformity',
     ('shooting/_pss_ppv.py', 'floquet_modes', 'pss_unused'):
         'public signature: callers pass the PSS positionally',
     ## The period maps' source-at-the-opening hooks: a no-op on every map but

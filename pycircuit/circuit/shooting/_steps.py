@@ -38,7 +38,7 @@ class _StageStep(object):
     built with another `method=`).
 
     `Ys`: the step's stage states, full width, as the walk solved them --
-    where a modulated source is injected (`PAC._stage_states`).
+    where a modulated source is injected (`_factored.stage_states`).
 
     History: `doc/shooting_history.md`, `_StageStep`.
     """
@@ -134,7 +134,7 @@ class _StageStep(object):
     def couplings(self, r):
         """Per stage `k`: ``h sum_i A_ik r_i`` -- what the costates read of a
         unit source at stage `k` (the sensitivity is minus that;
-        `PAC._stage_pass`)."""
+        `_factored.stage_pass`)."""
         return [self.h * cp if cp is not None
                 else np.zeros(self.m, dtype=complex)
                 for cp in (self.reach(r, k) for k in range(self.s))]
@@ -353,7 +353,7 @@ class _GLMStep(object):
       `restarted`: whether THIS step entered through such a restart;
     * `c`: the stage abscissae; `Ys`: the converged stage states (full
       width, reference row included) -- where a noise source is evaluated
-      (`PAC._stage_states`).
+      (`_factored.stage_states`).
 
     History: `doc/shooting_history.md`, `_GLMStep`."""
 
@@ -682,7 +682,7 @@ class _GLMStartup(object):
 
     def couplings(self, subs):
         """Per substage, in `injection_times` order: ``h_s sum_i A_il
-        a_i`` (the source sensitivity is minus that; `PAC._stage_pass`)."""
+        a_i`` (the source sensitivity is minus that; `_factored.stage_pass`)."""
         return [self.hs * cp for a in subs for cp in self._reach(a)]
 
     def injection_times(self, ts):
@@ -801,7 +801,7 @@ class _GLMStateStep(object):
     def couplings(self, r):
         """Per injection point, in `injection_times` order: `h` times what
         the costates read of a unit source there (the sensitivity is minus
-        that; `PAC._stage_pass`)."""
+        that; `_factored.stage_pass`)."""
         out = [self.rec.h * cp for cp in self._reach(r)]
         if r[2] is not None:
             out.extend(self.startup.couplings(r[2]))

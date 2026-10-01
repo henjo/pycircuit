@@ -3,7 +3,7 @@ pieces, the coloured band integral, event jitter.
 """
 import numpy as np
 import warnings
-from ._factored import dense_map
+from ._factored import dense_map, stage_states
 from ._steps import dense_c
 from .events import EventColumns
 from pycircuit.circuit.simwarnings import AccuracyWarning, CostWarning, warn
@@ -506,7 +506,7 @@ class _LyapunovCovariance(object):
         st = fp.steps[k]
         bvec, cvec = st.b, st.c
         s = st.s
-        states = self._stage_states(pss, fp)
+        states = stage_states(fp)
         irn = pss.irefnode
         if np.any(bvec <= 0.0):
             wts = self._abscissa_weights(cvec)
@@ -678,7 +678,7 @@ class _LyapunovCovariance(object):
         Q_tot = (Kf[N] - E @ Gi.T @ P_end.T - P_end @ Gi @ E.T
                  + P_end @ Gi @ D @ Gi.T @ P_end.T)
         Q_tot = 0.5 * (Q_tot + Q_tot.T)
-        Pk_fixed, _tau, _xdot = self._fixed_time_event_columns(pss)
+        Pk_fixed, _tau, _xdot = pss._fixed_time_event_columns()
         if pair:
             Pkf_prev = np.concatenate((Pk_fixed[:1] * 0.0, Pk_fixed[:-1]), axis=0)
             Pk_fixed = np.concatenate((Pk_fixed, Pkf_prev), axis=1)
@@ -801,9 +801,9 @@ class _LyapunovCovariance(object):
         N = len(fp.steps)
         if fp.is_glm:
             return ([len(st.injection_times(0.0)) for st in fp.step_objects()],
-                    self._stage_states(pss, fp))
+                    stage_states(fp))
         if fp.is_stage:
-            return [st.s for st in fp.steps], self._stage_states(pss, fp)
+            return [st.s for st in fp.steps], stage_states(fp)
         ## (the column the Lyapunov pieces read `CY` at)
         xs = np.asarray(pss.waveform[1], dtype=float)
         return [1] * N, [xs[:, min(j + 1, xs.shape[1] - 1)] for j in range(N)]

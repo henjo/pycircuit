@@ -2012,7 +2012,7 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
     ## so take the node's motion out with the orbit's rate -- the
     ## fixed-time form itself is exact-verified on the autonomous fixture
     ## (`test_the_sideband_response_on_a_staged_oscillator_is_bordered...`)
-    _rate = PAC(cir, toolkit=circuit.numeric)._orbit_rate(p0, p0._event_columns['nodes'])   # (N+1, m)
+    _rate = p0._orbit_rate(p0._event_columns['nodes'])   # (N+1, m)
     d = d - _rate.T[:, :d.shape[1]] * ((tms - tms_m)[:d.shape[1]] / (2 * e))[None, :]
     names = [str(n_) for i, n_ in enumerate(cir.nodes) if i != p0.irefnode]
     errs = {}

@@ -19,6 +19,119 @@ class _StateEvents(object):
 
     ## ⚠ THE STATE-EVENT STAGE -- see `solve`'s docstring.
     ## (History: `doc/shooting_history.md`, `_state_event_rows`.)
+    def _orbit_rate(self, event_nodes):
+        """`xdot` at every node of the solved orbit (reduced width) -- THE
+        DAE'S OWN DERIVATIVE at the node's state: on the
+        differential rows ``C(x) xdot = -(i(x) + u(t))``, on the algebraic
+        rows (a zero row of `C`) the differentiated constraint ``G(x) xdot
+        = -du/dt``; one small solve per node, exact for the discrete state
+        and independent of the step.  The rate converts a node's motion in
+        time into a state change: see `_fixed_time_event_columns`.
+
+        The three-node stencil (`_orbit_rate_stencil`: second order, and
+        one-sided at a landed event, where a step cannot fit a parabola to
+        a fast exponential) is only the fallback where the assembled matrix
+        is singular (an index above one), and says so.
+
+        History: `doc/shooting_history.md`, `PAC._orbit_rate`."""
+        ts = np.asarray(self.waveform[0], dtype=float)
+        X = np.delete(np.asarray(self.waveform[1], dtype=float),
+                      self.irefnode, axis=0)
+        N = len(ts) - 1
+        m = X.shape[0]
+        out = np.zeros((N + 1, m))
+        ok = True
+        for j in range(N + 1):
+            ## ⚠ NODE 0 IS EVALUATED AS NODE N.  A source's derivative at
+            ## exactly its start (`VSin` clamps `t - td` at 0: SPICE's rule
+            ## for a transient) is the LEFT one -- 0 -- where the periodic
+            ## steady state, t = 0 == t = T, has the right one.  Node N is
+            ## the same point.
+            jj = N if j == 0 else j
+            x = X[:, jj]
+            t = float(ts[jj])
+            try:
+                C = np.asarray(self._C_at(x), dtype=float)
+                k = np.asarray(self._k_at(x, t), dtype=float).ravel()
+                alg = [i for i in range(m) if not np.any(C[i, :])]
+                A = C.copy()
+                b = k.copy()
+                if alg:
+                    G = np.asarray(self._G_at(x), dtype=float)
+                    ## (at the solve's `epar`, as `_k_at` reads `u`: a source
+                    ## may depend on the temperature -- the review's D6)
+                    ud = self._dudt_at(t)
+                    A[alg, :] = G[alg, :]
+                    b[alg] = -ud[alg]
+                out[j] = np.linalg.solve(A, b)
+            except (np.linalg.LinAlgError, ValueError):
+                ok = False
+                break
+        if ok:
+            return out
+        warn(
+            'PSS._orbit_rate: the DAE derivative could not be assembled at a '
+            'node (a singular differential/algebraic split -- an index above '
+            'one?); falling back to the three-node stencil, which is second '
+            'order in the step and one-sided at a landed event.', AccuracyWarning)
+        return self._orbit_rate_stencil(event_nodes)
+
+    def _orbit_rate_stencil(self, event_nodes):
+        """The three-node parabola: one-sided AT a landed event and at the
+        node after one, central elsewhere, periodic at the ends.  Kept as
+        `_orbit_rate`'s fallback.
+
+        History: `doc/shooting_history.md`, `PAC._orbit_rate_stencil`."""
+        ts = np.asarray(self.waveform[0], dtype=float)
+        X = np.delete(np.asarray(self.waveform[1], dtype=float),
+                      self.irefnode, axis=0)
+        N = len(ts) - 1
+        T = float(ts[-1] - ts[0])
+        ev = {int(j) for j in event_nodes}
+        out = np.zeros((N + 1, X.shape[0]))
+
+        def _t(i):
+            k = i % N
+            return float(ts[k]) + T * ((i - k) // N)
+
+        for j in range(N + 1):
+            if j in ev or (j % N) in ev:
+                a, b, c = j - 2, j - 1, j
+            elif (j - 1) in ev or ((j - 1) % N) in ev:
+                a, b, c = j, j + 1, j + 2
+            else:
+                a, b, c = j - 1, j, j + 1
+            ta, tb, tc = _t(a), _t(b), _t(c)
+            xa, xb, xc = X[:, a % N], X[:, b % N], X[:, c % N]
+            tj = _t(j)
+            out[j] = (xa * ((tj - tb) + (tj - tc)) / ((ta - tb) * (ta - tc))
+                      + xb * ((tj - ta) + (tj - tc)) / ((tb - ta) * (tb - tc))
+                      + xc * ((tj - ta) + (tj - tb)) / ((tc - ta) * (tc - tb)))
+        return out
+
+    def _fixed_time_event_columns(self):
+        """The event columns at every node AT FIXED TIME: ``Pk_j - xdot_j
+        tau_j^T`` with `tau_j = sum_{i<j} dh_i/dtheta` (seconds) the node's
+        own motion when the crossings move (`_event_remap` scales the steps
+        between two crossings together) and `xdot_j` from `_orbit_rate`.
+        ⚠ The stored `Pk_nodes` are the derivatives of "the state at node
+        j", a point whose TIME moves with theta; a consumer that reports
+        a response or a covariance at the grid's times needs this form --
+        without it a noiseless ramp source reads 0.225 kT/C of a
+        threshold's noise (its node's share of the moving segment) and the
+        sideband response along a staged oscillator's orbit is O(1) off
+        the exact one while its period node is exact.  Returns
+        ``(Pk_fixed, tau, xdot)``."""
+        ev = EventColumns.of(self)
+        th = np.asarray(self._state_event_fracs, dtype=float)
+        _fr, hsens, _nd = self._event_remap(
+            np.asarray(self._grid_fracs, dtype=float), th, th, float(self.period))
+        tau = np.vstack((np.zeros((1, len(th))),
+                         np.cumsum(np.asarray(hsens, dtype=float), axis=0)))
+        xdot = self._orbit_rate(ev['nodes'])
+        Pk = np.asarray(ev['Pk_nodes'], dtype=float)
+        return Pk - xdot[:, :, None] * tau[:, None, :], tau, xdot
+
     def _state_event_rows(self):
         """`(W, c)`: the circuit's state-event rows on the REDUCED state and
         their thresholds, or `(None, None)` when the circuit declares none."""

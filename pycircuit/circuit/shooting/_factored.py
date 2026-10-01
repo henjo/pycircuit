@@ -41,6 +41,60 @@ def on_state(fp):
     return fp
 
 
+def stage_times(fp):
+    """The stage abscissae `t_j + c_k h_j` of one period, step by step,
+    `(N s,)` -- the injection times of a stage method's source.  A GLM's
+    map on the state lists its steps' own (`_GLMStateStep`: the stages,
+    then the substages of the startup that opens a step)."""
+    tms = np.asarray(fp.times, dtype=float)
+    if fp.is_glm:
+        return np.asarray([t for j, st in enumerate(fp.step_objects())
+                           for t in st.injection_times(tms[j])],
+                          dtype=float)
+    out = []
+    for j, st in enumerate(fp.steps):
+        h = tms[j + 1] - tms[j]
+        out.extend(tms[j] + st.c * h)
+    return np.asarray(out, dtype=float)
+
+def stage_states(fp):
+    """The stage states of one period, `N s` full-width vectors in the
+    order of `stage_times`: each step's own, as the factored walk
+    solved them (`_StageStep.Ys`; a GLM's steps list their startups'
+    substages too).
+    History: `doc/shooting_history.md`, `_factored.stage_states`."""
+    if fp.is_glm:
+        return [y for st in fp.step_objects()
+                for y in st.injection_states()]
+    return [y for st in fp.steps for y in st.Ys]
+
+def stage_pass(fp, lam0, seed=None):
+    """One reverse pass of a stage period map (`dirk` or `full`, or a
+    GLM's map on the state): returns the final costate and the coupling
+    vectors, one per injection point (`stage_times`; `h sum_i A_ik p_i`
+    per stage of a stage method) -- the sensitivity of the costate's
+    functional to a unit source there is minus that (see
+    `_reverse_points`, whose loop this is).  `seed = (k0, v)` adds `v`
+    to the costate on the state after step `k0`'s update: the output at
+    `t_{k0}` couples to the sources of earlier steps only."""
+    steps = fp.step_objects()
+    N = len(steps)
+    lam = fp.extract_T(np.asarray(lam0, dtype=complex).copy())
+    per = [None] * N
+    for j in range(N - 1, -1, -1):
+        st = steps[j]
+        lam, r = st.adjoint(lam)
+        per[j] = st.couplings(r)
+        if seed is not None:
+            if isinstance(seed, dict):
+                if j in seed:
+                    lam = fp.inject(lam, np.asarray(seed[j], dtype=complex))
+            elif j == seed[0]:
+                lam = fp.inject(lam, seed[1])
+    return (fp.seed_T(lam),
+            np.asarray([v for row in per for v in row], dtype=complex))
+
+
 class FactoredPeriod(object):
     """One converged period, kept FACTORED -- the hook PAC/PPV/pnoise share.
 
@@ -511,7 +565,7 @@ class _GLMStateMap(object):
     projections `ppv` reads).  The FactoredPeriod interface below --
     `_GLMStateStep`s on the per-step state ``(P, x)`` -- is what the generic
     replays run (`PSS._forced_replay`, `_forced_replay_transposed`,
-    `_reverse_points`, `PAC._stage_pass`): the source enters the stages,
+    `_reverse_points`, `_factored.stage_pass`): the source enters the stages,
     the output rows and the startup that opens a step.  The two agree on
     `M v` and `M^T v` (to round-off, the suite's GLM PAC tests).  The
     covariance surfaces read a GLM run from a radau twin by default

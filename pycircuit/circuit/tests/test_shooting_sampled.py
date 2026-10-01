@@ -13,6 +13,11 @@ from pycircuit.circuit.simwarnings import (
     CostWarning,
     ModelWarning,
 )
+from pycircuit.circuit.shooting._factored import (
+    stage_pass,
+    stage_states,
+    stage_times,
+)
 from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
@@ -93,7 +98,7 @@ def test_the_sample_series_evaluates_a_per_band_source_only_where_it_must():
     try:
         ## separable: about one evaluation per frequency, not one per point
         pss, pac = build(0.0)
-        K = len(pac._stage_states(pss, pss._state_map()))
+        K = len(stage_states(pss._state_map()))
         calls[0] = 0
         fast = sv(pss, pac)
         n_fast = calls[0]
@@ -111,7 +116,7 @@ def test_the_sample_series_evaluates_a_per_band_source_only_where_it_must():
     ## the shape moving: the one-element stamp equals the tree walk, and the
     ## per-frequency cache changes nothing
     pss, pac = build(0.5)
-    st = pac._stage_states(pss, pss._state_map())[:7]
+    st = stage_states(pss._state_map())[:7]
     a = pac._noise_components(pss, st).one_element_cy(('n',), 2 * np.pi * 3e5)
     ## ⚠ each equality holds VACUOUSLY if its patch is never looked up (a
     ## refactor that stops reaching the seam through the factory): count
@@ -927,15 +932,15 @@ def test_the_sampled_noise_runs_natively_under_a_glm():
         rng = np.random.default_rng(2)
         m = fp.width
         f = 0.137 / T
-        tinj = pac._stage_times(pss, fp)
+        tinj = stage_times(fp)
         ## the output at NODE 1 seeds the pass: step 0 and the substages of
         ## the startup that opens it carry the whole coupling (seeded at the
         ## period's end, the sampler damps it out before step 0 and a wrong
         ## substage time passed)
         d = rng.standard_normal(m)
         u = rng.standard_normal(m) + 1j * rng.standard_normal(m)
-        _g, Cp = pac._stage_pass(pss, fp, np.zeros(m), (1, d))
-        assert len(tinj) == len(Cp) == len(pac._stage_states(pss, fp))
+        _g, Cp = stage_pass(fp, np.zeros(m), (1, d))
+        assert len(tinj) == len(Cp) == len(stage_states(fp))
         acc = -np.sum(np.exp(2j * np.pi * f * tinj)[:, None] * Cp, axis=0) @ u
         _e, ys = pss._forced_replay(fp, f, u, y0=np.zeros(m, dtype=complex), collect=True)
         assert abs(acc - d @ ys[0]) < 1e-12 * abs(d @ ys[0]), method

@@ -3,6 +3,7 @@ metrics.
 """
 import numpy as np
 import weakref
+from ._factored import stage_pass, stage_states, stage_times
 from ._noise_components import cached_root, psd_sqrt, warn_sign_blind
 from ._numerics import edge_slope, _output_weights, integer_arg, output_index
 from .events import EventColumns
@@ -370,8 +371,8 @@ class _SampledNoise(object):
         ## states (the end-of-step state for every stage is not the limit
         ## under refinement).
         if stage:
-            tinj = self._stage_times(pss, fp)
-            states = self._stage_states(pss, fp)
+            tinj = stage_times(fp)
+            states = stage_states(fp)
         else:
             tinj = tms[1:N + 1]
             xs = np.asarray(pss.waveform[1], dtype=float)
@@ -444,7 +445,7 @@ class _SampledNoise(object):
         if _ev is not None:
             _dth = np.asarray(_ev.dth, dtype=float)
             _MtT = _ev.total_matvec(fp.matvec_transposed, transposed=True)
-            _Pkf, _t_, _x_ = self._fixed_time_event_columns(pss)
+            _Pkf = pss._fixed_time_event_columns()[0]
         ## ⚠ FREQUENCY OUTER, INSTANT INNER: every instant reads the same band
         ## roots of a frequency, and no two series frequencies share a band
         ## (`|f + n f0|`, `f` in `(0, f0/2]`), so the roots are dropped once
@@ -465,17 +466,17 @@ class _SampledNoise(object):
                         matvec=lambda v, a=alpha: np.asarray(v) - a * _MtT(v))
                 if stage:
                     seedv = np.exp(-2j * np.pi * f * tms[k0]) * d
-                    g, cA = self._stage_pass(pss, fp, np.zeros(m), (k0, seedv))
+                    g, cA = stage_pass(fp, np.zeros(m), (k0, seedv))
                     if _ev is not None:
                         g_theta = np.exp(-2j * np.pi * f * tms[k0]) * (_Pkf[k0].T @ d)
                         g = np.asarray(g) + _dth.T @ g_theta
                     z = self._adjoint_solve(pss, fp, alpha, g, A_, tol,
                                             'the sampled adjoint solve')
-                    _l, cZ = self._stage_pass(pss, fp, z)
+                    _l, cZ = stage_pass(fp, z)
                     Sv = -(cA + alpha * cZ)                          # N s x m
                     if _ev is not None:
                         zeta = _ev.collapsed_zeta(g_theta, alpha, z)
-                        _l2, cE = self._stage_pass(pss, fp, np.zeros(m), _ev.injection_dict(zeta))
+                        _l2, cE = stage_pass(fp, np.zeros(m), _ev.injection_dict(zeta))
                         Sv = Sv - cE
                 else:
                     g, t_inj, _st, q_inj = fp.matvec_transposed(

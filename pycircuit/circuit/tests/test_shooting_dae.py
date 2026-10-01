@@ -3,7 +3,7 @@
 `_shooting_fixtures.py`, the HDL elements in `_shooting_elements.py`.
 """
 from pycircuit.circuit import *
-from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
+from pycircuit.circuit.shooting import (algebraic_conditioning,
                                         topological_index)
 import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
@@ -1261,7 +1261,7 @@ def test_algebraic_conditioning_leaves_the_limiting_state_as_it_found_it():
 
 
 def test_the_orbit_rate_is_the_daes_own_and_its_stencil_fallback_is_live_and_second_order():
-    """`PAC._orbit_rate` -- the rate that turns a node's motion in time into a
+    """`PSS._orbit_rate` -- the rate that turns a node's motion in time into a
     state change for every fixed-time consumer -- and its fallback, given a
     test that fires it (refactor E9 item 5, 2026-09-23).
 
@@ -1287,9 +1287,8 @@ def test_the_orbit_rate_is_the_daes_own_and_its_stencil_fallback_is_live_and_sec
         p = PSS(cir, method='radau', reltol=1e-12)
         with quiet():
             p.solve(period=1e-3, timestep=1e-3 / N, maxiterations=40)
-        pac = PAC(cir, toolkit=circuit.numeric)
-        rd = pac._orbit_rate(p, [])
-        rs = pac._orbit_rate_stencil(p, [])
+        rd = p._orbit_rate([])
+        rs = p._orbit_rate_stencil([])
         ts = np.asarray(p.waveform[0], dtype=float)
         ia = [str(n_) for i, n_ in enumerate(cir.nodes) if i != p.irefnode].index('a')
         assert np.max(np.abs(rd[:, ia] - w * np.cos(w * ts))) < 1e-9 * w
@@ -1300,8 +1299,8 @@ def test_the_orbit_rate_is_the_daes_own_and_its_stencil_fallback_is_live_and_sec
     zero = lambda x: np.zeros((len(x), len(x)))
     p._C_at, p._G_at = zero, zero
     with pytest.warns(RuntimeWarning, match='three-node stencil'):
-        rf = pac._orbit_rate(p, [])
-    assert np.array_equal(rf, pac._orbit_rate_stencil(p, []))
+        rf = p._orbit_rate([])
+    assert np.array_equal(rf, p._orbit_rate_stencil([]))
 
 
 def test_the_shooting_reads_a_source_s_rate_at_the_solve_s_temperature():
@@ -1333,7 +1332,7 @@ def test_the_shooting_reads_a_source_s_rate_at_the_solve_s_temperature():
     p = PSS(c, method='radau', reltol=1e-10, epar=hot)
     with quiet():
         p.solve(period=1 / f, timestep=1 / f / 50, maxiterations=20)
-    rate = PAC(c)._orbit_rate(p, [])
+    rate = p._orbit_rate([])
     ia = [str(n_) for n_ in c.nodes if str(n_) != 'gnd!'].index('a')
     t = np.asarray(p.waveform[0], dtype=float)
     exact = 2.0 * 2 * np.pi * f * np.cos(2 * np.pi * f * t)
