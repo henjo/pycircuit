@@ -1,0 +1,180 @@
+"""The LMM companion model and the per-step device memo.  A theme of
+`Transient` (see `transient.py`).
+"""
+
+import numpy as np
+
+
+class _CompanionModel:
+    """The LMM companion model and the per-step device memo.  A theme of
+    `Transient` (see `transient.py`)."""
+
+    ## The integrator is selected by the `integrator` Parameter, not per call.
+    ## History: `doc/transient_history.md`, `Transient.get_diff`.
+    def get_diff(self, q, C):
+        """Method used to calculate time derivative for charge storing elements (i_eq and g_eq)."""
+        # Determine the active integrator based on step size variations
+        h_last = self._dt_last if self._dt_last is not None else self._dt
+        self.active_integrator = self.base_integrator.check_order_drop(
+            self._dt, h_last, self._is_first_step
+        )
+        
+        iq, geq = self.active_integrator.compute_derivatives(
+            q_curr=q, C_curr=C, h_curr=self._dt, 
+            q_last=self._qlast, iq_last=self._iqlast, h_last=h_last,
+            is_first_step=self._is_first_step,
+            toolkit=self.toolkit
+        )
+        
+        self._iq = iq
+        ## The companion CONDUCTANCE, stored beside the companion current for
+        ## the same reason: a caller that needs the per-step sensitivity
+        ## `Jf^-1 Geq` -- shooting's monodromy -- cannot recompute it without
+        ## repeating the whole assembly.  `_iq` has been kept here since
+        ## stage 11; this is its other half.
+        self._Geq = geq
+        ## And the two things that turn one step into a DERIVATIVE: the
+        ## capacitance matrix this step used, and the companion coefficients
+        ## of the integrator that actually ran -- `active_integrator`, not
+        ## `base_integrator`, so an order drop is reflected rather than
+        ## assumed away.  A caller differentiating the step (shooting) needs
+        ## the past `C` matrices as well as the current one, which `_Geq`
+        ## alone cannot supply once a method reaches back more than one step.
+        self._Cmat = C
+        self._companion_coeffs = self.active_integrator.companion_coefficients(
+            self._dt, h_last)
+        ## The class actually running this step -- check_order_drop() may have
+        ## dropped to a lower-order integrator than the one requested, so this
+        ## is derived from the live object rather than compared against a
+        ## removed user-supplied method name.
+        self._effective_method = type(self.active_integrator).__name__
+        return iq, geq
+
+    def _memo_clear(self):
+        """Forget the device-evaluation memo (`_memo_get`): at the start of
+        every solve, the one place a caller can change the circuit between
+        two steps."""
+        self._dev_memo = ({}, {})
+
+    def _memo_step(self):
+        """A new step: the current generation becomes the previous one (the
+        step's START is the previous step's last stage)."""
+        memo = getattr(self, '_dev_memo', None) or ({}, {})
+        self._dev_memo = ({}, memo[0])
+
+    def _memo_put(self, x, rec):
+        memo = getattr(self, '_dev_memo', None)
+        if memo is None:
+            memo = self._dev_memo = ({}, {})
+        memo[0][np.asarray(x, dtype=float).tobytes()] = rec
+
+    def _memo_get(self, x):
+        """The device evaluations (`q`, `i`, `C`, `G`, full width) the coupled
+        stage Newton made AT this exact state in this step or the previous
+        one, or None.  A MEMOISATION, as `_q_at`: keyed on the state's bytes,
+        recorded only without a shunt and without a stateful limiter, so the
+        value is the one recomputing gives, bit for bit.  Radau re-read `C`
+        and `G` at states its Newton had just evaluated -- 28 % of a compact
+        MOSFET's PSS solve (2026-09-30)."""
+        memo = getattr(self, '_dev_memo', None)
+        if memo is None or x is None:
+            return None
+        key = np.asarray(x, dtype=float).tobytes()
+        rec = memo[0].get(key)
+        return memo[1].get(key) if rec is None else rec
+
+    def _C_at_state(self, x):
+        """``cir.C(x)``, reusing the last assembly's (`_companion_at`) when it
+        was at this state -- the branch screen reads `C` at the converged
+        point, where `jacobian_only` has just assembled it: 360 of a compact
+        MOSFET's 1500 `C` evaluations on a 40-point gear PSS (2026-09-30).
+        A MEMOISATION, as `_q_at`: identity, then full equality; and never
+        across a stateful limiter (`Diode`), whose device reads its stored
+        state as well as `x`."""
+        rec = self._memo_get(x)
+        if rec is not None:
+            return rec['C']
+        cached = getattr(self, '_C_cache', None)
+        if (cached is not None and not getattr(self, '_stateful_lims', None)
+                and float(getattr(self.epar, 'bypasstol', -1.0) or -1.0) < 0.0):
+            x_cached, C_cached = cached
+            if x_cached is x:
+                return C_cached
+            if (x_cached is not None and x is not None
+                    and getattr(x_cached, 'shape', None) == getattr(x, 'shape', None)
+                    and bool(self.toolkit.alltrue(x_cached == x))):
+                return C_cached
+        return self.cir.C(x, self.epar)
+
+    def _q_at(self, x):
+        """``cir.q(x)``, reusing the value computed during the last assembly.
+
+        STAGE 2c.  This is a *memoisation*, not an approximation: the cached value
+        was produced by the same function at the same state, so it is bit-identical
+        to recomputing, and the whole of stage 2 is defined as behaviour-preserving.
+        The guard is deliberately strict -- identity first, then full equality --
+        because serving a charge vector from the wrong state would corrupt the LTE
+        estimate silently, which is precisely the failure class stage 1 removed.
+        """
+        cached = getattr(self, '_q_cache', None)
+        if cached is not None:
+            x_cached, q_cached = cached
+            if x_cached is x:
+                return q_cached
+            if (x_cached is not None and x is not None
+                    and getattr(x_cached, 'shape', None) == getattr(x, 'shape', None)
+                    and bool(self.toolkit.alltrue(x_cached == x))):
+                return q_cached
+        return self.cir.q(x, self.epar)
+
+    def _companion_at(self, x):
+        """``(iq, Geq)``: the step's companion current and conductance at `x`
+        (the current ``self._dt``), with the charge cached against the state
+        it belongs to.  One assembly for every step's residual and Jacobian.
+
+        `self.epar`, not the module-level `defaultepar`: without it every
+        device is evaluated at defaultepar's T = 300 K whatever the caller
+        asked for, and -- because `Analysis.__init__` attaches `bypasstol` to
+        the analysis's own epar and nowhere else -- the `bypass` parameter
+        does nothing at all.
+
+        STAGE 2c.  The charge vector is stashed alongside the state it belongs
+        to.  `solve()` needs `q` at the converged point twice more -- once for
+        the step controller and once for the history roll -- and `_q_at`
+        serves both from here instead of repeating the assembly.
+        Keyed by the state so a stale value can never be served: the check is
+        identity-then-equality on x, not a bare "did we cache".
+
+        History: `doc/transient_history.md`, `Transient._companion_at`."""
+        ## (`C` the branch screen may just have read at this state:
+        ## `_C_at_state`, a memoisation)
+        C = self._C_at_state(x)
+        q = self.cir.q(x, self.epar)
+        self._q_cache = (x, q)
+        self._C_cache = (x, C)
+        return self.get_diff(q, C)
+
+    def _source_at(self, t, provided_function=None):
+        """`u(t)`: the circuit's sources, plus `provided_function(t)`.
+
+        ONE CONTRACT: `provided_function(t)` is an extra source term, on every
+        path (F4).  A caller written for a post-solve callback
+        `provided_function(f, J, C)` breaks loudly on arity.
+
+        History: `doc/transient_history.md`, `Transient._source_at`."""
+        u = self.cir.u(t, self.epar, analysis=self.par.analysis)
+        if provided_function is not None:
+            u = u + provided_function(t)
+        return u
+
+    def _residual_and_jacobian(self, x, t, provided_function=None):
+        """``(f, J)`` at ``(x, t)`` using the current ``self._dt`` -- the step
+        residual `solve_timestep`'s Newton drives to zero, and reachable
+        without one: the coupled method needs one residual per iteration of
+        its OWN loop."""
+        iq, Geq = self._companion_at(x)
+        u = self._source_at(t, provided_function)
+        f = self.cir.i(x, self.epar) + iq + u
+        J = self.cir.G(x, self.epar) + Geq
+        return (self.toolkit.array(f, dtype=float),
+                self.toolkit.array(J, dtype=float))

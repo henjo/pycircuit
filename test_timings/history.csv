@@ -1325,3 +1325,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20261001T112951Z,df7c0a88,pycircuit no:cacheprovider tran_recorder,1160.6,3515,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,213.8
 20261001T113406Z,d853f1a2,no:cacheprovider 8 pycircuit/circuit/tests/test_shooting_ppv.py,139.5,49,pycircuit/circuit/tests/test_shooting_ppv.py::test_injection_locking_range_on_the_hostile_fixture_is_set_by_its_ppv_fundamental,92.8
 20261001T115629Z,d853f1a2,pycircuit no:cacheprovider tran_recorder,1142.8,3515,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,210.8
+20261001T115805Z,3512301d,no:cacheprovider 0 pycircuit/circuit/tests/test_no_dead_knobs.py pycircuit/circuit/tests/test_doctests.py,1.5,11,pycircuit/circuit/tests/test_no_dead_knobs.py::test_every_pss_and_pac_parameter_is_read,0.3
+20261001T121740Z,3512301d,pycircuit no:cacheprovider tran_recorder,1145.8,3515,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,213.4

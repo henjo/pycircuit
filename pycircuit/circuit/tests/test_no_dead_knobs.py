@@ -23,8 +23,14 @@ import os
 HERE = os.path.dirname(__file__)
 CIRCUIT = os.path.normpath(os.path.join(HERE, '..'))
 
+## (`Transient`'s themes, `_tran_*.py`, scanned with it: 2026-10-01, the
+## review's O8 -- unlisted, the scan would pass vacuously on the moved code)
+_TRAN_THEMES = sorted(f for f in os.listdir(CIRCUIT)
+                      if f.startswith('_tran_') and f.endswith('.py'))
+
 SCAN_MODULES = (['transient.py', 'jaxtransient.py', 'integrator.py',
                  'stepcontroller.py', 'nrsolver.py', '_lte_kernels.py']
+                + _TRAN_THEMES
                 ## the whole shooting package (2026-09-29; it found PSS's
                 ## `toolkit` accepted and dropped)
                 + sorted('shooting/' + f for f in os.listdir(
@@ -44,8 +50,8 @@ UNUSED_ARG_ALLOWLIST = {
     ('shooting/_factored.py', 'seed_source', 'u'): 'map interface (no-op)',
     ('shooting/_factored.py', 'seed_source_T', 'w'): 'map interface (no-op)',
     ## Helper signatures kept uniform with their sibling that does use ctrl.
-    ('transient.py', '_band_centre', 'ctrl'): 'signature uniformity',
-    ('transient.py', '_lte_in_band', 'ctrl'): 'signature uniformity',
+    ('_tran_fang.py', '_band_centre', 'ctrl'): 'signature uniformity',
+    ('_tran_fang.py', '_lte_in_band', 'ctrl'): 'signature uniformity',
     ## The Integrator ABC fixes one signature for all methods; lower-order
     ## integrators legitimately ignore history they do not difference.  Each
     ## case is documented at the implementation.
@@ -167,7 +173,8 @@ def test_every_pss_and_pac_parameter_is_read():
 
 def test_every_transient_parameter_is_read():
     from pycircuit.circuit.transient import Transient
-    _assert_parameters_reachable(Transient, ['transient.py', 'analysis.py'])
+    _assert_parameters_reachable(Transient, ['transient.py', 'analysis.py']
+                                 + _TRAN_THEMES)
 
 
 def test_every_jaxtransient_parameter_is_read():
@@ -179,4 +186,5 @@ def test_every_jaxtransient_parameter_is_read():
     ## max_di_step, points_per_period, ic) are read THERE on a JAXTransient
     ## instance.  The scan walks files, not bound objects.
     _assert_parameters_reachable(JAXTransient, ['jaxtransient.py', 'analysis.py',
-                                                'transient.py'])
+                                                'transient.py', '_tran_initial.py',
+                                                '_tran_events.py'])
