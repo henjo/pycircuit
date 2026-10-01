@@ -1335,3 +1335,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20261001T161951Z,ac1a8206,pycircuit no:cacheprovider tran_recorder,1089.2,3519,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,184.3
 20261001T164225Z,e1026b14,pycircuit no:cacheprovider tran_recorder,1091.0,3520,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,179.5
 20261001T172935Z,86c23d50,pycircuit no:cacheprovider tran_recorder,1050.0,3522,pycircuit/circuit/tests/test_shooting_pnoise.py::test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint,167.3
+20261001T192126Z,7c8356a8,pycircuit no:cacheprovider tran_recorder,1234.5,3523,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,206.8

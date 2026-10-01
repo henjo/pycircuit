@@ -446,6 +446,21 @@ class TestSpiceDiodeNoise(object):
 
 class TestSpiceDiodeTemperature(object):
 
+    def test_a_kelvin_looking_tnom_warns_under_the_warning_policy(self):
+        """`tnom` is Celsius on the card; `tnom = 300` meaning 300 K now
+        means 300 C and moves the device ~2x with no error, so construction
+        warns.  Since 2026-10-01 a `UsageWarning` (a `SimulationWarning`, so
+        the suite's policy makes an unexpected one an error) attributed to
+        the caller -- it was a bare `RuntimeWarning` at `stacklevel=2`,
+        outside the policy.  A Celsius value stays silent."""
+        from pycircuit.circuit.simwarnings import UsageWarning
+        with pytest.warns(UsageWarning, match='looks like a Kelvin') as rec:
+            eh.MosLevel1Hdl('d', 'g', gnd, gnd, tnom=300.0)
+        assert rec[0].filename == __file__, rec[0].filename
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            eh.MosLevel1Hdl('d', 'g', gnd, gnd, tnom=26.85)
+
     def test_at_tnom_every_correction_is_the_identity(self):
         """A structural check that needs no reference implementation: at
         T = tnom, IS(T) = IS, VJ(T) = VJ and CJ0(T) = CJ0 whatever the

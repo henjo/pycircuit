@@ -6932,21 +6932,25 @@ class Behavioural(circuit.Circuit, metaclass=BehaviouralMeta):
         ## failure (a Kelvin-as-Kelvin default of 300.15 was fine).  Warn
         ## once at construction; a real silicon card is not nominal above
         ## ~200 C, and the Kelvin mistakes (273, 300, 300.15) all clear it.
+        ## A `UsageWarning` through `simwarnings.warn` (2026-10-01; a bare
+        ## `RuntimeWarning` at `stacklevel=2` until then): the library's
+        ## policy category, so a suite that makes them errors sees it, and
+        ## attributed to the caller however deep the device is built.
         try:
             _tn = getattr(self.iparv, 'tnom', None)
         except Exception:
             _tn = None
         if isinstance(_tn, (int, float)) and not isinstance(_tn, bool) \
                 and _tn > 200.0:
-            import warnings as _w
-            _w.warn(
+            from pycircuit.circuit.simwarnings import UsageWarning, warn
+            warn(
                 '%s: tnom = %g looks like a Kelvin temperature passed as '
                 'CELSIUS -- tnom is Celsius on the card (a 27 C default), '
                 'translated to Kelvin inside the model. %g C = %g K; if you '
                 'meant %g K, pass tnom=%g.'
                 % (type(self).__name__, _tn, _tn, _tn + 273.15, _tn,
                    _tn - 273.15),
-                RuntimeWarning, stacklevel=2)
+                UsageWarning)
         info = getattr(self, '_hdl_info', None)
         if info is None:
             return
