@@ -3579,3 +3579,53 @@ half right):
 So a C-bound function counts `C_KERNEL_SHARE` (1/100) of its bytecode:
 PSP stays on (1.8 MB -> 18 KB), the mid-sized models go off (under 1 KB) --
 forgoing the chord's few per cent to avoid the transform's 8-11 % losses.
+
+## `_stamp_plan.py` -- the constant-stamp plan (2026-10-01, the speed plan's P2)
+
+### (module docstring)
+
+Andreas (`/plan`, 2026-10-01): "What can we do to speed up transient,
+shooting, pac, pnoise and related analyses ... memory allocation or how the
+solutions are shared".  The profiles put the circuit assembly at ~75 % of
+a transient or PSS on an ordinary circuit: a Python loop over every element
+on every pass, five passes per Newton iterate (C, q, u, i, G) -- and on a
+20-section RC ladder 41 of the 42 elements are resistors and capacitors
+whose stamps never change, re-stamped every time.  P1 trimmed the loop
+(the toolkit probes, the scatter, the default sources); this plan drops it
+for the constant elements, bit for bit.
+
+The design rests on two measured facts.  A batched `np.matmul(S (E,k,k),
+x[IDX][..., None])` reproduced per-element `np.dot(G_e, x_e)` in 0 of
+20000 trials (k = 2, 3; both reach OpenBLAS `gemv_t`), where `einsum` and
+hand-written sums did not; hence the per-process self-check per stamp
+size, which falls back to per-element `np.dot`.  And a `bincount` bin
+starts at +0.0, so it is never -0.0 and adding +-0.0 to it changes no bit:
+the constant stamps' exact zeros are left out of the matrix passes, and of
+the vector passes for a finite `x` only (`0 * inf` is NaN).
+
+THE CLASS TABLE, by `pair_kind` (method identity; G with i, C with q) on
+2026-10-01 -- 'cached' a stamp built in `update()`, 'zero' `Circuit`'s
+zero method with its default partner, None re-stamped every pass:
+
+| class | G | C | why |
+|---|---|---|---|
+| R, G, VS (+ VSin, VPulse, VPWL, VExp, VAM, VSFFM), VCVS, CCVS, VCCS, CCCS, Nullor, Transformer, Gyrator, IProbe | cached | zero | declare `_constant_stamps = ('G',)` |
+| L, SVCVS, CoupledInductors | cached | cached | declare `('G', 'C')` |
+| C | zero | cached | declares `('C',)` |
+| IS, ISin, IPulse, IPWL, IExp, IAM, ISFFM | zero | zero | sources only (`u`) |
+| Idt, Idtmod, IdtmodCircular, IdtmodQuadrature (`_IdtBase`) | None | cached | `C` declared; `G` / `i` their own |
+| Diode, VCVS_limited, VSwitch, ISwitch, TLine | None | zero | `G` computed per state |
+| BSource, NonLinearVCCS | None | None | own `i` (and `q`) -- both report `Circuit.linear` True |
+| SubCircuit, ProbeWrapper, CircuitProxy | None | None | assembled as a child (a nested SubCircuit has its own plan) |
+| every hdl `Behavioural` | None | None | generated `i` / `q`, not `dot(G, x)` |
+
+`Circuit.linear` was not used: BSource, NonLinearVCCS, VSwitch and TLine
+report True, and `volterra.py` still finds its nonlinear elements by it (a
+latent defect noted in the plan, out of its scope).
+
+The gate's one failure on the first build (G67): a doctest's `c.G(...)` on
+a lone capacitor came out `array([[0, 0], [0, 0]])` -- every entry of that
+pass is an exact zero, so the plan's `bincount` was EMPTY, and an empty
+`bincount` is int64 even with float weights.  An empty pass now returns
+the loop's float zeros (`test_a_pass_with_nothing_to_stamp_is_the_loops_
+float_zeros`).

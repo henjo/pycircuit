@@ -1113,6 +1113,21 @@ and ``1.003`` across three independent trials.  The figure holds.
 
 .. note::
 
+   **The figure is the per-element path's (2026-10-01).**  Since the
+   constant-stamp plan (``pycircuit/circuit/_stamp_plan.py``), the
+   hand-written constant elements -- R, C, L, the sources and the
+   controlled sources -- are no longer stamped one by one on a numeric
+   toolkit: their stamps are cached and their currents and charges computed
+   as one batched product per stamp size, bit for bit the same answer.  A
+   generated element is still stamped per element (its ``i`` and ``q`` are
+   generated expressions, not ``dot(G, x)``, so batching them would not be
+   bit-identical), which makes a hand-written ladder about 2-3x faster
+   than the generated one end to end.  The parity guard
+   (``test_perf_guards.py``) measures with the plan switched off, so the
+   number above remains the DSL's own stamp overhead.
+
+.. note::
+
    This figure read ``1.14x`` until 2026-08-26, and it had quietly gone
    stale: re-measured on the same machine it was **1.22x**.  Three
    changes closed it, none of them touching any arithmetic, and all

@@ -9,6 +9,7 @@ from copy import copy
 import contextlib
 from .toolkit import numeric
 from .toolkit import symbolic
+from . import _stamp_plan
 import numpy as np
 
 ## The process-wide fallback toolkit used when a circuit is built without an
@@ -1712,6 +1713,15 @@ class SubCircuit(Circuit):
         ## done once at the end instead of once per element.
         import numpy as np
 
+        ## THE CONSTANT-STAMP PLAN (`_stamp_plan`, 2026-10-01): the elements
+        ## whose stamps cannot change are not re-stamped, bit for bit the
+        ## same matrix; None where it does not apply (it says when)
+        if (methodname in ('G', 'C') and params_tree is None
+                and _stamp_plan.ENABLED):
+            out = _stamp_plan.assemble_matrix(self, methodname, x, args)
+            if out is not None:
+                return out
+
         n = self.n
         toolkit = self.toolkit
 
@@ -1822,6 +1832,13 @@ class SubCircuit(Circuit):
         ## keep the `np.add.at` path.  That is not a fallback for correctness -- both
         ## paths are exact -- it is a dtype restriction of `bincount`.
         import numpy as np
+
+        ## (the constant-stamp plan, as in `_add_element_submatrices`)
+        if (methodname in ('i', 'q') and dtype is None and params_tree is None
+                and _stamp_plan.ENABLED):
+            out = _stamp_plan.assemble_vector(self, methodname, x, args)
+            if out is not None:
+                return out
 
         n = self.n
         toolkit = self.toolkit
@@ -2076,6 +2093,9 @@ def instjoin(*instnames):
 class IProbe(Circuit):
     """Zero voltage independent voltage source used for current probing"""
     terminals = ('plus', 'minus')
+
+    ## (a constant stamp: `_stamp_plan`)
+    _constant_stamps = ('G',)
 
     def __init__(self, plus, minus, **kvargs):
         Circuit.__init__(self, plus, minus, **kvargs)

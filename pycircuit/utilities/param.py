@@ -41,6 +41,19 @@ class Parameter(object):
 class EvalError(Exception): pass
 
 class ParameterDict(ObserverSubject):
+    ## THE PARAMETER EPOCH: a new sentinel on every notification that reaches
+    ## an observer -- an element's `update()`, which may replace its stamps --
+    ## so the constant-stamp plans (`circuit._stamp_plan`) know to rebuild.
+    ## Every parameter write goes through `notify` (`set`, attribute
+    ## assignment, `update_values`).  A sentinel rather than a counter: a
+    ## deepcopy or a pickle cannot falsely match.
+    _epoch = object()
+
+    def notify(self, modifier=None, args=None):
+        if self._observers:
+            ParameterDict._epoch = object()
+        super().notify(modifier, args)
+
     def __init__(self, *parameters, **kvargs):
         super().__init__()
         self._paramnames = []

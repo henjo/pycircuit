@@ -27,6 +27,8 @@ class R(Circuit):
            [-0.001,  0.001]])
 
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G',)
     terminals = ('plus', 'minus')
     instparams = [Parameter(name='r', desc='Resistance', unit='ohm', 
                             default=1e3),
@@ -80,6 +82,8 @@ class G(Circuit):
     array([[ 0.001, -0.001],
            [-0.001,  0.001]])
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G',)
     terminals = ('plus', 'minus')
     instparams = [Parameter(name='g', desc='Conductance', unit='S', 
                             default=1e-3),
@@ -130,6 +134,8 @@ class C(Circuit):
            [-1.e-12,  1.e-12]])
 
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('C',)
 
     terminals = ('plus', 'minus')
     instparams = [Parameter(name='c', desc='Capacitance', 
@@ -186,6 +192,8 @@ class L(Circuit):
            [ 0.e+00,  0.e+00,  0.e+00],
            [ 0.e+00,  0.e+00, -1.e-09]])
    """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G', 'C')
     terminals = ('plus', 'minus')
     branches = (Branch(Node('plus'), Node('minus')),)
 
@@ -288,6 +296,8 @@ class VS(Circuit):
     array([ 1.5   ,  0.    , -0.0015])
     
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G',)
     terminals = ('plus', 'minus')
     branches = (Branch(Node('plus'), Node('minus')),)
     def signal_scale(self):
@@ -597,6 +607,8 @@ class VCVS(Circuit):
 
 
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G',)
     instparams = [Parameter(name='g', desc='Voltage gain',unit='V/V', 
                             default=1)]
 
@@ -652,6 +664,8 @@ class SVCVS(Circuit):
 
 
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G', 'C')
     instparams = [Parameter(name='numerator', 
                             desc='Numerator coefficients of laplace defined '
                             'transfer function',unit=None, default=(1,)),
@@ -799,6 +813,8 @@ class CCVS(Circuit):
 
 
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G',)
     instparams = [Parameter(name='r', desc='Transresistance',unit='V/I', 
                             default=1)]
 
@@ -863,6 +879,8 @@ class VCCS(Circuit):
     array([ 1.5, -1.5,  0. ,  0. ])
 
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G',)
     terminals = ('inp', 'inn', 'outp', 'outn')
     instparams = [Parameter(name='gm', desc='Transconductance', 
                             unit='A/V', default=1e-3)]
@@ -913,6 +931,8 @@ class Nullor(Circuit):
        ISBN 1402075901.
 
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G',)
     terminals = ('inp', 'inn', 'outp', 'outn')
     branches = (Branch(Node('outp'), Node('outn')),)
 
@@ -968,6 +988,8 @@ class Transformer(Circuit):
     `test_the_ideal_transformer_conserves_power`.
 
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G',)
     instparams = [Parameter(name='n', desc='Winding ratio', unit='', default=1)]
     terminals = ('inp', 'inn', 'outp', 'outn')
     branches = (Branch(Node('outp'), Node('outn')),)
@@ -1029,6 +1051,8 @@ class Gyrator(Circuit):
            [-1.,  1.,  0.,  0.],
            [ 1., -1.,  0.,  0.]])
    """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G',)
 
     terminals = ('inp', 'inn', 'outp', 'outn')
     instparams = [Parameter(name='gm', desc='Transconductance', 
@@ -1414,6 +1438,8 @@ class _IdtBase(Circuit):
     the LRM's no-ic branch: the operating point exists only if feedback
     forces the integrand to zero (otherwise use ``uic=True``).
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('C',)
 
     terminals = ('iplus', 'iminus', 'oplus', 'ominus')
     branches = (Branch(Node('oplus'), Node('ominus')),)
@@ -1672,6 +1698,8 @@ class IdtmodCircular(_WrapEvents, Circuit):
     solve does not carry the ``epar.analysis_kind`` pin and would settle on
     the degenerate centre.
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('C',)
 
     terminals = ('iplus', 'iminus', 'oplus', 'ominus')
     branches = (Branch(Node('oplus'), Node('ominus')),)
@@ -1885,6 +1913,8 @@ class IdtmodQuadrature(Circuit):
     under ``JAXTransient`` use ``uic=True`` or ``x0``.  Not supported on
     the symbolic toolkit.
     """
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('C',)
 
     terminals = ('iplus', 'iminus', 'cplus', 'cminus', 'splus', 'sminus')
     branches = (Branch(Node('cplus'), Node('cminus')),
@@ -2086,6 +2116,8 @@ class ISFFM(IS):
 
 class CoupledInductors(Circuit):
     """Coupled Inductors (Mutual Inductance)"""
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G', 'C')
     terminals = ('p1', 'm1', 'p2', 'm2')
     branches = (Branch(Node('p1'), Node('m1')), Branch(Node('p2'), Node('m2')))
 
@@ -2262,6 +2294,8 @@ class VSwitch(Circuit):
 
 class CCCS(Circuit):
     """Current Controlled Current Source"""
+    ## (constant stamps, built only in `update()`: `_stamp_plan`)
+    _constant_stamps = ('G',)
     instparams = [Parameter(name='F', desc='Current gain', unit='A/A', default=1.0)]
     terminals = ('inp', 'inn', 'outp', 'outn')
     branches = (Branch(Node('inp'), Node('inn')),)

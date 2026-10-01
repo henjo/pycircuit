@@ -152,13 +152,27 @@ def _ladder(mk_r, mk_c, stages=8):
 
 
 def _solve(mk_r, mk_c):
-    """One timed solve.  Returns (wall, waveform, accepted steps)."""
+    """One timed solve.  Returns (wall, waveform, accepted steps).
+
+    ⚠ ON THE PER-ELEMENT PATH: the constant-stamp plan (`_stamp_plan`,
+    2026-10-01) is off for the measurement.  It batches the hand-written R
+    and C and cannot batch the DSL's (their generated `i`/`q` are not
+    `dot(G, x)`), so with it on this would time the plan, not the DSL's
+    own stamp overhead -- which is what the guard and the published parity
+    figure are about (Andreas, 2026-10-01: measure with the plan off)."""
+    from pycircuit.circuit import _stamp_plan
     c, node = _ladder(mk_r, mk_c)
     tran = Transient(c, toolkit=numeric, uic=True)
-    with quiet():
-        t0 = time.perf_counter()
-        res = tran.solve(tend=TEND, timestep=TIMESTEP, fixed_timestep=True)
-        wall = time.perf_counter() - t0
+    was = _stamp_plan.ENABLED
+    _stamp_plan.ENABLED = False
+    try:
+        with quiet():
+            t0 = time.perf_counter()
+            res = tran.solve(tend=TEND, timestep=TIMESTEP,
+                             fixed_timestep=True)
+            wall = time.perf_counter() - t0
+    finally:
+        _stamp_plan.ENABLED = was
     return (wall, np.asarray(res.v(node).y, float),
             res.statistics.accepted_steps)
 
