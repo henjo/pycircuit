@@ -5,6 +5,8 @@
 """
 
 from pycircuit.circuit.elements import VSin, ISin, IS, R, L, C, SubCircuit, gnd
+from pycircuit.circuit.simwarnings import AccuracyWarning, ConvergenceWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.stepcontroller import IntegralController
 from pycircuit.circuit import circuit #new
@@ -643,6 +645,7 @@ _INTEGRATORS = [c[0] for c in _LTE_CASES]
 
 
 @pytest.mark.parametrize('name', _INTEGRATORS)
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_step_is_actually_rejected_on_stiff_case(name):
     """A step must actually be rejected somewhere on a stiff run.
 
@@ -655,6 +658,7 @@ def test_step_is_actually_rejected_on_stiff_case(name):
 
 
 @pytest.mark.parametrize('name', _INTEGRATORS)
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_step_count_and_error_respond_to_reltol(name):
     """Tightening reltol must cost steps and buy accuracy, monotonically.
 
@@ -696,6 +700,7 @@ def test_step_count_and_error_respond_to_reltol(name):
         '%s: less than 5x accuracy from a 1e3 tolerance change: %s' % (name, errs)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_gear2_error_is_four_times_trapezoidal_at_equal_steps():
     """Gate 1-3 of `doc/transient_repair_plan.md`, closed on a DERIVED bar
     (2026-09-27; Andreas: "B").
@@ -753,7 +758,6 @@ def test_companion_conductance_is_exposed_beside_the_companion_current():
     against the integrator's own definition rather than a recorded number:
     backward Euler's is `C/h`.
     """
-    import warnings
     from pycircuit.circuit.integrator import EulerIntegrator
     circuit.default_toolkit = circuit.numeric
 
@@ -767,8 +771,7 @@ def test_companion_conductance_is_exposed_beside_the_companion_current():
     step = 1e-7
     tran = Transient(c, toolkit=circuit.numeric,
                      integrator=EulerIntegrator(), reltol=1e-6)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=2e-6, timestep=step, fixed_timestep=True)
 
     x_end = np.asarray(res.x, dtype=float)[:, -1]
@@ -779,6 +782,7 @@ def test_companion_conductance_is_exposed_beside_the_companion_current():
         'the stored companion conductance is not the integrator´s C/h'
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_trbdf2_matches_the_analytic_rc_step_at_second_order():
     """TR-BDF2 (two-stage DIRK) integrates a driven RC to its analytic step
     response at second order, through the real Transient loop.
@@ -938,7 +942,6 @@ def test_radau_embedded_estimate_is_order_three_and_drives_step_control():
         actually costs steps) the accepted-step count rises monotonically as
         `reltol` tightens across six decades -- the estimate is steering.
     """
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     circuit.default_toolkit = circuit.numeric
@@ -978,8 +981,7 @@ def test_radau_embedded_estimate_is_order_three_and_drives_step_control():
         c = rectifier()
         tr = Transient(c, toolkit=circuit.numeric,
                        integrator=RadauIIA3Integrator(), reltol=rtol)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = tr.solve(tend=5e-6, timestep=5e-6 / 50, x0=np.zeros(c.n))
         return res.statistics.accepted_steps
 
@@ -1001,7 +1003,6 @@ def test_radau_cost_transform_matches_the_dense_coupled_solve():
     becomes two sparse ones.  It is only an efficiency path: it must not change
     the answer, which is what this pins.
     """
-    import warnings
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     from pycircuit.circuit.elements import Diode
     circuit.default_toolkit = circuit.numeric
@@ -1015,8 +1016,7 @@ def test_radau_cost_transform_matches_the_dense_coupled_solve():
         tr = Transient(c, toolkit=circuit.numeric,
                        integrator=RadauIIA3Integrator(), reltol=1e-10,
                        vabstol=1e-12, radau_transform=transform)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tr.solve(tend=tend, timestep=dt, x0=np.zeros(c.n),
                            fixed_timestep=True)
         return (np.asarray(res.x, dtype=float),
@@ -1129,7 +1129,6 @@ def test_pcnr_is_the_stage_method_limiting_and_matches_device_limiting():
     continuation the LMM step uses, with a limit(x,x) at convergence to sync
     the devices' _vlim for the downstream K/J.
     """
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import (TRBDF2Integrator,
                                               ESDIRK43Integrator)
@@ -1147,8 +1146,7 @@ def test_pcnr_is_the_stage_method_limiting_and_matches_device_limiting():
         c = mixer()
         tr = Transient(c, toolkit=circuit.numeric, integrator=integ,
                        reltol=1e-10, pcnr=pcnr)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tr.solve(tend=3e-6, timestep=3e-6 / 160, x0=np.zeros(c.n),
                            fixed_timestep=True)
         return np.asarray(res.x, dtype=float)
@@ -1199,7 +1197,6 @@ def test_pcnr_is_the_glm_stage_limiting_too_and_says_so_truthfully():
     on vs off 8.2e-9, reltol 1e-12 vs 1e-13 1.3e-8), against ~1.4e-15 for
     GLM2/GLM3 -- the badly scaled tableau, not the solver.
     """
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import GLM2Integrator, GLM3Integrator
     from pycircuit.circuit.nrsolver import NoConvergenceError
@@ -1226,8 +1223,7 @@ def test_pcnr_is_the_glm_stage_limiting_too_and_says_so_truthfully():
         c = rectifier()
         tr = Transient(c, toolkit=circuit.numeric, integrator=integ,
                        reltol=reltol, pcnr=pcnr)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(ConvergenceWarning):
             res = tr.solve(tend=3e-6, timestep=3e-6 / NSTEP,
                            x0=np.zeros(c.n), fixed_timestep=True)
         return tr, np.asarray(res.x, dtype=float), calls[0]
@@ -1315,7 +1311,6 @@ def test_pcnr_coupled_radau_solves_the_collocation_exactly():
       stage before reading its i/q/C/G fixes it (and converges in ~2 Newton
       iterations instead of 5); both paths now match this reference bit-for-bit.
     """
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     circuit.default_toolkit = circuit.numeric
@@ -1409,8 +1404,7 @@ def test_pcnr_coupled_radau_solves_the_collocation_exactly():
                 tr._rk_step_coupled_pcnr = checked
             else:
                 tr._rk_step_coupled = checked
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 tr.solve(tend=3e-6, timestep=3e-6 / 160, x0=np.zeros(c.n),
                          fixed_timestep=True)
             assert worst[0] < 1e-12, \
@@ -1422,8 +1416,7 @@ def test_pcnr_coupled_radau_solves_the_collocation_exactly():
     c = mixer(2.0)
     tr = Transient(c, toolkit=circuit.numeric,
                    integrator=RadauIIA3Integrator(), reltol=1e-10, pcnr=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tr.solve(tend=3e-6, timestep=3e-6 / 160, x0=np.zeros(c.n),
                        fixed_timestep=True)
     v2 = np.asarray(res.x)[c.get_node_index(2)][-160:]
@@ -1468,7 +1461,6 @@ def test_the_continuation_rescue_reaches_the_full_coupled_path():
                                               TRBDF2Integrator)
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.nrsolver import NoConvergenceError
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def slam():
@@ -1509,8 +1501,7 @@ def test_the_continuation_rescue_reaches_the_full_coupled_path():
         tr._continuation_rescue = rescue
         if force:
             tr._coupled_stage_solver = forced.__get__(tr)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tr.solve(tend=2e-4, timestep=1e-5, x0=np.zeros(c.n),
                            fixed_timestep=True)
         return (np.asarray(res.x, float)[c.get_node_index(2)],
@@ -1580,7 +1571,7 @@ def test_a_bad_circuit_reaches_the_continuation_ladder_on_the_default_path():
                                               TRBDF2Integrator)
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.nrsolver import NoConvergenceError
-    import warnings, logging
+    import logging
     circuit.default_toolkit = circuit.numeric
 
     def slam():
@@ -1599,8 +1590,7 @@ def test_a_bad_circuit_reaches_the_continuation_ladder_on_the_default_path():
                            reltol=1e-9, maxiter=3, pcnr=pcnr)
             tr.par.minstep = 2.5e-11
             try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
+                with quiet():
                     logging.disable(logging.WARNING)
                     tr.solve(tend=2e-10, timestep=1e-10, x0=np.zeros(c.n))
                 msg = None
@@ -1636,8 +1626,7 @@ def test_a_bad_circuit_reaches_the_continuation_ladder_on_the_default_path():
         c = mixer()
         tr = Transient(c, toolkit=circuit.numeric, integrator=integ(),
                        reltol=1e-12, pcnr=True)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             tr.solve(tend=3e-6, timestep=3e-6 / 160, x0=np.zeros(c.n),
                      fixed_timestep=True)
         assert tr.pcnr_fallbacks == 0 and tr.pcnr_status == 'used', \
@@ -1766,7 +1755,6 @@ def test_a_pcnr_failure_that_is_not_a_non_convergence_falls_back_on_every_path()
     vanishing capacitor on its stiff middle node raised `LinAlgError:
     Singular matrix`, where device limiting ran to the DC answer.  Now it
     falls back and lands on the same waveform."""
-    import warnings
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     from pycircuit.circuit.tests.test_limit_fet import _fet, _cascode
     circuit.default_toolkit = circuit.numeric
@@ -1776,8 +1764,7 @@ def test_a_pcnr_failure_that_is_not_a_non_convergence_falls_back_on_every_path()
         c['Cm'] = C('mid', gnd, c=1e-21)
         tr = Transient(c, integrator=RadauIIA3Integrator(), pcnr=pcnr,
                        reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(ConvergenceWarning):
             res = tr.solve(tend=2e-8, timestep=1e-9, x0=np.zeros(c.n),
                            fixed_timestep=True)
         return tr, np.asarray(res.x, float)[c.get_node_index('mid')]
@@ -1828,7 +1815,6 @@ def test_a_stage_pcnr_step_leaves_the_diode_at_its_solution():
     device state before the sync").  Measured on a diode driven to 0.85 V:
     TR-BDF2 + PCNR 50 mV short, its waveform 6.7e-3 V off the exact one
     (`_state_free_diode`)."""
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import TRBDF2Integrator
     circuit.default_toolkit = circuit.numeric
@@ -1840,8 +1826,7 @@ def test_a_stage_pcnr_step_leaves_the_diode_at_its_solution():
         c['D'] = cls(2, gnd)
         c['C'] = C(2, gnd, c=1e-9)
         tr = Transient(c, integrator=integ(), pcnr=pcnr, reltol=1e-9)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tr.solve(tend=5e-4, timestep=2.5e-6, x0=np.zeros(c.n),
                            fixed_timestep=True)
         return tr, c, np.asarray(res.x, float)[c.get_node_index(2)]
@@ -1861,7 +1846,6 @@ def test_an_lmm_pcnr_step_leaves_the_diode_at_its_solution(monkeypatch):
     check's confirming re-solve, a limiting fallback's first iteration --
     started from there.  (The waveform itself was exact: PCNR's own solve
     and Jacobian exclude the device from the ordinary assembly.)"""
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import Gear2Integrator
     circuit.default_toolkit = circuit.numeric
@@ -1877,8 +1861,7 @@ def test_an_lmm_pcnr_step_leaves_the_diode_at_its_solution(monkeypatch):
     monkeypatch.setattr(Transient, '_solve_timestep_pcnr', spy)
     c = _driven_diode(Diode)
     tr = Transient(c, integrator=Gear2Integrator(), pcnr=True, reltol=1e-9)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         tr.solve(tend=5e-4, timestep=2.5e-6, x0=np.zeros(c.n),
                  fixed_timestep=True)
     assert tr.pcnr_status == 'used' and tr.pcnr_fallbacks == 0, tr.pcnr_status
@@ -1941,7 +1924,6 @@ def test_the_coupled_radau_newton_meets_the_exact_diode(transform):
       where 0.80 V is right (0.87 V off).
     Each stage now owns its limiting state, and the Newton converges only
     with every limiter at rest."""
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     circuit.default_toolkit = circuit.numeric
@@ -1950,8 +1932,7 @@ def test_the_coupled_radau_newton_meets_the_exact_diode(transform):
         c = _driven_diode(cls)
         tr = Transient(c, integrator=RadauIIA3Integrator(), reltol=1e-9,
                        radau_transform=transform)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tr.solve(tend=tend, timestep=timestep, x0=np.zeros(c.n),
                            fixed_timestep=True)
         return np.asarray(res.x, float)[c.get_node_index(2)]
@@ -1973,7 +1954,6 @@ def test_a_rejected_step_leaves_no_device_state_to_its_retry():
     Run under `relref='pointlocal'`: the rejections this test needs came
     from the pointwise tolerance on the source's zero-crossing current, and
     under the default 'sigglobal' the twin rejects only 40 steps."""
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import TRBDF2Integrator
     circuit.default_toolkit = circuit.numeric
@@ -1982,8 +1962,7 @@ def test_a_rejected_step_leaves_no_device_state_to_its_retry():
         c = _driven_diode(cls)
         tr = Transient(c, integrator=TRBDF2Integrator(), reltol=1e-6,
                        relref='pointlocal')
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = tr.solve(tend=1e-3, timestep=1e-6, x0=np.zeros(c.n))
         return res.statistics.accepted_steps, res.statistics.rejected_steps
     (n_twin, rej_twin), (n, _rej) = steps(_state_free_diode()), steps(Diode)
@@ -2000,7 +1979,6 @@ def test_a_newton_starts_its_stateful_limiters_at_its_seed():
     diode's conductance -- a noisy TR-BDF2 estimate: on a half-wave
     rectifier 1023 steps (301 rejections, 6517 Newton iterations) where
     the state-free twin takes 863 (36, 3462) (2026-09-28)."""
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import TRBDF2Integrator
     from pycircuit.circuit import nrsolver
@@ -2024,8 +2002,7 @@ def test_a_newton_starts_its_stateful_limiters_at_its_seed():
         iters[0] = 0
         nrsolver.StandardNewton.solve_system = counting
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = tr.solve(tend=2e-3, timestep=2e-6, x0=np.zeros(c.n))
         finally:
             nrsolver.StandardNewton.solve_system = solve
@@ -2042,7 +2019,6 @@ def test_the_radau_estimate_reads_the_diode_at_the_step_start():
     takes 249 (7259 against 259 at 20 V), 12-16x the wall time, for the
     same accuracy.  The devices are now synced to `x_n` for those reads and
     put back; the two diodes take the same steps."""
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     circuit.default_toolkit = circuit.numeric
@@ -2050,8 +2026,7 @@ def test_the_radau_estimate_reads_the_diode_at_the_step_start():
     def steps(cls):
         c = _driven_diode(cls, va=5.0, r=10.0)
         tr = Transient(c, integrator=RadauIIA3Integrator(), reltol=1e-6)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tr.solve(tend=1e-3, timestep=1e-6, x0=np.zeros(c.n))
         return len(res.sweep_values)
     n_exact, n = steps(_state_free_diode()), steps(Diode)
@@ -2101,7 +2076,6 @@ def test_the_stage_methods_measure_their_error_against_relref():
     'sigglobal', as in the multistep family) it takes 324 attempts where
     'pointlocal' takes 1537, both 3e-5 V off a fine reference; the two
     runs end 1.2e-7 V apart."""
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import TRBDF2Integrator
     circuit.default_toolkit = circuit.numeric
@@ -2110,8 +2084,7 @@ def test_the_stage_methods_measure_their_error_against_relref():
         c = _driven_diode(Diode)
         tr = Transient(c, integrator=TRBDF2Integrator(), reltol=1e-6,
                        relref=relref)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = tr.solve(tend=1e-3, timestep=1e-6, x0=np.zeros(c.n))
         st = res.statistics
         return (st.accepted_steps + st.rejected_steps,
@@ -2139,14 +2112,12 @@ def test_adaptive_glm4_does_not_crawl_at_a_source_current_zero():
     tolerance was `lte_iabstol` at the current's zero, stayed O(1) however
     small the step.  Under `relref` (default 'sigglobal') the run takes
     324 + 40 steps, the smallest 3.7e-12 s."""
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.integrator import GLM4Integrator
     circuit.default_toolkit = circuit.numeric
     c = _driven_diode(Diode)
     tr = Transient(c, integrator=GLM4Integrator(), reltol=1e-6)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tr.solve(tend=1e-3, timestep=1e-6, x0=np.zeros(c.n))
     st = res.statistics
     assert st.accepted_steps + st.rejected_steps < 1000, st
@@ -2163,7 +2134,6 @@ def test_a_node_with_no_error_and_no_tolerance_does_not_blind_the_step_control(i
     family's judge rejected it and grew it (TR-BDF2 on this RC: 4 accepted,
     48 rejected, 18 % off the charge curve).  `normalised_error` decides
     0/0 as 0 and x/0 or a NaN as a reject; the zero node is then invisible."""
-    import warnings
 
     from pycircuit.circuit.elements import VS, VPulse
     from pycircuit.circuit.integrator import Gear2Integrator, TRBDF2Integrator
@@ -2181,8 +2151,7 @@ def test_a_node_with_no_error_and_no_tolerance_does_not_blind_the_step_control(i
             c['RZ'] = R('z', gnd, r=1e3)
         tr = Transient(c, integrator=cls(), reltol=1e-4, relref='pointlocal',
                        lte_vabstol=abstol, lte_iabstol=abstol)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = tr.solve(tend=5e-6, timestep=1e-8, x0=np.zeros(c.n))
         w = res.v('out')
         t, y = np.asarray(w.x[0], float), np.asarray(w.y, float)

@@ -5,9 +5,10 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
-import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, CostWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -36,13 +37,11 @@ from pycircuit.circuit.tests._shooting_fixtures import (_Flicker,
 
 
 def _cov_ratio(npts, Cval=1e-7, per=1e-3):
-    import warnings
     from pycircuit.circuit.constants import kboltzmann
     circuit.default_toolkit = circuit.numeric
     cir = _rc_noisy(Cval=Cval, per=per)
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / npts, maxiterations=40)
     assert pss.converged
     pac = PAC(cir, toolkit=circuit.numeric)
@@ -131,12 +130,10 @@ def test_the_covariance_samples_are_periodic_and_positive():
     covariance, which nothing in the solve guarantees a priori.
     """
     _r, _K = _cov_ratio(100)
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _rc_noisy()
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
     K0, _ci = PAC(cir, toolkit=circuit.numeric).covariance(pss, samples=True)
     seq = _ci['samples']
@@ -165,10 +162,8 @@ def _driven_rlc_for_lyapunov(method, npts=200):
     c['l'] = L('b', gnd, L=Lv)
     c['c1'] = C('b', gnd, c=Cv)
     c['n'] = IS('b', gnd, i=0.0, noisePSD=1e-18)
-    import warnings
     pss = PSS(c, method=method, reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / npts, x0=np.zeros(c.n - 1),
                   maxiterations=100, x0_unknown=False)
     assert pss.converged
@@ -225,7 +220,6 @@ def test_plain_covariance_reaches_kTC_like_gear_does():
     signature of double-counting rather than of any method, and it was.
     With the resistor's own noise only, every method converges on 1.0.
     """
-    import warnings
     from pycircuit.circuit.elements import VSin
     circuit.default_toolkit = circuit.numeric
     kT = 1.380649e-23 * 300.0
@@ -246,8 +240,7 @@ def test_plain_covariance_reaches_kTC_like_gear_does():
         for npts in (400, 1600):
             cir = rc()
             pss = PSS(cir, method=method, reltol=1e-11)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 pss.solve(period=per, timestep=per / npts,
                           x0=np.zeros(cir.n - 1), maxiterations=100,
                           x0_unknown=False)
@@ -307,8 +300,7 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
             c['cf'] = C('f', gnd, c=Cf)
             c['mx'] = _NuMult('out', gnd, 'f', gnd, 'lo', gnd, k=g)
         pss = PSS(c, method='radau', reltol=1e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             pss.solve(period=T, timestep=T / npts, maxiterations=40)
         o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
         return pss, o, PAC(c, toolkit=circuit.numeric)
@@ -323,8 +315,7 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
         [str(r.message)[:80] for r in rec]
     se = _ci['samples']
     pf, of, pacf = build('filtered')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         _Kf, _ci = pacf.covariance(pf, samples=True)
         sf = _ci['samples']
     a = np.array([K[o, o] for K in se])
@@ -344,8 +335,7 @@ def test_a_coloured_covariance_takes_a_modulated_non_power_law_source():
     assert not separable([pac5._noise_components(h5, st5).one_element_cy(('n',), w)
                           for w in wsp])
     p0, o0, pac0 = build('element', npts=100)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(CostWarning):
         Ks = pac0.covariance(p0, colour_fmin=fmin)[0][o0, o0]
         ## (on the instance's factory: the class keeps its own)
         consulted = []
@@ -371,7 +361,6 @@ def test_the_coloured_band_integral_resolves_a_high_q_line():
     and the grid 6 %.  Adaptive Simpson on the log axis (a panel against
     itself on five points, ``|S_2 - S_1| / 15``, on its share of
     `COLOURED_REFINE_TOL`): 10 and 40 per decade agree to 1.3e-7."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
     fr = 1.37 / T
@@ -388,8 +377,7 @@ def test_the_coloured_band_integral_resolves_a_high_q_line():
     c['L'] = L('out', gnd, L=Lv)
     c['n'] = _Flicker('out', gnd, i=0.0, noisePSD=1e-20, fref=1.0)
     pss = PSS(c, method='radau', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=T, timestep=T / 100, maxiterations=40)
     o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
     pac = PAC(c, toolkit=circuit.numeric)
@@ -419,7 +407,6 @@ def test_a_switched_capacitor_holds_kTC_with_per_step_CY():
     one.  Gated on the hold-phase mean and the control identity at 400
     points, and on the hold phase's order.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     fclk, cval, kb, temp = 100e3, 100e-12, 1.38e-23, 300.0
     ktc = kb * temp / cval
@@ -440,8 +427,7 @@ def test_a_switched_capacitor_holds_kTC_with_per_step_CY():
     def run(vth, vck, npts):
         cir = build(vth, vck)
         pss = PSS(cir, method='gear', reltol=1e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
                       maxiterations=100)
         assert pss.converged
@@ -489,15 +475,13 @@ def test_trbdf2_covariance_converges_to_kTC_at_second_order():
     must be O(h^2) and DECREASING, which is what pins the injection as the
     exact per-step integral rather than a stationary fit.
     """
-    import warnings
     from pycircuit.circuit.constants import kboltzmann
     circuit.default_toolkit = circuit.numeric
 
     def ratio(npts, method, Cval=1e-7, per=1e-3):
         cir = _rc_noisy(Cval=Cval, per=per)
         pss = PSS(cir, method=method, reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=per, timestep=per / npts, maxiterations=40)
         assert pss.converged
         K0 = PAC(cir).covariance(pss)[0]
@@ -544,15 +528,13 @@ def test_radau_covariance_converges_to_kTC_faster_than_second_order():
     stationary fit that hit kT/C exactly would corrupt the transient
     covariance -- see `test_trbdf2_covariance_converges_to_kTC`).
     """
-    import warnings
     from pycircuit.circuit.constants import kboltzmann
     circuit.default_toolkit = circuit.numeric
 
     def ratio(npts, method, Cval=1e-7, per=1e-3):
         cir = _rc_noisy(Cval=Cval, per=per)
         pss = PSS(cir, method=method, reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=per, timestep=per / npts, maxiterations=40)
         assert pss.converged
         K0 = PAC(cir).covariance(pss)[0]
@@ -650,7 +632,6 @@ def test_the_driven_fold_is_measured_for_accuracy_on_radau_not_only_alignment():
     switch opening left coarse); on 'pointlocal' 92 points, 3.7e-5 of the
     swing, held 0.999996.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     fclk, cval, kb, temp = 100e3, 100e-12, 1.38e-23, 300.0
     ktc = kb * temp / cval
@@ -678,8 +659,7 @@ def test_the_driven_fold_is_measured_for_accuracy_on_radau_not_only_alignment():
     def solve(npts, grid=None, seed=None, reltol=1e-8):
         cir = build()
         p = PSS(cir, method='radau', reltol=reltol)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=T, timestep=T / npts, grid=grid,
                     x0=np.zeros(cir.n - 1) if seed is None else seed,
                     maxiterations=100)
@@ -692,8 +672,7 @@ def test_the_driven_fold_is_measured_for_accuracy_on_radau_not_only_alignment():
     _io, tsr, vr = out_of(cr, pr)
     swing = vr.max() - vr.min()
     cir = build()
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         fr, seed = PSS(cir, method='radau', reltol=1e-8).lte_grid(
             T, x0=np.zeros(cir.n), reltol=1e-5)
     fr = np.asarray(fr, float)
@@ -702,8 +681,7 @@ def test_the_driven_fold_is_measured_for_accuracy_on_radau_not_only_alignment():
         c2, p2 = solve(len(fr), grid=grid, seed=sd)
         io, ts, v = out_of(c2, p2)
         errs[label] = float(np.max(np.abs(v - np.interp(ts % T, tsr, vr))) / swing)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             _K0, _ci = PAC(c2, toolkit=circuit.numeric).covariance(p2, samples=True)
             Ks = _ci['samples']
         vv = np.array([np.asarray(k, float)[io, io] for k in Ks]) / ktc
@@ -731,13 +709,11 @@ def test_covariance_on_a_staged_solve_borders_its_lyapunov_closure_with_the_movi
     correction is not decoration: without it the NOISELESS sawtooth
     source reads 0.225 kT/C_n at t = 0.7T -- exactly its node's share of
     the moving segment, ((0.925 - 0.7) / (0.925 - 0.45))^2."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
     cir = _jitter_sampler(T)
     pss = PSS(cir, method='radau', reltol=1e-9)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=T, timestep=T / 100, maxiterations=100,
                   state_events=True)
     assert pss.converged
@@ -805,7 +781,6 @@ def test_event_jitter_is_the_crossings_own_noise_and_matches_the_analytic_sigma(
     faster slope there).  Pinned: within 1 % of the analytic sigma at 100
     and 200 points, the two edges of one window equal, and an oscillator
     refused."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
     kT = 1.380649e-23 * 300.0
@@ -814,13 +789,11 @@ def test_event_jitter_is_the_crossings_own_noise_and_matches_the_analytic_sigma(
     for N in (100, 200):
         cir = _jitter_sampler(T)
         pss = PSS(cir, method='radau', reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             pss.solve(period=T, timestep=T / N, maxiterations=100, state_events=True)
         assert pss.converged
         pac = PAC(cir, toolkit=circuit.numeric)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             j = pac.event_jitter(pss)
         assert len(j['sigma_t']) == 4 and len(j['fractions']) == 4
         fr = np.asarray(j['fractions'], dtype=float)
@@ -837,8 +810,7 @@ def test_event_jitter_is_the_crossings_own_noise_and_matches_the_analytic_sigma(
     ## an oscillator's crossings diffuse with its phase: refused, not fudged
     osc = _comparator_relaxation_oscillator()
     seed, To = _relaxation_oscillator_seed(osc)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         qo = PSS(osc, method='radau', reltol=1e-9)
         qo.solve(period=To, timestep=To / 200,
                  x0=seed, maxiterations=100, state_events=True)
@@ -853,7 +825,6 @@ def _rc_flicker(method, npts, T=1e-6, Rv=1e3, Cv=1e-9, k=1e-20):
     """A driven LTI RC (`fc = 159 kHz`, `f0 = 1 MHz`) whose ONLY noise is a
     1/f current `k/f` into the capacitor node -- the closed-form gate of a
     coloured covariance."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
     c.add_node('in')
@@ -863,8 +834,7 @@ def _rc_flicker(method, npts, T=1e-6, Rv=1e3, Cv=1e-9, k=1e-20):
     c['C'] = C('out', gnd, c=Cv)
     c['n'] = _Flicker('out', gnd, i=0.0, noisePSD=k, fref=1.0)
     pss = PSS(c, method=method, reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, maxiterations=40)
     o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
     return c, pss, o, PAC(c, toolkit=circuit.numeric)
@@ -951,7 +921,6 @@ def test_event_jitter_integrates_a_coloured_threshold_and_keeps_the_white_part()
     read the component model's WHITE part while a coloured covariance runs
     (`PAC._lyap_cy`).  The white-only run is the reference: the flicker
     run minus the closed-form coloured part returns it to 1e-6."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
     Rn, Cn, k = 1e4, 1e-12, 4e-18
@@ -964,15 +933,13 @@ def test_event_jitter_integrates_a_coloured_threshold_and_keeps_the_white_part()
         if flick:
             cir['Fn'] = _Flicker('n', gnd, i=0.0, noisePSD=k, fref=1.0)
         pss = PSS(cir, method='radau', reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             pss.solve(period=T, timestep=T / 100, maxiterations=100,
                       state_events=True)
         assert pss.converged
         pac = PAC(cir, toolkit=circuit.numeric)
         band = dict(colour_fmin=fmin, colour_fmax=fmax) if flick else {}
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             j = pac.event_jitter(pss, **band)
             K0, _ci = pac.covariance(pss, samples=True, **band)
             seq = _ci['samples']
@@ -1050,7 +1017,6 @@ def test_a_coloured_covariance_integrates_any_flicker_exponent():
     by adaptive quadrature: -6.1e-10 (EF = 0.8) and +1.2e-9 (EF = 2.0) at
     40 per decade, fourth order down to the method's floor."""
     from scipy.integrate import quad
-    import warnings
     circuit.default_toolkit = circuit.numeric
     T, Rv, Cv, k = 1e-6, 1e3, 1e-9, 1e-20
     fc = 1.0 / (2.0 * np.pi * Rv * Cv)
@@ -1063,8 +1029,7 @@ def test_a_coloured_covariance_integrates_any_flicker_exponent():
         c['C'] = C('out', gnd, c=Cv)
         c['n'] = _pow_flicker(ef)('out', gnd, k=k)
         pss = PSS(c, method='radau', reltol=1e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             pss.solve(period=T, timestep=T / 100, maxiterations=40)
         pac = PAC(c, toolkit=circuit.numeric)
         o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
@@ -1112,7 +1077,6 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
         +2.8e-4 / +1.7e-5: radau's transfer at that grid, not the integral.
     A Lorentzian MODULATED by the orbit was refused here until 2026-09-26;
     it is now integrated (the separable path)."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
 
@@ -1141,8 +1105,7 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
             c['cf'] = C('f', gnd, c=Cf)
             c['gm'] = BSource('f', gnd, gnd, 'out', i_func=lambda u: g * u)
         pss = PSS(c, method='radau', reltol=1e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             pss.solve(period=T, timestep=T / 200, maxiterations=40)
         pac = PAC(c, toolkit=circuit.numeric)
         o = [str(x) for x in c.nodes if str(x) != 'gnd!'].index('out')
@@ -1165,8 +1128,7 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
         if flick:
             cir['Fn'] = IS('n', gnd, i=0.0, noisePSD=Pn, noiseTau=tn)
         pss = PSS(cir, method='radau', reltol=1e-9)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             pss.solve(period=T, timestep=T / 100, maxiterations=100,
                       state_events=True)
             band_ = dict(colour_fmin=1e-6 / T) if flick else {}
@@ -1186,8 +1148,7 @@ def test_a_coloured_covariance_integrates_a_stationary_lorentzian_source():
     c['C'] = C('out', gnd, c=Cv)
     c['n'] = _ModLorentz('out', gnd, i=0.0, noisePSD=P)
     pss = PSS(c, method='radau', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=T, timestep=T / 100, maxiterations=40)
         ## (refused until 2026-09-26; a level under a fixed shape is now the
         ## separable path -- see
@@ -1225,7 +1186,6 @@ def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
     (above).  What the hold needs is the landed grid: an UNSTAGED gear
     solve of the same circuit reads 537x the analytic held variance, and
     that is the contrast pinned below."""
-    import warnings as _w
     from pycircuit.circuit import remove_row_col
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
@@ -1233,8 +1193,7 @@ def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
     ## (a) the adjoint row on a staged gear solve
     cir = _pwm_loop(T)
     p = PSS(cir, method='gear', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=T, timestep=T / 100, maxiterations=100, state_events=True)
     assert p.converged and p._event_columns is not None
     names = [str(n_) for n_ in cir.nodes]
@@ -1244,8 +1203,7 @@ def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
     u_ac = np.asarray(u_ac, dtype=complex).ravel()
     fin = 0.3 * f0
     pac = PAC(cir, toolkit=circuit.numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         res = pac.solve(p, freqs=[fin])
         H = np.asarray(pac.adjoint_sideband_row(p, fin, io, sidebands=[0, 1]))
         ev = p._event_columns
@@ -1269,16 +1227,14 @@ def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
     for N in (100, 400):
         c3 = _jitter_sampler(T)
         ps = PSS(c3, method='gear', reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             ps.solve(period=T, timestep=T / N, maxiterations=100, state_events=True)
         red3 = [str(n_) for i, n_ in enumerate(c3.nodes) if i != ps.irefnode]
         ih, inn = red3.index('hold'), red3.index('n')
         ts3 = np.asarray(ps.waveform[0], dtype=float)
         j7 = int(np.searchsorted(ts3, 0.7 * T))
         pac3 = PAC(c3, toolkit=circuit.numeric)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             K0, _ci = pac3.covariance(ps, samples=True)
             seq = _ci['samples']
             ## the contrast that matters to a user: NOT staging at all
@@ -1288,8 +1244,7 @@ def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
             sequ = _ci['samples']
         ## m x m whatever the method (2026-09-29); gear's pair on request
         assert np.shape(K0) == (c3.n - 1, c3.n - 1)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             assert np.shape(pac3.covariance(ps, pair=True)[0]) == (2 * (c3.n - 1),) * 2
         var_n = float(np.mean([K[inn, inn] for K in seq])) / exp_n
         held = float(seq[j7][ih, ih]) / exp_h
@@ -1333,7 +1288,6 @@ def test_the_state_event_stage_runs_matrix_free(method):
     closure reads `P_nodes`) 1.2e-14; the PPV samples 2.8e-11 and the
     multipliers 3e-15 on the oscillator.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     Tp = 1e-5
     f0 = 1.0 / Tp
@@ -1367,8 +1321,7 @@ def test_the_state_event_stage_runs_matrix_free(method):
         for mf in (False, True):
             cir = mk()
             p = PSS(cir, method=method, reltol=1e-10 if mk is pwm else 1e-9)
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 p.solve(maxiterations=100, matrix_free=mf, **kw)
             assert p.converged and p._event_columns is not None, (method, mk.__name__, mf)
             got[mf] = (p, cir)
@@ -1384,16 +1337,14 @@ def test_the_state_event_stage_runs_matrix_free(method):
             out = {}
             for mf, (q, c) in got.items():
                 pac = PAC(c, toolkit=circuit.numeric)
-                with _w.catch_warnings():
-                    _w.simplefilter('ignore')
+                with quiet():
                     out[mf] = (np.asarray(pac.solve(q, [0.3 * f0]).x),
                                pac.adjoint_sideband_row(q, 0.3 * f0, 1, sidebands=[0, 1]),
                                pac.covariance(q)[0])
             for a, b in zip(out[True], out[False]):
                 assert rel(a, b) < 1e-9, method
         else:
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 sd = np.asarray(pd.ppv()[1]['samples'])
                 sm_ = np.asarray(pm.ppv()[1]['samples'])
             assert rel(sm_, sd) < 1e-8, method
@@ -1402,8 +1353,7 @@ def test_the_state_event_stage_runs_matrix_free(method):
     cir = pwm()
     p = PSS(cir, method=method, reltol=1e-9)
     q = PSS(pwm(), method=method, reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=Tp, timestep=Tp / 100, x0=np.zeros(cir.n - 1), maxiterations=100,
                 matrix_free=True, state_events=False)
         q.solve(period=Tp, timestep=Tp / 100, x0=np.zeros(cir.n - 1), maxiterations=100,
@@ -1441,7 +1391,6 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
       and the GLM's error there, 2e-6 of the carrier's response at its
       order, is several times the coefficient (radau: 1e-4).
     """
-    import warnings as _w
     from pycircuit.circuit.analysis import remove_row_col
     circuit.default_toolkit = circuit.numeric
 
@@ -1455,8 +1404,7 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
         p = PSS(c, method=method, reltol=1e-10)
         if mono is not None:
             p.monodromy = mono
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=1e-3, timestep=1e-3 / 100)
             pac = PAC(c, toolkit=circuit.numeric)
             res = pac.solve(p, [300.0])
@@ -1487,8 +1435,7 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
         cir, pss, io, pac, T = _sampler_fixture_method(
             lambda c: c.__setitem__('S0', _sw()), 'glm2', npts)
         N = len(pss.factored_period().steps)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             K0t, _ci = pac.covariance(pss, samples=True)
             seq_t = _ci['samples']
             pss.monodromy = 'native'
@@ -1514,8 +1461,7 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
     def carrier_response(method, N):
         cir = vdp()
         q = PSS(cir, method=method, reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             q.solve(period=6.66, timestep=6.66 / N, x0=np.array([2.0, 0.0]),
                     maxiterations=100)
         assert q.converged
@@ -1528,8 +1474,7 @@ def test_a_glm_run_reads_its_small_signal_off_its_own_map_and_its_covariance_off
         for r in (1e-3, 1e-5, 1e-7):
             f = (1.0 + r) * f0
             pac = PAC(cir, toolkit=circuit.numeric)
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 res = pac.solve(q, [f], sweeptype='absolute')
                 h = complex(np.asarray(pac.adjoint_sideband_row(q, f, io, sidebands=[0]))[0] @ u_ac)
             sv = np.asarray(res.sweep_values, dtype=float)
@@ -1597,6 +1542,5 @@ def test_a_dense_lyapunov_solve_refuses_a_size_it_cannot_hold():
     pac = PAC(cir, toolkit=circuit.numeric)
     pac.LYAPUNOV_DENSE_LIMIT = 1
     with pytest.raises(MemoryError, match='LYAPUNOV_DENSE_LIMIT'), \
-            warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+            quiet():
         pac.oscillator_covariance(pss)

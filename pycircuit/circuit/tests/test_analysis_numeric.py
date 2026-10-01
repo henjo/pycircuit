@@ -4,6 +4,7 @@
 
 import pycircuit.circuit.circuit 
 from pycircuit.circuit import *
+from pycircuit.circuit.tests._warnpolicy import quiet
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 from .test_circuit import create_current_divider
@@ -70,11 +71,13 @@ def test_a_frequency_dependent_CY_sweeps():
     import warnings
     import numpy as np
     from pycircuit.circuit import SubCircuit, R, C, gnd, AC, Noise
+    from pycircuit.circuit.simwarnings import SimulationWarning
     from pycircuit.circuit.elements import VS, IS
     from pycircuit.circuit.elements_hdl import (MosLevel1Hdl, GummelPoonNpnHdl,
                                                 EkvNmosHdl)
     circuit.default_toolkit = circuit.numeric
-    warnings.simplefilter('ignore')
+    warnings.simplefilter('ignore')     ## (scoped to this test by pytest)
+    warnings.simplefilter('error', SimulationWarning)
     fr = np.array([1e3, 1e5, 1e7])
 
     def sweep(cir, src, out):
@@ -123,7 +126,6 @@ def test_ac_and_noise_at_a_given_operating_point_read_the_devices_there():
     earlier bias point of the sweep read 0.21x the gain and 0.045x the
     output noise (2026-09-28).  The transimpedance analysis evaluates at
     its own fixed point, and reads the devices there too."""
-    import warnings
     from pycircuit.circuit.dcanalysis import DC, DCSweep
     from pycircuit.circuit.analysis_ss import AC, Noise, TransimpedanceAnalysis
     circuit.default_toolkit = numeric
@@ -143,8 +145,7 @@ def test_ac_and_noise_at_a_given_operating_point_read_the_devices_there():
         return g, n
     vals = np.linspace(0.0, 5.0, 11)
     c = build()
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         x = np.asarray(DCSweep(c).solve('vs', 'v', vals).x, dtype=float)
     ## the reference: the same point on a circuit no analysis has touched
     g, n = small_signal(c, dcx=x[:, 3])

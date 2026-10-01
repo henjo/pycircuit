@@ -80,6 +80,7 @@ import pycircuit.circuit.circuit as cm
 from pycircuit.circuit import gnd
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit.elements import SubCircuit, VSin, R, C
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.toolkit import numeric
 from pycircuit.circuit.transient import Transient
 
@@ -154,8 +155,7 @@ def _solve(mk_r, mk_c):
     """One timed solve.  Returns (wall, waveform, accepted steps)."""
     c, node = _ladder(mk_r, mk_c)
     tran = Transient(c, toolkit=numeric, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         t0 = time.perf_counter()
         res = tran.solve(tend=TEND, timestep=TIMESTEP, fixed_timestep=True)
         wall = time.perf_counter() - t0

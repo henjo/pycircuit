@@ -33,7 +33,6 @@ test, in the order they are made:
   including ``+-1e30``.
 """
 import hashlib
-import warnings
 
 import numpy as np
 import pytest
@@ -46,6 +45,7 @@ from pycircuit.circuit.circuit import Node, defaultepar
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    SelectRefused, check_jacobians, maxc,
                                    minc, select, unclamped, var)
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.utilities.param import Parameter
 
 try:
@@ -777,8 +777,7 @@ def _adopter_digest(clsname, card, pins):
     el.update_iparv()
     n = len(hdl.x_layout(el))
     out = []
-    with np.errstate(all='ignore'), warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with np.errstate(all='ignore'), quiet():
         for x in _sweep_points(n):
             out.append(_digest(b''.join(
                 np.ascontiguousarray(np.asarray(getattr(el, m)(x), float)

@@ -8,10 +8,11 @@ those methods unchanged; these tests run the CPU suite's key cases through
 the JAX class, spanning-tree cases included.
 """
 
-import warnings
 
 import numpy as np
 import pytest
+
+from pycircuit.circuit.tests._warnpolicy import quiet
 
 jax = pytest.importorskip('jax')
 
@@ -39,8 +40,7 @@ def test_node_ic_reaches_the_waveform():
         c['R'] = R('out', gnd, r=1e3)
         c['C'] = C('out', gnd, c=1e-6)
         tran = JAXTransient(c, reltol=1e-4, ic={'out': 0.5})
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-3, timestep=1e-5, uic=True)
         t = np.asarray(res.sweep_values, float)
         v = np.asarray(res.v('out'), float).reshape(-1)

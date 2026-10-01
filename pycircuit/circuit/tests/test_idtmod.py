@@ -17,6 +17,7 @@ import pytest
 from numpy.testing import assert_array_almost_equal
 
 import pycircuit.circuit.circuit
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.toolkit import numeric
 from pycircuit.circuit import gnd
 from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix
@@ -169,7 +170,6 @@ def test_solve_batched_sweeps_modulus():
     per-lane `modulus` override is accepted -- it used to be refused with
     NotImplementedError -- and each lane wraps at its own modulus."""
     pytest.importorskip('jax')
-    import warnings
     import jax.numpy as jnp
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
@@ -185,8 +185,7 @@ def test_solve_batched_sweeps_modulus():
                              toolkit=jaxtoolkit)
 
         tran = JAXTransient(c, reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve_batched(
                 refnode=gnd,
                 override_params_tree={
@@ -236,6 +235,7 @@ def test_gauge_shift_keeps_state_bounded():
 
 @pytest.mark.parametrize('integrator', ['RadauIIA3Integrator',
                                         'TRBDF2Integrator'])
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_gauge_shift_under_the_stage_methods_adaptive(integrator):
     """The same rewrap under the Runge-Kutta methods on the ADAPTIVE path.
     Their stepping loop used to accept without `_push_history` -- a stage
@@ -304,7 +304,6 @@ def test_jax_gauge_shift():
     """The branchless shift inside the traced accept: bounded state and
     congruence-correct output on the JAX backend."""
     pytest.importorskip('jax')
-    import warnings
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
 
@@ -318,8 +317,7 @@ def test_jax_gauge_shift():
         c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0, offset=-0.5,
                              toolkit=jaxtoolkit)
         tran = JAXTransient(c, reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=3.0, timestep=1e-2, uic=True,
                              fixed_timestep=True)
     finally:
@@ -377,10 +375,8 @@ def test_wrap_breakpoints_land_adaptive():
     """The adaptive controller lands a step boundary ON each predicted
     crossing instead of discovering the corner by rejection."""
     c = _ramp_circuit(modulus=1.0, offset=-0.5)
-    import warnings
     tran = Transient(c, toolkit=numeric, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=2.2, timestep=1e-2)
     t = res.v('out').x[0]
     for t_cross in (0.5, 1.5):
@@ -393,12 +389,10 @@ def test_many_wraps_no_step_collapse():
     ever straddles a wrap, so neither path pays a rejection storm -- the
     outcome the kink-gate extension was reserved for and, measured, does
     not need (idtmod.md 5.3).  Congruence stays at machine precision."""
-    import warnings
     for coupled in (False, True):
         c = _ramp_circuit(modulus=0.1, offset=-0.05)
         tran = Transient(c, toolkit=numeric, uic=True)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(tend=2.2, timestep=1e-2, coupled_lte=coupled)
         s = res.statistics
         assert s.breakpoints_hit >= 20, (coupled, s.breakpoints_hit)
@@ -416,7 +410,6 @@ def test_wrap_under_default_integrator():
     dropped across them, the wrap behaves under Gear-2 (the default) as it
     does under Euler -- asserted congruence-style, since the sample exactly
     ON a corner remains a knife-edge limit choice in any convention."""
-    import warnings
     from pycircuit.circuit.integrator import (EulerIntegrator,
                                               TrapezoidalIntegrator,
                                               Gear2Integrator)
@@ -425,8 +418,7 @@ def test_wrap_under_default_integrator():
         c = _ramp_circuit(modulus=1.0)
         tran = Transient(c, toolkit=numeric, uic=True,
                          integrator=integrator)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(tend=2.2, timestep=1e-2)
         y = res.v('out').y
         t = res.v('out').x[0]
@@ -502,11 +494,9 @@ def test_circular_transient_congruence():
     (Gear-2 phase lag; ~1.3e-2 after 2 cycles at the default reltol when
     this was written).  Tightening reltol pulls it down, which is what
     this test does to keep a meaningful bound."""
-    import warnings
     c = _circular_circuit(modulus=1.0, offset=-0.5, ic=0.0)
     tran = Transient(c, toolkit=numeric, reltol=1e-5)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=2.2, timestep=1e-2)
     y = res.v('out').y
     t = res.v('out').x[0]
@@ -526,7 +516,6 @@ def test_circular_baumgarte_orbit_correction():
     term makes the unit circle exponentially attracting.  The correction
     is purely radial (c*(corr*s) - s*(corr*c) == 0), so it cannot bias the
     phase -- only rescue the radius."""
-    import warnings
     from pycircuit.circuit.integrator import Gear2Integrator
 
     def radius_span(gamma):
@@ -534,8 +523,7 @@ def test_circular_baumgarte_orbit_correction():
         ci, si = _phasor_rows(c)
         tran = Transient(c, toolkit=numeric, uic=True,
                          integrator=Gear2Integrator())
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(tend=50.0, timestep=2e-2, fixed_timestep=True)
         X = np.asarray(res.x, float)
         r = np.hypot(X[ci], X[si])
@@ -549,13 +537,11 @@ def test_circular_baumgarte_orbit_correction():
 
 
 def test_circular_uic_seeds_on_circle():
-    import warnings
     c = _circular_circuit(modulus=1.0, offset=-0.5, ic=1.25)  # wrap -> 0.25
     from pycircuit.circuit.integrator import EulerIntegrator
     tran = Transient(c, toolkit=numeric, uic=True,
                      integrator=EulerIntegrator())
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=0.2, timestep=1e-3, fixed_timestep=True)
     y = res.v('out').y
     t = res.v('out').x[0]
@@ -621,7 +607,6 @@ def test_circular_trap_ringing_sentinel():
        unchanged (the correction is purely radial, so its ringing cannot
        reach the phase) -- measured 1.6e-3 vs 1.7e-3 at introduction.
     """
-    import warnings
     from pycircuit.circuit.integrator import TrapezoidalIntegrator
 
     def run(gamma, h=0.1):
@@ -635,8 +620,7 @@ def test_circular_trap_ringing_sentinel():
         ci, si = _phasor_rows(c)
         tran = Transient(c, toolkit=numeric, uic=True,
                          integrator=TrapezoidalIntegrator())
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(tend=5.0, timestep=h, fixed_timestep=True)
         X = np.asarray(res.x, float)
         a = X[ci] ** 2 + X[si] ** 2 - 1.0
@@ -690,13 +674,11 @@ def test_quadrature_smooth_transient():
     -- zero breakpoints fire (contrast Idtmod/IdtmodCircular, which land
     one per wrap), every node voltage smooth.  Waveforms track
     cos/sin(2*pi*t) to the per-cycle trap lag of idtmod.md 7.6."""
-    import warnings
     from pycircuit.circuit.integrator import TrapezoidalIntegrator
     c = _quadrature_circuit(ic=0.0, modulus=1.0)
     tran = Transient(c, toolkit=numeric, uic=True,
                      integrator=TrapezoidalIntegrator())
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=2.0, timestep=1e-2, fixed_timestep=True)
     t = res.v('outc').x[0]
     vc = res.v('outc').y
@@ -712,13 +694,11 @@ def test_quadrature_smooth_transient():
 def test_quadrature_uic_seed():
     """uic seeding places the phasor at the ic angle, phase continues
     from there: ic=0.5 -> theta = pi -> starts at (-1, 0)."""
-    import warnings
     from pycircuit.circuit.integrator import TrapezoidalIntegrator
     c = _quadrature_circuit(ic=0.5, modulus=1.0)
     tran = Transient(c, toolkit=numeric, uic=True,
                      integrator=TrapezoidalIntegrator())
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=0.5, timestep=1e-2, fixed_timestep=True)
     t = res.v('outc').x[0]
     vc = res.v('outc').y
@@ -735,7 +715,6 @@ def test_solve_batched_instance_key_remaps_when_unambiguous():
     has exactly one instance is remapped transparently (it used to be
     refused with a message about classes -- the 'R1' stumble)."""
     pytest.importorskip('jax')
-    import warnings
     import jax.numpy as jnp
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
@@ -750,8 +729,7 @@ def test_solve_batched_instance_key_remaps_when_unambiguous():
         c['R1'] = R(na, nb, r=1e3, toolkit=jaxtoolkit)   # instance != class
         c['C1'] = C(nb, gnd, c=1e-6, toolkit=jaxtoolkit)
         tran = JAXTransient(c, reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve_batched(
                 refnode=gnd,
                 override_params_tree={'R1': {'r': jnp.array([[1e2], [1e4]])}},
@@ -803,7 +781,6 @@ def test_solve_batched_shift_follows_per_lane_modulus():
     the per-lane state span bounded by ~one lane modulus (before item 3
     the swept case ran unbounded: span ~= the whole integral, 2.1)."""
     pytest.importorskip('jax')
-    import warnings
     import jax.numpy as jnp
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
@@ -818,8 +795,7 @@ def test_solve_batched_shift_follows_per_lane_modulus():
         c['X'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0,
                         toolkit=jaxtoolkit)   # instance name != class name
         tran = JAXTransient(c, reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve_batched(
                 refnode=gnd,
                 override_params_tree={
@@ -844,7 +820,6 @@ def test_jax_solve_dc_pin_without_uic():
     point (through dcanalysis.DC) instead of tripping the ic-without-uic
     guard, matching the CPU semantics."""
     pytest.importorskip('jax')
-    import warnings
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
 
@@ -858,8 +833,7 @@ def test_jax_solve_dc_pin_without_uic():
         c['X'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0, offset=-0.5,
                         ic=0.25, toolkit=jaxtoolkit)
         tran = JAXTransient(c, reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=0.2, timestep=1e-2, uic=False,
                              fixed_timestep=True)
     finally:
@@ -876,7 +850,6 @@ def test_solve_batched_dc_pinned_without_uic():
     ic-pinned Idtmod circuit biases per lane instead of raising
     NoConvergenceError from the singular integrator row."""
     pytest.importorskip('jax')
-    import warnings
     import jax.numpy as jnp
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
@@ -891,8 +864,7 @@ def test_solve_batched_dc_pinned_without_uic():
         c['X'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0, offset=-0.5,
                         ic=0.25, toolkit=jaxtoolkit)
         tran = JAXTransient(c, reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve_batched(
                 refnode=gnd,
                 override_params_tree={'R': {'r': jnp.array([[5e2], [2e3]])}},
@@ -931,7 +903,6 @@ def test_jax_lands_on_wrap_corners():
     is known rather than estimated.
     """
     pytest.importorskip('jax')
-    import warnings
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
 
@@ -945,8 +916,7 @@ def test_jax_lands_on_wrap_corners():
         c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0,
                              toolkit=jaxtoolkit)
         tran = JAXTransient(c, reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(refnode=gnd, tend=3.4, timestep=1e-2, uic=True)
         t = np.asarray(res.sweep_values, float).reshape(-1)
     finally:
@@ -985,7 +955,6 @@ def test_the_wrap_cap_does_not_collapse_the_step_at_a_corner():
     that bites on the feature (1.5e-02 with the cap disabled).
     """
     pytest.importorskip('jax')
-    import warnings
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
 
@@ -999,8 +968,7 @@ def test_the_wrap_cap_does_not_collapse_the_step_at_a_corner():
         c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0,
                              toolkit=jaxtoolkit)
         tran = JAXTransient(c, reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(refnode=gnd, tend=3.4, timestep=1e-2, uic=True)
         t = np.asarray(res.sweep_values, float).reshape(-1)
     finally:
@@ -1023,7 +991,6 @@ def _circular_ringing_probe(gamma, gamma_tau, h=0.1):
     inside a single wrap, so the only perturbation is the first-step Euler
     kick and its recovery either decays or alternates.
     """
-    import warnings
     from pycircuit.circuit.integrator import TrapezoidalIntegrator
     pycircuit.circuit.circuit.default_toolkit = numeric
     c = SubCircuit()
@@ -1035,8 +1002,7 @@ def _circular_ringing_probe(gamma, gamma_tau, h=0.1):
     ci, si = _phasor_rows(c)
     tran = Transient(c, toolkit=numeric, uic=True,
                      integrator=TrapezoidalIntegrator())
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=5.0, timestep=h, fixed_timestep=True)
     X = np.asarray(res.x, float)
     a = X[ci] ** 2 + X[si] ** 2 - 1.0

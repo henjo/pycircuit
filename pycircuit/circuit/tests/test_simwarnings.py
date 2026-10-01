@@ -19,6 +19,7 @@ from pycircuit.circuit.simwarnings import (
     summarised,
     warn,
 )
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 
 
@@ -49,8 +50,7 @@ def test_a_warning_raised_deep_in_the_library_lands_on_the_callers_line():
     from pycircuit.circuit.shooting import PAC, PSS
     c = _rc()
     p = PSS(c, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=1e-6, timestep=1e-6 / 40, maxiterations=20)
     pac = PAC(c)
     with warnings.catch_warnings(record=True) as rec:

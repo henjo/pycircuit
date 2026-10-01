@@ -52,6 +52,7 @@ from pycircuit.circuit import numeric, gnd
 from pycircuit.circuit.circuit import SubCircuit, defaultepar
 from pycircuit.circuit.elements import VS, IS, R, C, Diode, VPulse
 from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 
 
@@ -292,6 +293,7 @@ def _pulsed_run(**kwargs):
             float(np.asarray(res.v('n2'))[-1]))
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_gate_1_5_lte_vabstol_moves_the_step_count_under_pointlocal():
     """The controller's tolerance must control the controller.
 
@@ -344,6 +346,7 @@ def test_gate_1_5_lte_vabstol_is_not_load_bearing_under_sigglobal():
             % (value, v_base, v)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_gate_1_5_vabstol_does_not_move_the_step_count():
     """Newton's tolerance must NOT be a step-control knob.
 
@@ -867,7 +870,6 @@ def test_gate_4b_no_accepted_step_ratio_leaves_the_stability_bound():
     a real run of the shipped default, which remains meaningful whether or not the
     escape hatch fires.
     """
-    import warnings as _w
     from pycircuit.circuit.integrator import (Gear2Integrator,
                                               ZERO_STABILITY_RATIO)
     from pycircuit.circuit.stepcontroller import IntegralController
@@ -914,8 +916,7 @@ def test_gate_4b_no_accepted_step_ratio_leaves_the_stability_bound():
                      integrator=Gear2Integrator(), reltol=1e-3)
     spy = _Spy()
     tran.step_controller = spy
-    with _w.catch_warnings():
-        _w.simplefilter('ignore', RuntimeWarning)
+    with quiet():
         tran.solve(refnode=gnd, tend=5e-3, timestep=2e-4, x0=x0)
 
     ## No `n_forced > 0` precondition: see the docstring.  Recorded instead, so a
@@ -1111,7 +1112,6 @@ def test_gate_4g_b4_rejections_collapse_on_the_stiff_case():
     This is the test that would catch `_dt_last2` being rolled in the wrong order,
     which produces a plausible-looking but wrong grid rather than an error.
     """
-    import warnings as _w
     from pycircuit.circuit.integrator import TrapezoidalIntegrator
     from pycircuit.circuit.stepcontroller import IntegralController
     from pycircuit.circuit.elements import L
@@ -1139,8 +1139,7 @@ def test_gate_4g_b4_rejections_collapse_on_the_stiff_case():
                      integrator=TrapezoidalIntegrator(), reltol=1e-5)
     ctrl = _Counter()
     tran.step_controller = ctrl
-    with _w.catch_warnings():
-        _w.simplefilter('ignore', RuntimeWarning)
+    with quiet():
         res = tran.solve(refnode=gnd, tend=5e-3, timestep=2e-4, x0=x0)
 
     ## 757 before; a 10x margin on the measured 23 leaves room for platform drift
@@ -1161,12 +1160,10 @@ def test_gate_4g_b_a_second_solve_is_identical_to_the_first():
     while `q_last[2]` is the freshly seeded initial charge, and the estimator
     differences a grid that never existed -- silently, and only on re-use.
     """
-    import warnings as _w
     from pycircuit.circuit.integrator import TrapezoidalIntegrator
     tran = Transient(_pulsed_rc(), toolkit=numeric,
                      integrator=TrapezoidalIntegrator())
-    with _w.catch_warnings():
-        _w.simplefilter('ignore', RuntimeWarning)
+    with quiet():
         first = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
         v1 = np.asarray(first.v('n2'), dtype=float).copy()
         second = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
@@ -1328,10 +1325,8 @@ def test_gate_4i_the_error_constants_come_from_the_derivation():
 
 def _fixed_run(tend=3e-6, timestep=1e-7, **kwargs):
     """A VPulse-driven fixed-step run; returns the time vector."""
-    import warnings as _w
     tran = Transient(_pulsed_rc(), toolkit=numeric, **kwargs)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore', RuntimeWarning)
+    with quiet():
         res = tran.solve(refnode=gnd, tend=tend, timestep=timestep,
                          fixed_timestep=True)
     return np.asarray(res.sweep_values, dtype=float)
@@ -1377,7 +1372,6 @@ def test_gate_4h3_a_breakpoint_inside_a_fixed_step_still_drops_the_order():
     corner. Instrumented rather than inspected: `_effective_method` is derived from
     the live integrator object, so this sees what actually ran.
     """
-    import warnings as _w
     from pycircuit.circuit.integrator import Gear2Integrator
     tran = Transient(_pulsed_rc(), toolkit=numeric, integrator=Gear2Integrator())
     seen = []
@@ -1389,8 +1383,7 @@ def test_gate_4h3_a_breakpoint_inside_a_fixed_step_still_drops_the_order():
         return out
 
     tran.get_diff = spy
-    with _w.catch_warnings():
-        _w.simplefilter('ignore', RuntimeWarning)
+    with quiet():
         tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7, fixed_timestep=True)
 
     drops = sum(1 for m in seen if m == 'EulerIntegrator')
@@ -1451,10 +1444,8 @@ def test_gate_4h_the_adaptive_path_is_untouched():
     1e-20. Scoping the guard keeps 4h attributable -- if the adaptive step count
     moves, something other than 4h did it.
     """
-    import warnings as _w
     tran = Transient(_pulsed_rc(), toolkit=numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore', RuntimeWarning)
+    with quiet():
         res = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
     dt = np.diff(np.asarray(res.sweep_values, dtype=float))
     assert (dt < 1e-6 * np.median(dt)).sum() == 0, \
@@ -1611,10 +1602,8 @@ def _ce_stage(rb, toolkit=numeric):
 
 
 def _dc_solve(cir):
-    import warnings as _w
     from pycircuit.circuit.dcanalysis import DC
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         return DC(cir, toolkit=numeric).solve()
 
 
@@ -1737,11 +1726,9 @@ def test_gate_5_the_limiter_only_moves_the_linearisation_point():
     is sufficient.
     """
     from pycircuit.circuit.dcanalysis import DC
-    import warnings as _w
     cir = _ce_stage(1000.0)
     dc = DC(cir, toolkit=numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         res = dc.solve()
 
     x = np.asarray(res.x, dtype=float)
@@ -1777,15 +1764,13 @@ def _switching_stage(per, tf=None):
 
 
 def _switch_run(per, tf=None):
-    import warnings as _w
     ## timestep_max pins the old timestep-as-cap sampling density: the
     ## decoupled default (1.6*per/50) is 12.8x coarser and quantizes the
     ## storage-time measurement below its measured 13.6-16.8 ps resolution.
     from pycircuit.circuit.integrator import EulerIntegrator
     tran = Transient(_switching_stage(per, tf), toolkit=numeric,
                      timestep_max=per / 400, integrator=EulerIntegrator())
-    with _w.catch_warnings():
-        _w.simplefilter('ignore', RuntimeWarning)
+    with quiet():
         res = tran.solve(refnode=gnd, tend=per * 1.6, timestep=per / 400)
     return (np.asarray(res.sweep_values, dtype=float),
             np.asarray(res.v('c'), dtype=float))
@@ -2007,13 +1992,10 @@ def test_gate_6_2_a_non_convergent_circuit_names_the_worst_node():
     the *message*, and a genuine non-convergence and a truncated one reach the
     same code with the same information in scope.
     """
-    import warnings as _w
     from pycircuit.circuit.dcanalysis import DC
     cir = _ce_stage(100.0)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
-        with pytest.raises(NoConvergenceError) as excinfo:
-            DC(cir, toolkit=numeric, maxiter=2).solve()
+    with quiet(), pytest.raises(NoConvergenceError) as excinfo:
+        DC(cir, toolkit=numeric, maxiter=2).solve()
 
     msg = str(excinfo.value)
     assert any("'%s'" % n.name in msg for n in cir.nodes), \
@@ -2036,12 +2018,10 @@ def test_gate_6_3_statistics_are_populated_and_include_the_force_accept_counter(
     measured -- so a non-zero value is the run reporting that part of its own
     result is not error-controlled.
     """
-    import warnings as _w
     from pycircuit.circuit.integrator import TrapezoidalIntegrator
     tran = Transient(_pulsed_rc(), toolkit=numeric,
                      integrator=TrapezoidalIntegrator())
-    with _w.catch_warnings():
-        _w.simplefilter('ignore', RuntimeWarning)
+    with quiet():
         res = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
 
     st = res.statistics
@@ -2073,10 +2053,8 @@ def test_gate_6_3_statistics_are_per_run_not_cumulative():
     `__init__` -- gets this wrong, and the failure is invisible unless something
     solves twice.
     """
-    import warnings as _w
     tran = Transient(_pulsed_rc(), toolkit=numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore', RuntimeWarning)
+    with quiet():
         first = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
         n1 = first.statistics.accepted_steps
         second = tran.solve(refnode=gnd, tend=3e-6, timestep=1e-7)
@@ -2157,14 +2135,12 @@ def _settling_rc():
 
 def _quiescent_run(timestep_max, timestep=1e-4, tau=1e-3):
     """100*tau, so ~99% of the run is a dead-flat settled solution."""
-    import warnings
     import numpy as np
     from pycircuit.circuit import numeric, gnd
     from pycircuit.circuit.transient import Transient
     kw = {} if timestep_max is None else {'timestep_max': timestep_max}
     tran = Transient(_settling_rc(), toolkit=numeric, reltol=1e-4, uic=True, **kw)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(refnode=gnd, tend=100 * tau, timestep=timestep)
     t = np.asarray(res.sweep_values, dtype=float)
     v = np.asarray(res.v(2, gnd), dtype=float)
@@ -2263,7 +2239,6 @@ def test_pulse_zero_edges_do_not_disturb_normal_edges():
 
 def test_vpulse_on_element_defaults_runs_a_transient():
     """End to end: the element's own defaults must not crash the analysis."""
-    import warnings
     from pycircuit.circuit import numeric, gnd
     from pycircuit.circuit.elements import SubCircuit, R, C, VPulse
     from pycircuit.circuit.transient import Transient
@@ -2273,8 +2248,7 @@ def test_vpulse_on_element_defaults_runs_a_transient():
     cir['V1'] = VPulse('in', gnd, v1=0, v2=1, td=1e-6, pw=5e-6)   # tr/tf/per default
     cir['R1'] = R('in', 'out', r=1e3)
     cir['C1'] = C('out', gnd, c=1e-9)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = Transient(cir, toolkit=numeric, uic=True).solve(
             refnode=gnd, tend=2e-5, timestep=5e-7)
 
@@ -2364,15 +2338,13 @@ def test_tline_dc_is_the_same_before_and_after_a_transient():
     was never cleared -- so a DC solve after a transient used the transient stamp
     and returned **0.0** where **0.5** is correct for this matched line.
     """
-    import warnings
     from pycircuit.circuit import numeric, gnd
     from pycircuit.circuit.dcanalysis import DC
     from pycircuit.circuit.transient import Transient
 
     cir = _tline_circuit()
     before = float(DC(cir, toolkit=numeric).solve().v('b', gnd))
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         Transient(cir, toolkit=numeric, uic=True).solve(
             refnode=gnd, tend=5e-9, timestep=1e-10)
     after = float(DC(cir, toolkit=numeric).solve().v('b', gnd))
@@ -2390,15 +2362,13 @@ def test_tline_history_does_not_accumulate_across_runs():
 
     Measured before the fix: 12 history entries after run 1, **73** after run 2.
     """
-    import warnings
     from pycircuit.circuit import numeric, gnd
     from pycircuit.circuit.transient import Transient
 
     cir = _tline_circuit()
     lens = []
     for _ in range(2):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             Transient(cir, toolkit=numeric, uic=True).solve(
                 refnode=gnd, tend=5e-9, timestep=1e-10)
         lens.append(len(cir['T1'].history))
@@ -2411,7 +2381,6 @@ def test_tline_caps_the_adaptive_step_at_half_the_delay():
     The cap is asked of the elements, so this checks the circuit reports it AND
     that the solver honours it whatever timestep was requested.
     """
-    import warnings
     from pycircuit.circuit import numeric, gnd
     from pycircuit.circuit.transient import Transient
 
@@ -2420,8 +2389,7 @@ def test_tline_caps_the_adaptive_step_at_half_the_delay():
 
     for timestep in (5e-9, 2e-9):
         c = _tline_circuit(pulse=True)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = Transient(c, toolkit=numeric, uic=True).solve(
                 refnode=gnd, tend=3e-8, timestep=timestep)
         t = np.asarray(res.sweep_values, dtype=float)
@@ -2435,13 +2403,11 @@ def test_tline_propagation_delay_is_right_when_resolved():
     Measured before the cap, under fixed_timestep: 2.00x TD at dt=1e-9, 4.00x at
     2e-9, 8.00x at 5e-9 -- silently.
     """
-    import warnings
     from pycircuit.circuit import numeric, gnd
     from pycircuit.circuit.transient import Transient
 
     cir = _tline_circuit(pulse=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = Transient(cir, toolkit=numeric, uic=True).solve(
             refnode=gnd, tend=3e-8, timestep=5e-9)
     t = np.asarray(res.sweep_values, dtype=float)
@@ -2496,11 +2462,9 @@ def _driven_rc(f=1e3):
 
 
 def _run(f=1e3, **kw):
-    import warnings
     from pycircuit.circuit import numeric, gnd
     from pycircuit.circuit.transient import Transient
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         return Transient(_driven_rc(f), toolkit=numeric, reltol=1e-4,
                          uic=True, **kw).solve(refnode=gnd, tend=5 / f,
                                                timestep=1 / (f * 50))
@@ -2673,7 +2637,6 @@ def test_max_dv_step_binds_under_every_integrator(integrator):
     networks` uses: resistive, so no error estimator has anything to measure
     and a blind run samples at the step cap -- the premise is asserted per
     method, so the knob provably BINDS rather than being vacuously met."""
-    import warnings
     from pycircuit.circuit import integrator as integ_mod
     from pycircuit.circuit.elements import VCCS, VSin
 
@@ -2689,8 +2652,7 @@ def test_max_dv_step_binds_under_every_integrator(integrator):
     def run(**kw):
         tran = Transient(amp(), toolkit=numeric, reltol=1e-4, uic=True,
                          integrator=getattr(integ_mod, integrator)(), **kw)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-6, timestep=2e-8)
         vo = np.asarray(res.v('out'), float).reshape(-1)
         return float(np.max(np.abs(np.diff(vo)))), len(vo)

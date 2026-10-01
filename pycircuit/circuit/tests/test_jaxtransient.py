@@ -2,6 +2,8 @@
 import numpy as np
 import pytest
 
+from pycircuit.circuit.tests._warnpolicy import quiet
+
 jax = pytest.importorskip("jax")
 import jax.numpy as jnp
 
@@ -296,8 +298,7 @@ def test_jax_error_responds_to_reltol():
     def run(reltol):
         def go():
             cir = _rc_circuit()
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = JAXTransient(cir, reltol=reltol).solve(
                     gnd, tend=tend, timestep=1e-4, uic=True)
             return res, cir.get_node_index('out')
@@ -395,7 +396,6 @@ def test_gate_9_3_jax_transient_lands_on_the_pulse_edges():
     straight through every discontinuity.  Also asserts the run lands exactly on
     `tend`, which it used to overshoot by up to one timestep.
     """
-    import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit.elements import SubCircuit, R, C, VPulse
     from pycircuit.circuit import gnd
@@ -410,8 +410,7 @@ def test_gate_9_3_jax_transient_lands_on_the_pulse_edges():
                            pw=pw, per=per)
         cir['R1'] = R('in', 'out', r=1e3)
         cir['C1'] = C('out', gnd, c=1e-6)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             return JAXTransient(cir).solve(gnd, tend=tend, timestep=1e-4, uic=True)
 
     res = _with_jax_toolkit(go)
@@ -438,7 +437,6 @@ def test_gate_9_2_cpu_and_jax_agree_on_an_rc_transient():
     Gear2 error constant, which had disagreed by 4/3 since stage 4i.  Compared on
     a common time grid by interpolation, since the two choose their own steps.
     """
-    import warnings
     from pycircuit.circuit import numeric, gnd
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.integrator import Gear2Integrator
@@ -451,8 +449,7 @@ def test_gate_9_2_cpu_and_jax_agree_on_an_rc_transient():
     cpu['V1'] = VS(1, gnd, v=1.0)
     cpu['R1'] = R(1, 2, r=1e3)
     cpu['C1'] = C(2, gnd, c=1e-6)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         rc_cpu = Transient(cpu, toolkit=numeric, integrator=Gear2Integrator(),
                            uic=True, timestep_max=1e-5,
                            ).solve(refnode=gnd, tend=tend, timestep=1e-5)
@@ -465,8 +462,7 @@ def test_gate_9_2_cpu_and_jax_agree_on_an_rc_transient():
         cir['V1'] = VS('in', gnd, v=1.0)
         cir['R1'] = R('in', 'out', r=1e3)
         cir['C1'] = C('out', gnd, c=1e-6)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = JAXTransient(cir, timestep_max=1e-5).solve(
                 gnd, tend=tend, timestep=1e-5, uic=True)
         return res, cir.get_node_index('out')
@@ -507,15 +503,13 @@ def test_gate_9_1b_statistics_report_what_the_run_did():
     changed (an open decision -- see 9(b)/(c) in the plan) rejections should start
     happening and that must not read as a regression.
     """
-    import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit import gnd
 
     def go():
         cir = _rc_circuit()
         tran = JAXTransient(cir, reltol=1e-6)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
         return tran, res
 
@@ -543,15 +537,13 @@ def test_gate_9_1b_sigglobal_reference_survives_a_chunk_boundary():
     `_dt_last2` reset: a per-run quantity re-seeded by a per-call constructor.
     Forced here with a CHUNK_SIZE far smaller than the run.
     """
-    import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit import gnd
 
     def go(chunk):
         cir = _rc_circuit()
         tran = JAXTransient(cir)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True, CHUNK_SIZE=chunk)
         return tran.statistics
 
@@ -579,7 +571,6 @@ def test_gate_9e_nonconverged_newton_is_not_committed():
     not at the end of the run, because rejecting non-converged steps drives dt to
     dt_min and the end may never arrive (~5e12 steps on this circuit).
     """
-    import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit.nrsolver import NoConvergenceError
     from pycircuit.circuit import gnd
@@ -587,8 +578,7 @@ def test_gate_9e_nonconverged_newton_is_not_committed():
     def go(maxiter):
         cir = _rc_circuit()
         tran = JAXTransient(cir, maxiter=maxiter)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
         return tran, res, cir.get_node_index('out')
 
@@ -621,7 +611,6 @@ def test_gate_9e_holds_for_solve_batched():
     back as a waveform cut short of `tend` with no error -- measured, 2
     points ending at t = 1e-18 of 5e-3 on this RC at maxiter=1.  A healthy
     batch is untouched (maxiter=100 reaches `tend` in both lanes)."""
-    import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit.nrsolver import NoConvergenceError
     from pycircuit.circuit import gnd
@@ -630,8 +619,7 @@ def test_gate_9e_holds_for_solve_batched():
         cir = _rc_circuit()
         rname = [k for k in cir.elements if k.upper().startswith('R')][0]
         tran = JAXTransient(cir, maxiter=maxiter)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             return tran.solve_batched(
                 refnode=gnd, tend=5e-3, timestep=1e-4, uic=True,
                 override_params_tree={rname: {'r': jnp.array([[1e3], [2e3]])}})
@@ -654,7 +642,6 @@ def test_gate_9e_converged_flag_is_evaluated_at_the_returned_point():
     maxiter=2, which had been giving exactly the maxiter=100 answer and would have
     started raising.
     """
-    import warnings
     from pycircuit.circuit.jaxtransient import newton_inner_loop, TransientState
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit import circuit as circuit_mod
@@ -706,7 +693,6 @@ def test_gate_9_1b_the_reject_path_actually_fires():
     A test asserting `>= 0` -- which is what was written first -- passes against
     the defect and is worth nothing here.
     """
-    import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit import gnd
 
@@ -722,8 +708,7 @@ def test_gate_9_1b_the_reject_path_actually_fires():
         cir['R'] = R('a', 'b', r=1e3)
         cir['C'] = C('b', gnd, c=1e-7)
         tran = JAXTransient(cir, reltol=1e-6)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
         return tran.statistics
 
@@ -743,7 +728,6 @@ def test_gate_9g_opening_step_is_ramped():
     move the answer.  Before it, the error sat at 4.2535e-3 across FOUR DECADES of
     reltol, identical to five figures, always at the first step.
     """
-    import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit import gnd
     tau, tend = 1e-3, 5e-3
@@ -751,8 +735,7 @@ def test_gate_9g_opening_step_is_ramped():
     def run(reltol):
         def go():
             cir = _rc_circuit()
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = JAXTransient(cir, reltol=reltol).solve(
                     gnd, tend=tend, timestep=1e-4, uic=True)
             return res, cir.get_node_index('out')
@@ -791,7 +774,6 @@ def test_solve_batched_runs_and_honours_timestep_max():
     here through the batched entry, with the finer cap taking more steps to
     a better answer, exactly what the old coupling used to show.
     """
-    import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit import gnd
     tau, tend = 1e-3, 5e-3
@@ -799,8 +781,7 @@ def test_solve_batched_runs_and_honours_timestep_max():
     def run(cap):
         def go():
             cir = _rc_circuit()
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 ## 'C', not 'R': R has no eval_*_pure, so an R override is not
                 ## batchable and now raises (doc/transient_review_260820.md,
                 ## F2(a)).  The old {'R': ...} here was a silent no-op -- equal
@@ -839,7 +820,6 @@ def test_tline_standard_path_matches_cpu_bit_close():
     EMFs: a matched 1 V line returned |v(far)| = 24.5 V with delay 0, and NO
     e2e JAX TLine test existed to see it.  tline_stamp_correction fixes it;
     measured at landing: 5e-16 deviation from the CPU, delay exactly TD."""
-    import warnings
     from pycircuit.circuit import numeric
     from pycircuit.circuit import circuit as circuit_mod
     from pycircuit.circuit.toolkit import jaxtoolkit
@@ -863,8 +843,7 @@ def test_tline_standard_path_matches_cpu_bit_close():
     ## timestep_max pins the old timestep-as-cap configuration this record was measured under (decoupled 2026-08-21).
     tran_c = Transient(build(), toolkit=numeric, reltol=1e-4, uic=True,
                        timestep_max=2e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res_c = tran_c.solve(tend=8e-9, timestep=2e-10)
     tc = np.asarray(res_c.sweep_values, float)
     vc = np.asarray(res_c.v('b'), float).reshape(-1)
@@ -873,8 +852,7 @@ def test_tline_standard_path_matches_cpu_bit_close():
     circuit_mod.default_toolkit = jaxtoolkit
     try:
         tran = JAXTransient(build(), reltol=1e-4, timestep_max=2e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=8e-9, timestep=2e-10, uic=True)
         t = np.asarray(res.sweep_values, float)
         va = np.asarray(res.v('a'), float).reshape(-1)
@@ -908,14 +886,12 @@ def test_solve_batched_starts_a_tline_from_each_lanes_operating_point():
     read 0 V for the first TD: measured, a matched 1 V line came out 0.5 V
     off at the first point, where `solve` held it exactly.  Two lanes at
     different loads check that each lane starts from ITS OWN state."""
-    import warnings
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit import gnd
 
     def go():
         tr = JAXTransient(_dc_tline(), reltol=1e-4, timestep_max=2e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             r = tr.solve(gnd, tend=4e-9, timestep=2e-10)
             rs = JAXTransient(_dc_tline(), reltol=1e-4, timestep_max=2e-10).solve_batched(
                 refnode=gnd, tend=4e-9, timestep=2e-10,
@@ -936,7 +912,6 @@ def test_the_tline_ring_buffer_overflow_raises_on_both_entry_points(monkeypatch)
     symptom -- so `solve` raises.  ⚠ `solve_batched` never checked (until
     2026-09-27).  The depth is shrunk to 16 to reach it in a few steps (the
     traced code reads it when each run is traced)."""
-    import warnings
     import pycircuit.circuit.jaxtransient as jt
     from pycircuit.circuit.jaxtransient import JAXTransient
     from pycircuit.circuit import gnd
@@ -944,8 +919,7 @@ def test_the_tline_ring_buffer_overflow_raises_on_both_entry_points(monkeypatch)
 
     def run(batched):
         tr = JAXTransient(_dc_tline(), reltol=1e-4, timestep_max=2e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             if batched:
                 tr.solve_batched(refnode=gnd, tend=2e-8, timestep=2e-10,
                                  override_params_tree={'R': {'r': jnp.array([[50.0, 50.0]])}})
@@ -959,7 +933,6 @@ def test_tline_element_step_cap_holds_the_delay():
     """Stage 8(d) parity: dt_max is clamped to TD/2 (never applied on this
     backend before the TLine port).  At timestep = 5*TD the uncapped run
     reported a wrong delay; with the cap the wavefront arrives at TD."""
-    import warnings
     from pycircuit.circuit import circuit as circuit_mod
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
@@ -978,8 +951,7 @@ def test_tline_element_step_cap_holds_the_delay():
         c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=TD)
         c['Rl'] = R('b', gnd, r=50.0)
         tran = JAXTransient(c, reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=8e-9, timestep=5e-9, uic=True)
         t = np.asarray(res.sweep_values, float)
         va = np.asarray(res.v('a'), float).reshape(-1)
@@ -1013,7 +985,6 @@ def _pi_circuit():
 
 
 def _pi_run(**kw):
-    import warnings
     from pycircuit.circuit import circuit as circuit_mod, gnd
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
@@ -1021,8 +992,7 @@ def _pi_run(**kw):
     circuit_mod.default_toolkit = jaxtoolkit
     try:
         tran = JAXTransient(_pi_circuit(), reltol=1e-5, **kw)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             tran.solve(gnd, tend=1.2e-4, timestep=1e-6, uic=True)
         return tran.statistics
     finally:

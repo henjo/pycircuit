@@ -5,9 +5,10 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
-import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, ModelWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -243,7 +244,6 @@ def test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmetic():
     """
     import os
     import sys
-    import warnings
     import numpy as np
     from pycircuit.circuit.integrator import (Gear2Integrator,
                                               RadauIIA3Integrator)
@@ -254,8 +254,7 @@ def test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmetic():
     NPTS, NCYC, DROP = 120, 100, 80
 
     def jitter(cls, a):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             Tk, T0, _ = periods(cls, NPTS, a=a, ncyc=NCYC, drop=DROP)
         return float(np.std(Tk)) / T0, Tk, T0
 
@@ -358,7 +357,6 @@ def test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order(
     """
     import os
     import sys
-    import warnings
     import numpy as np
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     sys.path.insert(0, os.path.join(os.path.dirname(__file__),
@@ -374,8 +372,7 @@ def test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order(
     assert min(ranks_ok) == max(ranks_ok) == 1, ranks_ok
 
     def spread(build, npts):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             v = [endpoint(RadauIIA3Integrator, build, npts, off)
                  for off in (0.0, 0.31, 0.79)]
         return float(max(v) - min(v))
@@ -441,15 +438,13 @@ def test_one_netlist_returns_three_different_solutions_chosen_by_the_newton_seed
     """
     import os
     import sys
-    import warnings
     import numpy as np
     from pycircuit.circuit.integrator import Gear2Integrator, RadauIIA3Integrator
     sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from branch_selection import march
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(ModelWarning):
         ## (1) the repelling case: three distinct branches, and the spread
         ## does NOT shrink under refinement -- that is what says non-unique
         ## rather than inaccurate
@@ -534,7 +529,6 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
     """
     import os
     import sys
-    import warnings
     import numpy as np
     from pycircuit.circuit.circuit import gnd as _gnd
     from pycircuit.circuit.transient import Transient
@@ -554,8 +548,7 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
         tr.epar.t = 0.0
         tr._begin_run(x, cir.n)
         h = tend / npts
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(ModelWarning):
             for j in range(1, npts + 1):
                 tr._dt = h
                 tr.epar.t = j * h
@@ -590,8 +583,7 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
         assert p_ok == 0, (name, 'FALSE ALARM', p_ok)
 
     ## (3) an ordinary circuit never even reaches the expensive half
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         tr = Transient(_expg_fixture(PER), integrator=Gear2Integrator(),
                        reltol=1e-10)
         tr.solve(refnode=_gnd, tend=PER, timestep=PER / 100,
@@ -688,8 +680,7 @@ def test_the_branch_check_reports_on_a_full_transient_solve():
     rect['Cl'] = C(b, _gnd, c=1e-6)
     rect.update_iparv()
     tr = Transient(rect)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         tr.solve(refnode=_gnd, tend=2e-3, timestep=2e-6)
     assert tr.statistics.accepted_steps > 100
     assert tr.statistics.branch_screens == 0, tr.statistics.branch_screens
@@ -710,7 +701,9 @@ def test_the_branch_check_reports_on_a_full_transient_solve():
                and issubclass(r.category, ModelWarning) for r in rec)
     assert tr.statistics.branch_points == 0
     del tr._branch_screen
-    tr.solve(refnode=_gnd, tend=1.0, timestep=1.0 / 50, fixed_timestep=True)
+    ## (checking again, it finds the second root and says so)
+    with quiet(ModelWarning):
+        tr.solve(refnode=_gnd, tend=1.0, timestep=1.0 / 50, fixed_timestep=True)
     assert tr._branch_error is None and tr.branch_check == 'on'
     assert tr.statistics.branch_points > 0
 
@@ -734,7 +727,6 @@ def test_the_branch_check_does_not_disturb_device_limiting_state():
     (see the next test).  Asserted on both the single-Newton path and the
     coupled one, since they restore separately.
     """
-    import warnings
     import numpy as np
     import sympy
     import pycircuit.circuit.circuit as _cc
@@ -775,8 +767,7 @@ def test_the_branch_check_does_not_disturb_device_limiting_state():
         x = np.zeros(cir.n)
         tr.epar.t = 0.0
         tr._begin_run(x, cir.n)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(ModelWarning):
             for j in range(1, npts + 1):
                 tr._dt = h
                 tr.epar.t = j * h
@@ -820,7 +811,6 @@ def test_the_branch_check_confirms_on_every_solve_path():
     """
     import os
     import sys
-    import warnings
     import numpy as np
     from pycircuit.circuit.circuit import gnd as _gnd
     from pycircuit.circuit.transient import Transient
@@ -839,8 +829,7 @@ def test_the_branch_check_confirms_on_every_solve_path():
         x = np.zeros(cir.n)
         tr.epar.t = 0.0
         tr._begin_run(x, cir.n)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(ModelWarning):
             for j in range(1, 4):
                 tr._dt = 1.0 / 200
                 tr.epar.t = j / 200.0
@@ -867,8 +856,7 @@ def test_the_branch_check_confirms_on_every_solve_path():
 
     ## and an ordinary circuit is quiet on both transform settings
     for tf in (True, False):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             tr = Transient(_expg_fixture(PER), integrator=_I.RadauIIA3Integrator(),
                            reltol=1e-10)
             tr.par.radau_transform = tf
@@ -928,14 +916,12 @@ def test_the_one_over_h_defect_amplification_is_LOCAL_not_propagated():
     """
     import os
     import sys
-    import warnings
     import numpy as np
     sys.path.insert(0, os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from defect_locality import locality_below_the_turn, index1, index2
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         amp2, tail2 = locality_below_the_turn(index2, 'index-2', 2)
         amp1, tail1 = locality_below_the_turn(index1, 'index-1', 1)
 
@@ -973,7 +959,6 @@ def test_the_branch_check_solves_the_step_equation_and_restores_device_state_exa
     the step to end with the state it has with the check off.
     """
     import types
-    import warnings
     import pycircuit.circuit.circuit as _cc
     from pycircuit.circuit.circuit import SubCircuit, gnd as _gnd
     from pycircuit.circuit.elements import G as _G, Diode, VS as _VS, IS as _IS
@@ -1057,8 +1042,7 @@ def test_the_branch_check_solves_the_step_equation_and_restores_device_state_exa
         ## that starts its limiter at the seed landed one ulp away.
         tr._branch_cmax = 1.0
         vl = []
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(ModelWarning):
             for j in range(1, npts + 1):
                 tr._dt = h
                 tr.epar.t = j * h
@@ -1127,7 +1111,6 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
     same edges for radau; and the coupled-LTE loop, wired last, where
     landing does buy accuracy (gear coupled: mean +1.4e-3 -> +1.9e-4,
     spread 2.7e-3 -> 2.7e-6 at reltol 1e-6)."""
-    import warnings as _w
     from pycircuit.circuit.transient import Transient
     circuit.default_toolkit = circuit.numeric
     T_ex = 1.3918372887e-6
@@ -1139,8 +1122,7 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
     out = {}
     for se in (True, False):
         tr = Transient(cir, toolkit=circuit.numeric, reltol=1e-6, state_events=se)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = tr.solve(refnode=gnd, tend=14 * T_ex, timestep=T_ex / 200, x0=x0)
         tt = np.asarray(res.sweep_values, dtype=float)
         xx = np.asarray(res.x, dtype=float)
@@ -1176,8 +1158,7 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
     for se in (True, False):
         tr = Transient(cir, toolkit=circuit.numeric, reltol=1e-4, state_events=se,
                        integrator=RadauIIA3Integrator())
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = tr.solve(refnode=gnd, tend=14 * T_ex, timestep=T_ex / 200, x0=x0)
         tt = np.asarray(res.sweep_values, dtype=float)
         xx = np.asarray(res.x, dtype=float)
@@ -1213,8 +1194,7 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
     cp = {}
     for se in (True, False):
         tr = Transient(cir, toolkit=circuit.numeric, reltol=1e-6, state_events=se)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             res = tr.solve(refnode=gnd, tend=14 * T_ex, timestep=T_ex / 200, x0=x0, coupled_lte=True)
         tt = np.asarray(res.sweep_values, dtype=float)
         xx = np.asarray(res.x, dtype=float)
@@ -1248,7 +1228,6 @@ def test_the_runge_kutta_transient_loop_lands_source_corners():
     order); gear, whose loop always landed, would read 8.9e-3 / 5.9e-4
     without.  Pinned: radau at reltol 1e-4 below 1e-7 with all four
     corners hit, and above 1e-5 with `next_event` silenced."""
-    import warnings as _w
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     circuit.default_toolkit = circuit.numeric
@@ -1279,8 +1258,7 @@ def test_the_runge_kutta_transient_loop_lands_source_corners():
         if not landed:
             c.next_event = lambda t: float('inf')
         tr = Transient(c, toolkit=circuit.numeric, reltol=1e-4, integrator=RadauIIA3Integrator())
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             res = tr.solve(refnode=gnd, tend=10e-6, timestep=0.2e-6)
         tt = np.asarray(res.sweep_values, dtype=float)
         vb = np.asarray(res.x, dtype=float)[names.index('b')]

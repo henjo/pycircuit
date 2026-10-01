@@ -16,10 +16,11 @@ of the rc gain -- and step counts matched 120/120.  Bounds re-tightened
 per the gate's rule to ~5x the new measurements.
 """
 
-import warnings
 
 import numpy as np
 import pytest
+
+from pycircuit.circuit.tests._warnpolicy import quiet
 
 jax = pytest.importorskip('jax')
 
@@ -49,8 +50,7 @@ def _cpu(kind, uic, integrator=None):
     tran = Transient(_build(kind), toolkit=numeric,
                      integrator=integrator or Gear2Integrator(),
                      reltol=RELTOL, uic=uic)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=TEND, timestep=TIMESTEP)
     return (np.asarray(res.sweep_values, float),
             np.asarray(res.v('out'), float).reshape(-1))
@@ -63,8 +63,7 @@ def _jax(kind, uic, integrator='gear', controller='integral'):
         from pycircuit.circuit.jaxtransient import JAXTransient
         tran = JAXTransient(_build(kind), reltol=RELTOL, integrator=integrator,
                             step_controller=controller)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=TEND, timestep=TIMESTEP, uic=uic)
         return (np.asarray(res.sweep_values, float),
                 np.asarray(res.v('out'), float).reshape(-1))
@@ -164,8 +163,7 @@ def test_trapezoidal_rings_on_both_backends_identically():
 
     tran = Transient(stiff(), toolkit=numeric,
                      integrator=TrapezoidalIntegrator(), reltol=1e-4, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         rc = tran.solve(tend=40 * dt, timestep=dt, fixed_timestep=True)
     d_cpu = decay(rc.v('out'))
 
@@ -174,8 +172,7 @@ def test_trapezoidal_rings_on_both_backends_identically():
     try:
         from pycircuit.circuit.jaxtransient import JAXTransient
         j = JAXTransient(stiff(), integrator='trap', reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             rj = j.solve(gnd, tend=40 * dt, timestep=dt, uic=True,
                          fixed_timestep=True)
         d_jax = decay(rj.v('out'))
@@ -215,8 +212,7 @@ def test_backends_agree_on_the_pi_controller(kind, uic, bound):
     tran = Transient(_build(kind), toolkit=numeric,
                      integrator=Gear2Integrator(), reltol=RELTOL, uic=uic)
     tran.step_controller = PIController()
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=TEND, timestep=TIMESTEP)
     tc = np.asarray(res.sweep_values, float)
     vc = np.asarray(res.v('out'), float).reshape(-1)

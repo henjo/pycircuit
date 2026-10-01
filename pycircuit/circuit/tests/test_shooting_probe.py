@@ -5,9 +5,10 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
-import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, ConvergenceWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -61,7 +62,6 @@ def test_probe_shooting_finds_the_orbit_and_screens_for_instability():
     reported as `converged = False`.  `degenerate_placement` names that
     pairing instead of leaving a correct answer labelled non-convergent.
     """
-    import warnings as _w
     from pycircuit.circuit.shooting import ProbeShooting
     circuit.default_toolkit = circuit.numeric
 
@@ -99,8 +99,7 @@ def test_probe_shooting_finds_the_orbit_and_screens_for_instability():
     ## proves nothing.
     mu = 0.1
     ref = PSS(vdp(mu, 1e-2)(), method='gear', reltol=1e-11)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         ref.solve(period=6.6634, timestep=6.6634 / 300,
                   x0=np.array([2.0, 0.0, 0.0]), maxiterations=60)
     assert ref.converged, 'the autonomous reference did not converge'
@@ -169,7 +168,6 @@ def test_even_harmonic_pruning_must_be_measured_and_never_assumed():
     `even_harmonic_content` measures instead of assuming, and why `tones` has
     no clever default.
     """
-    import warnings as _w
     from pycircuit.circuit.shooting import ProbeShooting
     circuit.default_toolkit = circuit.numeric
     RS = 1e-2
@@ -202,8 +200,7 @@ def test_even_harmonic_pruning_must_be_measured_and_never_assumed():
 
     ## (2) THE SILENT FAILURE, asserted: pruning converges to a worse answer.
     ref = PSS(fac(0.2)(), method='gear', reltol=1e-11)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         ref.solve(period=6.6634, timestep=6.6634 / 300,
                   x0=np.array([2.0, 0.0, 0.0]), maxiterations=60)
     assert ref.converged
@@ -270,7 +267,6 @@ def test_the_pac_probe_jacobian_agrees_with_finite_difference_and_is_cheaper():
     starting point rather than trusting a standalone check: a correct Jacobian
     and a broken solve coexisted, and only validating in situ caught it.
     """
-    import warnings as _w
     from pycircuit.circuit.shooting import ProbeShooting
     circuit.default_toolkit = circuit.numeric
 
@@ -313,8 +309,7 @@ def test_the_pac_probe_jacobian_agrees_with_finite_difference_and_is_cheaper():
     got = {}
     for use_pac in (False, True):
         ps = ProbeShooting(fac(), 'v', npts=300, harmonics=3)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             f, amps, ph, info = ps.solve_multitone(
                 f_lc, [2.0, 0.05, 0.05], tol=1e-7, maxiter=12, use_pac=use_pac)
         assert info['converged'], 'use_pac=%s did not converge' % use_pac
@@ -389,7 +384,6 @@ def _pll_lambda(K, kvco, offset=0.0, fref=1e6, npts=400, df=0.0):
     """`|lambda|_max` of the closed loop, seeded at `offset` CYCLES on the
     integrator's own accumulator.  Returns None if the solve does not
     converge."""
-    import warnings as _w
     cir = _pll_loop(K, kvco, fref, df)
     names = [str(n) for n in cir.nodes if str(n) != 'gnd!']
     x0 = np.zeros(cir.n - 1)
@@ -400,8 +394,7 @@ def _pll_lambda(K, kvco, offset=0.0, fref=1e6, npts=400, df=0.0):
     x0[names.index('X1._state0')] = offset
     x0[names.index('ph')] = offset
     pss = PSS(cir, method='gear', reltol=1e-10)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ConvergenceWarning):
         pss.solve(period=1.0 / fref, timestep=1.0 / fref / npts, x0=x0,
                   maxiterations=100)
     if not pss.converged:
@@ -545,8 +538,7 @@ def test_the_probe_analysis_builds_its_analyses_at_its_temperature(monkeypatch):
         c['R'] = R('v', gnd, r=1e3)
         c['C'] = C('v', gnd, c=1e-7)
         return c
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         ProbeShooting(factory, 'v', npts=50, epar=hot).degenerate_placement(
             0.5, 1e3)
     assert seen and set(seen) == {400.0}, seen
@@ -581,8 +573,7 @@ def test_the_probe_reports_inner_solves_that_did_not_converge():
     assert info['inner_unconverged'] > 0, info
     assert any('did not report convergence' in str(r.message) for r in rec)
     ok = ProbeShooting(build, 'v', npts=100, maxiterations=30, warm_start=False)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         _A, _f, info2 = ok.solve(2.0, 1.0 / (2.0 * np.pi), tol=1e-8, maxiter=2)
     assert info2['inner_unconverged'] == 0, info2
 

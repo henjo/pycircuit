@@ -38,7 +38,6 @@ is measured against its absence on the same circuit; the mutation log is
 in the batch report.
 """
 import math
-import warnings
 
 import numpy as np
 import pytest
@@ -49,6 +48,7 @@ import pycircuit.circuit.circuit
 from pycircuit.circuit.circuit import defaultepar, SubCircuit
 from pycircuit.circuit import numeric, gnd
 from pycircuit.circuit.dcanalysis import DC
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.analysis_ss import Noise
 from pycircuit.circuit.elements import VS, R, IS as ISRC
@@ -84,8 +84,7 @@ def _mk(cls, *nodes, **kw):
 
 
 def _dc(c):
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         return DC(c).solve()
 
 
@@ -110,8 +109,7 @@ def _vco_transient(vc, f0=1e4, kvco=1e3, tend=2e-3, **kw):
     c['X'] = eh.VcoHdl('vc', gnd, 'out', gnd, 'ph', f0=f0, kvco=kvco, **kw)
     c['R'] = R('out', gnd, r=1e3)
     tr = Transient(c, toolkit=numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tr.solve(tend=tend, timestep=1e-7)
     return (tr.statistics, np.asarray(res.v('out').x[0], float),
             np.asarray(res.v('out').y, float), np.asarray(res.v('ph').y, float))
@@ -167,8 +165,7 @@ def test_vco_noise_is_on_the_phase_integral():
                            va=va, sf=sf, kff=kff)
         c['R'] = R('out', gnd, r=1e3)
         for f in (1e2, 1e3, 1e4):
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 r = Noise(c, inputsrc='vc', outputnodes=('out', gnd)).solve(f)
             w = 2 * np.pi * f
             expect = (2 * np.pi * va) ** 2 * (sf + kff / f) / w ** 2
@@ -238,8 +235,7 @@ def _divider_transient(cls, n=4.0, f=10500.0, tend=2e-3):
     c['D'] = cls('ph', gnd, 'div', gnd, n=n)
     c['R2'] = R('div', gnd, r=1e3)
     tr = Transient(c, toolkit=numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tr.solve(tend=tend, timestep=1e-7)
     return (tr.statistics, np.asarray(res.v('div').x[0], float),
             np.asarray(res.v('div').y, float))
@@ -309,8 +305,7 @@ def test_mixer_products_are_the_trigonometric_identity():
     c['X'] = eh.MixerHdl('rf', gnd, 'lo', gnd, 'if', gnd, k=k)
     c['R'] = R('if', gnd, r=1e3)
     tr = Transient(c, toolkit=numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         ## fixed 2 us steps: 62 per period of the 8 kHz sum, so the
         ## projection measures the model and not the step controller
         res = tr.solve(tend=2e-3, timestep=2e-6, fixed_timestep=True)
@@ -713,8 +708,7 @@ def _newton_from(c, x0, maxiter=100):
     from pycircuit.circuit.nrsolver import NoConvergenceError
     from pycircuit.circuit.analysis import SingularMatrix
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             x, its = _plain_newton_from(c, x0, maxiter)
         return its, x
     except (NoConvergenceError, SingularMatrix, FloatingPointError,

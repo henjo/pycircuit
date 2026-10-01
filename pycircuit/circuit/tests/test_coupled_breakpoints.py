@@ -11,7 +11,6 @@ starts on the corner rather than straddling it -- and that is true only if the
 solver truncates to breakpoints.  On the coupled path it did not, so `p` could
 be handed a derivative from the wrong segment.
 """
-import warnings
 
 import numpy as np
 import pytest
@@ -19,6 +18,7 @@ import pytest
 from pycircuit.circuit import gnd, numeric
 from pycircuit.circuit.circuit import SubCircuit
 from pycircuit.circuit.elements import R, C, VPulse
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 
 TD, TR, PW, TF, PER = 1e-5, 1e-7, 2e-5, 1e-7, 5e-5
@@ -44,8 +44,7 @@ def _edges():
 
 def _run(coupled):
     tran = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=TEND, timestep=1e-6, coupled_lte=coupled)
     return tran, np.asarray(res.v('b').x, dtype=float).ravel()
 
@@ -87,8 +86,7 @@ def test_both_paths_agree_on_the_waveform_through_the_edges():
     measured at 4.1e-2 on the maximum against 9.8e-4 on the median. The maximum
     here would be measuring `np.interp`, not the solver.
     """
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         r_std = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5).solve(
             tend=TEND, timestep=1e-6, coupled_lte=False)
         r_cpl = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5).solve(
@@ -135,8 +133,7 @@ def test_fixed_timestep_keeps_the_grid_on_the_coupled_path():
     """
     step = 1e-6
     tend = 2e-5
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5).solve(
             tend=tend, timestep=step, coupled_lte=True, fixed_timestep=True)
 
@@ -150,8 +147,7 @@ def test_fixed_timestep_and_adaptive_differ_on_the_coupled_path():
     """Guard against the test above passing because nothing adapts anyway."""
     step = 1e-6
     tend = 2e-5
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         adaptive = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5).solve(
             tend=tend, timestep=step, coupled_lte=True)
     dt = np.diff(np.asarray(adaptive.v('b').x, dtype=float).ravel())
@@ -183,8 +179,7 @@ def test_an_injected_solution_controller_is_the_one_used():
     tran = Transient(_rc(), toolkit=numeric, reltol=1e-5)
     ctrl = SolutionLTEController()
     tran.step_controller = ctrl
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         tran.solve(tend=2e-4, timestep=1e-5, coupled_lte=True)
     ## The private fallback must never have been built.
     assert getattr(tran, '_fang_controller', None) is None
@@ -214,12 +209,10 @@ def test_the_standard_paths_own_controller_is_not_mistaken_for_an_injection():
     refused it, rejecting a controller nobody had asked for.
     """
     tran = Transient(_rc(), toolkit=numeric, reltol=1e-5)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         tran.solve(tend=2e-4, timestep=1e-5, coupled_lte=False)
     assert tran.step_controller is not None      # auto-created by _solve
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=2e-4, timestep=1e-5, coupled_lte=True)
     assert len(np.asarray(res.v('b').x, dtype=float).ravel()) > 10
 
@@ -256,16 +249,14 @@ def test_the_excursion_bound_does_not_break_a_fixed_grid():
 
     ## ANTI-VACUITY FIRST: the bound must actually bite when the grid is free,
     ## or the assertion below passes on a check that never ran.
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         free = Transient(rc_pulse(), toolkit=numeric, reltol=1e-5,
                          max_dv_step=bound)
         free.solve(tend=tend, timestep=step, coupled_lte=True)
     assert free.statistics.rejected_steps > 0, \
         'the excursion bound never fired, so this test proves nothing'
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         tran = Transient(rc_pulse(), toolkit=numeric, reltol=1e-5,
                          max_dv_step=bound)
         res = tran.solve(tend=tend, timestep=step, coupled_lte=True,

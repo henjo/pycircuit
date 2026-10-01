@@ -5,15 +5,21 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
-import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    ConvergenceWarning,
+    UsageWarning,
+)
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 import unittest
 import pytest
 import functools as _functools
+import warnings
 from pycircuit.circuit.tests._shooting_elements import (_PllMultPd,
     _PllPhaseDiv)
 from pycircuit.circuit.tests._shooting_fixtures import (_a10_vdp,
@@ -196,7 +202,6 @@ def test_pss_uses_a_solve_not_an_explicit_inverse(monkeypatch):
     `linearsolver` (a sparse matrix-free path must not be measured against a
     hard-wired dense baseline).  The plain map and gear's pair both.
     """
-    import warnings
     from pycircuit.circuit.linearsolver import DenseSolver
 
     class _Counting(DenseSolver):
@@ -220,8 +225,7 @@ def test_pss_uses_a_solve_not_an_explicit_inverse(monkeypatch):
         pss.autonomous = False
         assert pss._map_kind() == kind
         times, hs = pss._period_grid(per, 40, None)
-        with monkeypatch.context() as mp, warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with monkeypatch.context() as mp, quiet():
             mp.setattr(np.linalg, 'inv', _refuse)
             M = pss._walk(kind, np.zeros(width * m), times, hs,
                           T=per).monodromy()
@@ -240,7 +244,6 @@ def test_pss_still_matches_the_ac_reference_with_a_fine_step():
     With a fine enough step both land on 1.0000, which is what makes the
     resonator comparison above a statement about damping rather than about luck.
     """
-    import warnings
     from pycircuit.circuit.analysis_ss import AC
     circuit.default_toolkit = circuit.numeric
 
@@ -253,14 +256,12 @@ def test_pss_still_matches_the_ac_reference_with_a_fine_step():
         return c
 
     f = 50e3
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         ac = AC(build()).solve(freqs=np.array([f]))
     ref = abs(complex(np.asarray(ac.v(2, gnd)).ravel()[0]))
 
     for method in ('euler', 'trap'):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning, ConvergenceWarning):
             res = PSS(build(), method=method).solve(period=1 / f,
                                                     timestep=1 / f / 1280)
         v = np.asarray(res['tpss'].v(2, gnd), dtype=float)
@@ -369,12 +370,10 @@ def test_pss_absolute_tolerances_reach_the_inner_solve():
     that is accepted and ignored is this codebase's most-paid-for defect
     class, and these two were exactly that here.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
 
     def run(**kw):
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = PSS(_q20_rlc(), method='euler', **kw).solve(
                 period=1e-3, timestep=1e-5, maxiterations=8)
         return np.asarray(res['tpss'].v('c'), dtype=float).ravel()
@@ -401,10 +400,8 @@ def test_steadyratio_relates_the_shooting_criterion_to_reltol():
     tight, _nc1, _r1 = _shooting_trace('euler', reltol=1e-9,
                                        maxiterations=40)
     circuit.default_toolkit = circuit.numeric
-    import warnings as _w
     pss = PSS(_q20_rlc(), method='euler', reltol=1e-9, steadyratio=100.0)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-5, maxiterations=40, trace=True)
     trace = [float(np.max(np.abs(F))) for _z, F, _J in pss.shooting_trace]
 
@@ -445,7 +442,6 @@ def test_pss_finds_the_conducting_solution_of_a_rectifier():
     period compared point for point.  Measured at landing, 5.8e-04 -- 0.01%
     of the 3.94 V ripple.
     """
-    import warnings
     from pycircuit.circuit.elements import Diode
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.integrator import EulerIntegrator
@@ -462,8 +458,7 @@ def test_pss_finds_the_conducting_solution_of_a_rectifier():
         c['CL'] = C('c', gnd, c=1e-7)
         return c
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         res = PSS(rect(), method='euler', reltol=1e-6).solve(
             period=per, timestep=per / n, maxiterations=20)
     t_p = np.asarray(res['tpss'].sweep_values, dtype=float)
@@ -474,8 +469,7 @@ def test_pss_finds_the_conducting_solution_of_a_rectifier():
     assert v_p.max() > 1.0, \
         'the rectifier never conducted: v(c) peaks at %.3e' % v_p.max()
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         rt = Transient(rect(), toolkit=circuit.numeric,
                        integrator=EulerIntegrator(), reltol=1e-6).solve(
             tend=40 * per, timestep=per / n, fixed_timestep=True)
@@ -500,10 +494,8 @@ def test_pss_uses_the_transient_integrator_not_a_private_copy():
     applies on the first step of each period.
     """
     circuit.default_toolkit = circuit.numeric
-    import warnings
     pss = PSS(_q20_rlc(), method='trap')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning, ConvergenceWarning):
         pss.solve(period=1e-3, timestep=1e-5, maxiterations=3)
     tr = pss._transient()
     from pycircuit.circuit.integrator import TrapezoidalIntegrator
@@ -597,7 +589,6 @@ def test_an_autonomous_circuit_is_solved_for_its_own_period():
     +83.08 ppm.  The error falls x4 per halving of the step, matching the
     h^2 precession that causes it.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def run(n):
@@ -640,11 +631,9 @@ def test_the_free_phase_eigenvalue_appears_at_the_solved_period():
     the same circuit reads 0.9615, which is why no spectral threshold can
     detect autonomy (a Q=1000 DRIVEN resonator sits at 0.99686).
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     pss = PSS(_phase_circuit(), method='trap', reltol=1e-8)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
     assert pss.spectral_radius > 0.99, \
         'no unit-circle eigenvalue at the solved period: %.6f' \
@@ -661,7 +650,6 @@ def test_driven_circuits_are_not_called_autonomous(kind):
     well: a Q=1000 resonator has exp(-pi/Q) = 0.99686.  No threshold
     separates them.  Whether anything depends on `t` does, exactly.
     """
-    import warnings
     from pycircuit.circuit.elements import Diode
     circuit.default_toolkit = circuit.numeric
 
@@ -697,7 +685,6 @@ def _pss_plain(method, timestep=1e-5, reltol=1e-3, **kw):
     user has no reason to ask for the formulation that measured 1.266e-01 V
     of avoidable error.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     pss = _force_plain_map(PSS(_q20_rlc(), method=method, reltol=reltol, **kw))
     with warnings.catch_warnings(record=True) as caught:
@@ -870,14 +857,12 @@ def test_pss_lte_measurement_does_not_touch_the_solution():
     on.  With the estimator neutralised the waveform must come back bit for
     bit, or the report is participating in the answer.
     """
-    import warnings
     from pycircuit.circuit.transient import Transient
     circuit.default_toolkit = circuit.numeric
 
     def run():
         pss = PSS(_q20_rlc(), method='gear', reltol=1e-3)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = pss.solve(period=1e-3, timestep=1e-5, maxiterations=40)
         return np.asarray(res['tpss'].x, dtype=float)
 
@@ -936,8 +921,7 @@ def test_pss_solved_history_jacobian_is_the_exact_one():
         pss = PSS(_q20_rlc(), method='gear', reltol=1e-9)
         if force_plain:
             _force_plain_map(pss)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=1e-3, timestep=1e-5, maxiterations=40,
                       trace=True)
         assert pss.converged
@@ -1011,13 +995,11 @@ def test_the_composed_autonomous_system_removes_the_seam_too():
     200 steps and +82.652 at 400, against a plain formulation's +329.682
     and +82.342.  The composed solve must LAND there, not merely improve.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def solved(method, n):
         pss = PSS(_phase_circuit(), method=method, reltol=1e-8)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
             res = pss.solve(period=1e-3, timestep=1e-3 / (n - 1), maxiterations=30)
         assert pss.converged and pss.autonomous
@@ -1078,7 +1060,6 @@ def test_an_autonomous_period_that_is_a_multiple_is_reported_as_one():
     three-fold orbit passes close at `T/3` and `2T/3`, and reporting the
     nearer of the two named a fundamental that was itself a multiple.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def run(seed, method='trap'):
@@ -1186,7 +1167,6 @@ def test_the_trivial_period_root_is_named_not_returned_bare():
     Which of the two failure modes appears is method-dependent, so this
     accepts either and insists only that it be NAMED.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     for method in ('trap', 'gear'):
@@ -1244,14 +1224,12 @@ def test_the_parasitic_roots_stay_far_from_the_physical_ones():
     period, so on every method in this tree today the separation changes no
     number and only documents why the old maximum was safe.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     ## BDF-2's own roots, so the claim above is checked and not asserted
     assert np.allclose(sorted(np.roots([1.5, -2.0, 0.5])), [1.0 / 3.0, 1.0])
 
     pss = PSS(_phase_circuit(), method='gear', reltol=1e-8)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
     ev = np.sort(np.abs(np.linalg.eigvals(np.asarray(pss._monodromy))))[::-1]
 
@@ -1312,14 +1290,12 @@ def test_a_non_uniform_grid_solves_a_driven_circuit():
     The analytic per-period decay is the check, because it does not care
     what grid produced it.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     analytic = float(np.exp(-np.pi / 20.0))
     for method in ('trap', 'gear'):
         for kind in ('2:1', 'smooth'):
             pss = PSS(_q20_rlc(), method=method, reltol=1e-9)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 res = pss.solve(period=1e-3, timestep=1e-5, maxiterations=40,
                                 grid=_grid_fracs(kind, 200))
             assert pss.converged, '%s/%s did not converge' % (method, kind)
@@ -1341,13 +1317,11 @@ def test_a_non_uniform_grid_works_when_the_period_is_an_unknown():
     wrong and the solve would converge to the wrong `T` -- which is what
     this asserts against.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     for method in ('trap', 'gear'):
         for kind in ('2:1', 'smooth'):
             pss = PSS(_phase_circuit(), method=method, reltol=1e-8)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30,
                           grid=_grid_fracs(kind, 200))
             assert pss.converged, '%s/%s did not converge' % (method, kind)
@@ -1445,7 +1419,6 @@ def test_the_lte_chosen_grid_solves_van_der_pol_through_the_analysis():
     opening step, which the prototype did not have because its unknown was
     `x_0` itself.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     T = 162.842412                      # measured free-running period
 
@@ -1453,8 +1426,7 @@ def test_the_lte_chosen_grid_solves_van_der_pol_through_the_analysis():
     cir = _van_der_pol()
     x0 = np.zeros(cir.n)
     x0[cir.get_node_index('v')] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = Transient(cir, reltol=1e-7).solve(refnode=gnd, tend=1200.0 + T,
                                                 timestep=0.05, x0=x0)
     t = np.asarray(res.sweep_values, dtype=float).ravel()
@@ -1473,8 +1445,7 @@ def test_the_lte_chosen_grid_solves_van_der_pol_through_the_analysis():
         % (fr[0], np.median(fr))
 
     pss = PSS(_van_der_pol(), method='trap', reltol=1e-7)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, x0=seed, grid=fr, maxiterations=25)
 
     assert pss.converged, \
@@ -1496,13 +1467,11 @@ def test_a_matrix_free_solve_agrees_with_the_dense_one():
     which are what a caller sees, and not on the iteration count, which
     measurably differs (matrix-free takes one more at m >= 502).
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     out = []
     for mf in (False, True):
         pss = PSS(_varying_c_ladder(), method='gear', reltol=1e-6)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = pss.solve(period=1e-3, timestep=1e-3 / 25, maxiterations=20,
                             matrix_free=mf)
         out.append((pss, np.asarray(res['tpss'].x, dtype=float).ravel()))
@@ -1530,7 +1499,6 @@ def test_matrix_free_covers_every_shooting_system():
     fallback, and the shape of that failure is `spectral_radius` coming back
     NOT None, because only the dense path forms a monodromy.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cases = ((_q20_rlc(), 'trap', 1e-3, 100),        # driven plain
              (_rc_ladder(6), 'gear', 1e-3, 50),      # driven solved-history
@@ -1538,8 +1506,7 @@ def test_matrix_free_covers_every_shooting_system():
              (_phase_circuit(), 'gear', 1e-3, 100))  # autonomous composed
     for cir, method, period, npts in cases:
         pss = PSS(cir, method=method, reltol=1e-8)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=period, timestep=period / npts,
                       maxiterations=25, matrix_free=True)
         assert pss.spectral_radius is None, \
@@ -1565,7 +1532,6 @@ def test_a_parasitic_root_near_the_unit_circle_is_not_read_as_stability():
     alternating root).  Waiting for such a method to exist before testing
     the separation would mean shipping it untested on the day it arrives.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     pss = PSS(_rc_ladder(2), method='gear', reltol=1e-6)
     m = pss.cir.n - 1
@@ -1612,13 +1578,11 @@ def test_the_physical_block_split_shrinks_with_the_step():
     gets.  So refining `h` must shrink the physical split and leave the
     parasitic one alone -- which is a prediction, and this checks it.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def split_at(npts):
         pss = PSS(_phase_circuit(), method='gear', reltol=1e-8)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=1e-3, timestep=1e-3 / npts, maxiterations=30)
         M = np.asarray(pss._monodromy)
         m = pss.cir.n - 1
@@ -1669,7 +1633,6 @@ def test_the_phase_pin_compares_units_on_purpose():
     i.e. nearly tangent to the orbit in that coordinate's own terms, and
     the row is STILL fully aligned because the scaled copy dominates `f`.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     T = 6.663293                      # measured free-running period, mu=1
 
@@ -1678,8 +1641,7 @@ def test_the_phase_pin_compares_units_on_purpose():
     iv = cir.get_node_index('v')
     x0 = np.zeros(cir.n)
     x0[iv] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = Transient(cir, reltol=1e-8).solve(refnode=gnd, tend=35.0,
                                                 timestep=0.02, x0=x0)
     t = np.asarray(res.sweep_values, dtype=float).ravel()
@@ -1692,8 +1654,7 @@ def test_the_phase_pin_compares_units_on_purpose():
     ## replay the production rule for choosing the row
     pss = PSS(_scaled_vdp(), method='trap', reltol=1e-9)
     times, hs = pss._period_grid(T, 200, None)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss._begin_period(seed)
         x1 = np.asarray(pss.solve_timestep(seed, times[0], hs[0]), float)
         x2 = np.asarray(pss.solve_timestep(x1, times[1], hs[0]), float)
@@ -1741,19 +1702,16 @@ def test_the_plain_matrix_free_matvec_carries_each_step_s_coefficients():
     swapping them for a post-run snapshot does NOT fail this -- checked.
     They are still stored per step, against a future variable-order method.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     for method in ('trap', 'euler', 'gear'):
         pss = PSS(_rc_ladder(12), method=method, reltol=1e-6)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning, ConvergenceWarning):
             pss.solve(period=1e-3, timestep=1e-3 / 50, maxiterations=2)
         m = pss.cir.n - 1
         times, hs = pss._period_grid(1e-3, 50, None)
         rng = np.random.default_rng(3)
         x_in = 0.01 * rng.standard_normal(m)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             wk = pss._walk('plain', x_in, times, hs, T=1e-3, want_dT=True)
             _x0, _xe, Mx, Mt = (wk.x0, wk.x_end, wk.monodromy(),
                                 wk.period_column())
@@ -1790,14 +1748,12 @@ def test_a_matrix_free_plain_solve_agrees_with_the_dense_one():
     solved-history path's, as the column count says it must be -- and it
     delivers 1.34x and 1.63x end to end there.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     for method in ('trap', 'euler'):
         out = []
         for mf in (False, True):
             pss = PSS(_q20_rlc(), method=method, reltol=1e-6)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 res = pss.solve(period=1e-3, timestep=1e-3 / 100,
                                 maxiterations=40, matrix_free=mf)
             out.append((pss, np.asarray(res['tpss'].x, dtype=float).ravel()))
@@ -1819,13 +1775,11 @@ def test_a_matrix_free_autonomous_solve_agrees_with_the_dense_one():
     term entirely would still close the state equations and return a wrong
     period.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     out = []
     for mf in (False, True):
         pss = PSS(_phase_circuit(), method='trap', reltol=1e-8)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = pss.solve(period=1e-3, timestep=1e-3 / 200,
                             maxiterations=30, matrix_free=mf)
         out.append((pss, np.asarray(res['tpss'].x, dtype=float).ravel()))
@@ -1854,19 +1808,16 @@ def test_a_matrix_free_composed_autonomous_solve_agrees_with_the_dense_one():
     systems, and a solve can absorb a wrong one by moving `x_0` instead --
     returning a converged answer at a period that is quietly off.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     pss = PSS(_phase_circuit(), method='gear', reltol=1e-8)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=25)
     m = pss.cir.n - 1
     T = pss.period
     times, hs = pss._period_grid(T, 100, None)
     rng = np.random.default_rng(11)
     a, b = 0.01 * rng.standard_normal(m), 0.01 * rng.standard_normal(m)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         wk = pss._walk('pair', np.concatenate((a, b)), times, hs, T=T,
                        want_dT=True)
         Pl, Pp, Ptl, Ptp = wk.P[0], wk.P[1], wk.Pt[0], wk.Pt[1]
@@ -1888,8 +1839,7 @@ def test_a_matrix_free_composed_autonomous_solve_agrees_with_the_dense_one():
     out = []
     for mf in (False, True):
         p = PSS(_phase_circuit(), method='gear', reltol=1e-8)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             r = p.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=25,
                         matrix_free=mf)
         out.append((p, np.asarray(r['tpss'].x, dtype=float).ravel()))
@@ -1986,9 +1936,7 @@ def test_pss_refuses_a_circuit_carrying_hidden_state():
     ## convergence), so it is not declared either.
     assert _q20_rlc().hidden_state_elements() == []
     pss = PSS(_q20_rlc(), method='trap', reltol=1e-6)
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=20)
     assert pss.converged
 
@@ -2020,7 +1968,6 @@ def test_the_period_column_is_a_total_derivative_not_a_partial():
     That is the plain path's seeding, not this; asserted loosely on purpose
     so it does not silently tighten.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     import types
     cap = {}
@@ -2034,12 +1981,10 @@ def test_the_period_column_is_a_total_derivative_not_a_partial():
     for method in ('gear', 'trap'):
         pss = PSS(_phase_circuit(), method=method, reltol=1e-9)
         pss._free_period_solve = types.MethodType(grab, pss)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
         func, z = cap['func'], cap['z0'].copy()
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             _F, J = func(z)
             d = 1e-7 * abs(z[-1])
             zp, zm = z.copy(), z.copy()
@@ -2078,7 +2023,6 @@ def test_autonomy_is_decided_on_every_grid_point_not_a_stride():
     PWM, sampling clocks, S/H and mixer LOs are core PSS workload and are
     exactly the shapes a stride misses.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     per = 1e-3
 
@@ -2108,8 +2052,7 @@ def test_autonomy_is_decided_on_every_grid_point_not_a_stride():
 
     ## end to end: the requested period is the one that comes back
     pss = PSS(pulsed(0.01), method='trap', reltol=1e-6)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / 200, maxiterations=30)
     assert pss.converged
     assert abs(pss.period - per) < 1e-15 * per, \
@@ -2132,7 +2075,6 @@ def test_one_reference_node_per_analysis():
     give -- the two choices disagree about which variable was eliminated
     before the solve began.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
     c.add_node('a')
@@ -2146,8 +2088,7 @@ def test_one_reference_node_per_analysis():
 
     ## the default still works, and so does agreeing explicitly
     pss = PSS(c)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=1e-3, timestep=1e-5, maxiterations=20)
     assert pss.converged
 
@@ -2189,7 +2130,6 @@ def test_a_grid_that_outruns_zero_stability_says_so():
     a run" because the grid is uniform and frozen; a caller's grid is frozen
     but not uniform.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir, per = _resonator_at_resonance()
     n = 100
@@ -2215,8 +2155,7 @@ def test_a_grid_that_outruns_zero_stability_says_so():
     peaks = {}
     for label, fr in (('uniform', None), ('3:1', bad)):
         pss = PSS(cir, method='gear', reltol=1e-8)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = pss.solve(period=per, timestep=per / n, grid=fr,
                             maxiterations=30)
         v = np.asarray(res['tpss'].v('n2', gnd), dtype=float).ravel()
@@ -2263,7 +2202,6 @@ def test_the_returned_waveform_closes_on_a_non_uniform_grid():
     -- and every recorded LTE figure was taken on a uniform grid, so no
     recorded number moved.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir, per = _resonator_at_resonance()
     npts = 200
@@ -2275,8 +2213,7 @@ def test_the_returned_waveform_closes_on_a_non_uniform_grid():
             fr = np.where(np.arange(npts) % 2 == 0, ratio, 1.0)
             g = fr / fr.sum()
         pss = PSS(cir, method=method, reltol=1e-9)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = pss.solve(period=per, timestep=per / npts, grid=g,
                             maxiterations=40)
         assert pss.converged, '%s/%s did not converge' % (method, ratio)
@@ -2330,7 +2267,6 @@ def test_x0_unknown_solves_for_the_period_s_own_start():
     and measured on the same grid it costs -47.3 -> -73.8.  With `x_0` the
     unknown the first step starts ON the orbit and the raw grid is solvable.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir, per = _resonator_at_resonance()
 
@@ -2339,8 +2275,7 @@ def test_x0_unknown_solves_for_the_period_s_own_start():
         for npts in (100, 101, 200):
             for flag in (False, True):
                 pss = PSS(cir, method=method, reltol=1e-10)
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
+                with quiet(AccuracyWarning):
                     res = pss.solve(period=per, timestep=per / npts,
                                     maxiterations=40, x0_unknown=flag)
                 assert pss.converged, \
@@ -2383,8 +2318,7 @@ def test_x0_unknown_solves_for_the_period_s_own_start():
     ## and never together is how that survives.
     for mf in (False, True):
         pss = PSS(cir, method='trap', reltol=1e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = pss.solve(period=per, timestep=per / 100, maxiterations=40,
                             x0_unknown=True, matrix_free=mf)
         assert pss.converged, 'x0_unknown + matrix_free=%s did not converge' % mf
@@ -2431,14 +2365,12 @@ def test_the_period_column_agrees_with_the_vector_field_at_T():
     constant-factor error is invisible to any test that only asks whether a
     number is small; it is unmissable to one that asks whether it falls.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     for method in ('trap', 'gear'):
         gaps = []
         for npts in (100, 200, 400):
             pss = PSS(_phase_circuit(), method=method, reltol=1e-10)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 res = pss.solve(period=1e-3, timestep=1e-3 / npts,
                                 maxiterations=30)
             assert pss.converged
@@ -2448,8 +2380,7 @@ def test_the_period_column_agrees_with_the_vector_field_at_T():
             red = lambda col: np.concatenate((Xw[:ir, col], Xw[ir + 1:, col]))
             x0 = red(0)
             times, hs = pss._period_grid(T, npts, None)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 if pss._solves_history():
                     Mt = pss._walk('pair', np.concatenate((x0, red(-2))),
                                    times, hs, T=T, want_dT=True).Pt[0]
@@ -2497,7 +2428,6 @@ def test_every_flag_combination_is_walked():
         `x0_unknown`, which has nothing to change.  A refusal that quietly
         spreads to another combination would look like a passing test.
     """
-    import warnings
     import itertools
     circuit.default_toolkit = circuit.numeric
 
@@ -2514,8 +2444,7 @@ def test_every_flag_combination_is_walked():
             key = (sysname, method, x0u, mf)
             pss = PSS(cf(), method=method, reltol=1e-8)
             try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
+                with quiet(AccuracyWarning):
                     pss.solve(period=per, timestep=per / 100,
                               maxiterations=30, x0_unknown=x0u,
                               matrix_free=mf)
@@ -2574,7 +2503,6 @@ def test_the_outer_newton_is_damped_and_the_damping_is_nearly_free():
     the undamped loop cost: 10 -> 11 and 2 -> 3, the +1 being the last
     iteration's trial that the loop exits before reusing.
     """
-    import warnings
     import numpy as _np
     from pycircuit.circuit import analysis as _an
     from pycircuit.circuit import numeric as _tk
@@ -2621,8 +2549,7 @@ def test_the_outer_newton_is_damped_and_the_damping_is_nearly_free():
         _an.fsolve = counting
         try:
             pss = PSS(cir, method='trap', reltol=1e-10)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 pss.solve(period=per, timestep=per / 200, maxiterations=40)
             assert pss.converged
             counts[tag] = n[0]
@@ -2652,8 +2579,7 @@ def test_the_outer_newton_is_damped_and_the_damping_is_nearly_free():
                                   _resonator_at_resonance()[1], 'trap'),
                                  (_phase_circuit, 1e-3, 'trap')):
             pss = PSS(cf(), method=method, reltol=1e-8)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 pss.solve(period=per_, timestep=per_ / 100, maxiterations=30)
     finally:
         _an.fsolve = orig
@@ -2684,7 +2610,6 @@ def test_the_phase_pin_is_reselected_every_iterate_and_rescues_a_far_seed():
     2.45e-6) and breaks the dense-vs-matrix-free `lambda_2` bit-equality.
     So it ships opt-in, and a future flip of the default has to fail this.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def vdp():
@@ -2699,8 +2624,7 @@ def test_the_phase_pin_is_reselected_every_iterate_and_rescues_a_far_seed():
     def run(seed, rule, **kw):
         pss = PSS(vdp(), method='trap', reltol=1e-9)
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning, ConvergenceWarning):
                 pss.solve(period=6.3, timestep=6.3 / 200, x0=seed,
                           maxiterations=40, phase_rule=rule, **kw)
             return pss, pss.converged
@@ -2720,8 +2644,7 @@ def test_the_phase_pin_is_reselected_every_iterate_and_rescues_a_far_seed():
     ## ⚠ THE DEFAULT IS THE FROZEN RULE, and this is where a flip of it has
     ## to fail: six suite tests broke under a re-selecting default.
     p_d = PSS(vdp(), method='trap', reltol=1e-9)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p_d.solve(period=6.3, timestep=6.3 / 200, x0=on, maxiterations=40)
     assert p_d.phase_rule == 'frozen', \
         'the autonomous phase rule now defaults to %r; with re-selection as ' \
@@ -2790,7 +2713,6 @@ def test_tstab_rescues_the_trivial_root_basin():
     it. This asserts that ordering, because getting it backwards would
     disable the option exactly where it earns its place.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def vdp(mu):
@@ -2810,8 +2732,7 @@ def test_tstab_rescues_the_trivial_root_basin():
     def run(mu, period, tstab, x0=None):
         pss = PSS(vdp(mu), method='trap', reltol=1e-9)
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 pss.solve(period=period, timestep=period / 200, x0=x0,
                           maxiterations=40, tstab=tstab)
             return pss, ('converged' if pss.converged else 'not-converged')
@@ -2870,14 +2791,12 @@ def test_tstab_also_runs_on_the_driven_path():
     The check is that the state actually MOVED and the answer did not: a
     warm start may not change where a converging solve lands.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     per = 1e-3
 
     def run(tstab):
         pss = PSS(_q20_rlc(), method='trap', reltol=1e-9)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = pss.solve(period=per, timestep=1e-5, maxiterations=40,
                             tstab=tstab)
         assert pss.converged, 'tstab=%r did not converge' % (tstab,)
@@ -2917,12 +2836,10 @@ def test_forward_replay_is_the_exact_transpose_of_the_adjoint(method):
     not).  Checked on a converting diode mixer, where every abscissa carries a
     non-trivial coupling.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _diode_mixer()
     pss = PSS(cir, method=method, reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=1e-6, timestep=1e-6 / 160, maxiterations=40)
     fp = pss._state_map()
     m = cir.n - 1
@@ -2947,13 +2864,11 @@ def test_the_forced_replay_superposes():
     would be solving the wrong equation, and the answer would still look
     entirely plausible.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _pac_circuit()
     per = 1e-3
     pss = PSS(cir, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / 200, maxiterations=40)
     fp = pss.factored_period()
     irn = pss.irefnode
@@ -2981,13 +2896,11 @@ def test_the_matvecs_take_a_complex_vector():
     used to cast with `dtype=float`, which does not refuse a complex vector,
     it DISCARDS its imaginary half.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _pac_circuit()
     per = 1e-3
     pss = PSS(cir, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / 150, maxiterations=40)
     fp = pss.factored_period()
     rng = np.random.default_rng(7)
@@ -3043,7 +2956,6 @@ class _TransCap(Circuit):
 
 def _transcap_pss(c12, c21, npts=60):
     """A driven pair whose `C` is symmetric or not, as asked."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir.add_node('a')
@@ -3054,8 +2966,7 @@ def _transcap_pss(c12, c21, npts=60):
     cir['Cb'] = C('b', gnd, c=1e-12)
     cir['T'] = _TransCap('a', 'b', c11=2e-12, c12=c12, c21=c21, c22=2e-12)
     pss = PSS(cir, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-6, timestep=1e-6 / npts, refnode=gnd)
     assert pss.converged
     return cir, pss
@@ -3263,7 +3174,6 @@ def test_saltation_is_unneeded_for_a_discontinuous_INJECTION_too():
     than the PFD**, and that is the next thing to measure rather than
     assume.
     """
-    import warnings
     from pycircuit.circuit import VSwitch
     circuit.default_toolkit = circuit.numeric
     per = 1e-3
@@ -3288,8 +3198,7 @@ def test_saltation_is_unneeded_for_a_discontinuous_INJECTION_too():
         pss = PSS(build(kind), method='trap', reltol=1e-11)
         m = pss.cir.n - 1
         times, hs = pss._period_grid(per, npts, None)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = pss.solve(period=per, timestep=per / npts, maxiterations=60)
         assert pss.converged
         ir = pss.irefnode
@@ -3302,14 +3211,12 @@ def test_saltation_is_unneeded_for_a_discontinuous_INJECTION_too():
         x0 = np.concatenate((Xw[:ir, 0], Xw[ir + 1:, 0]))
 
         def phi(v):
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 xe = pss._walk('plain', np.asarray(v, dtype=float), times,
                                hs, T=per).x_end
             return np.asarray(xe, dtype=float)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             M = pss._walk('plain', x0, times, hs, T=per).monodromy()
         M = np.asarray(M, dtype=float)
         assert np.linalg.norm(M) > 0.1, \
@@ -3383,7 +3290,6 @@ def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
     convergence there" are two separate defects and the second is the
     dangerous one.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     per = 1e-3
 
@@ -3402,8 +3308,7 @@ def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
         pss = PSS(build(ic), method='trap', reltol=1e-11)
         m = pss.cir.n - 1
         times, hs = pss._period_grid(per, npts, None)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning, ConvergenceWarning):
             ## (`npts` POINTS, the walk's `_period_grid` above: npts - 1 steps)
             res = pss.solve(period=per, timestep=per / (npts - 1), maxiterations=60)
         assert pss.converged
@@ -3412,14 +3317,12 @@ def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
         x0 = np.concatenate((Xw[:ir, 0], Xw[ir + 1:, 0]))
 
         def phi(v):
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 xe = pss._walk('plain', np.asarray(v, dtype=float), times,
                                hs, T=per).x_end
             return np.asarray(xe, dtype=float)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             M = pss._walk('plain', x0, times, hs, T=per).monodromy()
         return np.asarray(M, dtype=float), phi, phi(x0), m
 
@@ -3433,8 +3336,7 @@ def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
         pss = PSS(build(ic), method='trap', reltol=1e-11)
         m = pss.cir.n - 1
         times, hs = pss._period_grid(per, npts, None)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning, ConvergenceWarning):
             ## (`npts` POINTS, the walk's `_period_grid` above: npts - 1 steps)
             res = pss.solve(period=per, timestep=per / (npts - 1), maxiterations=60)
         assert pss.converged
@@ -3443,14 +3345,12 @@ def test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff():
         x0 = np.concatenate((Xw[:ir, 0], Xw[ir + 1:, 0]))
 
         def phi(v):
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 xe = pss._walk('plain', np.asarray(v, dtype=float), times,
                                hs, T=per).x_end
             return np.asarray(xe, dtype=float)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             M = pss._walk('plain', x0, times, hs, T=per).monodromy()
         M = np.asarray(M, dtype=float)
         base = phi(x0)
@@ -3503,7 +3403,6 @@ def test_the_closing_step_period_column_matches_its_own_derivative():
     agrees with a finite difference of the SAME convention, and that
     selecting it does not disturb the default.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     Q, a = 8.0, 0.25
     mu = 1.0 / (2 * np.pi * Q)
@@ -3519,8 +3418,7 @@ def test_the_closing_step_period_column_matches_its_own_derivative():
     pss = PSS(cir, method='trap', reltol=1e-12)
     x0 = np.zeros(cir.n - 1)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=2 * np.pi, timestep=2 * np.pi / 240, x0=x0,
                   maxiterations=250)
     assert pss.converged
@@ -3530,16 +3428,14 @@ def test_the_closing_step_period_column_matches_its_own_derivative():
         'the default convention must be unchanged'
 
     def endpoint(Tv, t_, h_):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             o = pss._walk('plain', xin, t_, h_, T=Tv)
         return np.asarray(o.x_end, dtype=float)
 
     def analytic(mode):
         pss._period_column = mode
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 o = pss._walk('plain', xin, times, hs, T=T, want_dT=True)
         finally:
             pss._period_column = 'proportional'
@@ -3610,7 +3506,6 @@ def test_the_manufactured_opening_step_is_INCONSISTENT_on_an_L_I_cutset():
     Gear-2, whose solved-history path already solves for `x(0)`, was never
     affected. This is a second and stronger reason for B1.
     """
-    import warnings
     from pycircuit.circuit.shooting import topological_index
     from pycircuit.circuit.elements import ISin
     circuit.default_toolkit = circuit.numeric
@@ -3634,8 +3529,7 @@ def test_the_manufactured_opening_step_is_INCONSISTENT_on_an_L_I_cutset():
     def run(method, npts, x0_unknown=False):
         cir = build()
         pss = PSS(cir, method=method, reltol=1e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning, ConvergenceWarning):
             ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
             pss.solve(period=per, timestep=per / (npts - 1),
                       x0=np.zeros(cir.n - 1), maxiterations=60,
@@ -3698,7 +3592,6 @@ def test_x0_unknown_defaults_from_the_topology_and_only_where_it_is_proved():
     On an index-2 netlist the trade reverses: the manufactured opening step
     is INCONSISTENT there, and trapezoidal carries the seed forever.
     """
-    import warnings
     from pycircuit.circuit.elements import ISin, VSin
     circuit.default_toolkit = circuit.numeric
     freq, ia, ll = 1.0, 1.0, 1e-3
@@ -3778,7 +3671,6 @@ def _resonant_driven(npts, method, Lv=1e-3, Cv=1e-9, Rs=10.0):
     multiplier is `≈ 0.94`, so `M` is `O(1)` and the check has something
     to fail on.
     """
-    import warnings
     from pycircuit.circuit.elements import VSin
     circuit.default_toolkit = circuit.numeric
     T = 2.0 * np.pi * np.sqrt(Lv * Cv)
@@ -3790,10 +3682,9 @@ def _resonant_driven(npts, method, Lv=1e-3, Cv=1e-9, Rs=10.0):
     cir['l'] = L('b', gnd, L=Lv)
     cir['c1'] = C('b', gnd, c=Cv)
     pss = PSS(cir, method=method, reltol=1e-11)
-    with warnings.catch_warnings():
+    with quiet(AccuracyWarning):
         ## the LTE advisory fires here -- this fixture is a transpose
         ## check, not an accuracy one, and the grid is deliberately coarse
-        warnings.simplefilter('ignore')
         pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
                   maxiterations=250, x0_unknown=False)
     assert pss.converged
@@ -3867,7 +3758,6 @@ def test_the_plain_transposed_replay_carries_the_autonomous_multiplier():
     """
     ## built inline rather than through a shared fixture: this needs the
     ## SAME circuit under two methods, and `_vdp_at_Q` pins gear
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     lam = {}
@@ -3885,8 +3775,7 @@ def test_the_plain_transposed_replay_carries_the_autonomous_multiplier():
             pss = PSS(cir, method=method, reltol=1e-12)
             z = np.zeros(cir.n - 1)
             z[0] = 2.0
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 pss.solve(period=2 * np.pi, timestep=2 * np.pi / npts, x0=z,
                           maxiterations=250, x0_unknown=False)
             assert pss.converged
@@ -3985,7 +3874,6 @@ def test_lte_grid_derives_a_frozen_nonuniform_grid_that_solve_accepts():
     makes a discontinuity's truncation error small. That half of B7 needs
     the event time to be a Newton unknown and is filed against A6.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu, T = 4.0, 11.0
 
@@ -4002,8 +3890,7 @@ def test_lte_grid_derives_a_frozen_nonuniform_grid_that_solve_accepts():
     pss = PSS(cir, method='gear', reltol=1e-6)
     x0 = np.zeros(cir.n)
     x0[cir.get_node_index('v')] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(UsageWarning):
         fr, seed = pss.lte_grid(period=T, x0=x0, tstab=12 * T, reltol=1e-5)
 
     ## it is a grid: positive fractions of exactly one period
@@ -4025,8 +3912,7 @@ def test_lte_grid_derives_a_frozen_nonuniform_grid_that_solve_accepts():
     ## and `solve` takes it, on a FRESH circuit, reaching the same period
     ## a uniform grid of the same count reaches
     p2 = PSS(vdp(), method='gear', reltol=1e-6)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         ## at the period `lte_grid` OBSERVED (2026-09-21): the grid is
         ## fractions of it, and this test's hint T = 11 is 8 % above the true
         ## 10.2 -- at the hint the folded grid's seam (mid-edge) meets the
@@ -4035,8 +3921,7 @@ def test_lte_grid_derives_a_frozen_nonuniform_grid_that_solve_accepts():
     assert p2.converged, 'the derived grid did not converge'
 
     p3 = PSS(vdp(), method='gear', reltol=1e-6)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p3.solve(period=T, timestep=T / len(fr), x0=seed, maxiterations=60)
     assert p3.converged
 
@@ -4057,8 +3942,7 @@ def test_lte_grid_derives_a_frozen_nonuniform_grid_that_solve_accepts():
     ## `benchmarks/pss_lte_grid.py`, which is far too slow for this suite.
     ## So this asserts NOT-WORSE, which is what is cheaply checkable here.
     pf = PSS(vdp(), method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pf.solve(period=T, timestep=T / 3000, x0=seed, maxiterations=60)
     assert pf.converged
     e_der = abs(p2.period - pf.period) / pf.period
@@ -4131,7 +4015,6 @@ def test_warm_start_finds_the_linear_region_and_the_handoff_works():
     Pol case in `benchmarks/pss_warm_start.py` is outside the paper's scope and
     is deliberately not tested here as if it were solved.
     """
-    import warnings
     from pycircuit.circuit.elements import Diode
     circuit.default_toolkit = circuit.numeric
     T = 1.256e-3
@@ -4152,8 +4035,7 @@ def test_warm_start_finds_the_linear_region_and_the_handoff_works():
     ## established at the pre-2026-09-19 default; at 1e-6 the cold start gets there
     ## in 8 and the fixture demonstrates nothing.  Asked for by name.
     pss = PSS(rlc(False), method='euler', reltol=1e-9, vabstol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         _x, info = pss.find_initial_solution(period=T, npts=200,
                                              n_iter=N_ITER, max_periods=60)
     assert info['found'], 'linear circuit: no linear region found at all'
@@ -4165,8 +4047,7 @@ def test_warm_start_finds_the_linear_region_and_the_handoff_works():
     ## (2) nonlinear: the criterion must REFUSE the first iterate, or (1) is
     ## satisfied by a criterion that never says no
     pssd = PSS(rlc(True), method='euler', reltol=1e-9, vabstol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         xw, infod = pssd.find_initial_solution(period=T, npts=200,
                                                n_iter=N_ITER, max_periods=80)
     assert infod['found'], 'nonlinear circuit: no linear region found'
@@ -4183,8 +4064,7 @@ def test_warm_start_finds_the_linear_region_and_the_handoff_works():
     def solves_from(x0):
         p = PSS(rlc(True), method='euler', reltol=1e-9, vabstol=1e-12)
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning, ConvergenceWarning):
                 p.solve(period=T, timestep=T / 200, x0=x0, maxiterations=8)
             return bool(p.converged)
         except Exception:
@@ -4258,8 +4138,7 @@ def test_an_autonomous_collapse_onto_the_trivial_root_reports_not_converged():
     ## (2) ⚠ AND A GENUINE SOLVE MUST STILL REPORT True, or the "fix" is just
     ## a flag wired to False.
     q = PSS(folding(), method='gear')
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         q.solve(period=2 * T0, timestep=2 * T0 / 300)
     assert q.converged is True, \
         'the demotion leaked into a healthy autonomous solve'
@@ -4272,8 +4151,7 @@ def test_an_autonomous_collapse_onto_the_trivial_root_reports_not_converged():
     for seed in (T0, 1.5 * T0, 2.0 * T0):
         r = PSS(folding(), method='gear')
         try:
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet(ConvergenceWarning):
                 r.solve(period=seed, timestep=seed / 300)
             found[seed] = (float(r._period_state[5]), bool(r.converged))
         except np.linalg.LinAlgError:
@@ -4298,10 +4176,8 @@ def test_warping_estimate_reproduces_the_period_error_at_one_grid_with_no_refere
     zero is a property, pinned so that a future "helpful" degree change
     announces itself: the failure it represents is a clean small number.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ConvergenceWarning):
         cir, _ = _a10_vdp()
         ref = PSS(cir, method='radau', reltol=1e-14)
         ref.solve(period=2 * np.pi, timestep=2 * np.pi / 800,
@@ -4336,11 +4212,9 @@ def test_warping_estimate_refuses_a_period_reading_on_a_driven_circuit():
     source reads as DC and the first gate's driven control came back
     `autonomous=True` with a 'period error' read off an entrained lag.
     """
-    import warnings as _w
     from pycircuit.circuit.elements import ISin
     circuit.default_toolkit = circuit.numeric
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ConvergenceWarning):
         cir, mu = _a10_vdp()
         T = 2 * np.pi
         cir['inj'] = ISin('v', gnd, ia=0.2 * mu * 2.0, freq=1.0 / T)
@@ -4378,8 +4252,7 @@ def test_an_autonomous_solve_that_returns_an_equilibrium_is_not_converged():
     assert p.converged is False, 'an equilibrium reported as a converged orbit'
     assert any('EQUILIBRIUM' in str(r.message) for r in rec), \
         'the demotion must say why: %r' % [str(r.message)[:60] for r in rec]
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         cir, _ = _a10_vdp()
         p = PSS(cir, method='radau', reltol=1e-14)
         p.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]), maxiterations=400)
@@ -4451,7 +4324,6 @@ def test_an_unimprovable_step_is_counted_and_named_instead_of_committed_in_silen
     or `tstab` (50 periods: still non-converged).  `radau` DOES converge there
     in 25 iterations, which is what the message steers to.
     """
-    import warnings
     from pycircuit.circuit import analysis as _an
     circuit.default_toolkit = circuit.numeric
 
@@ -4515,8 +4387,7 @@ def test_an_unimprovable_step_is_counted_and_named_instead_of_committed_in_silen
         c['B'] = BSource('v', gnd, gnd, 'v',
                          i_func=lambda u: u - u ** 3 / 3.0)
         return c
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p2 = PSS(vdp(), method='trap', reltol=1e-9)
         p2.solve(period=6.6634, timestep=6.6634 / 200,
                  x0=np.array([2.0, 0.0]), maxiterations=40)
@@ -4539,13 +4410,11 @@ def test_the_line_search_is_the_last_resort_and_reaches_the_shooting_path():
       the physical root, still gives v in [0, 1] through the plain
       transient -- a first-retry line search beat the ladder to v = -0.010.
     """
-    import warnings as _w
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     from pycircuit.circuit.nrsolver import NoConvergenceError
     circuit.default_toolkit = circuit.numeric
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ConvergenceWarning):
         for method in ('radau', 'trap'):
             cir, T = _current_sense_relaxation_oscillator()
             p = PSS(cir, method=method, reltol=1e-12)
@@ -4579,6 +4448,7 @@ def test_the_line_search_is_the_last_resort_and_reaches_the_shooting_path():
         'the search pre-empted the ladder: v in [%.4f, %.4f]' % (v.min(), v.max())
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_warping_estimate_refuses_a_reading_the_interpolant_sets():
     """2026-09-08 (item 3): Part I's "only if" as a self-check.  The
     defect-correction estimate is the METHOD's error only while the
@@ -4595,7 +4465,6 @@ def test_warping_estimate_refuses_a_reading_the_interpolant_sets():
     and the relaxation orbit under trap at 200 points (trusted False, a
     warning naming the interpolant, the number still returned).
     """
-    import warnings
     import numpy as np
     from pycircuit.circuit import circuit
     from pycircuit.circuit.circuit import SubCircuit, gnd
@@ -4718,8 +4587,7 @@ def test_the_accuracy_estimate_reads_the_devices_at_its_spline():
         c = _diode_fixture()
         c['d'] = cls('b', gnd)
         pss = PSS(c, method='radau', reltol=1e-9)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=60)
             return np.asarray(pss.warping_estimate(periods=5)['lag'], dtype=float)
     a, b = lag(_state_free_diode()), lag(Diode)
@@ -4834,6 +4702,7 @@ def test_a_shooting_solve_sitting_on_its_answer_says_why_it_failed_its_step_test
     assert got[2] == 1 and got[1]['step_floor'] is None
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.ModelWarning')
 def test_the_free_period_and_matrix_free_solves_record_the_stalled_step_signature_too():
     """`57600a8` gave the DENSE driven shooting solves a diagnosis for "sitting on
     the answer and still failing the step test" and said the free-period and
@@ -4925,7 +4794,6 @@ def test_the_period_column_carries_the_constant_source_vector_of_an_autonomous_c
     period at order 5: +1.52e-6 / +2.36e-8 / +6.5e-10 ppm at N = 100 / 200 /
     400.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0
 
@@ -4944,8 +4812,7 @@ def test_the_period_column_carries_the_constant_source_vector_of_an_autonomous_c
     x0 = np.zeros(4)
     x0[0], x0[1] = 2.0, 1e3
     g = PSS(vdp_vs(), method='gear', reltol=1e-8)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         g.solve(period=T0, timestep=T0 / 200, maxiterations=40,
                 break_events=False, x0=x0)
     assert g.converged
@@ -4970,8 +4837,7 @@ def test_the_period_column_carries_the_constant_source_vector_of_an_autonomous_c
     prev = None
     for n in (100, 200):
         pss = PSS(_phase_circuit(), method='radau', reltol=1e-10)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             pss.solve(period=1e-3, timestep=1e-3 / n, maxiterations=60,
                       break_events=False)
         assert pss.converged and pss.autonomous
@@ -5028,8 +4894,7 @@ def test_the_closing_period_column_is_the_default_again_and_its_polished_answer_
     p = PSS(cir, method='gear')
     xfull = np.zeros(cir.n)
     xfull[[str(n_) for n_ in cir.nodes].index('v')] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         fr, seed = p.lte_grid(19.1, x0=xfull, reltol=1e-5, fold=False)   # the raw window
     fr = np.asarray(fr, float)
     N = len(fr)
@@ -5154,7 +5019,6 @@ def test_a_switching_window_is_re_cut_whatever_the_base_step():
     was a class constant (8) that one instance could not change.  Pinned:
     the default, an explicit count reaching the cut, a run's own count
     reaching its stage, and a count below 2 refused."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     K = PSS.EVENT_WINDOW_STEPS
     assert K == 16
@@ -5185,8 +5049,7 @@ def test_a_switching_window_is_re_cut_whatever_the_base_step():
         cir = _pwm_loop(T)
         p = PSS(cir, method='radau', reltol=1e-8, event_window_steps=ws)
         assert p.par.event_window_steps == ws
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=T, timestep=T / 100, x0=np.zeros(cir.n - 1),
                     maxiterations=100)
         assert p.converged and len(p._state_event_fracs) == 4
@@ -5208,7 +5071,6 @@ def test_the_frozen_phase_pin_is_the_raw_rule_kept_on_measurement():
     seeded at ten phases of its exact orbit it converged from 4/10 against the
     raw rule's 7/10.  Pinned: the raw rule's choice on the LC (v), that every
     method still converges there, and `phase_k` exposed for diagnosis."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     Cv, Lv, mu = 1e-9, 1e-6, 0.3
     Z = np.sqrt(Lv / Cv)
@@ -5220,8 +5082,7 @@ def test_the_frozen_phase_pin_is_the_raw_rule_kept_on_measurement():
         cir['L'] = L('v', gnd, L=Lv)
         cir['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: (mu / Z) * (u - u ** 3 / 3.0))
         p = PSS(cir, method=method, reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]), maxiterations=60)
         assert p.converged, method
         assert p.phase_k == 0, (method, p.phase_k)            # v: the raw rule's choice
@@ -5234,7 +5095,6 @@ def test_a_pss_shoots_at_the_temperature_it_was_given(monkeypatch):
     every analysis gets its own copy of `defaultepar`, so a `PSS(epar=...)`
     at 400 K shot at 300.15 K -- its waveform BIT-EQUAL to the default's,
     where forward transients at the two temperatures differ by 4.2e-4 V."""
-    import warnings
 
     from pycircuit.circuit import dcanalysis
     from pycircuit.circuit.circuit import defaultepar
@@ -5259,8 +5119,7 @@ def test_a_pss_shoots_at_the_temperature_it_was_given(monkeypatch):
     hot = defaultepar.copy()
     hot.T = 400.0
     W = {}
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         for label, kw in (('default', {}), ('hot', {'epar': hot})):
             p = PSS(build(), method='radau', reltol=1e-9, **kw)
             p.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
@@ -5290,7 +5149,6 @@ def test_event_grid_does_not_read_an_earlier_runs_element_state():
     forward `Transient` to 0.3 T on the same circuit object the grid gained
     7 spurious events (0.3529, 0.4529, ... -- that run's predicted wraps);
     after `lte_grid` it did not.  The element state is now reset first."""
-    import warnings
 
     from pycircuit.circuit.elements import Idtmod, VPulse
     from pycircuit.circuit.transient import Transient
@@ -5306,8 +5164,7 @@ def test_event_grid_does_not_read_an_earlier_runs_element_state():
         c['I'] = Idtmod('in', gnd, 'out', gnd, modulus=0.1 * T)
         c['Rl'] = R('out', gnd, r=1e3)
         return c
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         fresh = PSS(build(), method='radau')
         fresh.event_grid(T, npts=100)
         c = build()
@@ -5326,7 +5183,6 @@ def test_the_noise_and_the_ppv_are_read_at_the_pss_temperature(monkeypatch):
     every one used `defaultepar`, so a 400 K PSS's resistor noise was
     300.15 K's (the pnoise ratio 1.000000 where 400/300.15 is right) and its
     PPV linearised the devices at 300.15 K."""
-    import warnings
 
     from pycircuit.circuit.circuit import defaultepar
     circuit.default_toolkit = circuit.numeric
@@ -5342,8 +5198,7 @@ def test_the_noise_and_the_ppv_are_read_at_the_pss_temperature(monkeypatch):
         c['C'] = C('out', gnd, c=1e-7)
         return c
     S = {}
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         for label, kw in (('default', {}), ('hot', {'epar': hot})):
             cir = rc()
             pss = PSS(cir, method='radau', reltol=1e-9, **kw)
@@ -5369,8 +5224,7 @@ def test_the_noise_and_the_ppv_are_read_at_the_pss_temperature(monkeypatch):
             seen.append(float(ep.T))
             return _o(self, x, *a, **k)
         monkeypatch.setattr(SubCircuit, name, rec)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         p = PSS(_phase_circuit(), method='radau', reltol=1e-8, epar=hot)
         p.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=30)
         assert p.converged
@@ -5385,10 +5239,8 @@ def test_the_monodromy_twin_takes_every_setting_of_its_pss():
     ⚠ Before (2026-09-28) it took four tolerances and `epar`, so `maxiter`,
     `pcnr`, the solvers, `relref` and the LTE floors never reached the map
     its PPV was read on."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p = PSS(_phase_circuit(), method='trap', reltol=1e-8, maxiter=77,
                 relref='pointlocal', lte_vabstol=1e-9, TRTOL=5.0)
         p.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=30)
@@ -5434,8 +5286,7 @@ def _review_vdp(method='trap', npts=100, ref=None, ac=False):
     T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
     rn = gnd if ref is None else cir.get_node(ref)
     pss = PSS(cir, method=method, reltol=1e-12, irefnode=rn)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, refnode=rn, maxiterations=200,
                   x0=np.array([-2.0 if ref is not None else 2.0, 0.0]),
                   state_events=False, break_events=False)
@@ -5460,8 +5311,7 @@ def test_every_re_solve_keeps_the_callers_event_settings(monkeypatch):
         return solve(self, *a, **kw)
 
     monkeypatch.setattr(PSS, 'solve', recording)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.ppv()
         pss.grid_error(lambda q: float(q.period), levels=2)
     assert len(seen) >= 2, seen
@@ -5497,8 +5347,7 @@ def test_a_re_solve_after_a_settings_change_is_the_solve_those_settings_give():
     c['C'] = C('out', gnd, c=1e-9)
 
     def solved(p):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=1e-5, timestep=1e-5 / 40)
         return np.asarray(p.waveform[1], float).copy()
 
@@ -5532,8 +5381,7 @@ def test_a_timestep_of_t_over_n_gives_n_steps():
     c['C'] = C('out', gnd, c=1e-12)
     for N in (80, 100, 400):
         p = PSS(c, method='gear')
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=1e-6, timestep=1e-6 / N)
         assert len(p.factored_period().times) == N + 1, (N, len(p.factored_period().times))
 
@@ -5550,8 +5398,7 @@ def test_a_solved_pss_is_freed_when_its_last_reference_goes(method):
     import gc
     import weakref
     _cir, pss = _review_vdp(method=method, npts=60)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.factored_period()
         pss.ppv()
     res = pss.shooting_residual

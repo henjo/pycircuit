@@ -8,6 +8,8 @@ from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
 import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, ConvergenceWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -103,13 +105,11 @@ def test_trapezoidal_is_now_right_on_both_axes():
     propagation must reduce to the old one when the `iq` row is identically
     zero; if this drifts, the "one formula, two methods" claim is false.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     peaks = {}
     for method in ('euler', 'trap'):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = PSS(_q20_rlc(), method=method, reltol=1e-6).solve(
                 period=1e-3, timestep=1e-5, maxiterations=40)
         peaks[method] = float(np.max(np.abs(
@@ -138,7 +138,6 @@ def test_gear2_shooting_converges_and_damps_between_euler_and_trap():
     peak, numerical damping should order euler >> gear2 > trap.  Measured
     at landing -- euler 8.815 V, gear 19.766 V, trap 19.990 V.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     peaks, iters = {}, {}
@@ -206,7 +205,6 @@ def test_the_monodromy_is_the_pair_map_not_a_corner_of_it():
     The analytic decay is the check, so this cannot drift with a
     reimplementation.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     analytic = float(np.exp(-np.pi / 20.0))
 
@@ -214,8 +212,7 @@ def test_the_monodromy_is_the_pair_map_not_a_corner_of_it():
         pss = PSS(_q20_rlc(), method=method, reltol=1e-9)
         if force_plain:
             _force_plain_map(pss)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=1e-3, timestep=1e-5, maxiterations=40)
         assert pss.converged
         return pss
@@ -244,11 +241,9 @@ def test_the_matrix_free_matvec_is_the_dense_monodromy():
     bug, so this pins them against each other directly rather than against
     a converged answer that could absorb the difference.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     pss = PSS(_varying_c_ladder(), method='gear', reltol=1e-6)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 25, maxiterations=20)
     m = pss.cir.n - 1
     times, hs = pss._period_grid(1e-3, 25, None)
@@ -260,8 +255,7 @@ def test_the_matrix_free_matvec_is_the_dense_monodromy():
     ## different entering states are what make the opening testable.
     xa = np.full(m, 0.05)
     xb = np.full(m, -0.03)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         M = pss._walk('pair', np.concatenate((xa, xb)), times, hs).monodromy()
         _wf = pss._walk('pair', np.concatenate((xa, xb)), times, hs,
                         dense=False, keep=True)
@@ -330,8 +324,7 @@ def test_gears_closing_period_column_carries_the_opening_step_and_auto_falls_bac
         raise _Stop()
     pss, kw = _gear_on_a_smooth_3to1_grid('closing')
     pss._free_period_solve = types.MethodType(grab, pss)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         try:
             pss.solve(maxiterations=40, **kw)
         except _Stop:
@@ -348,8 +341,7 @@ def test_gears_closing_period_column_carries_the_opening_step_and_auto_falls_bac
     assert err < 1e-6, 'the closing period column is %.2e from FD' % err
 
     ref, kw = _gear_on_a_smooth_3to1_grid('proportional')
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         ref.solve(maxiterations=40, **kw)
     assert ref.converged
     ## (a generous budget: the closing attempt must STALL OUT and hand over,
@@ -407,17 +399,14 @@ def test_the_monodromy_transpose_is_a_reverse_replay():
     does two `C^T` products against one shared transposed solve where the
     forward does two `C` products and a solve.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     pss = PSS(_rc_ladder(6), method='gear', reltol=1e-6)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 50, maxiterations=2)
     m = pss.cir.n - 1
     times, hs = pss._period_grid(1e-3, 50, None)
     z = np.zeros(m)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         _wf = pss._walk('pair', np.concatenate((z, z)), times, hs,
                         dense=False, keep=True)
         C0, steps = _wf.opening, _wf.steps
@@ -491,7 +480,6 @@ def test_the_monodromy_is_correct_across_a_switching_boundary():
     meaningless "rel err 1.000".  The switched element must change the decay
     RATE without clamping, or there is no monodromy to check.
     """
-    import warnings
     from pycircuit.circuit import VSwitch
     circuit.default_toolkit = circuit.numeric
     per = 1e-3
@@ -515,8 +503,7 @@ def test_the_monodromy_is_correct_across_a_switching_boundary():
         pss = PSS(switched(1e3, 1e9), method='trap', reltol=1e-11)
         m = pss.cir.n - 1
         times, hs = pss._period_grid(per, npts, None)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = pss.solve(period=per, timestep=per / npts, maxiterations=40)
         assert pss.converged
         ir = pss.irefnode
@@ -529,14 +516,12 @@ def test_the_monodromy_is_correct_across_a_switching_boundary():
         x0 = np.concatenate((Xw[:ir, 0], Xw[ir + 1:, 0]))
 
         def phi(v):
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 xe = pss._walk('plain', np.asarray(v, dtype=float), times,
                                hs, T=per).x_end
             return np.asarray(xe, dtype=float)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             M = pss._walk('plain', x0, times, hs, T=per).monodromy()
         M = np.asarray(M, dtype=float)
         assert np.linalg.norm(M) > 0.1, \
@@ -589,7 +574,6 @@ def _pac_operator_pieces(method, npts=40):
     whatever `Jtvec`/`Cvec` hold — but the two sides must describe one
     trajectory or the comparison means nothing.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _q20_rlc()
     per, N = 1e-3, cir.n - 1
@@ -598,8 +582,7 @@ def _pac_operator_pieces(method, npts=40):
     pss.autonomous = False
     times, hs = pss._period_grid(per, npts, None)
     x0 = np.zeros(N)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss._record_cj = True                     # (Cvec/Jtvec on request)
         pss._walk('plain', x0, times, hs, T=per)    # records Cvec/Jtvec/times
         Jt = [np.asarray(j).copy() for j in pss.Jtvec]
@@ -721,7 +704,6 @@ def test_grid_error_refines_with_the_runs_own_twin():
     under `monodromy='gear'` read the gear twin at the first level and the
     DEFAULT twin at the refined ones (measured) -- a refinement mixing two
     methods.  Now every level reads the run's own twin."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir.add_node('v')
@@ -735,8 +717,7 @@ def test_grid_error_refines_with_the_runs_own_twin():
     def ev(q):
         seen.append(q.monodromy_twin().par.method)
         return float(q.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=6.3, timestep=6.3 / 60, x0=np.array([2.0, 0.0]),
                 maxiterations=80)
         p.grid_error(ev)
@@ -924,15 +905,13 @@ def test_autonomous_pss_under_trbdf2_finds_its_own_period():
     orbit's own free-phase direction), and `factored_period()` must hand
     back the two-stage map.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _scaled_vdp()
     iref = cir.get_node_index(gnd)
     iv = cir.get_node_index('v')
     x0 = np.zeros(cir.n)
     x0[iv] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = Transient(cir, reltol=1e-8).solve(refnode=gnd, tend=35.0,
                                                 timestep=0.02, x0=x0)
     t = np.asarray(res.sweep_values, dtype=float).ravel()
@@ -943,8 +922,7 @@ def test_autonomous_pss_under_trbdf2_finds_its_own_period():
 
     def solve(method):
         pss = PSS(_scaled_vdp(), method=method, reltol=1e-8)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.3, timestep=6.3 / 300, x0=seed,
                       maxiterations=40)
         return pss
@@ -1009,15 +987,13 @@ def test_autonomous_pss_under_radau_finds_its_own_period():
     must hand back the coupled Radau map.  The period column `dphi/dT` that
     the free-period Newton needs is finite-difference checked in the build.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _scaled_vdp()
     iref = cir.get_node_index(gnd)
     iv = cir.get_node_index('v')
     x0 = np.zeros(cir.n)
     x0[iv] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = Transient(cir, reltol=1e-8).solve(refnode=gnd, tend=35.0,
                                                 timestep=0.02, x0=x0)
     t = np.asarray(res.sweep_values, dtype=float).ravel()
@@ -1028,8 +1004,7 @@ def test_autonomous_pss_under_radau_finds_its_own_period():
 
     def solve(method):
         pss = PSS(_scaled_vdp(), method=method, reltol=1e-8)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.3, timestep=6.3 / 300, x0=seed,
                       maxiterations=40)
         return pss
@@ -1225,14 +1200,12 @@ def test_pcnr_reaches_the_shooting_inner_transient_over_a_stage_method():
     PCNR is now 2-for-4 (rescue/breakpoints still need Transient.solve, which
     PSS does not call).
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def solve(pcnr):
         c = _diode_mixer()
         p = PSS(c, method='trbdf2', reltol=1e-11, pcnr=pcnr)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             p.solve(period=1e-6, timestep=1e-6 / 160, maxiterations=40)
         assert p.converged
         return p
@@ -1287,7 +1260,6 @@ def test_monodromy_matches_a_finite_difference_of_the_period_map():
     conductance: off `exp(-1)` = 0.368, fully on `exp(-2)` = 0.135, solution in
     between -- non-degenerate AND junction-dependent.
     """
-    import warnings
     from copy import copy
     from pycircuit.circuit.elements import Diode
     circuit.default_toolkit = circuit.numeric
@@ -1341,8 +1313,7 @@ def test_monodromy_matches_a_finite_difference_of_the_period_map():
                        ('theta', {'x0_unknown': True}),
                        ('radau', {}), ('trbdf2', {})):
         pss = PSS(build(15.0), method=method, reltol=1e-13)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=1e-6, timestep=1e-6 / 60, maxiterations=60, **kw)
         assert pss.converged, '%s: PSS did not converge' % method
         fp = pss.factored_period()
@@ -1416,12 +1387,10 @@ def _shooting_evaluations(method, K, T, **kw):
     is the quantity that carries the claim -- see the test below for why the
     COUNT alone is not.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir, _T = _b2_resonator()
     pss = PSS(cir, method=method, reltol=1e-3)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         res = pss.solve(period=T, timestep=T / K, maxiterations=200,
                         trace=True, **kw)
     assert pss.converged, '%s at K=%d did not converge' % (method, K)
@@ -1595,11 +1564,9 @@ def test_theta_s_shooting_jacobian_carries_the_consistent_iq_seed():
     ## exists to produce -- `((1-theta)/theta)^K`, positive at even K, which
     ## `ThetaIntegrator`'s own table gives as 7.778e-01 at C = 1e4.  Before the
     ## fix that eigenvalue was 0: annihilated, exactly as an Euler opener does.
-    import warnings as _w
     cir2, _T = _b2_resonator()
     pss2 = PSS(cir2, method='theta', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
         pss2.solve(period=T, timestep=T / 199, maxiterations=60)
     fp = pss2.factored_period()
@@ -1685,7 +1652,6 @@ def test_theta_s_bias_is_per_period_and_the_knob_is_reachable():
     4.3e-03 across `C T` = 0.0063 / 0.0628 / 0.628 -- FLAT over two decades, so
     a period that moves a few percent moves nothing that matters.
     """
-    import warnings as _w
     from pycircuit.circuit.integrator import ThetaIntegrator
     circuit.default_toolkit = circuit.numeric
 
@@ -1723,8 +1689,7 @@ def test_theta_s_bias_is_per_period_and_the_knob_is_reachable():
         p = PSS(cir, method='theta', reltol=1e-3, **kw)
         if neuter:
             p._theta_biased = lambda integ: integ
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
             res = p.solve(period=T, timestep=T / (K - 1), maxiterations=200)
         assert p.converged
@@ -1805,7 +1770,6 @@ def test_the_default_method_is_radau_and_it_takes_no_monodromy_twin():
        native one is order 5 — more cost for a worse answer, and nothing would
        have failed.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
 
     cir = SubCircuit()
@@ -1821,8 +1785,7 @@ def test_the_default_method_is_radau_and_it_takes_no_monodromy_twin():
             pss.par.method,)
 
     T0 = 2.0 * np.pi
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         pss.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]),
                   maxiterations=80)
     assert pss.converged, 'the default method did not converge on van der Pol'
@@ -1863,7 +1826,6 @@ def test_a_gear_free_period_stall_near_unit_multiplier_is_named_and_redirected()
     converges at 0.9.  The generic non-convergence warning used to advise
     `method='gear'` on an oscillator -- the wrong way.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def run(method, lambda2):
@@ -1984,7 +1946,6 @@ def test_lte_grid_steps_with_the_pss_own_method_so_a_radau_grid_is_radau_shaped(
     number on a 195-point adaptive grid here is O(1000 ppm), second order;
     a good number at one N is refined before it is believed.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     MU = 10.0
     T_REF = 19.098600502
@@ -2004,8 +1965,7 @@ def test_lte_grid_steps_with_the_pss_own_method_so_a_radau_grid_is_radau_shaped(
         p = PSS(cir, method=method)
         xfull = np.zeros(cir.n)
         xfull[[str(n_) for n_ in cir.nodes].index('v')] = 2.0
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             fr, seed = p.lte_grid(19.1, x0=xfull, reltol=1e-5)
         grids[method] = (np.asarray(fr, float), seed, float(p.lte_period))
     ## a radau grid is not a gear grid: sparser, from the fifth-order run
@@ -2013,8 +1973,7 @@ def test_lte_grid_steps_with_the_pss_own_method_so_a_radau_grid_is_radau_shaped(
         (len(grids['radau'][0]), len(grids['gear'][0]))
     fr, seed, Tl = grids['radau']
     q = PSS(vdp(), method='radau', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         q.solve(period=Tl, timestep=Tl / len(fr), x0=seed, maxiterations=80,
                 break_events=False, grid=fr)
     assert q.converged
@@ -2035,7 +1994,6 @@ def test_the_stage_methods_shoot_matrix_free():
     then warned), runs there since 2026-09-25 --
     `test_the_state_event_stage_runs_matrix_free`.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
     cases = ((_q20_rlc, dict(period=1e-3, timestep=1e-3 / 200)),
@@ -2045,8 +2003,7 @@ def test_the_stage_methods_shoot_matrix_free():
             out = {}
             for mf in (False, True):
                 p = PSS(mk(), method=method, reltol=1e-9)
-                with _w.catch_warnings():
-                    _w.simplefilter('ignore')
+                with quiet():
                     p.solve(maxiterations=60, matrix_free=mf, **kw)
                 assert p.converged, (method, mk.__name__, mf)
                 out[mf] = (float(p.period), np.asarray(p.waveform[1], dtype=float))
@@ -2066,7 +2023,6 @@ def test_every_method_states_its_order_to_grid_error_and_warping_estimate():
     Pol at 60 points it read +9.8e-7 against a true +1.7e-7 (the derived
     quintic +2.0e-7), and at 120 points the wrong sign.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     want = {'euler': (1, 3), 'trap': (2, 3), 'trapezoidal': (2, 3),
             'theta': (2, 3), 'gear': (2, 3), 'gear2': (2, 3),
@@ -2080,8 +2036,7 @@ def test_every_method_states_its_order_to_grid_error_and_warping_estimate():
     T_REF = 6.330195895892e+00
     T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
     q = PSS(_vdp_asym(), method='glm4', reltol=1e-12)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         q.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
                 maxiterations=60)
         assert q.converged
@@ -2107,13 +2062,11 @@ def test_a_glm_shoots_on_its_exact_map_once_the_startup_is_linearised():
     8e-12 / 6e-11, the RLC converged in ONE Newton step, matrix-free equal
     to dense to 1e-15, and the spectral radius the RLC's decay.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
     for method in ('glm2', 'glm3'):
         p = PSS(_vdp_asym(), method=method, reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
                     maxiterations=60)
         assert p.converged, method
@@ -2123,8 +2076,7 @@ def test_a_glm_shoots_on_its_exact_map_once_the_startup_is_linearised():
 
         def walk(x, TT, want=False):
             tms, hs = p._period_grid(TT, 60, None)
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 return p._walk('glm', x, tms, hs, T=TT, want_dT=want)
         w = walk(x0, T, True)
         M = np.asarray(w.monodromy(), dtype=float)
@@ -2144,8 +2096,7 @@ def test_a_glm_shoots_on_its_exact_map_once_the_startup_is_linearised():
         out = {}
         for mf in (False, True):
             p = PSS(_q20_rlc(), method=method, reltol=1e-9)
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 p.solve(period=1e-3, timestep=1e-3 / 200, maxiterations=60,
                         matrix_free=mf, trace=True)
             assert p.converged, (method, mf)
@@ -2173,7 +2124,6 @@ def test_a_glm_map_carries_the_nordsieck_rescale_on_a_non_uniform_grid():
     differences on the 3:1 grid, and the factored map's transpose against
     its forward.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
     N = 60
@@ -2183,8 +2133,7 @@ def test_a_glm_map_carries_the_nordsieck_rescale_on_a_non_uniform_grid():
     rng = np.random.default_rng(1)
     for method in ('glm2', 'glm3'):
         p = PSS(_vdp_asym(), method=method, reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(ConvergenceWarning):
             p.solve(period=T0, timestep=T0 / N, x0=np.array([2.0, 0.0]),
                     maxiterations=60, grid=fr)
         assert p.converged, method
@@ -2195,8 +2144,7 @@ def test_a_glm_map_carries_the_nordsieck_rescale_on_a_non_uniform_grid():
 
         def walk(x, hs, TT, want=False, keep=False):
             tms = np.concatenate(([0.0], np.cumsum(hs)))
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 return p._walk('glm', x, tms, hs, T=TT, want_dT=want,
                                keep=keep)
         p._period_column = 'proportional'
@@ -2244,7 +2192,6 @@ def test_a_glm_reads_pac_off_its_own_map_at_its_order():
     the order within a quarter of p over 100 -> 200, the finite difference
     to 1e-6, the replays to 1e-14.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     f0, Q = 1e3, 20.0
     L_, C_ = 1e-3, 1.0 / ((2 * np.pi * f0) ** 2 * 1e-3)
@@ -2256,8 +2203,7 @@ def test_a_glm_reads_pac_off_its_own_map_at_its_order():
     def run(method, N):
         c = _q20_rlc()
         p = PSS(c, method=method, reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=1e-3, timestep=1e-3 / N)
             res = PAC(c, toolkit=circuit.numeric).solve(p, [f])
         sv = np.asarray(res.sweep_values, dtype=float)
@@ -2290,8 +2236,7 @@ def test_a_glm_reads_pac_off_its_own_map_at_its_order():
         orig = cir.u
 
         def walk():
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 xs = p._glm_period_blocks(x0, tms, np.diff(tms))[1]
             return np.array([np.asarray(x_, dtype=float) for x_ in xs])
 
@@ -2332,15 +2277,13 @@ def test_grid_error_refines_by_any_factor_and_reports_the_methods_order():
         c['B'] = BSource('v', gnd, gnd, 'v',
                          i_func=lambda u: mu * (u - u ** 3 / 3.0))
         p = PSS(c, method=method, reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
                     maxiterations=100)
         assert p.converged
         return p
     period = lambda q: float(q.period)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         g = solved('gear', 40)
         r3 = g.grid_error(period, refine=3, levels=3)
         r2 = g.grid_error(period, refine=3, levels=2)

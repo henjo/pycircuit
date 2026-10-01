@@ -5,9 +5,10 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
-import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, CostWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -36,7 +37,6 @@ def test_the_orbital_covariance_resolves_onto_the_floquet_modes():
     be asserting that a rank-2 object equals a rank-4 one; the honest
     gates are the ones below.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     cir = SubCircuit()
@@ -48,15 +48,13 @@ def test_the_orbital_covariance_resolves_onto_the_floquet_modes():
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
                   maxiterations=300)
     assert pss.converged
 
     pac = PAC(cir)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         cw, _wi = pac.orbital_mode_weights(pss)
         modes, K = _wi['modes'], _wi['K']
     U = np.column_stack([m['u0'] for m in modes])
@@ -118,7 +116,6 @@ def test_orbital_correlation_is_gated_three_ways():
     not tuned away; the clean comparison needs the plain-path Lyapunov
     solve, which is still gear-only.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     cir = SubCircuit()
@@ -130,16 +127,14 @@ def test_orbital_correlation_is_gated_three_ways():
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
                   maxiterations=300)
     assert pss.converged
     pac = PAC(cir)
     m = cir.n - 1
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         R4, _ = pac.orbital_correlation(pss, maxharmonics=4)
         R, Cc = pac.orbital_correlation(pss, maxharmonics=32)
         Kf, info = pac.oscillator_covariance(pss, samples=True)
@@ -157,8 +152,7 @@ def test_orbital_correlation_is_gated_three_ways():
     mu2 = float(np.real(md['mu']))
     P2 = np.real(md['p'][:, :-1]); Q2 = np.real(md['q'][:, :-1])
     Nn = P2.shape[1]; Tp = float(pss.period); h = Tp / Nn
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         CY2 = 0.5 * np.real(np.asarray(pac._cy_reduced(pss, 0.0)))
     g = np.array([Q2[:, k] @ CY2 @ Q2[:, k] for k in range(Nn)])
     nper = max(int(np.ceil(-40.0 / (2 * mu2 * Tp))), 1)
@@ -181,8 +175,7 @@ def test_orbital_correlation_is_gated_three_ways():
     ## the wrong object, and it cost an afternoon.
     Ps = [np.asarray(P, float)[:m, :m] for P in info['samples']]
     G = [np.asarray(gg, float)[:m, :m] for gg in info['growth_samples']]
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         v0, pinfo = pss.ppv()
     ## `samples[j]` is node j: prepending `v0` shifted every node by one
     ## (the 'first-order Lyapunov route' of 2026-09-20 was this shift)
@@ -221,7 +214,6 @@ def test_the_orbital_residual_was_the_reference_not_the_sum():
     variance ~ Q against a CONSTANT phase-direction bounded part. Neither
     "physics" (which would grow with Q) nor "numerical" (flat).
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     cir = SubCircuit()
@@ -233,8 +225,7 @@ def test_the_orbital_residual_was_the_reference_not_the_sum():
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
     pss = PSS(cir, method='euler', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 1600, x0=np.array([2.0, 0.0]),
                   maxiterations=400)
     assert pss.converged
@@ -242,8 +233,7 @@ def test_the_orbital_residual_was_the_reference_not_the_sum():
     assert pss.factored_period().width == cir.n - 1, 'expected n = m'
     pac = PAC(cir)
     m = cir.n - 1
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         Rm, _ = pac.orbital_correlation(pss)
         Kf, info = pac.oscillator_covariance(pss, samples=True)
         v0, pinfo = pss.ppv()
@@ -303,13 +293,11 @@ def test_the_modal_spectrum_reads_a_coloured_source_per_input_sideband():
     every sideband (the model the refusal protected) reads 2.3 .. 5.1x.
     Below the phase model's validity (`phase_psd`'s corner / power bound)
     it refuses."""
-    import warnings as _w
     tot = {}
     for kind in ('coloured', 'filtered'):
         _c, pss, pac, ov = _coloured_vdp(kind)
         f0 = 1.0 / float(pss.period)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             _v, info = pss.ppv()
             f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
             offs = np.array([3.0, 10.0, -10.0]) * f_amp
@@ -378,8 +366,7 @@ def test_the_modal_spectrum_takes_a_coloured_source_that_follows_the_orbit():
         assert not B[2], kind
     assert run('flicker_psd')[2], 'a sign-blind root went unwarned'
     ms, _ph, _b, (pss, pac, ov, offs, f0) = run('lorentz_moving', method='radau')
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(CostWarning):
         pn = float(np.real(pac.pnoise(pss, f0 + offs[1], ov, maxsidebands=16,
                                       cyclostationary=True, sweeptype='absolute')[0]))
     assert abs(ms['total'][1] / pn - 1.0) < 1e-9, (ms['total'][1], pn)
@@ -412,10 +399,8 @@ def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
     flipped -- INVISIBLE on the symmetric orbit (`(1 - kV) q` is `(1 + kV)
     q` shifted by T/2, the same power spectrum), +5.1e-3 / -5.2e-3 on the
     asymmetric one, which is why the across case runs there."""
-    import warnings as _w
     c, pss, pac, ov = _orbit_modulated_vdp('white_ref', method='radau')
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         modes = pss.floquet_modes(pss)
     names = [str(x) for x in c.nodes]
     irn = pss.irefnode
@@ -431,8 +416,7 @@ def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
     for kind in ('white_ref', 'white'):
         _c, pss, pac, ov = _orbit_modulated_vdp(kind, method='radau')
         f0 = 1.0 / float(pss.period)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             _v, info = pss.ppv()
             f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
             offs = np.array([0.3, 3.0, 10.0, -10.0]) * f_amp
@@ -443,8 +427,7 @@ def test_the_floquet_modes_carry_a_source_on_an_algebraic_node():
     _c, pss, pac, ov = _orbit_modulated_vdp('white_across', method='radau',
                                             a=0.3)
     f0 = 1.0 / float(pss.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         _v, info = pss.ppv()
         f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
         offs = np.array([10.0, -10.0]) * f_amp
@@ -474,7 +457,6 @@ def test_oscillator_covariance_takes_a_coloured_source_in_its_transverse_part():
     `orbital_correlation` -8.5e-4).  Measured on the Lorentzian van der Pol
     (gear): -3.1e-3 at 200 points, -7.8e-4 at 400 (gear's h^2).  The
     remaining refusals name their alternatives."""
-    import warnings as _w
     from scipy.integrate import trapezoid
     _c, pss, pac, ov = _coloured_vdp('coloured', npts=200)
     f0 = 1.0 / float(pss.period)
@@ -492,8 +474,7 @@ def test_oscillator_covariance_takes_a_coloured_source_in_its_transverse_part():
     cyc = float(np.mean(tr[:N, ov, ov]))
     tot = 0.0
     dl = np.geomspace(1e-6, 0.5, 150)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         for j in range(1, 5):
             offs = (np.unique(np.concatenate((-(1.0 - dl[::-1]), -dl[::-1], dl)))
                     if j == 1 else np.concatenate((-dl[::-1], dl))) * f0
@@ -570,7 +551,6 @@ def test_the_orbital_mode_basis_is_complete_only_for_noise_in_the_slow_subspace(
     This test exists so the sibling's `rel < 1e-2` is never read as a property
     of the method.  It is a property of where that fixture puts its noise.
     """
-    import warnings as _w
     from pycircuit.circuit.elements import IS as _IS
     circuit.default_toolkit = circuit.numeric
 
@@ -597,16 +577,14 @@ def test_the_orbital_mode_basis_is_complete_only_for_noise_in_the_slow_subspace(
         pss = PSS(cir, method='gear', reltol=1e-11)
         x0 = np.zeros(cir.n - 1)
         x0[0] = 2.0
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=200)
         assert pss.converged, 'noise at %s did not converge' % noise_node
         return cir, pss
 
     def floor_of(node):
         cir, pss = build(node)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             cw, _wi = PAC(cir).orbital_mode_weights(pss)
             modes, K = _wi['modes'], _wi['K']
         cw = np.asarray(cw)
@@ -680,11 +658,9 @@ def _hostile_oscillator(npts=400):
     """
     cir, pss = _a9_vdp(cval=4.0, lval=0.25, a=0.30)
     if npts != 400:
-        import warnings as _w
         T = float(pss.period)
         pss = PSS(cir, method='gear', reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
                       maxiterations=400)
         assert pss.converged
@@ -728,7 +704,6 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
     under the same mutation, blind -- which
     is the whole point: a fixture on which the defect is visible.
     """
-    import warnings as _w
     ## ⚠ 2026-09-20: TWO grids, because the reference route is FIRST ORDER
     ## and this gate at one grid measured that, not eq (22).  See the ladder
     ## in the docstring: with the second-order adjoint the eq (22) route
@@ -745,8 +720,7 @@ def test_the_three_way_orbital_gate_holds_on_the_hostile_fixture():
         pac = PAC(cir)
         m = cir.n - 1
         Tp = float(pss.period)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             CY2 = 0.5 * np.real(np.asarray(pac._cy_reduced(pss, 0.0)))
             R, _ = pac.orbital_correlation(pss, maxharmonics=8)
             modes = pss.floquet_modes(pss)
@@ -856,8 +830,7 @@ def test_every_period_harmonic_is_a_fourier_integral_on_a_non_uniform_grid():
         c['R'] = R('in', 'out', r=Rv)
         c['C'] = C('out', gnd, c=Cv)
         pss = PSS(c, method='gear', reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = pss.solve(period=T, timestep=T / n, maxiterations=60,
                             break_events=False,
                             grid=(fracs(n) if nonuniform else None))
@@ -893,8 +866,7 @@ def test_every_period_harmonic_is_a_fourier_integral_on_a_non_uniform_grid():
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         Tv = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
         pss = PSS(cir, method='gear', reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=Tv, timestep=Tv / 200, x0=np.array([2.0, 0.0]),
                       maxiterations=300, break_events=False,
                       grid=(fracs(200) if nonuniform else None))
@@ -959,8 +931,7 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
         pss = PSS(cir, method=method, reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / n, x0=np.array([2.0, 0.0]),
                       maxiterations=300, break_events=False,
                       grid=(fracs(n) if nonuniform else None))
@@ -972,8 +943,7 @@ def test_floquet_modes_under_gear_are_second_order_on_a_uniform_grid_and_radau_i
 
     def parts(cir, pss):
         pac = PAC(cir, toolkit=circuit.numeric)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             ms = pac.modal_spectrum(pss, np.array([1e-3, 3e-3]), 0, maxharmonics=8,
                                     maxsidebands=16)
         return np.concatenate([ms[k] for k in ('phase', 'orbital', 'correlation')])
@@ -1054,7 +1024,6 @@ def test_gear_adjoint_modes_are_second_order_on_a_non_uniform_grid_and_orbital_c
     orbital sum and returned 146x .. 2449x radau's R, growing as N^2,
     silently.  It refuses now, naming radau, as `modal_spectrum` does.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
 
@@ -1072,8 +1041,7 @@ def test_gear_adjoint_modes_are_second_order_on_a_non_uniform_grid_and_orbital_c
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
         pss = PSS(cir, method=method, reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / n, x0=np.array([2.0, 0.0]),
                       maxiterations=300, break_events=False,
                       grid=(fracs(n) if nonuniform else None))
@@ -1104,8 +1072,7 @@ def test_gear_adjoint_modes_are_second_order_on_a_non_uniform_grid_and_orbital_c
         solve(400, True, 'radau')[1], maxharmonics=8)
     for method in ('gear', 'trap'):
         cir, pss = solve(400, True, method)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             R, _c = PAC(cir, toolkit=circuit.numeric).orbital_correlation(pss, maxharmonics=8)
         assert np.all(np.isfinite(R))
         assert np.linalg.norm(R - Rr) / np.linalg.norm(Rr) < 3e-2, method
@@ -1115,7 +1082,6 @@ def _vdp_tank_noise(tau_over_T, npts=200):
     """van der Pol (Q = 8, gear -- a PAIR map) with one current source on
     the tank: white (`tau_over_T` None) or a Lorentzian `IS(noiseTau)` of
     the same level."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
@@ -1129,8 +1095,7 @@ def _vdp_tank_noise(tau_over_T, npts=200):
     pss = PSS(c, method='gear', reltol=1e-12)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
     assert pss.converged
     return c, pss
@@ -1176,8 +1141,7 @@ def test_the_phase_mode_is_found_with_a_dc_source_on_the_tank():
     alignment is 1.000 and the split goes through."""
     from pycircuit.circuit.tests._shooting_fixtures import _loss_osc
     _cir, pss, pac, _rs = _loss_osc('parallel', idc_node='v', idc=1.0)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         modes = pss.floquet_modes()
         k, _rest = pac._phase_mode_split(pss, modes, 'test')
         R, _C = pac.orbital_correlation(pss)

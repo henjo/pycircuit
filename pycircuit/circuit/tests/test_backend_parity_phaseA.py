@@ -16,6 +16,8 @@ import warnings
 import numpy as np
 import pytest
 
+from pycircuit.circuit.tests._warnpolicy import quiet
+
 jax = pytest.importorskip('jax')
 import jax.numpy as jnp
 
@@ -64,8 +66,7 @@ def test_p1_uic_works_as_parameter_and_as_argument():
         for kind in ('param', 'arg'):
             tran = (JAXTransient(_rc(), reltol=1e-4, uic=True) if kind == 'param'
                     else JAXTransient(_rc(), reltol=1e-4))
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = (tran.solve(gnd, tend=1e-4, timestep=1e-5)
                        if kind == 'param' else
                        tran.solve(gnd, tend=1e-4, timestep=1e-5, uic=True))
@@ -103,8 +104,7 @@ def test_p2_trtol_settable_and_live_on_both_backends():
         tran = Transient(rc_step(), toolkit=numeric, reltol=1e-4, uic=True,
                          TRTOL=trtol)
         assert tran.LTERATIO == trtol
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             tran.solve(gnd, tend=5e-3, timestep=1e-4)
         counts[trtol] = tran.statistics.accepted_steps
     assert counts[1.0] > counts[7.0], counts
@@ -160,8 +160,7 @@ def test_p3_one_floor_one_vocabulary_for_solve_batched():
 
     def go():
         tran = JAXTransient(_rc(), reltol=1e-4, minstep=1e-16)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve_batched(
                 refnode=gnd,
                 override_params_tree={'R': {'r': jnp.array([[1e2], [1e4]])}},
@@ -180,8 +179,7 @@ def test_p4_refnode_defaults_to_gnd_object():
         outs = []
         for explicit in (False, True):
             tran = JAXTransient(_rc(), reltol=1e-4)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = (tran.solve(gnd, tend=1e-4, timestep=1e-5, uic=True)
                        if explicit else
                        tran.solve(tend=1e-4, timestep=1e-5, uic=True))
@@ -196,8 +194,7 @@ def test_p10_outputstep_resamples_the_jax_result():
     from pycircuit.circuit.jaxtransient import JAXTransient
 
     def go():
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             ## timestep_max pins the adaptive grid density the 1e-3 bound
             ## was derived at (cap decoupled from timestep 2026-08-21) --
             ## this test measures the resample, not the default cap.
@@ -280,8 +277,7 @@ def test_p6_integrator_defaults_agree_and_the_choice_is_live():
         errs = {}
         for m in ('gear', 'euler'):
             tran = JAXTransient(rc_step(), reltol=1e-4, integrator=m)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
             t = np.asarray(res.sweep_values, float)
             v = np.asarray(res.v('out'), float).reshape(-1)
@@ -321,8 +317,7 @@ def test_p8_standard_band_on_jax():
 
     def run(**kw):
         tran = JAXTransient(rc_step(), reltol=1e-5, **kw)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=5e-3, timestep=1e-3, uic=True)
         return (np.asarray(res.sweep_values, float),
                 np.asarray(res.v('out'), float).reshape(-1),
@@ -376,14 +371,12 @@ def test_p9_fixed_timestep_on_jax():
 
     cpu = Transient(pc(), toolkit=numeric, uic=True,
                     integrator=Gear2Integrator())
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         rc_ = cpu.solve(gnd, tend=6e-6, timestep=1e-7, fixed_timestep=True)
     vc = np.asarray(rc_.v('b'), float).reshape(-1)
 
     def go():
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             rj = JAXTransient(pc()).solve(gnd, tend=6e-6, timestep=1e-7,
                                           uic=True, fixed_timestep=True)
         t = np.asarray(rj.sweep_values, float)
@@ -433,8 +426,7 @@ def test_p7_relref_modes_on_jax():
         stats = {}
         for mode in ('sigglobal', 'alllocal', 'pointlocal'):
             tran = JAXTransient(rc_step(), reltol=1e-5, relref=mode)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = tran.solve(gnd, tend=5e-3, timestep=1e-3, uic=True)
             t = np.asarray(res.sweep_values, float)
             v = np.asarray(res.v('out'), float).reshape(-1)
@@ -504,8 +496,7 @@ def test_p11_provided_function_on_jax():
 
     cpu = Transient(rc(), toolkit=numeric, reltol=1e-5, uic=True,
                     integrator=Gear2Integrator(), timestep_max=1e-5)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         rc_ = cpu.solve(gnd, tend=1e-3, timestep=1e-5,
                         provided_function=pf_cpu)
     tc = np.asarray(rc_.sweep_values, float)
@@ -519,8 +510,7 @@ def test_p11_provided_function_on_jax():
             return jnp.array([-1e-3 * jnp.sin(2 * jnp.pi * 1e3 * t), 0.0])
 
         tran = JAXTransient(rc(), reltol=1e-5, timestep_max=1e-5)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             rj = tran.solve(gnd, tend=1e-3, timestep=1e-5, uic=True,
                             provided_function=pf_jax)
         tj = np.asarray(rj.sweep_values, float)
@@ -632,8 +622,7 @@ def test_p22_state_row_mask_and_shared_coupled_default():
                         ('euler', EulerIntegrator())):
         tran = Transient(rect(), toolkit=numeric, pcnr=True, reltol=1e-5,
                          uic=True, timestep_max=2e-5, integrator=integ)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-3, timestep=2e-5, coupled_lte=True)
         t = np.asarray(res.sweep_values, float)
         assert t[-1] == pytest.approx(2e-3, rel=1e-9), name
@@ -681,16 +670,14 @@ def test_max_dv_step_voltage_check_on_algebraic_networks():
 
     ## CPU: blind by default, bounded with the check.
     tran = Transient(amp(), toolkit=numeric, reltol=1e-4, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         r0 = tran.solve(gnd, tend=2e-6, timestep=2e-8)
     assert max_step_dv(r0) > 1.0, 'premise gone: the default is not blind'
 
     ## FACTOR semantics: 2e11 * lte_vabstol(1e-12) = the 0.2 V bound.
     tran = Transient(amp(), toolkit=numeric, reltol=1e-4, uic=True,
                      max_dv_step=2e11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         r1 = tran.solve(gnd, tend=2e-6, timestep=2e-8)
     assert max_step_dv(r1) <= 0.2 * (1.0 + 1e-9)
     assert len(np.asarray(r1.sweep_values)) > 5 * len(np.asarray(r0.sweep_values))
@@ -702,15 +689,13 @@ def test_max_dv_step_voltage_check_on_algebraic_networks():
     ## coverage runs here, on the CPU, in milliseconds.
     tran = Transient(amp(), toolkit=numeric, reltol=1e-4, uic=True,
                      max_dv_step=2e11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         rc2 = tran.solve(gnd, tend=2e-6, timestep=2e-8, coupled_lte=True)
     assert max_step_dv(rc2) <= 0.2 * (1.0 + 1e-9)
 
     def go():
         tran = JAXTransient(amp(), reltol=1e-4, max_dv_step=2e11)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-6, timestep=2e-8, uic=True)
         assert max_step_dv(res) <= 0.2 * (1.0 + 1e-9)
         t = np.asarray(res.sweep_values, float)
@@ -742,8 +727,7 @@ def test_max_dv_step_voltage_check_on_algebraic_networks():
     (bvs, cvr), (_bis, _cir) = tran._dv_step_bounds()
     assert cvr == pytest.approx(2 * math.pi / 64)
     assert bvs == pytest.approx(2 * math.pi / 64 * 1.0)   # va = 1 V
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         ra = tran.solve(gnd, tend=2e-6, timestep=2e-8)
     assert max_step_dv(ra) <= 2 * math.pi / 64 * 10.0 * (1.0 + 1e-9)
     assert len(np.asarray(ra.sweep_values)) > 100
@@ -755,8 +739,7 @@ def test_max_dv_step_voltage_check_on_algebraic_networks():
         assert bi == float(tran.par.lte_iabstol)
         import math
         tran = JAXTransient(amp(), reltol=1e-4, max_dv_step='auto')
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             ra = tran.solve(gnd, tend=2e-6, timestep=2e-8, uic=True)
         assert max_step_dv(ra) <= 2 * math.pi / 64 * 10.0 * (1.0 + 1e-9)
 
@@ -766,11 +749,9 @@ def test_max_dv_step_voltage_check_on_algebraic_networks():
         ## at the dv-controlled resolution is ~3 uA -- a 1 uA bound
         ## (factor 1e6 * lte_iabstol) must
         ## force a visibly denser run than the voltage check alone.
-        import warnings as _w
         def run(**kw):
             tran = JAXTransient(amp(), reltol=1e-4, **kw)
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 res = tran.solve(gnd, tend=2e-6, timestep=2e-8, uic=True)
             return len(np.asarray(res.sweep_values))
         n_v = run(max_dv_step=2e11)
@@ -890,8 +871,7 @@ def test_p21_batched_dc_operating_point():
         c['C1'] = C('out', gnd, c=1e-9)
         r_lanes = jnp.asarray([[1e3, 1e3], [3e3, 1e3]])  # (lane, instance)
         tran = JAXTransient(c, reltol=1e-5)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve_batched(
                 gnd, override_params_tree={'R': {'r': r_lanes}},
                 tend=5e-6, timestep=1e-7)          # uic defaults False now
@@ -911,8 +891,7 @@ def test_p21_batched_dc_operating_point():
         c2['R'] = R('b', gnd, r=1e3)
         c2['C'] = C('b', gnd, c=1e-9)
         tran2 = JAXTransient(c2, reltol=1e-5)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res2 = tran2.solve_batched(
                 gnd,
                 override_params_tree={'R': {'r': jnp.asarray([[1e3], [2e3]])}},
@@ -933,8 +912,7 @@ def test_p21_batched_dc_operating_point():
         c3['R'] = R('b', gnd, r=1e3)
         tran3 = JAXTransient(c3, reltol=1e-5)
         with pytest.raises(NoConvergenceError, match='lane'):
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 tran3.solve_batched(
                     gnd,
                     override_params_tree={'R': {'r': jnp.asarray([[1e3], [2e3]])}},

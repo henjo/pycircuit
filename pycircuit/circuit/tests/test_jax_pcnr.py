@@ -15,10 +15,11 @@ to 1.1e-2; wall-clock cost +29% on the rectifier, against the CPU's measured
 predicted it must be re-measured.
 """
 
-import warnings
 
 import numpy as np
 import pytest
+
+from pycircuit.circuit.tests._warnpolicy import quiet
 
 jax = pytest.importorskip('jax')
 
@@ -72,8 +73,7 @@ def test_pcnr_solves_the_cold_start_plain_newton_cannot():
     def run(pcnr):
         tran = JAXTransient(_cold_start(), reltol=1e-5, firststep=8e-7,
                             pcnr=pcnr)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-5, timestep=1e-6, uic=True)
         return np.asarray(res.v('b'), float).reshape(-1)
 
@@ -92,8 +92,7 @@ def test_pcnr_matches_cpu_pcnr_on_the_rectifier():
 
     tran_c = Transient(_rectifier(), toolkit=numeric, pcnr=True,
                        reltol=1e-5, uic=True, timestep_max=2e-5)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res_c = tran_c.solve(tend=2e-3, timestep=2e-5)
     tc = np.asarray(res_c.sweep_values, float)
     vc = np.asarray(res_c.v('b'), float).reshape(-1)
@@ -101,8 +100,7 @@ def test_pcnr_matches_cpu_pcnr_on_the_rectifier():
     def run():
         tran = JAXTransient(_rectifier(), reltol=1e-5, pcnr=True,
                             timestep_max=2e-5)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-3, timestep=2e-5, uic=True)
         assert tran.statistics.nonconverged_steps == 0
         return (np.asarray(res.sweep_values, float),
@@ -125,8 +123,7 @@ def test_pcnr_without_junctions_falls_through():
         c['R1'] = R('in', 'out', r=1e3)
         c['C1'] = C('out', gnd, c=1e-6)
         tran = JAXTransient(c, pcnr=pcnr)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=1e-4, timestep=1e-5, uic=True)
         return np.asarray(res.x)
 
@@ -146,8 +143,7 @@ def test_pcnr_inside_coupled_matches_cpu():
 
     tran_c = Transient(_rectifier(), toolkit=numeric, pcnr=True,
                        reltol=1e-5, uic=True, timestep_max=2e-5)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res_c = tran_c.solve(tend=2e-3, timestep=2e-5, coupled_lte=True)
     tc = np.asarray(res_c.sweep_values, float)
     vc = np.asarray(res_c.v('b'), float).reshape(-1)
@@ -155,8 +151,7 @@ def test_pcnr_inside_coupled_matches_cpu():
     def run():
         tran = JAXTransient(_rectifier(), reltol=1e-5, pcnr=True,
                             coupled_lte=True, timestep_max=2e-5)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-3, timestep=2e-5, uic=True)
         return (np.asarray(res.sweep_values, float),
                 np.asarray(res.v('b'), float).reshape(-1))
@@ -176,8 +171,7 @@ def test_pcnr_inside_coupled_solves_the_cold_start():
     def run(pcnr):
         tran = JAXTransient(_cold_start(), reltol=1e-5, firststep=8e-7,
                             coupled_lte=True, pcnr=pcnr)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-5, timestep=1e-6, uic=True)
         return np.asarray(res.v('b'), float).reshape(-1)
 
@@ -209,8 +203,7 @@ def test_pcnr_with_tline_matches_cpu():
 
     tran_c = Transient(line_diode(), toolkit=numeric, pcnr=True,
                        reltol=1e-4, uic=True, timestep_max=2e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res_c = tran_c.solve(tend=8e-9, timestep=2e-10)
     tc = np.asarray(res_c.sweep_values, float)
     vc = np.asarray(res_c.v('c'), float).reshape(-1)
@@ -218,8 +211,7 @@ def test_pcnr_with_tline_matches_cpu():
     def run():
         tran = JAXTransient(line_diode(), reltol=1e-4, pcnr=True,
                             timestep_max=2e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=8e-9, timestep=2e-10, uic=True)
         return (np.asarray(res.sweep_values, float),
                 np.asarray(res.v('c'), float).reshape(-1))

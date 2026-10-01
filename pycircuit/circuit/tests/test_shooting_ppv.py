@@ -5,15 +5,17 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
-import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, UsageWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 import unittest
 import pytest
 import functools as _functools
+import warnings
 from pycircuit.circuit.tests._shooting_fixtures import (_adjoint_ladder,
     _comparator_relaxation_oscillator,
     _exact_relaxation_oscillator_ppv,
@@ -30,7 +32,6 @@ from pycircuit.circuit.tests._shooting_fixtures import (_adjoint_ladder,
 
 def _vdp_ppv(npts, mu=1.0):
     """A converged van der Pol and its PPV."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
     c.add_node('v')
@@ -39,8 +40,7 @@ def _vdp_ppv(npts, mu=1.0):
     c['B'] = BSource('v', gnd, gnd, 'v',
                      i_func=lambda u: mu * (u - u ** 3 / 3.0))
     pss = PSS(c, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=6.6634, timestep=6.6634 / npts,
                   x0=np.array([2.0, 0.0]), maxiterations=50)
     assert pss.converged, 'van der Pol did not converge at %d points' % npts
@@ -162,7 +162,6 @@ def test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has():
     changing.**  The transverse ratios asserted below are what makes that
     visible instead of implicit.
     """
-    import warnings
     from pycircuit.circuit.transient import Transient
     rng = np.random.default_rng(0)
     dirs = [d / np.linalg.norm(d) for d in
@@ -190,8 +189,7 @@ def test_the_ppv_predicts_a_phase_shift_the_oscillator_actually_has():
             ## anything it has to resolve.
             tran = Transient(cir, toolkit=circuit.numeric, reltol=1e-9,
                              iabstol=1e-13, vabstol=1e-11)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = tran.solve(refnode=gnd, tend=nper * T,
                                  timestep=T / ppp, x0=xi)
             return np.asarray(res.x, dtype=float)[:, -1]
@@ -308,12 +306,10 @@ def test_the_ppv_border_residual_is_the_free_check():
 
 def test_the_ppv_refuses_what_has_no_phase():
     """A driven circuit's phase is its source's, not its own."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _adjoint_ladder(3)
     pss = PSS(cir, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
     assert pss.converged and not pss.autonomous
     with pytest.raises(ValueError, match='FREE-RUNNING'):
@@ -405,7 +401,6 @@ def test_no_periodic_covariance_exists_for_an_oscillator():
     dead linear (trace K 1.825 -> 1793.4 over 1000 periods); this checks
     the structural half on our own monodromy.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     _cir, pss, _v, _info = _vdp_ppv(60)
@@ -436,8 +431,7 @@ def test_no_periodic_covariance_exists_for_an_oscillator():
     ## the contrast: a DRIVEN circuit has no such obstruction
     cir2 = _adjoint_ladder(4)
     pss2 = PSS(cir2, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss2.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
     fp2 = pss2.factored_period()
     n2 = fp2.width
@@ -484,7 +478,6 @@ def test_the_coloured_noise_functional_is_exactly_zero_here(mu):
     over the period.)
     """
     period = 6.6634 if mu >= 1.0 else 6.35
-    import warnings
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
     c.add_node('v')
@@ -493,8 +486,7 @@ def test_the_coloured_noise_functional_is_exactly_zero_here(mu):
     c['B'] = BSource('v', gnd, gnd, 'v',
                      i_func=lambda u: mu * (u - u ** 3 / 3.0))
     pss = PSS(c, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=period, timestep=period / 200,
                   x0=np.array([2.0, 0.0]), maxiterations=60)
     assert pss.converged
@@ -546,13 +538,11 @@ def test_the_null_residual_fires_on_a_wrong_ppv_and_says_how_blind_it_is():
     `info['null_residual_amplification']` ships the second factor so a caller
     can convert one number into the other.  Read together or neither.
     """
-    import warnings
 
     floor, injected = 4.6e-11, 0.01
     for tau, lam2_want in ((None, 0.000856), (1e2, 0.990049), (1e4, 0.999900)):
         cir, pss = _solve_slow(tau)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             v, info = pss.ppv()
         v = np.asarray(v, dtype=float).ravel()
         fp = pss.factored_period()
@@ -642,9 +632,7 @@ def test_a_slow_node_degrades_the_ppv_border_silently():
         fp = pss.factored_period()
         n = fp.width
         M = np.column_stack([fp.matvec(e) for e in np.eye(n)])
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             _v, info = pss.ppv()
         q = info['q']
         qp = np.concatenate((q, np.zeros(n - m)))
@@ -684,7 +672,6 @@ def test_the_ppv_says_when_a_second_multiplier_is_near_one():
     bound, and the warning says so rather than implying a tolerance would
     help.
     """
-    import warnings
     for tt, expect in ((None, False), (1e0, False), (1e2, True)):
         cir, pss = _solve_slow(tt)
         fp = pss.factored_period()
@@ -730,9 +717,7 @@ def test_the_oscillator_Q_is_recovered_from_the_second_multiplier(tau_over_T):
     the computation never sees.
     """
     _cir, pss = _solve_slow(tau_over_T)
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         _v, info = pss.ppv()
     Q = info['Q']
     assert abs(Q - tau_over_T) < 0.02 * tau_over_T, \
@@ -751,9 +736,7 @@ def test_a_fast_oscillator_has_a_small_Q():
     the opposite corner from the case that breaks every method here.
     """
     _cir, pss = _solve_slow(None)
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         _v, info = pss.ppv()
     assert info['Q'] < 1.0, \
         'plain van der Pol reports Q = %.3f; it restores amplitude in ' \
@@ -762,7 +745,6 @@ def test_a_fast_oscillator_has_a_small_Q():
 
 def _vdp_scaled(cval, lval, period, npts=400):
     """van der Pol with reactances that are NOT unity — see the test below."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
     c.add_node('v')
@@ -771,8 +753,7 @@ def _vdp_scaled(cval, lval, period, npts=400):
     c['B'] = BSource('v', gnd, gnd, 'v',
                      i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
     pss = PSS(c, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=period, timestep=period / npts,
                   x0=np.array([2.0, 0.0]), maxiterations=80)
     assert pss.converged
@@ -871,7 +852,6 @@ def test_the_ppv_gate_probes_the_direction_of_maximum_sensitivity():
     specially are the BEST probes, and the capacitor nodes everyone
     reaches for first are the blind ones.
     """
-    import warnings
     from pycircuit.circuit.transient import Transient
     out = []
     for npts in (400, 800):
@@ -895,8 +875,7 @@ def test_the_ppv_gate_probes_the_direction_of_maximum_sensitivity():
         def integrate(xi, nper=3, ppp=2000):
             tran = Transient(cir, toolkit=circuit.numeric, reltol=1e-9,
                              iabstol=1e-13, vabstol=1e-11)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = tran.solve(refnode=gnd, tend=nper * T,
                                  timestep=T / ppp, x0=xi)
             return np.asarray(res.x, dtype=float)[:, -1]
@@ -936,7 +915,6 @@ def _vdp_at_Q(Q, npts=480, mu=None):
     `reltol = 1e-12`, or the shooting solve becomes the thing under test
     rather than the instrument measuring it.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * Q) if mu is None else mu
     cir = SubCircuit()
@@ -948,14 +926,14 @@ def _vdp_at_Q(Q, npts=480, mu=None):
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
                   maxiterations=150)
     assert pss.converged, 'mu = %r did not converge' % mu
     return cir, pss, PAC(cir, toolkit=circuit.numeric)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_reported_Q_amplifies_its_own_lambda2_error_by_Q():
     """⚠⚠ `info['Q']` CARRIES A `Q`-FOLD AMPLIFIED ERROR, AND NOTHING SAID SO.
 
@@ -1025,7 +1003,6 @@ def _vdp_with_parasitic(Q, tau_over_T, npts=480):
     `tau_p/T = Q`. A resonance between a designed quantity and an
     incidental one.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * Q)
     T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
@@ -1043,13 +1020,13 @@ def _vdp_with_parasitic(Q, tau_over_T, npts=480):
     pss = PSS(cir, method='gear', reltol=1e-12)
     x0 = np.zeros(m)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=150)
     assert pss.converged, 'Q=%r tau/T=%r' % (Q, tau_over_T)
     return cir, pss
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_a_resonant_parasitic_breaks_eigenvectors_and_not_the_ppv():
     """⚠⚠ THE BORDERED SOLVE EARNS ITS COST HERE, MEASURED.
 
@@ -1164,7 +1141,6 @@ def _high_q_with_bulk(Q=60.0, nbulk=10, lam_lo=0.05, lam_hi=0.35,
     MEASURED: `m = 12`, `n = 24`, `Q = 60.24`, `λ₂ = 0.9835`, bulk
     0.0500–0.3500, `cond(V) = 92`, converges in ~4 s.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * Q)
     T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
@@ -1185,13 +1161,13 @@ def _high_q_with_bulk(Q=60.0, nbulk=10, lam_lo=0.05, lam_hi=0.35,
     pss = PSS(cir, method='gear', reltol=1e-12)
     x0 = np.zeros(m)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=200)
     assert pss.converged, 'the high-Q bulk fixture did not converge'
     return cir, pss, PAC(cir, toolkit=circuit.numeric)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_high_q_bulk_fixture_is_what_it_claims():
     """The fixture's own regression test — it is useless if it drifts.
 
@@ -1227,6 +1203,7 @@ def test_the_high_q_bulk_fixture_is_what_it_claims():
         'resolving the phase mode and would select it as lambda_2' % cond
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_ppv_physical_gate_cannot_verify_the_ppv_at_high_q():
     """⚠⚠ THE ONE GATE THAT DOES BREAK, AND NO CHEAP REPAIR WORKS.
 
@@ -1300,7 +1277,6 @@ def _asym_lossy_osc(Q, idc=0.0, npts=480, seedT=None,
     to exactly the A4d fixture, and stays a *perturbed* oscillator as `Q`
     rises.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * Q)
     cir = SubCircuit()
@@ -1318,14 +1294,14 @@ def _asym_lossy_osc(Q, idc=0.0, npts=480, seedT=None,
     pss = PSS(cir, method='gear', reltol=1e-12)
     x0 = np.zeros(m)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=seedT or 2.0 * np.pi, timestep=(seedT or 2.0
                   * np.pi) / npts, x0=x0, maxiterations=250)
     assert pss.converged, 'Q=%r idc=%r did not converge' % (Q, idc)
     return cir, pss
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_ppv_predicts_a_frequency_shift_at_high_q():
     """⚠⚠ THE PPV GATE THAT WORKS AT HIGH Q — because it has no transient.
 
@@ -1456,7 +1432,6 @@ def test_the_ppv_is_invariant_to_the_newtons_inner_solver():
     operator for a different trajectory, silently. The re-traversal is
     what keeps that from mattering here.
     """
-    import warnings
     from pycircuit.circuit.transient import Transient
     circuit.default_toolkit = circuit.numeric
     ## ⚠ THE STAGE PREDICTOR IS PINNED OFF, and that is a statement about what
@@ -1477,14 +1452,12 @@ def test_the_ppv_is_invariant_to_the_newtons_inner_solver():
         pss = PSS(cir, method='gear', reltol=1e-12)
         x0 = np.zeros(cir.n - 1)
         x0[0] = 2.0
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
             pss.solve(period=6.6634, timestep=6.6634 / 239, x0=x0,
                       maxiterations=60, matrix_free=mf)
         assert pss.converged
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             v, info = pss.ppv()
         out[mf] = (np.asarray(v).copy(), info['second_multiplier'],
                    info['Q'], info['null_residual'])
@@ -1512,8 +1485,7 @@ def test_the_ppv_is_invariant_to_the_newtons_inner_solver():
             pss = PSS(cir, method='gear', reltol=1e-12)
             x0 = np.zeros(cir.n - 1)
             x0[0] = 2.0
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 pss.solve(period=6.6634, timestep=6.6634 / 239, x0=x0,
                           maxiterations=60, matrix_free=mf)
                 v, info = pss.ppv()
@@ -1528,6 +1500,7 @@ def test_the_ppv_is_invariant_to_the_newtons_inner_solver():
     assert abs(pred[False][1] - l0) < 1e-9 * abs(l0), (pred[False][1], l0)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_ppv_is_unchanged_by_the_gmres_swap():
     """The bordered solves moved off scipy; the answers must not move.
 
@@ -1559,7 +1532,6 @@ def _divider_osc(Q=8.0, npts=480, a=0.25, ratio=10.0, idc_node=None, idc=0.0,
     `(r1 + r2)` and `r2`, so the topology fixes the RATIO of their PPV
     entries -- and `ratio` chooses it.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2 * np.pi * Q)
     rtot = 0.2 * mu
@@ -1582,8 +1554,7 @@ def _divider_osc(Q=8.0, npts=480, a=0.25, ratio=10.0, idc_node=None, idc=0.0,
     pss = PSS(cir, method='gear', reltol=1e-12)
     x0 = np.zeros(cir.n - 1)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=250)
     assert pss.converged, 'divider did not converge'
     return cir, pss, r1, r2
@@ -1597,6 +1568,7 @@ def _reduced_index(cir, pss, name):
     return i if i < irn else i - 1
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_ppv_carries_the_slaved_sensitivity_on_an_algebraic_row():
     """⚠ An algebraic row's PPV entry is SLAVED to the differential ones,
     and it used to be left at zero.
@@ -1653,6 +1625,7 @@ def test_the_ppv_carries_the_slaved_sensitivity_on_an_algebraic_row():
             'dT/di, outside its measured floor' % (name, ints_c[j] - meas)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_algebraic_fill_is_identified_not_merely_validated():
     """⚠⚠ IDENTIFICATION, WHICH THREE AGREEING REFERENCES ARE NOT.
 
@@ -1734,7 +1707,6 @@ def test_the_algebraic_fill_is_identified_not_merely_validated():
 
 def _osc_for_deflation(Q=15.92, npts=400):
     """A van der Pol at a known `Q`, converged, for the deflated solve."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * Q)
     cir = SubCircuit()
@@ -1746,14 +1718,14 @@ def _osc_for_deflation(Q=15.92, npts=400):
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
                   maxiterations=200)
     assert pss.converged
     return cir, pss
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_deflated_solve_is_capped_by_the_TANGENT_not_by_the_PPV():
     """⚠⚠ THE BORDER ROW'S ACCURACY DOES NOT ENTER THE ANSWER; the border
     COLUMN'S enters linearly -- BELOW THE REFINEMENT GATE.  Above it, since
@@ -1854,7 +1826,6 @@ def _osc_with_ladder(Q, nladder, nslow, npts=200):
     the first version of this measurement confounded them and reported a
     flat iteration count at every `(Q, m)`.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     tper = 2.0 * np.pi
     mu = 1.0 / (2.0 * np.pi * Q)
@@ -1878,8 +1849,7 @@ def _osc_with_ladder(Q, nladder, nslow, npts=200):
     pss = PSS(cir, method='gear', reltol=1e-11)
     x0 = np.zeros(cir.n - 1)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=200)
     assert pss.converged, 'Q=%g/nslow=%d did not converge' % (Q, nslow)
     return cir, pss
@@ -1887,12 +1857,10 @@ def _osc_with_ladder(Q, nladder, nslow, npts=200):
 
 def _bordered_gmres_iterations(pss):
     """GMRES iterations for the bordered `(I - M) w = b` on an oscillator."""
-    import warnings
     import scipy.sparse.linalg as spla
     fp = pss.factored_period()
     n = fp.width
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         v_, info = pss.ppv()
     v = np.asarray(v_, dtype=float)
     u = np.asarray(info['tangent_pair'], dtype=float)
@@ -1997,7 +1965,6 @@ def test_floquet_modes_are_genuinely_periodic():
     5.9e-15 (the amplitude mode), with eigenvector residuals 9.2e-16 and
     4.0e-16.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     cir = SubCircuit()
@@ -2009,8 +1976,7 @@ def test_floquet_modes_are_genuinely_periodic():
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
                   maxiterations=300)
     assert pss.converged
@@ -2154,10 +2120,8 @@ def test_the_orbit_is_read_full_width_past_the_reference_node():
         `CY` at the shifted states: a source controlled by V(v, b) read
         `b` as 0.
     Both now read `_orbit_states`, right whichever width it is given."""
-    import warnings as _w
     _c, pss, pac, ov = _orbit_modulated_vdp('lorentz')
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         modes = pss.floquet_modes(pss)
     k, _orb = pac._phase_mode_split(pss, modes, 'test')
     assert abs(abs(complex(modes[k]['lam'])) - 1.0) < 1e-9
@@ -2186,7 +2150,6 @@ def test_the_raw_pair_dc_is_the_consistent_dc_times_1p5_s():
     series-loss tank's two rows: `mean(raw)/mean(consistent) = 1.5 s` to
     2e-4.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def bias():
@@ -2200,8 +2163,7 @@ def test_the_raw_pair_dc_is_the_consistent_dc_times_1p5_s():
                            + 0.3 * u ** 2)
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         pss = PSS(cir, method='gear', reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.731, timestep=6.731 / 400,
                       x0=np.array([2.0, 0.0]), maxiterations=300)
         return cir, pss, [1]
@@ -2220,8 +2182,7 @@ def test_the_raw_pair_dc_is_the_consistent_dc_times_1p5_s():
         pss = PSS(cir, method='gear', reltol=1e-12)
         x0 = np.zeros(cir.n - 1)
         x0[0] = 2.0
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.66, timestep=6.66 / 480, x0=x0,
                       maxiterations=200)
         return cir, pss, [0, 2]
@@ -2296,7 +2257,6 @@ def test_the_ppv_waveform_matches_a_pulse_isf_over_the_whole_period():
     -1.56e-1 at t/T = 0 .. 0.4); this reproduces those numbers from a
     separately written harness.
     """
-    import warnings
     from pycircuit.circuit.transient import Transient
     circuit.default_toolkit = circuit.numeric
 
@@ -2330,8 +2290,7 @@ def test_the_ppv_waveform_matches_a_pulse_isf_over_the_whole_period():
     def integrate(xi, ppp=2000):
         tran = Transient(cir, toolkit=circuit.numeric, reltol=1e-9,
                          iabstol=1e-13, vabstol=1e-11)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(refnode=gnd, tend=T, timestep=T / ppp, x0=xi)
         return np.asarray(res.x, dtype=float)[:, -1]
 
@@ -2471,7 +2430,6 @@ def test_the_ppv_takes_the_dense_spectrum_when_it_can_afford_it():
     many slow nodes. Lai's 64-gated-capacitor DCO is >500 equations. The
     remaining answer is a per-pair Ritz residual gate; the roadmap has it.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
 
     ## (1) THE REFERENCE MUST BE SOUND BEFORE AGREEMENT WITH IT MEANS ANYTHING.
@@ -2502,8 +2460,7 @@ def test_the_ppv_takes_the_dense_spectrum_when_it_can_afford_it():
     ## the three that used to be wrong, and says which route it took.
     for nslow in (11, 12, 13, 14):
         fp, ld, pss = fps[nslow]
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             _v, info = pss.ppv()
         la = float(info['second_multiplier'])
         assert info['second_multiplier_route'] == 'dense', \
@@ -2534,8 +2491,7 @@ def test_the_ppv_takes_the_dense_spectrum_when_it_can_afford_it():
         ## `ppv` holds no cache -- it recomputes -- so re-calling it under
         ## the lowered limit really does take the other branch, which the
         ## route assertion below checks rather than assumes.
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             _v, info = pss.ppv()
         assert info['second_multiplier_route'] == 'arnoldi', \
             'the neuter did not reach the truncated path'
@@ -2610,15 +2566,13 @@ def test_floquet_modes_above_the_dense_limit_are_the_dominant_ritz_certified_mod
     circuit.default_toolkit = circuit.numeric
     cir, p = _osc_with_ladder(16.0, 14, 14)
     q = PSS(cir, method='radau', reltol=1e-11)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         q.solve(period=float(p.period), timestep=float(p.period) / 200,
                 x0=np.asarray(p._period_state[1], dtype=float)[:cir.n - 1],
                 maxiterations=100)
     assert q.converged
     for pp in (p, q):
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(UsageWarning):
             dense = pp.floquet_modes(nmodes=4)
         pp.FLOQUET_DENSE_LIMIT = 8
         try:
@@ -2635,8 +2589,7 @@ def test_floquet_modes_above_the_dense_limit_are_the_dominant_ritz_certified_mod
             assert np.max(np.abs(pr - d['p'])) < 1e-9 * np.max(np.abs(d['p']))
             assert np.max(np.abs(qr - d['q'])) < 1e-9 * np.max(np.abs(d['q']))
     ## the certification gate, alive: a budget too small to certify
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(UsageWarning):
         dense = p.floquet_modes(nmodes=4)
     for budget, want in ((12, False), (16, True)):
         p.FLOQUET_DENSE_LIMIT = 8
@@ -2690,13 +2643,11 @@ def test_floquet_modes_above_the_dense_limit_on_a_staged_solve_read_the_total_ma
     move with the state), on both sides -- as the dense path's
     `total_matrix`.  Forced (the limit lowered to 2) on the comparator
     oscillator against the dense modes."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     osc = _comparator_relaxation_oscillator()
     seed, Tl = _relaxation_oscillator_seed(osc)
     p = PSS(osc, method='radau', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(UsageWarning):
         p.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100)
         assert p.converged and p._event_columns is not None
         dense = p.floquet_modes(nmodes=2)
@@ -2718,12 +2669,10 @@ def test_floquet_modes_run_on_a_monodromy_wider_than_the_dense_limit():
     certify, `q^T C p = 1`, and the second multiplier equals `ppv`'s --
     two independent routes (Arnoldi on `M` here, on `I - M` there).
     Measured: 16.5 s to solve, 10.8 s for the modes."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir, p = _osc_with_ladder(16.0, 200, 14, npts=60)
     assert p._state_map().width > p.FLOQUET_DENSE_LIMIT
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, UsageWarning):
         modes = p.floquet_modes(nmodes=3)
         _v, info = p.ppv()
     assert len(modes) == 3 and all(md['certified'] for md in modes)
@@ -2916,8 +2865,7 @@ def test_the_twin_serves_the_whole_frequency_aware_ppv():
     tw = pss.monodromy_twin()
     assert tw is not pss
     f = 1e-2 / float(pss.period)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         _va, ia = pss.frequency_aware_ppv(f)
         _vb, ib = tw.frequency_aware_ppv(f)
     assert np.array_equal(np.asarray(ia['samples_eq']), np.asarray(ib['samples_eq']))
@@ -2937,7 +2885,6 @@ def test_floquet_modes_runs_under_the_stage_methods_and_conserves_qCp():
     C-weighted invariant holds at the same index -- the property the `C^-T`
     fix of the same day restored.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     for method in ('trbdf2', 'radau'):
@@ -2950,8 +2897,7 @@ def test_floquet_modes_runs_under_the_stage_methods_and_conserves_qCp():
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
         pss = PSS(cir, method=method, reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
                       maxiterations=300)
             modes = pss.floquet_modes(pss)      # used to raise under trbdf2
@@ -3007,7 +2953,6 @@ def test_injection_locking_range_on_the_hostile_fixture_is_set_by_its_ppv_fundam
             last, [(r, round(am, 3), round(lm, 5), lk) for r, am, lm, lk in trace])
 
     ## the PPV fundamental, per unit current, on the same three fixtures
-    import warnings as _w
 
     def gamma1(cval, lval, a):
         cir = SubCircuit()
@@ -3020,8 +2965,7 @@ def test_injection_locking_range_on_the_hostile_fixture_is_set_by_its_ppv_fundam
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         T0 = 2.0 * np.pi * np.sqrt(cval * lval)
         p = PSS(cir, method='gear', reltol=1e-11)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=T0, timestep=T0 / 400, x0=np.array([2.0, 0.0]),
                     maxiterations=400)
             v0, info = p.ppv()
@@ -3065,7 +3009,6 @@ def test_the_frequency_aware_equation_rows_are_batched_bit_for_bit():
     (its fill's `G` block varies by 0.20).  On the plain slow-node LC they
     are constant, and a batch reading the wrong sample's blocks passed.
     The re-solve test above covers the cache following a new orbit."""
-    import warnings as _w
     from pycircuit.circuit.shooting import PSS as _PSS
     circuit.default_toolkit = circuit.numeric
     T0 = 6.6634
@@ -3084,13 +3027,11 @@ def test_the_frequency_aware_equation_rows_are_batched_bit_for_bit():
     pss = PSS(c, method='gear', reltol=1e-11)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
     assert pss.converged
     f0 = 1.0 / float(pss.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         for nu in (1e-5, 1e-3, 3e-2, 0.4):
             a = pss.frequency_aware_ppv(nu * f0)[1]['samples_eq']
             blocks = pss._eq_row_cache[2]
@@ -3119,7 +3060,6 @@ def test_the_continuous_adjoints_arnoldi_path_equals_its_dense_path():
     1.00000000 and identical invariant spreads at a basis of 3 / 16 / 24 for
     2m = 4 / 32 / 124 on the hostile and ladder fixtures.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
 
@@ -3136,8 +3076,7 @@ def test_the_continuous_adjoints_arnoldi_path_equals_its_dense_path():
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
                   maxiterations=300, break_events=False, grid=fracs(400))
     assert pss.converged
@@ -3218,8 +3157,7 @@ def test_gear_runs_its_ppv_on_the_lte_grid_gear_produced_and_is_told_when_its_un
     p = PSS(cir, method='gear')
     xfull = np.zeros(cir.n)
     xfull[[str(n_) for n_ in cir.nodes].index('v')] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         fr, seed = p.lte_grid(T_REF, x0=xfull, reltol=1e-5)
     fr = np.asarray(fr, float)
     N = len(fr)
@@ -3278,7 +3216,6 @@ def test_a_staged_glm_oscillators_ppv_and_floquet_modes_carry_the_moving_events(
     points: glm3 3.9e-4, glm2 6.6e-4, radau 4.5e-4 -- the comparison's own
     floor (see the radau test below); the second multiplier 0.02 for all.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T_ex, exact = _exact_relaxation_oscillator_ppv()
     for method in ('glm3', 'glm2'):
@@ -3286,8 +3223,7 @@ def test_a_staged_glm_oscillators_ppv_and_floquet_modes_carry_the_moving_events(
         names = [str(n_) for n_ in cir.nodes]
         seed, Tl = _relaxation_oscillator_seed(cir)
         q = PSS(_comparator_relaxation_oscillator(), method=method, reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(UsageWarning):
             q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100,
                     state_events=True)
             v, info = q.ppv()
@@ -3346,15 +3282,13 @@ def test_the_ppv_on_a_staged_autonomous_solve_is_bordered_and_matches_the_exact_
     comparator's own crossing it agrees with the exact value to 0.4 %.
     Also pins the autonomous stage listing its crossings in
     `event_times`."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
     names = [str(n_) for n_ in cir.nodes]
     seed, Tl = _relaxation_oscillator_seed(cir)
     c2 = _comparator_relaxation_oscillator()
     q = PSS(c2, method='radau', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100, state_events=True)
     assert q.converged
     T_ex, exact = _exact_relaxation_oscillator_ppv()
@@ -3366,8 +3300,7 @@ def test_the_ppv_on_a_staged_autonomous_solve_is_bordered_and_matches_the_exact_
     idx = [red.index(nm) for nm in ('c', 'fb0', 'fb1')]
     X = np.asarray(q.waveform[1], dtype=float)
     ts = np.asarray(q.waveform[0], dtype=float)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         v, info = q.ppv()
     S = np.asarray(info['samples'])
     nodes = list(q._event_columns['nodes'])
@@ -3384,8 +3317,7 @@ def test_the_ppv_on_a_staged_autonomous_solve_is_bordered_and_matches_the_exact_
     cols = q._event_columns
     q._event_columns = None
     try:
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             _vu, info_u = q.ppv()
     finally:
         q._event_columns = cols
@@ -3434,8 +3366,7 @@ def test_the_monodromy_twin_is_capped_and_warns_when_it_hits_the_cap():
 
     def solve(method, maxiterations):
         pss = PSS(build(), method=method, reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.731, timestep=6.731 / 400,
                       x0=np.array([2.0, 0.0]), maxiterations=maxiterations)
         assert pss.converged
@@ -3465,14 +3396,12 @@ def test_radau_and_esdirk43_serve_as_the_monodromy_twin():
     about trbdf2's cost.  A Nordsieck GLM (its map on the Nordsieck state)
     is refused.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     lam2_ref = 0.20038546770896304          # radau, 800 points
     T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
     p = PSS(_vdp_asym(), method='trap', reltol=1e-10)
     p.monodromy = 'radau'
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]),
                 maxiterations=60)
         _v, info = p.ppv()
@@ -3493,7 +3422,6 @@ def test_the_ppv_reads_a_stateful_diode_at_each_orbit_point():
     (2026-09-28): `Diode.G` linearised at the voltage the last Newton left
     (conducting, at the period's end) on every sample -- the node's entry
     98 % off there, and the diffusion constant 3.4x too large."""
-    import warnings
 
     from pycircuit.circuit.elements import BSource, Diode
     circuit.default_toolkit = circuit.numeric
@@ -3509,8 +3437,7 @@ def test_the_ppv_reads_a_stateful_diode_at_each_orbit_point():
     names = [str(n) for n in cir.nodes if str(n) != 'gnd!']
     x0 = np.zeros(cir.n - 1)
     x0[names.index('v')] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=2 * np.pi, timestep=2 * np.pi / 400, x0=x0,
                   maxiterations=60)
         assert pss.converged

@@ -18,7 +18,6 @@ residual, and then checks the thing a user cares about: PCNR on and off
 produce the same transient.
 """
 
-import warnings
 
 import numpy as np
 import pytest
@@ -26,6 +25,7 @@ import sympy
 from numpy.testing import assert_allclose
 
 import pycircuit.circuit.circuit
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.toolkit import numeric
 from pycircuit.circuit import gnd
 from pycircuit.circuit.dcanalysis import DC
@@ -149,8 +149,7 @@ def test_charge_participant_transient_matches_non_pcnr():
     def run(pcnr):
         c = _circuit(vsrc=2.0, sinusoid=True)
         tran = Transient(c, toolkit=numeric, pcnr=pcnr)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(tend=2e-6, timestep=2e-8, fixed_timestep=True)
         return np.asarray(res.v('b').y, float)
 
@@ -238,8 +237,7 @@ def test_a_pcnr_participant_is_never_evaluated_at_the_node_voltages():
     ## With pcnr, BOTH survive now: the participant's own `i` is never
     ## called at the node voltage.  The raw-exp model's `i` at 20 V is
     ## still `inf` (asserted above) -- it is simply not asked.
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         assert_allclose(solve(diode(sympy.exp), True), v_ref, rtol=1e-5)
         assert_allclose(solve(diode(limexp), True), v_ref, rtol=1e-5)
 
@@ -390,9 +388,7 @@ def test_jax_pcnr_calls_the_device_instead_of_rebuilding_it():
         assert len(meta[0]) == 2            # BOTH junctions, not one
         assert meta[4] is not None          # device-supplied evaluation
 
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = JAXTransient(cj, pcnr=True, reltol=1e-5).solve(
                 gnd, tend=1e-6, timestep=2e-8, uic=True,
                 fixed_timestep=True)

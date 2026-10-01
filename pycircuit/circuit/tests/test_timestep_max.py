@@ -9,10 +9,11 @@ Parameter, `timestep_max`, defaulting to tend/50 (SPICE's TMAX); `timestep`
 only sets the opening-step scale and the fixed_timestep grid.
 """
 
-import warnings
 
 import numpy as np
 import pytest
+
+from pycircuit.circuit.tests._warnpolicy import quiet
 
 jax = pytest.importorskip('jax')
 
@@ -63,16 +64,14 @@ def test_steps_grow_past_timestep_up_to_tend_over_50():
     from pycircuit.circuit.jaxtransient import JAXTransient
 
     tran = Transient(_rc_vsin(), toolkit=numeric, reltol=1e-4, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(gnd, tend=2e-3, timestep=1e-5)
     assert _max_h(res) > 1e-5
     assert _max_h(res) <= 4e-5 * (1.0 + 1e-9)
 
     def go():
         tran = JAXTransient(_rc_vsin(), reltol=1e-4)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-3, timestep=1e-5, uic=True)
         assert _max_h(res) > 1e-5
         assert _max_h(res) <= 4e-5 * (1.0 + 1e-9)
@@ -85,15 +84,13 @@ def test_an_explicit_cap_binds_exactly_on_both_backends():
 
     tran = Transient(_rc_vsin(), toolkit=numeric, reltol=1e-4, uic=True,
                      timestep_max=2e-5)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(gnd, tend=2e-3, timestep=1e-5)
     assert _max_h(res) <= 2e-5 * (1.0 + 1e-9)
 
     def go():
         tran = JAXTransient(_rc_vsin(), reltol=1e-4, timestep_max=2e-5)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-3, timestep=1e-5, uic=True)
         assert _max_h(res) <= 2e-5 * (1.0 + 1e-9)
     _with_jax(go)
@@ -110,8 +107,7 @@ def test_tolerance_knobs_are_live_on_jax_again():
         counts = {}
         for rel in (1e-4, 1e-6):
             tran = JAXTransient(_rc_vsin(), reltol=rel)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = tran.solve(gnd, tend=2e-3, timestep=1e-5, uic=True)
             counts[rel] = len(np.asarray(res.sweep_values))
         assert counts[1e-6] > 2 * counts[1e-4], counts

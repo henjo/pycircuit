@@ -14,6 +14,7 @@ from pycircuit.circuit.circuit import SubCircuit, defaultepar
 from pycircuit.circuit.elements import R, VS, Diode
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit import pcnr as P
+from pycircuit.circuit.tests._warnpolicy import quiet
 
 
 def _fig1(is1=1e-15, is2=1e-9, v=1.0, r=1e3):
@@ -153,7 +154,6 @@ def test_refine_limits_each_device_independently():
 ## companion terms enter the coupled system as extra blocks. Everything else is
 ## the DC flow unchanged.
 
-import warnings
 
 from pycircuit.circuit.elements import C, VSin
 from pycircuit.circuit.transient import Transient
@@ -170,8 +170,7 @@ def _rectifier():
 
 def _run_tran(pcnr, reltol=1e-5, tend=2e-3):
     tran = Transient(_rectifier(), toolkit=numeric, reltol=reltol, pcnr=pcnr)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=tend, timestep=1e-5)
     t = np.asarray(res.v('b').x, dtype=float).ravel()
     v = np.asarray(res.v('b').y, dtype=float).ravel()
@@ -211,8 +210,7 @@ def test_a_circuit_with_no_pcnr_device_falls_through():
     c['R'] = R('a', 'b', r=1e3)
     c['C'] = C('b', gnd, c=1e-7)
     tran = Transient(c, toolkit=numeric, reltol=1e-5, pcnr=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=2e-4, timestep=1e-5)
     assert tran.statistics.accepted_steps > 5
     assert np.max(np.abs(np.asarray(res.v('b').y, dtype=float))) > 0.1
@@ -315,7 +313,6 @@ def test_gate_13_6_controller_jacobian_carries_live_diode_conductance():
     is IS/VT ~ 4e-12 S, while forward-biased it is ~1e-2 S.  Asserting a ratio
     rather than an absolute value keeps the test independent of `IS` and `VT`.
     """
-    import warnings
     import numpy as np
     from pycircuit.circuit import gnd, numeric
     from pycircuit.circuit.transient import Transient
@@ -340,8 +337,7 @@ def test_gate_13_6_controller_jacobian_carries_live_diode_conductance():
 
     Transient._solve_timestep_pcnr = spy
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             tran.solve(tend=0.01, timestep=1e-4)
     finally:
         Transient._solve_timestep_pcnr = real
@@ -393,7 +389,6 @@ def test_gate_13_6_pcnr_and_limiting_take_the_same_steps(monkeypatch):
     same distance from that reference.  `test_stage_predictor.py` is where the
     predictor itself is gated.
     """
-    import warnings
     import numpy as np
     from pycircuit.circuit import gnd, numeric
     from pycircuit.circuit.transient import Transient
@@ -404,8 +399,7 @@ def test_gate_13_6_pcnr_and_limiting_take_the_same_steps(monkeypatch):
     for pcnr in (False, True):
         tran = Transient(_mains_rectifier(), toolkit=numeric, reltol=1e-5,
                          pcnr=pcnr)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(tend=0.01, timestep=1e-4)
         w = res.v(2, gnd)
         acc[pcnr] = (tran.statistics.accepted_steps,
@@ -413,8 +407,7 @@ def test_gate_13_6_pcnr_and_limiting_take_the_same_steps(monkeypatch):
                      np.asarray(w.y, dtype=float).ravel())
     assert acc[True][0] == acc[False][0], (acc[True][0], acc[False][0])
     ref = Transient(_mains_rectifier(), toolkit=numeric, reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         rw = ref.solve(tend=0.01, timestep=1e-6).v(2, gnd)
     tr_ref = np.asarray(rw.x, dtype=float).ravel()
     y_ref = np.asarray(rw.y, dtype=float).ravel()
@@ -428,8 +421,7 @@ def test_gate_13_6_pcnr_and_limiting_take_the_same_steps(monkeypatch):
     out = {}
     for pcnr in (False, True):
         tran = Transient(_mains_rectifier(), toolkit=numeric, reltol=1e-5, pcnr=pcnr)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(tend=0.01, timestep=1e-4)
         w = res.v(2, gnd)
         out[pcnr] = (tran.statistics.accepted_steps,
@@ -460,7 +452,6 @@ def test_gate_13_7_pcnr_is_honoured_on_the_coupled_path():
     two paths agree to within their own truncation error -- which is the correct
     outcome, and therefore cannot distinguish "PCNR ran" from "PCNR was ignored".
     """
-    import warnings
     from pycircuit.circuit import numeric
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.elements import Diode
@@ -483,8 +474,7 @@ def test_gate_13_7_pcnr_is_honoured_on_the_coupled_path():
         try:
             tran = Transient(_mains_rectifier(), toolkit=numeric,
                              reltol=1e-5, pcnr=pcnr)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 tran.solve(tend=2e-3, timestep=1e-4, coupled_lte=True)
         finally:
             Diode.limit, _pcnr.augmented_system = real_limit, real_aug

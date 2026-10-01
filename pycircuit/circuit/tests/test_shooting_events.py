@@ -5,9 +5,10 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
-import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, ConvergenceWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -49,7 +50,6 @@ def test_event_grid_lands_the_period_on_its_event_times():
     Newton iterates. That case needs the event time to become a Newton unknown
     and is deliberately out of scope here.
     """
-    import warnings
     from pycircuit.circuit.elements import VPulse
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
@@ -65,8 +65,7 @@ def test_event_grid_lands_the_period_on_its_event_times():
 
     def solve(fr, cr):
         p = PSS(cr, method='gear', reltol=1e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             ## the grid under test is the one passed in -- since 2026-09-20
             ## `break_events` defaults ON for gear too, and would land the
             ## events on the "uniform" baseline as well (measured: identical)
@@ -260,6 +259,7 @@ def test_a_state_fold_breaks_the_period_map_at_the_ENDPOINT_not_on_the_grid(monk
         'expected exactly one modulus across the fold, got %.6e' % abs(hi - lo)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else_alone():
     """`x_0 - phi(x_0) == 0` is the WRONG condition on a state that is only
     defined up to `n*modulus`, and the circuit already says which states those
@@ -361,7 +361,6 @@ def test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else
     ## (4) On a folding orbit it fires, and what it converges to is real.
     ## rate = 0.5 moduli per seed period: the orbit closes only after TWO,
     ## which is precisely the closure the unfolded residual cannot express.
-    import warnings as _w
     from numpy.linalg import LinAlgError
 
     def attempt(fold):
@@ -380,8 +379,7 @@ def test_the_shooting_residual_folds_a_periodic_state_and_leaves_everything_else
                 hits['max'] = max(hits['max'], d)
             return G
         q._fold_periodic = spy
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             q.solve(period=T, timestep=T / 300)
         return q, hits
 
@@ -705,8 +703,7 @@ def test_event_breaking_defaults_on_for_every_method_and_a_jump_keeps_both_ramp_
     same = []
     for be in (False, True):
         q = PSS(smooth(), method='trap')
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning, ConvergenceWarning):
             q.solve(period=T, timestep=T / 200, break_events=be)
         same.append(np.asarray(q._period_state[1], dtype=float).ravel())
         assert q.event_times == [], \
@@ -817,7 +814,6 @@ def test_lte_grid_folds_a_driven_circuit_on_the_drives_own_period_boundaries():
     the ten finest fractions of the folded grid start within 0.05 T of the
     ten steepest phases of the converged output.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     fclk, cval, kb, temp = 100e3, 100e-12, 1.38e-23, 300.0
     T = 1.0 / fclk
@@ -835,14 +831,12 @@ def test_lte_grid_folds_a_driven_circuit_on_the_drives_own_period_boundaries():
         return cir
     cir = build()
     p = PSS(cir, method='radau', reltol=1e-6)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         fr, seed = p.lte_grid(T, x0=np.zeros(cir.n), reltol=1e-5)
     fr = np.asarray(fr, float)
     assert abs(p.lte_period / T - 1.0) < 1e-12          # the drive's, exactly
     q = PSS(build(), method='radau', reltol=1e-6)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         q.solve(period=T, timestep=T / len(fr), x0=seed, grid=fr, maxiterations=40)
     assert q.converged
     ts = np.asarray(q.waveform[0], float)
@@ -883,7 +877,6 @@ def test_the_period_quadrature_breaks_its_spline_at_landed_events_and_reaches_fo
     1.3e-5 floor by 177).  Pinned: |H1| within 2e-3 and |H2| within 5e-2
     of the reference, and the weights differ from the trapezoid's.
     """
-    import warnings as _w
     from scipy.special import i0
     from pycircuit.circuit.shooting import periodic_spline_weights
 
@@ -917,8 +910,7 @@ def test_the_period_quadrature_breaks_its_spline_at_landed_events_and_reaches_fo
     def solve(npts, grid=None, seed=None, reltol=1e-8):
         cir = _pulse_clocked_sampler(T)
         p = PSS(cir, method='radau', reltol=reltol)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=T, timestep=T / npts, grid=grid,
                     x0=np.zeros(cir.n - 1) if seed is None else seed,
                     maxiterations=100)
@@ -939,8 +931,7 @@ def test_the_period_quadrature_breaks_its_spline_at_landed_events_and_reaches_fo
 
     _c, _p, Href, _w0, _t0 = solve(3200, reltol=1e-10)
     cir = _pulse_clocked_sampler(T)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         fr, seed = PSS(cir, method='radau', reltol=1e-8).lte_grid(
             T, x0=np.zeros(cir.n), reltol=1e-5)
     _c, p, H, w, tm = solve(len(fr), grid=np.asarray(fr, float), seed=seed)
@@ -1016,7 +1007,6 @@ def test_the_folds_walk_ends_at_the_period_so_two_folds_of_one_orbit_agree_and_g
     period on each is within 120 ppm of the reference and the two within
     40 ppm of each other (were 1100 ppm apart).
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     MU = 10.0
     T_REF = 19.098600502
@@ -1037,8 +1027,7 @@ def test_the_folds_walk_ends_at_the_period_so_two_folds_of_one_orbit_agree_and_g
         p = PSS(cir, method='gear')
         xfull = np.zeros(cir.n)
         xfull[[str(n_) for n_ in cir.nodes].index('v')] = v0
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             fr, seed = p.lte_grid(19.1, x0=xfull, reltol=1e-5)
         fr = np.asarray(fr, float)
         assert abs(fr.sum() - 1.0) < 1e-12
@@ -1048,8 +1037,7 @@ def test_the_folds_walk_ends_at_the_period_so_two_folds_of_one_orbit_agree_and_g
         fine = np.flatnonzero(fr < 0.004)
         groups = np.split(fine, np.flatnonzero(np.diff(fine) > 3) + 1)
         q = PSS(vdp(), method='gear', reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             q.solve(period=p.lte_period, timestep=p.lte_period / len(fr), x0=seed,
                     maxiterations=80, break_events=False, grid=fr)
         assert q.converged
@@ -1179,13 +1167,11 @@ def test_the_staged_solves_monodromy_is_the_total_derivative_through_the_moving_
     differences of the staged map (inner Newton on theta) to 1e-5, and
     the fixed grid at least 30 % off.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T = 1e-5
     cir = _pwm_loop(T)
     p = PSS(cir, method='radau', reltol=1e-8)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         p.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1), maxiterations=100)
     assert p.converged and p._state_event_fracs is not None
     x0 = np.asarray(p._period_state[1], float)
@@ -1314,7 +1300,6 @@ def test_an_autonomous_solve_takes_its_state_events_and_its_period_as_unknowns_t
     apart and the unstaged more than 2e-3 from the staged at 100; four
     event fractions landed.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
     seed, Tl = _relaxation_oscillator_seed(cir)
@@ -1322,8 +1307,7 @@ def test_an_autonomous_solve_takes_its_state_events_and_its_period_as_unknowns_t
     def solve(N, se):
         c2 = _comparator_relaxation_oscillator()
         q = PSS(c2, method='radau', reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             q.solve(period=Tl, timestep=Tl / N, x0=seed, maxiterations=100, state_events=se)
         assert q.converged
         return q
@@ -1494,8 +1478,7 @@ def test_the_plain_map_lands_state_events_opened_at_x0():
     ## not a Jacobian (the UNSTAGED solve converged from zeros only WITH the
     ## drop).  `_staged_fallback` recovers the zero start since, at ~9x the
     ## time (`test_a_staged_solve_that_stalls_falls_back_to_the_one_stage_orbit`).
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
                 maxiterations=100, tstab=20 * T)
     assert p.converged and p._open_at_x0
@@ -1503,15 +1486,13 @@ def test_the_plain_map_lands_state_events_opened_at_x0():
 
     for method in ('trap', 'theta'):
         q = PSS(_pwm_loop(T), method=method, reltol=1e-10)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning, ConvergenceWarning):
             q.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
                     maxiterations=100, state_events=False)
         x0 = np.asarray(q._period_state[1], dtype=float)[:q.cir.n - 1]
         W, c = q._state_event_rows()
         times, hs = q._period_grid(T, 60, None)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             q._walk('plain', x0, times, hs, T=T, hsens=np.zeros((len(hs), 0)),
                     capture=set(range(1, len(hs) + 1)), open_at_x0=True)
         base2, th0, Wk, ck = q._stage_one_crossings(x0, times, T, W, c)
@@ -1520,8 +1501,7 @@ def test_the_plain_map_lands_state_events_opened_at_x0():
             fr, hsens, nodes = q._event_remap(base2, th0, th, T)
             hs_ = fr * T
             tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 w = q._walk('plain', x0, tms_, hs_, T=T, hsens=hsens,
                             capture=set(nodes), open_at_x0=True)
             return (np.asarray(w.x_end, dtype=float),
@@ -1591,15 +1571,13 @@ def test_gears_state_event_stage_carries_both_step_partials_and_lands_the_crossi
     vs 4.4e-3 of the swing; gear's own second-order off-phase error
     dominates here, as trbdf2's does).
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T = 1e-5
 
     def solve(method, N, se):
         cir = _pwm_loop(T)
         p = PSS(cir, method=method, reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=T, timestep=T / N, x0=np.zeros(cir.n - 1),
                     maxiterations=100, state_events=se)
         assert p.converged
@@ -1716,7 +1694,6 @@ def test_the_staged_solve_is_fifth_order_at_the_switch_against_the_windowed_exac
     and 5e-8 of the windowed exact period, and the ratio between them
     above 8 (fifth order would be 32; the 100-point solve is where the
     grid's own resolution of the two lags still shows)."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T_ex = _windowed_exact_relaxation_period()
     assert abs(T_ex / 1.3918374e-6 - 1.0) < 2e-7, T_ex
@@ -1731,8 +1708,7 @@ def test_the_staged_solve_is_fifth_order_at_the_switch_against_the_windowed_exac
     ## 200 on (9.5, 23): at 100 points the window no longer dominates
     for N in (200, 400):
         q = PSS(cir, method='radau', reltol=1e-10)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             q.solve(period=Tl, timestep=Tl / N, x0=seed, maxiterations=100, state_events=True)
         assert q.converged
         errs[N] = abs(q.period / T_ex - 1.0)
@@ -1754,15 +1730,13 @@ def test_gears_stage_stores_its_event_columns_and_its_bordered_pac_matches_radau
     multipliers 0.98106 / 0.68206 against radau's 0.98105 / 0.68203.  The
     covariance closure and the adjoint row stay unbordered on gear (warned,
     plain)."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
 
     def staged(method):
         cir = _pwm_loop(T)
         p = PSS(cir, method=method, reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=T, timestep=T / 100, maxiterations=100, state_events=True)
         assert p.converged
         return cir, p
@@ -1783,8 +1757,7 @@ def test_gears_stage_stores_its_event_columns_and_its_bordered_pac_matches_radau
             p._event_columns = None
         try:
             pac = PAC(cir, toolkit=circuit.numeric)
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 pac.solve(p, [f0])
             tt, yy = pac.time_response[0]
         finally:
@@ -1827,13 +1800,11 @@ def test_a_glm_lands_state_events_and_restarts_where_its_step_grows():
     where unstaged reads -3.6e-3 (and a fixed-grid multiplier of 0.30 for
     the unit one), glm2 staged +6.4e-5 at 200 (unstaged +6.0e-4).
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T = 1e-5
     cir = _pwm_loop(T)
     p = PSS(cir, method='glm2', reltol=1e-8)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         p.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1),
                 maxiterations=100, state_events=False)
     assert p.converged
@@ -1849,8 +1820,7 @@ def test_a_glm_lands_state_events_and_restarts_where_its_step_grows():
         fr, hsens, nodes = p._event_remap(base2, th0, th, T)
         hs_ = fr * T
         tms_ = np.concatenate(([0.0], np.cumsum(hs_)))
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             wk = p._walk('glm', xx, tms_, hs_, T=T, hsens=hsens,
                          capture=set(nodes), keep=True)
         restarts.append(sum(1 for rec in wk.steps if rec.restarted))
@@ -1881,8 +1851,7 @@ def test_a_glm_lands_state_events_and_restarts_where_its_step_grows():
 
     def solve(method, N, se):
         q = PSS(_comparator_relaxation_oscillator(), method=method, reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             q.solve(period=Tl, timestep=Tl / N, x0=seed, maxiterations=100,
                     state_events=se)
         assert q.converged, (method, N, se)
@@ -1908,7 +1877,6 @@ def test_the_landed_edges_drop_the_order_so_a_stiff_state_does_not_ring():
     step; the uniform grid rings as well (trap 0.83).  With the drop 0.039.
     The drop is keyed to the edge's NODE, which the state-event stage's
     remap moves (`test_the_plain_map_lands_state_events_opened_at_x0`)."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
     RR, TAU, TR = 1e3, 1e-4 * T, 0.02 * T
@@ -1922,8 +1890,7 @@ def test_the_landed_edges_drop_the_order_so_a_stiff_state_does_not_ring():
     rows = [str(n) for n in c.nodes]
     for method in ('trap', 'gear'):
         pss = PSS(c, method=method, reltol=1e-10)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / 400, maxiterations=40)
         assert pss.converged and pss.break_events
         ts = np.asarray(pss.waveform[0], float).ravel()
@@ -1935,8 +1902,7 @@ def test_the_landed_edges_drop_the_order_so_a_stiff_state_does_not_ring():
     ## `order_drop_at_edges=False` walks through the edges at full order:
     ## trap rings again (the measured 0.85 at the first point)
     pss = PSS(c, method='trap', reltol=1e-10, order_drop_at_edges=False)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 400, maxiterations=40)
     ts = np.asarray(pss.waveform[0], float).ravel()
     X = np.asarray(pss.waveform[1], float)
@@ -1972,8 +1938,7 @@ def test_a_staged_solve_that_stalls_falls_back_to_the_one_stage_orbit():
     ## a solve that stages at once does not take it
     q = PSS(_pwm_loop(T), method='trap', reltol=1e-10,
             order_drop_at_edges=False)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         q.solve(period=T, timestep=T / 60, x0=np.zeros(_pwm_loop(T).n - 1),
                 maxiterations=100)
     assert q.converged and not q.staged_fallback
@@ -2024,8 +1989,7 @@ def test_a_staged_solve_keeps_one_copy_of_its_maps_to_the_nodes():
     the columns, which every consumer reads."""
     from pycircuit.circuit.tests._shooting_fixtures import _jitter_sampler
     p = PSS(_jitter_sampler(), method='gear', reltol=1e-8)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=1e-6, timestep=1e-6 / 100, maxiterations=40)
     ev = p._event_columns
     assert p.converged and ev is not None
@@ -2047,8 +2011,7 @@ def test_the_carrier_of_a_staged_trap_oscillator_is_read_on_its_own_grid():
     for method in ('trap', 'radau'):
         cir = _comparator_relaxation_oscillator()
         q = PSS(cir, method=method, reltol=1e-9)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             q.solve(period=Tl, timestep=Tl / 100, x0=seed, maxiterations=100,
                     state_events=True)
             X[method] = PAC(cir).carrier_phasor(
@@ -2066,8 +2029,7 @@ def test_the_frequency_aware_ppv_of_a_staged_oscillator_is_its_ppv_at_dc():
     1.7e-16.  Now 3.8e-17."""
     seed, Tl = _relaxation_oscillator_seed(_comparator_relaxation_oscillator())
     q = PSS(_comparator_relaxation_oscillator(), method='radau', reltol=1e-9)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         q.solve(period=Tl, timestep=Tl / 100, x0=seed, maxiterations=100,
                 state_events=True)
         _v, info = q.ppv()

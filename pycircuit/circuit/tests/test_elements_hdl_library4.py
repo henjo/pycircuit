@@ -49,7 +49,6 @@ of how much they can catch:
 """
 
 import math
-import warnings
 
 import numpy as np
 import pytest
@@ -57,6 +56,7 @@ from numpy.testing import assert_allclose
 
 import pycircuit.circuit.circuit
 from pycircuit.circuit.circuit import defaultepar
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.toolkit import numeric
 from pycircuit.circuit import gnd
 from pycircuit.circuit.circuit import SubCircuit
@@ -876,8 +876,7 @@ def test_level1_stays_finite_where_no_device_belongs():
     for cls, sgn in ((eh.MosLevel1Hdl, +1.0), (eh.MosLevel1PmosHdl, -1.0)):
         el = _mk(cls, 'd', 'g', 's', 'b', **NMOS)
         rng = np.random.default_rng(20260826)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             for _ in range(300):
                 xa = sgn * rng.uniform(-300.0, 300.0, 4)
                 for f in (el.i, el.q, el.G, el.C):
@@ -1121,8 +1120,7 @@ def test_opamp_slew_rate_is_the_tail_current_over_the_compensation_cap():
         c['vee'] = VS('vee', gnd, v=VEE, vac=0.0)
         c['vin'] = eh.VSinHdl('vp', gnd, vo=0.0, va=amp, freq=freq)
         c['x'] = eh.OpAmpHdl('vp', 'out', 'out', 'vcc', 'vee', **OPA)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = Transient(c, toolkit=numeric).solve(
                 tend=2.0 / freq, timestep=1e-8 / (freq / 1e5),
                 fixed_timestep=True)
@@ -1367,8 +1365,7 @@ def test_opamp_stays_finite_where_no_amplifier_belongs():
     which divides by things the value does not."""
     el = _mk(eh.OpAmpHdl, 'inp', 'inn', 'out', 'vcc', 'vee', **OPA_OFF)
     rng = np.random.default_rng(20260826)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         for _ in range(300):
             x = rng.uniform(-1e3, 1e3, 8)
             for f in (el.i, el.q, el.G, el.C):
@@ -1686,8 +1683,7 @@ def test_thermal_runaway_onset_is_where_the_loop_gain_reaches_one():
     ## anchor, 100 Newton iterations per rung): 27-30 s apiece, measured
     ## 2026-09-08.  The claim is the two endpoints; the three factors in
     ## between (1.05, 1.5, 3.0) cost 85 s and asserted nothing more.
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         for f in (1.001, 100.0):
             with pytest.raises((SingularMatrix, NoConvergenceError)):
                 DC(_th_circuit(rc * f), toolkit=numeric).solve()
@@ -1712,8 +1708,7 @@ def test_thermal_runaway_is_a_transient_that_does_not_settle():
 
     def run(f, tend, n=4000):
         c = _th_circuit(rc * f, cth=cth)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = Transient(c, toolkit=numeric, uic=True).solve(
                 tend=tend, timestep=tend / n, fixed_timestep=True)
         return (np.asarray(res.v('th').x[0], float),

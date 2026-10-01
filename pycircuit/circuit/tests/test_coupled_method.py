@@ -33,6 +33,7 @@ import pytest
 from pycircuit.circuit import gnd, numeric
 from pycircuit.circuit.circuit import SubCircuit
 from pycircuit.circuit.elements import R, C, VSin
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 
 TAU = 1e-4
@@ -57,8 +58,7 @@ def _run(method=None):
     tran = Transient(_rc(), toolkit=numeric, reltol=1e-5)
     if method is not None:
         tran.par.coupled_method = method
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=5e-4, timestep=1e-5, coupled_lte=True)
     t = np.asarray(res.v('b').x, dtype=float).ravel()
     v = np.asarray(res.v('b').y, dtype=float).ravel()
@@ -113,8 +113,7 @@ def _pulsed_rc():
 def _pulse_run(method):
     tran = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5)
     tran.par.coupled_method = method
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         tran.solve(tend=6e-5, timestep=1e-6, coupled_lte=True)
     return tran.statistics
 
@@ -182,16 +181,14 @@ def test_coupled_tline_matches_standard_path():
     ref = Transient(line(False), toolkit=numeric, reltol=1e-4,
                     integrator=Gear2Integrator(), uic=True,
                     timestep_max=2e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         rr = ref.solve(gnd, tend=8e-9, timestep=2e-10)
     tr = np.asarray(rr.sweep_values, float)
     vr = np.asarray(rr.v('b'), float).reshape(-1)
 
     tran = Transient(line(False), toolkit=numeric, reltol=1e-4,
                      uic=True, timestep_max=2e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(gnd, tend=8e-9, timestep=2e-10, coupled_lte=True)
     t = np.asarray(res.sweep_values, float)
     vb = np.asarray(res.v('b'), float).reshape(-1)
@@ -204,8 +201,7 @@ def test_coupled_tline_matches_standard_path():
     ## Mismatched RC load: must complete and settle at (1 + Gamma)/2 = 2/3.
     tran2 = Transient(line(True), toolkit=numeric, reltol=1e-4,
                       uic=True, timestep_max=2e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res2 = tran2.solve(gnd, tend=8e-9, timestep=2e-10, coupled_lte=True)
     t2 = np.asarray(res2.sweep_values, float)
     vb2 = np.asarray(res2.v('b'), float).reshape(-1)
@@ -238,8 +234,7 @@ def test_the_coupled_step_count_does_not_depend_on_how_tightly_newton_is_converg
         for va in (1e-12, 1e-9, 1e-6):
             tran = Transient(_rc(), toolkit=numeric, reltol=1e-5, vabstol=va)
             tran.par.coupled_method = method
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = tran.solve(tend=5e-4, timestep=1e-5, coupled_lte=True)
             t = np.asarray(res.v('b').x, dtype=float).ravel()
             v = np.asarray(res.v('b').y, dtype=float).ravel()

@@ -16,6 +16,7 @@ import pytest
 from pycircuit.circuit import gnd, numeric
 from pycircuit.circuit.circuit import SubCircuit
 from pycircuit.circuit.elements import R, C, L, VSin, VPulse, IS
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.integrator import (EulerIntegrator, TrapezoidalIntegrator,
                                           Gear2Integrator)
@@ -124,7 +125,6 @@ def test_a_delay_line_dudt_is_the_derivative_of_its_u():
     history comes from a real standard-path run, not a synthetic ring.
     """
     from pycircuit.circuit.elements import TLine, VPulse
-    import warnings
     c = SubCircuit()
     c.add_node('a'); c.add_node('b')
     c['vs'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=1e-9, tr=2e-10,
@@ -133,8 +133,7 @@ def test_a_delay_line_dudt_is_the_derivative_of_its_u():
     c['T'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
     c['R'] = R('b', gnd, r=50.0)
     tran = Transient(c, toolkit=numeric, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         tran.solve(gnd, tend=4e-9, timestep=2e-10)
     tl = tran.cir['T']
     assert len(tl.history) > 3

@@ -1,5 +1,4 @@
 """Tests for DCSweep -- SPICE's .dc (stage 10.1)."""
-import warnings
 
 import numpy as np
 import pytest
@@ -7,6 +6,7 @@ import pytest
 from pycircuit.circuit import numeric, gnd, SubCircuit
 from pycircuit.circuit.elements import R, VS, Diode
 from pycircuit.circuit.dcanalysis import DC, DCSweep
+from pycircuit.circuit.tests._warnpolicy import quiet
 
 
 def _divider():
@@ -102,8 +102,7 @@ def test_continuation_cuts_the_work_and_not_the_answer():
         results, work = {}, {}
         for cont in (True, False):
             counts['n'] = 0
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = DCSweep(_diode_chain(), toolkit=numeric).solve(
                     'V1', 'v', np.linspace(0, 5, 101), continuation=cont)
             results[cont] = np.asarray(res.v('n4', gnd), dtype=float)
@@ -121,8 +120,7 @@ def test_dc_x0_defaults_to_the_old_behaviour():
     """`x0=None` must be exactly `zeros`, or DCSweep's seeding would be a change
     in disguise rather than an addition."""
     cir = _diode_chain()
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         a = np.asarray(DC(_diode_chain(), toolkit=numeric).solve().x, dtype=float)
         b = np.asarray(DC(_diode_chain(), toolkit=numeric).solve(
             x0=np.zeros(cir.n)).x, dtype=float)
@@ -160,8 +158,7 @@ def test_diode_limiter_state_does_not_outlive_its_analysis():
         runs = []
         for _ in range(3):
             counts['n'] = 0
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 DC(cir, toolkit=numeric).solve()
             runs.append(counts['n'])
     finally:

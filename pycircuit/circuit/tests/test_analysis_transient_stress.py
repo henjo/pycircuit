@@ -85,6 +85,7 @@ def test_stress_full_wave_bridge():
     res_adapt, res_coupled = _compare_methods(c, 0.04, 1e-4, "Full-Wave Bridge")
     assert abs(res_adapt.v(3, gnd)[-1] - res_coupled.v(3, gnd)[-1]) < 0.5
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_stress_charge_pump():
     c = SubCircuit()
     c['VP'] = VPulse(1, gnd, v1=-5, v2=5, tr=1e-6, tf=1e-6, pw=5e-6, per=10e-6)

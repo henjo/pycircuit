@@ -50,6 +50,7 @@ from numpy.testing import assert_allclose
 
 import pycircuit.circuit.circuit
 from pycircuit.circuit.circuit import defaultepar
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.toolkit import numeric
 from pycircuit.circuit import gnd
 from pycircuit.circuit.dcanalysis import DC
@@ -82,8 +83,7 @@ def _mk(cls, *nodes, **kw):
 
 def _quiet_transient(cir, **kw):
     tran = Transient(cir, toolkit=numeric, **{'uic': True, **kw})
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(**kw.pop('solve', {}) or {})
     return tran, res
 
@@ -631,8 +631,7 @@ def _comp_transient(cls, freq=1e3, tend=2e-3, timestep=2e-6, **kw):
     c['X'] = cls(ni, gnd, no, gnd, **card)
     c['Rl'] = R(no, gnd, r=1e3)
     tran = Transient(c, toolkit=numeric, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=tend, timestep=timestep)
     return (tran.statistics,
             np.asarray(res.v('o').x[0], float),
@@ -854,8 +853,7 @@ def _mem_transient(va=1.0, freq=1.0, cycles=2, pts=2000, **kw):
     c['m'] = eh.MemristorHdl(n1, gnd, **card)
     tran = Transient(c, toolkit=numeric, uic=True,
                      timestep_max=1.0 / (freq * pts))
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=cycles / freq, timestep=1.0 / (freq * pts))
     return (np.asarray(res.v('n1').x[0], float),
             np.asarray(res.v('n1').y, float),

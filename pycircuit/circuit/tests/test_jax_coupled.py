@@ -13,10 +13,11 @@ CPU and returns inf on this backend -- a breakpoint-feature divergence
 (parity doc P14 note), not a property of the coupled method.
 """
 
-import warnings
 
 import numpy as np
 import pytest
+
+from pycircuit.circuit.tests._warnpolicy import quiet
 
 jax = pytest.importorskip('jax')
 import jax.numpy as jnp
@@ -43,8 +44,7 @@ def _jax_coupled(kind, uic, reltol):
     circuit_mod.default_toolkit = jaxtoolkit
     try:
         tran = JAXTransient(_build(kind), reltol=reltol, coupled_lte=True)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=uic)
         return (np.asarray(res.sweep_values, float),
                 np.asarray(res.v('out'), float).reshape(-1))
@@ -55,8 +55,7 @@ def _jax_coupled(kind, uic, reltol):
 def _cpu_coupled(kind, uic, reltol):
     from pycircuit.circuit.transient import Transient
     tran = Transient(_build(kind), toolkit=numeric, reltol=reltol, uic=uic)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=5e-3, timestep=1e-4, coupled_lte=True)
     return (np.asarray(res.sweep_values, float),
             np.asarray(res.v('out'), float).reshape(-1))
@@ -95,8 +94,7 @@ def test_jax_coupled_batched_lanes():
     circuit_mod.default_toolkit = jaxtoolkit
     try:
         tran = JAXTransient(_build('rc'), reltol=1e-4, coupled_lte=True)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve_batched(
                 gnd, override_params_tree={'R': {'r': jnp.array([[1e2], [1e4]])}},
                 tend=5e-3, timestep=1e-4, uic=True)
@@ -169,8 +167,7 @@ def test_jax_coupled_tline_matches_cpu_standard():
     cpu = Transient(line(), toolkit=numeric, reltol=1e-4,
                     integrator=Gear2Integrator(), uic=True,
                     timestep_max=2e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res_c = cpu.solve(gnd, tend=8e-9, timestep=2e-10)
     tc = np.asarray(res_c.sweep_values, float)
     vc = np.asarray(res_c.v('b'), float).reshape(-1)
@@ -180,8 +177,7 @@ def test_jax_coupled_tline_matches_cpu_standard():
     try:
         tran = JAXTransient(line(), reltol=1e-4, coupled_lte=True,
                             timestep_max=2e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=8e-9, timestep=2e-10, uic=True)
         tj = np.asarray(res.sweep_values, float)
         vj = np.asarray(res.v('b'), float).reshape(-1)
@@ -224,16 +220,14 @@ def _euler_coupled_pair(reltol=1e-6, tend=2e-5, ts=2e-7):
     try:
         cpu = Transient(build(numeric), toolkit=numeric,
                         integrator=EulerIntegrator(), reltol=reltol, uic=True)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             rc = cpu.solve(tend=tend, timestep=ts, coupled_lte=True)
         tc = np.asarray(rc.v('b').x[0], float)
         vc = np.asarray(rc.v('b').y, float)
 
         j = JAXTransient(build(jaxtoolkit), coupled_lte=True,
                          integrator='euler', reltol=reltol)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             rj = j.solve(gnd, tend=tend, timestep=ts, uic=True)
         tj = np.asarray(rj.sweep_values, float).reshape(-1)
         vj = np.asarray(rj.v('b'), float).reshape(-1)
@@ -313,8 +307,7 @@ def test_vector_pcnr_runs_inside_the_coupled_path():
     tend, ts = 1e-6, 2e-8
     saved = _cm.default_toolkit
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             rc = Transient(build(numeric), toolkit=numeric, uic=True,
                            reltol=1e-9).solve(refnode=gnd, tend=tend,
                                               timestep=ts)
@@ -327,8 +320,7 @@ def test_vector_pcnr_runs_inside_the_coupled_path():
         ## the routing this test exists for
         meta, _vt = tran._pcnr_setup()
         assert meta[0] == 'vector', 'test no longer covers the device view'
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(refnode=gnd, tend=tend, timestep=ts, uic=True)
         t = np.asarray(res.sweep_values, float).reshape(-1)
         v = np.asarray(res.v('d'), float).reshape(-1)
@@ -371,8 +363,7 @@ def _jax_pulsed(fixed):
     try:
         tran = JAXTransient(_pulsed_rc(jaxtoolkit), coupled_lte=True,
                             reltol=1e-5)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=_GTEND, timestep=_STEP,
                              fixed_timestep=fixed)
         return (np.asarray(res.sweep_values, float).reshape(-1),
@@ -419,8 +410,7 @@ def test_fixed_grid_coupled_matches_the_cpu():
     """
     from pycircuit.circuit.transient import Transient
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         rc = Transient(_pulsed_rc(), toolkit=numeric, reltol=1e-5).solve(
             tend=_GTEND, timestep=_STEP, coupled_lte=True,
             fixed_timestep=True)

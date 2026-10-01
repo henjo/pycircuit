@@ -57,7 +57,6 @@ order of how much they can catch:
 """
 
 import math
-import warnings
 
 import numpy as np
 import pytest
@@ -65,6 +64,7 @@ from numpy.testing import assert_allclose
 
 import pycircuit.circuit.circuit
 from pycircuit.circuit.circuit import defaultepar
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.toolkit import numeric
 from pycircuit.circuit import gnd
 from pycircuit.circuit.dcanalysis import DC
@@ -1187,8 +1187,7 @@ def _tr_run(timestep, tend):
     c['rc'] = R(nvcc, ncc, r=TR_RC)
     c['q1'] = eh.GummelPoonNpnHdl(ncc, nb, gnd, **TRAN_NPN)
     tran = Transient(c, toolkit=numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=tend, timestep=timestep, fixed_timestep=True)
     t = np.asarray(res.v('nb').x[0], float)
     return t, np.asarray(res.v('nb').y, float), \
@@ -1267,8 +1266,7 @@ def test_charge_storage_is_what_delays_the_collector():
                                    **dict(TRAN_NPN, tf=0.0, tr=0.0,
                                           cje=0.0, cjc=0.0))
     tran = Transient(c2, toolkit=numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         r2 = tran.solve(tend=tend, timestep=tend / 2400,
                         fixed_timestep=True)
     t2 = np.asarray(r2.v('nb').x[0], float)

@@ -1,11 +1,12 @@
 """Tests for the LinearSolver strategies (stage 7b)."""
-import warnings
 
 import numpy as np
 import pytest
 
 from pycircuit.circuit import numeric, gnd, SubCircuit
 from pycircuit.circuit.elements import R, C, VS
+from pycircuit.circuit.simwarnings import AccuracyWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.linearsolver import (LinearSolver, DenseSolver,
                                             SuperLUSolver, AutoSolver,
@@ -28,8 +29,7 @@ def _run(N, solver, tend=5e-6, ts=1e-6):
     cir = _ladder(N)
     kw = {} if solver is None else {'linearsolver': solver}
     tran = Transient(cir, toolkit=numeric, reltol=1e-4, uic=True, **kw)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         res = tran.solve(refnode=gnd, tend=tend, timestep=ts)
     return (np.asarray(res.sweep_values, dtype=float),
             np.asarray(res.x, dtype=float))
@@ -213,7 +213,6 @@ def test_klu_matches_dense_on_a_transient():
     Two different factorisations do not round identically, and asserting they do
     would make the test a liability the first time SuiteSparse changes.
     """
-    import warnings
     from pycircuit.circuit.linearsolver import DenseSolver
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.elements import SubCircuit, R, C, VS
@@ -235,8 +234,7 @@ def test_klu_matches_dense_on_a_transient():
         from pycircuit.circuit.linearsolver import KLUSolver
         tran = Transient(ladder(), toolkit=numeric, reltol=1e-4, uic=True,
                          linearsolver=solver)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = tran.solve(refnode=gnd, tend=5e-6, timestep=1e-6)
         return np.asarray(res.x, dtype=float)
 
@@ -409,8 +407,7 @@ def test_every_shooting_surface_runs_under_every_linear_solver():
         c = _vdp_asym()
         c['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         pss = PSS(c, method=method, reltol=1e-12, linearsolver=ls)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
                       maxiterations=60)
             pac = PAC(c, toolkit=numeric)
@@ -468,8 +465,7 @@ def test_a_sparse_factorisation_keeps_the_period_s_capacitances_sparse():
     def surfaces(method, solver):
         c = ladder()
         p = PSS(c, method=method, reltol=1e-8, linearsolver=solver)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=1e-6, timestep=1e-6 / 64, maxiterations=20)
             stored = p.factored_period().steps[0][1]
             pac = PAC(c, toolkit=numeric)

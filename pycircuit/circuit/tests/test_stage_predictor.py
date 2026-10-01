@@ -15,13 +15,14 @@ histogram [436, 244, 108], to the count, that the exact seed gives.  A linear
 circuit is worse still, forcing a one-step Newton.  `_expg_fixture` is a
 state-free exponential with no limiting, which is what it takes.
 """
-import warnings
 
 import numpy as np
 import pytest
 
 from pycircuit.circuit.circuit import SubCircuit, gnd
 from pycircuit.circuit.elements import C, R, VSin
+from pycircuit.circuit.simwarnings import AccuracyWarning, ConvergenceWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit import transient as TR
 from pycircuit.circuit import nrsolver as NR
@@ -87,8 +88,7 @@ def _counted(cls, mode, npts, va=0.8, fixed=True, reltol=1e-9):
         ## vabstol=1e-12: measured at the pre-2026-09-19 default; this pins agreement far
         ## below the 1e-6 default's Newton floor, so it asks for the tight solve by name
         tr = Transient(cir, integrator=cls(), reltol=reltol, vabstol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = tr.solve(refnode=gnd, tend=PER, timestep=PER / npts,
                            fixed_timestep=fixed)
     finally:
@@ -192,8 +192,7 @@ def test_the_stage_predictor_actually_fires(cls, name):
     TR.Transient.stage_predictor = 'on'
     try:
         tr = Transient(_expg_fixture(), integrator=cls(), reltol=1e-9)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             tr.solve(refnode=gnd, tend=PER, timestep=PER / 200,
                      fixed_timestep=True)
     finally:
@@ -287,8 +286,7 @@ def test_a_rejected_steps_stages_never_become_predictor_nodes():
         seen.append((t, [float(e[0]) for e in self._pred_hist]))
     Transient._pred_note = noted
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             tr.solve(refnode=gnd, tend=PER / 4, timestep=PER / 200,
                      fixed_timestep=False)
     finally:
@@ -334,8 +332,7 @@ def test_the_stage_predictor_leaves_a_wrapping_state_alone():
     ## the grid-ALIGNED wrap, which is the case that failed
     TR.Transient.stage_predictor = 'on'
     p = PSS(build(0.0), method='trap', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning, ConvergenceWarning):
         ## (the grid this was measured on: `T / N` gave N - 1 steps until 2026-09-30)
         p.solve(period=per, timestep=per / 1199, maxiterations=60)
     assert p.converged

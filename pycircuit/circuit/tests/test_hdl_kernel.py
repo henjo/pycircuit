@@ -21,6 +21,7 @@ import pytest
 import sympy
 
 from pycircuit.circuit import hdl
+from pycircuit.circuit.tests._warnpolicy import quiet
 
 
 X = sympy.Symbol('x', real=True)
@@ -117,8 +118,7 @@ class TestNothingIsEverNonFinite(object):
         the asymmetry is a decision, not a gap.
         """
         f, _ = _fns(hdl.expl_low(X))
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             old = np.seterr(all='ignore')
             try:
                 assert np.isfinite(float(f(-1e10)))
@@ -286,8 +286,7 @@ class TestSafeSqrt(object):
         """Guard against this test suite pinning a non-problem."""
         clamped = sympy.sqrt(sympy.Max(X, 0.0))
         _, d = _fns(clamped)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             old = np.seterr(all='ignore')
             try:
                 assert not np.isfinite(float(d(-1.0)))
@@ -623,8 +622,7 @@ class TestSignAndAbs(object):
         d_expr = sympy.diff(sympy.Abs(X * PARAM), X)          # mixed: not
         assert d_expr.has(sympy.re) and d_expr.has(sympy.im)
         d = sympy.lambdify([X, PARAM], d_expr, modules=KMODS)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             old = np.seterr(all='ignore')
             try:
                 assert not np.isfinite(float(d(0.0, 1.0)))    # the trap
@@ -709,8 +707,7 @@ class TestSafePow(object):
         ## and the raw form really does fail there, both ways
         raw = sympy.lambdify(X, X ** e, modules=KMODS)
         draw = sympy.lambdify(X, sympy.diff(X ** e, X), modules=KMODS)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             old = np.seterr(all='ignore')
             try:
                 ## a negative base with a fractional exponent is not a

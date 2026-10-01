@@ -32,7 +32,6 @@ Two premises of the design of record did not survive contact:
   where plain Newton was `[FAIL, 7]` (+20 V).  The mechanism is traced
   in the docstring there; it is not the layer's.
 """
-import warnings
 
 import numpy as np
 import pytest
@@ -50,6 +49,7 @@ from pycircuit.circuit import pcnr as P
 from pycircuit.circuit._limiting import _pnjlim
 from pycircuit.circuit.nrsolver import NoConvergenceError, StandardNewton
 from pycircuit.circuit.analysis import SingularMatrix
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.tests.test_elements_hdl_library3 import NPN, NPN_IDEAL
 from pycircuit.circuit.tests.test_pcnr import _fig1
 from pycircuit.circuit.tests.test_pcnr_charge import (
@@ -61,8 +61,7 @@ from pycircuit.utilities.param import Parameter
 def _numeric_toolkit():
     old = pycircuit.circuit.circuit.default_toolkit
     pycircuit.circuit.circuit.default_toolkit = numeric
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         yield
     pycircuit.circuit.circuit.default_toolkit = old
 

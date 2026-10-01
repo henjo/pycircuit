@@ -8,6 +8,8 @@ from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
 import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, ModelWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -63,7 +65,6 @@ def test_an_index_2_solve_that_converges_is_correct():
     circuit has been built here, and neither reviewer nor this test has
     evidence one exists in this tree.
     """
-    import warnings
     from pycircuit.circuit.transient import Transient
     circuit.default_toolkit = circuit.numeric
     per = 1e-3
@@ -100,8 +101,7 @@ def test_an_index_2_solve_that_converges_is_correct():
         'so the test has lost its subject' % ratio
 
     ## reference: a settled transient
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         ## ⚠ a SHORT reference on purpose.  R*C here is ~0.5 s against a
         ## 1 ms period, so no affordable transient settles the slow DC
         ## drift -- but the quantity compared is the per-period AMPLITUDE,
@@ -115,8 +115,7 @@ def test_an_index_2_solve_that_converges_is_correct():
     ref = np.array([0.5 * (W[i].max() - W[i].min()) for i in range(W.shape[0])])
 
     pss = PSS(cv_loop(), method='gear', reltol=1e-8)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         res = pss.solve(period=per, timestep=per / 200, maxiterations=40)
     assert pss.converged, 'gear no longer converges on the CV-loop'
     Xp = np.asarray(res['tpss'].x, dtype=float)
@@ -371,7 +370,6 @@ def test_noise_in_the_constraints_is_detected():
     """
     from pycircuit.circuit.shooting import noise_enters_constraints
     from pycircuit.circuit.analysis import remove_row_col
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def check(kind):
@@ -380,8 +378,7 @@ def test_noise_in_the_constraints_is_detected():
         X = np.asarray(pss.waveform[1], dtype=float)
         Cr, = remove_row_col((np.asarray(cir.C(X[:, 0]), dtype=float),),
                              pss.irefnode, pss.toolkit)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             return noise_enters_constraints(np.asarray(Cr, dtype=float), cy)
 
     bad_p, res_p = check('parallel')
@@ -502,7 +499,6 @@ def test_radau_keeps_order_on_differential_and_loses_two_on_algebraic_index2():
     -- so refining `h` makes the observed order WORSE and no order statement
     is meaningful without measuring the floor first.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     per = 1e-3
     w = 2 * np.pi / per
@@ -559,8 +555,7 @@ def test_radau_keeps_order_on_differential_and_loses_two_on_algebraic_index2():
     errs = []
     for npts in (5, 10, 20, 40, 80):
         p = PSS(cv_loop(), method='radau', reltol=1e-13)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(ModelWarning):
             p.solve(period=per, timestep=per / npts, maxiterations=40)
         assert p.converged, 'radau did not converge at npts=%d' % npts
         t = np.asarray(p.waveform[0], dtype=float)
@@ -799,7 +794,6 @@ def test_topological_index_reports_the_index_0_rung_and_agrees_with_the_rank_tes
     """
     import os
     import sys
-    import warnings
     import numpy as np
     from pycircuit.circuit.circuit import gnd as _gnd, defaultepar
     from pycircuit.circuit.dcanalysis import DC
@@ -817,8 +811,7 @@ def test_topological_index_reports_the_index_0_rung_and_agrees_with_the_rank_tes
     def c_is_nonsingular(cir):
         tr = Transient(cir, integrator=Gear2Integrator(), reltol=1e-12)
         iref = cir.get_node_index(_gnd)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             x = np.asarray(DC(cir, refnode=_gnd).solve().x,
                            dtype=float).ravel()
         C = np.asarray(cir.C(x, defaultepar), dtype=float)
@@ -1286,15 +1279,13 @@ def test_the_orbit_rate_is_the_daes_own_and_its_stencil_fallback_is_live_and_sec
     second order: 6.7e-4 / 1.66e-4 / 4.1e-5 at 100 / 200 / 400 points,
     ratios 4.04 and 4.02.  Forcing the split singular fires it, warns, and
     returns exactly the stencil."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     w = 2.0 * np.pi * 1e3
     errs = []
     for N in (100, 200, 400):
         cir = _rc_noisy()
         p = PSS(cir, method='radau', reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=1e-3, timestep=1e-3 / N, maxiterations=40)
         pac = PAC(cir, toolkit=circuit.numeric)
         rd = pac._orbit_rate(p, [])
@@ -1340,8 +1331,7 @@ def test_the_shooting_reads_a_source_s_rate_at_the_solve_s_temperature():
     hot = defaultepar.copy()
     hot.T = 600.0
     p = PSS(c, method='radau', reltol=1e-10, epar=hot)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         p.solve(period=1 / f, timestep=1 / f / 50, maxiterations=20)
     rate = PAC(c)._orbit_rate(p, [])
     ia = [str(n_) for n_ in c.nodes if str(n_) != 'gnd!'].index('a')

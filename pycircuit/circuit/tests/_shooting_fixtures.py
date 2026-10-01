@@ -8,6 +8,8 @@ from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
 import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, ConvergenceWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -49,10 +51,8 @@ def _series_rlc(Lv=1e-3, Cv=1e-9, Rv=50.0, va=1.0):
 
 
 def _pss_peak(method, steps=20):
-    import warnings
     cir, f0, Q = _series_rlc()
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning, ConvergenceWarning):
         res = PSS(cir, method=method).solve(period=1.0 / f0,
                                             timestep=1.0 / (f0 * steps))
     v = np.asarray(res['tpss'].v(3, gnd), dtype=float)
@@ -242,15 +242,13 @@ def _vdp_with_slow_node(tau_over_T=None, T=6.6634, mu=1.0):
 
 
 def _solve_slow(tau_over_T):
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _vdp_with_slow_node(tau_over_T)
     m = cir.n - 1
     pss = PSS(cir, method='gear', reltol=1e-11)
     x0 = np.zeros(m)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=6.6634, timestep=6.6634 / 300, x0=x0,
                   maxiterations=60)
     assert pss.converged, 'tau/T=%r did not converge' % (tau_over_T,)
@@ -275,15 +273,13 @@ def _vdp_with_noise(psd=1e-6, mu=1.0):
 
 
 def _solve_vdp_noise(npts=240, psd=1e-6):
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _vdp_with_noise(psd)
     m = cir.n - 1
     pss = PSS(cir, method='gear', reltol=1e-12)
     x0 = np.zeros(m)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=6.6634, timestep=6.6634 / npts, x0=x0,
                   maxiterations=60)
     assert pss.converged
@@ -333,7 +329,6 @@ def _lc_osc(a=0.0, rs=0.0, psd=1e-6, npts=240, flicker=False, fref=1.0,
     tank's structural identity. Both are needed — see the test below.
     `white` adds a white source beside the flicker one.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir.add_node('v')
@@ -357,8 +352,7 @@ def _lc_osc(a=0.0, rs=0.0, psd=1e-6, npts=240, flicker=False, fref=1.0,
     m = cir.n - 1
     x0 = np.zeros(m)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=6.66, timestep=6.66 / npts, x0=x0, maxiterations=80)
     assert pss.converged, 'a=%r rs=%r did not converge' % (a, rs)
     return cir, pss, PAC(cir, toolkit=circuit.numeric)
@@ -402,7 +396,6 @@ class _SquareMixer(Circuit):
 
 
 def _cos2_mixer(f0=1e3, psd=1e-18, rin=1e3, rout=1e3, g=1e-3, npts=400):
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     for nn in ('lo', 'vin', 'out'):
@@ -413,8 +406,7 @@ def _cos2_mixer(f0=1e3, psd=1e-18, rin=1e3, rout=1e3, g=1e-3, npts=400):
     cir['M'] = _SquareMixer('out', gnd, 'vin', gnd, 'lo', gnd, g=g)
     cir['rout'] = R('out', gnd, r=rout)
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=1.0 / f0, timestep=1.0 / (f0 * npts), refnode=gnd,
                   maxiterations=60)
     assert pss.converged
@@ -447,7 +439,6 @@ def _loss_osc(kind, Q=8.0, npts=480, a=0.0, idc_node=None, idc=0.0,
     while the QUADRATIC one does not care; so the sensitivity tests need it
     and the `c` comparison does not.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2 * np.pi * Q)
     rs = 0.2 * mu
@@ -473,8 +464,7 @@ def _loss_osc(kind, Q=8.0, npts=480, a=0.0, idc_node=None, idc=0.0,
     pss = PSS(cir, method='gear', reltol=1e-12)
     x0 = np.zeros(cir.n - 1)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=250)
     assert pss.converged, '%s did not converge' % kind
     return cir, pss, PAC(cir, toolkit=circuit.numeric), rs
@@ -515,7 +505,6 @@ def _raw_pair_integrals(pss, cir):
 
 def _vdp_ppv_method(method, npts, Q=8.0):
     """The same van der Pol under a named integrator, converged."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * Q)
     cir = SubCircuit()
@@ -527,8 +516,7 @@ def _vdp_ppv_method(method, npts, Q=8.0):
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
     pss = PSS(cir, method=method, reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
                   maxiterations=200)
     assert pss.converged, '%s/%d did not converge' % (method, npts)
@@ -542,7 +530,6 @@ def _coloured_vdp(kind, Q=8.0, npts=400):
     `P = g^2 Pw Rf^2`, `tau = Rf Cf`, chosen at `tau ~ 0.3 T` so that the
     source-side and output-side frequencies differ by a visible factor.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * Q)
     T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
@@ -567,8 +554,7 @@ def _coloured_vdp(kind, Q=8.0, npts=400):
     pss = PSS(c, method='gear', reltol=1e-12)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
     assert pss.converged
     ov = [str(n) for n in c.nodes].index('v')
@@ -599,7 +585,6 @@ def _orbit_modulated_vdp(kind, method='gear', a=0.0, kk=0.05, level=1.0,
     2.8 periods, which `oscillator_edge_jitter`'s first-order guard refuses
     -- the edge-jitter test runs it at 1e-8 (2026-09-29).
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     c = SubCircuit()
@@ -641,8 +626,7 @@ def _orbit_modulated_vdp(kind, method='gear', a=0.0, kk=0.05, level=1.0,
     pss = PSS(c, method=method, reltol=1e-12)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
     assert pss.converged
     ov = [str(n) for n in c.nodes].index('v')
@@ -739,7 +723,6 @@ def _a9_vdp(Q=8.0, psd=1e-6, cval=1.0, lval=1.0, a=0.0):
     move the reactances at fixed `w0` when `lval = 1/cval`.
     See `_hostile_oscillator` for the configuration that has BOTH.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * Q)
     cir = SubCircuit()
@@ -752,8 +735,7 @@ def _a9_vdp(Q=8.0, psd=1e-6, cval=1.0, lval=1.0, a=0.0):
     w0 = 1.0 / np.sqrt(cval * lval)
     T = 2.0 * np.pi / w0 / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
                   maxiterations=300)
     assert pss.converged
@@ -774,7 +756,6 @@ def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400,
     ⚠ NOT a fixed seed either: it hops branches (locked / non-convergent /
     suppressed).  Seed each step from the previous LOCKED orbit.
     """
-    import warnings as _w
     from pycircuit.circuit.elements import ISin
     circuit.default_toolkit = circuit.numeric
     ## 0.2x steps: 0.1x cost 11 min per gate; the edge is reported as the
@@ -803,8 +784,7 @@ def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400,
                              for e in np.eye(fp.width)])
         return float(np.max(np.abs(np.linalg.eigvals(M))))
 
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         cir0, cval, mu = cir_fn(0.0, None)
         T0 = 2.0 * np.pi * np.sqrt(cval * cir0['L'].ipar.L)
         p = PSS(cir0, method='gear', reltol=1e-11)
@@ -827,8 +807,7 @@ def _injection_lock_edge(cir_fn, ratio=0.2, steps=None, npts=400,
         import time as _time
         _t0 = _time.perf_counter()
         try:
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet(AccuracyWarning, ConvergenceWarning):
                 pp.solve(period=1.0 / finj, timestep=1.0 / finj / npts, x0=x0,
                          maxiterations=maxiterations, x0_unknown=False)
             if timing is not None:
@@ -914,7 +893,6 @@ def _sampler_fixture(elements, npts=400):
     """The switched-capacitor sampler of
     `test_a_switched_capacitor_holds_kTC_with_per_step_CY` with the noisy
     elements supplied: `elements(cir)` adds them between 'in'/'out'/'ck'."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     fclk = 100e3
     T = 1.0 / fclk
@@ -926,8 +904,7 @@ def _sampler_fixture(elements, npts=400):
     cir['C0'] = C('out', gnd, c=100e-12)
     elements(cir)
     pss = PSS(cir, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
                   maxiterations=100)
     assert pss.converged
@@ -947,7 +924,6 @@ def _sw(kb=_KB, **kw):
 
 def _sampler_fixture_method(elements, method, npts=400):
     """`_sampler_fixture` under another integrator."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     fclk = 100e3
     T = 1.0 / fclk
@@ -959,8 +935,7 @@ def _sampler_fixture_method(elements, method, npts=400):
     cir['C0'] = C('out', gnd, c=100e-12)
     elements(cir)
     pss = PSS(cir, method=method, reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=np.zeros(cir.n - 1),
                   maxiterations=100)
     assert pss.converged
@@ -1210,7 +1185,6 @@ def _mixed_exponent_rc(kind):
     entry `sqrt(p1 p2)`, of a third slope: no split makes them
     independent), 'xcorr' the same correlated noise as the two elements
     of 'split' and a `CY` override adding the cross entry."""
-    import warnings
     from pycircuit.circuit.hdl import flicker_noise as _fn
     circuit.default_toolkit = circuit.numeric
     T, Rv, Cv, k = 1e-6, 1e3, 1e-9, 1e-20
@@ -1258,8 +1232,7 @@ def _mixed_exponent_rc(kind):
         c['n1'] = _pow_flicker(0.8)('o1', gnd, k=k)
         c['n2'] = _pow_flicker(2.0)('o2', gnd, k=k)
     pss = PSS(c, method='radau', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=T, timestep=T / 100, maxiterations=40)
     names = [str(x) for x in c.nodes if str(x) != 'gnd!']
     return pss, PAC(c, toolkit=circuit.numeric), names, (T, Rv, Cv, k)

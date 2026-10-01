@@ -8,7 +8,6 @@ started at all.
 
 Both are tested here, because they are the two shapes the feature exists for.
 """
-import warnings
 
 import numpy as np
 import pytest
@@ -16,6 +15,7 @@ import pytest
 from pycircuit.circuit import gnd, numeric
 from pycircuit.circuit.circuit import SubCircuit
 from pycircuit.circuit.elements import R, C, L, VCVS
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 
 
@@ -33,8 +33,7 @@ def test_an_lc_tank_cannot_start_from_zero():
     `solve()` that makes this circuit oscillate.
     """
     tran = Transient(_lc_tank(), toolkit=numeric, reltol=1e-6, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=2e-7, timestep=1e-9)
     v = np.asarray(res.v(1, gnd).y, dtype=float).ravel()
     assert np.max(np.abs(v)) < 1e-12, \
@@ -48,8 +47,7 @@ def test_an_lc_tank_started_by_ic_oscillates_at_its_own_frequency():
     f0 = 1.0 / (2 * np.pi * np.sqrt(L_ * C_))
     tran = Transient(_lc_tank(L_, C_), toolkit=numeric, reltol=1e-7,
                      uic=True, ic={'1': 1.0})
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=4.0 / f0, timestep=1e-10)
     t = np.asarray(res.v(1, gnd).x, dtype=float).ravel()
     v = np.asarray(res.v(1, gnd).y, dtype=float).ravel()
@@ -100,8 +98,7 @@ def test_a_latch_started_by_ic_leaves_its_metastable_point():
 
     tran = Transient(ck, toolkit=numeric, reltol=1e-6, uic=True,
                      ic={'1': 1e-3})
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=5e-9, timestep=1e-12)
     v1 = np.asarray(res.v(1, gnd).y, dtype=float).ravel()
 
@@ -237,8 +234,7 @@ def test_a_tank_started_by_inductor_current_has_the_analytic_amplitude():
     ck['C'] = C(1, gnd, c=C_)
 
     tran = Transient(ck, toolkit=numeric, reltol=1e-7, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=3.0 / f0, timestep=1e-10)
     v = np.asarray(res.v(1, gnd).y, dtype=float).ravel()
 
@@ -375,8 +371,7 @@ def test_a_precharged_capacitor_discharges_with_the_analytic_time_constant():
     ck['C'] = C(1, gnd, c=C_, ic=V0)
     ck['R'] = R(1, gnd, r=R_)
     tran = Transient(ck, toolkit=numeric, reltol=1e-7, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=4 * tau, timestep=tau / 50)
     t = np.asarray(res.v(1, gnd).x, dtype=float).ravel()
     v = np.asarray(res.v(1, gnd).y, dtype=float).ravel()

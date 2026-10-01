@@ -29,7 +29,6 @@ arm replaced by ``vold`` breaks 1; the EKV declaration reverted to a raw
 ``bsb.V`` breaks 2 and 3; the pair view filter widened to all kinds breaks
 the gmin test.
 """
-import warnings
 
 import numpy as np
 import pytest
@@ -48,6 +47,7 @@ from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    explain, limit_identity, limit_fet,
                                    limit_pnj, limit_together, softplus,
                                    var, vt)
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.utilities.param import Parameter
 
 
@@ -474,8 +474,7 @@ def test_dc_pcnr_takes_the_ekv_pair_through_pcnr_and_agrees_with_dc():
     ref = _dc_tail(0.3)
     P.solve_dc = counted
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             dc = DC(c, pcnr=True)
             r = dc.solve()
     finally:

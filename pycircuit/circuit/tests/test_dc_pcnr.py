@@ -1,4 +1,6 @@
 import pytest
+
+from pycircuit.circuit.tests._warnpolicy import quiet
 def test_dc_pcnr_diode():
     """
     Test PCNR limiting in DC simulation with a diode driven by a large source.
@@ -34,7 +36,6 @@ def test_dc_pcnr_true_takes_a_circuit_with_no_junction_at_all():
     (Stage 2, 2026-08-26).  Gated on `pcnr_devices()` now, and this test
     would have caught the fall-through: it counts the calls.
     """
-    import warnings
     import numpy as np
     from pycircuit.circuit import gnd, pcnr
     from pycircuit.circuit.elements import SubCircuit, VS, R, IS
@@ -64,8 +65,7 @@ def test_dc_pcnr_true_takes_a_circuit_with_no_junction_at_all():
 
     pcnr.solve_dc = spy
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             r = DC(c, pcnr=True).solve()
     finally:
         pcnr.solve_dc = orig
@@ -341,6 +341,7 @@ def test_a_transient_says_when_nothing_participates():
     assert t.pcnr_solves == 0
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.ConvergenceWarning')
 def test_a_partly_failing_transient_reports_partial():
     """⚠ The case the counter exists for.
 

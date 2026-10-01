@@ -32,13 +32,13 @@ instead of being substituted and recomputed -- and the build does not get
 slower despite 185 more definitions.
 """
 
-import warnings
 
 import numpy as np
 import pytest
 import sympy
 
 import pycircuit.circuit.circuit as cm
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.toolkit import numeric
 from pycircuit.circuit import hdl, gnd
 
@@ -208,8 +208,7 @@ def test_the_library_still_computes_what_it_did():
         *['n%d' % i for i in range(len(eh.DiodeSpiceThermalHdl.terminals))])
     el.update_iparv()
     rng = np.random.default_rng(7)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         for _ in range(20):
             x = rng.uniform(-2.0, 2.0, el.n)
             for meth in ('i', 'G', 'q', 'C'):

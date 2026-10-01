@@ -10,6 +10,7 @@ import pytest
 from pycircuit.circuit import gnd
 from pycircuit.circuit.circuit import SubCircuit
 from pycircuit.circuit.elements import R, C, IS
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 
 
@@ -106,7 +107,6 @@ def test_f2a_batched_override_of_unbatchable_class_raises():
 
 def test_f2b_batched_r_override_differentiates_lanes():
     jax = pytest.importorskip('jax')
-    import warnings
     import jax.numpy as jnp
     from pycircuit.circuit import circuit as circuit_mod
     from pycircuit.circuit.toolkit import jaxtoolkit
@@ -121,8 +121,7 @@ def test_f2b_batched_r_override_differentiates_lanes():
         cir['V1'] = VS('in', gnd, v=1.0)
         cir['R1'] = R('in', 'out', r=1e3)
         cir['C1'] = C('out', gnd, c=1e-6)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = JAXTransient(cir, reltol=1e-6).solve_batched(
                 gnd, override_params_tree={'R': {'r': jnp.array([[1e2], [1e4]])}},
                 tend=5e-3, timestep=1e-4, uic=True)
@@ -252,11 +251,9 @@ def test_f1_batched_lanes_finishing_in_different_chunks():
 ## JAX parity), on both the standard and the coupled path.
 
 def test_f12_cpu_result_includes_t0_standard_and_coupled():
-    import warnings
     for coupled in (False, True):
         tran = Transient(_rc())
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(tend=1e-6, timestep=1e-8, coupled_lte=coupled)
         t = np.asarray(res.sweep_values, dtype=float).reshape(-1)
         assert t[0] == 0.0, 'coupled=%s missing t=0' % coupled
@@ -271,7 +268,6 @@ def test_f12_cpu_result_includes_t0_standard_and_coupled():
 ## and discard the result.
 
 def test_f4_provided_function_is_an_extra_source_on_every_path():
-    import warnings
 
     def run(coupled, pf):
         c = SubCircuit()
@@ -279,8 +275,7 @@ def test_f4_provided_function_is_an_extra_source_on_every_path():
         c['R'] = R('a', gnd, r=1e3)
         c['C'] = C('a', gnd, c=1e-9)
         tran = Transient(c, uic=True)      # uic: the seed knows nothing of pf
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(tend=2e-6, timestep=1e-8, coupled_lte=coupled,
                              provided_function=pf)
         return float(np.asarray(res.v('a'), dtype=float).reshape(-1)[-1])
@@ -330,7 +325,6 @@ def test_f4_inconsistent_seed_warns():
 ## row -- two reference nodes in one solve.
 
 def test_f7_pcnr_honours_refnode():
-    import warnings
     from pycircuit.circuit.elements import Diode, VSin
 
     def rectifier():
@@ -345,8 +339,7 @@ def test_f7_pcnr_honours_refnode():
         c = rectifier()
         ib = c.get_node_index('b')
         tran = Transient(c, pcnr=pcnr, reltol=1e-5)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(c.get_node('b'), tend=2e-4, timestep=1e-5)
         xb = np.asarray(res.x)[ib]
         assert float(np.max(np.abs(xb))) == 0.0, \
@@ -359,14 +352,12 @@ def test_f7_pcnr_honours_refnode():
 
 @pytest.mark.parametrize('tend,ts', [(1e-3, 1e-5), (5e-4, 1e-5), (1e-3, 1e-6)])
 def test_f3_coupled_lands_on_tend(tend, ts):
-    import warnings
     c = SubCircuit()
     c['is'] = IS(gnd, 'a', i=1e-3)
     c['R'] = R('a', gnd, r=1e3)
     c['C'] = C('a', gnd, c=1e-8)          # tau = 10us: quiet tail long before tend
     tran = Transient(c)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=tend, timestep=ts, coupled_lte=True)
     t = np.asarray(res.sweep_values, dtype=float).reshape(-1)
     assert t[-1] <= tend * (1 + 1e-12)
@@ -388,10 +379,8 @@ def test_f5_coupled_band_defaults_when_unset():
 
 
 def test_f5_standard_band_defaults_when_unset():
-    import warnings
     tran = Transient(_rc())
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         tran.solve(tend=1e-7, timestep=1e-9)
     ctrl = tran.step_controller
     assert (ctrl.lte_gamma_min, ctrl.lte_gamma_max, ctrl.lte_eta) \
@@ -424,7 +413,6 @@ def test_f14_growth_retries_do_not_force_accept():
 ## result; the JAX path attaches too (parity).
 
 def test_f13_coupled_statistics_complete_and_attached():
-    import warnings
     from pycircuit.circuit.elements import VPulse
     ## Same drive/timestep proportions as test_coupled_method's _pulse_run --
     ## a pulse the coupled path is known to complete.
@@ -434,8 +422,7 @@ def test_f13_coupled_statistics_complete_and_attached():
     c['R'] = R('a', 'b', r=1e3)
     c['C'] = C('b', gnd, c=1e-9)
     tran = Transient(c, reltol=1e-5)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=6e-5, timestep=1e-6, coupled_lte=True)
     st = res.statistics                      # attached to the RESULT
     assert st.total_seconds > 0
@@ -534,7 +521,6 @@ def test_f19_forced_lte_counter_exists_and_is_zero_on_clean_runs():
 
 def test_f11_breakpoint_order_drop_tames_edge_rejections():
     pytest.importorskip('jax')
-    import warnings
     from pycircuit.circuit import circuit as circuit_mod
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
@@ -551,8 +537,7 @@ def test_f11_breakpoint_order_drop_tames_edge_rejections():
         ## timestep_max pins the old timestep-as-cap configuration the
         ## 16-rejections record was measured under (decoupled 2026-08-21).
         tran = JAXTransient(cir, reltol=1e-4, timestep_max=2e-5)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=3e-3, timestep=2e-5, uic=True)
         st = tran.statistics
         assert st.accepted_steps > 100
@@ -577,8 +562,7 @@ def test_f11_breakpoint_order_drop_tames_edge_rejections():
     c2['C1'] = C('out', gnd, c=1e-6)
     tran_c = Transient(c2, toolkit=numeric, integrator=Gear2Integrator(),
                        reltol=1e-4, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res_c = tran_c.solve(tend=3e-3, timestep=2e-5)
     tc = np.asarray(res_c.sweep_values, float)
     vc = np.asarray(res_c.v('out'), float).reshape(-1)
@@ -593,7 +577,6 @@ def test_f11_breakpoint_order_drop_tames_edge_rejections():
 
 def test_f17_safety_factor_tames_rejection_rate():
     pytest.importorskip('jax')
-    import warnings
     from pycircuit.circuit import circuit as circuit_mod
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
@@ -607,8 +590,7 @@ def test_f17_safety_factor_tames_rejection_rate():
             c['R'] = R('a', 'b', r=1e3)
             c['C'] = C('b', gnd, c=1e-7)
             tran = JAXTransient(c, reltol=reltol)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 tran.solve(gnd, tend=5e-3, timestep=1e-4, uic=True)
             st = tran.statistics
             ratio = st.rejected_steps / max(1, st.accepted_steps)
@@ -625,7 +607,6 @@ def test_f17_safety_factor_tames_rejection_rate():
 
 def test_f16_high_voltage_converges_with_clamp_off():
     pytest.importorskip('jax')
-    import warnings
     from pycircuit.circuit import circuit as circuit_mod
     from pycircuit.circuit.toolkit import jaxtoolkit
     from pycircuit.circuit.jaxtransient import JAXTransient
@@ -639,8 +620,7 @@ def test_f16_high_voltage_converges_with_clamp_off():
         cir['R1'] = R('in', 'out', r=1e3)
         cir['C1'] = C('out', gnd, c=1e-6)
         tran = JAXTransient(cir)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=1e-4, timestep=1e-5, uic=True)
         assert tran.statistics.nonconverged_steps == 0
         assert tran.statistics.forced_nonconverged_steps == 0

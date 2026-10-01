@@ -13,10 +13,11 @@ property a `lax.cond` port would silently lose under `vmap`); and
 non-interference -- a run that never reaches the dt floor must produce the
 same numbers bit for bit whether the chain is armed or not.
 """
-import warnings
 
 import numpy as np
 import pytest
+
+from pycircuit.circuit.tests._warnpolicy import quiet
 
 jax = pytest.importorskip('jax')
 import jax.numpy as jnp
@@ -259,8 +260,7 @@ def test_armed_chain_does_not_change_a_healthy_run():
     the waveform must be identical bit for bit, not merely close."""
     def run(cont):
         tran = JAXTransient(_rc_diode(), continuation=cont, pcnr=False)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=2e-4, timestep=1e-6, uic=True)
         return (np.asarray(res.v('b'), float).reshape(-1),
                 tran.statistics.gmin_rescues,
@@ -312,8 +312,7 @@ def _run_overshoot(cont, minstep=_TS):
     def go():
         tran = JAXTransient(_overshoot(), pcnr=False, continuation=cont,
                             reltol=1e-6, minstep=minstep, firststep=_TS)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=20 * _TS, timestep=_TS, uic=True)
         return (np.asarray(res.sweep_values, float),
                 np.asarray(res.v('b'), float).reshape(-1), tran.statistics)
@@ -387,8 +386,7 @@ def _run_chain(cont, minstep=_PTS):
     def go():
         tran = JAXTransient(_diode_chain(), pcnr=True, continuation=cont,
                             reltol=1e-6, minstep=minstep, firststep=_PTS)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(gnd, tend=20 * _PTS, timestep=_PTS, uic=True)
         return (np.asarray(res.sweep_values, float),
                 np.asarray(res.v('n0'), float).reshape(-1), tran.statistics)
@@ -462,8 +460,7 @@ def test_vector_pcnr_traces_with_the_chain_armed():
                                 continuation=cont)
             meta, _vt = tran._pcnr_setup()
             assert meta[0] == 'vector', 'test no longer covers the vector path'
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = tran.solve(refnode=gnd, tend=1e-6, timestep=2e-8,
                                  uic=True)
             out[cont] = (np.asarray(res.v('d'), float).reshape(-1),

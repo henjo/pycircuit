@@ -8,13 +8,14 @@ read p / p.  Hypothesis (c) of the theorem -- the input vector exact to O(h^p) -
 machinery this file gates: the method is run from the EXACT Nordsieck vector and from the computed
 one, and the orders must agree.
 """
-import warnings
 import numpy as np
 import pytest
 
 from pycircuit.circuit import circuit
 from pycircuit.circuit.circuit import SubCircuit, gnd
 from pycircuit.circuit.elements import C, L, R, VSin
+from pycircuit.circuit.simwarnings import AccuracyWarning, ModelWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.integrator import (GLM2Integrator, GLM3Integrator,
                                           GLM4Integrator, RadauIIA3Integrator)
@@ -110,8 +111,7 @@ def _orders(cir, per, integ, keep, Vdiff, Valg, x_exact, override=None, npts_lis
                          iabstol=1e-16, vabstol=1e-14)
         if override is not None:
             tran._glm_startup_override = override
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tran.solve(refnode=gnd, tend=per, x0=x_exact(0.0), timestep=per / npts,
                              fixed_timestep=True)
         t = np.asarray(res.sweep_values, dtype=float)
@@ -163,8 +163,7 @@ def _pss_errors(method, per, keep, Vdiff, Valg, x_exact, npts_list=(20, 40, 80))
     errs = []
     for npts in npts_list:
         p = PSS(_cv_loop(per), method=method, reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(ModelWarning):
             p.solve(period=per, timestep=per / npts, maxiterations=40)
         assert p.converged, (method, npts)
         t = np.asarray(p.waveform[0], dtype=float)
@@ -215,8 +214,7 @@ def test_the_glm_period_map_is_on_the_nordsieck_state_and_carries_the_circuits_m
     mults = {}
     for method in ('glm3', 'radau'):
         p = PSS(_cv_loop(per), method=method, reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(ModelWarning):
             p.solve(period=per, timestep=per / 40, maxiterations=40)
         fp = p.factored_period()
         M = np.column_stack([fp.matvec(e) for e in np.eye(fp.width)])
@@ -274,8 +272,7 @@ def test_a_glm_finds_the_free_period_and_the_orbits_multipliers():
         for npts in (60, 120):
             c, _T = _vdp()
             p = PSS(c, method=method, reltol=1e-12)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 p.solve(period=T0, timestep=T0 / npts, x0=np.array([2.0, 0.0]),
                         maxiterations=200)
             assert p.converged, (method, npts)
@@ -312,8 +309,7 @@ def test_the_glm_adjoint_is_the_transpose_of_its_period_map():
     from pycircuit.circuit.shooting import PSS
     per = 1e-3
     p = PSS(_cv_loop(per), method='glm3', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(ModelWarning):
         p.solve(period=per, timestep=per / 40, maxiterations=40)
     fp = p.factored_period()
     w = fp.width
@@ -397,15 +393,13 @@ def test_small_signal_surfaces_work_over_a_glm_operating_point_through_the_twin(
         cir, T0 = _vdp()
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         p = PSS(cir, method=method, reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             p.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
                     maxiterations=200)
         assert p.converged
         m = cir.n - 1
         pac = PAC(cir, toolkit=circuit.numeric)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning, ModelWarning):
             v, _info = p.ppv()
             _K, _i2 = pac.oscillator_covariance(p)
             d = _i2['d']
@@ -437,8 +431,7 @@ def test_floquet_modes_off_the_nordsieck_map_drops_the_methods_own_multipliers()
     for method in ('radau', 'glm3'):
         cir, T0 = _vdp()
         p = PSS(cir, method=method, reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             p.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
                     maxiterations=200)
         fm = p.floquet_modes(fp=p.factored_period())
@@ -464,8 +457,7 @@ def test_floquet_modes_works_when_called_with_no_arguments(method):
     from pycircuit.circuit.shooting import PSS
     cir, T0 = _vdp()
     p = PSS(cir, method=method, reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=T0, timestep=T0 / 60, x0=np.array([2.0, 0.0]),
                 maxiterations=200)
     assert p.converged
@@ -591,8 +583,7 @@ def test_a_glm_runs_adaptively_and_restarts_once(cls, name):
     """
     from pycircuit.circuit.tests.test_stage_predictor import _expg_fixture
     per = 1e-3
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         ref = Transient(_expg_fixture(per), integrator=RadauIIA3Integrator(),
                         reltol=1e-13).solve(refnode=gnd, tend=per,
                                             timestep=per / 6000,
@@ -640,8 +631,7 @@ def test_a_glm_has_no_error_estimate_across_a_restart():
         return out
     Transient._solve_timestep_glm = wrapped
     try:
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             tr.solve(refnode=gnd, tend=per / 20, timestep=per / 200,
                      fixed_timestep=True)
     finally:
@@ -668,8 +658,7 @@ def test_sampled_noise_reads_a_glm_run_off_its_own_map():
         ib = [str(nd) for nd in cir.nodes if str(nd) != 'gnd!'].index('b')
         p = PSS(cir, method=method, reltol=1e-12)
         p.monodromy = mono
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning, ModelWarning):
             p.solve(period=per, timestep=per / 40, maxiterations=40)
             got[(method, mono)] = float(PAC(cir).sampled_noise(p, ib, [0.0], [0.1 / per])[0, 0])
     assert got[('glm3', 'radau')] == got[('glm3', 'native')] > 0.0, got
@@ -684,8 +673,7 @@ def test_glm_node_startups_run_on_the_transient_that_walked_the_period():
     2.9e-5 off a glm3 PSS's, and a PSS never solved raised AttributeError."""
     from pycircuit.circuit.shooting import PSS
     per, npts = 1e-3, 40
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(ModelWarning):
         p2 = PSS(_cv_loop(per), method='glm2', reltol=1e-12)
         p2.solve(period=per, timestep=per / npts, maxiterations=40)
         x0 = np.asarray(p2._period_state[1], float)
@@ -719,8 +707,7 @@ def test_a_startup_override_leaves_the_glm_walk_nothing_stale_to_linearise():
     from pycircuit.circuit.shooting import PSS
     per, npts = 1e-3, 20
     times = np.linspace(0.0, per, npts + 1)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(ModelWarning):
         p = PSS(_cv_loop(per), method='glm3', reltol=1e-12)
         p.solve(period=per, timestep=per / npts, maxiterations=40)
         x0 = np.asarray(p._period_state[1], float)
@@ -753,8 +740,7 @@ def test_a_glm_wraps_its_nordsieck_vector_with_the_state():
         c['Idtmod'] = Idtmod(nin, gnd, nout, gnd, modulus=1.0)
         return c
     out = {}
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         for label, integ in (('glm2', GLM2Integrator), ('radau', RadauIIA3Integrator)):
             c = ramp()
             tr = Transient(c, integrator=integ(), reltol=1e-9)

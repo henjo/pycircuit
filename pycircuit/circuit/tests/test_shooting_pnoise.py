@@ -5,9 +5,14 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
-import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    CostWarning,
+    ModelWarning,
+)
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -41,19 +46,16 @@ def _divider():
 
 
 def _pnoise_at(cir, per, fout, node, npts, **kw):
-    import warnings
     circuit.default_toolkit = circuit.numeric
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / npts, maxiterations=40)
     assert pss.converged
     irn = pss.irefnode
     k = cir.get_node_index(node)
     k = k - 1 if k > irn else k
     pac = PAC(cir, toolkit=circuit.numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         S, used = pac.pnoise(pss, fout, k, **kw)
     return S, used, pac
 
@@ -136,12 +138,10 @@ def test_pnoise_says_when_the_grid_stopped_it_rather_than_the_series():
     warning is not proof of a bad answer, it is a statement that the
     accumulation cannot vouch for itself.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _diode_mixer()
     pss = PSS(cir, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-6, timestep=1e-6 / 80, maxiterations=40)
     irn = pss.irefnode
     k = cir.get_node_index(2)
@@ -180,7 +180,6 @@ def test_pnoise_refuses_cyclostationary_sources():
             iPSD = base * (1.0 + 10.0 * abs(float(np.asarray(x).ravel()[0])))
             return self.toolkit.array([[iPSD, -iPSD], [-iPSD, iPSD]])
 
-    import warnings
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
     n1, n2 = c.add_nodes('net1', 'net2')
@@ -189,8 +188,7 @@ def test_pnoise_refuses_cyclostationary_sources():
     c['R2'] = R(n2, gnd, r=1e3)
     c['C'] = C(n2, gnd, c=1e-9)
     pss = PSS(c, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
     assert pss.converged
     with pytest.raises(NotImplementedError, match='cyclostationary'):
@@ -218,15 +216,13 @@ def test_pac_refuses_an_operating_point_from_another_circuit():
     count — so the existing guard passes and the answer is quietly about
     the wrong orbit.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     ## same topology, same node count, same refnode — different objects
     bare = _adjoint_ladder(3)
     other = _adjoint_ladder(3)
     pss = PSS(bare, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
     assert pss.converged
     assert bare.n == other.n, 'the two circuits must look alike for this ' \
@@ -242,8 +238,7 @@ def test_pac_refuses_an_operating_point_from_another_circuit():
 
     ## the matching pair is accepted
     pac_same = PAC(bare, toolkit=circuit.numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pac_same.adjoint_sideband_row(pss, 700.0, 1, 0)
 
 
@@ -274,11 +269,9 @@ def _hm_circuit(source=None, psd=1e-18, per=1e-3):
 
 
 def _hm_pnoise(cir, freq, modulated, per=1e-3, npts=200):
-    import warnings
     circuit.default_toolkit = circuit.numeric
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / npts, refnode=gnd,
                   maxiterations=40)
     assert pss.converged
@@ -288,8 +281,7 @@ def _hm_pnoise(cir, freq, modulated, per=1e-3, npts=200):
     d = np.zeros(cir.n - 1)
     d[k] = 1.0
     pac = PAC(cir, toolkit=circuit.numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         S, used = pac.pnoise(pss, freq, d, modulated=modulated)
     return S, used, np.asarray(pss.waveform[1], dtype=float)[k]
 
@@ -373,11 +365,9 @@ def test_the_modulated_path_accepts_what_the_stationary_one_refuses():
         % (S, min(S_lo, S_hi), max(S_lo, S_hi))
     ## the stronger statement: it IS the frozen-at-mean answer
     fp = None
-    import warnings
     circuit.default_toolkit = circuit.numeric
     p2 = PSS(modc, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p2.solve(period=1e-3, timestep=1e-3 / 200, refnode=gnd,
                  maxiterations=40)
     fp = p2.factored_period()
@@ -392,6 +382,7 @@ def test_the_modulated_path_accepts_what_the_stationary_one_refuses():
         'quantity and a difference is a quadrature error' % (S, S_mean)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_sideband_sum_gives_three_eighths_and_not_one_quarter():
     """⚠⚠ THE EXTERNAL GATE FOR THE CYCLOSTATIONARY PATH — and the wrong
     answer is a specific number, not merely a wrong shape.
@@ -497,11 +488,9 @@ def _cs_solved(va, f0=1e6, npts=12):
     is still fully seen: the departure from DC is 1e-4 at `va = 2e-2` on
     the same grid.
     """
-    import warnings
     cir = _cs_amp(va, f0=f0)
     pss = PSS(cir, method='gear', reltol=1e-8)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1.0 / f0, timestep=1.0 / (f0 * npts), refnode=gnd,
                   maxiterations=60)
     assert pss.converged, 'va = %r did not converge' % va
@@ -514,9 +503,7 @@ def _cs_solved(va, f0=1e6, npts=12):
 
 
 def _cs_pn(pac, pss, d, modulated, fout=1e5):
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         return pac.pnoise(pss, fout, d, modulated=modulated,
                           maxsidebands=2)[0]
 
@@ -615,14 +602,12 @@ def test_pnoise_refuses_a_harmonic_only_when_the_sources_are_undefined_there():
     library is white and defined everywhere.
     """
     from pycircuit.circuit import compact
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     ## the white case must keep working, at several harmonics
     cir = _divider()
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-5, refnode=gnd, maxiterations=40)
     irn = pss.irefnode
     k = cir.get_node_index('net2')
@@ -631,8 +616,7 @@ def test_pnoise_refuses_a_harmonic_only_when_the_sources_are_undefined_there():
     d[k] = 1.0
     pac = PAC(cir, toolkit=circuit.numeric)
     for m in (1, 2, 3):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             S, _u = pac.pnoise(pss, m * 1e3, d)
         assert np.isfinite(S) and S > 0, \
             'the white divider stopped working at %d*f0 (S = %r); a fold ' \
@@ -644,8 +628,7 @@ def test_pnoise_refuses_a_harmonic_only_when_the_sources_are_undefined_there():
         cirm['M'] = compact.PspMosLongChannel('d', 'g', gnd, gnd,
                                               fnt=1.0, nfa=nfa, ef=1.0)
         pm = PSS(cirm, method='gear', reltol=1e-8)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pm.solve(period=1e-6, timestep=1e-6 / 12, refnode=gnd,
                      maxiterations=60)
         assert pm.converged
@@ -655,16 +638,14 @@ def test_pnoise_refuses_a_harmonic_only_when_the_sources_are_undefined_there():
         dd = np.zeros(cirm.n - 1)
         dd[kk] = 1.0
         pcm = PAC(cirm, toolkit=circuit.numeric)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             off, _u = pcm.pnoise(pm, 1e6 + 1e2, dd, modulated=True,
                                  maxsidebands=2)
         assert np.isfinite(off), \
             'nfa=%r: 100 Hz off the harmonic is already broken (%r), so ' \
             'the guard below would be masking a different defect' % (nfa, off)
         with pytest.raises(ValueError, match='sits on a harmonic'):
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 pcm.pnoise(pm, 1e6, dd, modulated=True, maxsidebands=2)
 
 
@@ -689,14 +670,12 @@ def test_the_mos_flicker_term_shows_a_one_over_f_corner_in_pnoise():
     ordered, which a white-only path cannot produce at all.
     """
     from pycircuit.circuit import compact
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _cs_amp(2e-2, fnt=1.0)
     cir['M'] = compact.PspMosLongChannel('d', 'g', gnd, gnd,
                                          fnt=1.0, nfa=8e22, ef=1.0)
     pss = PSS(cir, method='gear', reltol=1e-8)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-6, timestep=1e-6 / 12, refnode=gnd,
                   maxiterations=60)
     assert pss.converged
@@ -707,8 +686,7 @@ def test_the_mos_flicker_term_shows_a_one_over_f_corner_in_pnoise():
     d[k] = 1.0
     pac = PAC(cir, toolkit=circuit.numeric)
     fs = np.array([1e2, 1e3, 1e4, 1e5])
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         Ss = np.array([pac.pnoise(pss, f, d, modulated=True,
                                   maxsidebands=2)[0] for f in fs])
     assert np.all(np.diff(Ss) < 0), \
@@ -952,6 +930,7 @@ class _DcHeldNoise(IS):
         return self.toolkit.array([[p, -p], [-p, p]])
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_cyclostationarity_probes_lie_on_the_orbit():
     """⚠ A FALSE POSITIVE FROM A STATE OFF THE ORBIT, found by an external
     reference-simulator cross-check (2026-09-05): `_cy_reduced` sampled `CY` at three
@@ -961,7 +940,6 @@ def test_the_cyclostationarity_probes_lie_on_the_orbit():
     whose `CY` is proportional to a DC-held node voltage is constant along
     the orbit and zero at the origin: `pnoise` must run.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir.add_node('v')
@@ -975,8 +953,7 @@ def test_the_cyclostationarity_probes_lie_on_the_orbit():
     pss = PSS(cir, method='gear', reltol=1e-12)
     x0 = np.zeros(cir.n - 1)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
                   maxiterations=60)
     assert pss.converged
@@ -1015,7 +992,6 @@ def test_pnoise_over_trbdf2_matches_the_stationary_analysis_and_folds():
         must fold them and land on the Gear-2 answer (both compute the same
         physical noise), within the discretisation gap.
     """
-    import warnings
     from pycircuit.circuit.analysis_ss import Noise
     circuit.default_toolkit = circuit.numeric
 
@@ -1027,14 +1003,12 @@ def test_pnoise_over_trbdf2_matches_the_stationary_analysis_and_folds():
                         ).solve(fout)['Svnout']).real
     cir = _divider()
     pss = PSS(cir, method='trbdf2', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=per, timestep=per / 200, maxiterations=40)
     k = cir.get_node_index(cir.get_node('net2'))
     k = k - 1 if k > pss.irefnode else k
     pac = PAC(cir, toolkit=circuit.numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         S, used = pac.pnoise(pss, fout, k)
     assert abs(S - ref) / ref < 1e-6, \
         'trbdf2 pnoise disagrees with AC noise by %.2e on a LINEAR circuit' \
@@ -1046,13 +1020,11 @@ def test_pnoise_over_trbdf2_matches_the_stationary_analysis_and_folds():
     def mix(method):
         c = _diode_mixer()
         p = PSS(c, method=method, reltol=1e-11)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=1e-6, timestep=1e-6 / 160, maxiterations=40)
         kk = c.get_node_index(2)
         kk = kk - 1 if kk > p.irefnode else kk
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             s, u = PAC(c, toolkit=circuit.numeric).pnoise(p, 3e5, kk)
         return s, max(abs(np.asarray(u)))
     Sg, _lg = mix('gear')
@@ -1080,7 +1052,6 @@ def test_pnoise_over_radau_matches_the_stationary_analysis_and_folds():
         folds them and lands on the Gear-2 answer within the discretisation
         gap.
     """
-    import warnings
     from pycircuit.circuit.analysis_ss import Noise
     circuit.default_toolkit = circuit.numeric
 
@@ -1092,14 +1063,12 @@ def test_pnoise_over_radau_matches_the_stationary_analysis_and_folds():
                         ).solve(fout)['Svnout']).real
     cir = _divider()
     pss = PSS(cir, method='radau', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=per, timestep=per / 200, maxiterations=40)
     k = cir.get_node_index(cir.get_node('net2'))
     k = k - 1 if k > pss.irefnode else k
     pac = PAC(cir, toolkit=circuit.numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         S, used = pac.pnoise(pss, fout, k)
     assert abs(S - ref) / ref < 1e-6, \
         'radau pnoise disagrees with AC noise by %.2e on a LINEAR circuit' \
@@ -1111,13 +1080,11 @@ def test_pnoise_over_radau_matches_the_stationary_analysis_and_folds():
     def mix(method):
         c = _diode_mixer()
         p = PSS(c, method=method, reltol=1e-11)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=1e-6, timestep=1e-6 / 160, maxiterations=40)
         kk = c.get_node_index(2)
         kk = kk - 1 if kk > p.irefnode else kk
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             s, u = PAC(c, toolkit=circuit.numeric).pnoise(p, 3e5, kk)
         return s, max(abs(np.asarray(u)))
     Sg, _lg = mix('gear')
@@ -1147,7 +1114,6 @@ def test_am_pm_noise_does_not_depend_on_where_t_equals_zero():
     the leak is `sin^2(phi)` of the 1/df^2 PM into AM, so AM rose toward the
     carrier instead of sitting flat below the corner.
     """
-    import warnings as _w
     from pycircuit.circuit.semiconductors import ZenerDiode
     F0, fm = 1e4, 100.0
     got = []
@@ -1159,14 +1125,12 @@ def test_am_pm_noise_does_not_depend_on_where_t_equals_zero():
         cir['C1'] = C('n1', gnd, c=1e-9)
         cir['D1'] = ZenerDiode('n1', gnd, IS=1e-13)
         pss = PSS(cir, method='gear', reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=1 / F0, timestep=1 / F0 / 800)
         pac = PAC(cir, toolkit=circuit.numeric)
         full = cir.get_node_index('n1')
         k = full - 1 if full > pss.irefnode else full
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             am, pm, _ = pac.am_pm_noise(pss, fm, k, harmonic=1, maxsidebands=30,
                                         sweeptype='relative')
             up, _ = pac.pnoise(pss, F0 + fm, k, maxsidebands=30)
@@ -1212,7 +1176,6 @@ def test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity():
     still returns two positive numbers, so only a test that computes the naive
     form and finds it DIFFERENT keeps that from rotting.
     """
-    import warnings
     from pycircuit.circuit.elements import Diode
     circuit.default_toolkit = circuit.numeric
 
@@ -1228,16 +1191,14 @@ def test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity():
     T = 1e-6
     f0 = 1.0 / T
     pss = PSS(cir, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 200, maxiterations=40)
     assert pss.converged
     pac = PAC(cir, toolkit=circuit.numeric)
     off = 0.13 * f0
 
     def residual(L):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             S_am, S_pm, _ = pac.am_pm_noise(pss, off, 2, harmonic=1,
                                             maxsidebands=L, sweeptype='relative')
             up, _ = pac.pnoise(pss, f0 + off, 2, maxsidebands=L)
@@ -1267,8 +1228,7 @@ def test_am_pm_noise_splits_the_sideband_pair_and_obeys_its_identity():
         'returning half the total twice' % ratio
 
     ## 4. the CONJUGATE is load-bearing: the naive `a +- b` must differ
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         a = pac.adjoint_sideband_row(pss, off, 2, 1)[0]
         b = pac.adjoint_sideband_row(pss, -off, 2, 1)[0]
         cy = pac._cy_reduced(pss, 2.0 * np.pi * off)
@@ -1304,7 +1264,6 @@ def test_a_coloured_source_is_refused_whatever_else_is_in_CY():
     spread over the orbit.
     """
     import os
-    import warnings as _w
     PDK = os.path.expanduser(
         '~/source/IHP-Open-PDK/ihp-sg13g2/libs.tech/ngspice/models')
     if not os.path.isdir(PDK):
@@ -1337,8 +1296,7 @@ def test_a_coloured_source_is_refused_whatever_else_is_in_CY():
                                           cm.Node('out'), gnd, **kw)
             cir['Ch'] = C('out', gnd, c=100e-12)
             pss = PSS(cir, method='gear', reltol=1e-12)
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 pss.solve(period=1 / F, timestep=1 / F / 100)
             return PAC(cir, toolkit=circuit.numeric), pss
 
@@ -1361,12 +1319,10 @@ def test_the_ppv_border_caches_follow_a_re_solve():
     solve; bit-identical cached).  Both are keyed on the state map, which a
     re-solve rebuilds: the SAME objects re-solved on another grid must give
     what fresh ones give."""
-    import warnings as _w
     cir, pss = _a9_vdp(a=0.3)
     pac = PAC(cir, toolkit=circuit.numeric)
     f0 = 1.0 / float(pss.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pac.pnoise(pss, f0 * 1.01, 0, maxsidebands=8, sweeptype='absolute')
         pss.frequency_aware_ppv(0.01 * f0)
         T = float(pss.period)
@@ -1456,16 +1412,14 @@ def test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_t
 
     def solve(c):
         pss = PSS(c, method='gear', reltol=1e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             pss.solve(period=T, timestep=T / 200, maxiterations=40)
         assert pss.converged
         return pss, PAC(c, toolkit=circuit.numeric)
 
     cA = build('A'); pA, pacA = solve(cA); oA = [str(n) for n in cA.nodes].index('out')
     cB = build('B'); pB, pacB = solve(cB); oB = [str(n) for n in cB.nodes].index('out')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         for f in (0.13 * f0, 1.37 * f0):
             s_st, _ = pacA.pnoise(pA, f, oA, maxsidebands=16)
             s_cy, _ = pacA.pnoise(pA, f, oA, maxsidebands=16, cyclostationary=True)
@@ -1522,8 +1476,7 @@ def test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics_and_t
 
     cA = build_f('A', 0.2); pA, pacA = solve(cA); oA = [str(n) for n in cA.nodes].index('out')
     cB = build_f('B', 0.2); pB, pacB = solve(cB); oB = [str(n) for n in cB.nodes].index('out')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         for f in (0.13 * f0, 1.37 * f0):
             s_st, _ = pacA.pnoise(pA, f, oA, maxsidebands=16)
             s_cy, _ = pacA.pnoise(pA, f, oA, maxsidebands=16, cyclostationary=True)
@@ -1589,7 +1542,6 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     per component the ratio reads 0.3055; the thermal-only 0.376 is white
     and unchanged.
     """
-    import warnings
     from pycircuit.circuit import elements_hdl as eh
     circuit.default_toolkit = circuit.numeric
     EKV = dict(vto=0.5, gamma=0.7, phi=0.7, kp=1.5e-4, cox=6.9e-3, w=10e-6, l=1e-6)
@@ -1613,14 +1565,12 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     for kf in (0.0, 1e-13):
         c = build(kf)
         pss = PSS(c, method='gear', reltol=1e-9)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / 200, maxiterations=60)
         assert pss.converged
         pac = PAC(c, toolkit=circuit.numeric)
         od = [str(n) for n in c.nodes].index('d')
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT'):
                 pac.pnoise(pss, 0.1e6, od, maxsidebands=16)
             sm, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, modulated=True)
@@ -1655,8 +1605,7 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     ## 'white') -- white and flicker rooted separately, as the fitted route
     ## roots them: 3.2e-13 (was 4.2e-4).  (Not bit-equal: the per-band
     ## route did run.)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning, CostWarning):
         assert pac._noise_components(pss).colour_model(0.1e6, f0) is not None
         _noise_seam(pac, colour_fit=staticmethod(lambda Cs, ws: None))
         try:
@@ -1672,8 +1621,7 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
         bump[od, od] = 1e-22 / (1.0 + (w / (2.0 * np.pi * 3.0e6)) ** 2)
         return base + bump
     c.CY = cy_lorentz
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         assert pac._noise_components(pss).colour_model(0.1e6, f0) is None
         sl, _ = pac.pnoise(pss, 0.1e6, od, maxsidebands=16, cyclostationary=True)
         consulted = []
@@ -1688,6 +1636,7 @@ def test_mos_pnoise_runs_through_the_cyclostationary_route_and_the_cycle_average
     assert abs(sl / sc - 1.0) > 1e-3, (sl, sc)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_am_corner_is_f0_over_2pi_q_lambda_not_4pi():
     """⚠ A FACTOR OF TWO IN A SHIPPED DOCSTRING, caught by the docs session
     against `am_pm_noise` itself (2026-09-09) and reproduced here before the
@@ -1724,7 +1673,6 @@ def _a2_tone_fixture(src, asym=0.25, npts=80):
     """The A2 fixture (van der Pol tank with series loss, a `u^2` asymmetry and
     one slow RC node, tau/T = 100) with a unit-PSD noise current at `src`
     ('v' = the tank, 'w' = behind the slow node), converged at `npts`."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     T0 = 6.6634
     c = SubCircuit()
@@ -1741,8 +1689,7 @@ def _a2_tone_fixture(src, asym=0.25, npts=80):
     pss = PSS(c, method='gear', reltol=1e-11)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T0, timestep=T0 / npts, x0=x0, maxiterations=200)
     assert pss.converged
     return c, pss
@@ -1759,7 +1706,6 @@ def _forward_tone_pm(c, pss, src, tones, r=0.10, periods=250, window=100, amp=1e
     the tones (a white source weights every band equally).  Shares the orbit
     and the integrator with `pnoise`; shares neither the adjoint nor the
     sideband assembly."""
-    import warnings
     T = float(pss.period)
     npts = len(pss.factored_period().steps) + 1
     h = T / (npts - 1)
@@ -1775,8 +1721,7 @@ def _forward_tone_pm(c, pss, src, tones, r=0.10, periods=250, window=100, amp=1e
             u[isrc] = amp * np.cos(ws * t)
             return u
         tr = pss._new_transient(pss._integrator_for('gear'))
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = tr.solve(tend=periods * T, x0=x0, timestep=h,
                            provided_function=inject if ws is not None else None,
                            fixed_timestep=True)
@@ -1837,7 +1782,6 @@ def test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint()
     sideband bins at the level of the response.  ⚠ Tone m = +1 doubled in
     amplitude gave 4.000x the power: linear.
     """
-    import warnings
     r = 0.10
     ratio = {}
     pm_tone = {}
@@ -1846,8 +1790,7 @@ def test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint()
         pac = PAC(c, toolkit=circuit.numeric)
         ov = [str(n) for n in c.nodes].index('v')
         f0 = 1.0 / float(pss.period)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             _am, pm, _ = pac.am_pm_noise(pss, r * f0, ov, harmonic=1, maxsidebands=32)
         ratio[src] = float(np.real(pm))
         pm_tone[src] = _forward_tone_pm(c, pss, src, tones, r=r)
@@ -1877,8 +1820,7 @@ def test_pnoise_refuses_a_coloured_source_folded_onto_dc_at_a_clock_harmonic():
     ## literal `k * 100e3` lands it 1.5e-11 Hz off (the finite absurd value)
     for f in (f0, 2 * f0, 100e3, 200e3):
         with pytest.raises(ValueError, match='harmonic'):
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 pac.pnoise(pss, f, io, maxsidebands=90, cyclostationary=True)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
@@ -1887,8 +1829,7 @@ def test_pnoise_refuses_a_coloured_source_folded_onto_dc_at_a_clock_harmonic():
     msgs = [str(w.message) for w in caught]
     assert pac.alias_stop == 'ratio', (pac.alias_stop, msgs)
     assert not [m_ for m_ in msgs if 'invalid value' in m_ or 'Nyquist' in m_], msgs
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         v0, _u = pac.pnoise(pss, 1.001 * f0, io, maxsidebands=90,
                             cyclostationary=True, ratio_tol=0.0)
     assert np.isfinite(v) and abs(float(np.real(v)) / float(np.real(v0)) - 1.0) < 1e-4, (v, v0)
@@ -1896,8 +1837,7 @@ def test_pnoise_refuses_a_coloured_source_folded_onto_dc_at_a_clock_harmonic():
     ## white sources on the harmonic are still answered
     wcir, wpss, wio, wpac, _T = _sampler_fixture(lambda c: c.__setitem__('S0', _sw()),
                                                  npts=200)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         vw, _u = wpac.pnoise(wpss, f0, wio, maxsidebands=90, cyclostationary=True)
     assert np.isfinite(vw) and float(np.real(vw)) > 0.0
 
@@ -1905,7 +1845,6 @@ def test_pnoise_refuses_a_coloured_source_folded_onto_dc_at_a_clock_harmonic():
 def _pll_phase_noise(K, kvco, cf, fm_list, sf=1.0, fref=1e6, npts=400):
     """`(f_c from the multiplier, [pnoise at the PHASE node])` for the locked
     loop, seeded on the STABLE branch."""
-    import warnings as _w
     from pycircuit.circuit.elements_hdl import VcoHdl
     T = 1.0 / fref
     c = SubCircuit()
@@ -1922,8 +1861,7 @@ def _pll_phase_noise(K, kvco, cf, fm_list, sf=1.0, fref=1e6, npts=400):
     x0[names.index('X1._state0')] = 0.25          # STABLE branch, see step 2
     x0[names.index('ph')] = 0.25
     pss = PSS(c, method='gear', reltol=1e-10)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=100)
     assert pss.converged
     lam = float(np.max(np.abs(np.linalg.eigvals(np.asarray(pss._monodromy)))))
@@ -1933,8 +1871,7 @@ def _pll_phase_noise(K, kvco, cf, fm_list, sf=1.0, fref=1e6, npts=400):
     iph = names.index('ph')
     out = []
     for fm in fm_list:
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             S, _nsb = pac.pnoise(pss, fm, iph)
         out.append(float(np.real(np.asarray(S, dtype=complex).ravel()[0])))
     return fc, out
@@ -2010,7 +1947,6 @@ def _nu_identity(kind, n, nonuniform):
     `test_pnoise_cyclostationary_is_the_stationary_fold_of_the_same_physics...`):
     'A' a stationary source through a multiplier, 'B' the same physics as a
     cyclostationary source.  Optionally on a 3:1 non-uniform grid."""
-    import warnings as _w
     T = 1e-6
     c = SubCircuit()
     for nd in ('lo', 'mid', 'out'):
@@ -2030,14 +1966,12 @@ def _nu_identity(kind, n, nonuniform):
         w = 1.0 + 0.5 * np.sin(2.0 * np.pi * np.arange(n) / n)
         grid = w / w.sum()
     pss = PSS(c, method='gear', reltol=1e-10)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         pss.solve(period=T, timestep=T / n, grid=grid, maxiterations=40,
                   break_events=False)
     assert pss.converged
     o = [str(x) for x in c.nodes].index('out')
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         s, _ = PAC(c, toolkit=circuit.numeric).pnoise(
             pss, 0.05 / T, o, maxsidebands=16, cyclostationary=(kind == 'B'))
     return float(np.real(s)), pss
@@ -2163,7 +2097,6 @@ def test_a_library_mosfets_signed_flicker_is_exact_under_a_periodic_fold():
     meant flicker was negligible.  Measured instead: the sensed current spans
     -7.3e-05 .. +1.2e-05 A and flicker is 44 % of the exact total.
     """
-    import warnings as _w
     import pycircuit.circuit.elements_hdl as eh
     from pycircuit.circuit.elements import CCVS
     circuit.default_toolkit = circuit.numeric
@@ -2176,8 +2109,7 @@ def test_a_library_mosfets_signed_flicker_is_exact_under_a_periodic_fold():
     el = eh.MosLevel1Hdl('d', 'g', 's', 'b', kf=kf, **mos)
     x = np.zeros(el.n)
     x[0], x[1] = 0.05, 1.5
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         wd = float(np.real(el.noise_amplitudes(x, 2 * np.pi * 10.0)[0, 0]))
         ids = float(np.real(np.asarray(el.i(x)).ravel()[0]))
     kappa = wd * np.sqrt(10.0) / ids
@@ -2203,8 +2135,7 @@ def test_a_library_mosfets_signed_flicker_is_exact_under_a_periodic_fold():
 
     def pn(c, blind=False):
         pss = PSS(c, method='gear', reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning, ModelWarning):
             res = pss.solve(period=T, timestep=T / 200, maxiterations=60)
             assert pss.converged
             pac = PAC(c, toolkit=circuit.numeric)
@@ -2234,7 +2165,6 @@ def test_am_pm_noise_runs_with_its_default_sideband_count():
     took `N//2`, asked for sideband `carrier + N//2`, and raised "above the
     grid's Nyquist" for every carrier >= 1 (found by the conventions review,
     2026-09-28); every call in the suite passed `maxsidebands`."""
-    import warnings
     from pycircuit.circuit.elements import Diode
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
@@ -2244,8 +2174,7 @@ def test_am_pm_noise_runs_with_its_default_sideband_count():
     c['C'] = C(2, gnd, c=1e-12)
     T = 1e-6
     pss = PSS(c, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 40, maxiterations=40)
         pac = PAC(c, toolkit=circuit.numeric)
         N = len(pss._adjoint_host().factored_period().steps)
@@ -2261,7 +2190,6 @@ def test_output_takes_a_node_name():
     index or a weight vector (2026-09-28): the name is resolved to its
     reduced index, so every surface returns the same numbers either way;
     the reference node, which has no row, is refused by name."""
-    import warnings
 
     from pycircuit.circuit.tests._shooting_fixtures import _solve_vdp_noise
     cir, pss, pac = _solve_vdp_noise(npts=80)
@@ -2271,8 +2199,7 @@ def test_output_takes_a_node_name():
     name = names[full]
     f0 = 1.0 / float(pss.period)
     offs = np.array([1e-3, 1e-2]) * f0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         for out in (name, cir.get_node(name)):
             assert np.array_equal(pac.oscillator_spectrum(pss, offs, out)[0],
                                   pac.oscillator_spectrum(pss, offs, k)[0])
@@ -2287,7 +2214,6 @@ def test_output_takes_a_node_name():
 
 def _driven_rc():
     """A sine-driven RC: linear, so its output has no second harmonic."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
     for nn in ('in', 'out'):
@@ -2296,8 +2222,7 @@ def _driven_rc():
     c['R'] = R('in', 'out', r=1e3)
     c['C'] = C('out', gnd, c=1e-7)
     pss = PSS(c, method='radau', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
     assert pss.converged
     return c, pss, PAC(c, toolkit=circuit.numeric)
@@ -2337,7 +2262,6 @@ def test_the_noise_surfaces_refuse_what_they_used_to_take_silently():
 def _vdp_ac(npts=240):
     """The van der Pol oscillator with a white noise source and a small-
     signal one (`iac`), for the sweep rule's autonomous side."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir.add_node('v')
@@ -2347,8 +2271,7 @@ def _vdp_ac(npts=240):
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     cir['ac'] = IS('v', gnd, i=0.0, iac=1.0)
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=6.66, timestep=6.66 / npts, x0=np.array([2.0, 0.0]),
                   maxiterations=80)
     assert pss.converged and pss.autonomous
@@ -2365,13 +2288,11 @@ def test_the_sweep_is_relative_on_an_oscillator_and_absolute_when_driven():
     `am_pm_noise` / `am_pm` every one as an offset, whatever the PSS; and
     `band_spread` read its band as absolute for 'pnoise' (an offset from
     DC) and as an offset from the harmonic for the other quantities."""
-    import warnings as _w
     close = lambda a, b: abs(complex(a) / complex(b) - 1.0) < 1e-12
     _cir, pss, pac = _vdp_ac(npts=100)
     f0 = 1.0 / float(pss.period)
     df = 1e-2 * f0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         ## the oscillator: pnoise and PAC.solve relative by default
         S = pac.pnoise(pss, df, 0, maxsidebands=8)[0]
         assert close(S, pac.pnoise(pss, f0 + df, 0, maxsidebands=8,
@@ -2438,7 +2359,6 @@ def test_a_count_above_the_grid_raises_and_the_knobs_share_their_names():
       `carrier_phasor`), `maxsidebands` / `maxharmonics` (were `sidebands`
       / `H` in the modal family), `offsets` (was `freqs` in the coloured
       diffusion)."""
-    import warnings as _w
     c, pss, pac = _driven_rc()
     k = [str(n) for n in c.nodes if str(n) != 'gnd!'].index('out')
     N = len(pss._adjoint_host().factored_period().steps)
@@ -2457,8 +2377,7 @@ def test_a_count_above_the_grid_raises_and_the_knobs_share_their_names():
 
     _cir, osc, opac = _vdp_ac(npts=100)
     f0 = 1.0 / float(osc.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         with pytest.raises(ValueError, match='maxharmonics=1000'):
             opac.modal_spectrum(osc, [0.1 * f0], 0, maxharmonics=1000)
         with pytest.raises(ValueError, match='maxharmonics=1000'):
@@ -2474,8 +2393,7 @@ def _review_mixer(npts=80):
     circuit.default_toolkit = circuit.numeric
     cir = _diode_mixer()
     pss = PSS(cir, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-6, timestep=1e-6 / npts, maxiterations=40)
     irn = pss.irefnode
     k = cir.get_node_index(2)
@@ -2489,8 +2407,7 @@ def test_a_zero_d_array_output_is_the_row_its_integer_names():
     on row 0.  One routine (`_output_vector`) now serves every surface."""
     cir, pss, k = _review_mixer()
     pac = PAC(cir, toolkit=circuit.numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         S_int, _u = pac.pnoise(pss, 3e5, k, maxsidebands=3)
         S_arr, _u = pac.pnoise(pss, 3e5, np.array(k), maxsidebands=3)
     assert S_int > 0.0
@@ -2523,16 +2440,13 @@ def test_the_dc_fold_guard_covers_every_sideband_the_fold_reaches():
     _cir, pss, io, pac, T = _sampler_fixture(els, npts=200)
     f0 = 1.0 / T
     for f in (10 * f0, 1e6):
-        with pytest.raises(ValueError, match='harmonic'), warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with pytest.raises(ValueError, match='harmonic'), quiet():
             pac.pnoise(pss, f, io, cyclostationary=True)
     for off in (0.0, f0):
-        with pytest.raises(ValueError, match='harmonic'), warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with pytest.raises(ValueError, match='harmonic'), quiet():
             pac.am_pm_noise(pss, off, io, harmonic=1, sweeptype='relative',
                             maxsidebands=12, modulated=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         am, pm, _b = pac.am_pm_noise(pss, 1e-3 * f0, io, harmonic=1,
                                      sweeptype='relative', maxsidebands=12,
                                      modulated=True)
@@ -2550,8 +2464,7 @@ def _ampm_diode_mixer(method):
     c['D'] = Diode(2, gnd)
     c['C'] = C(2, gnd, c=1e-12)
     pss = PSS(c, method=method, reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-6, timestep=1e-6 / 200, maxiterations=60)
     assert pss.converged
     return pss, PAC(c, toolkit=circuit.numeric)
@@ -2568,14 +2481,12 @@ def test_am_pm_noise_obeys_its_identity_under_every_map_kind(method):
     7.7e-9 / 2.0e-5, esdirk43 1.2e-10 / 1.9e-5 -- TRUNCATION, falling with
     the count (gear's own test: 3.3e-11 at 64).  (Trap does not converge on
     this mixer at 200 points.)"""
-    import warnings
     pss, pac = _ampm_diode_mixer(method)
     f0 = 1e6
     off = 0.13 * f0
 
     def residual(L):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             S_am, S_pm, _ = pac.am_pm_noise(pss, off, 2, harmonic=1,
                                             maxsidebands=L, sweeptype='relative')
             up, _ = pac.pnoise(pss, f0 + off, 2, maxsidebands=L)
@@ -2618,8 +2529,7 @@ def test_am_pm_noise_modulated_is_its_cycle_averaged_stationary_source():
         c['Ro'] = R('out', gnd, r=1.0)
         c['Co'] = C('out', gnd, c=0.2e-6)
         pss = PSS(c, method='gear', reltol=1e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / 200, maxiterations=40)
         assert pss.converged
         return pss, PAC(c, toolkit=circuit.numeric), \
@@ -2629,8 +2539,7 @@ def test_am_pm_noise_modulated_is_its_cycle_averaged_stationary_source():
     with pytest.raises(NotImplementedError, match='BIAS-DEPENDENT'):
         pacm.am_pm_noise(pm, off, om, harmonic=1, maxsidebands=16,
                          sweeptype='relative')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         am, pmn, _ = pacm.am_pm_noise(pm, off, om, harmonic=1, maxsidebands=16,
                                       sweeptype='relative', modulated=True)
         up, _ = pacm.pnoise(pm, f0 + off, om, maxsidebands=16, modulated=True)
@@ -2638,8 +2547,7 @@ def test_am_pm_noise_modulated_is_its_cycle_averaged_stationary_source():
     assert abs(2.0 * (am + pmn) - (up + lo)) < 1e-12 * (up + lo)
     assert abs(pmn / am - 1.0) > 0.1, pmn / am
     ps, pacs, os_ = build(True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         am_s, pm_s, _ = pacs.am_pm_noise(ps, off, os_, harmonic=1,
                                          maxsidebands=16, sweeptype='relative')
     assert abs(am / am_s - 1.0) < 1e-12 and abs(pmn / pm_s - 1.0) < 1e-12, \
@@ -2701,8 +2609,7 @@ def test_every_surface_gives_one_sign_blind_verdict_on_the_samples_and_the_step_
         if white:
             c['w'] = IS('out', gnd, i=0.0, noisePSD=0.3e-20)
         p = PSS(c, method='gear', reltol=1e-10)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             p.solve(period=T, timestep=T / 200, maxiterations=40)
         assert p.converged
         pac = PAC(c, toolkit=circuit.numeric)

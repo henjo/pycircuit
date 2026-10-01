@@ -17,6 +17,7 @@ import pytest
 from numpy.testing import assert_allclose
 
 import pycircuit.circuit.circuit
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.toolkit import numeric
 from pycircuit.circuit import gnd
 from pycircuit.circuit.dcanalysis import DC
@@ -119,10 +120,8 @@ def test_generated_jacobian_matches_finite_difference():
 
 
 def _tran(c, node, tend=1e-3, dt=1e-6, **kw):
-    import warnings
     tran = Transient(c, toolkit=numeric, **kw)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=tend, timestep=dt, fixed_timestep=True)
     return (np.asarray(res.v(node).x[0], float),
             np.asarray(res.v(node).y, float))
@@ -242,9 +241,7 @@ def test_idtmod_full_treatment():
     assert d.max() < 1e-9
     names = [str(nd) for nd in c.nodes]
     srow = [i for i, nm in enumerate(names) if '_state0' in nm][0]
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         full = Transient(c, toolkit=numeric,
                          integrator=EulerIntegrator()).solve(
             tend=3.0, timestep=1e-2, fixed_timestep=True)
@@ -1048,7 +1045,6 @@ def _comparator(use_cross):
 
 
 def _run_comparator(use_cross):
-    import warnings
     from pycircuit.circuit.elements import VSin
     pycircuit.circuit.circuit.default_toolkit = numeric
     c = SubCircuit()
@@ -1057,8 +1053,7 @@ def _run_comparator(use_cross):
     c['X'] = _comparator(use_cross)(ni, gnd, no, gnd, vref=0.0)
     c['Rl'] = R(no, gnd, r=1e3)
     tran = Transient(c, toolkit=numeric, uic=True)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = tran.solve(tend=2e-3, timestep=1e-6)
     t = np.asarray(res.v('o').x[0], float)
     edges = (0.5e-3, 1.0e-3, 1.5e-3)          # zero crossings of the sine
@@ -1217,7 +1212,6 @@ def test_discontinuity_is_parsed_and_ignored():
 
 
 def _laplace_amp(cls, f, tend_cycles=30, pts=400):
-    import warnings
     from pycircuit.circuit.elements import VSin
     pycircuit.circuit.circuit.default_toolkit = numeric
     c = SubCircuit()
@@ -1225,8 +1219,7 @@ def _laplace_amp(cls, f, tend_cycles=30, pts=400):
     c['vs'] = VSin(na, gnd, va=1.0, freq=f)
     c['F'] = cls(na, gnd, nb, gnd)
     c['Rl'] = R(nb, gnd, r=1e6)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = Transient(c, toolkit=numeric, uic=True).solve(
             tend=tend_cycles / f, timestep=1.0 / (f * pts))
     y = np.asarray(res.v('b').y, float)
@@ -1423,7 +1416,6 @@ def test_every_hdl_element_with_a_source_term_obeys_the_classical_gate():
     and its full swing in transient.
     """
     import inspect
-    import warnings
     from pycircuit.circuit import circuit
     from pycircuit.circuit import elements_hdl
     from pycircuit.circuit.circuit import SubCircuit, gnd
@@ -1453,8 +1445,7 @@ def test_every_hdl_element_with_a_source_term_obeys_the_classical_gate():
     cir['vs'] = VSinHdl('a', gnd, vo=1.0, va=0.1, freq=1.0 / T)
     cir['R'] = R('a', gnd, r=1e3)
     assert abs(float(DC(cir).solve().v('a')) - 1.0) < 1e-9
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = Transient(cir, toolkit=numeric).solve(tend=T, timestep=T / 200, fixed_timestep=True)
     va = np.asarray(res.v('a').y, float)
     assert abs(va.max() - 1.1) < 1e-6 and abs(va.min() - 0.9) < 1e-6, (va.min(), va.max())

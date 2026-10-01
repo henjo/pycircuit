@@ -8,6 +8,12 @@ from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
 import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    ModelWarning,
+    UsageWarning,
+)
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -185,16 +191,15 @@ def test_the_oscillator_covariance_refuses_a_driven_circuit():
     anyway would return a `d` near zero and an arbitrary `K_orb`, which is
     a plausible wrong answer rather than an error.
     """
-    import warnings
     cir = _rc_noisy()
     pss = PSS(cir, method='gear')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pss.solve(period=1e-3, timestep=1e-3 / 400, refnode=gnd)
     with pytest.raises(ValueError, match='GROWS'):
         PAC(cir, toolkit=circuit.numeric).oscillator_covariance(pss)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_diffusion_constant_sees_noise_on_an_algebraic_row():
     """⚠ `diffusion_constant` used to return EXACTLY ZERO for an oscillator
     whose only noise is its series tank loss.
@@ -246,7 +251,6 @@ def _ghanta_tank(Q=16.0, cc=1.0, ll=1.0, psd=1e-6, npts=480):
     `steps + 1` samples (the endpoint repeats t = 0); the FFT takes the
     first `len(fp.steps)`.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     w0 = 1.0 / np.sqrt(ll * cc)
     mu = cc * w0 / (2 * np.pi * Q)
@@ -260,8 +264,7 @@ def _ghanta_tank(Q=16.0, cc=1.0, ll=1.0, psd=1e-6, npts=480):
     x0 = np.zeros(cir.n - 1)
     x0[0] = 2.0
     T = 2 * np.pi / w0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=250)
     assert pss.converged, 'C=%r L=%r did not converge' % (cc, ll)
     ## ⚠ waveform is (times, states): [0] is the TIME vector, [1] the states
@@ -290,6 +293,7 @@ def _ghanta_tank(Q=16.0, cc=1.0, ll=1.0, psd=1e-6, npts=480):
     return cir, pss, PAC(cir, toolkit=circuit.numeric), amp, h3_h1, lemma
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_lyapunov_route_matches_an_analytic_external_oracle():
     """⚠ THE FIRST FULLY EXTERNAL ORACLE FOR THE PHASE DIFFUSION CONSTANT.
 
@@ -336,6 +340,7 @@ def test_the_lyapunov_route_matches_an_analytic_external_oracle():
         '(Winkler, Oberwolfach 18/2006 p.1160); got %.6f' % lo
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_diffusion_constant_should_not_depend_on_the_capacitance_scale():
     """⚠ `diffusion_constant` WAS WRONG BY EXACTLY `C^2`, and this is the sweep
     that found it -- against `oscillator_covariance`, which reaches `CY`
@@ -367,7 +372,6 @@ def _tank_with_rc_probe(rpar, cpar, npts=480):
     which is the whole point, because what follows is a statement about
     `tau/h`, not about `C`.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     Q = 8.0
     mu = 1.0 / (2 * np.pi * Q)
@@ -386,8 +390,7 @@ def _tank_with_rc_probe(rpar, cpar, npts=480):
     x0 = np.zeros(cir.n - 1)
     x0[0] = 2.0
     T0 = 2 * np.pi
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T0, timestep=T0 / npts, x0=x0, maxiterations=250)
     assert pss.converged, 'rpar=%r cpar=%r' % (rpar, cpar)
     names = [str(nd) for nd in cir.nodes]
@@ -397,6 +400,7 @@ def _tank_with_rc_probe(rpar, cpar, npts=480):
     return float(np.asarray(K, dtype=float)[iy, iy]), T0 / npts
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_orbital_covariance_reaches_kTC_when_the_mode_is_RESOLVED():
     """⚠ `K_orb` DOES carry `kT/C` — what it cannot carry is an UNRESOLVED mode.
 
@@ -446,6 +450,7 @@ def test_the_orbital_covariance_reaches_kTC_when_the_mode_is_RESOLVED():
         'got ratio %.6f' % (kyy3 / (kT / 2e-5))
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_trap_oscillator_covariance_goes_through_the_twin_default_radau():
     """trap hands `oscillator_covariance` to the monodromy twin -- Radau by
     default since 2026-09-24 (TR-BDF2 before), Gear-2 selectable -- and the
@@ -458,7 +463,6 @@ def test_trap_oscillator_covariance_goes_through_the_twin_default_radau():
     limit (`test_oscillator_covariance_runs_on_the_trapezoidal_pair_map`).
     The twin is what makes the default path accurate.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def build():
@@ -477,8 +481,7 @@ def test_trap_oscillator_covariance_goes_through_the_twin_default_radau():
         pss = PSS(cir, method=method, reltol=1e-12)
         if mono is not None:
             pss.monodromy = mono
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / 400, x0=np.asarray(x0),
                       maxiterations=100)
         assert pss.converged
@@ -545,7 +548,6 @@ def test_oscillator_covariance_takes_a_coloured_source_on_a_staged_oscillator():
     Lyapunov route is itself first order on switched circuits (see
     `covariance`).  A coloured source has no such band.  (The Lyapunov
     route's own projection does not leak: `|Pi u_j|/|u_j|` ~ 1e-9.)"""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     res = {}
     for flick in (False, True):
@@ -553,8 +555,7 @@ def test_oscillator_covariance_takes_a_coloured_source_on_a_staged_oscillator():
         if flick:
             osc['fl'] = _Flicker('c', gnd, i=0.0, noisePSD=1e-22, fref=1.0)
         seed, To = _relaxation_oscillator_seed(osc)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             pss = PSS(osc, method='radau', reltol=1e-9)
             pss.solve(period=To, timestep=To / 200, x0=seed, maxiterations=100,
                       state_events=True)
@@ -566,8 +567,7 @@ def test_oscillator_covariance_takes_a_coloured_source_on_a_staged_oscillator():
                 res[flick] = pac.oscillator_covariance(pss, samples=True,
                                                        colour_fmin=1e-4 * f0)
         else:
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 res[flick] = pac.oscillator_covariance(pss, samples=True)
             ## the transverse path against the projected full response
             names = [str(x) for x in osc.nodes if str(x) != 'gnd!']
@@ -607,7 +607,6 @@ def test_the_transverse_band_integral_is_the_lyapunov_route_for_a_white_source()
     digits.  Richardson in N removes it: +5e-6 (100/200), +2e-6 (200/400).
     (A 1/f source's tail is h^2, a Lorentzian's h^3 -- and white sources
     never take this route outside this check.)"""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     Q = 8.0
     mu = 1.0 / (2.0 * np.pi * Q)
@@ -624,8 +623,7 @@ def test_the_transverse_band_integral_is_the_lyapunov_route_for_a_white_source()
         pss = PSS(c, method='radau', reltol=1e-12)
         x0 = np.zeros(c.n - 1)
         x0[0] = 2.0
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
             pac = PAC(c, toolkit=circuit.numeric)
             _K, info = pac.oscillator_covariance(pss, samples=True)
@@ -693,15 +691,13 @@ def _a11_osc_chain(psd_tank=1e-6, psd_buf=1e-6, nstage=3, cb=0.5):
 
 def _a11_solved(psd_tank=1e-6, psd_buf=1e-6, npts=240, method='gear'):
     """`(cir, pss, reduced index of the last buffer, crossing time)`."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _a11_osc_chain(psd_tank, psd_buf)
     m = cir.n - 1
     pss = PSS(cir, method=method, reltol=1e-12)
     x0 = np.zeros(m)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=6.664052486, timestep=6.664052486 / npts, x0=x0,
                   maxiterations=80)
     assert pss.converged, 'the A11 autonomous fixture did not converge'
@@ -840,14 +836,12 @@ def test_the_oscillator_consumers_read_the_total_map_on_a_staged_solve():
     per-mille sliver (as everywhere today).  Pinned: multipliers equal to
     eig(M_tot) to 1e-9, the bordered residual below 1e-11, the mode's
     direction above 0.99999 at nodes before and after the crossings."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
     names = [str(n_) for n_ in cir.nodes]
     seed, Tl = _relaxation_oscillator_seed(cir)
     q = PSS(cir, method='radau', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100, state_events=True)
     assert q.converged and q._event_columns is not None
     fp = q.factored_period()
@@ -855,14 +849,12 @@ def test_the_oscillator_consumers_read_the_total_map_on_a_staged_solve():
     Md = np.column_stack([np.asarray(fp.matvec(e), dtype=float) for e in np.eye(n)])
     Mt = Md + np.asarray(q._event_columns['P_end'], dtype=float) @ np.asarray(q._event_sensitivity, dtype=float)
     lam_t = np.sort(np.abs(np.linalg.eigvals(Mt)))[::-1]
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(UsageWarning):
         fm = q.floquet_modes(nmodes=2)
     lam_fm = np.sort(np.abs([mm['lam'] for mm in fm]))[::-1]
     assert np.max(np.abs(lam_fm - lam_t[:2]) / lam_t[:2]) < 1e-9, (lam_fm, lam_t[:2])
     pac = PAC(cir, toolkit=circuit.numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         _K, info = pac.oscillator_covariance(q)
     assert info['d_residual'] < 1e-11, info['d_residual']
     ## the exact second left mode along the orbit (saltation propagation)
@@ -909,7 +901,6 @@ def test_a_staged_oscillator_samples_its_covariance_at_fixed_times():
     elsewhere.  ⚠ This fixture cannot show the EVENT term: its switch's
     transition sits inside the landed window, so ``|P_end dth| / |M|`` is
     5.9e-8 -- it gates the construction, not the event term's weight."""
-    import warnings as _w
 
     from scipy.linalg import expm
     circuit.default_toolkit = circuit.numeric
@@ -917,13 +908,11 @@ def test_a_staged_oscillator_samples_its_covariance_at_fixed_times():
     names = [str(n_) for n_ in cir.nodes]
     seed, Tl = _relaxation_oscillator_seed(cir)
     q = PSS(cir, method='radau', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100, state_events=True)
     assert q.converged and q._event_columns is not None
     pac = PAC(cir, toolkit=circuit.numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         K_orb, info = pac.oscillator_covariance(q, samples=True, pair=True)
         As, Qs, _K1, M, m, n = pac._lyapunov_pieces(q, 'oscillator_covariance')
     grow = info['growth']
@@ -1004,18 +993,15 @@ def test_the_oscillator_edge_jitter_runs_on_a_staged_solve():
     carry the noise across the reset, anti-correlating the transverse and
     the phase deviation -- warned, `sigma_t` nan, `k_cycle` exact.  The
     event term moves `k_cycle^2` by 2e-7 on this fixture (its limit)."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
     seed, Tl = _relaxation_oscillator_seed(cir)
     q = PSS(cir, method='radau', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100, state_events=True)
     assert q.converged and q._event_columns is not None
     pac = PAC(cir, toolkit=circuit.numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         _K, info = pac.oscillator_covariance(q, samples=True, pair=True)
     times = np.asarray(q.factored_period().times, dtype=float)
     first = int(q._event_columns['nodes'][0])
@@ -1042,7 +1028,6 @@ def test_oscillator_covariance_runs_on_the_trapezoidal_pair_map():
     -- first order, trap's own map's limit, as euler's is -- where the
     trbdf2 twin reads -7.6e-5.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     d_ref = 2.5756770857716342e-08          # radau, 800 points
     T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
@@ -1052,8 +1037,7 @@ def test_oscillator_covariance_runs_on_the_trapezoidal_pair_map():
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         p = PSS(cir, method='trap', reltol=1e-10)
         p.monodromy = mono
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=T0, timestep=T0 / 200, x0=np.array([2.0, 0.0]),
                     maxiterations=60)
             _K, info = PAC(cir, toolkit=circuit.numeric).oscillator_covariance(p)
@@ -1182,7 +1166,6 @@ def _vdp_colour_pair(kind, npts=200, slow=None, diff=False):
     orbit is unchanged).  `diff` (with `slow`) adds node 'd' = v - s
     through an ideal VCVS.  `(cir, pss, reduced index of the tank, its rising
     mid-level crossing)`."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
@@ -1214,8 +1197,7 @@ def _vdp_colour_pair(kind, npts=200, slow=None, diff=False):
     pss = PSS(c, method='radau', reltol=1e-12)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
     assert pss.converged
     full = c.get_node_index('v')
@@ -1290,15 +1272,12 @@ def test_the_coloured_edge_jitter_carries_a_slow_node_s_memory():
     linear diffusion, from its folded PSD's random-walk remainder, are its
     exact white realisation's (Lyapunov) -- 2.3e-6 and 1.5e-12 at 400
     points."""
-    import warnings as _w
     cw, pw, rw, tw = _vdp_colour_pair('filtered', slow=1.0)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         w = PAC(cw, toolkit=circuit.numeric).oscillator_edge_jitter(pw, rw, tw, kmax=4)
     ce, pe, re_, te = _vdp_colour_pair('coloured', slow=1.0)
     f0 = 1.0 / float(pe.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         e = PAC(ce, toolkit=circuit.numeric).oscillator_edge_jitter(
             pe, re_, te, kmax=4, colour_fmin=1e-6 * f0, points_per_decade=20,
             intercept='exact')
@@ -1324,7 +1303,6 @@ def test_the_coloured_edge_jitter_on_a_staged_oscillator_is_its_realisation_s():
     so the source BELOW `colour_fmin` -- which the band excludes by
     definition -- carries a diffusion of ~2 k fmin T times the DC share
     (the symmetric van der Pol's PPV has none); at 1e-8 f0 it is 100x less."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     out = {}
     for kind in ('filtered', 'coloured'):
@@ -1341,8 +1319,7 @@ def test_the_coloured_edge_jitter_on_a_staged_oscillator_is_its_realisation_s():
             cir['gm'] = BSource('f', gnd, gnd, 'c', i_func=lambda u: 1e-3 * u)
         seed, _T = _relaxation_oscillator_seed(cir)
         q = PSS(cir, method='radau', reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100,
                     state_events=True)
         assert q.converged and q._event_columns is not None
@@ -1351,8 +1328,7 @@ def test_the_coloured_edge_jitter_on_a_staged_oscillator_is_its_realisation_s():
         f0 = 1.0 / float(q.period)
         kw = ({} if kind == 'filtered'
               else {'colour_fmin': 1e-8 * f0, 'points_per_decade': 20})
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(ModelWarning):
             out[kind] = PAC(cir, toolkit=circuit.numeric).oscillator_edge_jitter(
                 q, 'fb1', t, kmax=4, intercept='exact', **kw)
     w, e = out['filtered'], out['coloured']
@@ -1371,7 +1347,6 @@ def _vdp_resonator_pair(kind, q2, npts=200):
     (tau = 0.3 T) into the resonator ('coloured') or its realisation, white
     noise through a noiseless RC ('filtered').  `(cir, pss, reduced index of
     the tank, its rising mid-level crossing)`."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
@@ -1399,8 +1374,7 @@ def _vdp_resonator_pair(kind, q2, npts=200):
     red = full if full < c.get_node_index(gnd) else full - 1
     x0 = np.zeros(c.n - 1)
     x0[red] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         pss.solve(period=T, timestep=T / npts, x0=x0, maxiterations=300)
     assert pss.converged
     Xw = np.asarray(pss.waveform[1], float)
@@ -1424,12 +1398,10 @@ def test_the_coloured_edge_jitter_resolves_a_narrow_orbital_line():
     panels geometrically from each centre (`increment_nodes`' `lines`):
     4e-12 at 400 points (2026-09-30).  FAILS on the parent (0.32 here: 200
     points, kmax 4)."""
-    import warnings as _w
     cw, pw, rw, tw = _vdp_resonator_pair('filtered', 1000.0)
     ce, pe, re_, te = _vdp_resonator_pair('coloured', 1000.0)
     f0 = 1.0 / float(pe.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         w = PAC(cw, toolkit=circuit.numeric).oscillator_edge_jitter(pw, rw, tw, kmax=4)
         e = PAC(ce, toolkit=circuit.numeric).oscillator_edge_jitter(
             pe, re_, te, kmax=4, colour_fmin=1e-6 * f0, points_per_decade=20)
@@ -1437,6 +1409,7 @@ def test_the_coloured_edge_jitter_resolves_a_narrow_orbital_line():
     assert np.max(np.abs(r)) < 1e-8, r
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.ModelWarning')
 def test_the_oscillator_edge_jitter_takes_a_modulated_flicker_as_its_realisation_does():
     """#17 B2, the ORBIT-MODULATED 1/f path (2026-09-29): a flicker current
     whose level follows the tank voltage (`k V_v flicker_noise(1)`, signed
@@ -1498,7 +1471,6 @@ def test_the_oscillator_edge_jitter_takes_a_differential_output():
     node's own law bit for bit, and `v - s` gives the law of an ideal VCVS
     node that IS `v - s` (the coloured source on the slow node, so the exact
     coloured law runs too)."""
-    import warnings as _w
     cir, pss, _red, _tc = _vdp_colour_pair('coloured', slow=0.5, diff=True)
     names = [str(x) for x in cir.nodes]
     irn = pss.irefnode
@@ -1519,8 +1491,7 @@ def test_the_oscillator_edge_jitter_takes_a_differential_output():
     w[red('v')], w[red('s')] = 1.0, -1.0
     pac = PAC(cir, toolkit=circuit.numeric)
     kw = {'colour_fmin': 1e-5 / float(pss.period), 'kmax': 4}
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         r_node = pac.oscillator_edge_jitter(pss, 'd', tc, **kw)
         r_unit = pac.oscillator_edge_jitter(pss, unit, tc, **kw)
         r_diff = pac.oscillator_edge_jitter(pss, w, tc, **kw)

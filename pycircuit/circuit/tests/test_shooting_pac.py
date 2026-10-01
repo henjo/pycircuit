@@ -5,15 +5,21 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
-import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import (
+    AccuracyWarning,
+    ConvergenceWarning,
+    UsageWarning,
+)
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 import unittest
 import pytest
 import functools as _functools
+import warnings
 from pycircuit.circuit.tests._shooting_elements import _SwitchHdl
 from pycircuit.circuit.tests._shooting_fixtures import (_adjoint_ladder,
     _comparator_relaxation_oscillator,
@@ -50,7 +56,6 @@ def test_PAC_runs_on_a_nonlinear_circuit_without_forming_the_operator():
     test counts what is stored: `N` factorisations of an `m x m` matrix,
     which is `O(N m^2)` and not `O(N^2 m^2)`.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir['vs'] = VSin(1, gnd, vac=2.0, va=2.0, freq=1e6, phase=20)
@@ -58,14 +63,12 @@ def test_PAC_runs_on_a_nonlinear_circuit_without_forming_the_operator():
     cir['D'] = Diode(2, gnd)
     cir['C'] = C(2, gnd, c=1e-12)
     pss = PSS(cir, method='gear')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-6, timestep=1e-6 / 40)
     assert pss.converged
 
     pac = PAC(cir)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = pac.solve(pss, np.array([1e6, 3e6]))
     X = np.asarray(res.x, dtype=complex)
     assert np.isfinite(X).all(), 'PAC returned non-finite entries'
@@ -124,7 +127,6 @@ def test_a_failed_inner_krylov_solve_says_so():
     solve is now held to it too.  Starved of cycles on purpose, because the
     honest way to test a failure path is to cause the failure.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     pss = PSS(_rc_ladder(20), method='gear', reltol=1e-6)
     old_cycles, old_restart = pss.KRYLOV_MAX_CYCLES, pss.KRYLOV_RESTART
@@ -166,14 +168,12 @@ def _pac_y0(pss, freq, per):
 
 
 def _pac_vs_ac(method, npts, freq=700.0, per=1e-3, x0_unknown=False):
-    import warnings
     from pycircuit.circuit.analysis_ss import AC
     circuit.default_toolkit = circuit.numeric
     cir = _pac_circuit()
     m = cir.n - 1
     pss = PSS(cir, method=method, reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / npts, maxiterations=40,
                   x0_unknown=x0_unknown)
     assert pss.converged, '%s at %d points did not converge' % (method, npts)
@@ -238,9 +238,7 @@ def test_pac_forward_replay_works_over_the_stage_methods(method, tol):
     must reduce to AC, a reference the shooting path cannot influence; Radau
     (order 5) reaches it far tighter than TR-BDF2 (order 2) at the same grid.
     """
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         rel, _pss = _pac_vs_ac(method, 200)
     assert rel < tol, \
         '%s PAC disagrees with AC by %.3e on a LINEAR circuit' % (method, rel)
@@ -323,7 +321,6 @@ def test_pac_recycling_matches_the_per_frequency_solve():
 
     with the two routes agreeing to 1.2e-13.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     c = SubCircuit()
     c.add_node('n0')
@@ -335,8 +332,7 @@ def test_pac_recycling_matches_the_per_frequency_solve():
         c['C%d' % k] = C(b, gnd, c=1e-7)
     per = 1e-3
     pss = PSS(c, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / 150, maxiterations=40)
     assert pss.converged
 
@@ -344,8 +340,7 @@ def test_pac_recycling_matches_the_per_frequency_solve():
     out = {}
     for rec in (False, True):
         pac = PAC(c, toolkit=circuit.numeric)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             res = pac.solve(pss, freqs, recycle=rec)
         out[rec] = (np.asarray(res.x, dtype=complex), pac.matvecs)
 
@@ -368,7 +363,6 @@ def test_pac_refuses_what_it_cannot_answer():
     itself: a source with no `vac` gave a zero right-hand side and returned
     zeros, and nothing checked that the operating point had converged.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     per = 1e-3
 
@@ -380,19 +374,18 @@ def test_pac_refuses_what_it_cannot_answer():
 
     ## (b) an operating point, but no small-signal source
     L_, C_ = 1e-3, 1.0 / ((2 * np.pi * 1e3) ** 2 * 1e-3)
-    quiet = SubCircuit()
-    quiet.add_node('a'); quiet.add_node('b')
-    quiet['vs'] = VSin('a', gnd, va=1.0, vac=0.0, freq=1e3)
-    quiet['R'] = R('a', 'b', r=(1.0 / 20.0) * np.sqrt(L_ / C_))
-    quiet['L'] = L('b', 'c', L=L_)
-    quiet['C'] = C('c', gnd, c=C_)
-    pss2 = PSS(quiet, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    silent = SubCircuit()
+    silent.add_node('a'); silent.add_node('b')
+    silent['vs'] = VSin('a', gnd, va=1.0, vac=0.0, freq=1e3)
+    silent['R'] = R('a', 'b', r=(1.0 / 20.0) * np.sqrt(L_ / C_))
+    silent['L'] = L('b', 'c', L=L_)
+    silent['C'] = C('c', gnd, c=C_)
+    pss2 = PSS(silent, method='gear', reltol=1e-10)
+    with quiet(AccuracyWarning):
         pss2.solve(period=per, timestep=per / 150, maxiterations=40)
     assert pss2.converged
     with pytest.raises(ValueError, match='identically zero'):
-        PAC(quiet, toolkit=circuit.numeric).solve(pss2, [700.0])
+        PAC(silent, toolkit=circuit.numeric).solve(pss2, [700.0])
 
 
 def test_the_adjoint_row_is_m_forward_solves_in_one():
@@ -420,15 +413,13 @@ def test_the_adjoint_row_is_m_forward_solves_in_one():
     thing Demir & Roychowdhury call "often unavailable even in existing
     time-domain simulators".
     """
-    import warnings
     import scipy.sparse.linalg as spla
     circuit.default_toolkit = circuit.numeric
     cir = _adjoint_ladder()
     per, f = 1e-3, 700.0
     m = cir.n - 1
     pss = PSS(cir, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / 120, maxiterations=40)
     assert pss.converged
     fp = pss.factored_period()
@@ -485,13 +476,11 @@ def test_the_adjoint_row_no_longer_refuses_the_plain_path():
     leaves no evidence the capability was ever absent, and this one
     dates the change.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _adjoint_ladder(3)
     per = 1e-3
     pss = PSS(cir, method='trap', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / 120, maxiterations=40)
     assert pss.converged
     row = np.asarray(PAC(cir, toolkit=circuit.numeric)
@@ -526,11 +515,9 @@ def _sideband_forward(pss, fp, freq, k, l, N, alpha, A):
 
 def _sideband_pair(cir, per, freq, k, ls, npts=60, reltol=1e-11):
     """The adjoint rows and the `m` forward driven solves they replace."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     pss = PSS(cir, method='gear', reltol=reltol)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / npts, maxiterations=40)
     assert pss.converged
     fp = pss.factored_period()
@@ -672,13 +659,11 @@ def test_the_sideband_bound_is_hard():
     grid, and silently returning the nearest representable sideband would
     answer a question the caller did not ask.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _adjoint_ladder(3)
     per = 1e-3
     pss = PSS(cir, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / 40, maxiterations=40)
     fp = pss.factored_period()
     lmax = len(fp.steps) // 2
@@ -697,14 +682,12 @@ def test_the_sideband_row_costs_one_solve_per_sideband():
     asymmetry pnoise is shaped by. This asserts the count, not the clock:
     this machine runs more than one agent.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _adjoint_ladder(10)
     per, freq = 1e-3, 700.0
     m = cir.n - 1
     pss = PSS(cir, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / 60, maxiterations=40)
     pac = PAC(cir, toolkit=circuit.numeric)
     rows = pac.adjoint_sideband_row(pss, freq, 1, [0, 1, 2])
@@ -737,7 +720,6 @@ def test_the_pac_operator_is_singular_at_every_harmonic_of_an_oscillator():
     return, so a number there would be a wrong answer rather than an
     imprecise one.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     _cir, pss = _solve_slow(None)                 # van der Pol, autonomous
@@ -769,15 +751,13 @@ def test_the_pac_operator_is_singular_at_every_harmonic_of_an_oscillator():
     f0 = 1.0 / pss.period
     with pytest.raises(ValueError, match='harmonic'):
         pac.adjoint_sideband_row(pss, f0, 0, 0)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         pac.adjoint_sideband_row(pss, 0.37 * f0, 0, 0)   # off-harmonic: fine
 
     ## a DRIVEN circuit has no such structure and is not refused
     cir2 = _adjoint_ladder(3)
     pss2 = PSS(cir2, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss2.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
     fp2 = pss2.factored_period()
     n2 = fp2.width
@@ -839,12 +819,10 @@ def test_am_pm_on_a_driven_mixer_is_predominantly_am():
     mechanism behind it here. (An oscillator is the opposite case: its
     phase response goes as `1/ω_m`, so PM dominates near the carrier.)
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _diode_mixer()
     pss = PSS(cir, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-6, timestep=1e-6 / 120, maxiterations=40)
     assert pss.converged
     irn = pss.irefnode
@@ -859,8 +837,7 @@ def test_am_pm_on_a_driven_mixer_is_predominantly_am():
 
     ratios = []
     for r in (0.3, 0.1, 0.03):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             am, pm = pac.am_pm(pss, r * f0, k, 1, sweeptype='relative')
         i = int(np.argmax(np.abs(am)))
         assert abs(am[i]) > 1.0, \
@@ -878,12 +855,10 @@ def test_am_pm_on_a_driven_mixer_is_predominantly_am():
 
 def test_am_pm_refuses_a_harmonic_with_no_carrier():
     """AM/PM of nothing is not a small number, it is undefined."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _adjoint_ladder(3)
     pss = PSS(cir, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
     pac = PAC(cir, toolkit=circuit.numeric)
     with pytest.raises(ValueError, match='no component at harmonic'):
@@ -913,7 +888,6 @@ def test_the_deflated_solve_removes_the_harmonic_singularity():
     agreement with the plain solve — in the regime where the plain solve
     can be believed — is what says it is still the same equation.
     """
-    import warnings
     _cir, pss = _solve_slow(None)                # van der Pol, autonomous
     pac = PAC(pss.cir, toolkit=circuit.numeric)
     fp = pss.factored_period()
@@ -925,8 +899,7 @@ def test_the_deflated_solve_removes_the_harmonic_singularity():
     smins, rels = [], []
     for r in (1e-2, 1e-4, 1e-6):
         alpha = np.exp(-2j * np.pi * r)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             y = pac._deflated_solve(pss, alpha, b)
         smins.append(np.linalg.svd(np.eye(n) - alpha * M,
                                    compute_uv=False)[-1])
@@ -948,8 +921,7 @@ def test_the_deflated_solve_removes_the_harmonic_singularity():
     ## the physical pole survives: |y| grows as 1/df
     mags = []
     for r in (1e-3, 1e-4, 1e-5):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             mags.append(np.linalg.norm(
                 pac._deflated_solve(pss, np.exp(-2j * np.pi * r), b)))
     for a, b_ in zip(mags, mags[1:]):
@@ -980,7 +952,6 @@ def test_the_deflated_solve_works_transposed_too():
     tangent, so `u` and `v` exchange roles. Checked against a dense
     transposed solve where that is still trustworthy.
     """
-    import warnings
     _cir, pss = _solve_slow(None)
     pac = PAC(pss.cir, toolkit=circuit.numeric)
     fp = pss.factored_period()
@@ -989,8 +960,7 @@ def test_the_deflated_solve_works_transposed_too():
     rng = np.random.default_rng(3)
     d = rng.standard_normal(n) + 1j * rng.standard_normal(n)
     alpha = np.exp(-2j * np.pi * 1e-2)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         x = pac._deflated_solve(pss, alpha, d, transposed=True)
     xp = np.linalg.solve(np.eye(n) - alpha * M.T, d)
     rel = np.linalg.norm(x - xp) / np.linalg.norm(x)
@@ -1222,13 +1192,11 @@ def _ampm_mixer():
 
 
 def _ampm_at(refname, fm=5e4, npts=200):
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _ampm_mixer()
     rn = gnd if refname == 'gnd' else cir.get_node(refname)
     pss = PSS(cir, method='gear', reltol=1e-12, irefnode=rn)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-6, timestep=1e-6 / npts, refnode=rn,
                   maxiterations=60)
     assert pss.converged, refname
@@ -1250,8 +1218,7 @@ def _ampm_at(refname, fm=5e4, npts=200):
     out = vec('b', 'c')
     src = vec('c', 'b')
     pac = PAC(cir, toolkit=circuit.numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         am, pm = pac.am_pm(pss, fm, out, harmonic=1, sweeptype='relative')
         car = pac.carrier_phasor(pss, out, 1)
     am = np.asarray(am).ravel()
@@ -1273,12 +1240,10 @@ def test_am_pm_accepts_a_direction_not_only_a_node_index():
     form still works, so callers naming a node are unaffected; this pins
     both, and pins that they agree where they overlap.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _ampm_mixer()
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-6, timestep=1e-6 / 200, refnode=gnd,
                   maxiterations=60)
     assert pss.converged
@@ -1290,8 +1255,7 @@ def test_am_pm_accepts_a_direction_not_only_a_node_index():
     ## the integer form still works and agrees with the equivalent vector
     e_b = np.zeros(cir.n - 1)
     e_b[kb] = 1.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         c_int = pac.carrier_phasor(pss, kb, 1)
         c_vec = pac.carrier_phasor(pss, e_b, 1)
     assert abs(c_int - c_vec) <= 1e-12 * abs(c_int), \
@@ -1303,8 +1267,7 @@ def test_am_pm_accepts_a_direction_not_only_a_node_index():
     kc = kc - 1 if kc > irn else kc
     diff = np.zeros(cir.n - 1)
     diff[kb], diff[kc] = 1.0, -1.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         c_diff = pac.carrier_phasor(pss, diff, 1)
         am, pm = pac.am_pm(pss, 5e4, diff, harmonic=1, sweeptype='relative')
     assert abs(c_diff - c_int) > 1e-3 * abs(c_int), \
@@ -1391,7 +1354,6 @@ def test_the_pac_adjoint_surfaces_run_under_every_integrator():
     which `test_pac_order_is_lost_to_the_manufacturing_step` pins
     independently with `x0_unknown` as the switch.
     """
-    import warnings
     from pycircuit.circuit.elements import VSin
     circuit.default_toolkit = circuit.numeric
     Lv, Cv, Rs = 1e-3, 1e-9, 10.0
@@ -1414,16 +1376,14 @@ def test_the_pac_adjoint_surfaces_run_under_every_integrator():
         for npts in (200, 400):
             cir = build()
             pss = PSS(cir, method=method, reltol=1e-11)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 pss.solve(period=per, timestep=per / npts,
                           x0=np.zeros(cir.n - 1), maxiterations=100,
                           x0_unknown=False)
             assert pss.converged
             ob = [str(nd) for nd in cir.nodes].index('b')
             pac = PAC(cir)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 ar = pac.adjoint_transfer_row(pss, freq, ob)
                 sr = pac.adjoint_sideband_row(pss, freq, ob, sidebands=0)
             got[(method, npts)] = (float(np.linalg.norm(ar)),
@@ -1481,7 +1441,6 @@ def test_pac_sweep_recycling_makes_matvecs_INDEPENDENT_of_sweep_length():
     but it is why the ratio must be read on matvecs and length, not on a
     single timing.
     """
-    import warnings
     from pycircuit.circuit.elements import VSin
     circuit.default_toolkit = circuit.numeric
     Lv, Cv, Rs = 1e-3, 1e-9, 10.0
@@ -1499,8 +1458,7 @@ def test_pac_sweep_recycling_makes_matvecs_INDEPENDENT_of_sweep_length():
 
     cir = build()
     pss = PSS(cir, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=per, timestep=per / 200,
                   x0=np.zeros(cir.n - 1), maxiterations=100,
                   x0_unknown=False)
@@ -1512,8 +1470,7 @@ def test_pac_sweep_recycling_makes_matvecs_INDEPENDENT_of_sweep_length():
         out = {}
         for flag in (True, False):
             pac = PAC(cir)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet():
                 res = pac.solve(pss, freqs, recycle=flag)
             out[flag] = (pac.matvecs, np.asarray(res.x))
         ## the two routes must agree -- recycling minimises the TRUE
@@ -1560,7 +1517,6 @@ def test_pac_reports_sidebands_at_the_right_frequencies_and_conjugates_the_fold(
     the fix the reported coefficients equal `H_l . u_ac` to 1e-15 at
     every grid, with `l = -1` the conjugate of `H_{-1} . u_ac`.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     fclk, fin, T = 100e3, 10e3, 1e-5
     cir = SubCircuit()
@@ -1573,8 +1529,7 @@ def test_pac_reports_sidebands_at_the_right_frequencies_and_conjugates_the_fold(
                            vth=0.0, vs=50e-3)
     cir['C0'] = C('out', gnd, c=100e-12)
     pss = PSS(cir, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 200, x0=np.zeros(cir.n - 1),
                   maxiterations=100)
     assert pss.converged
@@ -1613,7 +1568,6 @@ def test_the_sideband_gate_rejects_the_endpoint_and_the_unconjugated_fold():
     without conjugating disagrees with `H_l . u_ac`, while the conjugate
     agrees -- the equality gate rejects the mutation and accepts the fix.
     """
-    import warnings
     from pycircuit.circuit.shooting import freq_analysis
     circuit.default_toolkit = circuit.numeric
     fclk, fin, T = 100e3, 10e3, 1e-5
@@ -1627,8 +1581,7 @@ def test_the_sideband_gate_rejects_the_endpoint_and_the_unconjugated_fold():
                            vth=0.0, vs=50e-3)
     cir['C0'] = C('out', gnd, c=100e-12)
     pss = PSS(cir, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 200, x0=np.zeros(cir.n - 1),
                   maxiterations=100)
     assert pss.converged
@@ -1692,12 +1645,10 @@ def test_the_oscillator_am_pm_rows_are_the_isf_dc_term_and_vanish_by_half_wave_s
     paper's own linearity verification ("injecting impulses with different
     areas"), reproduced.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     got = {}
     for a in (0.0, 0.05, 0.25):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             cir, pss, pac = _lc_osc(a=a, psd=1e-6, npts=240)
             f0 = 1.0 / float(pss.period)
             _m_am, m_pm = pac.am_pm(pss, 1e-3 * f0, 0, harmonic=1)
@@ -1724,7 +1675,6 @@ def test_pac_solve_and_the_adjoint_transfer_row_take_the_deflated_route_on_an_os
     or differs from it by more than 1e-6 relative; (4) `deflated` is True there and False on
     the driven mixer, whose result is unchanged.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir.add_node('v')
@@ -1732,16 +1682,14 @@ def test_pac_solve_and_the_adjoint_transfer_row_take_the_deflated_route_on_an_os
     cir['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
     cir['ac'] = IS('v', gnd, i=0.0, iac=1.0)          # the sweep's small-signal source
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=6.66, timestep=6.66 / 240, x0=np.array([2.0, 0.0]), maxiterations=80)
     assert pss.converged
     pac = PAC(cir, toolkit=circuit.numeric)
     f0 = 1.0 / float(pss.period)
     fp = pss.factored_period()
     T = float(fp.T)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         ## the source vector for the sweep, as `solve` forms it (the AC
         ## vector with the reference row removed)
         u_ac = np.delete(np.asarray(cir.u(0.0, analysis=pac.par.analysis), dtype=complex).ravel(),
@@ -1786,8 +1734,7 @@ def test_pac_solve_and_the_adjoint_transfer_row_take_the_deflated_route_on_an_os
     c['vs'] = VSin(1, gnd, vac=1.0, va=2.0, freq=1e6, phase=20)
     c['R'] = R(1, 2, r=1e4); c['D'] = Diode(2, gnd); c['C'] = C(2, gnd, c=1e-12)
     p2 = PSS(c, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p2.solve(period=1e-6, timestep=1e-6 / 200, maxiterations=40)
         pac2 = PAC(c, toolkit=circuit.numeric)
         pac2.solve(p2, [0.13e6])
@@ -1806,7 +1753,6 @@ def test_the_forward_pac_sidebands_equal_the_adjoint_rows_on_a_non_uniform_grid(
     non-uniform grid is pinned by
     `test_pnoise_is_correct_on_a_non_uniform_grid_with_trapezoid_period_weights`.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     fclk = 100e3; T = 1.0 / fclk; fin = 7e3; n = 200
     cir = SubCircuit()
@@ -1819,15 +1765,13 @@ def test_the_forward_pac_sidebands_equal_the_adjoint_rows_on_a_non_uniform_grid(
     cir['C0'] = C('out', gnd, c=100e-12)
     w = 1.0 + 0.5 * np.sin(2.0 * np.pi * np.arange(n) / n)
     pss = PSS(cir, method='gear', reltol=1e-10)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / n, x0=np.zeros(cir.n - 1),
                   grid=w / w.sum(), maxiterations=60, break_events=False)
     assert pss.converged
     assert pss._period_quadrature(pss.factored_period()) is not None
     pac = PAC(cir, toolkit=circuit.numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         res = pac.solve(pss, freqs=[fin])
     fout = np.asarray(res.sweep_values, dtype=float)
     X = np.asarray(res.x)
@@ -1878,7 +1822,6 @@ def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
     solve is bit-identical (the fractions are only passed when the grid is
     not uniform).
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T = 1e-6
     RR, CC = 1e3, 3e-10
@@ -1926,8 +1869,7 @@ def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
     for N in (100, 200, 400):
         c = pulsed()
         p = PSS(c, method='radau', reltol=1e-10)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=T, timestep=T / N, maxiterations=40)
         assert p.converged and p.break_events and len(p.event_times) == 4
         fp = p.factored_period()
@@ -1962,8 +1904,7 @@ def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
     ## a bare count is still a uniform replay; a uniform solve is unchanged
     c = pulsed()
     p = PSS(c, method='radau', reltol=1e-10)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         p.solve(period=T, timestep=T / 100, maxiterations=40, break_events=False)
     fpu = p.factored_period()
     assert p._period_quadrature(fpu) is None
@@ -2001,7 +1942,6 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
     (glm2), 8.7e-10 / 6.5e-10 (glm3), the shifts 7e-10 / 6e-10, the
     unbordered response 3e-3 / 5e-3 .. 7e-3 off.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T = 1e-5
     f0 = 1.0 / T
@@ -2018,8 +1958,7 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
 
     cir = build(0.0, vac=1.0)
     p0 = PSS(cir, method=method, reltol=1e-10)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         p0.solve(period=T, timestep=T / N, x0=np.zeros(cir.n - 1), maxiterations=100)
     assert p0.converged and p0._event_columns is not None
     g0 = np.asarray(p0._grid_fracs, float)
@@ -2033,8 +1972,7 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
     def solve_fixed_base(eps):
         c2 = build(eps)
         q = PSS(c2, method=method, reltol=1e-10)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(ConvergenceWarning):
             q.solve(period=T, timestep=T / len(g0), x0=x0s, grid=g0,
                     maxiterations=1, state_events=False)
         z = np.concatenate((x0s, th0))
@@ -2082,8 +2020,7 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
         if not bordered:
             p0._event_columns = None
         pac = PAC(cir, toolkit=circuit.numeric)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             res = pac.solve(p0, [f0])
         t_r, y_r = pac.time_response[0]
         assert np.max(np.abs(t_r - tms[:len(t_r)])) < 1e-5 * T      # the same nodes (fp rebuilds them from the fractions)
@@ -2130,7 +2067,6 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
     never admitted to the bordering and missed the forward solve by
     1.9e-3 / 9e-3; now 3.6e-13 / 4e-15.
     """
-    import warnings as _w
     from pycircuit.circuit.analysis import remove_row_col
     circuit.default_toolkit = circuit.numeric
     T = 1e-5
@@ -2143,8 +2079,7 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
     cir['Vp'] = VSin('vin', 'vin0', vo=0.0, va=0.0, freq=fin, phase=0.0, vac=1.0)
     cir['Vramp'].iparv.vac = 0.0
     p = PSS(cir, method=method, reltol=1e-10)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ConvergenceWarning):
         p.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1), maxiterations=100)
     assert p.converged and p._event_columns is not None
     io_full = [str(n_) for n_ in cir.nodes].index('out')
@@ -2152,8 +2087,7 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
     (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), p.irefnode, circuit.numeric)
     u_ac = np.asarray(u_ac, dtype=complex).ravel()
     pac = PAC(cir, toolkit=circuit.numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         res = pac.solve(p, freqs=[fin])
     fout = np.asarray(res.sweep_values, dtype=float)
     X = np.asarray(res.x)
@@ -2186,7 +2120,6 @@ def test_the_adjoint_transfer_row_on_a_staged_solve_is_the_transpose_of_the_bord
     2.8e-4 (radau) / 1.6e-3 (trap) / 3.9e-2 (gear), exactly the unbordered
     row's gap.  Bordered as the sideband family is (the event rows'
     costate, a second reverse pass): 2.7e-15 / 1.0e-13 / 6.8e-15."""
-    import warnings as _w
 
     from pycircuit.circuit.analysis import remove_row_col
     circuit.default_toolkit = circuit.numeric
@@ -2199,8 +2132,7 @@ def test_the_adjoint_transfer_row_on_a_staged_solve_is_the_transpose_of_the_bord
     cir['Vp'] = VSin('vin', 'vin0', vo=0.0, va=0.0, freq=fin, phase=0.0, vac=1.0)
     cir['Vramp'].iparv.vac = 0.0
     p = PSS(cir, method=method, reltol=1e-10)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ConvergenceWarning):
         p.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1), maxiterations=100)
     assert p.converged and p._event_columns is not None
     io_full = [str(n_) for n_ in cir.nodes].index('out')
@@ -2208,8 +2140,7 @@ def test_the_adjoint_transfer_row_on_a_staged_solve_is_the_transpose_of_the_bord
     (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), p.irefnode, circuit.numeric)
     u_ac = np.asarray(u_ac, dtype=complex).ravel()
     pac = PAC(cir, toolkit=circuit.numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         pac.solve(p, freqs=[fin], sweeptype='absolute')
         y0 = complex(np.asarray(pac.time_response[0][1])[0][io])
         h = complex(pac.adjoint_transfer_row(p, fin, io) @ u_ac)
@@ -2242,15 +2173,13 @@ def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
     covariance` within 0.04 % / 3 % / 0.6 % of radau's at 200 points (0.00 /
     0.1 / 0.3 % at 800) -- gear's own second order.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
     cir['Vdd'] = VS('vdd', gnd, v=5.0, vac=1.0)
     names = [str(n_) for n_ in cir.nodes]
     seed, Tl = _relaxation_oscillator_seed(cir)
     q = PSS(cir, method='gear', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100,
                 state_events=True)
     assert q.converged and q._event_columns is not None
@@ -2268,8 +2197,7 @@ def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
     Mt = Md + (np.asarray(q._event_columns['P_end'], dtype=float)
                @ np.asarray(q._event_sensitivity, dtype=float))
     lam_t = np.sort(np.abs(np.linalg.eigvals(Mt)))[::-1]
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(UsageWarning):
         fm = q.floquet_modes(nmodes=2)
         v, info = q.ppv()
     lam_fm = np.sort(np.abs([mm['lam'] for mm in fm]))[::-1]
@@ -2300,8 +2228,7 @@ def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
         q._event_columns = ev if bordered else None
         try:
             pac = PAC(cir, toolkit=circuit.numeric)
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet():
                 pac.solve(q, [0.3 / Tq], sweeptype='absolute')
         finally:
             q._event_columns = ev
@@ -2323,8 +2250,7 @@ def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
     (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), q.irefnode, circuit.numeric)
     u_ac = np.asarray(u_ac, dtype=complex).ravel()
     pac = PAC(cir, toolkit=circuit.numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         res = pac.solve(q, freqs=[fin], sweeptype='absolute')
         H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
     fout = np.asarray(res.sweep_values, dtype=float)
@@ -2401,15 +2327,13 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
     15.7 % at 1.001 f0 (E8): the tails outside the window.  The adjoint row is the transpose of the same solve:
     dual-consistent with the forward one (the deflated solve refines on
     the plain operator, so both are the discrete operator's own)."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
     cir['Vdd'] = VS('vdd', gnd, v=5.0, vac=1.0)
     names = [str(n_) for n_ in cir.nodes]
     seed, Tl = _relaxation_oscillator_seed(cir)
     q = PSS(cir, method='radau', reltol=1e-9)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         q.solve(period=Tl, timestep=Tl / 200, x0=seed, maxiterations=100, state_events=True)
     assert q.converged and q._event_columns is not None
     Tq = float(q.period)
@@ -2446,8 +2370,7 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
             q._event_columns = ev if bordered else None
             try:
                 pac = PAC(cir, toolkit=circuit.numeric)
-                with _w.catch_warnings():
-                    _w.simplefilter('ignore')
+                with quiet():
                     pac.solve(q, [f], sweeptype='absolute')
                 tt, yy = pac.time_response[0]
             except RuntimeError:
@@ -2488,8 +2411,7 @@ def test_the_sideband_response_on_a_staged_oscillator_is_bordered_deflated_and_m
     (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), q.irefnode, circuit.numeric)
     u_ac = np.asarray(u_ac, dtype=complex).ravel()
     pac = PAC(cir, toolkit=circuit.numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         res = pac.solve(q, freqs=[fin], sweeptype='absolute')
         H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
     fout = np.asarray(res.sweep_values, dtype=float)
@@ -2514,14 +2436,12 @@ def test_trap_opened_at_x0_is_the_transpose_of_its_forward_replay():
     sideband rows (pnoise) missed the forward PAC by 1.1e-5 / 7.2e-5 at
     l = 0 / 1 (1e-15 opened at the manufacturing step).  Pinned: both to
     1e-10."""
-    import warnings as _w
     from pycircuit.circuit.analysis import remove_row_col
     circuit.default_toolkit = circuit.numeric
     Tp = 1e-5
     cir = _pwm_loop(Tp)
     p = PSS(cir, method='trap', reltol=1e-10)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         ## (settled first since a landed ramp edge drops the order,
         ## 2026-09-28: from zeros trap's staged Newton stalls on this loop;
         ## `_staged_fallback` recovers it since, at ~9x the time)
@@ -2546,8 +2466,7 @@ def test_trap_opened_at_x0_is_the_transpose_of_its_forward_replay():
     cir['S0'] = _SwitchHdl('in', 'out', 'ck', gnd, gon=1e-3, goff=1e-9, vth=0.0, vs=50e-3)
     cir['C0'] = C('out', gnd, c=100e-12)
     q = PSS(cir, method='trap', reltol=1e-10)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         q.solve(period=T, timestep=T / 200, x0=np.zeros(cir.n - 1), maxiterations=60,
                 x0_unknown=True)
     assert q.factored_period().open_at_x0
@@ -2556,8 +2475,7 @@ def test_trap_opened_at_x0_is_the_transpose_of_its_forward_replay():
     (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), q.irefnode, circuit.numeric)
     u_ac = np.asarray(u_ac, dtype=complex).ravel()
     pac = PAC(cir, toolkit=circuit.numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         res = pac.solve(q, freqs=[fin])
         H = np.asarray(pac.adjoint_sideband_row(q, fin, io, sidebands=[0, 1]))
     fout = np.asarray(res.sweep_values, dtype=float)
@@ -2579,8 +2497,7 @@ def test_a_twin_takes_the_analysis_reference_node():
     from pycircuit.circuit.tests.test_shooting_pss import _review_vdp
     cg, pg = _review_vdp()
     cv, pv = _review_vdp(ref='v')
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         c_v = PAC(cv, toolkit=circuit.numeric).diffusion_constant(pv)
         c_g = PAC(cg, toolkit=circuit.numeric).diffusion_constant(pg)
     assert pv.monodromy_twin().irefnode == pv.irefnode
@@ -2604,8 +2521,7 @@ def test_a_relative_sweep_offsets_from_the_carrier_of_the_map_it_solves_on():
     ## (the poison is alive: the carriers are further apart than 10 % of df)
     assert abs(f0r - f0t) > 0.1 * df, (f0r, f0t, df)
     pac = PAC(cir, toolkit=circuit.numeric)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         S_rel, _u = pac.pnoise(pss, df, 0, maxsidebands=3, sweeptype='relative')
         S_abs, _u = pac.pnoise(pss, f0t + df, 0, maxsidebands=3,
                                sweeptype='absolute')
@@ -2622,7 +2538,6 @@ def test_pac_solve_on_a_trap_staged_oscillator_reads_one_host():
     against 236; `adjoint_sideband_row` read the run's columns beside the
     twin's map too.  Both take the twin whole now: the trap run's response
     IS its twin's, and meets an independent radau solve to O(h^2)."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = _comparator_relaxation_oscillator()
     cir['ac'] = IS('c', gnd, i=0.0, iac=1e-6)
@@ -2630,8 +2545,7 @@ def test_pac_solve_on_a_trap_staged_oscillator_reads_one_host():
     runs = {}
     for method in ('trap', 'radau'):
         p = PSS(cir, method=method, reltol=1e-9)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=T, timestep=T / 100, x0=seed, maxiterations=100)
         assert p.converged and p._event_columns is not None, method
         runs[method] = p
@@ -2642,8 +2556,7 @@ def test_pac_solve_on_a_trap_staged_oscillator_reads_one_host():
 
     def response(p):
         pac = PAC(cir, toolkit=circuit.numeric)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             res = pac.solve(p, offs, sweeptype='relative')
             row = pac.adjoint_sideband_row(p, 1.0 / float(tw.period) + offs[1],
                                            io, sidebands=[0, 1])
@@ -2669,12 +2582,10 @@ def test_the_adjoint_transfer_row_tolerance_binds_on_the_iterative_path():
     the direct row on a 32-state ladder: 8.4e-3 / 3.4e-9 / 1.3e-15 at 1e-2 /
     1e-6 / 1e-12, in 5 / 9 / 11 mat-vecs (the default, KRYLOV_FACTOR *
     reltol: 1.4e-12)."""
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = _adjoint_ladder(30)
     pss = PSS(cir, method='gear', reltol=1e-9)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=1e-3, timestep=1e-3 / 100, maxiterations=40)
     assert pss.converged
     pac = PAC(cir, toolkit=circuit.numeric)
@@ -2719,8 +2630,7 @@ def test_pss_and_pac_run_under_the_jax_toolkit():
             c['R'] = R('1', '2', r=1e3, noisy=True, toolkit=tk)
             c['C'] = C('2', gnd, c=1e-10, toolkit=tk)
             p = PSS(c, toolkit=tk, method='gear', reltol=1e-10)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 p.solve(period=1e-6, timestep=1e-6 / 10, maxiterations=20)
                 pac = PAC(c, toolkit=tk)
                 res = pac.solve(p, freqs=[0.13e6], sweeptype='absolute')

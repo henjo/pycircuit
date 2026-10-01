@@ -5,15 +5,17 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
-import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, ConvergenceWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 import unittest
 import pytest
 import functools as _functools
+import warnings
 from pycircuit.circuit.tests._shooting_fixtures import (_lc_osc,
     _orbit_modulated_vdp,
     _raw_pair_integrals,
@@ -359,12 +361,10 @@ def test_the_power_bound_refuses_when_its_own_derivation_does_not_apply():
     cir2['L'] = L('v', 'x', L=1.0)
     cir2['Rs'] = R('x', gnd, r=0.2)
     cir2['n'] = _BlueNoise('v', gnd, i=0.0, noisePSD=1e-6, fref=1.0)
-    import warnings
     pss2 = PSS(cir2, method='gear', reltol=1e-12)
     x0 = np.zeros(cir2.n - 1)
     x0[0] = 2.0
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss2.solve(period=6.66, timestep=6.66 / 240, x0=x0, maxiterations=80)
     assert pss2.converged
     pac2 = PAC(cir2, toolkit=circuit.numeric)
@@ -399,7 +399,6 @@ def test_pnoise_is_phase_psd_times_the_CARRIER_POWER_not_a_psd_convention():
     refines: 0.995796 / 0.999164 / 0.999870 / 1.000012 at npts = 120 / 240 /
     480 / 960. Nothing is left unexplained.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     Q = 8.0
     mu = 1.0 / (2 * np.pi * Q)
@@ -415,8 +414,7 @@ def test_pnoise_is_phase_psd_times_the_CARRIER_POWER_not_a_psd_convention():
         pss = PSS(cir, method='gear', reltol=1e-12)
         x0 = np.zeros(cir.n - 1)
         x0[0] = 2.0 * sscale
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=2 * np.pi, timestep=2 * np.pi / npts, x0=x0,
                       maxiterations=250)
         assert pss.converged
@@ -550,7 +548,6 @@ def test_c_agrees_between_the_ppv_form_and_the_swept_noise_path():
     point here is 20 % high because it is outside it, not because either
     path is wrong.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     cir = SubCircuit()
@@ -562,15 +559,13 @@ def test_c_agrees_between_the_ppv_form_and_the_swept_noise_path():
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     T = 2.0 * np.pi / np.sqrt(max(1.0 - mu ** 2 / 4.0, 1e-9))
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 600, x0=np.array([2.0, 0.0]),
                   maxiterations=300)
     assert pss.converged
 
     pac = PAC(cir)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         cA = float(pac.diffusion_constant(pss))
     f0 = 1.0 / pss.period
 
@@ -586,8 +581,7 @@ def test_c_agrees_between_the_ppv_form_and_the_swept_noise_path():
     ob = [str(nd) for nd in cir.nodes].index('v')
     got = {}
     for k in (1e-3, 1e-4):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet():
             S, _ = pac.pnoise(pss, f0 * (1.0 + k), ob, sweeptype='absolute')
         df = k * f0
         got[k] = float(np.real(S)) / Pc * df * df / (f0 * f0)
@@ -634,7 +628,6 @@ def test_the_resolved_phase_diffusion_keeps_its_order_on_a_non_uniform_grid():
     them at first order, where for a white one it cancels in the sum.
     Gated cheaply at 200 points: the white fold against the same grid's
     `c` (Parseval), the Lorentzian against the uniform grid."""
-    import warnings as _w
 
     def build(source, nonuniform):
         circuit.default_toolkit = circuit.numeric
@@ -655,15 +648,13 @@ def test_the_resolved_phase_diffusion_keeps_its_order_on_a_non_uniform_grid():
         pss = PSS(c, method='radau', reltol=1e-12)
         x0 = np.zeros(c.n - 1)
         x0[0] = 2.0
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning, ConvergenceWarning):
             pss.solve(period=T, timestep=T / 200, x0=x0, maxiterations=300,
                       grid=grid)
         assert pss.converged
         return pss, PAC(c, toolkit=circuit.numeric)
 
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         pss, pac = build('white', True)
         f0 = 1.0 / float(pss.period)
         freqs = np.array([1e-3, 1e-2, 0.1]) * f0
@@ -699,14 +690,12 @@ def test_the_dc_colour_projection_takes_a_source_that_follows_the_orbit():
     signed multiplier -- both under `c`, which alone is physical for white
     noise.  Poisons: the l = 1 row for the l = 0 one; the signed amplitudes
     ignored."""
-    import warnings as _w
     res = {}
     for kind in ('flicker_ref', 'flicker'):
         _c, pss, pac, ov = _orbit_modulated_vdp(kind, a=0.3, kk=0.005)
         f0 = 1.0 / float(pss.period)
         fr = np.array([1e-4, 1e-3, 1e-2]) * f0
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             res[kind] = pac.coloured_diffusion(pss, fr)
             ## Jensen bounds Gamma by the DC fold (frequency-aware can sit below)
             cres = pac.coloured_diffusion_resolved(pss, fr,
@@ -725,7 +714,6 @@ def test_the_frequency_aware_fold_reads_each_band_at_f_minus_l_f0():
     element / realisation = 0.9999 with the bands at `f - l f0` (the DC
     fold's), 1.083 with `f + l f0`; the DC fold 1.048.  (The slow-node
     fixtures cannot tell: there the l = 0 term carries the colour.)"""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T6 = 6.66
 
@@ -762,8 +750,7 @@ def test_the_frequency_aware_fold_reads_each_band_at_f_minus_l_f0():
         pss = PSS(c, method='radau', reltol=1e-11)
         x0 = np.zeros(c.n - 1)
         x0[0] = 2.0
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             pss.solve(period=T6, timestep=T6 / 240, x0=x0, maxiterations=200)
         assert pss.converged
         return pss, PAC(c, toolkit=circuit.numeric)
@@ -771,8 +758,7 @@ def test_the_frequency_aware_fold_reads_each_band_at_f_minus_l_f0():
     fs = 0.05 * f0
     pe, pace = build('element', f0 + fs)
     pr, pacr = build('real', f0 + fs)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         ce = float(pace.coloured_diffusion_resolved(pe, [fs])[0])
         cdc = float(pace.coloured_diffusion_resolved(pe, [fs],
                                                      frequency_aware=False)[0])
@@ -852,7 +838,6 @@ def test_the_ppv_samples_are_pair_consistent_and_second_order():
         (the first block: std 2.7e-2), with `xdot` a central difference
         of the shooting waveform so no ODE is written into the test.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     C_TRUE = 5.3703e-06
     mu = 1.0 / (2.0 * np.pi * 8.0)
@@ -867,8 +852,7 @@ def test_the_ppv_samples_are_pair_consistent_and_second_order():
                            + 0.3 * u ** 2)
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         pss = PSS(cir, method='gear', reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.731, timestep=6.731 / npts,
                       x0=np.array([2.0, 0.0]), maxiterations=300)
         assert pss.converged
@@ -918,7 +902,6 @@ def test_the_pair_consistent_ppv_is_second_order_on_a_DAE_too():
     G[D,Z] G[A,Z]^-1 G[A,NZ]`: 2.7e-4 / 7e-5 / 2e-5 and 8.6e-4 / 2e-4 /
     5e-5.  Gates at 240 and 480 points on both, and on the order.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     C_TRUE, MEAN_TRUE = 1.204953e-07, 3.137167e-02
     errs_c, errs_m = [], []
@@ -937,8 +920,7 @@ def test_the_pair_consistent_ppv_is_second_order_on_a_DAE_too():
         m = cir.n - 1
         x0 = np.zeros(m)
         x0[0] = 2.0
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.66, timestep=6.66 / npts, x0=x0,
                       maxiterations=200)
         assert pss.converged
@@ -960,6 +942,7 @@ def test_the_pair_consistent_ppv_is_second_order_on_a_DAE_too():
         % tuple(errs_m)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_consistent_propagation_names_its_index_2_boundary():
     """⚠ `G[A,Z]` NONSINGULAR *IS* THE INDEX-1 CONDITION, so the Schur
     complement in the pair-consistent propagation does not exist at index
@@ -985,7 +968,6 @@ def test_the_consistent_propagation_names_its_index_2_boundary():
     finite generalised eigenvalues of `(C, G)` to 1e-12 on the series-loss
     tank, and the reduction is undefined on `li_plus_rc` and `cv_plus_rc`.
     """
-    import warnings
     from pycircuit.circuit.shooting import topological_index
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
@@ -1020,8 +1002,7 @@ def test_the_consistent_propagation_names_its_index_2_boundary():
             ## 1 V source the shooting Newton did not converge at any grid,
             ## and the cell read "empty" until the seed was fixed
             x0[[str(n) for n in cir.nodes][:m].index('b')] = 1.0
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.731, timestep=6.731 / 400, x0=x0,
                       maxiterations=300)
         assert pss.converged, topology
@@ -1041,6 +1022,7 @@ def test_the_consistent_propagation_names_its_index_2_boundary():
             % (topology, abs(c / 5.3703e-06 - 1.0))
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_radau():
     """⚠⚠ THE B16 DECISION, PINNED ON THE FIXTURE THAT SHOWED IT (2026-09-05).
 
@@ -1066,7 +1048,6 @@ def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_radau():
     points: period 5% off, amplitude 55% off) gets the error with the
     reason, not a number.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
 
@@ -1084,8 +1065,7 @@ def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_radau():
     def solve(method, maxiterations=300):
         cir = build()
         pss = PSS(cir, method=method, reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.731, timestep=6.731 / 400,
                       x0=np.array([2.0, 0.0]), maxiterations=maxiterations)
         assert pss.converged
@@ -1155,6 +1135,7 @@ def test_B16_the_oscillator_monodromy_comes_from_the_twin_default_radau():
         p3.ppv()
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
     """✅ A9's open question, closed by a POSITION test (2026-09-05).
 
@@ -1197,7 +1178,6 @@ def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
     and at Q = 8 the lower sideband's linear coefficient of the opposite
     sign with the odd part within 5% of the tank's 2.
     """
-    import warnings
     from scipy.optimize import least_squares
     circuit.default_toolkit = circuit.numeric
     ks = np.logspace(-3, -0.5, 14)
@@ -1214,8 +1194,7 @@ def test_the_pnoise_excess_over_phase_only_is_the_amplitude_mode():
                            i_func=lambda u: mu * (u - u ** 3 / 3.0))
         cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         pss = PSS(cir, method='gear', reltol=1e-12)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
                       maxiterations=300)
         assert pss.converged
@@ -1280,7 +1259,6 @@ def test_the_kTC_gate_rejects_an_unscaled_CY():
     now sees 2x and must reject it.  A gate that still passed under this
     mutation would be vacuous.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     mu = 1.0 / (2.0 * np.pi * 8.0)
     cir = SubCircuit()
@@ -1291,8 +1269,7 @@ def test_the_kTC_gate_rejects_an_unscaled_CY():
                        i_func=lambda u: mu * (u - u ** 3 / 3.0))
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=2 * np.pi, timestep=2 * np.pi / 400,
                   x0=np.array([2.0, 0.0]), maxiterations=300)
     assert pss.converged
@@ -1365,7 +1342,6 @@ def test_the_diffusion_constants_numerical_floor_is_the_grid_not_the_tolerance()
     absorbs it into `T` -- measured there.  If this fixture's `mu` ever moves,
     this assertion moves with it.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     psd = 1e-6
 
@@ -1382,8 +1358,7 @@ def test_the_diffusion_constants_numerical_floor_is_the_grid_not_the_tolerance()
     def cval(npts, reltol):
         cir = vdp()
         p = PSS(cir, method='gear', reltol=reltol)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=6.6634, timestep=6.6634 / npts,
                     x0=np.array([2.0, 0.0]), maxiterations=60)
         assert p.converged
@@ -1413,8 +1388,7 @@ def test_the_diffusion_constants_numerical_floor_is_the_grid_not_the_tolerance()
     got = []
     for cc in (cir_a, cir_b):
         p = PSS(cc, method='gear', reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=6.6634, timestep=6.6634 / 240,
                     x0=np.array([2.0, 0.0]), maxiterations=60)
         got.append(float(PAC(cc, toolkit=circuit.numeric).diffusion_constant(p))
@@ -1485,8 +1459,7 @@ def test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot
     def measure(method):
         cir = vdp()
         p = PSS(cir, method=method, reltol=1e-12)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             p.solve(period=T0, timestep=T0 / 120,
                     x0=np.array([2.0, 0.0]), maxiterations=80)
             r = p.grid_error(
@@ -1531,8 +1504,7 @@ def test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot
     ##    Fixed, trap reads order 3.02 and a clean estimate.
     cir = vdp()
     p = PSS(cir, method='trap', reltol=1e-12)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=T0, timestep=T0 / 120,
                 x0=np.array([2.0, 0.0]), maxiterations=80)
         r_t = p.grid_error(
@@ -1577,8 +1549,7 @@ def test_grid_error_measures_the_discretisation_floor_and_refuses_when_it_cannot
     ##    0.0 there would be a confident lie.
     cir = vdp()
     p = PSS(cir, method='radau', reltol=1e-12)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         p.solve(period=T0, timestep=T0 / 120, x0=np.array([2.0, 0.0]),
                 maxiterations=80,
                 grid=np.full(120, 1.0 / 120.0))   ## step FRACTIONS, sum 1
@@ -1617,7 +1588,6 @@ def test_ppv_quadratures_normalise_by_the_period_of_the_orbit_they_integrate():
     `T_twin/T_trap - 1 = -2.96e-05`, and Parseval by 1.5e-09 because the
     harmonic frequency came from the other orbit too.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     mu = 0.05
 
@@ -1635,8 +1605,7 @@ def test_ppv_quadratures_normalise_by_the_period_of_the_orbit_they_integrate():
 
     cir = osc()
     p = PSS(cir, method='trap', reltol=1e-12)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=2 * np.pi, timestep=2 * np.pi / 240,
                 x0=np.array([2.0, 0.0]), maxiterations=80)
     tw = p.monodromy_twin()
@@ -1663,6 +1632,7 @@ def test_ppv_quadratures_normalise_by_the_period_of_the_orbit_they_integrate():
         'Parseval under trap: resolved %.12e against c %.12e' % (cr_h, c_host)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_diffusion_constant_at_high_q_has_an_analytic_reference():
     """The floor AT HIGH Q -- the regime the original concern actually named.
 
@@ -1771,7 +1741,6 @@ def test_the_diffusion_constant_at_high_q_has_an_analytic_reference():
     At mu = 1 the orbit is far from harmonic, the h^2 error has a genuine
     waveform component, and `c` is order 2 again.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     psd = 1e-6
     T0 = 2.0 * np.pi
@@ -1790,8 +1759,7 @@ def test_the_diffusion_constant_at_high_q_has_an_analytic_reference():
     def run(mu, npts, method='gear', reltol=1e-12):
         cir = vdp(mu)
         p = PSS(cir, method=method, reltol=reltol)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             res = p.solve(period=T0, timestep=T0 / npts,
                           x0=np.array([2.0, 0.0]), maxiterations=80)
         assert p.converged, '%s mu=%g npts=%d did not converge' % (method, mu, npts)
@@ -1931,7 +1899,6 @@ def test_the_frequency_aware_diffusion_reaches_c_on_a_non_uniform_grid():
     grid hides it -- 8.8e-13 -- because the rectangle's error is `(1/2)
     integral h'(t) y dt`, which averages out when `h` alternates.)
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir.add_node('v')
@@ -1943,8 +1910,7 @@ def test_the_frequency_aware_diffusion_reaches_c_on_a_non_uniform_grid():
     n = 200
     w = 1.0 + 0.5 * np.sin(2.0 * np.pi * np.arange(n) / n)
     pss = PSS(cir, method='radau', reltol=1e-11)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=2 * np.pi, timestep=2 * np.pi / n, grid=w / w.sum(),
                   x0=np.array([2.0, 0.0]), maxiterations=60)
         pac = PAC(cir)
@@ -1966,8 +1932,7 @@ def test_the_frequency_aware_diffusion_reads_a_modulated_source_on_the_ppvs_orbi
     """
     cir, pss, pac, ov = _orbit_modulated_vdp('white', method='trap')
     assert pss.monodromy_twin() is not pss
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         c = pac.diffusion_constant(pss)
         cfa = pac.frequency_aware_diffusion(pss, 1e-7 / float(pss.period))
     assert abs(cfa / c - 1.0) < 1e-10, cfa / c - 1.0
@@ -1994,8 +1959,7 @@ def test_the_frequency_aware_samples_follow_a_re_solve():
     pac = PAC(cir)
     f = 0.05
     for n in (120, 180, 120, 180, 120, 180):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T, timestep=T / n, x0=np.array([2.0, 0.0]))
         got = pac._fa_samples(pss, f)
         want = PAC(cir)._fa_samples(pss, f)
@@ -2155,7 +2119,6 @@ def test_radaus_oscillator_surfaces_on_a_genuinely_non_uniform_grid_are_order_fi
     their phase multiplier leaves 1 at O(h^2) on the smooth grid only
     (1.1e-4 -> 1.7e-6), which is warned.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
 
     def vdp():
@@ -2177,8 +2140,7 @@ def test_radaus_oscillator_surfaces_on_a_genuinely_non_uniform_grid_are_order_fi
                   x0=np.array([2.0, 0.0]), break_events=False)
         if fr is not None:
             kw['grid'] = fr
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning, ConvergenceWarning):
             p.solve(**kw)
             assert p.converged
             p.ppv()
@@ -2250,8 +2212,7 @@ def test_a_noise_source_on_an_index2_constraint_is_named_not_silently_zero():
         x0[red.index(names.index('v'))] = 2.0
         x0[red.index(names.index('a'))] = 1.5
         p = PSS(cir, method='radau', reltol=1e-10)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=T0, timestep=T0 / 200, maxiterations=60, x0=x0)
         assert p.converged
         with _w.catch_warnings(record=True) as rec:
@@ -2284,7 +2245,6 @@ def test_a_native_glm_ppv_and_floquet_modes_are_on_the_state():
     2.5e-3 / 2.2e-5 (glm2 / glm3 at 60 points, second / third order), `c`
     2e-4 / 3e-5, the second multiplier 1.1e-3 / 7e-5 of radau's.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
 
@@ -2293,8 +2253,7 @@ def test_a_native_glm_ppv_and_floquet_modes_are_on_the_state():
         c['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
         p = PSS(c, method=method, reltol=1e-12)
         p.monodromy = mono
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=T0, timestep=T0 / N, x0=np.array([2.0, 0.0]),
                     maxiterations=60)
             v, info = p.ppv()
@@ -2319,8 +2278,7 @@ def test_a_native_glm_ppv_and_floquet_modes_are_on_the_state():
         assert np.max(np.abs(np.asarray(info['samples'])[0] - v)) < 1e-5 * np.max(np.abs(v))
         ## and the frequency-aware PPV runs on the same map, reaching `ppv`
         ## as the offset vanishes
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             vf, _inf = p.frequency_aware_ppv(1e-9 / float(p.period))
         assert np.max(np.abs(np.asarray(vf) - v)) < 1e-6 * np.max(np.abs(v))
 
@@ -2351,8 +2309,7 @@ def test_ppv_gives_each_of_its_warnings_once_a_call():
     x0[red.index(names.index('v'))] = 2.0
     x0[red.index(names.index('a'))] = 1.5
     p = PSS(cir, method='gear', reltol=1e-10, period_column='proportional')
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p.solve(period=T0, timestep=T0 / 200, maxiterations=60, x0=x0)
     with _w.catch_warnings(record=True) as rec:
         _w.simplefilter('always')

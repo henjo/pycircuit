@@ -8,6 +8,7 @@ from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
 import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -261,7 +262,6 @@ def test_every_library_device_states_the_sign_of_its_flicker_current():
     flicker part of `CY` (which is unchanged: the factor is +-1 to
     (1e-30/I)^2), and they change sign with the current.
     """
-    import warnings as _w
     import pycircuit.circuit.elements_hdl as eh
     w1, winf = 2 * np.pi * 10.0, 2 * np.pi * 1e30
     mos = [(0.5, 1.5, 0.0, 0.0), (0.0, 1.5, 0.5, 0.0)]
@@ -275,8 +275,7 @@ def test_every_library_device_states_the_sign_of_its_flicker_current():
               [(0.5, 0.0, 0.0), (0.0, 0.0, 0.5)])]
     for name, kw, biases in cases:
         cls = getattr(eh, name)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             el = cls(*['n%d' % i for i in range(len(cls.terminals))], **kw)
             signs = []
             for bias in biases:

@@ -8,6 +8,8 @@ from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
 import warnings
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
+from pycircuit.circuit.simwarnings import AccuracyWarning, ModelWarning
+from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
@@ -99,7 +101,6 @@ def test_higher_harmonics_are_noisier_by_20log10i():
 
 def test_the_oscillator_spectrum_is_built_and_refuses_a_driven_circuit():
     """End to end, and the one circuit class it does not describe."""
-    import warnings
     _cir, pss, pac = _solve_vdp_noise()
     offs = np.array([1e-4, 1e-3, 1e-2, 1e-1])
     Sv, L = pac.oscillator_spectrum(pss, offs, 0, harmonic=1)
@@ -114,8 +115,7 @@ def test_the_oscillator_spectrum_is_built_and_refuses_a_driven_circuit():
     circuit.default_toolkit = circuit.numeric
     driven = _adjoint_ladder(3)
     p2 = PSS(driven, method='gear', reltol=1e-11)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         p2.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
     with pytest.raises(ValueError, match='FREE-RUNNING'):
         PAC(driven, toolkit=circuit.numeric).diffusion_constant(p2)
@@ -221,7 +221,6 @@ def test_multiplicative_noise_is_refused_only_where_the_sum_is_stationary():
     (gear's own gap between the two; radau -4.4e-11).  The paths that sum
     ONE stationary `CY` still refuse.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir.add_node('v')
@@ -231,8 +230,7 @@ def test_multiplicative_noise_is_refused_only_where_the_sum_is_stationary():
                        i_func=lambda u: 1.0 * (u - u ** 3 / 3.0))
     cir['n'] = _StateDependentNoise('v', gnd, i=0.0, noisePSD=1e-6)
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=6.6634, timestep=6.6634 / 240,
                   x0=np.array([2.0, 0.0]), maxiterations=60)
     assert pss.converged
@@ -298,13 +296,11 @@ def test_the_modal_spectrum_takes_a_white_source_that_follows_the_orbit():
     falls 40x over 0.3 .. 10 f_amp: `c(f)` 1.7e-14, `S_v` 1.2e-14 (radau
     3.4e-10 / 7.3e-10, its GMRES tolerance); `CY` at one state 0.39 ..
     0.51."""
-    import warnings as _w
     res = {}
     for kind in ('white_ref', 'white'):
         _c, pss, pac, ov = _orbit_modulated_vdp(kind, a=0.3)
         f0 = 1.0 / float(pss.period)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(ModelWarning):
             _v, info = pss.ppv()
             f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
             offs = np.array([0.3, 3.0, 10.0, -10.0]) * f_amp
@@ -322,8 +318,7 @@ def test_the_modal_spectrum_takes_a_white_source_that_follows_the_orbit():
         err = np.max(np.abs(B[i] / A[i] - 1.0))
         assert err < 1e-9, (name, B[i] / A[i] - 1.0)
     _c, pss, pac, ov = _orbit_modulated_vdp('white', method='radau')
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         _K, oi = pac.oscillator_covariance(pss)
         c = float(pac.diffusion_constant(pss))
     assert abs(c / float(oi['c_from_growth']) - 1.0) < 1e-9, \
@@ -461,7 +456,6 @@ def _fa_core_oscillator(psd, flicker_rel=1e-8):
     `D_c(inf)` is ~0.01, so the line is the white one.  psd = 0.7 puts the
     slow corner 10 linewidths from the core; the math is linear in the
     level."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T0 = 6.6634
     c = SubCircuit()
@@ -478,13 +472,13 @@ def _fa_core_oscillator(psd, flicker_rel=1e-8):
     pss = PSS(c, method='gear', reltol=1e-11)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
     assert pss.converged
     return pss, PAC(c, toolkit=circuit.numeric), [str(n) for n in c.nodes].index('v')
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_not_hold():
     """The frequency-aware coloured lineshape (2026-09-26): FIRST ORDER in
     the change while its estimated error is below `FA_FIRST_ORDER_TOL`,
@@ -520,12 +514,10 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     ## 7.8e-6; one density at two phases reads 1.5e-5 (2026-09-27)
     assert not [r for r in rec if 'estimated relative error' in str(r.message)], \
         [str(r.message) for r in rec]
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         sphi = float(pac.phase_psd(pss, [offs[-1]])[0])
     assert abs(S_all[-1] / sphi - 1.0) < 1e-4, S_all[-1] / sphi - 1.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         S_first = pac.oscillator_spectrum(pss, offs, ov, offset_fmin=1e-5 * f0,
                                           all_orders=False)[0] / X2
     assert info['frequency_aware'] == 'all orders', info
@@ -534,8 +526,7 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     assert info['solves'] <= 40, info
     ## the rational fit against the Chebyshev series (both relative to 1 +
     ## rho; the series takes ~139 solves): measured 5.9e-8
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         pac.FA_RHO_FIT = 'chebyshev'
         try:
             S_ch = pac.oscillator_spectrum(pss, offs, ov, offset_fmin=1e-5 * f0)[0] / X2
@@ -552,14 +543,14 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     ## and a line with no slow path near its core stays first order
     _c, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, psd=1e-6,
                            fref=1.0 / 6.66, white=1e-6)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         pac.oscillator_spectrum(pss, [0.0, 1e-3 / float(pss.period)], 0,
                                 offset_fmin=1e-7 / float(pss.period))
     assert pac.lineshape_info['frequency_aware'] == 'first order', pac.lineshape_info
     assert pac.lineshape_info['estimate'] < pac.FA_FIRST_ORDER_TOL, pac.lineshape_info
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_white_lineshape_takes_the_frequency_aware_ppv_to_all_orders_when_asked():
     """`oscillator_spectrum(all_orders=True)` on a WHITE source (2026-09-27;
     Andreas: "Fix the oscillator_spectrum but put it off by default").  The
@@ -603,8 +594,7 @@ def test_the_white_lineshape_takes_the_frequency_aware_ppv_to_all_orders_when_as
     ## the coloured path, with the flicker's own (DC) effect taken out
     pss2, pac2, ov2 = _fa_core_oscillator(0.7, flicker_rel=1e-8)
     X22 = 2.0 * abs(pac2.carrier_phasor(pss2, ov2, 1)) ** 2
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         S_col = pac2.oscillator_spectrum(pss2, offs, ov2, offset_fmin=1e-4 * f0,
                                          all_orders=True)[0] / X22
         S_col_dc = pac2.oscillator_spectrum(pss2, offs, ov2, offset_fmin=1e-4 * f0,
@@ -637,15 +627,13 @@ def test_the_oscillator_spectrum_takes_a_coloured_source():
         -6.4e-5 / -6.4e-4, LINEAR in that level (9.996x), and the skirt by
         < 1e-6 (the colour enters additively);
       * no `fmin`, `frequency_aware=True`, `fmax > f0/2`: refused."""
-    import warnings as _w
     _c, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, psd=1e-6,
                            fref=1.0 / 6.66, white=1e-6)
     f0 = 1.0 / float(pss.period)
     ## the carrier's ONE-SIDED power 2|X|^2: `S_v` over it is `L(f)`
     X2 = 2.0 * abs(pac.carrier_phasor(pss, 0, 1)) ** 2
     offs = np.array([0.0, 1e-3, 0.1]) * f0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         S = {fr: pac.oscillator_spectrum(pss, offs, 0, offset_fmin=fr * f0)[0] / X2
              for fr in (1e-5, 1e-7)}
         sphi = pac.phase_psd(pss, offs[1:])
@@ -661,8 +649,7 @@ def test_the_oscillator_spectrum_takes_a_coloured_source():
     for psd in (1e-14, 1e-13):
         _c, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, psd=psd,
                                fref=1.0 / 6.66, white=1e-6)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             ## the colour's additivity onto the DC Lorentzian (the
             ## frequency-aware skirt moves off it on this asymmetric orbit)
             Sv = pac.oscillator_spectrum(pss, offs, 0, offset_fmin=1e-7 * f0,
@@ -690,14 +677,12 @@ def test_the_coloured_lineshape_takes_a_source_that_follows_the_orbit():
     difference can change a greedy choice: the two setups then agree to
     7.8e-9, each correct to its fit (2.3e-7 on `c_fa`, verified).  This
     test is about the FOLD's equivalence, so it takes the fixed nodes."""
-    import warnings as _w
     res = {}
     for kind in ('flicker_ref', 'flicker'):
         _c, pss, pac, ov = _orbit_modulated_vdp(kind)
         f0 = 1.0 / float(pss.period)
         pac.FA_RHO_FIT = 'chebyshev'
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             res[kind] = pac.oscillator_spectrum(
                 pss, np.array([0.0, 1e-4, 1e-2]) * f0, ov, offset_fmin=1e-7 * f0)[1]
         ## ⚠ vacuous if the knob is not read on the instance
@@ -711,7 +696,6 @@ def _slow_node_oscillator(kind, tau_over_T=100.0):
     """The A2 fixture: an asymmetric, lossy LC whose noise source sits
     behind a slow RC node `w` (tau = 100 T): 'white', 'lorentz' or
     'flicker'."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T0 = 6.6634
     c = SubCircuit()
@@ -731,8 +715,7 @@ def _slow_node_oscillator(kind, tau_over_T=100.0):
     pss = PSS(c, method='gear', reltol=1e-11)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
     assert pss.converged
     return pss, PAC(c, toolkit=circuit.numeric), [str(n) for n in c.nodes].index('v')
@@ -757,15 +740,13 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
     here).  The AM-to-PM control (van der Pol C = 4, a = 0.3, a Lorentzian
     at the tank): 0.9954 / 0.9588 at 1 / 10 f_amp against DC 0.6510 /
     0.3077 (white: 0.998 / 0.980 against 0.647 / 0.302)."""
-    import warnings as _w
     ## (pnoise's PM costs 13 s an offset: the flicker source at 1e-2 f0,
     ## where the two separate most; white is gated by the identity, and by
     ## `test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner`)
     pss, pac, ov = _slow_node_oscillator('white')
     f0 = 1.0 / float(pss.period)
     offs = np.array([1e-3, 1e-2]) * f0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         cfa = pac.coloured_diffusion_resolved(pss, offs)
         fad = np.array([pac.frequency_aware_diffusion(pss, o) for o in offs])
     assert np.max(np.abs(cfa / fad - 1.0)) < 1e-8, cfa / fad
@@ -773,8 +754,7 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
     ## the carrier's ONE-SIDED power 2|X|^2: `S_v` over it is `L(f)`
     X2 = 2.0 * abs(pac.carrier_phasor(pss, ov, 1)) ** 2
     o = 1e-2 * f0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         sfa = float(pac.phase_psd(pss, [o])[0])
         sdc = float(pac.phase_psd(pss, [o], frequency_aware=False)[0])
         pm = pac.am_pm_noise(pss, o, ov, harmonic=1, maxsidebands=16)[1]
@@ -783,8 +763,7 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
     ## and the coloured LINESHAPE (`oscillator_spectrum`), frequency-aware
     ## by default: its skirt there is the frequency-aware `S_phi`, to
     ## second order
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         L_fa = pac.oscillator_spectrum(pss, [0.0, o], ov, offset_fmin=1e-7 * f0)[0] / X2
         info = dict(pac.lineshape_info)
         L_dc = pac.oscillator_spectrum(pss, [0.0, o], ov, offset_fmin=1e-7 * f0,
@@ -814,8 +793,7 @@ def test_phase_psd_is_frequency_aware_for_a_coloured_source_behind_a_slow_node()
     T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6, noiseTau=0.3 * T)
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T, timestep=T / 400, x0=np.array([2.0, 0.0]),
                   maxiterations=300)
         assert pss.converged
@@ -874,6 +852,7 @@ def test_a_coloured_source_folds_per_harmonic_and_agrees_with_pnoise():
                 'for white the spectrum is the Lorentzian skirt in c exactly'
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.ModelWarning')
 def test_phase_noise_stack_works_over_trbdf2():
     """ppv, the diffusion constant, and the oscillator spectrum all run over
     the TR-BDF2 monodromy and agree with Gear-2.
@@ -884,7 +863,6 @@ def test_phase_noise_stack_works_over_trbdf2():
     source the diffusion constant `c` and the lineshape must match the
     Gear-2 numbers to O(h^2).
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def solve(method):
@@ -892,8 +870,7 @@ def test_phase_noise_stack_works_over_trbdf2():
         m = cir.n - 1
         pss = PSS(cir, method=method, reltol=1e-12)
         x0 = np.zeros(m); x0[0] = 2.0
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
                       maxiterations=60)
         assert pss.converged
@@ -909,6 +886,7 @@ def test_phase_noise_stack_works_over_trbdf2():
     assert np.max(np.abs(L_t - L_g)) < 0.05, (L_t, L_g)
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.ModelWarning')
 def test_phase_noise_stack_works_over_radau():
     """ppv, the diffusion constant, and the oscillator spectrum all run over
     the Radau IIA(3) monodromy and agree with Gear-2.
@@ -922,7 +900,6 @@ def test_phase_noise_stack_works_over_radau():
     match the Gear-2 numbers (Radau is order 5, gear order 2, so they agree
     to the coarser of the two).
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
 
     def solve(method):
@@ -930,8 +907,7 @@ def test_phase_noise_stack_works_over_radau():
         m = cir.n - 1
         pss = PSS(cir, method=method, reltol=1e-12)
         x0 = np.zeros(m); x0[0] = 2.0
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=6.6634, timestep=6.6634 / 240, x0=x0,
                       maxiterations=60)
         assert pss.converged
@@ -985,8 +961,7 @@ def test_the_phase_only_spectrum_warns_above_the_amplitude_pole():
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
 
     pss = PSS(cir, method='radau', reltol=1e-12)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         pss.solve(period=T0, timestep=T0 / 240, x0=np.array([2.0, 0.0]),
                   maxiterations=80)
     pac = PAC(cir, toolkit=circuit.numeric)
@@ -1057,17 +1032,14 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
     cir, pss = _a9_vdp()
     pac = PAC(cir)
     f0 = 1.0 / float(pss.period)
-    import warnings as _w
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         _v, info = pss.ppv()
     lam2 = float(info['second_multiplier'])
     f_amp = -np.log(lam2) * f0 / (2.0 * np.pi)
 
     ## 1. THE SHAPE, tied to lam2. A Lorentzian of half-width `f_amp` is at
     ##    half its peak exactly `f_amp` away.
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         s_peak = float(pac.orbital_spectrum(
             pss, np.array([1e-6 * f_amp]), 0, maxharmonics=4)[0])
         s_half = float(pac.orbital_spectrum(
@@ -1085,8 +1057,7 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
         c2, p2 = _a9_vdp(psd=psd)
         pac2 = PAC(c2)
         offs = np.array([f_amp, 100.0 * f_amp])
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(ModelWarning):
             sp, _ = pac2.oscillator_spectrum(p2, offs, 0, harmonic=1)
             so = pac2.orbital_spectrum(p2, offs, 0, harmonic=1, maxharmonics=4)
         ratios.append(np.asarray(so) / np.asarray(sp))
@@ -1105,8 +1076,7 @@ def test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp():
         ck, pk = _a9_vdp(cval=cval, lval=lval)
         pk_pac = PAC(ck)
         f0k = 1.0 / float(pk.period)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning, ModelWarning):
             _vk, ik = pk.ppv()
             fak = -np.log(float(ik['second_multiplier'])) * f0k / (2.0 * np.pi)
             spk, _ = pk_pac.oscillator_spectrum(
@@ -1158,12 +1128,10 @@ def test_the_orbital_spectrum_amplitude_matches_pnoise_on_a_symmetric_orbit():
     `test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise`.
     See `test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so`.
     """
-    import warnings as _w
     cir, pss = _a9_vdp(cval=4.0, lval=0.25)
     pac = PAC(cir, toolkit=circuit.numeric)
     f0 = 1.0 / float(pss.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         _v, info = pss.ppv()
         f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
         offs = np.array([0.3, 3.0, 10.0]) * f_amp
@@ -1203,7 +1171,6 @@ def test_the_line_shape_spectra_refuse_a_harmonic_that_has_no_line():
     by construction.  ⚠ The asymmetric orbit's k = 2 has a real line and is
     NOT refused -- its mismatch (0.40) is recorded, not guarded.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     offs = None
     for a_, expect_refusal in ((0.0, True), (0.30, False)):
@@ -1211,8 +1178,7 @@ def test_the_line_shape_spectra_refuse_a_harmonic_that_has_no_line():
         pac = PAC(cir, toolkit=circuit.numeric)
         f0 = 1.0 / float(pss.period)
         offs = np.array([0.01 * f0])
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning, ModelWarning):
             ## the fundamental always works
             assert np.all(np.isfinite(np.asarray(
                 pac.oscillator_spectrum(pss, offs, 0, frequency_aware=False)[0])))
@@ -1256,7 +1222,6 @@ def test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner():
     `frequency_aware_ppv`'s `times`, which is one entry short and drops the last
     step.  Over the orbit's full grid it is 1.000000000000; asserted below.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
 
     def pm_ratio(pac, pss, off, ov, fa, sb=16):
@@ -1269,8 +1234,7 @@ def test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner():
     cir, pss = _a9_vdp(cval=4.0, lval=0.25, a=0.30)
     pac = PAC(cir, toolkit=circuit.numeric)
     f0 = 1.0 / float(pss.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         _v, info = pss.ppv()
         f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
         c = pac.diffusion_constant(pss)
@@ -1288,8 +1252,7 @@ def test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner():
     ## 2. symmetric control: nothing to correct
     cir_s, pss_s = _a9_vdp(cval=4.0, lval=0.25, a=0.0)
     pac_s = PAC(cir_s, toolkit=circuit.numeric)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         f0s = 1.0 / float(pss_s.period)
         _v, info_s = pss_s.ppv()
         fa_s = -np.log(float(info_s['second_multiplier'])) * f0s / (2 * np.pi)
@@ -1311,8 +1274,7 @@ def test_oscillator_spectrum_is_frequency_aware_above_the_slow_corner():
     c2['n'] = IS('w', gnd, i=0.0, noisePSD=1e-6)
     p2 = PSS(c2, method='gear', reltol=1e-11)
     x0 = np.zeros(c2.n - 1); x0[0] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         p2.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
         assert p2.converged
         pac2 = PAC(c2, toolkit=circuit.numeric)
@@ -1363,8 +1325,7 @@ def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so
     cir, pss = _a9_vdp(cval=4.0, lval=0.25, a=0.20)
     pac = PAC(cir, toolkit=circuit.numeric)
     f0 = 1.0 / float(pss.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         _v, info = pss.ppv()
     f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
     off = np.array([10.0 * f_amp])
@@ -1375,8 +1336,7 @@ def test_the_orbital_spectrum_sum_over_states_on_an_asymmetric_orbit_and_says_so
                and 'pnoise' in str(w.message) for w in caught), \
         'orbital_spectrum must warn that the sum over-states on an asymmetric ' \
         'orbit; got %r' % [str(w.message) for w in caught]
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         ## the closed form: this test's claim is about the modal SUM as
         ## `orbital_spectrum`'s docstring states it (DC-PPV phase term)
         Sph = float(np.asarray(pac.oscillator_spectrum(
@@ -1428,13 +1388,11 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
     the ratio adds).  ⚠ First written as 2 S_v and failed at 0.997 off:
     the pair, not one sideband.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     cir, mu = _a10_vdp(100.0)
     cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
     pss = PSS(cir, method='gear', reltol=1e-12)
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=2 * np.pi, timestep=2 * np.pi / 240,
                   x0=np.array([2.0, 0.0]), maxiterations=100)
     assert pss.converged
@@ -1442,8 +1400,7 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
     f0 = 1.0 / float(pss.period)
     ov = [str(n) for n in cir.nodes].index('v')
     offs = f0 * np.array([1e-4, 1e-2, 1e-1])
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         Sv, _ = pac.oscillator_spectrum(pss, offs, ov)
         rows = []
         for f in offs:
@@ -1469,8 +1426,7 @@ def test_the_three_leg_chain_puts_pnoise_the_am_pm_split_and_the_lorentzian_on_o
     f0 = 1.0 / float(pss.period)
     ov = [str(n) for n in cir.nodes].index('v')
     offs = f0 * np.array([1e-4, 1e-3, 1e-2])
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet():
         Sv, _ = pac.oscillator_spectrum(pss, offs, ov)
         for f, sv in zip(offs, Sv):
             up, _ = pac.pnoise(pss, f0 + f, ov, maxsidebands=32, sweeptype='absolute')
@@ -1517,7 +1473,6 @@ def test_a_source_behind_a_slow_node_rolls_off_the_lorentzian_as_the_ppv_harmoni
     filter removes only high-frequency content), which is why a Monte Carlo
     of `c` -- the 2026-09-03 gate -- read a null at tau/T = 10.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     T0 = 6.6634
     tau_over_T = 100.0
@@ -1537,8 +1492,7 @@ def test_a_source_behind_a_slow_node_rolls_off_the_lorentzian_as_the_ppv_harmoni
         cir = build(src, asym, loss)
         pss = PSS(cir, method='gear', reltol=1e-11)
         x0 = np.zeros(cir.n - 1); x0[0] = 2.0
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning, ModelWarning):
             pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
             assert pss.converged
             pac = PAC(cir, toolkit=circuit.numeric)
@@ -1623,7 +1577,6 @@ def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multip
          the grid test was blind.  What remains at 0.1 f0 is recorded, not
          resolved.
     """
-    import warnings
     circuit.default_toolkit = circuit.numeric
     T0 = 6.6634
 
@@ -1644,14 +1597,12 @@ def test_the_frequency_aware_ppv_is_the_ppv_at_dc_and_corners_at_the_slow_multip
     def solve(c):
         pss = PSS(c, method='gear', reltol=1e-11)
         x0 = np.zeros(c.n - 1); x0[0] = 2.0
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
         assert pss.converged
         return pss
 
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    with quiet(AccuracyWarning, ModelWarning):
         ## 1. identity at DC, and 2. the corner, on the odd lossless core
         for tau_over_T, lo, hi in ((100.0, 1e-3, 3e-3), (10.0, 1e-2, 3e-2)):
             pss = solve(build(tau_over_T, 1e2, 0.0, 0.0))
@@ -1743,7 +1694,6 @@ def test_band_spread_tells_a_band_mean_from_a_point_value():
     mean matches the midpoint to 0.02 %; behind the slow node the spread is
     ~1.35 and they differ by ~4 %.
     """
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T0 = 6.6634
 
@@ -1767,14 +1717,12 @@ def test_band_spread_tells_a_band_mean_from_a_point_value():
         pss = PSS(cir, method='gear', reltol=1e-11)
         x0 = np.zeros(cir.n - 1)
         x0[0] = 2.0
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
         assert pss.converged
         pac = PAC(cir, toolkit=circuit.numeric)
         ov = [str(n) for n in cir.nodes].index('v')
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning):
             spread, info = pac.band_spread(pss, ov, (0.08, 0.15), points=5,
                                            quantity='S_pm', maxsidebands=32)
         out[src] = (spread, info['mean_over_point'])
@@ -1789,6 +1737,7 @@ def test_band_spread_tells_a_band_mean_from_a_point_value():
     assert out['w'][0] > 1.15 * out['v'][0], out
 
 
+@pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
     """⚠⚠ E6 CLOSED BY THE PHASE-ORBITAL CORRELATION WITH EVERY HARMONIC KEPT.
 
@@ -1808,13 +1757,11 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
     part is the library Lorentzian (1.00022 from 0 to 3 linewidths) and the
     correlation ~1e-6 of it.
     """
-    import warnings as _w
     for a in (0.0, 0.30):
         cir, pss = _a9_vdp(cval=4.0, lval=0.25, a=a)
         pac = PAC(cir, toolkit=circuit.numeric)
         f0 = 1.0 / float(pss.period)
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet(AccuracyWarning, ModelWarning):
             _v, info = pss.ppv()
             f_amp = -np.log(float(info['second_multiplier'])) * f0 / (2 * np.pi)
             offs = np.array([3.0, 10.0, -10.0]) * f_amp
@@ -1837,8 +1784,7 @@ def test_the_modal_spectrum_with_the_full_correlation_closes_on_pnoise():
             ## near the carrier: the phase part IS the Lorentzian, no correlation
             lw = np.pi * f0 ** 2 * float(pac.diffusion_constant(pss))
             near = np.array([0.0, lw])
-            with _w.catch_warnings():
-                _w.simplefilter('ignore')
+            with quiet(AccuracyWarning):
                 mn = pac.modal_spectrum(pss, near, 0, maxharmonics=8, maxsidebands=16)
                 lor = np.asarray(pac.oscillator_spectrum(
                     pss, near, 0, frequency_aware=False)[0], dtype=float)
@@ -1917,7 +1863,6 @@ def _xcorr_oscillator(kind, mod):
     """The asymmetric lossy LC of `_slow_node_oscillator` (no slow node),
     its noise a correlated pair on `v` and `x`: 'joint' two elements and an
     override, 'ref' one element."""
-    import warnings as _w
     circuit.default_toolkit = circuit.numeric
     T0 = 6.6634
     c = _XCSub() if kind == 'joint' else SubCircuit()
@@ -1936,8 +1881,7 @@ def _xcorr_oscillator(kind, mod):
     pss = PSS(c, method='gear', reltol=1e-11)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet(AccuracyWarning):
         pss.solve(period=T0, timestep=T0 / 240, x0=x0, maxiterations=200)
     assert pss.converged
     return pss, PAC(c, toolkit=circuit.numeric), [str(n) for n in c.nodes].index('v')
@@ -2105,8 +2049,7 @@ def test_the_coloured_spectrum_checks_its_own_amplitude_pole():
     ## at 0.02 f0)
     _c, pss, _pac, ov = _coloured_vdp('coloured')
     f0 = 1.0 / float(pss.period)
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         lam2 = float(pss.ppv()[1]['second_multiplier'])
     f_amp = -np.log(lam2) * f0 / (2.0 * np.pi)
     assert 0.0 < f_amp < 0.2 * f0, (lam2, f_amp / f0)
@@ -2131,15 +2074,13 @@ def test_the_coloured_lineshape_band_top_is_refused_past_half_f0_and_leaves_the_
     29 % high, its own estimate 46 %.  The ringing is carried exactly since
     2026-10-01 (`_lineshape.ColouredLineshape`): 2.50946e4 for every top,
     8e-7 apart."""
-    import warnings as _w
     _c, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, psd=1e-6,
                            fref=1.0 / 6.66, white=1e-6)
     ov = [str(n_) for n_ in _c.nodes].index('v')
     f0 = 1.0 / float(pss.period)
     fcore = np.pi * f0 * f0 * pac._colour_fold(pss, 1e-5 * f0, None, 'x').c_white
     offs = np.array([1.0]) * fcore
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         with pytest.raises(ValueError, match='offset_fmax'):
             pac.oscillator_spectrum(pss, offs, ov, offset_fmin=1e-5 * f0,
                                     offset_fmax=0.6 * f0)
@@ -2169,7 +2110,6 @@ def test_an_elements_white_remainder_is_white_on_every_surface():
     offset from 0.3 to 10 linewidths (the line had no width).  Now
     `NoiseComponents.model` folds a white remainder into the white part for
     every surface: equal to rounding."""
-    import warnings as _w
 
     from pycircuit.circuit.tests._shooting_fixtures import (
         _ModLorentzSigned,
@@ -2197,15 +2137,13 @@ def test_an_elements_white_remainder_is_white_on_every_surface():
         p = PSS(c, method='radau', reltol=1e-12)
         x0 = np.zeros(c.n - 1)
         x0[0] = 2.0
-        with _w.catch_warnings():
-            _w.simplefilter('ignore')
+        with quiet():
             p.solve(period=T, timestep=T / 200, x0=x0, maxiterations=200)
         assert p.converged
         return p, PAC(c, toolkit=circuit.numeric)
     f0 = 1.0 / T
     out = {}
-    with _w.catch_warnings():
-        _w.simplefilter('ignore')
+    with quiet():
         for kind in ('real', 'element'):
             p, pac = build(kind)
             cw = pac._colour_fold(p, 1e-5 * f0, None, 'x').c_white
