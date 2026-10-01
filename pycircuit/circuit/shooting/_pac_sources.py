@@ -5,8 +5,7 @@ the period quadrature.
 """
 import numpy as np
 from pycircuit.circuit.analysis import remove_row_col
-from ._noise_components import (NoiseComponents, orbit_states,
-                               uniform_exponent)
+from ._noise_components import NoiseComponents, orbit_states
 from ._numerics import insert_ref, periodic_spline_weights
 
 
@@ -263,40 +262,6 @@ class _NoiseSources(object):
             if np.any(np.abs(c1 - c2) > 1e-9 * den):
                 return True
         return False
-
-    @classmethod
-    def _split_by_exponent(cls, B, EF):
-        """`[(B_g, ef_g)]`: `B` split into the index blocks its nonzero entries
-        connect, when each block carries ONE exponent (`uniform_exponent`);
-        None when a block mixes exponents (correlated entries of different
-        slope, which no split makes independent)."""
-        aB = np.max(np.abs(np.asarray(B)), axis=0)
-        m = aB.shape[0]
-        parent = list(range(m))
-
-        def find(i):
-            while parent[i] != i:
-                parent[i] = parent[parent[i]]
-                i = parent[i]
-            return i
-        for i, j in zip(*np.nonzero(aB > 0.0)):
-            parent[find(i)] = find(j)
-        blocks = {}
-        for i in range(m):
-            if np.any(aB[i] > 0.0) or np.any(aB[:, i] > 0.0):
-                blocks.setdefault(find(i), []).append(i)
-        out = []
-        for idx in blocks.values():
-            Bg = np.zeros_like(np.asarray(B))
-            ix = np.ix_(range(Bg.shape[0]), idx, idx)
-            Bg[ix] = np.asarray(B)[ix]
-            EFg = np.zeros_like(np.asarray(EF, dtype=float))
-            EFg[ix] = np.asarray(EF, dtype=float)[ix]
-            ef = uniform_exponent(Bg, EFg)
-            if ef is None:
-                return None
-            out.append((Bg, float(ef)))
-        return out
 
     @classmethod
     def _power_law_weights(cls, nus, ef, richardson=True):

@@ -3,8 +3,7 @@ folds), its AM/PM split and the band spread.
 """
 import numpy as np
 import warnings
-from ._noise_components import (exponent_columns, uniform_exponent,
-                               warn_sign_blind, warn_signed_unused)
+from ._noise_components import warn_sign_blind
 from ._numerics import output_index, sweep_frequency, sweep_offset
 
 
@@ -443,8 +442,6 @@ class _DrivenNoise(object):
         ## circuit's TOTAL `CY` -- which missed a crossing flatter than
         ## linear (2.98x the signed physics, silent) and any touch a white
         ## source on the same node filled in (1.67x, silent)).
-        _signed = getattr(model, 'amplitude', None) or {}
-        warn_signed_unused(model, 'PAC.pnoise(cyclostationary=True)')
         ks = np.fft.fftfreq(Nn, d=1.0 / Nn).astype(int)
         pmin = min(ls) + int(ks.min()); pmax = max(ls) + int(ks.max())
         wband = lambda p: 2.0 * np.pi * abs(f - p * f0)
@@ -469,50 +466,39 @@ class _DrivenNoise(object):
             for l in ls:
                 for lp in ls:
                     total += complex(rows[l] @ Pw[(lp - l) % Nn] @ np.conj(rows[lp]))
-            groups = []
-            for _key, Bc, EF in model.flicker:
-                ef = uniform_exponent(Bc, EF)
-                if ef is not None:
-                    ## the element's SIGNED amplitudes where it states them
-                    ## (any factor with `W W^dagger = B` serves the pair sum;
-                    ## only this one knows the sign), else the PSD's root
-                    _W = _signed.get(_key)
-                    if _W is None:
-                        rooted.append(_key)
-                    groups.append(lambda p, SB=(_dft(_W) if _W is not None else
-                                                self._sqrt_harmonics_of(Bc, _dft)), ef=ef:
-                                  (model.w1 / wband(p)) ** (0.5 * ef) * SB)
-                else:
-                    ## signed columns grouped by their own exponents, where
-                    ## they carry one each (`exponent_columns`)
-                    _split = (exponent_columns(Bc, EF, _signed[_key])
-                              if _key in _signed else None)
-                    if _split is not None:
-                        for _Wg, _efg in _split:
-                            _SBg = _dft(_Wg)
-                            groups.append(lambda p, SB=_SBg, ef=_efg:
-                                          (model.w1 / wband(p)) ** (0.5 * ef) * SB)
-                        continue
-                    rooted.append(_key)
-                    groups.append(lambda p, Bc=Bc, EF=EF: self._sqrt_harmonics_of(
-                        Bc * (model.w1 / wband(p)) ** EF, _dft))
-            ## (the ONE element, `one_element_cy`; its SIGNED amplitudes
-            ## where it states them, `perband_amplitudes`, else its root)
+            ## the components as EVERY surface groups them
+            ## (`colour_components`, review O2, 2026-10-01), each band read
+            ## EXACTLY (no classification shortcut): a uniform power law's
+            ## fixed columns scaled per band (`sqrt(c B) = sqrt(c) sqrt(B)`,
+            ## no per-band eigendecomposition) -- the element's SIGNED
+            ## amplitudes where it states them (any factor with `W W^dagger
+            ## = B` serves the pair sum; only this one knows the sign), else
+            ## the PSD's root -- and the rest rooted (or its signed columns)
+            ## per band.  The sign-blind verdict is given there.
             ## History: `doc/shooting_history.md`, `PAC._cyclostationary_fold`.
-            def _perband_at(p, key, mode):
-                if mode is not None:
-                    return _dft(nc.perband_amplitudes(key, wband(p), mode))
-                return self._sqrt_harmonics_of(
-                    nc.one_element_cy(key, wband(p)), _dft)
-            for key in model.perband:
-                ## (its columns where its amplitudes fit its CY at f0)
-                mode = nc.perband_mode(key, [2.0 * np.pi * f0])
-                if mode is None:
-                    rooted.append(key)
-                groups.append(lambda p, key=key, mode=mode: _perband_at(p, key, mode))
-        blind = nc.sign_blind(model, rooted)
-        if blind:
-            warn_sign_blind('pnoise(cyclostationary=True)', blind, stacklevel=3)
+            _ws = [wband(p) for p in range(pmin, pmax + 1)]
+            comps = nc.colour_components(
+                model, max(min(w_ for w_ in _ws if w_ > 0.0), 2e-3 * np.pi * f0),
+                max(_ws), f0, 'pnoise(cyclostationary=True)', stacklevel=3,
+                shortcuts=False)
+            groups = []
+            for _key, _W, ef, _Bc in comps.fixed:
+                SB = (_dft(_W) if _Bc is None
+                      else self._sqrt_harmonics_of(_Bc, _dft))
+                groups.append(lambda p, SB=SB, ef=ef:
+                              (model.w1 / wband(p)) ** (0.5 * ef) * SB)
+            for band in comps.bands:
+                if band.signed:
+                    groups.append(lambda p, root=band.exact_root:
+                                  _dft(root(wband(p))))
+                else:
+                    groups.append(lambda p, psd=band.exact_psd:
+                                  self._sqrt_harmonics_of(psd(wband(p)), _dft))
+        if model is None:
+            blind = nc.sign_blind(None, rooted)
+            if blind:
+                warn_sign_blind('pnoise(cyclostationary=True)', blind,
+                                stacklevel=3)
         for sqrt_at in groups:
             cache = {}
             ## every band the sum reaches, stacked once: BB[pi, k] =

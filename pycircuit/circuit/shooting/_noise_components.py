@@ -235,6 +235,81 @@ def uniform_exponent(B, EF):
     return ref if float(np.max(cost)) <= 1e-9 else None
 
 
+def split_by_exponent(B, EF):
+    """`[(B_g, ef_g)]`: `B` split into the index blocks its nonzero entries
+    connect, when each block carries ONE exponent (`uniform_exponent`);
+    None when a block mixes exponents (correlated entries of different
+    slope, which no split makes independent).  Entries in DISJOINT blocks
+    (sources of different slope on branches that share no node) are
+    independent components, split exactly.  (`PAC._split_by_exponent` until
+    2026-10-01, the covariance family's alone.)"""
+    aB = np.max(np.abs(np.asarray(B)), axis=0)
+    m = aB.shape[0]
+    parent = list(range(m))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for i, j in zip(*np.nonzero(aB > 0.0)):
+        parent[find(i)] = find(j)
+    blocks = {}
+    for i in range(m):
+        if np.any(aB[i] > 0.0) or np.any(aB[:, i] > 0.0):
+            blocks.setdefault(find(i), []).append(i)
+    out = []
+    for idx in blocks.values():
+        Bg = np.zeros_like(np.asarray(B))
+        ix = np.ix_(range(Bg.shape[0]), idx, idx)
+        Bg[ix] = np.asarray(B)[ix]
+        EFg = np.zeros_like(np.asarray(EF, dtype=float))
+        EFg[ix] = np.asarray(EF, dtype=float)[ix]
+        ef = uniform_exponent(Bg, EFg)
+        if ef is None:
+            return None
+        out.append((Bg, float(ef)))
+    return out
+
+
+class ColourBand:
+    """One coloured component taken PER BAND FREQUENCY
+    (`NoiseComponents.colour_components`): `key`; `kind` -- 'stationary',
+    'separable', 'moving' (a per-band element, classified at the probes),
+    'density' (a power law whose exponents mix inside one block), 'columns'
+    (an element whose white remainder joined the white part: its signed
+    columns per band) or 'exact' (unclassified); `root(w)` its columns
+    `(K, m, r)` at angular `w`, by the
+    shortcut its kind allows; `exact_root(w)` without one; `exact_psd(w)`
+    the PSD that root is taken of (None where the columns are the element's
+    SIGNED amplitudes); `signed`.  A stationary one carries `supp` (its
+    support, for a surface that reads its `CY` directly), a separable one
+    `W0` (its columns at f0), `xref`, `pq` and `cref` (its level's
+    reference point, entry and value)."""
+    __slots__ = ('W0', 'cref', 'exact_psd', 'exact_root', 'key', 'kind',
+                 'pq', 'root', 'signed', 'supp', 'xref')
+
+    def __init__(self, key):
+        self.key = key
+        self.supp = self.W0 = self.xref = self.pq = self.cref = None
+
+
+class ColourComponents:
+    """`NoiseComponents.colour_components`' answer: `fixed` `[(key, W, ef,
+    B)]` (a uniform power law through columns `W (K, m, r)`; `B` the PSD
+    they are the root of, None where they are signed amplitudes), `bands`
+    (`ColourBand`s), `rooted` (the keys factored by a root, sign-tested)
+    and `w1` (the power laws' reference frequency)."""
+    __slots__ = ('bands', 'fixed', 'rooted', 'w1')
+
+    def __init__(self, w1):
+        self.fixed, self.bands, self.rooted, self.w1 = [], [], [], w1
+
+
+#: `NoiseComponents.perband_classify`'s "derive the mode" default
+_DERIVE = object()
+
+
 def warn_signed_unused(model, where):
     """Warn when an element STATED its signed amplitudes and the fold
     factors that component by sqrt(PSD) anyway: a silent fallback
@@ -351,6 +426,7 @@ class NoiseComponents(object):
     uniform_exponent = staticmethod(uniform_exponent)
     warn_signed_unused = staticmethod(warn_signed_unused)
     separable = staticmethod(separable)
+    split_by_exponent = staticmethod(split_by_exponent)
     psd_sqrt = staticmethod(psd_sqrt)
     cached_root = staticmethod(cached_root)
 
@@ -554,10 +630,41 @@ class NoiseComponents(object):
                 flicker.append((key, B, EF))
         ## (an element whose signed amplitudes rebuild its `CY` at every fit
         ## frequency is split by them, one column per fluctuation)
-        rooted = [key for key in perband
-                  if self.perband_mode(key, ws,
-                                       [per_w[i][key] for i in range(len(ws))])
-                  is None]
+        ## ⚠ EACH PER-BAND ELEMENT'S FACTORING IS DECIDED HERE, ONCE, FOR
+        ## EVERY SURFACE (`model.modes`; `perband_mode`).  AND A WHITE
+        ## REMAINDER JOINS THE WHITE PART: an element stating the amplitudes
+        ## of its coloured sources only (the HDL contract) leaves
+        ## ``C - W W^H``, its white sources, which belong with the white
+        ## parts over EVERY frequency on every surface -- band-limited, the
+        ## covariance read -1.4 % / -1.8 % against a separate white source.
+        ## Until 2026-10-01 only the covariance did this; the other surfaces
+        ## rooted it per band beside the columns (review O2).  Read at f0,
+        ## as the covariance read it.  A remainder that is NOT white (it
+        ## moves between the fit frequencies; `perband_mode` warns) stays
+        ## beside the columns.
+        modes, folded = {}, set()
+        w0 = 2.0 * np.pi * float(f0)
+        for key in perband:
+            Cs_k = [per_w[i][key] for i in range(len(ws))]
+            mode = self.perband_mode(key, ws, Cs_k)
+            if mode == 'white':
+                Rs = []
+                for i, w in enumerate(ws):
+                    Wi = self.one_element_amplitudes(key, w)
+                    Rs.append(np.asarray(Cs_k[i], dtype=complex)
+                              - np.einsum('kis,kjs->kij', Wi, Wi.conj()))
+                scale = max(float(np.max(np.abs(Rs[0]))), 1e-300)
+                if max(float(np.max(np.abs(R_ - Rs[0]))) for R_ in Rs[1:]) \
+                        <= 1e-6 * scale:
+                    W0 = self.one_element_amplitudes(key, w0)
+                    R0 = (self.one_element_cy(key, w0)
+                          - np.einsum('kis,kjs->kij', W0, W0.conj()))
+                    white = white + R0
+                    white_parts.append((key, R0))
+                    mode = 'signed'
+                    folded.add(key)
+            modes[key] = mode
+        rooted = [key for key in perband if modes[key] is None]
         if rooted:
             warnings.warn(
                 'PAC: the noise of %s is not thermal-plus-power-law, so it is '
@@ -591,6 +698,8 @@ class NoiseComponents(object):
         model.white_parts = white_parts
         model.flicker = flicker
         model.perband = perband
+        model.modes = modes
+        model.folded = folded
         ## ⚠ THE SIGN: where the element states its coloured AMPLITUDES, the
         ## folds factor the component with them instead of with sqrt(PSD) --
         ## see `Element.noise_amplitudes` (hdl.py)
@@ -632,6 +741,7 @@ class NoiseComponents(object):
         model.white_parts = [(self.JOINT_KEY, A)] if np.any(A) else []
         model.flicker = [(self.JOINT_KEY, B, EF)] if np.any(B) else []
         model.perband = []
+        model.modes, model.folded = {}, set()
         ## no element states signed amplitudes for a joint root
         model.amplitude = {}
         model.w1 = w1
@@ -774,7 +884,7 @@ class NoiseComponents(object):
         Z[:, supp, :] = self.psd_sqrt(R[:, supp][:, :, supp])
         return np.concatenate((np.asarray(W, dtype=complex), Z), axis=-1)
 
-    def perband_classify(self, key, wt):
+    def perband_classify(self, key, wt, mode=_DERIVE):
         """How the per-band element `key` varies along the orbit, read at
         the probe frequencies `wt`: `(kind, Cs, Ws, mode)`, `Cs` its `CY`
         per probe, `mode` its factoring (`perband_mode`) and `Ws` its
@@ -788,9 +898,11 @@ class NoiseComponents(object):
         ⚠ FROM THE COLUMNS WHERE STATED: a `CY` that does not move can
         still carry a sign that does (`k(x) = +-1`), and a separable `CY`
         can hold columns whose shapes differ -- either would be read as the
-        wrong kind from the `CY`."""
+        wrong kind from the `CY`.  `mode`: the factoring already decided
+        (`model.modes`), else derived here."""
         Cs = [self.one_element_cy(key, w_) for w_ in wt]
-        mode = self.perband_mode(key, wt, Cs)
+        if mode is _DERIVE:
+            mode = self.perband_mode(key, wt, Cs)
         Ws = None if mode is None else [
             self.perband_amplitudes(key, w_, mode, C_)
             for w_, C_ in zip(wt, Cs)]
@@ -815,101 +927,173 @@ class NoiseComponents(object):
                             if mode is not None else self.psd_sqrt(
                                 self.one_element_cy(key, k)))
             return cache[k]
+        root.cache = cache
         return root
 
-    def perband_root_sampler(self, key, wlo, f0, L):
-        """`w -> (K, m, r)`: the COLUMNS of one per-band element at the
-        injection points, for the sample series -- the element alone
-        (`one_element_cy`), cached per frequency, and classified once
-        (`perband_classify`):
+    @staticmethod
+    def band_probes(wlo, whi, f0):
+        """The (angular) frequencies a per-band element is classified at,
+        from a surface's band `[wlo, whi]`: its lower edge, f0, 10 f0, and
+        the band's top AND its middle -- a shape that departs only above the
+        middle does not read as separable; a probe more can only send a
+        source to the exact path.  One set for every surface (review O2,
+        2026-10-01; the sample series had no middle, pnoise read f0 alone).
+        History: `doc/shooting_history.md`, `PAC._coloured_prepare`."""
+        w0 = 2.0 * np.pi * float(f0)
+        return sorted({float(wlo), w0, 10.0 * w0, 0.5 * float(whi),
+                       float(whi)})
 
-          STATIONARY  the same at every point: one point, broadcast;
-          SEPARABLE   ``C(x, w) = C(x, w_ref) s(w)``: the columns per point
-                      at `w_ref` once, times ``sqrt(s(w))`` from one point;
-          otherwise   the element at every point for every frequency.
+    def _separable_root(self, key, W0, xref, pq, cref):
+        """`w -> (K, m, r)`: a separable element's columns at f0 times the
+        root of its level at `w` (``C(x, w) = C(x, w_ref) s(w)``), the level
+        read at ONE point; cached per frequency (`.cache`)."""
+        cache = {}
+        pi_, qi = pq
+        xr = [xref]
 
-        The columns are the element's SIGNED amplitudes where it states
-        them (`perband_amplitudes`), else the root of its PSD; `.signed`
-        on the returned function says which.
-
-        History: `doc/shooting_history.md`, `PAC._perband_root_sampler`."""
-        wref = 2.0 * np.pi * f0
-        wt = sorted({float(wlo), wref, 20.0 * np.pi * f0,
-                     2.0 * np.pi * (float(L) + 0.5) * f0})
-        kind, Cs, Ws, mode = self.perband_classify(key, wt)
-        states = self.states
-        K = len(states)
-        if kind == 'stationary':
-            one = [states[0]]
-            root = self.cached_root(lambda w: np.broadcast_to(
-                self.at(one).one_element_cy(key, w), (K,) + Cs[0].shape[1:]))
-        elif kind == 'separable':
-            Cref = Cs[wt.index(wref)]
-            Wref = self.psd_sqrt(Cref) if Ws is None else Ws[wt.index(wref)]
-            jr, pi_, qi = np.unravel_index(int(np.argmax(np.abs(Cref))), Cref.shape)
-            xr, cref = [states[jr]], complex(Cref[jr, pi_, qi])
-            cache = {}
-
-            def root(w):
-                k = float(w)
-                if k not in cache:
-                    c = self.at(xr).one_element_cy(key, k)[0, pi_, qi]
-                    cache[k] = np.sqrt(max(float(np.real(c / cref)), 0.0)) * Wref
-                return cache[k]
-            root.cache = cache
-        else:
-            root = self.perband_root(key, mode)
-        root.signed = Ws is not None
+        def root(w):
+            k = float(w)
+            if k not in cache:
+                c = self.at(xr).one_element_cy(key, k)[0, pi_, qi]
+                cache[k] = np.sqrt(max(float(np.real(c / cref)), 0.0)) * W0
+            return cache[k]
+        root.cache = cache
         return root
 
-    def colour_groups(self, model, wlo, f0, L, what):
-        """The coloured components of `model` as unit processes through
-        their own columns: `('fixed', G, s)` -- columns `G (K, m, r)` at
-        `states` and a power weight `s(nu)` (a uniform power law, its
-        element's SIGNED amplitudes where stated, else the root of its PSD)
-        -- or `('band', root, None)`, the columns per band frequency (a
-        power law whose exponent varies across its entries; a per-band
-        colour, `perband_root_sampler`).  A component factored by the root
-        of its PSD whose PSD TOUCHES ZERO along the orbit is warned on
-        (`sign_blind`: one verdict for every surface): if its modulation
-        changes sign there, that root is the `|m|` process.  Every band
-        root is cached per frequency (`cached_root`): the sample series
-        reads the same `|f + n f0|` at every instant.  The FIXED groups
-        before the BAND ones is the order the sample series sums them in."""
+    def colour_components(self, model, wlo, whi, f0, what, stacklevel=3,
+                          shortcuts=True):
+        """THE one grouping of `model`'s COLOURED components, for every
+        noise surface (review O2, 2026-10-01: until then three copies -- the
+        sample series' / modal / lineshape `colour_groups`, the covariance
+        family's `_coloured_prepare` and pnoise's `_cyclostationary_fold` --
+        whose probe frequencies, mixed-exponent handling, white remainders
+        and sign tests differed).  `[wlo, whi]` is the surface's band
+        (angular), which sets the per-band probes (`band_probes`); each
+        per-band element's factoring is the one `model` decided
+        (`model.modes`).  Returns a `ColourComponents`:
+
+          `fixed`  a uniform power law through FIXED columns: the element's
+                   SIGNED amplitudes where it states them (split by their
+                   own exponents where they differ, `exponent_columns`),
+                   else the root of its PSD (split into the disjoint index
+                   blocks of one exponent each, `split_by_exponent`);
+          `bands`  the rest, per band frequency (`ColourBand`): a per-band
+                   element -- stationary / separable / moving at the probes,
+                   or 'exact' with `shortcuts=False` -- or a power law whose
+                   exponents mix inside one block ('density', warned for its
+                   cost);
+          `rooted` the components factored by the ROOT of their PSD, given
+                   the one sign-blind verdict (`sign_blind`) and warned here.
+
+        Each surface builds its own numbers from these.  ⚠ An element whose
+        white remainder was folded into the white part (`model.folded`) is
+        taken through its signed columns alone, per band and without a
+        shortcut: its `CY` still holds the remainder, so a level or a
+        stationary density read from it would count it twice."""
         signed = getattr(model, 'amplitude', None) or {}
+        modes = getattr(model, 'modes', None) or {}
+        folded = getattr(model, 'folded', None) or set()
         self.warn_signed_unused(model, 'PAC.%s' % what)
-        groups, rooted = [], []
-        for key, Bc, EF in model.flicker:
-            ef = self.uniform_exponent(Bc, EF)
+        out = ColourComponents(model.w1)
+        rooted = out.rooted
+        for key, B, EF in model.flicker:
+            ef = self.uniform_exponent(B, EF)
             W = signed.get(key)
             if ef is not None:
                 if W is None:
                     rooted.append(key)
-                    W = self.psd_sqrt(Bc)
-                groups.append(('fixed', np.asarray(W, dtype=complex),
-                               lambda nu, ef=ef, w1=model.w1:
-                               (w1 / np.asarray(nu, dtype=float)) ** ef))
-            else:
-                ## (signed columns grouped by their own exponents, where
-                ## they carry one each: a uniform power law per group)
-                split = (self.exponent_columns(Bc, EF, W) if W is not None
-                         else None)
-                if split is not None:
-                    for Wg, efg in split:
-                        groups.append(('fixed', Wg,
-                                       lambda nu, ef=efg, w1=model.w1:
-                                       (w1 / np.asarray(nu, dtype=float)) ** ef))
-                    continue
-                rooted.append(key)
-                groups.append(('band', self.cached_root(
-                    lambda w, Bc=Bc, EF=EF, w1=model.w1: Bc * (w1 / w) ** EF),
-                    None))
+                    out.fixed.append((key, np.asarray(self.psd_sqrt(B),
+                                                      dtype=complex),
+                                      float(ef), B))
+                else:
+                    out.fixed.append((key, np.asarray(W, dtype=complex),
+                                      float(ef), None))
+                continue
+            split = (self.exponent_columns(B, EF, W) if W is not None
+                     else None)
+            if split is not None:
+                out.fixed.extend((key, np.asarray(Wg, dtype=complex),
+                                  float(efg), None) for Wg, efg in split)
+                continue
+            rooted.append(key)
+            parts = self.split_by_exponent(B, EF)
+            if parts is not None:
+                out.fixed.extend((key, np.asarray(self.psd_sqrt(Bg),
+                                                  dtype=complex),
+                                  float(efg), Bg) for Bg, efg in parts)
+                continue
+            band = ColourBand(key)
+            band.kind, band.signed = 'density', False
+            band.exact_psd = (lambda w, B=B, EF=EF, w1=model.w1:
+                              B * (w1 / w) ** EF)
+            band.root = band.exact_root = self.cached_root(band.exact_psd)
+            out.bands.append(band)
+            warnings.warn(
+                f'PAC.{what}: the coloured noise of {".".join(key)} carries '
+                'different power-law exponents in different entries of one '
+                'block, so it has no one amplitude to replay; its density is '
+                'rooted at every point per band frequency -- costlier.',
+                RuntimeWarning, stacklevel=stacklevel + 1)
+        probes = self.band_probes(wlo, whi, f0)
+        w0 = 2.0 * np.pi * float(f0)
+        sts = self.states if self.states is not None else self.xs
+        K = len(sts)
         for key in model.perband:
-            root = self.perband_root_sampler(key, wlo, f0, L)
-            if not root.signed:
+            mode = modes[key] if key in modes else self.perband_mode(key, probes)
+            band = ColourBand(key)
+            band.signed = mode is not None
+            band.exact_root = self.perband_root(key, mode)
+            band.exact_psd = (None if mode is not None else
+                              (lambda w, key=key: self.one_element_cy(key, w)))
+            if mode is None:
                 rooted.append(key)
-            groups.append(('band', root, None))
+            if not shortcuts or key in folded:
+                band.kind = 'exact' if not shortcuts else 'columns'
+                band.root = band.exact_root
+                out.bands.append(band)
+                continue
+            kind, Cs, Ws, _m = self.perband_classify(key, probes, mode=mode)
+            band.kind = kind
+            i0 = probes.index(w0)
+            if kind == 'stationary':
+                one = [sts[0]]
+                band.root = self.cached_root(
+                    lambda w, key=key, one=one, shp=Cs[0].shape[1:]:
+                    np.broadcast_to(self.at(one).one_element_cy(key, w),
+                                    (K,) + shp))
+                C0 = np.asarray(Cs[i0][0], dtype=complex)
+                band.supp = np.nonzero(np.any(np.abs(C0) > 0.0, axis=1))[0]
+            elif kind == 'separable':
+                Cref = Cs[i0]
+                band.W0 = self.psd_sqrt(Cref) if Ws is None else Ws[i0]
+                jr, pi_, qi = np.unravel_index(int(np.argmax(np.abs(Cref))),
+                                               Cref.shape)
+                band.xref, band.pq = sts[jr], (pi_, qi)
+                band.cref = complex(Cref[jr, pi_, qi])
+                band.root = self._separable_root(key, band.W0, band.xref,
+                                                 band.pq, band.cref)
+            else:
+                band.root = band.exact_root
+            out.bands.append(band)
         blind = self.sign_blind(model, rooted)
         if blind:
-            warn_sign_blind(what, blind, stacklevel=4)
+            warn_sign_blind(what, blind, stacklevel=stacklevel + 1)
+        return out
+
+    def colour_groups(self, model, wlo, f0, L, what):
+        """`colour_components` as the sample series, the modal spectra and
+        the lineshape take it: `('fixed', G, s)` -- columns `G (K, m, r)` at
+        `states` and a power weight `s(nu)` -- and `('band', root, None)`,
+        the columns per band frequency (`ColourBand.root`, cached per
+        frequency: the sample series reads the same `|f + n f0|` at every
+        instant), over the band up to the grid's `(L + 1/2) f0`.  The FIXED
+        groups before the BAND ones is the order the sample series sums
+        them in."""
+        comps = self.colour_components(
+            model, wlo, 2.0 * np.pi * (float(L) + 0.5) * float(f0), f0, what,
+            stacklevel=5)
+        groups = [('fixed', W, lambda nu, ef=ef, w1=comps.w1:
+                   (w1 / np.asarray(nu, dtype=float)) ** ef)
+                  for _key, W, ef, _B in comps.fixed]
+        groups += [('band', band.root, None) for band in comps.bands]
         return groups

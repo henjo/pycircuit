@@ -2144,3 +2144,68 @@ def test_the_coloured_lineshape_band_top_is_refused_past_half_f0_and_leaves_the_
                                            frequency_aware=False)[0][0])
              for fm in (0.5 * f0, 0.05 * f0)]
     assert abs(S[1] / S[0] - 1.0) < 1e-3, S
+
+
+def test_an_elements_white_remainder_is_white_on_every_surface():
+    """Review O2, stage 2 (2026-10-01: one grouping of the coloured
+    components for every surface).  An element that states SIGNED
+    amplitudes for its coloured source and none for a white one beside it
+    (`_ModLorentzThermal`, the HDL contract) leaves a WHITE remainder ``CY
+    - W W^H``.  Only the covariance took it as white; the other surfaces
+    rooted it per band beside the columns -- so on an oscillator it never
+    reached the white diffusion: `c_white` read 0 against 1.25e-10, and
+    `oscillator_spectrum` 1.00 BELOW the same physics written as two
+    elements (a signed Lorentzian and a separate white source) at every
+    offset from 0.3 to 10 linewidths (the line had no width).  Now
+    `NoiseComponents.model` folds a white remainder into the white part for
+    every surface: equal to rounding."""
+    import warnings as _w
+
+    from pycircuit.circuit.tests._shooting_fixtures import (
+        _ModLorentzSigned,
+        _ModLorentzThermal,
+    )
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    T = 2.0 * np.pi / np.sqrt(1.0 - mu ** 2 / 4.0)
+    P, tau, Pw = 1e-8, 0.3 * T, 2e-9
+
+    def build(kind):
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: mu * (u - u ** 3 / 3.0))
+        if kind == 'element':
+            c['n'] = _ModLorentzThermal('v', gnd, 'v', gnd, noisePSD=P,
+                                        tau=tau, k=1.0, white=Pw)
+        else:
+            c['n'] = _ModLorentzSigned('v', gnd, 'v', gnd, noisePSD=P,
+                                       tau=tau, k=1.0)
+            c['w'] = IS('v', gnd, i=0.0, noisePSD=Pw)
+        p = PSS(c, method='radau', reltol=1e-12)
+        x0 = np.zeros(c.n - 1)
+        x0[0] = 2.0
+        with _w.catch_warnings():
+            _w.simplefilter('ignore')
+            p.solve(period=T, timestep=T / 200, x0=x0, maxiterations=200)
+        assert p.converged
+        return p, PAC(c, toolkit=circuit.numeric)
+    f0 = 1.0 / T
+    out = {}
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        for kind in ('real', 'element'):
+            p, pac = build(kind)
+            cw = pac._colour_fold(p, 1e-5 * f0, None, 'x').c_white
+            out[kind] = (p, pac, cw)
+        fcore = np.pi * f0 * f0 * out['real'][2]
+        offs = np.array([0.3, 1.0, 3.0, 10.0]) * fcore
+        sp = {k: np.asarray(v[1].oscillator_spectrum(
+            v[0], offs, 0, offset_fmin=1e-5 * f0, frequency_aware=False)[0],
+            dtype=float) for k, v in out.items()}
+    assert abs(out['element'][2] / out['real'][2] - 1.0) < 1e-12, \
+        (out['element'][2], out['real'][2])
+    assert np.max(np.abs(sp['element'] / sp['real'] - 1.0)) < 1e-9, \
+        sp['element'] / sp['real'] - 1.0

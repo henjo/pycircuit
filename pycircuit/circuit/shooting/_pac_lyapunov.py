@@ -4,9 +4,6 @@ pieces, the coloured band integral, event jitter.
 import numpy as np
 import warnings
 from ._factored import dense_map
-from ._noise_components import (exponent_columns, psd_sqrt,
-                               uniform_exponent, warn_sign_blind,
-                               warn_signed_unused)
 from .events import EventColumns
 
 
@@ -872,148 +869,50 @@ class _LyapunovCovariance(object):
         ## CY_kl(nu) Re[y_k y_l^H]` over unit sources `e_k` on its support
         ## (`_coloured_covariance`).  A MODULATED one: below.
         ## History: `doc/shooting_history.md`, `PAC._coloured_prepare`.
-        perband, separable, nonseparable = [], [], []
-        wref = 2.0 * np.pi * f0
-        ## the band's TOP as well as its middle (`pi fmax`), so a shape that
-        ## departs only above fmax/2 does not read as separable.  A probe
-        ## more can only send a source to the exact path.
+        ## the components as EVERY surface groups them (`colour_components`,
+        ## review O2, 2026-10-01): a power law through fixed columns (`comps`),
+        ## the rest per band frequency -- a STATIONARY per-band element
+        ## through its own `CY` (no root), a SEPARABLE one replaying one
+        ## amplitude per point weighted by its level, otherwise the element
+        ## read at EVERY point for EVERY band frequency (the quasi-static
+        ## model `pnoise` and `sampled_variance` use, per band).  The
+        ## sign-blind verdict and the signed-amplitude notes are given there;
+        ## an element's white remainder is already in `model.white`.
         ## History: `doc/shooting_history.md`, `PAC._coloured_prepare`.
-        wt = sorted({2.0 * np.pi * fmin, wref, 20.0 * np.pi * f0,
-                     np.pi * fmax, 2.0 * np.pi * fmax})
-        white_split = []
-        ## the coloured components factored by the ROOT of their PSD, for the
-        ## one sign-blind verdict every surface gives (`sign_blind`)
-        rooted = []
-        for key in model.perband:
-            ## classified from the element's signed amplitudes where it
-            ## states them, else from its `CY` (`perband_classify`)
-            kind, Cs, Ws, mode = nc.perband_classify(key, wt)
-            if mode == 'white':
-                ## ⚠ ITS WHITE REMAINDER JOINS THE WHITE PART: the band
-                ## integral covers [fmin, fmax] only, and a white source
-                ## belongs to the Lyapunov path over every frequency (band-
-                ## limited, it read -1.4 % / -1.8 % against a separate white
-                ## source).  Its signed columns alone are read per band
-                ## frequency -- right for any shape of theirs.
-                white_split.append(key)
-                root = nc.perband_root(key, 'signed')
-                nonseparable.append((key, lambda nu, root=root: root(
-                    2.0 * np.pi * nu)))
-                continue
-            if kind == 'stationary':
-                C0 = np.asarray(Cs[wt.index(wref)][0], dtype=complex)
-                supp = np.nonzero(np.any(np.abs(C0) > 0.0, axis=1))[0]
-                if supp.size:
-                    perband.append((key, supp))
-                continue
-            ## ⚠ MODULATED AND NOT A POWER LAW.  SEPARABLE -- a level that
-            ## follows the state under a fixed spectral shape, ``C(x, w) =
-            ## C(x, w_ref) s(w)``, the usual burst / G-R noise -- replays one
-            ## amplitude per point and weights each band frequency by `s`;
-            ## otherwise the element is read at EVERY point for EVERY band
-            ## frequency (the quasi-static model `pnoise` and
-            ## `sampled_variance` use, per band).  Either takes the element's
-            ## SIGNED amplitudes where it states them, else the root of its
-            ## PSD: sign-tested below as every rooted component is (until
-            ## 2026-10-01 warned here on every modulated one, touch or not;
-            ## the merged sources inside such an element are `model`'s
-            ## warning).
-            if Ws is None:
-                rooted.append(key)
-            if kind == 'separable':
-                Cref = Cs[wt.index(wref)]
-                W0 = psd_sqrt(Cref) if Ws is None else Ws[wt.index(wref)]
-                jr, pi_, qi = np.unravel_index(int(np.argmax(np.abs(Cref))),
-                                               Cref.shape)
-                separable.append((key, W0, states[jr], (pi_, qi),
-                                  complex(Cref[jr, pi_, qi])))
+        perband, separable, nonseparable = [], [], []
+        groups = nc.colour_components(model, 2.0 * np.pi * fmin,
+                                      2.0 * np.pi * fmax, f0, what,
+                                      stacklevel=3)
+        comps = [(key, W, ef) for key, W, ef, _B in groups.fixed]
+        for band in groups.bands:
+            if band.kind == 'stationary':
+                if band.supp.size:
+                    perband.append((band.key, band.supp))
+            elif band.kind == 'separable':
+                separable.append((band.key, band.W0, band.xref, band.pq,
+                                  band.cref))
             else:
-                root = nc.perband_root(key, mode)
-                nonseparable.append((key, lambda nu, root=root: root(
-                    2.0 * np.pi * nu)))
-                warnings.warn(
-                    'PAC.%s: the noise of %s is coloured, not a power law, '
-                    'and its spectral SHAPE changes along the orbit, so it is '
-                    'read at every point for every band frequency -- the '
-                    'quasi-static model pnoise and sampled_variance use per '
-                    'band, and costly here.'
-                    % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
-        warn_signed_unused(model, 'PAC.%s' % what)
-        amp = getattr(model, 'amplitude', None) or {}
-        comps = []
-        for key, B, EF in model.flicker:
-            ef = uniform_exponent(B, EF)
-            split = (exponent_columns(B, EF, amp[key])
-                     if ef is None and key in amp else None)
-            if split is not None:
-                ## the element's signed columns, grouped by their own
-                ## exponents: a uniform power law each (`exponent_columns`)
-                comps.extend((key, np.asarray(Wg, dtype=complex), float(efg))
-                             for Wg, efg in split)
-                continue
-            if ef is None:
-                ## ⚠ EXPONENTS THAT DIFFER BETWEEN ENTRIES.  Entries in
-                ## DISJOINT index blocks, one exponent
-                ## each (sources of different slope on branches that share no
-                ## node), are independent components: split exactly.
-                parts = self._split_by_exponent(B, EF)
-                if parts is not None:
-                    rooted.append(key)
-                    for Bg, efg in parts:
-                        comps.append((key, np.asarray(psd_sqrt(Bg),
-                                                      dtype=complex), efg))
-                    continue
-                ## otherwise no one amplitude to replay: the moving-shape way,
-                ## the density `B (w1/w)^EF` rooted at every point per band
-                ## frequency (its white part is already in `white`: the
-                ## element's own `CY` would count it twice)
-                rooted.append(key)
-                nonseparable.append((key, lambda nu, B=B, EF=EF, w1=model.w1:
-                                     psd_sqrt(
-                                         B * (w1 / (2.0 * np.pi * nu)) ** EF)))
-                warnings.warn(
-                    'PAC.%s: the coloured noise of %s carries different '
-                    'power-law exponents in different entries, so it has no '
-                    'one amplitude to replay; its density is rooted at every '
-                    'point per band frequency -- costlier.'
-                    % (what, '.'.join(key)), RuntimeWarning, stacklevel=3)
-                continue
-            ## ⚠ THE SIGN: the element's stated amplitudes where it has them
-            ## (`W W^H = B` with the sign of the modulation); `sqrt(B)` is
-            ## the sign-blind |m| process (`warn_signed_unused` said so)
-            W = amp.get(key)
-            if W is None:
-                rooted.append(key)
-            W = np.asarray(W if W is not None else psd_sqrt(B), dtype=complex)
-            comps.append((key, W, float(ef)))
-        ## ⚠ ROOTED WHERE THE PSD TOUCHES ZERO: the |m| process, warned as
-        ## every surface that roots a PSD warns it (`sign_blind`, one verdict
-        ## on the orbit's samples and step midpoints)
-        blind = nc.sign_blind(model, rooted)
-        if blind:
-            warn_sign_blind(what, blind, stacklevel=3)
+                nonseparable.append((band.key, lambda nu, root=band.exact_root:
+                                     root(2.0 * np.pi * nu)))
+                if band.kind == 'moving':
+                    warnings.warn(
+                        'PAC.%s: the noise of %s is coloured, not a power law, '
+                        'and its spectral SHAPE changes along the orbit, so it '
+                        'is read at every point for every band frequency -- '
+                        'the quasi-static model pnoise and sampled_variance '
+                        'use per band, and costly here.'
+                        % (what, '.'.join(band.key)), RuntimeWarning,
+                        stacklevel=3)
         ## the white part of each source, at the states the pieces read:
         ## the injection points from the batch model, any other state (a
         ## step end under the Van Loan fallback) fitted on demand
         irn = pss.irefnode
         m = pss.cir.n - 1
 
-        def remainder(sts):
-            ## the white remainders ``C - W W^H`` of the split per-band
-            ## elements at `sts` (white: read at one frequency)
-            out = 0.0
-            for key in white_split:
-                at = self._noise_components(pss, sts)
-                C_ = at.one_element_cy(key, wref)
-                W_ = at.one_element_amplitudes(key, wref)
-                out = out + (C_ - np.einsum('kis,kjs->kij', W_, W_.conj()))
-            return out
-        rem = remainder(states) if white_split else None
         cache = {}
-        for k, (x, A) in enumerate(zip(states, model.white)):
+        for x, A in zip(states, model.white):
             xr = np.delete(np.asarray(x, dtype=float), irn)
-            cache[xr.tobytes()] = np.asarray(A, dtype=complex) + (
-                rem[k] if rem is not None else 0.0)
+            cache[xr.tobytes()] = np.asarray(A, dtype=complex)
 
         def white(xr):
             xr = np.asarray(xr, dtype=float).ravel()[:m]
@@ -1028,8 +927,7 @@ class _LyapunovCovariance(object):
                         'thermal-plus-power-law at a state the white part is '
                         'read at, so the white part cannot be separated '
                         'there.' % what)
-                cache[key] = np.asarray(mdl.white[0], dtype=complex) + (
-                    remainder([xr])[0] if white_split else 0.0)
+                cache[key] = np.asarray(mdl.white[0], dtype=complex)
             return cache[key]
         return {'fp': fp, 'counts': counts, 'comps': comps, 'w1': model.w1,
                 'white': white,
