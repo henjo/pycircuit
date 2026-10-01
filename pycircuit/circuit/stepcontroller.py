@@ -69,33 +69,23 @@ class StepController(ABC):
 
     ## ITEM 2+.3 -- what the RELATIVE part of the LTE tolerance is measured against.
     ##
-    ## The tolerance is `lteratio * (reltol*ref + abstol)`.  Until now `ref` was
-    ## hard-coded to `max(|x_curr|, |x_last|)` -- each unknown against itself, at
-    ## this instant.  That is a commercial simulator's `pointlocal`, and it has a failure mode that
-    ## is easy to miss: on a node carrying no signal `ref -> 0`, so the tolerance
-    ## collapses to `abstol` and the controller starts chasing numerical noise on a
-    ## quiet node.  On the leapfrog that alone cut the step size 5.4x, and the fix
-    ## applied at the time was to raise the absolute floor a millionfold
-    ## (`lte_vabstol` 1e-12 -> 1e-6), which treats the symptom.
+    ## The tolerance is `lteratio * (reltol*ref + abstol)`, and `relref` (a
+    ## commercial simulator's parameter of the same name) chooses `ref`:
     ##
-    ## A commercial simulator's answer is `relref`, and its default is `sigglobal`: measure each
-    ## signal against the largest signal anywhere in the circuit, over all past
-    ## time, so a quiet node inherits a sane reference instead of degenerating.
-    ##
-    ##   pointlocal  each unknown against itself, now.  (pycircuit's historical
-    ##               behaviour, and still selectable.)
+    ##   pointlocal  each unknown against itself, now.  On a node carrying no
+    ##               signal `ref -> 0`, so the tolerance collapses to `abstol`
+    ##               and the controller chases numerical noise on a quiet node
+    ##               (on the leapfrog it cut the step size 5.4x).
     ##   alllocal    each unknown against its OWN largest value so far.
-    ##   sigglobal   each unknown against the largest value of ANY unknown so far.
+    ##   sigglobal   each unknown against the largest value of ANY unknown so
+    ##               far, so a quiet node inherits a sane reference.
     ##
-    ## THE WORKAROUND ABOVE IS NOW GONE.  With `sigglobal` shipped, `lte_vabstol` is
-    ## back to 1e-12: measured at gate D3-e, 1e-6 / 1e-9 / 1e-12 give bit-identical
-    ## runs under `sigglobal` (403 steps on a pulsed RC, 601 with a quiet node, at
-    ## every value), where under `pointlocal` the same change costs 8.5-9.2%.  That
-    ## difference IS the symptom, and it is what the floor was raised to hide.
-    ##
-    ## DEFAULT IS `sigglobal` SINCE DECISION D3's SECOND ATTEMPT, matching a commercial simulator.
-    ## It was adopted, sent back by its own gate, and re-run once the reason for the
-    ## failure was removed -- see the D3 gates in `doc/transient_work_plan.md`.
+    ## DEFAULT IS `sigglobal`, matching a commercial simulator: under it
+    ## `lte_vabstol` 1e-6 / 1e-9 / 1e-12 give bit-identical runs (gate D3-e: 403
+    ## steps on a pulsed RC, 601 with a quiet node, at every value), where under
+    ## `pointlocal` the same change costs 8.5-9.2 % -- which is why the floor
+    ## can stay at 1e-12.
+    ## History: `doc/transient_history.md`, `StepController.relref`.
     relref = 'sigglobal'
 
     def set_relref(self, relref):
@@ -119,10 +109,11 @@ class StepController(ABC):
     ## In this module's normalisation `err = eps/tau` (the tolerance already folds
     ## in TRTOL), so the band is simply `gamma_min <= err <= gamma_max`.
     ##
-    ## THE DEFAULTS BELOW REPRODUCE THE PREVIOUS BEHAVIOUR EXACTLY: `gamma_min=0`
-    ## makes the lower test vacuous and `gamma_max=1` is the historical `err > 1`
-    ## rejection.  That is deliberate -- stage 12 is behind a flag until 12D, and
-    ## a band that changed the default path would make its own gate unreadable.
+    ## THE DEFAULTS BELOW KEEP THE CLASSICAL ONE-SIDED TEST: `gamma_min=0` makes
+    ## the lower test vacuous and `gamma_max=1` is the `err > 1` rejection, so
+    ## the band changes nothing unless a caller sets it (`set_lte_band`; the
+    ## coupled path takes Fang's values, `Transient._coupled_band`).
+    ## History: `doc/transient_history.md`, `StepController.lte_gamma_min`.
     ##
     ## The paper's own values (`ltemin=0.7`, `ltemax=3.0` in sec. 4.1) are NOT
     ## adopted as defaults, and not because they are unattractive: they are quoted

@@ -116,6 +116,19 @@ class NonLinearSolver(ABC):
     
     @abstractmethod
     def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
+        """Solve ``F(x) = 0`` from `x0`; returns ``(x, iterations)``.
+
+        `eval_FJ(x)` returns ``(F, J)``.  `StandardNewton`'s test, which the
+        continuation solvers reach through their base solver: converged when
+        every update is below ``reltol * max(|x_new|, |x|) + xtol`` AND every
+        residual below ``reltol * (|J| |x_new| + |F|) + abstol`` (`abstol`,
+        `xtol` per unknown).  `limiter(x_new, x)` limits a step, `scaler` equilibrates
+        `J` and `F` before the linear solve (`NoneScaler` when None),
+        `linsolver` replaces the dense solve, and `row_names` names the rows
+        in a failure message.  Raises `NoConvergenceError` after `maxiter`
+        iterations, naming the worst row, and `SingularMatrix` on a
+        structurally singular `J`.
+        """
         pass
 
 

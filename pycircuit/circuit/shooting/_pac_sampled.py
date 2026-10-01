@@ -67,7 +67,7 @@ class _SampledNoise(object):
         ⚠ STAGE METHODS (radau, trbdf2) RUN NATIVELY: the source enters
         every stage, so the sensitivities are read at the stage abscissae
         and `CY` at the STAGE states (one re-traversal of the orbit,
-        cached).  GLM period maps are refused.
+        cached).  A Nordsieck GLM's map runs natively the same way.
 
         ⚠ TIME AVERAGE, PER FREQUENCY: the mean over `t0` of this PSD is
         the fold of the time-averaged PSD, `sum_k pnoise(|f + k f0|)`, over

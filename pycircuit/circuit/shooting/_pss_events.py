@@ -271,7 +271,8 @@ class _StateEvents(object):
                            phase_row=None, phase_k=None, matrix_free=False):
         """The bordered second stage: the crossings of the first stage's
         orbit become Newton unknowns.  One stage for every kind that has
-        one: the stage methods and gear's pair, driven or free period.
+        one: the stage methods, gear's pair, a Nordsieck GLM (its map on the
+        state) and the plain map opened at `x(0)`, driven or free period.
 
         Unknowns ``(z, theta[, T])``: `z` the entering state (gear's PAIR
         `(x_0, x_{-1})`), `theta` the `K` crossing fractions, and the period

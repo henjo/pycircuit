@@ -951,9 +951,9 @@ def test_pnoise_over_trbdf2_matches_the_stationary_analysis_and_folds():
 
     A TR-BDF2 step injects the source at THREE abscissae, which the ordinary
     one-injection-per-step fold cannot represent (it gave 1e11 error and 99
-    spurious sidebands).  The two-vector fold (`_sideband_forced_trbdf2`)
-    carries the source coupling through both stages and is verified against
-    forward driven solves to machine precision.  Two end-to-end checks:
+    spurious sidebands).  The stage fold (each step's `source_points`, read
+    by `_reverse_points`) carries the source coupling through both stages
+    and is verified against forward driven solves to machine precision.  Two end-to-end checks:
 
     (1) LINEAR divider: no conversion, so the fold must collapse to l=0 and
         pnoise must reduce to the AC noise analysis (a different analysis, no

@@ -915,8 +915,9 @@ def test_phase_noise_stack_works_over_radau():
 
     The autonomous phase-noise surfaces ride on the PPV, which rides on the
     monodromy transpose and the coupled forced adjoint
-    (`_forced_replay_transposed_radau`) -- so a correct three-stage adjoint
-    makes the whole stack available without a Gear-2 twin.  On van der Pol
+    (`_forced_replay_transposed` over the stage steps) -- so a correct
+    three-stage adjoint makes the whole stack available without a Gear-2
+    twin.  On van der Pol
     with a white source the diffusion constant `c` and the lineshape must
     match the Gear-2 numbers (Radau is order 5, gear order 2, so they agree
     to the coarser of the two).

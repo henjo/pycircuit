@@ -236,7 +236,7 @@ class _AccuracyChecks(object):
         hands its covariance to the twin (the method `monodromy` names,
         radau by default) so both come from one consistent orbit; a
         gear/trbdf2 host is its own host.  TR-BDF2's per-step injection is
-        built (`_lyapunov_pieces_trbdf2`, DAE-projected Van Loan), so there
+        built (`_lyapunov_pieces_stage`, DAE-projected Van Loan), so there
         is no Gear-2 fallback -- the injection follows the chosen twin.
         A Nordsieck GLM hands them to its twin driven or not (`_state_twin`:
         radau unless `monodromy='native'`).
@@ -249,9 +249,9 @@ class _AccuracyChecks(object):
         """Host for the ADJOINT SIDEBAND noise surface (`pnoise`, via
         `adjoint_sideband_row`).
 
-        The two-stage sideband fold IS built for TR-BDF2
-        (`_sideband_forced_trbdf2`, the two-vector injected reverse pass that
-        carries the source coupling through both stages), so this is the
+        The sideband fold IS built for every stage method (`_reverse_points`:
+        each step's `source_points` carry the source coupling through every
+        stage), so this is the
         monodromy twin -- the same orbit the Floquet and Lyapunov surfaces
         use, no Gear-2 fallback.  `monodromy='gear'` still routes to the
         Gear-2 twin if asked.  A Nordsieck GLM reads its own map on the

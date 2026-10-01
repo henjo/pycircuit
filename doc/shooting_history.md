@@ -11801,3 +11801,440 @@ reverse-replayed event rows).  Gear's `w3` is zero throughout.
 The docstring's last line, before the move:
 
 (Until 2026-09-25 a 13-field tuple read by position.)
+
+## The third move (2026-10-01, review C20/C21)
+
+After the 2026-09-27 move, dated notes piled up again in the PAC mixins
+(21 in `_pac_osccov.py`, 9 in `_pac_pnoise.py`).  They moved here on
+2026-10-01, VERBATIM, as before: the code keeps the current behaviour in
+the present tense.  Error messages lost their "until <date>" clauses too;
+their old text is below as code.
+
+## `_pac_osccov.py` -- `_OscillatorCovariance` (the third move)
+
+### `oscillator_covariance`
+
+2026-10-01 (the third move, from the code):
+
+The docstring lines on the return shape, before the move:
+
+growth per period along the orbit tangent (see the split below).
+⚠ ONE SHAPE (2026-09-29), the family's `(value, info)`: it returned
+`(K_orb, d, info)`, and `info['samples']` was `'orbital_samples'`.
+
+The sentence on a staged solve, before the move:
+
+fixed-time map to node j (`_event_closure`); until 2026-09-29 they
+were the plain walk's, which misses the crossings' motion.
+
+The comment on the closure's samples, before the move:
+
+oscillator (5.8e-5 with `event_window_steps=2`), against
+1.6e-15 --
+it was returned until 2026-09-29.  The growth direction
+
+The comment on the m x m return, before the move:
+
+⚠ `m x m` WHATEVER THE METHOD (2026-09-29), as `covariance`: a
+
+### `oscillator_edge_jitter`
+
+2026-10-01 (the third move, from the code):
+
+The paragraph on the one-sided projection, before the move:
+
+-- the ONE-sided projection.  ⚠ Until 2026-09-29 this returned
+`e^T Pi P Pi^T e / s^2` and `k_cycle_bound = sqrt(c k T + 2 A)` with it:
+that drops the cross term `X = e^T Pi P (I - Pi)^T e / s^2`, the
+correlation between the transverse and the phase deviation at the
+edge (X/A = -0.150 on the A11 fixture).  A committed Monte Carlo
+(`benchmarks/oscillator_edge_jitter_probe.py`: noisy radau transients
+at the PSS's step, 5760 crossings) agrees with the exact law at
+k = 1..8 (1.2-1.7 sigma) and excluded the old value at k = 1 by 8.9
+sigma.
+
+The paragraph on the law between nodes, before the move:
+
+⚠ THE LAW IS SELF-CONSISTENT PER NODE AND LINEAR IN THE INSTANT
+BETWEEN NODES (2026-09-29).  At node j every piece is node j's --
+`P_j`, `G_j`, `M_j` and the slope ``s_j = e . u_j``, the orbit's own
+rate there, so ``e^T G_j e / s_j^2 = c T`` exactly -- and the law at
+the requested instant is the linear blend of the two nodes around
+it.  Until then the NEAREST node's `P`, `G`, `M` were divided by the
+slope AT THE INSTANT, up to half a step away on an edge that moves
+fast: +0.6 / -0.55 / -0.14 % at 240 / 480 / 960 points (k = 1, the
+A11 chain), the sign flipping with which node was nearest, where
+the law reads 1.5182 / 1.5181 / 1.5180e-6.  `slew` in the result is
+the local quadratic fit AT the instant (`edge_slope`), reported:
+a two-point difference moves with the grid (it changed sign under
+refinement, and was 2.8 % low at 240 points).
+
+The staged-solve parenthesis, before the move:
+
+`jitter_metrics`' for a DRIVEN circuit.  On a STAGED solve (state
+events; refused until 2026-09-29) the period map from node `j`
+
+The instant parenthesis, before the move:
+
+result is the instant the law describes (`time` modulo the period;
+until 2026-09-29 the nearest grid point, and an instant within half
+a step of the period's end read node N-1 instead of node 0), `nodes`
+the two grid nodes around it and `th` its fraction between them.
+
+The paragraph on a coloured source, before the move:
+
+⚠ A COLOURED SOURCE (2026-09-29) needs its band, as in
+`oscillator_covariance`: `colour_fmin` (and `colour_fmax`, default the
+grid's Nyquist).  Its part of `k_cycle` is EXACT (2026-09-30): the
+output sampled once a period at the edge's nodes, its one-sided PSD
+folded into (0, f0/2] and integrated against the k-lag kernel
+(`_edge_coloured_law`) -- the phase with its memory (the increment
+depends on WHERE in the period the edge sits), the transverse part
+with its correlation across periods, and their cross term,
+together; per node over the node's own rate, blended as the white
+law is.  ⚠ Until 2026-09-30 it was the colour fold's phase increment
+plus ``2 A_col`` at every k, which leaves out the last two: 1.3e-3
+for a Lorentzian on a van der Pol tank, 19 % behind a slow RC node
+(the element against its exact white realisation), and more for a
+1/f source.  `coloured_variance` in the result is that part (s^2);
+`coloured_phase_variance` is its PHASE part alone -- the full
+transfer less the transverse one, the oblique split at the edge's
+nodes (reported, not added; the colour fold's increment at the
+instant until 2026-09-30) -- and `coloured_transverse_variance` its
+transverse variance, both from the same folded solve.
+
+The opening of the paragraph on `intercept`, before the move:
+
+⚠ WHAT `A` AND `sigma_t` MEAN WITH A COLOURED SOURCE is `intercept`'s
+choice (2026-09-30; they included the coloured TRANSVERSE variance
+until then -- for a 1/f source a slow wander, not additive jitter:
+2A = 7.2e-6 s^2 against k_cycle_1^2 = 1.0e-7 s^2 on an orbit-
+modulated 1/f van der Pol, where that wander cancels in the
+increments):
+
+The comment on the white part alone, before the move:
+
+folded solve; the covariance's coloured samples at every node
+cost 29 s of a 67 s call until 2026-09-30)
+
+The comment on the law at the instant, before the move:
+
+instant.  Until 2026-09-29 the nearest node's `P`, `G`, `M` over
+the slope AT THE INSTANT: +0.6 / -0.55 / -0.14 % at 240 / 480 /
+960 points.  The slope at the instant (`edge_slope`, a local
+
+The comment on node N, before the move:
+
+blends N-1 and N -- until 2026-09-29 it read node N-1 alone
+
+The comment on the one-sided projection, before the move:
+
+intercept / 2 (the two-sided `Pi P Pi^T` dropped the cross
+term until 2026-09-29)
+
+The comment on the exact coloured law, before the move:
+
+own rate (`_edge_coloured_law`); until 2026-09-30 the fold's
+phase increment + ``2 A_col``, which omits the transverse
+part's memory and its cross term with the phase
+
+The comment on the reported coloured parts, before the move:
+
+variance, reported: the same solve's (until 2026-09-30 the
+covariance's coloured samples and the colour fold's increment,
+56 s of a 67 s call)
+
+### `orbital_mode_weights`
+
+2026-10-01 (the third move, from the code):
+
+The docstring lines on the return shape and the coloured source, before the move:
+
+`info['K']` that covariance (pair space on a pair map).  ⚠ ONE SHAPE
+(2026-09-29): it returned `(cw, modes, K_orb)`.
+
+⚠ A COLOURED SOURCE (2026-09-29) needs its band, as in
+
+## `_pac_pnoise.py` -- `_DrivenNoise` (the third move)
+
+### `pnoise`
+
+2026-10-01 (the third move, from the code):
+
+The docstring sentence on the sweep, before the move:
+
+on a driven one (`_numerics.sweep_kind`).  ⚠ Until 2026-09-29 it
+was absolute on every PSS.
+
+The error message refusing modulated and cyclostationary together, before the move:
+
+```
+'source at the cycle-averaged bias, or the cyclostationary '
+'construction; choose one (given both, the cyclostationary '
+'one was used silently until 2026-09-29).')
+```
+
+The comment on the sweep on the host, before the move:
+
+O(h^2).  Until 2026-09-30 it was read off the run's period, so an
+offset below that gap landed on the wrong side of the pole.
+
+The comment on a count above the Nyquist, before the move:
+
+⚠ A COUNT ABOVE THE GRID'S NYQUIST RAISES (as the sampled family
+does); it was clamped to `N//2` without a word until 2026-09-29
+
+The comment on the DC-fold scan, before the move:
+
+⚠ EVERY SIDEBAND THE FOLD USES (`lmax`): until 2026-09-30 the scan
+stopped at 8 (`maxsidebands or 8`) while the fold ran to the
+grid's Nyquist, so a harmonic above the 8th read a 1/f source
+next to DC unrefused.
+
+The comment on a cap the caller set, before the move:
+
+⚠ A CAP THE CALLER SET IS NAMED AS THAT CAP: until 2026-09-30 an
+explicit `maxsidebands` was reported as "the grid's Nyquist".
+
+### `_dc_fold_guard`
+
+2026-10-01 (the third move, from the code):
+
+The docstring, before the move:
+
+here when needed).  `pnoise` and `am_pm_noise` (whose fold had no
+guard until 2026-09-30).  See `pnoise` for the cases."""
+
+### `band_spread`
+
+2026-10-01 (the third move, from the code):
+
+The docstring sentence on the offsets, before the move:
+
+`harmonic` for EVERY quantity -- ⚠ until 2026-09-29 'pnoise' read
+the band as ABSOLUTE `r f0`, an offset from DC, and the other three
+as offsets from the harmonic; the sweep is fixed here, so `**kw`
+takes no `sweeptype` / `relharmnum`.
+
+The error message for an unknown quantity, before the move:
+
+```
+f"or 'oscillator_spectrum', not {quantity!r} (an unknown "
+"name was taken as 'pnoise' until 2026-09-29)")
+```
+
+### `am_pm_noise`
+
+2026-10-01 (the third move, from the code):
+
+The docstring sentence on the sweep, before the move:
+
+(`_numerics.sweep_kind`).  ⚠ Until 2026-09-29 it was an offset on
+every PSS.  Below, `freq` is the offset.
+
+The comment on the sideband cap, before the move:
+
+`N//2 - |k|`.  The default used to be `N//2` itself, and every
+call with `carrier >= 1` and no `maxsidebands` raised (2026-09-28).
+
+The comment on an explicit count, before the move:
+
+(an explicit count above that raises, as in `pnoise`; clamped
+without a word until 2026-09-29)
+
+The comment on a missing carrier, before the move:
+
+REFUSED, as `am_pm` refuses it (until 2026-09-29 it was left
+unrotated: a split that moved with where t = 0 sits).
+
+## Corrected claims (2026-10-01, review C1-C9, C14-C16, C21): the original wording
+
+Sentences the review found WRONG about the current code (or that named
+internal codes and dates in user-facing text), rewritten in the code on
+2026-10-01; each removed passage below, verbatim, file by file (the dated
+notes of `_pac_osccov.py` and `_pac_pnoise.py` are in the third move
+above; moved comments are not repeated).
+
+
+`pss.py`:
+
+```
+eigenvectors this method returns.  Not measured here on a high-Q case.
+```
+
+```
+GRIDS (recorded scope item 5).  `solve(grid=...)` takes step FRACTIONS
+```
+
+```
+MATRIX-FREE (recorded scope item 6; Telichevesky, Kundert & White, DAC
+```
+
+```
+"the note at the policy in solve()",
+```
+
+```
+## autonomous run takes NO TR-BDF2 twin and reads its own spectrum
+```
+
+```
+"'gear' (BDF-2), 'trap' or 'euler'. The default is "
+```
+
+```
+## step, no index-2 order split.  Driven PSS only (no free
+## period), and the period map is on the MULTIVALUE state --
+## see `factored_period_glm`.
+```
+
+```
+`grid` is RECORDED SCOPE ITEM 5: a sequence of step FRACTIONS of the
+```
+
+```
+`matrix_free` is RECORDED SCOPE ITEM 6: solve the outer system
+```
+
+```
+## ⚠ REFUSED RATHER THAN SILENTLY IGNORED (as `matrix_free` is below
+## on a kind without it).  A solved-history method already solves for
+## `x_0` and `x_{-1}` directly and manufactures nothing, so the flag
+## would be a no-op -- and a no-op flag that the caller believes
+## changed something is worse than an error.
+```
+
+```
+"""RECORDED SCOPE ITEM 6: the Newton's residual and its
+```
+
+```
+## stage 1's orbit, for every kind that has one -- the stage methods
+## and gear's pair, driven or free period (see `_state_event_stage`).
+```
+
+
+`_pss_inner.py`:
+
+```
+## 2m x 2m system rank-deficient.  The right second unknown for such a
+## method is `iq_{-1}` ITSELF, closed by `iq_{-1} = iq_{N-1}` -- a
+## different formulation, not a seeding fix, and not built.
+```
+
+```
+'enlarged system would be rank-deficient. Such a method '
+'needs `iq_{-1}` itself as the unknown, which is a different '
+'formulation; this refuses rather than solving a singular '
+'one.')
+```
+
+
+`_pss_events.py`:
+
+```
+one: the stage methods and gear's pair, driven or free period.
+```
+
+
+`_pac_sampled.py`:
+
+```
+cached).  GLM period maps are refused.
+```
+
+
+`_pss_accuracy.py`:
+
+```
+built (`_lyapunov_pieces_trbdf2`, DAE-projected Van Loan), so there
+```
+
+```
+The two-stage sideband fold IS built for TR-BDF2
+(`_sideband_forced_trbdf2`, the two-vector injected reverse pass that
+carries the source coupling through both stages), so this is the
+```
+
+
+`_pac_modal.py`:
+
+```
+(`test_the_orbital_spectrum_crosses_the_phase_spectrum_near_f_amp`),
+and it is the check that can actually fail.
+```
+
+```
+## ⚠ NOT the grid residual `_warn_if_orbit_is_asymmetric` names:
+```
+
+
+`_pss_ppv.py`:
+
+```
+perturbation `delta` at `t = 0` is then `v[:m] . delta`.  `info`
+carries both border residuals, the null residual, `q` and the scaled
+tangent.  `c` -- the diffusion constant this vector feeds -- has the
+designer-facing reading "JITTER PER SECOND".
+```
+
+```
+## and euler read a TR-BDF2 twin whose period differs by
+## O(h^2)).  A quadrature over `times` divides by THIS.
+```
+
+
+`_pac_phase.py`:
+
+```
+does not.  Reporting `S_phi` near the carrier is the mistake this
+```
+
+```
+'PAC.phase_psd: offsets must be positive; S_phi diverges '
+```
+
+```
+'Lorentzian corner %.6g Hz for harmonic %d, where S_phi is '
+```
+
+```
+sphi = (i ** 2) * (f0 ** 2) * cres / offs ** 2
+```
+
+```
+##     2 df S_phi(df) <= 1
+```
+
+```
+power = 2.0 * offs * sphi
+```
+
+```
+'carrier (2 f S_phi >= 1), so it has broken down there -- '
+```
+
+```
+return sphi
+```
+
+```
+one-sided power `2 |X_1|^2 = A^2/2` (`X_1 = A/2` the carrier phasor).
+Against a reference simulator at every offset over four decades.
+`L_dBc` is `S_v` over that carrier power, in dBc/Hz.  `output`: a
+reduced index, a weight vector, or a node name.
+History: `doc/shooting_history.md`, `PAC.oscillator_spectrum`.
+```
+
+```
+Reporting `S_phi` near the carrier instead is the mistake that
+object invites.
+```
+
+
+`__init__.py`:
+
+```
+_pac_sources.py   its noise sources: CY on the orbit, colour models, roots
+```
+

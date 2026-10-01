@@ -479,10 +479,30 @@ class _PPVFloquet(object):
         Returns `(v, info)`.  `v` is the pair-space left null vector of
         `I - M`, normalised so that `v . xdot(0) = 1` -- see the note on the
         normalisation in the body.  The phase shift caused by a state
-        perturbation `delta` at `t = 0` is then `v[:m] . delta`.  `info`
-        carries both border residuals, the null residual, `q` and the scaled
-        tangent.  `c` -- the diffusion constant this vector feeds -- has the
-        designer-facing reading "JITTER PER SECOND".
+        perturbation `delta` at `t = 0` is then `v[:m] . delta`.  `c` -- the
+        diffusion constant this vector feeds -- has the designer-facing
+        reading "JITTER PER SECOND".
+
+        `info`, key by key:
+
+          * `border_residual`, `tangent_border_residual` -- the border unknown
+            `y` of the left (PPV) and right (tangent) bordered solves: zero
+            at a correct null vector (below).
+          * `null_residual` -- ``||v - M^T v|| / ||v||``; read it times
+            `null_residual_amplification` = ``1 / (1 - lambda_2)``, the factor
+            an error along the second mode hides by.
+          * `second_multiplier` (`lambda_2`), `second_multiplier_route`
+            ('dense' or 'arnoldi'), `second_multiplier_residual` (its Ritz
+            residual) and `second_multiplier_certified` (cleared
+            `PPV_RITZ_RESIDUAL_TOL`); `Q` = ``-1 / ln(lambda_2)``.
+          * `q` = ``C(0) xdot(0)`` (the border), `xdot` = ``xdot(0)``,
+            `tangent_pair` the right null vector in pair space.
+          * `samples` -- the PPV ``C^T v_1`` at every grid node, a STATE
+            perturbation's phase sensitivity; `samples_pair` the same in pair
+            space; `samples_eq` -- ``v_1`` itself, an EQUATION-ROW input's
+            (the one to contract `CY` against); `v_eq` its value at `t = 0`.
+          * `times`, `period` -- the grid and period of the orbit the samples
+            live on (a twin's for trap/euler); `monodromy_method` the method.
 
         ⚠ AN AUGMENTED SOLVE, NOT AN EIGENVECTOR.  On a high-Q oscillator the
         monodromy has several multipliers numerically indistinguishable from
@@ -972,8 +992,9 @@ class _PPVFloquet(object):
                 'times': np.asarray(fp.times, dtype=float),
                 ## ⚠ THE PERIOD OF THE ORBIT THESE SAMPLES LIVE ON, which is
                 ## not the caller's `period` when this came from a twin (trap
-                ## and euler read a TR-BDF2 twin whose period differs by
-                ## O(h^2)).  A quadrature over `times` divides by THIS.
+                ## and euler read a twin, radau by default, whose period
+                ## differs by O(h^2)).  A quadrature over `times` divides by
+                ## THIS.
                 'period': float(fp.T)}
         return v, info
 
@@ -1010,7 +1031,13 @@ class _PPVFloquet(object):
         (`_ppv_propagate`; at w_s = 0 it is `ppv()`'s `samples`);
         `info['admixture']` the norm fraction of `v(w_s)` orthogonal to the
         DC PPV; `info['corner']` the predicted corner `|1 - mu_2| / (2 pi T)`
-        in Hz; `info['alpha']`; `info['ppv']` the DC object's info.
+        in Hz; `info['alpha']`; `info['ppv']` the DC object's info.  Also
+        `offset`, `second_multiplier` (`mu_2`), `residual` (the bordered
+        solve's relative residual), `times` (ONE ENTRY SHORT of the orbit's
+        grid -- integrate over `info['ppv']['times']`), `period`,
+        `samples_eq` (the equation-row samples, as `ppv()`'s), and below
+        `FLOQUET_DENSE_LIMIT` `mode_content` (each Floquet mode's coefficient
+        over the phase mode's) and `multipliers` (None above it).
 
         ⚠ WHAT IT IS FOR.  A source that reaches the phase through a slow
         path (an RC leg, tau >> T) is filtered at its own corner, and the

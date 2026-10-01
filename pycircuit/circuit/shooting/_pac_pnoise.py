@@ -47,8 +47,7 @@ class _DrivenNoise(object):
         rule: `'absolute'` reads `freq` as the output frequency itself,
         `'relative'` as the offset `relharmnum * f0 + freq` (`relharmnum`
         default 1), and `None` is relative on an AUTONOMOUS PSS and absolute
-        on a driven one (`_numerics.sweep_kind`).  ⚠ Until 2026-09-29 it
-        was absolute on every PSS.
+        on a driven one (`_numerics.sweep_kind`).
 
         The sources' `CY`, three ways:
 
@@ -134,19 +133,18 @@ class _DrivenNoise(object):
                 'PAC.pnoise: modulated=True and cyclostationary=True are two '
                 'models of the same bias-dependent source -- one stationary '
                 'source at the cycle-averaged bias, or the cyclostationary '
-                'construction; choose one (given both, the cyclostationary '
-                'one was used silently until 2026-09-29).')
-        ## pnoise folds sidebands through the ADJOINT (adjoint_sideband_row ->
-        ## _forced_replay_transposed) on the monodromy twin -- see
-        ## `_adjoint_host`: TR-BDF2's two-stage fold is built
-        ## (`_sideband_forced_trbdf2`), so there is no Gear-2 fallback; a
-        ## Gear-2 twin only if `monodromy='gear'` asks for one.
+                'construction; choose one.')
+        ## pnoise folds sidebands through the ADJOINT (`_sideband_family`: one
+        ## reverse pass per output frequency, `_reverse_points`) on the
+        ## monodromy twin -- see `_adjoint_host`: the stage methods' fold is
+        ## built, so there is no Gear-2 fallback; a Gear-2 twin only if
+        ## `monodromy='gear'` asks for one.
         pss = pss._adjoint_host()
         ## ⚠ THE SWEEP ON THE HOST: a relative frequency is an offset from
         ## the carrier of the operator the rows are solved on -- the twin's
         ## on a trap/euler oscillator, whose period differs from the run's by
-        ## O(h^2).  Until 2026-09-30 it was read off the run's period, so an
-        ## offset below that gap landed on the wrong side of the pole.
+        ## O(h^2): read off the run's period, an offset below that gap would
+        ## land on the wrong side of the pole.
         freq = sweep_frequency(pss, freq, sweeptype, relharmnum, 'pnoise')
         fp = pss.factored_period()
         m = pss.cir.n - 1
@@ -155,7 +153,7 @@ class _DrivenNoise(object):
         f0 = 1.0 / T
         tol = self.ALIAS_RATIO_TOL if ratio_tol is None else float(ratio_tol)
         ## ⚠ A COUNT ABOVE THE GRID'S NYQUIST RAISES (as the sampled family
-        ## does); it was clamped to `N//2` without a word until 2026-09-29
+        ## does)
         if maxsidebands is not None and int(maxsidebands) > N // 2:
             raise ValueError(
                 f'PAC.pnoise: maxsidebands={maxsidebands} is above the grid\'s '
@@ -209,10 +207,9 @@ class _DrivenNoise(object):
         ## this checks the SOURCES at the frequency actually used rather
         ## than refusing a harmonic on principle.
         f0_ = 1.0 / float(pss.period)
-        ## ⚠ EVERY SIDEBAND THE FOLD USES (`lmax`): until 2026-09-30 the scan
-        ## stopped at 8 (`maxsidebands or 8`) while the fold ran to the
-        ## grid's Nyquist, so a harmonic above the 8th read a 1/f source
-        ## next to DC unrefused.
+        ## ⚠ EVERY SIDEBAND THE FOLD USES (`lmax`): a scan shorter than the
+        ## fold lets a harmonic above it read a 1/f source next to DC
+        ## unrefused.
         lscan = max(1, lmax)
         offs = np.abs(float(freq) - np.arange(-lscan, lscan + 1) * f0_)
         self._dc_fold_guard(pss, cyfn, float(freq), float(np.min(offs)), f0_,
@@ -256,8 +253,8 @@ class _DrivenNoise(object):
         ## number is a LOWER bound on the folded noise -- every sideband
         ## above the grid's own maximum frequency is missing, not small.
         ## A strongly switching circuit does this readily.
-        ## ⚠ A CAP THE CALLER SET IS NAMED AS THAT CAP: until 2026-09-30 an
-        ## explicit `maxsidebands` was reported as "the grid's Nyquist".
+        ## ⚠ A CAP THE CALLER SET IS NAMED AS THAT CAP, not as the grid's
+        ## Nyquist.
         if (self.alias_stop == 'bound' and maxsidebands is not None
                 and lmax < N // 2):
             self.alias_stop = 'cap'
@@ -289,8 +286,10 @@ class _DrivenNoise(object):
 
         `freq` the output frequency, `near` the smallest |source frequency|
         the fold evaluates `cyfn` at, `cy` the sources at `freq` (None: read
-        here when needed).  `pnoise` and `am_pm_noise` (whose fold had no
-        guard until 2026-09-30).  See `pnoise` for the cases."""
+        here when needed).  Used by `pnoise` and `am_pm_noise`.  See `pnoise`
+        for the cases.
+
+        History: `doc/shooting_history.md`, `PAC._dc_fold_guard`."""
         if near <= self.HARMONIC_GUARD * f0_:
             probe = cyfn(pss, 2.0 * np.pi * near)
             if not np.all(np.isfinite(np.asarray(probe))):
@@ -600,9 +599,7 @@ class _DrivenNoise(object):
         `points` offsets spanning `band = (r_lo, r_hi)` in units of `f0`,
         and `info` carrying the samples, the band MEAN, the value at the
         band's midpoint, and their ratio.  The offsets are from harmonic
-        `harmonic` for EVERY quantity -- ⚠ until 2026-09-29 'pnoise' read
-        the band as ABSOLUTE `r f0`, an offset from DC, and the other three
-        as offsets from the harmonic; the sweep is fixed here, so `**kw`
+        `harmonic` for EVERY quantity; the sweep is fixed here, so `**kw`
         takes no `sweeptype` / `relharmnum`.
 
         ⚠⚠ WHY THIS EXISTS.  Far above the AM corner both AM and PM fall as
@@ -628,8 +625,7 @@ class _DrivenNoise(object):
         if quantity not in ('pnoise', 'S_pm', 'S_am', 'oscillator_spectrum'):
             raise ValueError(
                 "PAC.band_spread: quantity must be 'pnoise', 'S_pm', 'S_am' "
-                f"or 'oscillator_spectrum', not {quantity!r} (an unknown "
-                "name was taken as 'pnoise' until 2026-09-29)")
+                f"or 'oscillator_spectrum', not {quantity!r}")
         for k in ('sweeptype', 'relharmnum'):
             if k in kw:
                 raise ValueError(
@@ -678,8 +674,7 @@ class _DrivenNoise(object):
         the offset from `harmonic*f0`, `'absolute'` as the UPPER output
         sideband's own frequency (the offset is `freq - harmonic*f0`), and
         `None` is relative on an AUTONOMOUS PSS and absolute on a driven one
-        (`_numerics.sweep_kind`).  ⚠ Until 2026-09-29 it was an offset on
-        every PSS.  Below, `freq` is the offset.
+        (`_numerics.sweep_kind`).  Below, `freq` is the offset.
 
         ⚠ THIS NEEDS THE SIDEBAND *CORRELATION*, WHICH IS WHY IT IS NOT
         `|m_am|^2` FROM :meth:`am_pm`.  That method is the TRANSFER pair for a
@@ -757,16 +752,14 @@ class _DrivenNoise(object):
         k = int(harmonic)
         ## ⚠ BOTH SIDEBANDS OF A PAIR, `k - p` AND `k + p`, WITHIN THE GRID'S
         ## NYQUIST (`|l| <= N//2`, `adjoint_sideband_row`): so `|p|` up to
-        ## `N//2 - |k|`.  The default used to be `N//2` itself, and every
-        ## call with `carrier >= 1` and no `maxsidebands` raised (2026-09-28).
+        ## `N//2 - |k|`.
         cap = N // 2 - abs(k)
         if cap < 0:
             raise ValueError(
                 'PAC.am_pm_noise: harmonic %d is above the grid\'s Nyquist '
                 '(%d harmonics at %d points per period) -- use a finer period '
                 'grid.' % (k, N // 2, N))
-        ## (an explicit count above that raises, as in `pnoise`; clamped
-        ## without a word until 2026-09-29)
+        ## (an explicit count above that raises, as in `pnoise`)
         if maxsidebands is not None and int(maxsidebands) > cap:
             raise ValueError(
                 f'PAC.am_pm_noise: maxsidebands={maxsidebands} is above what '
@@ -787,8 +780,8 @@ class _DrivenNoise(object):
         ## identity cannot see it (`|a_r|`, `|b_r|` are `|a|`, `|b|`).
         ## `am_pm` divides by the COMPLEX carrier phasor instead.  With no
         ## carrier at this harmonic the phase is undefined, and the split is
-        ## REFUSED, as `am_pm` refuses it (until 2026-09-29 it was left
-        ## unrotated: a split that moved with where t = 0 sits).
+        ## REFUSED, as `am_pm` refuses it: unrotated, the split would move
+        ## with where t = 0 sits.
         _C = self.carrier_phasor(pss, output, k)
         _scale = float(np.max(np.abs(self._output_waveform_row(pss, output))))
         if abs(_C) <= 1e-9 * max(_scale, 1e-300):

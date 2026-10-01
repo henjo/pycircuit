@@ -230,6 +230,15 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         `recycle` shares one Krylov subspace across the sweep, which is
         where the sweep's cost goes; see `_solve_subspace`.
 
+        Returns a `CircuitResult` (also `self.result`) swept over the OUTPUT
+        frequency: every sideband ``f + k f0`` of every sweep point, merged
+        and sorted, a negative one folded to ``|f + k f0|`` with its
+        coefficient conjugated.  Also sets `self.time_response`, per sweep
+        point ``(times, y)`` the complex response at the grid's nodes (a
+        time-domain reading comes from here, not from summing sidebands),
+        and `self.event_shifts`, per sweep point the landed crossings'
+        small-signal shifts (None without state events).
+
         History: `doc/shooting_history.md`, `PAC.solve`.
         """
         toolkit = self.toolkit

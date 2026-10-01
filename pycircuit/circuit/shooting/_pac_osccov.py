@@ -189,8 +189,6 @@ class _OscillatorCovariance(object):
         Returns `(K_orb, info)`.  `K_orb` is the BOUNDED periodic
         (orbital) part of the covariance at `t = 0`; `info['d']` is the
         growth per period along the orbit tangent (see the split below).
-        ⚠ ONE SHAPE (2026-09-29), the family's `(value, info)`: it returned
-        `(K_orb, d, info)`, and `info['samples']` was `'orbital_samples'`.
 
         ⚠ "BOUNDED" IS NOT "TRANSVERSE".  `K_orb` has the SECULAR growth
         removed and still contains the phase direction's bounded
@@ -218,8 +216,8 @@ class _OscillatorCovariance(object):
         the growth DIRECTION is the propagated tangent rather than a fixed
         `u`.  On a STAGED solve both are at FIXED times -- the event
         closure's samples, and ``u_j = R_j u`` with ``R_j`` the total
-        fixed-time map to node j (`_event_closure`); until 2026-09-29 they
-        were the plain walk's, which misses the crossings' motion.
+        fixed-time map to node j (`_event_closure`): the plain walk would
+        miss the crossings' motion.
         `info['growth_samples'][j]` is ``d u_j u_j^T`` and
         `info['tangent_samples'][j]` is ``u_j`` itself -- its first block the
         orbit's own rate at node j.
@@ -288,6 +286,15 @@ class _OscillatorCovariance(object):
         `info['K_transverse']` is the TRANSVERSE covariance at `t = 0`,
         ``Pi K_orb Pi^T`` in the node space (`_node_projectors`), and with
         `samples=True` `info['transverse_samples']` at every node.
+
+        The rest of `info`: `d_closed_form` and `d_residual` (above),
+        `growth` (``d u u^T``), `c_from_growth` (``d / T``), `tangent_pair`
+        (`u`), `ppv_pair` (`v`), `pair_inner` (``v . u``), `sigma_min` and
+        `sigma_min_bordered` (the smallest singular values of ``I - M kron M``
+        and of the bordered system), `null_residual` (``||(I - M kron M)
+        (u kron u)||`` relative), `ppv` (`ppv()`'s info); with `samples=True`
+        also `samples` (``P(t_j)``), `growth_samples`, `tangent_samples` and
+        `times`.
 
         ⚠ A COLOURED SOURCE needs the band `colour_fmin` / `colour_fmax` /
         `points_per_decade`, as `covariance`.  Its phase does not diffuse --
@@ -405,8 +412,7 @@ class _OscillatorCovariance(object):
                 ## crossings' noise-driven motion and closed on `K_orb +
                 ## growth` only to 3.5e-7 of its size on the comparator
                 ## oscillator (5.8e-5 with `event_window_steps=2`), against
-                ## 1.6e-15 --
-                ## it was returned until 2026-09-29.  The growth direction
+                ## 1.6e-15 for the closure's.  The growth direction
                 ## at node j is the TOTAL fixed-time map's image of `u`.
                 orb = [np.asarray(P, dtype=float)[:n, :n]
                        for P in closure_samples(K_orb)]
@@ -467,7 +473,7 @@ class _OscillatorCovariance(object):
                 'noise is phase_psd\'s. Its transverse covariance is in '
                 "info['K_coloured'], and info['K_transverse'] holds both.",
                 RuntimeWarning, stacklevel=2)
-        ## ⚠ `m x m` WHATEVER THE METHOD (2026-09-29), as `covariance`: a
+        ## ⚠ `m x m` WHATEVER THE METHOD, as `covariance`: a
         ## two-step method's pair space is its own, `pair=True` keeps it
         ## (`orbital_mode_weights` reads the Floquet modes there)
         if not pair:
@@ -786,15 +792,13 @@ class _OscillatorCovariance(object):
 
             sigma_t^2 = e^T Pi P(t_j) e / s^2,  Pi = I - u_j v_j^T/(v_j^T u_j)
 
-        -- the ONE-sided projection.  ⚠ Until 2026-09-29 this returned
-        `e^T Pi P Pi^T e / s^2` and `k_cycle_bound = sqrt(c k T + 2 A)` with it:
-        that drops the cross term `X = e^T Pi P (I - Pi)^T e / s^2`, the
-        correlation between the transverse and the phase deviation at the
-        edge (X/A = -0.150 on the A11 fixture).  A committed Monte Carlo
-        (`benchmarks/oscillator_edge_jitter_probe.py`: noisy radau transients
-        at the PSS's step, 5760 crossings) agrees with the exact law at
-        k = 1..8 (1.2-1.7 sigma) and excluded the old value at k = 1 by 8.9
-        sigma.
+        -- the ONE-sided projection, which keeps the cross term
+        ``X = e^T Pi P (I - Pi)^T e / s^2``, the correlation between the
+        transverse and the phase deviation at the edge (X/A = -0.150 on the
+        A11 fixture; the two-sided ``Pi P Pi^T`` drops it).  A committed
+        Monte Carlo (`benchmarks/oscillator_edge_jitter_probe.py`: noisy
+        radau transients at the PSS's step, 5760 crossings) agrees with the
+        exact law at k = 1..8 (1.2-1.7 sigma).
 
         ⚠⚠ `P` ITSELF IS THE WRONG OBJECT, and by a margin that hides easily.
         "Bounded is not transverse": `P` keeps the phase direction's bounded
@@ -815,18 +819,13 @@ class _OscillatorCovariance(object):
         Everything is sliced `[:m, :m]` out of PAIR space.
 
         ⚠ THE LAW IS SELF-CONSISTENT PER NODE AND LINEAR IN THE INSTANT
-        BETWEEN NODES (2026-09-29).  At node j every piece is node j's --
-        `P_j`, `G_j`, `M_j` and the slope ``s_j = e . u_j``, the orbit's own
-        rate there, so ``e^T G_j e / s_j^2 = c T`` exactly -- and the law at
-        the requested instant is the linear blend of the two nodes around
-        it.  Until then the NEAREST node's `P`, `G`, `M` were divided by the
-        slope AT THE INSTANT, up to half a step away on an edge that moves
-        fast: +0.6 / -0.55 / -0.14 % at 240 / 480 / 960 points (k = 1, the
-        A11 chain), the sign flipping with which node was nearest, where
-        the law reads 1.5182 / 1.5181 / 1.5180e-6.  `slew` in the result is
-        the local quadratic fit AT the instant (`edge_slope`), reported:
-        a two-point difference moves with the grid (it changed sign under
-        refinement, and was 2.8 % low at 240 points).
+        BETWEEN NODES.  At node j every piece is node j's -- `P_j`, `G_j`,
+        `M_j` and the slope ``s_j = e . u_j``, the orbit's own rate there, so
+        ``e^T G_j e / s_j^2 = c T`` exactly -- and the law at the requested
+        instant is the linear blend of the two nodes around it: 1.5182 /
+        1.5181 / 1.5180e-6 at 240 / 480 / 960 points (k = 1, the A11 chain).
+        `slew` in the result is the local quadratic fit AT the instant
+        (`edge_slope`), reported: a two-point difference moves with the grid.
 
         ⚠ When validating this against a transient, run the Monte Carlo on the
         SAME integrator as the PSS, or divide by the slope of the orbit the
@@ -835,7 +834,7 @@ class _OscillatorCovariance(object):
 
         `k_cycle` is exact at every `k` -- the same key and meaning as
         `jitter_metrics`' for a DRIVEN circuit.  On a STAGED solve (state
-        events; refused until 2026-09-29) the period map from node `j`
+        events) the period map from node `j`
         carries the crossings' motion: ``M_j^k = R_j M_tot^{k-1} S_j`` from
         the event closure (`_event_closure`'s `period_map_from`), `P_j` and
         `G_j` its fixed-time samples.  ⚠ Gated by its construction only: on
@@ -846,37 +845,30 @@ class _OscillatorCovariance(object):
         ⚠ THE INSTANT IS THE CALLER'S.  This does not hunt for a crossing: a
         threshold taken from a simulated record can be biased by startup, and
         that moves the instant off the steepest point.  `instant` in the
-        result is the instant the law describes (`time` modulo the period;
-        until 2026-09-29 the nearest grid point, and an instant within half
-        a step of the period's end read node N-1 instead of node 0), `nodes`
-        the two grid nodes around it and `th` its fraction between them.
+        result is the instant the law describes (`time` modulo the period),
+        `nodes` the two grid nodes around it and `th` its fraction between
+        them.
 
-        ⚠ A COLOURED SOURCE (2026-09-29) needs its band, as in
-        `oscillator_covariance`: `colour_fmin` (and `colour_fmax`, default the
-        grid's Nyquist).  Its part of `k_cycle` is EXACT (2026-09-30): the
-        output sampled once a period at the edge's nodes, its one-sided PSD
-        folded into (0, f0/2] and integrated against the k-lag kernel
-        (`_edge_coloured_law`) -- the phase with its memory (the increment
-        depends on WHERE in the period the edge sits), the transverse part
-        with its correlation across periods, and their cross term,
-        together; per node over the node's own rate, blended as the white
-        law is.  ⚠ Until 2026-09-30 it was the colour fold's phase increment
-        plus ``2 A_col`` at every k, which leaves out the last two: 1.3e-3
-        for a Lorentzian on a van der Pol tank, 19 % behind a slow RC node
-        (the element against its exact white realisation), and more for a
-        1/f source.  `coloured_variance` in the result is that part (s^2);
-        `coloured_phase_variance` is its PHASE part alone -- the full
+        ⚠ A COLOURED SOURCE needs its band, as in `oscillator_covariance`:
+        `colour_fmin` (and `colour_fmax`, default the grid's Nyquist).  Its
+        part of `k_cycle` is EXACT: the output sampled once a period at the
+        edge's nodes, its one-sided PSD folded into (0, f0/2] and integrated
+        against the k-lag kernel (`_edge_coloured_law`) -- the phase with its
+        memory (the increment depends on WHERE in the period the edge sits),
+        the transverse part with its correlation across periods, and their
+        cross term, together; per node over the node's own rate, blended as
+        the white law is.  `coloured_variance` in the result is that part
+        (s^2); `coloured_phase_variance` is its PHASE part alone -- the full
         transfer less the transverse one, the oblique split at the edge's
-        nodes (reported, not added; the colour fold's increment at the
-        instant until 2026-09-30) -- and `coloured_transverse_variance` its
+        nodes (reported, not added) -- and `coloured_transverse_variance` its
         transverse variance, both from the same folded solve.
 
         ⚠ WHAT `A` AND `sigma_t` MEAN WITH A COLOURED SOURCE is `intercept`'s
-        choice (2026-09-30; they included the coloured TRANSVERSE variance
-        until then -- for a 1/f source a slow wander, not additive jitter:
-        2A = 7.2e-6 s^2 against k_cycle_1^2 = 1.0e-7 s^2 on an orbit-
-        modulated 1/f van der Pol, where that wander cancels in the
-        increments):
+        choice.  A coloured source's TRANSVERSE variance is, for a 1/f
+        source, a slow wander rather than additive jitter (2A = 7.2e-6 s^2
+        against k_cycle_1^2 = 1.0e-7 s^2 on an orbit-modulated 1/f van der
+        Pol, where that wander cancels in the increments), so by default it
+        is not in them:
 
           'white' (default)  the WHITE sources' exact intercept; a coloured
                              source enters `k_cycle` only (`A = 0`,
@@ -930,7 +922,7 @@ class _OscillatorCovariance(object):
             ## (the WHITE part alone: the coloured one -- its transverse
             ## variance and phase included -- is `_edge_coloured_law`'s, one
             ## folded solve; the covariance's coloured samples at every node
-            ## cost 29 s of a 67 s call until 2026-09-30)
+            ## would cost 29 s of a 67 s call)
             K_orb, info = self.oscillator_covariance(
                 pss, samples=True, pair=True, colour_fmin=colour_fmin,
                 colour_fmax=colour_fmax, points_per_decade=points_per_decade,
@@ -952,9 +944,7 @@ class _OscillatorCovariance(object):
         ## ⚠ THE LAW AT THE REQUESTED INSTANT, from the two nodes around it,
         ## each SELF-CONSISTENT: `P_j`, `G_j`, `M_j` and the slope `e . u_j`
         ## (the orbit's own rate at the node) at ONE node, then linear in the
-        ## instant.  Until 2026-09-29 the nearest node's `P`, `G`, `M` over
-        ## the slope AT THE INSTANT: +0.6 / -0.55 / -0.14 % at 240 / 480 /
-        ## 960 points.  The slope at the instant (`edge_slope`, a local
+        ## instant.  The slope at the instant (`edge_slope`, a local
         ## quadratic fit) is reported as `slew`.
         tc = float(time) % T
         slew, _jn = edge_slope(times, row, tc)
@@ -967,7 +957,7 @@ class _OscillatorCovariance(object):
         tn = np.asarray(fp.times, dtype=float)[:N + 1]
         ## node N is node 0 a period on (the law is the same there: the
         ## growth `d u u^T` cancels in it), so an instant in the last step
-        ## blends N-1 and N -- until 2026-09-29 it read node N-1 alone
+        ## blends N-1 and N
         a = int(np.clip(np.searchsorted(tn, tc, side='right') - 1, 0, N - 1))
         b = a + 1
         th = float(np.clip((tc - tn[a]) / (tn[b] - tn[a]), 0.0, 1.0))
@@ -1034,8 +1024,8 @@ class _OscillatorCovariance(object):
                         f'directions are orthogonal at node {jn}, so the '
                         'oblique projection is undefined.')
                 ## the ONE-sided projection: the exact law's large-k
-                ## intercept / 2 (the two-sided `Pi P Pi^T` dropped the cross
-                ## term until 2026-09-29)
+                ## intercept / 2 (the two-sided `Pi P Pi^T` would drop the
+                ## cross term)
                 Pm = np.asarray(info['samples'][jn], dtype=float)[:m, :m]
                 Pi = np.eye(m) - np.outer(uj, vj) / den
                 prj = float(e @ (Pi @ Pm) @ e)
@@ -1077,9 +1067,8 @@ class _OscillatorCovariance(object):
         if coloured:
             band = (float(col['fmin']), float(col['fmax']))
             ## ⚠ THE EXACT COLOURED k-LAG LAW at both nodes, each over its
-            ## own rate (`_edge_coloured_law`); until 2026-09-30 the fold's
-            ## phase increment + ``2 A_col``, which omits the transverse
-            ## part's memory and its cross term with the phase
+            ## own rate (`_edge_coloured_law`), the transverse part's memory
+            ## and its cross term with the phase included
             Pi = self._node_projectors(pss)
             law = self._edge_coloured_law(pss, col, output, (a, b),
                                           int(kmax), projectors=(Pi[a], Pi[b]))
@@ -1097,9 +1086,7 @@ class _OscillatorCovariance(object):
             else:
                 A_cx = c_col = float('nan')
             ## the coloured TRANSVERSE variance and the PHASE part's k-lag
-            ## variance, reported: the same solve's (until 2026-09-30 the
-            ## covariance's coloured samples and the colour fold's increment,
-            ## 56 s of a 67 s call)
+            ## variance, reported: the same solve's
             A_col = (1.0 - th) * law['transverse'][0] / sa + th * law['transverse'][1] / sb
             inc = (1.0 - th) * law['Vphase'][0] / sa + th * law['Vphase'][1] / sb
 
@@ -1189,10 +1176,9 @@ class _OscillatorCovariance(object):
         Returns `(cw, info)` with `cw[k, k'] = v_k† K_orb v_k'`, the weight
         of each pair of Floquet directions in the bounded (orbital) part of
         the state covariance, `info['modes']` those directions and
-        `info['K']` that covariance (pair space on a pair map).  ⚠ ONE SHAPE
-        (2026-09-29): it returned `(cw, modes, K_orb)`.
+        `info['K']` that covariance (pair space on a pair map).
 
-        ⚠ A COLOURED SOURCE (2026-09-29) needs its band, as in
+        ⚠ A COLOURED SOURCE needs its band, as in
         `oscillator_covariance` (`colour_fmin`, `colour_fmax`,
         `points_per_decade`).  Its part of the bounded covariance is built in
         the MAP's own space from the bordered solution at node 0

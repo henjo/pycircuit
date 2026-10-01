@@ -601,8 +601,9 @@ class Transient(Analysis):
     Fang DAC 2013) and PCNR run on both backends, sharing the Gear-2
     default since P22's state-row mask (eq (6) measured on state rows
     only; algebraic rows are slaved through the Jacobian).
-    CPU-only, with cause: trapezoidal integration (a correct VARIABLE-step
-    trap estimator exists only here) and the
+    CPU-only, with cause: every STAGE and MULTIVALUE method (radau, trbdf2,
+    esdirk43, the Nordsieck GLMs -- `JAXTransient` takes the three LMM
+    companions, euler, trap and gear, and nothing else) and the
     `nrsolver`/`scaler`/`linearsolver` strategy objects -- per-iteration
     Python dispatch that a traced loop cannot host, so `JAXTransient`
     refuses them permanently (P17).  JAX-only by design: `solve_batched`
@@ -610,48 +611,29 @@ class Transient(Analysis):
     concurrently; this class gets no imitation of it, because a Python loop
     over `Transient` is already expressible and honest about its cost.
 
-    i(t) = c*dv/dt
-    v(t) = L*di/dt
+    Each step solves the method's companion system ``i(x) + iq + u(t) = 0``
+    (a stage method: its stages) by Newton (`_newton`, or the strategy
+    objects above), the integrator supplying the companion current `iq` --
+    Gear-2 by default (the `integrator` Parameter).
 
-    The usual companion models are used.
-    backward euler:
-    i(n+1) = c/dt*(v(n+1) - v(n)) = geq*v(n+1) + Ieq
-    v(n+1) = L/dt*(i(n+1) - i(n)) = req*i(n+1) + Veq
+    Example: an RC network charging from zero (`uic=True`; the default
+    starts from the DC operating point, where it already sits), with a
+    time constant of 9.9 ms and a final value of 9.9 V at `net2`:
 
-    def F(x): return i(x)+Geq(x)*x+u(x)+ueq(x0), G(x)+Geq(x)
-    x0=x(n)
-    x(n+1) = fsolve(F, x0, fprime=J)
-
-    Linear circuit example:
     >>> circuit.default_toolkit = numeric
     >>> c = SubCircuit()
     >>> n1 = c.add_node('net1')
     >>> n2 = c.add_node('net2')
-    >>> c['Is'] = IS(gnd, n1, i=10)    
+    >>> c['Is'] = IS(gnd, n1, i=10)
     >>> c['R1'] = R(n1, gnd, r=1)
     >>> c['R2'] = R(n1, n2, r=1e3)
     >>> c['R3'] = R(n2, gnd, r=100e3)
     >>> c['C'] = C(n2, gnd, c=1e-5)
-    >>> tran = Transient(c)
-    >>> res = tran.solve(tend=10e-3,timestep=1e-4)
-    >>> expected = 6.3
-    >>> abs(res.v(n2, gnd)[-1] - expected) < 1e-2*expected #node 2 of last x
+    >>> tran = Transient(c, uic=True)
+    >>> res = tran.solve(tend=10e-3, timestep=1e-4)
+    >>> expected = 9.9 * (1 - np.exp(-10e-3 / 9.9e-3))
+    >>> bool(abs(res.v(n2, gnd)[-1] - expected) < 1e-2 * expected)
     True
-
-    Linear circuit example:
-    >>> from pycircuit.circuit.elements import ISin
-    >>> c = SubCircuit()
-    >>> n1 = c.add_node('net1')
-    >>> c['Isin'] = ISin(gnd, n1, ia=1e-3, freq=16e3)
-    >>> c['R'] = R(n1, gnd, r=200)
-    >>> c['C'] = C(n1, gnd, c=1e-6)
-    >>> c['L'] = L(n1, gnd, L=1e-4)
-    >>> tran = Transient(c)
-    >>> res = tran.solve(tend=260e-6,timestep=1e-6)
-    >>> expected = 0.063
-    >>> abs(res.v(n1,gnd)[-1]) < 1e-1*expected #node 2 of last x
-    True
-    
     """
     ## E7: a state event is landed when the crossing sits within this
     ## fraction of the step's end, in at most this many secant re-solves.
@@ -664,10 +646,7 @@ class Transient(Analysis):
     ## whether a landed crossing restarts the multistep history (measured
     ## both ways on the comparator oscillator -- see the E7 entry)
     EVENT_RESTART_HISTORY = True
-    ## TODO:
-    ## * Implement automatic timestep adjustment, using difference between
-    ##   BE and trapezoidal as a measure of the error.
-    ##   Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
+
     def _get_integrator(self):
         from pycircuit.circuit.integrator import (Integrator, Gear2Integrator)
         integrator = getattr(self.par, 'integrator', None)
@@ -803,8 +782,8 @@ class Transient(Analysis):
          ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='coupled_method',
                    desc="Step-size correction for coupled_lte=True: 'approx' "
-                        "(Fang sec 3.4, the only one; 'bordered' was retired "
-                        "2026-09-27)",
+                        "(Fang sec 3.4, the only one; 'bordered' is retired "
+                        "and raises)",
                    unit='',
                    default='approx'),
          ## THE RADAU COST TRANSFORM.  radau5's eig(A^-1) split: one real and one complex m x m solve per
@@ -852,7 +831,7 @@ class Transient(Analysis):
                         'window edge, `Circuit.state_events()`): a crossing '
                         'inside an accepted step cuts the step to the '
                         'crossing and restarts the history there, as a '
-                        'source corner does (E7, 2026-09-22)',
+                        'source corner does',
                    unit='', default=True),
          ## STAGE 10.3 -- SPICE's `.ic`, for `uic=True`.
          ##
@@ -878,10 +857,6 @@ class Transient(Analysis):
          Parameter(name='minstep',
                    desc='Minimum timestep to prevent infinite loops', unit='s',
                    default=1e-18),
-         ## STAGE 3.  The opening step, which the controller must accept
-         ## unevaluated because there is no history to difference against.  `None`
-         ## means `timestep * 1e-3`; see `Transient._opening_step` for why opening
-         ## at `timestep` made `reltol` unable to influence the answer at all.
          ## STAGE 10.2 -- ask for a uniform output grid instead of resampling by
          ## hand.  `None` keeps the solver's own adaptive points, which is what
          ## every existing caller gets.
@@ -892,12 +867,6 @@ class Transient(Analysis):
                         'resample_uniform',
                    unit='s',
                    default=None),
-         ## The step cap (`timestep_max`) is DECOUPLED from `timestep` (owner
-         ## decision): a shared value makes the step count on gentle circuits a
-         ## property of the requested output density rather than of the error
-         ## control.  `timestep` only sets the opening-step scale and the
-         ## fixed_timestep grid.
-         ## History: `doc/transient_history.md`, `Transient.parameters`.
          ## The commercial-simulator-class VOLTAGE CHECK: on a purely resistive/
          ## algebraic network (a designer exploring an amplifier topology
          ## with Rs and controlled sources, no reactances yet) NO error
@@ -946,6 +915,12 @@ class Transient(Analysis):
                         'order with Nyquist margin.',
                    unit='',
                    default=64),
+         ## The step cap (`timestep_max`) is DECOUPLED from `timestep` (owner
+         ## decision): a shared value makes the step count on gentle circuits a
+         ## property of the requested output density rather than of the error
+         ## control.  `timestep` only sets the opening-step scale and the
+         ## fixed_timestep grid.
+         ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='timestep_max',
                    desc='Largest accepted timestep; None means tend/50, the '
                         'SPICE TMAX default. Decoupled from timestep, which '
@@ -953,10 +928,15 @@ class Transient(Analysis):
                         'fixed_timestep grid',
                    unit='s',
                    default=None),
+         ## STAGE 3.  The opening step, which the controller must accept
+         ## unevaluated because there is no history to difference against.  `None`
+         ## means `timestep * 1e-3`; see `Transient._opening_step` for why opening
+         ## at `timestep` made `reltol` unable to influence the answer at all.
          Parameter(name='firststep',
-                   desc='Size of the first timestep; None means timestep*1e-3. '
-                        'The first step cannot be error-checked, so taking it '
-                        'large lets its error dominate the whole run.',
+                   desc='Size of the first timestep; None means timestep*1e-3, '
+                        'and a larger value is capped at timestep. The first '
+                        'step cannot be error-checked, so taking it large lets '
+                        'its error dominate the whole run.',
                    unit='s',
                    default=None),
          Parameter(name='bypasstol',
@@ -1675,8 +1655,8 @@ class Transient(Analysis):
             raise ValueError(
                 "firststep must be positive, not %r; pass None to use the default "
                 "ramp of timestep*1e-3" % (firststep,))
-        ## An opening step larger than max_step would be capped on the very next
-        ## step anyway, and asking for one is more likely a mistake than an intent.
+        ## capped at `timestep`, the opening-step scale: asking for more is more
+        ## likely a mistake than an intent
         return min(firststep, timestep)
 
     def _memo_clear(self):
@@ -2579,9 +2559,10 @@ class Transient(Analysis):
     ## STAGE 12B -- small helpers the coupled path needs, factored out of `_solve`
     ## rather than re-derived, so the two paths cannot drift apart on tolerances.
 
-    ## The LTE tolerance multiplier.  `TRTOL` in this module, `lteratio` in
-    ## a commercial simulator: the LTE estimate is deliberately conservative, so the allowed
-    ## truncation error is this many times the Newton-solve tolerance.
+    ## The LTE tolerance multiplier.  `TRTOL` in this module, `lteratio` in a
+    ## commercial simulator: the LTE estimate is deliberately conservative, so
+    ## the allowed truncation error is this many times the Newton-solve
+    ## tolerance.
     ## A property reading the `TRTOL` Parameter (the JAX backend's too, P2),
     ## so every `self.LTERATIO` read follows the Parameter and the two cannot
     ## drift.
@@ -2721,6 +2702,12 @@ class Transient(Analysis):
                       provided_function=None, gamma_min=0.7, gamma_max=3.0,
                       eta=0.15, maxiter=None, hmin=None, max_step=None,
                       hold_h=False, grid_locked=False, method='approx'):
+        """One time point of Fang's coupled method from `x_prev` at
+        `t_prev`, solving for the state AND the step together from the trial
+        step `h` (see `_fang_timestep_inner`, whose parameters these are).
+        Returns ``(x, h, iterations, converged)``.  Around it, the
+        `sigglobal` running reference is rebuilt from the RETURNED solution
+        only, so an unconverged iterate never moves a later tolerance."""
         ## R2 HYGIENE (doc/transient_review_260820.md, refuted-but-latent):
         ## the Newton loop below folds every UNCONVERGED iterate into the
         ## sigglobal running maximum through _lte_tolerance -> _reference.
@@ -4865,6 +4852,18 @@ class Transient(Analysis):
         return self._finish_radau(ctx, x0, t, provided_function, Y)
 
     def solve_timestep(self, x0, t, provided_function=None):
+        """One step of the run's method from `x0` to time `t`; the step
+        length is `self._dt`, set by the caller (the stepping loop, or the
+        shooting's inner transient).  Dispatched on the integrator: a
+        Nordsieck GLM (`_solve_timestep_glm`), any Runge-Kutta tableau
+        (`_solve_timestep_rk`), PCNR when asked for and a device takes part
+        (`_solve_timestep_pcnr`), else the multistep companion Newton below.
+
+        Returns ``(x, feval, J, f)``: the new state and the step's Jacobian at
+        it (the step controller and the shooting walks read `J`).  `feval`
+        and `f` are read by no caller -- None on every path but PCNR's, and
+        `f` is None on the multistep path by design (`jacobian_only`).
+        """
         from pycircuit.circuit.integrator import RungeKuttaIntegrator
         ## ⚠ THE STEP STARTS FROM ITS ENTERING POINT, NOT FROM THE LAST
         ## ATTEMPT'S DEVICE STATE.  A stateful limiter (`Diode`) reads `i` /
@@ -4977,6 +4976,20 @@ class Transient(Analysis):
     ## `analytical_eh` is not an argument (F8): passing it raises TypeError.
     ## History: `doc/transient_history.md`, `Transient.solve`.
     def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
+        """Integrate the circuit from 0 to `tend`; returns the run's
+        `CircuitResult` over time (also `self.result`), the start point
+        included and `statistics` attached.
+
+        `x0` is the start state; None means the DC operating point, or with
+        `uic=True` the `ic` vector (zeros where none is given).  `timestep`
+        sets the opening-step scale (`firststep`) and, with
+        `fixed_timestep=True`, the uniform grid the run keeps; otherwise the
+        step is LTE-controlled and capped by `timestep_max`.
+        `provided_function(t)` is an extra source term added to `u(t)`.
+        `coupled_lte=True` runs Fang's coupled `(x, h)` step (`fang_timestep`)
+        instead of the predict/accept loop.  The steps themselves are
+        `_solve`'s.
+        """
         ## (the caller may have changed the circuit since the last run)
         self._memo_clear()
         ## Stage 2a: hold BLAS to one thread for the whole run.  It wraps the whole
@@ -5074,6 +5087,10 @@ class Transient(Analysis):
                 self._ev_thr = np.array([float(t_) for _r, t_ in _rows])
 
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
+        """`solve`'s run, inside its single-threaded BLAS: the start state,
+        then ONE stepping loop over the method's step family (`_LMMSteps`,
+        `_StageSteps`, or `_CoupledSteps` for `coupled_lte`), the breakpoints
+        and state events landed on the way, then `_finish_result`."""
         ## PCNR OUTCOME, per run (roadmap sec. 47).  `pcnr=True` is a
         ## request: PCNR can decline for the whole run (no device
         ## declares a probe) or fail on individual timesteps and fall

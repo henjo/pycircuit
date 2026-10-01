@@ -279,6 +279,10 @@ class _FactoredReplays(object):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
 
         Runs the factored traversal ONCE, at the solution, and caches it.
+
+        ⚠ ON A TRAP/EULER OSCILLATOR IT IS THE TWIN'S (`monodromy_twin`):
+        its grid, orbit and period, not this run's -- read `fp.times` and
+        `fp.T`, never this PSS's, alongside it.
         Lazy on purpose: a factored walk stores `N` factorisations and
         `N` capacitances (`2 N m^2` doubles -- ~800 MB at m=1002 and 50
         points), which is a bad trade to impose on every `solve` for the

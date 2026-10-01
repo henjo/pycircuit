@@ -661,7 +661,7 @@ class _PhaseNoise(object):
         a Wiener process whose spectrum is singular at the origin; the
         finite value the real lineshape attains comes from the NONLINEAR
         phase-to-voltage map, which `oscillator_spectrum` carries and this
-        does not.  Reporting `S_phi` near the carrier is the mistake this
+        does not.  Reporting `L(f)` near the carrier is the mistake this
         object invites, so it raises instead.
 
         ⚠ `frequency_aware` (default True): `c(f)` from the
@@ -682,7 +682,7 @@ class _PhaseNoise(object):
         offs = np.atleast_1d(np.asarray(offsets, dtype=float))
         if np.any(offs <= 0.0):
             raise ValueError(
-                'PAC.phase_psd: offsets must be positive; S_phi diverges '
+                'PAC.phase_psd: offsets must be positive; L(f) diverges '
                 'at zero offset and that divergence is physical.')
         cres = self.coloured_diffusion_resolved(
             pss, offs, frequency_aware=frequency_aware)
@@ -700,20 +700,20 @@ class _PhaseNoise(object):
         if offs.min() <= corner:
             raise ValueError(
                 'PAC.phase_psd: offset %.6g Hz is at or below the '
-                'Lorentzian corner %.6g Hz for harmonic %d, where S_phi is '
+                'Lorentzian corner %.6g Hz for harmonic %d, where L(f) is '
                 'not the right object -- the excess phase is a Wiener '
                 'process and its spectrum is singular at the origin. The '
                 'finite value the LINESHAPE attains there comes from the '
                 'nonlinear phase-to-voltage map: use oscillator_spectrum().'
                 % (float(offs.min()), corner, i))
-        sphi = (i ** 2) * (f0 ** 2) * cres / offs ** 2
+        ssb = (i ** 2) * (f0 ** 2) * cres / offs ** 2
 
         ## ⚠ POWER CONSERVATION AS A SECOND, INDEPENDENT FLOOR -- and for a
         ## COLOURED source it is the binding one, by orders.  The
         ## normalised lineshape integrates to 1, and the integral over one
         ## box of width `df` on each side is a lower bound on it, so
         ##
-        ##     2 df S_phi(df) <= 1
+        ##     2 df L(df) <= 1
         ##
         ## is NECESSARY for the linearised skirt to be consistent with
         ## unit power.  Vanassche, Gielen & Sansen (2003) derive the same
@@ -767,14 +767,14 @@ class _PhaseNoise(object):
                 'here, so it is refused rather than applied.'
                 % float(probe[k]))
 
-        power = 2.0 * offs * sphi
+        power = 2.0 * offs * ssb
         bad = power >= 1.0
         if np.any(bad):
             k = int(np.argmax(bad))
             raise ValueError(
                 'PAC.phase_psd: at offset %.6g Hz the linearised skirt '
                 'already carries %.3f times the TOTAL power of the '
-                'carrier (2 f S_phi >= 1), so it has broken down there -- '
+                'carrier (2 f L(f) >= 1), so it has broken down there -- '
                 'a normalised spectrum integrates to 1. This bound is '
                 'independent of the Lorentzian corner (%.6g Hz here) and '
                 'for a coloured source it binds far earlier, because '
@@ -782,7 +782,7 @@ class _PhaseNoise(object):
                 'use oscillator_spectrum() for the lineshape. Note the '
                 'TRUE breakdown is higher still: this is a lower bound.'
                 % (float(offs[k]), float(power[k]), corner))
-        return sphi
+        return ssb
 
     @staticmethod
     def lorentzian(offsets, c, f0, harmonic=1):
@@ -857,11 +857,10 @@ class _PhaseNoise(object):
 
         Returns `(S_v, L_dBc)`.  `S_v` is the ONE-SIDED PSD of the output
         voltage, as `pnoise`'s: the Lorentzian lineshape times the carrier's
-        one-sided power `2 |X_1|^2 = A^2/2` (`X_1 = A/2` the carrier phasor).
-        Against a reference simulator at every offset over four decades.
-        `L_dBc` is `S_v` over that carrier power, in dBc/Hz.  `output`: a
-        reduced index, a weight vector, or a node name.
-        History: `doc/shooting_history.md`, `PAC.oscillator_spectrum`.
+        one-sided power `2 |X_1|^2 = A^2/2` (`X_1 = A/2` the carrier phasor),
+        checked against a reference simulator at every offset over four
+        decades.  `L_dBc` is `S_v` over that carrier power, in dBc/Hz.
+        `output`: a reduced index, a weight vector, or a node name.
 
         ⚠ NO SWEEP AND NO PER-FREQUENCY SOLVE.  Once the PSS waveform's
         Fourier coefficients and the scalar `c` are known, "we have an
@@ -893,8 +892,8 @@ class _PhaseNoise(object):
         spectrum has a singularity at the origin and no physical meaning,
         and the finite value `L` attains comes from the NONLINEAR
         phase-to-voltage map — which is what this closed form carries.
-        Reporting `S_phi` near the carrier instead is the mistake that
-        object invites.
+        Reporting `phase_psd`'s `L(f)` near the carrier instead is the
+        mistake that object invites.
 
         ⚠ A COLOURED SOURCE: with a 1/f source the phase is
         no longer a Wiener process and the line is not a Lorentzian.  The

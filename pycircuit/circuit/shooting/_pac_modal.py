@@ -226,8 +226,9 @@ class _ModalSpectra(object):
         ⚠ Those two arrived independently -- one from a commercial
         simulator's excess over our phase-only answer, one from this paper's
         modal sum -- and they must land in the same place.  That is the gate
-        (`test_the_orbital_spectrum_crosses_the_phase_spectrum_near_f_amp`),
-        and it is the check that can actually fail.
+        (`test_the_orbital_spectrum_is_a_lorentzian_of_half_width_f_amp`: the
+        `h = 0` line's half-width IS `f_amp`), and it is the check that can
+        actually fail.
 
         ⚠ `output` follows `oscillator_spectrum`: an integer indexes the
         REDUCED state (the reference row already removed), an array is a
@@ -245,7 +246,8 @@ class _ModalSpectra(object):
         except Exception:
             _asym = 0.0
         if _asym > self.ORBITAL_ASYMMETRY_LIMIT:
-            ## ⚠ NOT the grid residual `_warn_if_orbit_is_asymmetric` names:
+            ## ⚠ NOT the grid residual the deleted `_warn_if_orbit_is_asymmetric`
+            ## named (`doc/shooting_history.md`):
             ## the sum this spectrum is meant for over-states the TOTAL on an
             ## asymmetric orbit, and no refinement changes it -- see the
             ## docstring.

@@ -3342,3 +3342,156 @@ than or equal to one CAN BE FOUND for methods of high order"*, findable
 because the construction is linear in the free parameters -- is the
 machinery for it, not more restarts.  Measure before preferring this to
 GLM3 on a circuit with sharp sources; see the roadmap.
+
+## `stepcontroller.py` -- `StepController`
+
+### `StepController.relref`
+
+2026-10-01 (moved from the code, review C21):
+
+The comment above `relref` before the move:
+
+ITEM 2+.3 -- what the RELATIVE part of the LTE tolerance is measured against.
+
+The tolerance is `lteratio * (reltol*ref + abstol)`.  Until now `ref` was
+hard-coded to `max(|x_curr|, |x_last|)` -- each unknown against itself, at
+this instant.  That is a commercial simulator's `pointlocal`, and it has a failure mode that
+is easy to miss: on a node carrying no signal `ref -> 0`, so the tolerance
+collapses to `abstol` and the controller starts chasing numerical noise on a
+quiet node.  On the leapfrog that alone cut the step size 5.4x, and the fix
+applied at the time was to raise the absolute floor a millionfold
+(`lte_vabstol` 1e-12 -> 1e-6), which treats the symptom.
+
+A commercial simulator's answer is `relref`, and its default is `sigglobal`: measure each
+signal against the largest signal anywhere in the circuit, over all past
+time, so a quiet node inherits a sane reference instead of degenerating.
+
+  pointlocal  each unknown against itself, now.  (pycircuit's historical
+              behaviour, and still selectable.)
+  alllocal    each unknown against its OWN largest value so far.
+  sigglobal   each unknown against the largest value of ANY unknown so far.
+
+THE WORKAROUND ABOVE IS NOW GONE.  With `sigglobal` shipped, `lte_vabstol` is
+back to 1e-12: measured at gate D3-e, 1e-6 / 1e-9 / 1e-12 give bit-identical
+runs under `sigglobal` (403 steps on a pulsed RC, 601 with a quiet node, at
+every value), where under `pointlocal` the same change costs 8.5-9.2%.  That
+difference IS the symptom, and it is what the floor was raised to hide.
+
+DEFAULT IS `sigglobal` SINCE DECISION D3's SECOND ATTEMPT, matching a commercial simulator.
+It was adopted, sent back by its own gate, and re-run once the reason for the
+failure was removed -- see the D3 gates in `doc/transient_work_plan.md`.
+
+### `StepController.lte_gamma_min`
+
+2026-10-01 (moved from the code, review C21):
+
+The paragraph on the band's defaults before the move:
+
+THE DEFAULTS BELOW REPRODUCE THE PREVIOUS BEHAVIOUR EXACTLY: `gamma_min=0`
+makes the lower test vacuous and `gamma_max=1` is the historical `err > 1`
+rejection.  That is deliberate -- stage 12 is behind a flag until 12D, and
+a band that changed the default path would make its own gate unreadable.
+
+## `transient.py` -- `Transient` (review C10-C12, 2026-10-01)
+
+### class docstring
+
+2026-10-01 (moved from the code, review C10/C11):
+
+The CPU-only sentence before it was corrected (the JAX backend has a
+variable-step trapezoidal estimator; what it lacks is every stage and
+multivalue method):
+
+CPU-only, with cause: trapezoidal integration (a correct VARIABLE-step
+trap estimator exists only here) and the
+`nrsolver`/`scaler`/`linearsolver` strategy objects -- ...
+
+The backward-Euler sketch and the two examples, before the move (neither
+example had ever run: `test_doctests.py` did not collect `transient.py`.
+The RC one started from the DC operating point, where the capacitor
+already sits at 9.90 V, so it read 9.90 against "6.3"; with `uic=True` it
+reads 6.29.  The RLC one compared one instant of a 0.07 V sinusoid with
+0.0063 and was deleted):
+
+    i(t) = c*dv/dt
+    v(t) = L*di/dt
+
+    The usual companion models are used.
+    backward euler:
+    i(n+1) = c/dt*(v(n+1) - v(n)) = geq*v(n+1) + Ieq
+    v(n+1) = L/dt*(i(n+1) - i(n)) = req*i(n+1) + Veq
+
+    def F(x): return i(x)+Geq(x)*x+u(x)+ueq(x0), G(x)+Geq(x)
+    x0=x(n)
+    x(n+1) = fsolve(F, x0, fprime=J)
+
+    Linear circuit example:
+    >>> tran = Transient(c)
+    >>> res = tran.solve(tend=10e-3,timestep=1e-4)
+    >>> expected = 6.3
+    >>> abs(res.v(n2, gnd)[-1] - expected) < 1e-2*expected #node 2 of last x
+    True
+
+    Linear circuit example:
+    >>> from pycircuit.circuit.elements import ISin
+    >>> c = SubCircuit()
+    >>> n1 = c.add_node('net1')
+    >>> c['Isin'] = ISin(gnd, n1, ia=1e-3, freq=16e3)
+    >>> c['R'] = R(n1, gnd, r=200)
+    >>> c['C'] = C(n1, gnd, c=1e-6)
+    >>> c['L'] = L(n1, gnd, L=1e-4)
+    >>> tran = Transient(c)
+    >>> res = tran.solve(tend=260e-6,timestep=1e-6)
+    >>> expected = 0.063
+    >>> abs(res.v(n1,gnd)[-1]) < 1e-1*expected #node 2 of last x
+    True
+
+The TODO under the class constants, long done (the step is LTE-adaptive):
+
+TODO:
+* Implement automatic timestep adjustment, using difference between
+  BE and trapezoidal as a measure of the error.
+  Reference: "Time Step Control in Transient Analysis", by SHUBHA VIJAYCHAND
+
+### `Transient._opening_step`
+
+2026-10-01 (review C12): the comment read "An opening step larger than
+max_step would be capped on the very next step anyway, and asking for one is
+more likely a mistake than an intent." -- the code caps at `timestep`
+(`min(firststep, timestep)`), not at the step cap.
+
+## `integrator.py` -- corrected claims (2026-10-01, review C1-C3)
+
+Messages and docstrings the review found WRONG about the current code
+(named functions that no longer exist, "not yet built" for what is
+built), rewritten on 2026-10-01; the removed text, verbatim:
+
+
+`integrator.py`:
+
+```
+:meth:`companion_coefficients`.  Those three methods therefore raise here.
+```
+
+```
+'d(iq)/dT shared by the LMMs does not apply; the autonomous '
+'shooting dT for a stage method is not yet built.')
+```
+
+```
+dedicated coupled solve (``_solve_timestep_radau``), not through the
+```
+
+```
+'loop runs it via _solve_timestep_radau (one coupled 3n Newton '
+```
+
+```
+'estimate is computed in Transient._solve_timestep_radau and '
+'consumed by _run_radau_adaptive.')
+```
+
+```
+Still not built: no PCNR stage path; not on the JAX backend.
+```
+

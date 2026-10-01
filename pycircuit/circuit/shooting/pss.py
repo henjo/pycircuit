@@ -228,7 +228,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
     (Demir, IJCTA 2000; Bizzarri et al.; Demir & Roychowdhury).  Demir's
     2003 remedy is why a PPV built here goes to the augmented solve --
     sampled `C(t) u_1(t)` as the bordering row `q` -- and NOT to the
-    eigenvectors this method returns.  Not measured here on a high-Q case.
+    eigenvectors this method returns.  The high-Q PPV and diffusion
+    constant are tested (`test_the_diffusion_constant_at_high_q_has_an_analytic_reference`,
+    `test_the_ppv_physical_gate_cannot_verify_the_ppv_at_high_q`, the
+    Q = 1e4 van der Pol of the method table below); the shooting Newton's
+    conditioning there is not measured.
 
     ⚠ FREE-PERIOD PITFALLS, properties of the free-period system and not of
     any element (4e): `k*T` solves the periodicity condition whenever `T`
@@ -242,7 +246,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
     and only the phase condition distinguishes one starting phase from
     another.
 
-    GRIDS (recorded scope item 5).  `solve(grid=...)` takes step FRACTIONS
+    GRIDS.  `solve(grid=...)` takes step FRACTIONS
     of the period and freezes them (`_period_grid`); an autonomous run
     rebuilds the grid at the current `T` on every residual evaluation, so
     `dh/dT = h/T` holds.  The uniform grid is what costs on a stiff
@@ -255,7 +259,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
     `_install_history` takes the entering step `h_prev = hs[-1]`, not
     `hs[0]`.
 
-    MATRIX-FREE (recorded scope item 6; Telichevesky, Kundert & White, DAC
+    MATRIX-FREE (Telichevesky, Kundert & White, DAC
     1995): `solve(matrix_free=True)` never forms `J_phi`.  What it removes
     is the sensitivity propagation (`N` steps of `_step_sensitivity`, each
     O(m^3) twice over), which passes ~30 % of a traversal near m = 220;
@@ -309,6 +313,16 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
       * trbdf2: order 2, contractive; the alternative to price against
         `grid_error` above a few hundred unknowns.
       * trap: its PPV surfaces are its Radau twin's (`monodromy_twin`).
+      * theta: trapezoidal biased by `C h` (`ThetaIntegrator`), second
+        order; it DAMPS trapezoidal's null(C) mode instead of needing the
+        L-stable opening step (`theta_ct`, the damping over one period).
+        Not in the table: not measured on its fixture.
+      * glm2 / glm3 / glm4 (Nordsieck GLMs): stage order = order, one
+        factorisation per step, no index-2 order split; the period map is
+        on the MULTIVALUE state (width `(p+1) m`, the method's own
+        multipliers at zero), and the covariance surfaces read a radau twin
+        unless `monodromy='native'`.  Not in the table: not measured on its
+        fixture.
       * gear: the PPV, the diffusion constant, the period (free or driven),
         the adjoint modes and every noise fold are second order on any grid
         whose step ratios stay inside the zero-stability bound 1+sqrt(2);
@@ -378,12 +392,6 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                    desc='Use Predictor/Corrector Newton-Raphson instead of '
                         'limiting in the inner transient; off by default',
                    unit='', default=False),
-         ## Which step lengths move with an unknown period.  'proportional'
-         ## rescales every step with T; 'closing' keeps a caller's inner steps
-         ## at their absolute lengths and lets the last step close the period.
-         ## 'auto' is 'closing' on a caller's grid for an autonomous run and
-         ## 'proportional' otherwise -- see `_period_grid`, `_solve_prepare`
-         ## and `_closing_polish`.
          ## How finely a switching window is resolved: the segment between
          ## a threshold switch's two landed edges (`state_events`) is cut into
          ## this many equal steps whenever it holds fewer -- see
@@ -421,10 +429,16 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                         'stiff state) or none (False: more accurate on a '
                         'smooth one)',
                    unit='', default=True),
+         ## Which step lengths move with an unknown period.  'proportional'
+         ## rescales every step with T; 'closing' keeps a caller's inner steps
+         ## at their absolute lengths and lets the last step close the period.
+         ## 'auto' is 'closing' on a caller's grid for an autonomous run and
+         ## 'proportional' otherwise -- see `_period_grid`, `_solve_prepare`
+         ## and `_closing_polish`.
          Parameter(name='period_column',
                    desc="'auto' (= 'closing' + proportional polish on a caller's grid, 'proportional' on a uniform one), 'proportional' or 'closing': "
                         "which step lengths depend on an unknown period; see "
-                        "the note at the policy in solve()",
+                        "the note at the policy in PSS._solve_prepare",
                    unit='', default='auto'),
          ## `method='theta'`'s one knob, as the DIMENSIONLESS `C T`: the
          ## transferable quantity (see `ThetaIntegrator.DEFAULT_CT` for why
@@ -436,13 +450,6 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                         'takes ThetaIntegrator.DEFAULT_CT (the measured '
                         'knee). Ignored by every other method.',
                    unit='', default=None),
-         ## `reltol` MEANS THE SAME THING IN EVERY ANALYSIS: the relative
-         ## tolerance of the transient solution, applied to the per-timestep
-         ## Newton here exactly as `Transient` applies it, never rescaled.
-         ## `steadyratio` expresses the SHOOTING criterion against it
-         ## (shooting reltol = reltol * steadyratio).  It is >= 1 because the
-         ## period map is only KNOWN to the accuracy of the inner solves;
-         ## raise it for a looser periodic steady state in fewer iterations.
          ## The LTE floors are separate from the Newton ones (one knob must not
          ## move both criteria -- see `Transient`); same names, defaults and
          ## meaning, so this reports the number a transient would control on.
@@ -459,6 +466,13 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                    desc="What the relative LTE tolerance is measured "
                         "against: 'pointlocal', 'alllocal' or 'sigglobal'",
                    unit='', default='sigglobal'),
+         ## `reltol` MEANS THE SAME THING IN EVERY ANALYSIS: the relative
+         ## tolerance of the transient solution, applied to the per-timestep
+         ## Newton here exactly as `Transient` applies it, never rescaled.
+         ## `steadyratio` expresses the SHOOTING criterion against it
+         ## (shooting reltol = reltol * steadyratio).  It is >= 1 because the
+         ## period map is only KNOWN to the accuracy of the inner solves;
+         ## raise it for a looser periodic steady state in fewer iterations.
          Parameter(name='steadyratio',
                    desc='Shooting tolerance as a multiple of reltol (>= 1); '
                         '1 holds the shooting solve to the same relative '
@@ -468,7 +482,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
          ## this stack is DISCRETISATION, growing linearly in Q, and radau --
          ## order 5, self-starting (no manufactured opener, so no seam in the
          ## period map), L-stable -- carries its own monodromy, so an
-         ## autonomous run takes NO TR-BDF2 twin and reads its own spectrum
+         ## autonomous run takes NO twin and reads its own spectrum
          ## (`monodromy_twin`, `carries_own_monodromy`).  It costs more per
          ## step on a fine grid, but for any oscillator surface the twin
          ## dominates `trap`'s cost, and at equal accuracy radau wins on both
@@ -478,7 +492,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
          Parameter(name='method',
                    desc="Integration method for the inner transient: 'radau' "
                         "(default, order 5), 'esdirk43', 'trbdf2', 'theta', "
-                        "'gear' (BDF-2), 'trap' or 'euler'. The default is "
+                        "'gear' (BDF-2), 'trap', 'euler', or a Nordsieck GLM "
+                        "'glm2', 'glm3', 'glm4'. The default is "
                         "chosen for ACCURACY; the class docstring's 'CHOOSING "
                         "method' table states, from measurement, what each "
                         "alternative gives up in order, error estimability, "
@@ -636,9 +651,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                  'radau': RadauIIA3Integrator,
                  'esdirk43': ESDIRK43Integrator,
                  ## Nordsieck GLMs: stage order = order, one factorisation per
-                 ## step, no index-2 order split.  Driven PSS only (no free
-                 ## period), and the period map is on the MULTIVALUE state --
-                 ## see `factored_period_glm`.
+                 ## step, no index-2 order split.  Driven or free period; the
+                 ## period map is on the MULTIVALUE state -- see
+                 ## `factored_period_glm`.
                  'glm2': GLM2Integrator,
                  'glm3': GLM3Integrator,
                  'glm4': GLM4Integrator}
@@ -1065,7 +1080,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         `grid` is given.
         `maxiterations` bounds the shooting Newton.
 
-        `grid` is RECORDED SCOPE ITEM 5: a sequence of step FRACTIONS of the
+        `grid` is a sequence of step FRACTIONS of the
         period, summing to 1, used in place of the uniform `timestep` grid.
         Fractions rather than absolute times because an autonomous period is
         an unknown and every step has to scale with it.  See
@@ -1158,7 +1173,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         its manufacturing step IS an Euler step.  A two-step (solved-history)
         method refuses it: it already solves for `x_0`.
 
-        `matrix_free` is RECORDED SCOPE ITEM 6: solve the outer system
+        `matrix_free` solves the outer system
         without ever forming the monodromy, propagating ONE vector per
         Krylov iteration instead of `2m` columns per step.  Worth asking for
         on LARGE circuits only -- against a dense-solver dense path it loses
@@ -1219,6 +1234,15 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         `J`.  ⚠ It holds this analysis WEAKLY (since 2026-10-01; a strong
         reference made every solved PSS a reference cycle): evaluate it
         while the PSS is alive.
+
+        ⚠ TWO AUTOMATIC RE-SOLVES, each warned when it runs.  When the
+        free-period solve on a caller's grid fails under the 'closing'
+        period column that 'auto' chose, `solve` runs again from the same
+        seed with 'proportional' (`_closing_fallback`).  When a solve with
+        the circuit's state events as unknowns fails, it solves the
+        one-stage problem on a twin and, if that converges, the staged one
+        again from its orbit (`_staged_fallback`; `staged_fallback` is then
+        True).  The result returned is the re-solve's.
 
         History: `doc/shooting_history.md`, `PSS.solve`.
         """
@@ -1868,11 +1892,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         _shoot_reltol = self.par.reltol * _ratio
         _tol = _tol * _ratio
 
-        ## ⚠ REFUSED RATHER THAN SILENTLY IGNORED (as `matrix_free` is below
-        ## on a kind without it).  A solved-history method already solves for
-        ## `x_0` and `x_{-1}` directly and manufactures nothing, so the flag
-        ## would be a no-op -- and a no-op flag that the caller believes
-        ## changed something is worse than an error.
+        ## ⚠ REFUSED RATHER THAN SILENTLY IGNORED.  A solved-history method
+        ## already solves for `x_0` and `x_{-1}` directly and manufactures
+        ## nothing, so the flag would be a no-op -- and a no-op flag that the
+        ## caller believes changed something is worse than an error.
         if x0_unknown and solved_history:
             raise NotImplementedError(
                 'PSS: x0_unknown=True has nothing to change for a two-step '
@@ -1918,7 +1941,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             self._monodromy = None
 
             def _mf_build(zz):
-                """RECORDED SCOPE ITEM 6: the Newton's residual and its
+                """The matrix-free Newton's residual and its
                 Jacobian as a MAT-VEC, from the factored period (`m` columns
                 on the plain map, `2m` on the pair, never formed).  With the
                 period an unknown, `dphi/dT` is ONE column independent of the
@@ -1997,8 +2020,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 abstol=tol_z, xtol=tol_z, toolkit=self.toolkit,
                 full_output=True, line_search=True, floor_detect=True)
         ## THE STATE EVENTS AS NEWTON UNKNOWNS: a second, bordered stage from
-        ## stage 1's orbit, for every kind that has one -- the stage methods
-        ## and gear's pair, driven or free period (see `_state_event_stage`).
+        ## stage 1's orbit, for every kind that has one -- the stage methods,
+        ## gear's pair, a Nordsieck GLM and the plain map opened at `x(0)`,
+        ## driven or free period (see `_state_event_stage`).
         ## ⚠ ALSO FROM A STAGE 1 THAT DID NOT CONVERGE, unless it collapsed
         ## onto a trivial root.  Across a sharp switch the UNSTAGED map is
         ## nearly discontinuous in the state -- where the crossing falls in

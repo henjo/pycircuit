@@ -94,19 +94,19 @@ class _InnerTransient(object):
         ## `x_{-1}` only through `iq_{-1} = -(i(x_{-1}) + u)` (exact at a
         ## converged point), whose derivative `-G` is SINGULAR at every purely
         ## reactive node -- so admitting `x_{-1}` as m unknowns leaves the
-        ## 2m x 2m system rank-deficient.  The right second unknown for such a
-        ## method is `iq_{-1}` ITSELF, closed by `iq_{-1} = iq_{N-1}` -- a
-        ## different formulation, not a seeding fix, and not built.
+        ## 2m x 2m system rank-deficient.  Solving for `iq` itself instead was
+        ## built and fails too: trapezoidal's `iq` carries an undamped
+        ## `(-1)^n` mode, so its closure is vacuous or singular by the parity
+        ## of the step count (the class docstring's 'plain' kind).
         if b:
             raise NotImplementedError(
                 'a solved entering history admits `x_{-1}` as the second '
                 'unknown, and a companion with a b != 0 term depends on it '
                 'only through `iq_{-1} = -(i(x_{-1}) + u)`, whose derivative '
                 '-G is singular at every purely reactive node -- so the '
-                'enlarged system would be rank-deficient. Such a method '
-                'needs `iq_{-1}` itself as the unknown, which is a different '
-                'formulation; this refuses rather than solving a singular '
-                'one.')
+                'enlarged system would be rank-deficient (and solving for '
+                '`iq` itself is degenerate: its (-1)^n mode never decays); '
+                'this refuses rather than solving a singular one.')
         ## ⚠ THE STEP THAT PRODUCED `x_0` IS THE PERIOD'S LAST ONE, NOT ITS
         ## FIRST: `x_{-1}` sits one step BEFORE `x_0`, and on a periodic grid
         ## that step is `hs[-1]`.  On a non-uniform grid, handing `hs[0]` to a

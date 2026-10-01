@@ -60,6 +60,7 @@ from pycircuit.circuit import volterra as volterra_module
 from pycircuit.circuit import symbolicapprox as symbolicapprox_module
 from pycircuit.circuit import mos as mos_module
 from pycircuit.circuit import nportanalysis as nportanalysis_module
+from pycircuit.circuit import transient as transient_module
 
 
 def test_circuit_module_doctests():
@@ -147,4 +148,18 @@ def test_symbolicapprox_module_doctests():
     results = doctest.testmod(symbolicapprox_module, verbose=False)
     assert results.failed == 0, (
         '%d of %d doctests in symbolicapprox.py failed' %
+        (results.failed, results.attempted))
+
+
+def test_transient_module_doctests():
+    """``Transient``'s class example joined on 2026-10-01 (review C11): it had
+    never run, and both of its checks were false -- the RC example started
+    from the DC operating point, where its capacitor already sits at the
+    final value (9.90 V read against "6.3"), and the RLC one compared one
+    instant of a 0.07 V sinusoid with 0.0063.  The RC example now charges
+    from zero (`uic=True`) against the analytic exponential."""
+    results = doctest.testmod(transient_module, verbose=False)
+    assert results.attempted > 0
+    assert results.failed == 0, (
+        '%d of %d doctests in transient.py failed' %
         (results.failed, results.attempted))

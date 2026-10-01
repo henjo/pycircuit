@@ -897,7 +897,9 @@ class TRBDF2Integrator(RungeKuttaIntegrator):
     (two Newton solves sharing ONE factorisation, because ``a22 == a33``), not
     through :meth:`compute_derivatives`, and shooting builds its ``m x m``
     monodromy directly from the two stage linearisations rather than from
-    :meth:`companion_coefficients`.  Those three methods therefore raise here.
+    :meth:`companion_coefficients`.  ``compute_derivatives``,
+    ``companion_coefficients``, ``companion_dT`` and ``compute_lte`` therefore
+    raise here.
 
     ⚠ ADAPTIVE, but NOT through this class's LMM interface.  The embedded
     2(3) estimate (Hosea & Shampine 1996) is computed inside
@@ -1057,8 +1059,9 @@ class TRBDF2Integrator(RungeKuttaIntegrator):
     def companion_dT(self, q_curr, q_last, h_curr, h_last):
         raise NotImplementedError(
             'TR-BDF2 states no companion coefficients, so the Euler-theorem '
-            'd(iq)/dT shared by the LMMs does not apply; the autonomous '
-            'shooting dT for a stage method is not yet built.')
+            'd(iq)/dT shared by the LMMs does not apply; an autonomous '
+            "shooting's period column for a stage method comes from the "
+            'stage walk itself.')
 
     def compute_lte(self, q_curr, h_curr, q_last, iq_last, h_last,
                     is_first_step, toolkit, h_last2=None):
@@ -1150,7 +1153,7 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
     The price is that it is FULLY implicit: the three stages are coupled into
     one ``3n`` system, with no explicit first stage to unlock and no
     per-stage one-LU shortcut.  The Transient loop therefore runs it through a
-    dedicated coupled solve (``_solve_timestep_radau``), not through the
+    dedicated coupled solve (``Transient._rk_step_coupled``), not through the
     single-companion ``compute_derivatives`` path.
 
     COST TRANSFORM (documented; the coupled solve is the default).  The ``3n``
@@ -1219,7 +1222,7 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
                             h_last, is_first_step, toolkit):
         raise NotImplementedError(
             'Radau IIA(3) is a three-stage fully-implicit method; the Transient '
-            'loop runs it via _solve_timestep_radau (one coupled 3n Newton '
+            'loop runs it via _rk_step_coupled (one coupled 3n Newton '
             'solve), not through the single-companion compute_derivatives.')
 
     def companion_coefficients(self, h_curr, h_last):
@@ -1237,8 +1240,8 @@ class RadauIIA3Integrator(RungeKuttaIntegrator):
         raise NotImplementedError(
             'Radau IIA(3) states no linear-multistep companion, so the LMM '
             'divided-difference compute_lte does not apply. Its embedded 5(3) '
-            'estimate is computed in Transient._solve_timestep_radau and '
-            'consumed by _run_radau_adaptive.')
+            'estimate is computed in Transient._radau_error_estimate and '
+            'consumed by the stage family (_StageSteps).')
 
 
 ## ⚠⚠ STAGE ORDER 2 IS THE DIRK CLASS CEILING, NOT THIS TABLEAU'S CHOICE.
@@ -1386,7 +1389,8 @@ class NordsieckGLMIntegrator(Integrator):
     :class:`RadauIIA3Integrator` for why our own fixtures do not exercise the
     ``im D`` hypothesis at all.
 
-    Still not built: no PCNR stage path; not on the JAX backend.
+    Not on the JAX backend.  (PCNR runs its stages through
+    ``Transient._solve_implicit_stage``.)
 
     History: `doc/transient_history.md`, `NordsieckGLMIntegrator`.
     """
