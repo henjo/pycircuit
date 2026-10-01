@@ -271,12 +271,15 @@ class _FactoredReplays(object):
     def factored_period(self):
         """The converged period's steps, kept factored -- see `FactoredPeriod`.
 
-        Runs the factored traversal ONCE, at the solution, and caches it.
+        Runs the factored traversal ONCE, at the solution, and caches it --
+        on a multistep map that fits `REPLAY_FACTOR_BUDGET`, `solve`'s own
+        converged replay WAS that traversal (`_replay_keeps_factors`), and
+        this returns it.
 
         ⚠ ON A TRAP/EULER OSCILLATOR IT IS THE TWIN'S (`monodromy_twin`):
         its grid, orbit and period, not this run's -- read `fp.times` and
         `fp.T`, never this PSS's, alongside it.
-        Lazy on purpose: a factored walk stores `N` factorisations and
+        Lazy past the budget: a factored walk stores `N` factorisations and
         `N` capacitances (`2 N m^2` doubles -- ~800 MB at m=1002 and 50
         points), which is a bad trade to impose on every `solve` for the
         callers who never ask.

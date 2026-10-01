@@ -1329,3 +1329,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20261001T121740Z,3512301d,pycircuit no:cacheprovider tran_recorder,1145.8,3515,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,213.4
 20261001T122046Z,c09ec702,no:cacheprovider 0 pycircuit/circuit/tests/test_shooting_modal.py::test_the_modal_spectrum_reads_no_harmonic_past_the_grid_s_nyquist,3.1,1,pycircuit/circuit/tests/test_shooting_modal.py::test_the_modal_spectrum_reads_no_harmonic_past_the_grid_s_nyquist,2.5
 20261001T123953Z,c09ec702,pycircuit no:cacheprovider tran_recorder,1138.2,3516,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,215.6
+20261001T140738Z,584e065c,pycircuit no:cacheprovider tran_recorder,1176.3,3517,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,195.0

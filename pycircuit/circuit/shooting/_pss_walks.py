@@ -76,10 +76,12 @@ class _PeriodWalks(object):
         return _lmm_recursion(Px, Cs, Pq, C_new, alphas, b, solve, source)
 
     def _walk(self, kind, z, times, hs, T=None, dense=True, keep=False,
-              want_dT=False, hsens=None, capture=None, open_at_x0=False):
+              want_dT=False, hsens=None, capture=None, open_at_x0=False,
+              record=None):
         """ONE WALK OF THE PERIOD for every map, from the unknown `z` (gear's
         pair stacked): `_walk_stage` for 'stage', `_walk_glm` for 'glm',
-        `_walk_lmm` for 'plain' and 'pair'.  Returns the `_PeriodWalk`."""
+        `_walk_lmm` for 'plain' and 'pair'.  Returns the `_PeriodWalk`.
+        `record` (the multistep maps only) is `_walk_lmm`'s."""
         if kind == 'glm':
             return self._walk_glm(z, T, times, hs, dense=dense, keep=keep,
                                   want_dT=want_dT, hsens=hsens,
@@ -92,15 +94,15 @@ class _PeriodWalks(object):
             m = self.cir.n - 1
             w = self._walk_lmm(('pair', z[:m], z[m:]), times, hs, T=T,
                                dense=dense, keep=keep, want_dT=want_dT,
-                               hsens=hsens, capture=capture)
+                               hsens=hsens, capture=capture, record=record)
             w.z = z
             return w
         return self._walk_lmm(('plain', z, open_at_x0), times, hs, T=T,
                               dense=dense, keep=keep, want_dT=want_dT,
-                              hsens=hsens, capture=capture)
+                              hsens=hsens, capture=capture, record=record)
 
     def _walk_lmm(self, opening, times, hs, T=None, dense=True, keep=False,
-                  want_dT=False, hsens=None, capture=None):
+                  want_dT=False, hsens=None, capture=None, record=None):
         """ONE WALK OF THE PERIOD UNDER A LINEAR-MULTISTEP COMPANION -- the
         plain map and gear's solved-history pair, dense or factored.
 
@@ -148,6 +150,10 @@ class _PeriodWalks(object):
         * `hsens` / `capture`: the state-event columns of the pair (phase B)
           and the nodes whose state and sensitivities the bordered residual
           reads.
+        * `record(x, t)`: called with every step's state as it is solved --
+          the manufacturing step's too -- for the converged replay, which
+          reads its states and LTE off the factored walk
+          (`PSS._replay_orbit`).
 
         ⚠ ONE LINEAR SOLVE PER STEP, CHOSEN BY WHETHER THE STEP IS KEPT.  A
         kept step is factored once (`_factorise`) and every column solves
@@ -212,6 +218,8 @@ class _PeriodWalks(object):
                 C_open = np.asarray(self._C_at(x_in))
             else:
                 x = self.solve_timestep(x_in, times[0], hs[0])
+                if record is not None:
+                    record(x, times[0])
                 x0 = copy(x)
                 C_open = np.asarray(self._C)
             x_prev = None
@@ -283,6 +291,8 @@ class _PeriodWalks(object):
             dt = hs[min(_j, len(hs) - 1)]
             x_prev = x
             x = copy(self.solve_timestep(x, t, dt))
+            if record is not None:
+                record(x, t)
             ## ⚠ THE COEFFICIENTS BELONG TO THE STEP, NOT TO THE RUN -- read
             ## per step and, on a kept step, stored with it: a matrix-free
             ## replay happens after the run, when `_coeffs` no longer

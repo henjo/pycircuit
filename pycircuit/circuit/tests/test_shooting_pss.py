@@ -34,7 +34,8 @@ from pycircuit.circuit.tests._shooting_fixtures import (_a10_vdp,
     _rc_ladder,
     _scaled_vdp,
     _shooting_trace,
-    _varying_c_ladder)
+    _varying_c_ladder,
+    _vdp_with_noise)
 
 
 class myC(Circuit):
@@ -5432,3 +5433,68 @@ def test_pss_shares_the_transient_s_parameters():
     assert P['pcnr'] is not T['pcnr'] and 'inner transient' in P['pcnr'].desc
     assert (P['pcnr'].default, P['pcnr'].unit) == (T['pcnr'].default,
                                                    T['pcnr'].unit)
+
+
+def test_the_converged_replay_is_the_factored_period():
+    """The review's S6 (2026-10-01): a converged multistep solve's replay
+    walks the period FACTORED and keeps it, so `factored_period()` does not
+    walk the converged period a second time -- 15 % of a van der Pol gear
+    solve-and-factor, 11 % of a compact MOSFET's.  The map is the one a
+    second walk builds, bit for bit, on gear's pair and on a driven plain
+    map opened either way; a trap oscillator's stays its twin's (none is
+    kept at the solve), and past `REPLAY_FACTOR_BUDGET` none is kept."""
+    circuit.default_toolkit = circuit.numeric
+
+    def dense(fp):
+        return np.column_stack([np.asarray(fp.matvec(e), float)
+                                for e in np.eye(fp.width)])
+
+    def vdp():
+        cir = _vdp_with_noise(1e-6)
+        x0 = np.zeros(cir.n - 1)
+        x0[0] = 2.0
+        return cir, {'period': 6.6634, 'timestep': 6.6634 / 100, 'x0': x0,
+                     'maxiterations': 60}
+
+    def q20(**kw):
+        return _q20_rlc(), dict(period=1e-3, timestep=1e-3 / 60,
+                                maxiterations=30, **kw)
+
+    maps = {}
+    for label, (cir, skw), method in (
+            ('vdp gear', vdp(), 'gear'),
+            ('driven trap', q20(), 'trap'),
+            ('driven trap at x0', q20(x0_unknown=True), 'trap'),
+            ('driven theta', q20(), 'theta')):
+        p = PSS(cir, method=method, reltol=1e-10)
+        with quiet(AccuracyWarning):
+            p.solve(**skw)
+        assert p.converged and p._factored_period_cache is not None, label
+        steps = []
+        orig = p.solve_timestep
+        p.solve_timestep = (lambda *a, _s=steps, _o=orig, **k:
+                            _s.append(1) or _o(*a, **k))
+        fp = p.factored_period()
+        assert not steps, f'{label}: factored_period walked again'
+        M1 = dense(fp)
+        p._factored_period_cache = None
+        M2 = dense(p.factored_period())
+        assert steps and np.array_equal(M1, M2), label
+        maps[label] = M1
+
+    ## a trap oscillator's period is its twin's: nothing kept at the solve
+    cir, skw = vdp()
+    p = PSS(cir, method='trap', reltol=1e-10)
+    with quiet(AccuracyWarning):
+        p.solve(**skw)
+    assert p.converged and p._factored_period_cache is None
+    assert p.factored_period().T != p.period      # the twin's own period
+
+    ## past the budget the replay keeps nothing, and the map is unchanged
+    cir, skw = vdp()
+    p = PSS(cir, method='gear', reltol=1e-10)
+    p.REPLAY_FACTOR_BUDGET = 0
+    with quiet(AccuracyWarning):
+        p.solve(**skw)
+    assert p.converged and p._factored_period_cache is None
+    assert np.array_equal(dense(p.factored_period()), maps['vdp gear'])

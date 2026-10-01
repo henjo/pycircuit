@@ -2238,32 +2238,27 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## misaligned by one.
         ##
         ## `_period_state` keeps what a later factored replay cannot
-        ## re-derive (which seed, which grid, which opening), and
-        ## `factored_period()` runs the traversal on demand: the matrix-free
-        ## Newton's last factorisations belong to its last TRIAL iterate, and
-        ## retaining `N` of them from every solve would cost `2 N m^2`
-        ## doubles on every run.
+        ## re-derive (which seed, which grid, which opening).  The matrix-free
+        ## Newton's last factorisations belong to its last TRIAL iterate, so
+        ## the factored period is THIS walk's, kept when it fits
+        ## (`_replay_keeps_factors`), else `factored_period()` walks it on
+        ## demand.
         ## History: `doc/shooting_history.md`, `PSS._replay_orbit`.
         self._period_state = (bool(solved_history), copy(x0_ss),
                               None if xm1_ss is None else copy(xm1_ss),
                               times, hs, float(period), bool(x0_unknown))
         self._factored_period_cache = None
 
-        if solved_history:
-            self._install_history(x0_ss, xm1_ss, hs[0], h_prev=hs[-1])
-            X = [np.asarray(x0_ss, dtype=float)]
-            walk = list(zip(times[1:], hs[:len(times) - 1]))
-        else:
-            X = [x0_ss]
-            self._begin_period(x0_ss)
-            ## the manufacturing step, then the loop -- exactly the plain walk
-            ## ... unless there was no manufacturing step, in which case the
-            ## replay opens AT `x_0` and walks the period alone.  Getting
-            ## this wrong is the same class of defect as the grid shift
-            ## above: a replay that does not reproduce its own traversal.
-            walk = list(zip(times[1:], hs[:len(times) - 1]))
-            if not x0_unknown:
-                walk = [(times[0], hs[0])] + walk
+        ## the manufacturing step, then the loop -- exactly the plain walk
+        ## ... unless there was no manufacturing step (the pair, or the
+        ## unknown IS `x_0`), in which case the replay opens AT `x_0` and
+        ## walks the period alone.  Getting this wrong is the same class of
+        ## defect as the grid shift above: a replay that does not reproduce
+        ## its own traversal.
+        walk = list(zip(times[1:], hs[:len(times) - 1]))
+        if not solved_history and not x0_unknown:
+            walk = [(times[0], hs[0])] + walk
+        X = [np.asarray(x0_ss, dtype=float) if solved_history else x0_ss]
         ## A stage method has no LMM divided-difference LTE (compute_lte
         ## refuses), and the seam/interior split is a property of a manufactured
         ## opener it does not have -- so the replay collects no per-step LTE for
@@ -2272,15 +2267,57 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## method says which it is.
         self._want_lte = not self._integrator_for(method).is_stage_method()
         lte_seen = []
-        for t, dt in walk:
-            x = self.solve_timestep(X[-1], t, dt)
+
+        def seen(x, t):
             if self._lte is not None:
                 lte_seen.append((float(self._lte), float(t), self._lte_seam,
                                  self._lte_valid))
             X.append(copy(x))
+        if self._replay_keeps_factors(run):
+            ## ⚠ THE REPLAY IS THE FACTORED WALK (the review's S6,
+            ## 2026-10-01): the same steps in the same order, each `Jf`
+            ## factored and kept, so `factored_period()` does not walk the
+            ## converged period a second time: 15 % of a van der Pol gear
+            ## solve-and-factor (400 points), 11 % of a compact MOSFET's (40);
+            ## the map is the second walk's bit for bit.  Only where those
+            ## factors ARE what it returns (`_replay_keeps_factors`).
+            w = self._walk('pair' if solved_history else 'plain',
+                           (np.concatenate((x0_ss, xm1_ss)) if solved_history
+                            else x0_ss),
+                           times, hs, T=float(period), dense=False, keep=True,
+                           open_at_x0=x0_unknown, record=seen)
+            self._factored_period_cache = w.factored(self, times=times,
+                                                     T=float(period))
+        else:
+            if solved_history:
+                self._install_history(x0_ss, xm1_ss, hs[0], h_prev=hs[-1])
+            else:
+                self._begin_period(x0_ss)
+            for t, dt in walk:
+                seen(self.solve_timestep(X[-1], t, dt), t)
         self._want_lte = False
 
         return X, walk, lte_seen
+
+    ## The converged replay keeps its factors (`_replay_keeps_factors`) up to
+    ## this many bytes of them, counted as dense -- `2 N m^2` doubles, `N`
+    ## factorisations and `N` capacitances (64 MB: `m = 100` at 400 points).
+    ## Past it `factored_period()` walks the period on demand, as before.
+    REPLAY_FACTOR_BUDGET = 64 * 2 ** 20
+
+    def _replay_keeps_factors(self, run):
+        """Whether the converged replay (`_replay_orbit`) walks the period
+        factored and caches it: a converged multistep map (a stage or GLM
+        replay is not the factored walk), whose period `factored_period()`
+        would return -- not a trap/euler oscillator's, which is its twin's
+        (`_hosts_own_monodromy`) -- within `REPLAY_FACTOR_BUDGET`."""
+        if not self.converged or self._map_kind() not in ('plain', 'pair'):
+            return False
+        m = self.cir.n - 1
+        if (2 * (len(run.times) - 1) * m * m * 8
+                > self.REPLAY_FACTOR_BUDGET):
+            return False
+        return self._hosts_own_monodromy()
 
     def _report_lte(self, run, lte_seen):
         """`solve`, phase 5: the three truncation-error figures and their

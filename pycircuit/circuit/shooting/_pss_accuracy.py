@@ -66,7 +66,6 @@ class _AccuracyChecks(object):
                 "PSS.monodromy must be 'native' or a method whose own period "
                 "map serves as the twin -- 'radau' (the default), 'trbdf2', "
                 "'esdirk43' or 'gear' -- not %r" % (mono,))
-        _integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
         ## ⚠ A GLM USES ITS OWN MAP WHERE IT IS BUILT: measured on van der
         ## Pol, its `ppv` / `floquet_modes` on the state are second / third
         ## order, and glm3's spectrum is 4.6e-8 of radau's where the trbdf2
@@ -75,20 +74,27 @@ class _AccuracyChecks(object):
         ## (the startup seam) and its covariance injection is first order;
         ## the surfaces that feel those take a twin (`_state_twin`).
         ## History: `doc/shooting_history.md`, `_AccuracyChecks.monodromy_twin`.
-        if (mono == 'native'
-                or _integ.carries_own_monodromy()
-                or self._map_kind() == 'glm'
-                or not getattr(self, 'autonomous', False)):
-            ## ⚠ SELF-SUFFICIENT METHODS TAKE NO TWIN
-            ## (`carries_own_monodromy`: Gear-2 and every stage method).  Only
-            ## a one-step LMM needs one -- its opener seam makes its monodromy
-            ## first-order on a limit cycle; twinning any other method is pure
-            ## cost and hides the run's own spectrum.  `monodromy` governs only
-            ## the twin trap/euler borrow.
+        if self._hosts_own_monodromy():
             return self
         if getattr(self, '_period_state', None) is None or not self.converged:
             return self
         return self._solve_twin(mono)
+
+    def _hosts_own_monodromy(self):
+        """Whether this run's own map serves its monodromy (`monodromy_twin`
+        returns `self`): `monodromy='native'`, a method that carries its
+        own, a GLM, or a driven circuit."""
+        _integ = self._integrator_for(getattr(self.par, 'method', 'euler'))
+        ## ⚠ SELF-SUFFICIENT METHODS TAKE NO TWIN
+        ## (`carries_own_monodromy`: Gear-2 and every stage method).  Only
+        ## a one-step LMM needs one -- its opener seam makes its monodromy
+        ## first-order on a limit cycle; twinning any other method is pure
+        ## cost and hides the run's own spectrum.  `monodromy` governs only
+        ## the twin trap/euler borrow.
+        return (getattr(self, 'monodromy', 'radau') == 'native'
+                or _integ.carries_own_monodromy()
+                or self._map_kind() == 'glm'
+                or not getattr(self, 'autonomous', False))
 
     ## The iteration budget of a monodromy twin's re-solve.  A twin is a
     ## POLISH seeded at the converged orbit: a good seed converges in a
