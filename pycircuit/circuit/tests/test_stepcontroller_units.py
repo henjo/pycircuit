@@ -166,3 +166,33 @@ def test_solution_lte_controller_standard_path_contract():
                                x_hist=hist)
     assert not accept
     assert h_next > 1e-6
+
+
+@pytest.mark.parametrize('ctrl_cls', [IntegralController, PIController,
+                                      SolutionLTEController])
+def test_the_controllers_take_one_set_of_inputs_by_keyword_or_position(ctrl_cls):
+    """`evaluate_step` packs its arguments into one `StepLTEInputs` (the
+    review's O17, 2026-10-01: a 20-parameter signature written four times,
+    seven of its parameters dead in some controller).  Positional arguments
+    bind in the old signature's order, keywords as before; the verdict is
+    the same either way, and a doubled or unknown argument is refused."""
+    from pycircuit.circuit.stepcontroller import StepLTEInputs
+    integ = StubIntegrator(Eg=[2e-4, -1e-4, 0.0], order=2)
+    J = np.eye(3)
+    hist = [np.full(3, 0.9), np.full(3, 0.8), np.full(3, 0.7)]
+    kw = {'x_curr': np.ones(3), 'x_last': hist[0], 'q_curr': np.zeros(3),
+          'q_last_hist': [np.zeros(3)], 'iq_last_hist': [np.zeros(3)],
+          'h_curr': 1e-6, 'h_last': 1e-6, 'no_history': False, 'J': J,
+          'active_integrator': integ, 'irefnode': 2, 'reltol': 1e-3,
+          'abstol': 1e-12, 'toolkit': numeric, 'max_step': 1e-3, 'TRTOL': 7.0,
+          'n_nodes': None, 'h_last2': 1e-6, 'h_clamped': False,
+          'x_hist': hist}
+    names = list(StepLTEInputs.__dataclass_fields__)
+    assert names == list(kw), names
+    by_kw = ctrl_cls().evaluate_step(**kw)
+    by_pos = ctrl_cls().evaluate_step(*[kw[n] for n in names])
+    assert by_kw == by_pos, (by_kw, by_pos)
+    with pytest.raises(TypeError, match='multiple values'):
+        ctrl_cls().evaluate_step(kw['x_curr'], **kw)
+    with pytest.raises(TypeError):
+        ctrl_cls().evaluate_step(nonsense=1, **kw)

@@ -10,6 +10,7 @@ from pycircuit.circuit.analysis import Analysis
 from pycircuit.circuit.analysis import Parameter
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import gnd
+from pycircuit.circuit.transient import Transient
 from pycircuit.post import InternalResultDict
 import pycircuit.circuit.analysis as analysis
 from ._numerics import freq_analysis
@@ -66,6 +67,20 @@ def _kept_residual(fn):
                 'while you evaluate it.') from None
     return shooting_residual
 
+
+
+def _transient_parameter(name, desc=None):
+    """`Transient`'s Parameter `name` -- the object itself, or a copy with
+    `desc` where the shooting words it for its inner transient.  ⚠ The LAST
+    of that name: `Analysis.parameters`, which every list starts with, holds
+    an `analysis` of its own with no default, and Transient's ('tran')
+    overrides it.  (Taking the first unset PSS's default.)"""
+    p = [p for p in Transient.parameters if p.name == name][-1]
+    if desc is None:
+        return p
+    p = p.copy()
+    p.desc = desc
+    return p
 
 class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
           _InnerTransient, _PeriodWalks, _FactoredReplays, _PPVFloquet, _AccuracyChecks, _PeriodicStates,
@@ -375,35 +390,30 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
     History: `doc/shooting_history.md`, `PSS` (class docstring).
     """
 
+    ## ⚠ THE INNER TRANSIENT'S OWN PARAMETERS, not copies: `analysis`, the
+    ## tolerances, `maxiter`, `pcnr`, the LTE floors, `TRTOL` and `relref`
+    ## mean exactly what they mean in `Transient` (the names forwarded to the
+    ## inner transient, `_InnerTransient`), so they are its Parameter
+    ## objects -- re-declared here until 2026-10-01, defaults equal by hand
+    ## (the review's O18; `test_pss_shares_the_transient_s_parameters`).
+    ## `analysis` defaults to 'tran': sources supply their time-domain
+    ## waveform only for an analysis name in timedomain_analyses
+    ## (('dc','tran')); any other name makes cir.u(t) zero and the solve
+    ## unexcited.
     parameters = Analysis.parameters + \
-        [Parameter(name='analysis', desc='Analysis name',
-                   ## Sources supply their time-domain waveform only for an
-                   ## analysis name in timedomain_analyses (('dc','tran')); any
-                   ## other name makes cir.u(t) zero and the solve unexcited.
-                   default='tran'),
-         Parameter(name='reltol', 
-                   desc='Relative tolerance', unit='', 
-                   default=1e-4),
-         Parameter(name='iabstol', 
-                   desc='Absolute current error tolerance', unit='A', 
-                   default=1e-12),
-         ## DC, Transient, JAXTransient and PSS share one meaning and one
-         ## default; the reason is at `Transient.vabstol`
-         Parameter(name='vabstol', 
-                   desc='Absolute voltage error tolerance', unit='V', 
-                   default=1e-6),
-         Parameter(name='maxiter',
-                   desc='Maximum number of iterations', unit='',
-                   default=100),
+        [_transient_parameter('analysis'),
+         _transient_parameter('reltol'),
+         _transient_parameter('iabstol'),
+         _transient_parameter('vabstol'),
+         _transient_parameter('maxiter'),
          ## Forwarded to the inner Transient so PCNR (the junction-continuation
          ## limiting) reaches the shooting per-step solve too -- it lives in
          ## `Transient.solve_timestep`, which PSS DOES call, so no per-accepted-
          ## step machinery is needed (unlike breakpoints / continuation rescue,
          ## which are armed in `Transient.solve` and stay out of reach).
-         Parameter(name='pcnr',
-                   desc='Use Predictor/Corrector Newton-Raphson instead of '
-                        'limiting in the inner transient; off by default',
-                   unit='', default=False),
+         _transient_parameter(
+             'pcnr', desc='Use Predictor/Corrector Newton-Raphson instead of '
+                          'limiting in the inner transient; off by default'),
          ## How finely a switching window is resolved: the segment between
          ## a threshold switch's two landed edges (`state_events`) is cut into
          ## this many equal steps whenever it holds fewer -- see
@@ -463,21 +473,12 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                         'knee). Ignored by every other method.',
                    unit='', default=None),
          ## The LTE floors are separate from the Newton ones (one knob must not
-         ## move both criteria -- see `Transient`); same names, defaults and
-         ## meaning, so this reports the number a transient would control on.
-         Parameter(name='lte_vabstol',
-                   desc='Absolute voltage floor for the truncation-error '
-                        'estimate', unit='V', default=1e-12),
-         Parameter(name='lte_iabstol',
-                   desc='Absolute current floor for the truncation-error '
-                        'estimate', unit='A', default=1e-12),
-         Parameter(name='TRTOL',
-                   desc='Truncation error over-estimation factor (SPICE '
-                        'TRTOL / lteratio in a commercial simulator)', unit='', default=7.0),
-         Parameter(name='relref',
-                   desc="What the relative LTE tolerance is measured "
-                        "against: 'pointlocal', 'alllocal' or 'sigglobal'",
-                   unit='', default='sigglobal'),
+         ## move both criteria -- see `Transient`); the transient's own, so this
+         ## reports the number a transient would control on.
+         _transient_parameter('lte_vabstol'),
+         _transient_parameter('lte_iabstol'),
+         _transient_parameter('TRTOL'),
+         _transient_parameter('relref'),
          ## `reltol` MEANS THE SAME THING IN EVERY ANALYSIS: the relative
          ## tolerance of the transient solution, applied to the per-timestep
          ## Newton here exactly as `Transient` applies it, never rescaled.
@@ -1695,14 +1696,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## ⚠ THE NAME IS VALIDATED BEFORE ANYTHING ASKS THE INTEGRATOR A
         ## QUESTION, so an unknown name raises this `ValueError` rather than
         ## a `KeyError` from several frames down (`_solves_history`).
+        ## (by `_integrator_for`, whose table is the one list of method names;
+        ## a second copy of it stood here until 2026-10-01, the review's O18)
         method = getattr(self.par, 'method', 'euler')
-        if method not in ('euler', 'trap', 'trapezoidal', 'theta', 'gear',
-                          'gear2', 'trbdf2', 'radau', 'esdirk43',
-                          'glm2', 'glm3', 'glm4'):
-            raise ValueError(
-                "method must be 'euler', 'trap', 'theta', 'gear', 'trbdf2', "
-                "'radau', 'esdirk43', 'glm2', 'glm3' or 'glm4', not %r"
-                % (method,))
+        self._integrator_for(method)
 
         ## Whether the entering history joins the unknowns.  Decided once,
         ## here, because it chooses which system is solved -- like autonomy.

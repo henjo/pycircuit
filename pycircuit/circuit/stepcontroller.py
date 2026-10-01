@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, fields
+from typing import Any
 
 import numpy as np
 from pycircuit.circuit.simwarnings import AccuracyWarning, warn
@@ -60,6 +62,59 @@ def sigglobal_reference(running, n_nodes):
     out[:n_nodes] = np.max(running[:n_nodes])
     out[n_nodes:] = np.max(running[n_nodes:])
     return out
+
+
+@dataclass(frozen=True)
+class StepLTEInputs:
+    """One judged step attempt: everything a step controller may read.
+
+    `evaluate_step` packs its keywords (or positional arguments, in this
+    order) into one of these.  The three estimator families read different
+    parts -- the charge-based controllers `q_*`, `J`, `irefnode`; Fang's
+    solution-based one `x_hist` -- which is why the one interface no longer
+    shows as unused parameters in each (until 2026-10-01 a 20-parameter
+    signature written four times, seven of its parameters dead in some
+    controller: the review's O17).
+
+    `abstol` may be a vector; `n_nodes` splits node voltages from branch
+    currents for the global `relref` modes; `h_last2` is None until the
+    run has three real past charges; `h_clamped` marks a step truncated
+    onto a breakpoint (not LTE-limited); `x_hist` the accepted solutions,
+    newest first."""
+    x_curr: Any
+    x_last: Any
+    q_curr: Any
+    q_last_hist: Any
+    iq_last_hist: Any
+    h_curr: float
+    h_last: float
+    no_history: bool
+    J: Any
+    active_integrator: Any
+    irefnode: int
+    reltol: float
+    abstol: Any
+    toolkit: Any
+    max_step: float
+    TRTOL: float = 7.0
+    n_nodes: Any = None
+    h_last2: Any = None
+    h_clamped: bool = False
+    x_hist: Any = None
+
+    @classmethod
+    def bind(cls, *args, **kwargs):
+        """The inputs from `evaluate_step`'s arguments: positional ones
+        in the field order, then keywords."""
+        names = [f.name for f in fields(cls)]
+        if len(args) > len(names):
+            raise TypeError(f'evaluate_step takes at most {len(names)} '
+                            f'arguments, got {len(args)}')
+        for name, value in zip(names, args):
+            if name in kwargs:
+                raise TypeError(f'evaluate_step got multiple values for {name!r}')
+            kwargs[name] = value
+        return cls(**kwargs)
 
 
 class StepController(ABC):
@@ -244,9 +299,11 @@ class StepController(ABC):
         ## state instead), so the conversion is safe as long as that holds.
         return sigglobal_reference(self._ref_running, n_nodes)
 
-    @abstractmethod
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None):
+    def evaluate_step(self, *args, **kwargs):
         """Evaluate the Local Truncation Error (LTE) for the current step.
+
+        The inputs are `StepLTEInputs`' fields, by keyword (the transient's
+        way) or positionally in their order.
 
         ``no_history`` means there is genuinely no past point to difference
         against -- the first step of a run -- so the LTE cannot be estimated and
@@ -259,54 +316,58 @@ class StepController(ABC):
             tuple: ``(accept_step, h_next)`` -- whether the step is accepted and
             the predicted next step size.
         """
-        pass
+        return self._evaluate(StepLTEInputs.bind(*args, **kwargs))
 
-class IntegralController(StepController):
-    """
-    Standard Integral Step Controller based on Yao et al. ICECS 2014.
-    Rejects steps with LTE > 1.0, and predicts the next step size.
-    """
-    
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None):
-        ## Cleared on entry so `last_err` is None wherever no error was computed,
-        ## rather than silently holding the previous step's value -- a stale
-        ## reading is worse than a missing one for anything measuring the
-        ## distribution of accepted-step errors.
-        self.last_err = None
+    @abstractmethod
+    def _evaluate(self, s):
+        """`evaluate_step` on its packed `StepLTEInputs` `s`."""
 
-        ## No past point exists yet, so there is nothing to difference and the
-        ## step is accepted unevaluated.  This is the only place in a run where
-        ## that is correct, and it costs one uncontrolled step of O(h^2) Euler
-        ## error at max_step -- which is why it used to dominate every accuracy
-        ## measurement when breakpoints re-armed it periodically.  It still does
-        ## on the stiff ringdown: gate 12A-2 measured the total error there
-        ## saturating at 1.3589e-02 from this one step, unchanged across four
-        ## decades of `reltol`.
-        if no_history:
-            return True, h_curr
+    @staticmethod
+    def tolerance(ref, reltol, abstol, TRTOL):
+        """The LTE tolerance `TRTOL (reltol ref + abstol)`.  TRTOL is the
+        SPICE "transient tolerance" (a commercial simulator calls the
+        equivalent `lteratio`): the LTE estimate is deliberately conservative,
+        so the allowed truncation error is TRTOL times the Newton-solve
+        tolerance.  Folding TRTOL into the tolerance makes the accept threshold
+        (err <= 1) and the step-size prediction aim at the same target instead
+        of oscillating.  One expression for every controller and for Fang's
+        coupled path (`Transient._lte_tolerance`)."""
+        return TRTOL * (reltol * ref + abstol)
 
-        # --- LOCAL TRUNCATION ERROR (LTE) CALCULATION ---
-        # 1. Ask the active integrator (e.g. Gear2, Trapezoidal) to calculate the 
+    def _normalised(self, s, lte):
+        """`|lte| / tolerance` per entry, the reference by `relref`."""
+        ref = self._reference(s.x_curr, s.x_last, s.no_history, s.n_nodes,
+                              s.toolkit)
+        return normalised_error(lte, self.tolerance(ref, s.reltol, s.abstol,
+                                                    s.TRTOL))
+
+    def _charge_lte(self, s):
+        """The charge-domain LTE in solution units, `(lte, p)`: the active
+        integrator's raw truncation error `Eg` of the charge curvature, mapped
+        by `J^-1` (reference row removed and restored), `p` the step-size
+        exponent's denominator (order + 1).  The integral and PI controllers'
+        one chain (written out in each until 2026-10-01)."""
+        # 1. Ask the active integrator (e.g. Gear2, Trapezoidal) to calculate the
         #    raw unscaled truncation error vector (Eg) based on charge curvature.
-        Eg, p = active_integrator.compute_lte(
-            q_curr=q_curr,
-            h_curr=h_curr,
-            q_last=q_last_hist,
-            iq_last=iq_last_hist,
-            h_last=h_last,
-            is_first_step=no_history,
-            toolkit=toolkit,
+        Eg, p = s.active_integrator.compute_lte(
+            q_curr=s.q_curr,
+            h_curr=s.h_curr,
+            q_last=s.q_last_hist,
+            iq_last=s.iq_last_hist,
+            h_last=s.h_last,
+            is_first_step=s.no_history,
+            toolkit=s.toolkit,
             ## None until the run has three real past charges; see the ABC.
-            h_last2=h_last2,
+            h_last2=s.h_last2,
         )
-        
-        # 2. Convert charge error into voltage error by multiplying by the 
+
+        # 2. Convert charge error into voltage error by multiplying by the
         #    inverse of the Jacobian matrix: lte = J^-1 * Eg
         from pycircuit.circuit.analysis import remove_row_col
-        J_reduced, Eg_reduced = remove_row_col((J, Eg), irefnode, toolkit)
-        
+        J_reduced, Eg_reduced = remove_row_col((s.J, Eg), s.irefnode, s.toolkit)
+
         try:
-            lte_reduced = toolkit.linearsolver(J_reduced, Eg_reduced)
+            lte_reduced = s.toolkit.linearsolver(J_reduced, Eg_reduced)
         except Exception as exc:
             ## DECISION 0.3d called this "the unlogged half-(B) fallback" and said
             ## to delete it.  What made it a defect is not the fallback but the
@@ -324,21 +385,80 @@ class IntegralController(StepController):
             ## that is news.
             self._lte_solve_failed(exc)
             lte_reduced = Eg_reduced
-            
-        lte = toolkit.concatenate((lte_reduced[:irefnode], toolkit.array([0.0]), lte_reduced[irefnode:]))
 
-        # 3. Dynamic per-node tolerance, relaxed by the transient error factor TRTOL.
-        #    TRTOL is the SPICE "transient tolerance" (a commercial simulator calls the equivalent
-        #    `lteratio`): the LTE estimate is deliberately conservative, so the
-        #    allowed truncation error is TRTOL times the Newton-solve tolerance.
-        #    Folding TRTOL into etol makes the accept threshold (err<=1) and the
-        #    step-size prediction aim at the same target instead of oscillating.
-        ref = self._reference(x_curr, x_last, no_history, n_nodes, toolkit)
-        etol = TRTOL * (reltol * ref + abstol)
+        tk = s.toolkit
+        return tk.concatenate((lte_reduced[:s.irefnode], tk.array([0.0]),
+                               lte_reduced[s.irefnode:])), p
 
-        # 4. Normalize the error
-        err_array = normalised_error(lte, etol)
-        err = float(np.max(err_array))
+    def _band_decision(self, s, err, shrink, grow):
+        """Accept, reject, or redo larger -- the band tail the integral and
+        solution-LTE controllers share; each keeps its own predictor:
+        `shrink(err)` the next step after a rejection, `grow(err)` the
+        undamped next step otherwise.
+
+        Rejected above `lte_gamma_max`.  Below `lte_gamma_min` (eq (15)'s LOWER
+        bound) the step was so far under tolerance it was wasted work, so it
+        is redone LARGER at the same time point -- the one place a step is
+        rejected for being too ACCURATE, the mechanism Fang's sec. 4.1 credits
+        for the paper's 39 %.  `h_clamped` suppresses that, and the suppression
+        is not a detail: a step truncated onto a breakpoint or onto `tend` is
+        not LTE-limited, so its small error says nothing about the integrator
+        and growing it is either impossible or wrong (the stage-12 entry
+        measurement found exactly this population -- at loose tolerance the
+        steps sitting far below target were breakpoint-clamped, not
+        controller-chosen).  Likewise a step already at `max_step` has
+        nowhere to grow.
+
+        THE DAMPER IS NOT APPLIED TO A REJECTION.  Eq (16) bounds how far one
+        accepted step may sit from the one before it; it is not a limit on how
+        fast a step that failed its error test may retreat.  Applied there,
+        measured on the stiff RLC ringdown: with eta=0.15 the step could only
+        shrink 15 % per retry, so it exhausted MAX_REJECT, force-accepted, and
+        crossed the whole ringing transient in 62 steps against the baseline's
+        490 -- with a reported LTE of exactly zero, because by then it was
+        integrating a signal that had already decayed.  A limiter that makes
+        the error control unable to respond is not a damper, it is a muzzle."""
+        h = s.h_curr
+        if err > self.lte_gamma_max:
+            return False, shrink(err)
+        if (err < self.lte_gamma_min and not s.h_clamped
+                and h < s.max_step * (1.0 - 1e-12)):
+            h_next = min(self._damp(grow(err), h), s.max_step)
+            ## Never report a "grow" that does not actually grow: with the
+            ## damper or `max_step` binding, the retry would re-solve the same
+            ## step and reject it again, which is a livelock with extra steps.
+            if h_next > h * (1.0 + 1e-9):
+                return False, h_next
+        return True, min(self._damp(grow(err), h), s.max_step)
+
+class IntegralController(StepController):
+    """
+    Standard Integral Step Controller based on Yao et al. ICECS 2014.
+    Rejects steps with LTE > 1.0, and predicts the next step size.
+    """
+    
+    def _evaluate(self, s):
+        ## Cleared on entry so `last_err` is None wherever no error was computed,
+        ## rather than silently holding the previous step's value -- a stale
+        ## reading is worse than a missing one for anything measuring the
+        ## distribution of accepted-step errors.
+        self.last_err = None
+
+        ## No past point exists yet, so there is nothing to difference and the
+        ## step is accepted unevaluated.  This is the only place in a run where
+        ## that is correct, and it costs one uncontrolled step of O(h^2) Euler
+        ## error at max_step -- which is why it used to dominate every accuracy
+        ## measurement when breakpoints re-armed it periodically.  It still does
+        ## on the stiff ringdown: gate 12A-2 measured the total error there
+        ## saturating at 1.3589e-02 from this one step, unchanged across four
+        ## decades of `reltol`.
+        if s.no_history:
+            return True, s.h_curr
+
+        ## the LTE in solution units (`_charge_lte`) against the dynamic
+        ## per-node tolerance relaxed by TRTOL (`tolerance`), normalised
+        lte, p = self._charge_lte(s)
+        err = float(np.max(self._normalised(s, lte)))
         ## Exposed under the same name `PIController` uses, so the normalised
         ## error of whichever controller is running can be read from outside.
         ## Not used by this controller's own law -- it is pure integral -- but a
@@ -357,54 +477,12 @@ class IntegralController(StepController):
         ## arithmetic on the default path, it only names the aim point so a band
         ## can move it.
         target = self._band_target(safety, p)
-
-        # --- STEP REJECTION / ACCEPTANCE ---
-        if err > self.lte_gamma_max:
-            # Step rejected: shrink and recalculate.
-            ##
-            ## THE DAMPER IS DELIBERATELY NOT APPLIED HERE.  Eq (16) bounds how
-            ## far one accepted step may sit from the one before it; it is not a
-            ## limit on how fast a step that failed its error test may retreat.
-            ## Applying it to the rejection path was measured on the stiff RLC
-            ## ringdown: with eta=0.15 the step could only shrink 15% per retry,
-            ## so it exhausted MAX_REJECT, force-accepted, and crossed the whole
-            ## ringing transient in 62 steps against the baseline's 490 -- with a
-            ## reported LTE of exactly zero, because by then it was integrating a
-            ## signal that had already decayed.  A limiter that makes the error
-            ## control unable to respond is not a damper, it is a muzzle.
-            h_next = h_curr * max(MIN_SHRINK_RATIO, (target / err) ** exponent)
-            return False, h_next
-
-        ## Eq (15)'s LOWER bound: the step landed so far under tolerance that it
-        ## was wasted work, so it is redone LARGER at the same time point.  This
-        ## is the one place in the controller that rejects a step for being too
-        ## ACCURATE, and it is the mechanism sec. 4.1 credits for the paper's 39%.
-        ##
-        ## `h_clamped` suppresses it, and that suppression is not a detail: a step
-        ## truncated onto a breakpoint or onto `tend` is not LTE-limited, so its
-        ## small error says nothing about the integrator and growing it is either
-        ## impossible or wrong.  The stage-12 entry measurement found exactly this
-        ## population -- at loose tolerance the steps sitting far below target were
-        ## breakpoint-clamped, not controller-chosen.  Without this guard the band
-        ## would spend its retries re-solving steps whose size was never its to
-        ## choose.  Likewise a step already at `max_step` has nowhere to grow.
-        if (err < self.lte_gamma_min and not h_clamped
-                and h_curr < max_step * (1.0 - 1e-12)):
-            h_next = h_curr * min(MAX_GROWTH_RATIO,
-                                  (target / max(err, 1e-12)) ** exponent)
-            h_next = min(self._damp(h_next, h_curr), max_step)
-            ## Never report a "grow" that does not actually grow: with the damper
-            ## or `max_step` binding, the retry would re-solve the same step and
-            ## reject it again, which is a livelock with extra steps.
-            if h_next > h_curr * (1.0 + 1e-9):
-                return False, h_next
-
-        # Step accepted: predict next size with the same controller law.
-        h_next = h_curr * min(MAX_GROWTH_RATIO,
-                              (target / max(err, 1e-12)) ** exponent)
-        h_next = min(self._damp(h_next, h_curr), max_step)
-
-        return True, h_next
+        h = s.h_curr
+        return self._band_decision(
+            s, err,
+            shrink=lambda e: h * max(MIN_SHRINK_RATIO, (target / e) ** exponent),
+            grow=lambda e: h * min(MAX_GROWTH_RATIO,
+                                   (target / max(e, 1e-12)) ** exponent))
 
 class PIController(StepController):
     """
@@ -475,56 +553,20 @@ class PIController(StepController):
                   * ((err_last_norm / err_norm) ** (self.k_p / p)))
         return min(MAX_GROWTH_RATIO, max(MIN_SHRINK_RATIO, factor))
 
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None):
+    def _evaluate(self, s):
         ## As in IntegralController: nothing to difference on the first step of a
         ## run.  Unlike there, the 0.5 is not dead -- it seeds the PI history so
         ## the first real update has a previous error to work from.
-        if no_history:
+        if s.no_history:
             self.last_err = 0.5
-            return True, h_curr
-        
-        Eg, p = active_integrator.compute_lte(
-            q_curr=q_curr,
-            h_curr=h_curr,
-            q_last=q_last_hist,
-            iq_last=iq_last_hist,
-            h_last=h_last,
-            is_first_step=no_history,
-            toolkit=toolkit,
-            ## None until the run has three real past charges; see the ABC.
-            h_last2=h_last2,
-        )
-        
-        from pycircuit.circuit.analysis import remove_row_col
-        J_reduced, Eg_reduced = remove_row_col((J, Eg), irefnode, toolkit)
-        
-        try:
-            lte_reduced = toolkit.linearsolver(J_reduced, Eg_reduced)
-        except Exception as exc:
-            ## DECISION 0.3d called this "the unlogged half-(B) fallback" and said
-            ## to delete it.  What made it a defect is not the fallback but the
-            ## SILENCE: `Eg` is a current and `J^-1 Eg` is a voltage (see the
-            ## units note in the plan), so this substitutes one flavour for the
-            ## other and then compares the result against a voltage tolerance.
-            ## An error that is wrong by a factor of `h` either never fires or
-            ## always does, and either way looks like it is working.
-            ##
-            ## Kept rather than removed, because removing it would turn a
-            ## degenerate Jacobian into an exception from inside step control
-            ## rather than from the operating point, where the diagnostic is much
-            ## better.  Made loud instead: gate 4-D measured this firing ZERO
-            ## times on a circuit with cond(J) = 1.0e12, so if it ever does fire
-            ## that is news.
-            self._lte_solve_failed(exc)
-            lte_reduced = Eg_reduced
-            
-        lte = toolkit.concatenate((lte_reduced[:irefnode], toolkit.array([0.0]), lte_reduced[irefnode:]))
+            return True, s.h_curr
+        h_curr, max_step = s.h_curr, s.max_step
 
-        # Relax the LTE tolerance by TRTOL (see IntegralController) so the accept
-        # threshold matches the target the PI update drives toward.
-        ref = self._reference(x_curr, x_last, no_history, n_nodes, toolkit)
-        etol = TRTOL * (reltol * ref + abstol)
-        err_array = normalised_error(lte, etol)
+        # the LTE in solution units and its TRTOL-relaxed tolerance, as in
+        # IntegralController, so the accept threshold matches the target the
+        # PI update drives toward
+        lte, p = self._charge_lte(s)
+        err_array = self._normalised(s, lte)
 
         err = float(np.max(err_array))
         exponent = 1.0 / p
@@ -613,9 +655,24 @@ class SolutionLTEController(StepController):
     ## method does not commit.
     MAX_DEGREE = 2
 
-    def evaluate_step(self, x_curr, x_last, q_curr, q_last_hist, iq_last_hist, h_curr, h_last, no_history, J, active_integrator, irefnode, reltol, abstol, toolkit, max_step, TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None):
-        from pycircuit.circuit._lte_kernels import (solution_lte,
-                                                    step_for_error_ratio)
+    @classmethod
+    def solution_deviation(cls, x_curr, x_hist, h_hist, h_curr, order):
+        """Eq (6)'s deviation of `x_curr` from the degree-`d` extrapolation of
+        the accepted history `x_hist` (newest first, steps `h_hist`), `d` the
+        method's `order` capped by the history and `MAX_DEGREE`.  Returns
+        `(lte, d)`, `lte` None where `d < 1` (no line to extrapolate).  This
+        controller's and Fang's coupled band test's (`Transient._lte_in_band`)
+        one estimator."""
+        from pycircuit.circuit._lte_kernels import solution_lte
+        degree = min(order, len(x_hist) - 1, len(h_hist), cls.MAX_DEGREE)
+        if degree < 1:
+            return None, degree
+        return solution_lte(x_curr, list(x_hist[:degree + 1]),
+                            list(h_hist[:degree]), h_curr), degree
+
+    def _evaluate(self, s):
+        from pycircuit.circuit._lte_kernels import step_for_error_ratio
+        x_hist, h_curr = s.x_hist, s.h_curr
 
         self.last_err = None
         self.controlling_index = None
@@ -624,8 +681,8 @@ class SolutionLTEController(StepController):
         ## line.  With fewer there is nothing to compare against and the step is
         ## accepted unevaluated, exactly as the charge-based controllers do on
         ## their opening step.
-        hs = [h for h in (h_last, h_last2) if h is not None]
-        if no_history or not x_hist or len(x_hist) < 2 or not hs:
+        hs = [h for h in (s.h_last, s.h_last2) if h is not None]
+        if s.no_history or not x_hist or len(x_hist) < 2 or not hs:
             return True, h_curr
 
         ## THE DEGREE MUST EQUAL THE METHOD ORDER.  Fang's eq (6) is the Milne
@@ -643,21 +700,16 @@ class SolutionLTEController(StepController):
         ##
         ## `active_integrator` is the one actually running this step, so an
         ## order drop to Euler drops the predictor degree with it.
-        order = getattr(active_integrator, 'ORDER', None)
+        order = getattr(s.active_integrator, 'ORDER', None)
         if order is None:
             return True, h_curr
-        degree = min(order, len(x_hist) - 1, len(hs), self.MAX_DEGREE)
-        if degree < 1:
+        lte, degree = self.solution_deviation(s.x_curr, x_hist, hs, h_curr,
+                                              order)
+        if lte is None:
             return True, h_curr
-        v_hist = list(x_hist[:degree + 1])
         h_hist = list(hs[:degree])
 
-        lte = solution_lte(x_curr, v_hist, h_hist, h_curr)
-
-        ref = self._reference(x_curr, x_last, no_history, n_nodes, toolkit)
-        etol = TRTOL * (reltol * ref + abstol)
-
-        err_array = normalised_error(lte, etol)
+        err_array = self._normalised(s, lte)
         ## The reference node is held at zero by construction, so its deviation
         ## is identically zero and cannot be the controlling one; taking the
         ## argmax over the full vector is safe and keeps the index in the
@@ -680,19 +732,9 @@ class SolutionLTEController(StepController):
             return step_for_error_ratio(h_curr, h_hist, ratio,
                                         MIN_SHRINK_RATIO, MAX_GROWTH_RATIO)
 
-        if err > self.lte_gamma_max:
-            return False, predict(target / err)
-
-        if (err < self.lte_gamma_min and not h_clamped
-                and h_curr < max_step * (1.0 - 1e-12)):
-            h_next = min(self._damp(predict(target / max(err, 1e-12)), h_curr),
-                         max_step)
-            if h_next > h_curr * (1.0 + 1e-9):
-                return False, h_next
-
-        h_next = min(self._damp(predict(target / max(err, 1e-12)), h_curr),
-                     max_step)
-        return True, h_next
+        return self._band_decision(
+            s, err, shrink=lambda e: predict(target / e),
+            grow=lambda e: predict(target / max(e, 1e-12)))
 
     def lte_gradients(self, x_curr, x_hist, h_hist, h_curr, etol):
         """Fang's ``q^T`` and ``d`` for the LTE equation, both in closed form.

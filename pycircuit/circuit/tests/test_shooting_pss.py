@@ -5415,3 +5415,20 @@ def test_a_solved_pss_is_freed_when_its_last_reference_goes(method):
     ## ReferenceError from deep inside)
     with pytest.raises(RuntimeError, match='keep the PSS alive'):
         res(np.append(z0, 1.0) if method != 'glm3' else z0)
+
+
+def test_pss_shares_the_transient_s_parameters():
+    """The tolerances, `maxiter`, `pcnr`, the LTE floors, `TRTOL`, `relref`
+    and `analysis` -- the names forwarded to the inner transient -- are
+    `Transient`'s own Parameter objects (`pcnr` a copy worded for the
+    shooting), not re-declarations whose defaults matched by hand (the
+    review's O18, 2026-10-01)."""
+    from pycircuit.circuit.transient import Transient
+    T = {p.name: p for p in Transient.parameters}
+    P = {p.name: p for p in PSS.parameters}
+    for name in ('analysis', 'reltol', 'iabstol', 'vabstol', 'maxiter',
+                 'lte_vabstol', 'lte_iabstol', 'TRTOL', 'relref'):
+        assert P[name] is T[name], name
+    assert P['pcnr'] is not T['pcnr'] and 'inner transient' in P['pcnr'].desc
+    assert (P['pcnr'].default, P['pcnr'].unit) == (T['pcnr'].default,
+                                                   T['pcnr'].unit)

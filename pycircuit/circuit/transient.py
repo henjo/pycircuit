@@ -354,30 +354,11 @@ class _LMMSteps(_StepFamily):
 
     def judge(self, X, x_new, h, J, clamped):
         tr, run = self.tr, self.run
-        return tr.step_controller.evaluate_step(
-            x_curr=x_new,
-            x_last=X[-1],
-            q_curr=tr._q_at(x_new),
-            q_last_hist=tr._qlast,
-            iq_last_hist=tr._iqlast,
-            h_curr=h,
-            h_last=tr._dt_last if tr._dt_last is not None else h,
-            h_last2=tr._dt_last2,
-            no_history=tr._no_history,
-            J=J,
-            active_integrator=tr.active_integrator,
-            irefnode=tr.irefnode,
-            reltol=tr.par.reltol,
-            abstol=run.abstol,
-            toolkit=tr.toolkit,
-            max_step=run.max_step,
-            TRTOL=tr.LTERATIO,
-            n_nodes=len(tr.cir.nodes),
+        return tr.step_controller.evaluate_step(**tr._lte_inputs(
+            x_new, X[-1], J, h, run.abstol, run.max_step,
             ## STAGE 12A -- a truncated step is not LTE-limited, so Fang's
             ## lower bound must not try to grow it
-            h_clamped=clamped,
-            x_hist=X[-1:-4:-1],
-        )
+            clamped=clamped, x_hist=X[-1:-4:-1]))
 
     def h_after_force(self, h, _h_next):
         ## the clamp every accepted step obeys -- 4b's point is that the
@@ -3097,8 +3078,8 @@ class Transient(Analysis):
         paths are scored on the same scale."""
         ref = ctrl._reference(x_curr, x_last, not h_hist,
                               len(self.cir.nodes), self.toolkit)
-        etol = self.LTERATIO * (self.par.reltol * ref
-                                + self._lte_abstol_vector())
+        etol = ctrl.tolerance(ref, self.par.reltol, self._lte_abstol_vector(),
+                              self.LTERATIO)
         ## P22: eq (6) over the STATE rows only -- an infinite tolerance on
         ## algebraic rows removes them from the band test and the controlling-
         ## node argmax through this one mechanism.  See _state_row_mask for
@@ -3219,17 +3200,19 @@ class Transient(Analysis):
 
     def _lte_in_band(self, ctrl, x_curr, x_hist, h_hist, h, etol,
                      gamma_min, gamma_max):
-        """``(condition_holds, normalised_error)`` for eq (15)."""
-        from pycircuit.circuit._lte_kernels import solution_lte
+        """``(condition_holds, normalised_error)`` for eq (15): the solution
+        controller's estimator (`SolutionLTEController.solution_deviation`;
+        its degree cap, 2, never binds here: `h_hist` holds at most the two
+        past steps)."""
+        from pycircuit.circuit.stepcontroller import SolutionLTEController
 
         if not h_hist or len(x_hist) < 2:
             return True, 0.0
         order = getattr(self.active_integrator, 'ORDER', 1)
-        degree = min(order, len(x_hist) - 1, len(h_hist))
-        if degree < 1:
+        lte, _degree = SolutionLTEController.solution_deviation(
+            x_curr, x_hist, h_hist, h, order)
+        if lte is None:
             return True, 0.0
-        lte = solution_lte(x_curr, list(x_hist[:degree + 1]),
-                           list(h_hist[:degree]), h)
         err = float(np.max(normalised_error(lte, etol)))
         return (gamma_min <= err <= gamma_max), err
 
@@ -3258,19 +3241,29 @@ class Transient(Analysis):
         ## ⚠ THE LTE FLOORS, NOT THE NEWTON ONES -- the shared helper, not a
         ## second transcription of it: the two `abstol` flavours were split
         ## by stage 0.3d precisely because they are different quantities.
-        self._lte_probe.evaluate_step(
-            x_curr=x_curr, x_last=x_last,
-            q_curr=self._q_at(x_curr),
-            q_last_hist=self._qlast, iq_last_hist=self._iqlast,
-            h_curr=self._dt,
-            h_last=self._dt_last if self._dt_last is not None else self._dt,
-            h_last2=self._dt_last2, no_history=self._no_history, J=J,
-            active_integrator=self.active_integrator,
-            irefnode=self.irefnode, reltol=self.par.reltol,
-            abstol=self._lte_abstol_vector(),
-            toolkit=self.toolkit, max_step=self._dt, TRTOL=self.LTERATIO,
-            n_nodes=len(self.cir.nodes))
+        self._lte_probe.evaluate_step(**self._lte_inputs(
+            x_curr, x_last, J, self._dt, self._lte_abstol_vector(), self._dt))
         return self._lte_probe.last_err
+
+    def _lte_inputs(self, x_curr, x_last, J, h, abstol, max_step,
+                    clamped=False, x_hist=None):
+        """A step controller's inputs (`StepLTEInputs`, as keywords) for the
+        step `x_last -> x_curr` of size `h` at this transient's state: its
+        charges and past steps, active integrator, reference node, `reltol`,
+        TRTOL and node count -- the stepping loop's judge and `step_lte`'s
+        one set (written out in each until 2026-10-01)."""
+        return {
+            'x_curr': x_curr, 'x_last': x_last,
+            'q_curr': self._q_at(x_curr),
+            'q_last_hist': self._qlast, 'iq_last_hist': self._iqlast,
+            'h_curr': h,
+            'h_last': self._dt_last if self._dt_last is not None else h,
+            'h_last2': self._dt_last2, 'no_history': self._no_history, 'J': J,
+            'active_integrator': self.active_integrator,
+            'irefnode': self.irefnode, 'reltol': self.par.reltol,
+            'abstol': abstol, 'toolkit': self.toolkit, 'max_step': max_step,
+            'TRTOL': self.LTERATIO, 'n_nodes': len(self.cir.nodes),
+            'h_clamped': clamped, 'x_hist': x_hist}
 
     def residual_dh(self, x, t, h=None):
         """Fang's ``p = df_ckt/dh_m``, at fixed solution ``x``.

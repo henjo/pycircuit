@@ -62,22 +62,9 @@ UNUSED_ARG_ALLOWLIST = {
     ('integrator.py', 'companion_dh', 'h_last'): 'ABC signature',
     ('integrator.py', 'compute_lte', 'h_last2'):
         'ABC signature; Euler differences one past point (documented there)',
-    ## StepController.evaluate_step is one interface for three estimator
-    ## families; each ignores the inputs the other families need.
-    ('stepcontroller.py', 'evaluate_step', 'x_hist'):
-        'charge-based controllers ignore the solution history',
-    ('stepcontroller.py', 'evaluate_step', 'h_clamped'):
-        'PIController has no lower band to suppress (F10 revisits)',
-    ('stepcontroller.py', 'evaluate_step', 'q_curr'):
-        'SolutionLTEController is charge-free by design',
-    ('stepcontroller.py', 'evaluate_step', 'q_last_hist'):
-        'SolutionLTEController is charge-free by design',
-    ('stepcontroller.py', 'evaluate_step', 'iq_last_hist'):
-        'SolutionLTEController is charge-free by design',
-    ('stepcontroller.py', 'evaluate_step', 'J'):
-        'SolutionLTEController needs no J^-1 mapping',
-    ('stepcontroller.py', 'evaluate_step', 'irefnode'):
-        'SolutionLTEController takes the argmax over the full vector',
+    ## (StepController.evaluate_step's seven "signature uniformity" entries
+    ## went with its 20-parameter signature: the controllers take one
+    ## `StepLTEInputs`, 2026-10-01, the review's O17.)
     ## NonLinearSolver interface; SchurCoupledNewton does not dispatch on
     ## these.  (JAXNewtonSolver, the other holder of this entry, was deleted
     ## by F15.)
