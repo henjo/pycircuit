@@ -1818,9 +1818,10 @@ def test_one_step_factored_periods_replay_on_the_grid_the_solve_was_on():
     why radau's PPV, modes and noise read as "exact on the 3:1 grid": its
     adjoint never saw that grid.  `factored_period` now hands the solved
     fractions down (`_replay_grid`); a direct `factored_period_stage(x0, T,
-    npts)` call with a bare count is uniform as before, and a uniform
-    solve is bit-identical (the fractions are only passed when the grid is
-    not uniform).
+    npts)` call with a bare count is uniform as before.  (2026-10-02: it
+    walks the solved grid ITSELF now, not its fractions re-summed, whose
+    nodes could come out an ulp off a landed edge --
+    `test_the_factored_period_walks_the_solved_grid_itself`.)
     """
     circuit.default_toolkit = circuit.numeric
     T = 1e-6

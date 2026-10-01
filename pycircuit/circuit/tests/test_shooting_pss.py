@@ -5507,6 +5507,125 @@ def test_the_converged_replay_is_the_factored_period():
     assert np.array_equal(dense(p.factored_period()), maps['vdp gear'])
 
 
+def test_a_stage_methods_converged_replay_is_its_factored_period():
+    """The speed plan's P3 (2026-10-02): a stage method's converged replay
+    IS the walk `factored_period()` takes -- a transient of its own on the
+    solved grid's fractions -- with the waveform read off it and each step's
+    stage states recorded, so the first small-signal call factors that
+    record instead of walking the period again (radau is the default).
+    Nothing is factored at the solve.  The map is the on-demand walk's bit
+    for bit: radau on van der Pol, on a driven stateful diode, and TR-BDF2
+    (diagonally implicit) on a pulse-driven non-uniform grid.  The waveform
+    is a rounding apart from a replay on the PSS's own transient at the
+    solve's `(t, h)`; a GLM records nothing."""
+    from copy import copy
+
+    from pycircuit.circuit.elements import VPulse
+    circuit.default_toolkit = circuit.numeric
+
+    def dense(fp):
+        return np.column_stack([np.asarray(fp.matvec(e), float)
+                                for e in np.eye(fp.width)])
+
+    def vdp():
+        cir = _vdp_with_noise(1e-6)
+        x0 = np.zeros(cir.n - 1)
+        x0[0] = 2.0
+        return cir, {'period': 6.6634, 'timestep': 6.6634 / 100, 'x0': x0,
+                     'maxiterations': 60}
+
+    def diode():
+        return _diode_fixture(), {'period': 1e-3, 'timestep': 1e-3 / 60,
+                                  'maxiterations': 30}
+
+    def pulsed():
+        T = 1e-3
+        c = SubCircuit()
+        c['vp'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=0.0, tr=T / 50,
+                         tf=T / 50, pw=T / 2 - T / 50, per=T)
+        c['r'] = R('a', 'b', r=1e3)
+        c['c'] = C('b', gnd, c=1e-7)
+        c['d'] = Diode('b', gnd)
+        return c, {'period': T, 'timestep': T / 60, 'maxiterations': 30}
+
+    for label, fixture, method, uniform in (
+            ('vdp radau', vdp, 'radau', True),
+            ('diode radau', diode, 'radau', True),
+            ('pulsed trbdf2', pulsed, 'trbdf2', False)):
+        cir, skw = fixture()
+        p = PSS(cir, method=method, reltol=1e-10)
+        with quiet(AccuracyWarning):
+            p.solve(**skw)
+        assert p.converged, label
+        assert p._factored_period_cache is None, label
+        _, x0, _, times, hs, _, _ = p._period_state
+        assert len(p._stage_replay[2]) == len(times) - 1, label
+        _hs = np.asarray(hs, dtype=float)
+        assert (float(np.ptp(_hs)) / float(_hs.max()) < 1e-9) == uniform, label
+        steps = []
+        orig = p.solve_timestep
+        p.solve_timestep = (lambda *a, _s=steps, _o=orig, **k:
+                            _s.append(1) or _o(*a, **k))
+        M1 = dense(p.factored_period())
+        assert not steps, f'{label}: factored_period walked again'
+        assert p._stage_replay is None, label
+        p._factored_period_cache = None
+        M2 = dense(p.factored_period())
+        assert steps and np.array_equal(M1, M2), label
+        p.solve_timestep = orig
+
+        ## the waveform: the solve's time axis, and a rounding from a replay
+        ## on the PSS's own transient at the solve's (t, h)
+        t1, X1 = p.waveform
+        assert np.array_equal(t1, times), label
+        p._begin_period(x0)
+        X = [x0]
+        for t, h in zip(times[1:], hs[:len(times) - 1]):
+            X.append(copy(p.solve_timestep(X[-1], t, h)))
+        X0 = np.array([np.asarray(p._insert_refnode(x), float) for x in X]).T
+        assert X0.shape == X1.shape, label
+        scale = np.max(np.abs(X0), axis=1)[:, None] + 1e-30
+        assert np.max(np.abs(X1 - X0) / scale) < 1e-12, label
+
+    ## a GLM's factored walk is not its replay: nothing recorded
+    cir, skw = vdp()
+    p = PSS(cir, method='glm2', reltol=1e-10)
+    with quiet(AccuracyWarning):
+        p.solve(**skw)
+    assert p.converged and p._stage_replay is None
+
+
+def test_the_factored_period_walks_the_solved_grid_itself():
+    """A self-starting method's factored period walks the SOLVE'S OWN
+    grid, not its step fractions re-summed (2026-10-02, found by the speed
+    plan's P3 gate).  Rebuilt from fractions, a node can come out an ulp off
+    the solved one, and where a landed edge with no ramp sits on it the step
+    reads the source on the other side of the jump: on this pulsed RC the
+    factored walk then did not close -- ``x_N - x_0`` 5.7e-11 at 100 points
+    and 6.9e-9 at 200 (1.4e-20 at 400, where the node happened to land) --
+    so the map linearised was not the one solved.  Its times are the
+    waveform's exactly, and it closes to the solve's own residual."""
+    from pycircuit.circuit.elements import VPulse
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-6
+    for N in (100, 200, 400):
+        c = SubCircuit()
+        c['vs'] = VPulse(1, gnd, v1=0.0, v2=1.0, td=0.0125 * T, tr=0.0,
+                         tf=0.0, pw=0.4 * T, per=T)
+        c['R'] = R(1, 2, r=1e3)
+        c['C'] = C(2, gnd, c=3e-10)
+        p = PSS(c, method='radau', reltol=1e-10)
+        with quiet():
+            p.solve(period=T, timestep=T / N, maxiterations=40)
+        assert p.converged and p.break_events, N
+        fp = p.factored_period()
+        assert np.array_equal(np.asarray(fp.times, dtype=float),
+                              np.asarray(p.waveform[0], dtype=float)), N
+        x0 = np.asarray(p._period_state[1], dtype=float)
+        gap = float(np.max(np.abs(np.asarray(fp.x_last, dtype=float) - x0)))
+        assert gap < 1e-13 * float(np.max(np.abs(x0))), (N, gap)
+
+
 def test_pss_forwards_radau_s_cost_transform():
     """The review's S15 (2026-10-01): a chord Jacobian for compact models was
     measured first -- `G` and `C` are 92 % of a compact MOSFET's PSS solve --

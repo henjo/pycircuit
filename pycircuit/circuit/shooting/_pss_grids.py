@@ -701,8 +701,8 @@ class _PeriodGrids(object):
         """The grid a one-step factored period replays on: uniform for a
         bare point count, the CALLER'S fractions when `grid` is given.
 
-        `factored_period` hands the solved fractions down, so the replay is
-        on the grid the solve was on; a direct call with a bare `npts` is
+        (`factored_period` walks the solved grid itself, not this one: see
+        `_factored_self_starting`.)  A direct call with a bare `npts` is
         uniform.
         The fractions are scaled to `T` (an autonomous period is solved, and
         the fractions are of the period, not of the seed)."""

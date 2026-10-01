@@ -77,11 +77,12 @@ class _PeriodWalks(object):
 
     def _walk(self, kind, z, times, hs, T=None, dense=True, keep=False,
               want_dT=False, hsens=None, capture=None, open_at_x0=False,
-              record=None):
+              record=None, stage_record=None):
         """ONE WALK OF THE PERIOD for every map, from the unknown `z` (gear's
         pair stacked): `_walk_stage` for 'stage', `_walk_glm` for 'glm',
         `_walk_lmm` for 'plain' and 'pair'.  Returns the `_PeriodWalk`.
-        `record` (the multistep maps only) is `_walk_lmm`'s."""
+        `record` (the multistep and stage maps) is `_walk_lmm`'s;
+        `stage_record` is `_walk_stage`'s."""
         if kind == 'glm':
             return self._walk_glm(z, T, times, hs, dense=dense, keep=keep,
                                   want_dT=want_dT, hsens=hsens,
@@ -89,7 +90,8 @@ class _PeriodWalks(object):
         if kind == 'stage':
             return self._walk_stage(z, T, times, hs, dense=dense, keep=keep,
                                     want_dT=want_dT, hsens=hsens,
-                                    capture=capture)
+                                    capture=capture, record=record,
+                                    stage_record=stage_record)
         if kind == 'pair':
             m = self.cir.n - 1
             w = self._walk_lmm(('pair', z[:m], z[m:]), times, hs, T=T,
@@ -434,18 +436,22 @@ class _PeriodWalks(object):
     ## doc/integrator_architecture_260906.md.
     ## ------------------------------------------------------------------
 
-    def _stage_step(self, xn, h, tab, coupled):
+    def _stage_step(self, xn, h, tab, coupled, Y=None):
         """The factored stage system of the step just taken from `xn` -- its
-        stage states read off the inner transient -- as a `_StageStep`, and
+        stage states read off the inner transient, or `Y` (full width) as a
+        walk recorded them (`_stage_period_from`) -- as a `_StageStep`, and
         those stage states (reduced).  ``C(Y_i)`` and ``G(Y_j)`` are at the
         DISTINCT stage points, which is why `_C_at`/`_G_at` exist rather
-        than a stored `Geq`."""
+        than a stored `Geq`; both read the POINT alone, so the step can be
+        factored after the walk as well as during it."""
         A, b, c = tab
         s = A.shape[0]
         iref = self.irefnode
-        Yf = [np.array(yf, dtype=float) for yf in self._transient().last_step.Y]
+        if Y is None:
+            Y = self._transient().last_step.Y
+        Yf = [np.array(yf, dtype=float) for yf in Y]
         Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
-              for yf in self._transient().last_step.Y]
+              for yf in Y]
         Cn = np.asarray(self._C_at(xn))
         m = Cn.shape[0]
         if coupled:
@@ -801,7 +807,8 @@ class _PeriodWalks(object):
                                for Yj in Ys])
 
     def _walk_stage(self, x_in, T, times, hs, dense=True, keep=False,
-                    want_dT=False, hsens=None, capture=None):
+                    want_dT=False, hsens=None, capture=None, record=None,
+                    stage_record=None):
         """ONE WALK OF THE PERIOD UNDER A RUNGE-KUTTA STAGE METHOD (Radau
         IIA, TR-BDF2, ESDIRK), dense or factored.
         Self-starting: `x_in` IS `x_0`, so there is no opener seam and the
@@ -842,6 +849,13 @@ class _PeriodWalks(object):
         term).  Without it the column is badly wrong, down to the sign of the
         event row's derivative.
 
+        `record(x, t)`, as `_walk_lmm`'s: called with every step's state as
+        it is solved (the converged replay's waveform, `_replay_orbit`).
+        `stage_record`, a list: each step's ``(x_n, h, Y)`` is appended (`Y`
+        its stage states, full width), and a step none of `dense`, `keep`
+        and the columns asks for is NOT factored -- `_stage_period_from`
+        factors the record when the period is wanted.
+
         Returns a `_PeriodWalk`; `_factored_self_starting` keeps its
         steps.
 
@@ -877,7 +891,15 @@ class _PeriodWalks(object):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
             x = copy(self.solve_timestep(xn, t, h))
+            if record is not None:
+                record(x, t)
             x_prev = xn
+            if stage_record is not None:
+                stage_record.append(
+                    (xn, h, [np.array(y, dtype=float)
+                             for y in self._transient().last_step.Y]))
+                if not (dense or keep or want_dT or Pk is not None):
+                    continue
             st, Ys = self._stage_step(xn, h, tab, coupled)
             if keep:
                 steps.append(st)

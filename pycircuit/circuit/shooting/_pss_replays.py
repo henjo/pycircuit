@@ -4,7 +4,7 @@ the sideband fold.
 import numpy as np
 from ._factored import FactoredPeriod
 from ._numerics import _cx_collect
-from ._steps import _at_point
+from ._steps import _at_point, _butcher
 
 
 class _FactoredReplays(object):
@@ -311,18 +311,19 @@ class _FactoredReplays(object):
 
         solved, x0, xm1, times, hs, T, x0_unknown = self._period_state
         kind = self._map_kind()
-        if kind in ('stage', 'glm'):
+        if (kind == 'stage'
+                and getattr(self, '_stage_replay', None) is not None):
+            ## the converged replay WAS this walk: factor its record
+            ## (`_replay_orbit`, `_stage_period_from`)
+            fp = self._stage_period_from(self._stage_replay)
+            self._stage_replay = None
+        elif kind in ('stage', 'glm'):
             ## A self-starting method has its own factored map (no opener, no
-            ## pair), replayed on the SOLVED grid's fractions (None on a
-            ## uniform grid: the uniform replay) -- see `_replay_grid` and
+            ## pair), walked on the SOLVED grid itself -- see
             ## `_factored_self_starting` (history: `doc/shooting_history.md`,
             ## `factored_period`)
-            _hs = np.asarray(hs, dtype=float).ravel()
-            _uniform = (len(_hs) < 2 or float(np.max(_hs)) / float(np.min(_hs))
-                        - 1.0 <= self.UNIFORM_GRID_TOL)
-            _fr = None if _uniform else _hs / float(_hs.sum())
             fp = self._factored_self_starting(kind, x0, T, len(times) - 1,
-                                              grid=_fr)
+                                              solved=(times, hs))
         else:
             w = self._walk('pair' if solved else 'plain',
                            np.concatenate((x0, xm1)) if solved else x0,
@@ -351,20 +352,37 @@ class _FactoredReplays(object):
         return self._factored_self_starting('stage', x0, T, npts, method, grid)
 
     def _factored_self_starting(self, kind, x0, T, npts, method=None,
-                                grid=None):
+                                grid=None, solved=None):
         """The factored period of a SELF-STARTING method about `x0` -- 'stage'
         (`_walk_stage`; a `FactoredPeriod` of kind 'full' or 'dirk') or 'glm'
         (`_glm_period_blocks`; kind 'glm') -- integrated under `method` (or
         the PSS's own) in a transient of its own, on `npts` steps: uniform,
-        or `grid`'s fractions (see `_replay_grid`).  One builder for both.
+        or `grid`'s fractions (see `_replay_grid`), or EXACTLY the solve's own
+        `solved = (times, hs)` (`factored_period`).  One builder for both.
+
+        ⚠ THE SOLVED GRID ITSELF, NOT ITS FRACTIONS RE-SUMMED (2026-10-02).
+        Rebuilt from fractions, a node can come out an ulp off the solved one
+        -- and where a landed edge with no ramp (`tr = 0`) sits on that node,
+        the step reads the source on the OTHER side of the jump: the walk
+        then does not close (`x_N - x_0` 5.7e-11 and 6.9e-9 on a pulsed RC
+        at 100 and 200 points, 1.4e-20 where the node happened to land), and
+        the map linearised is not the one solved.
+        A stage period is built in two halves, the walk recording its stage
+        states (`_stage_walk_recorded`) and the factors from that record
+        (`_stage_period_from`) -- the converged replay takes the first half
+        and leaves the second to `factored_period()`.
 
         History: `doc/shooting_history.md`, `_factored_self_starting`."""
+        if kind == 'stage':
+            return self._stage_period_from(self._stage_walk_recorded(
+                x0, T, npts, method, grid, solved=solved))
         if method is None:
             method = getattr(self.par, 'method', 'euler')
         x0 = np.asarray(x0, dtype=float)
         if x0.shape[0] == self.cir.n:
             x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
-        times, hs = self._replay_grid(T, npts, grid)
+        times, hs = (self._replay_grid(T, npts, grid) if solved is None
+                     else solved)
         tr_saved = getattr(self, '_tran', None)
         self._tran = self._new_transient(self._integrator_for(method))
         try:
@@ -382,3 +400,46 @@ class _FactoredReplays(object):
             ## (`benchmarks/pss_transient_boundary.py` V7).
             fp._walk_tr = walk_tr
         return fp
+
+    def _stage_walk_recorded(self, x0, T, npts, method=None, grid=None,
+                             record=None, solved=None):
+        """The first half of a stage method's factored period (see
+        `_factored_self_starting`, whose grid arguments these are): the walk,
+        in a transient of its own, recording each step's stage states and
+        factoring none.  `record` is `_walk_stage`'s.  Returns what
+        `_stage_period_from` takes -- a few states per step, not the `(1 + s
+        + s^2) m^2` of the factors."""
+        if method is None:
+            method = getattr(self.par, 'method', 'euler')
+        x0 = np.asarray(x0, dtype=float)
+        if x0.shape[0] == self.cir.n:
+            x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
+        times, hs = (self._replay_grid(T, npts, grid) if solved is None
+                     else solved)
+        steps = []
+        tr_saved = getattr(self, '_tran', None)
+        self._tran = self._new_transient(self._integrator_for(method))
+        try:
+            w = self._walk('stage', x0, times, hs, dense=False, keep=False,
+                           record=record, stage_record=steps)
+            walk_tr = self._tran
+        finally:
+            self._tran = tr_saved
+        return (walk_tr, w, steps, times, float(T))
+
+    def _stage_period_from(self, walked):
+        """The second half (see `_factored_self_starting`): the recorded
+        steps factored -- under the transient that walked them, as during
+        the walk -- and returned as the `FactoredPeriod`."""
+        walk_tr, w, steps, times, T = walked
+        integ = walk_tr.base_integrator
+        tab = _butcher(integ)
+        coupled = integ.is_fully_implicit()
+        tr_saved = getattr(self, '_tran', None)
+        self._tran = walk_tr
+        try:
+            w.steps = [self._stage_step(xn, h, tab, coupled, Y=Y)[0]
+                       for xn, h, Y in steps]
+        finally:
+            self._tran = tr_saved
+        return w.factored(self, times=times, T=T)

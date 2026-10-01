@@ -601,6 +601,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## cannot leave a previous solution's state readable as this one's.
         self._period_state = None
         self._factored_period_cache = None
+        self._stage_replay = None
         ## ⚠ WHICH MONODROMY THE OSCILLATOR SURFACES READ -- see
         ## `monodromy_twin`.  Selects the method that supplies the PPV,
         ## Floquet modes and factored period when a one-step LMM (trap/euler)
@@ -1589,6 +1590,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## would not catch it.
         self._period_state = None
         self._factored_period_cache = None
+        self._stage_replay = None
         self.waveform = None
 
         ## ⚠ `theta`'s bias is PER-PERIOD (`_theta_biased`), so it must be
@@ -2273,6 +2275,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                               None if xm1_ss is None else copy(xm1_ss),
                               times, hs, float(period), bool(x0_unknown))
         self._factored_period_cache = None
+        self._stage_replay = None
 
         ## the manufacturing step, then the loop -- exactly the plain walk
         ## ... unless there was no manufacturing step (the pair, or the
@@ -2298,7 +2301,21 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 lte_seen.append((float(self._lte), float(t), self._lte_seam,
                                  self._lte_valid))
             X.append(copy(x))
-        if self._replay_keeps_factors(run):
+        if self.converged and self._map_kind() == 'stage':
+            ## ⚠ A STAGE METHOD'S REPLAY IS THE WALK ITS FACTORED PERIOD
+            ## TAKES (the speed plan's P3, 2026-10-02): a transient of its
+            ## own on the solve's own `(t, h)`, the waveform read off it and
+            ## each step's stage states recorded; `factored_period()` factors
+            ## that record (`_stage_period_from`) instead of walking the
+            ## period again -- bit for bit the same map, for the cost of its
+            ## factors alone (a compact MOSFET's radau 6.1 -> 3 s).  Nothing
+            ## is factored here, so a solve no small-signal call follows
+            ## costs what it did.  The WAVEFORM is that walk's, a rounding
+            ## apart from a replay on the PSS's own transient (~1e-15).
+            self._stage_replay = self._stage_walk_recorded(
+                x0_ss, float(period), len(times) - 1, record=seen,
+                solved=(times, hs))
+        elif self._replay_keeps_factors(run):
             ## ⚠ THE REPLAY IS THE FACTORED WALK (the review's S6,
             ## 2026-10-01): the same steps in the same order, each `Jf`
             ## factored and kept, so `factored_period()` does not walk the
@@ -2332,8 +2349,9 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
 
     def _replay_keeps_factors(self, run):
         """Whether the converged replay (`_replay_orbit`) walks the period
-        factored and caches it: a converged multistep map (a stage or GLM
-        replay is not the factored walk), whose period `factored_period()`
+        factored and caches it: a converged multistep map (a stage map's
+        replay records its walk instead, factored on demand; a GLM's is not
+        its factored walk), whose period `factored_period()`
         would return -- not a trap/euler oscillator's, which is its twin's
         (`_hosts_own_monodromy`) -- within `REPLAY_FACTOR_BUDGET`."""
         if not self.converged or self._map_kind() not in ('plain', 'pair'):
