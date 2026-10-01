@@ -282,7 +282,7 @@ class TransientStepError(NoConvergenceError, RuntimeError):
 
 ## ---------------------------------------------------------------------------
 ## THE STEP FAMILIES -- what differs between integrators in the one stepping
-## loop of `Transient._solve`.  The loop owns everything else: breakpoints, `tend`, the failure ladder and rescue, the
+## loop of `Transient._solve` (`_SteppingLoop`).  The loop owns everything else: breakpoints, `tend`, the failure ladder and rescue, the
 ## excursion veto, the rejection budget and force-accept, state events, the
 ## bookkeeping of an accepted step.  A family supplies:
 ##
@@ -572,6 +572,243 @@ class _CoupledSteps(_StepFamily):
 
     def finish(self):
         self.tr._fang_run = None
+
+
+class _SteppingLoop:
+    """THE ONE STEPPING LOOP of `Transient._solve`, over a step family
+    (`_LMMSteps`, `_StageSteps`, `_CoupledSteps`), the same for every
+    method.  Each attempt is placed (`where`: a breakpoint, `tend`), taken
+    (`take`: smaller on a Newton failure, the rescue at `minstep`), judged
+    (`judge`: the family's error test, the excursion veto, the rejection
+    budget and the force-accept), cut to a declared state event (`event`)
+    and accepted (`accept`).  A phase returning False ends the attempt --
+    `where` the run; the others retry from `where` at the size they set.
+
+    What lives between attempts is here, not on the transient: `t`, `h`,
+    `landing` (this attempt ends on a breakpoint, or the last one landed a
+    state event) and `order_drop` (the last step was force-accepted) --
+    both mean "do not fit a 2nd-order polynomial through this point" and
+    take effect on the NEXT attempt, which, after a rejection, is the retry
+    of the same point -- this time point's `rejects` / `point_retries`, the
+    state-event secant cuts in flight (`ev_iter`, E7), and `imposed` (the
+    next attempt's size was imposed: an event cut, the excursion veto); and
+    the steps the run could not take as asked (`fixed_fallbacks`,
+    `forced`), warned once after it.
+
+    F14 (doc/transient_review_260820.md): a lower-band GROWTH retry -- the
+    controller redoing a too-ACCURATE step larger -- is a voluntary redo,
+    not a failure, and must not trip the force-accept (on a QUIESCENT
+    circuit the opening ramp's growth retries would reach it and warn
+    spuriously).  Over-tolerance rejections strictly shrink in every
+    controller, growth retries return only behind a strict-growth guard, so
+    `h_next > h` tells them apart; the family's `max_retries` bounds both
+    against pathological alternation.
+
+    Split out of `_solve` (2026-10-01), statement for statement.
+    History: `doc/transient_history.md`, `Transient._solve`."""
+
+    def __init__(self, tr, family, run, X, tend, timestep, provided_function):
+        self.tr, self.family, self.run = tr, family, run
+        self.X, self.timelist = X, []
+        self.tend, self.timestep = tend, timestep
+        self.fixed = run.fixed
+        self.provided_function = provided_function
+        self.minstep = tr.par.minstep
+        ## The opening ramp exists to stop the ONE step the controller cannot
+        ## check from dominating the run.  Under `fixed_timestep` there is no
+        ## controller and the step is never adapted, so ramping would not
+        ## open small and grow -- it would run the ENTIRE simulation at
+        ## `timestep*1e-3`, a thousand times more steps for a result the
+        ## caller explicitly asked to be uniform.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
+        self.h = timestep if self.fixed else min(tr._opening_step(timestep),
+                                                 run.max_step)
+        self.t = 0.0
+        self.landing = self.order_drop = False
+        self.rejects = self.point_retries = 0
+        self.fixed_fallbacks, self.forced = [], []
+        self.ev_iter = 0
+        self.imposed = False
+
+    def execute(self):
+        try:
+            while self.t < self.tend:
+                if not self.where():
+                    break
+                if not (self.take() and self.judge() and self.event()):
+                    continue
+                self.accept()
+        finally:
+            self.family.finish()
+
+    def where(self):
+        """1. Where this attempt may end.  False: the run is over.
+
+        A breakpoint is a discontinuity (a VPulse corner): the step is
+        truncated to land exactly on it, and the step after it drops the
+        order -- `_is_first_step` means "do not trust a 2nd-order polynomial
+        through this point", not "there is no history": the rings keep
+        rolling, and the controller is handed `_no_history` (true only at
+        the genuine start of a run) so a truncated step is still checked (a
+        pulse train fires four per period; a sine none since stage 4g(a),
+        `Sin.next_event`)."""
+        tr, t, h = self.tr, self.t, self.h
+        if self.landing or self.order_drop:
+            tr._is_first_step = True
+        self.order_drop = False
+        t_break = self.t_break = self.family.next_breakpoint(t)
+        if self.fixed:
+            ## STAGE 4h -- UNDER `fixed_timestep` THE GRID WINS: a breakpoint
+            ## does not move it (a truncation would be permanent and
+            ## collapse the step geometrically), but crossing one still drops
+            ## the order.  `<=`, TOLERANCED: `t` accumulates by `+= h`, so an
+            ## edge exactly on a grid point is a float knife-edge (measured:
+            ## the drop fired at the first edge and missed every later one).
+            ## History: `doc/transient_history.md`, `Transient._solve`.
+            self.landing = t_break <= t + h * (1.0 + 1e-9)
+        elif t + h > t_break:
+            h = float(t_break - t)
+            self.landing = True
+        else:
+            self.landing = False
+        ## STAGE 12A -- was this step's size chosen, or imposed?
+        clamped = self.landing and not self.fixed
+        if t + h > self.tend:
+            h = self.tend - t
+            clamped = True
+            ## what a uniform grid leaves at `tend` is rounding residue, not
+            ## a step (a final 2.033e-20 s step against 1e-6 ones)
+            if self.fixed and h <= 1e-9 * self.timestep:
+                self.h = h
+                return False
+        self.h, self.clamped = h, clamped
+        ## a step whose size was decided by where it must land is HELD: the
+        ## coupled family has nothing to solve for (F3: unheld, its final
+        ## step grew past `tend` in 5 of 6 configurations)
+        self.hold = clamped or self.fixed or self.imposed
+        return True
+
+    def take(self):
+        """2. Take it: smaller on a Newton failure.  False: retry smaller."""
+        tr, h = self.tr, self.h
+        tr._dt = h
+        try:
+            self.x_new, self.h, self.J = tr._attempt_step(
+                self.family, self.X, self.t, h, self.hold,
+                self.provided_function)
+        except NoConvergenceError:
+            ## A failed attempt is retried smaller: a rejection in all but
+            ## name, and counted as one (F13).
+            tr.statistics.rejected_steps += 1
+            if self.fixed:
+                ## STAGE 4h -- a fixed grid that cannot be honoured must say
+                ## so (counted; one warning a run, after the loop -- until
+                ## 2026-10-01 one per step, each with its own `t`, which
+                ## Python's once-per-location filter cannot collapse; the
+                ## review's X8)
+                self.fixed_fallbacks.append((self.t, h * 0.25))
+            h = h * 0.25
+            ## a step whose size was imposed is retried smaller STILL
+            ## imposed: the coupled family then solves the circuit only
+            ## (unheld, its (x, h) Newton cost +25-38 % Newton iterations on
+            ## the pulsed RC for no accuracy)
+            self.imposed = self.hold
+            if h >= self.minstep:
+                self.h = h
+                return False
+            ## P18 phase 3 (+P25): the LAST resort -- the point is re-solved
+            ## at `minstep` through the junction-gmin -> gshunt ->
+            ## pseudo-transient chain, and only a converged solution flows on
+            h = self.minstep
+            self.x_new, self.h, self.J = tr._rescue_step(
+                self.family, self.X, self.t, h, self.hold,
+                self.provided_function)
+        return True
+
+    def judge(self):
+        """3. Judge it: the family's error test, then the excursion veto
+        (`max_dv_step` / `max_di_step`).  False: retry at the size set."""
+        if self.fixed:
+            self.h_next = self.timestep
+            return True
+        tr, family, h = self.tr, self.family, self.h
+        ok, h_next = family.judge(self.X, self.x_new, h, self.J, self.clamped)
+        ratio = tr._excursion_ratio(self.x_new, self.X[-1]) if ok else None
+        vetoed = ratio is not None and ratio > 1.0
+        if vetoed:
+            ok, h_next = False, h * max(MIN_SHRINK_RATIO, 0.9 / ratio)
+        if not ok:
+            growth = h_next > h
+            if self.point_retries < family.max_retries and (
+                    growth or (self.rejects < family.max_reject
+                               and h > self.minstep)):
+                tr.statistics.rejected_steps += 1
+                self.point_retries += 1
+                self.rejects += 0 if growth else 1
+                self.h = max(h_next, self.minstep)
+                ## the bound decided this size, so the coupled family must
+                ## not solve it back up (unheld, its (x, h) Newton grew
+                ## straight past the bound again)
+                self.imposed = vetoed
+                return False
+            if not growth:
+                ## FORCE-ACCEPT (4b): the error is still over tolerance and
+                ## the budget is spent; the converged step is taken with an
+                ## order drop, and the run says so -- the accepted error is
+                ## unbounded.
+                tr.statistics.force_accepts += 1
+                self.order_drop = True
+                h_next = family.h_after_force(h, h_next)
+                ## (one warning a run, after the loop: X8)
+                self.forced.append((self.t, h, self.rejects))
+        self.rejects = self.point_retries = 0
+        self.h_next = h_next
+        return True
+
+    def event(self):
+        """4. A declared state event inside the step: cut to it (E7) by the
+        secant on the fraction and re-solve, holding the cut step; the
+        landed step restarts the history as a corner does.  Not from the
+        initial condition (`len(X) > 1`).  False: retry the cut step."""
+        tr = self.tr
+        if tr._ev_rows is not None and not self.fixed and len(self.X) > 1:
+            evs = tr._state_event_step(self.X[-1], self.x_new, self.h,
+                                       self.t + self.h, self.ev_iter,
+                                       self.minstep)
+            if evs is not None and evs[0] == 'cut':
+                self.ev_iter += 1
+                self.h = evs[1] * self.h
+                self.imposed = True
+                return False
+            self.ev_iter = 0
+            if evs is not None and tr.EVENT_RESTART_HISTORY:
+                self.landing = True
+        return True
+
+    def accept(self):
+        """5. Accept it, and size the next attempt."""
+        tr, h = self.tr, self.h
+        self.imposed = False
+        ## a step is judged a landing by where it ENDED: a coupled step that
+        ## grew onto the corner is one in every way that matters
+        on_break = self.t + h >= self.t_break * (1.0 - 1e-12)
+        self.landing = self.landing or on_break
+        t = self.t = self.t + h
+        self.X.append(copy(self.x_new))
+        self.timelist.append(t)
+        tr.statistics.accepted_steps += 1
+        tr.statistics._note_step(h)
+        if on_break:
+            tr.statistics.breakpoints_hit += 1
+        if tr._effective_method == 'EulerIntegrator' and \
+                type(tr.base_integrator).__name__ != 'EulerIntegrator':
+            tr.statistics.order_drops += 1
+        if hasattr(tr.cir, 'accept_step'):
+            tr.cir.accept_step(t, self.X[-1], tr.epar)
+        tr._roll_history(self.x_new, h, self.X)
+        self.family.after_accept(self.landing)
+        self.h = (min(self.h_next, self.run.max_step) if not self.fixed
+                  else self.timestep)
 
 
 class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StagePredictor, _InitialState, _CoupledLTE, _PCNRSteps, _SequentialStages, _NordsieckGLM, _RadauStages, _StepEvents, Analysis):
@@ -1251,13 +1488,64 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         return _LMMSteps(self, run)
 
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
-        """`solve`'s run, inside its single-threaded BLAS: the start state,
-        then ONE stepping loop over the method's step family (`_LMMSteps`,
-        `_StageSteps`, or `_CoupledSteps` for `coupled_lte`), the breakpoints
-        and state events landed on the way, then `_finish_result`."""
+        """`solve`'s run, inside its single-threaded BLAS: the start state
+        (`_open_run`), then ONE stepping loop (`_SteppingLoop`) over the
+        method's step family (`_LMMSteps`, `_StageSteps`, or `_CoupledSteps`
+        for `coupled_lte`), the breakpoints and state events landed on the
+        way, then `_finish_result`."""
         self._reset_pcnr_counts()
         if coupled_lte:
             self._refuse_coupled_on_stage()
+        X = self._open_run(refnode, x0, provided_function, coupled_lte)
+
+        ## Stage 6(c).  Created per run, so a second `solve()` reports its own
+        ## numbers rather than the sum of every run on this object.
+        self.statistics = TransientStatistics()
+        ## the branch check reports (and may fail) once PER RUN, and its
+        ## collapse scale is this run's (`_branch_screen`)
+        self._branch_error = None
+        self._branch_warned = False
+        self._branch_cmax = 0.0
+        _t_run_start = time.perf_counter()
+        max_step = self._run_max_step(tend, timestep, fixed_timestep)
+
+        ## SOLUTION-flavoured, not residual-flavoured.  This vector is used by the
+        ## step controller as a tolerance on `lte = J^-1 * Eg`, which carries the
+        ## units of the solution vector x -- volts on node rows, amps on branch rows.
+        ## `_newton` needs the other flavour, because there the tolerance applies to
+        ## the residual f (KCL currents at nodes), and it builds both separately as
+        ## `abstol`/`xtol`.  This is the `xtol` one; `_newton`'s `abstol` here would
+        ## apply iabstol (1 pA) as a *voltage* tolerance to every node.
+        ##
+        ## It reads `lte_vabstol`/`lte_iabstol`, NOT `vabstol`/`iabstol`, so the
+        ## controller's knob moves without silently moving Newton's convergence
+        ## criterion with it (decision 0.3a).
+        ## History: `doc/transient_history.md`, `Transient._solve`.
+        abstol = self._lte_abstol_vector()
+
+        ## THE STEP FAMILY -- the only thing about stepping that depends on the
+        ## integrator (see `_LMMSteps`, `_StageSteps`, `_CoupledSteps`): how
+        ## one step is taken and judged.  Everything else is the same loop
+        ## (`_SteppingLoop`) for every method.  A Nordsieck GLM is not a
+        ## Runge-Kutta method, but it is self-starting, keeps no charge ring
+        ## and delivers its own estimate through `_rk_est`, so it is a stage
+        ## family.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
+        from types import SimpleNamespace
+        run = SimpleNamespace(tend=float(tend), max_step=max_step,
+                              abstol=abstol, fixed=bool(fixed_timestep))
+        family = self._step_family(run, coupled_lte)
+        loop = _SteppingLoop(self, family, run, X, tend, timestep,
+                             provided_function)
+        loop.execute()
+        self._warn_run_summary(loop.fixed_fallbacks, loop.forced, timestep)
+        return self._finish_result(X, loop.timelist, _t_run_start)
+
+    def _open_run(self, refnode, x0, provided_function, coupled_lte):
+        """`_solve`'s start state: the elements' state cleared, the reference
+        node and the state events set up, `x0` from the initial conditions
+        (`uic`) or the operating point, the run's history begun on it and
+        the elements told.  Returns the run's state list, `[x0]`."""
         ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
         ##
         ## Position matters: after the initial `accept_step(0.0, ...)` this would
@@ -1328,232 +1616,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):
             self.cir.accept_step(0.0, X[-1], self.epar)
-
-        timelist = []
-        ## Stage 6(c).  Created per run, so a second `solve()` reports its own
-        ## numbers rather than the sum of every run on this object.
-        self.statistics = TransientStatistics()
-        ## the branch check reports (and may fail) once PER RUN, and its
-        ## collapse scale is this run's (`_branch_screen`)
-        self._branch_error = None
-        self._branch_warned = False
-        self._branch_cmax = 0.0
-        _t_run_start = time.perf_counter()
-        max_step = self._run_max_step(tend, timestep, fixed_timestep)
-
-        ## SOLUTION-flavoured, not residual-flavoured.  This vector is used by the
-        ## step controller as a tolerance on `lte = J^-1 * Eg`, which carries the
-        ## units of the solution vector x -- volts on node rows, amps on branch rows.
-        ## `_newton` needs the other flavour, because there the tolerance applies to
-        ## the residual f (KCL currents at nodes), and it builds both separately as
-        ## `abstol`/`xtol`.  This is the `xtol` one; `_newton`'s `abstol` here would
-        ## apply iabstol (1 pA) as a *voltage* tolerance to every node.
-        ##
-        ## It reads `lte_vabstol`/`lte_iabstol`, NOT `vabstol`/`iabstol`, so the
-        ## controller's knob moves without silently moving Newton's convergence
-        ## criterion with it (decision 0.3a).
-        ## History: `doc/transient_history.md`, `Transient._solve`.
-        abstol = self._lte_abstol_vector()
-
-        ## THE STEP FAMILY -- the only thing about stepping that depends on the
-        ## integrator (see `_LMMSteps`, `_StageSteps`, `_CoupledSteps`): how
-        ## one step is taken and judged.  Everything below is the same loop
-        ## for every method.  A Nordsieck GLM is not a Runge-Kutta method, but
-        ## it is self-starting, keeps no charge ring and delivers its own
-        ## estimate through `_rk_est`, so it is a stage family.
-        ## History: `doc/transient_history.md`, `Transient._solve`.
-        from types import SimpleNamespace
-        run = SimpleNamespace(tend=float(tend), max_step=max_step,
-                              abstol=abstol, fixed=bool(fixed_timestep))
-        family = self._step_family(run, coupled_lte)
-        minstep = self.par.minstep
-
-        ## The opening ramp exists to stop the ONE step the controller cannot check
-        ## from dominating the run.  Under `fixed_timestep` there is no controller
-        ## and the step is never adapted, so ramping would not open small and grow
-        ## -- it would run the ENTIRE simulation at `timestep*1e-3`, a thousand
-        ## times more steps for a result the caller explicitly asked to be
-        ## uniform.
-        ## History: `doc/transient_history.md`, `Transient._solve`.
-        h = timestep if fixed_timestep else min(self._opening_step(timestep),
-                                                max_step)
-        t = 0.0
-        ## `landing`: this attempt ends on a breakpoint (or the last one landed
-        ## a state event); `order_drop`: the last step was force-accepted.
-        ## Both mean "do not fit a 2nd-order polynomial through this point" and
-        ## take effect on the NEXT attempt -- which, after a rejection, is the
-        ## retry of the same point.
-        landing = order_drop = False
-        rejects = point_retries = 0          # this time point's retries
-        ## the steps the run could not take as asked, warned once after it
-        fixed_fallbacks, forced = [], []
-        ev_iter = 0                          # E7: secant cuts in flight
-        imposed = False                      # the next attempt's size was imposed (an event cut, the excursion veto)
-        ## F14 (doc/transient_review_260820.md): a lower-band GROWTH retry --
-        ## the controller redoing a too-ACCURATE step larger -- is a voluntary
-        ## redo, not a failure, and must not trip the force-accept (on a
-        ## QUIESCENT circuit the opening ramp's growth retries would reach it
-        ## and warn spuriously).  Over-tolerance
-        ## rejections strictly shrink in every controller, growth retries return
-        ## only behind a strict-growth guard, so `h_next > h` tells them apart;
-        ## the family's `max_retries` bounds both against pathological
-        ## alternation.
-        ## History: `doc/transient_history.md`, `Transient._solve`.
-        try:
-            while t < tend:
-                ## -- 1. where this attempt may end ---------------------------
-                ##
-                ## A breakpoint is a discontinuity (a VPulse corner): the step is
-                ## truncated to land exactly on it, and the step after it drops
-                ## the order -- `_is_first_step` means "do not trust a 2nd-order
-                ## polynomial through this point", not "there is no history": the
-                ## rings keep rolling, and the controller is handed `_no_history`
-                ## (true only at the genuine start of a run) so a truncated step
-                ## is still checked (a pulse train fires four per period;
-                ## a sine none since stage 4g(a), `Sin.next_event`).
-                if landing or order_drop:
-                    self._is_first_step = True
-                order_drop = False
-                t_break = family.next_breakpoint(t)
-                if fixed_timestep:
-                    ## STAGE 4h -- UNDER `fixed_timestep` THE GRID WINS: a
-                    ## breakpoint does not move it (a truncation would be
-                    ## permanent and collapse the step geometrically), but
-                    ## crossing one still drops the order.  `<=`,
-                    ## TOLERANCED: `t` accumulates by `+= h`, so an edge exactly
-                    ## on a grid point is a float knife-edge (measured: the drop
-                    ## fired at the first edge and missed every later one).
-                    ## History: `doc/transient_history.md`, `Transient._solve`.
-                    landing = t_break <= t + h * (1.0 + 1e-9)
-                elif t + h > t_break:
-                    h = float(t_break - t)
-                    landing = True
-                else:
-                    landing = False
-                ## STAGE 12A -- was this step's size chosen, or imposed?
-                clamped = landing and not fixed_timestep
-                if t + h > tend:
-                    h = tend - t
-                    clamped = True
-                    ## what a uniform grid leaves at `tend` is rounding residue,
-                    ## not a step (a final 2.033e-20 s step against 1e-6 ones)
-                    if fixed_timestep and h <= 1e-9 * timestep:
-                        break
-                ## a step whose size was decided by where it must land is HELD:
-                ## the coupled family has nothing to solve for (F3: unheld, its
-                ## final step grew past `tend` in 5 of 6 configurations)
-                hold = clamped or fixed_timestep or imposed
-
-                ## -- 2. take it: smaller on a Newton failure -----------------
-                self._dt = h
-                try:
-                    x_new, h, J = self._attempt_step(family, X, t, h, hold,
-                                                     provided_function)
-                except NoConvergenceError:
-                    ## A failed attempt is retried smaller: a rejection in all
-                    ## but name, and counted as one (F13).
-                    self.statistics.rejected_steps += 1
-                    if fixed_timestep:
-                        ## STAGE 4h -- a fixed grid that cannot be honoured
-                        ## must say so
-                        ## (counted; one warning a run, after the loop --
-                        ## until 2026-10-01 one per step, each with its own
-                        ## `t`, which Python's once-per-location filter
-                        ## cannot collapse; the review's X8)
-                        fixed_fallbacks.append((t, h * 0.25))
-                    h = h * 0.25
-                    ## a step whose size was imposed is retried smaller STILL
-                    ## imposed: the coupled family then solves the circuit
-                    ## only (unheld, its (x, h) Newton cost +25-38 % Newton
-                    ## iterations on the pulsed RC for no accuracy)
-                    imposed = hold
-                    if h >= minstep:
-                        continue
-                    ## P18 phase 3 (+P25): the LAST resort -- the point is
-                    ## re-solved at `minstep` through the junction-gmin ->
-                    ## gshunt -> pseudo-transient chain, and only a converged
-                    ## solution flows on
-                    h = minstep
-                    x_new, h, J = self._rescue_step(family, X, t, h, hold,
-                                                    provided_function)
-
-                ## -- 3. judge it: the family's error test, then the
-                ## excursion veto (`max_dv_step` / `max_di_step`) ------------
-                if fixed_timestep:
-                    h_next = timestep
-                else:
-                    ok, h_next = family.judge(X, x_new, h, J, clamped)
-                    ratio = self._excursion_ratio(x_new, X[-1]) if ok else None
-                    vetoed = ratio is not None and ratio > 1.0
-                    if vetoed:
-                        ok, h_next = False, h * max(MIN_SHRINK_RATIO, 0.9 / ratio)
-                    if not ok:
-                        growth = h_next > h
-                        if point_retries < family.max_retries and (
-                                growth or (rejects < family.max_reject
-                                           and h > minstep)):
-                            self.statistics.rejected_steps += 1
-                            point_retries += 1
-                            rejects += 0 if growth else 1
-                            h = max(h_next, minstep)
-                            ## the bound decided this size, so the coupled
-                            ## family must not solve it back up (unheld, its
-                            ## (x, h) Newton grew straight past the bound again)
-                            imposed = vetoed
-                            continue
-                        if not growth:
-                            ## FORCE-ACCEPT (4b): the error is still over
-                            ## tolerance and the budget is spent; the converged
-                            ## step is taken with an order drop, and the run
-                            ## says so -- the accepted error is unbounded.
-                            self.statistics.force_accepts += 1
-                            order_drop = True
-                            h_next = family.h_after_force(h, h_next)
-                            ## (one warning a run, after the loop: X8)
-                            forced.append((t, h, rejects))
-                    rejects = point_retries = 0
-
-                ## -- 4. a declared state event inside the step: cut to it ----
-                ## (E7) by the secant on the fraction and re-solve, holding the
-                ## cut step; the landed step restarts the history as a corner
-                ## does.  Not from the initial condition (`len(X) > 1`).
-                if self._ev_rows is not None and not fixed_timestep and len(X) > 1:
-                    evs = self._state_event_step(X[-1], x_new, h, t + h,
-                                                 ev_iter, minstep)
-                    if evs is not None and evs[0] == 'cut':
-                        ev_iter += 1
-                        h = evs[1] * h
-                        imposed = True
-                        continue
-                    ev_iter = 0
-                    if evs is not None and self.EVENT_RESTART_HISTORY:
-                        landing = True
-
-                ## -- 5. accept it --------------------------------------------
-                imposed = False
-                ## a step is judged a landing by where it ENDED: a coupled step
-                ## that grew onto the corner is one in every way that matters
-                on_break = t + h >= t_break * (1.0 - 1e-12)
-                landing = landing or on_break
-                t = t + h
-                X.append(copy(x_new))
-                timelist.append(t)
-                self.statistics.accepted_steps += 1
-                self.statistics._note_step(h)
-                if on_break:
-                    self.statistics.breakpoints_hit += 1
-                if self._effective_method == 'EulerIntegrator' and \
-                        type(self.base_integrator).__name__ != 'EulerIntegrator':
-                    self.statistics.order_drops += 1
-                if hasattr(self.cir, 'accept_step'):
-                    self.cir.accept_step(t, X[-1], self.epar)
-                self._roll_history(x_new, h, X)
-                family.after_accept(landing)
-                h = min(h_next, max_step) if not fixed_timestep else timestep
-        finally:
-            family.finish()
-        self._warn_run_summary(fixed_fallbacks, forced, timestep)
-        return self._finish_result(X, timelist, _t_run_start)
+        return X
 
     def _warn_run_summary(self, fixed_fallbacks, forced, timestep):
         """One warning a run for each kind of step it could not take as
