@@ -585,7 +585,6 @@ class _PPVFloquet(object):
         _tw = self.monodromy_twin()
         if _tw is not self:
             return _tw.ppv(tol)
-        import scipy.sparse.linalg as spla
         fp = self._state_map()
         ## Every call below goes through `fp.matvec_transposed`/`fp.matvec`,
         ## so the map's kind is the dispatcher's business rather than this
@@ -630,50 +629,24 @@ class _PPVFloquet(object):
         else:
             _MtT = _ev.total_matvec(fp.matvec_transposed, transposed=True)
             _Mt = _ev.total_matvec(fp.matvec)
-        def _mv(z):
-            z = np.asarray(z)
-            v_, y_ = z[:n], z[n]
-            top = v_ - _MtT(v_) + y_ * qp
-            return np.concatenate((top, [float(qp @ v_)]))
 
         rtol = max(self.par.reltol * 1e-2 if tol is None else tol, 1e-14)
-        A = spla.LinearOperator((n + 1, n + 1), matvec=_mv, dtype=float)
-        rhs = np.zeros(n + 1)
-        rhs[n] = 1.0
-        ## ⚠ JUDGED BY ITS RESIDUAL, NOT BY A STATUS CODE.  SciPy returns
-        ## `info = 4` on a HAPPY breakdown -- the Krylov space exhausted
-        ## because the answer is exact -- and these bordered operators are
-        ## small enough to hit that routinely.  `_arnoldi_gmres` detects
-        ## the breakdown where it happens and returns the exact answer.
-        z, relres, _Ha, _ka = _arnoldi_gmres(
-            _mv, rhs, rtol=rtol, maxiter=min(n + 1, 200))
-        if relres > max(1e3 * rtol, 1e-8):
-            raise RuntimeError(
-                'PSS.ppv: the augmented solve did not converge (relative '
-                'residual %.3e). The border is `q` itself; if the orbit '
-                'tangent is nearly orthogonal to the null direction the '
-                'bordering is poor.' % relres)
-        v, y = z[:n], float(z[n])
+        v, y = self._bordered_null(
+            _MtT, qp, n, rtol,
+            'PSS.ppv: the augmented solve did not converge (relative '
+            'residual %.3e). The border is `q` itself; if the orbit '
+            'tangent is nearly orthogonal to the null direction the '
+            'bordering is poor.')
         resid = float(np.linalg.norm(v - _MtT(v)))
 
         ## ⚠ THE SCALE NEEDS THE TANGENT, so the RIGHT null vector is solved
         ## for too -- by the same bordering, not by an eigendecomposition,
         ## for the same reason: on a high-Q oscillator the other multipliers
         ## crowd 1 and no selection among candidates is reliable.
-        def _mvf(zz):
-            zz = np.asarray(zz)
-            u_, yy = zz[:n], zz[n]
-            top = u_ - _Mt(u_) + yy * qp
-            return np.concatenate((top, [float(qp @ u_)]))
-
-        Af = spla.LinearOperator((n + 1, n + 1), matvec=_mvf, dtype=float)
-        zf, relresf, _Hf, _kf = _arnoldi_gmres(
-            _mvf, rhs, rtol=rtol, maxiter=min(n + 1, 200))
-        if relresf > max(1e3 * rtol, 1e-8):
-            raise RuntimeError(
-                'PSS.ppv: the tangent solve did not converge (relative '
-                'residual %.3e).' % relresf)
-        u, yf = zf[:n], float(zf[n])
+        u, yf = self._bordered_null(
+            _Mt, qp, n, rtol,
+            'PSS.ppv: the tangent solve did not converge (relative '
+            'residual %.3e).')
 
         ## `u` is the tangent's DIRECTION; its scale comes from `C u = q`,
         ## which is the definition of `q` read backwards.  Least squares
@@ -791,19 +764,8 @@ class _PPVFloquet(object):
         ## warns at every sample.
         ## (`v` itself inside the same record: outside it, its fill warned a
         ## SECOND time per call -- until 2026-10-01, the review's W1)
-        with warnings.catch_warnings(record=True) as _caught:
-            warnings.simplefilter('always')
-            _eq = [self._equation_row_ppv(
-                       st[:m], _Xf[:, _sj if _sj < _Xf.shape[1] else -1],
-                       _alg_rows, _alg_cols)
-                   for _sj, st in enumerate(states)]
-            _v_eq = self._equation_row_ppv(v[:m], x0f, _alg_rows, _alg_cols)
-        _seen = set()
-        for _w in _caught:
-            _key = (str(_w.message), _w.category)
-            if _key not in _seen:
-                _seen.add(_key)
-                warn(str(_w.message), _w.category)
+        _eq, _v_eq = self._equation_row_samples(states, _Xf, v, x0f, m,
+                                                _alg_rows, _alg_cols)
         ## ⚠ A SECOND MULTIPLIER NEAR 1 BREAKS THIS SILENTLY, and none of
         ## the residuals above can see it.  The border removes the PHASE
         ## mode's singularity and does nothing about any OTHER root
@@ -836,7 +798,133 @@ class _PPVFloquet(object):
         ## Sorted by real part, not magnitude, because an amplitude mode is
         ## real and positive while a complex pair of larger modulus would be
         ## an oscillation about the orbit.
-        vu = float(v[:m] @ u[:m] + v[m:] @ u[m:])
+        lam2, _resid, _certified, _dense_ok = self._second_multiplier(fp, n)
+        ## `Q = log(threshold)/log|lambda_2|` (Wang & Roychowdhury): an
+        ## amplitude perturbation decays to `|lambda_2|` of its size each
+        ## cycle, so the cycles needed to fall below a threshold IS the
+        ## oscillator's Q.  Reported for a `1/e` threshold, so `Q` is
+        ## cycles-to-1/e.  (`f_r/df` and stored/dissipated do not apply to an
+        ## autonomous circuit, and this is not the resonator's Q.)  "High Q",
+        ## "a second multiplier near 1", "slow amplitude restoration" and "a
+        ## long time constant" are one condition -- the one behind every
+        ## failure this class warns about.
+        ##
+        ## ⚠⚠ ITS NAME IS ONLY RIGHT WHILE THE OSCILLATOR'S AMPLITUDE MODE IS
+        ## THE SLOWEST NON-UNIT MODE.  A parasitic with `tau_p/T > Q_osc` IS
+        ## the second multiplier, and `Q` then reports THE PARASITIC'S DECAY
+        ## TIME IN PERIODS (a DCO's gated capacitors sit permanently there).
+        ## Read `Q` as "cycles for the SLOWEST NON-UNIT MODE to decay by 1/e".
+        ##
+        ## ⚠ `Q` AMPLIFIES THE ERROR IN `lambda_2`:
+        ##
+        ##     (dQ/Q) / (dlambda_2/lambda_2)  =  -1/ln(lambda_2)  =  Q
+        ##
+        ## so the resolution needed for a given accuracy in `Q` scales with
+        ## `Q`, and a method that BIASES `lambda_2` at fixed order has no
+        ## escape from it.
+        Q = (-1.0 / np.log(lam2) if 0.0 < lam2 < 1.0 else float('inf'))
+        info = {'border_residual': y,
+                'tangent_border_residual': yf,
+                'Q': Q,
+                'null_residual': resid / max(float(np.linalg.norm(v)), 1e-300),
+                ## ⚠ MULTIPLY `null_residual` BY THIS TO GET THE RELATIVE
+                ## ERROR IN `v` THE RESIDUAL CANNOT EXCLUDE.  `null_residual`
+                ## is `||v - M^T v|| / ||v||`, so an error component along the
+                ## `lam2` left-eigendirection enters it scaled by `1 - lam2`
+                ## and is nearly INVISIBLE exactly when `lam2 -> 1` (a random
+                ## error is still caught).  A FLAT `null_residual` IS NOT
+                ## EVIDENCE OF ACCURACY: read the two numbers together or
+                ## neither.
+                'null_residual_amplification': (
+                    1.0 / max(1.0 - lam2, np.finfo(float).eps)),
+                'second_multiplier': lam2,
+                ## Which route produced it, so a caller can tell an exact
+                ## spectrum from a truncated estimate without re-deriving
+                ## the rule.  See the branch above.
+                'second_multiplier_route': ('dense' if _dense_ok
+                                            else 'arnoldi'),
+                ## The selected pair's Ritz residual and whether it cleared
+                ## `PPV_RITZ_RESIDUAL_TOL`.  Exact on the dense route (0.0,
+                ## True).  A caller that reads `Q` should read this too.
+                'second_multiplier_residual': float(_resid),
+                'second_multiplier_certified': bool(_certified),
+                'q': q, 'xdot': xdot, 'tangent_pair': u,
+                'samples': np.asarray(states),
+                ## ⚠ `samples_eq` IS THE ONE TO CONTRACT `CY` AGAINST.
+                ## `samples` is `C^T v_1` (a state perturbation's
+                ## sensitivity); this is `v_1` (an equation-row input's).
+                ## A noise current injected into a KCL row is the latter.
+                'samples_pair': np.asarray(states_pair),
+                'monodromy_method': getattr(self.par, 'method', '?'),
+                'samples_eq': np.asarray(_eq),
+                'v_eq': _v_eq,
+                'times': np.asarray(fp.times, dtype=float),
+                ## ⚠ THE PERIOD OF THE ORBIT THESE SAMPLES LIVE ON, which is
+                ## not the caller's `period` when this came from a twin (trap
+                ## and euler read a twin, radau by default, whose period
+                ## differs by O(h^2)).  A quadrature over `times` divides by
+                ## THIS.
+                'period': float(fp.T)}
+        return v, info
+
+    @staticmethod
+    def _bordered_null(apply, qp, n, rtol, failure):
+        """The null vector of `I - apply` (an `n`-wide map), bordered by
+        `qp`: `[[I - apply, qp], [qp^T, 0]] [x; y] = [0; 1]`, returning `(x,
+        y)` -- `y` the border's residual.  `ppv`'s left (`apply = M^T`) and
+        right (`M`, the tangent) null vectors, the same solve twice until
+        2026-10-01 (the review's O9).  `failure` (with `%.3e` for the
+        relative residual) is the refusal when it does not converge.
+
+        ⚠ JUDGED BY ITS RESIDUAL, NOT BY A STATUS CODE.  SciPy returns
+        `info = 4` on a HAPPY breakdown -- the Krylov space exhausted
+        because the answer is exact -- and these bordered operators are
+        small enough to hit that routinely.  `_arnoldi_gmres` detects the
+        breakdown where it happens and returns the exact answer."""
+        def _mv(z):
+            z = np.asarray(z)
+            x_, y_ = z[:n], z[n]
+            top = x_ - apply(x_) + y_ * qp
+            return np.concatenate((top, [float(qp @ x_)]))
+
+        rhs = np.zeros(n + 1)
+        rhs[n] = 1.0
+        z, relres, _H, _k = _arnoldi_gmres(_mv, rhs, rtol=rtol,
+                                           maxiter=min(n + 1, 200))
+        if relres > max(1e3 * rtol, 1e-8):
+            raise RuntimeError(failure % relres)
+        return z[:n], float(z[n])
+
+    def _equation_row_samples(self, states, Xf, v, x0f, m, rows, cols):
+        """`ppv`'s equation-row PPV: every sample's (`states`, at the orbit
+        states `Xf`) and `v`'s own (at `x0f`), `(samples_eq, v_eq)`.
+
+        ⚠ ONE WARNING PER CALL, NOT ONE PER SAMPLE: at index 2 the fill
+        warns at every sample, so each distinct warning is said once.  (`v`
+        itself inside the same record: outside it, its fill warned a SECOND
+        time per call -- until 2026-10-01, the review's W1.)"""
+        with warnings.catch_warnings(record=True) as _caught:
+            warnings.simplefilter('always')
+            _eq = [self._equation_row_ppv(
+                       st[:m], Xf[:, _sj if _sj < Xf.shape[1] else -1],
+                       rows, cols)
+                   for _sj, st in enumerate(states)]
+            _v_eq = self._equation_row_ppv(v[:m], x0f, rows, cols)
+        _seen = set()
+        for _w in _caught:
+            _key = (str(_w.message), _w.category)
+            if _key not in _seen:
+                _seen.add(_key)
+                warn(str(_w.message), _w.category)
+        return _eq, _v_eq
+
+    def _second_multiplier(self, fp, n):
+        """`ppv`'s second Floquet multiplier `lambda_2` of the `n`-wide map
+        `fp`, `(lam2, residual, certified, dense)`: from the exact spectrum
+        where it is affordable, else from the Ritz pair, its basis grown
+        until its residual certifies -- with the warnings (uncertified, or
+        near the unit circle).  See `ppv` for why each matters.
+        """
         lam2 = 0.0
         ## `_resid`/`_certified` describe how `lam2` was obtained; the
         ## degenerate `n < 2` fall-through never enters either branch, and
@@ -934,73 +1022,7 @@ class _PPVFloquet(object):
                 'tolerance nor a better extraction fixes that; it needs a '
                 'frequency-aware PPV. Treat this result as an upper bound.'
                 % lam2, AccuracyWarning)
-        ## `Q = log(threshold)/log|lambda_2|` (Wang & Roychowdhury): an
-        ## amplitude perturbation decays to `|lambda_2|` of its size each
-        ## cycle, so the cycles needed to fall below a threshold IS the
-        ## oscillator's Q.  Reported for a `1/e` threshold, so `Q` is
-        ## cycles-to-1/e.  (`f_r/df` and stored/dissipated do not apply to an
-        ## autonomous circuit, and this is not the resonator's Q.)  "High Q",
-        ## "a second multiplier near 1", "slow amplitude restoration" and "a
-        ## long time constant" are one condition -- the one behind every
-        ## failure this class warns about.
-        ##
-        ## ⚠⚠ ITS NAME IS ONLY RIGHT WHILE THE OSCILLATOR'S AMPLITUDE MODE IS
-        ## THE SLOWEST NON-UNIT MODE.  A parasitic with `tau_p/T > Q_osc` IS
-        ## the second multiplier, and `Q` then reports THE PARASITIC'S DECAY
-        ## TIME IN PERIODS (a DCO's gated capacitors sit permanently there).
-        ## Read `Q` as "cycles for the SLOWEST NON-UNIT MODE to decay by 1/e".
-        ##
-        ## ⚠ `Q` AMPLIFIES THE ERROR IN `lambda_2`:
-        ##
-        ##     (dQ/Q) / (dlambda_2/lambda_2)  =  -1/ln(lambda_2)  =  Q
-        ##
-        ## so the resolution needed for a given accuracy in `Q` scales with
-        ## `Q`, and a method that BIASES `lambda_2` at fixed order has no
-        ## escape from it.
-        Q = (-1.0 / np.log(lam2) if 0.0 < lam2 < 1.0 else float('inf'))
-        info = {'border_residual': y,
-                'tangent_border_residual': yf,
-                'Q': Q,
-                'null_residual': resid / max(float(np.linalg.norm(v)), 1e-300),
-                ## ⚠ MULTIPLY `null_residual` BY THIS TO GET THE RELATIVE
-                ## ERROR IN `v` THE RESIDUAL CANNOT EXCLUDE.  `null_residual`
-                ## is `||v - M^T v|| / ||v||`, so an error component along the
-                ## `lam2` left-eigendirection enters it scaled by `1 - lam2`
-                ## and is nearly INVISIBLE exactly when `lam2 -> 1` (a random
-                ## error is still caught).  A FLAT `null_residual` IS NOT
-                ## EVIDENCE OF ACCURACY: read the two numbers together or
-                ## neither.
-                'null_residual_amplification': (
-                    1.0 / max(1.0 - lam2, np.finfo(float).eps)),
-                'second_multiplier': lam2,
-                ## Which route produced it, so a caller can tell an exact
-                ## spectrum from a truncated estimate without re-deriving
-                ## the rule.  See the branch above.
-                'second_multiplier_route': ('dense' if _dense_ok
-                                            else 'arnoldi'),
-                ## The selected pair's Ritz residual and whether it cleared
-                ## `PPV_RITZ_RESIDUAL_TOL`.  Exact on the dense route (0.0,
-                ## True).  A caller that reads `Q` should read this too.
-                'second_multiplier_residual': float(_resid),
-                'second_multiplier_certified': bool(_certified),
-                'q': q, 'xdot': xdot, 'tangent_pair': u,
-                'samples': np.asarray(states),
-                ## ⚠ `samples_eq` IS THE ONE TO CONTRACT `CY` AGAINST.
-                ## `samples` is `C^T v_1` (a state perturbation's
-                ## sensitivity); this is `v_1` (an equation-row input's).
-                ## A noise current injected into a KCL row is the latter.
-                'samples_pair': np.asarray(states_pair),
-                'monodromy_method': getattr(self.par, 'method', '?'),
-                'samples_eq': np.asarray(_eq),
-                'v_eq': _v_eq,
-                'times': np.asarray(fp.times, dtype=float),
-                ## ⚠ THE PERIOD OF THE ORBIT THESE SAMPLES LIVE ON, which is
-                ## not the caller's `period` when this came from a twin (trap
-                ## and euler read a twin, radau by default, whose period
-                ## differs by O(h^2)).  A quadrature over `times` divides by
-                ## THIS.
-                'period': float(fp.T)}
-        return v, info
+        return lam2, _resid, _certified, _dense_ok
 
     def frequency_aware_ppv(self, offset, tol=None):
         """The PPV at a nonzero modulation frequency (Lai 2008, eq. 23).

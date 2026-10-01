@@ -1110,6 +1110,33 @@ class _OscillatorCovariance(object):
             inc = (1.0 - th) * law['Vphase'][0] / sa + th * law['Vphase'][1] / sb
 
         A = A_prj if intercept == 'white' else A_prj + A_cx
+        sigma_t = self._edge_sigma(A, T)
+
+        return {
+            'sigma_t': sigma_t,
+            'A': A,
+            'c': c,
+            'slew': slew,
+            'k_cycle': np.sqrt(np.clip(kc, 0.0, None)),
+            'instant': tc,
+            'nodes': (a, b),
+            'th': th,
+            'd': float(d),
+            'projection_share': (float(A_raw / A_prj - 1.0) if white
+                                 else None),
+            'coloured_variance': cvar,
+            'coloured_transverse_variance': float(A_col),
+            'c_coloured': float(c_col),
+            'coloured_phase_variance': inc,
+            'band': band,
+        }
+
+    def _edge_sigma(self, A, T):
+        """The additive edge jitter from the k-cycle law's intercept `A`
+        (s^2) on a period `T`: `sqrt(A)`, 0 at `A = 0`, nan (warned) where
+        `A` is nan (a power-law source under `intercept='exact'`) or
+        negative (an anti-correlated edge); refused where the displacement
+        breaks the first-order picture."""
         if np.isnan(A):
             warn(
                 'PAC.oscillator_edge_jitter: intercept=\'exact\' and a '
@@ -1145,25 +1172,7 @@ class _OscillatorCovariance(object):
                 'deviation at this edge are anti-correlated, so there is no '
                 'additive variance (sigma_t is nan); k_cycle is exact.' % A, ModelWarning)
             sigma_t = float('nan')
-
-        return {
-            'sigma_t': sigma_t,
-            'A': A,
-            'c': c,
-            'slew': slew,
-            'k_cycle': np.sqrt(np.clip(kc, 0.0, None)),
-            'instant': tc,
-            'nodes': (a, b),
-            'th': th,
-            'd': float(d),
-            'projection_share': (float(A_raw / A_prj - 1.0) if white
-                                 else None),
-            'coloured_variance': cvar,
-            'coloured_transverse_variance': float(A_col),
-            'c_coloured': float(c_col),
-            'coloured_phase_variance': inc,
-            'band': band,
-        }
+        return sigma_t
 
     def orbital_mode_weights(self, pss, nmodes=None, colour_fmin=None,
                              colour_fmax=None, points_per_decade=40):

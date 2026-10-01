@@ -1322,100 +1322,13 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## (the sign-blind verdicts are the last orbit's:
         ## `NoiseComponents.sign_blind`)
         self._sign_blind_cache = None
-        ## ⚠ HIDDEN STATE IS REFUSED, NOT INTEGRATED AND HOPED OVER.
-        ## `TLine.history` is filled by `cir.accept_step`, which the
-        ## TRANSIENT calls at every accepted step and which this analysis
-        ## never calls -- PSS drives `solve_timestep` directly.  With the
-        ## buffer empty `TLine.G`/`u` stamp a DC SHORT, so the line is
-        ## silently absent and the solve reports `converged` with a wrong
-        ## answer.  Filling the buffer is not the fix either: `phi` would
-        ## become history-dependent and the monodromy the derivative of a
-        ## neighbouring problem, which `_begin_period` exists to prevent (it
-        ## resets what is IN `x`; no reset can fix a period map that is not
-        ## a function of `x_0`).  The refusal is per ELEMENT
-        ## (`Circuit.hidden_state` defaults False), not per class: a
-        ## distributed component with a known frequency-domain description is
-        ## tractable in other analyses (Yang & Phillips, DAC 2002; cited, not
-        ## verified here), and an
-        ## element that declared its state properly would pass.
-        ## History: `doc/shooting_history.md`, `PSS._solve_prepare`.
-        _hidden = self.cir.hidden_state_elements()
-        if _hidden:
-            raise NotImplementedError(
-                'PSS: these elements carry HIDDEN STATE -- %s -- so THIS '
-                'formulation cannot solve this circuit. The period map must '
-                'be a function of x_0 alone, and they stamp from state that '
-                'lives outside x and is filled by accept_step, which only a '
-                'forward transient calls. Left alone the answer would be '
-                'silently wrong rather than slow: an empty TLine history '
-                'stamps the line as a DC short and the solve reports '
-                'converged. Use Transient for this circuit. ⚠ This is a '
-                'limit of the ELEMENT as implemented here, not of shooting '
-                'or of distributed components as a class: a component with '
-                'a KNOWN frequency-domain description (a transmission line, '
-                'an S-parameter block) is tractable in a time-domain '
-                'steady-state solve by either admitting the delay state '
-                'into the unknowns, or applying the component spectrally -- '
-                'the Fourier transform diagonalises the convolution, so its '
-                'action becomes a multiply by Y/Z/S while the state stays '
-                'finite. Both are different analyses than this one.'
-                % ', '.join(sorted(_hidden)))
+        self._refuse_hidden_state()
 
         self.period = period
         toolkit = self.toolkit
 
-        ## ⚠ ONE REFERENCE NODE PER ANALYSIS, CHECKED.  `self.irefnode` is
-        ## fixed in `__init__` and is what the TRAVERSAL eliminates; this
-        ## local one comes from `solve`'s own `refnode=` and is what
-        ## reinserts the zero row into the RESULT.  If they differ the rows
-        ## are incoherent (ground itself comes back non-zero) and there is no
-        ## answer to give, so it is refused rather than silently rotated.
-        irefnode = self.cir.get_node_index(refnode)
-        if irefnode != self.irefnode:
-            raise ValueError(
-                'PSS: solve(refnode=...) names a different reference node '
-                '(index %d) than the analysis was constructed with (index '
-                '%d). The traversal eliminated one and the result would '
-                'reinsert the other, so the waveform would be reported '
-                'against a node the solve never used -- ground itself comes '
-                'back non-zero. Pass the same node to both, or construct '
-                'the analysis with PSS(cir, irefnode=...) and leave '
-                "solve()'s refnode at its default."
-                % (irefnode, self.irefnode))
-        ## ⚠ CLEARED BEFORE THE RUN, not after it.  These describe the
-        ## period this call is about to solve for; leaving the previous
-        ## call's behind would let `factored_period()` hand back an operator
-        ## for the LAST solve after this one failed, and `converged` alone
-        ## would not catch it.
-        self._period_state = None
-        self._factored_period_cache = None
-        self.waveform = None
-
-        ## ⚠ `theta`'s bias is PER-PERIOD (`_theta_biased`), so it must be
-        ## known before anything builds or reuses the inner transient.
-        ## `_new_transient` only runs when there is no cache, so a SECOND
-        ## `solve()` at a different period would otherwise silently keep the
-        ## first one's bias -- re-bias the cached integrator in place rather
-        ## than dropping the cache, which would rebuild a `Transient` per
-        ## solve for every method that does not care.  A no-op for all of
-        ## them (`_theta_biased` type-checks, and tolerates `None`).
-        self._theta_period = float(period)
-        ## ⚠ AND DROPPED WHEN THE SETTINGS IT WAS BUILT FROM MOVED
-        ## (`_settings_key`, checked once per solve -- `_transient()` runs
-        ## per step): until 2026-09-30 a new `par.method` crashed the
-        ## re-solve (a Gear-2 transient under a stage walk) and a new
-        ## `reltol` never reached the steps.
-        _key = self._settings_key()
-        if getattr(self, '_tran_key', None) != _key:
-            self._tran = None
-            self._tran_key = _key
-        ## (and its device memo forgotten: the caller may have changed the
-        ## circuit since the last solve)
-        if getattr(self, '_tran', None) is not None:
-            self._tran._memo_clear()
-        _tr_cached = getattr(self, '_tran', None)
-        if _tr_cached is not None:
-            self._theta_biased(getattr(_tr_cached.par, 'integrator', None))
+        irefnode = self._check_refnode(refnode)
+        self._clear_last_solve(period)
 
         ## Everything `grid_error` needs to repeat THIS solve on a finer grid.
         ## Recorded rather than re-derived so the refinement differs from the
@@ -1476,37 +1389,15 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             ## (`needs_x0_unknown`), which keeps the phase pin and every
             ## open-at-x0 branch consistent without a name check here.
             x0_unknown = True
+        ## (read by `_period_grid`, which is called from the residual closures
+        ## and so cannot take it as an argument; set once -- it was written a
+        ## second time, the same value, after the grid until 2026-10-01)
         self._open_at_x0 = bool(x0_unknown)
         ## Break the traversal's steps at the source discontinuities -- see
         ## `_resolve_break_events`, and `event_grid` for the snap that keeps
         ## it from manufacturing slivers.
         self.break_events = self._resolve_break_events(break_events)
-        _drop = self.par.order_drop_at_edges
-        if not isinstance(_drop, (bool, np.bool_)):
-            raise TypeError('PSS: order_drop_at_edges must be True or False, '
-                            f'not {_drop!r}')
-        self._landed_edges = None
-        if self.break_events:
-            _ev = (self.event_grid(period, grid=grid) if grid is not None
-                   else self.event_grid(period, npts=_nsteps))
-            ## ⚠ ONLY replace the grid when there ARE events.  `event_grid`
-            ## rebuilds a uniform grid from `linspace` even when it finds none,
-            ## and that differs from `_period_grid`'s own in the last bit --
-            ## enough to move every event-free solve in the suite for nothing.
-            ## Touching the grid only when an event exists keeps every circuit
-            ## without one BIT-IDENTICAL, the same guarantee `_fold_periodic`
-            ## gives a circuit with no periodic state.
-            if self.event_times:
-                grid = _ev
-                ## the edges the grid now lands on, as fractions of the
-                ## period, for the order drop after each (`solve_timestep`);
-                ## a multistep map only -- a stage method or a GLM keeps no
-                ## companion history across the edge to drop -- and only
-                ## when asked (`order_drop_at_edges`)
-                if self._map_kind() in ('plain', 'pair') and bool(_drop):
-                    self._landed_edges = (
-                        np.asarray(self.event_times, dtype=float),
-                        float(period))
+        grid = self._landed_edge_grid(period, grid, _nsteps)
         ## ⚠ `_nsteps` STEPS, so `_nsteps + 1` points on the uniform grid: it
         ## was built with `_nsteps` POINTS until 2026-09-30 -- one step fewer
         ## than asked, while `event_grid` (above) always gave `_nsteps`
@@ -1516,9 +1407,6 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         npts = len(times)
         self._grid_fracs = (None if grid is None
                             else np.asarray(grid, dtype=float))
-        ## read by `_period_grid`, which is called from the residual
-        ## closures and so cannot take it as an argument
-        self._open_at_x0 = bool(x0_unknown)
         ## The fold gauge, collected once per solve (late-bound moduli are
         ## resolved by now).  See `_fold_periodic` for why the residual needs
         ## it and the Jacobian does not.
@@ -1555,6 +1443,191 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                     'stay inside their steps and the solve is first order '
                     'there. Pass x0_unknown=True (the default with state '
                     "events), or use method='radau'." % (len(_rows), _method_se), UsageWarning)
+        self._period_column_policy(grid)
+        self._closing_inner = None
+        self._closing_warned = False
+        self._stepup_warned = False
+        ## (the inner transient's PCNR fallbacks are this solve's: counted from
+        ## zero, warned once after it -- `_report_pcnr`)
+        if getattr(self, '_tran', None) is not None:
+            self._tran.pcnr_solves = self._tran.pcnr_fallbacks = 0
+            self._tran._pcnr_first = None
+        phase_k, phase_pin = 0, 0.0
+        if phase_rule not in ('reselect', 'frozen'):
+            raise ValueError("phase_rule must be 'reselect' or 'frozen', not %r"
+                             % (phase_rule,))
+        self.phase_rule = phase_rule
+
+        x = self._seed_state(x, x0, tstab, refnode, irefnode, dt)
+
+        if self.autonomous:
+            phase_k, phase_pin = self._pin_phase(x, times, hs, x0_unknown)
+
+        ## Resolved here as well as in `solve_timestep`, because the SHOOTING
+        ## Jacobian depends on which integrator the inner steps used.
+        ##
+        ## ⚠ THE NAME IS VALIDATED BEFORE ANYTHING ASKS THE INTEGRATOR A
+        ## QUESTION, so an unknown name raises this `ValueError` rather than
+        ## a `KeyError` from several frames down (`_solves_history`).
+        ## (by `_integrator_for`, whose table is the one list of method names;
+        ## a second copy of it stood here until 2026-10-01, the review's O18)
+        method = getattr(self.par, 'method', 'euler')
+        self._integrator_for(method)
+
+        ## Whether the entering history joins the unknowns.  Decided once,
+        ## here, because it chooses which system is solved -- like autonomy.
+        solved_history = self._solves_history()
+        self.solved_history = solved_history
+        xm1_ss = None
+
+        return _SolveRun(
+            refnode=refnode, period=period, x=x, dt=dt,
+            maxiterations=maxiterations, matrix_free=matrix_free,
+            x0_unknown=x0_unknown, phase_rule=phase_rule,
+            state_events=state_events, irefnode=irefnode, n=n, times=times,
+            hs=hs, npts=npts, alpha=alpha, phase_k=phase_k,
+            phase_pin=phase_pin, method=method,
+            solved_history=solved_history, xm1_ss=xm1_ss, trace=trace)
+
+    def _refuse_hidden_state(self):
+        """Refuse a circuit whose elements carry state outside `x` (see the
+        note)."""
+        ## ⚠ HIDDEN STATE IS REFUSED, NOT INTEGRATED AND HOPED OVER.
+        ## `TLine.history` is filled by `cir.accept_step`, which the
+        ## TRANSIENT calls at every accepted step and which this analysis
+        ## never calls -- PSS drives `solve_timestep` directly.  With the
+        ## buffer empty `TLine.G`/`u` stamp a DC SHORT, so the line is
+        ## silently absent and the solve reports `converged` with a wrong
+        ## answer.  Filling the buffer is not the fix either: `phi` would
+        ## become history-dependent and the monodromy the derivative of a
+        ## neighbouring problem, which `_begin_period` exists to prevent (it
+        ## resets what is IN `x`; no reset can fix a period map that is not
+        ## a function of `x_0`).  The refusal is per ELEMENT
+        ## (`Circuit.hidden_state` defaults False), not per class: a
+        ## distributed component with a known frequency-domain description is
+        ## tractable in other analyses (Yang & Phillips, DAC 2002; cited, not
+        ## verified here), and an
+        ## element that declared its state properly would pass.
+        ## History: `doc/shooting_history.md`, `PSS._solve_prepare`.
+        _hidden = self.cir.hidden_state_elements()
+        if _hidden:
+            raise NotImplementedError(
+                'PSS: these elements carry HIDDEN STATE -- %s -- so THIS '
+                'formulation cannot solve this circuit. The period map must '
+                'be a function of x_0 alone, and they stamp from state that '
+                'lives outside x and is filled by accept_step, which only a '
+                'forward transient calls. Left alone the answer would be '
+                'silently wrong rather than slow: an empty TLine history '
+                'stamps the line as a DC short and the solve reports '
+                'converged. Use Transient for this circuit. ⚠ This is a '
+                'limit of the ELEMENT as implemented here, not of shooting '
+                'or of distributed components as a class: a component with '
+                'a KNOWN frequency-domain description (a transmission line, '
+                'an S-parameter block) is tractable in a time-domain '
+                'steady-state solve by either admitting the delay state '
+                'into the unknowns, or applying the component spectrally -- '
+                'the Fourier transform diagonalises the convolution, so its '
+                'action becomes a multiply by Y/Z/S while the state stays '
+                'finite. Both are different analyses than this one.'
+                % ', '.join(sorted(_hidden)))
+
+    def _check_refnode(self, refnode):
+        """`solve(refnode=...)`'s node index, refused unless it is the one
+        the analysis was constructed with (see the note)."""
+        ## ⚠ ONE REFERENCE NODE PER ANALYSIS, CHECKED.  `self.irefnode` is
+        ## fixed in `__init__` and is what the TRAVERSAL eliminates; this
+        ## local one comes from `solve`'s own `refnode=` and is what
+        ## reinserts the zero row into the RESULT.  If they differ the rows
+        ## are incoherent (ground itself comes back non-zero) and there is no
+        ## answer to give, so it is refused rather than silently rotated.
+        irefnode = self.cir.get_node_index(refnode)
+        if irefnode != self.irefnode:
+            raise ValueError(
+                'PSS: solve(refnode=...) names a different reference node '
+                '(index %d) than the analysis was constructed with (index '
+                '%d). The traversal eliminated one and the result would '
+                'reinsert the other, so the waveform would be reported '
+                'against a node the solve never used -- ground itself comes '
+                'back non-zero. Pass the same node to both, or construct '
+                'the analysis with PSS(cir, irefnode=...) and leave '
+                "solve()'s refnode at its default."
+                % (irefnode, self.irefnode))
+        return irefnode
+
+    def _clear_last_solve(self, period):
+        """Forget the last solve's period, operator and waveform, and bring
+        the cached inner transient to this one's settings and period."""
+        ## ⚠ CLEARED BEFORE THE RUN, not after it.  These describe the
+        ## period this call is about to solve for; leaving the previous
+        ## call's behind would let `factored_period()` hand back an operator
+        ## for the LAST solve after this one failed, and `converged` alone
+        ## would not catch it.
+        self._period_state = None
+        self._factored_period_cache = None
+        self.waveform = None
+
+        ## ⚠ `theta`'s bias is PER-PERIOD (`_theta_biased`), so it must be
+        ## known before anything builds or reuses the inner transient.
+        ## `_new_transient` only runs when there is no cache, so a SECOND
+        ## `solve()` at a different period would otherwise silently keep the
+        ## first one's bias -- re-bias the cached integrator in place rather
+        ## than dropping the cache, which would rebuild a `Transient` per
+        ## solve for every method that does not care.  A no-op for all of
+        ## them (`_theta_biased` type-checks, and tolerates `None`).
+        self._theta_period = float(period)
+        ## ⚠ AND DROPPED WHEN THE SETTINGS IT WAS BUILT FROM MOVED
+        ## (`_settings_key`, checked once per solve -- `_transient()` runs
+        ## per step): until 2026-09-30 a new `par.method` crashed the
+        ## re-solve (a Gear-2 transient under a stage walk) and a new
+        ## `reltol` never reached the steps.
+        _key = self._settings_key()
+        if getattr(self, '_tran_key', None) != _key:
+            self._tran = None
+            self._tran_key = _key
+        ## (and its device memo forgotten: the caller may have changed the
+        ## circuit since the last solve)
+        if getattr(self, '_tran', None) is not None:
+            self._tran._memo_clear()
+        _tr_cached = getattr(self, '_tran', None)
+        if _tr_cached is not None:
+            self._theta_biased(getattr(_tr_cached.par, 'integrator', None))
+
+    def _landed_edge_grid(self, period, grid, nsteps):
+        """The grid with the source edges landed on it (`event_grid`), when
+        `break_events` is on and there are edges -- `grid` itself otherwise
+        -- and the edges the order drop after each reads (`_landed_edges`)."""
+        _nsteps = nsteps
+        _drop = self.par.order_drop_at_edges
+        if not isinstance(_drop, (bool, np.bool_)):
+            raise TypeError('PSS: order_drop_at_edges must be True or False, '
+                            f'not {_drop!r}')
+        self._landed_edges = None
+        if self.break_events:
+            _ev = (self.event_grid(period, grid=grid) if grid is not None
+                   else self.event_grid(period, npts=_nsteps))
+            ## ⚠ ONLY replace the grid when there ARE events.  `event_grid`
+            ## rebuilds a uniform grid from `linspace` even when it finds none,
+            ## and that differs from `_period_grid`'s own in the last bit --
+            ## enough to move every event-free solve in the suite for nothing.
+            ## Touching the grid only when an event exists keeps every circuit
+            ## without one BIT-IDENTICAL, the same guarantee `_fold_periodic`
+            ## gives a circuit with no periodic state.
+            if self.event_times:
+                grid = _ev
+                ## the edges the grid now lands on, as fractions of the
+                ## period, for the order drop after each (`solve_timestep`);
+                ## a multistep map only -- a stage method or a GLM keeps no
+                ## companion history across the edge to drop -- and only
+                ## when asked (`order_drop_at_edges`)
+                if self._map_kind() in ('plain', 'pair') and bool(_drop):
+                    self._landed_edges = (
+                        np.asarray(self.event_times, dtype=float),
+                        float(period))
+        return grid
+
+    def _period_column_policy(self, grid):
+        """This solve's period-column convention (see the Parameter) from
+        the requested one, the grid and the autonomy."""
         ## the period-column convention for this solve (see the Parameter)
         _pc = str(getattr(self, '_force_period_column', None)
                   or getattr(self.par, 'period_column', 'auto'))
@@ -1577,20 +1650,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                                else 'proportional')
         ## (`_closing_fallback`: only a column 'auto' chose falls back)
         self._period_column_requested = _pc
-        self._closing_inner = None
-        self._closing_warned = False
-        self._stepup_warned = False
-        ## (the inner transient's PCNR fallbacks are this solve's: counted from
-        ## zero, warned once after it -- `_report_pcnr`)
-        if getattr(self, '_tran', None) is not None:
-            self._tran.pcnr_solves = self._tran.pcnr_fallbacks = 0
-            self._tran._pcnr_first = None
-        phase_k, phase_pin = 0, 0.0
-        if phase_rule not in ('reselect', 'frozen'):
-            raise ValueError("phase_rule must be 'reselect' or 'frozen', not %r"
-                             % (phase_rule,))
-        self.phase_rule = phase_rule
 
+    def _seed_state(self, x, x0, tstab, refnode, irefnode, dt):
+        """The shooting's seed: an autonomous run without `x0` from its
+        operating point, then the `tstab` pre-integration (see the notes)."""
         if self.autonomous:
             ## An unseeded autonomous run starts at the origin, which IS a
             ## periodic solution -- the trivial one -- and the free-period
@@ -1633,88 +1696,91 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             _last = np.asarray(_res.x, dtype=float)[:, -1]
             x = np.concatenate((_last[:irefnode], _last[irefnode + 1:]))
             self.tstab_state = x
+        return x
 
-        if self.autonomous:
-            ## THE PHASE CONDITION pins the coordinate moving FASTEST at the
-            ## seed, so the orbit crosses the pinning hyperplane
-            ## transversally.  Pin a slow one and the last row of the
-            ## bordered Jacobian is nearly parallel to the null direction it
-            ## exists to remove, which is a singular system wearing an extra
-            ## equation.
-            ##
-            ## ⚠ The row removes the singularity from the UNIT multiplier
-            ## only, so an oscillator whose other multipliers cluster near 1
-            ## gives a bordered system that is nonsingular and ill
-            ## conditioned (the high-Q note in the class docstring).
-            ##
-            ## ⚠ THE `argmax` COMPARES VOLTS WITH AMPERES ON PURPOSE: the row
-            ## can only remove the orbit's tangent in proportion to
-            ## `|e_k . fhat|`, and one step of `|dx_k|` IS `|f_k|` up to `h`,
-            ## so this argmax maximises the quantity the row needs.  The
-            ## scaling that lets a large coordinate win the argmax is the
-            ## same scaling that makes it dominate `f`; the two cancel.
-            ## Pinned by `test_the_phase_pin_compares_units_on_purpose`.
-            ## (A swing-normalised pin and an orthogonality (Poincare) row
-            ## were both measured and are not better here; see history.)
-            ##
-            ## `phase_pin` is a VALUE the orbit must attain, so a seed far off
-            ## the orbit can pin one outside its range and the system is then
-            ## INCONSISTENT rather than merely hard, reporting ordinary
-            ## non-convergence.  That is about SEEDS (`tstab`,
-            ## `phase_rule='reselect'`), not the formulation.
-            self._begin_period(x)
-            _x1 = self.solve_timestep(x, times[0], hs[0])
-            _x2 = self.solve_timestep(_x1, times[1], hs[0])
-            phase_k = int(np.argmax(np.abs(np.asarray(_x2) - np.asarray(_x1))))
-            self.phase_k = phase_k                  # which coordinate is pinned, for diagnosis
-            ## The rule is Aprille & Trick's (oscillator paper, Step 3:
-            ## select k by max |f_k|), kept raw on measurement.  Their Step 3
-            ## sits INSIDE the iteration, re-choosing `k` and pinning the
-            ## iterate's own value: that is `phase_rule='reselect'`
-            ## (`_phase_row`), OPT-IN -- gains and costs in `solve`'s
-            ## docstring.
-            ##
-            ## ⚠ THE PHASE ROW SITS OUTSIDE THE INTEGRATOR ON PURPOSE: it
-            ## augments the OUTER shooting system, so it cannot raise the
-            ## index of the DAE actually being integrated (Brachtendorf et
-            ## al., TCAD 33(6) 867-878, warn that adding an algebraic
-            ## equation to the integrated system does).
-            ##
-            ## ⚠ THE PIN MUST BE IN THE UNKNOWN'S OWN FRAME.  `_x1` is the
-            ## state one step AFTER the seed, which is the right thing to
-            ## pin when the unknown is `x_in` and `x_0` is manufactured from
-            ## it -- and the wrong thing when the unknown IS `x_0`.  With a
-            ## fine opening step the two are nearly equal and the mismatch
-            ## hides; on a coarse one it pins a value the orbit need never
-            ## attain and the solve dies with a bare non-convergence.
-            ## History: `doc/shooting_history.md`, `PSS._solve_prepare`.
-            phase_pin = float(np.asarray(x if x0_unknown else _x1)[phase_k])
-
-        ## Resolved here as well as in `solve_timestep`, because the SHOOTING
-        ## Jacobian depends on which integrator the inner steps used.
+    def _pin_phase(self, x, times, hs, x0_unknown):
+        """The autonomous run's phase condition, `(phase_k, phase_pin)`: the
+        coordinate moving fastest at the seed, and the value it is pinned to
+        (see the notes)."""
+        ## THE PHASE CONDITION pins the coordinate moving FASTEST at the
+        ## seed, so the orbit crosses the pinning hyperplane
+        ## transversally.  Pin a slow one and the last row of the
+        ## bordered Jacobian is nearly parallel to the null direction it
+        ## exists to remove, which is a singular system wearing an extra
+        ## equation.
         ##
-        ## ⚠ THE NAME IS VALIDATED BEFORE ANYTHING ASKS THE INTEGRATOR A
-        ## QUESTION, so an unknown name raises this `ValueError` rather than
-        ## a `KeyError` from several frames down (`_solves_history`).
-        ## (by `_integrator_for`, whose table is the one list of method names;
-        ## a second copy of it stood here until 2026-10-01, the review's O18)
-        method = getattr(self.par, 'method', 'euler')
-        self._integrator_for(method)
+        ## ⚠ The row removes the singularity from the UNIT multiplier
+        ## only, so an oscillator whose other multipliers cluster near 1
+        ## gives a bordered system that is nonsingular and ill
+        ## conditioned (the high-Q note in the class docstring).
+        ##
+        ## ⚠ THE `argmax` COMPARES VOLTS WITH AMPERES ON PURPOSE: the row
+        ## can only remove the orbit's tangent in proportion to
+        ## `|e_k . fhat|`, and one step of `|dx_k|` IS `|f_k|` up to `h`,
+        ## so this argmax maximises the quantity the row needs.  The
+        ## scaling that lets a large coordinate win the argmax is the
+        ## same scaling that makes it dominate `f`; the two cancel.
+        ## Pinned by `test_the_phase_pin_compares_units_on_purpose`.
+        ## (A swing-normalised pin and an orthogonality (Poincare) row
+        ## were both measured and are not better here; see history.)
+        ##
+        ## `phase_pin` is a VALUE the orbit must attain, so a seed far off
+        ## the orbit can pin one outside its range and the system is then
+        ## INCONSISTENT rather than merely hard, reporting ordinary
+        ## non-convergence.  That is about SEEDS (`tstab`,
+        ## `phase_rule='reselect'`), not the formulation.
+        self._begin_period(x)
+        _x1 = self.solve_timestep(x, times[0], hs[0])
+        _x2 = self.solve_timestep(_x1, times[1], hs[0])
+        phase_k = int(np.argmax(np.abs(np.asarray(_x2) - np.asarray(_x1))))
+        self.phase_k = phase_k                  # which coordinate is pinned, for diagnosis
+        ## The rule is Aprille & Trick's (oscillator paper, Step 3:
+        ## select k by max |f_k|), kept raw on measurement.  Their Step 3
+        ## sits INSIDE the iteration, re-choosing `k` and pinning the
+        ## iterate's own value: that is `phase_rule='reselect'`
+        ## (`_phase_row`), OPT-IN -- gains and costs in `solve`'s
+        ## docstring.
+        ##
+        ## ⚠ THE PHASE ROW SITS OUTSIDE THE INTEGRATOR ON PURPOSE: it
+        ## augments the OUTER shooting system, so it cannot raise the
+        ## index of the DAE actually being integrated (Brachtendorf et
+        ## al., TCAD 33(6) 867-878, warn that adding an algebraic
+        ## equation to the integrated system does).
+        ##
+        ## ⚠ THE PIN MUST BE IN THE UNKNOWN'S OWN FRAME.  `_x1` is the
+        ## state one step AFTER the seed, which is the right thing to
+        ## pin when the unknown is `x_in` and `x_0` is manufactured from
+        ## it -- and the wrong thing when the unknown IS `x_0`.  With a
+        ## fine opening step the two are nearly equal and the mismatch
+        ## hides; on a coarse one it pins a value the orbit need never
+        ## attain and the solve dies with a bare non-convergence.
+        ## History: `doc/shooting_history.md`, `PSS._solve_prepare`.
+        phase_pin = float(np.asarray(x if x0_unknown else _x1)[phase_k])
+        return phase_k, phase_pin
 
-        ## Whether the entering history joins the unknowns.  Decided once,
-        ## here, because it chooses which system is solved -- like autonomy.
-        solved_history = self._solves_history()
-        self.solved_history = solved_history
-        xm1_ss = None
+    def _shooting_tolerances(self, irefnode):
+        """The shooting criterion, `(abstol vector, reltol)`: the
+        transient's, scaled by `steadyratio` (>= 1).
 
-        return _SolveRun(
-            refnode=refnode, period=period, x=x, dt=dt,
-            maxiterations=maxiterations, matrix_free=matrix_free,
-            x0_unknown=x0_unknown, phase_rule=phase_rule,
-            state_events=state_events, irefnode=irefnode, n=n, times=times,
-            hs=hs, npts=npts, alpha=alpha, phase_k=phase_k,
-            phase_pin=phase_pin, method=method,
-            solved_history=solved_history, xm1_ss=xm1_ss, trace=trace)
+        THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.  `x0 -
+        phi(x0)` is a difference of SOLUTIONS -- volts on node rows, amps on
+        branch rows -- so its absolute floor is the `xtol` flavour (vabstol
+        on nodes, iabstol on branches), not the residual flavour the
+        transient's Newton uses for `i(x)`.  Getting that backwards is
+        F6(a)'s defect, and it is easy to walk into here because the
+        quantity is called a residual."""
+        _tol = analysis.newton_tolerance_vectors(
+            len(self.cir.nodes), len(self.cir.branches),
+            self.par.iabstol, self.par.vabstol, self.toolkit)[1]
+        (_tol,) = remove_row_col((_tol,), irefnode, self.toolkit)
+        _ratio = float(self.par.steadyratio)
+        if _ratio < 1.0:
+            raise ValueError(
+                'steadyratio must be >= 1 (got %g): the period map is only '
+                'known to the accuracy of the per-timestep solves, so a '
+                'shooting tolerance tighter than reltol asks the outer '
+                'residual to resolve its own noise.' % _ratio)
+        return _tol * _ratio, self.par.reltol * _ratio
 
     def _shoot(self, run):
         """`solve`, phase 2: THE SHOOTING NEWTON -- the fixed-period or
@@ -1892,28 +1958,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         elif not getattr(self, '_closing_second_pass', False):
             self.shooting_trace = None
 
-        ## THE SHOOTING RESIDUAL IS IN SOLUTION UNITS, NOT KCL UNITS.
-        ## `x0 - phi(x0)` is a difference of SOLUTIONS -- volts on node rows,
-        ## amps on branch rows -- so its absolute floor is the `xtol` flavour
-        ## (vabstol on nodes, iabstol on branches), not the residual flavour
-        ## the transient's Newton uses for `i(x)`.  Getting that backwards is
-        ## F6(a)'s defect, and it is easy to walk into here because the
-        ## quantity is called a residual.
-        _tol = analysis.newton_tolerance_vectors(
-            len(self.cir.nodes), len(self.cir.branches),
-            self.par.iabstol, self.par.vabstol, self.toolkit)[1]
-        (_tol,) = remove_row_col((_tol,), irefnode, self.toolkit)
-
-        ## The shooting criterion, expressed against the transient one.
-        _ratio = float(self.par.steadyratio)
-        if _ratio < 1.0:
-            raise ValueError(
-                'steadyratio must be >= 1 (got %g): the period map is only '
-                'known to the accuracy of the per-timestep solves, so a '
-                'shooting tolerance tighter than reltol asks the outer '
-                'residual to resolve its own noise.' % _ratio)
-        _shoot_reltol = self.par.reltol * _ratio
-        _tol = _tol * _ratio
+        _tol, _shoot_reltol = self._shooting_tolerances(irefnode)
 
         ## ⚠ REFUSED RATHER THAN SILENTLY IGNORED.  A solved-history method
         ## already solves for `x_0` and `x_{-1}` directly and manufactures

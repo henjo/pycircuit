@@ -945,9 +945,7 @@ class Transient(Analysis):
         ## construction makes every entry point safe, and `_solve`'s reset
         ## still gives each analysis a clean count.
         ## History: `doc/transient_history.md`, `Transient.__init__`.
-        self.pcnr_solves = 0
-        self.pcnr_fallbacks = 0
-        self.pcnr_status = 'off'
+        self._reset_pcnr_counts()
 
         ## THE REFERENCE NODE IS `self.irefnode`, SET HERE AND NOWHERE ELSE
         ## SPONTANEOUSLY -- `solve()` overwrites it from its `refnode`
@@ -5078,60 +5076,139 @@ class Transient(Analysis):
                                           for r, _t in _rows])
                 self._ev_thr = np.array([float(t_) for _r, t_ in _rows])
 
+    def _reset_pcnr_counts(self):
+        """Zero the run's PCNR counters (`pcnr_solves`, `pcnr_fallbacks`,
+        `pcnr_status`) and its first recorded failure -- at construction and
+        at every run.
+
+        PCNR OUTCOME, per run (roadmap sec. 47).  `pcnr=True` is a
+        request: PCNR can decline for the whole run (no device
+        declares a probe) or fail on individual timesteps and fall
+        through to the ordinary step solver.  DC reports a single
+        `pcnr_status`; a transient cannot, because the answer differs
+        per step -- so it COUNTS.
+
+        These count SOLVER INVOCATIONS, not accepted steps: a rejected
+        step is solved and then thrown away, and it is still a step
+        PCNR did or did not carry.
+
+        SETTLED 2026-08-31 by the branch author, asked directly: this is
+        the honest number.  The consequence is intended -- `pcnr_solves +
+        pcnr_fallbacks` will generally EXCEED `statistics.accepted_steps`,
+        and that is not a bug to reconcile.  Do not "fix" these to track
+        accepted steps; that would hide work that actually happened.
+        """
+        self.pcnr_solves = 0
+        self.pcnr_fallbacks = 0
+        self.pcnr_status = 'off'
+        self._pcnr_first = None
+
+    @staticmethod
+    def _is_stage_family(integ):
+        """Whether `integ` steps as a stage family (`_StageSteps`): a
+        Runge-Kutta method, or a Nordsieck GLM -- not a Runge-Kutta method,
+        but self-starting, keeping no charge ring and delivering its own
+        estimate through `_rk_est`."""
+        from pycircuit.circuit.integrator import RungeKuttaIntegrator
+        return (isinstance(integ, RungeKuttaIntegrator)
+                or getattr(integ, 'is_multivalue', lambda: False)())
+
+    def _refuse_coupled_on_stage(self):
+        """`coupled_lte=True` on a stage method or a GLM, refused by name
+        before any work.
+
+        ⚠ FANG'S COUPLED PATH IS BUILT ON A LINEAR MULTISTEP COMPANION: it
+        solves the step from eq (6), a solution-space LTE over the step
+        history.  A stage method or a GLM judges its step by its own
+        embedded estimate.  Refused here, by name, before any work.
+        ⚠ AND REFUSED ON MEASUREMENT: around a stage step the coupled loop
+        does not keep Fang's no-rejection property, and on a stiff circuit
+        its error is set by no tolerance, because eq (6) needs accepted
+        history and so cannot judge the opening steps an embedded estimate
+        judges from the first.  Script:
+        `benchmarks/transient_review/stage12c_fang_stage_methods.py`.
+        History: `doc/transient_history.md`, `Transient._solve`.
+        """
+        _integ = self._get_integrator()
+        if self._is_stage_family(_integ):
+            raise NotImplementedError(
+                "coupled_lte=True (Fang's coupled (x, h) stepping) is "
+                "built on a linear multistep companion (gear, trap, "
+                "euler, theta), not on %s: it solves the step size from "
+                "eq (6), a solution-space LTE over the step history, "
+                "where a Runge-Kutta stage method or a GLM judges its "
+                "step by its own embedded estimate. Measured on a "
+                "prototype: around a stage step it re-solves more often "
+                "than the standard run rejects, and on a stiff circuit "
+                "its error does not follow the tolerance (eq (6) cannot "
+                "judge the opening steps). Run coupled_lte=False (the "
+                "embedded estimate drives the adaptive step), or choose "
+                "a multistep integrator." % type(_integ).__name__)
+
+    def _run_max_step(self, tend, timestep, fixed_timestep):
+        """The run's clamp on how large an ACCEPTED step may grow, and the
+        delay elements' cap on it (with its warning under a fixed grid)."""
+        ## The clamp on how large an ACCEPTED step may grow (`timestep_max`).
+        ## Decoupled from `timestep` by owner decision (see the Parameter):
+        ## None means SPICE's TMAX default, tend/50.  `timestep` promises no
+        ## output density, so a cap below it just clamps the opening step like
+        ## any other.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
+        max_step = self.par.timestep_max
+        if max_step is None or max_step <= 0:
+            max_step = tend / 50.0
+
+        ## STAGE 8(d) -- a delay element caps the step, per line.
+        ##
+        ## `TLine` interpolates its history at `t - TD`; with `dt` comparable to
+        ## `TD` there is nothing to interpolate between, and the delay simply comes
+        ## out wrong (4x TD at twice the cap under `fixed_timestep`).  The adaptive
+        ## controller usually rescues it, so it only bites the configuration
+        ## nobody checks.
+        ##
+        ## The cap is asked of the ELEMENTS rather than hard-coded here, so a future
+        ## delay element gets it by implementing one method.
+        ## History: `doc/transient_history.md`, `Transient._solve`.
+        element_cap = self.cir.max_timestep() if hasattr(self.cir, 'max_timestep') else None
+        if element_cap is not None:
+            ## Under `fixed_timestep` the caller has taken the grid into their own
+            ## hands, so silently substituting a finer one would be the wrong kind
+            ## of help -- but running on regardless is worse, because the error is a
+            ## WRONG DELAY and nothing else reports it.  Warn and obey, which is what
+            ## the force-accept and non-convergence paths already do.  The
+            ## comparison is against the GRID, not the cap: since timestep_max
+            ## decoupled from timestep, the cap says nothing about how coarse
+            ## the caller's fixed grid is.
+            if fixed_timestep:
+                if timestep > element_cap:
+                    warn(
+                        'transient: fixed_timestep=%g exceeds the %g s cap a delay '
+                        'element needs (TD/2). The propagation delay will come out too '
+                        'long -- measured 4x at twice the cap -- and nothing else will '
+                        'report it. Use a timestep <= %g, or drop fixed_timestep.'
+                        % (timestep, element_cap, element_cap), AccuracyWarning)
+            elif element_cap < max_step:
+                max_step = element_cap
+        return max_step
+
+    def _step_family(self, run, coupled_lte):
+        """The run's step family (`_LMMSteps`, `_StageSteps`, or
+        `_CoupledSteps` for `coupled_lte`) -- see the note at its use in
+        `_solve`."""
+        if coupled_lte:
+            return _CoupledSteps(self, run)
+        if self._is_stage_family(self.base_integrator):
+            return _StageSteps(self, run)
+        return _LMMSteps(self, run)
+
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
         """`solve`'s run, inside its single-threaded BLAS: the start state,
         then ONE stepping loop over the method's step family (`_LMMSteps`,
         `_StageSteps`, or `_CoupledSteps` for `coupled_lte`), the breakpoints
         and state events landed on the way, then `_finish_result`."""
-        ## PCNR OUTCOME, per run (roadmap sec. 47).  `pcnr=True` is a
-        ## request: PCNR can decline for the whole run (no device
-        ## declares a probe) or fail on individual timesteps and fall
-        ## through to the ordinary step solver.  DC reports a single
-        ## `pcnr_status`; a transient cannot, because the answer differs
-        ## per step -- so it COUNTS.
-        ##
-        ## These count SOLVER INVOCATIONS, not accepted steps: a rejected
-        ## step is solved and then thrown away, and it is still a step
-        ## PCNR did or did not carry.
-        ##
-        ## SETTLED 2026-08-31 by the branch author, asked directly: this is
-        ## the honest number.  The consequence is intended -- `pcnr_solves +
-        ## pcnr_fallbacks` will generally EXCEED `statistics.accepted_steps`,
-        ## and that is not a bug to reconcile.  Do not "fix" these to track
-        ## accepted steps; that would hide work that actually happened.
-        self.pcnr_solves = 0
-        self.pcnr_fallbacks = 0
-        self.pcnr_status = 'off'
-        self._pcnr_first = None
-        ## ⚠ FANG'S COUPLED PATH IS BUILT ON A LINEAR MULTISTEP COMPANION: it
-        ## solves the step from eq (6), a solution-space LTE over the step
-        ## history.  A stage method or a GLM judges its step by its own
-        ## embedded estimate.  Refused here, by name, before any work.
-        ## ⚠ AND REFUSED ON MEASUREMENT: around a stage step the coupled loop
-        ## does not keep Fang's no-rejection property, and on a stiff circuit
-        ## its error is set by no tolerance, because eq (6) needs accepted
-        ## history and so cannot judge the opening steps an embedded estimate
-        ## judges from the first.  Script:
-        ## `benchmarks/transient_review/stage12c_fang_stage_methods.py`.
-        ## History: `doc/transient_history.md`, `Transient._solve`.
+        self._reset_pcnr_counts()
         if coupled_lte:
-            from pycircuit.circuit.integrator import RungeKuttaIntegrator
-            _integ = self._get_integrator()
-            if (isinstance(_integ, RungeKuttaIntegrator)
-                    or getattr(_integ, 'is_multivalue', lambda: False)()):
-                raise NotImplementedError(
-                    "coupled_lte=True (Fang's coupled (x, h) stepping) is "
-                    "built on a linear multistep companion (gear, trap, "
-                    "euler, theta), not on %s: it solves the step size from "
-                    "eq (6), a solution-space LTE over the step history, "
-                    "where a Runge-Kutta stage method or a GLM judges its "
-                    "step by its own embedded estimate. Measured on a "
-                    "prototype: around a stage step it re-solves more often "
-                    "than the standard run rejects, and on a stiff circuit "
-                    "its error does not follow the tolerance (eq (6) cannot "
-                    "judge the opening steps). Run coupled_lte=False (the "
-                    "embedded estimate drives the adaptive step), or choose "
-                    "a multistep integrator." % type(_integ).__name__)
+            self._refuse_coupled_on_stage()
         ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
         ##
         ## Position matters: after the initial `accept_step(0.0, ...)` this would
@@ -5213,50 +5290,8 @@ class Transient(Analysis):
         self._branch_warned = False
         self._branch_cmax = 0.0
         _t_run_start = time.perf_counter()
-        ## The clamp on how large an ACCEPTED step may grow (`timestep_max`).
-        ## Decoupled from `timestep` by owner decision (see the Parameter):
-        ## None means SPICE's TMAX default, tend/50.  `timestep` promises no
-        ## output density, so a cap below it just clamps the opening step like
-        ## any other.
-        ## History: `doc/transient_history.md`, `Transient._solve`.
-        max_step = self.par.timestep_max
-        if max_step is None or max_step <= 0:
-            max_step = tend / 50.0
+        max_step = self._run_max_step(tend, timestep, fixed_timestep)
 
-        ## STAGE 8(d) -- a delay element caps the step, per line.
-        ##
-        ## `TLine` interpolates its history at `t - TD`; with `dt` comparable to
-        ## `TD` there is nothing to interpolate between, and the delay simply comes
-        ## out wrong (4x TD at twice the cap under `fixed_timestep`).  The adaptive
-        ## controller usually rescues it, so it only bites the configuration
-        ## nobody checks.
-        ##
-        ## The cap is asked of the ELEMENTS rather than hard-coded here, so a future
-        ## delay element gets it by implementing one method.
-        ## History: `doc/transient_history.md`, `Transient._solve`.
-        element_cap = self.cir.max_timestep() if hasattr(self.cir, 'max_timestep') else None
-        if element_cap is not None:
-            ## Under `fixed_timestep` the caller has taken the grid into their own
-            ## hands, so silently substituting a finer one would be the wrong kind
-            ## of help -- but running on regardless is worse, because the error is a
-            ## WRONG DELAY and nothing else reports it.  Warn and obey, which is what
-            ## the force-accept and non-convergence paths already do.  The
-            ## comparison is against the GRID, not the cap: since timestep_max
-            ## decoupled from timestep, the cap says nothing about how coarse
-            ## the caller's fixed grid is.
-            if fixed_timestep:
-                if timestep > element_cap:
-                    warn(
-                        'transient: fixed_timestep=%g exceeds the %g s cap a delay '
-                        'element needs (TD/2). The propagation delay will come out too '
-                        'long -- measured 4x at twice the cap -- and nothing else will '
-                        'report it. Use a timestep <= %g, or drop fixed_timestep.'
-                        % (timestep, element_cap, element_cap), AccuracyWarning)
-            elif element_cap < max_step:
-                max_step = element_cap
-
-        ones_nodes = self.toolkit.ones(len(self.cir.nodes))
-        ones_branches = self.toolkit.ones(len(self.cir.branches))
         ## SOLUTION-flavoured, not residual-flavoured.  This vector is used by the
         ## step controller as a tolerance on `lte = J^-1 * Eg`, which carries the
         ## units of the solution vector x -- volts on node rows, amps on branch rows.
@@ -5269,8 +5304,7 @@ class Transient(Analysis):
         ## controller's knob moves without silently moving Newton's convergence
         ## criterion with it (decision 0.3a).
         ## History: `doc/transient_history.md`, `Transient._solve`.
-        abstol = self.toolkit.concatenate((self.par.lte_vabstol * ones_nodes,
-                                          self.par.lte_iabstol * ones_branches))
+        abstol = self._lte_abstol_vector()
 
         ## THE STEP FAMILY -- the only thing about stepping that depends on the
         ## integrator (see `_LMMSteps`, `_StageSteps`, `_CoupledSteps`): how
@@ -5280,17 +5314,9 @@ class Transient(Analysis):
         ## estimate through `_rk_est`, so it is a stage family.
         ## History: `doc/transient_history.md`, `Transient._solve`.
         from types import SimpleNamespace
-        from pycircuit.circuit.integrator import RungeKuttaIntegrator
         run = SimpleNamespace(tend=float(tend), max_step=max_step,
                               abstol=abstol, fixed=bool(fixed_timestep))
-        if coupled_lte:
-            family = _CoupledSteps(self, run)
-        elif (isinstance(self.base_integrator, RungeKuttaIntegrator)
-              or getattr(self.base_integrator, 'is_multivalue',
-                         lambda: False)()):
-            family = _StageSteps(self, run)
-        else:
-            family = _LMMSteps(self, run)
+        family = self._step_family(run, coupled_lte)
         minstep = self.par.minstep
 
         ## The opening ramp exists to stop the ONE step the controller cannot check
