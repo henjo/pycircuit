@@ -58,7 +58,7 @@ import math
 import warnings
 
 import numpy as np
-from scipy import integrate, interpolate
+from scipy import integrate, interpolate, special
 
 #: the power-law interpolant meets `c_c` to this, relative, at every
 #: geometric midpoint
@@ -87,6 +87,17 @@ TABLE_PER_DECADE = 2000
 #: QUADPACK's 1.5e-8 by the gain, and below it is the (slightly) better one
 #: -- 2.1e-7 against 3.5e-7 at gain 19 on the closed form
 SPLIT_GAIN = 50.0
+#: the colour band's lower edge `nu0` rings in `D(tau)`; past `beta nu0 =
+#: EDGE_SWITCH` that ringing is carried exactly (`ColouredLineshape`)
+EDGE_SWITCH = 2.0
+#: and past the lag where its amplitude `|gamma|/2` falls below this, the
+#: transform takes it by its harmonics of `nu0` ...
+EDGE_HARMONIC_R = 0.02
+#: ... at most this many
+EDGE_MAX_HARMONICS = 40
+#: with no correction the integrand is `e^{-a tau}` small; past `EDGE_DECAY /
+#: a` it is taken as zero
+EDGE_DECAY = 80.0
 
 
 def _ratio(E, lr):
@@ -683,20 +694,101 @@ def phase_structure(tau, pc, pref, quad):
     return pref * (low + high)
 
 
+def band_envelope(beta, fun, nu_a, nu_b, nu0, scale, quad):
+    """``scale int_{nu_a}^{nu_b} fun(nu)/nu^2 e^{i beta (nu - nu0)} dnu`` --
+    a band's oscillatory integral DEMODULATED at `nu0`, by QAWO per decade
+    (its cosine and sine parts).  Smooth in `beta` where the band starts at
+    `nu0` (`ColouredLineshape`'s edge envelope).  `scale` is INSIDE the
+    integrand, so QUADPACK's absolute tolerance is one on `D` (as
+    `correction_structure`'s)."""
+    nd = max(math.ceil(math.log10(nu_b / nu_a)), 1)
+    edges = np.geomspace(nu_a, nu_b, nd + 1)
+    f = lambda v: scale * float(fun(v)) / (v * v)
+    cs, sn = 0.0, 0.0
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        cs += quad(f, lo, hi, weight='cos', wvar=beta, limit=200)[0]
+        sn += quad(f, lo, hi, weight='sin', wvar=beta, limit=200)[0]
+    return complex(cs, sn) * complex(math.cos(beta * nu0), -math.sin(beta * nu0))
+
+
+def _i0m1(r):
+    """`I_0(r) - 1`, without the cancellation at small `r`."""
+    if r < 0.1:
+        q = 0.25 * r * r
+        term, tot = 1.0, 0.0
+        for m in range(1, 8):
+            term *= q / (m * m)
+            tot += term
+        return tot
+    return float(special.iv(0, r)) - 1.0
+
+
+class _ScaledTable:
+    """A `SignedTable` read in the lineshape's own units (`ColouredLineshape`:
+    frequencies over `F`, the density times `F`)."""
+
+    def __init__(self, tab, F):
+        self.tab, self.F = tab, float(F)
+        self.nu_a, self.nu_b = tab.nu_a / F, tab.nu_b / F
+
+    def __call__(self, v):
+        return self.F * self.tab(v * self.F)
+
+
 class ColouredLineshape:
     """`S(f)` for a white rate `a` (the Lorentzian's `2 pi^2 i^2 f0^2 c_w`)
     and a coloured `c_c` (`PowerPieces`, or None), `D_c = pref int ...`,
     `pref = 4 i^2 f0^2` -- plus, optionally, a SIGNED correction `corr` to
     `c`: a `SignedTable`, or a list of them on their own bands and
     `ConstantTail`s, summed.  Its `D` (`correction_structure`, the tails
-    exact) enters the spline of the TOTAL `D`."""
+    exact) enters the spline of the TOTAL `D`.
+
+    ⚠ IN UNITS OF `F = i f0` INSIDE (frequencies over `F`, lags times `F`,
+    `c` times `F`, `pref` 4): QUADPACK's tolerances are absolute, and on
+    the physical scale they did not bind -- the same physics at `f0 = 1e9`
+    read the lineshape 1.9 % off at 100 times the band's lower edge, 3.4e-3
+    at 5 times, its own QUADPACK estimate 16 % (until 2026-10-01; every
+    reference test runs at `f0 = 1`, where nothing moves).
+
+    ⚠ THE BAND'S LOWER EDGE RINGS.  The colour stops at `nu0 = fmin`, so
+    `D_c` oscillates at `nu0` in the lag, ``D_c = D_inf - Re[e^{i 2 pi nu0
+    tau} gamma(tau)]`` with the envelope ``gamma = pref int h e^{i beta (nu -
+    nu0)}``, ``h = c/nu^2``, smooth.  A spline of `log D` in `log tau`
+    ALIASES that ringing: around the edge the lineshape read 29 % high at
+    0.55 `fmin` on an LC oscillator (its two grid phases 46 % apart), and
+    moved with `offset_fmax` (the grid's phase) -- the "1 % far skirt" of
+    the review (until 2026-10-01).  So past ``beta nu0 = EDGE_SWITCH`` the
+    ringing is carried EXACTLY: `gamma` splined (smooth), its asymptotic
+    series past the grid; the transform there on half-cycle panels until the
+    ringing's amplitude falls below `EDGE_HARMONIC_R`, and beyond by the
+    harmonics of `nu0` (``e^{r cos t} = I_0(r) + 2 sum I_k(r) cos k t``), each
+    by QUADPACK's Fourier rule.  A correction table that starts at the same
+    edge joins the envelope; the rest of `D` (the white part, the other
+    tables, the tails) is splined beside it, as before.  Against an mpmath
+    reference around the edge (`benchmarks/lineshape_reference.py`, regime
+    'edge', 0.3 .. 20 `fmin`): <= 8.2e-9 to 5 `fmin`, 1.6e-7 at 20, the
+    two grid phases within ~10x (were 1.3e-3 .. 4.3e-3).  Where the
+    integrand is dead before the switch -- the white part's `e^{-a tau}`, or
+    a strong colour's `D` itself -- nothing of this runs."""
 
     def __init__(self, a, pc, pref, per_decade=TAU_PER_DECADE, corr=None,
                  shift=False):
-        self.a = float(a)
-        self.pc, self.pref = pc, float(pref)
+        ## the lineshape's own units (see the class note); `F = 1` at `pref
+        ## = 4` changes nothing
+        F = 0.5 * math.sqrt(float(pref))
+        self.F = F
         corr = ([] if corr is None else
                 list(corr) if isinstance(corr, (list, tuple)) else [corr])
+        if F != 1.0:
+            if pc is not None:
+                pc = PowerPieces(pc.nu / F, pc.c * F)
+            corr = [ConstantTail(t.level * F, t.nu_b / F)
+                    if isinstance(t, ConstantTail) else _ScaledTable(t, F)
+                    for t in corr]
+            pref = 4.0
+        self.a = float(a) / F
+        self.pc, self.pref = pc, float(pref)
+        a, pref = self.a, self.pref
         self.corr = corr or None
         self.quad = _Quad()
         self.last_err = 0.0
@@ -714,6 +806,25 @@ class ColouredLineshape:
             lt = np.log(self.taus)
             self.taus = np.exp(np.concatenate(
                 ([lt[0]], 0.5 * (lt[:-1] + lt[1:]), [lt[-1]])))
+        ## the colour's edge: below `ta` the splines, past it the ringing
+        ## carried exactly (`_edge_init`); the splines on the nodes to `2 ta`.
+        ## (Not where the white part has killed the integrand before `ta`:
+        ## there the splines run to `thi`, as before.)
+        ## (Nor where `D` itself has: a strong colour, `D(ta)/2` past
+        ## `EDGE_DECAY` -- `D` rings about `D_inf` from there, so the whole
+        ## integrand beyond is `e^{-EDGE_DECAY}` small.)
+        self.ta = np.inf
+        self.edge = False
+        if pc is not None:
+            ta = EDGE_SWITCH / (2.0 * np.pi * pc.nu[0])
+            dead = corr == [] and self.a > 0.0 and EDGE_DECAY / self.a <= ta
+            if not dead and corr == []:
+                Dta = phase_structure(ta, pc, pref, _Quad())
+                dead = min(Dta, pref * pc.moment(-2.0, pc.nu[0], pc.nu[-1])) \
+                    > 4.0 * EDGE_DECAY
+            self.edge = not dead
+            self.ta = ta if self.edge else np.inf
+        low = self.taus[self.taus <= 2.0 * self.ta]
         self.Dinf = 0.0
         if pc is not None:
             p0, pN = pc.nu[0], pc.nu[-1]
@@ -722,10 +833,11 @@ class ColouredLineshape:
             self.q2 = pref * 2.0 * np.pi ** 2 * pc.moment(0.0, p0, pN)
             self.h0 = float(pc(p0)) / p0 ** 2
             Ds = np.array([phase_structure(t, pc, pref, self.quad)
-                           for t in self.taus])
+                           for t in low])
             self.spline = interpolate.CubicSpline(
-                np.log(self.taus), np.log(np.maximum(Ds, 1e-300)))
+                np.log(low), np.log(np.maximum(Ds, 1e-300)))
         self.Dpow_inf = self.Dinf
+        self._tab_inf = {}
         if corr:
             ## its moments by QUADPACK on each table, per decade
             self.cinf = sum(t.inf(pref) for t in self.tails)
@@ -734,8 +846,10 @@ class ColouredLineshape:
                 ed = np.geomspace(tab.nu_a, tab.nu_b,
                                   max(int(np.ceil(np.log10(tab.nu_b / tab.nu_a))), 1) + 1)
                 f2 = lambda v, tab=tab: pref * tab(v) / (v * v)
-                self.cinf += sum(self.quad(f2, lo, hi, limit=200)[0]
-                                 for lo, hi in zip(ed[:-1], ed[1:]))
+                tinf = sum(self.quad(f2, lo, hi, limit=200)[0]
+                           for lo, hi in zip(ed[:-1], ed[1:]))
+                self._tab_inf[id(tab)] = tinf
+                self.cinf += tinf
                 f0_ = lambda v, tab=tab: pref * tab(v)
                 self.cq2 += 2.0 * np.pi ** 2 * sum(
                     self.quad(f0_, lo, hi, limit=200)[0]
@@ -752,19 +866,129 @@ class ColouredLineshape:
                            + sum(correction_structure(t, tab, pref, self.quad)
                                  for tab in tables)
                            + sum(tl.structure(t, pref) for tl in self.tails)
-                           for t in self.taus])
+                           for t in low])
             self.tspline = interpolate.CubicSpline(
-                np.log(self.taus), np.log(np.maximum(Dt, 1e-300)))
+                np.log(low), np.log(np.maximum(Dt, 1e-300)))
             ## `Dinf` is the non-white TOTAL at infinite lag, which `g` and
             ## the head subtract
             self.Dinf = self.Dinf + self.cinf
+        if self.edge:
+            self._edge_init(tables)
+
+    def _edge_init(self, tables):
+        """The edge's envelope `gamma` (and, with a correction, the rest of
+        `D`, `Q`) past `ta`, splined; where the transform hands over to the
+        harmonics (`tb`)."""
+        pc, pref, a = self.pc, self.pref, self.a
+        nu0 = float(pc.nu[0])
+        self.nu_e, self.Om = nu0, 2.0 * np.pi * nu0
+        self._edge_tabs = [t for t in tables
+                           if abs(t.nu_a - nu0) <= 1e-12 * nu0]
+        rest = [t for t in tables if not any(t is e for e in self._edge_tabs)]
+        ## (no correction: the integrand decays as `e^{-a tau}`; past
+        ## `EDGE_DECAY / a` it is below `e^{-EDGE_DECAY}`, and nothing is
+        ## computed there -- but the envelope's grid reaches `30 / nu0`,
+        ## where its endpoint series holds to ~1e-5 of the ringing)
+        self.tend = self.thi
+        if self.corr is None and a > 0.0:
+            self.tend = min(self.thi, max(EDGE_DECAY / a, 30.0 / nu0))
+        ## (strictly inside, by more than rounding: the grid's own end is
+        ## `thi` to within an ulp)
+        tg = self.taus[(self.taus > self.ta * (1.0 + 1e-9))
+                       & (self.taus < self.tend * (1.0 - 1e-9))]
+        tg = np.concatenate(([self.ta], tg, [self.tend]))
+        if tg.size < 4:
+            tg = np.geomspace(self.ta, max(self.tend, 2.0 * self.ta), 4)
+        gam = []
+        for t in tg:
+            b = 2.0 * np.pi * t
+            g = band_envelope(b, pc, nu0, pc.nu[-1], nu0, pref, self.quad)
+            for tab in self._edge_tabs:
+                g += band_envelope(b, tab, tab.nu_a, tab.nu_b, nu0, pref,
+                                   self.quad)
+            gam.append(g)
+        gam = np.asarray(gam)
+        lb = np.log(2.0 * np.pi * tg)
+        self._gre = interpolate.CubicSpline(lb, 2.0 * np.pi * tg * gam.real)
+        self._gim = interpolate.CubicSpline(lb, 2.0 * np.pi * tg * gam.imag)
+        self._tg_end = float(tg[-1])
+        ## past the grid the endpoint series, ``G ~ i h0/b - h1/b^2 - i
+        ## h2/b^3`` (`h = c/nu^2` at the edge, the first piece's power law;
+        ## a correction table's leading two terms)
+        p = float(pc.p[0])
+        h0 = float(pc.c[0]) / nu0 ** 2
+        hs = [h0, h0 * (p - 2.0) / nu0, h0 * (p - 2.0) * (p - 3.0) / nu0 ** 2]
+        for tab in self._edge_tabs:
+            e = 1e-4 * nu0
+            t0 = float(tab(nu0)) / nu0 ** 2
+            t1 = (float(tab(nu0 + e)) / (nu0 + e) ** 2 - t0) / e
+            hs[0] += t0
+            hs[1] += t1
+        self._hs = hs
+        ## the rest of the TOTAL `D` past `ta`, `Q = D + Re[e^{i Om t} gamma]`:
+        ## with no correction `2 a t + D_inf` exactly; with one, its parts at
+        ## the nodes (the edge's at infinite lag), splined in logs
+        self._Qspl = None
+        if self.corr is not None:
+            base = self.Dpow_inf + sum(self._tab_inf[id(t)]
+                                       for t in self._edge_tabs)
+            Q = np.array([2.0 * a * t + base
+                          + sum(correction_structure(t, tab, pref, self.quad)
+                                for tab in rest)
+                          + sum(tl.structure(t, pref) for tl in self.tails)
+                          for t in tg])
+            self._Qlog = bool(np.all(Q > 0.0))
+            self._Qspl = interpolate.CubicSpline(
+                np.log(tg), np.log(Q) if self._Qlog else Q)
+        ## the hand-over to the harmonics: the first node past which the
+        ## ringing's amplitude `r = |gamma|/2` stays below EDGE_HARMONIC_R
+        r = np.abs(gam) / 2.0
+        above = np.nonzero(r >= EDGE_HARMONIC_R)[0]
+        k = int(above[-1]) + 1 if above.size else 0
+        self.tb = float(tg[min(k, tg.size - 1)])
+        self.tb = min(max(self.tb, 2.0 * self.ta), self._tg_end)
+
+    def _gamma(self, t):
+        """The edge's envelope at lag `t` (own units)."""
+        b = 2.0 * np.pi * t
+        if t <= self._tg_end:
+            lb = math.log(b)
+            return complex(float(self._gre(lb)), float(self._gim(lb))) / b
+        h0, h1, h2 = self._hs
+        return self.pref * complex(-h1 / b ** 2, h0 / b - h2 / b ** 3)
+
+    def _ring(self, t):
+        g = self._gamma(t)
+        ph = self.Om * t
+        return g.real * math.cos(ph) - g.imag * math.sin(ph)
+
+    def _Q(self, t):
+        """`D` without the edge's ringing past `ta` (own units)."""
+        if self._Qspl is None or t > self._tg_end:
+            return 2.0 * self.a * t + self.Dinf
+        v = float(self._Qspl(math.log(t)))
+        return math.exp(v) if self._Qlog else v
+
+    def _past_decay(self, t):
+        ## (no correction, past `EDGE_DECAY / a`: the integrand is zero)
+        return self.corr is None and self.a > 0.0 and t > self.tend
 
     def Dtotal(self, tau):
         """`D` with its white part `2 a tau`: with a correction, from the
         spline of the total (see `__init__`), never a difference."""
-        tau = float(tau)
+        return self._Dtotal(float(tau) * self.F)
+
+    def D(self, tau):
+        """`D` without its white part (the power-law pieces', and the
+        correction's past the grid; on the grid a correction's `D` is
+        `Dtotal - 2 a tau`)."""
+        return self._D(float(tau) * self.F)
+
+    def _Dtotal(self, tau):
+        if self.edge and tau >= self.ta:
+            return self._Q(tau) - self._ring(tau)
         if self.corr is None:
-            return 2.0 * self.a * tau + self.D(tau)
+            return 2.0 * self.a * tau + self._D(tau)
         if tau <= 0.0:
             return 0.0
         if tau < self.tlo:
@@ -772,18 +996,16 @@ class ColouredLineshape:
             return (2.0 * self.a * tau + (q2 + self.cq2) * tau * tau
                     + sum(tl.structure(tau, self.pref) for tl in self.tails))
         if tau > self.thi:
-            return 2.0 * self.a * tau + self.D(tau)
+            return 2.0 * self.a * tau + self._D(tau)
         return float(np.exp(self.tspline(np.log(tau))))
 
-    def D(self, tau):
-        """`D` without its white part (the power-law pieces', and the
-        correction's past the grid; on the grid a correction's `D` is
-        `Dtotal - 2 a tau`)."""
-        tau = float(tau)
+    def _D(self, tau):
         if tau <= 0.0:
             return 0.0
+        if self.edge and tau >= self.ta:
+            return self._Dtotal(tau) - 2.0 * self.a * tau
         if self.corr is not None and self.tlo <= tau <= self.thi:
-            return self.Dtotal(tau) - 2.0 * self.a * tau
+            return self._Dtotal(tau) - 2.0 * self.a * tau
         out = 0.0
         if self.pc is not None:
             if tau < self.tlo:
@@ -805,13 +1027,15 @@ class ColouredLineshape:
     def g(self, tau):
         """`e^{-a tau} (e^{-D/2} - e^{-D_inf/2})`, in logs (no 0 * inf);
         with a correction as `e^{-Dtotal/2} - e^{-a tau - D_inf/2}`, so the
-        white part is never subtracted from the total."""
+        white part is never subtracted from the total.  (Own units.)"""
+        if self.edge and self._past_decay(tau):
+            return 0.0
         if self.corr is None:
-            x, y = -0.5 * self.D(tau), -0.5 * self.Dinf
+            x, y = -0.5 * self._D(tau), -0.5 * self.Dinf
             m = max(x, y)
             diff = np.exp(m - self.a * tau) * (-np.expm1(min(x, y) - m))
             return diff if x >= y else -diff
-        x, y = -0.5 * self.Dtotal(tau), -self.a * tau - 0.5 * self.Dinf
+        x, y = -0.5 * self._Dtotal(tau), -self.a * tau - 0.5 * self.Dinf
         m = max(x, y)
         diff = np.exp(m) * (-np.expm1(min(x, y) - m))
         return diff if x >= y else -diff
@@ -822,11 +1046,14 @@ class ColouredLineshape:
         return float(np.exp(-0.5 * self.Dinf))
 
     def whole(self, tau):
-        """`exp(-D/2)` itself (with the white part), at most 1."""
-        return float(np.exp(-0.5 * self.Dtotal(tau)))
+        """`exp(-D/2)` itself (with the white part), at most 1.  (Own units.)"""
+        return float(np.exp(-0.5 * self._Dtotal(tau)))
 
     def __call__(self, f):
-        w = 2.0 * np.pi * abs(float(f))
+        return self._transform(abs(float(f)) / self.F) / self.F
+
+    def _transform(self, f):
+        w = 2.0 * np.pi * f
         a = self.a
         ## ⚠ A NEGATIVE `D_inf` (a signed correction that takes white noise
         ## away over a band holding the core): `exp(-D_inf/2) L_w` and the
@@ -834,14 +1061,15 @@ class ColouredLineshape:
         ## (e^33 against e^33 at a corner 0.03 linewidths out, every digit
         ## lost; 4.8e-7 split, against the closed form).  So the body
         ## integrates `exp(-D/2) <= 1` itself over the grid, and the
-        ## Lorentzian enters as its closed-form tail past `thi`,
-        ## `2 Re[e^{(-a + i w) thi} / (a - i w)]`, weighted `exp(-D_inf/2)`.
+        ## Lorentzian enters as its closed-form tail past the grid's end,
+        ## `2 Re[e^{(-a + i w) t_end} / (a - i w)]`, weighted `exp(-D_inf/2)`.
         ## A white part is then present (`D` grows as `2 a tau`, so `D_inf`
         ## < 0 needs `a > 0`).  Below `SPLIT_GAIN` the subtracted form is
         ## the more accurate one and stays.
+        t_end = self.tb if self.edge else self.thi
         split = a > 0.0 and -0.5 * self.Dinf > math.log(SPLIT_GAIN)
         if split:
-            z = complex(-a, w) * self.thi
+            z = complex(-a, w) * t_end
             head = (np.exp(-0.5 * self.Dinf + z.real) * 2.0
                     * (complex(np.cos(z.imag), np.sin(z.imag)) / complex(a, -w)).real)
             body = self.whole
@@ -849,9 +1077,17 @@ class ColouredLineshape:
             lw = (2.0 * a / (a * a + w * w)) if a > 0.0 else 0.0
             head = np.exp(-0.5 * self.Dinf) * lw
             body = self.g
+        ## per decade of the whole grid (to `ta` on an edge: the same panels
+        ## below it as without one)
         nd = int(np.ceil(np.log10(self.thi / self.tlo)))
-        edges = np.concatenate(([0.0], np.geomspace(self.tlo, self.thi,
-                                                    nd + 1)))
+        edges = np.concatenate(([0.0], np.geomspace(self.tlo, self.thi, nd + 1)))
+        if self.edge:
+            edges = np.concatenate((edges[edges < self.ta * (1.0 - 1e-9)],
+                                    [self.ta]))
+            ## past `ta` the ringing, exactly, half a cycle a panel
+            npan = max(int(np.ceil((self.tb - self.ta) * 2.0 * self.nu_e)), 1)
+            edges = np.concatenate((edges, np.linspace(self.ta, self.tb,
+                                                       npan + 1)[1:]))
         tot, err, err_failed = 0.0, 0.0, 0.0
         for lo, hi in zip(edges[:-1], edges[1:]):
             kw = ({'limit': 400} if w == 0.0 else
@@ -860,12 +1096,18 @@ class ColouredLineshape:
             tot += val
             err += e
             err_failed += e if self.quad.last_flag else 0.0
-        kw = ({'limit': 400} if w == 0.0 else
-              {'weight': 'cos', 'wvar': w, 'limlst': 200})
-        val, e = self.quad(self.g, self.thi, np.inf, **kw)
-        tot += val
-        err += e
-        err_failed += e if self.quad.last_flag else 0.0
+        if self.edge:
+            val, e, ef = self._edge_tail(w)
+            tot += val
+            err += e
+            err_failed += ef
+        else:
+            kw = ({'limit': 400} if w == 0.0 else
+                  {'weight': 'cos', 'wvar': w, 'limlst': 200})
+            val, e = self.quad(self.g, self.thi, np.inf, **kw)
+            tot += val
+            err += e
+            err_failed += e if self.quad.last_flag else 0.0
         out = head + 2.0 * tot
         self.quad.note(2.0 * err, out)
         ## ⚠ QUADPACK'S BOUND IS NOT THIS VALUE'S ERROR.  It sums absolute
@@ -877,6 +1119,82 @@ class ColouredLineshape:
         self.last_bound = 2.0 * err / max(abs(out), 1e-300)
         self.last_err = 2.0 * err_failed / max(abs(out), 1e-300)
         return out
+
+    def _edge_tail(self, w):
+        """``int_tb^inf g(tau) cos(w tau)`` by the harmonics of the edge:
+        ``g = e^{-Q/2} e^{r cos(Om tau + psi)} - e^{-a tau - D_inf/2}``, ``r =
+        |gamma|/2``, ``psi = arg gamma``, and ``e^{r cos t} = I_0(r) + 2 sum_k
+        I_k(r) cos k t`` -- a smooth part and, per harmonic, two smooth
+        envelopes against ``cos/sin((k Om +- w) tau)``, QUADPACK's Fourier
+        rule each.  Returns `(value, bound, bound where QUADPACK failed)`."""
+        a, Om = self.a, self.Om
+        rb = abs(self._gamma(self.tb)) / 2.0
+        K = 1
+        i1 = max(float(special.iv(1, rb)), 1e-300)
+        while K < EDGE_MAX_HARMONICS and float(special.iv(K + 1, rb)) > 1e-17 * i1:
+            K += 1
+        self.last_harmonics = K
+
+        def parts(t):
+            ## `(e^{-Q/2}, r, psi, the smooth part)`, None past the decay
+            if self._past_decay(t):
+                return None
+            g = self._gamma(t)
+            r, psi = abs(g) / 2.0, math.atan2(g.imag, g.real)
+            Q = self._Q(t)
+            eq = math.exp(-0.5 * Q)
+            ref = -a * t - 0.5 * self.Dinf
+            ## the smooth part, both differences formed without cancelling
+            sm = eq * _i0m1(r) + math.exp(ref) * math.expm1(
+                -0.5 * (Q - 2.0 * a * t - self.Dinf))
+            return eq, r, psi, sm
+
+        def smooth(t):
+            p = parts(t)
+            return 0.0 if p is None else p[3]
+
+        def harmonic(k, sine):
+            def fn(t):
+                p = parts(t)
+                if p is None:
+                    return 0.0
+                eq, r, psi = p[0], p[1], p[2]
+                amp = 2.0 * eq * float(special.iv(k, r))
+                return -amp * math.sin(k * psi) if sine else amp * math.cos(k * psi)
+            return fn
+        tot, err, err_failed = 0.0, 0.0, 0.0
+        ## per decade to the envelope's grid end, then QUADPACK's Fourier
+        ## rule (a term at `W = 0` -- an offset ON a harmonic of `nu0` --
+        ## integrates its slowly decaying envelope a decade at a time)
+        t1 = max(self._tg_end, self.tb)
+        nd = max(math.ceil(math.log10(t1 / self.tb)), 1) if t1 > self.tb else 0
+        dec = np.geomspace(self.tb, t1, nd + 1) if nd else np.array([self.tb])
+        beyond = not (self.corr is None and a > 0.0)
+
+        def add(fn, W, sine, fac):
+            nonlocal tot, err, err_failed
+            if W == 0.0 and sine:
+                return
+            sg = -1.0 if (sine and W < 0.0) else 1.0
+            kw = ({} if W == 0.0 else
+                  {'weight': 'sin' if sine else 'cos', 'wvar': abs(W)})
+            pieces = [(lo, hi, dict(kw, limit=400))
+                      for lo, hi in zip(dec[:-1], dec[1:])]
+            if beyond:
+                pieces.append((t1, np.inf, dict(kw, limlst=200) if kw
+                               else {'limit': 400}))
+            for lo, hi, kwp in pieces:
+                val, e = self.quad(fn, lo, hi, **kwp)
+                tot += fac * sg * val
+                err += fac * abs(e)
+                err_failed += fac * abs(e) if self.quad.last_flag else 0.0
+        add(smooth, w, False, 1.0)
+        for k in range(1, K + 1):
+            for sine in (False, True):
+                fn = harmonic(k, sine)
+                for W in (k * Om + w, k * Om - w):
+                    add(fn, W, sine, 0.5)
+        return tot, err, err_failed
 
 
 #: the second-order skirt splits the phase at `f / SKIRT_SPLIT`, and its

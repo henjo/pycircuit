@@ -2122,11 +2122,15 @@ def test_the_coloured_lineshape_band_top_is_refused_past_half_f0_and_leaves_the_
     """The review's X9 (2026-10-01): `oscillator_spectrum(offset_fmax=)` had
     no test.  It is the top of the coloured part's structure-function
     integral, default f0/2, the phase model's reach: above it the call is
-    refused, and the line CORE does not depend on it (phase noise far above
-    the linewidth barely moves `D(tau)` at the core's lags) -- at one
-    linewidth 1.4664e7 for f0/2 and f0/20 alike.  (Further out it moves a
-    little and not monotonically -- 3.2395e4 / 3.2036e4 / 3.2362e4 at 100
-    linewidths for f0/2 / f0/4 / f0/20 -- the quadrature, not the physics.)"""
+    refused, and the line does not depend on it -- at one linewidth 1.4664e7
+    for f0/2 and f0/20 alike.  ⚠ Further out it moved ~1 % and not
+    monotonically (3.2395e4 / 3.2036e4 / 3.2362e4 at 100 linewidths for f0/2
+    / f0/4 / f0/20): 100 linewidths is 0.55 `offset_fmin` here, where the
+    band's lower edge rings in `D(tau)`, and the log-tau spline aliased that
+    ringing with the grid's phase (which `offset_fmax` sets) -- the value was
+    29 % high, its own estimate 46 %.  The ringing is carried exactly since
+    2026-10-01 (`_lineshape.ColouredLineshape`): 2.50946e4 for every top,
+    8e-7 apart."""
     import warnings as _w
     _c, pss, pac = _lc_osc(a=0.25, rs=0.2, flicker=True, psd=1e-6,
                            fref=1.0 / 6.66, white=1e-6)
@@ -2143,7 +2147,13 @@ def test_the_coloured_lineshape_band_top_is_refused_past_half_f0_and_leaves_the_
                                            offset_fmax=fm,
                                            frequency_aware=False)[0][0])
              for fm in (0.5 * f0, 0.05 * f0)]
+        far = [float(pac.oscillator_spectrum(pss, 100.0 * offs, ov,
+                                             offset_fmin=1e-5 * f0,
+                                             offset_fmax=fm,
+                                             frequency_aware=False)[0][0])
+               for fm in (0.5 * f0, 0.25 * f0, 0.05 * f0)]
     assert abs(S[1] / S[0] - 1.0) < 1e-3, S
+    assert max(far) / min(far) - 1.0 < 1e-5, far
 
 
 def test_an_elements_white_remainder_is_white_on_every_surface():

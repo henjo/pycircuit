@@ -887,6 +887,59 @@ def test_the_coloured_lineshape_meets_an_independent_reference_across_the_handov
         assert abs(s2 / ref - 1.0) < 5e-8, (o, s2 / ref - 1.0)
 
 
+#: the lineshape AROUND the colour band's lower edge (`benchmarks/
+#: lineshape_reference.py`, regime 'edge': c_w 1e-7, 1/f with D_inf = 1.5 on
+#: [1e-5, 0.5] f0, the transform on panels of 1/(8 fmin) at 30 digits;
+#: 30 .. 900 s an offset): (offset / fmin, S)
+_EDGE_REFERENCE = ((0.3, 8.419674643293654e+03), (0.55, 4.000119124667532e+03),
+                   (0.8, 3.327917807229798e+03), (1.0, 1.677907496803478e+04),
+                   (1.2, 2.078670860889280e+04), (2.0, 5.614924947119242e+03),
+                   (5.0, 8.118049382148951e+02), (20.0, 1.248020659907944e+01))
+
+
+@pytest.mark.parametrize('scale', [1.0, 1e9])
+def test_the_coloured_lineshape_around_the_band_edge_meets_an_independent_reference(scale):
+    """The review's 11b (2026-10-01): the colour band's lower edge rings in
+    `D(tau)` at `fmin`, and a spline of `log D` in `log tau` aliased it --
+    around the edge the lineshape was 1.3e-3 .. 4.3e-3 off this mpmath
+    reference (an LC oscillator's line 29 % high at 0.55 `fmin`, its own
+    estimate 46 %).  The ringing is now carried exactly: <= 8.2e-9 to 5
+    `fmin`, 1.6e-7 at 20.  And at `f0 = 1e9` (the same physics, `nu -> F
+    nu`, `c -> c/F`): QUADPACK's absolute tolerances did not bind on the
+    physical scale -- 1.9 % off at 100 `fmin`, 3.4e-3 at 5 -- and the
+    lineshape now works in units of `i f0`: the same numbers."""
+    from pycircuit.circuit.shooting import _lineshape
+    c_w, fmin, fmax = 1e-7, 1e-5, 0.5
+    k = 0.75 * fmin ** 2
+    F = float(scale)
+    pc, _conv = _lineshape.refine(
+        lambda v: (k / (np.asarray(v, dtype=float) / F)) / F, fmin * F, fmax * F)
+    shapes = [_lineshape.ColouredLineshape(
+        2 * np.pi ** 2 * F * c_w, pc, 4.0 * F * F,
+        per_decade=2 * _lineshape.TAU_PER_DECADE, shift=sh) for sh in (True, False)]
+    offs = np.array([o for o, _ in _EDGE_REFERENCE]) * fmin * F
+    ref = np.array([v for _, v in _EDGE_REFERENCE]) / F
+    ctab = _lineshape.ClampedTable(
+        lambda v: c_w + np.where((v >= fmin * F) & (v <= fmax * F),
+                                 pc(np.clip(v, fmin * F, fmax * F)), 0.0) * F,
+        1e-3 * fmin * F, 1e3 * F, per_decade=400)
+
+    def skirt(o):
+        cf = c_w + k / (o / F) * 1.0
+        return tuple(_lineshape.second_order_skirt(
+            o, lambda v: ctab(v) / F, F * F, 1e-3 * fmin * F, fmax * F,
+            c_at_f=cf / F, split=sp)
+            for sp in (_lineshape.SKIRT_SPLIT, _lineshape.SKIRT_SPLIT_ALT)) + (
+            F * F * (cf / F) / (o * o),)
+    vals, errs = _lineshape.handover(shapes, offs, skirt)
+    err = np.asarray(vals) / ref - 1.0
+    assert np.max(np.abs(err[:-1])) < 2e-8, dict(zip(offs / (fmin * F), err))
+    assert abs(err[-1]) < 3e-7, err[-1]
+    ## the estimates are honest where the error is not negligible
+    assert np.all(np.abs(err) <= np.maximum(10.0 * np.asarray(errs), 2e-8)), \
+        dict(zip(offs / (fmin * F), zip(err, errs)))
+
+
 class _DcHeldNoise(IS):
     """`CY` proportional to the voltage across the element, which is a DC
     node held at 1 V on the orbit -- constant along it, ZERO at the zero

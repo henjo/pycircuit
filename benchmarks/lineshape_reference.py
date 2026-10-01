@@ -49,6 +49,32 @@ def S(f, c_w, k, fmin, fmax, dps=DPS):
         return float(2 * val)
 
 
+def S_panels(f, c_w, k, fmin, fmax, dps=30, panel=0.125):
+    """`S` AROUND THE BAND'S LOWER EDGE (regime 'edge', 2026-10-01): `D`
+    rings at `fmin` there, which `quadosc` (cut at the zeros of the offset's
+    cosine) does not follow; the transform is taken on panels of `panel /
+    fmin` (and at most a quarter of the offset's period) out to where
+    `exp(-a tau)` is below 1e-20."""
+    with mp.workdps(dps):
+        a = 2 * mp.pi ** 2 * mp.mpf(c_w)
+        w = 2 * mp.pi * mp.mpf(f)
+        g = lambda t: (mp.exp(-(2 * a * t + Dc(t, k, fmin, fmax)) / 2) * mp.cos(w * t)
+                       if t > 0 else mp.mpf(1))
+        tend = 46 / a
+        step = min(panel / mp.mpf(fmin), 0.25 / mp.mpf(f)) if f else panel / mp.mpf(fmin)
+        pts = [mp.mpf(0)] + [mp.mpf(10) ** e / fmax for e in range(-2, 4)]
+        pts = [p for p in pts if p < step] + [step]
+        t = step
+        while t < tend:
+            t = t + step
+            pts.append(t)
+        return float(2 * mp.quad(g, pts))
+
+
+#: the edge regime: a 1/f colour with `D_inf = 1.5` on [1e-5, 0.5], offsets
+#: in units of fmin (`test_the_coloured_lineshape_around_the_band_edge_...`)
+EDGE = (1e-7, 0.75e-10, 1e-5, (0.3, 0.55, 0.8, 1.0, 1.2, 2.0, 5.0, 20.0))
+
 REGIMES = (('narrow', 1.7496e-8, 7.5414e-11, (1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 0.1, 0.3)),
            ('broad r1', 1e-4, 1e-7, (3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 0.1, 0.3)),
            ('broad r100', 1e-4, 1e-5, (3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 0.1, 0.3)))
@@ -57,3 +83,5 @@ REGIMES = (('narrow', 1.7496e-8, 7.5414e-11, (1e-4, 3e-4, 1e-3, 3e-3, 1e-2, 3e-2
 if __name__ == '__main__':
     for name, c_w, k, offs in REGIMES:
         print(name, [(o, S(o, c_w, k, 1e-7, 0.5)) for o in offs], flush=True)
+    c_w, k, fmin, offs = EDGE
+    print('edge', [(o, S_panels(o * fmin, c_w, k, fmin, 0.5)) for o in offs], flush=True)
