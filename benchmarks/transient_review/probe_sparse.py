@@ -33,7 +33,8 @@ cir = rc_chain(4, sparse_numeric)
 x0 = np.zeros(cir.n)
 G = cir.G(x0)
 print('type(G) =', type(G))
-print('has build_sparse:', hasattr(sparse_numeric, 'build_sparse'))
+print('has build_sparse:',
+      getattr(sparse_numeric, 'build_sparse', None) is not None)
 
 print("\n=== DC with sparse_numeric on RC chain ===")
 try:

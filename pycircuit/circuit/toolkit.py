@@ -46,6 +46,15 @@ class Toolkit:
     poly = False
     jax = False
     sparse = False
+    ## THE TWO CAPABILITIES THE ASSEMBLY PROBES ON EVERY PASS
+    ## (`SubCircuit._add_element_submatrices` / `_subvectors`): None where a
+    ## toolkit has none -- the JAX toolkit defines `add_at`, the sparse one
+    ## `build_sparse`, as methods that override these.  Declared, so the
+    ## probe (`getattr(toolkit, name, None) is not None`) never misses: a miss
+    ## goes through `__getattr__`, which formats an error and raises, and
+    ## only hits are memoised there (see the note in `__getattr__`).
+    add_at = None
+    build_sparse = None
 
     def __init__(self, backend):
         self._backend = backend
@@ -90,6 +99,11 @@ class Toolkit:
             ## count per stamp CALL rather than per element -- so the case for
             ## reopening this is weakest exactly where run time matters most.
             ## See doc/hdl_roadmap_260824.md sec. 25.
+            ##
+            ## REOPENED 2026-10-01, narrowly: a PSS made 53k of those misses
+            ## (~6 % of its run), so those two names are now DECLARED on
+            ## the class (`Toolkit.add_at` / `build_sparse`, None) -- no
+            ## negative cache, so no attribute can turn invisible.
             ##
             ## Safe against runtime mutation of the *toolkit*: assigning
             ## `toolkit.foo = ...` writes the instance __dict__ directly and so

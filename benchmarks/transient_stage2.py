@@ -205,7 +205,7 @@ def reference_subvectors(self, methodname, x, args, dtype=None, params_tree=None
 
         if instance in self._map_indices_1d:
             indices = self._map_indices_1d[instance]
-            if hasattr(self.toolkit, 'add_at'):
+            if (getattr(self.toolkit, 'add_at', None) is not None):
                 rhs_flat = self.toolkit.reshape(rhs, (-1,)).flatten()
                 lhs = self.toolkit.add_at(lhs, indices, rhs_flat)
             else:
@@ -220,7 +220,7 @@ def reference_subvectors(self, methodname, x, args, dtype=None, params_tree=None
 
 def reference_submatrices(self, methodname, x, args, params_tree=None):
     n = self.n
-    build_sparse = hasattr(self.toolkit, 'build_sparse')
+    build_sparse = (getattr(self.toolkit, 'build_sparse', None) is not None)
     if build_sparse:
         all_data, all_rows, all_cols = [], [], []
     else:
@@ -250,7 +250,7 @@ def reference_submatrices(self, methodname, x, args, params_tree=None):
             if build_sparse:
                 all_data.append(np.asarray(rhs).flatten())
                 all_rows.append(rows); all_cols.append(cols)
-            elif hasattr(self.toolkit, 'add_at'):
+            elif (getattr(self.toolkit, 'add_at', None) is not None):
                 rhs_flat = self.toolkit.reshape(rhs, (-1,)).flatten()
                 lhs = self.toolkit.add_at(lhs, (rows, cols), rhs_flat)
             else:

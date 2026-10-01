@@ -1716,8 +1716,9 @@ class SubCircuit(Circuit):
         toolkit = self.toolkit
 
         # Check if toolkit prefers sparse assembly directly
-        build_sparse = hasattr(toolkit, 'build_sparse')
-        has_add_at = hasattr(toolkit, 'add_at')
+        ## (declared on `Toolkit`, None where absent: the probe never misses)
+        build_sparse = getattr(toolkit, 'build_sparse', None) is not None
+        has_add_at = getattr(toolkit, 'add_at', None) is not None
         groups = getattr(self, '_eval_groups', None)
         idxmap = self._map_indices_2d
         elementnodemap = self.elementnodemap
@@ -1825,9 +1826,19 @@ class SubCircuit(Circuit):
         n = self.n
         toolkit = self.toolkit
         lhs = toolkit.zeros(n, dtype=dtype)
-        has_add_at = hasattr(toolkit, 'add_at')
+        has_add_at = getattr(toolkit, 'add_at', None) is not None
         groups = getattr(self, '_eval_groups', None)
         idxmap = self._map_indices_1d
+        ## AN ELEMENT WITH THE DEFAULT SOURCE (`Circuit.u` / `dudt`: zeros)
+        ## IS SKIPPED, on the scatter path of a numeric toolkit: its entries
+        ## are exact +0.0, and a bin that starts at +0.0 can never become
+        ## -0.0, so adding them changes no bit -- while the call allocated a
+        ## vector per element per pass (every R and C, once per Newton
+        ## iterate; 2026-10-01).
+        default_src = (methodname in ('u', 'dudt') and not has_add_at
+                       and not getattr(toolkit, 'symbolic', False))
+        if default_src:
+            default_fn = getattr(Circuit, methodname)
         elementnodemap = self.elementnodemap
 
         batched = toolkit.batched_contributions(
@@ -1842,6 +1853,10 @@ class SubCircuit(Circuit):
         for instance, element in self.elements.items():
             if groups and element.__class__ in groups and x is not None:
                 continue # Handled by vectorization above
+            if (default_src
+                    and getattr(type(element), methodname) is default_fn
+                    and methodname not in element.__dict__):
+                continue
 
             if x is not None:
                 subx = x[elementnodemap[instance]]
@@ -1900,7 +1915,16 @@ class SubCircuit(Circuit):
             return lhs
 
         flat = np.asarray(rows, dtype=np.intp) * n + np.asarray(cols, dtype=np.intp)
-        lhs += np.bincount(flat, weights=val, minlength=n * n)[:n * n].reshape(n, n)
+        ## THE BINCOUNT IS THE ANSWER: `lhs` is the zero matrix here, and
+        ## `0.0 + v` is `v` for every bin (a bin starts at +0.0, so it is
+        ## never -0.0) -- returning it saves an n^2 sweep, and the zero
+        ## matrix's pages are never touched (2026-10-01)
+        out = np.bincount(flat, weights=val, minlength=n * n)
+        if lhs.dtype == out.dtype and out.size == n * n:
+            ## (a view: `out` is contiguous; setting `.shape` in place is
+            ## deprecated in NumPy 2.5)
+            return out.reshape(n, n)
+        lhs += out[:n * n].reshape(n, n)
         return lhs
 
     @staticmethod
@@ -1924,7 +1948,11 @@ class SubCircuit(Circuit):
             np.add.at(lhs, idx, val)
             return lhs
 
-        lhs += np.bincount(idx, weights=val, minlength=n)[:n]
+        ## (the bincount is the answer, as in `_scatter_2d`)
+        out = np.bincount(idx, weights=val, minlength=n)
+        if lhs.dtype == out.dtype and out.size == n:
+            return out
+        lhs += out[:n]
         return lhs
 
     def find_class_instances(self, instance_class):
