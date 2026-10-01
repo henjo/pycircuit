@@ -442,3 +442,48 @@ def test_every_shooting_surface_runs_under_every_linear_solver():
         k = KLUSolver()
         osc('radau', k)
         assert k.numerics > 0, 'radau factored its stage block itself: %r' % k
+
+
+def test_a_sparse_factorisation_keeps_the_period_s_capacitances_sparse():
+    """The review's M6 (2026-10-01): a shooting period kept every step's `C`
+    DENSE whatever the solver -- `N m^2` beside sparse factors.  Under a
+    sparse factorisation (`_Factored.sparse`) the record now keeps it
+    sparse, and every surface that replays the period reads the same
+    numbers: PAC, pnoise, the adjoint row and the covariance on a driven RC
+    ladder, gear and trap, against the dense solver's -- measured 4e-16 ..
+    3.3e-15."""
+    import scipy.sparse as sp
+
+    from pycircuit.circuit.elements import VSin
+    from pycircuit.circuit.shooting import PAC, PSS
+
+    def ladder(n=20):
+        c = SubCircuit(toolkit=numeric)
+        c['vs'] = VSin('n0', gnd, vac=1.0, va=1.0, freq=1e6, noisePSD=1e-16)
+        for k in range(n):
+            c[f'R{k}'] = R(f'n{k}', f'n{k + 1}', r=1e5, noisy=True)
+            c[f'C{k}'] = C(f'n{k + 1}', gnd, c=1e-12 * (1 + 0.1 * k))
+        return c
+
+    def surfaces(method, solver):
+        c = ladder()
+        p = PSS(c, method=method, reltol=1e-8, linearsolver=solver)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            p.solve(period=1e-6, timestep=1e-6 / 64, maxiterations=20)
+            stored = p.factored_period().steps[0][1]
+            pac = PAC(c, toolkit=numeric)
+            out = [np.asarray(pac.solve(p, freqs=[0.13e6],
+                                        sweeptype='absolute').x),
+                   pac.pnoise(p, 0.13e6, 'n20', maxsidebands=4,
+                              sweeptype='absolute')[0],
+                   pac.adjoint_transfer_row(p, 0.13e6, 'n20'),
+                   pac.covariance(p)[0]]
+        return stored, out
+    for method in ('gear', 'trap'):
+        cd, ref = surfaces(method, DenseSolver())
+        cs, got = surfaces(method, SuperLUSolver())
+        assert not sp.issparse(cd) and sp.issparse(cs), (type(cd), type(cs))
+        for g, r in zip(got, ref):
+            r = np.asarray(r)
+            assert np.max(np.abs(np.asarray(g) - r)) <= 1e-13 * np.max(np.abs(r))

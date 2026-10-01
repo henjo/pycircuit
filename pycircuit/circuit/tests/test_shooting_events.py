@@ -2013,3 +2013,66 @@ def test_event_grid_snaps_within_min_sep_and_inserts_beyond_it():
         counts.append(len(hs))
     assert counts == [44, 44, 43, 40], counts
     assert smallest == sorted(smallest)
+
+
+def test_a_staged_solve_keeps_one_copy_of_its_maps_to_the_nodes():
+    """The review's M6 (2026-10-01): after a staged solve the event stage's
+    captures (`_captured`, state, dense map and event columns per node)
+    kept every node's dense map beside `EventColumns['P_nodes']`, a second
+    `(N, m, m)` (0.60 -> 0.14 MB on the jitter sampler at 400 steps).  The
+    captures now keep the states and the event columns; the maps live in
+    the columns, which every consumer reads."""
+    from pycircuit.circuit.tests._shooting_fixtures import _jitter_sampler
+    p = PSS(_jitter_sampler(), method='gear', reltol=1e-8)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p.solve(period=1e-6, timestep=1e-6 / 100, maxiterations=40)
+    ev = p._event_columns
+    assert p.converged and ev is not None
+    assert all(c[1] is None for c in p._captured.values())
+    Pn = ev['P_nodes']
+    assert Pn.shape[0] == len(p._captured) + 1
+
+
+def test_the_carrier_of_a_staged_trap_oscillator_is_read_on_its_own_grid():
+    """The review's D7 (2026-10-01): `carrier_phasor` weighted the RUN's
+    samples with the quadrature of `factored_period()` -- on a trap or
+    euler oscillator the radau TWIN's, whose landed grid is another.  On the
+    staged comparator oscillator the trap carrier was 0.90 off the radau
+    one (its phase wrong; `oscillator_spectrum`, which scales by `|X|^2`,
+    22 % low).  On the waveform's own grid: 9.1e-4, the two methods'
+    discretisations."""
+    seed, Tl = _relaxation_oscillator_seed(_comparator_relaxation_oscillator())
+    X = {}
+    for method in ('trap', 'radau'):
+        cir = _comparator_relaxation_oscillator()
+        q = PSS(cir, method=method, reltol=1e-9)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            q.solve(period=Tl, timestep=Tl / 100, x0=seed, maxiterations=100,
+                    state_events=True)
+            X[method] = PAC(cir).carrier_phasor(
+                q, [str(n_) for n_ in cir.nodes].index('c'), 1)
+        assert q.converged and q._event_columns is not None
+    assert abs(X['trap'] - X['radau']) < 3e-3 * abs(X['radau']), X
+
+
+def test_the_frequency_aware_ppv_of_a_staged_oscillator_is_its_ppv_at_dc():
+    """The review's D2 (2026-10-01): `frequency_aware_ppv` solved on the
+    FIXED-GRID map and propagated without the event costate, while `ppv()`
+    uses the total map and injects the saltation's transpose at the event
+    nodes -- so on a staged oscillator `v(w_s -> 0)` was not `ppv()`: 4.1e-7
+    apart on the comparator oscillator, where the unstaged solve agrees to
+    1.7e-16.  Now 3.8e-17."""
+    seed, Tl = _relaxation_oscillator_seed(_comparator_relaxation_oscillator())
+    q = PSS(_comparator_relaxation_oscillator(), method='radau', reltol=1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        q.solve(period=Tl, timestep=Tl / 100, x0=seed, maxiterations=100,
+                state_events=True)
+        _v, info = q.ppv()
+        _vf, finfo = q.frequency_aware_ppv(1e-9 / float(q.period))
+    assert q._event_columns is not None
+    S = np.asarray(info['samples'], dtype=float)
+    Sf = np.real(np.asarray(finfo['samples']))
+    assert np.max(np.abs(Sf - S)) < 1e-12 * np.max(np.abs(S))

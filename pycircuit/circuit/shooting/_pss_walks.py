@@ -5,8 +5,10 @@ from copy import copy
 from math import factorial
 
 import numpy as np
+import scipy.sparse as _sp
 from ._factored import _PeriodWalk
 from ._steps import _GLMStartup
+from ._steps import _GLMStartupMatrix
 from ._steps import _StageStep
 from ._steps import _butcher
 from ._steps import _GLMStep
@@ -296,7 +298,13 @@ class _PeriodWalks(object):
                 self.Jtvec.append(copy(self._Jf))
             if keep:
                 lu = self._factorise(Jf)
-                steps.append((lu, C_new, alphas, b))
+                ## ⚠ SPARSE UNDER A SPARSE FACTORISATION: the stored `C` was
+                ## dense whatever the solver, `N m^2` beside sparse factors
+                ## (the review's M6, until 2026-10-01); the walk's own ring
+                ## stays dense
+                steps.append((lu, _sp.csr_matrix(C_new)
+                              if getattr(lu, 'sparse', False) else C_new,
+                              alphas, b))
                 solve = lu.solve
             else:
                 ## ⚠ THROUGH THE CALLER'S SOLVER, not `toolkit.linearsolver`
@@ -324,8 +332,8 @@ class _PeriodWalks(object):
                 ## top of `residual_dh`, which counts it twice.
                 dr_dhn_full = np.asarray(self._dfdh, dtype=float).ravel()
                 Ud = np.delete(np.asarray(self.cir.dudt(
-                    float(t), analysis=self.par.analysis), dtype=float),
-                    self.irefnode)
+                    float(t), epar=self.epar, analysis=self.par.analysis),
+                    dtype=float), self.irefnode)
                 dr_dhn_iq = dr_dhn_full - Ud
                 dt_prev = float(hs[_j - 1]) if _j > 0 else float(hs[-1])
                 dr_dhprev = (np.asarray(self._dfdT, dtype=float).ravel()
@@ -684,6 +692,7 @@ class _PeriodWalks(object):
             h = rec.h
             t0 = float(times[j])
             Ud = [np.delete(np.asarray(self.cir.dudt(t0 + float(ci) * h,
+                                                      epar=self.epar,
                                                       analysis=self.par.analysis),
                                        dtype=float), iref) for ci in c]
             for k in range(K):
@@ -726,8 +735,10 @@ class _PeriodWalks(object):
                 xf = np.insert(np.asarray(rec.x_in, dtype=float), iref, 0.0)
                 tr._pred_reset()
                 tr._glm_startup(float(times[j]), xf, float(rec.h))
-                out.append(self._glm_startup_linearisation(
-                    tr.last_step.startup))
+                ## (kept as its matrix: `rmatvec` is all a node's startup is
+                ## read for, and the linearisation is ~10 p m^2)
+                out.append(_GLMStartupMatrix(self._glm_startup_linearisation(
+                    tr.last_step.startup).matrix()))
         finally:
             tr._glm_startup_trace = saved
         return out
@@ -773,7 +784,8 @@ class _PeriodWalks(object):
                  for l_ in range(s)]
             fT.append(np.concatenate([sum(A[i, l_] * K[l_] for l_ in range(s))
                                       for i in range(s)]))
-            Ud.append([red(self.cir.dudt(ts[l_], analysis=self.par.analysis))
+            Ud.append([red(self.cir.dudt(ts[l_], epar=self.epar,
+                                         analysis=self.par.analysis))
                        for l_ in range(s)])
         Vd = np.array([[float(k) ** jj for jj in range(p + 1)]
                        for k in range(p + 1)])
@@ -876,6 +888,7 @@ class _PeriodWalks(object):
                       for jj in range(s)]
                 Ss = [sum(Amat[i, jj] * Ks[jj] for jj in range(s)) for i in range(s)]
                 Ud = [np.delete(np.asarray(self.cir.dudt(_t0 + float(_cabs[jj]) * h,
+                                                          epar=self.epar,
                                                           analysis=self.par.analysis),
                                            dtype=float), iref)
                       for jj in range(s)]

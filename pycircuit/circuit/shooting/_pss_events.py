@@ -232,6 +232,11 @@ class _StateEvents(object):
             elif attempt:
                 ev = EventColumns.from_capture(self._captured, len(hs_r), m, P0,
                                                nodes_r, Wk, ck, P_end)
+                ## the dense maps to the nodes now live in `ev['P_nodes']`;
+                ## the captures keep their states and event columns (a
+                ## second `(N, m, m)` until 2026-10-01 -- the review's M6)
+                self._captured = {j: (x_, None, pk_) for j, (x_, _p, pk_)
+                                  in self._captured.items()}
                 self._event_sensitivity = ev.dth
                 self._event_columns = ev
                 M = M + P_end @ ev.dth

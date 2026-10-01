@@ -6,6 +6,7 @@ import warnings
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit._limiting import devices_at
 from ._factored import dense_map
+from ._steps import dense_c
 from ._numerics import _arnoldi_gmres, insert_ref
 from .events import EventColumns
 
@@ -382,7 +383,7 @@ class _PPVFloquet(object):
                         (np.asarray(self.cir.G(_xj, epar=self.epar), dtype=float),),
                         self.irefnode, self.toolkit)
                 _Gj = np.asarray(_Gj, dtype=float)
-                _Cj = np.asarray(_cs1[_j], dtype=float)
+                _Cj = dense_c(_cs1[_j])
                 if _alg_rows:
                     ## ⚠ ON A DAE THE ALGEBRAIC STATE IS SLAVED, AND ITS
                     ## COUPLING INTO THE DIFFERENTIAL PROPAGATION IS O(h).
@@ -786,19 +787,21 @@ class _PPVFloquet(object):
         ## other would silently change what `ppv()` returns.
         ## ⚠ ONE WARNING PER CALL, NOT ONE PER SAMPLE: at index 2 the fill
         ## warns at every sample.
+        ## (`v` itself inside the same record: outside it, its fill warned a
+        ## SECOND time per call -- until 2026-10-01, the review's W1)
         with warnings.catch_warnings(record=True) as _caught:
             warnings.simplefilter('always')
             _eq = [self._equation_row_ppv(
                        st[:m], _Xf[:, _sj if _sj < _Xf.shape[1] else -1],
                        _alg_rows, _alg_cols)
                    for _sj, st in enumerate(states)]
+            _v_eq = self._equation_row_ppv(v[:m], x0f, _alg_rows, _alg_cols)
         _seen = set()
         for _w in _caught:
             _key = (str(_w.message), _w.category)
             if _key not in _seen:
                 _seen.add(_key)
                 warnings.warn(str(_w.message), _w.category, stacklevel=2)
-        _v_eq = self._equation_row_ppv(v[:m], x0f, _alg_rows, _alg_cols)
         ## ⚠ A SECOND MULTIPLIER NEAR 1 BREAKS THIS SILENTLY, and none of
         ## the residuals above can see it.  The border removes the PHASE
         ## mode's singularity and does nothing about any OTHER root
@@ -1094,11 +1097,20 @@ class _PPVFloquet(object):
         alpha = np.exp(-2j * np.pi * float(offset) * T)
         q = np.asarray(info0['q'], dtype=float)
         qp = np.concatenate((q, np.zeros(n - m))).astype(complex)
+        ## ⚠ ON A STAGED SOLVE THE TOTAL MAP, as `ppv()`: a perturbation
+        ## moves the crossings, and the samples carry the saltation's
+        ## transpose as costate injections at the event nodes.  The fixed-grid
+        ## map alone (until 2026-10-01, the review's D2) left `v(w_s -> 0)`
+        ## 4.1e-7 off `ppv()` on the staged comparator oscillator, where the
+        ## unstaged solve agrees to 1.7e-16.
+        _ev = EventColumns.of(self, n)
+        _MtT = (fp.matvec_transposed if _ev is None
+                else _ev.total_matvec(fp.matvec_transposed, transposed=True))
 
         def _mv(z):
             z = np.asarray(z, dtype=complex)
             v_, y_ = z[:n], z[n]
-            top = v_ - alpha * np.asarray(fp.matvec_transposed(v_), dtype=complex) + y_ * qp
+            top = v_ - alpha * np.asarray(_MtT(v_), dtype=complex) + y_ * qp
             return np.concatenate((top, [complex(qp @ v_)]))
         rtol = max(self.par.reltol * 1e-2 if tol is None else tol, 1e-14)
         rhs = np.zeros(n + 1, dtype=complex)
@@ -1132,7 +1144,9 @@ class _PPVFloquet(object):
         x0r = np.asarray(self._period_state[1], dtype=float).ravel()
         x0f = insert_ref(x0r, irn)
         _alg_rows, _alg_cols = self._algebraic_adjoint_pattern(x0f)
-        states, states_pair, _ts, _Xf = self._ppv_propagate(fp, v, m, xdot, _alg_rows, _alg_cols)
+        states, states_pair, _ts, _Xf = self._ppv_propagate(
+            fp, v, m, xdot, _alg_rows, _alg_cols,
+            inject=self._event_costate_injection(fp, v, n))
         st = np.asarray(states_pair, dtype=complex)
         tms = np.asarray(fp.times, dtype=float)[:st.shape[0]]
         phase = np.exp(2j * np.pi * float(offset) * tms)

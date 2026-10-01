@@ -1164,3 +1164,22 @@ def test_the_orbital_mode_weights_take_a_coloured_source_in_the_maps_own_space()
     rel = np.abs(cwc[np.ix_(o, o)] / white[np.ix_(o, o)] - 1.0)
     assert np.max(rel) < 1e-4, rel
     assert np.shape(info['K_coloured']) == np.shape(info['K']) ==         (2 * (cc.n - 1),) * 2            # the gear PAIR space
+
+
+def test_the_phase_mode_is_found_with_a_dc_source_on_the_tank():
+    """The review's D1 (2026-10-01): `_phase_mode_split` picks the phase mode
+    by its alignment with the orbit tangent, ``C xdot = -(i + u)``, and left
+    the SOURCE out.  A 1 A DC current on the tank node of a van der Pol
+    (Q = 8) put `xdot(0)` 56 % off, the phase mode's alignment 0.83 under
+    the 0.9 bar, and `orbital_correlation` REFUSED the oscillator ("no
+    Floquet mode ... aligned with the orbit tangent").  With the source the
+    alignment is 1.000 and the split goes through."""
+    from pycircuit.circuit.tests._shooting_fixtures import _loss_osc
+    _cir, pss, pac, _rs = _loss_osc('parallel', idc_node='v', idc=1.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        modes = pss.floquet_modes()
+        k, _rest = pac._phase_mode_split(pss, modes, 'test')
+        R, _C = pac.orbital_correlation(pss)
+    assert abs(abs(complex(modes[k]['lam'])) - 1.0) < 1e-9
+    assert np.all(np.isfinite(R))

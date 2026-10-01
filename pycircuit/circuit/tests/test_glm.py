@@ -703,6 +703,12 @@ def test_glm_node_startups_run_on_the_transient_that_walked_the_period():
         assert np.max(np.abs(got - ref)) <= 1e-12 * scale
         got = states(PSS(_cv_loop(per), method='glm3'))   # one never solved
         assert np.max(np.abs(got - ref)) <= 1e-12 * scale
+    ## (each node's startup kept as its matrix, `r m^2`, not the linearised
+    ## startup, ~`(10 p + 1) m^2` -- the review's M6, 2026-10-01)
+    from pycircuit.circuit.shooting._steps import _GLMStartupMatrix
+    fp = p3.factored_period_glm(x0, per, npts)
+    fp.x_matvec_transposed(v, collect=True)
+    assert all(isinstance(su, _GLMStartupMatrix) for su in fp._node_startups[1:])
 
 
 def test_a_startup_override_leaves_the_glm_walk_nothing_stale_to_linearise():

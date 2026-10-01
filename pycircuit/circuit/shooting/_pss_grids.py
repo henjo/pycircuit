@@ -670,7 +670,15 @@ class _PeriodGrids(object):
         cannot catch a mismatch."""
         ## History: `doc/shooting_history.md`, `_PeriodGrids._period_quadrature`.
         tms = np.asarray(fp.times, dtype=float)
-        N = len(fp.steps)
+        return self._times_quadrature(tms[:len(fp.steps) + 1])
+
+    def _times_quadrature(self, tms):
+        """`_period_quadrature` for the period grid `tms` (its `N + 1`
+        times, the period's end included): the run's own, where a consumer
+        reads the run's samples while the factored period is its twin's
+        (`PAC.carrier_phasor`)."""
+        tms = np.asarray(tms, dtype=float)
+        N = len(tms) - 1
         h = np.diff(tms[:N + 1])
         if len(h) < 2 or float(np.max(h)) / float(np.min(h)) - 1.0 <= self.UNIFORM_GRID_TOL:
             return None

@@ -2323,3 +2323,40 @@ def test_a_native_glm_ppv_and_floquet_modes_are_on_the_state():
             _w.simplefilter('ignore')
             vf, _inf = p.frequency_aware_ppv(1e-9 / float(p.period))
         assert np.max(np.abs(np.asarray(vf) - v)) < 1e-6 * np.max(np.abs(v))
+
+
+def test_ppv_gives_each_of_its_warnings_once_a_call():
+    """The review's W1 (2026-10-01): `ppv()` collects its samples'
+    warnings and gives each once -- but the anchor's own equation-row fill
+    ran outside that record, so on an index-2 oscillator (a DC source in a
+    capacitor loop) "the algebraic block G[A, Z] is singular" came TWICE
+    from one call.  Now once."""
+    import collections
+    import warnings as _w
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir.add_node('a')
+    cir['C'] = C('v', gnd, c=4.0)
+    cir['L'] = L('v', gnd, L=0.25)
+    cir['B'] = BSource('v', gnd, gnd, 'v',
+                       i_func=lambda u: (u - u ** 3 / 3.0) + 0.3 * u * u)
+    cir['vo'] = VS('v', 'a', v=0.5)
+    cir['Ca'] = C('a', gnd, c=1.0)
+    cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+    T0 = 2.0 * np.pi / np.sqrt(1.0 - 0.25 / 4.0)
+    names = [str(x) for x in cir.nodes]
+    red = [i for i in range(cir.n) if i != cir.get_node_index(gnd)]
+    x0 = np.zeros(cir.n - 1)
+    x0[red.index(names.index('v'))] = 2.0
+    x0[red.index(names.index('a'))] = 1.5
+    p = PSS(cir, method='gear', reltol=1e-10, period_column='proportional')
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T0, timestep=T0 / 200, maxiterations=60, x0=x0)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        p.ppv()
+    count = collections.Counter(str(r.message) for r in rec)
+    assert any('G[A, Z] is singular' in k for k in count), list(count)
+    assert max(count.values()) == 1, count

@@ -4,6 +4,7 @@ pieces, the coloured band integral, event jitter.
 import numpy as np
 import warnings
 from ._factored import dense_map
+from ._steps import dense_c
 from .events import EventColumns
 
 
@@ -185,8 +186,7 @@ class _LyapunovCovariance(object):
                                      white))
                for k in range(len(fp.steps))]
         C_open = np.asarray(fp.opening[0], dtype=float)
-        prevC = [C_open] + [np.asarray(st[1], dtype=float)
-                            for st in fp.steps[:-1]]
+        prevC = [C_open] + [dense_c(st[1]) for st in fp.steps[:-1]]
         bs = {bool(st[3]) for st in fp.steps}
         if len(bs) != 1:
             raise NotImplementedError(
@@ -196,7 +196,7 @@ class _LyapunovCovariance(object):
         n = 2 * m if pair else m
         As, Qs = [], []
         for k, (lu, C_new, alphas, b) in enumerate(fp.steps):
-            Ck = np.asarray(C_new, dtype=float)
+            Ck = dense_c(C_new)
             Cp = prevC[k]
             A = np.zeros((n, n))
             for j in range(n):
@@ -1026,9 +1026,23 @@ class _LyapunovCovariance(object):
             return y[:nk]
 
         ## the integrand's TERMS: per term a map from band frequencies to
-        ## per-frequency contributions `(G, Dd)` (node covariances, crossings'),
-        ## its power-law exponent, and the evaluated frequencies
+        ## per-frequency contributions `(Y, Cw, sc, Dd)` -- the node
+        ## covariances as their FACTOR, ``G = sc Re[sum_kl Y_k Cw_kl Y_l^H]``
+        ## per node (`Cw` None: the identity), and the crossings' `Dd` --
+        ## its power-law exponent, and the evaluated frequencies.  ⚠ The
+        ## factor, not `G`: `(N + 1, n, n)` per term per band frequency was
+        ## the integral's memory (the review's M4, until 2026-10-01); `G` is
+        ## formed once per frequency where it is summed (`node_cov`).
         terms = []
+
+        def node_cov(r):
+            ## ``sc Re[sum_kl Y_k Cw_kl Y_l^H]`` at every node
+            Y, Cw, sc, _Dd = r
+            if Cw is None:
+                G = np.real(np.einsum('kja,kjb->jab', Y, Y.conj()))
+            else:
+                G = np.real(np.einsum('kja,kl,ljb->jab', Y, Cw, Y.conj()))
+            return G if sc is None else sc * G
 
         def reduced(W):
             ## ⚠ THE COMPONENT'S OWN RANK, not `m` columns: ``W_k U`` with `U`
@@ -1060,8 +1074,10 @@ class _LyapunovCovariance(object):
                         Dd = np.real(np.outer(dd, dd.conj()))
                         if sc is not None:
                             Dd = sc * Dd
-                    G = np.real(np.einsum('ji,jk->jik', y, y.conj()))
-                    out.append((G if sc is None else sc * G, Dd))
+                    ## (a COPY: `y` is a view into the batch's responses,
+                    ## which it would otherwise keep alive -- every node, every
+                    ## frequency of the batch, the full width)
+                    out.append((y[None].copy(), None, sc, Dd))
                 return out
             return ev
 
@@ -1096,8 +1112,7 @@ class _LyapunovCovariance(object):
                         dd = np.array([np.asarray(pk[1][i], dtype=complex)
                                        for pk in per_k])
                         Dd = np.real(np.einsum('ka,kl,lb->ab', dd, cy, dd.conj()))
-                    out.append((np.real(np.einsum('kja,kl,ljb->jab', Y, cy,
-                                                  Y.conj())), Dd))
+                    out.append((Y, cy, None, Dd))
                 return out
             terms.append((0.0, ev, {}))
 
@@ -1123,16 +1138,18 @@ class _LyapunovCovariance(object):
                 out = []
                 for nu in batch:
                     Wn = reduced(root_at(nu))
-                    G = np.zeros((nk, n, n))
+                    Ys = []
                     Dd = None
                     for s_ in range(Wn.shape[2]):
                         u_points = [Wn[offs[j]:offs[j + 1], :, s_]
                                     for j in range(N)]
-                        Gs, Di = column_ev(u_points)(np.array([nu]))[0]
-                        G += Gs
+                        Yi, _c, _s, Di = column_ev(u_points)(np.array([nu]))[0]
+                        Ys.append(Yi[0])
                         if Di is not None:
                             Dd = Di if Dd is None else Dd + Di
-                    out.append((G, Dd))
+                    Y = (np.asarray(Ys, dtype=complex) if Ys
+                         else np.zeros((0, nk, n), dtype=complex))
+                    out.append((Y, None, None, Dd))
                 return out
             terms.append((0.0, ev, {}))
 
@@ -1146,8 +1163,12 @@ class _LyapunovCovariance(object):
         fac = lambda ef: (col['w1'] / (2.0 * np.pi)) ** ef   # noqa: E731
 
         def summary(r):
-            G, Dd = r
-            v = float(np.sum(np.trace(G, axis1=1, axis2=2)))
+            ## the trace of `G` summed over the nodes, from the factor
+            Y, Cw, sc, Dd = r
+            gram = np.einsum('kja,lja->kl', Y, Y.conj())
+            v = float(np.real(np.trace(gram) if Cw is None
+                              else np.sum(Cw * gram)))
+            v = v if sc is None else sc * v
             return v + (float(np.trace(Dd)) if Dd is not None else 0.0)
 
         ## PANELS `(a, c)` (their log midpoint implied): the known lines
@@ -1223,8 +1244,8 @@ class _LyapunovCovariance(object):
                 for x, qx in zip(f, q):
                     wts[float(x)] = wts.get(float(x), 0.0) + qx
             for x, qx in wts.items():
-                G, Dd = store[x]
-                K += qx * G
+                Dd = store[x][3]
+                K += qx * node_cov(store[x])
                 if Dd is not None:
                     D = qx * Dd if D is None else D + qx * Dd
         K = 0.5 * (K + np.swapaxes(K, 1, 2))

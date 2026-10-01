@@ -700,8 +700,16 @@ class _ModalSpectra(object):
         xf = orbit_states(pss, [np.asarray(pss.waveform[1],
                                            dtype=float)[:, 0]])[0]
         xr = np.delete(xf, irn)
+        ## ⚠ `C xdot = -(i + u)`: the SOURCE too -- a DC source on a row with
+        ## capacitance is part of the tangent (without it a 1 A current on
+        ## the tank node read `xdot` 56 % off, the phase mode's alignment
+        ## 0.83 under the 0.9 bar, and `orbital_correlation` REFUSED the
+        ## oscillator; until 2026-10-01, the review's D1).  As `ppv()` forms it.
         with devices_at(pss.cir, xf, pss.epar):
-            i_red = np.delete(np.asarray(pss.cir.i(xf, pss.epar), dtype=float).ravel(), irn)
+            i_red = np.delete(np.asarray(pss.cir.i(xf, pss.epar), dtype=float).ravel()
+                              + np.asarray(pss.cir.u(0.0, epar=pss.epar,
+                                                     analysis=pss.par.analysis),
+                                           dtype=float).ravel(), irn)
         C0 = np.asarray(pss._C_at(xr), dtype=float)
         try:
             xdot0 = np.linalg.solve(C0, -i_red)

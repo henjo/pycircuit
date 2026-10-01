@@ -913,19 +913,17 @@ class _OscillatorCovariance(object):
         pss = pss._lyapunov_host()
         ## (the covariance in the MAP's own space: the exact law contracts
         ## it with the period map; the node block is `[:m, :m]` of it)
-        with warnings.catch_warnings():
-            ## (its "K_orb, d and c_from_growth are the WHITE sources' alone"
-            ## is what this method handles below)
-            warnings.filterwarnings('ignore', message='PAC.oscillator_covariance: '
-                                     'this circuit has a COLOURED source')
-            ## (the WHITE part alone: the coloured one -- its transverse
-            ## variance and phase included -- is `_edge_coloured_law`'s, one
-            ## folded solve; the covariance's coloured samples at every node
-            ## would cost 29 s of a 67 s call)
-            K_orb, info = self.oscillator_covariance(
-                pss, samples=True, pair=True, colour_fmin=colour_fmin,
-                colour_fmax=colour_fmax, points_per_decade=points_per_decade,
-                _coloured=False)
+        ## (the WHITE part alone: the coloured one -- its transverse
+        ## variance and phase included -- is `_edge_coloured_law`'s, one
+        ## folded solve; the covariance's coloured samples at every node
+        ## would cost 29 s of a 67 s call.  `_coloured=False` gives no
+        ## "WHITE sources' alone" warning, so there is none to filter: the
+        ## filter that stood here could not match -- removed 2026-10-01, the
+        ## review's W2)
+        K_orb, info = self.oscillator_covariance(
+            pss, samples=True, pair=True, colour_fmin=colour_fmin,
+            colour_fmax=colour_fmax, points_per_decade=points_per_decade,
+            _coloured=False)
         coloured = bool(self._coloured_present(pss))
         d = info['d']
         m = self.cir.n - 1

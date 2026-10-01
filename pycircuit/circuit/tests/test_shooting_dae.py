@@ -1311,3 +1311,40 @@ def test_the_orbit_rate_is_the_daes_own_and_its_stencil_fallback_is_live_and_sec
     with pytest.warns(RuntimeWarning, match='three-node stencil'):
         rf = pac._orbit_rate(p, [])
     assert np.array_equal(rf, pac._orbit_rate_stencil(p, []))
+
+
+def test_the_shooting_reads_a_source_s_rate_at_the_solve_s_temperature():
+    """The review's D6 (2026-10-01): the five shooting reads of `du/dt` (the
+    orbit rate's algebraic rows, the period and event columns' source-time
+    terms) passed no `epar`, so a source that depends on the temperature was
+    differentiated at the default one while `u` itself (`_k_at`) was read
+    at the solve's.  An HDL voltage source ``sin(w t) TEMP/300`` at 600 K:
+    the orbit rate on its node was HALF the true one (0.50 off); now
+    exact."""
+    import sympy
+
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.hdl import TEMP, TIME
+    circuit.default_toolkit = circuit.numeric
+    f = 1e6
+
+    class _TempSrc(Behavioural):
+        @staticmethod
+        def analog(p, n):
+            return Contribution(Branch(p, n).V,
+                                sympy.sin(2 * sympy.pi * f * TIME) * TEMP / 300)
+    c = SubCircuit()
+    c['V'] = _TempSrc('a', gnd)
+    c['R'] = R('a', 'b', r=1e3)
+    c['C'] = C('b', gnd, c=1e-10)
+    hot = defaultepar.copy()
+    hot.T = 600.0
+    p = PSS(c, method='radau', reltol=1e-10, epar=hot)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        p.solve(period=1 / f, timestep=1 / f / 50, maxiterations=20)
+    rate = PAC(c)._orbit_rate(p, [])
+    ia = [str(n_) for n_ in c.nodes if str(n_) != 'gnd!'].index('a')
+    t = np.asarray(p.waveform[0], dtype=float)
+    exact = 2.0 * 2 * np.pi * f * np.cos(2 * np.pi * f * t)
+    assert np.max(np.abs(rate[1:, ia] - exact[1:])) < 1e-9 * np.max(np.abs(exact))

@@ -543,14 +543,51 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
 
         tol = (self.KRYLOV_FACTOR * pss.par.reltol if recycle_tol is None
                else recycle_tol)
+        tol = max(tol, 1e-14)
         A = spla.LinearOperator((n, n), matvec=_mv, dtype=complex)
         ## the same pole as in `solve` and `adjoint_sideband_row`: deflated
         ## on an oscillator, plain (and cheaper) on a driven circuit
-        self.deflated = bool(getattr(pss, 'autonomous', False))
-        xa = self._pole_solve(pss, A, alpha, d, max(tol, 1e-14),
-                              'the adjoint solve')
+        _autonomous = bool(getattr(pss, 'autonomous', False))
+        self.deflated = _autonomous
+        _ev = EventColumns.of(pss)
+        if _ev is None:
+            xa = self._pole_solve(pss, A, alpha, d, tol, 'the adjoint solve')
+            self.matvecs = count[0]
+            return alpha * pss._forced_replay_transposed(fp, freq, xa)
+        ## ⚠ ON A STAGED SOLVE THE ROW IS BORDERED, as `adjoint_sideband_row`'s
+        ## (`_sideband_family`): the transpose of `PAC.solve`'s bordered
+        ## system with the output `d . y_0` -- read at node 0, whose time the
+        ## events do not move (`g_theta` over the fixed-time columns, zero
+        ## there) -- and the event rows' term as a second reverse pass.
+        ## Unbordered until 2026-10-01 (the review's D3), it missed the
+        ## bordered forward solve by 2.8e-4 (radau) / 1.6e-3 (trap) / 3.9e-2
+        ## (gear) on the PWM loop at 60 points.
+        N = len(fp.steps)
+        cn = np.zeros(N, dtype=complex)
+        cn[0] = 1.0
+        _Pkf = self._fixed_time_event_columns(pss)[0]
+        g_theta = EventColumns.g_theta(cn, _Pkf, d[:m], N)
+        if _autonomous:
+            z = self._deflated_solve(
+                pss, alpha, np.asarray(d, dtype=complex)
+                + np.asarray(_ev.dth, dtype=float).T @ g_theta,
+                transposed=True, tol=tol)
+            zeta = _ev.collapsed_zeta(g_theta, alpha, z)
+        else:
+            def _solve_adj(b, k):
+                return self._adjoint_solve(
+                    pss, fp, alpha, b, A, tol,
+                    'the adjoint solve' if k is None
+                    else f'the bordered adjoint solve, event {k}',
+                    total=False)
+            z, zeta = _ev.bordered_adjoint(_solve_adj, d, g_theta, alpha)
         self.matvecs = count[0]
-        return alpha * pss._forced_replay_transposed(fp, freq, xa)
+        row = alpha * pss._forced_replay_transposed(fp, freq, z)
+        t_e, c_e, _g = pss._reverse_points(fp, freq,
+                                           extra=_ev.injection_dict(zeta))
+        if len(t_e):
+            row = row - np.exp(2j * np.pi * float(freq) * t_e) @ c_e
+        return row
 
     def _pole_solve(self, pss, A, alpha, rhs, tol, what):
         """The transposed solve ``(I - alpha M^T) x = rhs`` of an adjoint row:
@@ -948,7 +985,10 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                 b = k.copy()
                 if alg:
                     G = np.asarray(pss._G_at(x), dtype=float)
-                    ud = np.delete(np.asarray(pss.cir.dudt(t, analysis=analysis),
+                    ## (at the solve's `epar`, as `_k_at` reads `u`: a source
+                    ## may depend on the temperature -- the review's D6)
+                    ud = np.delete(np.asarray(pss.cir.dudt(t, epar=pss.epar,
+                                                           analysis=analysis),
                                               dtype=float).ravel(), pss.irefnode)
                     A[alg, :] = G[alg, :]
                     b[alg] = -ud[alg]
@@ -1152,8 +1192,12 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         v = row[:len(t)]
         w0 = 2.0 * np.pi / float(pss.period)
         ## ⚠ a Fourier INTEGRAL: `1/N` is its quadrature only on a uniform
-        ## grid (measured 7.5 % off and not converging on a 3:1 one)
-        _wq = pss._period_quadrature(pss.factored_period())
+        ## grid (measured 7.5 % off and not converging on a 3:1 one).  ⚠ The
+        ## WAVEFORM's own grid: `factored_period()` is the twin's on a trap
+        ## or euler oscillator, and its weights against the run's samples
+        ## put the carrier 90 % off on a staged trap one (until 2026-10-01,
+        ## the review's D7)
+        _wq = pss._times_quadrature(np.asarray(times, dtype=float))
         if _wq is None or len(_wq) != len(t):
             return complex(np.sum(v * np.exp(-1j * harmonic * w0 * t)) / len(t))
         return complex(np.sum(v * np.exp(-1j * harmonic * w0 * t) * _wq))

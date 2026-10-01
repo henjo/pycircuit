@@ -120,8 +120,8 @@ class _DrivenNoise(object):
         solve shows as "flat PSD curves or curves with unexpected slope
         near the oscillation frequency" (Gourary et al.).  The rows use the
         deflated solve (`_deflated_solve`, Gourary et al. eq. 27/28,
-        bordered with BOTH null vectors); `PAC.deflated` says which route
-        ran.
+        bordered with BOTH null vectors) on an oscillator, the plain one on
+        a driven circuit (`_sideband_family`).
 
         History: `doc/shooting_history.md`, `PAC.pnoise`.
         """
@@ -481,12 +481,18 @@ class _DrivenNoise(object):
                 model, max(min(w_ for w_ in _ws if w_ > 0.0), 2e-3 * np.pi * f0),
                 max(_ws), f0, 'pnoise(cyclostationary=True)', stacklevel=3,
                 shortcuts=False)
-            groups = []
+            ## a power law's ONE root and its per-band weight `(w1/w)^EF`
+            ## (`_band_resolved_pairs`' `scale2`): the root is not copied per
+            ## band (it was, stacked, until 2026-10-01 -- the review's M4)
+            ws_all = np.array([wband(p) for p in range(pmin, pmax + 1)])
             for _key, _W, ef, _Bc in comps.fixed:
                 SB = (_dft(_W) if _Bc is None
                       else self._sqrt_harmonics_of(_Bc, _dft))
-                groups.append(lambda p, SB=SB, ef=ef:
-                              (model.w1 / wband(p)) ** (0.5 * ef) * SB)
+                with np.errstate(divide='ignore'):
+                    scale2 = (model.w1 / ws_all) ** float(ef)
+                total = self._band_resolved_pairs(rows, ls, ks, Nn, pmin, SB,
+                                                  total, scale2=scale2)
+            groups = []
             for band in comps.bands:
                 if band.signed:
                     groups.append(lambda p, root=band.exact_root:
@@ -522,7 +528,11 @@ class _DrivenNoise(object):
         return float(np.real(total))
 
     @staticmethod
-    def _band_resolved_pairs(rows, ls, ks, Nn, pmin, BB, total):
+    def _band_resolved_pairs(rows, ls, ks, Nn, pmin, BB, total, scale2=None):
+        """The pair sum over one component: `BB[pi, k]` its root per band
+        (`pi = p - pmin`), or, with `scale2`, `BB[k]` one root for every band
+        and `scale2[pi]` the band's weight on `B B^H` (a power law's
+        `(w1/w)^EF`)."""
         for l in ls:
             for lp in ls:
                 ## (B B^H)_j = sum_k B_k B_{k-j}^H: the partner index is
@@ -537,9 +547,13 @@ class _DrivenNoise(object):
                 ok = np.abs(kp) <= Nn // 2
                 kk, kk2 = ks[ok], kp[ok]
                 pi = (l + kk) - pmin
-                X = BB[pi, kk % Nn]
-                Y = BB[pi, kk2 % Nn]
-                Q = np.einsum('kij,klj->il', X, Y.conj())
+                if scale2 is None:
+                    X = BB[pi, kk % Nn]
+                    Y = BB[pi, kk2 % Nn]
+                    Q = np.einsum('kij,klj->il', X, Y.conj())
+                else:
+                    Q = np.einsum('k,kij,klj->il', scale2[pi], BB[kk % Nn],
+                                  BB[kk2 % Nn].conj())
                 total += complex(rows[l] @ Q @ np.conj(rows[lp]))
         return float(np.real(total))
 

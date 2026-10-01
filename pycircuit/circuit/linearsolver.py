@@ -76,11 +76,14 @@ class _Factored(object):
     `N` of them does not branch on which solver produced them.
     """
 
-    __slots__ = ('_f', '_solve', '_solve_t')
+    __slots__ = ('_f', '_solve', '_solve_t', 'sparse')
 
-    def __init__(self, f, solve, solve_transposed=None):
+    def __init__(self, f, solve, solve_transposed=None, sparse=False):
         self._f, self._solve = f, solve
         self._solve_t = solve_transposed
+        ## a SPARSE factorisation: a caller keeping the factored matrix's
+        ## companions per step (the shooting's `C`) keeps them sparse too
+        self.sparse = bool(sparse)
 
     def solve(self, b):
         return self._solve(self._f, b)
@@ -228,7 +231,8 @@ class SuperLUSolver(LinearSolver):
         return _Factored(
             self._spla.splu(self._sp.csc_matrix(A)),
             lambda f, b: _split_complex(lambda r: f.solve(r), b),
-            lambda f, b: _split_complex(lambda r: f.solve(r, trans='T'), b))
+            lambda f, b: _split_complex(lambda r: f.solve(r, trans='T'), b),
+            sparse=True)
 
     def __repr__(self):
         return 'SuperLUSolver()'
@@ -466,7 +470,7 @@ class KLUSolver(LinearSolver):
         self.numerics += 1
         fac = _KLUNumeric(self, sym, num, n)
         return _Factored(fac, lambda f, b: f.solve(b),
-                         lambda f, b: f.solve_transposed(b))
+                         lambda f, b: f.solve_transposed(b), sparse=True)
 
     def __repr__(self):
         return ('KLUSolver(analyses=%d, factors=%d, refactors=%d, fallbacks=%d)'

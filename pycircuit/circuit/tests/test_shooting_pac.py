@@ -2177,6 +2177,50 @@ def test_the_adjoint_sideband_row_on_a_staged_solve_is_the_transpose_of_the_bord
         ## the window in 16 steps (2026-09-25)
         assert abs(x - h0) > 1e-4 * abs(h), (l, x, h0)
 
+@pytest.mark.parametrize('method', ['radau', 'gear', 'trap'])
+def test_the_adjoint_transfer_row_on_a_staged_solve_is_the_transpose_of_the_bordered_forward_solve(method):
+    """The review's D3 (2026-10-01): `adjoint_transfer_row` -- every source
+    to the output at `t = 0` -- was never bordered on a staged solve, while
+    `PAC.solve` and `adjoint_sideband_row` are: on the PWM loop (60 points,
+    f = 0.3 f0) it missed the bordered forward solve's state at `t = 0` by
+    2.8e-4 (radau) / 1.6e-3 (trap) / 3.9e-2 (gear), exactly the unbordered
+    row's gap.  Bordered as the sideband family is (the event rows'
+    costate, a second reverse pass): 2.7e-15 / 1.0e-13 / 6.8e-15."""
+    import warnings as _w
+
+    from pycircuit.circuit.analysis import remove_row_col
+    circuit.default_toolkit = circuit.numeric
+    T = 1e-5
+    fin = 0.3 / T
+    cir = _pwm_loop(T)
+    del cir['Vin']
+    cir.add_node('vin0')
+    cir['Vin'] = VS('vin0', gnd, v=5.0, vac=0.0)
+    cir['Vp'] = VSin('vin', 'vin0', vo=0.0, va=0.0, freq=fin, phase=0.0, vac=1.0)
+    cir['Vramp'].iparv.vac = 0.0
+    p = PSS(cir, method=method, reltol=1e-10)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        p.solve(period=T, timestep=T / 60, x0=np.zeros(cir.n - 1), maxiterations=100)
+    assert p.converged and p._event_columns is not None
+    io_full = [str(n_) for n_ in cir.nodes].index('out')
+    io = io_full if io_full < p.irefnode else io_full - 1
+    (u_ac,) = remove_row_col((cir.u(0, analysis='ac'),), p.irefnode, circuit.numeric)
+    u_ac = np.asarray(u_ac, dtype=complex).ravel()
+    pac = PAC(cir, toolkit=circuit.numeric)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        pac.solve(p, freqs=[fin], sweeptype='absolute')
+        y0 = complex(np.asarray(pac.time_response[0][1])[0][io])
+        h = complex(pac.adjoint_transfer_row(p, fin, io) @ u_ac)
+        ev = p._event_columns
+        p._event_columns = None
+        h0 = complex(pac.adjoint_transfer_row(p, fin, io) @ u_ac)
+        p._event_columns = ev
+    assert abs(h - y0) < 1e-11 * abs(y0), (h, y0)
+    assert abs(h0 - y0) > 1e-4 * abs(y0), (h0, y0)
+
+
 def test_the_oscillator_consumers_run_bordered_on_a_staged_gear_solve():
     """Gear's staged OSCILLATOR (the autonomous pair stage, 2026-09-24) was a
     combination no consumer had met, and three broke on it:
@@ -2655,9 +2699,10 @@ def test_pss_and_pac_run_under_the_jax_toolkit():
     numeric toolkit's to 1.2e-16 and the PAC sidebands exactly.  (Slow --
     per-call JAX dispatch in every element evaluation: ~12 s here against
     well under one numerically, and a diode mixer at 100 points did not
-    finish in 15 minutes.)  ⚠ `pnoise` does NOT run under it: `VSin.CY`
-    assigns into a JAX array in place (element code, outside the shooting
-    package) -- open."""
+    finish in 15 minutes.)  `pnoise` too, plain and cyclostationary, equal
+    to the numeric toolkit's: it failed until 2026-10-01 in `VS.CY`, which
+    assigned into a JAX array in place (fails on the parent with "JAX arrays
+    are immutable")."""
     pytest.importorskip('jax')
     import pycircuit.circuit.circuit as _cm
     from pycircuit.circuit.toolkit import jaxtoolkit
@@ -2669,20 +2714,27 @@ def test_pss_and_pac_run_under_the_jax_toolkit():
             c = SubCircuit(toolkit=tk)
             c.add_node('1')
             c.add_node('2')
-            c['vs'] = VSin('1', gnd, vac=1.0, va=1.0, freq=1e6, toolkit=tk)
-            c['R'] = R('1', '2', r=1e3, toolkit=tk)
+            c['vs'] = VSin('1', gnd, vac=1.0, va=1.0, freq=1e6,
+                           noisePSD=1e-16, toolkit=tk)
+            c['R'] = R('1', '2', r=1e3, noisy=True, toolkit=tk)
             c['C'] = C('2', gnd, c=1e-10, toolkit=tk)
             p = PSS(c, toolkit=tk, method='gear', reltol=1e-10)
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 p.solve(period=1e-6, timestep=1e-6 / 10, maxiterations=20)
-                res = PAC(c, toolkit=tk).solve(p, freqs=[0.13e6],
-                                               sweeptype='absolute')
+                pac = PAC(c, toolkit=tk)
+                res = pac.solve(p, freqs=[0.13e6], sweeptype='absolute')
+                S = [pac.pnoise(p, 0.13e6, '2', maxsidebands=3,
+                                sweeptype='absolute', cyclostationary=cy)[0]
+                     for cy in (False, True)]
             assert p.converged
-            return np.asarray(p.waveform[1], dtype=float), np.asarray(res.x)
+            return (np.asarray(p.waveform[1], dtype=float), np.asarray(res.x),
+                    np.asarray(S, dtype=float))
         finally:
             _cm.default_toolkit = saved
-    Xn, Yn = run(circuit.numeric)
-    Xj, Yj = run(jaxtoolkit)
+    Xn, Yn, Sn = run(circuit.numeric)
+    Xj, Yj, Sj = run(jaxtoolkit)
     assert np.max(np.abs(Xj - Xn)) < 1e-12 * np.max(np.abs(Xn))
     assert np.max(np.abs(Yj - Yn)) < 1e-12 * np.max(np.abs(Yn))
+    assert np.all(Sn > 0)
+    assert np.max(np.abs(Sj - Sn)) < 1e-12 * np.max(Sn)

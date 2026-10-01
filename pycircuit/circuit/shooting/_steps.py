@@ -218,6 +218,12 @@ def _lmm_recursion(Px, Cs, Pq, C_new, alphas, b, solve, source=None,
     return Px_new, Pq_new
 
 
+def dense_c(C):
+    """A stored LMM step's capacitance, dense: the record keeps it SPARSE
+    under a sparse factorisation (`PSS._walk`; the review's M6)."""
+    return C.toarray() if hasattr(C, 'toarray') else np.asarray(C, dtype=float)
+
+
 _ZEROS = {}
 
 
@@ -298,7 +304,7 @@ class _LMMStep(object):
         ## transpose.  Gear's `w3` is zero throughout.
         ## History: `doc/shooting_history.md`, `_LMMStep.adjoint`.
         full = bool(b) or (not _is_zero(w3) and bool(np.any(w3)))
-        rhs = w1 + a[0] * (np.asarray(self.C_new).T @ w3) if full else w1
+        rhs = w1 + a[0] * (self.C_new.T @ w3) if full else w1
         t = _complex_solve_transposed(self.lu, rhs)
         if t is None:
             raise NotImplementedError(
@@ -306,8 +312,8 @@ class _LMMStep(object):
                 'monodromy transpose cannot be replayed. Use DenseSolver or '
                 'SuperLUSolver.')
         Sbar = (w3 - t) if full else -t
-        p1 = a[1] * (np.asarray(self.C1).T @ Sbar) + w2
-        p2 = (a[2] * (np.asarray(self.C2).T @ Sbar) if len(a) > 2
+        p1 = a[1] * (self.C1.T @ Sbar) + w2
+        p2 = (a[2] * (self.C2.T @ Sbar) if len(a) > 2
               else _zero_like(w1))
         pq = b * Sbar if b else _zero_like(w1)
         return (p1, p2, pq), t
@@ -495,6 +501,22 @@ class _GLMStep(object):
             'that opens the period as well.')
 
     source_adjoint = source_points = sources
+
+
+class _GLMStartupMatrix:
+    """A linearised startup kept as its matrix, ``dQ_k/dx_0`` (`r` blocks
+    of ``m x m``, `_GLMStartup.matrix`), for `rmatvec` alone: what a GLM
+    period keeps per node (`PSS._glm_node_startups`) -- the linearisation
+    itself holds its substeps' factored stage systems, ``(10 p + 1) m^2``
+    per node, more than the period (until 2026-10-01; the review's M6)."""
+    __slots__ = ('blocks',)
+
+    def __init__(self, blocks):
+        self.blocks = [np.asarray(b, dtype=float) for b in blocks]
+
+    def rmatvec(self, lams):
+        """``(dQ/dx_0)^T lam``, real or complex."""
+        return sum(b.T @ np.asarray(lam) for b, lam in zip(self.blocks, lams))
 
 
 class _GLMStartup(object):

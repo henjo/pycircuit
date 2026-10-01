@@ -340,9 +340,14 @@ class VS(Circuit):
         return self.toolkit.inf
 
     def CY(self, x, w, epar=defaultepar):
-        CY = super().CY(x, w)
-        CY[2, 2] = self.iparv.noisePSD
-        return CY
+        ## built whole, not written into the base's zeros: a JAX array
+        ## cannot be assigned in place (pnoise under the JAX toolkit failed
+        ## here until 2026-10-01); `+ 0.0` keeps the float dtype for an
+        ## integer `noisePSD`
+        psd = self.iparv.noisePSD + 0.0
+        return self.toolkit.array([[0.0, 0.0, 0.0],
+                                   [0.0, 0.0, 0.0],
+                                   [0.0, 0.0, psd]])
 
     @property
     def branch(self):
