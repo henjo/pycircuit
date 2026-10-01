@@ -7,7 +7,7 @@ from pycircuit.circuit.shooting import (PAC, algebraic_conditioning,
                                         topological_index)
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    Parameter as _HdlParameter, white_noise)
-from pycircuit.circuit.simwarnings import AccuracyWarning, CostWarning
+from pycircuit.circuit.simwarnings import AccuracyWarning, CostWarning, ModelWarning
 from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.post import Waveform, average
 import numpy as np
@@ -1150,3 +1150,39 @@ def test_the_phase_mode_is_found_with_a_dc_source_on_the_tank():
         R, _C = pac.orbital_correlation(pss)
     assert abs(abs(complex(modes[k]['lam'])) - 1.0) < 1e-9
     assert np.all(np.isfinite(R))
+
+
+def test_the_modal_spectrum_reads_no_harmonic_past_the_grid_s_nyquist():
+    """The modal transfer couples input sideband `m` to the modes' harmonic
+    `j` through the coefficient `m - j`.  Past the grid's Nyquist (`|m - j|
+    > N/2`, reached whenever the default harmonic count meets the grid:
+    `N <= 66`) the index wrapped `% N` onto a LOW harmonic instead of
+    vanishing -- measured 2026-10-01 on an asymmetric van der Pol (Q = 8):
+    2.12 at N = 64 against 1.40 converged (N = 100) at 1e-3 f0, 51 % high.
+    With those terms dropped, as the modulated sum already did (`quadP`),
+    N = 64 meets N = 100 to 2e-7.  (The orbital correlation's own `% N`
+    index was measured harmless: identical with and without the wrap.)"""
+    from pycircuit.circuit.elements import BSource
+    circuit.default_toolkit = circuit.numeric
+    mu = 1.0 / (2.0 * np.pi * 8.0)
+    out = {}
+    for npts in (64, 100):
+        cir = SubCircuit()
+        cir.add_node('v')
+        cir['C'] = C('v', gnd, c=1.0)
+        cir['L'] = L('v', gnd, L=1.0)
+        cir['B'] = BSource('v', gnd, gnd, 'v',
+                           i_func=lambda u: mu * (u - u ** 3 / 3.0) + 0.2 * u * u)
+        cir['n'] = IS('v', gnd, i=0.0, noisePSD=1e-6)
+        T = 2.0 * np.pi
+        pss = PSS(cir, method='radau', reltol=1e-11)
+        with quiet(AccuracyWarning):
+            pss.solve(period=T, timestep=T / npts, x0=np.array([2.0, 0.0]),
+                      maxiterations=300)
+        assert pss.converged
+        f0 = 1.0 / float(pss.period)
+        with quiet(AccuracyWarning, ModelWarning):
+            out[npts] = PAC(cir, toolkit=circuit.numeric).modal_spectrum(
+                pss, np.array([1e-3, 1e-2, 0.1, 0.3]) * f0, 0)['total']
+    rel = np.abs(out[64] / out[100] - 1.0)
+    assert np.all(rel < 1e-5), rel

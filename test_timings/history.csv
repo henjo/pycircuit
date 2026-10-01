@@ -1327,3 +1327,5 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20261001T115629Z,d853f1a2,pycircuit no:cacheprovider tran_recorder,1142.8,3515,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,210.8
 20261001T115805Z,3512301d,no:cacheprovider 0 pycircuit/circuit/tests/test_no_dead_knobs.py pycircuit/circuit/tests/test_doctests.py,1.5,11,pycircuit/circuit/tests/test_no_dead_knobs.py::test_every_pss_and_pac_parameter_is_read,0.3
 20261001T121740Z,3512301d,pycircuit no:cacheprovider tran_recorder,1145.8,3515,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,213.4
+20261001T122046Z,c09ec702,no:cacheprovider 0 pycircuit/circuit/tests/test_shooting_modal.py::test_the_modal_spectrum_reads_no_harmonic_past_the_grid_s_nyquist,3.1,1,pycircuit/circuit/tests/test_shooting_modal.py::test_the_modal_spectrum_reads_no_harmonic_past_the_grid_s_nyquist,2.5
+20261001T123953Z,c09ec702,pycircuit no:cacheprovider tran_recorder,1138.2,3516,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,215.6

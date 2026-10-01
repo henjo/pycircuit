@@ -533,10 +533,17 @@ class _ModalSpectra(object):
             _l, u, Vl, mul = entry
             g = u / (1j * (w - js * w0) - mul + a_j)
             ## columns: the source rows `Vl` carries (`m`; `r` for a group)
+            ## ⚠ NO HARMONIC PAST THE GRID'S NYQUIST: the coefficient `m - j`
+            ## with `|m - j| > N/2` is not on the grid -- the index wrapped
+            ## `% N` onto a LOW harmonic until 2026-10-01, 51 % high at
+            ## N = 64 on an asymmetric van der Pol (every grid where the
+            ## default harmonic count meets the Nyquist, N <= 66); dropped,
+            ## as `quadP` drops it
             T = np.zeros((ms.size, Vl.shape[0]), dtype=complex)
             for ji, j in enumerate(js):
                 if g[ji] != 0.0:
-                    T += g[ji] * Vl[:, (ms - j) % N].T
+                    on = (np.abs(ms - j) <= N // 2)[:, None]
+                    T += g[ji] * (Vl[:, (ms - j) % N].T * on)
             return T
 
         def quad(A, B):
@@ -580,7 +587,8 @@ class _ModalSpectra(object):
                 for p in ms:
                     Wp = self._period_dft(pss, np.einsum(
                         'mn,nmr->nr', extra[k][0], G(abs(w - float(p) * w0)))).T
-                    R.append(Wp[:, (p - js) % N] @ g)
+                    ## (no harmonic past the Nyquist, as in `transfer`)
+                    R.append(Wp[:, (p - js) % N] @ (g * (np.abs(p - js) <= N // 2)))
                 rows.append(np.asarray(R))
             return rows[0], sum(rows[1:], np.zeros_like(rows[0]))
 
