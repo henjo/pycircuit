@@ -424,6 +424,15 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
          ## 2e-11 apart; van der Pol at 400 points +18 %, a switching PWM
          ## loop +79 % (57 stalled steps redone by the full Newton), the
          ## comparator relaxation oscillator -6 %, a linear RLC level.
+         ## THE CHORD JACOBIAN on the multistep inner steps (`Transient`'s
+         ## `chord_jacobian`), forwarded as `radau_transform` is: off by
+         ## default, the trade the circuit's.
+         _transient_parameter(
+             'chord_jacobian',
+             desc="Multistep methods (gear, trap, euler, theta): each inner "
+                  "step's Newton holds its Jacobian at the seed (the chord "
+                  "method), the full Newton where it stops contracting. Pays "
+                  "where device Jacobians are expensive. Off by default."),
          _transient_parameter(
              'radau_transform',
              desc="method='radau' only: solve each inner step by the "

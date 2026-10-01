@@ -1065,6 +1065,84 @@ def test_radau_cost_transform_matches_the_dense_coupled_solve():
         'radau transform lost the mixer harmonics: %s' % np.abs(Vh[:8])
 
 
+
+def test_the_chord_jacobian_holds_the_step_s_jacobian_at_its_seed():
+    """`chord_jacobian=True` (opt-in, 2026-10-01): a multistep step's Newton
+    evaluates and factors its Jacobian once, at the seed, and iterates on the
+    residual alone (`ChordNewton`); where the increments stop contracting it
+    hands the SAME seed to the full Newton.  Measured on a compact MOSFET
+    (PSP) common-source stage, where `G` and `C` are 92 % of the solve: the
+    gear transient 5.5 -> 3.4 s, `G` 236 -> 138, the same steps and Newton
+    iterations, the answer 1.7e-13 apart.  Here: (1) the strategy on a
+    scalar root -- a contracting chord needs ONE Jacobian, a diverging one
+    goes to the full Newton and still lands on the root; (2) a gear diode
+    mixer -- fewer Jacobian evaluations, the full Newton's answer to its
+    tolerance, the fallbacks counted."""
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.linearsolver import DenseSolver
+    from pycircuit.circuit.nrsolver import ChordNewton, StandardNewton
+    circuit.default_toolkit = circuit.numeric
+    tk = circuit.numeric
+
+    ## (1) f(x) = x^2 - 4, the root at 2
+    fj = []
+
+    def eval_FJ(x):
+        fj.append(1)
+        return x * x - 4.0, np.array([[2.0 * x[0]]])
+
+    def eval_F(x):
+        return x * x - 4.0
+
+    def solve(seed):
+        del fj[:]
+        chord = ChordNewton(eval_F, StandardNewton())
+        x, iters = chord.solve_system(
+            np.array([seed]), eval_FJ, tk, 1e-12, np.array([1e-15]),
+            np.array([1e-15]), 60, linsolver=DenseSolver())
+        return float(x[0]), iters, chord.fallbacks, len(fj)
+    x, iters, fb, nj = solve(1.9)
+    assert abs(x - 2.0) < 1e-12 and fb == 0 and nj == 1, (x, iters, fb, nj)
+    ## from 0.1 the held slope (0.2) throws the chord to 20 and on outward;
+    ## the full Newton from the same seed converges
+    x, iters, fb, nj = solve(0.1)
+    assert abs(x - 2.0) < 1e-12 and fb == 1 and nj > 1, (x, iters, fb, nj)
+
+    ## (2) a gear diode mixer on a fixed grid, with the Jacobian evaluations
+    ## counted at the circuit
+    def mixer():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+
+    got = {}
+    orig_G = SubCircuit.G
+    for chord in (False, True):
+        calls = []
+
+        def G(self, *a, _c=calls, **k):
+            _c.append(1)
+            return orig_G(self, *a, **k)
+        SubCircuit.G = G
+        try:
+            c = mixer()
+            tr = Transient(c, toolkit=tk, reltol=1e-10, vabstol=1e-12,
+                           chord_jacobian=chord)
+            with quiet():
+                res = tr.solve(tend=3e-6, timestep=3e-6 / 160,
+                               x0=np.zeros(c.n), fixed_timestep=True)
+        finally:
+            SubCircuit.G = orig_G
+        got[chord] = (np.asarray(res.x, dtype=float), len(calls),
+                      tr.statistics)
+    (x0, g0, st0), (x1, g1, st1) = got[False], got[True]
+    assert np.max(np.abs(x1 - x0)) / np.max(np.abs(x0)) < 1e-9
+    assert g1 < g0, f'the chord must evaluate fewer Jacobians: {g1} vs {g0}'
+    assert st0.chord_fallbacks == 0 and st1.chord_fallbacks >= 0
+
 def test_esdirk43_is_a_tableau_only_order4_dirk():
     """ESDIRK4(3)6 (KenCarp4) -- the refactor's test vehicle: a NEW DIRK method
     added as tableau-only runs at its proper order 4 through the generic RK

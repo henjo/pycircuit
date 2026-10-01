@@ -200,6 +200,90 @@ class StandardNewton(NonLinearSolver):
             % (maxiter, ('; ' + detail) if detail else ''))
 
 
+class ChordNewton(NonLinearSolver):
+    """THE CHORD METHOD: Newton with the Jacobian HELD at the seed.
+
+    The Jacobian is evaluated once, with the residual at the seed
+    (`eval_FJ`), and factored once; every further iteration evaluates the
+    residual alone (`eval_F`) and back-substitutes.  It converges linearly
+    where Newton converges quadratically, at a rate set by how far the
+    Jacobian moves between the seed and the root -- so it pays where the
+    Jacobian is the expensive evaluation and the seed is good: a compiled
+    compact model's `G` and `C` cost ~50x its `i` and `q`, and a transient
+    step starts from the stage predictor.
+
+    The convergence test is `StandardNewton`'s, its current scale read with
+    the held Jacobian.  When the increments stop contracting (or turn
+    non-finite, or the held matrix will not factor) or `maxiter` is spent,
+    the SAME SEED goes to `fallback`, the full Newton -- so this fails only
+    where that does, and its answer is the full Newton's there.  `fallbacks`
+    counts those hand-overs; the iterations returned include the chord's.
+
+    History: `doc/transient_history.md`, `ChordNewton`."""
+
+    def __init__(self, eval_F, fallback):
+        self.eval_F = eval_F
+        self.fallback = fallback
+        self.fallbacks = 0
+
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol,
+                     maxiter, limiter=None, scaler=None, row_names=None,
+                     linsolver=None):
+        if scaler is None:
+            scaler = NoneScaler()
+        x = x0
+        F, J = eval_FJ(x)
+        fac = None
+        prev = None
+        done = 0
+        for i in range(maxiter):
+            if i:
+                F = self.eval_F(x)
+            J_s, F_s, s_vec = scaler.scale(J, F, toolkit)
+            try:
+                if i == 0 and linsolver is not None:
+                    fac = linsolver.factor(J_s, toolkit)
+                if fac is not None:
+                    xdiff = fac.solve(-F_s)
+                elif linsolver is not None:
+                    xdiff = linsolver.solve(J_s, -F_s, toolkit)
+                else:
+                    xdiff = toolkit.linearsolver(J_s, -F_s)
+            except Exception:                                  # noqa: BLE001
+                ## a held matrix that will not factor, or a non-finite
+                ## right-hand side: the full Newton reports it properly
+                break
+            xdiff = scaler.unscale_solution(xdiff, s_vec, toolkit)
+            x_next = x + xdiff
+            if limiter is not None:
+                x_next = limiter(x_next, x)
+                xdiff = x_next - x
+            done = i + 1
+            I_scale = toolkit.dot(abs(J), abs(x_next)) + abs(F)
+            conv_x = toolkit.alltrue(
+                abs(xdiff) < reltol * toolkit.maximum(abs(x_next), abs(x))
+                + xtol)
+            conv_f = toolkit.alltrue(abs(F) < reltol * I_scale + abstol)
+            if conv_x and conv_f:
+                return x_next, done
+            ## A CHORD CONTRACTS OR IT IS NOT GOING TO CONVERGE: the
+            ## increments of a linearly convergent iteration shrink by the
+            ## rate every step, so one that does not shrink goes to the full
+            ## Newton now rather than spending `maxiter`
+            size = float(np.max(np.abs(np.asarray(xdiff, dtype=float))))
+            if not np.isfinite(size) or (prev is not None
+                                         and not size < prev):
+                break
+            prev = size
+            x = x_next
+        self.fallbacks += 1
+        x_res, iters = self.fallback.solve_system(
+            x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter,
+            limiter=limiter, scaler=scaler, row_names=row_names,
+            linsolver=linsolver)
+        return x_res, iters + done
+
+
 class DampedNewton(NonLinearSolver):
     """
     Damped Newton-Raphson Solver (Backtracking Line Search).

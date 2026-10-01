@@ -5433,9 +5433,13 @@ def test_pss_shares_the_transient_s_parameters():
     assert P['pcnr'] is not T['pcnr'] and 'inner transient' in P['pcnr'].desc
     assert (P['pcnr'].default, P['pcnr'].unit) == (T['pcnr'].default,
                                                    T['pcnr'].unit)
-    ## (and radau's cost transform, worded for the shooting)
-    assert P['radau_transform'] is not T['radau_transform']
-    assert P['radau_transform'].default is T['radau_transform'].default
+    ## (and radau's cost transform and the chord Jacobian, worded for the
+    ## shooting)
+    for name in ('radau_transform', 'chord_jacobian'):
+        assert P[name] is not T[name] and P[name].default is T[name].default
+    ## ... and the inner steps take them (`_new_transient`)
+    p = PSS(_q20_rlc(), method='gear', chord_jacobian=True)
+    assert p._transient().par.chord_jacobian is True
 
 
 def test_the_converged_replay_is_the_factored_period():

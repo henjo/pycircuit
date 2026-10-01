@@ -3495,3 +3495,33 @@ dedicated coupled solve (``_solve_timestep_radau``), not through the
 Still not built: no PCNR stage path; not on the JAX backend.
 ```
 
+## `nrsolver.py` -- `ChordNewton` (2026-10-01)
+
+### (class docstring)
+
+The review's S15 asked for a chord Jacobian on compact models.  Measured
+before built: on a compact MOSFET (PSP) common-source stage, gear PSS at 40
+points, `G` is 60.7 % and `C` 31.4 % of the solve (one `G` ~19 ms against
+`i` ~0.4 ms), and a step evaluates them 3.18 times -- 2.18 Newton
+evaluations plus the branch check's `C` and `jacobian_only`'s `G` at the
+converged point.  The step's converged-point Jacobian is what the step
+controller, the branch check and the shooting's monodromy read, so a chord
+keeps that evaluation and holds the iterations' Jacobian at the seed: two
+a step.  Built opt-in (`chord_jacobian`), the iterations' residual from
+`i`, `q` and the companion current (every multistep companion's current is
+a function of the charges alone), the full Newton from the same seed where
+the increments stop contracting.  Measured, full Newton against chord:
+
+| case | time | `G` | answer apart | fallbacks |
+|---|---|---|---|---|
+| PSP CS gear PSS, 40 points | 23.66 -> 15.54 s | 1017 -> 640 | 1.3e-13 (map 4e-16) | 0 |
+| PSP CS gear transient, 3 periods | 5.49 -> 3.35 s | 236 -> 138 | 1.7e-13 | 0 |
+| van der Pol gear PSS, 400 | 1.32 -> 1.25 s | 8381 -> 4804 | 2.6e-14 | 0 |
+| comparator oscillator, staged gear, 200 | 9.84 -> 9.71 s | 43572 -> 28984 | 5.5e-12 | 5 |
+| PWM loop, staged gear, 60 | 1.62 -> 1.86 s | 7409 -> 4941 | 1.6e-10 | 29 |
+| diode mixer, gear, fixed grid | -- | 652 -> 397 | < 1e-9 | 9 (Newton iterations 492 -> 1052) |
+
+On the compact model the iteration counts did not move: the predictor's
+seed is close enough that the held Jacobian contracts as fast as a fresh
+one.  Where the Jacobian is cheap or the steps switch it buys nothing or
+costs, hence opt-in.

@@ -168,7 +168,7 @@ class TransientStatistics(object):
     __slots__ = ('accepted_steps', 'rejected_steps', 'newton_iterations',
                  'force_accepts', 'order_drops', 'breakpoints_hit',
                  'gmin_rescues', 'state_events_hit', 'state_event_cuts',
-                 'branch_screens', 'branch_points',
+                 'branch_screens', 'branch_points', 'chord_fallbacks',
                  'min_step', 'max_step', 'solve_seconds', 'total_seconds')
 
     def __init__(self):
@@ -192,6 +192,9 @@ class TransientStatistics(object):
         ## History: `doc/transient_history.md`, `TransientStatistics`.
         self.branch_screens = 0
         self.branch_points = 0
+        ## `chord_jacobian`: steps whose chord iterations stopped contracting
+        ## and were handed to the full Newton
+        self.chord_fallbacks = 0
         self.min_step = None
         self.max_step = None
         self.solve_seconds = 0.0
@@ -1027,6 +1030,30 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         "on a circuit PCNR applies to, PCNR's dense coupled "
                         "solve is used instead (warned).",
                    unit='', default=False),
+         ## THE CHORD JACOBIAN on the multistep step's Newton (`ChordNewton`):
+         ## the Jacobian -- `G` and the companion's `C` -- evaluated and
+         ## factored once at the step's seed, the residual alone (`i`, `q`,
+         ## the source) every iteration; the full Newton from the same seed
+         ## where it stops contracting.  The step ends at the converged point
+         ## exactly as the full Newton's does (`jacobian_only`), so the step
+         ## controller, the branch check and the shooting read the same
+         ## state.  Off by default: the full Newton is the reference, and
+         ## the trade is the circuit's.  Measured (2026-10-01): a compact
+         ## MOSFET (PSP) common-source stage, whose `G` and `C` are 92 % of
+         ## the solve -- gear transient 5.5 -> 3.4 s, gear PSS 23.7 -> 15.5 s
+         ## (`G` 3.18 -> 2.0 a step), the same iterations, the answers 1e-13
+         ## apart; van der Pol -6 %, a comparator oscillator -1 %, a
+         ## switching PWM loop +15 % (29 fallbacks), a diode mixer twice the
+         ## Newton iterations for 39 % fewer `G`.
+         ## History: `doc/transient_history.md`, `ChordNewton`.
+         Parameter(name='chord_jacobian',
+                   desc="Multistep methods (gear, trap, euler, theta): hold "
+                        "each step's Newton Jacobian at its seed (the chord "
+                        "method), iterating on the residual alone, and fall "
+                        "back to the full Newton where it stops contracting. "
+                        "Pays where device Jacobians are expensive (compact "
+                        "models). Off by default.",
+                   unit='', default=False),
          ## STAGE 13 -- PCNR instead of limiting, on the transient path too.
          ## Off by default for the same measured reason as on DC: gate 13-4 puts
          ## it at +60-80% per Newton iteration, for a consistency these circuits
@@ -1343,10 +1370,25 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             J = self.cir.G(x, self.epar) + Geq
             return None, self.toolkit.array(J, dtype=float)
 
+        def residual_only(x):
+            """The step residual alone, for the chord iterations
+            (`chord_jacobian`): `i`, `q` and the source at `x`, the companion
+            current from `q` (`get_diff`).  Every multistep companion's current
+            is a function of the charges alone -- the conductance it also
+            returns is the only use of `C`, and it is discarded here, so the
+            seed's `C` (`_Cmat`, set by the evaluation at the seed) stands
+            in.  The step's state is the full Newton's after it all the same:
+            `jacobian_only` evaluates the converged point."""
+            q = self.cir.q(x, self.epar)
+            iq, _geq = self.get_diff(q, self._Cmat)
+            u = self._source_at(t, provided_function)
+            return self.toolkit.array(self.cir.i(x, self.epar) + iq + u,
+                                      dtype=float)
+
         ## STAGE PREDICTOR.  A multistep method has no stages, so its analogue
         ## is the classical one: extrapolate the accepted history to `t`.  The
         ## seed it replaces is `x_n`, a whole step behind.
-        x = self._newton(func, self._pred_or(x0, t))
+        x = self._newton(func, self._pred_or(x0, t), residual=residual_only)
         ## ⚠ AND IT MUST RECORD ITS OWN NODE.  The stage methods get theirs for
         ## free next to `_rk_Y`; this path has no stages, so without this line
         ## the history never reaches two entries and the predictor declines

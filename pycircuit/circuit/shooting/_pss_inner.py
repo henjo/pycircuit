@@ -381,7 +381,8 @@ class _InnerTransient(object):
             linearsolver=self.par.linearsolver,
             scaler=self.par.scaler,
             pcnr=self.par.pcnr,
-            radau_transform=self.par.radau_transform)
+            radau_transform=self.par.radau_transform,
+            chord_jacobian=self.par.chord_jacobian)
         kw.update(override)
         tr = Transient(self.cir, toolkit=self.toolkit, integrator=integ, **kw)
         ## the frozen grid's two settings (`Transient._freeze_grid`)

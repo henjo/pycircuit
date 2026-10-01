@@ -117,7 +117,11 @@ class _StepNewton:
             return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
         return limiter_func
 
-    def _newton(self, func, x0):
+    def _newton(self, func, x0, residual=None):
+        ## `residual(x)`: the step residual alone, for the chord iterations
+        ## (`chord_jacobian`; the multistep step passes it, see
+        ## `ChordNewton`).  The continuation rescue and a caller's own
+        ## strategy keep the full Newton.
         ## ⚠ THE FIRST EVALUATION IS AT THE SEED, not at the tangent of the
         ## point before it.  A stateful limiter (`Diode`) reads `i` / `G` as
         ## the tangent at its stored `_vlim`, which sits at the last solved
@@ -145,8 +149,20 @@ class _StepNewton:
         limiter_func = self._newton_limiter()
 
         solver = self._get_nrsolver()
+        chord = None
         if getattr(self, '_continuation_rescue', False):
             solver = self._rescue_solver(solver)
+        elif (residual is not None and self.par.chord_jacobian
+              and self.par.nrsolver is None):
+            from pycircuit.circuit.nrsolver import ChordNewton
+            iref, tk = self.irefnode, self.toolkit
+
+            def residual_reduced(xr):
+                f = residual(tk.concatenate((xr[:iref], tk.array([0.0]),
+                                             xr[iref:])))
+                (f,) = remove_row_col((f,), iref, tk)
+                return f
+            solver = chord = ChordNewton(residual_reduced, solver)
         scaler = self._get_scaler()
         linsolver = self._get_linearsolver()
         try:
@@ -227,6 +243,8 @@ class _StepNewton:
         stats = getattr(self, 'statistics', None)
         if stats is not None:
             stats.newton_iterations += int(_iters)
+            if chord is not None:
+                stats.chord_fallbacks += chord.fallbacks
 
         ## BRANCH DETECTION -- the screen is O(m) unless something collapsed
         if self._branch_on():
