@@ -76,9 +76,9 @@ import pickle
 import sys
 import tempfile
 import types
-import warnings
 import weakref
 
+from pycircuit.circuit import simwarnings as _sw
 from pycircuit.utilities import param
 
 #: Bump to invalidate every entry written by an older layout of the
@@ -779,7 +779,7 @@ def clear():
 def _note(cls, status):
     cls._hdl_cache_status = status
     if _debug() and status not in ('hit', 'miss'):
-        warnings.warn('hdl cache: %s: %s' % (cls.__name__, status))
+        _sw.warn(f'hdl cache: {cls.__name__}: {status}', _sw.CostWarning)
 
 
 def compiled_info(cls, compile_fn):

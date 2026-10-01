@@ -19,6 +19,7 @@ predicted it must be re-measured.
 import numpy as np
 import pytest
 
+from pycircuit.circuit.simwarnings import ConvergenceWarning
 from pycircuit.circuit.tests._warnpolicy import quiet
 
 jax = pytest.importorskip('jax')
@@ -73,7 +74,7 @@ def test_pcnr_solves_the_cold_start_plain_newton_cannot():
     def run(pcnr):
         tran = JAXTransient(_cold_start(), reltol=1e-5, firststep=8e-7,
                             pcnr=pcnr)
-        with quiet():
+        with quiet(ConvergenceWarning):
             res = tran.solve(gnd, tend=2e-5, timestep=1e-6, uic=True)
         return np.asarray(res.v('b'), float).reshape(-1)
 
@@ -151,7 +152,7 @@ def test_pcnr_inside_coupled_matches_cpu():
     def run():
         tran = JAXTransient(_rectifier(), reltol=1e-5, pcnr=True,
                             coupled_lte=True, timestep_max=2e-5)
-        with quiet():
+        with quiet(ConvergenceWarning):
             res = tran.solve(gnd, tend=2e-3, timestep=2e-5, uic=True)
         return (np.asarray(res.sweep_values, float),
                 np.asarray(res.v('b'), float).reshape(-1))
@@ -171,7 +172,7 @@ def test_pcnr_inside_coupled_solves_the_cold_start():
     def run(pcnr):
         tran = JAXTransient(_cold_start(), reltol=1e-5, firststep=8e-7,
                             coupled_lte=True, pcnr=pcnr)
-        with quiet():
+        with quiet(ConvergenceWarning):
             res = tran.solve(gnd, tend=2e-5, timestep=1e-6, uic=True)
         return np.asarray(res.v('b'), float).reshape(-1)
 

@@ -1082,3 +1082,57 @@ def test_pi_refuses_the_lower_lte_band():
             bad._step_controller()
     finally:
         circuit_mod.default_toolkit = saved
+
+
+def test_a_fixed_grid_warns_only_against_a_delay_element_s_cap():
+    """The CPU's stage-8(d) warning on this backend (2026-10-01): the fixed
+    GRID against the delay elements' cap (TD/2) alone.  It compared against
+    `timestep_max` too -- tend/50 by default, a clamp on ADAPTIVE steps that
+    says nothing about a caller's grid -- and so warned "the result on this
+    grid is degraded" on every fixed grid coarser than tend/50: four tests
+    tripped it, unseen while it was a bare RuntimeWarning their `quiet()`
+    swallowed.  An RC on a grid of tend/10 is silent; a TLine on a grid
+    past TD/2 warns, here and on the CPU."""
+    import warnings as _w
+
+    from pycircuit.circuit import gnd, numeric
+    from pycircuit.circuit.elements import R, SubCircuit, TLine, VPulse
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.simwarnings import AccuracyWarning
+    from pycircuit.circuit.transient import Transient
+
+    def caps(rec):
+        return [str(r.message) for r in rec
+                if issubclass(r.category, AccuracyWarning)
+                and 'cap' in str(r.message)]
+
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter('always')
+        _with_jax_toolkit(lambda: JAXTransient(_rc_circuit()).solve(
+            gnd, tend=1e-3, timestep=1e-4, uic=True, fixed_timestep=True))
+    ## (by its text, whatever its category: the old false alarm was a bare
+    ## RuntimeWarning)
+    stray = [str(r.message) for r in rec if 'exceeds the' in str(r.message)]
+    assert not stray, stray
+
+    def line():
+        c = SubCircuit()
+        c.add_node('a')
+        c.add_node('b')
+        c['V1'] = VPulse('s', gnd, v1=0.0, v2=1.0, td=1e-9, tr=2e-10,
+                         tf=2e-10, pw=1e-8, per=1e-7)
+        c['Rs'] = R('s', 'a', r=50.0)
+        c['T1'] = TLine('a', gnd, 'b', gnd, Z0=50.0, TD=1e-9)
+        c['Rl'] = R('b', gnd, r=50.0)
+        return c
+
+    runs = (('jax', lambda: _with_jax_toolkit(lambda: JAXTransient(
+                line()).solve(gnd, tend=8e-9, timestep=1e-9, uic=True,
+                              fixed_timestep=True))),
+            ('cpu', lambda: Transient(line(), toolkit=numeric).solve(
+                tend=8e-9, timestep=1e-9, fixed_timestep=True)))
+    for label, run in runs:
+        with _w.catch_warnings(record=True) as rec:
+            _w.simplefilter('always')
+            run()
+        assert any('TD/2' in m for m in caps(rec)), (label, caps(rec))

@@ -706,7 +706,10 @@ class TestSoStore(object):
         ref = e.i(np.array([0.5, 0.0])).copy()
         monkeypatch.setattr(hdl, '_KERNEL_C',
                             hdl._KERNEL_C + 'this is not C\n')
-        with pytest.warns(UserWarning, match='build failed'):
+        ## (a `CostWarning` since 2026-10-01; the default `UserWarning`
+        ## before)
+        from pycircuit.circuit.simwarnings import CostWarning
+        with pytest.warns(CostWarning, match='build failed'):
             hdl.set_backend('c', M)
         try:
             assert M._hdl_backend_status.startswith(

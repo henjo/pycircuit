@@ -39,11 +39,10 @@ See ``doc/src/circuit/ddd.rst`` for worked examples and rendered diagrams, and
 ``doc/ddd_conclusions.md`` for why this representation was chosen.
 """
 
-import warnings
-
 import numpy as np
 import sympy
 
+from pycircuit.circuit import simwarnings as _sw
 
 __all__ = ['DDD', 'DDDVertex', 'SExpandedDDD', 'DDDFamily', 'DDDCombination',
            'NumericTerminal',
@@ -517,13 +516,13 @@ class DDD:
             ## working approximation because the third return value was never
             ## printed.  Returning the error is evidently not enough on its own,
             ## so say so out loud: `cancellation` explains *why* in one number.
-            warnings.warn(
+            _sw.warn(
                 'dominant-term approximation stopped at relative error %.3g, '
                 'above the requested tol=%.3g, after %d terms; the diagram\'s '
                 'cancellation factor is what decides whether this can ever '
                 'converge -- see DDD.cancellation and '
                 'DDD.approximate_groups' % (err, tol, len(kept)),
-                RuntimeWarning, stacklevel=2)
+                _sw.AccuracyWarning)
         return sympy.Add(*kept), len(kept), err
 
     ## -- cancellation-aware approximation --------------------------------
@@ -870,10 +869,10 @@ class DDD:
 
         err = abs(exact - kept_sum) / abs(exact)
         if err > tol:
-            warnings.warn(
+            _sw.warn(
                 'group-ranked approximation stopped at relative error %.3g, '
                 'above the requested tol=%.3g, after %d groups and %d splits'
-                % (err, tol, len(kept), splits), RuntimeWarning, stacklevel=2)
+                % (err, tol, len(kept), splits), _sw.AccuracyWarning)
         if with_value:
             return sympy.Add(*kept), len(kept), err, kept_sum
         return sympy.Add(*kept), len(kept), err

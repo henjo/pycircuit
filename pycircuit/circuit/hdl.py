@@ -66,6 +66,7 @@ import re
 import types
 import time
 import warnings
+from pycircuit.circuit import simwarnings as _sw
 
 
 #: Stack of node registries, pushed while an `analog()` body runs.  It
@@ -5943,7 +5944,7 @@ def _warn_if_compile_is_pathological(cls, secs, info):
     ## is the cache's problem and not the model's, so say which.
     status = getattr(cls, '_hdl_cache_status', None)
     n_defs = len(info.get('chain_defs', ())) if isinstance(info, dict) else 0
-    warnings.warn(
+    _sw.warn(
         '%s took %.0f s to compile (warning above %.0f s%s). If this is '
         'unexpected, the usual cause is an intermediate that is used more '
         'than once and NOT wrapped in var(): every reference substitutes '
@@ -5952,7 +5953,7 @@ def _warn_if_compile_is_pathological(cls, secs, info):
         'measures which holds are load-bearing.'
         % (cls.__name__, secs, COMPILE_WARN_SECONDS,
            '' if status is None else ', cache %s' % status),
-        RuntimeWarning, stacklevel=3)
+        _sw.CostWarning)
 
 
 class BehaviouralMeta(type):

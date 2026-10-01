@@ -1,7 +1,6 @@
 from typing import NamedTuple, Any
 import numpy as np
 import jax
-import warnings
 
 import jax.numpy as jnp
 
@@ -16,6 +15,7 @@ from pycircuit.circuit.nrsolver import NoConvergenceError
 from pycircuit.utilities.param import Parameter
 from pycircuit.circuit.analysis import CircuitResult as Result
 from pycircuit.circuit.analysis import gnd
+from pycircuit.circuit import simwarnings as _sw
 
 ## Depth of the per-TLine delay-line ring buffer, in accepted steps.  The
 ## buffer is a RING: past this many accepted steps `tline_head` wraps and the
@@ -1016,14 +1016,14 @@ def collect_breakpoints(cir, tend, minbreak=1e-14):
         t_event = 0.0
         while t_event < tend:
             if n_events >= MAX_EVENTS_PER_ELEMENT:
-                warnings.warn(
+                _sw.warn(
                     'transient: %r produced %d breakpoints by t=%g of tend=%g; '
                     'later events from this element are not breakpoint-'
                     'truncated (the step controller still resolves them, at '
                     'extra rejections). A longer timestep or shorter tend '
                     'avoids this.' % (type(elem).__name__,
                                      MAX_EVENTS_PER_ELEMENT, t_event, tend),
-                    RuntimeWarning)
+                    _sw.CostWarning)
                 break
             nxt = elem.next_event(t_event)
             if nxt is None:
@@ -1035,12 +1035,12 @@ def collect_breakpoints(cir, tend, minbreak=1e-14):
             ## spinning.  Warn rather than raise: one bad source should not take
             ## down a run whose other sources are fine.
             if not nxt > t_event:
-                warnings.warn(
+                _sw.warn(
                     'transient: %r.next_event(%g) returned %g, which does not '
                     'advance; breakpoints for this element are incomplete. Its '
                     'next_event violates the strictly-increasing contract.'
                     % (type(elem).__name__, t_event, nxt),
-                    RuntimeWarning)
+                    _sw.ModelWarning)
                 break
             t_event = nxt
             if t_event <= tend:
@@ -3412,13 +3412,13 @@ class JAXTransient(Analysis):
 
         dropped = [nm for nm, rows in swept_rows_of.items() if rows is None]
         if dropped:
-            warnings.warn(
+            _sw.warn(
                 'solve_batched: %s declare periodic states on some lanes '
                 'but not others (a modulus swept across the degradation '
                 'boundary?); the gauge shift is disabled for them and their '
                 'state runs unbounded (Phase-1 behaviour, still correct).'
                 % ', '.join(sorted(repr(n) for n in dropped)),
-                RuntimeWarning)
+                _sw.UsageWarning)
         swept_rows = set()
         for nm, rows in swept_rows_of.items():
             if rows is not None:
@@ -4014,12 +4014,12 @@ class JAXTransient(Analysis):
         ## pf must additionally be jax-traceable (pure, jnp-composable); it
         ## is baked into the compiled chunk at trace time.
         if provided_function is not None and x0 is None and not uic:
-            warnings.warn(
+            _sw.warn(
                 'jaxtransient: provided_function adds a source the DC '
                 'operating point does not see, so the run opens from an '
                 'inconsistent state and integrates a spurious startup '
                 'transient. Pass uic=True or an explicit x0.',
-                RuntimeWarning, stacklevel=2)
+                _sw.UsageWarning)
         ## Same contract as the CPU (P12): ic without uic is a different
         ## feature (constraining the operating point) and is refused, not
         ## silently ignored.  `include_state=False`, as on the CPU: an
@@ -4043,14 +4043,24 @@ class JAXTransient(Analysis):
             
         dt_min = float(self.par.minstep) if minstep is None else minstep
         dt_max = self._element_cap(self._timestep_max(tend))
-        if fixed_timestep and timestep > dt_max * (1.0 + 1e-12):
-            ## The CPU's stage-8(d) warning, same trade: the caller owns the
-            ## grid, so obey it and say what it costs.
-            warnings.warn(
-                'jaxtransient: fixed_timestep=%g exceeds the %g s cap the '
-                'circuit needs (element TD/2 or timestep_max). The result on '
-                'this grid is degraded and nothing else will report it.'
-                % (timestep, float(dt_max)), RuntimeWarning)
+        ## The CPU's stage-8(d) warning, same trade: the caller owns the
+        ## grid, so obey it and say what it costs -- and, as there, the GRID
+        ## against the DELAY elements' cap alone.  `timestep_max` (tend/50 by
+        ## default) clamps an adaptive step and says nothing about a caller's
+        ## fixed grid; until 2026-10-01 this compared against it too, and
+        ## warned "degraded" on every fixed grid coarser than tend/50 (a bare
+        ## RuntimeWarning then, which the tests' `quiet()` swallowed).
+        element_cap = (self.cir.max_timestep()
+                       if hasattr(self.cir, 'max_timestep') else None)
+        if fixed_timestep and element_cap is not None \
+                and timestep > float(element_cap) * (1.0 + 1e-12):
+            cap = float(element_cap)
+            _sw.warn(
+                f'jaxtransient: fixed_timestep={timestep:g} exceeds the '
+                f'{cap:g} s cap a delay element needs (TD/2). The propagation '
+                'delay will come out too long and nothing else will report '
+                f'it. Use a timestep <= {cap:g}, or drop fixed_timestep.',
+                _sw.AccuracyWarning)
     
         ## Stage 8(d)'s contract ("called at the start of every analysis")
         ## applied here too: a previous CPU run leaves per-element state --
@@ -4232,12 +4242,12 @@ class JAXTransient(Analysis):
         ## F19(c): mirror the CPU force-accept warning -- an unbounded
         ## accepted truncation error must not be invisible.
         if int(n_forced_lte) > 0:
-            warnings.warn(
+            _sw.warn(
                 'jaxtransient: %d step(s) were accepted at dt_min with the '
                 'local truncation error still above tolerance. The accepted '
                 'error there is unbounded -- treat the waveform near those '
                 'times with suspicion (the CPU path calls these '
-                'force_accepts).' % int(n_forced_lte), RuntimeWarning)
+                'force_accepts).' % int(n_forced_lte), _sw.AccuracyWarning)
 
         ## Steps REJECTED for non-convergence are recoverable -- the controller
         ## shrank and retried -- but a run full of them is one to look at, so it is
@@ -4247,18 +4257,18 @@ class JAXTransient(Analysis):
             if fixed_timestep:
                 ## The CPU warns per event; a traced loop cannot, so the count
                 ## arrives once at the end -- same information, same class.
-                warnings.warn(
+                _sw.warn(
                     'jaxtransient: Newton did not converge on %d step attempt(s) '
                     'at the requested fixed timestep %g s; each fell back to a '
                     'smaller step. The output grid is no longer uniform.'
-                    % (int(n_nonconverged), timestep), RuntimeWarning)
+                    % (int(n_nonconverged), timestep), _sw.ConvergenceWarning)
             else:
-                warnings.warn(
+                _sw.warn(
                     'jaxtransient: the Newton solve failed to converge on %d step '
                     'attempt(s); each was rejected and retried at a smaller dt, so the '
                     'result is still error-controlled, but the circuit is hard for the '
                     'solver at this tolerance.' % int(n_nonconverged),
-                    RuntimeWarning)
+                    _sw.ConvergenceWarning)
 
         # Concatenate
         all_results = np.vstack(results_list)

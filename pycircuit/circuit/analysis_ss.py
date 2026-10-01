@@ -454,9 +454,10 @@ class Noise(SSAnalysis):
                 plus_node = self.cir.get_node(plus_term)
                 minus_node = self.cir.get_node(minus_term)
             except KeyError:
-                import warnings
-                warnings.warn("Noise: inputsrc %r has no 'plus'/'minus' terminals; "
-                              "gain is None" % (self.inputsrc_name,), RuntimeWarning)
+                from pycircuit.circuit import simwarnings as _sw
+                _sw.warn(f"Noise: inputsrc {self.inputsrc_name!r} has no "
+                         "'plus'/'minus' terminals; gain is None",
+                         _sw.UsageWarning)
                 self._input_is_voltage = None
                 return xn2out, gain
             self._input_is_voltage = has_branch

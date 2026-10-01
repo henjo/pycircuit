@@ -186,3 +186,50 @@ def test_lte_grid_passes_on_its_adaptive_run_s_accuracy():
     assert issubclass(hits[0].category, AccuracyWarning)
     assert 'still above tolerance' in str(hits[0].message)
     assert np.isfinite(float(p.lte_period))
+
+
+def test_no_library_module_warns_outside_the_policy():
+    """Every warning the library gives goes through `simwarnings.warn` with a
+    `SimulationWarning` category: no plain `warnings.warn` -- under any
+    alias, or as `from warnings import warn` -- anywhere in the package but
+    `simwarnings` itself.  The review's X8 moved the analyses' sites; six
+    modules outside its scope kept fourteen (`hdl`, `_hdl_cache`,
+    `_hdl_cbackend`, `ddd`, `analysis_ss`, `jaxtransient`) until
+    2026-10-01: bare `RuntimeWarning`s (two the default `UserWarning`) that
+    the suite's `error::SimulationWarning` never saw, attributed by fixed
+    stacklevels."""
+    import ast
+    import os
+
+    import pycircuit
+    root = os.path.dirname(os.path.abspath(pycircuit.__file__))
+    policy = os.path.join(root, 'circuit', 'simwarnings.py')
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in ('tests', '__pycache__')]
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            if not name.endswith('.py') or path == policy:
+                continue
+            with open(path) as fh:
+                tree = ast.parse(fh.read())
+            names = {'warnings'}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names |= {a.asname for a in node.names
+                              if a.name == 'warnings' and a.asname}
+                elif (isinstance(node, ast.ImportFrom)
+                      and node.module == 'warnings'
+                      and any(a.name == 'warn' for a in node.names)):
+                    found.append(f'{os.path.relpath(path, root)}:'
+                                 f'{node.lineno} (from warnings import warn)')
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == 'warn'
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id in names):
+                    found.append(f'{os.path.relpath(path, root)}:'
+                                 f'{node.lineno}')
+    assert not found, found

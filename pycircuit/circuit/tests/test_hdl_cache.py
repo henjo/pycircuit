@@ -642,7 +642,9 @@ def test_source_not_recoverable_is_uncacheable(cache_dir):
 
 def test_debug_env_warns_on_uncacheable(cache_dir, monkeypatch):
     monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DEBUG', '1')
-    with pytest.warns(UserWarning, match='hdl cache: Dyn2'):
+    ## (a `CostWarning` since 2026-10-01; the default `UserWarning` before)
+    from pycircuit.circuit.simwarnings import CostWarning
+    with pytest.warns(CostWarning, match='hdl cache: Dyn2'):
         exec(textwrap.dedent('''
             from pycircuit.circuit.hdl import Behavioural, Branch, Contribution
             class Dyn2(Behavioural):

@@ -17,6 +17,7 @@ CPU and returns inf on this backend -- a breakpoint-feature divergence
 import numpy as np
 import pytest
 
+from pycircuit.circuit.simwarnings import ConvergenceWarning
 from pycircuit.circuit.tests._warnpolicy import quiet
 
 jax = pytest.importorskip('jax')
@@ -227,7 +228,7 @@ def _euler_coupled_pair(reltol=1e-6, tend=2e-5, ts=2e-7):
 
         j = JAXTransient(build(jaxtoolkit), coupled_lte=True,
                          integrator='euler', reltol=reltol)
-        with quiet():
+        with quiet(ConvergenceWarning):
             rj = j.solve(gnd, tend=tend, timestep=ts, uic=True)
         tj = np.asarray(rj.sweep_values, float).reshape(-1)
         vj = np.asarray(rj.v('b'), float).reshape(-1)
@@ -320,7 +321,7 @@ def test_vector_pcnr_runs_inside_the_coupled_path():
         ## the routing this test exists for
         meta, _vt = tran._pcnr_setup()
         assert meta[0] == 'vector', 'test no longer covers the device view'
-        with quiet():
+        with quiet(ConvergenceWarning):
             res = tran.solve(refnode=gnd, tend=tend, timestep=ts, uic=True)
         t = np.asarray(res.sweep_values, float).reshape(-1)
         v = np.asarray(res.v('d'), float).reshape(-1)
@@ -363,7 +364,7 @@ def _jax_pulsed(fixed):
     try:
         tran = JAXTransient(_pulsed_rc(jaxtoolkit), coupled_lte=True,
                             reltol=1e-5)
-        with quiet():
+        with quiet(ConvergenceWarning):
             res = tran.solve(gnd, tend=_GTEND, timestep=_STEP,
                              fixed_timestep=fixed)
         return (np.asarray(res.sweep_values, float).reshape(-1),

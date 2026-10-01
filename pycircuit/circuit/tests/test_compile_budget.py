@@ -24,7 +24,6 @@ import warnings
 import pytest
 
 import pycircuit.circuit.circuit as cm
-from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.toolkit import numeric
 from pycircuit.circuit import hdl, gnd
 from pycircuit.circuit.hdl import Behavioural, Branch, Contribution
@@ -85,7 +84,10 @@ def test_the_warning_is_a_warning_and_not_an_error():
     was = hdl.COMPILE_WARN_SECONDS
     hdl.COMPILE_WARN_SECONDS = 0.0
     try:
-        with quiet():
+        ## (a `CostWarning` since 2026-10-01 -- a bare `RuntimeWarning` before,
+        ## which `quiet()` swallowed: asserted now, not silenced)
+        from pycircuit.circuit.simwarnings import CostWarning
+        with pytest.warns(CostWarning, match='to compile'):
             cls = _build('BudgetNotFatal')
         assert cls is not None
         el = cls('p', gnd)

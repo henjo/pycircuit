@@ -77,9 +77,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import warnings
 
 import numpy as np
+
+from pycircuit.circuit import simwarnings as _sw
 
 #: Bump when the key must invalidate every built object (a flags change
 #: already does; this is for changes to the convention itself).
@@ -420,8 +421,7 @@ C_FUNCS = ('i', 'G', 'q', 'C', 'i_dc', 'G_dc')
 def _note(cls, status, warn=None):
     cls._hdl_backend_status = status
     if warn:
-        warnings.warn('hdl C backend: %s: %s' % (cls.__name__, warn),
-                      stacklevel=3)
+        _sw.warn(f'hdl C backend: {cls.__name__}: {warn}', _sw.CostWarning)
 
 
 def detach(cls, info):

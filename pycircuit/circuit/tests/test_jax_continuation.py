@@ -17,6 +17,7 @@ same numbers bit for bit whether the chain is armed or not.
 import numpy as np
 import pytest
 
+from pycircuit.circuit.simwarnings import AccuracyWarning, ConvergenceWarning
 from pycircuit.circuit.tests._warnpolicy import quiet
 
 jax = pytest.importorskip('jax')
@@ -312,7 +313,7 @@ def _run_overshoot(cont, minstep=_TS):
     def go():
         tran = JAXTransient(_overshoot(), pcnr=False, continuation=cont,
                             reltol=1e-6, minstep=minstep, firststep=_TS)
-        with quiet():
+        with quiet(AccuracyWarning, ConvergenceWarning):
             res = tran.solve(gnd, tend=20 * _TS, timestep=_TS, uic=True)
         return (np.asarray(res.sweep_values, float),
                 np.asarray(res.v('b'), float).reshape(-1), tran.statistics)
@@ -386,7 +387,7 @@ def _run_chain(cont, minstep=_PTS):
     def go():
         tran = JAXTransient(_diode_chain(), pcnr=True, continuation=cont,
                             reltol=1e-6, minstep=minstep, firststep=_PTS)
-        with quiet():
+        with quiet(AccuracyWarning, ConvergenceWarning):
             res = tran.solve(gnd, tend=20 * _PTS, timestep=_PTS, uic=True)
         return (np.asarray(res.sweep_values, float),
                 np.asarray(res.v('n0'), float).reshape(-1), tran.statistics)
