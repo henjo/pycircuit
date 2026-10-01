@@ -4,6 +4,7 @@ the sideband fold.
 import numpy as np
 from ._factored import FactoredPeriod
 from ._numerics import _cx_collect
+from ._steps import _at_point
 
 
 class _FactoredReplays(object):
@@ -40,7 +41,8 @@ class _FactoredReplays(object):
             c = st.solve(c)
         return fp.extract(c)
 
-    def _replay_transposed(self, fp, v, collect=False, inject=None):
+    def _replay_transposed(self, fp, v, collect=False, inject=None,
+                           with_seed=False):
         """`M^T v` -- the same stored steps REPLAYED BACKWARDS, each solve
         transposed (``M = M_{N-1} ... M_0``, so ``M^T = M_0^T ...
         M_{N-1}^T``).
@@ -73,16 +75,22 @@ class _FactoredReplays(object):
                 inj is not None and any(np.iscomplexobj(z) for z in inj)):
             ii = (None, None) if inj is None else (
                 [np.real(z) for z in inj], [np.imag(z) for z in inj])
-            re = self._replay_transposed(fp, v.real, collect, ii[0])
-            im = self._replay_transposed(fp, v.imag, collect, ii[1])
+            re = self._replay_transposed(fp, v.real, collect, ii[0], with_seed)
+            im = self._replay_transposed(fp, v.imag, collect, ii[1], with_seed)
             if collect:
-                return (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
-                        _cx_collect(re[2], im[2]))
+                out = (re[0] + 1j * im[0], _cx_collect(re[1], im[1]),
+                       _cx_collect(re[2], im[2]))
+                if with_seed:
+                    out = out + (None if re[3] is None
+                                 else re[3] + 1j * im[3],)
+                return out
             return re + 1j * im
         v = v.astype(float)
         steps = fp.step_objects()
         if not steps:
-            return (v.copy(), [], []) if collect else v.copy()
+            if collect:
+                return (v.copy(), [], []) + ((None,) if with_seed else ())
+            return v.copy()
         w = fp.extract_T(v)
         ts, states = [], []
         for j in range(len(steps) - 1, -1, -1):
@@ -96,6 +104,10 @@ class _FactoredReplays(object):
         if collect:
             ts.reverse()
             states.reverse()
+            if with_seed:
+                wq = fp.seed_source_T(w)
+                return out, ts, states, (None if wq is None
+                                         else np.array(wq, dtype=float))
             return out, ts, states
         return out
 
@@ -123,6 +135,11 @@ class _FactoredReplays(object):
         v = (np.zeros(fp.width, dtype=complex) if y0 is None
              else np.asarray(y0, dtype=complex).ravel().copy())
         c = fp.seed(v)
+        ## the source at the period's start, where the opening reads it
+        ## (theta's consistent `iq_0`: `seed_source`); periodic, so a
+        ## modulated one's value there is the last step's last point's
+        u0 = u_ac if u_points is None else _at_point(u_points[-1], -1)
+        c = fp.seed_source(c, u0 * np.exp(jw * tms[0]))
         ys = []
         for j, st in enumerate(fp.step_objects()):
             u_j = u_ac if u_points is None else u_points[j]
@@ -147,6 +164,9 @@ class _FactoredReplays(object):
         for j in range(len(steps) - 1, -1, -1):
             w, r = steps[j].adjoint(w)
             acc = steps[j].source_adjoint(acc, r, jw, tms[j], tms[j + 1])
+        wq = fp.seed_source_T(w)
+        if wq is not None:
+            acc = acc - np.exp(jw * tms[0]) * np.asarray(wq)
         return acc
 
     def _reverse_points(self, fp, f_out, d=None, extra=None, lam0=None):
@@ -187,6 +207,11 @@ class _FactoredReplays(object):
                 lam = fp.inject(lam, (_e / N if _wq is None else _e * _wq[j]) * d)
             if extra is not None and j in extra:
                 lam = fp.inject(lam, np.asarray(extra[j], dtype=complex))
+        ## (the source the opening reads at the period's start: `seed_source`)
+        wq = fp.seed_source_T(lam)
+        if wq is not None:
+            times.append(float(tms[0]))
+            cps.append(np.asarray(wq))
         m = self.cir.n - 1
         return (np.asarray(times, dtype=float),
                 np.asarray(cps, dtype=complex).reshape(len(times), m),

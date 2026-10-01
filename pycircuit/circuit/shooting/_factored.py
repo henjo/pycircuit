@@ -98,8 +98,12 @@ class FactoredPeriod(object):
         replay every kind shares: `PSS._replay`)."""
         return self._pss._replay(self, v)
 
-    def matvec_transposed(self, v, collect=False, inject=None):
+    def matvec_transposed(self, v, collect=False, inject=None,
+                          with_seed=False):
         """`M^T v` -- see `_monodromy_matvec_transposed{,_plain}`.
+        `with_seed` (with `collect`) adds a fourth return, the costate a
+        source at the period's start couples to (`seed_source_T`; None on
+        every map but theta's plain one).
 
         Every kind has one, the PLAIN map's one-step companions included, so
         no adjoint surface -- `ppv`, PAC, `pnoise`, `covariance` -- is
@@ -119,7 +123,8 @@ class FactoredPeriod(object):
         `FactoredPeriod.matvec_transposed`.
         """
         return self._pss._replay_transposed(self, v, collect=collect,
-                                            inject=inject)
+                                            inject=inject,
+                                            with_seed=with_seed)
 
     ## -- what differs between the kinds: one subclass each -----------------
     ##
@@ -171,6 +176,22 @@ class FactoredPeriod(object):
         """The adjoint state at a node, as `matvec_transposed(collect=True)`
         returns it; ``st[:m]`` is the circuit block under every map."""
         raise NotImplementedError
+
+    #: whether the opening reads a source at the period's start
+    #: (`seed_source`)
+    seeds_source = False
+
+    def seed_source(self, c, u):
+        """The seeded state `c` with a small-signal source `u` (its value at
+        the period's start) added where the map's opening reads it --
+        nowhere, for every map but a plain one that seeds a consistent
+        ``iq_0`` (`_PlainPeriod`)."""
+        return c
+
+    def seed_source_T(self, w):
+        """The transpose of `seed_source`: the costate a source at the
+        period's start couples to, or None where it couples to none."""
+        return None
 
 
 class _LMMPeriod(FactoredPeriod):
@@ -259,6 +280,25 @@ class _PlainPeriod(_LMMPeriod):
         ## the circuit block (`m`): the plain map's `Pq` adjoint is a
         ## companion term, not a state
         return w[0].copy()
+
+    ## ⚠ THETA'S FIRST STEP READS ``iq_{-1} = -(i(x_0) + u(t_0))``
+    ## (`_pq_seed_at_x0`): the seed's `x_0` derivative is `pq_open`, and a
+    ## small-signal source at `t_0` is in it too.  Left out, every forced
+    ## replay under theta missed one half-weighted source sample per period:
+    ## a FIRST-order error of exactly 1/(2N) in PAC, pnoise and the rest
+    ## (review batch 10, 2026-10-01).  Every other plain map opens with zero
+    ## companion current, so nothing reads a source there.
+    @property
+    def seeds_source(self):
+        return self.opening[3] is not None
+
+    def seed_source(self, c, u):
+        if self.opening[3] is None:
+            return c
+        return (c[0], c[1], c[2] - u)
+
+    def seed_source_T(self, w):
+        return None if self.opening[3] is None else w[2]
 
 
 class _PairPeriod(_LMMPeriod):
@@ -521,6 +561,15 @@ class _GLMStateMap(object):
 
     def collected(self, w):
         return np.asarray(w[1]).copy()
+
+    ## (a GLM's opening reads no source: `FactoredPeriod.seed_source`)
+    seeds_source = False
+
+    def seed_source(self, c, u):
+        return c
+
+    def seed_source_T(self, w):
+        return None
 
     def matvec(self, v):
         return self._fp.x_matvec(v)

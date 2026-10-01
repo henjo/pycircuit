@@ -1798,3 +1798,117 @@ def test_the_sampled_resolution_warning_is_said_for_each_pss():
                                  points_per_decade=5, maxsidebands=100)
         assert any('omega h' in str(r.message) for r in rec), \
             [str(r.message)[:60] for r in rec]
+
+
+def _lti_sampler(method, npts, vac=False, flicker=True):
+    """The sampler with its switch frozen ON (`gon = goff`): an LTI RC, its
+    noise the switch's thermal plus a flicker source on `out`; `vac` puts a
+    unit small-signal source on the input."""
+    def els(c):
+        c['S0'] = _sw(gon=1e-3, goff=1e-3)
+        if flicker:
+            c['F0'] = _Flicker('out', gnd, i=0.0, noisePSD=1e-22, fref=1.0)
+        if vac:
+            c['Vin'].iparv.vac = 1.0
+    return _sampler_fixture_method(els, method, npts)
+
+
+def test_theta_small_signal_surfaces_read_the_source_in_its_consistent_iq0_seed():
+    """Found by the review's coverage batch (2026-10-01): `theta` READS
+    ``iq_{-1} = -(i(x_0) + u(t_0))`` on its first step (`_pq_seed_at_x0`),
+    and the small-signal replays seeded that current's `x_0` derivative but
+    not the SOURCE in it -- so on a driven circuit every small-signal
+    surface under theta missed one half-weighted source sample per period,
+    a FIRST-order error of exactly 1/(2N).  On the LTI sampler, before
+    `FactoredPeriod.seed_source`:
+
+    * the PAC transfer 1.250e-3 / 6.25e-4 / 3.125e-4 off radau's at 400 /
+      800 / 1600 points (now 4.4e-9 / 1.1e-9 / 2.8e-10, second order;
+      cutting `theta_ct` 10x left the old error unchanged -- not the bias);
+    * the sampled series 2.4e-3 off the pnoise fold (now exact);
+    * a sample two steps after `t_0` 17 % / 8.3 % off radau's at 400 / 800
+      points (now 2.7e-4 / 6.8e-5, the method's second order).
+
+    For comparison, unchanged: trap's transfer is first order too (1.1e-5
+    / 5.4e-6) -- its manufactured Euler OPENER, by design (2.1e-8 / 5.5e-9
+    with `x0_unknown=True`); gear's is second order.  A theta OSCILLATOR's
+    surfaces read the radau twin and never saw the seed."""
+    import warnings
+    circuit.default_toolkit = circuit.numeric
+
+    def transfer(method, npts):
+        cir, pss, io, pac, T = _lti_sampler(method, npts, vac=True,
+                                            flicker=False)
+        f = 0.137 / T
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = pac.solve(pss, freqs=[f], sweeptype='absolute')
+        fo = np.asarray(res.sweep_values, dtype=float)
+        k = int(np.argmin(np.abs(fo - f)))
+        return complex(np.asarray(res.x)[[str(n_) for n_ in cir.nodes].index('out'), k])
+    ref = transfer('radau', 400)
+    e4 = abs(transfer('theta', 400) / ref - 1.0)
+    e8 = abs(transfer('theta', 800) / ref - 1.0)
+    assert e4 < 1e-7 and e4 / e8 > 3.0, (e4, e8)
+
+    ## the sampled series against the pnoise fold, and a sample near t_0
+    cir, pss, io, pac, T = _lti_sampler('theta', 400)
+    f0 = 1.0 / T
+    f = 0.137 * f0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0, 0]
+        fold = sum(float(np.real(pac.pnoise(pss, abs(f + k * f0), io,
+                                            maxsidebands=20)[0]))
+                   for k in range(-10, 11))
+    assert abs(S / fold - 1.0) < 1e-12, (S, fold)
+    t_near = float(np.asarray(pss.factored_period().times)[2])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        near = pac.sampled_noise(pss, io, [t_near], [f], maxsidebands=10)[0, 0]
+        cr, pr, ior, pacr, _T = _lti_sampler('radau', 400)
+        near_r = pacr.sampled_noise(pr, ior, [t_near], [f], maxsidebands=10)[0, 0]
+    assert abs(near / near_r - 1.0) < 1e-3, (near, near_r)
+
+
+@pytest.mark.parametrize('method,held_tol,cov_tol', [
+    ('theta', 1e-4, 1e-4), ('esdirk43', 1e-5, 1e-3), ('glm4', 1e-3, 1e-6)])
+def test_the_sampler_holds_kTC_under_theta_esdirk43_and_glm4(method, held_tol,
+                                                             cov_tol):
+    """The review's X9 (2026-10-01): theta, esdirk43 and glm4 had no test on
+    any noise surface.  The sampler's held variance against kT/C at 400
+    points per period, by the sampled route and by the covariance --
+    measured (deviation from 1): theta -2.2e-5 / -2.2e-5; esdirk43 1.2e-6 /
+    -3.7e-4 (-2.0e-5 at 800: the covariance converges at order ~4); glm4
+    4.6e-4 / -1.3e-7 (its covariance is its radau twin's; its own sampled
+    route at 400 points has not resolved the switch: -1.2e-7 at 800).  And,
+    except under theta (its own test above), the LTI identity of the sampled
+    series and the pnoise fold: esdirk43 to rounding, glm4 3.7e-9."""
+    import warnings
+    ktc = _KB * _TEMP / 100e-12
+    cir, pss, io, pac, T = _sampler_fixture_method(
+        lambda c: c.__setitem__('S0', _sw()), method, 400)
+    f0 = 1.0 / T
+    fp = pss.factored_period()
+    grid = np.asarray(fp.times, dtype=float)
+    N = len(fp.steps)
+    fmin = 1e-6 * f0
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        v = pac.sampled_variance(pss, io, [grid[int(0.375 * N)]], fmin,
+                                 0.5 * f0, points_per_decade=10) / ktc
+        _K, info = pac.covariance(pss, samples=True)
+    held = float(v[0]) / (1.0 - fmin / (0.5 * f0))
+    cov = float(np.asarray(info['samples'][int(0.375 * N)])[io, io]) / ktc
+    assert abs(held - 1.0) < held_tol, (method, held)
+    assert abs(cov - 1.0) < cov_tol, (method, cov)
+    if method != 'theta':
+        cir, pss, io, pac, T = _lti_sampler(method, 400)
+        f = 0.137 * f0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            S = pac.sampled_noise(pss, io, [0.37 * T], [f], maxsidebands=10)[0, 0]
+            fold = sum(float(np.real(pac.pnoise(pss, abs(f + k * f0), io,
+                                                maxsidebands=20)[0]))
+                       for k in range(-10, 11))
+        assert abs(S / fold - 1.0) < 1e-8, (method, S, fold)

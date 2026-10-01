@@ -360,6 +360,11 @@ class _SampledNoise(object):
             tinj = tms[1:N + 1]
             xs = np.asarray(pss.waveform[1], dtype=float)
             states = [xs[:, (j + 1) % N] for j in range(N)]
+            ## theta's opening reads the source at `t_0` too (its
+            ## consistent `iq_0`, `seed_source`): one more point, at x(t_0)
+            if fp.seeds_source:
+                tinj = np.concatenate((tinj, [tms[0]]))
+                states = states + [xs[:, 0]]
         nc = self._noise_components(pss, states)
         model = nc.model(float(np.min(fr)), f0)
         white, scaled, perband = [], [], []
@@ -454,20 +459,26 @@ class _SampledNoise(object):
                         _l2, cE = self._stage_pass(pss, fp, np.zeros(m), _ev.injection_dict(zeta))
                         Sv = Sv - cE
                 else:
-                    g, t_inj, _st = fp.matvec_transposed(
-                        np.zeros(n, dtype=complex), collect=True, inject=inject)
+                    g, t_inj, _st, q_inj = fp.matvec_transposed(
+                        np.zeros(n, dtype=complex), collect=True, inject=inject,
+                        with_seed=True)
                     if _ev is not None:
                         g_theta = np.exp(-2j * np.pi * f * tms[k0]) * (_Pkf[k0].T @ d)
                         g = np.asarray(g) + _dth.T @ g_theta
                     z = self._adjoint_solve(pss, fp, alpha, g, A_, tol,
                                             'the sampled adjoint solve')
-                    _e, t_z, _st = fp.matvec_transposed(z, collect=True)
+                    _e, t_z, _st, q_z = fp.matvec_transposed(
+                        z, collect=True, with_seed=True)
                     Sv = -(np.asarray(t_inj) + alpha * np.asarray(t_z))  # N x m
+                    if q_inj is not None:
+                        Sv = np.vstack((Sv, -(q_inj + alpha * q_z)))
                     if _ev is not None:
                         zeta = _ev.collapsed_zeta(g_theta, alpha, z)
-                        _g2, t_ev, _st2 = fp.matvec_transposed(
+                        _g2, t_ev, _st2, q_ev = fp.matvec_transposed(
                             np.zeros(n, dtype=complex), collect=True,
-                            inject=_ev.injection(zeta, N, m))
+                            inject=_ev.injection(zeta, N, m), with_seed=True)
+                        if q_ev is not None:
+                            t_ev = np.vstack((np.asarray(t_ev), q_ev))
                         Sv = Sv - np.asarray(t_ev)
                 nu = f + ns * f0
                 E = (np.exp(2j * np.pi * nu[:, None] * tinj[None, :])

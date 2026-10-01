@@ -313,6 +313,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
       * trbdf2: order 2, contractive; the alternative to price against
         `grid_error` above a few hundred unknowns.
       * trap: its PPV surfaces are its Radau twin's (`monodromy_twin`).
+        On a DRIVEN circuit its small-signal transfer (PAC, pnoise, the
+        sampled series near `t = 0`) is FIRST order through the
+        manufactured opener -- 1.1e-5 / 5.4e-6 on an RC at 400 / 800
+        points -- and second with `x0_unknown=True` (2.1e-8 / 5.5e-9).
       * theta: trapezoidal biased by `C h` (`ThetaIntegrator`), second
         order; it DAMPS trapezoidal's null(C) mode instead of needing the
         L-stable opening step (`theta_ct`, the damping over one period).
@@ -339,9 +343,10 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         trbdf2's, both second order -- choose by that factor, and refine
         before believing a good number (a window can sit on a SIGN CHANGE
         of the error).  For NOISE on a coarse or folded grid choose trbdf2
-        or radau (exact per-stage injection); gear's covariance is first
-        order in h/tau.  It does not CERTIFY a free-period solve at 1e-14
-        below ~400 pts at Q=1e4.
+        or radau (exact per-stage injection); the LMMs' covariance (gear,
+        trap, theta: one injection per step) is first order in h/tau --
+        -15 % / -11 % / -11 % on an RC at h = tau/4.  Gear does not CERTIFY
+        a free-period solve at 1e-14 below ~400 pts at Q=1e4.
       * STATE EVENTS (a comparator, a threshold switch; `state_events`):
         use radau; trbdf2's and gear's own second-order error on the
         switch-off decay dominates there.

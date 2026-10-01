@@ -42,6 +42,10 @@ UNUSED_ARG_ALLOWLIST = {
     ('shooting/pac.py', '_stage_pass', 'pss'): 'signature uniformity',
     ('shooting/_pss_ppv.py', 'floquet_modes', 'pss_unused'):
         'public signature: callers pass the PSS positionally',
+    ## The period maps' source-at-the-opening hooks: a no-op on every map but
+    ## theta's plain one (`_PlainPeriod`), which reads both.
+    ('shooting/_factored.py', 'seed_source', 'u'): 'map interface (no-op)',
+    ('shooting/_factored.py', 'seed_source_T', 'w'): 'map interface (no-op)',
     ## Helper signatures kept uniform with their sibling that does use ctrl.
     ('transient.py', '_band_centre', 'ctrl'): 'signature uniformity',
     ('transient.py', '_lte_in_band', 'ctrl'): 'signature uniformity',
