@@ -6470,6 +6470,7 @@ class BehaviouralMeta(type):
             for _s, _ix in lgroups:
                 _grouped.update(_ix)
             lsingle = [i for i in range(len(lspec)) if i not in _grouped]
+            from math import copysign as _cps
 
             def limit(self, x, x0, epar=defaultepar, _ls=lspec,
                       _lg=lgroups, _l1=lsingle):
@@ -6563,11 +6564,22 @@ class BehaviouralMeta(type):
                 ## asserts exactly that, by reversing it.
                 drift = np.abs(np.asarray(out, dtype=float) - x0a)
                 _moved = set()
+                ## THE BRANCH VOLTAGES IN PYTHON FLOATS (stage L3,
+                ## 2026-10-02): `out[a] - out[b]` on numpy scalars cost
+                ## ~0.5 us each and a `float()` on top; the same IEEE
+                ## subtraction on the lists is 20x cheaper and gives the
+                ## same bits (two NaN operands apart, where the state is
+                ## NaN and the step fails either way).  `o` is refreshed
+                ## after a device write-back, so later probes read what
+                ## `out` holds, as they did.
+                o = out.tolist()
+                o0 = x0a.tolist()
+                drl = drift.tolist()
 
                 def _vlim_of(j_):
                     (i0, i1), k = _ls[j_][0], _ls[j_][1]
-                    vn = float(out[i0] - out[i1])
-                    vo = float(x0a[i0] - x0a[i1])
+                    vn = o[i0] - o[i1]
+                    vo = o0[i0] - o0[i1]
                     return vn, _lim(k, vn, vo, _pv(j_), self.toolkit)
 
                 ## DEVICE-LEVEL groups first (`limit_together`, roadmap
@@ -6609,11 +6621,21 @@ class BehaviouralMeta(type):
                                                  _ls[j][0][0], _ls[j][0][1]))
                     for j in seq_order:
                         (ra, rb), kind, _mv, _pfs = _ls[j]
-                        pv = _pv(j)
-                        vorig = float(out[ra] - out[rb])
-                        vold = float(x0a[ra] - x0a[rb])
+                        vorig = o[ra] - o[rb]
+                        vold = o0[ra] - o0[rb]
                         vin = vorig + shift.get(ra, 0.0) - shift.get(rb, 0.0)
-                        vlim = _lim(kind, vin, vold, pv, self.toolkit)
+                        ## The ranking computed this probe's limit from
+                        ## these very inputs when no earlier probe shifted
+                        ## its branch: reuse it -- bit for bit, so a zero's
+                        ## sign counts (`-0.0 + 0.0` is `+0.0`) and a NaN
+                        ## never matches.  Half the `_lim` calls, the same
+                        ## numbers (stage L3).
+                        vn = None if _seq else _rk[j][0]
+                        if (vn is not None and vin == vn
+                                and _cps(1.0, vin) == _cps(1.0, vn)):
+                            vlim = _rk[j][1]
+                        else:
+                            vlim = _lim(kind, vin, vold, _pv(j), self.toolkit)
                         if vlim != vin:
                             if _seq:
                                 ## SPICE's coupling: `mos1load.c` limits
@@ -6623,7 +6645,7 @@ class BehaviouralMeta(type):
                                 ## SOURCE, i.e. always the minus terminal.
                                 n = rb
                             else:
-                                n = ra if drift[ra] >= drift[rb] else rb
+                                n = ra if drl[ra] >= drl[rb] else rb
                                 if n in taken:
                                     n = rb if n == ra else ra
                             taken.add(n)
@@ -6634,7 +6656,10 @@ class BehaviouralMeta(type):
                     ## The shifts above are a READING order, not the
                     ## write-back: which node finally pays is decided over
                     ## the whole device, from the targets, below.
-                    _moved |= _dwb(out, targets, drift, _moved)
+                    _written = _dwb(out, targets, drift, _moved)
+                    if _written:
+                        _moved |= _written
+                        o = out.tolist()        # (what the next probes read)
 
                 ## WHO GETS THE SHARED TERMINAL when two probes want it:
                 ## the one applying the LARGER correction.  A BJT's two
@@ -6656,10 +6681,13 @@ class BehaviouralMeta(type):
                                    _ls[i][0][0], _ls[i][0][1]))
                 for i in order:
                     (ra, rb), kind, move, _pfs = _ls[i]
-                    vnew = float(out[ra] - out[rb])
-                    vold = float(x0a[ra] - x0a[rb])
-                    pv = _pv(i)
-                    vlim = _lim(kind, vnew, vold, pv, self.toolkit)
+                    vnew = o[ra] - o[rb]
+                    vold = o0[ra] - o0[rb]
+                    vn, vl = _rank[i]
+                    if vnew == vn and _cps(1.0, vnew) == _cps(1.0, vn):
+                        vlim = vl               # (the ranking's, as above)
+                    else:
+                        vlim = _lim(kind, vnew, vold, _pv(i), self.toolkit)
                     ## A LIMITER THAT DID NOT BITE MUST TOUCH NOTHING.
                     ## Writing `out[rb] = out[ra] - vlim` when `vlim` is
                     ## already `vnew` does not round-trip -- `a - (a - b)`
@@ -6671,16 +6699,16 @@ class BehaviouralMeta(type):
                     ## it would have wanted anyway.
                     if vlim == vnew:
                         continue
-                    cand = ra if drift[ra] >= drift[rb] else rb
+                    cand = ra if drl[ra] >= drl[rb] else rb
                     if cand in _moved:
                         cand = rb if cand == ra else ra
                     if cand in _moved:
                         cand = move          # both spoken for
                     _moved.add(cand)
                     if cand == ra:
-                        out[ra] = out[rb] + vlim
+                        out[ra] = o[ra] = o[rb] + vlim
                     else:
-                        out[rb] = out[ra] - vlim
+                        out[rb] = o[rb] = o[ra] - vlim
                 return out
 
             cls.limit = limit

@@ -139,6 +139,11 @@ def test_a_single_probe_model_computes_each_value_once_per_call():
 
 
 def test_the_cache_off_evaluates_at_every_use(monkeypatch):
+    """With the cache off every use evaluates: the ranking once per
+    function, and the apply loop again for a probe whose limit the
+    ranking's could not stand in for (another probe wrote its terminal
+    first -- stage L3 reuses the ranking's limit when the inputs are the
+    same bits)."""
     monkeypatch.setattr(hdl, 'LIMIT_PAR_CACHE', False)
     cls = eh.GummelPoonNpnHdl
     e = cls('c', 'b', gnd)
@@ -150,7 +155,11 @@ def test_the_cache_off_evaluates_at_every_use(monkeypatch):
         n = sum(len(s[3]) for s in spec)
         x0 = np.full(e.n, 0.2)
         e.limit(x0 + 0.6, x0, defaultepar)
-        assert len(calls) == 2 * n       # the ranking and the apply loop
+        assert n <= len(calls) <= 2 * n, (len(calls), n)
+        ## a second call evaluates again: nothing is kept
+        del calls[:]
+        e.limit(x0 + 0.6, x0, defaultepar)
+        assert len(calls) >= n
     finally:
         spec[:] = saved
 
@@ -193,3 +202,117 @@ def test_the_limiter_parameter_chains_run_as_bit_identical_twins(name):
             twins += 1
     assert twins >= 1
     assert cs.ENABLED
+
+
+## ----------------------------------------------------------------------
+## Stage L3: the streamlined limiter body (2026-10-02) against a reference
+## transliteration of the body as it was -- numpy-scalar branch voltages,
+## every probe's limit computed twice -- over a sweep.
+
+def _reference_limit(e, x, x0, epar=defaultepar):
+    """The generated `limit()` as it was before stage L3, written out: the
+    same `apply_limit` / `device_writeback`, the same canonical orders, the
+    probes' parameter values from the element's own cache, and each
+    probe's limit computed once for the ranking and again to apply."""
+    from pycircuit.circuit._limiting import apply_limit as _lim
+    from pycircuit.circuit._limiting import device_writeback as _dwb
+    info = type(e)._hdl_info
+    _ls = info['limit_spec']
+    _lg = info.get('limit_groups') or []
+    grouped = set()
+    for _s, ix in _lg:
+        grouped.update(ix)
+    _l1 = [i for i in range(len(_ls)) if i not in grouped]
+    out = np.array(x, dtype=float, copy=True)
+    x0a = np.asarray(x0, dtype=float)
+    args = hdl._args_of(e, epar)
+    pv_of = {j: [float(f(x0a, *args)) if getattr(f, '_wants_x', False)
+                 else float(f(*args)) for f in _ls[j][3]]
+             for j in range(len(_ls))}
+    drift = np.abs(np.asarray(out, dtype=float) - x0a)
+    moved = set()
+
+    def vlim_of(j):
+        (i0, i1), k = _ls[j][0], _ls[j][1]
+        vn = float(out[i0] - out[i1])
+        vo = float(x0a[i0] - x0a[i1])
+        return vn, _lim(k, vn, vo, pv_of[j], e.toolkit)
+    for seq, idx in _lg:
+        targets, shift, taken = [], {}, set()
+        if seq:
+            order = list(idx)
+        else:
+            rk = {j: vlim_of(j) for j in idx}
+            order = sorted(idx, key=lambda j: (-abs(rk[j][1] - rk[j][0]),
+                                               _ls[j][0][0], _ls[j][0][1]))
+        for j in order:
+            (ra, rb), kind, _mv, _pfs = _ls[j]
+            vorig = float(out[ra] - out[rb])
+            vold = float(x0a[ra] - x0a[rb])
+            vin = vorig + shift.get(ra, 0.0) - shift.get(rb, 0.0)
+            vlim = _lim(kind, vin, vold, pv_of[j], e.toolkit)
+            if vlim != vin:
+                if seq:
+                    n = rb
+                else:
+                    n = ra if drift[ra] >= drift[rb] else rb
+                    if n in taken:
+                        n = rb if n == ra else ra
+                taken.add(n)
+                shift[n] = shift.get(n, 0.0) + (vlim - vin) * (1 if n == ra
+                                                               else -1)
+            targets.append((ra, rb, vorig, vlim))
+        moved |= _dwb(out, targets, drift, moved)
+    rank = {i: vlim_of(i) for i in _l1}
+    order = sorted(_l1, key=lambda i: (-abs(rank[i][1] - rank[i][0]),
+                                       _ls[i][0][0], _ls[i][0][1]))
+    for i in order:
+        (ra, rb), kind, move, _pfs = _ls[i]
+        vnew = float(out[ra] - out[rb])
+        vold = float(x0a[ra] - x0a[rb])
+        vlim = _lim(kind, vnew, vold, pv_of[i], e.toolkit)
+        if vlim == vnew:
+            continue
+        cand = ra if drift[ra] >= drift[rb] else rb
+        if cand in moved:
+            cand = rb if cand == ra else ra
+        if cand in moved:
+            cand = move
+        moved.add(cand)
+        if cand == ra:
+            out[ra] = out[rb] + vlim
+        else:
+            out[rb] = out[ra] - vlim
+    return out
+
+
+@pytest.mark.parametrize('name', ['MosLevel1Hdl', 'MosLevel3Hdl',
+                                  'GummelPoonNpnHdl', 'EkvNmosHdl',
+                                  'DiodeSpiceHdl'])
+def test_the_streamlined_body_answers_the_old_one_bit_for_bit(name):
+    """Random states and steps of every size, ties (`x == x0`), signed
+    zeros, rails: the same limited vector to the last bit, probe groups
+    (MosLevel1/3), singles (the others) and a `limit_together` with a
+    sequential order (through `test_device_limiter`'s own model) alike."""
+    cls = getattr(eh, name)
+    e = (cls('c', 'b', gnd) if name == 'GummelPoonNpnHdl'
+         else cls('a', 'k') if name == 'DiodeSpiceHdl'
+         else cls('d', 'g', gnd, gnd))
+    e.update_iparv()
+    rng = np.random.default_rng(7)
+    n = e.n
+    for _ in range(400):
+        scale = rng.choice([1e-3, 0.1, 1.0, 10.0, 100.0])
+        x0 = rng.uniform(-2.0, 2.0, n)
+        x = x0 + scale * rng.standard_normal(n)
+        k = rng.integers(0, 4)
+        if k == 1:
+            x = x0.copy()                               # a tie everywhere
+        elif k == 2:
+            x[rng.integers(0, n)] = -0.0                # a signed zero
+            x0[rng.integers(0, n)] = 0.0
+        elif k == 3:
+            x[:2] = 50.0 * np.sign(x[:2])               # the rails
+        a = _reference_limit(e, x, x0)
+        b = e.limit(x, x0, defaultepar)
+        assert a.tobytes() == b.tobytes(), (name, x, x0)

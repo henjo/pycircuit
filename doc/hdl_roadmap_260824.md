@@ -6373,3 +6373,18 @@ parameter over the CSE + fast-path twin of its inner (`von` 10.6 -> 5.6 us);
 Round 3 in sum (gear transients, 100 fixed steps, 20 devices): MosLevel1
 0.382 -> 0.144 s (2.65x), Gummel-Poon 0.447 -> 0.154 s (2.9x), PSP 0.383 ->
 0.310 s (1.24x); the PSP stage PSS 0.301 -> 0.266 s.
+
+## 2026-10-02 — 61. Speed round 3, after L2: `-O3` refused, the limiter body streamlined (L3)
+
+`-O3` for the C kernels (fast-math and contraction still off): byte-identical
+over 307 points and no faster (PSP `G` 19.1 -> 19.3 us) -- straight-line
+scalar code gives the vectoriser nothing.  Not adopted.
+
+L3: the generated `limit()` takes its branch voltages from Python lists
+and reuses the ranking's limit where the inputs are the same bits (a
+signed-zero guard): `limit()` 20.5 -> 18.3 us a MosLevel1 call, the chain
+0.144 -> 0.138 s; a differential test against the old body over 2000
+random cases.  Round 3 closes here: 20 MosLevel1 0.382 -> 0.138 s (2.8x),
+20 Gummel-Poon 0.447 -> 0.149 s (3.0x), 20 PSP 0.383 -> 0.310 s (1.24x),
+the PSP stage PSS 0.301 -> 0.266 s.  What is left: the kernels' own C work
+on PSP-class models, and the per-step solver machinery on small circuits.
