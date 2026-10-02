@@ -14,6 +14,7 @@ file; two processes writing the same key must not tear it; and a class
 whose source cannot be recovered must compile and say so.
 """
 
+import builtins
 import importlib.util
 import os
 import pickle
@@ -601,14 +602,16 @@ def test_unwritable_directory_compiles_anyway(cache_dir, tmp_path,
 def test_no_temp_files_left_behind(cache_dir, tmp_path):
     _load_probe(tmp_path, 'a')
     ## (the bit-identical CSE keeps its derived store in a subdirectory,
-    ## `cse/`, one `.py` per optimised function -- `_hdl_cse`; no temp
-    ## file may be left there either)
+    ## `cse/`, one `.py` per optimised function -- `_hdl_cse`; the compiled
+    ## code of every generated function is in `code/`, one `.bin` each --
+    ## `code_for`; no temp file may be left in either)
     names = os.listdir(cache_dir)
     dirs = {n for n in names if os.path.isdir(os.path.join(cache_dir, n))}
-    assert dirs <= {'cse'}, dirs
+    assert dirs <= {'cse', 'code'}, dirs
     assert all(n.endswith('.pkl') for n in names if n not in dirs)
+    suffix = {'cse': '.py', 'code': '.bin'}
     for d in dirs:
-        assert all(n.endswith('.py')
+        assert all(n.endswith(suffix[d])
                    for n in os.listdir(os.path.join(cache_dir, d)))
 
 
@@ -824,3 +827,92 @@ def test_cache_disabled_matches_the_cached_compile(cache_dir, monkeypatch):
             '%s: cache-disabled compile differs from the cached one -- a ' \
             'field folded into codegen is missing from the cache key' \
             % base.__name__
+
+
+## ----------------------------------------------------------------------
+## Compiled code, content-addressed (`code_for`, 2026-10-02).
+
+_CODE_TEXT = 'def _f(x, a):\n    _v1 = x[0] * a\n    return [_v1 + 1.5, (_v1, -0.0)]'
+
+
+def _nested(code):
+    """The function code objects inside a module code object."""
+    return [c for c in code.co_consts if isinstance(c, types.CodeType)]
+
+
+def test_code_for_stores_once_and_loads_without_compiling(cache_dir,
+                                                         monkeypatch):
+    first = hc.code_for(_CODE_TEXT, '<hdl-chain>')
+    path = hc._code_path(_CODE_TEXT, '<hdl-chain>')
+    assert os.path.exists(path)
+
+    def no_compile(*a, **k):
+        raise AssertionError('compiled on a warm load')
+    monkeypatch.setattr(hc, 'compile', no_compile, raising=False)
+    again = hc.code_for(_CODE_TEXT, '<hdl-chain>')
+    monkeypatch.undo()
+    fresh = compile(_CODE_TEXT, '<hdl-chain>', 'exec')
+    for a, b in ((again, fresh), (first, fresh)):
+        assert a.co_filename == b.co_filename == '<hdl-chain>'
+        for fa, fb in zip(_nested(a), _nested(b), strict=True):
+            assert fa.co_code == fb.co_code
+            assert repr(fa.co_consts) == repr(fb.co_consts)
+            assert fa.co_names == fb.co_names
+    ns = {}
+    exec(again, ns)                                        # noqa: S102
+    assert ns['_f']([2.0], 3.0) == [7.5, (6.0, -0.0)]
+    assert str(ns['_f']([2.0], 3.0)[1][1]) == '-0.0'
+    assert again is not first        # a fresh object per call, as compile
+
+
+def test_code_for_recompiles_a_corrupt_or_foreign_blob(cache_dir):
+    hc.code_for(_CODE_TEXT, '<hdl-chain>')
+    path = hc._code_path(_CODE_TEXT, '<hdl-chain>')
+    with open(path, 'wb') as fh:
+        fh.write(b'\x00not marshal')
+    code = hc.code_for(_CODE_TEXT, '<hdl-chain>')
+    assert code.co_filename == '<hdl-chain>'
+    ## rewritten: the next load is a good blob again
+    import marshal
+    with open(path, 'rb') as fh:
+        assert marshal.loads(fh.read()).co_filename == '<hdl-chain>'
+    ## a blob compiled for another file is not served under this name
+    with open(path, 'wb') as fh:
+        fh.write(marshal.dumps(compile(_CODE_TEXT, '<other>', 'exec')))
+    assert hc.code_for(_CODE_TEXT, '<hdl-chain>').co_filename == \
+        '<hdl-chain>'
+
+
+def test_the_code_key_carries_the_interpreter_and_the_filename(
+        cache_dir, monkeypatch):
+    p0 = hc._code_path(_CODE_TEXT, '<hdl-chain>')
+    assert hc._code_path(_CODE_TEXT, '<hdl-chain-cse>') != p0
+    assert hc._code_path(_CODE_TEXT + ' ', '<hdl-chain>') != p0
+    monkeypatch.setattr(hc.importlib.util, 'MAGIC_NUMBER', b'\x00\x00\r\n')
+    assert hc._code_path(_CODE_TEXT, '<hdl-chain>') != p0
+
+
+def test_code_for_writes_nothing_with_the_cache_off(cache_dir, monkeypatch):
+    monkeypatch.setenv('PYCIRCUIT_HDL_CACHE', '0')
+    code = hc.code_for(_CODE_TEXT, '<hdl-chain>')
+    assert code.co_filename == '<hdl-chain>'
+    assert not os.path.exists(os.path.join(str(cache_dir), 'code'))
+
+
+def test_a_warm_class_load_compiles_no_generated_code(cache_dir, tmp_path,
+                                                      monkeypatch):
+    """The second load of a class (pickle hit, CSE store hit) takes every
+    generated function's code from the store: `compile` is never called
+    for a `<hdl-chain*>` file."""
+    _load_probe(tmp_path, 'a')
+    seen = []
+    real = builtins.compile
+
+    def watching(src, filename, *a, **k):
+        if str(filename).startswith('<hdl-chain'):
+            seen.append(filename)
+        return real(src, filename, *a, **k)
+    monkeypatch.setattr(hc, 'compile', watching, raising=False)
+    c = _load_probe(tmp_path, 'b')
+    assert c._hdl_cache_status == 'hit'
+    assert seen == []

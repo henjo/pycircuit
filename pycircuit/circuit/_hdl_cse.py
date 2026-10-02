@@ -384,7 +384,8 @@ def optimise(info):
                 continue
             ns = f.__globals__
             loc = {}
-            exec(compile(text, '<hdl-chain-cse>', 'exec'), ns, loc)  # noqa: S102 -- the generated chain, as `_chain_compile` runs it
+            from pycircuit.circuit import _hdl_cache
+            exec(_hdl_cache.code_for(text, '<hdl-chain-cse>'), ns, loc)  # noqa: S102 -- the generated chain, as `_chain_compile` runs it
             g = loc['_f']
             g.__dict__.update(f.__dict__)
             g._hdl_ref = f
@@ -462,7 +463,8 @@ def fused(info, which):
             if src is not None:
                 text = _optimised_text(src) or src
                 loc = {}
-                exec(compile(text, '<hdl-chain-fused>', 'exec'),  # noqa: S102 -- the generated chain
+                from pycircuit.circuit import _hdl_cache
+                exec(_hdl_cache.code_for(text, '<hdl-chain-fused>'),  # noqa: S102 -- the generated chain
                      refs[0].__globals__, loc)
                 fn = loc['_f']
                 fn._hdl_names = names

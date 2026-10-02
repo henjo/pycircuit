@@ -68,8 +68,10 @@ not a format for exchanging compiled models between machines or users.
 import builtins
 import dis
 import hashlib
+import importlib.util
 import inspect
 import linecache
+import marshal
 import opcode
 import os
 import pickle
@@ -608,6 +610,74 @@ def _register_source(src, filename):
                                  filename)
 
 
+## -- compiled code, content-addressed ---------------------------------------
+
+#: Bump when the code store's key or record changes meaning.
+CODE_FORMAT = 1
+
+
+def _code_path(text, filename):
+    """Where `code_for` keeps the code of `text` compiled as `filename`:
+    keyed on the interpreter's bytecode identity (the magic number, the
+    version string, the cache tag, `-O`) as well as the text and filename,
+    so a blob is only ever read by an interpreter that would have compiled
+    the same code."""
+    h = hashlib.sha256()
+    for part in (f'code-format={CODE_FORMAT}',
+                 importlib.util.MAGIC_NUMBER.hex(), sys.version,
+                 str(sys.implementation.cache_tag), str(sys.flags.optimize),
+                 filename, text):
+        h.update(part.encode('utf-8'))
+        h.update(b'\0')
+    return os.path.join(cache_dir(), 'code', h.hexdigest() + '.bin')
+
+
+def code_for(text, filename):
+    """`compile(text, filename, 'exec')`, from the store when it is there.
+
+    Every process compiled every generated function it loaded -- the
+    compile cache keeps their TEXT (the reference the C kernels are printed
+    from, `explain()` shows and the JAX twin re-executes), and so does the
+    CSE store: ~850 calls, 0.78 s of a 1.8 s library import, 0.27 s of the
+    PSP variant's class (2026-10-02).  Unmarshalling the code is ~20x
+    faster than compiling it (PSP's `G` twin: 2 ms against 43 ms).  The
+    code is exactly what `compile` returns -- the same object marshalled
+    -- and is executed into the same namespace as before.  A blob that
+    cannot be read, is not a code object or names another file is
+    compiled again and rewritten; with the cache disabled this only
+    compiles.  Not memoised in the process: each call returns a fresh code
+    object, as `compile` did."""
+    if not enabled():
+        return compile(text, filename, 'exec')
+    path = _code_path(text, filename)
+    try:
+        with open(path, 'rb') as fh:
+            code = marshal.loads(fh.read())
+        if isinstance(code, types.CodeType) and \
+                code.co_filename == filename:
+            return code
+    except (OSError, EOFError, ValueError, TypeError):
+        pass
+    code = compile(text, filename, 'exec')
+    try:
+        d = os.path.dirname(path)
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(suffix='.tmp', dir=d)
+        try:
+            with os.fdopen(fd, 'wb') as fh:
+                fh.write(marshal.dumps(code))
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        pass
+    return code
+
+
 def _thaw_function(rec):
     from pycircuit.circuit import hdl
     kind = rec[0]
@@ -616,7 +686,7 @@ def _thaw_function(rec):
     if kind == 'chain':
         _, src, name, cmeta = rec
         ns = hdl._chain_namespace(None)
-        exec(compile(src, '<hdl-chain>', 'exec'), ns)
+        exec(code_for(src, '<hdl-chain>'), ns)  # noqa: S102 -- the generated chain
         fn = ns[name]
         fn._src = src
         if cmeta is not None:

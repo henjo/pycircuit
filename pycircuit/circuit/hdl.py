@@ -5547,7 +5547,10 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
     lines.append('    return %s' % ret)
     src = '\n'.join(lines)
     ns = _chain_namespace(modules_map)
-    exec(compile(src, '<hdl-chain>', 'exec'), ns)
+    ## (through the code store: the compile cache's thaw finds this code
+    ## there, in every later process)
+    from pycircuit.circuit import _hdl_cache
+    exec(_hdl_cache.code_for(src, '<hdl-chain>'), ns)  # noqa: S102 -- the generated chain
     fn = ns['_f']
     fn._src = src
     if emit_c and unpack and xsyms:
@@ -5619,8 +5622,9 @@ def _chained_jax(fn):
         import jax.numpy as _jnp
     except ImportError:                              # pragma: no cover
         return None
+    from pycircuit.circuit import _hdl_cache
     ns = _chain_namespace(dict(_kernel_jax(_jnp), numpy=_jnp))
-    exec(compile(src, '<hdl-chain-jax>', 'exec'), ns)
+    exec(_hdl_cache.code_for(src, '<hdl-chain-jax>'), ns)  # noqa: S102 -- the generated chain
     out = ns.get(fn.__name__)
     if out is None:                                  # pragma: no cover
         return None

@@ -6282,3 +6282,14 @@ nothing changed on the numpy default:
 * cffi declared (and checked: `'numpy (cffi not installed)'`), `info['_c_bound']`
   first in `take`, an exponent that is a `numpy.where` value refused by the C
   printer, a `flock` build lock per key.
+
+## 2026-10-02 — 54. Speed round 2, stage B: compiled code from a content-addressed store
+
+Each process compiled every generated function it loaded (0.78 s of a 1.80 s
+library import; 0.27 s of PSP's 0.28 s class creation).
+`_hdl_cache.code_for(text, filename)` serves the marshalled code object from
+`cache_dir()/code/` (keyed on the interpreter's bytecode identity, the
+filename and the text), compiling and storing on a miss; used by the chain
+compile, the cache thaw, the CSE twins, the fused functions and the JAX
+twins.  Import 1.80 -> 1.06 s, PSP's class 0.28 -> 0.02 s; no cache-format
+bump; every result bit-identical (gate G80).
