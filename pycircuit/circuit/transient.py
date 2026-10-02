@@ -1031,7 +1031,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         "iteration instead of the dense 3m one, falling back "
                         "to the dense solve if it stalls. 'auto' (default): "
                         "on where the circuit's compiled device Jacobians are "
-                        "expensive (compact models: 20-68 % faster), off "
+                        "expensive (compact models: up to 68 % faster), off "
                         "otherwise; True / False force it. With pcnr=True on a "
                         "circuit PCNR applies to, PCNR's dense coupled solve is "
                         "used instead (warned where the transform was asked "
@@ -1060,7 +1060,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         "back to the full Newton where it stops contracting. "
                         "'auto' (default): on where the circuit's compiled "
                         "device Jacobians are expensive (compact models: "
-                        "17-47 % faster), off otherwise; True / False force "
+                        "5-32 % faster), off otherwise; True / False force "
                         "it.",
                    unit='', default='auto'),
          ## STAGE 13 -- PCNR instead of limiting, on the transient path too.

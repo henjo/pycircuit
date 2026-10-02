@@ -1148,11 +1148,12 @@ def test_the_newton_options_turn_on_where_the_compiled_jacobian_is_expensive():
     """'auto', the default of `chord_jacobian` and `radau_transform` since
     2026-10-01: on where the circuit's compiled Jacobian reaches
     `AUTO_JACOBIAN_CODE` bytes of bytecode (`compiled_jacobian_size`, a
-    deterministic stand-in for its cost), off otherwise.  Measured: every
-    compiled device from 20 KB up gained 17-68 % (MosLevel1 26 KB -17 / -31
-    %), the HEMT (2.2 KB) and `DiodeHdl` a few %, and the options LOST only
-    on circuits of hand-written elements (van der Pol +18 % under radau, a
-    switching PWM loop +79 / +15 %).  True / False force it; anything else
+    deterministic stand-in for its cost), off otherwise.  Measured
+    (2026-10-02, the CSE twins and fused passes running): every compiled
+    device from 20 KB up gained up to 68 % or broke even (MosLevel1 26 KB
+    -6 / -15 %), the HEMT (2.2 KB) and `DiodeHdl` within 3 %, and the options
+    LOST only on circuits of hand-written elements (van der Pol +18 % under
+    radau, a switching PWM loop +79 / +15 %).  True / False force it; anything else
     is refused.  On a MosLevel1 stage the default runs the chord: fewer `G`
     evaluations than forced off, the same answer to the Newton tolerance."""
     from pycircuit.circuit import elements_hdl as eh
@@ -1213,10 +1214,10 @@ def test_the_newton_options_turn_on_where_the_compiled_jacobian_is_expensive():
     assert ga < gf, (ga, gf)
     assert np.max(np.abs(xa - xf)) / np.max(np.abs(xf)) < 1e-9
 
-    ## ON THE C BACKEND a model's Jacobian is cheap (MosLevel1's `G` 53x
-    ## faster), and it counts `C_KERNEL_SHARE` of its bytecode: MosLevel1
-    ## goes off (the transform measured +11 % there, switching); PSP, at
-    ## 1.8 MB, would stay on (-64 % measured) -- read off its bytecode, so
+    ## ON THE C BACKEND a model's Jacobian is cheap (MosLevel1's `G` 20x
+    ## the CSE twin's speed), and it counts `C_KERNEL_SHARE` of its bytecode:
+    ## MosLevel1 goes off (the transform measured +16 % there, switching);
+    ## PSP, at 1.8 MB, would stay on (-63 % measured) -- read off its bytecode, so
     ## the test builds no PSP kernel
     from pycircuit.circuit import compact, hdl
     from pycircuit.circuit._tran_newton import C_KERNEL_SHARE

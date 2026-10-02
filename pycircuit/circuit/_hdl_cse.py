@@ -37,8 +37,9 @@ reference function stays reachable (`fn._hdl_ref`) and `fn._src` stays the
 REFERENCE text -- what `explain()` shows, what the JAX twin re-executes and
 what the C backend prints its kernels from -- with the optimised text in
 `fn._src_cse`.  `fn._hdl_codelen` keeps the reference's bytecode size for
-the 'auto' Newton options (`_tran_newton.compiled_jacobian_size`), whose
-calibration is in that size.
+the 'auto' Newton options (`_tran_newton.compiled_jacobian_size`): re-
+calibrated with the twins running, that size still places every model where
+it was, and it does not move with `PYCIRCUIT_HDL_CSE`.
 
 Measured (F0, 2026-10-02): PSP's `G` 13.9 -> 3.2 ms, `C` 7.2 -> 1.6 ms, `i`
 1.19 -> 0.90 ms; across the 22 chained library classes `G` 1.2-5.2x (median

@@ -420,8 +420,8 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
          ## JACOBIAN (`ChordNewton`), each the full Newton where it stalls.
          ## 'auto' by default: on where the circuit's compiled Jacobian is
          ## expensive (`Transient.AUTO_JACOBIAN_CODE`, its measurements
-         ## there) -- a compact MOSFET's PSS 107 -> 34 s under radau, 23.7 ->
-         ## 15.5 s under gear, the answers 1e-13 to 4e-8 apart; off on
+         ## there) -- a compact MOSFET's PSS 10.2 -> 3.3 s under radau, 3.7 ->
+         ## 2.8 s under gear (2026-10-02), the answers 1e-13 to 4e-8 apart; off on
          ## circuits of hand-written elements, where they lost (van der Pol
          ## +18 % under radau, a switching PWM loop +79 % / +15 %).
          _transient_parameter(

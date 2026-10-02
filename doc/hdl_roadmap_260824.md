@@ -6237,3 +6237,26 @@ call count).
 
 Gate G77: 3576 passed; every transient, PSS and PAC call identical to G76
 (the new tests' own calls aside); no warning differs.
+
+## 2026-10-02 — 52. Fused compiled evaluation, F1b and F4: the C kernels' libm calls declared const; 'auto' re-calibrated
+
+Andreas: "Do both F1b and F4".
+
+**F1b.**  `_KERNEL_C` declares the sixteen libm functions `CFLAGS` keeps
+real calls (`-fno-builtin-<f>`) `__attribute__((const))`: gcc computes an
+identical call once instead of at every repeat (a chained `G` prints each
+local partial once per unknown) -- still glibc's call, so still its value.
+PSP `G` 50 -> 22 us, `C` 26 -> 16 us, `pow` calls 5503 -> 2843; `i`/`q`
+byte-identical; `G`/`C` differ from the plain kernels only in NaN sign
+bits, at the 16 spike points where the plain kernels already differ from
+numpy so (the backend's contract).  `source_key` hashes the prelude, so
+every `.so` rebuilds on its own.  The PSP stage's PSS on C: gear 0.40 ->
+0.32 s, radau 1.06 -> 0.85 s (full Newton).
+
+**F4.**  The 2026-10-01 'auto' table re-measured with the twins, the fused
+passes and the const libm running (`doc/transient_history.md`, "'auto'
+re-calibrated"): the gains shrank (numpy chord 5-32 %, transform up to 68
+%), no crossover moved -- `AUTO_JACOBIAN_CODE`, `C_KERNEL_SHARE` and the
+reference-size proxy stand (the reference size does not move with
+`PYCIRCUIT_HDL_CSE`, which keeps that switch bit-identical end to end).
+The option descriptions' percentages corrected.

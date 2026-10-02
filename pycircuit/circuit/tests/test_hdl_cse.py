@@ -154,9 +154,11 @@ def test_every_chained_library_class_is_byte_identical_to_its_reference(name):
 
 
 def test_the_auto_options_read_the_reference_size():
-    """`compiled_jacobian_size` is calibrated on the reference bytecode
-    (`AUTO_JACOBIAN_CODE`); the optimised `G` is a third of PSP's, and would
-    flip the 'auto' Newton options without the pin (`_hdl_codelen`)."""
+    """`compiled_jacobian_size` reads the reference bytecode
+    (`_hdl_codelen`), not the twin's -- a third of it for PSP: re-calibrated
+    2026-10-02 with the twins running, the reference size still places every
+    model where it was (`AUTO_JACOBIAN_CODE`), and it does not move with
+    `PYCIRCUIT_HDL_CSE`, so the switch stays bit-identical end to end."""
     from pycircuit.circuit._tran_newton import compiled_jacobian_size
     from pycircuit.circuit.compact import PspMosLongChannel
     cm.default_toolkit = numeric

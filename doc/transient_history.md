@@ -3580,6 +3580,34 @@ So a C-bound function counts `C_KERNEL_SHARE` (1/100) of its bytecode:
 PSP stays on (1.8 MB -> 18 KB), the mid-sized models go off (under 1 KB) --
 forgoing the chord's few per cent to avoid the transform's 8-11 % losses.
 
+### 'auto' re-calibrated: the CSE twins, the fused passes, the const libm (2026-10-02)
+
+Andreas: "Do both F1b and F4" (the fused-evaluation plan's last two
+items; F4: re-tune 'auto' now that `G` and `C` are 3-5x cheaper on numpy,
+and the C kernels' libm calls are declared const).  The same stages, the
+minimum of 3 interleaved runs (PREDICTED: smaller gains, the mid-sized
+models near break-even -- the gains did shrink; no model broke):
+
+| device (reference / twin size) | numpy chord | numpy transform | C chord | C transform |
+|---|---|---|---|---|
+| PSP (1.78 MB / 584 KB), switching | -25 / -32 % | -68 / -25 % | -12 / -18 % | -63 / -9 % |
+| MosLevel3 (92 / 43 KB), switching | -14 / -19 % | -27 / -16 % | -2 / -4 % | -3 / +9 % |
+| Gummel-Poon (57 / 20 KB) | -10 % | 0 % | -3 % | +15 % |
+| EKV (26 / 12 KB) | -5 % | -12 % | -2 % | -5 % |
+| MosLevel1 (26 / 13 KB), switching | -6 / -9 % | -15 / +3 % | -3 / -4 % | -3 / +16 % |
+| SPICE diode (20 / 8 KB) | -6 % | -10 % | -3 % | -5 % |
+| HEMT (2.2 / 1.2 KB) | 0 % | -3 % | | |
+| `DiodeHdl` (0.2 KB) | -1 % | +2 % | | |
+
+No crossover moved, so `AUTO_JACOBIAN_CODE` (10 KB) and `C_KERNEL_SHARE`
+(1/100) stand.  The proxy stays the REFERENCE function's size
+(`_hdl_codelen`), not the twin's that runs: the twin's would place every
+model the same with the threshold moved into the 1.2-8 KB gap, but it
+moves with `PYCIRCUIT_HDL_CSE`, and the switch is meant to be
+bit-identical end to end -- a model near the threshold would change its
+Newton with it.  The option descriptions' percentages corrected: chord
+"17-47 %" -> "5-32 %", transform "20-68 %" -> "up to 68 %".
+
 ## `_stamp_plan.py` -- the constant-stamp plan (2026-10-01, the speed plan's P2)
 
 ### (module docstring)
