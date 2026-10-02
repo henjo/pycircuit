@@ -600,7 +600,16 @@ def test_unwritable_directory_compiles_anyway(cache_dir, tmp_path,
 
 def test_no_temp_files_left_behind(cache_dir, tmp_path):
     _load_probe(tmp_path, 'a')
-    assert all(n.endswith('.pkl') for n in os.listdir(cache_dir))
+    ## (the bit-identical CSE keeps its derived store in a subdirectory,
+    ## `cse/`, one `.py` per optimised function -- `_hdl_cse`; no temp
+    ## file may be left there either)
+    names = os.listdir(cache_dir)
+    dirs = {n for n in names if os.path.isdir(os.path.join(cache_dir, n))}
+    assert dirs <= {'cse'}, dirs
+    assert all(n.endswith('.pkl') for n in names if n not in dirs)
+    for d in dirs:
+        assert all(n.endswith('.py')
+                   for n in os.listdir(os.path.join(cache_dir, d)))
 
 
 ## ----------------------------------------------------------------------

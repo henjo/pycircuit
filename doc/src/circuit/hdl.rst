@@ -1261,6 +1261,71 @@ instead -- 15% of the source -- removes **no** such calls and measures
    compile time, so a parameter left at ``0.0`` makes it singular.
    Defaults are not a physical card.
 
+Repeated subexpressions, computed once
+---------------------------------------
+
+A chained model's ``G`` (and ``C``) is printed as the value chain followed
+by one forward-mode derivative statement per definition and unknown, and
+each of those re-prints the local partial derivatives inline -- so a
+partial (often a ``numpy.where`` or a regulariser call) runs once per
+UNKNOWN, and the values ``i`` already computed run again.  PSP's ``G``
+makes ~24 700 calls of which ~3 750 are distinct.
+
+At class creation every chained function is replaced by a twin with each
+repeated subexpression computed once (``pycircuit/circuit/_hdl_cse.py``).
+It works on the generated Python's syntax tree, after the compile cache,
+and it is **bit-identical by construction**: Python evaluates a subtree as
+a unit in the same order whether it is written inline or into a variable
+first, the generated function assigns every name once, its primitives are
+pure, and nothing in it is evaluated lazily (a function with a conditional
+expression or ``and``/``or`` is left as it is).  Each twin is verified --
+every variable and the return value, expanded into its inputs, must be the
+same expression -- before it is used.  Doing the same in sympy would not be
+exact: substituting a symbol changes how sympy orders and groups a sum or a
+product, and the last bits move.
+
+What it buys (2026-10-02; every function of the 22 chained library classes
+byte-identical over its sweep):
+
+.. list-table::
+   :header-rows: 1
+
+   * - model
+     - ``G`` before
+     - ``G`` after
+     - ``C`` before
+     - ``C`` after
+   * - PSP (surface potential)
+     - 13.9 ms
+     - **3.2 ms** (4.3x)
+     - 7.2 ms
+     - **1.6 ms** (4.5x)
+   * - MOS level 3
+     - 1121 us
+     - **368 us** (3.0x)
+     - 94 us
+     - 53 us
+   * - Gummel-Poon, thermal
+     - 923 us
+     - **184 us** (5.0x)
+     - 636 us
+     - 156 us
+   * - MOS level 1
+     - 209 us
+     - **73 us** (2.9x)
+     - 93 us
+     - 52 us
+
+The PSP common-source stage's PSS runs 3.5x faster end to end (gear 15.5 ->
+4.5 s, radau 24.4 -> 6.9 s) with the same waveform to the last bit.
+``explain()`` says when a class runs the twins; the source it prints stays
+the reference (``fn._src``; the twin's text is ``fn._src_cse``, the
+reference function ``fn._hdl_ref``).  The twins are stored beside the
+compile cache (``cse/``), so the pass runs once per model.
+``PYCIRCUIT_HDL_CSE=0`` turns it off.  The C backend is unaffected: its
+kernels are printed from the reference statements and stay bit-identical to
+the twin, because the twin computes the same bits.
+
 The C backend
 -------------
 

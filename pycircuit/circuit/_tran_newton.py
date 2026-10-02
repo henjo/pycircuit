@@ -30,7 +30,10 @@ def compiled_jacobian_size(cir):
     diode 20 KB, `MosLevel1Hdl` 26 KB (0.2 ms), `MosLevel3Hdl` 92 KB (1.2
     ms), the PSP MOSFET 1.8 MB (14 ms).  A function bound to its C kernel
     counts `C_KERNEL_SHARE` of that (PSP 18 KB, MosLevel3 0.9 KB).
-    Hand-written elements and `BSource` count 0.  Read by the 'auto' Newton
+    Hand-written elements and `BSource` count 0.  The REFERENCE function's
+    size where the bit-identical CSE replaced it (`_hdl_cse`,
+    `fn._hdl_codelen`): the calibration is in that size, and PSP's optimised
+    `G` is a third of it -- re-tuning is its own decision.  Read by the 'auto' Newton
     options (`Transient._newton_option`)."""
     total = 0
     stack = [cir]
@@ -48,7 +51,10 @@ def compiled_jacobian_size(cir):
                 code = getattr(fn, '__code__', None)
                 if code is None:
                     continue
-                size = len(code.co_code)
+                ## (the REFERENCE function's size -- the calibration above is
+                ## in it -- when the bit-identical CSE replaced it: `_hdl_cse`)
+                size = getattr(fn, '__dict__', {}).get('_hdl_codelen') \
+                    or len(code.co_code)
                 if getattr(fn, '__dict__', {}).get('_hdl_c') is not None:
                     size = int(size * C_KERNEL_SHARE)
                 total += size

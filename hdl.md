@@ -187,6 +187,13 @@ compiled with `lambdify(..., cse=True)`. Two consequences:
   sympy sees `i` and `q` as complete vectors rather than as independent
   scalar expressions.
 
+(2026-10-02: true of the EAGER path only, and within one vector or
+matrix -- `i`, `q`, `G` and `C` are four separate lambdify calls.  A model
+that uses `var()` takes the let-chain path, whose `_chain_compile` did no
+CSE at all: its `G` re-printed every local partial once per unknown.
+Since then `_hdl_cse` removes that repetition from the generated Python,
+bit for bit -- `doc/hdl_roadmap_260824.md` sec. 50.)
+
 Where a stamp turns out to be x-independent (every linear element), it is
 computed once and returned by reference, and the `update()` observer drops
 the cache whenever parameters change. That is not an optimization

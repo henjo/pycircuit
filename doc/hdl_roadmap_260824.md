@@ -6099,3 +6099,79 @@ with gate leakage off, `−CY[b,d] = 2q (mavl + 1)|I_b|`, `mavl = |I_b|/(|I_d| �
   (each shot source is the only one between its nodes).  ⚠ A first attempt used `−CY[d,s]` and was WRONG — the correlated
   induced-gate source also sits on noi–s, and its cross term lands on [d,s]: `sid` read +51 % (long) / ×14.5 (short).
 All 423 PSP gap / C-backend / compile-budget tests pass.
+
+## 2026-10-02 — 50. The generated chain's repeated subexpressions, computed once (bit-identical)
+
+Andreas (2026-10-02, after the speed plan): "fused compiled hdl evaluation 1
+Create a deep explanation for me. 2 do a deep investigation of the topic to
+understand the topic and limitations. 3 make the plan".  Plan approved
+(`plans/twinkly-bouncing-finch.md`): F0 measure, F1a CSE, F1b the C
+backend's libm, F2 fusion of i/q/G/C, F3 evaluation sessions, F4 'auto'.
+
+**The waste, counted in PSP's cache entry.**  `G` repeats `i`'s 719 value
+definitions and adds 2148 derivative statements, each re-printing the local
+partials `diff(expr, parent)` inline -- once per unknown (6): exp 303, sqrt
+1747, where 2313 calls against `i`'s 51 / 210 / 187.  `C` repeats `q`'s 388
+and adds 1362 (1222 text-identical to `G`'s).  Of `G`'s ~24.7k calls ~3.75k
+are distinct.  `_chain_compile` does no CSE (the eager path's lambdify does,
+per function).
+
+**Why not in sympy.**  Substituting a symbol for a subexpression changes
+sympy's canonical ordering and flattening of `Add`/`Mul` -- `Mul(2,a,b,dj)`
+against `Mul(P,dj)` -- so association and summation order, hence bits,
+move; and every compact-model result with them (as `fold_card`, sec. 30, and
+`_autohold`, sec. 36, did).  ON THE GENERATED PYTHON'S SYNTAX TREE it is exact:
+a subtree evaluates as a unit in the same order inlined or hoisted, the
+function is SSA, the primitives are pure, and the printer emits nothing lazy
+(the design review scanned the 300 newest cache entries: no IfExp/
+BoolOp/lambda/comprehension; `numpy.where` evaluates both arms).  Constants keyed by type
+and repr (`0` / `0.0` / `-0.0`), never hoisted alone.
+
+**F0 (measured, no source change).**  A prototype on the cached `_src` of
+PSP and the 22 chained library classes: every one of 88 functions
+byte-identical over its sweep (PSP: the C backend's 1005-point spike sweep),
+raise-mode behaviour unchanged.  PSP `G` 13.9 -> 3.2 ms (4.31x), `C` 7.2 ->
+1.6 ms (4.54x), `i` 1.32x, `q` 1.31x; library `G` 1.22-5.17x, median 3.0x.
+Fusion by statement name on top (F0.3): all four at one state 23.4 ms ->
+6.3 ms CSE'd separately -> 3.4 ms fused (0.54x; library 0.46-0.70x),
+byte-identical.  The C backend with the `-fno-builtin-*` libm declared
+`__attribute__((const))` (F0.4): `G` 50.0 -> 22.5 us, `C` 26.4 -> 15.6 us,
+`i`/`q` identical; `G`/`C` differ from the plain kernels in NaN SIGN BITS at
+16 of 1005 points, every one already NaN on every path (the backend's own
+contract counts the same 16 against numpy); `pow` calls in `G` 5503 ->
+2843.  End to end with the functions swapped in-process (F0.5): the PSP
+stage's PSS gear 15.5 -> 4.5 s, radau 24.4 -> 6.9 s, waveforms identical.
+
+**F1a (built).**  `_hdl_cse.py`: an iterative walk and hash-consing,
+DAG reference counts, hoisting each repeated non-trivial subtree before
+its first use (reusing a variable whose whole value it is), text spliced
+from the source spans (no `ast.unparse`: a ~300-deep statement exhausts its
+recursion), and `_verify` -- every variable and the return value expanded
+into the inputs must be the same expression.  Run after the compile cache
+(`BehaviouralMeta`, before the C backend attaches), stored in `cse/` beside
+it (keyed on the module's own source, the Python version and the input
+text), `PYCIRCUIT_HDL_CSE=0` off.  `_src` stays the reference (explain, the
+JAX twin, the C kernels' print), the twin in `_src_cse`, the reference
+function in `_hdl_ref`; `compiled_jacobian_size` reads `_hdl_codelen`, the
+reference size (PSP's optimised `G` is a third of it, and 18 KB on C is what
+the 'auto' threshold of 10 KB is calibrated against).
+
+**Measured traps.**  The benchmark circuit's PSP is a COLLAPSE VARIANT
+(`PspMosLongChannel_collapse10`) with its own functions -- a swap on the
+base class reached nothing and read as "no gain" until the instance's class
+was used; a test reading the base class's functions for an element built as
+a variant fails with an IndexError (fewer unknowns).
+
+**Gates.**  G75 (the first build): every transient, PSS and PAC call
+identical to G74; five failures, `test_hdl_params`' adopter records, which
+digest `explain()` -- the CSE note had been a new line; it rides on the
+`backend:` line now, which those records leave out (an evaluation fact, not
+the compile).  G76: 3565 passed, every call identical.  One warnings record
+moved: `TestARealPcnrSolve` logged two "overflow encountered in exp" before
+and none after -- the twin warns from other locations (`<hdl-chain-cse>`),
+and Python reports a location once; under `-W always` the same overflows
+occur (3 emissions without CSE, 2 with: the duplicates removed).  The PSP
+benchmark (`benchmarks/speed_analyses.py --psp`): gear 16.2 -> 5.4 s, radau
+24.4 -> 6.8 s.  The cost: each `hdl.py` edit recompiles every model once
+(~70 s; the compile cache keys on its source), the pass itself ~2 s for
+PSP on a store miss.

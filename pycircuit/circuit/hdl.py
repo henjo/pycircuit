@@ -5381,7 +5381,11 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
 
     The numpy source is always produced and is the reference: it is what
     `explain()` shows, what the compile cache stores, and what the C
-    backend is tested against.  With `emit_c` the SAME statement list is
+    backend is tested against.  At class creation `_hdl_cse` replaces each
+    x-taking function by a bit-identical twin with its repeated
+    subexpressions computed once (the derivative statements re-print
+    every local partial per unknown -- PSP's `G` 13.9 -> 3.2 ms); `_src`
+    stays this reference text.  With `emit_c` the SAME statement list is
     also printed to C (`_render_c`), and the function carries it as
     `_csrc` with `_cshape` and `_clayout`; `_hdl_cbackend` compiles and
     binds it when the backend is selected.  C is only emitted for the
@@ -5969,6 +5973,12 @@ class BehaviouralMeta(type):
         info = _hdl_cache.compiled_info(cls, generate_code)
         _warn_if_compile_is_pathological(cls, time.perf_counter() - _t0,
                                          info)
+        ## The chained functions' repeated subexpressions computed once, in
+        ## the generated Python itself and bit for bit (`_hdl_cse`: PSP's `G`
+        ## 13.9 -> 3.2 ms) -- after the cache, so the cache and the C
+        ## backend keep the reference text (`fn._src`).
+        from pycircuit.circuit import _hdl_cse
+        _hdl_cse.optimise(info)
         funcs = info['funcs']
         ## The evaluation backend (numpy by default; C when selected).
         ## Attached AFTER the compile so a cache hit can bind too, and
@@ -7153,8 +7163,20 @@ def explain(target, source=True, symbolic=True, maxlines=40):
                     'flat lambdify expressions'))
     ## Which backend the class actually RUNS -- not which was asked
     ## for.  The status carries the reason whenever they differ.
-    lines.append('backend: %s'
-                 % getattr(cls, '_hdl_backend_status', 'numpy'))
+    ## (and through the bit-identical CSE twins, `_hdl_cse`: an EVALUATION
+    ## fact like the backend, so it rides on this line -- the records that
+    ## pin `explain()` pin the compile and leave this line out)
+    opt = [k for k in ('i', 'q', 'G', 'C')
+           if '_hdl_ref' in getattr(info['funcs'].get(k), '__dict__', {})]
+    twins = ''
+    if opt:
+        twins = f', through bit-identical CSE twins of {"/".join(opt)}'
+        g = info['funcs'].get('G')
+        if g is not None and '_hdl_ref' in g.__dict__:
+            twins += (f' (G bytecode {len(g._hdl_ref.__code__.co_code)}'
+                      f' -> {len(g.__code__.co_code)})')
+    lines.append(f"backend: {getattr(cls, '_hdl_backend_status', 'numpy')}"
+                 f'{twins}')
     feats = []
     if sm['statenames']:
         feats.append('%d state%s' % (len(sm['statenames']),
