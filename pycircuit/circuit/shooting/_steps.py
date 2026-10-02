@@ -146,9 +146,41 @@ class _StageStep(object):
         `i`, one-term forcing tuples for `solve`.  `u` may be per stage
         (`(s, m)`, a modulated source: `_at_point`)."""
         s, A, c, h = self.s, self.A, self.c, self.h
-        return [(-h * sum(A[i, k] * _at_point(u, k) * np.exp(jw * (ts + c[k] * h))
-                          for k in range(s if self.lu is not None else i + 1)),)
-                for i in range(s)]
+        ## ⚠ VECTORISED OVER THE STAGES, BIT FOR BIT (2026-10-02): every
+        ## term is still ``(A_ik u_k) e^{jw t_k}`` and every stage's sum
+        ## still adds them in `k` order from zero (a lower-triangular
+        ## tableau's stage `i` only up to `k = i`) -- one `exp` per abscissa
+        ## instead of one per term, one array operation per abscissa
+        ## instead of a generator per stage.  The forced replays were 65 %
+        ## this method (`PAC.solve`, radau)
+        E = np.exp(jw * (ts + c * h))
+        per = np.ndim(u) == 2
+        u0 = np.asarray(u[0] if per else u)
+        acc = np.zeros((s,) + u0.shape, dtype=np.result_type(A, u0, E))
+        for k in range(s):
+            uk = np.asarray(u[k]) if per else u0
+            lo = 0 if self.lu is not None else k
+            acc[lo:] = acc[lo:] + (A[lo:, k][:, None] * uk[None, :]) * E[k]
+        return [(-h * acc[i],) for i in range(s)]
+
+    def sources_cols(self, u, jws, ts, _te):
+        """`sources` for a vector of frequencies `jws` at once: per stage
+        an `m x F` forcing, column `f` the forcing `sources(u, jws[f], ...)`
+        gives, the same terms summed in the same order
+        (`PSS._forced_replay_cols`)."""
+        s, A, c, h = self.s, self.A, self.c, self.h
+        jws = np.asarray(jws).ravel()
+        E = np.exp((ts + c * h)[:, None] * jws[None, :])
+        per = np.ndim(u) == 2
+        u0 = np.asarray(u[0] if per else u)
+        acc = np.zeros((s,) + u0.shape + jws.shape,
+                       dtype=np.result_type(A, u0, E))
+        for k in range(s):
+            uk = np.asarray(u[k]) if per else u0
+            lo = 0 if self.lu is not None else k
+            acc[lo:] = acc[lo:] + ((A[lo:, k][:, None] * uk[None, :])[:, :, None]
+                                   * E[k][None, None, :])
+        return [(-h * acc[i],) for i in range(s)]
 
     def source_adjoint(self, acc, r, jw, ts, _te):
         """`acc` less the step's source coupling to the costates `r` --
@@ -325,6 +357,12 @@ class _LMMStep(object):
         END, ``t_{n+1}`` -- the step's one injection point (`u` per point is
         `(1, m)`)."""
         return _at_point(u, 0) * np.exp(jw * float(te))
+
+    def sources_cols(self, u, jws, _ts, te):
+        """`sources` for a vector of frequencies `jws` at once: an `m x
+        F` source, column `f` the one `sources(u, jws[f], ...)` gives."""
+        return (np.asarray(_at_point(u, 0))[:, None]
+                * np.exp(np.asarray(jws).ravel() * float(te))[None, :])
 
     def source_adjoint(self, acc, t, jw, _ts, te):
         """`acc` less the source's coupling to the transposed solve `t`: the

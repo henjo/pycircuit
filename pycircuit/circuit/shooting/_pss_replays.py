@@ -148,6 +148,37 @@ class _FactoredReplays(object):
                 ys.append(fp.node(c).copy())
         return fp.extract(c), ys
 
+    def _forced_replay_cols(self, fp, freqs, u_ac, Y0=None, collect=False,
+                            u_points=None):
+        """`_forced_replay` at every frequency of `freqs` at once: one
+        state COLUMN per frequency, so each step is one block solve instead
+        of one solve per frequency (2026-10-02; `PAC.solve` was 94 % its
+        forced replays after the P4 work).  `Y0` an `(width, F)` block of
+        starting states.  Returns `(Y_end, ys)`, `Y_end` `(width, F)` and
+        `ys` (with `collect`) the node states, each `(m, F)`: column `k` is
+        `_forced_replay(fp, freqs[k], u_ac, y0=Y0[:, k], ...)` to rounding
+        -- a block solve is not the column solves bit for bit.  The stage
+        and multistep maps (`sources_cols`); a GLM's replays stay per
+        frequency (`PAC._forced_responses`)."""
+        freqs = np.asarray(freqs, dtype=float).ravel()
+        F = len(freqs)
+        jws = 2j * np.pi * freqs
+        u_ac = np.asarray(u_ac, dtype=complex).ravel()
+        tms = np.asarray(fp.times, dtype=float)
+        V = (np.zeros((fp.width, F), dtype=complex) if Y0 is None
+             else np.array(Y0, dtype=complex).reshape(fp.width, F))
+        c = fp.seed(V)
+        u0 = u_ac if u_points is None else _at_point(u_points[-1], -1)
+        c = fp.seed_source(c, np.asarray(u0)[:, None]
+                           * np.exp(jws * tms[0])[None, :])
+        ys = []
+        for j, st in enumerate(fp.step_objects()):
+            u_j = u_ac if u_points is None else u_points[j]
+            c = st.solve(c, st.sources_cols(u_j, jws, tms[j], tms[j + 1]))
+            if collect:
+                ys.append(fp.node(c).copy())
+        return fp.extract(c), ys
+
     def _forced_replay_transposed(self, fp, freq, xa):
         """`W^T xa` -- the transpose of the map `u -> w(freq)`, the
         many-to-one half and the reason adjoint noise is affordable: the

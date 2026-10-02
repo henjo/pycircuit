@@ -2650,3 +2650,72 @@ def test_pss_and_pac_run_under_the_jax_toolkit():
     assert np.max(np.abs(Yj - Yn)) < 1e-12 * np.max(np.abs(Yn))
     assert np.all(Sn > 0)
     assert np.max(np.abs(Sj - Sn)) < 1e-12 * np.max(Sn)
+
+
+def test_pac_solve_batches_its_frequencies_and_answers_as_one_at_a_time():
+    """2026-10-02: `PAC.solve`'s forced replays carry one state column per
+    frequency (`_forced_replay_cols`) and its deflated solves are one column
+    call (`_deflated_solve_cols`) -- 3-9x a 20-frequency sweep -- and every
+    sweep point's response is a single-frequency call's to rounding (block
+    solves are not column solves bit for bit).  The batched sources are the
+    scalar ones column by column, BIT FOR BIT, on stage and multistep
+    steps."""
+    from pycircuit.circuit.elements import IS, BSource, L
+    circuit.default_toolkit = circuit.numeric
+
+    def driven(method):
+        c = SubCircuit()
+        c['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
+        c['r'] = R('a', 'b', r=1e3)
+        c['d'] = Diode('b', gnd)
+        c['c'] = C('b', gnd, c=1e-7)
+        c['ac'] = IS('b', gnd, i=0.0, iac=1.0)
+        p = PSS(c, method=method, reltol=1e-10)
+        with quiet(AccuracyWarning):
+            p.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
+        return c, p, np.array([10.0, 700.0, 2300.0, 4100.0])
+
+    def osc(method):
+        c = SubCircuit()
+        c.add_node('v')
+        c['C'] = C('v', gnd, c=1.0)
+        c['L'] = L('v', gnd, L=1.0)
+        c['B'] = BSource('v', gnd, gnd, 'v',
+                         i_func=lambda u: u - u ** 3 / 3.0)
+        c['ac'] = IS('v', gnd, i=0.0, iac=1.0)
+        p = PSS(c, method=method, reltol=1e-10)
+        with quiet(AccuracyWarning):
+            p.solve(period=6.66, timestep=6.66 / 80, x0=np.array([2.0, 0.0]),
+                    maxiterations=80)
+        return c, p, np.array([1e-3, 2e-2, 0.13, 0.4]) / float(p.period)
+
+    for label, mk, method in (('driven radau', driven, 'radau'),
+                              ('driven gear', driven, 'gear'),
+                              ('oscillator radau', osc, 'radau'),
+                              ('oscillator gear', osc, 'gear')):
+        c, p, fs = mk(method)
+        assert p.converged, label
+        pac = PAC(c, toolkit=circuit.numeric)
+        with quiet(AccuracyWarning):
+            batch = pac.solve(p, fs).info['time_response']
+            one = [pac.solve(p, [f]).info['time_response'][0] for f in fs]
+        for (tb, yb), (t1, y1) in zip(batch, one):
+            assert np.array_equal(tb, t1), label
+            assert np.max(np.abs(yb - y1)) <= 1e-12 * np.max(np.abs(y1)), label
+
+        ## the batched sources, column by column, bit for bit
+        fp = p.factored_period()
+        tms = np.asarray(fp.times, dtype=float)
+        rng = np.random.default_rng(3)
+        jws = 2j * np.pi * fs
+        for j, st in enumerate(fp.step_objects()[:5]):
+            u = (rng.standard_normal(p.cir.n - 1)
+                 + 1j * rng.standard_normal(p.cir.n - 1))
+            cols = st.sources_cols(u, jws, tms[j], tms[j + 1])
+            for k, jw in enumerate(jws):
+                one_ = st.sources(u, jw, tms[j], tms[j + 1])
+                if isinstance(one_, list):
+                    for (a,), (b,) in zip(cols, one_):
+                        assert a[:, k].tobytes() == np.asarray(b).tobytes(), label
+                else:
+                    assert cols[:, k].tobytes() == np.asarray(one_).tobytes(), label

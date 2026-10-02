@@ -94,10 +94,13 @@ class _NoiseSources(object):
                 'PAC: the orbit has no stored samples to average CY over.')
         return acc / float(hs[:nsamp].sum())
 
-    def _cy_reduced(self, pss, w, what=None):
+    def _cy_reduced(self, pss, w, what=None, checked=False):
         """`CY` with the reference node removed, refusing a moving one --
         the refusal naming `PAC.<what>` and the routes past it that method
-        has (`am_pm_noise` has `modulated=True` only).
+        has (`am_pm_noise` has `modulated=True` only).  `checked`: the
+        caller has just verified this orbit's sources at another frequency,
+        so `CY` is read at the first state alone -- the same matrix, a third
+        of the assembly (`pnoise`'s sidebands, 2026-10-02).
 
         ⚠ THE CHECK IS THE POINT.  A bias-dependent `CY` makes the sources
         CYCLOSTATIONARY, and then sidebands stop adding in power -- the
@@ -142,6 +145,8 @@ class _NoiseSources(object):
         states = [np.asarray(_mid, dtype=float).ravel()[:pss.cir.n - 1],
                   np.asarray(fp.x_last, dtype=float).ravel(),
                   np.asarray(fp.x_prev, dtype=float).ravel()[:pss.cir.n - 1]]
+        if checked:
+            states = states[:1]
         mats = []
         for xr in states:
             xf = insert_ref(xr, irn)

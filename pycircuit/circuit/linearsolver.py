@@ -671,7 +671,14 @@ class ComplexKLUSolver(object):
 ## measuring the fill is not worth the pass over the matrix.  Chosen from the
 ## measured table (see the module docstring): at n=61 the win is 1.16x, which is
 ## inside the noise of a Python-level dispatch.
-MIN_N_FOR_SPARSE = 100
+## ⚠ RAISED 100 -> 250 (2026-10-02), END TO END: once the assembly stopped
+## re-stamping constant elements (`_stamp_plan`) the transient's own time
+## shrank around the solve, and SuperLU's per-call cost decides.  A gear
+## transient on an RC ladder with a diode every ten sections, best of two,
+## AutoSolver against the dense path: 0.83x at n = 102, 0.88x at 152, 0.92x at
+## 202, 1.00x at 252, 1.05x at 302, 1.17x at 402, 1.32x at 602, 1.60x at 1202
+## (answers within 3e-17).  The floor sits at the crossover.
+MIN_N_FOR_SPARSE = 250
 
 ## And above this fill the matrix is dense enough that SuperLU's bookkeeping costs
 ## more than it saves.  The measured circuits run 0.27%-9.4%; 20% is a deliberately

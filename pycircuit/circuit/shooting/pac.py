@@ -387,10 +387,19 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         History: `doc/shooting_history.md`, `PAC._forced_responses`."""
         T = float(fp.T)
         m = self.cir.n - 1
+        ## ⚠ THE FORCED REPLAYS ARE BATCHED over the frequencies (one state
+        ## column each, `_forced_replay_cols`) on the stage and multistep
+        ## maps -- they were 94 % of a sweep; a GLM's stay one per frequency
+        batch = len(freqs) > 1 and not fp.is_glm
         rhs = []
-        for f in freqs:
-            w, _ = pss._forced_replay(fp, f, u_ac, u_points=u_points)
-            rhs.append(np.exp(-2j * np.pi * f * T) * np.asarray(w))
+        if batch:
+            W, _ = pss._forced_replay_cols(fp, freqs, u_ac, u_points=u_points)
+            for k, f in enumerate(freqs):
+                rhs.append(np.exp(-2j * np.pi * f * T) * W[:, k])
+        else:
+            for f in freqs:
+                w, _ = pss._forced_replay(fp, f, u_ac, u_points=u_points)
+                rhs.append(np.exp(-2j * np.pi * f * T) * np.asarray(w))
 
         alphas = [np.exp(-2j * np.pi * f * T) for f in freqs]
         tol = max(pss.par.reltol * self.KRYLOV_FACTOR, 1e-14)
@@ -424,8 +433,13 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                                                              for v_ in f_steps]
                     _dth_f[i] = _evd.forced_shift(f_nodes)
                     rhs[i] = np.asarray(rhs[i], dtype=complex) + a * (_Pthd @ _dth_f[i])
-            ys = [self._deflated_solve(pss, a, b, transposed=False, tol=tol)
-                  for a, b in zip(alphas, rhs)]
+            ## (every frequency in ONE call: the refinement's residuals are
+            ## block replays -- `_deflated_solve_cols`)
+            _Y, _wb = self._deflated_solve_cols(
+                pss, alphas, np.column_stack(
+                    [np.asarray(b, dtype=complex).ravel() for b in rhs]),
+                transposed=False, tol=tol)
+            ys = [_Y[:, k] for k in range(len(alphas))]
             matvecs = None
         elif recycle:
             ys, matvecs = self._solve_subspace(fp, alphas, rhs, tol)
@@ -480,9 +494,19 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## per unit source), None where the solve had no state events
         out = []
         _Pk_fixed = None
-        for f, y0, dth in zip(freqs, ys, dthetas):
-            _end, ysteps = pss._forced_replay(fp, f, u_ac, y0=y0, collect=True,
-                                               u_points=u_points)
+        if batch:
+            _end, Ysteps = pss._forced_replay_cols(
+                fp, freqs, u_ac,
+                Y0=np.column_stack([np.asarray(y0, dtype=complex).ravel()
+                                    for y0 in ys]),
+                collect=True, u_points=u_points)
+        for k, (f, y0, dth) in enumerate(zip(freqs, ys, dthetas)):
+            if batch:
+                ysteps = [v[:, k] for v in Ysteps]
+            else:
+                _end, ysteps = pss._forced_replay(fp, f, u_ac, y0=y0,
+                                                   collect=True,
+                                                   u_points=u_points)
             y = np.array([np.asarray(y0)[:m]] + [np.asarray(v)[:m]
                                                  for v in ysteps])
             if dth is not None:

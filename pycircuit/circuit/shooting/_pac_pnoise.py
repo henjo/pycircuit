@@ -244,6 +244,16 @@ class _DrivenNoise(object):
             cyfn = (self._cy_cycle_averaged if modulated else
                     (lambda pss_, w_: self._cy_reduced(pss_, w_, what='pnoise')))
         cy = cyfn(pss, w)
+        ## ⚠ THE STATIONARITY CHECK RUNS AT THE OUTPUT FREQUENCY (`cyfn`
+        ## above, and wherever the DC-fold guard reads), its sidebands read
+        ## `CY` at one orbit state: a bias dependence is the source's, not
+        ## one frequency's, and the three-state check at every sideband was
+        ## half of an array call's time (2026-10-02)
+        if not (cyclostationary or modulated):
+            fold_cy = (lambda pss_, w_: self._cy_reduced(
+                pss_, w_, what='pnoise', checked=True))
+        else:
+            fold_cy = cyfn
 
         ## ⚠⚠ ON A HARMONIC, A SIDEBAND FOLDS THE SOURCES TO DC -- AND
         ## SOME DEVICE MODELS ARE NOT DEFINED THERE.  Sideband `l`
@@ -263,7 +273,7 @@ class _DrivenNoise(object):
         self._dc_fold_guard(pss, cyfn, float(freq), float(np.min(offs)), f0_,
                             cy, 'pnoise')
 
-        return cyfn, colour
+        return fold_cy, colour
 
     def _pnoise_fold(self, pss, freq, fam, cyfn, colour, lmax, tol, f0,
                      maxsidebands, N, cyclostationary):
