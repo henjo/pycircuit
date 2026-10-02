@@ -844,7 +844,10 @@ Two conclusions worth carrying, both measured rather than argued:
   `_ChainPrinter` instead.
 
 **BUILT 2026-08-26 (roadmap 20).** The C backend ships, default off:
-`PYCIRCUIT_HDL_BACKEND=c` or `hdl.set_backend('c', cls)`. Measured
+`PYCIRCUIT_HDL_BACKEND=c` or `hdl.set_backend('c', cls)`.  (THE DEFAULT
+since 2026-10-02 -- 'auto': every chained model on C where a compiler,
+cffi and the compile cache serve it, built at a class's first instance;
+roadmap sec. 56.) Measured
 20-270x per class (MosLevel3 270x, PSP's `G` 212x, its `q`/`C` 89x/
 215x), bitwise identical to numpy apart from two named causes (numpy's
 own tanh, and the sign of exact zeros where numpy computes a subchain

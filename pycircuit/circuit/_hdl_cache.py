@@ -719,7 +719,8 @@ _FN = '__hdl_fn__'
 #: Never frozen -- a fused function has no record (it is not chain-compiled
 #: from a `_src` of its own), so freezing a live class's `info` after a
 #: session had run raised `Uncacheable` (until 2026-10-02).
-_RUNTIME_KEYS = frozenset(('_jax', '_fused', '_fuse_ok', '_c_bound'))
+_RUNTIME_KEYS = frozenset(('_jax', '_fused', '_fuse_ok', '_c_bound',
+                           '_backend_pending', '_backend_seen'))
 
 
 def freeze(obj, memo=None):

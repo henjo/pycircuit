@@ -125,6 +125,19 @@ def c_backend(cls):
         hdl.set_backend(None, cls)
 
 
+@contextlib.contextmanager
+def numpy_backend(cls):
+    """The class pinned to numpy for the block -- the REFERENCE side of a
+    comparison: under the default ('auto') a class with an instance runs
+    C, so a reference taken through the element methods unpinned would
+    compare C with C -- restored afterwards."""
+    hdl.set_backend('numpy', cls)
+    try:
+        yield
+    finally:
+        hdl.set_backend(None, cls)
+
+
 def _points(n, count=50, seed=0):
     rng = np.random.default_rng(seed)
     pts = [np.ascontiguousarray(p) for p in rng.uniform(-2, 2, (count, n))]
@@ -328,7 +341,7 @@ class TestBothArmsPreserved(object):
     def test_finite_where_the_discarded_arm_overflows(self):
         e = _instance(_OverflowArms)
         x = np.array([1000.0, 0.0])   # exp(1000) = inf in the dead arm
-        with np.errstate(all='ignore'):
+        with numpy_backend(_OverflowArms), np.errstate(all='ignore'):
             ref_i = e.i(x).copy()
             ref_G = e.G(x).copy()
         ## The VALUE survives the overflowing dead arm; the Jacobian at
@@ -350,7 +363,7 @@ class TestBothArmsPreserved(object):
         e = _instance(_OverflowArms)
         for v in (15.0, 25.0, 700.0):
             x = np.array([v, 0.0])
-            with np.errstate(all='ignore'):
+            with numpy_backend(_OverflowArms), np.errstate(all='ignore'):
                 ref_i, ref_G = e.i(x).copy(), e.G(x).copy()
             with c_backend(_OverflowArms):
                 with np.errstate(all='ignore'):
@@ -401,7 +414,8 @@ class TestPowSentinel(object):
         x = self._x()
         e = _instance(_SquareModel)
         assert 'pow(' in _SquareModel._hdl_info['funcs']['i']._csrc
-        ref = e.i(x).copy()
+        with numpy_backend(_SquareModel):
+            ref = e.i(x).copy()
         with c_backend(_SquareModel):
             got = e.i(x)
         assert ref.tobytes() == got.tobytes()
@@ -416,7 +430,8 @@ class TestPowSentinel(object):
         test's power, measured."""
         x = self._x()
         e = _instance(_SquareModel)
-        ref = e.i(x).copy()
+        with numpy_backend(_SquareModel):
+            ref = e.i(x).copy()
         monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
         monkeypatch.setattr(cb, 'CFLAGS', tuple(
             f for f in cb.CFLAGS if f != '-fno-builtin-pow'))
@@ -559,7 +574,8 @@ class TestSelectionAndFallback(object):
         assert var_cls is not cls, 'expected a collapse variant'
         n = len(hdl.x_layout(var_cls))
         x = np.linspace(-0.3, 0.3, n)
-        with np.errstate(all='ignore'):
+        with numpy_backend(cls), np.errstate(all='ignore'):
+            assert var_cls._hdl_backend_status == 'numpy'
             ref = e.G(x).copy()
         with c_backend(cls):
             assert var_cls._hdl_backend_status == 'c', \
@@ -567,9 +583,11 @@ class TestSelectionAndFallback(object):
             with np.errstate(all='ignore'):
                 got = e.G(x)
         assert ref.tobytes() == got.tobytes()
-        ## unpinned: the variant follows whatever the environment says,
-        ## exactly as the base does
-        assert var_cls._hdl_backend_status == cls._hdl_backend_status
+        ## unpinned: the variant -- which has an instance -- runs whatever
+        ## the environment's default gives one ('auto': C)
+        want = {'numpy': 'numpy', 'c': 'c', 'auto': 'c'}[
+            hdl._backend_requested(var_cls)]
+        assert var_cls._hdl_backend_status == want
 
     def test_results_identical_through_the_element_methods(self):
         """The same instance, backend toggled around it: `i/G/q/C`
@@ -579,7 +597,7 @@ class TestSelectionAndFallback(object):
         e = _instance(cls, **KW['GummelPoonNpnHdl'])
         n = len(hdl.x_layout(cls))
         x = np.linspace(-0.4, 0.4, n)
-        with np.errstate(all='ignore'):
+        with numpy_backend(cls), np.errstate(all='ignore'):
             ref = [getattr(e, m)(x).copy() for m in ('i', 'G', 'q', 'C')]
         with c_backend(cls):
             with np.errstate(all='ignore'):
@@ -591,7 +609,7 @@ class TestSelectionAndFallback(object):
             e.update_iparv()
             with np.errstate(all='ignore'):
                 after_c = e.i(x).copy()
-        with np.errstate(all='ignore'):
+        with numpy_backend(cls), np.errstate(all='ignore'):
             after_np = e.i(x)
         assert after_c.tobytes() == after_np.tobytes()
         assert after_c.tobytes() != ref[0].tobytes()
@@ -706,7 +724,8 @@ class TestSoStore(object):
                 return Contribution(b.I, gg * u)               # noqa: F821
 
         e = _instance(M)
-        ref = e.i(np.array([0.5, 0.0])).copy()
+        with numpy_backend(M):
+            ref = e.i(np.array([0.5, 0.0])).copy()
         monkeypatch.setattr(hdl, '_KERNEL_C',
                             hdl._KERNEL_C + 'this is not C\n')
         ## (a `CostWarning` since 2026-10-01; the default `UserWarning`
@@ -720,7 +739,9 @@ class TestSoStore(object):
             got = e.i(np.array([0.5, 0.0]))
             assert got.tobytes() == ref.tobytes()
         finally:
-            hdl.set_backend(None, M)
+            ## (numpy, not the default: 'auto' would build again against
+            ## the broken prelude, still patched in)
+            hdl.set_backend('numpy', M)
 
 
 ## ----------------------------------------------------------------------
@@ -790,7 +811,8 @@ class TestSolverParity(object):
         from pycircuit.circuit.toolkit import numeric
         from pycircuit.circuit import gnd
         c, out = self._bjt_circuit()
-        ref = float(DC(c, toolkit=numeric).solve().v(out, gnd))
+        with numpy_backend(eh.GummelPoonNpnHdl):
+            ref = float(DC(c, toolkit=numeric).solve().v(out, gnd))
         with c_backend(eh.GummelPoonNpnHdl):
             got = float(DC(c, toolkit=numeric).solve().v(out, gnd))
         assert abs(got - ref) <= 1e-12 * max(1.0, abs(ref))
@@ -828,7 +850,8 @@ class TestSolverParity(object):
                 tend=2e-6, timestep=2e-8, fixed_timestep=True)
             return np.asarray(res.v('out', gnd), float)
 
-        ref = wave()
+        with numpy_backend(eh.GummelPoonNpnHdl):
+            ref = wave()
         with c_backend(eh.GummelPoonNpnHdl):
             got = wave()
         assert got.shape == ref.shape
@@ -871,7 +894,8 @@ class TestSolverParity(object):
                 tend=1e-6, timestep=2e-8, fixed_timestep=True)
             return np.asarray(res.v('d', gnd), float)
 
-        ref_dc, ref_tr = dc(), tran()
+        with numpy_backend(PspMosLongChannel):
+            ref_dc, ref_tr = dc(), tran()
         with c_backend(PspMosLongChannel):
             assert PspMosLongChannel._hdl_backend_status == 'c'
             got_dc, got_tr = dc(), tran()
@@ -1012,7 +1036,8 @@ def test_const_merges_the_repeated_calls_and_keeps_the_bytes(tmp_path,
     fn = _RepeatedPow._hdl_info['funcs']['G']
     assert fn._csrc.count('pow(') >= 3
     xs = [np.array([v, 0.0]) for v in (0.3, 1.7, 2.0, 1e3)]
-    ref = [e.G(x).copy() for x in xs]
+    with numpy_backend(_RepeatedPow):
+        ref = [e.G(x).copy() for x in xs]
 
     def pow_calls():
         with c_backend(_RepeatedPow):
@@ -1072,7 +1097,7 @@ def test_a_signed_zero_tie_has_numpys_sign_on_c(tmp_path, monkeypatch):
     monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
     e = _instance(_TieModel)
     xs = [np.array(v) for v in ([0.0, 0.0], [-0.0, 0.0], [0.0, -0.0])]
-    with np.errstate(all='ignore'):
+    with numpy_backend(_TieModel), np.errstate(all='ignore'):
         ref = [e.i(x).copy() for x in xs]
     assert all(np.all(np.isinf(r)) for r in ref)
     with c_backend(_TieModel):
@@ -1094,7 +1119,8 @@ def test_a_c_bound_class_under_the_jax_backend_runs_its_jax_twin():
     ref_el = eh.EkvNmosHdl(*nodes)
     ref_el.update_iparv()
     x = 0.1 + 0.2 * np.arange(len(ref_el.nodes), dtype=float)
-    ref = ref_el.i(x)
+    with numpy_backend(eh.EkvNmosHdl):
+        ref = ref_el.i(x)
     with c_backend(eh.EkvNmosHdl):
         el = eh.EkvNmosHdl(*nodes, toolkit=jaxtoolkit)
         el.update_iparv()
@@ -1113,13 +1139,15 @@ def test_a_temperature_array_runs_the_numpy_function(tmp_path):
     assert eh.DiodeSpiceHdl._hdl_info['funcs']['i']._clayout[1] is not None
     x = np.array([0.6, 0.0])
     ep = Epar(T=np.array([280.0, 300.0, 320.0]))
-    ref = e.i(x, ep).copy()
+    with numpy_backend(eh.DiodeSpiceHdl):
+        ref = e.i(x, ep).copy()
+        ref_one = e.i(x, Epar(T=300.0)).copy()
     with c_backend(eh.DiodeSpiceHdl):
         assert type(e)._hdl_backend_status == 'c'
         got = e.i(x, ep)
         one = e.i(x, Epar(T=300.0))
     assert got.tobytes() == ref.tobytes()
-    assert one.tobytes() == e.i(x, Epar(T=300.0)).tobytes()
+    assert one.tobytes() == ref_one.tobytes()
 
 
 @needs_cc
@@ -1157,7 +1185,8 @@ def test_a_c_bound_class_is_flagged_and_never_fused():
         with _evalhint.evaluating('i', 'G'):
             assert _hdl_cse.take(e, 'i', x, defaultepar, info,
                                  hdl._args_of) is None
-    assert not info.get('_c_bound')
+    with numpy_backend(eh.MosLevel1Hdl):
+        assert not info.get('_c_bound')
 
 
 def test_an_exponent_that_is_a_where_value_has_no_c_rendering():

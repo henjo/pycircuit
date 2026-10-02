@@ -15,8 +15,12 @@ from pycircuit.circuit.analysis import (
 )
 from pycircuit.circuit.dcanalysis import refnode_removed
 
-#: A compiled function running as C (`hdl.set_backend('c')`) counts this
-#: fraction of its bytecode in `compiled_jacobian_size`: measured
+#: A compiled function running as C counts this fraction of its bytecode in
+#: `compiled_jacobian_size` -- and C is the default for a chained model
+#: since 2026-10-02 where a compiler, cffi and the compile cache serve it
+#: (`_hdl_cbackend`), so the 'auto' Newton options follow the machine: a
+#: mid-sized model takes the full Newton on C and the chord on numpy, its
+#: answers apart by the Newton tolerance.  Measured
 #: 2026-10-01, the C kernel evaluates `G` 53x (MosLevel1, 206 -> 3.9 us) to
 #: 290x (PSP, 14 ms -> 49 us) faster than the numpy path.  2026-10-02,
 #: against the CSE twin that runs and the C kernel with its libm calls

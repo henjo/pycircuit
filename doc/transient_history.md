@@ -3608,6 +3608,17 @@ bit-identical end to end -- a model near the threshold would change its
 Newton with it.  The option descriptions' percentages corrected: chord
 "17-47 %" -> "5-32 %", transform "20-68 %" -> "up to 68 %".
 
+Later the same day, after the numpy twins' exact scalar fast paths (round 2,
+stage C): PSP and MosLevel3 still gain clearly (chord -12 to -35 %,
+transform -11 to -70 %); the mid-sized models' chord -3 to -8 %, their
+transform near break-even (-11 to +6 %: Gummel-Poon +5 %, switching
+MosLevel1 +6 %) -- no crossover moved.  And the C backend became the
+DEFAULT for chained models (stage D): those mid-sized models now run C
+where a compiler is, at a hundredth of their size, with chord and transform
+off -- so on the test suite every moved result but the `tanh` models' came
+from this option flipping, the answers apart by the Newton tolerance (the
+rectifier 1.4e-4 at the default reltol, the rest 3e-9 and below).
+
 ## `_stamp_plan.py` -- the constant-stamp plan (2026-10-01, the speed plan's P2)
 
 ### (module docstring)

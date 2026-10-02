@@ -1359,23 +1359,43 @@ A model that uses ``var()`` compiles to straight-line scalar Python --
 for the surface-potential MOSFET's Jacobian, some 21 000 interpreted
 calls per evaluation.  The same statements, printed to C and compiled
 by the system compiler, run two orders of magnitude faster and return
-**the same bytes**.  That second backend ships with the DSL and is off
-by default::
+**the same bytes**.  Since 2026-10-02 it is **the default** for every model
+that uses ``var()``, wherever it can be served: a C compiler (or the
+objects a compiler built earlier, stored beside the compile cache), the
+``cffi`` package, and the compile cache switched on.  Elsewhere the model
+runs numpy, quietly.  The kernels are built when a class's FIRST INSTANCE
+is constructed, not at import -- once per machine: PSP's take about 17 s,
+the library's other models 0.05-0.7 s each, and a stored object loads in a
+few milliseconds.  A PSP common-source stage's PSS runs in 0.3 s on C
+against 1.7-2 s on numpy.
 
-    PYCIRCUIT_HDL_BACKEND=c python my_simulation.py
+To choose explicitly::
+
+    PYCIRCUIT_HDL_BACKEND=numpy python my_simulation.py   # or c, or auto
 
 or, from code, process-wide or per class::
 
     from pycircuit.circuit import hdl
-    hdl.set_backend('c')                  # classes compiled from now on
+    hdl.set_backend('numpy')              # classes not resolved yet
     hdl.set_backend('c', MyModel)         # this class, immediately
+    hdl.set_backend(None, MyModel)        # back to the default
 
 ``explain()`` prints which backend a class actually runs, and
 ``cls._hdl_backend_status`` says the same thing programmatically:
-``'c'``, or ``'numpy (<why not>)'`` -- an eager-path class (no
-``var()``), a missing compiler, a failed build.  A request for C that
-cannot be served **falls back to numpy and warns**; it never silently
-degrades and never breaks the class.
+``'c'``, ``'numpy (<why not>)'`` -- an eager-path class (no ``var()``), a
+missing compiler, a failed build -- ``'numpy (auto: <why not>)'``, or
+``'auto (resolved at the first instance)'``.  An explicit request for C
+that cannot be served **falls back to numpy and warns**; it never silently
+degrades and never breaks the class.  The default falls back quietly,
+except for a build that fails with a compiler present.
+
+Three things the default changes, all measured on the test suite: a
+``tanh``-using model (op-amp, comparator, divider, charge pump, MESFET,
+HEMT) moves by numpy's ``tanh`` ulp (below), C raises none of numpy's
+floating-point warnings and ignores ``numpy.errstate``, and the 'auto'
+Newton options read a C kernel as a hundredth of its numpy cost -- so a
+mid-sized model's transient takes the full Newton where it took the chord
+on numpy, and its answer moves at the Newton tolerance.
 
 What it buys (measured 2026-08-26, gcc 15.2, one core;
 ``benchmarks/hdl_model_cost.py --backend`` reproduces the table):

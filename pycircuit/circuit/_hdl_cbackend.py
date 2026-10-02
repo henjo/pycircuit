@@ -17,15 +17,28 @@ evaluation.  The same statements compiled by the system C compiler run
 backend_spike_260826.md`); this module is that measurement built out.
 
 Selection
-    `PYCIRCUIT_HDL_BACKEND=c` (or `hdl.set_backend('c')`, or a class
-    attribute `hdl_backend = 'c'`), read once per class at compile /
-    attach time.  The default is numpy.  The choice is per CLASS, and
-    `cls._hdl_backend_status` always says what actually happened:
-    `'c'`, `'numpy'`, `'numpy (eager path: ...)'`, `'numpy (no C
-    compiler ...)'`, `'numpy (compile failed: ...)'`.  When C was
-    REQUESTED and cannot be delivered, a warning is issued as well --
-    requesting a 200x backend and silently getting the 1x one is the
-    failure mode this refuses to have.
+    The default is `'auto'` (since 2026-10-02): every chained class runs
+    C where it can be served -- the kernels printed (`_csrc`), cffi
+    installed, the compile cache on (without a store every process would
+    rebuild PSP's kernels, ~30-90 s), a compiler or the stored objects --
+    and numpy otherwise, QUIETLY, saying why in its status.  It is
+    resolved at the class's FIRST INSTANCE (`ensure`, from
+    `Behavioural.__init__`), not at class creation: importing the library
+    compiles nothing, a base class that only spawns collapse variants
+    never builds, and an instance runs one backend from its first
+    evaluation.  An instance on the JAX or symbolic toolkit leaves the
+    class unresolved (its own path is the jax twin).
+    `PYCIRCUIT_HDL_BACKEND=c` / `numpy` (or `hdl.set_backend`, or a class
+    attribute `hdl_backend`) pins it, applied at class creation as
+    before.  `cls._hdl_backend_status` always says what actually
+    happened: `'c'`, `'numpy'`, `'numpy (eager path: ...)'`, `'numpy
+    (compile failed: ...)'` (a missing compiler too, when C is asked for),
+    `'numpy (cffi not installed)'`, `'numpy (auto: <why>)'`, `'auto
+    (resolved at the first instance)'`.  When C was REQUESTED and cannot
+    be delivered, a warning is issued as well -- requesting a 200x backend
+    and silently getting the 1x one is the failure mode this refuses to
+    have; under 'auto' only a build that FAILS with a compiler present
+    warns (a defect, either way).
 
 Fidelity
     The `.so` is compiled with `-O2` and no fast-math, no FMA
@@ -511,19 +524,63 @@ def detach(cls, info):
 
 def attach(cls, info):
     """Bind C kernels to `cls`'s chained functions, per the requested
-    backend.  Always sets `cls._hdl_backend_status`; never raises for a
-    build problem (it warns and falls back to numpy), only for a
-    misconfigured backend name."""
+    backend -- or, for 'auto' (the default), mark the class to be
+    resolved at its first instance (`ensure`).  Always sets
+    `cls._hdl_backend_status`; never raises for a build problem (it warns
+    and falls back to numpy), only for a misconfigured backend name."""
     from pycircuit.circuit import hdl
     which = hdl._backend_requested(cls)
-    if which != 'c':
+    if which == 'numpy':
         detach(cls, info)
+        info['_backend_pending'] = False
         _note(cls, 'numpy')
         return
     if not info['chained']:
+        detach(cls, info)
+        info['_backend_pending'] = False
         _note(cls, 'numpy (eager path: the C backend serves let-chain '
                    'models only)')
         return
+    if which == 'auto':
+        detach(cls, info)
+        if info.get('_backend_seen'):
+            ## instances exist (a pin was lifted): resolve now, so they run
+            ## what they ran before it
+            info['_backend_pending'] = False
+            _resolve(cls, info, explicit=False)
+        else:
+            info['_backend_pending'] = True
+            _note(cls, 'auto (resolved at the first instance)')
+        return
+    info['_backend_pending'] = False
+    _resolve(cls, info, explicit=True)
+
+
+def ensure(cls, info, toolkit=None):
+    """At an instance's construction (`Behavioural.__init__`): resolve an
+    'auto' class's backend, once.  An instance on the JAX or symbolic
+    toolkit leaves it unresolved -- it runs its own path (the jax twin)."""
+    if getattr(toolkit, 'jax', False) or getattr(toolkit, 'symbolic', False):
+        return
+    info['_backend_seen'] = True
+    if info.get('_backend_pending'):
+        info['_backend_pending'] = False
+        _resolve(cls, info, explicit=False)
+
+
+def _resolve(cls, info, explicit):
+    """Bind the C kernels for an explicit request or an 'auto' class.
+    Where C cannot be served: numpy, with the reason in the status -- and a
+    warning when C was asked for; under 'auto' only a build that fails
+    with a compiler present warns."""
+    def refuse(status, why):
+        detach(cls, info)
+        if explicit:
+            _note(cls, f'numpy ({status})',
+                  warn=f'requested backend "c" but {why}; running numpy')
+        else:
+            _note(cls, f'numpy (auto: {status})')
+
     funcs = info['funcs']
     todo = {}
     for name in C_FUNCS:
@@ -533,32 +590,38 @@ def attach(cls, info):
         if getattr(fn, '_csrc', None) is not None:
             todo[id(fn)] = fn
         elif hasattr(fn, '_creason'):
-            _note(cls, 'numpy (C rendering unavailable: %s)' % fn._creason,
-                  warn='requested backend "c" but the chain could not be '
-                       'printed to C (%s); running numpy' % fn._creason)
-            return
+            return refuse(f'C rendering unavailable: {fn._creason}',
+                          'the chain could not be printed to C '
+                          f'({fn._creason})')
     if not todo:
-        _note(cls, 'numpy (no C source on this class; recompile with '
-                   'hdl.EMIT_C_SOURCE on)',
-              warn='requested backend "c" but the compiled functions carry '
-                   'no C source; running numpy')
-        return
+        return refuse('no C source on this class; recompile with '
+                      'hdl.EMIT_C_SOURCE on',
+                      'the compiled functions carry no C source')
     ## The kernels load through cffi, which numpy does not need: without
     ## it a request for C ran into an ImportError out of class creation
     ## (until 2026-10-02).
     if importlib.util.find_spec('cffi') is None:
-        detach(cls, info)
-        _note(cls, 'numpy (cffi not installed)',
-              warn='requested backend "c" but cffi is not installed; '
-                   'running numpy')
-        return
-    ## No compiler check here: a warm `.so` store serves a machine
-    ## with no compiler at all (`kernel_for` only builds on a miss, and
-    ## raises `CompileError` naming the missing compiler when it must
-    ## build).
-    _build_missing_parallel(list(todo.values()))
+        return refuse('cffi not installed', 'cffi is not installed')
+    if not explicit:
+        from pycircuit.circuit import _hdl_cache
+        if not _hdl_cache.enabled():
+            ## no store: every process would build every kernel again
+            return refuse('the compile cache is off', '')
+        try:
+            _so_dir()
+        except OSError:
+            return refuse('the compile cache directory is not usable', '')
+        if find_compiler()[0] is None and any(
+                find_so(source_key(fn._csrc)) is None
+                for fn in todo.values()):
+            return refuse('no C compiler', '')
+    ## (An explicit request has no compiler check: a warm `.so` store
+    ## serves a machine with no compiler at all -- `kernel_for` only builds
+    ## on a miss, and raises `CompileError` naming the missing compiler
+    ## when it must build.  'auto' looked above, and stays quiet.)
     cold = False
     try:
+        _build_missing_parallel(list(todo.values()))
         for fn in todo.values():
             ## The x length the kernel reads equals its output row
             ## count: `i`, `G`, `q`, `C` are all n-per-side.  Taken from
@@ -567,11 +630,14 @@ def attach(cls, info):
             kern, was_cold = kernel_for(fn, fn._cshape[0])
             cold = cold or was_cold
             fn._hdl_c = kern
-    except CompileError as e:
+    except (CompileError, OSError) as e:
+        ## (an OSError: the store's directory -- a file in its place, no
+        ## permission -- escaped class creation until 2026-10-02)
         detach(cls, info)
         _note(cls, 'numpy (compile failed: %s)' % e,
-              warn='requested backend "c" but the build failed (%s); '
-                   'running numpy' % e)
+              warn=('requested backend "c" but the build failed (%s); '
+                    'running numpy' if explicit else
+                    'the C build failed (%s); running numpy') % e)
         return
     ## (read by `_hdl_cse.take`: a C-bound class's calls never fuse)
     info['_c_bound'] = True

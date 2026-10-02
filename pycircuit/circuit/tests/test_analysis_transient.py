@@ -1154,8 +1154,11 @@ def test_the_newton_options_turn_on_where_the_compiled_jacobian_is_expensive():
     -6 / -15 %), the HEMT (2.2 KB) and `DiodeHdl` within 3 %, and the options
     LOST only on circuits of hand-written elements (van der Pol +18 % under
     radau, a switching PWM loop +79 / +15 %).  True / False force it; anything else
-    is refused.  On a MosLevel1 stage the default runs the chord: fewer `G`
-    evaluations than forced off, the same answer to the Newton tolerance."""
+    is refused.  On a MosLevel1 stage on numpy the default runs the chord:
+    fewer `G` evaluations than forced off, the same answer to the Newton
+    tolerance.  On the C backend -- the default where a compiler exists,
+    since 2026-10-02 -- MosLevel1's Jacobian counts a hundredth and both go
+    off."""
     from pycircuit.circuit import elements_hdl as eh
     from pycircuit.circuit._tran_newton import compiled_jacobian_size
     from pycircuit.circuit.elements import VS, Diode
@@ -1176,52 +1179,59 @@ def test_the_newton_options_turn_on_where_the_compiled_jacobian_is_expensive():
     dio = lambda: stage(lambda: Diode('d', gnd))
     small = lambda: stage(lambda: eh.DiodeHdl('d', gnd))
     limit = Transient.AUTO_JACOBIAN_CODE
-    assert compiled_jacobian_size(dio()) == 0
-    assert 0 < compiled_jacobian_size(small()) < limit
-    assert compiled_jacobian_size(mos()) >= limit
+    from pycircuit.circuit import compact, hdl
+    ## THE NUMPY PATH'S decisions, MosLevel1 pinned to it: the default
+    ## ('auto', 2026-10-02) runs a chained model on C where it can, and a
+    ## C-bound Jacobian counts a hundredth (below)
+    hdl.set_backend('numpy', eh.MosLevel1Hdl)
+    try:
+        assert compiled_jacobian_size(dio()) == 0
+        assert 0 < compiled_jacobian_size(small()) < limit
+        assert compiled_jacobian_size(mos()) >= limit
 
-    def option(c, name, **kw):
-        tr = Transient(c, toolkit=tk, **kw)
-        return tr._newton_option(getattr(tr.par, name), name)
+        def option(c, name, **kw):
+            tr = Transient(c, toolkit=tk, **kw)
+            return tr._newton_option(getattr(tr.par, name), name)
 
-    for name in ('chord_jacobian', 'radau_transform'):
-        assert option(mos(), name) is True
-        assert option(dio(), name) is False
-        assert option(small(), name) is False
-        assert option(mos(), name, **{name: False}) is False
-        assert option(dio(), name, **{name: True}) is True
-        with pytest.raises(ValueError, match="True, False or 'auto'"):
-            option(dio(), name, **{name: 'yes'})
-    got = {}
-    orig_G = SubCircuit.G
-    for chord in ('auto', False):
-        calls = []
+        for name in ('chord_jacobian', 'radau_transform'):
+            assert option(mos(), name) is True
+            assert option(dio(), name) is False
+            assert option(small(), name) is False
+            assert option(mos(), name, **{name: False}) is False
+            assert option(dio(), name, **{name: True}) is True
+            with pytest.raises(ValueError, match="True, False or 'auto'"):
+                option(dio(), name, **{name: 'yes'})
+        got = {}
+        orig_G = SubCircuit.G
+        for chord in ('auto', False):
+            calls = []
 
-        def G(self, *a, _c=calls, **k):
-            _c.append(1)
-            return orig_G(self, *a, **k)
-        SubCircuit.G = G
-        try:
-            c = mos()
-            tr = Transient(c, toolkit=tk, reltol=1e-10, chord_jacobian=chord)
-            with quiet():
-                res = tr.solve(tend=3e-6, timestep=3e-6 / 120,
-                               fixed_timestep=True)
-        finally:
-            SubCircuit.G = orig_G
-        got[chord] = (np.asarray(res.x, dtype=float), len(calls))
-    (xa, ga), (xf, gf) = got['auto'], got[False]
-    assert ga < gf, (ga, gf)
-    assert np.max(np.abs(xa - xf)) / np.max(np.abs(xf)) < 1e-9
+            def G(self, *a, _c=calls, **k):
+                _c.append(1)
+                return orig_G(self, *a, **k)
+            SubCircuit.G = G
+            try:
+                c = mos()
+                tr = Transient(c, toolkit=tk, reltol=1e-10, chord_jacobian=chord)
+                with quiet():
+                    res = tr.solve(tend=3e-6, timestep=3e-6 / 120,
+                                   fixed_timestep=True)
+            finally:
+                SubCircuit.G = orig_G
+            got[chord] = (np.asarray(res.x, dtype=float), len(calls))
+        (xa, ga), (xf, gf) = got['auto'], got[False]
+        assert ga < gf, (ga, gf)
+        assert np.max(np.abs(xa - xf)) / np.max(np.abs(xf)) < 1e-9
+        numpy_size = compiled_jacobian_size(mos())
+    finally:
+        hdl.set_backend(None, eh.MosLevel1Hdl)
 
     ## ON THE C BACKEND a model's Jacobian is cheap (MosLevel1's `G` 20x
     ## the CSE twin's speed), and it counts `C_KERNEL_SHARE` of its bytecode:
     ## MosLevel1 goes off (the transform measured +16 % there, switching);
     ## PSP, at 1.8 MB, would stay on (-63 % measured) -- read off its bytecode, so
     ## the test builds no PSP kernel
-    from pycircuit.circuit import compact, hdl
     from pycircuit.circuit._tran_newton import C_KERNEL_SHARE
-    numpy_size = compiled_jacobian_size(mos())
     hdl.set_backend('c', eh.MosLevel1Hdl)
     try:
         if eh.MosLevel1Hdl._hdl_backend_status != 'c':
@@ -1233,8 +1243,13 @@ def test_the_newton_options_turn_on_where_the_compiled_jacobian_is_expensive():
         assert option(mos(), 'radau_transform') is False
     finally:
         hdl.set_backend(None, eh.MosLevel1Hdl)
-    psp = stage(lambda: compact.PspMosLongChannel('d', 'g', gnd, gnd))
-    assert compiled_jacobian_size(psp) * C_KERNEL_SHARE >= limit
+    ## (its numpy size, PSP pinned: the default would bind its kernels)
+    hdl.set_backend('numpy', compact.PspMosLongChannel)
+    try:
+        psp = stage(lambda: compact.PspMosLongChannel('d', 'g', gnd, gnd))
+        assert compiled_jacobian_size(psp) * C_KERNEL_SHARE >= limit
+    finally:
+        hdl.set_backend(None, compact.PspMosLongChannel)
 
 def test_esdirk43_is_a_tableau_only_order4_dirk():
     """ESDIRK4(3)6 (KenCarp4) -- the refactor's test vehicle: a NEW DIRK method

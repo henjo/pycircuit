@@ -163,7 +163,21 @@ def test_every_chained_library_class_is_byte_identical_to_its_reference(name):
             assert outcome[0] == outcome[1], (name, k, x)
 
 
-def test_the_auto_options_read_the_reference_size():
+@pytest.fixture
+def numpy_twins():
+    """MosLevel1, MosLevel3 and PSP pinned to numpy for the test: under the default
+    ('auto') a class with an instance runs its C kernels, and the numpy
+    twins' sessions, fusion and size are what these tests are about."""
+    from pycircuit.circuit.compact import PspMosLongChannel
+    classes = (eh.MosLevel1Hdl, eh.MosLevel3Hdl, PspMosLongChannel)
+    for c in classes:
+        hdl.set_backend('numpy', c)
+    yield
+    for c in classes:
+        hdl.set_backend(None, c)
+
+
+def test_the_auto_options_read_the_reference_size(numpy_twins):
     """`compiled_jacobian_size` reads the reference bytecode
     (`_hdl_codelen`), not the twin's -- a third of it for PSP: re-calibrated
     2026-10-02 with the twins running, the reference size still places every
@@ -231,9 +245,14 @@ def test_the_text_does_not_depend_on_the_hash_seed():
 
 
 def test_a_transient_is_byte_identical_with_the_reference_functions(
-        monkeypatch):
+        monkeypatch, numpy_twins):
     """End to end: a MosLevel1 inverter's transient with the optimised
-    functions and with the references swapped back in."""
+    functions and with the references swapped back in (and no evaluation
+    sessions, whose fused functions are optimised too).
+
+    ⚠ The instance's class: MosLevel1 runs as a collapse VARIANT with
+    functions of its own, and until 2026-10-02 this swapped the base
+    class's -- reaching nothing, so it compared the twins with themselves."""
     from pycircuit.circuit.elements import VS, C, R, VPulse
     from pycircuit.circuit.transient import Transient
     cm.default_toolkit = numeric
@@ -248,11 +267,16 @@ def test_a_transient_is_byte_identical_with_the_reference_functions(
         c['CL'] = C('out', cm.gnd, c=1e-13)
         return c
     a = Transient(inverter()).solve(tend=2e-8, timestep=1e-10)
-    funcs = eh.MosLevel1Hdl._hdl_info['funcs']
+    funcs = type(inverter()['M'])._hdl_info['funcs']
+    swapped = 0
     for k in cs.FUNCS:
         f = funcs.get(k)
         if f is not None and '_hdl_ref' in f.__dict__:
             monkeypatch.setitem(funcs, k, f._hdl_ref)
+            swapped += 1
+    assert swapped >= 4
+    from pycircuit.circuit import _evalhint
+    monkeypatch.setattr(_evalhint, 'current', lambda: None)
     b = Transient(inverter()).solve(tend=2e-8, timestep=1e-10)
     assert (np.asarray(a.x, float).tobytes()
             == np.asarray(b.x, float).tobytes())
@@ -321,7 +345,7 @@ def _mos3():
 
 
 def test_a_session_runs_one_fused_pass_per_state_and_hands_each_output_once(
-        monkeypatch):
+        monkeypatch, numpy_twins):
     from pycircuit.circuit import _evalhint as eh_
     e = _mos3()
     info = type(e)._hdl_info
@@ -354,7 +378,7 @@ def test_a_session_runs_one_fused_pass_per_state_and_hands_each_output_once(
 
 
 
-def test_a_live_class_info_freezes_after_a_session_ran():
+def test_a_live_class_info_freezes_after_a_session_ran(numpy_twins):
     """The fused functions and session flags a class's `info` gains at
     runtime are derived, not recorded: freezing it after a session raised
     `Uncacheable` on the fused `_f` (DEFECT, fixed 2026-10-02 -- met by
@@ -373,7 +397,7 @@ def test_a_live_class_info_freezes_after_a_session_ran():
     thawed = hc.thaw(frozen)
     assert thawed['funcs']['i']._src == info['funcs']['i']._src
 
-def test_a_session_stays_out_of_what_it_cannot_serve():
+def test_a_session_stays_out_of_what_it_cannot_serve(numpy_twins):
     from pycircuit.circuit import _evalhint as eh_
     e = _mos3()
     x = np.full(e.n, 0.3)
@@ -400,7 +424,7 @@ def test_a_session_stays_out_of_what_it_cannot_serve():
 
 @pytest.mark.parametrize('method', ['gear', 'radau', 'trbdf2'])
 def test_sessions_and_the_stage_memo_leave_a_transient_byte_identical(
-        method, monkeypatch):
+        method, monkeypatch, numpy_twins):
     """A MosLevel3 inverter's transient with evaluation sessions (and the
     stage paths' device memo) and with both off: the same bytes, and the
     same number of circuit `G` calls (the Jacobian counters some tests

@@ -6307,3 +6307,16 @@ is only ever finite (which NaN two NaNs give follows the operand order).
 PSP `G` 3.16 -> 1.90 ms, library median `G` 2.5x, the PSP stage PSS gear
 2.75 -> 1.71 s, radau 3.30 -> 1.97 s; bit-identical (gate G81).
 `PYCIRCUIT_HDL_FAST=0` turns it off.
+
+## 2026-10-02 — 56. Speed round 2, stage D: the C backend is the default
+
+`'auto'`: every chained model runs C where a compiler (or its stored
+objects), cffi and the compile cache serve it, resolved at a class's first
+instance (`_hdl_cbackend.ensure` from `Behavioural.__init__`); numpy
+quietly elsewhere, the reason in `_hdl_backend_status`.  Cold builds: the
+library 0.04-0.66 s per class, PSP 16.7 s, once per machine.  On the suite,
+every moved result is either the 'auto' Newton options reading a C kernel at
+a hundredth (verified: with the share at 1 all but the `tanh` models are
+identical to numpy) or the `tanh` ulp (comparator, op-amp, divider); C
+raises no numpy warnings.  `PYCIRCUIT_HDL_BACKEND=numpy` restores the old
+default.  A vacuous F1a test (a swap on a collapse variant's base) fixed.

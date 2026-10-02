@@ -4828,19 +4828,22 @@ EMIT_C_SOURCE = True
 #: attribute `hdl_backend = 'c'` (inherited like any attribute).
 BACKEND = None
 
-_BACKENDS = ('numpy', 'c')
+_BACKENDS = ('numpy', 'c', 'auto')
 
 
 def _backend_requested(cls):
     """Which backend `cls` asked for: the class attribute, else the
-    module flag, else the environment, else numpy.  An unknown name
-    raises -- a typo in `PYCIRCUIT_HDL_BACKEND` must not quietly run
-    numpy while the user believes C is on."""
+    module flag, else the environment, else 'auto' -- the C backend for
+    every chained model where it can be served (a compiler or a stored
+    object, cffi, the compile cache), resolved at the class's first
+    instance; the default since 2026-10-02 (`_hdl_cbackend.attach`).  An
+    unknown name raises -- a typo in `PYCIRCUIT_HDL_BACKEND` must not
+    quietly run one backend while the user believes another is on."""
     which = getattr(cls, 'hdl_backend', None)
     if which is None:
         which = BACKEND
     if which is None:
-        which = os.environ.get('PYCIRCUIT_HDL_BACKEND', '').strip() or 'numpy'
+        which = os.environ.get('PYCIRCUIT_HDL_BACKEND', '').strip() or 'auto'
     if which not in _BACKENDS:
         raise ValueError('unknown HDL backend %r (one of %s; check '
                          'PYCIRCUIT_HDL_BACKEND)' % (which,
@@ -4849,14 +4852,19 @@ def _backend_requested(cls):
 
 
 def set_backend(which, cls=None):
-    """Select the evaluation backend: `'numpy'` (the default) or `'c'`.
+    """Select the evaluation backend: `'auto'` (the default: C where it can
+    be served, resolved at a class's first instance), `'c'` (requested --
+    a class that cannot have it warns) or `'numpy'`.
 
     With `cls` given, re-attaches that one class immediately and pins it
     (sets `cls.hdl_backend`); without, sets the process-wide default for
-    classes compiled from then on.  `which=None` removes the pin (or the
-    process default) so the environment decides again.
+    classes not resolved yet (compiled later, or 'auto' with no instance
+    so far).  `which=None` removes the pin (or the process default) so the
+    environment decides again -- a class with instances is then resolved
+    again at once, so they run what they ran before the pin.
     `cls._hdl_backend_status` afterwards says what actually happened --
-    `'c'`, or `'numpy (<why not>)'`.
+    `'c'`, `'numpy (<why not>)'`, or `'auto (resolved at the first
+    instance)'`.
     """
     if which is not None and which not in _BACKENDS:
         raise ValueError('unknown HDL backend %r' % (which,))
@@ -7112,6 +7120,16 @@ class Behavioural(circuit.Circuit, metaclass=BehaviouralMeta):
             self._hdl_collapse_seen = mask
         for name in info['internalnames'] + info['state_meta']['statenames']:
             self.add_node(name)
+        ## THE BACKEND, RESOLVED AT THE FIRST INSTANCE (the default 'auto',
+        ## 2026-10-02): a class -- a collapse variant too, created just
+        ## above -- builds or loads its C kernels here, not at import, so
+        ## importing the library compiles nothing and a base class that only
+        ## spawns variants never builds.  Here, before any analysis: every
+        ## evaluation of the instance runs one backend from its first, and
+        ## the 'auto' Newton options (`compiled_jacobian_size`) read it.
+        if not info.get('_backend_seen'):
+            from pycircuit.circuit import _hdl_cbackend
+            _hdl_cbackend.ensure(type(self), info, self.toolkit)
 
     def next_event(self, t):
         return self.toolkit.inf
