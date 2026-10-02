@@ -126,6 +126,16 @@ def test_every_chained_library_class_is_byte_identical_to_its_reference(name):
     pts = [np.ascontiguousarray(p) for p in rng.uniform(-2, 2, (60, e.n))]
     pts += [np.full(e.n, v) for v in (1e30, -1e30, 100.0, -100.0, 0.7,
                                       0.0, -0.0)]
+    ## (and where the exact scalar fast paths decide differently from a
+    ## plain select -- infinities, NaNs of both signs, a subnormal, ties of
+    ## equal and of opposite-signed-zero entries)
+    specials = [np.full(e.n, v) for v in (np.inf, -np.inf, np.nan,
+                                          -np.nan, 5e-324)]
+    for v in (0.0, 0.3, -1.2):
+        p = np.full(e.n, v)
+        p[::2] = -v if v == 0.0 else v
+        specials.append(p)
+    pts += specials
     for k in cs.FUNCS:
         f = funcs.get(k)
         if f is None:
@@ -141,7 +151,7 @@ def test_every_chained_library_class_is_byte_identical_to_its_reference(name):
                 b = np.asarray(f(x, *args), float)
             assert a.tobytes() == b.tobytes(), (name, k, x)
         ## raise-iff-raise: the same operations, so the same conditions
-        for x in pts[-7:]:
+        for x in pts[-(7 + len(specials)):]:
             outcome = []
             for g in (ref, f):
                 try:
@@ -201,11 +211,20 @@ def test_the_switch_turns_the_pass_off():
     assert _run(code, {}).strip() == 'True'
 
 
+def test_the_fast_switch_turns_the_fast_paths_off():
+    code = ('from pycircuit.circuit import elements_hdl as eh\n'
+            'print("_fwhere(" in eh.MosLevel1Hdl._hdl_info["funcs"]["G"]'
+            '._src_cse)')
+    assert _run(code, {'PYCIRCUIT_HDL_FAST': '0'}).strip() == 'False'
+    assert _run(code, {}).strip() == 'True'
+
+
 def test_the_text_does_not_depend_on_the_hash_seed():
     code = ('from pycircuit.circuit import _hdl_cse as cs, elements_hdl as eh\n'
             'import hashlib\n'
             'src = eh.MosLevel3Hdl._hdl_info["funcs"]["G"]._src\n'
-            'print(hashlib.sha256(cs.cse_source(src)[0].encode()).hexdigest())')
+            'text = cs._fast_rewrite(cs.cse_source(src)[0])\n'
+            'print(hashlib.sha256(text.encode()).hexdigest())')
     a = _run(code, {'PYTHONHASHSEED': '1'})
     b = _run(code, {'PYTHONHASHSEED': '12345'})
     assert a == b

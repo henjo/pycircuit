@@ -5658,6 +5658,11 @@ def _chain_namespace(modules_map):
     ns.setdefault('_wrapfloor', numpy.floor)
     for _k, _v2 in _KERNEL_NUMPY.items():
         ns.setdefault(_k, _v2)
+    ## the exact scalar fast paths the numpy twins call (`_hdl_fast`; new
+    ## names, so the reference functions and the jax twins never see them)
+    from pycircuit.circuit import _hdl_fast
+    for _k, _v2 in _hdl_fast.helpers().items():
+        ns.setdefault(_k, _v2)
     ## NumPyPrinter prints Min/Max as `functools.reduce(numpy.minimum, ...)`,
     ## so both names have to be in the namespace, not just numpy's.
     ns.setdefault('numpy', numpy)
@@ -7285,6 +7290,9 @@ def explain(target, source=True, symbolic=True, maxlines=40):
     twins = ''
     if opt:
         twins = f', through bit-identical CSE twins of {"/".join(opt)}'
+        if any('_fwhere(' in (getattr(info['funcs'].get(k), '_src_cse', '')
+                              or '') for k in opt):
+            twins += ' with exact scalar fast paths'
         g = info['funcs'].get('G')
         if g is not None and '_hdl_ref' in g.__dict__:
             twins += (f' (G bytecode {len(g._hdl_ref.__code__.co_code)}'

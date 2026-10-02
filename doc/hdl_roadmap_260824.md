@@ -6293,3 +6293,17 @@ filename and the text), compiling and storing on a miss; used by the chain
 compile, the cache thaw, the CSE twins, the fused functions and the JAX
 twins.  Import 1.80 -> 1.06 s, PSP's class 0.28 -> 0.02 s; no cache-format
 bump; every result bit-identical (gate G80).
+
+## 2026-10-02 — 55. Speed round 2, stage C: exact scalar fast paths for the numpy twins
+
+`_hdl_fast` + `_hdl_cse._fast_rewrite`: the twins call fast paths for
+`numpy.where`, `_step`, `maxc`/`minc`, `numpy.maximum`/`minimum` and the
+comparisons, each answering exactly what numpy answers on the scalars it
+decides and handing every other case (ties, NaN, arrays, int64, sympy) to
+numpy.  The two measured places a numpy scalar differs from numpy's 0-d
+array are closed: a `where` whose value reaches `**` stays `numpy.where`
+(numpy squares a 0-d array, a scalar goes through `pow`), and a fast `where`
+is only ever finite (which NaN two NaNs give follows the operand order).
+PSP `G` 3.16 -> 1.90 ms, library median `G` 2.5x, the PSP stage PSS gear
+2.75 -> 1.71 s, radau 3.30 -> 1.97 s; bit-identical (gate G81).
+`PYCIRCUIT_HDL_FAST=0` turns it off.

@@ -1326,6 +1326,21 @@ compile cache (``cse/``), so the pass runs once per model.
 kernels are printed from the reference statements and stay bit-identical to
 the twin, because the twin computes the same bits.
 
+The twins then take **exact scalar fast paths** (``_hdl_fast``): on a single
+number, ``numpy.where`` costs about a microsecond and hands back a 0-d array
+that slows the next operation, ``numpy.maximum`` and the comparisons over
+half a microsecond each -- and PSP's ``G`` makes some 1700 such calls.  Each
+fast path takes the same decision in Python and returns what numpy returns
+(the numpy scalar type, the same bits, the same behaviour under
+``numpy.errstate``); ties of signed zeros, NaNs, arrays and anything else
+go to numpy itself.  Two places where a number and numpy's 0-d array compute
+differently were measured and are kept as numpy does them: a ``where``
+value that is raised to a power (numpy squares a 0-d array exactly, a
+number goes through ``pow``), and a value that is not finite.  PSP's ``G``
+3.2 -> 1.9 ms, the library's median ``G`` 2.5x, the PSP stage's PSS gear
+2.75 -> 1.71 s and radau 3.30 -> 1.97 s, every result to the last bit.
+``PYCIRCUIT_HDL_FAST=0`` turns them off.
+
 The analyses go one step further.  Where a step needs several of ``i``,
 ``q``, ``G`` and ``C`` at one state, it opens an *evaluation session*
 naming them (``pycircuit/circuit/_evalhint.py``), and a chained model

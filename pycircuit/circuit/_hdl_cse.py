@@ -46,6 +46,15 @@ Measured (F0, 2026-10-02): PSP's `G` 13.9 -> 3.2 ms, `C` 7.2 -> 1.6 ms, `i`
 3.0x); every function of every class byte-identical over its sweep, the
 raise-mode behaviour unchanged; the PSP stage's PSS 3.5x end to end, its
 waveform byte-identical.  `PYCIRCUIT_HDL_CSE=0` turns the pass off.
+
+The twins then call EXACT SCALAR FAST PATHS (`_hdl_fast`, renamed in by
+`_fast_rewrite`): `numpy.where`, `_step`, `maxc`/`minc`, `numpy.maximum`/
+`minimum` and the comparisons cost ~0.6-1 us each on scalars through numpy's
+dispatch, and PSP's `G` makes ~1700 such calls.  Each fast path answers what
+numpy answers -- type, bits, raise mode -- and hands every other case to it
+(2026-10-02: PSP `G` 3.16 -> 1.90 ms, the library median `G` 2.5x, the PSP
+stage's PSS 38-40 % faster, every function of every chained class
+byte-identical over its sweep).  `PYCIRCUIT_HDL_FAST=0` turns them off.
 """
 import ast
 import hashlib
@@ -56,10 +65,15 @@ import tempfile
 import numpy as np
 
 #: the derived store's format; bump when the emitted text changes
-FORMAT = 1
+#: (2: the exact scalar fast paths, `_fast_rewrite`)
+FORMAT = 2
 
 #: the pass runs at class creation unless `PYCIRCUIT_HDL_CSE=0`
 ENABLED = os.environ.get('PYCIRCUIT_HDL_CSE', '1').strip() != '0'
+
+#: the twins call the exact scalar fast paths (`_hdl_fast`) unless
+#: `PYCIRCUIT_HDL_FAST=0`
+FAST_ENABLED = os.environ.get('PYCIRCUIT_HDL_FAST', '1').strip() != '0'
 
 #: the chain functions it applies to (those taking the state `x`)
 FUNCS = ('i', 'q', 'G', 'C', 'i_dc', 'G_dc')
@@ -307,8 +321,13 @@ def _verify(fn, text):
 ## -- the derived store ------------------------------------------------------
 
 def _own_hash():
-    with open(__file__, 'rb') as fh:
-        return hashlib.sha256(fh.read()).hexdigest()
+    ## (and the fast paths' module: its renames are part of the text)
+    from pycircuit.circuit import _hdl_fast
+    h = hashlib.sha256()
+    for path in (__file__, _hdl_fast.__file__):
+        with open(path, 'rb') as fh:
+            h.update(fh.read())
+    return h.hexdigest()
 
 
 _OWN = None
@@ -322,7 +341,8 @@ def _store_path(src):
     if _OWN is None:
         _OWN = _own_hash()
     h = hashlib.sha256()
-    for part in (f'format={FORMAT}', _OWN, sys.version, src):
+    for part in (f'format={FORMAT}', f'fast={int(FAST_ENABLED)}', _OWN,
+                 sys.version, src):
         h.update(part.encode('utf-8'))
         h.update(b'\0')
     return os.path.join(_hdl_cache.cache_dir(), 'cse', h.hexdigest() + '.py')
@@ -345,6 +365,11 @@ def _optimised_text(src):
         ## (an AssertionError is `_verify` refusing its own output: the
         ## reference function is kept, which is always correct)
         text = ''
+    if text and FAST_ENABLED:
+        try:
+            text = _fast_rewrite(text)
+        except (Refused, SyntaxError, RecursionError):
+            pass                        # the CSE twin, without fast paths
     if path is not None:
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -393,6 +418,104 @@ def optimise(info):
             g._hdl_codelen = len(f.__code__.co_code)
             done[id(f)] = g
         funcs[name] = g
+
+
+## -- the exact scalar fast paths (round 2, stage C) ---------------------------
+
+def _head(call):
+    """'numpy.where' / '_step' / ... for a call's func, or None."""
+    f = call.func
+    if isinstance(f, ast.Name):
+        return f.id
+    if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+        return f'{f.value.id}.{f.attr}'
+    return None
+
+
+def _kept_wheres(fn, head='numpy.where'):
+    """The `head` calls (`numpy.where`) whose value reaches a `**` operand --
+    as the operand itself, or as the whole value of a variable that is one,
+    following plain renames (`_v2 = _v1`) back.  Their result must stay
+    numpy's 0-d ARRAY: numpy squares / roots / reciprocates one where a
+    scalar goes through glibc `pow` (`_hdl_fast`)."""
+
+    def _is_where(n):
+        return isinstance(n, ast.Call) and _head(n) == head
+
+    reached = set()
+    kept = set()
+    for n in ast.walk(fn):
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Pow):
+            for side in (n.left, n.right):
+                if isinstance(side, ast.Name):
+                    reached.add(side.id)
+                elif _is_where(side):
+                    kept.add(id(side))
+    assigns = [st for st in fn.body if isinstance(st, ast.Assign)]
+    changed = True
+    while changed:
+        changed = False
+        for st in assigns:
+            t = st.targets[0].id
+            if t in reached and isinstance(st.value, ast.Name) \
+                    and st.value.id not in reached:
+                reached.add(st.value.id)
+                changed = True
+    for st in assigns:
+        if st.targets[0].id in reached and _is_where(st.value):
+            kept.add(id(st.value))
+    return kept
+
+
+def _fast_rewrite(text):
+    """`text` (a CSE twin) with each call head of `_hdl_fast.RENAMES`
+    renamed to its exact scalar fast path, but the `numpy.where` calls
+    `_kept_wheres` names.  Splices the source (each statement one line), so
+    everything else is the text itself.  Verified: renaming back gives
+    `text`, and no fast `where` value reaches a `**`.  `Refused` for a
+    function a fast name would shadow a name of."""
+    tree = ast.parse(text)
+    fn = tree.body[0]
+    from pycircuit.circuit._hdl_fast import RENAMES
+    fast = set(RENAMES.values())
+    names = {a.arg for a in fn.args.args}
+    names |= {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+    if names & fast:
+        raise Refused("a name of the function is a fast helper's")
+    kept = _kept_wheres(fn)
+    lines = text.split('\n')
+    edits = {}
+    for n in ast.walk(fn):
+        if not isinstance(n, ast.Call):
+            continue
+        h = _head(n)
+        new = RENAMES.get(h)
+        if new is None or (h == 'numpy.where' and id(n) in kept):
+            continue
+        f = n.func
+        if f.lineno != f.end_lineno:
+            raise Refused('a call head over two lines')
+        edits.setdefault(f.lineno, []).append((f.col_offset,
+                                               f.end_col_offset, new))
+    for ln, es in edits.items():
+        s = lines[ln - 1]
+        ## (col offsets are UTF-8 byte offsets; the generated text is ASCII)
+        for a, b, new in sorted(es, reverse=True):
+            s = s[:a] + new + s[b:]
+        lines[ln - 1] = s
+    out = '\n'.join(lines)
+    ## verified: renaming back gives the text, and no fast where reaches **
+    back = out
+    for old, new in RENAMES.items():
+        back = back.replace(new + '(', old + '(')
+    if back != text:
+        raise Refused('the rename does not invert')
+    ## and no fast `where` value reaches a `**` operand
+    out_fn = ast.parse(out).body[0]
+    reached = _kept_wheres(out_fn, head='_fwhere')
+    if reached:
+        raise Refused('a fast where value reaches **')
+    return out
 
 
 ## -- fused variants (the plan's F2) ------------------------------------------
