@@ -4713,8 +4713,38 @@ class _CChainPrinter(_ChainPrinter):
 ## `_npmax`/`_npmin` are numpy's `maximum`/`minimum` verbatim: NaN in
 ## either argument wins.  `c != 0.0` is numpy's truth test -- nonzero,
 ## and NaN, are true.
+##
+## The libm functions `CFLAGS` keeps real calls (`-fno-builtin-<f>`,
+## `_hdl_cbackend`) are declared `const`: as opaque calls that may set
+## `errno` gcc computed every repeat again -- and a chained `G` prints
+## each local partial once per unknown (PSP's `G`: 5503 `pow` calls).
+## `const` says the result is the arguments' alone, true of glibc's (and
+## nothing here reads `errno`), so gcc calls an identical one once: the
+## same glibc call, the same value (F1b, 2026-10-02: PSP `G` 50 -> 22 us,
+## `C` 26 -> 16 us, `pow` calls in `G` 5503 -> 2843).  Only NaN SIGN BITS
+## move, at points already NaN on every path: the operands of a
+## commutative operation can be ordered differently, and which NaN an
+## x86 operation returns follows the order (the 16 spike points the
+## plain kernels differ from numpy at; `TestPspBitIdentity`).
+## `test_hdl_cbackend` checks the declarations against the flags.
 _KERNEL_C = r"""
 #include <math.h>
+double pow(double, double) __attribute__((const));
+double exp(double) __attribute__((const));
+double log(double) __attribute__((const));
+double log1p(double) __attribute__((const));
+double expm1(double) __attribute__((const));
+double sin(double) __attribute__((const));
+double cos(double) __attribute__((const));
+double tan(double) __attribute__((const));
+double asin(double) __attribute__((const));
+double acos(double) __attribute__((const));
+double atan(double) __attribute__((const));
+double atan2(double, double) __attribute__((const));
+double sinh(double) __attribute__((const));
+double cosh(double) __attribute__((const));
+double tanh(double) __attribute__((const));
+double hypot(double, double) __attribute__((const));
 static inline double _sel(double c, double a, double b) { return (c != 0.0) ? a : b; }
 static inline double _npmax(double a, double b) { return (a >= b || a != a) ? a : b; }
 static inline double _npmin(double a, double b) { return (a <= b || a != a) ? a : b; }

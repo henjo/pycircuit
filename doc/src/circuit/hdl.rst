@@ -1404,13 +1404,17 @@ MOSFET are compared byte-for-byte over sweeps that include ``+-1e30``
 ``pow``, ``exp``, ``log`` a real libm call (``-fno-builtin-*``, no
 fast-math, no FMA contraction), because gcc would otherwise fold
 ``pow(x, 2.0)`` into the *more accurate* ``x*x`` and drift an ulp from
-numpy's glibc ``pow``.  Two measured exceptions, both named in the
+numpy's glibc ``pow``.  Those functions are declared
+``__attribute__((const))``, so gcc computes an identical call once instead
+of at every repeat -- still glibc's call, so still its value (2026-10-02:
+PSP's ``G`` 50 -> 22 us, ``C`` 26 -> 16 us).  Two measured exceptions, both named in the
 tests: numpy ships its own vectorised ``tanh`` (an ulp from libm's in
 ~30% of arguments -- a ``tanh``-using model agrees bitwise with its
 source run against libm's ``tanh``, and to that ulp with numpy's), and
 the sign of exact zeros (numpy computes integer-typed subchains, whose
 zeros carry no sign; values compare equal).  Where the numpy path
-returns NaN, C returns the same NaN; where a degenerate parameter set
+returns NaN, C returns NaN (its sign bit, which IEEE-754 leaves to the
+arithmetic, can differ); where a degenerate parameter set
 makes the numpy path raise ``ZeroDivisionError`` from a pure-parameter
 division, C returns ``inf`` instead -- the one behavioural difference.
 

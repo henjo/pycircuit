@@ -33,8 +33,11 @@ Fidelity
     (`-fno-builtin-*`), because gcc otherwise folds `pow(x, 2.0)` to
     `x*x` -- more accurate than numpy's scalar `**2`, which is glibc
     `pow`, and therefore WRONG for a backend whose contract is
-    bit-identity with the numpy path.  Two named, measured exceptions
-    (`test_hdl_cbackend.py` pins both):
+    bit-identity with the numpy path.  The kernel prelude declares
+    those functions `__attribute__((const))` (`hdl._KERNEL_C`), so gcc
+    calls an identical one once instead of at every repeat -- still
+    glibc's call, still its value; PSP's `G` 50 -> 22 us (2026-10-02).
+    Two named, measured exceptions (`test_hdl_cbackend.py` pins both):
 
     * `tanh`: numpy ships its own vectorised tanh, which differs from
       libm's in ~30% of arguments by an ulp.  A chain that uses `tanh`

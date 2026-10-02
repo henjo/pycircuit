@@ -38,6 +38,8 @@ import contextlib
 import itertools
 import math
 import os
+import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -959,6 +961,78 @@ class TestPspBitIdentity(object):
         assert tallies['G']['nan-bits'] <= 32, tallies['G']
         assert tallies['i']['nan-bits'] == 0, tallies['i']
         assert tallies['q']['nan-bits'] == 0, tallies['q']
+
+
+## ----------------------------------------------------------------------
+## The kept libm calls, declared const (F1b, 2026-10-02).
+
+_KEPT = tuple(f[len('-fno-builtin-'):] for f in cb.CFLAGS
+              if f.startswith('-fno-builtin-'))
+
+
+def _const_declared(prelude):
+    return re.findall(r'double (\w+)\([^)]*\) __attribute__\(\(const\)\);',
+                      prelude)
+
+
+def test_every_kept_libm_call_is_declared_const():
+    """The prelude declares `const` exactly the functions `CFLAGS` keeps
+    real libm calls: one the flags do not keep, gcc may already fold its
+    own way; one they keep and the prelude misses is computed again at
+    every repeat."""
+    declared = _const_declared(hdl._KERNEL_C)
+    assert len(declared) == len(set(declared))
+    assert _KEPT and set(declared) == set(_KEPT)
+
+
+class _RepeatedPow(Behavioural):
+    instparams = [Parameter(name='gg', desc='scale', unit='A', default=1.0)]
+
+    @staticmethod
+    def analog(p, m):
+        b = Branch(p, m)
+        u = var(b.V, 'u')
+        w = var(u ** 2.5, 'w')
+        return Contribution(b.I, gg * w * w + w)                # noqa: F821
+
+
+@needs_cc
+@pytest.mark.skipif(not shutil.which('objdump'),
+                    reason='no objdump')
+def test_const_merges_the_repeated_calls_and_keeps_the_bytes(tmp_path,
+                                                             monkeypatch):
+    """`G` prints the local partial `pow(u, 1.5)` once per unknown: with
+    the declarations gcc calls it once, without them twice -- the
+    declaration's power, measured on the object -- and both kernels
+    return the numpy path's bytes."""
+    monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
+    monkeypatch.setattr(cb, '_loaded', {})
+    e = _instance(_RepeatedPow)
+    fn = _RepeatedPow._hdl_info['funcs']['G']
+    assert fn._csrc.count('pow(') >= 3
+    xs = [np.array([v, 0.0]) for v in (0.3, 1.7, 2.0, 1e3)]
+    ref = [e.G(x).copy() for x in xs]
+
+    def pow_calls():
+        with c_backend(_RepeatedPow):
+            assert _RepeatedPow._hdl_backend_status == 'c'
+            assert all(e.G(x).tobytes() == r.tobytes()
+                       for x, r in zip(xs, ref))
+            so = cb.so_path(fn.__dict__['_hdl_c'].key)
+        out = subprocess.run(['objdump', '-d', so], capture_output=True,
+                             text=True, check=True).stdout
+        return sum('<pow@plt>' in ln and 'call' in ln
+                   for ln in out.splitlines())
+
+    merged = pow_calls()
+    plain = hdl._KERNEL_C
+    for name in _KEPT:
+        plain = '\n'.join(ln for ln in plain.splitlines()
+                          if not ln.startswith(f'double {name}('))
+    assert not _const_declared(plain)
+    monkeypatch.setattr(hdl, '_KERNEL_C', plain)
+    monkeypatch.setattr(cb, '_loaded', {})
+    assert pow_calls() > merged >= 1
 
 
 if __name__ == '__main__':                        # pragma: no cover
