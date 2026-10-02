@@ -13,6 +13,17 @@ from pycircuit.circuit import _evalhint
 #: test and as an escape.
 U_MEMO = True
 
+_F64 = np.dtype('float64')
+
+
+def _as_float(a, toolkit):
+    """`toolkit.array(a, dtype=float)` without the copy when `a` is already
+    a float64 ndarray: the sums a step builds (`i + iq + u`, `G + Geq`) are
+    fresh and nobody else holds them (speed round 4, stage C)."""
+    if type(a) is np.ndarray and a.dtype is _F64:
+        return a
+    return toolkit.array(a, dtype=float)
+
 
 class _CompanionModel:
     """The LMM companion model and the per-step device memo.  A theme of
@@ -109,6 +120,9 @@ class _CompanionModel:
         memo = getattr(self, '_dev_memo', None)
         if memo is None or x is None:
             return None
+        if not memo[0] and not memo[1]:
+            ## (the multistep path never records: no key to build)
+            return None
         key = np.asarray(x, dtype=float).tobytes()
         rec = memo[0].get(key)
         return memo[1].get(key) if rec is None else rec
@@ -171,10 +185,12 @@ class _CompanionModel:
                 return q_cached
         return self.cir.q(x, self.epar)
 
-    def _companion_at(self, x):
+    def _companion_at(self, x, C=None):
         """``(iq, Geq)``: the step's companion current and conductance at `x`
         (the current ``self._dt``), with the charge cached against the state
         it belongs to.  One assembly for every step's residual and Jacobian.
+        `C` is the capacitance a caller has already looked up at `x`
+        (`_C_lookup`), so the lookup is not made twice.
 
         `self.epar`, not the module-level `defaultepar`: without it every
         device is evaluated at defaultepar's T = 300 K whatever the caller
@@ -192,7 +208,8 @@ class _CompanionModel:
         History: `doc/transient_history.md`, `Transient._companion_at`."""
         ## (`C` the branch screen may just have read at this state:
         ## `_C_at_state`, a memoisation)
-        C = self._C_at_state(x)
+        if C is None:
+            C = self._C_at_state(x)
         q = self.cir.q(x, self.epar)
         self._q_cache = (x, q)
         self._C_cache = (x, C)
@@ -224,7 +241,7 @@ class _CompanionModel:
 
         History: `doc/transient_history.md`, `Transient._source_at`."""
         analysis = self.par.analysis
-        memo = self._u_memo if U_MEMO else None
+        memo = self.__dict__.get('_u_memo') if U_MEMO else None
         key = (t, analysis)
         u = None
         if memo is not None:
@@ -252,12 +269,11 @@ class _CompanionModel:
         `q`, `i`, `G` (and `C`, unless a cache serves it) it is asked for
         here in one fused pass -- the same bits, a compact MOSFET's four
         evaluations at a state 6.3 -> 3.4 ms."""
-        need = ('q', 'i', 'G') if self._C_lookup(x) is not None \
-            else ('C', 'q', 'i', 'G')
+        C = self._C_lookup(x)
+        need = ('q', 'i', 'G') if C is not None else ('C', 'q', 'i', 'G')
         with _evalhint.evaluating(*need):
-            iq, Geq = self._companion_at(x)
+            iq, Geq = self._companion_at(x, C)
             u = self._source_at(t, provided_function)
             f = self.cir.i(x, self.epar) + iq + u
             J = self.cir.G(x, self.epar) + Geq
-        return (self.toolkit.array(f, dtype=float),
-                self.toolkit.array(J, dtype=float))
+        return _as_float(f, self.toolkit), _as_float(J, self.toolkit)

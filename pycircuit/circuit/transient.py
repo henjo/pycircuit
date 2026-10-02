@@ -1395,7 +1395,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             with _evalhint.evaluating(session=conv):
                 _iq, Geq = self._companion_at(x)
                 J = self.cir.G(x, self.epar) + Geq
-            return None, self.toolkit.array(J, dtype=float)
+            return None, _tran_companion._as_float(J, self.toolkit)
 
         def residual_only(x):
             """The step residual alone, for the chord iterations
@@ -1410,8 +1410,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 q = self.cir.q(x, self.epar)
                 iq, _geq = self.get_diff(q, self._Cmat)
                 u = self._source_at(t, provided_function)
-                return self.toolkit.array(self.cir.i(x, self.epar) + iq + u,
-                                          dtype=float)
+                return _tran_companion._as_float(
+                    self.cir.i(x, self.epar) + iq + u, self.toolkit)
 
         ## STAGE PREDICTOR.  A multistep method has no stages, so its analogue
         ## is the classical one: extrapolate the accepted history to `t`.  The

@@ -13,6 +13,22 @@ from pycircuit.circuit._limiting import limit_sync, stateful_limiters
 ## History: `doc/transient_history.md`, `transient.py`.
 
 
+def _ring_push(v, ring, toolkit):
+    """`ring` with `v` as its newest row and the oldest dropped: the rows
+    ``[v, ring[0], ..., ring[-2]]``.  Float64 numpy rows are copied into a
+    fresh array (speed round 4, stage C: the `concatenate` of a one-row
+    array and the ring, then a view, built two arrays and a wrapper a
+    push); anything else keeps that form.  The same values either way."""
+    if (type(v) is np.ndarray and type(ring) is np.ndarray
+            and v.dtype == np.float64 and ring.dtype == np.float64
+            and ring.ndim == 2 and v.shape == ring.shape[1:]):
+        out = np.empty_like(ring)
+        out[0] = v
+        out[1:] = ring[:-1]
+        return out
+    return toolkit.concatenate((toolkit.array([v]), ring))[:-1]
+
+
 class _RunHistory:
     """The run's history (begin, push, roll, freeze, the periodic shifts) and
     what the shooting reads off a step (`step_lte`, `residual_dh`,
@@ -165,10 +181,8 @@ class _RunHistory:
 
         History: `doc/transient_history.md`, `Transient._push_history`.
         """
-        self._iqlast = self.toolkit.concatenate(
-            (self.toolkit.array([self._iq]), self._iqlast))[:-1]
-        self._qlast = self.toolkit.concatenate(
-            (self.toolkit.array([self._q_at(x)]), self._qlast))[:-1]
+        self._iqlast = _ring_push(self._iq, self._iqlast, self.toolkit)
+        self._qlast = _ring_push(self._q_at(x), self._qlast, self.toolkit)
         self._pred_promote(x)
         ## AFTER the ring push, so the newest ring entry shares the old gauge
         ## with its elders when the increment lands on all of them.

@@ -10,6 +10,8 @@ from pycircuit.circuit._limiting import stateful_limiters
 from pycircuit.circuit.analysis import (
     NoConvergenceError,
     SingularMatrix,
+    insert_row,
+    newton_tolerance_vectors,
     reduced_row_names,
     remove_row_col,
 )
@@ -189,15 +191,56 @@ class _StepNewton:
         raise ValueError(
             f"{name} must be True, False or 'auto', not {value!r}")
 
+    def _newton_tolerances(self):
+        """``(abstol, xtol, abstol_reduced, xtol_reduced)``: the Newton
+        tolerance vectors in both flavours and both widths, built once per
+        `(sizes, iabstol, vabstol, irefnode)` and kept on the instance
+        (speed round 4, stage C, 2026-10-02: a step built four `ones`, four
+        `concatenate`s and three reductions for vectors that move only
+        when a Parameter does).  READ-ONLY: a consumer writing into one
+        would poison every later step, so it fails loudly instead (no
+        consumer writes; `_tran_pcnr`, `_tran_fang` and the branch check
+        read them).  A tolerance that is not a number (a symbolic one) is
+        built every time, as before."""
+        cir = self.cir
+        nn, nb = len(cir.nodes), len(cir.branches)
+        ia, va = self.par.iabstol, self.par.vabstol
+        iref = self.irefnode
+        try:
+            key = (nn, nb, float(ia), float(va), iref)
+        except (TypeError, ValueError):
+            key = None
+        cached = self.__dict__.get('_newton_tol_cache')
+        if key is not None and cached is not None and cached[0] == key:
+            return cached[1]
+        abstol, xtol = newton_tolerance_vectors(nn, nb, ia, va, self.toolkit)
+        ar, xr = remove_row_col((abstol, xtol), iref, self.toolkit)
+        vecs = (abstol, xtol, ar, xr)
+        for v in vecs:
+            if isinstance(v, np.ndarray):
+                v.flags.writeable = False
+        if key is not None:
+            self.__dict__['_newton_tol_cache'] = (key, vecs)
+        return vecs
+
     def _newton_abstol_vector_reduced(self):
-        a = self._newton_abstol_vector()
-        (a,) = remove_row_col((a,), self.irefnode, self.toolkit)
-        return a
+        return self._newton_tolerances()[2]
 
     def _newton_xtol_vector_reduced(self):
-        t = self._newton_xtol_vector()
-        (t,) = remove_row_col((t,), self.irefnode, self.toolkit)
-        return t
+        return self._newton_tolerances()[3]
+
+    def _reduced_row_names(self):
+        """`reduced_row_names`, built once per circuit shape and kept: a
+        step built it to name a row in a failure message it almost never
+        writes (O(n) strings a step)."""
+        cir = self.cir
+        key = (id(cir.nodes), len(cir.nodes), id(cir.branches),
+               len(cir.branches), self.irefnode)
+        cached = self.__dict__.get('_row_names_cache')
+        if cached is None or cached[0] != key:
+            cached = self.__dict__['_row_names_cache'] = (
+                key, reduced_row_names(cir, self.irefnode))
+        return cached[1]
 
     def _newton_limiter(self):
         """The device limiting the step's Newton applies, in reduced
@@ -214,12 +257,14 @@ class _StepNewton:
         if not _has:
             return None
 
+        iref, tk = self.irefnode, self.toolkit
+
         def limiter_func(xr, x0r):
-            x = self.toolkit.insert(xr, self.irefnode, 0.0)
-            x0_full = self.toolkit.insert(x0r, self.irefnode, 0.0)
+            x = insert_row(xr, iref, tk)
+            x0_full = insert_row(x0r, iref, tk)
 
             x = self.cir.limit(x, x0_full, self.epar)
-            return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
+            return tk.concatenate((x[:iref], x[iref + 1:]))
         return limiter_func
 
     def _newton(self, func, x0, residual=None):
@@ -246,10 +291,9 @@ class _StepNewton:
         if lims:
             x0s = np.array(x0, dtype=float)
             self.cir.limit(x0s, x0s, self.epar)
-        abstol = self._newton_abstol_vector()
-        xtol = self._newton_xtol_vector()
+        abstol, xtol = self._newton_tolerances()[2:]
         
-        (x0, abstol, xtol) = remove_row_col((x0, abstol, xtol), self.irefnode, self.toolkit)
+        (x0,) = remove_row_col((x0,), self.irefnode, self.toolkit)
         
         limiter_func = self._newton_limiter()
 
@@ -264,8 +308,7 @@ class _StepNewton:
             iref, tk = self.irefnode, self.toolkit
 
             def residual_reduced(xr):
-                f = residual(tk.concatenate((xr[:iref], tk.array([0.0]),
-                                             xr[iref:])))
+                f = residual(insert_row(xr, iref, tk))
                 (f,) = remove_row_col((f,), iref, tk)
                 return f
             solver = chord = ChordNewton(residual_reduced, solver)
@@ -284,7 +327,7 @@ class _StepNewton:
                 scaler=scaler,
                 linsolver=linsolver,
                 ## Stage 6: lets the solver name a node instead of a row index.
-                row_names=reduced_row_names(self.cir, self.irefnode),
+                row_names=self._reduced_row_names(),
             )
         ## NARROW, deliberately.  A broad `except Exception` would report every
         ## failure inside a device model (a `ZeroDivisionError`, a `TypeError`, an
@@ -335,7 +378,7 @@ class _StepNewton:
                         limiter=limiter_func,
                         scaler=scaler,
                         linsolver=linsolver,
-                        row_names=reduced_row_names(self.cir, self.irefnode),
+                        row_names=self._reduced_row_names(),
                     )
                 except NoConvergenceError:
                     raise e
@@ -363,7 +406,7 @@ class _StepNewton:
         x = x_res
         
         # Insert reference node voltage
-        return self.toolkit.concatenate((x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
+        return insert_row(x, self.irefnode, self.toolkit)
 
     ## STAGE 12B -- small helpers the coupled path needs, factored out of `_solve`
     ## rather than re-derived, so the two paths cannot drift apart on tolerances.
@@ -402,10 +445,7 @@ class _StepNewton:
         for testing ``f``, not for testing an increment ``dx`` -- see
         :meth:`_newton_xtol_vector`, and `_newton` which builds both.
         """
-        from pycircuit.circuit.analysis import newton_tolerance_vectors
-        return newton_tolerance_vectors(
-            len(self.cir.nodes), len(self.cir.branches),
-            self.par.iabstol, self.par.vabstol, self.toolkit)[0]
+        return self._newton_tolerances()[0]
 
     def _newton_xtol_vector(self):
         """The Newton SOLUTION tolerance, per unknown -- the other flavour.
@@ -419,7 +459,4 @@ class _StepNewton:
 
         History: `doc/transient_history.md`, `Transient._newton_xtol_vector`.
         """
-        from pycircuit.circuit.analysis import newton_tolerance_vectors
-        return newton_tolerance_vectors(
-            len(self.cir.nodes), len(self.cir.branches),
-            self.par.iabstol, self.par.vabstol, self.toolkit)[1]
+        return self._newton_tolerances()[1]

@@ -376,7 +376,7 @@ class DC(Analysis):
 
 def refnode_removed(func, irefnode,toolkit):
     def new(x, *args, **kvargs):
-        newx = toolkit.concatenate((x[:irefnode], toolkit.array([0.0]), x[irefnode:]))
+        newx = insert_row(x, irefnode, toolkit)
         f, J = func(newx, *args, **kvargs)
         return remove_row_col((f, J), irefnode, toolkit)
     return new

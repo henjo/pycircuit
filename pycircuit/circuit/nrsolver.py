@@ -182,10 +182,13 @@ class StandardNewton(NonLinearSolver):
             #    However, 1mA error is huge for a micro-power circuit, but tiny for a 100A power 
             #    supply. Therefore, we scale the tolerance dynamically (I_scale) by looking at the 
             #    absolute magnitude of currents flowing into the node.
-            I_scale = toolkit.dot(abs(J), abs(x_next)) + abs(F)
+            ## (each magnitude once: `abs(F)` and `abs(x_next)` were taken
+            ## twice an iteration -- speed round 4, stage C)
+            aF, ax_next = abs(F), abs(x_next)
+            I_scale = toolkit.dot(abs(J), ax_next) + aF
             
-            conv_x = toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(abs(x_next), abs(x)) + xtol)
-            conv_f = toolkit.alltrue(abs(F) < reltol * I_scale + abstol)
+            conv_x = toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(ax_next, abs(x)) + xtol)
+            conv_f = toolkit.alltrue(aF < reltol * I_scale + abstol)
             
             if conv_x and conv_f:
                 return x_next, i + 1
@@ -233,6 +236,9 @@ class ChordNewton(NonLinearSolver):
             scaler = NoneScaler()
         x = x0
         F, J = eval_FJ(x)
+        ## (the held Jacobian's magnitudes, once: the chord's test reads them
+        ## at every iteration -- speed round 4, stage C)
+        absJ = abs(J)
         fac = None
         prev = None
         done = 0
@@ -259,11 +265,12 @@ class ChordNewton(NonLinearSolver):
                 x_next = limiter(x_next, x)
                 xdiff = x_next - x
             done = i + 1
-            I_scale = toolkit.dot(abs(J), abs(x_next)) + abs(F)
+            aF, ax_next = abs(F), abs(x_next)
+            I_scale = toolkit.dot(absJ, ax_next) + aF
             conv_x = toolkit.alltrue(
-                abs(xdiff) < reltol * toolkit.maximum(abs(x_next), abs(x))
+                abs(xdiff) < reltol * toolkit.maximum(ax_next, abs(x))
                 + xtol)
-            conv_f = toolkit.alltrue(abs(F) < reltol * I_scale + abstol)
+            conv_f = toolkit.alltrue(aF < reltol * I_scale + abstol)
             if conv_x and conv_f:
                 return x_next, done
             ## A CHORD CONTRACTS OR IT IS NOT GOING TO CONVERGE: the
@@ -346,10 +353,13 @@ class DampedNewton(NonLinearSolver):
                 alpha *= 0.5
             F = F_next
 
-            I_scale = toolkit.dot(abs(J), abs(x_next)) + abs(F)
+            ## (each magnitude once: `abs(F)` and `abs(x_next)` were taken
+            ## twice an iteration -- speed round 4, stage C)
+            aF, ax_next = abs(F), abs(x_next)
+            I_scale = toolkit.dot(abs(J), ax_next) + aF
 
-            conv_x = toolkit.alltrue(abs(alpha * xdiff) < reltol * toolkit.maximum(abs(x_next), abs(x)) + xtol)
-            conv_f = toolkit.alltrue(abs(F) < reltol * I_scale + abstol)
+            conv_x = toolkit.alltrue(abs(alpha * xdiff) < reltol * toolkit.maximum(ax_next, abs(x)) + xtol)
+            conv_f = toolkit.alltrue(aF < reltol * I_scale + abstol)
             
             if conv_x and conv_f:
                 return x_next, i + 1

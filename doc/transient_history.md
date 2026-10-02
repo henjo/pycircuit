@@ -3703,3 +3703,43 @@ twice); bytes and statistics identical.  The round's other finding, for
 the record: the assembly's remaining per-call cost is numpy's own floor
 (a minimal rewrite saves 1-5 us a call, 1.5-2 % of a step), so no
 assembly stage was built.
+
+## `_tran_newton.py`, `analysis.insert_row`, `nrsolver.py`, `circuit._hook_elements` -- the Newton's plumbing (2026-10-02, speed round 4's stage C)
+
+### `insert_row`, `_newton_tolerances`, `_reduced_row_names`, `_as_float`, `_ring_push`, `_hook_elements`
+
+The round's in-run tree put the plumbing around a step's Newton at a
+third of the PSP stage's step: the reference row in and out through
+`np.insert` (4.8 us a call, two an iteration in the limiter alone) and
+one-element `concatenate`s, the tolerance vectors built in both flavours
+and reduced at every step, the row names for a failure message a step
+almost never writes, `toolkit.array` copies of sums nobody else held,
+every magnitude taken twice in the Newton's test, the chord's held
+Jacobian's magnitudes every iteration, a generator context manager per
+evaluation session, both element hooks polled on every element, the
+history rings rebuilt through a one-row array and a view.
+
+Each item is now the same arithmetic on the same values or a cache of a
+pure function keyed on everything it reads.  `analysis.insert_row` copies
+a float64 vector into a fresh one through three slices (the toolkit form
+for anything else; the inserted row +0.0 both ways).  `_newton_tolerances`
+builds both flavours and both widths once per `(sizes, iabstol, vabstol,
+irefnode)` and keeps them READ-ONLY -- no consumer writes into one, and
+one that did would raise instead of poisoning every later step; a
+symbolic tolerance is built every time.  `_reduced_row_names` is kept per
+circuit shape.  `_as_float` returns a fresh float64 sum as it is.
+`_companion_at(x, C)` takes the `C` its caller looked up.  `_memo_get`
+builds no key on an empty memo.  `abs(F)`, `abs(x_next)` once an
+iteration; the chord's `abs(J)` once.  `_evalhint.evaluating` is a
+`__slots__` class.  `SubCircuit._hook_elements(name)` lists the elements
+whose hook is not `Circuit`'s no-op or is shadowed on the instance, kept
+per topology under the stamp plan's contract (an instance patch after the
+list was built is seen at the next topology change); `next_event` keeps
+`maximum(t, min)` with `inf` where none declares one.  `_ring_push`
+copies the ring into a fresh array.
+
+Measured against the parent (bfaf3ecd), five interleaved rounds, bytes
+and statistics identical: the PSP stage -13.3 % a step, its PSS -11.4 %,
+20 MosLevel1 -5.9 %, 20 PSP -2.8 % -- above the predicted 5-7 %: the
+Python removed ran cold between the kernel's calls, so the in-run
+inflation the plan noted cut both ways.

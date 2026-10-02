@@ -8,6 +8,7 @@ import numpy as np
 
 from pycircuit.circuit import _evalhint
 from pycircuit.circuit._limiting import state_restore, state_snapshot
+from pycircuit.circuit.analysis import insert_row
 from pycircuit.circuit.simwarnings import (
     ModelWarning,
     warn,
@@ -222,9 +223,7 @@ class _BranchCheck:
         ## swallowed and reported as the check failing (the review's W3)
         found = None
         try:
-            xf = self.toolkit.concatenate(
-                (x_res[:self.irefnode], self.toolkit.array([0.0]),
-                 x_res[self.irefnode:]))
+            xf = insert_row(x_res, self.irefnode, self.toolkit)
             fired, direction = self._branch_screen(xf)
             if not fired:
                 return

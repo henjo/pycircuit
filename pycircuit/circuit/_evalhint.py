@@ -18,7 +18,6 @@ for a site whose requests at one state are split across two scopes (the
 multistep step's branch screen reads `C` at the converged point, and its
 caller then reads `q` and `G` there).
 """
-import contextlib
 import contextvars
 
 _CURRENT = contextvars.ContextVar('pycircuit_evaluation_session',
@@ -47,14 +46,21 @@ def current():
     return _CURRENT.get()
 
 
-@contextlib.contextmanager
-def evaluating(*which, session=None):
+class evaluating:
     """Within the block, the circuit's `i`/`q`/`G`/`C` requests at one
     state are exactly `which` (or `session`'s, re-entered).  Yields the
-    session."""
-    s = Session(which) if session is None else session
-    token = _CURRENT.set(s)
-    try:
-        yield s
-    finally:
-        _CURRENT.reset(token)
+    session.  (A class, not a generator context manager: a step opens
+    three or four of these, at ~1 us each as a generator -- speed round
+    4, stage C.)"""
+
+    __slots__ = ('session', 'token')
+
+    def __init__(self, *which, session=None):
+        self.session = Session(which) if session is None else session
+
+    def __enter__(self):
+        self.token = _CURRENT.set(self.session)
+        return self.session
+
+    def __exit__(self, *exc):
+        _CURRENT.reset(self.token)

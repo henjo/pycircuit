@@ -1578,14 +1578,37 @@ class SubCircuit(Circuit):
 
         """
         return self._add_element_submatrices('CY', x, (w, epar,))
+
+    def _hook_elements(self, name):
+        """The elements whose `name` (`accept_step`, `next_event`) is not
+        `Circuit`'s no-op -- the class's or shadowed on the instance --
+        with their instance names; built once per topology and kept
+        (speed round 4, stage C: both hooks polled every element every
+        step, and most elements define neither).  A hook patched onto an
+        instance after this was built is seen at the next topology change,
+        as the stamp plan's contract has it."""
+        key = (id(self.elements), len(self.elements), id(self.elementnodemap))
+        hooks = self.__dict__.get('_hook_lists')
+        if hooks is None or hooks[0] != key:
+            hooks = self.__dict__['_hook_lists'] = (key, {})
+        found = hooks[1].get(name)
+        if found is None:
+            base = getattr(Circuit, name)
+            found = hooks[1][name] = [
+                (inst, el) for inst, el in self.elements.items()
+                if getattr(type(el), name, None) is not base or name in el.__dict__]
+        return found
+
     def next_event(self, t):
         """Returns the time of the next event given the current time t
-        by polling all elements in the subcircuit."""
-        events = [element.next_event(t) for element in self.elements.values() 
-                  if hasattr(element, 'next_event')]
-        if events:
-            return self.toolkit.maximum(t, min(events)) # Ensure we don't go backwards
-        return self.toolkit.inf
+        by polling the elements that declare one (`_hook_elements`; the
+        others answer `inf`, which changes no minimum)."""
+        if not self.elements:
+            return self.toolkit.inf
+        events = [el.next_event(t) for _inst, el in self._hook_elements('next_event')]
+        ## (`maximum` as before: the result stays what the full poll gave,
+        ## `inf` included when no element declares an event)
+        return self.toolkit.maximum(t, min(events) if events else self.toolkit.inf)
 
     def save_current(self, terminal):
         """Returns a circuit where the given terminal current is saved
@@ -1651,10 +1674,11 @@ class SubCircuit(Circuit):
         """Propagate accept_step to all child elements"""
         ## Hoisted for the same reason as in `limit` -- see the note there.
         elementnodemap = self.elementnodemap
-        for instance, element in self.elements.items():
-            if hasattr(element, 'accept_step'):
-                subx = x[elementnodemap[instance]]
-                element.accept_step(t, subx, epar)
+        ## Only the elements that define the hook (`_hook_elements`): the
+        ## base one is a no-op, and the fancy index it was handed cost more.
+        for instance, element in self._hook_elements('accept_step'):
+            subx = x[elementnodemap[instance]]
+            element.accept_step(t, subx, epar)
 
     def hidden_state_elements(self, prefix=''):
         """Every child carrying hidden state, named by its instance path."""

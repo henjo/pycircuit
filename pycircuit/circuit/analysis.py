@@ -178,6 +178,26 @@ def remove_row_col(matrices, n, toolkit):
         result.append(reduced)
     return tuple(result)
 
+
+def insert_row(x, n, toolkit):
+    """``x`` with a zero inserted at index ``n``: the full-width vector from
+    the reduced one, the inverse of `remove_row_col` on a vector.
+
+    A numpy float64 vector is copied straight into a fresh one (speed
+    round 4, stage C: `np.insert` cost 4.8 us a call, two of them per
+    Newton iteration in the limiter alone, against 1 us for the three
+    slices -- the same values); anything else keeps the toolkit's
+    `concatenate` with a one-element array, which is what every site did.
+    The inserted row is +0.0 in both forms."""
+    if type(x) is numpy.ndarray and x.ndim == 1 and x.dtype == numpy.float64:
+        out = numpy.empty(x.shape[0] + 1)
+        out[:n] = x[:n]
+        out[n] = 0.0
+        out[n + 1:] = x[n:]
+        return out
+    return toolkit.concatenate((x[:n], toolkit.array([0.0]), x[n:]))
+
+
 class Analysis(sim.Analysis):
     parameters = [Parameter(name='analysis', desc='Analysis name', 
                             default=None),
