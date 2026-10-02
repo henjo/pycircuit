@@ -6175,3 +6175,65 @@ benchmark (`benchmarks/speed_analyses.py --psp`): gear 16.2 -> 5.4 s, radau
 24.4 -> 6.8 s.  The cost: each `hdl.py` edit recompiles every model once
 (~70 s; the compile cache keys on its source), the pass itself ~2 s for
 PSP on a store miss.
+
+## 2026-10-02 — 51. Fused compiled evaluation, F2 and F3: one fused pass per state, and the stage paths' evaluations recorded
+
+**F2 (`_hdl_cse.fused`)**: several of a chained class's i/q/G/C at one
+state computed by one function -- their statements merged by name (the same
+name is the same text in every function `_chain_compile` printed for a
+class: asserted, `Refused` otherwise), each function's order kept, the
+union optimised and stored like the F1a twins.  Built lazily for the exact
+set a session names (any subset of two or more), so a site never computes a
+chain it does not read.  Every fused set byte-identical to its separate
+functions (PSP's 1005-point sweep; MosLevel3, thermal Gummel-Poon, EKV,
+SPICE diode in the tests).
+
+**F3 (`pycircuit/circuit/_evalhint.py`, `_hdl_cse.take`)**: an evaluation
+session names the methods a site will request at one state; inside it a
+chained element's first request runs the fused pass and keeps the other
+outputs for the calls that follow (keyed on the session, the state's bytes
+and the `_args_of` list -- a new list after `update()` or a temperature
+change; each output handed out once; at most 8 states per element).  The
+analyses still make every call -- the circuit passes, the tests' Jacobian
+counters and PCNR's instance shadows see the same calls.  Bypassed for a
+JAX or symbolic toolkit, `params_tree`, DC pins, a method shadowed on the
+instance, a C-bound function, a class whose reference `G` is under 5 KB of
+bytecode; a fused pass that raises falls back to the separate call.
+`PYCIRCUIT_HDL_FUSE=0` turns sessions off.  The sites: the multistep step's
+`_residual_and_jacobian` ({q, i, G}, + C unless cached -- `_C_lookup` split
+out of `_C_at_state`), the chord's `residual_only` ({q, i}), the converged
+point as ONE session object the branch screen's `C` read and
+`jacobian_only`'s `q`, `G` both re-enter; the dense Radau stage ({q, i, G,
+C}), the transform's iterations ({q, i}) and start ({C, G}), the DIRK
+stage's `func_i`, `_finish_stage_step` (what the memo lacks).
+
+**The stage paths' device memo, completed (the F0 side finding).**  The
+PSP radau PSS evaluated `C` about 9 times a step at 3 distinct states and
+`G` 5 times at 3: the transform's start reads `x_n` = the previous step's
+final stage, which `_finish_stage_step` had evaluated and not recorded; the
+shooting's stage step re-read `C` at the stages the branch screen had just
+read, and `G` at the final stage.  Memo records are now partial and merged
+(`_memo_put`); `_finish_stage_step`, the transform's start and
+`_C_at_state` record where the memo rolls (`_memo_ok`: the coupled stage
+steps -- the transform rolls its own generation now -- no stateful limiter,
+no bypass); the transform's start, `_coupled_stage_context`, PSS `_C_at`
+and `_G_at` read it.  Recorded values are the same function's at the same
+state: bit for bit.
+
+The PSP stage (`_cs_amp`, 40 points; waveforms byte-identical to the
+reference before F1a at every row):
+
+| | before F1a | F1a (CSE) | + memo | + fusion |
+|---|---|---|---|---|
+| gear PSS | 15.5 s | 4.5 s | -- | 2.9 s |
+| radau PSS + factored period | 24.4 s | 6.9 s | 4.6 s | 4.2 s |
+
+Tests (`test_hdl_cse.py`, 12 more): the session API, fusion and its
+refusal, fused sets byte-identical, one fused pass per state per session
+with distinct writable outputs and a recomputation after a parameter
+change, every bypass, MosLevel3 inverter transients (gear, radau, trbdf2)
+byte-identical with sessions and the memo off (gear: the same circuit `G`
+call count).
+
+Gate G77: 3576 passed; every transient, PSS and PAC call identical to G76
+(the new tests' own calls aside); no warning differs.

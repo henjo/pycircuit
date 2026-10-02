@@ -235,3 +235,173 @@ def test_a_transient_is_byte_identical_with_the_reference_functions(
     b = Transient(inverter()).solve(tend=2e-8, timestep=1e-10)
     assert (np.asarray(a.x, float).tobytes()
             == np.asarray(b.x, float).tobytes())
+
+
+## ----------------------------------------------------------------------
+## Fusion and evaluation sessions (the plan's F2 and F3)
+
+def test_a_session_names_its_methods_and_nests():
+    from pycircuit.circuit import _evalhint as eh_
+    assert eh_.current() is None
+    with eh_.evaluating('q', 'i') as outer:
+        assert eh_.current() is outer and outer.which == {'q', 'i'}
+        inner = eh_.Session(('C', 'G'))
+        with eh_.evaluating(session=inner):
+            assert eh_.current() is inner
+        assert eh_.current() is outer
+    assert eh_.current() is None
+    with pytest.raises(ValueError):
+        eh_.Session(('i', 'u'))
+    with pytest.raises(RuntimeError), eh_.evaluating('i', 'G'):
+        raise RuntimeError
+    assert eh_.current() is None
+
+
+def test_fusion_merges_by_name_and_refuses_one_name_for_two_texts():
+    a = 'def _f(x):\n    _x0 = x[0]\n    _v1 = _x0*2.0\n    return [_v1]'
+    b = ('def _f(x):\n    _x0 = x[0]\n    _v1 = _x0*2.0\n'
+         '    _d__v1_0 = 2.0\n    return [[_d__v1_0]]')
+    out = cs.fuse_source([a, b])
+    assert out.count('_v1 = _x0*2.0') == 1
+    assert out.endswith('return ([_v1], [[_d__v1_0]],)')
+    with pytest.raises(cs.Refused):
+        cs.fuse_source([a, a.replace('*2.0', '*3.0')])
+
+
+@pytest.mark.parametrize('name', ['MosLevel3Hdl', 'GummelPoonNpnThermalHdl',
+                                  'EkvNmosHdl', 'DiodeSpiceHdl'])
+def test_a_fused_set_is_byte_identical_to_its_separate_functions(name):
+    cm.default_toolkit = numeric
+    cls = getattr(eh, name)
+    e = cls(*[cm.Node(f'n{k}') for k in range(len(cls.terminals))])
+    e.update_iparv()
+    info = type(e)._hdl_info
+    args = list(hdl._args_of(e, defaultepar))
+    rng = np.random.default_rng(1)
+    pts = [np.ascontiguousarray(p) for p in rng.uniform(-2, 2, (40, e.n))]
+    for which in (('i', 'q'), ('i', 'G'), ('q', 'C'), ('q', 'G', 'C'),
+                  ('i', 'q', 'G', 'C')):
+        fn = cs.fused(info, which)
+        assert fn is not None and fn._hdl_names == which
+        for x in pts:
+            with np.errstate(all='ignore'):
+                outs = fn(x, *args)
+                for k, o in zip(which, outs):
+                    ref = np.asarray(info['funcs'][k](x, *args), float)
+                    assert np.asarray(o, float).tobytes() == ref.tobytes(), \
+                        (name, which, k)
+
+
+def _mos3():
+    cm.default_toolkit = numeric
+    e = eh.MosLevel3Hdl('d', 'g', 's', 'b')
+    e.update_iparv()
+    return e
+
+
+def test_a_session_runs_one_fused_pass_per_state_and_hands_each_output_once(
+        monkeypatch):
+    from pycircuit.circuit import _evalhint as eh_
+    e = _mos3()
+    info = type(e)._hdl_info
+    calls = []
+    fn = cs.fused(info, ('i', 'q', 'G', 'C'))
+
+    def counting(*a):
+        calls.append(1)
+        return fn(*a)
+    counting._hdl_names = fn._hdl_names
+    monkeypatch.setitem(info['_fused'], ('i', 'q', 'G', 'C'), counting)
+    x = np.array([0.9, 1.2, 0.1, -0.3] + [0.05] * (e.n - 4))
+    ref = {k: np.asarray(getattr(e, k)(x), float) for k in 'iqGC'}
+    with eh_.evaluating('i', 'q', 'G', 'C'):
+        got = {k: getattr(e, k)(x.copy()) for k in 'qGiC'}
+        assert len(calls) == 1
+        ## asked again at the same state: a fresh pass, not a shared array
+        again = e.G(x)
+        assert len(calls) == 2 and again is not got['G']
+    for k in 'iqGC':
+        assert got[k].tobytes() == ref[k].tobytes(), k
+        got[k][...] = 0.0          # writable, and nobody else's
+    ## a parameter change in the session: a new argument list, a new pass
+    with eh_.evaluating('i', 'q', 'G', 'C'):
+        e.i(x)
+        e.ipar.vto = float(e.iparv.vto) + 0.1
+        e.update_iparv()
+        e.q(x)
+    assert len(calls) == 4
+
+
+def test_a_session_stays_out_of_what_it_cannot_serve():
+    from pycircuit.circuit import _evalhint as eh_
+    e = _mos3()
+    x = np.full(e.n, 0.3)
+    with eh_.evaluating('i', 'G'):
+        ## a method shadowed on the instance (PCNR's participants)
+        e.__dict__['C'] = lambda *a, **k: None
+        assert cs.take(e, 'i', x, defaultepar, type(e)._hdl_info,
+                       hdl._args_of) is None
+        del e.__dict__['C']
+        ## a method outside the session, a state that is not a float vector
+        assert cs.take(e, 'q', x, defaultepar, type(e)._hdl_info,
+                       hdl._args_of) is None
+        assert cs.take(e, 'i', x.astype(complex), defaultepar,
+                       type(e)._hdl_info, hdl._args_of) is None
+        assert cs.take(e, 'i', x, defaultepar, type(e)._hdl_info,
+                       hdl._args_of) is not None
+    ## a class below FUSE_MIN_CODE
+    small = eh.ChargePumpHdl(*[cm.Node(f'p{k}') for k in
+                               range(len(eh.ChargePumpHdl.terminals))])
+    with eh_.evaluating('i', 'G'):
+        assert cs.take(small, 'i', np.zeros(small.n), defaultepar,
+                       type(small)._hdl_info, hdl._args_of) is None
+
+
+@pytest.mark.parametrize('method', ['gear', 'radau', 'trbdf2'])
+def test_sessions_and_the_stage_memo_leave_a_transient_byte_identical(
+        method, monkeypatch):
+    """A MosLevel3 inverter's transient with evaluation sessions (and the
+    stage paths' device memo) and with both off: the same bytes, and the
+    same number of circuit `G` calls (the Jacobian counters some tests
+    wrap)."""
+    from pycircuit.circuit import _evalhint as eh_
+    from pycircuit.circuit.elements import VS, C, R, VPulse
+    from pycircuit.circuit.integrator import (
+        Gear2Integrator,
+        RadauIIA3Integrator,
+        TRBDF2Integrator,
+    )
+    from pycircuit.circuit.transient import Transient
+    cm.default_toolkit = numeric
+    integ = {'gear': Gear2Integrator, 'radau': RadauIIA3Integrator,
+             'trbdf2': TRBDF2Integrator}[method]
+
+    def run():
+        c = cm.SubCircuit()
+        c['vdd'] = VS('vdd', cm.gnd, v=3.0)
+        c['vin'] = VPulse('in', cm.gnd, v1=0.0, v2=3.0, td=1e-9, tr=2e-10,
+                          tf=2e-10, pw=4e-9, per=1e-8)
+        c['M'] = eh.MosLevel3Hdl('out', 'in', cm.gnd, cm.gnd)
+        c['RL'] = R('vdd', 'out', r=5e3)
+        c['CL'] = C('out', cm.gnd, c=1e-13)
+        counts = []
+        orig = cm.SubCircuit.G
+
+        def G(self, *a, **k):
+            counts.append(1)
+            return orig(self, *a, **k)
+        monkeypatch.setattr(cm.SubCircuit, 'G', G)
+        try:
+            res = Transient(c, integrator=integ()).solve(tend=1.2e-8,
+                                                        timestep=1e-10)
+        finally:
+            monkeypatch.setattr(cm.SubCircuit, 'G', orig)
+        return np.asarray(res.x, float), len(counts)
+    a, na = run()
+    monkeypatch.setattr(eh_, 'current', lambda: None)
+    from pycircuit.circuit._tran_companion import _CompanionModel
+    monkeypatch.setattr(_CompanionModel, '_memo_ok', lambda self: False)
+    b, nb = run()
+    assert a.tobytes() == b.tobytes()
+    if method == 'gear':
+        assert na == nb

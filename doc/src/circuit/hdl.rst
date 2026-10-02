@@ -1326,6 +1326,17 @@ compile cache (``cse/``), so the pass runs once per model.
 kernels are printed from the reference statements and stay bit-identical to
 the twin, because the twin computes the same bits.
 
+The analyses go one step further.  Where a step needs several of ``i``,
+``q``, ``G`` and ``C`` at one state, it opens an *evaluation session*
+naming them (``pycircuit/circuit/_evalhint.py``), and a chained model
+answers the first request with ONE fused function computing exactly that
+set -- the statements of the separate functions merged by name, then
+optimised as above -- and the following requests from that pass.  The same
+bits again; the PSP stage's gear PSS 4.5 -> 2.9 s on top of the table's
+figures, radau (with the stage paths' evaluations no longer repeated at
+the same states) 6.9 -> 4.2 s.  ``PYCIRCUIT_HDL_FUSE=0`` turns the sessions
+off.  A model on the C backend keeps its separate kernels.
+
 The C backend
 -------------
 

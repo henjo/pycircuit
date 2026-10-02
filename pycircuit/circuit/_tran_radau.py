@@ -4,6 +4,7 @@ theme of `Transient` (see `transient.py`).
 
 import numpy as np
 
+from pycircuit.circuit import _evalhint
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import (
     limit_sync,
@@ -42,7 +43,8 @@ class _RadauStages:
             return np.concatenate((np.asarray(v)[:iref],
                                    np.asarray(v)[iref + 1:]))
         _rec = self._memo_get(x0)
-        qn = arr(self.cir.q(x0, self.epar)) if _rec is None else _rec['q']
+        qn = (arr(self.cir.q(x0, self.epar)) if _rec is None or 'q' not in _rec
+              else _rec['q'])
         return SimpleNamespace(
             Amat=np.array(integ.A, dtype=float), h=h, tn=tn, iref=iref,
             arr=arr, red=red, src=self._stage_source(provided_function),
@@ -324,10 +326,12 @@ class _RadauStages:
                 for j in range(3):
                     if S[j] is not None:
                         state_restore(S[j])
-                    qi.append(arr(self.cir.q(Y[j], epar)))
-                    i_j = arr(self.cir.i(Y[j], epar))
-                    G_j = arr(self.cir.G(Y[j], epar))
-                    Ci.append(arr(self.cir.C(Y[j], epar)))
+                    ## (one evaluation session per stage: `_evalhint`)
+                    with _evalhint.evaluating('q', 'i', 'G', 'C'):
+                        qi.append(arr(self.cir.q(Y[j], epar)))
+                        i_j = arr(self.cir.i(Y[j], epar))
+                        G_j = arr(self.cir.G(Y[j], epar))
+                        Ci.append(arr(self.cir.C(Y[j], epar)))
                     ## (the evaluations at this stage, for the step's
                     ## readers -- `_memo_get`; never under a shunt or a
                     ## stateful limiter)
@@ -804,10 +808,19 @@ class _RadauStages:
         tk = self.toolkit
         xn = x0
 
+        ## this step's device memo (the dense path rolls it too, after the
+        ## transform's dispatch): the frozen `C` and `G` at `x_n` are the
+        ## previous step's final stage's, recorded by `_finish_stage_step`
+        self._memo_step()
+        _rec = self._memo_get(xn) or {}
+        need = [k for k in ('C', 'G') if k not in _rec]
         ## the FROZEN Jacobian pieces, at x_n, reduced -- the whole point:
         ## factored implicitly once per step and reused every iteration
-        Cn = arr(self.cir.C(xn, epar))
-        Gn = arr(self.cir.G(xn, epar))
+        with _evalhint.evaluating(*need):
+            Cn = _rec['C'] if 'C' in _rec else arr(self.cir.C(xn, epar))
+            Gn = _rec['G'] if 'G' in _rec else arr(self.cir.G(xn, epar))
+        if need and self._memo_ok():
+            self._memo_put(xn, {'C': Cn, 'G': Gn})
         (Cr,) = remove_row_col((Cn,), iref, tk)
         (Gr,) = remove_row_col((Gn,), iref, tk)
         Cr = np.asarray(Cr, dtype=float)
@@ -835,8 +848,10 @@ class _RadauStages:
             for j in range(3):
                 if S[j] is not None:
                     state_restore(S[j])
-                qi_all.append(arr(self.cir.q(Y[j], epar)))
-                Ki_all.append(-(arr(self.cir.i(Y[j], epar)) + src(tstage[j])))
+                with _evalhint.evaluating('q', 'i'):
+                    qi_all.append(arr(self.cir.q(Y[j], epar)))
+                    Ki_all.append(-(arr(self.cir.i(Y[j], epar))
+                                    + src(tstage[j])))
             R, _J = self._coupled_stage_system(ctx, qi_all, Ki_all)
             dY = self._radau_transform_solve(R, Cr, Gr, h)
             scale = 0.0

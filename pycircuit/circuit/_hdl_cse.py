@@ -52,6 +52,8 @@ import os
 import sys
 import tempfile
 
+import numpy as np
+
 #: the derived store's format; bump when the emitted text changes
 FORMAT = 1
 
@@ -389,3 +391,160 @@ def optimise(info):
             g._hdl_codelen = len(f.__code__.co_code)
             done[id(f)] = g
         funcs[name] = g
+
+
+## -- fused variants (the plan's F2) ------------------------------------------
+##
+## Several of a chained class's functions at one state, computed by ONE
+## function: their statements merged by name -- the same name is the same
+## text in every function `_chain_compile` printed for the class (asserted;
+## the same sympy objects through the same printer), so each output is
+## computed exactly as its own function computes it -- then the union
+## optimised as above.  PSP's i, q, G and C at one state: 6.3 ms as four
+## optimised calls, 3.4 ms fused (F0, 2026-10-02); G and C share 1222
+## derivative statements, i and q 341 values.  Built on first use for the set
+## an evaluation session asks for (`take`), stored like the twins.
+
+#: the order a fused function returns its outputs in
+ORDER = ('i', 'q', 'G', 'C')
+
+
+def fuse_source(srcs):
+    """One generated function from several of the same signature: the union
+    of their statements by target name, each function's order kept (every
+    statement follows what it reads), the outputs returned as a tuple in
+    the order given.  `Refused` if the signatures differ or one name stands
+    for two texts."""
+    head, seen, body, rets = None, {}, [], []
+    for src in srcs:
+        lines = src.split('\n')
+        if head is None:
+            head = lines[0]
+        elif lines[0] != head:
+            raise Refused('different signatures')
+        if not lines[-1].startswith('    return '):
+            raise Refused('no single-line return')
+        for ln in lines[1:-1]:
+            name, sep, _rhs = ln.strip().partition(' = ')
+            if not sep or not ln.startswith('    '):
+                raise Refused('unexpected line')
+            prev = seen.get(name)
+            if prev is None:
+                seen[name] = ln
+                body.append(ln)
+            elif prev != ln:
+                raise Refused(f'{name} stands for two texts')
+        rets.append(lines[-1][len('    return '):])
+    return '\n'.join([head] + body
+                     + [f"    return ({', '.join(rets)},)"])
+
+
+def fused(info, which):
+    """The function computing exactly `which` (names of `ORDER`) of the
+    chained class whose `info` this is, returning them in `ORDER` -- built
+    on first use and kept in `info['_fused']`; None where it is not
+    available (fewer than two names, a function missing, a refusal)."""
+    names = tuple(k for k in ORDER if k in which)
+    cache = info.setdefault('_fused', {})
+    if names in cache:
+        return cache[names]
+    fn = None
+    funcs = info.get('funcs', {})
+    refs = [funcs.get(k) for k in names]
+    if len(names) >= 2 and all(r is not None for r in refs):
+        refs = [r.__dict__.get('_hdl_ref', r) for r in refs]
+        if all(hasattr(r, '_src') for r in refs):
+            try:
+                src = fuse_source([r._src for r in refs])
+            except Refused:
+                src = None
+            if src is not None:
+                text = _optimised_text(src) or src
+                loc = {}
+                exec(compile(text, '<hdl-chain-fused>', 'exec'),  # noqa: S102 -- the generated chain
+                     refs[0].__globals__, loc)
+                fn = loc['_f']
+                fn._hdl_names = names
+    cache[names] = fn
+    return fn
+
+
+## -- evaluation sessions (the plan's F3) -------------------------------------
+
+#: evaluation sessions fuse unless `PYCIRCUIT_HDL_FUSE=0` (the optimised
+#: separate functions then answer every call, as outside a session)
+FUSE_ENABLED = os.environ.get('PYCIRCUIT_HDL_FUSE', '1').strip() != '0'
+
+#: a chained class's sessions engage only when its reference `G` has at least
+#: this much bytecode: below it the memo's bookkeeping is the evaluation
+FUSE_MIN_CODE = 5000
+
+#: the states one element keeps per session: one site interleaves several
+#: (Radau's stages, the PSS walk's points)
+MEMO_ENTRIES = 8
+
+
+def take(el, method, x, epar, info, args_of):
+    """`el`'s `method` at `x`, from one fused pass over the session in
+    force's methods (`_evalhint`), the others kept for the calls that
+    follow at the same state; None for the separate call -- no session,
+    `method` not in it, or a bypass: a JAX or symbolic toolkit, an instance
+    attribute shadowing one of the methods (PCNR's participants), a
+    function bound to the C backend, a class below `FUSE_MIN_CODE`, a state
+    that is not a float vector, a fused pass that raises (the separate call
+    then raises, or not, exactly as before).  Each output is handed out
+    once, so no array is shared; the memo is keyed on the session, the
+    state's bytes and the parameter list `args_of` returns (a new list
+    after `update()` or a temperature change)."""
+    from pycircuit.circuit import _evalhint
+    s = _evalhint.current()
+    if s is None or method not in s.which or len(s.which) < 2:
+        return None
+    ok = info.get('_fuse_ok')
+    if ok is None:
+        g = info['funcs'].get('G')
+        ref = None if g is None else g.__dict__.get('_hdl_ref', g)
+        ok = info['_fuse_ok'] = bool(
+            ENABLED and FUSE_ENABLED and info.get('chained') and ref is not None
+            and len(ref.__code__.co_code) >= FUSE_MIN_CODE)
+    if not ok:
+        return None
+    d = el.__dict__
+    if 'i' in d or 'q' in d or 'G' in d or 'C' in d:
+        return None
+    tk = el.toolkit
+    if getattr(tk, 'jax', False) or getattr(tk, 'symbolic', False):
+        return None
+    funcs = info['funcs']
+    for k in s.which:
+        f = funcs.get(k)
+        if f is None or f.__dict__.get('_hdl_c') is not None:
+            return None
+    if (type(x) is not np.ndarray or x.dtype != np.float64
+            or x.ndim != 1):
+        return None
+    fm = d.get('_hdl_fm')
+    if fm is None or fm[0] is not s:
+        fm = d['_hdl_fm'] = (s, {})
+    entries = fm[1]
+    key = x.tobytes()
+    args = args_of(el, epar)
+    rec = entries.get(key)
+    if rec is not None and rec[0] is args:
+        out = rec[1].pop(method, None)
+        if out is not None:
+            return out
+    fn = fused(info, s.which)
+    if fn is None:
+        return None
+    try:
+        vals = fn(x, *args)
+    except Exception:  # noqa: BLE001 -- the separate call decides, as before
+        return None
+    outs = {k: np.asarray(v, dtype=float) for k, v in zip(fn._hdl_names, vals)}
+    out = outs.pop(method)
+    entries.pop(key, None)
+    entries[key] = [args, outs]
+    while len(entries) > MEMO_ENTRIES:
+        entries.pop(next(iter(entries)))
+    return out

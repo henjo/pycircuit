@@ -171,7 +171,8 @@ class _InnerTransient(object):
         ## (the stage Newton's own `C` when it evaluated this very state --
         ## `Transient._memo_get`, bit-identical)
         rec = tr._memo_get(xf)
-        C = tr.cir.C(xf, tr.epar) if rec is None else rec['C']
+        C = tr.cir.C(xf, tr.epar) if rec is None or 'C' not in rec \
+            else rec['C']
         (C,) = remove_row_col((C,), self.irefnode, self.toolkit)
         return C
 
@@ -212,7 +213,12 @@ class _InnerTransient(object):
             ## no junction devices: nothing limits, so the plain read IS the
             ## physical G and PCNR would only add an assembly for no reason.
             self._sync_limit_at(xf)
-            G = tr.cir.G(xf, tr.epar)
+            ## (the transient's own `G` at this very state, when its device
+            ## memo holds one -- the stage step's final stage, recorded by
+            ## `_finish_stage_step`; as `_C_at` reads `C`)
+            rec = tr._memo_get(xf)
+            G = tr.cir.G(xf, tr.epar) if rec is None or 'G' not in rec \
+                else rec['G']
         else:
             xfa = np.asarray(xf, dtype=float)
             v_lim = _pcnr.v_lim_init(junctions, xfa)

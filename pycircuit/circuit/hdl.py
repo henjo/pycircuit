@@ -5977,7 +5977,7 @@ class BehaviouralMeta(type):
         ## the generated Python itself and bit for bit (`_hdl_cse`: PSP's `G`
         ## 13.9 -> 3.2 ms) -- after the cache, so the cache and the C
         ## backend keep the reference text (`fn._src`).
-        from pycircuit.circuit import _hdl_cse
+        from pycircuit.circuit import _evalhint, _hdl_cse
         _hdl_cse.optimise(info)
         funcs = info['funcs']
         ## The evaluation backend (numpy by default; C when selected).
@@ -6021,8 +6021,15 @@ class BehaviouralMeta(type):
                 ## ic, ...)` kept its state equation at DC and the
                 ## operating point was singular; `IdtmodHdl` is flat and
                 ## never showed it.  Found by `VcoHdl` (fifth batch).
-                f = funcs['i_dc'] if has_dc_pins and _dc(epar) \
-                    else funcs['i']
+                dc = has_dc_pins and _dc(epar)
+                ## inside an evaluation session, from one fused pass
+                ## (`_evalhint`, `_hdl_cse.take`); None: the separate call
+                if (not dc and params_tree is None
+                        and _evalhint.current() is not None):
+                    r = _hdl_cse.take(self, 'i', x, epar, info, _args_of)
+                    if r is not None:
+                        return r
+                f = funcs['i_dc'] if dc else funcs['i']
                 return _chained_eval(self, f, x, epar)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'i', x, epar)
@@ -6041,6 +6048,8 @@ class BehaviouralMeta(type):
             ## generated code, since values are read from iparv at call
             ## time and the cache is dropped whenever they move.
             self.__dict__.pop('_hdl_Gc', None)
+            ## (and an evaluation session's fused outputs: `_hdl_cse.take`)
+            self.__dict__.pop('_hdl_fm', None)
             self.__dict__.pop('_hdl_Cc', None)
             ## The C backend's packed parameter vector is a cache of
             ## iparv too.
@@ -6089,8 +6098,13 @@ class BehaviouralMeta(type):
 
         def G(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
-                f = funcs['G_dc'] if has_dc_pins and _dc(epar) \
-                    else funcs['G']
+                dc = has_dc_pins and _dc(epar)
+                if (not dc and params_tree is None
+                        and _evalhint.current() is not None):
+                    r = _hdl_cse.take(self, 'G', x, epar, info, _args_of)
+                    if r is not None:
+                        return r
+                f = funcs['G_dc'] if dc else funcs['G']
                 return _chained_eval(self, f, x, epar)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'G', x, epar)
@@ -6110,6 +6124,11 @@ class BehaviouralMeta(type):
 
         def q(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
+                if (params_tree is None and _evalhint.current() is not None
+                        and not (has_dc_pins and _dc(epar))):
+                    r = _hdl_cse.take(self, 'q', x, epar, info, _args_of)
+                    if r is not None:
+                        return r
                 return _chained_eval(self, funcs['q'], x, epar)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'q', x, epar)
@@ -6117,6 +6136,11 @@ class BehaviouralMeta(type):
 
         def C(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
+                if (params_tree is None and _evalhint.current() is not None
+                        and not (has_dc_pins and _dc(epar))):
+                    r = _hdl_cse.take(self, 'C', x, epar, info, _args_of)
+                    if r is not None:
+                        return r
                 return _chained_eval(self, funcs['C'], x, epar)
             if getattr(self.toolkit, 'symbolic', False):
                 return _symbolic_eval(self, 'C', x, epar)

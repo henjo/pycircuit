@@ -4,6 +4,8 @@
 
 import numpy as np
 
+from pycircuit.circuit import _evalhint
+
 
 class _CompanionModel:
     """The LMM companion model and the per-step device memo.  A theme of
@@ -56,6 +58,7 @@ class _CompanionModel:
         start of every solve, the one place a caller can change the circuit
         between two steps."""
         self._dev_memo = ({}, {})
+        self._memo_rolling = False
         self._jacobian_expensive = None
 
     def _memo_step(self):
@@ -63,12 +66,29 @@ class _CompanionModel:
         step's START is the previous step's last stage)."""
         memo = getattr(self, '_dev_memo', None) or ({}, {})
         self._dev_memo = ({}, memo[0])
+        self._memo_rolling = True
 
     def _memo_put(self, x, rec):
+        """Record the device evaluations `rec` (some of `q`, `i`, `C`, `G`)
+        at `x`, merged into what is recorded there already (a record the
+        previous step holds is carried into this one)."""
         memo = getattr(self, '_dev_memo', None)
         if memo is None:
             memo = self._dev_memo = ({}, {})
-        memo[0][np.asarray(x, dtype=float).tobytes()] = rec
+        key = np.asarray(x, dtype=float).tobytes()
+        cur = memo[0].get(key)
+        if cur is None:
+            cur = memo[0][key] = dict(memo[1].get(key, ()))
+        cur.update(rec)
+
+    def _memo_ok(self):
+        """Whether an evaluation may be recorded (`_memo_put`): on a path
+        whose memo rolls per step (the coupled stage steps, `_memo_step`;
+        elsewhere it would only grow), with no stateful limiter and no
+        bypass -- the guards the dense stage Newton records under."""
+        return (bool(getattr(self, '_memo_rolling', False))
+                and not getattr(self, '_stateful_lims', None)
+                and float(getattr(self.epar, 'bypasstol', -1.0) or -1.0) < 0.0)
 
     def _memo_get(self, x):
         """The device evaluations (`q`, `i`, `C`, `G`, full width) the coupled
@@ -93,8 +113,22 @@ class _CompanionModel:
         A MEMOISATION, as `_q_at`: identity, then full equality; and never
         across a stateful limiter (`Diode`), whose device reads its stored
         state as well as `x`."""
+        C = self._C_lookup(x)
+        if C is None:
+            C = self.cir.C(x, self.epar)
+            ## (recorded where the memo rolls: the stage paths' branch screen
+            ## reads `C` at each stage, and the shooting's stage step then
+            ## reads it there again -- `_C_at`)
+            if self._memo_ok():
+                self._memo_put(x, {'C': C})
+        return C
+
+    def _C_lookup(self, x):
+        """The `C` `_C_at_state` would serve at `x` without evaluating, or
+        None -- what an evaluation session asks before naming `C`
+        (`_evalhint`: a session names exactly what will be evaluated)."""
         rec = self._memo_get(x)
-        if rec is not None:
+        if rec is not None and 'C' in rec:
             return rec['C']
         cached = getattr(self, '_C_cache', None)
         if (cached is not None and not getattr(self, '_stateful_lims', None)
@@ -106,7 +140,7 @@ class _CompanionModel:
                     and getattr(x_cached, 'shape', None) == getattr(x, 'shape', None)
                     and bool(self.toolkit.alltrue(x_cached == x))):
                 return C_cached
-        return self.cir.C(x, self.epar)
+        return None
 
     def _q_at(self, x):
         """``cir.q(x)``, reusing the value computed during the last assembly.
@@ -173,10 +207,18 @@ class _CompanionModel:
         """``(f, J)`` at ``(x, t)`` using the current ``self._dt`` -- the step
         residual `solve_timestep`'s Newton drives to zero, and reachable
         without one: the coupled method needs one residual per iteration of
-        its OWN loop."""
-        iq, Geq = self._companion_at(x)
-        u = self._source_at(t, provided_function)
-        f = self.cir.i(x, self.epar) + iq + u
-        J = self.cir.G(x, self.epar) + Geq
+        its OWN loop.
+
+        One evaluation session (`_evalhint`): a compiled model computes the
+        `q`, `i`, `G` (and `C`, unless a cache serves it) it is asked for
+        here in one fused pass -- the same bits, a compact MOSFET's four
+        evaluations at a state 6.3 -> 3.4 ms."""
+        need = ('q', 'i', 'G') if self._C_lookup(x) is not None \
+            else ('C', 'q', 'i', 'G')
+        with _evalhint.evaluating(*need):
+            iq, Geq = self._companion_at(x)
+            u = self._source_at(t, provided_function)
+            f = self.cir.i(x, self.epar) + iq + u
+            J = self.cir.G(x, self.epar) + Geq
         return (self.toolkit.array(f, dtype=float),
                 self.toolkit.array(J, dtype=float))

@@ -2,8 +2,11 @@
 `Transient` (see `transient.py`).
 """
 
+import contextlib
+
 import numpy as np
 
+from pycircuit.circuit import _evalhint
 from pycircuit.circuit._limiting import state_restore, state_snapshot
 from pycircuit.circuit.simwarnings import (
     ModelWarning,
@@ -102,7 +105,13 @@ class _BranchCheck:
         r0, scale0 = self._branch_structural_rank()
         if r0 <= 0 or scale0 <= 0.0:
             return False, None
-        _C = self._C_at_state(x)
+        ## (inside the converged point's evaluation session, where the step
+        ## sets one: its `jacobian_only` reads `q` and `G` here next --
+        ## `Transient.solve_timestep`, `_evalhint`)
+        conv = getattr(self, '_conv_session', None)
+        with (_evalhint.evaluating(session=conv) if conv is not None
+              else contextlib.nullcontext()):
+            _C = self._C_at_state(x)
         ## (kept for the step's own assembly at this state, which follows)
         self._C_cache = (x, _C)
         C = np.asarray(_C, dtype=float)

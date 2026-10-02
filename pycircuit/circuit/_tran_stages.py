@@ -4,6 +4,7 @@ step shares.  A theme of `Transient` (see `transient.py`).
 
 import numpy as np
 
+from pycircuit.circuit import _evalhint
 from pycircuit.circuit.analysis import (
     remove_row_col,
 )
@@ -78,9 +79,12 @@ class _SequentialStages:
         arr = lambda v: self.toolkit.array(v, dtype=float)
 
         def func_i(x):
-            Ki = -(arr(self.cir.i(x, epar)) + src(ti))
-            f = arr(self.cir.q(x, epar)) - target - h * aii * Ki
-            J = arr(self.cir.C(x, epar)) + h * aii * arr(self.cir.G(x, epar))
+            ## (one evaluation session: `_evalhint`)
+            with _evalhint.evaluating('i', 'q', 'C', 'G'):
+                Ki = -(arr(self.cir.i(x, epar)) + src(ti))
+                f = arr(self.cir.q(x, epar)) - target - h * aii * Ki
+                J = (arr(self.cir.C(x, epar))
+                     + h * aii * arr(self.cir.G(x, epar)))
             return f, J
         if self._rk_use_pcnr():
             Y, ok = self._pcnr_attempt(
@@ -113,15 +117,28 @@ class _SequentialStages:
         epar = self.epar
         arr = lambda v: self.toolkit.array(v, dtype=float)
         xnp1 = Y[-1]
-        rec = self._memo_get(xnp1)
-        if rec is None:
-            qY = self.cir.q(xnp1, epar)
-            i_n = arr(self.cir.i(xnp1, epar))
-            Cm = arr(self.cir.C(xnp1, epar))
-            Gm = arr(self.cir.G(xnp1, epar))
-        else:
-            ## (the stage Newton's own, at this very state)
-            qY, i_n, Cm, Gm = rec['q'], rec['i'], rec['C'], rec['G']
+        ## what the device memo holds at this very state (the stage Newton's
+        ## own, the branch screen's `C`) is read; the rest is evaluated in
+        ## one evaluation session (`_evalhint`) and recorded where the memo
+        ## rolls -- the next step opens here, and the shooting's stage step
+        ## reads `C` and `G` here again
+        rec = self._memo_get(xnp1) or {}
+        need = [k for k in ('q', 'i', 'C', 'G') if k not in rec]
+        if need:
+            vals = {}
+            with _evalhint.evaluating(*need):
+                if 'q' in need:
+                    vals['q'] = self.cir.q(xnp1, epar)
+                if 'i' in need:
+                    vals['i'] = arr(self.cir.i(xnp1, epar))
+                if 'C' in need:
+                    vals['C'] = arr(self.cir.C(xnp1, epar))
+                if 'G' in need:
+                    vals['G'] = arr(self.cir.G(xnp1, epar))
+            if self._memo_ok():
+                self._memo_put(xnp1, vals)
+            rec = dict(rec, **vals)
+        qY, i_n, Cm, Gm = rec['q'], rec['i'], rec['C'], rec['G']
         self._q_cache = (xnp1, qY)
         self._iq = -(i_n + src(t))
         self._Cmat = Cm

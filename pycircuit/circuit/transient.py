@@ -8,6 +8,7 @@ import numpy as np
 
 
 from pycircuit.circuit.analysis import *
+from pycircuit.circuit import _evalhint
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import (limit_sync, stateful_limiters)
 from pycircuit.circuit.simwarnings import (
@@ -1374,8 +1375,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
 
             History: `doc/transient_history.md`, `Transient.solve_timestep`.
             """
-            _iq, Geq = self._companion_at(x)
-            J = self.cir.G(x, self.epar) + Geq
+            ## (the converged point's session, which the branch screen's `C`
+            ## read at this state shared: `_conv_session`)
+            with _evalhint.evaluating(session=conv):
+                _iq, Geq = self._companion_at(x)
+                J = self.cir.G(x, self.epar) + Geq
             return None, self.toolkit.array(J, dtype=float)
 
         def residual_only(x):
@@ -1387,16 +1391,27 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             seed's `C` (`_Cmat`, set by the evaluation at the seed) stands
             in.  The step's state is the full Newton's after it all the same:
             `jacobian_only` evaluates the converged point."""
-            q = self.cir.q(x, self.epar)
-            iq, _geq = self.get_diff(q, self._Cmat)
-            u = self._source_at(t, provided_function)
-            return self.toolkit.array(self.cir.i(x, self.epar) + iq + u,
-                                      dtype=float)
+            with _evalhint.evaluating('q', 'i'):
+                q = self.cir.q(x, self.epar)
+                iq, _geq = self.get_diff(q, self._Cmat)
+                u = self._source_at(t, provided_function)
+                return self.toolkit.array(self.cir.i(x, self.epar) + iq + u,
+                                          dtype=float)
 
         ## STAGE PREDICTOR.  A multistep method has no stages, so its analogue
         ## is the classical one: extrapolate the accepted history to `t`.  The
         ## seed it replaces is `x_n`, a whole step behind.
-        x = self._newton(func, self._pred_or(x0, t), residual=residual_only)
+        ## THE CONVERGED POINT IS ONE EVALUATION SESSION: the branch screen
+        ## reads `C` there (inside `_newton`) and `jacobian_only` then `q`
+        ## and `G` -- the session object both re-enter (`_evalhint`), so a
+        ## compiled model computes the three in one fused pass
+        conv = _evalhint.Session(('C', 'q', 'G'))
+        self._conv_session = conv
+        try:
+            x = self._newton(func, self._pred_or(x0, t),
+                             residual=residual_only)
+        finally:
+            self._conv_session = None
         ## ⚠ AND IT MUST RECORD ITS OWN NODE.  The stage methods get theirs for
         ## free next to `_rk_Y`; this path has no stages, so without this line
         ## the history never reaches two entries and the predictor declines
