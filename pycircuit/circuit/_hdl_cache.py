@@ -720,7 +720,8 @@ _FN = '__hdl_fn__'
 #: from a `_src` of its own), so freezing a live class's `info` after a
 #: session had run raised `Uncacheable` (until 2026-10-02).
 _RUNTIME_KEYS = frozenset(('_jax', '_fused', '_fuse_ok', '_c_bound',
-                           '_backend_pending', '_backend_seen'))
+                           '_backend_pending', '_backend_seen',
+                           '_c_limit', '_c_limit_status'))
 
 
 def freeze(obj, memo=None):

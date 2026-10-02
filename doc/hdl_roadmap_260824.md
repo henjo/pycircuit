@@ -6388,3 +6388,38 @@ random cases.  Round 3 closes here: 20 MosLevel1 0.382 -> 0.138 s (2.8x),
 20 Gummel-Poon 0.447 -> 0.149 s (3.0x), 20 PSP 0.383 -> 0.310 s (1.24x),
 the PSP stage PSS 0.301 -> 0.266 s.  What is left: the kernels' own C work
 on PSP-class models, and the per-step solver machinery on small circuits.
+
+## 2026-10-03 — 62. Speed round 5: the hdl limiter in C (`_hdl_climit`; LC1, the kernel proven offline)
+
+Andreas, after speed round 4: "Plan for the hdl limiter C kernel".  The
+round's in-run tree had left `cir.limit` at 33 % of a 20-MosLevel1 gear
+step -- 18.8 us of generated Python a call after round 3's trimming (the
+body 17.6: lists, two rankings, sorts, the write-back; the parameter
+chain `von` 6.2; the laws 2.6) against 1.7 us for a C kernel call.  So
+the whole closure is printed, from the spec and the parameter functions'
+kept sympy statements (`_hdl_limit_par`), through the chain printer's
+own symbol map (`hdl._c_symmap`, factored out of `_render_c` with its
+text unchanged); the laws and `device_writeback` are transliterated in
+Python's own forms in a prelude of the kernel's own (`_LIMIT_C`, never
+`_KERNEL_C`'s: that would rebuild every object).
+
+Three things the design review changed.  Python's `sorted` and `min` on
+keys holding a NaN order by timsort's and the set's accidents, which no
+other sort reproduces (measured: a stable insertion sort disagrees in 29
+% of random NaN-keyed lists) -- so the kernel returns an `int` and
+DECLINES such a call, leaving the closure to answer it with its own
+order and its own warnings (`_hdl_cbackend._dlopen` and `load_kernel`
+take a `cdef` for that; `kernel_for` is the wrapper the chain functions
+keep).  MosLevel1/3's `von` evaluates both arms of a `where` and warns
+on `sqrt` of a negative at a forward-biased body where C is silent, so
+the gate's warning counters are to be censused before the kernel is
+bound (LC2).  Binding is per collapse variant, with `nx` the `i`
+kernel's, never the terminal count.
+
+LC1 proves the kernel offline: `test_hdl_climit.py` sweeps the five laws
+through a probe kernel against `apply_limit` (20 000 random points and
+every pair of special values), every library class with `$limit` against
+the closure over 2000 random cases, a chained sequential group, the
+inputs the closure accepts, the temperatures, the declines, and shows
+the sweep can fail.  Standalone the kernel is 1.7 us a call where the
+closure was 3.8 (the SPICE diode) to 20 (the thermal BJT).

@@ -4900,6 +4900,27 @@ def set_backend(which, cls=None):
             _hdl_cbackend.attach(variant, variant._hdl_info)
 
 
+def _c_symmap(stmts, trailing_names, xnames):
+    """The C printer's symbol map for a chain: the unknowns `x[k]` (by
+    name, in `xnames` order), the trailing arguments `p[k]` (the packed
+    layout: parameters, T, the givenness flags), every statement symbol
+    `L_<name>`; and the statement symbols bound to a `Piecewise`, which
+    the printer squares as numpy squares a `where` (`_sq`).  One
+    function for `_render_c` and the limiter's renderer (`_hdl_climit`),
+    so the two print through the same map by construction."""
+    symmap = {}
+    for k, nm in enumerate(xnames):
+        symmap[nm] = f'x[{k}]'
+    for k, nm in enumerate(trailing_names):
+        symmap[nm] = f'p[{k}]'
+    array_syms = set()
+    for sym, expr in stmts:
+        symmap[sym.name] = 'L_' + sym.name
+        if isinstance(expr, sympy.Piecewise):
+            array_syms.add(sym)
+    return symmap, array_syms
+
+
 def _render_c(stmts, cells, args, xsyms):
     """The C function for a chain: `(stmts, cells)` as `_chain_compile`
     collected them, `args` the numpy signature `[x, *trailing]`.
@@ -4910,16 +4931,8 @@ def _render_c(stmts, cells, args, xsyms):
     it of the temperature, which the element writes per call.
     """
     trailing = list(args[1:])
-    symmap = {}
-    for k, xs in enumerate(xsyms or ()):
-        symmap[xs.name] = 'x[%d]' % k
-    for k, a in enumerate(trailing):
-        symmap[a.name] = 'p[%d]' % k
-    array_syms = set()
-    for sym, expr in stmts:
-        symmap[sym.name] = 'L_' + sym.name
-        if isinstance(expr, sympy.Piecewise):
-            array_syms.add(sym)
+    symmap, array_syms = _c_symmap(
+        stmts, [a.name for a in trailing], [xs.name for xs in (xsyms or ())])
     printer = _CChainPrinter(symmap, array_syms)
     lines = ['void %s(const double *x, const double *p, double *out) {'
              % _C_ENTRY]

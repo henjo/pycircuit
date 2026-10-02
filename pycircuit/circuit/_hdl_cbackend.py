@@ -312,12 +312,21 @@ def _build(csrc, dest):
                 pass
 
 
-def _dlopen(path):
+def _fn_cdef():
+    """The chain functions' entry: `void hdl_fn(x, p, out)`."""
+    from pycircuit.circuit import hdl
+    return f'void {hdl._C_ENTRY}(const double *x, const double *p, double *out);'
+
+
+def _dlopen(path, cdef=None):
+    """`(ffi, cfn)` for the object at `path`: the chain functions' entry
+    by default, or the entry `cdef` declares (the limiter's `int hdl_fn`,
+    `_hdl_climit`) -- the one name, another signature; the object is
+    keyed by its source, so the two never meet in one file."""
     import cffi
     ffi = cffi.FFI()
     from pycircuit.circuit import hdl
-    ffi.cdef('void %s(const double *x, const double *p, double *out);'
-             % hdl._C_ENTRY)
+    ffi.cdef(cdef or _fn_cdef())
     lib = ffi.dlopen(path)
     return ffi, getattr(lib, hdl._C_ENTRY)
 
@@ -418,14 +427,17 @@ class CKernel(object):
 _loaded = {}
 
 
-def kernel_for(fn, nx, rebuild_corrupt=True):
-    """The `CKernel` for a chain function carrying `_csrc`.
+def load_kernel(csrc, cdef=None, rebuild_corrupt=True):
+    """The loaded object for the C source `csrc` (the prelude is added):
+    `(ffi, cfn, key, cold, seconds)` -- built under the key's lock when
+    the store has no object for it, loaded through `cdef`'s entry (the
+    chain functions' by default; `_hdl_climit`'s otherwise), memoised per
+    process by the source's key.
 
     Raises `CompileError` when there is no compiler or the build fails;
     the caller turns that into a status, never into a broken class.
-    Returns `(kernel, cold)` where `cold` says whether a compile ran.
+    `cold` says whether a compile ran; `seconds` is its time, 0 otherwise.
     """
-    csrc = fn._csrc
     key = source_key(csrc)
     cold = False
     import time
@@ -444,7 +456,7 @@ def kernel_for(fn, nx, rebuild_corrupt=True):
                     _build(csrc, path)
                     cold = True
         try:
-            ffi, cfn = _dlopen(path)
+            ffi, cfn = _dlopen(path, cdef)
         except OSError as e:
             if not rebuild_corrupt:
                 raise CompileError('unloadable object: %s' % e)
@@ -457,14 +469,20 @@ def kernel_for(fn, nx, rebuild_corrupt=True):
             _build(csrc, path)
             cold = True
             try:
-                ffi, cfn = _dlopen(path)
+                ffi, cfn = _dlopen(path, cdef)
             except OSError as e2:
                 raise CompileError('rebuilt object still unloadable: %s'
                                    % e2)
         _loaded[key] = (ffi, cfn)
+    return ffi, cfn, key, cold, (time.perf_counter() - t0 if cold else 0.0)
+
+
+def kernel_for(fn, nx, rebuild_corrupt=True):
+    """The `CKernel` for a chain function carrying `_csrc`: `load_kernel`
+    on its source, wrapped.  Returns `(kernel, cold)`."""
+    ffi, cfn, key, cold, secs = load_kernel(fn._csrc, None, rebuild_corrupt)
     kern = CKernel(ffi, cfn, tuple(fn._cshape), nx, tuple(fn._clayout),
-                   key, time.perf_counter() - t0)
-    kern.built_s = kern.built_s if cold else 0.0
+                   key, secs)
     return kern, cold
 
 
