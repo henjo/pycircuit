@@ -45,6 +45,13 @@ class _DrivenNoise(object):
         on a linear circuit, where the sidebands vanish and this reduces
         to the stationary answer (Okumura's `p = 1` case).
 
+        `freq` may be an ARRAY of frequencies: `S` is then an array, one PSD
+        per frequency, and `info['sidebands']` / `info['stop']` are lists,
+        one entry per frequency.  Their rows come from one reverse pass
+        carrying a costate column per frequency (`_sideband_families`) --
+        several times faster than a loop of scalar calls, and the same
+        numbers to rounding.
+
         ⚠ THE SWEEP (`sweeptype`, `relharmnum`), a commercial RF simulator's
         rule: `'absolute'` reads `freq` as the output frequency itself,
         `'relative'` as the offset `relharmnum * f0 + freq` (`relharmnum`
@@ -149,7 +156,19 @@ class _DrivenNoise(object):
         ## on a trap/euler oscillator, whose period differs from the run's by
         ## O(h^2): read off the run's period, an offset below that gap would
         ## land on the wrong side of the pole.
-        freq = sweep_frequency(pss, freq, sweeptype, relharmnum, 'pnoise')
+        ## ⚠ SEVERAL FREQUENCIES IN ONE CALL (`freq` an array; 2026-10-02,
+        ## the speed plan's P4): every output frequency's rows come from TWO
+        ## reverse passes carrying one costate column per frequency and one
+        ## batched pole solve (`_sideband_families`) instead of a family per
+        ## frequency; the sources, the fold and its stop rule stay per
+        ## frequency.  The same numbers as a loop of scalar calls, to
+        ## rounding (block solves are not column solves bit for bit).
+        scalar = np.ndim(freq) == 0
+        freqs = [freq] if scalar else list(np.asarray(freq, dtype=float).ravel())
+        if not freqs:
+            raise ValueError('PAC.pnoise: no frequency given.')
+        freqs = [float(sweep_frequency(pss, f, sweeptype, relharmnum, 'pnoise'))
+                 for f in freqs]
         fp = pss.factored_period()
         m = pss.cir.n - 1
         N = len(fp.steps)
@@ -168,7 +187,28 @@ class _DrivenNoise(object):
                 'use a finer period grid, or leave it None (the default, '
                 'every sideband the grid resolves).')
         lmax = N // 2 if maxsidebands is None else maxsidebands
+        srcs = [self._pnoise_sources(pss, f, f0, lmax, modulated,
+                                     cyclostationary) for f in freqs]
+        ## every row here has OUTPUT frequency `freq`: one family per
+        ## frequency, one adjoint solve for all its sidebands
+        ## (`_sideband_family`), the frequencies batched
+        ## (`_sideband_families`)
+        fams = (self._sideband_families(pss, freqs, output) if len(freqs) > 1
+                else [self._sideband_family(pss, freqs[0], output)])
+        out = [self._pnoise_fold(pss, f, fam, cyfn, colour, lmax, tol, f0,
+                                 maxsidebands, N, cyclostationary)
+               for f, fam, (cyfn, colour) in zip(freqs, fams, srcs)]
+        if scalar:
+            return out[0]
+        return (np.array([o[0] for o in out]),
+                {'sidebands': [o[1]['sidebands'] for o in out],
+                 'stop': [o[1]['stop'] for o in out],
+                 'deflated': bool(getattr(pss, 'autonomous', False))})
 
+    def _pnoise_sources(self, pss, freq, f0, lmax, modulated, cyclostationary):
+        """`pnoise` at one frequency, the sources: `(cyfn, colour)`, the
+        model of `CY` the fold reads, checked at the harmonics the fold
+        reaches (`_dc_fold_guard`)."""
         w = 2.0 * np.pi * float(freq)
         ## ⚠ `modulated=True` IS HULL & MEYER'S ROUTE, NOT A TOLERANCE
         ## RELAXATION.  Off, a bias-dependent `CY` raises, because the
@@ -223,14 +263,18 @@ class _DrivenNoise(object):
         self._dc_fold_guard(pss, cyfn, float(freq), float(np.min(offs)), f0_,
                             cy, 'pnoise')
 
+        return cyfn, colour
+
+    def _pnoise_fold(self, pss, freq, fam, cyfn, colour, lmax, tol, f0,
+                     maxsidebands, N, cyclostationary):
+        """`pnoise` at one frequency, the fold: the sidebands of its
+        family `fam` summed in power until the stop rule fires --
+        `(S, info)`."""
         total = 0.0
         used = []
         quiet = 0
         stop = 'bound'
         rows = {}
-        ## every row here has OUTPUT frequency `freq`: one family, one
-        ## adjoint solve for all the sidebands (`_sideband_family`)
-        fam = self._sideband_family(pss, float(freq), output)
         for l in range(0, lmax + 1):
             step = 0.0
             for sl in ((0,) if l == 0 else (l, -l)):
@@ -625,22 +669,25 @@ class _DrivenNoise(object):
                              why='a spread needs two values')
         f0 = 1.0 / float(pss.period)
         rs = np.linspace(float(band[0]), float(band[1]), points)
-        vals = []
-        for r in rs:
-            f = float(r) * f0
-            if quantity == 'oscillator_spectrum':
-                Sv, _L, _i = self.oscillator_spectrum(
-                    pss, np.array([f]), output, harmonic=harmonic, **kw)
-                v = float(np.real(Sv[0]))
-            elif quantity in ('S_pm', 'S_am'):
-                am, pm, _i = self.am_pm_noise(pss, f, output, harmonic=harmonic,
-                                              sweeptype='relative', **kw)
-                v = float(np.real(pm if quantity == 'S_pm' else am))
-            else:
-                v = float(np.real(self.pnoise(
-                    pss, f, output, sweeptype='relative',
-                    relharmnum=harmonic, **kw)[0]))
-            vals.append(v * float(r) ** 2)
+        if quantity == 'pnoise':
+            ## every offset in ONE call (`pnoise` takes an array: P4)
+            vals = np.real(self.pnoise(pss, rs * f0, output,
+                                       sweeptype='relative',
+                                       relharmnum=harmonic, **kw)[0]) * rs ** 2
+        else:
+            vals = []
+            for r in rs:
+                f = float(r) * f0
+                if quantity == 'oscillator_spectrum':
+                    Sv, _L, _i = self.oscillator_spectrum(
+                        pss, np.array([f]), output, harmonic=harmonic, **kw)
+                    v = float(np.real(Sv[0]))
+                else:
+                    am, pm, _i = self.am_pm_noise(
+                        pss, f, output, harmonic=harmonic,
+                        sweeptype='relative', **kw)
+                    v = float(np.real(pm if quantity == 'S_pm' else am))
+                vals.append(v * float(r) ** 2)
         vals = np.asarray(vals, dtype=float)
         lo = float(np.min(np.abs(vals)))
         ## ⚠ A RATIO WITH A ZERO IN IT IS UNDEFINED, NOT INFINITE: a noiseless
@@ -823,8 +870,9 @@ class _DrivenNoise(object):
         stop = 'bound'
         ## the `a` rows share OUTPUT frequency `k f0 + freq`, the `b` rows
         ## `k f0 - freq`: two families, two adjoint solves in all
-        fam_a = self._sideband_family(pss, k * f0 + float(freq), output)
-        fam_b = self._sideband_family(pss, k * f0 - float(freq), output)
+        ## (the two families as one batch, `_sideband_families`: P4)
+        fam_a, fam_b = self._sideband_families(
+            pss, [k * f0 + float(freq), k * f0 - float(freq)], output)
         ## ⚠ `pnoise`'s STOP RULE, band pair by band pair in `|p|` order:
         ## until 2026-10-01 every band to the cap was summed whatever its
         ## size, so the cost was always the maximum and nothing said whether

@@ -2640,3 +2640,95 @@ def test_every_surface_gives_one_sign_blind_verdict_on_the_samples_and_the_step_
     assert warned(lambda v: v, False, white=True) == [True, True, True]
     assert warned(lambda v: np.tanh(v / 0.005), False, phase=0.9) == [True, True, True]
     assert warned(lambda v: v * abs(v), True) == [False, False, False]
+
+
+def test_pnoise_takes_an_array_of_frequencies_and_answers_as_its_scalar_calls():
+    """The speed plan's P4 (2026-10-02): `pnoise(pss, freqs)` with an ARRAY
+    folds every frequency from one reverse pass carrying a costate column per
+    frequency (`_sideband_families`) -- 4.5x a loop of scalar calls on van
+    der Pol at 20 frequencies -- and gives the same numbers to rounding
+    (block solves are not column solves bit for bit), with the same
+    sidebands summed and the same stop rule per frequency.  Where the batch
+    does not apply (a GLM's state map) every family is a scalar call's own,
+    bit for bit.  A scalar stays a scalar; no frequency raises."""
+    c, pss, pac = _driven_rc()
+    k = [str(n) for n in c.nodes if str(n) != 'gnd!'].index('out')
+    _cir, osc, opac = _vdp_ac(npts=120)
+    f0 = 1.0 / float(osc.period)
+    _gc, glm, gpac = _vdp_ac(npts=120)
+    glm = PSS(_gc, method='glm2', reltol=1e-12)
+    with quiet(AccuracyWarning):
+        glm.solve(period=6.66, timestep=6.66 / 120, x0=np.array([2.0, 0.0]),
+                  maxiterations=80)
+    assert glm.converged
+    cases = (('driven radau', pss, pac, k,
+              np.array([150.0, 300.0, 1700.0, 2600.0]), 1e-12),
+             ('van der Pol gear', osc, opac, 0,
+              np.array([1e-3, 1e-2, 0.07, 0.3]) * f0, 1e-12),
+             ('van der Pol glm2', glm, gpac, 0,
+              np.array([1e-2, 0.07, 0.3]) * f0, 0.0))
+    for label, p, a, out, fs, rtol in cases:
+        with quiet(AccuracyWarning):
+            S, info = a.pnoise(p, fs, out, maxsidebands=8)
+            loop = [a.pnoise(p, f, out, maxsidebands=8) for f in fs]
+        ref = np.array([s for s, _ in loop])
+        assert isinstance(S, np.ndarray) and S.shape == fs.shape, label
+        assert np.ndim(loop[0][0]) == 0, label
+        assert np.all(np.abs(S - ref) <= rtol * np.abs(ref)), (label, S, ref)
+        assert info['sidebands'] == [i['sidebands'] for _, i in loop], label
+        assert info['stop'] == [i['stop'] for _, i in loop], label
+        assert info['deflated'] == loop[0][1]['deflated'], label
+    with pytest.raises(ValueError, match='no frequency'):
+        opac.pnoise(osc, [], 0)
+
+
+def test_the_deflated_refinement_reaches_the_plain_operators_answer_in_block_replays():
+    """The speed plan's P4 (2026-10-02; Andreas: "Batch + new refinement"):
+    below `FLOQUET_DENSE_LIMIT` the deflated solve refines by DEFECT
+    CORRECTION through the dense plain operator instead of an Arnoldi GMRES
+    on the replay.  Its target is the Arnoldi solve's -- the matrix-free
+    plain operator's own answer -- and it gets there: one correction from
+    the bordered answer's ~3e-10 to the arithmetic's floor, within 1e-12 of
+    the Arnoldi route (`_deflated_krylov`) column by column.  And its
+    residuals are BLOCK replays, so four frequencies cost the replays of one
+    (the Arnoldi solve took about five per frequency)."""
+    _cir, osc, opac = _vdp_ac(npts=120)
+    fp = osc._state_map()
+    n = fp.width
+    f0 = 1.0 / float(osc.period)
+    fs = f0 + np.array([1e-3, 3e-2, 0.2, 0.45]) * f0
+    alphas = np.exp(-2j * np.pi * fs * float(fp.T))
+    rng = np.random.default_rng(1)
+    B = rng.standard_normal((n, len(fs))) + 1j * rng.standard_normal((n, len(fs)))
+
+    calls = []
+    orig = osc._replay_transposed
+
+    def counting(fp_, v, *a, **kw):
+        if np.iscomplexobj(v):
+            calls.append(np.shape(v))
+        return orig(fp_, v, *a, **kw)
+    osc._replay_transposed = counting
+    try:
+        Y, _wb = opac._deflated_solve_cols(osc, alphas, B, transposed=True)
+        block = len(calls)
+        calls.clear()
+        opac._deflated_solve_cols(osc, alphas[:1], B[:, :1], transposed=True)
+        one = len(calls)
+    finally:
+        del osc._replay_transposed
+    assert 2 <= block <= 1 + PAC.DEFLATION_REFINE_ITERS, block
+    assert block <= one + 1, (block, one)
+
+    def residual(Yk):
+        R = B - (Yk - alphas[None, :] * np.column_stack(
+            [np.asarray(fp.matvec_transposed(Yk[:, j])) for j in range(len(fs))]))
+        return np.linalg.norm(R, axis=0) / np.linalg.norm(B, axis=0)
+    assert np.all(residual(Y) < 1e-13), residual(Y)
+    ## the Arnoldi route on the same borders, column by column
+    v, u = opac._deflation_border[2], opac._deflation_border[3]
+    col, row = v / np.linalg.norm(v), u / np.linalg.norm(u)
+    for j, a in enumerate(alphas):
+        ya, _w = opac._deflated_krylov(fp, fp.matvec_transposed, col, row,
+                                       complex(a), B[:, j], 1e-14)
+        assert np.linalg.norm(Y[:, j] - ya) < 1e-12 * np.linalg.norm(ya), j

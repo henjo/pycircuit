@@ -90,10 +90,14 @@ def case_pnoise():
     p.solve(period=6.6634, timestep=6.6634 / 400, x0=x0, maxiterations=60)
     pac = PAC(cir, toolkit=circuit.numeric)
     f0 = 1.0 / p.period
+    fs = np.logspace(-3, -0.5, 20) * f0
     t0 = time.perf_counter()
-    for f in np.logspace(-3, -0.5, 20) * f0:
+    for f in fs:
         pac.pnoise(p, f, 0, maxsidebands=8)
-    return 'pnoise alone %.2f s' % (time.perf_counter() - t0)
+    t1 = time.perf_counter()
+    pac.pnoise(p, fs, 0, maxsidebands=8)        # one call (P4)
+    t2 = time.perf_counter()
+    return f'pnoise alone: a loop {t1 - t0:.2f} s, one array call {t2 - t1:.2f} s'
 
 
 def case_radau_ppv():

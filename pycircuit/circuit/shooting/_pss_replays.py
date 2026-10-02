@@ -217,6 +217,50 @@ class _FactoredReplays(object):
                 np.asarray(cps, dtype=complex).reshape(len(times), m),
                 fp.seed_T(lam))
 
+    def _reverse_points_cols(self, fp, f_outs, d=None, lam0=None):
+        """`_reverse_points` for several OUTPUT frequencies at once: one
+        reverse pass carrying one costate COLUMN per frequency of `f_outs`,
+        so each step is one block solve instead of one solve per frequency
+        (the speed plan's P4, 2026-10-02).  `lam0` an `(width, F)` block of
+        starting costates; no `extra` (an event map's rows stay per
+        frequency).  Returns `(times, cps, g)`, `cps` of shape `(points, m,
+        F)` and `g` `(width, F)`: column `k` is `_reverse_points(fp,
+        f_outs[k], d, lam0=lam0[:, k])` to rounding -- a block solve is not
+        the column solves bit for bit."""
+        f_outs = np.asarray(f_outs, dtype=float).ravel()
+        F = len(f_outs)
+        tms = np.asarray(fp.times, dtype=float)
+        N = len(fp.steps)
+        if lam0 is None:
+            lam = fp.extract_T(np.zeros((fp.width, F), dtype=complex))
+        else:
+            lam = fp.extract_T(
+                np.array(lam0, dtype=complex).reshape(fp.width, F))
+        if d is not None:
+            d = np.asarray(d, dtype=complex).ravel()
+            _wq = self._period_quadrature(fp)
+        times, cps = [], []
+        steps = fp.step_objects()
+        for j in range(N - 1, -1, -1):
+            st = steps[j]
+            ts = tms[j]
+            lam, r = st.adjoint(lam)
+            for t, cp in st.source_points(r, ts, tms[j + 1]):
+                times.append(t)
+                cps.append(cp)
+            if d is not None:
+                _e = np.exp(-2j * np.pi * f_outs * ts)
+                _e = _e / N if _wq is None else _e * _wq[j]
+                lam = fp.inject(lam, d[:, None] * _e[None, :])
+        wq = fp.seed_source_T(lam)
+        if wq is not None:
+            times.append(float(tms[0]))
+            cps.append(np.asarray(wq))
+        m = self.cir.n - 1
+        return (np.asarray(times, dtype=float),
+                np.asarray(cps, dtype=complex).reshape(len(times), m, F),
+                fp.seed_T(lam))
+
     def _monodromy_matvec(self, C0, steps, v):
         """`M v` for gear's solved-history PAIR map from its raw steps --
         ``(v_0, v_{-1}) -> (P_last v, P_prev v)``."""

@@ -96,8 +96,9 @@ class _StageStep(object):
         (no costate, ``r_0 = None``) passes ``dbar_0`` straight to `wbar`."""
         s, m = self.s, self.m
         if self.lu is not None:
-            p = _lu_solve_split(
-                self.lu, np.concatenate([np.zeros(m)] * (s - 1) + [w]), trans=1)
+            ## (`w` a vector, or an `m x k` block of costate columns)
+            p = _lu_solve_split(self.lu, np.concatenate(
+                [np.zeros((m,) + np.shape(w)[1:])] * (s - 1) + [w]), trans=1)
             r = [p[i * m:(i + 1) * m] for i in range(s)]
             return self.Cn.T @ sum(r), r
         A, h, Gs = self.A, self.h, self.Gs

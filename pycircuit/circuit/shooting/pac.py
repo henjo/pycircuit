@@ -822,6 +822,45 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         return _SidebandFamily(self, pss, float(f_out), T, N, m, parts,
                                count[0])
 
+    def _sideband_families(self, pss, f_outs, output):
+        """`_sideband_family` for every output frequency of `f_outs`, the
+        rows of all of them from TWO reverse passes carrying one costate
+        column per frequency (`_reverse_points_cols`) and one batched pole
+        solve (`_deflated_solve_cols`; the dense one on a driven circuit) --
+        the speed plan's P4 (2026-10-02).  The same families as one call per
+        frequency, to rounding (block solves).  One call per frequency where
+        the batch does not apply: a single frequency, a GLM's state map, a
+        staged (event) solve, a map above `FLOQUET_DENSE_LIMIT`."""
+        f_outs = [float(f) for f in f_outs]
+        output = output_index(pss, output)
+        host = pss.monodromy_twin()
+        fp = host._state_map()
+        n = fp.width
+        if (len(f_outs) < 2 or fp.is_glm or EventColumns.of(host) is not None
+                or n > host.FLOQUET_DENSE_LIMIT):
+            return [self._sideband_family(pss, f, output) for f in f_outs]
+        self._check_circuit(host)
+        m = host.cir.n - 1
+        T = float(fp.T)
+        N = len(fp.steps)
+        fo = np.asarray(f_outs, dtype=float)
+        alphas = np.exp(-2j * np.pi * fo * T)
+        d = _output_weights(output, m)
+        tol = max(self.KRYLOV_FACTOR * host.par.reltol, 1e-14)
+        t_f, c_f, G = host._reverse_points_cols(fp, fo, d)
+        if getattr(host, 'autonomous', False):
+            Z, _wb = self._deflated_solve_cols(host, alphas, G,
+                                               transposed=True, tol=tol)
+        else:
+            Md = self._dense_period(host, fp, n, total=False)
+            Z = np.column_stack([np.linalg.solve(np.eye(n) - a * Md.T, G[:, k])
+                                 for k, a in enumerate(alphas)])
+        t_z, c_z, _g = host._reverse_points_cols(fp, fo, lam0=Z)
+        return [_SidebandFamily(self, host, f, T, N, m,
+                                [(t_f, c_f[:, :, k], 1.0),
+                                 (t_z, c_z[:, :, k], alphas[k])], 0)
+                for k, f in enumerate(f_outs)]
+
     def mixer_response(self, pss, f_out, output, sidebands=(-1, 0, 1)):
         """Every input band landing on `f_out` — a `SidebandResponse`.
 
@@ -1174,7 +1213,42 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
 
         History: `doc/shooting_history.md`, `PAC._deflated_solve`.
         """
-        import scipy.sparse.linalg as spla
+        y, wb = self._deflated_solve_cols(
+            pss, [alpha], np.asarray(b, dtype=complex).ravel()[:, None],
+            transposed=transposed, tol=tol)
+        return (y[:, 0], wb[:, 0]) if parts else y[:, 0]
+
+    #: The defect correction's iteration cap (`_deflated_solve_cols`).  One
+    #: correction reaches the arithmetic's floor on every map measured; the
+    #: cap bounds a column whose dense copy is far from its replay.
+    DEFLATION_REFINE_ITERS = 4
+
+    def _deflated_solve_cols(self, pss, alphas, B, transposed=False,
+                             tol=None):
+        """`_deflated_solve` for the COLUMNS of `B`, one `alpha` each --
+        `(Y, WB)`, the solutions and their bounded parts (`parts`), column
+        by column -- so a caller with many frequencies (`_sideband_families`)
+        replays its residuals as ONE block.
+
+        ⚠ BELOW `FLOQUET_DENSE_LIMIT` THE REFINEMENT IS A DEFECT CORRECTION,
+        NOT A KRYLOV SOLVE (2026-10-02, the speed plan's P4; Andreas: "Batch
+        + new refinement").  Its target is the one the Arnoldi GMRES had --
+        the matrix-free PLAIN operator's own answer (see the note at the
+        refinement) -- reached through the dense copy of that operator:
+        ``y += (I - alpha M_d)^-1 r``, ``r = b - (I - alpha M) y`` replayed.
+        The iteration contracts by the dense copy's distance from the replay
+        times the plain operator's conditioning, so one or two corrections
+        meet the tolerance where the Arnoldi solve took about five replays,
+        and every column's residual is one replay of a block (`mv` on `n x
+        F`).  NOT through the bordered factors: their recovery is exact only
+        for an exact null vector, and near a harmonic of a staged map
+        (multiplier displaced by `eta`) it is off by ``eta / |1 - alpha|`` --
+        a defect correction through it diverges exactly where the plain
+        answer is wanted.  A correction is kept only if it lowers the
+        residual, as the Arnoldi one was.  Above the limit the solve stays
+        GMRES with the Arnoldi refinement, per column (`_deflated_krylov`).
+        """
+        import scipy.linalg as sla
         fp = pss._state_map()
         n = fp.width
         ## ⚠ THE BORDER, ONCE PER SOLVED ORBIT: `v` and `u` depend only on
@@ -1222,44 +1296,43 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         _ev = EventColumns.of(pss, n)
         if _ev is not None:
             mv = _ev.total_matvec(mv, transposed=transposed)
-        b = np.asarray(b, dtype=complex).ravel()
-
-        def _mv(z):
-            z = np.asarray(z)
-            w_, s_ = z[:n], z[n]
-            top = w_ - alpha * np.asarray(mv(w_)) + s_ * col
-            return np.concatenate((top, [complex(row @ w_)]))
-
-        A = spla.LinearOperator((n + 1, n + 1), matvec=_mv, dtype=complex)
-        rhs = np.concatenate((b, [0.0 + 0.0j]))
+        B = np.asarray(B, dtype=complex).reshape(n, -1)
+        F = B.shape[1]
+        alphas = np.asarray(alphas, dtype=complex).ravel()
         rt = max(self.KRYLOV_FACTOR * pss.par.reltol if tol is None else tol,
                  1e-14)
-        Md = self._dense_period(pss, fp, n)
-        if Md is not None:
-            ## ⚠ DENSE BELOW THE LIMIT: the bordered system from the cached
-            ## map (`dense_map`), solved directly -- 0.14 ms against 0.55 s
-            ## of GMRES at the review's measurement (2026-09-30), and exact
-            ## to rounding rather than to the Krylov tolerance
-            Bd = np.zeros((n + 1, n + 1), dtype=complex)
-            Bd[:n, :n] = np.eye(n) - alpha * (Md.T if transposed else Md)
-            Bd[:n, n] = col
-            Bd[n, :n] = row
-            z = np.linalg.solve(Bd, rhs)
-        else:
-            z = self._gmres_checked(A, rhs, rt, 'the deflated solve')
-        w, s = z[:n], z[n]
-        denom = 1.0 - alpha
-        if denom == 0:
+        if np.any(1.0 - alphas == 0):
             raise ValueError(
                 'PAC: the deflated solve was asked for an EXACT harmonic, '
                 'where 1/(1 - alpha) is a division by zero and the physical '
                 'response is unbounded. The pole is removed from the '
                 'CONDITIONING, not from the answer.')
-        y = w + s * col / denom
-        ## `parts`: also the BOUNDED part, `w` -- the response with the pole's
-        ## `s col / (1 - alpha)` never added, which `_transverse_responses`
-        ## replays so the 1/offset term cannot enter its projection
-        wb = w.copy() if parts else None
+        Y = np.empty((n, F), dtype=complex)
+        WB = np.empty((n, F), dtype=complex)
+        Md = self._dense_period(pss, fp, n)
+        if Md is None:
+            for k in range(F):
+                Y[:, k], WB[:, k] = self._deflated_krylov(
+                    fp, mv, col, row, complex(alphas[k]), B[:, k], rt)
+            return Y, WB
+        ## ⚠ DENSE BELOW THE LIMIT: the bordered system from the cached
+        ## map (`dense_map`), solved directly -- 0.14 ms against 0.55 s
+        ## of GMRES at the review's measurement (2026-09-30), and exact
+        ## to rounding rather than to the Krylov tolerance
+        Mt = Md.T if transposed else Md
+        for k in range(F):
+            Bd = np.zeros((n + 1, n + 1), dtype=complex)
+            Bd[:n, :n] = np.eye(n) - alphas[k] * Mt
+            Bd[:n, n] = col
+            Bd[n, :n] = row
+            z = sla.lu_solve(sla.lu_factor(Bd),
+                             np.concatenate((B[:, k], [0.0 + 0.0j])))
+            ## `WB`: the BOUNDED part, `w` -- the response with the pole's
+            ## `s col / (1 - alpha)` never added, which
+            ## `_transverse_responses` replays so the 1/offset term cannot
+            ## enter its projection
+            WB[:, k] = z[:n]
+            Y[:, k] = z[:n] + z[n] * col / (1.0 - alphas[k])
         ## ⚠ REFINED ON THE PLAIN OPERATOR WHERE THAT IS WELL CONDITIONED:
         ## the recovery assumes `u`, `v` are EXACT null vectors of `I - M`.
         ## On a staged solve the discrete total map's unit multiplier is
@@ -1282,6 +1355,74 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## analytically -- it is O(h^p) at every offset, and forward and
         ## adjoint agree to O(eta) rather than the arithmetic.
         ## History: `doc/shooting_history.md`, `PAC._deflated_solve`.
+        if fp.is_glm:
+            return Y, WB
+        live = [k for k in range(F)
+                if abs(1.0 - alphas[k]) >= self.DEFLATION_REFINE_MIN]
+        if not live:
+            return Y, WB
+
+        def resid(ks, Yk):
+            return B[:, ks] - (Yk - alphas[ks][None, :] * np.asarray(mv(Yk)))
+        nb = {k: max(float(np.linalg.norm(B[:, k])), 1e-300) for k in live}
+        R = dict(zip(live, resid(live, Y[:, live]).T))
+        rn = {k: float(np.linalg.norm(R[k])) for k in live}
+        plain = {}
+        rc = complex(row @ col)
+        for _it in range(self.DEFLATION_REFINE_ITERS):
+            live = [k for k in live if rn[k] / nb[k] > rt]
+            if not live:
+                break
+            dY = np.empty((n, len(live)), dtype=complex)
+            for jj, k in enumerate(live):
+                if k not in plain:
+                    plain[k] = sla.lu_factor(np.eye(n) - alphas[k] * Mt)
+                dY[:, jj] = sla.lu_solve(plain[k], R[k])
+            Yn = Y[:, live] + dY
+            Rn = resid(live, Yn)
+            kept = []
+            for jj, k in enumerate(live):
+                r_ = float(np.linalg.norm(Rn[:, jj]))
+                if r_ < rn[k]:
+                    Y[:, k] = Yn[:, jj]
+                    ## the correction's own bounded part (small: no
+                    ## cancellation against the pole)
+                    WB[:, k] = WB[:, k] + dY[:, jj] - col * (
+                        complex(row @ dY[:, jj]) / rc)
+                    ## ⚠ ON ONLY WHILE IT CONTRACTS: one correction takes a
+                    ## column from the bordered answer's ~3e-10 to the
+                    ## arithmetic's floor (1e-15 .. 4e-14 on van der Pol,
+                    ## the floor the Arnoldi solve reached too), which can
+                    ## sit above the target -- a correction that does not
+                    ## halve the residual is at that floor, and another
+                    ## block replay would buy nothing
+                    if r_ < 0.5 * rn[k]:
+                        kept.append(k)
+                    R[k], rn[k] = Rn[:, jj], r_
+            live = kept
+        return Y, WB
+
+    def _deflated_krylov(self, fp, mv, col, row, alpha, b, rt):
+        """One column of `_deflated_solve_cols` above `FLOQUET_DENSE_LIMIT`:
+        the bordered system by GMRES, refined on the plain operator by an
+        Arnoldi GMRES (no dense copy to correct through) -- the solve as it
+        was before the defect correction.  `(y, wb)`."""
+        import scipy.sparse.linalg as spla
+        n = fp.width
+
+        def _mv(z):
+            z = np.asarray(z)
+            w_, s_ = z[:n], z[n]
+            top = w_ - alpha * np.asarray(mv(w_)) + s_ * col
+            return np.concatenate((top, [complex(row @ w_)]))
+
+        A = spla.LinearOperator((n + 1, n + 1), matvec=_mv, dtype=complex)
+        rhs = np.concatenate((b, [0.0 + 0.0j]))
+        z = self._gmres_checked(A, rhs, rt, 'the deflated solve')
+        w, s = z[:n], z[n]
+        denom = 1.0 - alpha
+        y = w + s * col / denom
+        wb = w.copy()
         if abs(denom) >= self.DEFLATION_REFINE_MIN and not fp.is_glm:
             def _plain(z_):
                 z_ = np.asarray(z_)
@@ -1293,12 +1434,9 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
                                                    maxiter=min(n, 200))
                 if float(np.linalg.norm(b - _plain(y + dy))) < float(np.linalg.norm(r0)):
                     y = y + dy
-                    if parts:
-                        ## the correction's own bounded part (small: no
-                        ## cancellation against the pole)
-                        wb = wb + dy - col * (complex(row @ dy)
-                                              / complex(row @ col))
-        return (y, wb) if parts else y
+                    wb = wb + dy - col * (complex(row @ dy)
+                                          / complex(row @ col))
+        return y, wb
 
     def _op(self, fp, alpha):
         """`v -> (I - alpha M) v`, never forming `M`."""

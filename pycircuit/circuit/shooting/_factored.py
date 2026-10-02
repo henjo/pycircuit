@@ -312,8 +312,9 @@ class _PlainPeriod(_LMMPeriod):
     def seed(self, v):
         m = self._pss.cir.n - 1
         C_open, a_open, b_open, pq_open = self.opening
+        ## (`v` a vector, or a block of columns: every kind takes either)
         Pq = (a_open[0] * (C_open @ v) if b_open
-              else np.zeros(m, dtype=v.dtype))
+              else np.zeros((m,) + v.shape[1:], dtype=v.dtype))
         if pq_open is not None:
             Pq = Pq + pq_open @ v
         return (v.copy(), v.copy(), Pq)
@@ -323,8 +324,8 @@ class _PlainPeriod(_LMMPeriod):
 
     def extract_T(self, v):
         m = self._pss.cir.n - 1
-        return (v.copy(), np.zeros(m, dtype=v.dtype),
-                np.zeros(m, dtype=v.dtype))
+        return (v.copy(), np.zeros((m,) + v.shape[1:], dtype=v.dtype),
+                np.zeros((m,) + v.shape[1:], dtype=v.dtype))
 
     def seed_T(self, w):
         ## ⚠ THE SEED'S COMPANION CURRENT IS ONLY DISCARDABLE WHEN IT DOES
@@ -378,7 +379,8 @@ class _PairPeriod(_LMMPeriod):
 
     def seed(self, v):
         m = self._pss.cir.n - 1
-        return (v[:m].copy(), v[m:].copy(), np.zeros(m, dtype=v.dtype))
+        return (v[:m].copy(), v[m:].copy(),
+                np.zeros((m,) + v.shape[1:], dtype=v.dtype))
 
     def extract(self, c):
         return np.concatenate((c[0], c[1]))
