@@ -6343,3 +6343,14 @@ ones kept on the instance against the argument list (`_hdl_lp`, by the
 function object, dropped by `update()`).  20 MosLevel1: 0.382 -> 0.202 s,
 20 Gummel-Poon 0.447 -> 0.218 s, PSP untouched; bit-identical (gate G84).
 `LIMIT_PAR_CACHE = False` is the old behaviour.
+
+## 2026-10-02 — 59. Speed round 3, stage W: the leaner kernel call
+
+`CKernel.__call__` cost 4.3 us around a mid-sized model's 0.3 us of C: two
+`ffi.cast` of `arr.ctypes.data` and `np.ndim(T)`.  Now `ffi.from_buffer` on
+the state and the output with a pointer type resolved once, a type test for
+the usual float `T`, the dtype singleton; the fresh output, the fallbacks
+and the ValueError kept; and a C-bound class's element methods skip the
+session call.  MosLevel1 4.3 -> 1.5 us a call, PSP `G` 23.2 -> 20.3; gear
+transients: 20 MosLevel1 0.202 -> 0.150 s, 20 Gummel-Poon 0.218 -> 0.155 s,
+20 PSP 0.372 -> 0.309 s; bit-identical (gate G85).

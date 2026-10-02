@@ -325,15 +325,31 @@ def _dlopen(path):
 ## ----------------------------------------------------------------------
 ## Kernels.
 
+#: numpy's float64 dtype object, one per process: `x.dtype is _F64` is a
+#: pointer test (27 ns) where `x.dtype == np.float64` is a comparison (64).
+_F64 = np.dtype('float64')
+
+
 class CKernel(object):
     """One compiled chain function, callable as the element methods
-    need it: `kernel(element, x, epar)` -> a fresh float64 array."""
+    need it: `kernel(element, x, epar)` -> a fresh float64 array.
+
+    THE CALL IS THE COST for a mid-sized model (2026-10-02): MosLevel1's
+    `G` computes in 0.3 us of C and the wrapper around it took 4.3 us --
+    two `ffi.cast('double *', arr.ctypes.data)` (860 ns each),
+    `np.ndim(T)` (485 ns), the rest in small change.  Now `ffi.from_buffer`
+    on the arrays (190 ns each, the buffer protocol; the cdata keeps the
+    array alive for the call), a pre-resolved pointer type, a type test
+    for the usual float `T`: 1.4 us measured, PSP's `G` 23.2 -> 20.1 us.
+    The fresh `out` per call stays (callers keep and even write into what
+    they get); so do the None fallbacks and the ValueError."""
 
     __slots__ = ('ffi', 'cfn', 'shape', 'nx', 'n_p', 't_index', 'key',
-                 'built_s')
+                 'built_s', 'dptr')
 
     def __init__(self, ffi, cfn, shape, nx, layout, key, built_s):
         self.ffi, self.cfn, self.shape = ffi, cfn, shape
+        self.dptr = ffi.typeof('double *')
         self.nx = nx
         self.n_p, self.t_index = layout
         self.key, self.built_s = key, built_s
@@ -368,13 +384,16 @@ class CKernel(object):
         if packed is False:
             return None
         p, pcast = packed
-        if self.t_index is not None:
-            from pycircuit.circuit import hdl
-            T = hdl._epar_T(epar)
-            if np.ndim(T) != 0:
+        t_index = self.t_index
+        if t_index is not None:
+            T = getattr(epar, 'T', 300.0)
+            ## (a float or an int is one number; anything else -- a numpy
+            ## scalar, a 0-d array -- is asked, an array steps aside)
+            if type(T) is not float and type(T) is not int \
+                    and np.ndim(T) != 0:
                 return None
-            p[self.t_index] = T
-        if (type(x) is np.ndarray and x.dtype == np.float64
+            p[t_index] = T
+        if (type(x) is np.ndarray and x.dtype is _F64
                 and x.flags.c_contiguous):
             xa = x
         else:
@@ -389,8 +408,8 @@ class CKernel(object):
                              % (np.shape(x), self.nx - 1))
         out = np.empty(self.shape)
         ffi = self.ffi
-        self.cfn(ffi.cast('double *', xa.ctypes.data), pcast,
-                 ffi.cast('double *', out.ctypes.data))
+        self.cfn(ffi.from_buffer(self.dptr, xa), pcast,
+                 ffi.from_buffer(self.dptr, out))
         return out
 
 

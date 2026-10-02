@@ -1151,6 +1151,30 @@ def test_a_temperature_array_runs_the_numpy_function(tmp_path):
 
 
 @needs_cc
+def test_the_kernel_takes_a_read_only_state_and_any_one_number_as_t():
+    """The buffer-protocol call (2026-10-02): a read-only `x` is read, not
+    written; a temperature that is a numpy scalar or a 0-d array is one
+    number and taken; an int is taken; the bytes are the numpy function's
+    in every case."""
+    from types import SimpleNamespace as Epar
+    e = _instance(eh.DiodeSpiceHdl)
+    f = type(e)._hdl_info['funcs']['i']
+    x = np.array([0.6, 0.0])
+    x.setflags(write=False)
+    temps = (300.0, 310, np.float64(320.0), np.array(330.0))
+    with numpy_backend(eh.DiodeSpiceHdl):
+        ref = [e.i(x, Epar(T=T)).copy() for T in temps]
+    with c_backend(eh.DiodeSpiceHdl):
+        assert type(e)._hdl_backend_status == 'c'
+        assert f.__dict__['_hdl_c'] is not None
+        for T, r in zip(temps, ref, strict=True):
+            got = e.i(x, Epar(T=T))
+            assert got.tobytes() == r.tobytes(), T
+            assert got is not r and got.flags.writeable
+    assert not x.flags.writeable
+
+
+@needs_cc
 def test_without_cffi_a_request_for_c_runs_numpy_and_says_why(tmp_path,
                                                               monkeypatch):
     """The kernels load through cffi; without it a request for C ran into

@@ -6136,6 +6136,7 @@ class BehaviouralMeta(type):
                 ## inside an evaluation session, from one fused pass
                 ## (`_evalhint`, `_hdl_cse.take`); None: the separate call
                 if (not dc and params_tree is None
+                        and not info.get('_c_bound')
                         and _evalhint.current() is not None):
                     r = _hdl_cse.take(self, 'i', x, epar, info, _args_of)
                     if r is not None:
@@ -6213,6 +6214,7 @@ class BehaviouralMeta(type):
             if info['chained']:
                 dc = has_dc_pins and _dc(epar)
                 if (not dc and params_tree is None
+                        and not info.get('_c_bound')
                         and _evalhint.current() is not None):
                     r = _hdl_cse.take(self, 'G', x, epar, info, _args_of)
                     if r is not None:
@@ -6237,7 +6239,8 @@ class BehaviouralMeta(type):
 
         def q(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
-                if (params_tree is None and _evalhint.current() is not None
+                if (params_tree is None and not info.get('_c_bound')
+                        and _evalhint.current() is not None
                         and not (has_dc_pins and _dc(epar))):
                     r = _hdl_cse.take(self, 'q', x, epar, info, _args_of)
                     if r is not None:
@@ -6249,7 +6252,8 @@ class BehaviouralMeta(type):
 
         def C(self, x, epar=defaultepar, params_tree=None):
             if info['chained']:
-                if (params_tree is None and _evalhint.current() is not None
+                if (params_tree is None and not info.get('_c_bound')
+                        and _evalhint.current() is not None
                         and not (has_dc_pins and _dc(epar))):
                     r = _hdl_cse.take(self, 'C', x, epar, info, _args_of)
                     if r is not None:
