@@ -1868,7 +1868,7 @@ def test_pss_forwards_its_solver_strategies_to_the_inner_transient():
     OBJECT the inner analysis will actually use -- a test that the string
     'linearsolver' appears in the source passes with the parameter dropped.
     """
-    from pycircuit.circuit.linearsolver import SuperLUSolver, DenseSolver
+    from pycircuit.circuit.linearsolver import AutoSolver, SuperLUSolver
     from pycircuit.circuit.nrsolver import DampedNewton, StandardNewton
     circuit.default_toolkit = circuit.numeric
 
@@ -1882,9 +1882,10 @@ def test_pss_forwards_its_solver_strategies_to_the_inner_transient():
         'the inner Transient resolved to %r, not the DampedNewton asked for' \
         % tran._get_nrsolver()
 
-    ## and the default is still the historical dense path, unmoved
+    ## and the default is the analyses' own: `AutoSolver` since 2026-10-02
+    ## (dense below 250 unknowns, the historical path; `DenseSolver` until then)
     plain = PSS(_q20_rlc(), method='trap', reltol=1e-6)._transient()
-    assert isinstance(plain._get_linearsolver(), DenseSolver)
+    assert isinstance(plain._get_linearsolver(), AutoSolver)
     assert isinstance(plain._get_nrsolver(), StandardNewton)
 
 

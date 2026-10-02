@@ -15,12 +15,14 @@ crossover follows the sparsity *pattern*: on the RC ladder SuperLU already wins
 size-only rule.  ``n`` is used only as a cheap floor below which the measurement
 itself is not worth taking.
 
-THE DEFAULT IS THE OLD PATH, DELIBERATELY.  ``numpy.linalg.solve`` and SuperLU
-round differently, so any circuit that switches gets different last bits.  Gate
-7b-1 asks for identical results on the existing transient tests, and those are all
-small; ``AutoSolver`` therefore leaves anything below its thresholds on exactly the
-call the code made before, and only reaches for the sparse path where the win is
-large enough to be worth a changed rounding.
+THE DEFAULT IS ``AutoSolver`` SINCE 2026-10-02 (Andreas: "Yes, set AutoSolver
+default"); until then it was the old dense path, deliberately.
+``numpy.linalg.solve`` and SuperLU round differently, so a circuit that switches
+gets different last bits.  ``AutoSolver`` leaves anything below its thresholds
+(`MIN_N_FOR_SPARSE`, 250 unknowns, the measured end-to-end crossover) on exactly
+the call the code made before, and reaches for the sparse path only where the
+win is worth a changed rounding: 1.17x a transient at 402 unknowns, 1.60x at
+1202, the answers within 3e-17.
 
 A further measured caution, which is why ``DenseSolver`` does NOT use
 ``scipy.linalg.lu_factor``: at n=31 ``numpy.linalg.solve`` takes 2e-5 s against

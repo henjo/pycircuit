@@ -483,3 +483,36 @@ def test_a_sparse_factorisation_keeps_the_period_s_capacitances_sparse():
         for g, r in zip(got, ref):
             r = np.asarray(r)
             assert np.max(np.abs(np.asarray(g) - r)) <= 1e-13 * np.max(np.abs(r))
+
+
+def test_the_analyses_default_to_one_autosolver():
+    """Andreas, 2026-10-02: the analyses' default linear solver is
+    `AutoSolver` -- ONE per analysis (it keeps its dense/sparse choice; a
+    fresh one per call would measure the fill on every solve), the old dense
+    call bit for bit below `MIN_N_FOR_SPARSE`, a sparse LU above it on a
+    sparse Jacobian.  Until then `DenseSolver`."""
+    from pycircuit.circuit.elements import Diode, VSin
+    from pycircuit.circuit.integrator import Gear2Integrator
+
+    def ladder(n):
+        c = SubCircuit()
+        c['vs'] = VSin('n0', gnd, va=2.0, freq=1e3)
+        for k in range(n):
+            c[f'R{k}'] = R(f'n{k}', f'n{k + 1}', r=1e3)
+            c[f'C{k}'] = C(f'n{k + 1}', gnd, c=1e-8)
+        c['D'] = Diode(f'n{n}', gnd)
+        return c
+    small = {}
+    for name, ls in (('default', None), ('dense', DenseSolver())):
+        tr = Transient(ladder(8), integrator=Gear2Integrator(), reltol=1e-5,
+                       linearsolver=ls)
+        small[name] = np.asarray(tr.solve(tend=2e-4, timestep=1e-5).x, float)
+        if ls is None:
+            s = tr._get_linearsolver()
+            assert isinstance(s, AutoSolver) and s is tr._get_linearsolver()
+            assert isinstance(s._choice, DenseSolver)
+    assert small['default'].tobytes() == small['dense'].tobytes()
+    tr = Transient(ladder(MIN_N_FOR_SPARSE + 10), integrator=Gear2Integrator(),
+                   reltol=1e-5)
+    tr.solve(tend=3e-5, timestep=1e-5)
+    assert not isinstance(tr._get_linearsolver()._choice, DenseSolver)

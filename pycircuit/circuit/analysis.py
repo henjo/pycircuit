@@ -191,8 +191,9 @@ class Analysis(sim.Analysis):
                   Parameter(name='linearsolver',
                             desc='Linear solver strategy (a LinearSolver instance, '
                                  'e.g. DenseSolver(), SuperLUSolver(), AutoSolver()); '
-                                 'default DenseSolver(), which is the historical '
-                                 'numpy.linalg.solve path',
+                                 'default AutoSolver(): the dense LAPACK path below '
+                                 '250 unknowns or on a dense Jacobian, a sparse LU '
+                                 'above (DenseSolver() for the dense path always)',
                             default=None),
                   Parameter(name='scaler',
                             desc='Jacobian scaling strategy (a Scaler instance, e.g. '
@@ -259,15 +260,22 @@ class Analysis(sim.Analysis):
         return solver
 
     def _get_linearsolver(self):
-        from pycircuit.circuit.linearsolver import LinearSolver, DenseSolver
+        from pycircuit.circuit.linearsolver import AutoSolver, LinearSolver
         solver = getattr(self.par, 'linearsolver', None)
         if solver is None:
-            ## DenseSolver, not AutoSolver: the default must not change any
-            ## existing result.  `numpy.linalg.solve` and SuperLU round
-            ## differently, so selecting sparse automatically would move the last
-            ## bits of every circuit large and sparse enough to qualify.  Opting
-            ## in is the caller's decision -- see stage 7b.
-            return DenseSolver()
+            ## AUTOSOLVER BY DEFAULT (Andreas, 2026-10-02): dense below 250
+            ## unknowns -- exactly the old call -- and a sparse LU above it
+            ## on a sparse Jacobian, 1.2-1.6x a transient from ~400 unknowns
+            ## (see `linearsolver.MIN_N_FOR_SPARSE`); those circuits' last
+            ## bits move.  Until then `DenseSolver`, so that no result moved
+            ## unasked.  ONE PER ANALYSIS: it decides dense or sparse on the
+            ## first matrix and keeps the decision, and a fresh one per call
+            ## would measure the fill again on every solve.
+            ## History: `doc/pss_log_260902.md`, 2026-10-02.
+            solver = self.__dict__.get('_default_linearsolver')
+            if solver is None:
+                solver = self._default_linearsolver = AutoSolver()
+            return solver
         if not isinstance(solver, LinearSolver):
             raise TypeError(
                 "linearsolver must be a LinearSolver instance (e.g. DenseSolver(), "
