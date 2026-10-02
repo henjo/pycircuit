@@ -29,6 +29,7 @@ from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
 ## here.
 from pycircuit.circuit._tran_newton import _StepNewton
 from pycircuit.circuit._tran_branch import _BranchCheck
+from pycircuit.circuit import _tran_companion
 from pycircuit.circuit._tran_companion import _CompanionModel
 from pycircuit.circuit._tran_history import _RunHistory
 from pycircuit.circuit._tran_predictor import _StagePredictor
@@ -1289,6 +1290,20 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         and `f` are read by no caller -- None on every path but PCNR's, and
         `f` is None on the multistep path by design (`jacobian_only`).
         """
+        ## THE STEP'S SOURCE MEMO lives exactly as long as this call
+        ## (`_source_at`, speed round 4): `u(t)` assembled once per time
+        ## within the step, and nothing of it left for the next one -- a
+        ## later caller at the same `t` (the shooting re-entering a period,
+        ## a source whose state `accept_step` moved) assembles afresh.
+        self._u_memo = {} if _tran_companion.U_MEMO else None
+        try:
+            return self._solve_timestep(x0, t, provided_function)
+        finally:
+            self._u_memo = None
+
+    def _solve_timestep(self, x0, t, provided_function=None):
+        """`solve_timestep`'s body: the dispatch on the integrator, and the
+        multistep companion Newton."""
         from pycircuit.circuit.integrator import RungeKuttaIntegrator
         ## ⚠ THE STEP STARTS FROM ITS ENTERING POINT, NOT FROM THE LAST
         ## ATTEMPT'S DEVICE STATE.  A stateful limiter (`Diode`) reads `i` /

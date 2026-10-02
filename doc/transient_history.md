@@ -3668,3 +3668,38 @@ pass is an exact zero, so the plan's `bincount` was EMPTY, and an empty
 `bincount` is int64 even with float weights.  An empty pass now returns
 the loop's float zeros (`test_a_pass_with_nothing_to_stamp_is_the_loops_
 float_zeros`).
+
+## `_tran_companion.py` -- the step's source memo (2026-10-02, speed round 4's stage B)
+
+### `_source_at`, `Transient.solve_timestep`, `_stage_source`
+
+Andreas, after speed round 3: "Plan for the per-step solver machinery".
+The round's measurement (`benchmarks/step_machinery.py --tree`, the log
+of 2026-10-02) put the sources at 2.03 assemblies per gear step on the
+PSP stage and 1.89 on a 20-PSP chain -- the same `t` each time, since
+the Newton's iterations, the chord's residual-only ones and the branch
+confirmation's re-solve all ask `u` at the step's end -- and the stage
+methods' `_stage_source` closure asked `cir.u` at every stage of every
+coupled iteration (Radau 10.24 a step).
+
+Now `solve_timestep` opens a memo (`_u_memo = {}`) and closes it in a
+`finally`; `_source_at` serves a `(t, analysis)` it has seen and
+assembles the others; `_stage_source` goes through it.  The same
+function on the same inputs is the same bits, and nothing a source
+reads moves inside a step: no numeric path writes `epar.t` (grep: reads
+only), `analysis_kind` is scoped around a whole solve, an element's
+state moves only at `accept_step` / `reset_state`.  Outside a step there
+is no memo (`_begin_run`, `_memo_clear` and the `finally` all set None),
+so a later caller at a time already seen -- the shooting re-entering a
+period, a source whose state an accept moved -- assembles afresh.
+`provided_function(t)` is still called at every request and added into a
+new vector: a caller may count it (the F4 tests do).  `U_MEMO` switches
+the memo off, for the byte-identity tests and as an escape.
+
+Measured against the parent (4af78ddd), each tree in its own
+interpreter, five interleaved rounds: the PSP stage -4.0 % a step, its
+PSS -4.2 %, 20 PSP -3.0 %, 20 MosLevel1 -1.0 % (it seldom iterates
+twice); bytes and statistics identical.  The round's other finding, for
+the record: the assembly's remaining per-call cost is numpy's own floor
+(a minimal rewrite saves 1-5 us a call, 1.5-2 % of a step), so no
+assembly stage was built.

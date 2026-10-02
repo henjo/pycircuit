@@ -51,10 +51,13 @@ class _SequentialStages:
     def _stage_source(self, provided_function):
         """`u(t)` for a stage step: the circuit's sources at `t`, plus the
         caller's `provided_function`."""
-        epar, ana, tk = self.epar, self.par.analysis, self.toolkit
+        tk = self.toolkit
 
         def src(tt):
-            u = tk.array(self.cir.u(tt, epar, analysis=ana), dtype=float)
+            ## (`_source_at` without the caller's term: the circuit's own
+            ## sources at `tt`, once per time within the step -- a coupled
+            ## method asks for every stage's at every iteration)
+            u = tk.array(self._source_at(tt), dtype=float)
             if provided_function is not None:
                 u = u + provided_function(tt)
             return u

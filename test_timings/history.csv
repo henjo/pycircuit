@@ -1355,3 +1355,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20261002T173139Z,77742846,pycircuit no:cacheprovider tran_recorder,861.8,3634,pycircuit/circuit/tests/test_shooting_pnoise.py::test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint,119.5
 20261002T180058Z,971ac21c,pycircuit no:cacheprovider tran_recorder,811.9,3638,pycircuit/circuit/tests/test_shooting_pnoise.py::test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint,119.6
 20261002T184937Z,7cb92106,pycircuit no:cacheprovider tran_recorder,807.3,3643,pycircuit/circuit/tests/test_shooting_pnoise.py::test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint,121.4
+20261002T202014Z,4af78ddd,pycircuit no:cacheprovider tran_recorder,817.1,3655,pycircuit/circuit/tests/test_shooting_pnoise.py::test_pnoise_oscillator_pm_matches_a_forward_tone_transient_with_no_adjoint,117.9

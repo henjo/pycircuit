@@ -113,6 +113,8 @@ class _RunHistory:
         self._qlast = self.toolkit.array([q0 for _ in range(hist_len)])
         self._iqlast = self.toolkit.zeros((hist_len, n))
         self._pred_reset()
+        ## (the step's source memo: none between steps -- `_source_at`)
+        self._u_memo = None
         ## the Nordsieck slots are per-RUN too: a second solve() on the same
         ## object must not read the first run's vector -- nor its stage
         ## predictor the first run's last step.  (The entry slot is keyed by

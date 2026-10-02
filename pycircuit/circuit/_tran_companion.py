@@ -6,6 +6,13 @@ import numpy as np
 
 from pycircuit.circuit import _evalhint
 
+#: `u(t)` ONCE PER STEP (speed round 4, stage B; 2026-10-02): the source
+#: vector assembled at a time serves every later request at that exact
+#: time within the step (`_source_at`).  False is the old behaviour -- the
+#: sources re-assembled at every Newton iteration -- for the byte-identity
+#: test and as an escape.
+U_MEMO = True
+
 
 class _CompanionModel:
     """The LMM companion model and the per-step device memo.  A theme of
@@ -60,6 +67,7 @@ class _CompanionModel:
         self._dev_memo = ({}, {})
         self._memo_rolling = False
         self._jacobian_expensive = None
+        self._u_memo = None
 
     def _memo_step(self):
         """A new step: the current generation becomes the previous one (the
@@ -197,8 +205,39 @@ class _CompanionModel:
         path (F4).  A caller written for a post-solve callback
         `provided_function(f, J, C)` breaks loudly on arity.
 
+        ONCE PER STEP AND TIME (speed round 4, stage B; 2026-10-02).  The
+        sources are a function of `t`, `epar` and the analysis name, and
+        none of them moves inside a step: nothing on the numeric path
+        writes `epar.t` (it is only read), `analysis_kind` is scoped around
+        a whole solve, and an element's state moves only at `accept_step`
+        / `reset_state`.  So the vector assembled at the first request at
+        a time serves every later request at that exact `t` -- the
+        Newton's iterations, the chord's residual-only ones, the branch
+        confirmation's re-solve, a coupled method's repeated stage times --
+        and the memo lives exactly as long as the step (`solve_timestep`
+        opens and closes it; outside one there is none).  The same
+        function on the same inputs: the same bits.  `provided_function(t)`
+        is called every time, as before (a caller may count it), and the
+        sum below is a new vector.  Measured: a gear step assembled `u`
+        2.03x on the PSP stage (31 us a call in-run), 1.89x on a 20-PSP
+        chain (126 us).  `U_MEMO` switches it off.
+
         History: `doc/transient_history.md`, `Transient._source_at`."""
-        u = self.cir.u(t, self.epar, analysis=self.par.analysis)
+        analysis = self.par.analysis
+        memo = self._u_memo if U_MEMO else None
+        key = (t, analysis)
+        u = None
+        if memo is not None:
+            try:
+                u = memo.get(key)
+            except TypeError:
+                ## a time that cannot be a key -- a JAX array under that
+                ## toolkit, a 0-d numpy array: assembled every time, as before
+                memo = None
+        if u is None:
+            u = self.cir.u(t, self.epar, analysis=analysis)
+            if memo is not None:
+                memo[key] = u
         if provided_function is not None:
             u = u + provided_function(t)
         return u
