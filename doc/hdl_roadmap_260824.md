@@ -6260,3 +6260,25 @@ re-calibrated"): the gains shrank (numpy chord 5-32 %, transform up to 68
 reference-size proxy stand (the reference size does not move with
 `PYCIRCUIT_HDL_CSE`, which keeps that switch bit-identical end to end).
 The option descriptions' percentages corrected.
+
+## 2026-10-02 — 53. Speed round 2, stage A: the C backend's defects closed before it becomes the default
+
+Andreas: "Make plan do implement 1, 2, 3 and 4, if 4 is worth it" -- the C
+backend as the default (every chained model, built at a class's first
+instance), exact scalar fast paths on the numpy path, a compiled-code store,
+fused C kernels if they pay (`plans/twinkly-bouncing-finch.md`).  Stage A,
+nothing changed on the numpy default:
+
+* DEFECT: numpy 2.5 on x86 returns the SECOND operand of `maximum`/`minimum`
+  on a +-0 tie (it follows `maxsd`), the prelude's `_npmax`/`_npmin` the
+  first -- a zero's sign and `1/x`'s infinity flipped against numpy.  The rule
+  is measured at import (`_numpy_tie_rule`) and printed into the prelude.
+* DEFECT: `_chained_eval` tried the C kernel before the jax twin -- a C-bound
+  class failed under the JAX backend on its tracer.
+* DEFECT: `CKernel` raised on an array temperature (or a parameter that is not
+  one number); it now steps aside for the numpy function, which broadcasts.
+* DEFECT (F2's): `_hdl_cache.freeze` of a live `info` after a session raised
+  `Uncacheable` on the fused `_f` -- `_RUNTIME_KEYS` are not frozen.
+* cffi declared (and checked: `'numpy (cffi not installed)'`), `info['_c_bound']`
+  first in `take`, an exponent that is a `numpy.where` value refused by the C
+  printer, a `flock` build lock per key.

@@ -56,7 +56,7 @@ from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit import hdl
 from pycircuit.circuit.circuit import Node, defaultepar
 from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
-                                   Collapse, var, maxc)
+                                   Collapse, var, maxc, minc)
 from pycircuit.utilities.param import Parameter
 
 _CC = cb.find_compiler()[0]
@@ -681,8 +681,9 @@ class TestSoStore(object):
                 return Contribution(b.I, gg * maxc(u, 0.5))    # noqa: F821
 
         e = _instance(M)
-        broken = hdl._KERNEL_C.replace(
-            'return (a >= b || a != a) ? a : b;', 'return (a >= b) ? a : b;')
+        line = next(ln for ln in hdl._KERNEL_C.splitlines()
+                    if ln.startswith('static inline double _npmax('))
+        broken = hdl._KERNEL_C.replace(line, line.replace(' || a != a', ''))
         assert broken != hdl._KERNEL_C
         monkeypatch.setattr(hdl, '_KERNEL_C', broken)
         with c_backend(M):
@@ -1033,6 +1034,171 @@ def test_const_merges_the_repeated_calls_and_keeps_the_bytes(tmp_path,
     monkeypatch.setattr(hdl, '_KERNEL_C', plain)
     monkeypatch.setattr(cb, '_loaded', {})
     assert pow_calls() > merged >= 1
+
+
+## ----------------------------------------------------------------------
+## The C backend's defects and gaps, closed before it became the default
+## (2026-10-02).
+
+class _TieModel(Behavioural):
+    instparams = [Parameter(name='gg', desc='scale', unit='A', default=1.0)]
+
+    @staticmethod
+    def analog(p, m):
+        b = Branch(p, m)
+        u = var(b.V, 'u')
+        return Contribution(b.I, gg / maxc(u, -u) + gg / minc(u, -u))  # noqa: F821
+
+
+def test_the_prelude_carries_numpys_signed_zero_tie_rule():
+    """`_npmax`/`_npmin` return the operand numpy returns on a tie of
+    signed zeros -- measured, because it follows the hardware (numpy 2.5 on
+    x86: the second)."""
+    rule = hdl._numpy_tie_rule()
+    assert rule == hdl._TIE_RULE
+    assert hdl._NPMAXMIN_C[rule] in hdl._KERNEL_C
+    if rule is not None:
+        a, b = np.float64(-0.0), 0.0
+        r = np.maximum(a, b)
+        assert np.signbit(r) == np.signbit(a if rule == 'first' else b)
+
+
+@needs_cc
+def test_a_signed_zero_tie_has_numpys_sign_on_c(tmp_path, monkeypatch):
+    """`gg / maxc(u, -u) + gg / minc(u, -u)` at u = +-0: the tie's zero
+    decides the infinity's sign.  The prelude returned the FIRST operand
+    where numpy returns the second -- +inf against -inf (DEFECT, fixed
+    2026-10-02; no byte sweep had met such a tie)."""
+    monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
+    e = _instance(_TieModel)
+    xs = [np.array(v) for v in ([0.0, 0.0], [-0.0, 0.0], [0.0, -0.0])]
+    with np.errstate(all='ignore'):
+        ref = [e.i(x).copy() for x in xs]
+    assert all(np.all(np.isinf(r)) for r in ref)
+    with c_backend(_TieModel):
+        assert _TieModel._hdl_backend_status == 'c'
+        got = [e.i(x) for x in xs]
+    assert [g.tobytes() for g in got] == [r.tobytes() for r in ref]
+
+
+@needs_cc
+def test_a_c_bound_class_under_the_jax_backend_runs_its_jax_twin():
+    """Under a JAX toolkit `x` is a tracer no C kernel can read: the jax
+    twin answers, whatever the class's backend.  The C kernel was consulted
+    first and failed on the tracer (DEFECT, fixed 2026-10-02)."""
+    jax = pytest.importorskip('jax')
+    import jax.numpy as jnp
+
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    nodes = [Node(f'n{k}') for k in range(len(eh.EkvNmosHdl.terminals))]
+    ref_el = eh.EkvNmosHdl(*nodes)
+    ref_el.update_iparv()
+    x = 0.1 + 0.2 * np.arange(len(ref_el.nodes), dtype=float)
+    ref = ref_el.i(x)
+    with c_backend(eh.EkvNmosHdl):
+        el = eh.EkvNmosHdl(*nodes, toolkit=jaxtoolkit)
+        el.update_iparv()
+        assert type(el)._hdl_backend_status == 'c'
+        got = jax.jit(lambda v: el.i(v))(jnp.asarray(x))
+    assert np.allclose(np.asarray(got), ref, rtol=1e-10, atol=0.0)
+
+
+@needs_cc
+def test_a_temperature_array_runs_the_numpy_function(tmp_path):
+    """A kernel takes one temperature; an array of them (a temperature
+    sweep's epar) is served by the numpy function, which broadcasts --
+    the kernel raised on it (until 2026-10-02)."""
+    from types import SimpleNamespace as Epar
+    e = _instance(eh.DiodeSpiceHdl)
+    assert eh.DiodeSpiceHdl._hdl_info['funcs']['i']._clayout[1] is not None
+    x = np.array([0.6, 0.0])
+    ep = Epar(T=np.array([280.0, 300.0, 320.0]))
+    ref = e.i(x, ep).copy()
+    with c_backend(eh.DiodeSpiceHdl):
+        assert type(e)._hdl_backend_status == 'c'
+        got = e.i(x, ep)
+        one = e.i(x, Epar(T=300.0))
+    assert got.tobytes() == ref.tobytes()
+    assert one.tobytes() == e.i(x, Epar(T=300.0)).tobytes()
+
+
+@needs_cc
+def test_without_cffi_a_request_for_c_runs_numpy_and_says_why(tmp_path,
+                                                              monkeypatch):
+    """The kernels load through cffi; without it a request for C ran into
+    an ImportError out of class creation."""
+    monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
+    real = cb.importlib.util.find_spec
+    monkeypatch.setattr(cb.importlib.util, 'find_spec',
+                        lambda n, *a: None if n == 'cffi' else real(n, *a))
+    e = _instance(_SquareModel)
+    from pycircuit.circuit.simwarnings import CostWarning
+    with pytest.warns(CostWarning, match='cffi is not installed'):
+        hdl.set_backend('c', _SquareModel)
+    try:
+        assert _SquareModel._hdl_backend_status == \
+            'numpy (cffi not installed)'
+        assert not _SquareModel._hdl_info.get('_c_bound')
+        e.i(np.array([0.5, 0.0]))
+    finally:
+        hdl.set_backend(None, _SquareModel)
+
+
+@needs_cc
+def test_a_c_bound_class_is_flagged_and_never_fused():
+    """`info['_c_bound']` follows attach / detach, and an evaluation
+    session hands a C-bound class's calls to its separate kernels."""
+    from pycircuit.circuit import _evalhint, _hdl_cse
+    e = _instance(eh.MosLevel1Hdl)
+    info = type(e)._hdl_info
+    x = 0.1 + 0.2 * np.arange(len(e.nodes), dtype=float)
+    with c_backend(eh.MosLevel1Hdl):
+        assert info['_c_bound'] is True
+        with _evalhint.evaluating('i', 'G'):
+            assert _hdl_cse.take(e, 'i', x, defaultepar, info,
+                                 hdl._args_of) is None
+    assert not info.get('_c_bound')
+
+
+def test_an_exponent_that_is_a_where_value_has_no_c_rendering():
+    """numpy raises to a 0-d ARRAY exponent through its fast power path
+    (2, 1/2, -1 squared / rooted / reciprocated, not `pow`), so no one C
+    form agrees: the printer refuses it, and the class runs numpy."""
+
+    class PowWhere(Behavioural):
+        instparams = [Parameter(name='gg', desc='g', unit='S', default=1.0)]
+
+        @staticmethod
+        def analog(p, m):
+            b = Branch(p, m)
+            u = var(b.V, 'u')
+            k = var(sympy.Piecewise((2, u > 0), (0.5, True)), 'k')
+            return Contribution(b.I, gg * (u * u + 1) ** k)     # noqa: F821
+
+    fn = PowWhere._hdl_info['funcs']['i']
+    assert getattr(fn, '_csrc', None) is None
+    assert 'exponent that is a numpy.where value' in fn._creason
+
+
+@needs_cc
+def test_a_key_being_built_elsewhere_is_left_to_its_builder(tmp_path,
+                                                           monkeypatch):
+    """The build lock: while another holder has a key, the parallel
+    pre-build leaves it alone (no duplicate `cc`), and `kernel_for` builds
+    it once the lock is free."""
+    monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
+    monkeypatch.setattr(cb, '_loaded', {})
+    fn = _SquareModel._hdl_info['funcs']['i']
+    key = cb.source_key(fn._csrc)
+    assert cb.find_so(key) is None
+    with cb._key_lock(key) as mine:
+        assert mine
+        with cb._key_lock(key, blocking=False) as other:
+            assert not other
+        cb._build_missing_parallel([fn])
+        assert cb.find_so(key) is None
+    _kern, cold = cb.kernel_for(fn, fn._cshape[0])
+    assert cold and cb.find_so(key) is not None
 
 
 if __name__ == '__main__':                        # pragma: no cover

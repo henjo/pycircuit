@@ -1414,7 +1414,10 @@ source run against libm's ``tanh``, and to that ulp with numpy's), and
 the sign of exact zeros (numpy computes integer-typed subchains, whose
 zeros carry no sign; values compare equal).  Where the numpy path
 returns NaN, C returns NaN (its sign bit, which IEEE-754 leaves to the
-arithmetic, can differ); where a degenerate parameter set
+arithmetic, can differ); on a tie of signed zeros ``maxc``/``minc`` and
+``Min``/``Max`` return the operand numpy does -- which follows the
+hardware's instruction (the second, on x86), so it is measured when
+pycircuit loads and printed into the kernels; where a degenerate parameter set
 makes the numpy path raise ``ZeroDivisionError`` from a pure-parameter
 division, C returns ``inf`` instead -- the one behavioural difference.
 

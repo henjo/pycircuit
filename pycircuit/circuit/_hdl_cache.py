@@ -643,6 +643,15 @@ def _thaw_function(rec):
 _FN = '__hdl_fn__'
 
 
+#: Keys a class's `info` gains AT RUNTIME, derived from what the cache
+#: records and rebuilt from it: the jax twins, the fused functions and the
+#: flags of `_hdl_cse` (sessions), the C binding flag of `_hdl_cbackend`.
+#: Never frozen -- a fused function has no record (it is not chain-compiled
+#: from a `_src` of its own), so freezing a live class's `info` after a
+#: session had run raised `Uncacheable` (until 2026-10-02).
+_RUNTIME_KEYS = frozenset(('_jax', '_fused', '_fuse_ok', '_c_bound'))
+
+
 def freeze(obj, memo=None):
     """`info` with every function replaced by a picklable record.
 
@@ -674,7 +683,8 @@ def freeze(obj, memo=None):
                 getattr(obj, '_wants_x', None),
                 getattr(obj, '_hdl_limit_par', None))
     if isinstance(obj, dict):
-        return {k: freeze(v, memo) for k, v in obj.items() if k != '_jax'}
+        return {k: freeze(v, memo) for k, v in obj.items()
+                if k not in _RUNTIME_KEYS}
     if isinstance(obj, list):
         return [freeze(v, memo) for v in obj]
     if isinstance(obj, tuple):

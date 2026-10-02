@@ -28,6 +28,8 @@ dependencies = [
     # load, so it cannot be scoped to one analysis and has to be remembered
     # from outside Python.  See `_single_threaded_blas` in transient.py.
     "threadpoolctl",
+    # Loads the hdl C backend's compiled kernels (`_hdl_cbackend`).
+    "cffi",
 ]
 
 [project.optional-dependencies]

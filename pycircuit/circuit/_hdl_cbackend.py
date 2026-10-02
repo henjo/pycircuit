@@ -74,7 +74,9 @@ Calling convention
     reentrant.
 """
 
+import contextlib
 import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -230,6 +232,43 @@ class CompileError(Exception):
     pass
 
 
+@contextlib.contextmanager
+def _key_lock(key, blocking=True):
+    """Exclusive, across processes, the right to build `key`'s object
+    (`fcntl.flock` on `locks/<key>.lock` in the store): yields whether it
+    was acquired -- with `blocking=False` it may not be, and the caller
+    leaves the build to the holder.  So eight test workers asking for one
+    model's kernels compile it once, not eight times (each a `cc` run of
+    up to a minute for PSP).  Where `flock` is unavailable it yields True
+    and builds proceed unlocked, as before (each still atomic)."""
+    try:
+        import fcntl
+    except ImportError:                            # pragma: no cover
+        yield True
+        return
+    d = os.path.join(_so_dir(), 'locks')
+    try:
+        os.makedirs(d, exist_ok=True)
+        fd = os.open(os.path.join(d, f'c-{key}.lock'),
+                     os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        yield True
+        return
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking
+                                             else fcntl.LOCK_NB))
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def _build(csrc, dest):
     """Compile `csrc` (prelude added here) to `dest`, atomically."""
     from pycircuit.circuit import hdl
@@ -301,16 +340,38 @@ class CKernel(object):
         return (p, cast)
 
     def __call__(self, element, x, epar):
+        """The kernel's output at `x`, or None where it cannot serve the
+        call -- a parameter or temperature that is not one number, a state
+        that is not one vector of numbers -- and the numpy function then
+        does (`hdl._chained_eval`), as it broadcasts there."""
         d = element.__dict__
         packed = d.get('_hdl_cp')
         if packed is None:
-            packed = d['_hdl_cp'] = self.pack(element)
+            try:
+                packed = self.pack(element)
+            except (TypeError, ValueError):
+                packed = False
+            d['_hdl_cp'] = packed
+        if packed is False:
+            return None
         p, pcast = packed
         if self.t_index is not None:
             from pycircuit.circuit import hdl
-            p[self.t_index] = hdl._epar_T(epar)
-        xa = np.ascontiguousarray(x, dtype=float)
-        if xa.ndim != 1 or xa.shape[0] < self.nx:
+            T = hdl._epar_T(epar)
+            if np.ndim(T) != 0:
+                return None
+            p[self.t_index] = T
+        if (type(x) is np.ndarray and x.dtype == np.float64
+                and x.flags.c_contiguous):
+            xa = x
+        else:
+            try:
+                xa = np.ascontiguousarray(x, dtype=float)
+            except (TypeError, ValueError):
+                return None
+        if xa.ndim != 1:
+            return None
+        if xa.shape[0] < self.nx:
             raise ValueError('x has shape %r; this kernel reads x[0..%d]'
                              % (np.shape(x), self.nx - 1))
         out = np.empty(self.shape)
@@ -342,9 +403,14 @@ def kernel_for(fn, nx, rebuild_corrupt=True):
     else:
         path = find_so(key)
         if path is None:
-            path = so_path(key)     # raises without a compiler
-            _build(csrc, path)
-            cold = True
+            ## (under the key's lock, and looked for again inside it: a
+            ## process that held it may have built the object meanwhile)
+            with _key_lock(key):
+                path = find_so(key)
+                if path is None:
+                    path = so_path(key)     # raises without a compiler
+                    _build(csrc, path)
+                    cold = True
         try:
             ffi, cfn = _dlopen(path)
         except OSError as e:
@@ -380,37 +446,44 @@ def _build_missing_parallel(fns):
         return
     jobs = []
     seen = set()
-    for fn in fns:
-        key = source_key(fn._csrc)
-        if key in seen or key in _loaded:
-            continue
-        seen.add(key)
-        if find_so(key) is not None:
-            continue
-        dest = so_path(key)
-        d = os.path.dirname(dest)
-        fd, cpath = tempfile.mkstemp(suffix='.c', dir=d)
-        with os.fdopen(fd, 'w') as fh:
-            fh.write(hdl._KERNEL_C)
-            fh.write(fn._csrc)
-        sopath = cpath[:-2] + '.so.tmp'
-        proc = subprocess.Popen([cc] + list(CFLAGS) +
-                                ['-o', sopath, cpath, '-lm'],
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
-        jobs.append((proc, cpath, sopath, dest))
-    for proc, cpath, sopath, dest in jobs:
-        rc = proc.wait()
-        if rc == 0:
-            try:
-                os.replace(sopath, dest)
-            except OSError:
-                pass
-        for p in (cpath, sopath):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+    with contextlib.ExitStack() as held:
+        for fn in fns:
+            key = source_key(fn._csrc)
+            if key in seen or key in _loaded:
+                continue
+            seen.add(key)
+            if find_so(key) is not None:
+                continue
+            ## a key another process is building is left to it:
+            ## `kernel_for` waits on the lock and then finds its object
+            if not held.enter_context(_key_lock(key, blocking=False)):
+                continue
+            if find_so(key) is not None:
+                continue
+            dest = so_path(key)
+            d = os.path.dirname(dest)
+            fd, cpath = tempfile.mkstemp(suffix='.c', dir=d)
+            with os.fdopen(fd, 'w') as fh:
+                fh.write(hdl._KERNEL_C)
+                fh.write(fn._csrc)
+            sopath = cpath[:-2] + '.so.tmp'
+            proc = subprocess.Popen([cc] + list(CFLAGS) +
+                                    ['-o', sopath, cpath, '-lm'],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            jobs.append((proc, cpath, sopath, dest))
+        for proc, cpath, sopath, dest in jobs:
+            rc = proc.wait()
+            if rc == 0:
+                try:
+                    os.replace(sopath, dest)
+                except OSError:
+                    pass
+            for p in (cpath, sopath):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
 
 ## ----------------------------------------------------------------------
@@ -433,6 +506,7 @@ def detach(cls, info):
         fn = info['funcs'].get(name)
         if fn is not None and hasattr(fn, '_hdl_c'):
             del fn._hdl_c
+    info['_c_bound'] = False
 
 
 def attach(cls, info):
@@ -469,6 +543,15 @@ def attach(cls, info):
               warn='requested backend "c" but the compiled functions carry '
                    'no C source; running numpy')
         return
+    ## The kernels load through cffi, which numpy does not need: without
+    ## it a request for C ran into an ImportError out of class creation
+    ## (until 2026-10-02).
+    if importlib.util.find_spec('cffi') is None:
+        detach(cls, info)
+        _note(cls, 'numpy (cffi not installed)',
+              warn='requested backend "c" but cffi is not installed; '
+                   'running numpy')
+        return
     ## No compiler check here: a warm `.so` store serves a machine
     ## with no compiler at all (`kernel_for` only builds on a miss, and
     ## raises `CompileError` naming the missing compiler when it must
@@ -490,4 +573,6 @@ def attach(cls, info):
               warn='requested backend "c" but the build failed (%s); '
                    'running numpy' % e)
         return
+    ## (read by `_hdl_cse.take`: a C-bound class's calls never fuse)
+    info['_c_bound'] = True
     _note(cls, 'c')

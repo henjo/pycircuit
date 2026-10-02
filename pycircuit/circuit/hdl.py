@@ -4631,6 +4631,15 @@ class _CChainPrinter(_ChainPrinter):
                 from sympy.printing.precedence import precedence
                 PREC = precedence(expr)
                 base_ = expr.base
+                exp_ = expr.exp
+                if isinstance(exp_, _s.Piecewise) or \
+                        (isinstance(exp_, _s.Symbol) and exp_ in array_syms):
+                    ## numpy raises to a 0-d ARRAY exponent through its
+                    ## fast power path value by value (2, 1/2 and -1 are
+                    ## squared / rooted / reciprocated, not `pow`): no one
+                    ## C form agrees.  None in the library (2026-10-02).
+                    raise CUnsupported('an exponent that is a numpy.where '
+                                       f'value ({exp_})')
                 if expr.exp == _s.S.Half:
                     return 'sqrt(%s)' % self._print(base_)
                 if -expr.exp == _s.S.Half:
@@ -4710,9 +4719,12 @@ class _CChainPrinter(_ChainPrinter):
 ## `numpy.where(c, a, b)`, and only then picks; a `?:` with the arms
 ## inline would skip one, and `a*c + b*(1-c)` would turn a losing
 ## infinite arm into NaN (`_maxc_numpy` records why that matters).
-## `_npmax`/`_npmin` are numpy's `maximum`/`minimum` verbatim: NaN in
-## either argument wins.  `c != 0.0` is numpy's truth test -- nonzero,
-## and NaN, are true.
+## `_npmax`/`_npmin` are numpy's `maximum`/`minimum`: NaN in either
+## argument wins (the first's when both are), and on a TIE of signed zeros
+## the operand numpy returns -- which follows its hardware instruction, so
+## it is measured at import (`_numpy_tie_rule`) and printed into the
+## prelude, whose text keys every `.so`.  `c != 0.0` is numpy's truth test
+## -- nonzero, and NaN, are true.
 ##
 ## The libm functions `CFLAGS` keeps real calls (`-fno-builtin-<f>`,
 ## `_hdl_cbackend`) are declared `const`: as opaque calls that may set
@@ -4727,6 +4739,45 @@ class _CChainPrinter(_ChainPrinter):
 ## x86 operation returns follows the order (the 16 spike points the
 ## plain kernels differ from numpy at; `TestPspBitIdentity`).
 ## `test_hdl_cbackend` checks the declarations against the flags.
+def _numpy_tie_rule():
+    """Which operand numpy's `maximum` / `minimum` return on a tie of
+    signed zeros: 'first' or 'second', or None where Python floats, numpy
+    scalars and 0-d arrays, in both orders, do not all agree.
+
+    numpy 2.5 on x86 returns the SECOND (`maximum(-0.0, +0.0)` is +0.0,
+    `maximum(+0.0, -0.0)` is -0.0, scalar, 0-d and array alike): it follows
+    the hardware's `maxsd`/`minsd`.  The prelude returned the FIRST until
+    2026-10-02 -- a zero's sign, and `1/x` of it, flipped against the numpy
+    path wherever a model met such a tie (DEFECT; no byte sweep had)."""
+    seen = set()
+    for make in (float, np.float64, np.array):
+        lo, hi = make(-0.0), make(0.0)
+        for f, (a, b) in ((np.maximum, (lo, hi)), (np.maximum, (hi, lo)),
+                          (np.minimum, (lo, hi)), (np.minimum, (hi, lo))):
+            r = f(a, b)
+            seen.add('first' if np.signbit(r) == np.signbit(a)
+                     else 'second')
+    return seen.pop() if len(seen) == 1 else None
+
+
+_TIE_RULE = _numpy_tie_rule()
+
+#: `_npmax` / `_npmin` per tie rule (None: the probes disagree -- the
+#: first operand, as before the rule was measured).
+_NPMAXMIN_C = {
+    'second': (
+        'static inline double _npmax(double a, double b) '
+        '{ return (a > b || a != a) ? a : b; }\n'
+        'static inline double _npmin(double a, double b) '
+        '{ return (a < b || a != a) ? a : b; }\n'),
+    'first': (
+        'static inline double _npmax(double a, double b) '
+        '{ return (a >= b || a != a) ? a : b; }\n'
+        'static inline double _npmin(double a, double b) '
+        '{ return (a <= b || a != a) ? a : b; }\n'),
+}
+_NPMAXMIN_C[None] = _NPMAXMIN_C['first']
+
 _KERNEL_C = r"""
 #include <math.h>
 double pow(double, double) __attribute__((const));
@@ -4746,8 +4797,7 @@ double cosh(double) __attribute__((const));
 double tanh(double) __attribute__((const));
 double hypot(double, double) __attribute__((const));
 static inline double _sel(double c, double a, double b) { return (c != 0.0) ? a : b; }
-static inline double _npmax(double a, double b) { return (a >= b || a != a) ? a : b; }
-static inline double _npmin(double a, double b) { return (a <= b || a != a) ? a : b; }
+""" + _NPMAXMIN_C[_TIE_RULE] + r"""
 static inline double _step(double a, double b) { return 1.0 * (a >= b); }
 static inline double _rdiv(double b, double e) { return b / (b * b + e * e); }
 static inline double _recip2(double b, double e) { return 1.0 / (b * b + e * e); }
@@ -5511,17 +5561,18 @@ def _chain_compile(defs, outputs, args, want_jacobian_of=None, xsyms=None,
 
 
 def _chained_eval(self, fn, x, epar):
-    """One chained evaluation: C kernel, jax twin, or numpy.
+    """One chained evaluation: jax twin, C kernel, or numpy.
 
     Written once because four methods need the same rule and a fifth will.
-    Order matters: the C kernel is an explicit backend selection and wins;
-    the jax twin follows, chosen by the INSTANCE'S TOOLKIT rather than by a
-    global switch, because that is what decides whether `x` can be a tracer;
-    numpy is the floor.
+    Order matters: the jax twin first, chosen by the INSTANCE'S TOOLKIT
+    rather than by a global switch, because that is what decides whether
+    `x` can be a tracer -- which no C kernel can read (until 2026-10-02 the
+    C kernel came first, and a C-bound class under the JAX backend failed
+    on its tracer: DEFECT); then the C kernel where one is bound and it can
+    serve the call (`CKernel` returns None for a state that is not one
+    vector of numbers or a temperature that is not one number); numpy is
+    the floor.
     """
-    ck = fn.__dict__.get('_hdl_c')
-    if ck is not None:
-        return ck(self, x, epar)
     if getattr(self.toolkit, 'jax', False):
         jf = _chained_jax(fn)
         if jf is not None:
@@ -5529,6 +5580,11 @@ def _chained_eval(self, fn, x, epar):
             ## with `np.asarray` and the assembly reshapes what it gets, so
             ## the twin has to hand back an array too.
             return self.toolkit.array(jf(x, *_args_of(self, epar)))
+    ck = fn.__dict__.get('_hdl_c')
+    if ck is not None:
+        r = ck(self, x, epar)
+        if r is not None:
+            return r
     return np.asarray(fn(x, *_args_of(self, epar)), dtype=float)
 
 

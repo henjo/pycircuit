@@ -497,6 +497,10 @@ def take(el, method, x, epar, info, args_of):
     once, so no array is shared; the memo is keyed on the session, the
     state's bytes and the parameter list `args_of` returns (a new list
     after `update()` or a temperature change)."""
+    if info.get('_c_bound'):
+        ## (first: on the C backend every call comes through here, and the
+        ## answer is always the separate kernel's)
+        return None
     from pycircuit.circuit import _evalhint
     s = _evalhint.current()
     if s is None or method not in s.which or len(s.which) < 2:

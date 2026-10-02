@@ -334,6 +334,26 @@ def test_a_session_runs_one_fused_pass_per_state_and_hands_each_output_once(
     assert len(calls) == 4
 
 
+
+def test_a_live_class_info_freezes_after_a_session_ran():
+    """The fused functions and session flags a class's `info` gains at
+    runtime are derived, not recorded: freezing it after a session raised
+    `Uncacheable` on the fused `_f` (DEFECT, fixed 2026-10-02 -- met by
+    test order, the cache itself freezes before any evaluation)."""
+    from pycircuit.circuit import _evalhint as eh_
+    from pycircuit.circuit import _hdl_cache as hc
+    e = _mos3()
+    info = type(e)._hdl_info
+    x = np.array([0.9, 1.2, 0.1, -0.3] + [0.05] * (e.n - 4))
+    with eh_.evaluating('i', 'G'):
+        e.i(x)
+        e.G(x)
+    assert info.get('_fused')
+    frozen = hc.freeze(info)
+    assert not set(frozen) & {'_fused', '_fuse_ok', '_c_bound', '_jax'}
+    thawed = hc.thaw(frozen)
+    assert thawed['funcs']['i']._src == info['funcs']['i']._src
+
 def test_a_session_stays_out_of_what_it_cannot_serve():
     from pycircuit.circuit import _evalhint as eh_
     e = _mos3()
