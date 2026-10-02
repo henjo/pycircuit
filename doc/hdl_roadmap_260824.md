@@ -6354,3 +6354,22 @@ and the ValueError kept; and a C-bound class's element methods skip the
 session call.  MosLevel1 4.3 -> 1.5 us a call, PSP `G` 23.2 -> 20.3; gear
 transients: 20 MosLevel1 0.202 -> 0.150 s, 20 Gummel-Poon 0.218 -> 0.155 s,
 20 PSP 0.372 -> 0.309 s; bit-identical (gate G85).
+
+## 2026-10-02 — 60. Speed round 3, stages O' and L2: one pass per state refused; the limiter chains as twins
+
+O' (the plan's item 1, one evaluation per element per state inside the
+stamp plan) was gated on a ceiling measurement: one hand-rolled loop against
+the four circuit passes saves 42 us per state on a 20-MosLevel1 chain (18 %
+of the passes) -- ~5 % of a gear step with its ~1.1 Newton iterations --
+and nothing on 20 PSP, where alternating four large kernels per element
+thrashes the instruction cache (+3 to -10 %); the gate was 8 %.  Not built.
+After stage W the per-element pass overhead is ~1.5 us; what remains in a
+step is the kernels and the per-step solver machinery.
+
+L2: `_hdl_cse.optimise_limit_pars` wraps each chain-compiled limiter
+parameter over the CSE + fast-path twin of its inner (`von` 10.6 -> 5.6 us);
+20 MosLevel1 0.150 -> 0.144 s, bit-identical (gate G86).
+
+Round 3 in sum (gear transients, 100 fixed steps, 20 devices): MosLevel1
+0.382 -> 0.144 s (2.65x), Gummel-Poon 0.447 -> 0.154 s (2.9x), PSP 0.383 ->
+0.310 s (1.24x); the PSP stage PSS 0.301 -> 0.266 s.

@@ -6090,6 +6090,7 @@ class BehaviouralMeta(type):
         ## backend keep the reference text (`fn._src`).
         from pycircuit.circuit import _evalhint, _hdl_cse
         _hdl_cse.optimise(info)
+        _hdl_cse.optimise_limit_pars(info)
         funcs = info['funcs']
         ## The evaluation backend (numpy by default; C when selected).
         ## Attached AFTER the compile so a cache hit can bind too, and

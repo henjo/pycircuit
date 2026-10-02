@@ -420,6 +420,54 @@ def optimise(info):
         funcs[name] = g
 
 
+def optimise_limit_pars(info):
+    """The limiter's parameter functions (`info['limit_spec']`, the
+    `_first_of` wrappers of `_limit_par_fn`) re-wrapped over the
+    bit-identical twins of their chain-compiled inner functions -- CSE and
+    the scalar fast paths, exactly as `optimise` gives `i`/`q`/`G`/`C`
+    (speed round 3, stage L2; 2026-10-02).  A parameter that reads the
+    solution is evaluated at every Newton iteration (MosLevel1's `von`:
+    10.4 us, 2300 calls in a 100-step run of a 20-device chain, 16 % of
+    it); one that reads only parameters, once per parameter state (stage
+    L1).  Each wrapper keeps its attributes (`_wants_x`, the JAX twin's
+    ingredients `_hdl_limit_par`) and names the twin as its `_hdl_inner`,
+    with the reference text on it (`_src`) as `optimise` keeps it, so the
+    compile cache records the chain as before; a lambdified parameter (no
+    chain to read) stays as it is."""
+    from pycircuit.circuit import _hdl_cache, hdl
+    if not ENABLED:
+        return
+    spec = info.get('limit_spec') or []
+    done = {}
+    for j, (rows, kind, move, pfs) in enumerate(spec):
+        new = []
+        for f in pfs:
+            inner = getattr(f, '_hdl_inner', None)
+            src = getattr(inner, '_src', None)
+            if src is None or '_hdl_ref' in getattr(inner, '__dict__', {}):
+                new.append(f)
+                continue
+            g = done.get(id(inner))
+            if g is None:
+                text = _optimised_text(src)
+                if text is None:
+                    new.append(f)
+                    continue
+                loc = {}
+                exec(_hdl_cache.code_for(text, '<hdl-chain-cse>'),  # noqa: S102
+                     inner.__globals__, loc)
+                g = loc['_f']
+                g.__dict__.update(inner.__dict__)
+                g._hdl_ref = inner
+                g._src_cse = text
+                done[id(inner)] = g
+            w = hdl._first_of(g, wants_x=getattr(f, '_wants_x', None))
+            w.__dict__.update(f.__dict__)
+            w._hdl_inner = g
+            new.append(w)
+        spec[j] = (rows, kind, move, tuple(new))
+
+
 ## -- the exact scalar fast paths (round 2, stage C) ---------------------------
 
 def _head(call):

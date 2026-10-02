@@ -153,3 +153,43 @@ def test_the_cache_off_evaluates_at_every_use(monkeypatch):
         assert len(calls) == 2 * n       # the ranking and the apply loop
     finally:
         spec[:] = saved
+
+
+## ----------------------------------------------------------------------
+## Stage L2: the parameter chains as twins (`_hdl_cse.optimise_limit_pars`).
+
+@pytest.mark.parametrize('name', ['MosLevel1Hdl', 'MosLevel3Hdl',
+                                  'GummelPoonNpnHdl', 'EkvNmosHdl'])
+def test_the_limiter_parameter_chains_run_as_bit_identical_twins(name):
+    """Every chain-compiled limiter parameter is wrapped over its CSE +
+    fast-path twin: the wrapper keeps `_wants_x` and the JAX twin's
+    ingredients, names the twin as its inner (with the reference on it),
+    and answers the reference's bytes over a sweep."""
+    from pycircuit.circuit import _hdl_cse as cs
+    cls = getattr(eh, name)
+    e = (cls('c', 'b', gnd) if name == 'GummelPoonNpnHdl'
+         else cls('d', 'g', gnd, gnd))
+    e.update_iparv()
+    args = list(hdl._args_of(e, defaultepar))
+    rng = np.random.default_rng(0)
+    pts = [rng.uniform(-2, 2, e.n) for _ in range(30)]
+    pts += [np.full(e.n, v) for v in (0.0, -0.0, 1e30, np.inf, np.nan)]
+    twins = 0
+    for rows, kind, move, pfs in type(e)._hdl_info['limit_spec']:
+        for f in pfs:
+            inner = getattr(f, '_hdl_inner', None)
+            if inner is None:
+                continue                      # a lambdified parameter
+            assert '_hdl_ref' in inner.__dict__, (name, kind)
+            assert inner._src == inner._hdl_ref._src
+            assert '_hdl_limit_par' in f.__dict__
+            ref = inner._hdl_ref
+            wx = getattr(f, '_wants_x', False)
+            for x in pts:
+                with np.errstate(all='ignore'):
+                    a = np.asarray(ref(x, *args) if wx else ref(*args), float)
+                    b = np.asarray(f(x, *args) if wx else f(*args), float)
+                assert a.tobytes() == b.tobytes(), (name, kind, x)
+            twins += 1
+    assert twins >= 1
+    assert cs.ENABLED
