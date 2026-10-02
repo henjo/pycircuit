@@ -79,6 +79,7 @@ class _CompanionModel:
         self._memo_rolling = False
         self._jacobian_expensive = None
         self._u_memo = None
+        self._pred_wmemo = None
 
     def _memo_step(self):
         """A new step: the current generation becomes the previous one (the

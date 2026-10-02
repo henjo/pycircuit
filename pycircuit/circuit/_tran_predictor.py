@@ -4,6 +4,13 @@ of `Transient` (see `transient.py`).
 
 import numpy as np
 
+#: THE WEIGHTS MEMO (speed round 4, stage D; 2026-10-02): the Vandermonde
+#: solve of `_fit` is a pure function of the normalised node times, and
+#: the shooting re-walks the same grid every iteration.  False recomputes
+#: it every time, for the byte-identity test and as an escape.
+PRED_WEIGHT_MEMO = True
+PRED_WEIGHT_MEMO_SIZE = 512
+
 
 class _StagePredictor:
     """The stage predictor every implicit family starts its Newton from.  A
@@ -132,6 +139,10 @@ class _StagePredictor:
             return None
         if deg is None:
             deg = self._pred_degree()
+        ## (speed round 4, stage D: the dedupe as a plain loop with the same
+        ## rule and the same first-wins order, one sort of the newest, and
+        ## the weights served from `_fit`'s memo -- 26.5 -> 14 us a step on
+        ## a hit, 22.5 on a miss, bit-identical)
         ## ⚠ DUPLICATE TIMES MAKE THE VANDERMONDE SINGULAR, and they are the
         ## normal case here, not a corner one: a stiffly accurate method's
         ## last stage IS the step it ends, and an ESDIRK's explicit first
@@ -143,8 +154,12 @@ class _StagePredictor:
         nodes.sort(key=lambda e: abs(e[0] - ttarget))
         uniq = []
         for e in nodes:
-            if not any(abs(e[0] - u[0]) <= 1e-13 * max(abs(e[0]), 1.0)
-                       for u in uniq):
+            t0 = e[0]
+            tol = 1e-13 * max(abs(t0), 1.0)
+            for u in uniq:
+                if abs(t0 - u[0]) <= tol:
+                    break
+            else:
                 uniq.append(e)
         nodes = uniq
         if len(nodes) < 2:
@@ -152,40 +167,16 @@ class _StagePredictor:
         nfit = min(int(deg) + 1, len(nodes))
         take = nodes[:nfit]
 
-        def _fit(sub, tat):
-            """The polynomial through ``sub`` evaluated at ``tat``, or None.
-
-            Fitted in a coordinate centred on the TARGET and scaled by the node
-            spread: an absolute-time Vandermonde at t ~ 1e-3 with 1e-6 spacing
-            is hopeless, and centring makes the right-hand side exactly e_0.
-            """
-            tv = np.array([e[0] for e in sub], dtype=float)
-            scale = float(np.max(np.abs(tv - tat)))
-            if not np.isfinite(scale) or scale <= 0.0:
-                return None
-            tau = (tv - tat) / scale
-            n = len(tau)
-            rhs = np.zeros(n)
-            rhs[0] = 1.0
-            try:
-                w = np.linalg.solve(np.vander(tau, n, increasing=True).T, rhs)
-            except np.linalg.LinAlgError:
-                return None
-            if not np.all(np.isfinite(w)):
-                return None
-            return w @ np.array([e[1] for e in sub], dtype=float)
-
-        newest = sorted(take, key=lambda e: -e[0])[:2]
-        motion = np.abs(newest[0][1] - newest[1][1]) if len(newest) == 2 \
-            else None
-        if motion is None:
+        newest_first = sorted(take, key=lambda e: -e[0])
+        if len(newest_first) < 2:
             return None
+        motion = np.abs(newest_first[0][1] - newest_first[1][1])
         ## ⚠ NO SELF-VALIDATION GATE (retrodict the newest node from the older
         ## ones, decline on a miss): it changes nothing measurable, because it
         ## looks BACKWARD, and the case it would be for is a knee that has not
         ## happened yet.  What actually bounds the damage is the clamp below.
         ## History: `doc/transient_history.md`, `Transient._predict_state`.
-        pred = _fit(take, ttarget)
+        pred = self._fit(take, ttarget)
         if pred is None:
             return None
         ## ⚠⚠ THE CLAMP, AND IT IS THE WHOLE DIFFERENCE BETWEEN A SPEED-UP AND
@@ -199,7 +190,6 @@ class _StagePredictor:
         ## needs the room -- but not an unbounded one.  Both scales come from
         ## the data: `motion` is the last step's own displacement and `ratio`
         ## is how far ahead this target is in units of the last step.
-        newest_first = sorted(take, key=lambda e: -e[0])
         xref = newest_first[0][1]
         dt_last = abs(newest_first[0][0] - newest_first[1][0])
         ratio = (abs(ttarget - newest_first[0][0]) / dt_last) if dt_last > 0 \
@@ -219,3 +209,43 @@ class _StagePredictor:
         for row, _m, _o in (getattr(self, '_periodic_rows', None) or ()):
             out[row] = xref[row]
         return out
+
+    def _fit(self, sub, tat):
+        """The polynomial through ``sub`` evaluated at ``tat``, or None.
+
+        Fitted in a coordinate centred on the TARGET and scaled by the node
+        spread: an absolute-time Vandermonde at t ~ 1e-3 with 1e-6 spacing
+        is hopeless, and centring makes the right-hand side exactly e_0.
+
+        The weights are a pure function of the normalised times `tau`, so
+        they are kept on the instance keyed by their bits (`PRED_WEIGHT_MEMO`;
+        bounded, forgotten at `_memo_clear` -- a `solve` starts afresh, the
+        shooting's period walks share it): the shooting re-walks the same
+        grid every iteration, and an exact uniform grid repeats them too.
+        `np.vander` stays -- its `multiply.accumulate` powers are the bits.
+        """
+        tv = np.array([e[0] for e in sub], dtype=float)
+        scale = float(np.max(np.abs(tv - tat)))
+        if not np.isfinite(scale) or scale <= 0.0:
+            return None
+        tau = (tv - tat) / scale
+        n = len(tau)
+        memo = self.__dict__.get('_pred_wmemo') if PRED_WEIGHT_MEMO else None
+        key = (n, tau.tobytes())
+        w = memo.get(key) if memo is not None else None
+        if w is None:
+            rhs = np.zeros(n)
+            rhs[0] = 1.0
+            try:
+                w = np.linalg.solve(np.vander(tau, n, increasing=True).T, rhs)
+            except np.linalg.LinAlgError:
+                return None
+            if not np.all(np.isfinite(w)):
+                return None
+            if PRED_WEIGHT_MEMO:
+                if memo is None:
+                    memo = self.__dict__['_pred_wmemo'] = {}
+                elif len(memo) >= PRED_WEIGHT_MEMO_SIZE:
+                    memo.clear()
+                memo[key] = w
+        return w @ np.array([e[1] for e in sub], dtype=float)

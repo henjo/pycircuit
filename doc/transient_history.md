@@ -3743,3 +3743,22 @@ and statistics identical: the PSP stage -13.3 % a step, its PSS -11.4 %,
 20 MosLevel1 -5.9 %, 20 PSP -2.8 % -- above the predicted 5-7 %: the
 Python removed ran cold between the kernel's calls, so the in-run
 inflation the plan noted cut both ways.
+
+## `_tran_predictor.py` -- the predictor's bookkeeping, its weights kept (2026-10-02, speed round 4's stage D)
+
+### `_predict_state`, `_fit`
+
+The round's in-run tree put the predictor at 7 % of the PSP stage's
+step: the node times deduplicated through a generator per pair, the
+newest nodes sorted twice, and the Vandermonde system solved at every
+step for weights that depend on the normalised node times alone -- which
+the shooting repeats at every period walk and a uniform grid repeats
+too.  The dedupe is a plain loop with the same rule and first-wins order,
+the newest are sorted once, and `_fit` (a method) keeps its weights on
+the instance keyed by `tau`'s bits (`PRED_WEIGHT_MEMO`; bounded,
+forgotten at `_memo_clear` so a `solve` starts afresh while a shooting
+solve's walks share it).  `np.vander` stays: its `multiply.accumulate`
+powers are the bits.  The clamp and the periodic rows are untouched.
+Measured against the parent (6f87af70): the PSP stage -5.2 % a step,
+its PSS -3.8 %; bytes and statistics identical; the old code
+transliterated is the test's oracle over 300 random node histories.
