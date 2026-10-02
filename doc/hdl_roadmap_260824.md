@@ -6320,3 +6320,14 @@ a hundredth (verified: with the share at 1 all but the `tanh` models are
 identical to numpy) or the `tanh` ulp (comparator, op-amp, divider); C
 raises no numpy warnings.  `PYCIRCUIT_HDL_BACKEND=numpy` restores the old
 default.  A vacuous F1a test (a swap on a collapse variant's base) fixed.
+
+## 2026-10-02 — 57. Speed round 2, stage E: fused C kernels measured and refused
+
+A multi-output C kernel per session subset (PSP's `_csrc` merged by
+statement name) computes all four at a state in 28 us against 66 us
+separately, byte-identical -- but end to end the PSP stage's PSS on C moves
+-10 % under gear and +1 % under radau (whose sessions are mostly `(i, q)`,
+where the session bookkeeping eats the saving), against a gate of >= 10 %
+under both; and four more PSP-sized objects would double to quadruple the
+cold-build CPU.  Not built; the numbers in the log.  What is left in a C run
+is the per-step Python (the kernels are 28-36 % of it).
