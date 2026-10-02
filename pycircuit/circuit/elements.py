@@ -2211,6 +2211,9 @@ class VSwitch(Circuit):
     `Voff` is now `1/Ron` / `1/Roff` exactly, which is what the parameter
     descriptions say; a circuit read at those points moves accordingly.
     """
+    ## (nonlinear in its state -- `Circuit.linear` was inherited True until
+    ## 2026-10-02; `test_an_element_class_flagged_linear_is_linear`)
+    linear = False
     terminals = ('plus', 'minus', 'cp', 'cm')
     instparams = [Parameter('Ron', 'On resistance', default=1.0),
                   Parameter('Roff', 'Off resistance', default=1e6),
@@ -2333,6 +2336,9 @@ class CCCS(Circuit):
 
 class ISwitch(Circuit):
     """Current Controlled Switch"""
+    ## (nonlinear in its state -- `Circuit.linear` was inherited True until
+    ## 2026-10-02; `test_an_element_class_flagged_linear_is_linear`)
+    linear = False
     terminals = ('plus', 'minus', 'cp', 'cm')
     branches = (Branch(Node('cp'), Node('cm')),)
     instparams = [Parameter('Ron', 'On resistance', default=1.0),
@@ -2421,6 +2427,9 @@ class BSource(Circuit):
     Can evaluate both a static current function i_out = i_func(v_ctrl)
     and a charge function q_out = q_func(v_ctrl).
     """
+    ## (nonlinear in its state -- `Circuit.linear` was inherited True until
+    ## 2026-10-02; `test_an_element_class_flagged_linear_is_linear`)
+    linear = False
     terminals = ('inp', 'inn', 'outp', 'outn')
     instparams = [Parameter('i_func', 'Function i_out = f(v_ctrl)', default=None),
                   Parameter('q_func', 'Function q_out = f(v_ctrl)', default=None)]

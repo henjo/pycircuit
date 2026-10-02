@@ -1341,3 +1341,4 @@ timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds
 20261001T220059Z,6a9ad76f,pycircuit no:cacheprovider tran_recorder,848.2,3532,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,130.4
 20261001T225540Z,29d739b1,pycircuit no:cacheprovider tran_recorder,833.4,3534,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,128.5
 20261002T045818Z,8ae6bad2,pycircuit no:cacheprovider tran_recorder,850.2,3536,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,131.6
+20261002T053346Z,eb269187,pycircuit no:cacheprovider tran_recorder,822.7,3537,pycircuit/circuit/tests/test_shooting_pnoise.py::test_a_coloured_source_is_refused_whatever_else_is_in_CY,130.8

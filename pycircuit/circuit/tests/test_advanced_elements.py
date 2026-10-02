@@ -247,3 +247,48 @@ def test_bsource_capacitance():
     
     # Verify magnitude and phase
     assert abs(Vout - expected_Vout) < 1e-6
+
+
+def test_an_element_class_flagged_linear_is_linear():
+    """`Circuit.linear` says whether an element's `i` and `q` are linear in
+    the state -- what `Volterra.solve` lists the nonlinear elements by.
+    Until 2026-10-02 `BSource` (alias `NonLinearVCCS`), `VSwitch` and
+    `ISwitch` inherited `Circuit`'s True: a behavioural source with any
+    nonlinear `i_func` / `q_func`, and two switches whose conductance moves
+    with their control.  Every hand-written and hdl class flagged linear
+    must SUPERPOSE -- ``f(x1 + x2) + f(0) = f(x1) + f(x2)`` for `i` and `q`,
+    `G` and `C` the same at every state -- at its default parameters; the
+    three are flagged nonlinear (a `BSource` with no function is linear,
+    but its class cannot know which it will be given)."""
+    import inspect
+
+    import numpy as np
+
+    from pycircuit.circuit import circuit, elements, elements_hdl
+    from pycircuit.circuit.circuit import Circuit
+    from pycircuit.circuit.elements import BSource, ISwitch, NonLinearVCCS
+    circuit.default_toolkit = numeric
+    rng = np.random.default_rng(0)
+    checked = []
+    for mod in (elements, elements_hdl):
+        for name, cls in sorted(vars(mod).items()):
+            if (not inspect.isclass(cls) or not issubclass(cls, Circuit)
+                    or cls.__module__ != mod.__name__ or name.startswith('_')
+                    or issubclass(cls, SubCircuit) or not cls.linear):
+                continue
+            el = cls(*[f't{k}' for k in range(len(cls.terminals))])
+            n = el.n
+            x1, x2 = (rng.standard_normal(n) * 0.7 for _ in range(2))
+            z = np.zeros(n)
+            for f in (el.i, el.q):
+                lhs = np.asarray(f(x1 + x2), float) + np.asarray(f(z), float)
+                rhs = np.asarray(f(x1), float) + np.asarray(f(x2), float)
+                assert np.allclose(lhs, rhs, rtol=1e-9, atol=1e-12), (name, f)
+            for f in (el.G, el.C):
+                assert np.allclose(np.asarray(f(x1), float),
+                                   np.asarray(f(x2), float),
+                                   rtol=1e-12, atol=1e-30), (name, f)
+            checked.append(name)
+    assert {'R', 'C', 'L', 'VSin', 'TLine', 'RHdl'} <= set(checked)
+    assert not (BSource.linear or NonLinearVCCS.linear or VSwitch.linear
+                or ISwitch.linear)

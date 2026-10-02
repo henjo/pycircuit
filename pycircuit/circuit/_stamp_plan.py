@@ -28,8 +28,9 @@ the matrix method is `Circuit`'s zero one, or the method of the nearest class
 declaring `_constant_stamps` naming it (a stamp built only in `update()`,
 independent of x, t and epar).  An override breaks the identity, so a
 subclass that computes its own `G` drops out without saying so.
-`Circuit.linear` is NOT used: BSource, NonLinearVCCS, VSwitch and TLine
-report True.  Per element too: no instance attribute shadowing the methods,
+`Circuit.linear` is NOT used: linear is not constant (a TLine is linear and
+re-stamped from its history), and BSource and the switches said linear until
+2026-10-02.  Per element too: no instance attribute shadowing the methods,
 the circuit's own toolkit, a real `(k, k)` ndarray stamp.
 
 WHEN IT RUNS: the numeric toolkit exactly (not sparse, JAX or symbolic), no
