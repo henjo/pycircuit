@@ -4830,6 +4830,14 @@ BACKEND = None
 
 _BACKENDS = ('numpy', 'c', 'auto')
 
+#: The generated `limit()` evaluates each probe's parameter functions once
+#: per call and keeps the ones that read no solution until the element's
+#: parameter list changes (`update()`, a temperature change); `False` makes
+#: it evaluate them at every use, as it did until 2026-10-02 -- the same
+#: functions on the same objects, so the same values either way (the
+#: byte-identity test).
+LIMIT_PAR_CACHE = True
+
 
 def _backend_requested(cls):
     """Which backend `cls` asked for: the class attribute, else the
@@ -6158,8 +6166,10 @@ class BehaviouralMeta(type):
             ## iparv too.
             self.__dict__.pop('_hdl_cp', None)
             ## ...and so is the memoised trailing argument list that
-            ## every compiled function is called with (`_args_of`).
+            ## every compiled function is called with (`_args_of`), and
+            ## the limiter's parameter values kept against it.
             self.__dict__.pop('_hdl_args', None)
+            self.__dict__.pop('_hdl_lp', None)
             ## A parameter that gates a collapse decides the element's
             ## SIZE, and the size was baked into the circuit's node map
             ## when this instance was built.  Changing it afterwards
@@ -6462,14 +6472,48 @@ class BehaviouralMeta(type):
                 x0a = np.asarray(x0, dtype=float)
                 args = _args_of(self, epar)
 
-                def _pv(pfs_):
-                    ## A parameter that reads the solution is evaluated
-                    ## at the LAST ACCEPTED iterate -- SPICE's `von`
-                    ## semantics -- never at the unlimited `x`, which is
-                    ## the point the limiter exists to distrust.
-                    return [float(f(x0a, *args)
-                                  if getattr(f, '_wants_x', False)
-                                  else f(*args)) for f in pfs_]
+                ## THE PARAMETER VALUES, ONCE PER CALL.  A parameter that
+                ## reads the solution is evaluated at the LAST ACCEPTED
+                ## iterate -- SPICE's `von` semantics -- never at the
+                ## unlimited `x`, which is the point the limiter exists to
+                ## distrust; `x0a` is the one array every probe reads this
+                ## call.  One that reads only parameters and T is the same
+                ## value until the argument list changes (`_args_of`: a new
+                ## LIST after `update()` or a temperature change), so it is
+                ## kept on the instance against that list -- the list
+                ## itself, never its id -- by the FUNCTION, not the probe's
+                ## position (a test reorders the spec list in place).  Until
+                ## 2026-10-02 every value was computed twice per probe per
+                ## call (the ranking and the apply loop): on a 20-MosLevel1
+                ## chain the limiter was 62 % of a gear step, ten
+                ## evaluations where one is needed.  `LIMIT_PAR_CACHE =
+                ## False` evaluates at every use.
+                if LIMIT_PAR_CACHE:
+                    kept = self.__dict__.get('_hdl_lp')
+                    if kept is None or kept[0] is not args:
+                        kept = (args, {})
+                        self.__dict__['_hdl_lp'] = kept
+                    vals = kept[1]
+                    pv_of = {}
+                    for j in range(len(_ls)):
+                        row = []
+                        for f in _ls[j][3]:
+                            if getattr(f, '_wants_x', False):
+                                row.append(float(f(x0a, *args)))
+                            else:
+                                v = vals.get(f)
+                                if v is None:
+                                    v = vals[f] = float(f(*args))
+                                row.append(v)
+                        pv_of[j] = row
+
+                    def _pv(j_):
+                        return pv_of[j_]
+                else:
+                    def _pv(j_):
+                        return [float(f(x0a, *args)
+                                      if getattr(f, '_wants_x', False)
+                                      else f(*args)) for f in _ls[j_][3]]
                 ## WHICH TERMINAL ABSORBS THE CORRECTION IS A RUNTIME
                 ## QUESTION, and deciding it at compile time made the
                 ## limiter a divergence GENERATOR.
@@ -6515,11 +6559,11 @@ class BehaviouralMeta(type):
                 drift = np.abs(np.asarray(out, dtype=float) - x0a)
                 _moved = set()
 
-                def _vlim_of(k, i0, i1, pfs_):
+                def _vlim_of(j_):
+                    (i0, i1), k = _ls[j_][0], _ls[j_][1]
                     vn = float(out[i0] - out[i1])
                     vo = float(x0a[i0] - x0a[i1])
-                    pv_ = _pv(pfs_)
-                    return vn, _lim(k, vn, vo, pv_, self.toolkit)
+                    return vn, _lim(k, vn, vo, _pv(j_), self.toolkit)
 
                 ## DEVICE-LEVEL groups first (`limit_together`, roadmap
                 ## 10.3(b)).  They see a pristine vector -- a group is a
@@ -6554,15 +6598,13 @@ class BehaviouralMeta(type):
                     if _seq:
                         seq_order = list(_idx)
                     else:
-                        _rk = {j: _vlim_of(_ls[j][1], _ls[j][0][0],
-                                           _ls[j][0][1], _ls[j][3])
-                               for j in _idx}
+                        _rk = {j: _vlim_of(j) for j in _idx}
                         seq_order = sorted(
                             _idx, key=lambda j: (-abs(_rk[j][1] - _rk[j][0]),
                                                  _ls[j][0][0], _ls[j][0][1]))
                     for j in seq_order:
-                        (ra, rb), kind, _mv, pfs = _ls[j]
-                        pv = _pv(pfs)
+                        (ra, rb), kind, _mv, _pfs = _ls[j]
+                        pv = _pv(j)
                         vorig = float(out[ra] - out[rb])
                         vold = float(x0a[ra] - x0a[rb])
                         vin = vorig + shift.get(ra, 0.0) - shift.get(rb, 0.0)
@@ -6602,18 +6644,16 @@ class BehaviouralMeta(type):
                 ## does not depend on the spec list's own order.  These
                 ## `vlim`s are for RANKING only; each probe recomputes its
                 ## own below against whatever earlier probes wrote.
-                _rank = {i: _vlim_of(_ls[i][1], _ls[i][0][0], _ls[i][0][1],
-                                     _ls[i][3])
-                         for i in _l1}
+                _rank = {i: _vlim_of(i) for i in _l1}
                 order = sorted(
                     _l1,
                     key=lambda i: (-abs(_rank[i][1] - _rank[i][0]),
                                    _ls[i][0][0], _ls[i][0][1]))
                 for i in order:
-                    (ra, rb), kind, move, pfs = _ls[i]
+                    (ra, rb), kind, move, _pfs = _ls[i]
                     vnew = float(out[ra] - out[rb])
                     vold = float(x0a[ra] - x0a[rb])
-                    pv = _pv(pfs)
+                    pv = _pv(i)
                     vlim = _lim(kind, vnew, vold, pv, self.toolkit)
                     ## A LIMITER THAT DID NOT BITE MUST TOUCH NOTHING.
                     ## Writing `out[rb] = out[ra] - vlim` when `vlim` is

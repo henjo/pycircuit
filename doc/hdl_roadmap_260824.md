@@ -6331,3 +6331,15 @@ where the session bookkeeping eats the saving), against a gate of >= 10 %
 under both; and four more PSP-sized objects would double to quadruple the
 cold-build CPU.  Not built; the numbers in the log.  What is left in a C run
 is the per-step Python (the kernels are 28-36 % of it).
+
+## 2026-10-02 — 58. Speed round 3, stage L1: the limiter's parameter values once per call
+
+Measured for the plan: on a 20-MosLevel1 chain the hdl `$limit` was 62 % of a
+gear step -- each probe's parameter functions (chain-compiled lambdas over
+`maxc`/`minc`) evaluated twice per probe per Newton iteration, ten
+evaluations where one is needed.  The generated `limit()` now builds the
+values once per call: the `x0` readers at the previous iterate, the pure
+ones kept on the instance against the argument list (`_hdl_lp`, by the
+function object, dropped by `update()`).  20 MosLevel1: 0.382 -> 0.202 s,
+20 Gummel-Poon 0.447 -> 0.218 s, PSP untouched; bit-identical (gate G84).
+`LIMIT_PAR_CACHE = False` is the old behaviour.
