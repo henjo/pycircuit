@@ -721,7 +721,7 @@ _FN = '__hdl_fn__'
 #: session had run raised `Uncacheable` (until 2026-10-02).
 _RUNTIME_KEYS = frozenset(('_jax', '_fused', '_fuse_ok', '_c_bound',
                            '_backend_pending', '_backend_seen',
-                           '_c_limit', '_c_limit_status'))
+                           '_c_limit', '_c_limit_status', '_u_zero'))
 
 
 def freeze(obj, memo=None):

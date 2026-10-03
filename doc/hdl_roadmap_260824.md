@@ -6487,3 +6487,23 @@ tree wrapped every element's methods on the instance -- an instance
 shadow, which is exactly what sends an element to the per-element path
 -- so its first run showed no batch; it wraps the hand-written elements
 only now and times `Batch.run`.
+
+### Commit 2 (2026-10-03): the zero source term skipped
+
+After the batches the largest circuit piece of a 20-MosLevel1 step was
+`cir.u` (105 of 544 us with timers): forty-four element `u` calls, every
+one returning `[0, 0, ...]` -- 22 of 22 chained library classes have no
+source term (their compiled `u`, `u_dc` and `dudt` end in a `return` of
+literal zeros) -- each allocating a vector to add exact +0.0 to a bin
+that starts at +0.0.  `_add_element_subvectors` skips such an element as
+it skips `Circuit.u`'s default (`_hdl_batch.zero_source`): decided once
+per class by an `ast` read of the compiled function's source, kept as
+`info['_u_zero']` (a runtime key of the compile cache, never pickled),
+checked per call against the method's code identity (a subclass that
+overrides `u` shares its parent's info and must be called), on the
+default skip's conditions plus no `dtype` and not the 'ac' analysis (the
+complex `uac` path, where a class with `ac_stim` terms answers).
+`PYCIRCUIT_HDL_ZERO_U=0` keeps the calls.  Measured (parent 40a976d6, 5
+interleaved rounds, bytes and statistics the same): 20 MosLevel1 446.9
+-> 412.7 us a step (-7.6 %), 20 Gummel-Poon -7.1 %, 20 PSP -2.9 %, the
+PSP stage and its PSS unchanged; the gate >= 5 %.

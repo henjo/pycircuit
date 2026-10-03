@@ -51,8 +51,21 @@ handed back to the caller for the per-element path and the rest of its
 class stays one call; a class that fails a class check takes the
 per-element path for the pass.
 
+THE SOURCE PASSES (`zero_source`, commit 2 of the round): every chained
+library class's `u`, `u_dc` and `dudt` return a list of literal zeros (22
+of 22 on 2026-10-03), and `cir.u` called each of them -- 44 calls at 1.3
+us on the 20-MosLevel1 chain, 10 % of a step -- to add exact zeros to
+bins that start at +0.0, which changes no bit.  `_add_element_subvectors`
+skips such an element as it skips `Circuit.u`'s default, on the same
+conditions (a numeric toolkit's scatter path, no instance shadow) plus no
+`dtype` and not the 'ac' analysis (the complex `uac` path), decided once
+per class by parsing the compiled function's source (`info['_u_zero']`,
+a runtime key of the compile cache) and checked per call against the
+method's code identity (a subclass override has its own code).
+
 `ENABLED` (env `PYCIRCUIT_HDL_BATCH=0`) is read on every pass, so a
-measurement can A/B it.  The driver is one small C source of its own,
+measurement can A/B it; `SKIP_ZERO_SOURCE` (`PYCIRCUIT_HDL_ZERO_U=0`) the
+source passes' skip.  The driver is one small C source of its own,
 exporting the chain functions' entry name with its own signature, built
 and loaded once per process through `_hdl_cbackend.load_kernel` under its
 own key (the limiter's precedent, `_hdl_climit`); a build that fails turns
@@ -61,12 +74,14 @@ batching off quietly (`STATUS`).
 History: `doc/transient_history.md`, `_stamp_plan`; `doc/hdl_roadmap_260824.md`
 sec. 63.
 """
+import ast
 import os
 import types
 
 import numpy as np
 
 ENABLED = os.environ.get('PYCIRCUIT_HDL_BATCH', '1') != '0'
+SKIP_ZERO_SOURCE = os.environ.get('PYCIRCUIT_HDL_ZERO_U', '1') != '0'
 
 #: The pass driver.  `fn` is a chain kernel's function pointer (the object
 #: `_dlopen` resolved, cast to `void *`); `X` is `n` rows of `sx` doubles,
@@ -241,6 +256,51 @@ class Batch:
         cfn(self.fnptr, ffi.from_buffer(dptr, X), ffi.from_buffer(pptr, PRp),
             ffi.from_buffer(dptr, OUT), len(pos), self.k, self.so, ti, T)
         return OUT, pos
+
+
+def _returns_zeros(fn):
+    """Whether the chain-compiled `fn`'s source ends in a `return` of a
+    list of literal zeros (`0`, `0.0`, their negatives: adding any of them
+    to a bin that starts at +0.0 changes no bit)."""
+    src = getattr(fn, '_src', None)
+    if src is None:
+        return False
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return False
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.FunctionDef):
+        return False
+    ret = tree.body[0].body[-1]
+    if not isinstance(ret, ast.Return) or not isinstance(ret.value, ast.List):
+        return False
+    for e in ret.value.elts:
+        if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.USub):
+            e = e.operand
+        if not (isinstance(e, ast.Constant) and type(e.value) in (int, float)
+                and e.value == 0):
+            return False
+    return True
+
+
+def zero_source(cls, m):
+    """Whether `cls`'s generated `m` ('u' or 'dudt') adds nothing on the
+    scatter path: the class's compiled `u` and `u_dc` (or `dudt`) return
+    literal zeros -- decided once per class (`info['_u_zero']`) -- and the
+    method is the generated one (an override has its own code; the
+    generated method's other answers are zeros too)."""
+    info = getattr(cls, '_hdl_info', None)
+    if info is None:
+        return False
+    z = info.get('_u_zero')
+    if z is None:
+        z = info['_u_zero'] = {}
+    r = z.get(m)
+    if r is None:
+        funcs = info['funcs']
+        names = ('u', 'u_dc') if m == 'u' else ('dudt',)
+        r = z[m] = all(_returns_zeros(funcs.get(n)) for n in names)
+    return r and is_generated(cls, m)
 
 
 def split(cir, m, calls):

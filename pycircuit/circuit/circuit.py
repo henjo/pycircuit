@@ -9,7 +9,7 @@ from copy import copy
 import contextlib
 from .toolkit import numeric
 from .toolkit import symbolic
-from . import _stamp_plan
+from . import _hdl_batch, _stamp_plan
 import numpy as np
 
 ## The process-wide fallback toolkit used when a circuit is built without an
@@ -1880,6 +1880,12 @@ class SubCircuit(Circuit):
                        and not getattr(toolkit, 'symbolic', False))
         if default_src:
             default_fn = getattr(Circuit, methodname)
+        ## AND AN HDL ELEMENT WHOSE GENERATED `u`/`dudt` IS LITERAL ZEROS
+        ## (every chained library class, 2026-10-03; `_hdl_batch.
+        ## zero_source`): the same skip on the same conditions, never with
+        ## a dtype or for the 'ac' analysis (the complex `uac` path).
+        zero_src = (default_src and dtype is None and _hdl_batch.SKIP_ZERO_SOURCE
+                    and (len(args) < 3 or args[2] != 'ac'))
         elementnodemap = self.elementnodemap
 
         batched = toolkit.batched_contributions(
@@ -1897,6 +1903,9 @@ class SubCircuit(Circuit):
             if (default_src
                     and getattr(type(element), methodname) is default_fn
                     and methodname not in element.__dict__):
+                continue
+            if (zero_src and methodname not in element.__dict__
+                    and _hdl_batch.zero_source(type(element), methodname)):
                 continue
 
             if x is not None:

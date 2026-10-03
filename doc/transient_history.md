@@ -3700,6 +3700,17 @@ the same): 20 MosLevel1 802.3 -> 445.9 us a step (-44.4 %), 20
 Gummel-Poon -40.2 %, 20 PSP -16.5 %, the PSP stage and its PSS
 unchanged.  The gate: >= 25 %.
 
+The round's second commit: every chained library class's `u`, `u_dc` and
+`dudt` return literal zeros (22 of 22), and `cir.u` called all of them --
+forty-four calls at 1.3 us on the 20-MosLevel1 chain, 19 % of its step
+after the batches -- to add exact +0.0 to bins that start at +0.0.
+`_add_element_subvectors` now skips such an element as it skips
+`Circuit.u`'s default (`_hdl_batch.zero_source`: an `ast` read of the
+compiled function's source, once per class, `info['_u_zero']`; the
+method's code identity per call), on the same conditions plus no `dtype`
+and not the 'ac' analysis.  Measured: 20 MosLevel1 446.9 -> 412.7 us a
+step (-7.6 %), 20 Gummel-Poon -7.1 %, bit for bit.
+
 ## `_tran_companion.py` -- the step's source memo (2026-10-02, speed round 4's stage B)
 
 ### `_source_at`, `Transient.solve_timestep`, `_stage_source`

@@ -1417,7 +1417,10 @@ with the Python around twenty such calls (50 of a 56 us pass on a
 method (PCNR's, during a solve), a class whose method was patched, a
 detached class, a class with DC pins or a temperature that is not one
 number take the call per element as before.  ``PYCIRCUIT_HDL_BATCH=0``
-keeps the call per element everywhere.
+keeps the call per element everywhere.  A model with no source term (its
+generated ``u`` returns zeros: every chained library model) is not asked
+for one on the assembly's scatter path -- ``PYCIRCUIT_HDL_ZERO_U=0`` asks
+anyway.
 
 What it buys (measured 2026-08-26, gcc 15.2, one core;
 ``benchmarks/hdl_model_cost.py --backend`` reproduces the table):
