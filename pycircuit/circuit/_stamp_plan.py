@@ -45,11 +45,22 @@ circuit's size changed.  `invalidate()` for what none of those see (a stamp
 mutated in place).  `ENABLED` (env `PYCIRCUIT_STAMP_PLAN=0` turns it off) is
 read on every pass, so a measurement can A/B it.
 
+THE C-BOUND HDL CLASSES ARE ONE CALL EACH (`_hdl_batch`, 2026-10-03; speed
+round 6): the non-constant elements of a chained hdl class whose kernels are
+bound run through one C driver per class per pass -- the kernel's own
+function pointer on each element's `x[nm]` and the element's own pack, the
+outputs written into the elements' slots -- instead of a wrapped call per
+element through the loop above (56 -> 7.5 us for a 20-MosLevel1 `G` pass).
+Which elements, and what is checked on every pass, is that module's note;
+an element a batch hands back is called here as before, in its order.
+
 History: `doc/transient_history.md`, `_stamp_plan`.
 """
 import os
 
 import numpy as np
+
+from pycircuit.circuit import _hdl_batch
 
 ENABLED = os.environ.get('PYCIRCUIT_STAMP_PLAN', '1') != '0'
 
@@ -100,7 +111,7 @@ class _MatrixPlan:
     """One matrix method's plan: the template buffer, the flat indices, the
     non-constant calls with their slots (see the module note)."""
 
-    __slots__ = ('calls', 'flat', 'template')
+    __slots__ = ('batches', 'calls', 'flat', 'template')
 
     def __init__(self, cir, m):
         n = cir.n
@@ -138,14 +149,14 @@ class _MatrixPlan:
         self.flat = (np.concatenate(flats) if flats
                      else np.zeros(0, dtype=np.intp))
         self.template = np.concatenate(parts) if parts else np.zeros(0)
-        self.calls = calls
+        self.calls, self.batches = _hdl_batch.split(cir, m, calls)
 
 
 class _VectorPlan:
     """One vector method's plan: the constant elements grouped by stamp size
     for the batched product, the non-constant calls, the flat indices."""
 
-    __slots__ = ('calls', 'groups', 'idx', 'length')
+    __slots__ = ('batches', 'calls', 'groups', 'idx', 'length')
 
     def __init__(self, cir, v):
         m = _MATRIX[v]
@@ -193,7 +204,7 @@ class _VectorPlan:
                     else np.zeros(0, dtype=np.intp))
         self.length = pos
         self.groups = groups
-        self.calls = calls
+        self.calls, self.batches = _hdl_batch.split(cir, v, calls)
 
 
 def _matmul_ok(k, S):
@@ -262,6 +273,61 @@ def _call(el, m, subx, args):
                           + ', args=' + str(args))
 
 
+def _call_plain(el, v, subx, args):
+    return getattr(el, v)(subx, *args)
+
+
+_DEFAULT_EPAR = None
+
+
+def _run_batches(x, args, p, buf, got, call, m):
+    """The plan's batches (`_hdl_batch`) into `buf`: True, or False with
+    `got` extended by everything computed so far, for the legacy loop.  An
+    element a batch hands back is called here, in its order."""
+    global _DEFAULT_EPAR
+    if args:
+        epar = args[0]
+    else:
+        if _DEFAULT_EPAR is None:
+            from pycircuit.circuit.circuit import defaultepar
+            _DEFAULT_EPAR = defaultepar
+        epar = _DEFAULT_EPAR
+    filled = []
+    for bt in p.batches:
+        res = bt.run(x, epar)
+        served = ()
+        if res is not None:
+            OUT, pos = res
+            if pos is None:
+                buf[bt.dst] = OUT.reshape(-1)
+                filled.extend(bt.slots)
+                continue
+            for j, e in enumerate(pos):
+                a, b = bt.slots[e]
+                buf[a:b] = OUT[j].reshape(-1)
+                filled.append((a, b))
+            served = set(pos)
+        for e, (inst, el, nm, a, b) in enumerate(bt.entries):
+            if e in served:
+                continue
+            rhs = call(el, m, x[nm], args)
+            val = np.asarray(rhs).ravel()
+            got.append((a, b, rhs))
+            if val.dtype.kind not in 'fiub' or val.size != b - a:
+                for a2, b2 in filled:
+                    got.append((a2, b2, buf[a2:b2]))
+                return False
+            buf[a:b] = val
+    return True
+
+
+def _every_call(p):
+    """The plan's non-constant calls, batched or not."""
+    yield from p.calls
+    for bt in p.batches:
+        yield from bt.entries
+
+
 def assemble_matrix(cir, m, x, args):
     """`m` ('G' or 'C') at `x` through the plan, or None for the legacy loop."""
     if not _eligible(cir, x):
@@ -281,6 +347,8 @@ def assemble_matrix(cir, m, x, args):
         if val.dtype.kind not in 'fiub' or val.size != b - a:
             return _legacy_matrix(cir, m, x, args, mp, got)
         buf[a:b] = val
+    if mp.batches and not _run_batches(x, args, mp, buf, got, _call, m):
+        return _legacy_matrix(cir, m, x, args, mp, got)
     n = plan.n
     if not mp.flat.size:
         ## (an EMPTY bincount is int64 even with weights: the loop's zeros)
@@ -316,6 +384,8 @@ def assemble_vector(cir, v, x, args):
         if val.dtype.kind not in 'fiub' or val.size != b - a:
             return _legacy_vector(cir, v, x, args, vp, got)
         buf[a:b] = val
+    if vp.batches and not _run_batches(x, args, vp, buf, got, _call_plain, v):
+        return _legacy_vector(cir, v, x, args, vp, got)
     if not vp.idx.size:
         return np.zeros(plan.n)
     return np.bincount(vp.idx, weights=buf, minlength=plan.n)
@@ -326,7 +396,7 @@ def _legacy_matrix(cir, m, x, args, mp, got):
     the constant elements re-called (they are pure), the non-constant ones'
     values reused -- never called twice."""
     computed = {a: rhs for a, b, rhs in got}
-    by_inst = {inst: a for inst, el, nm, a, b in mp.calls}
+    by_inst = {inst: a for inst, el, nm, a, b in _every_call(mp)}
     idxmap = cir._map_indices_2d
     pending_rc, pending_val = [], []
     for inst, el in cir.elements.items():
@@ -346,7 +416,7 @@ def _legacy_matrix(cir, m, x, args, mp, got):
 def _legacy_vector(cir, v, x, args, vp, got):
     """The vector pass's fallback, as `_legacy_matrix`."""
     computed = {a: rhs for a, b, rhs in got}
-    by_inst = {inst: a for inst, el, nm, a, b in vp.calls}
+    by_inst = {inst: a for inst, el, nm, a, b in _every_call(vp)}
     idxmap = cir._map_indices_1d
     pending_idx, pending_val = [], []
     for inst, el in cir.elements.items():

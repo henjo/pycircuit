@@ -96,6 +96,18 @@ Calling convention
     `np.asarray(list)` made it on the numpy path.  cffi releases the
     GIL for the call and the function has no globals, so it is
     reentrant.
+
+The batches
+    In a circuit's stamp plan a C-bound class's elements run as ONE call
+    per class per pass (`_hdl_batch`, 2026-10-03): a driver of its own
+    -- one more object under its own key, the entry name with another
+    signature, as the limiter -- loops over the elements calling the
+    kernel's function pointer on each element's `x[nm]` and its own
+    pack, the temperature written into the pack's slot exactly as
+    `CKernel.__call__` writes it.  What a batch cannot serve -- an
+    instance shadow, a patched method, a detached class, a temperature
+    that is not one number -- takes `CKernel.__call__` per element as
+    before.
 """
 
 import contextlib

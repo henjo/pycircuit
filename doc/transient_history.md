@@ -3669,6 +3669,37 @@ pass is an exact zero, so the plan's `bincount` was EMPTY, and an empty
 the loop's float zeros (`test_a_pass_with_nothing_to_stamp_is_the_loops_
 float_zeros`).
 
+### The C-bound classes' batches (`_hdl_batch.py`, 2026-10-03, speed round 6)
+
+Rounds 2 and 5 made every device evaluation of a chained hdl class a C
+kernel; what a mid-sized model's pass was made of after them was the call
+around each kernel: on a 20-MosLevel1 chain `cir.G` cost 56 us, of which
+the kernels' C work was 6.7 -- twenty wrapped calls at 2.0 us through the
+plan's loop at 0.8-1.1 us each.  `_stamp_plan.split` now gathers, when
+the plan is built, the non-constant elements of each C-bound chained
+class (no DC pins, the generated method by code identity, the circuit's
+toolkit, a kernel of the element's size and the slots' shape, two or more
+of them) into a `Batch`; `assemble_matrix` / `assemble_vector` call the
+rest per element first, as before, then each batch once: ONE C driver
+call (`PASS_C`, built and loaded through `_hdl_cbackend.load_kernel`
+under its own key) looping over the elements with the kernel's own
+function pointer on `x[NM]` and each element's own pack, the temperature
+written into the pack's slot as `CKernel.__call__` writes it, the outputs
+written into the elements' slots -- so the `bincount` sums the same
+values in the same order.  The batch mirrors the pack tuple the element
+holds at the pass and never repacks an existing one (`state_restore`
+puts an old `__dict__` back with no epoch move).  Checked every pass:
+`ENABLED` (`PYCIRCUIT_HDL_BATCH=0`), the binding, the kernel's identity,
+the method's code; per element an instance shadow (PCNR's) or a failed
+pack hands that element back to the loop and the rest of its class stays
+one call.  The legacy fallback receives the batches' outputs only when
+it runs (`_run_batches`, `_every_call`).
+
+Measured (parent dc2214da, 5 interleaved rounds, bytes and statistics
+the same): 20 MosLevel1 802.3 -> 445.9 us a step (-44.4 %), 20
+Gummel-Poon -40.2 %, 20 PSP -16.5 %, the PSP stage and its PSS
+unchanged.  The gate: >= 25 %.
+
 ## `_tran_companion.py` -- the step's source memo (2026-10-02, speed round 4's stage B)
 
 ### `_source_at`, `Transient.solve_timestep`, `_stage_source`

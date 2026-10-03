@@ -1408,6 +1408,17 @@ raises no numpy warnings.  ``PYCIRCUIT_HDL_CLIMIT=0`` keeps the Python
 closure on every class (the chain functions stay on C);
 ``hdl.LIMIT_PAR_CACHE`` governs that closure alone.
 
+**One C call per class per pass** (2026-10-03): in a circuit's assembly
+the elements of a C-bound class are evaluated by one C loop over the
+class, each element through the kernel's own function pointer on its own
+state slice and parameter pack -- the same bytes as a call per element,
+with the Python around twenty such calls (50 of a 56 us pass on a
+20-transistor chain) gone.  An element carrying an instance shadow of the
+method (PCNR's, during a solve), a class whose method was patched, a
+detached class, a class with DC pins or a temperature that is not one
+number take the call per element as before.  ``PYCIRCUIT_HDL_BATCH=0``
+keeps the call per element everywhere.
+
 What it buys (measured 2026-08-26, gcc 15.2, one core;
 ``benchmarks/hdl_model_cost.py --backend`` reproduces the table):
 

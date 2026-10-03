@@ -854,7 +854,11 @@ own tanh, and the sign of exact zeros where numpy computes a subchain
 in int64). The suite is green in both states. Below is the spike that
 decided it.  **The `$limit` closure is a kernel of its own since
 2026-10-03** (`_hdl_climit`, roadmap sec. 62): the same bytes, 1.7 us a
-call, declining only the calls Python's own sort order answers.
+call, declining only the calls Python's own sort order answers.  **And a
+C-bound class's elements are ONE call per class per pass in a circuit's
+assembly since 2026-10-03** (`_hdl_batch`, roadmap sec. 63): a C loop over
+the class calling the kernel's own pointer, the same bytes, a
+20-transistor chain's step -44 %.
 
 **Measured 2026-08-26 (roadmap 19):** emitting the same chain as C and
 compiling at `-O2` makes PSP's `G` **219-229x faster** (17.3 ms ->

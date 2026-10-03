@@ -31,7 +31,10 @@ in-run tree (`--tree`) attributes a step to its pieces with inclusive
 `perf_counter` timers; the timers and the cold caches between the PSP
 kernel's calls inflate every Python piece 1.5-3x over its standalone
 time, so attribute a saving to the piece it was predicted from, never
-compare a tree's number with a standalone one.
+compare a tree's number with a standalone one.  The hdl elements' i/q/G/C
+are not wrapped on the instance (that would be an instance shadow, which
+sends them to the per-element path): their batch is timed as one piece
+(`Batch.run`, speed round 6).
 """
 import functools
 import hashlib
@@ -246,10 +249,17 @@ def tree(name):
     tr._newton_limiter = newton_limiter
     for nm in ('i', 'q', 'G', 'C', 'u', 'limit', 'accept_step', 'next_event'):
         wrap(c, nm, f'cir.{nm}')
+    ## (an instance wrap IS an instance shadow, and a shadow sends an hdl
+    ## element to the per-element path -- so the hdl elements' i/q/G/C are
+    ## not wrapped, and their batch (`_hdl_batch`, one C call per class per
+    ## pass) is timed as one piece; `u` is not batched and stays counted)
+    from pycircuit.circuit import _hdl_batch
     for el in c.elements.values():
+        hdl_el = getattr(type(el), '_hdl_info', None) is not None
         for nm in ('i', 'q', 'G', 'C', 'u'):
-            if hasattr(el, nm):
+            if hasattr(el, nm) and not (hdl_el and nm != 'u'):
                 wrap(el, nm, f'element.{nm} calls')
+    wrap(_hdl_batch.Batch, 'run', 'Batch.run (one C call per class per pass)')
     ls = tr._get_linearsolver()
     wrap(ls, 'solve', 'linsolver.solve')
     wrap(ls, 'factor', 'linsolver.factor')
