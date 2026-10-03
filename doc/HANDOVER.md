@@ -22,6 +22,43 @@ which is the only statement of it that stays true:
 Merging to master remains the repo owner's call and has NOT been done.
 ⚠ Push only when asked, and only this branch.
 
+## THE TEST PROCEDURE (2026-10-03; supersedes the recipes below where they differ)
+
+`pytest.ini` runs `-n 8 --maxschedchunk=1 -p no:randomly` by default; the
+dev tools are pinned in `pyproject.toml` (`pip install -e ".[dev]"`):
+pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
+
+- **The recorded gate** (before every source commit):
+
+      G=<scratch>/gateGNN
+      PYCIRCUIT_STATE_DUMP=$G/state PYTHONPATH=benchmarks/tranrec TRANREC_OUT=$G \
+        TRANREC_FAMILIES=all .venv/bin/python -m pytest pycircuit -q \
+        -p no:cacheprovider -p tran_recorder -rf --replay-record-dir=$G/replay
+      .venv/bin/python benchmarks/tranrec/compare.py <previous gate> $G --family transient|pss|pac
+
+  `--replay-record-dir` keeps every worker's exact test order
+  (`$G/replay/.pytest-replay-gwN.txt`); `PYCIRCUIT_STATE_DUMP` writes each
+  worker's hdl backend state at the end (`$G/state/state-gwN.json`, with the
+  backend invariant's breaks), so a one-worker anomaly can be diffed against
+  the other workers.
+- **A shuffled run**, on demand and once per round: `pytest pycircuit -q -p
+  randomly --randomly-seed=<N>` (naming the plugin unblocks it; the seed is
+  printed and reproduces the order).  The longest-first sort steps aside for
+  it, and its run writes no timing record.
+- **Replay one worker in one process**: `python scripts/test_replay.py $G gw5
+  [--until 'path::victim'] [-- -p tran_recorder ...]`.
+- **Find the test that pollutes another**: `python scripts/find_polluter.py
+  'path::victim' $G gw5` -- bisects the tests that ran before the victim in
+  that worker (detect-test-pollution, serial, the leak detector off).  The
+  victim must FAIL in that order and pass alone.
+- **Timing records** are local: `test_timings/runs.csv` (workers, load, wall,
+  per run) and the per-run JSONs the longest-first sort reads; neither is in
+  git any more (`history.csv`, tracked until 2026-10-03, lost rows whenever it
+  was restored after a targeted run).  `PYCIRCUIT_TEST_TIMINGS=0` skips the
+  record; `PYCIRCUIT_TEST_ORDER=collected` skips the sort.
+- `faulthandler_timeout = 900`: a test running fifteen minutes dumps every
+  thread's stack into the log.
+
 Suite: **3235 passed, 6 skipped, 3 xfailed** — **27 min as ONE run**.
 
 ✅ **RUN IT DETACHED, IN ONE PIECE** (measured 2026-09-18, 1631 s):

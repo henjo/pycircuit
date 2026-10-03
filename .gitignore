@@ -25,3 +25,5 @@ graphify-out/
 
 # per-run suite timing records (conftest.py); history.csv is tracked
 test_timings/*.json
+## the run logs are local (2026-10-03): tracking history.csv lost its rows
+test_timings/*.csv

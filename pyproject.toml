@@ -33,7 +33,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-timeout", "matplotlib", "pexpect"]
+## The test and timing tools (2026-10-03): xdist runs the suite (`-n 8` in
+## pytest.ini); randomly (blocked by default, `-p randomly` for a shuffled
+## run), replay (the gate records every worker's order) and
+## detect-test-pollution (`scripts/find_polluter.py`) are pinned exactly:
+## the root conftest's order logic depends on their hooks.  pyperf sizes
+## one piece standalone (`benchmarks/micro.py`).
+dev = ["pytest", "pytest-timeout", "pytest-xdist", "pytest-randomly==5.0.0",
+       "pytest-replay==1.7.1", "detect-test-pollution==1.2.0", "pyperf==2.10.0",
+       "matplotlib", "pexpect"]
 ginac = ["pybind11>=2.11"]
 docs = ["sphinx", "matplotlib", "pexpect"]
 

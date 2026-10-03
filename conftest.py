@@ -50,9 +50,10 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 #
 # Every run writes ``test_timings/<utc-timestamp>_<commit>.json`` -- the call
 # duration of every test, sorted slowest first -- and appends one line to
-# ``test_timings/history.csv`` (timestamp, commit, wall seconds, test count,
-# the slowest test and its seconds).  The per-run files are gitignored; the
-# history is meant to be committed so the trend survives.  Under pytest-xdist
+# ``test_timings/runs.csv`` (timestamp, commit, scope, workers, load, wall
+# seconds, test count, the slowest test and its seconds).  Both are local and
+# gitignored since 2026-10-03 (`history.csv`, the tracked record before, lost
+# rows whenever it was restored after a targeted run).  Under pytest-xdist
 # the controller receives every worker's reports, so the record is complete
 # and the hooks are skipped inside workers.  The one recorded fact that
 # motivated this: a single injection-locking gate held the whole suite at
@@ -92,9 +93,47 @@ def pytest_runtest_logreport(report):
         _TIMINGS[report.nodeid] = float(report.duration)
 
 
+def _randomly_active(config):
+    """pytest-randomly loaded (the ini blocks it; `-p randomly` unblocks)
+    and reordering."""
+    return (config.pluginmanager.hasplugin('randomly')
+            and bool(config.getoption('randomly_reorganize', False)))
+
+
+def _replaying(config):
+    return bool(config.getoption('replay_files', None))
+
+
+def _dump_state(config):
+    """THE PER-WORKER BACKEND STATE (2026-10-03): with `PYCIRCUIT_STATE_DUMP`
+    set, every process -- each xdist worker and the controller -- writes the
+    hdl backend state it ended with (`pycircuit._testing.state.hdl_state`),
+    so two workers can be diffed after a one-worker anomaly (gates G97/G98:
+    a class bound to C with no kernels, in one worker of eight)."""
+    out = os.environ.get('PYCIRCUIT_STATE_DUMP')
+    if not out:
+        return
+    try:
+        from pycircuit._testing import state as _state
+        os.makedirs(out, exist_ok=True)
+        who = getattr(config, 'workerinput', {}).get('workerid', 'main')
+        with open(os.path.join(out, f'state-{who}.json'), 'w') as f:
+            _json.dump({'worker': who, 'state': _state.hdl_state(),
+                        'invariant_breaks': _state.invariant_breaks()}, f, indent=1,
+                       sort_keys=True)
+    except Exception as e:  # noqa: BLE001 -- a diagnostic must never fail a run
+        print(f'state dump failed: {e!r}')
+
+
 def pytest_sessionfinish(session, exitstatus):
     config = session.config
+    _dump_state(config)
     if _is_xdist_worker(config) or not _TIMINGS:
+        return
+    ## (not the runs that are not the suite's timing: a shuffled order, a
+    ## replay, a bisection's many sub-runs, or anyone who says so)
+    if (os.environ.get('PYCIRCUIT_TEST_TIMINGS', '1') == '0'
+            or _randomly_active(config) or _replaying(config)):
         return
     root = os.path.dirname(os.path.abspath(__file__))
     outdir = os.path.join(root, 'test_timings')
@@ -113,16 +152,35 @@ def pytest_sessionfinish(session, exitstatus):
                     'tests': len(items),
                     'args': list(getattr(config, 'invocation_params').args),
                     'durations': items}, f, indent=1)
-    hist = os.path.join(outdir, 'history.csv')
-    new = not os.path.exists(hist)
+    ## THE RUN LOG (2026-10-03): `runs.csv`, local and untracked.  Until then
+    ## `history.csv` was tracked in git, and restoring it after targeted runs
+    ## discarded the full runs' rows too (29 lost in one day); it is kept as
+    ## the old record.  Each row now says how the suite ran (workers, the
+    ## load average) so two rows are comparable, and appends under a lock.
+    hist = os.path.join(outdir, 'runs.csv')
     ## `scope`: the positional arguments, so a subset run is told apart from
-    ## the full suite when reading the history (`pycircuit` = everything).
-    scope = ' '.join(a for a in config.invocation_params.args if not a.startswith('-')) or '.'
+    ## the full suite when reading the history (`pycircuit` = everything);
+    ## the option values that follow a flag are not part of it.
+    args = list(config.invocation_params.args)
+    scope = ' '.join(a for j, a in enumerate(args) if not a.startswith('-')
+                     and not (j and args[j - 1] in ('-n', '-p', '-k', '-m', '-c', '-o'))) or '.'
+    workers = config.getoption('numprocesses', None)
+    try:
+        load = f'{os.getloadavg()[0]:.1f}'
+    except OSError:
+        load = ''
+    line = (f"{stamp},{commit},{scope.replace(',', ';')},{workers},{load},{wall:.1f},"
+            f"{len(items)},{items[0][0]},{items[0][1]:.1f}\n")
     with open(hist, 'a') as f:
-        if new:
-            f.write('timestamp,commit,scope,wall_seconds,tests,slowest_test,slowest_seconds\n')
-        f.write('%s,%s,%s,%.1f,%d,%s,%.1f\n' % (stamp, commit, scope.replace(',', ';'), wall,
-                                               len(items), items[0][0], items[0][1]))
+        try:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        if f.tell() == 0:
+            f.write('timestamp,commit,scope,workers,load,wall_seconds,tests,'
+                    'slowest_test,slowest_seconds\n')
+        f.write(line)
 
 
 # ---------------------------------------------------------------------------
@@ -158,8 +216,19 @@ def _last_full_record(root):
     return dict(best['durations']) if best else {}
 
 
+import pytest as _pytest
+
+
+@_pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(session, config, items):
     """Longest first, from the last full-suite record, IN EVERY PROCESS.
+
+    THE ORDER MODES (2026-10-03).  `tryfirst`, so an order another plugin
+    imposes afterwards wins: pytest-replay's (`--replay`) and
+    detect-test-pollution's.  And it steps aside entirely for a shuffled run
+    (pytest-randomly shuffles in a tryfirst WRAPPER before every plain hook,
+    so sorting after it would undo the shuffle), for a replay, and under
+    `PYCIRCUIT_TEST_ORDER=collected` (the collection's own order).
 
     ⚠⚠ MEASURED WRONG TWICE, 2026-09-08: the first version returned early
     on xdist workers -- and under xdist ONLY the workers collect, so the
@@ -175,6 +244,9 @@ def pytest_collection_modifyitems(session, config, items):
     idle -- the 10-minute tail at 96 % that the record shows.  One test at
     a time from a longest-first list is LPT list scheduling.
     """
+    if (_randomly_active(config) or _replaying(config)
+            or os.environ.get('PYCIRCUIT_TEST_ORDER') == 'collected'):
+        return
     rec = _last_full_record(os.path.dirname(os.path.abspath(__file__)))
     if not rec:
         return
