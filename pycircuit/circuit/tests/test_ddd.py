@@ -1278,28 +1278,47 @@ def test_adjoint_sensitivities_match_finite_differences(name):
         assert abs(got[parameter] - reference) <= 1e-6 * scale
 
 
-def test_adjoint_cost_does_not_grow_with_parameter_count():
+def test_adjoint_cost_does_not_grow_with_parameter_count(monkeypatch):
     """Two solves regardless -- the property that makes this worth doing.
 
     Differentiating naively costs one solve per parameter; the adjoint form
     costs two in total, so asking about every device is affordable.
+
+    COUNTED, not timed (2026-10-03): the wall-time ratio "ten parameters
+    under three times one" was a single shot under eight workers, the
+    suite's most fragile assert; the property is the number of solves.
     """
+    from pycircuit.circuit import ddd as _ddd
     system = bc.ua741(symbolic_devices=('q1', 'q2', 'q3', 'q4', 'q5',
                                         'q6', 'q16', 'q17', 'q23', 'q14'))
     env = dict(system.params)
     env[system.s] = 1j * 2 * np.pi * 1e3
     parameters = sorted(system.A.free_symbols - {system.s}, key=str)
+    assert len(parameters) >= 10
 
-    import time
-    timings = []
+    ## the TOP-LEVEL solves: the reduction's own dense solves inside one
+    ## hierarchical solve (about fifty here) are part of that one solve
+    solves, depth = [], [0]
+
+    def counted(real, kind):
+        def call(*a, **k):
+            if depth[0] == 0:
+                solves.append(kind)
+            depth[0] += 1
+            try:
+                return real(*a, **k)
+            finally:
+                depth[0] -= 1
+        return call
+    monkeypatch.setattr(_ddd, 'hierarchical_solve', counted(_ddd.hierarchical_solve, 'h'))
+    monkeypatch.setattr(np.linalg, 'solve', counted(np.linalg.solve, 'd'))
+    counts = []
     for count in (1, len(parameters)):
-        start = time.perf_counter()
+        solves.clear()
         adjoint_sensitivities(system.A, system.b, env, parameters[:count],
                               system.out_index)
-        timings.append(time.perf_counter() - start)
-
-    ## Ten parameters must not cost ten times one.
-    assert timings[1] < 3 * timings[0]
+        counts.append(len(solves))
+    assert counts == [2, 2], counts
 
 
 def test_sensitivities_on_the_ua741_match_finite_differences():

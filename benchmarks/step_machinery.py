@@ -16,14 +16,21 @@ as well as timed -- bit-identity is the contract of every stage.
                                                          # parent) against this one:
                                                          # subprocesses, interleaved
     python benchmarks/step_machinery.py --tree stage     # the in-run timer tree
-                                                         # of one case (per step)
+                                                         # of one case (RANKS pieces)
+    python benchmarks/step_machinery.py --sample mos1    # a sampled profile (py-spy)
 
-`--compare` runs each tree in its own interpreter from its own directory,
-alternating parent / child per round (default 5), and reports the MIN and
-the MEDIAN per-step time of each, the change of each, and whether the
-bytes and the statistics agree.  Read both numbers: the minimum is the
-quiet-box figure, the median says whether the box was quiet (`uptime`
-first; another session's benchmark here moves the median first).
+`--compare` (2026-10-03, `_bench.py`): under the benchmark lock, each child
+pinned to one P-core with one BLAS thread, the order alternating per round,
+rounds with the core's sibling busy discarded, and the result the median of
+PAIRED per-round ratios with a bootstrap 95 % interval; every run's bytes
+and statistics are checked and any difference exits 2.  An A/A run
+(`--compare .`) shows the noise floor: its interval covers 0.
+
+Each side of a round is the minimum of five warm runs in one process; the
+line under each case lists the per-round ratios, so an outlier round is
+visible rather than averaged in.  The printed min and median per side are
+over the rounds: the minimum is the quiet-box figure, the median says
+whether the box was quiet.
 
 Round-4 baseline (4af78ddd, this box, min of 5): stage 0.71 ms/step, 20
 MosLevel1 1.40 ms/step, 20 PSP 3.11 ms/step, the stage PSS 0.266 s.  The
@@ -48,6 +55,15 @@ import time
 import warnings
 
 warnings.simplefilter('ignore')
+## THE CONDITIONS FIRST (robust timing, 2026-10-03; `_bench.py`): one BLAS
+## thread BEFORE numpy opens its pool (the `pss` case ran on 24 threads:
+## PSS never enters `Transient.solve`'s single-thread scope), and, in a
+## `--compare` child, one P-core
+import _bench  # benchmarks/, this script's directory
+
+_bench.pin_threads()
+if os.environ.get('PYCIRCUIT_BENCH_PIN'):
+    _bench.pin_cpu()
 import numpy as np
 
 from pycircuit.circuit import PSS, circuit, compact
@@ -145,7 +161,7 @@ def run_case(name):
 def measure(cases, rounds):
     """Every case warmed once, then `rounds` interleaved runs; a dict per
     case with the times, the digest and the statistics."""
-    out = {k: {'times': [], 'per_step': []} for k in cases}
+    out = {k: {'times': [], 'per_step': [], 'shas': [], 'stats_all': []} for k in cases}
     for k in cases:
         run_case(k)
     for _ in range(rounds):
@@ -153,8 +169,16 @@ def measure(cases, rounds):
             dt, us, sha, st = run_case(k)
             out[k]['times'].append(dt)
             out[k]['per_step'].append(us)
-            out[k]['sha'] = sha
-            out[k]['stats'] = st
+            out[k]['shas'].append(sha)
+            out[k]['stats_all'].append(st)
+    for k in cases:
+        ## EVERY run's bytes and statistics, not the last one's: a run that
+        ## differs from its own siblings is a finding before any timing
+        r = out[k]
+        same = len(set(r['shas'])) == 1 and all(s == r['stats_all'][0] for s in r['stats_all'])
+        r['sha'] = r['shas'][0] if same else 'INCONSISTENT:' + ','.join(sorted(set(r['shas'])))
+        r['stats'] = r['stats_all'][0] if same else None
+        del r['shas'], r['stats_all']
     return out
 
 
@@ -165,39 +189,80 @@ def _fmt(k, r):
             f'{statistics.median(r["per_step"]):7.1f})')
 
 
-def compare(parent, cases, rounds):
+def compare(parent, cases, rounds, max_busy=0.25, repeats=5):
     """The tree at `parent` against this one, each in its own interpreter
-    from its own directory, alternating per round."""
+    from its own directory, pinned to one P-core, under the benchmark lock
+    (`_bench`).  The order alternates per round (parent first, then child
+    first), a round in which the timed core's hyperthread sibling was busy
+    more than `max_busy` is discarded and re-run, and the result is the
+    median of the per-round PAIRED ratios child/parent with a bootstrap 95 %
+    interval -- drift during the run lands on both sides of a pair.  Each
+    side of a round is the MIN of `repeats` warm runs in its process (timing
+    noise only adds: one slow run made a whole round an outlier, and six
+    such rounds an A/A interval of [-3, +20] %).  The bytes and statistics
+    of every run are checked; any difference exits 2."""
     child = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     trees = {'parent': os.path.abspath(parent), 'child': child}
-    got = {lab: {k: {'times': [], 'per_step': []} for k in cases} for lab in trees}
-    for _ in range(rounds):
-        for lab, tree in trees.items():
-            ## THIS script in both trees (the parent may predate it): the
-            ## package comes from PYTHONPATH, which precedes site-packages
-            env = dict(os.environ, PYTHONPATH=tree)
-            cmd = [sys.executable, os.path.abspath(__file__),
-                   '--json', '--rounds', '1', *cases]
-            res = subprocess.run(cmd, cwd=tree, env=env, capture_output=True, text=True,
-                                 check=True)
-            for line in res.stdout.splitlines():
-                if not line.startswith('{'):
-                    continue
-                rec = json.loads(line)
-                g = got[lab][rec['case']]
-                g['times'] += rec['times']
-                g['per_step'] += rec['per_step']
-                g['sha'] = rec['sha']
-                g['stats'] = rec['stats']
+    got = {lab: {k: {'times': [], 'per_step': [], 'sha': set(), 'stats': []}
+                 for k in cases} for lab in trees}
+    discarded, attempts = 0, 0
+    with _bench.lock(exclusive=True, what='step_machinery --compare'):
+        print('conditions:', _bench.stamp(), flush=True)
+        done = 0
+        while done < rounds and attempts < 3 * rounds:
+            attempts += 1
+            order = list(trees) if done % 2 == 0 else list(trees)[::-1]
+            this, busy = {}, 0.0
+            for lab in order:
+                tree_dir = trees[lab]
+                ## THIS script in both trees (the parent may predate it): the
+                ## package comes from PYTHONPATH, which precedes site-packages
+                env = dict(os.environ, PYTHONPATH=tree_dir, PYCIRCUIT_BENCH_PIN='1')
+                cmd = [sys.executable, os.path.abspath(__file__),
+                       '--json', '--rounds', str(repeats), *cases]
+                with _bench.Idle() as idle:
+                    res = subprocess.run(cmd, cwd=tree_dir, env=env, capture_output=True,
+                                         text=True, check=True)
+                busy = max(busy, idle.sibling_busy)
+                this[lab] = [json.loads(ln) for ln in res.stdout.splitlines()
+                             if ln.startswith('{')]
+            if busy > max_busy:
+                discarded += 1
+                print(f'  round discarded: CPU {_bench.CPU}\'s sibling was {100 * busy:.0f} % '
+                      'busy', flush=True)
+                continue
+            done += 1
+            for lab, recs in this.items():
+                for rec in recs:
+                    g = got[lab][rec['case']]
+                    g['times'].append(min(rec['times']))
+                    if rec['per_step'][0] is not None:
+                        g['per_step'].append(min(rec['per_step']))
+                    g['sha'].add(rec['sha'])
+                    g['stats'].append(rec['stats'])
+    print(f'{done} rounds kept, {discarded} discarded; each side of a round the min of '
+          f'{repeats} warm runs', flush=True)
+    differ = False
     for k in cases:
         p, c = got['parent'][k], got['child'][k]
         key = 'times' if k == 'pss' else 'per_step'
-        dmin = 100.0 * (min(c[key]) / min(p[key]) - 1.0)
-        dmed = 100.0 * (statistics.median(c[key]) / statistics.median(p[key]) - 1.0)
-        same = ('bytes ' + ('SAME' if p['sha'] == c['sha'] else 'DIFFER')
-                + ', stats ' + ('SAME' if p['stats'] == c['stats'] else 'DIFFER'))
-        print(f'{k:5s} parent {_fmt(k, p)} | child {_fmt(k, c)} | '
-              f'min {dmin:+.1f} % median {dmed:+.1f} % | {same}', flush=True)
+        same_bytes = len(p['sha'] | c['sha']) == 1
+        same_stats = all(s == p['stats'][0] for s in p['stats'] + c['stats'])
+        differ = differ or not (same_bytes and same_stats)
+        summ = _bench.paired_summary(p[key], c[key])
+        if summ is None:
+            print(f'{k:5s} no rounds kept', flush=True)
+            continue
+        med, lo, hi, wins = summ
+        print(f'{k:5s} parent {_fmt(k, p)} | child {_fmt(k, c)} | paired '
+              f'{100 * (med - 1):+.1f} % [{100 * (lo - 1):+.1f}, {100 * (hi - 1):+.1f}] '
+              f'child faster {wins}/{len(p[key])} | bytes {"SAME" if same_bytes else "DIFFER"}'
+              f', stats {"SAME" if same_stats else "DIFFER"}', flush=True)
+        print('      per-round ratios: ' + ' '.join(
+            f'{100 * (cv / pv - 1):+.1f}' for pv, cv in zip(p[key], c[key])), flush=True)
+    if differ:
+        print('BYTES OR STATISTICS DIFFER between or within the trees', flush=True)
+        sys.exit(2)
 
 
 ## -- the in-run timer tree -----------------------------------------------------
@@ -232,53 +297,121 @@ def tree(name):
         wrap(cls, 'solve_system', f'{cls.__name__}.solve_system')
     for nm in ('where', 'take', 'judge', 'event', 'accept'):
         wrap(TR._SteppingLoop, nm, f'loop.{nm}')
-    c = BUILD[name]()
-    tr = Transient(c, toolkit=circuit.numeric)
-    tr.solve(tend=4e-8, timestep=2e-8, fixed_timestep=True)
-    tr = Transient(c, toolkit=circuit.numeric)
+    ## NOTHING IS WRAPPED ON AN INSTANCE (2026-10-03).  An instance wrap is
+    ## an instance shadow, and the fast paths decline on shadows by design:
+    ## on `cir` or `tr` the evaluate core declines and the Python path runs,
+    ## on an hdl element the batch does, on a hand-written element its
+    ## constant stamp is no longer recognised.  The tree once timed the
+    ## Python path because of it.  So the wraps are on CLASSES (the core
+    ## reads instance dicts only) and the elements are not wrapped at all;
+    ## and the run is checked against the untimed one below.
+    ref = run_case(name)
+    from pycircuit.circuit.circuit import SubCircuit as _Sub
     for nm in ('solve_timestep', '_newton', '_residual_and_jacobian', '_predict_state',
                '_push_history', '_branch_after_solve', '_branch_screen',
                '_newton_abstol_vector', '_newton_xtol_vector', '_source_at', 'get_diff',
                '_C_lookup', '_companion_at', '_C_at_state'):
-        wrap(tr, nm)
-    orig_nl = tr._newton_limiter
+        wrap(Transient, nm)
+    orig_nl = Transient._newton_limiter
 
-    def newton_limiter():
-        f = orig_nl()
+    def newton_limiter(self):
+        f = orig_nl(self)
         return None if f is None else timed(
             f, 'limiter_func (reinsert x2 + cir.limit + remove)')
-    tr._newton_limiter = newton_limiter
+    Transient._newton_limiter = newton_limiter
     for nm in ('i', 'q', 'G', 'C', 'u', 'limit', 'accept_step', 'next_event'):
-        wrap(c, nm, f'cir.{nm}')
-    ## (an instance wrap IS an instance shadow: it sends an hdl element to
-    ## the per-element path and any element's zero `u` -- the default's or
-    ## an hdl class's -- to a call.  So the hdl elements are not wrapped at
-    ## all, their batch (`_hdl_batch`, one C call per class per pass) is
-    ## timed as one piece, and no element's `u` is wrapped: `cir.u` is the
-    ## pass as the run has it)
-    from pycircuit.circuit import _hdl_batch
-    for el in c.elements.values():
-        if getattr(type(el), '_hdl_info', None) is not None:
-            continue
-        for nm in ('i', 'q', 'G', 'C'):
-            if hasattr(el, nm):
-                wrap(el, nm, f'element.{nm} calls')
+        wrap(_Sub, nm, f'SubCircuit.{nm} (Python passes)')
+    from pycircuit.circuit import _hdl_batch, _tran_core
     wrap(_hdl_batch.Batch, 'run', 'Batch.run (one C call per class per pass)')
-    ## (the evaluate core, speed round 7: the passes, the companion and the
-    ## residual in one C call -- the `cir.*` passes above are what it replaces)
-    from pycircuit.circuit import _tran_core
-    wrap(_tran_core, 'evaluate', '_tran_core.evaluate (the passes + companion in C)')
+    served = [0, 0]
+    orig_eval = _tran_core.evaluate
+
+    def evaluate(*a, **k):
+        r = orig_eval(*a, **k)
+        served[r is None] += 1
+        return r
+    _tran_core.evaluate = timed(evaluate, '_tran_core.evaluate (the passes + companion in C)')
+    c = BUILD[name]()
+    tr = Transient(c, toolkit=circuit.numeric)
+    tr.solve(tend=4e-8, timestep=2e-8, fixed_timestep=True)
+    for v in acc.values():
+        v[0] = v[1] = 0
+    served[:] = [0, 0]
+    c = BUILD[name]()
+    tr = Transient(c, toolkit=circuit.numeric)
     ls = tr._get_linearsolver()
     wrap(ls, 'solve', 'linsolver.solve')
     wrap(ls, 'factor', 'linsolver.factor')
     t0 = time.perf_counter_ns()
-    tr.solve(tend=STEPS * 2e-8, timestep=2e-8, fixed_timestep=True)
+    res = tr.solve(tend=STEPS * 2e-8, timestep=2e-8, fixed_timestep=True)
     total = (time.perf_counter_ns() - t0) / STEPS
-    print(f'== {name}: n={c.n} {total / 1e3:7.1f} us/step (solve wall / {STEPS})')
+    sha = hashlib.sha256(np.asarray(res.x, float).tobytes()).hexdigest()[:12]
+    same = sha == ref[2] and _stats(tr) == ref[3]
+    print(f'== {name}: n={c.n} {total / 1e3:7.1f} us/step (solve wall / {STEPS}) -- '
+          f'the timers RANK pieces, they do not size them (each adds ~1 us and '
+          f'nests); size a piece with benchmarks/micro.py')
+    print(f'   the timed run is the untimed run: {"YES" if same else "NO -- the timers changed the path"}'
+          f'; the evaluate core served {served[0]} calls, declined {served[1]}')
     for lab, (ns, cnt) in sorted(acc.items(), key=lambda kv: -kv[1][0]):
         if cnt:
             print(f'   {lab:52s} {ns / STEPS / 1e3:7.1f} us/step {100 * ns / STEPS / total:5.1f} %'
                   f'  ({cnt / STEPS:6.2f} calls/step, {ns / cnt / 1e3:7.2f} us each)')
+
+
+def _sampled_round(name):
+    ## the frame `sample` keeps: only stacks through it are counted, so the
+    ## imports, the compile-cache loads and the warm-up run drop out
+    return run_case(name)
+
+
+def _sample_child(name, rounds):
+    run_case(name)
+    for _ in range(rounds):
+        _sampled_round(name)
+
+
+def sample(name, rounds=20):
+    """A sampled profile of `rounds` warm runs of `name` (py-spy in LAUNCH
+    mode: the target is its child, which `ptrace_scope=1` permits), no
+    wrapper in the code: the self time of each function, largest first,
+    over the samples taken inside the measured runs."""
+    import tempfile
+    spy = os.path.join(os.path.dirname(sys.executable), 'py-spy')
+    out = tempfile.mktemp(suffix='.txt')
+    cmd = [spy, 'record', '--format', 'raw', '--rate', '997', '-o', out, '--',
+           sys.executable, os.path.abspath(__file__), '--sample-child', str(rounds), name]
+    ## (py-spy 0.4.2 writes the profile, then exits 1 with "No child
+    ## process" when it reaps the child here: the file decides, not the code)
+    subprocess.call(cmd, stdout=subprocess.DEVNULL)
+    if not os.path.exists(out) or os.path.getsize(out) == 0:
+        print('py-spy could not sample (ptrace refused?).  To allow it: '
+              '`sudo setcap cap_sys_ptrace+ep $(readlink -f ' + spy + ')` or run '
+              'under a session that permits ptrace of children.')
+        return
+    self_t, total, outside = {}, 0, 0
+    with open(out) as f:
+        for ln in f:
+            stack, _, n = ln.rstrip().rpartition(' ')
+            if not stack:
+                continue
+            n = int(n)
+            ## inside a measured run AND inside its timed call (the `solve`
+            ## right under `run_case`; the circuit's construction is not timed)
+            fr = stack.split(';')
+            at = [i for i, x in enumerate(fr) if x.startswith('run_case (')]
+            if ('_sampled_round (' not in stack or not at or at[0] + 1 >= len(fr)
+                    or not fr[at[0] + 1].startswith('solve (')):
+                outside += n
+                continue
+            total += n
+            leaf = stack.rsplit(';', 1)[-1]
+            leaf = leaf.rsplit(':', 1)[0] + ')' if leaf.endswith(')') else leaf
+            self_t[leaf] = self_t.get(leaf, 0) + n
+    os.unlink(out)
+    print(f'== {name}: {total} samples in the timed calls of {rounds} warm runs '
+          f'({outside} elsewhere dropped), self time by function (sampled, no wrappers)')
+    for fn, n in sorted(self_t.items(), key=lambda kv: -kv[1])[:30]:
+        print(f'   {100 * n / total:5.1f} %  {fn}')
 
 
 def main(argv):
@@ -297,6 +430,13 @@ def main(argv):
             cmp_dir = next(it)
         elif a == '--tree':
             tree_case = next(it)
+        elif a == '--sample':
+            sample(next(it), rounds=rounds if '--rounds' in argv else 20)
+            return
+        elif a == '--sample-child':
+            n = int(next(it))
+            _sample_child(next(it), n)
+            return
         else:
             cases.append(a)
     cases = cases or list(CASES)
@@ -304,7 +444,8 @@ def main(argv):
         tree(tree_case)
         return
     if cmp_dir:
-        compare(cmp_dir, cases, rounds)
+        with warnings.catch_warnings():
+            compare(cmp_dir, cases, rounds)
         return
     got = measure(cases, rounds)
     for k in cases:

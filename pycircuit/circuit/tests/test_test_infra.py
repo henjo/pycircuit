@@ -146,3 +146,60 @@ def test_the_polluter_is_found_from_a_recorded_order(pytester, monkeypatch):
                          cwd=pytester.path, env=env, capture_output=True, text=True, timeout=300,
                          check=False)
     assert 'test_pol.py::test_polluter' in out.stdout, out.stdout + out.stderr
+
+
+## -- the benchmark helpers (robust timing, stage 5) ----------------------------
+
+def _bench():
+    ## loaded from its file, not imported: `benchmarks/` stays off `sys.path`
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        '_bench_under_test', os.path.join(ROOT, 'benchmarks', '_bench.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_paired_summary_cancels_a_drift_both_sides_share():
+    b = _bench()
+    assert b.paired_summary([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, 4.0]) == (1.0, 1.0, 1.0, 0)
+    ## the box slows 3.5x over the run: pooled, the two sides overlap; per
+    ## round, the child is 0.8 of its own parent every time
+    parent = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5]
+    child = [0.8 * p * (1 + e) for p, e in zip(parent, (0.01, -0.01, 0.0, 0.005, -0.005, 0.002))]
+    med, lo, hi, wins = b.paired_summary(parent, child)
+    assert 0.79 < lo <= med <= hi < 0.81 and wins == 6
+    assert b.paired_summary([], []) is None
+
+
+def test_a_running_suite_keeps_benchmarks_out():
+    """The controller holds the benchmark lock shared for the session: a
+    second shared holder (another suite) gets it, an exclusive one (a
+    benchmark) does not."""
+    if os.environ.get('PYCIRCUIT_BENCH_LOCK') == '0':
+        pytest.skip('the benchmark lock is switched off for this run')
+    import fcntl
+    b = _bench()
+    fd = os.open(b.LOCK_PATH, os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(fd)
+
+
+def test_the_thread_pin_refuses_once_numpy_is_imported():
+    b = _bench()
+    env = {k: v for k, v in os.environ.items() if k not in b.THREAD_VARS}
+    head = f'import sys; sys.path.insert(0, {os.path.join(ROOT, "benchmarks")!r}); import _bench; '
+    r = subprocess.run([sys.executable, '-c', head + 'import numpy; _bench.pin_threads()'],
+                       env=env, capture_output=True, text=True, timeout=120, check=False)
+    assert r.returncode != 0 and 'after numpy was imported' in r.stderr, r.stderr
+    ## pinned first, a second call after numpy is a no-op (the sizing tool
+    ## pins, imports numpy, then imports the harness, which pins again)
+    r = subprocess.run([sys.executable, '-c', head + 'import os; _bench.pin_threads(); '
+                        'import numpy; _bench.pin_threads(); print(os.environ["OPENBLAS_NUM_THREADS"])'],
+                       env=env, capture_output=True, text=True, timeout=120, check=False)
+    assert r.returncode == 0 and r.stdout.strip() == '1', r.stderr

@@ -31,8 +31,8 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
 - **The recorded gate** (before every source commit):
 
       G=<scratch>/gateGNN
-      PYCIRCUIT_STATE_DUMP=$G/state PYTHONPATH=benchmarks/tranrec TRANREC_OUT=$G \
-        TRANREC_FAMILIES=all .venv/bin/python -m pytest pycircuit -q \
+      PYCIRCUIT_STATE_DUMP=$G/state PYCIRCUIT_LEAKS_REPORT=$G/leaks \
+        PYTHONPATH=benchmarks/tranrec TRANREC_OUT=$G TRANREC_FAMILIES=all .venv/bin/python -m pytest pycircuit -q \
         -p no:cacheprovider -p tran_recorder -rf --replay-record-dir=$G/replay
       .venv/bin/python benchmarks/tranrec/compare.py <previous gate> $G --family transient|pss|pac
 
@@ -58,6 +58,56 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   record; `PYCIRCUIT_TEST_ORDER=collected` skips the sort.
 - `faulthandler_timeout = 900`: a test running fifteen minutes dumps every
   thread's stack into the log.
+- **The leak detector** (`pycircuit/_testing/leaks.py`, loaded by the root
+  conftest) snapshots the process-global state (every pycircuit module's
+  plain values and function identities, the toolkit, `defaultepar`, the
+  environment, `sys.path`, cwd, numpy and mpmath state, the hdl backend
+  state) around every test, every module and the collection, and checks the
+  hdl binding invariant at each.  `PYCIRCUIT_LEAKS=fail` (default; a leak
+  fails the test), `warn` (report only), `off`.  Reports go to
+  `$PYCIRCUIT_LEAKS_REPORT/leaks-<worker>.jsonl`; `python
+  scripts/leak_report.py <dir> [--by module|change|test]` groups them.  A
+  test that changes global state on purpose restores it with `monkeypatch`
+  or `MonkeyPatch.context()`, and a restore that re-derives state from what
+  was patched (an un-pin, `set_backend(None)`) runs AFTER the patch is
+  undone: three defects of that shape were found in October 2026.
+
+## THE BENCHMARK PROCEDURE (2026-10-03)
+
+- **The lock.** `~/.cache/pycircuit/bench.lock`: a test session holds it
+  shared (the root conftest, controller only; `PYCIRCUIT_BENCH_LOCK=0`
+  skips it), a benchmark exclusively (`benchmarks/_bench.py`).  A benchmark
+  never measures beside this repository's suite or another benchmark; each
+  waits for the other and says so.  Another session's work on this shared
+  box is not covered: check `uptime` first.
+- **Compare two trees**: `python benchmarks/step_machinery.py --compare
+  <parent tree> mos1 stage pss --rounds 8`.  Each side runs in its own
+  interpreter from its own directory, pinned to CPU 8 (`PYCIRCUIT_BENCH_CPU`)
+  with one BLAS thread; the order alternates per round; a round in which
+  CPU 8's hyperthread sibling was busy is discarded and re-run; each side of
+  a round is the minimum of five warm runs.  The result is the median of
+  the per-round PAIRED ratios with a bootstrap 95 % interval, and the
+  per-round ratios are printed under it.  Every run's bytes and statistics
+  are checked; a difference exits 2.  Measured 2026-10-03: an A/A run
+  (`--compare .`) gives intervals within +-2 %, and the evaluate core
+  against its parent -21.3 % [-21.7, -20.9] on the 20-MosLevel1 step.
+- **Rank the pieces of a step**: `--tree CASE` (inclusive timers wrapped on
+  classes only, never on instances, which the fast paths decline on).  It
+  RANKS pieces and does not size them: nested timers inflate each.  It
+  checks that its timed run equals the untimed run.
+- **A sampled profile**: `--sample CASE [--rounds N]`, py-spy in launch
+  mode, the self time of each function over the samples inside the timed
+  calls only (imports, compile-cache loads and the warm-up drop out).
+  py-spy 0.4.2 prints "No child process" after writing the profile; that
+  line is harmless.
+- **Size one piece standalone**: `python benchmarks/micro.py <piece|all>
+  <case> [pyperf options]` (pieces: `--list`), pyperf with calibrated loops,
+  several worker processes, the workers pinned to CPU 8.  Size a piece here
+  before planning around its share of a step.
+- **Optional, never required** (sudo): `sysctl kernel.perf_event_paranoid=1`
+  enables `perf` with `python -X perf`; `cpupower frequency-set -g
+  performance` for a benchmark session.  The paired ratios are built to be
+  robust without them.
 
 Suite: **3235 passed, 6 skipped, 3 xfailed** — **27 min as ONE run**.
 

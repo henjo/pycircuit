@@ -558,11 +558,14 @@ class TestMaxcMinc(object):
                      hdl.hypsmooth(X, 1e-6) * hdl.hypsmooth(X, 1e-6)]
         grid = np.array([-1e6, -1.0, -1e-9, 0.0, 1e-9, 1.0, 1e6])
         for c in compounds:
-            t0 = time.time()
+            ## (`perf_counter`, and ten seconds: the claim is four orders of
+            ## magnitude, and one second under eight workers was the margin
+            ## a busy box ate -- robust timing, 2026-10-03)
+            t0 = time.perf_counter()
             d = sympy.lambdify(X, sympy.diff(hdl.maxc(c, 1e-10), X),
                                modules=KMODS)
             f = sympy.lambdify(X, hdl.maxc(c, 1e-10), modules=KMODS)
-            assert time.time() - t0 < 1.0, c
+            assert time.perf_counter() - t0 < 10.0, c
             with np.errstate(all='ignore'):
                 vals = np.array([float(f(v)) for v in grid])
                 ders = np.array([float(d(v)) for v in grid])

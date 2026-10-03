@@ -83,6 +83,45 @@ def pytest_configure(config):
         threadpool_limits(1)
     except Exception:
         pass
+    _bench_lock_shared(config)
+
+
+# ---------------------------------------------------------------------------
+# THE BENCHMARK LOCK, SHARED (2026-10-03; `benchmarks/_bench.py`): a test
+# session of this repository holds `~/.cache/pycircuit/bench.lock` shared,
+# benchmarks take it exclusively -- so a benchmark never measures beside this
+# suite, and a suite started during a benchmark waits for it (saying so).
+# The controller holds it for the session; workers do not need to.
+# ---------------------------------------------------------------------------
+def _bench_lock_shared(config):
+    if _is_xdist_worker(config) or os.environ.get('PYCIRCUIT_BENCH_LOCK') == '0':
+        return
+    try:
+        import fcntl
+    except ImportError:
+        return
+    path = os.path.join(os.path.expanduser('~'), '.cache', 'pycircuit', 'bench.lock')
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except OSError:
+        print('waiting for a running benchmark (the benchmark lock, benchmarks/_bench.py)',
+              flush=True)
+        fcntl.flock(fd, fcntl.LOCK_SH)
+    config._pycircuit_bench_lock = fd
+
+
+def pytest_unconfigure(config):
+    fd = getattr(config, '_pycircuit_bench_lock', None)
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def pytest_sessionstart(session):
