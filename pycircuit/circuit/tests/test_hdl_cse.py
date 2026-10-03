@@ -268,18 +268,50 @@ def test_a_transient_is_byte_identical_with_the_reference_functions(
         return c
     a = Transient(inverter()).solve(tend=2e-8, timestep=1e-10)
     funcs = type(inverter()['M'])._hdl_info['funcs']
-    swapped = 0
-    for k in cs.FUNCS:
-        f = funcs.get(k)
-        if f is not None and '_hdl_ref' in f.__dict__:
-            monkeypatch.setitem(funcs, k, f._hdl_ref)
-            swapped += 1
-    assert swapped >= 4
+    ## ⚠ THE SWAP IS UNDONE HERE, IN THE TEST, NOT AT FIXTURE TEARDOWN
+    ## (2026-10-03): `numpy_twins` is torn down BEFORE `monkeypatch` (it was
+    ## set up after it), and its un-pin re-binds the C kernels onto whatever
+    ## functions the table holds -- the reference functions, still swapped
+    ## in; `monkeypatch` then put the twins back, without kernels.  The
+    ## variant was left bound to C with no kernel on any function, so numpy
+    ## ran for it until the next re-pin: the one-worker anomaly of gates
+    ## G97/G98/G100, found by the per-worker state dump and the replay of
+    ## that worker's order (`test_swapping_the_references_..._consistent`).
     from pycircuit.circuit import _evalhint
-    monkeypatch.setattr(_evalhint, 'current', lambda: None)
-    b = Transient(inverter()).solve(tend=2e-8, timestep=1e-10)
+    with monkeypatch.context() as mp:
+        swapped = 0
+        for k in cs.FUNCS:
+            f = funcs.get(k)
+            if f is not None and '_hdl_ref' in f.__dict__:
+                mp.setitem(funcs, k, f._hdl_ref)
+                swapped += 1
+        assert swapped >= 4
+        mp.setattr(_evalhint, 'current', lambda: None)
+        b = Transient(inverter()).solve(tend=2e-8, timestep=1e-10)
     assert (np.asarray(a.x, float).tobytes()
             == np.asarray(b.x, float).tobytes())
+
+
+def test_swapping_the_references_leaves_the_c_binding_consistent():
+    """The pair that found the anomaly, in a fresh process and in this
+    order: the test above, then a test that needs the MosLevel1 variant
+    bound to C with its kernels (`test_hdl_batch`'s detach test asserts it
+    first).  Before the fix the second failed whenever it followed the
+    first -- in the full suite only in the worker whose order did that."""
+    import os
+    import subprocess
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(os.path.dirname(os.path.dirname(here)))
+    rel = os.path.relpath(here, root)
+    env = dict(os.environ, PYCIRCUIT_TEST_ORDER='collected', PYCIRCUIT_TEST_TIMINGS='0')
+    out = subprocess.run(
+        [sys.executable, '-m', 'pytest', '-q', '-n', '0', '-p', 'no:cacheprovider',
+         f'{rel}/test_hdl_cse.py::test_a_transient_is_byte_identical_with_the_reference_functions',
+         f'{rel}/test_hdl_batch.py::test_a_detached_class_takes_the_loop_and_binds_back'],
+        cwd=root, env=env, capture_output=True, text=True, timeout=600, check=False)
+    assert out.returncode == 0, out.stdout[-3000:]
+    assert '2 passed' in out.stdout
 
 
 ## ----------------------------------------------------------------------
