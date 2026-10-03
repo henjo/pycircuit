@@ -858,7 +858,9 @@ call, declining only the calls Python's own sort order answers.  **And a
 C-bound class's elements are ONE call per class per pass in a circuit's
 assembly since 2026-10-03** (`_hdl_batch`, roadmap sec. 63): a C loop over
 the class calling the kernel's own pointer, the same bytes, a
-20-transistor chain's step -44 %.
+20-transistor chain's step -44 %; the limiting pass walks the kernel
+elements in one C call too (-14 % more), the zero source terms are not
+asked for (-8 %): -56 % over the round.
 
 **Measured 2026-08-26 (roadmap 19):** emitting the same chain as C and
 compiling at `-O2` makes PSP's `G` **219-229x faster** (17.3 ms ->

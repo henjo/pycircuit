@@ -1520,6 +1520,15 @@ class SubCircuit(Circuit):
         elementnodemap = self.elementnodemap
         from . import _limiting
         if not _limiting.CIRCUIT_LEVEL:
+            ## THE WALK (`_hdl_climit.limit_walk`, speed round 6): the loop
+            ## below with every run of C-kernel elements walked in one C
+            ## call on the live `x`, the same order, gathers and write-backs;
+            ## None where it does not serve, and the loop runs
+            from . import _hdl_climit
+            if _hdl_climit.WALK:
+                walked = _hdl_climit.limit_walk(self, x, x0, epar)
+                if walked is not None:
+                    return walked
             for instance, element in self.elements.items():
                 if hasattr(element, 'limit'):
                     nodemap = elementnodemap[instance]

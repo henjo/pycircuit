@@ -31,10 +31,11 @@ in-run tree (`--tree`) attributes a step to its pieces with inclusive
 `perf_counter` timers; the timers and the cold caches between the PSP
 kernel's calls inflate every Python piece 1.5-3x over its standalone
 time, so attribute a saving to the piece it was predicted from, never
-compare a tree's number with a standalone one.  The hdl elements' i/q/G/C
-are not wrapped on the instance (that would be an instance shadow, which
-sends them to the per-element path): their batch is timed as one piece
-(`Batch.run`, speed round 6).
+compare a tree's number with a standalone one.  The hdl elements are not
+wrapped on the instance (that would be an instance shadow, which sends
+them to the per-element path), and no element's `u` is (a shadow sends a
+zero `u` to a call): their batch is timed as one piece (`Batch.run`,
+speed round 6), `cir.u` as one pass.
 """
 import functools
 import hashlib
@@ -249,15 +250,18 @@ def tree(name):
     tr._newton_limiter = newton_limiter
     for nm in ('i', 'q', 'G', 'C', 'u', 'limit', 'accept_step', 'next_event'):
         wrap(c, nm, f'cir.{nm}')
-    ## (an instance wrap IS an instance shadow, and a shadow sends an hdl
-    ## element to the per-element path -- so the hdl elements' i/q/G/C are
-    ## not wrapped, and their batch (`_hdl_batch`, one C call per class per
-    ## pass) is timed as one piece; `u` is not batched and stays counted)
+    ## (an instance wrap IS an instance shadow: it sends an hdl element to
+    ## the per-element path and any element's zero `u` -- the default's or
+    ## an hdl class's -- to a call.  So the hdl elements are not wrapped at
+    ## all, their batch (`_hdl_batch`, one C call per class per pass) is
+    ## timed as one piece, and no element's `u` is wrapped: `cir.u` is the
+    ## pass as the run has it)
     from pycircuit.circuit import _hdl_batch
     for el in c.elements.values():
-        hdl_el = getattr(type(el), '_hdl_info', None) is not None
-        for nm in ('i', 'q', 'G', 'C', 'u'):
-            if hasattr(el, nm) and not (hdl_el and nm != 'u'):
+        if getattr(type(el), '_hdl_info', None) is not None:
+            continue
+        for nm in ('i', 'q', 'G', 'C'):
+            if hasattr(el, nm):
                 wrap(el, nm, f'element.{nm} calls')
     wrap(_hdl_batch.Batch, 'run', 'Batch.run (one C call per class per pass)')
     ls = tr._get_linearsolver()

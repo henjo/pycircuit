@@ -38,7 +38,9 @@ The limiter
     `tanh`, a parameter without ingredients -- and never the class;
     `info['_c_limit_status']` says.  On a C-bound class the closure's
     parameter functions are not called: a test that counts them pins
-    numpy.
+    numpy.  In a circuit's `limit` pass every run of such elements is
+    walked in ONE C call on the live state (`_hdl_climit.limit_walk`,
+    2026-10-03), the loop's order and write-backs kept.
     `PYCIRCUIT_HDL_BACKEND=c` / `numpy` (or `hdl.set_backend`, or a class
     attribute `hdl_backend`) pins it, applied at class creation as
     before.  `cls._hdl_backend_status` always says what actually

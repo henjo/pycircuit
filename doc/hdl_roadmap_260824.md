@@ -6507,3 +6507,50 @@ complex `uac` path, where a class with `ac_stim` terms answers).
 interleaved rounds, bytes and statistics the same): 20 MosLevel1 446.9
 -> 412.7 us a step (-7.6 %), 20 Gummel-Poon -7.1 %, 20 PSP -2.9 %, the
 PSP stage and its PSS unchanged; the gate >= 5 %.
+
+### Commit 3 (2026-10-03): the limiter walk; the round closed
+
+After commit 2 the largest circuit piece left in a 20-MosLevel1 step was
+`cir.limit` (78 of 544 us with timers): twenty wrapped `el.limit` calls
+at 2.3 us around twenty limit kernels of 0.34, plus the loop's Python.
+The loop is sequential -- the next element reads the earlier write-back
+(every chain device shares gnd, a cascode shares a node), `x0` often IS
+`x`, duplicate rows (source and bulk on gnd) take the last value -- so
+the passes' batch is not its shape.  `_hdl_climit.limit_walk` walks
+every run of C-kernel elements in ONE C call on the live `x`: the loop's
+order, its gathers before the call and its scatter after, the kernel's
+own pointer on the element's own pack with the temperature written as
+`CLimitKernel.__call__` writes it; the driver returns at the first
+element Python must answer -- no kernel (a hand-written limiter, a nested
+SubCircuit, a patched or shadowed `limit`, a failed pack) or a call its
+kernel declines (a NaN among the keys) -- and the caller runs the loop's
+own statement for it before the walk resumes behind it.  Where the walk
+does not serve (a state that is not one writeable float64 vector of the
+circuit's size, a strided or complex `x0`, a temperature that is not one
+number, a JAX or symbolic toolkit, the circuit-level resolution) nothing
+is touched and the loop runs.  A rebound kernel is taken per call; the
+walk's cache is keyed as the stamp plan's.  `PYCIRCUIT_HDL_LIMIT_WALK=0`
+keeps the loop.
+
+⚠ Two faults of the first cuts, both found by measurement or the suite:
+the walk asked the cache "is anything here kernel-capable?" LAST, after
+the state, temperature and driver checks, so a circuit whose limiters
+are all hand-written Python (PSP's own, `compact.py`) paid 2-3 us a call
+for nothing -- the three PSP cases read +0.5..+1.6 % twice, and a count
+showed `cir.limit` called 2.15 times a step there where I had claimed
+it never was (every hdl class has a `limit`; PSP its own); the cache is
+asked first now.  And a capable class with no kernel bound at both the
+build and the call dereferenced None (`test_device_limiter`'s PCNR grids,
+whose classes have a `$limit` spec and no C source).
+
+Measured (parent 1aff4af1, 5 interleaved rounds, bytes and statistics
+the same on every case): 20 MosLevel1 409.7 -> 352.1 us a step (-14.1
+%), 20 Gummel-Poon 626.3 -> 510.5 (-18.5 %), 20 PSP -0.3 %, the PSP
+stage +0.2 %, its PSS +0.1 %; the gate >= 5 %.  The round closed: since
+dc2214da (round 5's close) the 20-MosLevel1 chain is 802 -> 352 us a
+step (-56 %), 20 Gummel-Poon 1116 -> 511 (-54 %), 20 PSP 2853 -> 2329
+(-18 %); since round 1's start 20-MosLevel1 is 3.82 -> 0.35 ms a step
+(10.8x).  What a 20-MosLevel1 step is now (the in-run tree, timers on,
+392 us from 1048 before the round): `cir.C/G/q/i` 39/30/31/31 us, `cir.u` 34, `cir.limit`
+19; the rest the Newton's own bookkeeping and linear algebra, the
+companion assembly and the predictor.

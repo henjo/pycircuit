@@ -1406,7 +1406,12 @@ c)``).  It hands a call back to the Python closure only where Python's
 own sort order is the answer (a NaN among the ranking keys), and it
 raises no numpy warnings.  ``PYCIRCUIT_HDL_CLIMIT=0`` keeps the Python
 closure on every class (the chain functions stay on C);
-``hdl.LIMIT_PAR_CACHE`` governs that closure alone.
+``hdl.LIMIT_PAR_CACHE`` governs that closure alone.  In a circuit's
+limiting pass the elements with a limit kernel are walked in one C call
+on the live state, in the circuit's own order with its write-backs, the
+walk stopping wherever Python must answer (a hand-written limiter, a
+declined call) and resuming behind it; ``PYCIRCUIT_HDL_LIMIT_WALK=0``
+keeps the per-element loop.
 
 **One C call per class per pass** (2026-10-03): in a circuit's assembly
 the elements of a C-bound class are evaluated by one C loop over the

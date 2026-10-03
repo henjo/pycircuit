@@ -558,3 +558,253 @@ def unbind(info):
     """Drop the class's limit kernel: the closure answers again."""
     info['_c_limit'] = None
     info['_c_limit_status'] = 'numpy (detached)'
+
+
+## ---------------------------------------------------------------------------
+## THE WALK (speed round 6, commit 3, 2026-10-03).  `SubCircuit.limit` is a
+## loop in dict order over the limiting elements: gather `x[nm]` and
+## `x0[nm]`, call `el.limit`, write the result back -- so the NEXT element
+## reads the earlier writes (every chain device shares gnd; a cascode
+## shares a node), `x0` often IS `x`, and duplicate rows take the last
+## value.  After round 5 the loop cost 57 us for twenty kernels of 0.34 us:
+## twenty wrapped `el.limit` calls (2.3 us each) and the loop's own Python.
+## Here every run of C-kernel elements is walked in ONE C call on the live
+## state, in the same order with the same gathers and scatters, and the
+## driver returns at the first element Python must answer -- an element
+## without a kernel (a hand-written limiter -- `Diode`, PSP's own -- a
+## nested SubCircuit, a class whose `limit` is patched or shadowed, a pack
+## that failed) or a call the kernel declines (a NaN among the keys) --
+## which the caller handles with the loop's own statement before the walk
+## resumes behind it.  A circuit with no kernel-capable element at all (an
+## hdl class with a `$limit` spec and the generated `limit`; the PSP
+## cases) is answered from the cache before any other check: the loop,
+## at under a microsecond a call.  The pack
+## is the element's own, mirrored as `_hdl_batch` mirrors it; the
+## temperature is written into its slot as `CLimitKernel.__call__` writes
+## it.  Nothing is touched where the walk does not serve (a state that is
+## not one writeable float64 vector of the circuit's size, a temperature
+## that is not one number, a JAX or symbolic toolkit): None, and the loop
+## runs.  `WALK` (env `PYCIRCUIT_HDL_LIMIT_WALK=0`) is read per call.
+## ---------------------------------------------------------------------------
+
+WALK = os.environ.get('PYCIRCUIT_HDL_LIMIT_WALK', '1') != '0'
+
+_WALK_C = r"""
+#include <stdint.h>
+typedef int (*hdl_lim_fn_t)(const double *, const double *, double *);
+long hdl_fn(void **F, double **PR, const int64_t *TI, double T,
+            const int64_t *NM, const int64_t *OFF, const int64_t *K,
+            double *xg, const double *x0g, long start, long n)
+{
+    double o[64], b[64];
+    long e, j, k;
+    for (e = start; e < n; e++) {
+        const int64_t *nm;
+        if (F[e] == 0) return e;
+        k = K[e];
+        nm = NM + OFF[e];
+        for (j = 0; j < k; j++) { o[j] = xg[nm[j]]; b[j] = x0g[nm[j]]; }
+        if (TI[e] >= 0) PR[e][TI[e]] = T;
+        if (((hdl_lim_fn_t) F[e])(b, PR[e], o)) return e;
+        for (j = 0; j < k; j++) xg[nm[j]] = o[j];
+    }
+    return n;
+}
+"""
+_WALK_CDEF = ('long hdl_fn(void **F, double **PR, const int64_t *TI, double T, '
+              'const int64_t *NM, const int64_t *OFF, const int64_t *K, '
+              'double *xg, const double *x0g, long start, long n);')
+
+_walk_driver = None
+WALK_STATUS = 'not loaded'
+
+
+def _walk_drv():
+    """`(ffi, cfn)` of the walk driver, or None where it cannot be had."""
+    global _walk_driver, WALK_STATUS
+    if _walk_driver is None:
+        try:
+            ffi, cfn, _key, _cold, _secs = _cb.load_kernel(_WALK_C, _WALK_CDEF)
+        except (_cb.CompileError, OSError) as e:
+            _walk_driver = False
+            WALK_STATUS = f'off ({e})'
+        else:
+            _walk_driver = (ffi, cfn)
+            WALK_STATUS = 'c'
+    return _walk_driver or None
+
+
+class _Walk:
+    """A circuit's limiting elements in dict order; for each, whether its
+    class could carry a limit kernel (`capable`: an hdl class with a
+    `$limit` spec, the generated `limit`, the circuit's toolkit, a state
+    the driver's buffers hold), the kernel it has now, its node rows and
+    its mirrored pack.  The driver's handles are made at the first call
+    that needs them (`prepare`)."""
+
+    __slots__ = ('F', 'K', 'NM', 'OFF', 'PR', 'TI', 'addr', 'any_capable',
+                 'cF', 'cK', 'cNM', 'cOFF', 'cPR', 'cTI', 'cap_idx', 'capable',
+                 'elements', 'entries', 'epoch', 'kerns', 'mirror', 'n', 'nodemap')
+
+    def __init__(self, cir, epoch):
+        from pycircuit.circuit import _hdl_batch
+        self.epoch, self.elements = epoch, cir.elements
+        self.nodemap, self.n = cir.elementnodemap, cir.n
+        nodemaps = cir.elementnodemap
+        entries, capable, NMs, OFF, K = [], [], [], [], []
+        off = 0
+        for inst, el in cir.elements.items():
+            if not hasattr(el, 'limit'):
+                continue
+            nm = np.asarray(nodemaps[inst], dtype=np.int64)
+            cls = type(el)
+            info = getattr(cls, '_hdl_info', None)
+            ok = (info is not None and info.get('limit_spec')
+                  and el.toolkit is cir.toolkit and len(nm) <= 64
+                  and _hdl_batch.is_generated(cls, 'limit'))
+            entries.append((inst, el, nm))
+            capable.append(info if ok else None)
+            NMs.append(nm)
+            OFF.append(off)
+            K.append(len(nm))
+            off += len(nm)
+        n = len(entries)
+        self.entries, self.capable = entries, capable
+        self.cap_idx = [e for e in range(n) if capable[e] is not None]
+        self.any_capable = bool(self.cap_idx)
+        self.kerns = [None] * n
+        self.addr = [0] * n
+        self.F = np.zeros(n, dtype=np.uintp)
+        self.PR = np.zeros(n, dtype=np.uintp)
+        self.TI = np.full(n, -1, dtype=np.int64)
+        self.NM = (np.ascontiguousarray(np.concatenate(NMs)) if NMs
+                   else np.zeros(0, dtype=np.int64))
+        self.OFF = np.asarray(OFF, dtype=np.int64)
+        self.K = np.asarray(K, dtype=np.int64)
+        self.mirror = [None] * n
+        self.cF = self.cPR = self.cTI = self.cNM = self.cOFF = self.cK = None
+
+    def prepare(self, ffi):
+        """The driver's handles on the arrays (made once; the arrays are
+        written in place afterwards)."""
+        self.cF = ffi.from_buffer('void **', self.F)
+        self.cPR = ffi.from_buffer('double **', self.PR)
+        self.cTI = ffi.from_buffer('int64_t *', self.TI)
+        self.cNM = ffi.from_buffer('int64_t *', self.NM)
+        self.cOFF = ffi.from_buffer('int64_t *', self.OFF)
+        self.cK = ffi.from_buffer('int64_t *', self.K)
+
+    def retake(self, e, ck, ffi):
+        """Element `e`'s class kernel is `ck` now: take it where it fits
+        the element (a bind, a rebind), else none (unbound, refused)."""
+        if isinstance(ck, CLimitKernel) and ck.nx == self.K[e]:
+            self.kerns[e] = ck
+            self.addr[e] = int(ffi.cast('uintptr_t', ck.cfn))
+            self.TI[e] = -1 if ck.t_index is None else ck.t_index
+            return True
+        self.kerns[e] = None
+        self.addr[e] = 0
+        return False
+
+
+_PD = None
+
+
+def _walk_for(cir):
+    """The circuit's walk, rebuilt when it went stale (keyed as the stamp
+    plan: the parameter epoch, the elements dict, the node map, the size)."""
+    global _PD
+    if _PD is None:
+        from pycircuit.utilities.param import ParameterDict as _PD
+    epoch = _PD._epoch
+    w = cir.__dict__.get('_limit_walk')
+    if (w is None or w.epoch is not epoch or w.elements is not cir.elements
+            or w.nodemap is not cir.elementnodemap
+            or w.n != len(cir.nodes) + len(cir.branches)):
+        w = _Walk(cir, epoch)
+        cir.__dict__['_limit_walk'] = w
+    return w
+
+
+def limit_walk(cir, x, x0, epar):
+    """`SubCircuit.limit`'s loop with every run of C-kernel elements walked
+    in one C call on the live state `x` (see the note above); `x`, or None
+    where the walk does not serve -- nothing touched, the loop runs."""
+    if not (WALK and ENABLED):
+        return None
+    tk = cir.toolkit
+    if getattr(tk, 'jax', False) or getattr(tk, 'symbolic', False):
+        return None
+    w = _walk_for(cir)
+    if not w.any_capable:
+        return None
+    n_cir = w.n
+    if not (type(x) is np.ndarray and x.dtype is _cb._F64 and x.ndim == 1
+            and x.flags.c_contiguous and x.flags.writeable
+            and x.shape[0] == n_cir):
+        return None
+    if x0 is not x and not (type(x0) is np.ndarray and x0.dtype is _cb._F64
+                            and x0.ndim == 1 and x0.flags.c_contiguous
+                            and x0.shape[0] == n_cir):
+        return None
+    T = getattr(epar, 'T', 300.0)
+    if type(T) is not float and type(T) is not int and type(T) is not np.float64:
+        return None
+    drv = _walk_drv()
+    if drv is None:
+        return None
+    ffi, cfn = drv
+    if w.cF is None:
+        w.prepare(ffi)
+    entries, capable, kerns, addr, F, PR, mirror = (
+        w.entries, w.capable, w.kerns, w.addr, w.F, w.PR, w.mirror)
+    served = False
+    for e in w.cap_idx:
+        el = entries[e][1]
+        ck = capable[e].get('_c_limit')
+        kern = kerns[e]
+        if ck is not kern:
+            if not w.retake(e, ck, ffi):
+                F[e] = 0
+                continue
+            kern = ck
+        if kern is None:
+            ## (a capable class with no kernel bound: unbound, refused)
+            F[e] = 0
+            continue
+        d = el.__dict__
+        if 'limit' in d:
+            F[e] = 0
+            continue
+        cp = d.get('_hdl_cp')
+        if cp is None:
+            try:
+                cp = kern.pack(el)
+            except (TypeError, ValueError):
+                cp = False
+            d['_hdl_cp'] = cp
+        if cp is False:
+            F[e] = 0
+            continue
+        F[e] = addr[e]
+        served = True
+        if cp is not mirror[e]:
+            mirror[e] = cp
+            PR[e] = cp[0].ctypes.data
+    if not served:
+        return None
+    cx = ffi.from_buffer('double *', x)
+    cx0 = cx if x0 is x else ffi.from_buffer('double *', x0)
+    Tf = float(T)
+    n = len(entries)
+    e = 0
+    while e < n:
+        e = cfn(w.cF, w.cPR, w.cTI, Tf, w.cNM, w.cOFF, w.cK, cx, cx0, e, n)
+        if e < n:
+            ## the loop's own statement for the element the driver stopped at
+            _inst, el, nm = entries[e]
+            limited = el.limit(x[nm], x0[nm], epar)
+            if limited is not None:
+                x[nm] = limited
+            e += 1
+    return x

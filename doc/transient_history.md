@@ -3711,6 +3711,20 @@ method's code identity per call), on the same conditions plus no `dtype`
 and not the 'ac' analysis.  Measured: 20 MosLevel1 446.9 -> 412.7 us a
 step (-7.6 %), 20 Gummel-Poon -7.1 %, bit for bit.
 
+The round's third commit, the limiter: `SubCircuit.limit` is a sequential
+loop (the next element reads the earlier write-back; `x0` often IS `x`;
+duplicate rows take the last value), so the batch is not its shape --
+`_hdl_climit.limit_walk` walks every run of C-kernel elements in ONE C
+call on the live state, in the loop's order with its gathers and
+scatters, and the driver returns at the first element Python must answer
+(a hand-written limiter, a nested circuit, a shadow, a failed pack, a
+declined call), which the caller handles with the loop's own statement
+before the walk resumes.  A circuit with no kernel-capable element (PSP's
+limiter is its own Python) is answered from the walk's cache before any
+other check.  Measured: 20 MosLevel1 409.7 -> 352.1 us a step (-14.1 %),
+20 Gummel-Poon -18.5 %, the PSP cases unchanged, bit for bit.  The round
+closed: since dc2214da the 20-MosLevel1 chain is 802 -> 352 us a step.
+
 ## `_tran_companion.py` -- the step's source memo (2026-10-02, speed round 4's stage B)
 
 ### `_source_at`, `Transient.solve_timestep`, `_stage_source`
