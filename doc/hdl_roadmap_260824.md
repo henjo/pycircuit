@@ -6554,3 +6554,25 @@ step (-56 %), 20 Gummel-Poon 1116 -> 511 (-54 %), 20 PSP 2853 -> 2329
 392 us from 1048 before the round): `cir.C/G/q/i` 39/30/31/31 us, `cir.u` 34, `cir.limit`
 19; the rest the Newton's own bookkeeping and linear algebra, the
 companion assembly and the predictor.
+
+## 2026-10-03 — 64. Speed round 7, stage 0: the Newton iterate in C -- the ceiling measured, the build refused
+
+The plan (the iterate out of Python: three C primitives behind a slim
+loop, bit-identical through numpy's own `scipy_dgesv_64_` and
+`scipy_cblas_dgemv64_`) put a two-day ceiling first, with a gate of
+1.4x on the 20-MosLevel1 step and a refusal below 1.3x.  The evaluate
+half was built in scratch, bit for bit the Python path on every trial,
+and measured warm in the run: 20-MosLevel1 357 -> 311 us a step (-12.9
+%), 20-Gummel-Poon -6.9 %, the PSP cases -2..-4 %.  1.15x: refused.  The
+premise -- the evaluation at 143 of a 392 us step -- came from the
+in-run tree's INCLUSIVE timers (fifteen nested inside the residual, ~1
+us each); the warm standalone cost is 66 of 355, and the rest of the
+iterate is 36 us.  The full build would have reached ~1.2x.
+
+What the profile found: the Python around the existing C -- the four
+per-pass `Batch.run` check loops (~17 % of a step; one check serves all
+four passes), `zero_source`'s per-element `is_generated` (~8 %), the
+assembly wrappers, the walk's per-call loop, the predictor.  An
+estimated 15-20 % for a few days, no new C.  Lesson, recorded in the log
+and the memory: a tree of inclusive timers ranks pieces, it does not
+size them; size a piece standalone and warm before a plan rests on it.
