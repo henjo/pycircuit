@@ -19,6 +19,7 @@ Nothing is imported that the process has not imported already: a session
 that never touched the hdl compiler reports nothing.
 """
 import sys
+import weakref
 
 #: the chain functions that carry a C kernel (`_hdl_cbackend.C_FUNCS`)
 C_FUNCS = ('i', 'G', 'q', 'C', 'i_dc', 'G_dc')
@@ -88,11 +89,27 @@ def info_state(cls):
     return out
 
 
+#: a serial number per live class, held weakly: a class that dies frees its
+#: entry, so a NEW class allocated at the same address gets a new number
+#: (keying by `id` alone did not: a shuffled run reported a fixture's
+#: test-local class as "functions replaced" -- it was a new class at a
+#: freed address, 2026-10-03)
+_SERIALS = weakref.WeakKeyDictionary()
+_NEXT = [0]
+
+
 def class_key(cls, ids=False):
     """The name a class is reported under; with `ids`, made unique within
-    the process (test-local classes repeat names)."""
+    the process for as long as the class lives (test-local classes repeat
+    names)."""
     name = f'{cls.__module__}.{cls.__qualname__}'
-    return f'{name}@{id(cls):x}' if ids else name
+    if not ids:
+        return name
+    n = _SERIALS.get(cls)
+    if n is None:
+        n = _SERIALS[cls] = _NEXT[0]
+        _NEXT[0] += 1
+    return f'{name}#{n}'
 
 
 def hdl_state(ids=False):

@@ -7,19 +7,16 @@ import pycircuit.circuit.circuit
 pytest.register_assert_rewrite('pycircuit.circuit.tests._shooting_fixtures',
                                'pycircuit.circuit.tests._shooting_elements')
 
-@pytest.fixture(autouse=True)
-def reset_global_toolkit(request):
-    """Ensure the default toolkit is reset to numeric after every test.
-    This prevents tests that test SymbolicToolkit from leaking it into other tests.
-
-    It runs BEFORE the leak detector looks (it is torn down first), so it
-    reports what it repairs to the detector (2026-10-03) -- until the 28
-    unrestored writes are fixed and it goes (robust testing, stage 3).
-    """
-    from pycircuit.circuit.toolkit import numeric
-    yield
+@pytest.fixture
+def restore_default_toolkit():
+    """Put back the default toolkit a test switched (2026-10-03).  For the
+    modules whose tests deliberately run on the symbolic toolkit by setting
+    `circuit.default_toolkit` (`pytestmark = pytest.mark.usefixtures(
+    'restore_default_toolkit')`).  Until then an autouse fixture reset the
+    toolkit after EVERY test, which silently repaired the 17 writes the leak
+    detector then reported -- and would have repaired a library leak too.
+    Any other test that leaves the toolkit changed now fails (the detector,
+    `pycircuit/_testing/leaks.py`)."""
     old = pycircuit.circuit.circuit.default_toolkit
-    if old is not numeric:
-        from pycircuit._testing import leaks
-        leaks.note_toolkit_reset(request.config, request.node.nodeid, old)
-    pycircuit.circuit.circuit.default_toolkit = numeric
+    yield
+    pycircuit.circuit.circuit.default_toolkit = old

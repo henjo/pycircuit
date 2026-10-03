@@ -297,7 +297,7 @@ class TestTheHelperFunctions(object):
         ## checkable rather than merely finite.
         assert got == pytest.approx(190.73227733286575, rel=1e-9)
 
-    def test_the_root_is_exact_in_weak_inversion(self):
+    def test_the_root_is_exact_in_weak_inversion(self, monkeypatch):
         """A RESIDUAL IS NOT AN ERROR, and this is the difference.
 
         `sp_s` has always been validated by the residual of the SPE at
@@ -315,7 +315,7 @@ class TestTheHelperFunctions(object):
         source of the weak-inversion residual the model still carries.
         """
         import mpmath as mp
-        mp.mp.dps = 40
+        monkeypatch.setattr(mp.mp, 'dps', 40)          # (restored after the test)
         XG, XN, D, GF, XI = sympy.symbols('XG XN D GF XI', real=True)
         f = hdl.compile_chain(lambda: K.sp_s(XG, XN, D, GF, XI),
                               [XG, XN, D, GF, XI])

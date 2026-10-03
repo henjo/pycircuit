@@ -18,6 +18,11 @@ import numpy as np
 from numpy.testing import * #assert_array_almost_equal, assert_array_equal
 from copy import copy
 
+## (these tests set `circuit.default_toolkit` to the symbolic toolkit; the
+## fixture puts it back -- tests/conftest.py)
+pytestmark = pytest.mark.usefixtures('restore_default_toolkit')
+
+
 def generate_testcircuit():
     subc = SubCircuit()
     plus, minus = subc.add_nodes('plus', 'minus')

@@ -767,7 +767,7 @@ def test_the_topological_index_agrees_with_an_incidence_RANK_criterion():
     assert seen['C-V loop'] == (2, True, False), seen['C-V loop']
 
 
-def test_topological_index_reports_the_index_0_rung_and_agrees_with_the_rank_test():
+def test_topological_index_reports_the_index_0_rung_and_agrees_with_the_rank_test(monkeypatch):
     """⚠⚠ THE FUNCTION USED TO BE FLOORED AT 1 AND ANSWERED 1 FOR AN IMPLICIT
     ODE, SILENTLY.
 
@@ -793,7 +793,6 @@ def test_topological_index_reports_the_index_0_rung_and_agrees_with_the_rank_tes
     that shows it.
     """
     import os
-    import sys
     import numpy as np
     from pycircuit.circuit.circuit import gnd as _gnd, defaultepar
     from pycircuit.circuit.dcanalysis import DC
@@ -801,7 +800,7 @@ def test_topological_index_reports_the_index_0_rung_and_agrees_with_the_rank_tes
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.shooting import topological_index
     from pycircuit.circuit.integrator import Gear2Integrator
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+    monkeypatch.syspath_prepend(os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from noise_floor_sources_off import vdp
     from pycircuit.circuit.tests.test_stage_predictor import (_expg_fixture,

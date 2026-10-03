@@ -27,3 +27,5 @@ graphify-out/
 test_timings/*.json
 ## the run logs are local (2026-10-03): tracking history.csv lost its rows
 test_timings/*.csv
+## the leak detector's reports (its default directory)
+test_timings/leaks/

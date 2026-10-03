@@ -752,15 +752,15 @@ def test_the_coloured_lineshape_transform_meets_a_closed_form():
 
     def ref(f):
         import mpmath as mp
-        mp.mp.dps = 60
-        tot, bb, w = mp.mpf(0), mp.mpf(b), 2 * mp.pi * f
-        for k in range(400):
-            A = mp.mpf(a) + mp.mpf(a1) + k * mp.mpf(g)
-            t = (-bb) ** k / mp.factorial(k) * 2 * A / (A * A + w * w)
-            tot += t
-            if k > 5 and abs(t) < mp.mpf(10) ** -40 * abs(tot):
-                break
-        return float(mp.e ** bb * tot)
+        with mp.workdps(60):                     # (scoped: it leaked to later tests)
+            tot, bb, w = mp.mpf(0), mp.mpf(b), 2 * mp.pi * f
+            for k in range(400):
+                A = mp.mpf(a) + mp.mpf(a1) + k * mp.mpf(g)
+                t = (-bb) ** k / mp.factorial(k) * 2 * A / (A * A + w * w)
+                tot += t
+                if k > 5 and abs(t) < mp.mpf(10) ** -40 * abs(tot):
+                    break
+            return float(mp.e ** bb * tot)
 
     pc, converged = _lineshape.refine(
         lambda v: c1 / (1.0 + (np.asarray(v) / nuc) ** 2), 1e-9, 1e4)

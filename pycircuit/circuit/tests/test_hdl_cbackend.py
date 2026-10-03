@@ -432,13 +432,23 @@ class TestPowSentinel(object):
         e = _instance(_SquareModel)
         with numpy_backend(_SquareModel):
             ref = e.i(x).copy()
-        monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
-        monkeypatch.setattr(cb, 'CFLAGS', tuple(
-            f for f in cb.CFLAGS if f != '-fno-builtin-pow'))
-        monkeypatch.setattr(cb, '_loaded', {})
-        with c_backend(_SquareModel):
-            assert _SquareModel._hdl_backend_status == 'c'
-            got = e.i(x)
+        ## ⚠ THE CLASS IS RE-BOUND AFTER THE FLAGS ARE RESTORED (2026-10-03):
+        ## `c_backend`'s un-pin runs while the flags are still patched, so it
+        ## re-bound `_SquareModel` to kernels compiled WITHOUT
+        ## `-fno-builtin-pow`, and the module's later tests ran them (the
+        ## leak detector's report).  The patches end in this test now, and
+        ## the class is re-resolved under the real flags.
+        try:
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
+                mp.setattr(cb, 'CFLAGS', tuple(
+                    f for f in cb.CFLAGS if f != '-fno-builtin-pow'))
+                mp.setattr(cb, '_loaded', {})
+                with c_backend(_SquareModel):
+                    assert _SquareModel._hdl_backend_status == 'c'
+                    got = e.i(x)
+        finally:
+            hdl.set_backend(None, _SquareModel)
         assert ref.tobytes() != got.tobytes()
         assert np.allclose(ref, got, rtol=1e-14)   # one ulp, not garbage
 
@@ -1179,19 +1189,26 @@ def test_without_cffi_a_request_for_c_runs_numpy_and_says_why(tmp_path,
                                                               monkeypatch):
     """The kernels load through cffi; without it a request for C ran into
     an ImportError out of class creation."""
-    monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
-    real = cb.importlib.util.find_spec
-    monkeypatch.setattr(cb.importlib.util, 'find_spec',
-                        lambda n, *a: None if n == 'cffi' else real(n, *a))
-    e = _instance(_SquareModel)
+    ## ⚠ THE UN-PIN RUNS AFTER cffi IS VISIBLE AGAIN (2026-10-03): it used to
+    ## run in this test's `finally`, while `monkeypatch` still hid cffi (it
+    ## is undone at fixture teardown, later), so `_SquareModel` re-resolved
+    ## to numpy and stayed there for the module's later tests -- the leak
+    ## detector's report; the same teardown-order shape as the one-worker
+    ## anomaly (test_hdl_cse's reference swap).
     from pycircuit.circuit.simwarnings import CostWarning
-    with pytest.warns(CostWarning, match='cffi is not installed'):
-        hdl.set_backend('c', _SquareModel)
     try:
-        assert _SquareModel._hdl_backend_status == \
-            'numpy (cffi not installed)'
-        assert not _SquareModel._hdl_info.get('_c_bound')
-        e.i(np.array([0.5, 0.0]))
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
+            real = cb.importlib.util.find_spec
+            mp.setattr(cb.importlib.util, 'find_spec',
+                       lambda n, *a: None if n == 'cffi' else real(n, *a))
+            e = _instance(_SquareModel)
+            with pytest.warns(CostWarning, match='cffi is not installed'):
+                hdl.set_backend('c', _SquareModel)
+            assert _SquareModel._hdl_backend_status == \
+                'numpy (cffi not installed)'
+            assert not _SquareModel._hdl_info.get('_c_bound')
+            e.i(np.array([0.5, 0.0]))
     finally:
         hdl.set_backend(None, _SquareModel)
 

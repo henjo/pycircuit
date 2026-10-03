@@ -331,28 +331,28 @@ def _banded_lineshape_reference(f, a, eps, nu1, nu2):
     / (pi nu_j)`, `b_j = 2 pi nu_j`, so `exp(-D/2)` is a double series of
     exponentials and `S` one of Lorentzians (mpmath, 40 digits)."""
     import mpmath as mp
-    mp.mp.dps = 40
-    a, eps, nu1, nu2 = (mp.mpf(v) for v in (a, eps, nu1, nu2))
-    w = 2 * mp.pi * abs(mp.mpf(f))
-    A1, A2 = a * eps / (mp.pi * nu1), a * eps / (mp.pi * nu2)
-    b1, b2 = 2 * mp.pi * nu1, 2 * mp.pi * nu2
-    tot, ck = mp.mpf(0), mp.mpf(1)
-    for k in range(400):
-        if k:
-            ck *= -A1 / 2 / k
-        inner, cl = mp.mpf(0), mp.mpf(1)
-        for l in range(400):
-            if l:
-                cl *= A2 / 2 / l
-            r = a + k * b1 + l * b2
-            t = cl * r / (r * r + w * w)
-            inner += t
-            if l > 5 and abs(t) < mp.mpf(10) ** -35 * abs(inner):
+    with mp.workdps(40):              # (scoped: it leaked to later tests)
+        a, eps, nu1, nu2 = (mp.mpf(v) for v in (a, eps, nu1, nu2))
+        w = 2 * mp.pi * abs(mp.mpf(f))
+        A1, A2 = a * eps / (mp.pi * nu1), a * eps / (mp.pi * nu2)
+        b1, b2 = 2 * mp.pi * nu1, 2 * mp.pi * nu2
+        tot, ck = mp.mpf(0), mp.mpf(1)
+        for k in range(400):
+            if k:
+                ck *= -A1 / 2 / k
+            inner, cl = mp.mpf(0), mp.mpf(1)
+            for l in range(400):
+                if l:
+                    cl *= A2 / 2 / l
+                r = a + k * b1 + l * b2
+                t = cl * r / (r * r + w * w)
+                inner += t
+                if l > 5 and abs(t) < mp.mpf(10) ** -35 * abs(inner):
+                    break
+            tot += ck * inner
+            if k > 5 and abs(ck * inner) < mp.mpf(10) ** -35 * abs(tot):
                 break
-        tot += ck * inner
-        if k > 5 and abs(ck * inner) < mp.mpf(10) ** -35 * abs(tot):
-            break
-    return float(2 * mp.e ** ((A1 - A2) / 2) * tot)
+        return float(2 * mp.e ** ((A1 - A2) / 2) * tot)
 
 
 def test_the_lineshape_takes_a_signed_correction_to_c_against_a_closed_form():

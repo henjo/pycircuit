@@ -916,3 +916,36 @@ def test_a_warm_class_load_compiles_no_generated_code(cache_dir, tmp_path,
     c = _load_probe(tmp_path, 'b')
     assert c._hdl_cache_status == 'hit'
     assert seen == []
+
+
+def test_the_compile_switches_reach_the_key_only_when_they_are_not_default(monkeypatch):
+    """`EMIT_C_SOURCE` and `AUTOHOLD_MIN_OPS` change what a class compiles
+    to and were not in the key: a process that flipped one wrote entries
+    the default process was then served (the leak inventory, 2026-10-03).
+    At their defaults the key is the one it always was; flipped, each gets
+    a key of its own."""
+    from pycircuit.circuit import hdl as _hdl
+    base = hc.key_for(EagerDiode)
+    monkeypatch.setattr(_hdl, 'EMIT_C_SOURCE', False)
+    no_c = hc.key_for(EagerDiode)
+    monkeypatch.setattr(_hdl, 'EMIT_C_SOURCE', True)
+    assert hc.key_for(EagerDiode) == base
+    monkeypatch.setattr(_hdl, 'AUTOHOLD_MIN_OPS', 5)
+    hold = hc.key_for(EagerDiode)
+    assert len({base, no_c, hold}) == 3
+
+
+def test_a_container_of_numpy_values_is_keyed_by_its_values_not_its_repr():
+    """`repr` of a list holding an array follows numpy's print options
+    (`nportanalysis` sets `precision=4` at import) and elides long arrays,
+    so two different arrays could share a key; such a container is keyed
+    element by element.  A plain Python container keeps its `repr` key."""
+    a = [np.array([1.23456789, 2.0])]
+    b = [np.array([1.23456781, 2.0])]
+    with np.printoptions(precision=4):
+        assert repr(a) == repr(b)
+        assert hc._value_sig('x', a, 0, set(), False) != hc._value_sig('x', b, 0, set(), False)
+    long_a, long_b = [np.zeros(2000)], [np.zeros(2000)]
+    long_b[0][1000] = 1.0
+    assert hc._value_sig('x', long_a, 0, set(), False) != hc._value_sig('x', long_b, 0, set(), False)
+    assert hc._value_sig('x', [1, 2.5, 'a'], 0, set(), False) == f"list:{[1, 2.5, 'a']!r}"

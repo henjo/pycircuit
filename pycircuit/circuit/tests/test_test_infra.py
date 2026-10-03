@@ -22,9 +22,14 @@ sys.path.remove(SCRIPTS)
 
 
 @pytest.fixture
-def project(pytester):
+def project(pytester, monkeypatch):
     """A tiny project with the repository's root conftest, three tests and a
     full-suite timing record that orders them b, c, a."""
+    ## (an inner run must not inherit the outer run's switches: a gate's
+    ## state dump, a replay's timing switch, an explicit order)
+    for var in ('PYCIRCUIT_TEST_TIMINGS', 'PYCIRCUIT_TEST_ORDER', 'PYCIRCUIT_STATE_DUMP',
+                'PYCIRCUIT_LEAKS', 'PYCIRCUIT_LEAKS_REPORT', 'PYCIRCUIT_LEAKS_RUN'):
+        monkeypatch.delenv(var, raising=False)
     with open(os.path.join(ROOT, 'conftest.py')) as f:
         pytester.makeconftest(f.read())
     pytester.makepyfile(test_three="""
@@ -110,7 +115,7 @@ def test_a_replay_file_is_read_in_start_order_and_cut_at_the_victim(tmp_path):
         test_replay.read(str(p), 'm.py::zzz')
 
 
-def test_the_polluter_is_found_from_a_recorded_order(pytester):
+def test_the_polluter_is_found_from_a_recorded_order(pytester, monkeypatch):
     """End to end: a test that leaves a module global set, a victim that
     fails on it, a recorded order with innocents around them -- the script
     names the polluter."""
@@ -130,6 +135,11 @@ def test_the_polluter_is_found_from_a_recorded_order(pytester):
              'test_pol.py::test_innocent_2', 'test_pol.py::test_victim']
     rp = pytester.path / '.pytest-replay-gw0.txt'
     rp.write_text('\n'.join(json.dumps({'nodeid': n}) for n in order) + '\n')
+    ## (an inner run must not inherit the outer run's switches: a gate's
+    ## state dump, a replay's timing switch, an explicit order)
+    for var in ('PYCIRCUIT_TEST_TIMINGS', 'PYCIRCUIT_TEST_ORDER', 'PYCIRCUIT_STATE_DUMP',
+                'PYCIRCUIT_LEAKS', 'PYCIRCUIT_LEAKS_REPORT', 'PYCIRCUIT_LEAKS_RUN'):
+        monkeypatch.delenv(var, raising=False)
     env = dict(os.environ, PYTHONPATH=str(pytester.path) + os.pathsep + os.environ.get('PYTHONPATH', ''))
     out = subprocess.run([sys.executable, os.path.join(SCRIPTS, 'find_polluter.py'),
                           'test_pol.py::test_victim', str(rp)],

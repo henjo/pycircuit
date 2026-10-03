@@ -276,6 +276,23 @@ def _value_sig(name, val, depth, seen, in_closure):
         ## Keyed by content.  A body that WRITES into one is refused
         ## separately (`_writes_outside`), because no key can replay a
         ## side effect.
+        ## ⚠ A CONTAINER HOLDING NUMPY VALUES IS KEYED ELEMENT BY ELEMENT
+        ## (2026-10-03): its `repr` follows numpy's PRINT OPTIONS --
+        ## `nportanalysis` sets `precision=4` at import -- and elides past
+        ## 1000 elements, so two different arrays could share a key and a
+        ## class be served code compiled for the other's values.  Plain
+        ## Python containers keep their `repr` (exact; their keys unchanged).
+        if _holds_numpy(val):
+            items = (sorted(val.items(), key=lambda kv: repr(kv[0]))
+                     if isinstance(val, dict) else
+                     sorted(val, key=repr) if isinstance(val, set) else val)
+            if isinstance(val, dict):
+                inner = ','.join(f'{k!r}:{_value_sig(name, v, depth, seen, in_closure)}'
+                                 for k, v in items)
+            else:
+                inner = ','.join(_value_sig(name, v, depth, seen, in_closure)
+                                 for v in items)
+            return f'{type(val).__name__}[{inner}]'
         text = repr(val)
         if ' at 0x' in text:
             raise Uncacheable('analog() reads %s, whose repr has no stable '
@@ -283,6 +300,24 @@ def _value_sig(name, val, depth, seen, in_closure):
         return '%s:%s' % (type(val).__name__, text)
     raise Uncacheable('analog() reads %s, a %s, whose value has no stable '
                       'text for the cache key' % (name, type(val).__name__))
+
+
+def _holds_numpy(val, depth=0):
+    """Whether a dict/list/set (or a tuple inside one) holds a numpy array
+    or scalar anywhere."""
+    try:
+        import numpy
+    except ImportError:
+        return False
+    if depth > 20:
+        return False
+    vals = val.values() if isinstance(val, dict) else val
+    for v in vals:
+        if isinstance(v, (numpy.ndarray, numpy.generic)):
+            return True
+        if isinstance(v, (_CONTAINERS, tuple, frozenset)) and _holds_numpy(v, depth + 1):
+            return True
+    return False
 
 
 def _is_library(func):
@@ -436,6 +471,18 @@ def key_for(cls):
         'bindings=' + '|'.join(bindings),
         'analog=' + src,
     ]
+    ## TWO MORE RUNTIME FLAGS THAT CHANGE WHAT IS COMPILED (2026-10-03, the
+    ## leak inventory): `EMIT_C_SOURCE` off compiles a class with no C
+    ## rendering, `AUTOHOLD_MIN_OPS` moves which subexpressions are held.
+    ## Keyed ONLY when they differ from their defaults, so at the defaults
+    ## the key's parts are what they were (the edit of this file re-keys
+    ## every class once anyway, through `deps`); a test or a probe that
+    ## flips one gets entries of its own instead of serving its build to
+    ## the default process (`pcnr_lift`'s lesson, above).
+    if not getattr(_hdl_mod, 'EMIT_C_SOURCE', True):
+        parts.append('emit_c_source=False')
+    if getattr(_hdl_mod, 'AUTOHOLD_MIN_OPS', 3) != 3:
+        parts.append(f'autohold_min_ops={_hdl_mod.AUTOHOLD_MIN_OPS!r}')
     return hashlib.sha256('\n'.join(parts).encode('utf-8')).hexdigest()
 
 

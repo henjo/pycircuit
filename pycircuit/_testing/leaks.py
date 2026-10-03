@@ -45,9 +45,9 @@ THE INVARIANT, checked at every checkpoint (`state.invariant_breaks`): a
 class bound to C carries its kernels, one not bound carries none.  Each
 broken class is reported once, at the first checkpoint that sees it.
 
-`PYCIRCUIT_LEAKS` = `warn` (report to a file; a pure observer, the run is
-the run without it), `fail` (a leak fails the test at teardown, or the
-module's last test), `off`.  In `fail` mode the detector RESTORES only plain
+`PYCIRCUIT_LEAKS` = `fail` (the default since stage 3: a leak fails the
+test at teardown, or the module's last test), `warn` (report to a file; a
+pure observer, the run is the run without it), `off`.  In `fail` mode the detector RESTORES only plain
 data it owns the meaning of -- the known switches, the environment, the
 toolkit, the VALUES of the default parameters, `sys.path`, the working
 directory, numpy's and mpmath's state -- so one leak does not cascade;
@@ -67,14 +67,16 @@ import types
 
 import pytest
 
-MODE = os.environ.get('PYCIRCUIT_LEAKS', 'warn').strip().lower() or 'warn'
+MODE = os.environ.get('PYCIRCUIT_LEAKS', 'fail').strip().lower() or 'fail'
 
 #: lazy loads and memos: may change from an unloaded value to anything
 LAZY = {'STATUS', 'WALK_STATUS', '_driver', '_walk_driver', '_compiler', '_tmp_dir', '_GEN',
         '_PD', '_DEFAULT_EPAR', '_OWN'}
 UNLOADED = (None, 'not loaded', False)
 #: counters and identities that move on every use
-IGNORED = {('pycircuit.circuit._hdl_cache', '_counter')}
+IGNORED = {('pycircuit.circuit._hdl_cache', '_counter'),
+           ## the PSF grammar's parser counts names as it reads them
+           ('pycircuit.post.cds.yapps.runtime', 'in_name')}
 
 #: the switches the detector restores (module, name): the inventory of
 #: 2026-10-03 -- every other scalar is reported, never written
@@ -188,7 +190,16 @@ def snapshot():
             ## so names may appear; values may not move)
             snap['defaultepar'] = dict(vars(ep).get('_values', {}))
     snap['environ'] = {k: v for k, v in os.environ.items() if not k.startswith('PYTEST_')}
-    snap['sys.path'] = list(sys.path)
+    ## the path as the import system resolves it: entries normalised, each
+    ## once (a test that prepends the repository root under another
+    ## spelling changes no import)
+    seen, path = set(), []
+    for p in sys.path:
+        r = os.path.realpath(p) if isinstance(p, str) and p else p
+        if r not in seen:
+            seen.add(r)
+            path.append(r)
+    snap['sys.path'] = path
     snap['cwd'] = os.getcwd()
     np = sys.modules.get('numpy')
     if np is not None:
@@ -320,8 +331,11 @@ def restore(a):
     for k, v in env.items():
         if os.environ.get(k) != v:
             os.environ[k] = v
-    if sys.path != a['sys.path']:
-        sys.path[:] = a['sys.path']
+    if [os.path.realpath(p) if isinstance(p, str) and p else p for p in sys.path] \
+            != a['sys.path']:
+        keep = set(a['sys.path'])
+        sys.path[:] = [p for p in sys.path
+                       if (os.path.realpath(p) if isinstance(p, str) and p else p) in keep]
     if os.getcwd() != a['cwd']:
         os.chdir(a['cwd'])
     np = sys.modules.get('numpy')

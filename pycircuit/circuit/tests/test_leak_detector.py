@@ -16,6 +16,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 
 @pytest.fixture
 def project(pytester, monkeypatch, tmp_path):
+    ## (an inner run must not inherit the outer run's switches: a gate's
+    ## state dump, a replay's timing switch, an explicit order)
+    for var in ('PYCIRCUIT_TEST_TIMINGS', 'PYCIRCUIT_TEST_ORDER', 'PYCIRCUIT_STATE_DUMP',
+                'PYCIRCUIT_LEAKS', 'PYCIRCUIT_LEAKS_REPORT', 'PYCIRCUIT_LEAKS_RUN'):
+        monkeypatch.delenv(var, raising=False)
     with open(os.path.join(ROOT, 'conftest.py')) as f:
         pytester.makeconftest(f.read())
     report = tmp_path / 'leaks'
@@ -224,3 +229,26 @@ def test_off_mode_still_restores_the_toolkit(project):
             assert circuit.default_toolkit is circuit.numeric
     """, 'off').assert_outcomes(passed=2)
     assert _changes(project) == []
+
+
+def test_a_new_class_at_a_freed_address_is_a_new_class():
+    """A class that dies frees its address, and a new class can be allocated
+    there: keyed by `id`, the detector read a fixture's fresh test-local
+    class as the old one with "functions replaced" (a shuffled run,
+    2026-10-03).  The key is a serial held weakly per live class."""
+    import gc
+
+    from pycircuit._testing import state
+
+    class Fresh:
+        pass
+    k1 = state.class_key(Fresh, True)
+    addr = id(Fresh)
+    del Fresh
+    gc.collect()
+    for _ in range(5000):
+        class Fresh:
+            pass
+        if id(Fresh) == addr:
+            break
+    assert state.class_key(Fresh, True) != k1

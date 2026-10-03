@@ -199,7 +199,7 @@ def test_a_line_search_trial_that_cannot_be_evaluated_is_halved_not_fatal():
 
 
 
-def test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmetic():
+def test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmetic(monkeypatch):
     """⚠⚠ THE SOURCES-OFF NOISE FLOOR, measured on THIS tree's construction
     rather than on the published one.
 
@@ -243,11 +243,10 @@ def test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmetic():
     one comparison the result rests on.
     """
     import os
-    import sys
     import numpy as np
     from pycircuit.circuit.integrator import (Gear2Integrator,
                                               RadauIIA3Integrator)
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+    monkeypatch.syspath_prepend(os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from noise_floor_sources_off import periods
 
@@ -280,7 +279,7 @@ def test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmetic():
     assert np.array_equal(Tk1, Tk2)
 
 
-def test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order():
+def test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order(monkeypatch):
     """⚠⚠ THE `im D(t)` HYPOTHESIS BITES, AND IT COSTS RADAU EIGHT ORDERS.
 
     Lamour, März & Tischendorf (2013) put one hypothesis under IRK(DAE)
@@ -356,10 +355,9 @@ def test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order(
     which is what an oscillator's active device supplies.  NOT BUILT.
     """
     import os
-    import sys
     import numpy as np
     from pycircuit.circuit.integrator import RadauIIA3Integrator
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+    monkeypatch.syspath_prepend(os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from im_d_falsifier import (rank_changing, constant_rank,
                                 nonlinear_constant_rank, rank_probe, endpoint)
@@ -395,7 +393,7 @@ def test_violating_the_im_D_hypothesis_costs_the_high_order_methods_their_order(
     assert s_bad_400 > s_bad_200 / 3.0, (s_bad_200, s_bad_400)
 
 
-def test_one_netlist_returns_three_different_solutions_chosen_by_the_newton_seed():
+def test_one_netlist_returns_three_different_solutions_chosen_by_the_newton_seed(monkeypatch):
     """⚠⚠ ONE NETLIST, ONE GRID, ONE TOLERANCE -- THREE DIFFERENT ANSWERS, and
     the choice is made SILENTLY by the Newton's initial guess.
 
@@ -437,10 +435,9 @@ def test_one_netlist_returns_three_different_solutions_chosen_by_the_newton_seed
     `V = 0` has no history, so the predictor declines and falls back.
     """
     import os
-    import sys
     import numpy as np
     from pycircuit.circuit.integrator import Gear2Integrator, RadauIIA3Integrator
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+    monkeypatch.syspath_prepend(os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from branch_selection import march
 
@@ -470,7 +467,7 @@ def test_one_netlist_returns_three_different_solutions_chosen_by_the_newton_seed
     assert abs(on - off) < 1e-9, (off, on)
 
 
-def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
+def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise(monkeypatch):
     """The diagnostic for `test_one_netlist_returns_three_different_solutions_
     chosen_by_the_newton_seed`: `Transient.branch_check`, default ON.
 
@@ -528,13 +525,12 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
       check could not catch it because the residual was genuinely zero.
     """
     import os
-    import sys
     import numpy as np
     from pycircuit.circuit.circuit import gnd as _gnd
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.integrator import (Gear2Integrator,
                                               RadauIIA3Integrator)
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+    monkeypatch.syspath_prepend(os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from branch_selection import build
     from pycircuit.circuit.tests.test_stage_predictor import (_expg_fixture,
@@ -604,7 +600,7 @@ def test_the_branch_check_reports_a_multi_root_step_and_stays_quiet_otherwise():
     assert s_off == 0 and p_off == 0, (s_off, p_off)
 
 
-def test_the_branch_check_reports_on_a_full_transient_solve():
+def test_the_branch_check_reports_on_a_full_transient_solve(monkeypatch):
     """`branch_check` on the path a user takes -- `Transient.solve` -- and
     not only on the hand-driven marches the test above counts on.
 
@@ -627,7 +623,6 @@ def test_the_branch_check_reports_on_a_full_transient_solve():
     outside the warnings machinery -- the review's X8.)
     """
     import os
-    import sys
     import warnings as _w
 
     from pycircuit.circuit.simwarnings import ModelWarning
@@ -635,7 +630,7 @@ def test_the_branch_check_reports_on_a_full_transient_solve():
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit.integrator import (Gear2Integrator,
                                               RadauIIA3Integrator)
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+    monkeypatch.syspath_prepend(os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from branch_selection import build
 
@@ -791,7 +786,7 @@ def test_the_branch_check_does_not_disturb_device_limiting_state():
         assert np.max(np.abs(x_on - x_off)) < 1e-12, (name, x_on, x_off)
 
 
-def test_the_branch_check_confirms_on_every_solve_path():
+def test_the_branch_check_confirms_on_every_solve_path(monkeypatch):
     """⚠ THE SILENT HOLE IS THE PROBLEM, NOT THE MISSING CONFIRMATION -- and
     the confirmation is no longer missing (2026-09-24).  Three paths --
     Radau's opt-in transform, the coupled PCNR step and the multistep PCNR
@@ -810,12 +805,11 @@ def test_the_branch_check_confirms_on_every_solve_path():
     but does not confirm the second, and none leaves an unconfirmed screen.
     """
     import os
-    import sys
     import numpy as np
     from pycircuit.circuit.circuit import gnd as _gnd
     from pycircuit.circuit.transient import Transient
     from pycircuit.circuit import integrator as _I
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+    monkeypatch.syspath_prepend(os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from branch_selection import build
     from pycircuit.circuit.tests.test_stage_predictor import (_expg_fixture,
@@ -865,7 +859,7 @@ def test_the_branch_check_confirms_on_every_solve_path():
         assert getattr(tr.statistics, 'branch_points', 0) == 0
 
 
-def test_the_one_over_h_defect_amplification_is_LOCAL_not_propagated():
+def test_the_one_over_h_defect_amplification_is_LOCAL_not_propagated(monkeypatch):
     """⚠⚠ THE QUESTION THAT WAS OPEN ALL SESSION, ANSWERED: the amplification
     is LOCAL.
 
@@ -915,9 +909,8 @@ def test_the_one_over_h_defect_amplification_is_LOCAL_not_propagated():
     answer is the same for the method it names -- local, one step later.
     """
     import os
-    import sys
     import numpy as np
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+    monkeypatch.syspath_prepend(os.path.join(os.path.dirname(__file__),
                                     '..', '..', '..', 'benchmarks'))
     from defect_locality import locality_below_the_turn, index1, index2
 

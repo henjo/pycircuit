@@ -20,7 +20,9 @@ psfresultset_testvectors = {
 withlibpsf = 'withlibpsf'
 withoutlibpsf = 'withoutlibpsf'
 
-def test_psfresultset():
+def test_psfresultset(monkeypatch):
+    ## (the helper and the library set `USELIBPSF`; monkeypatch puts it back)
+    monkeypatch.setenv('USELIBPSF', os.environ.get('USELIBPSF', '1'))
     for uselibpsf in False, True:
         for rawdir in psfresultset_testvectors.keys():
             if uselibpsf:

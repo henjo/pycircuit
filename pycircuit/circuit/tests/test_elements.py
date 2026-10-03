@@ -16,6 +16,12 @@ import unittest
 
 from pylab import plot, show
 from pycircuit.circuit.transient import Transient
+import pytest
+
+## (these tests set `circuit.default_toolkit` to the symbolic toolkit; the
+## fixture puts it back -- tests/conftest.py)
+pytestmark = pytest.mark.usefixtures('restore_default_toolkit')
+
 
 def test_vsin():
     var('vo va freq td theta phase t')

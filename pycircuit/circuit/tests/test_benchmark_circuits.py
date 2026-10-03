@@ -13,7 +13,6 @@ These guard two things that the whole DDD comparison rests on:
 """
 
 import os
-import sys
 
 import numpy as np
 import pytest
@@ -21,8 +20,16 @@ import sympy
 
 from pycircuit.circuit import benchmark_circuits as bc
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                os.pardir, os.pardir, os.pardir, 'benchmarks'))
+
+@pytest.fixture(autouse=True, scope='module')
+def _benchmarks_on_path():
+    """`benchmarks/` importable for this module's tests, and only for them
+    (a module-level insert stayed on `sys.path` for the rest of the worker:
+    the leak detector, 2026-10-03)."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.syspath_prepend(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        os.pardir, os.pardir, os.pardir, 'benchmarks'))
+        yield
 
 
 def _solve_numerically(system, freq=1e6):

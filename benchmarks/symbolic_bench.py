@@ -52,7 +52,10 @@ import time
 import numpy as np
 import sympy
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+if __name__ == '__main__':
+    ## (run as a script: the repository root importable; imported by the
+    ## tests it is already, and an import must not change `sys.path`)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 
 from pycircuit.circuit import benchmark_circuits as bc
 

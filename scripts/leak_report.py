@@ -25,7 +25,7 @@ def load(d):
 
 
 def norm(change):
-    c = re.sub(r'@[0-9a-f]{6,}', '@…', change)
+    c = re.sub(r'@[0-9a-f]{6,}|#[0-9]+', '#…', change)
     c = re.sub(r"'[0-9a-f]{20,}'", "'<key>'", c)
     c = re.sub(r'\(first seen [^)]*\)', '', c)
     return c[:160]
