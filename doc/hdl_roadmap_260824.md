@@ -6576,3 +6576,32 @@ assembly wrappers, the walk's per-call loop, the predictor.  An
 estimated 15-20 % for a few days, no new C.  Lesson, recorded in the log
 and the memory: a tree of inclusive timers ranks pieces, it does not
 size them; size a piece standalone and warm before a plan rests on it.
+
+## 2026-10-03 — 65. Speed round 7, commit 1: the evaluate core (`_tran_core`)
+
+After stage 0's refusal (sec. 64) the Python trims the profile had
+suggested were sized standalone at ~3 %, and Andreas chose to build the
+prototype for real.  `_tran_core.py`: one C call evaluates the passes a
+site asks for (the batches through the kernels' own pointers, the
+constant vector groups through numpy's own `cblas_dgemv`, the templates,
+the bincounts from +0.0 in array order), then the companion in the
+integrator's own operation order -- gear2, euler, trap, theta -- and the
+residual; the three evaluation sites of the LMM step take it
+(`_residual_and_jacobian`; `jacobian_only` at the converged point; the
+chord's `residual_only` with the conductance from the held `C`), each
+leaving the state the Python path leaves, Python still deciding the
+active integrator and asking `_C_lookup` first.  The tables sit in one
+C struct filled once per stamp plan; a lone C-bound element is a batch
+of one; the readiness check runs once per call over the unique
+elements.  Everything the core cannot serve declines before touching
+state.  Pinned against its reference (`test_pinned_pairs`: the pair
+fired once during the build, when a lint fix moved the twin -- the
+practice working).
+
+Measured (parent 82819d61, 5 interleaved rounds, bytes and statistics
+the same on every case): 20 MosLevel1 357.8 -> 277.3 us a step (-22.5
+%), 20 Gummel-Poon -18.9 %, the PSP stage -7.6 %, its PSS -8.0 %, 20 PSP
+-3.2 %; the gate >= 12 % and >= 6 %.  Since round 5's close the
+20-MosLevel1 chain is 2.9x, since round 1's start 13.8x.  What is left
+of a step: the Newton's own bookkeeping and the step machinery, in
+pieces of a few microseconds each; the C work is ~15 us of ~277.

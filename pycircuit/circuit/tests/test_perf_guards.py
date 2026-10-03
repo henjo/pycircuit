@@ -361,8 +361,20 @@ def test_the_dsl_stays_at_parity_with_hand_written_elements():
     Asserted together with waveform equality, because either alone is
     the bug that let `hdl.rst` drift from 1.14x to 1.25x unnoticed.
     """
-    ratio, (y_ref, n_ref), (y_hdl, n_hdl) = _confirmed_ratio(
-        (R, C), (eh.RHdl, eh.CHdl), MAX_OVERHEAD, want='below')
+    ## THE SAME PATH ON BOTH SIDES: the evaluate core (`_tran_core`, speed
+    ## round 7) serves the hand-written ladder -- every element constant,
+    ## no kernel to call -- and runs it twice as fast, while `RHdl` and
+    ## `CHdl` are eager classes the core cannot evaluate; what this guard
+    ## measures is the DSL's per-element overhead against hand-written
+    ## elements on the Python path, so the core is off for the measurement
+    from pycircuit.circuit import _tran_core
+    was = _tran_core.CORE
+    _tran_core.CORE = False
+    try:
+        ratio, (y_ref, n_ref), (y_hdl, n_hdl) = _confirmed_ratio(
+            (R, C), (eh.RHdl, eh.CHdl), MAX_OVERHEAD, want='below')
+    finally:
+        _tran_core.CORE = was
 
     ## Equal work, or the ratio compares two different computations.
     assert n_ref == n_hdl, (n_ref, n_hdl)

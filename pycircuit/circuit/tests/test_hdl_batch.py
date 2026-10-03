@@ -75,12 +75,53 @@ def states(n, k=12, seed=0):
     return out
 
 
+def _why(cir, m):
+    """Every fact `split` reads for the hdl elements of `cir`, for a
+    failure message: the gate once found a bound class with no batch, in
+    one worker of eight, and the bare assertion could not say why."""
+    out = {}
+    for inst, el in cir.elements.items():
+        cls = type(el)
+        info = getattr(cls, '_hdl_info', None)
+        if info is None:
+            continue
+        fn = info['funcs'].get(m)
+        kern = fn.__dict__.get('_hdl_c') if fn is not None else None
+        ref = getattr(fn, '_hdl_ref', None)                   # the optimised twin's original
+        base = getattr(cls, '_hdl_collapse_base', None)
+        bfn = (base._hdl_info['funcs'].get(m) if base is not None and base is not cls else None)
+        out[inst] = {'status': getattr(cls, '_hdl_backend_status', None),
+                     'bound': info.get('_c_bound'), 'chained': info.get('chained'),
+                     'toolkit_same': el.toolkit is cir.toolkit,
+                     'toolkit': type(el.toolkit).__name__, 'shadow': m in el.__dict__,
+                     'generated': _hdl_batch.is_generated(cls, m),
+                     'kern': type(kern).__name__, 'nx': getattr(kern, 'nx', None),
+                     'n': el.n, 'batch_on': _hdl_batch.ENABLED,
+                     ## replaced after the binding, or stripped of it?
+                     'fn_keys': sorted(k for k in fn.__dict__ if k != '_hdl_c') if fn is not None else None,
+                     'optimised': ref is not None,
+                     'ref_has_kern': ref is not None and '_hdl_c' in ref.__dict__,
+                     'base_bound': base._hdl_info.get('_c_bound') if base is not None else None,
+                     'base_fn_is_ours': bfn is fn, 'base_fn_kern': bfn is not None and '_hdl_c' in bfn.__dict__,
+                     'limit_kernel': type(info.get('_c_limit')).__name__}
+    return out
+
+
 def _bound(cir, inst='M0'):
     """The chain's device class is C-bound here -- or the test has nothing
-    to say (no compiler and no stored objects, the compile cache off)."""
+    to say (no compiler and no stored objects, the compile cache off).
+    Bound but not batchable is a FAILURE with the facts: the recorded gate
+    twice found a chain's class bound and its elements unbatched in one
+    worker of eight (2026-10-03), which no single-process order reproduces
+    and a bare assertion could not explain."""
     cls = type(cir[inst])
     if not cls._hdl_info.get('_c_bound'):
         pytest.skip(f'{cls.__name__} is not C-bound: {cls._hdl_backend_status}')
+    facts = _why(cir, 'G')
+    bad = {k: v for k, v in facts.items()
+           if v['bound'] and not (v['toolkit_same'] and v['generated']
+                                  and v['kern'] == 'CKernel' and not v['shadow'])}
+    assert not bad, f'bound but not batchable: {bad}'
     return cls
 
 
@@ -95,6 +136,8 @@ def _both(cir, m, x, *args):
 
 def _batches(cir, m):
     return [(bt.cls, bt.n) for bt in cir.__dict__['_stamp_plan'].methods[m].batches]
+
+
 
 
 def test_a_pass_is_one_call_per_class_and_the_per_element_bytes(kernel_calls):
@@ -144,7 +187,7 @@ def test_every_chained_library_class_batches_bit_for_bit(name, kernel_calls):
             a, b = _both(cir, m, x)
             assert a.tobytes() == b.tobytes(), (name, m)
     for m in PASSES:
-        assert _batches(cir, m) == ([(v, 5)] if expect else []), (name, m)
+        assert _batches(cir, m) == ([(v, 5)] if expect else []), (name, m, _why(cir, m))
     if expect:
         kernel_calls.clear()
         with batching(True), np.errstate(all='ignore'):
@@ -355,11 +398,11 @@ def test_a_fallback_calls_the_batched_elements_once(kernel_calls):
         kernel_calls.clear()
         with batching(True):
             a = cir.G(x)
-        assert len(kernel_calls) == 6
+        assert len(kernel_calls) == 6, _why(cir, 'G')
         kernel_calls.clear()
         with batching(False):
             b = cir.G(x)
-        assert len(kernel_calls) == 6
+        assert len(kernel_calls) == 6, _why(cir, 'G')
     assert a.tobytes() == b.tobytes()
     assert _batches(cir, 'G') == [(type(cir['M0']), 6)]
 

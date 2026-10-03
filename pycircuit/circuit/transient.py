@@ -29,7 +29,7 @@ from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
 ## here.
 from pycircuit.circuit._tran_newton import _StepNewton
 from pycircuit.circuit._tran_branch import _BranchCheck
-from pycircuit.circuit import _tran_companion
+from pycircuit.circuit import _tran_companion, _tran_core
 from pycircuit.circuit._tran_companion import _CompanionModel
 from pycircuit.circuit._tran_history import _RunHistory
 from pycircuit.circuit._tran_predictor import _StagePredictor
@@ -1393,6 +1393,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             ## (the converged point's session, which the branch screen's `C`
             ## read at this state shared: `_conv_session`)
             with _evalhint.evaluating(session=conv):
+                ## (the evaluate core, `_tran_core`: C, q and G in one call
+                ## where it serves, the same state; the path below where not)
+                r = _tran_core.evaluate(self, x, t, provided_function, 'j')
+                if r is not None:
+                    return r
                 _iq, Geq = self._companion_at(x)
                 J = self.cir.G(x, self.epar) + Geq
             return None, _tran_companion._as_float(J, self.toolkit)
@@ -1407,6 +1412,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             in.  The step's state is the full Newton's after it all the same:
             `jacobian_only` evaluates the converged point."""
             with _evalhint.evaluating('q', 'i'):
+                ## (the evaluate core: i and q in one call, the conductance
+                ## from the held `_Cmat`, where it serves)
+                r = _tran_core.evaluate(self, x, t, provided_function, 'f')
+                if r is not None:
+                    return r
                 q = self.cir.q(x, self.epar)
                 iq, _geq = self.get_diff(q, self._Cmat)
                 u = self._source_at(t, provided_function)

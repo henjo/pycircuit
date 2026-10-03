@@ -264,6 +264,10 @@ def tree(name):
             if hasattr(el, nm):
                 wrap(el, nm, f'element.{nm} calls')
     wrap(_hdl_batch.Batch, 'run', 'Batch.run (one C call per class per pass)')
+    ## (the evaluate core, speed round 7: the passes, the companion and the
+    ## residual in one C call -- the `cir.*` passes above are what it replaces)
+    from pycircuit.circuit import _tran_core
+    wrap(_tran_core, 'evaluate', '_tran_core.evaluate (the passes + companion in C)')
     ls = tr._get_linearsolver()
     wrap(ls, 'solve', 'linsolver.solve')
     wrap(ls, 'factor', 'linsolver.factor')

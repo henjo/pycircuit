@@ -4,7 +4,7 @@
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint
+from pycircuit.circuit import _evalhint, _tran_core
 
 #: `u(t)` ONCE PER STEP (speed round 4, stage B; 2026-10-02): the source
 #: vector assembled at a time serves every later request at that exact
@@ -270,6 +270,12 @@ class _CompanionModel:
         `q`, `i`, `G` (and `C`, unless a cache serves it) it is asked for
         here in one fused pass -- the same bits, a compact MOSFET's four
         evaluations at a state 6.3 -> 3.4 ms."""
+        ## THE EVALUATE CORE (`_tran_core`, speed round 7): the passes, the
+        ## companion and the residual in one C call where it serves, the
+        ## same state left behind; None, and the path below, where not
+        r = _tran_core.evaluate(self, x, t, provided_function, 'fj')
+        if r is not None:
+            return r
         C = self._C_lookup(x)
         need = ('q', 'i', 'G') if C is not None else ('C', 'q', 'i', 'G')
         with _evalhint.evaluating(*need):

@@ -1427,6 +1427,18 @@ generated ``u`` returns zeros: every chained library model) is not asked
 for one on the assembly's scatter path -- ``PYCIRCUIT_HDL_ZERO_U=0`` asks
 anyway.
 
+**The transient's residual in one C call** (2026-10-03): where every
+non-constant element of a circuit is a C-bound model, the multistep
+transient evaluates its residual and Jacobian (and the converged-point
+Jacobian, and the chord's residual) in one C call: the passes, the
+constant elements' products through the very BLAS routine numpy uses,
+the integrator's companion term in its own operation order -- the same
+bytes as the Python path, which stays and takes over wherever the core
+declines (a hand-written element in the circuit, an instance shadow, a
+temperature that is not one number, an integrator other than gear, euler,
+trap or theta).  A 20-transistor chain's gear step went from 358 to 277
+us.  ``PYCIRCUIT_TRAN_CORE=0`` keeps the Python path everywhere.
+
 What it buys (measured 2026-08-26, gcc 15.2, one core;
 ``benchmarks/hdl_model_cost.py --backend`` reproduces the table):
 

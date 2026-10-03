@@ -66,6 +66,27 @@ PAIRS = {
         'twin': ['pycircuit.circuit._hdl_climit:_LIMIT_C',
               'pycircuit.circuit._hdl_climit:render'],
     },
+    'the transient evaluation and the core': {
+        'why': 'the core evaluates the four passes, the companion in each '
+               'integrator\'s own operation order and the residual in one C '
+               'call, asks the same C lookup first, and leaves the state '
+               '`_companion_at` and `get_diff` leave; `_solve_timestep`\'s '
+               '`jacobian_only` and `residual_only` are its other two sites',
+        'reference': ['pycircuit.circuit._tran_companion:_CompanionModel._residual_and_jacobian',
+                      'pycircuit.circuit._tran_companion:_CompanionModel._companion_at',
+                      'pycircuit.circuit._tran_companion:_CompanionModel._C_at_state',
+                      'pycircuit.circuit._tran_companion:_CompanionModel.get_diff',
+                      'pycircuit.circuit._lte_kernels:bdf2_companion',
+                      'pycircuit.circuit._lte_kernels:euler_companion',
+                      'pycircuit.circuit._lte_kernels:trapezoidal_companion',
+                      'pycircuit.circuit._lte_kernels:theta_companion',
+                      'pycircuit.circuit._stamp_plan:assemble_matrix',
+                      'pycircuit.circuit._stamp_plan:assemble_vector',
+                      'pycircuit.circuit.transient:Transient._solve_timestep'],
+        'twin': ['pycircuit.circuit._tran_core:CORE_C',
+                 'pycircuit.circuit._tran_core:_Core',
+                 'pycircuit.circuit._tran_core:evaluate'],
+    },
     'the assembly loops and the plan': {
         'why': 'the plan is the loop\'s bincount over the same values in the same '
             'order, with the constant elements pre-filled, the C-bound classes '
@@ -88,6 +109,7 @@ RECORD = {
     'the kernel call and the pass driver': ('09a9e274bbe8', '94c3c93979f5'),
     'the limiting loop and the walk': ('1668b574dfdd', '029cab015901'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
+    'the transient evaluation and the core': ('88fdcf23ab0d', 'd43fafebce5b'),
     'the assembly loops and the plan': ('e83483cda784', 'd10b57312cbf'),
 }
 

@@ -3725,6 +3725,32 @@ other check.  Measured: 20 MosLevel1 409.7 -> 352.1 us a step (-14.1 %),
 20 Gummel-Poon -18.5 %, the PSP cases unchanged, bit for bit.  The round
 closed: since dc2214da the 20-MosLevel1 chain is 802 -> 352 us a step.
 
+## `_tran_core.py` -- the evaluate core (2026-10-03, speed round 7's commit 1)
+
+### (module docstring)
+
+Andreas: "How could we take a big speed step?" -> the Newton iterate in C,
+planned with a two-day ceiling first; the ceiling refused the iterate
+(1.15x against a 1.4x gate: the plan's premise was the in-run tree's
+inclusive timers, which rank pieces and do not size them) and he chose
+to build its evaluate half for real.  One C call evaluates the passes a
+site asks for and the companion in the integrator's own operation order;
+the LMM step's three evaluation sites take it and fall back to the Python
+path wherever it declines, which happens before any state is touched.
+The constant vector groups' products go through the address of the
+`cblas_dgemv` numpy itself loaded, so the same kernel runs (a C loop,
+with or without FMA, differs on most products); the bincounts are
+sequential from +0.0 as numpy's; the companion divides where the kernel
+divides.  The state the Python path leaves (`_q_cache`, `_C_cache`, the
+memo, `get_diff`'s six) is written from the C outputs; `_C_lookup` is
+asked first and a hit skips the C pass, as `_C_at_state` does.
+
+The pinned pair "the transient evaluation and the core" fired during the
+build, when a lint fix changed the twin after the record: re-recorded in
+the same commit.  Measured (parent 82819d61): 20 MosLevel1 357.8 ->
+277.3 us a step (-22.5 %), 20 Gummel-Poon -18.9 %, the PSP cases -3..-8
+%, bit for bit.
+
 ## `tests/test_pinned_pairs.py` -- the pinned pairs (2026-10-03)
 
 Andreas, after speed round 6: "How would we keep the python code and c
