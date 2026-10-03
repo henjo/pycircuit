@@ -6476,8 +6476,9 @@ class BehaviouralMeta(type):
         ## in).  Only generated when the model asked for it.
         lspec = info['limit_spec']
         if lspec:
-            from pycircuit.circuit._limiting import (apply_limit as _lim,
-                                                     device_writeback as _dwb)
+            from pycircuit.circuit import _hdl_climit as _climit
+            from pycircuit.circuit._limiting import apply_limit as _lim
+            from pycircuit.circuit._limiting import device_writeback as _dwb
             lgroups = info.get('limit_groups') or []
             _grouped = set()
             for _s, _ix in lgroups:
@@ -6487,6 +6488,23 @@ class BehaviouralMeta(type):
 
             def limit(self, x, x0, epar=defaultepar, _ls=lspec,
                       _lg=lgroups, _l1=lsingle):
+                ## THE C KERNEL FIRST (`_hdl_climit`, speed round 5): on a
+                ## C-bound class the whole closure below runs as one
+                ## kernel -- the same bytes, 1.7 us a call against 4-20 of
+                ## Python.  It hands back None where it does not serve (a
+                ## vector or a temperature that is not one; a NaN among
+                ## the keys only Python's own sort orders), and the
+                ## closure answers.  Built from the spec as it was when
+                ## the class bound: a spec mutated in place afterwards is
+                ## not seen by it (a test counting the parameter functions
+                ## switches the kernel off: `_hdl_climit.ENABLED`).
+                ck = info.get('_c_limit') if _climit.ENABLED else None
+                if (ck is not None
+                        and not getattr(self.toolkit, 'jax', False)
+                        and not getattr(self.toolkit, 'symbolic', False)):
+                    r = ck(self, x, x0, epar)
+                    if r is not None:
+                        return r
                 out = np.array(x, dtype=float, copy=True)
                 x0a = np.asarray(x0, dtype=float)
                 args = _args_of(self, epar)
@@ -7401,8 +7419,12 @@ def explain(target, source=True, symbolic=True, maxlines=40):
         if g is not None and '_hdl_ref' in g.__dict__:
             twins += (f' (G bytecode {len(g._hdl_ref.__code__.co_code)}'
                       f' -> {len(g.__code__.co_code)})')
+    ## (and the limiter's own kernel, `_hdl_climit`, once the class bound)
+    lim = ''
+    if info.get('limit_spec') and info.get('_c_limit_status'):
+        lim = f" (limit: {info['_c_limit_status']})"
     lines.append(f"backend: {getattr(cls, '_hdl_backend_status', 'numpy')}"
-                 f'{twins}')
+                 f'{twins}{lim}')
     feats = []
     if sm['statenames']:
         feats.append('%d state%s' % (len(sm['statenames']),

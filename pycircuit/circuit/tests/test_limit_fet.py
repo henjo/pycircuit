@@ -608,8 +608,9 @@ def test_limit_pnj_is_unchanged_by_the_limit_spec_restructure(ISv):
                                np.array([vold + shift, shift]))
                 want = _pnjlim(vnew, vold, VT, ISv, numeric)
                 assert out[1] == shift          # the plus terminal moves
-                ## ⚠ to 2 ulp, not bit-identical: `limit()` runs in the C
-                ## backend and `vtf` is the Python fold, and with the exact
+                ## ⚠ to 2 ulp, not bit-identical: `limit()`'s `VT` comes
+                ## through the model's own chain (its C kernel on a
+                ## chained class) and `vtf` is the Python fold, and with the exact
                 ## Boltzmann constant (2026-09-05) their `k T / q` differ by
                 ## one ulp where with 1.38e-23 they had rounded alike.  The
                 ## claim -- the dispatch and the write-back -- is intact at

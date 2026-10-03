@@ -55,13 +55,14 @@ printed (an unsupported node, `tanh` -- the backend's named ulp
 exception -- a parameter without ingredients, a signature that is not
 the packed layout) keeps its Python closure and its own backend status;
 `_c_limit_status` says why.  The Python closure's parameter functions are
-not called on a C-bound class -- a test counting them pins numpy
-(`hdl.set_backend('numpy', cls)`) -- and a spec list mutated in place
+not called on a C-bound class -- a test counting them switches the kernel
+off (`ENABLED`, `PYCIRCUIT_HDL_CLIMIT=0`) -- and a spec list mutated in place
 AFTER the kernel was bound is not seen by it, as the stamp plan's contract
 has it.
 
 History: `doc/pss_log_260902.md`, 2026-10-03 (speed round 5).
 """
+import os
 import types
 
 import numpy as np
@@ -70,6 +71,14 @@ from pycircuit.circuit import _hdl_cbackend as _cb
 
 #: the law of each probe kind, as the C `_lim` dispatches it
 KINDS = {'pnj': 0, 'fet': 1, 'vds': 2, 'delta': 3, 'id': 4}
+
+#: THE SWITCH: False keeps the Python closure on every class (the chain
+#: functions stay on C) -- `PYCIRCUIT_HDL_CLIMIT=0`, read at import; the
+#: closure reads the attribute per call, so a test can flip it.  The
+#: tests that count the closure's parameter functions do: a numpy pin of
+#: the WHOLE class moved their recorded transients, since the 'auto'
+#: Newton options read a numpy class differently (2026-10-03).
+ENABLED = os.environ.get('PYCIRCUIT_HDL_CLIMIT', '1') != '0'
 
 
 class Refused(Exception):

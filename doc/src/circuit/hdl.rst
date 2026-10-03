@@ -1397,6 +1397,17 @@ Newton options read a C kernel as a hundredth of its numpy cost -- so a
 mid-sized model's transient takes the full Newton where it took the chord
 on numpy, and its answer moves at the Newton tolerance.
 
+**The limiter runs in C too** (2026-10-03): a model's ``$limit`` closure
+-- the probes' parameter chains, SPICE's laws, the canonical orders and
+the device write-back -- is one more kernel of a C-bound class, the same
+bytes as the Python closure (1.7 us a call against 4-20 us), bound with
+the others and named on the ``backend:`` line (``backend: c (limit:
+c)``).  It hands a call back to the Python closure only where Python's
+own sort order is the answer (a NaN among the ranking keys), and it
+raises no numpy warnings.  ``PYCIRCUIT_HDL_CLIMIT=0`` keeps the Python
+closure on every class (the chain functions stay on C);
+``hdl.LIMIT_PAR_CACHE`` governs that closure alone.
+
 What it buys (measured 2026-08-26, gcc 15.2, one core;
 ``benchmarks/hdl_model_cost.py --backend`` reproduces the table):
 

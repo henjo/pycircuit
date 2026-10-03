@@ -28,6 +28,17 @@ Selection
     never builds, and an instance runs one backend from its first
     evaluation.  An instance on the JAX or symbolic toolkit leaves the
     class unresolved (its own path is the jax twin).
+
+The limiter
+    A class that declares `$limit` gets its generated `limit()` as a
+    kernel of its own (`_hdl_climit`, 2026-10-03): rendered from the spec
+    and the parameter functions' kept statements, built and stored beside
+    the chain functions' objects, bound by `_resolve` after them and
+    unbound by `detach`.  It refuses itself -- an unprintable node,
+    `tanh`, a parameter without ingredients -- and never the class;
+    `info['_c_limit_status']` says.  On a C-bound class the closure's
+    parameter functions are not called: a test that counts them pins
+    numpy.
     `PYCIRCUIT_HDL_BACKEND=c` / `numpy` (or `hdl.set_backend`, or a class
     attribute `hdl_backend`) pins it, applied at class creation as
     before.  `cls._hdl_backend_status` always says what actually
@@ -540,7 +551,8 @@ def _build_missing_parallel(fns):
 ## Attaching to a class.
 
 #: The functions worth a C body: the per-iteration ones.  `CY` (AC),
-#: `u`/`dudt`/`uac` (x-free, cheap) stay numpy.
+#: `u`/`dudt`/`uac` (x-free, cheap) stay numpy.  (The limiter is a kernel
+#: of its own, `_hdl_climit`, bound beside these.)
 C_FUNCS = ('i', 'G', 'q', 'C', 'i_dc', 'G_dc')
 
 
@@ -557,6 +569,9 @@ def detach(cls, info):
         if fn is not None and hasattr(fn, '_hdl_c'):
             del fn._hdl_c
     info['_c_bound'] = False
+    if info.get('limit_spec'):
+        from pycircuit.circuit import _hdl_climit
+        _hdl_climit.unbind(info)
 
 
 def attach(cls, info):
@@ -657,8 +672,13 @@ def _resolve(cls, info, explicit):
     ## on a miss, and raises `CompileError` naming the missing compiler
     ## when it must build.  'auto' looked above, and stays quiet.)
     cold = False
+    ## (the class's limiter, printed from its spec and built beside the
+    ## chain functions; refused on its own, never the class: `_hdl_climit`)
+    from pycircuit.circuit import _hdl_climit
+    lsrc = _hdl_climit.source_for(info) if info.get('limit_spec') else None
     try:
-        _build_missing_parallel(list(todo.values()))
+        _build_missing_parallel(list(todo.values())
+                                + ([lsrc] if lsrc is not None else []))
         for fn in todo.values():
             ## The x length the kernel reads equals its output row
             ## count: `i`, `G`, `q`, `C` are all n-per-side.  Taken from
@@ -679,3 +699,5 @@ def _resolve(cls, info, explicit):
     ## (read by `_hdl_cse.take`: a C-bound class's calls never fuse)
     info['_c_bound'] = True
     _note(cls, 'c')
+    if lsrc is not None:
+        _hdl_climit.bind(cls, info, lsrc)

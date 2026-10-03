@@ -1,8 +1,9 @@
 """Speed round 4's harness: what one gear step costs around the device
 evaluations (2026-10-02, the per-step solver machinery plan).
 
-Four cases: the 7-node PSP stage (one device; the PSS target's circuit),
-a 20-MosLevel1 chain and a 20-PSP chain (45 unknowns each), each a DC
+Five cases: the 7-node PSP stage (one device; the PSS target's circuit),
+a 20-MosLevel1 chain, a 20-Gummel-Poon chain and a 20-PSP chain (45-61
+unknowns), each a DC
 operating point then 100 fixed gear steps, and the PSP stage's PSS (gear,
 40 points, reltol 1e-8).  A case is timed over its `solve` and reported
 per step; the solution's bytes and the run's statistics (every slot but
@@ -68,6 +69,26 @@ def chain(make, ndev=20, vdd=1.8, vg=0.9):
     return c
 
 
+def gp_chain(ndev=20):
+    """Common-emitter stages in a chain: each base through 10 k from the
+    previous collector (the limiter's other library case: single probes,
+    no parameter reading the solution)."""
+    c = SubCircuit()
+    c.add_node('vcc')
+    c['vcc'] = VS('vcc', gnd, v=3.0)
+    c.add_node('in')
+    c['vin'] = VSin('in', gnd, v=0.75, va=2e-2, freq=1e6)
+    prev = 'in'
+    for k in range(ndev):
+        c.add_node(f'b{k}')
+        c.add_node(f'c{k}')
+        c[f'rb{k}'] = R(prev, f'b{k}', r=1e4)
+        c[f'rc{k}'] = R('vcc', f'c{k}', r=1e3)
+        c[f'Q{k}'] = eh.GummelPoonNpnHdl(f'c{k}', f'b{k}', gnd)
+        prev = f'c{k}'
+    return c
+
+
 def stage():
     c = SubCircuit()
     for n in ('g', 'd', 'vdd'):
@@ -84,8 +105,9 @@ BUILD = {
     'mos1': lambda: chain(lambda d, g: eh.MosLevel1Hdl(d, g, gnd, gnd)),
     'psp': lambda: chain(lambda d, g: compact.PspMosLongChannel(
         d, g, gnd, gnd, fnt=1.0), vdd=1.2, vg=0.7),
+    'gp': gp_chain,
 }
-CASES = ('stage', 'mos1', 'psp', 'pss')
+CASES = ('stage', 'mos1', 'gp', 'psp', 'pss')
 
 
 def _stats(tr):

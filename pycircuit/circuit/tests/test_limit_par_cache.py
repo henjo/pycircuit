@@ -12,9 +12,9 @@ the old behaviour, for the comparison).
 import numpy as np
 import pytest
 
+from pycircuit.circuit import _hdl_climit, hdl
 from pycircuit.circuit import circuit as cm
 from pycircuit.circuit import elements_hdl as eh
-from pycircuit.circuit import hdl
 from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit.elements import VS, C, R, SubCircuit, VSin, gnd
 from pycircuit.circuit.toolkit import numeric
@@ -34,6 +34,18 @@ def _stage(make):
     return c
 
 
+@pytest.fixture
+def closure_limiters(monkeypatch):
+    """The Python closure, not its C kernel (`_hdl_climit.ENABLED` off;
+    the chain functions stay on C): on a C-bound class the closure's
+    parameter functions are never called, so a count of them -- or a run
+    with the cache off -- says nothing there.  (A numpy pin of the WHOLE
+    class moved the recorded transients: the 'auto' Newton options read a
+    numpy class differently.)"""
+    monkeypatch.setattr(_hdl_climit, 'ENABLED', False)
+
+
+@pytest.mark.usefixtures('closure_limiters')
 @pytest.mark.parametrize('name', ['MosLevel1Hdl', 'GummelPoonNpnHdl',
                                   'EkvNmosHdl'])
 def test_a_transient_is_byte_identical_with_the_cache_off(name, monkeypatch):
@@ -74,6 +86,7 @@ def _counting(cls, calls):
     return saved
 
 
+@pytest.mark.usefixtures('closure_limiters')
 def test_the_values_are_kept_until_the_parameters_or_the_temperature_move():
     cls = eh.MosLevel1Hdl
     e = cls('d', 'g', gnd, gnd)
@@ -119,6 +132,7 @@ def test_the_values_are_kept_until_the_parameters_or_the_temperature_move():
         spec[:] = saved
 
 
+@pytest.mark.usefixtures('closure_limiters')
 def test_a_single_probe_model_computes_each_value_once_per_call():
     cls = eh.GummelPoonNpnHdl
     e = cls('c', 'b', gnd)
@@ -138,6 +152,7 @@ def test_a_single_probe_model_computes_each_value_once_per_call():
         spec[:] = saved
 
 
+@pytest.mark.usefixtures('closure_limiters')
 def test_the_cache_off_evaluates_at_every_use(monkeypatch):
     """With the cache off every use evaluates: the ranking once per
     function, and the apply loop again for a probe whose limit the
@@ -289,7 +304,7 @@ def _reference_limit(e, x, x0, epar=defaultepar):
 @pytest.mark.parametrize('name', ['MosLevel1Hdl', 'MosLevel3Hdl',
                                   'GummelPoonNpnHdl', 'EkvNmosHdl',
                                   'DiodeSpiceHdl'])
-def test_the_streamlined_body_answers_the_old_one_bit_for_bit(name):
+def test_the_streamlined_body_answers_the_old_one_bit_for_bit(name, monkeypatch):
     """Random states and steps of every size, ties (`x == x0`), signed
     zeros, rails: the same limited vector to the last bit, probe groups
     (MosLevel1/3), singles (the others) and a `limit_together` with a
@@ -301,6 +316,7 @@ def test_the_streamlined_body_answers_the_old_one_bit_for_bit(name):
     e.update_iparv()
     rng = np.random.default_rng(7)
     n = e.n
+    cases = []
     for _ in range(400):
         scale = rng.choice([1e-3, 0.1, 1.0, 10.0, 100.0])
         x0 = rng.uniform(-2.0, 2.0, n)
@@ -313,6 +329,13 @@ def test_the_streamlined_body_answers_the_old_one_bit_for_bit(name):
             x0[rng.integers(0, n)] = 0.0
         elif k == 3:
             x[:2] = 50.0 * np.sign(x[:2])               # the rails
-        a = _reference_limit(e, x, x0)
+        cases.append((x, x0, _reference_limit(e, x, x0)))
+    ## the C kernel on a C-bound class (`_hdl_climit`), then the Python
+    ## closure with the kernel switched off: both the reference's bytes
+    for x, x0, a in cases:
+        b = e.limit(x, x0, defaultepar)
+        assert a.tobytes() == b.tobytes(), (name, x, x0)
+    monkeypatch.setattr(_hdl_climit, 'ENABLED', False)
+    for x, x0, a in cases:
         b = e.limit(x, x0, defaultepar)
         assert a.tobytes() == b.tobytes(), (name, x, x0)

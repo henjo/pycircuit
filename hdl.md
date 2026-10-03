@@ -852,7 +852,9 @@ roadmap sec. 56.) Measured
 215x), bitwise identical to numpy apart from two named causes (numpy's
 own tanh, and the sign of exact zeros where numpy computes a subchain
 in int64). The suite is green in both states. Below is the spike that
-decided it.
+decided it.  **The `$limit` closure is a kernel of its own since
+2026-10-03** (`_hdl_climit`, roadmap sec. 62): the same bytes, 1.7 us a
+call, declining only the calls Python's own sort order answers.
 
 **Measured 2026-08-26 (roadmap 19):** emitting the same chain as C and
 compiling at `-O2` makes PSP's `G` **219-229x faster** (17.3 ms ->

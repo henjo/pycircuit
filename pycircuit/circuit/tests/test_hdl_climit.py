@@ -9,6 +9,7 @@ x)`), the temperatures it serves, and the calls it DECLINES -- a NaN or
 an infinity among the keys it would sort -- which the closure answers.
 `test_a_wrong_law_is_caught` shows the sweep can fail.
 """
+import contextlib
 import pickle
 import types
 import warnings
@@ -23,7 +24,7 @@ from pycircuit.circuit import circuit as cm
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit.hdl import Node
-from pycircuit.circuit.tests.test_hdl_cbackend import _compare
+from pycircuit.circuit.tests.test_hdl_cbackend import _compare, numpy_backend
 from pycircuit.circuit.tests.test_limit_fet import _fet
 from pycircuit.circuit.toolkit import numeric
 
@@ -316,6 +317,8 @@ def test_a_limiter_that_cannot_be_printed_refuses_itself_only(monkeypatch):
     assert cl.bind(type(e), info) is not None and info['_c_limit_status'] == 'c'
     cl.unbind(info)
     assert info['_c_limit'] is None and info['_c_limit_status'].startswith('numpy')
+    ## (bound again: other tests in this process read the class)
+    assert cl.bind(type(e), info) is not None
 
 
 def test_a_class_with_no_limit_or_no_c_source_is_refused():
@@ -347,3 +350,122 @@ def test_a_bound_limiter_freezes_and_thaws_without_its_kernel():
     back = _hdl_cache.thaw(payload)
     assert '_c_limit' not in back and '_c_limit_status' not in back
     assert back['limit_spec'][0][3][0].__dict__.get('_hdl_limit_par') is not None
+
+
+## -- bound: the closure takes the kernel (LC2, 2026-10-03) ------------------
+
+@pytest.mark.parametrize('name', _limiting_classes())
+def test_every_limiting_library_class_binds_its_kernel(name):
+    """A C-bound class binds its limiter with its chain functions, and
+    `explain` says so on the backend line (the digests leave that line
+    out)."""
+    e = _inst(getattr(eh, name))
+    info = _bound(e)
+    assert info.get('_c_limit') is not None, info.get('_c_limit_status')
+    assert info['_c_limit_status'] == 'c'
+    line = next(l_ for l_ in hdl.explain(type(e)).splitlines()
+                if l_.startswith('backend:'))
+    assert line.startswith('backend: c') and line.endswith('(limit: c)'), line
+
+
+def test_the_closure_takes_the_kernel_and_a_numpy_pin_restores_the_closure():
+    e = _inst(eh.MosLevel1Hdl)
+    info = _bound(e)
+    kern = info['_c_limit']
+    calls = []
+
+    def counting(el, x, x0, ep):
+        calls.append(1)
+        return kern(el, x, x0, ep)
+    info['_c_limit'] = counting
+    x0 = np.linspace(-0.5, 1.0, e.n)
+    x = x0 + 0.8
+    out = e.limit(x, x0)
+    assert calls == [1]
+    assert out.tobytes() == kern(e, x, x0, defaultepar).tobytes()
+    info['_c_limit'] = kern
+    hdl.set_backend('numpy', type(e))
+    try:
+        assert type(e)._hdl_info.get('_c_limit') is None
+        assert _py_limit(e, x, x0).tobytes() == out.tobytes()
+    finally:
+        hdl.set_backend(None, type(e))
+    ## a resolved class resolves again at once under 'auto': re-bound
+    assert type(e)._hdl_info.get('_c_limit') is not None
+
+
+def test_the_switch_keeps_the_closure(monkeypatch):
+    """`ENABLED` off: `limit()` never consults the kernel (the chain
+    functions stay on C); on again, it does."""
+    e = _inst(eh.MosLevel1Hdl)
+    info = _bound(e)
+    kern = info['_c_limit']
+    calls = []
+
+    def counting(el, x, x0, ep):
+        calls.append(1)
+        return kern(el, x, x0, ep)
+    info['_c_limit'] = counting
+    try:
+        x0 = np.linspace(-0.5, 1.0, e.n)
+        monkeypatch.setattr(cl, 'ENABLED', False)
+        a = _py_limit(e, x0 + 0.8, x0)
+        assert calls == []
+        monkeypatch.setattr(cl, 'ENABLED', True)
+        b = e.limit(x0 + 0.8, x0)
+        assert calls == [1] and a.tobytes() == b.tobytes()
+    finally:
+        info['_c_limit'] = kern
+
+
+def test_a_declined_call_is_answered_by_the_closure():
+    """A NaN at a probe terminal: the kernel declines, `limit()` falls
+    through to the closure, whose answer is the numpy-pinned one."""
+    e = _inst(eh.MosLevel1Hdl)
+    info = _bound(e)
+    x0 = np.linspace(-0.5, 1.0, e.n)
+    x = x0 + 0.3
+    x[1] = np.nan
+    assert info['_c_limit'](e, x, x0, defaultepar) is None
+    out = _py_limit(e, x, x0)
+    with numpy_backend(type(e)):
+        ref = _py_limit(e, x, x0)
+    assert out.tobytes() == ref.tobytes()
+
+
+def test_an_instance_on_the_jax_toolkit_never_consults_the_kernel():
+    pytest.importorskip('jax')
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    ref = _inst(eh.EkvNmosHdl)
+    info = _bound(ref)
+    kern = info['_c_limit']
+    calls = []
+
+    def counting(el, x, x0, ep):
+        calls.append(1)
+        return kern(el, x, x0, ep)
+    info['_c_limit'] = counting
+    try:
+        e = eh.EkvNmosHdl(*[Node(f'n{k}') for k in range(4)], toolkit=jaxtoolkit)
+        e.update_iparv()
+        x0 = np.linspace(-0.5, 1.0, 4)
+        with contextlib.suppress(Exception):      # the closure's business there
+            e.limit(x0 + 0.8, x0)
+        assert calls == []
+        ref.limit(x0 + 0.8, x0)
+        assert calls == [1]
+    finally:
+        info['_c_limit'] = kern
+
+
+def test_a_thawed_class_binds_its_kernel_again():
+    e = _inst(eh.EkvNmosHdl)
+    info = _bound(e)
+    back = _hdl_cache.thaw(_hdl_cache.freeze(info))
+    assert back.get('_c_limit') is None
+    cb.attach(type(e), back)
+    cb.ensure(type(e), back, numeric)
+    assert back.get('_c_limit') is not None and back['_c_limit_status'] == 'c'
+    x0 = np.linspace(-0.5, 1.0, e.n)
+    assert back['_c_limit'](e, x0 + 0.8, x0, defaultepar).tobytes() == \
+        info['_c_limit'](e, x0 + 0.8, x0, defaultepar).tobytes()

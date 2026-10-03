@@ -816,10 +816,11 @@ class DiodeSpiceHdl(Behavioural):
     charge expression is a product and not a quotient.
 
     Shot and flicker noise on the junction and thermal noise on ``rs``
-    are included (roadmap item 14, for this device).  There is no
-    ``$limit``, and no PCNR participation either -- the layer refuses a
-    device that carries charge -- so the ``expl`` in the forward term is
-    the whole of what keeps a wild Newton iterate finite.  See the
+    are included (roadmap item 14, for this device).  The junction is
+    ``$limit``-ed (``pnjlim`` on the internal node, an identity probe
+    across ``rs``); there is no PCNR participation -- the layer refuses a
+    device that carries charge -- so between iterations the ``expl`` in
+    the forward term is what keeps a wild Newton iterate finite.  See the
     import block for why it is ``expl`` and not ``limexp``.
     """
     params_as = 'p'

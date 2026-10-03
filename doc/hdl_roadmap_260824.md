@@ -6423,3 +6423,19 @@ the closure over 2000 random cases, a chained sequential group, the
 inputs the closure accepts, the temperatures, the declines, and shows
 the sweep can fail.  Standalone the kernel is 1.7 us a call where the
 closure was 3.8 (the SPICE diode) to 20 (the thermal BJT).
+
+### LC2 (2026-10-03): bound and taken
+
+`_hdl_cbackend._resolve` renders the limiter beside the chain functions
+and binds it after them; `detach` unbinds; the generated `limit()` tries
+the kernel first (not on a JAX or symbolic toolkit) and keeps the closure
+for what the kernel hands back as None; `explain()`'s `backend:` line
+says `(limit: c)`.  The tests that count the closure's parameter
+functions pin numpy, and the reference transliteration checks both
+paths.  Measured against LC1 (d8f74c42): 20 MosLevel1 1256.7 -> 801.5 us
+a step (-36.2 %), 20 Gummel-Poon -12.7 %, the PSP cases unchanged (no
+`$limit`); `el.limit` 2.05-2.31 us from 3.8-17.2; bytes and statistics
+identical.  Since round 3's close the 20-MosLevel1 chain is -42 % a
+step, since round 1's start 4.8x.  What a mid-sized model's step is now:
+the kernels' call floor (~1.7 us a call, 1.2 of it wrapper) and the
+assembly's numpy floor (round 4's refusal); nothing of the limiter.
