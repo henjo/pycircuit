@@ -11,23 +11,22 @@ authors = [
     {name = "Joacim Olsson"},
     {name = "Andreas Drejfert"},
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "numpy",
     "scipy",
     "sympy",
     "jax",
     "pydot",
+    "polars-waveform>=0.1",
     "pytest-xdist>=3.8.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "matplotlib", "pexpect"]
+psf = ["polars-psf>=0.1"]
+dev = ["pytest", "matplotlib", "pexpect", "polars-psf>=0.1"]
 ginac = ["pybind11>=2.11"]
 docs = ["sphinx", "matplotlib", "pexpect"]
-
-[project.scripts]
-cdsnetlist = "pycircuit.post.cds.cdsnetlist:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

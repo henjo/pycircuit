@@ -1,4 +1,3 @@
-import os
 from setuptools import setup
 
 setup(name='Pycircuit',
@@ -8,8 +7,6 @@ setup(name='Pycircuit',
       author_email='henjo2006@gmail.com',
       url='http://rigel.johome.net/svn/pycircuit',
       packages=['pycircuit', 'pycircuit.circuit', 'pycircuit.post', 'pycircuit.utilities',
-                'pycircuit.sim', 'pycircuit.sim.gnucap', 'pycircuit.post.cds', 'pycircuit.post.cds.yapps',
-                'pycircuit.post.jwdb'],
-      scripts=[os.path.join('pycircuit', 'post', 'cds', 'cdsnetlist')],
+                'pycircuit.sim', 'pycircuit.post.cds'],
       tests_require=['pytest'],
      )

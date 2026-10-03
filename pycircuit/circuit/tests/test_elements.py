@@ -281,7 +281,7 @@ def test_Idt_tran():
     tran = Transient(c, toolkit=numeric)
     result = tran.solve(tend=0.5,timestep=1e-2, fixed_timestep=True)
     y = result.v(nout).y
-    x = result.v(nout).x[0]
+    x = result.v(nout).x
     # vout = vin * t with constant input
     # Transient solver time alignment is now correct: y(t) evaluates at t
     assert_array_almost_equal(y[1:], x[1:])
@@ -323,7 +323,7 @@ def test_Idtmod_tran():
     tran = Transient(c, toolkit=numeric)
     result = tran.solve(tend=0.5,timestep=1e-2, fixed_timestep=True)
     y = result.v(nout).y
-    x = result.v(nout).x[0]
+    x = result.v(nout).x
     # vout = vin * t with constant input
     # Transient solver time alignment is now correct: y(t) evaluates at t
     assert_array_almost_equal(y[1:], x[1:])
@@ -343,7 +343,7 @@ def test_Idtmod_modulo():
     tran = Transient(c, toolkit=numeric)
     result = tran.solve(tend=2.0,timestep=1e-2, fixed_timestep=True)
     y = result.v(nout).y
-    x = result.v(nout).x[0]
+    x = result.v(nout).x
     # vout = vin * t with constant input
     # Transient solver time alignment is now correct: y(t) evaluates at t
     assert_array_almost_equal(y[1:], x[1:] % 1.0)

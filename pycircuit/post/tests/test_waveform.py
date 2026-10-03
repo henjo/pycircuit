@@ -8,7 +8,9 @@ from numpy.testing import assert_array_almost_equal, assert_array_equal
 import numpy as np
 from pycircuit.post import Waveform
 from pycircuit.post.functions import *
+from numpy import array, pi, sin, arange, vstack
 from pycircuit.post.testing import *
+from pycircuit.post.waveform import iswave
 from numpy.testing import *
 
 testdata1 = (
@@ -340,7 +342,7 @@ def check_func(func, reference_func, args, preserve_yunit = False,
 
 def check_nonscalar_function(func):
     """Check that scalar input to a  waveform-only functions raises an exception"""
-    with pytest.raises(AssertionError):
+    with pytest.raises((AssertionError, AttributeError)):
         func(10)
 
 def get_y(w):
@@ -451,3 +453,15 @@ def test_duplicate_xlabels():
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
+
+
+def test_subs_then_numeric():
+    import sympy
+    import polars_waveform as pw
+    R = sympy.Symbol('R')
+    w = Waveform(np.array([1.0, 2.0, 3.0]), np.array([R, 2 * R, 3 * R], dtype=object), ylabel='v')
+    with pytest.raises(ValueError, match='R'):
+        w.numeric()
+    n = w.subs({R: 2}).numeric()
+    assert isinstance(n, pw.Waveform) and n.y.to_list() == [2.0, 4.0, 6.0]
+    assert w.subs(R, 1).numeric().ymax() == 3.0

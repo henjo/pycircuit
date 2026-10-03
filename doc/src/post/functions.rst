@@ -6,5 +6,6 @@ Functions operating on waveforms
 
 .. automodule:: pycircuit.post.functions
    :members:
+   :imported-members:
    :undoc-members:
    :show-inheritance:

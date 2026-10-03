@@ -3,6 +3,7 @@
 # See LICENSE for details.
 
 import numpy as np
+import polars_waveform as pw
 from copy import copy
 from pycircuit.circuit import Circuit, SubCircuit, gnd, R, VS, IS, \
     Branch, VCCS, CircuitProxy
@@ -196,11 +197,16 @@ class FeedbackDeviceAnalysis(SSAnalysis):
             Y_noloop = toolkit.toMatrix(G_noloop + s*C_noloop)
             return toolkit.det(Y) / toolkit.det(Y_noloop)
         if isiterable(slist):
-            F = Waveform(self.toolkit.array(slist),
-                         self.toolkit.array([Ffunc(s) for s in slist]),
-                         xlabels = ('frequency',),
-                         xunits = ('Hz',),
-                         ylabel = 'F')
+            x = np.asarray(slist if complexfreq else freqs)
+            y = np.asarray([Ffunc(s) for s in slist])
+            if y.dtype == object or np.iscomplexobj(x):
+                F = Waveform(self.toolkit.array(slist), self.toolkit.array(y),
+                             xlabels = ('frequency',),
+                             xunits = ('Hz',),
+                             ylabel = 'F')
+            else:
+                F = pw.Waveform.from_arrays(x, y, xlabels=['frequency'],
+                                            xunits=['Hz'], ylabel='F')
         else:
             F = Ffunc(slist)
 

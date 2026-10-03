@@ -6,6 +6,7 @@
 import numpy as np
 from pycircuit.post import Waveform
 from pycircuit.post.functions import *
+from numpy import array, pi, sin, arange, vstack
 
 from .test_waveform import testdata1, check_func, check_nonscalar_function
 
@@ -13,11 +14,11 @@ from .test_waveform import testdata1, check_func, check_nonscalar_function
 
 def test_db20():
     for testdata in testdata1:
-        check_func(db20, lambda x: 20*log10(abs(x)), (testdata,))
+        check_func(db20, lambda x: 20*np.log10(abs(x)), (testdata,))
 
 def test_db10():
     for testdata in testdata1:
-        check_func(db10, lambda x: 10*log10(abs(x)), (testdata,))
+        check_func(db10, lambda x: 10*np.log10(abs(x)), (testdata,))
 
 def test_phase():
     for testdata in testdata1:

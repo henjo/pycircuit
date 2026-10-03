@@ -20,8 +20,9 @@ import operator
 from copy import copy
 from pycircuit.utilities import remove_index
 from functools import reduce
+from polars_waveform import WaveformBase
 
-class Waveform(object):
+class Waveform(WaveformBase):
     """The Waveform class handles swept signals. The sweep can be multi 
     dimensional.
 
@@ -181,6 +182,9 @@ class Waveform(object):
     def binaryop(self, op, a, ylabel = None, yunit = None, reverse = False, 
                  sameunit = False):
         """Apply binary operator between self and a"""
+        if isinstance(a, WaveformBase) and not isinstance(a, Waveform):
+            num = self.numeric()  # with a polars_waveform.Waveform: as numbers
+            return op(a, num) if reverse else op(num, a)
         if isinstance(a, Waveform):
             if not compatible(self, a):
                 raise ValueError("Waveforms are not compatible")
@@ -439,6 +443,79 @@ class Waveform(object):
     def real(self): return applyfunc(np.real, self, 'real')
     def imag(self): return applyfunc(np.imag, self, 'imag')
     def conjugate(self): return applyfunc(np.conjugate, self, 'conjugate')
+    conj = conjugate
+
+    ## polars_waveform.WaveformBase: the shared waveform interface. This numpy-based class is
+    ## the waveform kind for values Polars cannot compute with (sympy expressions from the
+    ## symbolic toolkit); numeric() turns it into a polars_waveform.Waveform, on which the
+    ## measurements this class does not implement itself (bandwidth, cross, ...) run.
+
+    @classmethod
+    def from_arrays(cls, x, y, xlabels=None, ylabel=None, xunits=None, yunit=None):
+        return cls(x, y, xlabels=xlabels, ylabel=ylabel, xunits=xunits, yunit=yunit)
+
+    def to_arrays(self):
+        return list(self._xlist), self._y
+
+    @property
+    def index(self):
+        labels = self.xlabels
+        if labels is None or any(l is None for l in labels):
+            return ['x%d' % i for i in range(self._dim)]
+        return [str(l) for l in labels]
+
+    @property
+    def xname(self):
+        return self.index[-1]
+
+    @property
+    def yname(self):
+        return self.ylabel if self.ylabel is not None else 'y'
+
+    @property
+    def xunit(self):
+        return self.xunits[-1] if self.xunits else None
+
+    def _binop(self, other, op, *, reverse=False):
+        ops = {'+': operator.__add__, '-': operator.__sub__, '*': operator.__mul__,
+               '/': operator.__truediv__, '<': operator.__lt__, '>': operator.__gt__,
+               '<=': operator.__le__, '>=': operator.__ge__}
+        return self.binaryop(ops[op], other, reverse=reverse, sameunit=op in '+-')
+
+    def phase(self, deg=True):
+        return applyfunc(lambda y: np.angle(y, deg=deg), self, 'phase')
+
+    def db10(self):
+        return applyfunc(lambda y: 10.0 * log10(abs(y)), self, 'db10')
+
+    def db20(self):
+        return applyfunc(lambda y: 20.0 * log10(abs(y)), self, 'db20')
+
+    def subs(self, *args, **kwargs):
+        """Substitute symbols in the y values (sympy ``subs``), e.g. ``w.subs({R1: 1e3})``;
+        ``w.subs(...).numeric()`` gives a polars_waveform.Waveform once no symbols are left."""
+        def sub(v):
+            return v.subs(*args, **kwargs) if hasattr(v, 'subs') else v
+        return applyfunc(np.frompyfunc(sub, 1, 1), self, 'subs')
+
+    def numeric(self):
+        """This waveform as a polars_waveform.Waveform (numbers only: substitute symbols first)."""
+        import polars_waveform as pw
+        y = self._y
+        if y.dtype == object and not self.ragged:
+            try:
+                y = np.array([complex(v) for v in y.ravel()]).reshape(y.shape)
+            except TypeError as e:
+                free = set()
+                for v in y.ravel():
+                    free |= getattr(v, 'free_symbols', set())
+                raise ValueError('waveform has free symbols %s: substitute them first'
+                                 % sorted(map(str, free))) from e
+            if not np.iscomplexobj(y) or not np.any(y.imag):
+                y = y.real
+        xunits = self.xunits if self.xunits and all(u is not None for u in self.xunits) else None
+        return pw.Waveform.from_arrays(self._xlist, y, xlabels=self.index, ylabel=self.yname,
+                                       xunits=xunits, yunit=self.yunit)
 
     def deriv(self):
         """Calculate derivative of a waveform with respect to the inner x-axis"""
@@ -1183,3 +1260,6 @@ def wavefunc(func):
 if __name__ == "__main__":
     import doctest
     doctest.testmod()
+
+## The numpy waveform kind (symbolic and legacy uses); numeric results use polars_waveform.Waveform
+NumpyWaveform = Waveform
