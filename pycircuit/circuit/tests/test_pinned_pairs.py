@@ -1,0 +1,188 @@
+"""PINNED PAIRS (2026-10-03): a Python object that DEFINES a behaviour and
+the C text, or the second Python path, that REPRODUCES it, recorded
+together -- so that a change to either side fails here, naming the twin,
+until the record is re-made.  A prompt at the moment of editing, which
+the agreement tests cannot give.
+
+What this proves and what it does not: a digest says that something
+changed, never that the two sides still agree.  Agreement is the job of
+the sweeps that run both paths on the same inputs and assert the bytes
+equal (`test_hdl_batch`, `test_hdl_climit`, `test_hdl_limit_walk`,
+`test_stamp_plan`), of the recorded gate over every solve in the suite,
+and of the private comparison.  This test adds the one thing those lack:
+the author is made to look at the twin BEFORE any arithmetic has had the
+chance to drift.
+
+THE RULE: whoever changes one side re-records the pair -- after checking
+or changing the twin -- and the record line lands in the same commit, so
+a reviewer sees the code, its twin and the record move together.  To
+re-record:
+
+    python pycircuit/circuit/tests/test_pinned_pairs.py
+
+prints the `RECORD` table to paste below.  Comments are part of a digest
+on purpose: a comment that explains the arithmetic is part of what the
+twin mirrors.  Trailing whitespace is not.
+
+Each side is a list of `module:qualname` names; a name resolving to a
+string is C text, anything else is read with `inspect.getsource`.
+"""
+import hashlib
+import importlib
+import inspect
+import sys
+import textwrap
+import types
+
+import pytest
+
+PAIRS = {
+    'the kernel call and the pass driver': {
+        'why': 'the driver writes the temperature into the element\'s own pack and '
+            'calls the kernel exactly as `CKernel.__call__` does; `Batch.run` '
+            'mirrors its pack and temperature rules per pass',
+        'reference': ['pycircuit.circuit._hdl_cbackend:CKernel.__call__',
+                   'pycircuit.circuit._hdl_cbackend:CKernel.pack'],
+        'twin': ['pycircuit.circuit._hdl_batch:PASS_C',
+              'pycircuit.circuit._hdl_batch:Batch'],
+    },
+    'the limiting loop and the walk': {
+        'why': 'the walk is the loop in C: dict order, both gathers before the call, '
+            'the write-back after, the last duplicate row winning, `x0` aliasing '
+            '`x`; it stops where the loop\'s statement must run',
+        'reference': ['pycircuit.circuit.circuit:SubCircuit.limit',
+                   'pycircuit.circuit._hdl_climit:CLimitKernel.__call__'],
+        'twin': ['pycircuit.circuit._hdl_climit:_WALK_C',
+              'pycircuit.circuit._hdl_climit:_Walk',
+              'pycircuit.circuit._hdl_climit:limit_walk'],
+    },
+    'the limiter laws and their C prelude': {
+        'why': 'the prelude transliterates the laws and the device write-back in '
+            'Python\'s own forms (max as `(b > a) ? b : a`, the tuple order on '
+            'the keys, the stable sort); the renderer prints the closure\'s '
+            'ranking and write-back from the spec',
+        'reference': ['pycircuit.circuit._limiting:apply_limit',
+                   'pycircuit.circuit._limiting:device_writeback'],
+        'twin': ['pycircuit.circuit._hdl_climit:_LIMIT_C',
+              'pycircuit.circuit._hdl_climit:render'],
+    },
+    'the assembly loops and the plan': {
+        'why': 'the plan is the loop\'s bincount over the same values in the same '
+            'order, with the constant elements pre-filled, the C-bound classes '
+            'batched and the zero sources skipped; its fallbacks are the loop',
+        'reference': ['pycircuit.circuit.circuit:SubCircuit._add_element_submatrices',
+                   'pycircuit.circuit.circuit:SubCircuit._add_element_subvectors'],
+        'twin': ['pycircuit.circuit._stamp_plan:assemble_matrix',
+              'pycircuit.circuit._stamp_plan:assemble_vector',
+              'pycircuit.circuit._stamp_plan:_run_batches',
+              'pycircuit.circuit._stamp_plan:_legacy_matrix',
+              'pycircuit.circuit._stamp_plan:_legacy_vector',
+              'pycircuit.circuit._hdl_batch:split',
+              'pycircuit.circuit._hdl_batch:zero_source'],
+    },
+}
+
+#: `pair name: (reference digest, twin digest)` -- re-made by running this
+#: module as a script, after the twin was checked.
+RECORD = {
+    'the kernel call and the pass driver': ('09a9e274bbe8', '94c3c93979f5'),
+    'the limiting loop and the walk': ('1668b574dfdd', '029cab015901'),
+    'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
+    'the assembly loops and the plan': ('e83483cda784', 'd10b57312cbf'),
+}
+
+#: The generated methods a batch and the walk tell from their doubles by
+#: CODE identity (`_hdl_batch.generated_code`): each must be defined
+#: exactly once in `BehaviouralMeta.__init__`, or the marker is ambiguous.
+GENERATED = ('i', 'G', 'q', 'C', 'limit', 'u', 'dudt')
+
+
+def _resolve(name):
+    mod, _, qual = name.partition(':')
+    obj = importlib.import_module(mod)
+    for part in qual.split('.'):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _source(name):
+    obj = _resolve(name)
+    src = obj if isinstance(obj, str) else inspect.getsource(obj)
+    lines = [ln.rstrip() for ln in textwrap.dedent(src).splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    return '\n'.join(lines) + '\n'
+
+
+def digest(names):
+    h = hashlib.sha256()
+    for name in names:
+        h.update(name.encode())
+        h.update(b'\0')
+        h.update(_source(name).encode())
+        h.update(b'\0')
+    return h.hexdigest()[:12]
+
+
+def current():
+    return {name: (digest(p['reference']), digest(p['twin'])) for name, p in PAIRS.items()}
+
+
+@pytest.mark.parametrize('name', list(PAIRS))
+def test_every_side_resolves_to_source(name):
+    for side in ('reference', 'twin'):
+        for obj in PAIRS[name][side]:
+            assert len(_source(obj)) > 20, obj
+
+
+@pytest.mark.parametrize('name', list(PAIRS))
+def test_a_pinned_pair_is_as_recorded(name):
+    assert name in RECORD, f'{name!r}: not recorded yet -- run this module as a script'
+    ref, twin = current()[name]
+    ref0, twin0 = RECORD[name]
+    moved = [s for s, a, b in (('reference', ref, ref0), ('twin', twin, twin0)) if a != b]
+    if moved:
+        p = PAIRS[name]
+        other = {'reference': 'twin', 'twin': 'reference'}
+        what = ' and '.join(f'the {s} ({", ".join(p[s])})' for s in moved)
+        still = [other[s] for s in moved if other[s] not in moved]
+        hint = (f'; {", ".join(n for s in still for n in p[s])} did not' if still else '')
+        pytest.fail(f'pinned pair {name!r} moved on {what}{hint}.  Why they are a pair: '
+                    f'{p["why"]}.  Check the twin, then re-record: '
+                    f'python {__file__}')
+
+
+def test_a_moved_side_is_named(monkeypatch):
+    """The failure is the prompt: it names the side that moved, the one
+    that did not, and the way to re-record."""
+    name = next(iter(PAIRS))
+    ref, _twin = current()[name]
+    monkeypatch.setitem(RECORD, name, (ref, 'ffffffffffff'))
+    with pytest.raises(pytest.fail.Exception) as e:
+        test_a_pinned_pair_is_as_recorded(name)
+    msg = str(e.value)
+    assert 'moved on the twin' in msg and 'did not' in msg and 'Check the twin' in msg
+    monkeypatch.setitem(RECORD, name, ('ffffffffffff', 'ffffffffffff'))
+    with pytest.raises(pytest.fail.Exception) as e:
+        test_a_pinned_pair_is_as_recorded(name)
+    assert 'the reference' in str(e.value) and 'the twin' in str(e.value)
+
+
+def test_the_generated_methods_are_defined_once():
+    from pycircuit.circuit.hdl import BehaviouralMeta
+    counts = {}
+    for c in BehaviouralMeta.__init__.__code__.co_consts:
+        if isinstance(c, types.CodeType):
+            counts[c.co_name] = counts.get(c.co_name, 0) + 1
+    assert {m: counts.get(m, 0) for m in GENERATED} == dict.fromkeys(GENERATED, 1)
+
+
+def main():
+    print('RECORD = {')
+    for name, (ref, twin) in current().items():
+        print(f'    {name!r}: ({ref!r}, {twin!r}),')
+    print('}')
+
+
+if __name__ == '__main__':
+    sys.exit(main())

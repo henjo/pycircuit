@@ -3725,6 +3725,23 @@ other check.  Measured: 20 MosLevel1 409.7 -> 352.1 us a step (-14.1 %),
 20 Gummel-Poon -18.5 %, the PSP cases unchanged, bit for bit.  The round
 closed: since dc2214da the 20-MosLevel1 chain is 802 -> 352 us a step.
 
+## `tests/test_pinned_pairs.py` -- the pinned pairs (2026-10-03)
+
+Andreas, after speed round 6: "How would we keep the python code and c
+code synced?"  A Python object that DEFINES a behaviour and the C text,
+or the second Python path, that REPRODUCES it are recorded together as a
+pair of source digests; a change to either side fails the test naming
+the moved side and its twin until the record is re-made -- after the
+twin was checked -- in the same commit.  Four pairs now: `CKernel.
+__call__` + `pack` / the pass driver and `Batch`; `SubCircuit.limit` +
+`CLimitKernel.__call__` / the walk; `apply_limit` + `device_writeback` /
+the limiter prelude and renderer; the assembly loops / the plan, `split`
+and `zero_source`.  It also pins that the metaclass defines i/G/q/C/limit/
+u/dudt exactly once, which the code-identity marker rests on.  A digest
+proves only that something changed; agreement stays the sweeps', the
+recorded gate's and the private comparison's job.  Every new C twin --
+the Newton iterate above all -- gets a pair in its first commit.
+
 ## `_tran_companion.py` -- the step's source memo (2026-10-02, speed round 4's stage B)
 
 ### `_source_at`, `Transient.solve_timestep`, `_stage_source`
