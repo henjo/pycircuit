@@ -51,6 +51,13 @@ def _kernel_key(fn):
     return None if k is None else getattr(k, 'key', repr(k))
 
 
+def _is_library(cls):
+    """A class the package defines (or a variant of one), not a test's."""
+    mod = getattr(cls, '__module__', '') or ''
+    return (mod.startswith('pycircuit.') and '.tests.' not in mod and '.test.' not in mod
+            and not mod.rsplit('.', 1)[-1].startswith('test_'))
+
+
 def info_state(cls):
     """One owner class's backend state, as plain data: comparable within a
     process and across workers (no object identities)."""
@@ -58,6 +65,7 @@ def info_state(cls):
     funcs = info.get('funcs') or {}
     out = {
         'class': f'{cls.__module__}.{cls.__qualname__}',
+        'library': _is_library(cls),
         'status': cls.__dict__.get('_hdl_backend_status'),
         'pin': cls.__dict__.get('hdl_backend'),
         'chained': bool(info.get('chained')),
@@ -80,14 +88,23 @@ def info_state(cls):
     return out
 
 
-def hdl_state():
+def class_key(cls, ids=False):
+    """The name a class is reported under; with `ids`, made unique within
+    the process (test-local classes repeat names)."""
+    name = f'{cls.__module__}.{cls.__qualname__}'
+    return f'{name}@{id(cls):x}' if ids else name
+
+
+def hdl_state(ids=False):
     """`{owner class name: info_state}` for every live hdl class, plus the
-    statuses of the subclasses that read an inherited `info`."""
+    statuses of the subclasses that read an inherited `info`.  `ids`: keys
+    unique within the process (the leak detector); without, plain names
+    (a dump compared across workers; a repeated name keeps the last)."""
     out = {}
     owners = hdl_classes()
     by_info = {id(c.__dict__['_hdl_info']): c for c in owners}
     for c in owners:
-        out[f'{c.__module__}.{c.__qualname__}'] = info_state(c)
+        out[class_key(c, ids)] = info_state(c)
     hdl = sys.modules.get('pycircuit.circuit.hdl')
     base = getattr(hdl, 'Behavioural', None) if hdl is not None else None
     if base is not None:
@@ -102,9 +119,8 @@ def hdl_state():
                 if '_hdl_info' not in s.__dict__ and '_hdl_backend_status' in s.__dict__:
                     owner = by_info.get(id(getattr(s, '_hdl_info', None)))
                     if owner is not None:
-                        key = f'{owner.__module__}.{owner.__qualname__}'
-                        out[key].setdefault('readers', {})[
-                            f'{s.__module__}.{s.__qualname__}'] = s.__dict__['_hdl_backend_status']
+                        out[class_key(owner, ids)].setdefault('readers', {})[
+                            class_key(s, ids)] = s.__dict__['_hdl_backend_status']
     return out
 
 
@@ -114,7 +130,7 @@ def invariant_breaks(state=None):
     carries C source and every such function carries its kernel; unbound
     means no chain function carries a kernel.  The limiter is not read (it
     may refuse itself on a bound class)."""
-    state = hdl_state() if state is None else state
+    state = hdl_state(ids=True) if state is None else state
     bad = {}
     for name, st in state.items():
         fs = st['funcs']

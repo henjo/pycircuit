@@ -64,6 +64,10 @@ import subprocess as _subprocess
 import time as _time
 from datetime import datetime as _datetime, timezone as _timezone
 
+## THE LEAK DETECTOR (2026-10-03): a snapshot of all process-global state
+## around every test, every module and the collection; see its module note.
+pytest_plugins = ['pycircuit._testing.leaks']
+
 _TIMINGS = {}
 
 
