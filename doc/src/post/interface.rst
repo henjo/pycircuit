@@ -1,31 +1,17 @@
 Simulator interfaces
 ====================
 
-Cadence
--------
+Spectre PSF results
+-------------------
 
 :mod:`pycircuit.post.cds`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. automodule:: pycircuit.post.cds
-   :members: PSFResultSet, CadenceSession, CadenceSessionFile
+   :members: PSFResultSet, PSFResult
    :undoc-members:
    :show-inheritance:
 
-:mod:`pycircuit.post.cds.skill`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: pycircuit.post.cds.skill
-   :members: toSkill, Symbol, parse
-   :undoc-members:
-   :show-inheritance:
-
-Mentor Graphics
----------------
-
-.. automodule:: pycircuit.post.jwdb
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-
+Virtuoso/SKILL integration: `skillbridge <https://github.com/unihd-cag/skillbridge>`_ for a running
+Virtuoso, `simdeck <https://github.com/henjo/simdeck>`_ (``simdeck.virtuoso``) for a headless
+session, SKILL files and parsing SKILL values.
