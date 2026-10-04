@@ -72,6 +72,22 @@ def test_near_duplicate_times_and_a_wrapping_row():
         assert _same(a, b)
 
 
+def test_a_tie_in_the_distances_takes_the_general_path():
+    """Two times closer than their distance's rounding -- 0 and 1.6e-45,
+    behind a target 1.4e-3 away (the deep hypothesis profile's draw,
+    2026-10-04) -- round to one distance: the general path's stable sort
+    lists the older first and its dedupe keeps that one, so the fast path
+    steps aside, counted."""
+    tr = Transient(_rc(), toolkit=circuit.numeric)
+    t1 = 0.00036596218663498633
+    tr._pred_hist = [(0.0, np.zeros(4)), (1.5828005792270418e-45, np.array([0.0, 0.0, 0.0, 1.0])),
+                     (t1, np.zeros(4))]
+    before = _paths.snapshot()
+    a, b = _both(tr, t1 + 0.001, 1)
+    assert _same(a, b)
+    assert _paths.since(before).get('pred:tie', 0) == 1
+
+
 def test_the_fast_path_serves_the_multistep_step():
     """A gear transient's predictions take it: the count says so."""
     before = _paths.snapshot()

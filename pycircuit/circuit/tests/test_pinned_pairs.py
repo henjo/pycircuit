@@ -161,7 +161,7 @@ RECORD = {
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
     'the transient evaluation and the core': ('b3fb392a7acd', '8433a00608ff'),
     'the assembly loops and the plan': ('ed84458db1a3', '9578c5eca9ad'),
-    'the stage predictor and its multistep fast path': ('739b71ddbace', '01c4a05c791a'),
+    'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the Newton solve and its C': ('7e6a12179239', 'b7494b411856'),
     'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),
 }

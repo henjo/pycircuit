@@ -3943,6 +3943,29 @@ and statistics identical: the PSP stage -13.3 % a step, its PSS -11.4 %,
 Python removed ran cold between the kernel's calls, so the in-run
 inflation the plan noted cut both ways.
 
+## `_tran_predictor.py` -- the multistep fast path, and a tie (2026-10-04, speed round 8's 2b)
+
+### `_predict_fast`, `_pred_fast_nodes`
+
+A prediction with no extra nodes from a history wholly behind the target
+-- every multistep step -- in 90 k instructions where the general path
+took 168 k: behind the target, nearest-first IS newest-first, so the order
+and the 1e-13 dedupe depend on the history alone and are kept per history
+list; the fit's times in Python floats; the clamp the same ufunc.
+
+Except where two distances to the target ROUND EQUAL.  The round's deep
+hypothesis run (3000 draws a twin) found it: times 0 and 1.6e-45 behind a
+target 1.4e-3 away are one distance in floating point; the general path's
+stable sort lists the older of the two first, its dedupe keeps that one,
+and its fit took another node than the fast path's -- -2.73 against 0 in
+one row.  A tie needs two times closer than one ulp of the larger
+distance; the transient's own history keeps its times 1e-14 apart and
+never holds one, but the fast path's contract is the general path's bytes
+for any history behind the target.  It keeps the smallest gap between two
+history times with its per-list cache and steps aside (`pred:tie`) where
+that gap is within two ulps of the largest distance -- every tie, by
+construction.
+
 ## `_tran_predictor.py` -- the predictor's bookkeeping, its weights kept (2026-10-02, speed round 4's stage D)
 
 ### `_predict_state`, `_fit`

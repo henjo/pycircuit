@@ -254,9 +254,21 @@ class _StagePredictor:
         if type(self)._fit is not _FIT or '_fit' in self.__dict__:
             _PC['pred:patched'] += 1
             return _GENERAL
-        nodes = self._pred_fast_nodes(hist)
-        if nodes is None:
+        found = self._pred_fast_nodes(hist)
+        if found is None:
             _PC['pred:general'] += 1
+            return _GENERAL
+        nodes, gap = found
+        ## (nearest-first is newest-first unless two distances to the target
+        ## ROUND EQUAL: the general path's stable sort then lists the older
+        ## of the two first, its dedupe keeps that one, and its fit takes the
+        ## nodes in that order.  A tie needs two times closer than the
+        ## largest distance's rounding (2.2e-16 of it; this test has a margin
+        ## of two) -- never the transient's own history, whose times are
+        ## 1e-14 apart, but a history a caller wrote: the deep hypothesis
+        ## profile drew 0 and 1.6e-45 behind a target 1.4e-3 away, 2026-10-04)
+        if not gap > 4.5e-16 * (ttarget - hist[0][0]):
+            _PC['pred:tie'] += 1
             return _GENERAL
         _PC['pred:fast'] += 1
         if len(nodes) < 2:
@@ -282,8 +294,10 @@ class _StagePredictor:
 
     def _pred_fast_nodes(self, hist):
         """The history nearest-first -- newest-first, every node being
-        behind the target -- with `_predict_state`'s 1e-13 dedupe, kept per
-        history list; None where the times are not strictly ascending."""
+        behind the target and no two distances tied -- with
+        `_predict_state`'s 1e-13 dedupe, and the smallest gap between two of
+        its times (the tie test), kept per history list: `(nodes, gap)`, or
+        None where the times are not strictly ascending."""
         c = self.__dict__.get('_pred_fast')
         if c is not None and c[0] is hist and len(c[1]) == len(hist):
             for a, b in zip(hist, c[1]):
@@ -294,6 +308,7 @@ class _StagePredictor:
         ents = tuple(hist)
         uniq = []
         prev = prev_kept = None
+        gap = float('inf')
         ## newest first: every kept node is later than the one at hand, the
         ## nearest of them the last kept -- the general path's dedupe against
         ## all kept nodes is this one comparison
@@ -303,14 +318,16 @@ class _StagePredictor:
                 if not t0 < prev[0]:
                     uniq = None
                     break
+                gap = min(gap, prev[0] - t0)
                 if abs(t0 - prev_kept) <= 1e-13 * max(abs(t0), 1.0):
                     prev = e
                     continue
             uniq.append(e)
             prev = e
             prev_kept = t0
-        self.__dict__['_pred_fast'] = (hist, ents, uniq)
-        return uniq
+        out = None if uniq is None else (uniq, gap)
+        self.__dict__['_pred_fast'] = (hist, ents, out)
+        return out
 
     def _fit_fast(self, sub, tat):
         """`_fit` with the node times in Python floats: the same IEEE
