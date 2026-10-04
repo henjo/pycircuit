@@ -23,8 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-psf = ["polars-psf>=0.1"]
-dev = ["pytest", "matplotlib", "pexpect", "polars-psf>=0.1"]
+dev = ["pytest", "matplotlib", "pexpect"]
 ginac = ["pybind11>=2.11"]
 docs = ["sphinx", "matplotlib", "pexpect"]
 

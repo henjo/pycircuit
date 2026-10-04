@@ -3,13 +3,12 @@
 # See LICENSE for details.
 
 import numpy as np
-import polars_waveform as pw
 from copy import copy
 from pycircuit.circuit import Circuit, SubCircuit, gnd, R, VS, IS, \
     Branch, VCCS, CircuitProxy
 from .analysis import remove_row_col, defaultepar
 from .analysis_ss import SSAnalysis, AC, Noise, TransimpedanceAnalysis
-from pycircuit.post import InternalResultDict, Waveform
+from pycircuit.post import InternalResultDict, make_waveform
 from pycircuit.utilities import combinations, isiterable
 
 class LoopBreakError(Exception):
@@ -197,16 +196,9 @@ class FeedbackDeviceAnalysis(SSAnalysis):
             Y_noloop = toolkit.toMatrix(G_noloop + s*C_noloop)
             return toolkit.det(Y) / toolkit.det(Y_noloop)
         if isiterable(slist):
-            x = np.asarray(slist if complexfreq else freqs)
-            y = np.asarray([Ffunc(s) for s in slist])
-            if y.dtype == object or np.iscomplexobj(x):
-                F = Waveform(self.toolkit.array(slist), self.toolkit.array(y),
-                             xlabels = ('frequency',),
-                             xunits = ('Hz',),
-                             ylabel = 'F')
-            else:
-                F = pw.Waveform.from_arrays(x, y, xlabels=['frequency'],
-                                            xunits=['Hz'], ylabel='F')
+            F = make_waveform(slist if complexfreq else freqs,
+                              [Ffunc(s) for s in slist],
+                              xlabel='frequency', ylabel='F', xunit='Hz')
         else:
             F = Ffunc(slist)
 

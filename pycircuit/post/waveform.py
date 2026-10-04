@@ -910,6 +910,18 @@ class Waveform(WaveformBase):
                             
 
 ## Utility functions
+def make_waveform(x, y, xlabel='x', ylabel=None, xunit=None, yunit=None):
+    """A waveform of ``y`` over the sweep ``x``: a polars_waveform.Waveform for numbers, this
+    module's numpy Waveform for symbolic values (sympy objects) or a complex sweep (complex
+    frequency), which Polars cannot hold."""
+    xa, ya = np.asarray(x), np.asarray(y)
+    if ya.dtype == object or xa.dtype == object or np.iscomplexobj(xa):
+        return Waveform(xa, ya, xlabels=(xlabel,), xunits=(xunit,) if xunit else None,
+                        ylabel=ylabel, yunit=yunit)
+    import polars_waveform as pw
+    return pw.Waveform.from_arrays(xa, ya, xlabels=[xlabel], ylabel=ylabel, xunits=[xunit],
+                                   yunit=yunit)
+
 def iswave(w):
     """Returns true if argument is a waveform"""
     return isinstance(w, Waveform)

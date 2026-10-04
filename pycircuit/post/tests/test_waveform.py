@@ -465,3 +465,36 @@ def test_subs_then_numeric():
     n = w.subs({R: 2}).numeric()
     assert isinstance(n, pw.Waveform) and n.y.to_list() == [2.0, 4.0, 6.0]
     assert w.subs(R, 1).numeric().ymax() == 3.0
+
+
+def test_elementwise_methods():
+    """The numpy Waveform's own db20/db10/phase (the free functions are polars-waveform's)."""
+    w = testdata1[0]
+    y = get_y(w)
+    for name, ref in (('db20', 20 * np.log10(abs(y))), ('db10', 10 * np.log10(abs(y))),
+                      ('phase', np.angle(y, deg=True))):
+        res = getattr(w, name)()
+        assert isinstance(res, Waveform) and res.ylabel == '%s(amplitude)' % name
+        assert_array_almost_equal(get_y(res), ref)
+        assert res.xlabels == w.xlabels and res.xunits == w.xunits
+    assert_array_almost_equal(get_y(w.phase(deg=False)), np.angle(y))
+
+
+def test_deriv():
+    f = np.array([1.0, 0.5])
+    t = np.linspace(0, 1.0, num=100)
+    x = Waveform([f, t], np.array([np.sin(2 * np.pi * fr * t) for fr in f]))
+    ref = Waveform([f, t], np.array([2 * np.pi * fr * np.cos(2 * np.pi * fr * t) for fr in f]))
+    error = abs(x.deriv() - ref[:, :-1])
+    assert np.all(get_y(error.ymax()) < 2 * np.pi * f * 5e-2)
+
+
+def test_make_waveform_picks_the_kind():
+    import sympy
+    import polars_waveform as pw
+    from pycircuit.post import make_waveform
+    num = make_waveform([1.0, 2.0], [1 + 1j, 2.0], xlabel='f', ylabel='v', xunit='Hz', yunit='V')
+    assert isinstance(num, pw.Waveform) and num.xname == 'f' and num.xunit == 'Hz' and num.yunit == 'V'
+    s = sympy.Symbol('s')
+    assert isinstance(make_waveform([1.0, 2.0], [s, 2 * s]), Waveform)  # symbolic
+    assert isinstance(make_waveform([1j, 2j], [1.0, 2.0]), Waveform)    # complex sweep
