@@ -3790,6 +3790,49 @@ solves overwrite the step's state and `jacobian_only` runs again after it.
 Measured (parent d371a594): the 20-MosLevel1 marginal step -33.4 %, 20-GP
 -38.1 %, the adaptive MOS run -29.9 %; declining circuits within 0.5 %.
 
+## `_tran_lte_c.py` -- the adaptive error test in C (2026-10-04, speed round 8's stage 3)
+
+### (module docstring)
+
+The default transient is adaptive gear, and every step attempt is judged:
+on the 20-MosLevel1 chain after stage 4, 475 k instructions an attempt, 20 %
+of the adaptive run -- `bind` 56 k (a `fields()` walk per call), the charge
+LTE 233 k (`compute_lte` 77 k, numpy's solve 95 k of which LAPACK is 82 k,
+the reference row cut and restored), the normalised error 133 k (the
+reference 58 k, `normalised_error` 59 k).  A scratch prototype put
+`_charge_lte`, `_normalised` and their maximum into one C call behind one
+new method both controllers call (`StepController._max_error`), checked
+three ways (the repo's code, the prototype off, on) on nine cases -- every
+`relref`, both controllers, the trapezoid, a pulse with rejections and
+order drops, a stateful diode: every attempt's verdict, next step, error
+and running reference identical -- and counted -10.0 % on the adaptive MOS
+run, -6.5 % on an adaptive Gummel-Poon chain, in fresh processes.  (In one
+process the counts were bimodal, a persistent +4 % after some runs in any
+mode: the interpreter's state, which `--count`'s fresh processes avoid.)
+
+Exactness is by refusal: every input finite; the floating-point flags
+cleared on entry and tested after each part whose numpy calls would check
+them, every result stored before its test; LAPACK's own flags cleared as
+numpy's solve clears them; a tolerance not positive, a non-finite solution
+or a negative zero in the running reference (where numpy's SIMD reductions
+may pair signed zeros differently) handed back -- the Python chain then
+makes numpy's own warnings and errors and the solve's fallback, as before.
+The integrator's scalars -- its coefficient (`-h (h + h_last)`,
+`-(h**2)`: no `pow` in C) and the divided difference's step sums -- are
+computed in the glue in Python floats, numpy's step values converted: the
+same IEEE operations numpy's scalars make (0 mismatches in 2 M draws),
+without their warnings; one that overflows takes the Python chain, which
+warns as before.  (The first build took Python floats only, and the gate
+showed the decline in 372 tests: a period's grid gives numpy's.)  The
+chain's pieces are read once a call finds every one its module's own
+(the name, the module, no `__wrapped__`): read at
+the first call as built first, a test that ran first under a patch of
+`third_divided_difference` had the patch taken for the original.  The
+plan's Python trim: `StepLTEInputs.bind` skips the field names when called
+with keywords only (the transient's way), -0.83 %.  Measured (parent
+dbd4e1c3): the adaptive MOS run -9.9 %, an adaptive diode ladder -7.7 %,
+the PSS cases -1.0..-1.2 %.
+
 ## `tests/test_pinned_pairs.py` -- the pinned pairs (2026-10-03)
 
 Andreas, after speed round 6: "How would we keep the python code and c

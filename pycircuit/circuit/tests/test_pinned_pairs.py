@@ -119,6 +119,28 @@ PAIRS = {
                  'pycircuit.circuit._tran_newton_c:_Ctx',
                  'pycircuit.circuit._tran_newton_c:_walk_full'],
     },
+    'the error test and its C': {
+        'why': 'the C error test is `_charge_lte` (the trapezoid\'s and Gear-2\'s '
+               'charge-form `compute_lte`, numpy\'s own LAPACK on the reduced '
+               '`J`), `_normalised` (the running reference by `relref`, '
+               '`sigglobal_reference`, `tolerance`, `normalised_error`) and '
+               '`np.max`, the running reference written only on success',
+        'reference': ['pycircuit.circuit.stepcontroller:StepController._charge_lte',
+                      'pycircuit.circuit.stepcontroller:StepController._normalised',
+                      'pycircuit.circuit.stepcontroller:StepController._reference',
+                      'pycircuit.circuit.stepcontroller:StepController.tolerance',
+                      'pycircuit.circuit.stepcontroller:StepController._max_error',
+                      'pycircuit.circuit.stepcontroller:normalised_error',
+                      'pycircuit.circuit.stepcontroller:sigglobal_reference',
+                      'pycircuit.circuit.integrator:Gear2Integrator.compute_lte',
+                      'pycircuit.circuit.integrator:TrapezoidalIntegrator.compute_lte',
+                      'pycircuit.circuit._lte_kernels:third_divided_difference',
+                      'pycircuit.circuit.analysis:remove_row_col'],
+        'twin': ['pycircuit.circuit._tran_lte_c:LTE_C',
+                 'pycircuit.circuit._tran_lte_c:max_error',
+                 'pycircuit.circuit._tran_lte_c:_globals',
+                 'pycircuit.circuit._tran_lte_c:_Ctx'],
+    },
     'the stage predictor and its multistep fast path': {
         'why': 'behind the target nearest-first is newest-first: the fast path '
                'keeps the general path\'s order, its 1e-13 dedupe, the fit\'s '
@@ -141,6 +163,7 @@ RECORD = {
     'the assembly loops and the plan': ('ed84458db1a3', '9578c5eca9ad'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', '01c4a05c791a'),
     'the Newton solve and its C': ('7e6a12179239', 'e398385b81eb'),
+    'the error test and its C': ('a24ba5659ca4', 'ba43d6c388d0'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

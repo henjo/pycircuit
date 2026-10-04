@@ -3,6 +3,7 @@ from dataclasses import dataclass, fields
 from typing import Any
 
 import numpy as np
+from pycircuit.circuit import _tran_lte_c
 from pycircuit.circuit.simwarnings import AccuracyWarning, warn
 
 ## Valid values for `relref`, matching a commercial simulator's parameter of the same name.
@@ -106,6 +107,11 @@ class StepLTEInputs:
     def bind(cls, *args, **kwargs):
         """The inputs from `evaluate_step`'s arguments: positional ones
         in the field order, then keywords."""
+        if not args:
+            ## (keywords only, the transient's way: no field names to pair
+            ## -- `fields()` was 35 k instructions an attempt; speed round
+            ## 8, stage 3)
+            return cls(**kwargs)
         names = [f.name for f in fields(cls)]
         if len(args) > len(names):
             raise TypeError(f'evaluate_step takes at most {len(names)} '
@@ -390,6 +396,18 @@ class StepController(ABC):
         return tk.concatenate((lte_reduced[:s.irefnode], tk.array([0.0]),
                                lte_reduced[s.irefnode:])), p
 
+    def _max_error(self, s):
+        """`(err, p)`: the largest entry of the normalised LTE
+        (`_charge_lte`, `_normalised`) and the step-size exponent's
+        denominator -- the integral and PI controllers' one call, made in
+        one C call where it serves (`_tran_lte_c`: bit for bit this
+        chain, the running reference with it)."""
+        r = _tran_lte_c.max_error(self, s)
+        if r is not None:
+            return r
+        lte, p = self._charge_lte(s)
+        return float(np.max(self._normalised(s, lte))), p
+
     def _band_decision(self, s, err, shrink, grow):
         """Accept, reject, or redo larger -- the band tail the integral and
         solution-LTE controllers share; each keeps its own predictor:
@@ -456,9 +474,9 @@ class IntegralController(StepController):
             return True, s.h_curr
 
         ## the LTE in solution units (`_charge_lte`) against the dynamic
-        ## per-node tolerance relaxed by TRTOL (`tolerance`), normalised
-        lte, p = self._charge_lte(s)
-        err = float(np.max(self._normalised(s, lte)))
+        ## per-node tolerance relaxed by TRTOL (`tolerance`), normalised,
+        ## its largest entry (`_max_error`)
+        err, p = self._max_error(s)
         ## Exposed under the same name `PIController` uses, so the normalised
         ## error of whichever controller is running can be read from outside.
         ## Not used by this controller's own law -- it is pure integral -- but a
@@ -565,10 +583,7 @@ class PIController(StepController):
         # the LTE in solution units and its TRTOL-relaxed tolerance, as in
         # IntegralController, so the accept threshold matches the target the
         # PI update drives toward
-        lte, p = self._charge_lte(s)
-        err_array = self._normalised(s, lte)
-
-        err = float(np.max(err_array))
+        err, p = self._max_error(s)
         exponent = 1.0 / p
 
         ## F10: the band's upper edge, not a hardcoded 1.0 -- set_lte_band
