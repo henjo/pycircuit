@@ -7,7 +7,8 @@ probe kernel, a chained `limit_together(sequential=True)` model, the
 inputs the closure accepts (lists, int vectors, a longer vector, `limit(x,
 x)`), the temperatures it serves, and the calls it DECLINES -- a NaN or
 an infinity among the keys it would sort -- which the closure answers.
-`test_a_wrong_law_is_caught` shows the sweep can fail.
+`test_a_wrong_law_is_caught` and `test_a_wrong_ranking_is_caught` show
+the sweep can fail.
 """
 import contextlib
 import pickle
@@ -58,11 +59,45 @@ def _bound(e):
     return info
 
 
-def _py_limit(e, x, x0, epar=defaultepar):
-    """The closure's answer, its numpy warnings quiet (a parameter chain
-    evaluates both arms of a `where`)."""
+@contextlib.contextmanager
+def _quiet():
+    ## (a parameter chain evaluates both arms of a `where`: numpy warns)
     with warnings.catch_warnings(), np.errstate(all='ignore'):
         warnings.simplefilter('ignore', RuntimeWarning)
+        yield
+
+
+@contextlib.contextmanager
+def _closure_only(e):
+    """`limit()` with the kernel out of it: `ENABLED` off, and the class's
+    kernel replaced by one that fails if it is called."""
+    info = type(e)._hdl_info
+    kern = info.get('_c_limit')
+
+    def must_not_run(*a, **k):
+        raise AssertionError('the reference consulted the C kernel')
+    old = cl.ENABLED
+    cl.ENABLED = False
+    if kern is not None:
+        info['_c_limit'] = must_not_run
+    try:
+        yield
+    finally:
+        cl.ENABLED = old
+        if kern is not None:
+            info['_c_limit'] = kern
+
+
+def _py_limit(e, x, x0, epar=defaultepar):
+    """The CLOSURE's answer: the Python limiter, never the kernel.
+
+    Until 2026-10-04 this called `e.limit` with the kernel switch on, and
+    the generated `limit()` consults the bound kernel FIRST (hdl.py, the
+    `limit` closure; `bind` stores it in the class info): every sweep
+    below compared the C kernel with itself, and the whole-limiter path
+    (ranking, groups, write-back) had never met Python's.  The laws had,
+    through the probe kernel."""
+    with _quiet(), _closure_only(e):
         return e.limit(x, x0, epar)
 
 
@@ -301,6 +336,30 @@ def test_a_wrong_law_is_caught(monkeypatch):
     assert differ > 0
 
 
+def test_a_wrong_ranking_is_caught(monkeypatch):
+    """The sweep's REFERENCE is Python's: a kernel whose ranking sorts the
+    terminals in reverse, bound into the class's own info as the sweep
+    binds it, gives other bytes than the closure.  Through `limit()` with
+    the kernel switch on (the reference until 2026-10-04) both sides were
+    this kernel and the sweep saw nothing (0 of 2000 on every class)."""
+    e = _inst(eh.MosLevel1Hdl)
+    info = _bound(e)
+    good = info.get('_c_limit')
+    wrong = cl._LIMIT_C.replace('if (!(a0 == b0)) return a0 < b0;',
+                                'if (!(a0 == b0)) return a0 > b0;')
+    assert wrong != cl._LIMIT_C
+    monkeypatch.setattr(cl, '_LIMIT_C', wrong)
+    try:
+        kern = cl.bind(type(e), info)
+        assert kern is not None and info['_c_limit'] is kern
+        rng = np.random.default_rng(1)
+        differ = sum(_py_limit(e, x, x0).tobytes() != kern(e, x, x0, defaultepar).tobytes()
+                     for x, x0 in _cases(rng, e.n, 400))
+    finally:
+        info['_c_limit'] = good
+    assert differ > 0
+
+
 ## -- binding, refusal, the cache ---------------------------------------------
 
 def test_a_limiter_that_cannot_be_printed_refuses_itself_only(monkeypatch):
@@ -427,7 +486,8 @@ def test_a_declined_call_is_answered_by_the_closure():
     x = x0 + 0.3
     x[1] = np.nan
     assert info['_c_limit'](e, x, x0, defaultepar) is None
-    out = _py_limit(e, x, x0)
+    with _quiet():
+        out = e.limit(x, x0)                 # the kernel declines, the closure answers
     with numpy_backend(type(e)):
         ref = _py_limit(e, x, x0)
     assert out.tobytes() == ref.tobytes()
