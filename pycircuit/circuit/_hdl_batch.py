@@ -80,6 +80,13 @@ import types
 
 import numpy as np
 
+from pycircuit.circuit import _paths
+
+_PC = _paths.COUNTS
+_no = _paths.no
+_BATCH_KEYS = ('off', 'nodriver', 'unbound', 'kernel', 'generated', 'T', 'shadow', 'pack',
+               'none', 'served', 'partial')
+
 ENABLED = os.environ.get('PYCIRCUIT_HDL_BATCH', '1') != '0'
 SKIP_ZERO_SOURCE = os.environ.get('PYCIRCUIT_HDL_ZERO_U', '1') != '0'
 
@@ -157,10 +164,11 @@ class Batch:
     the mirrored packs and the kernel's pointer (see the module note)."""
 
     __slots__ = ('NM', 'PR', 'cls', 'dst', 'els', 'entries', 'fnptr', 'info',
-                 'k', 'kern', 'm', 'mirror', 'n', 'shape', 'slots', 'so', 'ti')
+                 'k', 'kern', 'keys', 'm', 'mirror', 'n', 'shape', 'slots', 'so', 'ti')
 
     def __init__(self, cls, m, entries, kern):
         self.cls, self.info, self.m = cls, cls._hdl_info, m
+        self.keys = {r: f'batch.{m}:{r}' for r in _BATCH_KEYS}
         self.entries = entries
         self.els = [e[1] for e in entries]
         self.NM = np.ascontiguousarray(
@@ -194,19 +202,20 @@ class Batch:
         """The kernel's outputs for this pass: `(OUT, None)` with a row per
         element, `(OUT, pos)` with a row per element in `pos` (the others
         are the caller's), or None where the whole class is the caller's."""
+        K = self.keys
         if not ENABLED:
-            return None
+            return _no(K['off'])
         drv = _driver
         if not drv:
-            return None
+            return _no(K['nodriver'])
         info = self.info
         if not info.get('_c_bound'):
-            return None
+            return _no(K['unbound'])
         kern = info['funcs'][self.m].__dict__.get('_hdl_c')
         if kern is not self.kern and not self._take(kern):
-            return None
+            return _no(K['kernel'])
         if not is_generated(self.cls, self.m):
-            return None
+            return _no(K['generated'])
         ti = self.ti
         T = 0.0
         if ti >= 0:
@@ -215,16 +224,17 @@ class Batch:
                 ## (an int or a 0-d array is one number -- `CKernel`'s rule;
                 ## `p[t_index] = T` converts it as `float` does)
                 if type(T) is not int and np.ndim(T) != 0:
-                    return None
+                    return _no(K['T'])
                 try:
                     T = float(T)
                 except (TypeError, ValueError, OverflowError):
-                    return None
+                    return _no(K['T'])
         els, mirror, PR, m = self.els, self.mirror, self.PR, self.m
         skip = None
         for e in range(self.n):
             d = els[e].__dict__
             if m in d:
+                _PC[K['shadow']] += 1
                 skip = (skip or []) + [e]
                 continue
             cp = d.get('_hdl_cp')
@@ -235,6 +245,7 @@ class Batch:
                     cp = False
                 d['_hdl_cp'] = cp
             if cp is False:
+                _PC[K['pack']] += 1
                 skip = (skip or []) + [e]
                 continue
             if cp is not mirror[e]:
@@ -246,10 +257,12 @@ class Batch:
             OUT = np.empty((self.n,) + self.shape)
             cfn(self.fnptr, ffi.from_buffer(dptr, X), ffi.from_buffer(pptr, PR),
                 ffi.from_buffer(dptr, OUT), self.n, self.k, self.so, ti, T)
+            _PC[K['served']] += 1
             return OUT, None
         pos = [e for e in range(self.n) if e not in skip]
         if not pos:
-            return None
+            return _no(K['none'])
+        _PC[K['partial']] += 1
         X = x[self.NM[pos]]
         PRp = np.ascontiguousarray(PR[pos])
         OUT = np.empty((len(pos),) + self.shape)

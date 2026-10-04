@@ -639,7 +639,10 @@ def _resolve(cls, info, explicit):
     Where C cannot be served: numpy, with the reason in the status -- and a
     warning when C was asked for; under 'auto' only a build that fails
     with a compiler present warns."""
+    from pycircuit.circuit import _paths
+
     def refuse(status, why):
+        _paths.COUNTS['once:backend:numpy'] += 1
         detach(cls, info)
         if explicit:
             _note(cls, f'numpy ({status})',
@@ -704,6 +707,7 @@ def _resolve(cls, info, explicit):
     except (CompileError, OSError) as e:
         ## (an OSError: the store's directory -- a file in its place, no
         ## permission -- escaped class creation until 2026-10-02)
+        _paths.COUNTS['once:backend:compile_failed'] += 1
         detach(cls, info)
         _note(cls, 'numpy (compile failed: %s)' % e,
               warn=('requested backend "c" but the build failed (%s); '
@@ -712,6 +716,7 @@ def _resolve(cls, info, explicit):
         return
     ## (read by `_hdl_cse.take`: a C-bound class's calls never fuse)
     info['_c_bound'] = True
+    _paths.COUNTS['once:backend:c'] += 1
     _note(cls, 'c')
     if lsrc is not None:
         _hdl_climit.bind(cls, info, lsrc)

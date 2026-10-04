@@ -57,6 +57,15 @@ import os
 
 import numpy as np
 
+from pycircuit.circuit import _paths
+
+## the counters (`_paths`): each decline by its reason, each served call
+_PC = _paths.COUNTS
+_no = _paths.no
+_K = {w: {r: f'core.{w}:{r}' for r in (
+    'off', 'toolkit', 'shadow_cir', 'shadow_tr', 'unservable', 'x', 'formula',
+    'history', 'cmat', 'clookup', 'ready', 'u', 'served')} for w in ('fj', 'j', 'f')}
+
 CORE = os.environ.get('PYCIRCUIT_TRAN_CORE', '1') != '0'
 STATUS = 'not loaded'
 
@@ -370,7 +379,7 @@ class _Core:
         T = getattr(epar, 'T', 300.0)
         if type(T) is not float:
             if type(T) is not int and np.ndim(T) != 0:
-                return None
+                return _no('core.ready:T')
             T = float(T)
         from pycircuit.circuit import _hdl_batch
         ffi, b_fn = self.ffi, self.b_fn
@@ -378,23 +387,23 @@ class _Core:
         for b, bt in enumerate(self.batches):
             info = bt.info
             if not info.get('_c_bound'):
-                return None
+                return _no('core.ready:unbound')
             kern = info['funcs'][bt.m].__dict__.get('_hdl_c')
             if kern is not bt.kern:
                 if not bt._take(kern):
-                    return None
+                    return _no('core.ready:kernel')
                 b_fn[b] = int(ffi.cast('uintptr_t', kern.cfn))
             elif not b_fn[b]:
                 b_fn[b] = int(ffi.cast('uintptr_t', kern.cfn))
             if not _hdl_batch.is_generated(bt.cls, bt.m):
-                return None
+                return _no('core.ready:generated')
             if kern0 is None:
                 kern0 = kern
         mirror, PR = self.mirror, self.PRall
         for ui, (el, ps) in enumerate(self.uniq):
             d = el.__dict__
             if 'G' in d or 'C' in d or 'i' in d or 'q' in d:
-                return None
+                return _no('core.ready:shadow')
             cp = d.get('_hdl_cp')
             if cp is None:
                 try:
@@ -403,7 +412,7 @@ class _Core:
                     cp = False
                 d['_hdl_cp'] = cp
             if cp is False:
-                return None
+                return _no('core.ready:pack')
             if cp is not mirror[ui]:
                 mirror[ui] = cp
                 a = cp[0].ctypes.data
@@ -429,6 +438,8 @@ def core_for(tr):
             core = _Core(cir, plan, ffi, dgemv)
         except Unservable:
             core = None
+    _PC['once:core.build:' + ('nodriver' if drv is None else
+                              'unservable' if core is None else 'built')] += 1
     tr.__dict__['_tran_core'] = (plan, core)
     return core
 
@@ -444,11 +455,12 @@ def evaluate(tr, x, t, provided_function, want):
     """`want` 'fj': `(f, J)` as `_residual_and_jacobian`; 'j': `(None, J)`
     as `jacobian_only`; 'f': `f` as `residual_only` -- or None where the
     core does not serve the call (nothing touched; the Python path runs)."""
+    K = _K[want]
     if not CORE:
-        return None
+        return _no(K['off'])
     from pycircuit.circuit.toolkit import NumericToolkit
     if type(tr.toolkit) is not NumericToolkit:
-        return None
+        return _no(K['toolkit'])
     ## THE METHODS THE CORE STANDS IN FOR MUST BE THE ONES IT MIRRORS: an
     ## instance shadow of the circuit's passes (a test counting `cir.G`, a
     ## harness timing it) or of the transient's companion machinery (a spy
@@ -456,29 +468,29 @@ def evaluate(tr, x, t, provided_function, want):
     ## as a batch's on an element's shadow (`_hdl_batch`)
     cd = tr.cir.__dict__
     if 'G' in cd or 'C' in cd or 'i' in cd or 'q' in cd:
-        return None
+        return _no(K['shadow_cir'])
     td = tr.__dict__
     if ('get_diff' in td or '_companion_at' in td or '_C_at_state' in td
             or '_C_lookup' in td or '_source_at' in td):
-        return None
+        return _no(K['shadow_tr'])
     core = core_for(tr)
     if core is None:
-        return None
+        return _no(K['unservable'])
     n = core.n
     if not (type(x) is np.ndarray and x.dtype == np.float64 and x.ndim == 1
             and x.flags.c_contiguous and x.shape[0] == n and np.isfinite(x).all()):
-        return None
+        return _no(K['x'])
     h = tr._dt
     h_last = tr._dt_last if tr._dt_last is not None else h
     active = tr.base_integrator.check_order_drop(h, h_last, tr._is_first_step)
     formula = FORMULA.get(type(active).__name__)
     if formula is None:
-        return None
+        return _no(K['formula'])
     q1 = _row(tr._qlast[0], n)
     q2 = _row(tr._qlast[1], n) if formula == 0 else q1
     iq1 = _row(tr._iqlast[0], n) if formula in (2, 3) else q1
     if q1 is None or q2 is None or iq1 is None:
-        return None
+        return _no(K['history'])
     a0 = a1 = a2 = theta = 0.0
     if formula == 0:
         from pycircuit.circuit._lte_kernels import bdf2_alphas
@@ -490,14 +502,14 @@ def evaluate(tr, x, t, provided_function, want):
         Cin = tr._Cmat
         if not (type(Cin) is np.ndarray and Cin.dtype == np.float64 and Cin.shape == (n, n)
                 and Cin.flags.c_contiguous):
-            return None
+            return _no(K['cmat'])
         C = Cin
     else:
         Cin = tr._C_lookup(x)
         if Cin is not None:
             if not (type(Cin) is np.ndarray and Cin.dtype == np.float64
                     and Cin.shape == (n, n) and Cin.flags.c_contiguous):
-                return None
+                return _no(K['clookup'])
             bits &= ~2
             C = Cin
         else:
@@ -505,13 +517,14 @@ def evaluate(tr, x, t, provided_function, want):
             Cin = C
     T = core.ready(tr.epar)
     if T is None:
-        return None
+        return _no(K['ready'])
     u = None
     if bits & 4:
         u = tr._source_at(t, provided_function)
         if not (type(u) is np.ndarray and u.dtype == np.float64 and u.ndim == 1
                 and u.shape[0] == n and u.flags.c_contiguous):
-            return None
+            return _no(K['u'])
+    _PC[K['served']] += 1
     ffi, cfn, _dgemv = driver()
     fb, dptr = ffi.from_buffer, core.dptr
     q, iq, Geq = np.empty(n), np.empty(n), np.empty((n, n))

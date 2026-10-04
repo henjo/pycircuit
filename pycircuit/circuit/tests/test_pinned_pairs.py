@@ -106,11 +106,11 @@ PAIRS = {
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
 #: module as a script, after the twin was checked.
 RECORD = {
-    'the kernel call and the pass driver': ('09a9e274bbe8', '94c3c93979f5'),
-    'the limiting loop and the walk': ('1668b574dfdd', '029cab015901'),
+    'the kernel call and the pass driver': ('09a9e274bbe8', 'c900976facbc'),
+    'the limiting loop and the walk': ('d151206fce18', '3f5b8f5d1503'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
-    'the transient evaluation and the core': ('88fdcf23ab0d', 'd43fafebce5b'),
-    'the assembly loops and the plan': ('e83483cda784', 'd10b57312cbf'),
+    'the transient evaluation and the core': ('6117b16cc4b6', '1b622bff6540'),
+    'the assembly loops and the plan': ('ed84458db1a3', '9578c5eca9ad'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

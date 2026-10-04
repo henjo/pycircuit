@@ -4,7 +4,7 @@ theme of `Transient` (see `transient.py`).
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint
+from pycircuit.circuit import _evalhint, _paths
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import (
     limit_sync,
@@ -510,6 +510,8 @@ class _RadauStages:
                 'pcnr=True -- PCNR has no transform variant, and it takes '
                 'precedence: each step is solved by the dense coupled PCNR '
                 'Newton.', UsageWarning)
+        if transform and use_pcnr:
+            _paths.COUNTS['radau.transform:pcnr'] += 1
         if transform and not use_pcnr:
             try:
                 return self._rk_step_transformed(
@@ -518,6 +520,7 @@ class _RadauStages:
                 ## simplified Newton stalled on this (nonlinear) step -- fall
                 ## through to the dense full-Newton solve, which is the
                 ## correctness reference and always converges here.
+                _paths.COUNTS['radau.transform:fallback'] += 1
                 self._radau_transform_fallbacks = getattr(
                     self, '_radau_transform_fallbacks', 0) + 1
         if use_pcnr:

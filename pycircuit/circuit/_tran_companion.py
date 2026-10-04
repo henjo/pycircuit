@@ -4,7 +4,9 @@
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint, _tran_core
+from pycircuit.circuit import _evalhint, _paths, _tran_core
+
+_PC = _paths.COUNTS
 
 #: `u(t)` ONCE PER STEP (speed round 4, stage B; 2026-10-02): the source
 #: vector assembled at a time serves every later request at that exact
@@ -152,18 +154,21 @@ class _CompanionModel:
         (`_evalhint`: a session names exactly what will be evaluated)."""
         rec = self._memo_get(x)
         if rec is not None and 'C' in rec:
+            _PC['memo.C:memo'] += 1
             return rec['C']
         cached = getattr(self, '_C_cache', None)
         if (cached is not None and not getattr(self, '_stateful_lims', None)
                 and float(getattr(self.epar, 'bypasstol', -1.0) or -1.0) < 0.0):
             x_cached, C_cached = cached
             if x_cached is x:
+                _PC['memo.C:same'] += 1
                 return C_cached
             if (x_cached is not None and x is not None
                     and getattr(x_cached, 'shape', None) == getattr(x, 'shape', None)
                     and bool(self.toolkit.alltrue(x_cached == x))):
+                _PC['memo.C:equal'] += 1
                 return C_cached
-        return None
+        return None                             # paths: not a decline (a lookup's miss)
 
     def _q_at(self, x):
         """``cir.q(x)``, reusing the value computed during the last assembly.
@@ -179,11 +184,14 @@ class _CompanionModel:
         if cached is not None:
             x_cached, q_cached = cached
             if x_cached is x:
+                _PC['memo.q:same'] += 1
                 return q_cached
             if (x_cached is not None and x is not None
                     and getattr(x_cached, 'shape', None) == getattr(x, 'shape', None)
                     and bool(self.toolkit.alltrue(x_cached == x))):
+                _PC['memo.q:equal'] += 1
                 return q_cached
+        _PC['memo.q:miss'] += 1
         return self.cir.q(x, self.epar)
 
     def _companion_at(self, x, C=None):
@@ -252,10 +260,14 @@ class _CompanionModel:
                 ## a time that cannot be a key -- a JAX array under that
                 ## toolkit, a 0-d numpy array: assembled every time, as before
                 memo = None
+                _PC['umemo:unhashable'] += 1
         if u is None:
             u = self.cir.u(t, self.epar, analysis=analysis)
             if memo is not None:
+                _PC['umemo:miss'] += 1
                 memo[key] = u
+        elif memo is not None:
+            _PC['umemo:hit'] += 1
         if provided_function is not None:
             u = u + provided_function(t)
         return u

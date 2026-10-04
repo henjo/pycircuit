@@ -12,7 +12,9 @@
 #
 # A test that asserts a fast path SERVED fails in the off run by design: the
 # comparison covers the tests that passed on both sides and names the rest.
-# Exit status: the comparison's (0 = every compared call identical).
+# Exit status: the comparison's (0 = every compared call identical).  The
+# fast-path counts (family `paths`) are not recorded here: with the paths off
+# they differ by design.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 OUT=${1:-$(mktemp -d -t fast_check.XXXXXX)}
@@ -27,7 +29,7 @@ OFF=(PYCIRCUIT_TRAN_CORE=0 PYCIRCUIT_HDL_BATCH=0 PYCIRCUIT_HDL_LIMIT_WALK=0
 run() {   # run LABEL [VAR=value ...]
     local label=$1; shift
     mkdir -p "$OUT/$label"
-    env "$@" PYTHONPATH=benchmarks/tranrec TRANREC_OUT="$OUT/$label" TRANREC_FAMILIES=all \
+    env "$@" PYTHONPATH=benchmarks/tranrec TRANREC_OUT="$OUT/$label" TRANREC_FAMILIES=transient,pss,pac \
         PYCIRCUIT_LEAKS_REPORT="$OUT/$label/leaks" \
         "$PY" -m pytest pycircuit -q -p no:cacheprovider -p tran_recorder --tier fast \
         "${EXTRA[@]}" > "$OUT/$label.log" 2>&1

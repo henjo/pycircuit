@@ -9,7 +9,7 @@ from copy import copy
 import contextlib
 from .toolkit import numeric
 from .toolkit import symbolic
-from . import _hdl_batch, _stamp_plan
+from . import _hdl_batch, _paths, _stamp_plan
 import numpy as np
 
 ## The process-wide fallback toolkit used when a circuit is built without an
@@ -1937,6 +1937,11 @@ class SubCircuit(Circuit):
                 ## `np.concatenate` is the only consumer.
                 pending_val.append(np.asarray(rhs).ravel())
 
+        if default_src:
+            ## (`_paths`: the elements a source pass CALLED, once per pass --
+            ## the two skips above leave out the rest, so a skip that stops
+            ## serving shows as more calls; nothing per element)
+            _paths.COUNTS[methodname + ':called'] += len(pending_val)
         if pending_idx:
             lhs = self._scatter_1d(lhs, pending_idx, pending_val, n)
 

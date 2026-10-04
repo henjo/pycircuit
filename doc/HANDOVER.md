@@ -34,7 +34,7 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
       PYCIRCUIT_STATE_DUMP=$G/state PYCIRCUIT_LEAKS_REPORT=$G/leaks \
         PYTHONPATH=benchmarks/tranrec TRANREC_OUT=$G TRANREC_FAMILIES=all .venv/bin/python -m pytest pycircuit -q \
         -p no:cacheprovider -p tran_recorder -rf --replay-record-dir=$G/replay
-      .venv/bin/python benchmarks/tranrec/compare.py <previous gate> $G --family transient|pss|pac
+      .venv/bin/python benchmarks/tranrec/compare.py <previous gate> $G --family transient|pss|pac|paths
 
   `--replay-record-dir` keeps every worker's exact test order
   (`$G/replay/.pytest-replay-gwN.txt`); `PYCIRCUIT_STATE_DUMP` writes each
@@ -74,6 +74,17 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   with no recorded call on one side is MISSING); `--passed-only` the tests
   that passed on both.  A family recorded on one side only is named and not
   compared.
+- **The fast-path counts** (`pycircuit/circuit/_paths.py`, 2026-10-04):
+  every decline of a fast path is counted with its reason, every served
+  call at the coarse sites.  The gate records them per test (family
+  `paths`, in `TRANREC_FAMILIES=all`); `compare.py <prev> $G --family paths`
+  lists each counter that moved (`core.fj:served 120 -> 0;
+  core.fj:shadow_cir 0 -> 120`) and exits 4 when the counts are the only
+  difference.  A moved count is a finding even with every answer
+  identical: a fast path stopped (or started) serving.  Keys `once:` are
+  per class or process and are only reported.  A new decline in a fast
+  path's entry function returns `_paths.no('<path>.<site>:<reason>')`
+  (`test_paths.py` checks every `return None` there).
 - **Timing records** are local: `test_timings/runs.csv` (workers, load, wall,
   per run) and the per-run JSONs the longest-first sort reads; neither is in
   git any more (`history.csv`, tracked until 2026-10-03, lost rows whenever it

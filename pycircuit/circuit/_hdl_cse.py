@@ -64,6 +64,11 @@ import tempfile
 
 import numpy as np
 
+from pycircuit.circuit import _paths
+
+_PC = _paths.COUNTS
+_no = _paths.no
+
 #: the derived store's format; bump when the emitted text changes
 #: (2: the exact scalar fast paths, `_fast_rewrite`)
 FORMAT = 2
@@ -673,11 +678,11 @@ def take(el, method, x, epar, info, args_of):
     if info.get('_c_bound'):
         ## (first: on the C backend every call comes through here, and the
         ## answer is always the separate kernel's)
-        return None
+        return None                             # paths: not a decline (the C backend's call)
     from pycircuit.circuit import _evalhint
     s = _evalhint.current()
     if s is None or method not in s.which or len(s.which) < 2:
-        return None
+        return None                             # paths: not a decline (no session asks)
     ok = info.get('_fuse_ok')
     if ok is None:
         g = info['funcs'].get('G')
@@ -686,21 +691,21 @@ def take(el, method, x, epar, info, args_of):
             ENABLED and FUSE_ENABLED and info.get('chained') and ref is not None
             and len(ref.__code__.co_code) >= FUSE_MIN_CODE)
     if not ok:
-        return None
+        return _no('fuse:class_off')
     d = el.__dict__
     if 'i' in d or 'q' in d or 'G' in d or 'C' in d:
-        return None
+        return _no('fuse:shadow')
     tk = el.toolkit
     if getattr(tk, 'jax', False) or getattr(tk, 'symbolic', False):
-        return None
+        return _no('fuse:toolkit')
     funcs = info['funcs']
     for k in s.which:
         f = funcs.get(k)
         if f is None or f.__dict__.get('_hdl_c') is not None:
-            return None
+            return _no('fuse:c_func')
     if (type(x) is not np.ndarray or x.dtype != np.float64
             or x.ndim != 1):
-        return None
+        return _no('fuse:x')
     fm = d.get('_hdl_fm')
     if fm is None or fm[0] is not s:
         fm = d['_hdl_fm'] = (s, {})
@@ -711,14 +716,16 @@ def take(el, method, x, epar, info, args_of):
     if rec is not None and rec[0] is args:
         out = rec[1].pop(method, None)
         if out is not None:
+            _PC['fuse:memo'] += 1
             return out
     fn = fused(info, s.which)
     if fn is None:
-        return None
+        return _no('fuse:unbuilt')
     try:
         vals = fn(x, *args)
     except Exception:  # noqa: BLE001 -- the separate call decides, as before
-        return None
+        return _no('fuse:raised')
+    _PC['fuse:pass'] += 1
     outs = {k: np.asarray(v, dtype=float) for k, v in zip(fn._hdl_names, vals)}
     out = outs.pop(method)
     entries.pop(key, None)

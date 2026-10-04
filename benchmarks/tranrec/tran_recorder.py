@@ -52,6 +52,7 @@ Each xdist worker writes `<TRANREC_OUT>/rec_<worker>.pkl` at session end,
 """
 import os, pickle, hashlib, inspect, functools, types
 import numpy as np
+import pytest
 
 _REC = []
 _WARN = []
@@ -73,7 +74,7 @@ MAX_DEPTH = 6
 def _families():
     f = os.environ.get('TRANREC_FAMILIES', 'transient')
     if f.strip() == 'all':
-        return {'transient', 'pss', 'pac'}
+        return {'transient', 'pss', 'pac', 'paths'}
     return {x.strip() for x in f.split(',') if x.strip()}
 
 
@@ -334,12 +335,52 @@ _RAN = []
 _OUTCOME = {}
 
 
+## THE FAST-PATH COUNTS, PER TEST (2026-10-04; family `paths`,
+## `pycircuit/circuit/_paths.py`): one record per test of what every fast
+## path served and why each declined, so a fast path that stopped serving --
+## invisible to every bit-identity check -- is named with its test.  The
+## counts of a module- or class-scoped fixture's setup go to a bucket of their
+## own (`paths_fixtures`, not compared: which test sets it up depends on the
+## schedule), not to the test that happened to set it up.
+_PATHS = {'before': None, 'fixtures': {}}
+
+
 def pytest_runtest_setup(item):
+    if 'paths' in _families():
+        from pycircuit.circuit import _paths
+        _PATHS['before'] = _paths.snapshot()
     _RAN.append(item.nodeid)
     _CUR['id'] = item.nodeid
     _CUR['k'] = {}
     _CUR['depth'] = 0
     _CUR['orbits'] = {}
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_fixture_setup(fixturedef, request):
+    if _PATHS['before'] is None or fixturedef.scope == 'function':
+        yield
+        return
+    from pycircuit.circuit import _paths
+    b = _paths.snapshot()
+    yield
+    d = _paths.since(b)
+    if d:
+        acc = _PATHS['fixtures'].setdefault(f'{fixturedef.baseid}::{fixturedef.argname}', {})
+        for k, v in d.items():
+            acc[k] = acc.get(k, 0) + v
+            _PATHS['before'][k] = _PATHS['before'].get(k, 0) + v
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    yield
+    if _PATHS['before'] is None:
+        return
+    from pycircuit.circuit import _paths
+    d = _paths.since(_PATHS['before'])
+    _PATHS['before'] = None
+    _REC.append({'test': item.nodeid, 'fam': 'paths', 'name': 'paths', 'k': 0, 'counts': d})
 
 
 def pytest_runtest_logreport(report):
@@ -380,4 +421,5 @@ def pytest_sessionfinish(session, exitstatus):
     with open(os.path.join(out, 'rec_%s.pkl' % wid), 'wb') as f:
         pickle.dump({'version': 3, 'families': sorted(_families()),
                      'calls': _REC, 'warnings': _WARN,
-                     'ran': _RAN, 'outcomes': _OUTCOME}, f)
+                     'ran': _RAN, 'outcomes': _OUTCOME,
+                     'paths_fixtures': _PATHS['fixtures']}, f)

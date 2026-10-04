@@ -6,6 +6,7 @@
 import numpy as np
 from numpy.linalg import LinAlgError
 
+from pycircuit.circuit import _paths
 from pycircuit.circuit._limiting import stateful_limiters
 from pycircuit.circuit.analysis import (
     NoConvergenceError,
@@ -312,6 +313,7 @@ class _StepNewton:
                 (f,) = remove_row_col((f,), iref, tk)
                 return f
             solver = chord = ChordNewton(residual_reduced, solver)
+            _paths.COUNTS['chord:chosen'] += 1
         scaler = self._get_scaler()
         linsolver = self._get_linearsolver()
         try:

@@ -68,6 +68,10 @@ import types
 import numpy as np
 
 from pycircuit.circuit import _hdl_cbackend as _cb
+from pycircuit.circuit import _paths
+
+_PC = _paths.COUNTS
+_no = _paths.no
 
 #: the law of each probe kind, as the C `_lim` dispatches it
 KINDS = {'pnj': 0, 'fet': 1, 'vds': 2, 'delta': 3, 'id': 4}
@@ -480,7 +484,7 @@ class CLimitKernel(_cb.CKernel):
                 packed = False
             d['_hdl_cp'] = packed
         if packed is False:
-            return None
+            return _no('climit:pack')
         p, pcast = packed
         t_index = self.t_index
         if t_index is not None:
@@ -489,7 +493,7 @@ class CLimitKernel(_cb.CKernel):
             ## a 0-d array, an array -- is the closure's)
             if type(T) is not float and type(T) is not int \
                     and type(T) is not np.float64:
-                return None
+                return _no('climit:T')
             p[t_index] = T
         if type(x) is np.ndarray and x.dtype is _cb._F64 and x.ndim == 1:
             out = x.copy()
@@ -497,9 +501,9 @@ class CLimitKernel(_cb.CKernel):
             try:
                 out = np.array(x, dtype=float)
             except (TypeError, ValueError):
-                return None
+                return _no('climit:x')
             if out.ndim != 1:
-                return None
+                return _no('climit:x')
         if (type(x0) is np.ndarray and x0.dtype is _cb._F64 and x0.ndim == 1
                 and x0.flags.c_contiguous):
             x0a = x0
@@ -507,16 +511,16 @@ class CLimitKernel(_cb.CKernel):
             try:
                 x0a = np.ascontiguousarray(x0, dtype=float)
             except (TypeError, ValueError):
-                return None
+                return _no('climit:x0')
             if x0a.ndim != 1:
-                return None
+                return _no('climit:x0')
         nx = self.nx
         if out.shape[0] < nx or x0a.shape[0] < nx:
-            return None
+            return _no('climit:short')
         ffi = self.ffi
         if self.cfn(ffi.from_buffer(self.dptr, x0a), pcast,
                     ffi.from_buffer(self.dptr, out)):
-            return None
+            return _no('climit:nan_key')
         return out
 
 
@@ -731,28 +735,28 @@ def limit_walk(cir, x, x0, epar):
     in one C call on the live state `x` (see the note above); `x`, or None
     where the walk does not serve -- nothing touched, the loop runs."""
     if not (WALK and ENABLED):
-        return None
+        return _no('walk:off')
     tk = cir.toolkit
     if getattr(tk, 'jax', False) or getattr(tk, 'symbolic', False):
-        return None
+        return _no('walk:toolkit')
     w = _walk_for(cir)
     if not w.any_capable:
-        return None
+        return _no('walk:incapable')
     n_cir = w.n
     if not (type(x) is np.ndarray and x.dtype is _cb._F64 and x.ndim == 1
             and x.flags.c_contiguous and x.flags.writeable
             and x.shape[0] == n_cir):
-        return None
+        return _no('walk:x')
     if x0 is not x and not (type(x0) is np.ndarray and x0.dtype is _cb._F64
                             and x0.ndim == 1 and x0.flags.c_contiguous
                             and x0.shape[0] == n_cir):
-        return None
+        return _no('walk:x0')
     T = getattr(epar, 'T', 300.0)
     if type(T) is not float and type(T) is not int and type(T) is not np.float64:
-        return None
+        return _no('walk:T')
     drv = _walk_drv()
     if drv is None:
-        return None
+        return _no('walk:nodriver')
     ffi, cfn = drv
     if w.cF is None:
         w.prepare(ffi)
@@ -765,15 +769,18 @@ def limit_walk(cir, x, x0, epar):
         kern = kerns[e]
         if ck is not kern:
             if not w.retake(e, ck, ffi):
+                _PC['walk:retake'] += 1
                 F[e] = 0
                 continue
             kern = ck
         if kern is None:
             ## (a capable class with no kernel bound: unbound, refused)
+            _PC['walk:unbound'] += 1
             F[e] = 0
             continue
         d = el.__dict__
         if 'limit' in d:
+            _PC['walk:shadow'] += 1
             F[e] = 0
             continue
         cp = d.get('_hdl_cp')
@@ -784,6 +791,7 @@ def limit_walk(cir, x, x0, epar):
                 cp = False
             d['_hdl_cp'] = cp
         if cp is False:
+            _PC['walk:pack'] += 1
             F[e] = 0
             continue
         F[e] = addr[e]
@@ -792,7 +800,8 @@ def limit_walk(cir, x, x0, epar):
             mirror[e] = cp
             PR[e] = cp[0].ctypes.data
     if not served:
-        return None
+        return _no('walk:none')
+    _PC['walk:served'] += 1
     cx = ffi.from_buffer('double *', x)
     cx0 = cx if x0 is x else ffi.from_buffer('double *', x0)
     Tf = float(T)
@@ -802,6 +811,7 @@ def limit_walk(cir, x, x0, epar):
         e = cfn(w.cF, w.cPR, w.cTI, Tf, w.cNM, w.cOFF, w.cK, cx, cx0, e, n)
         if e < n:
             ## the loop's own statement for the element the driver stopped at
+            _PC['walk:stopped'] += 1
             _inst, el, nm = entries[e]
             limited = el.limit(x[nm], x0[nm], epar)
             if limited is not None:

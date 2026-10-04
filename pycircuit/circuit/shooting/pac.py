@@ -18,6 +18,7 @@ History: `doc/shooting_history.md`, `pac` (module level).
 """
 import numpy as np
 import weakref
+from pycircuit.circuit import _paths
 from pycircuit.circuit.analysis import Analysis
 from pycircuit.circuit.analysis import Parameter
 from pycircuit.circuit.analysis import remove_row_col
@@ -391,6 +392,8 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         ## column each, `_forced_replay_cols`) on the stage and multistep
         ## maps -- they were 94 % of a sweep; a GLM's stay one per frequency
         batch = len(freqs) > 1 and not fp.is_glm
+        if len(freqs) > 1:
+            _paths.COUNTS['pac.forced:' + ('batched' if batch else 'glm')] += 1
         rhs = []
         if batch:
             W, _ = pss._forced_replay_cols(fp, freqs, u_ac, u_points=u_points)
@@ -862,7 +865,12 @@ class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
         n = fp.width
         if (len(f_outs) < 2 or fp.is_glm or EventColumns.of(host) is not None
                 or n > host.FLOQUET_DENSE_LIMIT):
+            if len(f_outs) >= 2:
+                _paths.COUNTS['pac.sidebands:' + (
+                    'glm' if fp.is_glm else 'events' if EventColumns.of(host) is not None
+                    else 'large')] += 1
             return [self._sideband_family(pss, f, output) for f in f_outs]
+        _paths.COUNTS['pac.sidebands:batched'] += 1
         self._check_circuit(host)
         m = host.cir.n - 1
         T = float(fp.T)

@@ -715,12 +715,15 @@ class AutoSolver(LinearSolver):
     def _select(self, A):
         if self._choice is not None:
             return self._choice
+        from pycircuit.circuit import _paths
         arr = numpy.asarray(A)
         if arr.ndim != 2 or arr.shape[0] < self.min_n or arr.dtype == object:
+            _paths.COUNTS['solver.auto:dense_small'] += 1
             self._choice = self._dense
             return self._choice
         fill = numpy.count_nonzero(arr) / float(arr.shape[0] * arr.shape[1])
         if fill > self.max_fill:
+            _paths.COUNTS['solver.auto:dense_fill'] += 1
             self._choice = self._dense
             return self._choice
         n_unknowns = arr.shape[0]
@@ -750,6 +753,7 @@ class AutoSolver(LinearSolver):
             try:
                 self._sparse = cls()
                 self._choice = self._sparse
+                _paths.COUNTS['solver.auto:' + cls.__name__] += 1
                 return self._choice
             except ImportError:
                 continue

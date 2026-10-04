@@ -60,7 +60,12 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _hdl_batch
+from pycircuit.circuit import _hdl_batch, _paths
+
+_PC = _paths.COUNTS
+_no = _paths.no
+_PK = {m: {r: f'plan.{m}:{r}' for r in ('off', 'toolkit', 'x', 'nonfinite', 'legacy', 'served')}
+       for m in ('G', 'C', 'i', 'q')}
 
 ENABLED = os.environ.get('PYCIRCUIT_STAMP_PLAN', '1') != '0'
 
@@ -256,11 +261,21 @@ def invalidate(cir):
     cir.__dict__.pop('_stamp_plan', None)
 
 
-def _eligible(cir, x):
+def _ineligible(cir, x):
+    """None where the plan serves `x`, else the reason (`_paths`)."""
     from pycircuit.circuit.toolkit import NumericToolkit
-    return (ENABLED and type(cir.toolkit) is NumericToolkit
-            and type(x) is np.ndarray and x.dtype == np.float64
-            and x.ndim == 1 and x.shape[0] == len(cir.nodes) + len(cir.branches))
+    if not ENABLED:
+        return 'off'
+    if type(cir.toolkit) is not NumericToolkit:
+        return 'toolkit'
+    if not (type(x) is np.ndarray and x.dtype == np.float64
+            and x.ndim == 1 and x.shape[0] == len(cir.nodes) + len(cir.branches)):
+        return 'x'
+    return None
+
+
+def _eligible(cir, x):
+    return _ineligible(cir, x) is None
 
 
 def _call(el, m, subx, args):
@@ -330,8 +345,10 @@ def _every_call(p):
 
 def assemble_matrix(cir, m, x, args):
     """`m` ('G' or 'C') at `x` through the plan, or None for the legacy loop."""
-    if not _eligible(cir, x):
-        return None
+    K = _PK[m]
+    why = _ineligible(cir, x)
+    if why is not None:
+        return _no(K[why])
     plan = _plan_for(cir)
     mp = plan.methods.get(m)
     if mp is None:
@@ -345,10 +362,13 @@ def assemble_matrix(cir, m, x, args):
     for a, b, rhs in got:
         val = np.asarray(rhs).ravel()
         if val.dtype.kind not in 'fiub' or val.size != b - a:
+            _PC[K['legacy']] += 1
             return _legacy_matrix(cir, m, x, args, mp, got)
         buf[a:b] = val
     if mp.batches and not _run_batches(x, args, mp, buf, got, _call, m):
+        _PC[K['legacy']] += 1
         return _legacy_matrix(cir, m, x, args, mp, got)
+    _PC[K['served']] += 1
     n = plan.n
     if not mp.flat.size:
         ## (an EMPTY bincount is int64 even with weights: the loop's zeros)
@@ -358,10 +378,12 @@ def assemble_matrix(cir, m, x, args):
 
 def assemble_vector(cir, v, x, args):
     """`v` ('i' or 'q') at `x` through the plan, or None for the legacy loop."""
-    if not _eligible(cir, x):
-        return None
+    K = _PK[v]
+    why = _ineligible(cir, x)
+    if why is not None:
+        return _no(K[why])
     if not np.isfinite(x).all():
-        return None
+        return _no(K['nonfinite'])
     plan = _plan_for(cir)
     vp = plan.methods.get(v)
     if vp is None:
@@ -382,10 +404,13 @@ def assemble_vector(cir, v, x, args):
     for a, b, rhs in got:
         val = np.asarray(rhs).ravel()
         if val.dtype.kind not in 'fiub' or val.size != b - a:
+            _PC[K['legacy']] += 1
             return _legacy_vector(cir, v, x, args, vp, got)
         buf[a:b] = val
     if vp.batches and not _run_batches(x, args, vp, buf, got, _call_plain, v):
+        _PC[K['legacy']] += 1
         return _legacy_vector(cir, v, x, args, vp, got)
+    _PC[K['served']] += 1
     if not vp.idx.size:
         return np.zeros(plan.n)
     return np.bincount(vp.idx, weights=buf, minlength=plan.n)

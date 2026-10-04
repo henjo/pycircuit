@@ -29,6 +29,12 @@ side only is NAMED and not compared (a gate recorded with fewer families,
 or a recording older than a new family), instead of every call reading
 MISSING.
 
+THE FAST-PATH COUNTS (family `paths`, 2026-10-04): one record per test of
+`pycircuit/circuit/_paths.py`'s counters; a difference lists each counter
+that moved (`core.fj:served 120 -> 0; core.fj:shadow_cir 0 -> 120`).  Keys
+`once:` are summed over the recording and reported, never failed.  When the
+counts are the only difference the exit status is 4.
+
 `--passed-only` compares only the tests that PASSED on both sides, and
 names how many it left out (the switches-off check: a test asserting that
 a fast path served fails by design when it is off).
@@ -216,6 +222,16 @@ def compare_call(a, b, tol, worst, k):
     for f in ('pcnr_solves', 'pcnr_fallbacks', 'pcnr_status'):
         if a.get(f) != b.get(f):
             msgs.append('%s %r vs %r' % (f, a.get(f), b.get(f)))
+    ## the fast-path counts (family `paths`): every key but the `once:` ones,
+    ## which land on whichever test a worker meets them in first
+    ca, cb = a.get('counts'), b.get('counts')
+    if ca is not None or cb is not None:
+        ca = {kk: v for kk, v in (ca or {}).items() if not kk.startswith('once:')}
+        cb = {kk: v for kk, v in (cb or {}).items() if not kk.startswith('once:')}
+        if ca != cb:
+            msgs.append('paths ' + '; '.join(
+                f'{kk} {ca.get(kk, 0)} -> {cb.get(kk, 0)}'
+                for kk in sorted(set(ca) | set(cb)) if ca.get(kk, 0) != cb.get(kk, 0)))
     return msgs
 
 
@@ -296,6 +312,10 @@ def main(argv):
     for k in keys:
         c = count.setdefault(k[1], Counter())
         w = worst.setdefault(k[1], [0.0, None])
+        if k[1] == 'paths' and any(cc in str(k[0]) for cc in CACHING_TESTS):
+            ## (their counts move with the cached helper's work, as their calls do)
+            c['cached'] += 1
+            continue
         if k not in A or k not in B:
             side, other = ('A', sigA) if k not in A else ('B', sigB)
             rec = B[k] if k not in A else A[k]
@@ -347,6 +367,17 @@ def main(argv):
             elif (Counter((r['cat'], r['msg'], r['where']) for r in ra)
                   != Counter((r['cat'], r['msg'], r['where']) for r in rb)):
                 wmoved += 1
+    ## the `once:` path counts, summed over the recording: reported, never failed
+    oa, ob = Counter(), Counter()
+    for side, rec in ((oa, A), (ob, B)):
+        for k, r in rec.items():
+            if k[1] == 'paths':
+                side.update({kk: v for kk, v in r.get('counts', {}).items()
+                             if kk.startswith('once:')})
+    if oa != ob:
+        print('NOTICE once-only path counts differ (not failed: they follow the schedule): '
+              + '; '.join(f'{kk} {oa.get(kk, 0)} -> {ob.get(kk, 0)}'
+                          for kk in sorted(set(oa) | set(ob)) if oa.get(kk, 0) != ob.get(kk, 0)))
     for fam in sorted(count):
         c = count[fam]
         print('%-9s compared %d calls: %d identical, %d cached elsewhere, %d differ; '
@@ -355,7 +386,12 @@ def main(argv):
                   worst[fam][0], worst[fam][1]))
     print('warnings: %d tests differ, %d tests with a moved location only; '
           'name collisions kept as nodeids: %d / %d' % (wbad, wmoved, ca, cb))
-    return 1 if (wbad or any(c['bad'] for c in count.values())) else 0
+    bad = {fam for fam, c in count.items() if c['bad']}
+    if wbad or bad - {'paths'}:
+        return 1
+    ## (only the fast-path counts differ: the answers are the same, a path
+    ## served differently -- its own exit status)
+    return 4 if bad else 0
 
 
 if __name__ == '__main__':
