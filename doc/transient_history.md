@@ -3790,6 +3790,24 @@ solves overwrite the step's state and `jacobian_only` runs again after it.
 Measured (parent d371a594): the 20-MosLevel1 marginal step -33.4 %, 20-GP
 -38.1 %, the adaptive MOS run -29.9 %; declining circuits within 0.5 %.
 
+Later the same day: the solve declined on an INSTANCE shadow of the
+machinery it stands in for, but not on a subclass overriding it or a patch
+on its class or module -- either would have been bypassed on every served
+step.  The C error test (stage 3) had to learn the same thing first: it
+compares its chain's pieces by identity against originals read once every
+one is its module's own (`_paths.genuine`: the name, the module, no
+`__wrapped__`; read lazily without that, a test that ran first under a
+patch had the patch taken for the original).  The Newton solve now checks
+the transient's class exactly (`newton_c:class`) and `_newton`,
+`_newton_limiter`, `_residual_and_jacobian`, `_get_nrsolver`,
+`_get_scaler`, the reference-row helpers `_newton` calls, `nrsolver`'s two
+loops and the evaluate core's Python entry (`newton_c:patched`): ~4 k
+instructions a served step.  No subclass of Transient exists in the
+package or its tests, and no run was served past such a patch: the one
+test helper that wraps `StandardNewton.solve_system` on the class (to log
+iterations, `test_stage_predictor`) also shadows `cir.i`, which the C
+declined -- the gate shows the reason move.
+
 ## `_tran_lte_c.py` -- the adaptive error test in C (2026-10-04, speed round 8's stage 3)
 
 ### (module docstring)

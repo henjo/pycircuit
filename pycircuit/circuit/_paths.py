@@ -25,6 +25,7 @@ the 20-MosLevel1 step, +1.1 % on the PSP stage's -- about a dozen
 increments a step.  Nothing here changes what any path computes.
 """
 import collections
+import types
 
 #: every count since the process started; a test's are a difference.  A
 #: `defaultdict(int)`, a C type: an increment takes the dict's own subscript
@@ -35,6 +36,17 @@ COUNTS = collections.defaultdict(int)
 def no(key):
     """Count `key` (a decline); a decline returns this call's None."""
     COUNTS[key] += 1
+
+
+def genuine(obj, qual, mod):
+    """`obj` is what `mod`'s source defines as `qual` -- not a caller's
+    stand-in (a lambda, a wrapper: another name or module, or `__wrapped__`).
+    A fast path that stands in for Python code reads that code's pieces
+    once, and only when every one is genuine: one read under a caller's
+    patch would hold the patch (the C error test's tests found it)."""
+    return (getattr(obj, '__module__', None) == mod and getattr(obj, '__qualname__', None) == qual
+            and (isinstance(obj, type) or (type(obj) is types.FunctionType
+                                          and '__wrapped__' not in obj.__dict__)))
 
 
 def snapshot():

@@ -43,7 +43,6 @@ why the path is off where it is.  History: `doc/transient_history.md`,
 """
 import math
 import os
-import types
 
 import numpy as np
 
@@ -237,14 +236,6 @@ def driver():
     return _driver or None
 
 
-def _genuine(obj, qual, mod='pycircuit.circuit.stepcontroller'):
-    """`obj` is what `mod`'s source defines as `qual` -- not a caller's
-    stand-in (a lambda, a wrapper: another name or module, or `__wrapped__`)."""
-    return (getattr(obj, '__module__', None) == mod and getattr(obj, '__qualname__', None) == qual
-            and (isinstance(obj, type) or (type(obj) is types.FunctionType
-                                          and '__wrapped__' not in obj.__dict__)))
-
-
 def _globals():
     """The chain's pieces as defined, read once a call finds every one its
     module's own (one taken under a caller's patch would hold the patch:
@@ -256,6 +247,7 @@ def _globals():
         from pycircuit.circuit.toolkit import NumericToolkit
         SC, IG, AN, NU = (sc.StepController, 'pycircuit.circuit.integrator',
                           'pycircuit.circuit.analysis', 'pycircuit.circuit._numeric')
+        SCM = 'pycircuit.circuit.stepcontroller'
         g2, tr = integrator.Gear2Integrator, integrator.TrapezoidalIntegrator
         own = ((SC._charge_lte, 'StepController._charge_lte'),
                (SC._normalised, 'StepController._normalised'),
@@ -274,7 +266,7 @@ def _globals():
                (analysis._reduce_ndarray, '_reduce_ndarray', AN),
                (_numeric.linearsolver, 'linearsolver', NU), (_numeric.array, 'array', NU),
                (NumericToolkit, 'NumericToolkit', 'pycircuit.circuit.toolkit'))
-        if not all(_genuine(*o) for o in own):
+        if not all(_paths.genuine(o[0], o[1], o[2] if len(o) > 2 else SCM) for o in own):
             return None
         _G['mods'] = (sc, integrator, analysis)
         _G['controllers'] = (sc.IntegralController, sc.PIController)

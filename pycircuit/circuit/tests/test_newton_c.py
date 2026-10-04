@@ -178,6 +178,36 @@ def test_an_instance_shadow_of_the_newton_is_honoured():
     assert len(calls) >= 10
 
 
+def test_a_class_patch_and_a_subclass_take_the_python_newton(monkeypatch):
+    """`_newton` patched on the class, or overridden by a subclass: today's
+    Newton runs, every step, counted (the C stood in for both until
+    2026-10-04)."""
+    calls = []
+    real = Transient._newton
+
+    def counting(self, *a, **k):
+        calls.append(1)
+        return real(self, *a, **k)
+    monkeypatch.setattr(Transient, '_newton', counting)
+    before = _paths.snapshot()
+    Transient(_mos_chain(2), toolkit=circuit.numeric).solve(tend=4e-7, timestep=2e-8,
+                                                            fixed_timestep=True)
+    d = _paths.since(before)
+    assert len(calls) >= 15 and d.get('newton_c:served', 0) == 0, d
+    assert d.get('newton_c:patched', 0) >= 15
+    monkeypatch.undo()
+
+    class Mine(Transient):
+        def _newton(self, *a, **k):
+            calls.append(2)
+            return super()._newton(*a, **k)
+    before = _paths.snapshot()
+    Mine(_mos_chain(2), toolkit=circuit.numeric).solve(tend=4e-7, timestep=2e-8,
+                                                       fixed_timestep=True)
+    d = _paths.since(before)
+    assert calls.count(2) >= 15 and d.get('newton_c:class', 0) >= 15, d
+
+
 def test_the_c_solve_serves_the_multistep_step():
     if _tran_newton_c.driver() is None:
         pytest.skip(f'the C solve is off: {_tran_newton_c.STATUS}')

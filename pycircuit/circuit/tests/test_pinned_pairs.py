@@ -162,8 +162,8 @@ RECORD = {
     'the transient evaluation and the core': ('b3fb392a7acd', '8433a00608ff'),
     'the assembly loops and the plan': ('ed84458db1a3', '9578c5eca9ad'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', '01c4a05c791a'),
-    'the Newton solve and its C': ('7e6a12179239', 'e398385b81eb'),
-    'the error test and its C': ('a24ba5659ca4', 'ba43d6c388d0'),
+    'the Newton solve and its C': ('7e6a12179239', 'b7494b411856'),
+    'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

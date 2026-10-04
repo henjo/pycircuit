@@ -325,6 +325,38 @@ def driver():
     return _driver or None
 
 
+def _chain():
+    """The machinery `solve` stands in for, as defined -- the transient's
+    class and its Newton methods, `nrsolver`'s two loops, the reference-row
+    helpers `_newton` calls, the evaluate core's Python entry -- read once a
+    call finds every piece its module's own (`_paths.genuine`); None: not
+    yet.  A call then compares what the Python path would call now."""
+    if 'chain' not in _MOD:
+        from pycircuit.circuit import _tran_core, _tran_newton, nrsolver
+        from pycircuit.circuit.transient import Transient as T
+        TN, AN = 'pycircuit.circuit._tran_newton', 'pycircuit.circuit.analysis'
+        own = ((T, 'Transient', 'pycircuit.circuit.transient'),
+               (T._newton, '_StepNewton._newton', TN),
+               (T._newton_limiter, '_StepNewton._newton_limiter', TN),
+               (T._residual_and_jacobian, '_CompanionModel._residual_and_jacobian',
+                'pycircuit.circuit._tran_companion'),
+               (T._get_nrsolver, 'Analysis._get_nrsolver', AN),
+               (T._get_scaler, 'Analysis._get_scaler', AN),
+               (_tran_newton.refnode_removed, 'refnode_removed', 'pycircuit.circuit.dcanalysis'),
+               (_tran_newton.remove_row_col, 'remove_row_col', AN),
+               (nrsolver.StandardNewton.solve_system, 'StandardNewton.solve_system',
+                'pycircuit.circuit.nrsolver'),
+               (nrsolver.ChordNewton.solve_system, 'ChordNewton.solve_system',
+                'pycircuit.circuit.nrsolver'),
+               (_tran_core.evaluate, 'evaluate', 'pycircuit.circuit._tran_core'))
+        if not all(_paths.genuine(*o) for o in own):
+            return None
+        _MOD['chain'] = tuple(o for o, _q, _m in own)
+        _MOD['chain_mods'] = (_tran_newton, nrsolver.StandardNewton, nrsolver.ChordNewton,
+                              _tran_core)
+    return _MOD['chain']
+
+
 def _mods():
     """The modules and names `solve` reads, imported once (a function-level
     `from pycircuit.circuit import ...` runs importlib's `_handle_fromlist`
@@ -548,6 +580,19 @@ def solve(tr, func, t, provided_function, seed, residual):
         return _no('newton_c:driver')
     ffi, cfn, lapack = drv
     M = _MOD or _mods()
+    ## (the machinery the C stands in for, as defined: a subclass, or a
+    ## piece patched on its class or module, takes the Python Newton)
+    chain = M.get('chain') or _chain()
+    if chain is None:
+        return _no('newton_c:patched')
+    T = chain[0]
+    if type(tr) is not T:
+        return _no('newton_c:class')
+    tn, SN, CN, tcm = M['chain_mods']
+    if (T._newton, T._newton_limiter, T._residual_and_jacobian, T._get_nrsolver,
+            T._get_scaler, tn.refnode_removed, tn.remove_row_col, SN.solve_system,
+            CN.solve_system, tcm.evaluate) != chain[1:]:
+        return _no('newton_c:patched')
     if type(tr.toolkit) is not M['NumericToolkit']:
         return _no('newton_c:toolkit')
     if 'G' in cd or 'C' in cd or 'i' in cd or 'q' in cd or 'limit' in cd:
