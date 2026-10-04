@@ -1505,9 +1505,16 @@ def test_the_traced_blocks_equal_the_cpus_augmented_system():
     """The assembly, before any Newton loop is trusted.
 
     If these agree, the rest of Stage 3 is the loop rather than the maths --
-    which is why this is asserted separately from the solve below, at a
+    which is why this is asserted separately from the solve below, at
     RANDOM (x, v_lim) rather than at a solution, where a wrong block could
     still look right.
+
+    ⚠ TO EIGHT ULPS OF EACH BLOCK'S SCALE, AT TEN STATES (2026-10-04).  It
+    asserted exact equality at one state, which held on this box's GPU by
+    the luck of that state: over 20 states the `J_ml` block differs at 3 on
+    the GPU (1 ulp) and at 6 on JAX's CPU backend (up to 5 ulps, 3.4e-16 of
+    the block's scale) -- the backends round an operation differently.  A
+    wrong block is wrong by far more than eight ulps.
     """
     jnp, jaxtoolkit, _device_arrays, blocks, _loop = _jax_bits()
     from pycircuit.circuit.circuit import defaultepar
@@ -1516,19 +1523,22 @@ def test_the_traced_blocks_equal_the_cpus_augmented_system():
     c = _mos_probe_circuit(numeric)
     devs = pcnr_devices(c)
     n, k = c.n, sum(d.m for d in devs)
-    rng = np.random.default_rng(0)
-    x = rng.uniform(-0.3, 1.2, n)
-    v = rng.uniform(0.2, 0.9, k)
-    ref = augmented_system(c, x, v, devs, defaultepar)[:5]
-
     cj = _mos_probe_circuit(jaxtoolkit)
-    got = blocks(cj, _device_arrays(cj, defaultepar), jnp.asarray(x),
-                 jnp.asarray(v), defaultepar, cj.n)
-    for name, a, b in zip(('g_mna', 'g_lim', 'J_mm', 'J_ml', 'J_lm'),
-                          ref, got):
-        a, b = np.asarray(a, float), np.asarray(b, float)
-        assert a.shape == b.shape, (name, a.shape, b.shape)
-        assert np.array_equal(a, b), (name, np.max(np.abs(a - b)))
+    arrays = _device_arrays(cj, defaultepar)
+    tol = 8 * np.finfo(float).eps
+    for seed in range(10):
+        rng = np.random.default_rng(seed)
+        x = rng.uniform(-0.3, 1.2, n)
+        v = rng.uniform(0.2, 0.9, k)
+        ref = augmented_system(c, x, v, devs, defaultepar)[:5]
+        got = blocks(cj, arrays, jnp.asarray(x), jnp.asarray(v), defaultepar, cj.n)
+        for name, a, b in zip(('g_mna', 'g_lim', 'J_mm', 'J_ml', 'J_lm'), ref, got):
+            a, b = np.asarray(a, float), np.asarray(b, float)
+            assert a.shape == b.shape, (name, a.shape, b.shape)
+            assert np.isfinite(a).all() and np.isfinite(b).all(), (name, seed)
+            scale = max(float(np.max(np.abs(a))), np.finfo(float).tiny)
+            err = float(np.max(np.abs(a - b))) / scale
+            assert err <= tol, (name, seed, err)
 
 
 def test_vector_pcnr_finds_the_cpus_operating_point_on_the_diff_pair():

@@ -44,15 +44,9 @@ echo "sanitize_suite: output in $OUT"
 DESELECT=(
     --deselect 'pycircuit/circuit/tests/test_hdl_cbackend.py::test_const_merges_the_repeated_calls_and_keeps_the_bytes'
     --deselect 'pycircuit/circuit/tests/test_perf_guards.py'
-    ## two JAX tests that hold on the GPU backend only (the suite runs JAX
-    ## on this box's GPU; here it must be the CPU): measured 2026-10-04, they
-    ## fail with JAX_PLATFORMS=cpu and no sanitizer at all -- the traced
-    ## blocks differ from the CPU system by a few ulps (the test's one state
-    ## happens to be exact on the GPU), and JAX's PCNR does NOT converge on
-    ## the 5 V cold start on the CPU backend (on the GPU only at the test's
-    ## first step and one other)
-    --deselect 'pycircuit/circuit/tests/test_pcnr_vector.py::test_the_traced_blocks_equal_the_cpus_augmented_system'
-    --deselect 'pycircuit/circuit/tests/test_jax_pcnr.py::test_pcnr_solves_the_cold_start_plain_newton_cannot'
+    ## (the two JAX tests that held on the GPU backend only -- here JAX runs
+    ## on the CPU -- were made backend-independent on 2026-10-04: the traced
+    ## blocks to eight ulps, the cold start an expected failure off the GPU)
 )
 if [ $DEEP -eq 1 ]; then
     SCOPE=(--tier all); MALLOC=(PYTHONMALLOC=malloc)

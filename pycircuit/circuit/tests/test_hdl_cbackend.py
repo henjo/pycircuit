@@ -236,14 +236,27 @@ class TestLibraryBitIdentity(object):
 
     @pytest.mark.parametrize('name', CHAINED)
     def test_class_bitwise(self, name):
-        cls = getattr(eh, name)
-        e = _instance(cls, **KW.get(name, {}))
+        ## THE CLASS AN INSTANCE RUNS (2026-10-04).  A MOSFET at its defaults
+        ## (no `rd`, `rs`) is a collapse variant; its base class's functions,
+        ## which this test compared until then, keep the internal nodes and
+        ## divide by the zero resistances -- `i` NaN in 67 % of its entries at
+        ## these points, `G` in 22 %, and NaN equals NaN: a fault planted in
+        ## the variant's kernel passed it, and the variant's kernels -- the
+        ## code a MOSFET runs -- were checked nowhere here
+        e = _instance(getattr(eh, name), **KW.get(name, {}))
+        cls = type(e)
         n = len(hdl.x_layout(cls))
         args = [float(v) for v in hdl._args_of(e, defaultepar)]
         with c_backend(cls):
             assert cls._hdl_backend_status == 'c', cls._hdl_backend_status
             found = _c_funcs(cls)
             assert found, 'no C kernels attached'
+            ## (not vacuous: the reference is a number in most entries)
+            for fname, f in found:
+                with np.errstate(all='ignore'):
+                    share = np.mean([np.isfinite(np.asarray(f(x, *args), float)).mean()
+                                     for x in _points(n)])
+                assert share > 0.5, (fname, share)
             uses_tanh = any('tanh' in f._src for _nm, f in found)
             if not uses_tanh:
                 tallies = _sweep(e, cls, _points(n))
@@ -288,9 +301,10 @@ class TestLibraryBitIdentity(object):
     def test_tanh_is_the_whole_difference(self, name):
         """For every tanh-using class, the C kernel agrees BITWISE with
         the numpy source run with libm's tanh: the ulp against the real
-        numpy path is numpy's own tanh, nothing else."""
-        cls = getattr(eh, name)
-        e = _instance(cls, **KW.get(name, {}))
+        numpy path is numpy's own tanh, nothing else.  (The class an
+        instance runs: see `test_class_bitwise`.)"""
+        e = _instance(getattr(eh, name), **KW.get(name, {}))
+        cls = type(e)
         n = len(hdl.x_layout(cls))
         args = [float(v) for v in hdl._args_of(e, defaultepar)]
         with c_backend(cls):
