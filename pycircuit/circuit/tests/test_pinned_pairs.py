@@ -119,6 +119,15 @@ PAIRS = {
                  'pycircuit.circuit._tran_newton_c:_Ctx',
                  'pycircuit.circuit._tran_newton_c:_walk_full'],
     },
+    'the PSP limiter and its C twin': {
+        'why': 'the twin is `PspMosLongChannel.limit` transliterated -- d, g, b moved '
+               'about the source in Python\'s order, `(vs + vold) + (+-lim)` -- with '
+               '`vlimit` baked in per value and any non-finite value declined',
+        'reference': ['pycircuit.circuit.compact:PspMosLongChannel.limit'],
+        'twin': ['pycircuit.circuit._hdl_climit:PSP_LIMIT_C',
+                 'pycircuit.circuit._hdl_climit:_handwritten',
+                 'pycircuit.circuit._hdl_climit:_Handwritten'],
+    },
     'the error test and its C': {
         'why': 'the C error test is `_charge_lte` (the trapezoid\'s and Gear-2\'s '
                'charge-form `compute_lte`, numpy\'s own LAPACK on the reduced '
@@ -157,13 +166,14 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the kernel call and the pass driver': ('09a9e274bbe8', 'c900976facbc'),
-    'the limiting loop and the walk': ('d151206fce18', '3f5b8f5d1503'),
+    'the limiting loop and the walk': ('d151206fce18', '411e5dd4e655'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
     'the transient evaluation and the core': ('b3fb392a7acd', '8433a00608ff'),
     'the assembly loops and the plan': ('ed84458db1a3', '9578c5eca9ad'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
-    'the Newton solve and its C': ('7e6a12179239', 'b7494b411856'),
+    'the Newton solve and its C': ('7e6a12179239', '6904a806ad8d'),
     'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),
+    'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

@@ -86,6 +86,7 @@ SWITCHES = (
     ('pycircuit.circuit._hdl_batch', 'SKIP_ZERO_SOURCE'),
     ('pycircuit.circuit._hdl_climit', 'ENABLED'),
     ('pycircuit.circuit._hdl_climit', 'WALK'),
+    ('pycircuit.circuit._hdl_climit', 'PSP_LIMIT'),
     ('pycircuit.circuit._tran_core', 'CORE'),
     ('pycircuit.circuit._tran_newton_c', 'ENABLED'),
     ('pycircuit.circuit._tran_lte_c', 'ENABLED'),

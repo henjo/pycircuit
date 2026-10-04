@@ -622,6 +622,108 @@ _WALK_CDEF = ('long hdl_fn(void **F, double **PR, const int64_t *TI, double T, '
 _walk_driver = None
 WALK_STATUS = 'not loaded'
 
+## ---------------------------------------------------------------------------
+## HAND-WRITTEN LIMITERS (speed round 9, stage 1; 2026-10-05).  A class whose
+## `limit` is hand-written Python has no spec to print: PSP's
+## (`compact.PspMosLongChannel.limit`, which PMOS inherits) moved d, g and b
+## about the source in the walk's Python loop, so the C Newton
+## (`_tran_newton_c`) declined every PSP circuit.  Its twin is written here,
+## the law transliterated in Python's own order: `vold = x0[k] - vs0`,
+## `delta = (x[k] - vs) - vold`, and where `|delta| > lim`, `x[k] = (vs +
+## vold) + (+-lim)` -- for the external g, as the Python does.  The Python
+## computes in numpy float64 scalars, which WARN on an overflow or an invalid
+## operation: so any non-finite value declines (the law answers, warning as
+## it does).  NOT the generated `limit_delta` probes: their write-back
+## rounds as `vs + (vold + lim)`.  `vlimit` is baked into the source (its repr
+## round-trips), one object per value; an element whose `vlimit` is not the
+## class's positive finite float is not capable.  The twin is bound per walk
+## entry through `_Handwritten` -- the class info's stand-in, whose
+## `_c_limit` is the twin only while the switch is on, the class C-bound and
+## its `vlimit` the baked one -- and on such an entry an instance `vlimit`
+## declines like an instance `limit` does on every entry (one more dict
+## lookup, for the hand-written entries alone).  `PSP_LIMIT` (env
+## `PYCIRCUIT_PSP_LIMIT_C=0`) is read per call.
+## ---------------------------------------------------------------------------
+PSP_LIMIT = os.environ.get('PYCIRCUIT_PSP_LIMIT_C', '1') != '0'
+
+PSP_LIMIT_C = r"""
+#include <math.h>
+/* compact.PspMosLongChannel.limit: d, g, b about the source (rows 0, 1, 3
+   about row 2), in Python's order; any non-finite value declines */
+int hdl_fn(const double *x, const double *p, double *out)
+{
+    const double lim = %(lim)s;
+    const double vs = out[2], vs0 = x[2];
+    static const int ks[3] = {0, 1, 3};
+    int j;
+    (void) p;
+    if (!(isfinite(vs) && isfinite(vs0))) return 1;
+    for (j = 0; j < 3; j++) {
+        const int k = ks[j];
+        double vold, delta;
+        if (!(isfinite(out[k]) && isfinite(x[k]))) return 1;
+        vold = x[k] - vs0;
+        delta = (out[k] - vs) - vold;
+        if (!(isfinite(vold) && isfinite(delta))) return 1;
+        if (fabs(delta) > lim) {
+            const double nv = (vs + vold) + (delta > 0.0 ? lim : -lim);
+            if (!isfinite(nv)) return 1;
+            out[k] = nv;
+        }
+    }
+    return 0;
+}
+"""
+
+_HW = {}
+
+
+class _Handwritten:
+    """A walk entry's stand-in for its class info where the class's `limit`
+    is hand-written: `get('_c_limit')` is the twin while the switch is on,
+    the class is C-bound and its `vlimit` is the baked one, else None (the
+    walk's own decline: the Python loop calls the law)."""
+
+    __slots__ = ('cls', 'info', 'kern', 'v')
+
+    def __init__(self, cls, info, kern, v):
+        self.cls, self.info, self.kern, self.v = cls, info, kern, v
+
+    def get(self, key, default=None):
+        if key != '_c_limit':
+            return self.info.get(key, default)
+        if PSP_LIMIT and self.info.get('_c_bound') and self.cls.vlimit == self.v:
+            return self.kern
+        return None
+
+
+def _handwritten(el, cls, info):
+    """The walk entry's `_Handwritten` for an element whose class's `limit`
+    is PSP's own, or None: not genuine, shadowed, a `vlimit` that is not a
+    positive finite float, the class not C-bound, the twin not built."""
+    from pycircuit.circuit import compact
+    d = el.__dict__
+    if not (PSP_LIMIT and info.get('_c_bound') and 'limit' not in d and 'vlimit' not in d
+            and _paths.genuine(cls.limit, 'PspMosLongChannel.limit', compact.__name__)):
+        return None
+    v = el.vlimit
+    if type(v) is not float or not (0.0 < v < float('inf')):
+        return None
+    key = (id(info), v)
+    hw = _HW.get(key)
+    if hw is None or hw.info is not info or hw.cls is not cls:
+        ik = info['funcs']['i'].__dict__.get('_hdl_c')
+        if ik is None:
+            return None
+        try:
+            ffi, cfn, k, _cold, secs = _cb.load_kernel(PSP_LIMIT_C % {'lim': repr(v)},
+                                                       limit_cdef())
+        except (_cb.CompileError, OSError):
+            return None
+        hw = _HW[key] = _Handwritten(cls, info, CLimitKernel(
+            ffi, cfn, ik.nx, (ik.n_p, ik.t_index), k, secs), v)
+    return hw
+
 
 def _walk_drv():
     """`(ffi, cfn)` of the walk driver, or None where it cannot be had."""
@@ -666,8 +768,13 @@ class _Walk:
             ok = (info is not None and info.get('limit_spec')
                   and el.toolkit is cir.toolkit and len(nm) <= 64
                   and _hdl_batch.is_generated(cls, 'limit'))
+            entry = info if ok else None
+            if (not ok and info is not None and el.toolkit is cir.toolkit
+                    and len(nm) <= 64):
+                ## (a hand-written `limit` with a twin: PSP's)
+                entry = _handwritten(el, cls, info)
             entries.append((inst, el, nm))
-            capable.append(info if ok else None)
+            capable.append(entry)
             NMs.append(nm)
             OFF.append(off)
             K.append(len(nm))
@@ -779,7 +886,7 @@ def limit_walk(cir, x, x0, epar):
             F[e] = 0
             continue
         d = el.__dict__
-        if 'limit' in d:
+        if 'limit' in d or (type(capable[e]) is _Handwritten and 'vlimit' in d):
             _PC['walk:shadow'] += 1
             F[e] = 0
             continue

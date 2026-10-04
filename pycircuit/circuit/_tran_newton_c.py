@@ -401,6 +401,7 @@ class _Ctx:
         'walk',
         'walk_dicts',
         'walk_els',
+        'walk_hw_els',
         'walk_kern',
         'walk_ok',
         'walk_packs',
@@ -447,18 +448,21 @@ class _Ctx:
         self.tol = None
         self.walk = self.walk_ok = None
         self.walk_els = self.walk_dicts = self.walk_packs = self.walk_kern = ()
+        self.walk_hw_els = ()
 
 
 def _walk_fast(rec):
     """The walk's tables still stand as the last full setup left them: each
     class's kernel the one taken, every element's `__dict__` the one seen
-    and without a `limit` shadow, every pack the one mirrored -- tuple
-    compares and mapped tests, at C speed."""
+    and without a `limit` shadow (nor a `vlimit` one on a hand-written
+    limiter's element: PSP's), every pack the one mirrored -- tuple compares
+    and mapped tests, at C speed."""
     for info, kern in rec.walk_kern:
         if info.get('_c_limit') is not kern:
             return False
     dicts = tuple(map(_GETDICT, rec.walk_els))
-    if dicts != rec.walk_dicts or any(map(operator.contains, dicts, repeat('limit'))):
+    if (dicts != rec.walk_dicts or any(map(operator.contains, dicts, repeat('limit')))
+            or any(map(operator.contains, map(_GETDICT, rec.walk_hw_els), repeat('vlimit')))):
         return False
     return all(map(operator.is_, map(_GETPACK, dicts), rec.walk_packs))
 
@@ -468,6 +472,7 @@ def _walk_full(w, ffi):
     True where every limiting element runs its C kernel."""
     entries, capable, kerns, addr, F, PR, mirror = (
         w.entries, w.capable, w.kerns, w.addr, w.F, w.PR, w.mirror)
+    hc = _MOD['climit']
     if w.cF is None:
         w.prepare(ffi)
     for e in w.cap_idx:
@@ -479,7 +484,7 @@ def _walk_full(w, ffi):
         if kern is None:
             return False
         d = el.__dict__
-        if 'limit' in d:
+        if 'limit' in d or (type(capable[e]) is hc._Handwritten and 'vlimit' in d):
             return False
         cp = d.get('_hdl_cp')
         if cp is None:
@@ -523,6 +528,8 @@ def _walk_ready(tr, rec):
     if ok:
         els = tuple(w.entries[e][1] for e in w.cap_idx)
         rec.walk_els = els
+        rec.walk_hw_els = tuple(w.entries[e][1] for e in w.cap_idx
+                                if type(w.capable[e]) is hc._Handwritten)
         rec.walk_dicts = tuple(map(_GETDICT, els))
         rec.walk_packs = tuple(w.mirror[e] for e in w.cap_idx)
         rec.walk_kern = tuple({id(w.capable[e]): (w.capable[e], w.kerns[e])
