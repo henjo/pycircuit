@@ -8,3 +8,6 @@ def test_read_sweep_psf():
     )
     psf = PSFReader(filename) 
     psf.open()
+    ## (closed: the reader sits in a reference cycle, and its file
+    ## otherwise closes inside whichever test the collector runs in)
+    psf.file.close()

@@ -68,6 +68,10 @@ def _run(build, on, **kw):
     try:
         with warnings.catch_warnings(record=True) as W:
             warnings.simplefilter('always')
+            ## (a finalizer's warning is not the run's: a file another test left in
+            ## a reference cycle closes whenever the collector runs -- inside either
+            ## run, 2026-10-04)
+            warnings.simplefilter('ignore', ResourceWarning)
             tr = Transient(build(), toolkit=circuit.numeric, **kw.pop('make', {}))
             res = tr.solve(**kw)
     finally:

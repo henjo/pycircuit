@@ -59,6 +59,10 @@ def _run(build, on, monkeypatch, pi=False, **kw):
     try:
         with warnings.catch_warnings(record=True) as W:
             warnings.simplefilter('always')
+            ## (a finalizer's warning is not the run's: a file another test left in
+            ## a reference cycle closes whenever the collector runs -- inside either
+            ## run, 2026-10-04)
+            warnings.simplefilter('ignore', ResourceWarning)
             tr = Transient(build(), toolkit=circuit.numeric, **kw.pop('make', {}))
             if pi:
                 tr.step_controller = sc.PIController()
@@ -155,6 +159,7 @@ def test_the_c_is_the_chain_bit_for_bit(data, n, pi, trap, relref, h, r2, r3):
         try:
             with warnings.catch_warnings(record=True) as W:
                 warnings.simplefilter('always')
+                warnings.simplefilter('ignore', ResourceWarning)
                 try:
                     r, exc = ctrl._max_error(sc.StepLTEInputs(**kw)), None
                 except Exception as e:                       # noqa: BLE001
@@ -183,6 +188,7 @@ def test_a_singular_jacobian_bails_and_warns_as_before(monkeypatch):
         before = _paths.snapshot()
         with warnings.catch_warnings(record=True) as W:
             warnings.simplefilter('always')
+            warnings.simplefilter('ignore', ResourceWarning)
             r = sc.IntegralController()._max_error(sc.StepLTEInputs(**kw))
         res.append((r, [str(w.message) for w in W], _paths.since(before)))
     assert res[0][:2] == res[1][:2] and len(res[1][1]) == 1

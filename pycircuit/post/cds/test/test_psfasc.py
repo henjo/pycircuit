@@ -32,6 +32,9 @@ for section in [("HEADER", "header"), ("TYPE", "types"), ("SWEEP", "sweeps"), ("
         expected=psfasc.sections[section[0]].strip()
         psf = PSFReader(self.dir + "/psf/dc.dc")
         psf.open()
+        ## (closed here: the reader sits in a reference cycle, and its file
+        ## otherwise closes inside whichever test the collector runs in)
+        self.addCleanup(psf.file.close)
         self.assertEqual(getattr(psf, section[1]).toPSFasc(), expected)
     setattr(toPSFASCTests, "test%sSection" % section[1], method)
 
@@ -41,19 +44,22 @@ class PSFTests(unittest.TestCase):
     def testPSFasc(self):
         psf=PSFReader(self.dir + "/psf/dc.dc")
         psf.open()
+        self.addCleanup(psf.file.close)
         
-        psfascfile=open(self.dir + "/psfasc/dc.dc.asc")
+        with open(self.dir + "/psfasc/dc.dc.asc") as psfascfile:
+            expected_lines = psfascfile.readlines()
         
-        for actual, expected in zip(psf.toPSFasc().split("\n"), psfascfile.readlines()):
+        for actual, expected in zip(psf.toPSFasc().split("\n"), expected_lines):
             self.assertEqual(actual, expected.strip())
         
 class PSFASCSplitter:
     def __init__(self, filename):
         self.sections={}
-        f=open(filename)
+        with open(filename) as f:
+            lines = f.readlines()
         buffer=""
         section=None
-        for line in f:
+        for line in lines:
             if line.strip() in ("HEADER", "TYPE", "SWEEP", "TRACE", "VALUE", "END"):
                 if section:
                     self.sections[section] = buffer
