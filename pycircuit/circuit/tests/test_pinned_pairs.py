@@ -101,6 +101,16 @@ PAIRS = {
               'pycircuit.circuit._hdl_batch:split',
               'pycircuit.circuit._hdl_batch:zero_source'],
     },
+    'the stage predictor and its multistep fast path': {
+        'why': 'behind the target nearest-first is newest-first: the fast path '
+               'keeps the general path\'s order, its 1e-13 dedupe, the fit\'s '
+               'IEEE arithmetic and memo key bytes, and the same clip ufunc',
+        'reference': ['pycircuit.circuit._tran_predictor:_StagePredictor._predict_state',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._fit'],
+        'twin': ['pycircuit.circuit._tran_predictor:_StagePredictor._predict_fast',
+                 'pycircuit.circuit._tran_predictor:_StagePredictor._pred_fast_nodes',
+                 'pycircuit.circuit._tran_predictor:_StagePredictor._fit_fast'],
+    },
 }
 
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
@@ -111,6 +121,7 @@ RECORD = {
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
     'the transient evaluation and the core': ('6117b16cc4b6', '1b622bff6540'),
     'the assembly loops and the plan': ('ed84458db1a3', '9578c5eca9ad'),
+    'the stage predictor and its multistep fast path': ('739b71ddbace', '01c4a05c791a'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

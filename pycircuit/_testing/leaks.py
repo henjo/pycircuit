@@ -103,6 +103,7 @@ SWITCHES = (
     ('pycircuit.circuit._tran_companion', 'U_MEMO'),
     ('pycircuit.circuit._tran_predictor', 'PRED_WEIGHT_MEMO'),
     ('pycircuit.circuit._tran_predictor', 'PRED_WEIGHT_MEMO_SIZE'),
+    ('pycircuit.circuit._tran_predictor', 'PRED_FAST'),
     ('pycircuit.circuit._tran_newton', 'C_KERNEL_SHARE'),
     ('pycircuit.circuit.linearsolver', 'MIN_N_FOR_KLU'),
     ('pycircuit.circuit.semiconductors', 'EXP_ARG_MAX'),

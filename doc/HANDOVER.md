@@ -78,7 +78,7 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   `--lf`/`--tier fast`, not stopped by `-x`) writes the record the order
   and the tier read; other runs write records marked incomplete.
 - **The switches-off check**: `scripts/fast_check.sh [OUTDIR]` (~6 min)
-  records the fast tier twice, every fast path on and all seven off
+  records the fast tier twice, every fast path on and all eight off
   (`PYCIRCUIT_TRAN_CORE`, `_HDL_BATCH`, `_HDL_LIMIT_WALK`, `_HDL_CLIMIT`,
   `_STAMP_PLAN`, `_HDL_FUSE`, `_HDL_ZERO_U` = 0), and compares every
   recorded call bit for bit.  Run it whenever a fast path changes.  The off

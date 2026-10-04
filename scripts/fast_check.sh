@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # THE SWITCHES-OFF CHECK (2026-10-04, testing for development, stage 1).
 #
-# The fast tier, recorded twice -- every fast path on, then all seven off --
+# The fast tier, recorded twice -- every fast path on, then all eight off --
 # and compared bit for bit.  Each fast path's contract is the same bytes as
 # the Python path it replaces (the evaluate core, the pass batches, the limit
 # walk, the limiter kernel, the stamp plan, the fused passes, the zero-source
-# skip); this checks every one of them on every circuit of the fast tier at
-# once.  ~6 min.
+# skip, the predictor's multistep fast path); this checks every one of them
+# on every circuit of the fast tier at once.  ~6 min.
 #
 #   scripts/fast_check.sh [OUTDIR] [-- extra pytest arguments]
 #
@@ -24,7 +24,7 @@ EXTRA=("$@")
 PY=.venv/bin/python
 OFF=(PYCIRCUIT_TRAN_CORE=0 PYCIRCUIT_HDL_BATCH=0 PYCIRCUIT_HDL_LIMIT_WALK=0
      PYCIRCUIT_HDL_CLIMIT=0 PYCIRCUIT_STAMP_PLAN=0 PYCIRCUIT_HDL_FUSE=0
-     PYCIRCUIT_HDL_ZERO_U=0)
+     PYCIRCUIT_HDL_ZERO_U=0 PYCIRCUIT_PRED_FAST=0)
 
 run() {   # run LABEL [VAR=value ...]
     local label=$1; shift

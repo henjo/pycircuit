@@ -2,7 +2,14 @@
 of `Transient` (see `transient.py`).
 """
 
+import math
+import os
+import struct
+
 import numpy as np
+from numpy._core import umath as _um
+
+from pycircuit.circuit import _paths
 
 #: THE WEIGHTS MEMO (speed round 4, stage D; 2026-10-02): the Vandermonde
 #: solve of `_fit` is a pure function of the normalised node times, and
@@ -10,6 +17,25 @@ import numpy as np
 #: it every time, for the byte-identity test and as an escape.
 PRED_WEIGHT_MEMO = True
 PRED_WEIGHT_MEMO_SIZE = 512
+
+#: THE MULTISTEP FAST PATH (speed round 8, stage 2b; 2026-10-04): a
+#: prediction with no extra nodes from a history wholly behind the target
+#: -- every multistep step, Radau's stages -- in 90 k instructions where the
+#: general path takes 168 k.  Bit for bit the general path: behind the
+#: target, nearest-first IS newest-first, so the order and the 1e-13 dedupe
+#: depend on the history's times alone and are kept per history list
+#: (checked per call: the list, its length, each entry -- tests edit it in
+#: place); the fit's times in Python floats (the same IEEE subtractions and
+#: divisions numpy makes elementwise); the weights memo under the same key
+#: bytes; the clamp the same `clip` ufunc, without `np.clip`'s Python
+#: wrapper.  A history not strictly ascending (one a test edited) takes the
+#: general path.  `PRED_FAST` (env `PYCIRCUIT_PRED_FAST=0`) is read per call.
+PRED_FAST = os.environ.get('PYCIRCUIT_PRED_FAST', '1') != '0'
+
+_PC = _paths.COUNTS
+_CLIP = _um.clip
+#: what the fast path returns to send a call to the general path
+_GENERAL = object()
 
 
 class _StagePredictor:
@@ -133,6 +159,10 @@ class _StagePredictor:
         """
         if self.stage_predictor == 'off':
             return None
+        if PRED_FAST and not extra:
+            out = self._predict_fast(ttarget, deg)
+            if out is not _GENERAL:
+                return out
         nodes = [(float(tt), np.asarray(xx, dtype=float)) for tt, xx in extra]
         nodes.extend(getattr(self, '_pred_hist', ()) or ())
         if len(nodes) < 2:
@@ -210,6 +240,111 @@ class _StagePredictor:
             out[row] = xref[row]
         return out
 
+    def _predict_fast(self, ttarget, deg):
+        """`_predict_state` with no extra nodes, from a history wholly
+        behind `ttarget` (`PRED_FAST`), or `_GENERAL`: the general path."""
+        hist = getattr(self, '_pred_hist', None) or ()
+        if len(hist) < 2:
+            return None
+        if type(hist) is not list or not hist[-1][0] < ttarget:
+            _PC['pred:general'] += 1
+            return _GENERAL
+        ## (a `_fit` patched on the class or shadowed on the instance is a
+        ## caller that expects its calls -- the core's rule for its methods)
+        if type(self)._fit is not _FIT or '_fit' in self.__dict__:
+            _PC['pred:patched'] += 1
+            return _GENERAL
+        nodes = self._pred_fast_nodes(hist)
+        if nodes is None:
+            _PC['pred:general'] += 1
+            return _GENERAL
+        _PC['pred:fast'] += 1
+        if len(nodes) < 2:
+            return None
+        if deg is None:
+            deg = self._pred_degree()
+        take = nodes[:min(int(deg) + 1, len(nodes))]
+        if len(take) < 2:
+            return None
+        ## (`take` is newest-first: the general path's `newest_first`)
+        motion = np.abs(take[0][1] - take[1][1])
+        pred = self._fit_fast(take, ttarget)
+        if pred is None:
+            return None
+        xref = take[0][1]
+        dt_last = abs(take[0][0] - take[1][0])
+        ratio = (abs(ttarget - take[0][0]) / dt_last) if dt_last > 0 else 1.0
+        w = self.PRED_CLAMP * motion * max(ratio, 1.0)
+        out = _CLIP(pred, xref - w, xref + w)
+        for row, _m, _o in (getattr(self, '_periodic_rows', None) or ()):
+            out[row] = xref[row]
+        return out
+
+    def _pred_fast_nodes(self, hist):
+        """The history nearest-first -- newest-first, every node being
+        behind the target -- with `_predict_state`'s 1e-13 dedupe, kept per
+        history list; None where the times are not strictly ascending."""
+        c = self.__dict__.get('_pred_fast')
+        if c is not None and c[0] is hist and len(c[1]) == len(hist):
+            for a, b in zip(hist, c[1]):
+                if a is not b:
+                    break
+            else:
+                return c[2]
+        ents = tuple(hist)
+        uniq = []
+        prev = prev_kept = None
+        ## newest first: every kept node is later than the one at hand, the
+        ## nearest of them the last kept -- the general path's dedupe against
+        ## all kept nodes is this one comparison
+        for e in reversed(ents):
+            t0 = e[0]
+            if prev is not None:
+                if not t0 < prev[0]:
+                    uniq = None
+                    break
+                if abs(t0 - prev_kept) <= 1e-13 * max(abs(t0), 1.0):
+                    prev = e
+                    continue
+            uniq.append(e)
+            prev = e
+            prev_kept = t0
+        self.__dict__['_pred_fast'] = (hist, ents, uniq)
+        return uniq
+
+    def _fit_fast(self, sub, tat):
+        """`_fit` with the node times in Python floats: the same IEEE
+        operations, the same memo key bytes, the same solve on a miss."""
+        tat = float(tat)
+        d = [e[0] - tat for e in sub]
+        for v in d:
+            if math.isnan(v):
+                return None
+        scale = max(abs(v) for v in d)
+        if not scale < float('inf') or scale <= 0.0:
+            return None
+        n = len(d)
+        tau = [v / scale for v in d]
+        memo = self.__dict__.get('_pred_wmemo') if PRED_WEIGHT_MEMO else None
+        key = (n, struct.pack(f'{n}d', *tau))
+        w = memo.get(key) if memo is not None else None
+        if w is None:
+            rhs = np.zeros(n)
+            rhs[0] = 1.0
+            try:
+                w = np.linalg.solve(np.vander(np.array(tau), n, increasing=True).T, rhs)
+            except np.linalg.LinAlgError:
+                return None
+            if not np.all(np.isfinite(w)):
+                return None
+            if PRED_WEIGHT_MEMO:
+                if memo is None:
+                    memo = self.__dict__['_pred_wmemo'] = {}
+                elif len(memo) >= PRED_WEIGHT_MEMO_SIZE:
+                    memo.clear()
+                memo[key] = w
+        return w @ np.array([e[1] for e in sub], dtype=float)
+
     def _fit(self, sub, tat):
         """The polynomial through ``sub`` evaluated at ``tat``, or None.
 
@@ -249,3 +384,8 @@ class _StagePredictor:
                     memo.clear()
                 memo[key] = w
         return w @ np.array([e[1] for e in sub], dtype=float)
+
+
+#: the general fit, as defined: `_predict_fast` declines where it is not
+#: the one a call would reach
+_FIT = _StagePredictor._fit
