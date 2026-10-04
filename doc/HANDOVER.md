@@ -216,6 +216,21 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   perf|valgrind` picks a route.
   `--plant-ops N` adds `sum(range(N))` (138 instructions an element) to
   the child's counted calls: the count's own proof.
+  THE MARGINAL STEP AND THE PER-SOLVE COST, apart (2026-10-04, speed round
+  8): a counting child counts every fixed-step case at 100 AND 200 steps
+  in one process, and `_bench.split_counts` gives the marginal step (the
+  extra 100 steps' instructions / 100) and the per-solve cost (the rest of
+  the 100-step call: setup, the operating point -- 5-28 steps' worth,
+  15-22 % of the 100-step call's "per step").  Each gets its own verdict:
+  the marginal step beyond `STEP_BAND` (1.0 %: a difference of two counts
+  carries both counts' noise; two A/As read it at most 0.44 % apart), the
+  per-solve cost beyond 0.5 % of the call.  `--plant-step-ops N` adds
+  `sum(range(N x steps))`: work that grows with the steps, which only the
+  marginal step may show (and does: 36 k instructions a step read
+  +1.6..+2.3 %); `--plant-ops` moves only the per-solve cost.  The case
+  `mos1_adaptive` is the default transient (adaptive gear: the error test,
+  rejections) on the 20-MosLevel1 chain driven to switch -- the fixed-step
+  cases never run the error test.
 - **Size one piece standalone**: `python benchmarks/micro.py <piece|all>
   <case> [pyperf options]` (pieces: `--list`), pyperf with calibrated loops,
   several worker processes, the workers pinned to CPU 8.  Size a piece here

@@ -400,6 +400,18 @@ def valgrind_count(out_file):
     raise ValueError(f'no summary in {out_file}')
 
 
+def split_counts(c1, c2, steps):
+    """`(marginal step, per-solve cost)` from the instructions of one
+    circuit's `steps`-step solve `c1` and its `2 * steps`-step solve `c2`:
+    the second solve's extra steps cost `c2 - c1`, the rest of `c1` is what
+    a solve pays once (its setup, the operating point, the result).  None
+    where a count is missing (speed round 8, stage 1)."""
+    if c1 is None or c2 is None:
+        return None
+    step = (c2 - c1) / steps
+    return step, c1 - steps * step
+
+
 class CountRegion:
     """In a child: the region whose instructions are counted, by the route
     the parent chose (`PYCIRCUIT_BENCH_COUNT`): `perf` reads the counter

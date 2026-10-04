@@ -359,6 +359,16 @@ def test_a_cachegrind_summary_is_read(tmp_path):
         b.valgrind_count(str(tmp_path / 'empty'))
 
 
+def test_the_count_splits_the_step_from_the_solve():
+    """A 100- and a 200-step solve of one circuit: the extra 100 steps are
+    the marginal step, the rest of the 100-step solve its per-solve cost --
+    a change to a solve's setup does not read as a per-step one."""
+    b = _bench()
+    assert b.split_counts(1_000_000 + 100 * 5_000, 1_000_000 + 200 * 5_000, 100) \
+        == (5_000.0, 1_000_000.0)
+    assert b.split_counts(None, 3, 100) is None and b.split_counts(3, None, 100) is None
+
+
 def test_outside_a_counting_run_the_region_counts_nothing(monkeypatch):
     b = _bench()
     monkeypatch.delenv('PYCIRCUIT_BENCH_COUNT', raising=False)

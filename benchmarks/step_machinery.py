@@ -102,12 +102,12 @@ circuit.default_toolkit = circuit.numeric
 STEPS = 100
 
 
-def chain(make, ndev=20, vdd=1.8, vg=0.9):
+def chain(make, ndev=20, vdd=1.8, vg=0.9, va=2e-2):
     c = SubCircuit()
     c.add_node('vdd')
     c['vdd'] = VS('vdd', gnd, v=vdd)
     c.add_node('g0')
-    c['vg'] = VSin('g0', gnd, v=vg, va=2e-2, freq=1e6)
+    c['vg'] = VSin('g0', gnd, v=vg, va=va, freq=1e6)
     for k in range(ndev):
         c.add_node(f'd{k}')
         c[f'rl{k}'] = R('vdd', f'd{k}', r=5e3)
@@ -217,6 +217,9 @@ def _paths_since(before):
 _REGION = None
 _COUNTING = False
 _LAST_COUNT = [None]
+#: the steps the run in progress takes (a per-step case), for
+#: `PYCIRCUIT_BENCH_PLANT_STEP_OPS`; 0 for an analysis case
+_RUN_STEPS = [0]
 
 
 def _counted(fn):
@@ -224,7 +227,10 @@ def _counted(fn):
     measured run of a counting child (`PYCIRCUIT_BENCH_COUNT`); with
     `PYCIRCUIT_BENCH_PLANT_OPS=n` (`--count --plant-ops n`, the count's own
     proof) followed, inside the region, by `sum(range(n))`: a fixed amount
-    of extra work."""
+    of extra work; with `PYCIRCUIT_BENCH_PLANT_STEP_OPS=n` (`--plant-step-ops
+    n`, the split's proof) by `sum(range(n * steps))` on a per-step case:
+    extra work that grows with the steps, which only the marginal step may
+    show."""
     global _REGION
     _LAST_COUNT[0] = None
     if not (_COUNTING and os.environ.get('PYCIRCUIT_BENCH_COUNT')):
@@ -232,6 +238,7 @@ def _counted(fn):
     if _REGION is None:
         _REGION = _bench.CountRegion()
     ops = int(os.environ.get('PYCIRCUIT_BENCH_PLANT_OPS', '0') or 0)
+    ops += int(os.environ.get('PYCIRCUIT_BENCH_PLANT_STEP_OPS', '0') or 0) * _RUN_STEPS[0]
     ## (the collector paused inside the region, after a full collection: a
     ## collection costs ~10^5 instructions and lands where the allocation
     ## history puts it -- identical runs counted 0.1 % apart with it)
@@ -314,7 +321,19 @@ def _case_ppv():
     return dt, None, _sha(getattr(v, 'y', v)), None, paths
 
 
+def _case_mos1_adaptive():
+    """The default transient -- adaptive gear: the error test, rejections,
+    the controller -- on the 20-MosLevel1 chain driven hard enough to
+    switch (speed round 8, 2026-10-04: the fixed-step cases never run the
+    error test, ~20 % of a default step)."""
+    c = chain(lambda d, g: eh.MosLevel1Hdl(d, g, gnd, gnd), va=0.9)
+    tr = Transient(c, toolkit=circuit.numeric)
+    dt, res, paths = _timed(lambda: tr.solve(tend=3e-6, timestep=2e-8))
+    return dt, None, _sha(res.x), _stats(tr), paths
+
+
 ANALYSES = {
+    'mos1_adaptive': _case_mos1_adaptive,
     'ladder_gear': lambda: _case_ladder('gear'),
     'ladder_radau': lambda: _case_ladder('radau'),
     'vdp_pss': _case_vdp_pss,
@@ -332,9 +351,11 @@ def _stats(tr):
     return {k: v for k, v in sorted(d.items()) if 'seconds' not in k}
 
 
-def run_case(name):
+def run_case(name, steps=None):
     """One run: `(seconds, per_step_us or None, sha of the result, stats,
-    the fast-path counts of the timed call or None)`."""
+    the fast-path counts of the timed call or None)`; a per-step case takes
+    `steps` (default `STEPS`)."""
+    _RUN_STEPS[0] = 0
     if name in ANALYSES:
         return ANALYSES[name]()
     if name == 'pss':
@@ -343,11 +364,13 @@ def run_case(name):
         dt, _out, paths = _timed(lambda: p.solve(period=1e-6, timestep=1e-6 / 40,
                                                  maxiterations=60))
         return dt, None, _sha(p.waveform[1]), None, paths
+    steps = steps or STEPS
     c = BUILD[name]()
     tr = Transient(c, toolkit=circuit.numeric)
-    dt, res, paths = _timed(lambda: tr.solve(tend=STEPS * 2e-8, timestep=2e-8,
+    _RUN_STEPS[0] = steps
+    dt, res, paths = _timed(lambda: tr.solve(tend=steps * 2e-8, timestep=2e-8,
                                              fixed_timestep=True))
-    return dt, 1e6 * dt / STEPS, _sha(res.x), _stats(tr), paths
+    return dt, 1e6 * dt / steps, _sha(res.x), _stats(tr), paths
 
 
 def measure(cases, rounds):
@@ -355,7 +378,8 @@ def measure(cases, rounds):
     case with the times, the digest, the statistics and the path counts."""
     global _COUNTING
     out = {k: {'times': [], 'per_step': [], 'shas': [], 'stats_all': [], 'paths_all': [],
-               'instructions': []} for k in cases}
+               'instructions': [], 'instructions_2x': []} for k in cases}
+    split = bool(os.environ.get('PYCIRCUIT_BENCH_COUNT'))
     _COUNTING = False
     for k in cases:
         run_case(k)
@@ -365,6 +389,12 @@ def measure(cases, rounds):
             dt, us, sha, st, paths = run_case(k)
             r = out[k]
             r['instructions'].append(_LAST_COUNT[0])
+            if split and k in BUILD:
+                ## (the same circuit at twice the steps, counted in this
+                ## process right after: the pair's difference is the
+                ## marginal step, its heap layout shared -- `_bench.split_counts`)
+                run_case(k, steps=2 * STEPS)
+                r['instructions_2x'].append(_LAST_COUNT[0])
             r['times'].append(dt)
             r['per_step'].append(us)
             r['shas'].append(sha)
@@ -583,7 +613,17 @@ def compare(parent, cases, rounds, max_busy=0.25, repeats=5, child=None, check=F
 COUNT_BAND = 0.005
 
 
-def count_compare(parent, cases, child=None, repeats=2, plant_ops=0, route=None):
+#: (`--count`) the marginal step's band.  A DIFFERENCE of two counts carries
+#: both counts' layout noise, so it is wider than `COUNT_BAND`: two A/As
+#: (2026-10-04, three runs a tree) read the marginal step at most +0.44 %
+#: apart (the PSP stage; the others <= 0.15 %), and a planted 36 k
+#: instructions a step read +1.6..+2.3 % -- MORE on every case it is 1.4 %
+#: or more of, "no change" on 20-PSP where it is 0.2 %
+STEP_BAND = 0.010
+
+
+def count_compare(parent, cases, child=None, repeats=2, plant_ops=0, route=None,
+                  plant_step_ops=0):
     """The instructions the timed call of every case retires, the tree at
     `parent` against `child` (this script's), each in its own process
     without address randomisation and with a fixed hash seed, `repeats`
@@ -603,7 +643,8 @@ def count_compare(parent, cases, child=None, repeats=2, plant_ops=0, route=None)
     child = child or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     trees = _bench.equal_paths({'parent': os.path.abspath(parent),
                                 'child': os.path.abspath(child)})
-    got = {lab: {k: {'counts': [], 'sha': set(), 'stats': []} for k in cases} for lab in trees}
+    got = {lab: {k: {'counts': [], 'counts2': [], 'sha': set(), 'stats': []} for k in cases}
+           for lab in trees}
     t0 = time.time()
     import tempfile
     with _bench.lock(exclusive=True, what='step_machinery --count'):
@@ -611,13 +652,19 @@ def count_compare(parent, cases, child=None, repeats=2, plant_ops=0, route=None)
         if plant_ops:
             print(f'PLANTED: the child adds sum(range({plant_ops})) to every counted call',
                   flush=True)
+        if plant_step_ops:
+            print(f'PLANTED: the child adds sum(range({plant_step_ops} x steps)) to every '
+                  'counted per-step call', flush=True)
         for r in range(repeats):
             for lab in (list(trees) if r % 2 == 0 else list(trees)[::-1]):
                 env = dict(os.environ, PYTHONPATH=trees[lab], PYCIRCUIT_BENCH_PIN='1',
                            PYTHONHASHSEED='0', PYCIRCUIT_BENCH_COUNT=route)
                 env.pop('PYCIRCUIT_BENCH_PLANT_OPS', None)
+                env.pop('PYCIRCUIT_BENCH_PLANT_STEP_OPS', None)
                 if plant_ops and lab == 'child':
                     env['PYCIRCUIT_BENCH_PLANT_OPS'] = str(plant_ops)
+                if plant_step_ops and lab == 'child':
+                    env['PYCIRCUIT_BENCH_PLANT_STEP_OPS'] = str(plant_step_ops)
                 groups = [list(cases)] if route == 'perf' else [[k] for k in cases]
                 for group in groups:
                     cmd = [sys.executable, os.path.abspath(__file__), '--json', '--rounds', '1',
@@ -639,6 +686,7 @@ def count_compare(parent, cases, child=None, repeats=2, plant_ops=0, route=None)
                             g['counts'].append(_bench.valgrind_count(out_file))
                         else:
                             g['counts'].extend(rec['instructions'])
+                            g['counts2'].extend(rec.get('instructions_2x') or [])
                         g['sha'].add(rec['sha'])
                         g['stats'].append(rec['stats'])
                     if out_file:
@@ -668,6 +716,31 @@ def count_compare(parent, cases, child=None, repeats=2, plant_ops=0, route=None)
               flush=True)
         print('      runs: parent ' + ' '.join(f'{x:,}' for x in pc)
               + ' | child ' + ' '.join(f'{x:,}' for x in cc), flush=True)
+        ## THE MARGINAL STEP AND THE PER-SOLVE COST, apart (a per-step case
+        ## counted at 2 x STEPS too): a change to a solve's setup no longer
+        ## reads as a per-step one -- the per-solve cost was 15-22 % of the
+        ## 100-step call's "per step" (2026-10-04)
+        sp = [_bench.split_counts(a, b, STEPS) for a, b in zip(p['counts'], p['counts2'])]
+        sc = [_bench.split_counts(a, b, STEPS) for a, b in zip(c['counts'], c['counts2'])]
+        sp, sc = [x for x in sp if x], [x for x in sc if x]
+        if sp and sc:
+            ps, cs = (statistics.median(x[0] for x in sp), statistics.median(x[0] for x in sc))
+            pf, cf = (statistics.median(x[1] for x in sp), statistics.median(x[1] for x in sc))
+            rs = cs / ps
+            vs = ('NOT-COMPARABLE' if not (same_bytes and same_stats) else
+                  'MORE' if rs > 1 + STEP_BAND else 'FEWER' if rs < 1 - STEP_BAND
+                  else 'no change')
+            ## the per-solve cost's band in the 100-step call's units: what a
+            ## band of the whole call can resolve
+            df = (cf - pf) / pm
+            vf = ('NOT-COMPARABLE' if not (same_bytes and same_stats) else
+                  'MORE' if df > COUNT_BAND else 'FEWER' if df < -COUNT_BAND else 'no change')
+            more += [k + ':step'] if vs == 'MORE' else []
+            more += [k + ':solve'] if vf == 'MORE' else []
+            print(f'      marginal step {vs:12s} parent {ps:13,.0f} | child {cs:13,.0f} '
+                  f'({100 * (rs - 1):+.2f} %)', flush=True)
+            print(f'      per solve     {vf:12s} parent {pf:13,.0f} | child {cf:13,.0f} '
+                  f'({100 * df:+.2f} % of the call)', flush=True)
     if differ:
         print('BYTES OR STATISTICS DIFFER: not comparable', flush=True)
         sys.exit(2)
@@ -836,6 +909,7 @@ def main(argv):
     plant = 0.0
     count = False
     plant_ops = 0
+    plant_step_ops = 0
     route = None
     tree_case = None
     cases = []
@@ -861,6 +935,8 @@ def main(argv):
             count = True
         elif a == '--plant-ops':
             plant_ops = int(next(it))
+        elif a == '--plant-step-ops':
+            plant_step_ops = int(next(it))
         elif a == '--route':
             route = next(it)
         elif a == '--tree':
@@ -884,7 +960,7 @@ def main(argv):
             sys.exit(f'no parent tree at {cmp_dir}: make it with scripts/parent_tree.sh')
         with warnings.catch_warnings():
             count_compare(cmp_dir, cases, child=child, repeats=rounds or 2, plant_ops=plant_ops,
-                          route=route)
+                          route=route, plant_step_ops=plant_step_ops)
         return
     if check:
         cmp_dir = cmp_dir or PARENT_TREE
