@@ -41,7 +41,11 @@ Usage (the plugin is opt-in, nothing in `pycircuit` imports it):
 
 `TRANREC_COVERAGE=1` also measures branch coverage of
 `pycircuit.circuit.shooting` in every worker (data files in TRANREC_OUT;
-`coverage combine` then `coverage report` there).
+`coverage combine` then `coverage report` there); `TRANREC_COVERAGE=pycircuit`
+(any comma-separated package list) measures those instead.
+
+Each worker also records the tests that RAN and how each ended (`ran`,
+`outcomes`; 2026-10-04), which `compare.py --only-common/--passed-only` read.
 
 Each xdist worker writes `<TRANREC_OUT>/rec_<worker>.pkl` at session end,
 ~60 MB for the transient family alone: keep recordings OUT of the repo.
@@ -308,17 +312,49 @@ def pytest_configure(config):
         import coverage
         out = os.environ['TRANREC_OUT']
         os.makedirs(out, exist_ok=True)
+        ## `TRANREC_COVERAGE=1` the shooting package (as before 2026-10-04),
+        ## else a comma-separated list of packages (`pycircuit`: everything;
+        ## the fast tier's coverage against the full suite's)
+        spec = os.environ['TRANREC_COVERAGE']
+        source = (['pycircuit.circuit.shooting'] if spec == '1'
+                  else [m for m in spec.split(',') if m])
         _COV.append(coverage.Coverage(
             data_file=os.path.join(out, '.coverage'), data_suffix=True,
-            branch=True, source=['pycircuit.circuit.shooting']))
+            branch=True, source=source))
         _COV[0].start()
 
 
+## THE TESTS THAT RAN, AND HOW THEY ENDED (2026-10-04): so a comparison of a
+## subset run (the fast tier) with a full recording keeps a test that ran on
+## both sides but made no recorded call on one -- it dropped out before,
+## when "common" meant "recorded a call on both sides" -- and can restrict
+## itself to tests that passed on both (the switches-off check, where tests
+## that assert a fast path served fail by design).
+_RAN = []
+_OUTCOME = {}
+
+
 def pytest_runtest_setup(item):
+    _RAN.append(item.nodeid)
     _CUR['id'] = item.nodeid
     _CUR['k'] = {}
     _CUR['depth'] = 0
     _CUR['orbits'] = {}
+
+
+def pytest_runtest_logreport(report):
+    ## in the process that ran the test (the controller's forwarded copies
+    ## are skipped: `_CUR['id']` is None there)
+    if _CUR['id'] is None:
+        return
+    nid = report.nodeid
+    if report.failed:
+        _OUTCOME[nid] = 'failed'
+    elif report.skipped:
+        if _OUTCOME.get(nid) != 'failed':
+            _OUTCOME[nid] = 'skipped'
+    elif report.when == 'call' and nid not in _OUTCOME:
+        _OUTCOME[nid] = 'passed'
 
 
 def pytest_warning_recorded(warning_message, when, nodeid, location):
@@ -342,5 +378,6 @@ def pytest_sessionfinish(session, exitstatus):
     os.makedirs(out, exist_ok=True)
     wid = os.environ.get('PYTEST_XDIST_WORKER', 'main')
     with open(os.path.join(out, 'rec_%s.pkl' % wid), 'wb') as f:
-        pickle.dump({'version': 2, 'families': sorted(_families()),
-                     'calls': _REC, 'warnings': _WARN}, f)
+        pickle.dump({'version': 3, 'families': sorted(_families()),
+                     'calls': _REC, 'warnings': _WARN,
+                     'ran': _RAN, 'outcomes': _OUTCOME}, f)

@@ -203,3 +203,118 @@ def test_the_thread_pin_refuses_once_numpy_is_imported():
                         'import numpy; _bench.pin_threads(); print(os.environ["OPENBLAS_NUM_THREADS"])'],
                        env=env, capture_output=True, text=True, timeout=120, check=False)
     assert r.returncode == 0 and r.stdout.strip() == '1', r.stderr
+
+
+## -- the fast tier and the record guard (testing for development, stage 1) ------
+
+def test_the_fast_tier_deselects_the_slow_and_runs_the_unknown(project, monkeypatch):
+    monkeypatch.setenv('PYCIRCUIT_SLOW_SECONDS', '2.5')
+    project.makepyfile(test_new="""
+        def test_new():
+            pass
+    """)
+    r = project.runpytest_subprocess('-q', '-p', 'no:randomly', '--tier', 'fast')
+    ## b took 3.0 s in the record: out; a and c in; the unrecorded test runs
+    r.assert_outcomes(passed=3, deselected=1)
+    assert 'test_b' not in r.stdout.str()
+    ## (the header line: not under -q, which drops the header)
+    r = project.runpytest_subprocess('-p', 'no:randomly', '--tier', 'fast', '--co')
+    assert 'tier fast: the 1 tests that took >= 2.5 s' in r.stdout.str()
+
+
+def _newest(project):
+    ## (by time written: two runs in one second write one file name)
+    return max((project.path / 'test_timings').glob('*.json'), key=lambda p: p.stat().st_mtime_ns)
+
+
+def test_a_selected_run_never_becomes_the_record(project, monkeypatch):
+    """THE HAZARD (2026-10-04): any run of 1000 tests or more used to count
+    as the full record, so a `-m "not slow"` run became the record the sort
+    and the fast tier read.  A fast-tier run, a `-k` run, a stopped run
+    write records marked incomplete, and the order still comes from the
+    complete one."""
+    monkeypatch.setenv('PYCIRCUIT_SLOW_SECONDS', '2.5')
+    for extra in (['--tier', 'fast'], ['-k', 'test_a or test_c'], ['-x']):
+        project.runpytest_subprocess('-q', '-p', 'no:randomly', *extra)
+        assert json.loads(_newest(project).read_text())['complete'] is False, extra
+    ## an incomplete record of "5000 tests", newer than the complete one,
+    ## does not reorder; a complete one does
+    tt = project.path / 'test_timings'
+    big = {'tests': 5000, 'durations': [['test_three.py::test_a', 9.0],
+                                        ['test_three.py::test_c', 0.2],
+                                        ['test_three.py::test_b', 0.1]]}
+    (tt / '20990101T000000Z_y.json').write_text(json.dumps(dict(big, complete=False)))
+    r = project.runpytest_subprocess('--co', '-q', '-p', 'no:randomly')
+    assert _order(r) == ['test_b', 'test_c', 'test_a']
+    (tt / '20990101T000001Z_z.json').write_text(json.dumps(dict(big, complete=True)))
+    r = project.runpytest_subprocess('--co', '-q', '-p', 'no:randomly')
+    assert _order(r) == ['test_a', 'test_c', 'test_b']
+
+
+def test_an_ordinary_run_writes_a_complete_record(project):
+    project.runpytest_subprocess('-q', '-p', 'no:randomly').assert_outcomes(passed=3)
+    d = json.loads(_newest(project).read_text())
+    assert d['complete'] is True and d['tests'] == 3
+
+
+## -- the comparison of recordings -------------------------------------------------
+
+def _cmp():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        '_tranrec_compare_under_test', os.path.join(ROOT, 'benchmarks', 'tranrec', 'compare.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _call(test, x=0.0, k=0):
+    import numpy as np
+    return {'test': test, 'fam': 'transient', 'name': 'Transient.solve', 'k': k,
+            't': np.array([0.0, 1.0]), 'x': np.array([[x, x]])}
+
+
+def _recording(d, calls, ran, outcomes=None, families=('transient',), legacy=False):
+    import pickle
+    d.mkdir(parents=True, exist_ok=True)
+    data = {'version': 3, 'families': list(families), 'calls': calls, 'warnings': []}
+    if not legacy:
+        data['ran'] = list(ran)
+        data['outcomes'] = outcomes or {t: 'passed' for t in ran}
+    with open(d / 'rec_gw0.pkl', 'wb') as f:
+        pickle.dump(data, f)
+    return str(d)
+
+
+def test_a_test_with_no_calls_on_one_side_is_missing_not_dropped(tmp_path, capsys):
+    """A full recording against a subset in which test t2 ran but made no
+    call: `--only-common` reports t2's call MISSING (it used to drop t2,
+    whose calls existed on one side only)."""
+    cmp = _cmp()
+    a = _recording(tmp_path / 'a', [_call('t1'), _call('t2'), _call('t3')], ['t1', 't2', 't3'])
+    b = _recording(tmp_path / 'b', [_call('t1')], ['t1', 't2'])
+    assert cmp.main([a, b, '--only-common']) == 1
+    out = capsys.readouterr().out
+    assert "MISSING B ('t2', 'transient', 0)" in out and 't3' not in out
+    ## a recording from before the run lists: the old rule, said plainly
+    b_old = _recording(tmp_path / 'b_old', [_call('t1')], ['t1', 't2'], legacy=True)
+    assert cmp.main([a, b_old, '--only-common']) == 0
+
+
+def test_a_family_recorded_on_one_side_is_named_not_failed(tmp_path, capsys):
+    cmp = _cmp()
+    pss = dict(_call('t1'), fam='pss', name='PSS.solve')
+    a = _recording(tmp_path / 'a', [_call('t1'), pss], ['t1'], families=('transient', 'pss'))
+    b = _recording(tmp_path / 'b', [_call('t1')], ['t1'])
+    assert cmp.main([a, b]) == 0
+    assert "NOTICE family 'pss' recorded in A only: not compared" in capsys.readouterr().out
+
+
+def test_passed_only_leaves_out_and_names_the_failed(tmp_path, capsys):
+    cmp = _cmp()
+    a = _recording(tmp_path / 'a', [_call('t1'), _call('t2')], ['t1', 't2'])
+    b = _recording(tmp_path / 'b', [_call('t1'), _call('t2', x=1.0)], ['t1', 't2'],
+                   outcomes={'t1': 'passed', 't2': 'failed'})
+    assert cmp.main([a, b]) == 1                         # t2 differs
+    assert cmp.main([a, b, '--passed-only']) == 0
+    assert 'NOTICE 1 tests not compared (not passed on both sides): t2' in capsys.readouterr().out

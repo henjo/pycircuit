@@ -124,6 +124,40 @@ def pytest_unconfigure(config):
             pass
 
 
+# ---------------------------------------------------------------------------
+# THE FAST TIER (2026-10-04, testing for development): `--tier fast` deselects
+# every test whose last COMPLETE record took >= `PYCIRCUIT_SLOW_SECONDS`
+# (default 5 s) -- in the 2026-10-03 record 263 tests, 82 % of the suite's
+# test-seconds; the rest runs in ~3 min at -n 8.  For iterating; the full
+# suite stays the gate.  A test the record does not know runs (it is new).
+# The `slow` marker is a different thing (transient/ODE tests, pytest.ini)
+# and is left alone.  Deselection happens where collection does: in every
+# xdist worker, from the same record, so the workers agree.
+# ---------------------------------------------------------------------------
+def pytest_addoption(parser):
+    parser.addoption(
+        '--tier', choices=('all', 'fast'), default='all',
+        help='fast: deselect the tests whose last complete timing record took '
+             '>= PYCIRCUIT_SLOW_SECONDS (default 5) seconds -- for iterating; '
+             'the full suite before a commit')
+
+
+def _slow_seconds():
+    return float(os.environ.get('PYCIRCUIT_SLOW_SECONDS', '5'))
+
+
+def pytest_report_header(config):
+    if config.getoption('tier', 'all') != 'fast':
+        return None
+    rec = _last_full_record(os.path.dirname(os.path.abspath(__file__)))
+    if not rec:
+        return 'tier fast: no complete timing record yet -- every test runs'
+    limit = _slow_seconds()
+    n = sum(1 for d in rec.values() if d >= limit)
+    return (f'tier fast: the {n} tests that took >= {limit:g} s in the last complete '
+            f'record ({len(rec)} tests) are deselected')
+
+
 def pytest_sessionstart(session):
     if _is_xdist_worker(session.config):
         return
@@ -192,7 +226,7 @@ def pytest_sessionfinish(session, exitstatus):
     items = sorted(_TIMINGS.items(), key=lambda kv: -kv[1])
     with open(os.path.join(outdir, '%s_%s.json' % (stamp, commit)), 'w') as f:
         _json.dump({'timestamp': stamp, 'commit': commit, 'wall_seconds': wall,
-                    'tests': len(items),
+                    'tests': len(items), 'complete': _complete_run(session),
                     'args': list(getattr(config, 'invocation_params').args),
                     'durations': items}, f, indent=1)
     ## THE RUN LOG (2026-10-03): `runs.csv`, local and untracked.  Until then
@@ -226,6 +260,38 @@ def pytest_sessionfinish(session, exitstatus):
         f.write(line)
 
 
+def _complete_run(session):
+    """THE RECORD GUARD (2026-10-04): a run is the suite's timing only when it
+    ran everything -- the package (or the root) and no selection: no `-m`,
+    `-k`, `--deselect`, last-failed / failed-first / stepwise, `--tier
+    fast`, and not stopped early (`-x`, `--maxfail`).  Until then any run of
+    1000 tests or more counted, and a `-m "not slow"` run (~3830 tests)
+    became THE record the sort and the fast tier read, with the deselected
+    tests missing from it.  Decided from the options, in the controller:
+    under xdist only the workers collect and deselect."""
+    config = session.config
+    if config.getoption('tier', 'all') != 'all':
+        return False
+    if config.getoption('markexpr', '') or config.getoption('keyword', ''):
+        return False
+    if config.getoption('deselect', None):
+        return False
+    for opt in ('lf', 'failedfirst', 'stepwise', 'stepwise_skip'):
+        if config.getoption(opt, False):
+            return False
+    if config.getoption('maxfail', 0) or session.shouldstop or session.shouldfail:
+        return False
+    root = os.path.dirname(os.path.abspath(__file__))
+    ## pytest's own parse of the positional paths (an option's value is
+    ## never one), the invocation directory when none were given
+    for a in config.args:
+        rel = os.path.relpath(os.path.abspath(os.path.join(
+            str(config.invocation_params.dir), a.split('::', 1)[0])), root)
+        if rel not in ('.', 'pycircuit'):
+            return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # LONGEST-FIRST COLLECTION ORDER, from the timing record (2026-09-08).
 #
@@ -253,10 +319,51 @@ def _last_full_record(root):
                 d = _json.load(f)
         except Exception:
             continue
-        ## the most recent record that covered the whole package
-        if d.get('tests', 0) >= 1000:
+        ## the most recent record of a COMPLETE run (`_complete_run`); a
+        ## record from before 2026-10-04 has no flag and counts when it
+        ## covered 1000 tests or more, as it did then
+        if d.get('complete', d.get('tests', 0) >= 1000) is True:
             best = d
     return dict(best['durations']) if best else {}
+
+
+def _recorded_duration(rec):
+    """`nodeid -> seconds or None` from a record.  ⚠ BY NAME WHEN THE NODEID
+    IS NEW (2026-09-27): a test MOVED to another file keeps its name, and
+    without this every moved test ran LAST as "unknown" -- measured by
+    simulation for the split of test_analysis_shooting.py, 1304 s -> ~1370 s
+    until the next full run.  Only names unique in the record are used."""
+    by_name, seen = {}, set()
+    for nid, dur in rec.items():
+        nm = nid.split('::', 1)[-1]
+        if nm in seen:
+            by_name.pop(nm, None)
+        else:
+            by_name[nm] = dur
+            seen.add(nm)
+
+    def dur(nodeid):
+        d = rec.get(nodeid)
+        return by_name.get(nodeid.split('::', 1)[-1]) if d is None else d
+    return dur
+
+
+def _select_tier(config, items, rec, dur):
+    if config.getoption('tier', 'all') != 'fast' or not rec:
+        return
+    limit = _slow_seconds()
+    keep, slow = [], []
+    for it in items:
+        d = dur(it.nodeid)
+        ## (`@pytest.mark.fast_tier`: the cheapest test of a feature no
+        ## faster test reaches, kept -- chosen by coverage, see pytest.ini)
+        if d is not None and d >= limit and it.get_closest_marker('fast_tier') is None:
+            slow.append(it)
+        else:
+            keep.append(it)
+    if slow:
+        config.hook.pytest_deselected(items=slow)
+        items[:] = keep
 
 
 import pytest as _pytest
@@ -287,24 +394,18 @@ def pytest_collection_modifyitems(session, config, items):
     idle -- the 10-minute tail at 96 % that the record shows.  One test at
     a time from a longest-first list is LPT list scheduling.
     """
+    rec = _last_full_record(os.path.dirname(os.path.abspath(__file__)))
+    dur = _recorded_duration(rec)
+    ## the fast tier selects in EVERY order mode (a shuffled or replayed
+    ## fast run is still the fast tier); only the sort steps aside
+    _select_tier(config, items, rec, dur)
     if (_randomly_active(config) or _replaying(config)
             or os.environ.get('PYCIRCUIT_TEST_ORDER') == 'collected'):
         return
-    rec = _last_full_record(os.path.dirname(os.path.abspath(__file__)))
     if not rec:
         return
-    ## ⚠ BY NAME WHEN THE NODEID IS NEW (2026-09-27): a test MOVED to another
-    ## file keeps its name, and without this every moved test ran LAST as
-    ## "unknown" -- measured by simulation for the split of
-    ## test_analysis_shooting.py, 1304 s -> ~1370 s until the next full run.
-    ## Only names unique in the record are used.
-    by_name, seen = {}, set()
-    for nid, dur in rec.items():
-        nm = nid.split('::', 1)[-1]
-        if nm in seen:
-            by_name.pop(nm, None)
-        else:
-            by_name[nm] = dur
-            seen.add(nm)
-    items.sort(key=lambda it: -rec.get(
-        it.nodeid, by_name.get(it.nodeid.split('::', 1)[-1], -1.0)))
+
+    def key(it):
+        d = dur(it.nodeid)
+        return -(-1.0 if d is None else d)
+    items.sort(key=key)

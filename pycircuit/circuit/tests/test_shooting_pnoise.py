@@ -2585,6 +2585,7 @@ def _gated_lorentz(gfun, signed, P=1e-20, tau=0.3e-6):
     return _Gated
 
 
+@pytest.mark.fast_tier
 def test_every_surface_gives_one_sign_blind_verdict_on_the_samples_and_the_step_midpoints():
     """Review O2 (2026-10-01; Andreas: "merge them, and add the midpoint
     check").  A coloured source factored by the ROOT of its PSD is the `|m|`

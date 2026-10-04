@@ -17,8 +17,21 @@ sit in the same places with the same values and takes the relative
 difference over the finite ones.  (Before 2026-09-27 a NaN difference read
 as IDENTICAL here: `nan > tol` is False.)
 
-`--only-common` compares only the tests (and families) recorded on BOTH
-sides -- a subset run against a full recording, while iterating.
+`--only-common` compares only the tests that RAN on both sides (and the
+families recorded on both) -- a subset run against a full recording, while
+iterating.  A test that ran on both sides with calls on one only is
+MISSING (before 2026-10-04 "common" meant "made a recorded call on both
+sides", and such a test dropped out).  A recording older than the run list
+falls back to the tests with calls.
+
+FAMILIES are read from each recording's header: a family recorded on one
+side only is NAMED and not compared (a gate recorded with fewer families,
+or a recording older than a new family), instead of every call reading
+MISSING.
+
+`--passed-only` compares only the tests that PASSED on both sides, and
+names how many it left out (the switches-off check: a test asserting that
+a fast path served fails by design when it is off).
 
 `--ignore-added-state` ignores a `state` leaf present in B only: across the
 recorder's 2026-09-27 fix (it compared ids, and a reassigned attribute whose
@@ -52,16 +65,32 @@ def _key_name(nodeid):
     return nodeid.split('::', 1)[1] if '::' in nodeid else nodeid
 
 
-def load(d, by_name):
+def load(d, by_name, meta=None):
+    """`(calls, warnings, collisions)`; `meta`, a dict when given, receives
+    the families header (`families`), the tests that ran (`ran`) and their
+    outcomes (`outcomes`) -- each None when a recording predates it."""
     calls, warns = [], []
+    fams, ran, outcomes = set(), set(), {}
+    old_fams = old_ran = False
     for fn in sorted(glob.glob(os.path.join(d, 'rec_*.pkl'))):
         with open(fn, 'rb') as f:
             data = pickle.load(f)
         if isinstance(data, list):               # the transient-only format
             calls.extend(data)
+            fams.add('transient')
+            old_ran = True
         else:
             calls.extend(data['calls'])
             warns.extend(data['warnings'])
+            if 'families' in data:
+                fams.update(data['families'])
+            else:
+                old_fams = True
+            if 'ran' in data:
+                ran.update(data['ran'])
+                outcomes.update(data.get('outcomes', {}))
+            else:
+                old_ran = True
     names = {}
     if by_name:
         per = {}
@@ -82,6 +111,10 @@ def load(d, by_name):
     w = {}
     for r in warns:
         w.setdefault(tkey(r['test']), []).append(r)
+    if meta is not None:
+        meta['families'] = None if old_fams else fams
+        meta['ran'] = None if old_ran else {tkey(t) for t in ran}
+        meta['outcomes'] = None if old_ran else {tkey(t): v for t, v in outcomes.items()}
     return out, w, len(collisions)
 
 
@@ -210,26 +243,53 @@ def main(argv):
     ap.add_argument('--family', default=None)
     ap.add_argument('--quiet', action='store_true')
     ap.add_argument('--only-common', action='store_true')
+    ap.add_argument('--passed-only', action='store_true')
     ap.add_argument('--ignore-added-state', action='store_true')
     o = ap.parse_args(argv)
     global IGNORE_ADDED_STATE
     IGNORE_ADDED_STATE = o.ignore_added_state
-    A, WA, ca = load(o.a, o.by_name)
-    B, WB, cb = load(o.b, o.by_name)
+    MA, MB = {}, {}
+    A, WA, ca = load(o.a, o.by_name, MA)
+    B, WB, cb = load(o.b, o.by_name, MB)
     if o.family:
         A = {k: v for k, v in A.items() if k[1] == o.family}
         B = {k: v for k, v in B.items() if k[1] == o.family}
-    if o.only_common:
-        both = {k[0] for k in A} & {k[0] for k in B}
-        fams = {k[1] for k in A} & {k[1] for k in B}
-        A = {k: v for k, v in A.items() if k[0] in both and k[1] in fams}
-        B = {k: v for k, v in B.items() if k[0] in both and k[1] in fams}
-        WA = {t: v for t, v in WA.items() if t in both}
-        WB = {t: v for t, v in WB.items() if t in both}
     say = (lambda *s: None) if o.quiet else print
     caching = lambda k: k[1] == 'transient' and any(c in str(k[0]) for c in CACHING_TESTS)
+    ## (the cached-elsewhere matches from the WHOLE recording, before any
+    ## filter: a cached call the full run made in a test the subset did not
+    ## run is still the same call)
     sigA = {sig(r) for k, r in A.items() if caching(k)}
     sigB = {sig(r) for k, r in B.items() if caching(k)}
+    ## a family one side did not record is not compared, and said so
+    fa, fb = MA['families'], MB['families']
+    if fa is not None and fb is not None and fa != fb:
+        for fam in sorted(fa ^ fb):
+            print(f"NOTICE family {fam!r} recorded in {'A' if fam in fa else 'B'} only: "
+                  'not compared')
+        A = {k: v for k, v in A.items() if k[1] in fb}
+        B = {k: v for k, v in B.items() if k[1] in fa}
+    keep = None
+    if o.only_common:
+        ra = MA['ran'] if MA['ran'] is not None else {k[0] for k in A}
+        rb = MB['ran'] if MB['ran'] is not None else {k[0] for k in B}
+        keep = ra & rb
+    if o.passed_only:
+        if MA['outcomes'] is None or MB['outcomes'] is None:
+            sys.exit('--passed-only needs recordings with outcomes (2026-10-04 or later)')
+        passed = {t for t, v in MA['outcomes'].items()
+                  if v == 'passed' and MB['outcomes'].get(t) == 'passed'}
+        ran = (set(MA['outcomes']) | set(MB['outcomes'])) if keep is None else keep
+        left = sorted((ran - passed), key=str)
+        names = (': ' + ', '.join(map(str, left[:8])) + (' ...' if len(left) > 8 else '')
+                 if left else '')
+        print(f'NOTICE {len(left)} tests not compared (not passed on both sides){names}')
+        keep = passed if keep is None else keep & passed
+    if keep is not None:
+        A = {k: v for k, v in A.items() if k[0] in keep}
+        B = {k: v for k, v in B.items() if k[0] in keep}
+        WA = {t: v for t, v in WA.items() if t in keep}
+        WB = {t: v for t, v in WB.items() if t in keep}
     keys = sorted(set(A) | set(B), key=lambda k: (str(k[0]), k[1], k[2]))
     count = {}
     worst = {}

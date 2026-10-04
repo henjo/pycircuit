@@ -394,6 +394,7 @@ def _run_chain(cont, minstep=_PTS):
     return _with_jax(go)
 
 
+@pytest.mark.fast_tier
 def test_the_chain_completes_a_pcnr_run_pcnr_alone_cannot():
     """The point of LAYERING it on PCNR rather than the plain Newton.
 

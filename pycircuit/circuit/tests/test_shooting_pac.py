@@ -2606,6 +2606,7 @@ def test_the_adjoint_transfer_row_tolerance_binds_on_the_iterative_path():
         (loose, tight, n_loose, n_tight)
 
 
+@pytest.mark.fast_tier
 def test_pss_and_pac_run_under_the_jax_toolkit():
     """The review's X9 (2026-10-01): nothing ran the shooting stack under the
     JAX toolkit.  A driven RC at 10 points: the PSS waveform matches the

@@ -4450,6 +4450,7 @@ def test_the_line_search_is_the_last_resort_and_reaches_the_shooting_path():
         'the search pre-empted the ladder: v in [%.4f, %.4f]' % (v.min(), v.max())
 
 
+@pytest.mark.fast_tier
 @pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_warping_estimate_refuses_a_reading_the_interpolant_sets():
     """2026-09-08 (item 3): Part I's "only if" as a self-check.  The

@@ -51,6 +51,29 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   'path::victim' $G gw5` -- bisects the tests that ran before the victim in
   that worker (detect-test-pollution, serial, the leak detector off).  The
   victim must FAIL in that order and pass alone.
+- **The fast tier, while iterating** (2026-10-04): `pytest pycircuit --tier
+  fast` deselects every test that took 5 s or more in the last complete
+  timing record (`PYCIRCUIT_SLOW_SECONDS`): ~3600 tests in under 3 minutes
+  instead of ~3850 in 13-14.  The header names how many were left out.  A
+  test the record does not know runs, and so does a test marked
+  `@pytest.mark.fast_tier`: the cheapest test of a feature no faster test
+  reaches (13, chosen by per-test coverage on 2026-10-04; the tier reaches
+  94 % of the library lines the full suite reaches).  The full gate stays
+  the rule before a commit.  Only a COMPLETE run (the package, no `-m`/`-k`/`--deselect`/
+  `--lf`/`--tier fast`, not stopped by `-x`) writes the record the order
+  and the tier read; other runs write records marked incomplete.
+- **The switches-off check**: `scripts/fast_check.sh [OUTDIR]` (~6 min)
+  records the fast tier twice, every fast path on and all seven off
+  (`PYCIRCUIT_TRAN_CORE`, `_HDL_BATCH`, `_HDL_LIMIT_WALK`, `_HDL_CLIMIT`,
+  `_STAMP_PLAN`, `_HDL_FUSE`, `_HDL_ZERO_U` = 0), and compares every
+  recorded call bit for bit.  Run it whenever a fast path changes.  The off
+  run's failures are listed by file: they are the tests of the fast paths
+  themselves (asserting a path served); any other file there is a finding.
+- **Comparing a subset with a full recording**: `compare.py A B
+  --only-common` compares the tests that RAN on both sides (a test that ran
+  with no recorded call on one side is MISSING); `--passed-only` the tests
+  that passed on both.  A family recorded on one side only is named and not
+  compared.
 - **Timing records** are local: `test_timings/runs.csv` (workers, load, wall,
   per run) and the per-run JSONs the longest-first sort reads; neither is in
   git any more (`history.csv`, tracked until 2026-10-03, lost rows whenever it

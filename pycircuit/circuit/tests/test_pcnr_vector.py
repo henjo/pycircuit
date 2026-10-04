@@ -1642,6 +1642,7 @@ def test_a_scalar_only_circuit_falls_through_to_the_junction_path():
         _cm.default_toolkit = numeric
 
 
+@pytest.mark.fast_tier
 def test_a_chained_compact_model_runs_a_pcnr_transient_on_the_jax_backend():
     """The positive form of a test that expired the same day it was written.
 

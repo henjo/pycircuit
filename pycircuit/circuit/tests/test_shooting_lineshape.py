@@ -554,6 +554,7 @@ def test_the_frequency_aware_lineshape_goes_to_all_orders_where_the_first_does_n
     assert info['estimate'] < pac.FA_FIRST_ORDER_TOL, info
 
 
+@pytest.mark.fast_tier
 @pytest.mark.filterwarnings('ignore::pycircuit.circuit.simwarnings.AccuracyWarning')
 def test_the_white_lineshape_takes_the_frequency_aware_ppv_to_all_orders_when_asked():
     """`oscillator_spectrum(all_orders=True)` on a WHITE source (2026-09-27;
@@ -2044,6 +2045,7 @@ def test_the_edge_increment_is_white_at_every_instant_and_stationary_on_average(
         assert abs(slope / pred - 1.0) < 1e-6, (k, slope, pred)
 
 
+@pytest.mark.fast_tier
 def test_the_coloured_spectrum_checks_its_own_amplitude_pole():
     """The review of 2026-09-30 (F4): the coloured `oscillator_spectrum`
     checked the offsets against the amplitude-relaxation pole BEFORE the

@@ -1685,6 +1685,7 @@ def test_a_coloured_covariance_meets_the_sampled_variance_sign_included():
     assert 5e-3 < abs(out['amp'] / out['psd'] - 1.0) < 2e-2, out
 
 
+@pytest.mark.fast_tier
 def test_a_coloured_covariance_takes_noise_correlated_across_elements():
     """The band integral (`covariance` and its kin) on the correlated
     sources of `_mixed_exponent_rc('corr')` built as two elements and a

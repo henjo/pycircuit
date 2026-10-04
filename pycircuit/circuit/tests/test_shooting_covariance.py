@@ -960,6 +960,7 @@ def test_event_jitter_integrates_a_coloured_threshold_and_keeps_the_white_part()
     assert abs((hc - hw) / (4.0 * var_n) - 1.0) < 2e-4
 
 
+@pytest.mark.fast_tier
 def test_a_coloured_covariance_takes_a_flicker_whose_exponent_differs_between_entries():
     """A coloured component whose power-law exponent differs between its
     entries was refused by the band integral ("no one amplitude to
@@ -1260,7 +1261,8 @@ def test_the_bordered_consumers_run_on_a_staged_gear_solve_too():
     assert abs(got[400] - 1.0) < abs(got[100] - 1.0), got
 
 
-@pytest.mark.parametrize('method', ['radau', 'gear', 'trap', 'glm2'])
+@pytest.mark.parametrize('method', ['radau', pytest.param('gear', marks=pytest.mark.fast_tier),
+                                    'trap', 'glm2'])
 def test_the_state_event_stage_runs_matrix_free(method):
     """The state-event stage under `matrix_free=True` (2026-09-25; until then
     it warned and was skipped, the crossings left inside their steps).  Its

@@ -639,6 +639,7 @@ def test_p22_state_row_mask_and_shared_coupled_default():
     assert not bool(mask[c.get_node_index('a')])
 
 
+@pytest.mark.fast_tier
 def test_max_dv_step_voltage_check_on_algebraic_networks():
     """The commercial-simulator-style voltage check (owner request, follow-on to
     P22): on a purely resistive/algebraic amplifier network -- the topology-
@@ -849,6 +850,7 @@ def test_p24_stamps_build_identically_on_every_toolkit():
             circuit_mod.default_toolkit = saved
 
 
+@pytest.mark.fast_tier
 def test_p21_batched_dc_operating_point():
     """P21: solve_batched starts from bias -- the roadmap's last refusal
     retired.  Each lane's DC is solved with ITS OWN swept parameters (the

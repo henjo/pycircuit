@@ -374,6 +374,7 @@ class _SolveOnly(LinearSolver):
         return np.linalg.solve(A, b)
 
 
+@pytest.mark.fast_tier
 def test_every_shooting_surface_runs_under_every_linear_solver():
     """The shooting replays under `linearsolver=` (2026-09-25).  Before:
     `KLUSolver` crashed gear's PSS SOLVE (its `solve` ravelled the `m x 2m`
