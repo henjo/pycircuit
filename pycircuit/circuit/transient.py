@@ -30,7 +30,7 @@ from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
 ## here.
 from pycircuit.circuit._tran_newton import _StepNewton
 from pycircuit.circuit._tran_branch import _BranchCheck
-from pycircuit.circuit import _tran_companion, _tran_core, _tran_newton_c
+from pycircuit.circuit import _paths, _tran_companion, _tran_core, _tran_newton_c
 from pycircuit.circuit._tran_companion import _CompanionModel
 from pycircuit.circuit._tran_history import _RunHistory
 from pycircuit.circuit._tran_predictor import _StagePredictor
@@ -651,8 +651,31 @@ class _SteppingLoop:
         self.fixed_fallbacks, self.forced = [], []
         self.ev_iter = 0
         self.imposed = False
+        ## NOTHING READS A FIXED MULTISTEP STEP'S JACOBIAN: `judge` returns
+        ## before the family's error test, `event` does nothing, and the
+        ## other pieces only carry it (PSS's steps and the adaptive test do
+        ## read theirs).  For this loop and the pieces as defined, every
+        ## attempt's converged point is then evaluated without G (`want_j`
+        ## in `_solve_timestep`; speed round 9, C0) -- a stand-in for any of
+        ## them, on the instance or the class, may read J, and gets it.
+        G, me = _paths.genuine, __name__
+        self.j_unread = bool(
+            _tran_core.SKIP_UNREAD_J and self.fixed and type(self) is _SteppingLoop
+            and type(tr) is Transient and type(family) is _LMMSteps
+            and not ('solve_timestep' in tr.__dict__ or '_solve_timestep' in tr.__dict__
+                     or '_attempt_step' in tr.__dict__)
+            and all(G(getattr(_SteppingLoop, m), '_SteppingLoop.' + m, me)
+                    for m in ('execute', 'where', 'take', 'judge', 'event', 'accept'))
+            and G(_LMMSteps.attempt, '_StepFamily.attempt', me)
+            and G(Transient.solve_timestep, 'Transient.solve_timestep', me)
+            and G(Transient._solve_timestep, 'Transient._solve_timestep', me)
+            and G(Transient._attempt_step, 'Transient._attempt_step', me))
 
     def execute(self):
+        ## (marked for this loop's attempts alone: `j_unread`)
+        tr = self.tr
+        if self.j_unread:
+            tr._j_unread = True
         try:
             while self.t < self.tend:
                 if not self.where():
@@ -661,6 +684,8 @@ class _SteppingLoop:
                     continue
                 self.accept()
         finally:
+            if self.j_unread:
+                tr.__dict__.pop('_j_unread', None)
             self.family.finish()
 
     def where(self):
@@ -1303,9 +1328,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         (`_solve_timestep_pcnr`), else the multistep companion Newton below.
 
         Returns ``(x, feval, J, f)``: the new state and the step's Jacobian at
-        it (the step controller and the shooting walks read `J`).  `feval`
-        and `f` are read by no caller -- None on every path but PCNR's, and
-        `f` is None on the multistep path by design (`jacobian_only`).
+        it (the step controller and the shooting walks read `J`; on the
+        multistep path it is None inside a stepping loop that reads none:
+        `_SteppingLoop.j_unread`).  `feval` and `f` are read by no caller --
+        None on every path but PCNR's, and `f` is None on the multistep path
+        by design (`jacobian_only`).
         """
         ## THE STEP'S SOURCE MEMO lives exactly as long as this call
         ## (`_source_at`, speed round 4): `u(t)` assembled once per time
@@ -1382,6 +1409,9 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
 
         n=self.cir.n
         dt = self._dt
+        ## (inside a stepping loop that reads no step's Jacobian, the
+        ## converged point is evaluated without G: `_SteppingLoop.j_unread`)
+        want_j = not self._j_unread
         
         def func(x):
             return self._residual_and_jacobian(x, t, provided_function)
@@ -1405,6 +1435,12 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             that starts reading it fails loudly instead of silently using zeros --
             which is the whole lesson of stage 1.
 
+            WHERE NOTHING READS `J` EITHER -- a fixed multistep run, whose loop
+            never asks the step controller (`want_j` False:
+            `_SteppingLoop.j_unread`, speed round 9, C0) -- the core evaluates
+            C and q alone and `J` is None too, by the same rule; the numpy
+            path computes G all the same (its warnings stay where they were).
+
             History: `doc/transient_history.md`, `Transient.solve_timestep`.
             """
             ## (the converged point's session, which the branch screen's `C`
@@ -1412,7 +1448,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             with _evalhint.evaluating(session=conv):
                 ## (the evaluate core, `_tran_core`: C, q and G in one call
                 ## where it serves, the same state; the path below where not)
-                r = _tran_core.evaluate(self, x, t, provided_function, 'j')
+                r = _tran_core.evaluate(self, x, t, provided_function,
+                                        'j' if want_j else 'c')
                 if r is not None:
                     return r
                 _iq, Geq = self._companion_at(x)
@@ -1455,7 +1492,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             ## serves (`_tran_newton_c`); `_newton` where it does not
             fj = None
             r = _tran_newton_c.solve(self, func, t, provided_function, seed,
-                                     residual_only)
+                                     residual_only, want_j)
             if r is None:
                 x = self._newton(func, seed, residual=residual_only)
             else:
@@ -1473,6 +1510,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         f, J = fj if fj is not None else jacobian_only(x)
         return x, None, J, f
     
+    #: True while a stepping loop runs whose steps' Jacobian nothing reads
+    #: (`_SteppingLoop.j_unread`): `_solve_timestep` evaluates the converged
+    #: point without G
+    _j_unread = False
+
     ## `analytical_eh` is not an argument (F8): passing it raises TypeError.
     ## History: `doc/transient_history.md`, `Transient.solve`.
     def solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):

@@ -64,9 +64,14 @@ _PC = _paths.COUNTS
 _no = _paths.no
 _K = {w: {r: f'core.{w}:{r}' for r in (
     'off', 'toolkit', 'shadow_cir', 'shadow_tr', 'unservable', 'x', 'formula',
-    'history', 'cmat', 'clookup', 'ready', 'u', 'served')} for w in ('fj', 'j', 'f')}
+    'history', 'cmat', 'clookup', 'ready', 'u', 'served')} for w in ('fj', 'j', 'f', 'c')}
 
 CORE = os.environ.get('PYCIRCUIT_TRAN_CORE', '1') != '0'
+#: where nothing reads a step's Jacobian (a fixed multistep run:
+#: `transient._SteppingLoop.j_unread`), the converged point is evaluated
+#: without G -- `want` 'c' here, the C Newton's fold likewise (speed round
+#: 9, C0); env `PYCIRCUIT_SKIP_UNREAD_J=0` turns it off
+SKIP_UNREAD_J = os.environ.get('PYCIRCUIT_SKIP_UNREAD_J', '1') != '0'
 STATUS = 'not loaded'
 
 CORE_C = r"""
@@ -192,7 +197,7 @@ PASSES = ('G', 'C', 'i', 'q')
 #: the integrators the core's companion enum covers, by class name
 FORMULA = {'Gear2Integrator': 0, 'EulerIntegrator': 1,
            'TrapezoidalIntegrator': 2, 'ThetaIntegrator': 3}
-WANT = {'fj': 7, 'j': 3, 'f': 4}
+WANT = {'fj': 7, 'j': 3, 'f': 4, 'c': 2}
 
 _driver = None
 
@@ -462,8 +467,10 @@ def _row(a, n):
 
 def evaluate(tr, x, t, provided_function, want):
     """`want` 'fj': `(f, J)` as `_residual_and_jacobian`; 'j': `(None, J)`
-    as `jacobian_only`; 'f': `f` as `residual_only` -- or None where the
-    core does not serve the call (nothing touched; the Python path runs)."""
+    as `jacobian_only`; 'c': `(None, None)`, `jacobian_only`'s state where
+    nothing reads its `J` (C and q; no G); 'f': `f` as `residual_only` -- or
+    None where the core does not serve the call (nothing touched; the
+    Python path runs)."""
     K = _K[want]
     if not CORE:
         return _no(K['off'])
@@ -559,4 +566,6 @@ def evaluate(tr, x, t, provided_function, want):
         return F, J
     if want == 'j':
         return None, J
+    if want == 'c':
+        return None, None
     return F

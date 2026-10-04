@@ -15,7 +15,8 @@ OpenBLAS), `x + dx`, the limiter walk's own driver (`_hdl_climit._WALK_C`)
 and `dx = x_next - x` re-taken where a limiter exists, the convergence test
 in `nrsolver`'s order (`|J||x|` through numpy's own `scipy_cblas_dgemv64_`)
 and the chord's shrink test; then the converged point's evaluation
-(`jacobian_only`: G, C, q) in the same call.  Bit for bit `StandardNewton`,
+(`jacobian_only`: G, C, q -- C and q where nothing reads the step's
+Jacobian, a fixed multistep run: speed round 9, C0) in the same call.  Bit for bit `StandardNewton`,
 `ChordNewton` and `jacobian_only` (the stage-0 prototype, pss_log
 2026-10-04; pinned in `tests/test_pinned_pairs.py`).
 
@@ -217,11 +218,12 @@ long hdl_fn(newton_t *s)
             if (conv_x && conv_f) {
                 for (i = 0; i < m; i++) s->x[i] = s->xn[i];
                 if (s->fold_j) {
-                    /* jacobian_only at the converged point: G, C, q */
+                    /* jacobian_only at the converged point: G, C, q -- C and
+                       q alone where J is unread (fold_j holds the passes) */
                     for (i = 0; i < r; i++) s->xc[i] = s->x[i];
                     s->xc[r] = 0.0;
                     for (i = r; i < m; i++) s->xc[i + 1] = s->x[i];
-                    core(s->core, s->xc, s->T, 3, s->formula, s->a0, s->a1, s->a2, s->h,
+                    core(s->core, s->xc, s->T, s->fold_j, s->formula, s->a0, s->a1, s->a2, s->h,
                          s->theta, s->q1, s->q2, s->iq1, s->u, s->Cj, s->Cj, s->qj, s->iqj,
                          s->Geqj, s->F, s->Jj);
                 }
@@ -563,12 +565,13 @@ def _keep(tr, td, M, why):
     return _no(key)
 
 
-def solve(tr, func, t, provided_function, seed, residual):
+def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     """The multistep step's Newton solve, and its converged-point evaluation,
     in C: `(x, fj)` -- `x` the full-width solution as `_newton` returns it,
-    `fj` `jacobian_only`'s `(None, J)` at it, or None where it must run again
-    (a branch confirmation re-solved) -- or None: declined or handed back,
-    nothing left behind, `_newton` runs."""
+    `fj` `jacobian_only`'s `(None, J)` at it (`(None, None)`, and no G,
+    where `want_j` is False: nothing reads it), or None where it must run
+    again (a branch confirmation re-solved) -- or None: declined or handed
+    back, nothing left behind, `_newton` runs."""
     if not ENABLED:
         return _no('newton_c:off')
     td, cd = tr.__dict__, tr.cir.__dict__
@@ -723,7 +726,7 @@ def solve(tr, func, t, provided_function, seed, residual):
     s.a0, s.a1, s.a2, s.h, s.theta = a0, a1, a2, float(h), float(theta)
     s.maxiter, s.chord = int(par.maxiter), (1 if chord else 0)
     s.reltol = float(par.reltol)
-    s.fold_j = 1
+    s.fold_j = 3 if want_j else 2
     status = cfn(s)
     if status != 1:
         _undo_source(memo, key, had, counts)
@@ -738,6 +741,8 @@ def solve(tr, func, t, provided_function, seed, residual):
     _PC['newton_c:served'] += 1
     _PC['newton_c:iterations'] += iters
     _PC['newton_c:jfold'] += 1
+    if not want_j:
+        _PC['newton_c:j_unread'] += 1
     stats = getattr(tr, 'statistics', None)
     if stats is not None:
         stats.newton_iterations += iters
@@ -752,7 +757,7 @@ def solve(tr, func, t, provided_function, seed, residual):
     tr.active_integrator = active
     tr._companion_coeffs = active.companion_coefficients(h, h_last)
     tr._effective_method = type(active).__name__
-    fj = (None, buf['Jj'].copy())
+    fj = (None, buf['Jj'].copy()) if want_j else (None, None)
     if tr._branch_on():
         target = stats if stats is not None else tr
         before = getattr(target, 'branch_screens', 0)
