@@ -8,7 +8,6 @@ from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
     defaultepar, instjoin
 import pycircuit.circuit.circuit
 from .toolkit import symbolic
-from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
 from pycircuit.circuit.dcanalysis import DC
@@ -151,11 +150,11 @@ class AC(SSAnalysis):
     >>> ac = AC(c)
     >>> res = ac.solve(freqs=array([1e6, 2e6]))
     >>> ac.result.v('net1')
-    Waveform(array([ 1000000.,  2000000.]), array([ 1.5+0.j,  1.5+0.j]))
-    >>> res.v(n1, gnd)
-    Waveform(array([ 1000000.,  2000000.]), array([ 1.5+0.j,  1.5+0.j]))
-    >>> res.i('vs.minus')
-    Waveform(array([ 1000000.,  2000000.]), array([ 0.0015 +9.4248e-06j,  0.0015 +1.8850e-05j]))
+    Waveform(frequency -> v(net1) [V], 2 points, complex)
+    >>> res.v(n1, gnd).to_numpy()
+    array([1.5+0.j, 1.5+0.j])
+    >>> res.i('vs.minus').to_numpy()
+    array([0.0015+9.4248e-06j, 0.0015+1.8850e-05j])
     
     """
 

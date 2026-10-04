@@ -8,10 +8,12 @@ from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
     defaultepar, instjoin, circuit
 from . import circuit
 from .toolkit import symbolic
-from pycircuit.post.waveform import Waveform
 from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
 from copy import copy
+import numpy as np
+import polars as pl
+import polars_waveform as pw
 from .toolkit import numeric
 import types
 
@@ -37,13 +39,39 @@ class CircuitResult(IVResultDict, InternalResultDict):
         self.sweep_unit = sweep_unit
 
     def build_waveform(self, result, ylabel, yunit):
-        if hasattr(result, '__iter__'):
-            return Waveform(self.sweep_values, result,
-                            ylabel = ylabel, yunit = 'V', 
-                            xlabels = (self.sweep_label,), 
-                            xunits=(self.sweep_unit,))
-        else:
+        """A swept result as a waveform: a polars_waveform.Waveform for numbers, a
+        polars_waveform.PandasWaveform for symbolic values (sympy) or a complex sweep."""
+        if not hasattr(result, '__iter__'):
             return result
+        return pw.from_arrays(np.asarray(self.sweep_values), result,
+                              xlabels=[self.sweep_label or 'x'], ylabel=ylabel,
+                              xunits=[self.sweep_unit or None], yunit=yunit)
+
+    # polars_waveform.ResultSource: names, leaves, scan() and v()
+    @property
+    def names(self):
+        """Node names ``v()`` accepts (the reference node excluded)."""
+        return [n.name for n in self.circuit.nodes if n != gnd]
+
+    @property
+    def leaves(self):
+        """One leaf without parameters (a circuit result is a single run)."""
+        return pl.DataFrame({'leaf': [0]})
+
+    def scan(self):
+        """Node voltages as a lazy table ``[sweep, v(node), ...]``; complex values are
+        ``Struct{re, im}`` like in polars_waveform. Swept numeric results only."""
+        if not len(self.sweep_values):
+            raise ValueError('scan() needs a swept result')
+        sweep = self.sweep_label or 'x'
+        frame = pl.DataFrame({sweep: np.asarray(self.sweep_values)})
+        cols = []
+        for name in self.names:
+            w = self.v(name)
+            if not isinstance(w, pw.Waveform):
+                raise ValueError('scan() needs numeric values; substitute symbols first')
+            cols.append(w.to_polars()[w.yname])
+        return frame.with_columns(cols).lazy()
 
     def v(self, plus, minus=None):
         result = self.circuit.extract_v(self.x, plus, minus)

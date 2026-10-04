@@ -1,16 +1,13 @@
 def plotall(*waveforms, **args):
     """Plot waveforms in a single plot"""
-    import pylab
+    import matplotlib.pyplot as plt
 
-    plotargs = []
-    plotkvargs = {}
-
-    if 'plotargs' in args:
-        plotargs = args['plotargs']
-    if 'plotkvargs' in args:
-        plotkvargs = args['plotkvargs']
+    plotkvargs = dict(args.get('plotkvargs', {}))
+    ax = plotkvargs.pop('ax', None) or plt.gca()
 
     for wave in waveforms:
-        wave.plot(*plotargs, **plotkvargs)
+        wave = wave.numeric()
+        wave.plot(ax=ax, **({'label': wave.yname} | plotkvargs))
 
-    pylab.legend([wave.ylabel for wave in waveforms])
+    ax.legend()
+    return ax

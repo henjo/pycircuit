@@ -1,6 +1,0 @@
-HEADER
-"PSFversion" "1.00"
-"v" "PLUS"
-"(FUNCTION minus(root(\"PLUS\")))v" "MINUS"
-"(FUNCTION zero(root(\"PLUS\")))v" "NC+"
-"(FUNCTION zero(root(\"PLUS\")))v" "NC-"
