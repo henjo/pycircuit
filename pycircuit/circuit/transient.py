@@ -2,6 +2,7 @@
 # See LICENSE for details.
 
 import contextlib
+import sys
 import time
 
 import numpy as np
@@ -69,6 +70,17 @@ def blas_single_thread_available():
     return _threadpool_limits is not None
 
 
+## THE CONTROLLER, KEPT (speed round 8, stage 2c, 2026-10-04): building
+## one rescans every shared library the process has loaded -- 3.4 M
+## instructions, two steps of a 20-MosLevel1 transient, on every `solve`
+## (`threadpool_limits` builds one per call) -- for a set that changes when
+## a package is imported: a BLAS arrives with its package.  So one,
+## rebuilt when `len(sys.modules)` moved; a library loaded through ctypes
+## alone is not seen until then.  The limit itself is the same call on it.
+## In a container: the leak detector reads module-level scalars.
+_BLAS_CONTROLLER = {}
+
+
 def _single_threaded_blas():
     """Limit BLAS to one thread for the duration, if that is possible here.
 
@@ -80,7 +92,12 @@ def _single_threaded_blas():
     """
     if _threadpool_limits is None:
         return contextlib.nullcontext()
-    return _threadpool_limits(limits=1, user_api='blas')
+    n = len(sys.modules)
+    rec = _BLAS_CONTROLLER.get('blas')
+    if rec is None or rec[0] != n:
+        from threadpoolctl import ThreadpoolController
+        rec = _BLAS_CONTROLLER['blas'] = (n, ThreadpoolController())
+    return rec[1].limit(limits=1, user_api='blas')
 
 def resample_uniform(t, x, npoints=None, step=None, grid=None):
     """Interpolate a transient result onto a UNIFORM time grid.
