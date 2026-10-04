@@ -147,6 +147,53 @@ CFLAGS = ('-O2', '-shared', '-fPIC', '-fno-fast-math', '-ffp-contract=off',
 
 _FALSE = ('0', 'off', 'false', 'no', '')
 
+#: THE SANITIZER BUILD (2026-10-04, testing for development, stage 4).
+#: With `PYCIRCUIT_C_SANITIZE=1` every C object -- the chain kernels, the
+#: limiters, the pass driver, the walk, the evaluate core: all build here --
+#: is compiled with AddressSanitizer and UndefinedBehaviorSanitizer, so an
+#: out-of-bounds access or undefined behaviour stops the process with the
+#: file and line instead of corrupting a neighbour silently.  No float
+#: checks: the kernels make inf and NaN on purpose, where Python raises.
+#: The flags are part of `source_key`, so sanitized objects sit in the same
+#: store under their own keys and a normal process never loads one.  The
+#: interpreter is not instrumented: the ASan runtime must be PRELOADED
+#: (`scripts/sanitize_suite.sh` sets everything).  Without it every object
+#: would fail to load, `load_kernel` would rebuild and fail again, every
+#: class would fall back to numpy and every test would pass having tested
+#: nothing -- so the import refuses instead.
+SANITIZE = os.environ.get('PYCIRCUIT_C_SANITIZE', '').strip().lower() not in _FALSE
+SANITIZE_FLAGS = ('-g', '-fno-omit-frame-pointer', '-fsanitize=address,undefined',
+                  '-fno-sanitize-recover=all')
+
+
+def _asan_preloaded():
+    import ctypes
+    try:
+        return hasattr(ctypes.CDLL(None), '__asan_init')
+    except OSError:
+        return False
+
+
+if SANITIZE:
+    if not _asan_preloaded():
+        raise RuntimeError(
+            'PYCIRCUIT_C_SANITIZE=1 needs the AddressSanitizer runtime preloaded '
+            '(LD_PRELOAD="$(gcc -print-file-name=libasan.so) $(gcc '
+            '-print-file-name=libstdc++.so)"): without it no '
+            'sanitized object loads and every class would run numpy. '
+            'Use scripts/sanitize_suite.sh.')
+    CFLAGS = CFLAGS + SANITIZE_FLAGS
+
+
+def _compiler_env():
+    """The environment a compiler runs in: this process's, without the
+    sanitizer runtime preload (gcc is not built for it)."""
+    if not SANITIZE:
+        return None
+    env = dict(os.environ)
+    env.pop('LD_PRELOAD', None)
+    return env
+
 
 def enabled_env():
     """The backend the environment asks for, `'numpy'` unless set."""
@@ -180,8 +227,8 @@ def find_compiler():
         if path is None:
             continue
         try:
-            out = subprocess.run([path, '--version'], capture_output=True,
-                                 text=True, timeout=60)
+            out = subprocess.run([path, '--version'], capture_output=True, env=_compiler_env(),
+                                 text=True, timeout=60, check=False)
         except (OSError, subprocess.SubprocessError) as e:
             _compiler = (None, '%s --version failed: %s' % (path, e))
             return _compiler
@@ -322,7 +369,7 @@ def _build(csrc, dest):
             fh.write(csrc)
         proc = subprocess.run([cc] + list(CFLAGS) + ['-o', sopath, cpath,
                                                      '-lm'],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, env=_compiler_env())
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or '').strip()
             raise CompileError('%s exited %d: %s'
@@ -545,7 +592,7 @@ def _build_missing_parallel(fns):
             proc = subprocess.Popen([cc] + list(CFLAGS) +
                                     ['-o', sopath, cpath, '-lm'],
                                     stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL)
+                                    stderr=subprocess.DEVNULL, env=_compiler_env())
             jobs.append((proc, cpath, sopath, dest))
         for proc, cpath, sopath, dest in jobs:
             rc = proc.wait()

@@ -85,6 +85,20 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   per class or process and are only reported.  A new decline in a fast
   path's entry function returns `_paths.no('<path>.<site>:<reason>')`
   (`test_paths.py` checks every `return None` there).
+- **The sanitized suite** (2026-10-04): `scripts/sanitize_suite.sh
+  [--deep] [OUTDIR]` runs the fast tier (~6 min; `--deep`: the whole suite
+  with every Python allocation through ASan, hours) with every C object the package builds (the
+  chain kernels, limiters, pass driver, walk, evaluate core) compiled under
+  AddressSanitizer and UndefinedBehaviorSanitizer (`PYCIRCUIT_C_SANITIZE=1`
+  adds the flags; they are part of each object's key, so sanitized
+  objects sit beside the ordinary ones).  It preloads the ASan runtime and
+  libstdc++ (Python is not C++: without libstdc++ ASan's `__cxa_throw`
+  interceptor aborts when jaxlib throws at import), uses the system
+  allocator, and fails on any sanitizer report, any test failure, or any
+  class left on numpy by an object that would not load.  Run it once per
+  speed round and before any commit that touches C.  A sanitized process
+  without the runtime refuses to start (it would otherwise fall back to
+  numpy everywhere and pass having tested nothing).
 - **Timing records** are local: `test_timings/runs.csv` (workers, load, wall,
   per run) and the per-run JSONs the longest-first sort reads; neither is in
   git any more (`history.csv`, tracked until 2026-10-03, lost rows whenever it
