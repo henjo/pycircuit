@@ -318,3 +318,50 @@ def test_passed_only_leaves_out_and_names_the_failed(tmp_path, capsys):
     assert cmp.main([a, b]) == 1                         # t2 differs
     assert cmp.main([a, b, '--passed-only']) == 0
     assert 'NOTICE 1 tests not compared (not passed on both sides): t2' in capsys.readouterr().out
+
+
+## -- instruction counts (stage 6) ----------------------------------------------------
+
+def test_the_count_route_says_what_this_box_offers_and_how_to_open_the_rest():
+    b = _bench()
+    route = b.count_route()
+    assert route in ('perf', 'valgrind', None)
+    if route != 'perf':
+        ## (closed counters: the message names the setting and the no-root way)
+        msg = b.count_unavailable_message()
+        assert 'perf_event_paranoid' in msg and 'get_valgrind.sh' in msg
+        with pytest.raises(OSError):
+            b.InstrCounter()
+
+
+def test_the_perf_attribute_is_the_kernels_version_0_layout():
+    """`perf_event_attr`, 64 bytes (PERF_ATTR_SIZE_VER0): the fields the
+    counter sets at the kernel's offsets -- type 0, size 4, config 8,
+    read_format 32 (time enabled and running), the flag bits 40 (disabled,
+    exclude_kernel, exclude_hv)."""
+    import struct
+    attr = _bench()._perf_attr((4 << 32) | 1)
+    assert len(attr) == 64
+    assert struct.unpack_from('I', attr, 0)[0] == 0
+    assert struct.unpack_from('I', attr, 4)[0] == 64
+    assert struct.unpack_from('Q', attr, 8)[0] == (4 << 32) | 1
+    assert struct.unpack_from('Q', attr, 32)[0] == 3
+    assert struct.unpack_from('Q', attr, 40)[0] == 0x61
+
+
+def test_a_cachegrind_summary_is_read(tmp_path):
+    b = _bench()
+    f = tmp_path / 'cg.out'
+    f.write_text('desc: I1 cache:\ncmd: python x\nevents: Ir\nsummary: 216623069\n')
+    assert b.valgrind_count(str(f)) == 216623069
+    (tmp_path / 'empty').write_text('events: Ir\n')
+    with pytest.raises(ValueError):
+        b.valgrind_count(str(tmp_path / 'empty'))
+
+
+def test_outside_a_counting_run_the_region_counts_nothing(monkeypatch):
+    b = _bench()
+    monkeypatch.delenv('PYCIRCUIT_BENCH_COUNT', raising=False)
+    with b.CountRegion() as r:
+        pass
+    assert r.route is None and r.count is None

@@ -224,3 +224,187 @@ def paired_summary(parent, child, n_boot=4000, seed=0):
     boots = sorted(statistics.median(rng.choices(r, k=len(r))) for _ in range(n_boot))
     lo, hi = boots[int(0.025 * n_boot)], boots[int(0.975 * n_boot) - 1]
     return med, lo, hi, sum(1 for v in r if v < 1.0)
+
+
+## -- instruction counts (2026-10-04, testing for development, stage 6) ---------------
+##
+## Wall time on this shared box resolves about 1 % with eight paired rounds;
+## the instructions a call retires are nearly a property of the code alone
+## (with address randomisation off and a fixed hash seed, three cachegrind
+## runs gave the same count to the instruction).  Two routes:
+##
+## * `perf`: the CPU's own counter, read around the call in-process
+##   (`perf_event_open`, user space only, the P-core's PMU on this hybrid
+##   CPU).  Needs `kernel.perf_event_paranoid` <= 2 -- one root setting:
+##       sudo sysctl kernel.perf_event_paranoid=2
+##       echo kernel.perf_event_paranoid=2 | sudo tee /etc/sysctl.d/60-perf.conf
+## * `valgrind`: cachegrind, its counting switched on only around the call
+##   (`scripts/get_valgrind.sh` unpacks it without root).  Every process runs
+##   under valgrind's translator: minutes per process, so one process per case.
+##
+## `count_route()` names the route this box offers (perf first) or None.
+
+PERF_TYPE_HARDWARE = 0
+PERF_COUNT_HW_INSTRUCTIONS = 1
+PERF_FORMAT_TOTAL_TIME_ENABLED = 1
+PERF_FORMAT_TOTAL_TIME_RUNNING = 2
+PERF_EVENT_IOC_ENABLE = 0x2400
+PERF_EVENT_IOC_DISABLE = 0x2401
+PERF_EVENT_IOC_RESET = 0x2403
+_NR_PERF_EVENT_OPEN = 298                      # x86_64
+VALGRIND_DIR = os.environ.get('PYCIRCUIT_VALGRIND') or os.path.join(
+    os.path.expanduser('~'), '.local', 'opt', 'valgrind')
+
+
+def _paranoid():
+    try:
+        with open('/proc/sys/kernel/perf_event_paranoid') as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _core_pmu_type():
+    """The P-core PMU's type on a hybrid CPU (`cpu_core`), or None."""
+    try:
+        with open('/sys/bus/event_source/devices/cpu_core/type') as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _perf_attr(config):
+    """`struct perf_event_attr`, version 0 (64 bytes): type, size, config,
+    sample_period, sample_type, read_format (time enabled and running), the
+    flag bits (disabled, exclude_kernel, exclude_hv), wakeup_events, bp_type,
+    config1."""
+    import struct
+    flags = 1 | (1 << 5) | (1 << 6)
+    return struct.pack('IIQQQQQIIQ', PERF_TYPE_HARDWARE, 64, config, 0, 0,
+                       PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING,
+                       flags, 0, 0, 0)
+
+
+class InstrCounter:
+    """User-space instructions retired by this process between `start()`
+    and `stop()`, from the CPU's counter.  `count` is None when the counter
+    did not run the whole time (multiplexed, or the process left the P-core
+    whose PMU it counts) -- such a reading is rejected, not scaled."""
+
+    def __init__(self):
+        import ctypes
+        import struct
+        self._ct, self._st = ctypes, struct
+        libc = ctypes.CDLL(None, use_errno=True)
+        self._libc = libc
+        config = PERF_COUNT_HW_INSTRUCTIONS
+        pmu = _core_pmu_type()
+        if pmu is not None:
+            config |= pmu << 32               # (the extended type: one PMU of a hybrid CPU)
+        attr = _perf_attr(config)
+        assert len(attr) == 64
+        buf = ctypes.create_string_buffer(attr, 64)
+        libc.syscall.restype = ctypes.c_long
+        fd = libc.syscall(ctypes.c_long(_NR_PERF_EVENT_OPEN), buf, ctypes.c_int(0),
+                          ctypes.c_int(-1), ctypes.c_int(-1), ctypes.c_ulong(8))
+        if fd < 0:
+            err = ctypes.get_errno()
+            raise OSError(err, f'perf_event_open: {os.strerror(err)} '
+                               f'(perf_event_paranoid={_paranoid()})')
+        self.fd = fd
+        self.count = None
+
+    def start(self):
+        self._libc.ioctl(self.fd, PERF_EVENT_IOC_RESET, 0)
+        self._libc.ioctl(self.fd, PERF_EVENT_IOC_ENABLE, 0)
+
+    def stop(self):
+        self._libc.ioctl(self.fd, PERF_EVENT_IOC_DISABLE, 0)
+        value, enabled, running = self._st.unpack('QQQ', os.read(self.fd, 24))
+        self.count = value if running == enabled and enabled > 0 else None
+        return self.count
+
+    def close(self):
+        os.close(self.fd)
+
+
+def perf_available():
+    try:
+        InstrCounter().close()
+    except OSError:
+        return False
+    return True
+
+
+def valgrind_available():
+    return (os.path.exists(os.path.join(VALGRIND_DIR, 'usr', 'bin', 'valgrind.bin'))
+            and os.path.exists(os.path.join(VALGRIND_DIR, 'pycircuit-count.so')))
+
+
+def count_route():
+    """'perf', 'valgrind' or None (and why)."""
+    if perf_available():
+        return 'perf'
+    if valgrind_available():
+        return 'valgrind'
+    return None
+
+
+def count_unavailable_message():
+    return ('no instruction counter here: the kernel keeps its counters closed '
+            f'(perf_event_paranoid={_paranoid()}; `sudo sysctl kernel.perf_event_paranoid=2` '
+            'opens them for your own processes) and no valgrind in '
+            f'{VALGRIND_DIR} (`scripts/get_valgrind.sh` unpacks it, no root)')
+
+
+def valgrind_prefix(out_file):
+    """The command prefix running a child under cachegrind, counting only
+    between the helper's start and stop (`--instr-at-start=no`)."""
+    return [os.path.join(VALGRIND_DIR, 'usr', 'bin', 'valgrind.bin'), '--tool=cachegrind',
+            '--cache-sim=no', '--instr-at-start=no', f'--cachegrind-out-file={out_file}']
+
+
+def valgrind_env(env):
+    env = dict(env)
+    env['VALGRIND_LIB'] = os.path.join(VALGRIND_DIR, 'usr', 'libexec', 'valgrind')
+    return env
+
+
+def valgrind_count(out_file):
+    """The instructions cachegrind counted (its `summary:` line)."""
+    with open(out_file) as f:
+        for line in f:
+            if line.startswith('summary:'):
+                return int(line.split()[1])
+    raise ValueError(f'no summary in {out_file}')
+
+
+class CountRegion:
+    """In a child: the region whose instructions are counted, by the route
+    the parent chose (`PYCIRCUIT_BENCH_COUNT`): `perf` reads the counter
+    (`.count`), `valgrind` switches cachegrind on and off (the parent reads
+    the file).  Outside a counting run it does nothing."""
+
+    def __init__(self):
+        self.route = os.environ.get('PYCIRCUIT_BENCH_COUNT') or None
+        self.count = None
+        self._perf = self._helper = None
+        if self.route == 'perf':
+            self._perf = InstrCounter()
+        elif self.route == 'valgrind':
+            import ctypes
+            self._helper = ctypes.CDLL(os.path.join(VALGRIND_DIR, 'pycircuit-count.so'))
+
+    def __enter__(self):
+        if self._perf is not None:
+            self._perf.start()
+        elif self._helper is not None:
+            self._helper.pyc_count_start()
+        return self
+
+    def __exit__(self, *exc):
+        if self._perf is not None:
+            self.count = self._perf.stop()
+        elif self._helper is not None:
+            self._helper.pyc_count_stop()
+        return False

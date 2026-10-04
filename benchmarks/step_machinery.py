@@ -212,6 +212,43 @@ def _paths_since(before):
     return {k: v for k, v in sorted(_paths.since(before).items()) if not k.startswith('once:')}
 
 
+#: (`--count`, stage 6) the counted region of a counting child, and whether
+#: the run in progress is a measured one: the warm-up run is never counted
+_REGION = None
+_COUNTING = False
+_LAST_COUNT = [None]
+
+
+def _counted(fn):
+    """`fn()`, inside the instruction-counting region when this is a
+    measured run of a counting child (`PYCIRCUIT_BENCH_COUNT`); with
+    `PYCIRCUIT_BENCH_PLANT_OPS=n` (`--count --plant-ops n`, the count's own
+    proof) followed, inside the region, by `sum(range(n))`: a fixed amount
+    of extra work."""
+    global _REGION
+    _LAST_COUNT[0] = None
+    if not (_COUNTING and os.environ.get('PYCIRCUIT_BENCH_COUNT')):
+        return fn()
+    if _REGION is None:
+        _REGION = _bench.CountRegion()
+    ops = int(os.environ.get('PYCIRCUIT_BENCH_PLANT_OPS', '0') or 0)
+    ## (the collector paused inside the region, after a full collection: a
+    ## collection costs ~10^5 instructions and lands where the allocation
+    ## history puts it -- identical runs counted 0.1 % apart with it)
+    import gc
+    gc.collect()
+    gc.disable()
+    try:
+        with _REGION:
+            out = fn()
+            if ops:
+                sum(range(ops))
+    finally:
+        gc.enable()
+    _LAST_COUNT[0] = _REGION.count
+    return out
+
+
 def _timed(fn):
     """`(seconds, fn(), the fast-path counts it added)`.  With
     `PYCIRCUIT_BENCH_PLANT=p` (`--plant`, the check's own proof) the call is
@@ -219,7 +256,7 @@ def _timed(fn):
     calibrated slowdown of exactly `p`."""
     p0 = _paths_now()
     t0 = time.perf_counter()
-    out = fn()
+    out = _counted(fn)
     dt = time.perf_counter() - t0
     paths = _paths_since(p0)
     plant = float(os.environ.get('PYCIRCUIT_BENCH_PLANT', '0') or 0)
@@ -316,14 +353,18 @@ def run_case(name):
 def measure(cases, rounds):
     """Every case warmed once, then `rounds` interleaved runs; a dict per
     case with the times, the digest, the statistics and the path counts."""
-    out = {k: {'times': [], 'per_step': [], 'shas': [], 'stats_all': [], 'paths_all': []}
-           for k in cases}
+    global _COUNTING
+    out = {k: {'times': [], 'per_step': [], 'shas': [], 'stats_all': [], 'paths_all': [],
+               'instructions': []} for k in cases}
+    _COUNTING = False
     for k in cases:
         run_case(k)
+    _COUNTING = True
     for _ in range(rounds):
         for k in cases:
             dt, us, sha, st, paths = run_case(k)
             r = out[k]
+            r['instructions'].append(_LAST_COUNT[0])
             r['times'].append(dt)
             r['per_step'].append(us)
             r['shas'].append(sha)
@@ -526,6 +567,108 @@ def compare(parent, cases, rounds, max_busy=0.25, repeats=5, child=None, check=F
             sys.exit(3)
 
 
+## -- instruction counts (stage 6) ------------------------------------------------------
+
+#: `--count`'s verdict: a count that moved by more than this fraction.
+#: MEASURED 2026-10-04 (cachegrind, no address randomisation, a fixed hash
+#: seed, the collector paused): a pure-Python loop counts the same to the
+#: instruction run after run, but a simulation does not -- numpy's identity
+#: hash tables and the dicts keyed by objects probe by ADDRESS, and the heap
+#: layout moves between processes and between trees: runs of one tree
+#: spread up to 0.28 %, and an A/A (two trees, one commit, four runs each)
+#: read +0.10, +0.24 and +0.31 % on the 20-MosLevel1 step, the PSP stage and
+#: the adaptive ladder.  So the band is 0.5 %: four times finer than the
+#: paired wall time's +-2 %, and blind to the box's load
+COUNT_BAND = 0.005
+
+
+def count_compare(parent, cases, child=None, repeats=2, plant_ops=0):
+    """The instructions the timed call of every case retires, the tree at
+    `parent` against `child` (this script's), each in its own process
+    without address randomisation and with a fixed hash seed, `repeats`
+    times each (the counts of one tree must agree).  The route is
+    `_bench.count_route()`: the CPU's counter in-process (one process for
+    every case), or cachegrind (one process per case: valgrind translates
+    everything).  A verdict per case: MORE or FEWER beyond `COUNT_BAND`,
+    else "no change"; bytes and statistics are checked as in `compare`."""
+    route = _bench.count_route()
+    if route is None:
+        sys.exit(_bench.count_unavailable_message())
+    child = child or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    trees = {'parent': os.path.abspath(parent), 'child': os.path.abspath(child)}
+    got = {lab: {k: {'counts': [], 'sha': set(), 'stats': []} for k in cases} for lab in trees}
+    t0 = time.time()
+    import tempfile
+    with _bench.lock(exclusive=True, what='step_machinery --count'):
+        print('conditions:', _bench.stamp(), f'route: {route}', flush=True)
+        if plant_ops:
+            print(f'PLANTED: the child adds sum(range({plant_ops})) to every counted call',
+                  flush=True)
+        for r in range(repeats):
+            for lab in (list(trees) if r % 2 == 0 else list(trees)[::-1]):
+                env = dict(os.environ, PYTHONPATH=trees[lab], PYCIRCUIT_BENCH_PIN='1',
+                           PYTHONHASHSEED='0', PYCIRCUIT_BENCH_COUNT=route)
+                env.pop('PYCIRCUIT_BENCH_PLANT_OPS', None)
+                if plant_ops and lab == 'child':
+                    env['PYCIRCUIT_BENCH_PLANT_OPS'] = str(plant_ops)
+                groups = [list(cases)] if route == 'perf' else [[k] for k in cases]
+                for group in groups:
+                    cmd = [sys.executable, os.path.abspath(__file__), '--json', '--rounds', '1',
+                           *group]
+                    out_file = None
+                    if route == 'valgrind':
+                        fd, out_file = tempfile.mkstemp(suffix='.cachegrind')
+                        os.close(fd)
+                        cmd = _bench.valgrind_prefix(out_file) + cmd
+                        run_env = _bench.valgrind_env(env)
+                    else:
+                        run_env = env
+                    res = subprocess.run(_bench.no_aslr() + cmd, cwd=trees[lab], env=run_env,
+                                         capture_output=True, text=True, check=True)
+                    for rec in (json.loads(ln) for ln in res.stdout.splitlines()
+                                if ln.startswith('{')):
+                        g = got[lab][rec['case']]
+                        if route == 'valgrind':
+                            g['counts'].append(_bench.valgrind_count(out_file))
+                        else:
+                            g['counts'].extend(rec['instructions'])
+                        g['sha'].add(rec['sha'])
+                        g['stats'].append(rec['stats'])
+                    if out_file:
+                        os.unlink(out_file)
+    print(f'{repeats} repeats per tree, {time.time() - t0:.0f} s', flush=True)
+    differ, more = False, []
+    for k in cases:
+        p, c = got['parent'][k], got['child'][k]
+        same_bytes = len(p['sha'] | c['sha']) == 1
+        same_stats = all(s == p['stats'][0] for s in p['stats'] + c['stats'])
+        differ = differ or not (same_bytes and same_stats)
+        pc = [x for x in p['counts'] if x is not None]
+        cc = [x for x in c['counts'] if x is not None]
+        if not pc or not cc:
+            print(f'{k:12s} no counts (the counter did not run the whole call)', flush=True)
+            continue
+        spread = max((max(v) - min(v)) / min(v) for v in (pc, cc))
+        pm, cm_ = statistics.median(pc), statistics.median(cc)
+        ratio = cm_ / pm
+        v = ('NOT-COMPARABLE' if not (same_bytes and same_stats) else
+             'MORE' if ratio > 1 + COUNT_BAND else 'FEWER' if ratio < 1 - COUNT_BAND
+             else 'no change')
+        more += [k] if v == 'MORE' else []
+        print(f'{k:12s} {v:14s} parent {pm:15,.0f} | child {cm_:15,.0f} instructions | '
+              f'{100 * (ratio - 1):+.3f} % | spread within a tree {100 * spread:.4f} % | '
+              f'bytes {"SAME" if same_bytes else "DIFFER"}, stats {"SAME" if same_stats else "DIFFER"}',
+              flush=True)
+        print('      runs: parent ' + ' '.join(f'{x:,}' for x in pc)
+              + ' | child ' + ' '.join(f'{x:,}' for x in cc), flush=True)
+    if differ:
+        print('BYTES OR STATISTICS DIFFER: not comparable', flush=True)
+        sys.exit(2)
+    print(f'count: MORE {more or "none"}', flush=True)
+    if more:
+        sys.exit(3)
+
+
 ## -- the in-run timer tree -----------------------------------------------------
 
 def tree(name):
@@ -684,6 +827,8 @@ def main(argv):
     check = False
     budget = 300.0
     plant = 0.0
+    count = False
+    plant_ops = 0
     tree_case = None
     cases = []
     it = iter(argv)
@@ -704,6 +849,10 @@ def main(argv):
             budget = float(next(it))
         elif a == '--plant':
             plant = float(next(it)) / 100.0
+        elif a == '--count':
+            count = True
+        elif a == '--plant-ops':
+            plant_ops = int(next(it))
         elif a == '--tree':
             tree_case = next(it)
         elif a == '--sample':
@@ -718,6 +867,13 @@ def main(argv):
     cases = cases or list(CASES)
     if tree_case:
         tree(tree_case)
+        return
+    if count:
+        cmp_dir = cmp_dir or PARENT_TREE
+        if not os.path.isdir(cmp_dir):
+            sys.exit(f'no parent tree at {cmp_dir}: make it with scripts/parent_tree.sh')
+        with warnings.catch_warnings():
+            count_compare(cmp_dir, cases, child=child, repeats=rounds or 2, plant_ops=plant_ops)
         return
     if check:
         cmp_dir = cmp_dir or PARENT_TREE

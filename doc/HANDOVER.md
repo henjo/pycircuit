@@ -24,6 +24,21 @@ Merging to master remains the repo owner's call and has NOT been done.
 
 ## THE TEST PROCEDURE (2026-10-03; supersedes the recipes below where they differ)
 
+**THE DEVELOPMENT LOOP (2026-10-04; each step below is described further
+down):**
+
+- Iterating: `pytest pycircuit --tier fast` (~3 min); `scripts/fast_check.sh`
+  when a fast path changes (every fast path against its Python path, ~6 min).
+- Before a commit: the recorded gate and `compare.py` for the transient,
+  PSS, PAC and fast-path-count families; the private suite;
+  `scripts/parent_tree.sh` then `python benchmarks/step_machinery.py
+  --check` (~3-5 min), its verdict line in the commit message; when C
+  changed, `scripts/sanitize_suite.sh` (~7 min).
+- Once per speed round: `scripts/sanitize_suite.sh --deep` (hours),
+  `pytest pycircuit/circuit/tests/test_twins_random.py
+  --hypothesis-profile deep`, and `step_machinery.py --count` for the cases
+  the round changed.
+
 `pytest.ini` runs `-n 8 --maxschedchunk=1 -p no:randomly` by default; the
 dev tools are pinned in `pyproject.toml` (`pip install -e ".[dev]"`):
 pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
@@ -180,6 +195,25 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   calls only (imports, compile-cache loads and the warm-up drop out).
   py-spy 0.4.2 prints "No child process" after writing the profile; that
   line is harmless.
+- **Instruction counts** (2026-10-04): `python benchmarks/step_machinery.py
+  --count [--rounds N] [cases]` counts the instructions each case's timed
+  call retires, this tree against the parent tree, with a verdict per case
+  (MORE / FEWER beyond 0.5 %, else "no change"; exit 3 on MORE, 2 when
+  bytes or statistics differ).  Counts do not depend on the box's load.
+  Two routes, the first available is used:
+  - `perf`, the CPU's own counter read in-process, at full speed.  It
+    needs one root setting, kept across reboots:
+        sudo sysctl kernel.perf_event_paranoid=2
+        echo kernel.perf_event_paranoid=2 | sudo tee /etc/sysctl.d/60-perf.conf
+    Not yet verified on this box (the setting was not made).
+  - `valgrind` (cachegrind), no root: `scripts/get_valgrind.sh` unpacks it
+    into `~/.local/opt/valgrind`.  One process per case, ~20-60 s each.
+  The floor, measured: a simulation's count moves by up to ~0.3 % between
+  processes and trees with the same code (numpy's identity hash tables
+  and object-keyed dicts probe by address, and the heap layout moves), so
+  the band is 0.5 %: four times finer than the paired wall time's +-2 %.
+  `--plant-ops N` adds `sum(range(N))` (138 instructions an element) to
+  the child's counted calls: the count's own proof.
 - **Size one piece standalone**: `python benchmarks/micro.py <piece|all>
   <case> [pyperf options]` (pieces: `--list`), pyperf with calibrated loops,
   several worker processes, the workers pinned to CPU 8.  Size a piece here
