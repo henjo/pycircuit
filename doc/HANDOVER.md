@@ -36,8 +36,11 @@ down):**
   changed, `scripts/sanitize_suite.sh` (~7 min).
 - Once per speed round: `scripts/sanitize_suite.sh --deep` (hours),
   `pytest pycircuit/circuit/tests/test_twins_random.py
-  --hypothesis-profile deep`, and `step_machinery.py --count` for the cases
-  the round changed.
+  pycircuit/circuit/tests/test_predictor_fast.py
+  pycircuit/circuit/tests/test_lte_c.py --hypothesis-profile deep` (the
+  twins that draw by the profile), and `step_machinery.py --count` /
+  `--check` against the round's base (`scripts/parent_tree.sh <base>`,
+  then `scripts/parent_tree.sh` again).
 
 `pytest.ini` runs `-n 8 --maxschedchunk=1 -p no:randomly` by default; the
 dev tools are pinned in `pyproject.toml` (`pip install -e ".[dev]"`):

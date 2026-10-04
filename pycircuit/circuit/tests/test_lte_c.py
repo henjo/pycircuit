@@ -107,7 +107,8 @@ def _vec(data, n, elems=_plain):
     return np.array(data.draw(st.lists(elems, min_size=n, max_size=n)), dtype=float)
 
 
-@settings(max_examples=100, deadline=None)
+## (the profile's examples: 60 in the gate, 3000 at `--hypothesis-profile deep`)
+@settings(deadline=None)
 @given(data=st.data(), n=st.integers(2, 6), pi=st.booleans(),
        trap=st.booleans(), relref=st.sampled_from(sc.RELREF_MODES),
        h=st.floats(1e-15, 1e-3), r2=st.floats(0.01, 50.0), r3=st.floats(0.01, 50.0))
