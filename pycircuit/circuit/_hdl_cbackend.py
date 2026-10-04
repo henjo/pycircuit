@@ -110,16 +110,27 @@ The batches
     instance shadow, a patched method, a detached class, a temperature
     that is not one number -- takes `CKernel.__call__` per element as
     before.
+
+The fused kernel
+    For the transient's evaluate core a class also gets ONE kernel for
+    its four passes (`fuse_csrc`, 2026-10-05): the printed statements
+    unioned by name, each run under the bits of the passes that print it,
+    each pass's outputs to its own array -- the same statements, so the
+    same values (a NaN's sign aside).  Built with the others, bound as
+    `info['_c_fused']`, refused on its own (`info['_c_fused_status']`);
+    `PYCIRCUIT_HDL_CFUSE=0` leaves it unbuilt and unused.
 """
 
 import contextlib
 import hashlib
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import types
 
 import numpy as np
 
@@ -558,6 +569,189 @@ def kernel_for(fn, nx, rebuild_corrupt=True):
     return kern, cold
 
 
+## ----------------------------------------------------------------------
+## The fused kernel (speed round 9, stage 3).
+
+#: ONE MASKED KERNEL A CLASS for the evaluate core (`_tran_core`): a
+#: class's four passes print four functions that each recompute their
+#: whole chain -- `i` is inside `G`, `q` inside `C`, and `G` and `C` share
+#: about half their statements -- where one function evaluating what a
+#: call wants needs 48-62 % of the work on PSP.  Printed from the passes'
+#: C (`fuse_csrc`), built beside them and bound as `info['_c_fused']`;
+#: refused on its own, never the class.  env `PYCIRCUIT_HDL_CFUSE=0`: not
+#: built, and the core calls the passes' own kernels (read at the bind and
+#: at every readiness check).
+FUSE = os.environ.get('PYCIRCUIT_HDL_CFUSE', '1').strip().lower() not in _FALSE
+
+#: the passes a fused kernel computes: bit `1 << k` is `FUSE_PASSES[k]`
+#: (the evaluate core's order)
+FUSE_PASSES = ('G', 'C', 'i', 'q')
+
+_FUSE_STMT = re.compile(r'  const double L_(\w+) = ([^;]*);\Z')
+_FUSE_OUT = re.compile(r'  out\[(\d+)\] = ([^;]*);\Z')
+_FUSE_REF = re.compile(r'\bL_(\w+)')
+
+
+class FuseRefused(Exception):
+    """The passes' printed C cannot be unioned into one masked kernel."""
+
+
+def fused_cdef():
+    """The fused kernel's entry: `void hdl_fn(x, p, want, oG, oC, oi, oq)`."""
+    from pycircuit.circuit import hdl
+    return (f'void {hdl._C_ENTRY}(const double *x, const double *p, long want, '
+            'double *oG, double *oC, double *oi, double *oq);')
+
+
+def fuse_csrc(srcs):
+    """One masked C function from a class's printed pass kernels (`srcs`:
+    a pass of `FUSE_PASSES` -> its `_csrc`): the union of their
+    statements by name, each function's order kept (every statement
+    follows what it reads), each statement carrying the bits of the passes
+    that print it and run under `if (want & bits)`; each pass's outputs
+    written to its own array (`oG`, `oC`, `oi`, `oq`) under its bit.  The
+    statements are the printed ones, unchanged: the same IEEE operations,
+    only grouped (a NaN's sign may differ where gcc orders a commutative
+    operation's operands otherwise -- the caveat the backend carries
+    against numpy).  `FuseRefused` for a line the printer does not make
+    (`hdl._render_c` is the only printer), one name standing for two
+    texts, or a statement or output reading a name outside its passes.
+
+    Returns `(text, stats)`."""
+    from pycircuit.circuit import hdl
+    head = f'void {hdl._C_ENTRY}(const double *x, const double *p, double *out) {{'
+    order, text, bits, outs = [], {}, {}, {}
+    for b, m in enumerate(FUSE_PASSES):
+        src = srcs.get(m)
+        if src is None:
+            continue
+        lines = src.split('\n')
+        if len(lines) < 3 or lines[0] != head or lines[-2:] != ['}', '']:
+            raise FuseRefused(f'{m}: not the printed frame')
+        o = []
+        for ln in lines[1:-2]:
+            mt = _FUSE_STMT.match(ln)
+            if mt is not None and not o:
+                name, expr = mt.groups()
+                prev = text.get(name)
+                if prev is None:
+                    order.append(name)
+                    text[name], bits[name] = expr, 1 << b
+                elif prev != expr:
+                    raise FuseRefused(f'L_{name} stands for two texts')
+                else:
+                    bits[name] |= 1 << b
+                continue
+            mt = _FUSE_OUT.match(ln)
+            if mt is None or int(mt.group(1)) != len(o):
+                raise FuseRefused(f'{m}: a line the printer does not make')
+            o.append(mt.group(2))
+        outs[m] = o
+    if len(outs) < 2:
+        raise FuseRefused('fewer than two passes')
+    ## every name read: printed before its reader and in each of its
+    ## reader's passes (so a run its guard skips is read by no run it lets
+    ## through)
+    pos = {n: k for k, n in enumerate(order)}
+    for n in order:
+        for d in _FUSE_REF.findall(text[n]):
+            if d not in pos or pos[d] >= pos[n] or bits[n] & ~bits[d]:
+                raise FuseRefused(f'L_{n} reads L_{d} outside its passes')
+    for b, m in enumerate(FUSE_PASSES):
+        for e in outs.get(m, ()):
+            for d in _FUSE_REF.findall(e):
+                if d not in pos or not bits[d] & (1 << b):
+                    raise FuseRefused(f'an output of {m} reads L_{d} outside it')
+    lines = [(f'void {hdl._C_ENTRY}(const double *x, const double *p, long want, '
+              'double *oG, double *oC, double *oi, double *oq) {')]
+    for k in range(0, len(order), 32):
+        lines.append('  double {};'.format(', '.join('L_' + n for n in order[k:k + 32])))
+    run, runs = None, 0
+    for n in order:
+        if bits[n] != run:
+            if run is not None:
+                lines.append('  }')
+            run, runs = bits[n], runs + 1
+            lines.append(f'  if (want & {run}) {{')
+        lines.append(f'    L_{n} = {text[n]};')
+    if run is not None:
+        lines.append('  }')
+    for b, m in enumerate(FUSE_PASSES):
+        if m in outs:
+            lines.append(f'  if (want & {1 << b}) {{')
+            lines.extend(f'    o{m}[{k}] = {e};' for k, e in enumerate(outs[m]))
+            lines.append('  }')
+    lines.append('}')
+    stats = {'union': len(order), 'runs': runs,
+             'printed': sum(1 for m in outs for ln in srcs[m].split('\n')
+                            if _FUSE_STMT.match(ln))}
+    return '\n'.join(lines) + '\n', stats
+
+
+class FusedKernel:
+    """A class's fused kernel: the loaded function, the pass kernels it was
+    printed from (`parts`: the core calls it only while they are the
+    class's bound kernels), each pass's output length (`sizes`), the bits
+    of its passes (`mask`), the x length it reads and the pack layout."""
+
+    __slots__ = ('built_s', 'cfn', 'ffi', 'key', 'layout', 'mask', 'nx', 'parts', 'sizes',
+                 'stats')
+
+    def __init__(self, ffi, cfn, parts, sizes, nx, layout, key, built_s, stats):
+        self.ffi, self.cfn, self.parts, self.sizes = ffi, cfn, parts, sizes
+        self.mask = sum(1 << FUSE_PASSES.index(m) for m in parts)
+        self.nx, self.layout, self.key, self.built_s, self.stats = nx, layout, key, built_s, stats
+
+
+def fuse_source(info):
+    """The class's fused source as `_build_missing_parallel` takes it, or
+    None with `info['_c_fused_status']` saying why: the passes' kernels
+    must agree on the x they read and the pack they take."""
+    if not FUSE:
+        info['_c_fused_status'] = 'off'
+        return None
+    srcs, shapes, nxs, layouts = {}, {}, set(), set()
+    for m in FUSE_PASSES:
+        fn = info['funcs'].get(m)
+        if fn is not None and getattr(fn, '_csrc', None) is not None:
+            srcs[m], shapes[m] = fn._csrc, tuple(fn._cshape)
+            nxs.add(fn._cshape[0])
+            layouts.add(tuple(fn._clayout))
+    if len(nxs) > 1 or len(layouts) > 1:
+        info['_c_fused_status'] = 'refused (the passes read different x or packs)'
+        return None
+    try:
+        text, stats = fuse_csrc(srcs)
+    except FuseRefused as e:
+        info['_c_fused_status'] = f'refused ({e})'
+        return None
+    return types.SimpleNamespace(_csrc=text, shapes=shapes, nx=nxs.pop(),
+                                 layout=layouts.pop(), stats=stats)
+
+
+def bind_fused(info, src):
+    """Bind the class's fused kernel from `fuse_source`'s object (None:
+    nothing to bind) once its passes' kernels are bound: `info['_c_fused']`
+    the kernel or None, `info['_c_fused_status']` 'c' or why not."""
+    info['_c_fused'] = None
+    if src is None:
+        return None
+    parts = {m: info['funcs'][m].__dict__.get('_hdl_c') for m in src.shapes}
+    if not all(isinstance(k, CKernel) for k in parts.values()):
+        info['_c_fused_status'] = 'refused (a pass without its kernel)'
+        return None
+    try:
+        ffi, cfn, key, _cold, secs = load_kernel(src._csrc, fused_cdef())
+    except (CompileError, OSError) as e:
+        info['_c_fused_status'] = f'compile failed ({e})'
+        return None
+    sizes = {m: int(np.prod(s)) for m, s in src.shapes.items()}
+    fk = FusedKernel(ffi, cfn, parts, sizes, src.nx, src.layout, key, secs, src.stats)
+    info['_c_fused'] = fk
+    info['_c_fused_status'] = 'c'
+    return fk
+
+
 def _build_missing_parallel(fns):
     """Compile, in parallel, every distinct `_csrc` in `fns` whose
     object is not on disk yet.  Failures fall through to `kernel_for`,
@@ -630,6 +824,8 @@ def detach(cls, info):
         if fn is not None and hasattr(fn, '_hdl_c'):
             del fn._hdl_c
     info['_c_bound'] = False
+    info['_c_fused'] = None
+    info['_c_fused_status'] = 'detached'
     if info.get('limit_spec'):
         from pycircuit.circuit import _hdl_climit
         _hdl_climit.unbind(info)
@@ -740,9 +936,12 @@ def _resolve(cls, info, explicit):
     ## chain functions; refused on its own, never the class: `_hdl_climit`)
     from pycircuit.circuit import _hdl_climit
     lsrc = _hdl_climit.source_for(info) if info.get('limit_spec') else None
+    ## (and the evaluate core's fused kernel, printed from the passes' C:
+    ## refused on its own too, `fuse_source`)
+    fsrc = fuse_source(info)
     try:
         _build_missing_parallel(list(todo.values())
-                                + ([lsrc] if lsrc is not None else []))
+                                + [s for s in (lsrc, fsrc) if s is not None])
         for fn in todo.values():
             ## The x length the kernel reads equals its output row
             ## count: `i`, `G`, `q`, `C` are all n-per-side.  Taken from
@@ -767,3 +966,4 @@ def _resolve(cls, info, explicit):
     _note(cls, 'c')
     if lsrc is not None:
         _hdl_climit.bind(cls, info, lsrc)
+    bind_fused(info, fsrc)

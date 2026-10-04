@@ -253,6 +253,146 @@ def test_the_psp_kernels_answer_their_numpy_functions_on_drawn_biases():
         drawn()
 
 
+## -- the fused kernel -----------------------------------------------------------------------
+
+def _check_fused(e, fk, x, epar):
+    """The class's fused kernel at `x` (`_hdl_cbackend.fuse_csrc`), every
+    subset of its passes, against the passes' own kernels: the same bytes
+    (a NaN's sign aside), and nothing written for a pass outside the
+    subset.  False where a pass kernel declines the call."""
+    from pycircuit.circuit import _hdl_cbackend as cb
+    funcs = type(e)._hdl_info['funcs']
+    ref = {}
+    for m in fk.parts:
+        r = funcs[m].__dict__['_hdl_c'](e, x, epar)
+        if r is None:
+            return False
+        ref[m] = np.asarray(r, float).reshape(-1)
+    _p, pcast = e.__dict__['_hdl_cp']
+    ffi = fk.ffi
+    dptr = ffi.typeof('double *')
+    xa = np.ascontiguousarray(x, dtype=float)
+    for want in range(1, 16):
+        if want & ~fk.mask:
+            continue
+        outs = [np.full(max(fk.sizes.get(m, 0), 1), 1.25) for m in cb.FUSE_PASSES]
+        fk.cfn(ffi.from_buffer(dptr, xa), pcast, want, *(ffi.from_buffer(dptr, o) for o in outs))
+        for b, m in enumerate(cb.FUSE_PASSES):
+            if m not in fk.parts:
+                continue
+            got = outs[b][:fk.sizes[m]]
+            if want & (1 << b):
+                assert _compare(ref[m], got) in ('equal', 'nan-bits'), (m, want, x.tolist())
+            else:
+                assert (got == 1.25).all(), (m, want, 'written outside its passes')
+    return True
+
+
+def _fused(cls):
+    fk = cls._hdl_info.get('_c_fused')
+    assert fk is not None, cls._hdl_info.get('_c_fused_status')
+    return fk
+
+
+#: AT ITS DEFAULTS A DEVICE CARRIES NO CHARGE: every capacitance zero, so a
+#: fault in a charge statement multiplies out to the same zero (a planted one
+#: passed, 2026-10-05).  These cases load the charges and the other zeros.
+LOADED = {
+    'MosLevel1Hdl': {'vto': 0.5, 'gamma': 0.4, 'lambd': 0.02, 'cgso': 2e-10, 'cgdo': 2e-10,
+                     'cgbo': 1e-10, 'cbd': 1e-14, 'cbs': 1e-14, 'cj': 1e-4, 'cjsw': 1e-10,
+                     'ad': 1e-12, 'asrc': 1e-12, 'pd': 4e-6, 'ps': 4e-6},
+    'GummelPoonNpnHdl': dict(KW.get('GummelPoonNpnHdl', {}), vaf=50.0, ikf=0.1, ise=1e-15,
+                             cje=1e-12, cjc=5e-13, tf=1e-10, tr=1e-8, xtf=1.0, vtf=2.0,
+                             itf=0.1),
+}
+FUSED_CASES = CASES + [(n, 'loaded') for n in LOADED]
+
+
+def _fused_device(name, how):
+    if how != 'loaded':
+        return _device(name, how)
+    e = _instance(getattr(eh, name), **LOADED[name])
+    return e, type(e)
+
+
+@needs_cc
+@pytest.mark.parametrize('name, how', FUSED_CASES, ids=[f'{n}-{h}' for n, h in FUSED_CASES])
+def test_the_fused_kernel_takes_every_special_and_parameter_value_at_every_coordinate(name, how):
+    from pycircuit.circuit import _hdl_cbackend as cb
+    if not cb.FUSE:
+        pytest.skip('the fused kernels are off (PYCIRCUIT_HDL_CFUSE=0)')
+    e, cls = _fused_device(name, how)
+    n = len(hdl.x_layout(cls))
+    args = [float(v) for v in hdl._args_of(e, defaultepar)]
+    with c_backend(cls):
+        assert cls._hdl_backend_status == 'c', cls._hdl_backend_status
+        fk = _fused(cls)
+        checked = sum(_check_fused(e, fk, x, defaultepar)
+                      for x in one_at_a_time(n, args, _bases(n)))
+    assert checked > 0
+
+
+@needs_cc
+@pytest.mark.parametrize('name, how', FUSED_CASES, ids=[f'{n}-{h}' for n, h in FUSED_CASES])
+def test_the_fused_kernel_answers_the_passes_on_drawn_states(name, how):
+    from pycircuit.circuit import _hdl_cbackend as cb
+    if not cb.FUSE:
+        pytest.skip('the fused kernels are off (PYCIRCUIT_HDL_CFUSE=0)')
+    e, cls = _fused_device(name, how)
+    n = len(hdl.x_layout(cls))
+    pnames = _numeric(e)
+    with c_backend(cls):
+        assert cls._hdl_backend_status == 'c', cls._hdl_backend_status
+        fk = _fused(cls)
+
+        @given(data=st.data())
+        def drawn(data):
+            epar = data.draw(st.sampled_from(EPARS), label='epar')
+            pick = data.draw(st.sampled_from([None] + pnames), label='parameter')
+            old = getattr(e.ipar, pick) if pick is not None else None
+            if pick is not None:
+                factor = data.draw(st.sampled_from((0.5, 0.9, 1.0 + 2 ** -40, 1.1, 2.0)),
+                                   label='factor')
+                setattr(e.ipar, pick, old * factor)
+                e.update_iparv()
+            try:
+                args = [float(v) for v in hdl._args_of(e, epar)]
+                x = data.draw(states(n, args), label='x')
+                assume(_check_fused(e, fk, x, epar))
+            finally:
+                if pick is not None:
+                    setattr(e.ipar, pick, old)
+                    e.update_iparv()
+        drawn()
+
+
+@needs_cc
+def test_the_psp_fused_kernel_answers_its_passes_on_drawn_biases():
+    from pycircuit.circuit import _hdl_cbackend as cb
+    from pycircuit.circuit import compact
+    if not cb.FUSE:
+        pytest.skip('the fused kernels are off (PYCIRCUIT_HDL_CFUSE=0)')
+    e = compact.PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
+                                  fnt=1.0)
+    e.update_iparv()
+    cls = type(e)
+    with c_backend(cls):
+        assert cls._hdl_backend_status == 'c', cls._hdl_backend_status
+        fk = _fused(cls)
+        assert fk.stats['union'] < fk.stats['printed'] * 0.6, fk.stats
+
+        @given(data=st.data())
+        def drawn(data):
+            bias = [data.draw(st.one_of(st.floats(lo, hi), st.sampled_from(SPECIALS)), label=nm)
+                    for nm, lo, hi in (('vd', -0.3, 1.5), ('vg', -0.5, 1.8),
+                                       ('vs', -0.2, 0.2), ('vb', -0.8, 0.2))]
+            with np.errstate(all='ignore'):
+                x = np.ascontiguousarray(e.bias(*bias), dtype=float)
+            epar = data.draw(st.sampled_from(EPARS), label='epar')
+            assume(_check_fused(e, fk, x, epar))
+        drawn()
+
+
 ## -- the limiter kernel ---------------------------------------------------------------------
 
 def _limiter_matches_on(e, kern, n, epar_strategy, params):

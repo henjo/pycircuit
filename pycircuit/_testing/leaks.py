@@ -97,6 +97,7 @@ SWITCHES = (
     ('pycircuit.circuit._hdl_cse', 'FUSE_MIN_CODE'),
     ('pycircuit.circuit._hdl_cse', 'MEMO_ENTRIES'),
     ('pycircuit.circuit._hdl_cache', 'ENABLED'),
+    ('pycircuit.circuit._hdl_cbackend', 'FUSE'),
     ('pycircuit.circuit.hdl', 'EMIT_C_SOURCE'),
     ('pycircuit.circuit.hdl', 'BACKEND'),
     ('pycircuit.circuit.hdl', 'LIMIT_PAR_CACHE'),

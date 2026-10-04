@@ -175,6 +175,18 @@ PAIRS = {
         'twin': ['pycircuit.circuit.transient:_SteppingLoop.__init__',
                  'pycircuit.circuit.transient:_SteppingLoop.execute'],
     },
+    'the printed pass kernels and their fused kernel': {
+        'why': 'the fused kernel is the passes\' printed statements unioned by name, '
+               'each run under the bits of the passes that print it, the outputs per '
+               'pass -- it parses exactly the lines `_render_c` prints and refuses '
+               'any other; the core calls it once a call and scatters from its '
+               'staging in the passes\' order',
+        'reference': ['pycircuit.circuit.hdl:_render_c'],
+        'twin': ['pycircuit.circuit._hdl_cbackend:fuse_csrc',
+                 'pycircuit.circuit._hdl_cbackend:fuse_source',
+                 'pycircuit.circuit._hdl_cbackend:bind_fused',
+                 'pycircuit.circuit._tran_core:_fuse_groups'],
+    },
 }
 
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
@@ -183,13 +195,14 @@ RECORD = {
     'the kernel call and the pass driver': ('09a9e274bbe8', 'c900976facbc'),
     'the limiting loop and the walk': ('d151206fce18', '411e5dd4e655'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
-    'the transient evaluation and the core': ('ce82a66a3520', '8a9af4084d3f'),
+    'the transient evaluation and the core': ('ce82a66a3520', '618bea4b7aee'),
     'the assembly loops and the plan': ('ed84458db1a3', '9578c5eca9ad'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the Newton solve and its C': ('a4c57d1d7bee', '3ad57f183c63'),
     'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
+    'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

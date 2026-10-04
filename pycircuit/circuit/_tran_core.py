@@ -46,6 +46,19 @@ pack mirrors are the core's own (`_hdl_batch`'s rule: mirror the tuple the
 element holds, never repack one), the readiness check runs once per call
 over the unique elements rather than once per pass.
 
+THE FUSED KERNELS (speed round 9, stage 3).  A class's four passes print
+four kernels that each recompute their whole chain; its fused kernel
+(`_hdl_cbackend.fuse_csrc`: the printed statements unioned by name, each
+run under the bits of the passes that print it) is called ONCE a call for
+every pass the call wants, before the passes, into a staging buffer --
+where the class's batches cover two or more passes over the same elements
+on the same nodes (`_fuse_groups`) -- and each batch then scatters its
+outputs from there in its own order: the same values in the same places,
+the passes' bins as before.  The readiness check takes the class's fused
+kernel only while it is bound and was printed from the passes' bound
+kernels (and the switch, `_hdl_cbackend.FUSE`, is on); else the batches
+call their own.
+
 `CORE` (env `PYCIRCUIT_TRAN_CORE=0`) is read on every call; `STATUS` says
 why the core is off where it is.  Pinned against its Python reference in
 `tests/test_pinned_pairs.py`.  History: `doc/transient_history.md`,
@@ -53,6 +66,7 @@ why the core is off where it is.  Pinned against its Python reference in
 """
 import ctypes
 import glob
+import operator
 import os
 
 import numpy as np
@@ -78,6 +92,8 @@ CORE_C = r"""
 #include <stdint.h>
 #include <string.h>
 typedef void (*hdl_fn_t)(const double *, const double *, double *);
+typedef void (*hdl_fz_t)(const double *, const double *, long, double *, double *, double *,
+                         double *);
 typedef void (*dgemv_t)(int, int, int64_t, int64_t, double, const double *, int64_t,
                         const double *, int64_t, double, double *, int64_t);
 typedef struct {
@@ -94,8 +110,18 @@ typedef struct {
     const int64_t *gdstall; const int64_t *g_seloff;
     void *dgemv;
     double *work; double *ywork; double *binG; double *bini;
+    long nz; void **z_fn; const int64_t *ztab; double *zst;
+    const int64_t *bftab; const int64_t *fidxall;
 } hdl_core_t;
-/* passes 0 G, 1 C, 2 i, 3 q; want bits 1 G, 2 C, 4 i (q always) */
+/* passes 0 G, 1 C, 2 i, 3 q; want bits 1 G, 2 C, 4 i (q always).  A class
+   with a fused kernel (z_fn) is evaluated once a call, before the passes,
+   for every pass the call wants, into its staging (zst); its batches then
+   scatter from there -- the passes' writes and bins as before.  ztab, a
+   group's row: ne, k, ti, mask, nmoff, proff, then per pass G C i q its
+   output length and its staging offset; bftab, a batch's row: its group
+   (-1: none) and its offset in fidxall (each element's place in it; -1:
+   the group's own order, the usual case) */
+#define ZW 14
 long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long formula,
             double a0, double a1, double a2, double h, double theta,
             const double *q1, const double *q2, const double *iq1, const double *u,
@@ -106,8 +132,26 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
     double *bins[4] = {c->binG, C, c->bini, q};
     const long bits[4] = {1, 2, 4, 0};
     dgemv_t gemv = (dgemv_t) c->dgemv;
-    long n = c->n, m, b, g, e, j, s;
+    long n = c->n, m, b, g, e, j, s, z;
     const double *Cs;
+    for (z = 0; z < c->nz; z++) {
+        const int64_t *zt = c->ztab + ZW * z;
+        hdl_fz_t ff = (hdl_fz_t) c->z_fn[z];
+        long zw = ((want & 7) | 8) & zt[3];
+        if (!ff || !zw) continue;
+        {
+            long ne = zt[0], k = zt[1], ti = zt[2];
+            const int64_t *NM = c->NMall + zt[4];
+            double **PR = c->PRall + zt[5];
+            double *sG = c->zst + zt[7], *sC = c->zst + zt[9], *si = c->zst + zt[11];
+            double *sq = c->zst + zt[13];
+            for (e = 0; e < ne; e++) {
+                for (j = 0; j < k; j++) X[j] = x[NM[e * k + j]];
+                if (ti >= 0) PR[e][ti] = T;
+                ff(X, PR[e], zw, sG + e * zt[6], sC + e * zt[8], si + e * zt[10], sq + e * zt[12]);
+            }
+        }
+    }
     for (m = 0; m < 4; m++) {
         double *buf = c->work;
         long L = c->p_L[m];
@@ -118,9 +162,20 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             if (c->b_pass[b] != m) continue;
             hdl_fn_t f = (hdl_fn_t) c->b_fn[b];
             long ne = c->b_ne[b], k = c->b_k[b], so = c->b_so[b], ti = c->b_ti[b];
+            long fz = c->nz ? c->bftab[2 * b] : -1;
             const int64_t *NM = c->NMall + c->b_nmoff[b];
             const int64_t *dst = c->bdstall + c->b_dstoff[b];
             double **PR = c->PRall + c->b_proff[b];
+            if (fz >= 0 && c->z_fn[fz]) {
+                const double *sz = c->zst + c->ztab[ZW * fz + 7 + 2 * m];
+                long fo = c->bftab[2 * b + 1];
+                const int64_t *fi = fo >= 0 ? c->fidxall + fo : 0;
+                for (e = 0; e < ne; e++) {
+                    const double *oz = sz + (fi ? fi[e] : e) * so;
+                    for (j = 0; j < so; j++) buf[dst[e * so + j]] = oz[j];
+                }
+                continue;
+            }
             for (e = 0; e < ne; e++) {
                 for (j = 0; j < k; j++) X[j] = x[NM[e * k + j]];
                 if (ti >= 0) PR[e][ti] = T;
@@ -185,6 +240,8 @@ typedef struct {
     const int64_t *gdstall; const int64_t *g_seloff;
     void *dgemv;
     double *work; double *ywork; double *binG; double *bini;
+    long nz; void **z_fn; const int64_t *ztab; double *zst;
+    const int64_t *bftab; const int64_t *fidxall;
 } hdl_core_t;
 long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long formula,
             double a0, double a1, double a2, double h, double theta,
@@ -240,6 +297,84 @@ def driver():
 
 class Unservable(Exception):
     """The circuit has an element the core cannot evaluate."""
+
+
+def _fuse_groups(batches, b_pass, cb):
+    """The classes the core evaluates with their fused kernel:
+    `(groups, b_fz, b_fidx)` -- each group `(info, kernel, elements, pass
+    bits, node maps)`, per batch its group (-1: none) and each of its
+    elements' place in the group (None: the group's own order).  A class is fused where its fused kernel
+    is bound and its batches cover two or more of its passes, the same
+    elements in each, once each, on the same nodes, with the kernel's
+    widths; each refusal counted once a build (`once:core.fuse:<why>`).
+    (Every pass lists a class's elements in one order, the plan's: the
+    node maps are then compared a batch at a time -- an element at a time
+    cost a 20-element chain's core build 1.7 M instructions.)"""
+    by_cls = {}
+    for b, bt in enumerate(batches):
+        by_cls.setdefault(bt.cls, []).append(b)
+    groups, b_fz, b_fidx = [], [-1] * len(batches), [None] * len(batches)
+    for bs in by_cls.values():
+        first = batches[bs[0]]
+        info = first.info
+        fk = info.get('_c_fused') if cb.FUSE else None
+        if fk is None and cb.FUSE and info.get('_c_bound') and info.get('_c_fused_status') == 'off':
+            ## (bound while the switch was off: built now)
+            fk = cb.bind_fused(info, cb.fuse_source(info))
+        passes = [PASSES[b_pass[b]] for b in bs]
+        why = None
+        if fk is None:
+            why = 'nokernel'
+        elif len(set(passes)) != len(passes):
+            why = 'passes'          # (a class split into two batches in one pass)
+        elif len(passes) < 2 or not set(passes) <= set(fk.parts):
+            why = 'passes'
+        else:
+            ti = -1 if fk.layout[1] is None else fk.layout[1]
+            for b, m in zip(bs, passes):
+                bt = batches[b]
+                if bt.k != fk.nx or bt.so != fk.sizes[m] or bt.ti != ti:
+                    why = 'widths'
+                    break
+        els, places = first.els, {}
+        if why is None:
+            nm0 = first.NM.tobytes()
+            index = None
+            for b in bs:
+                bt = batches[b]
+                if bt.els is els or (len(bt.els) == len(els)
+                                     and all(map(operator.is_, bt.els, els))):
+                    ## (the plan's one order: the node maps compared whole,
+                    ## both int64 and C-ordered as `Batch` makes them)
+                    if bt is not first and not (bt.NM.shape == first.NM.shape
+                                                and bt.NM.tobytes() == nm0):
+                        why = 'nodes'
+                        break
+                    places[b] = None
+                    continue
+                if index is None:
+                    index = {id(el): i for i, el in enumerate(els)}
+                rows = [index.get(id(el), -1) for el in bt.els]
+                if (len(index) != len(els) or len(rows) != len(els) or -1 in rows
+                        or len(set(rows)) != len(rows)):
+                    why = 'elements'
+                    break
+                rows = np.asarray(rows, dtype=np.int64)
+                if not np.array_equal(bt.NM, first.NM[rows]):
+                    why = 'nodes'
+                    break
+                places[b] = rows
+        if why is not None:
+            _PC['once:core.fuse:' + why] += 1
+            continue
+        z = len(groups)
+        mask = sum(1 << PASSES.index(m) for m in passes)
+        groups.append((info, fk, els, mask, first.NM))
+        for b in bs:
+            b_fz[b] = z
+            b_fidx[b] = places[b]
+        _PC['once:core.fuse:fused'] += 1
+    return groups, b_fz, b_fidx
 
 
 class _Core:
@@ -329,6 +464,42 @@ class _Core:
                     if parts else np.zeros(1, np.int64))
         self.batches = batches
         self.nb, self.ng = len(batches), len(g_pass)
+        ## THE FUSED KERNELS (speed round 9, stage 3): a class whose fused
+        ## kernel is bound (`_hdl_cbackend.bind_fused`) and whose batches
+        ## cover two or more passes over the same elements -- each once a
+        ## pass, on the same nodes -- is evaluated once a call into a
+        ## staging buffer; its batches scatter from there
+        zgroups, b_fz, b_fidx = _fuse_groups(batches, b_pass, cb)
+        self._cb = cb
+        z_proff, ztab, fidx, bftab = [], [], [], []
+        st_len = fo = 0
+        for _info, fk, els, mask, znm in zgroups:
+            ne = len(els)
+            ztab += (ne, fk.nx, -1 if fk.layout[1] is None else fk.layout[1], mask,
+                     nmoff, pr_len)
+            z_proff.append(pr_len)
+            pr_len += ne
+            NM.append(znm.reshape(-1))
+            nmoff += znm.size
+            for m in PASSES:
+                sz = fk.sizes.get(m, 0)
+                ztab += (sz, st_len)
+                st_len += sz * ne
+        if zgroups:
+            for b in range(len(batches)):
+                rows = b_fidx[b]
+                if rows is None:
+                    ## (the group's own order: no table)
+                    bftab += (b_fz[b], -1)
+                else:
+                    bftab += (b_fz[b], fo)
+                    fidx.append(rows)
+                    fo += len(rows)
+        self.zgroups = zgroups
+        self.nz = len(zgroups)
+        self.b_fz = b_fz
+        self.z_fn = np.zeros(max(self.nz, 1), dtype=np.uintp)
+        self.zk = [None] * self.nz
         self.b_fn = np.zeros(max(self.nb, 1), dtype=np.uintp)
         self.PRall = np.zeros(max(pr_len, 1), dtype=np.uintp)
         self.b_proff = b_proff
@@ -348,6 +519,10 @@ class _Core:
             'work': np.empty(max(int(max(p_L)), 1)), 'ywork': np.empty(maxy),
             'binG': np.empty(n * n), 'bini': np.empty(n),
         }
+        if zgroups:
+            ## (the fused groups' tables: none at all where nothing fuses)
+            arrays.update(ztab=np.array(ztab, dtype=np.int64), zst=np.empty(max(st_len, 1)),
+                          bftab=np.array(bftab, dtype=np.int64), fidxall=cat64(fidx))
         if any(bt.k > 64 or bt.so > 4096 for bt in batches) or any(k > 64 for _o, _e, k in g_soff):
             raise Unservable('an element wider than the core holds')
         self.arrays = arrays
@@ -363,15 +538,22 @@ class _Core:
         cs.b_fn = self.handles[-1]
         self.handles.append(ffi.from_buffer('double **', self.PRall))
         cs.PRall = self.handles[-1]
+        cs.nz = self.nz
+        self.handles.append(ffi.from_buffer('void **', self.z_fn))
+        cs.z_fn = self.handles[-1]
         cs.dgemv = ffi.cast('void *', dgemv)
         self.cs = cs
         self.ffi = ffi
         ## the unique elements across the batches, each with its positions in
-        ## the pointer table: one shadow-and-pack check per call
+        ## the pointer table (a fused group's too): one shadow-and-pack check
+        ## per call
         pos = {}
         for b, bt in enumerate(batches):
             for e, el in enumerate(bt.els):
                 pos.setdefault(id(el), (el, []))[1].append(b_proff[b] + e)
+        for z, g in enumerate(zgroups):
+            for e, el in enumerate(g[2]):
+                pos[id(el)][1].append(z_proff[z] + e)
         self.uniq = [(el, tuple(ps)) for el, ps in pos.values()]
         self.mirror = [None] * len(self.uniq)
         self.dptr = ffi.typeof('double *')
@@ -407,12 +589,31 @@ class _Core:
                 if not bt._take(kern):
                     return 'kernel'
                 b_fn[b] = int(ffi.cast('uintptr_t', kern.cfn))
+                if self.b_fz[b] >= 0:
+                    ## (its group's fused kernel is checked again below)
+                    self.zk[self.b_fz[b]] = None
             elif not b_fn[b]:
                 b_fn[b] = int(ffi.cast('uintptr_t', kern.cfn))
             if not _hdl_batch.is_generated(bt.cls, bt.m):
                 return 'generated'
             if kern0 is None:
                 kern0 = kern
+        if self.nz:
+            ## A FUSED KERNEL SERVES while it is the class's bound one and
+            ## was printed from the passes' bound kernels; else the batches
+            ## call their own (the switch `_hdl_cbackend.FUSE` too)
+            zk, z_fn, on = self.zk, self.z_fn, self._cb.FUSE
+            for z, g in enumerate(self.zgroups):
+                info = g[0]
+                fk = info.get('_c_fused') if on else None
+                if fk is not zk[z] or (fk is None and z_fn[z]):
+                    zk[z] = fk
+                    funcs, fk0 = info['funcs'], self.zgroups[z][1]
+                    ok = (fk is not None and fk.sizes == fk0.sizes and fk.nx == fk0.nx
+                          and fk.layout == fk0.layout and all(
+                              k is funcs[m].__dict__.get('_hdl_c')
+                              for m, k in fk.parts.items()))
+                    z_fn[z] = int(ffi.cast('uintptr_t', fk.cfn)) if ok else 0
         mirror, PR = self.mirror, self.PRall
         for ui, (el, ps) in enumerate(self.uniq):
             d = el.__dict__

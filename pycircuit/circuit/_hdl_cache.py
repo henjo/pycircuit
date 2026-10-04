@@ -762,13 +762,16 @@ _FN = '__hdl_fn__'
 
 #: Keys a class's `info` gains AT RUNTIME, derived from what the cache
 #: records and rebuilt from it: the jax twins, the fused functions and the
-#: flags of `_hdl_cse` (sessions), the C binding flag of `_hdl_cbackend`.
-#: Never frozen -- a fused function has no record (it is not chain-compiled
-#: from a `_src` of its own), so freezing a live class's `info` after a
-#: session had run raised `Uncacheable` (until 2026-10-02).
+#: flags of `_hdl_cse` (sessions), the C binding flag of `_hdl_cbackend` and
+#: the C kernels it binds beside the functions (the limiter's, the fused
+#: one -- cffi objects, which do not pickle).  Never frozen -- a fused
+#: function has no record (it is not chain-compiled from a `_src` of its
+#: own), so freezing a live class's `info` after a session had run raised
+#: `Uncacheable` (until 2026-10-02).
 _RUNTIME_KEYS = frozenset(('_jax', '_fused', '_fuse_ok', '_c_bound',
                            '_backend_pending', '_backend_seen',
-                           '_c_limit', '_c_limit_status', '_u_zero'))
+                           '_c_limit', '_c_limit_status', '_u_zero',
+                           '_c_fused', '_c_fused_status'))
 
 
 def freeze(obj, memo=None):
