@@ -3751,6 +3751,45 @@ the same commit.  Measured (parent 82819d61): 20 MosLevel1 357.8 ->
 277.3 us a step (-22.5 %), 20 Gummel-Poon -18.9 %, the PSP cases -3..-8
 %, bit for bit.
 
+## `_tran_newton_c.py` -- the Newton solve in C (2026-10-04, speed round 8's stage 4)
+
+### (module docstring)
+
+Speed round 8 sized the step by instruction counts, standalone and warm,
+before planning (round 7's lesson): with the evaluate core in place, a
+20-MosLevel1 Newton iteration was ~750 k instructions of Python and numpy
+around ~250 k of C, at about one iteration a step.  A scratch prototype
+(stage 0) put the whole solve in one C call -- the core's own C through its
+struct pointer, the reduced `J` column-major as numpy's solve copies it,
+numpy's own `scipy_dgesv_64_` (and, for the chord, SciPy's own
+`scipy_dgetrf_`/`scipy_dgetrs_`: the chord factors with SciPy's OpenBLAS,
+whose LUs differ from numpy's), the walk's driver, the convergence test in
+`nrsolver`'s order -- and measured it bit for bit on every served case.  Its
+first cut gained 10 %: it made its buffers, handles and struct fields per
+solve and checked readiness in two loops, and with one iteration a step a
+solve's setup IS an iteration's cost.  Persistent buffers and the converged
+point's evaluation folded into the same call (the largest single gain)
+gave 1.39x / 1.59x on the 20-MosLevel1 / 20-GP marginal step: BUILD.
+
+The build adds what the prototype lacked: every decline counted before
+anything is touched, the circuit's own reasons (a core that cannot serve
+it, a stateful limiter, a limiting element without a C kernel -- PSP's)
+kept with its stamp plan so it declines at its first check (the
+prototype's late decline cost the PSP stage +3.7 % a step) -- the plan the
+circuit's dict holds, compared by identity: `_plan_for`'s own check cost
+~1.5 us a step inside a run, and a plan gone stale is replaced at the
+circuit's next evaluation, a decline being today's Newton meanwhile; the core's
+readiness through `_Core.probe`, uncounted, so a decline is counted once,
+by the path that follows; the walk's readiness at C speed (tuple compares
+of the elements' dicts and packs); the evaluate core's switch honoured.  A
+bail rolls back the attempt's one trace, the step's source memo, and
+`_newton` repeats the arithmetic from the same seed.  The branch screen
+reads `C` at the converged point from `_C_cache` and skips its own write
+when its lookup served it; where it fires, the confirmation's speculative
+solves overwrite the step's state and `jacobian_only` runs again after it.
+Measured (parent d371a594): the 20-MosLevel1 marginal step -33.4 %, 20-GP
+-38.1 %, the adaptive MOS run -29.9 %; declining circuits within 0.5 %.
+
 ## `tests/test_pinned_pairs.py` -- the pinned pairs (2026-10-03)
 
 Andreas, after speed round 6: "How would we keep the python code and c

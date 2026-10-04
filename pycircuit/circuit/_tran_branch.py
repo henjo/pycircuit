@@ -110,11 +110,15 @@ class _BranchCheck:
         ## sets one: its `jacobian_only` reads `q` and `G` here next --
         ## `Transient.solve_timestep`, `_evalhint`)
         conv = getattr(self, '_conv_session', None)
+        cached = self.__dict__.get('_C_cache')
         with (_evalhint.evaluating(session=conv) if conv is not None
               else contextlib.nullcontext()):
             _C = self._C_at_state(x)
-        ## (kept for the step's own assembly at this state, which follows)
-        self._C_cache = (x, _C)
+        ## (kept for the step's own assembly at this state, which follows --
+        ## unless it IS the kept one: the converged point was evaluated
+        ## first, `_tran_newton_c`)
+        if cached is None or _C is not cached[1]:
+            self._C_cache = (x, _C)
         C = np.asarray(_C, dtype=float)
         if C.size == 0:
             return False, None

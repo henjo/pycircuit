@@ -375,11 +375,20 @@ class _Core:
         """`Batch.run`'s checks, once: per batch the class (bound, the
         kernel the one cast, the method generated), per unique element the
         shadows of all four methods and the pack mirror.  The temperature,
-        or None (the Python path)."""
+        or None (the Python path), counted."""
+        T = self.probe(epar)
+        if T.__class__ is str:
+            return _no('core.ready:' + T)
+        return T
+
+    def probe(self, epar):
+        """`ready` without the count: the temperature, or why not (a str).
+        For a caller that falls back to a path which asks `ready` itself
+        (`_tran_newton_c`): the decline is counted once, there."""
         T = getattr(epar, 'T', 300.0)
         if type(T) is not float:
             if type(T) is not int and np.ndim(T) != 0:
-                return _no('core.ready:T')
+                return 'T'
             T = float(T)
         from pycircuit.circuit import _hdl_batch
         ffi, b_fn = self.ffi, self.b_fn
@@ -387,23 +396,23 @@ class _Core:
         for b, bt in enumerate(self.batches):
             info = bt.info
             if not info.get('_c_bound'):
-                return _no('core.ready:unbound')
+                return 'unbound'
             kern = info['funcs'][bt.m].__dict__.get('_hdl_c')
             if kern is not bt.kern:
                 if not bt._take(kern):
-                    return _no('core.ready:kernel')
+                    return 'kernel'
                 b_fn[b] = int(ffi.cast('uintptr_t', kern.cfn))
             elif not b_fn[b]:
                 b_fn[b] = int(ffi.cast('uintptr_t', kern.cfn))
             if not _hdl_batch.is_generated(bt.cls, bt.m):
-                return _no('core.ready:generated')
+                return 'generated'
             if kern0 is None:
                 kern0 = kern
         mirror, PR = self.mirror, self.PRall
         for ui, (el, ps) in enumerate(self.uniq):
             d = el.__dict__
             if 'G' in d or 'C' in d or 'i' in d or 'q' in d:
-                return _no('core.ready:shadow')
+                return 'shadow'
             cp = d.get('_hdl_cp')
             if cp is None:
                 try:
@@ -412,7 +421,7 @@ class _Core:
                     cp = False
                 d['_hdl_cp'] = cp
             if cp is False:
-                return _no('core.ready:pack')
+                return 'pack'
             if cp is not mirror[ui]:
                 mirror[ui] = cp
                 a = cp[0].ctypes.data

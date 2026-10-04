@@ -101,6 +101,24 @@ PAIRS = {
               'pycircuit.circuit._hdl_batch:split',
               'pycircuit.circuit._hdl_batch:zero_source'],
     },
+    'the Newton solve and its C': {
+        'why': 'the C solve is `nrsolver`\'s plain and chord Newton on the reduced '
+               'system (numpy\'s and SciPy\'s own LAPACK, the walk, the test in its '
+               'order, `dx` re-taken where a limiter exists), `jacobian_only`\'s '
+               'converged-point evaluation, `_newton`\'s statistics and branch check',
+        'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
+                      'pycircuit.circuit.nrsolver:ChordNewton.solve_system',
+                      'pycircuit.circuit.dcanalysis:refnode_removed',
+                      'pycircuit.circuit.analysis:insert_row',
+                      'pycircuit.circuit.analysis:remove_row_col',
+                      'pycircuit.circuit._tran_newton:_StepNewton._newton',
+                      'pycircuit.circuit._tran_newton:_StepNewton._newton_limiter',
+                      'pycircuit.circuit.transient:Transient._solve_timestep'],
+        'twin': ['pycircuit.circuit._tran_newton_c:NEWTON_C',
+                 'pycircuit.circuit._tran_newton_c:solve',
+                 'pycircuit.circuit._tran_newton_c:_Ctx',
+                 'pycircuit.circuit._tran_newton_c:_walk_full'],
+    },
     'the stage predictor and its multistep fast path': {
         'why': 'behind the target nearest-first is newest-first: the fast path '
                'keeps the general path\'s order, its 1e-13 dedupe, the fit\'s '
@@ -119,9 +137,10 @@ RECORD = {
     'the kernel call and the pass driver': ('09a9e274bbe8', 'c900976facbc'),
     'the limiting loop and the walk': ('d151206fce18', '3f5b8f5d1503'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
-    'the transient evaluation and the core': ('6117b16cc4b6', '1b622bff6540'),
+    'the transient evaluation and the core': ('b3fb392a7acd', '8433a00608ff'),
     'the assembly loops and the plan': ('ed84458db1a3', '9578c5eca9ad'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', '01c4a05c791a'),
+    'the Newton solve and its C': ('7e6a12179239', 'e398385b81eb'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

@@ -24,6 +24,7 @@ from pycircuit.circuit import (
     _stamp_plan,
     _tran_companion,
     _tran_core,
+    _tran_newton_c,
 )
 from pycircuit.circuit import circuit as cm
 from pycircuit.circuit.transient import Transient
@@ -36,6 +37,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 DECLINING = [
     (_tran_core, 'evaluate'),
     (_tran_core, '_Core.ready'),
+    (_tran_newton_c, 'solve'),
     (_hdl_batch, 'Batch.run'),
     (_hdl_climit, 'CLimitKernel.__call__'),
     (_hdl_climit, 'limit_walk'),

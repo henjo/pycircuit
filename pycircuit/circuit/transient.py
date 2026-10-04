@@ -30,7 +30,7 @@ from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
 ## here.
 from pycircuit.circuit._tran_newton import _StepNewton
 from pycircuit.circuit._tran_branch import _BranchCheck
-from pycircuit.circuit import _tran_companion, _tran_core
+from pycircuit.circuit import _tran_companion, _tran_core, _tran_newton_c
 from pycircuit.circuit._tran_companion import _CompanionModel
 from pycircuit.circuit._tran_history import _RunHistory
 from pycircuit.circuit._tran_predictor import _StagePredictor
@@ -1450,8 +1450,16 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         conv = _evalhint.Session(('C', 'q', 'G'))
         self._conv_session = conv
         try:
-            x = self._newton(func, self._pred_or(x0, t),
-                             residual=residual_only)
+            seed = self._pred_or(x0, t)
+            ## THE NEWTON SOLVE IN C, the converged point with it, where it
+            ## serves (`_tran_newton_c`); `_newton` where it does not
+            fj = None
+            r = _tran_newton_c.solve(self, func, t, provided_function, seed,
+                                     residual_only)
+            if r is None:
+                x = self._newton(func, seed, residual=residual_only)
+            else:
+                x, fj = r
         finally:
             self._conv_session = None
         ## ⚠ AND IT MUST RECORD ITS OWN NODE.  The stage methods get theirs for
@@ -1462,7 +1470,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         ## The source term does not enter `J`, and `jacobian_only` returns
         ## `f = None` by design, so the reduced evaluation stays correct with
         ## `provided_function` folded into `func` above (F4).
-        f, J = jacobian_only(x)
+        f, J = fj if fj is not None else jacobian_only(x)
         return x, None, J, f
     
     ## `analytical_eh` is not an argument (F8): passing it raises TypeError.

@@ -87,6 +87,7 @@ SWITCHES = (
     ('pycircuit.circuit._hdl_climit', 'ENABLED'),
     ('pycircuit.circuit._hdl_climit', 'WALK'),
     ('pycircuit.circuit._tran_core', 'CORE'),
+    ('pycircuit.circuit._tran_newton_c', 'ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'FAST_ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'FUSE_ENABLED'),
