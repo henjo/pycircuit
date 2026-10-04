@@ -41,6 +41,7 @@ dependencies = [
 ## one piece standalone (`benchmarks/micro.py`).
 dev = ["pytest", "pytest-timeout", "pytest-xdist", "pytest-randomly==5.0.0",
        "pytest-replay==1.7.1", "detect-test-pollution==1.2.0", "pyperf==2.10.0",
+       "hypothesis==6.168.3",
        "matplotlib", "pexpect"]
 ginac = ["pybind11>=2.11"]
 docs = ["sphinx", "matplotlib", "pexpect"]

@@ -146,6 +146,33 @@ def _slow_seconds():
     return float(os.environ.get('PYCIRCUIT_SLOW_SECONDS', '5'))
 
 
+# ---------------------------------------------------------------------------
+# HYPOTHESIS'S PROFILES (2026-10-04, testing for development, stage 5;
+# `pycircuit/circuit/tests/test_twins_random.py`).  `gate`, the suite's
+# default: derandomized -- the same examples every run, as the recorded gate
+# needs -- no example database (nothing written into the tree), no deadline
+# (the first example of a class may compile it).  `deep`
+# (`--hypothesis-profile deep`): thousands of fresh examples a test, the
+# failures kept in ~/.cache/pycircuit/hypothesis and replayed first.
+# ---------------------------------------------------------------------------
+try:
+    from hypothesis import HealthCheck as _HC
+    from hypothesis import settings as _hsettings
+    from hypothesis.database import DirectoryBasedExampleDatabase as _HDB
+except ImportError:                                  # (not installed: the tests skip)
+    _hsettings = None
+if _hsettings is not None:
+    _HSLOW = [_HC.too_slow, _HC.data_too_large, _HC.filter_too_much]
+    _hsettings.register_profile('gate', derandomize=True, database=None,
+                                max_examples=60, deadline=None,
+                                suppress_health_check=_HSLOW)
+    _hsettings.register_profile('deep', max_examples=3000, deadline=None,
+                                database=_HDB(os.path.join(os.path.expanduser('~'), '.cache',
+                                                           'pycircuit', 'hypothesis')),
+                                suppress_health_check=_HSLOW)
+    _hsettings.load_profile('gate')
+
+
 def pytest_report_header(config):
     if config.getoption('tier', 'all') != 'fast':
         return None

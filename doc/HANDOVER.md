@@ -99,6 +99,21 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   speed round and before any commit that touches C.  A sanitized process
   without the runtime refuses to start (it would otherwise fall back to
   numpy everywhere and pass having tested nothing).
+- **The C twins on drawn inputs** (2026-10-04; `test_twins_random.py`,
+  hypothesis pinned): every chained library device's C kernels, PSP's, and
+  the limiter kernel against their Python references -- (1) EVERY special
+  value (signed zeros, subnormals, huge, infinite, NaN) and every parameter
+  value of the class (one ulp either side, and negated) at EVERY coordinate
+  of three base states, deterministically; (2) drawn combinations with
+  parameters perturbed and the temperature given three ways (hypothesis);
+  (3) the evaluate core and the limiter at the widths their C buffers hold
+  and one past (`_wide_elements`).  The tests run the class an INSTANCE
+  runs (a MOSFET at its defaults is a collapse variant), and check that
+  the references are mostly numbers (NaN compares equal to NaN).  The
+  suite's profile `gate` is derandomized with 60 examples; `pytest
+  --hypothesis-profile deep` draws 3000 a test, fresh, failures kept in
+  `~/.cache/pycircuit/hypothesis`.  Run `deep` with the sanitized suite,
+  once per speed round.
 - **Timing records** are local: `test_timings/runs.csv` (workers, load, wall,
   per run) and the per-run JSONs the longest-first sort reads; neither is in
   git any more (`history.csv`, tracked until 2026-10-03, lost rows whenever it

@@ -64,10 +64,19 @@ env "${MALLOC[@]}" LD_PRELOAD="$ASAN $STDCXX" \
     PYCIRCUIT_C_SANITIZE=1 PYCIRCUIT_TEST_TIMINGS=0 \
     JAX_PLATFORMS=cpu \
     PYCIRCUIT_STATE_DUMP="$OUT/state" PYCIRCUIT_LEAKS_REPORT="$OUT/leaks" \
-    "$PY" -m pytest pycircuit -q -p no:cacheprovider -n 4 --max-worker-restart=0 \
+    "$PY" -m pytest pycircuit -q -s -p no:cacheprovider -n 4 --max-worker-restart=0 \
     "${SCOPE[@]}" "${DESELECT[@]}" "$@" > "$OUT/suite.log" 2>&1
 status=$?
 echo "sanitize_suite: $(grep -E '[0-9]+ (passed|failed)' "$OUT/suite.log" | tail -1)"
+## (UBSan, combined with ASan, writes its report to stderr whatever its
+## log_path says, and a test's stderr is pytest's capture file, lost with
+## the aborted worker: the run is uncaptured, `-s`, so the report reaches
+## the log; ASan's own reports go to the files above as well)
+if grep -qE 'runtime error:|ERROR: AddressSanitizer' "$OUT/suite.log"; then
+    echo "sanitize_suite: SANITIZER REPORTS IN THE LOG:"
+    grep -E -A6 'runtime error:|ERROR: AddressSanitizer' "$OUT/suite.log" | grep -E 'runtime error|ERROR|SUMMARY| #[0-3] ' | head -20
+    status=1
+fi
 if ls "$OUT"/reports/* >/dev/null 2>&1; then
     echo "sanitize_suite: SANITIZER REPORTS:"
     for f in "$OUT"/reports/*; do
