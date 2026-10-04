@@ -508,7 +508,8 @@ def compare(parent, cases, rounds, max_busy=0.25, repeats=5, child=None, check=F
     two at a time, while a case is UNSURE and `budget` seconds last.  Exit 3
     when a case is SLOWER."""
     child = child or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    trees = {'parent': os.path.abspath(parent), 'child': os.path.abspath(child)}
+    trees = _bench.equal_paths({'parent': os.path.abspath(parent),
+                                'child': os.path.abspath(child)})
     got = {lab: {k: {'times': [], 'per_step': [], 'sha': set(), 'stats': [], 'paths': []}
                  for k in cases} for lab in trees}
     t_start = time.time()
@@ -582,7 +583,7 @@ def compare(parent, cases, rounds, max_busy=0.25, repeats=5, child=None, check=F
 COUNT_BAND = 0.005
 
 
-def count_compare(parent, cases, child=None, repeats=2, plant_ops=0):
+def count_compare(parent, cases, child=None, repeats=2, plant_ops=0, route=None):
     """The instructions the timed call of every case retires, the tree at
     `parent` against `child` (this script's), each in its own process
     without address randomisation and with a fixed hash seed, `repeats`
@@ -591,11 +592,17 @@ def count_compare(parent, cases, child=None, repeats=2, plant_ops=0):
     every case), or cachegrind (one process per case: valgrind translates
     everything).  A verdict per case: MORE or FEWER beyond `COUNT_BAND`,
     else "no change"; bytes and statistics are checked as in `compare`."""
-    route = _bench.count_route()
+    if route is None:
+        route = _bench.count_route()
+    elif route == 'perf' and not _bench.perf_available() or \
+            route == 'valgrind' and not _bench.valgrind_available():
+        sys.exit(f'the {route} route is not available here: '
+                 + _bench.count_unavailable_message())
     if route is None:
         sys.exit(_bench.count_unavailable_message())
     child = child or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    trees = {'parent': os.path.abspath(parent), 'child': os.path.abspath(child)}
+    trees = _bench.equal_paths({'parent': os.path.abspath(parent),
+                                'child': os.path.abspath(child)})
     got = {lab: {k: {'counts': [], 'sha': set(), 'stats': []} for k in cases} for lab in trees}
     t0 = time.time()
     import tempfile
@@ -829,6 +836,7 @@ def main(argv):
     plant = 0.0
     count = False
     plant_ops = 0
+    route = None
     tree_case = None
     cases = []
     it = iter(argv)
@@ -853,6 +861,8 @@ def main(argv):
             count = True
         elif a == '--plant-ops':
             plant_ops = int(next(it))
+        elif a == '--route':
+            route = next(it)
         elif a == '--tree':
             tree_case = next(it)
         elif a == '--sample':
@@ -873,7 +883,8 @@ def main(argv):
         if not os.path.isdir(cmp_dir):
             sys.exit(f'no parent tree at {cmp_dir}: make it with scripts/parent_tree.sh')
         with warnings.catch_warnings():
-            count_compare(cmp_dir, cases, child=child, repeats=rounds or 2, plant_ops=plant_ops)
+            count_compare(cmp_dir, cases, child=child, repeats=rounds or 2, plant_ops=plant_ops,
+                          route=route)
         return
     if check:
         cmp_dir = cmp_dir or PARENT_TREE

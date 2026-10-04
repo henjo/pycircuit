@@ -205,13 +205,15 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
     needs one root setting, kept across reboots:
         sudo sysctl kernel.perf_event_paranoid=2
         echo kernel.perf_event_paranoid=2 | sudo tee /etc/sysctl.d/60-perf.conf
-    Not yet verified on this box (the setting was not made).
+    Made and verified 2026-10-04: ten cases, four runs a tree, in a minute.
   - `valgrind` (cachegrind), no root: `scripts/get_valgrind.sh` unpacks it
     into `~/.local/opt/valgrind`.  One process per case, ~20-60 s each.
-  The floor, measured: a simulation's count moves by up to ~0.3 % between
-  processes and trees with the same code (numpy's identity hash tables
-  and object-keyed dicts probe by address, and the heap layout moves), so
-  the band is 0.5 %: four times finer than the paired wall time's +-2 %.
+  Both trees are reached through symlinks of one length (a path's length
+  moves the heap layout).  The floor, measured: runs of one tree spread up
+  to ~0.25 % (numpy's identity hash tables and object-keyed dicts probe by
+  address); two trees at one commit agree to +-0.07 %.  The band is 0.5 %:
+  four times finer than the paired wall time's +-2 %.  `--route
+  perf|valgrind` picks a route.
   `--plant-ops N` adds `sum(range(N))` (138 instructions an element) to
   the child's counted calls: the count's own proof.
 - **Size one piece standalone**: `python benchmarks/micro.py <piece|all>

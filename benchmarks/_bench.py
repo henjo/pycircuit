@@ -50,6 +50,27 @@ def pin_threads():
         os.environ[v] = '1'
 
 
+def equal_paths(trees):
+    """`trees` (`{label: path}`) reached through symlinks of ONE length
+    (`<tmp>/p`, `<tmp>/c`), removed at exit.  A module's path is a string
+    the process allocates, so two trees at paths of different lengths lay
+    their heaps out differently, and numpy's identity hashing and the
+    object-keyed dicts probe differently: the CPU counter read -0.56 to
+    +0.10 % between two trees at ONE commit, -0.08 to +0.23 % through
+    equal-length links (2026-10-04)."""
+    import atexit
+    import shutil
+    import tempfile
+    d = tempfile.mkdtemp(prefix='pyc-trees-')
+    atexit.register(shutil.rmtree, d, True)
+    out = {}
+    for lab, path in trees.items():
+        link = os.path.join(d, lab[0])
+        os.symlink(os.path.abspath(path), link)
+        out[lab] = link
+    return out
+
+
 def no_aslr():
     """The command prefix that runs a child without address-space layout
     randomisation (`setarch <arch> -R`, no root needed), or [] where it is

@@ -47,8 +47,10 @@ DESELECT=(
     ## two JAX tests that hold on the GPU backend only (the suite runs JAX
     ## on this box's GPU; here it must be the CPU): measured 2026-10-04, they
     ## fail with JAX_PLATFORMS=cpu and no sanitizer at all -- the traced
-    ## blocks differ from the CPU system by a few ulps (6.6e-24 on 1e-8),
-    ## and plain Newton DOES converge on the cold start
+    ## blocks differ from the CPU system by a few ulps (the test's one state
+    ## happens to be exact on the GPU), and JAX's PCNR does NOT converge on
+    ## the 5 V cold start on the CPU backend (on the GPU only at the test's
+    ## first step and one other)
     --deselect 'pycircuit/circuit/tests/test_pcnr_vector.py::test_the_traced_blocks_equal_the_cpus_augmented_system'
     --deselect 'pycircuit/circuit/tests/test_jax_pcnr.py::test_pcnr_solves_the_cold_start_plain_newton_cannot'
 )
