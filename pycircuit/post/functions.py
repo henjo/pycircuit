@@ -4,10 +4,9 @@
 
 """Functions that operate on waveforms or scalars.
 
-These are the calculator functions of :mod:`polars_waveform.functions`. They work on
-polars-waveform waveforms (numeric results), on the symbolic :class:`~pycircuit.post.Waveform`
-(elementwise functions keep it symbolic, measurements evaluate it numerically) and on plain
-numbers and numpy arrays.
+These are the calculator functions of :mod:`polars_waveform.functions`. They work on numeric
+results (polars_waveform.Waveform), symbolic ones (polars_waveform.PandasWaveform: elementwise
+functions stay symbolic, measurements evaluate numerically) and plain numbers and numpy arrays.
 
 Changes from earlier pycircuit versions: ``cross(w, threshold, edge=1, type="either")`` counts
 crossings from 1 (negative from the end) and the edge type is ``"rising"``, ``"falling"`` or

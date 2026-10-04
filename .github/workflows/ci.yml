@@ -35,7 +35,7 @@ jobs:
       - name: Install dependencies
         run: |
           # until polars-waveform is on PyPI
-          pip install "polars-waveform @ git+https://github.com/henjo/polars-waveform"
+          pip install "polars-waveform[pandas] @ git+https://github.com/henjo/polars-waveform"
           pip install -e ".[dev,ginac]"
 
       - name: Run tests

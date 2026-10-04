@@ -1,6 +1,7 @@
 from pycircuit.circuit import *
-from myTabVCCS import myVCCS
+import numpy as np
 import pylab
+from pycircuit.post import from_arrays
 
 circuit.default_toolkit = numeric
 
@@ -23,10 +24,8 @@ def wave_conv(w1,w2):
 
     Convolution by frequency of two waveforms.
     '''
-    x1vec=w1.get_x()[0]#frequency array
-    y1vec=w1.get_y() #values
-    x2vec=w2.get_x()[0]#frequency array
-    y2vec=w2.get_y() #values
+    (x1vec,), y1vec = w1.to_arrays()  # frequencies, values
+    (x2vec,), y2vec = w2.to_arrays()
     wdict={}
     for x1,y1 in zip(x1vec,y1vec):
         for x2,y2 in zip(x2vec,y2vec):
@@ -34,16 +33,16 @@ def wave_conv(w1,w2):
                 wdict[x1+x2]+=y1*y2
             else:
                 wdict[x1+x2]=y1*y2
-    newx=np.sort(np.array(wdict.keys()))
+    newx=np.sort(np.array(list(wdict.keys())))
     newy=np.array([])
     for x in newx:
         newy=np.append(newy,wdict[x])
-    newwave=Waveform(newx,newy)
+    newwave=from_arrays(newx,newy,xlabels=['frequency'])
     return newwave
 
 def solve_by_freq(w,c,vac=True):
     ac=AC(c)
-    xvec=w.get_x()[0]
+    (xvec,), _ = w.to_arrays()
     vc=np.array([])
     vout=np.array([])
     if vac:
@@ -85,16 +84,12 @@ def lna_volterra(w):
 def test_volterra():
     f=np.array([-1200.,-1000.,1000.,1200.])
     v=np.array([2.,2.,2.,2.])
-    w=Waveform(f,v)
+    w=from_arrays(f,v,xlabels=['frequency'])
     v1,v2,v31,v32=lna_volterra(w)
-    pylab.subplot(4,1,1)
-    pylab.stem(v1.get_x()[0],v1.get_y())
-    pylab.subplot(4,1,2)
-    pylab.stem(v2.get_x()[0],v2.get_y())
-    pylab.subplot(4,1,3)
-    pylab.stem(v31.get_x()[0],v31.get_y())
-    pylab.subplot(4,1,4)
-    pylab.stem(v32.get_x()[0],v32.get_y())
+    abs(v1).stem(ax=pylab.subplot(4,1,1))
+    abs(v2).stem(ax=pylab.subplot(4,1,2))
+    abs(v31).stem(ax=pylab.subplot(4,1,3))
+    abs(v32).stem(ax=pylab.subplot(4,1,4))
     pylab.show()
     
 if __name__ == '__main__':

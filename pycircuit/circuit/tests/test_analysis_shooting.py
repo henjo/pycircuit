@@ -1,6 +1,6 @@
 from pycircuit.circuit import *
 from pycircuit.circuit.shooting import *
-from pycircuit.post import Waveform, average
+from pycircuit.post import from_arrays, average
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 import unittest
@@ -84,8 +84,8 @@ def test_shooting():
 
     v2ref = numeric.imag(v2ac * numeric.exp(2j*numeric.pi*1/period*t))
 
-    w2ref = Waveform(t,v2ref,ylabel='reference', yunit='V',
-                     xunits=('s',), xlabels=('vref(2,gnd!)',))
+    w2ref = from_arrays(t, v2ref, xlabels=[v2pss.xname], ylabel='reference',
+                        xunits=['s'], yunit='V')
 
     ## Check amplitude of the fundamental against the AC result
     v2rms_ac = np.abs(v2ac) / np.sqrt(2)

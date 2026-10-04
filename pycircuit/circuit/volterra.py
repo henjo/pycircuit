@@ -14,7 +14,6 @@ from pycircuit.circuit.analysis import Analysis, AC, remove_row_col
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
 from pycircuit.post.internalresult import InternalResultDict
-from pycircuit.post import Waveform
 import sympy
 from sympy import Symbol, Matrix, symbols, simplify, together, factor, cancel, diff, Mul, factorial
 #from symbolicelements import R, defaultepar, gnd, Diode, SubCircuit, IS, C, VCCS

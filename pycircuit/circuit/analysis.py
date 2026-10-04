@@ -8,7 +8,6 @@ from pycircuit.circuit import Circuit, SubCircuit, VS,IS,R,C,L,Diode, gnd, \
     defaultepar, instjoin, circuit
 from . import circuit
 from .toolkit import symbolic
-from pycircuit.post.waveform import make_waveform
 from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
 from copy import copy
@@ -40,11 +39,13 @@ class CircuitResult(IVResultDict, InternalResultDict):
         self.sweep_unit = sweep_unit
 
     def build_waveform(self, result, ylabel, yunit):
-        """A swept result as a waveform (see pycircuit.post.make_waveform)."""
+        """A swept result as a waveform: a polars_waveform.Waveform for numbers, a
+        polars_waveform.PandasWaveform for symbolic values (sympy) or a complex sweep."""
         if not hasattr(result, '__iter__'):
             return result
-        return make_waveform(self.sweep_values, result, xlabel=self.sweep_label or 'x',
-                             ylabel=ylabel, xunit=self.sweep_unit or None, yunit=yunit)
+        return pw.from_arrays(np.asarray(self.sweep_values), result,
+                              xlabels=[self.sweep_label or 'x'], ylabel=ylabel,
+                              xunits=[self.sweep_unit or None], yunit=yunit)
 
     # polars_waveform.ResultSource: names, leaves, scan() and v()
     @property

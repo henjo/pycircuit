@@ -8,7 +8,8 @@ from pycircuit.circuit import Circuit, SubCircuit, gnd, R, VS, IS, \
     Branch, VCCS, CircuitProxy
 from .analysis import remove_row_col, defaultepar
 from .analysis_ss import SSAnalysis, AC, Noise, TransimpedanceAnalysis
-from pycircuit.post import InternalResultDict, make_waveform
+import polars_waveform as pw
+from pycircuit.post import InternalResultDict
 from pycircuit.utilities import combinations, isiterable
 
 class LoopBreakError(Exception):
@@ -196,9 +197,9 @@ class FeedbackDeviceAnalysis(SSAnalysis):
             Y_noloop = toolkit.toMatrix(G_noloop + s*C_noloop)
             return toolkit.det(Y) / toolkit.det(Y_noloop)
         if isiterable(slist):
-            F = make_waveform(slist if complexfreq else freqs,
-                              [Ffunc(s) for s in slist],
-                              xlabel='frequency', ylabel='F', xunit='Hz')
+            F = pw.from_arrays(np.asarray(slist if complexfreq else freqs),
+                               [Ffunc(s) for s in slist],
+                               xlabels=['frequency'], ylabel='F', xunits=['Hz'])
         else:
             F = Ffunc(slist)
 

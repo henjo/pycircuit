@@ -18,7 +18,7 @@ dependencies = [
     "sympy",
     "jax",
     "pydot",
-    "polars-waveform>=0.1",
+    "polars-waveform[pandas]>=0.1",
     "pytest-xdist>=3.8.0",
 ]
 
