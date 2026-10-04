@@ -117,7 +117,8 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
 - **Compare two trees**: `python benchmarks/step_machinery.py --compare
   <parent tree> mos1 stage pss --rounds 8`.  Each side runs in its own
   interpreter from its own directory, pinned to CPU 8 (`PYCIRCUIT_BENCH_CPU`)
-  with one BLAS thread; the order alternates per round; a round in which
+  with one BLAS thread, without address randomisation and with
+  `PYTHONHASHSEED=0`; the order alternates per round; a round in which
   CPU 8's hyperthread sibling was busy is discarded and re-run; each side of
   a round is the minimum of five warm runs.  The result is the median of
   the per-round PAIRED ratios with a bootstrap 95 % interval, and the
@@ -125,6 +126,22 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   are checked; a difference exits 2.  Measured 2026-10-03: an A/A run
   (`--compare .`) gives intervals within +-2 %, and the evaluate core
   against its parent -21.3 % [-21.7, -20.9] on the 20-MosLevel1 step.
+- **The performance check, in every commit** (2026-10-04): before
+  committing, `scripts/parent_tree.sh` (a worktree at HEAD, the working
+  tree's parent, in `~/.cache/pycircuit/wt_parent`), then
+  `python benchmarks/step_machinery.py --check` (~4-5 min).  Ten cases --
+  the fixed-step gear steps (PSP stage, 20-MosLevel1, 20-GP, 20-PSP), the
+  stage's PSS, adaptive gear and Radau transients on a diode ladder, a van
+  der Pol PSS with its factored period, pnoise (20 frequencies x 8
+  sidebands) and the PPV -- each gets a verdict: SLOWER (the interval
+  above +1 % and the median above +2 %), FASTER (mirrored), "no change"
+  (the interval inside +-2 %), INCONCLUSIVE (more rounds while the 5-minute
+  budget lasts).  Exit 3 on SLOWER, 2 when bytes or statistics differ
+  (NOT-COMPARABLE).  The fast-path counts of each timed call are compared
+  too and reported (`paths SAME` / `paths MOVED: ...`): a speed change
+  usually moves them, a move nobody intended is a finding.  The verdict
+  line goes in the commit message; an intended slowdown says so there.
+  `--plant P` slows the child by P % (the check's own proof).
 - **Rank the pieces of a step**: `--tree CASE` (inclusive timers wrapped on
   classes only, never on instances, which the fast paths decline on).  It
   RANKS pieces and does not size them: nested timers inflate each.  It

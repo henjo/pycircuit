@@ -50,6 +50,17 @@ def pin_threads():
         os.environ[v] = '1'
 
 
+def no_aslr():
+    """The command prefix that runs a child without address-space layout
+    randomisation (`setarch <arch> -R`, no root needed), or [] where it is
+    not available."""
+    import platform
+    import shutil
+    if shutil.which('setarch') is None:
+        return []
+    return ['setarch', platform.machine(), '-R']
+
+
 def pin_cpu(cpu=None):
     """This process (and its future threads) on one CPU."""
     cpu = CPU if cpu is None else cpu
