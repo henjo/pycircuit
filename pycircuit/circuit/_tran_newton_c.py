@@ -38,7 +38,11 @@ limiting element that is not its C kernel (structural reasons kept with the
 walk: such a circuit declines at its first check), the core's readiness
 (`_Core.probe`: counted once, by the path that follows).  Between two
 iterations only the C runs, so readiness checked once a solve holds for
-every iteration.
+every iteration.  Between two SOLVES the walk's readiness, the core's and
+the parameter reads (the solver options, the linear solver, the
+tolerances) hold as stamped (`_watch`, speed round 9, stage 4): unchecked
+while no dict they read has changed, what no dict watcher sees compared
+on every call.
 
 THE BRANCH CHECK follows as in `_newton`; its screen finds `C` at the
 converged point in `_C_cache`.  Where it fires, the confirmation's
@@ -370,13 +374,14 @@ def _mods():
             _stamp_plan,
             _tran_companion,
             _tran_core,
+            _watch,
         )
         from pycircuit.circuit._lte_kernels import bdf2_alphas
         from pycircuit.circuit.analysis import insert_row
         from pycircuit.circuit.dcanalysis import refnode_removed
         from pycircuit.circuit.linearsolver import AutoSolver
         from pycircuit.circuit.toolkit import NumericToolkit
-        _MOD.update(climit=_hdl_climit, limiting=_limiting, companion=_tran_companion,
+        _MOD.update(climit=_hdl_climit, limiting=_limiting, companion=_tran_companion, watch=_watch,
                     plan_for=_stamp_plan._plan_for,
                     core=_tran_core, bdf2_alphas=bdf2_alphas, insert_row=insert_row,
                     refnode_removed=refnode_removed, AutoSolver=AutoSolver,
@@ -398,15 +403,20 @@ class _Ctx:
         'iref',
         'keep',
         'n',
+        'par_arms',
+        'par_rec',
         's',
         'tol',
         'walk',
+        'walk_arms',
         'walk_dicts',
         'walk_els',
         'walk_hw_els',
+        'walk_hwk',
         'walk_kern',
         'walk_ok',
         'walk_packs',
+        'walk_stamp',
     )
 
     def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, lapack):
@@ -450,7 +460,75 @@ class _Ctx:
         self.tol = None
         self.walk = self.walk_ok = None
         self.walk_els = self.walk_dicts = self.walk_packs = self.walk_kern = ()
-        self.walk_hw_els = ()
+        self.walk_hw_els = self.walk_hwk = ()
+        self.walk_stamp, self.walk_arms = -1, 0
+        self.par_rec, self.par_arms = None, 0
+
+
+class _ParRec:
+    """`solve`'s reads of the analysis parameters and of the transient's
+    own caches, stamped (`_watch`): `tr.par`'s and `tr.epar`'s dicts
+    watched, the methods that read them and the caches they keep in the
+    transient's dict compared on every call (`_par_stamped`)."""
+
+    __slots__ = ('analysis', 'bypass', 'chord', 'epar', 'f_ls', 'f_tol', 'iref', 'ls',
+                 'ls_default', 'maxiter', 'nb', 'nn', 'nrsolver', 'par', 'reltol', 'scaler',
+                 'stamp', 'tol', 'tolc')
+
+
+def _par_stamped(tr, td, par, rec):
+    """The stamped record of `solve`'s parameter reads, where it stands:
+    its stamp the counter, the same `par` and `epar`, the methods that read
+    them (the linear solver's, the tolerances') the class's and not
+    shadowed, the transient's caches of them the objects seen, and the
+    circuit's size and reference row the same.  (What the reads feed is
+    still computed every call: the chord option from the recorded value,
+    the bypass test from the recorded tolerance -- their errors and side
+    effects where they were.)"""
+    P = rec.par_rec if rec is not None else None
+    ep = _MOD['watch'].EPOCH
+    if (P is None or ep is None or P.stamp != ep.value or P.par is not par
+            or P.epar is not tr.epar):
+        return None
+    T = type(tr)
+    cir = tr.cir
+    if (T._get_linearsolver is not P.f_ls or T._newton_tolerances is not P.f_tol
+            or '_get_linearsolver' in td or '_newton_tolerances' in td
+            or td.get('_default_linearsolver') is not P.ls_default
+            or td.get('_newton_tol_cache') is not P.tolc
+            or len(cir.nodes) != P.nn or len(cir.branches) != P.nb or tr.irefnode != P.iref):
+        return None
+    return P
+
+
+def _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol):
+    """Record and stamp `solve`'s parameter reads (after a solve that read
+    them in full and passed every check): the values as read, nothing
+    computed from them -- a read that raises leaves no record."""
+    rec.par_rec = None
+    P = _ParRec()
+    T, cir = type(tr), tr.cir
+    P.par, P.epar = par, tr.epar
+    P.f_ls, P.f_tol = T._get_linearsolver, T._newton_tolerances
+    P.ls_default = td.get('_default_linearsolver')
+    P.tolc = td.get('_newton_tol_cache')
+    P.nn, P.nb, P.iref = len(cir.nodes), len(cir.branches), tr.irefnode
+    P.nrsolver, P.scaler, P.ls, P.tol = nrsolver, scaler, ls, tol
+    try:
+        P.chord, P.analysis = par.chord_jacobian, par.analysis
+        P.maxiter, P.reltol = par.maxiter, par.reltol
+        P.bypass = getattr(tr.epar, 'bypasstol', -1.0)
+    except Exception:                                          # noqa: BLE001
+        return
+    dicts = [par.__dict__, tr.epar.__dict__]
+    for pd in (par, tr.epar):
+        v = pd.__dict__.get('_values')
+        if isinstance(v, dict):
+            dicts.append(v)
+    rec.par_arms += 1
+    P.stamp = (_MOD['watch'].arm(dicts, before)
+               if rec.par_arms <= _MOD['watch'].MAX_ARMS else -1)
+    rec.par_rec = P
 
 
 def _walk_fast(rec):
@@ -508,10 +586,21 @@ def _walk_ready(tr, rec):
     """The struct's walk for this solve: True, or False where a limiting
     element is not its C kernel.  A structural reason (an element whose
     class has no C limiter at all: PSP's) is kept with the walk object, so
-    such a circuit declines at its first check; the others are re-checked."""
+    such a circuit declines at its first check; the others are re-checked.
+    As stamped (`_watch`): the walk's elements' dicts, their classes' info
+    dicts, the circuit's dict (its plan, which holds the walk) and the
+    limiter module's switches unchanged since it was ready, every element's
+    `__dict__` the object seen and each hand-written limiter's twin its
+    class's still (its `vlimit`, a class attribute) -- ready again."""
     hc = _MOD['climit']
     if not (hc.WALK and hc.ENABLED):
         return False
+    ep = _MOD['watch'].EPOCH
+    if (ep is not None and rec.walk_stamp == ep.value and rec.walk_ok
+            and tuple(map(_GETDICT, rec.walk_els)) == rec.walk_dicts
+            and all(c.get('_c_limit') is k for c, k in rec.walk_hwk)):
+        return True
+    before = _MOD['watch'].now()
     w = hc._walk_for(tr.cir)
     if w is rec.walk:
         if rec.walk_ok is False:
@@ -545,6 +634,15 @@ def _walk_ready(tr, rec):
         s.wOFF = ffi.cast('int64_t *', w.OFF.ctypes.data)
         s.wK = ffi.cast('int64_t *', w.K.ctypes.data)
         s.wn = len(w.entries)
+        infos = {id(c): c for c in w.capable if isinstance(c, dict)}
+        hw = [c.info for c in w.capable if type(c) is hc._Handwritten]
+        rec.walk_hwk = tuple((c, k) for c, k in rec.walk_kern if type(c) is hc._Handwritten)
+        rec.walk_arms += 1
+        rec.walk_stamp = (_MOD['watch'].arm(
+            [*rec.walk_dicts, *infos.values(), *hw, tr.cir.__dict__, hc.__dict__], before)
+            if rec.walk_arms <= _MOD['watch'].MAX_ARMS else -1)
+    else:
+        rec.walk_stamp = -1
     return ok
 
 
@@ -621,10 +719,16 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if td.get('_stateful_lims'):
         return _keep(tr, td, M, 'stateful')
     par = tr.par
-    if (getattr(tr, '_continuation_rescue', False) or par.nrsolver is not None
-            or getattr(par, 'scaler', None) is not None):
+    ## (the parameter reads, as stamped where they stand: `_par_stamped`)
+    P = _par_stamped(tr, td, par, td.get('_newton_c'))
+    if P is None:
+        before = M['watch'].now()
+        nrsolver, scaler = par.nrsolver, getattr(par, 'scaler', None)
+    else:
+        nrsolver, scaler = P.nrsolver, P.scaler
+    if getattr(tr, '_continuation_rescue', False) or nrsolver is not None or scaler is not None:
         return _no('newton_c:solver')
-    ls = tr._get_linearsolver()
+    ls = tr._get_linearsolver() if P is None else P.ls
     if not (type(ls) is M['AutoSolver'] and ls._choice is not None
             and ls._choice is ls._dense):
         return _no('newton_c:linsolver')
@@ -682,10 +786,11 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     T = core.probe(tr.epar)
     if T.__class__ is str:
         return _no('newton_c:ready')
-    chord = bool(residual is not None and par.nrsolver is None
-                 and tr._newton_option(par.chord_jacobian, 'chord_jacobian'))
+    chord = bool(residual is not None and nrsolver is None
+                 and tr._newton_option(par.chord_jacobian if P is None else P.chord,
+                                       'chord_jacobian'))
     ## ---- from here the attempt leaves one trace: the step's source memo ----
-    key = (t, par.analysis)
+    key = (t, par.analysis if P is None else P.analysis)
     try:
         had = key in memo
     except TypeError:
@@ -701,7 +806,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
             and u.shape[0] == n):
         _undo_source(memo, key, had, counts)
         return _no('newton_c:u')
-    tol = tr._newton_tolerances()
+    tol = tr._newton_tolerances() if P is None else P.tol
     if tol is not rec.tol:
         rec.tol = tol
         buf['abstol'][...] = tol[2]
@@ -715,7 +820,8 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     ## no stateful limiter -- declined -- and no bypass: its other routes)
     cached = td.get('_C_cache')
     s.have_cache = 0
-    if (cached is not None and float(getattr(tr.epar, 'bypasstol', -1.0) or -1.0) < 0.0):
+    if cached is not None and float((getattr(tr.epar, 'bypasstol', -1.0) if P is None
+                                     else P.bypass) or -1.0) < 0.0:
         cxa, cCa = cached
         if (type(cxa) is np.ndarray and cxa.shape == (n,) and type(cCa) is np.ndarray
                 and cCa.dtype == np.float64 and cCa.shape == (n, n)):
@@ -724,9 +830,15 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
             s.have_cache = 1
     s.T, s.formula = T, formula
     s.a0, s.a1, s.a2, s.h, s.theta = a0, a1, a2, float(h), float(theta)
-    s.maxiter, s.chord = int(par.maxiter), (1 if chord else 0)
-    s.reltol = float(par.reltol)
+    if P is None:
+        s.maxiter, s.reltol = int(par.maxiter), float(par.reltol)
+    else:
+        s.maxiter, s.reltol = int(P.maxiter), float(P.reltol)
+    s.chord = 1 if chord else 0
     s.fold_j = 3 if want_j else 2
+    if P is None:
+        ## (every read above in full, every check passed: stamp them)
+        _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)
     status = cfn(s)
     if status != 1:
         _undo_source(memo, key, had, counts)

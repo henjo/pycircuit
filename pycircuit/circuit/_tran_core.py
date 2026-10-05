@@ -59,6 +59,16 @@ kernel only while it is bound and was printed from the passes' bound
 kernels (and the switch, `_hdl_cbackend.FUSE`, is on); else the batches
 call their own.
 
+READY AS STAMPED (speed round 9, stage 4).  The readiness check (`probe`:
+every batch's kernel the class's bound one, its pass the generated one,
+every element without a shadow, every pack mirrored) and the lookup
+(`core_for`: the circuit's plan) read the same dicts every call, and their
+answer does not change between steps: a check that passed watches what it
+read (`_watch`: one counter any change to a watched dict moves) and passes
+again unchecked while the counter stands -- what no dict watcher sees
+compared on every call: the elements' `__dict__` objects, the passes'
+code, `ParameterDict`'s epoch, the circuit's size.
+
 `CORE` (env `PYCIRCUIT_TRAN_CORE=0`) is read on every call; `STATUS` says
 why the core is off where it is.  Pinned against its Python reference in
 `tests/test_pinned_pairs.py`.  History: `doc/transient_history.md`,
@@ -71,10 +81,11 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _paths
+from pycircuit.circuit import _paths, _watch
 
 ## the counters (`_paths`): each decline by its reason, each served call
 _PC = _paths.COUNTS
+_GETDICT = operator.attrgetter('__dict__')
 _no = _paths.no
 _K = {w: {r: f'core.{w}:{r}' for r in (
     'off', 'toolkit', 'shadow_cir', 'shadow_tr', 'unservable', 'x', 'formula',
@@ -498,6 +509,8 @@ class _Core:
         self.zgroups = zgroups
         self.nz = len(zgroups)
         self.b_fz = b_fz
+        ## (`probe`'s stamp: none yet)
+        self.stamp, self.uniq_els, self.uniq_dicts, self.codes, self.arms = -1, (), (), (), 0
         self.z_fn = np.zeros(max(self.nz, 1), dtype=np.uintp)
         self.zk = [None] * self.nz
         self.b_fn = np.zeros(max(self.nb, 1), dtype=np.uintp)
@@ -577,6 +590,16 @@ class _Core:
             if type(T) is not int and np.ndim(T) != 0:
                 return 'T'
             T = float(T)
+        ## AS STAMPED (speed round 9, stage 4): nothing the check below read
+        ## has changed since it passed -- its dicts and types are watched
+        ## (`_watch`); what no watcher sees, compared here: the elements'
+        ## `__dict__` objects and the passes' code
+        ep = _watch.EPOCH
+        if (ep is not None and self.stamp == ep.value
+                and tuple(map(_GETDICT, self.uniq_els)) == self.uniq_dicts
+                and all(map(_same_code, self.codes))):
+            return T
+        before = _watch.now()
         from pycircuit.circuit import _hdl_batch
         ffi, b_fn = self.ffi, self.b_fn
         kern0 = None
@@ -633,17 +656,57 @@ class _Core:
                 a = cp[0].ctypes.data
                 for p_ in ps:
                     PR[p_] = a
+        self._stamp(before, _hdl_batch)
         return T
+
+    def _stamp(self, before, _hdl_batch):
+        """Watch what the check read and stamp it (`_watch.arm`): the
+        classes' info dicts and pass lists, the passes' function dicts (their
+        bound kernels), the classes, the elements' dicts, the backend's and
+        the batches' modules (their switches and drivers)."""
+        infos = {id(bt.info): bt.info for bt in self.batches}
+        dicts = list(infos.values())
+        dicts += [info['funcs'] for info in infos.values()]
+        dicts += [info['funcs'][bt.m].__dict__ for bt in self.batches
+                  for info in (bt.info,)]
+        self.uniq_els = tuple(el for el, _ps in self.uniq)
+        self.uniq_dicts = tuple(map(_GETDICT, self.uniq_els))
+        dicts += self.uniq_dicts
+        dicts += [_hdl_batch.__dict__, self._cb.__dict__]
+        self.codes = tuple({(bt.cls, bt.m): (bt.cls, bt.m, getattr(bt.cls, bt.m).__code__)
+                            for bt in self.batches}.values())
+        self.arms += 1
+        self.stamp = _watch.arm(dicts, before) if self.arms <= _watch.MAX_ARMS else -1
+
+
+def _same_code(c):
+    """A class's pass still the code it was at the stamp (a function's
+    `__code__` is no dict)."""
+    return getattr(c[0], c[1]).__code__ is c[2]
 
 
 def core_for(tr):
     """The transient's core for its circuit's current plan, or None where
-    the circuit cannot be served (remembered until the plan rebuilds)."""
-    from pycircuit.circuit import _stamp_plan
+    the circuit cannot be served (remembered until the plan rebuilds).
+    As stamped (`_watch`): the circuit's dict, its elements and its node map
+    unchanged since, the circuit's plan the one recorded, `ParameterDict`'s
+    epoch the plan's and the circuit's size the plan's -- the record stands
+    without asking `_plan_for`."""
     cir = tr.cir
-    plan = _stamp_plan._plan_for(cir)
     rec = tr.__dict__.get('_tran_core')
+    ep = _watch.EPOCH
+    if (rec is not None and ep is not None and rec[2] == ep.value
+            and cir.__dict__.get('_stamp_plan') is rec[0] and rec[3]._epoch is rec[0].epoch
+            and rec[0].n == len(cir.nodes) + len(cir.branches)):
+        return rec[1]
+    before = _watch.now()
+    from pycircuit.circuit import _stamp_plan
+    from pycircuit.utilities.param import ParameterDict
+    plan = _stamp_plan._plan_for(cir)
     if rec is not None and rec[0] is plan:
+        arms = rec[4] + 1 if len(rec) > 4 else 1
+        tr.__dict__['_tran_core'] = (plan, rec[1], _plan_stamp(cir, before, arms),
+                                     ParameterDict, arms)
         return rec[1]
     drv = driver()
     core = None
@@ -655,8 +718,22 @@ def core_for(tr):
             core = None
     _PC['once:core.build:' + ('nodriver' if drv is None else
                               'unservable' if core is None else 'built')] += 1
-    tr.__dict__['_tran_core'] = (plan, core)
+    tr.__dict__['_tran_core'] = (plan, core, _plan_stamp(cir, before, 1), ParameterDict, 1)
     return core
+
+
+def _plan_stamp(cir, before, arms):
+    """`_plan_for`'s dict reads, watched: the circuit's dict (its plan, its
+    element and node-map attributes), the elements and the node map
+    themselves.  (`ParameterDict`'s epoch, a class attribute, is compared
+    on every call.)"""
+    if arms > _watch.MAX_ARMS:
+        return -1
+    nodemap = cir.__dict__.get('elementnodemap')
+    dicts = [cir.__dict__, cir.elements]
+    if isinstance(nodemap, dict):
+        dicts.append(nodemap)
+    return _watch.arm(dicts, before)
 
 
 def _row(a, n):

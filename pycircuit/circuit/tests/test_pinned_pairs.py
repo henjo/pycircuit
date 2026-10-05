@@ -187,6 +187,24 @@ PAIRS = {
                  'pycircuit.circuit._hdl_cbackend:bind_fused',
                  'pycircuit.circuit._tran_core:_fuse_groups'],
     },
+    'the readiness reads and their stamps': {
+        'why': 'a stamp stands for a full check while no dict it read has changed: '
+               'every read of the plan lookup, the generated-pass test, the pack, a '
+               'hand-written limiter\'s twin, the linear solver and the tolerances '
+               'must be a watched dict or compared on every call',
+        'reference': ['pycircuit.circuit._stamp_plan:_plan_for',
+                      'pycircuit.circuit._hdl_batch:is_generated',
+                      'pycircuit.circuit._hdl_cbackend:CKernel.pack',
+                      'pycircuit.circuit._hdl_climit:_Handwritten',
+                      'pycircuit.circuit.analysis:Analysis._get_linearsolver',
+                      'pycircuit.circuit._tran_newton:_StepNewton._newton_tolerances'],
+        'twin': ['pycircuit.circuit._watch:WATCH_C',
+                 'pycircuit.circuit._watch:arm',
+                 'pycircuit.circuit._tran_core:_Core._stamp',
+                 'pycircuit.circuit._tran_core:_plan_stamp',
+                 'pycircuit.circuit._tran_newton_c:_par_stamped',
+                 'pycircuit.circuit._tran_newton_c:_par_stamp'],
+    },
 }
 
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
@@ -195,14 +213,15 @@ RECORD = {
     'the kernel call and the pass driver': ('09a9e274bbe8', 'c900976facbc'),
     'the limiting loop and the walk': ('d151206fce18', '411e5dd4e655'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
-    'the transient evaluation and the core': ('ce82a66a3520', '618bea4b7aee'),
+    'the transient evaluation and the core': ('ce82a66a3520', '8346bb46d6be'),
     'the assembly loops and the plan': ('ed84458db1a3', '9578c5eca9ad'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
-    'the Newton solve and its C': ('a4c57d1d7bee', '3ad57f183c63'),
+    'the Newton solve and its C': ('a4c57d1d7bee', '4f1ac89867b6'),
     'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
     'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),
+    'the readiness reads and their stamps': ('48b75bd9cace', 'e52c723f0eb8'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by
