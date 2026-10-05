@@ -160,8 +160,11 @@ def _both(seed, h=None, qn=None):
     finally:
         ctx.h, ctx.qn = h0, qn0
     if not db.get('radau_c:served'):
-        ## a hand-back leaves no trace: every count the Python's but the C's own
-        own = lambda d: {k: v for k, v in d.items() if not k.startswith('radau_c:')}
+        ## a hand-back leaves no trace: every count the Python's but the C's
+        ## own -- and the `once:` ones, which follow the build schedule (the
+        ## first run rebuilds a core another test's parameter write staled)
+        own = lambda d: {k: v for k, v in d.items()
+                         if not k.startswith(('radau_c:', 'once:'))}
         assert own(db) == own(da), (da, db)
     return a, b, db
 
@@ -260,7 +263,7 @@ def test_a_stopped_walk_hands_back_and_is_taken_again():
 SCALES = (0.0, 1e-12, 1e-6, 1e-3, 0.05, 0.4, 3.0, 40.0, 1e3, 1e30, 1e150, 1e300)
 
 
-@settings(deadline=None, max_examples=60)
+@settings(deadline=None)
 @given(data=st.data())
 def test_drawn_seeds_steps_and_charges_are_the_pythons(data):
     _on()
