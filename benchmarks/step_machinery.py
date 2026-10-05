@@ -152,8 +152,12 @@ BUILD = {
     'psp': lambda: chain(lambda d, g: compact.PspMosLongChannel(
         d, g, gnd, gnd, fnt=1.0), vdd=1.2, vg=0.7),
     'gp': gp_chain,
+    'mos1_radau': lambda: chain(lambda d, g: eh.MosLevel1Hdl(d, g, gnd, gnd)),
 }
-CASES = ('stage', 'mos1', 'gp', 'psp', 'pss')
+#: the per-step cases a stage method steps, by its integrator (speed round 9,
+#: stage 8: Radau's stages through the evaluate core -- PSS's default method)
+STAGE_METHOD = {'mos1_radau': RadauIIA3Integrator}
+CASES = ('stage', 'mos1', 'gp', 'psp', 'mos1_radau', 'pss')
 
 
 ## -- the analysis cases (2026-10-04, testing for development, stage 3) -----------
@@ -321,6 +325,16 @@ def _case_ppv():
     return dt, None, _sha(getattr(v, 'y', v)), None, paths
 
 
+def _case_pss_radau():
+    """The `pss` case by PSS's default method, Radau IIA(3) -- on the PSP
+    stage its cost transform under 'auto' (speed round 9, stage 8)."""
+    c = stage()
+    p = PSS(c, method='radau', reltol=1e-8)
+    dt, _out, paths = _timed(lambda: p.solve(period=1e-6, timestep=1e-6 / 40,
+                                             maxiterations=60))
+    return dt, None, _sha(p.waveform[1]), None, paths
+
+
 def _case_mos1_adaptive():
     """The default transient -- adaptive gear: the error test, rejections,
     the controller -- on the 20-MosLevel1 chain driven hard enough to
@@ -336,6 +350,7 @@ ANALYSES = {
     'mos1_adaptive': _case_mos1_adaptive,
     'ladder_gear': lambda: _case_ladder('gear'),
     'ladder_radau': lambda: _case_ladder('radau'),
+    'pss_radau': _case_pss_radau,
     'vdp_pss': _case_vdp_pss,
     'pnoise': _case_pnoise,
     'ppv': _case_ppv,
@@ -366,7 +381,8 @@ def run_case(name, steps=None):
         return dt, None, _sha(p.waveform[1]), None, paths
     steps = steps or STEPS
     c = BUILD[name]()
-    tr = Transient(c, toolkit=circuit.numeric)
+    tr = Transient(c, toolkit=circuit.numeric,
+                   **({'integrator': STAGE_METHOD[name]()} if name in STAGE_METHOD else {}))
     _RUN_STEPS[0] = steps
     dt, res, paths = _timed(lambda: tr.solve(tend=steps * 2e-8, timestep=2e-8,
                                              fixed_timestep=True))

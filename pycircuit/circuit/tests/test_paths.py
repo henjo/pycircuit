@@ -38,6 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 DECLINING = [
     (_tran_core, 'evaluate'),
     (_tran_core, '_Core.ready'),
+    (_tran_core, 'passes'),
     (_tran_newton_c, 'solve'),
     (_tran_lte_c, 'max_error'),
     (_hdl_batch, 'Batch.run'),

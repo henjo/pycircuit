@@ -89,7 +89,7 @@ _GETDICT = operator.attrgetter('__dict__')
 _no = _paths.no
 _K = {w: {r: f'core.{w}:{r}' for r in (
     'off', 'toolkit', 'shadow_cir', 'shadow_tr', 'unservable', 'x', 'formula',
-    'history', 'cmat', 'clookup', 'ready', 'u', 'served')} for w in ('fj', 'j', 'f', 'c')}
+    'history', 'cmat', 'clookup', 'ready', 'u', 'served')} for w in ('fj', 'j', 'f', 'c', 'p')}
 
 CORE = os.environ.get('PYCIRCUIT_TRAN_CORE', '1') != '0'
 #: where nothing reads a step's Jacobian (a fixed multistep run:
@@ -216,6 +216,9 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             for (s = 0; s < L; s++) bin[flat[s]] += buf[s];
         }
     }
+    /* formula 4: the passes alone (`passes`: G in binG, i in bini, C and q
+       in the caller's buffers) -- no companion, no residual, no Jacobian */
+    if (formula == 4) return 0;
     Cs = (want & 2) ? C : Cin;
     if (formula == 0) {
         for (j = 0; j < n; j++) iq[j] = (a0 * q[j] + a1 * q1[j]) + a2 * q2[j];
@@ -741,6 +744,96 @@ def _row(a, n):
     if type(a) is np.ndarray and a.dtype == np.float64 and a.ndim == 1 and a.shape[0] == n:
         return a if a.flags.c_contiguous else np.ascontiguousarray(a)
     return None
+
+
+_NTK = []
+
+
+def _ntk():
+    """`NumericToolkit`, imported at the first call (a function-level import
+    runs importlib's `_handle_fromlist` on every call)."""
+    from pycircuit.circuit.toolkit import NumericToolkit
+    _NTK.append(NumericToolkit)
+    return NumericToolkit
+
+
+#: the circuit's passes for the stage paths from the core (`passes`, speed
+#: round 9, stage 8); env `PYCIRCUIT_CORE_PASSES=0` turns it off
+CORE_PASSES = os.environ.get('PYCIRCUIT_CORE_PASSES', '1') != '0'
+_PASS_BITS = {'G': 1, 'C': 2, 'i': 4, 'q': 0}
+
+
+def passes(tr, x, which):
+    """`{m: cir.m(x, epar)}` for each pass `m` of `which` (letters of
+    'GCiq') -- fresh float64 arrays, bit for bit the circuit's passes --
+    from ONE core call (formula 4: the passes alone, through the classes'
+    fused kernels), or None where the core does not serve the call (nothing
+    touched; the caller makes its own calls): the switches, a toolkit that
+    is not numeric, an instance shadow of a pass on the circuit, a circuit
+    the core cannot serve, a state that is not one finite float64 vector of
+    its size, a batch not ready -- each counted (`core.p:<why>`) as
+    `evaluate` counts its own.  For the stage methods (Radau, the DIRKs),
+    whose step evaluates the passes at several points a step (speed round
+    9, stage 8)."""
+    K = _K['p']
+    if not (CORE and CORE_PASSES):
+        return _no(K['off'])
+    if type(tr.toolkit) is not (_NTK[0] if _NTK else _ntk()):
+        return _no(K['toolkit'])
+    cd = tr.cir.__dict__
+    if 'G' in cd or 'C' in cd or 'i' in cd or 'q' in cd:
+        return _no(K['shadow_cir'])
+    ## A CIRCUIT THE CORE CANNOT SERVE declines at once under the plan its
+    ## dict holds (as `core_for` remembers it per plan): `core_for`'s full
+    ## check ran on every call of such a circuit -- a diode ladder by
+    ## Radau, whose stamps never hold, paid 9 k instructions a call, +0.95 %
+    ## of its run.  A plan gone stale is replaced at the circuit's next
+    ## evaluation, which follows; until then the decline is the circuit's
+    ## own passes.
+    td = tr.__dict__
+    kept = td.get('_passes_no')
+    if kept is not None and cd.get('_stamp_plan') is kept:
+        return _no(K['unservable'])
+    core = core_for(tr)
+    if core is None:
+        plan = cd.get('_stamp_plan')
+        if plan is not None:
+            td['_passes_no'] = plan
+        return _no(K['unservable'])
+    n = core.n
+    if not (type(x) is np.ndarray and x.dtype == np.float64 and x.ndim == 1
+            and x.flags.c_contiguous and x.shape[0] == n and np.isfinite(x).all()):
+        return _no(K['x'])
+    T = core.ready(tr.epar)
+    if T is None:
+        return _no(K['ready'])
+    bits = 0
+    for m in which:
+        bits |= _PASS_BITS[m]
+    ffi, cfn, _dgemv = driver()
+    fb, dptr = ffi.from_buffer, core.dptr
+    dummy = core.__dict__.get('_pass_dummy')
+    if dummy is None:
+        dummy = core._pass_dummy = (np.zeros(max(n * n, 1)), )
+        dummy = core._pass_dummy = (dummy[0], fb(dptr, dummy[0]))
+    q = np.empty(n)
+    C = np.empty((n, n)) if bits & 2 else None
+    dC = fb(dptr, C) if C is not None else dummy[1]
+    _PC[K['served']] += 1
+    cfn(core.cs, fb(dptr, x), T, bits, 4, 0.0, 0.0, 0.0, 1.0, 0.0,
+        dummy[1], dummy[1], dummy[1], dummy[1], dC, dC, fb(dptr, q),
+        dummy[1], dummy[1], dummy[1], dummy[1])
+    out = {}
+    for m in which:
+        if m == 'G':
+            out['G'] = core.arrays['binG'].reshape(n, n).copy()
+        elif m == 'C':
+            out['C'] = C
+        elif m == 'i':
+            out['i'] = core.arrays['bini'].copy()
+        else:
+            out['q'] = q
+    return out
 
 
 def evaluate(tr, x, t, provided_function, want):

@@ -4,7 +4,7 @@ step shares.  A theme of `Transient` (see `transient.py`).
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint
+from pycircuit.circuit import _evalhint, _tran_core
 from pycircuit.circuit.analysis import (
     remove_row_col,
 )
@@ -82,7 +82,15 @@ class _SequentialStages:
         arr = lambda v: self.toolkit.array(v, dtype=float)
 
         def func_i(x):
-            ## (one evaluation session: `_evalhint`)
+            ## (the four passes in one evaluate-core call where it serves --
+            ## `_tran_core.passes`, speed round 9, stage 8; else one
+            ## evaluation session: `_evalhint`)
+            P = _tran_core.passes(self, x, 'iqCG')
+            if P is not None:
+                Ki = -(P['i'] + src(ti))
+                f = P['q'] - target - h * aii * Ki
+                J = P['C'] + h * aii * P['G']
+                return f, J
             with _evalhint.evaluating('i', 'q', 'C', 'G'):
                 Ki = -(arr(self.cir.i(x, epar)) + src(ti))
                 f = arr(self.cir.q(x, epar)) - target - h * aii * Ki
@@ -128,16 +136,20 @@ class _SequentialStages:
         rec = self._memo_get(xnp1) or {}
         need = [k for k in ('q', 'i', 'C', 'G') if k not in rec]
         if need:
-            vals = {}
-            with _evalhint.evaluating(*need):
-                if 'q' in need:
-                    vals['q'] = self.cir.q(xnp1, epar)
-                if 'i' in need:
-                    vals['i'] = arr(self.cir.i(xnp1, epar))
-                if 'C' in need:
-                    vals['C'] = arr(self.cir.C(xnp1, epar))
-                if 'G' in need:
-                    vals['G'] = arr(self.cir.G(xnp1, epar))
+            ## (the passes in one evaluate-core call where it serves:
+            ## `_tran_core.passes`, speed round 9, stage 8)
+            vals = _tran_core.passes(self, xnp1, ''.join(need))
+            if vals is None:
+                vals = {}
+                with _evalhint.evaluating(*need):
+                    if 'q' in need:
+                        vals['q'] = self.cir.q(xnp1, epar)
+                    if 'i' in need:
+                        vals['i'] = arr(self.cir.i(xnp1, epar))
+                    if 'C' in need:
+                        vals['C'] = arr(self.cir.C(xnp1, epar))
+                    if 'G' in need:
+                        vals['G'] = arr(self.cir.G(xnp1, epar))
             if self._memo_ok():
                 self._memo_put(xnp1, vals)
             rec = dict(rec, **vals)

@@ -85,7 +85,8 @@ PAIRS = {
                       'pycircuit.circuit.transient:Transient._solve_timestep'],
         'twin': ['pycircuit.circuit._tran_core:CORE_C',
                  'pycircuit.circuit._tran_core:_Core',
-                 'pycircuit.circuit._tran_core:evaluate'],
+                 'pycircuit.circuit._tran_core:evaluate',
+                 'pycircuit.circuit._tran_core:passes'],
     },
     'the assembly loops and the plan': {
         'why': 'the plan is the loop\'s bincount over the same values in the same '
@@ -190,6 +191,19 @@ PAIRS = {
                  'pycircuit.circuit._hdl_cbackend:bind_fused',
                  'pycircuit.circuit._tran_core:_fuse_groups'],
     },
+    'the stage paths\' passes and the core\'s': {
+        'why': 'where the core serves, a stage path takes the passes from one core '
+               'call (formula 4) for the circuit\'s own `q`, `i`, `G`, `C` calls, '
+               'which stay as its fallback -- the same values, fresh arrays',
+        'reference': ['pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_context',
+                      'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_solver',
+                      'pycircuit.circuit._tran_radau:_RadauStages._radau_error_estimate',
+                      'pycircuit.circuit._tran_radau:_RadauStages._rk_step_transformed',
+                      'pycircuit.circuit._tran_stages:_SequentialStages._solve_implicit_stage',
+                      'pycircuit.circuit._tran_stages:_SequentialStages._finish_stage_step'],
+        'twin': ['pycircuit.circuit._tran_core:passes',
+                 'pycircuit.circuit._tran_core:CORE_C'],
+    },
     'the readiness reads and their stamps': {
         'why': 'a stamp stands for a full check while no dict it read has changed: '
                'every read of the plan lookup, the generated-pass test, the pack, a '
@@ -216,7 +230,7 @@ RECORD = {
     'the kernel call and the pass driver': ('09a9e274bbe8', 'c900976facbc'),
     'the limiting loop and the walk': ('d151206fce18', '411e5dd4e655'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
-    'the transient evaluation and the core': ('ce82a66a3520', '8346bb46d6be'),
+    'the transient evaluation and the core': ('ce82a66a3520', '9a913d20faa9'),
     'the assembly loops and the plan': ('4c77e2ad0e1e', '951ecc14d234'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the Newton solve and its C': ('a4c57d1d7bee', '96a7d2fa7fe9'),
@@ -225,6 +239,7 @@ RECORD = {
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
     'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),
     'the readiness reads and their stamps': ('48b75bd9cace', 'e52c723f0eb8'),
+    "the stage paths' passes and the core's": ('5a1404ac486d', 'a3ae0f6c8d98'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

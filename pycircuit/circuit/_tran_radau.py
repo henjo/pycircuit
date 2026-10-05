@@ -4,7 +4,7 @@ theme of `Transient` (see `transient.py`).
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint, _paths
+from pycircuit.circuit import _evalhint, _paths, _tran_core
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import (
     limit_sync,
@@ -43,8 +43,13 @@ class _RadauStages:
             return np.concatenate((np.asarray(v)[:iref],
                                    np.asarray(v)[iref + 1:]))
         _rec = self._memo_get(x0)
-        qn = (arr(self.cir.q(x0, self.epar)) if _rec is None or 'q' not in _rec
-              else _rec['q'])
+        if _rec is None or 'q' not in _rec:
+            ## (the evaluate core's passes where it serves: speed round 9,
+            ## stage 8 -- `_tran_core.passes`)
+            P = _tran_core.passes(self, x0, 'q')
+            qn = P['q'] if P is not None else arr(self.cir.q(x0, self.epar))
+        else:
+            qn = _rec['q']
         return SimpleNamespace(
             Amat=np.array(integ.A, dtype=float), h=h, tn=tn, iref=iref,
             arr=arr, red=red, src=self._stage_source(provided_function),
@@ -326,12 +331,20 @@ class _RadauStages:
                 for j in range(3):
                     if S[j] is not None:
                         state_restore(S[j])
-                    ## (one evaluation session per stage: `_evalhint`)
-                    with _evalhint.evaluating('q', 'i', 'G', 'C'):
-                        qi.append(arr(self.cir.q(Y[j], epar)))
-                        i_j = arr(self.cir.i(Y[j], epar))
-                        G_j = arr(self.cir.G(Y[j], epar))
-                        Ci.append(arr(self.cir.C(Y[j], epar)))
+                    ## (the stage's four passes in one evaluate-core call where
+                    ## it serves -- `_tran_core.passes`, speed round 9, stage
+                    ## 8; else one evaluation session: `_evalhint`)
+                    P = _tran_core.passes(self, Y[j], 'qiGC')
+                    if P is not None:
+                        qi.append(P['q'])
+                        i_j, G_j = P['i'], P['G']
+                        Ci.append(P['C'])
+                    else:
+                        with _evalhint.evaluating('q', 'i', 'G', 'C'):
+                            qi.append(arr(self.cir.q(Y[j], epar)))
+                            i_j = arr(self.cir.i(Y[j], epar))
+                            G_j = arr(self.cir.G(Y[j], epar))
+                            Ci.append(arr(self.cir.C(Y[j], epar)))
                     ## (the evaluations at this stage, for the step's
                     ## readers -- `_memo_get`; never under a shunt or a
                     ## stateful limiter)
@@ -702,9 +715,14 @@ class _RadauStages:
         try:
             if lims:
                 limit_sync(self.cir, xn, epar, lims)
-            Cn = arr(self.cir.C(xn, epar))
-            Gn = arr(self.cir.G(xn, epar))
-            f0 = -(arr(self.cir.i(xn, epar)) + src(tn))
+            P = _tran_core.passes(self, xn, 'CGi')
+            if P is not None:
+                Cn, Gn = P['C'], P['G']
+                f0 = -(P['i'] + src(tn))
+            else:
+                Cn = arr(self.cir.C(xn, epar))
+                Gn = arr(self.cir.G(xn, epar))
+                f0 = -(arr(self.cir.i(xn, epar)) + src(tn))
         finally:
             if snap is not None:
                 state_restore(snap)
@@ -819,9 +837,14 @@ class _RadauStages:
         need = [k for k in ('C', 'G') if k not in _rec]
         ## the FROZEN Jacobian pieces, at x_n, reduced -- the whole point:
         ## factored implicitly once per step and reused every iteration
-        with _evalhint.evaluating(*need):
-            Cn = _rec['C'] if 'C' in _rec else arr(self.cir.C(xn, epar))
-            Gn = _rec['G'] if 'G' in _rec else arr(self.cir.G(xn, epar))
+        P = _tran_core.passes(self, xn, ''.join(need)) if need else None
+        if P is not None:
+            Cn = _rec['C'] if 'C' in _rec else P['C']
+            Gn = _rec['G'] if 'G' in _rec else P['G']
+        else:
+            with _evalhint.evaluating(*need):
+                Cn = _rec['C'] if 'C' in _rec else arr(self.cir.C(xn, epar))
+                Gn = _rec['G'] if 'G' in _rec else arr(self.cir.G(xn, epar))
         if need and self._memo_ok():
             self._memo_put(xn, {'C': Cn, 'G': Gn})
         (Cr,) = remove_row_col((Cn,), iref, tk)
@@ -851,10 +874,15 @@ class _RadauStages:
             for j in range(3):
                 if S[j] is not None:
                     state_restore(S[j])
-                with _evalhint.evaluating('q', 'i'):
-                    qi_all.append(arr(self.cir.q(Y[j], epar)))
-                    Ki_all.append(-(arr(self.cir.i(Y[j], epar))
-                                    + src(tstage[j])))
+                P = _tran_core.passes(self, Y[j], 'qi')
+                if P is not None:
+                    qi_all.append(P['q'])
+                    Ki_all.append(-(P['i'] + src(tstage[j])))
+                else:
+                    with _evalhint.evaluating('q', 'i'):
+                        qi_all.append(arr(self.cir.q(Y[j], epar)))
+                        Ki_all.append(-(arr(self.cir.i(Y[j], epar))
+                                        + src(tstage[j])))
             R, _J = self._coupled_stage_system(ctx, qi_all, Ki_all)
             dY = self._radau_transform_solve(R, Cr, Gr, h)
             scale = 0.0

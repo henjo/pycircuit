@@ -91,6 +91,7 @@ SWITCHES = (
     ('pycircuit.circuit._hdl_climit', 'PSP_LIMIT'),
     ('pycircuit.circuit._tran_core', 'CORE'),
     ('pycircuit.circuit._tran_core', 'SKIP_UNREAD_J'),
+    ('pycircuit.circuit._tran_core', 'CORE_PASSES'),
     ('pycircuit.circuit._watch', 'ENABLED'),
     ('pycircuit.circuit._watch', 'MAX_ARMS'),
     ('pycircuit.circuit._tran_newton_c', 'ENABLED'),
