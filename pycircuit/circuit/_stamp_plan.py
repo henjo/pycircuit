@@ -56,6 +56,8 @@ an element a batch hands back is called here as before, in its order.
 
 History: `doc/transient_history.md`, `_stamp_plan`.
 """
+import itertools
+import operator
 import os
 
 import numpy as np
@@ -68,6 +70,16 @@ _PK = {m: {r: f'plan.{m}:{r}' for r in ('off', 'toolkit', 'x', 'nonfinite', 'leg
        for m in ('G', 'C', 'i', 'q')}
 
 ENABLED = os.environ.get('PYCIRCUIT_STAMP_PLAN', '1') != '0'
+#: the source pass from the plan (`assemble_source`; env `PYCIRCUIT_SOURCE_PLAN=0`)
+SOURCE_PLAN = os.environ.get('PYCIRCUIT_SOURCE_PLAN', '1') != '0'
+#: ... for a circuit of this many elements or more: the plan's fixed checks
+#: cost more than the loop's visits below it (a pass on a MOS chain, in
+#: instructions: 4 elements +3.5 %, 6 even, 8 -3.4 %, 12 -9.7 %, 42 -33.6 %;
+#: 2026-10-05)
+SOURCE_MIN_ELEMENTS = 6
+_SK = {m: {r: f'src.{m}:{r}' for r in ('off', 'toolkit', 'gate', 'groups', 'shadowed',
+                                         'patched', 'element', 'served')}
+       for m in ('u', 'dudt')}
 
 _PARTNER = {'G': 'i', 'C': 'q'}
 _MATRIX = {'i': 'G', 'q': 'C'}
@@ -414,6 +426,114 @@ def assemble_vector(cir, v, x, args):
     if not vp.idx.size:
         return np.zeros(plan.n)
     return np.bincount(vp.idx, weights=buf, minlength=plan.n)
+
+
+## -- THE SOURCE PASS (speed round 8, stage 2a; 2026-10-04) ------------------------
+##
+## `u` and `dudt` have no x and no constant stamps; their cost is the loop:
+## 42 elements visited for two real sources on a 20-MosLevel1 chain, each
+## asked whether it is the default source or a generated zero (`_hdl_batch.
+## zero_source`) -- 237 k instructions a pass, 88 k of them the two sources'
+## own `u` and the scatter.  The plan keeps the elements to CALL, in dict
+## order, with what made the others skippable, and per call keeps today's
+## checks: the switch and the analysis gate, the default method's identity,
+## each class's method identity and its `zero_source` verdict (its own code
+## check), and every element as at the build -- identity, type, `__dict__`
+## object and no instance `m` (tuple compares and one mapped `in`, at C
+## speed).  The calls, the scatter and the `:called` count are the loop's.
+## A plan whose build saw an instance shadow is not used (the loop runs).
+
+class _SourcePlan:
+    __slots__ = ('call', 'default_fn', 'dicts', 'els', 'fns', 'shadowed', 'types',
+                 'zero_classes')
+
+    def __init__(self, cir, m):
+        Circuit = _src_types()[0]
+        self.default_fn = default_fn = getattr(Circuit, m)
+        idxmap = cir._map_indices_1d
+        classes, call, els, shadowed = {}, [], [], False
+        for inst, el in cir.elements.items():
+            cls = type(el)
+            if cls not in classes:
+                fn = getattr(cls, m)
+                classes[cls] = (fn, 'default' if fn is default_fn else
+                                'zero' if _hdl_batch.zero_source(cls, m) else 'call')
+            shadowed = shadowed or m in el.__dict__
+            els.append(el)
+            if classes[cls][1] == 'call':
+                call.append((el, idxmap.get(inst)))
+        self.call, self.shadowed = call, shadowed
+        self.els = tuple(els)
+        self.types = tuple(map(type, self.els))
+        self.dicts = tuple(map(_GETDICT, self.els))
+        self.fns = tuple((cls, fn) for cls, (fn, _v) in classes.items())
+        self.zero_classes = tuple(cls for cls, (_fn, v) in classes.items() if v == 'zero')
+
+
+_GETDICT = operator.attrgetter('__dict__')
+
+
+_SRC = {}
+
+
+def _src_types():
+    """`(Circuit, NumericToolkit)`, imported once (a per-call import is a
+    measurable share of a pass)."""
+    if not _SRC:
+        from pycircuit.circuit.circuit import Circuit
+        from pycircuit.circuit.toolkit import NumericToolkit
+        _SRC['t'] = (Circuit, NumericToolkit)
+    return _SRC['t']
+
+
+def assemble_source(cir, m, args):
+    """`m` ('u' or 'dudt', no x, no dtype) through the plan, or None for
+    the legacy loop (`SubCircuit._add_element_subvectors`)."""
+    Circuit, NumericToolkit = _SRC['t'] if _SRC else _src_types()
+    K = _SK[m]
+    if not (ENABLED and SOURCE_PLAN):
+        return _no(K['off'])
+    tk = cir.toolkit
+    if type(tk) is not NumericToolkit:
+        return _no(K['toolkit'])
+    if not _hdl_batch.SKIP_ZERO_SOURCE or (len(args) >= 3 and args[2] == 'ac'):
+        return _no(K['gate'])
+    if getattr(cir, '_eval_groups', None):
+        return _no(K['groups'])
+    plan = _plan_for(cir)
+    sp = plan.methods.get('src:' + m)
+    if sp is None:
+        sp = plan.methods['src:' + m] = _SourcePlan(cir, m)
+    if sp.shadowed:
+        return _no(K['shadowed'])
+    if getattr(Circuit, m) is not sp.default_fn:
+        return _no(K['patched'])
+    for cls, fn in sp.fns:
+        if getattr(cls, m) is not fn:
+            return _no(K['patched'])
+    for cls in sp.zero_classes:
+        if not _hdl_batch.zero_source(cls, m):
+            return _no(K['patched'])
+    vals = tuple(cir.elements.values())
+    if vals != sp.els or tuple(map(type, vals)) != sp.types:
+        return _no(K['element'])
+    dicts = tuple(map(_GETDICT, vals))
+    if dicts != sp.dicts or any(map(operator.contains, dicts, itertools.repeat(m))):
+        return _no(K['element'])
+    _PC[K['served']] += 1
+    n = plan.n
+    lhs = tk.zeros(n)
+    pending_idx, pending_val = [], []
+    for el, indices in sp.call:
+        rhs = getattr(el, m)(*args)
+        if indices is None:
+            continue
+        pending_idx.append(indices)
+        pending_val.append(np.asarray(rhs).ravel())
+    _paths.COUNTS[m + ':called'] += len(pending_val)
+    if pending_idx:
+        lhs = cir._scatter_1d(lhs, pending_idx, pending_val, n)
+    return lhs
 
 
 def _legacy_matrix(cir, m, x, args, mp, got):

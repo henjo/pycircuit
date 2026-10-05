@@ -82,6 +82,8 @@ IGNORED = {('pycircuit.circuit._hdl_cache', '_counter'),
 #: 2026-10-03 -- every other scalar is reported, never written
 SWITCHES = (
     ('pycircuit.circuit._stamp_plan', 'ENABLED'),
+    ('pycircuit.circuit._stamp_plan', 'SOURCE_PLAN'),
+    ('pycircuit.circuit._stamp_plan', 'SOURCE_MIN_ELEMENTS'),
     ('pycircuit.circuit._hdl_batch', 'ENABLED'),
     ('pycircuit.circuit._hdl_batch', 'SKIP_ZERO_SOURCE'),
     ('pycircuit.circuit._hdl_climit', 'ENABLED'),

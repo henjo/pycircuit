@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # THE SWITCHES-OFF CHECK (2026-10-04, testing for development, stage 1).
 #
-# The fast tier, recorded twice -- every fast path on, then all fourteen off --
+# The fast tier, recorded twice -- every fast path on, then all fifteen off --
 # and compared bit for bit.  Each fast path's contract is the same bytes as
 # the Python path it replaces (the evaluate core, the pass batches, the limit
 # walk, the limiter kernel, the stamp plan, the fused passes, the zero-source
 # skip, the predictor's multistep fast path, the Newton solve in C, the
 # error test in C, PSP's limiter in C, the converged point without its
-# unread G, the fused device kernels, the stamped readiness); this checks
-# every one of them on every circuit of the fast tier at once.
+# unread G, the fused device kernels, the stamped readiness, the source
+# pass as a plan); this checks every one of them on every circuit of the
+# fast tier at once.
 # ~6 min.
 #
 #   scripts/fast_check.sh [OUTDIR] [-- extra pytest arguments]
@@ -29,7 +30,8 @@ OFF=(PYCIRCUIT_TRAN_CORE=0 PYCIRCUIT_HDL_BATCH=0 PYCIRCUIT_HDL_LIMIT_WALK=0
      PYCIRCUIT_HDL_CLIMIT=0 PYCIRCUIT_STAMP_PLAN=0 PYCIRCUIT_HDL_FUSE=0
      PYCIRCUIT_HDL_ZERO_U=0 PYCIRCUIT_PRED_FAST=0
      PYCIRCUIT_NEWTON_C=0 PYCIRCUIT_LTE_C=0 PYCIRCUIT_PSP_LIMIT_C=0
-     PYCIRCUIT_SKIP_UNREAD_J=0 PYCIRCUIT_HDL_CFUSE=0 PYCIRCUIT_WATCH=0)
+     PYCIRCUIT_SKIP_UNREAD_J=0 PYCIRCUIT_HDL_CFUSE=0 PYCIRCUIT_WATCH=0
+     PYCIRCUIT_SOURCE_PLAN=0)
 
 run() {   # run LABEL [VAR=value ...]
     local label=$1; shift

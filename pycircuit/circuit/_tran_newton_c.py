@@ -277,7 +277,8 @@ long hdl_fn(newton_t *s);
 #: the C's status codes past 1 (converged): why it handed the solve back
 BAIL = {2: 'x', 3: 'jnonfinite', 4: 'getrf', 5: 'bnonfinite', 6: 'getrs', 7: 'dgesv',
         8: 'walkstop', 9: 'xnext', 10: 'chordbreak', 11: 'maxiter'}
-#: the counts the step's source pass makes (`_source_at`, `cir.u`): the
+#: the counts the step's source pass makes (`_source_at`, `cir.u`; the
+#: source plan's own, `_stamp_plan._SK`, are added at `_mods`): the
 #: attempt's one trace, rolled back with the memo entry when it bails
 _U_KEYS = ('umemo:hit', 'umemo:miss', 'umemo:unhashable', 'u:called')
 
@@ -385,7 +386,8 @@ def _mods():
                     plan_for=_stamp_plan._plan_for,
                     core=_tran_core, bdf2_alphas=bdf2_alphas, insert_row=insert_row,
                     refnode_removed=refnode_removed, AutoSolver=AutoSolver,
-                    NumericToolkit=NumericToolkit)
+                    NumericToolkit=NumericToolkit,
+                    u_keys=_U_KEYS + tuple(_stamp_plan._SK['u'].values()))
     return _MOD
 
 
@@ -795,7 +797,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         had = key in memo
     except TypeError:
         return _no('newton_c:u')
-    counts = {k: _PC.get(k, 0) for k in _U_KEYS}
+    counts = {k: _PC.get(k, 0) for k in M['u_keys']}
     try:
         u = tr._source_at(t, None)
     except Exception:                                          # noqa: BLE001

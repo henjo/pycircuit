@@ -1872,6 +1872,16 @@ class SubCircuit(Circuit):
             out = _stamp_plan.assemble_vector(self, methodname, x, args)
             if out is not None:
                 return out
+        ## (the source pass from the plan, `_stamp_plan.assemble_source`:
+        ## the elements to call, today's checks per call -- from
+        ## `SOURCE_MIN_ELEMENTS` up, where its fixed checks cost less than
+        ## the loop's visits)
+        if (methodname in ('u', 'dudt') and x is None and dtype is None
+                and params_tree is None and _stamp_plan.ENABLED
+                and len(self.elements) >= _stamp_plan.SOURCE_MIN_ELEMENTS):
+            out = _stamp_plan.assemble_source(self, methodname, args)
+            if out is not None:
+                return out
 
         n = self.n
         toolkit = self.toolkit

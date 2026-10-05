@@ -45,6 +45,7 @@ DECLINING = [
     (_hdl_climit, 'limit_walk'),
     (_stamp_plan, 'assemble_matrix'),
     (_stamp_plan, 'assemble_vector'),
+    (_stamp_plan, 'assemble_source'),
     (_hdl_cse, 'take'),
     (_tran_companion, '_CompanionModel._C_lookup'),
 ]

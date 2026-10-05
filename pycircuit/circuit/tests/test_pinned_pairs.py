@@ -90,11 +90,14 @@ PAIRS = {
     'the assembly loops and the plan': {
         'why': 'the plan is the loop\'s bincount over the same values in the same '
             'order, with the constant elements pre-filled, the C-bound classes '
-            'batched and the zero sources skipped; its fallbacks are the loop',
+            'batched and the zero sources skipped -- the source pass the same '
+            'elements called in the same order; its fallbacks are the loop',
         'reference': ['pycircuit.circuit.circuit:SubCircuit._add_element_submatrices',
                    'pycircuit.circuit.circuit:SubCircuit._add_element_subvectors'],
         'twin': ['pycircuit.circuit._stamp_plan:assemble_matrix',
               'pycircuit.circuit._stamp_plan:assemble_vector',
+              'pycircuit.circuit._stamp_plan:assemble_source',
+              'pycircuit.circuit._stamp_plan:_SourcePlan',
               'pycircuit.circuit._stamp_plan:_run_batches',
               'pycircuit.circuit._stamp_plan:_legacy_matrix',
               'pycircuit.circuit._stamp_plan:_legacy_vector',
@@ -214,9 +217,9 @@ RECORD = {
     'the limiting loop and the walk': ('d151206fce18', '411e5dd4e655'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
     'the transient evaluation and the core': ('ce82a66a3520', '8346bb46d6be'),
-    'the assembly loops and the plan': ('ed84458db1a3', '9578c5eca9ad'),
+    'the assembly loops and the plan': ('4c77e2ad0e1e', '951ecc14d234'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
-    'the Newton solve and its C': ('a4c57d1d7bee', '4f1ac89867b6'),
+    'the Newton solve and its C': ('a4c57d1d7bee', '96a7d2fa7fe9'),
     'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
