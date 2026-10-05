@@ -4031,3 +4031,49 @@ step 5.46 M -> 3.20 M instructions (-41.4 %); `--check`, the same step -43.1 %
 in wall time.  The round's lesson from stage 6 (refused: fewer
 instructions, slower in situ) does not touch it: one call stands in for
 milliseconds of Python and numpy a step, not microseconds.
+
+## `_tran_radau.py` -- the transform's factors once a step (2026-10-05, speed round 10's B3.1)
+
+### `_RadauStages._radau_frozen`, `_FrozenTransform`, `linearsolver.NumpyLU`, `ComplexKLUSolver.prepare` / `solve_prepared`
+
+The cost transform (`_rk_step_transformed`; PSS's default on PSP-class
+circuits under 'auto') is a SIMPLIFIED Newton: `C` and `G` frozen at
+`x_n` for the step.  Its two factors, `(gamma_r/h) C + G` and
+`((alpha + i beta)/h) C + G`, are therefore the same at every iteration,
+and so are their factorisations -- yet `_radau_transform_solve` rebuilt
+`P`, both factors, numpy's LU of the real one, SciPy's CSC copy of the
+complex one and its KLU refactor at every iteration (870 k instructions
+an iteration on the PSP stage, 2.03 iterations a step on its PSS).
+`_radau_frozen` makes them once a step and `_FrozenTransform.solve` is the
+per-iteration solve's bytes; `_radau_transform_solve` stays, as the path
+of a declined step.
+
+Three traps, each found by checking the piece against what it stands in
+for before it was used:
+
+- NUMPY'S SOLVE IS `dgesv`, AND `dgesv` IS NOT `dgetrf` + `dgetrs` ON A
+  THREADED OPENBLAS.  With one right-hand side `dgesv` factors on one
+  thread below 10000 unknowns; a standalone `dgetrf` of 100 unknowns or
+  more uses several, and rounds differently (210 of 360 solves differed
+  from 100 to 1000 unknowns; below 100, 9000 of 9000 agreed -- the first
+  check drew sizes below 50 and would have shipped the defect).
+  `NumpyLU` makes numpy's own `dgesv` call at its first solve and keeps
+  the factors for `dgetrs`.
+- A REFACTOR IS NOT A FACTOR.  KLU's refactor of the same values with the
+  same pivots repeats its own bits, so `solve_prepared` skips the refactor
+  `solve` would repeat for the same record (`_fresh`) -- but after a full
+  factor it still refactors once, as `solve` did: skipping that one moved
+  the answers of 15 tests.
+- NUMPY SHOWS A WARNING ONCE A LINE.  The right-hand sides and the update
+  are helpers both solves call (`_transform_rhs`, `_transform_back`); a
+  frozen solve forming them at its own line would show, after a declined
+  step, a warning the per-iteration line had already shown.
+
+SciPy's `csc_matrix(A)` of the dense complex factor cost 382 k
+instructions; `_csc_of_dense` builds the same arrays with numpy (copies:
+the nonzeros column by column, rows ascending, a NaN counted, a signed
+zero not) and the residual check's product is SciPy's own `csc_matvec`,
+as `_matmul_vector` calls it.  Without it the stage read -5.8 % on the
+radau PSS (its line -7 %); with it -10.3 %.  Measured against the parent
+(3fb7ec26): the radau PSS of the PSP stage 1.303 G -> 1.169 G instructions
+(-10.3 %), -13.2 % in wall time; nothing else moved.

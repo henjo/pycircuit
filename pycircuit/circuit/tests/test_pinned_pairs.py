@@ -218,6 +218,42 @@ PAIRS = {
         'twin': ['pycircuit.circuit._tran_radau_c:RADAU_C',
                  'pycircuit.circuit._tran_radau_c:solve'],
     },
+    'the transform solve and its frozen form': {
+        'why': 'the frozen solve makes once a step what the per-iteration solve '
+               'makes every iteration -- `P`, both factors, the real LU, the '
+               'complex factor\'s marshalling and refactor -- and calls the same '
+               'right-hand side and update helpers; it keeps numpy\'s LU only where '
+               'the analysis solver\'s choice is the dense one, each piece as defined',
+        'reference': ['pycircuit.circuit._tran_radau:_RadauStages._radau_transform_solve',
+                      'pycircuit.circuit._tran_radau:_RadauStages._radau_complex_solve',
+                      'pycircuit.circuit.analysis:Analysis._get_linearsolver',
+                      'pycircuit.circuit.linearsolver:AutoSolver',
+                      'pycircuit.circuit.linearsolver:DenseSolver.solve',
+                      'pycircuit.circuit.linearsolver:ComplexKLUSolver.solve'],
+        'twin': ['pycircuit.circuit._tran_radau:_FrozenTransform',
+                 'pycircuit.circuit._tran_radau:_frozen_chain',
+                 'pycircuit.circuit._tran_radau:_RadauStages._radau_frozen',
+                 'pycircuit.circuit.linearsolver:ComplexKLUSolver.solve_prepared'],
+    },
+    'numpy\'s solve and its kept LU': {
+        'why': 'the kept LU is numpy\'s own call -- its OpenBLAS\'s `dgesv` on a '
+               'Fortran copy, one right-hand side -- then `dgetrs` on its factors; '
+               'not `dgetrf` first (threaded from 100 unknowns: other bits), and '
+               'numpy\'s error at every solve of a singular matrix',
+        'reference': ['pycircuit.circuit._numeric:linearsolver'],
+        'twin': ['pycircuit.circuit.linearsolver:_numpy_lapack',
+                 'pycircuit.circuit.linearsolver:NumpyLU'],
+    },
+    'the complex factor\'s CSC, SciPy\'s and numpy\'s': {
+        'why': 'numpy builds the arrays `csc_matrix(A).astype(complex128)` holds -- '
+               'the nonzeros (a NaN is one, a signed zero is not) column by column, '
+               'rows ascending, copied -- and the product as SciPy\'s '
+               '`_matmul_vector` runs it, a zero vector and `csc_matvec`',
+        'reference': ['pycircuit.circuit.linearsolver:ComplexKLUSolver.prepare'],
+        'twin': ['pycircuit.circuit.linearsolver:_csc_of_dense',
+                 'pycircuit.circuit.linearsolver:_csc_dot',
+                 'pycircuit.circuit.linearsolver:_csc_matvec'],
+    },
     'the readiness reads and their stamps': {
         'why': 'a stamp stands for a full check while no dict it read has changed: '
                'every read of the plan lookup, the generated-pass test, the pack, a '
@@ -253,8 +289,11 @@ RECORD = {
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
     'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),
     'the readiness reads and their stamps': ('48b75bd9cace', 'e52c723f0eb8'),
-    "the stage paths' passes and the core's": ('775ff77bc4cb', 'a3ae0f6c8d98'),
+    "the stage paths' passes and the core's": ('eeae47fa06ce', 'a3ae0f6c8d98'),
     'the coupled stage Newton and its C': ('5f7c56901f9a', 'e9156eef9c41'),
+    'the transform solve and its frozen form': ('945834192f2a', 'f7146ba0f56e'),
+    "numpy's solve and its kept LU": ('1f8908b895c7', 'f0bcd0f84207'),
+    "the complex factor's CSC, SciPy's and numpy's": ('9de9a726e6a5', '9ce76450fa2a'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

@@ -2,6 +2,8 @@
 theme of `Transient` (see `transient.py`).
 """
 
+import os
+
 import numpy as np
 
 from pycircuit.circuit import _evalhint, _paths, _tran_core, _tran_radau_c
@@ -20,6 +22,94 @@ from pycircuit.circuit.simwarnings import (
     UsageWarning,
     warn,
 )
+
+#: the transform's frozen factors made once a step (`_radau_frozen`, speed
+#: round 10, B3.1); env `PYCIRCUIT_RADAU_FROZEN=0` makes them every iteration
+RADAU_FROZEN = os.environ.get('PYCIRCUIT_RADAU_FROZEN', '1') != '0'
+#: numpy's solve as imported: a caller's stand-in takes the per-iteration path
+_NP_SOLVE = np.linalg.solve
+_FROZEN = {}
+
+
+def _transform_rhs(F0, F1, F2, p):
+    """The transform's right-hand sides ``-(P[k,0] F0 + P[k,1] F1 + P[k,2]
+    F2)``, k = 0, 1 (`p` the six entries).  ONE PLACE for the per-iteration
+    and the frozen solve: a warning their arithmetic gives comes from one
+    line, as before the frozen solve (numpy's warnings are shown once a
+    line)."""
+    p00, p01, p02, p10, p11, p12 = p
+    rhs0 = -(p00 * F0 + p01 * F1 + p02 * F2)
+    rhs1 = -(p10 * F0 + p11 * F1 + p12 * F2)
+    return rhs0, rhs1
+
+
+def _transform_back(w0, w1, v):
+    """``dY_i = V[i,0].real w0 + 2 Re(V[i,1] w1)``, concatenated (`v` the
+    pairs ``(V[i,0].real, V[i,1])``): one place for both solves, as
+    `_transform_rhs`."""
+    dY = [a * w0 + 2.0 * np.real(b * w1) for a, b in v]
+    return np.concatenate(dY)
+
+
+class _FrozenTransform:
+    """One step's transform, frozen (`_RadauStages._radau_frozen`): its `P`
+    entries, `V`'s, the real factor with its kept LU (or the analysis
+    solver to call) and the complex factor marshalled for its solver (or
+    the per-call complex solve)."""
+
+    __slots__ = ('cf', 'cs', 'ls', 'lu', 'm', 'p', 'prep', 'rf', 'tk', 'v', 'zs')
+
+    def solve(self, R3):
+        """`_RadauStages._radau_transform_solve(R3, Cr, Gr, h)` against the
+        frozen factors: its operations, in its order.  The real solve is the
+        kept LU's for a finite right-hand side (numpy's solve, bit for bit),
+        the analysis solver's otherwise."""
+        m = self.m
+        R3 = np.asarray(R3, dtype=float)
+        rhs0, rhs1 = _transform_rhs(R3[0:m], R3[m:2 * m], R3[2 * m:3 * m], self.p)
+        b0 = np.real(rhs0)
+        if self.lu is not None and np.isfinite(b0).all():
+            w0 = self.lu.solve(b0)
+        else:
+            w0 = np.asarray(self.ls.solve(self.rf, b0, self.tk), dtype=float)
+        if self.prep is not None:
+            w1 = np.asarray(self.zs.solve_prepared(self.prep, rhs1), dtype=complex)
+        else:
+            w1 = np.asarray(self.cs(self.cf, rhs1), dtype=complex)
+        return _transform_back(w0, w1, self.v)
+
+
+def _frozen_chain():
+    """The transform's pieces as defined (`_paths.genuine`), read once; None
+    while one is not."""
+    if 'chain' not in _FROZEN:
+        from pycircuit.circuit import _numeric
+        from pycircuit.circuit.analysis import Analysis
+        from pycircuit.circuit.linearsolver import (
+            AutoSolver,
+            ComplexKLUSolver,
+            DenseSolver,
+        )
+        from pycircuit.circuit.toolkit import NumericToolkit
+        R, L = 'pycircuit.circuit._tran_radau', 'pycircuit.circuit.linearsolver'
+        own = ((_RadauStages._radau_transform_solve, '_RadauStages._radau_transform_solve', R),
+               (_RadauStages._radau_complex_solve, '_RadauStages._radau_complex_solve', R),
+               (_RadauStages._radau_transform_matrices,
+                '_RadauStages._radau_transform_matrices', R),
+               (Analysis._get_linearsolver, 'Analysis._get_linearsolver',
+                'pycircuit.circuit.analysis'),
+               (AutoSolver.solve, 'AutoSolver.solve', L),
+               (AutoSolver._select, 'AutoSolver._select', L),
+               (DenseSolver.solve, 'DenseSolver.solve', L),
+               (_numeric.linearsolver, 'linearsolver', 'pycircuit.circuit._numeric'),
+               (ComplexKLUSolver.solve, 'ComplexKLUSolver.solve', L),
+               (ComplexKLUSolver.prepare, 'ComplexKLUSolver.prepare', L),
+               (ComplexKLUSolver.solve_prepared, 'ComplexKLUSolver.solve_prepared', L))
+        if not all(_paths.genuine(*o) for o in own):
+            return None
+        _FROZEN['chain'] = tuple(o for o, _q, _m in own)
+        _FROZEN['types'] = (ComplexKLUSolver, AutoSolver, DenseSolver, NumericToolkit, _numeric)
+    return _FROZEN['chain']
 
 
 class _RadauStages:
@@ -802,8 +892,8 @@ class _RadauStages:
         R3 = np.asarray(R3, dtype=float)
         F = (R3[0:m], R3[m:2 * m], R3[2 * m:3 * m])
         P = (np.diag(lam) @ Tinv) / h
-        rhs0 = -(P[0, 0] * F[0] + P[0, 1] * F[1] + P[0, 2] * F[2])
-        rhs1 = -(P[1, 0] * F[0] + P[1, 1] * F[1] + P[1, 2] * F[2])
+        rhs0, rhs1 = _transform_rhs(F[0], F[1], F[2], (P[0, 0], P[0, 1], P[0, 2],
+                                                       P[1, 0], P[1, 1], P[1, 2]))
         Cr = np.asarray(Cr, dtype=float)
         Gr = np.asarray(Gr, dtype=float)
         real_factor = (lam[0].real / h) * Cr + Gr
@@ -812,8 +902,90 @@ class _RadauStages:
         comp_factor = (lam[1] / h) * Cr + Gr
         w1 = np.asarray(self._radau_complex_solve(comp_factor, rhs1),
                         dtype=complex)
-        dY = [V[i, 0].real * w0 + 2.0 * np.real(V[i, 1] * w1) for i in range(3)]
-        return np.concatenate(dY)
+        return _transform_back(w0, w1, [(V[i, 0].real, V[i, 1]) for i in range(3)])
+
+    def _radau_frozen(self, Cr, Gr, h):
+        """THE TRANSFORM'S FROZEN FACTORS, ONCE A STEP (speed round 10, B3.1):
+        a `_FrozenTransform` whose `solve(R3)` is `_radau_transform_solve(R3,
+        Cr, Gr, h)` -- or None (declined, counted), and each iteration calls
+        that.
+
+        The transform's Newton is SIMPLIFIED: `C` and `G` are frozen at `x_n`
+        for the whole step, so `P`, the real and complex factors and their
+        factorisations are the same at every iteration -- and
+        `_radau_transform_solve` made them again each time: `P`, both
+        factors, a dense LU of the real one (`numpy.linalg.solve`), a scipy
+        CSC copy of the complex one (382 k instructions of a 578 k complex
+        solve on the PSP stage) and its KLU refactor.  Here they are made
+        once: the real factor's LU kept (`linearsolver.NumpyLU`, bit for bit
+        numpy's solve) where the analysis solver's choice is the dense one,
+        the complex factor marshalled once (`ComplexKLUSolver.prepare`) and
+        refactored once (`solve_prepared`: a refactor of the same values is
+        not repeated; the residual check and its fallback run on every
+        solve).  Each iteration forms the right-hand sides and the update in
+        `_radau_transform_solve`'s operations and order.  Made under
+        `numpy.errstate(all='raise')`: an operation that would warn leaves
+        the step to the per-iteration solve, which warns as before."""
+        if not RADAU_FROZEN:
+            return _paths.no('radau.frozen:off')
+        chain = _FROZEN.get('chain') or _frozen_chain()
+        if chain is None:
+            return _paths.no('radau.frozen:patched')
+        T = type(self)
+        d = self.__dict__
+        if ((T._radau_transform_solve, T._radau_complex_solve, T._radau_transform_matrices,
+             T._get_linearsolver) != chain[:4]
+                or '_radau_transform_solve' in d or '_radau_complex_solve' in d
+                or '_radau_transform_matrices' in d or '_get_linearsolver' in d):
+            return _paths.no('radau.frozen:patched')
+        ZS, AS, DS, NTK, NUM = _FROZEN['types']
+        lam, V, Tinv = self._radau_transform_matrices()
+        Cr = np.asarray(Cr, dtype=float)
+        Gr = np.asarray(Gr, dtype=float)
+        try:
+            with np.errstate(all='raise'):
+                P = (np.diag(lam) @ Tinv) / h
+                real_factor = (lam[0].real / h) * Cr + Gr
+                comp_factor = (lam[1] / h) * Cr + Gr
+        except FloatingPointError:
+            return _paths.no('radau.frozen:fp')
+        fz = _FrozenTransform()
+        fz.m = Cr.shape[0]
+        fz.p = (P[0, 0], P[0, 1], P[0, 2], P[1, 0], P[1, 1], P[1, 2])
+        fz.v = tuple((V[i, 0].real, V[i, 1]) for i in range(3))
+        fz.rf, fz.cf, fz.tk = real_factor, comp_factor, self.toolkit
+        ls = fz.ls = self._get_linearsolver()
+        fz.lu = None
+        ## the real solve is numpy's where the solver is the dense one --
+        ## `AutoSolver` once it chose it, or a `DenseSolver` -- on the numeric
+        ## toolkit, each piece as defined
+        if type(ls) is AS:
+            dense = ls._choice
+            ok = (AS.solve is chain[4] and AS._select is chain[5]
+                  and 'solve' not in ls.__dict__ and '_select' not in ls.__dict__)
+        else:
+            dense, ok = ls, True
+        if (ok and type(dense) is DS and DS.solve is chain[6] and 'solve' not in dense.__dict__
+                and type(self.toolkit) is NTK and self.toolkit.linearsolver is chain[7]
+                and NUM.linearsolver is chain[7] and np.linalg.solve is _NP_SOLVE
+                and np.isfinite(real_factor).all()):
+            from pycircuit.circuit.linearsolver import NumpyLU
+            fz.lu = NumpyLU.make(real_factor)
+        zs = getattr(self, '_radau_zsolver', 'unset')
+        if zs == 'unset':
+            ## (made as `_radau_complex_solve` makes it, at its first call)
+            try:
+                zs = ZS()
+            except ImportError:
+                zs = None
+            self._radau_zsolver = zs
+        fz.zs, fz.prep, fz.cs = zs, None, self._radau_complex_solve
+        if (type(zs) is ZS and (ZS.solve, ZS.prepare, ZS.solve_prepared) == chain[8:11]
+                and not ('solve' in zs.__dict__ or 'prepare' in zs.__dict__
+                         or 'solve_prepared' in zs.__dict__)):
+            fz.prep = zs.prepare(comp_factor)
+        _paths.COUNTS['radau.frozen:served'] += 1
+        return fz
 
     def _rk_step_transformed(self, x0, t, provided_function=None):
         """One Radau IIA(3) step by the COST TRANSFORM -- simplified Newton
@@ -859,6 +1031,9 @@ class _RadauStages:
         (Gr,) = remove_row_col((Gn,), iref, tk)
         Cr = np.asarray(Cr, dtype=float)
         Gr = np.asarray(Gr, dtype=float)
+        ## (the transform's factors, once a step: `_radau_frozen`, speed round
+        ## 10, B3.1; None -- each iteration makes them)
+        fz = self._radau_frozen(Cr, Gr, h)
 
         ## STAGE PREDICTOR.  ⚠ This path is SIMPLIFIED Newton (one Jacobian per
         ## step), so it is the one that benefits most from starting near the
@@ -892,7 +1067,7 @@ class _RadauStages:
                         Ki_all.append(-(arr(self.cir.i(Y[j], epar))
                                         + src(tstage[j])))
             R, _J = self._coupled_stage_system(ctx, qi_all, Ki_all)
-            dY = self._radau_transform_solve(R, Cr, Gr, h)
+            dY = fz.solve(R) if fz is not None else self._radau_transform_solve(R, Cr, Gr, h)
             scale = 0.0
             for i in range(3):
                 if S[i] is not None:

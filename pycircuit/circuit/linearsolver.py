@@ -30,6 +30,7 @@ A further measured caution, which is why ``DenseSolver`` does NOT use
 Python call overhead alone.  A factor/solve split only pays when the factors are
 reused, and on this code path they are not: see the note on ``factor()`` below.
 """
+import functools
 from abc import ABC, abstractmethod
 
 import numpy
@@ -67,6 +68,123 @@ def lu_solve(lu_and_piv, b, trans=0):
         return x
     raise ValueError(f'illegal value in {-info}th argument of internal '
                      'gesv|posv')
+
+
+_NPLU = {}
+
+
+def _numpy_lapack():
+    """`(ctypes, dgesv, dgetrs)` of the OpenBLAS numpy itself loaded
+    (`numpy.libs/libscipy_openblas64_*.so`, ILP64), or None."""
+    if 'f' not in _NPLU:
+        _NPLU['f'] = None
+        try:
+            import ctypes
+            import glob
+            import os
+            d = os.path.join(os.path.dirname(numpy.__file__), '..', 'numpy.libs')
+            paths = glob.glob(os.path.join(d, 'libscipy_openblas64_*.so'))
+            if paths:
+                lib = ctypes.CDLL(os.path.realpath(paths[0]))
+                gesv, getrs = lib.scipy_dgesv_64_, lib.scipy_dgetrs_64_
+                gesv.restype = getrs.restype = None
+                _NPLU['f'] = (ctypes, gesv, getrs)
+        except (OSError, AttributeError):
+            pass
+    return _NPLU['f']
+
+
+def _csc_matvec():
+    """SciPy's own `csc_matvec` (`scipy.sparse._sparsetools`: what a CSC
+    matrix's `dot` with a vector runs), or None."""
+    if 'mv' not in _NPLU:
+        _NPLU['mv'] = None
+        try:
+            from scipy.sparse import _sparsetools
+            _NPLU['mv'] = _sparsetools.csc_matvec
+        except (ImportError, AttributeError):
+            pass
+    return _NPLU['mv']
+
+
+def _csc_dot(mv, n, Ap, Ai, data, x):
+    """``csc_matrix((data, Ai, Ap)).dot(x)`` for a complex128 vector `x`:
+    SciPy's `_matmul_vector` -- a zero vector, then `csc_matvec` into it."""
+    y = numpy.zeros(n, dtype=numpy.complex128)
+    mv(n, n, Ap, Ai, data, x, y)
+    return y
+
+
+def _csc_of_dense(A, mv):
+    """`ComplexKLUSolver.prepare`'s record of a dense square complex128 `A`
+    without SciPy's construction (382 k instructions a call on the PSP
+    stage): the arrays ``csc_matrix(A).astype(complex128)`` holds -- the
+    nonzeros (a NaN is one, a signed zero is not) column by column, rows
+    ascending, COPIED: no arithmetic -- and its `dot` as SciPy runs it
+    (`_csc_dot`)."""
+    n = A.shape[0]
+    At = A.T
+    nz = At != 0
+    Ap = numpy.zeros(n + 1, dtype=numpy.int32)
+    Ap[1:] = numpy.cumsum(nz.sum(axis=1))
+    Ai = numpy.ascontiguousarray(nz.nonzero()[1], dtype=numpy.int32)
+    data = At[nz]
+    return (functools.partial(_csc_dot, mv, n, Ap, Ai, data), n, Ap, Ai,
+            data.view(numpy.float64), (n, Ap.tobytes(), Ai.tobytes()))
+
+
+class NumpyLU:
+    """THE FACTORISATION `numpy.linalg.solve` MAKES, KEPT (speed round 10,
+    B3.1): `numpy.linalg.solve(A, b)` for every real 1-D `b`, bit for bit,
+    with `A` factored once.  The first `solve` IS numpy's call -- its own
+    OpenBLAS's `dgesv` on a Fortran copy of `A` and a copy of `b` -- and
+    keeps the factors; each later one is that library's `dgetrs` against
+    them.  ⚠ NOT `dgetrf` FIRST: `dgesv` with one right-hand side factors
+    on one thread below 10000 unknowns, a `dgetrf` of 100 unknowns or more
+    on several, and their bits differ (210 of 360 solves from 100 to 1000
+    unknowns; `dgesv` then `dgetrs`: 2920 of 2920 the same from 1 to 1000,
+    threaded).  Not SciPy's `lu_factor`: SciPy's OpenBLAS rounds
+    differently.  A singular `A` (`info` > 0) raises numpy's
+    `LinAlgError('Singular matrix')` at every `solve`, as numpy's solve
+    would.  `make` returns None where numpy's library is not found."""
+
+    __slots__ = ('_a', '_ct', '_gesv', '_getrs', '_info', '_p', 'n')
+
+    @classmethod
+    def make(cls, A):
+        f = _numpy_lapack()
+        if f is None:
+            return None
+        ctypes, gesv, getrs = f
+        self = cls()
+        a = numpy.array(A, dtype=numpy.float64, order='F', copy=True)
+        n = self.n = a.shape[0]
+        ipiv = numpy.zeros(n, dtype=numpy.int64)
+        nn = ctypes.c_int64(n)
+        ## (each `byref` and `data_as` holds its object: the buffers live
+        ## as long as these arguments)
+        self._p = (ctypes.byref(ctypes.c_char(b'N')), ctypes.byref(nn),
+                   ctypes.byref(ctypes.c_int64(1)), a.ctypes.data_as(ctypes.c_void_p),
+                   ipiv.ctypes.data_as(ctypes.c_void_p), ctypes.c_size_t(1))
+        self._a, self._info = (a, ipiv), None
+        self._ct, self._gesv, self._getrs = ctypes, gesv, getrs
+        return self
+
+    def solve(self, b):
+        """``numpy.linalg.solve(A, b)`` for a real 1-D `b` of the size."""
+        ct = self._ct
+        trans, nn, one, a, ipiv, tl = self._p
+        x = numpy.array(b, dtype=numpy.float64, copy=True)
+        info = ct.c_int64(0)
+        if self._info is None:
+            self._gesv(nn, one, a, nn, ipiv, x.ctypes.data_as(ct.c_void_p), nn, ct.byref(info))
+            self._info = info.value
+        elif self._info == 0:
+            self._getrs(trans, nn, one, a, nn, ipiv, x.ctypes.data_as(ct.c_void_p), nn,
+                        ct.byref(info), tl)
+        if self._info > 0:
+            raise numpy.linalg.LinAlgError('Singular matrix')
+        return x
 
 
 class _Factored(object):
@@ -583,6 +701,9 @@ class ComplexKLUSolver(object):
         self._pattern = None
         self._symbolic = None
         self._numeric = None
+        ## the `prepare` record whose values the numeric holds as a REFACTOR
+        ## (`solve_prepared`), or None
+        self._fresh = None
         self.analyses = 0
         self.factors = 0
         self.refactors = 0
@@ -590,6 +711,30 @@ class ComplexKLUSolver(object):
 
     def _ptr(self, arr, ctype):
         return arr.ctypes.data_as(self._ct.POINTER(ctype))
+
+    def prepare(self, A):
+        """``A`` as `solve` marshals it -- its product with a vector (the
+        residual check's), its CSC column pointers, row indices and packed
+        values, and the pattern key -- for a caller solving several
+        right-hand sides against ONE matrix (`solve_prepared`: the Radau
+        transform's frozen complex factor).
+
+        A dense square complex128 `A` is marshalled by numpy
+        (`_csc_of_dense`, speed round 10, B3.1): the arrays below, and the
+        product as SciPy runs it.  Anything else goes through SciPy."""
+        numpy = self._np
+        mv = _csc_matvec()
+        if (mv is not None and type(A) is numpy.ndarray and A.dtype == numpy.complex128
+                and A.ndim == 2 and A.shape[0] == A.shape[1]):
+            return _csc_of_dense(A, mv)
+        ## accept either a dense array or a scipy.sparse matrix
+        Acsc = self._sp.csc_matrix(A).astype(numpy.complex128)
+        n = Acsc.shape[0]
+        Ap = numpy.ascontiguousarray(Acsc.indptr, dtype=numpy.int32)
+        Ai = numpy.ascontiguousarray(Acsc.indices, dtype=numpy.int32)
+        ## packed complex: view the complex128 data as 2*nnz interleaved doubles
+        Ax = numpy.ascontiguousarray(Acsc.data, dtype=numpy.complex128).view(numpy.float64)
+        return (Acsc.dot, n, Ap, Ai, Ax, (n, Ap.tobytes(), Ai.tobytes()))
 
     def solve(self, A, b):
         """Solve the complex system ``A x = b`` and return ``x`` (complex).
@@ -599,24 +744,32 @@ class ComplexKLUSolver(object):
         when the residual shows the reused pivots have gone bad -- the same
         validated-not-trusted rule :class:`KLUSolver` uses.
         """
+        return self.solve_prepared(self.prepare(A), b)
+
+    def solve_prepared(self, prep, b):
+        """`solve` for the matrix `prepare` marshalled into `prep`.
+
+        ONE MATRIX, SEVERAL RIGHT-HAND SIDES (speed round 10, B3.1): where
+        the numeric factorisation already holds a REFACTOR of this very
+        `prep`'s values (`_fresh`), the refactor `solve` would repeat is not
+        made -- the same values with the same pivots give the same factors,
+        so the same solution bits (measured 8000 of 8000 against a refactor
+        every call).  A full factor is always followed by one refactor at
+        the next call, as `solve` would make it; the residual check and its
+        fallback run on every reused solve, as before.  `refactors` counts
+        the refactors made."""
         numpy = self._np
         ctypes = self._ct
-        ## accept either a dense array or a scipy.sparse matrix
-        Acsc = self._sp.csc_matrix(A).astype(numpy.complex128)
-        n = Acsc.shape[0]
-        Ap = numpy.ascontiguousarray(Acsc.indptr, dtype=numpy.int32)
-        Ai = numpy.ascontiguousarray(Acsc.indices, dtype=numpy.int32)
-        ## packed complex: view the complex128 data as 2*nnz interleaved doubles
-        Ax = numpy.ascontiguousarray(Acsc.data, dtype=numpy.complex128).view(numpy.float64)
+        dot, n, Ap, Ai, Ax, key = prep
         rhs = numpy.ascontiguousarray(numpy.asarray(b, dtype=numpy.complex128).ravel())
 
-        key = (n, Ap.tobytes(), Ai.tobytes())
         reused = key == self._pattern and self._symbolic and self._numeric
         if not reused:
             self._symbolic = self._lib.klu_analyze(
                 n, self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
                 ctypes.byref(self._common))
             self.analyses += 1
+            self._fresh = None
             if not self._symbolic:
                 raise numpy.linalg.LinAlgError('klu_analyze failed (singular structure?)')
             self._numeric = self._lib.klu_z_factor(
@@ -627,7 +780,8 @@ class ComplexKLUSolver(object):
             if not self._numeric:
                 raise numpy.linalg.LinAlgError('Singular matrix')
             self._pattern = key
-        else:
+        elif self._fresh is not prep:
+            self._fresh = None
             ok = self._lib.klu_z_refactor(
                 self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
                 self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._symbolic),
@@ -635,6 +789,7 @@ class ComplexKLUSolver(object):
             self.refactors += 1
             if not ok:
                 raise numpy.linalg.LinAlgError('Singular matrix')
+            self._fresh = prep
 
         x = rhs.copy()
         xv = x.view(numpy.float64)
@@ -645,9 +800,10 @@ class ComplexKLUSolver(object):
 
         if reused:
             scale = max(float(numpy.abs(rhs).max()), 1e-300)
-            resid = float(numpy.abs(Acsc.dot(x) - rhs).max()) / scale
+            resid = float(numpy.abs(dot(x) - rhs).max()) / scale
             if not (resid <= self.REFACTOR_RESIDUAL_TOL):
                 self.residual_fallbacks += 1
+                self._fresh = None
                 self._numeric = self._lib.klu_z_factor(
                     self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
                     self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._symbolic),
