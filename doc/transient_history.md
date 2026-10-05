@@ -4125,3 +4125,36 @@ and solve failures are planted in the C's function pointers instead.
 Measured against the parent
 (1e4b6c67): the radau PSS of the PSP stage 1.168 G -> 0.805 G instructions
 (-31.1 %), -26.5 % in wall time; nothing else moved.
+
+## `_tran_radau.py`, `_tran_branch.py` -- a Radau step's stage passes fused; the screen's proxy (2026-10-05, speed round 10's B3.2)
+
+### `_RadauStages._stage_end_passes`, `_PeriodWalks._walk_stage`'s hint, `Transient._branch_screen`
+
+A Radau step's stages are read by three readers after its Newton: the
+branch screen (`C` at every stage), the step end (`_finish_stage_step`:
+`q`, `i`, `C`, `G` at `x_{n+1}`) and, in a PSS walk that factors the step
+at once, the shooting (`_C_at`, `_G_at` at every stage).  Each evaluated
+on its own, through the circuit's passes: the device kernels ran twice
+at the same state.  The memo (`_memo_get`/`_memo_put`, rolled per step)
+was already the place where one reader leaves an evaluation for the
+next; `_stage_end_passes` fills it first, in one core call a stage --
+`qiCG` at `x_{n+1}`, `CG` at the others where the walk says it will read
+`G` there (`_stage_G_read`, set around `solve_timestep` alone, so a step
+that raises leaves it down) -- and every reader then finds its own.
+Bit for bit: the core's passes are the circuit's own, and the memo
+records only where a recorded value is the one re-evaluating gives
+(`_memo_ok`).  Not on the dense path, whose Newton records all four
+passes at every assembly's stages already.
+
+What made the gain FUSION rather than the core: for PSP the core's single
+passes cost what the circuit's own do -- the kernel is the cost -- while
+the kernels' shared statements make `CG` 301 k against 476 k apart.
+
+The screen's proxy took `np.max(np.abs(C))` three times, the diagonal's
+`abs` separately and the positive mask twice; each is now made once, the
+same reductions of the same arrays.  Its oracle is the old code, verbatim,
+in the test, on every branch enumerated: a drawn test missed a planted
+`>=` in the positive mask (the branch wants a zero beside large diagonal
+entries and no NaN, rare in draws).  Measured against the
+parent (584411d3): the radau PSS of the PSP stage -14.9 % instructions,
+-18.7 % in wall time; gear, through the proxy, -4..-6 %.

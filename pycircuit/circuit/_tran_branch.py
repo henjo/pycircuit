@@ -131,18 +131,22 @@ class _BranchCheck:
         ## quiet where `C` is zero for the whole run -- and for a linear `C`
         ## the two scales are one number.
         ## History: `doc/transient_history.md`, `Transient._branch_screen`.
-        ref = max(getattr(self, '_branch_cmax', 0.0),
-                  float(np.max(np.abs(C))))
+        ## (each reduction made once -- `|C|`, its largest entry, its
+        ## diagonal, the positive part -- where they were made up to three
+        ## times: the same reductions of the same arrays, so the same
+        ## values; speed round 10, B3.2)
+        Ca = np.abs(C)
+        nrm = float(Ca.max())
+        ref = max(getattr(self, '_branch_cmax', 0.0), nrm)
         self._branch_cmax = ref
-        d = np.abs(np.diag(C))
-        if float(np.max(np.abs(C))) > self.BRANCH_SCREEN_TOL * ref \
-                and float(np.max(d)) > self.BRANCH_SCREEN_TOL * ref:
+        d = Ca.diagonal()
+        tol = self.BRANCH_SCREEN_TOL * ref
+        if nrm > tol and float(d.max()) > tol:
             ## nothing has collapsed at the cheap level
-            if float(np.min(d[d > 0.0]) if np.any(d > 0.0) else 0.0) \
-                    > 1e-6 * ref:
+            pos = d[d > 0.0]
+            if (float(pos.min()) if pos.size else 0.0) > 1e-6 * ref:
                 return False, None
-        nrm = float(np.max(np.abs(C)))
-        if nrm <= self.BRANCH_SCREEN_TOL * ref:
+        if nrm <= tol:
             return True, None            # C has collapsed entirely
         U, sv, _Vt = np.linalg.svd(C)
         r = int((sv > self.BRANCH_SCREEN_TOL * ref).sum())

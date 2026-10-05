@@ -887,10 +887,21 @@ class _PeriodWalks(object):
         _cabs = tab[2] if Pk is not None else None
         _tau = np.zeros(hsens.shape[1]) if Pk is not None else None
         steps = [] if keep else None
+        ## (each step's stages are read (`_C_at`, `_G_at`) right after it
+        ## where the walk factors it: the step records their `C` and `G` in
+        ## one core call a stage, `Transient._stage_end_passes`, speed round
+        ## 10, B3.2; a junction's `G` is PCNR's, never the memo's)
+        tr_in = self._transient()
+        read_now = (bool(dense or keep or want_dT or Pk is not None or stage_record is None)
+                    and not self._pcnr_junctions())
         for _j, t in enumerate(times[1:]):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
-            x = copy(self.solve_timestep(xn, t, h))
+            tr_in._stage_G_read = read_now
+            try:
+                x = copy(self.solve_timestep(xn, t, h))
+            finally:
+                tr_in._stage_G_read = False
             if record is not None:
                 record(x, t)
             x_prev = xn

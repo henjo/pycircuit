@@ -32,6 +32,10 @@ from pycircuit.circuit.simwarnings import (
 #: the transform's frozen factors made once a step (`_radau_frozen`, speed
 #: round 10, B3.1); env `PYCIRCUIT_RADAU_FROZEN=0` makes them every iteration
 RADAU_FROZEN = os.environ.get('PYCIRCUIT_RADAU_FROZEN', '1') != '0'
+#: the stages' readers' passes in one core call a stage (`_stage_end_passes`,
+#: speed round 10, B3.2); env `PYCIRCUIT_STAGE_FUSE=0` leaves each reader its
+#: own evaluation
+STAGE_FUSE = os.environ.get('PYCIRCUIT_STAGE_FUSE', '1') != '0'
 #: numpy's solve as imported: a caller's stand-in takes the per-iteration path
 _NP_SOLVE = np.linalg.solve
 _FROZEN = {}
@@ -736,6 +740,13 @@ class _RadauStages:
         The paths with their own Newton (PCNR, the transform) pass None: the
         branch check's confirmation then re-solves the same step equation with
         the dense coupled solver, built only if the screen fires."""
+        ## (the passes the step's readers make at its stages, one core call
+        ## a stage: `_stage_end_passes`, speed round 10, B3.2 -- on the paths
+        ## with a Newton of their own; the dense Newton has recorded all
+        ## four passes at every assembly's stages, the converged ones too)
+        if solver is None:
+            self._stage_end_passes(Y)
+
         ## BRANCH DETECTION on the COUPLED path.  ⚠ This path does NOT go
         ## through `self._newton`, so the check wired there does not reach
         ## the fully-implicit method -- which is the PSS default.  Same screen, same
@@ -764,6 +775,46 @@ class _RadauStages:
             self._rk_est = self._radau_error_estimate(x0, Y, ctx.tn, ctx.h,
                                                       ctx.src, ctx.arr)
         return xnp1, None, J, None
+
+    def _stage_end_passes(self, Y):
+        """THE STAGES' READERS' PASSES, ONE CORE CALL A STAGE (speed round
+        10, B3.2).  At the step's end ``x_{n+1} = Y[-1]`` the branch screen
+        reads `C` and `_finish_stage_step` then evaluates `q`, `i` and `G`:
+        two evaluations of one state, the device kernels run twice (on the
+        PSP stage `C` 199 k instructions and `qiG` ~290 k; `qiCG` in one
+        call 308 k: the kernels share their statements).  Here the passes
+        the memo lacks there are made in one call (`_tran_core.passes`, bit
+        for bit the circuit's own) and recorded (`_memo_put`), and each
+        reader finds its own in the memo.  At the other stages the screen
+        reads `C` and -- where the shooting walk factors the step at once
+        (`_stage_G_read`, set around the step by `_walk_stage`) -- the
+        shooting reads `G` (`_InnerTransient._G_at`): `CG` in one call
+        there.  Only where the memo records (`_memo_ok`: a rolling memo, no
+        stateful limiter, no bypass -- a recorded value is the one
+        re-evaluating gives); where the core does not serve, each reader
+        evaluates as before (counted)."""
+        if not STAGE_FUSE:
+            return _paths.no('radau.fuse:off')
+        if not self._memo_ok():
+            return _paths.no('radau.fuse:memo')
+        get, put = self._memo_get, self._memo_put
+        x = Y[-1]
+        rec = get(x)
+        need = ''.join(k for k in 'qiCG' if rec is None or k not in rec)
+        if need:
+            vals = _tran_core.passes(self, x, need)
+            if vals is None:
+                return _paths.no('radau.fuse:core')
+            put(x, vals)
+        if self.__dict__.get('_stage_G_read'):
+            for y in Y[:-1]:
+                rec = get(y)
+                if rec is None or ('C' not in rec and 'G' not in rec):
+                    vals = _tran_core.passes(self, y, 'CG')
+                    if vals is None:
+                        return _paths.no('radau.fuse:core')
+                    put(y, vals)
+        _paths.COUNTS['radau.fuse:served'] += 1
 
     def _radau_error_estimate(self, xn, Y, tn, h, src, arr):
         """The filtered embedded 5(3) error estimate for one Radau IIA(3) step

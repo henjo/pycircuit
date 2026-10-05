@@ -45,6 +45,7 @@ DECLINING = [
     (_tran_newton_c, 'solve'),
     (_tran_radau_c, 'solve'),
     (_tran_radau, '_RadauStages._radau_frozen'),
+    (_tran_radau, '_RadauStages._stage_end_passes'),
     (_tran_radau_tc, 'solve'),
     (_tran_lte_c, 'max_error'),
     (_hdl_batch, 'Batch.run'),
