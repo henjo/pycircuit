@@ -199,6 +199,7 @@ PAIRS = {
                       'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_solver',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_error_estimate',
                       'pycircuit.circuit._tran_radau:_RadauStages._rk_step_transformed',
+                      'pycircuit.circuit._tran_radau:_RadauStages._transform_loop',
                       'pycircuit.circuit._tran_stages:_SequentialStages._solve_implicit_stage',
                       'pycircuit.circuit._tran_stages:_SequentialStages._finish_stage_step'],
         'twin': ['pycircuit.circuit._tran_core:passes',
@@ -234,6 +235,25 @@ PAIRS = {
                  'pycircuit.circuit._tran_radau:_frozen_chain',
                  'pycircuit.circuit._tran_radau:_RadauStages._radau_frozen',
                  'pycircuit.circuit.linearsolver:ComplexKLUSolver.solve_prepared'],
+    },
+    'the transform Newton and its C': {
+        'why': 'the C runs `_transform_loop` with the step\'s frozen factors: the stages\' '
+               '`q` and `i` through the core, `_coupled_stage_system`\'s residual, '
+               '`_transform_rhs` and `_transform_back` with numpy\'s complex product as '
+               '`cmul_mode` reads it, the kept LU\'s `dgesv`-then-`dgetrs`, '
+               '`solve_prepared`\'s refactor once a record and its residual check '
+               '(decided with a margin), the walk, the test after the update',
+        'reference': ['pycircuit.circuit._tran_radau:_RadauStages._transform_loop',
+                      'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_system',
+                      'pycircuit.circuit._tran_radau:_RadauStages._stages_converged',
+                      'pycircuit.circuit._tran_radau:_FrozenTransform.solve',
+                      'pycircuit.circuit._tran_radau:_transform_rhs',
+                      'pycircuit.circuit._tran_radau:_transform_back',
+                      'pycircuit.circuit.linearsolver:NumpyLU.solve',
+                      'pycircuit.circuit.linearsolver:ComplexKLUSolver.solve_prepared'],
+        'twin': ['pycircuit.circuit._tran_radau_tc:RADAU_TC',
+                 'pycircuit.circuit._tran_radau_tc:solve',
+                 'pycircuit.circuit._tran_radau_tc:cmul_mode'],
     },
     'numpy\'s solve and its kept LU': {
         'why': 'the kept LU is numpy\'s own call -- its OpenBLAS\'s `dgesv` on a '
@@ -289,9 +309,10 @@ RECORD = {
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
     'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),
     'the readiness reads and their stamps': ('48b75bd9cace', 'e52c723f0eb8'),
-    "the stage paths' passes and the core's": ('eeae47fa06ce', 'a3ae0f6c8d98'),
+    "the stage paths' passes and the core's": ('a79442c01c65', 'a3ae0f6c8d98'),
     'the coupled stage Newton and its C': ('5f7c56901f9a', 'e9156eef9c41'),
     'the transform solve and its frozen form': ('945834192f2a', 'f7146ba0f56e'),
+    'the transform Newton and its C': ('d7c24c3c7e7d', 'b4413fe8ec29'),
     "numpy's solve and its kept LU": ('1f8908b895c7', 'f0bcd0f84207'),
     "the complex factor's CSC, SciPy's and numpy's": ('9de9a726e6a5', '9ce76450fa2a'),
 }

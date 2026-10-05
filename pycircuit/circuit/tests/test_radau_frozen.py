@@ -18,7 +18,7 @@ import scipy.sparse as sp
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from pycircuit.circuit import _paths, _tran_radau, circuit
+from pycircuit.circuit import _paths, _tran_radau, _tran_radau_tc, circuit
 from pycircuit.circuit import linearsolver as LS
 from pycircuit.circuit._tran_radau import _RadauStages
 from pycircuit.circuit.integrator import RadauIIA3Integrator
@@ -48,8 +48,10 @@ def _others(d):
 
 
 def _run(build, on, make=None, **kw):
-    old = _tran_radau.RADAU_FROZEN
-    _tran_radau.RADAU_FROZEN = on
+    ## (the frozen factors' own answers: the transform's Newton in C off --
+    ## it takes the frozen factors itself, `test_radau_tc`)
+    old, old_tc = _tran_radau.RADAU_FROZEN, _tran_radau_tc.ENABLED
+    _tran_radau.RADAU_FROZEN, _tran_radau_tc.ENABLED = on, False
     try:
         with warnings.catch_warnings(record=True) as W:
             warnings.simplefilter('always')
@@ -60,7 +62,7 @@ def _run(build, on, make=None, **kw):
             res = tr.solve(**kw)
             d = _paths.since(before)
     finally:
-        _tran_radau.RADAU_FROZEN = old
+        _tran_radau.RADAU_FROZEN, _tran_radau_tc.ENABLED = old, old_tc
     st_ = {k: getattr(tr.statistics, k) for k in tr.statistics.__slots__ if 'seconds' not in k}
     return (np.asarray(res.x, float).tobytes(), np.asarray(res.sweep_values, float).tobytes(),
             st_, sorted(str(w.message) for w in W), _others(d)), d
@@ -98,8 +100,8 @@ def test_a_radau_pss_is_the_same_with_the_frozen_transform_off():
     from pycircuit.circuit.shooting import PSS
 
     def run(on):
-        old = _tran_radau.RADAU_FROZEN
-        _tran_radau.RADAU_FROZEN = on
+        old, old_tc = _tran_radau.RADAU_FROZEN, _tran_radau_tc.ENABLED
+        _tran_radau.RADAU_FROZEN, _tran_radau_tc.ENABLED = on, False
         try:
             with warnings.catch_warnings(record=True) as W:
                 warnings.simplefilter('always')
@@ -109,7 +111,7 @@ def test_a_radau_pss_is_the_same_with_the_frozen_transform_off():
                 p.solve(period=1e-6, timestep=1e-6 / 40, maxiterations=60)
                 d = _paths.since(before)
         finally:
-            _tran_radau.RADAU_FROZEN = old
+            _tran_radau.RADAU_FROZEN, _tran_radau_tc.ENABLED = old, old_tc
         wf = p.waveform
         return (np.asarray(wf[0], float).tobytes(), np.asarray(wf[1], float).tobytes(),
                 sorted(str(w.message) for w in W), _others(d)), d

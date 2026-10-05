@@ -28,6 +28,7 @@ from pycircuit.circuit import (
     _tran_newton_c,
     _tran_radau,
     _tran_radau_c,
+    _tran_radau_tc,
 )
 from pycircuit.circuit import circuit as cm
 from pycircuit.circuit.transient import Transient
@@ -44,6 +45,7 @@ DECLINING = [
     (_tran_newton_c, 'solve'),
     (_tran_radau_c, 'solve'),
     (_tran_radau, '_RadauStages._radau_frozen'),
+    (_tran_radau_tc, 'solve'),
     (_tran_lte_c, 'max_error'),
     (_hdl_batch, 'Batch.run'),
     (_hdl_climit, 'CLimitKernel.__call__'),

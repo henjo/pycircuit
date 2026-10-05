@@ -99,6 +99,7 @@ SWITCHES = (
     ('pycircuit.circuit._tran_radau_c', 'ENABLED'),
     ('pycircuit.circuit._tran_radau_c', 'MAXA'),
     ('pycircuit.circuit._tran_radau', 'RADAU_FROZEN'),
+    ('pycircuit.circuit._tran_radau_tc', 'ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'FAST_ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'FUSE_ENABLED'),

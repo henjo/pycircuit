@@ -4077,3 +4077,51 @@ as `_matmul_vector` calls it.  Without it the stage read -5.8 % on the
 radau PSS (its line -7 %); with it -10.3 %.  Measured against the parent
 (3fb7ec26): the radau PSS of the PSP stage 1.303 G -> 1.169 G instructions
 (-10.3 %), -13.2 % in wall time; nothing else moved.
+
+## `_tran_radau_tc.py` -- the transform's Newton in C (2026-10-05, speed round 10's B3.3)
+
+### (module docstring), `_RadauStages._transform_loop`
+
+With its factors made once a step (B3.1), the transform's Newton loop was
+half of the PSP stage's radau PSS step: 3.5 M instructions of Python and
+numpy around ~0.4 M of device kernels.  The loop became a method of its
+own (`_transform_loop`, its statements unchanged) so a C call could stand
+in for it and be tested against it, and `_tran_radau_tc.solve` runs it in
+C: the stages' passes through the evaluate core, B2's residual, the
+transform's right-hand sides and update, numpy's kept LU and the complex
+factor's KLU on their own handles, the walk, the convergence test.
+
+Two things it had to READ rather than assume, each found before the C was
+written:
+
+- NUMPY'S COMPLEX PRODUCT FUSES ON THIS BOX.  numpy 2.5.2's X86_V3 loops
+  (AVX2, FMA3) compute `re = fma(ar, br, -(ai*bi))` and `im = fma(ar, bi,
+  ai*br)`, at every position of every length (20 000 of 20 000; the
+  separate products differed in 958).  A build or CPU without FMA would
+  multiply separately, so `cmul_mode` asks numpy itself, once, on inputs
+  where the two forms round apart -- and on signed zeros and underflow,
+  where a real vector cast to complex (the right-hand sides' `P F`) tells
+  them apart only by the sign of a zero -- and the C takes the form numpy
+  showed (the backend compiles with `-ffp-contract=off`: `fma` is called,
+  never inferred).  Neither form: the path is off.
+- NUMPY'S COMPLEX `abs` IS ITS OWN.  It differs from `hypot` in ~10 % of
+  values, so the residual check `solve_prepared` makes (fall back to a
+  fresh factor past 1e-8) cannot be reproduced bit for bit; it can be
+  DECIDED outside the band the two roundings can reach (`32 (m + 4) eps`
+  of `max_k sum_j |A_kj||x_j|` over `max|b|`, plus `16 eps` of the
+  residual), and anything inside the band or past the tolerance is handed
+  back.  The residual sits ~1e-15 below a 1e-8 tolerance in practice.
+
+The hand-back protocol leans on B3.1's two facts: a refactor of the same
+values and pivots repeats its bits, and `dgetrs` on `dgesv`'s factors is
+`dgesv`'s solve -- so the factorisations' state the C leaves (the kept LU
+after its first `dgesv`, the numeric holding the record's refactor) is
+the state the Python loop would have left, and a Python loop run after a
+hand-back makes the C's iterates again.  A test planted a zeroed record
+expecting KLU's refactor to fail; on this block structure the refactor
+SUCCEEDS (a 3x3 probe's failed), the solve is not finite and the residual
+check hands back -- the expectation was wrong, not the C, and the refactor
+and solve failures are planted in the C's function pointers instead.
+Measured against the parent
+(1e4b6c67): the radau PSS of the PSP stage 1.168 G -> 0.805 G instructions
+(-31.1 %), -26.5 % in wall time; nothing else moved.

@@ -6,7 +6,13 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint, _paths, _tran_core, _tran_radau_c
+from pycircuit.circuit import (
+    _evalhint,
+    _paths,
+    _tran_core,
+    _tran_radau_c,
+    _tran_radau_tc,
+)
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import (
     limit_sync,
@@ -1003,8 +1009,7 @@ class _RadauStages:
         path."""
         ctx = self._coupled_stage_context(x0, t, provided_function)
         h, iref = ctx.h, ctx.iref
-        arr, red, src, tstage, m = (ctx.arr, ctx.red, ctx.src, ctx.tstage,
-                                    ctx.m)
+        arr, src, tstage = ctx.arr, ctx.src, ctx.tstage
         epar = self.epar
         tk = self.toolkit
         xn = x0
@@ -1050,7 +1055,36 @@ class _RadauStages:
         ## 1.09e-4 V off the exact solution on a diode driven to 0.85 V.
         lims = stateful_limiters(self.cir)
         S = self._stage_limiter_states(Y, lims, epar)
-        converged = False
+        ## (the loop in one C call where it serves -- its iterates, the
+        ## source memo and the two factorisations' state as the loop leaves
+        ## them: `_tran_radau_tc`, speed round 10, B3.3; None -- declined or
+        ## handed back, and the loop runs from the same seed)
+        _nobypass = float(getattr(epar, 'bypasstol', -1.0) or -1.0) < 0.0
+        Yc = _tran_radau_tc.solve(self, ctx, fz, Y, src, provided_function, lims,
+                                  _nobypass, reltol, abstol, maxit)
+        if Yc is not None:
+            Y = Yc
+        elif not self._transform_loop(ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, maxit):
+            raise NoConvergenceError(
+                'Radau IIA(3) transform (simplified Newton) did not converge')
+        ## the step end (the last stage) is what the epilogue reads
+        if S[2] is not None:
+            state_restore(S[2])
+        return self._finish_radau(ctx, x0, t, provided_function, Y)
+
+    def _transform_loop(self, ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, maxit):
+        """The transform's simplified Newton from the stages `Y` (updated in
+        place, as their limiter states `S`): True once converged within
+        `maxit` iterations.  Per iteration each stage's `q` and `K` at its
+        own limiting state, the residual, the transform's solve (the step's
+        frozen factors, `fz`; None: made each iteration), and per stage the
+        step, the limiter and its snapshot; the test after the update.
+        `_tran_radau_tc` runs it in C where it serves."""
+        h, iref = ctx.h, ctx.iref
+        arr, red, src, tstage, m = (ctx.arr, ctx.red, ctx.src, ctx.tstage,
+                                    ctx.m)
+        epar = self.epar
+        tk = self.toolkit
         for _ in range(maxit):
             ## each stage's q and K read ONCE, at its own limiting state
             qi_all, Ki_all = [], []
@@ -1082,12 +1116,5 @@ class _RadauStages:
                 step_i = red(np.asarray(Y_new) - np.asarray(Y_prev))
                 scale = max(scale, np.max(np.abs(step_i)))
             if self._stages_converged(Y, S, lims, scale, reltol, abstol, red):
-                converged = True
-                break
-        if not converged:
-            raise NoConvergenceError(
-                'Radau IIA(3) transform (simplified Newton) did not converge')
-        ## the step end (the last stage) is what the epilogue reads
-        if S[2] is not None:
-            state_restore(S[2])
-        return self._finish_radau(ctx, x0, t, provided_function, Y)
+                return True
+        return False
