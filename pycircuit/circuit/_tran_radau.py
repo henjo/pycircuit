@@ -4,7 +4,7 @@ theme of `Transient` (see `transient.py`).
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint, _paths, _tran_core
+from pycircuit.circuit import _evalhint, _paths, _tran_core, _tran_radau_c
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import (
     limit_sync,
@@ -309,6 +309,14 @@ class _RadauStages:
             makes the deformed problem a real circuit (every node shunted to
             ground by `g`), so the ladder tracks a physical branch.
             """
+            if not gshunt and not damped:
+                ## (the undamped Newton in one C call where it serves, the
+                ## memo left as below: `_tran_radau_c`, speed round 9, B2;
+                ## None -- declined or handed back, nothing left behind)
+                Yc = _tran_radau_c.solve(self, ctx, seed, src, provided_function, lims,
+                                         _nobypass, reltol, abstol, maxit)
+                if Yc is not None:
+                    return Yc
             Y = [np.array(y, dtype=float) for y in seed]
             ## ⚠ EACH STAGE OWNS ITS LIMITING STATE.  The three stages are
             ## solved SIMULTANEOUSLY, and a stateful limiter (`Diode`) keeps

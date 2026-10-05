@@ -204,6 +204,20 @@ PAIRS = {
         'twin': ['pycircuit.circuit._tran_core:passes',
                  'pycircuit.circuit._tran_core:CORE_C'],
     },
+    'the coupled stage Newton and its C': {
+        'why': 'the C runs `_stage_newton` undamped and unshunted: the assembly\'s '
+               'operations and order over the full width, numpy\'s solve, the '
+               'reference row\'s `+ 0.0`, the walk against the previous stage, the '
+               'convergence test after the assembly, every assembly\'s memo record '
+               'and the source memo\'s calls and hits',
+        'reference': ['pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_solver',
+                      'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_system',
+                      'pycircuit.circuit._tran_radau:_RadauStages._stages_converged',
+                      'pycircuit.circuit._tran_companion:_CompanionModel._memo_put',
+                      'pycircuit.circuit._tran_companion:_CompanionModel._source_at'],
+        'twin': ['pycircuit.circuit._tran_radau_c:RADAU_C',
+                 'pycircuit.circuit._tran_radau_c:solve'],
+    },
     'the readiness reads and their stamps': {
         'why': 'a stamp stands for a full check while no dict it read has changed: '
                'every read of the plan lookup, the generated-pass test, the pack, a '
@@ -239,7 +253,8 @@ RECORD = {
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
     'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),
     'the readiness reads and their stamps': ('48b75bd9cace', 'e52c723f0eb8'),
-    "the stage paths' passes and the core's": ('5a1404ac486d', 'a3ae0f6c8d98'),
+    "the stage paths' passes and the core's": ('775ff77bc4cb', 'a3ae0f6c8d98'),
+    'the coupled stage Newton and its C': ('5f7c56901f9a', 'e9156eef9c41'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

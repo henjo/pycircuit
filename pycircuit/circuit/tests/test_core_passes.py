@@ -10,7 +10,7 @@ import warnings
 import numpy as np
 import pytest
 
-from pycircuit.circuit import _paths, _tran_core, circuit
+from pycircuit.circuit import _paths, _tran_core, _tran_radau_c, circuit
 from pycircuit.circuit.elements import Diode, gnd
 from pycircuit.circuit.integrator import (
     ESDIRK43Integrator,
@@ -89,6 +89,9 @@ def test_what_the_passes_decline(monkeypatch):
 
 def _run(build, on, monkeypatch, integ, **kw):
     monkeypatch.setattr(_tran_core, 'CORE_PASSES', on)
+    ## (the stage paths' own passes: Radau's dense Newton in C off -- it
+    ## calls the core itself, `test_radau_c`)
+    monkeypatch.setattr(_tran_radau_c, 'ENABLED', False)
     with warnings.catch_warnings(record=True) as W:
         warnings.simplefilter('always')
         warnings.simplefilter('ignore', ResourceWarning)

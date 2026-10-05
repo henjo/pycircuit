@@ -96,6 +96,8 @@ SWITCHES = (
     ('pycircuit.circuit._watch', 'MAX_ARMS'),
     ('pycircuit.circuit._tran_newton_c', 'ENABLED'),
     ('pycircuit.circuit._tran_lte_c', 'ENABLED'),
+    ('pycircuit.circuit._tran_radau_c', 'ENABLED'),
+    ('pycircuit.circuit._tran_radau_c', 'MAXA'),
     ('pycircuit.circuit._hdl_cse', 'ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'FAST_ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'FUSE_ENABLED'),

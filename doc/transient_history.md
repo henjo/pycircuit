@@ -3984,3 +3984,50 @@ powers are the bits.  The clamp and the periodic rows are untouched.
 Measured against the parent (6f87af70): the PSP stage -5.2 % a step,
 its PSS -3.8 %; bytes and statistics identical; the old code
 transliterated is the test's oracle over 300 random node histories.
+
+## `_tran_radau_c.py` -- Radau's dense stage Newton in C (2026-10-05, speed round 9's B2)
+
+### (module docstring)
+
+Radau IIA(3) is PSS's default method, and with stage 8 (B1) its stages
+took the evaluate core's passes; what remained of a 20-MosLevel1 step
+(5.3 M instructions) was the Newton's Python: `_coupled_stage_system`
+(1.40 M a step, two calls: nine blocks each through `remove_row_col`), the
+passes' wrappers (6 calls), the limiter's wrapper per stage (0.42 M),
+numpy's solve wrapper, the convergence test, the closure's glue.  B0, the
+same system vectorised in guarded Python, was refused at -6.95 % (its line
+-8 %); here the whole undamped, unshunted Newton is one C call -- the
+assembly in `_coupled_stage_system`'s operations and order over the full
+width (Python's `sum` starts at the int 0: `0 + A_i0 K_0` makes a -0.0 a
++0.0, so the C adds `0.0 +` too), numpy's own `scipy_dgesv_64_` on the
+reduced system written column-major as numpy's solve copies it, the
+reference row's `Y_prev + 0.0`, the walk against the previous stage, the
+convergence test after the next assembly, as the Python tests.
+
+What it does not mirror, it bounds or hands back: `Rnorm = sum |R|` (read
+by the undamped Newton only for its overflow warning) by a bound, every
+`|R| < 2^1000`, not numpy's pairwise sum; a floating-point exception in its
+own arithmetic (overflow, invalid, division, underflow -- numpy would warn
+or might) by handing back, after clearing what the core, the walk and
+LAPACK raised (numpy clears before each operation); a non-finite value, a
+LAPACK info, the walk stopping, maxiter, and more assemblies than its
+buffers hold (`MAXA`, 8) likewise.  A hand-back rolls back the source
+memo's entries and counts the C's calls made -- the C Newton's keys plus
+the source plan's (`_tran_newton_c`'s `u_keys`; stage 5's `src.u:*` were
+missing from that list until its switches-off check found a bail's trace)
+-- and the Python Newton runs from the same seed.  Where it converges,
+every assembly's three stages go into the device memo through
+`_memo_put` in the Python's order, and the source memo's hits for every
+later assembly are counted: the transform path, `_finish_stage_step`, the
+next step's `q_n` and PSS read the same records.
+
+The tests drive one captured step's `_stage_newton` (the closure kept by
+a spy on `_coupled_stage_solver`, the memos copied as its Newton found
+them) with drawn seeds, step sizes and entering charges, the C on and
+off: the stages' bytes or the exception, both memos, the counts and the
+warnings the same, and on a hand-back every count but the C's own.
+Measured against the parent (ccd7bb33): the radau 20-MosLevel1 marginal
+step 5.46 M -> 3.20 M instructions (-41.4 %); `--check`, the same step -43.1 %
+in wall time.  The round's lesson from stage 6 (refused: fewer
+instructions, slower in situ) does not touch it: one call stands in for
+milliseconds of Python and numpy a step, not microseconds.

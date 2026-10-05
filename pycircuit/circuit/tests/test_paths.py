@@ -26,6 +26,7 @@ from pycircuit.circuit import (
     _tran_core,
     _tran_lte_c,
     _tran_newton_c,
+    _tran_radau_c,
 )
 from pycircuit.circuit import circuit as cm
 from pycircuit.circuit.transient import Transient
@@ -40,6 +41,7 @@ DECLINING = [
     (_tran_core, '_Core.ready'),
     (_tran_core, 'passes'),
     (_tran_newton_c, 'solve'),
+    (_tran_radau_c, 'solve'),
     (_tran_lte_c, 'max_error'),
     (_hdl_batch, 'Batch.run'),
     (_hdl_climit, 'CLimitKernel.__call__'),
