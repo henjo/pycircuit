@@ -256,6 +256,15 @@ PAIRS = {
                  'pycircuit.circuit._tran_radau_tc:solve',
                  'pycircuit.circuit._tran_radau_tc:cmul_mode'],
     },
+    'the stage block and its one pass': {
+        'why': 'the one pass makes the block loop\'s elementwise products `(h A_ij) G_j` '
+               'and diagonal sums `C_i + ...` in its operand order, placed by one '
+               'transpose and reshape; it declines non-finite blocks (a NaN sum\'s '
+               'payload follows numpy\'s loop, not the operand order) and anything '
+               'that would raise, leaving them to the loop',
+        'reference': ['pycircuit.circuit.shooting._pss_walks:_PeriodWalks._stage_step'],
+        'twin': ['pycircuit.circuit.shooting._pss_walks:_stage_block'],
+    },
     'numpy\'s solve and its kept LU': {
         'why': 'the kept LU is numpy\'s own call -- its OpenBLAS\'s `dgesv` on a '
                'Fortran copy, one right-hand side -- then `dgetrs` on its factors; '
@@ -314,6 +323,7 @@ RECORD = {
     'the coupled stage Newton and its C': ('5f7c56901f9a', 'e9156eef9c41'),
     'the transform solve and its frozen form': ('945834192f2a', 'f7146ba0f56e'),
     'the transform Newton and its C': ('d7c24c3c7e7d', 'b4413fe8ec29'),
+    'the stage block and its one pass': ('a177e4f1decf', '24be0c26211b'),
     "numpy's solve and its kept LU": ('1f8908b895c7', 'f0bcd0f84207'),
     "the complex factor's CSC, SciPy's and numpy's": ('9de9a726e6a5', '9ce76450fa2a'),
 }

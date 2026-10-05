@@ -100,6 +100,7 @@ SWITCHES = (
     ('pycircuit.circuit._tran_radau_c', 'MAXA'),
     ('pycircuit.circuit._tran_radau', 'RADAU_FROZEN'),
     ('pycircuit.circuit._tran_radau', 'STAGE_FUSE'),
+    ('pycircuit.circuit.shooting._pss_inner', 'SHOOT_TRIM'),
     ('pycircuit.circuit._tran_radau_tc', 'ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'FAST_ENABLED'),

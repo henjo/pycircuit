@@ -1,18 +1,58 @@
 """The period walks: one per step family (`_walk_lmm`, `_walk_stage`,
 `_walk_glm`), dense and/or factored, and their views.
 """
+import math
 from copy import copy
 from math import factorial
 
 import numpy as np
 import scipy.sparse as _sp
+
+from pycircuit.circuit import _paths
+
+from . import _pss_inner
 from ._factored import _PeriodWalk
-from ._steps import _GLMStartup
-from ._steps import _GLMStartupMatrix
-from ._steps import _StageStep
-from ._steps import _butcher
-from ._steps import _GLMStep
-from ._steps import _lmm_recursion
+from ._steps import (
+    _butcher,
+    _GLMStartup,
+    _GLMStartupMatrix,
+    _GLMStep,
+    _lmm_recursion,
+    _StageStep,
+)
+
+
+def _stage_block(Cs, Gs, h, A):
+    """The coupled stage system ``J[i][j] = delta_ij C_i + (h A_ij) G_j`` in
+    one pass (speed round 10, B3.4): ``h A`` and its products with the
+    stacked `G`s, `C_i` added on the diagonal blocks -- the block loop's own
+    elementwise operations and operand order -- placed by one transpose and
+    reshape.  None where it does not serve (counted): blocks that are not
+    float64 `m x m`; a non-finite block or step -- ⚠ where both operands of
+    a sum are NaN the result is one operand's payload, and WHICH depends on
+    numpy's loop (its SIMD body or its scalar tail, so the array's size),
+    not on the operand order alone: measured, the one pass and the loop
+    kept different payloads; or an operation that would raise a
+    floating-point exception -- the loop then makes the system and warns
+    from its own line, as before."""
+    s, m = A.shape[0], Cs[0].shape[0]
+    if not (type(A) is np.ndarray and A.dtype == np.float64 and A.shape == (s, s)
+            and len(Cs) == s and len(Gs) == s
+            and all(type(M) is np.ndarray and M.dtype == np.float64 and M.shape == (m, m)
+                    for M in (*Cs, *Gs))):
+        return _paths.no('pss.block:kind')
+    G3, C3 = np.stack(Gs), np.stack(Cs)
+    if not (math.isfinite(h) and np.isfinite(G3).all() and np.isfinite(C3).all()):
+        return _paths.no('pss.block:nonfinite')
+    idx = np.arange(s)
+    try:
+        with np.errstate(all='raise'):
+            T = (h * A)[:, :, None, None] * G3[None]
+            T[idx, idx] = C3 + T[idx, idx]
+    except FloatingPointError:
+        return _paths.no('pss.block:fp')
+    _paths.COUNTS['pss.block:served'] += 1
+    return T.transpose(0, 2, 1, 3).reshape(s * m, s * m)
 
 
 class _PeriodWalks(object):
@@ -458,13 +498,17 @@ class _PeriodWalks(object):
             Cs = [np.asarray(self._C_at(y)) for y in Ys]
         Gs = [np.asarray(self._G_at(y)) for y in Ys]
         if coupled:
-            Jb = np.zeros((s * m, s * m))
-            for i in range(s):
-                for jj in range(s):
-                    blk = h * A[i, jj] * Gs[jj]
-                    if i == jj:
-                        blk = Cs[i] + blk
-                    Jb[i * m:(i + 1) * m, jj * m:(jj + 1) * m] = blk
+            ## (in one pass where it serves: `_stage_block`, speed round 10,
+            ## B3.4; None -- the loop)
+            Jb = _stage_block(Cs, Gs, h, A) if _pss_inner.SHOOT_TRIM else None
+            if Jb is None:
+                Jb = np.zeros((s * m, s * m))
+                for i in range(s):
+                    for jj in range(s):
+                        blk = h * A[i, jj] * Gs[jj]
+                        if i == jj:
+                            blk = Cs[i] + blk
+                        Jb[i * m:(i + 1) * m, jj * m:(jj + 1) * m] = blk
             ## the CALLER'S solver (`_factorise`), as every other stored
             ## step (under the default `DenseSolver` its factor is an
             ## `lu_factor` pair)
@@ -898,10 +942,14 @@ class _PeriodWalks(object):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
             tr_in._stage_G_read = read_now
+            ## (the step's reduced `Jf`, `Geq`, `C` are `_walk_lmm`'s: not
+            ## made here -- `_InnerTransient.solve_timestep`, B3.4)
+            self._skip_step_mats = _pss_inner.SHOOT_TRIM
             try:
                 x = copy(self.solve_timestep(xn, t, h))
             finally:
                 tr_in._stage_G_read = False
+                self._skip_step_mats = False
             if record is not None:
                 record(x, t)
             x_prev = xn

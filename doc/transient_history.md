@@ -4158,3 +4158,27 @@ in the test, on every branch enumerated: a drawn test missed a planted
 entries and no NaN, rare in draws).  Measured against the
 parent (584411d3): the radau PSS of the PSP stage -14.9 % instructions,
 -18.7 % in wall time; gear, through the proxy, -4..-6 %.
+
+## `shooting/_pss_inner.py`, `_pss_walks.py` -- a stage walk's per-step trims (2026-10-05, speed round 10's B3.4)
+
+### `_InnerTransient._sync_limit_at`, `_stage_block`, `_skip_step_mats`, `_insert_refnode`
+
+A stage walk factors every step it takes: `_stage_step` reads `C` and `G`
+at the step's stages (from the device memo since B3.2) and assembles the
+coupled `3m x 3m` system.  Four of its costs were nothing's: the limit
+sync before each `G` read (`limit(x, x)` -- it moves only a limiter that
+KEEPS state, `Diode`'s, and the PSP circuits keep none), the block loop's
+nine slice assignments, the inner transient's reduced `Jf`/`Geq`/`C` after
+every step (only `_walk_lmm` reads them) and the generic `concatenate`
+inserting the reference node (`analysis.insert_row` had replaced it in the
+Newton in speed round 4).
+
+The one pass's lesson is the NaN payload: IEEE addition commutes but for
+which NaN survives a NaN + NaN, and numpy decides that by its loop -- the
+SIMD body or the scalar tail -- so a rewrite that changes an array's
+shape can keep the other NaN even in the same operand order.  A drawn
+test with only `np.nan` cannot see it; NaNs of three payloads did.  The
+one pass declines non-finite blocks and step; the loop keeps them as it
+always did.  Measured against the
+parent (4c25985b): the radau PSS -4.15 % instructions, -1.2..-2.0 % in
+wall time.

@@ -1,10 +1,20 @@
 """The inner transient the period walks step with, and the circuit linearised
 at a point (C, G, the stage derivative).
 """
+import os
+
 import numpy as np
-from pycircuit.circuit.analysis import remove_row_col
+
+from pycircuit.circuit import _limiting, _paths
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import devices_at
+from pycircuit.circuit.analysis import insert_row, remove_row_col
+
+#: a stage walk's per-step trims (speed round 10, B3.4): no limit sync where
+#: nothing keeps limiting state, the stage block in one pass, the step's
+#: reduced matrices only where a walk reads them; env
+#: `PYCIRCUIT_SHOOT_TRIM=0` makes each as before
+SHOOT_TRIM = os.environ.get('PYCIRCUIT_SHOOT_TRIM', '1') != '0'
 
 
 class _InnerTransient(object):
@@ -149,6 +159,17 @@ class _InnerTransient(object):
         History: `doc/shooting_history.md`, `_InnerTransient._sync_limit_at`.
         """
         tr = self._transient()
+        ## (no element keeping limiting state -- every limiter in the library
+        ## but `Diode`'s returns a limited copy and writes nothing -- and no
+        ## circuit-level limiting: `limit(x, x)` moves nothing, and is not
+        ## made; speed round 10, B3.4)
+        if SHOOT_TRIM and not _limiting.CIRCUIT_LEVEL:
+            lims = tr.__dict__.get('_stateful_lims')
+            if lims is None:
+                lims = _limiting.stateful_limiters(tr.cir)
+            if not lims:
+                _paths.COUNTS['pss.sync:skipped'] += 1
+                return
         tr.cir.limit(x_full, x_full, tr.epar)
 
     def _C_at(self, x_reduced):
@@ -417,8 +438,10 @@ class _InnerTransient(object):
         return tr
 
     def _insert_refnode(self, x):
-        return self.toolkit.concatenate(
-            (x[:self.irefnode], self.toolkit.array([0.0]), x[self.irefnode:]))
+        ## (`analysis.insert_row`: a float64 vector copied into a fresh one,
+        ## anything else this very `concatenate` -- the same values; speed
+        ## round 10, B3.4)
+        return insert_row(x, self.irefnode, self.toolkit)
 
     def solve_timestep(self, x0, t, dt):
         """One timestep of the inner transient, taken by `Transient`.
@@ -573,8 +596,15 @@ class _InnerTransient(object):
         ## companion conductance the step actually used, which is the factor
         ## the monodromy needs; `_iq` is kept for the caller's own bookkeeping
         ## as before.
-        (self._Jf, self._Geq, self._C) = remove_row_col(
-            (J_full, tr.last_step.Geq, tr.last_step.C), irefnode, toolkit)
+        if self.__dict__.get('_skip_step_mats'):
+            ## (a stage walk reads none of the three -- `_stage_step` reads
+            ## the stages' own `C` and `G`; only `_walk_lmm` reads them: None,
+            ## so an unexpected reader fails rather than reading a stale one;
+            ## speed round 10, B3.4)
+            self._Jf = self._Geq = self._C = None
+        else:
+            (self._Jf, self._Geq, self._C) = remove_row_col(
+                (J_full, tr.last_step.Geq, tr.last_step.C), irefnode, toolkit)
         ## The coefficients of the integrator that ACTUALLY ran this step --
         ## an order drop on the opening step reports Euler's, which is what
         ## the propagation must use for that step.
