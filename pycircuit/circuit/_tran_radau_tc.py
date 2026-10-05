@@ -471,6 +471,8 @@ def driver():
             STATUS = f'off ({e})'
             return None
         _ct, gesv, getrs = lap
+        from pycircuit.circuit import _tran_newton_c, _tran_radau_c
+        _MOD['NC'], _MOD['RC'] = _tran_newton_c, _tran_radau_c
         _driver = (ffi, cfn, ctypes.cast(gesv, ctypes.c_void_p).value,
                    ctypes.cast(getrs, ctypes.c_void_p).value)
         STATUS = 'c'
@@ -515,12 +517,18 @@ class _Ctx:
     `_walk_ready` sets them)."""
 
     __slots__ = (
+        'A_bytes',
+        'Ap_obj',
         'buf',
         'core',
         'ffi',
         'iref',
         'keep',
+        'keep_ap',
+        'klu_kk',
+        'lu_addr',
         'n',
+        'p_of',
         's',
         'walk',
         'walk_arms',
@@ -564,6 +572,14 @@ class _Ctx:
         s.n, s.iref = n, iref
         s.walk_fn = ffi.NULL
         s.wn = 0
+        ## (what does not change from step to step is set once: the product
+        ## form, the passes' bits; the rest when it changes -- speed round 10,
+        ## B3.5: a cast from `arr.ctypes.data` cost 13.5 k instructions, 21
+        ## of `P`'s and `V`'s entries ~30 k a step)
+        s.fused = _MOD['cmul']
+        s.bits = _MOD['bits']
+        self.A_bytes = self.p_of = self.Ap_obj = self.keep_ap = self.klu_kk = None
+        self.lu_addr = None
         self.walk = self.walk_ok = None
         self.walk_els = self.walk_dicts = self.walk_packs = self.walk_kern = ()
         self.walk_hw_els = self.walk_hwk = ()
@@ -599,7 +615,7 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     cir = tr.cir
     if _now(T, cir) != chain[1:]:
         return _no('radau_tc:patched')
-    from pycircuit.circuit import _tran_newton_c as NC
+    NC = _MOD['NC']
     M = NC._MOD or NC._mods()
     if type(tr.toolkit) is not M['NumericToolkit']:
         return _no('radau_tc:toolkit')
@@ -636,8 +652,11 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     if not (type(qn) is np.ndarray and qn.dtype == np.float64 and qn.shape == (n,)
             and type(Amat) is np.ndarray and Amat.dtype == np.float64 and Amat.shape == (3, 3)):
         return _no('radau_tc:ctx')
-    Y0 = [np.array(y, dtype=float) for y in seed]
-    if len(Y0) != 3 or any(y.shape != (n,) for y in Y0):
+    if len(seed) != 3:
+        return _no('radau_tc:seed')
+    if not all(type(y) is np.ndarray and y.dtype == np.float64 for y in seed):
+        seed = [np.array(y, dtype=float) for y in seed]
+    if any(y.shape != (n,) for y in seed):
         return _no('radau_tc:seed')
     ## the two factorisations as `_FrozenTransform.solve` would use them
     lu, zs, prep = fz.lu, fz.zs, fz.prep
@@ -658,6 +677,7 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
             return _no('radau_tc:T')
     rec = td.get('_radau_tc')
     if rec is None or rec.core is not core or rec.n != n or rec.iref != iref:
+        _MOD['bits'] = tc._PASS_BITS['q'] | tc._PASS_BITS['i']
         cffi_core, cfn_core, _dg = tc.driver()
         rec = _Ctx(core, n, iref, ffi, cfn_core, cffi_core, drv)
         td['_radau_tc'] = rec
@@ -677,7 +697,7 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
         zk = _MOD['klu'] = (zs._lib, ctypes.cast(zs._lib.klu_z_refactor, ctypes.c_void_p).value,
                             ctypes.cast(zs._lib.klu_z_solve, ctypes.c_void_p).value)
     ## ---- from here the attempt leaves one trace: the step's source memo ----
-    from pycircuit.circuit import _tran_radau_c as RC
+    RC = _MOD['RC']
     analysis = tr.par.analysis
     keys = [(tt, analysis) for tt in ctx.tstage]
     try:
@@ -695,36 +715,50 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
                for u in us):
         RC._undo_source(memo, keys, had, counts)
         return _no('radau_tc:u')
-    for j in range(3):
-        buf['u'][j] = us[j]
-        buf['seed'][j] = Y0[j]
+    buf['u'][...] = us
+    buf['seed'][...] = seed
     np.copyto(buf['qn'], qn)
-    for k, v in enumerate(Amat.ravel().tolist()):
-        s.A[k] = v
-    for k, z in enumerate(fz.p):
-        s.p[2 * k] = float(z.real)
-        s.p[2 * k + 1] = float(z.imag)
-    for i, (a, b) in enumerate(fz.v):
-        s.v[3 * i] = float(a)
-        s.v[3 * i + 1] = float(b.real)
-        s.v[3 * i + 2] = float(b.imag)
-    a_lu, ipiv = lu._a
-    Ap, Ai, Ax = prep[2], prep[3], prep[4]
-    s.lu_a = ffi.cast('double *', a_lu.ctypes.data)
-    s.lu_ipiv = ffi.cast('int64_t *', ipiv.ctypes.data)
+    ## (the tableau once its values change; `P`'s and `V`'s entries once the
+    ## step's cached tuple changes -- `_radau_frozen` keeps it per step size)
+    ab = Amat.tobytes()
+    if ab != rec.A_bytes:
+        for k, v in enumerate(Amat.ravel().tolist()):
+            s.A[k] = v
+        rec.A_bytes = ab
+    if fz.p is not rec.p_of:
+        for k, z in enumerate(fz.p):
+            s.p[2 * k] = float(z.real)
+            s.p[2 * k + 1] = float(z.imag)
+        for i, (a, b) in enumerate(fz.v):
+            s.v[3 * i] = float(a)
+            s.v[3 * i + 1] = float(b.real)
+            s.v[3 * i + 2] = float(b.imag)
+        rec.p_of = fz.p
+    ## (the kept LU by its addresses -- a refilled one keeps them; the
+    ## pattern's arrays by their identity -- a kept pattern keeps them)
+    addr = lu.addr
+    if addr != rec.lu_addr:
+        s.lu_a = ffi.cast('double *', addr[0])
+        s.lu_ipiv = ffi.cast('int64_t *', addr[1])
+        rec.lu_addr = addr
     s.lu_info = -1 if lu._info is None else 0
-    s.Ap = ffi.cast('int *', Ap.ctypes.data)
-    s.Ai = ffi.cast('int *', Ai.ctypes.data)
-    s.Ax = ffi.cast('double *', Ax.ctypes.data)
-    s.klu_refactor = ffi.cast('void *', zk[1])
-    s.klu_solve = ffi.cast('void *', zk[2])
-    s.Symbolic = ffi.cast('void *', zs._symbolic)
-    s.Numeric = ffi.cast('void *', zs._numeric)
-    s.Common = ffi.cast('void *', ctypes.addressof(zs._common))
+    Ap, Ai = prep[2], prep[3]
+    if Ap is not rec.Ap_obj or Ai is not rec.keep_ap[1]:
+        rec.keep_ap = (Ap, Ai, ffi.from_buffer('int *', Ap), ffi.from_buffer('int *', Ai))
+        s.Ap, s.Ai = rec.keep_ap[2], rec.keep_ap[3]
+        rec.Ap_obj = Ap
+    ax = ffi.from_buffer('double *', prep[4])
+    s.Ax = ax
+    kk = (zk[1], zk[2], zs._symbolic, zs._numeric, ctypes.addressof(zs._common))
+    if kk != rec.klu_kk:
+        s.klu_refactor = ffi.cast('void *', kk[0])
+        s.klu_solve = ffi.cast('void *', kk[1])
+        s.Symbolic = ffi.cast('void *', kk[2])
+        s.Numeric = ffi.cast('void *', kk[3])
+        s.Common = ffi.cast('void *', kk[4])
+        rec.klu_kk = kk
     fresh = zs._fresh is prep
     s.klu_fresh = 1 if fresh else 0
-    s.fused = _MOD['cmul']
-    s.bits = tc._PASS_BITS['q'] | tc._PASS_BITS['i']
     s.T = Tc
     s.h, s.reltol, s.abstol = float(h), float(reltol), float(abstol)
     s.rtol, s.maxiter = float(zs.REFACTOR_RESIDUAL_TOL), int(maxit)

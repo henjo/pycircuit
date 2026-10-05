@@ -269,7 +269,8 @@ PAIRS = {
         'why': 'the kept LU is numpy\'s own call -- its OpenBLAS\'s `dgesv` on a '
                'Fortran copy, one right-hand side -- then `dgetrs` on its factors; '
                'not `dgetrf` first (threaded from 100 unknowns: other bits), and '
-               'numpy\'s error at every solve of a singular matrix',
+               'numpy\'s error at every solve of a singular matrix; a refilled LU '
+               'copies its matrix as a fresh one does',
         'reference': ['pycircuit.circuit._numeric:linearsolver'],
         'twin': ['pycircuit.circuit.linearsolver:_numpy_lapack',
                  'pycircuit.circuit.linearsolver:NumpyLU'],
@@ -278,7 +279,9 @@ PAIRS = {
         'why': 'numpy builds the arrays `csc_matrix(A).astype(complex128)` holds -- '
                'the nonzeros (a NaN is one, a signed zero is not) column by column, '
                'rows ascending, copied -- and the product as SciPy\'s '
-               '`_matmul_vector` runs it, a zero vector and `csc_matvec`',
+               '`_matmul_vector` runs it, a zero vector and `csc_matvec`; the last '
+               'record\'s `Ap`, `Ai` and key kept only where the nonzeros fall '
+               'where they fell',
         'reference': ['pycircuit.circuit.linearsolver:ComplexKLUSolver.prepare'],
         'twin': ['pycircuit.circuit.linearsolver:_csc_of_dense',
                  'pycircuit.circuit.linearsolver:_csc_dot',
@@ -321,11 +324,11 @@ RECORD = {
     'the readiness reads and their stamps': ('48b75bd9cace', 'e52c723f0eb8'),
     "the stage paths' passes and the core's": ('8e4b7cf1fa24', 'a3ae0f6c8d98'),
     'the coupled stage Newton and its C': ('5f7c56901f9a', 'e9156eef9c41'),
-    'the transform solve and its frozen form': ('945834192f2a', 'f7146ba0f56e'),
-    'the transform Newton and its C': ('d7c24c3c7e7d', 'b4413fe8ec29'),
+    'the transform solve and its frozen form': ('945834192f2a', '76a16f4bcc14'),
+    'the transform Newton and its C': ('d7c24c3c7e7d', 'b599fff42385'),
     'the stage block and its one pass': ('a177e4f1decf', '24be0c26211b'),
-    "numpy's solve and its kept LU": ('1f8908b895c7', 'f0bcd0f84207'),
-    "the complex factor's CSC, SciPy's and numpy's": ('9de9a726e6a5', '9ce76450fa2a'),
+    "numpy's solve and its kept LU": ('1f8908b895c7', 'd5e13aa3b107'),
+    "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

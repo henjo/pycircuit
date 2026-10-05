@@ -4182,3 +4182,22 @@ one pass declines non-finite blocks and step; the loop keeps them as it
 always did.  Measured against the
 parent (4c25985b): the radau PSS -4.15 % instructions, -1.2..-2.0 % in
 wall time.
+
+## `_tran_radau.py`, `_tran_radau_tc.py`, `linearsolver.py` -- what a radau step keeps for the next (2026-10-05, speed round 10's B3.5)
+
+### `_radau_frozen`, `NumpyLU.make(reuse=)`, `_csc_of_dense(last=)`, the C's inputs
+
+B3.1 made the transform's two factorisations once a step; each step still
+made them from nothing: a new LU (buffers, LAPACK arguments), a new CSC
+pattern for the complex factor, `P = diag(lam) Tinv / h` and `V`'s entries,
+and the C call (B3.3) re-marshalled every pointer and entry into its
+struct.  Now a step keeps what the last one made where the values say it
+is the same: the LU refilled in place once the frozen transform that read
+it is gone (`NumpyLU.owner`, a weak reference -- never while it lives, so
+a nested step cannot overwrite an outer step's factors), the pattern's
+`Ap`, `Ai` and key where the nonzeros fall where they fell, `P` and `V`
+per step size and type, and each C input set where it changes.  The tests
+that pin the keeps plant each one stale and require the C to differ from
+the Python loop: a keep whose bookkeeping is right can still serve wrong
+values, and only the answer shows it.  Measured against the parent
+(be80acf2): the radau PSS -6.0 % instructions, -9.2 % in wall time.

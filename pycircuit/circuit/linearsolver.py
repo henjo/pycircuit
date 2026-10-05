@@ -115,22 +115,29 @@ def _csc_dot(mv, n, Ap, Ai, data, x):
     return y
 
 
-def _csc_of_dense(A, mv):
+def _csc_of_dense(A, mv, last=None):
     """`ComplexKLUSolver.prepare`'s record of a dense square complex128 `A`
     without SciPy's construction (382 k instructions a call on the PSP
     stage): the arrays ``csc_matrix(A).astype(complex128)`` holds -- the
     nonzeros (a NaN is one, a signed zero is not) column by column, rows
     ascending, COPIED: no arithmetic -- and its `dot` as SciPy runs it
-    (`_csc_dot`)."""
+    (`_csc_dot`).  Returned with its pattern ``(nz, Ap, Ai, key)``: given
+    the last one, `last`, and the nonzeros where they fell, its `Ap`, `Ai`
+    and key are this record's too -- functions of the pattern alone (speed
+    round 10, B3.5); the values are copied as ever."""
     n = A.shape[0]
     At = A.T
     nz = At != 0
-    Ap = numpy.zeros(n + 1, dtype=numpy.int32)
-    Ap[1:] = numpy.cumsum(nz.sum(axis=1))
-    Ai = numpy.ascontiguousarray(nz.nonzero()[1], dtype=numpy.int32)
+    if last is not None and last[0].shape == nz.shape and numpy.array_equal(last[0], nz):
+        nz, Ap, Ai, key = last
+    else:
+        Ap = numpy.zeros(n + 1, dtype=numpy.int32)
+        Ap[1:] = numpy.cumsum(nz.sum(axis=1))
+        Ai = numpy.ascontiguousarray(nz.nonzero()[1], dtype=numpy.int32)
+        key = (n, Ap.tobytes(), Ai.tobytes())
     data = At[nz]
-    return (functools.partial(_csc_dot, mv, n, Ap, Ai, data), n, Ap, Ai,
-            data.view(numpy.float64), (n, Ap.tobytes(), Ai.tobytes()))
+    return ((functools.partial(_csc_dot, mv, n, Ap, Ai, data), n, Ap, Ai,
+             data.view(numpy.float64), key), (nz, Ap, Ai, key))
 
 
 class NumpyLU:
@@ -146,12 +153,24 @@ class NumpyLU:
     threaded).  Not SciPy's `lu_factor`: SciPy's OpenBLAS rounds
     differently.  A singular `A` (`info` > 0) raises numpy's
     `LinAlgError('Singular matrix')` at every `solve`, as numpy's solve
-    would.  `make` returns None where numpy's library is not found."""
+    would.  `make` returns None where numpy's library is not found.
+    `owner`: the one reader of the factors, a weak reference its caller
+    keeps (None: not set) -- what decides that a kept LU may be refilled."""
 
-    __slots__ = ('_a', '_ct', '_gesv', '_getrs', '_info', '_p', 'n')
+    __slots__ = ('_a', '_ct', '_gesv', '_getrs', '_info', '_p', 'addr', 'n', 'owner')
 
     @classmethod
-    def make(cls, A):
+    def make(cls, A, reuse=None):
+        """The kept LU of `A`, unfactored.  `reuse`, a kept LU of the size
+        whose factors nothing reads any more, is refilled with `A` in place
+        and returned -- its buffers, its LAPACK arguments and its addresses
+        (`addr`, the C's) kept (speed round 10, B3.5): the values `A` copied
+        as a fresh one copies them."""
+        if (type(reuse) is cls and type(A) is numpy.ndarray and A.dtype == numpy.float64
+                and A.shape == (reuse.n, reuse.n)):
+            numpy.copyto(reuse._a[0], A)
+            reuse._info = None
+            return reuse
         f = _numpy_lapack()
         if f is None:
             return None
@@ -167,6 +186,7 @@ class NumpyLU:
                    ctypes.byref(ctypes.c_int64(1)), a.ctypes.data_as(ctypes.c_void_p),
                    ipiv.ctypes.data_as(ctypes.c_void_p), ctypes.c_size_t(1))
         self._a, self._info = (a, ipiv), None
+        self.addr, self.owner = (a.ctypes.data, ipiv.ctypes.data), None
         self._ct, self._gesv, self._getrs = ctypes, gesv, getrs
         return self
 
@@ -704,6 +724,8 @@ class ComplexKLUSolver(object):
         ## the `prepare` record whose values the numeric holds as a REFACTOR
         ## (`solve_prepared`), or None
         self._fresh = None
+        ## (the last record's pattern, `_csc_of_dense`'s)
+        self._csc_last = None
         self.analyses = 0
         self.factors = 0
         self.refactors = 0
@@ -726,7 +748,8 @@ class ComplexKLUSolver(object):
         mv = _csc_matvec()
         if (mv is not None and type(A) is numpy.ndarray and A.dtype == numpy.complex128
                 and A.ndim == 2 and A.shape[0] == A.shape[1]):
-            return _csc_of_dense(A, mv)
+            rec, self._csc_last = _csc_of_dense(A, mv, self._csc_last)
+            return rec
         ## accept either a dense array or a scipy.sparse matrix
         Acsc = self._sp.csc_matrix(A).astype(numpy.complex128)
         n = Acsc.shape[0]

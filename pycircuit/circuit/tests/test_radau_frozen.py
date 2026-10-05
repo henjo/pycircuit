@@ -9,7 +9,9 @@ exceptions the same; its pieces -- numpy's solve kept as an LU
 (`linearsolver.NumpyLU`), the complex factor marshalled by numpy
 (`ComplexKLUSolver.prepare`, `_csc_of_dense`) and refactored once
 (`solve_prepared`) -- each the bytes of what it stands in for; and the
-declines."""
+declines.  What a step keeps for the next (speed round 10, B3.5): the LU
+refilled once its one reader is gone, the complex factor's pattern, `P`
+per step size -- each a fresh one's bytes."""
 import warnings
 
 import numpy as np
@@ -382,3 +384,163 @@ def test_solve_prepared_refactors_once_a_matrix():
     assert zs.residual_fallbacks == ref.residual_fallbacks == 4
     ## (the first call's refactor skipped: the last one was of its record)
     assert (zs.refactors - 5, ref.refactors - 8) == (3, 4), (zs, ref)
+
+
+## -- what a step keeps for the next (speed round 10, B3.5) -----------------------------
+
+def test_a_refilled_lu_is_a_fresh_one():
+    """`NumpyLU.make(A, reuse=lu)`: the kept LU refilled in place -- the
+    same object, buffers and addresses -- whose every solve is a fresh
+    LU's and numpy's, bytes or error, after a factored, a singular or an
+    unfactored one, `A` in either order or a strided view; a size, a type
+    or a reuse not the kept one's makes a fresh LU and leaves it alone."""
+    _lapack_or_skip()
+    rng = np.random.default_rng(23)
+    for n in (1, 2, 5, 30, 120):
+        lu = LS.NumpyLU.make(rng.standard_normal((n, n)))
+        addr = lu.addr
+        for k in range(12):
+            A = rng.standard_normal((n, n)) * 10.0 ** rng.integers(-6, 3, size=(n, n))
+            if k % 4 == 1:
+                A[:, rng.integers(n)] = 0.0
+            elif k % 4 == 2:
+                A = np.asfortranarray(A)
+            elif k % 4 == 3:
+                B = np.zeros((n, 2 * n))
+                B[:, ::2] = A
+                A = B[:, ::2]
+            if k % 3 == 0:
+                try:
+                    lu.solve(rng.standard_normal(n))
+                except np.linalg.LinAlgError:
+                    pass
+            fresh = LS.NumpyLU.make(A)
+            got = LS.NumpyLU.make(A, reuse=lu)
+            assert got is lu and got.addr == addr and got._info is None
+            assert [a.ctypes.data for a in got._a] == list(addr)
+            for _ in range(2):
+                b = rng.standard_normal(n)
+                assert (_answer(got.solve, b) == _answer(fresh.solve, b)
+                        == _answer(np.linalg.solve, A, b)), (n, k)
+    lu = LS.NumpyLU.make(np.eye(3) * 2.0)
+    kept = lu._a[0].tobytes()
+    for A, reuse in ((np.eye(4), lu), (np.eye(3).tolist(), lu),
+                     (np.eye(3, dtype=np.float32), lu), (np.eye(3), object()), (np.eye(3), None)):
+        got = LS.NumpyLU.make(A, reuse=reuse)
+        assert got is not lu and got.owner is None
+        assert got.solve(np.ones(len(A))).tobytes() == np.linalg.solve(
+            np.asarray(A, dtype=float), np.ones(len(A))).tobytes()
+    assert lu._a[0].tobytes() == kept
+
+
+def test_a_kept_pattern_is_a_fresh_record():
+    """`prepare` after a record of the same pattern keeps its `Ap`, `Ai`
+    and key -- the same objects -- and copies the values; a pattern that
+    differs anywhere (a NaN or a subnormal is a nonzero, a signed zero is
+    not) or a size makes them anew: every record's arrays, key and product
+    the bytes of a fresh record's and SciPy's."""
+    zs = _klu_or_skip()
+    mv = LS._csc_matvec()
+    if mv is None:
+        pytest.skip('SciPy\'s product is not found')
+    rng = np.random.default_rng(29)
+    last = lastA = None
+    seen = {True: 0, False: 0}
+    for k in range(240):
+        n = 9 if k < 200 else int(rng.integers(1, 6))
+        if lastA is None or lastA.shape[0] != n or k % 25 == 0:
+            A = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
+            A[rng.random((n, n)) < 0.5] = 0.0
+        else:
+            ## (the same pattern's values, NaN and infinities among them once
+            ## an entry is set so; then one entry made or unmade a nonzero)
+            with np.errstate(invalid='ignore', over='ignore'):
+                A = lastA * (1.0 + rng.random((n, n)))
+            i, j = rng.integers(n, size=2)
+            flip = k % 7
+            if flip == 1:
+                A[i, j] = 0.0
+            elif flip == 2:
+                A[i, j] = complex(np.nan, 0.0)
+            elif flip == 3:
+                A[i, j] = complex(-0.0, -0.0)
+            elif flip == 4:
+                A[i, j] = complex(0.0, 5e-324)
+            elif flip == 5:
+                with np.errstate(invalid='ignore'):
+                    A[i, j] = A[i, j] * np.inf
+        p = zs.prepare(A)
+        fresh = LS._csc_of_dense(A, mv)[0]
+        Acsc = sp.csc_matrix(A).astype(np.complex128)
+        Ap = np.ascontiguousarray(Acsc.indptr, dtype=np.int32)
+        Ai = np.ascontiguousarray(Acsc.indices, dtype=np.int32)
+        Ax = np.ascontiguousarray(Acsc.data, dtype=np.complex128).view(np.float64)
+        assert p[1] == fresh[1] == n and p[5] == fresh[5] == (n, Ap.tobytes(), Ai.tobytes())
+        assert ([(a.dtype, a.tobytes()) for a in p[2:5]]
+                == [(a.dtype, a.tobytes()) for a in fresh[2:5]]
+                == [(a.dtype, a.tobytes()) for a in (Ap, Ai, Ax)])
+        same = (last is not None and lastA.shape == A.shape
+                and ((lastA.T != 0) == (A.T != 0)).all())
+        assert (p[2] is last[2] and p[3] is last[3] and p[5] is last[5]) if same else (
+            last is None or (p[2] is not last[2] and p[3] is not last[3])), k
+        seen[bool(same)] += 1
+        x = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+        with np.errstate(all='ignore'):
+            assert p[0](x).tobytes() == fresh[0](x).tobytes() == Acsc.dot(x).tobytes()
+        last, lastA = p, A
+    assert seen[True] > 60 and seen[False] > 60, seen
+
+
+def test_the_steps_p_is_made_once_a_step_size():
+    """`P`'s and `V`'s entries kept per step size: the bytes and types of a
+    fresh `(diag(lam) Tinv) / h` for each `h` of a run returning to earlier
+    ones in either float type; the same tuples where neither the step size
+    nor its type changed, new ones where either did."""
+    _klu_or_skip()
+    tr, Cr, Gr, h0 = _captured()
+    lam, V, Tinv = tr._radau_transform_matrices()
+
+    def entries(t):
+        return [(type(z), np.asarray(z).tobytes()) for z in np.ravel(np.array(t, dtype=object))]
+    prev = None
+    for h in (h0, h0, h0 / 3.0, np.float64(h0 / 3.0), np.float64(h0 / 3.0), h0, 2.5e-30, h0):
+        fz = tr._radau_frozen(Cr, Gr, h)
+        P = (np.diag(lam) @ Tinv) / h
+        assert entries(fz.p) == entries((P[0, 0], P[0, 1], P[0, 2], P[1, 0], P[1, 1], P[1, 2]))
+        assert entries(fz.v) == entries(tuple((V[i, 0].real, V[i, 1]) for i in range(3)))
+        if prev is not None:
+            kept = prev[0] == h and type(prev[0]) is type(h)
+            assert (fz.p is prev[1]) == kept and (fz.v is prev[2]) == kept, (prev[0], h)
+        prev = (h, fz.p, fz.v)
+        del fz
+
+
+def test_a_kept_lu_is_refilled_only_once_its_reader_is_gone():
+    """The last LU a step made is refilled -- the same object -- only once
+    the one frozen transform that reads it is gone: while that lives, the
+    next step makes a fresh LU, and the living one's solves are its own
+    factor's, before and after."""
+    _lapack_or_skip()
+    _klu_or_skip()
+    tr, Cr, Gr, h = _captured()
+    b = np.linspace(-1.0, 1.0, Cr.shape[0])
+
+    def own(fz):
+        return _answer(fz.lu.solve, b) == _answer(np.linalg.solve, fz.rf, b)
+    fz1 = tr._radau_frozen(Cr, Gr, h)
+    want1 = _answer(fz1.lu.solve, b)
+    assert own(fz1) and fz1.lu.owner() is fz1
+    fz2 = tr._radau_frozen(Cr * 2.0, Gr, h)
+    lu2 = fz2.lu
+    assert lu2 is not fz1.lu and lu2.owner() is fz2
+    assert own(fz2) and _answer(fz1.lu.solve, b) == want1
+    del fz2
+    assert lu2.owner() is None
+    fz3 = tr._radau_frozen(Cr * 3.0, Gr, h)
+    assert fz3.lu is lu2 and lu2.owner() is fz3
+    assert own(fz3) and _answer(fz1.lu.solve, b) == want1
+    ## (the living first one is never the one refilled)
+    del fz3
+    fz4 = tr._radau_frozen(Cr * 4.0, Gr, h)
+    assert fz4.lu is lu2 and fz4.lu is not fz1.lu
+    assert own(fz4) and own(fz1)

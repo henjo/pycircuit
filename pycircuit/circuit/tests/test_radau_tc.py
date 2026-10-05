@@ -6,8 +6,9 @@ PSS, and on one captured step driven from drawn seeds, step sizes and
 entering charges; every hand-back (a non-finite stage, a floating-point
 exception, a singular real factor, a failed refactor, the residual check,
 the walk stopping, maxiter) leaves the Python loop to answer as before,
-with no trace; numpy's complex product read, not assumed; and the
-declines."""
+with no trace; numpy's complex product read, not assumed; the inputs
+it keeps from step to step set again wherever they change (B3.5); and
+the declines."""
 import ctypes
 import math
 import warnings
@@ -340,6 +341,50 @@ def test_a_stopped_walk_hands_back_and_is_taken_again():
     assert rec.walk_ok is None
     c, dc = _attempt(_seed(), True)
     assert c == a and _counts(dc).get('radau_tc:served') == 1, dc
+
+
+def test_what_the_c_keeps_follows_each_step():
+    """The C's kept inputs -- `P` and `V`, the kept LU's addresses, the
+    pattern's arrays, KLU's handles -- set again wherever the step's
+    change (speed round 10, B3.5): on one context, loops whose step size
+    leaves and returns, whose LU is a fresh one while the last one's
+    reader lives (a stale address would solve another factor), and whose
+    complex factor loses an entry (a stale pattern would mismatch its
+    values) -- each the Python loop's, served, and what is kept the
+    step's own."""
+    _on()
+    tr, got = _cap()
+    h0 = got['ctx'].h
+
+    def kept():
+        rec, zs = tr.__dict__['_radau_tc'], tr._radau_zsolver
+        assert rec.p_of is tr._radau_Pc[1] and rec.lu_addr == tr._radau_lu.addr
+        assert rec.Ap_obj is zs._csc_last[1] and rec.klu_kk[2:4] == (zs._symbolic, zs._numeric)
+        return rec
+    marks = []
+    for h in (h0, h0 * 0.5, h0 * 0.5, h0):
+        a, b, db = _both(_seed(), h=h)
+        assert a == b and _counts(db).get('radau_tc:served') == 1, (h, db)
+        marks.append(kept().p_of)
+    assert marks[1] is not marks[0] and marks[2] is marks[1] and marks[3] is not marks[2]
+    ## the last LU's reader alive: the C's LU is another one, at its own address
+    addr = kept().lu_addr
+    keep = tr._radau_frozen(got['Cr'] * 2.0, got['Gr'], h0)
+    assert keep.lu.addr == addr
+    a, b, db = _both(_seed())
+    assert a == b and _counts(db).get('radau_tc:served') == 1, db
+    assert kept().lu_addr != addr and keep.lu._a[0].tobytes() == keep.rf.tobytes()
+    ## the complex factor's smallest off-diagonal entry removed: a new pattern
+    Cr, Gr = np.array(got['Cr']), np.array(got['Gr'])
+    m = Cr.shape[0]
+    off = [(abs(Cr[i, j]) + abs(Gr[i, j]), i, j) for i in range(m) for j in range(m)
+           if i != j and (Cr[i, j] != 0 or Gr[i, j] != 0)]
+    _s, i, j = min(off)
+    nnz = int(kept().Ap_obj[-1])
+    Cr[i, j] = Gr[i, j] = 0.0
+    a, b, db = _both(_seed(), Cr=Cr, Gr=Gr)
+    assert a == b and _counts(db).get('radau_tc:served') == 1, db
+    assert int(kept().Ap_obj[-1]) == nnz - 1
 
 
 SCALES = (0.0, 1e-12, 1e-6, 1e-3, 0.05, 0.4, 3.0, 40.0, 1e3, 1e30, 1e150, 1e300)

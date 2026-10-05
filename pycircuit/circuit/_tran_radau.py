@@ -3,6 +3,7 @@ theme of `Transient` (see `transient.py`).
 """
 
 import os
+import weakref
 
 import numpy as np
 
@@ -67,7 +68,7 @@ class _FrozenTransform:
     solver to call) and the complex factor marshalled for its solver (or
     the per-call complex solve)."""
 
-    __slots__ = ('cf', 'cs', 'ls', 'lu', 'm', 'p', 'prep', 'rf', 'tk', 'v', 'zs')
+    __slots__ = ('__weakref__', 'cf', 'cs', 'ls', 'lu', 'm', 'p', 'prep', 'rf', 'tk', 'v', 'zs')
 
     def solve(self, R3):
         """`_RadauStages._radau_transform_solve(R3, Cr, Gr, h)` against the
@@ -999,17 +1000,26 @@ class _RadauStages:
         lam, V, Tinv = self._radau_transform_matrices()
         Cr = np.asarray(Cr, dtype=float)
         Gr = np.asarray(Gr, dtype=float)
+        ## (`P`'s entries and `V`'s are functions of the step alone: made once
+        ## a step size, the same values -- speed round 10, B3.5)
+        pc = self.__dict__.get('_radau_Pc')
+        if pc is not None and (pc[0] != h or type(pc[0]) is not type(h) or pc[3] is not lam
+                               or pc[4] is not V or pc[5] is not Tinv):
+            pc = None
         try:
             with np.errstate(all='raise'):
-                P = (np.diag(lam) @ Tinv) / h
+                if pc is None:
+                    P = (np.diag(lam) @ Tinv) / h
+                    pc = self._radau_Pc = (
+                        h, (P[0, 0], P[0, 1], P[0, 2], P[1, 0], P[1, 1], P[1, 2]),
+                        tuple((V[i, 0].real, V[i, 1]) for i in range(3)), lam, V, Tinv)
                 real_factor = (lam[0].real / h) * Cr + Gr
                 comp_factor = (lam[1] / h) * Cr + Gr
         except FloatingPointError:
             return _paths.no('radau.frozen:fp')
         fz = _FrozenTransform()
         fz.m = Cr.shape[0]
-        fz.p = (P[0, 0], P[0, 1], P[0, 2], P[1, 0], P[1, 1], P[1, 2])
-        fz.v = tuple((V[i, 0].real, V[i, 1]) for i in range(3))
+        fz.p, fz.v = pc[1], pc[2]
         fz.rf, fz.cf, fz.tk = real_factor, comp_factor, self.toolkit
         ls = fz.ls = self._get_linearsolver()
         fz.lu = None
@@ -1027,7 +1037,15 @@ class _RadauStages:
                 and NUM.linearsolver is chain[7] and np.linalg.solve is _NP_SOLVE
                 and np.isfinite(real_factor).all()):
             from pycircuit.circuit.linearsolver import NumpyLU
-            fz.lu = NumpyLU.make(real_factor)
+            ## (the last LU made here refilled once the one frozen transform
+            ## that reads it is gone -- nothing else can read its factors:
+            ## speed round 10, B3.5)
+            last = self.__dict__.get('_radau_lu')
+            reuse = last if last is not None and last.owner() is None else None
+            lu = fz.lu = NumpyLU.make(real_factor, reuse=reuse)
+            if lu is not None:
+                lu.owner = weakref.ref(fz)
+                self._radau_lu = lu
         zs = getattr(self, '_radau_zsolver', 'unset')
         if zs == 'unset':
             ## (made as `_radau_complex_solve` makes it, at its first call)
