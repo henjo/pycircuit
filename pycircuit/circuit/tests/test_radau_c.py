@@ -249,6 +249,9 @@ def test_a_stopped_walk_hands_back_and_is_taken_again():
     assert a[0] == b[0] and a[1:3] == b[1:3] and a[4] == b[4]
     _bail(db, 'walkstop')
     assert db.get('walk:stopped', 0) > 0, db
+    ## (the context the attempt used: a new one where the core was rebuilt
+    ## since -- another test's parameter write moves the plan)
+    rec = tr.__dict__['_radau_c']
     assert rec.walk_ok is None
     c, dc = _attempt(tr, got, _seed(), True)
     assert c == a and _counts(dc).get('radau_c:served') == 1, dc
