@@ -44,7 +44,9 @@ from pycircuit.circuit.tests.test_hdl_cbackend import (
     _c_funcs,
     _compare,
     _instance,
-    _libm_tanh_twin,
+    _libm_twin,
+    _twin_exact,
+    _ulp_names,
     c_backend,
     needs_cc,
 )
@@ -104,10 +106,12 @@ def _ref(f, x, args):
         return None
 
 
-def _check_kernels(e, found, x, epar, args, tanh, strict=()):
+def _check_kernels(e, found, x, epar, args, ulp, strict=()):
     """Every C function of `found` at `x` against its numpy function (and
-    that against the raw reference it was optimised from); False, checking
-    nothing more, where Python raises (outside the contract)."""
+    that against the raw reference it was optimised from) -- run with the C
+    library's functions for those of `ulp` (`_ulp_names`: numpy's own differ
+    on this CPU, tanh here); False, checking nothing more, where Python
+    raises (outside the contract)."""
     for fname, f in found:
         ref = _ref(f, x, args)
         if ref is None:
@@ -121,8 +125,8 @@ def _check_kernels(e, found, x, epar, args, tanh, strict=()):
                 (fname, x.tolist())
         out = f.__dict__['_hdl_c'](e, x, epar)
         assert out is not None, (fname, 'the kernel declined', epar)
-        if tanh:
-            ref = _ref(_libm_tanh_twin(f), x, args)
+        if ulp:
+            ref = _ref(_libm_twin(f, ulp), x, args)
         got = _compare(ref, out)
         assert got != 'value', (fname, x.tolist(), epar)
         if fname in strict:
@@ -180,8 +184,11 @@ def test_every_c_kernel_takes_every_special_and_parameter_value_at_every_coordin
         assert cls._hdl_backend_status == 'c', cls._hdl_backend_status
         found = _c_funcs(cls)
         assert found, 'no C kernels attached'
-        tanh = any('tanh' in f._src for _nm, f in found)
-        checked = sum(_check_kernels(e, found, x, defaultepar, args, tanh)
+        ulp = _ulp_names(found)
+        if not _twin_exact(ulp):
+            pytest.skip("numpy's power is not the C library's pow on this CPU, and `**` "
+                        'cannot be swapped in the twin')
+        checked = sum(_check_kernels(e, found, x, defaultepar, args, ulp)
                       for x in one_at_a_time(n, args, _bases(n)))
         ## (not vacuous: the reference is a number in most entries -- NaN
         ## compares equal to NaN, and a fault there would pass unseen)
@@ -202,7 +209,10 @@ def test_every_c_kernel_answers_its_numpy_function_on_drawn_states(name, how):
         assert cls._hdl_backend_status == 'c', cls._hdl_backend_status
         found = _c_funcs(cls)
         assert found, 'no C kernels attached'
-        tanh = any('tanh' in f._src for _nm, f in found)
+        ulp = _ulp_names(found)
+        if not _twin_exact(ulp):
+            pytest.skip("numpy's power is not the C library's pow on this CPU, and `**` "
+                        'cannot be swapped in the twin')
 
         @given(data=st.data())
         def drawn(data):
@@ -218,7 +228,7 @@ def test_every_c_kernel_answers_its_numpy_function_on_drawn_states(name, how):
             try:
                 args = [float(v) for v in hdl._args_of(e, epar)]
                 x = data.draw(states(n, args), label='x')
-                assume(_check_kernels(e, found, x, epar, args, tanh))
+                assume(_check_kernels(e, found, x, epar, args, ulp))
             finally:
                 if pick is not None:
                     setattr(e.ipar, pick, old)
@@ -239,6 +249,10 @@ def test_the_psp_kernels_answer_their_numpy_functions_on_drawn_biases():
         assert cls._hdl_backend_status == 'c', cls._hdl_backend_status
         found = _c_funcs(cls)
         assert found, 'no C kernels attached'
+        ulp = _ulp_names(found)
+        if not _twin_exact(ulp):
+            pytest.skip("numpy's power is not the C library's pow on this CPU, and `**` "
+                        'cannot be swapped in the twin')
 
         @given(data=st.data())
         def drawn(data):
@@ -249,7 +263,7 @@ def test_the_psp_kernels_answer_their_numpy_functions_on_drawn_biases():
                 x = np.ascontiguousarray(e.bias(*bias), dtype=float)
             epar = data.draw(st.sampled_from(EPARS), label='epar')
             args = [float(v) for v in hdl._args_of(e, epar)]
-            assume(_check_kernels(e, found, x, epar, args, False, strict=('i', 'G', 'q')))
+            assume(_check_kernels(e, found, x, epar, args, ulp, strict=('i', 'G', 'q')))
         drawn()
 
 

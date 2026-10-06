@@ -46,6 +46,7 @@ from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
                                    SelectRefused, check_jacobians, maxc,
                                    minc, select, unclamped, var)
 from pycircuit.circuit.tests._warnpolicy import quiet
+from pycircuit.circuit.tests.test_hdl_cbackend import _libm_twin, _twin_exact
 from pycircuit.utilities.param import Parameter
 
 try:
@@ -644,10 +645,16 @@ def test_both_backends_agree_bitwise():
         assert cls._hdl_backend_status == 'c', cls._hdl_backend_status
         f = funcs['i']
         kern = f.__dict__['_hdl_c']
+        ## (the numpy source with the C library's functions where numpy's own
+        ## differ on this CPU: `libm_check`)
+        names = cb.libm_calls(f._csrc) & cb.libm_check()
+        if not _twin_exact(names):
+            pytest.skip("numpy's power is not the C library's pow on this CPU")
+        ref_f = _libm_twin(f, names) if names else f
         for v in BIAS:
             x = np.ascontiguousarray([v, 0.0])
             with np.errstate(all='ignore'):
-                ref = np.asarray(f(x, *args), float)
+                ref = np.asarray(ref_f(x, *args), float)
             got = np.asarray(kern(el, x, defaultepar), float)
             assert ref.tobytes() == got.tobytes(), v
     finally:

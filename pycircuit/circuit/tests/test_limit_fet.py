@@ -645,11 +645,16 @@ def test_limit_pnj_now_reaches_the_chained_code_generator(chained):
     b = cls('p', 'n', IS=1e-13)
     a.update_iparv(); b.update_iparv()
     moved = 0
+    ## (the chained class's limiter is its C kernel: where a function it
+    ## calls is not numpy's on this CPU, `libm_check`, it agrees to an ulp)
+    from pycircuit.circuit.tests.test_hdl_climit import _limiter_ulp
+    listed = _limiter_ulp(b)
     for vnew in np.linspace(-50.0, 50.0, 201):
         x = np.array([vnew, 0.0])
         x0 = np.array([0.1, 0.0])
         out = a.limit(x, x0)
-        assert (out == b.limit(x, x0)).all()
+        got = b.limit(x, x0)
+        assert (out == got).all() or (listed and np.allclose(out, got, rtol=1e-12, atol=0.0))
         moved += (out[0] != vnew)
     assert moved > 0
 

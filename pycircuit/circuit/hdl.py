@@ -7423,8 +7423,12 @@ def explain(target, source=True, symbolic=True, maxlines=40):
     lim = ''
     if info.get('limit_spec') and info.get('_c_limit_status'):
         lim = f" (limit: {info['_c_limit_status']})"
+    ## (the functions its C calls whose numpy twin differs on this CPU:
+    ## `_hdl_cbackend.libm_check`, speed round 12)
+    ulp = getattr(cls, '_hdl_backend_ulp', ())
+    ulp = f" (to an ulp of numpy in {', '.join(ulp)})" if ulp else ''
     lines.append(f"backend: {getattr(cls, '_hdl_backend_status', 'numpy')}"
-                 f'{twins}{lim}')
+                 f'{ulp}{twins}{lim}')
     feats = []
     if sm['statenames']:
         feats.append('%d state%s' % (len(sm['statenames']),

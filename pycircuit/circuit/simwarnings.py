@@ -16,6 +16,9 @@ it:
 * `CostWarning` -- a costlier route was taken; nothing is less accurate.
 * `UsageWarning` -- an argument or a setting has no effect, or a
   combination is unusual.
+* `PlatformWarning` -- on this machine an answer agrees with its other path
+  to an ulp, not bitwise (the C backend where the CPU's numpy brings its own
+  `exp`, `log`, ...: `_hdl_cbackend.libm_check`).
 
 ⚠ ONE ATTRIBUTION FOR EVERY WARNING.  `warn` attributes the warning to the
 first frame OUTSIDE the library (`warnings.warn`'s `skip_file_prefixes`),
@@ -29,8 +32,8 @@ import os
 import warnings
 
 __all__ = ['AccuracyWarning', 'ConvergenceWarning', 'CostWarning',
-           'ModelWarning', 'SimulationWarning', 'UsageWarning', 'summarised',
-           'warn']
+           'ModelWarning', 'PlatformWarning', 'SimulationWarning', 'UsageWarning',
+           'summarised', 'warn']
 
 
 class SimulationWarning(RuntimeWarning):
@@ -58,6 +61,12 @@ class CostWarning(SimulationWarning):
 class UsageWarning(SimulationWarning):
     """An argument or a setting has no effect, or a combination is
     unusual."""
+
+
+class PlatformWarning(SimulationWarning):
+    """On this machine an answer agrees with its other path to an ulp, not
+    bitwise: nothing is less accurate, but a contract measured elsewhere as
+    bit-identity holds here only to the last bit."""
 
 
 def _library_files():

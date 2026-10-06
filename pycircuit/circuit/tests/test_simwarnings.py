@@ -14,6 +14,7 @@ from pycircuit.circuit.simwarnings import (
     ConvergenceWarning,
     CostWarning,
     ModelWarning,
+    PlatformWarning,
     SimulationWarning,
     UsageWarning,
     summarised,
@@ -27,7 +28,7 @@ def test_every_category_is_a_simulation_warning_and_a_runtime_warning():
     """A filter or `pytest.warns(RuntimeWarning)` written before the
     categories existed still sees every one of them."""
     for cat in (AccuracyWarning, ConvergenceWarning, ModelWarning,
-                CostWarning, UsageWarning):
+                CostWarning, UsageWarning, PlatformWarning):
         assert issubclass(cat, SimulationWarning)
         assert issubclass(cat, RuntimeWarning)
 

@@ -50,6 +50,7 @@ from pycircuit.circuit._limiting import _pnjlim
 from pycircuit.circuit.nrsolver import NoConvergenceError, StandardNewton
 from pycircuit.circuit.analysis import SingularMatrix
 from pycircuit.circuit.tests._warnpolicy import quiet
+from pycircuit.circuit.tests.test_hdl_cbackend import _agree
 from pycircuit.circuit.tests.test_elements_hdl_library3 import NPN, NPN_IDEAL
 from pycircuit.circuit.tests.test_pcnr import _fig1
 from pycircuit.circuit.tests.test_pcnr_charge import (
@@ -334,7 +335,9 @@ def test_pcnr_i_is_the_resistive_current_and_didv_its_derivative(card):
         i_el = np.asarray(el.i(x), float)
         i_pc = np.asarray(el.pcnr_i(v, pr, defaultepar, numeric), float)
         assert i_pc.shape == (3,)
-        assert np.array_equal(i_el, i_pc), (x, i_el, i_pc)
+        ## (`i` is the C kernel's: to an ulp where its functions are not numpy's
+        ## on this CPU, `libm_check`)
+        assert np.array_equal(i_el, i_pc) or _agree(i_pc, i_el, type(el)), (x, i_el, i_pc)
         blk = np.asarray(el.pcnr_didv(v, pr, defaultepar, numeric), float)
         assert blk.shape == (3, 2)
         eps = 1e-7

@@ -6605,3 +6605,21 @@ the same on every case): 20 MosLevel1 357.8 -> 277.3 us a step (-22.5
 20-MosLevel1 chain is 2.9x, since round 1's start 13.8x.  What is left
 of a step: the Newton's own bookkeeping and the step machinery, in
 pieces of a few microseconds each; the C work is ~15 us of ~277.
+
+## 2026-10-06 — 66. Speed round 12, stage 1: the C library against numpy, by CPU
+
+Section 19's contract -- the C kernels return the numpy path's bytes --
+rests on numpy's float64 transcendentals being the C library's.  They are
+on this box but for `tanh` (exception 1 above); numpy's AVX-512 loops
+bring their own `exp`, `log`, ... (a peer machine failed 50 kernel tests).
+`_hdl_cbackend.libm_check()` now measures it once a process (10.5 ms: each
+function of the prelude, in the forms the numpy path calls it, against
+the C library through ctypes), and a class whose C calls a function that
+differs KEEPS C and names it -- `cls._hdl_backend_ulp`, the backend line of
+`explain`, one `simwarnings.PlatformWarning` a process beyond tanh
+(Andreas's decision, kernels and limiters alike).  The exceptions above
+become: (1) every LISTED function, tanh on every CPU measured -- the class
+bitwise its source run with the C library's functions; (2) unchanged.  The
+tests apply the rule wherever C meets numpy, and a pytest plugin
+(`scripts/plant_libm.py`) simulates such a CPU on this one.  Record:
+`doc/pss_log_260902.md`, "speed round 12, stage 1".

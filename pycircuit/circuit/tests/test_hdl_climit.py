@@ -25,7 +25,7 @@ from pycircuit.circuit import circuit as cm
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit.hdl import Node
-from pycircuit.circuit.tests.test_hdl_cbackend import _compare, numpy_backend
+from pycircuit.circuit.tests.test_hdl_cbackend import _compare, _libm_fn, numpy_backend
 from pycircuit.circuit.tests.test_limit_fet import _fet
 from pycircuit.circuit.toolkit import numeric
 
@@ -88,6 +88,24 @@ def _closure_only(e):
             info['_c_limit'] = kern
 
 
+_LIMITER_ULP = {}
+
+
+def _limiter_ulp(e):
+    """The listed functions (`_hdl_cbackend.libm_check`) the class's BOUND
+    limiter calls -- its laws and its printed parameter chains."""
+    info = type(e)._hdl_info
+    if info.get('_c_limit') is None:
+        return frozenset()
+    key = (type(e), cb.libm_check())
+    got = _LIMITER_ULP.get(key)
+    if got is None:
+        src = cl.source_for(info)
+        got = _LIMITER_ULP[key] = (frozenset() if src is None
+                                   else cb.libm_calls(src._csrc) & cb.libm_check())
+    return got
+
+
 def _py_limit(e, x, x0, epar=defaultepar):
     """The CLOSURE's answer: the Python limiter, never the kernel.
 
@@ -96,9 +114,33 @@ def _py_limit(e, x, x0, epar=defaultepar):
     `limit` closure; `bind` stores it in the class info): every sweep
     below compared the C kernel with itself, and the whole-limiter path
     (ranking, groups, write-back) had never met Python's.  The laws had,
-    through the probe kernel."""
+    through the probe kernel.
+
+    ON A CPU WHERE NUMPY'S FUNCTION IS NOT THE C LIBRARY'S (speed round 12:
+    `libm_check`) and the limiter calls it, the kernel agrees with the
+    closure to an ulp, not bitwise -- the comparisons this feeds skip there,
+    naming it (none here: tanh, the only listed function on this box,
+    refuses a limiter's kernel)."""
+    names = _limiter_ulp(e)
+    if names:
+        pytest.skip(f"numpy's {', '.join(sorted(names))} differ from the C library's on this "
+                    f"CPU: the limiter agrees with its closure to an ulp ({cb.libm_status()})")
     with _quiet(), _closure_only(e):
         return e.limit(x, x0, epar)
+
+
+class _LibmToolkit:
+    """The numeric toolkit with the C library's functions in place of the
+    listed ones (`libm_check`): what a C law computes on every CPU."""
+
+    def __init__(self, names):
+        self._swap = {n: _libm_fn(c) for c, n in cb.LIBM_PAIRS if c in names}
+
+    def __getattr__(self, name):
+        if name.startswith('_'):
+            raise AttributeError(name)
+        f = self._swap.get(name)
+        return f if f is not None else getattr(numeric, name)
 
 
 ## -- the laws ----------------------------------------------------------------
@@ -173,11 +215,15 @@ def test_every_law_is_the_python_one_bit_for_bit(law, kind):
                     cases.append((a, b, (vmax,)))
             else:
                 cases.append((a, b, ()))
+    ## (the Python law with the C library's functions where numpy's own
+    ## differ on this CPU, `libm_check`: the C law calls the library's)
+    listed = cb.libm_check()
+    tk = _LibmToolkit(listed) if listed - {'tanh'} else numeric
     tally = {'equal': 0, 'nan-bits': 0, 'zero-sign': 0, 'value': 0}
     for vnew, vold, pars in cases:
         with warnings.catch_warnings(), np.errstate(all='ignore'):
             warnings.simplefilter('ignore', RuntimeWarning)
-            ref = _limiting.apply_limit(kind, vnew, vold, list(pars), numeric)
+            ref = _limiting.apply_limit(kind, vnew, vold, list(pars), tk)
         p0 = pars[0] if len(pars) > 0 else 0.0
         p1 = pars[1] if len(pars) > 1 else 0.0
         got = law(kind, vnew, vold, p0, p1)

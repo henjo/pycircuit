@@ -132,6 +132,22 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   --hypothesis-profile deep` draws 3000 a test, fresh, failures kept in
   `~/.cache/pycircuit/hypothesis`.  Run `deep` with the sanitized suite,
   once per speed round.
+- **On another CPU** (2026-10-06, speed round 12): the C kernels match
+  numpy bit for bit only where numpy's float64 transcendentals are the C
+  library's (this box: all but tanh).  `_hdl_cbackend.libm_check()` probes
+  it once a process (~10 ms; the root conftest runs it at session start, so
+  its one `PlatformWarning` is printed in the summary, never inside a test);
+  `libm_status()` says what it found.  Where numpy brings its own `exp`,
+  `log`, ... (AVX-512 builds), a class calling them keeps C and names them
+  (`cls._hdl_backend_ulp`, `explain`), the C-against-numpy tests compare
+  with the numpy source run with the C library's functions (bitwise) or
+  within the tanh band, and the limiter-against-closure tests skip, naming
+  the function.  `PYTHONPATH=scripts pytest -p plant_libm ...` simulates
+  such a CPU here (`scripts/plant_libm.py`); the fast tier then fails 3
+  tests outside the C backend (`test_device_limiter` x2, `test_psp_kernel`'s
+  seam slope: pure-numpy sensitivity to an ulp).  To check a machine:
+  `python -c "from pycircuit.circuit import _hdl_cbackend as cb;
+  cb.libm_check(); print(cb.libm_status())"`.
 - **Timing records** are local: `test_timings/runs.csv` (workers, load, wall,
   per run) and the per-run JSONs the longest-first sort reads; neither is in
   git any more (`history.csv`, tracked until 2026-10-03, lost rows whenever it

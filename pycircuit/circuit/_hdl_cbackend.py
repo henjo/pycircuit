@@ -75,6 +75,21 @@ Fidelity
       sign) where C is all doubles.  Values compare equal; bytes can
       differ on zero entries.
 
+    And one that depends on the CPU (speed round 12, 2026-10-06): numpy
+    picks its loops by the CPU it runs on, and where it brings its own
+    float64 `exp`, `log`, ... (AVX-512 builds, by the evidence of another
+    machine: 50 kernel tests failing there) they are not the C library's.
+    `libm_check` compares each function of the kernel prelude with numpy's,
+    in the forms the numpy path calls it, once a process on a fixed probe
+    set.  A class whose kernels or limiter call a function that differs
+    KEEPS C (Andreas's decision: the speed, with the difference named) and
+    names it: `cls._hdl_backend_ulp`, `explain`'s backend line, and one
+    `PlatformWarning` a process for the functions beyond tanh -- the
+    class then agrees with the numpy path to that function's ulp (amplified
+    where the model cancels), and bitwise with its numpy source run with
+    the C library's functions, as a tanh class does.  On this box (numpy's
+    X86_V3 loops) tanh is the only one.
+
 Cache
     The `.so` lives beside the pickled compile-cache entries
     (`_hdl_cache.cache_dir()`), keyed by SHA-256 of the complete C
@@ -811,8 +826,190 @@ def _build_missing_parallel(fns):
 C_FUNCS = ('i', 'G', 'q', 'C', 'i_dc', 'G_dc')
 
 
+## -- THE C LIBRARY AGAINST NUMPY (speed round 12, stage 1, 2026-10-06) ------------
+
+#: The transcendentals the kernel prelude declares (`hdl._KERNEL_C`), each
+#: with the numpy function the numpy path calls for it (`hdl._C_NAMES`).
+#: `pow` is checked as the `**` of a 0-d array (`numpy.where`'s result:
+#: numpy's own `power` loop) and of a numpy scalar (the C library's `pow`
+#: on every CPU, checked anyway).  `sqrt`, `fabs`, `floor` and `ceil` are
+#: exact in every library: not here.
+LIBM_PAIRS = (('exp', 'exp'), ('log', 'log'), ('log1p', 'log1p'), ('expm1', 'expm1'),
+              ('sin', 'sin'), ('cos', 'cos'), ('tan', 'tan'), ('asin', 'arcsin'),
+              ('acos', 'arccos'), ('atan', 'arctan'), ('sinh', 'sinh'), ('cosh', 'cosh'),
+              ('tanh', 'tanh'), ('atan2', 'arctan2'), ('hypot', 'hypot'), ('pow', 'power'))
+_LIBM_BINARY = frozenset(('atan2', 'hypot', 'pow'))
+_LIBM_CALL = re.compile(r'\b(' + '|'.join(c for c, _n in LIBM_PAIRS) + r')\s*\(')
+#: the probe's outcome: `differ` None until `libm_check` ran, then the
+#: functions that differ; `detail` per function (differing, probed);
+#: `status` what was found, or why nothing could be checked (`libm_status`).
+#: A dict, not module scalars: the leak detector reports a module scalar
+#: that moves, and this fills at a process's first C resolve.
+_LIBM = {'differ': None, 'detail': {}, 'status': 'not checked yet'}
+
+
+def _libm_probe_values():
+    """The fixed probe set: the special values (signed zeros, subnormals,
+    the smallest normal, the overflow and underflow edges of `exp`, +-1e300,
+    the largest double, infinities, NaN), magnitudes from 1e-310 to 1e308
+    of both signs, and dense bands where the functions curve (+-40, +-1)."""
+    import math
+    specials = [0.0, -0.0, 5e-324, -5e-324, 2.2250738585072014e-308,
+                -2.2250738585072014e-308, 1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 3.0, 10.0,
+                -10.0, 100.0, 709.78, 709.79, 710.0, -745.1, -745.2, -746.0, 1e300, -1e300,
+                1.7976931348623157e308, -1.7976931348623157e308, math.inf, -math.inf,
+                math.nan, math.pi, math.pi / 2, 1e-8, -1e-8, 0.999999, -0.999999, 1e22,
+                2.0 ** 52, 2.0 ** 60]
+    mags = list(10.0 ** np.linspace(-310.0, 308.0, 220))
+    bands = list(np.linspace(-40.0, 40.0, 161)) + list(np.linspace(-1.0, 1.0, 81))
+    return np.array(specials + mags + [-m for m in mags] + bands, dtype=float)
+
+
+def _libm_differ(a, b):
+    """Entries whose bits differ, NaN against NaN not counted (a NaN's
+    payload and sign are not the contract; the tests' `_compare`)."""
+    a = np.ascontiguousarray(a, dtype=float)
+    b = np.ascontiguousarray(b, dtype=float)
+    return (~(np.isnan(a) & np.isnan(b))) & (a.view(np.int64) != b.view(np.int64))
+
+
+def _libm_probe(numpy_funcs=None):
+    """`(the C names whose numpy function differs, {name: (differing,
+    probed)})` -- or None where the C library cannot be reached from here.
+    Each function along an array of the probe set and on every third value
+    as a numpy scalar (a CPU's numpy may run the two through different
+    loops); `numpy_funcs` (tests: a planted difference) replaces numpy's
+    functions by their numpy name."""
+    import ctypes
+    import ctypes.util
+    try:
+        lib = ctypes.CDLL(ctypes.util.find_library('m') or None)
+        cfun = {}
+        for c, _n in LIBM_PAIRS:
+            f = getattr(lib, c)
+            f.restype = ctypes.c_double
+            f.argtypes = [ctypes.c_double] * (2 if c in _LIBM_BINARY else 1)
+            cfun[c] = f
+    except (OSError, AttributeError) as e:
+        _LIBM['status'] = f'not checked: the C library is not reachable ({e})'
+        return None
+    over = numpy_funcs or {}
+    vals = _libm_probe_values()
+    third = vals[::3]
+    a2 = vals[::12]
+    b2 = np.concatenate([vals[::29], [2.0, 3.0, 0.5, -1.0, -0.5, 1.5, -2.0]])
+    A, B = (m.ravel() for m in np.meshgrid(a2, b2))
+    differ, detail = set(), {}
+    with np.errstate(all='ignore'):
+        for c, n in LIBM_PAIRS:
+            uf = over.get(n) or getattr(np, n)
+            f = cfun[c]
+            if c in _LIBM_BINARY:
+                ref = np.array([f(float(a), float(b)) for a, b in zip(A, B)])
+                got = [_libm_differ(uf(A, B), ref)]
+                if c == 'pow':
+                    k = slice(None, None, 4)
+                    got.append(_libm_differ([uf(np.asarray(a), b) for a, b in zip(A[k], B[k])],
+                                            ref[k]))
+                    got.append(_libm_differ([np.float64(a) ** np.float64(b)
+                                             for a, b in zip(A[k], B[k])], ref[k]))
+            else:
+                ref = np.array([f(float(v)) for v in vals])
+                got = [_libm_differ(uf(vals), ref),
+                       _libm_differ([uf(np.float64(v)) for v in third], ref[::3])]
+            d, m = sum(int(g.sum()) for g in got), sum(g.size for g in got)
+            detail[c] = (d, m)
+            if d:
+                differ.add(c)
+    _LIBM['status'] = ('checked: ' + (', '.join(f'{c} differs in {detail[c][0]} of {detail[c][1]}'
+                                                for c in sorted(differ))
+                                      or 'every function agrees'))
+    return frozenset(differ), detail
+
+
+def libm_check():
+    """The functions of the kernel prelude whose numpy twin gives other
+    bits than the C library's on this CPU, as a frozenset of C names;
+    measured once a process (`_libm_probe`, ~10 ms).  Empty where nothing
+    could be checked (`libm_status` says so).  Where it finds one beyond
+    tanh, the process gets ONE `PlatformWarning` naming them."""
+    if _LIBM['differ'] is None:
+        out = _libm_probe()
+        _LIBM['differ'], _LIBM['detail'] = (frozenset(), {}) if out is None else out
+        beyond = sorted(_LIBM['differ'] - {'tanh'})
+        if beyond:
+            _sw.warn(f"hdl C backend: on this CPU numpy's {', '.join(beyond)} differ from the "
+                     "C library's: a C-bound class calling them agrees with the numpy path to "
+                     "an ulp, not bitwise, as tanh does on every CPU -- `cls._hdl_backend_ulp` "
+                     f"names a class's ({_LIBM['status']})", _sw.PlatformWarning)
+    return _LIBM['differ']
+
+
+def libm_status():
+    """What `libm_check` found ('checked: ...'), or why it found nothing."""
+    return _LIBM['status']
+
+
+def _limit_helper_calls():
+    """For each helper of the limiter's own prelude (`_hdl_climit._LIMIT_C`):
+    the transcendentals it calls, through the helpers it calls."""
+    from pycircuit.circuit import _hdl_climit
+    got = _LIBM.get('helpers')
+    if got is None:
+        pre = _hdl_climit._LIMIT_C
+        heads = list(re.finditer(r'^static\s+\w+\s+(\w+)\s*\(', pre, re.MULTILINE))
+        bodies = {m.group(1): pre[m.end():(heads[k + 1].start() if k + 1 < len(heads)
+                                            else len(pre))]
+                  for k, m in enumerate(heads)}
+        direct = {h: set(_LIBM_CALL.findall(b)) for h, b in bodies.items()}
+        got = {}
+        for h in bodies:
+            seen, todo, calls = {h}, [h], set()
+            while todo:
+                g = todo.pop()
+                calls |= direct[g]
+                for other in bodies:
+                    if other not in seen and re.search(r'\b' + other + r'\s*\(', bodies[g]):
+                        seen.add(other)
+                        todo.append(other)
+            got[h] = frozenset(calls)
+        _LIBM['helpers'] = got
+    return got
+
+
+def libm_calls(csrc):
+    """The functions of `LIBM_PAIRS` a kernel's C source calls -- a
+    limiter's helper prelude counted only through the helpers its own code
+    calls (every limit kernel carries the whole prelude)."""
+    from pycircuit.circuit import _hdl_climit
+    pre = _hdl_climit._LIMIT_C
+    if pre not in csrc:
+        return frozenset(_LIBM_CALL.findall(csrc))
+    body = csrc.replace(pre, '')
+    out = set(_LIBM_CALL.findall(body))
+    for h, calls in _limit_helper_calls().items():
+        if re.search(r'\b' + h + r'\s*\(', body):
+            out |= calls
+    return frozenset(out)
+
+
+def _name_ulp(cls, info, fns, lsrc):
+    """`cls._hdl_backend_ulp`: the listed functions (`libm_check`) its bound
+    C calls -- the chain functions and, where it bound, its limiter (`lsrc`,
+    `_hdl_climit.source_for`'s; the fused kernel's statements are the chain
+    functions')."""
+    srcs = [fn._csrc for fn in fns]
+    if lsrc is not None and info.get('_c_limit') is not None:
+        srcs.append(lsrc._csrc)
+    listed = libm_check()
+    called = frozenset().union(*(libm_calls(s) for s in srcs)) if srcs else frozenset()
+    cls._hdl_backend_ulp = tuple(sorted(called & listed))
+
+
 def _note(cls, status, warn=None):
     cls._hdl_backend_status = status
+    ## (named again where the class binds C: `_name_ulp`)
+    cls._hdl_backend_ulp = ()
     if warn:
         _sw.warn(f'hdl C backend: {cls.__name__}: {warn}', _sw.CostWarning)
 
@@ -967,3 +1164,4 @@ def _resolve(cls, info, explicit):
     if lsrc is not None:
         _hdl_climit.bind(cls, info, lsrc)
     bind_fused(info, fsrc)
+    _name_ulp(cls, info, todo.values(), lsrc)

@@ -186,9 +186,31 @@ def pytest_report_header(config):
 
 
 def pytest_sessionstart(session):
+    _libm_session_check(session.config)
     if _is_xdist_worker(session.config):
         return
     session.config._suite_t0 = _time.perf_counter()
+
+
+def _libm_session_check(config):
+    """THE C LIBRARY AGAINST NUMPY (speed round 12, 2026-10-06): checked
+    here, once a process (each xdist worker too), so its one
+    `PlatformWarning` -- a CPU whose numpy brings its own `exp`, `log`, ...
+    (`_hdl_cbackend.libm_check`) -- is the session's, never a test's: a test
+    that records warnings would otherwise see it inside whichever test first
+    binds a class to C.  The controller prints it in the summary."""
+    import warnings
+
+    from pycircuit.circuit import _hdl_cbackend
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter('always')
+        _hdl_cbackend.libm_check()
+    config._libm_notes = [str(r.message) for r in rec]
+
+
+def pytest_terminal_summary(terminalreporter, config):
+    for note in getattr(config, '_libm_notes', ()):
+        terminalreporter.write_line(f'pycircuit: {note}')
 
 
 def pytest_runtest_logreport(report):

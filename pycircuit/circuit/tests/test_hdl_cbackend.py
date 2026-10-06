@@ -7,12 +7,15 @@ include the extremes the kernel's safety primitives exist for.  Three
 exceptions, each measured, each named, each pinned by its own test
 rather than hidden in a tolerance:
 
-* **tanh** -- numpy ships its own vectorised `tanh`, which differs from
-  libm's by an ulp in ~30% of arguments.  A chain using `tanh` agrees
-  with the numpy path only to that ulp (amplified where the model
-  cancels), and agrees BITWISE with the same numpy source run with
-  libm's `tanh` -- which is what `test_tanh_is_the_whole_difference`
-  asserts, converting the tolerance into a named cause.
+* **tanh, and on some CPUs more** -- numpy ships its own vectorised
+  `tanh`, which differs from libm's by an ulp in ~30% of arguments; on a
+  CPU where numpy brings its own `exp`, `log`, ... too (AVX-512 builds),
+  those differ as well.  `_hdl_cbackend.libm_check` lists them, once a
+  process (here: tanh).  A chain calling a listed function agrees with
+  the numpy path only to that ulp (amplified where the model cancels),
+  and agrees BITWISE with the same numpy source run with the C library's
+  functions -- which is what `test_the_listed_functions_are_the_whole_
+  difference` asserts, converting the tolerance into a named cause.
 * **the sign of exact zeros** -- the numpy path computes integer-typed
   subchains (`numpy.where(c, 1, 0)` is int64, and an integer zero
   carries no sign) where C is all doubles, so a C zero can be `-0.0`
@@ -43,6 +46,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import warnings
 
 import numpy as np
 import pytest
@@ -195,34 +199,112 @@ def _compare(ref, out):
     return 'nan-bits' if bool((differing & ~both_nan).sum() == 0) else 'zero-sign'
 
 
-def _sweep(e, cls, pts):
+def _sweep(e, cls, pts, ulp=frozenset()):
     """{func name: {'equal': n, 'zero-sign': n, 'value': n}} comparing
-    the C kernel against the numpy function it was printed from."""
+    the C kernel against the numpy function it was printed from -- run
+    with the C library's functions for those of `ulp` (`_ulp_names`)."""
     args = [float(v) for v in hdl._args_of(e, defaultepar)]
     out = {}
     for name, f in _c_funcs(cls):
         kern = f.__dict__['_hdl_c']
+        ref_f = _libm_twin(f, ulp) if ulp else f
         tally = {'equal': 0, 'nan-bits': 0, 'zero-sign': 0,
                  'value': 0}
         for x in pts:
             with np.errstate(all='ignore'):
-                ref = np.asarray(f(x, *args), float)
+                ref = np.asarray(ref_f(x, *args), float)
             tally[_compare(ref, kern(e, x, defaultepar))] += 1
         out[name] = tally
     return out
 
 
-def _libm_tanh_twin(f):
-    """`f._src` re-executed with `numpy.tanh` swapped for libm's --
-    the ONLY difference from the real numpy path."""
+_LIBM_FNS = {}
+
+
+def _libm_fn(c):
+    """The C library's `c` as numpy would be called: a numpy float for a
+    scalar (or 0-d array), an array for an array -- through ctypes, so with
+    C's inf and NaN where Python's `math` would raise."""
+    f = _LIBM_FNS.get(c)
+    if f is not None:
+        return f
+    import ctypes
+    import ctypes.util
+    raw = getattr(ctypes.CDLL(ctypes.util.find_library('m') or None), c)
+    raw.restype = ctypes.c_double
+    if c in cb._LIBM_BINARY:
+        raw.argtypes = [ctypes.c_double, ctypes.c_double]
+
+        def f(a, b):
+            a, b = np.asarray(a, float), np.asarray(b, float)
+            if a.ndim == 0 and b.ndim == 0:
+                return np.float64(raw(float(a), float(b)))
+            A, B = np.broadcast_arrays(a, b)
+            return np.array([raw(float(p), float(q)) for p, q in zip(A.ravel(), B.ravel())]
+                            ).reshape(A.shape)
+    else:
+        raw.argtypes = [ctypes.c_double]
+
+        def f(v):
+            a = np.asarray(v, float)
+            if a.ndim == 0:
+                return np.float64(raw(float(a)))
+            return np.array([raw(float(t)) for t in a.ravel()]).reshape(a.shape)
+    _LIBM_FNS[c] = f
+    return f
+
+
+def _libm_twin(f, names):
+    """`f._src` re-executed with each function of `names` (C names, as
+    `_hdl_cbackend.libm_check` lists them) swapped for the C library's --
+    the ONLY difference from the real numpy path.  `pow` is numpy's `**`
+    and cannot be swapped: where it is listed the caller cannot have a
+    bitwise twin (`_twin_exact`)."""
     import types
     proxy = types.ModuleType('numpy')
     proxy.__dict__.update(np.__dict__)
-    proxy.tanh = lambda v: np.float64(math.tanh(v))
+    for c, n in cb.LIBM_PAIRS:
+        if c in names and c != 'pow':
+            setattr(proxy, n, _libm_fn(c))
     ns = hdl._chain_namespace(dict(hdl._KERNEL_NUMPY, _wrapfloor=np.floor))
     ns['numpy'] = proxy
-    exec(compile(f._src, '<libm-tanh>', 'exec'), ns)
+    exec(compile(f._src, '<libm>', 'exec'), ns)  # noqa: S102 -- the twin is the source, re-run
     return ns['_f']
+
+
+def _ulp_names(found):
+    """The listed functions (`libm_check`) the C kernels `found` call."""
+    return frozenset().union(*(cb.libm_calls(f._csrc) for _nm, f in found)) & cb.libm_check()
+
+
+def _twin_exact(names):
+    """Whether `_libm_twin` reproduces the kernel bit for bit: every listed
+    function it calls can be swapped (`pow` cannot)."""
+    return 'pow' not in names
+
+
+def _class_ulp(cls):
+    """The listed functions (`libm_check`) the C of `cls`'s chain functions
+    calls, bound or not."""
+    funcs = cls._hdl_info['funcs']
+    return frozenset().union(*(cb.libm_calls(f._csrc) for f in funcs.values()
+                               if getattr(f, '_csrc', None))) & cb.libm_check()
+
+
+def _agree(ref, got, cls):
+    """The C answer `got` against the numpy path's `ref`: the same bytes --
+    or, where the class's C calls a listed function (`libm_check`: numpy's
+    own differs on this CPU; tanh here, exp, log, ... on some CPUs), the
+    same values within the band `test_class_bitwise` holds those classes to."""
+    ref, got = np.asarray(ref, float), np.asarray(got, float)
+    if ref.tobytes() == got.tobytes():
+        return True
+    if ref.shape != got.shape or not _class_ulp(cls):
+        return False
+    eq = (ref == got) | (np.isnan(ref) & np.isnan(got))
+    scale = float(np.nanmax(np.abs(np.where(np.isfinite(ref), ref, 0.0)))) if ref.size else 0.0
+    return bool(np.allclose(np.where(eq, 0.0, ref), np.where(eq, 0.0, got),
+                            rtol=1e-6, atol=1e-9 * max(1.0, scale)))
 
 
 ## ----------------------------------------------------------------------
@@ -257,8 +339,8 @@ class TestLibraryBitIdentity(object):
                     share = np.mean([np.isfinite(np.asarray(f(x, *args), float)).mean()
                                      for x in _points(n)])
                 assert share > 0.5, (fname, share)
-            uses_tanh = any('tanh' in f._src for _nm, f in found)
-            if not uses_tanh:
+            ulp = _ulp_names(found)
+            if not ulp:
                 tallies = _sweep(e, cls, _points(n))
                 for fname, t in tallies.items():
                     ## Value-identical everywhere; bytes identical bar
@@ -272,11 +354,12 @@ class TestLibraryBitIdentity(object):
                     assert t['value'] == 0, (fname, t)
                     assert t['equal'] >= t['zero-sign'], (fname, t)
                 return
-            ## tanh classes: the ulp of numpy's own tanh, amplified
+            ## a listed function (tanh here; on some CPUs exp, log, ...:
+            ## `libm_check`): the ulp of numpy's own function, amplified
             ## where the model cancels, is the ONLY allowed deviation
             ## from the true numpy path (the twin test pins that it IS
-            ## tanh).  One shared band across all points and functions,
-            ## absolute against the function's own scale.
+            ## that function).  One shared band across all points and
+            ## functions, absolute against the function's own scale.
             for fname, f in found:
                 kern = f.__dict__['_hdl_c']
                 for x in _points(n):
@@ -295,21 +378,25 @@ class TestLibraryBitIdentity(object):
 
     @pytest.mark.parametrize('name', sorted(
         n for n in CHAINED
-        if any('tanh' in f._src for _nm, f in
-               [(k, getattr(eh, n)._hdl_info['funcs'][k])
-                for k in ('i', 'G')])))
-    def test_tanh_is_the_whole_difference(self, name):
-        """For every tanh-using class, the C kernel agrees BITWISE with
-        the numpy source run with libm's tanh: the ulp against the real
-        numpy path is numpy's own tanh, nothing else.  (The class an
-        instance runs: see `test_class_bitwise`.)"""
+        if any(cb.libm_calls(getattr(f, '_csrc', None) or '') & cb.libm_check()
+               for f in [getattr(eh, n)._hdl_info['funcs'][k] for k in ('i', 'G')])))
+    def test_the_listed_functions_are_the_whole_difference(self, name):
+        """For every class calling a listed function (`libm_check`: tanh
+        here), the C kernel agrees BITWISE with the numpy source run with
+        the C library's functions: the ulp against the real numpy path is
+        numpy's own function, nothing else.  (The class an instance runs:
+        see `test_class_bitwise`.)"""
         e = _instance(getattr(eh, name), **KW.get(name, {}))
         cls = type(e)
         n = len(hdl.x_layout(cls))
         args = [float(v) for v in hdl._args_of(e, defaultepar)]
         with c_backend(cls):
+            names = _ulp_names(_c_funcs(cls))
+            if not _twin_exact(names):
+                pytest.skip(f"numpy's power is not the C library's pow on this CPU, "
+                            f"and `**` cannot be swapped in the twin ({cb.libm_status()})")
             for fname, f in _c_funcs(cls):
-                twin = _libm_tanh_twin(f)
+                twin = _libm_twin(f, names)
                 kern = f.__dict__['_hdl_c']
                 for x in _points(n):
                     with np.errstate(all='ignore'):
@@ -327,6 +414,114 @@ class TestLibraryBitIdentity(object):
         n = len(hdl.x_layout(cls))
         with np.errstate(all='ignore'):
             e.i(np.zeros(n))
+
+
+## ----------------------------------------------------------------------
+## The C library against numpy, by CPU (speed round 12, stage 1).
+
+def _planted_log(v):
+    """numpy's log, one ulp up above 1.5: what a CPU whose numpy brings its
+    own `log` looks like to the probe."""
+    v = np.asarray(v, float)
+    with np.errstate(all='ignore'):
+        out = np.log(v)
+        up = np.nextafter(out, np.inf)
+    return np.where(np.isfinite(out) & (v > 1.5), up, out)[()]
+
+
+class TestLibmCheck:
+    """`_hdl_cbackend.libm_check`: which of the kernel prelude's functions
+    numpy gives other bits for than the C library on this CPU -- and what a
+    class calling one does (Andreas, 2026-10-06: keeps C, names it)."""
+
+    def test_the_check_says_what_it_found(self):
+        differ, detail = cb._libm_probe()
+        assert set(detail) == {c for c, _n in cb.LIBM_PAIRS}
+        assert all(m > 0 for _d, m in detail.values())
+        assert differ == {c for c, (d, _m) in detail.items() if d}
+        ## (kept for the process: measured once)
+        assert cb.libm_check() == differ
+        assert cb.libm_check() is cb.libm_check()
+        assert cb.libm_status().startswith('checked: ')
+        for c in differ:
+            assert f'{c} differs' in cb.libm_status()
+
+    def test_a_planted_difference_is_listed(self):
+        differ, detail = cb._libm_probe(numpy_funcs={'log': _planted_log})
+        assert 'log' in differ and detail['log'][0] > 0
+        assert differ - {'log'} == cb.libm_check() - {'log'}
+
+    def test_a_limiter_names_a_helpers_function_only_where_it_calls_it(self):
+        """Every limit kernel carries the limiter's whole prelude; only the
+        helpers its own code calls count (`_lim_pnj` calls `log`)."""
+        from pycircuit.circuit import _hdl_climit as cl
+        body = 'int hdl_fn(const double *x, const double *p, double *out) { %s return 0; }'
+        assert cb.libm_calls(cl._LIMIT_C + body % '') == frozenset()
+        assert cb.libm_calls(cl._LIMIT_C + body % 'out[0] = _lim_pnj(x[0], x[1], p[0], p[1]);'
+                             ) == {'log'}
+        assert cb.libm_calls(cl._LIMIT_C + body % 'out[0] = exp(x[0]);') == {'exp'}
+        ## a chain's own text: each call by its name; a name that only
+        ## begins like one (`L_exp`, `expm1`) is not another's
+        assert cb.libm_calls('const double L_a = exp(x[0]) + expm1(x[1]) + log1p(x[2]);'
+                             ' const double L_b = atan2(L_a, x[0]) + L_exp;'
+                             ) == {'exp', 'expm1', 'log1p', 'atan2'}
+
+    @needs_cc
+    def test_a_listed_function_is_named_on_the_class(self):
+        """A planted `log`: a C class calling it keeps C and names it
+        (`_hdl_backend_ulp`, `explain`'s backend line); a class on numpy names
+        nothing.  Restored after."""
+        saved = dict(cb._LIBM)
+        classes = []
+        try:
+            cb._LIBM['differ'] = cb.libm_check() | {'log'}
+            e = _instance(eh.MosLevel1Hdl)
+            cls = type(e)
+            classes.append(cls)
+            with c_backend(cls):
+                assert cls._hdl_backend_status == 'c'
+                assert 'log' in cls._hdl_backend_ulp
+                line = next(ln for ln in hdl.explain(cls, source=False, symbolic=False)
+                            .splitlines() if ln.startswith('backend:'))
+                assert line.startswith('backend: c (to an ulp of numpy in ') \
+                    and 'log' in line, line
+            with numpy_backend(cls):
+                assert cls._hdl_backend_ulp == ()
+        finally:
+            cb._LIBM.clear()
+            cb._LIBM.update(saved)
+            ## (each class named again as the process's own check has it)
+            for c in classes:
+                hdl.set_backend(None, c)
+        assert ('log' in cls._hdl_backend_ulp) == ('log' in cb.libm_check())
+
+    def test_the_check_warns_once_for_a_function_beyond_tanh(self, monkeypatch):
+        """The first check that finds a function beyond tanh gives the
+        process ONE `PlatformWarning` naming it (a `SimulationWarning`: the
+        policy's); the next call measures nothing and says nothing."""
+        from pycircuit.circuit.simwarnings import PlatformWarning, SimulationWarning
+        assert issubclass(PlatformWarning, SimulationWarning)
+        saved = dict(cb._LIBM)
+        detail = {c: (0, 10) for c, _n in cb.LIBM_PAIRS}
+        detail['log'] = (3, 10)
+        calls = []
+
+        def probe():
+            calls.append(1)
+            cb._LIBM['status'] = 'checked: log differs in 3 of 10'
+            return frozenset({'log'}), detail
+        monkeypatch.setattr(cb, '_libm_probe', probe)
+        try:
+            cb._LIBM['differ'] = None
+            with pytest.warns(PlatformWarning, match="numpy's log differ"):
+                assert cb.libm_check() == {'log'}
+            with warnings.catch_warnings():
+                warnings.simplefilter('error')
+                assert cb.libm_check() == {'log'}
+            assert calls == [1]
+        finally:
+            cb._LIBM.clear()
+            cb._LIBM.update(saved)
 
 
 ## ----------------------------------------------------------------------
@@ -382,8 +577,8 @@ class TestBothArmsPreserved(object):
             with c_backend(_OverflowArms):
                 with np.errstate(all='ignore'):
                     ci, cG = e.i(x), e.G(x)
-            assert ref_i.tobytes() == ci.tobytes()
-            assert ref_G.tobytes() == cG.tobytes()
+            assert _agree(ref_i, ci, type(e))
+            assert _agree(ref_G, cG, type(e))
             assert np.isfinite(ci).all()
 
 
@@ -606,7 +801,7 @@ class TestSelectionAndFallback(object):
                 var_cls._hdl_backend_status
             with np.errstate(all='ignore'):
                 got = e.G(x)
-        assert ref.tobytes() == got.tobytes()
+        assert _agree(ref, got, var_cls)
         ## unpinned: the variant -- which has an instance -- runs whatever
         ## the environment's default gives one ('auto': C)
         want = {'numpy': 'numpy', 'c': 'c', 'auto': 'c'}[
@@ -626,8 +821,7 @@ class TestSelectionAndFallback(object):
         with c_backend(cls):
             with np.errstate(all='ignore'):
                 got = [getattr(e, m)(x) for m in ('i', 'G', 'q', 'C')]
-            assert all(a.tobytes() == b.tobytes()
-                       for a, b in zip(ref, got))
+            assert all(_agree(a, b, type(e)) for a, b in zip(ref, got, strict=True))
             ## a parameter change must invalidate the packed vector
             e.ipar.rc = 4.0
             e.update_iparv()
@@ -635,7 +829,7 @@ class TestSelectionAndFallback(object):
                 after_c = e.i(x).copy()
         with numpy_backend(cls), np.errstate(all='ignore'):
             after_np = e.i(x)
-        assert after_c.tobytes() == after_np.tobytes()
+        assert _agree(after_np, after_c, type(e))
         assert after_c.tobytes() != ref[0].tobytes()
 
 
@@ -981,7 +1175,11 @@ class TestPspBitIdentity(object):
         assert len(pts) >= 1000
         with c_backend(cls):
             assert cls._hdl_backend_status == 'c'
-            tallies = _sweep(e, cls, pts)
+            ulp = _ulp_names(_c_funcs(cls))
+            if not _twin_exact(ulp):
+                pytest.skip("numpy's power is not the C library's pow on this CPU, and "
+                            '`**` cannot be swapped in the twin')
+            tallies = _sweep(e, cls, pts, ulp)
         assert set(tallies) == {'i', 'G', 'q', 'C'}
         for k in ('i', 'G', 'q'):
             t = tallies[k]
@@ -1171,7 +1369,7 @@ def test_a_temperature_array_runs_the_numpy_function(tmp_path):
         got = e.i(x, ep)
         one = e.i(x, Epar(T=300.0))
     assert got.tobytes() == ref.tobytes()
-    assert one.tobytes() == ref_one.tobytes()
+    assert _agree(ref_one, one, type(e))
 
 
 @needs_cc
@@ -1193,7 +1391,7 @@ def test_the_kernel_takes_a_read_only_state_and_any_one_number_as_t():
         assert f.__dict__['_hdl_c'] is not None
         for T, r in zip(temps, ref, strict=True):
             got = e.i(x, Epar(T=T))
-            assert got.tobytes() == r.tobytes(), T
+            assert _agree(r, got, type(e)), T
             assert got is not r and got.flags.writeable
     assert not x.flags.writeable
 
