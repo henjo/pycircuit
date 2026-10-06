@@ -4254,3 +4254,17 @@ every time.  Each is now kept with the tableau `butcher()` returned for it,
 and given again while `butcher()` returns that object.  Measured: the
 radau PSS of the PSP stage -7.8 % instructions, a radau transient of a
 20-MosLevel1 chain -8.3 %.
+
+## `analysis.py` -- small reduces and inserts as one indexed copy (2026-10-06, speed round 11)
+
+### `_reduce_small`, `_insert_small`, `_TAKE_2D`, `_TAKE_1D`
+
+`_reduce_ndarray` drops the reference row and column with four slice
+copies, the layout fastest for the large matrices it was written for; on
+a circuit of a few nodes each copy is its own numpy call -- ~28 k
+instructions for a 7 x 7 -- and `insert_row`'s slices ~12 k.  Up to a
+32 x 32 matrix or a 256-entry vector both are now one indexed copy
+through a cached index, the same entries bit for bit in a fresh array:
+~7 k and ~3 k.  Past those sizes the slices stay.  Measured: the radau
+PSS of the PSP stage -4.9 % instructions and -1.8 % in time, the gear PSS
+-5.5 % and -1.0 %, the van der Pol PSS -4.7 % and -2.4 %.

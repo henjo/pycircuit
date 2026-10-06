@@ -141,7 +141,13 @@ def _reduce_ndarray(A, n):
     worst-SCALING component of the step, measured at n^2.53 against assembly's
     n^1.26 and dense LU's n^1.83.  At n=20000 the old form costs 12.4 s per Newton
     iteration -- more than the LU it feeds.
+
+    A SMALL ARRAY is one `take` instead (`_reduce_small`, speed round 11).
     """
+    if type(A) is numpy.ndarray and type(n) is int:
+        out = _reduce_small(A, n)
+        if out is not None:
+            return out
     if A.ndim == 1:
         out = numpy.empty(A.shape[0] - 1, dtype=A.dtype)
         out[:n] = A[:n]
@@ -159,6 +165,46 @@ def _reduce_ndarray(A, n):
 
     ## Any other rank or a non-square 2-D array: fall through to the general path.
     return None
+
+
+#: the sizes up to which a reduce (`_reduce_small`) or an insert
+#: (`_insert_small`) is one indexed copy -- measured (speed round 11,
+#: 2026-10-06): the four slice copies of a 7 x 7 reduce cost ~29 k
+#: instructions, its `take` ~7 k, the two of a 7-vector ~11 k against ~3 k,
+#: an insert ~12 k against ~3 k; a 32 x 32 still 19 k against 32 k, a
+#: 64 x 64 at parity in time, a 4096-vector's `take` 5x the slices'
+#: instructions
+_TAKE_2D = 32
+_TAKE_1D = 256
+#: the cached indices, by `(rank, size, n)`
+_TAKE_IDX = {}
+
+
+def _reduce_small(A, n):
+    """`_reduce_ndarray` of a square matrix of up to `_TAKE_2D` rows or a
+    vector of up to `_TAKE_1D` entries, `n` within it: one `take` of the
+    kept entries' flat indices -- an index array of the result's own shape,
+    cached -- so a fresh C-contiguous array of `A`'s dtype holding the same
+    entries, bit for bit; else None (the slices)."""
+    shape = A.shape
+    N = shape[0] if shape else 0
+    if len(shape) == 2:
+        if shape[1] != N or N > _TAKE_2D or not 0 <= n < N:
+            return None
+    elif len(shape) != 1 or N > _TAKE_1D or not 0 <= n < N:
+        return None
+    key = (len(shape), N, n)
+    idx = _TAKE_IDX.get(key)
+    if idx is None:
+        keep = [k for k in range(N) if k != n]
+        if len(shape) == 2:
+            idx = numpy.array([i * N + j for i in keep for j in keep],
+                              dtype=numpy.intp).reshape(N - 1, N - 1)
+        else:
+            idx = numpy.array(keep, dtype=numpy.intp)
+        idx.setflags(write=False)
+        _TAKE_IDX[key] = idx
+    return A.take(idx)
 
 
 def remove_row_col(matrices, n, toolkit):
@@ -188,14 +234,39 @@ def insert_row(x, n, toolkit):
     Newton iteration in the limiter alone, against 1 us for the three
     slices -- the same values); anything else keeps the toolkit's
     `concatenate` with a one-element array, which is what every site did.
-    The inserted row is +0.0 in both forms."""
+    The inserted row is +0.0 in both forms.  A vector of up to `_TAKE_1D`
+    entries is one indexed copy into zeros (`_insert_small`, speed round
+    11)."""
     if type(x) is numpy.ndarray and x.ndim == 1 and x.dtype == numpy.float64:
+        if type(n) is int:
+            out = _insert_small(x, n)
+            if out is not None:
+                return out
         out = numpy.empty(x.shape[0] + 1)
         out[:n] = x[:n]
         out[n] = 0.0
         out[n + 1:] = x[n:]
         return out
     return toolkit.concatenate((x[:n], toolkit.array([0.0]), x[n:]))
+
+
+def _insert_small(x, n):
+    """`insert_row` of a float64 vector of up to `_TAKE_1D` entries, `n`
+    within it or at its end: zeros, and `x` copied to every position but
+    `n` through a cached index -- the same values, bit for bit, the
+    inserted one +0.0; else None (the slices)."""
+    N = x.shape[0]
+    if N > _TAKE_1D or not 0 <= n <= N:
+        return None
+    key = (0, N, n)
+    pos = _TAKE_IDX.get(key)
+    if pos is None:
+        pos = numpy.array([k if k < n else k + 1 for k in range(N)], dtype=numpy.intp)
+        pos.setflags(write=False)
+        _TAKE_IDX[key] = pos
+    out = numpy.zeros(N + 1)
+    out[pos] = x
+    return out
 
 
 class Analysis(sim.Analysis):

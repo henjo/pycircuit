@@ -129,6 +129,21 @@ PAIRS = {
         'reference': ['pycircuit.circuit.func:Sin.f'],
         'twin': ['pycircuit.circuit.func:_sin_scalar'],
     },
+    'the reduce and its small take': {
+        'why': 'a square matrix of up to `_TAKE_2D` rows or a vector of up to '
+               '`_TAKE_1D` entries, `n` an int within it, is one `take` of the kept '
+               'entries\' flat indices: the slices\' entries bit for bit, a fresh '
+               'C-contiguous array of the input\'s dtype',
+        'reference': ['pycircuit.circuit.analysis:_reduce_ndarray'],
+        'twin': ['pycircuit.circuit.analysis:_reduce_small'],
+    },
+    'the insert and its small copy': {
+        'why': 'a float64 vector of up to `_TAKE_1D` entries, `n` an int within it '
+               'or at its end, is zeros and one indexed copy of the vector: the '
+               'slices\' values bit for bit, the inserted entry +0.0',
+        'reference': ['pycircuit.circuit.analysis:insert_row'],
+        'twin': ['pycircuit.circuit.analysis:_insert_small'],
+    },
     'the Newton solve and its C': {
         'why': 'the C solve is `nrsolver`\'s plain and chord Newton on the reduced '
                'system (numpy\'s and SciPy\'s own LAPACK, the walk, the test in its '
@@ -341,8 +356,10 @@ RECORD = {
     'the assembly loops and the plan': ('4c77e2ad0e1e', '1e6881a772fd'),
     'the sources and their direct pass': ('813b77a25a3e', 'fced12f39974'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
+    'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
+    'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
-    'the Newton solve and its C': ('a4c57d1d7bee', 'f26777acec22'),
+    'the Newton solve and its C': ('772989bd55ff', 'f26777acec22'),
     'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
