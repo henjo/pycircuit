@@ -41,6 +41,14 @@ EPOCH = None
 #: element's dict each iteration) would otherwise pay the full check AND
 #: the arming on every call -- past the cap it pays today's check alone
 MAX_ARMS = 16
+#: ... COUNTING ONLY THE STAMPS THAT CHURN (2026-10-06): a stamp that held
+#: `HOLD` checks or more before it broke watched dicts that change between
+#: runs, not within them -- a parameter set between the solves of a sweep, a
+#: Monte Carlo draw -- and its re-arm starts the count again (`counted`).
+#: Counted from the first arm on, the cap stopped every stamp of a circuit
+#: object after ~8 to 16 solves, each solve moving the counter at least
+#: once: 20 solves of the PSP stage cost 13 % more each from the 16th
+HOLD = 8
 
 WATCH_C = r"""
 #include <stdint.h>
@@ -103,6 +111,12 @@ def _clear():
         _API.pop('did')
     EPOCH = None
     STATUS = 'off (cleared at exit)'
+
+
+def counted(arms, held):
+    """A checker's arm count after one more arm: `arms + 1`, or 1 where
+    its stamp before held `HOLD` checks or more (`HOLD`)."""
+    return 1 if held >= HOLD else arms + 1
 
 
 def now():

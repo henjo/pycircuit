@@ -514,6 +514,8 @@ class _Core:
         self.b_fz = b_fz
         ## (`probe`'s stamp: none yet)
         self.stamp, self.uniq_els, self.uniq_dicts, self.codes, self.arms = -1, (), (), (), 0
+        ## (the checks the stamp passed since it was armed: `_watch.counted`)
+        self.held = 0
         self.z_fn = np.zeros(max(self.nz, 1), dtype=np.uintp)
         self.zk = [None] * self.nz
         self.b_fn = np.zeros(max(self.nb, 1), dtype=np.uintp)
@@ -601,6 +603,7 @@ class _Core:
         if (ep is not None and self.stamp == ep.value
                 and tuple(map(_GETDICT, self.uniq_els)) == self.uniq_dicts
                 and all(map(_same_code, self.codes))):
+            self.held += 1
             return T
         before = _watch.now()
         from pycircuit.circuit import _hdl_batch
@@ -678,7 +681,7 @@ class _Core:
         dicts += [_hdl_batch.__dict__, self._cb.__dict__]
         self.codes = tuple({(bt.cls, bt.m): (bt.cls, bt.m, getattr(bt.cls, bt.m).__code__)
                             for bt in self.batches}.values())
-        self.arms += 1
+        self.arms, self.held = _watch.counted(self.arms, self.held), 0
         self.stamp = _watch.arm(dicts, before) if self.arms <= _watch.MAX_ARMS else -1
 
 
@@ -701,15 +704,18 @@ def core_for(tr):
     if (rec is not None and ep is not None and rec[2] == ep.value
             and cir.__dict__.get('_stamp_plan') is rec[0] and rec[3]._epoch is rec[0].epoch
             and rec[0].n == len(cir.nodes) + len(cir.branches)):
+        ## (the record `[plan, core, stamp, ParameterDict, arms, held]`: its
+        ## checks passed since armed counted, `_watch.counted`)
+        rec[5] += 1
         return rec[1]
     before = _watch.now()
     from pycircuit.circuit import _stamp_plan
     from pycircuit.utilities.param import ParameterDict
     plan = _stamp_plan._plan_for(cir)
     if rec is not None and rec[0] is plan:
-        arms = rec[4] + 1 if len(rec) > 4 else 1
-        tr.__dict__['_tran_core'] = (plan, rec[1], _plan_stamp(cir, before, arms),
-                                     ParameterDict, arms)
+        arms = _watch.counted(rec[4], rec[5])
+        tr.__dict__['_tran_core'] = [plan, rec[1], _plan_stamp(cir, before, arms),
+                                     ParameterDict, arms, 0]
         return rec[1]
     drv = driver()
     core = None
@@ -721,7 +727,7 @@ def core_for(tr):
             core = None
     _PC['once:core.build:' + ('nodriver' if drv is None else
                               'unservable' if core is None else 'built')] += 1
-    tr.__dict__['_tran_core'] = (plan, core, _plan_stamp(cir, before, 1), ParameterDict, 1)
+    tr.__dict__['_tran_core'] = [plan, core, _plan_stamp(cir, before, 1), ParameterDict, 1, 0]
     return core
 
 

@@ -24,7 +24,8 @@ as well as timed -- bit-identity is the contract of every stage.
 `--check` (2026-10-04, testing for development, stage 3): every case of
 `CASES` -- the four fixed-step gear steps, the stage's PSS, and the analysis
 cases (`ANALYSES`: adaptive gear and Radau transients on a diode ladder, a
-van der Pol PSS with its factored period, pnoise, the PPV) -- against the
+van der Pol PSS with its factored period, pnoise, the PPV, one transient
+solved again and again) -- against the
 tree `scripts/parent_tree.sh` keeps at HEAD (`--parent DIR` for another,
 `--child DIR` for another child), with a verdict each (`verdict`): SLOWER,
 FASTER, UNSURE (more rounds while `--budget`, 300 s, lasts) or "no change".
@@ -346,8 +347,29 @@ def _case_mos1_adaptive():
     return dt, None, _sha(res.x), _stats(tr), paths
 
 
+def _case_resolve():
+    """One transient solved again and again, as a sweep or a Monte Carlo
+    loop solves it (2026-10-06): the 20-MosLevel1 chain, 16 solves of one
+    `Transient` of 40 fixed gear steps untimed, then 4 timed.  The stamped
+    checks hold from solve to solve -- each solve's operating point moved
+    the counter twice (`analysis_kind`), and the cap on re-arms left every
+    check unstamped from the 8th to the 16th solve on."""
+    tr = Transient(BUILD['mos1'](), toolkit=circuit.numeric)
+    kw = {'tend': 40 * 2e-8, 'timestep': 2e-8, 'fixed_timestep': True}
+    for _ in range(16):
+        tr.solve(**kw)
+
+    def go():
+        for _ in range(3):
+            tr.solve(**kw)
+        return tr.solve(**kw)
+    dt, res, paths = _timed(go)
+    return dt, None, _sha(res.x), _stats(tr), paths
+
+
 ANALYSES = {
     'mos1_adaptive': _case_mos1_adaptive,
+    'resolve': _case_resolve,
     'ladder_gear': lambda: _case_ladder('gear'),
     'ladder_radau': lambda: _case_ladder('radau'),
     'pss_radau': _case_pss_radau,

@@ -572,6 +572,8 @@ def source_direct(cir, args):
         if sd.ent is not None and not sd.check(NumericToolkit):
             return _no(K['kind'])
         sd.arm(cir, sp, Circuit, before)
+    else:
+        sd.held += 1
     if sd.ent is None:
         return _no(K['kind'])
     out = sd.run(cir, args)
@@ -584,7 +586,8 @@ class _SourceDirect:
     its parameter's key and its class's `function` descriptor, its rows --
     and what a full check read, stamped."""
 
-    __slots__ = ('arms', 'dicts', 'els', 'ent', 'n', 'others', 'same_cls', 'stamp', 'types')
+    __slots__ = ('arms', 'dicts', 'els', 'ent', 'held', 'n', 'others', 'same_cls', 'stamp',
+                 'types')
 
     @classmethod
     def build(cls, cir, sp, n):
@@ -594,7 +597,7 @@ class _SourceDirect:
         the ones that `u`'s values fill, within the vector)."""
         G = _genuine()
         self = cls()
-        self.n, self.arms, self.stamp = n, 0, -1
+        self.n, self.arms, self.held, self.stamp = n, 0, 0, -1
         self.els = self.dicts = self.types = self.same_cls = self.others = ()
         self.ent = None
         ent = []
@@ -655,7 +658,7 @@ class _SourceDirect:
                          (type(cir), '_scatter_1d', G['scatter'])) + tuple(
             (c, 'u', fn) for c, fn in sp.fns) + tuple(
             (type(el), 'function', desc) for el, _k, desc, _r in ent)
-        self.arms += 1
+        self.arms, self.held = _watch.counted(self.arms, self.held), 0
         if self.arms > _watch.MAX_ARMS:
             self.stamp = -1
             return

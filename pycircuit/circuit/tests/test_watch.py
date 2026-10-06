@@ -5,6 +5,7 @@ the counter stands a stamped check passes unchecked; every change it
 stands for, and every one no watcher sees (an instance's `__dict__`
 reassigned, a class attribute), checks again -- with the answers of the
 checks run in full."""
+import gc
 import warnings
 
 import numpy as np
@@ -162,6 +163,10 @@ def test_the_walk_sees_a_class_vlimit(monkeypatch):
 
 
 def _run(build, watch, monkeypatch, **kw):
+    ## (the counter loaded before it is patched out: the undo restores the
+    ## counter, not the None of a module not loaded yet -- which turned
+    ## watching off for the rest of the process, `STATUS` 'on')
+    _watch.now()
     if not watch:
         monkeypatch.setattr(_watch, 'EPOCH', None)
     make = kw.pop('make', {})
@@ -193,6 +198,7 @@ def test_watched_and_unwatched_runs_are_the_same(build, fixed, monkeypatch):
     def kept(d):
         return {k: v for k, v in d.items() if not k.startswith('once:')}
     assert kept(a[4]) == kept(b[4]), 'a path count moved'
+    assert (_watch.STATUS == 'on') == (_watch.EPOCH is not None), 'the counter left patched out'
 
 
 def test_a_checker_stops_arming_past_the_cap(monkeypatch):
@@ -206,3 +212,111 @@ def test_a_checker_stops_arming_past_the_cap(monkeypatch):
         el.__dict__['_churn'] = k
         assert core.probe(tr.epar).__class__ is not str
     assert core.stamp == -1 and core.arms > _watch.MAX_ARMS
+
+
+## -- what moves the counter between solves (2026-10-06) ------------------------------------
+
+def _stamps(tr):
+    """Each stamped checker of a served transient: (arms, stamp, held)."""
+    rec = tr.__dict__['_tran_core']
+    core, nc = rec[1], tr.__dict__['_newton_c']
+    sd = tr.cir.__dict__['_stamp_plan'].methods['src:u'].direct
+    assert nc.walk_ok, 'the chain limits: its walk is ready'
+    return {'core': (core.arms, core.stamp, core.held),
+            'lookup': (rec[4], rec[2], rec[5]),
+            'par': (nc.par_arms, nc.par_rec.stamp, nc.par_held),
+            'walk': (nc.walk_arms, nc.walk_stamp, nc.walk_held),
+            'source': (sd.arms, sd.stamp, sd.held)}
+
+
+_KW = {'tend': 3e-7, 'timestep': 2e-8, 'fixed_timestep': True}
+
+
+def test_a_warm_solve_moves_no_watched_dict():
+    """A solve of a circuit already solved moves the counter not once, and
+    every stamp holds through it.  (The analyses set `analysis_kind` in
+    `epar`'s values around every operating point, `analysis.analysis_kind`:
+    watched by the C Newton's parameter record, it broke every stamp twice
+    a solve, and the cap stopped them all after ~8 solves.)"""
+    _on()
+    tr = Transient(_mos_chain(), toolkit=circuit.numeric)
+    tr.solve(**_KW)
+    gc.collect()
+    gc.disable()                        # (a watched dict freed moves the counter)
+    try:
+        tr.solve(**_KW)                 # (stamped again after what the collector freed)
+        s0, e0 = _stamps(tr), _watch.now()
+        tr.solve(**_KW)
+        moved = _watch.now() - e0
+    finally:
+        gc.enable()
+    assert moved == 0
+    for k, (arms, stamp, held) in _stamps(tr).items():
+        ## (not armed again, its stamp checked once a step at least)
+        assert (arms, stamp) == (s0[k][0], e0) and held >= s0[k][2] + 15, (k, s0[k], held)
+    assert 'analysis_kind' in tr.epar._parameters and tr.epar.analysis_kind is None
+
+
+def test_a_stamp_that_held_rearms_without_counting():
+    """A parameter set between the solves of a sweep (here the relative
+    tolerance, in the analysis's watched values) moves the counter once a
+    solve: every stamp breaks there, and its re-arm -- after a stamp that
+    held `HOLD` checks or more -- starts its count again (`_watch.counted`).
+    Counted from the first arm, the cap stopped the circuit's stamps for
+    good after `MAX_ARMS` solves; the walk, armed again by its full setup
+    only, went unstamped at the first move."""
+    _on()
+    tr = Transient(_mos_chain(), toolkit=circuit.numeric)
+    gc.collect()
+    gc.disable()
+    try:
+        for k in range(_watch.MAX_ARMS + 4):
+            tr.par.reltol = 1e-4 if k % 2 else 1.1e-4
+            tr.solve(**_KW)
+        e = _watch.now()
+    finally:
+        gc.enable()
+    for k, (arms, stamp, held) in _stamps(tr).items():
+        assert arms == 1 and stamp == e and held >= _watch.HOLD, (k, arms, stamp, held)
+
+
+def test_the_counted_rule():
+    assert _watch.counted(0, 0) == 1
+    assert _watch.counted(5, _watch.HOLD - 1) == 6
+    assert _watch.counted(_watch.MAX_ARMS + 3, _watch.HOLD) == 1
+
+
+def test_a_bypass_written_into_epar_is_compared():
+    """`epar`'s values are not watched (`analysis_kind` is written there
+    around every operating point): the one value the C Newton's parameter
+    record keeps from them, `bypasstol`, is compared by its object on every
+    call -- a write no watcher sees refuses the record, an equal value
+    another object too.  Each solve's operating point writes it again from
+    the analysis's `bypass` and `bypasstol` (`Analysis.__init__`, the
+    transient's forwarded to its DC): the same object while they stand, so
+    the record a solve made holds into the next."""
+    _on()
+    from pycircuit.circuit import _tran_newton_c
+    tr = Transient(_mos_chain(), toolkit=circuit.numeric)
+    tr.solve(**_KW)
+    tr.solve(**_KW)
+    rec = tr.__dict__['_newton_c']
+    P = rec.par_rec
+    assert P.stamp == _watch.now() and P.bypass == -1.0
+    assert _tran_newton_c._par_stamped(tr, tr.__dict__, tr.par, rec) is P
+    e0 = _watch.now()
+    tr.epar.bypasstol = 1e-5
+    assert _watch.now() == e0, 'not watched: compared'
+    assert _tran_newton_c._par_stamped(tr, tr.__dict__, tr.par, rec) is None
+    tr.epar.bypasstol = float('-1')
+    assert _tran_newton_c._par_stamped(tr, tr.__dict__, tr.par, rec) is None
+    ## a bypass asked of the analysis: read where the operating point wrote it
+    tr.par.bypass, tr.par.bypasstol = True, 1e-5
+    before = _paths.snapshot()
+    tr.solve(**_KW)
+    assert _paths.since(before).get('newton_c:served', 0) > 0
+    P = rec.par_rec
+    assert P.bypass == 1e-5 and tr.epar.bypasstol is tr.par.bypasstol
+    assert _tran_newton_c._par_stamped(tr, tr.__dict__, tr.par, rec) is P
+    tr.solve(**_KW)
+    assert rec.par_rec is P, 'held into the next solve'

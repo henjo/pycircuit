@@ -284,6 +284,8 @@ _U_KEYS = ('umemo:hit', 'umemo:miss', 'umemo:unhashable', 'u:called')
 
 _driver = None
 _MOD = {}
+#: a parameter not stored (`_ParRec.bp_obj`)
+_ABSENT = object()
 _GETDICT = operator.attrgetter('__dict__')
 _GETPACK = operator.methodcaller('get', '_hdl_cp')
 #: the declines that are a property of the circuit: kept with its stamp
@@ -407,6 +409,7 @@ class _Ctx:
         'keep',
         'n',
         'par_arms',
+        'par_held',
         'par_rec',
         's',
         'tol',
@@ -414,12 +417,14 @@ class _Ctx:
         'walk_arms',
         'walk_dicts',
         'walk_els',
+        'walk_held',
         'walk_hw_els',
         'walk_hwk',
         'walk_kern',
         'walk_ok',
         'walk_packs',
         'walk_stamp',
+        'walk_watch',
     )
 
     def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, lapack):
@@ -464,19 +469,25 @@ class _Ctx:
         self.walk = self.walk_ok = None
         self.walk_els = self.walk_dicts = self.walk_packs = self.walk_kern = ()
         self.walk_hw_els = self.walk_hwk = ()
-        self.walk_stamp, self.walk_arms = -1, 0
-        self.par_rec, self.par_arms = None, 0
+        self.walk_stamp, self.walk_arms, self.walk_held = -1, 0, 0
+        self.walk_watch = ()
+        self.par_rec, self.par_arms, self.par_held = None, 0, 0
 
 
 class _ParRec:
     """`solve`'s reads of the analysis parameters and of the transient's
-    own caches, stamped (`_watch`): `tr.par`'s and `tr.epar`'s dicts
-    watched, the methods that read them and the caches they keep in the
-    transient's dict compared on every call (`_par_stamped`)."""
+    own caches, stamped (`_watch`): `tr.par`'s dicts watched, and of
+    `tr.epar`'s its instance dict and its parameter table -- its values
+    are not: the analyses write `analysis_kind` there around every solve's
+    operating point (`analysis.analysis_kind`), which moved the counter of
+    every stamp twice a solve (2026-10-06) -- and the one value read there,
+    `bypasstol`, compared by its object on every call (`bp_obj`); the
+    methods that read them and the caches they keep in the transient's dict
+    compared on every call (`_par_stamped`)."""
 
-    __slots__ = ('analysis', 'bypass', 'chord', 'epar', 'f_ls', 'f_tol', 'iref', 'ls',
-                 'ls_default', 'maxiter', 'nb', 'nn', 'nrsolver', 'par', 'reltol', 'scaler',
-                 'stamp', 'tol', 'tolc')
+    __slots__ = ('analysis', 'bp_obj', 'bypass', 'chord', 'epar', 'f_ls', 'f_tol', 'iref',
+                 'ls', 'ls_default', 'maxiter', 'nb', 'nn', 'nrsolver', 'par', 'reltol',
+                 'scaler', 'stamp', 'tol', 'tolc')
 
 
 def _par_stamped(tr, td, par, rec):
@@ -490,8 +501,9 @@ def _par_stamped(tr, td, par, rec):
     effects where they were.)"""
     P = rec.par_rec if rec is not None else None
     ep = _MOD['watch'].EPOCH
+    epar = tr.epar
     if (P is None or ep is None or P.stamp != ep.value or P.par is not par
-            or P.epar is not tr.epar):
+            or P.epar is not epar or epar._values.get('bypasstol', _ABSENT) is not P.bp_obj):
         return None
     T = type(tr)
     cir = tr.cir
@@ -501,6 +513,7 @@ def _par_stamped(tr, td, par, rec):
             or td.get('_newton_tol_cache') is not P.tolc
             or len(cir.nodes) != P.nn or len(cir.branches) != P.nb or tr.irefnode != P.iref):
         return None
+    rec.par_held += 1
     return P
 
 
@@ -521,16 +534,22 @@ def _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol):
         P.chord, P.analysis = par.chord_jacobian, par.analysis
         P.maxiter, P.reltol = par.maxiter, par.reltol
         P.bypass = getattr(tr.epar, 'bypasstol', -1.0)
+        ep_values, ep_params = tr.epar._values, tr.epar._parameters
     except Exception:                                          # noqa: BLE001
         return
-    dicts = [par.__dict__, tr.epar.__dict__]
-    for pd in (par, tr.epar):
-        v = pd.__dict__.get('_values')
-        if isinstance(v, dict):
-            dicts.append(v)
-    rec.par_arms += 1
-    P.stamp = (_MOD['watch'].arm(dicts, before)
-               if rec.par_arms <= _MOD['watch'].MAX_ARMS else -1)
+    if type(ep_values) is not dict or type(ep_params) is not dict:
+        return
+    ## (`bypasstol` as `getattr` resolved it: `epar`'s instance dict and its
+    ## parameter table watched, the value stored for it -- or its absence --
+    ## compared on every call)
+    P.bp_obj = ep_values.get('bypasstol', _ABSENT)
+    dicts = [par.__dict__, tr.epar.__dict__, ep_params]
+    v = par.__dict__.get('_values')
+    if isinstance(v, dict):
+        dicts.append(v)
+    W = _MOD['watch']
+    rec.par_arms, rec.par_held = W.counted(rec.par_arms, rec.par_held), 0
+    P.stamp = W.arm(dicts, before) if rec.par_arms <= W.MAX_ARMS else -1
     rec.par_rec = P
 
 
@@ -594,7 +613,11 @@ def _walk_ready(tr, rec):
     dicts, the circuit's dict (its plan, which holds the walk) and the
     limiter module's switches unchanged since it was ready, every element's
     `__dict__` the object seen and each hand-written limiter's twin its
-    class's still (its `vlimit`, a class attribute) -- ready again."""
+    class's still (its `vlimit`, a class attribute) -- ready again.  Where
+    the counter moved, the tables still standing as the last setup left
+    them (`_walk_fast`) are ready and stamped again (2026-10-06: they were
+    ready unstamped, the tuple checks on every call from the first move
+    on)."""
     hc = _MOD['climit']
     if not (hc.WALK and hc.ENABLED):
         return False
@@ -602,6 +625,7 @@ def _walk_ready(tr, rec):
     if (ep is not None and rec.walk_stamp == ep.value and rec.walk_ok
             and tuple(map(_GETDICT, rec.walk_els)) == rec.walk_dicts
             and all(c.get('_c_limit') is k for c, k in rec.walk_hwk)):
+        rec.walk_held += 1
         return True
     before = _MOD['watch'].now()
     w = hc._walk_for(tr.cir)
@@ -609,6 +633,7 @@ def _walk_ready(tr, rec):
         if rec.walk_ok is False:
             return False
         if rec.walk_ok and _walk_fast(rec):
+            _walk_arm(rec, before)
             return True
     if not w.any_capable or len(w.cap_idx) != len(w.entries):
         rec.walk, rec.walk_ok = w, False
@@ -640,13 +665,18 @@ def _walk_ready(tr, rec):
         infos = {id(c): c for c in w.capable if isinstance(c, dict)}
         hw = [c.info for c in w.capable if type(c) is hc._Handwritten]
         rec.walk_hwk = tuple((c, k) for c, k in rec.walk_kern if type(c) is hc._Handwritten)
-        rec.walk_arms += 1
-        rec.walk_stamp = (_MOD['watch'].arm(
-            [*rec.walk_dicts, *infos.values(), *hw, tr.cir.__dict__, hc.__dict__], before)
-            if rec.walk_arms <= _MOD['watch'].MAX_ARMS else -1)
+        rec.walk_watch = (*rec.walk_dicts, *infos.values(), *hw, tr.cir.__dict__, hc.__dict__)
+        _walk_arm(rec, before)
     else:
         rec.walk_stamp = -1
     return ok
+
+
+def _walk_arm(rec, before):
+    """The walk's stamp, over the dicts its last setup read (`walk_watch`)."""
+    W = _MOD['watch']
+    rec.walk_arms, rec.walk_held = W.counted(rec.walk_arms, rec.walk_held), 0
+    rec.walk_stamp = W.arm(rec.walk_watch, before) if rec.walk_arms <= W.MAX_ARMS else -1
 
 
 def _undo_source(memo, key, had, counts):

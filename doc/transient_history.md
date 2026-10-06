@@ -4222,3 +4222,22 @@ expression in Python floats around the toolkit's own `exp` and `sin`,
 served only where nothing the expression does could warn.  Measured
 against the parent (0a05e7ae): the radau PSS -4.4 % instructions and -4.0 % in wall time, the gear
 device chains -3.4 % and -6.3..-6.9 %.
+
+## `_watch.py`, `_tran_newton_c.py`, `_tran_core.py`, `_stamp_plan.py` -- the watch counter between solves (2026-10-06)
+
+### `_ParRec.bp_obj`, `_watch.counted` and `HOLD`, `_walk_arm`
+
+One counter (`_watch.EPOCH`) stands for every watched dict, and every
+stamped check compares its stamp with it.  Every transient solve moved it
+twice: its operating point is made inside `analysis.analysis_kind`, which
+writes `analysis_kind` into `epar`'s values and restores it, and the C
+Newton's parameter record watched those values.  So every stamp broke
+twice a solve, and with re-arms capped at 16 a transient solved again and
+again -- a sweep, a Monte Carlo loop -- had every stamped check unstamped
+from about its 8th solve on: +13..+20 % a solve.  The record now watches
+`epar`'s own dict and its parameter table and compares the one value it
+keeps from them, `bypasstol`, by its object; a re-arm after a stamp that
+held 8 checks or more no longer counts toward the cap; and the limiter
+walk, stamped only by its full setup before, is stamped again after its
+tuple check.  Measured: one transient solved again, -22.6 % instructions
+a solve; a single solve unchanged.
