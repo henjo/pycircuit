@@ -17,7 +17,18 @@ from numpy import cos, sin, tan, cosh, sinh, tanh, log, exp, pi, linalg,\
      ones, diff, delete, all, maximum, minimum, size, conj, cdouble, sum, max, where, abs, insert,\
      arctan2
 
-alltrue = all
+
+
+def alltrue(a, *args, **kwargs):
+    """numpy's `all` (imported above) -- by the array's own method where `a`
+    is an exact ndarray and nothing else is asked: the same
+    `logical_and.reduce(a, None, bool)` (`numpy.all` and `ndarray.all`
+    reduce alike, result and type), without the module function's dispatch:
+    4.5 k instructions against 11.6 k a call, 16.6 k calls a vdP PSS (the C
+    lookup's and the Newton's convergence tests; speed round 12, stage 3)."""
+    if type(a) is np.ndarray and not args and not kwargs:
+        return a.all()
+    return all(a, *args, **kwargs)
 
 # natural logarithm; matches sympy's ``ln`` name used by circuit models
 ln = log

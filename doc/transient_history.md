@@ -4305,3 +4305,23 @@ still seen -- except `_hdl_climit`, which imports `hdl` and through it
 `circuit`.  `_ineligible` compares the dtype by identity first.  Measured:
 the van der Pol PSS -2.8 % instructions and -1.7 % in time, the diode
 ladders -2.9..-3.1 % and -1.5..-1.9 %.
+
+
+## `_numeric.py`, `_tran_companion.py` -- numpy's module reductions at their floor (2026-10-07, speed round 12)
+
+### `alltrue`, `_C_lookup`, `_q_at`, `_memo_put`, `_memo_get`
+
+`numpy.all` costs 11.6 k instructions a call where the array's own `.all()`
+costs 4.5 k -- the same `logical_and.reduce(a, None, bool)`, without the
+module function's dispatch -- and the numeric toolkit's `alltrue` was
+`numpy.all` itself: 16.6 k calls a van der Pol PSS (the C lookup's
+comparison and the Python Newton's convergence tests).  It now takes an
+exact ndarray's own method where nothing else is asked, numpy's function
+otherwise.  The C lookup missed 83 % of its lookups after a ~20 k
+comparison: a miss is decided at the first entry where two exact float64
+vectors differ (NaN never equal, signed zeros equal, as `==` has them),
+there and in the charge's identical comparison (`_q_at`); the full
+comparison otherwise.  The device memo's key skips `asarray` for an exact
+float64 array (the same bytes).  Measured: the van der Pol PSS -3.95 %
+instructions and -3.8 % in time, the gear ladder -1.06 %
+instructions.

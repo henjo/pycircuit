@@ -8,6 +8,20 @@ from pycircuit.circuit import _evalhint, _paths, _tran_core
 
 _PC = _paths.COUNTS
 
+
+def _first_equal(a, b):
+    """False where two exact float64 vectors of one shape differ at their
+    first entry -- `a == b` cannot then be all true (NaN never equal, signed
+    zeros equal, as `==` has them) -- so a lookup that misses is decided at
+    one entry: 83 % of the vdP PSS's C lookups miss, after a comparison of
+    ~20 k instructions each -- the C lookup's and the charge's (`_q_at`)
+    (speed round 12, stage 3).  True otherwise: the
+    full comparison follows."""
+    if (type(a) is np.ndarray and type(b) is np.ndarray and a.dtype is _F64
+            and b.dtype is _F64 and a.ndim == 1 and a.shape[0]):
+        return a[0] == b[0]
+    return True
+
 #: `u(t)` ONCE PER STEP (speed round 4, stage B; 2026-10-02): the source
 #: vector assembled at a time serves every later request at that exact
 #: time within the step (`_source_at`).  False is the old behaviour -- the
@@ -97,7 +111,10 @@ class _CompanionModel:
         memo = getattr(self, '_dev_memo', None)
         if memo is None:
             memo = self._dev_memo = ({}, {})
-        key = np.asarray(x, dtype=float).tobytes()
+        ## (an exact float64 array is its own `asarray`: 0.6 k for the key
+        ## where `asarray` and `tobytes` cost 1.7 k -- speed round 12)
+        key = (x if type(x) is np.ndarray and x.dtype is _F64
+               else np.asarray(x, dtype=float)).tobytes()
         cur = memo[0].get(key)
         if cur is None:
             cur = memo[0][key] = dict(memo[1].get(key, ()))
@@ -126,7 +143,8 @@ class _CompanionModel:
         if not memo[0] and not memo[1]:
             ## (the multistep path never records: no key to build)
             return None
-        key = np.asarray(x, dtype=float).tobytes()
+        key = (x if type(x) is np.ndarray and x.dtype is _F64
+               else np.asarray(x, dtype=float)).tobytes()
         rec = memo[0].get(key)
         return memo[1].get(key) if rec is None else rec
 
@@ -165,6 +183,7 @@ class _CompanionModel:
                 return C_cached
             if (x_cached is not None and x is not None
                     and getattr(x_cached, 'shape', None) == getattr(x, 'shape', None)
+                    and _first_equal(x_cached, x)
                     and bool(self.toolkit.alltrue(x_cached == x))):
                 _PC['memo.C:equal'] += 1
                 return C_cached
@@ -188,6 +207,7 @@ class _CompanionModel:
                 return q_cached
             if (x_cached is not None and x is not None
                     and getattr(x_cached, 'shape', None) == getattr(x, 'shape', None)
+                    and _first_equal(x_cached, x)
                     and bool(self.toolkit.alltrue(x_cached == x))):
                 _PC['memo.q:equal'] += 1
                 return q_cached
