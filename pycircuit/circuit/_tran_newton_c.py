@@ -387,7 +387,8 @@ def _mods():
                     core=_tran_core, bdf2_alphas=bdf2_alphas, insert_row=insert_row,
                     refnode_removed=refnode_removed, AutoSolver=AutoSolver,
                     NumericToolkit=NumericToolkit,
-                    u_keys=_U_KEYS + tuple(_stamp_plan._SK['u'].values()))
+                    u_keys=_U_KEYS + tuple(_stamp_plan._SK['u'].values())
+                    + tuple(_stamp_plan._SD.values()))
     return _MOD
 
 

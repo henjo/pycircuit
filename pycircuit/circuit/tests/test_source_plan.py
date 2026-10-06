@@ -18,6 +18,17 @@ from pycircuit.circuit.tests.test_stamp_plan import mixed
 from pycircuit.circuit.transient import Transient
 
 
+@pytest.fixture(autouse=True)
+def _the_plan_itself():
+    """The plan's own pass: the direct one (`source_direct`, speed round 10,
+    B3.7, `test_source_direct`) serves these circuits' `u` before it.  (Set
+    and restored here: the tests undo their own `monkeypatch`es.)"""
+    old = _stamp_plan.SOURCE_DIRECT
+    _stamp_plan.SOURCE_DIRECT = False
+    yield
+    _stamp_plan.SOURCE_DIRECT = old
+
+
 def _pulsed():
     c = SubCircuit()
     c['vp'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=1e-7, tr=1e-9, tf=1e-9, pw=4e-7, per=1e-6)
@@ -118,7 +129,7 @@ def test_a_small_circuit_takes_the_loop(monkeypatch):
     small = _mos_chain(1)
     assert len(small.elements) < _stamp_plan.SOURCE_MIN_ELEMENTS
     a = _pass(small, 'u', 1e-7, 'tran', True, monkeypatch)
-    assert not any(k.startswith('src.') for k in a[2]), a[2]
+    assert not any(k.startswith('src.u') for k in a[2]), a[2]
     assert a[0] == _pass(small, 'u', 1e-7, 'tran', False, monkeypatch)[0]
     monkeypatch.setattr(_stamp_plan, 'SOURCE_MIN_ELEMENTS', len(small.elements))
     assert _pass(small, 'u', 1e-7, 'tran', True, monkeypatch)[2].get('src.u:served') == 1

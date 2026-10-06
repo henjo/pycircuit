@@ -1455,6 +1455,13 @@ class SubCircuit(Circuit):
         dtype = None
         if analysis == 'ac':
             dtype = self.toolkit.ac_u_dtype
+        elif params_tree is None and _stamp_plan.ENABLED:
+            ## (the sources evaluated directly where every element called is a
+            ## VS- or IS-family source, any circuit size, its checks stamped --
+            ## `_stamp_plan.source_direct`, speed round 10, B3.7)
+            out = _stamp_plan.source_direct(self, (t, epar, analysis))
+            if out is not None:
+                return out
 
         return self._add_element_subvectors('u', None, (t,epar,analysis), params_tree=params_tree, 
                                             dtype=dtype)

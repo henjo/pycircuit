@@ -56,6 +56,7 @@ DECLINING = [
     (_stamp_plan, 'assemble_matrix'),
     (_stamp_plan, 'assemble_vector'),
     (_stamp_plan, 'assemble_source'),
+    (_stamp_plan, 'source_direct'),
     (_hdl_cse, 'take'),
     (_tran_companion, '_CompanionModel._C_lookup'),
 ]

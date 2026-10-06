@@ -105,6 +105,30 @@ PAIRS = {
               'pycircuit.circuit._hdl_batch:split',
               'pycircuit.circuit._hdl_batch:zero_source'],
     },
+    'the sources and their direct pass': {
+        'why': 'a pass of VS- and IS-family sources is each source\'s parameter plus '
+               'its time function at `t` -- `u`\'s own add, its warnings re-emitted '
+               'from `u`\'s line -- scattered as the loop\'s bincount (every bin '
+               'from +0.0, element order), in Python floats; its stamp watches what '
+               'its full check read, the rest compared on every call',
+        'reference': ['pycircuit.circuit.elements:VS.u',
+                      'pycircuit.circuit.elements:IS.u',
+                      'pycircuit.circuit.circuit:SubCircuit.u',
+                      'pycircuit.circuit.circuit:SubCircuit._add_element_subvectors',
+                      'pycircuit.circuit.circuit:SubCircuit._scatter_1d'],
+        'twin': ['pycircuit.circuit._stamp_plan:source_direct',
+                 'pycircuit.circuit._stamp_plan:_SourceDirect',
+                 'pycircuit.circuit._stamp_plan:_added',
+                 'pycircuit.circuit._stamp_plan:_u_add_site',
+                 'pycircuit.circuit._stamp_plan:_genuine'],
+    },
+    'the sine and its scalar form': {
+        'why': '`Sin.f` at a scalar time is its expression in Python floats around '
+               'the toolkit\'s own `exp` and `sin`: the same IEEE operations in the '
+               'same order, served only where nothing the expression does could warn',
+        'reference': ['pycircuit.circuit.func:Sin.f'],
+        'twin': ['pycircuit.circuit.func:_sin_scalar'],
+    },
     'the Newton solve and its C': {
         'why': 'the C solve is `nrsolver`\'s plain and chord Newton on the reduced '
                'system (numpy\'s and SciPy\'s own LAPACK, the walk, the test in its '
@@ -314,7 +338,9 @@ RECORD = {
     'the limiting loop and the walk': ('d151206fce18', '411e5dd4e655'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
     'the transient evaluation and the core': ('ce82a66a3520', '9a913d20faa9'),
-    'the assembly loops and the plan': ('4c77e2ad0e1e', '951ecc14d234'),
+    'the assembly loops and the plan': ('4c77e2ad0e1e', '1e6881a772fd'),
+    'the sources and their direct pass': ('813b77a25a3e', '7073bf4808a2'),
+    'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the Newton solve and its C': ('a4c57d1d7bee', '96a7d2fa7fe9'),
     'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),

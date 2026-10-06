@@ -1,5 +1,86 @@
-from .toolkit import numeric
+import os
+
+import numpy as _np
 from scipy import interpolate
+
+from .toolkit import NumericToolkit, numeric
+
+#: `Sin.f` AT A SCALAR TIME ON THE NUMERIC TOOLKIT (speed round 10, B3.7):
+#: the clamp's `where` a conditional and every product and sum a Python
+#: float -- single IEEE operations, numpy's own -- around the toolkit's own
+#: `exp` and `sin` (numpy's, on a scalar: the loop a 0-d array takes), where
+#: nothing can warn (`_sin_scalar`); ~10 k instructions where numpy's 0-d
+#: arithmetic was 35 k.  env `PYCIRCUIT_SIN_SCALAR=0` turns it off
+SIN_SCALAR = os.environ.get('PYCIRCUIT_SIN_SCALAR', '1') != '0'
+_F64 = _np.float64
+_BIG = 1e300
+_SCALAR_T = frozenset((float, _F64))
+#: (bool is not int's type: a flag is not a parameter)
+_NUMBER_T = frozenset((float, int, _F64))
+#: numpy's floating-point error state: what `_sin_scalar` needs of it --
+#: underflow ignored (its guards keep every other exception away) -- read
+#: by `np.geterr()` (11 k instructions) once per state object (the context
+#: variable's; a new one at every `seterr` and `errstate`) and kept with the
+#: last two objects seen, held so their identities cannot be reused
+try:
+    from numpy._core import _ufunc_config as _ufc
+    _EXTOBJ = _ufc._extobj_contextvar
+except (ImportError, AttributeError):                         # pragma: no cover
+    _EXTOBJ = None
+_UNDER_SEEN = [None, False, None, False]
+
+
+def _underflow_ignored():
+    """Whether numpy's current error state ignores underflow."""
+    if _EXTOBJ is None:                                       # pragma: no cover
+        return _np.geterr()['under'] == 'ignore'
+    e, m = _EXTOBJ.get(), _UNDER_SEEN
+    if e is m[0]:
+        return m[1]
+    if e is m[2]:
+        return m[3]
+    ok = _np.geterr()['under'] == 'ignore'
+    m[2], m[3], m[0], m[1] = m[0], m[1], e, ok
+    return ok
+
+
+def _sin_scalar(fn, t):
+    """`fn.f(t)` (a `Sin`) at a scalar time on the numeric toolkit, or None
+    for `Sin.f`'s own expression: the same IEEE operations in the same
+    order -- `t - td` or 0.0 by the same comparison, `-theta * dt`, the
+    toolkit's `exp` and `sin` (numpy's, on one value), the products, the
+    sum -- returned as numpy's float, as that expression returns it.
+    ⚠ ONLY WHERE NOTHING CAN WARN: Python floats never do, numpy's 0-d
+    arithmetic would -- the time and the parameters finite and below 1e300,
+    the exponent within [-700, 700] (no overflow, no subnormal), the phase
+    and the scaled exponential below 1e300 (no overflow, nothing invalid:
+    whatever the error state says of those, they cannot happen), numpy's
+    underflow ignored (a product may underflow); else None."""
+    tk = fn.toolkit
+    if not (SIN_SCALAR and type(tk) is NumericToolkit and type(t) in _SCALAR_T):
+        return None
+    td, th, om, ph, of, am = fn.td, fn.theta, fn.omega, fn.phase, fn.offset, fn.amplitude
+    T = _NUMBER_T
+    if not (type(td) in T and type(th) in T and type(om) in T and type(ph) in T
+            and type(of) in T and type(am) in T):
+        return None
+    t = float(t)
+    if not (-_BIG < t < _BIG and -_BIG < td < _BIG and -_BIG < th < _BIG
+            and -_BIG < om < _BIG and -_BIG < ph < _BIG and -_BIG < of < _BIG
+            and -_BIG < am < _BIG
+            and tk.where is _np.where and tk.exp is _np.exp and tk.sin is _np.sin
+            and _underflow_ignored()):
+        return None
+    dt = t - td if t > td else 0.0
+    a = -th * dt
+    b = om * dt + ph
+    if not (-700.0 <= a <= 700.0 and -_BIG < b < _BIG):
+        return None
+    p = am * float(tk.exp(a))
+    if not -_BIG < p < _BIG:
+        return None
+    return _F64(of + p * float(tk.sin(b)))
+
 
 class TimeFunction():
     """Time dependent function"""
@@ -102,6 +183,12 @@ class Sin(TimeFunction):
         return self.toolkit.inf
         
     def f(self, t):
+        ## (a scalar time on the numeric toolkit: the same operations in
+        ## Python floats where nothing can warn -- `_sin_scalar`, speed round
+        ## 10, B3.7)
+        r = _sin_scalar(self, t)
+        if r is not None:
+            return r
         # --- DAMPED SINE WAVE EQUATION ---
         # V(t) = VO + VA * exp(-theta * (t - td)) * sin(omega * (t - td) + phase)
         #

@@ -4201,3 +4201,24 @@ that pin the keeps plant each one stale and require the C to differ from
 the Python loop: a keep whose bookkeeping is right can still serve wrong
 values, and only the answer shows it.  Measured against the parent
 (be80acf2): the radau PSS -6.0 % instructions, -9.2 % in wall time.
+
+## `_stamp_plan.py`, `func.py` -- the sources evaluated directly; `Sin.f` at a scalar time (2026-10-06, speed round 10's B3.7)
+
+### `source_direct`, `_SourceDirect`, `_added`, `_genuine`; `_sin_scalar`
+
+A `u` pass called each source's own `u` -- an `iparv.v` read through
+`ParameterDict.__getattr__`, the time function's `f(t)`, a 3-entry array --
+and the loop gathered and bincounted them: ~117 k instructions on a
+four-element circuit, ~60 k of it around two additions.  Where every
+element a pass calls is a VS- or IS-family source, the pass is now those
+additions and the loop's bincount in Python floats -- bins from +0.0,
+contributions in element order -- with the add made as `u` makes it
+wherever numpy could warn about it (its warnings re-emitted from `u`'s line
+and module), and its checks stamped: the sources' dicts are watched, not
+the other elements' (a limiter writes its element's dict every
+iteration), and what no watcher sees is compared on every call against the
+definitions captured at first use.  `Sin.f` at a scalar time is its
+expression in Python floats around the toolkit's own `exp` and `sin`,
+served only where nothing the expression does could warn.  Measured
+against the parent (0a05e7ae): the radau PSS -4.4 % instructions and -4.0 % in wall time, the gear
+device chains -3.4 % and -6.3..-6.9 %.

@@ -62,7 +62,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _hdl_batch, _paths
+from pycircuit.circuit import _hdl_batch, _paths, _watch
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -80,6 +80,13 @@ SOURCE_MIN_ELEMENTS = 6
 _SK = {m: {r: f'src.{m}:{r}' for r in ('off', 'toolkit', 'gate', 'groups', 'shadowed',
                                          'patched', 'element', 'served')}
        for m in ('u', 'dudt')}
+#: THE SOURCES EVALUATED DIRECTLY (`source_direct`, speed round 10, B3.7):
+#: the `u` pass of a circuit whose called elements are all independent
+#: sources of the VS or IS family, in Python floats, its checks stamped --
+#: every circuit size; env `PYCIRCUIT_SOURCE_DIRECT=0` turns it off
+SOURCE_DIRECT = os.environ.get('PYCIRCUIT_SOURCE_DIRECT', '1') != '0'
+_SD = {r: f'src.direct:{r}' for r in ('off', 'toolkit', 'gate', 'groups', 'shadowed', 'patched',
+                                       'element', 'kind', 'served')}
 
 _PARTNER = {'G': 'i', 'C': 'q'}
 _MATRIX = {'i': 'G', 'q': 'C'}
@@ -444,7 +451,7 @@ def assemble_vector(cir, v, x, args):
 ## A plan whose build saw an instance shadow is not used (the loop runs).
 
 class _SourcePlan:
-    __slots__ = ('call', 'default_fn', 'dicts', 'els', 'fns', 'shadowed', 'types',
+    __slots__ = ('call', 'default_fn', 'dicts', 'direct', 'els', 'fns', 'shadowed', 'types',
                  'zero_classes')
 
     def __init__(self, cir, m):
@@ -468,6 +475,9 @@ class _SourcePlan:
         self.dicts = tuple(map(_GETDICT, self.els))
         self.fns = tuple((cls, fn) for cls, (fn, _v) in classes.items())
         self.zero_classes = tuple(cls for cls, (_fn, v) in classes.items() if v == 'zero')
+        ## (`source_direct`'s program: None until asked, False where an
+        ## element called is not a source it evaluates)
+        self.direct = None
 
 
 _GETDICT = operator.attrgetter('__dict__')
@@ -484,6 +494,326 @@ def _src_types():
         from pycircuit.circuit.toolkit import NumericToolkit
         _SRC['t'] = (Circuit, NumericToolkit)
     return _SRC['t']
+
+
+def _source_unfit(cir, sp, m, Circuit):
+    """Why the source plan `sp` does not serve `cir`'s pass `m` now (a
+    reason of `_SK`), or None: an instance shadow, a method patched on a
+    class or a generated zero source no longer one, the elements or their
+    types or dicts not the ones it was built from."""
+    if sp.shadowed:
+        return 'shadowed'
+    if getattr(Circuit, m) is not sp.default_fn:
+        return 'patched'
+    for cls, fn in sp.fns:
+        if getattr(cls, m) is not fn:
+            return 'patched'
+    for cls in sp.zero_classes:
+        if not _hdl_batch.zero_source(cls, m):
+            return 'patched'
+    vals = tuple(cir.elements.values())
+    if vals != sp.els or tuple(map(type, vals)) != sp.types:
+        return 'element'
+    dicts = tuple(map(_GETDICT, vals))
+    if dicts != sp.dicts or any(map(operator.contains, dicts, itertools.repeat(m))):
+        return 'element'
+    return None
+
+
+def source_direct(cir, args):
+    """The `u` pass (no x, no dtype, not 'ac') where every element it calls
+    is an independent source of the library's VS or IS family -- each
+    source's value its parameter (`iparv.v`, `.i`) plus its time function's
+    `f(t)`, the very expression its `u` evaluates, in the loop's order --
+    scattered as the loop's `bincount` scatters: bins from +0.0, each
+    contribution added in element order, in Python floats where every value
+    is a float (`_SourceDirect.run`); or None (counted): the plan or the
+    loop.  Its checks stamped (`_watch`): while no dict a full check read has
+    changed, what no watcher sees is compared on every call (`same`).
+    (speed round 10, B3.7: a pass on the PSP stage was 117 k instructions,
+    ~55 k of them the loop around its two sources, ~60 k their `u`.)"""
+    K = _SD
+    if not (ENABLED and SOURCE_DIRECT):
+        return _no(K['off'])
+    Circuit, NumericToolkit = _SRC['t'] if _SRC else _src_types()
+    if type(cir.toolkit) is not NumericToolkit:
+        return _no(K['toolkit'])
+    if not _hdl_batch.SKIP_ZERO_SOURCE or (len(args) >= 3 and args[2] == 'ac'):
+        return _no(K['gate'])
+    if getattr(cir, '_eval_groups', None):
+        return _no(K['groups'])
+    plan = cir.__dict__.get('_stamp_plan')
+    sp = plan.methods.get('src:u') if plan is not None else None
+    sd = sp.direct if sp is not None else None
+    ep = _watch.EPOCH
+    if sd is None or ep is None or sd.stamp != ep.value or not sd.same(cir, Circuit):
+        ## the full check: the plan's, as `assemble_source` makes it, the
+        ## program's facts again, then the stamp -- a program that cannot
+        ## be (`ent` None) stamped as well: its decline is then this cheap
+        before = _watch.now()
+        plan = _plan_for(cir)
+        sp = plan.methods.get('src:u')
+        if sp is None:
+            sp = plan.methods['src:u'] = _SourcePlan(cir, 'u')
+        why = _source_unfit(cir, sp, 'u', Circuit)
+        if why is not None:
+            return _no(K[why])
+        ## (the loop and its scatter, which the pass stands in for, as
+        ## defined: not shadowed on the circuit nor replaced on its class)
+        G = _genuine()
+        cd, cc = cir.__dict__, type(cir)
+        if ('_add_element_subvectors' in cd or '_scatter_1d' in cd
+                or cc._add_element_subvectors is not G['loop']
+                or cc._scatter_1d is not G['scatter']):
+            return _no(K['patched'])
+        sd = sp.direct
+        if sd is None:
+            sd = sp.direct = _SourceDirect.build(cir, sp, plan.n)
+        if sd.ent is not None and not sd.check(NumericToolkit):
+            return _no(K['kind'])
+        sd.arm(cir, sp, Circuit, before)
+    if sd.ent is None:
+        return _no(K['kind'])
+    out = sd.run(cir, args)
+    _PC[K['served']] += 1
+    return out
+
+
+class _SourceDirect:
+    """`source_direct`'s program for one source plan: per source its element,
+    its parameter's key and its class's `function` descriptor, its rows --
+    and what a full check read, stamped."""
+
+    __slots__ = ('arms', 'dicts', 'els', 'ent', 'n', 'others', 'same_cls', 'stamp', 'types')
+
+    @classmethod
+    def build(cls, cir, sp, n):
+        """The program -- its `ent` None where an element the plan calls is
+        not a VS- or IS-family source as the library defines it (its `u` the
+        family's own, its time function the family's descriptor, its rows
+        the ones that `u`'s values fill, within the vector)."""
+        G = _genuine()
+        self = cls()
+        self.n, self.arms, self.stamp = n, 0, -1
+        self.els = self.dicts = self.types = self.same_cls = self.others = ()
+        self.ent = None
+        ent = []
+        for el, idx in sp.call:
+            fn = type(el).u
+            if fn is G['VS.u']:
+                key, desc, size = 'v', G['VS.function'], 3
+            elif fn is G['IS.u']:
+                key, desc, size = 'i', G['IS.function'], 2
+            else:
+                return self
+            if idx is None:
+                return self
+            rows = tuple(int(k) for k in idx)
+            if len(rows) != size or not all(0 <= k < n for k in rows):
+                return self
+            ent.append((el, key, desc, rows))
+        self.ent = tuple(ent)
+        return self
+
+    def check(self, NumericToolkit):
+        """The facts the program rests on that live in instance dicts: each
+        source's parameters `ParameterDict`'s own, its key a parameter and no
+        attribute of its own, its toolkit numeric with the backend's `array`
+        (what makes `u`'s values float64), its class's `function` the
+        family's descriptor -- and `ParameterDict`'s lookup as defined."""
+        G = _genuine()
+        PD = G['PD']
+        if PD.__getattr__ is not G['PD.getattr']:
+            return False
+        arr = G['array']
+        for el, key, desc, _rows in self.ent:
+            d = el.__dict__
+            ip = d.get('iparv')
+            tk = d.get('toolkit')
+            if (type(ip) is not PD or key not in ip._parameters or key in ip.__dict__
+                    or key in PD.__dict__ or type(tk) is not NumericToolkit
+                    or tk.array is not arr or type(el).function is not desc):
+                return False
+        return True
+
+    def arm(self, cir, sp, Circuit, before):
+        """Stamp what the full check read (`_watch.arm`): the circuit's dict,
+        its elements dict and node map, the sources' dicts and their
+        parameter dicts, the zero classes' generated-function dicts, the
+        batch module's switch; keep what no watcher sees for `same`.  The
+        other elements' dicts are not watched -- a limiter writes its state
+        into its element's every iteration (`Diode`), and its stamp would
+        never hold -- only an instance `u` of theirs matters, looked for on
+        every call (`others`)."""
+        ent = self.ent or ()
+        self.els, self.dicts, self.types = sp.els, sp.dicts, sp.types
+        src = {id(e[0]) for e in ent}
+        self.others = tuple(d for el, d in zip(sp.els, sp.dicts) if id(el) not in src)
+        G = _genuine()
+        self.same_cls = ((Circuit, 'u', sp.default_fn),
+                         (type(cir), '_add_element_subvectors', G['loop']),
+                         (type(cir), '_scatter_1d', G['scatter'])) + tuple(
+            (c, 'u', fn) for c, fn in sp.fns) + tuple(
+            (type(el), 'function', desc) for el, _k, desc, _r in ent)
+        self.arms += 1
+        if self.arms > _watch.MAX_ARMS:
+            self.stamp = -1
+            return
+        dicts = [cir.__dict__, cir.elements, cir._map_indices_1d, _hdl_batch.__dict__]
+        for el, _k, _d, _r in ent:
+            d = el.__dict__
+            ip = d['iparv']
+            dicts += [d, ip.__dict__, ip._parameters, d['toolkit'].__dict__]
+        for c in sp.zero_classes:
+            info = c._hdl_info
+            dicts += [info, info['funcs']]
+        self.stamp = _watch.arm(dicts, before)
+
+    def same(self, cir, Circuit):
+        """What no dict watcher sees, as the stamped check left it: the
+        elements' `__dict__` objects and types, the classes' `u` and
+        `function`, `ParameterDict`'s lookup, the vector's length."""
+        if (tuple(map(_GETDICT, self.els)) != self.dicts
+                or tuple(map(type, self.els)) != self.types or cir.n != self.n
+                or any(map(operator.contains, self.others, itertools.repeat('u')))):
+            return False
+        for c, name, f in self.same_cls:
+            if getattr(c, name) is not f:
+                return False
+        G = _LAZY['gen']
+        PD = G['PD']
+        pdd = PD.__dict__
+        return PD.__getattr__ is G['PD.getattr'] and 'v' not in pdd and 'i' not in pdd
+
+    def run(self, cir, args):
+        """The pass: each source's value as its `u` makes it, then the
+        loop's bincount -- every bin from +0.0, each contribution added in
+        element order (a VS's two +0.0 contributions leave every bin as it
+        is: a bin started at +0.0 never holds -0.0) -- in Python floats where
+        every value is Python's or numpy's float; else the arrays `u` makes,
+        through the loop's own scatter."""
+        t = args[0] if args else 0.0
+        an = args[2] if len(args) > 2 else None
+        n, ent = self.n, self.ent
+        if an not in _LAZY['gen']['cir'].timedomain_analyses:
+            ## (`u`'s integer zeros: +0.0 in every bin)
+            _PC['u:called'] += len(ent)
+            return np.zeros(n)
+        vals = []
+        out = [0.0] * n
+        floats = True
+        for el, key, _desc, rows in ent:
+            d = el.__dict__
+            fn = d.get('function')
+            if fn is None:
+                fn = el.function
+            a = d['iparv']._values[key]
+            b = fn.f(t)
+            ## (the value as `u` makes it: in Python floats where neither
+            ## operand can make numpy's add warn -- both within 1e300 -- else
+            ## that add, its warnings from `u`'s own line: `_added`)
+            ta, tb = type(a), type(b)
+            if ((ta is float or ta is _F64 or ta is int) and -_BIG < a < _BIG
+                    and (tb is float or tb is _F64 or tb is int) and -_BIG < b < _BIG
+                    and (ta is not int or tb is not int)):
+                v = float(a) + float(b)
+            else:
+                v = _added(a, b, key)
+            vals.append(v)
+            if floats:
+                tv = type(v)
+                if tv is not float and tv is not _F64:
+                    floats = False
+                    continue
+                v = float(v)
+                if key == 'v':
+                    out[rows[2]] += -v
+                else:
+                    out[rows[0]] += v
+                    out[rows[1]] += -v
+        _PC['u:called'] += len(ent)
+        return np.array(out) if floats else self._arrays(cir, vals)
+
+    def _arrays(self, cir, vals):
+        """A value not a float: the arrays each `u` returns for it and the
+        loop's scatter -- the loop's own answer."""
+        pending_idx, pending_val = [], []
+        for (el, key, _desc, rows), v in zip(self.ent, vals):
+            tk = el.__dict__['toolkit']
+            rhs = tk.array([0, 0, -v]) if key == 'v' else tk.array([v, -v])
+            pending_idx.append(np.array(rows, dtype=int))
+            pending_val.append(np.asarray(rhs).ravel())
+        n = self.n
+        if not pending_idx:
+            return cir.toolkit.zeros(n)
+        return cir._scatter_1d(cir.toolkit.zeros(n), pending_idx, pending_val, n)
+
+
+_F64 = np.float64
+_BIG = 1e300
+_LAZY = {}
+
+
+def _genuine():
+    """What the direct pass stands in for, as defined -- captured once, at
+    its first use (the other fast paths' rule): `VS.u`, `IS.u` and their
+    classes' `function` descriptors, the loop and its scatter
+    (`SubCircuit._add_element_subvectors`, `_scatter_1d`), `ParameterDict`
+    and its lookup, the numeric backend's `array`, the circuit module (its
+    `timedomain_analyses`)."""
+    G = _LAZY.get('gen')
+    if G is None:
+        from pycircuit.circuit import _numeric
+        from pycircuit.circuit import circuit as cm
+        from pycircuit.circuit.elements import IS, VS
+        from pycircuit.utilities.param import ParameterDict
+        G = _LAZY['gen'] = {
+            'VS.u': VS.u, 'IS.u': IS.u,
+            'VS.function': VS.__dict__['function'], 'IS.function': IS.__dict__['function'],
+            'loop': cm.SubCircuit._add_element_subvectors,
+            'scatter': cm.SubCircuit._scatter_1d,
+            'PD': ParameterDict, 'PD.getattr': ParameterDict.__getattr__,
+            'array': _numeric.array, 'cir': cm, 'VS': VS, 'IS': IS}
+    return G
+
+
+def _added(a, b, key):
+    """`a + b` as `VS.u` (key 'v') or `IS.u` ('i') makes it -- the value
+    and its type -- where numpy may warn about it: its warnings re-emitted
+    from `u`'s own line, with that module's registry, as numpy emits them
+    there (a raise, a call or a print in numpy's error state happens here as
+    it would there)."""
+    import warnings
+    with warnings.catch_warnings(record=True) as W:
+        warnings.simplefilter('always')
+        v = a + b
+    if W:
+        fname, line, mod = _u_add_site(key)
+        for w in W:
+            warnings.warn_explicit(w.message, w.category, fname, line, module=mod.__name__,
+                                   registry=mod.__dict__.setdefault('__warningregistry__', {}),
+                                   module_globals=mod.__dict__)
+    return v
+
+
+def _u_add_site(key):
+    """`(filename, line, module)` of the add in `VS.u` ('v') or `IS.u`
+    ('i') -- read from their source once (the pinned pair of the sources
+    and their direct pass fails where `u` changes)."""
+    site = _LAZY.get('site:' + key)
+    if site is None:
+        import inspect
+        import sys
+        G = _genuine()
+        fn = G['VS.u'] if key == 'v' else G['IS.u']
+        text = f'self.iparv.{key} + self.function.f(t)'
+        lines, start = inspect.getsourcelines(fn)
+        hits = [start + k for k, ln in enumerate(lines) if text in ln]
+        if len(hits) != 1:
+            raise RuntimeError(f'{fn.__qualname__}: its add ({text!r}) not found once')
+        site = _LAZY['site:' + key] = (fn.__code__.co_filename, hits[0],
+                                       sys.modules[fn.__module__])
+    return site
 
 
 def assemble_source(cir, m, args):
@@ -504,22 +834,9 @@ def assemble_source(cir, m, args):
     sp = plan.methods.get('src:' + m)
     if sp is None:
         sp = plan.methods['src:' + m] = _SourcePlan(cir, m)
-    if sp.shadowed:
-        return _no(K['shadowed'])
-    if getattr(Circuit, m) is not sp.default_fn:
-        return _no(K['patched'])
-    for cls, fn in sp.fns:
-        if getattr(cls, m) is not fn:
-            return _no(K['patched'])
-    for cls in sp.zero_classes:
-        if not _hdl_batch.zero_source(cls, m):
-            return _no(K['patched'])
-    vals = tuple(cir.elements.values())
-    if vals != sp.els or tuple(map(type, vals)) != sp.types:
-        return _no(K['element'])
-    dicts = tuple(map(_GETDICT, vals))
-    if dicts != sp.dicts or any(map(operator.contains, dicts, itertools.repeat(m))):
-        return _no(K['element'])
+    why = _source_unfit(cir, sp, m, Circuit)
+    if why is not None:
+        return _no(K[why])
     _PC[K['served']] += 1
     n = plan.n
     lhs = tk.zeros(n)
