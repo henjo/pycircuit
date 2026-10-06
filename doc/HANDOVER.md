@@ -238,6 +238,17 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   <case> [pyperf options]` (pieces: `--list`), pyperf with calibrated loops,
   several worker processes, the workers pinned to CPU 8.  Size a piece here
   before planning around its share of a step.
+- **Size a piece IN SITU** (2026-10-06, speed round 12): `python
+  benchmarks/insitu.py rank|calls|lines|callers CASE [TARGET ...]` -- any
+  `step_machinery` case, a target as `module:Qual.name` (or a short name of
+  its `SHORT`), one fresh process a target, instructions in the case's TIMED
+  call only (the region `--count` counts; a case's setup is outside it).
+  `rank`: the functions by self time and calls, named for pasting; `calls`:
+  a target's instructions a call and its share of the run; `lines`: per
+  top-level statement (an AST rewrite with checkpoints); `callers`: the
+  sites behind a call count.  Every fast-path count is compared with an
+  unwrapped run, and a wrap that changes the path is reported -- wrapping a
+  function a fast path checks for genuineness sizes the other path.
 - **Optional, never required** (sudo): `sysctl kernel.perf_event_paranoid=1`
   enables `perf` with `python -X perf`; `cpupower frequency-set -g
   performance` for a benchmark session.  The paired ratios are built to be
