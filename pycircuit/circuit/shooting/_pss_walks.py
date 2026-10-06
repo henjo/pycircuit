@@ -10,7 +10,7 @@ import scipy.sparse as _sp
 
 from pycircuit.circuit import _limiting, _paths
 
-from . import _pss_inner
+from . import _pss_inner, _sens_c
 from ._factored import _PeriodWalk
 from ._steps import (
     _butcher,
@@ -1025,6 +1025,9 @@ class _PeriodWalks(object):
         tr_in = self._transient()
         read_now = (bool(dense or keep or want_dT or Pk is not None or stage_record is None)
                     and not self._pcnr_junctions())
+        ## (the shooting Newton's monodromy alone: dense, nothing kept, no
+        ## period or event column)
+        plain = coupled and dense and not keep and not want_dT and Pk is None
         for _j, t in enumerate(times[1:]):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
@@ -1045,6 +1048,13 @@ class _PeriodWalks(object):
                     (xn, h, [np.array(y, dtype=float)
                              for y in self._transient().last_step.Y]))
                 if not (dense or keep or want_dT or Pk is not None):
+                    continue
+            if plain:
+                ## (the step map in one C call: `_sens_c`, speed round 11;
+                ## None -- the Python step)
+                Pn = _sens_c.step(self, xn, h, tab, P)
+                if Pn is not None:
+                    P = Pn
                     continue
             st, Ys = self._stage_step(xn, h, tab, coupled)
             if keep:

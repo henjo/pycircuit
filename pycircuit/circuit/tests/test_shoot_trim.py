@@ -240,11 +240,15 @@ def test_the_reads_are_the_readers(monkeypatch):
     assert len(seen) >= 40 and all(x == (True, 3, 3) for x in seen), seen[:3]
 
 
-def test_the_reads_serve_a_radau_pss():
+def test_the_reads_serve_a_radau_pss(monkeypatch):
     """The PSP stage's radau PSS: each coupled stage step's `C` and `G` read
-    once (`pss.reads:served`, one a sensitivity step).  (Apart from the
-    trims' comparison above: the reads need the step's memo, which the
-    other fast paths fill -- with those off, this fails and that compares.)"""
+    once (`pss.reads:served`, one a sensitivity step) -- the Python step's,
+    the C step map off (`_sens_c`: where it serves it reads the memo
+    itself).  (Apart from the trims' comparison above: the reads need the
+    step's memo, which the other fast paths fill -- with those off, this
+    fails and that compares.)"""
+    from pycircuit.circuit.shooting import _sens_c
+    monkeypatch.setattr(_sens_c, 'SENS_C', False)
     before = _paths.snapshot()
     _solved()
     d = _paths.since(before)

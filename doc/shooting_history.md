@@ -12398,3 +12398,26 @@ def colour_groups(self, model, wlo, f0, L, what):
         warn_sign_blind(what, blind, stacklevel=4)
     return groups
 ```
+
+## `_sens_c.py` -- the coupled stage step map in C (speed round 11, 2026-10-06)
+
+### `step`, `_map`, `_Ctx`, `SENS_C_SRC`
+
+A fully implicit stage method's dense period walk carries the monodromy
+through every step: the stage system ``J Z = B``, ``J[i][j] = delta_ij
+C(Y_i) + h A_ij G(Y_j)``, assembled (`_stage_block`), factored by the
+caller's dense solver (SciPy's `lu_factor`) and solved for ``B = [C_n
+P]_i`` (`_StageStep.solve`, SciPy's `getrs`), the last stage block the
+new `P`.  On a small circuit that was ~530 k instructions a step around
+~50 k of LAPACK -- the readers' lookups and reductions, a dozen small
+numpy calls, the solvers' checks.  Where the walk is the shooting
+Newton's plain monodromy (dense, nothing kept, no period or event
+column) and the readers would read the step's memo, one C call now makes
+the step map: the block assembled column-major from the stages' full
+matrices (the reference row and column skipped as the readers reduce
+them) in `_stage_block`'s operations, SciPy's own `getrf` and `getrs` on
+numpy's ``C_n P`` stacked per stage, the new `P` laid out as `getrs`
+returns it -- the Python step's bytes, and its exceptions and warnings
+where the C hands the step back (a non-finite value, a floating-point
+flag in the assembly, a singular block).  Measured: the radau PSS of the
+PSP stage -7.6 % instructions and -11.1 % in time.

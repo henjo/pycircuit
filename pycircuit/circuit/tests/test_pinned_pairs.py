@@ -304,6 +304,31 @@ PAIRS = {
         'reference': ['pycircuit.circuit.shooting._pss_walks:_PeriodWalks._stage_step'],
         'twin': ['pycircuit.circuit.shooting._pss_walks:_stage_block'],
     },
+    'the stage step map and its C': {
+        'why': 'the plain dense walk\'s step in one call: the block column-major (as '
+               '`lu_factor` copies it) from the stages\' full `C` and `G`, the reference '
+               'row and column skipped as the readers reduce them, in `_stage_block`\'s '
+               'operations (`h A_ij` first, `C_i` added on the diagonal), SciPy\'s own '
+               '`getrf` and `getrs` on `C_n P` stacked per stage, the new `P` the last '
+               'stage block in `getrs`\' Fortran order; it hands back wherever the Python '
+               'step declines, warns or raises, and counts the readers\' sync skips',
+        'reference': ['pycircuit.circuit.shooting._pss_walks:_PeriodWalks._stage_step',
+                      'pycircuit.circuit.shooting._pss_walks:_stage_block',
+                      'pycircuit.circuit.shooting._pss_walks:_stage_reads',
+                      'pycircuit.circuit.shooting._steps:_StageStep.solve',
+                      'pycircuit.circuit.shooting._numerics:_lu_solve_split',
+                      'pycircuit.circuit.shooting._numerics:_complex_solve',
+                      'pycircuit.circuit.shooting._pss_inner:_InnerTransient._C_at',
+                      'pycircuit.circuit.shooting._pss_inner:_InnerTransient._G_at',
+                      'pycircuit.circuit.shooting._pss_inner:_InnerTransient._factorise',
+                      'pycircuit.circuit.linearsolver:DenseSolver.factor',
+                      'pycircuit.circuit.linearsolver:AutoSolver.factor',
+                      'pycircuit.circuit.linearsolver:lu_solve'],
+        'twin': ['pycircuit.circuit.shooting._sens_c:SENS_C_SRC',
+                 'pycircuit.circuit.shooting._sens_c:step',
+                 'pycircuit.circuit.shooting._sens_c:_map',
+                 'pycircuit.circuit.shooting._sens_c:_Ctx'],
+    },
     'the stage readers and their one read': {
         'why': 'where the readers would read just that -- no junction, nothing keeping '
                'limiting state (the sync skips), each full stage\'s reference entry +0.0 '
@@ -385,6 +410,7 @@ RECORD = {
     'the transform solve and its frozen form': ('945834192f2a', '76a16f4bcc14'),
     'the transform Newton and its C': ('d7c24c3c7e7d', '359ac763a410'),
     'the stage block and its one pass': ('a013cd007e0c', '24be0c26211b'),
+    'the stage step map and its C': ('d6a705611a62', '0231752eb52b'),
     'the stage readers and their one read': ('c81f3df96666', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', 'd5e13aa3b107'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
