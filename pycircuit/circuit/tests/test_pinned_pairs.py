@@ -390,21 +390,20 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the kernel call and the pass driver': ('09a9e274bbe8', 'c900976facbc'),
-    'the limiting loop and the walk': ('d151206fce18', '411e5dd4e655'),
+    'the limiting loop and the walk': ('58c4ce9c8f4d', '411e5dd4e655'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
-    'the transient evaluation and the core': ('ce82a66a3520', '294d53dc4c16'),
-    'the assembly loops and the plan': ('4c77e2ad0e1e', '1e6881a772fd'),
-    'the sources and their direct pass': ('813b77a25a3e', 'fced12f39974'),
+    'the transient evaluation and the core': ('ce82a66a3520', '06de17f78a25'),
+    'the assembly loops and the plan': ('fa280abb9bf9', '1e6881a772fd'),
+    'the sources and their direct pass': ('61c7a4bed013', 'fced12f39974'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the Newton solve and its C': ('772989bd55ff', 'f26777acec22'),
-    'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
+    'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),
+    'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
     'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),
-    'the readiness reads and their stamps': ('48b75bd9cace', '00c4ca6aed03'),
     "the stage paths' passes and the core's": ('8e4b7cf1fa24', 'a3ae0f6c8d98'),
     'the coupled stage Newton and its C': ('5f7c56901f9a', 'e9156eef9c41'),
     'the transform solve and its frozen form': ('945834192f2a', '76a16f4bcc14'),
@@ -414,6 +413,7 @@ RECORD = {
     'the stage readers and their one read': ('c81f3df96666', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', 'd5e13aa3b107'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
+    'the readiness reads and their stamps': ('28340cff33fb', '00c4ca6aed03'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

@@ -4287,3 +4287,21 @@ readers run.  The transform solve's array checks compare the float64
 dtype by identity first, and its snapshot of the source counters is a
 tuple.  Measured: the radau PSS of the PSP stage -2.3 % instructions
 and -1.3 % in time.
+
+
+## `_stamp_plan.py`, `circuit.py`, `_tran_core.py`, `toolkit.py` -- the per-call imports once at module level (2026-10-06, speed round 12)
+
+### `_plan_for`, `_ineligible`, `_add_element_submatrices`, `_add_element_subvectors`, `evaluate`, `matrix_from_entries`, `SubCircuit.limit`
+
+A function-level import costs ~1.6 k instructions every time the function
+runs (`import numpy as np` ~0.8 k), and seven functions on the assembly's
+and the step's paths ran one or two on every call: the stamp plan's two
+checks (every assembly), the two assembly passes (numpy again: `np` is the
+module's), the evaluate core (the toolkit class; the BDF2 kernel under
+gear), the numeric toolkit's matrix builder, the limiting loop.  Each is
+now imported once at module level -- as the module, read by attribute
+where a name was taken from it, so a monkeypatch of that attribute is
+still seen -- except `_hdl_climit`, which imports `hdl` and through it
+`circuit`.  `_ineligible` compares the dtype by identity first.  Measured:
+the van der Pol PSS -2.8 % instructions and -1.7 % in time, the diode
+ladders -2.9..-3.1 % and -1.5..-1.9 %.

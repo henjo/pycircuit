@@ -63,6 +63,8 @@ import os
 import numpy as np
 
 from pycircuit.circuit import _hdl_batch, _paths, _watch
+from pycircuit.circuit import toolkit as _toolkit
+from pycircuit.utilities import param as _param
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -70,6 +72,8 @@ _PK = {m: {r: f'plan.{m}:{r}' for r in ('off', 'toolkit', 'x', 'nonfinite', 'leg
        for m in ('G', 'C', 'i', 'q')}
 
 ENABLED = os.environ.get('PYCIRCUIT_STAMP_PLAN', '1') != '0'
+#: numpy's float64 dtype: one object, so an identity test is exact
+_F64DT = np.dtype(np.float64)
 #: the source pass from the plan (`assemble_source`; env `PYCIRCUIT_SOURCE_PLAN=0`)
 SOURCE_PLAN = os.environ.get('PYCIRCUIT_SOURCE_PLAN', '1') != '0'
 #: ... for a circuit of this many elements or more: the plan's fixed checks
@@ -261,9 +265,11 @@ class _Plan:
 
 
 def _plan_for(cir):
-    """The circuit's current plan, rebuilt when it went stale."""
-    from pycircuit.utilities.param import ParameterDict
-    epoch = ParameterDict._epoch
+    """The circuit's current plan, rebuilt when it went stale.  (Its modules
+    imported once, read by attribute -- `_param.ParameterDict` is what the
+    function-level import made it at every call, 1.5 k instructions of the
+    4.3 k a call it cost on every assembly; speed round 12.)"""
+    epoch = _param.ParameterDict._epoch
     plan = cir.__dict__.get('_stamp_plan')
     if (plan is None or plan.epoch is not epoch
             or plan.elements is not cir.elements
@@ -281,13 +287,15 @@ def invalidate(cir):
 
 
 def _ineligible(cir, x):
-    """None where the plan serves `x`, else the reason (`_paths`)."""
-    from pycircuit.circuit.toolkit import NumericToolkit
+    """None where the plan serves `x`, else the reason (`_paths`).  (The
+    toolkit's module imported once and the dtype compared by identity first,
+    as numpy's own float64 dtype is one object: 1.6 k and 0.75 k of the 4.9 k
+    a call this cost on every assembly; speed round 12.)"""
     if not ENABLED:
         return 'off'
-    if type(cir.toolkit) is not NumericToolkit:
+    if type(cir.toolkit) is not _toolkit.NumericToolkit:
         return 'toolkit'
-    if not (type(x) is np.ndarray and x.dtype == np.float64
+    if not (type(x) is np.ndarray and (x.dtype is _F64DT or x.dtype == np.float64)
             and x.ndim == 1 and x.shape[0] == len(cir.nodes) + len(cir.branches)):
         return 'x'
     return None

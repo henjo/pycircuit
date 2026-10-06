@@ -107,6 +107,34 @@ def test_the_plan_assembles_bit_for_bit_what_the_element_loop_does():
     assert cir.__dict__['_stamp_plan'].builds == 1
 
 
+def test_an_assembly_executes_no_import_statement(monkeypatch):
+    """Speed round 12: the plan's checks and the assembly's passes ran a
+    function-level import on every call (`_plan_for`, `_ineligible`, the
+    submatrix and subvector passes: 0.8-1.7 k instructions each, ~2 % of a
+    small circuit's PSS).  Assemblies through the plan now execute none --
+    every element kind, the nested circuit's too (the parent: four or more
+    each pass)."""
+    import builtins
+    cir = mixed()
+    x = states(cir.n, k=1, seed=3)[0]
+    with np.errstate(all='ignore'):
+        for m in ('G', 'C', 'i', 'q'):
+            getattr(cir, m)(x)
+    seen = []
+    real = builtins.__import__
+
+    def counting(name, *a, **k):
+        seen.append(name)
+        return real(name, *a, **k)
+    monkeypatch.setattr(builtins, '__import__', counting)
+    with np.errstate(all='ignore'):
+        for _ in range(5):
+            for m in ('G', 'C', 'i', 'q'):
+                getattr(cir, m)(x)
+    monkeypatch.undo()
+    assert seen == [], sorted(set(seen))
+
+
 def test_a_pass_with_nothing_to_stamp_is_the_loops_float_zeros():
     """A capacitor's G, a resistor's C: every entry an exact zero, so the
     plan's bincount is EMPTY -- and an empty bincount is int64 even with

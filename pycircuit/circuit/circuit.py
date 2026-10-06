@@ -9,7 +9,7 @@ from copy import copy
 import contextlib
 from .toolkit import numeric
 from .toolkit import symbolic
-from . import _hdl_batch, _paths, _stamp_plan
+from . import _hdl_batch, _limiting, _paths, _stamp_plan
 import numpy as np
 
 ## The process-wide fallback toolkit used when a circuit is built without an
@@ -1525,7 +1525,6 @@ class SubCircuit(Circuit):
         ## stamping paths below already hoist; these two did not, and the suite
         ## went from ~8 to ~16 minutes until they did.
         elementnodemap = self.elementnodemap
-        from . import _limiting
         if not _limiting.CIRCUIT_LEVEL:
             ## THE WALK (`_hdl_climit.limit_walk`, speed round 6): the loop
             ## below with every run of C-kernel elements walked in one C
@@ -1750,8 +1749,8 @@ class SubCircuit(Circuit):
     def _add_element_submatrices(self, methodname, x, args, params_tree=None):
         ## STAGE 2b -- see the note on `_add_element_subvectors`.  Same two changes:
         ## the per-element `hasattr`/`getattr` probes are hoisted, and the scatter is
-        ## done once at the end instead of once per element.
-        import numpy as np
+        ## done once at the end instead of once per element.  (`np` is the
+        ## module's: a function-level import cost 0.77 k a call -- speed round 12)
 
         ## THE CONSTANT-STAMP PLAN (`_stamp_plan`, 2026-10-01): the elements
         ## whose stamps cannot change are not re-stamped, bit for bit the
@@ -1841,7 +1840,6 @@ class SubCircuit(Circuit):
             lhs = self._scatter_2d(lhs, pending_rc, pending_val, n)
 
         if build_sparse:
-            import numpy as np
             if not all_data:
                 return self.toolkit.build_sparse([], [], [], shape=(n,n))
             return self.toolkit.build_sparse(
@@ -1871,7 +1869,6 @@ class SubCircuit(Circuit):
         ## `bincount` only handles real floating point, so complex and object dtypes
         ## keep the `np.add.at` path.  That is not a fallback for correctness -- both
         ## paths are exact -- it is a dtype restriction of `bincount`.
-        import numpy as np
 
         ## (the constant-stamp plan, as in `_add_element_submatrices`)
         if (methodname in ('i', 'q') and dtype is None and params_tree is None

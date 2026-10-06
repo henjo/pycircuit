@@ -290,10 +290,10 @@ class NumericToolkit(Toolkit):
         ## stamps (gm=1) come out int64, which changed doctest reprs and
         ## invites integer-division surprises downstream.  The symbolic
         ## toolkit keeps the base implementation -- exact integer zeros and
-        ## live sympy entries are exactly what it needs.
-        import numpy as _np
+        ## live sympy entries are exactly what it needs.  (`np` is the
+        ## module's: a function-level import cost 0.77 k a call.)
         n_rows, n_cols = shape
-        M = _np.zeros((n_rows, n_cols))
+        M = np.zeros((n_rows, n_cols))
         for r, c, v in entries:
             M[r, c] += v
         return M

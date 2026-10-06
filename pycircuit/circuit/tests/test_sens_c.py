@@ -81,8 +81,12 @@ def _check(Cfs, Gfs, iref, h, A, base):
         assert blk == {'pss.block:nonfinite': 1} and p == ('raise', ValueError), (blk, p[0])
     elif c == 3:                    # a flag in the assembly: `_stage_block`'s errstate
         assert blk == {'pss.block:fp': 1}, blk
-    elif c == 4:                    # a non-finite `C_n P`: `lu_solve` refuses it
-        assert blk == {'pss.block:served': 1} and p == ('raise', ValueError), (blk, p[0])
+    elif c == 4:                    # a non-finite `C_n P`: `lu_solve` refuses it --
+        ## after the block assembled, or after it declined on a flag in its
+        ## assembly: the C tests `C_n P` before it assembles, the Python after
+        ## (a drawn case, found 2026-10-06 when other draws hit it)
+        assert blk in ({'pss.block:served': 1}, {'pss.block:fp': 1}) \
+            and p == ('raise', ValueError), (blk, p[0])
     elif c == 5:                    # a singular block: `lu_factor` warns
         assert blk == {'pss.block:served': 1} and p[0] == 'warn', (blk, p[0])
     else:
@@ -163,6 +167,8 @@ def test_every_hand_back():
     b2 = base.copy()
     b2[1, 1] = np.inf
     assert _check(Cfs, Gfs, 0, 2.5e-8, _A, b2) == 4
+    ## ... with a flag in the assembly as well: the C sees `C_n P` first
+    assert _check(Cfs, G_big, 0, 1e300, _A, b2) == 4
     ## a singular block
     Z = [np.zeros((nf, nf)) for _ in range(3)]
     assert _check(Z, Z, 0, 2.5e-8, _A, base) == 5

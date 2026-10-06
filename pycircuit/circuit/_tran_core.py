@@ -81,7 +81,8 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _paths, _watch
+from pycircuit.circuit import _lte_kernels, _paths, _watch
+from pycircuit.circuit import toolkit as _toolkit
 
 ## the counters (`_paths`): each decline by its reason, each served call
 _PC = _paths.COUNTS
@@ -851,8 +852,7 @@ def evaluate(tr, x, t, provided_function, want):
     K = _K[want]
     if not CORE:
         return _no(K['off'])
-    from pycircuit.circuit.toolkit import NumericToolkit
-    if type(tr.toolkit) is not NumericToolkit:
+    if type(tr.toolkit) is not _toolkit.NumericToolkit:
         return _no(K['toolkit'])
     ## THE METHODS THE CORE STANDS IN FOR MUST BE THE ONES IT MIRRORS: an
     ## instance shadow of the circuit's passes (a test counting `cir.G`, a
@@ -886,8 +886,7 @@ def evaluate(tr, x, t, provided_function, want):
         return _no(K['history'])
     a0 = a1 = a2 = theta = 0.0
     if formula == 0:
-        from pycircuit.circuit._lte_kernels import bdf2_alphas
-        a0, a1, a2 = bdf2_alphas(h, h_last)
+        a0, a1, a2 = _lte_kernels.bdf2_alphas(h, h_last)
     elif formula == 3:
         theta = active.theta_at(h)
     bits = WANT[want]
