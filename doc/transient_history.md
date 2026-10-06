@@ -4241,3 +4241,16 @@ held 8 checks or more no longer counts toward the cap; and the limiter
 walk, stamped only by its full setup before, is stamped again after its
 tuple check.  Measured: one transient solved again, -22.6 % instructions
 a solve; a single solve unchanged.
+
+## `integrator.py` -- a stage method's tableau classified once (2026-10-06, speed round 11)
+
+### `RungeKuttaIntegrator.is_stiffly_accurate`, `stage_structure`, `_classify`
+
+The stage step asks, on every step, whether its tableau is stiffly
+accurate and what structure it has (`_solve_timestep_rk`); each answer
+was `np.allclose` over the tableau's rows, ~130 k instructions apiece --
+0.29 M of a Radau step and 0.43 M of a TR-BDF2 one, for the same answer
+every time.  Each is now kept with the tableau `butcher()` returned for it,
+and given again while `butcher()` returns that object.  Measured: the
+radau PSS of the PSP stage -7.8 % instructions, a radau transient of a
+20-MosLevel1 chain -8.3 %.

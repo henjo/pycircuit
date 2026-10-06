@@ -823,11 +823,24 @@ class RungeKuttaIntegrator(Integrator):
     def stages(self) -> int:
         return int(np.array(self.C).shape[0])
 
+    ## ONCE PER TABLEAU (speed round 11, 2026-10-06): the stage step asks
+    ## both questions below on every step (`_solve_timestep_rk`), and
+    ## `np.allclose` on three numbers is ~130 k instructions -- 0.29 M of a
+    ## Radau step, 0.43 M of a TR-BDF2 one, to answer the same thing again.
+    ## Each answer is kept with the tableau `butcher` returned for it, and
+    ## given while `butcher` returns that very object.
+
     def is_stiffly_accurate(self) -> bool:
         """``b == last row of A`` and ``c[-1] == 1`` -- the step lands ON the
         constraint manifold, so ``x_{n+1}`` is the last stage."""
-        A, B, C = self.butcher()
-        return bool(np.allclose(B, A[-1]) and abs(C[-1] - 1.0) < 1e-14)
+        ABC = self.butcher()
+        memo = self.__dict__.get('_stiffly_memo')
+        if memo is not None and memo[0] is ABC:
+            return memo[1]
+        A, B, C = ABC
+        out = bool(np.allclose(B, A[-1]) and abs(C[-1] - 1.0) < 1e-14)
+        self._stiffly_memo = (ABC, out)
+        return out
 
     def stage_structure(self):
         """Classify the tableau so the solver picks the cheapest correct path:
@@ -835,8 +848,16 @@ class RungeKuttaIntegrator(Integrator):
         diagonals -> one shared factorisation), ``SDIRK`` (lower-triangular,
         all diagonals equal), ``DIRK`` (lower-triangular), or ``FULL`` (fully
         implicit -> coupled solve or the eig(A^-1) cost transform)."""
-        A, _B, _C = self.butcher()
-        s = A.shape[0]
+        ABC = self.butcher()
+        memo = self.__dict__.get('_structure_memo')
+        if memo is not None and memo[0] is ABC:
+            return memo[1]
+        out = self._classify(ABC[0])
+        self._structure_memo = (ABC, out)
+        return out
+
+    def _classify(self, A):
+        """`stage_structure` of the Butcher matrix `A`."""
         lower = np.allclose(np.triu(A, 1), 0.0)
         if not lower:
             return self.FULL
