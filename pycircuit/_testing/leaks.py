@@ -107,6 +107,7 @@ SWITCHES = (
     ('pycircuit.circuit.shooting._sens_c', 'MAXS'),
     ('pycircuit.circuit.shooting._sens_c', 'MAXN'),
     ('pycircuit.circuit._tran_radau_tc', 'ENABLED'),
+    ('pycircuit.circuit.hdl', 'PARAM_DIRECT'),
     ('pycircuit.circuit._hdl_cse', 'ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'FAST_ENABLED'),
     ('pycircuit.circuit._hdl_cse', 'FUSE_ENABLED'),

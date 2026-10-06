@@ -5718,11 +5718,41 @@ def _first_of(fn, wants_x=None):
     return out
 
 
+#: the pack's values read from the values dict where `getattr` would read
+#: them there (`_params_of`, speed round 12, stage 4); env
+#: `PYCIRCUIT_PARAM_DIRECT=0` turns it off
+PARAM_DIRECT = os.environ.get('PYCIRCUIT_PARAM_DIRECT', '1') != '0'
+_PD = param.ParameterDict
+_PD_GETATTR = param.ParameterDict.__getattr__
+_OBJ_GETATTRIBUTE = object.__getattribute__
+
+
 def _params_of(self):
     ## Values from the RESOLVED iparv, plus the givenness flags from
     ## `ipar` -- givenness is a property of what the user wrote, and only
     ## `ipar` records that (see ParameterDict.update_values).
-    vals = [getattr(self.iparv, name) for name in self._hdl_paramnames]
+    ## EACH VALUE AS `getattr` RESOLVES IT (speed round 12, stage 4): from the
+    ## values dict where the name is a parameter of an exact `ParameterDict`
+    ## whose `__getattr__` is the class's own and whose lookup the default
+    ## one (no `__getattribute__` of its own), the name not `_parameters`,
+    ## not shadowed on the instance and not a class attribute -- exactly
+    ## where `getattr` would reach that dict through `__getattr__`; else
+    ## `getattr`.  ~0.3 k instructions a name where the read costs ~2.3 k,
+    ## every name of every element at each pack (886 reads in a 20-MOSFET
+    ## solve).
+    iparv = self.iparv
+    names = self._hdl_paramnames
+    d = iparv.__dict__ if (PARAM_DIRECT and type(iparv) is _PD
+                           and _PD.__getattr__ is _PD_GETATTR
+                           and _PD.__getattribute__ is _OBJ_GETATTRIBUTE) else None
+    values = d.get('_values') if d is not None else None
+    params = d.get('_parameters') if d is not None else None
+    if type(values) is dict and type(params) is dict:
+        vals = [values[n] if (n in params and n != '_parameters' and n not in d
+                              and not hasattr(_PD, n)) else getattr(iparv, n)
+                for n in names]
+    else:
+        vals = [getattr(iparv, name) for name in names]
     ipar = self.ipar
     vals += [1.0 if ipar.is_given(nm) else 0.0
              for nm in self._hdl_given_names]

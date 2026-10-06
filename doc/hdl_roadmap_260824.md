@@ -6623,3 +6623,18 @@ bitwise its source run with the C library's functions; (2) unchanged.  The
 tests apply the rule wherever C meets numpy, and a pytest plugin
 (`scripts/plant_libm.py`) simulates such a CPU on this one.  Record:
 `doc/pss_log_260902.md`, "speed round 12, stage 1".
+
+
+## 2026-10-07 — 67. Speed round 12, stage 4: the pack's parameter values at dict speed
+
+The pack (`_params_of`: every parameter of an element, each time its
+packed array is rebuilt) read each value by `getattr`, ~2.3 k
+instructions through `ParameterDict.__getattr__` -- the failed lookup and
+the hook, which no leaner body avoids.  It now reads the values dict
+exactly where `getattr` would reach it (an exact `ParameterDict`, the
+class's own `__getattr__` and the default lookup, the name a parameter, on
+neither the instance nor the class), `getattr` otherwise; switch
+`PYCIRCUIT_PARAM_DIRECT`, a pinned pair with the whole `ParameterDict`
+class.  `BSource` reads its function once a call.  Measured: the element
+cases -1.0..-3.3 % in instructions, -0.9..-1.4 % in time (12/12).
+Record: `doc/pss_log_260902.md`, "speed round 12, stage 4".
