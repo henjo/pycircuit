@@ -77,6 +77,7 @@ why the path is off where it is.  History: `doc/transient_history.md`,
 `_tran_radau_tc.py`.
 """
 import ctypes
+import itertools
 import math
 import os
 
@@ -85,6 +86,9 @@ import numpy as np
 from pycircuit.circuit import _paths
 
 _PC = _paths.COUNTS
+#: (float64's dtype: a check by identity first, `==` where it is not the
+#: object -- speed round 11)
+_F64 = np.dtype(np.float64)
 _no = _paths.no
 
 ENABLED = os.environ.get('PYCIRCUIT_RADAU_TC', '1') != '0'
@@ -652,14 +656,20 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
             and type(reltol) is not np.float64) or type(reltol) is bool:
         return _no('radau_tc:tol')
     qn, Amat = ctx.qn, ctx.Amat
-    if not (type(qn) is np.ndarray and qn.dtype == np.float64 and qn.shape == (n,)
-            and type(Amat) is np.ndarray and Amat.dtype == np.float64 and Amat.shape == (3, 3)):
+    if not (type(qn) is np.ndarray and (qn.dtype is _F64 or qn.dtype == np.float64)
+            and qn.shape == (n,) and type(Amat) is np.ndarray
+            and (Amat.dtype is _F64 or Amat.dtype == np.float64) and Amat.shape == (3, 3)):
         return _no('radau_tc:ctx')
     if len(seed) != 3:
         return _no('radau_tc:seed')
-    if not all(type(y) is np.ndarray and y.dtype == np.float64 for y in seed):
+    y0, y1, y2 = seed
+    if not (type(y0) is np.ndarray and type(y1) is np.ndarray and type(y2) is np.ndarray
+            and (y0.dtype is _F64 or y0.dtype == np.float64)
+            and (y1.dtype is _F64 or y1.dtype == np.float64)
+            and (y2.dtype is _F64 or y2.dtype == np.float64)):
         seed = [np.array(y, dtype=float) for y in seed]
-    if any(y.shape != (n,) for y in seed):
+        y0, y1, y2 = seed
+    if y0.shape != (n,) or y1.shape != (n,) or y2.shape != (n,):
         return _no('radau_tc:seed')
     ## the two factorisations as `_FrozenTransform.solve` would use them
     lu, zs, prep = fz.lu, fz.zs, fz.prep
@@ -707,16 +717,21 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
         had = [key in memo for key in keys]
     except TypeError:
         return _no('radau_tc:u')
-    counts = {k: _PC.get(k, 0) for k in M['u_keys']}
+    u_keys = M['u_keys']
+    cvals = tuple(map(_PC.get, u_keys, itertools.repeat(0)))
     try:
         us = [src(tt) for tt in ctx.tstage]
     except Exception:                                          # noqa: BLE001
         ## (the call raises again in the Python loop, where it raised before)
-        RC._undo_source(memo, keys, had, counts)
+        RC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         return _no('radau_tc:u')
-    if not all(type(u) is np.ndarray and u.dtype == np.float64 and u.shape == (n,)
-               for u in us):
-        RC._undo_source(memo, keys, had, counts)
+    u0, u1, u2 = us
+    if not (type(u0) is np.ndarray and type(u1) is np.ndarray and type(u2) is np.ndarray
+            and (u0.dtype is _F64 or u0.dtype == np.float64)
+            and (u1.dtype is _F64 or u1.dtype == np.float64)
+            and (u2.dtype is _F64 or u2.dtype == np.float64)
+            and u0.shape == (n,) and u1.shape == (n,) and u2.shape == (n,)):
+        RC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         return _no('radau_tc:u')
     buf['u'][...] = us
     buf['seed'][...] = seed
@@ -775,7 +790,7 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
         zs.refactors += int(s.refactored)
         zs._fresh = prep
     if status != 1:
-        RC._undo_source(memo, keys, had, counts)
+        RC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         if status == 10:
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None

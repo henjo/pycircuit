@@ -8,7 +8,7 @@ from math import factorial
 import numpy as np
 import scipy.sparse as _sp
 
-from pycircuit.circuit import _paths
+from pycircuit.circuit import _limiting, _paths
 
 from . import _pss_inner
 from ._factored import _PeriodWalk
@@ -53,6 +53,87 @@ def _stage_block(Cs, Gs, h, A):
         return _paths.no('pss.block:fp')
     _paths.COUNTS['pss.block:served'] += 1
     return T.transpose(0, 2, 1, 3).reshape(s * m, s * m)
+
+
+#: the readers `_stage_reads` stands in for, as their modules define them,
+#: read once every one is (`_paths.genuine`)
+_READERS = {}
+
+
+def _readers():
+    """`(_C_at, _G_at, _sync_limit_at, _insert_refnode, _memo_get)` as
+    defined, or None: one is a stand-in (a caller's patch) -- read again
+    at the next call."""
+    g = _READERS.get('g')
+    if g is None:
+        from pycircuit.circuit import _tran_companion
+        IT, M = _pss_inner._InnerTransient, 'pycircuit.circuit.shooting._pss_inner'
+        pieces = ((IT._C_at, '_InnerTransient._C_at', M),
+                  (IT._G_at, '_InnerTransient._G_at', M),
+                  (IT._sync_limit_at, '_InnerTransient._sync_limit_at', M),
+                  (IT._insert_refnode, '_InnerTransient._insert_refnode', M),
+                  (_tran_companion._CompanionModel._memo_get, '_CompanionModel._memo_get',
+                   'pycircuit.circuit._tran_companion'))
+        if not all(_paths.genuine(*p) for p in pieces):
+            return None
+        g = _READERS['g'] = tuple(p[0] for p in pieces)
+    return g
+
+
+#: +0.0's bytes: a full stage whose reference entry holds them is the state
+#: `_insert_refnode` rebuilds from the reduced stage, to the byte
+_PLUS_ZERO = np.float64(0.0).tobytes()
+
+
+def _stage_reads(walks, Yf):
+    """The coupled stage step's ``C(Y_i)`` and ``G(Y_i)``, reduced, as
+    `_C_at` and `_G_at` read them at the reduced stages -- read once a
+    stage (speed round 11): one lookup of the step's device memo at the
+    full stage, each matrix reduced as the readers reduce it, the limit
+    sync counted as skipped where `_G_at`'s would skip.  Where the readers
+    are their modules' own, nothing keeps limiting state (the sync skips),
+    no junction takes `G` through PCNR, each full stage's reference entry
+    is +0.0 (so the readers' key) and the memo holds both matrices at
+    every stage; else None (counted), and the readers run."""
+    g = _readers()
+    T, d = type(walks), walks.__dict__
+    if (g is None or (T._C_at, T._G_at, T._sync_limit_at, T._insert_refnode) != g[:4]
+            or '_C_at' in d or '_G_at' in d or '_sync_limit_at' in d
+            or '_insert_refnode' in d):
+        return _paths.no('pss.reads:patched')
+    if walks._pcnr_junctions():
+        return _paths.no('pss.reads:junctions')
+    tr = walks._transient()
+    td = tr.__dict__
+    if type(tr)._memo_get is not g[4] or '_memo_get' in td:
+        return _paths.no('pss.reads:patched')
+    ## (`_sync_limit_at`'s own test: it skips, and counts the skip, only
+    ## here -- anything it would make, the readers make)
+    if _limiting.CIRCUIT_LEVEL:
+        return _paths.no('pss.reads:limits')
+    lims = td.get('_stateful_lims')
+    if lims is None:
+        lims = _limiting.stateful_limiters(tr.cir)
+    if lims:
+        return _paths.no('pss.reads:limits')
+    iref = walks.irefnode
+    recs = []
+    for yf in Yf:
+        if (yf.ndim != 1 or not 0 <= iref < yf.shape[0]
+                or yf[iref:iref + 1].tobytes() != _PLUS_ZERO):
+            return _paths.no('pss.reads:state')
+        rec = tr._memo_get(yf)
+        if rec is None or 'C' not in rec or 'G' not in rec:
+            return _paths.no('pss.reads:memo')
+        recs.append(rec)
+    rr, tk = _pss_inner.remove_row_col, walks.toolkit
+    Cs = [np.asarray(rr((rec['C'],), iref, tk)[0]) for rec in recs]
+    Gs = []
+    for rec in recs:
+        _paths.COUNTS['pss.sync:skipped'] += 1
+        Gs.append(np.asarray(rr((rec['G'],), iref, tk)[0]))
+    _paths.COUNTS['pss.reads:served'] += 1
+    return Cs, Gs
 
 
 class _PeriodWalks(object):
@@ -494,9 +575,15 @@ class _PeriodWalks(object):
               for yf in Y]
         Cn = np.asarray(self._C_at(xn))
         m = Cn.shape[0]
-        if coupled:
-            Cs = [np.asarray(self._C_at(y)) for y in Ys]
-        Gs = [np.asarray(self._G_at(y)) for y in Ys]
+        ## (each stage's pair read once where the readers would read just
+        ## that: `_stage_reads`, speed round 11; None -- the readers)
+        CG = _stage_reads(self, Yf) if coupled and _pss_inner.SHOOT_TRIM else None
+        if CG is not None:
+            Cs, Gs = CG
+        else:
+            if coupled:
+                Cs = [np.asarray(self._C_at(y)) for y in Ys]
+            Gs = [np.asarray(self._G_at(y)) for y in Ys]
         if coupled:
             ## (in one pass where it serves: `_stage_block`, speed round 10,
             ## B3.4; None -- the loop)

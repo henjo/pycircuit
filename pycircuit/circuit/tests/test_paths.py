@@ -48,6 +48,7 @@ DECLINING = [
     (_tran_radau, '_RadauStages._radau_frozen'),
     (_tran_radau, '_RadauStages._stage_end_passes'),
     (_pss_walks, '_stage_block'),
+    (_pss_walks, '_stage_reads'),
     (_tran_radau_tc, 'solve'),
     (_tran_lte_c, 'max_error'),
     (_hdl_batch, 'Batch.run'),

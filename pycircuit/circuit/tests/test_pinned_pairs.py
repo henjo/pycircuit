@@ -304,6 +304,21 @@ PAIRS = {
         'reference': ['pycircuit.circuit.shooting._pss_walks:_PeriodWalks._stage_step'],
         'twin': ['pycircuit.circuit.shooting._pss_walks:_stage_block'],
     },
+    'the stage readers and their one read': {
+        'why': 'where the readers would read just that -- no junction, nothing keeping '
+               'limiting state (the sync skips), each full stage\'s reference entry +0.0 '
+               '(the state `_insert_refnode` rebuilds), the memo holding both matrices -- '
+               'each stage\'s `C` and `G` are the step\'s memo record at the full stage, '
+               'reduced by the readers\' own `remove_row_col`, the sync\'s skip counted '
+               'before each `G` as `_G_at` counts it',
+        'reference': ['pycircuit.circuit.shooting._pss_inner:_InnerTransient._C_at',
+                      'pycircuit.circuit.shooting._pss_inner:_InnerTransient._G_at',
+                      'pycircuit.circuit.shooting._pss_inner:_InnerTransient._sync_limit_at',
+                      'pycircuit.circuit.shooting._pss_inner:_InnerTransient._insert_refnode',
+                      'pycircuit.circuit._tran_companion:_CompanionModel._memo_get'],
+        'twin': ['pycircuit.circuit.shooting._pss_walks:_stage_reads',
+                 'pycircuit.circuit.shooting._pss_walks:_readers'],
+    },
     'numpy\'s solve and its kept LU': {
         'why': 'the kept LU is numpy\'s own call -- its OpenBLAS\'s `dgesv` on a '
                'Fortran copy, one right-hand side -- then `dgetrs` on its factors; '
@@ -368,8 +383,9 @@ RECORD = {
     "the stage paths' passes and the core's": ('8e4b7cf1fa24', 'a3ae0f6c8d98'),
     'the coupled stage Newton and its C': ('5f7c56901f9a', 'e9156eef9c41'),
     'the transform solve and its frozen form': ('945834192f2a', '76a16f4bcc14'),
-    'the transform Newton and its C': ('d7c24c3c7e7d', 'b599fff42385'),
-    'the stage block and its one pass': ('a177e4f1decf', '24be0c26211b'),
+    'the transform Newton and its C': ('d7c24c3c7e7d', '359ac763a410'),
+    'the stage block and its one pass': ('a013cd007e0c', '24be0c26211b'),
+    'the stage readers and their one read': ('c81f3df96666', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', 'd5e13aa3b107'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
 }

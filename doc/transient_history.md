@@ -4268,3 +4268,22 @@ through a cached index, the same entries bit for bit in a fresh array:
 ~7 k and ~3 k.  Past those sizes the slices stay.  Measured: the radau
 PSS of the PSP stage -4.9 % instructions and -1.8 % in time, the gear PSS
 -5.5 % and -1.0 %, the van der Pol PSS -4.7 % and -2.4 %.
+
+## `shooting/_pss_walks.py`, `_tran_radau_tc.py` -- the stage step reads each stage once; the transform solve's checks (2026-10-06, speed round 11)
+
+### `_stage_reads`, `_readers`; `solve`'s checks
+
+The shooting's coupled stage step reduced each of the step's stages and
+then read `C` and `G` there through `_C_at` and `_G_at`, each of which
+inserted the reference row back, looked the transient's device memo up
+and reduced the matrix again -- seven readers a sensitivity step, for
+matrices the step had just evaluated at those very states.  Where the
+readers would read exactly that (they are their modules' own, nothing
+keeps limiting state, no junction goes through PCNR, each full stage's
+reference entry is +0.0, the memo holds both), each stage is now looked
+up once at the full state and its two matrices reduced as the readers
+reduce them, the limit sync's skip counted as theirs; elsewhere the
+readers run.  The transform solve's array checks compare the float64
+dtype by identity first, and its snapshot of the source counters is a
+tuple.  Measured: the radau PSS of the PSP stage -2.3 % instructions
+and -1.3 % in time.

@@ -2,7 +2,9 @@
 no element keeps limiting state (`_InnerTransient._sync_limit_at`), the
 coupled stage system in one pass (`_pss_walks._stage_block`), the step's
 reduced `Jf`/`Geq`/`C` left to the walk that reads them (`_walk_lmm`), and
-the reference node inserted by `analysis.insert_row`.  Every PSS the same
+the reference node inserted by `analysis.insert_row`, and (speed round
+11) each stage's `C` and `G` read once (`_pss_walks._stage_reads`).  Every
+PSS the same
 -- waveform, monodromy, warnings -- with the trims off, under every stage
 method and gear; the one pass against the block loop on drawn and special
 blocks, its fall-back warning from the loop's own line; the sync made
@@ -199,3 +201,89 @@ def test_the_insertion_is_the_old_one(x, iref):
     old = tk.concatenate((x[:p.irefnode], tk.array([0.0]), x[p.irefnode:]))
     new = _pss_inner._InnerTransient._insert_refnode(p, x)
     assert new.dtype == old.dtype and new.tobytes() == old.tobytes() and new is not x
+
+
+## -- the stage reads (speed round 11) ---------------------------------------------------
+
+def _solved(build=_stage):
+    from pycircuit.circuit.shooting import PSS
+    p = PSS(build(), method='radau', reltol=1e-8)
+    p.solve(period=1e-6, timestep=1e-6 / 40, maxiterations=60)
+    return p
+
+
+def test_the_reads_are_the_readers(monkeypatch):
+    """In every coupled stage step of a radau PSS: each stage's `C` and `G`
+    as `_C_at` and `_G_at` read them at the reduced stage, bit for bit, and
+    the sync's skips counted as theirs are."""
+    real = _pss_walks._stage_reads
+    seen = []
+
+    def both(walks, Yf):
+        before = _paths.snapshot()
+        got = real(walks, Yf)
+        d_new = _paths.since(before)
+        if got is not None:
+            iref = walks.irefnode
+            Ys = [walks.toolkit.concatenate((y[:iref], y[iref + 1:])) for y in Yf]
+            before = _paths.snapshot()
+            Cs = [np.asarray(walks._C_at(y)) for y in Ys]
+            Gs = [np.asarray(walks._G_at(y)) for y in Ys]
+            d_old = _paths.since(before)
+            seen.append((all(a.dtype == b.dtype and a.shape == b.shape
+                             and a.tobytes() == b.tobytes()
+                             for a, b in zip(got[0] + got[1], Cs + Gs)),
+                         d_new.get('pss.sync:skipped'), d_old.get('pss.sync:skipped')))
+        return got
+    monkeypatch.setattr(_pss_walks, '_stage_reads', both)
+    _solved()
+    assert len(seen) >= 40 and all(x == (True, 3, 3) for x in seen), seen[:3]
+
+
+def test_the_reads_serve_a_radau_pss():
+    """The PSP stage's radau PSS: each coupled stage step's `C` and `G` read
+    once (`pss.reads:served`, one a sensitivity step).  (Apart from the
+    trims' comparison above: the reads need the step's memo, which the
+    other fast paths fill -- with those off, this fails and that compares.)"""
+    before = _paths.snapshot()
+    _solved()
+    d = _paths.since(before)
+    assert d.get('pss.reads:served', 0) >= 40, d
+
+
+def _declined(p, Yf):
+    before = _paths.snapshot()
+    assert _pss_walks._stage_reads(p, Yf) is None
+    return sorted(k for k in _paths.since(before) if k.startswith('pss.reads:'))
+
+
+def test_the_reads_decline_where_the_readers_read_otherwise(monkeypatch):
+    """A reader patched (on the instance, on the class), a junction (PCNR's
+    `G`), limiting state kept (a stateful limiter, the circuit level), a
+    full stage whose reference entry is not +0.0 (not the state the readers
+    rebuild), a stage the memo lacks: declined, counted -- the readers run."""
+    p = _solved()
+    iref = p.irefnode
+    Yf = [np.array(y, dtype=float) for y in p._transient().last_step.Y]
+    bad = [y.copy() for y in Yf]
+    bad[0][iref] = -0.0
+    assert _declined(p, bad) == ['pss.reads:state']
+    odd = [y + 1.0 for y in Yf]
+    for y in odd:
+        y[iref] = 0.0
+    assert _declined(p, odd) == ['pss.reads:memo']
+    with monkeypatch.context() as mp:
+        mp.setitem(p.__dict__, '_G_at', lambda x: None)
+        assert _declined(p, Yf) == ['pss.reads:patched']
+    with monkeypatch.context() as mp:
+        mp.setattr(type(p), '_C_at', lambda self, x: None)
+        assert _declined(p, Yf) == ['pss.reads:patched']
+    with monkeypatch.context() as mp:
+        mp.setitem(p.__dict__, '_pcnr_junctions_cache', [object()])
+        assert _declined(p, Yf) == ['pss.reads:junctions']
+    with monkeypatch.context() as mp:
+        mp.setattr(_limiting, 'CIRCUIT_LEVEL', True)
+        assert _declined(p, Yf) == ['pss.reads:limits']
+    with monkeypatch.context() as mp:
+        mp.setitem(p._transient().__dict__, '_stateful_lims', [object()])
+        assert _declined(p, Yf) == ['pss.reads:limits']
