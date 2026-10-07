@@ -375,6 +375,32 @@ class DC(Analysis):
         return GminAnchorNewton(solver_chain, node_rows, gmin=self.par.gmin,
                                 rung_solver=base_solver)
 
+    def unholdable(self, nodes):
+        """The nodes of `nodes` ({node: volts}) that cannot be held -- a
+        voltage source or an inductor holds them at DC, so a hold would
+        leave that branch's current undetermined (SPICE lets the source
+        win).  Their names."""
+        held = self._held(nodes)
+        if not held:
+            return []
+        with analysis_kind(self.epar, 'dc'):
+            red = _Held(self.cir.n, self.irefnode, held)
+            return self._source_held(held, red.full(red.reduce(np.zeros(self.cir.n))))
+
+    def _source_held(self, held, x):
+        """The held nodes (`held`: {index: volts}) whose branch current only
+        their own rows saw at `x`: nothing is left to fix it."""
+        J = np.asarray(self.cir.G(x, self.epar))
+        keep = [i for i in range(self.cir.n) if i != self.irefnode and i not in held]
+        Jr = J[np.ix_(keep, keep)]
+        nodes, out = len(self.cir.nodes), []
+        for k in np.flatnonzero(~Jr.any(axis=0)):
+            col = keep[k]
+            if col >= nodes:
+                out += [str(self.cir.nodes[r].name) for r in np.flatnonzero(J[:, col])
+                        if r in held and str(self.cir.nodes[r].name) not in out]
+        return out
+
     def _held(self, nodes):
         """`nodes` ({node or name: volts}) as {node index: volts}."""
         if not nodes:
@@ -400,20 +426,12 @@ class DC(Analysis):
         red = _Held(self.cir.n, self.irefnode, held)
         nodes = len(self.cir.nodes)
         x0 = np.asarray(x0, dtype=float)
-        ## A branch whose current only held rows saw has nothing left to
-        ## fix it: a voltage source or an inductor holds that node at DC.
-        _f, J = func(red.full(red.reduce(x0)))
-        J = np.asarray(J)
-        Jr = J[np.ix_(red.keep, red.keep)]
-        for k in np.flatnonzero(~Jr.any(axis=0)):
-            col = red.keep[k]
-            if col >= nodes:
-                by = [str(self.cir.nodes[r].name) for r in np.flatnonzero(J[:, col])
-                      if r in held]
-                raise ValueError(
-                    f'held node(s) {", ".join(by or ["?"])}: a voltage source or an '
-                    'inductor holds them at DC, so the hold leaves its current '
-                    'undetermined (SPICE lets the source win, through a 1e10 S pin)')
+        by = self._source_held(held, red.full(red.reduce(x0)))
+        if by:
+            raise ValueError(
+                f'held node(s) {", ".join(by)}: a voltage source or an inductor holds '
+                'them at DC, so the hold leaves its current undetermined (SPICE lets the '
+                'source win, through a 1e10 S pin)')
         pos = {int(i): k for k, i in enumerate(red.keep)}
         jrows = [(pos[ra], pos[rb]) for _i, _e, ra, rb in pcnr_junctions(self.cir)
                  if ra in pos and rb in pos]

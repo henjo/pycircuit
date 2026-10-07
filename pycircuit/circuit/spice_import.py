@@ -197,9 +197,11 @@ class Imported:
         with its values in full precision and SPICE's spelling, each
         device's model as mapped, the `.tran` and its UIC, `.ic`, the
         temperature and the options mapped, a `.print tran` of `probes`
-        (flat nodes; default every node).  Names are made ngspice's (an
-        element's starts with its kind; ``:`` becomes ``_``): returns the
-        map from each flat node to its name in the deck."""
+        (flat nodes, and ``('i', element)`` for a source's current; default
+        every node).  Names are made ngspice's (an element's starts with its
+        kind; ``:`` becomes ``_``): returns the map from each flat node to
+        its name in the deck, and from each current probe to its column in
+        ngspice's output (``name#branch``)."""
         nodes = _NameMap()
         lines, models = [f'* {self.netlist.title} -- flat, written by pycircuit', ''], {}
         names = _NameMap()
@@ -208,24 +210,27 @@ class Imported:
             return names(m.name if m.name.startswith(kind) and ':' not in m.name
                          else f'{kind}_{m.name}')
 
+        written = {}
         for m in self.elements:
             n = [nodes(x) for x in m.nodes]
             p = m.params
+            written[m.name] = name(m, {elements.R: 'r', elements.C: 'c', elements.L: 'l',
+                                       elements.CoupledInductors: 'k', elements.VCCS: 'g'}.get(
+                m.cls) or _SOURCE_CLASSES.get(m.cls) or _DEVICE_CLASSES[m.cls][0])
             if m.cls is elements.R:
-                lines.append(f'{name(m, "r")} {n[0]} {n[1]} {p["r"]!r}')
+                lines.append(f'{written[m.name]} {n[0]} {n[1]} {p["r"]!r}')
             elif m.cls in (elements.C, elements.L):
-                kind, key = ('c', 'c') if m.cls is elements.C else ('l', 'L')
+                key = 'c' if m.cls is elements.C else 'L'
                 ic = f' ic={p["ic"]!r}' if 'ic' in p else ''
-                lines.append(f'{name(m, kind)} {n[0]} {n[1]} {p[key]!r}{ic}')
+                lines.append(f'{written[m.name]} {n[0]} {n[1]} {p[key]!r}{ic}')
             elif m.cls is elements.CoupledInductors:
-                k = name(m, 'k')
+                k = written[m.name]
                 lines += [f'l{k}_1 {n[0]} {n[1]} {p["L1"]!r}', f'l{k}_2 {n[2]} {n[3]} {p["L2"]!r}',
                           f'{k} l{k}_1 l{k}_2 {p["K"]!r}']
             elif m.cls is elements.VCCS:
-                lines.append(f'{name(m, "g")} {n[2]} {n[3]} {n[0]} {n[1]} {p["gm"]!r}')
+                lines.append(f'{written[m.name]} {n[2]} {n[3]} {n[0]} {n[1]} {p["gm"]!r}')
             elif m.cls in _SOURCE_CLASSES:
-                lines.append(f'{name(m, _SOURCE_CLASSES[m.cls])} {n[0]} {n[1]} '
-                             + _source_spec(m.cls, p))
+                lines.append(f'{written[m.name]} {n[0]} {n[1]} ' + _source_spec(m.cls, p))
             elif m.cls in _DEVICE_CLASSES:
                 kind, mtype, table, inst = _DEVICE_CLASSES[m.cls]
                 card = {k: v for k, v in p.items() if k not in inst}
@@ -240,7 +245,7 @@ class Imported:
                 if key not in models:
                     models[key] = f'{kind}model{len(models) + 1}'
                 ip = ' '.join(f'{inst[k]}={v!r}' for k, v in p.items() if k in inst)
-                lines.append(f'{name(m, kind)} {" ".join(n)} {models[key]} {ip}'.rstrip())
+                lines.append(f'{written[m.name]} {" ".join(n)} {models[key]} {ip}'.rstrip())
             else:
                 raise SpiceImportError(f'{m.name}: no ngspice form for {m.cls.__name__}')
         lines.append('')
@@ -257,16 +262,25 @@ class Imported:
             lines.append(f'.temp {self.temp!r}')
         if 'reltol' in self.options:
             lines.append(f'.options reltol={self.options["reltol"]!r}')
-        if self.tran is not None:
-            shown = [n for n in (probes if probes is not None else list(nodes.names))
-                     if n != '0']
+        columns, shown = {}, []
+        for pr in (probes if probes is not None else list(nodes.names)):
+            if isinstance(pr, tuple):
+                if pr[1] not in written:
+                    raise SpiceImportError(f'no element {pr[1]} to print the current of')
+                columns[pr] = f'{written[pr[1]]}#branch'
+                shown.append(f'i({written[pr[1]]})')
+            elif pr != '0':
+                shown.append(f'v({nodes(pr)})')
+        if self.tran is not None and shown:
             lines.append('.print tran')
             for k in range(0, len(shown), 8):
-                lines.append('+ ' + ' '.join(f'v({nodes(n)})' for n in shown[k:k + 8]))
+                lines.append('+ ' + ' '.join(shown[k:k + 8]))
         lines.append('.end')
         with open(path, 'w') as fh:
             fh.write('\n'.join(lines) + '\n')
-        return dict(nodes.names)
+        out = dict(nodes.names)
+        out.update(columns)
+        return out
 
 
 class _NameMap:
@@ -386,7 +400,27 @@ class _Importer:
                                        + '\n  '.join(self.errors))
             self.out.report = self.errors + self.out.report
         self.out.circuit = self.build()
+        self.unholdable()
         return self.out
+
+    def unholdable(self):
+        """An `.ic` (without UIC) on a node a voltage source or an inductor
+        holds at DC has no effect in SPICE (the source wins): left out,
+        and said."""
+        tran = self.out.tran
+        if not self.out.ic or tran is None or tran['start'] != 'op':
+            return
+        from pycircuit.circuit.dcanalysis import DC
+        names = {str(n.name) for n in self.out.circuit.nodes}
+        ## (with strict=False a refused element can take a node with it)
+        ic = {n: v for n, v in self.out.ic.items() if n in names}
+        if not ic or 'gnd' not in names:
+            return
+        for node in DC(self.out.circuit, epar=self.out.epar()).unholdable(ic):
+            del self.out.ic[node]
+            self.note(self.net.ic_where, f'.ic v({node}): a voltage source or an inductor '
+                                         'holds the node at DC -- no effect, as in SPICE '
+                                         '(the source wins)')
 
     def build(self):
         cir = SubCircuit()

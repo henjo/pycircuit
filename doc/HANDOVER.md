@@ -293,6 +293,13 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   `pycircuit.circuit.spice_import.import_netlist(path)` (stage 2; the
   census of what imports and what each gap waits for is in
   `doc/transient_history.md`, "SPICE netlists read and imported").
+  Scoring them: `python benchmarks/spice_suite.py [deck ...] [--peers]`
+  (stage 4: each deck in its own process, Xyce's own metric against its
+  gold; `--peers` adds ngspice on the imported deck written back -- the
+  three-way check -- and Xyce's time on the original; the table and its
+  reading are in `doc/transient_history.md`, "the benchmark decks against
+  Xyce's gold").  `step_machinery`'s `spice_4049` reads fetched data and
+  is left out where it is not fetched (`DATA`).
 
 Suite: **3235 passed, 6 skipped, 3 xfailed** — **27 min as ONE run**.
 

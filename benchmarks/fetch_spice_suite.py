@@ -68,12 +68,16 @@ def _get(url, timeout=120):
 
 def _store(path, data):
     """`data` at `path`, atomically (a temporary file in the same directory
-    moved into place): a reader never sees a partial file."""
+    moved into place): a reader never sees a partial file.  The file takes
+    the umask's mode, as any file this user writes (`mkstemp` makes 0600)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.part-')
     try:
         with os.fdopen(fd, 'wb') as fh:
             fh.write(data)
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(tmp, 0o666 & ~umask)
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):

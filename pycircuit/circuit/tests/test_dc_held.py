@@ -56,6 +56,14 @@ def test_what_cannot_be_held_is_refused(pin, says):
         DC(_divider(), pin=pin).solve()
 
 
+def test_unholdable_names_the_nodes_a_source_holds():
+    """What the refusal above says, asked before a solve (the importer
+    leaves such an `.ic` out, as SPICE lets the source win)."""
+    dc = DC(_divider())
+    assert dc.unholdable({'top': 5.0, 'mid': 3.0}) == ['top']
+    assert dc.unholdable({'mid': 3.0}) == [] and dc.unholdable(None) == []
+
+
 def test_pcnr_with_held_nodes_is_refused():
     with pytest.raises(ValueError, match='with held nodes'):
         DC(_divider(), pcnr=True, nodeset={'mid': 1.0}).solve()

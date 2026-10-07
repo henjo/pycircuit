@@ -352,6 +352,21 @@ def _case_mos1_adaptive():
     return dt, None, _sha(res.x), _stats(tr), paths
 
 
+def _case_spice_4049():
+    """A circuit read from a SPICE netlist (the SPICE benchmark plan's stage
+    4, 2026-10-07): the 4049 oscillator of Xyce's regression suite -- two
+    CD4049UB inverters, four MOS level 1 -- imported, from its NOOP start,
+    400 fixed gear steps of 50 ns.  Its deck is fetched benchmark data
+    (`DATA`): where it is not, the case is left out."""
+    from pycircuit._testing import benchdata
+    from pycircuit.circuit.spice_import import import_netlist
+    imp = import_netlist(benchdata.spice_data(DATA['spice_4049'][0]))
+    tr, _kw = imp.transient(integrator=Gear2Integrator())
+    dt, res, paths = _timed(lambda: tr.solve(tend=400 * 5e-8, timestep=5e-8,
+                                             fixed_timestep=True))
+    return dt, None, _sha(res.x), _stats(tr), paths
+
+
 def _case_resolve():
     """One transient solved again and again, as a sweep or a Monte Carlo
     loop solves it (2026-10-06): the 20-MosLevel1 chain, 16 solves of one
@@ -384,13 +399,33 @@ ANALYSES = {
     'vdp_pss_hdl': lambda: _case_vdp_pss(hdl=True),
     'pnoise': _case_pnoise,
     'ppv': _case_ppv,
+    'spice_4049': _case_spice_4049,
 }
 CASES = CASES + tuple(ANALYSES)
 #: what a case needs of the package it runs against, where a tree may lack
 #: it -- a parent from before it: `(module, attribute)`.  A comparison
 #: leaves such a case out where either tree lacks it, and says so (this
 #: script runs in both trees, the package is each tree's own)
-NEEDS = {'vdp_pss_hdl': ('pycircuit.circuit.elements_hdl', 'BSourceHdl')}
+NEEDS = {'vdp_pss_hdl': ('pycircuit.circuit.elements_hdl', 'BSourceHdl'),
+         'spice_4049': ('pycircuit.circuit.spice_import', 'import_netlist')}
+#: the fetched benchmark data a case reads (`pycircuit._testing.benchdata`,
+#: `benchmarks/fetch_spice_suite.py`): where a file is not fetched the case
+#: is left out, with a line saying so -- a comparison and a plain run alike,
+#: so missing data never aborts either
+DATA = {'spice_4049': ('Netlists/4049OSC/4049osc.cir',)}
+
+
+def _has_data(case):
+    """Whether `case`'s benchmark data (`DATA`) is fetched; says so if not."""
+    paths = DATA.get(case, ())
+    if not paths:
+        return True
+    from pycircuit._testing import benchdata
+    missing = [p for p in paths if benchdata.spice_data(p) is None]
+    if missing:
+        print(f'{case}: left out -- benchmark data not fetched ({", ".join(missing)}; '
+              'benchmarks/fetch_spice_suite.py)', flush=True)
+    return not missing
 
 
 def _tree_has(tree_dir, module, attr):
@@ -402,11 +437,29 @@ def _tree_has(tree_dir, module, attr):
                           capture_output=True, check=False).returncode == 0
 
 
+def _script_has(tree_dir, case):
+    """Whether the tree's own copy of this script defines `case` (a parent
+    from before the case would fail on its name)."""
+    path = os.path.join(tree_dir, 'benchmarks', 'step_machinery.py')
+    try:
+        with open(path) as fh:
+            return f"'{case}'" in fh.read()
+    except OSError:
+        return False
+
+
 def _runnable(cases, *tree_dirs):
-    """`cases` but those whose need (`NEEDS`) one of the trees lacks --
-    each left out with a line saying where."""
+    """`cases` but those whose need (`NEEDS`) one of the trees lacks, whose
+    data is not fetched (`DATA`), or which a tree's script does not define
+    -- each left out with a line saying why."""
     keep = []
     for k in cases:
+        if not _has_data(k):
+            continue
+        lack = [d for d in tree_dirs if not _script_has(d, k)]
+        if lack:
+            print(f'{k}: left out -- not a case of {", ".join(lack)}', flush=True)
+            continue
         need = NEEDS.get(k)
         lack = [d for d in tree_dirs if need is not None and not _tree_has(d, *need)]
         if lack:
@@ -1052,6 +1105,7 @@ def main(argv):
             compare(cmp_dir, cases, rounds or (6 if check else 5), child=child, check=check,
                     budget=budget, plant=plant)
         return
+    cases = [k for k in cases if _has_data(k)]
     got = measure(cases, rounds or 5)
     for k in cases:
         r = got[k]

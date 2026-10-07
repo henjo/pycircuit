@@ -163,6 +163,11 @@ def test_the_fetcher_stores_only_the_manifests_bytes(monkeypatch, tmp_path, caps
             assert fh.read() == data[f['path']]
     left = [fn for _d, _s, fns in os.walk(tmp_path) for fn in fns if fn.startswith('.part-')]
     assert not left, left
+    umask = os.umask(0)
+    os.umask(umask)
+    for f in picked:
+        mode = os.stat(benchdata.local_path(f['path'], f['source'])).st_mode & 0o777
+        assert mode == 0o666 & ~umask, oct(mode)          # not mkstemp's 0600
     asked.clear()
     assert fs.fetch() == 0 and not asked                   # all cached: nothing fetched
     p = benchdata.local_path(picked[0]['path'], picked[0]['source'])

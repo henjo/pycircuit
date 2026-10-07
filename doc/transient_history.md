@@ -4466,3 +4466,77 @@ node held at 1 V decays from exactly 1 V as exp(-t/RC); a latch's
 nodeset picks each of its states where the plain solve finds the
 metastable point.  JAXTransient keeps refusing `ic` without `uic`
 (recorded in `doc/backend_parity_260821.md`, P12).
+
+
+## `utilities/spiceoutput.py`, `benchmarks/spice_suite.py` -- the benchmark decks against Xyce's gold, by Xyce's own metric (2026-10-07, the SPICE benchmark plan's stage 4)
+
+### `read_prn`, `read_ngspice_print`, `read_ibm_output`, `xyce_verify`, `comp_tolerances`, `crossing_times`; `spice_suite.run_one`; `step_machinery` `spice_4049`, `DATA`
+
+Readers for Xyce's `.prn` (the harmonic balance's HB.TD/FD too),
+ngspice's batch `.print` and the IBM grids' reference; `xyce_verify`
+transcribed from Xyce's regression script (`TestScripts/xyce_verify.pl`:
+`replaceZeros`, `interpolateTimes`, `errNorm` -- the gold interpolated at
+the test's times, the RMS over time of (gold - test) / (reltol |gold| +
+abstol), in units of reltol: 1 or below passes; a `*COMP` line's
+tolerances matched by exact column name, so the 4049 deck's `*COMP V(8)`
+matches none of its `{V(8)+4}` columns).  `benchmarks/spice_suite.py`
+runs each importable deck in its own process (read, import, solve wall
+times, steps, rejections, Newton iterations, force-accepts, peak RSS, the
+metric per printed column) and with `--peers` the three-way check: the
+imported circuit written for ngspice (`write_ngspice`, a source's current
+printed as `i(name)`, read back as `name#branch`) and scored against the
+gold too -- both away from the gold is a model difference, only ours a
+simulator one -- or, without a gold, ours against ngspice (an absolute
+floor of 1 % of full scale: those decks print logic levels at 0 V with no
+offset); Xyce timed on the original deck.  `step_machinery`'s
+`spice_4049` (400 fixed gear steps of the imported 4049 oscillator) and
+a `DATA` map that leaves a case out where its data is not fetched.  The
+fetcher's files take the umask's mode (`mkstemp`'s 0600 before).
+
+**The first gold comparison passes**: the 4049 oscillator, imported and
+run from its NOOP start, scores 0.358 / 0.385 / 0.366 / 0.359 on its four
+columns (a test; overlap capacitances removed it scores ~40), its rising
+edges within 0.01 us of the gold's over a ~197 us period -- so Xyce adds
+no Meyer capacitance from its default TOX on this card.
+
+
+**The suite, 2026-10-07** (`spice_suite.py --peers`; wall seconds, the
+quiet box; metric = the worst printed column's, 1 or below passes; ngspice
+runs OUR written deck, so where it passes and we do not, the mapping is
+right and the difference is our simulation):
+
+| deck | unknowns | ours | ngspice | Xyce | ours vs gold | ngspice vs gold |
+|---|---|---|---|---|---|---|
+| 4049osc | 15 | 0.33 | 0.07 | 0.17 | **0.385** | 0.406 |
+| schmitecl (bipolar) | 19 | 0.06 | 0.01 | 0.03 | **0.108** | 1.54 |
+| rca (bipolar) | 33 | 0.07 | 0.01 | 0.08 | 2.76 | 0.588 |
+| toronto (MOS3) | 153 | 0.57 | 0.04 | 0.06 | 1.93 | 0.242 |
+| slowlatch (MOS3) | 46 | 0.09 | 0.02 | 0.04 | 138 | 0.494 |
+| gm1 (MOS3) | 130 | 0.66 | 0.03 | 0.08 | 39.7 | 0.511 |
+| gm2 (MOS3) | 22 | 0.10 | 0.01 | 0.05 | 20.3 | 0.612 |
+| gm3 (MOS3) | 80 | 0.52 | 0.01 | 0.08 | 39.6 | 0.651 |
+| mike2 (MOS3) | 41 | 0.08 | 0.01 | 0.05 | 32.7 | 0.681 |
+| todd3 (MOS3) | 46 | 0.08 | 0.01 | 0.04 | 4.36 | 3.18 |
+| rich3 (MOS3) | 269 | 9.47 | 0.30 | fails | 169 | 95.3 |
+| gm17 (MOS3) | 149 | 0.38 | 0.01 | 0.05 | 3.2e9 | 12.9 |
+| arom (MOS3, no gold) | 295 | 10.34 | 0.34 | fails | 49.7 vs ngspice | |
+| gm19 (MOS3, no gold) | 429 | 35.59 | 0.54 | fails | 29.8 vs ngspice | |
+| jge (MOS3, no gold) | 244 | 32.66 | 1.44 | fails | 49.9 vs ngspice | |
+
+Read: every MOS level 3 deck where ngspice passes on our parameters fails
+on our simulation -- the cards give TOX, so SPICE and Xyce add Meyer's
+gate capacitance, which our level 3 has not (the plan's stage 6; the
+force-accepts and rejections of gm19 and jge, gate nodes without a
+capacitance, are of a piece with it) -- a hypothesis stage 6 tests, not a
+finding.  rca's bipolar (2.76 against ngspice's 0.588) is the plan's
+stage 7's to explain.  todd3, rich3 and gm17 fail for ngspice too (Xyce's
+level 3 is not SPICE's; gm17's `V(5)` sits at 0-0.17 V with no offset, so
+any difference is a large relative one).  Xyce itself fails on rich3 and
+the three decks without a gold.  Speed: 2-70x ngspice's wall time on these
+small decks -- the plan's stage 10 sizes why.
+
+Found by running the decks and fixed here: an `.ic` on a node a voltage
+source holds (gm17) is left out with a note, as SPICE lets the source win
+(`DC.unholdable`; a direct `DC(pin=...)` still refuses it); a Xyce header
+keeps a `{...}` column with blanks whole; a TSTOP read as SPICE reads it
+can pass the gold's printed one by an ulp (clamped within 1e-12).

@@ -123,11 +123,14 @@ def test_the_ngspice_deck_written_back_reads_as_the_same_circuit(tmp_path):
     nodes, a PMOS threshold's sign, `.tran` and its print."""
     imp = _import(tmp_path, DECK)
     path = str(tmp_path / 'w.cir')
-    names = imp.write_ngspice(path, probes=['out', 'x1:vdd'])
+    names = imp.write_ngspice(path, probes=['out', 'x1:vdd', ('i', 'vcc'), ('i', 'x1:vdd')])
     assert names['x1:vdd'] == 'x1_vdd' and names['0'] == '0'
+    ## (a source's current: printed as i(name), ngspice's column name#branch)
+    assert names[('i', 'vcc')] == 'vcc#branch' and names[('i', 'x1:vdd')] == 'v_x1_vdd#branch'
     with open(path) as fh:
         text = fh.read()
-    assert '.print tran\n+ v(out) v(x1_vdd)\n' in text and text.endswith('.end\n')
+    assert ('.print tran\n+ v(out) v(x1_vdd) i(vcc) i(v_x1_vdd)\n' in text
+            and text.endswith('.end\n'))
     again = import_netlist(path, dialect='ngspice')
     assert len(again.elements) == len(imp.elements) == 15
     for a, b in zip(imp.elements, again.elements, strict=True):
@@ -276,6 +279,22 @@ def test_an_ic_without_uic_holds_the_operating_point(tmp_path):
     assert res.v('a', gnd).y[0] == 1.0
 
 
+def test_an_ic_a_source_holds_is_left_out_as_spice_does(tmp_path):
+    """SPICE lets the source win (CircuitSim90's gm17 holds such a node):
+    the `.ic` left out and said, the others kept."""
+    imp = _import(tmp_path, """
+        title
+        V1 s 0 5
+        R1 s a 1k
+        C1 a 0 1p
+        .ic v(s)=1 v(a)=2
+        .tran 1n 10n
+        """)
+    assert imp.ic == {'a': 2.0}
+    assert any('.ic v(s): a voltage source or an inductor holds the node' in r
+               for r in imp.report)
+
+
 def test_the_transient_follows_the_netlist(tmp_path):
     """TMAX, NOOP (zeros), the options' method and reltol, the
     temperature; an override replaces any."""
@@ -389,7 +408,7 @@ def test_each_fetched_deck_imports_or_names_exactly_its_known_gaps(path):
     refused = [r for r in imp.report
                if not any(s in r for s in ('not mapped', 'not read', 'ignored', 'a 0 V source',
                                            'left unconnected', 'starts at 0',
-                                           'ignored under UIC'))]
+                                           'ignored under UIC', 'no effect'))]
     gaps = CENSUS_GAPS.get(os.path.basename(path), ())
     for r in refused:
         assert any(g in r for g in gaps), (path, r)
