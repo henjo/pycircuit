@@ -1,0 +1,525 @@
+{
+ "files": [
+  {
+   "path": "Netlists/4049OSC/4049osc.cir",
+   "sha256": "17213048661e53c9922a071ebb1aa9f55f672e77ed91cf696cbc4588be973923",
+   "size": 978,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/BJT/vreg.cir",
+   "sha256": "37e51383099449f21e699332828708241cb233bb59d95721d61cc11d9672bbeb",
+   "size": 747,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/ab_ac.cir",
+   "sha256": "4629e860befe1b77ab22ec34ac1d9f04c3b0d763a9d1d5ab3daeefa63998bd4a",
+   "size": 3608,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/ab_integ.cir",
+   "sha256": "0b26c63471ad65f26d60b29461161589a6a8ffaf7975533fdc912aff17662e32",
+   "size": 4002,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/ab_opamp.cir",
+   "sha256": "22254a57e4e976712960fd5c21bbbbf2f72e41e28301d567362ac9c95a75352e",
+   "size": 3745,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/cram.cir",
+   "sha256": "60e91211c78a3becfe8f3765872af9f715e2db5e79bf94268e69729356636d0e",
+   "size": 5502,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/e1480.cir",
+   "sha256": "ba099fbc45a07ca21e33d5e2be8faabd1e37ade40f6e8e8be912843b3ea80577",
+   "size": 8138,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/g1310.cir",
+   "sha256": "86a52428bb1c6244b3942ddc2de5eba3254a323109336db8aab26ff8b04c08ba",
+   "size": 1794,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/gm6.cir",
+   "sha256": "e0a5f86b6d1daebb364f3a156d2d2f411c9383bd61dbaca33bc2fae2692b3e70",
+   "size": 1207,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/hussamp.cir",
+   "sha256": "262e04cd3954f5d1e87f9a6c7158c8c706cfd0763c6b8def5359c6ec528d4cf4",
+   "size": 1781,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/mosrect.cir",
+   "sha256": "edad518d693e1771f5a70bedaa4a23ad88e1cca0a21b9bf37f978da7c91ce801",
+   "size": 1213,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/mux8.cir",
+   "sha256": "68e478bafb2daf900300d319c665e63e9482afa6766573fee913c8a033f1e2bc",
+   "size": 15346,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/nand.cir",
+   "sha256": "14ae4051e24d8f2077d2b723cc66a326e922d419accb3bdc3065f55839e86791",
+   "size": 3175,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/pump.cir",
+   "sha256": "142a0df7fc79780e9eb85491b0307224a5e0fa745e15dffb3c27bb6f38bb668f",
+   "size": 2295,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/reg0.cir",
+   "sha256": "462e2c81437c1cb084882cefa4d78de936a987e9d8d5fa3485c99123804f98b8",
+   "size": 1055,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/ring.cir",
+   "sha256": "42c2b03804914eeadade29b6bbaea94d9bae575a2eba165e3a8d4a806ae23475",
+   "size": 3781,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/schmitfast.cir",
+   "sha256": "cc2034ae509345822e9a83835d8d1d7854b112fa86a512a9bfbd887f8c6afd8c",
+   "size": 2035,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/schmitslow.cir",
+   "sha256": "7ebd52837e56e13a4bfa0718dba5aa3df93a7a4019cd7c5c92cfbf4be8420798",
+   "size": 2033,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/slowlatch.cir",
+   "sha256": "2ff69abefa7df895e24efadfa4822b39d7ce19cc32c490a6e6bcc58b22eb8a38",
+   "size": 2172,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2/toronto.cir",
+   "sha256": "efa07962b99021c701d850797b8fca0dea204a722b8ef02ea79cfeac0ae86018",
+   "size": 4689,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/README",
+   "sha256": "3bc310f34de4f4d6d47f0e33330bf076008701fe215217478023ff3fb66faa65",
+   "size": 4180,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/add20.cir",
+   "sha256": "197b34fcac1376f5351f3c3c8508b30cec83f0ba45540c233aac8b9856340bc1",
+   "size": 206326,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/add32.cir",
+   "sha256": "120cbd0023c06993224b862be199f095226ce4a0efa587dc8c46cebd21181138",
+   "size": 82193,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/chip2.cir",
+   "sha256": "565e93a8c658a9b46e33bacf1a01794b79285bfe295998db8260fa5494c150fd",
+   "size": 189732,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/dac.cir",
+   "sha256": "daff3bedde91fafd24d5a4123738d7845cd2f067d1c918f73dc07f8d9c3ab637",
+   "size": 60270,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/fadd32.cir",
+   "sha256": "e0056c1c0e9f7c9c1fd917affec058d32001c6172251359068506b165dc5a12d",
+   "size": 4164,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/mem_plus.cir",
+   "sha256": "8018590341994b176a192a86b448166bd33d1d3b1d7d733af8ffffe355d2dbed",
+   "size": 1210790,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/pc_frame.cir",
+   "sha256": "0a17bad85607d9dadd55057c004fc2cb4508d4402b524fd553dfa946dc29c250",
+   "size": 942159,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/pchip.cir",
+   "sha256": "6abe8ffc3bb0e664b465bbb0ebc9d202265df9eb39608140bc976f28202bcb21",
+   "size": 106510,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/ram2k.cir",
+   "sha256": "67ccac70d1c253d20bdeea6f15877d4222de43cc102a377c9990cd1e94a23818",
+   "size": 1623478,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/smult20.cir",
+   "sha256": "318f1cf6c7a49b76e7f72f626fb2b0bfc802fdc693ac7704e4fee36f4984f199",
+   "size": 2259694,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/sqrt.cir",
+   "sha256": "efec05bb614eedd46c39b85f3e8430e3c0955230909ab2adb2542667306ee791",
+   "size": 22996,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/sram.cir",
+   "sha256": "f7199d0ba58e8b3563f9910511b7a1954f86ea647e276bb517eb49acdcf1fdd4",
+   "size": 151751,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/voter.cir",
+   "sha256": "84fd6e849405ea15b18c8e2554e31a31a6d85de5bd76d0fa7709bc6dc26e7f8f",
+   "size": 193933,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/voter.cir.options",
+   "sha256": "3b8051c6e5ee408e470a5979293c0e7fdcaf180564537ee6c4758a045af2951c",
+   "size": 16,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS2_LARGE/voter25.cir",
+   "sha256": "ecbafc22d9a1e2d1d9b7e7b3b7450aea94a4936c8e0ef51ea0e977c39669bfa3",
+   "size": 8802,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS3/arom.cir",
+   "sha256": "4db593d3133a5929e7efdcb26921d3fce15e6c6c17e8bcef2fa2a08c4f7d062c",
+   "size": 8162,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS3/gm1.cir",
+   "sha256": "417d4fe8629398295bb317ad236781f36b34eebb58e74c7b63757263f55c338c",
+   "size": 2933,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS3/gm17.cir",
+   "sha256": "43fc842bd3c7bfbbe285a5d83b4eb08fa6acc1a3c8a5da9ae62c605bd32324a9",
+   "size": 3360,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS3/gm19.cir",
+   "sha256": "0b94a01a96dd0ae19e93fe78b5fc7397411815d350ee13ee118c49548bb62c08",
+   "size": 7040,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS3/gm2.cir",
+   "sha256": "ad4261e8c85a1f0376b24c0bad6f42fa4046a0fa669b84853236ef558fa417fc",
+   "size": 1561,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS3/gm3.cir",
+   "sha256": "90ee65bd24818d09d008de93e92f5a398f3422ae2a4a663e5889834e2c1fe071",
+   "size": 2255,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS3/jge.cir",
+   "sha256": "c0da4a46792a27496530ea1a57b1253dd980d17380db58ffd6e6434f0156babf",
+   "size": 91710,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS3/mike2.cir",
+   "sha256": "99cf3671f37b401548a991f679ceaeb6ab502c97ac7c98de81b5adbddb4df013",
+   "size": 2361,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS3/rich3.cir",
+   "sha256": "5cf5ebcafb990907419d4844249ed6c8a53e47be8faf06f8e16fd08a5ef353ae",
+   "size": 7286,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/CircuitSim90/MOS3/todd3.cir",
+   "sha256": "adecd1aec7ea465065ee828bea3db6a4f675a9e8abf0e8931137593bb338b57f",
+   "size": 2187,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/HB/common_emitter_hb.cir",
+   "sha256": "b9d9ad78888a71758c065bd269740626455ecb296695c8e6b4da510527b3497d",
+   "size": 970,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/HB/gilbert_cell_hb.cir",
+   "sha256": "288484167172ea873386ab01f424ae87f0a169a487fc8d619dbe5c85fd1732ff",
+   "size": 2582,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/MCNC_BJT_LATCH/latch.cir",
+   "sha256": "41622f75dcc9297915a1b0614ad27cfe19850cb4e19817f02a8914644e4d6382",
+   "size": 759,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/MCNC_BJT_OPAMPAL/opampal.cir",
+   "sha256": "690904bc6bc2fc65367e1b13eed7625b647fa8d8131dff71687c558da2a9ca8b",
+   "size": 3720,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/MCNC_BJT_RCA/rca.cir",
+   "sha256": "a90dde190b244726972cfafabadeab0531357008dc0b3eda7d9c6a7ee42e11a3",
+   "size": 588,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "Netlists/MCNC_BJT_SCHMITECL/schmitecl.cir_NORUN",
+   "sha256": "7987e63a33a822bd5fa9fcf0023463b5ac5e792adfa3502b3b3fcd147425d88f",
+   "size": 489,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/4049OSC/4049osc.cir.prn",
+   "sha256": "ae0b5e030d1d6de78c00e620758b3694ba5f1ecd97b906e441c98aed042fd3a1",
+   "size": 1165860,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/ab_integ.cir.prn",
+   "sha256": "252481da2291b92db3b5d8177ff18b1a8de092ab53b1edf412d4f806c1473fba",
+   "size": 12340,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/e1480.cir.prn",
+   "sha256": "5471f537a183cb1ea21330afebcc60ddd671497db4dee432d5e401ac36e500e2",
+   "size": 7879,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/g1310.cir.prn",
+   "sha256": "271a70649c53572ea9c1c13e542af6bed2756620de9505e807975e2e02ad36a2",
+   "size": 131405,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/gm6.cir.prn",
+   "sha256": "c58191401bd0713296405555848655933d422e1263a57dc6b5d9d51a3c2e2493",
+   "size": 56718,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/hussamp.cir.prn",
+   "sha256": "582646b3063ee7abfbc3b4f8c81baf4d4d842ee9e2f6c6e8e98e82e59d2fa965",
+   "size": 5300,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/mosrect.cir.prn",
+   "sha256": "6a26cf4ed23bf4ce4815068b7a2607bfed6c9479002edb17bd91ad5ba9bfc2be",
+   "size": 23661,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/mux8.cir.prn",
+   "sha256": "24d10295da3967be7011a57242f56b75dfca50457918cf8fada721c39476e530",
+   "size": 6349775,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/nand.cir.prn",
+   "sha256": "6b7ebc549480a8367ac9412ae8c3dc6ff16faedc9bd2731340fcfa46ec692148",
+   "size": 59542,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/ring.cir.prn",
+   "sha256": "340f397905d8908866cc2365d6805e72629af3fdba6d866c4c983acb98ca0bab",
+   "size": 184702,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/slowlatch.cir.prn",
+   "sha256": "f11be5b8d9aa3420b22f1802c5107602de21c81bba3f0505f674af4fc8f85f51",
+   "size": 75613,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2/toronto.cir.prn",
+   "sha256": "7e10403d448f32e7689409f76d73a9cc8eb690f63c1fbaf22967a11039467aa1",
+   "size": 134807,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS2_LARGE/mem_plus.cir.prn",
+   "sha256": "402cedcb32b88ed6a275f33ec08f0ca8c6fe16324be1130df2bee16c99fd75b8",
+   "size": 35985,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS3/gm1.cir.prn",
+   "sha256": "9b5a31d87f31956013a95d49654dadcbeca16fa58c38dd0d5a656131deb61bfc",
+   "size": 261374,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS3/gm17.cir.prn",
+   "sha256": "1d18ce1c7d33294d5a159683dc7ac1e85223da621249fbc67b2c9ef918e9a6d9",
+   "size": 8577,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS3/gm2.cir.prn",
+   "sha256": "9d7b416874550bcc5db18a0ac5fa60fa6a8ce596c17042fc492591c1c564e665",
+   "size": 25221,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS3/gm3.cir.prn",
+   "sha256": "cf317e80c50686478bb77a125ac103658f10e2a2f9bbb30ef4b52850da5e0593",
+   "size": 54637,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS3/mike2.cir.prn",
+   "sha256": "4c099ef4b30e1592981e6e795b43f63f370d788fc7c24eaf9aae1af26571529d",
+   "size": 205049,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS3/rich3.cir.prn",
+   "sha256": "fd97db11ac15ff96131b23642e532325056800cad3613ad9329d07e1480ef4fd",
+   "size": 813290,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/CircuitSim90/MOS3/todd3.cir.prn",
+   "sha256": "a762d858f233850ed46c93bad6dbb0cb5ac1830a00a613c0f5958095ce00a5c3",
+   "size": 21564,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/HB/common_emitter_hb.cir.HB.FD.prn",
+   "sha256": "3ee7d08b8cedf98834bb262c371b23ba0ba2c68b93ab9b8e821317281b248a47",
+   "size": 9819,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/HB/common_emitter_hb.cir.HB.TD.prn",
+   "sha256": "fc8577278c1ed4f090504a8aec469e65f30ebfc967c262da7315b1bc0986bd88",
+   "size": 6147,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/HB/gilbert_cell_hb.cir.HB.FD.prn",
+   "sha256": "6a5349825545fbb9f066bc855894d9ded09dfd3f1f1bd40cb12c72f5619f8570",
+   "size": 5571,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/HB/gilbert_cell_hb.cir.HB.TD.prn",
+   "sha256": "26b25ded7d36f6741dd514451c4a476637ae3eb831f56720d4ccb58ac3af8128",
+   "size": 3303,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/HB/gilbert_cell_hb.cir.hb_ic.prn",
+   "sha256": "b9431d091a77a8d7625348eafd4ced468d01a807295e716a5822ea57a622e626",
+   "size": 6657,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/HB/gilbert_cell_hb.cir.startup.prn",
+   "sha256": "de251ad037e4bca487a83b8c316d1e0b835a4d949b72ea7f0332f03401e42956",
+   "size": 5877,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/MCNC_BJT_LATCH/latch.cir.prn",
+   "sha256": "1006099a38ba3d1aa40a15dad9198b0e82ad758f8b9494dca02dfa25019ffa96",
+   "size": 125037,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/MCNC_BJT_OPAMPAL/opampal.cir.prn",
+   "sha256": "49b0dead6873d340936b58def3c14723f568b9eea5f26e43f38cd3d7057fc3a8",
+   "size": 103610,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/MCNC_BJT_RCA/rca.cir.prn",
+   "sha256": "46a64e76f776d92eda544572d0e314e62d956e4552423dd9766aa2b7c79069f2",
+   "size": 223012,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "OutputData/MCNC_BJT_SCHMITECL/schmitecl.cir.prn",
+   "sha256": "5264553de1d07b50e501f76fd644ef45ed335ac880e98e051c8975c006036546",
+   "size": 9028,
+   "source": "xyce_regression"
+  },
+  {
+   "path": "ibmpg1t.spice.bz2",
+   "sha256": "b07ff53c59c288fe4da9a62e9e0216676e334dec12ed2f6ebb46946e2b4436b5",
+   "size": 467293,
+   "source": "ibm_pg"
+  },
+  {
+   "path": "ibmpg1t.output.bz2",
+   "sha256": "77035fd8a6650262e2ecbfbdd14cf1bde437694a1944a11066e7cb6e30d8e7fd",
+   "size": 91823,
+   "source": "ibm_pg"
+  }
+ ],
+ "format": 1,
+ "sources": {
+  "ibm_pg": {
+   "home": "https://web.ece.ucsb.edu/~lip/PGBenchmarks/ibmpgbench.html",
+   "terms": "no terms stated: fetched into the cache, never vendored",
+   "url": "https://web.ece.ucsb.edu/~lip/PGBenchmarks/ibmpg/{path}",
+   "version": "2020-03",
+   "what": "IBM power grid benchmarks (S. Nassif), the transient set"
+  },
+  "xyce_regression": {
+   "home": "https://github.com/Xyce/Xyce_Regression",
+   "terms": "no license declared: fetched into the cache, never vendored",
+   "url": "https://raw.githubusercontent.com/Xyce/Xyce_Regression/{version}/{path}",
+   "version": "7bb7e98f0ed3a81a7d1cf1d10b68592107ed40b2",
+   "what": "Sandia's Xyce regression suite: CircuitSim90 / MCNC circuits and Xyce gold outputs"
+  }
+ }
+}

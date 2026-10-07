@@ -274,6 +274,22 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   enables `perf` with `python -X perf`; `cpupower frequency-set -g
   performance` for a benchmark session.  The paired ratios are built to be
   robust without them.
+- **The public SPICE benchmark circuits** (2026-10-07, the SPICE benchmark
+  plan's stage 0): `python benchmarks/fetch_spice_suite.py` fetches the
+  CircuitSim90 and MCNC circuits with Xyce's gold outputs (Sandia's
+  Xyce_Regression at a pinned commit, `XYCE_VERSION`), two of its
+  harmonic-balance circuits, the 4049 oscillator and the IBM power grid
+  ibmpg1t -- 84 files, 18 MB -- into `~/.cache/pycircuit/benchmarks`
+  (`$PYCIRCUIT_BENCH_DATA` moves it); `--verify` re-hashes every file.
+  **Never vendored**: the Xyce suite declares no license and the IBM page
+  states no terms, so the repository keeps only
+  `pycircuit/_testing/spice_suite_manifest.json` (each file's source, path,
+  size and sha256), and a test fails if a file under `pycircuit/`,
+  `benchmarks/`, `doc/` or `scripts/` carries a manifest file's bytes.
+  Every reader goes through `benchdata.spice_data(path)`: None where a file
+  is absent or partial (a skip -- nothing else touches the network), a
+  ValueError for a path the manifest does not list.  `--build-manifest`
+  lists, downloads and hashes anew (maintainers).
 
 Suite: **3235 passed, 6 skipped, 3 xfailed** — **27 min as ONE run**.
 

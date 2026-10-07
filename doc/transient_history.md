@@ -4359,3 +4359,19 @@ factor that would raise must decline before the transform's readiness
 checks run, as it did.  The C's work is nothing at this size; the
 marshalling is everything -- buffers kept per size.  Measured: the PSP
 stage's radau PSS -1.55 % instructions and -3.8 % in time.
+
+
+## `_testing/benchdata.py`, `benchmarks/fetch_spice_suite.py` -- the public SPICE benchmark circuits, fetched and never vendored (2026-10-07, the SPICE benchmark plan's stage 0)
+
+### `cache_root`, `manifest`, `local_path`, `spice_data`; `fetch`, `build_manifest`
+
+The first stage of the plan to run real SPICE netlists (CircuitSim90,
+MCNC, the 4049 oscillator, two harmonic-balance circuits, the IBM power
+grids): their data.  Sandia's Xyce regression suite, where CircuitSim90
+survives with Xyce's gold outputs, declares no license, and the IBM page
+states no terms -- so the files are fetched into a local cache and pinned
+by a committed manifest (a Xyce commit, each file's size and sha256), never
+put in the repository.  `spice_data` is the one gate: a data-dependent test
+or benchmark skips where a file is absent or partial; a path the manifest
+does not list is an error, so a typo cannot read as missing data.  A
+download whose hash is not the manifest's is refused.
