@@ -60,6 +60,21 @@ fresh factor), the walk stopping, maxiter -- hands the loop back: the
 source memo's entries and counts rolled back, and the Python loop runs
 from the same seed (the same answer, exception, warning).
 
+THE STEP'S END PASSES (speed round 12, stage 5a; `END`, env
+`PYCIRCUIT_RADAU_TC_END`).  Once converged the C makes, in the same call,
+the passes `_stage_end_passes` makes next: all four at the last stage, and
+`C` and `G` at the first two where the shooting reads them (`_stage_G_read`)
+-- each `_tran_core.passes`'s core call with its bits, outputs and dummies,
+in its order (the core's own arrays are its scratch, each call writing what
+it reads: a call the Python then does not need leaves nothing behind) -- and
+hands them over with the very stage list it returns (`_tc_end`, the watch
+counter with it).  `_stage_end_passes` takes them for those stages only,
+the counter unmoved, all four passes wanted at the last stage and
+`passes`'s readiness holding as stamped (`_tran_core.passes_held`), making
+the counters each of its calls makes (`passes_count`); else it makes the
+calls (`radau.fuse:unhanded`).  Each hand-off's own `passes` call cost
+~57 k instructions of readiness and marshalling around its kernels.
+
 DECLINES, before anything is touched (`_paths.no`): the switch (and the
 evaluate core's two), no frozen factors or no kept LU or marshalled record
 (`_radau_frozen`'s own), no build, numpy's complex product of neither
@@ -83,7 +98,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _paths
+from pycircuit.circuit import _paths, _watch
 
 _PC = _paths.COUNTS
 #: (float64's dtype: a check by identity first, `==` where it is not the
@@ -92,6 +107,10 @@ _F64 = np.dtype(np.float64)
 _no = _paths.no
 
 ENABLED = os.environ.get('PYCIRCUIT_RADAU_TC', '1') != '0'
+#: THE STEP'S END PASSES in the same call (speed round 12, stage 5a): the
+#: passes `_stage_end_passes` makes next, made by the C after it converges
+#: and handed over (`_tc_end`); env `PYCIRCUIT_RADAU_TC_END=0` turns it off
+END = os.environ.get('PYCIRCUIT_RADAU_TC_END', '1') != '0'
 STATUS = 'not loaded'
 
 RADAU_TC = r"""
@@ -133,6 +152,8 @@ typedef struct {
     long klu_fresh, refactored;
     double *Y, *Yp, *q, *iv, *K, *F, *R, *b0, *x0, *r1, *x1, *y1, *ab, *dY, *stp, *tolv;
     long iters, status;
+    const double *binG; long end_bits, end_cg, end_done;
+    double *e_q, *e_i, *e_C, *e_G, *e_C01, *e_G01, *e_q01;
 } radau_tf_t;
 
 #define TC_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
@@ -349,6 +370,35 @@ long hdl_fn(radau_tf_t *s)
         s->iters = it + 1;
         if (scale <= s->tolv[1]) {
             s->status = 1;
+            /* THE STEP'S END PASSES (speed round 12, stage 5a): the calls
+               `_stage_end_passes` makes next and in its order -- all four
+               passes at the last stage, then `C` and `G` at the first two
+               where the shooting reads them -- each `passes`'s core call
+               with its bits, outputs and dummies, into the caller's buffers
+               (the core's arrays its scratch, each call writing what it
+               reads).  A
+               non-finite stage: none made (`passes` declines such a state;
+               the Python's calls then run) */
+            s->end_done = 0;
+            if (s->end_bits) {
+                for (k = 0; k < 3 * n; k++) if (!isfinite(s->Y[k])) return 1;
+                core(s->core, s->Y + 2 * n, s->T, s->end_bits, 4, 0.0, 0.0, 0.0, 1.0, 0.0,
+                     s->dummy, s->dummy, s->dummy, s->dummy, s->e_C, s->e_C, s->e_q,
+                     s->dummy, s->dummy, s->dummy, s->dummy);
+                memcpy(s->e_i, s->bini, (size_t) n * sizeof(double));
+                memcpy(s->e_G, s->binG, (size_t) (n * n) * sizeof(double));
+                if (s->end_cg) {
+                    for (j = 0; j < 2; j++) {
+                        core(s->core, s->Y + j * n, s->T, s->end_cg, 4, 0.0, 0.0, 0.0, 1.0, 0.0,
+                             s->dummy, s->dummy, s->dummy, s->dummy, s->e_C01 + j * n * n,
+                             s->e_C01 + j * n * n, s->e_q01, s->dummy, s->dummy, s->dummy,
+                             s->dummy);
+                        memcpy(s->e_G01 + j * n * n, s->binG, (size_t) (n * n) * sizeof(double));
+                    }
+                }
+                feclearexcept(FE_ALL_EXCEPT);
+                s->end_done = 1;
+            }
             return 1;
         }
     }
@@ -373,6 +423,8 @@ typedef struct {
     long klu_fresh, refactored;
     double *Y, *Yp, *q, *iv, *K, *F, *R, *b0, *x0, *r1, *x1, *y1, *ab, *dY, *stp, *tolv;
     long iters, status;
+    const double *binG; long end_bits, end_cg, end_done;
+    double *e_q, *e_i, *e_C, *e_G, *e_C01, *e_G01, *e_q01;
 } radau_tf_t;
 long hdl_fn(radau_tf_t *s);
 """
@@ -560,6 +612,10 @@ class _Ctx:
             'ab': np.empty(m), 'dY': np.empty(3 * m), 'stp': np.empty(n), 'tolv': np.empty(2),
             'qn': np.empty(n), 'u': np.empty((3, n)), 'seed': np.empty((3, n)),
             'dummy': np.zeros(max(n * n, 1)),
+            ## (the step's end passes' outputs, stage 5a)
+            'e_q': np.empty(n), 'e_i': np.empty(n), 'e_C': np.empty(n * n),
+            'e_G': np.empty(n * n), 'e_C01': np.empty(2 * n * n), 'e_G01': np.empty(2 * n * n),
+            'e_q01': np.empty(n),
         }
         self.keep = []
         fb = ffi.from_buffer
@@ -575,6 +631,9 @@ class _Ctx:
         a = core.arrays['bini']
         self.keep.append(a)
         s.bini = ffi.cast('double *', a.ctypes.data)
+        g = core.arrays['binG']
+        self.keep.append(g)
+        s.binG = ffi.cast('double *', g.ctypes.data)
         s.n, s.iref = n, iref
         s.walk_fn = ffi.NULL
         s.wn = 0
@@ -780,6 +839,13 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     s.T = Tc
     s.h, s.reltol, s.abstol = float(h), float(reltol), float(abstol)
     s.rtol, s.maxiter = float(zs.REFACTOR_RESIDUAL_TOL), int(maxit)
+    ## THE STEP'S END PASSES (stage 5a): asked where `_stage_end_passes`
+    ## would make them -- its switch on and the step's memo rolling (it
+    ## reads and records only there); `C` and `G` at the first two stages
+    ## where the shooting reads them (`_stage_G_read`)
+    end = END and _MOD['mods'][0].STAGE_FUSE and bool(td.get('_memo_rolling'))
+    s.end_bits = 7 if end else 0
+    s.end_cg = 3 if end and td.get('_stage_G_read') else 0
     status = cfn(s)
     ## the factorisations' state, as the Python would have left it: the
     ## kept LU after its first `dgesv`, the numeric holding the record's
@@ -800,4 +866,19 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     _PC['radau_tc:served'] += 1
     _PC['radau_tc:iterations'] += it
     Y = buf['Y']
-    return [Y[j].copy() for j in range(3)]
+    out = [Y[j].copy() for j in range(3)]
+    if s.end_done:
+        ## (fresh arrays, as `passes` returns them, keyed in its order; the
+        ## stage list itself the token: `_stage_end_passes` takes them for
+        ## these stages only, with the watch counter unmoved)
+        nn = (n, n)
+        last = {'q': buf['e_q'].copy(), 'i': buf['e_i'].copy(),
+                'C': buf['e_C'].reshape(nn).copy(), 'G': buf['e_G'].reshape(nn).copy()}
+        cg = None
+        if s.end_cg:
+            C01, G01 = buf['e_C01'], buf['e_G01']
+            cg = [{'C': C01[j * n * n:(j + 1) * n * n].reshape(nn).copy(),
+                   'G': G01[j * n * n:(j + 1) * n * n].reshape(nn).copy()} for j in (0, 1)]
+        td['_tc_end'] = (out, _watch.now(), last, cg, core)
+        _PC['radau_tc:end'] += 1
+    return out

@@ -843,6 +843,43 @@ def passes(tr, x, which):
     return out
 
 
+def passes_held(tr, core):
+    """Whether a call of `passes` on this transient would find its readiness
+    as stamped -- `core_for`'s record and `core.ready`'s probe both holding,
+    the switches, the toolkit and the circuit's passes as `passes` checks
+    them (speed round 12, stage 5a: for passes another C made in the same
+    step, `_tran_radau_tc`).  Nothing counted: `passes_count` makes the
+    counters of each such call -- a check that holds holds for every call
+    the caller makes before anything it watches can change."""
+    if not (CORE and CORE_PASSES) or type(tr.toolkit) is not (_NTK[0] if _NTK else _ntk()):
+        return False
+    cir = tr.cir
+    cd = cir.__dict__
+    if 'G' in cd or 'C' in cd or 'i' in cd or 'q' in cd:
+        return False
+    rec = tr.__dict__.get('_tran_core')
+    ep = _watch.EPOCH
+    if not (rec is not None and rec[1] is core and ep is not None and rec[2] == ep.value
+            and cd.get('_stamp_plan') is rec[0] and rec[3]._epoch is rec[0].epoch
+            and rec[0].n == len(cir.nodes) + len(cir.branches)):
+        return False
+    ## (`probe`'s temperature test: a float, an int, or one number)
+    T = getattr(tr.epar, 'T', 300.0)
+    if type(T) is not float and type(T) is not int and np.ndim(T) != 0:
+        return False
+    return (core.stamp == ep.value
+            and tuple(map(_GETDICT, core.uniq_els)) == core.uniq_dicts
+            and all(map(_same_code, core.codes)))
+
+
+def passes_count(tr, core):
+    """The counters one call of `passes` makes on its stamped path (after
+    `passes_held`): a held `core_for`, a held probe, a served pass."""
+    tr.__dict__['_tran_core'][5] += 1
+    core.held += 1
+    _PC[_K['p']['served']] += 1
+
+
 def evaluate(tr, x, t, provided_function, want):
     """`want` 'fj': `(f, J)` as `_residual_and_jacobian`; 'j': `(None, J)`
     as `jacobian_only`; 'c': `(None, None)`, `jacobian_only`'s state where

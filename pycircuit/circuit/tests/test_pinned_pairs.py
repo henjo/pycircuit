@@ -295,6 +295,23 @@ PAIRS = {
                  'pycircuit.circuit._tran_radau_tc:solve',
                  'pycircuit.circuit._tran_radau_tc:cmul_mode'],
     },
+    "the step's end passes and the C's": {
+        'why': 'once converged the C makes the calls `_stage_end_passes` makes next -- '
+               '`passes`\'s core call, its bits, outputs and dummies, at the last stage '
+               'with all four passes and at the first two with `C` and `G` where the '
+               'shooting reads them -- and `_stage_end_passes` takes them where each call '
+               'would find its readiness as stamped (`passes_held`: `core_for`\'s record, '
+               'the probe), making the counters each call makes (`passes_count`)',
+        'reference': ['pycircuit.circuit._tran_radau:_RadauStages._stage_end_passes',
+                      'pycircuit.circuit._tran_core:passes',
+                      'pycircuit.circuit._tran_core:core_for',
+                      'pycircuit.circuit._tran_core:_Core.ready',
+                      'pycircuit.circuit._tran_core:_Core.probe'],
+        'twin': ['pycircuit.circuit._tran_radau_tc:RADAU_TC',
+                 'pycircuit.circuit._tran_radau_tc:solve',
+                 'pycircuit.circuit._tran_core:passes_held',
+                 'pycircuit.circuit._tran_core:passes_count'],
+    },
     'the stage block and its one pass': {
         'why': 'the one pass makes the block loop\'s elementwise products `(h A_ij) G_j` '
                'and diagonal sums `C_i + ...` in its operand order, placed by one '
@@ -413,10 +430,11 @@ RECORD = {
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
     'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),
-    "the stage paths' passes and the core's": ('8e4b7cf1fa24', 'a3ae0f6c8d98'),
+    "the stage paths' passes and the core's": ('f83268db1289', 'a3ae0f6c8d98'),
     'the coupled stage Newton and its C': ('c9e9adf33989', 'e9156eef9c41'),
     'the transform solve and its frozen form': ('945834192f2a', '76a16f4bcc14'),
-    'the transform Newton and its C': ('d7c24c3c7e7d', '359ac763a410'),
+    'the transform Newton and its C': ('d7c24c3c7e7d', 'c1c1e4a6a070'),
+    "the step's end passes and the C's": ('277bd8328e9f', '6af6e40ca712'),
     'the stage block and its one pass': ('a013cd007e0c', '24be0c26211b'),
     'the stage step map and its C': ('d6a705611a62', '0231752eb52b'),
     'the stage readers and their one read': ('1f21d643cfde', '08f3606179d1'),

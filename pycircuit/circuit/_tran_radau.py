@@ -13,6 +13,7 @@ from pycircuit.circuit import (
     _tran_core,
     _tran_radau_c,
     _tran_radau_tc,
+    _watch,
 )
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import (
@@ -793,7 +794,18 @@ class _RadauStages:
         there.  Only where the memo records (`_memo_ok`: a rolling memo, no
         stateful limiter, no bypass -- a recorded value is the one
         re-evaluating gives); where the core does not serve, each reader
-        evaluates as before (counted)."""
+        evaluates as before (counted).  After the transform's C call the
+        passes may already be made: its hand-off (`_tran_radau_tc`, speed
+        round 12, stage 5a) is taken for its own stages where every call
+        below would find its readiness as stamped, its counters made as
+        theirs (`radau.fuse:handed`); else dropped (`:unhanded`) and the
+        calls made."""
+        ## (what the transform's C made of these very passes in its call --
+        ## `_tran_radau_tc`, speed round 12, stage 5a: taken for these
+        ## stages only, the watch counter unmoved since, all four passes
+        ## wanted at the last stage, and `passes`'s readiness holding as
+        ## stamped, its counters made as its calls make them; else the calls)
+        hand = self.__dict__.pop('_tc_end', None)
         if not STAGE_FUSE:
             return _paths.no('radau.fuse:off')
         if not self._memo_ok():
@@ -801,19 +813,35 @@ class _RadauStages:
         get, put = self._memo_get, self._memo_put
         x = Y[-1]
         rec = get(x)
-        need = ''.join(k for k in 'qiCG' if rec is None or k not in rec)
+        need = 'qiCG' if rec is None else ''.join(k for k in 'qiCG' if k not in rec)
+        if hand is not None:
+            if (hand[0] is Y and hand[1] == _watch.now() and need in ('qiCG', '')
+                    and _tran_core.passes_held(self, hand[4])):
+                _paths.COUNTS['radau.fuse:handed'] += 1
+            else:
+                _paths.COUNTS['radau.fuse:unhanded'] += 1
+                hand = None
         if need:
-            vals = _tran_core.passes(self, x, need)
-            if vals is None:
-                return _paths.no('radau.fuse:core')
+            if hand is not None:
+                _tran_core.passes_count(self, hand[4])
+                vals = hand[2]
+            else:
+                vals = _tran_core.passes(self, x, need)
+                if vals is None:
+                    return _paths.no('radau.fuse:core')
             put(x, vals)
         if self.__dict__.get('_stage_G_read'):
-            for y in Y[:-1]:
+            cg = hand[3] if hand is not None else None
+            for j, y in enumerate(Y[:-1]):
                 rec = get(y)
                 if rec is None or ('C' not in rec and 'G' not in rec):
-                    vals = _tran_core.passes(self, y, 'CG')
-                    if vals is None:
-                        return _paths.no('radau.fuse:core')
+                    if cg is not None:
+                        _tran_core.passes_count(self, hand[4])
+                        vals = cg[j]
+                    else:
+                        vals = _tran_core.passes(self, y, 'CG')
+                        if vals is None:
+                            return _paths.no('radau.fuse:core')
                     put(y, vals)
         _paths.COUNTS['radau.fuse:served'] += 1
 

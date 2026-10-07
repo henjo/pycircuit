@@ -4325,3 +4325,18 @@ comparison otherwise.  The device memo's key skips `asarray` for an exact
 float64 array (the same bytes).  Measured: the van der Pol PSS -3.95 %
 instructions and -3.8 % in time, the gear ladder -1.06 %
 instructions.
+
+
+## `_tran_radau_tc.py`, `_tran_radau.py`, `_tran_core.py` -- the step's end passes in the transform's C call (2026-10-07, speed round 12)
+
+### `RADAU_TC`, `solve`, `_RadauStages._stage_end_passes`, `passes_held`, `passes_count`
+
+After the transform Newton's C call returned the converged stages, the
+step made its end passes through `passes` -- 2.7 core calls a step, each
+~57 k instructions of readiness and marshalling around its kernels.  The C
+now makes those calls itself once converged, in `passes`'s form and order,
+and hands them over with the stage list it returns; `_stage_end_passes`
+takes them for those stages where every call it replaces would find its
+readiness as stamped and nothing watched has changed since, making the
+counters those calls make, and makes the calls otherwise.  Measured: the
+PSP stage's radau PSS -3.88 % instructions and -4.1 % in time.
