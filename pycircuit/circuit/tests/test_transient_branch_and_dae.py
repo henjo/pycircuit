@@ -1263,3 +1263,107 @@ def test_the_runge_kutta_transient_loop_lands_source_corners():
         else:
             assert tr.statistics.breakpoints_hit == 0
     assert errs[True] < 1e-7 and errs[False] > 1e-5, errs
+
+
+def _planted_c(rng, n):
+    """A square `C` of random blocks under a random permutation: 1 x 1
+    entries (some zero, some at the threshold's scale), floating-capacitor
+    pairs (rank 1), one-way couplings (a weakly connected pattern), rank-
+    deficient blocks and one larger dense block."""
+    C = np.zeros((n, n))
+    perm = rng.permutation(n)
+    i = 0
+    while i < n:
+        kind = rng.integers(0, 6)
+        k = min(n - i, (1, 2, 2, 3, 5, 9)[kind])
+        idx = perm[i:i + k]
+        if kind == 0:
+            C[idx[0], idx[0]] = rng.choice([0.0, 1e-12, 3e-10, 1.0, -2.0])
+        elif kind == 1 and k == 2:
+            c = rng.uniform(0.1, 2.0)
+            C[np.ix_(idx, idx)] = c * np.array([[1.0, -1.0], [-1.0, 1.0]])
+        elif kind == 2 and k == 2:
+            C[idx[0], idx[1]] = rng.uniform(0.1, 2.0)
+        else:
+            B = rng.standard_normal((k, k))
+            if kind == 3:
+                B[-1] = B[0] + B[1] if k > 2 else 0.0
+            C[np.ix_(idx, idx)] = B
+        i += k
+    return C
+
+
+def test_the_structural_rank_by_blocks_is_the_dense_svd_count():
+    """`_rank_by_blocks` -- the branch check's structural rank without a
+    dense SVD (2026-10-07: three of them were 93 % of a 4681-unknown power
+    grid's run) -- counts what `np.linalg.svd` of the whole `C` counts, on
+    planted block structures under a permutation, a `C` all of one block,
+    an all-zero one, and entries either side of the tolerance."""
+    from pycircuit.circuit._tran_branch import _rank_by_blocks
+
+    rng = np.random.default_rng(20261007)
+    cases = [_planted_c(rng, n) for n in (1, 2, 7, 40, 150) for _ in range(20)]
+    cases += [rng.standard_normal((30, 30)), np.zeros((6, 6)),
+              np.diag([1.0, 1e-10, 1e-8, 0.0]), np.diag([1.0, 1e-9, 0.5])]
+    for C in cases:
+        nrm = float(np.max(np.abs(C)))
+        for tol in (1e-9 * max(nrm, 1.0), 1e-9, 0.5):
+            expect = int((np.linalg.svd(C, compute_uv=False) > tol).sum())
+            assert _rank_by_blocks(C, tol) == expect, (C.shape, tol)
+
+
+def _reference_embedded(R, g, m):
+    """`R` (no reference row or column) put back in a full matrix whose
+    reference `g` row and column are minus the other nodes' sums (`m`
+    nodes, the rest branches): what a charge-conserving circuit stamps."""
+    n = R.shape[0] + 1
+    keep = np.r_[0:g, g + 1:n]
+    M = np.zeros((n, n - 1))
+    M[keep, np.arange(n - 1)] = 1.0
+    M[g, [k for k, i in enumerate(keep) if i < m]] = -1.0
+    return M @ R @ M.T
+
+
+def test_the_reduced_structural_rank_is_the_full_count_or_declines():
+    """`_BranchCheck._reduced_rank` -- the rank without the reference row
+    and column, which is what lets a power grid split into blocks -- gives
+    the dense count of the FULL `C` or ``None``: never another number.  The
+    fixture that showed the danger (2026-10-07: a 1 pF capacitor to ground
+    beside 1 mH, `tol` = 1 pF; singular value 2 pF full, 1 pF reduced) and
+    planted conservative matrices with singular values put near `tol`;
+    a grid's `C` (capacitors to ground, an inductor) takes the fast path."""
+    from types import SimpleNamespace
+
+    from pycircuit.circuit._tran_branch import _BranchCheck
+
+    def checker(g, m):
+        return SimpleNamespace(irefnode=g, cir=SimpleNamespace(nodes=[None] * m))
+
+    def dense(C, tol):
+        return int((np.linalg.svd(C, compute_uv=False) > tol).sum())
+
+    C = np.zeros((5, 5))
+    C[np.ix_([0, 2], [0, 2])] = 1e-12 * np.array([[1.0, -1.0], [-1.0, 1.0]])
+    C[4, 4] = -1e-3
+    tol = 1e-9 * 1e-3
+    got = _BranchCheck._reduced_rank(checker(0, 3), C, tol, 0.0)
+    assert got in (None, dense(C, tol)) and dense(C, tol) == 2
+
+    grid = _reference_embedded(np.diag(np.r_[np.full(30, 1e-14), -1e-9]), 0, 31)
+    assert _BranchCheck._reduced_rank(checker(0, 31), grid, 1e-18, 1e-30) == dense(grid, 1e-18)
+
+    rng = np.random.default_rng(20261008)
+    declined = 0
+    for _ in range(300):
+        n = int(rng.integers(2, 12))
+        m = int(rng.integers(1, n + 1))
+        g = int(rng.integers(0, m))
+        R = _planted_c(rng, n - 1)
+        C = _reference_embedded(R, g, m)
+        sv = np.linalg.svd(C, compute_uv=False)
+        for tol in (sv[sv > 0][-1] if np.any(sv > 0) else 1.0, 1e-9, 0.7):
+            eps = 8 * n * np.finfo(float).eps * float(np.linalg.norm(C))
+            got = _BranchCheck._reduced_rank(checker(g, m), C, tol, eps)
+            declined += got is None
+            assert got in (None, dense(C, tol)), (n, m, g, tol)
+    assert declined < 600                   # of 900: the fast path is not vacuous

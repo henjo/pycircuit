@@ -15,6 +15,47 @@ from pycircuit.circuit.simwarnings import (
 )
 
 
+def _rank_by_blocks(C, tol, band=None):
+    """The number of singular values of the square `C` above `tol`, one
+    block at a time; ``None`` where one lies in the open-closed interval
+    `band` ``(low, high]`` (the caller's ambiguous range).
+
+    `C` permuted by the connected components of its nonzero pattern is
+    block diagonal, and a block-diagonal matrix's singular values are its
+    blocks' together: the count is the one a dense SVD of `C` gives, made
+    without it.  A 1 x 1 block's singular value is its entry's magnitude;
+    blocks of one size go to `np.linalg.svd` stacked.  ⚠ MEASURED
+    (2026-10-07): the dense SVD of a power grid's `C` was 72 s of a 77.6 s
+    run at n = 4681, three calls at O(n^3) -- the time the check took, not
+    the step's; by blocks (capacitors to ground are blocks of one once the
+    reference is out, `_BranchCheck._reduced_rank`) 1.0 s.  A `C` whose
+    pattern connects everything is still one dense SVD.
+    """
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    n = C.shape[0]
+    rows, cols = np.nonzero(C)
+    _ncomp, label = connected_components(
+        csr_matrix((np.ones(rows.size, dtype=np.int8), (rows, cols)), shape=(n, n)),
+        directed=True, connection='weak')
+    order = np.argsort(label, kind='stable')
+    starts = np.flatnonzero(np.r_[True, np.diff(label[order]) != 0])
+    sizes = np.diff(np.r_[starts, n])
+    rank = 0
+    for k in np.unique(sizes):
+        members = order[(starts[sizes == k])[:, None] + np.arange(k)]   # (blocks, k)
+        if k == 1:
+            sv = np.abs(C[members[:, 0], members[:, 0]])
+        else:
+            sv = np.linalg.svd(C[members[:, :, None], members[:, None, :]],
+                               compute_uv=False)                      # (blocks, k)
+        if band is not None and np.any((sv > band[0]) & (sv <= band[1])):
+            return None
+        rank += int((sv > tol).sum())
+    return rank
+
+
 class _BranchCheck:
     """Branch detection: did the step equation have more than one root.  A
     theme of `Transient` (see `transient.py`)."""
@@ -88,10 +129,56 @@ class _BranchCheck:
             nrm = float(np.max(np.abs(C)))
             scale = max(scale, nrm)
             if nrm > 0:
-                sv = np.linalg.svd(C, compute_uv=False)
-                best = max(best, int((sv > self.BRANCH_SCREEN_TOL * nrm).sum()))
+                ## the dense SVD's count, found by blocks (`_rank_by_blocks`,
+                ## `_reduced_rank`) unless a singular value lies within
+                ## rounding (`eps`: a block's SVD and the whole's round
+                ## apart) or the reduction's bound of `tol`
+                tol = self.BRANCH_SCREEN_TOL * nrm
+                eps = 8 * C.shape[0] * np.finfo(float).eps * float(np.linalg.norm(C))
+                r = self._reduced_rank(C, tol, eps)
+                if r is None:
+                    r = _rank_by_blocks(C, tol, band=(tol - eps, tol + eps))
+                if r is None:
+                    r = int((np.linalg.svd(C, compute_uv=False) > tol).sum())
+                best = max(best, r)
         self._branch_rank0 = (best, scale)
         return self._branch_rank0
+
+    def _reduced_rank(self, C, tol, eps):
+        """The count of `C`'s singular values above `tol`, from `C` without
+        the reference node's row and column -- or ``None`` where that
+        cannot be shown to be the same count.
+
+        ⚠ The reference is what joins a power grid into ONE block: every
+        capacitor to ground couples to its row, and `_rank_by_blocks` met
+        a 257-node star on a 273-unknown mesh (2026-10-07) until it was
+        taken out.  But the count is NOT the reduced matrix's in general:
+        a capacitor to ground has singular value 2C in the full matrix and
+        C without the reference, and a test fixture (1 pF against 1 mH, so
+        `tol` = 1 pF) sat on exactly that.
+
+        Where the node rows sum to zero (KCL) and the node columns too
+        (charges seeing only voltage differences), the full matrix is
+        ``M R M^T + E``: `R` the reduced one, `M` the reference's embedding
+        (singular values 1 and sqrt(m), `m` nodes), `E` the residual in the
+        reference row and column, ``||E|| <= delta``.  Then each singular
+        value of the full one lies in ``[s - delta, m s + delta]`` for `s`
+        the reduced one's: the counts agree unless an `s` lies in
+        ``((tol - delta - eps) / m, tol + delta + eps]`` (`eps` the SVDs'
+        rounding apart), where ``None`` sends the caller on.
+        """
+        g = getattr(self, 'irefnode', None)
+        m = len(getattr(self.cir, 'nodes', ()))
+        if g is None or not 0 <= g < m <= C.shape[0]:
+            return None
+        res_row = C[:m].sum(axis=0)
+        res_col = C[:, :m].sum(axis=1)
+        delta = float(np.linalg.norm(res_row) + np.linalg.norm(res_col))
+        if not delta + eps < tol:
+            return None
+        keep = np.r_[0:g, g + 1:C.shape[0]]
+        return _rank_by_blocks(C[np.ix_(keep, keep)], tol,
+                               band=((tol - delta - eps) / m, tol + delta + eps))
 
     def _branch_screen(self, x):
         """`(fired, null_direction)` -- has `rank C(x)` fallen below the

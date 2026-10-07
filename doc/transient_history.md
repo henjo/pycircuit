@@ -4540,3 +4540,38 @@ source holds (gm17) is left out with a note, as SPICE lets the source win
 (`DC.unholdable`; a direct `DC(pin=...)` still refuses it); a Xyce header
 keeps a `{...}` column with blanks whole; a TSTOP read as SPICE reads it
 can pass the gold's printed one by an ulp (clamped within 1e-12).
+
+## `_tran_branch.py` -- the branch check's structural rank by blocks (2026-10-08, found by the SPICE benchmark plan's stage 5)
+
+### `_rank_by_blocks`, `_BranchCheck._reduced_rank`, `_BranchCheck._branch_structural_rank`
+
+The large-circuit ladder (`benchmarks/large_circuits.py mesh`, an RC power
+grid in the IBM files' form) read its step as "linear solve"; a profile at
+n = 4681 put 72.1 s of the 77.6 s run in THREE dense `np.linalg.svd(C)`
+calls -- the branch check's structural rank, once a run, O(n^3) -- filed
+under the solver because they live in `numpy/linalg`.  KLU itself was
+0.44 s.
+
+The count is now made without the dense SVD, and is the same number:
+
+* `_rank_by_blocks`: `C` permuted by its pattern's connected components is
+  block diagonal, so its singular values are its blocks'; 1 x 1 blocks
+  read directly, blocks of one size go to the SVD stacked.
+* `_reduced_rank`: a power grid is still ONE block -- every capacitor to
+  ground couples to the reference row (a 257-node star on 273 unknowns).
+  Without the reference row and column it splits, but the count is not
+  the reduced matrix's in general: a capacitor to ground is 2C full and C
+  reduced, and a PSS fixture (1 pF beside 1 mH, so `tol` = 1 pF) sat on
+  exactly that.  Where the node rows and columns sum to zero, full =
+  `M R M^T + E`, each full singular value in `[s - delta, m s + delta]`;
+  a reduced `s` in `((tol - delta - eps) / m, tol + delta + eps]` declines,
+  as does a block value within rounding `eps` of `tol`, and the dense SVD
+  decides.
+
+Checked: the dense count logged beside the new one on every call of eight
+transient/shooting test files (2241 calls, 0 differ, 1872 on the reduced
+path); planted block and reference-embedded matrices with `tol` placed on
+a singular value (two tests; removing the band fails one).  Timed, the
+rank alone: n = 4681 84 s -> 0.85 s, n = 9226 ~10 min -> 2.8 s.  The
+per-step screen is unchanged (its SVD runs only when the cheap proxy
+fires).
