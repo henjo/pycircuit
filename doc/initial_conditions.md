@@ -42,13 +42,23 @@ accepting it quietly would leave the caller believing an initial condition had b
 | capacitor `ic`s form a group touching neither ground nor a node `ic` | `ValueError` — they fix the nodes only up to a constant |
 | capacitor `ic`s contradict each other, or a node `ic` | `ValueError` naming the element and both values |
 | a capacitor with both terminals on one node and `ic ≠ 0` | `ValueError` — it constrains `0 == ic` |
-| `ic` or an element `ic` given without `uic=True` | `ValueError` naming both forms |
+| an element `ic` given without `uic=True` | `ValueError` — a starting value the operating point overwrites (SPICE ignores it) |
+| `ic` (or `nodeset`) without `uic=True` beside an explicit `x0` | `ValueError` — the hold shapes the operating point, which `x0` replaces |
+| `nodeset` with `uic=True` | `ValueError` — no operating point is solved for it to start |
+| a held node a voltage source or an inductor holds at DC | `ValueError` naming the node — the hold would leave that branch's current undetermined |
 | an element `ic` inside a nested subcircuit | `NotImplementedError` naming the instance |
 | an element declares `ic` but owns ≠ 1 branch row | `ValueError` |
 
-The `uic` guard is worth singling out. SPICE's `.ic` **without** UIC constrains the operating
-point and then releases it — a genuinely different feature, and one that is *not* implemented
-here. Raising says which of the two is missing; ignoring would do neither and report neither.
+**`ic` without `uic` (2026-10-07, the SPICE benchmark plan's stage 3)** is SPICE's `.ic`:
+the operating point is solved with those nodes **held** — `DC(pin=...)`: a held node's KCL
+row and column leave the system and its value enters as `lam * volts`, `lam` the
+source-stepping factor, SPICE's pinned row (`x_k = srcFact * ic`) in eliminated form, so no
+gmin ladder touches it — and the transient **releases** them at t = 0.  A node a voltage
+source or an inductor holds at DC is refused: SPICE lets the source win there, through a
+1e10 S pin carrying a meaningless current.  **`nodeset`** (`DC(nodeset=...)`,
+`Transient(nodeset=...)`) is a solve with the nodes held, then one without them from its
+answer — a hint, as in SPICE; a held solve that fails leaves it unused.  `pcnr` with held
+nodes is refused.  The JAX transient still refuses `ic` without `uic`.
 
 ## 3. The boundary: why `L` is an assignment and `C` is a solve
 
@@ -171,17 +181,14 @@ node voltage propagates from it.
 
 ## 5. Not implemented
 
-* **`.nodeset`** — a genuinely different feature: a *hint* that seeds the DC solve and is then
-  released, where `.ic` under UIC is a *starting value* that never is. It belongs with stage
-  5's convergence-aid ladder, not here.
-* **`.ic` without UIC** — constraining the operating point and releasing it; see §2.
+* ~~`.nodeset`~~ and ~~`.ic` without UIC~~ — built 2026-10-07 (§2): CircuitSim90 decks use
+  them (`.ic`: arom, gm17, rich3, ring; `.nodeset`: hussamp, jge).
 * **Element `ic` inside a subcircuit** — the span of a nested instance covers all its
   children's branches. Resolving `'X1.L1'` means recursing into the child's own map with the
   parent's offset. Mechanical, but a second piece of work.
 
-**Reconsider the deferrals if** a circuit needs a floating capacitor's initial voltage, a
-starting current on an inductor inside a subcircuit, or a DC-convergence hint. None of the
-three is expressible by naming node voltages, and none is a workaround away.
+**Reconsider the deferral if** a circuit needs a starting current on an inductor inside a
+subcircuit.  It is not expressible by naming node voltages, and not a workaround away.
 
 ## 6. A note on the tests
 

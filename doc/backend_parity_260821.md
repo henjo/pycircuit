@@ -308,6 +308,12 @@ Parameter, delete the `node.ic` walk.
 > Gates in `test_jax_initial_conditions.py` (spanning tree, floating-group
 > refusal, dead-walk regression included).
 
+> **A GAP SINCE 2026-10-07 (the SPICE benchmark plan's stage 3).**  The CPU's
+> `ic` without `uic` now HOLDS the operating point (SPICE's `.ic`, through
+> `DC(pin=...)`) and `Transient` has `nodeset`; `JAXTransient` still refuses
+> `ic` without `uic` and has no `nodeset`.  Its comment's "same contract as the
+> CPU (P12)" is the contract before that date.
+
 ### P16 — TLine interpolation order
 
 CPU delay lookup is 3-point quadratic with recorded reasoning ("a first-order

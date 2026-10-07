@@ -1145,8 +1145,16 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
          ## own `ic` -- see `_initial_state`.
          ## History: `doc/transient_history.md`, `Transient.parameters`.
          Parameter(name='ic',
-                   desc="Initial node voltages for uic=True, as {node: volts}. "
-                        "Node may be a name or a Node instance.",
+                   desc="Initial node voltages, as {node: volts} (a name or a "
+                        "Node instance): with uic=True the starting values; "
+                        "without, held while the operating point is solved and "
+                        "released at t = 0 (SPICE's .ic)",
+                   unit='V',
+                   default=None),
+         Parameter(name='nodeset',
+                   desc="Node voltages the operating point is solved from, as "
+                        "{node: volts}: a solve with them held, then one without "
+                        "(SPICE's .nodeset); not with uic=True",
                    unit='V',
                    default=None),
          Parameter(name='minbreak',
@@ -1734,6 +1742,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         self.irefnode=self.cir.get_node_index(refnode)
         n = self.cir.n
         self._init_state_events(n)
+        x0_given = x0 is not None
         if x0 is None:
             if self.par.uic:
                 ## Skip the operating point and start from the stated initial
@@ -1745,25 +1754,30 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 x0 = self._solve_operating_point(refnode)
         x = x0
 
-        ## `ic` without `uic` is a request the operating point overwrites, so
-        ## honouring it silently would be a lie in either direction: SPICE uses
-        ## `.ic` to CONSTRAIN the operating point and then releases it, which is
-        ## a different feature from the one implemented here. Raising says which
-        ## one is missing rather than quietly doing neither.
-        ## `include_state=False`: an Idt/Idtmod `ic` pins the DC operating
-        ## point (LRM), so it is meaningful without uic and exempt here.
-        if (self.par.ic or self._descendant_has_ic(self.cir,
-                                                   include_state=False)) \
-                and not self.par.uic:
-            raise ValueError(
-                "ic was given without uic=True. This implements SPICE's initial "
-                "conditions for the uic case only -- starting values for the "
-                "transient. Constraining the operating point with .ic and then "
-                "releasing it is a separate feature and is not implemented. "
-                "Pass uic=True, or drop ic.\n"
-                "(This covers element initial conditions such as L(..., ic=...) "
-                "as well as the analysis-level ic dict -- both are starting "
-                "values, and both are ignored without uic.)")
+        ## Without `uic` the analysis-level `ic` HOLDS the operating point
+        ## (SPICE's `.ic`, released at t = 0 -- `_solve_operating_point`);
+        ## an explicit `x0` replaces that operating point, so the hold
+        ## would silently do nothing.  Element initial conditions are
+        ## starting values: SPICE ignores them without UIC, and a silent
+        ## drop is the defect class this project keeps finding, so they
+        ## are refused.  `include_state=False`: an Idt/Idtmod `ic` pins the
+        ## DC operating point (LRM), so it is meaningful without uic and
+        ## exempt here.
+        if not self.par.uic:
+            if self._descendant_has_ic(self.cir, include_state=False):
+                raise ValueError(
+                    "an element initial condition (such as L(..., ic=...)) was "
+                    "given without uic=True. It is a starting value, which the "
+                    "operating point overwrites (SPICE ignores it). Pass "
+                    "uic=True, or drop it; an analysis-level ic holds the "
+                    "operating point instead (SPICE's .ic).")
+            if (self.par.ic or self.par.nodeset) and x0_given:
+                raise ValueError(
+                    "ic or nodeset without uic=True shapes the operating point, "
+                    "which an explicit x0 replaces: drop one.")
+        elif self.par.nodeset:
+            raise ValueError("nodeset with uic=True: uic solves no operating "
+                             "point for it to start.")
 
         if coupled_lte:
             ## P22: eq (6)'s state-row mask, built once at the seed

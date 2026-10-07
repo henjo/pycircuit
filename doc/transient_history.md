@@ -4437,3 +4437,32 @@ outside MOS2_LARGE (a test; it skips without the data):
 | 4049osc; vreg (a `.dc`); reg0 (a linear hybrid-pi, `.ac`); toronto, slowlatch (level 3); gm1, gm2, gm3, gm19, jge, mike2, todd3 (MOS3); common_emitter_hb, rca, schmitecl | `.ic` without UIC (3): arom, gm17, rich3, ring; the bipolar substrate junction (7): latch, opampal, gilbert_cell_hb; MOS level 2 (9): ab_ac, ab_integ, ab_opamp, cram, e1480, g1310, gm6, hussamp, mosrect, mux8, nand, pump, ring, schmitfast, schmitslow -- and all 14 MOS2_LARGE |
 
 ngspice runs the written 4049osc deck's 500 us in 0.07 s.
+
+
+## `dcanalysis.py`, `_tran_initial.py`, `transient.py` -- held nodes: SPICE's `.ic` without UIC and `.nodeset` (2026-10-07, the SPICE benchmark plan's stage 3)
+
+### `DC.pin`, `DC.nodeset`, `_Held`, `DC._solve_held`, `DC._chain`; `Transient.nodeset`, `Transient._solve_operating_point`
+
+SPICE's `.ic` without UIC holds the transient's operating point and
+releases it at t = 0; `.nodeset` is a solve with the nodes held, then one
+without them.  Four CircuitSim90 decks use `.ic` (arom, gm17, rich3, ring)
+and two `.nodeset` (hussamp, jge); `Transient` refused `ic` without `uic`.
+`DC(pin=...)` holds nodes: a held node is not an unknown -- its KCL row
+and its column leave the system and its value enters as `lam * volts`,
+`lam` the source-stepping factor (SPICE's pinned row, `x_k = srcFact *
+ic`, in eliminated form), so no gmin ladder touches it; the solver chain
+is built in one place (`_chain`) for both solves.  A node a voltage
+source or an inductor holds at DC is refused (SPICE lets the source win
+through a 1e10 S pin carrying a meaningless current); `pcnr` with held
+nodes is refused.  `DC(nodeset=...)` and `Transient(nodeset=...)`: a held
+solve, then the ordinary one from its answer (a held solve that fails
+leaves the hint unused, as SPICE).  `Transient(ic=...)` without `uic`
+passes its `ic` to the operating point as pins; an element `ic` without
+`uic` still raises (SPICE ignores it), and so does an `ic` or `nodeset`
+the run could not act on (beside an explicit `x0`; `nodeset` under
+`uic`).  The importer maps `.ic` without UIC and `.nodeset` to these.
+Without held nodes every solve is the parent's (the gate's bytes).  An RC
+node held at 1 V decays from exactly 1 V as exp(-t/RC); a latch's
+nodeset picks each of its states where the plain solve finds the
+metastable point.  JAXTransient keeps refusing `ic` without `uic`
+(recorded in `doc/backend_parity_260821.md`, P12).

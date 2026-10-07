@@ -126,14 +126,43 @@ def test_setting_the_reference_node_raises():
     assert 'reference node' in str(exc.value)
 
 
-def test_ic_without_uic_raises():
-    """SPICE's `.ic` without UIC constrains the operating point and then
-    releases it -- a different feature, and not this one. Silently doing neither
-    is the defect class this project keeps finding."""
+def test_ic_without_uic_holds_the_operating_point_then_releases_it():
+    """SPICE's `.ic` without UIC (the SPICE benchmark plan's stage 3): the
+    operating point solved with the node held -- an RC node at 1 V, its
+    resistor's current flowing into the hold -- and released at t = 0, from
+    which it decays as exp(-t/RC).  Until stage 3 this raised, saying the
+    feature was missing (`test_ic_without_uic_raises`)."""
+    ck = SubCircuit()
+    ck['R'] = R('n', gnd, r=1e3)
+    ck['C'] = C('n', gnd, c=1e-9)
+    tran = Transient(ck, toolkit=numeric, ic={'n': 1.0}, reltol=1e-6)
+    with quiet():
+        res = tran.solve(tend=5e-6, timestep=1e-8)
+    w = res.v('n', gnd)
+    t, v = np.asarray(w.x[0], dtype=float), np.asarray(w.y, dtype=float)
+    assert v[0] == 1.0
+    assert np.max(np.abs(v - np.exp(-t / 1e-6))) < 1e-3
+
+
+def test_a_node_an_inductor_holds_at_dc_cannot_be_held():
+    """The tank's node is shorted by its inductor at DC: a hold leaves the
+    inductor's current undetermined.  SPICE lets the inductor win, through a
+    1e10 S pin carrying a meaningless current; refused here, saying why."""
     tran = Transient(_lc_tank(), toolkit=numeric, ic={'1': 1.0})
-    with pytest.raises(ValueError) as exc:
+    with pytest.raises(ValueError, match='an inductor holds them at DC'):
         tran.solve(tend=1e-9, timestep=1e-10)
-    assert 'uic=True' in str(exc.value)
+
+
+@pytest.mark.parametrize('kw, solve_kw, says', [
+    ({'ic': {'1': 1.0}}, {'x0': np.zeros(2)}, 'an explicit x0 replaces'),
+    ({'uic': True, 'nodeset': {'1': 1.0}}, {}, 'nodeset with uic=True'),
+], ids=['x0', 'uic'])
+def test_a_hold_that_could_not_act_is_refused(kw, solve_kw, says):
+    ck = SubCircuit()
+    ck['R'] = R(1, gnd, r=1e3)
+    ck['C'] = C(1, gnd, c=1e-9)
+    with pytest.raises(ValueError, match=says):
+        Transient(ck, toolkit=numeric, **kw).solve(tend=1e-9, timestep=1e-10, **solve_kw)
 
 
 ## ---------------------------------------------------------------------------

@@ -138,7 +138,29 @@ class DC(Analysis):
                             desc='Bypass tolerance for device models', unit='V',
                             default=None),
                   Parameter(name='epar', desc='Environment parameters',
-                            default=defaultepar)
+                            default=defaultepar),
+                  ## THE SPICE BENCHMARK PLAN'S STAGE 3 (2026-10-07) -- SPICE's
+                  ## `.ic` for a transient's operating point and `.nodeset`.  A
+                  ## held node is not an unknown of the solve: its KCL row and
+                  ## its column leave the system and its value enters as
+                  ## lam * volts, lam the source-stepping factor -- SPICE's
+                  ## row replacement (a unit row, `x_k = srcFact * ic`) in its
+                  ## eliminated form, so no gmin ladder touches a held row.
+                  ## A held node a voltage source or an inductor holds at DC
+                  ## is refused (SPICE lets the source win, through a 1e10 S
+                  ## pin carrying a meaningless current).  `pcnr` with held
+                  ## nodes is refused.  None (the default) is today's solve,
+                  ## untouched.
+                  Parameter(name='pin',
+                            desc="Node voltages held while the operating point is "
+                                 "solved, {node: volts} (SPICE's .ic for a "
+                                 "transient's operating point)",
+                            unit='V', default=None),
+                  Parameter(name='nodeset',
+                            desc="Node voltages to start from, {node: volts}: a "
+                                 "solve with them held, then one without them from "
+                                 "its answer (SPICE's .nodeset)",
+                            unit='V', default=None),
                   ]
 
     ## ROADMAP 12.3.  A class-level default so it can be read after ANY
@@ -193,6 +215,10 @@ class DC(Analysis):
         ## AttributeError rather than an answer.
         self.pcnr_status = 'off'
         self.pcnr_fell_back = False
+        pin, nodeset = self._held(self.par.pin), self._held(self.par.nodeset)
+        if (pin or nodeset) and self.par.pcnr:
+            raise ValueError('DC(pcnr=True) with held nodes (pin, nodeset) is not '
+                             'supported')
 
         if self.par.pcnr:
             from pycircuit.circuit import pcnr as _pcnr
@@ -254,12 +280,24 @@ class DC(Analysis):
             f = self.cir.i(x, self.epar) + lambda_ * self.cir.u(0, analysis='dc', epar=self.epar)
             dFdx = self.cir.G(x, self.epar)
             return f, dFdx
-            
-        from pycircuit.circuit.nrsolver import (GminAnchorNewton,
-                                                 GminSteppingNewton,
-                                                 JunctionGminSteppingNewton,
-                                                 PseudoTransientNewton,
-                                                 SourceSteppingNewton)
+
+        if nodeset:
+            ## SPICE's `.nodeset`: a solve with the nodes held, then one
+            ## without them (but for the pins) from its answer.  A held
+            ## solve that fails leaves the hint unused, as SPICE does.
+            both = dict(nodeset)
+            both.update(pin)
+            try:
+                x0 = self._solve_held(func, source_callback, x0, both)
+            except (NoConvergenceError, SingularMatrix) as exc:
+                logging.getLogger(__name__).warning(
+                    'DC: the solve with the nodesets held failed (%s); solving without '
+                    'them', str(exc)[:120])
+        if pin:
+            x = self._solve_held(func, source_callback, x0, pin)
+            self.result = CircuitResult(self.cir, x)
+            return self.result
+
         from pycircuit.circuit.pcnr import pcnr_junctions
 
         ## P18 chain, physical-first: junction-gmin (the proper `gmin`,
@@ -275,32 +313,12 @@ class DC(Analysis):
             _jrows.append((_ra - (_ra > self.irefnode),
                            _rb - (_rb > self.irefnode)))
 
-        base_solver = self._get_nrsolver()
-        jgmin_solver = JunctionGminSteppingNewton(base_solver, _jrows)
-        gshunt_solver = GminSteppingNewton(jgmin_solver)
-        source_chain = SourceSteppingNewton(gshunt_solver, refnode_removed(source_callback, self.irefnode, self.toolkit))
-        ## P25: pseudo-transient continuation as the chain's LAST resort
-        ## (industry order: gmin -> gshunt -> source stepping -> Psi-tc).
-        ## Its pseudo steps are solved by the PLAIN base solver, never the
-        ## chain: SourceSteppingNewton's rungs rebuild F from the callback
-        ## WITHOUT the pseudo term, so handing the chain a deformed system
-        ## would solve the wrong problem mid-ladder.
-        solver_chain = PseudoTransientNewton(source_chain,
-                                             rung_solver=base_solver)
-
-        ## ROADMAP 12.3 -- OUTERMOST, and on a DIFFERENT exception from every
-        ## layer below it.  The four ladders above engage on
-        ## `NoConvergenceError`; a `SingularMatrix` passes straight through all
-        ## of them by design (stage 6(a)), which is precisely why an empty row
-        ## had no rescue at all.  The anchor takes that exception, and only
-        ## that one.  Node rows of the REDUCED system: branch rows must not be
-        ## anchored, because a conductance in a voltage source's KVL equation
-        ## is not a leaky element, it is a wrong equation.
+        ## Node rows of the REDUCED system, for the anchor (see `_chain`).
         _node_rows = [i - (i > self.irefnode)
                       for i in range(len(self.cir.nodes)) if i != self.irefnode]
-        anchored_chain = GminAnchorNewton(solver_chain, _node_rows,
-                                          gmin=self.par.gmin,
-                                          rung_solver=base_solver)
+        anchored_chain = self._chain(
+            refnode_removed(source_callback, self.irefnode, self.toolkit), _jrows,
+            _node_rows)
 
         try:
             x = self._newton(func, x0, anchored_chain)
@@ -323,6 +341,119 @@ class DC(Analysis):
 
         self.result = CircuitResult(self.cir, x)
         return self.result
+
+    def _chain(self, source_callback, jrows, node_rows):
+        """The solver chain on the reduced system: `source_callback` its
+        source-stepping residual, `jrows` its junction row pairs, `node_rows`
+        its node (KCL) rows."""
+        from pycircuit.circuit.nrsolver import (GminAnchorNewton,
+                                                 GminSteppingNewton,
+                                                 JunctionGminSteppingNewton,
+                                                 PseudoTransientNewton,
+                                                 SourceSteppingNewton)
+        base_solver = self._get_nrsolver()
+        jgmin_solver = JunctionGminSteppingNewton(base_solver, jrows)
+        gshunt_solver = GminSteppingNewton(jgmin_solver)
+        source_chain = SourceSteppingNewton(gshunt_solver, source_callback)
+        ## P25: pseudo-transient continuation as the chain's LAST resort
+        ## (industry order: gmin -> gshunt -> source stepping -> Psi-tc).
+        ## Its pseudo steps are solved by the PLAIN base solver, never the
+        ## chain: SourceSteppingNewton's rungs rebuild F from the callback
+        ## WITHOUT the pseudo term, so handing the chain a deformed system
+        ## would solve the wrong problem mid-ladder.
+        solver_chain = PseudoTransientNewton(source_chain,
+                                             rung_solver=base_solver)
+
+        ## ROADMAP 12.3 -- OUTERMOST, and on a DIFFERENT exception from every
+        ## layer below it.  The four ladders above engage on
+        ## `NoConvergenceError`; a `SingularMatrix` passes straight through all
+        ## of them by design (stage 6(a)), which is precisely why an empty row
+        ## had no rescue at all.  The anchor takes that exception, and only
+        ## that one.  Node rows of the REDUCED system: branch rows must not be
+        ## anchored, because a conductance in a voltage source's KVL equation
+        ## is not a leaky element, it is a wrong equation.
+        return GminAnchorNewton(solver_chain, node_rows, gmin=self.par.gmin,
+                                rung_solver=base_solver)
+
+    def _held(self, nodes):
+        """`nodes` ({node or name: volts}) as {node index: volts}."""
+        if not nodes:
+            return {}
+        out = {}
+        for node, volts in dict(nodes).items():
+            try:
+                idx = self.cir.get_node_index(node)
+            except ValueError:
+                raise ValueError(f'a held node {node!r} is not in the circuit')
+            if idx == self.irefnode:
+                raise ValueError('the reference node cannot be held: it is 0 V by '
+                                 'construction')
+            out[idx] = float(volts)
+        return out
+
+    def _solve_held(self, func, source_callback, x0, held):
+        """The operating point with the nodes `held` ({index: volts}) at
+        their values (see the `pin` parameter)."""
+        if not isinstance(self.toolkit.zeros(1), np.ndarray):
+            raise NotImplementedError('held nodes need the numeric toolkit')
+        from pycircuit.circuit.pcnr import pcnr_junctions
+        red = _Held(self.cir.n, self.irefnode, held)
+        nodes = len(self.cir.nodes)
+        x0 = np.asarray(x0, dtype=float)
+        ## A branch whose current only held rows saw has nothing left to
+        ## fix it: a voltage source or an inductor holds that node at DC.
+        _f, J = func(red.full(red.reduce(x0)))
+        J = np.asarray(J)
+        Jr = J[np.ix_(red.keep, red.keep)]
+        for k in np.flatnonzero(~Jr.any(axis=0)):
+            col = red.keep[k]
+            if col >= nodes:
+                by = [str(self.cir.nodes[r].name) for r in np.flatnonzero(J[:, col])
+                      if r in held]
+                raise ValueError(
+                    f'held node(s) {", ".join(by or ["?"])}: a voltage source or an '
+                    'inductor holds them at DC, so the hold leaves its current '
+                    'undetermined (SPICE lets the source win, through a 1e10 S pin)')
+        pos = {int(i): k for k, i in enumerate(red.keep)}
+        jrows = [(pos[ra], pos[rb]) for _i, _e, ra, rb in pcnr_junctions(self.cir)
+                 if ra in pos and rb in pos]
+        node_rows = [pos[i] for i in range(nodes) if i in pos]
+
+        def held_func(xr):
+            red.lam = 1.0
+            return red.system(*func(red.full(xr)))
+
+        def held_source(xr, lam):
+            red.lam = lam
+            return red.system(*source_callback(red.full(xr), lam))
+
+        solver = self._chain(held_source, jrows, node_rows)
+        n_branches = len(self.cir.branches)
+        abstol = red.reduce(np.concatenate((self.par.iabstol * np.ones(nodes),
+                                            self.par.vabstol * np.ones(n_branches))))
+        xtol = red.reduce(np.concatenate((self.par.vabstol * np.ones(nodes),
+                                          self.par.iabstol * np.ones(n_branches))))
+
+        def limiter_func(xr, x0r):
+            return red.reduce(self.cir.limit(red.full(xr), red.full(x0r), self.epar))
+
+        names = reduced_row_names(self.cir, -1)
+        try:
+            x_res, _ = solver.solve_system(
+                red.reduce(x0), held_func, self.toolkit, self.par.reltol, abstol, xtol,
+                self.par.maxiter, limiter=limiter_func, scaler=self._get_scaler(),
+                row_names=None if names is None else [names[i] for i in red.keep])
+        except SingularMatrix:
+            raise
+        except NoConvergenceError as e:
+            if 'Singular' in str(e) or 'linearsolver' in str(e).lower():
+                raise SingularMatrix(str(e)) from e
+            raise
+        except LinAlgError as e:
+            raise SingularMatrix(str(e)) from e
+        red.lam = 1.0
+        self.gmin_anchor_retained = solver.anchor_retained
+        return red.full(x_res)
 
     def _newton(self, func, x0, solver):
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
@@ -373,6 +504,33 @@ class DC(Analysis):
 
         # Insert reference node voltage
         return self.toolkit.concatenate((x_res[:self.irefnode], self.toolkit.array([0.0]), x_res[self.irefnode:]))
+
+class _Held:
+    """A solve with nodes held: the unknowns it leaves out -- the reference
+    node at 0, each held node at `lam` times its volts (`lam` the
+    source-stepping factor, as SPICE scales a pinned row) -- and the maps
+    between the full vector and the solved one."""
+
+    def __init__(self, n, irefnode, held):
+        out = sorted({irefnode} | set(held))
+        self.keep = np.array([i for i in range(n) if i not in set(out)], dtype=np.intp)
+        self.out = np.array(out, dtype=np.intp)
+        self.values = np.array([0.0 if i == irefnode else held[i] for i in out])
+        self.n = n
+        self.lam = 1.0
+
+    def full(self, xr):
+        x = np.empty(self.n)
+        x[self.keep] = xr
+        x[self.out] = self.lam * self.values
+        return x
+
+    def reduce(self, x):
+        return np.asarray(x)[self.keep]
+
+    def system(self, F, J):
+        return np.asarray(F)[self.keep], np.asarray(J)[np.ix_(self.keep, self.keep)]
+
 
 def refnode_removed(func, irefnode,toolkit):
     def new(x, *args, **kvargs):

@@ -256,6 +256,26 @@ def test_initial_conditions_only_under_uic(tmp_path):
     assert any('IC= ignored without UIC' in r for r in imp.report)
 
 
+def test_an_ic_without_uic_holds_the_operating_point(tmp_path):
+    """`.ic` without UIC: the transient's operating point with those nodes
+    held, released at t = 0 (the plan's stage 3); `.nodeset` the point it
+    is solved from."""
+    imp = _import(tmp_path, """
+        title
+        R1 a 0 1k
+        C1 a 0 1n
+        R2 b 0 1k
+        .ic v(a)=1
+        .nodeset v(b)=0.5
+        .tran 10n 1u
+        """)
+    tr, kw = imp.transient()
+    assert not tr.par.uic and dict(tr.par.ic) == {'a': 1.0}
+    assert dict(tr.par.nodeset) == {'b': 0.5}
+    res = tr.solve(**kw)
+    assert res.v('a', gnd).y[0] == 1.0
+
+
 def test_the_transient_follows_the_netlist(tmp_path):
     """TMAX, NOOP (zeros), the options' method and reltol, the
     temperature; an override replaces any."""
@@ -303,9 +323,9 @@ def test_every_refusal_is_listed_with_its_line(tmp_path):
                        (5, 'a substrate junction (CJS) is not supported'),
                        (7, 'x1: no subcircuit nosuch'),
                        (8, "resistor parameters ['tc1'] are not supported"),
-                       (9, 'a SFFM waveform is not supported'),
-                       (10, '.ic without UIC')):
+                       (9, 'a SFFM waveform is not supported')):
         assert f'a.cir:{line}: ' in msg and what in msg, (line, what, msg)
+    assert '.ic' not in msg
     imp = _import(tmp_path, text, strict=False)
     assert [m.name for m in imp.elements] == []
     assert sum('not supported' in r for r in imp.report) >= 5
@@ -337,16 +357,13 @@ def test_refusals_say_why(tmp_path, line, says):
 
 
 #: The fetched decks' known gaps: what each import refuses today, by the
-#: plan's stages (stage 3: `.ic` without UIC; 7: the bipolar substrate
-#: junction; 9: MOS level 2).  A deck absent here imports.
+#: plan's stages (7: the bipolar substrate junction; 9: MOS level 2).  A
+#: deck absent here imports.
 CENSUS_GAPS = {
-    'ring.cir': ('MOS LEVEL 2', '.ic without UIC'),
-    'arom.cir': ('.ic without UIC',), 'gm17.cir': ('.ic without UIC',),
-    'rich3.cir': ('.ic without UIC',),
     'latch.cir': ('CJS',), 'opampal.cir': ('CJS',), 'gilbert_cell_hb.cir': ('CJS',),
 }
 _LEVEL2 = ('ab_ac', 'ab_integ', 'ab_opamp', 'cram', 'e1480', 'g1310', 'gm6', 'hussamp',
-           'mosrect', 'mux8', 'nand', 'pump', 'schmitfast', 'schmitslow')
+           'mosrect', 'mux8', 'nand', 'pump', 'ring', 'schmitfast', 'schmitslow')
 CENSUS_GAPS.update({f'{n}.cir': ('MOS LEVEL 2',) for n in _LEVEL2})
 #: The large decks import in seconds to tens of seconds: their census is a
 #: benchmark's (`benchmarks/large_circuits.py`), not the suite's.
@@ -371,7 +388,8 @@ def test_each_fetched_deck_imports_or_names_exactly_its_known_gaps(path):
         imp = import_netlist(p, strict=False)
     refused = [r for r in imp.report
                if not any(s in r for s in ('not mapped', 'not read', 'ignored', 'a 0 V source',
-                                           'left unconnected', 'starts at 0', 'not applied'))]
+                                           'left unconnected', 'starts at 0',
+                                           'ignored under UIC'))]
     gaps = CENSUS_GAPS.get(os.path.basename(path), ())
     for r in refused:
         assert any(g in r for g in gaps), (path, r)

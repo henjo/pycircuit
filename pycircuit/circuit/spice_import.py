@@ -11,6 +11,9 @@ element is mapped as SPICE defines it:
 R     `R`; ``r = 0`` a 0 V source (SPICE's ammeter idiom)
 C, L  `C`, `L`; an ``IC=`` only under UIC (SPICE ignores it otherwise)
 K     `CoupledInductors`, replacing its two inductors
+.ic   under UIC (or NOOP) the transient's starting values; without, the
+      operating point solved with those nodes held, released at t = 0
+.nodeset  the operating point solved from them (held, then released)
 V, I  `VS`, `IS` and the waveform sources, SPICE's defaults filled in
       from ``.tran`` (PULSE's TR and TF a zero or absent one TSTEP, PW
       and PER TSTOP; SIN's FREQ 1/TSTOP; EXP's TAU TSTEP and TD2
@@ -164,7 +167,8 @@ class Imported:
     def transient(self, **overrides):
         """The `.tran` as pycircuit's transient: ``(Transient, keyword
         arguments for its solve)``.  The netlist's options, its temperature,
-        UIC/NOOP (zeros, plus `.ic`) and TMAX become the Transient's
+        UIC/NOOP (zeros, plus `.ic`), `.ic` without UIC (the operating point
+        with those nodes held), `.nodeset` and TMAX become the Transient's
         keywords; `overrides` replace any of them.  TSTART is not a
         Transient's: the run starts at 0 (slice its result)."""
         from pycircuit.circuit.transient import Transient
@@ -178,8 +182,12 @@ class Imported:
             kw['timestep_max'] = self.tran['tmax']
         if self.tran['start'] in ('uic', 'noop'):
             kw['uic'] = True
-            if self.ic:
-                kw['ic'] = {gnd if n == '0' else n: v for n, v in self.ic.items()}
+        elif self.nodeset:
+            kw['nodeset'] = dict(self.nodeset)
+        if self.ic:
+            ## (under UIC the starting values; without, held while the
+            ## operating point is solved -- SPICE's `.ic`)
+            kw['ic'] = dict(self.ic)
         kw.update(overrides)
         return (Transient(self.circuit, **kw),
                 {'tend': self.tran['tstop'], 'timestep': self.tran['tstep']})
@@ -521,11 +529,12 @@ class _Importer:
                     target[node] = self.net.deck.evaluate(raw)
                 except SpiceCardError as e:
                     self.refuse(getattr(self.net, what[1:] + '_where'), f'{what} v({node}): {e}')
-        if self.net.ic and (tran is None or tran['start'] == 'op'):
-            self.refuse(self.net.ic_where, '.ic without UIC: an operating point with nodes '
-                                           'held is not built yet (the plan\'s stage 3)')
-        if self.net.nodeset:
-            self.note(self.net.nodeset_where, '.nodeset: not applied yet (the plan\'s stage 3)')
+        if '0' in self.out.ic or '0' in self.out.nodeset:
+            self.refuse(self.net.ic_where or self.net.nodeset_where,
+                        'an .ic or .nodeset on the ground node')
+        if self.net.nodeset and tran is not None and tran['start'] != 'op':
+            self.note(self.net.nodeset_where, '.nodeset ignored under UIC (no operating '
+                                              'point is solved)')
 
     ## -- elements -------------------------------------------------------------
 

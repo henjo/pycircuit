@@ -307,6 +307,14 @@ class _InitialState:
             if value is not None:
                 shared[name] = value
 
+        ## SPICE's `.ic` without UIC (and `.nodeset`): the operating point
+        ## solved with those nodes held, the transient releasing them at
+        ## t = 0 -- `DC`'s `pin` and `nodeset` (the SPICE benchmark plan's
+        ## stage 3).
+        if self.par.ic:
+            shared['pin'] = self.par.ic
+        if getattr(self.par, 'nodeset', None):
+            shared['nodeset'] = self.par.nodeset
         dc = DC(self.cir, toolkit=self.toolkit, refnode=refnode, **shared)
         try:
             return dc.solve().x
