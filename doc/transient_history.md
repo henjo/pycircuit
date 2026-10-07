@@ -4375,3 +4375,31 @@ put in the repository.  `spice_data` is the one gate: a data-dependent test
 or benchmark skips where a file is absent or partial; a path the manifest
 does not list is an error, so a typo cannot read as missing data.  A
 download whose hash is not the manifest's is refused.
+
+
+## `utilities/spicecard.py` -- SPICE's lexical rules, and expressions parsed (2026-10-07, the SPICE benchmark plan's stage 1)
+
+### `number`, `_scale`, `_number_text`, `_tokens`, `_Parser`, `_emit`, `_python_text`; `_strip_comments`, `_model_card`, `_subckt_ports`
+
+The card reader's lexical layer, made SPICE's for the netlists to come
+(the CircuitSim90 decks write `7.0F`, `10pF`, `1.8mA`, `.05V`, `1MEG`,
+`NS`, `.model nn2 nmos(` with the parameters on `+` lines and the `)` on
+its own, and names like `v$d5`): a scale factor in any case, the letters
+after it a unit and ignored (so `1F` is a femto and `1Mohm` a milliohm, as
+in SPICE); parenthesised `.model` parameters; `.subckt` ports ending at
+`params:` or the first assignment; a `$` a comment only where it starts a
+token.  `number` reads one value -- the value its text has in an
+expression.
+
+Expressions are parsed (a Pratt parser) and emitted as Python: Python's
+operators with Python's precedence, which is what the regex translation
+handed to Python -- on the IHP cards every one of the 1849 expressions it
+read parses to the same Python tree (pinned with a verbatim copy of it),
+and every (corner, model) read it made gives the same bytes (213 of 307;
+checked once against the parent tree) -- plus SPICE's `c ? a : b`, `&&`,
+`||`, `!` and `<>` with C's precedence.  The IHP RF and mismatch cards,
+which use `?:`, and the cards whose `.if` reads a parameter named `as`,
+now read (75 more model reads; a Python word as a parameter name reaches
+Python under a prefix the resolver strips).  Only numbers, names, calls
+and operators parse: on the parent a lambda or an attribute walk from a
+literal reached `eval` (the closed namespace stops a name, not those).
