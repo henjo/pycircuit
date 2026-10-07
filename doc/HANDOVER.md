@@ -289,7 +289,10 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   Every reader goes through `benchdata.spice_data(path)`: None where a file
   is absent or partial (a skip -- nothing else touches the network), a
   ValueError for a path the manifest does not list.  `--build-manifest`
-  lists, downloads and hashes anew (maintainers).
+  lists, downloads and hashes anew (maintainers).  Importing a deck:
+  `pycircuit.circuit.spice_import.import_netlist(path)` (stage 2; the
+  census of what imports and what each gap waits for is in
+  `doc/transient_history.md`, "SPICE netlists read and imported").
 
 Suite: **3235 passed, 6 skipped, 3 xfailed** — **27 min as ONE run**.
 

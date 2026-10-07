@@ -4403,3 +4403,37 @@ now read (75 more model reads; a Python word as a parameter name reaches
 Python under a prefix the resolver strips).  Only numbers, names, calls
 and operators parse: on the parent a lambda or an attribute walk from a
 literal reached `eval` (the closed namespace stops a name, not those).
+
+
+## `utilities/spicenetlist.py`, `circuit/spice_import.py` -- SPICE netlists read and imported (2026-10-07, the SPICE benchmark plan's stage 2)
+
+### `spicenetlist.read`, `Netlist`, `Card`, `Subckt`; `spice_import.import_netlist`, `Imported.transient`, `Imported.write_ngspice`
+
+A SPICE netlist read as SPICE wrote it (`spicenetlist`, no simulator
+imports: element lines with file and line, subcircuits with their scoped
+models and parameters, analyses, options, prints, `.ic`, `.nodeset`, the
+regression suite's `*COMP`), then flattened and mapped onto pycircuit as
+SPICE defines each element (`spice_import`): R (a zero one a 0 V source),
+C and L (an `IC=` only under UIC), K (`CoupledInductors`), V and I with
+SPICE's waveform defaults from `.tran` (PULSE's TR, TF a TSTEP where 0 or
+absent, PW and PER TSTOP; SIN's FREQ 1/TSTOP; EXP's TAUs and TD2) and an
+AC magnitude of 0 unless given, G (`VCCS`, control pins first), D, Q (a
+substrate node where no substrate junction is asked for), M by LEVEL (a
+PMOS threshold as its magnitude, level 1's KP from UO and TOX, PHI 0.6
+where neither PHI nor NSUB is given, TPG and NSS without effect where VTO
+is given), X flattened with `:`-joined names (Xyce's; `.` is pycircuit's
+hierarchy separator).  What cannot be mapped is refused in one error
+naming every occurrence's file and line.  `transient()` builds the
+`.tran` (UIC and NOOP as `uic=True`, TMAX, the options' method and
+reltol, the temperature); `write_ngspice` writes the flat circuit back
+for references (ngspice runs it; the suite never calls a simulator).
+
+An imported deck of every kind is the circuit built by hand: its DC and
+20 transient steps the same bytes.  The census over the 36 fetched decks
+outside MOS2_LARGE (a test; it skips without the data):
+
+| imports | gaps (the plan's stage) |
+|---|---|
+| 4049osc; vreg (a `.dc`); reg0 (a linear hybrid-pi, `.ac`); toronto, slowlatch (level 3); gm1, gm2, gm3, gm19, jge, mike2, todd3 (MOS3); common_emitter_hb, rca, schmitecl | `.ic` without UIC (3): arom, gm17, rich3, ring; the bipolar substrate junction (7): latch, opampal, gilbert_cell_hb; MOS level 2 (9): ab_ac, ab_integ, ab_opamp, cram, e1480, g1310, gm6, hussamp, mosrect, mux8, nand, pump, ring, schmitfast, schmitslow -- and all 14 MOS2_LARGE |
+
+ngspice runs the written 4049osc deck's 500 us in 0.07 s.

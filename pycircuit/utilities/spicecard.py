@@ -343,6 +343,13 @@ def _logical_lines(path, seen=None):
     flat stream; `dirname` travels with each line because an include path
     is relative to the file that names it.
     """
+    for text, here, _lineno in _numbered_lines(path, seen):
+        yield text, here
+
+
+def _numbered_lines(path, seen=None, title=False):
+    """`_logical_lines`, each with the number of its first physical line;
+    `title`: the file's first line is a netlist's title, not a statement."""
     seen = seen if seen is not None else set()
     real = os.path.realpath(path)
     if real in seen:
@@ -354,8 +361,10 @@ def _logical_lines(path, seen=None):
     with open(path, errors='replace') as fh:
         raw = fh.readlines()
 
-    pending = None
-    for line in raw + ['\n']:
+    pending, start = None, 0
+    for lineno, line in enumerate(raw + ['\n'], 1):
+        if title and lineno == 1:
+            continue
         text = _strip_comments(line)
         stripped = text.strip()
         if not stripped:
@@ -370,10 +379,10 @@ def _logical_lines(path, seen=None):
             pending += ' ' + stripped[1:]
             continue
         if pending is not None and pending.strip():
-            yield pending.strip(), here
-        pending = text
+            yield pending.strip(), here, start
+        pending, start = text, lineno
     if pending is not None and pending.strip():
-        yield pending.strip(), here
+        yield pending.strip(), here, start
 
 
 _ASSIGN = re.compile(r"([A-Za-z_][\w.\[\]]*)\s*=\s*"
@@ -537,13 +546,24 @@ class Deck(object):
             raise SpiceCardError(
                 'no model %r in this deck (have: %s)'
                 % (name, ', '.join(sorted(self.models)) or 'none'))
-        model = self.models[key]
+        return self.values(self.models[key], **overrides)
+
+    def values(self, model, **overrides):
+        """`model`'s resolved numeric parameters (a `Model` of this deck,
+        or of a scope it does not register by name -- a netlist's
+        subcircuit-local models)."""
         res = self._resolver(model.scope,
                              {k.lower(): v for k, v in overrides.items()})
         out = {}
         for pname, raw in model.raw.items():
             out[pname] = self._evaluate(raw, res)
         return out
+
+    def evaluate(self, raw, scope=None, **overrides):
+        """One expression or value in `scope` (default: the global one)."""
+        res = self._resolver(scope or self.global_scope,
+                             {k.lower(): v for k, v in overrides.items()})
+        return self._evaluate(raw, res)
 
     def param(self, name, **overrides):
         """Resolve one global `.param`."""
