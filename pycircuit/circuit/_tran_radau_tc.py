@@ -75,6 +75,25 @@ the counters each of its calls makes (`passes_count`); else it makes the
 calls (`radau.fuse:unhanded`).  Each hand-off's own `passes` call cost
 ~57 k instructions of readiness and marshalling around its kernels.
 
+THE FROZEN FACTORS (speed round 12, stage 5b; `FOLD`, env
+`PYCIRCUIT_RADAU_FOLD`).  `_radau_frozen` makes its two factors -- ``(lam0/h)
+Cr + Gr`` real, ``(lam1/h) Cr + Gr`` complex -- and the complex one's packed
+values by `fold`, one small C call of its own: numpy's operations in its
+order (two roundings for the real one; for the complex one ``Cr`` cast to
+complex, numpy's product in `cmul_mode`'s form, then ``Gr`` cast to
+complex), the four flags its `errstate(all='raise')` raises on, and the
+nonzeros where they fall in the last record's pattern (`_csc_of_dense`'s
+order: column by column, rows ascending).  Every decision stays in
+`_radau_frozen`, in its order: a flag declines as numpy's error does, the
+kept LU is made as before, the record is `prepare`'s own
+(`ComplexKLUSolver.prepare_values`) where the values fell in the pattern and
+`prepare`'s otherwise.  A non-finite input is numpy's (a NaN's payload
+follows its loops).  Its own call, not inside the transform's: inside, a
+factor that would raise surfaces only after the call's readiness checks
+have run, and the step would be made again around them.  The C's work is
+nothing on the PSP stage's 6x6 factors; the call's marshalling is the cost
+(buffers kept per size: `ffi.from_buffer` costs ~3.5 k a call).
+
 DECLINES, before anything is touched (`_paths.no`): the switch (and the
 evaluate core's two), no frozen factors or no kept LU or marshalled record
 (`_radau_frozen`'s own), no build, numpy's complex product of neither
@@ -111,6 +130,10 @@ ENABLED = os.environ.get('PYCIRCUIT_RADAU_TC', '1') != '0'
 #: passes `_stage_end_passes` makes next, made by the C after it converges
 #: and handed over (`_tc_end`); env `PYCIRCUIT_RADAU_TC_END=0` turns it off
 END = os.environ.get('PYCIRCUIT_RADAU_TC_END', '1') != '0'
+#: THE FROZEN FACTORS IN C (speed round 12, stage 5b): `_radau_frozen`'s two
+#: factors and the complex one's packed values made by one small C call
+#: (`fold`); env `PYCIRCUIT_RADAU_FOLD=0` turns it off
+FOLD = os.environ.get('PYCIRCUIT_RADAU_FOLD', '1') != '0'
 STATUS = 'not loaded'
 
 RADAU_TC = r"""
@@ -429,12 +452,105 @@ typedef struct {
 long hdl_fn(radau_tf_t *s);
 """
 
+FOLD_C = r"""
+#include <stdint.h>
+#include <math.h>
+#include <fenv.h>
+typedef struct {
+    long m, fused, nnz, nz_at;
+    double s0, c1r, c1i;
+    const double *Cr, *Gr;
+    const uint8_t *nz;
+    double *rf, *cf, *ax;
+    long status, same;
+} radau_fold_t;
+
+#define FOLD_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
+
+/* numpy's complex product, in the form its loops take here (`cmul_mode`) */
+static void cmul(long fused, double ar, double ai, double br, double bi, double *re, double *im)
+{
+    if (fused) {
+        *re = fma(ar, br, -(ai * bi));
+        *im = fma(ar, bi, ai * br);
+    } else {
+        *re = ar * br - ai * bi;
+        *im = ar * bi + ai * br;
+    }
+}
+
+/* `_radau_frozen`'s factors as numpy makes them: the real one (s0 * Cr) +
+   Gr, two roundings as its two loops; the complex one c1 * Cr -- Cr cast to
+   complex, numpy's product -- + Gr cast to complex (the imaginary part
+   + 0.0).  `status`: 0 made; 1 a flag `errstate(all='raise')` raises on,
+   in either; 2 a non-finite input, none made (a NaN's payload follows
+   numpy's loops, not the operands' order: numpy's to make).  Finite inputs
+   and no flag: both factors finite.  Then, given the last record's pattern
+   (`nz`: `A.T != 0`, laid out as `A.T` -- `nz_at` -- or as `A`), the complex
+   one's nonzeros column by column, rows ascending, into `ax`; `same`: every
+   nonzero where the pattern has one and nowhere else */
+long hdl_fn(radau_fold_t *f)
+{
+    const long m = f->m, mm = m * m;
+    long i, j, k;
+    f->same = 0;
+    for (k = 0; k < mm; k++)
+        if (!isfinite(f->Cr[k]) || !isfinite(f->Gr[k])) {
+            f->status = 2;
+            return 0;
+        }
+    feclearexcept(FE_ALL_EXCEPT);
+    for (k = 0; k < mm; k++) {
+        const double t = f->s0 * f->Cr[k];
+        f->rf[k] = t + f->Gr[k];
+    }
+    for (k = 0; k < mm; k++) {
+        double re, im;
+        cmul(f->fused, f->c1r, f->c1i, f->Cr[k], 0.0, &re, &im);
+        f->cf[2 * k] = re + f->Gr[k];
+        f->cf[2 * k + 1] = im + 0.0;
+    }
+    f->status = fetestexcept(FOLD_FLAGS) != 0;
+    feclearexcept(FE_ALL_EXCEPT);
+    if (f->status || !f->nz) return 0;
+    k = 0;
+    for (j = 0; j < m; j++)
+        for (i = 0; i < m; i++) {
+            const double re = f->cf[2 * (i * m + j)], im = f->cf[2 * (i * m + j) + 1];
+            const long nz = re != 0.0 || im != 0.0;
+            const long was = f->nz[f->nz_at ? j * m + i : i * m + j] != 0;
+            if (nz != was) return 0;
+            if (nz) {
+                if (k == f->nnz) return 0;
+                f->ax[2 * k] = re;
+                f->ax[2 * k + 1] = im;
+                k++;
+            }
+        }
+    f->same = k == f->nnz;
+    return 0;
+}
+"""
+FOLD_CDEF = """
+typedef struct {
+    long m, fused, nnz, nz_at;
+    double s0, c1r, c1i;
+    const double *Cr, *Gr;
+    const uint8_t *nz;
+    double *rf, *cf, *ax;
+    long status, same;
+} radau_fold_t;
+long hdl_fn(radau_fold_t *f);
+"""
+
 #: the C's status codes past 1 (converged): why it handed the loop back
 BAIL = {2: 'nonfinite', 3: 'flags', 4: 'rhs', 5: 'lu', 6: 'refactor', 7: 'klusolve',
         8: 'residual', 9: 'step', 10: 'walkstop', 11: 'maxiter'}
 
 _driver = None
 _MOD = {}
+#: `fold`'s loaded kernel and its status
+_FOLD = {}
 
 
 def _cmul_samples():
@@ -533,6 +649,119 @@ def driver():
                    ctypes.cast(getrs, ctypes.c_void_p).value)
         STATUS = 'c'
     return _driver or None
+
+
+def _fold_driver():
+    """`(ffi, cfn, struct)` for `fold` once loaded, or None (the reason in
+    `_FOLD['status']`)."""
+    d = _FOLD.get('drv')
+    if d is None:
+        d = _FOLD['drv'] = False
+        if cmul_mode() is None:
+            _FOLD['status'] = "off (numpy's complex product is neither form)"
+            return None
+        from pycircuit.circuit import _hdl_cbackend as cb
+        try:
+            ffi, cfn, _key, _cold, _secs = cb.load_kernel(FOLD_C, FOLD_CDEF)
+        except (cb.CompileError, OSError) as e:
+            _FOLD['status'] = f'off ({e})'
+            return None
+        d = _FOLD['drv'] = (ffi, cfn, ffi.new('radau_fold_t *'))
+        d[2].fused = _MOD['cmul']
+        _FOLD['status'] = 'c'
+    return d or None
+
+
+def _fold_bufs(m):
+    """`fold`'s buffers for size `m` -- the inputs copied in, the outputs
+    copied out: a buffer's handle is made once (`ffi.from_buffer` costs
+    ~3.5 k instructions a call, more than the C's work on a small factor)
+    -- set in the struct."""
+    ffi, _cfn, f = _FOLD['drv']
+    bufs = (np.empty((m, m)), np.empty((m, m)), np.empty((m, m)),
+            np.empty((m, m), dtype=np.complex128), np.empty(m * m, dtype=np.complex128))
+    hs = [ffi.from_buffer('double *', a) for a in bufs]
+    f.Cr, f.Gr, f.rf, f.cf, f.ax = hs
+    f.m = m
+    b = _FOLD['m'] = (m, *bufs, hs)
+    return b
+
+
+def _fold_nz(nz, m):
+    """The last record's pattern as `fold`'s C reads it -- `(nz, at, handle)`,
+    `at` 1 where it is laid out as `A.T`, 0 as `A` -- or None (another
+    kind); its handle made once for each pattern."""
+    if not (type(nz) is np.ndarray and nz.dtype == np.bool_ and nz.shape == (m, m)):
+        return None
+    if nz.flags.c_contiguous:
+        at = 1
+    elif nz.flags.f_contiguous:
+        ## (`A.T != 0` is laid out as `A` where `A` is C-ordered: its
+        ## transpose is the C-ordered view of that memory)
+        at = 0
+    else:
+        return None
+    ffi = _FOLD['drv'][0]
+    c = _FOLD['nz'] = (nz, at, ffi.from_buffer('uint8_t *', nz if at else nz.T))
+    return c
+
+
+def fold(Cr, Gr, s0, c1, last):
+    """`_RadauStages._radau_frozen`'s two factors from ONE C call (speed
+    round 12, stage 5b), or None where the C does not make them -- the
+    switch, no build, inputs other than two float64 square arrays of one
+    size, a non-finite entry (each counted, `radau.frozen:fold.<why>`): the caller
+    makes them in numpy, as before.  Else `(flagged, rf, cf, data)`:
+    `flagged`, an operation raised a flag numpy raises on under
+    `errstate(all='raise')` (the caller declines as it does; nothing else
+    returned); `rf` and `cf`, ``s0 * Cr + Gr`` and ``c1 * Cr + Gr`` -- fresh
+    arrays, numpy's bytes, for the scalars as the caller's expression makes
+    them, finite; `data`, the complex factor's nonzeros where they fall in
+    `last`'s pattern (`ComplexKLUSolver._csc_last`), in its order
+    (`ComplexKLUSolver.prepare_values`) -- None where they fall elsewhere,
+    there is no pattern or it has no nonzeros.  It stands in for the numpy calls, their errstate,
+    the mask and the gather: ~85 k instructions a step on the PSP stage's
+    radau PSS."""
+    if not FOLD:
+        return _no('radau.frozen:fold.off')
+    d = _FOLD.get('drv')
+    if d is None:
+        d = _fold_driver()
+    if not d:
+        return _no('radau.frozen:fold.driver')
+    m = Cr.shape[0] if type(Cr) is np.ndarray and Cr.ndim == 2 else 0
+    if not (m and type(Gr) is np.ndarray and Cr.shape == (m, m) and Gr.shape == (m, m)
+            and (Cr.dtype is _F64 or Cr.dtype == np.float64)
+            and (Gr.dtype is _F64 or Gr.dtype == np.float64)):
+        return _no('radau.frozen:fold.input')
+    f = d[2]
+    b = _FOLD.get('m')
+    if b is None or b[0] != m:
+        b = _fold_bufs(m)
+    np.copyto(b[1], Cr)
+    np.copyto(b[2], Gr)
+    nnz = 0
+    if last is not None:
+        c = _FOLD.get('nz')
+        if c is None or c[0] is not last[0]:
+            c = _fold_nz(last[0], m)
+        nnz = last[2].shape[0] if c is not None else 0
+    if nnz:
+        f.nz, f.nz_at, f.nnz = c[2], c[1], nnz
+    else:
+        f.nz = d[0].NULL
+    f.s0, f.c1r, f.c1i = s0, c1.real, c1.imag
+    d[1](f)
+    if f.status == 2:
+        return _no('radau.frozen:fold.nonfinite')
+    _PC['radau.frozen:fold'] += 1
+    if f.status:
+        return (True, None, None, None)
+    rf, cf = b[3].copy(), b[4].copy()
+    if nnz and f.same:
+        _PC['radau.frozen:fold.same'] += 1
+        return (False, rf, cf, b[5][:nnz].copy())
+    return (False, rf, cf, None)
 
 
 def _chain():

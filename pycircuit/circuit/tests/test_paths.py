@@ -51,6 +51,7 @@ DECLINING = [
     (_pss_walks, '_stage_reads'),
     (_sens_c, 'step'),
     (_tran_radau_tc, 'solve'),
+    (_tran_radau_tc, 'fold'),
     (_tran_lte_c, 'max_error'),
     (_hdl_batch, 'Batch.run'),
     (_hdl_climit, 'CLimitKernel.__call__'),

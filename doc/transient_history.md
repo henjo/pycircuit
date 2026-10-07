@@ -4340,3 +4340,22 @@ takes them for those stages where every call it replaces would find its
 readiness as stamped and nothing watched has changed since, making the
 counters those calls make, and makes the calls otherwise.  Measured: the
 PSP stage's radau PSS -3.88 % instructions and -4.1 % in time.
+
+
+## `_tran_radau.py`, `_tran_radau_tc.py`, `linearsolver.py` -- the frozen factors in C (2026-10-07, speed round 12)
+
+### `_RadauStages._radau_frozen`, `fold`, `FOLD_C`, `ComplexKLUSolver.prepare_values`
+
+The transform's frozen factors cost 131 k instructions a step on the PSP
+stage's radau PSS -- numpy calls on 6x6 arrays under an errstate, the
+complex factor's mask, comparison and gather for its KLU record, the
+kept LU's finiteness test.  One small C call now makes both factors as
+numpy does (its operations in its order, its complex product's form, the
+flags its errstate raises on) and the complex one's packed values where
+they fall in the last record's pattern; `_radau_frozen` makes every
+decision as before, in its order, and `prepare_values` is `prepare`'s own
+record of those values.  Its own call, not inside the transform's: a
+factor that would raise must decline before the transform's readiness
+checks run, as it did.  The C's work is nothing at this size; the
+marshalling is everything -- buffers kept per size.  Measured: the PSP
+stage's radau PSS -1.55 % instructions and -3.8 % in time.

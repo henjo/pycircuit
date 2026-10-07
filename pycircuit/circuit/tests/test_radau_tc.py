@@ -245,8 +245,10 @@ def _both(seed, **kw):
     a, da = _attempt(seed, False, **kw)
     b, db = _attempt(seed, True, **kw)
     if not db.get('radau_tc:served'):
+        ## (the factors' C call, `radau.frozen:fold`, counts as the step
+        ## size's cache stands: the second attempt finds it made)
         own = lambda d: {k: v for k, v in d.items()
-                         if not k.startswith(('radau_tc:', 'once:'))}
+                         if not k.startswith(('radau_tc:', 'once:', 'radau.frozen:fold'))}
         assert own(db) == own(da), (da, db)
     return a, b, db
 

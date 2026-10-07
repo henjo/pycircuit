@@ -140,6 +140,19 @@ def _csc_of_dense(A, mv, last=None):
              data.view(numpy.float64), key), (nz, Ap, Ai, key))
 
 
+def _csc_of_values(data, mv, last):
+    """`_csc_of_dense`'s record of a matrix whose nonzeros fell in the
+    last one's pattern, `last`, given those nonzeros in its order -- `data`,
+    complex128, made elsewhere (the transform's frozen factors in C, speed
+    round 12, stage 5b): the pattern's `Ap`, `Ai` and key, `data` as the
+    values, its `dot` -- what `_csc_of_dense` returns where its pattern is
+    the last one."""
+    nz, Ap, Ai, key = last
+    n = nz.shape[0]
+    return ((functools.partial(_csc_dot, mv, n, Ap, Ai, data), n, Ap, Ai,
+             data.view(numpy.float64), key), (nz, Ap, Ai, key))
+
+
 class NumpyLU:
     """THE FACTORISATION `numpy.linalg.solve` MAKES, KEPT (speed round 10,
     B3.1): `numpy.linalg.solve(A, b)` for every real 1-D `b`, bit for bit,
@@ -758,6 +771,23 @@ class ComplexKLUSolver(object):
         ## packed complex: view the complex128 data as 2*nnz interleaved doubles
         Ax = numpy.ascontiguousarray(Acsc.data, dtype=numpy.complex128).view(numpy.float64)
         return (Acsc.dot, n, Ap, Ai, Ax, (n, Ap.tobytes(), Ai.tobytes()))
+
+    def prepare_values(self, data, A):
+        """`prepare(A)` where `A`'s nonzeros are known to fall in the last
+        record's pattern, `data` holding them in its order (speed round 12,
+        stage 5b: the transform's frozen factors, made in C with their
+        packed values): `prepare`'s own record, without the mask and the
+        gather -- and `prepare(A)` itself where it would not marshal by
+        numpy or has no last pattern."""
+        numpy = self._np
+        mv = _csc_matvec()
+        last = self._csc_last
+        if (mv is None or last is None or type(A) is not numpy.ndarray
+                or A.dtype != numpy.complex128 or A.ndim != 2 or A.shape[0] != A.shape[1]
+                or last[0].shape != A.shape):
+            return self.prepare(A)
+        rec, self._csc_last = _csc_of_values(data, mv, last)
+        return rec
 
     def solve(self, A, b):
         """Solve the complex system ``A x = b`` and return ``x`` (complex).

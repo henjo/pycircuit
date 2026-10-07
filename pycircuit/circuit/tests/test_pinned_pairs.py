@@ -312,6 +312,26 @@ PAIRS = {
                  'pycircuit.circuit._tran_core:passes_held',
                  'pycircuit.circuit._tran_core:passes_count'],
     },
+    'the frozen factors and their C': {
+        'why': 'the C makes `_radau_frozen`\'s two factors as numpy does -- the real '
+               'one in two roundings, the complex one with `Cr` cast to complex and '
+               'numpy\'s product in `cmul_mode`\'s form, then `Gr` cast to complex -- '
+               'with the four flags its `errstate(all=\'raise\')` raises on, a '
+               'non-finite input left to numpy, and the complex one\'s nonzeros where '
+               'they fall in the last record\'s pattern, in `_csc_of_dense`\'s order; '
+               '`prepare_values` makes `prepare`\'s record of them',
+        'reference': ['pycircuit.circuit._tran_radau:_RadauStages._radau_frozen',
+                      'pycircuit.circuit.linearsolver:_csc_of_dense',
+                      'pycircuit.circuit.linearsolver:ComplexKLUSolver.prepare',
+                      'pycircuit.circuit._tran_radau_tc:cmul_mode'],
+        'twin': ['pycircuit.circuit._tran_radau_tc:FOLD_C',
+                 'pycircuit.circuit._tran_radau_tc:fold',
+                 'pycircuit.circuit._tran_radau_tc:_fold_bufs',
+                 'pycircuit.circuit._tran_radau_tc:_fold_nz',
+                 'pycircuit.circuit._tran_radau:_lam_folds',
+                 'pycircuit.circuit.linearsolver:_csc_of_values',
+                 'pycircuit.circuit.linearsolver:ComplexKLUSolver.prepare_values'],
+    },
     'the stage block and its one pass': {
         'why': 'the one pass makes the block loop\'s elementwise products `(h A_ij) G_j` '
                'and diagonal sums `C_i + ...` in its operand order, placed by one '
@@ -432,9 +452,10 @@ RECORD = {
     'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),
     "the stage paths' passes and the core's": ('f83268db1289', 'a3ae0f6c8d98'),
     'the coupled stage Newton and its C': ('c9e9adf33989', 'e9156eef9c41'),
-    'the transform solve and its frozen form': ('945834192f2a', '76a16f4bcc14'),
+    'the transform solve and its frozen form': ('945834192f2a', '9b7970f8fbb7'),
     'the transform Newton and its C': ('d7c24c3c7e7d', 'c1c1e4a6a070'),
     "the step's end passes and the C's": ('277bd8328e9f', '6af6e40ca712'),
+    'the frozen factors and their C': ('c27dee545b25', '871cc4295d36'),
     'the stage block and its one pass': ('a013cd007e0c', '24be0c26211b'),
     'the stage step map and its C': ('d6a705611a62', '0231752eb52b'),
     'the stage readers and their one read': ('1f21d643cfde', '08f3606179d1'),

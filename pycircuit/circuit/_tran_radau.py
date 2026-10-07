@@ -91,6 +91,19 @@ class _FrozenTransform:
         return _transform_back(w0, w1, self.v)
 
 
+def _lam_folds(lam):
+    """Whether the transform's eigenvalues are ones whose quotients by a
+    step in 1e-290..1e290 cannot raise a flag (`_radau_frozen`'s scalars,
+    made outside numpy's errstate where the factors are made in C):
+    `lam[0].real`, `lam[1].real` and `lam[1].imag` each of magnitude in
+    1e-10..1e10 -- read once for each `lam`."""
+    got = _FROZEN.get('lam')
+    if got is None or got[0] is not lam:
+        ok = all(1e-10 < abs(float(x)) < 1e10 for x in (lam[0].real, lam[1].real, lam[1].imag))
+        got = _FROZEN['lam'] = (lam, ok)
+    return got[1]
+
+
 def _frozen_chain():
     """The transform's pieces as defined (`_paths.genuine`), read once; None
     while one is not."""
@@ -116,7 +129,8 @@ def _frozen_chain():
                (_numeric.linearsolver, 'linearsolver', 'pycircuit.circuit._numeric'),
                (ComplexKLUSolver.solve, 'ComplexKLUSolver.solve', L),
                (ComplexKLUSolver.prepare, 'ComplexKLUSolver.prepare', L),
-               (ComplexKLUSolver.solve_prepared, 'ComplexKLUSolver.solve_prepared', L))
+               (ComplexKLUSolver.solve_prepared, 'ComplexKLUSolver.solve_prepared', L),
+               (ComplexKLUSolver.prepare_values, 'ComplexKLUSolver.prepare_values', L))
         if not all(_paths.genuine(*o) for o in own):
             return None
         _FROZEN['chain'] = tuple(o for o, _q, _m in own)
@@ -1011,7 +1025,10 @@ class _RadauStages:
         solve).  Each iteration forms the right-hand sides and the update in
         `_radau_transform_solve`'s operations and order.  Made under
         `numpy.errstate(all='raise')`: an operation that would warn leaves
-        the step to the per-iteration solve, which warns as before."""
+        the step to the per-iteration solve, which warns as before.  The two
+        factors and the complex one's packed values come from one C call
+        where it serves (`_tran_radau_tc.fold`, speed round 12, stage 5b):
+        numpy's bytes and its errstate's flags, every decision here."""
         if not RADAU_FROZEN:
             return _paths.no('radau.frozen:off')
         chain = _FROZEN.get('chain') or _frozen_chain()
@@ -1034,17 +1051,35 @@ class _RadauStages:
         if pc is not None and (pc[0] != h or type(pc[0]) is not type(h) or pc[3] is not lam
                                or pc[4] is not V or pc[5] is not Tinv):
             pc = None
-        try:
-            with np.errstate(all='raise'):
-                if pc is None:
-                    P = (np.diag(lam) @ Tinv) / h
-                    pc = self._radau_Pc = (
-                        h, (P[0, 0], P[0, 1], P[0, 2], P[1, 0], P[1, 1], P[1, 2]),
-                        tuple((V[i, 0].real, V[i, 1]) for i in range(3)), lam, V, Tinv)
-                real_factor = (lam[0].real / h) * Cr + Gr
-                comp_factor = (lam[1] / h) * Cr + Gr
-        except FloatingPointError:
-            return _paths.no('radau.frozen:fp')
+        ## THE FACTORS IN C (speed round 12, stage 5b): both from one call --
+        ## numpy's operations, its complex product's form, the flags its
+        ## errstate raises on -- with the complex one's packed values where
+        ## they fall in the last record's pattern (`_tran_radau_tc.fold`); every
+        ## decision below is made here, in its order.  numpy where the step's
+        ## `P` is new (made under that errstate), where the scalars could
+        ## raise (a step outside 1e-290..1e290, or `lam` outside
+        ## 1e-10..1e10), or where the call declines.
+        fd = None
+        if pc is not None and 1e-290 < h < 1e290 and _lam_folds(lam):
+            zs0 = d.get('_radau_zsolver')
+            fd = _tran_radau_tc.fold(Cr, Gr, lam[0].real / h, lam[1] / h,
+                                     zs0._csc_last if type(zs0) is ZS else None)
+        if fd is not None:
+            if fd[0]:
+                return _paths.no('radau.frozen:fp')
+            real_factor, comp_factor = fd[1], fd[2]
+        else:
+            try:
+                with np.errstate(all='raise'):
+                    if pc is None:
+                        P = (np.diag(lam) @ Tinv) / h
+                        pc = self._radau_Pc = (
+                            h, (P[0, 0], P[0, 1], P[0, 2], P[1, 0], P[1, 1], P[1, 2]),
+                            tuple((V[i, 0].real, V[i, 1]) for i in range(3)), lam, V, Tinv)
+                    real_factor = (lam[0].real / h) * Cr + Gr
+                    comp_factor = (lam[1] / h) * Cr + Gr
+            except FloatingPointError:
+                return _paths.no('radau.frozen:fp')
         fz = _FrozenTransform()
         fz.m = Cr.shape[0]
         fz.p, fz.v = pc[1], pc[2]
@@ -1063,7 +1098,7 @@ class _RadauStages:
         if (ok and type(dense) is DS and DS.solve is chain[6] and 'solve' not in dense.__dict__
                 and type(self.toolkit) is NTK and self.toolkit.linearsolver is chain[7]
                 and NUM.linearsolver is chain[7] and np.linalg.solve is _NP_SOLVE
-                and np.isfinite(real_factor).all()):
+                and (fd is not None or np.isfinite(real_factor).all())):
             from pycircuit.circuit.linearsolver import NumpyLU
             ## (the last LU made here refilled once the one frozen transform
             ## that reads it is gone -- nothing else can read its factors:
@@ -1086,7 +1121,13 @@ class _RadauStages:
         if (type(zs) is ZS and (ZS.solve, ZS.prepare, ZS.solve_prepared) == chain[8:11]
                 and not ('solve' in zs.__dict__ or 'prepare' in zs.__dict__
                          or 'solve_prepared' in zs.__dict__)):
-            fz.prep = zs.prepare(comp_factor)
+            ## (the packed values the C made in the last record's pattern:
+            ## `prepare`'s own record of them, as it would make it)
+            if (fd is not None and fd[3] is not None and ZS.prepare_values is chain[11]
+                    and 'prepare_values' not in zs.__dict__):
+                fz.prep = zs.prepare_values(fd[3], comp_factor)
+            else:
+                fz.prep = zs.prepare(comp_factor)
         _paths.COUNTS['radau.frozen:served'] += 1
         return fz
 

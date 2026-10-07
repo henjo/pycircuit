@@ -242,7 +242,10 @@ def test_what_the_frozen_transform_declines(monkeypatch):
     def counted(**kw):
         before = _paths.snapshot()
         fz = tr._radau_frozen(Cr, Gr, kw.get('h', h))
-        return fz, {k: v for k, v in _paths.since(before).items() if k.startswith('radau.')}
+        ## (the factors' C call counts its own, `radau.frozen:fold`: as the
+        ## step size's cache stands -- not what is checked here)
+        return fz, {k: v for k, v in _paths.since(before).items()
+                    if k.startswith('radau.') and not k.startswith('radau.frozen:fold')}
     monkeypatch.setattr(_tran_radau, 'RADAU_FROZEN', False)
     assert counted() == (None, {'radau.frozen:off': 1})
     monkeypatch.undo()
