@@ -6647,3 +6647,40 @@ the stage landed under its plan's refusal line on mos1 (-1.25 % against
 -1.5 %), and Andreas kept the line.  `_params_of` reads every value by
 `getattr` again.  Record: `doc/pss_log_260902.md`, "speed round 12, stage
 4 REFUSED".
+
+
+## 2026-10-07 — 69. `BSourceHdl`: the behavioural source in the HDL
+
+Andreas, on the open question of a C path for circuits with Python
+elements (the stamp plan's passes are 36 % of the van der Pol PSS): "Can
+we build the BSource from the HDL?"  `elements.BSource` holds arbitrary
+Python callables, so the evaluate core refuses any circuit that has one
+(`_tran_core`: a non-constant element that is not a C-bound chained HDL
+class) and every pass runs element by element in Python and numpy.
+
+`elements_hdl.BSourceHdl(inp, inn, outp, outn, i_func=f, q_func=g)` takes
+the same terminals and callables, TRACES each callable once with a
+symbolic control voltage, and compiles ``I(outp,outn) <+ i(u) +
+ddt(q(u))`` with ``u = var(V(inp,inn))`` -- one class for each pair of
+expressions, made at the first instance and kept, its compile cached by
+the expressions (the closure's `srepr`), the instance returned is of it.
+The `var` is not decoration: a class without an intermediate is not
+CHAINED, and only chained classes run in the core -- prototyped without
+it, the van der Pol PSS was 6 % SLOWER than with `BSource`; with it the
+core takes the circuit whole and the C Newton every step: 0.470 -> 0.161 s
+(2.9x).  What traces: Python arithmetic, powers, sympy's functions
+(`sympy.Piecewise` for a branch); numpy's functions, an `if` on the
+voltage, a free symbol or a complex value are refused, naming
+`elements.BSource` for them.
+
+NOT `BSource`'s numbers, by construction: `BSource` takes its derivative
+as a central difference (`Toolkit.derivative`, step 1e-6), this one is
+exact; and the expression is sympy's (``u**3/3.0`` becomes ``0.333... *
+u**3``).  On the van der Pol PSS the waveforms agree to 2.7e-14 and the
+monodromy matrices to 1.1e-10 -- the difference's own error.  So it is an
+element to choose, not a replacement: `BSource` is unchanged, `vdp_pss`
+stays on it, and `vdp_pss_hdl` is the same PSS on the HDL source
+(`benchmarks/step_machinery.py`; a case that needs what a tree may lack
+is left out of a comparison whose tree lacks it -- `NEEDS`).  Pinned pair:
+the behavioural source and its HDL form.  Record:
+`doc/pss_log_260902.md`, "BSourceHdl".

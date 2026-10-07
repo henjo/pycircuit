@@ -421,6 +421,17 @@ PAIRS = {
                  'pycircuit.circuit._tran_newton_c:_par_stamped',
                  'pycircuit.circuit._tran_newton_c:_par_stamp'],
     },
+    'the behavioural source and its HDL form': {
+        'why': '`BSourceHdl` makes `BSource`\'s stamps from the same callables -- the same '
+               'terminals and orientation, the current and charge as the callables trace, '
+               'the derivative exact where `BSource` takes the toolkit\'s central '
+               'difference -- and its tests hold it to `BSource`\'s values',
+        'reference': ['pycircuit.circuit.elements:BSource',
+                      'pycircuit.circuit.toolkit:Toolkit.derivative'],
+        'twin': ['pycircuit.circuit.elements_hdl:BSourceHdl',
+                 'pycircuit.circuit.elements_hdl:_bsource_class',
+                 'pycircuit.circuit.elements_hdl:_bsource_trace'],
+    },
 }
 
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
@@ -453,6 +464,7 @@ RECORD = {
     "numpy's solve and its kept LU": ('1f8908b895c7', 'd5e13aa3b107'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
     'the readiness reads and their stamps': ('28340cff33fb', '00c4ca6aed03'),
+    'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

@@ -204,6 +204,11 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   too and reported (`paths SAME` / `paths MOVED: ...`): a speed change
   usually moves them, a move nobody intended is a finding.  The verdict
   line goes in the commit message; an intended slowdown says so there.
+  `vdp_pss_hdl` (2026-10-07) is the van der Pol PSS with its nonlinearity
+  an `elements_hdl.BSourceHdl` (compiled: the circuit runs in C; not
+  `vdp_pss`'s numbers).  A case that needs something a tree may lack names
+  it in `NEEDS`; a comparison whose tree lacks it leaves the case out and
+  says so.
   `--plant P` slows the child by P % (the check's own proof).
 - **Rank the pieces of a step**: `--tree CASE` (inclusive timers wrapped on
   classes only, never on instances, which the fast paths decline on).  It

@@ -1104,6 +1104,27 @@ el.G(x)        # exact symbolic Jacobian, compiled
 el.linear      # False -- inferred from x-dependence of G
 ```
 
+### A behavioural source from a callable
+
+`elements_hdl.BSourceHdl` takes `elements.BSource`'s terminals and
+callables and compiles them: each callable is traced once with a symbolic
+control voltage, and the expression it returns becomes an HDL element (one
+class per pair of expressions, made at the first instance and kept).
+
+```python
+from pycircuit.circuit.elements_hdl import BSourceHdl
+c['B'] = BSourceHdl('v', gnd, gnd, 'v', i_func=lambda u: mu * (u - u**3 / 3))
+```
+
+Its Jacobian is the exact derivative (`BSource` takes a central
+difference, step 1e-6), and a circuit of such elements and constant stamps
+runs in C: a van der Pol PSS 2.9x faster than with `BSource` (2026-10-07).
+Python arithmetic, powers and sympy's functions trace (`sympy.Piecewise`
+for a branch); numpy's functions and an `if` on the voltage do not, and are
+refused, naming `BSource` for them.  Its numbers are not `BSource`'s: the
+derivative exact, the expression sympy's (the van der Pol PSS: waveforms
+within 2.7e-14, monodromy within 1.1e-10 -- the difference's own error).
+
 `elements_hdl.py` is the worked catalogue: ten elements, each exercising
 one capability, each proven against its hand-written twin.
 

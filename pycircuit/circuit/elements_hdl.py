@@ -22,6 +22,9 @@ element          HDL capability it exercises
                  branch current (the inductor needs all three)
 ``VCCSHdl``      4 terminals, cross-branch probe
 ``VCVSHdl``      V-contribution controlled by a remote voltage
+``BSourceHdl``   ``elements.BSource``'s callables TRACED into a class
+                 compiled per expression -- an exact Jacobian, and the
+                 C core runs it
 ``DiodeHdl``     nonlinear static (``exp``), exact symbolic Jacobian
 ``VSinHdl``      time-dependent source terms via ``TIME`` (+ ``dudt``)
 ``IdtHdl``       the ``idt`` operator -> generated state equation
@@ -121,6 +124,7 @@ the generated code costs against the hand-written stamps.
 
 
 import sympy
+import hashlib
 
 from pycircuit.utilities.param import Parameter
 from pycircuit.circuit.hdl import (Behavioural, Branch, Node, Contribution,
@@ -310,6 +314,109 @@ class VCVSHdl(Behavioural):
         bin_ = Branch(inp, inn)
         bout = Branch(outp, outn)
         return Contribution(bout.V, g * bin_.V)
+
+
+## -- the behavioural source, traced ---------------------------------------------------
+
+#: the control voltage `BSourceHdl` traces its callables with
+_BS_V = sympy.Symbol('v_ctrl', real=True)
+#: one compiled class for each pair of traced expressions
+_BS_CLASSES = {}
+
+
+def _bsource_trace(func, which):
+    """The expression `func` makes of a symbolic control voltage
+    (`_BS_V`): zero for no function, else a ValueError naming `which` --
+    its error, what traces, and `elements.BSource` for the rest."""
+    if func is None:
+        return sympy.Integer(0)
+    if not callable(func):
+        raise TypeError(f'BSourceHdl: {which} must be callable, not {type(func).__name__}')
+    try:
+        expr = sympy.sympify(func(_BS_V))
+    except Exception as e:
+        ## (any error the callable raises on a symbol: re-raised, saying what traces)
+        raise ValueError(
+            f'BSourceHdl: {which} does not trace with a symbolic voltage '
+            f'({type(e).__name__}: {e}) -- write it with Python arithmetic, powers and '
+            "sympy's functions (sympy.exp, sympy.tanh, sympy.Piecewise, ...): numpy's "
+            'functions and an `if` on the voltage do not trace; or use elements.BSource'
+        ) from e
+    extra = sorted(str(sym) for sym in expr.free_symbols if sym != _BS_V)
+    if extra:
+        raise ValueError(f'BSourceHdl: {which} depends on {", ".join(extra)} besides '
+                         'its control voltage')
+    if expr.has(sympy.I):
+        raise ValueError(f'BSourceHdl: {which} is complex ({expr})')
+    return expr
+
+
+def _bsource_class(i_expr, q_expr):
+    """The compiled class for one pair of traced expressions, made once and
+    kept (`_BS_CLASSES`): ``I(outp,outn) <+ i(u) + ddt(q(u))`` with ``u =
+    var(V(inp,inn))``.  The `var` makes the class CHAINED, the form the
+    evaluate core runs in C (`_tran_core`): without it the class is
+    numpy's alone, and a van der Pol PSS ran 6 % slower than with
+    `BSource` (2026-10-07).  The compile cache keys the class by its
+    expressions (`srepr`), which `analog` holds."""
+    key = (sympy.srepr(i_expr), sympy.srepr(q_expr))
+    cls = _BS_CLASSES.get(key)
+    if cls is not None:
+        return cls
+
+    def analog(inp, inn, outp, outn):
+        bin_ = Branch(inp, inn)
+        bout = Branch(outp, outn)
+        u = _var(bin_.V, 'v_ctrl')
+        rhs = i_expr.subs(_BS_V, u)
+        if q_expr != 0:
+            rhs = rhs + ddt(q_expr.subs(_BS_V, u))
+        return Contribution(bout.I, rhs)
+
+    name = 'BSourceHdl_' + hashlib.sha256('\0'.join(key).encode('utf-8')).hexdigest()[:12]
+    cls = type(Behavioural)(name, (Behavioural,), {
+        '__module__': __name__, '__qualname__': name,
+        '__doc__': f'`BSourceHdl` of i(v) = {i_expr}, q(v) = {q_expr}.',
+        'analog': staticmethod(analog), 'instparams': [],
+        'bsource_exprs': (i_expr, q_expr)})
+    _BS_CLASSES[key] = cls
+    return cls
+
+
+class BSourceHdl:
+    """`elements.BSource` in the HDL: ``I(outp,outn) <+ i(V(inp,inn)) +
+    ddt(q(V(inp,inn)))``, with `BSource`'s terminals and callables --
+    ``BSourceHdl(inp, inn, outp, outn, i_func=f, q_func=g)``.
+
+    Each callable is TRACED once, with a symbolic control voltage, and
+    the expression it returns is compiled as an HDL element: one class
+    for each pair of expressions, made at the first instance and kept
+    (`bsource_exprs` on the class), the instance returned is of it.
+    What `BSource` cannot have follows: the Jacobian is the expression's
+    exact derivative, and the element runs in C -- the evaluate core and
+    the C Newton take a circuit of such elements and constant stamps
+    whole (a van der Pol PSS: 0.47 -> 0.16 s against `BSource`,
+    2026-10-07).
+
+    What traces: Python arithmetic and powers, and sympy's functions
+    (``sympy.exp``, ``sympy.tanh``, ``sympy.Piecewise`` for a branch).
+    A callable that does not -- numpy's functions, an ``if`` on the
+    voltage, a value that is not a number -- raises ValueError: use
+    `elements.BSource` for it.  A number a callable closes over is part
+    of its expression: another value is another class.
+
+    NOT `BSource`'s numbers.  `BSource` takes its derivative as a
+    central difference (step 1e-6, `NumericToolkit.derivative`); this
+    one is exact.  And the expression is sympy's, not the callable's
+    order of operations (``u**3 / 3.0`` becomes ``0.333... * u**3``).
+    Measured on the van der Pol PSS: the waveforms agree to 2.7e-14,
+    the monodromy matrices to 1.1e-10 -- the difference's own error.
+    """
+
+    def __new__(cls, *args, i_func=None, q_func=None, **kvargs):
+        klass = _bsource_class(_bsource_trace(i_func, 'i_func'),
+                               _bsource_trace(q_func, 'q_func'))
+        return klass(*args, **kvargs)
 
 
 class DiodeHdl(Behavioural):

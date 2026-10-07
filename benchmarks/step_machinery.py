@@ -159,6 +159,8 @@ BUILD = {
 #: stage 8: Radau's stages through the evaluate core -- PSS's default method)
 STAGE_METHOD = {'mos1_radau': RadauIIA3Integrator}
 CASES = ('stage', 'mos1', 'gp', 'psp', 'mos1_radau', 'pss')
+#: the tree this script belongs to (the child of a comparison by default)
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 ## -- the analysis cases (2026-10-04, testing for development, stage 3) -----------
@@ -184,14 +186,17 @@ def _ladder(n=20):
     return c
 
 
-def _vdp(mu=1.0, psd=1e-6):
+def _vdp(mu=1.0, psd=1e-6, hdl=False):
     """van der Pol with a white current source at its core
-    (`tests/_shooting_fixtures._vdp_with_noise`) and its PSS seed."""
+    (`tests/_shooting_fixtures._vdp_with_noise`) and its PSS seed; `hdl`:
+    its nonlinearity an `elements_hdl.BSourceHdl` of the same callable
+    (compiled; the circuit then runs in C) instead of `BSource`."""
     c = SubCircuit()
     c.add_node('v')
     c['C'] = Cap('v', gnd, c=1.0)
     c['L'] = L('v', gnd, L=1.0)
-    c['B'] = BSource('v', gnd, gnd, 'v', i_func=lambda u: mu * (u - u ** 3 / 3.0))
+    c['B'] = (eh.BSourceHdl if hdl else BSource)('v', gnd, gnd, 'v',
+                                                 i_func=lambda u: mu * (u - u ** 3 / 3.0))
     c['n'] = IS('v', gnd, i=0.0, noisePSD=psd)
     x0 = np.zeros(c.n - 1)
     x0[0] = 2.0
@@ -290,8 +295,8 @@ def _case_ladder(method):
     return dt, None, _sha(res.x), _stats(tr), paths
 
 
-def _case_vdp_pss():
-    cir, x0 = _vdp()
+def _case_vdp_pss(hdl=False):
+    cir, x0 = _vdp(hdl=hdl)
     p = PSS(cir, method='gear', reltol=1e-12)
 
     def go():
@@ -374,10 +379,42 @@ ANALYSES = {
     'ladder_radau': lambda: _case_ladder('radau'),
     'pss_radau': _case_pss_radau,
     'vdp_pss': _case_vdp_pss,
+    ## (the same PSS, its nonlinearity the HDL's: not `vdp_pss`'s numbers
+    ## -- the exact Jacobian -- but its circuit, run in C)
+    'vdp_pss_hdl': lambda: _case_vdp_pss(hdl=True),
     'pnoise': _case_pnoise,
     'ppv': _case_ppv,
 }
 CASES = CASES + tuple(ANALYSES)
+#: what a case needs of the package it runs against, where a tree may lack
+#: it -- a parent from before it: `(module, attribute)`.  A comparison
+#: leaves such a case out where either tree lacks it, and says so (this
+#: script runs in both trees, the package is each tree's own)
+NEEDS = {'vdp_pss_hdl': ('pycircuit.circuit.elements_hdl', 'BSourceHdl')}
+
+
+def _tree_has(tree_dir, module, attr):
+    """Whether the package of the tree at `tree_dir` has `module.attr`."""
+    probe = ('import importlib, sys; sys.exit(0 if hasattr(importlib.import_module('
+             f'{module!r}), {attr!r}) else 1)')
+    env = dict(os.environ, PYTHONPATH=tree_dir)
+    return subprocess.run([sys.executable, '-c', probe], cwd=tree_dir, env=env,
+                          capture_output=True, check=False).returncode == 0
+
+
+def _runnable(cases, *tree_dirs):
+    """`cases` but those whose need (`NEEDS`) one of the trees lacks --
+    each left out with a line saying where."""
+    keep = []
+    for k in cases:
+        need = NEEDS.get(k)
+        lack = [d for d in tree_dirs if need is not None and not _tree_has(d, *need)]
+        if lack:
+            print(f'{k}: left out -- {need[0]}.{need[1]} is not in {", ".join(lack)}',
+                  flush=True)
+            continue
+        keep.append(k)
+    return keep
 
 
 def _stats(tr):
@@ -996,6 +1033,9 @@ def main(argv):
         cmp_dir = cmp_dir or PARENT_TREE
         if not os.path.isdir(cmp_dir):
             sys.exit(f'no parent tree at {cmp_dir}: make it with scripts/parent_tree.sh')
+        cases = _runnable(cases, cmp_dir, child or ROOT_DIR)
+        if not cases:
+            sys.exit('no case both trees can run')
         with warnings.catch_warnings():
             count_compare(cmp_dir, cases, child=child, repeats=rounds or 2, plant_ops=plant_ops,
                           route=route, plant_step_ops=plant_step_ops)
@@ -1005,6 +1045,9 @@ def main(argv):
         if not os.path.isdir(cmp_dir):
             sys.exit(f'no parent tree at {cmp_dir}: make it with scripts/parent_tree.sh')
     if cmp_dir:
+        cases = _runnable(cases, cmp_dir, child or ROOT_DIR)
+        if not cases:
+            sys.exit('no case both trees can run')
         with warnings.catch_warnings():
             compare(cmp_dir, cases, rounds or (6 if check else 5), child=child, check=check,
                     budget=budget, plant=plant)
