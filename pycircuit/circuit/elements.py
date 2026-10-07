@@ -2435,23 +2435,18 @@ class BSource(Circuit):
                   Parameter('q_func', 'Function q_out = f(v_ctrl)', default=None)]
     
     def i(self, x, epar=defaultepar):
-        ## (the function read once a call, not twice: a read through
-        ## `ParameterDict.__getattr__` is ~2.3 k instructions, and a vdP PSS
-        ## made 25.7 k of them here -- speed round 12)
-        f = self.iparv.i_func
-        if f is None:
+        if self.iparv.i_func is None:
             return self.toolkit.zeros(4)
         v_ctrl = x[0] - x[1]
-        i_val = f(v_ctrl)
+        i_val = self.iparv.i_func(v_ctrl)
         return self.toolkit.array([0.0, 0.0, i_val, -i_val])
 
     def G(self, x, epar=defaultepar):
-        f = self.iparv.i_func
-        if f is None:
+        if self.iparv.i_func is None:
             return self.toolkit.zeros((4, 4))
         v_ctrl = x[0] - x[1]
         
-        di_dv = self.toolkit.derivative(f, v_ctrl)
+        di_dv = self.toolkit.derivative(self.iparv.i_func, v_ctrl)
 
         G_mat = self.toolkit.matrix_from_entries(
             (4, 4),
@@ -2464,20 +2459,18 @@ class BSource(Circuit):
         return G_mat
 
     def q(self, x, epar=defaultepar):
-        f = self.iparv.q_func
-        if f is None:
+        if self.iparv.q_func is None:
             return self.toolkit.zeros(4)
         v_ctrl = x[0] - x[1]
-        q_val = f(v_ctrl)
+        q_val = self.iparv.q_func(v_ctrl)
         return self.toolkit.array([0.0, 0.0, q_val, -q_val])
 
     def C(self, x, epar=defaultepar):
-        f = self.iparv.q_func
-        if f is None:
+        if self.iparv.q_func is None:
             return self.toolkit.zeros((4, 4))
         v_ctrl = x[0] - x[1]
         
-        dq_dv = self.toolkit.derivative(f, v_ctrl)
+        dq_dv = self.toolkit.derivative(self.iparv.q_func, v_ctrl)
 
         C_mat = self.toolkit.matrix_from_entries(
             (4, 4),

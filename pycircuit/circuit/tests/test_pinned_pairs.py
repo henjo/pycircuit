@@ -421,15 +421,6 @@ PAIRS = {
                  'pycircuit.circuit._tran_newton_c:_par_stamped',
                  'pycircuit.circuit._tran_newton_c:_par_stamp'],
     },
-    "the parameter read and the pack's direct read": {
-        'why': 'the pack reads a value from the values dict exactly where `getattr` '
-               'reaches it through `ParameterDict.__getattr__`: an exact '
-               '`ParameterDict`, the class\'s own `__getattr__` and the default '
-               'lookup, the name a parameter, not `_parameters`, not on the instance, '
-               'not on the class; else `getattr`',
-        'reference': ['pycircuit.utilities.param:ParameterDict'],
-        'twin': ['pycircuit.circuit.hdl:_params_of'],
-    },
 }
 
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
@@ -462,7 +453,6 @@ RECORD = {
     "numpy's solve and its kept LU": ('1f8908b895c7', 'd5e13aa3b107'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
     'the readiness reads and their stamps': ('28340cff33fb', '00c4ca6aed03'),
-    "the parameter read and the pack's direct read": ('183d898cc1f0', '30f67e8460b5'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

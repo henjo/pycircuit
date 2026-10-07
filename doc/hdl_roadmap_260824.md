@@ -6638,3 +6638,12 @@ neither the instance nor the class), `getattr` otherwise; switch
 class.  `BSource` reads its function once a call.  Measured: the element
 cases -1.0..-3.3 % in instructions, -0.9..-1.4 % in time (12/12).
 Record: `doc/pss_log_260902.md`, "speed round 12, stage 4".
+
+
+## 2026-10-07 — 68. Speed round 12, stage 4 reverted
+
+Section 67's direct read and `BSource`'s single read are reverted:
+the stage landed under its plan's refusal line on mos1 (-1.25 % against
+-1.5 %), and Andreas kept the line.  `_params_of` reads every value by
+`getattr` again.  Record: `doc/pss_log_260902.md`, "speed round 12, stage
+4 REFUSED".
