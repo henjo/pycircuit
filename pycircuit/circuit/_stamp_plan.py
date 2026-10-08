@@ -403,6 +403,20 @@ def assemble_matrix(cir, m, x, args):
     return np.bincount(mp.flat, weights=buf, minlength=n * n).reshape(n, n)
 
 
+def constant_matrix(cir, m, x):
+    """Matrix `m`'s plan where every stamp in it is constant -- no call and
+    no batch, so the matrix is one for every x, t and epar -- and the plan
+    serves `x`; else None.  A NEW object whenever the plan is rebuilt (a
+    parameter write, a topology change), so a caller may key on it."""
+    if _ineligible(cir, x) is not None:
+        return None
+    plan = _plan_for(cir)
+    mp = plan.methods.get(m)
+    if mp is None:
+        mp = plan.methods[m] = _MatrixPlan(cir, m)
+    return mp if not mp.calls and not mp.batches else None
+
+
 def assemble_vector(cir, v, x, args):
     """`v` ('i' or 'q') at `x` through the plan, or None for the legacy loop."""
     K = _PK[v]

@@ -6,13 +6,14 @@ import contextlib
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint
+from pycircuit.circuit import _evalhint, _stamp_plan
 from pycircuit.circuit._limiting import state_restore, state_snapshot
 from pycircuit.circuit.analysis import insert_row
 from pycircuit.circuit.simwarnings import (
     ModelWarning,
     warn,
 )
+from pycircuit.utilities import param as _param
 
 
 def _rank_by_blocks(C, tol, band=None):
@@ -209,6 +210,36 @@ class _BranchCheck:
         C = np.asarray(_C, dtype=float)
         if C.size == 0:
             return False, None
+        ## ⚠ A CONSTANT `C` (every stamp in the plan constant) has one largest
+        ## entry, and ONE verdict for given `r0` and scale `ref` (the running
+        ## maximum with it): kept, keyed on the plan's object (a parameter
+        ## write or a topology change makes a new one), the running maximum
+        ## moved as the reductions would have.  MEASURED (2026-10-08): the
+        ## reductions were 64 ms of an 829 ms step on a 4681-unknown power
+        ## grid, its `C` assembly 14 ms.  ⚠ The lookup is not free: ~11.5 k
+        ## instructions a screen in situ, +1.6 % on the 4049 oscillator
+        ## (whose MOS `C` is never constant), so a NO is kept for the
+        ## parameter epoch -- a stale no only forgoes the shortcut.
+        const = None
+        epoch = _param.ParameterDict._epoch
+        if self.__dict__.get('_branch_varying') is not epoch:
+            const = _stamp_plan.constant_matrix(self.cir, 'C', x)
+            if const is None:
+                self._branch_varying = epoch
+        kept = self.__dict__.get('_branch_const')
+        if const is not None and kept is not None and kept[0] is const and kept[1] == r0:
+            ref = max(getattr(self, '_branch_cmax', 0.0), kept[2])
+            if ref == kept[3]:
+                self._branch_cmax = ref
+                return kept[4]
+        verdict, nrm = self._branch_screen_C(C, r0)
+        if const is not None:
+            self._branch_const = (const, r0, nrm, self._branch_cmax, verdict)
+        return verdict
+
+    def _branch_screen_C(self, C, r0):
+        """`_branch_screen`'s verdict on the dense `C` and `C`'s largest
+        entry, `_branch_cmax` moved."""
         ## ⚠ THE SCALE IS THE LARGEST `C` THIS RUN HAS SEEN, not the random
         ## states' (`scale0`).  Those sit anywhere in +-1 V, where a forward
         ## junction's diffusion capacitance is e^38 above any state the
@@ -232,14 +263,14 @@ class _BranchCheck:
             ## nothing has collapsed at the cheap level
             pos = d[d > 0.0]
             if (float(pos.min()) if pos.size else 0.0) > 1e-6 * ref:
-                return False, None
+                return (False, None), nrm
         if nrm <= tol:
-            return True, None            # C has collapsed entirely
+            return (True, None), nrm     # C has collapsed entirely
         U, sv, _Vt = np.linalg.svd(C)
         r = int((sv > self.BRANCH_SCREEN_TOL * ref).sum())
         if r >= r0:
-            return False, None
-        return True, U[:, -1]
+            return (False, None), nrm
+        return (True, U[:, -1]), nrm
 
     def _branch_confirm(self, func, x_res, direction):
         """Re-solve the SAME step from a perturbed seed; return the other root

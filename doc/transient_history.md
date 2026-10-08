@@ -4575,3 +4575,36 @@ a singular value (two tests; removing the band fails one).  Timed, the
 rank alone: n = 4681 84 s -> 0.85 s, n = 9226 ~10 min -> 2.8 s.  The
 per-step screen is unchanged (its SVD runs only when the cheap proxy
 fires).
+
+## `_tran_branch.py`, `_stamp_plan.py` -- the branch screen of a constant `C` made once (2026-10-08, the large-circuit open items' stage C)
+
+### `_stamp_plan.constant_matrix`, `_BranchCheck._branch_screen`, `_BranchCheck._branch_screen_C`
+
+The per-step screen took `np.abs` of the dense `C`, its largest entry and
+its diagonal at every step: on the RC power-grid mesh 15 ms of a 216 ms
+step at n = 2354 and 59 ms of 829 ms at n = 4681 (~7 %), of which the C
+assembly itself was 4 / 14 ms and the reductions the rest.  Where every
+`C` stamp is constant (the stamp plan's `C` has no call and no batch:
+`constant_matrix`), the verdict is one for given structural rank `r0` and
+scale `ref` = max(running maximum, `C`'s largest entry): it is kept on the
+plan's object (a parameter write or a topology change builds a new one),
+and the running maximum is moved as the reductions would move it.  The
+`C` read and its `_C_cache` are as before.  A state-dependent `C` takes
+the old path at every screen.
+
+Checked: the kept verdict recomputed beside every hit in eight
+transient/shooting test files, 1,799,089 hits, 0 differ (none fired: a
+constant `C`'s rank cannot drop); a test that the reductions are made
+once in a 20-step RC run, once more after a parameter write (on the new
+plan), and at every screen of `branch_selection.build` (which still
+fires); turning the kept path off or ignoring the plan's identity fails it.
+
+⚠ The lookup was not free.  `step_machinery.py --check` flagged
+`spice_4049` SLOWER (+2.4 %; alone +2.1 %, A/A -0.3 %, instructions
++1.64 % against a 0.49 % spread): `constant_matrix` cost ~11.5 k
+instructions a screen in situ where a warm `timeit` said 0.47 us, and the
+4049's MOS `C` is never constant.  With the lookup stubbed the count was
++0.007 %, so a NO is now kept for the parameter epoch (a stale no only
+forgoes the shortcut): +0.32 %, "no change" on every case, bytes the
+same; `ladder_gear` (linear) -2.0 %.  The mesh at n = 4681, 10 steps with
+the check on: 10.80 -> 10.18 s, the same bytes.

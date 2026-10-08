@@ -1367,3 +1367,67 @@ def test_the_reduced_structural_rank_is_the_full_count_or_declines():
             declined += got is None
             assert got in (None, dense(C, tol)), (n, m, g, tol)
     assert declined < 600                   # of 900: the fast path is not vacuous
+
+
+def test_the_branch_screen_of_a_constant_c_is_made_once_and_again_after_a_write(monkeypatch):
+    """`_branch_screen` keeps its verdict where every `C` stamp is constant
+    (`_stamp_plan.constant_matrix`): its reductions were 64 ms of an 829 ms
+    step on a 4681-unknown power grid (2026-10-08).  Asserted: an RC's 20
+    steps make the reductions ONCE and the answer is the check-off one; a
+    parameter write (a new plan) makes them once more, on the new
+    capacitance; a state-dependent `C` (`branch_selection.build`,
+    which fires) makes them at every screen, and still fires."""
+    import os
+
+    from pycircuit.circuit import _stamp_plan
+    from pycircuit.circuit._tran_branch import _BranchCheck
+    from pycircuit.circuit.transient import Transient
+    from pycircuit.circuit.integrator import Gear2Integrator
+
+    made, screened = [], []
+    reductions, screen = _BranchCheck._branch_screen_C, _BranchCheck._branch_screen
+    monkeypatch.setattr(_BranchCheck, '_branch_screen_C',
+                        lambda self, *a: made.append(1) or reductions(self, *a))
+    monkeypatch.setattr(_BranchCheck, '_branch_screen',
+                        lambda self, *a: screened.append(1) or screen(self, *a))
+
+    def rc():
+        cir = SubCircuit()
+        cir['VS'] = VS('n1', gnd, v=1.0)
+        cir['R'] = R('n1', 'n2', r=1e3)
+        cir['C'] = C('n2', gnd, c=1e-9)
+        return cir
+
+    def run(tr):
+        made.clear(), screened.clear()
+        with quiet():
+            res = tr.solve(tend=20e-7, timestep=1e-7, fixed_timestep=True)
+        return np.asarray(res.v('n2').y), len(made), len(screened)
+
+    cir = rc()
+    tr = Transient(cir, integrator=Gear2Integrator())
+    v1, m1, s1 = run(tr)
+    assert s1 >= 20 and m1 == 1, (s1, m1)
+    assert _stamp_plan.constant_matrix(cir, 'C', np.zeros(cir.n)) is not None
+    off = Transient(rc(), integrator=Gear2Integrator())
+    off.branch_check = 'off'
+    assert_array_equal(run(off)[0], v1)
+
+    before = tr._branch_const[0]
+    cir['C'].ipar.c = 2e-9
+    _v2, m2, s2 = run(tr)
+    assert s2 >= 20 and m2 == 1, (s2, m2)
+    assert tr._branch_const[0] is not before    # kept on the new plan
+    assert tr._branch_const[2] == 2e-9          # the new C's largest entry
+
+    monkeypatch.syspath_prepend(os.path.join(os.path.dirname(__file__),
+                                             '..', '..', '..', 'benchmarks'))
+    from branch_selection import build
+    trn = Transient(build(-1.0), integrator=Gear2Integrator(), reltol=1e-10)
+    made.clear(), screened.clear()
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')        # it fires: the point of the fixture
+        trn.solve(refnode=gnd, tend=1.0, timestep=1.0 / 50, fixed_timestep=True)
+    assert len(made) == len(screened) > 1
+    assert trn.statistics.branch_points > 0
