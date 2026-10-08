@@ -8,6 +8,7 @@ on:
       - 'pycircuit/**'
       - 'pyproject.toml'
       - '.github/workflows/docs.yml'
+      - 'scripts/fetch_howland_models.py'
   workflow_dispatch:
 
 permissions:
@@ -34,6 +35,20 @@ jobs:
 
       - name: Install dependencies
         run: pip install -e ".[docs,ginac]"
+
+      ## Examples 12 and 13 need vendor SPICE models that cannot be
+      ## committed.  The script downloads them; the AD8606 may fail (its
+      ## site refuses some scripted clients), which is a warning -- the
+      ## pages then show their recorded results and say so.  The cache holds
+      ## the PC817 model extracted from the 145 MB LTspice installer.
+      - name: Cache the extracted LTspice model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pycircuit
+          key: howland-models-${{ hashFiles('scripts/fetch_howland_models.py') }}
+
+      - name: Fetch vendor models for examples 12 and 13
+        run: python scripts/fetch_howland_models.py
 
       - name: Build docs
         run: make -C doc html
