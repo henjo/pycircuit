@@ -1,6 +1,7 @@
 Example 3
 ----------
 
+
 Simple example - VCCS with resistor load 
 ```````````````````````````````````````````````
 .. image:: vccs_res.*
