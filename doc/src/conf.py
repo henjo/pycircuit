@@ -47,12 +47,7 @@ extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon', 'sphinx.ext.mathjax',
 # longer under build load, so the 60 s default made it fail intermittently.  A
 # failed block renders its source with a warning rather than a table, so the
 # limit has to sit well clear of the worst case, not just above the typical one.
-#
-# Raised from 300 s (2026-10-07): example 12's intermodulation table is the
-# first block to need its ten shooting (PSS) runs, ~4 min standalone on a
-# 16-core machine, and it exceeded 300 s in a full build.  The runs are
-# cached for the rest of the page, so only that one block pays.
-exec_rst_timeout = 1200
+exec_rst_timeout = 300
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['.templates']
