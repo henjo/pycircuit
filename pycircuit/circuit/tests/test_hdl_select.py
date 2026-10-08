@@ -733,11 +733,14 @@ _RECORDED = {
     'MosLevel1Hdl-r': 'ce4c800a74fb348f',
     'MosLevel1Hdl-g0': 'a407ac6af5a7e7e9',
     'MosLevel1PmosHdl': 'fd4f1f41fb4d2587',
-    'GummelPoonNpnHdl': 'b8f2981a979cffca',
-    'GummelPoonNpnHdl-off': 'c410a2703cec8200',
-    'GummelPoonPnpHdl': '5e16039ceb22ec01',
-    'GummelPoonNpnThermalHdl': 'a204d7c7c84114ee',
-    'GummelPoonNpnThermalHdl-off': 'ced67134cc2ea251',
+    ## 2026-10-08: the five GP digests re-recorded for `TF*IF/qb` (q/C moved,
+    ## i/G bit-identical); old b8f2981a979cffca, c410a2703cec8200,
+    ## 5e16039ceb22ec01, a204d7c7c84114ee, ced67134cc2ea251
+    'GummelPoonNpnHdl': '32a36b705d59fb35',
+    'GummelPoonNpnHdl-off': '53a8b396c0e3adf0',
+    'GummelPoonPnpHdl': '50ae7556271a167a',
+    'GummelPoonNpnThermalHdl': '557038e128529bb0',
+    'GummelPoonNpnThermalHdl-off': 'b210391d0a543937',
     ## ⚠ RE-RECORDED 2026-08-27 for the three MOS level 3 rows, and only
     ## those.  `_autohold` (roadmap sec. 36) makes the regularisers hold
     ## their own arguments, which stops sympy flattening across the

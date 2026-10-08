@@ -634,17 +634,25 @@ _RECORDED = [
     ## BIT-identical across 25 random biases for all three classes, max
     ## relative difference exactly 0.000e+00.  An identity probe applies
     ## no law, so it must not move a number, and it did not.
+    ## ⚠ 2026-10-08: the three Gummel-Poon POINT digests RE-RECORDED for
+    ## SPICE's diffusion charge `TF*IF/qb` (it was `TF*IF`; the rca
+    ## amplifier ran 8 % of its swing from ngspice).  Measured before
+    ## re-recording, 25 biases a class: `i` and `G` BIT-identical, `q`/`C`
+    ## moved (the fix); the explain digests did not move.  Old points:
+    ## Npn 6d6a5a0d2d06161b/a0ac7ee494c8ecc7/35e7afcbb3b7e370, Pnp
+    ## c3ed303997f1392e/21e88b90474a46ad/21439709d3b32cd6, Thermal
+    ## fe1b458d8329968c/3455c501ca26160e/d500ccf7379c575b.
     ('GummelPoonNpnHdl', _BJT, ('c', 'b', 'e'), 6,
-     ['6d6a5a0d2d06161b', 'a0ac7ee494c8ecc7', '35e7afcbb3b7e370'],
+     ['86f6b89d43855a39', '5728a1d4e1a34904', '8bc701a57dfa0a54'],
      'c5bd4ef41193ba0f'),
     ('GummelPoonPnpHdl', _BJT, ('c', 'b', 'e'), 6,
-     ['c3ed303997f1392e', '21e88b90474a46ad', '21439709d3b32cd6'],
+     ['d78f3f1ca0c7525c', 'f2463ed66739ca8e', '186e9ba75b76412b'],
      'f47a8c22e23dbb57'),
     ## 2026-09-19: explain re-recorded (was d498f022d01f0c10).  The flicker term gained a
     ## named sign factor `sgnfl`, which RENUMBERS the intermediate after it
     ## (`_v73_pdiss` -> `_v74_pdiss`); the three POINT digests did not move.
     ('GummelPoonNpnThermalHdl', _BJT, ('c', 'b', 'e', 'th', 'tha'), 8,
-     ['fe1b458d8329968c', '3455c501ca26160e', 'd500ccf7379c575b'],
+     ['f5a076b126f68f66', '929ed86f421a4875', '725e30e46a092a66'],
      '85b972d92cf59d7d'),
     ## ⚠ The two SPICE-diode `explain` digests were RE-RECORDED
     ## 2026-08-27 for `_autohold` (roadmap sec. 36): the regularisers now

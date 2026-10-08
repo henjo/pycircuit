@@ -6754,3 +6754,33 @@ the inverter chain (430 against its 419 points); the force-accepts (20-40
 on these decks, at the sources' corners) and the rejections are open.
 `qpart = 1` doubles the force-accepts and fails gm17.  The plan's lift of
 the junctions' 0.9 grading clamp was dropped: no deck has `mj` near it.
+
+## 2026-10-08 — 71. Gummel-Poon: the forward diffusion charge is `TF*IF/qb` (a defect, fixed)
+
+SPICE's forward diffusion charge is `TF_eff*IF/qb` (ngspice `bjtload.c`:
+`cbe = cbe*(1 + argtf)/qb`, then `qbe = tf*cbe`); `_gummel_poon` had
+`tff*ifwd`, without the base charge `qb`.  Found by the SPICE benchmark
+plan's stage 7: the rca wideband amplifier (CircuitSim90; VAF = 50, so
+`qb` ~ 0.89 at its bias) ran 8 % of its output swing away from ngspice on
+the same written deck, with both simulators converged (ours to 0.05 ns
+steps, ngspice's `.tran` capped at 0.05 ns) and the operating points equal
+to 3 uV -- a difference in the stored charge.  With `/qb` the two agree to
+1e-4 of the swing.
+
+The test reference had been transcribed from the model, not from SPICE
+(`_gp_reference`'s `qbe = tff*ifw`), so it could not see it.  Now from
+`bjtload.c`; the RK4 transient's ODE carries the full charge Jacobian
+(`Qbe` sees `vbc` through `qb`); the closed-form capacitance writes
+`d(TF*IF/qb)/dVbe` out.  Reverting `/qb` fails all three.  Every class
+built on `_gummel_poon` moves: `i` and `G` bit-identical at 25 biases a
+class, `q` and `C` moved; the recorded point digests re-recorded (old ones
+in the notes beside them).  ngspice divides only where `vbe > 0`; here
+always, so the charge is continuous (`TF*IS*(1/qb - 1)` apart below zero
+bias).
+
+rca's gold metric: 2.76 -> 2.31 with the fix at the deck's own stepping,
+0.800 (passing) when our step is also capped at SPICE's default `TMAX =
+min(TSTEP, TSTOP/50)` -- the cap `write_ngspice` gives ngspice.  Whether
+the importer should apply that default to our own runs is open: the gold
+is Xyce's, which has no such cap, and the cap costs 4049osc 5x the steps
+(0.385 -> 0.389).

@@ -202,11 +202,12 @@ def _gp_reference(vbe, vbc, T=None, IS=1e-16, bf=100.0, nf=1.0, vaf=0.0,
     tfr = 0.0 if den == 0.0 else ifw / den
     tfx = 1.0 if vtf <= 0 else math.exp(vbc / (1.44 * vtf))
     tff = tf * (1.0 + xtf * tfr * tfr * tfx)
-    qbe = tff * ifw + _dep_q(vbe, cjeT, vjeT, mje, fc)
+    ## SPICE's `TF_eff*IF/qb` (ngspice `bjtload.c`), not a copy of the model
+    qbe = tff * ifw / qb + _dep_q(vbe, cjeT, vjeT, mje, fc)
     qjc = _dep_q(vbc, cjcT, vjcT, mjc, fc)
     rbmx = rb if rbm < 0 else rbm
     return dict(ic=ic, ib=ib, ie=-(ic + ib), ict=ict, ifwd=ifw, irev=irv,
-                qb=qb, ibe=ibe, ibc=ibc, qbe=qbe,
+                qb=qb, q1=q1, q2=q2, ibe=ibe, ibc=ibc, qbe=qbe,
                 qbc=tr * irv + xcjc * qjc, qbx=(1.0 - xcjc) * qjc,
                 rbb=(rbmx + (rb - rbmx) / qb) / area, isT=isT, vt=vt,
                 cjeT=cjeT, cjcT=cjcT, vjeT=vjeT, vjcT=vjcT, tff=tff)
@@ -603,10 +604,12 @@ def test_junction_capacitance_is_the_hand_differentiated_charge():
     ``fc*vj`` seam and through it.
 
     ``xtf = 0`` here so that the transit time is a constant and the
-    diffusion capacitance is exactly ``tf*d(IF)/dVbe`` -- with the
+    diffusion capacitance is exactly ``tf*d(IF/qb)/dVbe`` -- with the
     ``xtf`` modulation on, ``tf_eff`` depends on the bias too and the
     closed form would have to reproduce the model's own arithmetic,
-    which is not a reference.
+    which is not a reference.  ``qb``'s derivative is written out:
+    ``q1' = q1^2/VAR``, ``q2' = IF'/IKF`` and ``qb' = q1'(1 + s)/2 +
+    q1 q2'/s``, ``s = sqrt(1 + 4 q2)`` (SPICE's `TF*IF/qb`, 2026-10-08).
     """
     card = dict(NPN, xtf=0.0, tr=0.0, xcjc=1.0, rb=0.0, re=0.0, rc=0.0)
     el = _mk(eh.GummelPoonNpnHdl, 'c', 'b', 'e', **card)
@@ -615,11 +618,14 @@ def test_junction_capacitance_is_the_hand_differentiated_charge():
             r = _gp_reference(vbe, vbc, **card)
             x = np.array([vbe - vbc, vbe, 0.0])
             C = np.asarray(el.C(x), float)
+            dif = (r['isT'] * math.exp(vbe / (card['nf'] * r['vt']))
+                   / (card['nf'] * r['vt']))
+            sq = math.sqrt(1.0 + 4.0 * r['q2'])
+            dqb = (r['q1'] ** 2 / card['var'] * 0.5 * (1.0 + sq)
+                   + r['q1'] * (dif / card['ikf']) / sq)
             cbe = (_cj_closed(vbe, r['cjeT'], r['vjeT'], card['mje'],
                               card['fc'])
-                   + card['tf'] * r['isT']
-                   * math.exp(vbe / (card['nf'] * r['vt']))
-                   / (card['nf'] * r['vt']))
+                   + card['tf'] * (dif / r['qb'] - r['ifwd'] * dqb / r['qb'] ** 2))
             cbc = _cj_closed(vbc, r['cjcT'], r['vjcT'], card['mjc'],
                              card['fc'])
             ## Row/col 2 is the emitter: `q[e] = -qbe`, so `C[2,2]` is
@@ -1108,11 +1114,10 @@ def test_dc_differential_pair_follows_the_exponential_ratio_law():
 ## ----------------------------------------------------------------------
 ## 1.7  Transient: charge storage against an independent integration
 
-#: A card for the transient.  ``xtf = 0`` and ``xcjc = 1`` so that
-#: ``qbe`` is a function of ``vbe`` alone and ``qbc`` of ``vbc`` alone --
-#: with the ``xtf`` modulation on, ``tf_eff`` depends on ``vbc`` too and
-#: the reference ODE below would have to reproduce the model's own
-#: arithmetic instead of being derived from the equations.
+#: A card for the transient.  ``xtf = 0`` and ``xcjc = 1``, so that the
+#: reference ODE below is derived from the equations rather than the
+#: model's arithmetic; ``qbe`` still sees ``vbc`` through ``qb``
+#: (``TF*IF/qb``), which the ODE's full charge Jacobian carries.
 TRAN_NPN = dict(IS=1e-16, bf=120.0, vaf=80.0, ikf=2e-2, br=2.0,
                 cje=5e-12, vje=0.72, mje=0.35, tf=5e-10,
                 cjc=2e-12, vjc=0.6, mjc=0.4, xcjc=1.0, tr=2e-9, fc=0.5)
@@ -1136,22 +1141,28 @@ def _tr_rhs(vb, vc, t, h=1e-6):
         Cbe*vb' + Cbc*(vb' - vc') = (vin - vb)/Rb - Ib
                  -Cbc*(vb' - vc') = (Vcc - vc)/Rc - Ic
 
-    a 2x2 system whose determinant is ``Cbe*Cbc``.  The two capacitances
-    are central differences of the reference CHARGE -- not of the
-    model's -- so nothing in this function has seen the compiled
-    element.
+    a 2x2 system.  ⚠ ``Qbe`` is ``TF*IF/qb`` plus depletion (SPICE's,
+    since 2026-10-08), and ``qb`` carries ``vbc`` through the Early
+    factor, so ``Qbe`` is NOT a function of ``vbe`` alone: the system is
+    the full Jacobian of the two node charges ``Qb = Qbe + Qbc`` and
+    ``Qc = -Qbc`` in ``(vb, vc)``.  Its entries are central differences
+    of the reference CHARGES -- not of the model's -- so nothing in this
+    function has seen the compiled element.
     """
     r = _gp_reference(vb, vb - vc, **TRAN_NPN)
-    cbe = (_gp_reference(vb + h, vb + h - vc, **TRAN_NPN)['qbe']
-           - _gp_reference(vb - h, vb - h - vc, **TRAN_NPN)['qbe']) / (2 * h)
-    cbc = (_gp_reference(vb, vb - vc + h, **TRAN_NPN)['qbc']
-           - _gp_reference(vb, vb - vc - h, **TRAN_NPN)['qbc']) / (2 * h)
+
+    def charges(b_, c_):
+        q = _gp_reference(b_, b_ - c_, **TRAN_NPN)
+        return q['qbe'] + q['qbc'], -q['qbc']
+    (qb_p, qc_p), (qb_m, qc_m) = charges(vb + h, vc), charges(vb - h, vc)
+    (qb_q, qc_q), (qb_n, qc_n) = charges(vb, vc + h), charges(vb, vc - h)
+    j11, j21 = (qb_p - qb_m) / (2 * h), (qc_p - qc_m) / (2 * h)
+    j12, j22 = (qb_q - qb_n) / (2 * h), (qc_q - qc_n) / (2 * h)
     a = (_tr_vin(t) - vb) / TR_RB - r['ib']
     b = (TR_VCC - vc) / TR_RC - r['ic']
-    ## [[cbe+cbc, -cbc], [-cbc, cbc]] [vb', vc'] = [a, b]
-    det = cbe * cbc
-    return ((cbc * a + cbc * b) / det,
-            (cbc * a + (cbe + cbc) * b) / det)
+    det = j11 * j22 - j12 * j21
+    return ((j22 * a - j12 * b) / det,
+            (j11 * b - j21 * a) / det)
 
 
 def _tr_rk4(vb0, vc0, tend, n):

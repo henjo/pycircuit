@@ -1934,7 +1934,16 @@ def _gp_core(p, T, npn, c, b, e):
         (_expl(vbc / (1.44 * p.vtf)), True), margin=1e-3), 'tfx')
     tff = _var(p.tf * (1.0 + p.xtf * tfr * tfr * tfx), 'tff')
 
-    qbe = _var(tff * ifwd
+    ## The forward diffusion charge is SPICE's `TF_eff*IF/qb`
+    ## (`bjtload.c`: `cbe = cbe*(1 + argtf)/qb; qbe = tf*cbe`) -- the
+    ## base charge's Early and high-injection factor divides it as it
+    ## divides the transport current.  ⚠ Until 2026-10-08 it was
+    ## `tff*ifwd`, without `qb`: the rca wideband amplifier (CircuitSim90,
+    ## VAF = 50, qb ~ 0.89) ran 8 % of its output swing away from ngspice
+    ## on the same deck, and 1e-4 with it.  ngspice divides only where
+    ## `vbe > 0`; here always, so the charge is continuous (they differ
+    ## by `TF*IS*(1/qb - 1)` below zero bias).
+    qbe = _var(tff * ifwd / qb
                + _pn_depletion_charge(vbe, cjeT, vjeT, p.mje,
                                       p.fc, 'e'), 'qbe')
     qbc = _var(p.tr * irev
@@ -2058,7 +2067,7 @@ def _gummel_poon(npn):
       base one MODULATED by ``qb`` (base-width modulation makes the
       base spreading resistance fall as the device turns on);
     * depletion charge on both junctions with SPICE's ``fc``
-      linearisation, diffusion charge ``tf_eff*IF`` and ``tr*IR``, and
+      linearisation, diffusion charge ``tf_eff*IF/qb`` and ``tr*IR``, and
       the ``xcjc`` split of the collector capacitance between the
       internal and the external base node;
     * the SPICE temperature path for ``IS``, ``BF``/``BR``, the leakage
