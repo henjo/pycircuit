@@ -6684,3 +6684,73 @@ stays on it, and `vdp_pss_hdl` is the same PSS on the HDL source
 is left out of a comparison whose tree lacks it -- `NEEDS`).  Pinned pair:
 the behavioural source and its HDL form.  Record:
 `doc/pss_log_260902.md`, "BSourceHdl".
+
+## 2026-10-08 — 70. The MOS gate charge: charge-conserving, following Meyer (the SPICE benchmark plan's stage 6)
+
+`elements_hdl._mos_gate_charge` and four variants,
+`MosLevel{1,1Pmos,3,3Pmos}GateChargeHdl` (`_mos1_analog`/`_mos3_analog`
+with `gate_charge=True`); `MosLevel{1,3}[Pmos]Hdl` are unchanged.  The
+importer builds the variants where SPICE adds Meyer's capacitances
+(level 3 always; level 1 when TOX is given and not zero).  Andreas
+(2026-10-07): a charge model whose capacitances follow Meyer's, not
+SPICE's integration of Meyer.
+
+The charge: inversion `(2/3)*Cox*(a^2 + ab + b^2)/(a + b)` over the gate
+drives `a`, `b` at source and drain (its gradient IS Meyer's triode and
+saturation capacitances at `vdsat = vgs - von`), and below threshold two
+functions of `max(us, ud)` whose slopes are Meyer's depletion/accumulation
+and near-threshold capacitances.  Checked against a transcription of
+ngspice's `DEVqmeyer` (`test_mos_gate_charge.py`): the gate's total
+capacitance Meyer's to 1e-15 of Cox in accumulation, depletion,
+transition and inversion; the source/drain/bulk split exact in inversion;
+inside Meyer's 25 mV sliver his total at most 1.47x; conservation (the
+4x4 columns and rows sum to zero, both polarities, body effect on); round
+a closed terminal loop Meyer's integration leaves 0.06 Cox, this one the
+quadrature's 1e-4.  Named deviations (the docstring): below threshold the
+charge follows `vgs`; the sliver; body-effect transcapacitances; level 3's
+triode (its `vdsat` is not `vgs - von`: at most 0.25 Cox with `vmax`);
+level 3's threshold without `eta`'s DIBL.
+
+Found while building:
+
+* **DIBL made a negative capacitance.**  A charge following a `von` that
+  falls with `vds` has the drain's own capacitance negative
+  (`-(4/15)*Cox*etal`), and these decks give the drain no other
+  (`ad = pd = 0`, `cgdo = 0`): an inverter chain on mike2's cards grew a
+  mode at 3.9e13/s and the step collapsed to 6e-18 s.  The charge now sees
+  `von` at `vds = 0`.
+* **The hard `max(us, ud)`** moved the near-threshold capacitance from
+  source to drain in one step as `vds` changed sign; gm3 failed at the
+  time-step floor.  Rounded over `|vds| < 25 mV` (C1) it runs.
+* **The channel split decides the timing.**  An inverter chain on mike2's
+  cards against ngspice's Meyer, 50 % crossings: Ward-Dutton +20 ps a
+  stage, every channel charge to the source -30 ps, the split that
+  follows Meyer's terminal capacitances (`Qd = -(Q(a,b) - Q(a,0) +
+  Q(b,0))/2`: nothing in saturation, half at `vds = 0`) +10 ps.  Andreas:
+  both, selectable -- `qpart` (0 Ward-Dutton, the default; 1 following
+  Meyer; a blend between), the importer's `mos_qpart`, the suite's
+  `--qpart`.  Exact reciprocity throughout needs a `d ln d` term (an
+  infinite slope at `vds = 0`).  The ablations `gamma = 0`, `vmax = 0`,
+  `eta = 0` (on both simulators) moved it little.
+
+The gold decks (Xyce's metric, 1 or below passes; stage 4 had no gate
+charge; ngspice on our own written deck beside them):
+
+| deck | stage 4 | qpart 0 | qpart 1 | ngspice |
+|---|---|---|---|---|
+| gm1 | 39.7 | 5.81 | 4.29 | 0.511 |
+| gm2 | 20.3 | 2.37 | 1.71 | 0.612 |
+| gm3 | 39.6 | 2.16 | 1.34 | 0.651 |
+| gm17 | 3.2e9 | 96.9 | fails (Newton stalls at 5.75 ns) | 12.9 |
+| mike2 | 32.7 | 1.92 | 1.86 | 0.681 |
+| todd3 | 4.36 | 1.06 | **0.73** | 3.18 |
+| 4049osc (no TOX: unchanged) | 0.385 | 0.385 | 0.385 | 0.406 |
+
+The remaining gap is the model, not the numerics (gm2/mike2 at reltol
+1e-5 score the same), and the metric swings with small changes (the
+rounded `max` moved gm1 2.74 -> 5.81, mike2 2.07 -> 1.92).  The gate
+charge adds real dynamics: steps roughly double, at ngspice's own count on
+the inverter chain (430 against its 419 points); the force-accepts (20-40
+on these decks, at the sources' corners) and the rejections are open.
+`qpart = 1` doubles the force-accepts and fails gm17.  The plan's lift of
+the junctions' 0.9 grading clamp was dropped: no deck has `mj` near it.

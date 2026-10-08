@@ -164,7 +164,11 @@ def _bases(n):
 #: case tests `type(instance)`; the four MOSFETs also with series
 #: resistances, where the uncollapsed functions run.
 SERIES = {n: {'rd': 10.0, 'rs': 10.0} for n in ('MosLevel1Hdl', 'MosLevel1PmosHdl',
-                                               'MosLevel3Hdl', 'MosLevel3PmosHdl')}
+                                               'MosLevel3Hdl', 'MosLevel3PmosHdl',
+                                               'MosLevel1GateChargeHdl',
+                                               'MosLevel1PmosGateChargeHdl',
+                                               'MosLevel3GateChargeHdl',
+                                               'MosLevel3PmosGateChargeHdl')}
 CASES = [(n, 'defaults') for n in CHAINED] + [(n, 'series') for n in SERIES]
 
 
@@ -315,6 +319,12 @@ LOADED = {
     'MosLevel1Hdl': {'vto': 0.5, 'gamma': 0.4, 'lambd': 0.02, 'cgso': 2e-10, 'cgdo': 2e-10,
                      'cgbo': 1e-10, 'cbd': 1e-14, 'cbs': 1e-14, 'cj': 1e-4, 'cjsw': 1e-10,
                      'ad': 1e-12, 'asrc': 1e-12, 'pd': 4e-6, 'ps': 4e-6},
+    ## the intrinsic gate charge (stage 6): TOX gives it its oxide, and a
+    ## threshold and body effect put its regions inside the drawn states
+    'MosLevel1GateChargeHdl': {'vto': 0.5, 'gamma': 0.4, 'tox': 2e-8, 'w': 1e-5, 'l': 1e-6,
+                               'cbd': 1e-14, 'cbs': 1e-14},
+    'MosLevel3GateChargeHdl': {'vto': 0.5, 'gamma': 0.4, 'tox': 2e-8, 'w': 1e-5, 'l': 1e-6,
+                               'eta': 0.3, 'nfs': 1e11, 'vmax': 1e5, 'theta': 0.1},
     'GummelPoonNpnHdl': dict(KW.get('GummelPoonNpnHdl', {}), vaf=50.0, ikf=0.1, ise=1e-15,
                              cje=1e-12, cjc=5e-13, tf=1e-10, tr=1e-8, xtf=1.0, vtf=2.0,
                              itf=0.1),

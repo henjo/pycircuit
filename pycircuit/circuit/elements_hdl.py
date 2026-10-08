@@ -2695,7 +2695,113 @@ def _mos1_params():
     ]
 
 
-def _mos1_analog(T, nmos, limiting='group'):
+def _qpart_param():
+    """The gate-charge variants' channel split (`_mos_gate_charge`)."""
+    return [Parameter(name='qpart', desc='Channel charge split: 0 Ward-Dutton, 1 '
+                      "following Meyer's capacitances, between a blend", unit='',
+                      default=0.0)]
+
+
+def _mos_gate_charge(us, ud, phi, coxt, qpart, tag=''):
+    """The intrinsic gate charge of a SPICE level-1/3 MOSFET, CHARGE-
+    CONSERVING and following Meyer's capacitances: ``(qg, qd, qs)`` in the
+    n-channel convention, the bulk's ``-(qg + qd + qs)`` (conservation is
+    structural).  ``us``/``ud`` are the gate drives over the threshold at
+    the source and the drain (``vgs - von``, ``vgd - von``), ``phi`` the
+    surface potential, ``coxt`` the whole oxide capacitance -- the inputs
+    SPICE's `DEVqmeyer` takes.  The SPICE benchmark plan's stage 6
+    (Andreas, 2026-10-07: a charge model whose capacitances follow
+    Meyer's, not SPICE's integration of Meyer, which conserves nothing).
+
+    THE CHARGE.  With ``a = max(us, 0)``, ``b = max(ud, 0)`` and
+    ``m = max(us, ud)``:
+
+    * inversion: ``(2/3)*coxt*(a^2 + ab + b^2)/(a + b)`` -- the square-law
+      channel's charge, whose gradient IS Meyer's: ``(2/3)*coxt*(1 -
+      b^2/(a + b)^2)`` to the source, the same with ``a``/``b`` exchanged
+      to the drain (Meyer's triode forms with ``vdsat = us``), ``2/3`` and
+      0 in saturation, ``1/2`` each at ``vds = 0``;
+    * below threshold, functions of ``m`` whose derivatives are Meyer's
+      gate-bulk capacitance (``coxt`` in accumulation, ``-m*coxt/phi`` in
+      depletion: ``qdep``) and his near-threshold gate-source one
+      (``(2/3)*coxt*(1 + 2m/phi)`` above ``-phi/2``: ``qtr``), so the
+      gate's total capacitance is Meyer's in every region.
+
+    THE CHANNEL'S SHARE, chosen by ``qpart`` (Andreas, 2026-10-08: both,
+    selectable).  ``qpart = 0``, the default: Ward-Dutton for the same
+    channel -- the drain's ``(2/15)*coxt*((2a + 3b) - ab(3a + 2b)/(a +
+    b)^2)``, 2/5 in saturation, 1/2 at ``vds = 0``, the source's the same
+    with ``a``/``b`` exchanged.  ``qpart = 1``: the split that follows
+    Meyer's terminal capacitances, the drain's ``-(Q(a, b) - Q(a, 0) +
+    Q(b, 0))/2`` with ``Q`` the inversion charge -- NOTHING in saturation
+    (Meyer's ``Cdg = Cdd = 0`` there) and half at ``vds = 0`` (his
+    ``Cdg = Cgd = Cox/2``), symmetric, the drain's own capacitance
+    positive.  Between them, the blend: two conserving, symmetric splits
+    mix into one.  MEASURED (2026-10-08, an inverter chain on mike2's
+    cards against ngspice's Meyer): Ward-Dutton +20 ps a stage, this
+    +10 ps; on the gold decks neither wins everywhere (the record).
+    Exact reciprocity everywhere is not available: a split with
+    ``Cdg = Cgd`` throughout needs a ``d ln d`` term, whose slope is
+    infinite at ``vds = 0``.  ``qdep``'s image is the bulk's (depletion
+    and accumulation charge ARE bulk charge); ``qtr``'s is halved between
+    source and drain.
+
+    ``m`` is ``max(us, ud)`` with the corner rounded over ``|vds| <
+    25 mV`` (a parabola, ``C1``, exact beyond): with the hard ``max`` the
+    near-threshold capacitance jumped from source to drain as ``vds``
+    changed sign, and gm3 (CircuitSim90) failed at the time-step floor
+    (2026-10-08); rounded it runs.  Meyer spreads that capacitance over
+    the same 25 mV (his ``MAGIC_VDS``), so this sits inside deviation (2).
+
+    DEVIATIONS FROM MEYER, NAMED: (1) below threshold the charge follows
+    ``us`` -- i.e. ``vgs`` -- so Meyer's gate-BULK capacitance appears in
+    the gate row against the source (and drain), the gate total unchanged:
+    a charge cannot follow ``vgb`` with a capacitance set by ``vgs - von``,
+    and the threshold-referred form keeps the regions aligned for every
+    ``vbs``; (2) Meyer's ``x1.5`` sliver near threshold below ``vds <
+    25 mV`` (his ``MAGIC_VDS`` floor on ``vdsat`` splits the transition
+    capacitance ``3/4 + 3/4``), here the ``vds >= 25 mV`` form; (3) the
+    threshold's body effect gives transcapacitances to the bulk Meyer has
+    not; (4) level 3's triode is approximate: its ``vdsat`` is not ``us``
+    (saturation and ``vds = 0`` are exact); (5) level 3's threshold is taken
+    without ``eta``'s drain-induced lowering, which in a charge would make
+    the drain's own capacitance negative (see `_mos3_analog`), so its
+    regions sit ``etal*vds`` from Meyer's.
+
+    CHAINED: polynomial arms (finite everywhere, no `select` clamp
+    needed) and the two removable ``0/0`` at ``a = b = 0`` through
+    `safe_div`, whose value tends to the limit 0 there with a finite
+    derivative.
+    """
+    def v(expr, name):
+        return _var(expr, name + tag)
+
+    hx = v((us - ud) / 2.0, 'qghx')
+    habs = v(sympy.Piecewise((hx * hx / 0.025 + 0.00625, hx * hx < 0.0125 ** 2),
+                             (_maxc(hx, -hx), True)), 'qgabs')
+    m = v((us + ud) / 2.0 + habs, 'qgm')
+    a = v(_maxc(us, 0.0), 'qga')
+    b = v(_maxc(ud, 0.0), 'qgb')
+    qdep = v(sympy.Piecewise((coxt * (m + 0.5 * phi), m <= -phi),
+                             (-coxt * m * m / (2.0 * phi), m <= 0.0),
+                             (0.0, True)), 'qdep')
+    qtr = v(sympy.Piecewise((-coxt * phi / 6.0, m <= -0.5 * phi),
+                            (2.0 / 3.0 * coxt * (m + m * m / phi), m <= 0.0),
+                            (0.0, True)), 'qtr')
+    sab = v(a + b, 'qgsab')
+    qinv = v(2.0 / 3.0 * coxt * (sab - _safe_div(a * b, sab, 1e-30)), 'qginv')
+    qdwd = v(-2.0 / 15.0 * coxt * ((2.0 * a + 3.0 * b)
+                                   - _safe_div(a * b * (3.0 * a + 2.0 * b),
+                                               sab * sab, 1e-30)), 'qdwd')
+    qg = v(qdep + qtr + qinv, 'qgate')
+    qdml = v(-0.5 * (qinv - 2.0 / 3.0 * coxt * a + 2.0 / 3.0 * coxt * b), 'qdml')
+    qdch = v(qdwd + qpart * (qdml - qdwd), 'qdch')
+    qd = v(qdch - 0.5 * qtr, 'qdrain')
+    qs = v(-qinv - qdch - 0.5 * qtr, 'qsource')
+    return qg, qd, qs
+
+
+def _mos1_analog(T, nmos, limiting='group', gate_charge=False):
     """Build the ``analog()`` body of a SPICE level-1 MOSFET.
 
     Equations: Massobrio & Antognetti, *Semiconductor Device Modeling
@@ -2758,8 +2864,9 @@ def _mos1_analog(T, nmos, limiting='group'):
     ``ddt(q)``, so transcribing Meyer here would mean integrating three
     capacitances that are not the gradient of any charge.  The overlap
     capacitances ARE charges and are included; a card that needs the
-    intrinsic gate capacitance wants `EkvNmosHdl`, whose charge model is
-    a genuine Ward-Dutton partition.  Also absent: ``uo`` (so ``kp`` is
+    intrinsic gate capacitance wants `MosLevel1GateChargeHdl` (since
+    2026-10-08: a charge whose capacitances follow Meyer's,
+    `_mos_gate_charge`, with ``gate_charge=True`` here) or `EkvNmosHdl`.  Also absent: ``uo`` (so ``kp`` is
     never derived from mobility), the substrate current, and ``theta``
     (not a level-1 parameter).
     """
@@ -2993,6 +3100,17 @@ def _mos1_analog(T, nmos, limiting='group'):
             Contribution(brs.I, brs.V / rsx),
             Collapse(brs, sympy.And(rs <= 0.0, rsh * nrs <= 0.0)),  # noqa
         )
+        if gate_charge:
+            ## The intrinsic gate charge (`_mos_gate_charge`): SPICE's
+            ## Meyer inputs -- `von` is `vth` here, `phi` at temperature,
+            ## the oxide over the effective length and drawn width
+            ## (`mos1load.c`'s `OxideCap`).  The bulk's charge is what the
+            ## three branches to it leave.
+            qg, qd, qs = _mos_gate_charge(vgs - vth, vgd - vth, phiT,
+                                          _var(cox * leff * w, 'coxt'), qpart)  # noqa
+            stmts += (Contribution(bgb.I, ddt(qg)),
+                      Contribution(bbd.I, ddt(-qd)),
+                      Contribution(bbs.I, ddt(-qs)))
 
         ## -- noise -------------------------------------------------------
         ## Channel thermal noise from the Klaassen-Prins integral for a
@@ -3111,6 +3229,26 @@ class MosLevel1PmosHdl(Behavioural):
     aliasparams = {'lambda': 'lambd', 'as': 'asrc'}
 
     analog = staticmethod(_mos1_analog(TEMP, -1))
+
+
+class MosLevel1GateChargeHdl(Behavioural):
+    """`MosLevel1Hdl` with the intrinsic gate charge: charge-conserving,
+    its capacitances Meyer's where `_mos_gate_charge` says and named where
+    not.  What the SPICE importer builds for a level-1 card that gives
+    ``TOX``, as SPICE adds Meyer only then; `MosLevel1Hdl` is unchanged."""
+    instparams = _mos1_params() + _qpart_param()
+    aliasparams = {'lambda': 'lambd', 'as': 'asrc'}
+
+    analog = staticmethod(_mos1_analog(TEMP, +1, gate_charge=True))
+
+
+class MosLevel1PmosGateChargeHdl(Behavioural):
+    """`MosLevel1PmosHdl` with the intrinsic gate charge (see
+    `MosLevel1GateChargeHdl`)."""
+    instparams = _mos1_params() + _qpart_param()
+    aliasparams = {'lambda': 'lambd', 'as': 'asrc'}
+
+    analog = staticmethod(_mos1_analog(TEMP, -1, gate_charge=True))
 
 
 ## ======================================================================
@@ -4059,7 +4197,7 @@ def _mos3_channel(p, vgs, vds, vbs, c, tag):
     return cdrain, von, vdsat
 
 
-def _mos3_analog(T, nmos):
+def _mos3_analog(T, nmos, gate_charge=False):
     """Build the ``analog()`` body of a SPICE level-3 MOSFET.
 
     Equations: `mos3load.c` / `mos3temp.c` (Berkeley SPICE3, ngspice-44
@@ -4088,7 +4226,8 @@ def _mos3_analog(T, nmos):
     charge, the overlap capacitances, ``rd``/``rs`` on collapsible
     nodes, ``gamma``/``phi`` given-or-derived, the temperature path,
     the noise -- is level 1's, restated through ``p``.  Meyer is absent
-    for level 1's reason.
+    for level 1's reason; ``gate_charge=True`` adds `_mos_gate_charge`
+    (`MosLevel3GateChargeHdl`).
     """
     def analog(p, d, g, s, b):
         di, si = Node('di'), Node('si')
@@ -4238,6 +4377,30 @@ def _mos3_analog(T, nmos):
             Contribution(brd.I, _white_noise(4.0 * _KB * T / rdx)),
             Contribution(brs.I, _white_noise(4.0 * _KB * T / rsx)),
         )
+        if gate_charge:
+            ## The intrinsic gate charge (`_mos_gate_charge`), each side's
+            ## own `von` (the two arms', equal at `vds = 0`), `phi` at
+            ## temperature, the oxide over the effective length and width
+            ## (`mos3load.c`'s `OxideCap`).
+            ##
+            ## ⚠ WITHOUT ETA'S DIBL TERM.  `von` falls by `etal*vds`, and a
+            ## charge that follows it has the drain's own capacitance
+            ## NEGATIVE (the channel charge grows as the drain rises,
+            ## `-(4/15)*coxt*etal` in saturation) -- and these cards give
+            ## the drain no other (`ad = pd = 0`, `cgdo = 0`).  Measured
+            ## (2026-10-08): an inverter chain on mike2's cards grew a mode
+            ## at 3.9e13/s on its last output and the step collapsed to
+            ## 6e-18 s.  Meyer's formulas take `von`'s value and never its
+            ## slope, so SPICE has no such term; here the threshold the
+            ## charge sees is `von` at `vds = 0`, every self-capacitance is
+            ## non-negative, and the regions shift by `etal*vds` (named in
+            ## `_mos_gate_charge`).
+            qg, qd, qs = _mos_gate_charge(vgs - (vonf + etal * vds),
+                                          vgd - (_vonr - etal * vds), phiT,
+                                          _var(cox * leff * weff, 'coxt'), p.qpart)
+            stmts += (Contribution(bgb.I, ddt(qg)),
+                      Contribution(bbd.I, ddt(-qd)),
+                      Contribution(bbs.I, ddt(-qs)))
         return stmts
     return analog
 
@@ -4272,3 +4435,23 @@ class MosLevel3PmosHdl(Behavioural):
     instparams = _mos3_params()
 
     analog = staticmethod(_mos3_analog(TEMP, -1))
+
+
+class MosLevel3GateChargeHdl(Behavioural):
+    """`MosLevel3Hdl` with the intrinsic gate charge: charge-conserving,
+    its capacitances Meyer's where `_mos_gate_charge` says and named where
+    not.  What the SPICE importer builds for a level-3 card, as SPICE adds
+    Meyer to every level-3 device; `MosLevel3Hdl` is unchanged."""
+    params_as = 'p'
+    instparams = _mos3_params() + _qpart_param()
+
+    analog = staticmethod(_mos3_analog(TEMP, +1, gate_charge=True))
+
+
+class MosLevel3PmosGateChargeHdl(Behavioural):
+    """`MosLevel3PmosHdl` with the intrinsic gate charge (see
+    `MosLevel3GateChargeHdl`)."""
+    params_as = 'p'
+    instparams = _mos3_params() + _qpart_param()
+
+    analog = staticmethod(_mos3_analog(TEMP, -1, gate_charge=True))

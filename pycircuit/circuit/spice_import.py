@@ -23,7 +23,10 @@ G     `VCCS`, its control pins first
 D     `DiodeSpiceHdl`
 Q     `GummelPoonNpnHdl` / `GummelPoonPnpHdl`; a substrate node only
       where no substrate junction is asked for (``cjs = 0``)
-M     `MosLevel1Hdl` / `MosLevel3Hdl` and their PMOS twins by LEVEL: a
+M     `MosLevel1Hdl` / `MosLevel3Hdl` and their PMOS twins by LEVEL --
+      their `...GateChargeHdl` variants where SPICE adds Meyer's gate
+      capacitance (level 3 always, level 1 when TOX is given), the
+      charge-conserving gate charge following it: a
       PMOS threshold as its magnitude, KP from UO and TOX where KP is
       not given, PHI 0.6 where neither PHI nor NSUB is given (as SPICE);
       TPG and NSS without effect where VTO is given, a VTO SPICE would
@@ -87,6 +90,17 @@ MOS3_PARAMS = {'vto': 'vto', 'vt0': 'vto', 'kp': 'kp', 'uo': 'u0', 'u0': 'u0', '
 MOS_INSTANCE = ('l', 'w', 'ad', 'as', 'pd', 'ps', 'nrd', 'nrs')
 MOS_CLASSES = {(1, 'nmos'): elements_hdl.MosLevel1Hdl, (1, 'pmos'): elements_hdl.MosLevel1PmosHdl,
                (3, 'nmos'): elements_hdl.MosLevel3Hdl, (3, 'pmos'): elements_hdl.MosLevel3PmosHdl}
+#: With the intrinsic gate charge (`elements_hdl._mos_gate_charge`): what a
+#: card gets where SPICE adds Meyer's capacitances -- level 3 always, level 1
+#: when TOX is given and not zero (`mos1temp.c` sets the oxide capacitance
+#: to zero otherwise).  The SPICE benchmark plan's stage 6.
+MOS_CHARGE_CLASSES = {
+    (1, 'nmos'): elements_hdl.MosLevel1GateChargeHdl,
+    (1, 'pmos'): elements_hdl.MosLevel1PmosGateChargeHdl,
+    (3, 'nmos'): elements_hdl.MosLevel3GateChargeHdl,
+    (3, 'pmos'): elements_hdl.MosLevel3PmosGateChargeHdl}
+_MOS3 = (elements_hdl.MosLevel3Hdl, elements_hdl.MosLevel3PmosHdl,
+         elements_hdl.MosLevel3GateChargeHdl, elements_hdl.MosLevel3PmosGateChargeHdl)
 
 #: A source's waveform: its pycircuit classes (V, I) and its parameters' names.
 WAVES = {'pulse': (elements.VPulse, elements.IPulse, ('1', '2', 'td', 'tr', 'tf', 'pw', 'per')),
@@ -235,13 +249,12 @@ class Imported:
                 lines.append(f'{written[m.name]} {n[0]} {n[1]} ' + _source_spec(m.cls, p))
             elif m.cls in _DEVICE_CLASSES:
                 kind, mtype, table, inst = _DEVICE_CLASSES[m.cls]
-                card = {k: v for k, v in p.items() if k not in inst}
+                card = {k: v for k, v in p.items() if k not in inst and k != 'qpart'}
                 if mtype == 'pmos' and 'vto' in card:
                     card['vto'] = -card['vto']
                 spec = ' '.join(f'{table.get(k, k)}={v!r}' for k, v in sorted(card.items()))
                 if kind == 'm':
-                    level = 3 if m.cls in (elements_hdl.MosLevel3Hdl,
-                                           elements_hdl.MosLevel3PmosHdl) else 1
+                    level = 3 if m.cls in _MOS3 else 1
                     spec = f'level={level} {spec}'
                 key = (mtype, spec)
                 if key not in models:
@@ -328,32 +341,35 @@ _DEVICE_CLASSES = {
     elements_hdl.GummelPoonNpnHdl: ('q', 'npn', {'IS': 'is'}, {'area': 'area'}),
     elements_hdl.GummelPoonPnpHdl: ('q', 'pnp', {'IS': 'is'}, {'area': 'area'}),
 }
-for _cls, _mtype in ((elements_hdl.MosLevel1Hdl, 'nmos'), (elements_hdl.MosLevel1PmosHdl, 'pmos'),
-                     (elements_hdl.MosLevel3Hdl, 'nmos'), (elements_hdl.MosLevel3PmosHdl, 'pmos')):
+for (_level, _mtype), _cls in list(MOS_CLASSES.items()) + list(MOS_CHARGE_CLASSES.items()):
     _DEVICE_CLASSES[_cls] = ('m', _mtype, {'IS': 'is', 'lambd': 'lambda', 'u0': 'uo'},
                              {k: k for k in MOS_INSTANCE} | {'asrc': 'as'})
 
 
-def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False):
+def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qpart=None):
     """Read and map the netlist `path` (see the module note).  `dialect`
     (``'xyce'`` or ``'ngspice'``) chooses where the two read a deck
     differently: the option and temperature statements.  `merge_shorts`:
     the nodes a 0 V source joins -- one whose current no `.print` reads --
     made one node and the source left out (a power grid's pads: ibmpg1t's
     unknowns roughly halve); `Imported.merged` maps each node merged away
-    to the node it became."""
+    to the node it became.  `mos_qpart`: the gate-charge MOSFETs' channel
+    split (`elements_hdl._mos_gate_charge`; None keeps the class's 0,
+    Ward-Dutton; 1 follows Meyer's capacitances) -- not a SPICE parameter,
+    so `Imported.write_ngspice` leaves it out."""
     if dialect not in ('xyce', 'ngspice'):
         raise ValueError(f'dialect {dialect!r}: xyce or ngspice')
-    return _Importer(spicenetlist.read(path), dialect, strict, merge_shorts).run()
+    return _Importer(spicenetlist.read(path), dialect, strict, merge_shorts, mos_qpart).run()
 
 
 class _Importer:
 
-    def __init__(self, net, dialect, strict, merge_shorts=False):
+    def __init__(self, net, dialect, strict, merge_shorts=False, mos_qpart=None):
         self.net = net
         self.dialect = dialect
         self.strict = strict
         self.merge_shorts = merge_shorts
+        self.mos_qpart = mos_qpart
         self.out = Imported(net)
         self.errors = []
         self.inductors = {}         # flat name -> [Mapped, coupled by]
@@ -928,6 +944,8 @@ class _Importer:
         if cls is None:
             stage = ' (the plan\'s stage 9)' if level == 2 else ''
             raise SpiceImportError(f'model {m.name}: MOS LEVEL {level} is not supported{stage}')
+        if level == 3 or values.get('tox', 0.0) != 0.0:
+            cls = MOS_CHARGE_CLASSES[(level, m.type)]
         geometry = {k: values.pop(k) for k in ('l', 'w') if k in values}
         if level == 1:
             uo = values.pop('uo', values.pop('u0', 600.0))
@@ -954,5 +972,7 @@ class _Importer:
         if level == 1 and 'as' in inst:
             inst['asrc'] = inst.pop('as')
         kw.update(inst)
+        if self.mos_qpart is not None and cls in MOS_CHARGE_CLASSES.values():
+            kw['qpart'] = float(self.mos_qpart)
         self.add(f, 'm', [f.node(x) for x in w[:4]], cls, kw, model=m)
 

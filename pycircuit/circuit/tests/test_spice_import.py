@@ -81,7 +81,7 @@ def _by_hand():
     c['vcc'] = elements.VS('vcc', gnd, v=5.0, vac=0.0)
     c['x1:m1'] = elements_hdl.MosLevel1Hdl('y', 'c', gnd, gnd, vto=0.7, kp=1e-4, phi=0.6,
                                            w=2e-6, l=1e-6)
-    c['x1:m2'] = elements_hdl.MosLevel3PmosHdl('y', 'c', 'x1:vdd', 'x1:vdd', vto=0.8,
+    c['x1:m2'] = elements_hdl.MosLevel3PmosGateChargeHdl('y', 'c', 'x1:vdd', 'x1:vdd', vto=0.8,
                                                u0=200.0, tox=2e-8, phi=0.6, w=4e-6, l=1e-6)
     c['x1:vdd'] = elements.VS('x1:vdd', gnd, v=5.0, vac=0.0)
     c['rl'] = elements.R('y', gnd, r=10e3)
@@ -187,16 +187,19 @@ def test_each_two_terminal_maps_as_spice_defines_it(tmp_path, line, cls, nodes, 
     ('.model n1 nmos vto=0.7 kp=1e-4 lambda=0.02', '', elements_hdl.MosLevel1Hdl,
      {'vto': 0.7, 'kp': 1e-4, 'lambd': 0.02, 'phi': 0.6}),
     ('.model n1 pmos level=1 vto=-0.7 uo=300 tox=1e-8', 'w=2u l=1u as=1p',
-     elements_hdl.MosLevel1PmosHdl,
+     elements_hdl.MosLevel1PmosGateChargeHdl,
      {'vto': 0.7, 'tox': 1e-8, 'kp': 300.0 * 1e-4 * (3.9 * 8.854214871e-12) / 1e-8,
       'phi': 0.6, 'w': 2e-6, 'l': 1e-6, 'asrc': 1e-12}),
     ('.model n1 nmos level=3 vto=0.9 uo=600 nsub=1e16 tpg=1 nss=0', 'as=2p',
-     elements_hdl.MosLevel3Hdl, {'vto': 0.9, 'u0': 600.0, 'nsub': 1e16, 'as': 2e-12}),
-    ('.model n1 nmos (level=3 vto=0.9 phi=0.7 l=3u)', '', elements_hdl.MosLevel3Hdl,
+     elements_hdl.MosLevel3GateChargeHdl, {'vto': 0.9, 'u0': 600.0, 'nsub': 1e16, 'as': 2e-12}),
+    ('.model n1 nmos (level=3 vto=0.9 phi=0.7 l=3u)', '', elements_hdl.MosLevel3GateChargeHdl,
      {'vto': 0.9, 'phi': 0.7, 'l': 3e-6}),
+    ('.model n1 nmos level=1 vto=0.7 kp=1e-4 tox=0', '', elements_hdl.MosLevel1Hdl,
+     {'vto': 0.7, 'kp': 1e-4, 'tox': 0.0, 'phi': 0.6}),
 ])
 def test_mosfets_map_as_spice_reads_their_cards(tmp_path, model, inst, cls, params):
-    """LEVEL picks the class; a PMOS threshold its magnitude; level 1's KP
+    """LEVEL picks the class -- with the gate charge where SPICE adds
+    Meyer's (level 3; level 1 with a TOX that is not zero); a PMOS threshold its magnitude; level 1's KP
     from UO and TOX where KP is not given (mos1temp.c); PHI 0.6 where
     neither PHI nor NSUB is given; TPG and NSS without effect where VTO is
     given; a model's L and W the instance's default; `as` level 1's

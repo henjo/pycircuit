@@ -5,6 +5,7 @@
     python benchmarks/spice_suite.py 4049osc gm1     # some
     python benchmarks/spice_suite.py --peers         # ngspice and Xyce too
     python benchmarks/spice_suite.py --json out.json
+    python benchmarks/spice_suite.py --qpart 1 gm2   # the MOS gate charge's channel split
 
 Each deck runs in a process of its own (its peak RSS is its own): read,
 import, the `.tran` (`Imported.transient`), its wall times, steps, Newton
@@ -100,7 +101,7 @@ def _gold_column(names, col):
     return lower.index(key) if key in lower else None
 
 
-def run_one(name, peers):
+def run_one(name, peers, qpart=None):
     """One deck, in this process: its record (see the module note)."""
     import numpy as np
 
@@ -117,7 +118,7 @@ def run_one(name, peers):
     net = spicenetlist.read(deck)
     rec['read_s'] = time.perf_counter() - t0
     t0 = time.perf_counter()
-    imp = spice_import.import_netlist(deck)
+    imp = spice_import.import_netlist(deck, mos_qpart=qpart)
     rec['import_s'] = time.perf_counter() - t0
     rec['elements'], rec['unknowns'] = len(imp.elements), imp.circuit.n
     tr, kw = imp.transient()
@@ -250,18 +251,20 @@ def _fmt(rec):
 
 def main(argv):
     peers = '--peers' in argv
+    qpart = float(argv[argv.index('--qpart') + 1]) if '--qpart' in argv else None
     out_json = argv[argv.index('--json') + 1] if '--json' in argv else None
     if '--one' in argv:
-        print(json.dumps(run_one(argv[argv.index('--one') + 1], peers)))
+        print(json.dumps(run_one(argv[argv.index('--one') + 1], peers, qpart)))
         return 0
-    names = [a for a in argv if not a.startswith('--') and a != out_json] or list(CASES)
+    values = {out_json, argv[argv.index('--qpart') + 1] if '--qpart' in argv else None}
+    names = [a for a in argv if not a.startswith('--') and a not in values] or list(CASES)
     unknown = [n for n in names if n not in CASES]
     if unknown:
         sys.exit(f'unknown cases {unknown}; known: {", ".join(CASES)}')
     recs = []
     for name in names:
         cmd = [sys.executable, os.path.abspath(__file__), '--one', name] + (
-            ['--peers'] if peers else [])
+            ['--peers'] if peers else []) + (['--qpart', str(qpart)] if qpart is not None else [])
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, check=False,
                                timeout=CASE_TIMEOUT)
