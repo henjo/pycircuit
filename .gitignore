@@ -29,9 +29,3 @@ test_timings/*.json
 test_timings/*.csv
 ## the leak detector's reports (its default directory)
 test_timings/leaks/
-
-# Vendor SPICE models for examples 12 and 13 -- licensed, not ours to
-# redistribute.  See doc/src/circuit/examples/example12.rst.
-doc/src/circuit/examples/howland/PBSS4230PAN.txt
-doc/src/circuit/examples/howland/ad8606.cir
-doc/src/circuit/examples/howland/PC817.sub
