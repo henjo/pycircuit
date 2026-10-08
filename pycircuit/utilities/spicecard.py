@@ -143,6 +143,40 @@ def _assignments(text):
     return [(m.group(1).lower(), m.group(2)) for m in _ASSIGN.finditer(text)]
 
 
+_WRAPPED = re.compile(r'([A-Za-z_]\w*)\s*\((.*)\)\s*$', re.S)
+
+
+def _model_type_and_body(rest):
+    """Split what follows a `.model` name into its type and parameters.
+
+    Vendor libraries also write the card wrapped and comma-separated,
+    ``.model DX D(IS=1E-14, RS=5)`` or ``PMOS (LEVEL=2,KP=10E-6)``: the
+    parentheses are dropped, and so is every comma that separates two
+    assignments.  A comma inside a quoted, braced or parenthesised
+    expression belongs to the expression and is kept.
+    """
+    m = _WRAPPED.match(rest.strip())
+    if m:
+        mtype, body = m.group(1), m.group(2)
+    else:
+        split = rest.split(None, 1)
+        mtype, body = split[0], split[1] if len(split) > 1 else ''
+    out, quote, depth = [], None, 0
+    for ch in body:
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in '\'"':
+            quote = ch
+        elif ch in '{(':
+            depth += 1
+        elif ch in '})':
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            ch = ' '
+        out.append(ch)
+    return mtype, ''.join(out)
+
+
 class _Scope(object):
     """A parameter namespace: global, or one `.subckt`."""
 
@@ -413,16 +447,15 @@ def _parse_file(deck, path, section, scope, seen):
             continue
 
         if head == '.model':
-            parts = text.split()
+            parts = text.split(None, 2)
             if len(parts) < 3:
                 raise SpiceCardError('malformed .model: %r' % text[:80])
-            model = Model(parts[1].lower(), parts[2].lower(), scopes[-1])
+            mtype, body = _model_type_and_body(parts[2])
+            model = Model(parts[1].lower(), mtype.lower(), scopes[-1])
             deck.models[model.name] = model
             ## Parameters may follow on the same logical line.
-            after = text.split(None, 3)
-            if len(after) > 3:
-                for pname, raw in _assignments(after[3]):
-                    model.raw[pname] = raw
+            for pname, raw in _assignments(body):
+                model.raw[pname] = raw
             continue
 
         ## Anything else -- device lines, analyses, control blocks -- is
