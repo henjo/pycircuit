@@ -110,3 +110,33 @@ def test_the_device_loop_gain_does_not_depend_on_an_earlier_analysis():
     DC(cir, toolkit=numeric).solve()
     lg, lg_ref = loopgain(cir), loopgain(build())
     assert abs(lg / lg_ref - 1.0) < 1e-12, (lg, lg_ref)
+
+
+def test_the_loop_analysis_linearises_at_a_given_dc_solution():
+    """`dcx` is the operating point the loop gain is taken at.  An
+    inverting amplifier with a diode in its feedback path has a loop gain
+    that depends on the diode's bias, so the analysis given the DC solution
+    of a circuit biased elsewhere must return THAT circuit's loop gain,
+    not the one its own sources would give."""
+    from pycircuit.circuit import numeric
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.elements import Diode
+
+    def build(vin):
+        cir = SubCircuit()
+        cir['VS'] = VS('in', gnd, v=vin)
+        cir['R1'] = R('in', 'int', r=1e3)
+        cir['A1'] = VCVS(gnd, 'int', 'out', gnd, g=100)
+        cir['probe'] = LoopProbe('out', gnd, 'out_D', gnd)
+        cir['D'] = Diode('int', 'out_D')
+        return cir
+
+    def loopgain(cir, **kw):
+        return complex(np.asarray(FeedbackLoopAnalysis(
+            cir, toolkit=numeric, **kw).solve(1e3)['loopgain']).ravel()[0])
+
+    lo, hi = build(0.1), build(5.0)
+    x_hi = DC(hi, toolkit=numeric).solve().x
+    assert abs(loopgain(lo) / loopgain(hi) - 1.0) > 0.1, \
+        'the bias must matter, or the test proves nothing'
+    assert abs(loopgain(lo, dcx=x_hi) / loopgain(hi) - 1.0) < 1e-9
