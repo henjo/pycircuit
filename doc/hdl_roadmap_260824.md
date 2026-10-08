@@ -6818,3 +6818,45 @@ deck; ours fails (pseudo-transient exhausted, a residual 1e5 over at the
 nodes at their terminals): residual 1e4 over at `xb:15`, updates of 2.8 V
 at `xd:qt.ci`.  The cards are unusual (a p-n-p with BR = 25990, IKR =
 12.8 uA, MJE = MJC = 0.99); not yet localised.
+
+## 2026-10-08 — 73. opampal's DC: source stepping falls back to adaptive steps (section 72's open item, closed)
+
+Localised in four measurements, each ruling a cause in or out:
+
+1. **The models agree.**  Each of the deck's two cards alone, against
+   ngspice on the same written deck, 25 biases (forward, saturated,
+   reverse, `vce` -1..30 V): equal to ~1e-5 wherever current flows.  The
+   only differences are at 1e-14..1e-10 A, and they are SPICE's GMIN (1e-12
+   S across each junction, kept permanently by ngspice; ours has none).
+   (A first version of this comparison read ngspice's output wrongly and
+   its NaNs compared as "agree": `NaN > tol` is False.  The flag is now
+   `not (rel <= tol)`.)
+2. **GMIN is not the cause.**  1 TOhm across every junction: the same
+   failure, to the same residual.
+3. **Our equations hold ngspice's point.**  Started from ngspice's
+   operating point (its node voltages, each internal node at its
+   terminal), our DC converges and agrees with it to 3.5e-5 V.  (A first
+   attempt left the internal nodes at 0 V and read as a singular Jacobian
+   at ngspice's point -- an artefact of the starting vector.)
+4. **The continuation was the failure.**  `SourceSteppingNewton` stepped
+   the sources 0, 0.01, 0.1, 1 and nothing between: on +-35 V supplies and
+   516 unknowns the last jump failed and so did every later rung.  Steps
+   that grow on success and shrink on failure, as SPICE steps its sources,
+   reach the operating point ngspice finds (to 2 uV) in 16 steps.
+
+The fix: the fixed ladder unchanged (a circuit it solves is solved exactly
+as before), the adaptive steps only where it fails, from the last factor
+it solved (`SourceSteppingNewton._adaptive`; tested with a stub solver
+that converges only for small jumps).  Its reach is wider than one deck: a
+circuit the fixed ladder gave up on may now converge -- gate 6-2's test,
+which caps Newton at 2 iterations to force a failure and check its
+message, converged (steps that small need 2), and now switches the
+fallback off (`ADAPT_MIN`) to keep testing the message.  opampal now passes its gold:
+**0.013** (ngspice on our deck 0.019).
+
+Cost, measured and left: its DC takes ~200 s (the transient 101 s in
+all), ngspice's whole run 0.2 s.  176 s of it is 156 FAILED leaf Newton
+solves (100 iterations at ~11 ms on 519 unknowns), because each source
+step's inner solve is the whole gmin ladder, which runs to exhaustion
+before a step is cut.  A faster DC (SPICE's order: gmin stepping, then
+source stepping with plain Newton steps) is its own piece of work.

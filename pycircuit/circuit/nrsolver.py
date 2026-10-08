@@ -560,22 +560,59 @@ class SourceSteppingNewton(NonLinearSolver):
             
         x_curr = x0
         lambdas = [0.0, 1e-2, 1e-1, 1.0]
-        
+        done = None             # the last factor solved, and its solution
+
         for lambda_ in lambdas:
             def eval_FJ_with_source(x):
                 # The callback MUST scale the source term specifically.
                 # In PyCircuit, F = i(x) + lambda_ * u(0)
                 # But evaluating this requires access to the circuit elements.
                 return self.source_callback(x, lambda_)
-                
+
             try:
                 x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_source, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
+                done = (lambda_, x_curr)
             except NoConvergenceError as e:
-                ## STAGE 6 -- keep the inner diagnosis; see the Gmin note above.
-                raise NoConvergenceError(
-                    'Source Stepping failed at lambda=%s: %s' % (lambda_, e)) from e
-                
+                if done is None:
+                    ## STAGE 6 -- keep the inner diagnosis; see the Gmin note above.
+                    raise NoConvergenceError(
+                        'Source Stepping failed at lambda=%s: %s' % (lambda_, e)) from e
+                x_curr = self._adaptive(done, e, toolkit, reltol, abstol, xtol, maxiter,
+                                        limiter, scaler, row_names, linsolver)
+                break
+
         return self.base_solver.solve_system(x_curr, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
+
+    #: the adaptive continuation's first step, its growth on success, its cut
+    #: on failure and the step it gives up below
+    ADAPT_STEP, ADAPT_GROW, ADAPT_CUT, ADAPT_MIN = 1e-3, 2.0, 0.25, 1e-9
+
+    def _adaptive(self, done, first_failure, toolkit, reltol, abstol, xtol, maxiter,
+                  limiter, scaler, row_names, linsolver):
+        """The factor taken from the last one solved to 1 in steps that grow
+        on success and shrink on failure, as SPICE steps its sources.  Only
+        where the fixed ladder above failed: a circuit it solves is solved
+        exactly as before.  MEASURED (2026-10-08): the CircuitSim90/MCNC
+        bipolar op-amp chain (opampal, 516 unknowns, +-35 V supplies) failed
+        the fixed jump 0.1 -> 1 and every rung after it; this reached the
+        operating point ngspice finds, to 2 uV, in 16 steps."""
+        lam, x = done
+        step = self.ADAPT_STEP
+        while lam < 1.0:
+            nxt = min(1.0, lam + step)
+            try:
+                x, _ = self.base_solver.solve_system(
+                    x, lambda xx, l=nxt: self.source_callback(xx, l), toolkit, reltol,
+                    abstol, xtol, maxiter, limiter, scaler, row_names=row_names,
+                    linsolver=linsolver)
+                lam, step = nxt, step * self.ADAPT_GROW
+            except NoConvergenceError as e:
+                step *= self.ADAPT_CUT
+                if step < self.ADAPT_MIN:
+                    raise NoConvergenceError(
+                        f'Source Stepping failed: the fixed ladder ({first_failure}), then '
+                        f'the adaptive steps stalled at lambda={lam:.6g}: {e}') from e
+        return x
 
 
 class PseudoTransientNewton(NonLinearSolver):

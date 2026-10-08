@@ -1985,14 +1985,19 @@ def test_gate_6_1_a_floating_node_is_named():
         'the message does not say what the condition is: %s' % msg
 
 
-def test_gate_6_2_a_non_convergent_circuit_names_the_worst_node():
+def test_gate_6_2_a_non_convergent_circuit_names_the_worst_node(monkeypatch):
     """The circuit must be non-singular, or it takes gate 6-1's path instead.
 
     `maxiter` is cut rather than inventing a pathological circuit: the point is
     the *message*, and a genuine non-convergence and a truncated one reach the
-    same code with the same information in scope.
+    same code with the same information in scope.  ⚠ Since 2026-10-08 source
+    stepping falls back to adaptive steps, and steps that small converge in
+    two iterations -- so the fallback is made to give up at once
+    (`ADAPT_MIN`), and its own failure has to carry the node through.
     """
     from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.nrsolver import SourceSteppingNewton
+    monkeypatch.setattr(SourceSteppingNewton, 'ADAPT_MIN', 1.0)
     cir = _ce_stage(100.0)
     with quiet(), pytest.raises(NoConvergenceError) as excinfo:
         DC(cir, toolkit=numeric, maxiter=2).solve()

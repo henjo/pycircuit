@@ -370,3 +370,55 @@ def test_pseudo_transient_continuation_is_the_chains_last_rung():
     x, _ = PseudoTransientNewton(Instant()).solve_system(
         np.zeros(1), eval_cubic, *tols)
     assert x[0] == 1.0
+
+
+class _JumpLimited:
+    """A base solver that converges only when the source factor moves by at
+    most `limit` from the last one it solved, and records each factor."""
+
+    def __init__(self, limit):
+        self.limit, self.last, self.seen = limit, None, []
+
+    def solve_system(self, x0, eval_FJ, *a, **k):
+        lam = eval_FJ(None)
+        self.seen.append(lam)
+        if lam == 'target':
+            if self.last != 1.0:
+                raise NoConvergenceError('the unscaled problem from far away')
+            return x0, 1
+        if self.last is not None and abs(lam - self.last) > self.limit:
+            raise NoConvergenceError(f'jump {self.last} -> {lam}')
+        self.last = lam
+        return x0, 1
+
+
+def _stepping(limit):
+    base = _JumpLimited(limit)
+    return base, SourceSteppingNewton(base, lambda x, lam: lam)
+
+
+def test_source_stepping_keeps_its_fixed_ladder_and_falls_back_to_adaptive_steps():
+    """(1) Where the fixed ladder 0, 0.01, 0.1, 1 converges it is all that
+    runs; (2) where its last jump fails, the factor is taken from the last
+    one solved to 1 in growing steps (opampal, 2026-10-08, needed it);
+    (3) where even that stalls, the error names both."""
+    target = lambda x: 'target'
+
+    base, ss = _stepping(limit=10.0)
+    ss.solve_system(0.0, target, None, 1e-3, 1e-9, 1e-9, 100)
+    assert base.seen == ['target', 0.0, 0.01, 0.1, 1.0, 'target']
+
+    base, ss = _stepping(limit=0.095)        # 0.01 -> 0.1 passes, 0.1 -> 1 does not
+    ss.solve_system(0.0, target, None, 1e-3, 1e-9, 1e-9, 100)
+    solved = [lam for lam in base.seen if lam != 'target']
+    assert base.last == 1.0 and base.seen[-1] == 'target'
+    assert solved[:3] == [0.0, 0.01, 0.1] and 1.0 in solved
+    tail = solved[3:]
+    assert tail[-1] == 1.0 and all(0.1 < lam <= 1.0 for lam in tail)
+
+    base, ss = _stepping(limit=1e-12)
+    ss.ADAPT_MIN = 1e-6
+    with pytest.raises(NoConvergenceError) as e:
+        ss.solve_system(0.0, target, None, 1e-3, 1e-9, 1e-9, 100)
+    assert 'fixed ladder' in str(e.value) and 'stalled at lambda=' in str(e.value)
+    assert isinstance(ss, SourceSteppingNewton)
