@@ -1686,6 +1686,9 @@ def _spice_bjt_params():
                   unit='', default=0.33),
         Parameter(name='tf', desc='Ideal forward transit time', unit='s',
                   default=0.0),
+        Parameter(name='ptf', desc='Excess phase at 1/(2 pi tf) (Weil): '
+                  'the forward transport current delayed by ptf[rad]*tf', unit='deg',
+                  default=0.0),
         Parameter(name='xtf', desc='Bias coefficient of tf', unit='',
                   default=0.0),
         Parameter(name='vtf', desc='Vbc dependence of tf (0 = none)',
@@ -1719,6 +1722,10 @@ def _spice_bjt_params():
                   unit='C', default=_TNOM_DEFAULT_C),
     ]
 
+
+
+#: the excess-phase states' scale: their node voltage per ampere
+_XP_R = 1e3
 
 
 def _substrate_params():
@@ -1937,7 +1944,36 @@ def _gp_core(p, T, npn, c, b, e, s=None):
     qb = _var(q1 * 0.5 * (1.0 + sympy.sqrt(_maxc(1.0 + 4.0 * q2,
                                                  1e-8))), 'qb')
 
-    ict = _var((ifwd - irev) / qb, 'ict')
+    ## EXCESS PHASE (`ptf > 0`, SPICE's): Weil's approximation, as
+    ## ngspice's `bjtload.c` -- the forward transport current `IF/qb`
+    ## through `td^2 y'' + 3 td y' + 3 y = 3 IF/qb`, `td = ptf[rad]*tf`,
+    ## and `y` in its place.  ngspice integrates it inside the device by
+    ## backward Euler on its own step; here it is two internal states the
+    ## simulator integrates with the circuit (`td y' = w`, `td w' = 3(IF/qb
+    ## - y - w)`), on nodes referenced to the emitter terminal whose own
+    ## rows ARE those equations (the emitter receives their currents, which
+    ## they hold at zero).  The states are currents scaled by `_XP_R`
+    ## (volts near the device's milliamps).  At DC `y = IF/qb`.  `ptf <= 0`
+    ## collapses both nodes away: today's device, bit for bit in value.
+    ## The SPICE benchmark plan's stage 7 (Andreas, 2026-10-08: support
+    ## PTF -- the HB gilbert cell's card gives 14.6 degrees).
+    xp1, xp2 = Node('xp1'), Node('xp2')
+    bxp1, bxp2 = Branch(xp1, e), Branch(xp2, e)
+    tdx = _var(p.ptf * (sympy.pi / 180.0) * p.tf, 'tdx')
+    ## (raw node differences, NOT identity probes: with `ptf = 0` the
+    ## collapse removes them, so today's device keeps its PCNR exactly; a
+    ## `ptf > 0` device reads them and vector PCNR declines it -- probes
+    ## would cost every device two PCNR unknowns, measured 2026-10-08)
+    yxp = _var(bxp1.V / _XP_R, 'yxp')
+    wxp = _var(bxp2.V / _XP_R, 'wxp')
+    ict = _var(sympy.Piecewise((yxp - irev / qb, p.ptf > 0.0),
+                               ((ifwd - irev) / qb, True)), 'ict')
+    xpstate = (
+        Contribution(bxp1.I, ddt(tdx * yxp) - wxp),
+        Collapse(bxp1, p.ptf <= 0.0),
+        Contribution(bxp2.I, ddt(tdx * wxp) + 3.0 * (yxp + wxp - ifwd / qb)),
+        Collapse(bxp2, p.ptf <= 0.0),
+    )
     ibe = _var(ifwd / bfT + iseT * (_expl(vbe / (p.ne * vtT))
                                     - 1.0), 'ibe')
     ibc = _var(irev / brT + iscT * (_expl(vbc / (p.nc * vtT))
@@ -2049,7 +2085,7 @@ def _gp_core(p, T, npn, c, b, e, s=None):
         Collapse(brc, p.rc <= 0.0),
         Contribution(bre.I, bre.V * p.area / p.re),
         Collapse(bre, p.re <= 0.0),
-    )
+    ) + xpstate
     if s is not None:
         ## THE SUBSTRATE JUNCTION (the 4-terminal classes): a depletion
         ## charge between the substrate and the internal collector

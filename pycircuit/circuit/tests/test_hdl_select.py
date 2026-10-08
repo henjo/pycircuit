@@ -736,10 +736,13 @@ _RECORDED = {
     ## 2026-10-08: the five GP digests re-recorded for `TF*IF/qb` (q/C moved,
     ## i/G bit-identical); old b8f2981a979cffca, c410a2703cec8200,
     ## 5e16039ceb22ec01, a204d7c7c84114ee, ced67134cc2ea251
-    'GummelPoonNpnHdl': '32a36b705d59fb35',
+    ## 2026-10-08 (PTF): Npn/Pnp/Thermal re-recorded for the excess-phase states:
+    ## last-bit reassociation only (worst 3.3e-15), measured; old 32a36b705d59fb35,
+    ## 50ae7556271a167a, 557038e128529bb0; the -off digests did not move
+    'GummelPoonNpnHdl': 'b3c5f3b48e9ad70e',
     'GummelPoonNpnHdl-off': '53a8b396c0e3adf0',
-    'GummelPoonPnpHdl': '50ae7556271a167a',
-    'GummelPoonNpnThermalHdl': '557038e128529bb0',
+    'GummelPoonPnpHdl': '03b3771e0dc7891b',
+    'GummelPoonNpnThermalHdl': 'f2c6067653acd3c7',
     ## 2026-10-08 (later): -off re-recorded for `irb` (old b210391d0a543937):
     ## every value equal (`irb = 0` keeps the qb law); 9 of the 39 points
     ## carry one Jacobian ZERO of the other sign (G[12], +0.0 <-> -0.0),

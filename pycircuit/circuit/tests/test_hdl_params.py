@@ -634,6 +634,13 @@ _RECORDED = [
     ## BIT-identical across 25 random biases for all three classes, max
     ## relative difference exactly 0.000e+00.  An identity probe applies
     ## no law, so it must not move a number, and it did not.
+    ## 2026-10-08 (PTF): re-recorded again for the excess-phase states (a
+    ## parameter, two collapsed nodes, `ict` a choice): measured old vs new
+    ## on these points and the select sweeps -- every difference LAST-BIT
+    ## REASSOCIATION, worst 3.9e-16 (Npn/Pnp) and 3.3e-15 (Thermal), none on
+    ## the -off cards.  Old points Npn 5728a1d4e1a34904/8bc701a57dfa0a54,
+    ## Pnp d78f3f1ca0c7525c; old explain 1da42b94371613bc, 3f8610a8acea8887,
+    ## 02554da254741287.
     ## 2026-10-08 (later): the three Gummel-Poon EXPLAIN digests re-recorded
     ## for `irb` (a parameter, and the base resistance's new intermediates);
     ## their POINT digests did not move (`irb = 0` keeps the qb law).  Old
@@ -647,17 +654,17 @@ _RECORDED = [
     ## c3ed303997f1392e/21e88b90474a46ad/21439709d3b32cd6, Thermal
     ## fe1b458d8329968c/3455c501ca26160e/d500ccf7379c575b.
     ('GummelPoonNpnHdl', _BJT, ('c', 'b', 'e'), 6,
-     ['86f6b89d43855a39', '5728a1d4e1a34904', '8bc701a57dfa0a54'],
-     '1da42b94371613bc'),
+     ['86f6b89d43855a39', '2f85a7792aa1201e', '5ff8e2d4c0347086'],
+     '12f9bd59d4d4f203'),
     ('GummelPoonPnpHdl', _BJT, ('c', 'b', 'e'), 6,
-     ['d78f3f1ca0c7525c', 'f2463ed66739ca8e', '186e9ba75b76412b'],
-     '3f8610a8acea8887'),
+     ['1fdb986ba17c1931', 'f2463ed66739ca8e', '186e9ba75b76412b'],
+     'a27aaf1b487efcf6'),
     ## 2026-09-19: explain re-recorded (was d498f022d01f0c10).  The flicker term gained a
     ## named sign factor `sgnfl`, which RENUMBERS the intermediate after it
     ## (`_v73_pdiss` -> `_v74_pdiss`); the three POINT digests did not move.
     ('GummelPoonNpnThermalHdl', _BJT, ('c', 'b', 'e', 'th', 'tha'), 8,
      ['f5a076b126f68f66', '929ed86f421a4875', '725e30e46a092a66'],
-     '02554da254741287'),
+     'b48032c5efaed323'),
     ## ⚠ The two SPICE-diode `explain` digests were RE-RECORDED
     ## 2026-08-27 for `_autohold` (roadmap sec. 36): the regularisers now
     ## hold their own arguments, so the chain carries more named

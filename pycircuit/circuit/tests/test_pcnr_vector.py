@@ -1270,7 +1270,11 @@ def _vec_dev(name, nargs, toolkit):
     cls = getattr(_eh, name)
     el = cls(*([None] * nargs), toolkit=toolkit)
     params = {q.name: getattr(el.iparv, q.name) for q in el.instparams}
-    return cls, params
+    ## the class the instance RUNS -- its collapse variant -- not the base:
+    ## since 2026-10-08 the Gummel-Poon base carries the excess-phase
+    ## states (collapsed away at `ptf = 0`), whose raw node voltages vector
+    ## PCNR declines, and no instance runs the base
+    return type(el), params
 
 
 def test_pcnr_limit_branchless_is_the_same_law_as_the_cpu_form():

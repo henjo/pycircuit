@@ -71,7 +71,7 @@ BJT_PARAMS = {'is': 'IS', 'bf': 'bf', 'nf': 'nf', 'vaf': 'vaf', 'va': 'vaf', 'ik
               'me': 'mje', 'tf': 'tf', 'xtf': 'xtf', 'vtf': 'vtf', 'itf': 'itf', 'cjc': 'cjc',
               'vjc': 'vjc', 'pc': 'vjc', 'mjc': 'mjc', 'mc': 'mjc', 'xcjc': 'xcjc', 'tr': 'tr',
               'fc': 'fc', 'xtb': 'xtb', 'eg': 'eg', 'xti': 'xti', 'kf': 'kf', 'af': 'af',
-              'tnom': 'tnom', 'irb': 'irb'}
+              'tnom': 'tnom', 'irb': 'irb', 'ptf': 'ptf'}
 #: A bipolar card's substrate junction: CJS (or CCS) on selects the
 #: 4-terminal class, which takes them (stage 7); off, they are dropped.
 BJT_SUBSTRATE = ('cjs', 'ccs', 'vjs', 'ps', 'mjs', 'ms')
@@ -185,8 +185,8 @@ class Imported:
         """The `.tran` as pycircuit's transient: ``(Transient, keyword
         arguments for its solve)``.  The netlist's options, its temperature,
         UIC/NOOP (zeros, plus `.ic`), `.ic` without UIC (the operating point
-        with those nodes held), `.nodeset` and TMAX become the Transient's
-        keywords; `overrides` replace any of them.  TSTART is not a
+        with those nodes held), `.nodeset` and TMAX -- SPICE's default where
+        the deck gives none (`tmax`) -- become the Transient's keywords; `overrides` replace any of them.  TSTART is not a
         Transient's: the run starts at 0 (slice its result)."""
         from pycircuit.circuit.transient import Transient
         if self.tran is None:
@@ -195,8 +195,7 @@ class Imported:
         kw['epar'] = self.epar()
         if self.integrator is not None:
             kw['integrator'] = self.integrator()
-        if self.tran['tmax']:
-            kw['timestep_max'] = self.tran['tmax']
+        kw['timestep_max'] = self.tmax()
         if self.tran['start'] in ('uic', 'noop'):
             kw['uic'] = True
         elif self.nodeset:
@@ -208,6 +207,16 @@ class Imported:
         kw.update(overrides)
         return (Transient(self.circuit, **kw),
                 {'tend': self.tran['tstop'], 'timestep': self.tran['tstep']})
+
+    def tmax(self):
+        """The `.tran`'s TMAX, or SPICE's default where it gives none:
+        ``min(TSTEP, (TSTOP - TSTART)/50)`` (ngspice's manual).  Andreas,
+        2026-10-08: our runs take SPICE's cap as ngspice's do -- the rca
+        amplifier passes its gold with it (0.800) and not without (2.31,
+        the LTE control alone sampling its 50 MHz sine 25 times a period);
+        it costs the 4049 oscillator ~5x the steps."""
+        t = self.tran
+        return t['tmax'] or min(t['tstep'], (t['tstop'] - t['tstart']) / 50.0)
 
     def write_ngspice(self, path, probes=None):
         """The flat circuit as an ngspice deck at `path` -- every element
@@ -270,8 +279,7 @@ class Imported:
         if self.tran is not None:
             t = self.tran
             uic = ' uic' if t['start'] in ('uic', 'noop') else ''
-            lines.append(f'.tran {t["tstep"]!r} {t["tstop"]!r} 0 '
-                         f'{t["tmax"] or min(t["tstep"], t["tstop"] / 50)!r}{uic}')
+            lines.append(f'.tran {t["tstep"]!r} {t["tstop"]!r} 0 {self.tmax()!r}{uic}')
         if self.ic:
             lines.append('.ic ' + ' '.join(f'v({nodes(k)})={v!r}' for k, v in self.ic.items()))
         if self.temp is not None:
@@ -922,10 +930,6 @@ class _Importer:
                                    'supported')
         sub = {k: values.pop(k) for k in BJT_SUBSTRATE if k in values}
         subs = values.pop('subs', None)
-        for k in ('ptf',):
-            if values.get(k, 0.0):
-                raise SpiceImportError(f'model {m.name}: {k.upper()} is not supported')
-            values.pop(k, None)
         kw = self.translate(values, BJT_PARAMS, m.name, 'GummelPoonHdl')
         kw.update(self.instance(f, w[nn + 1:], ('area',)))
         cjs = sub.get('cjs', sub.get('ccs', 0.0))

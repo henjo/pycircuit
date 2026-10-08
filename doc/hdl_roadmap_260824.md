@@ -6891,3 +6891,50 @@ about 1e-6 of the deck's 10 kHz period -- below anything its HB gold can
 resolve.  Whether to import such a card with a note (excess phase left
 out) or to build the plan's Bessel network is the stage-8 decision, when
 gilbert's HB runs.
+
+## 2026-10-08 — 75. PTF (excess phase), and SPICE's default TMAX for imported decks
+
+**PTF** (Andreas: support it).  Weil's approximation as ngspice's
+`bjtload.c`: the forward transport current `IF/qb` through `td^2 y'' + 3
+td y' + 3 y = 3 IF/qb`, `td = PTF[rad]*TF`, and `y` in its place in the
+collector current.  ngspice integrates it inside the device by backward
+Euler on its own step; here it is two internal states (`td y' = w`, `td
+w' = 3(IF/qb - y - w)`, scaled to volts by `_XP_R`) the simulator
+integrates with the circuit, on nodes referenced to the EMITTER TERMINAL
+and collapsed away at `PTF <= 0` -- referenced to the internal emitter the
+collapse could not chain (it left zero-volt branches: 7 unknowns where
+today's device has 3).  The states are raw node voltages, so a `PTF > 0`
+device is declined by vector PCNR; identity probes would have kept it, at
+two PCNR unknowns on EVERY device, and broke the thermal class's affine
+remainder -- measured, refused.  At `PTF = 0` the variants an instance
+runs are today's; the recorded digests moved by last-bit reassociation
+only (worst 3.3e-15, measured on every recorded point and sweep), noted
+beside them.  A PCNR test helper read the BASE class, which no instance
+runs and which now carries the states: it reads `type(instance)`.
+
+Against ngspice (a common-emitter stage at 100 MHz, TF = 1 ns, PTF = 60):
+the collector within 0.12 mV of ngspice's (committed), where PTF = 0 is
+~80 mV away; the operating point does not see PTF.  The importer reads
+PTF; the HB gilbert cell imports (no deck in the census is refused now
+but for MOS level 2).
+
+**TMAX** (Andreas: use SPICE's default).  `Imported.tmax()`: the `.tran`'s
+TMAX or `min(TSTEP, (TSTOP - TSTART)/50)`, for our runs and `write_ngspice`
+alike (which had used TSTOP alone).
+
+The gold suite with both (Xyce's metric; ngspice on our deck beside):
+4049osc 0.389 (0.406), toronto 0.462 (0.242), rca **0.800** (0.588),
+schmitecl 0.126 (1.537), latch 0.101 (0.307), opampal 0.013 (0.019), gm1
+5.81 (0.511), gm2 2.38 (0.612), gm3 2.16 (0.651), gm17 96.9 (12.9), mike2
+1.88 (0.681), rich3 29.5 (95.3), todd3 1.06 (3.18); no gold: arom 4.0, gm19
+72, jge 50 against ngspice.
+
+⚠ **slowlatch FAILS (minstep at 10.0 ns) -- a stage-6 regression**, with or
+without the cap: without the gate charge it runs (138, as in stage 4).
+No growing mode (unlike the DIBL case); Newton stalls at node 99 (residual
+55x over with updates already at tolerance): a kink.  The gate charge
+still has capacitance JUMPS -- the gate's total at threshold for vds ~ 0
+(2/3 Cox -> Cox, Meyer's sliver) and the source/drain rows at threshold
+for any vds (the near-threshold image split 50/50, Ward-Dutton's 40/60
+above) -- and at a small step `C/h` turns a jump into a Newton stall.  A
+gate charge with continuous capacitances is the fix; next, before stage 8.

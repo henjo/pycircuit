@@ -194,3 +194,48 @@ def test_irb_is_spices_base_resistance_law(tmp_path):
         gap = max(gap, abs(ib0 - ib_ng) / abs(ib_ng))
     assert worst < 1e-4, worst
     assert gap > 1e-2, gap
+
+
+PTF_DECK = """ce excess phase
+vcc vcc 0 10
+vin in 0 sin(0.75 0.02 100meg 0 0)
+rb in b 200
+rc vcc c 1k
+q1 c b 0 qx
+.model qx npn is=1e-16 bf=100 vaf=50 tf=1n ptf={ptf} cje=0.2p cjc=0.1p rb=10
+.tran 0.01n 40n
+.end
+"""
+#: ngspice-47's collector on PTF_DECK at PTF = 60 (`.options reltol=1e-6`,
+#: `.tran 0.005n 40n 0 0.005n`), 2026-10-08, interpolated at these times.
+PTF_NGSPICE = {30e-9: 9.661455, 32.5e-9: 9.574411, 35e-9: 9.426587, 37.5e-9: 9.512939}
+
+
+def _ptf_collector(tmp_path, ptf):
+    from pycircuit.circuit import spice_import
+    deck = tmp_path / f'ptf_{ptf}.cir'
+    deck.write_text(PTF_DECK.format(ptf=ptf))
+    imp = spice_import.import_netlist(str(deck))
+    tr, kw = imp.transient()
+    tr.par.timestep_max = 0.01e-9
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = tr.solve(**kw)
+    v = r.v('c')
+    return np.asarray(v.x[0], float), np.asarray(v.y, float)
+
+
+def test_ptf_is_spices_excess_phase(tmp_path):
+    """PTF (Weil's excess phase, ngspice `bjtload.c`): a common-emitter
+    stage at 100 MHz with TF = 1 ns, against ngspice's collector to 0.5 mV
+    (0.2 % of its 0.28 V swing, measured 0.12; ngspice integrates the delay inside the
+    device by backward Euler, here the simulator integrates its two states)
+    -- where PTF = 0 is ~80 mV away, so the agreement is the delay's.  The
+    operating point does not see PTF (the delay's DC gain is one)."""
+    t, v = _ptf_collector(tmp_path, 60)
+    t0, v0 = _ptf_collector(tmp_path, 0)
+    for tt, want in PTF_NGSPICE.items():
+        assert abs(np.interp(tt, t, v) - want) < 5e-4, (tt, np.interp(tt, t, v), want)
+    g = np.linspace(20e-9, 40e-9, 801)
+    assert np.abs(np.interp(g, t, v) - np.interp(g, t0, v0)).max() > 0.05
+    assert v[0] == pytest.approx(v0[0], rel=1e-12)

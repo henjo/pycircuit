@@ -328,7 +328,7 @@ LOADED = {
     ## the substrate junction (stage 7), vertical and lateral
     'GummelPoonNpn4Hdl': {'rb': 100.0, 'rc': 2.0, 're': 1.0, 'cjs': 1e-12, 'vjs': 0.6,
                           'mjs': 0.4, 'cje': 1e-12, 'tf': 1e-10, 'vaf': 50.0,
-                          'rbm': 10.0, 'irb': 1e-4},
+                          'rbm': 10.0, 'irb': 1e-4, 'ptf': 30.0},
     'GummelPoonPnp4Hdl': {'rb': 100.0, 'rc': 2.0, 're': 1.0, 'cjs': 1e-12, 'vjs': 0.6,
                           'mjs': 0.4, 'subs': -1.0},
     'GummelPoonNpnHdl': dict(KW.get('GummelPoonNpnHdl', {}), vaf=50.0, ikf=0.1, ise=1e-15,
