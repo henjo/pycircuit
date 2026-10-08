@@ -38,6 +38,7 @@ an ``OFF`` flag, an option group, a ``.print`` -- goes into `report`, as
 does a second element of one flat name (renamed ``name#1``).  A name
 with a ``.`` is refused.  The SPICE benchmark plan's stage 2.
 """
+import re
 from dataclasses import dataclass
 
 from pycircuit.circuit import elements, elements_hdl
@@ -155,6 +156,7 @@ class Imported:
         self.temp = None
         self.options = {}
         self.integrator = None
+        self.merged = {}
         self.report = []
 
     def epar(self):
@@ -332,21 +334,26 @@ for _cls, _mtype in ((elements_hdl.MosLevel1Hdl, 'nmos'), (elements_hdl.MosLevel
                              {k: k for k in MOS_INSTANCE} | {'asrc': 'as'})
 
 
-def import_netlist(path, dialect='xyce', strict=True):
+def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False):
     """Read and map the netlist `path` (see the module note).  `dialect`
     (``'xyce'`` or ``'ngspice'``) chooses where the two read a deck
-    differently: the option and temperature statements."""
+    differently: the option and temperature statements.  `merge_shorts`:
+    the nodes a 0 V source joins -- one whose current no `.print` reads --
+    made one node and the source left out (a power grid's pads: ibmpg1t's
+    unknowns roughly halve); `Imported.merged` maps each node merged away
+    to the node it became."""
     if dialect not in ('xyce', 'ngspice'):
         raise ValueError(f'dialect {dialect!r}: xyce or ngspice')
-    return _Importer(spicenetlist.read(path), dialect, strict).run()
+    return _Importer(spicenetlist.read(path), dialect, strict, merge_shorts).run()
 
 
 class _Importer:
 
-    def __init__(self, net, dialect, strict):
+    def __init__(self, net, dialect, strict, merge_shorts=False):
         self.net = net
         self.dialect = dialect
         self.strict = strict
+        self.merge_shorts = merge_shorts
         self.out = Imported(net)
         self.errors = []
         self.inductors = {}         # flat name -> [Mapped, coupled by]
@@ -389,6 +396,8 @@ class _Importer:
                 self.refuse(f.card.where, f'{f.name}: {e}')
         self.couple()
         self.initial_conditions()
+        if self.merge_shorts:
+            self.merge()
         for what, where in self.net.unsupported:
             self.note(where, f'{what}: not read')
         for d in self.net.prints:
@@ -402,6 +411,45 @@ class _Importer:
         self.out.circuit = self.build()
         self.unholdable()
         return self.out
+
+    def merge(self):
+        """`merge_shorts` (see `import_netlist`): union-find over the 0 V
+        sources no `.print` reads, ground the representative of its class;
+        refused where a merge would short a source left in."""
+        read = set()
+        for d in self.net.prints:
+            for w in d.words:
+                read.update(m.lower() for m in re.findall(r'[iI]\(\s*([^,()\s]+)', w))
+        parent = {}
+
+        def find(n):
+            while parent.get(n, n) != n:
+                n = parent[n]
+            return n
+
+        shorts = [m for m in self.out.elements
+                  if m.cls is elements.VS and m.params.get('v') == 0.0
+                  and not m.params.get('vac') and not m.params.get('phase')
+                  and m.name not in read]
+        for m in shorts:
+            a, b = find(m.nodes[0]), find(m.nodes[1])
+            if a != b:
+                keep, gone = (a, b) if a == '0' or (b != '0' and a < b) else (b, a)
+                parent[gone] = keep
+        dropped = {id(m) for m in shorts}
+        self.out.elements = [m for m in self.out.elements if id(m) not in dropped]
+        merged = {n: find(n) for n in parent}
+        for m in self.out.elements:
+            m.nodes = [merged.get(n, n) for n in m.nodes]
+            if m.cls is elements.VS and m.nodes[0] == m.nodes[1]:
+                self.refuse(m.where, f'{m.name}: merge_shorts would short this source')
+        for target in (self.out.ic, self.out.nodeset):
+            for n in list(target):
+                if n in merged:
+                    target.setdefault(merged[n], target.pop(n))
+        self.out.merged = merged
+        self.note(self.net.files[0], f'merge_shorts: {len(shorts)} 0 V sources left out, '
+                                     f'{len(merged)} nodes merged')
 
     def unholdable(self):
         """An `.ic` (without UIC) on a node a voltage source or an inductor

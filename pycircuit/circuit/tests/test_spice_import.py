@@ -279,6 +279,40 @@ def test_an_ic_without_uic_holds_the_operating_point(tmp_path):
     assert res.v('a', gnd).y[0] == 1.0
 
 
+def test_merge_shorts_makes_one_node_of_what_a_0v_source_joins(tmp_path):
+    """A power grid's pads (ibmpg1t's `vb9 _Y_n2 0 0`): the 0 V sources no
+    `.print` reads left out, the nodes they join one -- ground the node a
+    class becomes where ground is in it; a read one, and a 1.8 V one, kept;
+    the same answer at the nodes left; a merge that would short a source
+    left in refused."""
+    text = """
+        title
+        V1 vdd 0 1.8
+        R1 vdd a 1k
+        Vs a b 0
+        R2 b y 1k
+        Vg y 0 0
+        Vm b c 0
+        R3 c 0 2k
+        .print tran i(vm)
+        .tran 1n 10n
+        """
+    plain = _import(tmp_path, text)
+    imp = import_netlist(_write(tmp_path, text, 'b.cir'), merge_shorts=True)
+    assert [m.name for m in imp.elements] == ['v1', 'r1', 'r2', 'vm', 'r3']
+    assert imp.merged == {'b': 'a', 'y': '0'}
+    assert {m.name: m.nodes for m in imp.elements}['r2'] == ['a', '0']
+    assert imp.circuit.n == plain.circuit.n - 4
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        va = DC(plain.circuit).solve().v('a')
+        assert DC(imp.circuit).solve().v('a') == pytest.approx(va, rel=1e-12, abs=1e-15)
+    assert any('merge_shorts: 2 0 V sources left out, 2 nodes merged' in r for r in imp.report)
+    with pytest.raises(SpiceImportError, match='merge_shorts would short this source'):
+        import_netlist(_write(tmp_path, 'title\nV1 a 0 1\nVz a 0 0\nR1 a 0 1\n', 'c.cir'),
+                       merge_shorts=True)
+
+
 def test_an_ic_a_source_holds_is_left_out_as_spice_does(tmp_path):
     """SPICE lets the source win (CircuitSim90's gm17 holds such a node):
     the `.ic` left out and said, the others kept."""

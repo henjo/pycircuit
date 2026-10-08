@@ -4608,3 +4608,52 @@ instructions a screen in situ where a warm `timeit` said 0.47 us, and the
 forgoes the shortcut): +0.32 %, "no change" on every case, bytes the
 same; `ladder_gear` (linear) -2.0 %.  The mesh at n = 4681, 10 steps with
 the check on: 10.80 -> 10.18 s, the same bytes.
+
+## `benchmarks/large_circuits.py`, `spice_import.import_netlist(merge_shorts=)` -- large circuits imported and measured (2026-10-08, the SPICE benchmark plan's stage 5)
+
+### `rc_mesh`, `mesh_one`, `ibm`, `guard`, `footprint`, `_child`; `_Importer.merge`, `Imported.merged`
+
+The mesh ladder (an RC power grid in the IBM files' form, 20 fixed gear
+steps, the branch check on; after 5608aab4 and c2b8f948):
+
+| mesh | n | elements | build | rank | screen | step | DC op | Newton | peak RSS | split (assembly / linear / sources / other) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 16^2 | 273 | 834 | 0.4 s | 0.02 s | 0.1 ms | 11 ms | 0.07 s | 40 | 283 MB | 23 / 3 / 8 / 65 % (SuperLU) |
+| 33^2 | 1190 | 3639 | 0.6 s | 0.11 s | 4.1 ms | 58 ms | 0.22 s | 40 | 404 MB | 41 / 11 / 6 / 42 % (KLU) |
+| 47^2 | 2354 | 7378 | 1.2 s | 0.30 s | 15 ms | 209 ms | 0.67 s | 40 | 663 MB | 45 / 16 / 3 / 36 % |
+| 66^2 | 4681 | 14631 | 3.4 s | 0.86 s | 51 ms | 858 ms | 4.1 s | 40 | 1.7 GB | 42 / 27 / 2 / 29 % |
+| 93^2 | 9226 | 29076 | 11 s | 3.2 s | 249 ms | 27.6 s | 24 s | 144 | 7.2 GB | 69 / 8 / 0 / 23 % |
+
+18291 unknowns refused (~38 GB).  Read: the dense path's wall is ~10 k
+unknowns on a 30 GB box; assembly (dense n x n bincount and reductions)
+passes half a step there.  The 9226 rung took 144 Newton iterations for
+20 steps where every smaller one took 40 -- not explained (recorded for
+the sparse plan).  Peak RSS grows faster than n^2 (69 then 91 B/n^2).
+(The screen column is one call; a constant `C`'s verdict is kept, so the
+step pays it once.)
+
+ibmpg1t imported (no transient: the guard refuses every one):
+
+| part | elements | unknowns | import | per element | dense step, est. |
+|---|---|---|---|---|---|
+| 1/16 | 4808 | 5638 | 1.9 s | 386 us | 1.5 GB at 48 B/n^2 |
+| 1/4 | 19233 | 22958 | 14.1 s | 731 us | refused |
+| 1/4, merge_shorts | 15867 | 16226 | 10.7 s | 676 us | refused |
+| whole | 76934 | 54266 | 99 s | 1290 us | refused |
+| whole, merge_shorts | 62726 | 25850 | 45 s | 721 us | refused (~61 GB) |
+
+The whole file holds 40801 R, 14308 V (0 V pads and the 1.8 V supplies),
+277 L, 10774 PULSE I and 10774 C.  `merge_shorts` (union-find over the 0 V
+sources no `.print` reads, ground kept as a class's node; a merge that
+would short a source left in refused) more than halves the unknowns.
+Import grows superlinearly (`Circuit.append_node`'s list scan), 386 ->
+1290 us an element, but the whole file imports: the open-items plan's
+stage D (a node index) was refused by its line (1.82x at 1/4 vs 1/16,
+3x required).
+
+Found on the way: the guard's 48 B/n^2 was assumed, and a guard-only
+ladder took the shared machine down at n ~ 9 k (2026-10-07): every
+measurement now runs capped (`systemd-run --user --scope -p MemoryMax
+-p MemorySwapMax=0`), the guard fitted from the ladder's slope; the
+branch check's dense SVD (5608aab4) and per-step reductions (c2b8f948);
+DC's dense solve measured and left (the plan's stage B refused: 2.3x).
