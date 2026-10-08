@@ -1,0 +1,46 @@
+/* Collapsible code listings: `<details class="code-toggle">` round a
+ * literalinclude (see examples 12 and 13).  Native HTML, no JavaScript --
+ * collapsed by default, the summary styled as a button whose label says
+ * Show or Hide depending on the state. */
+
+details.code-toggle {
+    margin: 0.8em 0;
+}
+
+details.code-toggle > summary {
+    display: inline-block;
+    cursor: pointer;
+    list-style: none;
+    padding: 0.35em 0.9em;
+    border: 1px solid #8a8a8a;
+    border-radius: 4px;
+    background: #f4f4f2;
+    color: #1f1f1f;
+    font-size: 0.92em;
+    user-select: none;
+}
+
+details.code-toggle > summary::-webkit-details-marker {
+    display: none;
+}
+
+details.code-toggle > summary:hover {
+    background: #e8e8e4;
+}
+
+details.code-toggle > summary:focus-visible {
+    outline: 2px solid #2a78d6;
+    outline-offset: 2px;
+}
+
+details.code-toggle > summary::before {
+    content: "\25B8\00a0 Show ";
+}
+
+details.code-toggle[open] > summary::before {
+    content: "\25BE\00a0 Hide ";
+}
+
+details.code-toggle[open] > summary {
+    margin-bottom: 0.4em;
+}
