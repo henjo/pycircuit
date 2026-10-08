@@ -72,7 +72,8 @@ BJT_PARAMS = {'is': 'IS', 'bf': 'bf', 'nf': 'nf', 'vaf': 'vaf', 'va': 'vaf', 'ik
               'vjc': 'vjc', 'pc': 'vjc', 'mjc': 'mjc', 'mc': 'mjc', 'xcjc': 'xcjc', 'tr': 'tr',
               'fc': 'fc', 'xtb': 'xtb', 'eg': 'eg', 'xti': 'xti', 'kf': 'kf', 'af': 'af',
               'tnom': 'tnom'}
-#: A bipolar card's substrate junction: mapped only where it is off.
+#: A bipolar card's substrate junction: CJS (or CCS) on selects the
+#: 4-terminal class, which takes them (stage 7); off, they are dropped.
 BJT_SUBSTRATE = ('cjs', 'ccs', 'vjs', 'ps', 'mjs', 'ms')
 MOS1_PARAMS = {'vto': 'vto', 'vt0': 'vto', 'kp': 'kp', 'gamma': 'gamma', 'phi': 'phi',
                'lambda': 'lambd', 'tox': 'tox', 'nsub': 'nsub', 'ld': 'ld', 'cgso': 'cgso',
@@ -340,6 +341,8 @@ _DEVICE_CLASSES = {
     elements_hdl.DiodeSpiceHdl: ('d', 'd', {'IS': 'is'}, {'area': 'area'}),
     elements_hdl.GummelPoonNpnHdl: ('q', 'npn', {'IS': 'is'}, {'area': 'area'}),
     elements_hdl.GummelPoonPnpHdl: ('q', 'pnp', {'IS': 'is'}, {'area': 'area'}),
+    elements_hdl.GummelPoonNpn4Hdl: ('q', 'npn', {'IS': 'is'}, {'area': 'area'}),
+    elements_hdl.GummelPoonPnp4Hdl: ('q', 'pnp', {'IS': 'is'}, {'area': 'area'}),
 }
 for (_level, _mtype), _cls in list(MOS_CLASSES.items()) + list(MOS_CHARGE_CLASSES.items()):
     _DEVICE_CLASSES[_cls] = ('m', _mtype, {'IS': 'is', 'lambd': 'lambda', 'u0': 'uo'},
@@ -918,15 +921,31 @@ class _Importer:
             raise SpiceImportError(f'model {m.name}: only bipolar LEVEL 1 (Gummel-Poon) is '
                                    'supported')
         sub = {k: values.pop(k) for k in BJT_SUBSTRATE if k in values}
-        if sub.get('cjs', 0.0) or sub.get('ccs', 0.0):
-            raise SpiceImportError(f'model {m.name}: a substrate junction (CJS) is not '
-                                   'supported')
+        subs = values.pop('subs', None)
         for k in ('irb', 'ptf'):
             if values.get(k, 0.0):
                 raise SpiceImportError(f'model {m.name}: {k.upper()} is not supported')
             values.pop(k, None)
         kw = self.translate(values, BJT_PARAMS, m.name, 'GummelPoonHdl')
         kw.update(self.instance(f, w[nn + 1:], ('area',)))
+        cjs = sub.get('cjs', sub.get('ccs', 0.0))
+        if cjs:
+            ## THE SUBSTRATE JUNCTION (the SPICE benchmark plan's stage 7):
+            ## the 4-terminal class, on the line's substrate node or, on a
+            ## 3-node line, ground (SPICE's default).  Vertical (on the
+            ## collector) unless the card says SUBS or the dialect's default
+            ## is lateral: Xyce's, whose gold the suite scores against, is
+            ## vertical; ngspice makes a p-n-p lateral (`bjtsetup.c`).
+            kw.update(cjs=cjs, **{name: sub[k] for k, name in (
+                ('vjs', 'vjs'), ('ps', 'vjs'), ('mjs', 'mjs'), ('ms', 'mjs')) if k in sub})
+            if subs is None:
+                subs = -1.0 if (self.dialect == 'ngspice' and m.type == 'pnp') else 1.0
+            kw['subs'] = 1.0 if subs >= 0 else -1.0
+            cls = (elements_hdl.GummelPoonNpn4Hdl if m.type == 'npn'
+                   else elements_hdl.GummelPoonPnp4Hdl)
+            nodes = [f.node(x) for x in w[:3]] + [f.node(w[3]) if nn == 4 else f.node('0')]
+            self.add(f, 'q', nodes, cls, kw, model=m)
+            return
         cls = elements_hdl.GummelPoonNpnHdl if m.type == 'npn' else elements_hdl.GummelPoonPnpHdl
         if nn == 4:
             self.note(c.where, f'{f.name}: the substrate node {w[3]} is left unconnected '

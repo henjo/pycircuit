@@ -44,8 +44,8 @@ NGSPICE = os.environ.get('PYCIRCUIT_NGSPICE', os.path.expanduser('~/local/ngspic
 XYCE = os.environ.get('PYCIRCUIT_XYCE', os.path.expanduser('~/local/xyce/serial/bin/Xyce'))
 
 #: name -> (deck, gold or None): the decks with a `.tran` that import
-#: (stage 2's census) -- the bipolar substrate junction (stage 7) and MOS
-#: level 2 (stage 9) keep the rest out for now
+#: (stage 2's census; latch and opampal since stage 7's substrate
+#: junction) -- MOS level 2 (stage 9) keeps the rest out for now
 _X = 'Netlists/'
 _G = 'OutputData/'
 CASES = {
@@ -56,6 +56,8 @@ CASES = {
     'rca': (_X + 'MCNC_BJT_RCA/rca.cir', _G + 'MCNC_BJT_RCA/rca.cir.prn'),
     'schmitecl': (_X + 'MCNC_BJT_SCHMITECL/schmitecl.cir_NORUN',
                   _G + 'MCNC_BJT_SCHMITECL/schmitecl.cir.prn'),
+    'latch': (_X + 'MCNC_BJT_LATCH/latch.cir', _G + 'MCNC_BJT_LATCH/latch.cir.prn'),
+    'opampal': (_X + 'MCNC_BJT_OPAMPAL/opampal.cir', _G + 'MCNC_BJT_OPAMPAL/opampal.cir.prn'),
 }
 for _n in ('gm1', 'gm2', 'gm3', 'gm17', 'mike2', 'rich3', 'todd3'):
     CASES[_n] = (f'{_X}CircuitSim90/MOS3/{_n}.cir', f'{_G}CircuitSim90/MOS3/{_n}.cir.prn')

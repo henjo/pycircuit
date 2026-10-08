@@ -325,6 +325,11 @@ LOADED = {
                                'cbd': 1e-14, 'cbs': 1e-14},
     'MosLevel3GateChargeHdl': {'vto': 0.5, 'gamma': 0.4, 'tox': 2e-8, 'w': 1e-5, 'l': 1e-6,
                                'eta': 0.3, 'nfs': 1e11, 'vmax': 1e5, 'theta': 0.1},
+    ## the substrate junction (stage 7), vertical and lateral
+    'GummelPoonNpn4Hdl': {'rb': 100.0, 'rc': 2.0, 're': 1.0, 'cjs': 1e-12, 'vjs': 0.6,
+                          'mjs': 0.4, 'cje': 1e-12, 'tf': 1e-10, 'vaf': 50.0},
+    'GummelPoonPnp4Hdl': {'rb': 100.0, 'rc': 2.0, 're': 1.0, 'cjs': 1e-12, 'vjs': 0.6,
+                          'mjs': 0.4, 'subs': -1.0},
     'GummelPoonNpnHdl': dict(KW.get('GummelPoonNpnHdl', {}), vaf=50.0, ikf=0.1, ise=1e-15,
                              cje=1e-12, cjc=5e-13, tf=1e-10, tr=1e-8, xtf=1.0, vtf=2.0,
                              itf=0.1),

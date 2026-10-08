@@ -364,7 +364,7 @@ def test_every_refusal_is_listed_with_its_line(tmp_path):
         M1 d g 0 0 n2
         .model n2 nmos level=2 vto=1
         Q1 c b 0 qs
-        .model qs npn cjs=1p
+        .model qs npn irb=1m
         X1 a b nosuch
         R1 a b 1k tc1=0.01
         V1 a 0 SFFM(0 1 1k 5 1)
@@ -376,7 +376,7 @@ def test_every_refusal_is_listed_with_its_line(tmp_path):
     msg = str(e.value)
     for line, what in ((2, 'e1: a voltage-controlled voltage source is not supported'),
                        (3, 'MOS LEVEL 2 is not supported'),
-                       (5, 'a substrate junction (CJS) is not supported'),
+                       (5, 'IRB is not supported'),
                        (7, 'x1: no subcircuit nosuch'),
                        (8, "resistor parameters ['tc1'] are not supported"),
                        (9, 'a SFFM waveform is not supported')):
@@ -413,10 +413,11 @@ def test_refusals_say_why(tmp_path, line, says):
 
 
 #: The fetched decks' known gaps: what each import refuses today, by the
-#: plan's stages (7: the bipolar substrate junction; 9: MOS level 2).  A
-#: deck absent here imports.
+#: plan's stages (9: MOS level 2; IRB, which the gilbert cell's card gives
+#: -- the stage-7 census saw only the MCNC decks).  A deck absent here
+#: imports; latch and opampal do since stage 7's substrate junction.
 CENSUS_GAPS = {
-    'latch.cir': ('CJS',), 'opampal.cir': ('CJS',), 'gilbert_cell_hb.cir': ('CJS',),
+    'gilbert_cell_hb.cir': ('IRB',),
 }
 _LEVEL2 = ('ab_ac', 'ab_integ', 'ab_opamp', 'cram', 'e1480', 'g1310', 'gm6', 'hussamp',
            'mosrect', 'mux8', 'nand', 'pump', 'ring', 'schmitfast', 'schmitslow')

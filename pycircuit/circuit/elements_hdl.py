@@ -1718,7 +1718,36 @@ def _spice_bjt_params():
 
 
 
-def _gp_core(p, T, npn, c, b, e):
+def _substrate_params():
+    """The substrate junction's card (the 4-terminal Gummel-Poon classes
+    only, so the 3-terminal classes keep their bytes and pins)."""
+    return [
+        Parameter(name='cjs', desc='Zero-bias substrate junction capacitance',
+                  unit='F', default=0.0),
+        Parameter(name='vjs', desc='Substrate junction built-in potential',
+                  unit='V', default=0.75),
+        Parameter(name='mjs', desc='Substrate junction grading coefficient',
+                  unit='', default=0.0),
+        Parameter(name='subs', desc="1: vertical (the substrate junction on the "
+                  "internal collector, Xyce's), -1: lateral (on the internal base, "
+                  "ngspice's default for a p-n-p)", unit='', default=1.0),
+    ]
+
+
+def _substrate_charge(v, cj, vj, m, tag):
+    """SPICE's substrate junction charge (ngspice `bjtload.c`): the
+    depletion form below zero bias, ``vj*cj*(1 - (1 - v/vj)^(1 - m))/
+    (1 - m)``, and a linear extension of the capacitance above it,
+    ``cj*v*(1 + m*v/(2*vj))`` -- no ``fc``, no current.  ``m`` is clamped
+    below 1 as `_pn_depletion_charge` clamps it (the model divides by
+    ``1 - m``)."""
+    mc = _var(_minc(m, 0.9), 'm' + tag)
+    return _var(_select(
+        (vj * cj * (1.0 - (1.0 - v / vj) ** (1.0 - mc)) / (1.0 - mc), v < 0.0),
+        (cj * v * (1.0 + mc * v / (2.0 * vj)), True)), 'q' + tag)
+
+
+def _gp_core(p, T, npn, c, b, e, s=None):
     """The Gummel-Poon body itself, shared by the isothermal and the
     self-heating classes.  Returns ``(statements, (ict, ibc, ibe))``.
 
@@ -2000,6 +2029,28 @@ def _gp_core(p, T, npn, c, b, e):
         Contribution(bre.I, bre.V * p.area / p.re),
         Collapse(bre, p.re <= 0.0),
     )
+    if s is not None:
+        ## THE SUBSTRATE JUNCTION (the 4-terminal classes): a depletion
+        ## charge between the substrate and the internal collector
+        ## (`subs = 1`, vertical -- Xyce's, whose gold the benchmarks are)
+        ## or the internal base (`subs = -1`, lateral -- ngspice's default
+        ## for a p-n-p).  ngspice's `vsub = type*subs*(V(s) - V(con))`:
+        ## for the vertical device the polarity is the branch order, as
+        ## every branch here; the lateral one is the opposite type's
+        ## junction, so its branch runs the other way.  Both are always
+        ## built and `subs` picks one, a parameter-only choice.
+        bsv = Branch(s, ci) if npn > 0 else Branch(ci, s)
+        bsl = Branch(bi, s) if npn > 0 else Branch(s, bi)
+        vjsT = _var(p.vjs * trat - 3.0 * vtT * ltr - egn * trat + egT, 'vjsT')
+        cjsT = _var(p.area * p.cjs * (1.0 + p.mjs * (4e-4 * (T - _tnom_k(p.tnom))
+                                                   - (vjsT / p.vjs - 1.0))), 'cjsT')
+        vert = _var(sympy.Piecewise((1.0, p.subs >= 0.0), (0.0, True)), 'subvert')
+        stmts += (
+            Contribution(bsv.I, ddt(vert * _substrate_charge(
+                bsv.V, cjsT, vjsT, p.mjs, 'subv'))),
+            Contribution(bsl.I, ddt((1.0 - vert) * _substrate_charge(
+                bsl.V, cjsT, vjsT, p.mjs, 'subl'))),
+        )
 
     ## -- noise -----------------------------------------------------
     ## Shot noise is `2*q*|I|` on each of the two independent
@@ -2157,6 +2208,34 @@ class GummelPoonPnpHdl(Behavioural):
     instparams = _spice_bjt_params()
 
     analog = staticmethod(_gummel_poon(-1))
+
+
+def _gummel_poon4(npn):
+    """`_gummel_poon` with a fourth terminal, the substrate (see
+    `_gp_core`'s substrate junction)."""
+    def analog(p, c, b, e, s):
+        return _gp_core(p, TEMP, npn, c, b, e, s)[0]
+    return analog
+
+
+class GummelPoonNpn4Hdl(Behavioural):
+    """`GummelPoonNpnHdl` with the substrate: terminals ``(c, b, e, s)`` and
+    SPICE's substrate junction (``cjs``, ``vjs``, ``mjs``; ``subs`` 1
+    vertical, -1 lateral).  What the SPICE importer builds for a card that
+    asks for a substrate capacitance; the 3-terminal class is unchanged.
+    The SPICE benchmark plan's stage 7."""
+    params_as = 'p'
+    instparams = _spice_bjt_params() + _substrate_params()
+
+    analog = staticmethod(_gummel_poon4(+1))
+
+
+class GummelPoonPnp4Hdl(Behavioural):
+    """`GummelPoonPnpHdl` with the substrate (see `GummelPoonNpn4Hdl`)."""
+    params_as = 'p'
+    instparams = _spice_bjt_params() + _substrate_params()
+
+    analog = staticmethod(_gummel_poon4(-1))
 
 
 class GummelPoonNpnThermalHdl(Behavioural):

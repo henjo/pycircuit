@@ -6784,3 +6784,37 @@ min(TSTEP, TSTOP/50)` -- the cap `write_ngspice` gives ngspice.  Whether
 the importer should apply that default to our own runs is open: the gold
 is Xyce's, which has no such cap, and the cap costs 4049osc 5x the steps
 (0.385 -> 0.389).
+
+## 2026-10-08 — 72. The bipolar substrate junction: `GummelPoon{Npn,Pnp}4Hdl` (the SPICE benchmark plan's stage 7)
+
+Terminals `(c, b, e, s)`, built on `_gp_core` with a substrate (the
+3-terminal classes and their recorded digests unchanged): SPICE's
+substrate charge (`bjtload.c`: depletion below zero bias, the capacitance
+linearly extended above, no current), `cjs`/`vjs`/`mjs` with the
+junctions' temperature path, attached by `subs` -- 1 vertical, on the
+internal collector (Xyce's, whose gold the suite scores against), -1
+lateral, on the internal base (ngspice's default for a p-n-p), polarity
+`type*subs` as ngspice's.  The importer builds them where a card gives
+CJS: on the line's substrate node, or ground on a 3-node line; vertical in
+Xyce's dialect, a p-n-p lateral in ngspice's; `write_ngspice` writes SUBS
+explicitly.  `test_bjt_substrate.py`: the charge is ngspice's on both
+sides of zero bias, on the collector (or the base) and nowhere else; a
+zero junction is the 3-terminal device bit for bit.
+
+The stage's census (the decks' cards): no deck needs `ptf`; `irb` only the
+HB gilbert cell (its card gives one -- the first census saw only the MCNC
+decks), which now stops there; the substrate junction latch and opampal.
+
+| deck | before | now | ngspice on our deck |
+|---|---|---|---|
+| latch | refused (CJS) | **0.107** | 0.307 |
+| opampal | refused (CJS) | DC operating point fails | finds it |
+| rca | 2.76 | 2.31 (0.800 with SPICE's TMAX; section 71) | 0.588 |
+| schmitecl | 0.108 | 0.126 | 1.54 |
+
+OPEN: opampal's DC.  ngspice finds the operating point of our written
+deck; ours fails (pseudo-transient exhausted, a residual 1e5 over at the
+-35 V supply), and fails too when started FROM ngspice's point (internal
+nodes at their terminals): residual 1e4 over at `xb:15`, updates of 2.8 V
+at `xd:qt.ci`.  The cards are unusual (a p-n-p with BR = 25990, IKR =
+12.8 uA, MJE = MJC = 0.99); not yet localised.
