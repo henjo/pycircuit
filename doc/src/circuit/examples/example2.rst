@@ -1,6 +1,11 @@
 Example 2
 ----------
 
+.. contents:: On this page
+   :local:
+   :depth: 2
+
+
 Multi feedBack (MFB) filter 
 ``````````````````````````````````````````````
 .. image:: mfb.*

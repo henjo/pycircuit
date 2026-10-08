@@ -400,7 +400,11 @@ _MODEL_TYPE = re.compile(r'([A-Za-z_]\w*)\s*(.*)\Z', re.DOTALL)
 def _model_card(text):
     """A `.model` line as (name, type, its parameters' text): the
     parameters may sit in parentheses, glued to the type
-    (`NPN(BF=100 ...)`) or not, the closing one on a line of its own."""
+    (`NPN(BF=100 ...)`) or not, the closing one on a line of its own, and
+    be separated by commas, as vendor libraries write them
+    (`.model DX D(IS=1E-14, RS=5)`, `PMOS (LEVEL=2,KP=10E-6)`): a comma
+    between two assignments is dropped, one inside a quoted, braced or
+    parenthesised expression is the expression's."""
     parts = text.split(None, 2)
     m = _MODEL_TYPE.match(parts[2]) if len(parts) == 3 else None
     if m is None:
@@ -408,7 +412,26 @@ def _model_card(text):
     rest = m.group(2).strip()
     if rest.startswith('('):
         rest = rest[1:-1] if rest.endswith(')') else rest[1:]
-    return parts[1].lower(), m.group(1).lower(), rest
+    return parts[1].lower(), m.group(1).lower(), _uncomma(rest)
+
+
+def _uncomma(body):
+    """`body` with each comma outside quotes, braces and parentheses a
+    blank."""
+    out, quote, depth = [], None, 0
+    for ch in body:
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in '\'"':
+            quote = ch
+        elif ch in '{(':
+            depth += 1
+        elif ch in '})':
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            ch = ' '
+        out.append(ch)
+    return ''.join(out)
 
 
 _PARAMS_KW = re.compile(r'(?<!\S)params:', re.IGNORECASE)

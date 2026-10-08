@@ -1,6 +1,7 @@
 Example 10: MFB filter -- symbolic post-processing with GiNaC
 -------------------------------------------------------------
 
+
 .. image:: mfb.*
 
 This example revisits the Multiple-FeedBack (MFB) active filter of

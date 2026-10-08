@@ -40,6 +40,28 @@ class TestParameters(object):
         assert p['vth'] == pytest.approx(11.0, rel=1e-12, abs=0.0)
         assert p['w'] == pytest.approx(3.0, rel=1e-12, abs=0.0)
 
+    def test_a_wrapped_comma_separated_card_reads_like_a_plain_one(
+            self, tmp_path):
+        """The form vendor macromodels use: `TYPE(a=1, b=2)`, the
+        parenthesis glued to the type or not, over continuation lines.
+        Commas inside an expression are the expression's."""
+        f = _write(tmp_path, 'a.sp', """
+            .model dx D(IS=1E-14,RS=5)
+            .model pox PMOS (LEVEL=2,KP=10E-6,VTO=-0.328)
+            .model np NPN(Bf=1200 Vaf=140
+            + Ikf=100m)
+            .model m1 nmos a='max(1, 2)' b={min(3, 4)}, c=max(5,6)
+            """)
+        d = spicecard.read(f)
+        assert d.models['dx'].type == 'd'
+        assert d.model_params('dx') == {'is': 1e-14, 'rs': 5.0}
+        assert d.models['pox'].type == 'pmos'
+        assert d.model_params('pox') == pytest.approx(
+            {'level': 2.0, 'kp': 10e-6, 'vto': -0.328}, rel=1e-12, abs=0.0)
+        assert d.model_params('np') == pytest.approx(
+            {'bf': 1200.0, 'vaf': 140.0, 'ikf': 0.1}, rel=1e-12, abs=0.0)
+        assert d.model_params('m1') == {'a': 2.0, 'b': 3.0, 'c': 6.0}
+
     def test_engineering_suffixes(self, tmp_path):
         f = _write(tmp_path, 'a.sp', """
             .model m1 nmos a=1u b=2n c=3p d=1meg e=4k g=5m h=6f

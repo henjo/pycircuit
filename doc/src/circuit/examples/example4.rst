@@ -1,6 +1,7 @@
 Example 4
 ----------
 
+
 Simple example - Input impedance of gyrator loaded with capacitance
 ```````````````````````````````````````````````````````````````````
 ###.. image:: gyrator.*

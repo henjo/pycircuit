@@ -1,6 +1,11 @@
 Example 11: characterising a foundry MOSFET
 -------------------------------------------
 
+.. contents:: On this page
+   :local:
+   :depth: 2
+
+
 A production compact model is not a formula you type in — it is a
 **model card**, several hundred parameters a foundry extracted from
 silicon, plus the geometry scaling that turns those into the values one

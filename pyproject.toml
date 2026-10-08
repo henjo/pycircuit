@@ -42,9 +42,15 @@ dependencies = [
 dev = ["pytest", "pytest-timeout", "pytest-xdist", "pytest-randomly==5.0.0",
        "pytest-replay==1.7.1", "detect-test-pollution==1.2.0", "pyperf==2.10.0",
        "hypothesis==6.168.3",
+       ## scripts/fetch_howland_models.py, for test_doc_howland.py
+       "olefile",
        "matplotlib", "pexpect"]
 ginac = ["pybind11>=2.11"]
-docs = ["sphinx", "matplotlib", "pexpect"]
+docs = ["sphinx", "matplotlib", "pexpect",
+        ## scripts/fetch_howland_models.py: unpacks the LTspice installer
+        "olefile",
+        ## the examples' schematics (doc/src/circuit/examples/schematics.py)
+        "schemdraw"]
 
 [project.scripts]
 cdsnetlist = "pycircuit.post.cds.cdsnetlist:main"

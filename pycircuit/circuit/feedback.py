@@ -255,9 +255,11 @@ def find_loopprobe(circuit, path=[]):
 class FeedbackLoopAnalysis(SSAnalysis):
     """Find loop-gain by breaking all loops with a LoopProbe element
     """
-    def __init__(self, circuit, toolkit=None):
-        super().__init__(circuit, toolkit=toolkit)
-        
+    def __init__(self, circuit, toolkit=None, **kvargs):
+        """``dcx``, if given, is the DC solution to linearise at; without
+        it each of the two AC runs solves the operating point itself."""
+        super().__init__(circuit, toolkit=toolkit, **kvargs)
+
         ## Find LoopProbe instance
         loopprobes = list(find_loopprobe(circuit))
         
@@ -270,11 +272,10 @@ class FeedbackLoopAnalysis(SSAnalysis):
     def solve(self, freqs, refnode = gnd, complexfreq = False):
         toolkit = self.toolkit
 
-        x = self.toolkit.zeros(self.cir.n) ## FIXME, this should be replaced by DC-analysis
         self.loopprobe['vinj'].ipar.vac = 1 
         self.loopprobe['iinj'].ipar.iac = 0 
 
-        ac_vinj = AC(self.cir, toolkit=toolkit)
+        ac_vinj = AC(self.cir, toolkit=toolkit, dcx=self.par.dcx)
 
         res_vinj = ac_vinj.solve(freqs, refnode = refnode, 
                                  complexfreq=complexfreq,
@@ -283,7 +284,7 @@ class FeedbackLoopAnalysis(SSAnalysis):
         self.loopprobe['vinj'].ipar.vac = 0 
         self.loopprobe['iinj'].ipar.iac = 1 
 
-        ac_iinj = AC(self.cir, toolkit=toolkit)
+        ac_iinj = AC(self.cir, toolkit=toolkit, dcx=self.par.dcx)
 
         res_iinj = ac_iinj.solve(freqs, refnode = refnode, 
                                  complexfreq=complexfreq,
