@@ -1671,6 +1671,9 @@ def _spice_bjt_params():
         Parameter(name='rbm', desc='Minimum base resistance at high '
                   'current (negative = follow rb)', unit='ohm',
                   default=-1.0),
+        Parameter(name='irb', desc='Current where the base resistance falls '
+                  'halfway to rbm (0: the qb modulation instead)', unit='A',
+                  default=0.0),
         Parameter(name='re', desc='Emitter resistance', unit='ohm',
                   default=0.0),
         Parameter(name='rc', desc='Collector resistance', unit='ohm',
@@ -1997,7 +2000,25 @@ def _gp_core(p, T, npn, c, b, e, s=None):
     ## Base-width modulation: the spreading resistance falls as the
     ## base charge grows.  `qb >= 0.5*q1 > 0` structurally, so this
     ## is a division by something bounded away from zero.
-    rbb = _var((rbmx + (p.rb - rbmx) / qb) / p.area, 'rbb')
+    rbbq = _var((rbmx + (p.rb - rbmx) / qb) / p.area, 'rbbq')
+    ## `irb > 0`: SPICE's current-crowding law (ngspice `bjtload.c`) on
+    ## the base current ``IB``: ``x = max(IB/(irb*area), 1e-9)``, ``z =
+    ## (sqrt(1 + 14.59025 x) - 1)/(2.4317 sqrt(x))``, ``rbb = rbm + 3(rb -
+    ## rbm)(tan z - z)/(z tan^2 z)`` -- ``rb`` at low current, ``rbm`` as
+    ## ``z -> pi/2``.  Below ``z^2 = 1e-4`` the factor is its series
+    ## ``1 - 4z^2/15 - 4z^4/105 - 8z^6/1575`` (``tan z - z`` cancels there;
+    ## the two agree to ~1e-11 at the seam).  `irb = 0` keeps the `qb`
+    ## modulation exactly (a parameter-only choice).  The SPICE benchmark
+    ## plan's stage 7 (the gilbert cell's card gives IRB).
+    ibt = _var(ibe + ibc, 'ibtot')
+    zx = _var(_maxc(ibt / (_maxc(p.irb, 1e-30) * p.area), 1e-9), 'irbx')
+    zz = _var((sympy.sqrt(1.0 + 14.59025 * zx) - 1.0) / (2.4317 * sympy.sqrt(zx)), 'irbz')
+    rfac = _var(_select(
+        (1.0 - 4.0 * zz * zz / 15.0 - 4.0 * zz ** 4 / 105.0 - 8.0 * zz ** 6 / 1575.0,
+         zz * zz < 1e-4),
+        (3.0 * (sympy.tan(zz) - zz) / (zz * sympy.tan(zz) ** 2), True)), 'irbf')
+    rbbi = _var((rbmx + (p.rb - rbmx) * rfac) / p.area, 'rbbi')
+    rbb = _var(sympy.Piecewise((rbbi, p.irb > 0.0), (rbbq, True)), 'rbb')
 
     ## -- statements ------------------------------------------------
     ## Every expression above is in the n-p-n convention; the

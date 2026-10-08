@@ -147,3 +147,50 @@ vb b 0 0.7
         cards = [ln.lower() for ln in written.read_text().splitlines()
                  if ln.lower().startswith('.model')]
         assert any('cjs=' in c and f'subs={psubs!r}' in c for c in cards if ' pnp' in c), cards
+
+
+#: ngspice-47 on this deck (`.dc vb 0.6 1.0 0.1`, `.print dc i(vc) i(vb)`,
+#: `.options reltol=1e-9 abstol=1e-18 vntol=1e-12`), 2026-10-08: the base
+#: current crosses IRB = 100 uA in the sweep, so the base resistance moves
+#: from RB = 100 toward RBM = 10 along SPICE's law.  ⚠ At ngspice's default
+#: tolerances a SWEEP carries ~1e-3 of its own error (each point continued
+#: from the last): the first reference taken that way read as a 9e-4
+#: disagreement that was ngspice's.
+IRB_DECK = """irb reference
+vc c 0 5
+vb b 0 {vbe}
+q1 c b 0 QI
+.model QI NPN IS=1e-15 BF=100 BR=2 VAF=50 RB=100 RBM=10 IRB={irb} RE=1 RC=5 ISE=1e-14 NE=1.5
+.end
+"""
+IRB_NGSPICE = {0.6: (-1.29017e-05, -1.70579e-07), 0.7: (-5.89129e-04, -6.09017e-06),
+               0.8: (-1.34061e-02, -1.29162e-04), 0.9: (-6.07214e-02, -5.78865e-04),
+               1.0: (-1.26997e-01, -1.21333e-03)}
+
+
+def _irb_currents(tmp_path, vbe, irb):
+    from pycircuit.circuit import spice_import
+    from pycircuit.circuit.dcanalysis import DC
+    deck = tmp_path / f'irb_{vbe}_{irb}.cir'
+    deck.write_text(IRB_DECK.format(vbe=vbe, irb=irb))
+    imp = spice_import.import_netlist(str(deck), strict=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = DC(imp.circuit).solve()
+    return float(r.i('vc.plus')), float(r.i('vb.plus'))
+
+
+def test_irb_is_spices_base_resistance_law(tmp_path):
+    """`irb > 0`: the current-crowding base resistance (ngspice
+    `bjtload.c`), against ngspice's own sweep of the same card to 1e-4 --
+    across the base current's crossing of IRB; and `irb = 0` (the `qb`
+    law) is measurably another device there, so the agreement is the
+    law's and not a coincidence."""
+    worst, gap = 0.0, 0.0
+    for vbe, (ic_ng, ib_ng) in IRB_NGSPICE.items():
+        ic, ib = _irb_currents(tmp_path, vbe, 1e-4)
+        worst = max(worst, abs(ic - ic_ng) / abs(ic_ng), abs(ib - ib_ng) / abs(ib_ng))
+        ic0, ib0 = _irb_currents(tmp_path, vbe, 0)
+        gap = max(gap, abs(ib0 - ib_ng) / abs(ib_ng))
+    assert worst < 1e-4, worst
+    assert gap > 1e-2, gap

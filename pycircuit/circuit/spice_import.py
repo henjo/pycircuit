@@ -71,7 +71,7 @@ BJT_PARAMS = {'is': 'IS', 'bf': 'bf', 'nf': 'nf', 'vaf': 'vaf', 'va': 'vaf', 'ik
               'me': 'mje', 'tf': 'tf', 'xtf': 'xtf', 'vtf': 'vtf', 'itf': 'itf', 'cjc': 'cjc',
               'vjc': 'vjc', 'pc': 'vjc', 'mjc': 'mjc', 'mc': 'mjc', 'xcjc': 'xcjc', 'tr': 'tr',
               'fc': 'fc', 'xtb': 'xtb', 'eg': 'eg', 'xti': 'xti', 'kf': 'kf', 'af': 'af',
-              'tnom': 'tnom'}
+              'tnom': 'tnom', 'irb': 'irb'}
 #: A bipolar card's substrate junction: CJS (or CCS) on selects the
 #: 4-terminal class, which takes them (stage 7); off, they are dropped.
 BJT_SUBSTRATE = ('cjs', 'ccs', 'vjs', 'ps', 'mjs', 'ms')
@@ -922,7 +922,7 @@ class _Importer:
                                    'supported')
         sub = {k: values.pop(k) for k in BJT_SUBSTRATE if k in values}
         subs = values.pop('subs', None)
-        for k in ('irb', 'ptf'):
+        for k in ('ptf',):
             if values.get(k, 0.0):
                 raise SpiceImportError(f'model {m.name}: {k.upper()} is not supported')
             values.pop(k, None)

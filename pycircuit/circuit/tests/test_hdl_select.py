@@ -740,7 +740,11 @@ _RECORDED = {
     'GummelPoonNpnHdl-off': '53a8b396c0e3adf0',
     'GummelPoonPnpHdl': '50ae7556271a167a',
     'GummelPoonNpnThermalHdl': '557038e128529bb0',
-    'GummelPoonNpnThermalHdl-off': 'b210391d0a543937',
+    ## 2026-10-08 (later): -off re-recorded for `irb` (old b210391d0a543937):
+    ## every value equal (`irb = 0` keeps the qb law); 9 of the 39 points
+    ## carry one Jacobian ZERO of the other sign (G[12], +0.0 <-> -0.0),
+    ## from the new resistance choice's derivative -- measured, nothing else
+    'GummelPoonNpnThermalHdl-off': 'c6bf61325ef51211',
     ## ⚠ RE-RECORDED 2026-08-27 for the three MOS level 3 rows, and only
     ## those.  `_autohold` (roadmap sec. 36) makes the regularisers hold
     ## their own arguments, which stops sympy flattening across the

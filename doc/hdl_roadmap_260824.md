@@ -6860,3 +6860,34 @@ solves (100 iterations at ~11 ms on 519 unknowns), because each source
 step's inner solve is the whole gmin ladder, which runs to exhaustion
 before a step is cut.  A faster DC (SPICE's order: gmin stepping, then
 source stepping with plain Newton steps) is its own piece of work.
+
+## 2026-10-08 — 74. Gummel-Poon `irb`: SPICE's current-crowding base resistance (stage 7, finished)
+
+`irb > 0`: ngspice's law on the base current `IB` (`bjtload.c`): `x =
+max(IB/(IRB*area), 1e-9)`, `z = (sqrt(1 + 14.59025 x) - 1)/(2.4317
+sqrt(x))`, `rbb = RBM + 3(RB - RBM)(tan z - z)/(z tan^2 z)`, its series
+`1 - 4z^2/15 - 4z^4/105 - 8z^6/1575` below `z^2 = 1e-4` (where `tan z - z`
+cancels; ~1e-11 apart at the seam).  `irb = 0` keeps the `qb` law: the
+point digests did not move; the explain digests did (a parameter and new
+intermediates), and one `select` adopter digest moved by nine signed zeros
+in one Jacobian entry (`G[12]`, +0.0 <-> -0.0, values equal), each
+recorded beside its digest.  The importer reads IRB.
+
+Against ngspice on a crowding card (RB 100, RBM 10, IRB 100 uA; the base
+current crosses IRB in the sweep): 1e-5 at every bias; committed as
+ngspice's numbers in `test_bjt_substrate.py`, with `irb = 0` shown to be
+another device there (>1 %).  ⚠ The first reference was ngspice's `.dc`
+sweep at its default tolerances and read as a 9e-4 disagreement: a sweep
+continues each point from the last at `reltol = 1e-3`, so it carries
+~1e-3 of its own error.  Taken at `reltol = 1e-9` it agrees with ours.
+
+The stage's verification, where it lives: the substrate charge against a
+transcription of `bjtload.c` (section 72); the transient against ngspice
+on rca (1e-4 of its swing, section 71); `irb` above.
+
+**PTF (excess phase) stays refused.**  Only the HB gilbert cell gives it
+(14.6 degrees, with TF = 0.53 ns): its delay is ~PTF[rad] * TF = 0.135 ns,
+about 1e-6 of the deck's 10 kHz period -- below anything its HB gold can
+resolve.  Whether to import such a card with a note (excess phase left
+out) or to build the plan's Bessel network is the stage-8 decision, when
+gilbert's HB runs.
