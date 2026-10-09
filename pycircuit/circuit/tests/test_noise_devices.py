@@ -332,3 +332,45 @@ def test_the_level3_channel_noise_is_shot_noise_in_weak_inversion_and_thermal_ab
     assert ratios == sorted(ratios, reverse=True), ratios
     assert min(ratios) > 0.97 and abs(ratios[-1] - 1.0) < 0.03, ratios
     assert ratios[0] < 4.0, ratios
+
+
+@pytest.mark.parametrize('cls', ['MosLevel1Hdl', 'MosLevel3Hdl'])
+def test_the_mos_flicker_forms_are_ngspice_s_nlev(cls):
+    """`nlev` (2026-10-09), ngspice's flicker forms, each against its
+    formula at a saturated bias, `cox` per area and `Leff = l - 2 ld`:
+
+      0  kf |Id|^af / (f cox Leff^2)          SPICE2's; the default
+      1  kf |Id|^af / (f cox W Leff)          the gate area, as a
+                                              commercial simulator has it
+      2  kf gm^2 / (f^af cox W Leff)          ngspice-47's default (3 too)
+
+    `gm` is the device's own `dId/dVg` (its Jacobian, drain, source and
+    bulk held); `af = 1.2` so the gm form's `f^af` is tested at two
+    frequencies.  An AD8606 input pair read 5e4 x apart between forms 0
+    and 2 -- `W Vov^2 / (4 L Id)` for a square law."""
+    from pycircuit.circuit import elements_hdl as eh
+    circuit.default_toolkit = circuit.numeric
+    card = dict(vto=0.7, kp=1e-4, w=20e-6, l=2e-6, ld=0.1e-6, tox=2e-8, kf=1e-25, af=1.2)
+    cox = 3.9 * 8.854187817e-12 / card['tox']
+    leff, w = card['l'] - 2 * card['ld'], card['w']
+    x = np.zeros(4)
+    x[0], x[1] = 2.0, 1.5
+
+    def flicker(nlev, f):
+        m = getattr(eh, cls)('d', 'g', 's', 'b', nlev=nlev, **card)
+        m0 = getattr(eh, cls)('d', 'g', 's', 'b', nlev=nlev, **dict(card, kf=0.0))
+        s = (float(np.asarray(m.CY(x, 2 * np.pi * f), dtype=float)[0, 0])
+             - float(np.asarray(m0.CY(x, 2 * np.pi * f), dtype=float)[0, 0]))
+        G = np.asarray(m.G(x), dtype=float)
+        return s, abs(float(np.asarray(m.i(x), dtype=float)[0])), G[0, 1]
+
+    kf, af = card['kf'], card['af']
+    for nlev, want in ((0, lambda i, gm, f: kf * i ** af / (f * cox * leff ** 2)),
+                       (1, lambda i, gm, f: kf * i ** af / (f * cox * w * leff)),
+                       (2, lambda i, gm, f: kf * gm ** 2 / (f ** af * cox * w * leff)),
+                       (3, lambda i, gm, f: kf * gm ** 2 / (f ** af * cox * w * leff))):
+        for f in (10.0, 1e3):
+            s, i, gm = flicker(nlev, f)
+            assert gm > 0 and i > 0
+            r = s / want(i, gm, f)
+            assert abs(r - 1.0) < 1e-6, (cls, nlev, f, r)

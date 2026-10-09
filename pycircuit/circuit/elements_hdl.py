@@ -176,6 +176,7 @@ def _tnom_k(tnom_c):
 
 
 _TNOM_DEFAULT_C = round(float(_defaultepar.T) - _ZERO_C, 6)   # 26.85 C for a 300 K ambient
+from pycircuit.circuit import hdl as _hdl
 from pycircuit.circuit.hdl import var as _var
 ## `expl`, not `limexp`, and the reason is measured rather than
 ## stylistic.  `limexp` is deliberately NOT both-arms-safe: its discarded
@@ -2727,6 +2728,23 @@ _EPSSI = 11.7 * 8.854187817e-12
 _NI_CM3 = 1.45e10
 
 
+def _mos_flicker(kf, ids, gm, af, nlev, cox, w, leff):
+    """The SPICE MOSFET flicker source by ngspice's ``nlev``, as ``(pwr,
+    exponent)`` for ONE `flicker_noise` (one source: only one form is ever
+    selected), ``cox`` per area:
+
+      0  ``kf |Id|^af / (cox Leff^2)`` over ``f`` -- SPICE2's, the default
+      1  ``kf |Id|^af / (cox W Leff)`` over ``f`` -- the gate AREA, as a
+         commercial simulator normalises
+      2, 3  ``kf gm^2 / (cox W Leff)`` over ``f^af`` -- ngspice-47's default
+         for levels 1-3 (2026-10-09)"""
+    pwr = sympy.Piecewise(
+        (kf * _safe_abs(ids) ** af / (cox * leff ** 2), nlev < 0.5),
+        (kf * _safe_abs(ids) ** af / (cox * w * leff), nlev < 1.5),
+        (kf * gm * gm / (cox * w * leff), True))
+    return pwr, sympy.Piecewise((1.0, nlev < 1.5), (af, True))
+
+
 def _mos1_params():
     """The SPICE level-1 MOSFET card, in SPICE's own names and defaults.
 
@@ -2835,6 +2853,11 @@ def _mos1_params():
                   default=0.0),
         Parameter(name='af', desc='Flicker-noise exponent', unit='',
                   default=1.0),
+        Parameter(name='nlev', desc="Flicker form (ngspice's): 0 "
+                  "kf*Id^af/(f*cox*Leff^2), 1 kf*Id^af/(f*cox*W*Leff) -- the "
+                  "area form, as a commercial simulator normalises -- 2 or 3 "
+                  "kf*gm^2/(f^af*cox*W*Leff), ngspice-47's default",
+                  unit='', default=0.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
                   unit='C', default=_TNOM_DEFAULT_C),
     ]
@@ -3309,8 +3332,10 @@ def _mos1_analog(T, nmos, limiting='group', gate_charge=False):
             ## `safe_abs` because a PSD may not be negative and `ids` is
             ## negative for a reversed device.
             ## signed: see the note at the EKV flicker term
+            ## (nlev 2/3: `gm = d ids / d vgs` through the chain, vds and
+            ## the bulk held -- SPICE's gm)
             Contribution(bds.I, _var(ids / _safe_abs(ids), 'sgnfl') * _flicker_noise(
-                kf * _safe_abs(ids) ** af / (cox * leff ** 2), 1)),  # noqa
+                *_mos_flicker(kf, ids, _hdl.ddx(ids, vgs), af, nlev, cox, w, leff))),  # noqa
             Contribution(brd.I, _white_noise(4.0 * _KB * T / rdx)),
             Contribution(brs.I, _white_noise(4.0 * _KB * T / rsx)),
         )
@@ -4207,6 +4232,11 @@ def _mos3_params():
                   default=0.0),
         Parameter(name='af', desc='Flicker-noise exponent', unit='',
                   default=1.0),
+        Parameter(name='nlev', desc="Flicker form (ngspice's): 0 "
+                  "kf*Id^af/(f*cox*Leff^2), 1 kf*Id^af/(f*cox*W*Leff) -- the "
+                  "area form, as a commercial simulator normalises -- 2 or 3 "
+                  "kf*gm^2/(f^af*cox*W*Leff), ngspice-47's default",
+                  unit='', default=0.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
                   unit='C', default=_TNOM_DEFAULT_C),
     ]
@@ -4541,7 +4571,8 @@ def _mos3_analog(T, nmos, gate_charge=False):
             Contribution(bds.I, _white_noise(4.0 * _KB * T * (gn + gw))),
             ## signed: see the note at the EKV flicker term
             Contribution(bds.I, _var(ids / _safe_abs(ids), 'sgnfl') * _flicker_noise(
-                p.kf * _safe_abs(ids) ** p.af / (cox * leff ** 2), 1)),
+                *_mos_flicker(p.kf, ids, _hdl.ddx(ids, vgs), p.af, p.nlev, cox, weff,
+                              leff))),
             Contribution(brd.I, _white_noise(4.0 * _KB * T / rdx)),
             Contribution(brs.I, _white_noise(4.0 * _KB * T / rsx)),
         )

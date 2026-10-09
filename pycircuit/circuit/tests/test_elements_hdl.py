@@ -1449,3 +1449,38 @@ def test_every_hdl_element_with_a_source_term_obeys_the_classical_gate():
         res = Transient(cir, toolkit=numeric).solve(tend=T, timestep=T / 200, fixed_timestep=True)
     va = np.asarray(res.v('a').y, float)
     assert abs(va.max() - 1.1) < 1e-6 and abs(va.min() - 0.9) < 1e-6, (va.min(), va.max())
+
+
+def test_ddx_sees_through_var_intermediates():
+    """`ddx` while an element compiles differentiates through `var`
+    intermediates, as Verilog-A's does through local variables
+    (2026-10-09): by a branch voltage, held probes untouched, and by an
+    intermediate itself (`ddx(ids, vgs)`, the intermediates defined before
+    it held).  Read back through the compiled currents at 0.7 V: `w =
+    a v^3 + v exp(v)`, `dw/dv = 3 a v^2 + (1 + v) exp(v)`; and through
+    `u = v^2` alone, `dw/du = a v` (v held as the probe defined first)."""
+    import sympy
+    from pycircuit.circuit.hdl import (Behavioural, Branch, Contribution,
+                                       Parameter, ddx, var)
+
+    class Chain(Behavioural):
+        terminals = ('p', 'n', 'c', 'm', 'e', 'f')
+        instparams = [Parameter(name='a', default=2.0)]
+
+        @staticmethod
+        def analog(p, n, c, m, e, f):
+            b, bc, be = Branch(p, n), Branch(c, m), Branch(e, f)
+            v = var(b.V, 'v')
+            u = var(v * v, 'u')
+            w = var(u * v * a + sympy.exp(v) * v, 'w')       # noqa: F821
+            return (Contribution(b.I, w),
+                    Contribution(bc.I, ddx(w, b.V)),
+                    Contribution(be.I, ddx(w, u)))
+
+    el = Chain('p', 'n', 'c', 'm', 'e', 'f')
+    x = np.zeros(6)
+    x[0] = 0.7
+    i = np.asarray(el.i(x), dtype=float)
+    assert_allclose(i[2], 3 * 2.0 * 0.7 ** 2 + 1.7 * np.exp(0.7), rtol=1e-14)
+    assert_allclose(i[2], np.asarray(el.G(x), dtype=float)[0, 0], rtol=1e-14)
+    assert_allclose(i[4], 2.0 * 0.7, rtol=1e-14)

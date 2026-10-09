@@ -2083,9 +2083,55 @@ def ddx(expr, probe):
     ``diff``.  The probe must appear in ``expr`` as the SAME quantity
     object (``b.V`` matched against ``b.V``, not against an expanded
     node-voltage difference).
+
+    THROUGH `var` INTERMEDIATES, as Verilog-A's ``ddx`` sees through
+    local variables (2026-10-09; a MOSFET's ``gm`` for SPICE's ``nlev = 2``
+    flicker): while an element compiles, an intermediate ``expr`` depends
+    on is differentiated by FORWARD ACCUMULATION over the let-chain --
+    each intermediate between the probe and ``expr`` gets its derivative
+    as an intermediate of its own, in chain order, so the cost is linear
+    in the chain, not exponential in its depth.  ``probe`` may itself be
+    an intermediate (``ddx(ids, vgs)``, ``vgs`` the limited gate voltage
+    the current reads): the intermediates defined before it are held.
     """
-    d = sympy.Dummy()
-    return sympy.sympify(expr).subs(probe, d).diff(d).subs(d, probe)
+    expr = sympy.sympify(expr)
+    reg = _VAR_STACK[-1] if _VAR_STACK else None
+    defs = dict(reg) if reg else {}
+    if not (expr.free_symbols & defs.keys()):
+        if isinstance(probe, sympy.Symbol):
+            return expr.diff(probe)
+        d = sympy.Dummy()
+        return expr.subs(probe, d).diff(d).subs(d, probe)
+
+    seeded = probe in defs
+
+    def direct(e):
+        if seeded:
+            ## (an intermediate probe enters through `D[probe] = 1` alone)
+            return sympy.S.Zero
+        if isinstance(probe, sympy.Symbol):
+            return e.diff(probe)
+        d = sympy.Dummy()
+        return e.subs(probe, d).diff(d).subs(d, probe)
+
+    ## the intermediates `expr` reaches, backwards through the chain
+    need, todo = set(), [s for s in expr.free_symbols if s in defs]
+    while todo:
+        s = todo.pop()
+        if s in need or s == probe:
+            continue
+        need.add(s)
+        todo.extend(t for t in defs[s].free_symbols if t in defs)
+    ## forward, in chain order: d(s)/d(probe) for each, zero where none
+    D = {probe: sympy.S.One} if seeded else {}
+    for s, e in list(reg):
+        if s not in need:
+            continue
+        dv = direct(e) + sum((e.diff(t) * D[t] for t in e.free_symbols
+                              if t in D and D[t] != 0), sympy.S.Zero)
+        D[s] = dv if dv == 0 or dv.is_Number else var(dv, 'ddx')
+    return direct(expr) + sum((expr.diff(t) * D[t] for t in expr.free_symbols
+                               if t in D and D[t] != 0), sympy.S.Zero)
 
 
 class Quantity(sympy.AtomicExpr):

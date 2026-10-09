@@ -7040,3 +7040,27 @@ levels 1, 2 and 3 default to `nlev = 2` (`mos{1,2,3}set.c`), the form
 for a square law: 5.0e4 for that pair (W/L 1600, KP 10u, Id 0.6 mA).  Not
 changed: a choice for Andreas (an `nlev` parameter, and the importer's
 default).
+
+## 2026-10-09 — 79. `nlev`: ngspice's MOSFET flicker forms, and `ddx` through `var` intermediates (Andreas: "Add nlev option")
+
+`MosLevel1Hdl`/`MosLevel3Hdl` (and their PMOS and gate-charge classes)
+take `nlev`, ngspice's flicker selector, `cox` per area, `Leff = l - 2 ld`:
+
+| nlev | PSD | who |
+|---|---|---|
+| 0 (default) | `kf |Id|^af / (f cox Leff^2)` | SPICE2; ngspice's compatibility mode; pycircuit until now |
+| 1 | `kf |Id|^af / (f cox W Leff)` | the gate area -- as a commercial simulator normalises (relayed, pss_log 2026-09: not measured here) |
+| 2, 3 | `kf gm^2 / (f^af cox W Leff)` | ngspice-47's default for levels 1-3 (`mos{1,2,3}set.c`) |
+
+`gm` is the device's own `dId/dVgs`, drain, source and bulk held -- the
+limited `vgs` the current reads, so SPICE's `gm` -- taken by `ddx`, which
+now sees through `var` intermediates as Verilog-A's does through local
+variables: forward accumulation over the let-chain, each intermediate
+between the probe and the expression given its derivative as an
+intermediate of its own, linear in the chain; the probe may be an
+intermediate (`ddx(ids, vgs)`).  Measured: every form against its formula
+to 1e-6 on both models, two frequencies at `af = 1.2`; `ddx` through a
+chain against the analytic derivative and the compiled Jacobian to 1e-14.
+The importer reads `NLEV` (it refused the card before); without it the
+device keeps 0.  The default stays 0: changing it moves every flicker
+result (an AD8606 pair: 5e4 between 0 and 2).

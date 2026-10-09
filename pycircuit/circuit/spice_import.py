@@ -80,14 +80,15 @@ MOS1_PARAMS = {'vto': 'vto', 'vt0': 'vto', 'kp': 'kp', 'gamma': 'gamma', 'phi': 
                'cgdo': 'cgdo', 'cgbo': 'cgbo', 'cbd': 'cbd', 'cbs': 'cbs', 'is': 'IS',
                'pb': 'pb', 'cj': 'cj', 'cjsw': 'cjsw', 'mj': 'mj', 'mjsw': 'mjsw', 'fc': 'fc',
                'js': 'js', 'rd': 'rd', 'rs': 'rs', 'rsh': 'rsh', 'kf': 'kf', 'af': 'af',
-               'tnom': 'tnom'}
+               'nlev': 'nlev', 'tnom': 'tnom'}
 MOS3_PARAMS = {'vto': 'vto', 'vt0': 'vto', 'kp': 'kp', 'uo': 'u0', 'u0': 'u0', 'gamma': 'gamma',
                'phi': 'phi', 'tox': 'tox', 'nsub': 'nsub', 'xj': 'xj', 'nfs': 'nfs',
                'eta': 'eta', 'delta': 'delta', 'theta': 'theta', 'vmax': 'vmax',
                'kappa': 'kappa', 'ld': 'ld', 'wd': 'wd', 'cgso': 'cgso', 'cgdo': 'cgdo',
                'cgbo': 'cgbo', 'cbd': 'cbd', 'cbs': 'cbs', 'is': 'IS', 'pb': 'pb', 'cj': 'cj',
                'cjsw': 'cjsw', 'mj': 'mj', 'mjsw': 'mjsw', 'fc': 'fc', 'js': 'js', 'rd': 'rd',
-               'rs': 'rs', 'rsh': 'rsh', 'kf': 'kf', 'af': 'af', 'tnom': 'tnom'}
+               'rs': 'rs', 'rsh': 'rsh', 'kf': 'kf', 'af': 'af', 'nlev': 'nlev',
+               'tnom': 'tnom'}
 MOS_INSTANCE = ('l', 'w', 'ad', 'as', 'pd', 'ps', 'nrd', 'nrs')
 MOS_CLASSES = {(1, 'nmos'): elements_hdl.MosLevel1Hdl, (1, 'pmos'): elements_hdl.MosLevel1PmosHdl,
                (3, 'nmos'): elements_hdl.MosLevel3Hdl, (3, 'pmos'): elements_hdl.MosLevel3PmosHdl}

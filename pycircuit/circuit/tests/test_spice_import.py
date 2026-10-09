@@ -450,3 +450,23 @@ def test_each_fetched_deck_imports_or_names_exactly_its_known_gaps(path):
         assert any(g in r for g in gaps), (path, r)
     for g in gaps:
         assert any(g in r for r in refused), (path, g)
+
+
+def test_a_mos_card_s_nlev_reaches_the_device():
+    """NLEV (ngspice's flicker form, 2026-10-09) is read from a level-1 or
+    level-3 card; without it the device keeps pycircuit's form, 0."""
+    import tempfile
+    import os
+    from pycircuit.circuit import spice_import
+    for level in (1, 3):
+        for card, want in (('', 0.0), (' NLEV=2', 2.0)):
+            deck = ('* nlev\nM1 d g 0 0 NX W=10u L=1u\nVD d 0 1\nVG g 0 1\n'
+                    f'.MODEL NX NMOS (LEVEL={level} VTO=0.5 KP=1e-4 KF=1e-25{card})\n'
+                    '.op\n.end\n')
+            with tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, 'n.cir')
+                with open(path, 'w') as fh:
+                    fh.write(deck)
+                imp = spice_import.import_netlist(path)
+            m1 = [e for k, e in imp.circuit.elements.items() if k.lower() == 'm1'][0]
+            assert float(m1.iparv.nlev) == want, (level, card, m1.iparv.nlev)
