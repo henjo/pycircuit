@@ -51,7 +51,9 @@ XYCE = os.environ.get('PYCIRCUIT_XYCE', os.path.expanduser('~/local/xyce/serial/
 #: nodes behind 40 ohm sheet resistances, coupled by the gate charge), and
 #: runs as ngspice judges -- device charges, not source currents
 #: (`Transient.lte_algebraic`; doc/hdl_roadmap_260824.md, 76)
-OVERRIDES = {'slowlatch': {'lte_algebraic': 'skip'}}
+OVERRIDES = {'slowlatch': {'lte_algebraic': 'skip'},
+             ## (gm17: the same collapse, on its supply's current; 2026-10-10)
+             'gm17': {'lte_algebraic': 'skip'}}
 
 _X = 'Netlists/'
 _G = 'OutputData/'
@@ -137,7 +139,7 @@ def run_one(name, peers, qpart=None):
     net = spicenetlist.read(deck)
     rec['read_s'] = time.perf_counter() - t0
     t0 = time.perf_counter()
-    imp = spice_import.import_netlist(deck, mos_qpart=qpart)
+    imp = spice_import.import_netlist(deck, **({} if qpart is None else {'mos_qpart': qpart}))
     rec['import_s'] = time.perf_counter() - t0
     rec['elements'], rec['unknowns'] = len(imp.elements), imp.circuit.n
     tr, kw = imp.transient(**OVERRIDES.get(name, {}))

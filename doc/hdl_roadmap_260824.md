@@ -7195,3 +7195,28 @@ depletion ramp `-mdep*Cox/phi`; fails on the old charge).
 (A measurement note: a gold run during which `elements_hdl.py` was
 briefly swapped and restored read mosrect as 7.34 -- a class compiled
 from the swapped file.  The rerun on an untouched tree is the record.)
+
+## 2026-10-10 — 83. Meyer's channel split, smoothed, is the importer's default; gm17 runs (Andreas: "do as you suggest")
+
+After the bulk-referred depletion (82) the two channel splits were scored
+on every MOS gold deck.  Meyer's (`qpart = 1`) won on ten -- toronto 0.47
+-> 0.32, todd3 1.06 -> **0.68 (passes)**, mux8 0.61 -> 0.40, nand 2.40 ->
+1.32, gm1 6.0 -> 3.6, gm2 2.38 -> 1.35, gm3 2.19 -> 1.49, g1310 4.5 -> 3.0,
+rich3 19.6 -> 16.7, ring 75 -> 66 -- lost on gm6 (4.14 -> 5.39), the rest
+unchanged.  The importer's `mos_qpart` defaults to 1 now (the decks'
+simulators use Meyer); the classes keep Ward-Dutton (0).
+
+Meyer's split had a DEFECT, found on the way: its drain charge `-(Q(a,b)
+- Q(a,0) + Q(b,0))/2` has slope `-coxt/3` in `b` at the saturation edge,
+so `Cdd` jumped by Cox/3 there (measured 1.15e-14 -> 0 on a 10u/2u
+device).  Now `qd = -Q(a,b) b^2/(a^2 + b^2)`: 0 in saturation, half at
+vds = 0, symmetric, conserving, and its slope zero at the edge (3.5e-18
+-> 0).  Its interior capacitances are not Meyer's -- named.
+
+gm17 under Meyer's split collapsed its step at 5.75 ns -- not the jump
+(it stayed with the smooth split), but slowlatch's mechanism: the error
+test on its supply's current (with `lte_algebraic='skip'` it completes in
+94 steps, no forced step).  The suite's `OVERRIDES` give gm17 the skip, as
+slowlatch.  Its v(5) column stays ~96 under either split: open.
+Passing the gold now: 4049osc, toronto, ab_integ, e1480, mosrect, mux8,
+rca, schmitecl, latch, opampal, todd3 (11 of 23 scored).

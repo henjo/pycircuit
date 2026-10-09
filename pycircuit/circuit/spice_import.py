@@ -372,7 +372,7 @@ for (_level, _mtype), _cls in list(MOS_CLASSES.items()) + list(MOS_CHARGE_CLASSE
                              {k: k for k in MOS_INSTANCE} | {'asrc': 'as'})
 
 
-def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qpart=None):
+def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qpart=1.0):
     """Read and map the netlist `path` (see the module note).  `dialect`
     (``'xyce'`` or ``'ngspice'``) chooses where the two read a deck
     differently: the option and temperature statements.  `merge_shorts`:
@@ -380,9 +380,12 @@ def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qp
     made one node and the source left out (a power grid's pads: ibmpg1t's
     unknowns roughly halve); `Imported.merged` maps each node merged away
     to the node it became.  `mos_qpart`: the gate-charge MOSFETs' channel
-    split (`elements_hdl._mos_gate_charge`; None keeps the class's 0,
-    Ward-Dutton; 1 follows Meyer's capacitances) -- not a SPICE parameter,
-    so `Imported.write_ngspice` leaves it out."""
+    split (`elements_hdl._mos_gate_charge`): 1, the default since
+    2026-10-10, follows Meyer's capacitances -- what the decks' simulators
+    use, and after the bulk-referred depletion better on 10 of the gold
+    decks than Ward-Dutton (todd3 passes), worse on gm6 alone; 0 is
+    Ward-Dutton, the class's own default; None keeps the class's.  Not a
+    SPICE parameter, so `Imported.write_ngspice` leaves it out."""
     if dialect not in ('xyce', 'ngspice'):
         raise ValueError(f'dialect {dialect!r}: xyce or ngspice')
     return _Importer(spicenetlist.read(path), dialect, strict, merge_shorts, mos_qpart).run()

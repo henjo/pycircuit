@@ -2914,10 +2914,11 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None):
     b)^2)``, 2/5 in saturation, 1/2 at ``vds = 0``, the source's the same
     with ``a``/``b`` exchanged.  ``qpart = 1``: the split that follows
     Meyer's terminal capacitances, the drain's ``-(Q(a, b) - Q(a, 0) +
-    Q(b, 0))/2`` with ``Q`` the inversion charge -- NOTHING in saturation
-    (Meyer's ``Cdg = Cdd = 0`` there) and half at ``vds = 0`` (his
-    ``Cdg = Cgd = Cox/2``), symmetric, the drain's own capacitance
-    positive.  Between them, the blend: two conserving, symmetric splits
+    Q(b, 0))/2`` until 2026-10-10, now ``-Q(a, b) b^2/(a^2 + b^2)`` with
+    ``Q`` the inversion charge -- NOTHING in saturation (Meyer's ``Cdg =
+    Cdd = 0`` there) and half at ``vds = 0`` (his ``Cdg = Cgd = Cox/2``),
+    symmetric, and CONTINUOUS at the saturation edge, where the earlier
+    form's drain capacitance jumped by Cox/3 (gm17 stalled on it).  Between them, the blend: two conserving, symmetric splits
     mix into one.  MEASURED (2026-10-08, an inverter chain on mike2's
     cards against ngspice's Meyer): Ward-Dutton +20 ps a stage, this
     +10 ps; on the gold decks neither wins everywhere (the record).
@@ -2987,7 +2988,12 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None):
                                    - _safe_div(a * b * (3.0 * a + 2.0 * b),
                                                sab * sab, 1e-30)), 'qdwd')
     qg = v(qdep + qtr + qinv, 'qgate')
-    qdml = v(-0.5 * (qinv - 2.0 / 3.0 * coxt * a + 2.0 / 3.0 * coxt * b), 'qdml')
+    ## (Meyer's split, made smooth 2026-10-10: the drain's weight
+    ## b^2/(a^2 + b^2) -- 0 in saturation, 1/2 at vds = 0, symmetric -- with
+    ## a ZERO slope at the saturation edge; the earlier -(Q(a,b) - Q(a,0) +
+    ## Q(b,0))/2 had slope -coxt/3 there, a Cox/3 jump in Cdd that stalled
+    ## gm17's Newton at a small step)
+    qdml = v(-qinv * _safe_div(b * b, a * a + b * b, 1e-30), 'qdml')
     qdch = v(qdwd + qpart * (qdml - qdwd), 'qdch')
     qd = v(qdch - 0.5 * qtr, 'qdrain')
     qs = v(-qinv - qdch - 0.5 * qtr, 'qsource')
