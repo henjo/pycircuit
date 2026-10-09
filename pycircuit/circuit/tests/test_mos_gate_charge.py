@@ -261,3 +261,23 @@ cl b 0 50f
     assert _paths.since(before).get('newton_c:served', 0) > 50
     vb = np.asarray(res.v('b').y, float)
     assert vb.min() < 0.5 and vb.max() > 4.5             # it switched both ways
+
+
+@pytest.mark.parametrize('cls', [eh.MosLevel1GateChargeHdl, eh.MosLevel2GateChargeHdl,
+                                 eh.MosLevel3GateChargeHdl])
+def test_below_threshold_the_gate_capacitance_is_to_the_bulk(cls):
+    """The depletion and accumulation charge is BULK-referred (2026-10-10):
+    with the bulk 1 V from the source, deep in accumulation the gate's
+    whole capacitance is to the BULK (Meyer's ``cgb = Cox``) and nothing
+    to source or drain -- where until then it sat against the source
+    (mosrect's bridge: 0.19 V from ngspice, now 0.002 V).  And in the
+    depletion ramp the gate-bulk capacitance is Meyer's ``-mdep*Cox/phi``
+    with ``mdep = vgb - von0`` (gamma 0: ``von0 = vto``)."""
+    e = _device(cls)
+    vs, vb = 1.0, 0.0
+    cgs, cgd, cgb = _gate_row(_C(e, vs + 0.5, vb - 3.0, vs, vb))       # vgb = -3 V
+    assert cgb == pytest.approx(COX, rel=1e-9)
+    assert abs(cgs) < 1e-9 * COX and abs(cgd) < 1e-9 * COX
+    vgb = VTO - 0.3                                                   # in the ramp
+    _cgs, _cgd, cgb = _gate_row(_C(e, vs + 0.5, vb + vgb, vs, vb))
+    assert cgb == pytest.approx(0.3 * COX / PHI, rel=1e-6), cls.__name__

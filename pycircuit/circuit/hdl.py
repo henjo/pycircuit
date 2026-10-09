@@ -2283,6 +2283,37 @@ def ddx(expr, probe):
                                if t in D and D[t] != 0), sympy.S.Zero)
 
 
+def with_values(expr, values):
+    """``expr`` re-evaluated with some of its inputs replaced -- ``values``
+    maps `var` intermediates (or probes, or parameters) to expressions --
+    while an element compiles.  The intermediates between the replaced
+    inputs and ``expr`` are rebuilt, in chain order, as intermediates of
+    their own; the rest are shared.  A threshold at zero bulk bias,
+    ``with_values(von, {vbs: 0, vds: 0})``, is the use it was written for
+    (the MOS gate charge's bulk-referred depletion, 2026-10-10).
+    """
+    expr = sympy.sympify(expr)
+    values = {k: sympy.sympify(v) for k, v in values.items()}
+    reg = _VAR_STACK[-1] if _VAR_STACK else None
+    defs = dict(reg) if reg else {}
+    need, todo = set(), [t for t in expr.free_symbols if t in defs]
+    while todo:
+        t = todo.pop()
+        if t in need or t in values:
+            continue
+        need.add(t)
+        todo.extend(u for u in defs[t].free_symbols if u in defs)
+    new = dict(values)
+    for t, e in list(reg or ()):
+        if t not in need or t in values:
+            continue
+        hit = {u: new[u] for u in e.free_symbols if u in new}
+        if hit:
+            new[t] = var(e.xreplace(hit), 'wv')
+    hit = {u: new[u] for u in expr.free_symbols if u in new}
+    return expr.xreplace(hit) if hit else expr
+
+
 class Quantity(sympy.AtomicExpr):
     """Reference to a voltage or current of a branch or node.
 

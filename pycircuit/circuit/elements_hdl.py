@@ -2883,7 +2883,7 @@ def _qpart_param():
                       default=0.0)]
 
 
-def _mos_gate_charge(us, ud, phi, coxt, qpart, tag=''):
+def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None):
     """The intrinsic gate charge of a SPICE level-1/3 MOSFET, CHARGE-
     CONSERVING and following Meyer's capacitances: ``(qg, qd, qs)`` in the
     n-channel convention, the bulk's ``-(qg + qd + qs)`` (conservation is
@@ -2934,12 +2934,23 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag=''):
     (2026-10-08); rounded it runs.  Meyer spreads that capacitance over
     the same 25 mV (his ``MAGIC_VDS``), so this sits inside deviation (2).
 
-    DEVIATIONS FROM MEYER, NAMED: (1) below threshold the charge follows
-    ``us`` -- i.e. ``vgs`` -- so Meyer's gate-BULK capacitance appears in
-    the gate row against the source (and drain), the gate total unchanged:
-    a charge cannot follow ``vgb`` with a capacitance set by ``vgs - von``,
-    and the threshold-referred form keeps the regions aligned for every
-    ``vbs``; (2) Meyer's ``x1.5`` sliver near threshold below ``vds <
+    THE DEPLETION AND ACCUMULATION CHARGE IS BULK-REFERRED (``mdep``,
+    2026-10-10; Andreas: "fix it"): below threshold there is no channel, so
+    the gate's charge is the bulk's and follows ``vgb`` alone --
+    ``mdep = vgb - von0``, ``von0`` the threshold at zero bulk bias (and,
+    for level 3, without DIBL), so Meyer's gate-BULK capacitance is
+    gate-bulk.  Until then it followed ``m`` (``vgs - von``), which put
+    that capacitance against the SOURCE: identical where the bulk is the
+    source, wrong where it is not -- mosrect's bridge (each device's bulk
+    another bridge node) loaded node 4 where Meyer loads node 2.  ``m``
+    still sets the near-threshold transition (``qtr``) and the inversion
+    charge, which have a channel.
+
+    DEVIATIONS FROM MEYER, NAMED: (1) the depletion/accumulation regions
+    are set by ``vgb - von0`` (the gate-bulk bias, the flat-band picture)
+    where Meyer's are set by ``vgs - von(vbs)``: the same at zero bulk
+    bias in forward mode, apart where ``vbs != 0`` or the device runs in
+    reverse (``mdep``; called without it, the old ``m`` form); (2) Meyer's ``x1.5`` sliver near threshold below ``vds <
     25 mV`` (his ``MAGIC_VDS`` floor on ``vdsat`` splits the transition
     capacitance ``3/4 + 3/4``), here the ``vds >= 25 mV`` form; (3) the
     threshold's body effect gives transcapacitances to the bulk Meyer has
@@ -2963,8 +2974,9 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag=''):
     m = v((us + ud) / 2.0 + habs, 'qgm')
     a = v(_maxc(us, 0.0), 'qga')
     b = v(_maxc(ud, 0.0), 'qgb')
-    qdep = v(sympy.Piecewise((coxt * (m + 0.5 * phi), m <= -phi),
-                             (-coxt * m * m / (2.0 * phi), m <= 0.0),
+    md = m if mdep is None else v(mdep, 'qgmd')
+    qdep = v(sympy.Piecewise((coxt * (md + 0.5 * phi), md <= -phi),
+                             (-coxt * md * md / (2.0 * phi), md <= 0.0),
                              (0.0, True)), 'qdep')
     qtr = v(sympy.Piecewise((-coxt * phi / 6.0, m <= -0.5 * phi),
                             (2.0 / 3.0 * coxt * (m + m * m / phi), m <= 0.0),
@@ -3287,8 +3299,12 @@ def _mos1_analog(T, nmos, limiting='group', gate_charge=False):
             ## the oxide over the effective length and drawn width
             ## (`mos1load.c`'s `OxideCap`).  The bulk's charge is what the
             ## three branches to it leave.
+            ## (the depletion charge bulk-referred: vgb against the
+            ## threshold at zero bulk bias, `_mos_gate_charge`'s `mdep`)
+            von0 = _hdl.with_values(vth, {vbs: 0.0, vbd: 0.0})
             qg, qd, qs = _mos_gate_charge(vgs - vth, vgd - vth, phiT,
-                                          _var(cox * leff * w, 'coxt'), qpart)  # noqa
+                                          _var(cox * leff * w, 'coxt'), qpart,  # noqa
+                                          mdep=vgs - vbs - von0)
             stmts += (Contribution(bgb.I, ddt(qg)),
                       Contribution(bbd.I, ddt(-qd)),
                       Contribution(bbs.I, ddt(-qs)))
@@ -4607,9 +4623,11 @@ def _mos3_analog(T, nmos, gate_charge=False):
             ## charge sees is `von` at `vds = 0`, every self-capacitance is
             ## non-negative, and the regions shift by `etal*vds` (named in
             ## `_mos_gate_charge`).
+            von0 = _hdl.with_values(vonf, {vbs: 0.0, vds: 0.0})
             qg, qd, qs = _mos_gate_charge(vgs - (vonf + etal * vds),
                                           vgd - (_vonr - etal * vds), phiT,
-                                          _var(cox * leff * weff, 'coxt'), p.qpart)
+                                          _var(cox * leff * weff, 'coxt'), p.qpart,
+                                          mdep=vgs - vbs - von0)
             stmts += (Contribution(bgb.I, ddt(qg)),
                       Contribution(bbd.I, ddt(-qd)),
                       Contribution(bbs.I, ddt(-qs)))
@@ -5119,8 +5137,10 @@ def _mos2_analog(T, nmos, gate_charge=False):
         if gate_charge:
             ## The intrinsic gate charge (`_mos_gate_charge`), each side's own
             ## `von`, as level 3's (level 2 has no DIBL term to leave out).
+            von0 = _hdl.with_values(vonf, {vbs: 0.0, vds: 0.0})
             qg, qd, qs = _mos_gate_charge(vgs - vonf, vgd - _vonr, phiT,
-                                          _var(cox * leff * weff, 'coxt'), p.qpart)
+                                          _var(cox * leff * weff, 'coxt'), p.qpart,
+                                          mdep=vgs - vbs - von0)
             stmts += (Contribution(bgb.I, ddt(qg)),
                       Contribution(bbd.I, ddt(-qd)),
                       Contribution(bbs.I, ddt(-qs)))

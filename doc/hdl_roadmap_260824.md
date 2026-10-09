@@ -7166,3 +7166,32 @@ previous record bit for bit (measured); the explain digests moved with
 the parameter.  The physics tests pin `gmin=0` explicitly; the reference
 transcription carries GMIN as `bjtload.c` does.  Test:
 `test_spice_gmin_holds_every_junction`.
+
+## 2026-10-10 — 82. The gate charge's depletion is bulk-referred (Andreas: "fix it")
+
+`_mos_gate_charge`'s named deviation (1) is gone: below threshold the gate
+charge followed `m = vgs - von(vbs)`, so Meyer's gate-BULK capacitance sat
+against the SOURCE -- invisible where the bulk is the source, wrong where
+it is not.  No charge that is a function of `vgs - von(vbs)` can move it
+(any such function responds to the source), so the depletion and
+accumulation charge now takes its own argument, `mdep = vgb - von0`,
+`von0` the threshold at zero bulk bias (level 3 also without DIBL, as its
+gate charge already was) -- built by a new `hdl.with_values`, which
+re-evaluates an intermediate with inputs substituted (the dependent part
+of the chain rebuilt, as `ddx`'s forward pass).  `m` still sets the
+near-threshold transition and the inversion charge, which have a channel.
+At zero bulk bias in forward mode `mdep = m`; apart where `vbs != 0` or a
+device runs reversed -- the regions there are the gate-bulk bias's (the
+flat-band picture), Meyer's `vgs - von(vbs)` the named deviation now.
+
+Measured: mosrect (each bridge device's bulk another bridge node) 0.19 V
+from ngspice -> 0.002 V; gold 7.34 -> **0.917** (ngspice 0.939); mux8 1.05
+-> **0.611** (0.342); every other gold deck unchanged (their devices'
+bulk is their source).  nand stays 2.40 (0.55): another cause, open.
+Test: `test_below_threshold_the_gate_capacitance_is_to_the_bulk` (levels
+1-3, bulk 1 V from the source: deep accumulation all to the bulk, the
+depletion ramp `-mdep*Cox/phi`; fails on the old charge).
+
+(A measurement note: a gold run during which `elements_hdl.py` was
+briefly swapped and restored read mosrect as 7.34 -- a class compiled
+from the swapped file.  The rerun on an untouched tree is the record.)
