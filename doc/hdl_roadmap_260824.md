@@ -7257,3 +7257,35 @@ the ring: with `lte_algebraic='skip'` the ring 7885 steps / 729 forced ->
 2877 / 0 at the same accuracy): still an opt-in per deck (Andreas's
 choice); the ring's PSS waits on it -- its `lte_grid` drew 25,563 points
 from the forced-step run and the shooting ran out of memory.
+
+## 2026-10-10 — 85. Stage 9 continued: the ring's PSS, voter25 runs (level 2's VMAX vdsat floored), `spice_ring`
+
+**The ring's PSS** converges: 10.877 / 10.856 / 10.852 ns at 320 / 1013 /
+2864 grid points (gear), against ngspice's 10.68 on our deck -- the gate
+charge's open 1.6 %.  The key was `lte_grid`'s reference: its per-unknown
+default (`relref='pointlocal'`, kept deliberately for switched-noise
+grids) at reltol 1e-5 drew 24,336 points through the nine fast edges and
+the shooting ran out of memory; the GLOBAL reference at 1e-4 draws 320
+and refines to the same period.  `PSS(lte_algebraic=...)` now reaches
+its transients.  Test: `test_the_ring_oscillator_s_periodic_steady_state`
+(5 s).  `spice_ring` joins step_machinery (the ring's transient to 20
+ns, 0.43 s).
+
+**voter25 stalled at 32.6 ns -- and ngspice stalls on it too (Xyce runs,
+8.9 s).**  An off PMOS (|vgs| 0.5 V, vds 22 uV) whose gate sat at `vbin`:
+with VMAX the quartic gives `vdsat = x^2 - (phi - vbs)`, NEGATIVE below
+threshold (-0.33 V there), which ngspice does not floor (its Grove-Frohman
+branch does), and the saturation arm then carries a spurious 1.7 uA,
+switched on abruptly at `vgs = vbin` -- a jump Newton cannot cross.  The
+VMAX `vdsat` is floored at 0 now (Andreas: "make level 2 continuous"):
+the current is 0 below threshold and grows continuously.  A named
+departure from ngspice; the reference transcription gains `floor=` (the
+model's comparisons use it, the ngspice one does not).  voter25 then runs:
+36.5 s, 14463 steps / 890 forced; with its supply currents out of the
+error test 10.4 s, 3989 / 2 (the FOURTH deck: slowlatch, gm17, the ring,
+voter25).  Against Xyce's waveforms (no gold): the logic levels agree at
+every sampled time; Xyce's metric with a 1 V offset 4.6-6.2 -- edge
+timing, the same open charge gap.
+
+mem_plus (17,789 unknowns) imports in 19 s at 468 MB; its transient is
+not run yet.

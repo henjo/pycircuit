@@ -4847,7 +4847,10 @@ def _mos2_channel(p, vgs, vds, vbs, c, tag):
       divides by ``lvds`` and multiplies back: the reverse arm is
       evaluated at every bias, ``lvds = 0`` included;
     * the velocity-saturation root is `hdl.quartic_root` (SPICE's
-      algorithm; a NaN candidate invalid);
+      algorithm; a NaN candidate invalid), and its ``vdsat`` floored at 0
+      as the other branch's is -- ngspice's is not, and below threshold
+      a negative ``vdsat`` gave a spurious current switched on at ``vbin``
+      (voter25 stalled on the jump);
     * ``xn`` is floored at 1 for the channel noise's weight only, where
       SPICE leaves it 0 without ``nfs`` (no subthreshold current there).
     """
@@ -4917,7 +4920,16 @@ def _mos2_channel(p, vgs, vds, vbs, c, tag):
     qd1 = v(2.0 * argv * (phivbs + xv) - phivbs * phivbs
             - 4.0 / 3.0 * gammad * sarg3, 'qd1')
     xq = v(_hdl.quartic_root(qa1, qb1, qc1, qd1), 'xq')
-    vdsat = v(sympy.Piecewise((xq * xq - phivbs, sympy.And(p.vmax > 0.0, xq > 0.0)),
+    ## (FLOORED AT 0, as the Grove-Frohman branch is (`MAX(vdsat, 0)`)
+    ## and ngspice's VMAX branch is not: below threshold the root gives
+    ## x^2 < phi - vbs, a NEGATIVE vdsat, and the saturation arm then
+    ## carries a spurious current -- 1.7 uA at vds = 22 uV on voter25's
+    ## PMOS -- switched on abruptly at vgs = vbin, a jump Newton cannot
+    ## cross (voter25 stalled at 32.6 ns; ngspice stalls too, Xyce runs).
+    ## Floored, the current is 0 there and grows continuously as vdsat
+    ## crosses 0 (2026-10-10, Andreas: "make level 2 continuous").)
+    vdsat = v(sympy.Piecewise((_maxc(xq * xq - phivbs, 0.0),
+                               sympy.And(p.vmax > 0.0, xq > 0.0)),
                               (vdsgf, True)), 'vdsat')
     ## -- channel shortening: xlamda * lvds, formed directly -------------
     vbsat = v(vbs - vdsat, 'vbsat')

@@ -69,7 +69,7 @@ def test_the_level2_channel_is_the_reference(model_constants):
             x = np.zeros(m.n)
             x[0], x[1], x[3] = vd, vg, vb
             got = float(np.asarray(m.i(x), dtype=float)[0])
-            ref = R.cdrain(c, vg, vd, vb)
+            ref = R.cdrain(c, vg, vd, vb, floor=True)
             assert abs(got - ref) <= 1e-9 * abs(ref) + 1e-21, (name, vg, vd, vb, got, ref)
 
 
@@ -93,7 +93,8 @@ def test_the_level2_jacobian_is_the_reference_s_derivative(model_constants, name
                 G = np.asarray(m.G(x), dtype=float)
                 for col, dv in ((0, (0, 1, 0)), (1, (1, 0, 0)), (3, (0, 0, 1))):
                     def f(s, dv=dv, vgs=vgs, vds=vds, vbs=vbs):
-                        return R.cdrain(c, vgs + s * dv[0], vds + s * dv[1], vbs + s * dv[2])
+                        return R.cdrain(c, vgs + s * dv[0], vds + s * dv[1], vbs + s * dv[2],
+                                        floor=True)
                     fd = (f(h) - f(-h)) / (2 * h)
                     scale = max(abs(fd), abs(G[0, col]), 1e-9)
                     assert abs(G[0, col] - fd) / scale < 2e-6, (name, vgs, vds, vbs, col, G[0, col], fd)
@@ -230,5 +231,32 @@ def test_a_level2_card_imports_with_vto_from_nsub(model_constants, tmp_path):
     assert isinstance(m1, eh.MosLevel2GateChargeHdl), type(m1)
     x = np.zeros(m1.n)
     x[0], x[1], x[3] = 1.0, 1.5, -1.0
-    ref = R.cdrain(R.card(**card), 1.5, 1.0, -1.0)
+    ref = R.cdrain(R.card(**card), 1.5, 1.0, -1.0, floor=True)
     assert float(np.asarray(m1.i(x), dtype=float)[0]) == pytest.approx(ref, rel=1e-9)
+
+
+def test_a_vmax_card_is_continuous_below_threshold(model_constants):
+    """With VMAX, SPICE's quartic gives a NEGATIVE vdsat below threshold,
+    which ngspice does not floor: an off device then carried a spurious
+    current switched on abruptly at vgs = vbin (1.7 uA at vds = 22 uV on
+    voter25's PMOS card; voter25 stalled on the jump, in ngspice too).
+    Floored at 0 (2026-10-10): the current is zero below threshold and has
+    no jump anywhere on a fine gate sweep -- where ngspice's (the
+    reference unfloored) jumps."""
+    circuit.default_toolkit = circuit.numeric
+    card = {'vto': 0.9, 'nsub': 6.6e15, 'tox': 4.3e-8, 'tpg': -1, 'xj': 5e-8, 'ld': 5e-8,
+            'u0': 240, 'ucrit': 86000, 'uexp': 0.29, 'vmax': 30000, 'neff': 2.65,
+            'delta': 1.0, 'l': 2e-6, 'w': 4e-6}
+    m = _model(card)
+    c = R.card(**card)
+    vds = vbs = 2.2e-5
+    got, spice = [], []
+    for vg in np.linspace(0.0, 1.2, 1201):
+        x = np.zeros(m.n)
+        x[0], x[1], x[3] = vds, vg, vbs
+        got.append(float(np.asarray(m.i(x), dtype=float)[0]))
+        spice.append(R.cdrain(c, vg, vds, vbs))
+    got, spice = np.array(got), np.array(spice)
+    assert np.max(np.abs(np.diff(got))) < 1e-8, np.max(np.abs(np.diff(got)))
+    assert np.max(np.abs(got[:800])) < 1e-12                      # below ~0.8 V: off
+    assert np.max(np.abs(np.diff(spice))) > 1e-6                  # ngspice's jump

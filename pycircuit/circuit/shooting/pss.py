@@ -516,6 +516,14 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                         '1 holds the shooting solve to the same relative '
                         'tolerance as the transient, larger relaxes it',
                    unit='', default=1.0),
+         ## `Transient.lte_algebraic`, handed to every transient this PSS
+         ## runs (2026-10-10): the adaptive ones (`lte_grid`, `tstab`) are
+         ## what it changes -- the CircuitSim90 ring's grid run forced 729
+         ## steps on its supply's current and drew a 25,563-point grid.
+         Parameter(name='lte_algebraic',
+                   desc="The inner transients' LTE test on algebraic branch "
+                        "currents: 'judge' or 'skip' (Transient's)",
+                   unit='', default='judge'),
          ## The default is `radau` (owner decision), for ACCURACY: the floor of
          ## this stack is DISCRETISATION, growing linearly in Q, and radau --
          ## order 5, self-starting (no manufactured opener, so no seam in the

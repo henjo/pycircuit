@@ -385,6 +385,20 @@ def _case_spice_ce_pss():
     return dt, None, _sha(p.waveform[1]), None, paths
 
 
+def _case_spice_ring():
+    """A level-2 deck read from a SPICE netlist (the SPICE benchmark plan's
+    stage 9, 2026-10-10): the CircuitSim90 ring -- nine MOS level-2
+    inverters with their gate charge -- by the default adaptive transient
+    over 20 ns from its `.ic`, the supply currents out of the error test as
+    the suite runs it."""
+    from pycircuit._testing import benchdata
+    from pycircuit.circuit.spice_import import import_netlist
+    imp = import_netlist(benchdata.spice_data(DATA['spice_ring'][0]))
+    tr, kw = imp.transient(lte_algebraic='skip')
+    dt, res, paths = _timed(lambda: tr.solve(tend=20e-9, timestep=kw['timestep']))
+    return dt, None, _sha(res.x), _stats(tr), paths
+
+
 def _case_resolve():
     """One transient solved again and again, as a sweep or a Monte Carlo
     loop solves it (2026-10-06): the 20-MosLevel1 chain, 16 solves of one
@@ -419,6 +433,7 @@ ANALYSES = {
     'ppv': _case_ppv,
     'spice_4049': _case_spice_4049,
     'spice_ce_pss': _case_spice_ce_pss,
+    'spice_ring': _case_spice_ring,
 }
 CASES = CASES + tuple(ANALYSES)
 #: what a case needs of the package it runs against, where a tree may lack
@@ -427,13 +442,15 @@ CASES = CASES + tuple(ANALYSES)
 #: script runs in both trees, the package is each tree's own)
 NEEDS = {'vdp_pss_hdl': ('pycircuit.circuit.elements_hdl', 'BSourceHdl'),
          'spice_4049': ('pycircuit.circuit.spice_import', 'import_netlist'),
-         'spice_ce_pss': ('pycircuit.circuit.spice_import', 'import_netlist')}
+         'spice_ce_pss': ('pycircuit.circuit.spice_import', 'import_netlist'),
+         'spice_ring': ('pycircuit.circuit.elements_hdl', 'MosLevel2Hdl')}
 #: the fetched benchmark data a case reads (`pycircuit._testing.benchdata`,
 #: `benchmarks/fetch_spice_suite.py`): where a file is not fetched the case
 #: is left out, with a line saying so -- a comparison and a plain run alike,
 #: so missing data never aborts either
 DATA = {'spice_4049': ('Netlists/4049OSC/4049osc.cir',),
-        'spice_ce_pss': ('Netlists/HB/common_emitter_hb.cir',)}
+        'spice_ce_pss': ('Netlists/HB/common_emitter_hb.cir',),
+        'spice_ring': ('Netlists/CircuitSim90/MOS2/ring.cir',)}
 
 
 def _has_data(case):

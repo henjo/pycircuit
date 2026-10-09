@@ -195,3 +195,33 @@ def test_the_gilbert_cell_s_periodic_steady_state_is_xyce_s_harmonic_balance():
                      1e-4, range(6))
     assert all(m < 0.1 for m, _e in got.values()), got
     assert all(e < 1e-3 for _m, e in got.values()), got
+
+
+def test_the_ring_oscillator_s_periodic_steady_state():
+    """Stage 9: the CircuitSim90 ring (MOS level 2, nine stages) by
+    autonomous shooting -- settled by 30 ns of its own transient from the
+    deck's `.ic`, a grid from one adaptive period on the GLOBAL reference
+    (`lte_grid`'s per-unknown default drew 24k points through the fast
+    edges), gear, the supply currents out of the error test (as the suite
+    runs this deck).  Measured 2026-10-10: the period converges with the
+    grid, 10.877 / 10.856 / 10.852 ns at 320 / 1013 / 2864 points; the
+    gold's cycles are 10.56 and ngspice's on our deck 10.68 -- the 1.6 %
+    to ngspice is the gate charge's open gap (doc/hdl_roadmap_260824.md,
+    84), bounded here so it cannot grow unseen."""
+    from pycircuit.circuit.shooting.pss import PSS
+    deck, = _data('Netlists/CircuitSim90/MOS2/ring.cir')
+    circuit.default_toolkit = circuit.numeric
+    imp = spice_import.import_netlist(deck)
+    tr, kw = imp.transient(lte_algebraic='skip')
+    T0 = 10.56e-9
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        start = np.asarray(tr.solve(tend=30e-9, timestep=kw['timestep']).x)[:, -1]
+        pss = PSS(imp.circuit, method='gear', epar=imp.epar(), lte_algebraic='skip',
+                  **imp.options)
+        fracs, seed = pss.lte_grid(T0, x0=start, tstab=2 * T0, fold=False,
+                                   relref='sigglobal', reltol=1e-4)
+        pss.solve(period=pss.lte_period, grid=fracs, x0=seed, maxiterations=40)
+    assert pss.converged
+    assert abs(pss.period / 10.852e-9 - 1.0) < 5e-3, pss.period     # its grid-converged value
+    assert abs(pss.period / 10.68e-9 - 1.0) < 0.025, pss.period     # ngspice: the open gap

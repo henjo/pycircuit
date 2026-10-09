@@ -53,7 +53,12 @@ XYCE = os.environ.get('PYCIRCUIT_XYCE', os.path.expanduser('~/local/xyce/serial/
 #: (`Transient.lte_algebraic`; doc/hdl_roadmap_260824.md, 76)
 OVERRIDES = {'slowlatch': {'lte_algebraic': 'skip'},
              ## (gm17: the same collapse, on its supply's current; 2026-10-10)
-             'gm17': {'lte_algebraic': 'skip'}}
+             'gm17': {'lte_algebraic': 'skip'},
+             ## (the ring: 7885 steps / 729 forced -> 2877 / 0, the same
+             ## accuracy; its PSS's grid needs it, 2026-10-10)
+             'ring': {'lte_algebraic': 'skip'},
+             ## (voter25: 14463 steps / 890 forced -> 3989 / 2)
+             'voter25': {'lte_algebraic': 'skip'}}
 
 _X = 'Netlists/'
 _G = 'OutputData/'
@@ -61,6 +66,8 @@ CASES = {
     '4049osc': (_X + '4049OSC/4049osc.cir', _G + '4049OSC/4049osc.cir.prn'),
     'toronto': (_X + 'CircuitSim90/MOS2/toronto.cir', _G + 'CircuitSim90/MOS2/toronto.cir.prn'),
     ## (MOS level 2, stage 9)
+    ## (no gold: scored against ngspice on our deck)
+    'voter25': (_X + 'CircuitSim90/MOS2_LARGE/voter25.cir', None),
     'ab_integ': (_X + 'CircuitSim90/MOS2/ab_integ.cir', _G + 'CircuitSim90/MOS2/ab_integ.cir.prn'),
     'e1480': (_X + 'CircuitSim90/MOS2/e1480.cir', _G + 'CircuitSim90/MOS2/e1480.cir.prn'),
     'g1310': (_X + 'CircuitSim90/MOS2/g1310.cir', _G + 'CircuitSim90/MOS2/g1310.cir.prn'),

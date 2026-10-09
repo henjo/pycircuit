@@ -158,7 +158,7 @@ def _quartic(a1, b1, c1, d1):
     return xvalid
 
 
-def cdrain(c, vgs, vds, vbs, spice_band=True):
+def cdrain(c, vgs, vds, vbs, spice_band=True, floor=False):
     """The channel current, drain to source in the n-channel convention
     (`mode * cdrain`), at terminal voltages already in that convention."""
     t = _temp(c)
@@ -264,6 +264,9 @@ def cdrain(c, vgs, vds, vbs, spice_band=True):
         xvalid = _quartic(a1, b1, c1, d1)
         if xvalid is not None:
             vdsat = xvalid * xvalid - phi_min_vbs
+            ## (`floor`: the model's 0 floor; ngspice has none)
+            if floor:
+                vdsat = max(vdsat, 0.0)
     ## effective channel length
     bsarg = None
     if lvds != 0.0:
