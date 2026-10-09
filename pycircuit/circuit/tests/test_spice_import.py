@@ -470,3 +470,18 @@ def test_a_mos_card_s_nlev_reaches_the_device():
                 imp = spice_import.import_netlist(path)
             m1 = [e for k, e in imp.circuit.elements.items() if k.lower() == 'm1'][0]
             assert float(m1.iparv.nlev) == want, (level, card, m1.iparv.nlev)
+
+
+def test_a_nodeset_on_a_source_held_node_is_dropped_as_spice_ignores_it(tmp_path):
+    """A `.nodeset` (or a held `.ic`) on a node a voltage source holds has no
+    effect in SPICE -- the source wins -- where `DC` refuses to hold it; the
+    import drops it and says so (hussamp's `.NODESET V(1)=5` on its supply,
+    2026-10-10: it then passes its gold).  The other entries stay."""
+    imp = _import(tmp_path, 'title\nV1 1 0 5\nR1 1 2 1k\nR2 2 0 1k\n'
+                            '.nodeset v(1)=5 v(2)=2.4\n.ic v(1)=5\n.tran 1n 10n\n')
+    assert imp.nodeset == {'2': 2.4} and imp.ic == {}
+    assert sum('holds the node at DC -- no effect' in r for r in imp.report) == 2
+    tr, _kw = imp.transient()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr.solve(tend=2e-9, timestep=1e-9)

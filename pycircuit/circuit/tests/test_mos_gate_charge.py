@@ -281,3 +281,28 @@ def test_below_threshold_the_gate_capacitance_is_to_the_bulk(cls):
     vgb = VTO - 0.3                                                   # in the ramp
     _cgs, _cgd, cgb = _gate_row(_C(e, vs + 0.5, vb + vgb, vs, vb))
     assert cgb == pytest.approx(0.3 * COX / PHI, rel=1e-6), cls.__name__
+
+
+def test_level2_saturates_its_charge_at_its_own_vdsat():
+    """Level 2 passes the model's `vdsat` to the gate charge (2026-10-10):
+    with velocity saturation and body effect `vdsat` sits well below
+    `vgs - von`, and past it the drain side carries no gate capacitance --
+    Meyer's saturation -- where the square-law charge kept a Miller
+    capacitance up to `vgs - von` (the CircuitSim90 ring ran 3.6 % slow
+    against ngspice on the same deck; 1.8 % now).  And the capacitances
+    stay continuous through vds = 0, where forward and reverse blend."""
+    card = dict(vto=0.62, nsub=1.066e16, kp=6.3e-5, gamma=0.64, phi=0.31, tox=225e-10,
+                vmax=177269.0, l=2e-6, w=10e-6, IS=1e-30)
+    e = eh.MosLevel2GateChargeHdl(*[Node(n) for n in 'dgsb'], **card)
+    e.update_iparv()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ## (the model's vdsat at vgs = 2: where Cgd falls to zero, found by
+        ## the charge's own row; it must be well below vgs - von)
+        cgd = [(-_C(e, vd, 2.0, 0.0, 0.0)[G, D], vd) for vd in np.linspace(0.05, 1.6, 156)]
+    zero = [vd for c, vd in cgd if abs(c) < 1e-6 * COX]
+    assert zero and zero[0] < 1.0, zero[:3]      # vgs - von is ~1.2 V here
+    for vds in np.linspace(-0.05, 0.05, 101):
+        lo = _C(e, vds - 1e-7, 2.0, 0.0, 0.0)
+        hi = _C(e, vds + 1e-7, 2.0, 0.0, 0.0)
+        assert np.max(np.abs(hi - lo)) < 1e-4 * COX, vds

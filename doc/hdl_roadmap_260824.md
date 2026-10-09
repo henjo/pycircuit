@@ -7220,3 +7220,40 @@ test on its supply's current (with `lte_algebraic='skip'` it completes in
 slowlatch.  Its v(5) column stays ~96 under either split: open.
 Passing the gold now: 4049osc, toronto, ab_integ, e1480, mosrect, mux8,
 rca, schmitecl, latch, opampal, todd3 (11 of 23 scored).
+
+## 2026-10-10 — 84. Level 2's gate charge saturates at its own vdsat; the MOS junctions' MJ unclamped; hussamp (Andreas: "1 first")
+
+**The ring ran 4.8 % slow** (11.066 ns against the gold's 10.56; ngspice on
+our deck 10.68).  Two charge defects, measured:
+
+1. The square-law gate charge saturated where `vgs - von` says, Meyer's
+   (SPICE's) at the model's `vdsat` -- which the ring card's VMAX and
+   body effect put well below it, so past `vdsat` our drain side kept a
+   Miller capacitance.  `_mos_gate_charge(sat=(vds, vdsat_f, vdsat_r))`
+   scales the drain drive to reach 0 at `vdsat` (`b = a(1 - vds/vdsat)`
+   forward, the mirror reverse), the two blended over |vds| < 25 mV by a
+   C1 smoothstep (Meyer's MAGIC_VDS band): capacitances continuous through
+   vds = 0 (max jump 6e-20 F over 2e-7 V).  LEVEL 2 ONLY: on level 3 the
+   charge inherits its `vdsat`'s kinks and gm3 and jge collapsed their
+   step -- level 3 needs a kink-free `vdsat` first (open).
+2. The MOS bulk junctions clamped MJ at 0.9 (`_pn_depletion_charge`, the
+   bipolar's rule); ngspice's MOS take MJ as given, and these cards give
+   1.067 -- the junction capacitance was 14-39 % high at reverse bias.
+   `mos=True` unclamps it (m = 1 itself kept off); now exact against
+   SPICE's formula.  (The bipolar's 0.9 is 0.999 in `bjttemp.c`: open.)
+
+Ring 11.066 -> 10.872 ns (ngspice 10.68: the rest, ~1.8 %, open -- Meyer's
+interior capacitances and SPICE's non-conserving integration of them are
+the candidates).  Gold, level 2 (vs before): ring 66 -> **48**, mux8 0.40 ->
+**0.26** (ngspice 0.34), gm6 5.39 -> 5.24, g1310 3.02 -> 3.12, nand 1.32 ->
+1.38, mosrect 0.917 -> 0.938 (passes); level 3 unchanged.
+
+**hussamp passes (0.767)**: its `.NODESET V(1)=5` is on its supply, which
+DC refused to hold; the importer's existing `.ic` rule (a source holds the
+node: no effect in SPICE, left out and said) now covers `.nodeset` too.
+
+**The supply-current error test, now on three decks** (slowlatch, gm17,
+the ring: with `lte_algebraic='skip'` the ring 7885 steps / 729 forced ->
+2877 / 0 at the same accuracy): still an opt-in per deck (Andreas's
+choice); the ring's PSS waits on it -- its `lte_grid` drew 25,563 points
+from the forced-step run and the shooting ran out of memory.

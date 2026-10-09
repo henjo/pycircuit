@@ -497,23 +497,29 @@ class _Importer:
                                      f'{len(merged)} nodes merged')
 
     def unholdable(self):
-        """An `.ic` (without UIC) on a node a voltage source or an inductor
-        holds at DC has no effect in SPICE (the source wins): left out,
-        and said."""
+        """An `.ic` (without UIC) or a `.nodeset` on a node a voltage source
+        or an inductor holds at DC has no effect in SPICE (the source wins):
+        left out, and said.  (`.nodeset` since 2026-10-10: hussamp's
+        `.NODESET V(1)=5` on its supply was refused by DC's hold, and the
+        deck then passes its gold.)"""
         tran = self.out.tran
-        if not self.out.ic or tran is None or tran['start'] != 'op':
+        if tran is None or tran['start'] != 'op':
             return
         from pycircuit.circuit.dcanalysis import DC
         names = {str(n.name) for n in self.out.circuit.nodes}
-        ## (with strict=False a refused element can take a node with it)
-        ic = {n: v for n, v in self.out.ic.items() if n in names}
-        if not ic or 'gnd' not in names:
+        if 'gnd' not in names:
             return
-        for node in DC(self.out.circuit, epar=self.out.epar()).unholdable(ic):
-            del self.out.ic[node]
-            self.note(self.net.ic_where, f'.ic v({node}): a voltage source or an inductor '
-                                         'holds the node at DC -- no effect, as in SPICE '
-                                         '(the source wins)')
+        for what, target, where in (('.ic', self.out.ic, self.net.ic_where),
+                                    ('.nodeset', self.out.nodeset, self.net.nodeset_where)):
+            ## (with strict=False a refused element can take a node with it)
+            held = {n: v for n, v in target.items() if n in names}
+            if not held:
+                continue
+            for node in DC(self.out.circuit, epar=self.out.epar()).unholdable(held):
+                del target[node]
+                self.note(where, f'{what} v({node}): a voltage source or an inductor '
+                                 'holds the node at DC -- no effect, as in SPICE '
+                                 '(the source wins)')
 
     def build(self):
         cir = SubCircuit()

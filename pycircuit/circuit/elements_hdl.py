@@ -1544,7 +1544,7 @@ class MemristorHdl(Behavioural):
 ## ======================================================================
 
 
-def _pn_depletion_charge(v, cj, vjx, mx, fcx, tag):
+def _pn_depletion_charge(v, cj, vjx, mx, fcx, tag, mos=False):
     """SPICE's junction depletion charge, with the ``fc`` linearisation.
 
     The same construction the diode above uses, written once more --
@@ -1568,12 +1568,24 @@ def _pn_depletion_charge(v, cj, vjx, mx, fcx, tag):
     ngspice does this in `bjttemp.c`/`diotemp.c` with an outright
     assignment and a warning; here it is a `minc`, which is the same
     number for every card that is not already broken.
+
+    ``mos=True`` (the MOSFETs' bulk junctions, 2026-10-10): NO clamp on
+    ``m`` -- ngspice's `mos{1,2,3}temp.c`/`load.c` take MJ as given, and
+    the CircuitSim90 MOS2 cards give MJ = 1.067; clamped at 0.9 the
+    junction capacitance was 14-39 % high at reverse bias (the ring ran
+    slow).  Only ``m = 1`` itself is kept off (``1 - m`` divides).  (The
+    bipolar's clamp, 0.9 here, is 0.999 in `bjttemp.c` -- recorded, not
+    changed.)
     """
     ## Parameter-only clamps: no bias reaches them, so their derivative
     ## with respect to a solution variable is exactly zero and the hard
     ## corner costs nothing.
     fcc = _var(_minc(fcx, 0.9999), 'fc' + tag)
-    mc = _var(_minc(mx, 0.9), 'm' + tag)
+    if mos:
+        mc = _var(sympy.Piecewise((mx, sympy.Abs(1.0 - mx) > 1e-6), (1.0 - 1e-6, True)),
+                  'm' + tag)
+    else:
+        mc = _var(_minc(mx, 0.9), 'm' + tag)
     fcvj = _var(fcc * vjx, 'fcvj' + tag)
     ub = _var(_safe_pow(1.0 - v / vjx, 1.0 - mc, lo=0.5 * (1.0 - fcc)),
               'ub' + tag)
@@ -2883,7 +2895,7 @@ def _qpart_param():
                       default=0.0)]
 
 
-def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None):
+def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None, sat=None):
     """The intrinsic gate charge of a SPICE level-1/3 MOSFET, CHARGE-
     CONSERVING and following Meyer's capacitances: ``(qg, qd, qs)`` in the
     n-channel convention, the bulk's ``-(qg + qd + qs)`` (conservation is
@@ -2955,8 +2967,12 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None):
     25 mV`` (his ``MAGIC_VDS`` floor on ``vdsat`` splits the transition
     capacitance ``3/4 + 3/4``), here the ``vds >= 25 mV`` form; (3) the
     threshold's body effect gives transcapacitances to the bulk Meyer has
-    not; (4) level 3's triode is approximate: its ``vdsat`` is not ``us``
-    (saturation and ``vds = 0`` are exact); (5) level 3's threshold is taken
+    not; (4) the square-law triode saturates at ``vds = us`` unless the
+    caller passes the model's own ``vdsat`` (``sat``): level 2 does
+    (2026-10-10, the ring 3.6 % -> 1.8 % from ngspice), level 3 does not
+    yet -- its ``vdsat`` has kinks (the ``von`` clamp, the regions) the
+    charge then inherits, and gm3 and jge collapsed their step on it;
+    level 1's is ``us`` exactly; (5) level 3's threshold is taken
     without ``eta``'s drain-induced lowering, which in a charge would make
     the drain's own capacitance negative (see `_mos3_analog`), so its
     regions sit ``etal*vds`` from Meyer's.
@@ -2975,6 +2991,28 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None):
     m = v((us + ud) / 2.0 + habs, 'qgm')
     a = v(_maxc(us, 0.0), 'qga')
     b = v(_maxc(ud, 0.0), 'qgb')
+    if sat is not None:
+        ## SATURATION AT THE MODEL'S OWN vdsat (2026-10-10; Andreas: "1
+        ## first").  The square-law charge saturates where the drain-side
+        ## drive `ud` reaches 0 -- at `vds = vgs - von` -- where Meyer's,
+        ## SPICE's, saturate at the model's `vdsat`, which body effect and
+        ## velocity saturation put well below it: past it the drain side
+        ## kept a Miller capacitance Meyer's has not (the CircuitSim90 ring
+        ## ran 3.6 % slower than ngspice on the same deck).  Forward, the
+        ## drain drive is scaled to reach 0 at vdsat, `b = a (1 - vds/vdsat)`;
+        ## reverse, its mirror; the two blended over |vds| < 25 mV by a C1
+        ## smoothstep (Meyer's MAGIC_VDS band), so no capacitance jumps where
+        ## the mode flips.  Level 1's vdsat IS `vgs - von`: not passed there;
+        ## level 3's has kinks the charge would inherit (gm3, jge collapsed
+        ## their step): not passed there yet.
+        vds, vdsf, vdsr = sat
+        a0, b0 = a, b
+        af, bf = a0, v(_maxc(a0 * (1.0 - vds / _maxc(vdsf, 1e-6)), 0.0), 'qgbf')
+        ar, br = v(_maxc(b0 * (1.0 + vds / _maxc(vdsr, 1e-6)), 0.0), 'qgar'), b0
+        su = v(_minc(_maxc((vds + 0.025) / 0.05, 0.0), 1.0), 'qgsu')
+        sw = v(su * su * (3.0 - 2.0 * su), 'qgsw')
+        a = v(sw * af + (1.0 - sw) * ar, 'qgas')
+        b = v(sw * bf + (1.0 - sw) * br, 'qgbs')
     md = m if mdep is None else v(mdep, 'qgmd')
     qdep = v(sympy.Piecewise((coxt * (md + 0.5 * phi), md <= -phi),
                              (-coxt * md * md / (2.0 * phi), md <= 0.0),
@@ -3267,12 +3305,12 @@ def _mos1_analog(T, nmos, limiting='group', gate_charge=False):
                                            (cj * asrc, True)), 'cbsb')
         cbdw = _var(cfacw * cjsw * pd, 'cbdw')                      # noqa
         cbsw = _var(cfacw * cjsw * ps, 'cbsw')                      # noqa
-        qbd = _var(_pn_depletion_charge(vbd, cbdb, pbT, mj, fc, 'bd')
+        qbd = _var(_pn_depletion_charge(vbd, cbdb, pbT, mj, fc, 'bd', mos=True)
                    + _pn_depletion_charge(vbd, cbdw, pbT, mjsw, fc,  # noqa
-                                          'bdw'), 'qbd')           # noqa
-        qbs = _var(_pn_depletion_charge(vbs, cbsb, pbT, mj, fc, 'bs')
+                                          'bdw', mos=True), 'qbd')           # noqa
+        qbs = _var(_pn_depletion_charge(vbs, cbsb, pbT, mj, fc, 'bs', mos=True)
                    + _pn_depletion_charge(vbs, cbsw, pbT, mjsw, fc,  # noqa
-                                          'bsw'), 'qbs')           # noqa
+                                          'bsw', mos=True), 'qbs')           # noqa
 
         ## -- the ohmic resistances --------------------------------------
         ## `rd` if given, `rsh` times the squares otherwise; the branch
@@ -4547,12 +4585,12 @@ def _mos3_analog(T, nmos, gate_charge=False):
                                             (p.cj * p['as'], True)), 'cbsb')
         cbdw = _var(cfacw * p.cjsw * p.pd, 'cbdw')
         cbsw = _var(cfacw * p.cjsw * p.ps, 'cbsw')
-        qbd = _var(_pn_depletion_charge(vbd, cbdb, pbT, p.mj, p.fc, 'bd')
+        qbd = _var(_pn_depletion_charge(vbd, cbdb, pbT, p.mj, p.fc, 'bd', mos=True)
                    + _pn_depletion_charge(vbd, cbdw, pbT, p.mjsw, p.fc,
-                                          'bdw'), 'qbd')
-        qbs = _var(_pn_depletion_charge(vbs, cbsb, pbT, p.mj, p.fc, 'bs')
+                                          'bdw', mos=True), 'qbd')
+        qbs = _var(_pn_depletion_charge(vbs, cbsb, pbT, p.mj, p.fc, 'bs', mos=True)
                    + _pn_depletion_charge(vbs, cbsw, pbT, p.mjsw, p.fc,
-                                          'bsw'), 'qbs')
+                                          'bsw', mos=True), 'qbs')
         rdx = _var(sympy.Piecewise((p.rd, p.rd > 0.0), (p.rsh * p.nrd, True)),
                    'rdx')
         rsx = _var(sympy.Piecewise((p.rs, p.rs > 0.0), (p.rsh * p.nrs, True)),
@@ -5076,12 +5114,12 @@ def _mos2_analog(T, nmos, gate_charge=False):
                                             (p.cj * p['as'], True)), 'cbsb')
         cbdw = _var(cfacw * p.cjsw * p.pd, 'cbdw')
         cbsw = _var(cfacw * p.cjsw * p.ps, 'cbsw')
-        qbd = _var(_pn_depletion_charge(vbd, cbdb, pbT, p.mj, p.fc, 'bd')
+        qbd = _var(_pn_depletion_charge(vbd, cbdb, pbT, p.mj, p.fc, 'bd', mos=True)
                    + _pn_depletion_charge(vbd, cbdw, pbT, p.mjsw, p.fc,
-                                          'bdw'), 'qbd')
-        qbs = _var(_pn_depletion_charge(vbs, cbsb, pbT, p.mj, p.fc, 'bs')
+                                          'bdw', mos=True), 'qbd')
+        qbs = _var(_pn_depletion_charge(vbs, cbsb, pbT, p.mj, p.fc, 'bs', mos=True)
                    + _pn_depletion_charge(vbs, cbsw, pbT, p.mjsw, p.fc,
-                                          'bsw'), 'qbs')
+                                          'bsw', mos=True), 'qbs')
         rdx = _var(sympy.Piecewise((p.rd, p.rd > 0.0), (p.rsh * p.nrd, True)),
                    'rdx')
         rsx = _var(sympy.Piecewise((p.rs, p.rs > 0.0), (p.rsh * p.nrs, True)),
@@ -5146,7 +5184,8 @@ def _mos2_analog(T, nmos, gate_charge=False):
             von0 = _hdl.with_values(vonf, {vbs: 0.0, vds: 0.0})
             qg, qd, qs = _mos_gate_charge(vgs - vonf, vgd - _vonr, phiT,
                                           _var(cox * leff * weff, 'coxt'), p.qpart,
-                                          mdep=vgs - vbs - von0)
+                                          mdep=vgs - vbs - von0,
+                                          sat=(vds, vdsatf, _vdsatr))
             stmts += (Contribution(bgb.I, ddt(qg)),
                       Contribution(bbd.I, ddt(-qd)),
                       Contribution(bbs.I, ddt(-qs)))
