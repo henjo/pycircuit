@@ -7289,3 +7289,9 @@ timing, the same open charge gap.
 
 mem_plus (17,789 unknowns) imports in 19 s at 468 MB; its transient is
 not run yet.
+
+**mem_plus (2026-10-10)**: imported (21,743 elements, 17,789 unknowns, 19 s,
+467 MB); its operating point did not finish in 25 minutes (a 10 GB cap,
+~3.1 GB reached) -- the size of ONE dense 17,789^2 matrix (2.5 GB) with an
+LU of ~1e12 operations an iteration.  The large decks need the sparse
+path: the evidence for stage 10's decision.
