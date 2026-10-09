@@ -470,6 +470,9 @@ class _StageSteps(_StepFamily):
         ## step and then grows it)
         ek = tk.array(normalised_error(np.asarray(est)[self.keep],
                                        np.asarray(wt)[self.keep]))
+        mask = self.tr._lte_mask()
+        if mask is not None:
+            ek = ek * np.asarray(mask, dtype=float)[self.keep]
         err = float((tk.sum(ek * ek) / len(self.keep)) ** 0.5)
         order = int(self.tr.base_integrator.EMBEDDED_ORDER)
         grow = self.SAFETY * (err if err > 1e-16 else 1e-16) ** (
@@ -1005,6 +1008,20 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         "its own past maximum)",
                    unit='',
                    default='sigglobal'),
+         ## The error test on ALGEBRAIC unknowns -- a branch current no charge
+         ## depends on (a voltage source's, a controlled source's).  'judge'
+         ## (the default): judged as every unknown.  'skip': left out, as
+         ## ngspice judges only device charges (its sources declare no
+         ## truncation).  Judged, a source driving a MOS gate carries the gate
+         ## charge's derivative, and femtosecond content from stiff internal
+         ## nodes collapsed slowlatch's step; skipped as a default it cost
+         ## accuracy six tests measure (an HDL Laplace element, a VCO phase,
+         ## a BJT turn-off ...): an opt-in, `doc/hdl_roadmap_260824.md`, 76.
+         Parameter(name='lte_algebraic',
+                   desc="The LTE test on algebraic branch currents (no charge "
+                        "depends on them): 'judge' or 'skip' (ngspice's)",
+                   unit='',
+                   default='judge'),
          ## STAGE 12A -- Fang's acceptance band (DAC 2013 eq 15) and step-change
          ## damper (eq 16).  The defaults are the historical one-sided test, so
          ## nothing changes until a caller asks; see `StepController.set_lte_band`
@@ -1671,6 +1688,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         self._branch_error = None
         self._branch_warned = False
         self._branch_cmax = 0.0
+        self.__dict__.pop('_lte_mask_cache', None)
         _t_run_start = time.perf_counter()
         max_step = self._run_max_step(tend, timestep, fixed_timestep)
 

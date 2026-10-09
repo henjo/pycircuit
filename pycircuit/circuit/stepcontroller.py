@@ -102,6 +102,8 @@ class StepLTEInputs:
     h_last2: Any = None
     h_clamped: bool = False
     x_hist: Any = None
+    ## True where an unknown is judged; None judges all (see `Transient.lte_algebraic`)
+    lte_mask: Any = None
 
     @classmethod
     def bind(cls, *args, **kwargs):
@@ -344,8 +346,11 @@ class StepController(ABC):
         """`|lte| / tolerance` per entry, the reference by `relref`."""
         ref = self._reference(s.x_curr, s.x_last, s.no_history, s.n_nodes,
                               s.toolkit)
-        return normalised_error(lte, self.tolerance(ref, s.reltol, s.abstol,
-                                                    s.TRTOL))
+        e = normalised_error(lte, self.tolerance(ref, s.reltol, s.abstol,
+                                                 s.TRTOL))
+        if s.lte_mask is not None:
+            e = np.where(s.lte_mask, e, 0.0)
+        return e
 
     def _charge_lte(self, s):
         """The charge-domain LTE in solution units, `(lte, p)`: the active

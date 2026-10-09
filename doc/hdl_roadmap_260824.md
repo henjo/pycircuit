@@ -6938,3 +6938,55 @@ still has capacitance JUMPS -- the gate's total at threshold for vds ~ 0
 for any vds (the near-threshold image split 50/50, Ward-Dutton's 40/60
 above) -- and at a small step `C/h` turns a jump into a Newton stall.  A
 gate charge with continuous capacitances is the fix; next, before stage 8.
+
+## 2026-10-09 — 76. slowlatch's step collapse: the error test on source currents (`lte_algebraic`)
+
+**Section 75's explanation was wrong.**  The continuous-capacitance gate
+charge it called the fix was built (a 25 mV rounding band; every
+capacitance continuous) and slowlatch failed at the same 10.0167 ns;
+without it, once the step no longer collapses, the run is the same (666
+steps, metric 136.2 either way).  Not built.
+
+What collapses the step, each link measured:
+
+* the error estimate is dominated by `br4` -- VSEU2's current (-2.6 mA,
+  tolerance 7.7 uA, estimate 5-7 uA), mapped there through `J^-1` from
+  node 12's charge (the gate it drives);
+* it does not fall with the step: ~5e-6 from h = 1e-12 down to 1e-16 s,
+  so it is not truncation error; not Newton noise (vabstol 1e-6, 1e-8,
+  1e-10: the same estimate); no growing mode;
+* node 12's charge history at the collapse gives the source current
+  2.00, 2.24, 2.47 mA over three steps of ~0.9 fs: real femtosecond
+  content, from the internal source/drain nodes behind the 40 ohm sheet
+  resistances coupled through the gate charge -- `rsh = 0` and it runs.
+
+ngspice runs it because it does not judge source currents at all (a
+source declares no truncation; each device judges its own charges in
+charge units).  VACASK judges every unknown, but on predictor minus
+corrector of its values; with the current moving ~10 % a femtosecond it
+would most likely hold the step down too -- not measured.
+
+**`Transient.lte_algebraic`**: 'judge' (the default, today's) or 'skip',
+which leaves out of the error test every branch current no charge depends
+on -- `C`'s column and row zero at a generic state, read once a run: a
+voltage source's current is left out, an inductor's (its flux) judged,
+node voltages always.  The Python chain and the C error test carry the
+same mask (`StepLTEInputs.lte_mask`; the C sets the left-out entries to
++0.0 before the maximum): slowlatch and gm2 under 'skip' give the same
+waveform bytes on either path; the pinned pair re-recorded after that.
+
+**Measured as the default and refused there.**  With 'skip' everywhere:
+18 tests failed, six of them on accuracy -- an HDL Laplace element (3 %),
+a VCO's phase, the driven fold on radau (0.36 % vs 0.05 %), a BJT's
+turn-off no longer lengthening with TF, the state-event period, a diode's
+forced steps -- and the two ladder timing cases changed bytes (a third
+fewer error tests).  A current no charge depends on can still be the
+quantity a circuit is about.  slowlatch, gm2 and gm3 gained (gm2 20 -> 0
+forced steps, 753 -> 362 steps; gm3 29 -> 0, 579 -> 177) with their gold
+scores unchanged (2.34, 2.09).  Andreas: an opt-in, not even the
+importer's default -- set only where a case needs it: the suite runner's
+`OVERRIDES` gives slowlatch 'skip'.
+
+slowlatch now completes (665 steps, 6 forced) and scores 136 against its
+gold -- stage 4's 138 (before the gate charge), where ngspice on our deck
+scored 0.494: a separate discrepancy, open.

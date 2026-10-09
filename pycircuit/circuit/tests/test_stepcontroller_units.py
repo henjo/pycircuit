@@ -186,7 +186,7 @@ def test_the_controllers_take_one_set_of_inputs_by_keyword_or_position(ctrl_cls)
           'active_integrator': integ, 'irefnode': 2, 'reltol': 1e-3,
           'abstol': 1e-12, 'toolkit': numeric, 'max_step': 1e-3, 'TRTOL': 7.0,
           'n_nodes': None, 'h_last2': 1e-6, 'h_clamped': False,
-          'x_hist': hist}
+          'x_hist': hist, 'lte_mask': None}
     names = list(StepLTEInputs.__dataclass_fields__)
     assert names == list(kw), names
     by_kw = ctrl_cls().evaluate_step(**kw)
@@ -196,3 +196,20 @@ def test_the_controllers_take_one_set_of_inputs_by_keyword_or_position(ctrl_cls)
         ctrl_cls().evaluate_step(kw['x_curr'], **kw)
     with pytest.raises(TypeError):
         ctrl_cls().evaluate_step(nonsense=1, **kw)
+
+
+@pytest.mark.parametrize('ctrl_cls', [IntegralController, PIController])
+def test_an_unknown_the_mask_leaves_out_does_not_judge_the_step(ctrl_cls):
+    """`lte_mask` (`Transient.lte_algebraic='skip'`): an unknown it leaves
+    out cannot reject a step however large its error; the others judge as
+    before."""
+    integ = StubIntegrator(Eg=[1e-9, 1.0, 0.0])
+    kw = {'x_curr': np.ones(3), 'x_last': np.ones(3), 'q_curr': np.zeros(3),
+          'q_last_hist': [np.zeros(3)], 'iq_last_hist': [np.zeros(3)], 'h_curr': 1e-6,
+          'h_last': 1e-6, 'no_history': False, 'J': np.eye(3), 'active_integrator': integ,
+          'irefnode': 2, 'reltol': 1e-3, 'abstol': 1e-12, 'toolkit': numeric,
+          'max_step': 1e-3, 'TRTOL': 7.0, 'n_nodes': None, 'h_last2': None,
+          'h_clamped': False, 'x_hist': None}
+    assert not ctrl_cls().evaluate_step(**kw)[0]
+    assert ctrl_cls().evaluate_step(lte_mask=np.array([True, False, True]), **kw)[0]
+    assert not ctrl_cls().evaluate_step(lte_mask=np.array([False, True, True]), **kw)[0]

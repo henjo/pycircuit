@@ -46,6 +46,13 @@ XYCE = os.environ.get('PYCIRCUIT_XYCE', os.path.expanduser('~/local/xyce/serial/
 #: name -> (deck, gold or None): the decks with a `.tran` that import
 #: (stage 2's census; latch and opampal since stage 7's substrate
 #: junction) -- MOS level 2 (stage 9) keeps the rest out for now
+#: name -> the Transient keywords a deck runs with beyond its own: slowlatch
+#: collapses its step on the source currents' error test (stiff internal
+#: nodes behind 40 ohm sheet resistances, coupled by the gate charge), and
+#: runs as ngspice judges -- device charges, not source currents
+#: (`Transient.lte_algebraic`; doc/hdl_roadmap_260824.md, 76)
+OVERRIDES = {'slowlatch': {'lte_algebraic': 'skip'}}
+
 _X = 'Netlists/'
 _G = 'OutputData/'
 CASES = {
@@ -123,7 +130,7 @@ def run_one(name, peers, qpart=None):
     imp = spice_import.import_netlist(deck, mos_qpart=qpart)
     rec['import_s'] = time.perf_counter() - t0
     rec['elements'], rec['unknowns'] = len(imp.elements), imp.circuit.n
-    tr, kw = imp.transient()
+    tr, kw = imp.transient(**OVERRIDES.get(name, {}))
     t0 = time.perf_counter()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')

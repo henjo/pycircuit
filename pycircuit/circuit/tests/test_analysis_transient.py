@@ -2352,3 +2352,22 @@ def test_a_node_with_no_error_and_no_tolerance_does_not_blind_the_step_control(i
     assert e_ref < 1e-2, e_ref
     assert abs(e_plain / e_ref - 1.0) < 0.25, (e_ref, e_plain)
     assert abs(e_zero / e_ref - 1.0) < 0.25, (e_ref, e_zero)
+
+
+def test_lte_algebraic_skip_leaves_out_only_the_currents_no_charge_depends_on():
+    """`lte_algebraic='skip'` (doc/hdl_roadmap_260824.md, 76): every node
+    voltage and an inductor's current (its flux is a charge) are judged, a
+    voltage source's current is not; the default judges every unknown."""
+    from pycircuit.circuit.elements import VS
+    c = SubCircuit()
+    c['V1'] = VS(1, gnd, vac=0, v=1.0)
+    c['R1'] = R(1, 2, r=1e3)
+    c['C1'] = C(2, gnd, c=1e-9)
+    c['L1'] = L(2, gnd, L=1e-3)
+    nn = len(c.nodes)
+    assert Transient(c).par.lte_algebraic == 'judge'
+    assert Transient(c)._lte_mask() is None
+    mask = Transient(c, lte_algebraic='skip')._lte_mask()
+    assert mask[:nn].all()
+    judged = sorted(bool(m) for m in mask[nn:])
+    assert judged == [False, True], mask

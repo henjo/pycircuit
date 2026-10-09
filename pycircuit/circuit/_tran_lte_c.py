@@ -62,9 +62,9 @@ LTE_C = r"""
 typedef void (*dgesv_t)(const int64_t *, const int64_t *, double *, const int64_t *,
                         int64_t *, double *, const int64_t *, int64_t *);
 typedef struct {
-    long n, iref, nn, relref, have_run, abs_vec;
+    long n, iref, nn, relref, have_run, abs_vec, has_mask;
     double h1, h2, h3, s12, s23, s123, coef, reltol, abstol, trtol;
-    const double *xc, *xl, *q, *q1, *q2, *q3, *J, *run, *abst;
+    const double *xc, *xl, *q, *q1, *q2, *q3, *J, *run, *abst, *mask;
     double *A, *b, *lte, *ref, *out, *tq;
     int64_t *ipiv;
     void *dgesv;
@@ -173,6 +173,10 @@ long hdl_fn(lte_t *s)
     for (i = 0; i < n; i++) if (!(s->tq[i] > 0.0 && isfinite(s->tq[i]))) return lte_bail(s, 6);
     for (i = 0; i < n; i++) s->tq[i] = fabs(s->lte[i]) / s->tq[i];
     if (fetestexcept(LTE_FLAGS)) return lte_bail(s, 3);
+    /* `_normalised`'s mask (`Transient.lte_algebraic`): an unknown not
+       judged is +0.0, as `np.where(mask, e, 0.0)` makes it */
+    if (s->has_mask)
+        for (i = 0; i < n; i++) if (s->mask[i] == 0.0) s->tq[i] = 0.0;
     /* np.max: no NaN, no negative zero (|lte| / a positive tolerance) */
     err = s->tq[0];
     for (i = 1; i < n; i++) if (s->tq[i] > err) err = s->tq[i];
@@ -184,9 +188,9 @@ long hdl_fn(lte_t *s)
 """
 LTE_CDEF = """
 typedef struct {
-    long n, iref, nn, relref, have_run, abs_vec;
+    long n, iref, nn, relref, have_run, abs_vec, has_mask;
     double h1, h2, h3, s12, s23, s123, coef, reltol, abstol, trtol;
-    const double *xc, *xl, *q, *q1, *q2, *q3, *J, *run, *abst;
+    const double *xc, *xl, *q, *q1, *q2, *q3, *J, *run, *abst, *mask;
     double *A, *b, *lte, *ref, *out, *tq;
     int64_t *ipiv;
     void *dgesv;
@@ -295,6 +299,7 @@ class _Ctx:
             'J': np.empty((n, n)), 'run': np.empty(n),
             'abst': np.empty(n), 'A': np.empty(m * m), 'b': np.empty(m), 'lte': np.empty(n),
             'ref': np.empty(n), 'out': np.empty(n), 'tq': np.empty(n),
+            'mask': np.empty(n),
         }
         self.ipiv = np.empty(m, dtype=np.int64)
         fb = ffi.from_buffer
@@ -425,6 +430,14 @@ def max_error(ctrl, s):
     else:
         st.abstol = float(ab)
     st.abs_vec = 1 if abs_vec else 0
+    mask = s.lte_mask
+    if mask is None:
+        st.has_mask = 0
+    else:
+        if not (type(mask) is np.ndarray and mask.shape == (n,)):
+            return _no('lte_c:x')
+        np.copyto(buf['mask'], mask)
+        st.has_mask = 1
     st.have_run = 0 if run is None else 1
     st.relref = mode
     st.nn = -1 if nn is None else nn

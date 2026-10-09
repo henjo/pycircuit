@@ -176,7 +176,8 @@ PAIRS = {
                'charge-form `compute_lte`, numpy\'s own LAPACK on the reduced '
                '`J`), `_normalised` (the running reference by `relref`, '
                '`sigglobal_reference`, `tolerance`, `normalised_error`) and '
-               '`np.max`, the running reference written only on success',
+               '`np.max`, the running reference written only on success; an unknown '
+               '`lte_mask` leaves out is +0.0 before the maximum',
         'reference': ['pycircuit.circuit.stepcontroller:StepController._charge_lte',
                       'pycircuit.circuit.stepcontroller:StepController._normalised',
                       'pycircuit.circuit.stepcontroller:StepController._reference',
@@ -448,7 +449,7 @@ RECORD = {
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
     'the Newton solve and its C': ('772989bd55ff', 'f26777acec22'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
-    'the error test and its C': ('a24ba5659ca4', 'd6903a790f88'),
+    'the error test and its C': ('3ccf864dc600', '5e087f14eec7'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
     'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),

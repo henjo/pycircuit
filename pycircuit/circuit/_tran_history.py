@@ -362,7 +362,34 @@ class _RunHistory:
             'irefnode': self.irefnode, 'reltol': self.par.reltol,
             'abstol': abstol, 'toolkit': self.toolkit, 'max_step': max_step,
             'TRTOL': self.LTERATIO, 'n_nodes': len(self.cir.nodes),
-            'h_clamped': clamped, 'x_hist': x_hist}
+            'h_clamped': clamped, 'x_hist': x_hist, 'lte_mask': self._lte_mask()}
+
+    def _lte_mask(self):
+        """The unknowns the LTE test judges (`Transient.lte_algebraic`):
+        every node voltage, and every branch current a charge depends on --
+        `C`'s column or row non-zero at a generic state, as the branch
+        check's structural rank is read (an inductor's current carries its
+        flux; a voltage source's carries nothing).  None: all.  Once a run
+        (`_solve` clears it)."""
+        if self.par.lte_algebraic != 'skip':
+            return None
+        cached = self.__dict__.get('_lte_mask_cache')
+        n = self.cir.n
+        if cached is not None and len(cached) == n:
+            return cached
+        nn = len(self.cir.nodes)
+        mask = np.ones(n, dtype=bool)
+        if n > nn:
+            try:
+                xr = np.random.RandomState(20261009).uniform(-1.0, 1.0, n)
+                C = np.asarray(self.cir.C(xr, self.epar), dtype=float)
+                br = np.arange(nn, n)
+                charged = (np.any(C[:, br] != 0.0, axis=0) | np.any(C[br, :] != 0.0, axis=1))
+                mask[nn:] = charged
+            except Exception:                                  # noqa: BLE001
+                mask[:] = True
+        self._lte_mask_cache = mask
+        return mask
 
     def residual_dh(self, x, t, h=None):
         """Fang's ``p = df_ckt/dh_m``, at fixed solution ``x``.
