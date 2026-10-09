@@ -2975,7 +2975,12 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None, sat=None):
     level 1's is ``us`` exactly; (5) level 3's threshold is taken
     without ``eta``'s drain-induced lowering, which in a charge would make
     the drain's own capacitance negative (see `_mos3_analog`), so its
-    regions sit ``etal*vds`` from Meyer's.
+    regions sit ``etal*vds`` from Meyer's; (6) the channel's split starts
+    at 1/2 where inversion starts, as ``qtr``'s halved image does below
+    threshold, and is the chosen split from a drive of 25 mV
+    (``a^2 + b^2``) on -- where Meyer gives the whole transition
+    capacitance to the side that inverts first, and taken at once the
+    drain's capacitance jumped by ``coxt/3`` at that threshold.
 
     CHAINED: polynomial arms (finite everywhere, no `select` clamp
     needed) and the two removable ``0/0`` at ``a = b = 0`` through
@@ -3032,7 +3037,20 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None, sat=None):
     ## Q(b,0))/2 had slope -coxt/3 there, a Cox/3 jump in Cdd that stalled
     ## gm17's Newton at a small step)
     qdml = v(-qinv * _safe_div(b * b, a * a + b * b, 1e-30), 'qdml')
-    qdch = v(qdwd + qpart * (qdml - qdwd), 'qdch')
+    ## (the split starts at 1/2 where inversion starts, 2026-10-10: halved,
+    ## like qtr's image below threshold, and the split above from a drive
+    ## of 25 mV on, by h = 1 - (1 - s)^2, s = (a^2 + b^2)/(25 mV)^2 up to 1
+    ## -- C1 there, and a function of a^2 and b^2, so flat at both edges.
+    ## Taken at once, the drain's capacitance jumped by coxt/3 where a
+    ## device crossed its threshold with one side (Meyer's 0 or all of the
+    ## channel against qtr's half; Ward-Dutton's 2/5 or 3/5, coxt/15), and
+    ## gm17's Newton stalled on it at a 1e-16 s step.  Not by moving qtr's
+    ## image instead: a vds-dependent share of that charge put a
+    ## drain-source capacitance into OFF devices, and gm17 grew an unstable
+    ## 85 fs mode)
+    son = v(_minc((a * a + b * b) / 0.025 ** 2, 1.0), 'qgson')
+    hon = v(1.0 - (1.0 - son) * (1.0 - son), 'qgon')
+    qdch = v(-0.5 * qinv + hon * (qdwd + qpart * (qdml - qdwd) + 0.5 * qinv), 'qdch')
     qd = v(qdch - 0.5 * qtr, 'qdrain')
     qs = v(-qinv - qdch - 0.5 * qtr, 'qsource')
     return qg, qd, qs

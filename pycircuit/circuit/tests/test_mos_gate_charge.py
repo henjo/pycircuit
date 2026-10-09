@@ -306,3 +306,26 @@ def test_level2_saturates_its_charge_at_its_own_vdsat():
         lo = _C(e, vds - 1e-7, 2.0, 0.0, 0.0)
         hi = _C(e, vds + 1e-7, 2.0, 0.0, 0.0)
         assert np.max(np.abs(hi - lo)) < 1e-4 * COX, vds
+
+
+@pytest.mark.parametrize('qpart', [0.0, 1.0])
+@pytest.mark.parametrize('cls', ['MosLevel1GateChargeHdl', 'MosLevel3GateChargeHdl'])
+def test_the_capacitances_are_continuous_where_one_side_crosses_threshold(cls, qpart):
+    """Where a device crosses its threshold with one side -- forward, the
+    source; reverse, the drain -- below it the transition charge's image is
+    halved between the two, above it the channel's split gave the side
+    that inverts all of it (Meyer) or 3/5 (Ward-Dutton): the drain's
+    capacitance jumped by coxt/3 (coxt/15), and gm17 (CircuitSim90)
+    stalled its Newton on it at a 1e-16 s step, a PMOS in reverse.  Now
+    the split starts at 1/2 there (2026-10-10).  The card has no body
+    effect and no DIBL, so both sides' threshold is VTO."""
+    e = _device(getattr(eh, cls), qpart=qpart)
+    for vd, vs in ((0.1, 0.0), (0.0, 0.1)):
+        lo = _C(e, vd, vs + VTO - 1e-7, vs, 0.0)
+        hi = _C(e, vd, vs + VTO + 1e-7, vs, 0.0)
+        assert np.max(np.abs(hi - lo)) < 1e-4 * COX, (vd, vs, np.max(np.abs(hi - lo)) / COX)
+    ## (and the test straddles the threshold: the gate's capacitance to the
+    ## inverting side moves through it from the transition's to the channel's)
+    far_lo = _C(e, 0.1, VTO - 0.01, 0.0, 0.0)
+    far_hi = _C(e, 0.1, VTO + 0.01, 0.0, 0.0)
+    assert abs(far_hi[G, S] - far_lo[G, S]) > 1e-3 * COX

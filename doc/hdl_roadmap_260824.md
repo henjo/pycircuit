@@ -7295,3 +7295,59 @@ not run yet.
 ~3.1 GB reached) -- the size of ONE dense 17,789^2 matrix (2.5 GB) with an
 LU of ~1e12 operations an iteration.  The large decks need the sparse
 path: the evidence for stage 10's decision.
+
+## 2026-10-10 — 86. The channel's split starts at 1/2 where inversion starts; gm17 runs under the full error test (Andreas: "how can we solve this without loosening the tolerance", "start gm17")
+
+**gm17 was a model corner, not the error test.**  Judged (supply currents
+in the error test) it stopped at 5.75 ns, the step at 1e-18 s, Newton
+failing.  The drain capacitance of one PMOS (`x21:mp1`, reverse, |vds|
+28.7 mV, at threshold) jumped by 4.86e-14 F under qpart 1 and 0.98e-14
+under qpart 0 within 0.1 mV -- the ratio 5 that the mechanism predicts:
+where a device crosses its threshold with ONE side, below it the
+transition charge `qtr`'s image is halved between source and drain, above
+it the channel's split gives the inverting side all of the channel
+(Meyer; Ward-Dutton 3/5), so `dqd` jumped by coxt/3 (coxt/15) -- forward
+as well as reverse.  Now the split starts at 1/2 there and is the chosen
+split from a drive of 25 mV on: `qdch = -qinv/2 + h (qdch_split +
+qinv/2)`, `h = 1 - (1 - s)^2`, `s = min((a^2 + b^2)/(25 mV)^2, 1)` -- a
+function of a^2 and b^2, flat at both edges, exact Meyer / Ward-Dutton
+beyond 25 mV (the existing split tests hold to 1e-12 COX).  Named
+deviation (6) in `_mos_gate_charge`.  Test:
+`test_the_capacitances_are_continuous_where_one_side_crosses_threshold`
+(L1 and L3, both splits, both directions) -- on the old code it fails
+with jumps of exactly 0.0667 and 0.3333 COX.
+
+**The first fix was wrong, and the eigenvalues said so.**  Moving `qtr`'s
+image with vds instead (Meyer's 0 forward / 1 reverse, blended over the
+band, tapered by `(1 + 2m/phi)^2`) removed the jump but put a
+drain-source transcapacitance into near-threshold devices: gm17 then
+crawled at 5.77 ns with every step ACCEPTED (0.83 of tolerance) and
+shrinking, `br0`'s estimate GROWING as h fell -- a growing mode.  At that
+state `eig(-G, C)` had lambda = +1.17e13/s on `x21:mp1`'s internal
+nodes, its C indefinite (internal self-capacitances 54/82 fF -> 23/46
+fF); with the halved image at the SAME state: no unstable mode.
+
+**Judged, after the fix**: gm17 completes (517 steps, 26 forced, metric
+96.06 against the skip's 96.11); slowlatch 1025 / 22 (136.23 both). The
+remaining forced steps sit on no capacitance or conductance jump (every
+device scanned +-2 mV at each forced state): the supply current's
+estimate falls only ~linearly with h at 0.2-60 ps steps (stiff, h >> the
+~0.3 ps internal-node time constants) while the controller sizes its
+retries for h^3, so four retries end at 1.0-1.25x tolerance and the step
+is forced -- the step controller's order assumption, the next item.  The
+ring's forced steps (7824 / 657) are that, unchanged by this fix.
+
+**The gold decks** (suite overrides unchanged): gm3 and jge, which
+collapsed at the time-step floor, now RUN (gm3 metric 1.49, ngspice
+0.65); gm1 3.87 -> 3.62, rich3 17.2 -> 16.9, toronto 0.338 -> 0.325;
+the rest unchanged or within noise (g1310 3.12 -> 3.16).  voter25 with
+the skip 3995 / 1 (was 3989 / 2).
+
+**Open: voter25 judged now crawls at 40.04 ns** (it ran before, 36.7 s,
+890 forced).  Not the error test (1e-5 of tolerance): Newton, in a
+period-3 cycle of 1-2 mV on `xfblk0#b:xload:mp5.si` / `mp6.di` at h =
+6.4e-17 s, converging at half that.  No C or G jump along the cycle's
+path, C and G agree with finite differences to 1e-9, no physical
+unstable mode.  Not yet explained; a suspect (from reading, unverified):
+level 2's reverse drive `b0 (1 + vds/vdsatr)` blended into the 25 mV
+band, with `vdsatr` near threshold tiny.
