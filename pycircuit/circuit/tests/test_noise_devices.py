@@ -290,3 +290,45 @@ def test_every_library_device_states_the_sign_of_its_flicker_current():
                 assert err < 1e-9, (name, err)
                 signs.append(np.sign(np.real(W[int(np.argmax(np.abs(W[:, 0]))), 0])))
         assert signs[0] * signs[1] == -1.0, (name, signs)
+
+
+def test_the_level3_channel_noise_is_shot_noise_in_weak_inversion_and_thermal_above():
+    """MosLevel3's channel noise across inversion, against the anchors that
+    leave no freedom (2026-10-09; reported from a Si2302CDS card, VTO 1.17 V
+    with `nfs`, where the drain noise read 32 uV/rtHz for 1 kOhm's 5.8 nV):
+
+      * weak inversion, saturated: shot noise of the diffusion current,
+        `S_id = 2 q Id` (it was `(vdsn^2/3)/1e-9`: 1e8..1e10 x that);
+      * `vds -> 0`: equilibrium, `S_id = 4 k T g_ds`, weak and strong;
+      * strong inversion, saturated: `(8/3) k T gm` (long channel);
+      * between: monotone from the weak value (3 xn / 4 of it) to 1 --
+        no spike, and nothing below the strong value (the old form
+        dipped to 0.84 at Vgs 1.5)."""
+    from pycircuit.circuit import elements_hdl as eh
+    circuit.default_toolkit = circuit.numeric
+    KB, Q, T = 1.380649e-23, 1.602176634e-19, 300.15
+    m = eh.MosLevel3Hdl('d', 'g', 's', 'b', vto=1.17, kp=2e-5, w=0.273, l=2e-6,
+                        nfs=1e12, tox=5e-8, nsub=1e17, gamma=0.5, phi=0.7,
+                        theta=0.05, tnom=27.0)
+
+    def at(vd, vg):
+        x = np.zeros(m.n)
+        x[0], x[1] = vd, vg
+        G = np.asarray(m.G(x), dtype=float)
+        return (float(np.asarray(m.i(x), dtype=float)[0]), G[0, 0], G[0, 1],
+                float(np.asarray(m.CY(x, 2 * np.pi * 1e6), dtype=float)[0, 0]))
+
+    for vg in (0.6, 0.9, 1.2):
+        i, _gds, _gm, s = at(5.0, vg)
+        assert abs(s / (2 * Q * i) - 1.0) < 1e-3, (vg, s / (2 * Q * i))
+        i, gds, _gm, s = at(1e-3, vg)
+        assert abs(s / (4 * KB * T * gds) - 1.0) < 0.03, (vg, s / (4 * KB * T * gds))
+    i, gds, _gm, s = at(1e-3, 3.0)
+    assert abs(s / (4 * KB * T * gds) - 1.0) < 0.06, s / (4 * KB * T * gds)
+    ratios = []
+    for vg in (1.2, 1.3, 1.4, 1.5, 1.6, 1.8):
+        i, _gds, gm, s = at(5.0, vg)
+        ratios.append(s / (8.0 / 3.0 * KB * T * gm))
+    assert ratios == sorted(ratios, reverse=True), ratios
+    assert min(ratios) > 0.97 and abs(ratios[-1] - 1.0) < 0.03, ratios
+    assert ratios[0] < 4.0, ratios

@@ -7002,3 +7002,41 @@ common-emitter xyce_verify 0.094 / 0.808 (the 0.808 is the gold's own
 Gilbert cell 0.016 / 0.009, h1/h3/h5 to 4 digits.  Three gold tests, and
 `spice_ce_pss` in step_machinery.  Open: radau 50-450x slower than gear
 on these decks, unsized.
+
+## 2026-10-09 — 78. MosLevel3's channel noise in weak inversion (reported from another session's Si2302CDS model)
+
+The channel noise was the Klaassen-Prins integral
+`(vgtn^2 - vgtn vdsn + vdsn^2/3) / max(vgtn - vdsn/2, 1e-9)`, `vgtn` from
+`von`, `vdsn = min(|vds|, vdsat)`.  With `nfs`, `vdsat` comes from the
+clamped `vgsx = max(vgs, von)` and is measured from `vth`: below threshold
+it stays ~`xn Vt` while `vgtn` is 0, so the term was `(vdsn^2/3)/1e-9` --
+1e4..1e5 S, 1e8..1e10 x `2 q Id` (a Si2302CDS-like card, VTO 1.17 V, W
+0.273 m: the floor 1e-13 A^2/Hz flat below 1.3 V).  Above threshold the
+same mismatch made the denominator small near `von` (S/(8/3 kT gm) 2.39
+at Vgs 1.35) and the vds -> 0 value fall short of `4 k T g_ds` (0.28 at
+1.3 V).
+
+Now: `vdsn` at most `vgtn` (the integral falls to 0 with `vgtn`, as
+`2 vgtn/3`; unchanged where `vdsat <= vgtn`), plus the weak-inversion
+diffusion current's shot noise `2 q |Id| coth(|vds|/2 Vt)` -- `2 q Id`
+saturated, `4 k T Id/vds` as `vds -> 0` -- weighted by
+`exp(-vgtn/(xn Vt))` (`_mos3_channel` returns `xn` now).  Measured on
+that card: weak inversion saturated `S = 2 q Id` exactly; `vds` = 1 mV,
+`S/(4 k T g_ds)` 1.01 in weak inversion (0.83-0.96 near threshold, the
+strong part's `von`/`vth` offset; 1.04 at 3 V); saturated, `S/((8/3) k T
+gm)` monotone from 2.71 (= 3 xn/4, the shot value) through 1.59, 1.44,
+1.18, 1.05 to 1.00 at 1.8 V -- where the old form spiked and then dipped
+to 0.84.  Test: `test_noise_devices.py`, the level-3 anchors.
+
+EKV's noise is charge-based (`4kT beta n Ut (qs+qd)`: `2 q I` in weak
+inversion) and level 1 has no subthreshold current: neither has the
+defect.  There is no level 2 yet (stage 9).
+
+**The reporter's second item, flicker against ngspice (5e4 x on an
+AD8606 input pair), is a CONVENTION, found in ngspice-47's source**: its
+levels 1, 2 and 3 default to `nlev = 2` (`mos{1,2,3}set.c`), the form
+`KF gm^2 / (f^AF W Leff Cox)`, not `KF Id^AF / (f Cox Leff^2)` (its
+`nlev = 0`, ours).  The ratio, ours over ngspice's, is `W Vov^2 / (4 L Id)`
+for a square law: 5.0e4 for that pair (W/L 1600, KP 10u, Id 0.6 mA).  Not
+changed: a choice for Andreas (an `nlev` parameter, and the importer's
+default).

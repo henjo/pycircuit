@@ -4215,7 +4215,9 @@ def _mos3_params():
 def _mos3_channel(p, vgs, vds, vbs, c, tag):
     """One ARM of the level-3 channel: ``vds >= 0``, in the n-channel
     convention.  ``c`` carries the card-derived constants (a dict);
-    returns ``(cdrain, von, vdsat)``, every intermediate named with
+    returns ``(cdrain, von, vdsat, xn)`` (``xn`` the subthreshold slope
+    factor the channel noise weights its weak-inversion part by), every
+    intermediate named with
     ``tag`` so the two arms coexist in one chain.
 
     Transcribed from `mos3load.c` through `mos3.va` (vacask's
@@ -4339,7 +4341,7 @@ def _mos3_channel(p, vgs, vds, vbs, c, tag):
         (_expl((vgs - von) / (vtT * _maxc(xn, 1.0))), vgs < von),
         (1.0, True)), 'wfact')
     cdrain = v(cd0 * xlfact * wfact, 'cdrain')
-    return cdrain, von, vdsat
+    return cdrain, von, vdsat, xn
 
 
 def _mos3_analog(T, nmos, gate_charge=False):
@@ -4467,8 +4469,8 @@ def _mos3_analog(T, nmos, gate_charge=False):
         cst = dict(phiT=phiT, leff=leff, weff=weff, cox=cox, vtT=vtT,
                    gam=gam, vbiT=vbiT, kpT=kpT, u0T=u0T, xd=xd,
                    narrow=narrow, etal=etal, csonco=csonco, alpha=alpha)
-        idf, vonf, vdsatf = _mos3_channel(p, vgs, vds, vbs, cst, 'f')
-        idr, _vonr, _vdsatr = _mos3_channel(p, vgd, -vds, vbd, cst, 'r')
+        idf, vonf, vdsatf, xnf = _mos3_channel(p, vgs, vds, vbs, cst, 'f')
+        idr, _vonr, _vdsatr, _xnr = _mos3_channel(p, vgd, -vds, vbd, cst, 'r')
         ids = _var(sympy.Piecewise((idf, vds >= 0.0), (-idr, True)), 'ids')
 
         ## -- the two bulk junctions ---------------------------------
@@ -4498,11 +4500,32 @@ def _mos3_analog(T, nmos, gate_charge=False):
         vgtn = _var(_maxc(sympy.Piecewise((vgs, vds >= 0.0), (vgd, True))
                           - sympy.Piecewise((vonf, vds >= 0.0),
                                             (_vonr, True)), 0.0), 'vgtn')
-        vdsn = _var(_minc(_safe_abs(vds), sympy.Piecewise(
-            (vdsatf, vds >= 0.0), (_vdsatr, True))), 'vdsn')
+        ## ⚠ `vdsn` AT MOST `vgtn`.  `vdsat` comes from the CLAMPED gate
+        ## voltage (`vgsx = max(vgs, von)`) and is measured from `vth`, so
+        ## with `nfs` it stays ~`xn Vt` below threshold where `vgtn` is 0:
+        ## the expression was `(vdsn^2/3) / 1e-9` there, 1e4-1e5 S --
+        ## 1e8-1e10 x 2 q Id (reported 2026-10-09).  Clamped, the integral
+        ## falls to 0 with `vgtn` (as `2 vgtn / 3`) and never meets the
+        ## floor; where `vdsat <= vgtn` (strong inversion) it is unchanged.
+        vdsn = _var(_minc(_minc(_safe_abs(vds), sympy.Piecewise(
+            (vdsatf, vds >= 0.0), (_vdsatr, True))), vgtn), 'vdsn')
         gn = _var(_safe_div(vgtn * vgtn - vgtn * vdsn + vdsn * vdsn / 3.0,
                             _maxc(vgtn - 0.5 * vdsn, 1e-9)) * kpT
                   * weff / leff, 'gn')
+        ## WEAK INVERSION: the forward and reverse diffusion currents' shot
+        ## noise, `2 q |Id| coth(|vds| / 2 Vt)` -- `2 q Id` in saturation,
+        ## `4 k T Id / vds` (equilibrium, Nyquist) as `vds -> 0` -- written
+        ## as `4 k T (|Id|/|vds|) y coth(y)`, `y = |vds| / 2 Vt`, its series
+        ## below `y = 1e-3`; weighted by `exp(-vgtn / (xn Vt))`: 1 at and
+        ## below `von`, gone a few slope voltages above it.
+        yn = _var(_safe_abs(vds) / (2.0 * vtT), 'yn')
+        ycoth = _var(sympy.Piecewise(
+            (1.0 + yn * yn / 3.0, yn < 1e-3),
+            (yn * (1.0 + sympy.exp(-2.0 * yn)) / (1.0 - sympy.exp(-2.0 * yn)), True)),
+            'ycoth')
+        gw = _var(_safe_div(_safe_abs(ids), _safe_abs(vds)) * ycoth
+                  * sympy.exp(-vgtn / (sympy.Piecewise((xnf, vds >= 0.0), (_xnr, True))
+                                       * vtT)), 'gw')
 
         stmts = (
             Contribution(bds.I, ids),
@@ -4515,7 +4538,7 @@ def _mos3_analog(T, nmos, gate_charge=False):
             Collapse(brd, sympy.And(p.rd <= 0.0, p.rsh * p.nrd <= 0.0)),
             Contribution(brs.I, brs.V / rsx),
             Collapse(brs, sympy.And(p.rs <= 0.0, p.rsh * p.nrs <= 0.0)),
-            Contribution(bds.I, _white_noise(4.0 * _KB * T * gn)),
+            Contribution(bds.I, _white_noise(4.0 * _KB * T * (gn + gw))),
             ## signed: see the note at the EKV flicker term
             Contribution(bds.I, _var(ids / _safe_abs(ids), 'sgnfl') * _flicker_noise(
                 p.kf * _safe_abs(ids) ** p.af / (cox * leff ** 2), 1)),
