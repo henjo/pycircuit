@@ -45,7 +45,7 @@ XYCE = os.environ.get('PYCIRCUIT_XYCE', os.path.expanduser('~/local/xyce/serial/
 
 #: name -> (deck, gold or None): the decks with a `.tran` that import
 #: (stage 2's census; latch and opampal since stage 7's substrate
-#: junction) -- MOS level 2 (stage 9) keeps the rest out for now
+#: junction; the MOS level-2 decks since stage 9)
 #: name -> the Transient keywords a deck runs with beyond its own: slowlatch
 #: collapses its step on the source currents' error test (stiff internal
 #: nodes behind 40 ohm sheet resistances, coupled by the gate charge), and
@@ -58,6 +58,16 @@ _G = 'OutputData/'
 CASES = {
     '4049osc': (_X + '4049OSC/4049osc.cir', _G + '4049OSC/4049osc.cir.prn'),
     'toronto': (_X + 'CircuitSim90/MOS2/toronto.cir', _G + 'CircuitSim90/MOS2/toronto.cir.prn'),
+    ## (MOS level 2, stage 9)
+    'ab_integ': (_X + 'CircuitSim90/MOS2/ab_integ.cir', _G + 'CircuitSim90/MOS2/ab_integ.cir.prn'),
+    'e1480': (_X + 'CircuitSim90/MOS2/e1480.cir', _G + 'CircuitSim90/MOS2/e1480.cir.prn'),
+    'g1310': (_X + 'CircuitSim90/MOS2/g1310.cir', _G + 'CircuitSim90/MOS2/g1310.cir.prn'),
+    'gm6': (_X + 'CircuitSim90/MOS2/gm6.cir', _G + 'CircuitSim90/MOS2/gm6.cir.prn'),
+    'hussamp': (_X + 'CircuitSim90/MOS2/hussamp.cir', _G + 'CircuitSim90/MOS2/hussamp.cir.prn'),
+    'mosrect': (_X + 'CircuitSim90/MOS2/mosrect.cir', _G + 'CircuitSim90/MOS2/mosrect.cir.prn'),
+    'mux8': (_X + 'CircuitSim90/MOS2/mux8.cir', _G + 'CircuitSim90/MOS2/mux8.cir.prn'),
+    'nand': (_X + 'CircuitSim90/MOS2/nand.cir', _G + 'CircuitSim90/MOS2/nand.cir.prn'),
+    'ring': (_X + 'CircuitSim90/MOS2/ring.cir', _G + 'CircuitSim90/MOS2/ring.cir.prn'),
     'slowlatch': (_X + 'CircuitSim90/MOS2/slowlatch.cir',
                   _G + 'CircuitSim90/MOS2/slowlatch.cir.prn'),
     'rca': (_X + 'MCNC_BJT_RCA/rca.cir', _G + 'MCNC_BJT_RCA/rca.cir.prn'),
@@ -198,31 +208,38 @@ def _peers(name, imp, deck, cols, gold, comps):
             out['ngspice_error'] = f'over {PEER_TIMEOUT} s'
             return out, None
         out['ngspice_s'] = time.perf_counter() - t0
+        aborted = [ln.strip() for ln in (p.stdout + p.stderr).splitlines()
+                   if 'aborted' in ln.lower() or 'timestep too small' in ln.lower()]
         try:
             ncols, data = spiceoutput.read_ngspice_print(p.stdout)
         except ValueError as e:
             out['ngspice_error'] = str(e)
         else:
-            low = [c.lower() for c in ncols]
-            out['ngspice_steps'] = len(data) - 1
-            waves = {}
-            for col, kind, (a, b), off in cols:
-                if kind == 'i':
-                    va, vb = data[:, low.index(names[('i', a)].lower())], 0.0
-                else:
-                    va = data[:, low.index(f'v({names[a]})')]
-                    vb = data[:, low.index(f'v({names[b]})')] if b else 0.0
-                waves[col] = va - vb + off
-            ng = (data[:, 0], waves)
-            if gold is not None:
-                gn, g = spiceoutput.read_prn(gold)
-                out['ngspice_metric'] = {}
-                ts, keep = _within(data[:, 0], g[:, 1])
-                for col, wave in waves.items():
-                    k = _gold_column(gn, col)
-                    if k is not None:
-                        out['ngspice_metric'][col] = spiceoutput.xyce_verify(
-                            ts, wave[keep], g[:, 1], g[:, k], **comps.get(col, {}))
+            if aborted:
+                ## (ngspice gave up -- e1480: 'Timestep too small' at its
+                ## first point -- and printed the steps before: no waveform)
+                out['ngspice_error'] = '; '.join(aborted)[:200]
+            else:
+                low = [c.lower() for c in ncols]
+                out['ngspice_steps'] = len(data) - 1
+                waves = {}
+                for col, kind, (a, b), off in cols:
+                    if kind == 'i':
+                        va, vb = data[:, low.index(names[('i', a)].lower())], 0.0
+                    else:
+                        va = data[:, low.index(f'v({names[a]})')]
+                        vb = data[:, low.index(f'v({names[b]})')] if b else 0.0
+                    waves[col] = va - vb + off
+                ng = (data[:, 0], waves)
+                if gold is not None:
+                    gn, g = spiceoutput.read_prn(gold)
+                    out['ngspice_metric'] = {}
+                    ts, keep = _within(data[:, 0], g[:, 1])
+                    for col, wave in waves.items():
+                        k = _gold_column(gn, col)
+                        if k is not None:
+                            out['ngspice_metric'][col] = spiceoutput.xyce_verify(
+                                ts, wave[keep], g[:, 1], g[:, k], **comps.get(col, {}))
     if shutil.which(XYCE) or os.path.exists(XYCE):
         with tempfile.TemporaryDirectory(dir=work) as tmp:
             local = os.path.join(tmp, os.path.basename(deck))

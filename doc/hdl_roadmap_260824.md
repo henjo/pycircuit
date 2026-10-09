@@ -7064,3 +7064,63 @@ chain against the analytic derivative and the compiled Jacobian to 1e-14.
 The importer reads `NLEV` (it refused the card before); without it the
 device keeps 0.  The default stays 0: changing it moves every flicker
 result (an AD8606 pair: 5e4 between 0 and 2).
+
+## 2026-10-09 — 80. Stage 9: MOS level 2 (`MosLevel2Hdl`), and `hdl.quartic_root`
+
+**The model.**  `MosLevel2Hdl` / `MosLevel2PmosHdl` and their gate-charge
+classes, transcribed from ngspice-47's `mos2load.c`/`mos2temp.c` into
+`_mos2_channel` (one arm, level 3's `Piecewise` on `vds` for the two
+modes) and `_mos2_analog` (level 3's junctions, overlaps, `rd`/`rs`,
+limiting group, noise, `nlev` flicker and gate charge).  Everything in the
+channel: Grove-Frohman bulk charge with the 3/2-power body term, `xj`
+short-channel gamma, `delta`, `nfs` subthreshold, `ucrit`/`uexp`
+mobility, `vmax` velocity saturation, `lambda` given or computed from
+`nsub` (and with `vmax`, `neff`), the punch-through limit; `vto` from
+`nsub` with `tpg`/`nss` where not given; `phi` 0.6 without `nsub`.
+Deliberate departures, each in the docstring: no `lvds <= 1e-10` band
+(below); `xlamda*lvds` formed without dividing by `lvds`; a NaN quartic
+candidate invalid; ngspice's ueff/xv read the model's (untempered) `uo`,
+transcribed as such.
+
+**`hdl.quartic_root(a1, b1, c1, d1)`**: SPICE's velocity-saturation root
+(Ferrari through the resolvent cubic, the smallest positive root with
+`|P| <= 1e-6`, 0.0 for none), its derivative implicit (`-(dP/da_k)/P'`);
+scalar in `math` (the libm the C prelude calls), per element on numpy
+arrays (bit for bit the scalar's), masked on jax; the C prelude twin.
+SPICE's closed form gives its root to ~1e-8 relative -- a finite
+difference needs a 1e-4 step to see the derivative.
+
+**Verified**, `tests/test_mos_level2.py`: an independent transcription
+(`tests/_mos2_reference.py`) against ngspice-47's own currents (13 cards,
+every feature, 1560 points recorded in `tests/data/mos2_ngspice_iv.json`:
+worst 3.8e-9 of a card's peak, ngspice's solve tolerance); the model
+against it on pycircuit's constants (worst 4e-11, rounding); gm/gds/gmb
+from the Jacobian against its differences (worst 4e-7, the differences'
+own); numpy against C on every value of i/G/q/C (bit for bit, 12 cards x
+32760 values); PMOS the NMOS mirrored; the importer (LEVEL=2 to the
+gate-charge class, VTO from NSUB with NSS/TPG).  Compile ~4 s.
+
+**g1310's DC point found the band.**  SPICE zeroes the current for
+`lvds <= 1e-10` and keeps `gds` for its Jacobian; transcribed, the exact
+derivative of that zero is zero, so a switch held on at vds ~ 0 (x6:mn,
+vds = 6 nV) had no conductance inside the band and Newton bounced across
+it -- from ngspice's own operating point too.  Without the band the
+expressions reach 0 with vds and their slope there is SPICE's `gds`.
+
+**The gold decks** (Xyce's metric; ngspice on our deck beside):
+ab_integ **0.004** (0.003), e1480 **0.008** (ngspice aborts: 'Timestep
+too small' at its first point -- the suite now records that), gm6 4.14
+(3.88), mux8 1.05 (0.34), g1310 4.52 (1.49), nand 2.40 (0.55), mosrect
+7.34 (0.94), ring 72.6 (24.4); hussamp refused (an `.ic` on a node a
+source holds -- the importer's, not level 2's).  The DC channel is
+ngspice's (above, and on mosrect's card at |vds| to 11 V, forward bulk to
+0.6 V: 1e-7), so the transient gaps are in the charges.  mosrect is
+traced: the bridge devices' bulk is another bridge node, and our gate
+charge's named deviation (1) -- below threshold Meyer's gate-BULK
+capacitance appears against the SOURCE -- loads node 4 where Meyer loads
+node 2 (without our intrinsic charge the gap falls 0.19 -> 0.07 V while
+ngspice keeps Meyer's).  nand's stacked NMOS have the same topology
+(bulk at ground, sources inside the stack); not separated there.
+Open, for Andreas: a bulk-referred accumulation/depletion charge.
+Not done yet from the plan: voter25, the ring's PSS, mem_plus,
+`spice_ring` in step_machinery.

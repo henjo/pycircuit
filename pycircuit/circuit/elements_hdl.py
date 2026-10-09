@@ -4654,3 +4654,498 @@ class MosLevel3PmosGateChargeHdl(Behavioural):
     instparams = _mos3_params() + _qpart_param()
 
     analog = staticmethod(_mos3_analog(TEMP, -1, gate_charge=True))
+
+
+def _mos2_params():
+    """The SPICE level-2 card, in SPICE's own names -- ``as`` included,
+    which the namespace lets a model declare outright."""
+    return [
+        Parameter(name='vto', desc='Zero-bias threshold voltage', unit='V',
+                  default=0.0),
+        Parameter(name='kp', desc='Transconductance parameter (0: from '
+                  'u0 and tox)', unit='A/V^2', default=0.0),
+        Parameter(name='u0', desc='Surface mobility', unit='cm^2/V/s',
+                  default=600.0),
+        Parameter(name='gamma', desc='Body effect factor (unset: from '
+                  'nsub and tox)', unit='V^0.5', default=0.0),
+        Parameter(name='phi', desc='Surface inversion potential (unset: '
+                  'from nsub)', unit='V', default=0.6),
+        Parameter(name='tox', desc='Oxide thickness', unit='m',
+                  default=1e-7),
+        Parameter(name='nsub', desc='Substrate doping', unit='cm^-3',
+                  default=0.0),
+        Parameter(name='xj', desc='Junction depth', unit='m', default=0.0),
+        Parameter(name='nfs', desc='Fast surface state density',
+                  unit='cm^-2', default=0.0),
+        Parameter(name='delta', desc='Width effect on threshold', unit='',
+                  default=0.0),
+        Parameter(name='vmax', desc='Maximum drift velocity (0: none)',
+                  unit='m/s', default=0.0),
+        Parameter(name='lambda', desc='Channel-length modulation (0: from nsub)',
+                  unit='1/V', default=0.0),
+        Parameter(name='ucrit', desc='Critical field for mobility degradation',
+                  unit='V/cm', default=1e4),
+        Parameter(name='uexp', desc='Critical field exponent', unit='',
+                  default=0.0),
+        Parameter(name='utra', desc='Transverse field coefficient (accepted, '
+                  'unused -- as in ngspice)', unit='', default=0.0),
+        Parameter(name='neff', desc='Total channel charge coefficient', unit='',
+                  default=1.0),
+        Parameter(name='nss', desc='Surface state density (vto from nsub)',
+                  unit='cm^-2', default=0.0),
+        Parameter(name='tpg', desc='Gate material type (vto from nsub): 1 '
+                  'opposite to substrate, -1 same, 0 aluminium', unit='',
+                  default=1.0),
+        Parameter(name='w', desc='Channel width', unit='m', default=1e-4),
+        Parameter(name='l', desc='Drawn channel length', unit='m',
+                  default=1e-4),
+        Parameter(name='ld', desc='Lateral diffusion', unit='m',
+                  default=0.0),
+        Parameter(name='cgso', desc='Gate-source overlap capacitance per '
+                  'metre', unit='F/m', default=0.0),
+        Parameter(name='cgdo', desc='Gate-drain overlap capacitance per '
+                  'metre', unit='F/m', default=0.0),
+        Parameter(name='cgbo', desc='Gate-bulk overlap capacitance per '
+                  'metre', unit='F/m', default=0.0),
+        Parameter(name='cbd', desc='Zero-bias bulk-drain capacitance '
+                  '(0: cj*ad)', unit='F', default=0.0),
+        Parameter(name='cbs', desc='Zero-bias bulk-source capacitance '
+                  '(0: cj*as)', unit='F', default=0.0),
+        Parameter(name='IS', desc='Bulk junction saturation current',
+                  unit='A', default=1e-14),
+        Parameter(name='pb', desc='Bulk junction potential', unit='V',
+                  default=0.8),
+        Parameter(name='cj', desc='Bulk bottom capacitance per area',
+                  unit='F/m^2', default=0.0),
+        Parameter(name='cjsw', desc='Bulk sidewall capacitance per metre',
+                  unit='F/m', default=0.0),
+        Parameter(name='mj', desc='Bottom grading coefficient', unit='',
+                  default=0.5),
+        Parameter(name='mjsw', desc='Sidewall grading coefficient',
+                  unit='', default=0.33),
+        Parameter(name='fc', desc='Forward-bias depletion coefficient',
+                  unit='', default=0.5),
+        Parameter(name='js', desc='Bulk junction saturation current per '
+                  'area', unit='A/m^2', default=0.0),
+        Parameter(name='rd', desc='Drain ohmic resistance', unit='ohm',
+                  default=0.0),
+        Parameter(name='rs', desc='Source ohmic resistance', unit='ohm',
+                  default=0.0),
+        Parameter(name='rsh', desc='Sheet resistance', unit='ohm/sq',
+                  default=0.0),
+        Parameter(name='ad', desc='Drain diffusion area', unit='m^2',
+                  default=0.0),
+        Parameter(name='as', desc='Source diffusion area', unit='m^2',
+                  default=0.0),
+        Parameter(name='pd', desc='Drain diffusion perimeter', unit='m',
+                  default=0.0),
+        Parameter(name='ps', desc='Source diffusion perimeter', unit='m',
+                  default=0.0),
+        Parameter(name='nrd', desc='Drain squares', unit='', default=1.0),
+        Parameter(name='nrs', desc='Source squares', unit='', default=1.0),
+        Parameter(name='kf', desc='Flicker-noise coefficient', unit='',
+                  default=0.0),
+        Parameter(name='af', desc='Flicker-noise exponent', unit='',
+                  default=1.0),
+        Parameter(name='nlev', desc="Flicker form (ngspice's): 0 "
+                  "kf*Id^af/(f*cox*Leff^2), 1 kf*Id^af/(f*cox*W*Leff) -- the "
+                  "area form, as a commercial simulator normalises -- 2 or 3 "
+                  "kf*gm^2/(f^af*cox*W*Leff), ngspice-47's default",
+                  unit='', default=0.0),
+        Parameter(name='tnom', desc='Parameter measurement temperature',
+                  unit='C', default=_TNOM_DEFAULT_C),
+    ]
+
+def _mos2_channel(p, vgs, vds, vbs, c, tag):
+    """One ARM of the level-2 channel, ``vds >= 0``, the n-channel
+    convention: `mos2load.c` lines 556-1010 (its ``lvgs``, ``lvds``,
+    ``lvbs``), the current only -- its derivatives are this expression's,
+    exact (ngspice's hand-written ``gm``/``gds`` are not).  Returns
+    ``(cdrain, von, vdsat, xn)``; every intermediate named with ``tag``.
+
+    Where it differs from the C, and why:
+
+    * no ``lvds <= 1e-10`` band where the current is zeroed (and the
+      conductance kept): the expressions go to 0 with ``vds`` themselves,
+      their slope there SPICE's ``gds`` (see the note at ``cdrain``);
+    * ``xlamda * lvds`` is formed directly (``xd/Leff * arg``) where SPICE
+      divides by ``lvds`` and multiplies back: the reverse arm is
+      evaluated at every bias, ``lvds = 0`` included;
+    * the velocity-saturation root is `hdl.quartic_root` (SPICE's
+      algorithm; a NaN candidate invalid);
+    * ``xn`` is floored at 1 for the channel noise's weight only, where
+      SPICE leaves it 0 without ``nfs`` (no subthreshold current there).
+    """
+    def v(expr, name):
+        return _var(expr, name + tag)
+
+    tphi, leff, w, cox = c['phiT'], c['leff'], c['w'], c['cox']
+    vtT, gam, xd = c['vtT'], c['gam'], c['xd']
+    sphi = c['sphi']
+    phivbs = v(tphi - vbs, 'phivbs')
+    ## (SPICE's `sarg1`/`barg`: the square root below zero bias, its
+    ## first-order continuation above; `select` keeps the unselected arm
+    ## finite)
+    sarg1 = v(_select((sympy.sqrt(tphi - vbs), vbs <= 0.0),
+                      (sphi / (1.0 + 0.5 * vbs / tphi), True)), 'sarg1')
+    vbsd = v(vbs - vds, 'vbsd')
+    barg = v(_select((sympy.sqrt(tphi - vbsd), vbsd <= 0.0),
+                     (sphi / (1.0 + 0.5 * vbsd / tphi), True)), 'barg')
+    factor = c['factor']
+    eta = c['eta2']
+    vbin = v(c['vbiT'] + factor * phivbs, 'vbin')
+    ## -- short-channel gamma (xj): gamma*(1 - argss - argsd) ----------
+    xjp = v(_maxc(p.xj, 1e-30), 'xjp')
+    args = v(sympy.sqrt(1.0 + 2.0 * xd * sarg1 / xjp), 'args')
+    argd = v(sympy.sqrt(1.0 + 2.0 * xd * barg / xjp), 'argd')
+    sc = v(sympy.Piecewise((0.5 * p.xj / leff * ((args - 1.0) + (argd - 1.0)),
+                            p.xj > 0.0), (0.0, True)), 'sc')
+    gamasd = v(gam * (1.0 - sc), 'gamasd')
+    ## -- threshold, and the subthreshold slope (nfs) ---------------------
+    von0 = v(vbin + gamasd * sarg1, 'von0')
+    tphi15 = v(tphi * sphi, 'tphi15')
+    dsrgdb = v(sympy.Piecewise((-0.5 / sarg1, vbs <= 0.0),
+                               (-0.5 * sarg1 * sarg1 / tphi15, True)), 'dsrgdb')
+    dbrgdb = v(sympy.Piecewise((-0.5 / barg, vbsd <= 0.0),
+                               (-0.5 * barg * barg / tphi15, True)), 'dbrgdb')
+    dgddvb = v(sympy.Piecewise((-gam * (0.5 / leff * xd * dsrgdb / args
+                                        + 0.5 / leff * xd * dbrgdb / argd),
+                                p.xj > 0.0), (0.0, True)), 'dgddvb')
+    cdonco = v(-(gamasd * dsrgdb + dgddvb * sarg1) + factor, 'cdonco')
+    xn = v(1.0 + _QE * p.nfs * 1e4 / cox + cdonco, 'xn')
+    nfsx = v(_hdl._step(p.nfs, 1e-300), 'nfsx')   # 1 where nfs > 0
+    von = v(von0 + nfsx * vtT * xn, 'von')
+    ## -- effective mobility (ucrit, uexp) --------------------------------
+    ucr = v(p.ucrit * 100.0 * _EPSSI / cox, 'ucr')
+    udenom = v(vgs - von, 'udenom')
+    ufact = v(_select((sympy.exp(p.uexp * sympy.log(ucr / udenom)), udenom > ucr),
+                      (1.0, True)), 'ufact')
+    ueff = v(p.u0 * 1e-4 * ufact, 'ueff')
+    ## -- saturation voltage: Grove-Frohman ------------------------------
+    vgsx = v(sympy.Piecewise((_maxc(vgs, von), p.nfs > 0.0), (vgs, True)), 'vgsx')
+    gammad = v(gamasd / eta, 'gammad')
+    gammd2 = v(gammad * gammad, 'gammd2')
+    vgxe = v((vgsx - vbin) / eta, 'vgxe')
+    argv = v(vgxe + phivbs, 'argv')
+    vdsgf = v(sympy.Piecewise(
+        (_maxc(vgxe + gammd2 * (1.0 - sympy.sqrt(1.0 + 4.0 * _maxc(argv, 0.0)
+                                                  / _maxc(gammd2, 1e-300))) / 2.0,
+               0.0), sympy.And(gammad > 0.0, argv > 0.0)),
+        (0.0, gammad > 0.0),
+        (_maxc(vgxe, 0.0), True)), 'vdsgf')
+    ## -- velocity saturation (vmax): Baum's quartic ---------------------
+    xv = v(p.vmax * leff / ueff, 'xv')
+    sarg3 = v(sarg1 * sarg1 * sarg1, 'sarg3')
+    qa1 = v(gammad / 0.75, 'qa1')
+    qb1 = v(-2.0 * (argv + xv), 'qb1')
+    qc1 = v(-2.0 * gammad * xv, 'qc1')
+    qd1 = v(2.0 * argv * (phivbs + xv) - phivbs * phivbs
+            - 4.0 / 3.0 * gammad * sarg3, 'qd1')
+    xq = v(_hdl.quartic_root(qa1, qb1, qc1, qd1), 'xq')
+    vdsat = v(sympy.Piecewise((xq * xq - phivbs, sympy.And(p.vmax > 0.0, xq > 0.0)),
+                              (vdsgf, True)), 'vdsat')
+    ## -- channel shortening: xlamda * lvds, formed directly -------------
+    vbsat = v(vbs - vdsat, 'vbsat')
+    bsarg = v(_select((sympy.sqrt(tphi - vbsat), vbsat <= 0.0),
+                      (sphi / (1.0 + 0.5 * vbsat / tphi), True)), 'bsarg')
+    bodys = v(bsarg * bsarg * bsarg - sarg3, 'bodys')
+    body = v(barg * barg * barg - sarg3, 'body')
+    av = v((vds - vdsat) / 4.0, 'av')
+    lamn = v(xd / leff * sympy.sqrt(av + sympy.sqrt(1.0 + av * av)), 'lamn')
+    xdv = v(xd / sympy.sqrt(p.neff), 'xdv')
+    ## (floored: without vmax the arm is unselected, and `sqrt(0)` there
+    ## would carry an infinite slope times the clamp's zero into the
+    ## Jacobian as NaN; with vmax `xlv > 0` and the floor is the identity)
+    xlv = v(_maxc(p.vmax * xdv / (2.0 * ueff), 1e-30), 'xlv')
+    lamv = v(xdv / leff * (sympy.sqrt(xlv * xlv + _maxc(vds - vdsat, 0.0)) - xlv),
+             'lamv')
+    lamc = v(sympy.Piecewise((p['lambda'] * vds,
+                              sympy.Or(p['lambda'] > 0.0, c['nsm3'] <= 0.0)),
+                             (lamv, p.vmax > 0.0),
+                             (lamn, True)), 'lamc')
+    ## -- punch-through ---------------------------------------------------
+    xwbd = v(xd * sympy.sqrt(_maxc(c['pbT'], 1e-30)), 'xwbd')
+    xld = v(leff - xwbd, 'xld')
+    xwb = v(sympy.Piecewise((xwbd, c['nsm3'] > 0.0), (0.25e-6, True)), 'xwb')
+    clf0 = v(1.0 - lamc, 'clf0')
+    clfact = v(sympy.Piecewise(
+        (xwb / (1.0 + (lamc * leff - xld) / xwb) / leff, leff * clf0 < xwb),
+        (clf0, True)), 'clfact')
+    beta1 = v(c['kpT'] * w / leff * ufact / clfact, 'beta1')
+    ## -- the current -----------------------------------------------------
+    strong = v(beta1 * sympy.Piecewise(
+        ((vgs - vbin - eta * vds / 2.0) * vds - gamasd * body / 1.5, vds <= vdsat),
+        ((vgs - vbin - eta * vdsat / 2.0) * vdsat - gamasd * bodys / 1.5, True)),
+        'strong')
+    vdson = v(_minc(vdsat, vds), 'vdson')
+    bodysub = v(sympy.Piecewise((bodys, vds > vdsat), (body, True)), 'bodysub')
+    argg = v(1.0 / (vtT * _maxc(xn, 1e-30)), 'argg')
+    sub = v(sympy.Piecewise(
+        (beta1 * ((von - vbin - eta * vdson * 0.5) * vdson - gamasd * bodysub / 1.5)
+         * sympy.exp(argg * _minc(vgs - von, 0.0)), vdsat > 0.0),
+        (0.0, True)), 'sub')
+    ## ⚠ NO `lvds <= 1e-10 -> 0` BAND.  SPICE zeroes the CURRENT there and
+    ## keeps the CONDUCTANCE (`gds = beta1*(vgs - vbin - gammad*sarg1)`) for
+    ## its Jacobian; transcribed, the exact derivative of a zero is zero,
+    ## and a switch held on at vds ~ 0 had NO conductance inside the band --
+    ## g1310's DC point stalled there (x6:mn at vds = 6 nV, Newton bouncing
+    ## across it, 2026-10-09).  The expressions below go to 0 with vds on
+    ## their own (the body term vanishes exactly), and their slope there IS
+    ## SPICE's gds; the value differs from SPICE's inside |vds| <= 1e-10 V
+    ## only, by at most beta*vgt*1e-10.
+    cdrain = v(sympy.Piecewise(
+        (strong, sympy.And(p.nfs > 0.0, vgs > von)),
+        (sub, p.nfs > 0.0),
+        (strong, vgs > vbin),
+        (0.0, True)), 'cdrain')
+    return cdrain, von, vdsat, v(_maxc(xn, 1.0), 'xnn')
+
+
+def _mos2_analog(T, nmos, gate_charge=False):
+    """Build the ``analog()`` body of a SPICE level-2 MOSFET (the SPICE
+    benchmark plan's stage 9, 2026-10-09).
+
+    Equations: ngspice-47's `mos2load.c` / `mos2temp.c`; the channel is
+    `_mos2_channel` (Grove-Frohman bulk charge with the 3/2-power body
+    term, ``xj`` short-channel gamma, ``delta`` narrow-channel, ``nfs``
+    subthreshold, ``ucrit``/``uexp`` mobility, ``vmax`` velocity
+    saturation through `hdl.quartic_root`, ``lambda`` given or computed
+    from ``nsub``, the punch-through limit), both modes as level 3's
+    `Piecewise` on ``vds``.  Everything else -- junctions, overlaps,
+    ``rd``/``rs``, limiting, noise, the gate charge -- is level 3's.
+    ``vto`` unset with ``nsub`` is computed from the work functions
+    (``tpg``, ``nss``); ``phi`` unset is ngspice's 0.6 without ``nsub``.
+    Tested against an independent transcription (`tests/_mos2_reference.py`,
+    itself against ngspice to its solve tolerance).
+    """
+    def analog(p, d, g, s, b):
+        di, si = Node('di'), Node('si')
+        brd, brs = Branch(d, di), Branch(s, si)
+        if nmos > 0:
+            bgs, bds = Branch(g, si), Branch(di, si)
+            bbs, bbd = Branch(b, si), Branch(b, di)
+            bgd, bgb = Branch(g, di), Branch(g, b)
+        else:
+            bgs, bds = Branch(si, g), Branch(si, di)
+            bbs, bbd = Branch(si, b), Branch(di, b)
+            bgd, bgb = Branch(di, g), Branch(b, g)
+
+        ## -- geometry and the derived card --------------------------
+        leff = _var(_maxc(p.l - 2.0 * p.ld, 1e-9), 'leff')
+        weff = _var(_maxc(p.w, 1e-9), 'weff')
+        cox = _var(_EPSOX / _maxc(p.tox, 1e-12), 'cox')
+        vtn = _var(_KB * _tnom_k(p.tnom) / _QE, 'vtnom')
+        nsm3 = _var(_maxc(p.nsub, 0.0) * 1e6, 'nsm3')
+        gd = _var(sympy.sqrt(2.0 * _QE * _EPSSI * nsm3) / cox, 'gamd')
+        phid = _var(2.0 * vtn * sympy.log(_maxc(nsm3 / (_NI_CM3 * 1e6),
+                                                1.0)), 'phid')
+        gg = _var(p.given('gamma'), 'ggam')
+        gp = _var(p.given('phi'), 'gphi')
+        gam = _var(gg * p.gamma + (1.0 - gg) * gd, 'gam')
+        phz = _var(sympy.Piecewise((p.phi, gp > 0.5), (_maxc(phid, 0.1), nsm3 > 0.0),
+                                   (p.phi, True)), 'phz')
+        ## SPICE's `alpha = 2*eps_si/(q*nsub)` and `xd = sqrt(alpha)`:
+        ## zero without `nsub`, which switches fshort and kappa off.
+        ## `select`, not `Piecewise`: the arm is selected exactly where
+        ## `nsm3 > 0`, so the clamp that keeps the OTHER arm's evaluation
+        ## finite is derivable from the condition instead of hand-picked.
+        ## `margin=1.0` reproduces the previous `_maxc(nsm3, 1.0)` bit for
+        ## bit -- `nsm3` is a doping density near 1e21, so a 1.0 floor is
+        ## far below anything selected.
+        alpha = _var(_select((2.0 * _EPSSI / (_QE * nsm3), nsm3 > 0.0),
+                             (0.0, True), margin=1.0), 'alpha')
+        xd = _var(sympy.sqrt(alpha), 'xd')
+        kp0 = _var(sympy.Piecewise((p.kp, p.kp > 0.0),
+                                   (p.u0 * cox * 1e-4, True)), 'kp0')
+
+        ## SPICE's narrow-channel `factor = 0.125*delta*2*pi*eps_si/(cox W L)
+        ## * Leff` (`mos2load.c`), the drawn width
+        factor = _var(0.25 * sympy.pi * p.delta * _EPSSI / (cox * weff), 'factor')
+        eta2 = _var(1.0 + factor, 'eta2')
+
+        ## -- temperature (`mos3temp.c`) ------------------------------
+        vtT = _var(_vt(T), 'vtT')
+        trat = _var(T / _tnom_k(p.tnom), 'trat')
+        ltr = _var(sympy.log(trat), 'ltrat')
+        egT = _var(1.16 - 7.02e-4 * T ** 2 / (T + 1108.0), 'egT')
+        egn = _var(1.16 - 7.02e-4 * _tnom_k(p.tnom) ** 2 / (_tnom_k(p.tnom) + 1108.0),
+                   'egtnom')
+        phiT = _var(_maxc(phz * trat - 3.0 * vtT * ltr
+                          - egn * trat + egT, 0.1), 'phiT')
+        pbT = _var(p.pb * trat - 3.0 * vtT * ltr - egn * trat + egT, 'pbT')
+        ## `tVbi = vto - gamma*sqrt(phi) + (Eg(tnom) - Eg(T))/2
+        ##        + (phi(T) - phi)/2`, then `vth(T) = tVbi + gamma*sqrt
+        ## (phi(T))`.  The `(Eg(tnom) - Eg(T))/2` term is in mos1temp.c
+        ## and mos3temp.c alike; `MosLevel1Hdl` above omits it (its
+        ## docstring's `vbi(T)` line is incomplete).  Recorded, not
+        ## changed there: it is a `T != tnom` effect of ~0.5*dEg only.
+        ## `vto` unset with `nsub`: `mos2temp.c`'s work-function form, in the
+        ## n-channel convention (`type*vt0`): `type*vfb + gamma sqrt(phi) + phi`
+        wks = _var(sympy.Piecewise(
+            (-p.tpg * 0.5 * egn - 0.5 * phz, sympy.Ne(p.tpg, 0.0)),
+            (nmos * (-0.05 - 0.5 * egn) - 0.5 * phz, True)), 'wks')
+        vto = _var(sympy.Piecewise(
+            (p.vto, p.given('vto') > 0.5),
+            (wks - nmos * p.nss * 1e4 * _QE / cox + gam * sympy.sqrt(phz) + phz,
+             nsm3 > 0.0),
+            (p.vto, True)), 'vto2')
+        ## (`tVbi`'s bandgap term is `type*(Eg(tnom) - Eg(T))/2` in the
+        ## n-channel convention)
+        vbiT = _var(vto - gam * sympy.sqrt(phz) + nmos * 0.5 * (egn - egT)
+                    + 0.5 * (phiT - phz), 'vbiT')
+        ratio4 = _var(_safe_pow(trat, -1.5, lo=1e-3), 'ratio4')
+        kpT = _var(kp0 * ratio4, 'kpT')
+        factlog = _var(-egT / vtT + egn / vtn, 'factlog')
+        tshift = _var(4e-4 * (T - _tnom_k(p.tnom)) - (pbT / p.pb - 1.0), 'tshift')
+        cfacb = _var(1.0 + p.mj * tshift, 'cfacb')
+        cfacw = _var(1.0 + p.mjsw * tshift, 'cfacw')
+        isbd = _var(_maxc(sympy.Piecewise((p.js * p.ad, p.js * p.ad > 0.0),
+                                          (p.IS, True))
+                          * _expl(factlog), 1e-30), 'isbd')
+        isbs = _var(_maxc(sympy.Piecewise((p.js * p['as'],
+                                           p.js * p['as'] > 0.0),
+                                          (p.IS, True))
+                          * _expl(factlog), 1e-30), 'isbs')
+
+        ## -- the four probes, as one group (SPICE's set) ------------
+        vbsl = _var(bbs.V, 'vbsl')
+        sargl = _var(_select(
+            (sympy.sqrt(phiT - vbsl), vbsl <= 0.0),
+            (sympy.sqrt(phiT) / (1.0 + vbsl / (2.0 * phiT)),
+             True)), 'sargl')
+        vonl = _var(vbiT + gam * sargl, 'vonl')
+        vgs, vds, vbs, vbd = limit_together(
+            limit_fet(bgs.V, vonl), limit_vds(bds.V),
+            limit_pnj(bbs.V, isbs, vtT), limit_pnj(bbd.V, isbd, vtT))
+        vgs, vds = _var(vgs, 'vgs'), _var(vds, 'vds')
+        vbs, vbd = _var(vbs, 'vbs'), _var(vbd, 'vbd')
+        vgd = _var(vgs - vds, 'vgd')
+
+        ## -- the channel, both modes --------------------------------
+        cst = {'phiT': phiT, 'leff': leff, 'w': weff, 'cox': cox, 'vtT': vtT,
+               'gam': gam, 'vbiT': vbiT, 'kpT': kpT, 'xd': xd, 'factor': factor,
+               'eta2': eta2, 'nsm3': nsm3, 'pbT': pbT,
+               'sphi': _var(sympy.sqrt(phiT), 'sphiT')}
+        idf, vonf, vdsatf, xnf = _mos2_channel(p, vgs, vds, vbs, cst, 'f')
+        idr, _vonr, _vdsatr, _xnr = _mos2_channel(p, vgd, -vds, vbd, cst, 'r')
+        ids = _var(sympy.Piecewise((idf, vds >= 0.0), (-idr, True)), 'ids')
+
+        ## -- the two bulk junctions ---------------------------------
+        ibs = _var(isbs * (_expl(vbs / vtT) - 1.0), 'ibs')
+        ibd = _var(isbd * (_expl(vbd / vtT) - 1.0), 'ibd')
+        cbdb = _var(cfacb * sympy.Piecewise((p.cbd, p.cbd > 0.0),
+                                            (p.cj * p.ad, True)), 'cbdb')
+        cbsb = _var(cfacb * sympy.Piecewise((p.cbs, p.cbs > 0.0),
+                                            (p.cj * p['as'], True)), 'cbsb')
+        cbdw = _var(cfacw * p.cjsw * p.pd, 'cbdw')
+        cbsw = _var(cfacw * p.cjsw * p.ps, 'cbsw')
+        qbd = _var(_pn_depletion_charge(vbd, cbdb, pbT, p.mj, p.fc, 'bd')
+                   + _pn_depletion_charge(vbd, cbdw, pbT, p.mjsw, p.fc,
+                                          'bdw'), 'qbd')
+        qbs = _var(_pn_depletion_charge(vbs, cbsb, pbT, p.mj, p.fc, 'bs')
+                   + _pn_depletion_charge(vbs, cbsw, pbT, p.mjsw, p.fc,
+                                          'bsw'), 'qbs')
+        rdx = _var(sympy.Piecewise((p.rd, p.rd > 0.0), (p.rsh * p.nrd, True)),
+                   'rdx')
+        rsx = _var(sympy.Piecewise((p.rs, p.rs > 0.0), (p.rsh * p.nrs, True)),
+                   'rsx')
+
+        ## -- noise: (8/3)kT gm for a saturated channel, Nyquist for a
+        ## linear one, through the same bulk-charge form as the current
+        ## (`mos3noi.c` uses `(8/3)*k*T*(gm + gds + gmbs)`; here the
+        ## Klaassen-Prins integral over the level-3 triode expression).
+        vgtn = _var(_maxc(sympy.Piecewise((vgs, vds >= 0.0), (vgd, True))
+                          - sympy.Piecewise((vonf, vds >= 0.0),
+                                            (_vonr, True)), 0.0), 'vgtn')
+        ## ⚠ `vdsn` AT MOST `vgtn`.  `vdsat` comes from the CLAMPED gate
+        ## voltage (`vgsx = max(vgs, von)`) and is measured from `vth`, so
+        ## with `nfs` it stays ~`xn Vt` below threshold where `vgtn` is 0:
+        ## the expression was `(vdsn^2/3) / 1e-9` there, 1e4-1e5 S --
+        ## 1e8-1e10 x 2 q Id (reported 2026-10-09).  Clamped, the integral
+        ## falls to 0 with `vgtn` (as `2 vgtn / 3`) and never meets the
+        ## floor; where `vdsat <= vgtn` (strong inversion) it is unchanged.
+        vdsn = _var(_minc(_minc(_safe_abs(vds), sympy.Piecewise(
+            (vdsatf, vds >= 0.0), (_vdsatr, True))), vgtn), 'vdsn')
+        gn = _var(_safe_div(vgtn * vgtn - vgtn * vdsn + vdsn * vdsn / 3.0,
+                            _maxc(vgtn - 0.5 * vdsn, 1e-9)) * kpT
+                  * weff / leff, 'gn')
+        ## WEAK INVERSION: the forward and reverse diffusion currents' shot
+        ## noise, `2 q |Id| coth(|vds| / 2 Vt)` -- `2 q Id` in saturation,
+        ## `4 k T Id / vds` (equilibrium, Nyquist) as `vds -> 0` -- written
+        ## as `4 k T (|Id|/|vds|) y coth(y)`, `y = |vds| / 2 Vt`, its series
+        ## below `y = 1e-3`; weighted by `exp(-vgtn / (xn Vt))`: 1 at and
+        ## below `von`, gone a few slope voltages above it.
+        yn = _var(_safe_abs(vds) / (2.0 * vtT), 'yn')
+        ycoth = _var(sympy.Piecewise(
+            (1.0 + yn * yn / 3.0, yn < 1e-3),
+            (yn * (1.0 + sympy.exp(-2.0 * yn)) / (1.0 - sympy.exp(-2.0 * yn)), True)),
+            'ycoth')
+        gw = _var(_safe_div(_safe_abs(ids), _safe_abs(vds)) * ycoth
+                  * sympy.exp(-vgtn / (sympy.Piecewise((xnf, vds >= 0.0), (_xnr, True))
+                                       * vtT)), 'gw')
+
+        stmts = (
+            Contribution(bds.I, ids),
+            Contribution(bbs.I, ibs + ddt(qbs)),
+            Contribution(bbd.I, ibd + ddt(qbd)),
+            Contribution(bgs.I, ddt(p.cgso * weff * bgs.V)),
+            Contribution(bgd.I, ddt(p.cgdo * weff * bgd.V)),
+            Contribution(bgb.I, ddt(p.cgbo * leff * bgb.V)),
+            Contribution(brd.I, brd.V / rdx),
+            Collapse(brd, sympy.And(p.rd <= 0.0, p.rsh * p.nrd <= 0.0)),
+            Contribution(brs.I, brs.V / rsx),
+            Collapse(brs, sympy.And(p.rs <= 0.0, p.rsh * p.nrs <= 0.0)),
+            Contribution(bds.I, _white_noise(4.0 * _KB * T * (gn + gw))),
+            ## signed: see the note at the EKV flicker term
+            Contribution(bds.I, _var(ids / _safe_abs(ids), 'sgnfl') * _flicker_noise(
+                *_mos_flicker(p.kf, ids, _hdl.ddx(ids, vgs), p.af, p.nlev, cox, weff,
+                              leff))),
+            Contribution(brd.I, _white_noise(4.0 * _KB * T / rdx)),
+            Contribution(brs.I, _white_noise(4.0 * _KB * T / rsx)),
+        )
+        if gate_charge:
+            ## The intrinsic gate charge (`_mos_gate_charge`), each side's own
+            ## `von`, as level 3's (level 2 has no DIBL term to leave out).
+            qg, qd, qs = _mos_gate_charge(vgs - vonf, vgd - _vonr, phiT,
+                                          _var(cox * leff * weff, 'coxt'), p.qpart)
+            stmts += (Contribution(bgb.I, ddt(qg)),
+                      Contribution(bbd.I, ddt(-qd)),
+                      Contribution(bbs.I, ddt(-qs)))
+        return stmts
+    return analog
+
+
+class MosLevel2Hdl(Behavioural):
+    """SPICE level-2 n-channel MOSFET (Grove-Frohman).  Terminals ``(d, g,
+    s, b)``; parameters and defaults are ngspice-47's.  See `_mos2_analog`
+    and `_mos2_channel`; limiting is level 1's four-probe group."""
+    params_as = 'p'
+    instparams = _mos2_params()
+
+    analog = staticmethod(_mos2_analog(TEMP, +1))
+
+
+class MosLevel2PmosHdl(Behavioural):
+    """SPICE level-2 p-channel MOSFET: `MosLevel2Hdl` with every branch
+    reversed, positive magnitudes on the card (see `MosLevel1PmosHdl`)."""
+    params_as = 'p'
+    instparams = _mos2_params()
+
+    analog = staticmethod(_mos2_analog(TEMP, -1))
+
+
+class MosLevel2GateChargeHdl(Behavioural):
+    """`MosLevel2Hdl` with the intrinsic gate charge (`_mos_gate_charge`) --
+    what the SPICE importer builds for a level-2 card."""
+    params_as = 'p'
+    instparams = _mos2_params() + _qpart_param()
+
+    analog = staticmethod(_mos2_analog(TEMP, +1, gate_charge=True))
+
+
+class MosLevel2PmosGateChargeHdl(Behavioural):
+    """`MosLevel2PmosHdl` with the intrinsic gate charge."""
+    params_as = 'p'
+    instparams = _mos2_params() + _qpart_param()
+
+    analog = staticmethod(_mos2_analog(TEMP, -1, gate_charge=True))

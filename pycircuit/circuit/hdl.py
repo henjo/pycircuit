@@ -59,6 +59,7 @@ import numpy as np
 
 import os
 import collections
+import math
 import inspect
 import keyword
 import itertools
@@ -957,6 +958,153 @@ def _rdiv_numpy(b, e):
     return b / (b * b + e * e)
 
 
+def _quartic_root_scalar(a1, b1, c1, d1):
+    """SPICE's level-2 saturation root, one point (`mos2load.c` lines
+    770-824): the resolvent cubic's root ``y3`` (Cardano, or the
+    trigonometric form where ``p < 0``), Ferrari's four quadratics, and of
+    their real roots the SMALLEST POSITIVE one with ``|P(x)| <= 1e-6``;
+    0.0 where none is (0 is never valid: SPICE requires ``x > 0``).
+
+    The C prelude's `_quartic_root` is this function, operation for
+    operation, on the same libm calls -- the two agree bit for bit.  ONE
+    deliberate departure from the C: a NaN candidate (a negative radicand)
+    is INVALID here, where SPICE's comparisons accept it and its current
+    becomes NaN."""
+    a = -b1
+    b = a1 * c1 - 4.0 * d1
+    c = -d1 * (a1 * a1 - 4.0 * b1) - c1 * c1
+    r = -a * a / 3.0 + b
+    s = 2.0 * a * a * a / 27.0 - a * b / 3.0 + c
+    r3 = r * r * r
+    s2 = s * s
+    p = s2 / 4.0 + r3 / 27.0
+    p0 = abs(p)
+    p2 = math.sqrt(p0)
+    try:
+        if p < 0:
+            ro = math.sqrt(s2 / 4.0 + p0)
+            ro = math.log(ro) / 3.0
+            ro = math.exp(ro)
+            fi = math.atan(-2.0 * p2 / s) if s != 0.0 else \
+                math.copysign(math.pi / 2.0, -2.0 * p2) * math.copysign(1.0, s)
+            y3 = 2.0 * ro * math.cos(fi / 3.0) - a / 3.0
+        else:
+            ## (SPICE's `exp(log(0)/3)` is `exp(-inf)`: 0, not a stop)
+            p3 = (-s / 2.0 + p2)
+            p3 = math.exp(math.log(abs(p3)) / 3.0) if p3 != 0.0 else 0.0
+            p4 = (-s / 2.0 - p2)
+            p4 = math.exp(math.log(abs(p4)) / 3.0) if p4 != 0.0 else 0.0
+            y3 = p3 + p4 - a / 3.0
+        ra3 = a1 * a1 / 4.0 - b1 + y3
+        rb3 = y3 * y3 / 4.0 - d1
+        if not (ra3 >= 0.0 and rb3 >= 0.0):
+            return 0.0
+        a3 = math.sqrt(ra3)
+        b3 = math.sqrt(rb3)
+    except (ValueError, OverflowError, ZeroDivisionError):
+        return 0.0
+    xvalid = 0.0
+    for sg1, sg2 in ((1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)):
+        a4 = a1 / 2.0 + sg1 * a3
+        b4 = y3 / 2.0 + sg2 * b3
+        delta4 = a4 * a4 / 4.0 - b4
+        if not delta4 >= 0.0:
+            continue
+        tmp = math.sqrt(delta4)
+        for x in (-a4 / 2.0 + tmp, -a4 / 2.0 - tmp):
+            if not x > 0.0:
+                continue
+            poly4 = x * x * x * x + a1 * x * x * x
+            poly4 = poly4 + b1 * x * x + c1 * x + d1
+            if not abs(poly4) <= 1.0e-6:
+                continue
+            if xvalid == 0.0 or x < xvalid:
+                xvalid = x
+    return xvalid
+
+
+def _quartic_root_jax(jnp, a1, b1, c1, d1):
+    """`_quartic_root_scalar` on jax arrays: both branches and every
+    candidate computed, the selection masked."""
+    a = -b1
+    b = a1 * c1 - 4.0 * d1
+    c = -d1 * (a1 * a1 - 4.0 * b1) - c1 * c1
+    r = -a * a / 3.0 + b
+    s = 2.0 * a * a * a / 27.0 - a * b / 3.0 + c
+    p = s * s / 4.0 + r * r * r / 27.0
+    p0 = jnp.abs(p)
+    p2 = jnp.sqrt(p0)
+    ro = jnp.exp(jnp.log(jnp.sqrt(s * s / 4.0 + p0)) / 3.0)
+    fi = jnp.arctan2(-2.0 * p2, s) - jnp.where(s < 0, jnp.sign(-2.0 * p2) * jnp.pi, 0.0)
+    y3n = 2.0 * ro * jnp.cos(fi / 3.0) - a / 3.0
+    p3 = jnp.exp(jnp.log(jnp.abs(-s / 2.0 + p2)) / 3.0)
+    p4 = jnp.exp(jnp.log(jnp.abs(-s / 2.0 - p2)) / 3.0)
+    y3 = jnp.where(p < 0, y3n, p3 + p4 - a / 3.0)
+    ra3 = a1 * a1 / 4.0 - b1 + y3
+    rb3 = y3 * y3 / 4.0 - d1
+    ok = (ra3 >= 0.0) & (rb3 >= 0.0)
+    a3 = jnp.sqrt(jnp.where(ok, ra3, 0.0))
+    b3 = jnp.sqrt(jnp.where(ok, rb3, 0.0))
+    best = jnp.full(jnp.shape(a1 + b1 + c1 + d1), jnp.inf)
+    for sg1, sg2 in ((1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)):
+        a4 = a1 / 2.0 + sg1 * a3
+        b4 = y3 / 2.0 + sg2 * b3
+        delta4 = a4 * a4 / 4.0 - b4
+        tmp = jnp.sqrt(jnp.where(delta4 >= 0.0, delta4, 0.0))
+        for x in (-a4 / 2.0 + tmp, -a4 / 2.0 - tmp):
+            poly4 = x * x * x * x + a1 * x * x * x + b1 * x * x + c1 * x + d1
+            valid = ok & (delta4 >= 0.0) & (x > 0.0) & (jnp.abs(poly4) <= 1.0e-6)
+            best = jnp.where(valid & (x < best), x, best)
+    return jnp.where(jnp.isfinite(best), best, 0.0)
+
+
+def _quartic_root_numpy(a1, b1, c1, d1):
+    """Runtime form of `quartic_root`: the scalar algorithm on a point, the
+    same per element on numpy arrays (bit for bit the scalar's -- no
+    vectorised libm), the masked form on a jax tracer."""
+    args = (a1, b1, c1, d1)
+    if any(isinstance(v, sympy.Basic) for v in args):
+        raise TypeError('quartic_root has no symbolic evaluation')
+    try:
+        arrs = np.broadcast_arrays(*[np.asarray(v, dtype=float) for v in args])
+    except TypeError:
+        import jax.numpy as jnp
+        return _quartic_root_jax(jnp, *args)
+    if arrs[0].ndim == 0:
+        return np.float64(_quartic_root_scalar(*(float(v) for v in arrs)))
+    out = np.empty(arrs[0].shape)
+    flat = [v.ravel() for v in arrs]
+    for k in range(out.size):
+        out.flat[k] = _quartic_root_scalar(flat[0][k], flat[1][k], flat[2][k], flat[3][k])
+    return out
+
+
+class quartic_root(sympy.Function):
+    """SPICE's MOS level-2 velocity-saturation root (`_quartic_root_scalar`):
+    the smallest positive real root ``x`` of ``x^4 + a1 x^3 + b1 x^2 + c1 x
+    + d1`` that SPICE's closed form finds within ``|P| <= 1e-6``, or 0.0
+    where there is none (the caller keeps its other ``vdsat`` then).
+
+    Its derivative is IMPLICIT, ``P(x(a), a) = 0``: ``dx/da_k =
+    -(dP/da_k) / P'(x)``, ``dP/d(a1, b1, c1, d1) = (x^3, x^2, x, 1)``,
+    ``P'(x) = 4x^3 + 3 a1 x^2 + 2 b1 x + c1`` -- exact where the selected
+    root moves smoothly, through `safe_div` so the arm a caller does not
+    select (``x = 0``) stays finite.  (2026-10-09, the SPICE benchmark
+    plan's stage 9.)"""
+    nargs = (4,)
+
+    def fdiff(self, argindex=1):
+        a1, b1, c1, _d1 = self.args
+        x = self
+        dp = 4 * x ** 3 + 3 * a1 * x ** 2 + 2 * b1 * x + c1
+        num = (x ** 3, x ** 2, x, sympy.Integer(1))[argindex - 1]
+        return -safe_div(num, dp, eps=1e-100)
+
+    @staticmethod
+    def _imp_(a1, b1, c1, d1):
+        return _quartic_root_numpy(a1, b1, c1, d1)
+
+
 def safe_div(a, b, eps=1e-30):
     """``a/b`` regularised to ``a*b/(b^2 + eps^2)``.
 
@@ -1227,6 +1375,7 @@ def mxe(x, y, a=0.0):
 _KERNEL_NUMPY = {
     '_recip2': _recip2_numpy,
     '_rdiv': _rdiv_numpy,
+    'quartic_root': _quartic_root_numpy,
     '_step': _step_numpy,
     'maxc': _maxc_numpy,
     'minc': _minc_numpy,
@@ -4492,6 +4641,10 @@ class _ChainPrinter(object):
                 return '_rdiv(%s, %s)' % tuple(
                     self._print(a) for a in expr.args)
 
+            def _print_quartic_root(self, expr):
+                return 'quartic_root({}, {}, {}, {})'.format(
+                    *(self._print(a) for a in expr.args))
+
             ## The selection primitives, same treatment.  A missing entry
             ## here fails ONLY for a model that uses `var()` -- which is
             ## every production model -- because the eager path prints
@@ -4847,6 +5000,55 @@ static inline double _sel(double c, double a, double b) { return (c != 0.0) ? a 
 static inline double _step(double a, double b) { return 1.0 * (a >= b); }
 static inline double _rdiv(double b, double e) { return b / (b * b + e * e); }
 static inline double _recip2(double b, double e) { return 1.0 / (b * b + e * e); }
+static double quartic_root(double a1, double b1, double c1, double d1)
+{
+    /* hdl._quartic_root_scalar, operation for operation (SPICE's
+       mos2load.c lines 770-824; a NaN candidate is invalid) */
+    double a = -b1, b = a1 * c1 - 4.0 * d1;
+    double c = -d1 * (a1 * a1 - 4.0 * b1) - c1 * c1;
+    double r = -a * a / 3.0 + b;
+    double s = 2.0 * a * a * a / 27.0 - a * b / 3.0 + c;
+    double r3 = r * r * r, s2 = s * s;
+    double p = s2 / 4.0 + r3 / 27.0, p0 = fabs(p), p2 = sqrt(p0);
+    double y3, ra3, rb3, a3, b3, xvalid = 0.0;
+    int i, j;
+    static const double sg1[4] = {1.0, -1.0, 1.0, -1.0}, sg2[4] = {1.0, 1.0, -1.0, -1.0};
+    if (p < 0) {
+        double ro = sqrt(s2 / 4.0 + p0), fi;
+        ro = log(ro) / 3.0;
+        ro = exp(ro);
+        fi = (s != 0.0) ? atan(-2.0 * p2 / s)
+                        : copysign(M_PI / 2.0, -2.0 * p2) * copysign(1.0, s);
+        y3 = 2.0 * ro * cos(fi / 3.0) - a / 3.0;
+    } else {
+        double p3 = (-s / 2.0 + p2), p4 = (-s / 2.0 - p2);
+        p3 = (p3 != 0.0) ? exp(log(fabs(p3)) / 3.0) : 0.0;
+        p4 = (p4 != 0.0) ? exp(log(fabs(p4)) / 3.0) : 0.0;
+        y3 = p3 + p4 - a / 3.0;
+    }
+    ra3 = a1 * a1 / 4.0 - b1 + y3;
+    rb3 = y3 * y3 / 4.0 - d1;
+    if (!(ra3 >= 0.0 && rb3 >= 0.0) || !isfinite(y3)) return 0.0;
+    a3 = sqrt(ra3);
+    b3 = sqrt(rb3);
+    for (i = 0; i < 4; i++) {
+        double a4 = a1 / 2.0 + sg1[i] * a3, b4 = y3 / 2.0 + sg2[i] * b3;
+        double delta4 = a4 * a4 / 4.0 - b4, tmp, xs[2];
+        if (!(delta4 >= 0.0)) continue;
+        tmp = sqrt(delta4);
+        xs[0] = -a4 / 2.0 + tmp;
+        xs[1] = -a4 / 2.0 - tmp;
+        for (j = 0; j < 2; j++) {
+            double x = xs[j], poly4;
+            if (!(x > 0.0)) continue;
+            poly4 = x * x * x * x + a1 * x * x * x;
+            poly4 = poly4 + b1 * x * x + c1 * x + d1;
+            if (!(fabs(poly4) <= 1.0e-6)) continue;
+            if (xvalid == 0.0 || x < xvalid) xvalid = x;
+        }
+    }
+    return xvalid;
+}
 static inline double _sq(double a) { return a * a; }
 static inline double _sign(double a) { return (a != a) ? a : (a > 0.0) ? 1.0 : (a < 0.0) ? -1.0 : 0.0; }
 static inline double _land(double a, double b) { return (a != 0.0) && (b != 0.0); }

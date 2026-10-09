@@ -23,14 +23,14 @@ G     `VCCS`, its control pins first
 D     `DiodeSpiceHdl`
 Q     `GummelPoonNpnHdl` / `GummelPoonPnpHdl`; a substrate node only
       where no substrate junction is asked for (``cjs = 0``)
-M     `MosLevel1Hdl` / `MosLevel3Hdl` and their PMOS twins by LEVEL --
-      their `...GateChargeHdl` variants where SPICE adds Meyer's gate
-      capacitance (level 3 always, level 1 when TOX is given), the
+M     `MosLevel1Hdl` / `MosLevel2Hdl` / `MosLevel3Hdl` and their PMOS twins
+      by LEVEL -- their `...GateChargeHdl` variants where SPICE adds Meyer's
+      gate capacitance (levels 2 and 3 always, level 1 when TOX is given), the
       charge-conserving gate charge following it: a
       PMOS threshold as its magnitude, KP from UO and TOX where KP is
       not given, PHI 0.6 where neither PHI nor NSUB is given (as SPICE);
-      TPG and NSS without effect where VTO is given, a VTO SPICE would
-      derive from NSUB refused
+      TPG and NSS without effect where VTO is given; a VTO SPICE would
+      derive from NSUB computed by level 2, refused by levels 1 and 3
 X     flattened
 ====  ===============================================================
 
@@ -89,18 +89,32 @@ MOS3_PARAMS = {'vto': 'vto', 'vt0': 'vto', 'kp': 'kp', 'uo': 'u0', 'u0': 'u0', '
                'cjsw': 'cjsw', 'mj': 'mj', 'mjsw': 'mjsw', 'fc': 'fc', 'js': 'js', 'rd': 'rd',
                'rs': 'rs', 'rsh': 'rsh', 'kf': 'kf', 'af': 'af', 'nlev': 'nlev',
                'tnom': 'tnom'}
+MOS2_PARAMS = {'vto': 'vto', 'vt0': 'vto', 'kp': 'kp', 'uo': 'u0', 'u0': 'u0', 'gamma': 'gamma',
+               'phi': 'phi', 'tox': 'tox', 'nsub': 'nsub', 'nss': 'nss', 'tpg': 'tpg',
+               'nfs': 'nfs', 'xj': 'xj', 'ld': 'ld', 'ucrit': 'ucrit', 'uexp': 'uexp',
+               'utra': 'utra', 'vmax': 'vmax', 'neff': 'neff', 'lambda': 'lambda',
+               'delta': 'delta', 'cgso': 'cgso', 'cgdo': 'cgdo', 'cgbo': 'cgbo', 'cbd': 'cbd',
+               'cbs': 'cbs', 'is': 'IS', 'pb': 'pb', 'cj': 'cj', 'cjsw': 'cjsw', 'mj': 'mj',
+               'mjsw': 'mjsw', 'fc': 'fc', 'js': 'js', 'rd': 'rd', 'rs': 'rs', 'rsh': 'rsh',
+               'kf': 'kf', 'af': 'af', 'nlev': 'nlev', 'tnom': 'tnom'}
 MOS_INSTANCE = ('l', 'w', 'ad', 'as', 'pd', 'ps', 'nrd', 'nrs')
 MOS_CLASSES = {(1, 'nmos'): elements_hdl.MosLevel1Hdl, (1, 'pmos'): elements_hdl.MosLevel1PmosHdl,
+               (2, 'nmos'): elements_hdl.MosLevel2Hdl, (2, 'pmos'): elements_hdl.MosLevel2PmosHdl,
                (3, 'nmos'): elements_hdl.MosLevel3Hdl, (3, 'pmos'): elements_hdl.MosLevel3PmosHdl}
 #: With the intrinsic gate charge (`elements_hdl._mos_gate_charge`): what a
 #: card gets where SPICE adds Meyer's capacitances -- level 3 always, level 1
 #: when TOX is given and not zero (`mos1temp.c` sets the oxide capacitance
-#: to zero otherwise).  The SPICE benchmark plan's stage 6.
+#: to zero otherwise), level 2 always (TOX defaults to 1e-7).  The SPICE
+#: benchmark plan's stage 6.
 MOS_CHARGE_CLASSES = {
     (1, 'nmos'): elements_hdl.MosLevel1GateChargeHdl,
     (1, 'pmos'): elements_hdl.MosLevel1PmosGateChargeHdl,
+    (2, 'nmos'): elements_hdl.MosLevel2GateChargeHdl,
+    (2, 'pmos'): elements_hdl.MosLevel2PmosGateChargeHdl,
     (3, 'nmos'): elements_hdl.MosLevel3GateChargeHdl,
     (3, 'pmos'): elements_hdl.MosLevel3PmosGateChargeHdl}
+_MOS2 = (elements_hdl.MosLevel2Hdl, elements_hdl.MosLevel2PmosHdl,
+         elements_hdl.MosLevel2GateChargeHdl, elements_hdl.MosLevel2PmosGateChargeHdl)
 _MOS3 = (elements_hdl.MosLevel3Hdl, elements_hdl.MosLevel3PmosHdl,
          elements_hdl.MosLevel3GateChargeHdl, elements_hdl.MosLevel3PmosGateChargeHdl)
 
@@ -265,7 +279,7 @@ class Imported:
                     card['vto'] = -card['vto']
                 spec = ' '.join(f'{table.get(k, k)}={v!r}' for k, v in sorted(card.items()))
                 if kind == 'm':
-                    level = 3 if m.cls in _MOS3 else 1
+                    level = 3 if m.cls in _MOS3 else 2 if m.cls in _MOS2 else 1
                     spec = f'level={level} {spec}'
                 key = (mtype, spec)
                 if key not in models:
@@ -966,9 +980,8 @@ class _Importer:
         level = self.level(values, m.name)
         cls = MOS_CLASSES.get((level, m.type))
         if cls is None:
-            stage = ' (the plan\'s stage 9)' if level == 2 else ''
-            raise SpiceImportError(f'model {m.name}: MOS LEVEL {level} is not supported{stage}')
-        if level == 3 or values.get('tox', 0.0) != 0.0:
+            raise SpiceImportError(f'model {m.name}: MOS LEVEL {level} is not supported')
+        if level in (2, 3) or values.get('tox', 0.0) != 0.0:
             cls = MOS_CHARGE_CLASSES[(level, m.type)]
         geometry = {k: values.pop(k) for k in ('l', 'w') if k in values}
         if level == 1:
@@ -976,13 +989,16 @@ class _Importer:
             if 'kp' not in values and 'tox' in values:
                 values['kp'] = uo * 1e-4 * EPS_OX / values['tox']
         ## (SPICE derives VTO from NSUB -- with TPG and NSS -- only where VTO
-        ## is not given; these classes take VTO as given, default 0)
-        if 'nsub' in values and 'vto' not in values and 'vt0' not in values:
-            raise SpiceImportError(f'model {m.name}: VTO from NSUB is not supported (give VTO)')
-        for k in ('tpg', 'nss'):
-            values.pop(k, None)
-        kw = self.translate(values, MOS1_PARAMS if level == 1 else MOS3_PARAMS, m.name,
-                            cls.__name__)
+        ## is not given: level 2 does it (`MosLevel2Hdl`); levels 1 and 3 take
+        ## VTO as given, default 0)
+        if level != 2:
+            if 'nsub' in values and 'vto' not in values and 'vt0' not in values:
+                raise SpiceImportError(f'model {m.name}: VTO from NSUB is not supported '
+                                       '(give VTO)')
+            for k in ('tpg', 'nss'):
+                values.pop(k, None)
+        kw = self.translate(values, {1: MOS1_PARAMS, 2: MOS2_PARAMS}.get(level, MOS3_PARAMS),
+                            m.name, cls.__name__)
         if 'vto' in kw and m.type == 'pmos':
             kw['vto'] = -kw['vto']
         if 'phi' not in kw and 'nsub' not in kw:
