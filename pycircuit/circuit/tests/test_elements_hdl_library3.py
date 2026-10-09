@@ -116,7 +116,10 @@ NPN = dict(IS=1e-16, bf=120.0, nf=1.0, vaf=80.0, ikf=2e-2,
            ise=3e-15, ne=1.6, br=3.0, nr=1.0, var=20.0, ikr=5e-3,
            isc=1e-14, nc=1.9, cje=2e-13, vje=0.72, mje=0.35,
            tf=3e-11, xtf=2.0, vtf=2.0, itf=0.03,
-           cjc=1.2e-13, vjc=0.6, mjc=0.4, xcjc=0.6, tr=1e-9, fc=0.5)
+           cjc=1.2e-13, vjc=0.6, mjc=0.4, xcjc=0.6, tr=1e-9, fc=0.5,
+           gmin=0.0)
+## (NPN, NPN_IDEAL, TRAN_NPN: gmin=0: these tests are about the junction physics; SPICE's GMIN shunt,
+## the device's default since 2026-10-10, is tested on its own)
 
 #: The same device with the three parasitic resistances given, so the
 #: internal nodes exist and the collapse variants differ.
@@ -125,7 +128,7 @@ NPN_R = dict(NPN, rb=30.0, rbm=8.0, re=1.0, rc=15.0)
 #: The IDEAL transport device: no leakage, no knee, no Early, no charge.
 #: Used where a hand-derived identity needs the other blocks out of the
 #: way -- and every such test says which blocks it switched off and why.
-NPN_IDEAL = dict(IS=1e-16, bf=100.0, br=1.0)
+NPN_IDEAL = dict(IS=1e-16, bf=100.0, br=1.0, gmin=0.0)
 
 
 def _dep_q(v, cj, vj, m, fc):
@@ -151,7 +154,7 @@ def _gp_reference(vbe, vbc, T=None, IS=1e-16, bf=100.0, nf=1.0, vaf=0.0,
                   rc=0.0, cje=0.0, vje=0.75, mje=0.33, tf=0.0, xtf=0.0,
                   vtf=0.0, itf=0.0, cjc=0.0, vjc=0.75, mjc=0.33,
                   xcjc=1.0, tr=0.0, fc=0.5, xtb=0.0, eg=1.11, xti=3.0,
-                  kf=0.0, af=1.0, area=1.0, tnom=None):
+                  kf=0.0, af=1.0, area=1.0, tnom=None, gmin=0.0):
     """The Gummel-Poon model in plain numpy, from the textbook.
 
     Takes the two INTERNAL junction voltages (behind ``rb``/``re``/``rc``)
@@ -193,8 +196,10 @@ def _gp_reference(vbe, vbc, T=None, IS=1e-16, bf=100.0, nf=1.0, vaf=0.0,
     q2 = ifw * rikf + irv * rikr
     qb = q1 * 0.5 * (1.0 + math.sqrt(1.0 + 4.0 * q2))
     ict = (ifw - irv) / qb
-    ibe = ifw / bfT + iseT * (math.exp(vbe / (ne * vt)) - 1.0)
-    ibc = irv / brT + iscT * (math.exp(vbc / (nc * vt)) - 1.0)
+    ## (SPICE's junction GMIN, `bjtload.c`: `cben += gmin*vbe`, `cbcn +=
+    ## gmin*vbc`)
+    ibe = ifw / bfT + iseT * (math.exp(vbe / (ne * vt)) - 1.0) + gmin * vbe
+    ibc = irv / brT + iscT * (math.exp(vbc / (nc * vt)) - 1.0) + gmin * vbc
     ic = ict - ibc
     ib = ibe + ibc
 
@@ -394,7 +399,7 @@ def test_gummel_plot_beta_falls_to_half_at_a_collector_current_of_ikf():
     ikf = 5e-3
     bf = 150.0
     el = _mk(eh.GummelPoonNpnHdl, 'c', 'b', 'e',
-             IS=1e-16, bf=bf, br=2.0, ikf=ikf)
+             IS=1e-16, bf=bf, br=2.0, ikf=ikf, gmin=0.0)
     ## Locate the bias where the MEASURED beta is BF/2, by bisection on
     ## the model's own output -- nothing is read back from the card.
     def f(vbe):
@@ -451,7 +456,7 @@ def test_gummel_plot_base_current_ideality_is_ne_at_low_injection():
     ## hoping.
     ne, nf = 2.0, 1.0
     el = _mk(eh.GummelPoonNpnHdl, 'c', 'b', 'e',
-             IS=1e-16, bf=100.0, ne=ne, ise=1e-13, nf=nf, br=2.0)
+             IS=1e-16, bf=100.0, ne=ne, ise=1e-13, nf=nf, br=2.0, gmin=0.0)
 
     def ideality(f, v, dv=2e-3):
         a, b = f(v - dv), f(v + dv)
@@ -524,7 +529,7 @@ def test_early_effect_is_a_measured_output_conductance():
     """
     vaf = 80.0
     el = _mk(eh.GummelPoonNpnHdl, 'c', 'b', 'e',
-             IS=1e-16, bf=120.0, br=2.0, vaf=vaf)
+             IS=1e-16, bf=120.0, br=2.0, vaf=vaf, gmin=0.0)
     for vbe in (0.6, 0.7, 0.75):
         for vce in (2.0, 5.0, 12.0):
             h = 1e-3
@@ -536,7 +541,7 @@ def test_early_effect_is_a_measured_output_conductance():
     ## Without vaf: the residual output conductance is the base-collector
     ## leakage alone, six decades down.
     flat = _mk(eh.GummelPoonNpnHdl, 'c', 'b', 'e',
-               IS=1e-16, bf=120.0, br=2.0, vaf=0.0)
+               IS=1e-16, bf=120.0, br=2.0, vaf=0.0, gmin=0.0)
     h = 1e-3
     ic = _gummel(flat, 0.7, 0.7 - 5.0)[0]
     go0 = (_gummel(flat, 0.7, 0.7 - 5.0 - h)[0]
@@ -1120,7 +1125,7 @@ def test_dc_differential_pair_follows_the_exponential_ratio_law():
 #: (``TF*IF/qb``), which the ODE's full charge Jacobian carries.
 TRAN_NPN = dict(IS=1e-16, bf=120.0, vaf=80.0, ikf=2e-2, br=2.0,
                 cje=5e-12, vje=0.72, mje=0.35, tf=5e-10,
-                cjc=2e-12, vjc=0.6, mjc=0.4, xcjc=1.0, tr=2e-9, fc=0.5)
+                cjc=2e-12, vjc=0.6, mjc=0.4, xcjc=1.0, tr=2e-9, fc=0.5, gmin=0.0)
 
 TR_RB, TR_RC, TR_VCC = 5e3, 2e3, 5.0
 TR_FREQ, TR_VO, TR_VA = 2e6, 0.78, 0.03

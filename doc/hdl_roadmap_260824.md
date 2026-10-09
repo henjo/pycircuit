@@ -7124,3 +7124,45 @@ ngspice keeps Meyer's).  nand's stacked NMOS have the same topology
 Open, for Andreas: a bulk-referred accumulation/depletion charge.
 Not done yet from the plan: voter25, the ring's PSS, mem_plus,
 `spice_ring` in step_machinery.
+
+## 2026-10-10 — 81. SPICE's junction GMIN on the Gummel-Poon (Andreas: "add GMIN", then "default 0")
+
+`gmin` (default **0**, the card's physics; SPICE's 1e-12 S for parity)
+across the base-emitter, base-collector and substrate junctions, where
+`bjtload.c` adds it: in the base currents (`cben += gmin*vbe`, `cbcn +=
+gmin*vbc`, so irb's crowding law reads it as ngspice's does) and on the
+substrate junction (ngspice's `gdsub` without ISS).  Default 0 because with
+1e-12 a dark high-beta phototransistor's collector current is GMIN's
+(5 V x 1e-12 x beta 1200 ~ 6 nA against ~0.1 pA of junction leakage).
+
+WHY IT WAS WANTED: another project's optocoupler (nested), its
+phototransistor's base fed by nothing but a dark photocurrent, failed DC
+with the base "in no equation" -- bisected to 4ec03518, whose last-bit
+reassociation changed the Newton path.  From the old answer the new code
+converges (base column 8e-14 S there): a PATH problem.  `gmin=1e-12` on
+that device is SPICE's remedy.  PCNR does not reach it (off by default in
+DC; it limits forward overshoot).
+
+ngspice's REVERSE junction limiting (`DEVpnjlim`'s `vnew < 0` branch,
+Gillespie, ngspice NEWS "Ng-spice-rework-13", 2000; absent from SPICE3f5
+and the PCNR paper's listing) was ported and MEASURED, and reverted: it
+cost the high-voltage starts -- a level-1 cascode from 40 V under PCNR 77
+iterations (budget 30), a PCNR grid point that plain Newton solves no
+longer converging, the grouped MOS limiter's advantage gone -- while the
+mechanism it addresses was not the one at work.  The reporter's
+iterate at the failure (2026-10-10): base -2.3e83 V, the internal
+collector +2.4e74 V, and a node held by a 3.3 V SOURCE at -2.2e58 V -- the
+linear solve itself had returned garbage, the near-singular Jacobian (the
+base held by ~1e-18 S beside ~1e-3 S) blowing a step up in EVERY unknown;
+the empty column (every exponential exactly 0 at 1e83 V) is the symptom.
+Junction limiting cannot cure that; GMIN, by restoring the conditioning,
+does (`gmin=1e-12` on that device, now the reporter's fix).  OPEN, a
+solver item: DC Newton should reject a step that violates the linear
+source rows that grossly, as a failed linear solve, rather than carry it
+to the structural check.
+
+With `gmin=0` every recorded point digest of the three classes is the
+previous record bit for bit (measured); the explain digests moved with
+the parameter.  The physics tests pin `gmin=0` explicitly; the reference
+transcription carries GMIN as `bjtload.c` does.  Test:
+`test_spice_gmin_holds_every_junction`.

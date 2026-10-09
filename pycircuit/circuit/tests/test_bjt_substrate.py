@@ -12,8 +12,10 @@ from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit import hdl
 from pycircuit.circuit.circuit import Node, defaultepar
 
+## (gmin=0: these tests are about the junction physics; SPICE's GMIN shunt,
+## the device's default since 2026-10-10, is tested on its own)
 CARD = {'IS': 1e-16, 'bf': 100.0, 'vaf': 50.0, 'cje': 1e-12, 'cjc': 5e-13, 'tf': 1e-10,
-        'rb': 50.0, 'rc': 10.0, 're': 1.0}
+        'rb': 50.0, 'rc': 10.0, 're': 1.0, 'gmin': 0.0}
 SUB = {'cjs': 2e-12, 'vjs': 0.6, 'mjs': 0.4}
 
 
@@ -239,3 +241,42 @@ def test_ptf_is_spices_excess_phase(tmp_path):
     g = np.linspace(20e-9, 40e-9, 801)
     assert np.abs(np.interp(g, t, v) - np.interp(g, t0, v0)).max() > 0.05
     assert v[0] == pytest.approx(v0[0], rel=1e-12)
+
+
+def test_spice_gmin_holds_every_junction():
+    """SPICE's junction GMIN (`bjtload.c`), `gmin=1e-12` (the default is 0,
+    the card's physics): a conductance across base-emitter, base-collector
+    and substrate.  At a bias deep enough to underflow the junctions it is
+    what holds the base (without it the column is ~1e-126).  And a
+    floating-base phototransistor fed by nothing but a dark photocurrent --
+    the shape of the circuit that made it wanted (another project's, whose
+    base fell out of every equation on a Newton path) -- solves at the
+    default `gmin=0` here; that circuit's own failure is not reproduced."""
+    from pycircuit.circuit import circuit
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.elements import SubCircuit, VS, R, VCCS
+    from pycircuit.circuit import gnd
+    circuit.default_toolkit = circuit.numeric
+    x = np.zeros(3)
+    x[1] = -40.0                               # vbe = vbc = -40 V: exp underflows
+    on = eh.GummelPoonNpnHdl(Node('c'), Node('b'), Node('e'), gmin=1e-12)
+    off = eh.GummelPoonNpnHdl(Node('c'), Node('b'), Node('e'), gmin=0.0)
+    Gon, Goff = np.asarray(on.G(x), dtype=float), np.asarray(off.G(x), dtype=float)
+    assert Gon[1, 1] == pytest.approx(2e-12, rel=1e-9)    # the two junctions' GMIN
+    ## (without it the column is the junctions' own: 1e-126 here, the
+    ## clamped exponential's floor -- 1e114 below GMIN)
+    assert np.max(np.abs(Goff[:, 1])) < 1e-100
+    s = eh.GummelPoonNpn4Hdl(*[Node(n) for n in 'cbes'], cjs=1e-12, gmin=1e-12)
+    xs = np.array([1.0, 0.7, 0.0, -3.0])
+    i_on = np.asarray(s.i(xs), dtype=float)[3]
+    s0 = eh.GummelPoonNpn4Hdl(*[Node(n) for n in 'cbes'], cjs=1e-12, gmin=0.0)
+    assert i_on - float(np.asarray(s0.i(xs), dtype=float)[3]) == pytest.approx(
+        1e-12 * (-3.0 - 1.0), rel=1e-6)                     # gmin * v(s, ci)
+    c = SubCircuit()
+    c['vcc'] = VS('vcc', gnd, v=5.0)
+    c['rl'] = R('vcc', 'col', r=1e4)
+    c['led'] = VCCS('base', gnd, 'a', gnd, gm=1e-3)         # dark: control 0
+    c['ra'] = R('a', gnd, r=1e3)
+    c['q'] = eh.GummelPoonNpnHdl('col', 'base', gnd, bf=1200, vaf=140, ikf=0.1, rc=1.0)
+    res = DC(c).solve()
+    assert abs(float(res.v('col')) - 5.0) < 1e-3            # dark: the transistor off

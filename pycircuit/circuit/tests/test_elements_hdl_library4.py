@@ -1476,8 +1476,10 @@ def test_what_the_hdl_opamp_does_and_does_not_take_over_from_macromodels():
 #: read and checked by eye -- the FULL card is exercised by
 #: `test_elements_hdl_library3.py`, and the one thing this batch adds is
 #: the thermal node.
+## (gmin=0: these tests are about the junction physics; SPICE's GMIN shunt,
+## the device's default since 2026-10-10, is tested on its own)
 NPN_TH = dict(IS=1e-16, bf=100.0, nf=1.0, nr=1.0, br=1.0, eg=1.11,
-              xti=3.0, tnom=26.85)
+              xti=3.0, tnom=26.85, gmin=0.0)
 
 TH_VBE, TH_VCE = 0.7, 5.0
 

@@ -653,18 +653,22 @@ _RECORDED = [
     ## Npn 6d6a5a0d2d06161b/a0ac7ee494c8ecc7/35e7afcbb3b7e370, Pnp
     ## c3ed303997f1392e/21e88b90474a46ad/21439709d3b32cd6, Thermal
     ## fe1b458d8329968c/3455c501ca26160e/d500ccf7379c575b.
+    ## 2026-10-10: explain re-recorded for the `gmin` parameter (SPICE's
+    ## junction GMIN, default 0): the three POINT digests did not move
+    ## (measured); previous explain Npn 12f9bd59d4d4f203, Pnp
+    ## a27aaf1b487efcf6, Thermal b48032c5efaed323.
     ('GummelPoonNpnHdl', _BJT, ('c', 'b', 'e'), 6,
      ['86f6b89d43855a39', '2f85a7792aa1201e', '5ff8e2d4c0347086'],
-     '12f9bd59d4d4f203'),
+     'f59fa02d9bbea957'),
     ('GummelPoonPnpHdl', _BJT, ('c', 'b', 'e'), 6,
      ['1fdb986ba17c1931', 'f2463ed66739ca8e', '186e9ba75b76412b'],
-     'a27aaf1b487efcf6'),
+     'd26dff1ba7bbb30b'),
     ## 2026-09-19: explain re-recorded (was d498f022d01f0c10).  The flicker term gained a
     ## named sign factor `sgnfl`, which RENUMBERS the intermediate after it
     ## (`_v73_pdiss` -> `_v74_pdiss`); the three POINT digests did not move.
     ('GummelPoonNpnThermalHdl', _BJT, ('c', 'b', 'e', 'th', 'tha'), 8,
      ['f5a076b126f68f66', '929ed86f421a4875', '725e30e46a092a66'],
-     'b48032c5efaed323'),
+     'f4b7fe86a2dfddfc'),
     ## ⚠ The two SPICE-diode `explain` digests were RE-RECORDED
     ## 2026-08-27 for `_autohold` (roadmap sec. 36): the regularisers now
     ## hold their own arguments, so the chain carries more named

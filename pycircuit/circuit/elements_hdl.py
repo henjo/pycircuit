@@ -1690,6 +1690,10 @@ def _spice_bjt_params():
         Parameter(name='ptf', desc='Excess phase at 1/(2 pi tf) (Weil): '
                   'the forward transport current delayed by ptf[rad]*tf', unit='deg',
                   default=0.0),
+        Parameter(name='gmin', desc="SPICE's junction GMIN, a conductance across "
+                  'the base-emitter, base-collector and substrate junctions: 0 '
+                  "(the default -- the card's physics) or SPICE's 1e-12 for "
+                  'parity', unit='S', default=0.0),
         Parameter(name='xtf', desc='Bias coefficient of tf', unit='',
                   default=0.0),
         Parameter(name='vtf', desc='Vbc dependence of tf (0 = none)',
@@ -1975,10 +1979,18 @@ def _gp_core(p, T, npn, c, b, e, s=None):
         Contribution(bxp2.I, ddt(tdx * wxp) + 3.0 * (yxp + wxp - ifwd / qb)),
         Collapse(bxp2, p.ptf <= 0.0),
     )
+    ## SPICE's junction GMIN (`bjtload.c`: `cben += gmin*vbe`, `cbcn +=
+    ## gmin*vbc`), in the base currents -- and so in irb's crowding law,
+    ## which reads them, as ngspice's does.  DEFAULT 0 (Andreas,
+    ## 2026-10-10): with SPICE's 1e-12 a dark high-beta phototransistor's
+    ## collector current is GMIN's (5 pA x beta), not the card's.
+    ## `gmin=1e-12` gives SPICE parity, and is the remedy for a node held by
+    ## nothing but junctions (a dark floating-base phototransistor's base
+    ## fell out of every equation on a Newton path: roadmap sec. 81).
     ibe = _var(ifwd / bfT + iseT * (_expl(vbe / (p.ne * vtT))
-                                    - 1.0), 'ibe')
+                                    - 1.0) + p.gmin * vbe, 'ibe')
     ibc = _var(irev / brT + iscT * (_expl(vbc / (p.nc * vtT))
-                                    - 1.0), 'ibc')
+                                    - 1.0) + p.gmin * vbc, 'ibc')
 
     ## -- charge ----------------------------------------------------
     ## The transit-time modulation, SPICE's
@@ -2103,10 +2115,11 @@ def _gp_core(p, T, npn, c, b, e, s=None):
         cjsT = _var(p.area * p.cjs * (1.0 + p.mjs * (4e-4 * (T - _tnom_k(p.tnom))
                                                    - (vjsT / p.vjs - 1.0))), 'cjsT')
         vert = _var(sympy.Piecewise((1.0, p.subs >= 0.0), (0.0, True)), 'subvert')
+        ## (the junction's GMIN, as ngspice's `gdsub` without ISS)
         stmts += (
-            Contribution(bsv.I, ddt(vert * _substrate_charge(
+            Contribution(bsv.I, vert * p.gmin * bsv.V + ddt(vert * _substrate_charge(
                 bsv.V, cjsT, vjsT, p.mjs, 'subv'))),
-            Contribution(bsl.I, ddt((1.0 - vert) * _substrate_charge(
+            Contribution(bsl.I, (1.0 - vert) * p.gmin * bsl.V + ddt((1.0 - vert) * _substrate_charge(
                 bsl.V, cjsT, vjsT, p.mjs, 'subl'))),
         )
 
