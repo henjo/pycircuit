@@ -2297,3 +2297,54 @@ def test_grid_error_refines_by_any_factor_and_reports_the_methods_order():
     assert abs(r3['error'] / actual - 1.0) < 0.05, (r3['error'], actual)
     with pytest.raises(ValueError, match='levels'):
         g.grid_error(period, levels=4)
+
+
+def test_radau_s_monodromy_reads_the_stage_newton_s_g_where_it_evaluated_the_state(monkeypatch):
+    """`_G_at` on a circuit with junctions reads the device memo's `G` where
+    the stage Newton evaluated that very state, and builds it through PCNR
+    only where it did not (2026-10-09: the 4049 oscillator's radau solve
+    6.3 -> 0.8 s, all 3600 reads found).  The memo is stateless by
+    construction, so the orbit is PCNR's to rounding: here forced through
+    PCNR by hiding the memo from `_G_at`."""
+    from pycircuit.circuit import pcnr
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit.elements import VS, VSin, R, C
+    from pycircuit.circuit.shooting import _pss_inner
+
+    def inverter():
+        c = SubCircuit()
+        c['VDD'] = VS('vdd', gnd, v=3.0)
+        c['VIN'] = VSin('in', gnd, vo=1.5, va=1.5, freq=1e6)
+        c['RL'] = R('vdd', 'out', r=10e3)
+        c['M1'] = eh.MosLevel1Hdl('out', 'in', gnd, gnd)
+        c['CL'] = C('out', gnd, c=1e-12)
+        return c
+
+    def solve(hide_memo):
+        pss = PSS(inverter(), method='radau')
+        assert pss._pcnr_junctions(), 'the fixture must have junctions'
+        calls = []
+        orig = pcnr.augmented_system
+
+        def counting(*a, **k):
+            calls.append(1)
+            return orig(*a, **k)
+        monkeypatch.setattr(pcnr, 'augmented_system', counting)
+        if hide_memo:
+            G_at = _pss_inner._InnerTransient._G_at
+
+            def no_memo(self, x):
+                tr = self._transient()
+                with monkeypatch.context() as m:
+                    m.setattr(tr, '_memo_get', lambda _x: None)
+                    return G_at(self, x)
+            monkeypatch.setattr(_pss_inner._InnerTransient, '_G_at', no_memo)
+        pss.solve(period=1e-6, timestep=1e-6 / 40)
+        monkeypatch.undo()
+        assert pss.converged
+        return np.asarray(pss.waveform[1]), len(calls)
+
+    memo, n_memo = solve(False)
+    forced, n_forced = solve(True)
+    assert n_forced > 0 and n_memo == 0, (n_memo, n_forced)
+    assert np.max(np.abs(memo - forced)) < 1e-12, np.max(np.abs(memo - forced))

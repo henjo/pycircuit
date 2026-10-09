@@ -219,6 +219,10 @@ class _InnerTransient(object):
         to its linearisation.  It also lets the transient and the monodromy
         share ONE limiting.
 
+        Where the stage Newton evaluated this very state, its device memo
+        holds that `G` (`Transient._memo_get`), read first: a memo entry is
+        stateless by construction (see the branch).
+
         ⚠ `_C_at` CANNOT JOIN: PCNR re-stamps `i`/`G` at `v_lim` but leaves `q`
         alone (`pcnr.py` treats the algebraic equations; diffusion charge is its
         stated caveat), so the capacitance is read directly -- with no limit
@@ -240,6 +244,15 @@ class _InnerTransient(object):
             rec = tr._memo_get(xf)
             G = tr.cir.G(xf, tr.epar) if rec is None or 'G' not in rec \
                 else rec['G']
+        elif (rec := tr._memo_get(xf)) is not None and 'G' in rec:
+            ## (the stage Newton's own `G` AT this state: the memo is keyed on
+            ## the state's bytes and records only without a stateful limiter
+            ## -- the walk limits the iterate, not a stored device voltage --
+            ## so it depends on the point alone, the property PCNR is used for
+            ## here.  Measured 2026-10-09 on the 4049 oscillator by radau: all
+            ## 3600 reads found, within 5.6e-17 of PCNR's Schur-reduced `G`,
+            ## 8.5 of 10.6 s spent rebuilding it)
+            G = rec['G']
         else:
             xfa = np.asarray(xf, dtype=float)
             v_lim = _pcnr.v_lim_init(junctions, xfa)

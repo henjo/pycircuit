@@ -183,9 +183,9 @@ def test_the_gilbert_cell_s_periodic_steady_state_is_xyce_s_harmonic_balance():
     steps, against Xyce's harmonic balance (20 harmonics).  Measured
     2026-10-09: the output V(5,3) within 0.17 mV over 2.47 V (xyce_verify
     0.016), the input 0.009; h1 -0.63630j against -0.63632j, h3 and h5 to
-    4 digits, the even harmonics zero in both (a balanced cell).  Gear,
-    not radau: the same answer in 0.5 s where radau's solve took 222 s
-    (open, doc/pss_log_260902.md)."""
+    4 digits, the even harmonics zero in both (a balanced cell).  Gear in
+    0.5 s; radau the same answer in 1.2 s (222 s until `PSS.solve` held
+    BLAS at one thread, 2026-10-09)."""
     R = 'Netlists/HB/gilbert_cell_hb.cir'
     deck, td, fd = _data(R, 'OutputData/HB/gilbert_cell_hb.cir.HB.TD.prn',
                          'OutputData/HB/gilbert_cell_hb.cir.HB.FD.prn')

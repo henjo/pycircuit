@@ -10,7 +10,7 @@ from pycircuit.circuit.analysis import Analysis
 from pycircuit.circuit.analysis import Parameter
 from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.circuit import gnd
-from pycircuit.circuit.transient import Transient
+from pycircuit.circuit.transient import Transient, _single_threaded_blas
 from pycircuit.post import InternalResultDict
 import pycircuit.circuit.analysis as analysis
 from ._numerics import freq_analysis
@@ -1293,6 +1293,18 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                      tstab=tstab, break_events=break_events,
                      phase_rule=phase_rule, state_events=state_events,
                      trace=trace)
+        ## BLAS ON ONE THREAD FOR THE WHOLE SOLVE, as `Transient.solve` holds
+        ## it (its stage 2a): the shooting walks drive the inner transient's
+        ## steps directly, never through its `solve`, so until 2026-10-09 every
+        ## dense solve here ran on OpenBLAS's pool -- radau's coupled stage
+        ## system of 3m unknowns crosses its threading size near 100: a
+        ## Gilbert cell (m = 49) took 221 s, 1.2 s on one thread (the same
+        ## answer; doc/pss_log_260902.md, 2026-10-09).
+        with _single_threaded_blas():
+            return self._solve_run(_args, x0)
+
+    def _solve_run(self, _args, x0):
+        """`solve`'s phases under its BLAS limit."""
         ## (the fallbacks re-solve from `_args`, whose `x0` is a copy the
         ## first solve cannot touch)
         run = self._solve_prepare(**dict(_args, x0=x0))
