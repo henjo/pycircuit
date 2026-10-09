@@ -6990,3 +6990,15 @@ importer's default -- set only where a case needs it: the suite runner's
 slowlatch now completes (665 steps, 6 forced) and scores 136 against its
 gold -- stage 4's 138 (before the gate charge), where ngspice on our deck
 scored 0.494: a separate discrepancy, open.
+
+## 2026-10-09 — 77. Stage 8: PSS on the SPICE decks (record in `doc/pss_log_260902.md`)
+
+The 4049 oscillator's limit cycle (autonomous, gear on a one-period
+`lte_grid`): period 196.98892 us against the gold's settled 196.9905,
+every node within 3 mV.  Xyce's two HB decks by driven shooting from the
+operating point (from zeros the common-emitter stage diverges):
+common-emitter xyce_verify 0.094 / 0.808 (the 0.808 is the gold's own
+50-harmonic truncation), harmonics within 2e-4 of the fundamental; the
+Gilbert cell 0.016 / 0.009, h1/h3/h5 to 4 digits.  Three gold tests, and
+`spice_ce_pss` in step_machinery.  Open: radau 50-450x slower than gear
+on these decks, unsized.

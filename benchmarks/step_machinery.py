@@ -367,6 +367,24 @@ def _case_spice_4049():
     return dt, None, _sha(res.x), _stats(tr), paths
 
 
+def _case_spice_ce_pss():
+    """A driven PSS on a deck read from a SPICE netlist (the SPICE benchmark
+    plan's stage 8, 2026-10-09): Xyce's common-emitter HB deck -- a 2N2222
+    Gummel-Poon stage driven at 1 MHz into clipping -- by radau shooting on
+    200 steps from its operating point (untimed), as the gold test runs it."""
+    from pycircuit._testing import benchdata
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.spice_import import import_netlist
+    imp = import_netlist(benchdata.spice_data(DATA['spice_ce_pss'][0]))
+    cir = imp.circuit
+    xdc = np.asarray(DC(cir, epar=imp.epar()).solve().x, dtype=float).ravel()
+    x0 = np.delete(xdc, cir.get_node_index(gnd))
+    p = PSS(cir, method='radau', epar=imp.epar(), **imp.options)
+    dt, _out, paths = _timed(lambda: p.solve(period=1e-6, timestep=1e-6 / 200,
+                                             maxiterations=40, x0=x0))
+    return dt, None, _sha(p.waveform[1]), None, paths
+
+
 def _case_resolve():
     """One transient solved again and again, as a sweep or a Monte Carlo
     loop solves it (2026-10-06): the 20-MosLevel1 chain, 16 solves of one
@@ -400,6 +418,7 @@ ANALYSES = {
     'pnoise': _case_pnoise,
     'ppv': _case_ppv,
     'spice_4049': _case_spice_4049,
+    'spice_ce_pss': _case_spice_ce_pss,
 }
 CASES = CASES + tuple(ANALYSES)
 #: what a case needs of the package it runs against, where a tree may lack
@@ -407,12 +426,14 @@ CASES = CASES + tuple(ANALYSES)
 #: leaves such a case out where either tree lacks it, and says so (this
 #: script runs in both trees, the package is each tree's own)
 NEEDS = {'vdp_pss_hdl': ('pycircuit.circuit.elements_hdl', 'BSourceHdl'),
-         'spice_4049': ('pycircuit.circuit.spice_import', 'import_netlist')}
+         'spice_4049': ('pycircuit.circuit.spice_import', 'import_netlist'),
+         'spice_ce_pss': ('pycircuit.circuit.spice_import', 'import_netlist')}
 #: the fetched benchmark data a case reads (`pycircuit._testing.benchdata`,
 #: `benchmarks/fetch_spice_suite.py`): where a file is not fetched the case
 #: is left out, with a line saying so -- a comparison and a plain run alike,
 #: so missing data never aborts either
-DATA = {'spice_4049': ('Netlists/4049OSC/4049osc.cir',)}
+DATA = {'spice_4049': ('Netlists/4049OSC/4049osc.cir',),
+        'spice_ce_pss': ('Netlists/HB/common_emitter_hb.cir',)}
 
 
 def _has_data(case):
