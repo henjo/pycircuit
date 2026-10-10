@@ -1,3 +1,4 @@
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 from typing import Any
@@ -29,6 +30,29 @@ MAX_GROWTH_RATIO = 2.0
 ## zero-stable for BDF-2 -- and it exists so a single over-tolerance estimate
 ## cannot collapse the step by orders of magnitude in one move.
 MIN_SHRINK_RATIO = 0.2
+
+## THE RETRY'S ORDER (2026-10-10; Andreas: "start on the step controller retry
+## order").  The shrink after a rejection assumes the estimate falls as `h^p`
+## (`p` = order + 1, 3 for gear).  Measured between retries at one time point
+## on the CircuitSim90 decks, it falls as `h^q` with q ~ 2.3-2.7 where a node
+## voltage is the worst unknown but q ~ 1.2-1.5 where a supply's branch
+## current is (most rejections there: 5627 of the ring's 6045), and ~0.85-1.2
+## in the sequences that ended forced -- stiff steps, h far above the internal
+## nodes' time constants, where an algebraic unknown's error loses order.
+## Each cube-law retry then undershoots, `max_reject` runs out, and the step
+## is force-accepted over tolerance (the ring 657, mux8 624).  So from the
+## SECOND retry at a point the exponent is the one the last two tries
+## measured, `q = ln(e1/e2)/ln(h1/h2)`, clamped to `[RETRY_ORDER_MIN, p]`:
+## the ring 657 -> 0 forced, mux8 624 -> 131, gm17 26 -> 2, gm1 59 -> 16, a
+## native rectifier 4 -> 0, the same runs' time unchanged or less; the
+## ladder, a pulsed RC and a slow rectifier unchanged.  The floor 1 is the
+## estimate falling no slower than `h`: below it (0.5 measured too) nothing
+## more was gained; an estimate that does not fall at all (a corner) shrinks
+## at `target/err`, MIN_SHRINK_RATIO-bounded, and still meets `max_reject`.
+## NOT IN THE JAX TRANSIENT YET (`jaxtransient.calculate_next_dt` keeps the
+## assumed order): it needs the same rule, the last rejection carried in its
+## loop state (Andreas, 2026-10-10: "take on the JAX side later").
+RETRY_ORDER_MIN = 1.0
 
 
 
@@ -172,7 +196,33 @@ class StepController(ABC):
                 "relref must be one of %r, not %r" % (RELREF_MODES, relref))
         self.relref = relref
         self._ref_running = None
+        ## (re-applied every run, like the running reference: no rejection
+        ## carries into the next run)
+        self._retry = None
         return self
+
+    ## The last rejection, `(x_last, h, err)`, for the retry's measured order.
+    _retry = None
+
+    def _retry_exponent(self, s, err, p, target):
+        """The exponent for the step after this rejection when the step
+        before it was rejected at the SAME point (`x_last` the same
+        object: the accepted state both tries left from) and larger:
+        ``1/q``, ``q`` the order the two tries measured, clamped to
+        ``[RETRY_ORDER_MIN, p]``.  None otherwise -- the caller's own
+        ``1/p`` law, unchanged to the bit."""
+        prev = self._retry
+        h = s.h_curr
+        if (prev is None or prev[0] is not s.x_last or not prev[1] > h * (1.0 + 1e-9)
+                or not prev[2] > target or not err > 0.0):
+            return None
+        q = math.log(prev[2] / err) / math.log(prev[1] / h)
+        return 1.0 / min(max(q, RETRY_ORDER_MIN), p)
+
+    def _judged(self, s, accepted, err):
+        """Remember a rejection for `_retry_exponent`; an accepted step
+        clears it."""
+        self._retry = None if accepted else (s.x_last, s.h_curr, err)
 
     ## STAGE 12A -- Fang's two-sided acceptance band, eq (15), and the step-change
     ## damper, eq (16).  (DAC 2013; see doc/transient_work_plan.md STAGE 12.)
@@ -476,6 +526,7 @@ class IntegralController(StepController):
         ## saturating at 1.3589e-02 from this one step, unchanged across four
         ## decades of `reltol`.
         if s.no_history:
+            self._retry = None
             return True, s.h_curr
 
         ## the LTE in solution units (`_charge_lte`) against the dynamic
@@ -501,11 +552,17 @@ class IntegralController(StepController):
         ## can move it.
         target = self._band_target(safety, p)
         h = s.h_curr
-        return self._band_decision(
+        ## a second retry at one point shrinks at the order the two tries
+        ## measured (`RETRY_ORDER_MIN`)
+        retry = self._retry_exponent(s, err, p, target)
+        shrink_exponent = exponent if retry is None else retry
+        accepted, h_next = self._band_decision(
             s, err,
-            shrink=lambda e: h * max(MIN_SHRINK_RATIO, (target / e) ** exponent),
+            shrink=lambda e: h * max(MIN_SHRINK_RATIO, (target / e) ** shrink_exponent),
             grow=lambda e: h * min(MAX_GROWTH_RATIO,
                                    (target / max(e, 1e-12)) ** exponent))
+        self._judged(s, accepted, err)
+        return accepted, h_next
 
 class PIController(StepController):
     """
@@ -582,6 +639,7 @@ class PIController(StepController):
         ## the first real update has a previous error to work from.
         if s.no_history:
             self.last_err = 0.5
+            self._retry = None
             return True, s.h_curr
         h_curr, max_step = s.h_curr, s.max_step
 
@@ -607,8 +665,15 @@ class PIController(StepController):
             ## err` below drives the P factor `(err_last/err)^k_P` to exactly 1.
             ## That is the textbook response to a rejection (Hairer & Wanner II.4),
             ## and it needs no new mode -- the machinery was already here.
-            h_next = h_curr * max(MIN_SHRINK_RATIO, 0.9 * (1.0 / err)**exponent)
+            ## (a second retry at one point: the measured order, as in
+            ## IntegralController -- `0.9 err^(-1/p)` is `(0.9^p/err)^(1/p)`)
+            retry = self._retry_exponent(s, err, p, 0.9 ** p)
+            if retry is None:
+                h_next = h_curr * max(MIN_SHRINK_RATIO, 0.9 * (1.0 / err)**exponent)
+            else:
+                h_next = h_curr * max(MIN_SHRINK_RATIO, (0.9 ** p / err) ** retry)
             self.last_err = None
+            self._judged(s, False, err)
             return False, h_next
             
         # Step accepted: use PI update
@@ -625,7 +690,8 @@ class PIController(StepController):
         h_next = min(self._damp(h_next, h_curr), max_step)
         
         self.last_err = err
-        
+        self._judged(s, True, err)
+
         return True, h_next
 
 

@@ -213,3 +213,50 @@ def test_an_unknown_the_mask_leaves_out_does_not_judge_the_step(ctrl_cls):
     assert not ctrl_cls().evaluate_step(**kw)[0]
     assert ctrl_cls().evaluate_step(lte_mask=np.array([True, False, True]), **kw)[0]
     assert not ctrl_cls().evaluate_step(lte_mask=np.array([False, True, True]), **kw)[0]
+
+
+@pytest.mark.parametrize('ctrl_cls', [IntegralController, PIController])
+def test_a_second_retry_shrinks_at_the_order_its_two_tries_measured(ctrl_cls):
+    """The retry's order (`RETRY_ORDER_MIN`, 2026-10-10): the first retry at
+    a point assumes the estimate falls as h^p (p = 3 here); the SECOND, at
+    the same point (`x_last` the same object), shrinks at the order ``q``
+    the two tries measured, clamped to ``[1, p]``.  On the CircuitSim90
+    decks a supply current's estimate falls as ~h^1.2-1.5, the cube-law
+    retries undershot until `max_reject` force-accepted the step (the ring
+    657 forced, now 0).  Each clause: the measured order; an estimate that
+    does not fall (a corner) at the floor 1; one falling faster than h^p at
+    p; another base point, and an accepted step, back to the assumed p."""
+    ctrl = ctrl_cls()
+    tol = 7.0 * (1e-3 + 1e-12)
+    x0 = np.zeros(2)
+
+    def judge(err, h, x_last=x0):
+        return ctrl.evaluate_step(
+            x_curr=np.ones(2), x_last=x_last, q_curr=np.zeros(2),
+            q_last_hist=[np.zeros(2)], iq_last_hist=[np.zeros(2)],
+            h_curr=h, h_last=1e-6, no_history=False, J=np.eye(2),
+            active_integrator=StubIntegrator(Eg=[err * tol, 0.0]), irefnode=1,
+            reltol=1e-3, abstol=1e-12, toolkit=numeric, max_step=1e-3,
+            TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None)
+
+    target = 0.9 ** 3
+    ok, h1 = judge(8.0, 1e-6)
+    assert not ok and h1 == pytest.approx(1e-6 * (target / 8.0) ** (1 / 3), rel=1e-9)
+    ok, h2 = judge(3.3, h1)
+    q = np.log(8.0 / 3.3) / np.log(1e-6 / h1)
+    assert 1.0 < q < 3.0
+    assert not ok and h2 == pytest.approx(h1 * (target / 3.3) ** (1 / q), rel=1e-9)
+    ## not falling: the floor, q = 1 -- `target/err`, MIN_SHRINK_RATIO-bounded
+    ok, h3 = judge(3.3, h2)
+    assert not ok and h3 == pytest.approx(h2 * max(MIN_SHRINK_RATIO, target / 3.3), rel=1e-9)
+    ## falling faster than h^p: clamped at p (q against the last TRY, at h2)
+    ok, h4 = judge(1.1, 0.8 * h2)
+    assert not ok and h4 == pytest.approx(0.8 * h2 * (target / 1.1) ** (1 / 3), rel=1e-9)
+    ## another base point: the assumed order
+    ok, h5 = judge(3.3, 0.5 * h4, x_last=np.zeros(2))
+    assert not ok and h5 == pytest.approx(0.5 * h4 * (target / 3.3) ** (1 / 3), rel=1e-9)
+    ## an accepted step clears it: the next rejection assumes p again
+    ok, _ = judge(0.1, 0.4 * h4, x_last=x0)
+    assert ok
+    ok, h6 = judge(8.0, 0.3 * h4)
+    assert not ok and h6 == pytest.approx(0.3 * h4 * (target / 8.0) ** (1 / 3), rel=1e-9)

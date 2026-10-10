@@ -4657,3 +4657,81 @@ measurement now runs capped (`systemd-run --user --scope -p MemoryMax
 -p MemorySwapMax=0`), the guard fitted from the ladder's slope; the
 branch check's dense SVD (5608aab4) and per-step reductions (c2b8f948);
 DC's dense solve measured and left (the plan's stage B refused: 2.3x).
+
+## `stepcontroller.py` -- the second retry at one point shrinks at the order its tries measured (2026-10-10; Andreas: "start on the step controller retry order", "build it, take on the JAX side later")
+
+### `RETRY_ORDER_MIN`, `StepController._retry_exponent`, `StepController._judged`
+
+The shrink after a rejection assumed the estimate falls as `h^p` (`p` =
+order + 1 = 3 for gear).  Measured between consecutive tries at one time
+point (`q = ln(e1/e2)/ln(h1/h2)`, percentiles 10/25/50/75/90):
+
+| case | q, all retries | median q, sequences that ended forced | worst a branch current | worst a node | forced |
+|---|---|---|---|---|---|
+| gm17, judged | 0.78 1.13 1.44 1.90 2.67 | 1.07 | 1.44 | 1.39 | 26 |
+| slowlatch, judged | 0.96 1.23 1.57 2.76 5.43 | 1.18 | 1.56 | 2.33 | 22 |
+| ring, judged | 0.69 0.95 1.25 1.62 2.33 | 0.85 | 1.23 | 2.32 | 657 |
+| gm1 | 0.63 0.91 1.19 1.57 2.49 | 0.88 | 1.16 | 2.73 | 59 |
+| mux8 | 0.86 1.05 1.32 1.79 2.45 | 0.97 | 1.26 | 2.42 | 624 |
+| native rectifier, 1 MHz, reltol 1e-4 | 0.57 1.26 1.90 2.20 2.63 | 0.53 | 1.90 | - | 4 |
+| same at reltol 1e-6 | 2.02 2.20 2.54 2.80 3.01 | - | 2.54 | - | 0 |
+| native rectifier, 1 kHz | 1.71 2.68 3.00 4.46 8.04 | - | 3.12 | - | 0 |
+| RC ladder + diode | 2.07 2.09 2.10 2.15 2.16 | - | 2.10 | - | 0 |
+
+A supply's branch current -- most rejections on the MOS decks (5627 of
+the ring's 6045) -- falls as ~h^1.2-1.5: stiff steps, h far above the
+internal nodes' ~0.3 ps, where an algebraic unknown's error loses order.
+Each cube-law retry undershot and `max_reject` (3) force-accepted the
+step over tolerance.  Now, from the SECOND retry at a point (`x_last` the
+same object: the accepted state both tries left from), the exponent is
+`1/q`, `q` clamped to `[RETRY_ORDER_MIN = 1, p]`; the first retry, and
+every other case, keep the controllers' own expressions to the bit.  The
+PI controller's rejection path takes the same rule.
+
+Measured (forced / rejected / accepted, time; the gold metric):
+
+| case | before | after |
+|---|---|---|
+| ring, judged | 657 / 6045 / 7824, 8.2 s, 48.41 | 0 / 4592 / 8885, 7.9 s, 48.53 |
+| mux8 | 624 / 7389 / 17753, 32.7 s, 0.259 | 131 / 5769 / 18181, 31.3 s, 0.259 |
+| gm1 | 59 / 489 / 925, 1.25 s, 3.61 | 16 / 394 / 1009, 1.21 s, 3.66 |
+| gm17, judged | 26 / 310 / 517, 1.10 s, 96.06 | 2 / 241 / 556, 1.04 s, 96.06 |
+| slowlatch, judged | 22 / 230 / 1025, 0.55 s, 136.23 | 10 / 200 / 1067, 0.69 s, 136.23 |
+| native rectifier, 1 MHz | 4 / 72 / 190 | 0 / 61 / 198; max error to a reltol-1e-9 reference 9.0 -> 8.6 mV |
+| ladder, pulsed RC | | unchanged |
+
+A floor of 0.5 gained nothing over 1 (mux8 136 forced, more steps).
+Tests: `test_a_second_retry_shrinks_at_the_order_its_two_tries_measured`
+(both controllers; the measured order, the floor, the clamp at p, another
+base point, an accepted step), `test_gm17_s_supply_currents_in_the_error_
+test_force_few_steps` (26 -> 2; on the old controller `26 <= 5` fails).
+
+⚠ THE JAX TRANSIENT DOES NOT HAVE IT (`jaxtransient.calculate_next_dt`
+keeps the assumed order; noted there).  It needs the same rule -- the last
+rejection's (dt, err) carried in its loop state -- or the two backends'
+step sequences part after a second rejection.  Andreas: "take on the JAX
+side later. Note that this fix is needed for Jax".
+
+Still forced: mux8 131, gm1 16, slowlatch 10, gm17 2 -- the first retry
+at a point still assumes `p`; the order the previous point measured is
+the candidate for it.
+
+**The one suite failure it caused was the TEST's window, and the
+investigation found no PSS defect** (Andreas: "1" -- investigate first).
+`test_the_lte_chosen_grid_solves_van_der_pol_through_the_analysis` built
+its grid from the accepted points at or after `t[-1] - T`: short of a
+period by up to one coarse step, because `t[-1]` is the `tend`-truncated
+landing at any phase (0.9 and 1.37 here), so normalised to fractions the
+grid stretched by up to 0.85 % and its fine region sat 0.4-0.7 time units
+off van der Pol's jumps.  Moving `tend` by 0, 0.3, 1, 2, 5, 10 on the
+code BEFORE this change: -74, -28 ppm, no convergence x3, -73 ppm; after:
+-468, -190, no convergence, -62, -43, no convergence -- the 200 ppm held
+by where `tend` fell.  (The shooting's 'closing' column stalled at |F|
+0.02 with its Newton direction uphill along T; the proportional
+fallback then failed its trial steps.)  An exact window -- the seed
+interpolated at `t[-1] - T` inside its slow step, the partial step folded
+into the next -- converges at all 12 (both codes) at -24.5 ppm, opening
+coarse (3400-6100x the median step); the test now builds that.
+`PSS.lte_grid(fold=False)` is NOT affected: its window ends at the last
+NATURAL step and a settled run's steps recur each period, so the
+shortfall is 0.004 (all six tstab 1200-1210 converge at -21.5 ppm).

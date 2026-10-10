@@ -7351,3 +7351,19 @@ path, C and G agree with finite differences to 1e-9, no physical
 unstable mode.  Not yet explained; a suspect (from reading, unverified):
 level 2's reverse drive `b0 (1 + vds/vdsatr)` blended into the 25 mV
 band, with `vdsatr` near threshold tiny.
+
+## 2026-10-10 — 87. The step controller's second retry shrinks at the order its tries measured (Andreas: "start on the step controller retry order", "build it, take on the JAX side later")
+
+The forced steps that stayed after 86 were the retry law, not the model:
+a supply's branch current falls as ~h^1.2-1.5 between retries at one
+point (q ~ 0.85-1.2 in the sequences that ended forced) where the law
+assumed h^3.  From the second retry the exponent is the one the two tries
+measured, clamped to [1, p]: the ring judged 657 -> 0 forced, mux8 624 ->
+131, gm1 59 -> 16, gm17 judged 26 -> 2, slowlatch 22 -> 10, the time the
+same or less; native circuits unchanged.  The measurements and the
+design: `doc/transient_history.md` (`RETRY_ORDER_MIN`).  ⚠ Needed in the
+JAX transient too (not done: Andreas, "take on the JAX side later").
+The one suite failure, van der Pol's LTE-grid PSS test, was the test's
+window (short of a period by up to one coarse step; it passed or failed
+by where `tend` fell, on the old code too); built exactly, 12 of 12
+converge.  `PSS.lte_grid` is not affected (`doc/transient_history.md`).

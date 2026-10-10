@@ -1128,6 +1128,12 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
     ## (stepcontroller._band_target) so the backends read as one law.  The
     ## clamps are the CPU's named constants rather than re-derived literals.
     ## History: `doc/transient_history.md`, `jaxtransient.calculate_next_dt`.
+    ## ⚠ NOT YET ONE LAW AFTER A REJECTION (2026-10-10): the CPU's second
+    ## retry at one point shrinks at the order its last two tries MEASURED
+    ## (`stepcontroller.RETRY_ORDER_MIN`, `StepController._retry_exponent`;
+    ## the ring's forced steps 657 -> 0); this keeps the assumed order.  It
+    ## needs the same rule, the last rejection's (dt, err) in the loop state
+    ## (Andreas: "take on the JAX side later" -- the fix is needed here).
     from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO,
                                                   MAX_GROWTH_RATIO)
     safety = 0.9

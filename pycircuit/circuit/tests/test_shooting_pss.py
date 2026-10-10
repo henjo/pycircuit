@@ -1419,6 +1419,20 @@ def test_the_lte_chosen_grid_solves_van_der_pol_through_the_analysis():
     Jacobians agree to six digits.  The blocker was the manufactured
     opening step, which the prototype did not have because its unknown was
     `x_0` itself.
+
+    ⚠ THE WINDOW IS EXACTLY ONE PERIOD (2026-10-10).  It was the accepted
+    points from the first one at or after `t[-1] - T`: short of a period by
+    up to one coarse step (0.9 here; `t[-1]` is the `tend`-truncated
+    landing, at any phase), and normalised to fractions the grid was
+    stretched by up to 0.85 %, its fine region 0.4-0.7 time units off the
+    jumps it was built on.  The solve then converged or not by where `tend`
+    fell: moving `tend` by 0.3-10 failed 3 of 6 windows on the then code
+    (-28 .. -74 ppm where it converged), and a step controller change that
+    moved the run 3 steps in 9544 put it at -468 ppm.  Exact -- the seed
+    interpolated at `t[-1] - T`, inside its slow step, the partial step
+    folded into the next -- all 12 (both codes, six `tend`) converged at
+    -24.5 ppm.  `PSS.lte_grid` is not affected: its window ends at the last
+    NATURAL step, and a settled run's steps recur each period (0.004 short).
     """
     circuit.default_toolkit = circuit.numeric
     T = 162.842412                      # measured free-running period
@@ -1432,12 +1446,14 @@ def test_the_lte_chosen_grid_solves_van_der_pol_through_the_analysis():
                                                 timestep=0.05, x0=x0)
     t = np.asarray(res.sweep_values, dtype=float).ravel()
     xs = np.asarray(res.x, dtype=float)
-    j0 = int(np.searchsorted(t, t[-1] - T))
-    win_t, win_x = t[j0:], xs[:, j0:]
-    fr = np.diff(win_t)
+    ta = t[-1] - T
+    j0 = int(np.searchsorted(t, ta))    # the first accepted point at or after it
+    xa = np.array([np.interp(ta, t[j0 - 1:j0 + 1], xs[k, j0 - 1:j0 + 1])
+                   for k in range(xs.shape[0])])
+    fr = np.diff(np.concatenate(([ta], t[j0 + 1:]))) / T
     fr = fr / fr.sum()
     iref = cir.get_node_index(gnd)
-    seed = np.concatenate((win_x[:iref, 0], win_x[iref + 1:, 0]))
+    seed = np.concatenate((xa[:iref], xa[iref + 1:]))
 
     ## the pathology this case exists for: the window opens on a coarse step
     assert fr[0] > 100 * np.median(fr), \

@@ -225,3 +225,21 @@ def test_the_ring_oscillator_s_periodic_steady_state():
     assert pss.converged
     assert abs(pss.period / 10.852e-9 - 1.0) < 5e-3, pss.period     # its grid-converged value
     assert abs(pss.period / 10.68e-9 - 1.0) < 0.025, pss.period     # ngspice: the open gap
+
+
+def test_gm17_s_supply_currents_in_the_error_test_force_few_steps():
+    """The step controller's retry order (2026-10-10): gm17 (CircuitSim90,
+    MOS level 3) with its supply currents JUDGED -- the error test's
+    default, not the suite's skip.  Their estimates fall as ~h^1.1-1.4
+    between retries at a point; the cube-law retries undershot and 26
+    steps were force-accepted over tolerance (and until the gate charge's
+    onset split, 10700247, the run stopped at 5.75 ns).  With the second
+    retry at the order its tries measured: 2."""
+    deck, = _data('Netlists/CircuitSim90/MOS3/gm17.cir')
+    circuit.default_toolkit = circuit.numeric
+    imp = spice_import.import_netlist(deck)
+    tr, kw = imp.transient(lte_algebraic='judge')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr.solve(**kw)
+    assert tr.statistics.force_accepts <= 5, tr.statistics.force_accepts
