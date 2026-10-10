@@ -7370,3 +7370,41 @@ The one suite failure, van der Pol's LTE-grid PSS test, was the test's
 window (short of a period by up to one coarse step; it passed or failed
 by where `tend` fell, on the old code too); built exactly, 12 of 12
 converge.  `PSS.lte_grid` is not affected (`doc/transient_history.md`).
+
+## 2026-10-10 — 88. Level 2's gate-charge saturation floor is Meyer's 25 mV, not 1 uV -- voter25 runs judged (Andreas: "investigate and fix")
+
+**voter25 judged crawled at 40.04 ns** (2-100 as steps, every try
+accepted by the error test at 1e-5 of tolerance): the step's Newton
+cycled.  ⚠ The first diagnosis (85, then 86's open item) was VOID: the
+saved Newton iterates were the solver's REDUCED vector (ground row 13
+removed), read against the full vector's names -- every unknown past
+ground was its neighbour, and "no C/G jump, the Jacobian equals FD" was
+measured on misaligned vectors.  Redone aligned, then with the solver's
+own residual function captured: J equals FD of the residual at every
+iterate, yet the residual along the cycle's segment is linear with one
+STEEP RISE -- the node-3 (clock) charge gains 1.06e-17 C over 2.9 uV of
+one PMOS's (`xcblk0:xload:mp6`) gate drive, a picofarad on a 6 fF device.
+Seen at the deck's 125 C (`tr.epar`), invisible at `defaultepar`'s 27 C
+(the first per-element scans used that).  A guessed cause was REFUTED
+(the VMAX vdsat's no-root branch: changing it moved nothing, both
+backends, each tree importing its own source).  The cause: the gate
+charge's saturation block divides by the model's vdsat floored at 1 uV;
+in reverse mode the forward arm `a0 (1 + |vds|/vdsat)` (weight 0.34 at
+-5 mV) sweeps through thousands of `a0` as the forward vdsat leaves 0
+near threshold.  Floored at Meyer's MAGIC_VDS, 25 mV, rounded C1 (25 mV
++ vdsat^2/0.1 V below 50 mV, vdsat above), the step is gone (largest
+charge step = the median one).
+
+**voter25 judged completes**: 16614 steps, 107 forced, 36.7 s (it crawled
+indefinitely; before 86 it ran, 14463 / 890 forced).  The level-2 gold
+decks: unchanged except mux8 0.259 -> 0.263 (131 -> 145 forced) and nand
+29 -> 33 forced.  Test: `test_level2_s_saturation_floor_is_meyer_s_not_a_
+microvolt` (the two states, 2.9 uV apart: 1.06e-17 C on the old code).
+
+**Open, found on the way: the band's near-threshold gap.**  At the same
+state the gate's own capacitance still JUMPS ~0.4 coxt (2.3 fF) within
+5 uV (HEAD: 1.4 fF): inside |vds| < 25 mV the rounded `m` ends `qtr` a few
+mV before inversion starts -- the docstring's deviation (2), where Meyer
+spreads the transition x1.5 near vds = 0.  A capacitance jump, which
+Newton crosses (voter25 runs); the candidate fix is Meyer's sliver plus
+drives measured from `m`.

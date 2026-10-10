@@ -329,3 +329,36 @@ def test_the_capacitances_are_continuous_where_one_side_crosses_threshold(cls, q
     far_lo = _C(e, 0.1, VTO - 0.01, 0.0, 0.0)
     far_hi = _C(e, 0.1, VTO + 0.01, 0.0, 0.0)
     assert abs(far_hi[G, S] - far_lo[G, S]) > 1e-3 * COX
+
+
+def test_level2_s_saturation_floor_is_meyer_s_not_a_microvolt():
+    """Level 2's gate charge divides its drives by the model's vdsat
+    (`sat=`), floored at Meyer's MAGIC_VDS 25 mV, rounded C1 (2026-10-10).
+    Floored at 1 uV it was not a floor: in reverse mode the forward arm
+    `a0 (1 + |vds|/vdsat)` swept through thousands of `a0` as the forward
+    vdsat left 0 near threshold.  These are the two states, 2.9 uV of gate
+    drive apart, where one PMOS of voter25 (CircuitSim90, 125 C) carried
+    1.06e-17 C between them -- a picofarad on a 6 fF device -- and the
+    transient's Newton cycled on it at a 1e-16 s step (the run crawled at
+    40.04 ns; it now completes judged).  Now the charge moves as its
+    capacitance says."""
+    card = {'vto': 0.9, 'pb': 0.8, 'cgso': 2.05e-10, 'cgdo': 2.05e-10, 'rsh': 110.0,
+            'cj': 2.75e-4, 'mj': 0.535, 'cjsw': 4e-10, 'mjsw': 0.34, 'tox': 4.3e-8,
+            'nsub': 6.6e15, 'tpg': -1.0, 'xj': 5e-8, 'ld': 5e-8, 'u0': 240.0,
+            'ucrit': 8.6e4, 'uexp': 0.29, 'vmax': 3e4, 'neff': 2.65, 'delta': 1.0,
+            'l': 2e-6, 'w': 4e-6, 'qpart': 1.0}
+    e = eh.MosLevel2PmosGateChargeHdl(*[Node(n) for n in 'dgsb'], **card)
+    e.update_iparv()
+    ep = defaultepar.copy()
+    ep.T = 273.15 + 125.0
+    x1 = np.array([5.5, 4.800094983964395, 5.494624738019754, 5.5, 5.49880559999766,
+                   5.493404272306865])
+    x2 = np.array([5.5, 4.800094983964395, 5.494624737573135, 5.5, 5.498802727464313,
+                   5.493401349707507])
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        dq = np.asarray(e.q(x2, ep), float) - np.asarray(e.q(x1, ep), float)
+    ## (a few fF across 2.9 uV, 1e-20 C: measured 2.6e-20; and not to C's
+    ## first order -- the gate's own capacitance still jumps ~0.4 coxt
+    ## here, the band's near-threshold gap, the docstring's deviation (2))
+    assert np.max(np.abs(dq)) < 1e-19, np.max(np.abs(dq))

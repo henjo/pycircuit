@@ -2969,7 +2969,8 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None, sat=None):
     threshold's body effect gives transcapacitances to the bulk Meyer has
     not; (4) the square-law triode saturates at ``vds = us`` unless the
     caller passes the model's own ``vdsat`` (``sat``): level 2 does
-    (2026-10-10, the ring 3.6 % -> 1.8 % from ngspice), level 3 does not
+    (2026-10-10, the ring 3.6 % -> 1.8 % from ngspice; that vdsat floored
+    at Meyer's 25 mV MAGIC_VDS, rounded C1, as his are), level 3 does not
     yet -- its ``vdsat`` has kinks (the ``von`` clamp, the regions) the
     charge then inherits, and gm3 and jge collapsed their step on it;
     level 1's is ``us`` exactly; (5) level 3's threshold is taken
@@ -3011,9 +3012,22 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None, sat=None):
         ## level 3's has kinks the charge would inherit (gm3, jge collapsed
         ## their step): not passed there yet.
         vds, vdsf, vdsr = sat
+
+        ## THE vdsat THE ARMS DIVIDE BY IS FLOORED AT MEYER'S MAGIC_VDS
+        ## (2026-10-10; Andreas: "investigate and fix"), rounded C1: 25 mV
+        ## at vdsat = 0, vdsat itself from 50 mV on.  Floored at 1 uV, the
+        ## forward arm in REVERSE (vds < 0, its weight 0.34 at -5 mV) is
+        ## `a0 (1 + |vds|/vdsat)`, which sweeps through thousands of `a0`
+        ## as the forward vdsat leaves 0 near threshold: voter25 at 125 C
+        ## put 1.06e-17 C (a pF) into 2.9 uV of one PMOS's gate drive, its
+        ## Newton cycled on it at a 1e-16 s step, and the run crawled at
+        ## 40.04 ns.  Meyer's own capacitances floor vdsat there.
+        def floored(vd, name):
+            vd = _maxc(vd, 0.0)
+            return v(sympy.Piecewise((0.025 + vd * vd / 0.1, vd < 0.05), (vd, True)), name)
         a0, b0 = a, b
-        af, bf = a0, v(_maxc(a0 * (1.0 - vds / _maxc(vdsf, 1e-6)), 0.0), 'qgbf')
-        ar, br = v(_maxc(b0 * (1.0 + vds / _maxc(vdsr, 1e-6)), 0.0), 'qgar'), b0
+        af, bf = a0, v(_maxc(a0 * (1.0 - vds / floored(vdsf, 'qgvf')), 0.0), 'qgbf')
+        ar, br = v(_maxc(b0 * (1.0 + vds / floored(vdsr, 'qgvr')), 0.0), 'qgar'), b0
         su = v(_minc(_maxc((vds + 0.025) / 0.05, 0.0), 1.0), 'qgsu')
         sw = v(su * su * (3.0 - 2.0 * su), 'qgsw')
         a = v(sw * af + (1.0 - sw) * ar, 'qgas')
