@@ -44,6 +44,7 @@ from pycircuit.circuit import (
     _tran_newton_c,
     _tran_radau_c,
     _tran_radau_tc,
+    _tran_sources,
     _watch,
 )
 from pycircuit.circuit.shooting import _sens_c
@@ -60,6 +61,7 @@ UNITS = [
     ('pass', _hdl_batch.PASS_CDEF),
     ('walk', _hdl_climit._WALK_CDEF),
     ('watch', _watch.WATCH_CDEF),
+    ('sources', _tran_sources.SOURCES_CDEF),
 ]
 
 

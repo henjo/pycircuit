@@ -1,29 +1,43 @@
 
-## 2026-10-10 — 104. Stage R2 closed: what stands, what was reverted for speed, the couplings written down
+## 2026-10-10 — 105. Stage 1: the sources and their breakpoints in C (`csrc/sources.c`, `_tran_sources.Table`)
 
-* ONE COMPANION SETUP AND WRITE-BACK (R2c's clarity item), built and COUNTED: the step's
-  companion set up (the step, the one before it, the integrator after an order drop, its
-  formula, history rows, coefficients) is the same fifteen lines in `_tran_core.evaluate` and
-  `_tran_newton_c.solve`, and the six-attribute write-back the same in both (the stage family's
-  differs in kind: no active integrator, `Geq = a h G`).  One shared function each (an 11-tuple
-  out) counted against an A/A: spice_4049 +0.44 %, mos1's step +0.43 %, stage's step +0.29 %,
-  mos1_adaptive +0.15 % -- ~3 k a call for two calls, a tuple and a test.  Speed is ranked first:
-  REVERTED; each copy now names its twin in a comment ("a change here is a change there"), and
-  the pinned pairs hold each to its reference.
-* R2d, THE COUPLINGS A TWIN MUST COPY, written into `_SteppingLoop`'s docstring: who decided a
-  step's size (`clamped` / `imposed` / `hold`, each flag's phase), `landing` and `order_drop` as
-  one signal, the order drop's path (`where` -> `_is_first_step` -> `check_order_drop` ->
-  `_effective_method` -> `order_drops`), the veto after an accept the controller has recorded,
-  the retry's "same point" by object identity, `X` both output and history.  Two plan items not
-  built, by reason: the "same point" as an INDEX belongs to the C loop (stages 4-5) -- the
-  periodic shift edits `X`'s last entries in place, so a plain count of accepted points is not
-  the same test, and the index must move there too; `_is_first_step` NOT renamed -- private, its
-  meaning stated in `_RUN_STATE` and in `where`, and the alias the plan asked for would be a
-  property on every read.
+Sized first: on spice_4049 the source pass is 48.5 k a call, served by the direct pass
+(`_stamp_plan.source_direct`) -- its validity check 22.2 k (what no watcher sees: the elements'
+dicts and types, the classes' `u` and `function`, `ParameterDict`'s lookup), the evaluation
+16.8 k.  So the C sources save little per PYTHON step; their place is the C loop (stage 4), where
+they run every step and their validity once a loop call.  A prerequisite, as the plan says.
 
-R2 against its line (re-sized before R2b: the R2-addressable per-call Python on spice_4049,
->= 55 k a call): ~31 k (batch 1 ~24.5 k, batch 2 ~7 k) -- NOT MET.  By the plan's own rule
-what paid stays (both batches counted FEWER, beyond their A/A), what did not is reverted (R2b,
-neutral; the shared companion, +0.4 %), and R2a's manifest and R2d's couplings stay (no cost).
-The per-call Python left on spice_4049 is dominated by the branch screen (88 k, stage 3) and
-the source pass (49 k, stage 1) -- the C loop's own stages.  Full suite 5069 passed.
+`csrc/sources.c` (+ `sources.h`): SEVEN waveforms -- the plan said five; DC (the base
+`TimeFunction`, `f` the int 0), Sin, Pulse, PWL, Exp, AM, SFFM -- in the Python's own operations
+and order: Python's float `%` and `//` (CPython's `float_rem` and `_float_div_mod`) for the
+pulse's period, the `where` chain's last true branch with each branch's arithmetic as written,
+`_sin_scalar` and its guards, Exp's three branches, the AM / SFFM products as Python groups
+them; the direct pass's per-source `v = a + f(t)` and its scatter in element order from +0.0
+(a voltage source's `-v` into its branch row, a current source's `+v`, `-v`); each
+`next_event` (the pulse's candidates from the period index, strictly after `t`).  DECLINE,
+NEVER DIFFER: anything the Python makes by another route bails -- a non-finite intermediate,
+a value past the fast add's 1e300 guard, a sine past `_sin_scalar`'s guards, a PWL time that
+finds no segment (the Python's None raises).
+
+`_tran_sources.table_for(sd)`: the table of a direct pass, its sources in the pass's own order
+and rows, built only where every value comes the fast float way (the waveform exactly one of
+the seven, the numeric toolkit's `exp` / `sin` / `where` / `pi`, every parameter a float or a
+small int, the DC value and the waveform not both ints -- the Python adds those as ints, an
+exponential's taus nonzero -- the Python raises -- numpy's exp / sin the C library's on this CPU
+by the HDL backend's probe, `libm_check`).  Per call: the toolkit's functions, the sine's
+switch, numpy's underflow state.  `Table.holds()`: every input as read (each source's
+`function`, its class, its attributes, a PWL's points, the DC value).
+
+Tests (`test_tran_sources.py`): every waveform V and I on a 3001-point grid and its corners
+(+-1 ulp): `u` byte for byte and the next event, none declined; a hypothesis twin per waveform
+(signed zeros, subnormals, 1e299 .. 1e301, infinities, NaN, ints among the values; times
+negative and past the period) -- wherever the C answers it is the Python's (185 vectors
+compared, 53 bails, 63 declines at build in the gate profile); each decline; a table whose input
+changed does not hold; a parameter a ulp off is caught.  The unit in `test_c_abi` (complete,
+`-Werror`, its header its cdef); a pinned pair "the sources and their C" (the waveforms' `f` /
+`next_event`, `_sin_scalar`, `_SourceDirect.run` against the C and its table).
+
+NOT wired into the Python step's source pass: the benchmark decks hold one DC source each
+(spice_4049, spice_ring), whose pass is plumbing, not waveforms -- wired only if it counts FEWER
+against an A/A, which a single DC source will not show.  Stage 4 calls the table.
+Full suite 5084 passed; the sanitizer's fast tier clean (4816 passed).

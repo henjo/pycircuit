@@ -37,6 +37,24 @@ import types
 import pytest
 
 PAIRS = {
+    'the sources and their C': {
+        'why': 'the C makes each waveform\'s `f` in its operations and order (Python\'s '
+               'float `%` and `//` for the pulse\'s period, the `where` chain\'s last true '
+               'branch, `_sin_scalar` and its guards), the direct pass\'s fast add and '
+               'its scatter in element order from +0.0, and each `next_event`; it '
+               'declines where the Python takes another route',
+        'reference': ['pycircuit.circuit.func:_sin_scalar',
+                      'pycircuit.circuit.func:Sin.f', 'pycircuit.circuit.func:Sin.next_event',
+                      'pycircuit.circuit.func:Pulse.f', 'pycircuit.circuit.func:Pulse.next_event',
+                      'pycircuit.circuit.func:PWL.f', 'pycircuit.circuit.func:PWL.next_event',
+                      'pycircuit.circuit.func:Exp.f', 'pycircuit.circuit.func:Exp.next_event',
+                      'pycircuit.circuit.func:AM.f', 'pycircuit.circuit.func:SFFM.f',
+                      'pycircuit.circuit._stamp_plan:_SourceDirect.run'],
+        'twin': ['pycircuit.circuit._tran_sources:SOURCES_C',
+                 'pycircuit.circuit._tran_sources:table_for',
+                 'pycircuit.circuit._tran_sources:_waveform',
+                 'pycircuit.circuit._tran_sources:Table'],
+    },
     'the kernel call and the pass driver': {
         'why': 'the driver writes the temperature into the element\'s own pack and '
             'calls the kernel exactly as `CKernel.__call__` does; `Batch.run` '
@@ -438,6 +456,7 @@ PAIRS = {
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
 #: module as a script, after the twin was checked.
 RECORD = {
+    'the sources and their C': ('55cf2d3441f8', 'e9ef34a79dd1'),
     'the kernel call and the pass driver': ('09a9e274bbe8', '97fae56c99b0'),
     'the limiting loop and the walk': ('58c4ce9c8f4d', 'da5a8fa92e9d'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
