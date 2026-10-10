@@ -600,6 +600,81 @@ class _CoupledSteps(_StepFamily):
         self.tr._fang_run = None
 
 
+#: THE STATE MANIFEST (the C stepping loop plan's stage R2a, 2026-10-10):
+#: every attribute a stepping loop writes on the transient, by its role --
+#: MEASURED, not read off the code: a write census and a first-access trace
+#: over the benchmark cases and every step family (doc/hdl_roadmap_260824.md,
+#: section 99); `test_run_state.py` fails on a write it does not declare.
+#:   'carried'  a step leaves it and the next step reads it: what one step
+#:              hands the next -- the state a C loop marshals;
+#:   'run'      decided once a run, at its setup or lazily at its first
+#:              step: R2b's one run context;
+#:   'step'     written and then read within one step -- parked on the
+#:              transient between the step's pieces: R2c's one setup and one
+#:              write-back.
+#: The loop's own state between attempts (`t`, `h`, `landing`, ...) is on
+#: `_SteppingLoop`, not here.
+_RUN_STATE = {
+    ## carried
+    '_qlast': ('carried', 'q at the last accepted point: the companion history'),
+    '_iqlast': ('carried', 'the companion current at the last accepted point'),
+    '_dt_last': ('carried', 'the last accepted step'),
+    '_dt_last2': ('carried', 'the accepted step before it'),
+    '_is_first_step': ('carried', ('drop the order on the next step (a breakpoint landed, '
+                                   'a force-accept)')),
+    '_no_history': ('carried', 'true until the run\'s first step is accepted'),
+    '_pred_hist': ('carried', 'the predictor\'s accepted points'),
+    '_pred_fast': ('carried', 'the fast predictor\'s memo of that history'),
+    '_C_cache': ('carried', 'C at the last converged point, with its x: reused when x repeats'),
+    '_dev_memo': ('carried', 'the device evaluations of this step and the previous one'),
+    '_branch_cmax': ('carried', 'the branch check\'s running bound on C'),
+    '_glm_Q': ('carried', 'the Nordsieck vector after the last accepted step'),
+    '_glm_prev': ('carried', 'the last GLM step\'s stage values (its error estimate)'),
+    '_glm_restarted': ('carried', 'the GLM restarted (a breakpoint, a rejection)'),
+    '_glm_rho': ('carried', 'the GLM\'s step ratio'),
+    ## run
+    '_tran_core': ('run', 'the evaluation core\'s plan, its stamp and a call counter'),
+    '_newton_c': ('run', 'the C Newton\'s record'),
+    '_newton_c_no': ('run', 'why the C Newton declined, kept until the stamp moves'),
+    '_radau_c': ('run', 'the C Radau stage solve\'s record'),
+    '_passes_no': ('run', 'why the passes\' C declined, kept until the stamp moves'),
+    '_has_limiters': ('run', 'whether any element limits its Newton step'),
+    '_jacobian_expensive': ('run', 'the \'auto\' Newton options\' verdict on the circuit'),
+    '_newton_tol_cache': ('run', 'the Newton tolerances per unknown'),
+    '_row_names_cache': ('run', 'the reduced system\'s row names'),
+    '_lte_mask_cache': ('run', 'the error test\'s algebraic-unknown mask'),
+    '_default_linearsolver': ('run', 'the linear solver, made at the first solve'),
+    '_branch_rank0': ('run', 'the branch check\'s structural rank'),
+    '_branch_const': ('run', 'the branch check\'s constant part'),
+    '_branch_varying': ('run', 'the branch check\'s varying part'),
+    '_j_unread': ('run', 'the loop\'s mark: no attempt reads its Jacobian'),
+    '_pred_wmemo': ('run', 'the predictor\'s weights, by step ratios'),
+    '_memo_rolling': ('run', 'whether the device memo has started rolling'),
+    '_rk_want_est': ('run', 'whether the stage family wants the error estimate'),
+    '_fang_run': ('run', 'the coupled (Fang) family\'s run'),
+    '_glm_startup_trace': ('run', 'the GLM startup\'s trace'),
+    'statistics_glm_startups': ('run', ('the GLM startups counted (a statistic kept on the '
+                                        'transient, not in `statistics`)')),
+    ## step
+    '_q_cache': ('step', 'the companion: q at the point being solved'),
+    '_iq': ('step', 'the companion current'),
+    '_Geq': ('step', 'the companion conductance'),
+    '_Cmat': ('step', 'the companion\'s C'),
+    '_companion_coeffs': ('step', 'the integrator\'s coefficients for this step'),
+    '_effective_method': ('step', 'the integrator this step uses (Euler on an order drop)'),
+    'active_integrator': ('step', 'that integrator'),
+    '_dt': ('step', 'the step being attempted'),
+    '_u_memo': ('step', 'the step\'s source values'),
+    '_pred_pending': ('step', 'the predictor\'s pending point'),
+    '_conv_session': ('step', 'the converged point\'s evaluation session'),
+    '_rk_Y': ('step', 'the stage values'),
+    '_rk_K': ('step', 'the stage derivatives'),
+    '_rk_est': ('step', 'the stage error estimate'),
+    '_glm_Q_in': ('step', 'the GLM step\'s input Nordsieck vector'),
+    '_glm_Q_at_entry': ('step', 'its copy, for a retry'),
+}
+
+
 class _SteppingLoop:
     """THE ONE STEPPING LOOP of `Transient._solve`, over a step family
     (`_LMMSteps`, `_StageSteps`, `_CoupledSteps`), the same for every

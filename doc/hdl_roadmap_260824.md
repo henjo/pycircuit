@@ -1,21 +1,37 @@
 
-## 2026-10-10 — 98. R1's line held, and the one cost it hid: radau_tc's residual loops reloaded after every `hypot`
+## 2026-10-10 — 99. Stage R2a: the stepping loop's state, measured and declared (`transient._RUN_STATE`)
 
-R1's line (written before measuring): bit-identical everywhere, `step_machinery --check` no SLOWER,
-against the tree before R1 (02235bcc).  Held: all 18 cases "no change", bytes, statistics and
-fast-path counts SAME.  But the child leaned slower in most rounds (+0.1..+1.1 %, some intervals
-clear of zero: ladder_gear +1.1 % [+0.5, +1.7]) -- under the check's band (+3 % flags every case,
-+1 % none), so counted rather than shrugged off: `--count` (instructions, perf) flagged ONE case,
-mos1_radau's step +1.00 % (2.759 M -> 2.787 M), with ladder_radau +0.33 % (spread 0.01 %); every
-other case within its tree's own spread.
+What does one step hand the next?  The C loop must marshal exactly that, and no reading of the
+code had listed it.  Measured instead, two ways, with `sys.monitoring` on `_SteppingLoop.execute`
+and `accept` (nothing on the loop replaced: wrapping a loop method makes `_paths.genuine` false
+and changes the very path observed):
 
-The cause is step 3's one machine-code change.  The prelude declared `hypot` `const`; without that
-lie, the compiler must assume each `hypot` call may write memory, so after every call in the
-residual check's loops it reloaded the struct's array pointers (`s->Ax`, `s->Ai`, `s->y1`,
-`s->ab`, the bound `s->Ap[j + 1]`).  Fixed by saying it honestly: the arrays in local pointers and
-the inner bound read once (the arithmetic and its order untouched).  Recounted against the same
-parent: mos1_radau's step -0.10 %, ladder_radau -0.07 %, pss_radau -0.03 % -- no MORE anywhere.
-Lesson: a time verdict of "no change" with a one-sided lean is worth one `--count`; it named the
-case and the cause in a minute.
-Two pinned pairs moved on the twin (radau_tc.c) and were re-recorded; the 103 Radau tests pass.  Full
-suite 5053 passed; the sanitizer's fast tier clean (4746 passed).
+* a WRITE census over the 20 benchmark cases (13 with a stepping loop; PSS shoots outside it):
+  every attribute reachable from the transient fingerprinted at each accepted step (identity,
+  array bytes) -- 39 transient attributes written between steps, 11 on the loop, the rest in
+  the core's buffers, the limiters, the linear solver, the integrator and the controller;
+* a FIRST-ACCESS trace (class-level `__getattribute__` / `__setattr__` on `Transient` while a
+  loop runs): per step, is an attribute's first access a read (it was CARRIED in) or a write
+  (it is STEP scratch)?  ~80 attributes touched a step: 14 read before written, 16 written
+  before read, the rest the run's context (mostly methods).
+
+Crossed (a "carried" one written once a run is a lazily memoised RUN constant), they give three
+roles, now declared once in `transient._RUN_STATE` (49 names, each with its role and a line of
+meaning):
+
+* carried (15): the history (`_qlast`, `_iqlast`, `_dt_last`, `_dt_last2`, `_is_first_step`,
+  `_no_history`), the predictor's (`_pred_hist`, `_pred_fast`), `_C_cache`, the device memo,
+  the branch check's bound, the Nordsieck GLM's four;
+* run (21): the C paths' records and decline memos, the lazily decided verdicts
+  (`_has_limiters`, `_jacobian_expensive`), the caches, the linear solver, the loop's mark;
+* step (16): the companion block (`_q_cache`, `_iq`, `_Geq`, `_Cmat`, `_companion_coeffs`,
+  `_effective_method`, `active_integrator`) -- written in FOUR places, not the three the plan
+  counted (the Python reference `_tran_companion`, `_tran_core`, `_tran_newton_c`,
+  `_tran_stages`) -- with `_dt`, the source memo, the stages' values.
+
+Found on the way: `statistics_glm_startups` is a counter kept ON the transient, not in its
+`statistics` (R2d's list).  `test_run_state.py`: 14 runs covering every step family (each
+integrator adaptive on a pulsed RC, the coupled family, a fixed grid, an HDL MOS chain fixed /
+gear / Radau through the C paths) -- any attribute whose binding changes while a loop runs must
+be declared; every declared name has a role and is assigned in the package; the observer proved
+alive on a planted write.  No code path changed (the manifest is data; the tests observe).  Full suite 5069 passed.
