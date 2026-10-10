@@ -3,18 +3,8 @@
 #include <stddef.h>
 #include <math.h>
 #include <fenv.h>
-typedef void (*dgesv_t)(const int64_t *, const int64_t *, double *, const int64_t *,
-                        int64_t *, double *, const int64_t *, int64_t *);
-typedef struct {
-    long n, iref, nn, relref, have_run, abs_vec, has_mask;
-    double h1, h2, h3, s12, s23, s123, coef, reltol, abstol, trtol;
-    const double *xc, *xl, *q, *q1, *q2, *q3, *J, *run, *abst, *mask;
-    double *A, *b, *lte, *ref, *out, *tq;
-    int64_t *ipiv;
-    void *dgesv;
-    double err;
-    long status;
-} lte_t;
+#include "pcx_abi.h"
+#include "lte.h"
 
 #define LTE_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
 
@@ -73,7 +63,7 @@ long hdl_fn(lte_t *s)
         s->b[rr] = s->lte[ri];
         rr++;
     }
-    ((dgesv_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv, s->b, &m64, &info64);
+    ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv, s->b, &m64, &info64);
     /* (numpy's solve clears what LAPACK raised; an info is its LinAlgError) */
     feclearexcept(FE_ALL_EXCEPT);
     if (info64 != 0) return lte_bail(s, 4);

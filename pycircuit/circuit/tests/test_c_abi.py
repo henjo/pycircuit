@@ -1,52 +1,62 @@
 """The C units' interfaces agree with each other (the C stepping loop plan's
-stage R1a, 2026-10-10).
+stages R1a and R1d, 2026-10-10).
 
-The C code is compiled from Python strings and loaded through cffi's ABI
-mode, which lays a struct out from the cdef TEXT it is handed and never
-sees the compiled struct: a field added to a unit's C but not to its cdef
-(or a type changed in one of the two) loads without complaint and puts
-every later field at the wrong offset.  Likewise a unit that calls another
-through a function pointer re-types the callee's signature by hand.  No
-test compared either until this one.
+The C units are loaded through cffi's ABI mode, which lays a struct out from
+the cdef TEXT it is handed and never sees the compiled struct: a field in
+one but not the other loads without complaint and puts every later field at
+the wrong offset.  R1a compared the two texts; R1d made them ONE: each unit
+`X.c` has a header `csrc/X.h` (its struct and its `hdl_fn` declaration),
+the module's cdef IS that header's text, and `X.c` includes it, so the
+compiler checks the definition against the very declaration cffi reads.
+The function types the units share are declared once, in `pcx_abi.h`.
+These tests hold that construction: each cdef is its header, each unit
+includes its own, no C file declares a type, no header includes another.
 
-Each struct is parsed twice by cffi's own parser -- from the cdef, and from
-the typedef in the C text -- and compared field by field (name, offset,
-size, kind) and by its size.  Each re-typed function-pointer copy is
-compared with the callee's own definition by its ABI: the number of
-arguments, each one's kind (pointer, integer, floating) and size, and the
-result's.  The comparison is proved alive on planted differences.
+What a header cannot check: `core_fn_t` and `walk_fn_t` (pcx_abi.h) re-type
+the core's and the walk's entries for their callers, and the core's first
+argument is a `const void *` there.  Those two are compared with their
+definitions by ABI -- the number of arguments, each one's kind (pointer,
+integer, floating) and size, and the result's -- and the comparison is
+proved alive on planted differences.
 """
+import glob
+import os
 import re
 
 import cffi
 import pytest
 
 from pycircuit.circuit import (
+    _cbuild,
+    _hdl_batch,
     _hdl_climit,
     _tran_core,
     _tran_lte_c,
     _tran_newton_c,
     _tran_radau_c,
     _tran_radau_tc,
+    _watch,
 )
 from pycircuit.circuit.shooting import _sens_c
 
-#: (the unit, its C text, its cdef, the struct both declare)
-STRUCTS = [
-    ('_tran_newton_c', _tran_newton_c.NEWTON_C, _tran_newton_c.NEWTON_CDEF, 'newton_t'),
-    ('_tran_lte_c', _tran_lte_c.LTE_C, _tran_lte_c.LTE_CDEF, 'lte_t'),
-    ('_tran_core', _tran_core.CORE_C, _tran_core.CORE_CDEF, 'hdl_core_t'),
-    ('_tran_radau_c', _tran_radau_c.RADAU_C, _tran_radau_c.RADAU_CDEF, 'radau_t'),
-    ('_tran_radau_tc', _tran_radau_tc.RADAU_TC, _tran_radau_tc.RADAU_TC_CDEF, 'radau_tf_t'),
-    ('_tran_radau_tc.fold', _tran_radau_tc.FOLD_C, _tran_radau_tc.FOLD_CDEF, 'radau_fold_t'),
-    ('_sens_c', _sens_c.SENS_C_SRC, _sens_c.SENS_CDEF, 'sens_t'),
+#: (the unit, the cdef its module loads it through)
+UNITS = [
+    ('newton', _tran_newton_c.NEWTON_CDEF),
+    ('lte', _tran_lte_c.LTE_CDEF),
+    ('core', _tran_core.CORE_CDEF),
+    ('radau', _tran_radau_c.RADAU_CDEF),
+    ('radau_tc', _tran_radau_tc.RADAU_TC_CDEF),
+    ('radau_fold', _tran_radau_tc.FOLD_CDEF),
+    ('sens', _sens_c.SENS_CDEF),
+    ('pass', _hdl_batch.PASS_CDEF),
+    ('walk', _hdl_climit._WALK_CDEF),
+    ('watch', _watch.WATCH_CDEF),
 ]
 
-#: the units that call the evaluation core and the limiter walk through a
-#: pointer, each with its own copy of their signatures
-CALLERS = [('_tran_newton_c', _tran_newton_c.NEWTON_C),
-           ('_tran_radau_c', _tran_radau_c.RADAU_C),
-           ('_tran_radau_tc', _tran_radau_tc.RADAU_TC)]
+
+def _raw(name):
+    with open(os.path.join(_cbuild.CSRC_DIR, name), encoding='utf-8', newline='') as fh:
+        return fh.read()
 
 
 def _strip(c):
@@ -56,22 +66,18 @@ def _strip(c):
     return '\n'.join(ln for ln in c.split('\n') if not ln.lstrip().startswith('#'))
 
 
-def _typedefs(c):
-    """Every top-level `typedef ...;` statement of a C text, in order."""
+def _declared_types(c):
+    """The names every `typedef` of a C text declares."""
     c = _strip(c)
-    out, depth, start = [], 0, None
-    for m in re.finditer(r'\btypedef\b|[{};]', c):
-        tok = m.group()
-        if tok == 'typedef' and depth == 0 and start is None:
-            start = m.start()
-        elif tok == '{':
-            depth += 1
-        elif tok == '}':
-            depth -= 1
-        elif tok == ';' and depth == 0 and start is not None:
-            out.append(c[start:m.end()])
-            start = None
-    return out
+    return re.findall(r'\btypedef\b[^;{]*?(?:\{.*?\}\s*(\w+)|\(\*\s*(\w+)\s*\)[^;]*|(\w+))\s*;',
+                      c, flags=re.DOTALL)
+
+
+def _function_type(c, name):
+    """The `typedef ... (*name)(...);` statement of a C text."""
+    m = re.search(r'typedef[^;{]*?\(\*\s*' + name + r'\s*\)\s*\([^;]*\)\s*;', _strip(c))
+    assert m, f'no function type {name}'
+    return m.group(0)
 
 
 def _definition(c, ret):
@@ -81,6 +87,13 @@ def _definition(c, ret):
     m = re.search(r'\b' + ret + r'\s+hdl_fn\s*\(([^)]*)\)\s*\{', c)
     assert m, 'no definition of hdl_fn in the C text'
     return f'typedef {ret} (*_def_t)({m.group(1)});'
+
+
+def _declaration(h, ret):
+    """The `ret hdl_fn(...);` declaration of a header, as `_decl_t`."""
+    m = re.search(r'\b' + ret + r'\s+hdl_fn\s*\(([^)]*)\)\s*;', _strip(h))
+    assert m, 'no declaration of hdl_fn in the header'
+    return f'typedef {ret} (*_decl_t)({m.group(1)});'
 
 
 def _kind(ffi, ct):
@@ -93,16 +106,6 @@ def _kind(ffi, ct):
     return (ct.kind, ffi.sizeof(ct))
 
 
-def _layout(text, name):
-    """`name`'s fields as cffi lays them out from `text`: (name, offset,
-    size, kind) each, then the struct's size."""
-    ffi = cffi.FFI()
-    ffi.cdef(text)
-    t = ffi.typeof(name)
-    return [(f, fld.offset, ffi.sizeof(fld.type), _kind(ffi, fld.type)) for f, fld in t.fields] \
-        + [('<sizeof>', ffi.sizeof(t))]
-
-
 def _signature(text, name):
     """A function-pointer type's ABI: (result kind, (argument kinds))."""
     ffi = cffi.FFI()
@@ -112,47 +115,63 @@ def _signature(text, name):
     return _kind(ffi, t.result), tuple(_kind(ffi, a) for a in t.args), t.ellipsis
 
 
-@pytest.mark.parametrize('unit,c,cdef,name', STRUCTS, ids=[s[0] for s in STRUCTS])
-def test_each_struct_s_cdef_is_its_c_struct(unit, c, cdef, name):
-    """The cdef cffi lays the struct out from is the struct the C compiles."""
-    assert _layout(cdef, name) == _layout('\n'.join(_typedefs(c)), name), unit
+@pytest.mark.parametrize('unit,cdef', UNITS, ids=[u for u, _ in UNITS])
+def test_each_unit_is_loaded_through_the_header_it_compiles_with(unit, cdef):
+    """The cdef is the header's text; the unit includes the header once, and
+    its compiled text holds it."""
+    header = _raw(unit + '.h')
+    assert cdef == header
+    assert _raw(unit + '.c').count(f'#include "{unit}.h"\n') == 1
+    assert _cbuild.csrc(unit + '.c').count(header) == 1
 
 
-@pytest.mark.parametrize('unit,c', CALLERS, ids=[u for u, _ in CALLERS])
-def test_each_copy_of_the_core_s_signature_is_the_core_s(unit, c):
-    """`core_fn_t` in each caller is the evaluation core's own `hdl_fn`, as
-    defined in `CORE_C` and declared in `CORE_CDEF` (its first argument a
-    `const hdl_core_t *` there, a `const void *` in the copies: both a
-    pointer)."""
-    defined = _signature(_tran_core.CORE_CDEF + _definition(_tran_core.CORE_C, 'long'), '_def_t')
-    declared = _signature(_tran_core.CORE_CDEF.replace(' hdl_fn(', ' (*_decl_t)(')
-                          .replace('long (*_decl_t)', 'typedef long (*_decl_t)'), '_decl_t')
+def test_no_c_file_declares_a_type_and_no_header_includes_another():
+    """Every type lives in a header -- a struct in its unit's, a shared
+    function type in pcx_abi.h, each declared once; one level of local
+    includes, so `csrc` expands them all."""
+    for path in glob.glob(os.path.join(_cbuild.CSRC_DIR, '*.c')):
+        assert not _declared_types(_raw(os.path.basename(path))), path
+    seen = {}
+    for path in glob.glob(os.path.join(_cbuild.CSRC_DIR, '*.h')):
+        h = _raw(os.path.basename(path))
+        assert not re.search(r'^#include "', h, flags=re.MULTILINE), path
+        for names in _declared_types(h):
+            name = next(n for n in names if n)
+            assert name not in seen, (name, path, seen.get(name))
+            seen[name] = path
+    for path in glob.glob(os.path.join(_cbuild.CSRC_DIR, '*.c')):
+        assert not re.search(r'^#include "', _cbuild.csrc(os.path.basename(path)),
+                             flags=re.MULTILINE), path
+
+
+def test_core_fn_t_is_the_core_s_entry():
+    """`core_fn_t` (pcx_abi.h) is the core's own `hdl_fn`, as core.c defines
+    it and core.h declares it (its first argument a `const hdl_core_t *`
+    there, a `const void *` in the type: both a pointer)."""
+    core_h = _raw('core.h')
+    defined = _signature(core_h + _definition(_raw('core.c'), 'long'), '_def_t')
+    declared = _signature(core_h + _declaration(core_h, 'long'), '_decl_t')
     assert defined == declared
-    assert _signature('\n'.join(_typedefs(c)), 'core_fn_t') == defined, unit
+    assert _signature(_function_type(_raw('pcx_abi.h'), 'core_fn_t'), 'core_fn_t') == defined
 
 
-@pytest.mark.parametrize('unit,c', CALLERS, ids=[u for u, _ in CALLERS])
-def test_each_copy_of_the_walk_s_signature_is_the_walk_s(unit, c):
-    """`walk_fn_t` in each caller is the limiter walk's own `hdl_fn`, as
-    defined in `_WALK_C` and declared in `_WALK_CDEF`."""
-    defined = _signature(_definition(_hdl_climit._WALK_C, 'long'), '_def_t')
-    declared = _signature('typedef ' + _hdl_climit._WALK_CDEF.replace(' hdl_fn(', ' (*_decl_t)('),
-                          '_decl_t')
+def test_walk_fn_t_is_the_walk_s_entry():
+    """`walk_fn_t` (pcx_abi.h) is the limiter walk's own `hdl_fn`, as walk.c
+    defines it and walk.h declares it."""
+    defined = _signature(_definition(_raw('walk.c'), 'long'), '_def_t')
+    declared = _signature(_declaration(_raw('walk.h'), 'long'), '_decl_t')
     assert defined == declared
-    assert _signature('\n'.join(_typedefs(c)), 'walk_fn_t') == defined, unit
+    assert _signature(_function_type(_raw('pcx_abi.h'), 'walk_fn_t'), 'walk_fn_t') == defined
 
 
-def test_the_comparisons_see_a_planted_difference():
-    """Alive: a field the cdef lacks, two fields swapped, a width changed
-    in one argument -- each is caught."""
-    c = '\n'.join(_typedefs(_tran_lte_c.LTE_C))
-    base = _layout(c, 'lte_t')
-    cdef = _tran_lte_c.LTE_CDEF
-    first = re.search(r'\{\s*([^;]+;)', cdef).group(1)
-    assert _layout(cdef.replace(first, '', 1), 'lte_t') != base          # one field fewer
-    assert _layout(cdef.replace('{', '{ long planted;', 1), 'lte_t') != base
-    copy = '\n'.join(_typedefs(_tran_newton_c.NEWTON_C))
+def test_the_checks_see_a_planted_difference():
+    """Alive: a width changed in one argument, two arguments swapped, a type
+    declared in a C file, a header including another -- each is caught."""
+    copy = _function_type(_raw('pcx_abi.h'), 'core_fn_t')
     good = _signature(copy, 'core_fn_t')
     assert _signature(copy.replace('long want', 'int want', 1), 'core_fn_t') != good
     assert _signature(copy.replace('double T, long want', 'long want, double T', 1),
                       'core_fn_t') != good
+    assert _declared_types(_raw('newton.c') + 'typedef long (*x_t)(long);\n')
+    assert _declared_types('typedef struct {\n    long a;\n} y_t;\n')
+    assert re.search(r'^#include "', '#include "pcx_abi.h"\n', flags=re.MULTILINE)

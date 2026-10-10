@@ -34,20 +34,30 @@ one it was.  History of the pieces: `_hdl_cbackend`'s module docstring.
 import contextlib
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 
 #: The runtime units' C sources, as files (the C loop plan's stage R1c):
-#: `csrc(name)` is the text of `csrc/<name>`, exactly -- read without
-#: newline translation, so what is keyed and compiled is the file's text.
+#: `csrc(name)` is the text of `csrc/<name>`, read without newline
+#: translation, its `#include "x.h"` lines replaced by those headers' text
+#: (R1d) -- so what is keyed, compiled and digested is every line compiled.
 CSRC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'csrc')
+
+#: a line including a header of `csrc/` (a header includes none of them)
+_LOCAL_INCLUDE = re.compile(r'^#include "([\w.]+)"\n', re.MULTILINE)
+
+
+def _read(name):
+    with open(os.path.join(CSRC_DIR, name), encoding='utf-8', newline='') as fh:
+        return fh.read()
 
 
 def csrc(name):
-    """The text of the C source file `csrc/<name>`."""
-    with open(os.path.join(CSRC_DIR, name), encoding='utf-8', newline='') as fh:
-        return fh.read()
+    """The text of the C source file `csrc/<name>`, its local headers
+    expanded in place."""
+    return _LOCAL_INCLUDE.sub(lambda m: _read(m.group(1)), _read(name))
 
 
 #: Bump when the key must invalidate every built object (a flags change

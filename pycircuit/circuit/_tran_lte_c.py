@@ -55,19 +55,7 @@ ENABLED = os.environ.get('PYCIRCUIT_LTE_C', '1') != '0'
 STATUS = 'not loaded'
 
 LTE_C = _cbuild.csrc('lte.c')
-LTE_CDEF = """
-typedef struct {
-    long n, iref, nn, relref, have_run, abs_vec, has_mask;
-    double h1, h2, h3, s12, s23, s123, coef, reltol, abstol, trtol;
-    const double *xc, *xl, *q, *q1, *q2, *q3, *J, *run, *abst, *mask;
-    double *A, *b, *lte, *ref, *out, *tq;
-    int64_t *ipiv;
-    void *dgesv;
-    double err;
-    long status;
-} lte_t;
-long hdl_fn(lte_t *s);
-"""
+LTE_CDEF = _cbuild.csrc('lte.h')
 
 #: the C's status codes past 1 (done): why it handed the attempt back
 BAIL = {2: 'nonfinite', 3: 'flags', 4: 'dgesv', 5: 'lte', 6: 'tolerance'}

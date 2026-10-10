@@ -406,9 +406,7 @@ def unbind(info):
 WALK = os.environ.get('PYCIRCUIT_HDL_LIMIT_WALK', '1') != '0'
 
 _WALK_C = _cbuild.csrc('walk.c')
-_WALK_CDEF = ('long hdl_fn(void **F, double **PR, const int64_t *TI, double T, '
-              'const int64_t *NM, const int64_t *OFF, const int64_t *K, '
-              'double *xg, const double *x0g, long start, long n);')
+_WALK_CDEF = _cbuild.csrc('walk.h')
 
 _walk_driver = None
 WALK_STATUS = 'not loaded'

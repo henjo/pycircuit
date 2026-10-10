@@ -53,7 +53,7 @@ MAX_ARMS = 16
 HOLD = 8
 
 WATCH_C = _cbuild.csrc('watch.c')
-WATCH_CDEF = 'void *hdl_fn(int which);'
+WATCH_CDEF = _cbuild.csrc('watch.h')
 
 _API = {}
 

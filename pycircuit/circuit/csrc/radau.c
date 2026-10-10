@@ -4,30 +4,8 @@
 #include <string.h>
 #include <math.h>
 #include <fenv.h>
-typedef long (*core_fn_t)(const void *c, const double *x, double T, long want, long formula,
-            double a0, double a1, double a2, double h, double theta,
-            const double *q1, const double *q2, const double *iq1, const double *u,
-            const double *Cin, double *C, double *q, double *iq, double *Geq,
-            double *F, double *J);
-typedef long (*walk_fn_t)(void **F, double **PR, const int64_t *TI, double T,
-            const int64_t *NM, const int64_t *OFF, const int64_t *K,
-            double *xg, const double *x0g, long start, long n);
-typedef void (*dgesv_t)(const int64_t *, const int64_t *, double *, const int64_t *,
-                        int64_t *, double *, const int64_t *, int64_t *);
-typedef struct {
-    const void *core; void *core_fn; double T;
-    const double *binG, *bini; double *dummy;
-    void *walk_fn; void **wF; double **wPR; const int64_t *wTI, *wNM, *wOFF, *wK; long wn;
-    void *dgesv;
-    long n, iref, maxiter, maxa;
-    double h, reltol, abstol;
-    double A[9];
-    const double *qn, *u, *seed;
-    double *Ya, *qa, *ia, *Ca, *Ga;
-    double *K, *F, *R, *Jf, *b, *blk, *stp, *tolv;
-    int64_t *ipiv;
-    long assemblies, iters, status;
-} radau_t;
+#include "pcx_abi.h"
+#include "radau.h"
 
 #define RC_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
 
@@ -128,7 +106,7 @@ long hdl_fn(radau_t *s)
             s->b[k] = -s->R[k];
         }
         for (k = 0; k < M * M; k++) if (!isfinite(s->Jf[k])) return rc_bail(s, 4);
-        ((dgesv_t) s->dgesv)(&M64, &one64, s->Jf, &M64, s->ipiv, s->b, &M64, &info64);
+        ((dgesv64_t) s->dgesv)(&M64, &one64, s->Jf, &M64, s->ipiv, s->b, &M64, &info64);
         /* (numpy's solve clears what LAPACK raised; an info is its LinAlgError) */
         feclearexcept(FE_ALL_EXCEPT);
         if (info64 != 0) return rc_bail(s, 5);

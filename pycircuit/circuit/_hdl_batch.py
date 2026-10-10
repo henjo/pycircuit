@@ -95,8 +95,7 @@ SKIP_ZERO_SOURCE = os.environ.get('PYCIRCUIT_HDL_ZERO_U', '1') != '0'
 #: `OUT` `n` rows of `so`; `PR[e]` the element's pack; `ti` the temperature
 #: slot or -1 when the class reads none.
 PASS_C = _cbuild.csrc('pass.c')
-PASS_CDEF = ('void hdl_fn(const void *fn, const double *X, double **PR, '
-             'double *OUT, long n, long sx, long so, long ti, double T);')
+PASS_CDEF = _cbuild.csrc('pass.h')
 
 #: `(ffi, cfn, double*, double**)` once the driver is loaded; False after a
 #: build that failed (`STATUS` says why); None before the first use.

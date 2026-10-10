@@ -5,41 +5,8 @@
 #include <math.h>
 #include <float.h>
 #include <fenv.h>
-typedef long (*core_fn_t)(const void *c, const double *x, double T, long want, long formula,
-            double a0, double a1, double a2, double h, double theta,
-            const double *q1, const double *q2, const double *iq1, const double *u,
-            const double *Cin, double *C, double *q, double *iq, double *Geq,
-            double *F, double *J);
-typedef long (*walk_fn_t)(void **F, double **PR, const int64_t *TI, double T,
-            const int64_t *NM, const int64_t *OFF, const int64_t *K,
-            double *xg, const double *x0g, long start, long n);
-typedef void (*dgesv_t)(const int64_t *, const int64_t *, double *, const int64_t *,
-                        int64_t *, double *, const int64_t *, int64_t *);
-typedef void (*dgetrs_t)(const char *, const int64_t *, const int64_t *, const double *,
-                         const int64_t *, const int64_t *, double *, const int64_t *,
-                         int64_t *, size_t);
-typedef int (*kluref_t)(int *, int *, double *, void *, void *, void *);
-typedef int (*klusol_t)(void *, void *, int, int, double *, void *);
-typedef struct {
-    const void *core; void *core_fn; double T;
-    const double *bini; double *dummy; long bits;
-    void *walk_fn; void **wF; double **wPR; const int64_t *wTI, *wNM, *wOFF, *wK; long wn;
-    void *dgesv; void *dgetrs; void *klu_refactor; void *klu_solve;
-    void *Symbolic; void *Numeric; void *Common;
-    int *Ap; int *Ai; double *Ax;
-    long n, iref, maxiter, fused;
-    double h, reltol, abstol, rtol;
-    double A[9];
-    double p[12];
-    double v[9];
-    const double *qn, *u, *seed;
-    double *lu_a; int64_t *lu_ipiv; int64_t lu_info;
-    long klu_fresh, refactored;
-    double *Y, *Yp, *q, *iv, *K, *F, *R, *b0, *x0, *r1, *x1, *y1, *ab, *dY, *stp, *tolv;
-    long iters, status;
-    const double *binG; long end_bits, end_cg, end_done;
-    double *e_q, *e_i, *e_C, *e_G, *e_C01, *e_G01, *e_q01;
-} radau_tf_t;
+#include "pcx_abi.h"
+#include "radau_tc.h"
 
 #define TC_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
 
@@ -143,10 +110,10 @@ long hdl_fn(radau_tf_t *s)
         /* numpy's kept LU: `dgesv` at its first solve, `dgetrs` after */
         memcpy(s->x0, s->b0, (size_t) m * sizeof(double));
         if (s->lu_info < 0) {
-            ((dgesv_t) s->dgesv)(&m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0, &m64, &info64);
+            ((dgesv64_t) s->dgesv)(&m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0, &m64, &info64);
             s->lu_info = info64;
         } else if (s->lu_info == 0) {
-            ((dgetrs_t) s->dgetrs)("N", &m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0, &m64,
+            ((dgetrs64_t) s->dgetrs)("N", &m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0, &m64,
                                    &info64, (size_t) 1);
         }
         feclearexcept(FE_ALL_EXCEPT);
@@ -154,14 +121,14 @@ long hdl_fn(radau_tf_t *s)
         for (k = 0; k < m; k++) if (!isfinite(s->x0[k])) return tf_bail(s, 9);
         /* the complex factor: its refactor at most once a record, then the solve */
         if (!s->klu_fresh) {
-            if (!((kluref_t) s->klu_refactor)(s->Ap, s->Ai, s->Ax, s->Symbolic, s->Numeric,
+            if (!((klu_refactor_t) s->klu_refactor)(s->Ap, s->Ai, s->Ax, s->Symbolic, s->Numeric,
                                                s->Common))
                 return tf_bail(s, 6);
             s->klu_fresh = 1;
             s->refactored++;
         }
         memcpy(s->x1, s->r1, (size_t) (2 * m) * sizeof(double));
-        if (!((klusol_t) s->klu_solve)(s->Symbolic, s->Numeric, (int) m, 1, s->x1, s->Common))
+        if (!((klu_solve_t) s->klu_solve)(s->Symbolic, s->Numeric, (int) m, 1, s->x1, s->Common))
             return tf_bail(s, 7);
         feclearexcept(FE_ALL_EXCEPT);
         /* the residual check, decided outside the band numpy's `abs` and

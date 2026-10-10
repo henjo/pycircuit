@@ -2,46 +2,15 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
-typedef long (*core_fn_t)(const void *c, const double *x, double T, long want, long formula,
-            double a0, double a1, double a2, double h, double theta,
-            const double *q1, const double *q2, const double *iq1, const double *u,
-            const double *Cin, double *C, double *q, double *iq, double *Geq,
-            double *F, double *J);
-typedef long (*walk_fn_t)(void **F, double **PR, const int64_t *TI, double T,
-            const int64_t *NM, const int64_t *OFF, const int64_t *K,
-            double *xg, const double *x0g, long start, long n);
-typedef void (*dgesv_t)(const int64_t *, const int64_t *, double *, const int64_t *,
-                        int64_t *, double *, const int64_t *, int64_t *);
-typedef void (*dgetrf_t)(const int *, const int *, double *, const int *, int *, int *);
-typedef void (*dgetrs_t)(const char *, const int *, const int *, const double *, const int *,
-                         const int *, double *, const int *, int *, size_t);
-typedef void (*dgemv_t)(int, int, int64_t, int64_t, double, const double *, int64_t,
-                        const double *, int64_t, double, double *, int64_t);
-typedef struct {
-    const void *core; void *core_fn;
-    double T; long formula; double a0, a1, a2, h, theta;
-    const double *q1, *q2, *iq1, *u;
-    void *walk_fn; void **wF; double **wPR; const int64_t *wTI, *wNM, *wOFF, *wK; long wn;
-    void *dgesv, *dgetrf, *dgetrs, *dgemv;
-    long n, iref, maxiter, chord, first_bits;
-    double reltol; const double *abstol, *xtol;
-    const double *Cin0; const double *xseed; const double *cx, *cC; long have_cache, hit;
-    double *C0, *q0, *iq0, *Geq0, *F0, *J0;
-    double *C, *q, *iq, *Geq, *F, *J;
-    double *xf, *xnf, *x0f;
-    double *A, *absJ;
-    double *b, *Fr, *x, *xn, *xd, *ax, *Is;
-    int64_t *ipiv64; int *ipiv32;
-    long iters, last_eval, status;
-    long fold_j; double *xc, *Cj, *qj, *iqj, *Geqj, *Jj;
-} newton_t;
+#include "pcx_abi.h"
+#include "newton.h"
 
 long hdl_fn(newton_t *s)
 {
     long n = s->n, m = n - 1, r = s->iref, it, i, j;
     core_fn_t core = (core_fn_t) s->core_fn;
     walk_fn_t walk = (walk_fn_t) s->walk_fn;
-    dgemv_t gemv = (dgemv_t) s->dgemv;
+    dgemv64_t gemv = (dgemv64_t) s->dgemv;
     double prev = 0.0;
     int have_prev = 0;
     int64_t m64 = m, one64 = 1, info64 = 0;
@@ -109,15 +78,15 @@ long hdl_fn(newton_t *s)
         if (s->chord) {
             if (it == 0) {
                 for (i = 0; i < m * m; i++) if (!isfinite(s->A[i])) { s->status = 3; return 3; }
-                ((dgetrf_t) s->dgetrf)(&m32, &m32, s->A, &m32, s->ipiv32, &info32);
+                ((dgetrf32_t) s->dgetrf)(&m32, &m32, s->A, &m32, s->ipiv32, &info32);
                 if (info32 != 0) { s->status = 4; return 4; }
             }
             for (i = 0; i < m; i++) if (!isfinite(s->b[i])) { s->status = 5; return 5; }
-            ((dgetrs_t) s->dgetrs)(&trans, &m32, &one32, s->A, &m32, s->ipiv32, s->b, &m32,
+            ((dgetrs32_t) s->dgetrs)(&trans, &m32, &one32, s->A, &m32, s->ipiv32, s->b, &m32,
                                    &info32, 1);
             if (info32 != 0) { s->status = 6; return 6; }
         } else {
-            ((dgesv_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv64, s->b, &m64, &info64);
+            ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv64, s->b, &m64, &info64);
             if (info64 != 0) { s->status = 7; return 7; }
         }
         for (i = 0; i < m; i++) s->xn[i] = s->x[i] + s->b[i];

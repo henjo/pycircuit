@@ -61,23 +61,7 @@ STATUS = 'not loaded'
 MAXA = 8
 
 RADAU_C = _cbuild.csrc('radau.c')
-RADAU_CDEF = """
-typedef struct {
-    const void *core; void *core_fn; double T;
-    const double *binG, *bini; double *dummy;
-    void *walk_fn; void **wF; double **wPR; const int64_t *wTI, *wNM, *wOFF, *wK; long wn;
-    void *dgesv;
-    long n, iref, maxiter, maxa;
-    double h, reltol, abstol;
-    double A[9];
-    const double *qn, *u, *seed;
-    double *Ya, *qa, *ia, *Ca, *Ga;
-    double *K, *F, *R, *Jf, *b, *blk, *stp, *tolv;
-    int64_t *ipiv;
-    long assemblies, iters, status;
-} radau_t;
-long hdl_fn(radau_t *s);
-"""
+RADAU_CDEF = _cbuild.csrc('radau.h')
 
 #: the C's status codes past 1 (converged): why it handed the solve back
 BAIL = {2: 'nonfinite', 3: 'flags', 4: 'rbound', 5: 'dgesv', 6: 'assemblies', 8: 'walkstop',

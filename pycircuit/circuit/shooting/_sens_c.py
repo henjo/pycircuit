@@ -75,17 +75,7 @@ _PLUS_ZERO = np.float64(0.0).tobytes()
 
 SENS_C_SRC = _cbuild.csrc('sens.c')
 
-SENS_CDEF = """
-typedef struct {
-    void *dgetrf, *dgetrs;
-    long s, m, k, nf, iref;
-    double h;
-    const double *A, *Cf, *Gf, *base;
-    double *J; int *ipiv; double *Z;
-    long status, info;
-} sens_t;
-long hdl_fn(sens_t *t);
-"""
+SENS_CDEF = _cbuild.csrc('sens.h')
 
 #: the C's status codes past 1 (served): why it handed the step back
 BAIL = {2: 'nonfinite', 3: 'flags', 4: 'rhs', 5: 'singular', 6: 'lapack'}

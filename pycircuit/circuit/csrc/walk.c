@@ -1,6 +1,7 @@
 
 #include <stdint.h>
-typedef int (*hdl_lim_fn_t)(const double *, const double *, double *);
+#include "pcx_abi.h"
+#include "walk.h"
 long hdl_fn(void **F, double **PR, const int64_t *TI, double T,
             const int64_t *NM, const int64_t *OFF, const int64_t *K,
             double *xg, const double *x0g, long start, long n)
@@ -14,7 +15,7 @@ long hdl_fn(void **F, double **PR, const int64_t *TI, double T,
         nm = NM + OFF[e];
         for (j = 0; j < k; j++) { o[j] = xg[nm[j]]; b[j] = x0g[nm[j]]; }
         if (TI[e] >= 0) PR[e][TI[e]] = T;
-        if (((hdl_lim_fn_t) F[e])(b, PR[e], o)) return e;
+        if (((lim_fn_t) F[e])(b, PR[e], o)) return e;
         for (j = 0; j < k; j++) xg[nm[j]] = o[j];
     }
     return n;

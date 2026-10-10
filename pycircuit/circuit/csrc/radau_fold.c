@@ -2,14 +2,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <fenv.h>
-typedef struct {
-    long m, fused, nnz, nz_at;
-    double s0, c1r, c1i;
-    const double *Cr, *Gr;
-    const uint8_t *nz;
-    double *rf, *cf, *ax;
-    long status, same;
-} radau_fold_t;
+#include "radau_fold.h"
 
 #define FOLD_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
 

@@ -1,28 +1,8 @@
 
 #include <stdint.h>
 #include <string.h>
-typedef void (*hdl_fn_t)(const double *, const double *, double *);
-typedef void (*hdl_fz_t)(const double *, const double *, long, double *, double *, double *,
-                         double *);
-typedef void (*dgemv_t)(int, int, int64_t, int64_t, double, const double *, int64_t,
-                        const double *, int64_t, double, double *, int64_t);
-typedef struct {
-    long n;
-    const int64_t *p_L; const int64_t *p_toff; const double *tmplall;
-    const int64_t *flatall; const int64_t *p_nbins;
-    long nb; const int64_t *b_pass; void **b_fn; const int64_t *b_ne;
-    const int64_t *b_k; const int64_t *b_so; const int64_t *b_ti;
-    const int64_t *NMall; const int64_t *b_nmoff; double **PRall;
-    const int64_t *b_proff; const int64_t *bdstall; const int64_t *b_dstoff;
-    long ng; const int64_t *g_pass; const int64_t *g_E; const int64_t *g_k;
-    const double *Sall; const int64_t *g_soff; const int64_t *Iall;
-    const int64_t *g_ioff; const int64_t *g_nsel; const int64_t *selall;
-    const int64_t *gdstall; const int64_t *g_seloff;
-    void *dgemv;
-    double *work; double *ywork; double *binG; double *bini;
-    long nz; void **z_fn; const int64_t *ztab; double *zst;
-    const int64_t *bftab; const int64_t *fidxall;
-} hdl_core_t;
+#include "pcx_abi.h"
+#include "core.h"
 /* passes 0 G, 1 C, 2 i, 3 q; want bits 1 G, 2 C, 4 i (q always).  A class
    with a fused kernel (z_fn) is evaluated once a call, before the passes,
    for every pass the call wants, into its staging (zst); its batches then
@@ -41,12 +21,12 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
     double X[64], o[4096], y[64], xg[64];
     double *bins[4] = {c->binG, C, c->bini, q};
     const long bits[4] = {1, 2, 4, 0};
-    dgemv_t gemv = (dgemv_t) c->dgemv;
+    dgemv64_t gemv = (dgemv64_t) c->dgemv;
     long n = c->n, m, b, g, e, j, s, z;
     const double *Cs;
     for (z = 0; z < c->nz; z++) {
         const int64_t *zt = c->ztab + ZW * z;
-        hdl_fz_t ff = (hdl_fz_t) c->z_fn[z];
+        fused_fn_t ff = (fused_fn_t) c->z_fn[z];
         long zw = ((want & 7) | 8) & zt[3];
         if (!ff || !zw) continue;
         {
@@ -70,7 +50,7 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
         else memset(buf, 0, (size_t) L * sizeof(double));
         for (b = 0; b < c->nb; b++) {
             if (c->b_pass[b] != m) continue;
-            hdl_fn_t f = (hdl_fn_t) c->b_fn[b];
+            pass_fn_t f = (pass_fn_t) c->b_fn[b];
             long ne = c->b_ne[b], k = c->b_k[b], so = c->b_so[b], ti = c->b_ti[b];
             long fz = c->nz ? c->bftab[2 * b] : -1;
             const int64_t *NM = c->NMall + c->b_nmoff[b];
