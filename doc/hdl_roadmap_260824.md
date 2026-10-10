@@ -1,37 +1,28 @@
 
-## 2026-10-10 — 99. Stage R2a: the stepping loop's state, measured and declared (`transient._RUN_STATE`)
+## 2026-10-10 — 100. Stage R2b measured and REFUTED: one run context per call does not pay
 
-What does one step hand the next?  The C loop must marshal exactly that, and no reading of the
-code had listed it.  Measured instead, two ways, with `sys.monitoring` on `_SteppingLoop.execute`
-and `accept` (nothing on the loop replaced: wrapping a loop method makes `_paths.genuine` false
-and changes the very path observed):
+R2b's premise: the C Newton's ~28 per-call checks become ONE run context, made once a run and
+re-validated by ONE stamp test per call.  Sized first (`insitu.py lines spice_4049
+_tran_newton_c:solve`, 408.5 k a call): the C 113.7 k, the branch screen 87.8 k (stage 3's), the
+source pass 49.2 k (stage 1's), the run-level re-checks ~95 k.  R2's line was RE-SIZED before R2b
+was built (the plan, 2026-10-10): the R2-addressable ~158 k down >= 35 %.  A throwaway ceiling
+prototype (every run-level check skipped, unsafely) put the most R2b could save at 46.5 k a call.
 
-* a WRITE census over the 20 benchmark cases (13 with a stepping loop; PSS shoots outside it):
-  every attribute reachable from the transient fingerprinted at each accepted step (identity,
-  array bytes) -- 39 transient attributes written between steps, 11 on the loop, the rest in
-  the core's buffers, the limiters, the linear solver, the integrator and the controller;
-* a FIRST-ACCESS trace (class-level `__getattribute__` / `__setattr__` on `Transient` while a
-  loop runs): per step, is an attribute's first access a read (it was CARRIED in) or a write
-  (it is STEP scratch)?  ~80 attributes touched a step: 14 read before written, 16 written
-  before read, the rest the run's context (mostly methods).
+Built exactly: a `_Run` context after a call whose every check passed, at the counter's present
+value; its test -- the counter, plus ONE pass over what no dict watcher sees (the transient's own
+attributes the checks read, the machinery's class and module attributes, the switches,
+`ParameterDict`'s epoch, the linear solver's choice, values in unwatched dicts, each element's
+`__dict__` object, each pass's code, the circuit's size).  First run: built but held 0 of 400
+calls -- the step's source memo (`_RUN_STATE` 'step') is a new dict every step, and the context
+compared it by identity where the check asks only that one exists (fixed: held 397 of 400).
+Then COUNTED against its parent (`step_machinery --count`): spice_4049 +1.24 %, mos1 and stage
++1.0 % a step -- MORE.  Bytes and statistics the same.
 
-Crossed (a "carried" one written once a run is a lazily memoised RUN constant), they give three
-roles, now declared once in `transient._RUN_STATE` (49 names, each with its role and a line of
-meaning):
-
-* carried (15): the history (`_qlast`, `_iqlast`, `_dt_last`, `_dt_last2`, `_is_first_step`,
-  `_no_history`), the predictor's (`_pred_hist`, `_pred_fast`), `_C_cache`, the device memo,
-  the branch check's bound, the Nordsieck GLM's four;
-* run (21): the C paths' records and decline memos, the lazily decided verdicts
-  (`_has_limiters`, `_jacobian_expensive`), the caches, the linear solver, the loop's mark;
-* step (16): the companion block (`_q_cache`, `_iq`, `_Geq`, `_Cmat`, `_companion_coeffs`,
-  `_effective_method`, `active_integrator`) -- written in FOUR places, not the three the plan
-  counted (the Python reference `_tran_companion`, `_tran_core`, `_tran_newton_c`,
-  `_tran_stages`) -- with `_dt`, the source memo, the stages' values.
-
-Found on the way: `statistics_glm_startups` is a counter kept ON the transient, not in its
-`statistics` (R2d's list).  `test_run_state.py`: 14 runs covering every step family (each
-integrator adaptive on a pulsed RC, the coupled family, a fixed grid, an HDL MOS chain fixed /
-gear / Radau through the C paths) -- any attribute whose binding changes while a loop runs must
-be declared; every declared name has a role and is assigned in the package; the observer proved
-alive on a planted write.  No code path changed (the manifest is data; the tests observe).  Full suite 5069 passed.
+Why: the stamps already skip what a dict watcher can see; what is left on every call is exactly
+what NO watcher sees, item by item -- and the fused test must compare every one of those too (~70
+identities through mapped tuples), which costs what today's inline checks cost, plus the
+context's own reads.  The work a context could truly skip (the limiter closure built to test `is
+not None`, the walk's lookup, the core record's call) is a few k.  Reverted, by the plan's rule (a
+stage showing MORE is not kept, even for clarity).  The design is not lost: validated ONCE PER
+C-LOOP CALL -- many steps a call -- it is the C loop's entry gate (stage 4), where it pays; the
+diff is kept with the plan's working notes.
