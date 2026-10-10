@@ -7946,3 +7946,26 @@ Not yet: the C side (the core assembling on the pattern, a C linsys with KLU, th
 sparse runs) -- stage 2's next steps; `_tran_radau_tc`'s complex KLU still takes its pattern from
 the values.  Found on the way: the editable install's import finder serves THIS tree's package
 whatever `sys.path` says, so a parent worktree cannot be A/B'd by path -- stash in the same tree.
+
+## 2026-10-10 — 107. Stage 2, step b: a sparse run's error test solves on its structural factorisation (-15 .. -23 % more)
+
+After step a, rich3's profile put the error test's dense LU first among what was left: the C
+error test (`_tran_lte_c`) maps the charge LTE by `J^-1` with numpy's own `dgesv` on the m x m
+reduced Jacobian, 0.52 ms a step at m = 268 against KLU's 63 us factor of the same matrix.  The
+reference (`StepController._charge_lte`) solved with the toolkit's dense solve.  For a sparse run
+-- the analysis's `AutoSolver` having chosen `StructuralKLU` -- the transient now hands the step
+controller that solver (`StepLTEInputs.linsolver`, from `_lte_inputs`' `_sparse_linsolver()`;
+None everywhere else) and `_charge_lte` solves `J^-1 Eg` with it, as the Newton's solves are;
+the C error test declines there (`lte_c:sparse`: its `dgesv` is no longer the reference).  Dense
+runs: unchanged (None: the toolkit's solve, the C serving).  The same decision as step a (a
+sparse run's linear algebra on the structural pattern); its answers move once more.
+
+Measured, full length, both versions: rich3 11.71 -> 9.48 s, arom 11.45 -> 9.79 s, gm19 39.49 ->
+30.49 s; with step a, against SuperLU and the dense error test: rich3 15.0 -> 9.5 s (-37 %),
+arom 14.8 -> 9.8 s (-34 %), gm19 44.5 -> 30.5 s (-31 %).  The answers move at the integration
+error's level as in step a (on the old grid max |new - old| 3.4e-2 / 2.5e-2 / 4.5e-2, at tend
+3.7e-3 / 3.3e-3 / 7.3e-4).  `test_structural_klu.py` gains: a sparse run's error test goes to its
+`StructuralKLU` (the C declining `lte_c:sparse`), a dense run's does not.  `StepLTEInputs`' field
+list grew by `linsolver` (its contract test's input set with it).  The pinned pair "the error
+test and its C" moved on both sides -- the reference's sparse branch and the twin's decline for
+exactly it -- checked, re-recorded.  Full suite 5090 passed.

@@ -186,7 +186,7 @@ def test_the_controllers_take_one_set_of_inputs_by_keyword_or_position(ctrl_cls)
           'active_integrator': integ, 'irefnode': 2, 'reltol': 1e-3,
           'abstol': 1e-12, 'toolkit': numeric, 'max_step': 1e-3, 'TRTOL': 7.0,
           'n_nodes': None, 'h_last2': 1e-6, 'h_clamped': False,
-          'x_hist': hist, 'lte_mask': None}
+          'x_hist': hist, 'lte_mask': None, 'linsolver': None}
     names = list(StepLTEInputs.__dataclass_fields__)
     assert names == list(kw), names
     by_kw = ctrl_cls().evaluate_step(**kw)

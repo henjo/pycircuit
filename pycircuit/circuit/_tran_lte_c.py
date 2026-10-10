@@ -187,6 +187,10 @@ def max_error(ctrl, s):
     handed back, nothing written, the Python chain runs."""
     if not ENABLED:
         return _no('lte_c:off')
+    if s.linsolver is not None:
+        ## (a sparse run solves `J^-1 Eg` on its structural factorisation,
+        ## not numpy's dense LU: the C's `dgesv` is not its reference)
+        return _no('lte_c:sparse')
     drv = _driver or driver()
     if not drv:
         return _no('lte_c:driver')

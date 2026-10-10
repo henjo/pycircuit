@@ -149,3 +149,25 @@ def test_a_sparse_transient_runs_on_it_and_agrees_with_the_dense_solver():
         if ls is None:
             assert type(tr._get_linearsolver()._choice) is linearsolver.StructuralKLU
     np.testing.assert_allclose(out['auto'], out['dense'], rtol=0, atol=1e-6)
+
+
+def test_a_sparse_run_s_error_test_solves_on_its_factorisation():
+    """The error test's `J^-1 Eg` on a sparse run is solved by the run's
+    `StructuralKLU` (the C error test declines: its `dgesv` is not the
+    reference there); a dense run's stays numpy's, and the C serves."""
+    from pycircuit.circuit import _paths
+    before = _paths.snapshot()
+    tr = Transient(_ladder(), reltol=1e-6)
+    with quiet(AccuracyWarning):
+        tr.solve(tend=3e-8, timestep=1e-10)
+    got = _paths.since(before)
+    ls = tr._get_linearsolver()
+    assert tr._sparse_linsolver() is ls and type(ls._choice) is linearsolver.StructuralKLU
+    assert got.get('lte_c:sparse', 0) > 0 and ls._choice.refactors > 0
+    before = _paths.snapshot()
+    small = Transient(_ladder(20), reltol=1e-6)
+    with quiet(AccuracyWarning):
+        small.solve(tend=3e-8, timestep=1e-10)
+    got = _paths.since(before)
+    assert small._sparse_linsolver() is None
+    assert got.get('lte_c:sparse', 0) == 0

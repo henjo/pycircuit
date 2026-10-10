@@ -362,7 +362,22 @@ class _RunHistory:
             'irefnode': self.irefnode, 'reltol': self.par.reltol,
             'abstol': abstol, 'toolkit': self.toolkit, 'max_step': max_step,
             'TRTOL': self.LTERATIO, 'n_nodes': len(self.cir.nodes),
-            'h_clamped': clamped, 'x_hist': x_hist, 'lte_mask': self._lte_mask()}
+            'h_clamped': clamped, 'x_hist': x_hist, 'lte_mask': self._lte_mask(),
+            'linsolver': self._sparse_linsolver()}
+
+    def _sparse_linsolver(self):
+        """The run's linear solver where it factors on the circuit's
+        structural pattern -- the analysis's `AutoSolver` having chosen
+        `StructuralKLU` for a sparse Jacobian (the C loop plan's stage 2):
+        the error test's `J^-1 Eg` is solved with it there, as the Newton's
+        are; None elsewhere (the toolkit's solve, as before)."""
+        ls = self.__dict__.get('_default_linearsolver')
+        if ls is None:
+            return None
+        from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
+        if type(ls) is AutoSolver and type(ls._choice) is StructuralKLU:
+            return ls
+        return None
 
     def _lte_mask(self):
         """The unknowns the LTE test judges (`Transient.lte_algebraic`):

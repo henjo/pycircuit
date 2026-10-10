@@ -135,6 +135,10 @@ class StepLTEInputs:
     x_hist: Any = None
     ## True where an unknown is judged; None judges all (see `Transient.lte_algebraic`)
     lte_mask: Any = None
+    ## the run's linear solver where it factors on the circuit's structural
+    ## pattern (a sparse run: `linearsolver.StructuralKLU`, the C loop plan's
+    ## stage 2) -- `J^-1 Eg` is solved with it; None: the toolkit's solve
+    linsolver: Any = None
 
     @classmethod
     def bind(cls, *args, **kwargs):
@@ -454,7 +458,9 @@ class StepController(ABC):
         J_reduced, Eg_reduced = remove_row_col((s.J, Eg), s.irefnode, s.toolkit)
 
         try:
-            lte_reduced = s.toolkit.linearsolver(J_reduced, Eg_reduced)
+            ls = s.linsolver
+            lte_reduced = (s.toolkit.linearsolver(J_reduced, Eg_reduced) if ls is None
+                           else ls.solve(J_reduced, Eg_reduced, s.toolkit))
         except Exception as exc:
             ## DECISION 0.3d called this "the unlogged half-(B) fallback" and said
             ## to delete it.  What made it a defect is not the fallback but the
