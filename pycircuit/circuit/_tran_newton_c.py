@@ -594,13 +594,13 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         a0, a1, a2 = M['bdf2_alphas'](h, h_last)
     elif formula == 3:
         theta = active.theta_at(h)
-    has_limiter = tr._newton_limiter() is not None
-    if has_limiter:
-        ## (a limiting element whose class has no C limiter at all -- PSP's:
-        ## a property of the circuit, before any context is built for it)
-        w = M['climit']._walk_for(tr.cir)
-        if not w.any_capable or len(w.cap_idx) != len(w.entries):
-            return _keep(tr, td, M, 'limit')
+    ## (whether anything limits: what the genuine `_newton_limiter` -- the
+    ## chain above holds it so -- answers by its memo, read without building
+    ## the closure it returns; the method only where the memo is unset)
+    _has = getattr(tr, '_has_limiters', None)
+    has_limiter = bool(_has) if _has is not None else tr._newton_limiter() is not None
+    ## (a limiting element whose class has no C limiter at all -- PSP's -- is
+    ## a property of the circuit: `_walk_ready` finds it, kept below)
     rec = td.get('_newton_c')
     if rec is None or rec.core is not core or rec.n != n or rec.iref != iref:
         cffi_core, cfn_core, _dg = tc.driver()

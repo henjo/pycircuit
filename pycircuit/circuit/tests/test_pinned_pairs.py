@@ -447,7 +447,7 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('772989bd55ff', '034fa2dd434c'),
+    'the Newton solve and its C': ('772989bd55ff', '8a463a7fa1f0'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('3ccf864dc600', '5b13d3da418e'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
