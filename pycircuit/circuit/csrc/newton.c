@@ -3,13 +3,15 @@
 #include <stddef.h>
 #include <math.h>
 #include "pcx_abi.h"
+#include "pcx_dense.h"
 #include "newton.h"
 
 /* the iteration; `*num` the sparse chord's numeric where it made one (the
    caller frees it: every return) */
 static long iterate(newton_t *s, void **num)
 {
-    long n = s->n, m = n - 1, r = s->iref, it, i, j, k;
+    long n = s->n, m = n - 1, r = s->iref, it, i, k;
+    int finite = 1;   /* the last full iteration's J: every entry finite */
     core_fn_t core = (core_fn_t) s->core_fn;
     walk_fn_t walk = (walk_fn_t) s->walk_fn;
     dgemv64_t gemv = (dgemv64_t) s->dgemv;
@@ -24,7 +26,7 @@ static long iterate(newton_t *s, void **num)
     s->hit = 0;
     /* the seed, reduced (remove_row_col), and _C_lookup's equality test of
        the full seed it evaluates against the cached state */
-    for (i = 0, j = 0; i < n; i++) { if (i == r) continue; s->x[j++] = s->xseed[i]; }
+    pcx_drop_ref(s->xseed, s->x, n, r);
     s->Cin0 = 0;
     if (s->have_cache) {
         int eq = 1;
@@ -42,9 +44,7 @@ static long iterate(newton_t *s, void **num)
         if (it == 0) { F = s->F0; J = s->J0; C = s->C0; q = s->q0; iq = s->iq0; Geq = s->Geq0; }
         else { F = s->F; J = s->J; C = s->C; q = s->q; iq = s->iq; Geq = s->Geq; }
         /* insert_row: the full x of this evaluation */
-        for (i = 0; i < r; i++) s->xf[i] = s->x[i];
-        s->xf[r] = 0.0;
-        for (i = r; i < m; i++) s->xf[i + 1] = s->x[i];
+        pcx_put_ref(s->x, s->xf, n, r);
         for (i = 0; i < n; i++) if (!isfinite(s->xf[i])) { s->status = NEWTON_BAIL_X; return NEWTON_BAIL_X; }
         if (full) {
             bits = (it == 0) ? s->first_bits : PCX_WANT_ALL;
@@ -57,12 +57,8 @@ static long iterate(newton_t *s, void **num)
              s->theta,
              s->q1, s->q2, s->iq1, s->u, Cin, C, q, iq, Geq, F, J);
         s->last_eval = it;
-        for (i = 0, j = 0; i < n; i++) {
-            if (i == r) continue;
-            s->Fr[j] = F[i];
-            s->b[j] = -F[i];
-            j++;
-        }
+        pcx_drop_ref(F, s->Fr, n, r);
+        for (i = 0; i < m; i++) s->b[i] = -s->Fr[i];
         if (full && s->klu_sym) {
             /* the pattern's values, and |J| on it (zero off it) */
             for (k = 0; k < s->knnz; k++) {
@@ -71,19 +67,7 @@ static long iterate(newton_t *s, void **num)
                 s->absJ[s->kabs[k]] = fabs(v);
             }
         } else if (full) {
-            long ri, ci, rr, cc;
-            for (ri = 0, rr = 0; ri < n; ri++) {
-                if (ri == r) continue;
-                for (ci = 0, cc = 0; ci < n; ci++) {
-                    double v;
-                    if (ci == r) continue;
-                    v = J[ri * n + ci];
-                    s->A[cc * m + rr] = v;
-                    s->absJ[rr * m + cc] = fabs(v);
-                    cc++;
-                }
-                rr++;
-            }
+            finite = pcx_reduce_cm_abs(J, s->A, s->absJ, n, r);
         }
         if (s->chord && s->klu_sym) {
             /* StructuralKLU.factor's numeric, then `_KLUNumeric.solve` */
@@ -100,7 +84,7 @@ static long iterate(newton_t *s, void **num)
             }
         } else if (s->chord) {
             if (it == 0) {
-                for (i = 0; i < m * m; i++) if (!isfinite(s->A[i])) { s->status = NEWTON_BAIL_JNONFINITE; return NEWTON_BAIL_JNONFINITE; }
+                if (!finite) { s->status = NEWTON_BAIL_JNONFINITE; return NEWTON_BAIL_JNONFINITE; }
                 ((dgetrf32_t) s->dgetrf)(&m32, &m32, s->A, &m32, s->ipiv32, &info32);
                 if (info32 != 0) { s->status = NEWTON_BAIL_GETRF; return NEWTON_BAIL_GETRF; }
             }
@@ -115,13 +99,11 @@ static long iterate(newton_t *s, void **num)
         for (i = 0; i < m; i++) s->xn[i] = s->x[i] + s->b[i];
         if (walk) {
             long e;
-            for (i = 0; i < r; i++) { s->xnf[i] = s->xn[i]; s->x0f[i] = s->x[i]; }
-            s->xnf[r] = 0.0;
-            s->x0f[r] = 0.0;
-            for (i = r; i < m; i++) { s->xnf[i + 1] = s->xn[i]; s->x0f[i + 1] = s->x[i]; }
+            pcx_put_ref(s->xn, s->xnf, n, r);
+            pcx_put_ref(s->x, s->x0f, n, r);
             e = walk(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK, s->xnf, s->x0f, 0, s->wn);
             if (e < s->wn) { s->status = NEWTON_BAIL_WALKSTOP; return NEWTON_BAIL_WALKSTOP; }
-            for (i = 0, j = 0; i < n; i++) { if (i == r) continue; s->xn[j++] = s->xnf[i]; }
+            pcx_drop_ref(s->xnf, s->xn, n, r);
             for (i = 0; i < m; i++) s->xd[i] = s->xn[i] - s->x[i];
         } else {
             for (i = 0; i < m; i++) s->xd[i] = s->b[i];
@@ -145,9 +127,7 @@ static long iterate(newton_t *s, void **num)
                 if (s->fold_j) {
                     /* jacobian_only at the converged point: G, C, q -- C and
                        q alone where J is unread (fold_j holds the passes) */
-                    for (i = 0; i < r; i++) s->xc[i] = s->x[i];
-                    s->xc[r] = 0.0;
-                    for (i = r; i < m; i++) s->xc[i + 1] = s->x[i];
+                    pcx_put_ref(s->x, s->xc, n, r);
                     core(s->core, s->xc, s->T, s->fold_j | s->pattern, s->formula, s->a0, s->a1,
                          s->a2, s->h,
                          s->theta, s->q1, s->q2, s->iq1, s->u, s->Cj, s->Cj, s->qj, s->iqj,

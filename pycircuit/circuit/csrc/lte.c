@@ -4,6 +4,7 @@
 #include <math.h>
 #include <fenv.h>
 #include "pcx_abi.h"
+#include "pcx_dense.h"
 #include "lte.h"
 
 #define LTE_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
@@ -17,7 +18,7 @@ static long lte_bail(lte_t *s, long why)
 
 long hdl_fn(lte_t *s)
 {
-    long n = s->n, m = n - 1, r = s->iref, i, j, ri, ci, rr, cc;
+    long n = s->n, m = n - 1, r = s->iref, i;
     int64_t m64 = m, one64 = 1, info64 = 0;
     double err;
     /* every input finite: anything else is the Python chain's */
@@ -50,26 +51,15 @@ long hdl_fn(lte_t *s)
     if (fetestexcept(LTE_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
     /* remove_row_col and numpy's solve: the reduced J column-major (numpy's
        copy for LAPACK), the reduced Eg, numpy's own dgesv */
-    for (ri = 0, rr = 0; ri < n; ri++) {
-        if (ri == r) continue;
-        for (ci = 0, cc = 0; ci < n; ci++) {
-            double v;
-            if (ci == r) continue;
-            v = s->J[ri * n + ci];
-            if (!isfinite(v)) return lte_bail(s, LTE_BAIL_NONFINITE);
-            s->A[cc * m + rr] = v;
-            cc++;
-        }
-        s->b[rr] = s->lte[ri];
-        rr++;
-    }
+    if (!pcx_reduce_cm(s->J, s->A, n, r)) return lte_bail(s, LTE_BAIL_NONFINITE);
+    pcx_drop_ref(s->lte, s->b, n, r);
     ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv, s->b, &m64, &info64);
     /* (numpy's solve clears what LAPACK raised; an info is its LinAlgError) */
     feclearexcept(FE_ALL_EXCEPT);
     if (info64 != 0) return lte_bail(s, LTE_BAIL_DGESV);
     for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return lte_bail(s, LTE_BAIL_LTE);
     /* the full vector, the reference row restored as +0.0 */
-    for (i = 0, j = 0; i < n; i++) s->lte[i] = (i == r) ? 0.0 : s->b[j++];
+    pcx_put_ref(s->b, s->lte, n, r);
     /* _reference: numpy's maximum (the first where they compare equal) of
        |x_curr| and |x_last|, folded into the running maximum */
     for (i = 0; i < n; i++) {

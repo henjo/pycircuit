@@ -151,7 +151,7 @@ def test_each_unit_compiles_on_its_own_without_a_warning(unit, cdef, tmp_path):
     assert proc.returncode == 0, proc.stderr
 
 
-@pytest.mark.parametrize('planted', ['newton.c', 'newton.h', 'pcx_abi.h'])
+@pytest.mark.parametrize('planted', ['newton.c', 'newton.h', 'pcx_abi.h', 'pcx_dense.h'])
 def test_a_compiler_message_names_the_file_and_line_it_came_from(planted, tmp_path,
                                                                 monkeypatch):
     """`csrc` marks each expanded header with `#line` (R1d step 4): an error

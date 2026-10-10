@@ -8056,3 +8056,29 @@ transient answer moves by at most 1.3e-23 absolute (max |x| 10.2); rich3 and aro
 Tests (`test_structural_klu.py`): a 30-section diode ladder's operating point is byte for byte
 the call with no solver; a 300-section one factors on the structure (nothing foreign) and agrees
 with the dense solve to 1e-12.  Full suite 5104 passed, nothing else moved.
+
+## 2026-10-10 — 111. Stage 2 closed: the reduced system's dense plumbing in one header (`csrc/pcx_dense.h`)
+
+The reference row out and back and LAPACK's column-major copy were written out by hand at each
+site: seven loops in `newton.c` (the seed reduced; each evaluation's x, the walk's two vectors
+and the converged point put back; F reduced; the walk's result reduced; J copied with |J|) and
+three in `lte.c` (J copied with its finiteness bail, the right-hand side reduced, the result put
+back).  Now four inline helpers, named for the Python they stand for: `pcx_drop_ref`
+(`remove_row_col` on a vector), `pcx_put_ref` (`insert_row`: +0.0 at the reference),
+`pcx_reduce_cm` and `pcx_reduce_cm_abs` (the reduced J column-major -- numpy's / SciPy's copy for
+LAPACK -- and |J| row-major for the convergence test; each returns whether every entry copied was
+finite).  The Newton's chord reads that flag instead of scanning A again; the error test bails on
+it as before.  Radau's 3 x 3 block layouts keep their own loops (another layout, not this one).
+
+Not built, by choice: one polymorphic "linsys" over LAPACK and KLU.  The bits depend on which
+library a solve calls (numpy's ILP64 dgesv for the full Newton and the error test, SciPy's LP64
+getrf/getrs for the chord, KLU's factor/solve for the sparse chord), and a struct that hides the
+choice hides the one thing a reader of a twin must see; the three solves stay where they are
+called, each a few lines, each naming the Python it stands for.
+
+Proved: the Newton and error-test byte-identity suites (test_newton_c, test_lte_c) unchanged and
+passing; `-Wall -Wextra -Werror` clean; the header added to the `#line` plant test (an error in it
+reported at pcx_dense.h:line).  Two pinned pairs moved on the twin only ("the Newton solve and
+its C", "the error test and its C"): checked, re-recorded.  Counted against HEAD with an A/A beside it:
+no change on every case (-0.34 .. +0.30 %, the A/A +0.04 .. +0.57 %).  Full suite 5105 passed; the sanitizer's
+fast tier clean (4790 passed).
