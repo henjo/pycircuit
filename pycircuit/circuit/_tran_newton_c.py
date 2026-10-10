@@ -184,12 +184,13 @@ def _mods():
         from pycircuit.circuit._lte_kernels import bdf2_alphas
         from pycircuit.circuit.analysis import insert_row
         from pycircuit.circuit.dcanalysis import refnode_removed
-        from pycircuit.circuit.linearsolver import AutoSolver
+        from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
         from pycircuit.circuit.toolkit import NumericToolkit
         _MOD.update(climit=_hdl_climit, limiting=_limiting, companion=_tran_companion, watch=_watch,
                     plan_for=_stamp_plan._plan_for,
                     core=_tran_core, bdf2_alphas=bdf2_alphas, insert_row=insert_row,
                     refnode_removed=refnode_removed, AutoSolver=AutoSolver,
+                    StructuralKLU=StructuralKLU,
                     NumericToolkit=NumericToolkit,
                     u_keys=_U_KEYS + tuple(_stamp_plan._SK['u'].values())
                     + tuple(_stamp_plan._SD.values()))
@@ -209,6 +210,9 @@ class _Ctx:
         'ipiv64',
         'iref',
         'keep',
+        'klu',
+        'klu_keep',
+        'klu_sym',
         'n',
         'par_arms',
         'par_held',
@@ -239,7 +243,7 @@ class _Ctx:
         Z = np.zeros
         self.buf = buf = {
             'xf': np.empty(n), 'xnf': np.empty(n), 'x0f': np.empty(n),
-            'A': np.empty(m * m), 'absJ': np.empty(m * m),
+            'A': np.empty(m * m), 'absJ': Z(m * m),
             'b': np.empty(m), 'Fr': np.empty(m), 'x': np.empty(m), 'xn': np.empty(m),
             'xd': np.empty(m), 'ax': np.empty(m), 'Is': np.empty(m),
             'F0': np.empty(n), 'F': np.empty(n), 'J0': Z(nn), 'J': Z(nn),
@@ -271,6 +275,9 @@ class _Ctx:
         s.pattern = _WANT_PATTERN if core.npat else 0
         s.walk_fn = ffi.NULL
         s.wn = 0
+        s.klu_sym = ffi.NULL
+        self.klu = self.klu_sym = None
+        self.klu_keep = ()
         self.tol = None
         self.walk = self.walk_ok = None
         self.walk_els = self.walk_dicts = self.walk_packs = self.walk_kern = ()
@@ -278,6 +285,43 @@ class _Ctx:
         self.walk_stamp, self.walk_arms, self.walk_held = -1, 0, 0
         self.walk_watch = ()
         self.par_rec, self.par_arms, self.par_held = None, 0, 0
+
+
+def _klu_bind(rec, sk):
+    """Point the C chord at `sk`, the run's `StructuralKLU`: its pattern's
+    places in the core's full J (`kat`) and in the reduced |J| (`kabs`), its
+    analysis and its common, the library's entries.  False -- declined --
+    where it is not analysed yet (its first solve does that) or where the
+    core's pattern does not lie within its own: there a nonzero off its
+    pattern would go to its fallback in the Python."""
+    n, iref = rec.n, rec.iref
+    m = n - 1
+    if sk.m != m or not sk._symbolic:
+        return False
+    r, c = np.divmod(sk.take, m)
+    kat = np.ascontiguousarray((r + (r >= iref)) * n + (c + (c >= iref)), dtype=np.int64)
+    pat = rec.core.arrays['pat']
+    pr, pc = np.divmod(pat, n)
+    if not np.isin(pat[(pr != iref) & (pc != iref)], kat).all():
+        return False
+    ffi, s = rec.ffi, rec.s
+    lib, ct = sk._lib, sk._ct
+    kabs = np.ascontiguousarray(sk.take, dtype=np.int64)
+    kAx = np.empty(max(sk.nnz, 1))
+    keep = (sk, kat, kabs, kAx, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai),
+            ffi.from_buffer('int64_t *', kat), ffi.from_buffer('int64_t *', kabs),
+            ffi.from_buffer('double *', kAx))
+    s.knnz = sk.nnz
+    s.kAp, s.kAi, s.kat, s.kabs, s.kAx = keep[4:]
+
+    def addr(f):
+        return ffi.cast('void *', ct.cast(f, ct.c_void_p).value)
+    s.klu_factor, s.klu_solve, s.klu_free = (addr(lib.klu_factor), addr(lib.klu_solve),
+                                             addr(lib.klu_free_numeric))
+    s.klu_common = ffi.cast('void *', ct.addressof(sk._common))
+    s.klu_sym = ffi.cast('void *', sk._symbolic)
+    rec.klu, rec.klu_sym, rec.klu_keep = sk, sk._symbolic, keep
+    return True
 
 
 class _ParRec:
@@ -568,8 +612,10 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if getattr(tr, '_continuation_rescue', False) or nrsolver is not None or scaler is not None:
         return _no('newton_c:solver')
     ls = tr._get_linearsolver() if P is None else P.ls
-    if not (type(ls) is M['AutoSolver'] and ls._choice is not None
-            and ls._choice is ls._dense):
+    ## (the dense choice -- LAPACK, as the Python's -- or KLU on the circuit's
+    ## pattern: the sparse chord, `_klu_bind`)
+    ch = ls._choice if type(ls) is M['AutoSolver'] else None
+    if ch is None or not (ch is ls._dense or type(ch) is M['StructuralKLU']):
         return _no('newton_c:linsolver')
     tc = M['core']
     if not tc.CORE:
@@ -630,6 +676,18 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     chord = bool(residual is not None and nrsolver is None
                  and tr._newton_option(par.chord_jacobian if P is None else P.chord,
                                        'chord_jacobian'))
+    sparse = ch is not ls._dense
+    if sparse:
+        ## (the full Newton's sparse solve refactors the run's own numeric,
+        ## validated by its residual: the Python's)
+        if not chord:
+            return _no('newton_c:sparse_full')
+        if (rec.klu is not ch or ch._symbolic != rec.klu_sym) and not _klu_bind(rec, ch):
+            return _no('newton_c:klu')
+    elif rec.klu is not None:
+        s.klu_sym = ffi.NULL
+        rec.klu = rec.klu_sym = None
+        rec.klu_keep = ()
     ## ---- from here the attempt leaves one trace: the step's source memo ----
     key = (t, par.analysis if P is None else P.analysis)
     try:
@@ -694,6 +752,10 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     iters = int(s.iters)
     if chord:
         _PC['chord:chosen'] += 1
+    if sparse:
+        ## (the numeric `StructuralKLU.factor` would have made: counted)
+        ch.numerics += 1
+        _PC['newton_c:sparse'] += 1
     _PC['newton_c:served'] += 1
     _PC['newton_c:iterations'] += iters
     _PC['newton_c:jfold'] += 1

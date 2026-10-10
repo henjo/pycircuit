@@ -7999,3 +7999,41 @@ every unit including pcx_abi.h, whose enum gained the bit); "the step's end pass
 also on its reference (`passes`' zeroed C and the bit) -- its twin (radau_tc's end passes)
 takes the dense route to the same bytes -- checked, re-recorded.  Full suite 5095 passed; the sanitizer's fast
 tier clean (4824 passed).
+
+## 2026-10-10 — 109. Stage 2, step d: the C Newton serves sparse runs -- the chord on KLU from C, byte for byte the Python's
+
+Sized first (rich3, a quarter of the run): the Python Newton was 1.78 s of 2.60 s, of which the C
+core 0.46 s and KLU 0.10 s -- 1.22 s (47 % of the run) of Python around them, ~320 us an
+iteration against the core's 121 us.  The C Newton declined every sparse run
+(`newton_c:linsolver`: the AutoSolver's choice not the dense one).  Now, where the choice is the
+run's `StructuralKLU` and the Newton is the chord, `newton.c` factors and solves with KLU itself:
+at the first iteration the pattern's values gathered straight from the core's full J (`kat`: each
+CSC entry's place there -- no reduced copy, no coverage count) and `klu_factor` on StructuralKLU's
+own analysis and common -- the numeric its `factor` makes; each iteration `klu_solve` on -F, as
+`_KLUNumeric.solve`; |J| written on the pattern only (`kabs`; zero off it, so the convergence
+test's `dgemv` reads the matrix numpy's `dot` reads); the numeric freed on every return
+(`hdl_fn` wraps `iterate`).  `_tran_newton_c._klu_bind` points the C at the solver once a run,
+declining where it is not analysed yet or where the core's pattern does not lie within KLU's (a
+nonzero there would go to its fallback in the Python); a full Newton on KLU declines
+(`newton_c:sparse_full`: its solve refactors the run's numeric, validated by the residual).  A
+served call counts the numeric (`numerics`), as the Python's `factor` would.
+
+Proved: `test_newton_c.py` -- a 250-stage MOS chain with capacitors, gear / trapezoid / Euler
+adaptive and gear fixed: the same bytes, steps, iterations and StructuralKLU counts with the C on
+and off; a bail on every call leaves no trace; a core pattern given an entry KLU's lacks declines
+(`newton_c:klu`) with the Python's answer; alive: the first drain's diagonal read from the
+second's place makes another run.  The sparse decks full length, C Newton on and off (off = the
+path before): byte for byte the same; rich3 9.16 -> 6.52 s (-29 %), arom 8.66 -> 6.24 s (-28 %),
+gm19 27.54 -> 24.00 s (-13 %; every Newton call served -- its remaining cost is elsewhere, below).
+Counted on the dense cases against HEAD with an A/A: no change on every case.  Ten pinned pairs'
+twins moved (pcx_abi.h gained `klu_factor_t` / `klu_free_numeric_t`; newton.c/h): checked; "the
+Newton solve and its C" now names `StructuralKLU.factor`, `._factor` and `_KLUNumeric._run` as
+reference and `_klu_bind` as twin -- re-recorded.
+
+Found while sizing gm19 (not changed): the DC operating point solves DENSE whatever its size --
+`DCAnalysis`'s two `solve_system` calls pass no `linsolver`, so every rung of the gmin / gshunt
+continuation takes `toolkit.linearsolver` (numpy's dgesv): on gm19 (429 unknowns) 3227 dense
+solves at a tenth of the run.  Routing it to the analysis's AutoSolver would move the sparse
+circuits' operating points in their last bits: a decision, put to Andreas.
+
+Full suite 5102 passed; the sanitizer's fast tier clean (4734 passed).

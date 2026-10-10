@@ -221,3 +221,113 @@ def test_the_c_solve_serves_the_multistep_step():
     d = _paths.since(before)
     assert d.get('newton_c:served', 0) >= 40
     assert d.get('newton_c:jfold', 0) == d.get('newton_c:served', 0)
+
+
+## -- the sparse chord (the C loop plan's stage 2, step d) ------------------
+
+def _sparse_chain():
+    """A 250-stage MOS chain with capacitors: 254 unknowns, a sparse run --
+    `StructuralKLU`, the chord."""
+    return _mos_chain(250, cap=1e-13)
+
+
+def _sparse_run(on, **kw):
+    old = _tran_newton_c.ENABLED
+    _tran_newton_c.ENABLED = on
+    before = _paths.snapshot()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr = Transient(_sparse_chain(), toolkit=circuit.numeric, **kw.pop('make', {}))
+            res = tr.solve(**kw)
+    finally:
+        _tran_newton_c.ENABLED = old
+    sk = tr._get_linearsolver()._choice
+    st_ = tr.statistics
+    return ((np.asarray(res.x, float).tobytes(), np.asarray(res.sweep_values, float).tobytes(),
+             st_.accepted_steps, st_.rejected_steps, st_.newton_iterations),
+            (type(sk).__name__, sk.analyses, sk.factors, sk.refactors, sk.numerics, sk.foreign),
+            _paths.since(before))
+
+
+@pytest.mark.parametrize('integ, fixed', [(Gear2Integrator, False), (TrapezoidalIntegrator, False),
+                                          (EulerIntegrator, False), (Gear2Integrator, True)])
+def test_the_sparse_chord_is_the_python_one(integ, fixed):
+    """KLU from C on `StructuralKLU`'s own analysis: the same bytes, steps
+    and iterations, and the solver's counts the same (the numeric the C
+    makes counted as the Python's `factor`)."""
+    kw = {'tend': 8e-9, 'timestep': 2e-10, 'make': {'integrator': integ()}}
+    if fixed:
+        kw['fixed_timestep'] = True
+    a = _sparse_run(False, **dict(kw, make=dict(kw['make'])))
+    kw['make'] = {'integrator': integ()}
+    b = _sparse_run(True, **kw)
+    assert a[0] == b[0]
+    assert a[1] == b[1] and a[1][0] == 'StructuralKLU'
+    assert b[2].get('newton_c:sparse', 0) > 10 and a[2].get('newton_c:sparse', 0) == 0
+
+
+def test_a_sparse_bail_leaves_no_trace(monkeypatch):
+    """Every sparse C solve runs to its end -- its numeric made and freed
+    -- and hands the step back: the Python's answer and counts."""
+    drv = _tran_newton_c.driver()
+    if drv is None:
+        pytest.skip(f'the C solve is off: {_tran_newton_c.STATUS}')
+    ffi, cfn, lapack = drv
+    kw = {'tend': 4e-9, 'timestep': 2e-10}
+    a = _sparse_run(False, **dict(kw))
+
+    def bailing(s):
+        cfn(s)
+        return 11
+    monkeypatch.setattr(_tran_newton_c, '_driver', (ffi, bailing, lapack))
+    b = _sparse_run(True, **dict(kw))
+    assert a[0] == b[0] and a[1] == b[1]
+    assert b[2].get('newton_c:served', 0) == 0 and b[2].get('newton_c:bail:maxiter', 0) > 10
+
+
+def test_a_core_pattern_outside_the_klu_pattern_declines(monkeypatch):
+    """The core's pattern given an entry KLU's does not hold (two drains
+    no element joins; the core writes its zero there): the C declines
+    (`newton_c:klu`) -- in the Python a nonzero there would go to the
+    solver's fallback -- and the run is the Python's."""
+    from pycircuit.circuit import _tran_core
+    orig = _tran_core._Core.__init__
+
+    def init(self, cir, *a, **k):
+        orig(self, cir, *a, **k)
+        n = self.n
+        extra = cir.get_node_index('d10') * n + cir.get_node_index('d200')
+        pat = np.ascontiguousarray(np.append(self.arrays['pat'], extra), dtype=np.int64)
+        self.arrays['pat'] = pat
+        self.handles.append(self.ffi.from_buffer('int64_t *', pat))
+        self.cs.pat = self.handles[-1]
+        self.npat += 1
+        self.cs.npat = self.npat
+    monkeypatch.setattr(_tran_core._Core, '__init__', init)
+    kw = {'tend': 4e-9, 'timestep': 2e-10}
+    a = _sparse_run(False, **dict(kw))
+    b = _sparse_run(True, **dict(kw))
+    assert a[0] == b[0] and a[1] == b[1]
+    assert b[2].get('newton_c:klu', 0) > 0 and b[2].get('newton_c:sparse', 0) == 0
+
+
+def test_the_sparse_comparison_sees_a_planted_difference(monkeypatch):
+    """Alive: the first drain's diagonal read from the second's place in J
+    (the C's map planted) -- another run."""
+    bind = _tran_newton_c._klu_bind
+
+    def planted(rec, sk):
+        if not bind(rec, sk):
+            return False
+        kat, n = rec.klu_keep[1], rec.n
+        cir = planted.cir
+        d0, d1 = (cir.get_node_index(k) * (n + 1) for k in ('d0', 'd1'))
+        kat[np.nonzero(kat == d0)[0][0]] = d1
+        return True
+    kw = {'tend': 4e-9, 'timestep': 2e-10}
+    a = _sparse_run(True, **dict(kw))
+    planted.cir = _sparse_chain()
+    monkeypatch.setattr(_tran_newton_c, '_klu_bind', planted)
+    b = _sparse_run(True, **dict(kw))
+    assert a[0] != b[0]

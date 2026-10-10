@@ -52,9 +52,12 @@ typedef void (*dgetrf32_t)(const int *, const int *, double *, const int *, int 
 typedef void (*dgetrs32_t)(const char *, const int *, const int *, const double *, const int *,
                            const int *, double *, const int *, int *, size_t);
 
-/* ---- KLU's int interface (klu_refactor, klu_solve): nonzero on success */
+/* ---- KLU's int interface: klu_factor (a numeric, NULL where singular);
+        klu_refactor, klu_solve, klu_free_numeric (nonzero on success) -- */
+typedef void *(*klu_factor_t)(int *, int *, double *, void *, void *);
 typedef int (*klu_refactor_t)(int *, int *, double *, void *, void *, void *);
 typedef int (*klu_solve_t)(void *, void *, int, int, double *, void *);
+typedef int (*klu_free_numeric_t)(void **, void *);
 
 /* ---- the evaluation core's codes (core.c), said by its callers too and
         read by `_tran_core` ------------------------------------------- */

@@ -5,9 +5,11 @@
 #include "pcx_abi.h"
 #include "newton.h"
 
-long hdl_fn(newton_t *s)
+/* the iteration; `*num` the sparse chord's numeric where it made one (the
+   caller frees it: every return) */
+static long iterate(newton_t *s, void **num)
 {
-    long n = s->n, m = n - 1, r = s->iref, it, i, j;
+    long n = s->n, m = n - 1, r = s->iref, it, i, j, k;
     core_fn_t core = (core_fn_t) s->core_fn;
     walk_fn_t walk = (walk_fn_t) s->walk_fn;
     dgemv64_t gemv = (dgemv64_t) s->dgemv;
@@ -61,7 +63,14 @@ long hdl_fn(newton_t *s)
             s->b[j] = -F[i];
             j++;
         }
-        if (full) {
+        if (full && s->klu_sym) {
+            /* the pattern's values, and |J| on it (zero off it) */
+            for (k = 0; k < s->knnz; k++) {
+                double v = J[s->kat[k]];
+                s->kAx[k] = v;
+                s->absJ[s->kabs[k]] = fabs(v);
+            }
+        } else if (full) {
             long ri, ci, rr, cc;
             for (ri = 0, rr = 0; ri < n; ri++) {
                 if (ri == r) continue;
@@ -76,7 +85,20 @@ long hdl_fn(newton_t *s)
                 rr++;
             }
         }
-        if (s->chord) {
+        if (s->chord && s->klu_sym) {
+            /* StructuralKLU.factor's numeric, then `_KLUNumeric.solve` */
+            if (it == 0) {
+                for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) { s->status = NEWTON_BAIL_JNONFINITE; return NEWTON_BAIL_JNONFINITE; }
+                *num = ((klu_factor_t) s->klu_factor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
+                                                      s->klu_common);
+                if (!*num) { s->status = NEWTON_BAIL_KLU_FACTOR; return NEWTON_BAIL_KLU_FACTOR; }
+            }
+            for (i = 0; i < m; i++) if (!isfinite(s->b[i])) { s->status = NEWTON_BAIL_BNONFINITE; return NEWTON_BAIL_BNONFINITE; }
+            if (!((klu_solve_t) s->klu_solve)(s->klu_sym, *num, m32, 1, s->b, s->klu_common)) {
+                s->status = NEWTON_BAIL_KLU_SOLVE;
+                return NEWTON_BAIL_KLU_SOLVE;
+            }
+        } else if (s->chord) {
             if (it == 0) {
                 for (i = 0; i < m * m; i++) if (!isfinite(s->A[i])) { s->status = NEWTON_BAIL_JNONFINITE; return NEWTON_BAIL_JNONFINITE; }
                 ((dgetrf32_t) s->dgetrf)(&m32, &m32, s->A, &m32, s->ipiv32, &info32);
@@ -150,4 +172,12 @@ long hdl_fn(newton_t *s)
     }
     s->status = NEWTON_BAIL_MAXITER;
     return NEWTON_BAIL_MAXITER;
+}
+
+long hdl_fn(newton_t *s)
+{
+    void *num = 0;
+    long status = iterate(s, &num);
+    if (num) ((klu_free_numeric_t) s->klu_free)(&num, s->klu_common);
+    return status;
 }
