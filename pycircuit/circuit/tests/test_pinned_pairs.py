@@ -474,7 +474,7 @@ RECORD = {
     'the printed pass kernels and their fused kernel': ('e61140203114', '0c0764bd821c'),
     "the stage paths' passes and the core's": ('f83268db1289', 'e323733ea4ff'),
     'the coupled stage Newton and its C': ('c9e9adf33989', '7995ecf611c4'),
-    'the transform solve and its frozen form': ('945834192f2a', '9b7970f8fbb7'),
+    'the transform solve and its frozen form': ('258c0a005c28', '9b7970f8fbb7'),
     'the transform Newton and its C': ('d7c24c3c7e7d', '8bd4848b587b'),
     "the step's end passes and the C's": ('a70259d9bbf6', 'b1d1092657c6'),
     'the frozen factors and their C': ('c27dee545b25', '7ea0d60692b2'),
@@ -483,7 +483,7 @@ RECORD = {
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', 'd5e13aa3b107'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
-    'the readiness reads and their stamps': ('28340cff33fb', '037415e2f80e'),
+    'the readiness reads and their stamps': ('816c68ec5531', '037415e2f80e'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
 }
 

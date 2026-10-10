@@ -631,6 +631,150 @@ class KLUSolver(LinearSolver):
                    self.residual_fallbacks))
 
 
+class StructuralKLU(KLUSolver):
+    """KLU ON THE CIRCUIT'S STRUCTURAL PATTERN (the C stepping loop plan's
+    stage 2; Andreas's decision, 2026-10-10: every sparse run).
+
+    `KLUSolver` takes its pattern from the VALUES: each call converts the
+    dense matrix (`csc_matrix`, a scan of every entry) and compares the
+    pattern's bytes, and an exact zero -- a gm at cutoff -- is a new pattern
+    and a new ordering.  Here the pattern is the circuit's own
+    (`analysis.jacobian_structure`: every position an element can stamp,
+    and the diagonal), fixed for the run: ONE analysis, and each call takes
+    the values at the pattern's positions (one `take`) for a refactor
+    (`solve`, validated by the residual as `KLUSolver`'s) or a factor of its
+    own (`factor`, with the transposed solve).
+
+    A matrix this pattern does not cover -- another shape, another dtype,
+    a nonzero off the pattern (a monodromy, a block system the same size)
+    -- is not this circuit's Jacobian: it goes to `fallback()`, today's
+    choice for its size, and leaves this factorisation alone (`foreign`
+    counts them).  Measured (2026-10-10, gear, 15 % of the run): rich3
+    (269 unknowns) 2.71 -> 2.02 s, arom (295) 2.64 -> 1.98 s against
+    SuperLU; the answers' last bits move (the plan's one re-baseline).
+    """
+
+    def __init__(self, m, rows, cols, fallback, libname='libklu.so.2'):
+        super().__init__(libname)
+        self.m = m = int(m)
+        rows = numpy.asarray(rows, dtype=numpy.intp)
+        cols = numpy.asarray(cols, dtype=numpy.intp)
+        self.Ai = numpy.ascontiguousarray(rows, dtype=numpy.int32)
+        self.Ap = numpy.zeros(m + 1, dtype=numpy.int32)
+        numpy.cumsum(numpy.bincount(cols, minlength=m), out=self.Ap[1:])
+        self.take = rows * m + cols
+        self.nnz = len(rows)
+        self._fallback, self._fb = fallback, None
+        self.foreign = 0
+
+    def _ours(self, A):
+        """`(A as an array, its values in CSC order)` where `A` is this
+        circuit's reduced Jacobian -- `m x m` float64 with no nonzero off
+        the pattern -- else None."""
+        arr = numpy.asarray(A)
+        if arr.shape != (self.m, self.m) or arr.dtype != numpy.float64:
+            return None
+        Ax = arr.ravel().take(self.take)
+        if numpy.count_nonzero(arr) != numpy.count_nonzero(Ax):
+            return None
+        return arr, Ax
+
+    def _other(self):
+        self.foreign += 1
+        if self._fb is None:
+            self._fb = self._fallback()
+        return self._fb
+
+    def _analysed(self):
+        ctypes = self._ct
+        if self._symbolic is None:
+            self._symbolic = self._lib.klu_analyze(
+                self.m, self._ptr(self.Ap, ctypes.c_int), self._ptr(self.Ai, ctypes.c_int),
+                ctypes.byref(self._common))
+            self.analyses += 1
+            if not self._symbolic:
+                raise numpy.linalg.LinAlgError('klu_analyze failed (singular structure?)')
+        return self._symbolic
+
+    def _factor(self, Ax):
+        ctypes = self._ct
+        num = self._lib.klu_factor(
+            self._ptr(self.Ap, ctypes.c_int), self._ptr(self.Ai, ctypes.c_int),
+            self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._analysed()),
+            ctypes.byref(self._common))
+        if not num:
+            raise numpy.linalg.LinAlgError('Singular matrix')
+        return num
+
+    def _free(self, num):
+        ctypes = self._ct
+        self._lib.klu_free_numeric(ctypes.byref(ctypes.c_void_p(num)), ctypes.byref(self._common))
+
+    def solve(self, A, b, toolkit):
+        got = self._ours(A)
+        if got is None:
+            return self._other().solve(A, b, toolkit)
+        if numpy.iscomplexobj(b):
+            return _split_complex(lambda r: self.solve(A, r, toolkit), b)
+        ctypes = self._ct
+        arr, Ax = got
+        rhs = numpy.asarray(b, dtype=numpy.float64)
+        nrhs = 1 if rhs.ndim < 2 else rhs.shape[1]
+        rhs = (numpy.ascontiguousarray(rhs.ravel()) if rhs.ndim < 2
+               else numpy.asfortranarray(rhs))
+        reused = self._numeric is not None
+        if reused:
+            ok = self._lib.klu_refactor(
+                self._ptr(self.Ap, ctypes.c_int), self._ptr(self.Ai, ctypes.c_int),
+                self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._analysed()),
+                ctypes.c_void_p(self._numeric), ctypes.byref(self._common))
+            self.refactors += 1
+            if not ok:
+                raise numpy.linalg.LinAlgError('Singular matrix')
+        else:
+            self._numeric = self._factor(Ax)
+            self.factors += 1
+        x = rhs.copy(order='F')
+        if not self._lib.klu_solve(
+                ctypes.c_void_p(self._symbolic), ctypes.c_void_p(self._numeric), self.m, nrhs,
+                self._ptr(x, ctypes.c_double), ctypes.byref(self._common)):
+            raise numpy.linalg.LinAlgError('klu_solve failed')
+        if reused:
+            ## (the refactor's validation, as `KLUSolver`'s: the reused pivot
+            ## order checked by the residual, a fresh factor where it fails)
+            scale = max(float(numpy.abs(rhs).max()), 1e-300)
+            resid = float(numpy.abs(arr @ x - rhs).max()) / scale
+            if not (resid <= self.REFACTOR_RESIDUAL_TOL):
+                self.residual_fallbacks += 1
+                old, self._numeric = self._numeric, None
+                self._free(old)
+                self._numeric = self._factor(Ax)
+                self.factors += 1
+                x = rhs.copy(order='F')
+                if not self._lib.klu_solve(
+                        ctypes.c_void_p(self._symbolic), ctypes.c_void_p(self._numeric), self.m,
+                        nrhs, self._ptr(x, ctypes.c_double), ctypes.byref(self._common)):
+                    raise numpy.linalg.LinAlgError('klu_solve failed')
+        return x
+
+    def factor(self, A, toolkit):
+        """A factorisation of its own (`_KLUNumeric`, freed with it, with the
+        transposed solve), on the run's one analysis."""
+        got = self._ours(A)
+        if got is None:
+            return self._other().factor(A, toolkit)
+        num = self._factor(got[1])
+        self.numerics += 1
+        fac = _KLUNumeric(self, self._symbolic, num, self.m)
+        return _Factored(fac, lambda f, b: f.solve(b),
+                         lambda f, b: f.solve_transposed(b), sparse=True)
+
+    def __repr__(self):
+        return (f'StructuralKLU(m={self.m}, nnz={self.nnz}, analyses={self.analyses}, '
+                f'factors={self.factors}, refactors={self.refactors}, numerics={self.numerics}, '
+                f'fallbacks={self.residual_fallbacks}, foreign={self.foreign})')
+
+
 class _KLUNumeric(object):
     """One KLU numeric factorisation, OWNED: freed with this object.  Holds
     its solver (the library and the `klu_common` buffer) and its symbolic
@@ -914,9 +1058,14 @@ class AutoSolver(LinearSolver):
     counting non-zeros every time would give back the saving.
     """
 
-    def __init__(self, min_n=MIN_N_FOR_SPARSE, max_fill=MAX_FILL_FOR_SPARSE):
+    def __init__(self, min_n=MIN_N_FOR_SPARSE, max_fill=MAX_FILL_FOR_SPARSE, structure=None):
         self.min_n = min_n
         self.max_fill = max_fill
+        ## a callable giving the circuit's structural pattern -- `(m, rows,
+        ## cols)` or None (`analysis.jacobian_structure`): an analysis hands
+        ## it in, and a sparse matrix of its size then factors on it with KLU
+        ## (`StructuralKLU`; Andreas's decision, 2026-10-10)
+        self.structure = structure
         self._dense = DenseSolver()
         self._sparse = None
         self._choice = None
@@ -957,17 +1106,40 @@ class AutoSolver(LinearSolver):
         ## that size buildable: construction was O(N^2.23) and a 1600-section ladder
         ## exceeded a ten-minute budget.  The earlier reading -- "KLU loses end to
         ## end" -- was correct for the sizes then reachable, and this supersedes it.
+        ## THE CIRCUIT'S PATTERN, where the analysis gave one: KLU on it for
+        ## every sparse run (the C stepping loop plan's stage 2) -- today's
+        ## choice below for a matrix it does not cover, and where none
+        st = self.structure() if self.structure is not None else None
+        if st is not None and st[0] == n_unknowns:
+            try:
+                self._sparse = self._choice = StructuralKLU(
+                    *st, fallback=lambda: self._value_sparse(n_unknowns, count=False))
+                _paths.COUNTS['solver.auto:StructuralKLU'] += 1
+                return self._choice
+            except ImportError:
+                pass
+        sp = self._value_sparse(n_unknowns)
+        if sp is not None:
+            self._sparse = self._choice = sp
+            return self._choice
+        self._choice = self._dense                          # pragma: no cover
+        return self._choice
+
+    def _value_sparse(self, n_unknowns, count=True):
+        """Today's sparse solver for `n_unknowns`, its pattern from the
+        values: KLU from `MIN_N_FOR_KLU`, SuperLU below (the other where one
+        is missing), or None."""
+        from pycircuit.circuit import _paths
         for cls in ((KLUSolver, SuperLUSolver) if n_unknowns >= MIN_N_FOR_KLU
                     else (SuperLUSolver, KLUSolver)):
             try:
-                self._sparse = cls()
-                self._choice = self._sparse
-                _paths.COUNTS['solver.auto:' + cls.__name__] += 1
-                return self._choice
+                sp = cls()
             except ImportError:
                 continue
-        self._choice = self._dense                          # pragma: no cover
-        return self._choice
+            if count:
+                _paths.COUNTS['solver.auto:' + cls.__name__] += 1
+            return sp
+        return None
 
     def solve(self, A, b, toolkit):
         return self._select(A).solve(A, b, toolkit)

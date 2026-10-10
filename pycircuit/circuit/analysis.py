@@ -2,6 +2,8 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
+import weakref
+
 import numpy
 from pycircuit import sim
 from pycircuit.utilities import Parameter, ParameterDict, isiterable
@@ -207,6 +209,32 @@ def _reduce_small(A, n):
     return A.take(idx)
 
 
+def jacobian_structure(cir, iref):
+    """The reduced Jacobian's STRUCTURAL pattern (the C stepping loop plan's
+    stage 2, 2026-10-10): every position an element of `cir` can stamp --
+    the full block over its node map, `G`'s and `C`'s alike (`G + a C` and
+    the gmin, shunt and pseudo-transient steps' added diagonal inside it) --
+    and the whole diagonal, the reference row and column taken out and the
+    rest renumbered as `_reduce_ndarray` does.  `(m, rows, cols)`, sorted by
+    column then row (CSC order); None where there is no reference row in
+    range.  A superset of every nonzero the circuit's Jacobian can hold,
+    whatever its values: a gm that is zero now is in it."""
+    n = cir.n
+    if not (iref is not None and 0 <= iref < n):
+        return None
+    flats = [numpy.arange(n, dtype=numpy.intp) * (n + 1)]
+    for rows, cols in cir._map_indices_2d.values():
+        flats.append(numpy.asarray(rows, dtype=numpy.intp) * n
+                     + numpy.asarray(cols, dtype=numpy.intp))
+    r, c = numpy.divmod(numpy.unique(numpy.concatenate(flats)), n)
+    keep = (r != iref) & (c != iref)
+    r, c = r[keep], c[keep]
+    r = r - (r > iref)
+    c = c - (c > iref)
+    order = numpy.lexsort((r, c))
+    return n - 1, r[order], c[order]
+
+
 def remove_row_col(matrices, n, toolkit):
     result = []
     for A in matrices:
@@ -365,7 +393,19 @@ class Analysis(sim.Analysis):
             ## History: `doc/pss_log_260902.md`, 2026-10-02.
             solver = self.__dict__.get('_default_linearsolver')
             if solver is None:
-                solver = self._default_linearsolver = AutoSolver()
+                ## (the circuit's structural pattern, asked for when the first
+                ## sparse matrix arrives: a sparse run factors on it with KLU
+                ## -- Andreas's decision, 2026-10-10; `AutoSolver`.  The
+                ## analysis held WEAKLY: it holds the solver, and a closure
+                ## over it would make a cycle -- a solved analysis then waits
+                ## for the collector instead of going with its last reference)
+                ref = weakref.ref(self)
+
+                def structure():
+                    a = ref()
+                    return None if a is None else jacobian_structure(
+                        a.cir, getattr(a, 'irefnode', None))
+                solver = self._default_linearsolver = AutoSolver(structure=structure)
             return solver
         if not isinstance(solver, LinearSolver):
             raise TypeError(

@@ -7893,3 +7893,56 @@ NOT wired into the Python step's source pass: the benchmark decks hold one DC so
 (spice_4049, spice_ring), whose pass is plumbing, not waveforms -- wired only if it counts FEWER
 against an A/A, which a single DC source will not show.  Stage 4 calls the table.
 Full suite 5084 passed; the sanitizer's fast tier clean (4816 passed).
+
+## 2026-10-10 — 106. Stage 2, step a: every sparse run factors on the circuit's STRUCTURAL pattern with KLU (Andreas's decision; one re-baseline)
+
+Measured first.  The three sparse gold decks (rich3 269 unknowns, arom 295, gm19 429) ran SuperLU
+in Python (`AutoSolver`: SuperLU below 1000, the C Newton declining `newton_c:linsolver`); a
+profile of rich3 found per step a dense n x n assembly, the error test's dense solve, SuperLU
+re-ordering at every factorisation and `nonzero` building the CSC from the dense J.  A
+throwaway prototype -- KLU on a FIXED pattern, the values taken with one `take` -- first replaced
+`solve` only and barely ran (the sparse Newton factors once a solve and reuses the factors:
+`factor`), then `factor` too: rich3 -25 %, arom -25 %, gm19 -5 % at 15 / 15 / 5 % of the run.
+
+Built: `analysis.jacobian_structure(cir, iref)` -- every position an element can stamp (the full
+block over its node map, G's and C's alike) and the whole diagonal (gmin, shunt, pseudo-transient
+steps), the reference row and column out and renumbered as `_reduce_ndarray`, CSC order;
+`linearsolver.StructuralKLU` -- ONE analysis a run, each call's values at the pattern's positions,
+`solve` refactoring with `KLUSolver`'s residual validation (a fresh factor where it fails, the old
+numeric freed), `factor` a numeric of its own with the transposed solve; a matrix the pattern does
+not cover (another shape or dtype, a nonzero off it: a monodromy, a block system) goes to
+`fallback()` -- today's choice for its size -- and leaves the factorisation alone;
+`AutoSolver(structure=...)` takes it for a sparse matrix exactly where an analysis hands a
+structure (`Analysis._get_linearsolver`; the analysis held weakly -- a closure over it made a
+cycle, and a solved PSS waited for the collector: `test_a_solved_pss_is_freed...` caught it).
+Without a structure (a solver built directly), today's choice, unchanged.
+
+THE RE-BASELINE.  In the suite, one test runs a sparse analysis
+(`test_linearsolver.py::test_the_analyses_default_to_one_autosolver`, 262 unknowns: now on
+`StructuralKLU`, passing); every other run is dense and unchanged (a census plugin over the whole
+suite: 9 tests made a sparse choice -- that one, three that build `AutoSolver` directly, keeping
+today's choice, and the new tests).  The sparse runs are the benchmark decks, full length, both
+versions the same day (`benchmarks/spice_suite.py`): rich3 15.02 -> 11.32 s (-25 %), arom 14.77 ->
+11.11 s (-25 %), gm19 44.54 -> 37.12 s (-17 %); steps 3639 -> 3620, 3151 -> 3129, 3901 -> 3882;
+rich3's gold metric 16.813 both (arom and gm19 have no gold file).  The answers move by more than
+their last bits: a last bit moves a step decision, and the run takes another valid grid -- on the
+old grid, rich3's largest |new - old| is 3.2e-2 V at a fast edge (on a 4.25 V swing), 6.5e-4 at
+tend.  THAT IT IS THE INTEGRATION ERROR, measured: at reltol 1e-4 (the deck's) max |new - old|
+3.23e-2, median over unknowns 2.0e-3; at 3e-5, 7.2e-3 and 9.6e-4 -- it shrinks with the
+tolerance.  (At reltol 1e-3 the OLD SuperLU path raises `SingularMatrix` on rich3; the structural
+KLU runs.  At 1e-5 both fail the same step.)
+
+Tests (`test_structural_klu.py`): the structure covers every nonzero of G, C and G + a C at drawn
+states of a 300-section ladder, in CSC order without duplicates; the solver equals the dense
+solve (one and several right-hand sides, complex, the factor's solve and transposed solve); a
+dense matrix goes to the fallback and leaves the numeric alone; a refactor failing its residual
+is factored again; `AutoSolver` takes it exactly where a structure is given; a sparse transient
+runs on it and agrees with the dense solver.  Two pinned pairs moved on their REFERENCE
+(`Analysis._get_linearsolver`, `AutoSolver`): the readiness stamps read the same solver identity
+(one per analysis, the same attribute), and the frozen transform takes the analysis's solver for
+its real block where the choice is not dense -- both twins checked, re-recorded.
+
+Not yet: the C side (the core assembling on the pattern, a C linsys with KLU, the C Newton serving
+sparse runs) -- stage 2's next steps; `_tran_radau_tc`'s complex KLU still takes its pattern from
+the values.  Found on the way: the editable install's import finder serves THIS tree's package
+whatever `sys.path` says, so a parent worktree cannot be A/B'd by path -- stash in the same tree.
