@@ -45,6 +45,10 @@ import tempfile
 #: (R1d) -- so what is keyed, compiled and digested is every line compiled.
 CSRC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'csrc')
 
+#: the name a `#line` gives a file of `csrc/`: its path from the source
+#: tree's root, the same wherever the package lives (it is part of the key)
+CSRC_NAME = 'pycircuit/circuit/csrc/'
+
 #: a line including a header of `csrc/` (a header includes none of them)
 _LOCAL_INCLUDE = re.compile(r'^#include "([\w.]+)"\n', re.MULTILINE)
 
@@ -56,8 +60,20 @@ def _read(name):
 
 def csrc(name):
     """The text of the C source file `csrc/<name>`, its local headers
-    expanded in place."""
-    return _LOCAL_INCLUDE.sub(lambda m: _read(m.group(1)), _read(name))
+    expanded in place -- each between `#line` markers, so a compiler
+    message or a sanitizer report names the file and the line it came
+    from.  A unit is compiled with nothing before it (`load_unit`), so its
+    own lines before the first header need no marker; a file including no
+    header is its text exactly."""
+    text = _read(name)
+    out, at = [], 0
+    for m in _LOCAL_INCLUDE.finditer(text):
+        header = _read(m.group(1))
+        out += [text[at:m.start()], f'#line 1 "{CSRC_NAME}{m.group(1)}"\n',
+                header if header.endswith('\n') else header + '\n',
+                f'#line {text.count(chr(10), 0, m.end()) + 1} "{CSRC_NAME}{name}"\n']
+        at = m.end()
+    return ''.join(out) + text[at:]
 
 
 def constants(text):

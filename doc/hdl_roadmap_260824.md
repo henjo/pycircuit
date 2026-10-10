@@ -1,23 +1,28 @@
 
-## 2026-10-10 — 96. Stage R1d, step 3: the runtime units built without the HDL kernels' prelude
+## 2026-10-10 — 97. Stage R1d, step 4: `#line` -- a report names the repository file and line (R1 done)
 
-Every object was built from `hdl._KERNEL_C` + its source: the prelude of the printed kernels
-(`<math.h>`, the libm functions re-declared `__attribute__((const))`, `_sel`, `_npmax`,
-`quartic_root` ...).  The runtime units used none of it knowingly, but one depended on it:
-`sens.c` calls `isfinite` and never included `<math.h>` -- the prelude did.  Now
-`_cbuild.load_unit(csrc, cdef)` builds a unit as the complete C file it is (`prelude=False`
-through `source_key`, `_build`, `load_kernel`; the key hashes an empty prelude part, so no HDL
-kernel's key moved), `sens.c` includes `<math.h>`, and the ten unit drivers no longer import the
-HDL backend to build (`_cbuild.load_unit`, `_cbuild.CompileError`).
+`_cbuild.csrc` marks each header it expands: `#line 1 "pycircuit/circuit/csrc/x.h"` before it,
+`#line N "pycircuit/circuit/csrc/unit.c"` after it (the path from the source tree's root, the
+same wherever the package lives -- it is part of the key).  A unit is compiled with nothing before
+it, so its own lines need no other marker; a file including no header (limit.c, psp_limit.c) is
+its text exactly -- no model limiter's key moved.  A failed build or a sanitizer report (the
+sanitized builds carry `-g`) named a temporary `.c` that `_build` had already deleted; it now
+names the file and line in the tree.
 
-Proof: nine units' machine code identical (the objects the store built, hashed).  `radau_tc`'s
-differs, by one thing: the prelude declared `hypot` `const`, and it is not -- it raises the
-floating-point flags this unit tests.  Its four `hypot` calls sit between a `feclearexcept` and
-the `fetestexcept` that judges them, each result used before that test, so data dependencies
-already fix their place: the same four call sites either way, 26 instructions fewer without the
-attribute; the values and the flags cannot move.  The 102 Radau tests (their C-against-Python
-bit-identity among them) pass.  test_c_abi gains: every unit compiles ON ITS OWN under `-Wall
--Wextra -Werror` (alive: `sens.c` without its include is refused, implicit `isfinite`).  The two
-tests that build a planted variant of a unit (core.c, pass.c) build it as the unit is built.
-One pinned pair moved on its twin (sens.c's include).  Full suite 5050 passed; the sanitizer's
-fast tier clean (4758 passed).
+The plan's other half -- the `.c` kept beside its `.so` -- is not built, by reason: a unit's key
+is the hash of its exact text, so an object served for the current source was compiled from
+exactly the files its markers name; a kept copy would add a file per object (4566 in an 11 GB
+store) for nothing a report needs.  The HDL kernels (generated text, no file in the tree) are where
+a kept `.c` would help; left until a report in one needs it.
+
+Proof: the machine code of all ten units identical (no `-g`, `#line` emits nothing).
+test_c_abi gains: an `#error` planted before the last line of newton.c, of newton.h and of
+pcx_abi.h is reported at that file and line (alive: with the markers stripped the report names
+`unit.c:193`; a first plant at a file's middle sat in a block comment, where `#error` is inert).
+12 pinned pairs moved on the twin only.  Full suite 5053 passed; the sanitizer's fast tier clean
+(4762 passed).
+
+R1 (stages R1a-R1d) is done: the C units are files, one interface text each, shared types and
+codes named once, complete without the HDL prelude, and reported at their own lines -- every step
+proved by unchanged machine code (radau_tc's one difference: the prelude's false `const` on
+`hypot`).

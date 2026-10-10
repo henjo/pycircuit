@@ -28,6 +28,7 @@ proved alive on planted differences.
 import glob
 import os
 import re
+import shutil
 import subprocess
 
 import cffi
@@ -146,6 +147,29 @@ def test_each_unit_compiles_on_its_own_without_a_warning(unit, cdef, tmp_path):
     proc = subprocess.run([cc, *_cbuild.CFLAGS, '-Wall', '-Wextra', '-Werror', '-fsyntax-only',
                            str(path)], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize('planted', ['newton.c', 'newton.h', 'pcx_abi.h'])
+def test_a_compiler_message_names_the_file_and_line_it_came_from(planted, tmp_path,
+                                                                monkeypatch):
+    """`csrc` marks each expanded header with `#line` (R1d step 4): an error
+    planted at a line of a unit, or of a header it includes, is reported
+    at that file and line -- and so is a sanitizer's report (`-g`)."""
+    cc = _cbuild.find_compiler()[0]
+    if cc is None:
+        pytest.skip('no C compiler')
+    d = tmp_path / 'csrc'
+    shutil.copytree(_cbuild.CSRC_DIR, d)
+    lines = (d / planted).read_text().split('\n')
+    k = len(lines) - 2           # before the last line: code, not a comment
+    lines.insert(k, '#error planted')
+    (d / planted).write_text('\n'.join(lines))
+    monkeypatch.setattr(_cbuild, 'CSRC_DIR', str(d))
+    path = tmp_path / 'unit.c'
+    path.write_text(_cbuild.csrc('newton.c'))
+    proc = subprocess.run([cc, *_cbuild.CFLAGS, '-fsyntax-only', str(path)],
+                          capture_output=True, text=True, check=False)
+    assert f'{_cbuild.CSRC_NAME}{planted}:{k + 1}:' in proc.stderr, proc.stderr
 
 
 def test_no_c_file_declares_a_type_and_no_header_includes_another():
