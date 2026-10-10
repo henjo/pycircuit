@@ -16,6 +16,7 @@ import warnings
 import numpy as np
 import pytest
 
+from pycircuit.circuit import _cbuild
 from pycircuit.circuit import _hdl_cbackend as cb
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit import hdl
@@ -110,7 +111,7 @@ def test_auto_builds_at_the_first_instance_not_at_class_creation(
     monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path / 'store'))
     ## (every `Fresh` prints the same C -- its parameters travel at run time
     ## -- so a kernel another test loaded would be served from memory)
-    monkeypatch.setattr(cb, '_loaded', {})
+    monkeypatch.setattr(_cbuild, '_loaded', {})
     cls = _fresh(tmp_path, 't5', '1.25')
     assert cls._hdl_backend_status == 'auto (resolved at the first instance)'
     store = tmp_path / 'store'
@@ -156,7 +157,7 @@ def test_auto_runs_numpy_quietly_where_c_cannot_be_served(
                             else real(n, *a))
         want = 'numpy (auto: cffi not installed)'
     elif what == 'compiler':
-        monkeypatch.setattr(cb, '_compiler', (None, 'none here'))
+        monkeypatch.setattr(_cbuild, '_compiler', (None, 'none here'))
         want = 'numpy (auto: no C compiler)'
     else:
         cls0 = _fresh(tmp_path, 't7', '1.75')   # compiled, the cache on
@@ -176,12 +177,12 @@ def test_auto_runs_numpy_quietly_where_c_cannot_be_served(
 def test_a_stored_object_serves_auto_without_a_compiler(
         default_backend, tmp_path, monkeypatch):
     monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path / 'store'))
-    monkeypatch.setattr(cb, '_loaded', {})
+    monkeypatch.setattr(_cbuild, '_loaded', {})
     cls = _fresh(tmp_path, 't9', '2.5')
     cls(Node('a'), Node('b'))
     assert cls._hdl_backend_status == 'c'
-    monkeypatch.setattr(cb, '_compiler', (None, 'none here'))
-    monkeypatch.setattr(cb, '_loaded', {})
+    monkeypatch.setattr(_cbuild, '_compiler', (None, 'none here'))
+    monkeypatch.setattr(_cbuild, '_loaded', {})
     again = _fresh(tmp_path, 't9b', '2.5')       # same text, same keys
     again(Node('a'), Node('b'))
     assert again._hdl_backend_status == 'c'

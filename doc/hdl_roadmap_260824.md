@@ -7538,3 +7538,18 @@ kind; 301 fields, every size equal); each caller's copy of the core's (21 argume
 limiter walk's (11) signature compared with the callee's own definition and declaration by ABI.
 All agree today; alive on a planted missing field, an extra field, a narrowed argument and two
 swapped arguments.
+
+## 2026-10-10 — 92. Stage R1b: the C build and load machinery in its own module, `_cbuild.py` (no object rebuilt)
+
+The flags, the sanitizer, compiler discovery, the object store, the key, the lock, the
+build, `dlopen` and `load_kernel` moved out of `_hdl_cbackend` (an HDL module) into
+`_cbuild.py`, CUT from the file byte for byte, under a docstring that states its contract.
+`_hdl_cbackend` re-exports the names for its callers and reaches them as `_cbuild.X` itself.
+Proof: the 14 recorded keys (the 12 runtime C sources, the flags, the default entry cdef)
+identical before and after -- every stored object is served as it was.  Tests that PATCH a
+moved name (`CFLAGS` x2, `_loaded` x7, `_compiler` x3) now patch it on `_cbuild`, where the
+code reads it; a patch left on the old name fails `test_every_key_ingredient_changes_the_key`
+(planted, then restored).  The pinned pair "the printed pass kernels and their fused kernel"
+moved on its twin (`bind_fused`: `load_kernel` / `CompileError` named through `_cbuild`, the
+same objects) -- checked, re-recorded (twin digest only).  Full suite: 5027 passed and that
+pair.

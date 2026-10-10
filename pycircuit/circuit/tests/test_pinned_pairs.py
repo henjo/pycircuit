@@ -452,7 +452,7 @@ RECORD = {
     'the error test and its C': ('3ccf864dc600', '5e087f14eec7'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
-    'the printed pass kernels and their fused kernel': ('e61140203114', 'df928813e8cd'),
+    'the printed pass kernels and their fused kernel': ('e61140203114', '0c0764bd821c'),
     "the stage paths' passes and the core's": ('f83268db1289', 'a3ae0f6c8d98'),
     'the coupled stage Newton and its C': ('c9e9adf33989', 'e9156eef9c41'),
     'the transform solve and its frozen form': ('945834192f2a', '9b7970f8fbb7'),

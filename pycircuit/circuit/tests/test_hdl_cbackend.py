@@ -55,6 +55,7 @@ import sympy
 import pycircuit.circuit.circuit
 import pycircuit.circuit.circuit as cm
 from pycircuit.circuit import _hdl_cache as hc
+from pycircuit.circuit import _cbuild
 from pycircuit.circuit import _hdl_cbackend as cb
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit import hdl
@@ -650,9 +651,9 @@ class TestPowSentinel(object):
         try:
             with pytest.MonkeyPatch.context() as mp:
                 mp.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
-                mp.setattr(cb, 'CFLAGS', tuple(
-                    f for f in cb.CFLAGS if f != '-fno-builtin-pow'))
-                mp.setattr(cb, '_loaded', {})
+                mp.setattr(_cbuild, 'CFLAGS', tuple(
+                    f for f in _cbuild.CFLAGS if f != '-fno-builtin-pow'))
+                mp.setattr(_cbuild, '_loaded', {})
                 with c_backend(_SquareModel):
                     assert _SquareModel._hdl_backend_status == 'c'
                     got = e.i(x)
@@ -881,7 +882,7 @@ class TestSoStore(object):
                'double *out) { out[0] = x[0]; }\n'
         k0 = cb.source_key(csrc)
         assert cb.source_key(csrc.replace('x[0]', 'p[0]')) != k0
-        monkeypatch.setattr(cb, 'CFLAGS', cb.CFLAGS + ('-DX',))
+        monkeypatch.setattr(_cbuild, 'CFLAGS', _cbuild.CFLAGS + ('-DX',))
         k_flags = cb.source_key(csrc)
         monkeypatch.undo()
         assert k_flags != k0
@@ -893,7 +894,7 @@ class TestSoStore(object):
         ## the compiler's identity lives in the FILENAME, so that a
         ## warm store can be served with no compiler at all
         p0 = os.path.basename(cb.so_path(k0))
-        monkeypatch.setattr(cb, '_compiler', ('/usr/bin/cc', 'other 1.0'))
+        monkeypatch.setattr(_cbuild, '_compiler', ('/usr/bin/cc', 'other 1.0'))
         p_cc = os.path.basename(cb.so_path(cb.source_key(csrc)))
         monkeypatch.undo()
         assert p_cc != p0
@@ -1253,7 +1254,7 @@ def test_const_merges_the_repeated_calls_and_keeps_the_bytes(tmp_path,
     declaration's power, measured on the object -- and both kernels
     return the numpy path's bytes."""
     monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
-    monkeypatch.setattr(cb, '_loaded', {})
+    monkeypatch.setattr(_cbuild, '_loaded', {})
     e = _instance(_RepeatedPow)
     fn = _RepeatedPow._hdl_info['funcs']['G']
     assert fn._csrc.count('pow(') >= 3
@@ -1279,7 +1280,7 @@ def test_const_merges_the_repeated_calls_and_keeps_the_bytes(tmp_path,
                           if not ln.startswith(f'double {name}('))
     assert not _const_declared(plain)
     monkeypatch.setattr(hdl, '_KERNEL_C', plain)
-    monkeypatch.setattr(cb, '_loaded', {})
+    monkeypatch.setattr(_cbuild, '_loaded', {})
     assert pow_calls() > merged >= 1
 
 
@@ -1469,7 +1470,7 @@ def test_a_key_being_built_elsewhere_is_left_to_its_builder(tmp_path,
     pre-build leaves it alone (no duplicate `cc`), and `kernel_for` builds
     it once the lock is free."""
     monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
-    monkeypatch.setattr(cb, '_loaded', {})
+    monkeypatch.setattr(_cbuild, '_loaded', {})
     fn = _SquareModel._hdl_info['funcs']['i']
     key = cb.source_key(fn._csrc)
     assert cb.find_so(key) is None
