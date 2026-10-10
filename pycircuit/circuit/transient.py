@@ -706,6 +706,38 @@ class _SteppingLoop:
     against pathological alternation.
 
     Split out of `_solve` (2026-10-01), statement for statement.
+
+    THE COUPLINGS A TWIN OF THIS LOOP MUST COPY (the C stepping loop plan's
+    stage R2d, 2026-10-10; what it carries between steps: `_RUN_STATE`):
+
+    * THE STEP'S SIZE, WHO DECIDED IT -- three flags, each set by one phase:
+        `clamped` (`where`)  where the step must END decided it: a
+                             breakpoint landed on (adaptive) or `tend`;
+        `imposed` (`take`, `judge`, `event`)  the NEXT attempt's size was
+                             imposed: a state-event cut, the excursion veto,
+                             or a Newton failure's smaller retry of a step
+                             already held; cleared by `accept`;
+        `hold` (`where`)     `clamped or fixed or imposed`: the coupled
+                             family must not solve this size back up.
+      `landing` (`where`, `event`, `accept`) and `order_drop` (`judge`) both
+      mean "drop the order on the next attempt"; `where` hands them on as
+      `tr._is_first_step` (its meaning, not its name: `_RUN_STATE`).
+    * THE ORDER DROP'S PATH: `where` -> `tr._is_first_step` -> the
+      integrator's `check_order_drop` -> `tr._effective_method` (the step's
+      companion) -> `accept`'s `order_drops` count.
+    * THE VETO AFTER AN ACCEPT: `judge` asks the family first, whose error
+      test RECORDS the step in the controller as accepted; the excursion
+      veto (`_excursion_ratio`) may then turn it into a rejection, the
+      controller's record left as the accept made it.  A twin keeps that
+      order: the controller's accept, then the veto.
+    * THE RETRY'S "SAME POINT" is object identity: the controller compares
+      its last rejection's `x_last` with this attempt's (`X[-1]`, by `is`)
+      to measure the retry's order (`stepcontroller._retry_exponent`).  A
+      twin needs an index of the accepted points instead -- and the periodic
+      shift (PSS) edits `X`'s last entries in place, so the index must move
+      there too, or a shifted point would read as the same point.
+    * `X` IS BOTH THE OUTPUT AND THE HISTORY: `accept` appends to it, the
+      family and the controller read its last entries.
     History: `doc/transient_history.md`, `Transient._solve`."""
 
     def __init__(self, tr, family, run, X, tend, timestep, provided_function):

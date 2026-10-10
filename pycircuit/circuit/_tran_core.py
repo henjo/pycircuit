@@ -756,6 +756,10 @@ def evaluate(tr, x, t, provided_function, want):
     if not (type(x) is np.ndarray and (x.dtype is _F64 or x.dtype == np.float64) and x.ndim == 1
             and x.flags.c_contiguous and x.shape[0] == n and np.isfinite(x).all()):
         return _no(K['x'])
+    ## THE STEP'S COMPANION SET UP as `get_diff` sets it up -- the same lines
+    ## as `_tran_newton_c.solve`'s, kept twice on purpose: one shared function
+    ## (an 11-tuple out) cost +0.3 .. +0.4 % a step, counted against an A/A
+    ## (roadmap 104); a change here is a change there
     h = tr._dt
     h_last = tr._dt_last if tr._dt_last is not None else h
     active = tr.base_integrator.check_order_drop(h, h_last, tr._is_first_step)
@@ -815,6 +819,8 @@ def evaluate(tr, x, t, provided_function, want):
             tr._memo_put(x, {'C': C})
         tr._q_cache = (x, q)
         tr._C_cache = (x, C)
+    ## (the step's companion left as `get_diff` leaves it -- the same writes
+    ## as `_tran_newton_c.solve`'s; `transient._RUN_STATE`'s 'step' block)
     tr.active_integrator = active
     tr._iq = iq
     tr._Geq = Geq

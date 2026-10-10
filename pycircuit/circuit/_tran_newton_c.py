@@ -578,6 +578,8 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if not (type(seed) is np.ndarray and (seed.dtype is _F64 or seed.dtype == np.float64) and seed.ndim == 1
             and seed.shape[0] == n and np.isfinite(seed).all()):
         return _no('newton_c:x')
+    ## (the step's companion set up as `get_diff` sets it up -- the same
+    ## lines as `_tran_core.evaluate`'s, kept twice on purpose: roadmap 104)
     h = tr._dt
     h_last = tr._dt_last if tr._dt_last is not None else h
     active = tr.base_integrator.check_order_drop(h, h_last, tr._is_first_step)
@@ -702,6 +704,8 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     Cj = buf['Cj'].copy()
     tr._q_cache = (x, buf['qj'].copy())
     tr._C_cache = (x, Cj)
+    ## (the step's companion left as `get_diff` leaves it -- the same writes
+    ## as `_tran_core.evaluate`'s; `transient._RUN_STATE`'s 'step' block)
     tr._iq, tr._Geq = buf['iqj'].copy(), buf['Geqj'].copy()
     tr._Cmat = Cj
     tr.active_integrator = active
