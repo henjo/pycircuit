@@ -7408,3 +7408,92 @@ mV before inversion starts -- the docstring's deviation (2), where Meyer
 spreads the transition x1.5 near vds = 0.  A capacitance jump, which
 Newton crosses (voter25 runs); the candidate fix is Meyer's sliver plus
 drives measured from `m`.
+
+## 2026-10-10 — 89. Stage 10: the decision's numbers (the rule as the plan wrote it before measuring)
+
+**The rule** (the plan, stage 10): C stepping loop next if the median
+orchestration share on the gold cases is >= 40 % AND the circuits wanted
+fit the dense limit (expected gain ~1/(1 - 0.8 share)); sparse path next
+if the wanted circuits (mem_plus, ram2k, the IBM grids) are refused by the
+guard, or assembly + linear algebra is >= 50 % of a step at their size;
+vectorised sources first if the per-source pass dominates the mesh steps.
+
+**The split, measured** -- instructions in the timed solve only
+(cachegrind switched on and off around it, `_bench.CountRegion`), every
+function attributed to the shared object that defines it; OpenBLAS pinned
+to one thread; 26 gold decks with n <= 429 (the long ones capped at ~2 s
+native, hundreds of steps each).  Attribution checked by callgrind on two
+decks: the unnamed code is the interpreter binary's own; memcpy/memset is
+half numpy's copies, half the in-memory C core's matrix traffic; libm is
+the kernels' math.  Unattributed at most 1.2 %.
+
+| share of a step (26 decks) | median | quartiles |
+|---|---|---|
+| the Python interpreter alone | 36.1 % | 13.4 / 43.9 % |
+| orchestration: interpreter + numpy + libc + half the memory traffic | 49.1 % | 26.4 / 59.0 % |
+| assembly + linear algebra: BLAS/LAPACK + half the memory traffic | 25.0 % | 12.0 / 34.9 % |
+| C kernels (HDL kernels, C Newton/LTE cores, libm) | 25.4 % | 13.7 / 38.0 % |
+
+n <= 100 (16 decks): orchestration 54.9 %, assembly + LA 15.6 %; n > 100
+(10): orchestration 31.8 %, assembly + LA 34.2 %.  Dense LU already
+dominates some 100-300-unknown decks: e1480 (n 205) 80 % BLAS, ab_integ
+(95) 68 %, g1310 (98) 65 %.  Instruction shares understate the
+interpreter's TIME share (its IPC is the lowest of the four).
+
+**The other inputs** (stage 5, stage 9): the dense wall ~10 k unknowns on
+this 30 GB box; on the RC mesh assembly + LA is 52 % of a step at n 1190,
+77 % at 9226; the per-source pass 0-8 % (not dominant: vectorised sources
+are not first); every IBM grid above 1/16 refused (whole, merged: ~61 GB);
+mem_plus (17,789 unknowns) has no operating point dense in 25 min; ram2k
+(13,880 MOSFETs) and pc_frame (14,265) are past the wall.
+
+**What the rule says.**  Orchestration median 49 % (36 % counting the
+interpreter alone) -- over the C loop's 40 % line by the broad reading,
+under it by the narrow one; its gain ~1.65x (1.4x narrow), on circuits
+that fit.  The circuits the plan names as wanted -- mem_plus, ram2k, the
+IBM grids -- are all refused dense: if they are wanted, the sparse path is
+next (capability before a constant factor).  Presented to Andreas.
+
+## 2026-10-10 — 90. The C stepping loop plan, stage 0: sized in cycles -- cleared its line (Andreas: "starts with the C stepping loop", "write the plan", "go ahead")
+
+The plan: `~/.claude/plans/c-stepping-loop.md` -- `Transient`'s multistep loop
+in C, sparse-ready (the matrix through an interface with dense, chord and KLU
+backends), stage 0 a measurement with its line written first: build only if the
+cycle-weighted conservative ceiling is >= 1.5x in median over the 26 gold decks
+and >= 1.8x over those with n <= 100.
+
+**The instrument** (`benchmarks/loop_split.py`): each deck in its own process,
+pinned, warm; the CPU's instruction and cycle counters read at the boundaries of
+`_SteppingLoop`'s five phases and of every COMPUTE call (the C Newton, the C error
+test and the HDL batch drivers' functions, a `CKernel` call, the leaf linear
+solvers, dense LAPACK through `numpy.linalg` / `scipy.linalg`); the readings' own
+cost calibrated in the process and taken off.  REMOVABLE = in the loop and in no
+compute call; CEILING = 1 / (1 - removable).  Every counted run's fast-path
+counts are compared with an unwrapped run's -- and three wraps were CAUGHT moving
+the path, then removed: the C core's Python callers (the C Newton declines when
+they are not genuine, `newton_c:patched`; they are wrapped only on a deck the C
+Newton never serves), and `numpy.linalg.solve` (the C error test twins it,
+`lte_c:patched`).  Proved by a planted cost: a busy loop added to one phase came
+back in it to -0.09 % (accept, gm6) and -0.40 % (take, mosrect).
+
+**The result**: ceiling median **1.70x in cycles** over 26 decks (quartiles 1.34 /
+3.06), **3.00x over the 16 with n <= 100**; in instructions 1.28x / 2.00x -- the
+interpreter's cycles per instruction are the highest of the four.  CLEARED on
+both.  Per deck (cycles): 4049osc 9.35x, gm2 4.25x, todd3 3.38x, gm6 3.32x ...
+ring 1.68x, gm1 1.72x, voter25 1.44x, rich3 1.35x, gm17 1.17x (the operating
+point is 64 % of it), gm19 1.06x (76 %).
+
+**Found on the way**: the branch check's per-step SVD screen (`_branch_screen_C`
+-> `numpy.linalg.svd`) is 51 % of ab_integ's run and dominates e1480 and g1310 --
+compute, its own item.
+
+**Census** (the loop's scope -- why it would NOT run): the 26 gold decks all in
+scope; the C Newton serves on 23, the three n >= 250 decks (rich3, arom, gm19) on
+KLU (`newton_c:linsolver`), stage 2's.  The suite (a pytest plugin wrapping
+`_SteppingLoop.__init__`; its one failure, the pinned pair "the stepping loop and
+its unread Jacobian", is the plugin's own patch -- 58/58 without it): 1187
+stepping loops in 544 tests, 632 (53 %) in scope; declines: the stage family 334,
+stateful limiters (Diode) 125, `accept_step` 59, the coupled family 52,
+`provided_function` 41, tests' own controllers 26, PI 9, state events 7, the
+band 2, a source 1, the toolkit 1.  Tests: 255 with every loop in scope, 26 with
+some, 263 with none.
