@@ -86,6 +86,8 @@ _MOD = {}
 #: a parameter not stored (`_ParRec.bp_obj`)
 _ABSENT = object()
 _GETDICT = operator.attrgetter('__dict__')
+#: float64 (an exact array's dtype is this object: `is`, then `==`)
+_F64 = np.dtype(np.float64)
 _GETPACK = operator.methodcaller('get', '_hdl_cp')
 #: the declines that are a property of the circuit: kept with its stamp
 #: plan, so the next step declines at its first check
@@ -573,7 +575,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     n, iref = core.n, tr.irefnode
     if not (0 <= iref < n) or n < 2:
         return _no('newton_c:iref')
-    if not (type(seed) is np.ndarray and seed.dtype == np.float64 and seed.ndim == 1
+    if not (type(seed) is np.ndarray and (seed.dtype is _F64 or seed.dtype == np.float64) and seed.ndim == 1
             and seed.shape[0] == n and np.isfinite(seed).all()):
         return _no('newton_c:x')
     h = tr._dt
@@ -626,16 +628,19 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         had = key in memo
     except TypeError:
         return _no('newton_c:u')
-    counts = {k: _PC.get(k, 0) for k in M['u_keys']}
+    ## (the counts before the pass, as values -- their dict made only to
+    ## roll back, which a served attempt never does)
+    u_keys = M['u_keys']
+    cvals = tuple(map(_PC.get, u_keys, repeat(0)))
     try:
         u = tr._source_at(t, None)
     except Exception:                                          # noqa: BLE001
         ## (the pass raises again in `_newton`, where it raised before)
-        _undo_source(memo, key, had, counts)
+        _undo_source(memo, key, had, dict(zip(u_keys, cvals)))
         return _no('newton_c:u')
-    if not (type(u) is np.ndarray and u.dtype == np.float64 and u.ndim == 1
+    if not (type(u) is np.ndarray and (u.dtype is _F64 or u.dtype == np.float64) and u.ndim == 1
             and u.shape[0] == n):
-        _undo_source(memo, key, had, counts)
+        _undo_source(memo, key, had, dict(zip(u_keys, cvals)))
         return _no('newton_c:u')
     tol = tr._newton_tolerances() if P is None else P.tol
     if tol is not rec.tol:
@@ -655,7 +660,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
                                      else P.bypass) or -1.0) < 0.0:
         cxa, cCa = cached
         if (type(cxa) is np.ndarray and cxa.shape == (n,) and type(cCa) is np.ndarray
-                and cCa.dtype == np.float64 and cCa.shape == (n, n)):
+                and (cCa.dtype is _F64 or cCa.dtype == np.float64) and cCa.shape == (n, n)):
             np.copyto(buf['cx'], cxa)
             np.copyto(buf['cC'], cCa)
             s.have_cache = 1
@@ -672,7 +677,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)
     status = cfn(s)
     if status != _CODES['NEWTON_CONVERGED']:
-        _undo_source(memo, key, had, counts)
+        _undo_source(memo, key, had, dict(zip(u_keys, cvals)))
         if status == _CODES['NEWTON_BAIL_WALKSTOP']:
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None
@@ -690,8 +695,10 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if stats is not None:
         stats.newton_iterations += iters
     x_res = buf['x'].copy()
-    insert_row = M['insert_row']
-    x = insert_row(x_res, iref, tr.toolkit)
+    ## (the full-width solution the C wrote at the converged point, the
+    ## reference row's +0.0 in its place: `insert_row`'s array, byte for
+    ## byte -- written wherever the converged point is evaluated, `fold_j`)
+    x = buf['xc'].copy() if s.fold_j else M['insert_row'](x_res, iref, tr.toolkit)
     Cj = buf['Cj'].copy()
     tr._q_cache = (x, buf['qj'].copy())
     tr._C_cache = (x, Cj)

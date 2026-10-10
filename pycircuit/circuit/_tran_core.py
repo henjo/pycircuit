@@ -87,6 +87,8 @@ from pycircuit.circuit import toolkit as _toolkit
 ## the counters (`_paths`): each decline by its reason, each served call
 _PC = _paths.COUNTS
 _GETDICT = operator.attrgetter('__dict__')
+#: float64 (an exact array's dtype is this object: `is`, then `==`)
+_F64 = np.dtype(np.float64)
 _no = _paths.no
 _K = {w: {r: f'core.{w}:{r}' for r in (
     'off', 'toolkit', 'shadow_cir', 'shadow_tr', 'unservable', 'x', 'formula',
@@ -591,7 +593,7 @@ def _plan_stamp(cir, before, arms):
 
 def _row(a, n):
     """A history row as the C reads it, or None."""
-    if type(a) is np.ndarray and a.dtype == np.float64 and a.ndim == 1 and a.shape[0] == n:
+    if type(a) is np.ndarray and (a.dtype is _F64 or a.dtype == np.float64) and a.ndim == 1 and a.shape[0] == n:
         return a if a.flags.c_contiguous else np.ascontiguousarray(a)
     return None
 
@@ -652,7 +654,7 @@ def passes(tr, x, which):
             td['_passes_no'] = plan
         return _no(K['unservable'])
     n = core.n
-    if not (type(x) is np.ndarray and x.dtype == np.float64 and x.ndim == 1
+    if not (type(x) is np.ndarray and (x.dtype is _F64 or x.dtype == np.float64) and x.ndim == 1
             and x.flags.c_contiguous and x.shape[0] == n and np.isfinite(x).all()):
         return _no(K['x'])
     T = core.ready(tr.epar)
@@ -751,7 +753,7 @@ def evaluate(tr, x, t, provided_function, want):
     if core is None:
         return _no(K['unservable'])
     n = core.n
-    if not (type(x) is np.ndarray and x.dtype == np.float64 and x.ndim == 1
+    if not (type(x) is np.ndarray and (x.dtype is _F64 or x.dtype == np.float64) and x.ndim == 1
             and x.flags.c_contiguous and x.shape[0] == n and np.isfinite(x).all()):
         return _no(K['x'])
     h = tr._dt
@@ -773,14 +775,14 @@ def evaluate(tr, x, t, provided_function, want):
     bits = WANT[want]
     if want == 'f':
         Cin = tr._Cmat
-        if not (type(Cin) is np.ndarray and Cin.dtype == np.float64 and Cin.shape == (n, n)
+        if not (type(Cin) is np.ndarray and (Cin.dtype is _F64 or Cin.dtype == np.float64) and Cin.shape == (n, n)
                 and Cin.flags.c_contiguous):
             return _no(K['cmat'])
         C = Cin
     else:
         Cin = tr._C_lookup(x)
         if Cin is not None:
-            if not (type(Cin) is np.ndarray and Cin.dtype == np.float64
+            if not (type(Cin) is np.ndarray and (Cin.dtype is _F64 or Cin.dtype == np.float64)
                     and Cin.shape == (n, n) and Cin.flags.c_contiguous):
                 return _no(K['clookup'])
             bits &= ~2
@@ -794,7 +796,7 @@ def evaluate(tr, x, t, provided_function, want):
     u = None
     if bits & 4:
         u = tr._source_at(t, provided_function)
-        if not (type(u) is np.ndarray and u.dtype == np.float64 and u.ndim == 1
+        if not (type(u) is np.ndarray and (u.dtype is _F64 or u.dtype == np.float64) and u.ndim == 1
                 and u.shape[0] == n and u.flags.c_contiguous):
             return _no(K['u'])
     _PC[K['served']] += 1

@@ -1,28 +1,25 @@
 
-## 2026-10-10 — 100. Stage R2b measured and REFUTED: one run context per call does not pay
+## 2026-10-10 — 101. Stage R2c, batch 1: per-call work the C Newton's entry did for nothing (-2.6 % a step)
 
-R2b's premise: the C Newton's ~28 per-call checks become ONE run context, made once a run and
-re-validated by ONE stamp test per call.  Sized first (`insitu.py lines spice_4049
-_tran_newton_c:solve`, 408.5 k a call): the C 113.7 k, the branch screen 87.8 k (stage 3's), the
-source pass 49.2 k (stage 1's), the run-level re-checks ~95 k.  R2's line was RE-SIZED before R2b
-was built (the plan, 2026-10-10): the R2-addressable ~158 k down >= 35 %.  A throwaway ceiling
-prototype (every run-level check skipped, unsafely) put the most R2b could save at 46.5 k a call.
+Exact changes, counted against their parent (`step_machinery --count`, instructions; bytes and
+statistics the same everywhere):
 
-Built exactly: a `_Run` context after a call whose every check passed, at the counter's present
-value; its test -- the counter, plus ONE pass over what no dict watcher sees (the transient's own
-attributes the checks read, the machinery's class and module attributes, the switches,
-`ParameterDict`'s epoch, the linear solver's choice, values in unwatched dicts, each element's
-`__dict__` object, each pass's code, the circuit's size).  First run: built but held 0 of 400
-calls -- the step's source memo (`_RUN_STATE` 'step') is a new dict every step, and the context
-compared it by identity where the check asks only that one exists (fixed: held 397 of 400).
-Then COUNTED against its parent (`step_machinery --count`): spice_4049 +1.24 %, mos1 and stage
-+1.0 % a step -- MORE.  Bytes and statistics the same.
+* the source-count snapshot taken on EVERY call only to roll back a bail -- a dict built by a
+  comprehension of `_PC.get(k, 0)` over 21 keys (15.9 k a call in situ) -- now the values,
+  `tuple(map(_PC.get, keys, repeat(0)))`, the dict made only on the rare rollback (the form
+  `_tran_radau_tc` already used); in `_tran_newton_c` and `_tran_radau_c`;
+* `x.dtype == np.float64` on the per-call checks (numpy's dtype coercion, ~50 ns a test) as
+  `x.dtype is _F64 or x.dtype == np.float64` (~19 ns; the same verdict for every array): the
+  seed, the source vector, the cached state, `_tran_core._row`, `evaluate`'s and `passes`'
+  inputs;
+* the converged `x` is the C's own full-width `xc` (the reference row's +0.0 in place), copied,
+  where `insert_row` rebuilt it from the reduced solution (7.6 k a call) -- the same array byte
+  for byte (checked on 99 served solves before the change).
 
-Why: the stamps already skip what a dict watcher can see; what is left on every call is exactly
-what NO watcher sees, item by item -- and the fused test must compare every one of those too (~70
-identities through mapped tuples), which costs what today's inline checks cost, plus the
-context's own reads.  The work a context could truly skip (the limiter closure built to test `is
-not None`, the walk's lookup, the core record's call) is a few k.  Reverted, by the plan's rule (a
-stage showing MORE is not kept, even for clarity).  The design is not lost: validated ONCE PER
-C-LOOP CALL -- many steps a call -- it is the C loop's entry gate (stage 4), where it pays; the
-diff is kept with the plan's working notes.
+spice_4049 -3.49 %, mos1 -2.63 % a step, stage -2.72 % a step, mos1_adaptive -1.52 %; the Radau
+cases no change (another path); no MORE.  On spice_4049, ~24.5 k a call of R2's re-sized
+~55 k line.  Five pinned pairs moved on the twin (the Newton's, the core's, the coupled stage's)
+and were re-recorded; one, "the step's end passes and the C's", moved on its REFERENCE
+(`_tran_core.passes`, its input guard's dtype test): checked -- the C twin makes the calls
+`_stage_end_passes` makes, which a guard's spelling cannot change -- and re-recorded.  Full
+suite 5064 passed and those five.

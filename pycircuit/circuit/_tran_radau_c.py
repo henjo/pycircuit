@@ -47,6 +47,7 @@ why the path is off where it is.  History: `doc/transient_history.md`,
 `_tran_radau_c.py`.
 """
 import os
+from itertools import repeat
 
 import numpy as np
 
@@ -311,16 +312,19 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
         had = [key in memo for key in keys]
     except TypeError:
         return _no('radau_c:u')
-    counts = {k: _PC.get(k, 0) for k in M['u_keys']}
+    ## (the counts before the passes, as values -- their dict made only
+    ## to roll back)
+    u_keys = M['u_keys']
+    cvals = tuple(map(_PC.get, u_keys, repeat(0)))
     try:
         us = [src(tt) for tt in ctx.tstage]
     except Exception:                                          # noqa: BLE001
         ## (the call raises again in the Python Newton, where it raised before)
-        _undo_source(memo, keys, had, counts)
+        _undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         return _no('radau_c:u')
     if not all(type(u) is np.ndarray and u.dtype == np.float64 and u.shape == (n,)
                for u in us):
-        _undo_source(memo, keys, had, counts)
+        _undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         return _no('radau_c:u')
     for j in range(3):
         buf['u'][j] = us[j]
@@ -332,7 +336,7 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     s.h, s.reltol, s.abstol, s.maxiter = float(h), float(reltol), float(abstol), int(maxit)
     status = cfn(s)
     if status != _CODES['RADAU_CONVERGED']:
-        _undo_source(memo, keys, had, counts)
+        _undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         if status == _CODES['RADAU_BAIL_WALKSTOP']:
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None
