@@ -134,31 +134,38 @@ long hdl_fn(radau_tf_t *s)
         /* the residual check, decided outside the band numpy's `abs` and
            SciPy's product can round apart from these */
         {
+            /* the arrays in locals, the inner bound read once: `hypot` is a
+               libm call that may write memory as far as the compiler knows,
+               so a struct field read after one is reloaded -- a local is not
+               (the arithmetic, and its order, as before) */
+            const double *r1 = s->r1, *x1 = s->x1, *Ax = s->Ax;
+            const int *Ap = s->Ap, *Ai = s->Ai;
+            double *y1 = s->y1, *ab = s->ab;
             double sc = 0.0, res = 0.0, bnd = 0.0, band;
             for (k = 0; k < m; k++) {
-                double a = hypot(s->r1[2 * k], s->r1[2 * k + 1]);
+                double a = hypot(r1[2 * k], r1[2 * k + 1]);
                 if (!(a <= DBL_MAX)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
                 if (a > sc) sc = a;
             }
             if (!(sc >= 1e-300)) sc = 1e-300;
-            memset(s->y1, 0, (size_t) (2 * m) * sizeof(double));
-            memset(s->ab, 0, (size_t) m * sizeof(double));
+            memset(y1, 0, (size_t) (2 * m) * sizeof(double));
+            memset(ab, 0, (size_t) m * sizeof(double));
             for (j = 0; j < m; j++) {
-                const double xr = s->x1[2 * j], xi = s->x1[2 * j + 1], xa = hypot(xr, xi);
-                for (k = s->Ap[j]; k < s->Ap[j + 1]; k++) {
-                    const long row = s->Ai[k];
-                    const double ar = s->Ax[2 * k], ai = s->Ax[2 * k + 1];
-                    s->y1[2 * row] += ar * xr - ai * xi;
-                    s->y1[2 * row + 1] += ar * xi + ai * xr;
-                    s->ab[row] += hypot(ar, ai) * xa;
+                const double xr = x1[2 * j], xi = x1[2 * j + 1], xa = hypot(xr, xi);
+                const long kend = Ap[j + 1];
+                for (k = Ap[j]; k < kend; k++) {
+                    const long row = Ai[k];
+                    const double ar = Ax[2 * k], ai = Ax[2 * k + 1];
+                    y1[2 * row] += ar * xr - ai * xi;
+                    y1[2 * row + 1] += ar * xi + ai * xr;
+                    ab[row] += hypot(ar, ai) * xa;
                 }
             }
             for (k = 0; k < m; k++) {
-                const double a = hypot(s->y1[2 * k] - s->r1[2 * k],
-                                       s->y1[2 * k + 1] - s->r1[2 * k + 1]);
+                const double a = hypot(y1[2 * k] - r1[2 * k], y1[2 * k + 1] - r1[2 * k + 1]);
                 if (!(a <= DBL_MAX)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
                 if (a > res) res = a;
-                if (s->ab[k] > bnd) bnd = s->ab[k];
+                if (ab[k] > bnd) bnd = ab[k];
             }
             if (fetestexcept(FE_OVERFLOW | FE_INVALID | FE_DIVBYZERO)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
             res = res / sc;
