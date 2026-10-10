@@ -8106,3 +8106,39 @@ already pay it: a known cost, for the loop in C to remove); mux8 instructions th
 step_machinery cases (no Euler step among them) no change against an A/A.  "The error test and
 its C" now names `EulerIntegrator.compute_lte` among its references: re-recorded.  Full suite 5105 passed; the
 sanitizer's fast tier clean (4798 passed).
+
+## 2026-10-11 — 113. Stage 3, step b: a sparse run's error test in C -- `StructuralKLU.solve` twinned; rich3 -4.8 %, arom -6.1 %
+
+The census (112) found every sparse run's error test in Python (`lte_c:sparse`: 15 % of rich3
+and arom, 8 % of gm19).  Now `lte.c`'s `sparse_solve` is `StructuralKLU.solve` on the reduced J:
+the reduced J row-major (`pcx_reduce_rm`, remove_row_col's copy), the pattern's values by
+`take`, `_ours`'s check (as many nonzeros as the matrix -- `pcx_count_nonzero`; another matrix
+is handed back, its fallback solver is the Python's), `klu_refactor` on the run's numeric,
+`klu_solve`, and the refactor's validation (max|R x - b| / max(max|b|, 1e-300) against the
+solver's `REFACTOR_RESIDUAL_TOL`, R x numpy's `dgemv` -- `arr @ x` is that call); a failed
+validation is handed back too, so the Python alone ever replaces the numeric, and a run's first
+error test (no numeric yet) declines (`lte_c:sparse_first`).  A served call counts the refactor
+(`refactors`), as `solve` would.  The glue binds once a run (`_klu_bind`: the solver's CSC
+pattern, `take`, analysis, common, the library's entries, numpy's `dgemv` from the Newton's
+driver).  And J is read where it stands when C-contiguous (the C only reads it): an n x n copy
+a call saved, on the dense path too.
+
+First built with the C's own element-by-element loops (a finiteness test per entry in the
+reduce, a plain nonzero count): gm19 (m = 428) read +3.5 % instructions, +1.2 % wall -- numpy's
+vectorised copies and counts beat them at that size.  Then: the reduce is two `memcpy` a row and
+tests nothing (a non-finite entry off the pattern is a nonzero the count hands back; one on it
+makes the residual non-finite, handed back too), the count runs in blocks of eight, and J is not
+copied: gm19 -0.28 % instructions.
+
+Proved: test_lte_c -- a 250-stage MOS chain, gear and trapezoid: every attempt's verdict, error
+and running reference the Python's; a residual bound below zero hands every solve back with the
+Python's run; a drawn twin at the `StepLTEInputs` level -- banded patterns, values, a nonzero
+off the pattern now and then, a failing residual bound, gear / trapezoid / Euler -- compares the
+bits, the running reference, the warnings and the solver's own counts, each side on a solver
+primed alike: 3000 examples, 1601 sparse solves served, 797 foreign and 345 failed-residual hand-
+backs.  The decks full length against HEAD, twice each: byte for byte; rich3 6.50 -> 6.19 s
+(-4.8 %), arom 6.24 -> 5.86 s (-6.1 %), gm19 no change (17.12 .. 17.73 s both ways).  The
+step_machinery cases no change against an A/A.  "The error test and its C" names
+`AutoSolver.solve`, `StructuralKLU.solve` and `._ours` among its references and `_klu_bind`
+among its twin; "the Newton solve and its C" moved on its twin (pcx_dense.h): re-recorded.  Full suite 5109 passed; the
+sanitizer's fast tier clean (4801 passed).

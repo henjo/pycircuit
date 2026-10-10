@@ -16,6 +16,52 @@ static long lte_bail(lte_t *s, long why)
     return why;
 }
 
+/* StructuralKLU.solve(the reduced J, the reduced Eg): the solution in `b`;
+   0, or why it is handed back */
+static long sparse_solve(lte_t *s, long n, long r)
+{
+    long m = n - 1, k, i, nz_r = 0, nz_a = 0;
+    double max_b = 0.0, max_r = 0.0, scale;
+    /* (no finiteness test of J here: a non-finite entry off the pattern is a
+       nonzero the count hands back, and one on it reaches the residual,
+       which it makes non-finite -- handed back too) */
+    pcx_reduce_rm(s->J, s->R, n, r);
+    /* `_ours`: the pattern's values, and as many nonzeros as the matrix */
+    nz_r = pcx_count_nonzero(s->R, m * m);
+    for (k = 0; k < s->knnz; k++) {
+        double v = s->R[s->ktake[k]];
+        s->kAx[k] = v;
+        nz_a += v != 0.0;
+    }
+    if (nz_r != nz_a) return LTE_BAIL_FOREIGN;
+    pcx_drop_ref(s->lte, s->b, n, r);
+    for (i = 0; i < m; i++) s->x[i] = s->b[i];
+    if (!((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym, s->klu_num,
+                                            s->klu_common))
+        return LTE_BAIL_KLU;
+    if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_num, (int) m, 1, s->x, s->klu_common))
+        return LTE_BAIL_KLU;
+    /* (what KLU raised inside: the Python's ctypes call never sees it) */
+    feclearexcept(FE_ALL_EXCEPT);
+    /* the refactor's validation, numpy's operations in their order */
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m, s->x, 1,
+                           0.0, s->y, 1);
+    for (i = 0; i < m; i++) {
+        double a = fabs(s->b[i]);
+        if (a > max_b) max_b = a;
+    }
+    for (i = 0; i < m; i++) {
+        double d = fabs(s->y[i] - s->b[i]);
+        if (isnan(d)) return LTE_BAIL_RESIDUAL;
+        if (d > max_r) max_r = d;
+    }
+    if (fetestexcept(LTE_FLAGS)) return LTE_BAIL_FLAGS;
+    scale = (1e-300 > max_b) ? 1e-300 : max_b;
+    if (!(max_r / scale <= s->resid_tol)) return LTE_BAIL_RESIDUAL;
+    for (i = 0; i < m; i++) s->b[i] = s->x[i];
+    return 0;
+}
+
 long hdl_fn(lte_t *s)
 {
     long n = s->n, m = n - 1, r = s->iref, i;
@@ -56,12 +102,17 @@ long hdl_fn(lte_t *s)
     if (fetestexcept(LTE_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
     /* remove_row_col and numpy's solve: the reduced J column-major (numpy's
        copy for LAPACK), the reduced Eg, numpy's own dgesv */
-    if (!pcx_reduce_cm(s->J, s->A, n, r)) return lte_bail(s, LTE_BAIL_NONFINITE);
-    pcx_drop_ref(s->lte, s->b, n, r);
-    ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv, s->b, &m64, &info64);
-    /* (numpy's solve clears what LAPACK raised; an info is its LinAlgError) */
-    feclearexcept(FE_ALL_EXCEPT);
-    if (info64 != 0) return lte_bail(s, LTE_BAIL_DGESV);
+    if (s->klu_sym) {
+        long why = sparse_solve(s, n, r);
+        if (why) return lte_bail(s, why);
+    } else {
+        if (!pcx_reduce_cm(s->J, s->A, n, r)) return lte_bail(s, LTE_BAIL_NONFINITE);
+        pcx_drop_ref(s->lte, s->b, n, r);
+        ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv, s->b, &m64, &info64);
+        /* (numpy's solve clears what LAPACK raised; an info is its LinAlgError) */
+        feclearexcept(FE_ALL_EXCEPT);
+        if (info64 != 0) return lte_bail(s, LTE_BAIL_DGESV);
+    }
     for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return lte_bail(s, LTE_BAIL_LTE);
     /* the full vector, the reference row restored as +0.0 */
     pcx_put_ref(s->b, s->lte, n, r);

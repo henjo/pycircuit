@@ -109,11 +109,13 @@ def _globals():
     a call compares what it would call now against them.  None: not yet."""
     if not _G:
         from pycircuit.circuit import _numeric, analysis, integrator
+        from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
         from pycircuit.circuit import stepcontroller as sc
         from pycircuit.circuit.toolkit import NumericToolkit
         SC, IG, AN, NU = (sc.StepController, 'pycircuit.circuit.integrator',
                           'pycircuit.circuit.analysis', 'pycircuit.circuit._numeric')
         SCM = 'pycircuit.circuit.stepcontroller'
+        LS = 'pycircuit.circuit.linearsolver'
         g2, tr = integrator.Gear2Integrator, integrator.TrapezoidalIntegrator
         eu = integrator.EulerIntegrator
         own = ((SC._charge_lte, 'StepController._charge_lte'),
@@ -133,12 +135,17 @@ def _globals():
                (analysis.remove_row_col, 'remove_row_col', AN),
                (analysis._reduce_ndarray, '_reduce_ndarray', AN),
                (_numeric.linearsolver, 'linearsolver', NU), (_numeric.array, 'array', NU),
-               (NumericToolkit, 'NumericToolkit', 'pycircuit.circuit.toolkit'))
+               (NumericToolkit, 'NumericToolkit', 'pycircuit.circuit.toolkit'),
+               (AutoSolver.solve, 'AutoSolver.solve', LS),
+               (StructuralKLU.solve, 'StructuralKLU.solve', LS),
+               (StructuralKLU._ours, 'StructuralKLU._ours', LS))
         if not all(_paths.genuine(o[0], o[1], o[2] if len(o) > 2 else SCM) for o in own):
             return None
         _G['mods'] = (sc, integrator, analysis)
         _G['controllers'] = (sc.IntegralController, sc.PIController)
         _G['tk'] = NumericToolkit
+        _G['sparse'] = (AutoSolver, StructuralKLU, AutoSolver.solve, StructuralKLU.solve,
+                        StructuralKLU._ours)
         _G['chain'] = (SC._charge_lte, SC._normalised, SC._reference, SC.tolerance,
                        sc.normalised_error, sc.sigglobal_reference,
                        integrator.third_divided_difference, analysis.remove_row_col,
@@ -155,11 +162,12 @@ class _Ctx:
     """One controller's struct and buffers for one size and reference row:
     every pointer the C holds is a buffer of this context's, set once."""
 
-    __slots__ = ('buf', 'ipiv', 'iref', 'keep', 'n', 's')
+    __slots__ = ('buf', 'ffi', 'ipiv', 'iref', 'jbuf', 'keep', 'klu', 'klu_keep', 'klu_sym', 'n',
+                 's')
 
     def __init__(self, ffi, dgesv, n, iref):
         m = n - 1
-        self.n, self.iref = n, iref
+        self.n, self.iref, self.ffi = n, iref, ffi
         self.s = s = ffi.new('lte_t *')
         self.buf = buf = {
             'xc': np.empty(n), 'xl': np.empty(n), 'q': np.empty(n), 'ql': np.empty((3, n)),
@@ -184,7 +192,44 @@ class _Ctx:
         self.keep.append(fb('int64_t *', self.ipiv))
         s.ipiv = self.keep[-1]
         s.dgesv = ffi.cast('void *', dgesv)
+        ## (J's own buffer, for a J that is not C-contiguous: copied there)
+        self.jbuf = s.J
         s.n, s.iref = n, iref
+        s.klu_sym = ffi.NULL
+        self.klu = self.klu_sym = None
+        self.klu_keep = ()
+
+
+def _klu_bind(ctx, sk):
+    """Point the C's sparse solve at `sk`, the run's `StructuralKLU`: its
+    pattern in CSC, its places in the reduced row-major J (`take`), its
+    analysis and its common, the library's entries; the reduced J and the
+    residual's buffers.  False -- declined -- where its size is not this
+    context's."""
+    from pycircuit.circuit import _tran_newton_c
+    m = ctx.n - 1
+    nd = _tran_newton_c.driver()
+    if sk.m != m or nd is None:
+        return False
+    ffi, s, fb = ctx.ffi, ctx.s, ctx.ffi.from_buffer
+    ## (numpy's `cblas_dgemv`, as the C Newton's: `arr @ x` is that call)
+    s.dgemv = ffi.cast('void *', nd[2]['dgemv'])
+    ct, lib = sk._ct, sk._lib
+    ktake = np.ascontiguousarray(sk.take, dtype=np.int64)
+    kAx, R, x, y = np.empty(max(sk.nnz, 1)), np.empty(m * m), np.empty(m), np.empty(m)
+    keep = (sk, ktake, kAx, R, x, y, fb('int *', sk.Ap), fb('int *', sk.Ai),
+            fb('int64_t *', ktake), fb('double *', kAx), fb('double *', R), fb('double *', x),
+            fb('double *', y))
+    s.knnz = sk.nnz
+    s.kAp, s.kAi, s.ktake, s.kAx, s.R, s.x, s.y = keep[6:]
+
+    def addr(f):
+        return ffi.cast('void *', ct.cast(f, ct.c_void_p).value)
+    s.klu_refactor, s.klu_solve = addr(lib.klu_refactor), addr(lib.klu_solve)
+    s.klu_common = ffi.cast('void *', ct.addressof(sk._common))
+    s.klu_sym = ffi.cast('void *', sk._symbolic)
+    ctx.klu, ctx.klu_sym, ctx.klu_keep = sk, sk._symbolic, keep
+    return True
 
 
 def _vec(a, n):
@@ -196,16 +241,26 @@ def max_error(ctrl, s):
     handed back, nothing written, the Python chain runs."""
     if not ENABLED:
         return _no('lte_c:off')
-    if s.linsolver is not None:
-        ## (a sparse run solves `J^-1 Eg` on its structural factorisation,
-        ## not numpy's dense LU: the C's `dgesv` is not its reference)
-        return _no('lte_c:sparse')
     drv = _driver or driver()
     if not drv:
         return _no('lte_c:driver')
     G = _G or _globals()
     if G is None:
         return _no('lte_c:patched')
+    ## (a sparse run solves `J^-1 Eg` on its structural factorisation:
+    ## `StructuralKLU.solve`, twinned -- its refactor needs the run's numeric,
+    ## which only the Python's first factor makes)
+    ls = s.linsolver
+    sk = None
+    if ls is not None:
+        sk = ls._choice
+        AS, SK, as_solve, sk_solve, sk_ours = G['sparse']
+        if not (type(ls) is AS and type(sk) is SK and AS.solve is as_solve
+                and SK.solve is sk_solve and SK._ours is sk_ours and 'solve' not in ls.__dict__
+                and 'solve' not in sk.__dict__ and '_ours' not in sk.__dict__):
+            return _no('lte_c:sparse')
+        if not (sk._numeric and sk._symbolic):
+            return _no('lte_c:sparse_first')
     cls = type(ctrl)
     if cls is not G['controllers'][0] and cls is not G['controllers'][1]:
         return _no('lte_c:controller')
@@ -298,6 +353,16 @@ def max_error(ctrl, s):
         ffi, _cfn, dgesv = drv
         ctx = cd['_lte_c'] = _Ctx(ffi, dgesv, n, iref)
     buf, st = ctx.buf, ctx.s
+    if sk is not None:
+        if (ctx.klu is not sk or ctx.klu_sym != sk._symbolic) and not _klu_bind(ctx, sk):
+            return _no('lte_c:sparse')
+        ## (the run's numeric as it stands, and the validation's bound)
+        st.klu_num = ctx.ffi.cast('void *', sk._numeric)
+        st.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+    elif ctx.klu is not None:
+        st.klu_sym = ctx.ffi.NULL
+        ctx.klu = ctx.klu_sym = None
+        ctx.klu_keep = ()
     np.copyto(buf['xc'], xc)
     np.copyto(buf['xl'], xl)
     np.copyto(buf['q'], q)
@@ -310,7 +375,13 @@ def max_error(ctrl, s):
         if not _vec(iq1, n):
             return _no('lte_c:x')
         np.copyto(buf['iq1'], iq1)
-    np.copyto(buf['J'], J)
+    ## (J read where it stands when C-contiguous -- the C only reads it --
+    ## else copied: an n x n copy a call saved)
+    if J.flags.c_contiguous:
+        st.J = ctx.ffi.from_buffer('double *', J)
+    else:
+        np.copyto(buf['J'], J)
+        st.J = ctx.jbuf
     if run is not None:
         np.copyto(buf['run'], run)
     if abs_vec:
@@ -338,6 +409,10 @@ def max_error(ctrl, s):
     if status != _CODES['LTE_DONE']:
         return _no('lte_c:bail:' + BAIL.get(status, str(status)))
     _PC['lte_c:served'] += 1
+    if sk is not None:
+        ## (the refactor `StructuralKLU.solve` counts)
+        sk.refactors += 1
+        _PC['lte_c:sparse_served'] += 1
     if euler:
         _PC['lte_c:euler'] += 1
     if mode:

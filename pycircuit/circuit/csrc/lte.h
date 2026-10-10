@@ -10,6 +10,16 @@ typedef struct {
     void *dgesv;
     double err;
     long status;
+    /* THE SPARSE SOLVE (the C loop plan's stage 3, step b): where `klu_sym`
+       is set, J^-1 Eg is `StructuralKLU.solve`'s -- the reduced J row-major
+       (`R`, remove_row_col's copy), its pattern's values (`kAx`, by `ktake`:
+       a matrix with a nonzero off the pattern is handed back, its fallback
+       solver is the Python's), `klu_refactor` on the run's numeric
+       (`klu_num`), `klu_solve`, and the refactor's validation -- max|R x - b|
+       / max(max|b|, 1e-300) <= `resid_tol`, R x numpy's `dgemv`; a failure is
+       handed back too (the Python alone factors again) */
+    long knnz; int *kAp, *kAi; const int64_t *ktake; double *kAx, *R, *x, *y, resid_tol;
+    void *klu_sym, *klu_num, *klu_common, *klu_refactor, *klu_solve, *dgemv;
 } lte_t;
 long hdl_fn(lte_t *s);
 
@@ -21,7 +31,10 @@ enum lte_status {
     LTE_BAIL_FLAGS = 3,          /* a floating-point flag numpy would raise on */
     LTE_BAIL_DGESV = 4,          /* the divided difference's solve: singular */
     LTE_BAIL_LTE = 5,            /* the estimate not finite */
-    LTE_BAIL_TOLERANCE = 6       /* a tolerance not positive and finite */
+    LTE_BAIL_TOLERANCE = 6,      /* a tolerance not positive and finite */
+    LTE_BAIL_FOREIGN = 7,        /* the sparse solve: a nonzero off the pattern */
+    LTE_BAIL_KLU = 8,            /* the sparse solve: KLU's refactor or solve failed */
+    LTE_BAIL_RESIDUAL = 9        /* the sparse solve: the refactor's residual too large */
 };
 /* `formula`, the estimate (the integrator's `compute_lte`): `coef` the
    glue's, in the integrator's own scalar arithmetic */

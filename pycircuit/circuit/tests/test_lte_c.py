@@ -240,3 +240,115 @@ def test_the_c_serves_the_adaptive_step():
         warnings.simplefilter('always')
         Transient(_mos_chain(), toolkit=circuit.numeric).solve(tend=1e-6, timestep=2e-8)
     assert _paths.since(before).get('lte_c:served', 0) >= 20
+
+
+## -- the sparse solve (the C loop plan's stage 3, step b) ------------------
+
+def _sparse_chain():
+    """A 250-stage MOS chain behind a pulse: 254 unknowns, a sparse run --
+    `StructuralKLU`, its error test's `J^-1 Eg` in C."""
+    c = SubCircuit()
+    c['vdd'] = VS('vdd', gnd, v=1.8)
+    c['vg'] = VPulse('g0', gnd, v1=0.0, v2=1.8, td=2e-9, tr=1e-9, tf=1e-9, pw=5e-9, per=2e-8)
+    for k in range(250):
+        c[f'rl{k}'] = R('vdd', f'd{k}', r=5e3)
+        c[f'c{k}'] = C(f'd{k}', gnd, c=2e-14)
+        c[f'M{k}'] = eh.MosLevel1Hdl(f'd{k}', 'g0' if k == 0 else f'd{k - 1}', gnd, gnd)
+    return c
+
+
+@pytest.mark.parametrize('integ', [ig.Gear2Integrator, ig.TrapezoidalIntegrator])
+def test_the_sparse_error_test_is_the_python_one(integ, monkeypatch):
+    """Every attempt's verdict, error and running reference on a sparse run,
+    the C solving on the run's numeric."""
+    _, b = _same(_sparse_chain, monkeypatch, make={'integrator': integ(), 'reltol': 1e-5},
+                 tend=1.2e-8, timestep=2e-10)
+    assert b[5].get('lte_c:sparse_served', 0) > 10
+
+
+def test_a_failed_residual_hands_the_solve_back(monkeypatch):
+    """The refactor's validation failing on every call (the bound below
+    zero): each attempt handed back -- the Python factors again -- and the
+    run the Python's."""
+    from pycircuit.circuit import linearsolver
+    monkeypatch.setattr(linearsolver.KLUSolver, 'REFACTOR_RESIDUAL_TOL', -1.0)
+    _, b = _same(_sparse_chain, monkeypatch, served_min=0, make={'reltol': 1e-5},
+                 tend=6e-9, timestep=2e-10)
+    assert b[5].get('lte_c:bail:residual', 0) > 5 and b[5].get('lte_c:sparse_served', 0) == 0
+
+
+def _banded(m, width):
+    """A banded pattern (CSC order) and its rows / cols."""
+    rows, cols = [], []
+    for c_ in range(m):
+        for r_ in range(max(0, c_ - width), min(m, c_ + width + 1)):
+            rows.append(r_)
+            cols.append(c_)
+    return np.array(rows), np.array(cols)
+
+
+@settings(deadline=None)
+@given(data=st.data(), m=st.integers(3, 9), width=st.integers(0, 2),
+       kind=st.sampled_from(['gear', 'trap', 'euler']), h=st.floats(1e-12, 1e-6),
+       r2=st.floats(0.1, 10.0), r3=st.floats(0.1, 10.0))
+def test_the_sparse_solve_is_structural_klu_bit_for_bit(data, m, width, kind, h, r2, r3):
+    """Drawn: a banded pattern and a reduced J on it (now and then a nonzero
+    off it -- another matrix -- or a residual bound the refactor fails),
+    drawn charges and steps: the same `(err, p)` bits, running reference,
+    warnings and exception, and the solver's own counts, the C serving or
+    handing back -- each side on its own solver, primed alike."""
+    from pycircuit.circuit import linearsolver
+    n = m + 1
+    iref = data.draw(st.integers(0, n - 1))
+    rows, cols = _banded(m, width)
+    vals = data.draw(st.lists(st.floats(-1.0, 1.0), min_size=len(rows), max_size=len(rows)))
+    Jr = np.zeros((m, m))
+    Jr[rows, cols] = vals
+    Jr += (2.0 + width) * np.eye(m)
+    J0 = Jr.copy()
+    Jr = Jr * data.draw(st.floats(0.5, 2.0))
+    if data.draw(st.integers(0, 5)) == 0:
+        far = [(i, j) for i in range(m) for j in range(m) if abs(i - j) > width]
+        if far:
+            i, j = data.draw(st.sampled_from(far))
+            Jr[i, j] = 0.25
+    J = np.insert(np.insert(Jr, iref, 0.0, axis=0), iref, 0.0, axis=1)
+    J[iref, iref] = 1.0
+    tol = data.draw(st.sampled_from([linearsolver.KLUSolver.REFACTOR_RESIDUAL_TOL] * 4 + [1e-30]))
+    q = _vec(data, n)
+    ql = np.array([_vec(data, n) for _ in range(3)])
+    iql = np.array([_vec(data, n) for _ in range(3)])
+    integ = {'gear': ig.Gear2Integrator, 'trap': ig.TrapezoidalIntegrator,
+             'euler': ig.EulerIntegrator}[kind]
+    out = []
+    for on in (False, True):
+        ls = linearsolver.AutoSolver(min_n=2, max_fill=1.0, structure=lambda: (m, rows, cols))
+        ls.solve(J0, np.ones(m), circuit.numeric)          # (the run's first factor)
+        sk = ls._choice
+        assert type(sk) is linearsolver.StructuralKLU and sk._numeric
+        sk.REFACTOR_RESIDUAL_TOL = tol
+        kw = {'x_curr': _vec(data, n, st.floats(-5.0, 5.0)) if not out else out[0][-1][0],
+              'x_last': _vec(data, n, st.floats(-5.0, 5.0)) if not out else out[0][-1][1],
+              'q_curr': q, 'q_last_hist': ql, 'iq_last_hist': iql, 'h_curr': h,
+              'h_last': h * r2, 'h_last2': h * r3, 'no_history': False, 'J': J,
+              'active_integrator': integ(), 'irefnode': iref, 'reltol': 1e-3, 'abstol': 1e-9,
+              'toolkit': circuit.numeric, 'max_step': 1.0, 'n_nodes': None, 'linsolver': ls}
+        ctrl = sc.IntegralController()
+        old = _tran_lte_c.ENABLED
+        _tran_lte_c.ENABLED = on
+        try:
+            with warnings.catch_warnings(record=True) as W:
+                warnings.simplefilter('always')
+                warnings.simplefilter('ignore', ResourceWarning)
+                try:
+                    r, exc = ctrl._max_error(sc.StepLTEInputs(**kw)), None
+                except Exception as e:                       # noqa: BLE001
+                    r, exc = None, (type(e), str(e))
+        finally:
+            _tran_lte_c.ENABLED = old
+        got = getattr(ctrl, '_ref_running', None)
+        counts = (sk.analyses, sk.factors, sk.refactors, sk.residual_fallbacks, sk.foreign)
+        out.append((None if r is None else (float(r[0]).hex(), r[1]), exc,
+                    None if got is None else got.tobytes(), [str(w.message) for w in W], counts,
+                    (kw['x_curr'], kw['x_last'])))
+    assert out[0][:5] == out[1][:5]
