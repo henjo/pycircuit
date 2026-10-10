@@ -10,6 +10,7 @@ setup(name='Pycircuit',
       packages=['pycircuit', 'pycircuit.circuit', 'pycircuit.circuit.shooting', 'pycircuit.post', 'pycircuit.utilities',
                 'pycircuit.sim', 'pycircuit.sim.gnucap', 'pycircuit.post.cds', 'pycircuit.post.cds.yapps',
                 'pycircuit.post.jwdb'],
+      package_data={'pycircuit.circuit': ['csrc/*.c', 'csrc/*.h']},
       scripts=[os.path.join('pycircuit', 'post', 'cds', 'cdsnetlist')],
       tests_require=['pytest'],
      )

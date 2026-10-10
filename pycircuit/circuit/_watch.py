@@ -33,6 +33,8 @@ import atexit
 import ctypes
 import os
 
+from pycircuit.circuit import _cbuild
+
 ENABLED = os.environ.get('PYCIRCUIT_WATCH', '1') != '0'
 STATUS = 'not loaded'
 EPOCH = None
@@ -50,16 +52,7 @@ MAX_ARMS = 16
 #: once: 20 solves of the PSP stage cost 13 % more each from the 16th
 HOLD = 8
 
-WATCH_C = r"""
-#include <stdint.h>
-static int64_t hdl_epoch = 0;
-static int hdl_dict_cb(int event, void *d, void *k, void *v)
-{ (void) event; (void) d; (void) k; (void) v; hdl_epoch++; return 0; }
-void *hdl_fn(int which)
-{
-    return which == 0 ? (void *) &hdl_epoch : (void *) hdl_dict_cb;
-}
-"""
+WATCH_C = _cbuild.csrc('watch.c')
 WATCH_CDEF = 'void *hdl_fn(int which);'
 
 _API = {}

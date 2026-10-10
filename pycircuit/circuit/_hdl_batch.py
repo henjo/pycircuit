@@ -80,7 +80,7 @@ import types
 
 import numpy as np
 
-from pycircuit.circuit import _paths
+from pycircuit.circuit import _cbuild, _paths
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -94,24 +94,7 @@ SKIP_ZERO_SOURCE = os.environ.get('PYCIRCUIT_HDL_ZERO_U', '1') != '0'
 #: `_dlopen` resolved, cast to `void *`); `X` is `n` rows of `sx` doubles,
 #: `OUT` `n` rows of `so`; `PR[e]` the element's pack; `ti` the temperature
 #: slot or -1 when the class reads none.
-PASS_C = r"""
-typedef void (*hdl_batch_fn_t)(const double *, const double *, double *);
-void hdl_fn(const void *fn, const double *X, double **PR, double *OUT,
-            long n, long sx, long so, long ti, double T)
-{
-    hdl_batch_fn_t f = (hdl_batch_fn_t) fn;
-    long e;
-    if (ti >= 0) {
-        for (e = 0; e < n; e++) {
-            PR[e][ti] = T;
-            f(X + e * sx, PR[e], OUT + e * so);
-        }
-    } else {
-        for (e = 0; e < n; e++)
-            f(X + e * sx, PR[e], OUT + e * so);
-    }
-}
-"""
+PASS_C = _cbuild.csrc('pass.c')
 PASS_CDEF = ('void hdl_fn(const void *fn, const double *X, double **PR, '
              'double *OUT, long n, long sx, long so, long ti, double T);')
 

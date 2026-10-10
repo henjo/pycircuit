@@ -7553,3 +7553,16 @@ code reads it; a patch left on the old name fails `test_every_key_ingredient_cha
 moved on its twin (`bind_fused`: `load_kernel` / `CompileError` named through `_cbuild`, the
 same objects) -- checked, re-recorded (twin digest only).  Full suite: 5027 passed and that
 pair.
+
+## 2026-10-10 — 93. Stage R1c: the runtime units' C in real files, `pycircuit/circuit/csrc/*.c` (no object rebuilt)
+
+The twelve C texts the runtime builds -- `newton.c`, `lte.c`, `core.c`, `radau.c`,
+`radau_tc.c`, `radau_fold.c`, `sens.c`, `pass.c`, `walk.c`, `limit.c` (the limiter's
+template), `psp_limit.c` (PSP's, %-formatted per value as before), `watch.c` -- moved out
+of their Python string literals into files, BYTE FOR BYTE (each literal asserted equal to
+its value before the move, raw strings only, no continuation); each module reads its file
+through `_cbuild.csrc(name)` (no newline translation) into the same attribute.  About 1350
+lines of C leave the Python.  Proof: the 14 recorded keys identical, and the pinned pairs
+and the ABI test pass WITHOUT re-recording (they digest the strings' values).  The files
+ship with the package (`package-data` in pyproject.toml and setup.py; a built wheel checked:
+all 12 inside).  Full suite 5028 passed.

@@ -52,3 +52,7 @@ cdsnetlist = "pycircuit.post.cds.cdsnetlist:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["pycircuit*"]
+
+## the C sources the runtime builds at first use (`_cbuild.csrc`)
+[tool.setuptools.package-data]
+"pycircuit.circuit" = ["csrc/*.c", "csrc/*.h"]

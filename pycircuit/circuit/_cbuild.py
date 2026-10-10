@@ -38,6 +38,18 @@ import shutil
 import subprocess
 import tempfile
 
+#: The runtime units' C sources, as files (the C loop plan's stage R1c):
+#: `csrc(name)` is the text of `csrc/<name>`, exactly -- read without
+#: newline translation, so what is keyed and compiled is the file's text.
+CSRC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'csrc')
+
+
+def csrc(name):
+    """The text of the C source file `csrc/<name>`."""
+    with open(os.path.join(CSRC_DIR, name), encoding='utf-8', newline='') as fh:
+        return fh.read()
+
+
 #: Bump when the key must invalidate every built object (a flags change
 #: already does; this is for changes to the convention itself).
 SO_FORMAT = 1
