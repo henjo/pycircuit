@@ -49,10 +49,17 @@ MIN_SHRINK_RATIO = 0.2
 ## estimate falling no slower than `h`: below it (0.5 measured too) nothing
 ## more was gained; an estimate that does not fall at all (a corner) shrinks
 ## at `target/err`, MIN_SHRINK_RATIO-bounded, and still meets `max_reject`.
-## NOT IN THE JAX TRANSIENT YET (`jaxtransient.calculate_next_dt` keeps the
-## assumed order): it needs the same rule, the last rejection carried in its
-## loop state (Andreas, 2026-10-10: "take on the JAX side later").
+## The JAX transient takes the same rule and modes (`jaxtransient.
+## outer_time_loop`'s `do_reject`, `TransientState.rej_dt`) on its own
+## clipped law (Andreas, 2026-10-10: "needed for Jax").
 RETRY_ORDER_MIN = 1.0
+
+## `Transient(retry_order=...)` (Andreas, 2026-10-10: "implement but
+## controlled by an option"): 'assumed' every retry at `p` (until 1fd4bbec);
+## 'measured' the rule above, the default; 'carried' the FIRST retry at a
+## point too, at the order the last measurement found (the forced steps left
+## under 'measured' are sequences whose first retry undershot as well).
+RETRY_ORDER_MODES = ('assumed', 'measured', 'carried')
 
 
 
@@ -199,25 +206,44 @@ class StepController(ABC):
         ## (re-applied every run, like the running reference: no rejection
         ## carries into the next run)
         self._retry = None
+        self._q_carried = None
         return self
 
-    ## The last rejection, `(x_last, h, err)`, for the retry's measured order.
+    ## The last rejection, `(x_last, h, err)`, for the retry's measured order;
+    ## the last order measured, for 'carried'.
     _retry = None
+    _q_carried = None
+    retry_order = 'measured'
+
+    def set_retry_order(self, mode):
+        """`Transient(retry_order=...)`: one of `RETRY_ORDER_MODES`."""
+        if mode not in RETRY_ORDER_MODES:
+            raise ValueError(f"retry_order must be one of {RETRY_ORDER_MODES!r}, "
+                             f"not {mode!r}")
+        self.retry_order = mode
+        self._q_carried = None
+        return self
 
     def _retry_exponent(self, s, err, p, target):
         """The exponent for the step after this rejection when the step
         before it was rejected at the SAME point (`x_last` the same
         object: the accepted state both tries left from) and larger:
         ``1/q``, ``q`` the order the two tries measured, clamped to
-        ``[RETRY_ORDER_MIN, p]``.  None otherwise -- the caller's own
-        ``1/p`` law, unchanged to the bit."""
+        ``[RETRY_ORDER_MIN, p]``.  Under 'carried' a FIRST rejection at a
+        point takes the last order measured.  None otherwise -- the
+        caller's own ``1/p`` law, unchanged to the bit."""
+        if self.retry_order == 'assumed':
+            return None
         prev = self._retry
         h = s.h_curr
         if (prev is None or prev[0] is not s.x_last or not prev[1] > h * (1.0 + 1e-9)
                 or not prev[2] > target or not err > 0.0):
+            if self.retry_order == 'carried' and self._q_carried is not None:
+                return 1.0 / min(self._q_carried, p)
             return None
-        q = math.log(prev[2] / err) / math.log(prev[1] / h)
-        return 1.0 / min(max(q, RETRY_ORDER_MIN), p)
+        q = min(max(math.log(prev[2] / err) / math.log(prev[1] / h), RETRY_ORDER_MIN), p)
+        self._q_carried = q
+        return 1.0 / q
 
     def _judged(self, s, accepted, err):
         """Remember a rejection for `_retry_exponent`; an accepted step
@@ -552,13 +578,15 @@ class IntegralController(StepController):
         ## can move it.
         target = self._band_target(safety, p)
         h = s.h_curr
-        ## a second retry at one point shrinks at the order the two tries
-        ## measured (`RETRY_ORDER_MIN`)
-        retry = self._retry_exponent(s, err, p, target)
-        shrink_exponent = exponent if retry is None else retry
+        def shrink(e):
+            ## a second retry at one point shrinks at the order the two tries
+            ## measured (`RETRY_ORDER_MIN`, `retry_order`) -- measured on a
+            ## rejection only, as in PIController
+            retry = self._retry_exponent(s, e, p, target)
+            return h * max(MIN_SHRINK_RATIO,
+                           (target / e) ** (exponent if retry is None else retry))
         accepted, h_next = self._band_decision(
-            s, err,
-            shrink=lambda e: h * max(MIN_SHRINK_RATIO, (target / e) ** shrink_exponent),
+            s, err, shrink=shrink,
             grow=lambda e: h * min(MAX_GROWTH_RATIO,
                                    (target / max(e, 1e-12)) ** exponent))
         self._judged(s, accepted, err)

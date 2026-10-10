@@ -7361,8 +7361,11 @@ assumed h^3.  From the second retry the exponent is the one the two tries
 measured, clamped to [1, p]: the ring judged 657 -> 0 forced, mux8 624 ->
 131, gm1 59 -> 16, gm17 judged 26 -> 2, slowlatch 22 -> 10, the time the
 same or less; native circuits unchanged.  The measurements and the
-design: `doc/transient_history.md` (`RETRY_ORDER_MIN`).  ⚠ Needed in the
-JAX transient too (not done: Andreas, "take on the JAX side later").
+design: `doc/transient_history.md` (`RETRY_ORDER_MIN`).  The JAX transient
+has it since (Andreas: "do it"), and both take `retry_order` --
+'assumed' / 'measured' (default) / 'carried' (Andreas: "implement but
+controlled by an option"; 'carried' trades 20-27 % of the rejections for
+8-17 % more steps and no fewer forced, so it is not the default).
 The one suite failure, van der Pol's LTE-grid PSS test, was the test's
 window (short of a period by up to one coarse step; it passed or failed
 by where `tend` fell, on the old code too); built exactly, 12 of 12

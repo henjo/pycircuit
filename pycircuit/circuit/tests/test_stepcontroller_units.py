@@ -260,3 +260,44 @@ def test_a_second_retry_shrinks_at_the_order_its_two_tries_measured(ctrl_cls):
     assert ok
     ok, h6 = judge(8.0, 0.3 * h4)
     assert not ok and h6 == pytest.approx(0.3 * h4 * (target / 8.0) ** (1 / 3), rel=1e-9)
+
+
+@pytest.mark.parametrize('ctrl_cls', [IntegralController, PIController])
+def test_retry_order_assumed_and_carried(ctrl_cls):
+    """`Transient(retry_order=...)` (2026-10-10): 'assumed' sizes every
+    retry at the method's order (the law before the measured order);
+    'carried' sizes the FIRST rejection at a new point at the order the
+    last two tries measured; an unknown mode is refused.  ('measured', the
+    default, is the test above.)"""
+    tol = 7.0 * (1e-3 + 1e-12)
+    target = 0.9 ** 3
+
+    def judge(ctrl, err, h, x_last):
+        return ctrl.evaluate_step(
+            x_curr=np.ones(2), x_last=x_last, q_curr=np.zeros(2),
+            q_last_hist=[np.zeros(2)], iq_last_hist=[np.zeros(2)],
+            h_curr=h, h_last=1e-6, no_history=False, J=np.eye(2),
+            active_integrator=StubIntegrator(Eg=[err * tol, 0.0]), irefnode=1,
+            reltol=1e-3, abstol=1e-12, toolkit=numeric, max_step=1e-3,
+            TRTOL=7.0, n_nodes=None, h_last2=None, h_clamped=False, x_hist=None)
+
+    a = np.zeros(2)
+    assumed = ctrl_cls().set_retry_order('assumed')
+    _, h1 = judge(assumed, 8.0, 1e-6, a)
+    _, h2 = judge(assumed, 3.3, h1, a)
+    assert h2 == pytest.approx(h1 * (target / 3.3) ** (1 / 3), rel=1e-9)
+
+    carried = ctrl_cls().set_retry_order('carried')
+    _, h1 = judge(carried, 8.0, 1e-6, a)            # nothing measured yet: p
+    assert h1 == pytest.approx(1e-6 * (target / 8.0) ** (1 / 3), rel=1e-9)
+    _, h2 = judge(carried, 3.3, h1, a)              # measures q at this point
+    q = np.log(8.0 / 3.3) / np.log(1e-6 / h1)
+    assert 1.0 < q < 3.0
+    ok, _ = judge(carried, 0.1, 0.5 * h2, a)        # accepted (measures nothing)
+    assert ok
+    b = np.zeros(2)                                 # the next point
+    ok, h3 = judge(carried, 2.0, 1e-6, b)           # its FIRST rejection: q
+    assert not ok and h3 == pytest.approx(1e-6 * (target / 2.0) ** (1 / q), rel=1e-9)
+
+    with pytest.raises(ValueError, match='retry_order'):
+        ctrl_cls().set_retry_order('guessed')

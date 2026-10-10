@@ -746,6 +746,12 @@ class _RejectionInjector:
         self.inner.set_lte_band(*args, **kwargs)
         return self
 
+    def set_retry_order(self, mode):
+        ## (`Transient(retry_order=...)`, 2026-10-10: forwarded like the
+        ## band, and for the same reason)
+        self.inner.set_retry_order(mode)
+        return self
+
     def evaluate_step(self, *args, **kwargs):
         accept, h_next = self.inner.evaluate_step(*args, **kwargs)
         h = kwargs['h_curr']

@@ -382,6 +382,7 @@ class _LMMSteps(_StepFamily):
         tr.step_controller.set_lte_band(tr.par.lte_gamma_min,
                                         tr.par.lte_gamma_max,
                                         tr.par.lte_eta)
+        tr.step_controller.set_retry_order(tr.par.retry_order)
 
     def judge(self, X, x_new, h, J, clamped):
         tr, run = self.tr, self.run
@@ -1022,6 +1023,19 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         "depends on them): 'judge' or 'skip' (ngspice's)",
                    unit='',
                    default='judge'),
+         ## The order a rejected step's retry assumes (`stepcontroller.
+         ## RETRY_ORDER_MODES`): 'assumed' every retry h^p; 'measured' (the
+         ## default) from the second retry at a point the order its two tries
+         ## measured; 'carried' the first retry too, at the order the last
+         ## point measured.
+         Parameter(name='retry_order',
+                   desc="The error order a rejected step's retry is sized by: "
+                        "'assumed' (the method's), 'measured' (from the second "
+                        "retry at a point, the order its tries measured -- the "
+                        "default) or 'carried' (the first retry too, at the "
+                        "order the previous point measured)",
+                   unit='',
+                   default='measured'),
          ## STAGE 12A -- Fang's acceptance band (DAC 2013 eq 15) and step-change
          ## damper (eq 16).  The defaults are the historical one-sided test, so
          ## nothing changes until a caller asks; see `StepController.set_lte_band`

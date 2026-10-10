@@ -29,7 +29,8 @@ TLINE_HISTORY_DEPTH = 10000
 ## MIN_SHRINK_RATIO / MAX_GROWTH_RATIO), re-exported as plain floats for the
 ## traced Fang loop.
 from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO as MIN_SHRINK,
-                                              MAX_GROWTH_RATIO as MAX_GROWTH)
+                                              MAX_GROWTH_RATIO as MAX_GROWTH,
+                                              RETRY_ORDER_MIN, RETRY_ORDER_MODES)
 
 
 class NewtonState(NamedTuple):
@@ -113,6 +114,16 @@ class TransientState(NamedTuple):
     ## update to the elementary pure-I one.  Inert under the default
     ## integral controller, which never reads it.
     last_err: Any = 0.0
+
+    ## THE RETRY'S MEASURED ORDER, the CPU's `StepController._retry_exponent`
+    ## (`stepcontroller.RETRY_ORDER_MIN`; Andreas, 2026-10-10: "needed for
+    ## Jax"): the last LTE rejection at THIS time point (`rej_dt`, `rej_err`;
+    ## 0 = none -- cleared on accept, kept through a Newton failure, cleared
+    ## by a dv veto or a too-accurate retry, as the CPU's controller sees
+    ## them) and the last order measured, for 'carried' (0 = none).
+    rej_dt: Any = 0.0
+    rej_err: Any = 0.0
+    q_carried: Any = 0.0
 
     ## F11/F19: "do not trust a 2nd-order polynomial through this point" --
     ## set when the PREVIOUS accepted step landed on a breakpoint, consumed by
@@ -1128,12 +1139,10 @@ def calculate_next_dt(dt, error_ratio, dt_min, dt_max, t_breaks_array, current_t
     ## (stepcontroller._band_target) so the backends read as one law.  The
     ## clamps are the CPU's named constants rather than re-derived literals.
     ## History: `doc/transient_history.md`, `jaxtransient.calculate_next_dt`.
-    ## ⚠ NOT YET ONE LAW AFTER A REJECTION (2026-10-10): the CPU's second
-    ## retry at one point shrinks at the order its last two tries MEASURED
-    ## (`stepcontroller.RETRY_ORDER_MIN`, `StepController._retry_exponent`;
-    ## the ring's forced steps 657 -> 0); this keeps the assumed order.  It
-    ## needs the same rule, the last rejection's (dt, err) in the loop state
-    ## (Andreas: "take on the JAX side later" -- the fix is needed here).
+    ## (A rejection's retry is sized in `outer_time_loop`'s `do_reject`, not
+    ## here; since 2026-10-10 it takes the CPU's measured order --
+    ## `retry_order`, `TransientState.rej_dt` -- on this backend's own
+    ## clipped law.)
     from pycircuit.circuit.stepcontroller import (MIN_SHRINK_RATIO,
                                                   MAX_GROWTH_RATIO)
     safety = 0.9
@@ -2205,7 +2214,7 @@ def pcnr_controller_jacobian(circuit, state, x, v_lim, j_ra, j_rb, j_IS, VT,
     return _scatter_junction_G(J, j_ra, j_rb, g_l, +1.0)
 
 
-def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, dv_bounds=((jnp.inf, 0.0), (jnp.inf, 0.0)), periodic_states=None, rescue_meta=None, controller='integral'):
+def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, irefnode, dt_min, dt_max, t_breaks_array, tline_params, tline_indices, eval_method='euler', params_tree=None, reltol=1e-4, abstol=1e-12, xtol=1e-12, maxiter=100, trtol=7.0, lte_reltol=1e-4, lte_abstol=1e-12, max_dv=jnp.inf, coupled=False, gamma_min=0.7, gamma_max=3.0, eta=0.15, pcnr_meta=None, pcnr_VT=0.025, tline_dG=None, analysis='tran', s_gamma_min=0.0, s_gamma_max=1.0, s_eta=jnp.inf, fixed_timestep=False, grid_dt=None, relref='sigglobal', n_nodes=None, provided_function=None, state_mask=None, dv_bounds=((jnp.inf, 0.0), (jnp.inf, 0.0)), periodic_states=None, rescue_meta=None, controller='integral', retry_order='measured'):
 
     ## The same epsilon `calculate_next_dt` uses to decide a breakpoint is
     ## "already reached".  ⚠ The two tests must agree: after many steps the
@@ -2785,6 +2794,10 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
                 n_rescued=state.n_rescued + jnp.where(rescued, 1, 0),
                 ## The PI term differences consecutive ACCEPTED errors.
                 last_err=error_ratio,
+                ## the retry's measured order: an accept ends the point's
+                ## rejections; the measured order carries ('carried')
+                rej_dt=0.0 * state.rej_dt, rej_err=0.0 * state.rej_err,
+                q_carried=state.q_carried,
                 ## F11: the CPU's breakpoint discipline.  A step that LANDS on
                 ## a breakpoint (calculate_next_dt truncates onto them, so
                 ## landing is exact to t_eps) marks the NEXT step "do not trust
@@ -2806,7 +2819,29 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## The predictor's `ratio^(-1/p)` is only meaningful when `x_curr` IS a
             ## solution; after a failed Newton the ratio describes a point the
             ## circuit never occupied, so a fixed cut is used instead.
-            lte_shrink = jnp.clip(error_ratio ** (-1.0 / order_p1), 0.1, 0.9)
+            ## The exponent: the method's, or -- from the second LTE rejection
+            ## at this point (`retry_order`, the CPU's `_retry_exponent`) --
+            ## the order the two tries measured, clamped to
+            ## [RETRY_ORDER_MIN, p]; 'carried' takes the last order measured
+            ## for a first rejection.  This backend's own clipped law is kept.
+            lte_exp = 1.0 / order_p1
+            q_carried = state.q_carried
+            if retry_order != 'assumed':
+                _meas = jnp.logical_and(
+                    state.rej_dt > state.dt * (1.0 + 1e-9),
+                    jnp.logical_and(state.rej_err > 0.0, error_ratio > 0.0))
+                _num = jnp.where(_meas, jnp.log(jnp.where(_meas, state.rej_err / error_ratio, 1.0)), 1.0)
+                _den = jnp.where(_meas, jnp.log(jnp.where(_meas, state.rej_dt / state.dt, 2.0)), 1.0)
+                _q = jnp.clip(_num / _den, RETRY_ORDER_MIN, order_p1)
+                if retry_order == 'carried':
+                    _q_first = jnp.where(state.q_carried > 0.0,
+                                         jnp.minimum(state.q_carried, order_p1), order_p1)
+                else:
+                    _q_first = order_p1
+                lte_exp = 1.0 / jnp.where(_meas, _q, _q_first)
+                q_carried = jnp.where(jnp.logical_and(_meas, nr_state.converged),
+                                      _q, state.q_carried)
+            lte_shrink = jnp.clip(error_ratio ** (-lte_exp), 0.1, 0.9)
             ## A dv-vetoed step retries at 0.9*bound/dv (industry semantics);
             ## a converged-but-LTE-rejected one keeps the predictor's cut.
             dv_shrink = jnp.clip(0.9 / jnp.maximum(dv_ratio, 1e-300),
@@ -2832,7 +2867,19 @@ def outer_time_loop(initial_state: TransientState, circuit, tend, chunk_size, ir
             ## P8: a too-accurate rejection retries LARGER (the CPU's eq (15)
             ## lower bound); grow_dt's guards above ensure it genuinely grows.
             retry_dt = jnp.where(too_accurate, grow_dt, retry_dt)
+            ## the rejection recorded for the next try's measured order: an
+            ## LTE rejection (converged, not vetoed, not too accurate) is
+            ## recorded; a Newton failure keeps the record; the rest clear it
+            _lte_rej = jnp.logical_and(
+                jnp.logical_and(nr_state.converged, dv_ok),
+                jnp.logical_not(too_accurate))
+            _keep = jnp.logical_not(nr_state.converged)
+            rej_dt = jnp.where(_lte_rej, state.dt,
+                               jnp.where(_keep, state.rej_dt, 0.0 * state.rej_dt))
+            rej_err = jnp.where(_lte_rej, error_ratio,
+                                jnp.where(_keep, state.rej_err, 0.0 * state.rej_err))
             return state._replace(
+                rej_dt=rej_dt, rej_err=rej_err, q_carried=q_carried,
                 dt=retry_dt,
                 n_rejected=state.n_rejected + 1,
                 n_nonconverged=state.n_nonconverged
@@ -3018,6 +3065,14 @@ class JAXTransient(Analysis):
                        'coupled path uses Fang solution-space LTE and '
                        'ignores this.',
                   unit='', default='integral'),
+        ## the CPU's `Transient(retry_order=...)`, same name, modes and default
+        Parameter(name='retry_order',
+                  desc="The error order a rejected step's retry is sized by: "
+                       "'assumed' (the method's), 'measured' (from the second "
+                       "rejection at a point, the order its tries measured -- "
+                       "the default) or 'carried' (the first too, at the "
+                       "order the previous point measured)",
+                  unit='', default='measured'),
         Parameter(name='lte_gamma_min',
                   desc="Lower edge of the LTE acceptance band; 'auto' means "
                        "0.7 (Fang) on the coupled path and 0.0 (no lower "
@@ -3528,6 +3583,14 @@ class JAXTransient(Analysis):
                 "(roadmap sec. 49.5); use Transient for this circuit."
                 % (type(exc).__name__,))
 
+    def _retry_order(self):
+        """`retry_order`, validated (`stepcontroller.RETRY_ORDER_MODES`)."""
+        mode = self.par.retry_order
+        if mode not in RETRY_ORDER_MODES:
+            raise ValueError(f"retry_order must be one of {RETRY_ORDER_MODES!r}, "
+                             f"not {mode!r}")
+        return mode
+
     def _step_controller(self):
         """The step-size law, validated -- and PI's band refusal, ported.
 
@@ -3861,6 +3924,7 @@ class JAXTransient(Analysis):
                                    pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT,
                                    tline_dG=_tline_dG,
                                    controller=self._step_controller(),
+                                   retry_order=self._retry_order(),
                                    rescue_meta=self._rescue_meta())
             
         # JIT the vmapped run_chunk
@@ -3889,6 +3953,9 @@ class JAXTransient(Analysis):
         b_n_rescued = jnp.full(batch_size, 0)
         b_last_err = jnp.full(batch_size, 0.0)
         b_force_first = jnp.full(batch_size, False)
+        b_rej_dt = jnp.full(batch_size, 0.0)
+        b_rej_err = jnp.full(batch_size, 0.0)
+        b_q_carried = jnp.full(batch_size, 0.0)
         
         while np.any(current_t < tend):
             res_buf = jnp.zeros((batch_size, CHUNK_SIZE, n))
@@ -3914,7 +3981,8 @@ class JAXTransient(Analysis):
                 n_forced_lte=b_n_forced_lte,
                 n_rescued=b_n_rescued,
                 last_err=b_last_err,
-                force_first_order=b_force_first
+                force_first_order=b_force_first,
+                rej_dt=b_rej_dt, rej_err=b_rej_err, q_carried=b_q_carried
             )
             
             final_state = batched_run_chunk(state, override_params_tree,
@@ -3985,6 +4053,9 @@ class JAXTransient(Analysis):
             b_n_rescued = final_state.n_rescued
             b_last_err = final_state.last_err
             b_force_first = final_state.force_first_order
+            b_rej_dt = final_state.rej_dt
+            b_rej_err = final_state.rej_err
+            b_q_carried = final_state.q_carried
             x_hist = final_state.x_history
             q_hist = final_state.q_history
             iq_hist = final_state.iq_history
@@ -4118,6 +4189,7 @@ class JAXTransient(Analysis):
                                    pcnr_meta=_pcnr_meta, pcnr_VT=_pcnr_VT,
                                    tline_dG=_tline_dG,
                                    controller=self._step_controller(),
+                                   retry_order=self._retry_order(),
                                    rescue_meta=self._rescue_meta())
         
         results_list = [np.array([x0])]
@@ -4140,6 +4212,9 @@ class JAXTransient(Analysis):
         n_rescued = jnp.array(0)
         last_err = jnp.array(0.0)
         force_first = jnp.array(False)
+        rej_dt = jnp.array(0.0)
+        rej_err = jnp.array(0.0)
+        q_carried = jnp.array(0.0)
 
         while current_t < tend:
             res_buf = jnp.zeros((CHUNK_SIZE, n))
@@ -4163,7 +4238,8 @@ class JAXTransient(Analysis):
                 n_forced_lte=n_forced_lte,
                 n_rescued=n_rescued,
                 last_err=last_err,
-                force_first_order=force_first
+                force_first_order=force_first,
+                rej_dt=rej_dt, rej_err=rej_err, q_carried=q_carried
             )
         
             final_state = run_chunk(state)
@@ -4210,6 +4286,9 @@ class JAXTransient(Analysis):
             n_rescued = final_state.n_rescued
             last_err = final_state.last_err
             force_first = final_state.force_first_order
+            rej_dt = final_state.rej_dt
+            rej_err = final_state.rej_err
+            q_carried = final_state.q_carried
 
             ## STAGE 9(e) -- CHECKED PER CHUNK, NOT AT THE END, BECAUSE THE END
             ## MAY NEVER ARRIVE.  Rejecting a non-converged step shrinks `dt`;

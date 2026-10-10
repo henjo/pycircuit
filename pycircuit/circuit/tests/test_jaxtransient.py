@@ -1136,3 +1136,43 @@ def test_a_fixed_grid_warns_only_against_a_delay_element_s_cap():
             _w.simplefilter('always')
             run()
         assert any('TD/2' in m for m in caps(rec)), (label, caps(rec))
+
+
+def test_jax_retry_order_is_the_cpu_s_rule():
+    """The retry's measured order on this backend (2026-10-10; Andreas:
+    "needed for Jax"): `retry_order` takes the CPU's modes and default; from
+    the second LTE rejection at a point the retry is sized at the order its
+    tries measured (`TransientState.rej_dt`), on this backend's own clipped
+    law.  On a 1 MHz diode rectifier, measured 2026-10-10: 119 rejections
+    'assumed', 81 'measured', 50 'carried', its last value and peak within
+    1e-4 V.  An
+    unknown mode is refused."""
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import C, Diode, R, VSin
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    def rect():
+        c = SubCircuit()
+        c['vs'] = VSin(1, gnd, va=2.0, freq=1e6, phase=20)
+        c['R'] = R(1, 2, r=1e4)
+        c['D'] = Diode(2, gnd)
+        c['C'] = C(2, gnd, c=1e-12)
+        return c
+
+    out = {}
+    for mode in ('assumed', 'measured'):
+        tr = _with_jax_toolkit(lambda mode=mode: JAXTransient(rect(), reltol=1e-4,
+                                                              retry_order=mode))
+        with quiet():
+            res = _with_jax_toolkit(lambda tr=tr: tr.solve(gnd, tend=5e-6, timestep=1e-7))
+        out[mode] = (tr.statistics.rejected_steps, np.asarray(res.v('2').x, float).ravel(),
+                     np.asarray(res.v('2').y, float).ravel())
+    assert out['measured'][0] < 0.8 * out['assumed'][0], (out['assumed'][0], out['measured'][0])
+    ## the same waveform: its last value and its peak (interpolating one
+    ## grid onto the other is 0.03 V of linear-interpolation error here)
+    ya, ym = out['assumed'][2], out['measured'][2]
+    assert abs(ym[-1] - ya[-1]) < 1e-3 and abs(ym.max() - ya.max()) < 1e-3, \
+        (ya[-1], ym[-1], ya.max(), ym.max())
+    tr = _with_jax_toolkit(lambda: JAXTransient(rect(), retry_order='guessed'))
+    with pytest.raises(ValueError, match='retry_order'):
+        _with_jax_toolkit(lambda: tr.solve(gnd, tend=5e-6, timestep=1e-7))

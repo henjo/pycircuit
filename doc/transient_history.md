@@ -4706,15 +4706,41 @@ Tests: `test_a_second_retry_shrinks_at_the_order_its_two_tries_measured`
 base point, an accepted step), `test_gm17_s_supply_currents_in_the_error_
 test_force_few_steps` (26 -> 2; on the old controller `26 <= 5` fails).
 
-⚠ THE JAX TRANSIENT DOES NOT HAVE IT (`jaxtransient.calculate_next_dt`
-keeps the assumed order; noted there).  It needs the same rule -- the last
-rejection's (dt, err) carried in its loop state -- or the two backends'
-step sequences part after a second rejection.  Andreas: "take on the JAX
-side later. Note that this fix is needed for Jax".
+**The JAX transient has it too** (Andreas: "take on the JAX side later.
+Note that this fix is needed for Jax", then "do it"): `outer_time_loop`'s
+`do_reject` sizes an LTE rejection's retry at the measured order from the
+second rejection at a point, on this backend's own clipped law
+(`err^(-1/q)` in [0.1, 0.9]; the CPU's is `(0.9^p/err)^(1/q)` floored at
+0.2, and this backend has no `max_reject` -- it forces only at `dt_min`,
+so the rule saves rejections here, not forced steps).  `TransientState`
+carries `rej_dt`/`rej_err` (an LTE rejection recorded; kept through a
+Newton failure; cleared by a dv veto, a too-accurate retry, an accept)
+and `q_carried`; `JAXTransient(retry_order=...)` takes the CPU's modes
+and default.  Rejected steps 'assumed' / 'measured' / 'carried': a 1 MHz
+rectifier 119 / 81 / 50 (accepted 203 / 207 / 215), a 1 kHz one 49 / 45 /
+35, the ladder 13 / 13 / 11, a pulsed RC 0; the waveforms' last value and
+peak within 1e-4 V.  'assumed' is the code before bit for bit (the same
+counts and waveform sum on both rectifiers).  Test:
+`test_jax_retry_order_is_the_cpu_s_rule`.
 
 Still forced: mux8 131, gm1 16, slowlatch 10, gm17 2 -- the first retry
 at a point still assumes `p`; the order the previous point measured is
 the candidate for it.
+
+**`Transient(retry_order=...)`** (Andreas: "implement but controlled by an
+option"): 'assumed' (every retry at `p`, the law before), 'measured' (the
+rule above, the default), 'carried' (the FIRST retry at a point too, at
+the order the last rejection measured; measured on rejections only, in
+both controllers).  'carried' against 'measured' (forced / rejected /
+accepted): ring 0/4592/8885 -> 0/3343/10393, mux8 131/5769/18181 ->
+126/4668/20123, gm1 16/394/1009 -> 15/303/1135, rich3 1/1171/3639 ->
+0/899/3938, gm17 2/241/556 -> 2/187/601, nand 29/438/1871 -> 40/385/2019;
+the time the same (+-3 %), the metrics within noise -- fewer rejections,
+more steps, not fewer forced: the default stays 'measured'.  The forced
+steps 'measured' leaves on mux8 and gm1 are first tries 100-130x over
+tolerance whose three retries each hit MIN_SHRINK_RATIO (h / 125) and end
+at 2-3x (their q ~ 0.85): the floor and `max_reject` bind there, not the
+order.  slowlatch's 10 end after a ~2x shrink: another mechanism, open.
 
 **The one suite failure it caused was the TEST's window, and the
 investigation found no PSS defect** (Andreas: "1" -- investigate first).
