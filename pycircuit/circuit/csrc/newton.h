@@ -20,3 +20,20 @@ typedef struct {
     long fold_j; double *xc, *Cj, *qj, *iqj, *Geqj, *Jj;
 } newton_t;
 long hdl_fn(newton_t *s);
+
+/* hdl_fn's result, left in `status` too (`_tran_newton_c.BAIL` names the
+   bails from these): */
+enum newton_status {
+    NEWTON_RUNNING = 0,
+    NEWTON_CONVERGED = 1,
+    NEWTON_BAIL_X = 2,           /* an iterate not finite */
+    NEWTON_BAIL_JNONFINITE = 3,  /* the chord's Jacobian not finite */
+    NEWTON_BAIL_GETRF = 4,       /* the chord's factorisation: singular */
+    NEWTON_BAIL_BNONFINITE = 5,  /* a chord step's right-hand side not finite */
+    NEWTON_BAIL_GETRS = 6,       /* the chord's solve failed */
+    NEWTON_BAIL_DGESV = 7,       /* a full step's solve: singular */
+    NEWTON_BAIL_WALKSTOP = 8,    /* a limiter declined: the walk stopped */
+    NEWTON_BAIL_XNEXT = 9,       /* the next iterate not finite */
+    NEWTON_BAIL_CHORDBREAK = 10, /* the chord's steps stopped shrinking */
+    NEWTON_BAIL_MAXITER = 11     /* no convergence in maxiter */
+};

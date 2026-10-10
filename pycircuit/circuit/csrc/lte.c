@@ -24,16 +24,16 @@ long hdl_fn(lte_t *s)
     if (!(isfinite(s->h1) && isfinite(s->h2) && isfinite(s->h3) && isfinite(s->s12)
           && isfinite(s->s23) && isfinite(s->s123) && isfinite(s->coef)
           && isfinite(s->reltol) && isfinite(s->trtol) && isfinite(s->abstol)))
-        return lte_bail(s, 2);
+        return lte_bail(s, LTE_BAIL_NONFINITE);
     for (i = 0; i < n; i++)
         if (!(isfinite(s->xc[i]) && isfinite(s->xl[i]) && isfinite(s->q[i])
               && isfinite(s->q1[i]) && isfinite(s->q2[i]) && isfinite(s->q3[i])))
-            return lte_bail(s, 2);
+            return lte_bail(s, LTE_BAIL_NONFINITE);
     if (s->have_run)
         for (i = 0; i < n; i++)
-            if (!isfinite(s->run[i]) || signbit(s->run[i])) return lte_bail(s, 2);
+            if (!isfinite(s->run[i]) || signbit(s->run[i])) return lte_bail(s, LTE_BAIL_NONFINITE);
     if (s->abs_vec)
-        for (i = 0; i < n; i++) if (!isfinite(s->abst[i])) return lte_bail(s, 2);
+        for (i = 0; i < n; i++) if (!isfinite(s->abst[i])) return lte_bail(s, LTE_BAIL_NONFINITE);
     feclearexcept(FE_ALL_EXCEPT);
     /* compute_lte: coef * third_divided_difference, numpy's elementwise
        operations in their order (each result stored, so each operation
@@ -47,7 +47,7 @@ long hdl_fn(lte_t *s)
         double ddb = (d2 - d3) / s->s23;
         s->lte[i] = s->coef * ((dda - ddb) / s->s123);
     }
-    if (fetestexcept(LTE_FLAGS)) return lte_bail(s, 3);
+    if (fetestexcept(LTE_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
     /* remove_row_col and numpy's solve: the reduced J column-major (numpy's
        copy for LAPACK), the reduced Eg, numpy's own dgesv */
     for (ri = 0, rr = 0; ri < n; ri++) {
@@ -56,7 +56,7 @@ long hdl_fn(lte_t *s)
             double v;
             if (ci == r) continue;
             v = s->J[ri * n + ci];
-            if (!isfinite(v)) return lte_bail(s, 2);
+            if (!isfinite(v)) return lte_bail(s, LTE_BAIL_NONFINITE);
             s->A[cc * m + rr] = v;
             cc++;
         }
@@ -66,8 +66,8 @@ long hdl_fn(lte_t *s)
     ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv, s->b, &m64, &info64);
     /* (numpy's solve clears what LAPACK raised; an info is its LinAlgError) */
     feclearexcept(FE_ALL_EXCEPT);
-    if (info64 != 0) return lte_bail(s, 4);
-    for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return lte_bail(s, 5);
+    if (info64 != 0) return lte_bail(s, LTE_BAIL_DGESV);
+    for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return lte_bail(s, LTE_BAIL_LTE);
     /* the full vector, the reference row restored as +0.0 */
     for (i = 0, j = 0; i < n; i++) s->lte[i] = (i == r) ? 0.0 : s->b[j++];
     /* _reference: numpy's maximum (the first where they compare equal) of
@@ -75,7 +75,7 @@ long hdl_fn(lte_t *s)
     for (i = 0; i < n; i++) {
         double a = fabs(s->xc[i]), c = fabs(s->xl[i]);
         double loc = (a >= c) ? a : c;
-        if (s->relref == 0) {
+        if (s->relref == LTE_RELREF_POINTLOCAL) {
             s->ref[i] = loc;
         } else if (s->have_run) {
             double rv = s->run[i];
@@ -84,9 +84,9 @@ long hdl_fn(lte_t *s)
             s->out[i] = loc;
         }
     }
-    if (s->relref == 1) {
+    if (s->relref == LTE_RELREF_ALLLOCAL) {
         for (i = 0; i < n; i++) s->ref[i] = s->out[i];
-    } else if (s->relref == 2) {
+    } else if (s->relref == LTE_RELREF_SIGGLOBAL) {
         /* sigglobal_reference: each unit group's maximum, broadcast back */
         long nn = s->nn, lo, hi, g;
         long cut = (nn <= 0 || nn >= n) ? n : nn;
@@ -103,10 +103,10 @@ long hdl_fn(lte_t *s)
     /* the tolerance TRTOL (reltol ref + abstol) and |lte| / tol */
     for (i = 0; i < n; i++)
         s->tq[i] = s->trtol * (s->reltol * s->ref[i] + (s->abs_vec ? s->abst[i] : s->abstol));
-    if (fetestexcept(LTE_FLAGS)) return lte_bail(s, 3);
-    for (i = 0; i < n; i++) if (!(s->tq[i] > 0.0 && isfinite(s->tq[i]))) return lte_bail(s, 6);
+    if (fetestexcept(LTE_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
+    for (i = 0; i < n; i++) if (!(s->tq[i] > 0.0 && isfinite(s->tq[i]))) return lte_bail(s, LTE_BAIL_TOLERANCE);
     for (i = 0; i < n; i++) s->tq[i] = fabs(s->lte[i]) / s->tq[i];
-    if (fetestexcept(LTE_FLAGS)) return lte_bail(s, 3);
+    if (fetestexcept(LTE_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
     /* `_normalised`'s mask (`Transient.lte_algebraic`): an unknown not
        judged is +0.0, as `np.where(mask, e, 0.0)` makes it */
     if (s->has_mask)
@@ -116,6 +116,6 @@ long hdl_fn(lte_t *s)
     for (i = 1; i < n; i++) if (s->tq[i] > err) err = s->tq[i];
     s->err = err;
     feclearexcept(FE_ALL_EXCEPT);
-    s->status = 1;
-    return 1;
+    s->status = LTE_DONE;
+    return LTE_DONE;
 }

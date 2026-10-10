@@ -3,7 +3,7 @@
 #include <string.h>
 #include "pcx_abi.h"
 #include "core.h"
-/* passes 0 G, 1 C, 2 i, 3 q; want bits 1 G, 2 C, 4 i (q always).  A class
+/* passes 0 G, 1 C, 2 i, 3 q; their want bits pcx_pass (pcx_abi.h).  A class
    with a fused kernel (z_fn) is evaluated once a call, before the passes,
    for every pass the call wants, into its staging (zst); its batches then
    scatter from there -- the passes' writes and bins as before.  ztab, a
@@ -20,14 +20,14 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
 {
     double X[64], o[4096], y[64], xg[64];
     double *bins[4] = {c->binG, C, c->bini, q};
-    const long bits[4] = {1, 2, 4, 0};
+    const long bits[4] = {PCX_PASS_G, PCX_PASS_C, PCX_PASS_I, 0};
     dgemv64_t gemv = (dgemv64_t) c->dgemv;
     long n = c->n, m, b, g, e, j, s, z;
     const double *Cs;
     for (z = 0; z < c->nz; z++) {
         const int64_t *zt = c->ztab + ZW * z;
         fused_fn_t ff = (fused_fn_t) c->z_fn[z];
-        long zw = ((want & 7) | 8) & zt[3];
+        long zw = ((want & PCX_WANT_ALL) | PCX_PASS_Q) & zt[3];
         if (!ff || !zw) continue;
         {
             long ne = zt[0], k = zt[1], ti = zt[2];
@@ -82,7 +82,7 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             const int64_t *gdst = c->gdstall + c->g_seloff[g];
             for (e = 0; e < E; e++) {
                 for (j = 0; j < k; j++) xg[j] = x[I[e * k + j]];
-                gemv(101, 111, k, k, 1.0, S + e * k * k, k, xg, 1, 0.0, y, 1);
+                gemv(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, k, k, 1.0, S + e * k * k, k, xg, 1, 0.0, y, 1);
                 for (j = 0; j < k; j++) c->ywork[e * k + j] = y[j];
             }
             for (s = 0; s < nsel; s++) buf[gdst[s]] = c->ywork[sel[s]];
@@ -97,23 +97,23 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
     }
     /* formula 4: the passes alone (`passes`: G in binG, i in bini, C and q
        in the caller's buffers) -- no companion, no residual, no Jacobian */
-    if (formula == 4) return 0;
-    Cs = (want & 2) ? C : Cin;
-    if (formula == 0) {
+    if (formula == PCX_FORMULA_PASSES) return 0;
+    Cs = (want & PCX_PASS_C) ? C : Cin;
+    if (formula == PCX_FORMULA_GEAR2) {
         for (j = 0; j < n; j++) iq[j] = (a0 * q[j] + a1 * q1[j]) + a2 * q2[j];
         for (s = 0; s < n * n; s++) Geq[s] = a0 * Cs[s];
-    } else if (formula == 1) {
+    } else if (formula == PCX_FORMULA_EULER) {
         for (j = 0; j < n; j++) iq[j] = (q[j] - q1[j]) / h;
         for (s = 0; s < n * n; s++) Geq[s] = Cs[s] / h;
-    } else if (formula == 2) {
+    } else if (formula == PCX_FORMULA_TRAPEZOIDAL) {
         for (j = 0; j < n; j++) iq[j] = (2.0 * (q[j] - q1[j])) / h - iq1[j];
         for (s = 0; s < n * n; s++) Geq[s] = (2.0 * Cs[s]) / h;
-    } else {
+    } else {  /* PCX_FORMULA_THETA */
         double th = theta * h, w = (1.0 - theta) / theta;
         for (j = 0; j < n; j++) iq[j] = (q[j] - q1[j]) / th - w * iq1[j];
         for (s = 0; s < n * n; s++) Geq[s] = Cs[s] / th;
     }
-    if (want & 4) for (j = 0; j < n; j++) F[j] = (c->bini[j] + iq[j]) + u[j];
-    if (want & 1) for (s = 0; s < n * n; s++) J[s] = c->binG[s] + Geq[s];
+    if (want & PCX_PASS_I) for (j = 0; j < n; j++) F[j] = (c->bini[j] + iq[j]) + u[j];
+    if (want & PCX_PASS_G) for (s = 0; s < n * n; s++) J[s] = c->binG[s] + Geq[s];
     return 0;
 }

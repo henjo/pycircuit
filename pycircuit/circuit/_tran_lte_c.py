@@ -58,12 +58,14 @@ LTE_C = _cbuild.csrc('lte.c')
 LTE_CDEF = _cbuild.csrc('lte.h')
 
 #: the C's status codes past 1 (done): why it handed the attempt back
-BAIL = {2: 'nonfinite', 3: 'flags', 4: 'dgesv', 5: 'lte', 6: 'tolerance'}
+#: the C's results, named in lte.h: {code: why} of its bails
+_CODES = _cbuild.constants(LTE_CDEF)
+BAIL = _cbuild.bails(_CODES, 'LTE_BAIL_')
 
 _driver = None
 _G = {}
 _F64 = np.dtype(np.float64)
-_RELREF = {'pointlocal': 0, 'alllocal': 1}
+_RELREF = {'pointlocal': _CODES['LTE_RELREF_POINTLOCAL'], 'alllocal': _CODES['LTE_RELREF_ALLLOCAL']}
 _NPF = np.float64
 #: numpy's pieces of the chain, as imported (before any caller could patch)
 _NP = (np.linalg.solve, np.maximum, np.concatenate)
@@ -254,8 +256,9 @@ def max_error(ctrl, s):
     rr = ctrl.relref
     if type(rr) is not str:
         return _no('lte_c:relref')
-    mode = _RELREF.get(rr, 2)
-    run = getattr(ctrl, '_ref_running', None) if mode else None
+    mode = _RELREF.get(rr, _CODES['LTE_RELREF_SIGGLOBAL'])
+    run = (getattr(ctrl, '_ref_running', None)
+           if mode != _CODES['LTE_RELREF_POINTLOCAL'] else None)
     if run is not None and not _vec(run, n):
         return _no('lte_c:x')
     ab, reltol, trtol, nn = s.abstol, s.reltol, s.TRTOL, s.n_nodes
@@ -302,7 +305,7 @@ def max_error(ctrl, s):
     st.s12, st.s23, st.s123 = s12, s23, s123
     st.reltol, st.trtol = float(reltol), float(trtol)
     status = drv[1](st)
-    if status != 1:
+    if status != _CODES['LTE_DONE']:
         return _no('lte_c:bail:' + BAIL.get(status, str(status)))
     _PC['lte_c:served'] += 1
     if mode:

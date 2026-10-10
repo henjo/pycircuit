@@ -46,6 +46,8 @@ typedef void (*dgetrs64_t)(const char *, const int64_t *, const int64_t *, const
                            int64_t *, size_t);
 typedef void (*dgemv64_t)(int, int, int64_t, int64_t, double, const double *, int64_t,
                           const double *, int64_t, double, double *, int64_t);
+/* CBLAS's own values for dgemv64_t's first two arguments */
+enum pcx_cblas { PCX_CBLAS_ROW_MAJOR = 101, PCX_CBLAS_NO_TRANS = 111 };
 typedef void (*dgetrf32_t)(const int *, const int *, double *, const int *, int *, int *);
 typedef void (*dgetrs32_t)(const char *, const int *, const int *, const double *, const int *,
                            const int *, double *, const int *, int *, size_t);
@@ -53,3 +55,25 @@ typedef void (*dgetrs32_t)(const char *, const int *, const int *, const double 
 /* ---- KLU's int interface (klu_refactor, klu_solve): nonzero on success */
 typedef int (*klu_refactor_t)(int *, int *, double *, void *, void *, void *);
 typedef int (*klu_solve_t)(void *, void *, int, int, double *, void *);
+
+/* ---- the evaluation core's codes (core.c), said by its callers too and
+        read by `_tran_core` ------------------------------------------- */
+
+/* the passes: a call's `want` (q is always made, so it has no want bit)
+   and a fused kernel's pass mask (where q has its own) */
+enum pcx_pass {
+    PCX_PASS_G = 1,
+    PCX_PASS_C = 2,
+    PCX_PASS_I = 4,
+    PCX_PASS_Q = 8,
+    PCX_WANT_ALL = PCX_PASS_G | PCX_PASS_C | PCX_PASS_I
+};
+/* the companion the core forms: an integrator's, or none at all (the
+   passes alone: G in binG, i in bini, C and q in the caller's buffers) */
+enum pcx_formula {
+    PCX_FORMULA_GEAR2 = 0,
+    PCX_FORMULA_EULER = 1,
+    PCX_FORMULA_TRAPEZOIDAL = 2,
+    PCX_FORMULA_THETA = 3,
+    PCX_FORMULA_PASSES = 4
+};

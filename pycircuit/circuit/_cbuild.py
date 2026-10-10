@@ -60,6 +60,34 @@ def csrc(name):
     return _LOCAL_INCLUDE.sub(lambda m: _read(m.group(1)), _read(name))
 
 
+def constants(text):
+    """`{name: value}` of the enumerators of a C text (a header's `enum
+    {...}` bodies): how Python reads the codes the C says by name.  Each
+    enumerator spells its value -- an integer, or earlier names joined by
+    `|`."""
+    text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.DOTALL)
+    out = {}
+    for body in re.findall(r'\benum\b[^{;]*\{(.*?)\}', text, flags=re.DOTALL):
+        for item in body.split(','):
+            if not item.strip():
+                continue
+            name, eq, expr = (part.strip() for part in item.partition('='))
+            if not eq:
+                raise ValueError(f'enumerator {name} spells no value')
+            value = 0
+            for part in expr.split('|'):
+                part = part.strip()
+                value |= int(part) if part.isdigit() else out[part]
+            out[name] = value
+    return out
+
+
+def bails(codes, prefix):
+    """`{code: why}` of the `codes` named `prefix<WHY>`: a unit's bails as
+    its Python side reports them (`why` lowered)."""
+    return {v: k[len(prefix):].lower() for k, v in codes.items() if k.startswith(prefix)}
+
+
 #: Bump when the key must invalidate every built object (a flags change
 #: already does; this is for changes to the convention itself).
 SO_FORMAT = 1

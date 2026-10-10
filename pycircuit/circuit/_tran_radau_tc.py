@@ -143,8 +143,11 @@ FOLD_C = _cbuild.csrc('radau_fold.c')
 FOLD_CDEF = _cbuild.csrc('radau_fold.h')
 
 #: the C's status codes past 1 (converged): why it handed the loop back
-BAIL = {2: 'nonfinite', 3: 'flags', 4: 'rhs', 5: 'lu', 6: 'refactor', 7: 'klusolve',
-        8: 'residual', 9: 'step', 10: 'walkstop', 11: 'maxiter'}
+#: the C's results, named in radau_tc.h and radau_fold.h: {code: why} of
+#: the solve's bails
+_CODES = _cbuild.constants(RADAU_TC_CDEF)
+_FOLD_CODES = _cbuild.constants(FOLD_CDEF)
+BAIL = _cbuild.bails(_CODES, 'RADAU_TC_BAIL_')
 
 _driver = None
 _MOD = {}
@@ -351,7 +354,7 @@ def fold(Cr, Gr, s0, c1, last):
         f.nz = d[0].NULL
     f.s0, f.c1r, f.c1i = s0, c1.real, c1.imag
     d[1](f)
-    if f.status == 2:
+    if f.status == _FOLD_CODES['FOLD_STATUS_NONFINITE']:
         return _no('radau.frozen:fold.nonfinite')
     _PC['radau.frozen:fold'] += 1
     if f.status:
@@ -683,9 +686,9 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     if s.refactored:
         zs.refactors += int(s.refactored)
         zs._fresh = prep
-    if status != 1:
+    if status != _CODES['RADAU_TC_CONVERGED']:
         RC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
-        if status == 10:
+        if status == _CODES['RADAU_TC_BAIL_WALKSTOP']:
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None
         return _no('radau_tc:bail:' + BAIL.get(status, str(status)))

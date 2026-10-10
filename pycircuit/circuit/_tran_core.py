@@ -105,9 +105,14 @@ CORE_CDEF = _cbuild.csrc('core.h')
 
 PASSES = ('G', 'C', 'i', 'q')
 #: the integrators the core's companion enum covers, by class name
-FORMULA = {'Gear2Integrator': 0, 'EulerIntegrator': 1,
-           'TrapezoidalIntegrator': 2, 'ThetaIntegrator': 3}
-WANT = {'fj': 7, 'j': 3, 'f': 4, 'c': 2}
+#: the core's call codes, named in pcx_abi.h
+_ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
+FORMULA = {'Gear2Integrator': _ABI['PCX_FORMULA_GEAR2'],
+           'EulerIntegrator': _ABI['PCX_FORMULA_EULER'],
+           'TrapezoidalIntegrator': _ABI['PCX_FORMULA_TRAPEZOIDAL'],
+           'ThetaIntegrator': _ABI['PCX_FORMULA_THETA']}
+_G, _C, _I = _ABI['PCX_PASS_G'], _ABI['PCX_PASS_C'], _ABI['PCX_PASS_I']
+WANT = {'fj': _G | _C | _I, 'j': _G | _C, 'f': _I, 'c': _C}
 
 _driver = None
 
@@ -605,7 +610,8 @@ def _ntk():
 #: the circuit's passes for the stage paths from the core (`passes`, speed
 #: round 9, stage 8); env `PYCIRCUIT_CORE_PASSES=0` turns it off
 CORE_PASSES = os.environ.get('PYCIRCUIT_CORE_PASSES', '1') != '0'
-_PASS_BITS = {'G': 1, 'C': 2, 'i': 4, 'q': 0}
+#: each pass's want bit (q is always made)
+_PASS_BITS = {'G': _G, 'C': _C, 'i': _I, 'q': 0}
 
 
 def passes(tr, x, which):

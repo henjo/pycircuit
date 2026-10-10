@@ -78,7 +78,9 @@ SENS_C_SRC = _cbuild.csrc('sens.c')
 SENS_CDEF = _cbuild.csrc('sens.h')
 
 #: the C's status codes past 1 (served): why it handed the step back
-BAIL = {2: 'nonfinite', 3: 'flags', 4: 'rhs', 5: 'singular', 6: 'lapack'}
+#: the C's results, named in sens.h: {code: why} of its bails
+_CODES = _cbuild.constants(SENS_CDEF)
+BAIL = _cbuild.bails(_CODES, 'SENS_BAIL_')
 
 
 def driver():
@@ -333,6 +335,6 @@ def _map(td, drv, A, Cfs, Gfs, iref, h, base):
     t.h = float(h)
     status = drv[1](t)
     t.Z = ctx.ffi.NULL
-    if status != 1:
+    if status != _CODES['SENS_DONE']:
         return int(status)
     return Zc.T[(s - 1) * m:s * m]

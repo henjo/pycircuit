@@ -12,6 +12,12 @@ The function types the units share are declared once, in `pcx_abi.h`.
 These tests hold that construction: each cdef is its header, each unit
 includes its own, no C file declares a type, no header includes another.
 
+The codes the C returns and is called with (a unit's results, the core's
+passes and formulas) are named once, in the headers, and Python reads its
+tables from them (`_cbuild.constants`): tested here against cffi's own
+reading, against the pass order Python builds the fused masks from, and
+for any bare number left where a name belongs.
+
 What a header cannot check: `core_fn_t` and `walk_fn_t` (pcx_abi.h) re-type
 the core's and the walk's entries for their callers, and the core's first
 argument is a `const void *` there.  Those two are compared with their
@@ -29,6 +35,7 @@ import pytest
 from pycircuit.circuit import (
     _cbuild,
     _hdl_batch,
+    _hdl_cbackend,
     _hdl_climit,
     _tran_core,
     _tran_lte_c,
@@ -164,9 +171,44 @@ def test_walk_fn_t_is_the_walk_s_entry():
     assert _signature(_function_type(_raw('pcx_abi.h'), 'walk_fn_t'), 'walk_fn_t') == defined
 
 
+#: a code said by its number where the header names it: a bail, a status
+#: set, a formula tested
+_BARE_CODE = re.compile(r'_bail\(\w+, \d+\)|status = \d+;|formula [=!]= \d+')
+
+
+@pytest.mark.parametrize('unit,cdef', UNITS, ids=[u for u, _ in UNITS])
+def test_each_header_s_codes_read_as_cffi_reads_them(unit, cdef):
+    """`_cbuild.constants` (how the modules read their tables) gives what
+    cffi's own parser gives for every enum of the header."""
+    ffi = cffi.FFI()
+    ffi.cdef(cdef)
+    by_cffi = {}
+    for name in re.findall(r'\benum\s+(\w+)\s*\{', _strip(cdef)):
+        by_cffi.update(ffi.typeof('enum ' + name).relements)
+    assert _cbuild.constants(cdef) == by_cffi
+
+
+def test_the_pass_bits_are_the_order_python_builds_the_masks_from():
+    """pcx_pass's G, C, i, q bits are `1 << k` of the pass order the core's
+    and the fused kernel's masks are built from in Python, and a want of
+    every pass is G | C | i (q is always made)."""
+    abi = _cbuild.constants(_raw('pcx_abi.h'))
+    for order in (_tran_core.PASSES, _hdl_cbackend.FUSE_PASSES):
+        assert [abi['PCX_PASS_' + p.upper()] for p in order] == [1 << k for k in range(4)]
+    assert abi['PCX_WANT_ALL'] == abi['PCX_PASS_G'] | abi['PCX_PASS_C'] | abi['PCX_PASS_I']
+    assert _tran_core.WANT['fj'] == abi['PCX_WANT_ALL']
+
+
+def test_no_c_file_says_a_code_by_its_number():
+    """A bail, a status set and a formula test say the header's name."""
+    for path in glob.glob(os.path.join(_cbuild.CSRC_DIR, '*.c')):
+        assert not _BARE_CODE.findall(_strip(_raw(os.path.basename(path)))), path
+
+
 def test_the_checks_see_a_planted_difference():
     """Alive: a width changed in one argument, two arguments swapped, a type
-    declared in a C file, a header including another -- each is caught."""
+    declared in a C file, a header including another, a code said by its
+    number, an enumerator spelling no value -- each is caught."""
     copy = _function_type(_raw('pcx_abi.h'), 'core_fn_t')
     good = _signature(copy, 'core_fn_t')
     assert _signature(copy.replace('long want', 'int want', 1), 'core_fn_t') != good
@@ -175,3 +217,7 @@ def test_the_checks_see_a_planted_difference():
     assert _declared_types(_raw('newton.c') + 'typedef long (*x_t)(long);\n')
     assert _declared_types('typedef struct {\n    long a;\n} y_t;\n')
     assert re.search(r'^#include "', '#include "pcx_abi.h"\n', flags=re.MULTILINE)
+    assert _BARE_CODE.findall(_raw('lte.c').replace('LTE_BAIL_DGESV', '4', 1))
+    assert _BARE_CODE.findall('if (formula == 2) {')
+    with pytest.raises(ValueError):
+        _cbuild.constants('enum e { A = 1, B };')

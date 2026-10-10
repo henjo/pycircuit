@@ -73,8 +73,9 @@ NEWTON_C = _cbuild.csrc('newton.c')
 NEWTON_CDEF = _cbuild.csrc('newton.h')
 
 #: the C's status codes past 1 (converged): why it handed the solve back
-BAIL = {2: 'x', 3: 'jnonfinite', 4: 'getrf', 5: 'bnonfinite', 6: 'getrs', 7: 'dgesv',
-        8: 'walkstop', 9: 'xnext', 10: 'chordbreak', 11: 'maxiter'}
+#: the C's results, named in newton.h: {code: why} of its bails
+_CODES = _cbuild.constants(NEWTON_CDEF)
+BAIL = _cbuild.bails(_CODES, 'NEWTON_BAIL_')
 #: the counts the step's source pass makes (`_source_at`, `cir.u`; the
 #: source plan's own, `_stamp_plan._SK`, are added at `_mods`): the
 #: attempt's one trace, rolled back with the memo entry when it bails
@@ -671,9 +672,9 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         ## (every read above in full, every check passed: stamp them)
         _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)
     status = cfn(s)
-    if status != 1:
+    if status != _CODES['NEWTON_CONVERGED']:
         _undo_source(memo, key, had, counts)
-        if status == 8:
+        if status == _CODES['NEWTON_BAIL_WALKSTOP']:
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None
         return _no('newton_c:bail:' + BAIL.get(status, str(status)))

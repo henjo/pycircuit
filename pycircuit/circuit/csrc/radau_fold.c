@@ -35,7 +35,7 @@ long hdl_fn(radau_fold_t *f)
     f->same = 0;
     for (k = 0; k < mm; k++)
         if (!isfinite(f->Cr[k]) || !isfinite(f->Gr[k])) {
-            f->status = 2;
+            f->status = FOLD_STATUS_NONFINITE;
             return 0;
         }
     feclearexcept(FE_ALL_EXCEPT);

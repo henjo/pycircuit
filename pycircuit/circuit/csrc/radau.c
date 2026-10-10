@@ -30,8 +30,8 @@ static long assemble(radau_t *s, long a)
     double h = s->h;
     for (j = 0; j < 3; j++) {
         /* (a non-finite stage: `passes` declines and the Python evaluates) */
-        for (k = 0; k < n; k++) if (!isfinite(Y[j * n + k])) return 2;
-        core(s->core, Y + j * n, s->T, 7, 4, 0.0, 0.0, 0.0, 1.0, 0.0,
+        for (k = 0; k < n; k++) if (!isfinite(Y[j * n + k])) return RADAU_BAIL_NONFINITE;
+        core(s->core, Y + j * n, s->T, PCX_WANT_ALL, PCX_FORMULA_PASSES, 0.0, 0.0, 0.0, 1.0, 0.0,
              s->dummy, s->dummy, s->dummy, s->dummy, s->dummy, C + j * nn, q + j * n,
              s->dummy, s->dummy, s->dummy, s->dummy);
         memcpy(G + j * nn, s->binG, (size_t) nn * sizeof(double));
@@ -73,7 +73,7 @@ static long assemble(radau_t *s, long a)
             }
         }
     }
-    if (fetestexcept(RC_FLAGS)) return 3;
+    if (fetestexcept(RC_FLAGS)) return RADAU_BAIL_FLAGS;
     return 0;
 }
 
@@ -84,52 +84,52 @@ long hdl_fn(radau_t *s)
     walk_fn_t walk = (walk_fn_t) s->walk_fn;
     s->assemblies = 0;
     s->iters = 0;
-    s->status = 0;
+    s->status = RADAU_RUNNING;
     /* every input finite: anything else is the Python Newton's */
-    if (!(isfinite(s->h) && isfinite(s->reltol) && isfinite(s->abstol))) return rc_bail(s, 2);
-    for (k = 0; k < 9; k++) if (!isfinite(s->A[k])) return rc_bail(s, 2);
-    for (k = 0; k < n; k++) if (!isfinite(s->qn[k])) return rc_bail(s, 2);
-    for (k = 0; k < 3 * n; k++) if (!isfinite(s->u[k])) return rc_bail(s, 2);
+    if (!(isfinite(s->h) && isfinite(s->reltol) && isfinite(s->abstol))) return rc_bail(s, RADAU_BAIL_NONFINITE);
+    for (k = 0; k < 9; k++) if (!isfinite(s->A[k])) return rc_bail(s, RADAU_BAIL_NONFINITE);
+    for (k = 0; k < n; k++) if (!isfinite(s->qn[k])) return rc_bail(s, RADAU_BAIL_NONFINITE);
+    for (k = 0; k < 3 * n; k++) if (!isfinite(s->u[k])) return rc_bail(s, RADAU_BAIL_NONFINITE);
     memcpy(s->Ya, s->seed, (size_t) (3 * n) * sizeof(double));
     e = assemble(s, 0);
     if (e) return rc_bail(s, e);
     for (it = 0; it < s->maxiter; it++) {
         double scale = 0.0, ynorm = 0.0;
         double *Yp = s->Ya + a * 3 * n, *Yn;
-        if (a + 1 >= s->maxa) return rc_bail(s, 6);
+        if (a + 1 >= s->maxa) return rc_bail(s, RADAU_BAIL_ASSEMBLIES);
         Yn = Yp + 3 * n;
         /* np.linalg.solve(Jbig, -R), then sum|R| (the undamped Newton reads
            it for its overflow alone: a bound, numpy's pairwise sum not
            mirrored) */
         for (k = 0; k < M; k++) {
-            if (!(fabs(s->R[k]) < 0x1p1000)) return rc_bail(s, 4);
+            if (!(fabs(s->R[k]) < 0x1p1000)) return rc_bail(s, RADAU_BAIL_RBOUND);
             s->b[k] = -s->R[k];
         }
-        for (k = 0; k < M * M; k++) if (!isfinite(s->Jf[k])) return rc_bail(s, 4);
+        for (k = 0; k < M * M; k++) if (!isfinite(s->Jf[k])) return rc_bail(s, RADAU_BAIL_RBOUND);
         ((dgesv64_t) s->dgesv)(&M64, &one64, s->Jf, &M64, s->ipiv, s->b, &M64, &info64);
         /* (numpy's solve clears what LAPACK raised; an info is its LinAlgError) */
         feclearexcept(FE_ALL_EXCEPT);
-        if (info64 != 0) return rc_bail(s, 5);
-        for (k = 0; k < M; k++) if (!isfinite(s->b[k])) return rc_bail(s, 9);
+        if (info64 != 0) return rc_bail(s, RADAU_BAIL_DGESV);
+        for (k = 0; k < M; k++) if (!isfinite(s->b[k])) return rc_bail(s, RADAU_BAIL_STEP);
         for (i = 0; i < 3; i++) {
             const double *yp = Yp + i * n, *d = s->b + i * m;
             double *yn = Yn + i * n, mx = 0.0;
             for (k = 0; k < r; k++) yn[k] = yp[k] + d[k];
             yn[r] = yp[r] + 0.0;
             for (k = r + 1; k < n; k++) yn[k] = yp[k] + d[k - 1];
-            if (fetestexcept(RC_FLAGS)) return rc_bail(s, 3);
+            if (fetestexcept(RC_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
             if (walk) {
                 e = walk(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK, yn, yp, 0, s->wn);
-                if (e < s->wn) return rc_bail(s, 8);
+                if (e < s->wn) return rc_bail(s, RADAU_BAIL_WALKSTOP);
                 feclearexcept(FE_ALL_EXCEPT);
             }
             for (k = 0; k < n; k++) s->stp[k] = yn[k] - yp[k];
-            if (fetestexcept(RC_FLAGS)) return rc_bail(s, 3);
+            if (fetestexcept(RC_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
             for (k = 0; k < n; k++) {
                 double v;
                 if (k == r) continue;
                 v = fabs(s->stp[k]);
-                if (!isfinite(v)) return rc_bail(s, 9);
+                if (!isfinite(v)) return rc_bail(s, RADAU_BAIL_STEP);
                 if (v > mx) mx = v;
             }
             if (mx > scale) scale = mx;
@@ -147,13 +147,13 @@ long hdl_fn(radau_t *s)
         feclearexcept(FE_ALL_EXCEPT);
         s->tolv[0] = s->reltol * ynorm;
         s->tolv[1] = s->tolv[0] + s->abstol;
-        if (fetestexcept(RC_FLAGS)) return rc_bail(s, 3);
+        if (fetestexcept(RC_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
         s->iters = it + 1;
         if (scale <= s->tolv[1]) {
             s->assemblies = a + 1;
-            s->status = 1;
-            return 1;
+            s->status = RADAU_CONVERGED;
+            return RADAU_CONVERGED;
         }
     }
-    return rc_bail(s, 11);
+    return rc_bail(s, RADAU_BAIL_MAXITER);
 }

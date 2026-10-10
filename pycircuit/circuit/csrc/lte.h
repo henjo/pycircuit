@@ -12,3 +12,20 @@ typedef struct {
     long status;
 } lte_t;
 long hdl_fn(lte_t *s);
+
+/* hdl_fn's result, left in `status` too (`_tran_lte_c.BAIL` names the
+   bails from these): */
+enum lte_status {
+    LTE_DONE = 1,
+    LTE_BAIL_NONFINITE = 2,      /* an input not finite */
+    LTE_BAIL_FLAGS = 3,          /* a floating-point flag numpy would raise on */
+    LTE_BAIL_DGESV = 4,          /* the divided difference's solve: singular */
+    LTE_BAIL_LTE = 5,            /* the estimate not finite */
+    LTE_BAIL_TOLERANCE = 6       /* a tolerance not positive and finite */
+};
+/* `relref`, the reference the tolerance scales (Transient's `relref`) */
+enum lte_relref {
+    LTE_RELREF_POINTLOCAL = 0,   /* this point's own |x| */
+    LTE_RELREF_ALLLOCAL = 1,     /* each unknown's running maximum */
+    LTE_RELREF_SIGGLOBAL = 2     /* each unit group's running maximum (any other) */
+};

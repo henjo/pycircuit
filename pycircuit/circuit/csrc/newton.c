@@ -17,7 +17,7 @@ long hdl_fn(newton_t *s)
     int m32 = (int) m, one32 = 1, info32 = 0;
     char trans = 'N';
     s->iters = 0;
-    s->status = 0;
+    s->status = NEWTON_RUNNING;
     s->last_eval = -1;
     s->hit = 0;
     /* the seed, reduced (remove_row_col), and _C_lookup's equality test of
@@ -31,7 +31,7 @@ long hdl_fn(newton_t *s)
         if (eq) for (i = r; i < m; i++) if (!(s->cx[i + 1] == s->x[i])) { eq = 0; break; }
         if (eq) { s->Cin0 = s->cC; s->hit = 1; }
     }
-    s->first_bits = s->Cin0 ? 5 : 7;
+    s->first_bits = s->Cin0 ? (PCX_PASS_G | PCX_PASS_I) : PCX_WANT_ALL;
     for (it = 0; it < s->maxiter; it++) {
         const double *Cin;
         long bits;
@@ -43,12 +43,12 @@ long hdl_fn(newton_t *s)
         for (i = 0; i < r; i++) s->xf[i] = s->x[i];
         s->xf[r] = 0.0;
         for (i = r; i < m; i++) s->xf[i + 1] = s->x[i];
-        for (i = 0; i < n; i++) if (!isfinite(s->xf[i])) { s->status = 2; return 2; }
+        for (i = 0; i < n; i++) if (!isfinite(s->xf[i])) { s->status = NEWTON_BAIL_X; return NEWTON_BAIL_X; }
         if (full) {
-            bits = (it == 0) ? s->first_bits : 7;
+            bits = (it == 0) ? s->first_bits : PCX_WANT_ALL;
             Cin = (it == 0 && s->Cin0) ? s->Cin0 : C;
         } else {
-            bits = 4;
+            bits = PCX_PASS_I;
             Cin = s->Cin0 ? s->Cin0 : s->C0;
         }
         core(s->core, s->xf, s->T, bits, s->formula, s->a0, s->a1, s->a2, s->h, s->theta,
@@ -77,17 +77,17 @@ long hdl_fn(newton_t *s)
         }
         if (s->chord) {
             if (it == 0) {
-                for (i = 0; i < m * m; i++) if (!isfinite(s->A[i])) { s->status = 3; return 3; }
+                for (i = 0; i < m * m; i++) if (!isfinite(s->A[i])) { s->status = NEWTON_BAIL_JNONFINITE; return NEWTON_BAIL_JNONFINITE; }
                 ((dgetrf32_t) s->dgetrf)(&m32, &m32, s->A, &m32, s->ipiv32, &info32);
-                if (info32 != 0) { s->status = 4; return 4; }
+                if (info32 != 0) { s->status = NEWTON_BAIL_GETRF; return NEWTON_BAIL_GETRF; }
             }
-            for (i = 0; i < m; i++) if (!isfinite(s->b[i])) { s->status = 5; return 5; }
+            for (i = 0; i < m; i++) if (!isfinite(s->b[i])) { s->status = NEWTON_BAIL_BNONFINITE; return NEWTON_BAIL_BNONFINITE; }
             ((dgetrs32_t) s->dgetrs)(&trans, &m32, &one32, s->A, &m32, s->ipiv32, s->b, &m32,
                                    &info32, 1);
-            if (info32 != 0) { s->status = 6; return 6; }
+            if (info32 != 0) { s->status = NEWTON_BAIL_GETRS; return NEWTON_BAIL_GETRS; }
         } else {
             ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv64, s->b, &m64, &info64);
-            if (info64 != 0) { s->status = 7; return 7; }
+            if (info64 != 0) { s->status = NEWTON_BAIL_DGESV; return NEWTON_BAIL_DGESV; }
         }
         for (i = 0; i < m; i++) s->xn[i] = s->x[i] + s->b[i];
         if (walk) {
@@ -97,15 +97,15 @@ long hdl_fn(newton_t *s)
             s->x0f[r] = 0.0;
             for (i = r; i < m; i++) { s->xnf[i + 1] = s->xn[i]; s->x0f[i + 1] = s->x[i]; }
             e = walk(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK, s->xnf, s->x0f, 0, s->wn);
-            if (e < s->wn) { s->status = 8; return 8; }
+            if (e < s->wn) { s->status = NEWTON_BAIL_WALKSTOP; return NEWTON_BAIL_WALKSTOP; }
             for (i = 0, j = 0; i < n; i++) { if (i == r) continue; s->xn[j++] = s->xnf[i]; }
             for (i = 0; i < m; i++) s->xd[i] = s->xn[i] - s->x[i];
         } else {
             for (i = 0; i < m; i++) s->xd[i] = s->b[i];
         }
-        for (i = 0; i < m; i++) if (!isfinite(s->xn[i])) { s->status = 9; return 9; }
+        for (i = 0; i < m; i++) if (!isfinite(s->xn[i])) { s->status = NEWTON_BAIL_XNEXT; return NEWTON_BAIL_XNEXT; }
         for (i = 0; i < m; i++) s->ax[i] = fabs(s->xn[i]);
-        gemv(101, 111, m, m, 1.0, s->absJ, m, s->ax, 1, 0.0, s->Is, 1);
+        gemv(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->absJ, m, s->ax, 1, 0.0, s->Is, 1);
         {
             int conv_x = 1, conv_f = 1;
             for (i = 0; i < m; i++) {
@@ -129,8 +129,8 @@ long hdl_fn(newton_t *s)
                          s->theta, s->q1, s->q2, s->iq1, s->u, s->Cj, s->Cj, s->qj, s->iqj,
                          s->Geqj, s->F, s->Jj);
                 }
-                s->status = 1;
-                return 1;
+                s->status = NEWTON_CONVERGED;
+                return NEWTON_CONVERGED;
             }
         }
         if (s->chord) {
@@ -140,12 +140,12 @@ long hdl_fn(newton_t *s)
                 if (isnan(v)) { size = v; break; }
                 if (v > size) size = v;
             }
-            if (!isfinite(size) || (have_prev && !(size < prev))) { s->status = 10; return 10; }
+            if (!isfinite(size) || (have_prev && !(size < prev))) { s->status = NEWTON_BAIL_CHORDBREAK; return NEWTON_BAIL_CHORDBREAK; }
             prev = size;
             have_prev = 1;
         }
         for (i = 0; i < m; i++) s->x[i] = s->xn[i];
     }
-    s->status = 11;
-    return 11;
+    s->status = NEWTON_BAIL_MAXITER;
+    return NEWTON_BAIL_MAXITER;
 }

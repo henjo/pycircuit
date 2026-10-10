@@ -64,8 +64,9 @@ RADAU_C = _cbuild.csrc('radau.c')
 RADAU_CDEF = _cbuild.csrc('radau.h')
 
 #: the C's status codes past 1 (converged): why it handed the solve back
-BAIL = {2: 'nonfinite', 3: 'flags', 4: 'rbound', 5: 'dgesv', 6: 'assemblies', 8: 'walkstop',
-        9: 'step', 11: 'maxiter'}
+#: the C's results, named in radau.h: {code: why} of its bails
+_CODES = _cbuild.constants(RADAU_CDEF)
+BAIL = _cbuild.bails(_CODES, 'RADAU_BAIL_')
 
 _driver = None
 _MOD = {}
@@ -331,9 +332,9 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     s.T = Tc
     s.h, s.reltol, s.abstol, s.maxiter = float(h), float(reltol), float(abstol), int(maxit)
     status = cfn(s)
-    if status != 1:
+    if status != _CODES['RADAU_CONVERGED']:
         _undo_source(memo, keys, had, counts)
-        if status == 8:
+        if status == _CODES['RADAU_BAIL_WALKSTOP']:
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None
         return _no('radau_c:bail:' + BAIL.get(status, str(status)))

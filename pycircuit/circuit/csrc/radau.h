@@ -16,3 +16,18 @@ typedef struct {
     long assemblies, iters, status;
 } radau_t;
 long hdl_fn(radau_t *s);
+
+/* hdl_fn's result, left in `status` too (`_tran_radau_c.BAIL` names the
+   bails from these; 7 and 10 unused): */
+enum radau_status {
+    RADAU_RUNNING = 0,
+    RADAU_CONVERGED = 1,
+    RADAU_BAIL_NONFINITE = 2,    /* an input or a stage not finite */
+    RADAU_BAIL_FLAGS = 3,        /* a floating-point flag numpy would raise on */
+    RADAU_BAIL_RBOUND = 4,       /* the residual or the Jacobian out of bounds */
+    RADAU_BAIL_DGESV = 5,        /* the stage system's solve: singular */
+    RADAU_BAIL_ASSEMBLIES = 6,   /* more assemblies than the buffers hold */
+    RADAU_BAIL_WALKSTOP = 8,     /* a limiter declined: the walk stopped */
+    RADAU_BAIL_STEP = 9,         /* a step not finite */
+    RADAU_BAIL_MAXITER = 11      /* no convergence in maxiter */
+};
