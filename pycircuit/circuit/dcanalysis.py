@@ -460,7 +460,9 @@ class DC(Analysis):
             x_res, _ = solver.solve_system(
                 red.reduce(x0), held_func, self.toolkit, self.par.reltol, abstol, xtol,
                 self.par.maxiter, limiter=limiter_func, scaler=self._get_scaler(),
-                row_names=None if names is None else [names[i] for i in red.keep])
+                row_names=None if names is None else [names[i] for i in red.keep],
+                ## (the analysis's linear solver, as `_newton`'s)
+                linsolver=self._get_linearsolver())
         except SingularMatrix:
             raise
         except NoConvergenceError as e:
@@ -505,6 +507,14 @@ class DC(Analysis):
                 scaler=scaler,
                 ## Stage 6: lets the solver name a node instead of a row index.
                 row_names=reduced_row_names(self.cir, self.irefnode),
+                ## THE ANALYSIS'S LINEAR SOLVER (Andreas, 2026-10-10): until
+                ## then the operating point solved dense at any size -- no
+                ## `linsolver` reached the chain, every gmin / gshunt rung took
+                ## `toolkit.linearsolver` -- while the transient after it ran
+                ## sparse.  Below 250 unknowns the AutoSolver's choice IS that
+                ## call; above it the circuit's structural KLU (gm19's
+                ## operating point 17.8 -> 6.9 s; its answers' last bits move)
+                linsolver=self._get_linearsolver(),
             )
         ## NARROW, deliberately -- see the matching note in `transient.py:_newton`.
         ## `except Exception` here reported every device-model bug as a convergence

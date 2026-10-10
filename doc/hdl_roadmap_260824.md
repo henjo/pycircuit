@@ -8037,3 +8037,22 @@ solves at a tenth of the run.  Routing it to the analysis's AutoSolver would mov
 circuits' operating points in their last bits: a decision, put to Andreas.
 
 Full suite 5102 passed; the sanitizer's fast tier clean (4734 passed).
+
+## 2026-10-10 — 110. The operating point solves on the analysis's linear solver (Andreas's decision) -- gm19's DC op on structural KLU
+
+Found sizing step d (109): `DC`'s two `solve_system` calls passed no `linsolver`, so the operating
+point solved dense at any size -- every rung of the gmin / gshunt / source-stepping chain took
+`toolkit.linearsolver` (numpy's dgesv) -- while the transient after it ran on the circuit's
+structural KLU; a user's `linearsolver` never reached a DC either.  Now both calls pass
+`self._get_linearsolver()`: below 250 unknowns the AutoSolver's choice is `DenseSolver`, whose
+`solve` IS `toolkit.linearsolver` -- byte for byte the call before (the default `StandardNewton`
+and the continuation wrappers solve through `linsolver.solve`); from 250 the circuit's
+`StructuralKLU` (or today's value-patterned sparse choice where the DC's system is reduced
+further: rich3 and arom hold nodes -- SuperLU, their DC 0.02 s either way).
+
+Measured (a scratch wrapper on `DC._chain` first, then the change): gm19 (429 unknowns) DC op
+17.8 -> 6.9 s on a loaded box (3227 dense solves at a tenth of the run were the DC's); its
+transient answer moves by at most 1.3e-23 absolute (max |x| 10.2); rich3 and arom identical.
+Tests (`test_structural_klu.py`): a 30-section diode ladder's operating point is byte for byte
+the call with no solver; a 300-section one factors on the structure (nothing foreign) and agrees
+with the dense solve to 1e-12.  Full suite 5104 passed, nothing else moved.

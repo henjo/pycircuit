@@ -171,3 +171,46 @@ def test_a_sparse_run_s_error_test_solves_on_its_factorisation():
     got = _paths.since(before)
     assert small._sparse_linsolver() is None
     assert got.get('lte_c:sparse', 0) == 0
+
+
+## -- the operating point on the analysis's solver (Andreas, 2026-10-10) ----
+
+def _dc_ladder(sections):
+    """A resistive ladder driven at DC with a diode every tenth node:
+    current flows, the junctions are on."""
+    c = SubCircuit()
+    c['vs'] = E.VS('n0', gnd, v=2.0)
+    for k in range(sections):
+        a, b = f'n{k}', f'n{k + 1}'
+        c[f'R{k}'] = E.R(a, b, r=50.0)
+        c[f'G{k}'] = E.R(b, gnd, r=5e3)
+        if k % 10 == 5:
+            c[f'D{k}'] = E.Diode(b, gnd)
+    return c
+
+
+def _op(c, dense, monkeypatch):
+    from pycircuit.circuit import numeric
+    from pycircuit.circuit.dcanalysis import DC
+    dc = DC(c, toolkit=numeric)
+    if dense:
+        ## (the call before: no solver reaches the chain)
+        monkeypatch.setattr(dc, '_get_linearsolver', lambda: None)
+    x = np.asarray(dc.solve().x, dtype=float)
+    monkeypatch.undo()
+    return x, dc.__dict__.get('_default_linearsolver')
+
+
+def test_a_small_operating_point_is_the_dense_call_byte_for_byte(monkeypatch):
+    c = _dc_ladder(30)
+    got, ls = _op(c, False, monkeypatch)
+    ref, _ = _op(_dc_ladder(30), True, monkeypatch)
+    assert got.tobytes() == ref.tobytes()
+    assert ls._choice is ls._dense
+
+
+def test_a_sparse_operating_point_factors_on_the_structure(monkeypatch):
+    got, ls = _op(_dc_ladder(300), False, monkeypatch)
+    ref, _ = _op(_dc_ladder(300), True, monkeypatch)
+    assert type(ls._choice) is linearsolver.StructuralKLU and ls._choice.foreign == 0
+    np.testing.assert_allclose(got, ref, rtol=1e-12, atol=1e-15)
