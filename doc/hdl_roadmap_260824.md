@@ -7497,3 +7497,44 @@ stateful limiters (Diode) 125, `accept_step` 59, the coupled family 52,
 `provided_function` 41, tests' own controllers 26, PI 9, state events 7, the
 band 2, a source 1, the toolkit 1.  Tests: 255 with every loop in scope, 26 with
 some, 263 with none.
+
+## 2026-10-10 — 91. The C loop plan amended after a measurement and four reviews; stage R1a, the C-against-C guard test (Andreas: "measure and deep review first and amend the plan ... not just speed ... also to make the code understandable")
+
+**Measured** (`insitu.py lines`, instructions per call of `_tran_newton_c.solve`): on
+spice_4049 (n 15, fixed step) 407 k a call -- the C call 114 k (28 %), the branch check's
+screen after it 87 k (21 %), the source pass with a 21-key counter snapshot for rollback 65 k
+(16 %), eligibility / type checks, the temperature probe, the bypass and limiter decisions ~75 k
+(18 %), marshalling (history rows, 5-7 copies in, 6 out of which 3 n x n, `insert_row`) ~55 k
+(13 %).  On spice_ring (n 88, adaptive): 3761 k, the C 3335 k (89 %).  The error test's wrapper:
+735 k on the ring, 658 k in C.
+
+**Reviewed** (read-only, four areas): eligibility re-decided every call (28 decline points in
+the C Newton's wrapper, 23 in the error test's, each rebuilding a tuple of the method chain to
+compare); the loop's state on ~45 fields; the companion setup and its 8-attribute write-back
+three times; couplings a C twin must copy (the retry's "same point" by object identity, the
+excursion veto after a recorded accept, the order-drop signal's four hops); two SCOPE GAPS in the
+first plan (the branch check screens after every served Newton; the C error test declines every
+Euler step, i.e. after every breakpoint); a WRONG FACT in it (n 250..999 uses SuperLU, not KLU --
+checked: rich3, arom, gm19 `solver.auto:SuperLUSolver`; and today's KLU pattern is
+value-derived); the C side: 14 units in Python strings, 7 structs written twice with nothing
+comparing them, the core's 21-argument signature re-typed in 5 places, `dgetrs_t` LP64 in two
+units and ILP64 in a third, magic status / pass / formula codes, the HDL prelude compiled into
+every runtime object, the `.c` deleted after the build, an 11 GB object store never pruned; and
+the gate counts fast paths, which a C loop moves.
+
+**The plan amended** (`~/.claude/plans/c-stepping-loop.md`): two clean-up stages before the
+sources -- R1, the C side (one home, real files, one header declaring every interface once; no
+answer moves) and R2, the Python side (one run context checked once per run, one declared list
+of the loop's state, one companion setup, the couplings explicit; line: the per-call Python
+around the C Newton -35 %) -- then sources, the linear system on a structural pattern, the error
+test's Euler formula and the branch proxy in C, the fixed-step loop, the adaptive loop.  Code
+clarity is an acceptance criterion of every stage.  OPEN for Andreas before stage 2: the n >= 250
+runs decline the C loop, or every sparse run moves to KLU on the structural pattern (one
+deliberate re-baseline).
+
+**R1a** (`tests/test_c_abi.py`): each of the 7 structs parsed by cffi's own parser twice -- from
+its cdef and from the typedef in its C text -- and compared field by field (name, offset, size,
+kind; 301 fields, every size equal); each caller's copy of the core's (21 arguments) and the
+limiter walk's (11) signature compared with the callee's own definition and declaration by ABI.
+All agree today; alive on a planted missing field, an extra field, a narrowed argument and two
+swapped arguments.
