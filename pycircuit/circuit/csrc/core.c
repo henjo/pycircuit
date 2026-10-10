@@ -12,6 +12,12 @@
    (-1: none) and its offset in fidxall (each element's place in it; -1:
    the group's own order, the usual case) */
 #define ZW 14
+/* `body` for each matrix entry the call writes (`patt`: the pattern's; else
+   all n x n), `s` the entry */
+#define EACH_ENTRY(body) do { \
+        if (patt) { for (pk = 0; pk < c->npat; pk++) { s = c->pat[pk]; body; } } \
+        else { for (s = 0; s < n * n; s++) { body; } } \
+    } while (0)
 long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long formula,
             double a0, double a1, double a2, double h, double theta,
             const double *q1, const double *q2, const double *iq1, const double *u,
@@ -22,7 +28,11 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
     double *bins[4] = {c->binG, C, c->bini, q};
     const long bits[4] = {PCX_PASS_G, PCX_PASS_C, PCX_PASS_I, 0};
     dgemv64_t gemv = (dgemv64_t) c->dgemv;
-    long n = c->n, m, b, g, e, j, s, z;
+    long n = c->n, m, b, g, e, j, s, z, pk;
+    /* the matrices' entries this call writes: the pattern's where the caller
+       asks (its matrices zero off the pattern, which no stamp reaches), or
+       every one */
+    const int patt = (want & PCX_WANT_PATTERN) && c->npat;
     const double *Cs;
     for (z = 0; z < c->nz; z++) {
         const int64_t *zt = c->ztab + ZW * z;
@@ -91,7 +101,10 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             const int64_t *flat = c->flatall + c->p_toff[m];
             double *bin = bins[m];
             long nbins = c->p_nbins[m];
-            memset(bin, 0, (size_t) nbins * sizeof(double));
+            if (patt && nbins == n * n)
+                for (pk = 0; pk < c->npat; pk++) bin[c->pat[pk]] = 0.0;
+            else
+                memset(bin, 0, (size_t) nbins * sizeof(double));
             for (s = 0; s < L; s++) bin[flat[s]] += buf[s];
         }
     }
@@ -101,19 +114,19 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
     Cs = (want & PCX_PASS_C) ? C : Cin;
     if (formula == PCX_FORMULA_GEAR2) {
         for (j = 0; j < n; j++) iq[j] = (a0 * q[j] + a1 * q1[j]) + a2 * q2[j];
-        for (s = 0; s < n * n; s++) Geq[s] = a0 * Cs[s];
+        EACH_ENTRY(Geq[s] = a0 * Cs[s]);
     } else if (formula == PCX_FORMULA_EULER) {
         for (j = 0; j < n; j++) iq[j] = (q[j] - q1[j]) / h;
-        for (s = 0; s < n * n; s++) Geq[s] = Cs[s] / h;
+        EACH_ENTRY(Geq[s] = Cs[s] / h);
     } else if (formula == PCX_FORMULA_TRAPEZOIDAL) {
         for (j = 0; j < n; j++) iq[j] = (2.0 * (q[j] - q1[j])) / h - iq1[j];
-        for (s = 0; s < n * n; s++) Geq[s] = (2.0 * Cs[s]) / h;
+        EACH_ENTRY(Geq[s] = (2.0 * Cs[s]) / h);
     } else {  /* PCX_FORMULA_THETA */
         double th = theta * h, w = (1.0 - theta) / theta;
         for (j = 0; j < n; j++) iq[j] = (q[j] - q1[j]) / th - w * iq1[j];
-        for (s = 0; s < n * n; s++) Geq[s] = Cs[s] / th;
+        EACH_ENTRY(Geq[s] = Cs[s] / th);
     }
     if (want & PCX_PASS_I) for (j = 0; j < n; j++) F[j] = (c->bini[j] + iq[j]) + u[j];
-    if (want & PCX_PASS_G) for (s = 0; s < n * n; s++) J[s] = c->binG[s] + Geq[s];
+    if (want & PCX_PASS_G) EACH_ENTRY(J[s] = c->binG[s] + Geq[s]);
     return 0;
 }

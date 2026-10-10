@@ -7969,3 +7969,33 @@ error's level as in step a (on the old grid max |new - old| 3.4e-2 / 2.5e-2 / 4.
 list grew by `linsolver` (its contract test's input set with it).  The pinned pair "the error
 test and its C" moved on both sides -- the reference's sparse branch and the twin's decline for
 exactly it -- checked, re-recorded.  Full suite 5090 passed.
+
+## 2026-10-10 — 108. Stage 2, step c: the evaluation core writes only the circuit's pattern (byte for byte the same)
+
+After steps a and b, the core's `evaluate` was the largest piece of a sparse deck's step (rich3:
+0.66 s of 2.37 s profiled, ~0.2 ms a call): each call zeroed and filled dense n x n buffers -- the
+G and C bins, the companion `Geq`, the Jacobian `J` -- about 2 MB of memory traffic at n = 269,
+where the circuit's pattern holds 1816 entries.  Now a caller whose matrices are zero off the
+pattern asks the core to write only the pattern's entries (`PCX_WANT_PATTERN` in pcx_abi.h; the
+core's `npat` / `pat`: every entry a matrix pass can write, and the diagonal): the bins zeroed
+there, `Geq` and `J` formed there.  The same arithmetic on every entry written; the entries left
+are the +0.0 the full loops write there (`a0 * 0.0`, `0.0 / h`, `0.0 + 0.0`: every formula's
+coefficient is positive).  Opt-in per call: `evaluate` and `passes` (their fresh matrices
+`np.zeros` where the core has a pattern) and the C Newton (its buffers zeroed once, `s.pattern`);
+the Radau units keep every entry.  Used where the pattern is at most a quarter of n x n
+(`PATTERN_MAX_FILL`; env `PYCIRCUIT_CORE_PATTERN=0` turns it off): mos1 (24.8 %), gp, psp and the
+sparse decks; not the 7-unknown stage.
+
+Proved: `test_core_pattern.py` -- a 30-stage chain, fixed gear (the C Newton) and adaptive
+trapezoid, and a 250-stage chain (a sparse run: `evaluate` and KLU), each the same bytes and
+statistics with the pattern on and off; a pattern missing the first drain's diagonal entry makes
+another run (a singular J).  The sparse decks full length, on and off: byte for byte the same,
+rich3 9.71 -> 9.39 s, arom 9.16 -> 8.86 s, gm19 28.95 -> 27.99 s (-3.3 % each; the fresh zeroed
+matrices a call keeps give back part of the saving).  Counted against HEAD with an A/A beside
+it: gp -2.9 % a step; mos1, psp, mos1_adaptive -0.2 .. -0.6 %; stage and spice_4049 (no pattern)
++0.3 / +0.5 % first, then recounted twice: +0.01 .. +0.26 % against an A/A of +0.25 .. +0.51 % --
+noise, not a cost.  Ten pinned pairs moved, nine on the twin (the core's and the Newton's C, and
+every unit including pcx_abi.h, whose enum gained the bit); "the step's end passes and the C's"
+also on its reference (`passes`' zeroed C and the bit) -- its twin (radau_tc's end passes)
+takes the dense route to the same bytes -- checked, re-recorded.  Full suite 5095 passed; the sanitizer's fast
+tier clean (4824 passed).

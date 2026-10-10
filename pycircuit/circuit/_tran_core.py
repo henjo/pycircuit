@@ -109,6 +109,14 @@ PASSES = ('G', 'C', 'i', 'q')
 #: the integrators the core's companion enum covers, by class name
 #: the core's call codes, named in pcx_abi.h
 _ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
+#: THE CIRCUIT'S PATTERN (the C stepping loop plan's stage 2): a caller whose
+#: matrices are zero off it asks the core to write only the pattern's
+#: entries (`PCX_WANT_PATTERN`) -- for a core whose pattern is at most this
+#: share of n x n (else every entry, as before); env `PYCIRCUIT_CORE_PATTERN=0`
+#: turns it off
+PATTERN = os.environ.get('PYCIRCUIT_CORE_PATTERN', '1') != '0'
+PATTERN_MAX_FILL = 0.25
+_WANT_PATTERN = _ABI['PCX_WANT_PATTERN']
 FORMULA = {'Gear2Integrator': _ABI['PCX_FORMULA_GEAR2'],
            'EulerIntegrator': _ABI['PCX_FORMULA_EULER'],
            'TrapezoidalIntegrator': _ABI['PCX_FORMULA_TRAPEZOIDAL'],
@@ -381,8 +389,15 @@ class _Core:
             'g_nsel': i64([sz for _o, sz in g_seloff]), 'selall': cat64(sel), 'gdstall': cat64(gdst),
             'g_seloff': i64([o for o, _sz in g_seloff]),
             'work': np.empty(max(int(max(p_L)), 1)), 'ywork': np.empty(maxy),
-            'binG': np.empty(n * n), 'bini': np.empty(n),
+            'binG': np.zeros(n * n), 'bini': np.empty(n),
         }
+        ## THE PATTERN: every entry a matrix pass can write (G's and C's
+        ## slots) and the diagonal -- `binG` above starts at zero, and a
+        ## caller's matrices are zero off it where it asks for it
+        mats = [f for f, nb in zip(flat, p_nbins) if nb == n * n]
+        pat = np.unique(np.concatenate(mats + [np.arange(n, dtype=np.int64) * (n + 1)]))
+        self.npat = len(pat) if PATTERN and len(pat) <= PATTERN_MAX_FILL * n * n else 0
+        arrays['pat'] = np.ascontiguousarray(pat, dtype=np.int64)
         if zgroups:
             ## (the fused groups' tables: none at all where nothing fuses)
             arrays.update(ztab=np.array(ztab, dtype=np.int64), zst=np.empty(max(st_len, 1)),
@@ -393,6 +408,7 @@ class _Core:
         cs = ffi.new('hdl_core_t *')
         cs.n = n
         cs.nb, cs.ng = self.nb, self.ng
+        cs.npat = self.npat
         self.handles = []
         for name, arr in arrays.items():
             h = ffi.from_buffer('double *' if arr.dtype == np.float64 else 'int64_t *', arr)
@@ -670,10 +686,11 @@ def passes(tr, x, which):
         dummy = core._pass_dummy = (np.zeros(max(n * n, 1)), )
         dummy = core._pass_dummy = (dummy[0], fb(dptr, dummy[0]))
     q = np.empty(n)
-    C = np.empty((n, n)) if bits & 2 else None
+    C = ((np.zeros if core.npat else np.empty)((n, n))) if bits & 2 else None
     dC = fb(dptr, C) if C is not None else dummy[1]
     _PC[K['served']] += 1
-    cfn(core.cs, fb(dptr, x), T, bits, 4, 0.0, 0.0, 0.0, 1.0, 0.0,
+    cfn(core.cs, fb(dptr, x), T, bits | (_WANT_PATTERN if core.npat else 0), 4,
+        0.0, 0.0, 0.0, 1.0, 0.0,
         dummy[1], dummy[1], dummy[1], dummy[1], dC, dC, fb(dptr, q),
         dummy[1], dummy[1], dummy[1], dummy[1])
     out = {}
@@ -792,7 +809,7 @@ def evaluate(tr, x, t, provided_function, want):
             bits &= ~2
             C = Cin
         else:
-            C = np.empty((n, n))
+            C = (np.zeros if core.npat else np.empty)((n, n))
             Cin = C
     T = core.ready(tr.epar)
     if T is None:
@@ -806,10 +823,13 @@ def evaluate(tr, x, t, provided_function, want):
     _PC[K['served']] += 1
     ffi, cfn, _dgemv = driver()
     fb, dptr = ffi.from_buffer, core.dptr
-    q, iq, Geq = np.empty(n), np.empty(n), np.empty((n, n))
+    ## (the matrices zero off the pattern where the core writes only that)
+    mat = np.zeros if core.npat else np.empty
+    q, iq, Geq = np.empty(n), np.empty(n), mat((n, n))
     F = np.empty(n) if bits & 4 else q
-    J = np.empty((n, n)) if bits & 1 else Geq
-    cfn(core.cs, fb(dptr, x), T, bits, formula, a0, a1, a2, float(h), theta,
+    J = mat((n, n)) if bits & 1 else Geq
+    cfn(core.cs, fb(dptr, x), T, bits | (_WANT_PATTERN if core.npat else 0), formula, a0, a1, a2,
+        float(h), theta,
         fb(dptr, q1), fb(dptr, q2), fb(dptr, iq1), fb(dptr, u if u is not None else q1),
         fb(dptr, Cin), fb(dptr, C), fb(dptr, q), fb(dptr, iq), fb(dptr, Geq),
         fb(dptr, F), fb(dptr, J))

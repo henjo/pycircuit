@@ -88,6 +88,8 @@ _ABSENT = object()
 _GETDICT = operator.attrgetter('__dict__')
 #: float64 (an exact array's dtype is this object: `is`, then `==`)
 _F64 = np.dtype(np.float64)
+#: the core's want bit for "these matrices are zero off the pattern" (pcx_abi.h)
+_WANT_PATTERN = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))['PCX_WANT_PATTERN']
 _GETPACK = operator.methodcaller('get', '_hdl_cp')
 #: the declines that are a property of the circuit: kept with its stamp
 #: plan, so the next step declines at its first check
@@ -232,19 +234,22 @@ class _Ctx:
         nn = (n, n)
         self.core, self.n, self.iref, self.ffi = core, n, iref, ffi
         self.s = s = ffi.new('newton_t *')
+        ## (the n x n buffers start at zero: where the core writes only the
+        ## circuit's pattern -- `s.pattern` -- the entries off it stay so)
+        Z = np.zeros
         self.buf = buf = {
             'xf': np.empty(n), 'xnf': np.empty(n), 'x0f': np.empty(n),
             'A': np.empty(m * m), 'absJ': np.empty(m * m),
             'b': np.empty(m), 'Fr': np.empty(m), 'x': np.empty(m), 'xn': np.empty(m),
             'xd': np.empty(m), 'ax': np.empty(m), 'Is': np.empty(m),
-            'F0': np.empty(n), 'F': np.empty(n), 'J0': np.empty(nn), 'J': np.empty(nn),
-            'C0': np.empty(nn), 'q0': np.empty(n), 'iq0': np.empty(n), 'Geq0': np.empty(nn),
-            'C': np.empty(nn), 'q': np.empty(n), 'iq': np.empty(n), 'Geq': np.empty(nn),
+            'F0': np.empty(n), 'F': np.empty(n), 'J0': Z(nn), 'J': Z(nn),
+            'C0': Z(nn), 'q0': np.empty(n), 'iq0': np.empty(n), 'Geq0': Z(nn),
+            'C': Z(nn), 'q': np.empty(n), 'iq': np.empty(n), 'Geq': Z(nn),
             'q1': np.empty(n), 'q2': np.empty(n), 'iq1': np.empty(n), 'u': np.empty(n),
             'abstol': np.empty(m), 'xtol': np.empty(m), 'xseed': np.empty(n),
-            'cx': np.empty(n), 'cC': np.empty(nn),
-            'xc': np.empty(n), 'Cj': np.empty(nn), 'qj': np.empty(n), 'iqj': np.empty(n),
-            'Geqj': np.empty(nn), 'Jj': np.empty(nn),
+            'cx': np.empty(n), 'cC': Z(nn),
+            'xc': np.empty(n), 'Cj': Z(nn), 'qj': np.empty(n), 'iqj': np.empty(n),
+            'Geqj': Z(nn), 'Jj': Z(nn),
         }
         self.ipiv64 = np.empty(max(m, 1), dtype=np.int64)
         self.ipiv32 = np.empty(max(m, 1), dtype=np.int32)
@@ -263,6 +268,7 @@ class _Ctx:
         s.core = ffi.cast('void *', int(cffi_core.cast('uintptr_t', core.cs)))
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
         s.n, s.iref = n, iref
+        s.pattern = _WANT_PATTERN if core.npat else 0
         s.walk_fn = ffi.NULL
         s.wn = 0
         self.tol = None

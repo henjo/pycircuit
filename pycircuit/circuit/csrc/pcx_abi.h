@@ -66,7 +66,11 @@ enum pcx_pass {
     PCX_PASS_C = 2,
     PCX_PASS_I = 4,
     PCX_PASS_Q = 8,
-    PCX_WANT_ALL = PCX_PASS_G | PCX_PASS_C | PCX_PASS_I
+    PCX_WANT_ALL = PCX_PASS_G | PCX_PASS_C | PCX_PASS_I,
+    /* (not a pass: the caller's matrices are zero off the circuit's
+       pattern, so the core writes only the pattern's entries -- the
+       core's `npat`, `pat`; the C stepping loop plan's stage 2) */
+    PCX_WANT_PATTERN = 16
 };
 /* the companion the core forms: an integrator's, or none at all (the
    passes alone: G in binG, i in bini, C and q in the caller's buffers) */

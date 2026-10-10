@@ -18,6 +18,8 @@ typedef struct {
     int64_t *ipiv64; int *ipiv32;
     long iters, last_eval, status;
     long fold_j; double *xc, *Cj, *qj, *iqj, *Geqj, *Jj;
+    long pattern;   /* PCX_WANT_PATTERN where the core writes only the
+                       pattern's entries (these buffers zero off it), else 0 */
 } newton_t;
 long hdl_fn(newton_t *s);
 

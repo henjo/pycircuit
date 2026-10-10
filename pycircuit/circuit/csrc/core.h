@@ -17,6 +17,7 @@ typedef struct {
     double *work; double *ywork; double *binG; double *bini;
     long nz; void **z_fn; const int64_t *ztab; double *zst;
     const int64_t *bftab; const int64_t *fidxall;
+    long npat; const int64_t *pat;
 } hdl_core_t;
 long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long formula,
             double a0, double a1, double a2, double h, double theta,

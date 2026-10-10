@@ -51,7 +51,8 @@ long hdl_fn(newton_t *s)
             bits = PCX_PASS_I;
             Cin = s->Cin0 ? s->Cin0 : s->C0;
         }
-        core(s->core, s->xf, s->T, bits, s->formula, s->a0, s->a1, s->a2, s->h, s->theta,
+        core(s->core, s->xf, s->T, bits | s->pattern, s->formula, s->a0, s->a1, s->a2, s->h,
+             s->theta,
              s->q1, s->q2, s->iq1, s->u, Cin, C, q, iq, Geq, F, J);
         s->last_eval = it;
         for (i = 0, j = 0; i < n; i++) {
@@ -125,7 +126,8 @@ long hdl_fn(newton_t *s)
                     for (i = 0; i < r; i++) s->xc[i] = s->x[i];
                     s->xc[r] = 0.0;
                     for (i = r; i < m; i++) s->xc[i + 1] = s->x[i];
-                    core(s->core, s->xc, s->T, s->fold_j, s->formula, s->a0, s->a1, s->a2, s->h,
+                    core(s->core, s->xc, s->T, s->fold_j | s->pattern, s->formula, s->a0, s->a1,
+                         s->a2, s->h,
                          s->theta, s->q1, s->q2, s->iq1, s->u, s->Cj, s->Cj, s->qj, s->iqj,
                          s->Geqj, s->F, s->Jj);
                 }
