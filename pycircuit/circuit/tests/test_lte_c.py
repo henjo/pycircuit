@@ -32,7 +32,8 @@ def _mos_chain(n=4, va=0.9):
 
 def _rc_pulse():
     """Two RC sections behind a pulse: rejections at the edges, the Euler
-    order drop after each breakpoint (declined: the Python chain)."""
+    order drop after each breakpoint (served: Euler's estimate in C, 2026-10-10;
+    the Python chain until then)."""
     c = SubCircuit()
     c['vs'] = VPulse('in', gnd, v1=0.0, v2=1.0, td=1e-7, tr=1e-9, tf=1e-9, pw=4e-7, per=1e-6)
     c['R'] = R('in', 'out', r=1e3)
@@ -98,9 +99,9 @@ def test_the_error_test_is_the_python_one(relref, pi, monkeypatch):
 @pytest.mark.parametrize('integ', [ig.Gear2Integrator, ig.TrapezoidalIntegrator])
 def test_rejections_and_order_drops(integ, monkeypatch):
     """A pulse: rejected attempts fold into the running reference as before,
-    and the Euler order drop after each edge takes the Python chain."""
+    and the Euler order drop after each edge is served too."""
     _, b = _same(_rc_pulse, monkeypatch, make={'integrator': integ()}, tend=2e-6, timestep=2e-8)
-    assert b[5].get('lte_c:integrator', 0) > 0
+    assert b[5].get('lte_c:euler', 0) > 0 and b[5].get('lte_c:integrator', 0) == 0
 
 
 _plain = st.one_of(st.floats(-1e3, 1e3), st.floats(-1e-12, 1e-12), st.just(0.0))
@@ -114,9 +115,9 @@ def _vec(data, n, elems=_plain):
 ## (the profile's examples: 60 in the gate, 3000 at `--hypothesis-profile deep`)
 @settings(deadline=None)
 @given(data=st.data(), n=st.integers(2, 6), pi=st.booleans(),
-       trap=st.booleans(), relref=st.sampled_from(sc.RELREF_MODES),
+       kind=st.sampled_from(['gear', 'trap', 'euler']), relref=st.sampled_from(sc.RELREF_MODES),
        h=st.floats(1e-15, 1e-3), r2=st.floats(0.01, 50.0), r3=st.floats(0.01, 50.0))
-def test_the_c_is_the_chain_bit_for_bit(data, n, pi, trap, relref, h, r2, r3):
+def test_the_c_is_the_chain_bit_for_bit(data, n, pi, kind, relref, h, r2, r3):
     """Drawn inputs -- huge and tiny charges (overflow, underflow), singular
     and ill-conditioned `J`, vector and scalar `abstol`, every unit split:
     the same `(err, p)` bits, running reference, warnings and exception, the
@@ -140,11 +141,20 @@ def test_the_c_is_the_chain_bit_for_bit(data, n, pi, trap, relref, h, r2, r3):
               else data.draw(st.floats(0.0, 1e-3)))
     run = (np.abs(_vec(data, n, st.floats(-2.0, 2.0)))
            if relref != 'pointlocal' and data.draw(st.booleans()) else None)
+    ## (Euler's: its own companion currents, and a last step that may be
+    ## missing or zero -- `scale` is then 1 -- and no second one)
+    iql = np.array([_vec(data, n, mag) for _ in range(3)]) if kind == 'euler' else ql.copy()
+    h_last, h_last2 = hs[1], hs[2]
+    if kind == 'euler':
+        h_last = data.draw(st.sampled_from([h_last, h_last, None, 0.0]))
+        h_last2 = data.draw(st.sampled_from([h_last2, None]))
+    integ = {'gear': ig.Gear2Integrator, 'trap': ig.TrapezoidalIntegrator,
+             'euler': ig.EulerIntegrator}[kind]
     kw = {'x_curr': _vec(data, n, st.floats(-5.0, 5.0)),
           'x_last': _vec(data, n, st.floats(-5.0, 5.0)),
-          'q_curr': q, 'q_last_hist': ql, 'iq_last_hist': ql.copy(), 'h_curr': hs[0],
-          'h_last': hs[1], 'h_last2': hs[2], 'no_history': False, 'J': J,
-          'active_integrator': ig.TrapezoidalIntegrator() if trap else ig.Gear2Integrator(),
+          'q_curr': q, 'q_last_hist': ql, 'iq_last_hist': iql, 'h_curr': hs[0],
+          'h_last': h_last, 'h_last2': h_last2, 'no_history': False, 'J': J,
+          'active_integrator': integ(),
           'irefnode': iref, 'reltol': data.draw(st.sampled_from([1e-3, 1e-6, 0.0])),
           'abstol': abstol, 'toolkit': circuit.numeric, 'max_step': 1.0,
           'n_nodes': data.draw(st.sampled_from([None, 0, 1, n - 1, n]))}

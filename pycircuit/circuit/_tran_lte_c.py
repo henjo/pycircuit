@@ -98,6 +98,10 @@ def driver():
     return _driver or None
 
 
+#: the glue's code for Euler's coefficient (gear 0, trapezoid 1)
+_EULER = 2
+
+
 def _globals():
     """The chain's pieces as defined, read once a call finds every one its
     module's own (one taken under a caller's patch would hold the patch:
@@ -111,6 +115,7 @@ def _globals():
                           'pycircuit.circuit.analysis', 'pycircuit.circuit._numeric')
         SCM = 'pycircuit.circuit.stepcontroller'
         g2, tr = integrator.Gear2Integrator, integrator.TrapezoidalIntegrator
+        eu = integrator.EulerIntegrator
         own = ((SC._charge_lte, 'StepController._charge_lte'),
                (SC._normalised, 'StepController._normalised'),
                (SC._reference, 'StepController._reference'),
@@ -124,6 +129,7 @@ def _globals():
                (g2, 'Gear2Integrator', IG), (g2.compute_lte, 'Gear2Integrator.compute_lte', IG),
                (tr, 'TrapezoidalIntegrator', IG),
                (tr.compute_lte, 'TrapezoidalIntegrator.compute_lte', IG),
+               (eu, 'EulerIntegrator', IG), (eu.compute_lte, 'EulerIntegrator.compute_lte', IG),
                (analysis.remove_row_col, 'remove_row_col', AN),
                (analysis._reduce_ndarray, '_reduce_ndarray', AN),
                (_numeric.linearsolver, 'linearsolver', NU), (_numeric.array, 'array', NU),
@@ -138,7 +144,10 @@ def _globals():
                        integrator.third_divided_difference, analysis.remove_row_col,
                        analysis._reduce_ndarray, _NP[0], _numeric.linearsolver,
                        _NP[1], _NP[2], _numeric.array)
-        _G['formula'] = {g2: (0, g2.compute_lte), tr: (1, tr.compute_lte)}
+        ## (the estimate's coefficient: gear's, the trapezoid's, Euler's --
+        ## the step after a breakpoint, where the order drops)
+        _G['formula'] = {g2: (0, g2.compute_lte), tr: (1, tr.compute_lte),
+                         eu: (_EULER, eu.compute_lte)}
     return _G
 
 
@@ -157,7 +166,7 @@ class _Ctx:
             'J': np.empty((n, n)), 'run': np.empty(n),
             'abst': np.empty(n), 'A': np.empty(m * m), 'b': np.empty(m), 'lte': np.empty(n),
             'ref': np.empty(n), 'out': np.empty(n), 'tq': np.empty(n),
-            'mask': np.empty(n),
+            'mask': np.empty(n), 'iq1': np.empty(n),
         }
         self.ipiv = np.empty(m, dtype=np.int64)
         fb = ffi.from_buffer
@@ -217,24 +226,33 @@ def max_error(ctrl, s):
                 tk.maximum, tk.concatenate, tk.array) != G['chain']):
         return _no('lte_c:patched')
     h, hl, hl2 = s.h_curr, s.h_last, s.h_last2
-    if s.no_history or hl2 is None:
+    euler = form[0] == _EULER
+    if s.no_history or (hl2 is None and not euler):
         return _no('lte_c:formula')
     th, tl, tl2 = type(h), type(hl), type(hl2)
-    if not ((th is float or th is _NPF) and (tl is float or tl is _NPF)
-            and (tl2 is float or tl2 is _NPF)):
+    if not ((th is float or th is _NPF) and (tl is float or tl is _NPF or (euler and hl is None))
+            and (tl2 is float or tl2 is _NPF or euler)):
         return _no('lte_c:h')
     ## (the integrator's scalars -- its coefficient, the divided
     ## difference's step sums -- in Python floats: the IEEE operations
     ## numpy's scalars make, without their warnings; one that overflows
     ## takes the Python chain, which warns as before)
-    h, hl, hl2 = float(h), float(hl), float(hl2)
+    h = float(h)
     try:
-        coef = -h * (h + hl) if form[0] == 0 else -(h ** 2)
+        if euler:
+            ## (Euler's: `-0.5 * scale`, the variable-step correction
+            ## `2 h / (h + h_last)` where there is a last step; no step sums)
+            hl = None if hl is None else float(hl)
+            coef = -0.5 * (2.0 * h / (h + hl) if hl else 1.0)
+            hl = hl2 = s12 = s23 = s123 = 0.0
+        else:
+            hl, hl2 = float(hl), float(hl2)
+            coef = -h * (h + hl) if form[0] == 0 else -(h ** 2)
+            s12 = h + hl
+            s23 = hl + hl2
+            s123 = s12 + hl2
     except ArithmeticError:
         return _no('lte_c:h')
-    s12 = h + hl
-    s23 = hl + hl2
-    s123 = s12 + hl2
     if not (math.isfinite(coef) and math.isfinite(s12) and math.isfinite(s23)
             and math.isfinite(s123)):
         return _no('lte_c:h')
@@ -284,6 +302,14 @@ def max_error(ctrl, s):
     np.copyto(buf['xl'], xl)
     np.copyto(buf['q'], q)
     np.copyto(buf['ql'], ql3)
+    if euler:
+        ## (the last companion current, `iq_last[0]`)
+        iql = s.iq_last_hist
+        iq1 = iql[0] if type(iql) is np.ndarray and iql.ndim == 2 else (
+            iql[0] if type(iql) in (list, tuple) and len(iql) else None)
+        if not _vec(iq1, n):
+            return _no('lte_c:x')
+        np.copyto(buf['iq1'], iq1)
     np.copyto(buf['J'], J)
     if run is not None:
         np.copyto(buf['run'], run)
@@ -304,6 +330,7 @@ def max_error(ctrl, s):
     st.have_run = 0 if run is None else 1
     st.relref = mode
     st.nn = -1 if nn is None else nn
+    st.formula = _CODES['LTE_FORMULA_EULER'] if euler else _CODES['LTE_FORMULA_DD3']
     st.h1, st.h2, st.h3, st.coef = h, hl, hl2, coef
     st.s12, st.s23, st.s123 = s12, s23, s123
     st.reltol, st.trtol = float(reltol), float(trtol)
@@ -311,6 +338,8 @@ def max_error(ctrl, s):
     if status != _CODES['LTE_DONE']:
         return _no('lte_c:bail:' + BAIL.get(status, str(status)))
     _PC['lte_c:served'] += 1
+    if euler:
+        _PC['lte_c:euler'] += 1
     if mode:
         ctrl._ref_running = buf['out'].copy()
-    return float(st.err), 3.0
+    return float(st.err), (2.0 if euler else 3.0)

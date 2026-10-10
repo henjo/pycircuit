@@ -8082,3 +8082,27 @@ reported at pcx_dense.h:line).  Two pinned pairs moved on the twin only ("the Ne
 its C", "the error test and its C"): checked, re-recorded.  Counted against HEAD with an A/A beside it:
 no change on every case (-0.34 .. +0.30 %, the A/A +0.04 .. +0.57 %).  Full suite 5105 passed; the sanitizer's
 fast tier clean (4790 passed).
+
+## 2026-10-11 — 112. Stage 3, step a: Euler's error estimate in C -- the step after a breakpoint no longer hands the error test back
+
+Sized first (a census of 26 gold decks at a fifth of their runs): the C error test served every
+gear step and declined two kinds -- every sparse run (`lte_c:sparse`) and EULER, the step after
+each breakpoint where the order drops (`lte_c:integrator`: jge 1037 of 3198 error tests, mux8
+244, 1..47 on the others; confirmed Euler by type, every one).  Now `lte.c` has Euler's estimate
+(`LTE_FORMULA_EULER`: `coef * ((q - q1) / h - iq1)`, `iq1` the last companion current, checked
+finite), the glue its coefficient in Python floats -- `-0.5 * (2 h / (h + h_last) if h_last else
+1.0)`, `EulerIntegrator.compute_lte`'s variable-step correction -- and its order (2.0); the J
+solve, the reference and the tolerance are the gear and trapezoid's.  A run's first step (no
+history: zeros) still declines (`lte_c:formula`, 1-2 a run).
+
+Proved: test_lte_c -- the pulse's order drops now served (`lte_c:euler` > 0, no `integrator`
+decline) with every attempt's verdict, error and running reference the Python's; the drawn
+bit-for-bit twin draws Euler too (its own companion currents, a last step missing or zero): 3000
+examples, 759 Euler error tests served, every one the chain's bits.  jge and mux8 at half
+length: byte for byte the same.  Speed: neutral, as the stage's line asks -- jge 23.0 s both
+ways (instructions +0.41 %: the C's reduced, column-major copy of J -- an element-wise strided
+transpose -- costs ~1 M instructions at n = 244 where numpy's copies cost less, and the gear steps
+already pay it: a known cost, for the loop in C to remove); mux8 instructions the same; the
+step_machinery cases (no Euler step among them) no change against an A/A.  "The error test and
+its C" now names `EulerIntegrator.compute_lte` among its references: re-recorded.  Full suite 5105 passed; the
+sanitizer's fast tier clean (4798 passed).

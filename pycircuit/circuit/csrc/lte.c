@@ -35,12 +35,17 @@ long hdl_fn(lte_t *s)
             if (!isfinite(s->run[i]) || signbit(s->run[i])) return lte_bail(s, LTE_BAIL_NONFINITE);
     if (s->abs_vec)
         for (i = 0; i < n; i++) if (!isfinite(s->abst[i])) return lte_bail(s, LTE_BAIL_NONFINITE);
+    if (s->formula == LTE_FORMULA_EULER)
+        for (i = 0; i < n; i++) if (!isfinite(s->iq1[i])) return lte_bail(s, LTE_BAIL_NONFINITE);
     feclearexcept(FE_ALL_EXCEPT);
     /* compute_lte: coef * third_divided_difference, numpy's elementwise
        operations in their order (each result stored, so each operation
        precedes the flag test); the step sums and the coefficient are the
        glue's, in the integrator's own scalar arithmetic */
-    for (i = 0; i < n; i++) {
+    if (s->formula == LTE_FORMULA_EULER) {
+        /* EulerIntegrator.compute_lte: gn = (q - q1) / h, gn - iq1, scaled */
+        for (i = 0; i < n; i++) s->lte[i] = s->coef * ((s->q[i] - s->q1[i]) / s->h1 - s->iq1[i]);
+    } else for (i = 0; i < n; i++) {
         double d1 = (s->q[i] - s->q1[i]) / s->h1;
         double d2 = (s->q1[i] - s->q2[i]) / s->h2;
         double d3 = (s->q2[i] - s->q3[i]) / s->h3;
