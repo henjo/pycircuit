@@ -225,16 +225,17 @@ def _so_dir():
     return _tmp_dir
 
 
-def source_key(csrc):
+def source_key(csrc, prelude=True):
     """SHA-256 of the SOURCE side of the key: format, flags, the C
-    kernel prelude and the function itself.  The compiler's identity is
-    part of the FILENAME instead (`so_path`), so that a machine with no
-    compiler at all can still find and serve an object built from this
-    exact source by some compiler (`find_so`)."""
+    kernel prelude (empty for a runtime unit, `prelude=False`) and the
+    function itself.  The compiler's identity is part of the FILENAME
+    instead (`so_path`), so that a machine with no compiler at all can
+    still find and serve an object built from this exact source by some
+    compiler (`find_so`)."""
     from pycircuit.circuit import hdl
     h = hashlib.sha256()
     for part in ('format=%d' % SO_FORMAT, ' '.join(CFLAGS),
-                 hdl._KERNEL_C, csrc):
+                 hdl._KERNEL_C if prelude else '', csrc):
         h.update(part.encode('utf-8'))
         h.update(b'\0')
     return h.hexdigest()
@@ -317,8 +318,9 @@ def _key_lock(key, blocking=True):
         os.close(fd)
 
 
-def _build(csrc, dest):
-    """Compile `csrc` (prelude added here) to `dest`, atomically."""
+def _build(csrc, dest, prelude=True):
+    """Compile `csrc` (the HDL kernels' prelude added here unless
+    `prelude=False`) to `dest`, atomically."""
     from pycircuit.circuit import hdl
     cc, _version = find_compiler()
     if cc is None:
@@ -328,7 +330,8 @@ def _build(csrc, dest):
     sopath = cpath[:-2] + '.so.tmp'
     try:
         with os.fdopen(fd, 'w') as fh:
-            fh.write(hdl._KERNEL_C)
+            if prelude:
+                fh.write(hdl._KERNEL_C)
             fh.write(csrc)
         proc = subprocess.run([cc] + list(CFLAGS) + ['-o', sopath, cpath,
                                                      '-lm'],
@@ -371,8 +374,9 @@ def _dlopen(path, cdef=None):
 _loaded = {}
 
 
-def load_kernel(csrc, cdef=None, rebuild_corrupt=True):
-    """The loaded object for the C source `csrc` (the prelude is added):
+def load_kernel(csrc, cdef=None, rebuild_corrupt=True, prelude=True):
+    """The loaded object for the C source `csrc` (the HDL kernels' prelude
+    added unless `prelude=False`; `load_unit`):
     `(ffi, cfn, key, cold, seconds)` -- built under the key's lock when
     the store has no object for it, loaded through `cdef`'s entry (the
     chain functions' by default; `_hdl_climit`'s otherwise), memoised per
@@ -382,7 +386,7 @@ def load_kernel(csrc, cdef=None, rebuild_corrupt=True):
     the caller turns that into a status, never into a broken class.
     `cold` says whether a compile ran; `seconds` is its time, 0 otherwise.
     """
-    key = source_key(csrc)
+    key = source_key(csrc, prelude)
     cold = False
     import time
     t0 = time.perf_counter()
@@ -397,7 +401,7 @@ def load_kernel(csrc, cdef=None, rebuild_corrupt=True):
                 path = find_so(key)
                 if path is None:
                     path = so_path(key)     # raises without a compiler
-                    _build(csrc, path)
+                    _build(csrc, path, prelude)
                     cold = True
         try:
             ffi, cfn = _dlopen(path, cdef)
@@ -410,7 +414,7 @@ def load_kernel(csrc, cdef=None, rebuild_corrupt=True):
             except OSError:
                 pass
             path = so_path(key)
-            _build(csrc, path)
+            _build(csrc, path, prelude)
             cold = True
             try:
                 ffi, cfn = _dlopen(path, cdef)
@@ -419,3 +423,10 @@ def load_kernel(csrc, cdef=None, rebuild_corrupt=True):
                                    % e2)
         _loaded[key] = (ffi, cfn)
     return ffi, cfn, key, cold, (time.perf_counter() - t0 if cold else 0.0)
+
+
+def load_unit(csrc, cdef):
+    """`load_kernel` for a runtime unit (`csrc/`): a complete C file of its
+    own, its headers expanded, built WITHOUT the HDL kernels' prelude --
+    what it includes and declares is all it is compiled with."""
+    return load_kernel(csrc, cdef, prelude=False)

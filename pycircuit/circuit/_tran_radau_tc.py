@@ -226,7 +226,6 @@ def driver():
     global _driver, STATUS
     if _driver is None:
         _driver = False
-        from pycircuit.circuit import _hdl_cbackend as cb
         from pycircuit.circuit import _tran_radau_c, linearsolver
         if _tran_radau_c.driver() is None:
             STATUS = f'off (the radau C: {_tran_radau_c.STATUS})'
@@ -240,8 +239,8 @@ def driver():
             STATUS = "off (numpy's complex product is neither form)"
             return None
         try:
-            ffi, cfn, _key, _cold, _secs = cb.load_kernel(RADAU_TC, RADAU_TC_CDEF)
-        except (cb.CompileError, OSError) as e:
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(RADAU_TC, RADAU_TC_CDEF)
+        except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None
         _ct, gesv, getrs = lap
@@ -262,10 +261,9 @@ def _fold_driver():
         if cmul_mode() is None:
             _FOLD['status'] = "off (numpy's complex product is neither form)"
             return None
-        from pycircuit.circuit import _hdl_cbackend as cb
         try:
-            ffi, cfn, _key, _cold, _secs = cb.load_kernel(FOLD_C, FOLD_CDEF)
-        except (cb.CompileError, OSError) as e:
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(FOLD_C, FOLD_CDEF)
+        except (_cbuild.CompileError, OSError) as e:
             _FOLD['status'] = f'off ({e})'
             return None
         d = _FOLD['drv'] = (ffi, cfn, ffi.new('radau_fold_t *'))

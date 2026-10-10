@@ -80,15 +80,14 @@ def driver():
     global _driver, STATUS
     if _driver is None:
         _driver = False
-        from pycircuit.circuit import _hdl_cbackend as cb
         from pycircuit.circuit import _tran_newton_c
         nd = _tran_newton_c.driver()
         if nd is None:
             STATUS = f'off (the C Newton: {_tran_newton_c.STATUS})'
             return None
         try:
-            ffi, cfn, _key, _cold, _secs = cb.load_kernel(RADAU_C, RADAU_CDEF)
-        except (cb.CompileError, OSError) as e:
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(RADAU_C, RADAU_CDEF)
+        except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None
         _driver = (ffi, cfn, nd[2]['dgesv'])

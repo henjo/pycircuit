@@ -876,8 +876,9 @@ class TestSoStore(object):
                 if ln.startswith('BYTES')]
 
     def test_every_key_ingredient_changes_the_key(self, monkeypatch):
-        """Source, kernel prelude, flags, compiler identity: each must
-        move the key, or a stale binary would be served."""
+        """Source, kernel prelude (and whether there is one), flags,
+        compiler identity: each must move the key, or a stale binary
+        would be served."""
         csrc = 'void hdl_fn(const double *x, const double *p, '\
                'double *out) { out[0] = x[0]; }\n'
         k0 = cb.source_key(csrc)
@@ -891,6 +892,7 @@ class TestSoStore(object):
         k_kernel = cb.source_key(csrc)
         monkeypatch.undo()
         assert k_kernel != k0
+        assert cb.source_key(csrc, prelude=False) not in (k0, k_kernel)
         ## the compiler's identity lives in the FILENAME, so that a
         ## warm store can be served with no compiler at all
         p0 = os.path.basename(cb.so_path(k0))

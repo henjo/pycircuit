@@ -460,7 +460,7 @@ RECORD = {
     "the step's end passes and the C's": ('277bd8328e9f', '9a7e48ab2468'),
     'the frozen factors and their C': ('c27dee545b25', '93358c601bc5'),
     'the stage block and its one pass': ('a013cd007e0c', '24be0c26211b'),
-    'the stage step map and its C': ('7507f30134bb', 'be4de4c21fc6'),
+    'the stage step map and its C': ('7507f30134bb', 'e0442d1bddc3'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', 'd5e13aa3b107'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),

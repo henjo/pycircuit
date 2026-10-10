@@ -14,7 +14,7 @@ import warnings
 import numpy as np
 import pytest
 
-from pycircuit.circuit import _hdl_batch, _limiting, hdl
+from pycircuit.circuit import _cbuild, _hdl_batch, _limiting, hdl
 from pycircuit.circuit import _hdl_cbackend as cb
 from pycircuit.circuit import circuit as cm
 from pycircuit.circuit import elements_hdl as eh
@@ -431,8 +431,8 @@ def test_a_driver_with_the_wrong_stride_is_caught(kernel_calls, monkeypatch):
         cir.G(x)
     src = _hdl_batch.PASS_C.replace('X + e * sx', 'X + e * (sx - 1)')
     assert src != _hdl_batch.PASS_C
-    ffi, cfn, key, _cold, _secs = cb.load_kernel(src, _hdl_batch.PASS_CDEF)
-    assert key != cb.source_key(_hdl_batch.PASS_C)
+    ffi, cfn, key, _cold, _secs = _cbuild.load_unit(src, _hdl_batch.PASS_CDEF)
+    assert key != _cbuild.source_key(_hdl_batch.PASS_C, prelude=False)
     monkeypatch.setattr(_hdl_batch, '_driver',
                         (ffi, cfn, ffi.typeof('double *'), ffi.typeof('double **')))
     a, b = _both(cir, 'G', x)

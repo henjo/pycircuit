@@ -88,10 +88,9 @@ def driver():
         except (OSError, AttributeError) as e:
             STATUS = f'off ({e})'
             return None
-        from pycircuit.circuit import _hdl_cbackend as cb
         try:
-            ffi, cfn, _key, _cold, _secs = cb.load_kernel(LTE_C, LTE_CDEF)
-        except (cb.CompileError, OSError) as e:
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(LTE_C, LTE_CDEF)
+        except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None
         _driver = (ffi, cfn, dgesv)

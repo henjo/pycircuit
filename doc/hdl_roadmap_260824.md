@@ -1,26 +1,23 @@
 
-## 2026-10-10 — 95. Stage R1d, step 2: the codes named once, in the headers (machine code identical)
+## 2026-10-10 — 96. Stage R1d, step 3: the runtime units built without the HDL kernels' prelude
 
-The numbers the C units return and are called with were bare in the C and mirrored by hand in
-Python: each unit's results (`BAIL` tables in five modules, `status != 1`, `status == 8`), the
-core's passes (`want`: 1 G, 2 C, 4 i; the fused mask's q bit 8; `_PASS_BITS`, `WANT`), its
-formulas (`FORMULA`: 0 gear2 .. 3 theta, 4 the passes alone), the error test's reference modes
-(`_RELREF`) and CBLAS's `101, 111`.  A real trap among them: "the limiter walk stopped" is 8 in
-newton.c and radau.c and 10 in radau_tc.c -- the Python tested each by its own number.
+Every object was built from `hdl._KERNEL_C` + its source: the prelude of the printed kernels
+(`<math.h>`, the libm functions re-declared `__attribute__((const))`, `_sel`, `_npmax`,
+`quartic_root` ...).  The runtime units used none of it knowingly, but one depended on it:
+`sens.c` calls `isfinite` and never included `<math.h>` -- the prelude did.  Now
+`_cbuild.load_unit(csrc, cdef)` builds a unit as the complete C file it is (`prelude=False`
+through `source_key`, `_build`, `load_kernel`; the key hashes an empty prelude part, so no HDL
+kernel's key moved), `sens.c` includes `<math.h>`, and the ten unit drivers no longer import the
+HDL backend to build (`_cbuild.load_unit`, `_cbuild.CompileError`).
 
-Now each unit's header names its results (`enum newton_status { NEWTON_CONVERGED = 1,
-NEWTON_BAIL_X = 2, ... }`, a line saying what each means; lte.h also `enum lte_relref`), and
-pcx_abi.h names the core's (`enum pcx_pass`, `enum pcx_formula`, `enum pcx_cblas`).  The C says
-the names; Python reads its tables from the header text (`_cbuild.constants`, `_cbuild.bails`):
-`BAIL = _cbuild.bails(_CODES, 'NEWTON_BAIL_')`, `status != _CODES['NEWTON_CONVERGED']`,
-`FORMULA` / `WANT` / `_PASS_BITS` from pcx_abi.h -- the strings the Python reports (`'walkstop'`,
-`'getrf'` ...) are the names' suffixes, unchanged.
-
-Proof: the machine code of all ten units identical again; every Python table equal to its old
-literal (the eight compared as data); cffi reads each header's enums as `constants` does.
-test_c_abi gains: the two readers agree on every header; pcx_pass's bits are `1 << k` of the
-pass order Python builds the fused masks from (`_tran_core.PASSES`, `_hdl_cbackend.FUSE_PASSES`);
-no `.c` says a code by its number (the check finds 80 in the previous commit's C, 0 now); an
-enumerator spelling no value refuses.  11 pinned pairs moved on the twin only (pass.c and walk.c
-among them: they include pcx_abi.h, which gained the enums -- the watcher's, which does not,
-stayed).  Full suite 5040 passed; the sanitizer's fast tier clean (4776 passed).
+Proof: nine units' machine code identical (the objects the store built, hashed).  `radau_tc`'s
+differs, by one thing: the prelude declared `hypot` `const`, and it is not -- it raises the
+floating-point flags this unit tests.  Its four `hypot` calls sit between a `feclearexcept` and
+the `fetestexcept` that judges them, each result used before that test, so data dependencies
+already fix their place: the same four call sites either way, 26 instructions fewer without the
+attribute; the values and the flags cannot move.  The 102 Radau tests (their C-against-Python
+bit-identity among them) pass.  test_c_abi gains: every unit compiles ON ITS OWN under `-Wall
+-Wextra -Werror` (alive: `sens.c` without its include is refused, implicit `isfinite`).  The two
+tests that build a planted variant of a unit (core.c, pass.c) build it as the unit is built.
+One pinned pair moved on its twin (sens.c's include).  Full suite 5050 passed; the sanitizer's
+fast tier clean (4758 passed).

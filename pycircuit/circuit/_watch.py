@@ -73,10 +73,9 @@ def load():
     except AttributeError:
         STATUS = 'off (no dict watchers: CPython 3.12+)'
         return None
-    from pycircuit.circuit import _hdl_cbackend as cb
     try:
-        ffi, cfn, _key, _cold, _secs = cb.load_kernel(WATCH_C, WATCH_CDEF)
-    except (cb.CompileError, OSError) as e:
+        ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(WATCH_C, WATCH_CDEF)
+    except (_cbuild.CompileError, OSError) as e:
         STATUS = f'off ({e})'
         return None
     add_d.restype, add_d.argtypes = ctypes.c_int, [ctypes.c_void_p]

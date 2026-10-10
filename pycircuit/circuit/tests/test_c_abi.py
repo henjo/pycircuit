@@ -28,6 +28,7 @@ proved alive on planted differences.
 import glob
 import os
 import re
+import subprocess
 
 import cffi
 import pytest
@@ -130,6 +131,21 @@ def test_each_unit_is_loaded_through_the_header_it_compiles_with(unit, cdef):
     assert cdef == header
     assert _raw(unit + '.c').count(f'#include "{unit}.h"\n') == 1
     assert _cbuild.csrc(unit + '.c').count(header) == 1
+
+
+@pytest.mark.parametrize('unit,cdef', UNITS, ids=[u for u, _ in UNITS])
+def test_each_unit_compiles_on_its_own_without_a_warning(unit, cdef, tmp_path):
+    """A unit is a complete C file (R1d step 3: built without the HDL
+    kernels' prelude): what it includes and declares is all it needs, and
+    the compiler finds nothing to warn about."""
+    cc = _cbuild.find_compiler()[0]
+    if cc is None:
+        pytest.skip('no C compiler')
+    path = tmp_path / (unit + '.c')
+    path.write_text(_cbuild.csrc(unit + '.c'))
+    proc = subprocess.run([cc, *_cbuild.CFLAGS, '-Wall', '-Wextra', '-Werror', '-fsyntax-only',
+                           str(path)], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_no_c_file_declares_a_type_and_no_header_includes_another():

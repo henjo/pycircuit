@@ -143,7 +143,7 @@ def driver():
             STATUS = "off (numpy's own cblas_dgemv not found)"
         else:
             try:
-                ffi, cfn, _key, _cold, _secs = cb.load_kernel(CORE_C, CORE_CDEF)
+                ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(CORE_C, CORE_CDEF)
             except (cb.CompileError, OSError) as e:
                 _driver = False
                 STATUS = f'off ({e})'

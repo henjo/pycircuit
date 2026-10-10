@@ -107,10 +107,9 @@ def driver():
     """The loaded pass driver, or None where it cannot be had."""
     global _driver, STATUS
     if _driver is None:
-        from pycircuit.circuit import _hdl_cbackend as cb
         try:
-            ffi, cfn, _key, _cold, _secs = cb.load_kernel(PASS_C, PASS_CDEF)
-        except (cb.CompileError, OSError) as e:
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(PASS_C, PASS_CDEF)
+        except (_cbuild.CompileError, OSError) as e:
             _driver = False
             STATUS = f'off ({e})'
         else:

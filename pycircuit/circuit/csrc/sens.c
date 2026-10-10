@@ -1,5 +1,6 @@
 
 #include <fenv.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "pcx_abi.h"

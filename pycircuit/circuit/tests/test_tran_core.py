@@ -13,8 +13,7 @@ import warnings
 import numpy as np
 import pytest
 
-from pycircuit.circuit import PSS, _tran_core, simwarnings
-from pycircuit.circuit import _hdl_cbackend as cb
+from pycircuit.circuit import PSS, _cbuild, _tran_core, simwarnings
 from pycircuit.circuit import circuit as cm
 from pycircuit.circuit.elements import VS, Diode, R, SubCircuit, VSin, gnd
 from pycircuit.circuit.integrator import (
@@ -276,8 +275,8 @@ def test_a_core_with_the_wrong_accumulation_order_is_caught(monkeypatch):
     src = _tran_core.CORE_C.replace('for (s = 0; s < L; s++) bin[flat[s]] += buf[s];',
                                     'for (s = L - 1; s >= 0; s--) bin[flat[s]] += buf[s];')
     assert src != _tran_core.CORE_C
-    ffi, cfn, key, _cold, _secs = cb.load_kernel(src, _tran_core.CORE_CDEF)
-    assert key != cb.source_key(_tran_core.CORE_C)
+    ffi, cfn, key, _cold, _secs = _cbuild.load_unit(src, _tran_core.CORE_CDEF)
+    assert key != _cbuild.source_key(_tran_core.CORE_C, prelude=False)
     drv = _tran_core.driver()
     monkeypatch.setattr(_tran_core, '_driver', (ffi, cfn, drv[2]))
     tr.__dict__.pop('_tran_core', None)
