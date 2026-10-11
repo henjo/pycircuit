@@ -54,8 +54,8 @@ next, up to `BACKOFF_MAX`; one that made any resets it), watching off, a
 kept decline while nothing watched has moved, the Newton's (adaptive: the
 error test's) last call not served.  DECLINES (`loop_c:<reason>`, kept on
 the loop until something watched moves unless the reason is the
-attempt's): no build, a patched or shadowed piece (`_own`, `_SHADOWS`,
-`_CIRCUIT_SHADOWS`), another statistics class, loop or family, a fixed-step
+attempt's): no build, a patched or shadowed piece (`_PIECES`, the table
+`_own`, `_pieces` and `_SHADOWS` are made from; `_CIRCUIT_SHADOWS`), another statistics class, loop or family, a fixed-step
 loop whose Jacobian something reads, an imposed step, events or a periodic
 state, the continuation rescue or a stateful limiter, a circuit hook, an
 integrator outside the three, the predictor's settings, no source memo, a
@@ -71,6 +71,7 @@ general path or a flag, the Newton, a screen that is not quiet, a
 companion it does not make, the error test, a forced accept); the attempts
 made before it are written back.  History: `doc/transient_history.md`.
 """
+import operator
 import os
 import time
 
@@ -115,24 +116,82 @@ def driver():
     return _driver or None
 
 
+#: THE PIECES the attempts call -- the Python the C loop stands in for -- written
+#: once: (the object it is read from, as `_own` names it; the attribute; where it
+#: is defined: its qualified name and module).  `_own` checks each is its
+#: module's own (`_paths.genuine`) once a process; an entry compares them all as
+#: they stand (`_pieces`); one read from the transient must not be shadowed on the
+#: instance either (`_SHADOWS`).
+_PIECES = (
+    ('T', '_next_breakpoint', '_StepEvents._next_breakpoint', '_tran_events'),
+    ('T', '_attempt_step', 'Transient._attempt_step', 'transient'),
+    ('T', '_pred_or', '_StagePredictor._pred_or', '_tran_predictor'),
+    ('T', '_predict_state', '_StagePredictor._predict_state', '_tran_predictor'),
+    ('T', '_predict_fast', '_StagePredictor._predict_fast', '_tran_predictor'),
+    ('T', '_pred_fast_nodes', '_StagePredictor._pred_fast_nodes', '_tran_predictor'),
+    ('T', '_fit_fast', '_StagePredictor._fit_fast', '_tran_predictor'),
+    ('T', '_pred_note', '_StagePredictor._pred_note', '_tran_predictor'),
+    ('T', '_pred_promote', '_StagePredictor._pred_promote', '_tran_predictor'),
+    ('T', '_pred_degree', '_StagePredictor._pred_degree', '_tran_predictor'),
+    ('T', '_push_history', '_RunHistory._push_history', '_tran_history'),
+    ('T', '_roll_history', '_RunHistory._roll_history', '_tran_history'),
+    ('history', '_ring_push', '_ring_push', '_tran_history'),
+    ('T', '_q_at', '_CompanionModel._q_at', '_tran_companion'),
+    ('T', '_branch_after_solve', '_BranchCheck._branch_after_solve', '_tran_branch'),
+    ('T', '_branch_screen', '_BranchCheck._branch_screen', '_tran_branch'),
+    ('T', '_branch_screen_C', '_BranchCheck._branch_screen_C', '_tran_branch'),
+    ('T', '_branch_on', '_BranchCheck._branch_on', '_tran_branch'),
+    ('stats', '_note_step', 'TransientStatistics._note_step', 'transient'),
+    ('Sub', 'next_event', 'SubCircuit.next_event', 'circuit'),
+    ('Sub', 'accept_step', 'SubCircuit.accept_step', 'circuit'),
+    ('VS', 'next_event', 'VS.next_event', 'elements'),
+    ('IS', 'next_event', 'IS.next_event', 'elements'),
+    ('Behavioural', 'next_event', 'Behavioural.next_event', 'hdl'),
+    ('T', '_source_at', '_CompanionModel._source_at', '_tran_companion'),
+    ('Sub', 'u', 'SubCircuit.u', 'circuit'),
+    ('T', '_branch_structural_rank', '_BranchCheck._branch_structural_rank', '_tran_branch'),
+    ('family', 'next_breakpoint', '_StepFamily.next_breakpoint', 'transient'),
+    ('family', 'after_accept', '_StepFamily.after_accept', 'transient'),
+    ('newton_c', 'solve', 'solve', '_tran_newton_c'),
+    ('Gear2', 'check_order_drop', 'Gear2Integrator.check_order_drop', 'integrator'),
+    ('Euler', 'check_order_drop', 'EulerIntegrator.check_order_drop', 'integrator'),
+    ('Trap', 'check_order_drop', 'TrapezoidalIntegrator.check_order_drop', 'integrator'),
+    ('Loop', 'execute', '_SteppingLoop.execute', 'transient'),
+    ('Loop', 'where', '_SteppingLoop.where', 'transient'),
+    ('Loop', 'take', '_SteppingLoop.take', 'transient'),
+    ('Loop', 'judge', '_SteppingLoop.judge', 'transient'),
+    ('Loop', 'event', '_SteppingLoop.event', 'transient'),
+    ('Loop', 'accept', '_SteppingLoop.accept', 'transient'),
+    ('family', 'attempt', '_StepFamily.attempt', 'transient'),
+    ('LMM', 'judge', '_LMMSteps.judge', 'transient'),
+    ('LMM', 'h_after_force', '_LMMSteps.h_after_force', 'transient'),
+    ('T', 'solve_timestep', 'Transient.solve_timestep', 'transient'),
+    ('T', '_solve_timestep', 'Transient._solve_timestep', 'transient'),
+    ('T', '_lte_inputs', '_RunHistory._lte_inputs', '_tran_history'),
+    ('T', '_excursion_ratio', '_StepEvents._excursion_ratio', '_tran_events'),
+    ('T', '_lte_mask', '_RunHistory._lte_mask', '_tran_history'),
+    ('T', '_sparse_linsolver', '_RunHistory._sparse_linsolver', '_tran_history'),
+    ('IC', '_evaluate', 'IntegralController._evaluate', 'stepcontroller'),
+    ('SC', 'evaluate_step', 'StepController.evaluate_step', 'stepcontroller'),
+    ('SC', '_max_error', 'StepController._max_error', 'stepcontroller'),
+    ('SC', '_band_decision', 'StepController._band_decision', 'stepcontroller'),
+    ('SC', '_band_target', 'StepController._band_target', 'stepcontroller'),
+    ('SC', '_retry_exponent', 'StepController._retry_exponent', 'stepcontroller'),
+    ('SC', '_judged', 'StepController._judged', 'stepcontroller'),
+    ('SC', '_damp', 'StepController._damp', 'stepcontroller'),
+    ('lte_c', 'max_error', 'max_error', '_tran_lte_c'),
+)
+
+#: (an instance attribute of one of these names is a piece the Python attempts
+#: would call and the C would not)
+_SHADOWS = tuple(attr for owner, attr, _q, _m in _PIECES if owner == 'T')
+
+
 def _pieces(O):
-    """The pieces the attempts call, as they stand now (in `_own`'s order)."""
-    T, E, Sub, F, I = O['T'], O['E'], O['Sub'], O['family'], O['I']
-    L, LMM, SC, IC = O['Loop'], O['LMM'], O['SC'], O['IC']
-    return (T._next_breakpoint, T._attempt_step, T._pred_or, T._predict_state, T._predict_fast,
-            T._pred_fast_nodes, T._fit_fast, T._pred_note, T._pred_promote, T._pred_degree,
-            T._push_history, T._roll_history, O['history']._ring_push, T._q_at,
-            T._branch_after_solve, T._branch_screen, T._branch_screen_C, T._branch_on,
-            O['stats']._note_step, Sub.next_event, Sub.accept_step, E.VS.next_event,
-            E.IS.next_event, O['hdl'].Behavioural.next_event, T._source_at, Sub.u,
-            T._branch_structural_rank, F.next_breakpoint, F.after_accept, O['newton_c'].solve,
-            I.Gear2Integrator.check_order_drop, I.EulerIntegrator.check_order_drop,
-            I.TrapezoidalIntegrator.check_order_drop,
-            L.execute, L.where, L.take, L.judge, L.event, L.accept, F.attempt, LMM.judge,
-            LMM.h_after_force, T.solve_timestep, T._solve_timestep, T._lte_inputs,
-            T._excursion_ratio, T._lte_mask, T._sparse_linsolver, IC._evaluate,
-            SC.evaluate_step, SC._max_error, SC._band_decision, SC._band_target,
-            SC._retry_exponent, SC._judged, SC._damp, O['lte_c'].max_error)
+    """The pieces as they stand now, a tuple per object they are read from
+    (`O['getters']`, in `_PIECES`'s order): what an entry compares with
+    `O['chain']`."""
+    return tuple(get(obj) for obj, get in O['getters'])
 
 
 def _own():
@@ -161,73 +220,18 @@ def _own():
             _SteppingLoop,
         )
         M = 'pycircuit.circuit.'
-        TR, PR, HI, BR, CO, EV, CI, EL, IG, SM = (M + m for m in (
-            'transient', '_tran_predictor', '_tran_history', '_tran_branch', '_tran_companion',
-            '_tran_events', 'circuit', 'elements', 'integrator', 'stepcontroller'))
         T, F, L, LMM, SC = Transient, _StepFamily, _SteppingLoop, _LMMSteps, sc.StepController
         IC = sc.IntegralController
-        own = (
-            (T._next_breakpoint, '_StepEvents._next_breakpoint', EV),
-            (T._attempt_step, 'Transient._attempt_step', TR),
-            (T._pred_or, '_StagePredictor._pred_or', PR),
-            (T._predict_state, '_StagePredictor._predict_state', PR),
-            (T._predict_fast, '_StagePredictor._predict_fast', PR),
-            (T._pred_fast_nodes, '_StagePredictor._pred_fast_nodes', PR),
-            (T._fit_fast, '_StagePredictor._fit_fast', PR),
-            (T._pred_note, '_StagePredictor._pred_note', PR),
-            (T._pred_promote, '_StagePredictor._pred_promote', PR),
-            (T._pred_degree, '_StagePredictor._pred_degree', PR),
-            (T._push_history, '_RunHistory._push_history', HI),
-            (T._roll_history, '_RunHistory._roll_history', HI),
-            (_tran_history._ring_push, '_ring_push', HI),
-            (T._q_at, '_CompanionModel._q_at', CO),
-            (T._branch_after_solve, '_BranchCheck._branch_after_solve', BR),
-            (T._branch_screen, '_BranchCheck._branch_screen', BR),
-            (T._branch_screen_C, '_BranchCheck._branch_screen_C', BR),
-            (T._branch_on, '_BranchCheck._branch_on', BR),
-            (TransientStatistics._note_step, 'TransientStatistics._note_step', TR),
-            (SubCircuit.next_event, 'SubCircuit.next_event', CI),
-            (SubCircuit.accept_step, 'SubCircuit.accept_step', CI),
-            (E.VS.next_event, 'VS.next_event', EL),
-            (E.IS.next_event, 'IS.next_event', EL),
-            (hdl.Behavioural.next_event, 'Behavioural.next_event', M + 'hdl'),
-            (T._source_at, '_CompanionModel._source_at', CO),
-            (SubCircuit.u, 'SubCircuit.u', CI),
-            (T._branch_structural_rank, '_BranchCheck._branch_structural_rank', BR),
-            (F.next_breakpoint, '_StepFamily.next_breakpoint', TR),
-            (F.after_accept, '_StepFamily.after_accept', TR),
-            (_tran_newton_c.solve, 'solve', M + '_tran_newton_c'),
-            (I.Gear2Integrator.check_order_drop, 'Gear2Integrator.check_order_drop', IG),
-            (I.EulerIntegrator.check_order_drop, 'EulerIntegrator.check_order_drop', IG),
-            (I.TrapezoidalIntegrator.check_order_drop, 'TrapezoidalIntegrator.check_order_drop',
-             IG),
-            (L.execute, '_SteppingLoop.execute', TR),
-            (L.where, '_SteppingLoop.where', TR),
-            (L.take, '_SteppingLoop.take', TR),
-            (L.judge, '_SteppingLoop.judge', TR),
-            (L.event, '_SteppingLoop.event', TR),
-            (L.accept, '_SteppingLoop.accept', TR),
-            (F.attempt, '_StepFamily.attempt', TR),
-            (LMM.judge, '_LMMSteps.judge', TR),
-            (LMM.h_after_force, '_LMMSteps.h_after_force', TR),
-            (T.solve_timestep, 'Transient.solve_timestep', TR),
-            (T._solve_timestep, 'Transient._solve_timestep', TR),
-            (T._lte_inputs, '_RunHistory._lte_inputs', HI),
-            (T._excursion_ratio, '_StepEvents._excursion_ratio', EV),
-            (T._lte_mask, '_RunHistory._lte_mask', HI),
-            (T._sparse_linsolver, '_RunHistory._sparse_linsolver', HI),
-            (IC._evaluate, 'IntegralController._evaluate', SM),
-            (SC.evaluate_step, 'StepController.evaluate_step', SM),
-            (SC._max_error, 'StepController._max_error', SM),
-            (SC._band_decision, 'StepController._band_decision', SM),
-            (SC._band_target, 'StepController._band_target', SM),
-            (SC._retry_exponent, 'StepController._retry_exponent', SM),
-            (SC._judged, 'StepController._judged', SM),
-            (SC._damp, 'StepController._damp', SM),
-            (_tran_lte_c.max_error, 'max_error', M + '_tran_lte_c'),
-        )
-        if not all(_paths.genuine(*o) for o in own):
+        owners = {'T': T, 'history': _tran_history, 'stats': TransientStatistics,
+                  'Sub': SubCircuit, 'VS': E.VS, 'IS': E.IS, 'Behavioural': hdl.Behavioural,
+                  'family': F, 'newton_c': _tran_newton_c, 'Gear2': I.Gear2Integrator,
+                  'Euler': I.EulerIntegrator, 'Trap': I.TrapezoidalIntegrator, 'Loop': L,
+                  'LMM': LMM, 'IC': IC, 'SC': SC, 'lte_c': _tran_lte_c}
+        if not all(_paths.genuine(getattr(owners[o], a), q, M + m) for o, a, q, m in _PIECES):
             return None
+        names = {}
+        for o, a, _q, _m in _PIECES:
+            names.setdefault(o, []).append(a)
         O = {
             'T': T, 'stats': TransientStatistics, 'Circuit': Circuit, 'Sub': SubCircuit,
             'history': _tran_history, 'E': E, 'hdl': hdl, 'I': I,
@@ -242,6 +246,7 @@ def _own():
             'newton_c': _tran_newton_c, 'lte_c': _tran_lte_c, 'family': F, 'Loop': L,
             'LMM': LMM, 'SC': SC, 'IC': IC,
         }
+        O['getters'] = tuple((owners[o], operator.attrgetter(*a)) for o, a in names.items())
         O['chain'] = _pieces(O)
         _OWN = O
     return _OWN
@@ -707,13 +712,6 @@ def run(loop):
 _CIRCUIT_SHADOWS = ('u', 'G', 'C', 'i', 'q', 'limit', 'next_event', 'accept_step')
 #: the transient's methods the attempts call, shadowed on the instance: the
 #: Python attempts call the shadow
-_SHADOWS = ('_next_breakpoint', '_attempt_step', 'solve_timestep', '_solve_timestep', '_pred_or',
-            '_predict_state', '_predict_fast', '_fit_fast', '_fit', '_pred_note', '_pred_promote',
-            '_push_history', '_roll_history', '_q_at', '_branch_after_solve', '_branch_screen',
-            '_branch_screen_C', '_branch_on', '_pred_degree', '_branch_structural_rank',
-            '_source_at', '_lte_inputs', '_excursion_ratio', '_lte_mask', '_sparse_linsolver')
-
-
 def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     """The state after the C's attempts, as the Python attempts leave it
     (the module's THE STATE), and the `_paths` counts their glue would have

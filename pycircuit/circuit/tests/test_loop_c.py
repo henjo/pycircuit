@@ -269,6 +269,16 @@ def test_an_adaptive_run_is_the_python_one(name, build, make, kw, monkeypatch):
         assert ca.get('loop_c:attempts', 0) > ca.get('loop_c:steps', 0), ca
 
 
+def test_a_piece_shadowed_on_the_transient_is_declined(monkeypatch):
+    """A piece the attempts call, shadowed on the transient instance -- here
+    the fast predictor's node choice, which the Python's attempts then call
+    -- declines (`loop_c:shadow`): the C would not call it."""
+    def shadow(tr):
+        tr._pred_fast_nodes = lambda hist: None
+    ca = _same(_mos, monkeypatch, steps_min=0, setup=shadow, tend=1e-6, timestep=2e-8)
+    assert ca.get('loop_c:steps', 0) == 0 and ca.get('loop_c:shadow', 0) > 0, ca
+
+
 def test_a_predictor_off_or_unbuilt_is_declined(monkeypatch):
     """The predictor's switch off, or its unit not built: the loop declines
     (`loop_c:pred`), as for the screen and the law -- the Python attempts,
