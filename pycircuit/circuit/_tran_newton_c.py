@@ -785,6 +785,9 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     Cj = buf['Cj'].copy()
     tr._q_cache = (x, buf['qj'].copy())
     tr._C_cache = (x, Cj)
+    if core.npat:
+        ## (written on the core's pattern: the branch screen reads only it)
+        tr._C_pattern = (Cj, core.arrays['pat'])
     ## (the step's companion left as `get_diff` leaves it -- the same writes
     ## as `_tran_core.evaluate`'s; `transient._RUN_STATE`'s 'step' block)
     tr._iq, tr._Geq = buf['iqj'].copy(), buf['Geqj'].copy()

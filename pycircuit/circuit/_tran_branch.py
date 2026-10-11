@@ -6,7 +6,7 @@ import contextlib
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint, _stamp_plan
+from pycircuit.circuit import _evalhint, _stamp_plan, _tran_branch_c
 from pycircuit.circuit._limiting import state_restore, state_snapshot
 from pycircuit.circuit.analysis import insert_row
 from pycircuit.circuit.simwarnings import (
@@ -14,6 +14,10 @@ from pycircuit.circuit.simwarnings import (
     warn,
 )
 from pycircuit.utilities import param as _param
+
+#: the screen's verdicts where no direction comes with them: quiet, and C
+#: collapsed entirely (`_branch_screen`)
+_QUIET, _COLLAPSED = (False, None), (True, None)
 
 
 def _rank_by_blocks(C, tol, band=None):
@@ -232,7 +236,17 @@ class _BranchCheck:
             if ref == kept[3]:
                 self._branch_cmax = ref
                 return kept[4]
-        verdict, nrm = self._branch_screen_C(C, r0)
+        ## (the cheap level in C where it serves: the same verdict, the SVD
+        ## the Python's -- `_tran_branch_c`, the C loop plan's stage 3)
+        got = _tran_branch_c.screen(self, C)
+        if got is None:
+            verdict, nrm = self._branch_screen_C(C, r0)
+        else:
+            code, nrm, ref = got
+            self._branch_cmax = ref
+            verdict = (_QUIET if code == _tran_branch_c.QUIET
+                       else _COLLAPSED if code == _tran_branch_c.COLLAPSED
+                       else self._branch_svd(C, r0, ref))
         if const is not None:
             self._branch_const = (const, r0, nrm, self._branch_cmax, verdict)
         return verdict
@@ -266,11 +280,17 @@ class _BranchCheck:
                 return (False, None), nrm
         if nrm <= tol:
             return (True, None), nrm     # C has collapsed entirely
+        return self._branch_svd(C, r0, ref), nrm
+
+    def _branch_svd(self, C, r0, ref):
+        """The screen's verdict where its cheap level fired: `C`'s rank by
+        the SVD against the running maximum `ref` -- fired with the null
+        direction where it fell below `r0`."""
         U, sv, _Vt = np.linalg.svd(C)
         r = int((sv > self.BRANCH_SCREEN_TOL * ref).sum())
         if r >= r0:
-            return (False, None), nrm
-        return (True, U[:, -1]), nrm
+            return (False, None)
+        return (True, U[:, -1])
 
     def _branch_confirm(self, func, x_res, direction):
         """Re-solve the SAME step from a perturbed seed; return the other root

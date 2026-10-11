@@ -626,6 +626,8 @@ _RUN_STATE = {
     '_pred_hist': ('carried', 'the predictor\'s accepted points'),
     '_pred_fast': ('carried', 'the fast predictor\'s memo of that history'),
     '_C_cache': ('carried', 'C at the last converged point, with its x: reused when x repeats'),
+    '_C_pattern': ('carried', ('a C the evaluation core wrote on its pattern, with the pattern: '
+                               'the branch screen reads only those entries of that C')),
     '_dev_memo': ('carried', 'the device evaluations of this step and the previous one'),
     '_branch_cmax': ('carried', 'the branch check\'s running bound on C'),
     '_glm_Q': ('carried', 'the Nordsieck vector after the last accepted step'),

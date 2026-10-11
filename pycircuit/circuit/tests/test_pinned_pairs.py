@@ -37,6 +37,17 @@ import types
 import pytest
 
 PAIRS = {
+    'the branch screen and its C': {
+        'why': 'the C makes `_branch_screen_C`\'s cheap level -- |C|\'s largest entry '
+               '(on the core\'s pattern where the core wrote C), Python\'s `max` of the '
+               'running maximum, the diagonal\'s largest and smallest positive entry, the '
+               'two tests -- the same comparisons on the same values; the SVD stays the '
+               'Python\'s (`_branch_svd`); a non-finite entry is handed back',
+        'reference': ['pycircuit.circuit._tran_branch:_BranchCheck._branch_screen_C',
+                      'pycircuit.circuit._tran_branch:_BranchCheck._branch_screen'],
+        'twin': ['pycircuit.circuit._tran_branch_c:BRANCH_C',
+                 'pycircuit.circuit._tran_branch_c:screen'],
+    },
     'the sources and their C': {
         'why': 'the C makes each waveform\'s `f` in its operations and order (Python\'s '
                'float `%` and `//` for the pulse\'s period, the `where` chain\'s last true '
@@ -468,17 +479,18 @@ PAIRS = {
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
 #: module as a script, after the twin was checked.
 RECORD = {
+    'the branch screen and its C': ('1b848875234f', '67f78befa5b6'),
     'the sources and their C': ('55cf2d3441f8', 'e9ef34a79dd1'),
     'the kernel call and the pass driver': ('09a9e274bbe8', '6ca70a65d1bf'),
     'the limiting loop and the walk': ('58c4ce9c8f4d', '10cb4263e632'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
-    'the transient evaluation and the core': ('ce82a66a3520', '12996dad6c61'),
+    'the transient evaluation and the core': ('ce82a66a3520', '2076ab287bcf'),
     'the assembly loops and the plan': ('fa280abb9bf9', '1e6881a772fd'),
     'the sources and their direct pass': ('61c7a4bed013', 'fced12f39974'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('d7ce3151abd4', 'bc0cc1a8f66e'),
+    'the Newton solve and its C': ('d7ce3151abd4', 'f7f5a41b3026'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('f801a096927f', 'c155d6ec852e'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),

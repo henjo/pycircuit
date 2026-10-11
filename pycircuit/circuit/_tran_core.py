@@ -839,6 +839,10 @@ def evaluate(tr, x, t, provided_function, want):
             tr._memo_put(x, {'C': C})
         tr._q_cache = (x, q)
         tr._C_cache = (x, C)
+        if bits & 2 and core.npat:
+            ## (this C the core wrote on its pattern: the branch screen reads
+            ## only the pattern's entries of it -- `_tran_branch_c`)
+            tr._C_pattern = (C, core.arrays['pat'])
     ## (the step's companion left as `get_diff` leaves it -- the same writes
     ## as `_tran_newton_c.solve`'s; `transient._RUN_STATE`'s 'step' block)
     tr.active_integrator = active

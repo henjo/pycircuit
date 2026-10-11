@@ -8161,3 +8161,33 @@ error-test byte-identity suites pass both routes (the 250-stage chains in place,
 circuits copied).  Two pinned pairs moved on the twin only (`_tran_newton_c`'s `solve` and
 `_Ctx`, `_tran_lte_c`'s): re-recorded.  Full suite 5109
 passed (no C source changed).
+
+## 2026-10-11 — 115. Stage 3, step d: the branch check's cheap screen in C -- the SVD stays Python's; rich3 -3.3 %, stage 3 closed
+
+Sized first: after every converged step the branch check screens `C` at the converged point
+(`_branch_screen_C`): |C|'s largest entry, the run's running maximum, the diagonal's largest and
+its smallest positive entry -- six numpy reductions over n x n, 6 us a call at n = 15 (4.4 % of
+4049osc), 27 us at 171, 60 us at 269 (4.7 % of rich3).  (Found on the way, not changed: on
+ab_integ the screen fires on EVERY step and its SVD clears it -- 823 us a step, 60 % of the run;
+e1480 and g1310 the same: the plan's "after this plan" item, now the largest single cost left on
+those decks.)  Now `csrc/branch.c` makes the cheap level -- the same comparisons on the same
+values, Python's `max(cmax, nrm)` included -- and hands back QUIET, COLLAPSED or SVD; the SVD is
+the Python's, split out as `_BranchCheck._branch_svd` (one copy for both routes); a non-finite
+entry hands the screen back.  THE PATTERN: where `C` is one the core wrote on its pattern -- the
+C Newton's converged point, `_tran_core.evaluate`'s fresh C -- the writer records it with the
+pattern (`_C_pattern`, declared in `_RUN_STATE`), and the screen reads only those entries of
+that object (an identity test: any other C is read whole up to 4096 entries, numpy's above).
+Declines on a patched or shadowed `_branch_screen_C` (a test counts its calls).
+
+Proved: test_branch_c -- a drawn twin (random patterns with the diagonal, entries at the
+thresholds -- 1e-9, 1e-6, subnormals, signed zeros, 1e300 -- and a drawn running maximum)
+compares verdict, largest entry and running maximum bit for bit by both routes: 3000 examples,
+quiet 450, collapsed 1060, SVD 4490; non-finite entries hand back; the declines; alive: a pattern
+missing the largest entry moves the largest entry; four whole runs (gear, trapezoid, fixed, a
+250-stage sparse run on the pattern route) the same bytes, statistics, warnings and running
+maximum.  Decks against HEAD, twice each: byte for byte; rich3 5.98 -> 5.79 s (-3.3 %), mux8
+(half) 14.33 -> 14.18 s (-1.1 %), 4049osc ~ -2 % (noisy).  Counted against an A/A: stage
+-1.55 points, spice_4049 -2.5, the rest no change.  New pinned pair "the branch screen and its
+C"; "the transient evaluation and the core" and "the Newton solve and its C" moved on the twin
+(the marker's writes): re-recorded.  Full suite 5119 passed; the sanitizer's fast tier clean (4830
+passed).
