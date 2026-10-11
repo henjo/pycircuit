@@ -94,7 +94,7 @@ def driver():
             STATUS = f'off (the C Newton: {_tran_newton_c.STATUS})'
             return None
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(RADAU_C, RADAU_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(RADAU_C, RADAU_CDEF, 'pcx_radau')
         except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None

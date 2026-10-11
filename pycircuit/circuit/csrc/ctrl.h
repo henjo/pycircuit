@@ -28,9 +28,9 @@ typedef struct {
     /* out */
     long accepted;              /* 1: accepted, 0: rejected */
     double h_next;              /* the next step, as `_evaluate` returns it */
-    long status;                /* hdl_fn's result: CTRL_DONE */
+    long status;                /* pcx_ctrl's result: CTRL_DONE */
 } ctrl_t;
-long hdl_fn(ctrl_t *s);
+long pcx_ctrl(ctrl_t *s);
 
 /* `retry_order` (stepcontroller.RETRY_ORDER_MODES) */
 enum ctrl_mode {
@@ -38,7 +38,7 @@ enum ctrl_mode {
     CTRL_MEASURED = 1,
     CTRL_CARRIED = 2
 };
-/* hdl_fn's result, left in `status` too */
+/* pcx_ctrl's result, left in `status` too */
 enum ctrl_status {
     CTRL_DONE = 1
 };

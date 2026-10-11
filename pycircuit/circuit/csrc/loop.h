@@ -74,9 +74,9 @@ typedef struct {
     double hmin, hmax;
     long status;
 } loop_t;
-long hdl_fn(loop_t *s);
+long pcx_loop(loop_t *s);
 
-/* hdl_fn's result, left in `status` too: why the loop stopped */
+/* pcx_loop's result, left in `status` too: why the loop stopped */
 enum loop_status {
     LOOP_DONE = 1,              /* the run's end: `tend` reached */
     LOOP_FULL = 2,              /* the outputs are full: take them, come back */

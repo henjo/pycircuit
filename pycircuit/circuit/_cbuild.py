@@ -25,7 +25,7 @@ CONTRACT
     chain kernels' `_fn_cdef()` when None), memoised per process in
     `_loaded`.  `CompileError` when no compiler is found or a build
     fails; a caller turns it into a status.
-    `load_unit(csrc, cdef)` is `load_kernel` for a runtime unit: no
+    `load_unit(csrc, cdef, entry)` is `load_kernel` for a runtime unit: no
     prelude, the source as `csrc(name)` gives it (its local headers
     expanded), so the key is the exact text compiled and the flags.
     The FFI an object is called through is `_ffi_for(cdef)`'s: one per
@@ -459,16 +459,17 @@ def _precompiled(cdef):
         return None
 
 
-def _dlopen(path, cdef=None):
+def _dlopen(path, cdef=None, entry=None):
     """`(ffi, cfn)` for the object at `path`: the chain functions' entry
-    by default, or the entry `cdef` declares (the limiter's `int hdl_fn`,
-    `_hdl_climit`) -- the one name, another signature; the object is
-    keyed by its source, so the two never meet in one file."""
+    (`hdl_fn`) by default, or the one `cdef` declares -- the limiter's `int
+    hdl_fn` (`_hdl_climit`: the one name, another signature; the object is
+    keyed by its source, so the two never meet in one file), or a runtime
+    unit's own, `entry` (`pcx_<unit>`)."""
     from pycircuit.circuit import hdl
     ffi = _ffi_for(cdef or _fn_cdef())
     lib = ffi.dlopen(path)
     _libs.append(lib)
-    return ffi, getattr(lib, hdl._C_ENTRY)
+    return ffi, getattr(lib, entry or hdl._C_ENTRY)
 
 
 #: In-process memo: key -> (ffi, cfn), so one function shared between
@@ -476,7 +477,7 @@ def _dlopen(path, cdef=None):
 _loaded = {}
 
 
-def load_kernel(csrc, cdef=None, rebuild_corrupt=True, prelude=True):
+def load_kernel(csrc, cdef=None, rebuild_corrupt=True, prelude=True, entry=None):
     """The loaded object for the C source `csrc` (the HDL kernels' prelude
     added unless `prelude=False`; `load_unit`):
     `(ffi, cfn, key, cold, seconds)` -- built under the key's lock when
@@ -506,7 +507,7 @@ def load_kernel(csrc, cdef=None, rebuild_corrupt=True, prelude=True):
                     _build(csrc, path, prelude)
                     cold = True
         try:
-            ffi, cfn = _dlopen(path, cdef)
+            ffi, cfn = _dlopen(path, cdef, entry)
         except OSError as e:
             if not rebuild_corrupt:
                 raise CompileError('unloadable object: %s' % e)
@@ -519,7 +520,7 @@ def load_kernel(csrc, cdef=None, rebuild_corrupt=True, prelude=True):
             _build(csrc, path, prelude)
             cold = True
             try:
-                ffi, cfn = _dlopen(path, cdef)
+                ffi, cfn = _dlopen(path, cdef, entry)
             except OSError as e2:
                 raise CompileError('rebuilt object still unloadable: %s'
                                    % e2)
@@ -527,8 +528,10 @@ def load_kernel(csrc, cdef=None, rebuild_corrupt=True, prelude=True):
     return ffi, cfn, key, cold, (time.perf_counter() - t0 if cold else 0.0)
 
 
-def load_unit(csrc, cdef):
+def load_unit(csrc, cdef, entry):
     """`load_kernel` for a runtime unit (`csrc/`): a complete C file of its
     own, its headers expanded, built WITHOUT the HDL kernels' prelude --
-    what it includes and declares is all it is compiled with."""
-    return load_kernel(csrc, cdef, prelude=False)
+    what it includes and declares is all it is compiled with -- loaded
+    through its entry `entry` (`pcx_<unit>`, the one function its header
+    declares: test_c_abi)."""
+    return load_kernel(csrc, cdef, prelude=False, entry=entry)

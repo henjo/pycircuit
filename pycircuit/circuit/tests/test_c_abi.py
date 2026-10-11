@@ -5,7 +5,7 @@ The C units are loaded through cffi's ABI mode, which lays a struct out from
 the cdef TEXT it is handed and never sees the compiled struct: a field in
 one but not the other loads without complaint and puts every later field at
 the wrong offset.  R1a compared the two texts; R1d made them ONE: each unit
-`X.c` has a header `csrc/X.h` (its struct and its `hdl_fn` declaration),
+`X.c` has a header `csrc/X.h` (its struct and its entry `pcx_X`'s declaration),
 the module's cdef IS that header's text, and `X.c` includes it, so the
 compiler checks the definition against the very declaration cffi reads.
 The function types the units share are declared once, in `pcx_abi.h`.
@@ -99,19 +99,19 @@ def _function_type(c, name):
     return m.group(0)
 
 
-def _definition(c, ret):
-    """The `ret hdl_fn(...)` definition of a C text, as a typedef of a
+def _definition(c, ret, entry):
+    """The `ret entry(...)` definition of a C text, as a typedef of a
     pointer to it named `_def_t`."""
     c = _strip(c)
-    m = re.search(r'\b' + ret + r'\s+hdl_fn\s*\(([^)]*)\)\s*\{', c)
-    assert m, 'no definition of hdl_fn in the C text'
+    m = re.search(r'\b' + ret + r'\s+' + entry + r'\s*\(([^)]*)\)\s*\{', c)
+    assert m, f'no definition of {entry} in the C text'
     return f'typedef {ret} (*_def_t)({m.group(1)});'
 
 
-def _declaration(h, ret):
-    """The `ret hdl_fn(...);` declaration of a header, as `_decl_t`."""
-    m = re.search(r'\b' + ret + r'\s+hdl_fn\s*\(([^)]*)\)\s*;', _strip(h))
-    assert m, 'no declaration of hdl_fn in the header'
+def _declaration(h, ret, entry):
+    """The `ret entry(...);` declaration of a header, as `_decl_t`."""
+    m = re.search(r'\b' + ret + r'\s+' + entry + r'\s*\(([^)]*)\)\s*;', _strip(h))
+    assert m, f'no declaration of {entry} in the header'
     return f'typedef {ret} (*_decl_t)({m.group(1)});'
 
 
@@ -202,21 +202,21 @@ def test_no_c_file_declares_a_type_and_no_header_includes_another():
 
 
 def test_core_fn_t_is_the_core_s_entry():
-    """`core_fn_t` (pcx_abi.h) is the core's own `hdl_fn`, as core.c defines
+    """`core_fn_t` (pcx_abi.h) is the core's own entry, as core.c defines
     it and core.h declares it (its first argument a `const hdl_core_t *`
     there, a `const void *` in the type: both a pointer)."""
     core_h = _raw('core.h')
-    defined = _signature(core_h + _definition(_raw('core.c'), 'long'), '_def_t')
-    declared = _signature(core_h + _declaration(core_h, 'long'), '_decl_t')
+    defined = _signature(core_h + _definition(_raw('core.c'), 'long', 'pcx_core'), '_def_t')
+    declared = _signature(core_h + _declaration(core_h, 'long', 'pcx_core'), '_decl_t')
     assert defined == declared
     assert _signature(_function_type(_raw('pcx_abi.h'), 'core_fn_t'), 'core_fn_t') == defined
 
 
 def test_walk_fn_t_is_the_walk_s_entry():
-    """`walk_fn_t` (pcx_abi.h) is the limiter walk's own `hdl_fn`, as walk.c
+    """`walk_fn_t` (pcx_abi.h) is the limiter walk's own entry, as walk.c
     defines it and walk.h declares it."""
-    defined = _signature(_definition(_raw('walk.c'), 'long'), '_def_t')
-    declared = _signature(_declaration(_raw('walk.h'), 'long'), '_decl_t')
+    defined = _signature(_definition(_raw('walk.c'), 'long', 'pcx_walk'), '_def_t')
+    declared = _signature(_declaration(_raw('walk.h'), 'long', 'pcx_walk'), '_decl_t')
     assert defined == declared
     assert _signature(_function_type(_raw('pcx_abi.h'), 'walk_fn_t'), 'walk_fn_t') == defined
 
@@ -314,7 +314,7 @@ def test_each_unit_s_precompiled_ffi_declares_what_parsing_declares(unit, cdef):
     parsed = cffi.FFI()
     parsed.cdef(cdef)
     assert _declared(pre) == _declared(parsed)
-    path = _cbuild.load_unit(_cbuild.csrc(unit + '.c'), cdef)[2]
+    path = _cbuild.load_unit(_cbuild.csrc(unit + '.c'), cdef, 'pcx_' + unit)[2]
     path = _cbuild.find_so(path)
     assert _opened(pre, path) == _opened(parsed, path)
 
@@ -345,7 +345,7 @@ def test_the_precompiled_check_sees_a_planted_difference():
     assert m, 'no enumerator to plant on'
     moved = cffi.FFI()
     moved.cdef(cdef.replace(m.group(0), f'{m.group(1)} = {int(m.group(2)) + 100}', 1))
-    path = _cbuild.find_so(_cbuild.load_unit(_cbuild.csrc('newton.c'), cdef)[2])
+    path = _cbuild.find_so(_cbuild.load_unit(_cbuild.csrc('newton.c'), cdef, 'pcx_newton')[2])
     assert _opened(pre, path) != _opened(moved, path)
 
 
@@ -408,3 +408,20 @@ def test_the_comment_checks_see_a_planted_gap():
                              '    long b;\n    long c;\n} t_t;\n')
     assert _HISTORY.findall('/* the plan\'s stage 4, 2026-10-11 */') == ['stage 4', '2026-10-11']
     assert not _HISTORY.findall('/* the next stage, the stage solve, a round-off */')
+
+
+#: (a function a header declares: a line from column 0, not a typedef)
+_FUNCTION = re.compile(r'^(?!typedef)[a-z][\w\s]*?\**\s*\b(\w+)\s*\(', re.MULTILINE)
+
+
+@pytest.mark.parametrize('unit,cdef', UNITS, ids=[u for u, _ in UNITS])
+def test_each_unit_s_header_declares_its_entry_and_no_other_function(unit, cdef):
+    """A unit's entry is named for it, `pcx_<unit>`: the one function its
+    header declares, what `load_unit` loads it by, what a backtrace or a
+    sanitizer report names -- and what another unit calls it by (loop.c)."""
+    assert set(_FUNCTION.findall(_strip(cdef))) == {'pcx_' + unit}
+
+
+def test_the_entry_check_sees_a_planted_function():
+    text = 'typedef long (*x_t)(long);\nlong pcx_a(a_t *s);\nvoid *pcx_b(int w);\n'
+    assert set(_FUNCTION.findall(text)) == {'pcx_a', 'pcx_b'}

@@ -499,7 +499,7 @@ def _walk_drv():
     global _walk_driver, WALK_STATUS
     if _walk_driver is None:
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(_WALK_C, _WALK_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(_WALK_C, _WALK_CDEF, 'pcx_walk')
         except (_cbuild.CompileError, OSError) as e:
             _walk_driver = False
             WALK_STATUS = f'off ({e})'

@@ -129,7 +129,7 @@ static long assemble(radau_t *s, long a)
    struct's buffers only the core's and the walk's own writes are made (the
    core's bins, its scratch; the temperature in the elements' parameter
    rows), as the Python's calls of the same C make them. */
-long hdl_fn(radau_t *s)
+long pcx_radau(radau_t *s)
 {
     long n = s->n, m = n - 1, r = s->iref, M = 3 * m, a = 0, it, i, k, e;
     int64_t M64 = M, one64 = 1, info64 = 0;

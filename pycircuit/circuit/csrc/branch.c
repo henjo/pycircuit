@@ -20,7 +20,7 @@
    QUIET, COLLAPSED, SVD: `nrm` and `ref` written.  BRANCH_BAIL_NONFINITE:
    an entry read is not finite, `nrm` and `ref` not written.  `verdict` is
    always set; the running maximum is the caller's to assign. */
-long hdl_fn(branch_t *s)
+long pcx_branch(branch_t *s)
 {
     long n = s->n, k, i;
     const double *C = s->C;

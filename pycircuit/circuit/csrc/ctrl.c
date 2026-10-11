@@ -54,7 +54,7 @@ static double retry_exponent(ctrl_t *s, double err, double p, double target)
    error test's (finite, not negative).  Writes `accepted`, `h_next`, the
    retry state as `_judged` leaves `_retry` (kept on a rejection, cleared
    on an accept) and, measuring, `q_carried`; always CTRL_DONE. */
-long hdl_fn(ctrl_t *s)
+long pcx_ctrl(ctrl_t *s)
 {
     /* target = `_band_target(0.9, p)` with no band: `safety ** p`, Python's
        float `**` -- libm's pow */

@@ -251,7 +251,7 @@ def driver():
             STATUS = "off (numpy's complex product is neither form)"
             return None
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(RADAU_TC, RADAU_TC_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(RADAU_TC, RADAU_TC_CDEF, 'pcx_radau_tc')
         except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None
@@ -274,7 +274,7 @@ def _fold_driver():
             _FOLD['status'] = "off (numpy's complex product is neither form)"
             return None
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(FOLD_C, FOLD_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(FOLD_C, FOLD_CDEF, 'pcx_radau_fold')
         except (_cbuild.CompileError, OSError) as e:
             _FOLD['status'] = f'off ({e})'
             return None

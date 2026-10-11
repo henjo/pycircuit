@@ -82,7 +82,7 @@ def load():
         STATUS = 'off (no dict watchers: CPython 3.12+)'
         return None
     try:
-        ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(WATCH_C, WATCH_CDEF)
+        ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(WATCH_C, WATCH_CDEF, 'pcx_watch')
     except (_cbuild.CompileError, OSError) as e:
         STATUS = f'off ({e})'
         return None

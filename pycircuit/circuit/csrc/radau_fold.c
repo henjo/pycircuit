@@ -48,7 +48,7 @@ static void cmul(long fused, double ar, double ai, double br, double bi, double 
    call; rf and cf unless status 2 (read by the glue only on status 0); ax
    only past status 0 with a pattern, partly where `same` stays 0 (not
    read then).  Returns 0 always: the outcome is `status`. */
-long hdl_fn(radau_fold_t *f)
+long pcx_radau_fold(radau_fold_t *f)
 {
     const long m = f->m, mm = m * m;
     long i, j, k;

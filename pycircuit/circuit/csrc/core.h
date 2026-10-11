@@ -114,7 +114,7 @@ typedef struct {
    slot.  F and J are touched only where written, so a caller may pass
    any buffer of the size otherwise (`_tran_core.evaluate` passes q and
    Geq).  Returns 0. */
-long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long formula,
+long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long formula,
             double a0, double a1, double a2, double h, double theta,
             const double *q1, const double *q2, const double *iq1, const double *u,
             const double *Cin, double *C, double *q, double *iq, double *Geq,

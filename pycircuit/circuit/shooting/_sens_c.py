@@ -107,7 +107,7 @@ def driver():
             STATUS = f'off ({e})'
             return None
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(SENS_C_SRC, SENS_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(SENS_C_SRC, SENS_CDEF, 'pcx_sens')
         except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None

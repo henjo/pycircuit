@@ -12,14 +12,14 @@
 
 /* ---- the other units' entries ---------------------------------------- */
 
-/* the evaluation core, core.c's hdl_fn (its first argument a
+/* the evaluation core, core.c's `pcx_core` (its first argument a
    `const hdl_core_t *` there): the elements' C, q, i, G at x, stamped */
 typedef long (*core_fn_t)(const void *c, const double *x, double T, long want, long formula,
             double a0, double a1, double a2, double h, double theta,
             const double *q1, const double *q2, const double *iq1, const double *u,
             const double *Cin, double *C, double *q, double *iq, double *Geq,
             double *F, double *J);
-/* the limiter walk, walk.c's hdl_fn: each limited element's limiter on xg
+/* the limiter walk, walk.c's `pcx_walk`: each limited element's limiter on xg
    from `start`; returns n, or the element whose limiter declined */
 typedef long (*walk_fn_t)(void **F, double **PR, const int64_t *TI, double T,
             const int64_t *NM, const int64_t *OFF, const int64_t *K,

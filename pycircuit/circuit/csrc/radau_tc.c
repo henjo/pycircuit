@@ -74,7 +74,7 @@ static void cmul(long fused, double ar, double ai, double br, double bi, double 
    struct's buffers and the factorisations only the core's and the walk's
    own writes are made (the core's bins; the temperature in the elements'
    parameter rows), as the Python's calls of the same C make them. */
-long hdl_fn(radau_tf_t *s)
+long pcx_radau_tc(radau_tf_t *s)
 {
     long n = s->n, m = n - 1, r = s->iref, it, i, j, k, e;
     core_fn_t core = (core_fn_t) s->core_fn;

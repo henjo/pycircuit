@@ -107,7 +107,7 @@ def driver():
     global _driver, STATUS
     if _driver is None:
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(PASS_C, PASS_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(PASS_C, PASS_CDEF, 'pcx_pass')
         except (_cbuild.CompileError, OSError) as e:
             _driver = False
             STATUS = f'off ({e})'

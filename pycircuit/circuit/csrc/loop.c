@@ -3,30 +3,19 @@
 #include <string.h>
 #include <math.h>
 #include "pcx_abi.h"
-/* the units' structs -- each header declares its own unit's entry as
-   `hdl_fn`, renamed here: this unit calls them through the pointers it is
-   handed, as the Newton calls the core */
-#define hdl_fn pcx_newton_entry_
+/* the units this one calls through the pointers it is handed: their
+   structs and entries */
 #include "newton.h"
-#undef hdl_fn
-#define hdl_fn pcx_pred_entry_
 #include "pred.h"
-#undef hdl_fn
-#define hdl_fn pcx_branch_entry_
 #include "branch.h"
-#undef hdl_fn
-#define hdl_fn pcx_sources_entry_
 #include "sources.h"
-#undef hdl_fn
-#define hdl_fn pcx_lte_entry_
 #include "lte.h"
-#undef hdl_fn
-#define hdl_fn pcx_ctrl_entry_
 #include "ctrl.h"
-#undef hdl_fn
 #include "loop.h"
 
-#define CALL(fn, T, p) (((long (*)(T *)) (fn))(p))
+/* a call to a unit through its pointer, typed by the unit's own declaration:
+   a struct that is not its own does not compile */
+#define CALL(fn, entry, p) (((__typeof__(&entry)) (fn))(p))
 /* `integrator.SHRINK_GUARD_RATIO` (test_loop_c holds the two together) */
 #define SHRINK_GUARD_RATIO 0.1
 #define COPY(dst, src, n) memcpy((dst), (src), (size_t) (n) * sizeof(double))
@@ -46,13 +35,13 @@ static int next_breakpoint(loop_t *s, double t, double *out)
     double a = fabs(t), m = (1.0 > a) ? 1.0 : a, nb;
     src->mode = SOURCES_NEXT;
     src->t = t;
-    if (CALL(s->src_fn, sources_t, src) != SOURCES_DONE) return 0;
+    if (CALL(s->src_fn, pcx_sources, src) != SOURCES_DONE) return 0;
     nb = (t >= src->t_next) ? t : src->t_next;
     if (nb <= t + s->minbreak * m) {
         double t2 = t + (s->minbreak * 1e3) * m;
         src->mode = SOURCES_NEXT;
         src->t = t2;
-        if (CALL(s->src_fn, sources_t, src) != SOURCES_DONE) return 0;
+        if (CALL(s->src_fn, pcx_sources, src) != SOURCES_DONE) return 0;
         nb = (t2 >= src->t_next) ? t2 : src->t_next;
     }
     *out = nb;
@@ -105,7 +94,7 @@ static void attempt_made(loop_t *s, newton_t *nt, long nxt, long formula, double
    attempt's), the `att_*` fields its step, and the rings, the predictor's
    nodes, `xlast`, X and T accepted steps only.  The counts are this call's
    (zeroed here). */
-long hdl_fn(loop_t *s)
+long pcx_loop(loop_t *s)
 {
     newton_t *nt = (newton_t *) s->newton;
     pred_t *pr = (pred_t *) s->pred;
@@ -171,7 +160,7 @@ long hdl_fn(loop_t *s)
         /* the seed: the predictor's, or the last point */
         pr->hk = s->hk;
         pr->ttarget = tn;
-        st = CALL(s->pred_fn, pred_t, pr);
+        st = CALL(s->pred_fn, pcx_pred, pr);
         if (st == PRED_DONE) seed = pr->out;
         else if (st == PRED_NONE) seed = s->xlast;
         else return s->status = LOOP_BAIL_PRED;
@@ -179,7 +168,7 @@ long hdl_fn(loop_t *s)
         /* u at the attempt's end */
         src->mode = SOURCES_U;
         src->t = tn;
-        if (CALL(s->src_fn, sources_t, src) != SOURCES_DONE) return s->status = LOOP_BAIL_SOURCES;
+        if (CALL(s->src_fn, pcx_sources, src) != SOURCES_DONE) return s->status = LOOP_BAIL_SOURCES;
         /* the Newton, its inputs as `_tran_newton_c.solve` sets them */
         nt->formula = formula;
         nt->a0 = a0;
@@ -201,12 +190,12 @@ long hdl_fn(loop_t *s)
         }
         nt->Cj = s->cC[nxt];
         nt->Geqj = s->Geq[nxt];
-        if (CALL(s->newton_fn, newton_t, nt) != NEWTON_CONVERGED) return s->status = LOOP_BAIL_NEWTON;
+        if (CALL(s->newton_fn, pcx_newton, nt) != NEWTON_CONVERGED) return s->status = LOOP_BAIL_NEWTON;
         /* the branch screen, after the solve */
         if (br) {
             br->C = nt->Cj;
             br->cmax = s->cmax;
-            if (CALL(s->branch_fn, branch_t, br) != BRANCH_QUIET) return s->status = LOOP_BAIL_SCREEN;
+            if (CALL(s->branch_fn, pcx_branch, br) != BRANCH_QUIET) return s->status = LOOP_BAIL_SCREEN;
         }
         /* 3. judge: the error test, the controller's law, the budget */
         if (s->adaptive) {
@@ -253,7 +242,7 @@ long hdl_fn(loop_t *s)
             le->J = nt->Jj;
             le->run = s->run;
             le->have_run = s->have_run;
-            if (CALL(s->lte_fn, lte_t, le) != LTE_DONE) return s->status = LOOP_BAIL_LTE;
+            if (CALL(s->lte_fn, pcx_lte, le) != LTE_DONE) return s->status = LOOP_BAIL_LTE;
             err = le->err;
             ct->err = err;
             /* (`_max_error`'s exponent: the order + 1; the point the attempt
@@ -262,7 +251,7 @@ long hdl_fn(loop_t *s)
             ct->h = h;
             ct->max_step = s->max_step;
             ct->point = s->npoint - 1;
-            CALL(s->ctrl_fn, ctrl_t, ct);
+            CALL(s->ctrl_fn, pcx_ctrl, ct);
             if (!ct->accepted) {
                 double hn = ct->h_next;
                 int growth = hn > h;

@@ -31,7 +31,7 @@
 typedef struct {
     /* THE CORE (CTX): `_tran_core._Core.cs` and core.c's entry */
     const void *core;     /* the core's hdl_core_t */
-    void *core_fn;        /* core.c's hdl_fn (core_fn_t, pcx_abi.h) */
+    void *core_fn;        /* core.c's `pcx_core` (core_fn_t, pcx_abi.h) */
     /* THE COMPANION (CALL; LOOP sets all but T): the integrator
        `check_order_drop` chose and its scalars, as `_tran_core.evaluate`
        sets them up */
@@ -50,7 +50,7 @@ typedef struct {
     /* THE LIMITER WALK (WALK): walk.c's entry and the tables of the
        circuit's walk object (`_hdl_climit`: these point into its arrays,
        not the record's); walk_fn NULL and wn 0 where nothing limits */
-    void *walk_fn;        /* walk.c's hdl_fn (walk_fn_t, pcx_abi.h) */
+    void *walk_fn;        /* walk.c's `pcx_walk` (walk_fn_t, pcx_abi.h) */
     void **wF;            /* (wn) each element's C limiter (lim_fn_t; 0
                              stops the walk there) */
     double **wPR;         /* (wn) its parameter row */
@@ -172,9 +172,9 @@ typedef struct {
    temperature slot (the core's and the walk's kernels) -- the core's own
    scratch, and on the sparse chord KLU's common; the numeric it factors
    it frees before it returns. */
-long hdl_fn(newton_t *s);
+long pcx_newton(newton_t *s);
 
-/* hdl_fn's result, left in `status` too (`_tran_newton_c.BAIL` names the
+/* pcx_newton's result, left in `status` too (`_tran_newton_c.BAIL` names the
    bails from these).  Every code from 2 is a hand-back: `_tran_newton_c`
    rolls the attempt's trace back and the Python Newton repeats the solve
    from the same seed (loop.c stops, LOOP_BAIL_NEWTON: the attempt is the

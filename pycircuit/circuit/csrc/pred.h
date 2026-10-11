@@ -39,9 +39,9 @@ typedef struct {
     long wk;                /* the weights `w` holds (0: none yet) */
     int64_t ipiv[5];        /* work: dgesv's pivots */
     void *dgesv, *dgemv;    /* numpy's own (`scipy_dgesv_64_`, `scipy_cblas_dgemv64_`) */
-    long status;            /* OUT: hdl_fn's result, enum pred_status */
+    long status;            /* OUT: pcx_pred's result, enum pred_status */
 } pred_t;
-long hdl_fn(pred_t *s);
+long pcx_pred(pred_t *s);
 
 /* the capacities the struct, pred.c, the C loop and both glues share: the
    nodes a history holds (`_StagePredictor.PRED_HIST_MAX`: `ht`, `hx`) and the
@@ -52,7 +52,7 @@ enum pred_cap {
     PRED_FIT_MAX = 5
 };
 
-/* hdl_fn's result, left in `status` too */
+/* pcx_pred's result, left in `status` too */
 enum pred_status {
     PRED_DONE = 1,          /* `out` is the prediction */
     PRED_NONE = 2,          /* no prediction: the seed is the last point */

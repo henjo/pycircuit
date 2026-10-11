@@ -69,7 +69,7 @@ def driver():
         _driver = False
         from pycircuit.circuit import _hdl_cbackend as cb
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(SOURCES_C, SOURCES_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(SOURCES_C, SOURCES_CDEF, 'pcx_sources')
         except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None

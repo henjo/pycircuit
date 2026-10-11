@@ -27,15 +27,15 @@ typedef struct {
        Z[c n + row]) the solution, a fresh array `_map` sets each call and
        clears after; its last stage block is the new P */
     double *J; int *ipiv; double *Z;
-    /* outputs: status (a sens_status, also hdl_fn's result), set on every
+    /* outputs: status (a sens_status, also pcx_sens's result), set on every
        return; info, LAPACK's info of the last call made (dgetrf, then
        dgetrs) -- not written where the call bails before dgetrf, not read
        by the glue */
     long status, info;
 } sens_t;
-long hdl_fn(sens_t *t);
+long pcx_sens(sens_t *t);
 
-/* hdl_fn's result, left in `status` too (`_sens_c.BAIL` names the bails
+/* pcx_sens's result, left in `status` too (`_sens_c.BAIL` names the bails
    from these).  A bail hands the step back: the glue reads the status
    alone and the Python step runs: */
 enum sens_status {

@@ -32,9 +32,9 @@ typedef struct {
        the nonzeros fall exactly on the pattern (ax then complete) */
     long status, same;
 } radau_fold_t;
-long hdl_fn(radau_fold_t *f);
+long pcx_radau_fold(radau_fold_t *f);
 
-/* `status` after hdl_fn (which returns 0): */
+/* `status` after pcx_radau_fold (which returns 0): */
 enum radau_fold_status {
     FOLD_STATUS_MADE = 0,
     FOLD_STATUS_FLAGGED = 1,     /* a flag `errstate(all='raise')` raises on */

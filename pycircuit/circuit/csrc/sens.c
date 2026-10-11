@@ -23,7 +23,7 @@
    bail code, also in `status`: J, ipiv and Z possibly part-written, none
    read by the glue.  The floating-point flags are left as they are, on
    every return (none cleared). */
-long hdl_fn(sens_t *t)
+long pcx_sens(sens_t *t)
 {
     long s = t->s, m = t->m, k = t->k, nf = t->nf, n = s * m, nn = nf * nf;
     long i, j, r, c;

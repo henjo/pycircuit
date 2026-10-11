@@ -21,7 +21,7 @@
         else { for (s = 0; s < n * n; s++) { body; } } \
     } while (0)
 /* the entry (contract: core.h) */
-long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long formula,
+long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long formula,
             double a0, double a1, double a2, double h, double theta,
             const double *q1, const double *q2, const double *iq1, const double *u,
             const double *Cin, double *C, double *q, double *iq, double *Geq,

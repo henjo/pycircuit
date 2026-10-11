@@ -111,7 +111,7 @@ def driver():
     if _driver is None:
         _driver = False
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(LOOP_C, LOOP_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(LOOP_C, LOOP_CDEF, 'pcx_loop')
         except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None

@@ -15,7 +15,7 @@
  *     a context of the run's own, and loop.c sets the [step] fields at each
  *     attempt, re-pointing the [step] pointers at its own and the Newton's
  *     buffers.
- * hdl_fn reads the inputs and writes the work buffers, `out`, `err` and
+ * pcx_lte reads the inputs and writes the work buffers, `out`, `err` and
  * `status` -- lte.c says what holds after a bail. */
 typedef struct {
     long n,                     /* [ctx] unknowns: J is n x n, each vector n */
@@ -72,7 +72,7 @@ typedef struct {
     void *dgesv;                /* [ctx] numpy's own `scipy_dgesv_64_` (dgesv64_t) */
     double err;                 /* OUT: the largest normalised error; written on
                                    LTE_DONE only */
-    long status;                /* OUT: hdl_fn's result, enum lte_status */
+    long status;                /* OUT: pcx_lte's result, enum lte_status */
     /* THE SPARSE SOLVE: where `klu_sym` is set, J^-1 Eg is
        `StructuralKLU.solve`'s -- the reduced J row-major
        (`R`, remove_row_col's copy), its pattern's values (`kAx`, by `ktake`:
@@ -102,9 +102,9 @@ typedef struct {
         *klu_refactor, *klu_solve,  /* KLU's entries (klu_refactor_t, klu_solve_t) */
         *dgemv;                 /* numpy's own cblas dgemv (dgemv64_t), for R x */
 } lte_t;
-long hdl_fn(lte_t *s);
+long pcx_lte(lte_t *s);
 
-/* hdl_fn's result, left in `status` too (`_tran_lte_c.BAIL` names the
+/* pcx_lte's result, left in `status` too (`_tran_lte_c.BAIL` names the
    bails from these): */
 enum lte_status {
     LTE_DONE = 1,                /* `err` and `out` are the answer */

@@ -10,7 +10,7 @@
  * a complex array is (re, im) pairs of doubles. */
 typedef struct {
     /* wiring, set once by `_Ctx.__init__`: the evaluate core's struct
-       (`core.cs`) and its entry (core.c's hdl_fn, a core_fn_t, called with
+       (`core.cs`) and its entry (core.c's `pcx_core`, a core_fn_t, called with
        formula 4: the passes alone) */
     const void *core;
     void *core_fn;
@@ -24,7 +24,7 @@ typedef struct {
     const double *bini;
     double *dummy;
     long bits;
-    /* wiring: the limiter walk (walk.c's hdl_fn, a walk_fn_t, and its
+    /* wiring: the limiter walk (walk.c's `pcx_walk`, a walk_fn_t, and its
        tables; `wn` its elements), set by `_tran_newton_c._walk_ready` where
        the circuit limits; walk_fn NULL and wn 0 where it does not */
     void *walk_fn; void **wF; double **wPR; const int64_t *wTI, *wNM, *wOFF, *wK; long wn;
@@ -85,8 +85,8 @@ typedef struct {
        step; tolv (2) reltol * ynorm, then plus abstol (stored: see
        radau_tc.c) */
     double *Y, *Yp, *q, *iv, *K, *F, *R, *b0, *x0, *r1, *x1, *y1, *ab, *dY, *stp, *tolv;
-    /* outputs, set by hdl_fn on every call: iters (the iterations
-       completed), status (a radau_tc_status, also hdl_fn's result) */
+    /* outputs, set by pcx_radau_tc on every call: iters (the iterations
+       completed), status (a radau_tc_status, also pcx_radau_tc's result) */
     long iters, status;
     /* the step's end passes (`_stage_end_passes`'s calls, made after
        convergence).  binG, wiring set once: the core's own G bin.  end_bits,
@@ -100,9 +100,9 @@ typedef struct {
        made), not read */
     double *e_q, *e_i, *e_C, *e_G, *e_C01, *e_G01, *e_q01;
 } radau_tf_t;
-long hdl_fn(radau_tf_t *s);
+long pcx_radau_tc(radau_tf_t *s);
 
-/* hdl_fn's result, left in `status` too (`_tran_radau_tc.BAIL` names the
+/* pcx_radau_tc's result, left in `status` too (`_tran_radau_tc.BAIL` names the
    bails from these).  A bail hands the loop back: the glue reads the
    status and the factorisations' state (lu_info, refactored), and the
    Python loop runs from the same seed: */

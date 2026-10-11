@@ -275,7 +275,7 @@ def test_a_core_with_the_wrong_accumulation_order_is_caught(monkeypatch):
     src = _tran_core.CORE_C.replace('for (s = 0; s < L; s++) bin[flat[s]] += buf[s];',
                                     'for (s = L - 1; s >= 0; s--) bin[flat[s]] += buf[s];')
     assert src != _tran_core.CORE_C
-    ffi, cfn, key, _cold, _secs = _cbuild.load_unit(src, _tran_core.CORE_CDEF)
+    ffi, cfn, key, _cold, _secs = _cbuild.load_unit(src, _tran_core.CORE_CDEF, 'pcx_core')
     assert key != _cbuild.source_key(_tran_core.CORE_C, prelude=False)
     drv = _tran_core.driver()
     monkeypatch.setattr(_tran_core, '_driver', (ffi, cfn, drv[2]))

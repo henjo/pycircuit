@@ -9,7 +9,7 @@
  * Arrays are C order (row-major) unless said otherwise. */
 typedef struct {
     /* wiring, set once by `_Ctx.__init__`: the evaluate core's struct
-       (`core.cs`) and its entry (core.c's hdl_fn, a core_fn_t, called with
+       (`core.cs`) and its entry (core.c's `pcx_core`, a core_fn_t, called with
        formula 4: the passes alone) */
     const void *core;
     void *core_fn;
@@ -23,7 +23,7 @@ typedef struct {
     /* wiring, set once: max(n*n, 1) zeros for the core's arguments formula
        4 neither reads nor writes */
     double *dummy;
-    /* wiring: the limiter walk (walk.c's hdl_fn, a walk_fn_t, and its
+    /* wiring: the limiter walk (walk.c's `pcx_walk`, a walk_fn_t, and its
        tables; `wn` its elements), set by `_tran_newton_c._walk_ready` where
        the circuit limits; walk_fn NULL and wn 0 where it does not */
     void *walk_fn; void **wF; double **wPR; const int64_t *wTI, *wNM, *wOFF, *wK; long wn;
@@ -59,14 +59,14 @@ typedef struct {
     double *K, *F, *R, *Jf, *b, *blk, *stp, *tolv;
     /* work: dgesv's pivots (max(M, 1), `_Ctx.buf['ipiv']`) */
     int64_t *ipiv;
-    /* outputs, set by hdl_fn on every call: assemblies (0 until
+    /* outputs, set by pcx_radau on every call: assemblies (0 until
        RADAU_CONVERGED, then the assemblies made), iters (the iterations
-       completed), status (a radau_status, also hdl_fn's result) */
+       completed), status (a radau_status, also pcx_radau's result) */
     long assemblies, iters, status;
 } radau_t;
-long hdl_fn(radau_t *s);
+long pcx_radau(radau_t *s);
 
-/* hdl_fn's result, left in `status` too (`_tran_radau_c.BAIL` names the
+/* pcx_radau's result, left in `status` too (`_tran_radau_c.BAIL` names the
    bails from these; 7 and 10 unused).  A bail hands the solve back: the
    glue reads nothing but the status, and the Python Newton runs from the
    same seed: */

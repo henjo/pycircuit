@@ -15,7 +15,7 @@
    would take a course this cannot follow (a non-finite value, a LAPACK or
    KLU failure, a limiter's decline, a chord break, maxiter) it returns a
    bail and the Python repeats the solve.
-   Assumes what `hdl_fn` assumes (newton.h).  Returns the status, also left
+   Assumes what `pcx_newton` assumes (newton.h).  Returns the status, also left
    in `status`.  NEWTON_CONVERGED: `x` the reduced solution, `iters`, and
    where fold_j is nonzero xc, Cj, qj, iqj, Geqj (and Jj where it has
    PCX_PASS_G).  A bail writes none of xc .. Jj.  Every return: `*num` the
@@ -218,7 +218,7 @@ static long iterate(newton_t *s, void **num)
 
 /* the entry (contract: newton.h); the sparse chord's numeric is the
    solve's own, freed on every return */
-long hdl_fn(newton_t *s)
+long pcx_newton(newton_t *s)
 {
     void *num = 0;
     long status = iterate(s, &num);

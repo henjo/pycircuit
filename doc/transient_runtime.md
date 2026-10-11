@@ -58,7 +58,7 @@ object's counts (`factors`, `refactors`, `numerics`) what the Python would; a re
 a zero pivot bails to the Python, which factors afresh and counts it (`pivot_fallbacks`).
 
 Every unit has the same shape: a header `csrc/X.h` that is both what the C compiles and what cffi
-reads (its structs, its entry `long hdl_fn(X_t *)`, its codes as named enums); a `csrc/X.c` that
+reads (its structs, its entry `pcx_X(X_t *)`, named for the unit, its codes as named enums); a `csrc/X.c` that
 includes it; and a glue module that checks the case, fills the struct, calls the entry, reads the
 status, and writes back. `csrc/pcx_abi.h` holds what units share (the core's and the walk's
 signatures, the LAPACK, BLAS and KLU typedefs, the pass bits and formula codes);
@@ -141,7 +141,7 @@ attribute and the controller's state -- and, for the loop, every count but its o
 
 ## Building and loading
 
-`_cbuild.load_unit(csrc, cdef)` returns the unit's object from the store (`~/.cache/pycircuit/hdl`
+`_cbuild.load_unit(csrc, cdef, entry)` returns the unit's object from the store (`~/.cache/pycircuit/hdl`
 or a per-process directory with the cache off), keyed by the exact source text and the flags,
 built under the key's lock when absent. `CFLAGS` are strict IEEE (no fast-math, no FMA
 contraction, no `-march`, every transcendental a real libm call): the bit identity rests on them.
@@ -152,7 +152,7 @@ the process.
 
 ## Adding a C unit
 
-1. `csrc/X.h` (structs, the entry, the codes as named enums; no `#include`) and `csrc/X.c`
+1. `csrc/X.h` (structs, the entry `pcx_X`, the codes as named enums; no `#include`) and `csrc/X.c`
    (includes `X.h` once); shared types in `pcx_abi.h`, not in a unit's header.
 2. The glue `_tran_X_c.py`: its switch, `driver()`, the eligibility checks and their decline
    reasons, the call, the write-back; its docstring says what it stands for, what it keeps on

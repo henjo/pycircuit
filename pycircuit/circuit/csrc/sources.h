@@ -7,7 +7,7 @@
  * pass: `n`, `ns`, the per-source arrays and `out` (numpy arrays the table
  * keeps), once -- `Table.holds` re-checks what they were read from.  At
  * each call `Table._call`, or in the C loop loop.c (the breakpoint search
- * and each attempt's u), sets `mode` and `t`; hdl_fn writes `out` or
+ * and each attempt's u), sets `mode` and `t`; pcx_sources writes `out` or
  * `t_next`, `status` and `bad`. */
 typedef struct {
     long n,                 /* the unknowns: `out` holds n */
@@ -28,10 +28,10 @@ typedef struct {
         t_next;             /* OUT (SOURCES_NEXT): the earliest event strictly
                                after t, inf where none */
     double *out;            /* OUT (SOURCES_U), n: u(t) */
-    long status,            /* OUT: hdl_fn's result, enum sources_status */
+    long status,            /* OUT: pcx_sources's result, enum sources_status */
         bad;                /* OUT: the source a bail stopped at, -1 otherwise */
 } sources_t;
-long hdl_fn(sources_t *s);
+long pcx_sources(sources_t *s);
 
 /* a source's waveform (its `function`'s class), and its parameters' order
    in `par` from `poff` */
@@ -44,12 +44,12 @@ enum sources_kind {
     SOURCES_AM = 5,     /* vo, va, fc, fm, m, pi */
     SOURCES_SFFM = 6    /* vo, va, fc, mdi, fm, pi */
 };
-/* what hdl_fn does: `mode` */
+/* what pcx_sources does: `mode` */
 enum sources_mode {
     SOURCES_U = 0,      /* u(t) into out[n], each bin from +0.0 */
     SOURCES_NEXT = 1    /* the earliest event strictly after t, into t_next */
 };
-/* hdl_fn's result, left in `status` too (`_tran_sources.BAIL` names the
+/* pcx_sources's result, left in `status` too (`_tran_sources.BAIL` names the
    bails from these; `bad` the source): */
 enum sources_status {
     SOURCES_DONE = 1,

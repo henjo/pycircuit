@@ -41,7 +41,7 @@ static long done(pred_t *s, long status)
    hold a product or part of the clamp); `xt`, `motion`, `V`, `ipiv` are
    work; `tau`, `w`, `wk` change only by a solve that succeeded (`wk` is 0
    while it runs).  Every return leaves the flags clear (`done`). */
-long hdl_fn(pred_t *s)
+long pcx_pred(pred_t *s)
 {
     /* nodes[8]: the history's indices newest first, the 1e-13 duplicates
        dropped -- the first eight recorded (the history's capacity, pred.h;

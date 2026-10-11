@@ -233,7 +233,7 @@ static int next_event(long kind, const double *p, long np_, double t, double *tn
    SOURCES_DONE: the answer written, `bad` -1.  A bail: `bad` the source;
    in SOURCES_U `out` may be partly summed, in SOURCES_NEXT `t_next` is
    not written -- the caller reads neither. */
-long hdl_fn(sources_t *s)
+long pcx_sources(sources_t *s)
 {
     const double t = s->t;
     long k;

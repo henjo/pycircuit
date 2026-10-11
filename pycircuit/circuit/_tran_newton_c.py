@@ -162,7 +162,7 @@ def driver():
             STATUS = f'off ({e})'
             return None
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(NEWTON_C, NEWTON_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(NEWTON_C, NEWTON_CDEF, 'pcx_newton')
         except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None

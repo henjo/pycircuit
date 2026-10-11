@@ -63,7 +63,7 @@ def driver():
             STATUS = f'off (numpy\'s LAPACK: {_tran_newton_c.STATUS})'
             return None
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(PRED_C, PRED_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(PRED_C, PRED_CDEF, 'pcx_pred')
         except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None

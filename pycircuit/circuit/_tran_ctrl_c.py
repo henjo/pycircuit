@@ -44,7 +44,7 @@ def driver():
     if _driver is None:
         _driver = False
         try:
-            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(CTRL_C, CTRL_CDEF)
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(CTRL_C, CTRL_CDEF, 'pcx_ctrl')
         except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None

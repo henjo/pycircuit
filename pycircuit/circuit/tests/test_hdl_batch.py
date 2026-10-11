@@ -431,7 +431,7 @@ def test_a_driver_with_the_wrong_stride_is_caught(kernel_calls, monkeypatch):
         cir.G(x)
     src = _hdl_batch.PASS_C.replace('X + e * sx', 'X + e * (sx - 1)')
     assert src != _hdl_batch.PASS_C
-    ffi, cfn, key, _cold, _secs = _cbuild.load_unit(src, _hdl_batch.PASS_CDEF)
+    ffi, cfn, key, _cold, _secs = _cbuild.load_unit(src, _hdl_batch.PASS_CDEF, 'pcx_pass')
     assert key != _cbuild.source_key(_hdl_batch.PASS_C, prelude=False)
     monkeypatch.setattr(_hdl_batch, '_driver',
                         (ffi, cfn, ffi.typeof('double *'), ffi.typeof('double **')))

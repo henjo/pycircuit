@@ -41,7 +41,7 @@ static long lte_bail(lte_t *s, long why)
    `klu_num` in place: on a hand-back after the refactor the Python's own
    solve refactors it again, from the same values.  Flags: what KLU raised
    is cleared; on 0 the flags hold at most what the last division raised
-   (hdl_fn's next test sees it), on a bail the caller clears them. */
+   (pcx_lte's next test sees it), on a bail the caller clears them. */
 static long sparse_solve(lte_t *s, long n, long r)
 {
     long m = n - 1, k, i, nz_r = 0, nz_a = 0;
@@ -110,7 +110,7 @@ static long sparse_solve(lte_t *s, long n, long r)
    A bail (enum lte_status): `err` is not written; `out` and the work
    buffers may hold part of the work -- no caller reads them on a bail --
    and the inputs are only read.  Every return leaves the flags clear. */
-long hdl_fn(lte_t *s)
+long pcx_lte(lte_t *s)
 {
     long n = s->n, m = n - 1, r = s->iref, i;
     int64_t m64 = m, one64 = 1, info64 = 0;

@@ -1,7 +1,7 @@
 
 #include "pcx_abi.h"
 #include "pass.h"
-void hdl_fn(const void *fn, const double *X, double **PR, double *OUT,
+void pcx_pass(const void *fn, const double *X, double **PR, double *OUT,
             long n, long sx, long so, long ti, double T)
 {
     pass_fn_t f = (pass_fn_t) fn;

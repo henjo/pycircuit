@@ -20,11 +20,11 @@ typedef struct {
                                relative tolerance (BRANCH_SCREEN_TOL) */
     double nrm, ref;        /* out: |C|'s largest entry, the new running
                                maximum (not written on a bail) */
-    long verdict;           /* out: hdl_fn's result, enum branch_verdict */
+    long verdict;           /* out: pcx_branch's result, enum branch_verdict */
 } branch_t;
-long hdl_fn(branch_t *s);
+long pcx_branch(branch_t *s);
 
-/* hdl_fn's result, left in `verdict` too: `_branch_screen_C`'s cheap level */
+/* pcx_branch's result, left in `verdict` too: `_branch_screen_C`'s cheap level */
 enum branch_verdict {
     BRANCH_QUIET = 0,            /* nothing collapsed: no SVD */
     BRANCH_COLLAPSED = 1,        /* C collapsed entirely: fired, no direction */
