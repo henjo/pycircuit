@@ -53,8 +53,8 @@ entry that made no attempt doubles the Python attempts made before the
 next, up to `BACKOFF_MAX`; one that made any resets it), watching off, a
 kept decline while nothing watched has moved, the Newton's (adaptive: the
 error test's) last call not served.  DECLINES (`loop_c:<reason>`, kept on
-the loop until something watched moves unless the reason is the
-attempt's): no build, a patched or shadowed piece (`_PIECES`, the table
+the loop until something watched moves where `_KEEPS` says the reason is
+the run's, not the attempt's): no build, a patched or shadowed piece (`_PIECES`, the table
 `_own`, `_pieces` and `_SHADOWS` are made from; `_CIRCUIT_SHADOWS`), another statistics class, loop or family, a fixed-step
 loop whose Jacobian something reads, an imposed step, events or a periodic
 state, the continuation rescue or a stateful limiter, a circuit hook, an
@@ -370,11 +370,29 @@ def _bind(tr, rec, tab, n, hist_len, screen, judge):
     return run
 
 
-def _declined(loop, why, keep=True):
-    """The entry declined, counted -- kept on the loop (`keep`) until
-    something watched moves, where the reason is the run's and not the
-    attempt's."""
-    if keep:
+#: THE DECLINES (`loop_c:<reason>`), each the run's -- kept on the loop
+#: (`c_kept`) until something watched moves -- or the attempt's alone (the
+#: next Python attempt enters again)
+_KEEPS = {
+    ## the run's: its pieces, classes, settings, circuit and sources
+    'driver': True, 'patched': True, 'stats': True, 'loop': True, 'shadow': True,
+    'events': True, 'state': True, 'circuit': True, 'integrator': True, 'predictor': True,
+    'umemo': True, 'sources': True, 'table': True, 'breakpoints': True, 'minbreak': True,
+    'screen': True, 'pred': True, 'bind': True,
+    ## (the adaptive judge's, `_judge`)
+    'controller': True, 'veto': True, 'mask': True, 'abstol': True, 'step_bounds': True,
+    'tolerance': True, 'budget': True,
+    ## the attempt's: what the last Python attempt left, or a state the next
+    ## one may change
+    'imposed': False, 'newton': False, 'table_stale': False, 'toolkit': False,
+    'rings': False, 'history': False, 'cache': False, 'reference': False, 'sparse': False,
+}
+
+
+def _declined(loop, why):
+    """The entry declined, counted -- and kept on the loop until something
+    watched moves where the reason is the run's (`_KEEPS`)."""
+    if _KEEPS[why]:
         loop.c_kept = _watch.now()
     _no('loop_c:' + why)
     return False
@@ -508,7 +526,7 @@ def run(loop):
             or loop.provided_function is not None or (not adaptive and not loop.j_unread):
         return _declined(loop, 'loop')
     if loop.imposed:
-        return _declined(loop, 'loop', keep=False)
+        return _declined(loop, 'imposed')
     for k in _SHADOWS:
         if k in td:
             return _declined(loop, 'shadow')
@@ -538,7 +556,7 @@ def run(loop):
     ## (the Newton's record as its last call left it: J formed where the
     ## attempts read it)
     if rec.s.fold_j != (3 if adaptive else 2):
-        return _declined(loop, 'newton', keep=False)
+        return _declined(loop, 'newton')
     ## the sources: the direct pass's table; every other element's
     ## breakpoint inf (`Behavioural.next_event`)
     from pycircuit.circuit import _tran_sources, func
@@ -558,7 +576,7 @@ def run(loop):
         loop.c_tab = (sd, tab)
     if not tab.holds():
         loop.c_tab = None
-        return _declined(loop, 'table', keep=False)
+        return _declined(loop, 'table_stale')
     tab_els = {id(e[0]) for e in tab.entries}
     src_next, inf_next = O['source_next'], O['inf_next']
     for _inst, el in cir._hook_elements('next_event'):
@@ -570,7 +588,7 @@ def run(loop):
     if not (tk.exp is np.exp and tk.sin is np.sin and tk.where is np.where) or (
             tab.uses_libm and ((tab.has_sin and not func.SIN_SCALAR)
                                or not func._underflow_ignored())):
-        return _declined(loop, 'sources', keep=False)
+        return _declined(loop, 'toolkit')
     minbreak = tr.par.minbreak
     if type(minbreak) is not float:
         return _declined(loop, 'minbreak')
@@ -580,23 +598,23 @@ def run(loop):
     if not (type(ql) is np.ndarray and ql.dtype is _F64 and ql.ndim == 2 and ql.shape[1] == n
             and ql.shape[0] >= (3 if adaptive else 2) and type(iql) is np.ndarray
             and iql.dtype is _F64 and iql.shape == ql.shape):
-        return _declined(loop, 'rings', keep=False)
+        return _declined(loop, 'rings')
     hist_len = ql.shape[0]
     hist = td.get('_pred_hist') or []
     if type(hist) is not list or len(hist) > 8 or td.get('_pred_pending') is not None or not all(
             type(e) is tuple and len(e) == 2 and type(e[0]) is float and type(e[1]) is np.ndarray
             and e[1].dtype is _F64 and e[1].shape == (n,) for e in hist):
-        return _declined(loop, 'history', keep=False)
+        return _declined(loop, 'history')
     X = loop.X
     xl = X[-1] if X else None
     cached = td.get('_C_cache')
     if cached is None or float(getattr(tr.epar, 'bypasstol', -1.0) or -1.0) >= 0.0:
-        return _declined(loop, 'cache', keep=False)
+        return _declined(loop, 'cache')
     cx, cC = cached
     if not (type(xl) is np.ndarray and xl.dtype is _F64 and xl.shape == (n,)
             and type(cx) is np.ndarray and cx.dtype is _F64 and cx.shape == (n,)
             and type(cC) is np.ndarray and cC.dtype is _F64 and cC.shape == (n, n)):
-        return _declined(loop, 'cache', keep=False)
+        return _declined(loop, 'cache')
     dl, dl2 = tr._dt_last, tr._dt_last2
     stats = tr.statistics
     if (type(dl) is not float or not (dl2 is None or type(dl2) is float) or td.get('_no_history')
@@ -605,7 +623,7 @@ def run(loop):
             or type(loop.t) is not float or type(loop.h) is not float):
         ## (declined as `history`, not `steps`: `loop_c:steps` counts the
         ## steps made in C)
-        return _declined(loop, 'history', keep=False)
+        return _declined(loop, 'history')
     screen = _screen(tr, td, rec, n)
     if screen is None:
         return _declined(loop, 'screen')
@@ -620,7 +638,7 @@ def run(loop):
     if adaptive:
         judge = _judge(loop, tr, O, n)
         if type(judge) is str:
-            return _declined(loop, judge, keep=judge not in ('sparse', 'reference'))
+            return _declined(loop, judge)
     ## bound once a loop (again where the Newton's record, the table, the
     ## screen's presence, the sizes or the judge's solver or mask moved)
     run_ = loop.c_run

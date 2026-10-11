@@ -341,3 +341,31 @@ def test_a_law_a_hair_off_is_another_adaptive_run(monkeypatch):
     monkeypatch.setattr(_tran_loop_c, '_bind', planted)
     b, cb = _run(_pulsed, True, monkeypatch, **dict(kw))
     assert cb.get('loop_c:attempts', 0) > 10 and (a['x'] != b['x'] or a['t'] != b['t'])
+
+
+def _reasons(text):
+    """Every reason the loop's text declines with: `_declined(loop, '<x>')`
+    and the strings `_judge` returns."""
+    import ast
+    tree = ast.parse(text)
+    out = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and getattr(node.func, 'id', None) == '_declined'
+                and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)):
+            out.add(node.args[1].value)
+        if isinstance(node, ast.FunctionDef) and node.name == '_judge':
+            out |= {r.value.value for r in ast.walk(node) if isinstance(r, ast.Return)
+                    and isinstance(r.value, ast.Constant) and type(r.value.value) is str}
+    return out
+
+
+def test_every_decline_says_whether_it_holds_for_the_run():
+    """`_KEEPS` names every reason the loop declines with (a reason missing
+    would raise at the decline) and no other."""
+    import inspect
+    found = _reasons(inspect.getsource(_tran_loop_c))
+    assert found == set(_tran_loop_c._KEEPS), (found ^ set(_tran_loop_c._KEEPS))
+    ## alive: a reason the table does not name, and a judge's
+    planted = "def run(loop):\n    return _declined(loop, 'nowhere')\n" \
+              "def _judge(loop):\n    return 'elsewhere'\n"
+    assert _reasons(planted) == {'nowhere', 'elsewhere'}
