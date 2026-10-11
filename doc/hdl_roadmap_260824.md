@@ -8313,3 +8313,27 @@ their order and 237 that carried one, every verdict, next step, `_retry` and `_q
 bit; a second retry at one point measures its order, at another it does not.  New pinned pair
 "the controller law and its C".  Full suite 5144 passed; the sanitizer's fast tier clean (4818
 passed).
+
+## 2026-10-11 — 119. A FIX to 106/110: a structural KLU refactor that meets a zero pivot factors again -- opampal's operating point had failed since the DC routing
+
+Found sizing stage 5: opampal (519 unknowns) had dropped out of two censuses (26 of 27 decks) and
+nobody asked why.  Its operating point failed: "singular Jacobian: 'xa:qna.bi' appears in no
+equation".  The cause is 106's `StructuralKLU.solve`, reached by the DC since 110 (212a5b06): a
+refactor reuses the first factor's pivot ORDER, and where a pivot of that order went to zero it
+raised "singular" -- without the fresh factor a failed residual already gets.  An operating
+point's gmin and source ladders move the matrix far between solves; opampal's met it.  Measured,
+its operating point under each solver: dense 176 s, the structural KLU as it was FAILED (24.5 s),
+KLU factored fresh every solve 40.6 s, SuperLU 74 s.  Now a refactor that fails is followed by a
+fresh factor (`pivot_fallbacks` counts them; only the fresh factor's failure is the matrix's):
+opampal's operating point converges on the structural KLU in 36 s (34 pivot fallbacks), within
+2.2e-16 of the dense one (max |x| 35).  The transients never reach the branch (their factors
+stay one: rich3 and gm19 byte for byte as before).  `KLUSolver` (the value-patterned one, n >=
+1000 without a structure) keeps the old behaviour -- the same shape, not reached here; noted.
+
+Proved: test_structural_klu -- a refactor on a permutation the first factor's pivots cannot
+take factors again and solves it (one pivot fallback), a rank-one matrix still raises; the test
+fails on the code before ("Singular matrix").  "The error test and its C" moved on its reference
+(`StructuralKLU.solve`): its C hands a failed refactor back, which the Python now factors again
+-- checked, re-recorded.  The lesson kept: a solver or DC change runs every gold deck, its
+operating point included, before it is committed -- the suite runs none of them.  Full suite
+5145 passed.

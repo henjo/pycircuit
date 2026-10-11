@@ -215,3 +215,20 @@ def test_a_sparse_operating_point_factors_on_the_structure(monkeypatch):
     ref, _ = _op(_dc_ladder(300), True, monkeypatch)
     assert type(ls._choice) is linearsolver.StructuralKLU and ls._choice.foreign == 0
     np.testing.assert_allclose(got, ref, rtol=1e-12, atol=1e-15)
+
+
+def test_a_refactor_that_meets_a_zero_pivot_factors_again():
+    """The reused pivot order on a matrix that is regular under another: a
+    fresh factor (counted), not "singular" -- the gmin and source ladders
+    of an operating point move the matrix that far (opampal's failed until
+    2026-10-11); a matrix singular under every order still raises."""
+    m = 3
+    cols, rows = np.nonzero(np.ones((m, m)))                 # (CSC order: by column)
+    s = linearsolver.StructuralKLU(m, rows, cols, fallback=linearsolver.SuperLUSolver)
+    b = np.array([1.0, 2.0, 3.0])
+    s.solve(np.eye(m) + 0.1 * np.ones((m, m)), b, None)    # (the first factor's pivots)
+    P = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+    np.testing.assert_allclose(s.solve(P, b, None), np.linalg.solve(P, b), rtol=1e-12)
+    assert s.pivot_fallbacks == 1 and s.factors == 2
+    with pytest.raises(np.linalg.LinAlgError):
+        s.solve(np.outer([1.0, 1.0, 1.0], [1.0, 2.0, 3.0]), b, None)     # (rank one)

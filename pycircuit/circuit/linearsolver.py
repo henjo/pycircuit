@@ -666,6 +666,7 @@ class StructuralKLU(KLUSolver):
         self.nnz = len(rows)
         self._fallback, self._fb = fallback, None
         self.foreign = 0
+        self.pivot_fallbacks = 0
 
     def _ours(self, A):
         """`(A as an array, its values in CSC order)` where `A` is this
@@ -730,7 +731,19 @@ class StructuralKLU(KLUSolver):
                 ctypes.c_void_p(self._numeric), ctypes.byref(self._common))
             self.refactors += 1
             if not ok:
-                raise numpy.linalg.LinAlgError('Singular matrix')
+                ## ⚠ THE REUSED PIVOT ORDER MET A ZERO PIVOT: the matrix may
+                ## well be regular under another, so a fresh factor decides --
+                ## as a failed residual does below -- and only its failure is
+                ## the matrix's.  Raised here until 2026-10-11, it failed
+                ## opampal's operating point (519 unknowns): the gmin and
+                ## source ladders move the matrix far between solves, and a
+                ## pivot the first factor chose went to zero.
+                self.pivot_fallbacks += 1
+                old, self._numeric = self._numeric, None
+                self._free(old)
+                self._numeric = self._factor(Ax)
+                self.factors += 1
+                reused = False
         else:
             self._numeric = self._factor(Ax)
             self.factors += 1
@@ -772,7 +785,8 @@ class StructuralKLU(KLUSolver):
     def __repr__(self):
         return (f'StructuralKLU(m={self.m}, nnz={self.nnz}, analyses={self.analyses}, '
                 f'factors={self.factors}, refactors={self.refactors}, numerics={self.numerics}, '
-                f'fallbacks={self.residual_fallbacks}, foreign={self.foreign})')
+                f'fallbacks={self.residual_fallbacks}, pivot_fallbacks={self.pivot_fallbacks}, '
+                f'foreign={self.foreign})')
 
 
 class _KLUNumeric(object):
