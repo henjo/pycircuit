@@ -348,9 +348,13 @@ def test_a_law_a_hair_off_is_another_adaptive_run(monkeypatch):
     assert cb.get('loop_c:attempts', 0) > 10 and (a['x'] != b['x'] or a['t'] != b['t'])
 
 
+#: (the functions whose returned strings are decline reasons)
+_REASONERS = ('_judge', '_why_not_the_run', '_sources', '_read')
+
+
 def _reasons(text):
     """Every reason the loop's text declines with: `_declined(loop, '<x>')`
-    and the strings `_judge` returns."""
+    and the strings the reasoners return (`_REASONERS`)."""
     import ast
     tree = ast.parse(text)
     out = set()
@@ -358,7 +362,7 @@ def _reasons(text):
         if (isinstance(node, ast.Call) and getattr(node.func, 'id', None) == '_declined'
                 and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)):
             out.add(node.args[1].value)
-        if isinstance(node, ast.FunctionDef) and node.name == '_judge':
+        if isinstance(node, ast.FunctionDef) and node.name in _REASONERS:
             out |= {r.value.value for r in ast.walk(node) if isinstance(r, ast.Return)
                     and isinstance(r.value, ast.Constant) and type(r.value.value) is str}
     return out

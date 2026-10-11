@@ -14,10 +14,11 @@ as its last served call left it: `_tran_newton_c`), the branch screen
 Python would, which the Python loop then makes; the next attempt enters
 the C again.
 
-OWNS, on the `_SteppingLoop`: `c_run` (the bound `_Run`: the struct, its
-buffers, the units' structs it drives), `c_tab` (`(the direct source pass,
-its Table)`), `c_kept` (the watch counter at the last kept decline),
-`c_skip` and `c_backoff` (the backoff); `c_loop` (whether to try at all)
+OWNS, on the `_SteppingLoop`: `c`, a `LoopState` (`attach`; None where the
+loop never tries) -- `run` (the bound `_Run`: the struct, its buffers, the
+units' structs it drives), `tab` (`(the direct source pass, its Table)`),
+`kept` (the watch counter at the last kept decline), `skip` and `backoff`
+(the backoff)
 is `_SteppingLoop.__init__`'s.  `_paths` prefix `loop_c:`:
 `loop_c:attempts`, `loop_c:steps`, the declines (`loop_c:<reason>`) and the
 bails (`loop_c:bail:<why>`); for the attempts it makes it re-creates the
@@ -71,6 +72,7 @@ general path or a flag, the Newton, a screen that is not quiet, a
 companion it does not make, the error test, a forced accept); the attempts
 made before it are written back.  History: `doc/transient_history.md`.
 """
+import collections
 import operator
 import os
 import time
@@ -91,7 +93,8 @@ _CODES = _cbuild.constants(LOOP_CDEF)
 #: (the law's mark for a kept point that is none of the loop's: ctrl.h)
 _POINT_OTHER = _cbuild.constants(_cbuild.csrc('ctrl.h'))['CTRL_POINT_OTHER']
 #: (the predictor's history capacity: pred.h)
-_HIST_MAX = _cbuild.constants(_cbuild.csrc('pred.h'))['PRED_HIST_MAX']
+_PRED_CAP = _cbuild.constants(_cbuild.csrc('pred.h'))
+_HIST_MAX, _MAX_DEG = _PRED_CAP['PRED_HIST_MAX'], _PRED_CAP['PRED_FIT_MAX'] - 1
 BAIL = _cbuild.bails(_CODES, 'LOOP_BAIL_')
 _ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
 #: the outputs' rows an entry holds (full: written back, entered again)
@@ -375,7 +378,7 @@ def _bind(tr, rec, tab, n, hist_len, screen, judge):
 
 
 #: THE DECLINES (`loop_c:<reason>`), each the run's -- kept on the loop
-#: (`c_kept`) until something watched moves -- or the attempt's alone (the
+#: (`c.kept`) until something watched moves -- or the attempt's alone (the
 #: next Python attempt enters again)
 _KEEPS = {
     ## the run's: its pieces, classes, settings, circuit and sources
@@ -393,11 +396,36 @@ _KEEPS = {
 }
 
 
+class LoopState:
+    """What the C loop keeps on one `_SteppingLoop` (`loop.c`): the bound run
+    (`run`, `_bound`), the source table it reads (`tab`: `(the direct pass,
+    its Table)`, `_sources`), the watch counter at the last kept decline
+    (`kept`, `_declined`), and the backoff (`skip`: the Python attempts left
+    before the next entry; `backoff`: the spacing that set it)."""
+
+    __slots__ = ('backoff', 'kept', 'run', 'skip', 'tab')
+
+    def __init__(self):
+        self.run = self.tab = self.kept = None
+        self.skip = self.backoff = 0
+
+
+def attach(loop):
+    """The C loop's state for a `_SteppingLoop` that may enter it -- a fixed
+    run whose attempts read no Jacobian (`loop.j_unread`), or an adaptive
+    multistep one -- else None, and the loop never tries.  `run` checks the
+    rest at every entry."""
+    from pycircuit.circuit.transient import _LMMSteps
+    if loop.j_unread or (not loop.fixed and type(loop.family) is _LMMSteps):
+        return LoopState()
+    return None
+
+
 def _declined(loop, why):
     """The entry declined, counted -- and kept on the loop until something
     watched moves where the reason is the run's (`_KEEPS`)."""
     if _KEEPS[why]:
-        loop.c_kept = _watch.now()
+        loop.c.kept = _watch.now()
     _no('loop_c:' + why)
     return False
 
@@ -482,86 +510,63 @@ _CONTROLLER_SHADOWS = ('evaluate_step', '_evaluate', '_max_error', '_band_decisi
                        '_normalised', '_reference', 'tolerance')
 
 
-def run(loop):
-    """Make as many of `loop`'s attempts in C as it can, from where the loop
-    stands: True where it made any (the loop's, the transient's and the
-    controller's state written back as the Python attempts leave it,
-    `_write_back`), else False -- nothing of the run's written; the Python
-    loop makes the next attempt, and the one after enters again.  What
-    keeps it out, what it declines and where the C bails: the module's
-    ENTRY."""
-    if not ENABLED:
-        return False
-    ## (entries that made no attempt -- a screen that fires every step, the
-    ## SVD the Python's -- are spaced out: each such entry doubles the
-    ## Python attempts made before the next one, up to `BACKOFF_MAX`, whatever
-    ## else holds the loop back meanwhile; an entry that makes any starts
-    ## again from none.  Checked first: made once a Python attempt while the
-    ## entries are spaced, it is the cheapest return.)
-    if loop.c_skip:
-        loop.c_skip -= 1
-        return False
-    now = _watch.now()
-    ## (watching off: nothing would tell the attempts' checks have moved --
-    ## the counter stays -1 -- so the Python attempts make them, every one)
-    if now == -1 or loop.c_kept == now:
-        return False
-    tr = loop.tr
-    td = tr.__dict__
-    rec = td.get('_newton_c')
-    if rec is None or rec.served != now:
-        ## (the C Newton's last call did not serve, or something watched
-        ## moved since: the Python attempt, which serves or not by its checks)
-        return False
-    adaptive = not loop.fixed
-    if adaptive:
-        lc = tr.step_controller.__dict__.get('_lte_c') if tr.step_controller is not None else None
-        if lc is None or lc.served != now:
-            return False
-    drv = _driver or driver()
-    if not drv:
-        return _declined(loop, 'driver')
-    O = _OWN or _own()
+def _why_not_the_run(loop, tr, td, rec, O, adaptive):
+    """Why the run itself is not one the C loop makes (a reason, `_KEEPS`),
+    or None: the pieces patched or shadowed, another statistics class, loop
+    or family, an imposed step, events or a periodic state, the rescue or a
+    stateful limiter, a circuit hook, an integrator outside the three, the
+    predictor's settings, no source memo, a Newton record whose J is not
+    formed where the attempts read it."""
     if O is None or type(tr) is not O['T'] or _pieces(O) != O['chain']:
-        return _declined(loop, 'patched')
+        return 'patched'
     if type(tr.statistics) is not O['stats']:
-        return _declined(loop, 'stats')
+        return 'stats'
     if type(loop) is not O['Loop'] or type(loop.family) is not O['LMM'] \
             or loop.provided_function is not None or (not adaptive and not loop.j_unread):
-        return _declined(loop, 'loop')
+        return 'loop'
     if loop.imposed:
-        return _declined(loop, 'imposed')
+        return 'imposed'
     for k in _SHADOWS:
         if k in td:
-            return _declined(loop, 'shadow')
+            return 'shadow'
     if getattr(tr, '_ev_rows', None) is not None or getattr(tr, '_periodic_rows', None):
-        return _declined(loop, 'events')
+        return 'events'
     if getattr(tr, '_continuation_rescue', False) or td.get('_stateful_lims'):
-        return _declined(loop, 'state')
+        return 'state'
     cir = tr.cir
     cd = cir.__dict__
     if (type(cir).next_event is not O['Sub'].next_event
             or type(cir).accept_step is not O['Sub'].accept_step
             or type(cir).u is not O['Sub'].u or any(k in cd for k in _CIRCUIT_SHADOWS)
             or cir._hook_elements('accept_step')):
-        return _declined(loop, 'circuit')
+        return 'circuit'
     base = tr.base_integrator
     code = O['integrators'].get(type(base))
     if code is None or 'check_order_drop' in base.__dict__ or (
             adaptive and 'compute_lte' in base.__dict__):
-        return _declined(loop, 'integrator')
+        return 'integrator'
     P = O['predictor']
-    if (not P.PRED_FAST or tr.stage_predictor != 'on' or tr.PRED_HIST_MAX != 8
+    if (not P.PRED_FAST or tr.stage_predictor != 'on' or tr.PRED_HIST_MAX != _HIST_MAX
             or type(tr)._fit is not P._FIT or type(tr.PRED_CLAMP) is not float
-            or not 1 <= tr._pred_degree() <= 4):
-        return _declined(loop, 'predictor')
+            or not 1 <= tr._pred_degree() <= _MAX_DEG):
+        return 'predictor'
     if not O['companion'].U_MEMO:
-        return _declined(loop, 'umemo')
+        return 'umemo'
     ## (the Newton's record as its last call left it: J formed where the
     ## attempts read it)
     NC = O['newton_c']
     if rec.s.fold_j != (NC.FOLD_J if adaptive else NC.FOLD_C):
-        return _declined(loop, 'newton')
+        return 'newton'
+    return None
+
+
+def _sources(loop, tr, O):
+    """The sources as the C reads them -- the direct pass's table (kept on
+    the loop, `c.tab`, while it holds), every other element's breakpoint
+    inf, the toolkit's and numpy's state -- and `minbreak`: `(table,
+    minbreak)`, or why not (a reason, `_KEEPS`)."""
+    cir = tr.cir
+    cd = cir.__dict__
     ## the sources: the direct pass's table; every other element's
     ## breakpoint inf (`Behavioural.next_event`)
     from pycircuit.circuit import _tran_sources, func
@@ -570,56 +575,67 @@ def run(loop):
     sd = sp.direct if sp is not None else None
     ep = _watch.EPOCH
     if sd is None or ep is None or sd.stamp != ep.value or not sd.same(cir, O['Circuit']):
-        return _declined(loop, 'sources')
-    ct_ = loop.c_tab
+        return 'sources'
+    ct_ = loop.c.tab
     if ct_ is not None and ct_[0] is sd:
         tab = ct_[1]
     else:
         tab = _tran_sources.table_for(sd)
         if tab is None:
-            return _declined(loop, 'table')
-        loop.c_tab = (sd, tab)
+            return 'table'
+        loop.c.tab = (sd, tab)
     if not tab.holds():
-        loop.c_tab = None
-        return _declined(loop, 'table_stale')
+        loop.c.tab = None
+        return 'table_stale'
     tab_els = {id(e[0]) for e in tab.entries}
     src_next, inf_next = O['source_next'], O['inf_next']
     for _inst, el in cir._hook_elements('next_event'):
         f = type(el).next_event
         if 'next_event' in el.__dict__ or not (
                 (f in src_next and id(el) in tab_els) or f is inf_next):
-            return _declined(loop, 'breakpoints')
+            return 'breakpoints'
     tk = tab.tk
     if not (tk.exp is np.exp and tk.sin is np.sin and tk.where is np.where) or (
             tab.uses_libm and ((tab.has_sin and not func.SIN_SCALAR)
                                or not func._underflow_ignored())):
-        return _declined(loop, 'toolkit')
+        return 'toolkit'
     minbreak = tr.par.minbreak
     if type(minbreak) is not float:
-        return _declined(loop, 'minbreak')
+        return 'minbreak'
+    return tab, minbreak
+
+
+#: (what an entry read of the Python loop's state: `_read`)
+_Read = collections.namedtuple('_Read', 'n ql iql hist_len hist X xl cx cC dl dl2')
+
+
+def _read(loop, tr, td, rec, adaptive):
+    """The state the attempts read, as the Python loop leaves it (`_Read`):
+    the rings, the predictor's history, the last point and the cached C,
+    the last steps -- or why not (a reason, `_KEEPS`)."""
     ## the state the attempts read
     n = rec.n
     ql, iql = tr._qlast, tr._iqlast
     if not (type(ql) is np.ndarray and ql.dtype is _F64 and ql.ndim == 2 and ql.shape[1] == n
             and ql.shape[0] >= (3 if adaptive else 2) and type(iql) is np.ndarray
             and iql.dtype is _F64 and iql.shape == ql.shape):
-        return _declined(loop, 'rings')
+        return 'rings'
     hist_len = ql.shape[0]
     hist = td.get('_pred_hist') or []
     if type(hist) is not list or len(hist) > _HIST_MAX or td.get('_pred_pending') is not None or not all(
             type(e) is tuple and len(e) == 2 and type(e[0]) is float and type(e[1]) is np.ndarray
             and e[1].dtype is _F64 and e[1].shape == (n,) for e in hist):
-        return _declined(loop, 'history')
+        return 'history'
     X = loop.X
     xl = X[-1] if X else None
     cached = td.get('_C_cache')
     if cached is None or float(getattr(tr.epar, 'bypasstol', -1.0) or -1.0) >= 0.0:
-        return _declined(loop, 'cache')
+        return 'cache'
     cx, cC = cached
     if not (type(xl) is np.ndarray and xl.dtype is _F64 and xl.shape == (n,)
             and type(cx) is np.ndarray and cx.dtype is _F64 and cx.shape == (n,)
             and type(cC) is np.ndarray and cC.dtype is _F64 and cC.shape == (n, n)):
-        return _declined(loop, 'cache')
+        return 'cache'
     dl, dl2 = tr._dt_last, tr._dt_last2
     stats = tr.statistics
     if (type(dl) is not float or not (dl2 is None or type(dl2) is float) or td.get('_no_history')
@@ -628,25 +644,18 @@ def run(loop):
             or type(loop.t) is not float or type(loop.h) is not float):
         ## (declined as `history`, not `steps`: `loop_c:steps` counts the
         ## steps made in C)
-        return _declined(loop, 'history')
-    screen = _screen(tr, td, rec, n)
-    if screen is None:
-        return _declined(loop, 'screen')
-    if screen[0] is None:
-        screen = None
-    ## (the predictor: off by its switch, or unbuilt -- as the screen's and
-    ## the law's, read on every entry)
-    from pycircuit.circuit import _tran_pred_c
-    if not _tran_pred_c.ENABLED or _tran_pred_c.driver() is None:
-        return _declined(loop, 'pred')
-    judge = None
-    if adaptive:
-        judge = _judge(loop, tr, O, n)
-        if type(judge) is str:
-            return _declined(loop, judge)
+        return 'history'
+    return _Read(n, ql, iql, hist_len, hist, X, xl, cx, cC, dl, dl2)
+
+
+def _bound(loop, tr, rec, tab, rd, screen, judge):
+    """The loop's bound run (`c.run`), bound again where the Newton's record,
+    the table, the screen's presence, the sizes or the judge's solver or
+    mask moved since; None where it cannot be bound."""
+    n, hist_len = rd.n, rd.hist_len
     ## bound once a loop (again where the Newton's record, the table, the
     ## screen's presence, the sizes or the judge's solver or mask moved)
-    run_ = loop.c_run
+    run_ = loop.c.run
     if (run_ is None or run_.nrec is not rec or run_.tab is not tab
             or (run_.br is None) != (screen is None) or len(run_.buf['xlast']) != n
             or len(run_.buf['qring']) != hist_len * n
@@ -654,9 +663,20 @@ def run(loop):
             or (judge is not None and (run_.sk is not judge[2] or run_.lte.s.has_mask
                                        != (judge[3] is not None)))):
         run_ = _bind(tr, rec, tab, n, hist_len, screen, judge)
-        if run_ is None:
-            return _declined(loop, 'bind')
-        loop.c_run = run_
+        if run_ is not None:
+            loop.c.run = run_
+    return run_
+
+
+def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
+    """The struct loaded with the state as the Python loop leaves it -- the
+    rings, the history, the cached C, the step record, the run's constants
+    and, adaptive, the controller's record.  Returns the controller's retry
+    record as it was (`_write_back` reads it)."""
+    n, ql, iql, _hist_len, hist, X, xl, cx, cC, dl, dl2 = rd
+    base = tr.base_integrator
+    code = O['integrators'][type(base)]
+    stats = tr.statistics
     s, buf = run_.s, run_.buf
     ## in: the state as the Python loop leaves it
     buf['qring'][:] = ql.reshape(-1)
@@ -708,6 +728,13 @@ def run(loop):
         ct.q_carried = q if q is not None else 0.0
         if run_.sk is not None:
             run_.lte.s.klu_num = run_.lte.ffi.cast('void *', run_.sk._numeric)
+    return retry0
+
+
+def _call(drv, rec, s, stats):
+    """The C's attempts: its status.  The Newton record's own pointers are
+    saved before and restored after, whatever the status (the C points
+    them at the loop's buffers while it runs); the time is the solve's."""
     ## (the Newton's own pointers: the C points them elsewhere while it runs)
     nt = rec.s
     saved = (nt.q1, nt.q2, nt.iq1, nt.u, nt.xseed, nt.cx, nt.cC, nt.Cj, nt.Geqj, nt.have_cache)
@@ -718,14 +745,93 @@ def run(loop):
         (nt.q1, nt.q2, nt.iq1, nt.u, nt.xseed, nt.cx, nt.cC, nt.Cj, nt.Geqj,
          nt.have_cache) = saved
         stats.solve_seconds += time.perf_counter() - t0
+    return status
+
+
+def run(loop):
+    """Make as many of `loop`'s attempts in C as it can, from where the loop
+    stands: True where it made any (the loop's, the transient's and the
+    controller's state written back as the Python attempts leave it,
+    `_write_back`), else False -- nothing of the run's written; the Python
+    loop makes the next attempt, and the one after enters again.  The
+    entry's gate first (the cheap returns, uncounted), then each job in
+    turn: the run (`_why_not_the_run`), the sources (`_sources`), the state
+    (`_read`), the screen, the predictor and the judge, the bind
+    (`_bound`), the load (`_load`), the call (`_call`), the write-back.
+    What keeps it out, what it declines and where the C bails: the module's
+    ENTRY."""
+    if not ENABLED:
+        return False
+    ## (entries that made no attempt -- a screen that fires every step, the
+    ## SVD the Python's -- are spaced out: each such entry doubles the
+    ## Python attempts made before the next one, up to `BACKOFF_MAX`, whatever
+    ## else holds the loop back meanwhile; an entry that makes any starts
+    ## again from none.  Checked first: made once a Python attempt while the
+    ## entries are spaced, it is the cheapest return.)
+    if loop.c.skip:
+        loop.c.skip -= 1
+        return False
+    now = _watch.now()
+    ## (watching off: nothing would tell the attempts' checks have moved --
+    ## the counter stays -1 -- so the Python attempts make them, every one)
+    if now == -1 or loop.c.kept == now:
+        return False
+    tr = loop.tr
+    td = tr.__dict__
+    rec = td.get('_newton_c')
+    if rec is None or rec.served != now:
+        ## (the C Newton's last call did not serve, or something watched
+        ## moved since: the Python attempt, which serves or not by its checks)
+        return False
+    adaptive = not loop.fixed
+    if adaptive:
+        lc = tr.step_controller.__dict__.get('_lte_c') if tr.step_controller is not None else None
+        if lc is None or lc.served != now:
+            return False
+    drv = _driver or driver()
+    if not drv:
+        return _declined(loop, 'driver')
+    O = _OWN or _own()
+    why = _why_not_the_run(loop, tr, td, rec, O, adaptive)
+    if why is not None:
+        return _declined(loop, why)
+    got = _sources(loop, tr, O)
+    if type(got) is str:
+        return _declined(loop, got)
+    tab, minbreak = got
+    rd = _read(loop, tr, td, rec, adaptive)
+    if type(rd) is str:
+        return _declined(loop, rd)
+    n = rd.n
+    screen = _screen(tr, td, rec, n)
+    if screen is None:
+        return _declined(loop, 'screen')
+    if screen[0] is None:
+        screen = None
+    ## (the predictor: off by its switch, or unbuilt -- as the screen's and
+    ## the law's, read on every entry)
+    from pycircuit.circuit import _tran_pred_c
+    if not _tran_pred_c.ENABLED or _tran_pred_c.driver() is None:
+        return _declined(loop, 'pred')
+    judge = None
+    if adaptive:
+        judge = _judge(loop, tr, O, n)
+        if type(judge) is str:
+            return _declined(loop, judge)
+    run_ = _bound(loop, tr, rec, tab, rd, screen, judge)
+    if run_ is None:
+        return _declined(loop, 'bind')
+    retry0 = _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O)
+    s = run_.s
+    status = _call(drv, rec, s, tr.statistics)
     if status not in (_CODES['LOOP_DONE'], _CODES['LOOP_FULL']):
         _no('loop_c:bail:' + BAIL.get(status, str(status)))
     if not s.attempts:
-        loop.c_backoff = min(2 * loop.c_backoff + 1, BACKOFF_MAX)
-        loop.c_skip = loop.c_backoff
+        loop.c.backoff = min(2 * loop.c.backoff + 1, BACKOFF_MAX)
+        loop.c.skip = loop.c.backoff
         return False
-    loop.c_backoff = 0
-    _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0)
+    loop.c.backoff = 0
+    _write_back(loop, tr, rec, run_, s, run_.buf, n, rd.hist_len, O, retry0)
     return True
 
 

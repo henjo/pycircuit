@@ -74,7 +74,7 @@ declared in `transient._RUN_STATE`, with its owner and lifetime
 
 | Glue | Keeps | Writes back on a serve |
 |---|---|---|
-| `_tran_loop_c` | on the `_SteppingLoop`: `c_run` (the bound run: structs, buffers, the units' pointers), `c_tab` (the source table), `c_kept` (the watch counter of the last kept decline), `c_skip` / `c_backoff` (the spacing of entries that made no attempt); `c_loop` is set by `_SteppingLoop.__init__` | the loop's position (`t`, `h`, `h_next`, `landing`, `order_drop`, `point_retries`, `t_break`, `J`, `imposed`), the transient's run state and statistics, the controller's `last_err`, `_q_carried`, `_ref_running`, `_retry` |
+| `_tran_loop_c` | on the `_SteppingLoop`: `c`, a `LoopState` (`attach`; None where the loop never tries) -- `run` (the bound run: structs, buffers, the units' pointers), `tab` (the source table), `kept` (the watch counter of the last kept decline), `skip` / `backoff` (the spacing of entries that made no attempt) | the loop's position (`t`, `h`, `h_next`, `landing`, `order_drop`, `point_retries`, `t_break`, `J`, `imposed`), the transient's run state and statistics, the controller's `last_err`, `_q_carried`, `_ref_running`, `_retry` |
 | `_tran_newton_c` | on the transient: `_newton_c` (its record: buffers, pointers, the walk's and KLU's bindings, `served`), `_newton_c_no` (a kept decline); on the limiter walk its tables (`F`, `PR`, `mirror`); on each limiting element `_hdl_cp` | the step's state: `_q_cache`, `_C_cache`, `_Cmat`, `_Geq`, `_iq`, `_companion_coeffs`, `_C_pattern`, `active_integrator`, `_effective_method`; the statistics' `newton_iterations`; the `StructuralKLU`'s `numerics` |
 | `_tran_lte_c` | on the step controller: `_lte_c` (its context: buffers, the KLU binding, `served`) | the controller's `_ref_running` |
 | `_tran_core` | on the transient: `_tran_core` (the plan, the core, their stamp), `_passes_no` (a kept decline); on each HDL element: `_hdl_cp` (its packed parameters); on the stamp plan, the `methods` it lacks | the same step state as the Newton |
@@ -98,7 +98,7 @@ packed. Checking them costs far more than the work, so they are checked once and
   attempt passed every check, and nothing watched has moved since. With watching off the counter
   reads -1 and the loop never enters.
 * **Kept declines.** A decline whose reason is the run's, not the attempt's, is kept and not
-  re-checked: the C loop's with the watch counter (`c_kept`, until something watched moves), the
+  re-checked: the C loop's with the watch counter (`c.kept`, until something watched moves), the
   Newton's and the core's with the circuit's stamp plan (`_newton_c_no`, `_passes_no`, until the
   plan is another).
 * **The backoff.** An entry that made no attempt (the screen fired on the first one) doubles the

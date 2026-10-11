@@ -10,7 +10,7 @@ another the earliest event after `t` -- bit for bit the Python's, or
 declined.
 
 OWNS nothing on others' objects: a `Table` holds what it read.  The C loop
-keeps the table it uses on the stepping loop (`c_tab`, `_tran_loop_c`),
+keeps the table it uses on the stepping loop (`c.tab`, `_tran_loop_c`),
 checks `holds` once an entry and calls the C on the table's struct itself,
 every attempt.  `_paths` prefix `sources_c:`: `sources_c:built` (a table
 made), `sources_c:u` and `sources_c:next` (the Python entries' serves), the

@@ -606,10 +606,11 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     again (a branch confirmation re-solved) -- or None: declined or handed
     back, nothing left behind, `_newton` runs.
 
-    In order: the checks that decline (module docstring: DECLINES), the
-    record (`_Ctx`) and the walk's and KLU's bindings, the source pass (the
-    attempt's one trace), the inputs copied in, the parameter reads
-    stamped, the call.  A bail undoes the trace (`_undo_source`).  A serve
+    In order, its sections: 1. the checks that decline (module docstring:
+    DECLINES); 2. the step's companion and whether anything limits; 3. the
+    record (`_Ctx`) and the walk's, the core's and KLU's bindings; 4. the
+    source pass (the attempt's one trace), the inputs copied in, the
+    parameter reads stamped, the call; 5. converged, the write-back.  A bail undoes the trace (`_undo_source`).  A serve
     writes the step's state (`_q_cache`, `_C_cache`, `_C_pattern` where
     the core has a pattern, `_iq`, `_Geq`, `_Cmat`, `active_integrator`,
     `_companion_coeffs`, `_effective_method`), the statistics' Newton
@@ -621,6 +622,8 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         last.served = None
     if not ENABLED:
         return _no('newton_c:off')
+    ## ---- 1. the checks that decline: a kept reason, the build, the
+    ## machinery, the circuit, the settings, the solver, the core, the seed ----
     kept = td.get('_newton_c_no')
     if kept is not None:
         ## (the circuit's own reason, under the plan the circuit's dict
@@ -694,6 +697,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if not (type(seed) is np.ndarray and (seed.dtype is _F64 or seed.dtype == np.float64) and seed.ndim == 1
             and seed.shape[0] == n and np.isfinite(seed).all()):
         return _no('newton_c:x')
+    ## ---- 2. the step's companion and whether anything limits ----
     ## (the step's companion set up as `get_diff` sets it up -- the same
     ## lines as `_tran_core.evaluate`'s, kept twice on purpose -- why:
     ## `doc/transient_history.md`, `_tran_core.evaluate` -- a change here is
@@ -721,6 +725,8 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     has_limiter = bool(_has) if _has is not None else tr._newton_limiter() is not None
     ## (a limiting element whose class has no C limiter at all -- PSP's -- is
     ## a property of the circuit: `_walk_ready` finds it, kept below)
+    ## ---- 3. the record and its bindings: the walk, the core's readiness,
+    ## the chord, KLU ----
     rec = td.get('_newton_c')
     if rec is None or rec.core is not core or rec.n != n or rec.iref != iref:
         cffi_core, cfn_core, _dg = tc.driver()
@@ -754,7 +760,8 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         s.klu_sym = ffi.NULL
         rec.klu = rec.klu_sym = None
         rec.klu_keep = ()
-    ## ---- from here the attempt leaves one trace: the step's source memo ----
+    ## ---- 4. from here the attempt leaves one trace: the step's source memo;
+    ## then the inputs, the stamps, the call ----
     key = (t, par.analysis if P is None else P.analysis)
     try:
         had = key in memo
@@ -821,7 +828,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None
         return _no('newton_c:bail:' + BAIL.get(status, str(status)))
-    ## ---- converged: the converged point's state, the counts, the check ----
+    ## ---- 5. converged: the converged point's state, the counts, the check ----
     iters = int(s.iters)
     if chord:
         _PC['chord:chosen'] += 1

@@ -769,10 +769,6 @@ class _SteppingLoop:
         self.fixed_fallbacks, self.forced = [], []
         self.ev_iter = 0
         self.imposed = False
-        ## (the stepping loop in C, `_tran_loop_c`: its record, its source
-        ## table, and the watch counter its last kept decline was made at)
-        self.c_run = self.c_tab = self.c_kept = None
-        self.c_skip = self.c_backoff = 0
         ## NOTHING READS A FIXED MULTISTEP STEP'S JACOBIAN: `judge` returns
         ## before the family's error test, `event` does nothing, and the
         ## other pieces only carry it (PSS's steps and the adaptive test do
@@ -792,10 +788,9 @@ class _SteppingLoop:
             and G(Transient.solve_timestep, 'Transient.solve_timestep', me)
             and G(Transient._solve_timestep, 'Transient._solve_timestep', me)
             and G(Transient._attempt_step, 'Transient._attempt_step', me))
-        ## (the attempts the stepping loop in C may make: a fixed run's
-        ## marked above, an adaptive multistep run's -- `_tran_loop_c` checks
-        ## the rest at its entry)
-        self.c_loop = self.j_unread or (not self.fixed and type(family) is _LMMSteps)
+        ## (the stepping loop in C, `_tran_loop_c`: its state on this loop,
+        ## or None where the loop never tries it -- `attach` says which)
+        self.c = _tran_loop_c.attach(self)
 
     def execute(self):
         ## (marked for this loop's attempts alone: `j_unread`)
@@ -806,7 +801,7 @@ class _SteppingLoop:
             while self.t < self.tend:
                 ## (the attempts the stepping loop in C makes, fixed or
                 ## adaptive, where it can: `_tran_loop_c`)
-                if self.c_loop and _tran_loop_c.run(self):
+                if self.c is not None and _tran_loop_c.run(self):
                     continue
                 if not self.where():
                     break

@@ -271,7 +271,12 @@ def max_error(ctrl, s):
     to the watch counter, writes `ctrl._ref_running` (any `relref` but
     pointlocal) and, sparse, adds the refactor to the solver's `refactors`;
     the context (`ctrl._lte_c`) is made, or remade for another size or
-    reference row, before the call."""
+    reference row, before the call.
+
+    In order, its sections: 1. the checks that decline (module docstring:
+    DECLINES); 2. the integrator's scalars, in Python floats; 3. the
+    context and the attempt's arrays copied in (or read where they stand);
+    4. the call and the serve."""
     last = ctrl.__dict__.get('_lte_c')
     if last is not None:
         last.served = None
@@ -280,6 +285,8 @@ def max_error(ctrl, s):
     drv = _driver or driver()
     if not drv:
         return _no('lte_c:driver')
+    ## ---- 1. the checks that decline: the build, the pieces, the solver,
+    ## the controller, the integrator, the steps, the arrays' types ----
     G = _G or _globals()
     if G is None:
         return _no('lte_c:patched')
@@ -324,6 +331,7 @@ def max_error(ctrl, s):
     if not ((th is float or th is _NPF) and (tl is float or tl is _NPF or (euler and hl is None))
             and (tl2 is float or tl2 is _NPF or euler)):
         return _no('lte_c:h')
+    ## ---- 2. the integrator's scalars ----
     ## (the integrator's scalars -- its coefficient, the divided
     ## difference's step sums -- in Python floats: the IEEE operations
     ## numpy's scalars make, without their warnings; one that overflows
@@ -384,6 +392,7 @@ def max_error(ctrl, s):
         return _no('lte_c:x')
     if nn is not None and type(nn) is not int:
         return _no('lte_c:x')
+    ## ---- 3. the context and the attempt's arrays ----
     ctx = cd.get('_lte_c')
     if ctx is None or ctx.n != n or ctx.iref != iref:
         ffi, _cfn, dgesv = drv
@@ -442,6 +451,7 @@ def max_error(ctrl, s):
     st.h1, st.h2, st.h3, st.coef = h, hl, hl2, coef
     st.s12, st.s23, st.s123 = s12, s23, s123
     st.reltol, st.trtol = float(reltol), float(trtol)
+    ## ---- 4. the call and the serve ----
     status = drv[1](st)
     if status != _CODES['LTE_DONE']:
         return _no('lte_c:bail:' + BAIL.get(status, str(status)))
