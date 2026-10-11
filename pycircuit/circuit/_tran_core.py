@@ -497,7 +497,7 @@ class _Core:
         before = _watch.now()
         from pycircuit.circuit import _hdl_batch
         ffi, b_fn = self.ffi, self.b_fn
-        kern0 = None
+        kern_of = {}
         for b, bt in enumerate(self.batches):
             info = bt.info
             if not info.get('_c_bound'):
@@ -514,8 +514,8 @@ class _Core:
                 b_fn[b] = int(ffi.cast('uintptr_t', kern.cfn))
             if not _hdl_batch.is_generated(bt.cls, bt.m):
                 return 'generated'
-            if kern0 is None:
-                kern0 = kern
+            ## (a class's kernels share its layout: any of them packs it)
+            kern_of.setdefault(bt.cls, kern)
         if self.nz:
             ## A FUSED KERNEL SERVES while it is the class's bound one and
             ## was printed from the passes' bound kernels; else the batches
@@ -539,8 +539,13 @@ class _Core:
                 return 'shadow'
             cp = d.get('_hdl_cp')
             if cp is None:
+                ## (packed by ITS class's kernel, as its batch packs it: the
+                ## array's size and the temperature's slot are the class's)
+                k = kern_of.get(el.__class__)
+                if k is None:
+                    return 'pack'
                 try:
-                    cp = kern0.pack(el)
+                    cp = k.pack(el)
                 except (TypeError, ValueError):
                     cp = False
                 d['_hdl_cp'] = cp

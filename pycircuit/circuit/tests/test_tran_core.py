@@ -293,3 +293,36 @@ def test_the_switch_is_read_from_the_environment():
     out = subprocess.run([sys.executable, '-c', code], env=env,
                          capture_output=True, text=True, check=True)
     assert out.stdout.strip() == 'False'
+
+
+def test_an_element_is_packed_by_its_own_class_s_kernel(monkeypatch):
+    """`_Core.probe` packs an element whose pack was dropped (a parameter
+    change drops it) with the kernel of ITS class, as its batch does: two
+    classes whose layouts put the temperature at another slot would
+    otherwise have one's parameters packed in the other's places, silently."""
+    from pycircuit.circuit import _hdl_cbackend as cb
+    from pycircuit.circuit import elements_hdl as eh
+    c = SubCircuit()
+    c['vdd'] = VS('vdd', gnd, v=1.8)
+    c['vg'] = VSin('g', gnd, v=0.9, va=0.3, freq=1e6)
+    c['rl'] = R('vdd', 'd', r=5e3)
+    c['M'] = eh.MosLevel1Hdl('d', 'g', gnd, gnd)
+    c['D'] = eh.DiodeSpiceHdl('d', gnd)
+    tr, _x = _tr(c)
+    core = tr.__dict__['_tran_core'][1]
+    kern_of = {}
+    for bt in core.batches:
+        kern_of.setdefault(bt.cls, set()).add(bt.kern)
+    assert len(kern_of) == 2
+    calls = []
+    pack = cb.CKernel.pack
+
+    def spy(self, el):
+        calls.append((self, el.__class__))
+        return pack(self, el)
+    monkeypatch.setattr(cb.CKernel, 'pack', spy)
+    for el in core.uniq_els:
+        el.__dict__.pop('_hdl_cp', None)
+    assert _tran_core.core_for(tr) is not None and core.probe(tr.epar) is not None
+    assert {cls for _k, cls in calls} == set(kern_of)
+    assert all(k in kern_of[cls] for k, cls in calls), calls
