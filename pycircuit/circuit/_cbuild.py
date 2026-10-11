@@ -379,16 +379,79 @@ def _fn_cdef():
     return f'void {hdl._C_ENTRY}(const double *x, const double *p, double *out);'
 
 
+## ----------------------------------------------------------------------
+## The FFIs: one per declaration, precompiled.
+
+#: In-process memo: a declaration's text -> its FFI (the HDL kernels all
+#: share the chain functions' entry).
+_ffis = {}
+
+#: Every library opened, held for the process: an out-of-line FFI's
+#: library closes its object when collected, and the entry read from it
+#: outlives it (an in-line FFI holds its own, `ffi._libraries`).
+_libs = []
+
+
+def _ffi_for(cdef):
+    """The FFI declaring `cdef`, one a process: precompiled (`_precompiled`)
+    where the store can hold it, parsed otherwise.  Either declares the
+    same types -- sizes, offsets, fields, signatures (test_c_abi) -- so
+    which one a process got moves no byte."""
+    ffi = _ffis.get(cdef)
+    if ffi is None:
+        ffi = _precompiled(cdef)
+        if ffi is None:
+            import cffi
+            ffi = cffi.FFI()
+            ffi.cdef(cdef)
+        _ffis[cdef] = ffi
+    return ffi
+
+
+def _precompiled(cdef):
+    """`cdef` as cffi's out-of-line ABI mode declares it: its type tables
+    as a generated Python module in the store (`ffi-<sha>.py`, keyed by
+    the text and cffi's version, written by one process and renamed into
+    place), so a process parses neither the declaration nor, later, a
+    type string with pycparser -- a header ~2-3 ms and a first type
+    string ~0.2 ms parsed, microseconds read.  None when the module
+    cannot be written or read: the caller parses."""
+    import importlib.util
+
+    import cffi
+    h = hashlib.sha256(f'cffi={cffi.__version__}\0{cdef}'.encode()).hexdigest()
+    name = 'pcx_ffi_' + h[:32]
+    path = os.path.join(_so_dir(), name + '.py')
+    try:
+        if not os.path.exists(path):
+            builder = cffi.FFI()
+            builder.cdef(cdef)
+            builder.set_source(name, None, compiler_verbose=0)   # (no 'generating' line)
+            fd, tmp = tempfile.mkstemp(suffix='.py', dir=os.path.dirname(path))
+            os.close(fd)
+            try:
+                builder.emit_python_code(tmp)
+                os.replace(tmp, path)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.ffi
+    except Exception:   # noqa: BLE001 -- a truncated or foreign module raises anything
+        return None
+
+
 def _dlopen(path, cdef=None):
     """`(ffi, cfn)` for the object at `path`: the chain functions' entry
     by default, or the entry `cdef` declares (the limiter's `int hdl_fn`,
     `_hdl_climit`) -- the one name, another signature; the object is
     keyed by its source, so the two never meet in one file."""
-    import cffi
-    ffi = cffi.FFI()
     from pycircuit.circuit import hdl
-    ffi.cdef(cdef or _fn_cdef())
+    ffi = _ffi_for(cdef or _fn_cdef())
     lib = ffi.dlopen(path)
+    _libs.append(lib)
     return ffi, getattr(lib, hdl._C_ENTRY)
 
 

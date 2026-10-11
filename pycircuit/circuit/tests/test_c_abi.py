@@ -271,3 +271,79 @@ def test_the_checks_see_a_planted_difference():
     assert _BARE_CODE.findall('if (formula == 2) {')
     with pytest.raises(ValueError):
         _cbuild.constants('enum e { A = 1, B };')
+
+
+def _declared(ffi):
+    """Every type `ffi` declares: a typedef's C name and kind, and a
+    struct's or union's -- named, or behind a typedef, as every header
+    declares them -- size, alignment and fields (offset, type, bit
+    width)."""
+    typedefs, structs, unions = ffi.list_types()
+    types = {f'struct {n}': ffi.typeof(f'struct {n}') for n in structs}
+    types.update({f'union {n}': ffi.typeof(f'union {n}') for n in unions})
+    types.update({n: ffi.typeof(n) for n in typedefs})
+    out = {}
+    for name, t in types.items():
+        out[name] = (t.cname, t.kind)
+        if t.kind in ('struct', 'union'):
+            out[name] += (ffi.sizeof(t), ffi.alignof(t), tuple(
+                (f, ft.offset, ft.type.cname, ft.bitsize) for f, ft in t.fields))
+    return out
+
+
+def _opened(ffi, path):
+    """The unit's object opened through `ffi`: each name it declares --
+    a function's C type, an enumerator's value."""
+    lib = ffi.dlopen(path)
+    out = {}
+    for name in dir(lib):
+        v = getattr(lib, name)
+        out[name] = v if type(v) is int else ffi.typeof(v).cname
+    return out
+
+
+@pytest.mark.parametrize('unit,cdef', UNITS, ids=[u for u, _ in UNITS])
+def test_each_unit_s_precompiled_ffi_declares_what_parsing_declares(unit, cdef):
+    """The FFI a unit is loaded through (`_cbuild._ffi_for`: cffi's
+    out-of-line module, read, not parsed) declares what parsing the header
+    declares -- every type's layout, every function's signature, every
+    code -- so which one a process got moves no byte."""
+    pre = _cbuild._precompiled(cdef)
+    assert pre is not None and type(pre).__module__ == '_cffi_backend'
+    assert _cbuild._ffi_for(cdef) is pre or type(_cbuild._ffi_for(cdef)) is type(pre)
+    parsed = cffi.FFI()
+    parsed.cdef(cdef)
+    assert _declared(pre) == _declared(parsed)
+    path = _cbuild.load_unit(_cbuild.csrc(unit + '.c'), cdef)[2]
+    path = _cbuild.find_so(path)
+    assert _opened(pre, path) == _opened(parsed, path)
+
+
+def test_the_kernels_entry_s_precompiled_ffi_is_the_parsed_one():
+    """The chain functions' entry, shared by every HDL kernel: its one
+    signature as parsing declares it."""
+    from pycircuit.circuit import hdl
+    cdef = _cbuild._fn_cdef()
+    pre = _cbuild._precompiled(cdef)
+    parsed = cffi.FFI()
+    parsed.cdef(cdef)
+    assert f' {hdl._C_ENTRY}(' in cdef
+    sig = 'void(*)(const double *, const double *, double *)'
+    ## (cffi's C names drop `const`: the same name from both is the check)
+    assert pre.typeof(sig).cname == parsed.typeof(sig).cname
+
+
+def test_the_precompiled_check_sees_a_planted_difference():
+    """Alive: one field's type changed, one enumerator's value moved --
+    each is another declaration."""
+    cdef = _tran_newton_c.NEWTON_CDEF
+    pre = _cbuild._precompiled(cdef)
+    planted = cffi.FFI()
+    planted.cdef(re.sub(r'\bdouble (\w+);', r'float \1;', cdef, count=1))
+    assert _declared(pre) != _declared(planted)
+    m = re.search(r'(NEWTON_\w+) = (\d+)', cdef)
+    assert m, 'no enumerator to plant on'
+    moved = cffi.FFI()
+    moved.cdef(cdef.replace(m.group(0), f'{m.group(1)} = {int(m.group(2)) + 100}', 1))
+    path = _cbuild.find_so(_cbuild.load_unit(_cbuild.csrc('newton.c'), cdef)[2])
+    assert _opened(pre, path) != _opened(moved, path)

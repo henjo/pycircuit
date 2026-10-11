@@ -8439,3 +8439,45 @@ ceiling there was 1.25-1.6x), the operating point on opampal and gm17.  NOT a ga
 decks the screen hands back pay a cost -- mosrect 0.94x in all five rounds (~15 ms on 0.26 s),
 the other three 0.99-1.00x; not yet located (the unit's load and bind, the entries before the
 backoff: to be measured, not guessed).
+
+## 2026-10-11 — 122. Stage 5e: the units' load precompiled -- a C unit loads in ~0.2 ms, not 2-3; the loop's cost on a hand-back deck 13 -> 4 ms; the smallest decks 1.3-1.7x
+
+LOCATED (121's open item, mosrect: the C loop on cost 15.0 ms mean, 13.0 median over five
+in-tree pairs, on a 0.26 s run whose every step the screen hands back): the first real entry
+12.1 ms once, 998 backoff skips 2.1 ms (2.1 us each), nine entries whose Newton the screen then
+discards ~1 ms.  The first entry was cffi's: a unit's load is ~90 % `ffi.cdef` (pycparser, 1.7-2.7
+ms a header, ~6 ms more on the parser's first use in a process) and the first use of each type
+string in `ffi.cast` / `from_buffer` / `new` ~0.2 ms (72 in the loop's `_bind`); `dlopen` is
+nothing.  Every unit pays it: 16.5 ms of loads in mosrect's solve (11 units).
+
+BUILT: `_cbuild._dlopen` takes its FFI from `_ffi_for(cdef)` -- one per declaration text a process
+(the HDL kernels share the chain functions' entry), from `_precompiled`: cffi's out-of-line ABI
+mode, the declaration's type tables as a generated module in the object store (`pcx_ffi_<sha>.py`,
+keyed by the text and cffi's version, written to a temporary file and renamed into place),
+parsed as before when it cannot be written or read; every library opened is held for the process
+(an out-of-line FFI's library closes its object when collected).  `_tran_loop_c.run` checks the
+backoff's skip first (the `_watch` import hoisted): a skip is now ~0.6 us.
+
+Proved: for every unit (15) the precompiled FFI declares what parsing declares -- every typedef,
+every struct's size, alignment and fields (offset, type, bit width: newton 87, loop 77, radau_tc
+72, lte 54, ...), and with the unit's object opened through each, every function's type and
+every enumerator's value; the kernels' entry signature; alive: one field's type changed and one
+enumerator moved are each caught (the plant first caught the check itself comparing typedef
+NAMES, not layouts -- fixed before it counted).  Twelve processes racing on one new module all
+got it precompiled, one file, no temporary left; a truncated module falls back to parsing.  Full
+suite 5187 passed; sanitizer fast tier clean; every gold deck's final x and t one digest, the
+same as 8b5d2cca's.
+
+THE LINE (written before building): loads during mosrect's solve 16.5 -> 2.4 ms (<= 3: met);
+mosrect's loop on-minus-off 13.0 -> 4.05 ms median over 15 pairs, 4.94 mean (<= 5: met; the first
+build alone read 7.1 -- the skip-first check closed it); no gold deck slower in all five paired
+rounds (met).  Paired against 8b5d2cca, full length, five rounds: rca 1.66x, schmitecl 1.64x,
+hussamp 1.48x, gm6 1.33x, mike2 1.32x, gm2 1.28x, latch 1.18x, 4049osc 1.17x, mosrect 1.14x,
+slowlatch 1.12x, todd3 1.10x, gm17 1.09x; the long decks 1.00-1.05x; median 1.04x over all 27.
+gm19 read 0.96x (rounds 0.997, 0.963, 0.912, 0.963, 1.003): its stepping is 0.03 s FASTER in
+every one of eight further pairs (6.77-6.81 s against 6.82-6.84 s); its operating point takes
+3.6, 4.1-4.2 or 4.4-4.6 s by process in BOTH trees, the same answer -- a matter of its own.
+
+A MEASUREMENT LESSON: the first probe walked the stack (`traceback.extract_stack`, which reads
+source lines) INSIDE the timed region: each load read ~0.3 ms high, the baseline 21 ms instead of
+16.5 and the build's 5.4 ms instead of 2.4.  Take the time, then describe what was timed.

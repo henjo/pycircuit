@@ -537,7 +537,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('837249250601', '1a38aea52745'),
-    'the stepping loop and its C': ('f25febbc090f', '3c061d063c32'),
+    'the stepping loop and its C': ('f25febbc090f', '6f3fa6e4df19'),
     'the predictor and its C': ('f2c284eb392d', '46a83fdd35ab'),
     'the branch screen and its C': ('1b848875234f', '67f78befa5b6'),
     'the sources and their C': ('55cf2d3441f8', 'e9ef34a79dd1'),

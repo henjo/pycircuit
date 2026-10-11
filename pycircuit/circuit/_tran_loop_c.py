@@ -41,7 +41,7 @@ import time
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths
+from pycircuit.circuit import _cbuild, _paths, _watch
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -332,7 +332,6 @@ def _declined(loop, why, keep=True):
     """The entry declined, counted -- kept on the loop (`keep`) until
     something watched moves, where the reason is the run's and not the
     attempt's."""
-    from pycircuit.circuit import _watch
     if keep:
         loop.c_kept = _watch.now()
     _no('loop_c:' + why)
@@ -426,18 +425,19 @@ def run(loop):
     enters again."""
     if not ENABLED:
         return False
-    from pycircuit.circuit import _watch
+    ## (entries that made no attempt -- a screen that fires every step, the
+    ## SVD the Python's -- are spaced out: each such entry doubles the
+    ## Python attempts made before the next one, up to `BACKOFF_MAX`, whatever
+    ## else holds the loop back meanwhile; an entry that makes any starts
+    ## again from none.  Checked first: made once a Python attempt while the
+    ## entries are spaced, it is the cheapest return.)
+    if loop.c_skip:
+        loop.c_skip -= 1
+        return False
     now = _watch.now()
     ## (watching off: nothing would tell the attempts' checks have moved --
     ## the counter stays -1 -- so the Python attempts make them, every one)
     if now == -1 or loop.c_kept == now:
-        return False
-    ## (entries that made no attempt -- a screen that fires every step, the
-    ## SVD the Python's -- are spaced out: each such entry doubles the
-    ## Python attempts made before the next one, up to `BACKOFF_MAX`; an
-    ## entry that makes any starts again from none)
-    if loop.c_skip:
-        loop.c_skip -= 1
         return False
     tr = loop.tr
     td = tr.__dict__
