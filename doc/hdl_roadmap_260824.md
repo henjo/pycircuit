@@ -8515,3 +8515,41 @@ Proved at R3d's end against f56cb48b (before R3c): `--check` 18 of 18 no change 
 digest, the same in both trees. Found on the way and recorded in the plan: the gm19 operating
 point's per-process modes; hand-backs on underflow (numpy ignores it); a few latent cases in the
 Radau glue to test. Steps e-g (one job per function in C and Python, shared helpers) remain.
+
+## 2026-10-11 — 124. Readability stage R3, steps e-g: one job per function, the shared helpers -- R3 closed; no answer moved, no case slower; one criterion not met
+
+Andreas: "Start" (continue R3 after the a-d checkpoint).
+
+* R3e (9113cec3): newton.c's `iterate` and loop.c's `pcx_loop` as their named phases (the Newton:
+  finish, cache hit, solve, limit, converged, fold, chord breaks; the loop: where, take, judge,
+  accept, one attempt's values in `loop_attempt_t`), so the C loop reads as
+  `_SteppingLoop.execute`. `--check` against e009ac19: 18 of 18 no change; gold decks the same
+  digests.
+* R3f (3c74b517): `_tran_loop_c.run` as its jobs (why not the run, the sources, the read, the
+  bounds, the load, the call, the counts); the per-step `_tran_newton_c.solve` and
+  `_tran_lte_c.max_error` sectioned and numbered rather than split (each a call a step); the C
+  loop's state on the Python loop one object (`LoopState`, `attach`).
+* R3g (a36646b6): `csrc/pcx_minmax.h` -- Python's `max`/`min` and numpy's `maximum`/`clip` by name,
+  the 21 hand-written ternaries of five units saying which rule each follows (all 15 units'
+  machine code identical; pred.c keeps its own written out: the helpers moved its instruction
+  schedule, and a unit that tests flags keeps the code it was proven with);
+  `_cbuild.openblas` / `address`, one way to find numpy's and SciPy's own routines (five copies
+  of the lookup, three spellings of the cast); one `_undo_source`.
+
+Proved at R3's end against 9113cec3 (R3e): `--check` 18 of 18 no change (SLOWER none, FASTER
+none); all 27 gold decks one digest, the same in both trees; full suite 5221 and the sanitizer's
+fast tier clean at each commit. opampal's one-round 1.38x was a slow parent round: over three
+rounds 0.99x (0.99, 0.98, 1.01).
+
+Decided, not shared (the plan says why for each): the eight `driver()`s (each states its own
+reasons), the buffer binders and walk records (each struct's), `cmul` and the bail helpers
+(different by design: FMA order, flag clears), radau / radau_tc's common lines.
+
+The readability line, item by item: the map names every C file, glue module and switch; every
+struct field documented; no history in the C or the glue; no literal code across the boundary --
+MET, each held by a test. "No function over ~80 lines without a measured cost in its docstring"
+-- NOT MET: `_tran_newton_c.solve` 276 lines, `_tran_lte_c.max_error` 204, `_Core.__init__` 192,
+`evaluate` 116, `probe` 83, `_tran_loop_c._bind` 104, `run` 85; C `pcx_core` 148, `pcx_lte` 123,
+`pcx_pred` 110, `judge` 97, `iterate` 85. Left for a follow-up: split the run-once ones (`_bind`,
+`_Core.__init__`, `judge`); measure a split's cost on the per-step ones and write it where they
+stay whole.
