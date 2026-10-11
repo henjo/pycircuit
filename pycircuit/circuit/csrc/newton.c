@@ -32,27 +32,26 @@ static long iterate(newton_t *s, void **num)
     int64_t m64 = m, one64 = 1, info64 = 0;
     int m32 = (int) m, one32 = 1, info32 = 0;
     char trans = 'N';
+    const double *Cin0 = 0;   /* cC where the full seed equals cx (a cache hit), else NULL */
+    long first_bits;          /* the first evaluation's want bits */
     s->iters = 0;
     s->status = NEWTON_RUNNING;
-    s->last_eval = -1;
-    s->hit = 0;
     /* the seed, reduced (remove_row_col), and _C_lookup's equality test of
        the full seed it evaluates against the cached state: elementwise ==
        (`alltrue(x_cached == x)`, a NaN never equal), the full seed being
        insert_row(x) -- +0.0 at the reference, so cx[r] is compared with
        0.0 */
     pcx_drop_ref(s->xseed, s->x, n, r);
-    s->Cin0 = 0;
     if (s->have_cache) {
         int eq = 1;
         for (i = 0; i < r; i++) if (!(s->cx[i] == s->x[i])) { eq = 0; break; }
         if (eq && !(s->cx[r] == 0.0)) eq = 0;
         if (eq) for (i = r; i < m; i++) if (!(s->cx[i + 1] == s->x[i])) { eq = 0; break; }
-        if (eq) { s->Cin0 = s->cC; s->hit = 1; }
+        if (eq) Cin0 = s->cC;
     }
     /* a hit evaluates without the C pass, its C the cached one: as
        `_tran_core.evaluate` drops its C bit on `_C_lookup`'s hit */
-    s->first_bits = s->Cin0 ? (PCX_PASS_G | PCX_PASS_I) : PCX_WANT_ALL;
+    first_bits = Cin0 ? (PCX_PASS_G | PCX_PASS_I) : PCX_WANT_ALL;
     for (it = 0; it < s->maxiter; it++) {
         const double *Cin;
         long bits;
@@ -67,19 +66,18 @@ static long iterate(newton_t *s, void **num)
         pcx_put_ref(s->x, s->xf, n, r);
         for (i = 0; i < n; i++) if (!isfinite(s->xf[i])) { s->status = NEWTON_BAIL_X; return NEWTON_BAIL_X; }
         if (full) {
-            bits = (it == 0) ? s->first_bits : PCX_WANT_ALL;
-            Cin = (it == 0 && s->Cin0) ? s->Cin0 : C;
+            bits = (it == 0) ? first_bits : PCX_WANT_ALL;
+            Cin = (it == 0 && Cin0) ? Cin0 : C;
         } else {
             /* the chord's `residual_only` (i, q), its companion from the
                held C: the cache's, else the first evaluation's -- what
                `tr._Cmat` holds after the first */
             bits = PCX_PASS_I;
-            Cin = s->Cin0 ? s->Cin0 : s->C0;
+            Cin = Cin0 ? Cin0 : s->C0;
         }
         core(s->core, s->xf, s->T, bits | s->pattern, s->formula, s->a0, s->a1, s->a2, s->h,
              s->theta,
              s->q1, s->q2, s->iq1, s->u, Cin, C, q, iq, Geq, F, J);
-        s->last_eval = it;
         /* `-F_s`: F reduced, negated (no scaler: `_tran_newton_c` declines
            one, and NoneScaler's leaves J and F as they are) */
         pcx_drop_ref(F, s->Fr, n, r);

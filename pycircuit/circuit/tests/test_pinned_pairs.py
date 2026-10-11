@@ -538,7 +538,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('837249250601', '89a6a83c1360'),
-    'the stepping loop and its C': ('2ad8d9574d68', '6c9d42e8fa03'),
+    'the stepping loop and its C': ('3ac24bb1687c', 'f4498421bf95'),
     'the predictor and its C': ('f2c284eb392d', '5f436ac6e6a7'),
     'the branch screen and its C': ('1b848875234f', '644b73072495'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
@@ -551,7 +551,7 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('d7ce3151abd4', '5cee9489d509'),
+    'the Newton solve and its C': ('d7ce3151abd4', 'ec27c5922fdd'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1650ca5eabf8', '28cf292e2ef9'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),

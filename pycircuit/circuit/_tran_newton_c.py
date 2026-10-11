@@ -217,13 +217,12 @@ def _mods():
             _watch,
         )
         from pycircuit.circuit._lte_kernels import bdf2_alphas
-        from pycircuit.circuit.analysis import insert_row
         from pycircuit.circuit.dcanalysis import refnode_removed
         from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
         from pycircuit.circuit.toolkit import NumericToolkit
         _MOD.update(climit=_hdl_climit, limiting=_limiting, companion=_tran_companion, watch=_watch,
                     plan_for=_stamp_plan._plan_for,
-                    core=_tran_core, bdf2_alphas=bdf2_alphas, insert_row=insert_row,
+                    core=_tran_core, bdf2_alphas=bdf2_alphas,
                     refnode_removed=refnode_removed, AutoSolver=AutoSolver,
                     StructuralKLU=StructuralKLU,
                     NumericToolkit=NumericToolkit,
@@ -841,8 +840,8 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     x_res = buf['x'].copy()
     ## (the full-width solution the C wrote at the converged point, the
     ## reference row's +0.0 in its place: `insert_row`'s array, byte for
-    ## byte -- written wherever the converged point is evaluated, `fold_j`)
-    x = buf['xc'].copy() if s.fold_j else M['insert_row'](x_res, iref, tr.toolkit)
+    ## byte -- every serve evaluates the converged point, `fold_j` never 0)
+    x = buf['xc'].copy()
     Cj = buf['Cj'].copy()
     tr._q_cache = (x, buf['qj'].copy())
     tr._C_cache = (x, Cj)

@@ -67,16 +67,12 @@ typedef struct {
     long n,               /* CTX: the full size (n >= 2) */
          iref,            /* CTX: the reference row, 0 <= iref < n */
          maxiter,         /* CALL: `par.maxiter` */
-         chord,           /* CALL: 1 the chord (`ChordNewton`), 0 the full
+         chord;           /* CALL: 1 the chord (`ChordNewton`), 0 the full
                              Newton (`StandardNewton`) */
-         first_bits;      /* OWN, read by `iterate` alone: the first
-                             evaluation's want bits */
     double reltol;        /* CALL: `par.reltol` */
     const double *abstol, *xtol;  /* (m) CTX buffers: `_newton_tolerances()`
                                      [2] and [3], copied in by `solve` when
                                      it reads another tuple than the last */
-    const double *Cin0;   /* OWN, read by `iterate` alone: cC where the seed
-                             equals cx, else NULL */
     const double *xseed;  /* CALL, LOOP: (n) the seed, full */
     /* `_C_lookup`'s cached state (CALL: the transient's `_C_cache`, the
        last evaluated point; LOOP: its last attempt's) */
@@ -85,10 +81,7 @@ typedef struct {
                              the transient's `_C_cache` array itself (n x n
                              >= INPLACE_MIN_ENTRIES and C-ordered) or at the
                              record's copy */
-    long have_cache,      /* CALL, LOOP: 1 where cx and cC hold a state */
-         hit;             /* OWN: 1 where the full seed equals cx (a cache
-                             hit); written, not read outside: a candidate
-                             for removal */
+    long have_cache;      /* CALL, LOOP: 1 where cx and cC hold a state */
     /* THE EVALUATIONS' OUTPUTS (OWN, CTX buffers; C, Geq, J n x n and
        q, iq, F n): the first iteration's (C0 .. J0) apart from the later
        ones' (C .. J) -- a chord's later residuals read C0 as the held C
@@ -117,8 +110,6 @@ typedef struct {
     int *ipiv32;          /* (m) dgetrf's, held for the chord's dgetrs */
     /* OUTPUTS AND STATUS (OWN) */
     long iters,           /* the iterations made: the Python's count */
-         last_eval,       /* the iteration of the last evaluation; written,
-                             not read outside: a candidate for removal */
          status;          /* the result (enum newton_status), as returned */
     /* THE CONVERGED POINT: `jacobian_only` there, in the same call.  xc ..
        Jj are written only on NEWTON_CONVERGED with fold_j nonzero, and hold
