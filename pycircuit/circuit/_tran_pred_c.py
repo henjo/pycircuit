@@ -1,7 +1,7 @@
 """THE STAGE PREDICTOR'S FAST PATH IN C (the C stepping loop plan's stage 4,
 step a; 2026-10-11): `_StagePredictor._predict_fast` -- the seed every
 multistep step starts its Newton from, extrapolated from the accepted
-history -- as `csrc/pred.c`, for the fixed-step loop in C to call (step b).
+history -- as `csrc/pred.c`, which the stepping loop in C calls (`csrc/loop.c`).
 Bit for bit the Python's: the nodes newest first with the 1e-13 dedupe and
 the tie test, the fit's times in Python's float order, `np.vander`'s
 running products, numpy's own `dgesv` (the weights) and `dgemv` (`w @ X`:

@@ -1,5 +1,5 @@
-"""The fixed-step multistep loop in C (`_tran_fixed_c`, the C stepping loop
-plan's stage 4; 2026-10-11): a fixed run with the C loop on is the run with
+"""The stepping loop in C (`_tran_loop_c`, the C stepping loop plan's
+stages 4 and 5; 2026-10-11): a fixed run with the C loop on is the run with
 it off -- every output byte, time, statistic and warning, the `_paths`
 tallies the Python steps make, and every attribute the steps leave on the
 transient (`transient._RUN_STATE`, its memos and counters aside) -- on the
@@ -16,7 +16,7 @@ import warnings
 import numpy as np
 import pytest
 
-from pycircuit.circuit import _paths, _tran_fixed_c, circuit, compact
+from pycircuit.circuit import _paths, _tran_loop_c, circuit, compact
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit import transient as trmod
 from pycircuit.circuit.elements import VS, C, R, SubCircuit, VPulse, VSin, gnd
@@ -26,7 +26,7 @@ from pycircuit.circuit.integrator import (
 )
 from pycircuit.circuit.transient import Transient
 
-pytestmark = pytest.mark.skipif(_tran_fixed_c.driver() is None,
+pytestmark = pytest.mark.skipif(_tran_loop_c.driver() is None,
                                 reason='the fixed-step loop unit did not build')
 
 
@@ -79,7 +79,7 @@ def _pulsed(n=6):
 ## predictor's memos, the core's check counters, a cache keyed by ids)
 _NOT_STATE = {'_pred_fast', '_pred_wmemo', '_tran_core', '_row_names_cache'}
 ## (counts the C loop's own machinery makes: its build, its table's)
-_OWN_COUNTS = ('once:', 'sources_c:', 'fixed_c:', 'pred_c:', 'branch_c:bail')
+_OWN_COUNTS = ('once:', 'sources_c:', 'loop_c:', 'pred_c:', 'branch_c:bail')
 
 
 def _norm(v, depth=0):
@@ -97,7 +97,7 @@ def _norm(v, depth=0):
 
 
 def _run(build, on, monkeypatch, make=None, setup=None, **kw):
-    monkeypatch.setattr(_tran_fixed_c, 'ENABLED', on)
+    monkeypatch.setattr(_tran_loop_c, 'ENABLED', on)
     before = _paths.snapshot()
     with warnings.catch_warnings(record=True) as W:
         warnings.simplefilter('always')
@@ -105,7 +105,8 @@ def _run(build, on, monkeypatch, make=None, setup=None, **kw):
         tr = Transient(build(), toolkit=circuit.numeric, **(make or {}))
         if setup:
             setup(tr)
-        res = tr.solve(fixed_timestep=True, **kw)
+        kw.setdefault('fixed_timestep', True)
+        res = tr.solve(**kw)
     st = tr.statistics
     stats = {k: getattr(st, k) for k in st.__slots__ if 'seconds' not in k}
     counts = {k: v for k, v in _paths.since(before).items() if not k.startswith(_OWN_COUNTS)}
@@ -113,6 +114,11 @@ def _run(build, on, monkeypatch, make=None, setup=None, **kw):
              if k not in _NOT_STATE}
     ## (the linear solver's own counts: a sparse run's factors and numerics)
     state['linear solver'] = repr(tr.__dict__.get('_default_linearsolver'))
+    ## (the controller's own: its running reference, its retry record, its
+    ## carried order, its last error -- its C error test's context aside)
+    ctrl = getattr(tr, 'step_controller', None)
+    if ctrl is not None:
+        state['controller'] = _norm({k: v for k, v in vars(ctrl).items() if k != '_lte_c'})
     return {'x': np.asarray(res.x, float).tobytes(),
             't': np.asarray(res.sweep_values, float).tobytes(), 'stats': stats,
             'warnings': sorted(str(w.message) for w in W), 'counts': counts,
@@ -128,7 +134,7 @@ def _same(build, monkeypatch, steps_min=1, **kw):
             assert not diff, ('the state moved', diff)
         else:
             assert a[k] == b[k], (k, a[k] if k != 'x' else '', b[k] if k != 'x' else '')
-    assert ca.get('fixed_c:steps', 0) >= steps_min, ca
+    assert ca.get('loop_c:steps', 0) >= steps_min, ca
     return ca
 
 
@@ -146,12 +152,12 @@ def _same(build, monkeypatch, steps_min=1, **kw):
 def test_a_fixed_run_is_the_python_one(name, build, make, kw, monkeypatch):
     ca = _same(build, monkeypatch, steps_min=10, make=make, **kw)
     if name == 'pulse':
-        assert ca.get('fixed_c:steps', 0) > 100
+        assert ca.get('loop_c:steps', 0) > 100
 
 
 def test_an_entry_that_fills_its_outputs_comes_back(monkeypatch):
     """Seven rows an entry: the run in many entries, the same run."""
-    monkeypatch.setattr(_tran_fixed_c, 'CAP_MAX', 7)
+    monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', 7)
     _same(_mos, monkeypatch, steps_min=40, tend=60 * 2e-8, timestep=2e-8)
 
 
@@ -168,7 +174,7 @@ def test_a_screen_that_fires_hands_the_step_back(monkeypatch):
     def setup(tr):
         tr.BRANCH_SCREEN_TOL = 0.9
     ca = _same(build, monkeypatch, steps_min=5, setup=setup, tend=80 * 2e-8, timestep=2e-8)
-    assert ca.get('fixed_c:bail:screen', 0) > 0
+    assert ca.get('loop_c:bail:screen', 0) > 0
 
 
 def test_a_newton_that_fails_hands_the_step_back(monkeypatch):
@@ -177,7 +183,7 @@ def test_a_newton_that_fails_hands_the_step_back(monkeypatch):
     def setup(tr):
         tr.par.maxiter = 2
     ca = _same(_pulsed, monkeypatch, steps_min=5, setup=setup, tend=2e-8, timestep=2.5e-10)
-    assert ca.get('fixed_c:bail:newton', 0) > 0
+    assert ca.get('loop_c:bail:newton', 0) > 0
 
 
 def test_the_declines(monkeypatch):
@@ -193,17 +199,17 @@ def test_the_declines(monkeypatch):
         c['rh'] = Hooked('d0', gnd, r=1e6)
         return c
     _, ca = _run(hooked, True, monkeypatch, tend=20 * 2e-8, timestep=2e-8)
-    assert ca.get('fixed_c:steps', 0) == 0 and ca.get('fixed_c:circuit', 0) > 0
+    assert ca.get('loop_c:steps', 0) == 0 and ca.get('loop_c:circuit', 0) > 0
     real = Transient._pred_note
     monkeypatch.setattr(Transient, '_pred_note', lambda self, *a, **k: real(self, *a, **k))
     _, ca = _run(_mos, True, monkeypatch, tend=20 * 2e-8, timestep=2e-8)
-    assert ca.get('fixed_c:steps', 0) == 0 and ca.get('fixed_c:patched', 0) > 0
+    assert ca.get('loop_c:steps', 0) == 0 and ca.get('loop_c:patched', 0) > 0
     monkeypatch.undo()
 
     def shadow(tr):
         tr._q_at = lambda x: Transient._q_at(tr, x)
     _, ca = _run(_mos, True, monkeypatch, setup=shadow, tend=20 * 2e-8, timestep=2e-8)
-    assert ca.get('fixed_c:steps', 0) == 0 and ca.get('fixed_c:shadow', 0) > 0
+    assert ca.get('loop_c:steps', 0) == 0 and ca.get('loop_c:shadow', 0) > 0
 
     def perturbed():
         ## (a source perturbed on the instance, as the shooting tests make
@@ -214,19 +220,99 @@ def test_the_declines(monkeypatch):
             real(t, epar, analysis=analysis, **kw), float) * 1.01
         return c
     _, ca = _run(perturbed, True, monkeypatch, tend=20 * 2e-8, timestep=2e-8)
-    assert ca.get('fixed_c:steps', 0) == 0 and ca.get('fixed_c:circuit', 0) > 0
+    assert ca.get('loop_c:steps', 0) == 0 and ca.get('loop_c:circuit', 0) > 0
 
 
 def test_a_seed_a_hair_off_is_another_run(monkeypatch):
     """Alive: the predictor's clamp a ulp off in the C (its seeds move, and
     the converged points with them) -- the comparison sees another run."""
     a, _ = _run(_pulsed, False, monkeypatch, tend=2e-8, timestep=2.5e-10)
-    bind = _tran_fixed_c._bind
+    bind = _tran_loop_c._bind
 
     def planted(*args, **kw):
         run = bind(*args, **kw)
         run.pr[0].clamp = math.nextafter(run.pr[0].clamp, 0.0)
         return run
-    monkeypatch.setattr(_tran_fixed_c, '_bind', planted)
+    monkeypatch.setattr(_tran_loop_c, '_bind', planted)
     b, cb = _run(_pulsed, True, monkeypatch, tend=2e-8, timestep=2.5e-10)
-    assert cb.get('fixed_c:steps', 0) > 10 and a['x'] != b['x']
+    assert cb.get('loop_c:steps', 0) > 10 and a['x'] != b['x']
+
+
+## -- adaptive (stage 5) -------------------------------------------------------
+
+def _hard_mos(n=8):
+    """A MOS chain with capacitors driven hard: the controller rejects."""
+    return _mos(n, va=0.6, cap=1e-13)
+
+
+@pytest.mark.parametrize('name, build, make, kw', [
+    ('gear', _hard_mos, None, {'tend': 4e-6, 'timestep': 2e-8}),
+    ('pulse', _pulsed, None, {'tend': 6e-8, 'timestep': 1e-9}),
+    ('trap', _pulsed, {'integrator': TrapezoidalIntegrator()}, {'tend': 4e-8, 'timestep': 1e-9}),
+    ('gp-chord', _gp, None, {'tend': 3e-6, 'timestep': 2e-8}),
+    ('psp-screen', _psp_stage, None, {'tend': 3e-6, 'timestep': 2e-8}),
+    ('sparse', lambda: _mos(250, cap=1e-13), {'reltol': 1e-5}, {'tend': 1e-8, 'timestep': 2e-10}),
+    ('alllocal', _pulsed, {'relref': 'alllocal'}, {'tend': 4e-8, 'timestep': 1e-9}),
+    ('pointlocal', _pulsed, {'relref': 'pointlocal'}, {'tend': 4e-8, 'timestep': 1e-9}),
+    ('assumed', _pulsed, {'retry_order': 'assumed'}, {'tend': 4e-8, 'timestep': 1e-9}),
+    ('carried', _pulsed, {'retry_order': 'carried'}, {'tend': 4e-8, 'timestep': 1e-9}),
+    ('mask', _pulsed, {'lte_algebraic': 'skip'}, {'tend': 4e-8, 'timestep': 1e-9}),
+])
+def test_an_adaptive_run_is_the_python_one(name, build, make, kw, monkeypatch):
+    """Every attempt -- accepted, rejected at a point and retried, a landing,
+    an order drop -- the same bytes, statistics, warnings, tallies, state and
+    controller (its running reference, retry record, carried order)."""
+    kw = dict(kw, fixed_timestep=False)
+    ca = _same(build, monkeypatch, steps_min=10, make=make, **kw)
+    if build is _pulsed:
+        ## (the pulse's corners reject: retried at the point, in C)
+        assert ca.get('loop_c:attempts', 0) > ca.get('loop_c:steps', 0), ca
+
+
+def test_the_adaptive_declines(monkeypatch):
+    """Another controller (a subclass: its law may be another) -- the
+    Python attempts, every one -- and an excursion bound, which the judge's
+    check refuses."""
+    from pycircuit.circuit import stepcontroller as sc
+
+    class Mine(sc.IntegralController):
+        pass
+
+    def mine(tr):
+        tr.step_controller = Mine()
+    _, ca = _run(_hard_mos, True, monkeypatch, setup=mine, tend=1e-6, timestep=2e-8,
+                 fixed_timestep=False)
+    ## (declined where the C error test declines it: no serve to enter on)
+    assert ca.get('loop_c:steps', 0) == 0 and ca.get('lte_c:controller', 0) > 0
+    ## (an excursion bound, asked of the judge's check directly: a run with
+    ## one set crawls in the Python loop on this chain -- a matter of its
+    ## own, 2026-10-11)
+    from types import SimpleNamespace
+    tr = Transient(_hard_mos(), toolkit=circuit.numeric)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr.solve(tend=2e-7, timestep=2e-8)
+    fam = SimpleNamespace(max_retries=10, max_reject=3)
+    loop = SimpleNamespace(run=SimpleNamespace(abstol=1e-6, max_step=1e-8), minstep=1e-18,
+                           family=fam)
+    O = _tran_loop_c._own()
+    assert type(_tran_loop_c._judge(loop, tr, O, tr.cir.n)) is tuple
+    tr.par.max_dv_step = 5.0
+    assert _tran_loop_c._judge(loop, tr, O, tr.cir.n) == 'veto'
+
+
+def test_a_law_a_hair_off_is_another_adaptive_run(monkeypatch):
+    """Alive: the shrink's floor a ulp off in the C's law (its rejections
+    retry at another step) -- the comparison sees another run."""
+    kw = {'tend': 6e-8, 'timestep': 1e-9, 'fixed_timestep': False}
+    a, _ = _run(_pulsed, False, monkeypatch, **dict(kw))
+    bind = _tran_loop_c._bind
+
+    def planted(*args, **k):
+        run = bind(*args, **k)
+        run.ct.min_shrink = math.nextafter(run.ct.min_shrink, 1.0)
+        run.ct.order_min = 1.5
+        return run
+    monkeypatch.setattr(_tran_loop_c, '_bind', planted)
+    b, cb = _run(_pulsed, True, monkeypatch, **dict(kw))
+    assert cb.get('loop_c:attempts', 0) > 10 and (a['x'] != b['x'] or a['t'] != b['t'])

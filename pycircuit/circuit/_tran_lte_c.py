@@ -46,7 +46,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths
+from pycircuit.circuit import _cbuild, _paths, _watch
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -109,8 +109,8 @@ def _globals():
     a call compares what it would call now against them.  None: not yet."""
     if not _G:
         from pycircuit.circuit import _numeric, analysis, integrator
-        from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
         from pycircuit.circuit import stepcontroller as sc
+        from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
         from pycircuit.circuit.toolkit import NumericToolkit
         SC, IG, AN, NU = (sc.StepController, 'pycircuit.circuit.integrator',
                           'pycircuit.circuit.analysis', 'pycircuit.circuit._numeric')
@@ -163,7 +163,7 @@ class _Ctx:
     every pointer the C holds is a buffer of this context's, set once."""
 
     __slots__ = ('buf', 'ffi', 'ipiv', 'iref', 'j_inplace', 'jbuf', 'keep', 'klu', 'klu_keep',
-                 'klu_sym', 'n', 's')
+                 'klu_sym', 'n', 's', 'served')
 
     def __init__(self, ffi, dgesv, n, iref):
         m = n - 1
@@ -196,6 +196,10 @@ class _Ctx:
         ## `_cbuild.INPLACE_MIN_ENTRIES`, or not C-contiguous)
         self.jbuf = s.J
         self.j_inplace = n * n >= _cbuild.INPLACE_MIN_ENTRIES
+        ## (the watch counter at this context's last serve, None after any
+        ## other outcome: the adaptive loop in C enters only on a serve
+        ## nothing watched has moved since -- `_tran_loop_c`)
+        self.served = None
         s.n, s.iref = n, iref
         s.klu_sym = ffi.NULL
         self.klu = self.klu_sym = None
@@ -241,6 +245,9 @@ def _vec(a, n):
 def max_error(ctrl, s):
     """`StepController._max_error` in C: `(err, p)`, or None -- declined or
     handed back, nothing written, the Python chain runs."""
+    last = ctrl.__dict__.get('_lte_c')
+    if last is not None:
+        last.served = None
     if not ENABLED:
         return _no('lte_c:off')
     drv = _driver or driver()
@@ -412,6 +419,7 @@ def max_error(ctrl, s):
     if status != _CODES['LTE_DONE']:
         return _no('lte_c:bail:' + BAIL.get(status, str(status)))
     _PC['lte_c:served'] += 1
+    ctx.served = _watch.now()
     if sk is not None:
         ## (the refactor `StructuralKLU.solve` counts)
         sk.refactors += 1

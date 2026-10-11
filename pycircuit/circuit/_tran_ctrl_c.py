@@ -2,8 +2,8 @@
 2026-10-11): `IntegralController._evaluate` past its error test -- the
 default band's accept or reject, the next step (`0.9 ** p`, the shrink with
 `retry_order`'s exponent from the last rejection at the same point, the
-grow, the cap), `_judged`'s retry state -- as `csrc/ctrl.c`, for the
-adaptive loop in C to call (step b).  Bit for bit the Python's: its float
+grow, the cap), `_judged`'s retry state -- as `csrc/ctrl.c`, which the
+adaptive loop in C calls (`csrc/loop.c`).  Bit for bit the Python's: its float
 operations in their order, `pow` and `log` the same libm's, its `min` and
 `max` as Python's builtins pick.  "The same point" is the object the
 controller kept (`is`) in the Python, an index of the accepted points here.

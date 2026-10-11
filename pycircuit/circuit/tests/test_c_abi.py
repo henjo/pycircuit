@@ -39,9 +39,13 @@ from pycircuit.circuit import (
     _hdl_batch,
     _hdl_cbackend,
     _hdl_climit,
+    _tran_branch_c,
     _tran_core,
+    _tran_ctrl_c,
+    _tran_loop_c,
     _tran_lte_c,
     _tran_newton_c,
+    _tran_pred_c,
     _tran_radau_c,
     _tran_radau_tc,
     _tran_sources,
@@ -62,6 +66,10 @@ UNITS = [
     ('walk', _hdl_climit._WALK_CDEF),
     ('watch', _watch.WATCH_CDEF),
     ('sources', _tran_sources.SOURCES_CDEF),
+    ('branch', _tran_branch_c.BRANCH_CDEF),
+    ('pred', _tran_pred_c.PRED_CDEF),
+    ('ctrl', _tran_ctrl_c.CTRL_CDEF),
+    ('loop', _tran_loop_c.LOOP_CDEF),
 ]
 
 

@@ -8337,3 +8337,59 @@ fails on the code before ("Singular matrix").  "The error test and its C" moved 
 -- checked, re-recorded.  The lesson kept: a solver or DC change runs every gold deck, its
 operating point included, before it is committed -- the suite runs none of them.  Full suite
 5145 passed.
+
+## 2026-10-11 — 120. Stage 5, steps b and c: the adaptive multistep loop in C -- one loop unit for both modes
+
+`csrc/fixed.c` became `csrc/loop.c` (`_tran_fixed_c` -> `_tran_loop_c`, `PYCIRCUIT_LOOP_C`,
+`loop_c:` counts; the tests `test_loop_c.py`): one stepping loop in C, fixed or adaptive, as the
+Python has one.  An adaptive attempt adds to a fixed step: `where`'s truncation onto the next
+breakpoint (a landing) and the cap; the judge -- the C error test (stage 3) driven through its
+own struct (the estimate's coefficient and step sums as `_tran_lte_c` makes them in Python
+floats; its sparse solve bound to the run's StructuralKLU as its glue binds it; an `lte_algebraic`
+mask copied in once a run), then the controller's law (5a), the "same point" the index of the
+accepted point the attempt left from; a rejection retried at the point within the family's
+budget (`max_retries`, `max_reject`, `minstep`) -- the attempt's Newton write-backs, the screen's
+maximum, the error test's running reference, the law's retry record and `last_err` kept PER
+ATTEMPT (the converged C and Geq alternating between two buffers per attempt, so an attempt
+handed back leaves the last one's); a force-accept handed back (its warning's record is the
+Python's), the law's record restored first; the accept as the fixed loop's, the next step
+`min(h_next, max_step)`.  A rejected attempt keeps `where`'s landing: its retry drops the order,
+as the Python's `where` reads the landing flag the rejected attempt left.  THE ENTRY: the error
+test's glue marks its last serve as the Newton's does (`_tran_lte_c`'s `served`), and an adaptive
+entry needs both; checked once an entry besides the fixed loop's: the controller exactly the
+`IntegralController` with the default band, a `retry_order` the law knows, no excursion bound, the
+judge's pieces genuine (the loop's and the family's `judge`, `_lte_inputs`, the controller's
+methods, `_tran_lte_c.max_error`) and unshadowed, the run's tolerance and caps of the types the C
+reads.  THE BACKOFF: an entry that makes no attempt (a screen that fires every step, the SVD the
+Python's -- mosrect, ab_integ, e1480, g1310) doubles the Python attempts before the next, up to
+256: mosrect's 307 hand-backs became 8 and its run no slower.
+
+Proved (test_loop_c, 26 tests): the fixed cases as before, and adaptive -- gear on a hard-driven
+chain, a pulse's landings, order drops and rejections retried in C, the trapezoid, Gummel-Poon on
+the chord, the PSP stage behind the screen, a 250-stage sparse run (the error test on KLU), relref
+alllocal and pointlocal, retry_order assumed and carried, an LTE mask: the same bytes, times,
+statistics, warnings, `_paths` tallies, every `_RUN_STATE` attribute (memos and counters aside)
+and the controller's state (its running reference, retry record, carried order, last error); a
+controller subclass declines (the error test's glue declines it first), an excursion bound is
+refused by the judge's check; alive: the law's shrink floor a ulp off is another run.  Found on the
+way, NOT this stage's: an excursion bound (`max_dv_step=5.0`) on the 8-stage MOS chain makes the
+Python loop crawl (40 ns of a run not done in 60 s, at HEAD too) -- noted for its own look.
+
+Every gold deck (27, at 0.3 of each run, the C loop on against off): the same x, t, statistics,
+warnings and controller state.  The C makes 95-100 % of the attempts on 22 of them; ab_integ,
+e1480, g1310 and mosrect none (the screen fires: handed back, backed off), todd3 81 %, gm17 83 %.
+Wall time at 0.3 (one run each, not the line): 4049osc 0.43 -> 0.08 s, gm2 0.14 -> 0.04, gm6
+0.11 -> 0.04, mike2 0.10 -> 0.04, latch 0.11 -> 0.05, nand 0.47 -> 0.24, ring 0.62 -> 0.33, gm1
+0.44 -> 0.25, rich3 1.85 -> 1.12, arom 1.76 -> 1.10, mux8 8.75 -> 6.30, gm19 6.69 -> 5.36, jge
+13.94 -> 11.66, voter25 2.65 -> 2.22, opampal 32.6 -> 31.8 (its operating point dominates); the
+screen's four unchanged.  The line (5d) is measured full length, paired against the parent tree.
+
+A FIX to 117, found by the readability review (below): `loop_c:steps` (then `fixed_c:steps`)
+counted both the steps made in C and a decline (the run's opening steps, no history yet) -- the
+tests read it as steps made.  The declines are now `loop_c:history` and `loop_c:step_bounds`.
+Stale lines the rename left (the "fixed-step loop" in transient.py, `_tran_newton_c`, the pred and
+ctrl docstrings, test_watch) corrected.  Pinned: "the stepping loop and its C" (renamed from "the
+fixed-step loop and its C", its reference list grown by the judge's pieces: `_LMMSteps.judge`,
+`_lte_inputs`, `IntegralController._evaluate`, `_tran_lte_c.max_error`, the event breakpoint),
+re-recorded with "the error test and its C", "the Newton solve and its C" and "the stepping loop
+and its unread Jacobian" (twin side only).  Full suite 5158 passed; sanitizer fast tier clean.

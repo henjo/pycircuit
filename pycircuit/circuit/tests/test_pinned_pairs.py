@@ -50,30 +50,38 @@ PAIRS = {
         'twin': ['pycircuit.circuit._tran_ctrl_c:CTRL_C',
                  'pycircuit.circuit._tran_ctrl_c:new_state'],
     },
-    'the fixed-step loop and its C': {
-        'why': 'the C runs `_SteppingLoop`\'s fixed multistep steps -- where (the grid, '
-               'the next breakpoint as `_next_breakpoint` makes it, the order drop a '
-               'landing asks for), take (the predictor, `check_order_drop`, '
-               '`bdf2_alphas`, the C Newton set up as its glue sets it up, the screen) and '
-               'accept (the rings, `_pred_note`, the statistics) -- and writes back what '
-               'the Python steps leave',
+    'the stepping loop and its C': {
+        'why': 'the C makes `_SteppingLoop`\'s multistep attempts, fixed and adaptive -- '
+               'where (the grid or the controller\'s step, the next breakpoint as '
+               '`_next_breakpoint` makes it, crossed or landed on, the order drop a landing '
+               'or a force asks for), take (the predictor, `check_order_drop`, '
+               '`bdf2_alphas`, the C Newton set up as its glue sets it up, the screen), judge '
+               '(the C error test as its glue sets it up, the controller\'s law, a rejection '
+               'retried within the budget) and accept (the rings, `_pred_note`, the '
+               'statistics) -- and writes back what the Python attempts leave',
         'reference': ['pycircuit.circuit.transient:_SteppingLoop.where',
                       'pycircuit.circuit.transient:_SteppingLoop.take',
+                      'pycircuit.circuit.transient:_SteppingLoop.judge',
                       'pycircuit.circuit.transient:_SteppingLoop.accept',
+                      'pycircuit.circuit.transient:_LMMSteps.judge',
                       'pycircuit.circuit.transient:Transient._solve_timestep',
                       'pycircuit.circuit._tran_events:_StepEvents._next_breakpoint',
                       'pycircuit.circuit._tran_history:_RunHistory._roll_history',
                       'pycircuit.circuit._tran_history:_RunHistory._push_history',
+                      'pycircuit.circuit._tran_history:_RunHistory._lte_inputs',
                       'pycircuit.circuit._tran_predictor:_StagePredictor._pred_note',
                       'pycircuit.circuit._tran_predictor:_StagePredictor._pred_promote',
                       'pycircuit.circuit.integrator:Gear2Integrator.check_order_drop',
                       'pycircuit.circuit.integrator:TrapezoidalIntegrator.check_order_drop',
                       'pycircuit.circuit._lte_kernels:bdf2_alphas',
-                      'pycircuit.circuit._tran_newton_c:solve'],
-        'twin': ['pycircuit.circuit._tran_fixed_c:FIXED_C',
-                 'pycircuit.circuit._tran_fixed_c:run',
-                 'pycircuit.circuit._tran_fixed_c:_write_back',
-                 'pycircuit.circuit._tran_fixed_c:_bind'],
+                      'pycircuit.circuit.stepcontroller:IntegralController._evaluate',
+                      'pycircuit.circuit._tran_newton_c:solve',
+                      'pycircuit.circuit._tran_lte_c:max_error'],
+        'twin': ['pycircuit.circuit._tran_loop_c:LOOP_C',
+                 'pycircuit.circuit._tran_loop_c:run',
+                 'pycircuit.circuit._tran_loop_c:_write_back',
+                 'pycircuit.circuit._tran_loop_c:_bind',
+                 'pycircuit.circuit._tran_loop_c:_judge'],
     },
     'the predictor and its C': {
         'why': 'the C makes `_predict_fast`: the nodes newest first with the 1e-13 dedupe '
@@ -529,7 +537,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('837249250601', '1a38aea52745'),
-    'the fixed-step loop and its C': ('4f1670e206e3', '03ef637f2548'),
+    'the stepping loop and its C': ('f25febbc090f', '3c061d063c32'),
     'the predictor and its C': ('f2c284eb392d', '46a83fdd35ab'),
     'the branch screen and its C': ('1b848875234f', '67f78befa5b6'),
     'the sources and their C': ('55cf2d3441f8', 'e9ef34a79dd1'),
@@ -542,11 +550,11 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('d7ce3151abd4', '69690219204a'),
+    'the Newton solve and its C': ('d7ce3151abd4', '41f6bd9b23c3'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
-    'the error test and its C': ('1650ca5eabf8', '3d8475fd3328'),
+    'the error test and its C': ('1650ca5eabf8', '4b8980210a47'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
-    'the stepping loop and its unread Jacobian': ('16a27211f0a2', 'a4444d4d60a1'),
+    'the stepping loop and its unread Jacobian': ('16a27211f0a2', '82008a8b28a2'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '0c0764bd821c'),
     "the stage paths' passes and the core's": ('f83268db1289', 'd20bbf28ddf2'),
     'the coupled stage Newton and its C': ('c9e9adf33989', '3474b7e6790d'),

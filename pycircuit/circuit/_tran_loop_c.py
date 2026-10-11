@@ -1,0 +1,774 @@
+"""THE STEPPING LOOP IN C (the C stepping loop plan's stages 4 and 5;
+2026-10-11).  `_SteppingLoop` with a multistep family is, attempt after
+attempt, `where` (the grid or the controller's step, the next breakpoint --
+crossed by a grid, landed on by an adaptive step -- the order drop a landing
+or a force asks for), `take` (the stage predictor's seed, the companion, the
+C Newton, the branch screen), `judge` (adaptive: the error test, the
+controller's law, a rejection retried at the point within its budget) and
+`accept` (the rings, the predictor's node, the outputs, the statistics) --
+~85 us of Python around ~20 us of C a fixed step on the 20-MosLevel1 chain.
+Here `csrc/loop.c` makes those attempts itself, driving the units the Python
+steps call -- the sources' table (stage 1), the predictor (4a), the C Newton
+(its record, as its last served call left it), the branch screen (3d), the
+error test (stage 3), the controller's law (5a) -- and stops before any
+attempt it cannot make as the Python would, which the Python loop then
+makes; the next attempt enters the C again.
+
+THE RUN CONTEXT.  Inside the C loop no Python runs between attempts: the
+sources are the table, the devices the core's kernels, and a circuit with
+an `accept_step` hook, a breakpoint the table does not make, a periodic
+state, a provided function, a stateful limiter, an injected piece of the
+chain declines.  So what the C Newton's glue checks on every call holds for
+every attempt of an entry when its last call SERVED and nothing watched
+moved since (`_tran_newton_c`'s `served` mark against `_watch.now()`), and
+the same of the error test's glue (`_tran_lte_c`'s); the rest is checked
+here, once an entry.  Watching off, the loop does not run.
+
+THE STATE.  Copied in at entry (the rings, the predictor's nodes, the
+cached C, the step record, the error test's running reference, the
+controller's retry record, the loop's own) and written back after it, as
+the Python attempts leave it: `X` and `timelist` a fresh array and float a
+step, the statistics, every attribute the attempts write
+(`transient._RUN_STATE`: the rings, `_q_cache`, `_C_cache`, `_C_pattern`,
+`_iq`, `_Geq`, `_Cmat`, the active integrator and its coefficients, the
+predictor's history, the step record, the screen's running maximum), the
+controller's (`_ref_running`, `_retry`, `_q_carried`, `last_err`), the
+loop's -- and the `_paths` tallies the Python attempts make, under their
+keys.  `ENABLED` (env `PYCIRCUIT_LOOP_C=0`) is read on every entry.
+"""
+import os
+import time
+
+import numpy as np
+
+from pycircuit.circuit import _cbuild, _paths
+
+_PC = _paths.COUNTS
+_no = _paths.no
+
+ENABLED = os.environ.get('PYCIRCUIT_LOOP_C', '1') != '0'
+STATUS = 'not loaded'
+
+LOOP_C = _cbuild.csrc('loop.c')
+LOOP_CDEF = _cbuild.csrc('loop.h')
+_CODES = _cbuild.constants(LOOP_CDEF)
+BAIL = _cbuild.bails(_CODES, 'LOOP_BAIL_')
+_ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
+#: the outputs' rows an entry holds (full: written back, entered again)
+CAP_MAX = 4096
+#: the most Python attempts made between two entries after entries that
+#: made none (`run`'s backoff)
+BACKOFF_MAX = 256
+_F64 = np.dtype(np.float64)
+
+_driver = None
+_OWN = None
+
+
+def driver():
+    """`(ffi, cfn)` once loaded, or None (`STATUS`)."""
+    global _driver, STATUS
+    if _driver is None:
+        _driver = False
+        try:
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(LOOP_C, LOOP_CDEF)
+        except (_cbuild.CompileError, OSError) as e:
+            STATUS = f'off ({e})'
+            return None
+        _driver = (ffi, cfn)
+        STATUS = 'c'
+    return _driver or None
+
+
+def _pieces(O):
+    """The pieces the attempts call, as they stand now (in `_own`'s order)."""
+    T, E, Sub, F, I = O['T'], O['E'], O['Sub'], O['family'], O['I']
+    L, LMM, SC, IC = O['Loop'], O['LMM'], O['SC'], O['IC']
+    return (T._next_breakpoint, T._attempt_step, T._pred_or, T._predict_state, T._predict_fast,
+            T._pred_fast_nodes, T._fit_fast, T._pred_note, T._pred_promote, T._pred_degree,
+            T._push_history, T._roll_history, O['history']._ring_push, T._q_at,
+            T._branch_after_solve, T._branch_screen, T._branch_screen_C, T._branch_on,
+            O['stats']._note_step, Sub.next_event, Sub.accept_step, E.VS.next_event,
+            E.IS.next_event, O['hdl'].Behavioural.next_event, T._source_at, Sub.u,
+            T._branch_structural_rank, F.next_breakpoint, F.after_accept, O['newton_c'].solve,
+            I.Gear2Integrator.check_order_drop, I.EulerIntegrator.check_order_drop,
+            I.TrapezoidalIntegrator.check_order_drop,
+            L.execute, L.where, L.take, L.judge, L.event, L.accept, F.attempt, LMM.judge,
+            LMM.h_after_force, T.solve_timestep, T._solve_timestep, T._lte_inputs,
+            T._excursion_ratio, T._lte_mask, T._sparse_linsolver, IC._evaluate,
+            SC.evaluate_step, SC._max_error, SC._band_decision, SC._band_target,
+            SC._retry_exponent, SC._judged, SC._damp, O['lte_c'].max_error)
+
+
+def _own():
+    """The pieces the loop stands in for, as defined -- read once every one
+    is its module's own (`_paths.genuine`), else None -- with what an entry
+    compares against them (`_pieces`)."""
+    global _OWN
+    if _OWN is None:
+        from pycircuit.circuit import (
+            _tran_companion,
+            _tran_history,
+            _tran_lte_c,
+            _tran_newton_c,
+            _tran_predictor,
+            hdl,
+        )
+        from pycircuit.circuit import elements as E
+        from pycircuit.circuit import integrator as I
+        from pycircuit.circuit import stepcontroller as sc
+        from pycircuit.circuit.circuit import Circuit, SubCircuit
+        from pycircuit.circuit.transient import (
+            Transient,
+            TransientStatistics,
+            _LMMSteps,
+            _StepFamily,
+            _SteppingLoop,
+        )
+        M = 'pycircuit.circuit.'
+        TR, PR, HI, BR, CO, EV, CI, EL, IG, SM = (M + m for m in (
+            'transient', '_tran_predictor', '_tran_history', '_tran_branch', '_tran_companion',
+            '_tran_events', 'circuit', 'elements', 'integrator', 'stepcontroller'))
+        T, F, L, LMM, SC = Transient, _StepFamily, _SteppingLoop, _LMMSteps, sc.StepController
+        IC = sc.IntegralController
+        own = (
+            (T._next_breakpoint, '_StepEvents._next_breakpoint', EV),
+            (T._attempt_step, 'Transient._attempt_step', TR),
+            (T._pred_or, '_StagePredictor._pred_or', PR),
+            (T._predict_state, '_StagePredictor._predict_state', PR),
+            (T._predict_fast, '_StagePredictor._predict_fast', PR),
+            (T._pred_fast_nodes, '_StagePredictor._pred_fast_nodes', PR),
+            (T._fit_fast, '_StagePredictor._fit_fast', PR),
+            (T._pred_note, '_StagePredictor._pred_note', PR),
+            (T._pred_promote, '_StagePredictor._pred_promote', PR),
+            (T._pred_degree, '_StagePredictor._pred_degree', PR),
+            (T._push_history, '_RunHistory._push_history', HI),
+            (T._roll_history, '_RunHistory._roll_history', HI),
+            (_tran_history._ring_push, '_ring_push', HI),
+            (T._q_at, '_CompanionModel._q_at', CO),
+            (T._branch_after_solve, '_BranchCheck._branch_after_solve', BR),
+            (T._branch_screen, '_BranchCheck._branch_screen', BR),
+            (T._branch_screen_C, '_BranchCheck._branch_screen_C', BR),
+            (T._branch_on, '_BranchCheck._branch_on', BR),
+            (TransientStatistics._note_step, 'TransientStatistics._note_step', TR),
+            (SubCircuit.next_event, 'SubCircuit.next_event', CI),
+            (SubCircuit.accept_step, 'SubCircuit.accept_step', CI),
+            (E.VS.next_event, 'VS.next_event', EL),
+            (E.IS.next_event, 'IS.next_event', EL),
+            (hdl.Behavioural.next_event, 'Behavioural.next_event', M + 'hdl'),
+            (T._source_at, '_CompanionModel._source_at', CO),
+            (SubCircuit.u, 'SubCircuit.u', CI),
+            (T._branch_structural_rank, '_BranchCheck._branch_structural_rank', BR),
+            (F.next_breakpoint, '_StepFamily.next_breakpoint', TR),
+            (F.after_accept, '_StepFamily.after_accept', TR),
+            (_tran_newton_c.solve, 'solve', M + '_tran_newton_c'),
+            (I.Gear2Integrator.check_order_drop, 'Gear2Integrator.check_order_drop', IG),
+            (I.EulerIntegrator.check_order_drop, 'EulerIntegrator.check_order_drop', IG),
+            (I.TrapezoidalIntegrator.check_order_drop, 'TrapezoidalIntegrator.check_order_drop',
+             IG),
+            (L.execute, '_SteppingLoop.execute', TR),
+            (L.where, '_SteppingLoop.where', TR),
+            (L.take, '_SteppingLoop.take', TR),
+            (L.judge, '_SteppingLoop.judge', TR),
+            (L.event, '_SteppingLoop.event', TR),
+            (L.accept, '_SteppingLoop.accept', TR),
+            (F.attempt, '_StepFamily.attempt', TR),
+            (LMM.judge, '_LMMSteps.judge', TR),
+            (LMM.h_after_force, '_LMMSteps.h_after_force', TR),
+            (T.solve_timestep, 'Transient.solve_timestep', TR),
+            (T._solve_timestep, 'Transient._solve_timestep', TR),
+            (T._lte_inputs, '_RunHistory._lte_inputs', HI),
+            (T._excursion_ratio, '_StepEvents._excursion_ratio', EV),
+            (T._lte_mask, '_RunHistory._lte_mask', HI),
+            (T._sparse_linsolver, '_RunHistory._sparse_linsolver', HI),
+            (IC._evaluate, 'IntegralController._evaluate', SM),
+            (SC.evaluate_step, 'StepController.evaluate_step', SM),
+            (SC._max_error, 'StepController._max_error', SM),
+            (SC._band_decision, 'StepController._band_decision', SM),
+            (SC._band_target, 'StepController._band_target', SM),
+            (SC._retry_exponent, 'StepController._retry_exponent', SM),
+            (SC._judged, 'StepController._judged', SM),
+            (SC._damp, 'StepController._damp', SM),
+            (_tran_lte_c.max_error, 'max_error', M + '_tran_lte_c'),
+        )
+        if not all(_paths.genuine(*o) for o in own):
+            return None
+        O = {
+            'T': T, 'stats': TransientStatistics, 'Circuit': Circuit, 'Sub': SubCircuit,
+            'history': _tran_history, 'E': E, 'hdl': hdl, 'I': I,
+            'source_next': (E.VS.next_event, E.IS.next_event),
+            'inf_next': hdl.Behavioural.next_event,
+            'integrators': {I.Gear2Integrator: _ABI['PCX_FORMULA_GEAR2'],
+                            I.EulerIntegrator: _ABI['PCX_FORMULA_EULER'],
+                            I.TrapezoidalIntegrator: _ABI['PCX_FORMULA_TRAPEZOIDAL']},
+            'Euler': I.EulerIntegrator,
+            'zs_ratio': I.ZERO_STABILITY_RATIO,
+            'predictor': _tran_predictor, 'companion': _tran_companion,
+            'newton_c': _tran_newton_c, 'lte_c': _tran_lte_c, 'family': F, 'Loop': L,
+            'LMM': LMM, 'SC': SC, 'IC': IC,
+        }
+        O['chain'] = _pieces(O)
+        _OWN = O
+    return _OWN
+
+
+class _Run:
+    """One stepping loop's C loop: the struct, its buffers, the units'
+    structs it drives -- bound to the C Newton's record, the source table and
+    the screen it was made for (and, adaptive, the error test's context)."""
+
+    __slots__ = ('br', 'buf', 'ct', 'ffi', 'keep', 'lte', 'npat', 'nrec', 'pr', 's', 'sk', 'tab')
+
+
+def _addr(ffi, obj):
+    return int(ffi.cast('uintptr_t', obj))
+
+
+def _bind(tr, rec, tab, n, hist_len, screen, judge):
+    """The loop's `_Run` for the C Newton's record `rec`, the source table
+    `tab`, the branch screen `screen` (`(its ffi, its entry, the core's
+    pattern or None)`, or None: nothing screened) and, adaptive, `judge`
+    (`(the controller, the run, the sparse solver or None)`)."""
+    from pycircuit.circuit import (
+        _tran_ctrl_c,
+        _tran_lte_c,
+        _tran_newton_c,
+        _tran_pred_c,
+    )
+    ffi, _cfn = driver()
+    run = _Run()
+    run.ffi, run.nrec, run.tab = ffi, rec, tab
+    s = run.s = ffi.new('loop_t *')
+    cap = CAP_MAX
+    run.buf = buf = {
+        'qring': np.empty(hist_len * n), 'iqring': np.empty(hist_len * n),
+        'xlast': np.empty(n), 'ht': np.empty(8), 'hx': np.empty(8 * n),
+        ## (zero off the pattern: where the core writes only the pattern's
+        ## entries, the rest stay as the Newton's own buffers keep them)
+        'cC0': np.zeros(n * n), 'cC1': np.zeros(n * n),
+        'Geq0': np.zeros(n * n), 'Geq1': np.zeros(n * n),
+        'run': np.empty(n), 'xatt': np.empty(n), 'qatt': np.empty(n), 'iqatt': np.empty(n),
+        'X': np.empty(cap * n), 'T': np.empty(cap),
+    }
+    keep = run.keep = []
+    fb = ffi.from_buffer
+    for k in ('qring', 'iqring', 'xlast', 'ht', 'hx', 'run', 'xatt', 'qatt', 'iqatt', 'X', 'T'):
+        keep.append(fb('double *', buf[k]))
+        setattr(s, k, keep[-1])
+    for i in (0, 1):
+        keep.append(fb('double *', buf[f'cC{i}']))
+        s.cC[i] = keep[-1]
+        keep.append(fb('double *', buf[f'Geq{i}']))
+        s.Geq[i] = keep[-1]
+    nffi, ncfn, _lapack = _tran_newton_c.driver()
+    s.newton = ffi.cast('void *', _addr(nffi, rec.s))
+    s.newton_fn = ffi.cast('void *', _addr(nffi, ncfn))
+    pffi, pcfn, dgesv, dgemv = _tran_pred_c.driver()
+    ps, pbuf, pkeep = _tran_pred_c.new_state(pffi, dgesv, dgemv, n)
+    ps.ht = pffi.cast('double *', _addr(ffi, s.ht))
+    ps.hx = pffi.cast('double *', _addr(ffi, s.hx))
+    ps.deg = int(tr._pred_degree())
+    ps.clamp = float(tr.PRED_CLAMP)
+    run.pr = (ps, pbuf, pkeep)
+    s.pred = ffi.cast('void *', _addr(pffi, ps))
+    s.pred_fn = ffi.cast('void *', _addr(pffi, pcfn))
+    s.src = ffi.cast('void *', _addr(tab.ffi, tab.s))
+    s.src_fn = ffi.cast('void *', _addr(tab.ffi, tab.cfn))
+    run.br, run.npat = None, 0
+    if screen is None:
+        s.branch = s.branch_fn = ffi.NULL
+    else:
+        bffi, bcfn, pat = screen
+        bs = bffi.new('branch_t *')
+        bs.n, bs.npat = n, 0
+        bs.tol_rel = float(tr.BRANCH_SCREEN_TOL)
+        bkeep = [bs]
+        if pat is not None:
+            bkeep += [pat, bffi.from_buffer('int64_t *', pat)]
+            bs.pat, bs.npat = bkeep[-1], len(pat)
+            run.npat = len(pat)
+        run.br = bkeep
+        s.branch = ffi.cast('void *', _addr(bffi, bs))
+        s.branch_fn = ffi.cast('void *', _addr(bffi, bcfn))
+    run.lte = run.ct = run.sk = None
+    s.lte = s.lte_fn = s.ctrl = s.ctrl_fn = ffi.NULL
+    if judge is not None:
+        ctrl, rset, sk, mask = judge
+        lffi, lcfn, ldgesv = _tran_lte_c.driver()
+        ctx = _tran_lte_c._Ctx(lffi, ldgesv, n, tr.irefnode)
+        if sk is not None and not _tran_lte_c._klu_bind(ctx, sk):
+            return None
+        le = ctx.s
+        ab = rset.abstol
+        if type(ab) is np.ndarray:
+            ctx.buf['abst'][:] = ab
+            le.abs_vec, le.abstol = 1, 0.0
+        else:
+            le.abs_vec, le.abstol = 0, float(ab)
+        le.reltol, le.trtol = float(tr.par.reltol), float(tr.LTERATIO)
+        le.relref = _tran_lte_c._RELREF.get(ctrl.relref, _tran_lte_c._CODES['LTE_RELREF_SIGGLOBAL'])
+        le.nn = len(tr.cir.nodes)
+        ## (the unknowns the test judges, `lte_algebraic`: the run's own)
+        le.has_mask = int(mask is not None)
+        if mask is not None:
+            ctx.buf['mask'][:] = mask
+        if sk is not None:
+            le.klu_num = lffi.cast('void *', sk._numeric)
+            le.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+        run.lte, run.sk = ctx, sk
+        s.lte = ffi.cast('void *', _addr(lffi, le))
+        s.lte_fn = ffi.cast('void *', _addr(lffi, lcfn))
+        cffi_, ccfn = _tran_ctrl_c.driver()
+        ct = _tran_ctrl_c.new_state(cffi_, ctrl.retry_order)
+        run.ct = ct
+        s.ctrl = ffi.cast('void *', _addr(cffi_, ct))
+        s.ctrl_fn = ffi.cast('void *', _addr(cffi_, ccfn))
+        s.keeps_run = int(le.relref != _tran_lte_c._CODES['LTE_RELREF_POINTLOCAL'])
+    s.n, s.hist_len, s.cap = n, hist_len, cap
+    return run
+
+
+def _declined(loop, why, keep=True):
+    """The entry declined, counted -- kept on the loop (`keep`) until
+    something watched moves, where the reason is the run's and not the
+    attempt's."""
+    from pycircuit.circuit import _watch
+    if keep:
+        loop.c_kept = _watch.now()
+    _no('loop_c:' + why)
+    return False
+
+
+def _screen(tr, td, rec, n):
+    """The branch screen the attempts make: `(None,)` -- nothing screened
+    (off, or `C` structurally empty) -- `(ffi, entry, pattern or None)` in
+    C, or None: not in C."""
+    if not tr._branch_on():
+        return (None,)
+    r0, scale0 = tr._branch_structural_rank()
+    if not (r0 > 0 and scale0 > 0.0):
+        return (None,)
+    from pycircuit.circuit import _tran_branch_c
+    bd = _tran_branch_c.driver()
+    if bd is None or not _tran_branch_c.ENABLED or type(tr.BRANCH_SCREEN_TOL) is not float \
+            or type(td.get('_branch_cmax', 0.0)) is not float:
+        return None
+    core = rec.core
+    pat = core.arrays['pat'] if core.npat else None
+    if pat is None and n * n > _cbuild.INPLACE_MIN_ENTRIES:
+        return None
+    return (bd[0], bd[1], pat)
+
+
+def _judge(loop, tr, O, n):
+    """The adaptive attempts' judge, checked: `(the controller, the run's
+    settings, the sparse solver or None)`, or a decline reason (str)."""
+    from pycircuit.circuit import _tran_ctrl_c, _tran_lte_c
+    from pycircuit.circuit import stepcontroller as sc
+    ctrl = tr.step_controller
+    cd = ctrl.__dict__
+    if type(ctrl) is not O['IC'] or any(k in cd for k in _CONTROLLER_SHADOWS):
+        return 'controller'
+    if not (ctrl.lte_gamma_min == 0.0 and ctrl.lte_gamma_max == 1.0 and ctrl.lte_eta is None
+            and ctrl.retry_order in _tran_ctrl_c.MODES and type(ctrl.relref) is str):
+        return 'controller'
+    if (sc.MIN_SHRINK_RATIO, sc.MAX_GROWTH_RATIO, sc.RETRY_ORDER_MIN) != (0.2, 2.0, 1.0):
+        return 'controller'
+    if _tran_ctrl_c.driver() is None or not _tran_ctrl_c.ENABLED or not _tran_lte_c.ENABLED:
+        return 'controller'
+    if tr.par.max_dv_step is not None or tr.par.max_di_step is not None:
+        return 'veto'
+    mask = tr._lte_mask()
+    if mask is not None and not (type(mask) is np.ndarray and mask.shape == (n,)):
+        return 'mask'
+    rset = loop.run
+    ab = rset.abstol
+    if not ((type(ab) is np.ndarray and ab.dtype is _F64 and ab.shape == (n,))
+            or type(ab) is float):
+        return 'abstol'
+    if type(rset.max_step) is not float or type(loop.minstep) is not float:
+        return 'step_bounds'
+    if type(tr.par.reltol) not in (float, int) or type(tr.LTERATIO) is not float:
+        return 'tolerance'
+    fam = loop.family
+    if type(fam.max_retries) is not int or type(fam.max_reject) is not int:
+        return 'budget'
+    run = cd.get('_ref_running')
+    if run is not None and not (type(run) is np.ndarray and run.dtype is _F64
+                                and run.shape == (n,)):
+        return 'reference'
+    q = cd.get('_q_carried')
+    if q is not None and type(q) is not float:
+        return 'controller'
+    retry = cd.get('_retry')
+    if retry is not None and not (type(retry) is tuple and len(retry) == 3
+                                  and type(retry[1]) is float and type(retry[2]) is float):
+        return 'controller'
+    sk = tr._sparse_linsolver()
+    if sk is not None:
+        sk = sk._choice
+        if not (sk._numeric and sk._symbolic):
+            return 'sparse'
+    return (ctrl, rset, sk, mask)
+
+
+#: the controller's methods the judge calls, shadowed on the instance
+_CONTROLLER_SHADOWS = ('evaluate_step', '_evaluate', '_max_error', '_band_decision',
+                       '_band_target', '_retry_exponent', '_judged', '_damp', '_charge_lte',
+                       '_normalised', '_reference', 'tolerance')
+
+
+def run(loop):
+    """Make as many of `loop`'s attempts in C as it can, from where the loop
+    stands: True where it made any (the loop's, the transient's and the
+    controller's state written back as the Python attempts leave it), else
+    False -- the Python loop makes the next attempt, and the one after
+    enters again."""
+    if not ENABLED:
+        return False
+    from pycircuit.circuit import _watch
+    now = _watch.now()
+    ## (watching off: nothing would tell the attempts' checks have moved --
+    ## the counter stays -1 -- so the Python attempts make them, every one)
+    if now == -1 or loop.c_kept == now:
+        return False
+    ## (entries that made no attempt -- a screen that fires every step, the
+    ## SVD the Python's -- are spaced out: each such entry doubles the
+    ## Python attempts made before the next one, up to `BACKOFF_MAX`; an
+    ## entry that makes any starts again from none)
+    if loop.c_skip:
+        loop.c_skip -= 1
+        return False
+    tr = loop.tr
+    td = tr.__dict__
+    rec = td.get('_newton_c')
+    if rec is None or rec.served != now:
+        ## (the C Newton's last call did not serve, or something watched
+        ## moved since: the Python attempt, which serves or not by its checks)
+        return False
+    adaptive = not loop.fixed
+    if adaptive:
+        lc = tr.step_controller.__dict__.get('_lte_c') if tr.step_controller is not None else None
+        if lc is None or lc.served != now:
+            return False
+    drv = _driver or driver()
+    if not drv:
+        return _declined(loop, 'driver')
+    O = _OWN or _own()
+    if O is None or type(tr) is not O['T'] or _pieces(O) != O['chain']:
+        return _declined(loop, 'patched')
+    if type(tr.statistics) is not O['stats']:
+        return _declined(loop, 'stats')
+    if type(loop) is not O['Loop'] or type(loop.family) is not O['LMM'] \
+            or loop.provided_function is not None or (not adaptive and not loop.j_unread):
+        return _declined(loop, 'loop')
+    if loop.imposed:
+        return _declined(loop, 'loop', keep=False)
+    for k in _SHADOWS:
+        if k in td:
+            return _declined(loop, 'shadow')
+    if getattr(tr, '_ev_rows', None) is not None or getattr(tr, '_periodic_rows', None):
+        return _declined(loop, 'events')
+    if getattr(tr, '_continuation_rescue', False) or td.get('_stateful_lims'):
+        return _declined(loop, 'state')
+    cir = tr.cir
+    cd = cir.__dict__
+    if (type(cir).next_event is not O['Sub'].next_event
+            or type(cir).accept_step is not O['Sub'].accept_step
+            or type(cir).u is not O['Sub'].u or any(k in cd for k in _CIRCUIT_SHADOWS)
+            or cir._hook_elements('accept_step')):
+        return _declined(loop, 'circuit')
+    base = tr.base_integrator
+    code = O['integrators'].get(type(base))
+    if code is None or 'check_order_drop' in base.__dict__ or (
+            adaptive and 'compute_lte' in base.__dict__):
+        return _declined(loop, 'integrator')
+    P = O['predictor']
+    if (not P.PRED_FAST or tr.stage_predictor != 'on' or tr.PRED_HIST_MAX != 8
+            or type(tr)._fit is not P._FIT or type(tr.PRED_CLAMP) is not float
+            or not 1 <= tr._pred_degree() <= 4):
+        return _declined(loop, 'predictor')
+    if not O['companion'].U_MEMO:
+        return _declined(loop, 'umemo')
+    ## (the Newton's record as its last call left it: J formed where the
+    ## attempts read it)
+    if rec.s.fold_j != (3 if adaptive else 2):
+        return _declined(loop, 'newton', keep=False)
+    ## the sources: the direct pass's table, every other breakpoint inf
+    from pycircuit.circuit import _tran_sources, func
+    plan = cd.get('_stamp_plan')
+    sp = plan.methods.get('src:u') if plan is not None else None
+    sd = sp.direct if sp is not None else None
+    ep = _watch.EPOCH
+    if sd is None or ep is None or sd.stamp != ep.value or not sd.same(cir, O['Circuit']):
+        return _declined(loop, 'sources')
+    ct_ = loop.c_tab
+    if ct_ is not None and ct_[0] is sd:
+        tab = ct_[1]
+    else:
+        tab = _tran_sources.table_for(sd)
+        if tab is None:
+            return _declined(loop, 'table')
+        loop.c_tab = (sd, tab)
+    if not tab.holds():
+        loop.c_tab = None
+        return _declined(loop, 'table', keep=False)
+    tab_els = {id(e[0]) for e in tab.entries}
+    src_next, inf_next = O['source_next'], O['inf_next']
+    for _inst, el in cir._hook_elements('next_event'):
+        f = type(el).next_event
+        if 'next_event' in el.__dict__ or not (
+                (f in src_next and id(el) in tab_els) or f is inf_next):
+            return _declined(loop, 'breakpoints')
+    tk = tab.tk
+    if not (tk.exp is np.exp and tk.sin is np.sin and tk.where is np.where) or (
+            tab.uses_libm and ((tab.has_sin and not func.SIN_SCALAR)
+                               or not func._underflow_ignored())):
+        return _declined(loop, 'sources', keep=False)
+    minbreak = tr.par.minbreak
+    if type(minbreak) is not float:
+        return _declined(loop, 'minbreak')
+    ## the state the attempts read
+    n = rec.n
+    ql, iql = tr._qlast, tr._iqlast
+    if not (type(ql) is np.ndarray and ql.dtype is _F64 and ql.ndim == 2 and ql.shape[1] == n
+            and ql.shape[0] >= (3 if adaptive else 2) and type(iql) is np.ndarray
+            and iql.dtype is _F64 and iql.shape == ql.shape):
+        return _declined(loop, 'rings', keep=False)
+    hist_len = ql.shape[0]
+    hist = td.get('_pred_hist') or []
+    if type(hist) is not list or len(hist) > 8 or td.get('_pred_pending') is not None or not all(
+            type(e) is tuple and len(e) == 2 and type(e[0]) is float and type(e[1]) is np.ndarray
+            and e[1].dtype is _F64 and e[1].shape == (n,) for e in hist):
+        return _declined(loop, 'history', keep=False)
+    X = loop.X
+    xl = X[-1] if X else None
+    cached = td.get('_C_cache')
+    if cached is None or float(getattr(tr.epar, 'bypasstol', -1.0) or -1.0) >= 0.0:
+        return _declined(loop, 'cache', keep=False)
+    cx, cC = cached
+    if not (type(xl) is np.ndarray and xl.dtype is _F64 and xl.shape == (n,)
+            and type(cx) is np.ndarray and cx.dtype is _F64 and cx.shape == (n,)
+            and type(cC) is np.ndarray and cC.dtype is _F64 and cC.shape == (n, n)):
+        return _declined(loop, 'cache', keep=False)
+    dl, dl2 = tr._dt_last, tr._dt_last2
+    stats = tr.statistics
+    if (type(dl) is not float or not (dl2 is None or type(dl2) is float) or td.get('_no_history')
+            or not (stats.min_step is None or type(stats.min_step) is float)
+            or not (stats.max_step is None or type(stats.max_step) is float)
+            or type(loop.t) is not float or type(loop.h) is not float):
+        ## (`loop_c:steps` counts the steps made in C: not a reason)
+        return _declined(loop, 'history', keep=False)
+    screen = _screen(tr, td, rec, n)
+    if screen is None:
+        return _declined(loop, 'screen')
+    if screen[0] is None:
+        screen = None
+    judge = None
+    if adaptive:
+        judge = _judge(loop, tr, O, n)
+        if type(judge) is str:
+            return _declined(loop, judge, keep=judge not in ('sparse', 'reference'))
+    ## bound once a loop (again where the Newton's record or the table moved)
+    run_ = loop.c_run
+    if (run_ is None or run_.nrec is not rec or run_.tab is not tab
+            or (run_.br is None) != (screen is None) or len(run_.buf['xlast']) != n
+            or len(run_.buf['qring']) != hist_len * n
+            or (run_.lte is None) != (judge is None)
+            or (judge is not None and (run_.sk is not judge[2] or run_.lte.s.has_mask
+                                       != (judge[3] is not None)))):
+        run_ = _bind(tr, rec, tab, n, hist_len, screen, judge)
+        if run_ is None:
+            return _declined(loop, 'bind')
+        loop.c_run = run_
+    s, buf = run_.s, run_.buf
+    ## in: the state as the Python loop leaves it
+    buf['qring'][:] = ql.reshape(-1)
+    buf['iqring'][:] = iql.reshape(-1)
+    buf['xlast'][:] = xl
+    buf['xatt'][:] = cx
+    s.hk = len(hist)
+    for i, (tt, xx) in enumerate(hist):
+        buf['ht'][i] = tt
+        buf['hx'][i * n:(i + 1) * n] = xx
+    buf['cC0'][:] = cC.reshape(-1)
+    s.cur = 0
+    s.cmax = td.get('_branch_cmax', 0.0)
+    s.t, s.h = loop.t, loop.h
+    s.landing, s.is_first = int(bool(loop.landing)), int(bool(tr._is_first_step))
+    s.order_drop = int(bool(loop.order_drop))
+    s.rejects, s.point_retries = loop.rejects, loop.point_retries
+    s.npoint = len(X)
+    s.dt_last, s.have_dt_last = dl, 1
+    s.dt_last2, s.have_dt_last2 = (dl2, 1) if dl2 is not None else (0.0, 0)
+    s.tend, s.timestep, s.minbreak = float(loop.tend), float(loop.timestep), minbreak
+    s.adaptive = int(adaptive)
+    s.max_step = float(loop.run.max_step)
+    s.minstep = float(loop.minstep)
+    s.max_retries, s.max_reject = loop.family.max_retries, loop.family.max_reject
+    s.base = code
+    s.zs_ratio = float(O['zs_ratio'])
+    s.shrink_guard = int(bool(getattr(base, 'shrink_guard', True)))
+    s.have_hm = int(stats.min_step is not None)
+    s.hmin = stats.min_step if stats.min_step is not None else 0.0
+    s.hmax = stats.max_step if stats.max_step is not None else 0.0
+    retry0 = None
+    if adaptive:
+        ctrl = judge[0]
+        ref = ctrl.__dict__.get('_ref_running')
+        s.have_run = int(ref is not None)
+        if ref is not None:
+            buf['run'][:] = ref
+        ct = run_.ct
+        retry0 = ctrl.__dict__.get('_retry')
+        ct.have_retry = int(retry0 is not None)
+        if retry0 is not None:
+            ## (the point the controller kept, by `is`: the last accepted one
+            ## or another -- never one of the C's)
+            ct.retry_point = len(X) - 1 if retry0[0] is xl else -2
+            ct.retry_h, ct.retry_err = retry0[1], retry0[2]
+        q = ctrl.__dict__.get('_q_carried')
+        ct.have_q = int(q is not None)
+        ct.q_carried = q if q is not None else 0.0
+        if run_.sk is not None:
+            run_.lte.s.klu_num = run_.lte.ffi.cast('void *', run_.sk._numeric)
+    ## (the Newton's own pointers: the C points them elsewhere while it runs)
+    nt = rec.s
+    saved = (nt.q1, nt.q2, nt.iq1, nt.u, nt.xseed, nt.cx, nt.cC, nt.Cj, nt.Geqj, nt.have_cache)
+    t0 = time.perf_counter()
+    try:
+        status = drv[1](s)
+    finally:
+        (nt.q1, nt.q2, nt.iq1, nt.u, nt.xseed, nt.cx, nt.cC, nt.Cj, nt.Geqj,
+         nt.have_cache) = saved
+        stats.solve_seconds += time.perf_counter() - t0
+    if status not in (_CODES['LOOP_DONE'], _CODES['LOOP_FULL']):
+        _no('loop_c:bail:' + BAIL.get(status, str(status)))
+    if not s.attempts:
+        loop.c_backoff = min(2 * loop.c_backoff + 1, BACKOFF_MAX)
+        loop.c_skip = loop.c_backoff
+        return False
+    loop.c_backoff = 0
+    _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0)
+    return True
+
+
+#: the circuit's methods the attempts call, shadowed on the instance (a
+#: perturbed source, as the shooting tests make): the Python attempts call
+#: the shadow, the C the table and the core
+_CIRCUIT_SHADOWS = ('u', 'G', 'C', 'i', 'q', 'limit', 'next_event', 'accept_step')
+#: the transient's methods the attempts call, shadowed on the instance: the
+#: Python attempts call the shadow
+_SHADOWS = ('_next_breakpoint', '_attempt_step', 'solve_timestep', '_solve_timestep', '_pred_or',
+            '_predict_state', '_predict_fast', '_fit_fast', '_fit', '_pred_note', '_pred_promote',
+            '_push_history', '_roll_history', '_q_at', '_branch_after_solve', '_branch_screen',
+            '_branch_screen_C', '_branch_on', '_pred_degree', '_branch_structural_rank',
+            '_source_at', '_lte_inputs', '_excursion_ratio', '_lte_mask', '_sparse_linsolver')
+
+
+def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
+    """The state after the C's attempts, as the Python attempts leave it."""
+    k, adaptive = s.k, bool(s.adaptive)
+    Xo, To = buf['X'], buf['T']
+    X, tl = loop.X, loop.timelist
+    for i in range(k):
+        X.append(Xo[i * n:(i + 1) * n].copy())
+        tl.append(float(To[i]))
+    stats = tr.statistics
+    stats.accepted_steps += k
+    stats.rejected_steps += s.rejected
+    stats.newton_iterations += s.iters
+    stats.breakpoints_hit += s.breaks
+    stats.order_drops += s.euler_steps
+    if s.have_hm:
+        stats.min_step, stats.max_step = float(s.hmin), float(s.hmax)
+    ## the last attempt's write-back (`_tran_newton_c`'s), accepted or not
+    x = buf['xatt'].copy()
+    cur = s.cur
+    Cj = buf[f'cC{cur}'].reshape(n, n).copy()
+    tr._q_cache = (x, buf['qatt'].copy())
+    tr._C_cache = (x, Cj)
+    if rec.core.npat:
+        tr._C_pattern = (Cj, rec.core.arrays['pat'])
+    tr._iq = buf['iqatt'].copy()
+    tr._Geq = buf[f'Geq{cur}'].reshape(n, n).copy()
+    tr._Cmat = Cj
+    h, h_last = float(s.att_h), float(s.att_h_last)
+    base = tr.base_integrator
+    active = (O['Euler']() if s.att_formula == _ABI['PCX_FORMULA_EULER']
+              and type(base) is not O['Euler'] else base)
+    tr.active_integrator = active
+    tr._companion_coeffs = active.companion_coefficients(h, h_last)
+    tr._effective_method = type(active).__name__
+    tr._dt = h
+    tr._pred_pending = (float(s.att_t), ()) if s.att_rejected else None
+    if k:
+        ## the accepted steps' rings, history and step record
+        tr._qlast = buf['qring'].reshape(hist_len, n).copy()
+        tr._iqlast = buf['iqring'].reshape(hist_len, n).copy()
+        tr._pred_hist = [(float(buf['ht'][i]), buf['hx'][i * n:(i + 1) * n].copy())
+                         for i in range(s.hk)]
+        tr._dt_last = float(s.dt_last)
+        tr._dt_last2 = float(s.dt_last2) if s.have_dt_last2 else None
+        tr._no_history = False
+    tr._is_first_step = bool(s.is_first)
+    if run_.br is not None:
+        tr._branch_cmax = float(s.cmax)
+    if rec.klu is not None:
+        rec.klu.numerics += s.attempts
+    if adaptive:
+        ctrl, ct = tr.step_controller, run_.ct
+        if s.keeps_run and s.have_run:
+            ctrl._ref_running = buf['run'].copy()
+        ctrl.last_err = float(s.last_err)
+        kept = (retry0 is not None, retry0[1] if retry0 else None, retry0[2] if retry0 else None)
+        now_ = (bool(ct.have_retry), float(ct.retry_h) if ct.have_retry else None,
+                float(ct.retry_err) if ct.have_retry else None)
+        if not ct.have_retry:
+            ctrl._retry = None
+        elif now_ != kept or ct.retry_point != -2:
+            ## (a rejection the C made: its point the accepted one it left
+            ## from -- the object in `X`, as `_judged` keeps it)
+            ctrl._retry = (X[ct.retry_point], float(ct.retry_h), float(ct.retry_err))
+        if ct.have_q:
+            ctrl._q_carried = float(ct.q_carried)
+        if run_.sk is not None:
+            run_.sk.refactors += s.ltes
+    loop.t, loop.h = float(s.t), float(s.h)
+    loop.landing = bool(s.landing)
+    loop.order_drop = bool(s.order_drop)
+    loop.rejects, loop.point_retries = int(s.rejects), int(s.point_retries)
+    loop.t_break = s.t_break
+    loop.x_new, loop.J = x, None
+    loop.h_next = loop.timestep if not adaptive else loop.h
+    loop.clamped, loop.hold, loop.imposed = False, not adaptive, False
+    ## the tallies the Python attempts make
+    a = s.attempts
+    _PC['loop_c:attempts'] += a
+    _PC['loop_c:steps'] += k
+    if rec.klu is not None:
+        _PC['newton_c:sparse'] += a
+    _PC['newton_c:served'] += a
+    _PC['newton_c:iterations'] += s.iters
+    _PC['newton_c:jfold'] += a
+    if not adaptive:
+        _PC['newton_c:j_unread'] += a
+    if rec.s.chord:
+        _PC['chord:chosen'] += a
+    if s.pred_fast:
+        _PC['pred:fast'] += s.pred_fast
+    _PC['src.direct:served'] += a
+    _PC['u:called'] += len(run_.tab.entries) * a
+    _PC['umemo:miss'] += a
+    _PC['memo.q:same'] += k + (s.ltes if adaptive else 0)
+    if s.screens:
+        _PC['branch_c:served'] += s.screens
+        _PC['memo.C:equal'] += s.screens
+        if run_.npat:
+            _PC['branch_c:pattern'] += s.screens
+    if adaptive and s.ltes:
+        _PC['lte_c:served'] += s.ltes
+        if s.lte_euler:
+            _PC['lte_c:euler'] += s.lte_euler
+        if run_.sk is not None:
+            _PC['lte_c:sparse_served'] += s.ltes

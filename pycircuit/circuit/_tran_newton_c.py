@@ -293,8 +293,8 @@ class _Ctx:
         self.walk_watch = ()
         self.par_rec, self.par_arms, self.par_held = None, 0, 0
         ## (the watch counter at this record's last serve, None after any
-        ## other outcome: the fixed-step loop in C enters only on a serve
-        ## nothing watched has moved since -- `_tran_fixed_c`)
+        ## other outcome: the stepping loop in C enters only on a serve
+        ## nothing watched has moved since -- `_tran_loop_c`)
         self.served = None
 
 

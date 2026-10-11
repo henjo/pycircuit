@@ -15,7 +15,7 @@ from pycircuit.circuit import _hdl_cbackend as cb
 from pycircuit.circuit import (
     _paths,
     _tran_core,
-    _tran_fixed_c,
+    _tran_loop_c,
     _watch,
     circuit,
     compact,
@@ -202,12 +202,12 @@ def test_watched_and_unwatched_runs_are_the_same(build, fixed, monkeypatch):
     assert a[2] == b[2], ('the statistics moved', a[2], b[2])
     assert a[3] == b[3], 'the warnings moved'
     ## (a `once:` count lands on whichever run resolves a class first; the
-    ## fixed-step loop in C, which rests on the counter, runs watched only:
+    ## stepping loop in C, which rests on the counter, runs watched only:
     ## its own counts are its machinery's -- its steps' tallies are the
     ## Python steps', under their keys)
     def kept(d):
         return {k: v for k, v in d.items()
-                if not k.startswith(('once:', 'fixed_c:', 'sources_c:built'))}
+                if not k.startswith(('once:', 'loop_c:', 'sources_c:built'))}
     assert kept(a[4]) == kept(b[4]), 'a path count moved'
     assert (_watch.STATUS == 'on') == (_watch.EPOCH is not None), 'the counter left patched out'
 
@@ -250,9 +250,9 @@ def test_a_warm_solve_moves_no_watched_dict(monkeypatch):
     watched by the C Newton's parameter record, it broke every stamp twice
     a solve, and the cap stopped them all after ~8 solves.)"""
     _on()
-    ## (the Python steps' checks, made every step: the fixed-step loop in C
-    ## makes them once an entry -- `_tran_fixed_c`)
-    monkeypatch.setattr(_tran_fixed_c, 'ENABLED', False)
+    ## (the Python steps' checks, made every step: the stepping loop in C
+    ## makes them once an entry -- `_tran_loop_c`)
+    monkeypatch.setattr(_tran_loop_c, 'ENABLED', False)
     tr = Transient(_mos_chain(), toolkit=circuit.numeric)
     tr.solve(**_KW)
     gc.collect()
@@ -280,8 +280,8 @@ def test_a_stamp_that_held_rearms_without_counting(monkeypatch):
     good after `MAX_ARMS` solves; the walk, armed again by its full setup
     only, went unstamped at the first move."""
     _on()
-    ## (the Python steps' checks, made every step: `_tran_fixed_c` aside)
-    monkeypatch.setattr(_tran_fixed_c, 'ENABLED', False)
+    ## (the Python steps' checks, made every step: `_tran_loop_c` aside)
+    monkeypatch.setattr(_tran_loop_c, 'ENABLED', False)
     tr = Transient(_mos_chain(), toolkit=circuit.numeric)
     gc.collect()
     gc.disable()
