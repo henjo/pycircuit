@@ -115,8 +115,11 @@ def driver():
     return _driver or None
 
 
-#: the glue's code for Euler's coefficient (gear 0, trapezoid 1)
-_EULER = 2
+#: the companions by their pcx_abi.h codes: the estimate's coefficient is
+#: Gear-2's, the trapezoid's or Euler's (the step after a breakpoint)
+_ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
+_GEAR2, _TRAP, _EULER = (_ABI['PCX_FORMULA_GEAR2'], _ABI['PCX_FORMULA_TRAPEZOIDAL'],
+                         _ABI['PCX_FORMULA_EULER'])
 
 
 def _globals():
@@ -170,7 +173,7 @@ def _globals():
                        _NP[1], _NP[2], _numeric.array)
         ## (the estimate's coefficient: gear's, the trapezoid's, Euler's --
         ## the step after a breakpoint, where the order drops)
-        _G['formula'] = {g2: (0, g2.compute_lte), tr: (1, tr.compute_lte),
+        _G['formula'] = {g2: (_GEAR2, g2.compute_lte), tr: (_TRAP, tr.compute_lte),
                          eu: (_EULER, eu.compute_lte)}
     return _G
 
@@ -335,7 +338,7 @@ def max_error(ctrl, s):
             hl = hl2 = s12 = s23 = s123 = 0.0
         else:
             hl, hl2 = float(hl), float(hl2)
-            coef = -h * (h + hl) if form[0] == 0 else -(h ** 2)
+            coef = -h * (h + hl) if form[0] == _GEAR2 else -(h ** 2)
             s12 = h + hl
             s23 = hl + hl2
             s123 = s12 + hl2

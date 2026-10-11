@@ -20,9 +20,8 @@ typedef struct {
     /* the controller's retry state (`_retry`, `_q_carried`), in and out:
        carried from call to call */
     long have_retry, retry_point;   /* a rejection kept (`_retry` not None) and
-                                   its point's index (`_tran_loop_c` loads -2
-                                   for a point that is not the loop's: no
-                                   `point` equals it) */
+                                   its point's index (`CTRL_POINT_OTHER` for a
+                                   point that is not the loop's) */
     double retry_h, retry_err;  /* the kept rejection's step and error */
     long have_q;                /* `_q_carried` not None */
     double q_carried;           /* the last order measured (`carried` reuses it) */
@@ -42,4 +41,9 @@ enum ctrl_mode {
 /* hdl_fn's result, left in `status` too */
 enum ctrl_status {
     CTRL_DONE = 1
+};
+/* `retry_point` for a kept point that is none of the loop's accepted points
+   (the controller kept another object): below every index `point` takes */
+enum ctrl_point {
+    CTRL_POINT_OTHER = -2
 };

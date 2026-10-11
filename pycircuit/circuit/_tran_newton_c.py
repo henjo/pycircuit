@@ -117,8 +117,14 @@ _ABSENT = object()
 _GETDICT = operator.attrgetter('__dict__')
 #: float64 (an exact array's dtype is this object: `is`, then `==`)
 _F64 = np.dtype(np.float64)
-#: the core's want bit for "these matrices are zero off the pattern" (pcx_abi.h)
-_WANT_PATTERN = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))['PCX_WANT_PATTERN']
+#: the codes the core and the units share (pcx_abi.h)
+_ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
+#: the core's want bit for "these matrices are zero off the pattern"
+_WANT_PATTERN = _ABI['PCX_WANT_PATTERN']
+#: the passes evaluated at the converged point (`fold_j`): `G` and `C` where an
+#: attempt reads the step's Jacobian, `C` alone where none does
+FOLD_J = _ABI['PCX_PASS_G'] | _ABI['PCX_PASS_C']
+FOLD_C = _ABI['PCX_PASS_C']
 _GETPACK = operator.methodcaller('get', '_hdl_cp')
 #: the declines that are a property of the circuit: kept with its stamp
 #: plan, so the next step declines at its first check
@@ -700,14 +706,14 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if formula is None:
         return _no('newton_c:formula')
     q1 = tc._row(tr._qlast[0], n)
-    q2 = tc._row(tr._qlast[1], n) if formula == 0 else q1
-    iq1 = tc._row(tr._iqlast[0], n) if formula in (2, 3) else q1
+    q2 = tc._row(tr._qlast[1], n) if formula == tc._GEAR2 else q1
+    iq1 = tc._row(tr._iqlast[0], n) if formula in tc._IQ_FORMS else q1
     if q1 is None or q2 is None or iq1 is None:
         return _no('newton_c:history')
     a0 = a1 = a2 = theta = 0.0
-    if formula == 0:
+    if formula == tc._GEAR2:
         a0, a1, a2 = M['bdf2_alphas'](h, h_last)
-    elif formula == 3:
+    elif formula == tc._THETA:
         theta = active.theta_at(h)
     ## (whether anything limits: what the genuine `_newton_limiter` -- the
     ## chain above holds it so -- answers by its memo, read without building
@@ -805,7 +811,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     else:
         s.maxiter, s.reltol = int(P.maxiter), float(P.reltol)
     s.chord = 1 if chord else 0
-    s.fold_j = 3 if want_j else 2
+    s.fold_j = FOLD_J if want_j else FOLD_C
     if P is None:
         ## (every read above in full, every check passed: stamp them)
         _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)

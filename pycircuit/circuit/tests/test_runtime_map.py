@@ -99,3 +99,24 @@ def test_the_history_check_sees_a_planted_line():
     line naming the next stage of a solve."""
     glue = {'a': '## (the plan\'s stage 4; 2026-10-11)\n', 'b': '## (the next stage solve)\n'}
     assert _history(glue) == {'a': ['stage 4', '2026-10-11']}
+
+
+#: (a code the C reads, said in the glue by its number: a companion, a pass
+#: mask, the converged point's passes, the law's point mark)
+_BARE_CODE = re.compile(r'formula (?:==|!=|in) [0-9(]|bits (?:&|&=|\|=) ~?[0-9]|'
+                        r'fold_j (?:=|==|!=) \(?[0-9]|retry_point (?:=|==|!=) -?[0-9]|'
+                        r'form\[0\] == [0-9]')
+
+
+def test_no_module_that_builds_or_loads_c_says_a_code_by_its_number():
+    """The codes are the headers' names (`_cbuild.constants`), on both sides
+    of the boundary."""
+    found = {m: _BARE_CODE.findall(text) for m, text in _glue().items()}
+    assert not {m: f for m, f in found.items() if f}
+
+
+def test_the_code_check_sees_a_planted_number():
+    for text in ('if formula == 0:', 'J if bits & 1 else', 's.fold_j = 3 if j else 2',
+                 'ct.retry_point != -2', "x if form[0] == 0 else y"):
+        assert _BARE_CODE.findall(text), text
+    assert not _BARE_CODE.findall('if formula == _GEAR2 and bits & _C:')

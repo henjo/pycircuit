@@ -88,6 +88,8 @@ STATUS = 'not loaded'
 LOOP_C = _cbuild.csrc('loop.c')
 LOOP_CDEF = _cbuild.csrc('loop.h')
 _CODES = _cbuild.constants(LOOP_CDEF)
+#: (the law's mark for a kept point that is none of the loop's: ctrl.h)
+_POINT_OTHER = _cbuild.constants(_cbuild.csrc('ctrl.h'))['CTRL_POINT_OTHER']
 BAIL = _cbuild.bails(_CODES, 'LOOP_BAIL_')
 _ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
 #: the outputs' rows an entry holds (full: written back, entered again)
@@ -555,7 +557,8 @@ def run(loop):
         return _declined(loop, 'umemo')
     ## (the Newton's record as its last call left it: J formed where the
     ## attempts read it)
-    if rec.s.fold_j != (3 if adaptive else 2):
+    NC = O['newton_c']
+    if rec.s.fold_j != (NC.FOLD_J if adaptive else NC.FOLD_C):
         return _declined(loop, 'newton')
     ## the sources: the direct pass's table; every other element's
     ## breakpoint inf (`Behavioural.next_event`)
@@ -696,7 +699,7 @@ def run(loop):
         if retry0 is not None:
             ## (the point the controller kept, by `is`: the last accepted one
             ## or another -- never one of the C's)
-            ct.retry_point = len(X) - 1 if retry0[0] is xl else -2
+            ct.retry_point = len(X) - 1 if retry0[0] is xl else _POINT_OTHER
             ct.retry_h, ct.retry_err = retry0[1], retry0[2]
         q = ctrl.__dict__.get('_q_carried')
         ct.have_q = int(q is not None)
@@ -792,7 +795,7 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
                 float(ct.retry_err) if ct.have_retry else None)
         if not ct.have_retry:
             ctrl._retry = None
-        elif now_ != kept or ct.retry_point != -2:
+        elif now_ != kept or ct.retry_point != _POINT_OTHER:
             ## (a rejection the C made: its point the accepted one it left
             ## from -- the object in `X`, as `_judged` keeps it)
             ctrl._retry = (X[ct.retry_point], float(ct.retry_h), float(ct.retry_err))

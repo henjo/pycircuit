@@ -143,6 +143,10 @@ FORMULA = {'Gear2Integrator': _ABI['PCX_FORMULA_GEAR2'],
            'TrapezoidalIntegrator': _ABI['PCX_FORMULA_TRAPEZOIDAL'],
            'ThetaIntegrator': _ABI['PCX_FORMULA_THETA']}
 _G, _C, _I = _ABI['PCX_PASS_G'], _ABI['PCX_PASS_C'], _ABI['PCX_PASS_I']
+#: the companions by name: Gear-2's (two charges back), theta's (its theta), and
+#: the two whose companion carries the current (`iq`)
+_GEAR2, _THETA = _ABI['PCX_FORMULA_GEAR2'], _ABI['PCX_FORMULA_THETA']
+_IQ_FORMS = (_ABI['PCX_FORMULA_TRAPEZOIDAL'], _THETA)
 #: each `want`'s pass bits (q is always made)
 WANT = {'fj': _G | _C | _I, 'j': _G | _C, 'f': _I, 'c': _C}
 
@@ -716,7 +720,7 @@ def passes(tr, x, which):
         dummy = core._pass_dummy = (np.zeros(max(n * n, 1)), )
         dummy = core._pass_dummy = (dummy[0], fb(dptr, dummy[0]))
     q = np.empty(n)
-    C = ((np.zeros if core.npat else np.empty)((n, n))) if bits & 2 else None
+    C = ((np.zeros if core.npat else np.empty)((n, n))) if bits & _C else None
     dC = fb(dptr, C) if C is not None else dummy[1]
     _PC[K['served']] += 1
     cfn(core.cs, fb(dptr, x), T, bits | (_WANT_PATTERN if core.npat else 0), 4,
@@ -815,14 +819,14 @@ def evaluate(tr, x, t, provided_function, want):
     if formula is None:
         return _no(K['formula'])
     q1 = _row(tr._qlast[0], n)
-    q2 = _row(tr._qlast[1], n) if formula == 0 else q1
-    iq1 = _row(tr._iqlast[0], n) if formula in (2, 3) else q1
+    q2 = _row(tr._qlast[1], n) if formula == _GEAR2 else q1
+    iq1 = _row(tr._iqlast[0], n) if formula in _IQ_FORMS else q1
     if q1 is None or q2 is None or iq1 is None:
         return _no(K['history'])
     a0 = a1 = a2 = theta = 0.0
-    if formula == 0:
+    if formula == _GEAR2:
         a0, a1, a2 = _lte_kernels.bdf2_alphas(h, h_last)
-    elif formula == 3:
+    elif formula == _THETA:
         theta = active.theta_at(h)
     bits = WANT[want]
     if want == 'f':
@@ -837,7 +841,7 @@ def evaluate(tr, x, t, provided_function, want):
             if not (type(Cin) is np.ndarray and (Cin.dtype is _F64 or Cin.dtype == np.float64)
                     and Cin.shape == (n, n) and Cin.flags.c_contiguous):
                 return _no(K['clookup'])
-            bits &= ~2
+            bits &= ~_C
             C = Cin
         else:
             C = (np.zeros if core.npat else np.empty)((n, n))
@@ -846,7 +850,7 @@ def evaluate(tr, x, t, provided_function, want):
     if T is None:
         return _no(K['ready'])
     u = None
-    if bits & 4:
+    if bits & _I:
         u = tr._source_at(t, provided_function)
         if not (type(u) is np.ndarray and (u.dtype is _F64 or u.dtype == np.float64) and u.ndim == 1
                 and u.shape[0] == n and u.flags.c_contiguous):
@@ -857,8 +861,8 @@ def evaluate(tr, x, t, provided_function, want):
     ## (the matrices zero off the pattern where the core writes only that)
     mat = np.zeros if core.npat else np.empty
     q, iq, Geq = np.empty(n), np.empty(n), mat((n, n))
-    F = np.empty(n) if bits & 4 else q
-    J = mat((n, n)) if bits & 1 else Geq
+    F = np.empty(n) if bits & _I else q
+    J = mat((n, n)) if bits & _G else Geq
     cfn(core.cs, fb(dptr, x), T, bits | (_WANT_PATTERN if core.npat else 0), formula, a0, a1, a2,
         float(h), theta,
         fb(dptr, q1), fb(dptr, q2), fb(dptr, iq1), fb(dptr, u if u is not None else q1),
@@ -866,11 +870,11 @@ def evaluate(tr, x, t, provided_function, want):
         fb(dptr, F), fb(dptr, J))
     ## the state the Python path leaves behind
     if want != 'f':
-        if bits & 2 and tr._memo_ok():
+        if bits & _C and tr._memo_ok():
             tr._memo_put(x, {'C': C})
         tr._q_cache = (x, q)
         tr._C_cache = (x, C)
-        if bits & 2 and core.npat:
+        if bits & _C and core.npat:
             ## (this C the core wrote on its pattern: the branch screen reads
             ## only the pattern's entries of it -- `_tran_branch_c`)
             tr._C_pattern = (C, core.arrays['pat'])

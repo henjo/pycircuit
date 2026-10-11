@@ -103,8 +103,8 @@ def csrc(name):
 def constants(text):
     """`{name: value}` of the enumerators of a C text (a header's `enum
     {...}` bodies): how Python reads the codes the C says by name.  Each
-    enumerator spells its value -- an integer, or earlier names joined by
-    `|`."""
+    enumerator spells its value -- an integer (a negative one too), or
+    earlier names joined by `|`."""
     text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.DOTALL)
     out = {}
     for body in re.findall(r'\benum\b[^{;]*\{(.*?)\}', text, flags=re.DOTALL):
@@ -117,7 +117,7 @@ def constants(text):
             value = 0
             for part in expr.split('|'):
                 part = part.strip()
-                value |= int(part) if part.isdigit() else out[part]
+                value |= int(part) if part.lstrip('-').isdigit() else out[part]
             out[name] = value
     return out
 
