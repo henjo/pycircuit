@@ -192,38 +192,21 @@ static long take(loop_t *s, loop_attempt_t *a)
     return 0;
 }
 
-/* 3. judge (`_SteppingLoop.judge`, `_LMMSteps.judge`): a fixed grid's next
-   step; adaptive, the error test, the controller's law, the rejection
-   budget -- a rejection within it retried at the point, the attempt
-   recorded as made.  LOOP_JUDGE_ACCEPT (`h_next` set), LOOP_JUDGE_RETRY, or
-   the status to stop with (the budget spent: the force-accept and its
-   warning's record are the Python's, the law's record left as before) */
-static long judge(loop_t *s, loop_attempt_t *a)
+/* the error test on the attempt (as `_tran_lte_c.max_error` calls it): its
+   scalars as `_tran_lte_c` makes them in Python floats -- Euler `-0.5 *
+   (2.0 * h / (h + hl) if hl else 1.0)`, Gear `-h * (h + hl)` (the unary
+   minus first), the trapezoid `-(h ** 2)`; Python's `**` on floats is libm
+   `pow`, which can differ from `h * h` in the last bit, so `pow` it is
+   (`-fno-builtin-pow` keeps the call) -- its vectors the attempt's and the
+   rings'.  0 (`err` set), or LOOP_BAIL_LTE */
+static long error_test(loop_t *s, loop_attempt_t *a)
 {
     newton_t *nt = (newton_t *) s->newton;
     lte_t *le = (lte_t *) s->lte;
-    ctrl_t *ct = (ctrl_t *) s->ctrl;
-    long n = s->n, had_retry, kept_point, had_q;
-    double h = a->h, kept_h, kept_err, kept_q;
+    long n = s->n;
+    double h = a->h;
     double coef, hl = a->h_last, hl2 = 0.0, s12 = 0.0, s23 = 0.0, s123 = 0.0;
-    int euler;
-    a->err = 0.0;
-    if (!s->adaptive) {
-        a->h_next = s->timestep;
-        return LOOP_JUDGE_ACCEPT;
-    }
-    had_retry = ct->have_retry;
-    kept_point = ct->retry_point;
-    had_q = ct->have_q;
-    kept_h = ct->retry_h;
-    kept_err = ct->retry_err;
-    kept_q = ct->q_carried;
-    euler = a->formula == PCX_FORMULA_EULER;
-    /* the estimate's scalars, as `_tran_lte_c` makes them in Python floats:
-       Euler `-0.5 * (2.0 * h / (h + hl) if hl else 1.0)`, Gear `-h * (h +
-       hl)` (the unary minus first), the trapezoid `-(h ** 2)` -- Python's
-       `**` on floats is libm `pow`, which can differ from `h * h` in the
-       last bit, so `pow` it is (`-fno-builtin-pow` keeps the call) */
+    int euler = a->formula == PCX_FORMULA_EULER;
     if (euler) {
         coef = -0.5 * ((hl != 0.0) ? (2.0 * h) / (h + hl) : 1.0);
         hl = 0.0;
@@ -257,32 +240,67 @@ static long judge(loop_t *s, loop_attempt_t *a)
     le->have_run = s->have_run;
     if (CALL(s->lte_fn, pcx_lte, le) != LTE_DONE) return LOOP_BAIL_LTE;
     a->err = le->err;
+    return 0;
+}
+
+/* a rejection the budget allows -- a growth always, a shrink while the
+   point's rejections and the step allow -- retried at the point: the
+   attempt recorded as made, the next step `_LMMSteps.judge`'s `max(h,
+   minstep)`.  0: the budget is spent */
+static int retry_at_point(loop_t *s, loop_attempt_t *a)
+{
+    ctrl_t *ct = (ctrl_t *) s->ctrl;
+    double h = a->h, hn = ct->h_next;
+    int growth = hn > h;
+    if (!(s->point_retries < s->max_retries
+          && (growth || (s->rejects < s->max_reject && h > s->minstep))))
+        return 0;
+    attempt_made(s, a, 1);
+    s->rejected++;
+    s->point_retries++;
+    s->rejects += !growth;
+    s->landing = a->landing;
+    s->is_first = a->is_first;
+    s->order_drop = 0;
+    s->att_rejected = 1;
+    s->t_break = a->t_break;
+    s->h = pcx_py_max(hn, s->minstep);
+    return 1;
+}
+
+/* 3. judge (`_SteppingLoop.judge`, `_LMMSteps.judge`): a fixed grid's next
+   step; adaptive, the error test (`error_test`), the controller's law, the
+   rejection budget (`retry_at_point`).  LOOP_JUDGE_ACCEPT (`h_next` set),
+   LOOP_JUDGE_RETRY, or the status to stop with (the budget spent: the
+   force-accept and its warning's record are the Python's, the law's
+   record put back as it was) */
+static long judge(loop_t *s, loop_attempt_t *a)
+{
+    ctrl_t *ct = (ctrl_t *) s->ctrl;
+    long had_retry, kept_point, had_q, st;
+    double kept_h, kept_err, kept_q;
+    a->err = 0.0;
+    if (!s->adaptive) {
+        a->h_next = s->timestep;
+        return LOOP_JUDGE_ACCEPT;
+    }
+    had_retry = ct->have_retry;
+    kept_point = ct->retry_point;
+    had_q = ct->have_q;
+    kept_h = ct->retry_h;
+    kept_err = ct->retry_err;
+    kept_q = ct->q_carried;
+    if ((st = error_test(s, a)) != 0) return st;
     ct->err = a->err;
     /* (`_max_error`'s exponent: the order + 1; the point the attempt left
        from as an index, where the Python keeps the object) */
-    ct->p = euler ? 2.0 : 3.0;
-    ct->h = h;
+    ct->p = (a->formula == PCX_FORMULA_EULER) ? 2.0 : 3.0;
+    ct->h = a->h;
     ct->max_step = s->max_step;
     ct->point = s->npoint - 1;
     CALL(s->ctrl_fn, pcx_ctrl, ct);
     if (!ct->accepted) {
-        double hn = ct->h_next;
-        int growth = hn > h;
-        if (s->point_retries < s->max_retries
-                && (growth || (s->rejects < s->max_reject && h > s->minstep))) {
-            attempt_made(s, a, 1);
-            s->rejected++;
-            s->point_retries++;
-            s->rejects += !growth;
-            s->landing = a->landing;
-            s->is_first = a->is_first;
-            s->order_drop = 0;
-            s->att_rejected = 1;
-            s->t_break = a->t_break;
-            /* (`_LMMSteps.judge`'s `max(h, minstep)`) */
-            s->h = pcx_py_max(hn, s->minstep);
-            return LOOP_JUDGE_RETRY;
-        }
+        if (retry_at_point(s, a)) return LOOP_JUDGE_RETRY;
         ct->have_retry = had_retry;
         ct->retry_point = kept_point;
         ct->retry_h = kept_h;

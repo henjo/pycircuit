@@ -222,8 +222,10 @@ def test_walk_fn_t_is_the_walk_s_entry():
 
 
 #: a code said by its number where the header names it: a bail, a status
-#: set, a formula tested
-_BARE_CODE = re.compile(r'_bail\(\w+, \d+\)|status = \d+;|formula [=!]= \d+')
+#: set, a formula tested, a code returned (a helper's: 0 goes on, 1 is a
+#: truth; every bail and status a header names here is 2 or more)
+_BARE_CODE = re.compile(r'_bail\(\w+, \d+\)|status = \d+;|formula [=!]= \d+'
+                        r'|return (?:[2-9]|\d{2,});')
 
 
 @pytest.mark.parametrize('unit,cdef', UNITS, ids=[u for u, _ in UNITS])
@@ -267,7 +269,9 @@ def test_the_checks_see_a_planted_difference():
     assert _declared_types(_raw('newton.c') + 'typedef long (*x_t)(long);\n')
     assert _declared_types('typedef struct {\n    long a;\n} y_t;\n')
     assert re.search(r'^#include "', '#include "pcx_abi.h"\n', flags=re.MULTILINE)
-    assert _BARE_CODE.findall(_raw('lte.c').replace('LTE_BAIL_DGESV', '4', 1))
+    assert _BARE_CODE.findall(_raw('lte.c').replace('return LTE_BAIL_DGESV;', 'return 4;', 1))
+    assert _BARE_CODE.findall(_raw('lte.c').replace('lte_bail(s, LTE_BAIL_NONFINITE)',
+                                                    'lte_bail(s, 2)', 1))
     assert _BARE_CODE.findall('if (formula == 2) {')
     with pytest.raises(ValueError):
         _cbuild.constants('enum e { A = 1, B };')

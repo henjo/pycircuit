@@ -26,38 +26,20 @@ static long done(pred_t *s, long status)
     return s->status = status;
 }
 
-/* `_StagePredictor._predict_fast` with `_pred_fast_nodes` and `_fit_fast`:
-   the nodes newest first (the 1e-13 dedupe, the smallest gap, the tie
-   test), the fit in the target's coordinate (the times in Python's float
-   order, `np.vander`'s running products, numpy's own `dgesv` for the
-   weights and `dgemv` for `w @ X`), the clamp to the newest node widened by
-   the motion between the two newest (numpy's `clip`).
-   Assumes: the struct as pred.h says it -- `deg` <= 4 (the fit's
-   capacity: d, tau, w, ipiv hold 5, V 25, xt 5 x n), `ht` and `hx` hold
-   hk nodes, oldest first.
-   PRED_DONE: `out` the clamped prediction.  PRED_NONE: `_predict_fast`'s
-   None (fewer than two nodes, the degree below 1, a NaN or degenerate
-   time spread, a singular or non-finite fit).  PRED_GENERAL: a history
-   the fast path does not take (the newest node not strictly before the
-   target, times not strictly ascending, a tie).  PRED_BAIL_FLAGS: a flag
-   numpy would report (the motion, the Vandermonde, the product and the
-   clamp).  On every status but PRED_DONE `out` is not the answer (it may
-   hold a product or part of the clamp); `xt`, `motion`, `V`, `ipiv` are
-   work; `tau`, `w`, `wk` change only by a solve that succeeded (`wk` is 0
-   while it runs).  Every return leaves the flags clear (`done`). */
-long pcx_pred(pred_t *s)
+/* `_pred_fast_nodes` and the tests before the fit: the history's indices
+   newest first into `nodes` (the 1e-13 duplicates dropped -- the first
+   eight recorded, the history's capacity, pred.h; only the first take <= 5
+   are read), `*kp` counting them all.  0, or the status to return
+   (PRED_NONE, PRED_GENERAL) */
+static long fast_nodes(const pred_t *s, long *nodes, long *kp)
 {
-    /* nodes[8]: the history's indices newest first, the 1e-13 duplicates
-       dropped -- the first eight recorded (the history's capacity, pred.h;
-       only the first take <= 5 are read), `k` counting them all */
-    long n = s->n, hk = s->hk, k = 0, e, j, c, i, take, nodes[PRED_HIST_MAX];
-    double prev_t = 0.0, prev_kept = 0.0, gap = INFINITY, scale, tat, d[PRED_FIT_MAX], ratio, wmul, dt_last;
+    long hk = s->hk, k = 0, e;
+    double prev_t = 0.0, prev_kept = 0.0, gap = INFINITY;
     int have_prev = 0;
-    const double *x0, *x1;
     /* (the Python's tests in its order: too short, then not wholly behind
        the target) */
-    if (hk < 2) return done(s, PRED_NONE);
-    if (!(s->ht[hk - 1] < s->ttarget)) return done(s, PRED_GENERAL);
+    if (hk < 2) return PRED_NONE;
+    if (!(s->ht[hk - 1] < s->ttarget)) return PRED_GENERAL;
     /* `_pred_fast_nodes`: newest first; Python's `min(gap, prev - t0)` and
        `max(abs(t0), 1.0)` as ternaries -- the first argument kept unless
        the second is strictly beyond it (fmin/fmax differ on a NaN) */
@@ -65,7 +47,7 @@ long pcx_pred(pred_t *s)
         double t0 = s->ht[e];
         if (have_prev) {
             double a = fabs(t0), m;
-            if (!(t0 < prev_t)) return done(s, PRED_GENERAL);
+            if (!(t0 < prev_t)) return PRED_GENERAL;
             if (prev_t - t0 < gap) gap = prev_t - t0;
             m = (1.0 > a) ? 1.0 : a;
             if (fabs(t0 - prev_kept) <= 1e-13 * m) { prev_t = t0; continue; }
@@ -77,16 +59,18 @@ long pcx_pred(pred_t *s)
         have_prev = 1;
     }
     /* the tie test, as `_predict_fast` writes it */
-    if (!(gap > 4.5e-16 * (s->ttarget - s->ht[0]))) return done(s, PRED_GENERAL);
-    if (k < 2) return done(s, PRED_NONE);
-    /* min(int(deg) + 1, len(nodes)) */
-    take = s->deg + 1 < k ? s->deg + 1 : k;
-    if (take < 2) return done(s, PRED_NONE);
-    feclearexcept(FE_ALL_EXCEPT);
-    x0 = s->hx + nodes[0] * n;
-    x1 = s->hx + nodes[1] * n;
-    for (i = 0; i < n; i++) s->motion[i] = fabs(x0[i] - x1[i]);
-    if (fetestexcept(PCX_FP_FLAGS)) return done(s, PRED_BAIL_FLAGS);
+    if (!(gap > 4.5e-16 * (s->ttarget - s->ht[0]))) return PRED_GENERAL;
+    if (k < 2) return PRED_NONE;
+    *kp = k;
+    return 0;
+}
+
+/* `_fit_fast`'s weights `w` for the `take` nodes (the memo: `tau`, `wk`).
+   0, or the status to return (PRED_NONE, PRED_BAIL_FLAGS) */
+static long fit(pred_t *s, const long *nodes, long take)
+{
+    long j, c;
+    double scale, tat, d[PRED_FIT_MAX];
     /* _fit_fast: the times about the target, scaled by the largest --
        Python floats there, whose flags numpy never sees (one raised here
        reaches the Vandermonde's test: a hand-back, never a difference);
@@ -95,11 +79,11 @@ long pcx_pred(pred_t *s)
     tat = s->ttarget;
     for (j = 0; j < take; j++) {
         d[j] = s->ht[nodes[j]] - tat;
-        if (isnan(d[j])) return done(s, PRED_NONE);
+        if (isnan(d[j])) return PRED_NONE;
     }
     scale = fabs(d[0]);
     for (j = 1; j < take; j++) if (fabs(d[j]) > scale) scale = fabs(d[j]);
-    if (!(scale < INFINITY) || scale <= 0.0) return done(s, PRED_NONE);
+    if (!(scale < INFINITY) || scale <= 0.0) return PRED_NONE;
     {
         double tau[PRED_FIT_MAX];
         for (j = 0; j < take; j++) tau[j] = d[j] / scale;
@@ -116,7 +100,7 @@ long pcx_pred(pred_t *s)
                 for (c = 2; c < take; c++) { p = p * tau[j]; s->V[j * take + c] = p; }
             }
             /* (numpy's vander is a ufunc: what it raised, it reports) */
-            if (fetestexcept(PCX_FP_FLAGS)) return done(s, PRED_BAIL_FLAGS);
+            if (fetestexcept(PCX_FP_FLAGS)) return PRED_BAIL_FLAGS;
             for (j = 0; j < take; j++) s->w[j] = (j == 0) ? 1.0 : 0.0;
             s->wk = 0;
             ((dgesv64_t) s->dgesv)(&m64, &one64, s->V, &m64, s->ipiv, s->w, &m64, &info64);
@@ -124,13 +108,22 @@ long pcx_pred(pred_t *s)
                answers with None; an invalid operation is answered None
                here too -- numpy clears what LAPACK raises (lte.c), but from
                V's finite entries, all within [-1, 1], none arises) */
-            if (info64 != 0 || fetestexcept(FE_INVALID)) return done(s, PRED_NONE);
+            if (info64 != 0 || fetestexcept(FE_INVALID)) return PRED_NONE;
             feclearexcept(FE_ALL_EXCEPT);
-            for (j = 0; j < take; j++) if (!isfinite(s->w[j])) return done(s, PRED_NONE);
+            for (j = 0; j < take; j++) if (!isfinite(s->w[j])) return PRED_NONE;
             memcpy(s->tau, tau, (size_t) take * sizeof(double));
             s->wk = take;
         }
     }
+    return 0;
+}
+
+/* `w @ X` into `out`, clamped to the newest node `x0` widened by the
+   motion and the reach.  0, or PRED_BAIL_FLAGS */
+static long clamped_product(pred_t *s, const long *nodes, long take, const double *x0)
+{
+    long n = s->n, j, i;
+    double ratio, wmul, dt_last;
     /* w @ X, X the nodes taken, newest first: copied into `xt` as the
        Python's fresh (take, n) array lays them out (`hx` is oldest first,
        with duplicates), then numpy's own dgemv, the call its matmul makes */
@@ -152,6 +145,43 @@ long pcx_pred(pred_t *s)
         double m = (p > lo) ? p : lo;
         s->out[i] = (m < hi) ? m : hi;
     }
+    if (fetestexcept(PCX_FP_FLAGS)) return PRED_BAIL_FLAGS;
+    return 0;
+}
+
+/* `_StagePredictor._predict_fast` with `_pred_fast_nodes` and `_fit_fast`:
+   the nodes newest first (the 1e-13 dedupe, the smallest gap, the tie
+   test), the fit in the target's coordinate (the times in Python's float
+   order, `np.vander`'s running products, numpy's own `dgesv` for the
+   weights and `dgemv` for `w @ X`), the clamp to the newest node widened by
+   the motion between the two newest (numpy's `clip`).
+   Assumes: the struct as pred.h says it -- `deg` <= 4 (the fit's
+   capacity: d, tau, w, ipiv hold 5, V 25, xt 5 x n), `ht` and `hx` hold
+   hk nodes, oldest first.
+   PRED_DONE: `out` the clamped prediction.  PRED_NONE: `_predict_fast`'s
+   None (fewer than two nodes, the degree below 1, a NaN or degenerate
+   time spread, a singular or non-finite fit).  PRED_GENERAL: a history
+   the fast path does not take (the newest node not strictly before the
+   target, times not strictly ascending, a tie).  PRED_BAIL_FLAGS: a flag
+   numpy would report (the motion, the Vandermonde, the product and the
+   clamp).  On every status but PRED_DONE `out` is not the answer (it may
+   hold a product or part of the clamp); `xt`, `motion`, `V`, `ipiv` are
+   work; `tau`, `w`, `wk` change only by a solve that succeeded (`wk` is 0
+   while it runs).  Every return leaves the flags clear (`done`). */
+long pcx_pred(pred_t *s)
+{
+    long n = s->n, k = 0, i, take, st, nodes[PRED_HIST_MAX];
+    const double *x0, *x1;
+    if ((st = fast_nodes(s, nodes, &k)) != 0) return done(s, st);
+    /* min(int(deg) + 1, len(nodes)) */
+    take = s->deg + 1 < k ? s->deg + 1 : k;
+    if (take < 2) return done(s, PRED_NONE);
+    feclearexcept(FE_ALL_EXCEPT);
+    x0 = s->hx + nodes[0] * n;
+    x1 = s->hx + nodes[1] * n;
+    for (i = 0; i < n; i++) s->motion[i] = fabs(x0[i] - x1[i]);
     if (fetestexcept(PCX_FP_FLAGS)) return done(s, PRED_BAIL_FLAGS);
+    if ((st = fit(s, nodes, take)) != 0) return done(s, st);
+    if ((st = clamped_product(s, nodes, take, x0)) != 0) return done(s, st);
     return done(s, PRED_DONE);
 }

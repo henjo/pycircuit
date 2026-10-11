@@ -166,16 +166,72 @@ static int chord_breaks(const newton_t *s, long m, double *prev, int *have_prev)
     return 0;
 }
 
+/* One evaluation at insert_row(x) (`_tran_core.evaluate`): the
+   iteration's buffers (the first's kept apart -- the chord's companion and
+   the write-back read them), the full x, the core's passes -- every one
+   where J is formed (`full`), else the chord's `residual_only` -- then the
+   right-hand side `-F_s` and, formed, J reduced for the solve and |J| for
+   the test (`finite`: every entry of J finite).  0, or the status to stop
+   with */
+static long evaluate(newton_t *s, long it, int full, long first_bits, const double *Cin0,
+                     int *finite)
+{
+    long n = s->n, m = n - 1, r = s->iref, i, k;
+    core_fn_t core = (core_fn_t) s->core_fn;
+    const double *Cin;
+    long bits;
+    double *F, *J, *C, *q, *iq, *Geq;
+    if (it == 0) { F = s->F0; J = s->J0; C = s->C0; q = s->q0; iq = s->iq0; Geq = s->Geq0; }
+    else { F = s->F; J = s->J; C = s->C; q = s->q; iq = s->iq; Geq = s->Geq; }
+    /* insert_row: the full x of this evaluation; a non-finite one hands
+       back (`_tran_core.evaluate` declines one: the Python's course is
+       not the core's) */
+    pcx_put_ref(s->x, s->xf, n, r);
+    for (i = 0; i < n; i++) if (!isfinite(s->xf[i])) return NEWTON_BAIL_X;
+    if (full) {
+        bits = (it == 0) ? first_bits : PCX_WANT_ALL;
+        Cin = (it == 0 && Cin0) ? Cin0 : C;
+    } else {
+        /* the chord's `residual_only` (i, q), its companion from the
+           held C: the cache's, else the first evaluation's -- what
+           `tr._Cmat` holds after the first */
+        bits = PCX_PASS_I;
+        Cin = Cin0 ? Cin0 : s->C0;
+    }
+    core(s->core, s->xf, s->T, bits | s->pattern, s->formula, s->a0, s->a1, s->a2, s->h,
+         s->theta,
+         s->q1, s->q2, s->iq1, s->u, Cin, C, q, iq, Geq, F, J);
+    /* `-F_s`: F reduced, negated (no scaler: `_tran_newton_c` declines
+       one, and NoneScaler's leaves J and F as they are) */
+    pcx_drop_ref(F, s->Fr, n, r);
+    for (i = 0; i < m; i++) s->b[i] = -s->Fr[i];
+    if (full && s->klu_sym) {
+        /* the pattern's values, and |J| on it (zero off it) */
+        for (k = 0; k < s->knnz; k++) {
+            double v = J[s->kat[k]];
+            s->kAx[k] = v;
+            s->absJ[s->kabs[k]] = fabs(v);
+        }
+    } else if (full) {
+        /* remove_row_col of J: A column-major, the copy numpy's solve
+           (and SciPy's lu_factor) hands LAPACK, so LAPACK factors the
+           same matrix in the same layout; absJ row-major, `abs(J)` as
+           the convergence test's dgemv reads it */
+        *finite = pcx_reduce_cm_abs(J, s->A, s->absJ, n, r);
+    }
+    return 0;
+}
+
 /* The Newton loop (`StandardNewton` / `ChordNewton.solve_system` on the
    reduced system `_newton` hands them): per iteration the evaluation at
-   insert_row(x) (the core: its residual, and J where the iteration forms
-   it), the step (`solve_step`), x_next and the limiter (`limit_step`), the
-   convergence test (`converged`, then `jacobian_only` there: `fold`), the
-   chord's contraction (`chord_breaks`).  Contract: THE ITERATION, at the
-   top of this file. */
+   insert_row(x) (`evaluate`: the core's residual, and J where the
+   iteration forms it), the step (`solve_step`), x_next and the limiter
+   (`limit_step`), the convergence test (`converged`, then `jacobian_only`
+   there: `fold`), the chord's contraction (`chord_breaks`).  Contract: THE
+   ITERATION, at the top of this file. */
 static long iterate(newton_t *s, void **num)
 {
-    long n = s->n, m = n - 1, r = s->iref, it, i, k, st;
+    long n = s->n, m = n - 1, r = s->iref, it, i, st;
     int finite = 1;   /* the last full iteration's J: every entry finite */
     core_fn_t core = (core_fn_t) s->core_fn;
     walk_fn_t walk = (walk_fn_t) s->walk_fn;
@@ -192,49 +248,9 @@ static long iterate(newton_t *s, void **num)
     Cin0 = cache_hit(s, m, r);
     first_bits = Cin0 ? (PCX_PASS_G | PCX_PASS_I) : PCX_WANT_ALL;
     for (it = 0; it < s->maxiter; it++) {
-        const double *Cin;
-        long bits;
-        double *F, *J, *C, *q, *iq, *Geq;
         /* J evaluated: every iteration of the full Newton, the chord's first */
         int full = (it == 0) || !s->chord;
-        if (it == 0) { F = s->F0; J = s->J0; C = s->C0; q = s->q0; iq = s->iq0; Geq = s->Geq0; }
-        else { F = s->F; J = s->J; C = s->C; q = s->q; iq = s->iq; Geq = s->Geq; }
-        /* insert_row: the full x of this evaluation; a non-finite one hands
-           back (`_tran_core.evaluate` declines one: the Python's course is
-           not the core's) */
-        pcx_put_ref(s->x, s->xf, n, r);
-        for (i = 0; i < n; i++) if (!isfinite(s->xf[i])) return finish(s, NEWTON_BAIL_X);
-        if (full) {
-            bits = (it == 0) ? first_bits : PCX_WANT_ALL;
-            Cin = (it == 0 && Cin0) ? Cin0 : C;
-        } else {
-            /* the chord's `residual_only` (i, q), its companion from the
-               held C: the cache's, else the first evaluation's -- what
-               `tr._Cmat` holds after the first */
-            bits = PCX_PASS_I;
-            Cin = Cin0 ? Cin0 : s->C0;
-        }
-        core(s->core, s->xf, s->T, bits | s->pattern, s->formula, s->a0, s->a1, s->a2, s->h,
-             s->theta,
-             s->q1, s->q2, s->iq1, s->u, Cin, C, q, iq, Geq, F, J);
-        /* `-F_s`: F reduced, negated (no scaler: `_tran_newton_c` declines
-           one, and NoneScaler's leaves J and F as they are) */
-        pcx_drop_ref(F, s->Fr, n, r);
-        for (i = 0; i < m; i++) s->b[i] = -s->Fr[i];
-        if (full && s->klu_sym) {
-            /* the pattern's values, and |J| on it (zero off it) */
-            for (k = 0; k < s->knnz; k++) {
-                double v = J[s->kat[k]];
-                s->kAx[k] = v;
-                s->absJ[s->kabs[k]] = fabs(v);
-            }
-        } else if (full) {
-            /* remove_row_col of J: A column-major, the copy numpy's solve
-               (and SciPy's lu_factor) hands LAPACK, so LAPACK factors the
-               same matrix in the same layout; absJ row-major, `abs(J)` as
-               the convergence test's dgemv reads it */
-            finite = pcx_reduce_cm_abs(J, s->A, s->absJ, n, r);
-        }
+        if ((st = evaluate(s, it, full, first_bits, Cin0, &finite)) != 0) return finish(s, st);
         if ((st = solve_step(s, it, finite, num)) != 0) return finish(s, st);
         /* `x_next = x + xdiff` */
         for (i = 0; i < m; i++) s->xn[i] = s->x[i] + s->b[i];

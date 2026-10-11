@@ -98,43 +98,37 @@ static long sparse_solve(lte_t *s, long n, long r)
     return 0;
 }
 
-/* `StepController._max_error` on one attempt: `compute_lte` by `formula`,
-   `J^-1 Eg` with the reference row cut and restored (dense: numpy's
-   `dgesv`; sparse: `sparse_solve`), `_reference` by `relref` folded into
-   the running maximum, `tolerance`, `normalised_error`, `_normalised`'s
-   mask and `np.max` -- numpy's operations in numpy's order.
-   Assumes: the struct as lte.h says it (n >= 2, 0 <= iref < n, every
-   pointer valid for its size; sparse, a bound StructuralKLU whose numeric
-   exists).
-   LTE_DONE: `err` the largest normalised error, `out` the new running
-   maximum (relref not POINTLOCAL).
-   A bail (enum lte_status): `err` is not written; `out` and the work
-   buffers may hold part of the work -- no caller reads them on a bail --
-   and the inputs are only read.  Every return leaves the flags clear. */
-long pcx_lte(lte_t *s)
+/* every input finite, and a running maximum not negative: anything else
+   is the Python chain's.  1, or 0 */
+static int inputs_finite(const lte_t *s, long n)
 {
-    long n = s->n, m = n - 1, r = s->iref, i;
-    int64_t m64 = m, one64 = 1, info64 = 0;
-    double err;
-    /* every input finite: anything else is the Python chain's */
+    long i;
     if (!(isfinite(s->h1) && isfinite(s->h2) && isfinite(s->h3) && isfinite(s->s12)
           && isfinite(s->s23) && isfinite(s->s123) && isfinite(s->coef)
           && isfinite(s->reltol) && isfinite(s->trtol) && isfinite(s->abstol)))
-        return lte_bail(s, LTE_BAIL_NONFINITE);
+        return 0;
     for (i = 0; i < n; i++)
         if (!(isfinite(s->xc[i]) && isfinite(s->xl[i]) && isfinite(s->q[i])
               && isfinite(s->q1[i]) && isfinite(s->q2[i]) && isfinite(s->q3[i])))
-            return lte_bail(s, LTE_BAIL_NONFINITE);
+            return 0;
     /* (a running maximum also not negative, -0.0 included: a -0.0 could
        reach sigglobal's np.max, whose pairing of +0.0 and -0.0 -- numpy's
        reduction is SIMD-paired -- a running `>` does not follow) */
     if (s->have_run)
         for (i = 0; i < n; i++)
-            if (!isfinite(s->run[i]) || signbit(s->run[i])) return lte_bail(s, LTE_BAIL_NONFINITE);
+            if (!isfinite(s->run[i]) || signbit(s->run[i])) return 0;
     if (s->abs_vec)
-        for (i = 0; i < n; i++) if (!isfinite(s->abst[i])) return lte_bail(s, LTE_BAIL_NONFINITE);
+        for (i = 0; i < n; i++) if (!isfinite(s->abst[i])) return 0;
     if (s->formula == LTE_FORMULA_EULER)
-        for (i = 0; i < n; i++) if (!isfinite(s->iq1[i])) return lte_bail(s, LTE_BAIL_NONFINITE);
+        for (i = 0; i < n; i++) if (!isfinite(s->iq1[i])) return 0;
+    return 1;
+}
+
+/* compute_lte into `lte`, under a cleared-and-tested region of its own.
+   0, or LTE_BAIL_FLAGS */
+static long charge_lte(lte_t *s, long n)
+{
+    long i;
     feclearexcept(FE_ALL_EXCEPT);
     /* compute_lte: coef * third_divided_difference, numpy's elementwise
        operations in their order (each result stored, so each operation
@@ -156,26 +150,44 @@ long pcx_lte(lte_t *s)
         double ddb = (d2 - d3) / s->s23;
         s->lte[i] = s->coef * ((dda - ddb) / s->s123);
     }
-    if (fetestexcept(PCX_FP_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
+    if (fetestexcept(PCX_FP_FLAGS)) return LTE_BAIL_FLAGS;
+    return 0;
+}
+
+/* J^-1 Eg into `lte`, the reference row cut and restored as +0.0: dense,
+   numpy's own dgesv on the reduced J; sparse, `sparse_solve`.  0, or why
+   it is handed back */
+static long solve_lte(lte_t *s, long n, long r)
+{
+    long m = n - 1, i;
+    int64_t m64 = m, one64 = 1, info64 = 0;
     /* remove_row_col and numpy's solve: the reduced J column-major (numpy's
        copy for LAPACK), the reduced Eg, numpy's own dgesv */
     if (s->klu_sym) {
         long why = sparse_solve(s, n, r);
-        if (why) return lte_bail(s, why);
+        if (why) return why;
     } else {
-        if (!pcx_reduce_cm(s->J, s->A, n, r)) return lte_bail(s, LTE_BAIL_NONFINITE);
+        if (!pcx_reduce_cm(s->J, s->A, n, r)) return LTE_BAIL_NONFINITE;
         pcx_drop_ref(s->lte, s->b, n, r);
         ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv, s->b, &m64, &info64);
         /* (numpy's solve clears what LAPACK raised; an info is its LinAlgError) */
         feclearexcept(FE_ALL_EXCEPT);
-        if (info64 != 0) return lte_bail(s, LTE_BAIL_DGESV);
+        if (info64 != 0) return LTE_BAIL_DGESV;
     }
     /* (a non-finite J^-1 Eg is the Python's: its normalised_error makes
        it +inf, a rejection) */
-    for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return lte_bail(s, LTE_BAIL_LTE);
+    for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return LTE_BAIL_LTE;
     /* the full vector, the reference row restored as +0.0 (the Python's
        concatenate of the two halves around [0.0]) */
     pcx_put_ref(s->b, s->lte, n, r);
+    return 0;
+}
+
+/* `_reference` by `relref` into `ref`, folded into the running maximum
+   `out` */
+static void reference(lte_t *s, long n)
+{
+    long i;
     /* _reference: numpy's maximum (the first where they compare equal) of
        |x_curr| and |x_last|, folded into the running maximum.  The ternary
        is numpy's maximum, `(a >= b || isnan(a)) ? a : b`, on finite values
@@ -211,16 +223,24 @@ long pcx_lte(lte_t *s)
             for (i = lo; i < hi; i++) s->ref[i] = mx;
         }
     }
+}
+
+/* `tolerance`, `normalised_error`, `_normalised`'s mask and `np.max`:
+   `err`.  0, or why it is handed back */
+static long normalised_error(lte_t *s, long n)
+{
+    long i;
+    double err;
     /* the tolerance TRTOL (reltol ref + abstol) and |lte| / tol, in
        `tolerance`'s order.  normalised_error's two `where`s (0/0 -> 0, NaN
        -> inf) cannot fire past the tests: every tol positive and finite,
        every |lte| finite */
     for (i = 0; i < n; i++)
         s->tq[i] = s->trtol * (s->reltol * s->ref[i] + (s->abs_vec ? s->abst[i] : s->abstol));
-    if (fetestexcept(PCX_FP_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
-    for (i = 0; i < n; i++) if (!(s->tq[i] > 0.0 && isfinite(s->tq[i]))) return lte_bail(s, LTE_BAIL_TOLERANCE);
+    if (fetestexcept(PCX_FP_FLAGS)) return LTE_BAIL_FLAGS;
+    for (i = 0; i < n; i++) if (!(s->tq[i] > 0.0 && isfinite(s->tq[i]))) return LTE_BAIL_TOLERANCE;
     for (i = 0; i < n; i++) s->tq[i] = fabs(s->lte[i]) / s->tq[i];
-    if (fetestexcept(PCX_FP_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
+    if (fetestexcept(PCX_FP_FLAGS)) return LTE_BAIL_FLAGS;
     /* `_normalised`'s mask (`Transient.lte_algebraic`): an unknown not
        judged is +0.0, as `np.where(mask, e, 0.0)` makes it (a mask entry
        is true where nonzero: -0.0 false, NaN true, as `== 0.0` decides) */
@@ -230,6 +250,30 @@ long pcx_lte(lte_t *s)
     err = s->tq[0];
     for (i = 1; i < n; i++) if (s->tq[i] > err) err = s->tq[i];
     s->err = err;
+    return 0;
+}
+
+/* `StepController._max_error` on one attempt: `compute_lte` by `formula`,
+   `J^-1 Eg` with the reference row cut and restored (dense: numpy's
+   `dgesv`; sparse: `sparse_solve`), `_reference` by `relref` folded into
+   the running maximum, `tolerance`, `normalised_error`, `_normalised`'s
+   mask and `np.max` -- numpy's operations in numpy's order.
+   Assumes: the struct as lte.h says it (n >= 2, 0 <= iref < n, every
+   pointer valid for its size; sparse, a bound StructuralKLU whose numeric
+   exists).
+   LTE_DONE: `err` the largest normalised error, `out` the new running
+   maximum (relref not POINTLOCAL).
+   A bail (enum lte_status): `err` is not written; `out` and the work
+   buffers may hold part of the work -- no caller reads them on a bail --
+   and the inputs are only read.  Every return leaves the flags clear. */
+long pcx_lte(lte_t *s)
+{
+    long n = s->n, r = s->iref, why;
+    if (!inputs_finite(s, n)) return lte_bail(s, LTE_BAIL_NONFINITE);
+    if ((why = charge_lte(s, n)) != 0) return lte_bail(s, why);
+    if ((why = solve_lte(s, n, r)) != 0) return lte_bail(s, why);
+    reference(s, n);
+    if ((why = normalised_error(s, n)) != 0) return lte_bail(s, why);
     feclearexcept(FE_ALL_EXCEPT);
     s->status = LTE_DONE;
     return LTE_DONE;
