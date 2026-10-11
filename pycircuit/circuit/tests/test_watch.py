@@ -12,7 +12,14 @@ import numpy as np
 import pytest
 
 from pycircuit.circuit import _hdl_cbackend as cb
-from pycircuit.circuit import _paths, _tran_core, _watch, circuit, compact
+from pycircuit.circuit import (
+    _paths,
+    _tran_core,
+    _tran_fixed_c,
+    _watch,
+    circuit,
+    compact,
+)
 from pycircuit.circuit.tests.test_newton_c import _gp_chain, _mos_chain
 from pycircuit.circuit.tests.test_psp_limit_c import _chain
 from pycircuit.circuit.transient import Transient
@@ -194,9 +201,13 @@ def test_watched_and_unwatched_runs_are_the_same(build, fixed, monkeypatch):
     assert a[0] == b[0] and a[1] == b[1], 'the solution moved'
     assert a[2] == b[2], ('the statistics moved', a[2], b[2])
     assert a[3] == b[3], 'the warnings moved'
-    ## (a `once:` count lands on whichever run resolves a class first)
+    ## (a `once:` count lands on whichever run resolves a class first; the
+    ## fixed-step loop in C, which rests on the counter, runs watched only:
+    ## its own counts are its machinery's -- its steps' tallies are the
+    ## Python steps', under their keys)
     def kept(d):
-        return {k: v for k, v in d.items() if not k.startswith('once:')}
+        return {k: v for k, v in d.items()
+                if not k.startswith(('once:', 'fixed_c:', 'sources_c:built'))}
     assert kept(a[4]) == kept(b[4]), 'a path count moved'
     assert (_watch.STATUS == 'on') == (_watch.EPOCH is not None), 'the counter left patched out'
 
@@ -232,13 +243,16 @@ def _stamps(tr):
 _KW = {'tend': 3e-7, 'timestep': 2e-8, 'fixed_timestep': True}
 
 
-def test_a_warm_solve_moves_no_watched_dict():
+def test_a_warm_solve_moves_no_watched_dict(monkeypatch):
     """A solve of a circuit already solved moves the counter not once, and
     every stamp holds through it.  (The analyses set `analysis_kind` in
     `epar`'s values around every operating point, `analysis.analysis_kind`:
     watched by the C Newton's parameter record, it broke every stamp twice
     a solve, and the cap stopped them all after ~8 solves.)"""
     _on()
+    ## (the Python steps' checks, made every step: the fixed-step loop in C
+    ## makes them once an entry -- `_tran_fixed_c`)
+    monkeypatch.setattr(_tran_fixed_c, 'ENABLED', False)
     tr = Transient(_mos_chain(), toolkit=circuit.numeric)
     tr.solve(**_KW)
     gc.collect()
@@ -257,7 +271,7 @@ def test_a_warm_solve_moves_no_watched_dict():
     assert 'analysis_kind' in tr.epar._parameters and tr.epar.analysis_kind is None
 
 
-def test_a_stamp_that_held_rearms_without_counting():
+def test_a_stamp_that_held_rearms_without_counting(monkeypatch):
     """A parameter set between the solves of a sweep (here the relative
     tolerance, in the analysis's watched values) moves the counter once a
     solve: every stamp breaks there, and its re-arm -- after a stamp that
@@ -266,6 +280,8 @@ def test_a_stamp_that_held_rearms_without_counting():
     good after `MAX_ARMS` solves; the walk, armed again by its full setup
     only, went unstamped at the first move."""
     _on()
+    ## (the Python steps' checks, made every step: `_tran_fixed_c` aside)
+    monkeypatch.setattr(_tran_fixed_c, 'ENABLED', False)
     tr = Transient(_mos_chain(), toolkit=circuit.numeric)
     gc.collect()
     gc.disable()

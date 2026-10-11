@@ -30,7 +30,7 @@ from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
 ## here.
 from pycircuit.circuit._tran_newton import _StepNewton
 from pycircuit.circuit._tran_branch import _BranchCheck
-from pycircuit.circuit import _paths, _tran_companion, _tran_core, _tran_newton_c
+from pycircuit.circuit import _paths, _tran_companion, _tran_core, _tran_fixed_c, _tran_newton_c
 from pycircuit.circuit._tran_companion import _CompanionModel
 from pycircuit.circuit._tran_history import _RunHistory
 from pycircuit.circuit._tran_predictor import _StagePredictor
@@ -764,6 +764,9 @@ class _SteppingLoop:
         self.fixed_fallbacks, self.forced = [], []
         self.ev_iter = 0
         self.imposed = False
+        ## (the fixed-step loop in C, `_tran_fixed_c`: its record, its source
+        ## table, and the watch counter its last kept decline was made at)
+        self.c_run = self.c_tab = self.c_fixed = None
         ## NOTHING READS A FIXED MULTISTEP STEP'S JACOBIAN: `judge` returns
         ## before the family's error test, `event` does nothing, and the
         ## other pieces only carry it (PSS's steps and the adaptive test do
@@ -791,6 +794,10 @@ class _SteppingLoop:
             tr._j_unread = True
         try:
             while self.t < self.tend:
+                ## (the steps the fixed-step loop in C takes, where it can:
+                ## `_tran_fixed_c`, the C stepping loop plan's stage 4)
+                if self.j_unread and _tran_fixed_c.run(self):
+                    continue
                 if not self.where():
                     break
                 if not (self.take() and self.judge() and self.event()):

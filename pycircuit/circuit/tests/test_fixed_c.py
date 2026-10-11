@@ -1,0 +1,232 @@
+"""The fixed-step multistep loop in C (`_tran_fixed_c`, the C stepping loop
+plan's stage 4; 2026-10-11): a fixed run with the C loop on is the run with
+it off -- every output byte, time, statistic and warning, the `_paths`
+tallies the Python steps make, and every attribute the steps leave on the
+transient (`transient._RUN_STATE`, its memos and counters aside) -- on the
+chains of the speed cases (MOS level 1, Gummel-Poon on the chord, the PSP
+stage behind the branch screen), a sparse run, a pulse's landings and
+order drops, the trapezoid and Euler, a grid that does not divide `tend`,
+an entry that fills its outputs; through its hand-backs (a screen that
+fires, a Newton that fails); its declines; and alive: a seed a hair off is
+another run.
+"""
+import math
+import warnings
+
+import numpy as np
+import pytest
+
+from pycircuit.circuit import _paths, _tran_fixed_c, circuit, compact
+from pycircuit.circuit import elements_hdl as eh
+from pycircuit.circuit import transient as trmod
+from pycircuit.circuit.elements import VS, C, R, SubCircuit, VPulse, VSin, gnd
+from pycircuit.circuit.integrator import (
+    EulerIntegrator,
+    TrapezoidalIntegrator,
+)
+from pycircuit.circuit.transient import Transient
+
+pytestmark = pytest.mark.skipif(_tran_fixed_c.driver() is None,
+                                reason='the fixed-step loop unit did not build')
+
+
+def _chain(make, n=8, vdd=1.8, vg=0.9, va=2e-2, cap=None):
+    c = SubCircuit()
+    c['vdd'] = VS('vdd', gnd, v=vdd)
+    c['vg'] = VSin('g0', gnd, v=vg, va=va, freq=1e6)
+    for k in range(n):
+        c[f'rl{k}'] = R('vdd', f'd{k}', r=5e3)
+        c[f'M{k}'] = make(f'd{k}', 'g0' if k == 0 else f'd{k - 1}')
+        if cap:
+            c[f'c{k}'] = C(f'd{k}', gnd, c=cap)
+    return c
+
+
+def _mos(n=8, **kw):
+    return _chain(lambda d, g: eh.MosLevel1Hdl(d, g, gnd, gnd), n=n, **kw)
+
+
+def _gp(n=6):
+    c = SubCircuit()
+    c['vcc'] = VS('vcc', gnd, v=3.0)
+    c['vin'] = VSin('in', gnd, v=0.75, va=2e-2, freq=1e6)
+    prev = 'in'
+    for k in range(n):
+        c[f'rb{k}'] = R(prev, f'b{k}', r=1e4)
+        c[f'rc{k}'] = R('vcc', f'c{k}', r=1e3)
+        c[f'Q{k}'] = eh.GummelPoonNpnHdl(f'c{k}', f'b{k}', gnd)
+        prev = f'c{k}'
+    return c
+
+
+def _psp_stage():
+    c = SubCircuit()
+    c['vdd'] = VS('vdd', gnd, v=1.2)
+    c['vg'] = VSin('g', gnd, v=0.7, va=2e-2, freq=1e6)
+    c['rl'] = R('vdd', 'd', r=5e3)
+    c['M'] = compact.PspMosLongChannel('d', 'g', gnd, gnd, fnt=1.0)
+    return c
+
+
+def _pulsed(n=6):
+    """A MOS chain behind a pulse: breakpoints, landings, order drops."""
+    c = _mos(n, cap=1e-13)
+    c['vg'] = VPulse('g0', gnd, v1=0.0, v2=1.8, td=3e-9, tr=1e-9, tf=1e-9, pw=6e-9, per=2e-8)
+    return c
+
+
+## (what the steps leave that is not state they compute from: the
+## predictor's memos, the core's check counters, a cache keyed by ids)
+_NOT_STATE = {'_pred_fast', '_pred_wmemo', '_tran_core', '_row_names_cache'}
+## (counts the C loop's own machinery makes: its build, its table's)
+_OWN_COUNTS = ('once:', 'sources_c:', 'fixed_c:', 'pred_c:', 'branch_c:bail')
+
+
+def _norm(v, depth=0):
+    if isinstance(v, np.ndarray):
+        return ('nd', v.dtype.str, v.shape, v.tobytes())
+    if isinstance(v, (list, tuple)) and depth < 4:
+        return (type(v).__name__, tuple(_norm(e, depth + 1) for e in v))
+    if isinstance(v, dict) and depth < 4:
+        return ('dict', tuple(sorted((str(k), _norm(e, depth + 1)) for k, e in v.items())))
+    if isinstance(v, (int, float, str, bool, type(None), np.floating, np.integer)):
+        return (type(v).__name__, repr(v))
+    if type(v).__module__ == 'pycircuit.circuit.integrator':
+        return ('obj', type(v).__name__, _norm(vars(v), depth + 1))
+    return ('obj', type(v).__name__)
+
+
+def _run(build, on, monkeypatch, make=None, setup=None, **kw):
+    monkeypatch.setattr(_tran_fixed_c, 'ENABLED', on)
+    before = _paths.snapshot()
+    with warnings.catch_warnings(record=True) as W:
+        warnings.simplefilter('always')
+        warnings.simplefilter('ignore', ResourceWarning)
+        tr = Transient(build(), toolkit=circuit.numeric, **(make or {}))
+        if setup:
+            setup(tr)
+        res = tr.solve(fixed_timestep=True, **kw)
+    st = tr.statistics
+    stats = {k: getattr(st, k) for k in st.__slots__ if 'seconds' not in k}
+    counts = {k: v for k, v in _paths.since(before).items() if not k.startswith(_OWN_COUNTS)}
+    state = {k: _norm(tr.__dict__.get(k, '<absent>')) for k in trmod._RUN_STATE
+             if k not in _NOT_STATE}
+    ## (the linear solver's own counts: a sparse run's factors and numerics)
+    state['linear solver'] = repr(tr.__dict__.get('_default_linearsolver'))
+    return {'x': np.asarray(res.x, float).tobytes(),
+            't': np.asarray(res.sweep_values, float).tobytes(), 'stats': stats,
+            'warnings': sorted(str(w.message) for w in W), 'counts': counts,
+            'state': state}, _paths.since(before)
+
+
+def _same(build, monkeypatch, steps_min=1, **kw):
+    a, ca = _run(build, True, monkeypatch, **dict(kw))
+    b, _cb = _run(build, False, monkeypatch, **dict(kw))
+    for k in ('x', 't', 'stats', 'warnings', 'counts', 'state'):
+        if k == 'state':
+            diff = [n for n in a[k] if a[k][n] != b[k][n]]
+            assert not diff, ('the state moved', diff)
+        else:
+            assert a[k] == b[k], (k, a[k] if k != 'x' else '', b[k] if k != 'x' else '')
+    assert ca.get('fixed_c:steps', 0) >= steps_min, ca
+    return ca
+
+
+@pytest.mark.parametrize('name, build, make, kw', [
+    ('mos1', _mos, None, {'tend': 60 * 2e-8, 'timestep': 2e-8}),
+    ('gp-chord', _gp, None, {'tend': 60 * 2e-8, 'timestep': 2e-8}),
+    ('psp-screen', _psp_stage, None, {'tend': 60 * 2e-8, 'timestep': 2e-8}),
+    ('sparse', lambda: _mos(250, cap=1e-13), None, {'tend': 20 * 2e-10, 'timestep': 2e-10}),
+    ('pulse', _pulsed, None, {'tend': 4e-8, 'timestep': 2.5e-10}),
+    ('trap', _pulsed, {'integrator': TrapezoidalIntegrator()},
+     {'tend': 3e-8, 'timestep': 2.5e-10}),
+    ('euler', _pulsed, {'integrator': EulerIntegrator()}, {'tend': 3e-8, 'timestep': 2.5e-10}),
+    ('ragged-end', _mos, None, {'tend': 61.37 * 2e-8, 'timestep': 2e-8}),
+])
+def test_a_fixed_run_is_the_python_one(name, build, make, kw, monkeypatch):
+    ca = _same(build, monkeypatch, steps_min=10, make=make, **kw)
+    if name == 'pulse':
+        assert ca.get('fixed_c:steps', 0) > 100
+
+
+def test_an_entry_that_fills_its_outputs_comes_back(monkeypatch):
+    """Seven rows an entry: the run in many entries, the same run."""
+    monkeypatch.setattr(_tran_fixed_c, 'CAP_MAX', 7)
+    _same(_mos, monkeypatch, steps_min=40, tend=60 * 2e-8, timestep=2e-8)
+
+
+def test_a_screen_that_fires_hands_the_step_back(monkeypatch):
+    """The PSP stage driven hard (its C moves) and the screen's tolerance
+    raised on the instance, so it fires where C dips below the run's
+    largest: those steps go to the Python (its SVD, its confirmation), the
+    rest stay in C -- the same run, the same `branch_screens`."""
+    def build():
+        c = _psp_stage()
+        c['vg'] = VSin('g', gnd, v=0.7, va=0.5, freq=1e6)
+        return c
+
+    def setup(tr):
+        tr.BRANCH_SCREEN_TOL = 0.9
+    ca = _same(build, monkeypatch, steps_min=5, setup=setup, tend=80 * 2e-8, timestep=2e-8)
+    assert ca.get('fixed_c:bail:screen', 0) > 0
+
+
+def test_a_newton_that_fails_hands_the_step_back(monkeypatch):
+    """Two Newton iterations at most: the steps that need more fail in C and
+    are the Python's (its failure, its smaller retry) -- the same run."""
+    def setup(tr):
+        tr.par.maxiter = 2
+    ca = _same(_pulsed, monkeypatch, steps_min=5, setup=setup, tend=2e-8, timestep=2.5e-10)
+    assert ca.get('fixed_c:bail:newton', 0) > 0
+
+
+def test_the_declines(monkeypatch):
+    """An element with an `accept_step` hook, a patched piece of the step,
+    a shadowed method, a source perturbed on the circuit: the Python loop,
+    every step."""
+    class Hooked(R):
+        def accept_step(self, t, x, epar):
+            pass
+
+    def hooked():
+        c = _mos(4)
+        c['rh'] = Hooked('d0', gnd, r=1e6)
+        return c
+    _, ca = _run(hooked, True, monkeypatch, tend=20 * 2e-8, timestep=2e-8)
+    assert ca.get('fixed_c:steps', 0) == 0 and ca.get('fixed_c:circuit', 0) > 0
+    real = Transient._pred_note
+    monkeypatch.setattr(Transient, '_pred_note', lambda self, *a, **k: real(self, *a, **k))
+    _, ca = _run(_mos, True, monkeypatch, tend=20 * 2e-8, timestep=2e-8)
+    assert ca.get('fixed_c:steps', 0) == 0 and ca.get('fixed_c:patched', 0) > 0
+    monkeypatch.undo()
+
+    def shadow(tr):
+        tr._q_at = lambda x: Transient._q_at(tr, x)
+    _, ca = _run(_mos, True, monkeypatch, setup=shadow, tend=20 * 2e-8, timestep=2e-8)
+    assert ca.get('fixed_c:steps', 0) == 0 and ca.get('fixed_c:shadow', 0) > 0
+
+    def perturbed():
+        ## (a source perturbed on the instance, as the shooting tests make
+        ## one: the Python steps call it, so the table cannot stand in)
+        c = _mos(4)
+        real = c.u
+        c.u = lambda t, epar=None, analysis=None, **kw: np.asarray(
+            real(t, epar, analysis=analysis, **kw), float) * 1.01
+        return c
+    _, ca = _run(perturbed, True, monkeypatch, tend=20 * 2e-8, timestep=2e-8)
+    assert ca.get('fixed_c:steps', 0) == 0 and ca.get('fixed_c:circuit', 0) > 0
+
+
+def test_a_seed_a_hair_off_is_another_run(monkeypatch):
+    """Alive: the predictor's clamp a ulp off in the C (its seeds move, and
+    the converged points with them) -- the comparison sees another run."""
+    a, _ = _run(_pulsed, False, monkeypatch, tend=2e-8, timestep=2.5e-10)
+    bind = _tran_fixed_c._bind
+
+    def planted(*args, **kw):
+        run = bind(*args, **kw)
+        run.pr[0].clamp = math.nextafter(run.pr[0].clamp, 0.0)
+        return run
+    monkeypatch.setattr(_tran_fixed_c, '_bind', planted)
+    b, cb = _run(_pulsed, True, monkeypatch, tend=2e-8, timestep=2.5e-10)
+    assert cb.get('fixed_c:steps', 0) > 10 and a['x'] != b['x']

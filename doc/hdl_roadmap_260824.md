@@ -8222,3 +8222,65 @@ ways, 277 handed back on a flag (extreme magnitudes); the general path's cases; 
 predicted exactly; alive: the clamp's factor a ulp off moves a prediction the clamp bites.  New
 pinned pair "the predictor and its C"; every unit's twin re-recorded for pcx_abi.h.  Full suite 5125 passed; the
 sanitizer's fast tier clean (4817 passed).
+
+## 2026-10-11 — 117. Stage 4, steps b and c: the fixed-step multistep loop in C, its write-back proven complete
+
+`csrc/fixed.c` / `_tran_fixed_c` run `_SteppingLoop`'s fixed multistep steps themselves --
+where (the grid; the next breakpoint as `_next_breakpoint` makes it: numpy's maximum of t and
+the source table's earliest event, past one closer than `minbreak`; the order drop a landing
+asks for; the grid's end), take (the predictor in C, 4a; `check_order_drop` and `bdf2_alphas`
+in the glue's float order; u(t) from the source table, stage 1; the C Newton through its own
+struct, set up as its glue sets it up, its converged C and Geq alternating between two buffers
+so a step handed back after its Newton leaves the last accepted step's; the branch screen in C,
+3d) and accept (the rings, `_pred_note`'s ordered, deduplicated nodes, the outputs, the
+statistics) -- driving the units through their entries and structs, as the Newton drives the
+core.  It stops BEFORE a step it cannot take as the Python would -- a Newton that fails, a
+screen that fires (the SVD is the Python's), a predictor or a table that hands back -- and the
+Python loop takes that step; the next enters the C again.
+
+THE RUN CONTEXT: inside the C loop no Python runs between steps, so the C Newton glue's
+per-call checks hold for every step of an entry when its last call SERVED and the watch counter
+has not moved since (`_tran_newton_c` marks `served` with `_watch.now()`, cleared on any other
+outcome; watching off, the loop does not run).  Checked once an entry: every piece the steps
+call is its module's own and not shadowed (the loop's, the predictor's, the history's, the
+screen's, `_source_at`, `SubCircuit.u` / `next_event` / `accept_step`, the integrators'
+`check_order_drop`, the family's, `_tran_newton_c.solve`), the circuit's methods not shadowed
+on the instance (a source perturbed there, as the shooting tests make one -- found by
+test_source_memo, which the first version failed), no `accept_step` hook, every breakpoint
+the table's (the sources' `next_event`, HDL devices' inf), the table holding, no event rows or
+periodic states or stateful limiters, the predictor's settings, the cached C at the last point.
+State copied in (the rings, the predictor's nodes, the cached C, the step record) and written
+back as the Python steps leave it (`X` and `timelist` a fresh array and float a step, the
+statistics, the rings, `_q_cache` / `_C_cache` / `_C_pattern`, `_iq`, `_Geq`, `_Cmat`, the
+active integrator and its coefficients, the predictor's history, the step record, the screen's
+maximum, the StructuralKLU's `numerics`) with the `_paths` tallies the Python steps make, under
+their keys.
+
+PROVED (test_fixed_c): the run with the C loop on is the run with it off -- every output byte,
+time, statistic, warning, the `_paths` tallies (the loop's own build counts aside) and every
+`_RUN_STATE` attribute (the predictor's two memos, the core's check counters and an id-keyed
+cache aside: 4c, 49 of 53 compared byte for byte), and the linear solver's counts -- on MOS
+level 1, Gummel-Poon on the chord, the PSP stage behind the screen, a 250-stage sparse run, a
+pulse's landings and order drops, the trapezoid, Euler, a grid that does not divide `tend`,
+entries that fill their outputs (seven rows); through its hand-backs (a screen made to fire, a
+Newton held to two iterations); its declines (an `accept_step` hook, a patched piece, a
+shadowed method, a perturbed source); alive: the predictor's clamp a ulp off is another run.
+The watch tests that count the Python steps' per-call checks run with the C loop off (it makes
+them once an entry), and the watched/unwatched comparison sets its own counts aside as it sets
+`once:` aside.  New pinned pair "the fixed-step loop and its C"; "the Newton solve and its C"
+and "the stepping loop and its unread Jacobian" moved on their twins (the served mark; the
+loop's call): re-recorded.
+
+The marginal fixed step, C loop on / off (alternated, median of 7): stage 38.6 / 153.8 us
+(3.98x), mos1 19.4 / 105.8 us (5.46x), gp 36.2 / 130.5 us (3.60x), psp 735.6 / 900.3 us
+(1.22x) -- above the sizing's ceilings on stage (2.9x): the Newton called from C costs less
+than the cffi call the sizing timed.
+
+STEP 4d, THE LINE (`step_machinery --check` against the parent tree, 15-min load < 3, six paired
+rounds, the whole timed case -- the operating point and the Python's first steps in it): stage
+-60.6 % [-60.9, -59.6] (2.54x), mos1 -58.3 % [-59.8, -57.8] (2.40x), gp -43.5 % [-44.1, -43.3]
+(1.77x), psp -15.6 % [-16.3, -15.3] (1.18x), spice_4049 -82.9 % [-83.4, -82.7] (5.85x); child
+faster 6 of 6 on every case; bytes and statistics the same across the trees, the paths moved by
+the loop's own counts only.  THE LINE HOLDS: stage, mos1, gp, spice_4049 >= 1.3x with the
+interval above it; psp >= 1.05x.  Stage 4 closed.  Full suite 5140 passed; the sanitizer's fast
+tier clean (4866 passed).

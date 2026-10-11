@@ -220,6 +220,7 @@ class _Ctx:
         'par_held',
         'par_rec',
         's',
+        'served',
         'tol',
         'walk',
         'walk_arms',
@@ -291,6 +292,10 @@ class _Ctx:
         self.walk_stamp, self.walk_arms, self.walk_held = -1, 0, 0
         self.walk_watch = ()
         self.par_rec, self.par_arms, self.par_held = None, 0, 0
+        ## (the watch counter at this record's last serve, None after any
+        ## other outcome: the fixed-step loop in C enters only on a serve
+        ## nothing watched has moved since -- `_tran_fixed_c`)
+        self.served = None
 
 
 def _klu_bind(rec, sk):
@@ -559,9 +564,12 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     where `want_j` is False: nothing reads it), or None where it must run
     again (a branch confirmation re-solved) -- or None: declined or handed
     back, nothing left behind, `_newton` runs."""
+    td, cd = tr.__dict__, tr.cir.__dict__
+    last = td.get('_newton_c')
+    if last is not None:
+        last.served = None
     if not ENABLED:
         return _no('newton_c:off')
-    td, cd = tr.__dict__, tr.cir.__dict__
     kept = td.get('_newton_c_no')
     if kept is not None:
         ## (the circuit's own reason, under the plan the circuit's dict
@@ -803,4 +811,6 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         if getattr(target, 'branch_screens', 0) != before:
             ## the confirmation re-solved: `jacobian_only` again, after it
             fj = None
+    if fj is not None:
+        rec.served = M['watch'].now()
     return x, fj
