@@ -55,8 +55,9 @@ next, up to `BACKOFF_MAX`; one that made any resets it), watching off, a
 kept decline while nothing watched has moved, the Newton's (adaptive: the
 error test's) last call not served.  DECLINES (`loop_c:<reason>`, kept on
 the loop until something watched moves where `_KEEPS` says the reason is
-the run's, not the attempt's): no build, a patched or shadowed piece (`_PIECES`, the table
-`_own`, `_pieces` and `_SHADOWS` are made from; `_CIRCUIT_SHADOWS`), another statistics class, loop or family, a fixed-step
+the run's, not the attempt's): no build, a patched or shadowed piece
+(`_PIECES`, the table `_own`, `_pieces` and `_SHADOWS` are made from;
+`_CIRCUIT_SHADOWS`), another statistics class, loop or family, a fixed-step
 loop whose Jacobian something reads, an imposed step, events or a periodic
 state, the continuation rescue or a stateful limiter, a circuit hook, an
 integrator outside the three, the predictor's settings, no source memo, a
@@ -622,9 +623,10 @@ def _read(loop, tr, td, rec, adaptive):
         return 'rings'
     hist_len = ql.shape[0]
     hist = td.get('_pred_hist') or []
-    if type(hist) is not list or len(hist) > _HIST_MAX or td.get('_pred_pending') is not None or not all(
-            type(e) is tuple and len(e) == 2 and type(e[0]) is float and type(e[1]) is np.ndarray
-            and e[1].dtype is _F64 and e[1].shape == (n,) for e in hist):
+    if (type(hist) is not list or len(hist) > _HIST_MAX or td.get('_pred_pending') is not None
+            or not all(type(e) is tuple and len(e) == 2 and type(e[0]) is float
+                       and type(e[1]) is np.ndarray and e[1].dtype is _F64 and e[1].shape == (n,)
+                       for e in hist)):
         return 'history'
     X = loop.X
     xl = X[-1] if X else None

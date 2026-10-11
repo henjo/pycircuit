@@ -213,17 +213,6 @@ class _Ctx:
         self.walk_watch = ()
 
 
-def _undo_source(memo, keys, had, counts):
-    """The attempt's one trace, removed: the source memo's entries its
-    calls made and the counts they added -- the Python Newton makes them
-    again."""
-    for key, h in zip(keys, had):
-        if not h:
-            memo.pop(key, None)
-    for k, v in counts.items():
-        _PC[k] = v
-
-
 def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol, maxit):
     """`_stage_newton(seed)` (undamped, no shunt) in C: the three converged
     stages as fresh full-width arrays, the device memo and the source memo
@@ -331,11 +320,11 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
         us = [src(tt) for tt in ctx.tstage]
     except Exception:                                          # noqa: BLE001
         ## (the call raises again in the Python Newton, where it raised before)
-        _undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
+        NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         return _no('radau_c:u')
     if not all(type(u) is np.ndarray and u.dtype == np.float64 and u.shape == (n,)
                for u in us):
-        _undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
+        NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         return _no('radau_c:u')
     for j in range(3):
         buf['u'][j] = us[j]
@@ -347,7 +336,7 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     s.h, s.reltol, s.abstol, s.maxiter = float(h), float(reltol), float(abstol), int(maxit)
     status = cfn(s)
     if status != _CODES['RADAU_CONVERGED']:
-        _undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
+        NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         if status == _CODES['RADAU_BAIL_WALKSTOP']:
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None

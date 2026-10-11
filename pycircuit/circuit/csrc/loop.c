@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include "pcx_abi.h"
+#include "pcx_minmax.h"
 /* the units this one calls through the pointers it is handed: their
    structs and entries */
 #include "newton.h"
@@ -32,17 +33,17 @@
 static int next_breakpoint(loop_t *s, double t, double *out)
 {
     sources_t *src = (sources_t *) s->src;
-    double a = fabs(t), m = (1.0 > a) ? 1.0 : a, nb;
+    double m = pcx_py_max(fabs(t), 1.0), nb;
     src->mode = SOURCES_NEXT;
     src->t = t;
     if (CALL(s->src_fn, pcx_sources, src) != SOURCES_DONE) return 0;
-    nb = (t >= src->t_next) ? t : src->t_next;
+    nb = pcx_np_maximum(t, src->t_next);
     if (nb <= t + s->minbreak * m) {
         double t2 = t + (s->minbreak * 1e3) * m;
         src->mode = SOURCES_NEXT;
         src->t = t2;
         if (CALL(s->src_fn, pcx_sources, src) != SOURCES_DONE) return 0;
-        nb = (t2 >= src->t_next) ? t2 : src->t_next;
+        nb = pcx_np_maximum(t2, src->t_next);
     }
     *out = nb;
     return 1;
@@ -279,7 +280,7 @@ static long judge(loop_t *s, loop_attempt_t *a)
             s->att_rejected = 1;
             s->t_break = a->t_break;
             /* (`_LMMSteps.judge`'s `max(h, minstep)`) */
-            s->h = (s->minstep > hn) ? s->minstep : hn;
+            s->h = pcx_py_max(hn, s->minstep);
             return LOOP_JUDGE_RETRY;
         }
         ct->have_retry = had_retry;
@@ -332,7 +333,7 @@ static void accept(loop_t *s, const loop_attempt_t *a)
        newest PRED_HIST_MAX kept, the capacity pred.c and the glue's `ht` /
        `hx` buffers share) */
     {
-        double at = fabs(tn), m = (1.0 > at) ? 1.0 : at;
+        double m = pcx_py_max(fabs(tn), 1.0);
         if (s->hk && fabs(tn - s->ht[s->hk - 1]) <= 1e-14 * m) {
             s->hk--;
         } else if (s->hk == PRED_HIST_MAX) {
@@ -352,7 +353,7 @@ static void accept(loop_t *s, const loop_attempt_t *a)
     s->t_break = a->t_break;
     /* (`accept`'s `min(h_next, max_step)`: the first argument kept unless
        the second is strictly smaller) */
-    s->h = s->adaptive ? ((s->max_step < a->h_next) ? s->max_step : a->h_next) : s->timestep;
+    s->h = s->adaptive ? pcx_py_min(a->h_next, s->max_step) : s->timestep;
     s->npoint++;
     s->k++;
 }

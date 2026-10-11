@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <math.h>
 #include "pcx_abi.h"
+#include "pcx_minmax.h"
 #include "pcx_dense.h"
 #include "newton.h"
 
@@ -126,7 +127,7 @@ static int converged(newton_t *s, long m)
         /* np.maximum(ax_next, abs(x)): both finite here, where this ternary
            is the same value; it would not propagate a NaN as np.maximum
            does */
-        double mx = (axi >= axo) ? axi : axo;
+        double mx = pcx_np_maximum(axi, axo);
         if (!(fabs(s->xd[i]) < s->reltol * mx + s->xtol[i])) conv_x = 0;
         if (!(aF < s->reltol * Is + s->abstol[i])) conv_f = 0;
     }

@@ -50,7 +50,6 @@ then runs, as before: the same answer, exception, warning and counts.
 
 History: `doc/shooting_history.md`, `_sens_c.py`.
 """
-import ctypes
 import os
 
 import numpy as np
@@ -96,13 +95,11 @@ def driver():
             import scipy
             import scipy.linalg  # (its OpenBLAS mapped: `lu_factor`'s)
 
-            from pycircuit.circuit._tran_newton_c import _openblas
-            spl = _openblas(scipy, 'libscipy_openblas-*.so')
+            spl = _cbuild.openblas(scipy)
             if spl is None:
                 STATUS = "off (SciPy's own OpenBLAS not found)"
                 return None
-            getrf = ctypes.cast(spl.scipy_dgetrf_, ctypes.c_void_p).value
-            getrs = ctypes.cast(spl.scipy_dgetrs_, ctypes.c_void_p).value
+            getrf, getrs = _cbuild.address(spl.scipy_dgetrf_), _cbuild.address(spl.scipy_dgetrs_)
         except (ImportError, OSError, AttributeError) as e:
             STATUS = f'off ({e})'
             return None

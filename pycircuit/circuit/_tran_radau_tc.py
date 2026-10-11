@@ -258,8 +258,7 @@ def driver():
         _ct, gesv, getrs = lap
         from pycircuit.circuit import _tran_newton_c, _tran_radau_c
         _MOD['NC'], _MOD['RC'] = _tran_newton_c, _tran_radau_c
-        _driver = (ffi, cfn, ctypes.cast(gesv, ctypes.c_void_p).value,
-                   ctypes.cast(getrs, ctypes.c_void_p).value)
+        _driver = (ffi, cfn, _cbuild.address(gesv), _cbuild.address(getrs))
         STATUS = 'c'
     return _driver or None
 
@@ -606,10 +605,9 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
         return _no('radau_tc:ready')
     zk = _MOD.get('klu')
     if zk is None or zk[0] is not zs._lib:
-        zk = _MOD['klu'] = (zs._lib, ctypes.cast(zs._lib.klu_z_refactor, ctypes.c_void_p).value,
-                            ctypes.cast(zs._lib.klu_z_solve, ctypes.c_void_p).value)
+        zk = _MOD['klu'] = (zs._lib, _cbuild.address(zs._lib.klu_z_refactor),
+                            _cbuild.address(zs._lib.klu_z_solve))
     ## ---- from here the attempt leaves one trace: the step's source memo ----
-    RC = _MOD['RC']
     analysis = tr.par.analysis
     keys = [(tt, analysis) for tt in ctx.tstage]
     try:
@@ -622,7 +620,7 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
         us = [src(tt) for tt in ctx.tstage]
     except Exception:                                          # noqa: BLE001
         ## (the call raises again in the Python loop, where it raised before)
-        RC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
+        NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         return _no('radau_tc:u')
     u0, u1, u2 = us
     if not (type(u0) is np.ndarray and type(u1) is np.ndarray and type(u2) is np.ndarray
@@ -630,7 +628,7 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
             and (u1.dtype is _F64 or u1.dtype == np.float64)
             and (u2.dtype is _F64 or u2.dtype == np.float64)
             and u0.shape == (n,) and u1.shape == (n,) and u2.shape == (n,)):
-        RC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
+        NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         return _no('radau_tc:u')
     buf['u'][...] = us
     buf['seed'][...] = seed
@@ -696,7 +694,7 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
         zs.refactors += int(s.refactored)
         zs._fresh = prep
     if status != _CODES['RADAU_TC_CONVERGED']:
-        RC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
+        NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         if status == _CODES['RADAU_TC_BAIL_WALKSTOP']:
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None

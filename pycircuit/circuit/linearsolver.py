@@ -80,12 +80,10 @@ def _numpy_lapack():
         _NPLU['f'] = None
         try:
             import ctypes
-            import glob
-            import os
-            d = os.path.join(os.path.dirname(numpy.__file__), '..', 'numpy.libs')
-            paths = glob.glob(os.path.join(d, 'libscipy_openblas64_*.so'))
-            if paths:
-                lib = ctypes.CDLL(os.path.realpath(paths[0]))
+
+            from pycircuit.circuit import _cbuild
+            lib = _cbuild.openblas(numpy)
+            if lib is not None:
                 gesv, getrs = lib.scipy_dgesv_64_, lib.scipy_dgetrs_64_
                 gesv.restype = getrs.restype = None
                 _NPLU['f'] = (ctypes, gesv, getrs)

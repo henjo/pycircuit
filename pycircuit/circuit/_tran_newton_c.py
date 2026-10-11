@@ -78,8 +78,6 @@ again after it, as in the Python.
 
 History: `doc/transient_history.md`, `_tran_newton_c.py`.
 """
-import ctypes
-import glob
 import operator
 import os
 from itertools import repeat
@@ -131,14 +129,6 @@ _GETPACK = operator.methodcaller('get', '_hdl_cp')
 _KEPT = ('unservable', 'stateful', 'limit')
 
 
-def _openblas(pkg, pattern):
-    """The OpenBLAS `pkg` itself loaded (`<pkg>.libs/`): `CDLL` on its real
-    path returns the instance already mapped."""
-    d = os.path.join(os.path.dirname(pkg.__file__), '..', pkg.__name__ + '.libs')
-    paths = glob.glob(os.path.join(d, pattern))
-    return ctypes.CDLL(os.path.realpath(paths[0])) if paths else None
-
-
 def driver():
     """`(ffi, cfn, LAPACK addresses)` once loaded, or None (`STATUS`)."""
     global _driver, STATUS
@@ -147,14 +137,11 @@ def driver():
         try:
             import scipy
             import scipy.linalg  # (its OpenBLAS mapped: the chord's)
-            npl = _openblas(np, 'libscipy_openblas64_*.so')
-            spl = _openblas(scipy, 'libscipy_openblas-*.so')
+            npl, spl = _cbuild.openblas(np), _cbuild.openblas(scipy)
             if npl is None or spl is None:
                 STATUS = "off (numpy's or SciPy's own OpenBLAS not found)"
                 return None
-
-            def addr(f):
-                return ctypes.cast(f, ctypes.c_void_p).value
+            addr = _cbuild.address
             lapack = {'dgesv': addr(npl.scipy_dgesv_64_),
                       'dgemv': addr(npl.scipy_cblas_dgemv64_),
                       'dgetrf': addr(spl.scipy_dgetrf_), 'dgetrs': addr(spl.scipy_dgetrs_)}
@@ -358,6 +345,7 @@ def _klu_bind(rec, sk):
         return False
     ffi, s = rec.ffi, rec.s
     lib, ct = sk._lib, sk._ct
+    addr = _cbuild.address
     kabs = np.ascontiguousarray(sk.take, dtype=np.int64)
     kAx = np.empty(max(sk.nnz, 1))
     keep = (sk, kat, kabs, kAx, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai),
@@ -365,11 +353,8 @@ def _klu_bind(rec, sk):
             ffi.from_buffer('double *', kAx))
     s.knnz = sk.nnz
     s.kAp, s.kAi, s.kat, s.kabs, s.kAx = keep[4:]
-
-    def addr(f):
-        return ffi.cast('void *', ct.cast(f, ct.c_void_p).value)
-    s.klu_factor, s.klu_solve, s.klu_free = (addr(lib.klu_factor), addr(lib.klu_solve),
-                                             addr(lib.klu_free_numeric))
+    s.klu_factor, s.klu_solve, s.klu_free = (ffi.cast('void *', addr(f)) for f in (
+        lib.klu_factor, lib.klu_solve, lib.klu_free_numeric))
     s.klu_common = ffi.cast('void *', ct.addressof(sk._common))
     s.klu_sym = ffi.cast('void *', sk._symbolic)
     rec.klu, rec.klu_sym, rec.klu_keep = sk, sk._symbolic, keep
@@ -581,11 +566,14 @@ def _walk_arm(rec, before):
     rec.walk_stamp = W.arm(rec.walk_watch, before) if rec.walk_arms <= W.MAX_ARMS else -1
 
 
-def _undo_source(memo, key, had, counts):
-    """The attempt's one trace, removed: the source memo's entry it made and
-    the counts the pass added -- `_newton` makes them again."""
-    if not had and memo is not None:
-        memo.pop(key, None)
+def _undo_source(memo, keys, had, counts):
+    """An attempt's one trace, removed (the Newton's, the Radau units'): the
+    source memo's entries its calls made -- each key it had not before --
+    and the counts they added; the Python makes them again."""
+    if memo is not None:
+        for key, h in zip(keys, had):
+            if not h:
+                memo.pop(key, None)
     for k, v in counts.items():
         _PC[k] = v
 
@@ -610,7 +598,8 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     DECLINES); 2. the step's companion and whether anything limits; 3. the
     record (`_Ctx`) and the walk's, the core's and KLU's bindings; 4. the
     source pass (the attempt's one trace), the inputs copied in, the
-    parameter reads stamped, the call; 5. converged, the write-back.  A bail undoes the trace (`_undo_source`).  A serve
+    parameter reads stamped, the call; 5. converged, the write-back.  A bail
+    undoes the trace (`_undo_source`).  A serve
     writes the step's state (`_q_cache`, `_C_cache`, `_C_pattern` where
     the core has a pattern, `_iq`, `_Geq`, `_Cmat`, `active_integrator`,
     `_companion_coeffs`, `_effective_method`), the statistics' Newton
@@ -775,11 +764,11 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         u = tr._source_at(t, None)
     except Exception:                                          # noqa: BLE001
         ## (the pass raises again in `_newton`, where it raised before)
-        _undo_source(memo, key, had, dict(zip(u_keys, cvals)))
+        _undo_source(memo, (key,), (had,), dict(zip(u_keys, cvals)))
         return _no('newton_c:u')
     if not (type(u) is np.ndarray and (u.dtype is _F64 or u.dtype == np.float64) and u.ndim == 1
             and u.shape[0] == n):
-        _undo_source(memo, key, had, dict(zip(u_keys, cvals)))
+        _undo_source(memo, (key,), (had,), dict(zip(u_keys, cvals)))
         return _no('newton_c:u')
     tol = tr._newton_tolerances() if P is None else P.tol
     if tol is not rec.tol:
@@ -823,7 +812,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)
     status = cfn(s)
     if status != _CODES['NEWTON_CONVERGED']:
-        _undo_source(memo, key, had, dict(zip(u_keys, cvals)))
+        _undo_source(memo, (key,), (had,), dict(zip(u_keys, cvals)))
         if status == _CODES['NEWTON_BAIL_WALKSTOP']:
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None

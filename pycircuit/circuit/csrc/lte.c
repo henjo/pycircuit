@@ -15,6 +15,7 @@
 #include <math.h>
 #include <fenv.h>
 #include "pcx_abi.h"
+#include "pcx_minmax.h"
 #include "pcx_fenv.h"
 #include "pcx_dense.h"
 #include "lte.h"
@@ -91,7 +92,7 @@ static long sparse_solve(lte_t *s, long n, long r)
     if (fetestexcept(PCX_FP_FLAGS)) return LTE_BAIL_FLAGS;
     /* Python's `max(max_b, 1e-300)`: the first argument kept unless the
        second is strictly greater; `not (resid <= tol)` fails a NaN too */
-    scale = (1e-300 > max_b) ? 1e-300 : max_b;
+    scale = pcx_py_max(max_b, 1e-300);
     if (!(max_r / scale <= s->resid_tol)) return LTE_BAIL_RESIDUAL;
     for (i = 0; i < m; i++) s->b[i] = s->x[i];
     return 0;
@@ -181,12 +182,12 @@ long pcx_lte(lte_t *s)
        (fmax would not promise which of two equal zeros it keeps) */
     for (i = 0; i < n; i++) {
         double a = fabs(s->xc[i]), c = fabs(s->xl[i]);
-        double loc = (a >= c) ? a : c;
+        double loc = pcx_np_maximum(a, c);
         if (s->relref == LTE_RELREF_POINTLOCAL) {
             s->ref[i] = loc;
         } else if (s->have_run) {
             double rv = s->run[i];
-            s->out[i] = (rv >= loc) ? rv : loc;
+            s->out[i] = pcx_np_maximum(rv, loc);
         } else {
             s->out[i] = loc;
         }

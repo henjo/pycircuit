@@ -10,6 +10,10 @@
 #include <math.h>
 #include <fenv.h>
 #include "pcx_abi.h"
+/* (its min / max / clip are written out, where the other units call
+   pcx_minmax.h: the named helpers moved this unit's instruction
+   schedule, and a unit that tests flags keeps the code it was proven
+   with -- each says the rule it follows, as pcx_minmax.h names them) */
 #include "pcx_fenv.h"
 #include "pred.h"
 

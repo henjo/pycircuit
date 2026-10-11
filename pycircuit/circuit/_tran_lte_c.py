@@ -93,15 +93,12 @@ def driver():
     global _driver, STATUS
     if _driver is None:
         _driver = False
-        import ctypes
-
-        from pycircuit.circuit import _tran_newton_c
         try:
-            npl = _tran_newton_c._openblas(np, 'libscipy_openblas64_*.so')
+            npl = _cbuild.openblas(np)
             if npl is None:
                 STATUS = "off (numpy's own OpenBLAS not found)"
                 return None
-            dgesv = ctypes.cast(npl.scipy_dgesv_64_, ctypes.c_void_p).value
+            dgesv = _cbuild.address(npl.scipy_dgesv_64_)
         except (OSError, AttributeError) as e:
             STATUS = f'off ({e})'
             return None
@@ -248,10 +245,8 @@ def _klu_bind(ctx, sk):
             fb('double *', y))
     s.knnz = sk.nnz
     s.kAp, s.kAi, s.ktake, s.kAx, s.R, s.x, s.y = keep[6:]
-
-    def addr(f):
-        return ffi.cast('void *', ct.cast(f, ct.c_void_p).value)
-    s.klu_refactor, s.klu_solve = addr(lib.klu_refactor), addr(lib.klu_solve)
+    s.klu_refactor, s.klu_solve = (ffi.cast('void *', _cbuild.address(f))
+                                   for f in (lib.klu_refactor, lib.klu_solve))
     s.klu_common = ffi.cast('void *', ct.addressof(sk._common))
     s.klu_sym = ffi.cast('void *', sk._symbolic)
     ctx.klu, ctx.klu_sym, ctx.klu_keep = sk, sk._symbolic, keep

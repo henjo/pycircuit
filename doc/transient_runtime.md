@@ -51,7 +51,8 @@ count the Python would have made on the same path: `umemo:hit` (the source memo,
 Radau glue), `pss.sync:skipped` (the sensitivities), `chord:chosen` (the Newton).
 
 **The linear system** has no unit of its own. Dense solves are numpy's and SciPy's LAPACK
-(`dgesv`, `dgetrf`/`dgetrs`), called by address from `newton.c`, `lte.c` and `pred.c`. Sparse
+(`dgesv`, `dgetrf`/`dgetrs`), called by address from `newton.c`, `lte.c` and `pred.c` -- the very
+libraries the packages mapped, found one way (`_cbuild.openblas`, `_cbuild.address`). Sparse
 solves are `linearsolver.StructuralKLU` (KLU on the circuit's structure): `newton.c` and `lte.c`
 call KLU through the run's own symbolic and numeric objects, and the glue adds to the solver
 object's counts (`factors`, `refactors`, `numerics`) what the Python would; a refactor that meets
@@ -65,6 +66,8 @@ signatures, the LAPACK, BLAS and KLU typedefs, the pass bits and formula codes);
 `csrc/pcx_dense.h` the small dense helpers;
 `csrc/pcx_fenv.h` the floating-point flags a unit tests and THE FLAG RULE every such unit keeps
 (each operation a flag test covers stores its result before the test).
+`csrc/pcx_minmax.h` min and max as Python and numpy pick them (which operand a tie or a NaN
+keeps is part of the bits: `pcx_py_max`, `pcx_py_min`, `pcx_np_maximum`, `pcx_np_clip`).
 
 ## Who owns what
 

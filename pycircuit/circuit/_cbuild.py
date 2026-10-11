@@ -50,6 +50,8 @@ History: `doc/transient_history.md`, `_cbuild.py`.
 """
 
 import contextlib
+import ctypes
+import glob
 import hashlib
 import os
 import re
@@ -394,6 +396,34 @@ def _fn_cdef():
     """The chain functions' entry: `void hdl_fn(x, p, out)`."""
     from pycircuit.circuit import hdl
     return f'void {hdl._C_ENTRY}(const double *x, const double *p, double *out);'
+
+
+## ----------------------------------------------------------------------
+## The routines numpy's and SciPy's own calls run: their OpenBLAS.
+
+#: (a package's OpenBLAS file: numpy's ILP64 build, SciPy's LP64 one)
+_OPENBLAS = {'numpy': 'libscipy_openblas64_*.so', 'scipy': 'libscipy_openblas-*.so'}
+_openblas_libs = {}
+
+
+def openblas(pkg):
+    """The OpenBLAS `pkg` (numpy, or scipy) itself loaded, as a ctypes
+    library -- `CDLL` on its real path returns the instance already mapped,
+    so its routines are the very code the package's calls run -- or None
+    where the wheel has none.  (SciPy maps its own once `scipy.linalg` is
+    imported: a caller imports it first.)  Raises what `CDLL` raises."""
+    name = pkg.__name__
+    if name not in _openblas_libs:
+        d = os.path.join(os.path.dirname(pkg.__file__), '..', name + '.libs')
+        paths = glob.glob(os.path.join(d, _OPENBLAS[name]))
+        _openblas_libs[name] = ctypes.CDLL(os.path.realpath(paths[0])) if paths else None
+    return _openblas_libs[name]
+
+
+def address(fn):
+    """A ctypes function's address, as an int: what a unit's `void *` field
+    takes (`ffi.cast('void *', address(fn))`)."""
+    return ctypes.cast(fn, ctypes.c_void_p).value
 
 
 ## ----------------------------------------------------------------------

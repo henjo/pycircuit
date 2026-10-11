@@ -92,8 +92,6 @@ epoch, the circuit's size.
 
 History: `doc/transient_history.md`, `_tran_core.py`.
 """
-import ctypes
-import glob
 import operator
 import os
 
@@ -159,16 +157,11 @@ _driver = None
 
 
 def _numpy_dgemv():
-    """The address of `cblas_dgemv` in the OpenBLAS numpy itself loaded
-    (`numpy.libs/libscipy_openblas64_*.so`, the instance already mapped:
-    `CDLL` returns it), or None where the wheel has no such library."""
+    """The address of numpy's own `cblas_dgemv` (`_cbuild.openblas`), or
+    None where the wheel has no such library."""
     try:
-        d = os.path.join(os.path.dirname(np.__file__), '..', 'numpy.libs')
-        paths = glob.glob(os.path.join(d, 'libscipy_openblas64_*.so'))
-        if not paths:
-            return None
-        lib = ctypes.CDLL(os.path.realpath(paths[0]))
-        return ctypes.cast(lib.scipy_cblas_dgemv64_, ctypes.c_void_p).value
+        lib = _cbuild.openblas(np)
+        return None if lib is None else _cbuild.address(lib.scipy_cblas_dgemv64_)
     except (OSError, AttributeError):
         return None
 

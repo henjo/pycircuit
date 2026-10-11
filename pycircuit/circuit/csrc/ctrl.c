@@ -14,6 +14,7 @@
    zeros they keep. */
 #include <stdint.h>
 #include <math.h>
+#include "pcx_minmax.h"
 #include "ctrl.h"
 
 /* `_retry_exponent`: the exponent after a rejection when the one before it
@@ -32,14 +33,14 @@ static double retry_exponent(ctrl_t *s, double err, double p, double target)
     if (!s->have_retry || s->retry_point != s->point || !(s->retry_h > s->h * (1.0 + 1e-9))
             || !(s->retry_err > target) || !(err > 0.0)) {
         if (s->mode == CTRL_CARRIED && s->have_q)
-            return 1.0 / ((p < s->q_carried) ? p : s->q_carried);   /* min(q_carried, p) */
+            return 1.0 / pcx_py_min(s->q_carried, p);
         return 0.0;
     }
     /* math.log is libm's log for a positive argument: both quotients are
        > 0 past the tests above (err > 1 here, retry_err > target > 0) */
     q = log(s->retry_err / err) / log(s->retry_h / s->h);
-    m = (s->order_min > q) ? s->order_min : q;          /* max(q, RETRY_ORDER_MIN) */
-    q = (p < m) ? p : m;                                 /* min(., p) */
+    m = pcx_py_max(q, s->order_min);                    /* max(q, RETRY_ORDER_MIN) */
+    q = pcx_py_min(m, p);                                /* min(., p) */
     s->q_carried = q;
     s->have_q = 1;
     return 1.0 / q;
@@ -64,7 +65,7 @@ long pcx_ctrl(ctrl_t *s)
            retry is None else retry))` */
         double r = retry_exponent(s, err, p, target), v;
         v = pow(target / err, r == 0.0 ? exponent : r);
-        s->h_next = h * ((v > s->min_shrink) ? v : s->min_shrink);
+        s->h_next = h * pcx_py_max(s->min_shrink, v);
         s->accepted = 0;
         s->have_retry = 1;
         s->retry_point = s->point;
@@ -73,10 +74,10 @@ long pcx_ctrl(ctrl_t *s)
     } else {
         /* grow: `h * min(MAX_GROWTH_RATIO, (target / max(e, 1e-12)) **
            exponent)`, then `min(grown, s.max_step)` */
-        double e = (1e-12 > err) ? 1e-12 : err, v, g;
+        double e = pcx_py_max(err, 1e-12), v, g;
         v = pow(target / e, exponent);
-        g = h * ((v < s->max_growth) ? v : s->max_growth);
-        s->h_next = (s->max_step < g) ? s->max_step : g;
+        g = h * pcx_py_min(s->max_growth, v);
+        s->h_next = pcx_py_min(g, s->max_step);
         s->accepted = 1;
         s->have_retry = 0;
     }

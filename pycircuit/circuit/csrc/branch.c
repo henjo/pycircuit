@@ -6,6 +6,7 @@
    the Python's reductions and products warn about none of them. */
 #include <stdint.h>
 #include <math.h>
+#include "pcx_minmax.h"
 #include "branch.h"
 
 /* `_BranchCheck._branch_screen_C` up to its SVD: |C|'s largest entry, the
@@ -43,7 +44,7 @@ long pcx_branch(branch_t *s)
     }
     /* `max(self._branch_cmax, nrm)`: cmax kept unless nrm is strictly
        greater (fmax would not promise which of two equal zeros) */
-    ref = (nrm > s->cmax) ? nrm : s->cmax;
+    ref = pcx_py_max(s->cmax, nrm);
     tol = s->tol_rel * ref;
     /* the diagonal's `d.max()` and `pos.min()` of its positive entries
        (0.0 where there are none, as `... if pos.size else 0.0`): order-free
