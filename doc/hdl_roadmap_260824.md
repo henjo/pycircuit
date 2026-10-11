@@ -8481,3 +8481,37 @@ every one of eight further pairs (6.77-6.81 s against 6.82-6.84 s); its operatin
 A MEASUREMENT LESSON: the first probe walked the stack (`traceback.extract_stack`, which reads
 source lines) INSIDE the timed region: each load read ~0.3 ms high, the baseline 21 ms instead of
 16.5 and the build's 5.4 ms instead of 2.4.  Take the time, then describe what was timed.
+
+## 2026-10-11 — 123. Readability stage R3, steps a-d: the map, the comments, the tables, the names, the typed wiring -- no answer moved, no case slower
+
+Andreas: "Start R3" (a readability stage after stage 5; "it does not need to be small"). Two
+read-only reviews sized it (the plan's R3 section); seven steps, a-d done:
+
+* R3a (a8709599, a9705bf6, 5a83f1f8): `doc/transient_runtime.md`, the map of the C runtime, with a
+  test that it names every C file, glue module and switch; every C struct field documented by
+  role, every entry's contract, the why of every bit-identity form (comments only: all 26 files
+  token-identical, all 15 units' machine code identical); the glue's docstrings say what each
+  module stands for and owns; the history (81 lines of Python, the C's plan tags) moved to
+  `doc/transient_history.md`; tests keep history out of the C and the glue.
+* Fixes R3a's review found (4fa1530f, 68079113): the C loop ignored `PYCIRCUIT_PRED_C=0` and
+  raised where the predictor could not load; a Pulse's zero edge set after `__init__` was served
+  where the Python raises; the core packed an unpacked element with the FIRST batch's kernel
+  (another class's layout); `_RUN_STATE` lacked three records. Each with a test that fails before.
+* R3b (beb97d51, 33f00b94, f56cb48b): the C loop's 57 pieces one table (`_PIECES` -> `_own`,
+  `_pieces`, `_SHADOWS`; the copies had drifted -- `_pred_fast_nodes` unshadowable, now declined);
+  every decline reason the run's or the attempt's in one table (`_KEEPS`; three reasons that meant
+  two things split); the write-back's counts in `_count`, each with its Python site, and a moved
+  count named by the A/B. `--check` against 68079113: 18 of 18 no change.
+* R3c (2a9e0998, 02510917): the glue says the codes the C reads by the headers' names (a test
+  forbids the numbers); one flags macro and THE FLAG RULE in `pcx_fenv.h`; the predictor's, the
+  core's and the walk's capacities and the core's ztab columns as header enums both sides read;
+  the shrink guard named on both sides, a test holding them (machine code identical).
+* R3d (d2b682b6, e009ac19): every unit's entry `pcx_<unit>` (loop.c's six `#define hdl_fn`
+  renames gone; its calls typed by `__typeof__` of the callee's own declaration -- .text
+  identical, the exports renamed alone); newton_t's dead fields out, its locals local.
+
+Proved at R3d's end against f56cb48b (before R3c): `--check` 18 of 18 no change (spice_ce_pss
++0.9 % [+0.7, +1.3] under the +1 % line, pss -0.7 %, ladder_radau -0.5 %); all 27 gold decks one
+digest, the same in both trees. Found on the way and recorded in the plan: the gm19 operating
+point's per-process modes; hand-backs on underflow (numpy ignores it); a few latent cases in the
+Radau glue to test. Steps e-g (one job per function in C and Python, shared helpers) remain.
