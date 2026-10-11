@@ -37,6 +37,19 @@ import types
 import pytest
 
 PAIRS = {
+    'the controller law and its C': {
+        'why': 'the C makes `IntegralController._evaluate` past its error test with the '
+               'default band: `0.9 ** p`, the shrink with `_retry_exponent` (the same point '
+               'an index where the Python compares by `is`), the grow, the cap, `_judged` -- '
+               'Python\'s float operations, `pow` and `log`, its `min` and `max` in order',
+        'reference': ['pycircuit.circuit.stepcontroller:IntegralController._evaluate',
+                      'pycircuit.circuit.stepcontroller:StepController._retry_exponent',
+                      'pycircuit.circuit.stepcontroller:StepController._band_decision',
+                      'pycircuit.circuit.stepcontroller:StepController._band_target',
+                      'pycircuit.circuit.stepcontroller:StepController._judged'],
+        'twin': ['pycircuit.circuit._tran_ctrl_c:CTRL_C',
+                 'pycircuit.circuit._tran_ctrl_c:new_state'],
+    },
     'the fixed-step loop and its C': {
         'why': 'the C runs `_SteppingLoop`\'s fixed multistep steps -- where (the grid, '
                'the next breakpoint as `_next_breakpoint` makes it, the order drop a '
@@ -515,6 +528,7 @@ PAIRS = {
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
 #: module as a script, after the twin was checked.
 RECORD = {
+    'the controller law and its C': ('837249250601', '1a38aea52745'),
     'the fixed-step loop and its C': ('4f1670e206e3', '03ef637f2548'),
     'the predictor and its C': ('f2c284eb392d', '46a83fdd35ab'),
     'the branch screen and its C': ('1b848875234f', '67f78befa5b6'),

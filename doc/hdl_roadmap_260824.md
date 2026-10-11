@@ -8284,3 +8284,32 @@ faster 6 of 6 on every case; bytes and statistics the same across the trees, the
 the loop's own counts only.  THE LINE HOLDS: stage, mos1, gp, spice_4049 >= 1.3x with the
 interval above it; psp >= 1.05x.  Stage 4 closed.  Full suite 5140 passed; the sanitizer's fast
 tier clean (4866 passed).
+
+## 2026-10-11 — 118. Stage 5 sized; step a: the step controller's law in C (not yet wired)
+
+SIZED (scratchpad s5/size.py, 26 gold decks full length, the C calls timed inside the run): the C
+Newton serves 95-100 % of every deck's attempts; the ceiling -- the run over its operating point
+plus its time in C -- median 3.08x: 3-10x on the small and medium decks, 1.25-1.6x on jge, mux8,
+gm19, voter25, rich3 and arom (the core's C dominates them).  ab_integ, e1480 and g1310 will gain
+little whatever the loop: their screen fires every step and the SVD is the Python's.  The line
+stands (>= 1.4x median over the decks the loop covers).  What an adaptive attempt adds to a
+fixed step: the judge (the C error test of stage 3, the controller law), a rejection retried at
+the same point within the budget, breakpoint truncation, the cap; a rejected attempt leaves its
+Newton write-backs and the error test's running reference behind, so the loop keeps them per
+attempt.  Steps: 5a the law, 5b the adaptive path in the one loop unit, 5c the write-back, 5d
+the line.
+
+STEP 5a: `csrc/ctrl.c` / `_tran_ctrl_c` -- `IntegralController._evaluate` past its error test,
+the default band: `0.9 ** p` (libm's pow, as Python's float `**`), the shrink with
+`_retry_exponent` under every `retry_order` (the last rejection at the SAME point -- the object
+the controller kept, by `is`, an index here -- larger and above the target: the order the two
+tries measured, clamped, and carried), the grow, the cap, and `_judged`'s retry state; Python's
+`min` and `max` as its builtins pick (the first argument unless the second is strictly beyond).
+Not yet wired: the loop (5b) calls it.
+
+Proved: test_ctrl_c -- a drawn twin against `IntegralController._evaluate` (its error test
+stubbed): 3000 drawn, 1702 accepted (981 at the cap) and 1298 rejected, 127 retries that measured
+their order and 237 that carried one, every verdict, next step, `_retry` and `_q_carried` bit for
+bit; a second retry at one point measures its order, at another it does not.  New pinned pair
+"the controller law and its C".  Full suite 5144 passed; the sanitizer's fast tier clean (4818
+passed).
