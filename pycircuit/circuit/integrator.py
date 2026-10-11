@@ -32,6 +32,10 @@ import numpy as np
 ## It bounds *growth* only; shrinking is unconditionally zero-stable.
 ## History: `doc/transient_history.md`, `integrator.ZERO_STABILITY_RATIO`.
 ZERO_STABILITY_RATIO = 1.0 + math.sqrt(2.0)
+#: Gear-2's shrink guard: a step under this fraction of the last drops to
+#: Euler (`Gear2Integrator.check_order_drop`, where `shrink_guard` is on);
+#: the C loop's `SHRINK_GUARD_RATIO` (csrc/loop.c) is this one
+SHRINK_GUARD_RATIO = 0.1
 
 ## STAGE 9(a).  The definition moved to `_lte_kernels` so the JAX backend can
 ## reach the same one; re-exported here because this is where callers and tests
@@ -612,7 +616,7 @@ class Gear2Integrator(Integrator):
     """Gear-2 / BDF-2 (2nd order) Variable Step Size Integration Method"""
 
     ORDER = 2
-    #: the `h_curr / h_last < 0.1` drop to Euler in `check_order_drop` is a
+    #: the `h_curr / h_last < SHRINK_GUARD_RATIO` drop to Euler in `check_order_drop` is a
     #: STALLED-ESTIMATE heuristic for an adaptive run (see there); on a
     #: FROZEN grid there is no estimate to stall, and the drop only costs a
     #: two-alpha step the shooting adjoint cannot transpose -- measured on a
@@ -665,12 +669,12 @@ class Gear2Integrator(Integrator):
         ## without it those steps become force-accepted 2nd-order ones.
         ##
         ## **Reconsider if** the rejection cap ever becomes
-        ## rejection-count-aware: `h_curr/h_last < 0.1` is a proxy for "we have
+        ## rejection-count-aware: `h_curr/h_last < SHRINK_GUARD_RATIO` is a proxy for "we have
         ## rejected three times at this time point", and the thing it is a
         ## proxy for is known exactly one level up in `transient.py`, where it
         ## would not need a threshold at all.
         ## History: `doc/transient_history.md`, `Gear2Integrator.check_order_drop`.
-        if h_curr / h_last < 0.1 and getattr(self, 'shrink_guard', True):
+        if h_curr / h_last < SHRINK_GUARD_RATIO and getattr(self, 'shrink_guard', True):
             return EulerIntegrator()
 
         return self

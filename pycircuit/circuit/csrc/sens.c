@@ -8,10 +8,10 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "pcx_abi.h"
+#include "pcx_fenv.h"
 #include "sens.h"
 /* the four flags `_stage_block`'s errstate(all='raise') raises on (inexact
    is not one) */
-#define SENS_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
 /* the full row (column) of reduced index r: the reference one skipped */
 #define FULL(r) ((r) < t->iref ? (r) : (r) + 1)
 /* the step map: J Z = B, J[i][j] = delta_ij C_i + (h A_ij) G_j over the
@@ -64,7 +64,7 @@ long hdl_fn(sens_t *t)
                 }
             }
         }
-    if (fetestexcept(SENS_FLAGS)) return t->status = SENS_BAIL_FLAGS;
+    if (fetestexcept(PCX_FP_FLAGS)) return t->status = SENS_BAIL_FLAGS;
     int n32 = (int) n, k32 = (int) k, info = 0;
     /* `lu_factor`: SciPy's own dgetrf on the column-major block, in place */
     ((dgetrf32_t) t->dgetrf)(&n32, &n32, t->J, &n32, t->ipiv, &info);

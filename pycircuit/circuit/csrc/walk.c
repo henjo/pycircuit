@@ -6,7 +6,7 @@ long hdl_fn(void **F, double **PR, const int64_t *TI, double T,
             const int64_t *NM, const int64_t *OFF, const int64_t *K,
             double *xg, const double *x0g, long start, long n)
 {
-    double o[64], b[64];
+    double o[WALK_MAX_NODES], b[WALK_MAX_NODES];
     long e, j, k;
     for (e = start; e < n; e++) {
         const int64_t *nm;

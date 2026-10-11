@@ -326,3 +326,21 @@ def test_an_element_is_packed_by_its_own_class_s_kernel(monkeypatch):
     assert _tran_core.core_for(tr) is not None and core.probe(tr.epar) is not None
     assert {cls for _k, cls in calls} == set(kern_of)
     assert all(k in kern_of[cls] for k, cls in calls), calls
+
+
+def test_a_fused_group_s_row_is_where_its_column_names_say():
+    """core.h's `core_ztab` names the columns `_Core.__init__` writes and
+    core.c reads: a fused group's elements, inputs, passes and each pass's
+    output length, read by name from the row a real core built."""
+    tr, _x = _tr(_stage())
+    core = tr.__dict__['_tran_core'][1]
+    if not core.zgroups:
+        pytest.skip('no fused group (the fused kernel is off)')
+    Z = _cbuild.constants(_tran_core.CORE_CDEF)
+    rows = core.arrays['ztab'].reshape(-1, Z['ZT_WIDTH'])
+    assert len(rows) == len(core.zgroups)
+    for row, (_info, fk, els, mask, _znm) in zip(rows, core.zgroups):
+        assert row[Z['ZT_NE']] == len(els) and row[Z['ZT_K']] == fk.nx
+        assert row[Z['ZT_PASSES']] == mask
+        for m, p in enumerate(_tran_core.PASSES):
+            assert row[Z['ZT_G_LEN'] + 2 * m] == fk.sizes.get(p, 0)

@@ -123,6 +123,11 @@ STATUS = 'not loaded'
 
 CORE_C = _cbuild.csrc('core.c')
 CORE_CDEF = _cbuild.csrc('core.h')
+#: what an element may be for the core's stack buffers (core.h)
+_CAP = _cbuild.constants(CORE_CDEF)
+_MAX_IN, _MAX_OUT = _CAP['CORE_MAX_INPUTS'], _CAP['CORE_MAX_OUTPUTS']
+#: a fused group's row in `ztab` (core.h's `core_ztab`)
+_ZT_WIDTH = _CAP['ZT_WIDTH']
 
 #: the circuit passes, in the core's order (its tables are laid out pass
 #: by pass; a fused group's pass mask is `1 << PASSES.index(m)`)
@@ -373,17 +378,20 @@ class _Core:
         z_proff, ztab, fidx, bftab = [], [], [], []
         st_len = fo = 0
         for _info, fk, els, mask, znm in zgroups:
+            ## (a row in core.h's `core_ztab` order: ZT_NE, ZT_K, ZT_TI,
+            ## ZT_PASSES, ZT_NM, ZT_PR, then each pass's _LEN and _AT)
             ne = len(els)
-            ztab += (ne, fk.nx, -1 if fk.layout[1] is None else fk.layout[1], mask,
-                     nmoff, pr_len)
+            row = (ne, fk.nx, -1 if fk.layout[1] is None else fk.layout[1], mask, nmoff, pr_len)
             z_proff.append(pr_len)
             pr_len += ne
             NM.append(znm.reshape(-1))
             nmoff += znm.size
             for m in PASSES:
                 sz = fk.sizes.get(m, 0)
-                ztab += (sz, st_len)
+                row += (sz, st_len)
                 st_len += sz * ne
+            assert len(row) == _ZT_WIDTH
+            ztab += row
         if zgroups:
             for b in range(len(batches)):
                 rows = b_fidx[b]
@@ -433,7 +441,8 @@ class _Core:
             ## (the fused groups' tables: none at all where nothing fuses)
             arrays.update(ztab=np.array(ztab, dtype=np.int64), zst=np.empty(max(st_len, 1)),
                           bftab=np.array(bftab, dtype=np.int64), fidxall=cat64(fidx))
-        if any(bt.k > 64 or bt.so > 4096 for bt in batches) or any(k > 64 for _o, _e, k in g_soff):
+        if any(bt.k > _MAX_IN or bt.so > _MAX_OUT for bt in batches) \
+                or any(k > _MAX_IN for _o, _e, k in g_soff):
             raise Unservable('an element wider than the core holds')
         self.arrays = arrays
         cs = ffi.new('hdl_core_t *')

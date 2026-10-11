@@ -411,6 +411,8 @@ WALK = os.environ.get('PYCIRCUIT_HDL_LIMIT_WALK', '1') != '0'
 
 _WALK_C = _cbuild.csrc('walk.c')
 _WALK_CDEF = _cbuild.csrc('walk.h')
+#: the walk's node-map capacity (walk.h)
+_WALK_MAX_NODES = _cbuild.constants(_WALK_CDEF)['WALK_MAX_NODES']
 
 _walk_driver = None
 WALK_STATUS = 'not loaded'
@@ -536,11 +538,11 @@ class _Walk:
             cls = type(el)
             info = getattr(cls, '_hdl_info', None)
             ok = (info is not None and info.get('limit_spec')
-                  and el.toolkit is cir.toolkit and len(nm) <= 64
+                  and el.toolkit is cir.toolkit and len(nm) <= _WALK_MAX_NODES
                   and _hdl_batch.is_generated(cls, 'limit'))
             entry = info if ok else None
             if (not ok and info is not None and el.toolkit is cir.toolkit
-                    and len(nm) <= 64):
+                    and len(nm) <= _WALK_MAX_NODES):
                 ## (a hand-written `limit` with a twin: PSP's)
                 entry = _handwritten(el, cls, info)
             entries.append((inst, el, nm))

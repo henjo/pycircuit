@@ -18,7 +18,7 @@
  * most 8 nodes: loop.c keeps the newest eight in buffers of 8 and 8 x n
  * (`_tran_loop_c._bind`'s `np.empty(8)`, `np.empty(8 * n)`), `predict`
  * declines a longer one, and pred.c records the first eight nodes it keeps
- * (`nodes[8]`). */
+ * (`nodes[PRED_HIST_MAX]`). */
 typedef struct {
     long n;                 /* unknowns */
     long hk;                /* the history's nodes, oldest first (`_pred_hist`) */
@@ -42,6 +42,15 @@ typedef struct {
     long status;            /* OUT: hdl_fn's result, enum pred_status */
 } pred_t;
 long hdl_fn(pred_t *s);
+
+/* the capacities the struct, pred.c, the C loop and both glues share: the
+   nodes a history holds (`_StagePredictor.PRED_HIST_MAX`: `ht`, `hx`) and the
+   fit's (`deg` + 1 at most: `tau`, `w`, `ipiv`, `V`'s rows, `xt`'s) -- the
+   arrays above are sized by them (tests/test_pred_c holds them together) */
+enum pred_cap {
+    PRED_HIST_MAX = 8,
+    PRED_FIT_MAX = 5
+};
 
 /* hdl_fn's result, left in `status` too */
 enum pred_status {

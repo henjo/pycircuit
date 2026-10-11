@@ -374,3 +374,13 @@ def test_every_decline_says_whether_it_holds_for_the_run():
     planted = "def run(loop):\n    return _declined(loop, 'nowhere')\n" \
               "def _judge(loop):\n    return 'elsewhere'\n"
     assert _reasons(planted) == {'nowhere', 'elsewhere'}
+
+
+def test_the_shrink_guard_is_one_value():
+    """loop.c's `SHRINK_GUARD_RATIO` is `integrator.SHRINK_GUARD_RATIO` (a
+    float: not an enum the glue could read, so held here)."""
+    import re
+
+    from pycircuit.circuit import _cbuild, integrator
+    m = re.search(r'^#define SHRINK_GUARD_RATIO (\S+)$', _cbuild.csrc('loop.c'), re.MULTILINE)
+    assert m and float(m.group(1)) == integrator.SHRINK_GUARD_RATIO

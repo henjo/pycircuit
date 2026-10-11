@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <fenv.h>
+#include "pcx_fenv.h"
 #include "radau_fold.h"
 
 /* the four flags `errstate(all='raise')` raises on (inexact is not one).
@@ -16,7 +17,6 @@
    so an operation whose result stays in a register may move past the
    test; one whose result is stored to memory the call could read may
    not. */
-#define FOLD_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
 
 /* numpy's complex product, in the form its loops take here (`cmul_mode`):
    fused as `cmul_mode` reads it from numpy (re rounds ai bi first and
@@ -75,7 +75,7 @@ long hdl_fn(radau_fold_t *f)
            product becomes +0.0, as numpy's complex sum makes it */
         f->cf[2 * k + 1] = im + 0.0;
     }
-    f->status = fetestexcept(FOLD_FLAGS) != 0;
+    f->status = fetestexcept(PCX_FP_FLAGS) != 0;
     feclearexcept(FE_ALL_EXCEPT);
     if (f->status || !f->nz) return 0;
     /* the CSC gather: a nonzero is `!= 0` in either part (a -0.0 is

@@ -1,7 +1,7 @@
 /* pred.c -- the stage predictor's fast path in C, bit for bit
    `_StagePredictor._predict_fast` or handed back; its glue is
    `_tran_pred_c`, and the C loop (loop.c) calls it for every attempt's
-   seed.  It tests floating-point flags: lte.c's FLAG RULE holds here too
+   seed.  It tests floating-point flags: THE FLAG RULE (pcx_fenv.h) holds
    (MUST KEEP: each operation a flag test covers stores its result through
    a pointer, `motion`, `V`, `out`, before the test). */
 #include <stdint.h>
@@ -10,10 +10,10 @@
 #include <math.h>
 #include <fenv.h>
 #include "pcx_abi.h"
+#include "pcx_fenv.h"
 #include "pred.h"
 
 /* the flags numpy checks after its operations (inexact is not one) */
-#define PRED_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
 
 /* every return: the flags cleared, `status` set and returned */
 static long done(pred_t *s, long status)
@@ -46,8 +46,8 @@ long hdl_fn(pred_t *s)
     /* nodes[8]: the history's indices newest first, the 1e-13 duplicates
        dropped -- the first eight recorded (the history's capacity, pred.h;
        only the first take <= 5 are read), `k` counting them all */
-    long n = s->n, hk = s->hk, k = 0, e, j, c, i, take, nodes[8];
-    double prev_t = 0.0, prev_kept = 0.0, gap = INFINITY, scale, tat, d[5], ratio, wmul, dt_last;
+    long n = s->n, hk = s->hk, k = 0, e, j, c, i, take, nodes[PRED_HIST_MAX];
+    double prev_t = 0.0, prev_kept = 0.0, gap = INFINITY, scale, tat, d[PRED_FIT_MAX], ratio, wmul, dt_last;
     int have_prev = 0;
     const double *x0, *x1;
     /* (the Python's tests in its order: too short, then not wholly behind
@@ -66,7 +66,7 @@ long hdl_fn(pred_t *s)
             m = (1.0 > a) ? 1.0 : a;
             if (fabs(t0 - prev_kept) <= 1e-13 * m) { prev_t = t0; continue; }
         }
-        if (k < 8) nodes[k] = e;
+        if (k < PRED_HIST_MAX) nodes[k] = e;
         k++;
         prev_t = t0;
         prev_kept = t0;
@@ -82,7 +82,7 @@ long hdl_fn(pred_t *s)
     x0 = s->hx + nodes[0] * n;
     x1 = s->hx + nodes[1] * n;
     for (i = 0; i < n; i++) s->motion[i] = fabs(x0[i] - x1[i]);
-    if (fetestexcept(PRED_FLAGS)) return done(s, PRED_BAIL_FLAGS);
+    if (fetestexcept(PCX_FP_FLAGS)) return done(s, PRED_BAIL_FLAGS);
     /* _fit_fast: the times about the target, scaled by the largest --
        Python floats there, whose flags numpy never sees (one raised here
        reaches the Vandermonde's test: a hand-back, never a difference);
@@ -97,7 +97,7 @@ long hdl_fn(pred_t *s)
     for (j = 1; j < take; j++) if (fabs(d[j]) > scale) scale = fabs(d[j]);
     if (!(scale < INFINITY) || scale <= 0.0) return done(s, PRED_NONE);
     {
-        double tau[5];
+        double tau[PRED_FIT_MAX];
         for (j = 0; j < take; j++) tau[j] = d[j] / scale;
         /* the memo's key is tau's bytes (`struct.pack`): memcmp, not ==,
            so -0.0 and +0.0 are two keys there as here */
@@ -112,7 +112,7 @@ long hdl_fn(pred_t *s)
                 for (c = 2; c < take; c++) { p = p * tau[j]; s->V[j * take + c] = p; }
             }
             /* (numpy's vander is a ufunc: what it raised, it reports) */
-            if (fetestexcept(PRED_FLAGS)) return done(s, PRED_BAIL_FLAGS);
+            if (fetestexcept(PCX_FP_FLAGS)) return done(s, PRED_BAIL_FLAGS);
             for (j = 0; j < take; j++) s->w[j] = (j == 0) ? 1.0 : 0.0;
             s->wk = 0;
             ((dgesv64_t) s->dgesv)(&m64, &one64, s->V, &m64, s->ipiv, s->w, &m64, &info64);
@@ -148,6 +148,6 @@ long hdl_fn(pred_t *s)
         double m = (p > lo) ? p : lo;
         s->out[i] = (m < hi) ? m : hi;
     }
-    if (fetestexcept(PRED_FLAGS)) return done(s, PRED_BAIL_FLAGS);
+    if (fetestexcept(PCX_FP_FLAGS)) return done(s, PRED_BAIL_FLAGS);
     return done(s, PRED_DONE);
 }

@@ -119,3 +119,25 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             const double *q1, const double *q2, const double *iq1, const double *u,
             const double *Cin, double *C, double *q, double *iq, double *Geq,
             double *F, double *J);
+
+/* what an element may be, for the core's stack buffers (core.c) --
+   `_Core.__init__` refuses a wider one as Unservable: its inputs (a batch's
+   `k`, a fused group's x), a kernel's outputs (a batch's `so`) */
+enum core_cap {
+    CORE_MAX_INPUTS = 64,
+    CORE_MAX_OUTPUTS = 4096
+};
+
+/* a fused group's row in `ztab` (`_Core.__init__` writes it, core.c reads
+   it): the group's elements, an element's inputs, the temperature's slot
+   in a parameter row (-1: none), its passes (a PCX_PASS_* mask, q's bit
+   included), its node map's offset in NMall, its rows' offset in PRall;
+   then per pass -- G, C, i, q -- its output length per element (`_LEN`)
+   and its staging's offset in zst (`_AT`); a pass m's pair is
+   `ZT_G_LEN + 2 * m` and `ZT_G_AT + 2 * m` */
+enum core_ztab {
+    ZT_NE = 0, ZT_K = 1, ZT_TI = 2, ZT_PASSES = 3, ZT_NM = 4, ZT_PR = 5,
+    ZT_G_LEN = 6, ZT_G_AT = 7, ZT_C_LEN = 8, ZT_C_AT = 9,
+    ZT_I_LEN = 10, ZT_I_AT = 11, ZT_Q_LEN = 12, ZT_Q_AT = 13,
+    ZT_WIDTH = 14
+};

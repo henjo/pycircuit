@@ -90,6 +90,8 @@ LOOP_CDEF = _cbuild.csrc('loop.h')
 _CODES = _cbuild.constants(LOOP_CDEF)
 #: (the law's mark for a kept point that is none of the loop's: ctrl.h)
 _POINT_OTHER = _cbuild.constants(_cbuild.csrc('ctrl.h'))['CTRL_POINT_OTHER']
+#: (the predictor's history capacity: pred.h)
+_HIST_MAX = _cbuild.constants(_cbuild.csrc('pred.h'))['PRED_HIST_MAX']
 BAIL = _cbuild.bails(_CODES, 'LOOP_BAIL_')
 _ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
 #: the outputs' rows an entry holds (full: written back, entered again)
@@ -286,7 +288,7 @@ def _bind(tr, rec, tab, n, hist_len, screen, judge):
     cap = CAP_MAX
     run.buf = buf = {
         'qring': np.empty(hist_len * n), 'iqring': np.empty(hist_len * n),
-        'xlast': np.empty(n), 'ht': np.empty(8), 'hx': np.empty(8 * n),
+        'xlast': np.empty(n), 'ht': np.empty(_HIST_MAX), 'hx': np.empty(_HIST_MAX * n),
         ## (zero off the pattern: where the core writes only the pattern's
         ## entries, the rest stay as the Newton's own buffers keep them)
         'cC0': np.zeros(n * n), 'cC1': np.zeros(n * n),
@@ -604,7 +606,7 @@ def run(loop):
         return _declined(loop, 'rings')
     hist_len = ql.shape[0]
     hist = td.get('_pred_hist') or []
-    if type(hist) is not list or len(hist) > 8 or td.get('_pred_pending') is not None or not all(
+    if type(hist) is not list or len(hist) > _HIST_MAX or td.get('_pred_pending') is not None or not all(
             type(e) is tuple and len(e) == 2 and type(e[0]) is float and type(e[1]) is np.ndarray
             and e[1].dtype is _F64 and e[1].shape == (n,) for e in hist):
         return _declined(loop, 'history')

@@ -27,6 +27,8 @@
 #include "loop.h"
 
 #define CALL(fn, T, p) (((long (*)(T *)) (fn))(p))
+/* `integrator.SHRINK_GUARD_RATIO` (test_loop_c holds the two together) */
+#define SHRINK_GUARD_RATIO 0.1
 #define COPY(dst, src, n) memcpy((dst), (src), (size_t) (n) * sizeof(double))
 
 /* `_next_breakpoint` on the table: `cir.next_event` is numpy's maximum of t
@@ -146,14 +148,15 @@ long hdl_fn(loop_t *s)
                 if (h <= 1e-9 * s->timestep) return s->status = LOOP_DONE;
             }
         }
-        /* 2. take: the companion (`check_order_drop`, `bdf2_alphas`; 0.1 is
-           `check_order_drop`'s own literal shrink guard, `zs_ratio` its growth
-           limit `ZERO_STABILITY_RATIO`) */
+        /* 2. take: the companion (`check_order_drop`, `bdf2_alphas`; its
+           shrink guard `SHRINK_GUARD_RATIO`, its growth limit `zs_ratio`,
+           `ZERO_STABILITY_RATIO`) */
         tn = t + h;
         h_last = s->have_dt_last ? s->dt_last : h;
         formula = s->base;
         if (s->base == PCX_FORMULA_GEAR2) {
-            if (is_first || h / h_last > s->zs_ratio || (h / h_last < 0.1 && s->shrink_guard))
+            if (is_first || h / h_last > s->zs_ratio
+                    || (h / h_last < SHRINK_GUARD_RATIO && s->shrink_guard))
                 formula = PCX_FORMULA_EULER;
         } else if (s->base == PCX_FORMULA_TRAPEZOIDAL) {
             if (is_first) formula = PCX_FORMULA_EULER;
@@ -330,10 +333,10 @@ long hdl_fn(loop_t *s)
             double a = fabs(tn), m = (1.0 > a) ? 1.0 : a;
             if (s->hk && fabs(tn - s->ht[s->hk - 1]) <= 1e-14 * m) {
                 s->hk--;
-            } else if (s->hk == 8) {
-                memmove(s->ht, s->ht + 1, 7 * sizeof(double));
-                memmove(s->hx, s->hx + n, (size_t) (7 * n) * sizeof(double));
-                s->hk = 7;
+            } else if (s->hk == PRED_HIST_MAX) {
+                memmove(s->ht, s->ht + 1, (PRED_HIST_MAX - 1) * sizeof(double));
+                memmove(s->hx, s->hx + n, (size_t) ((PRED_HIST_MAX - 1) * n) * sizeof(double));
+                s->hk = PRED_HIST_MAX - 1;
             }
             s->ht[s->hk] = tn;
             COPY(s->hx + s->hk * n, nt->xc, n);

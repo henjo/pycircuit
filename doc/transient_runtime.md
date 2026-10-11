@@ -62,7 +62,9 @@ reads (its structs, its entry `long hdl_fn(X_t *)`, its codes as named enums); a
 includes it; and a glue module that checks the case, fills the struct, calls the entry, reads the
 status, and writes back. `csrc/pcx_abi.h` holds what units share (the core's and the walk's
 signatures, the LAPACK, BLAS and KLU typedefs, the pass bits and formula codes);
-`csrc/pcx_dense.h` the small dense helpers.
+`csrc/pcx_dense.h` the small dense helpers;
+`csrc/pcx_fenv.h` the floating-point flags a unit tests and THE FLAG RULE every such unit keeps
+(each operation a flag test covers stores its result before the test).
 
 ## Who owns what
 

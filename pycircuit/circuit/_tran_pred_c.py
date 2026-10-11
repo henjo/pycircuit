@@ -42,8 +42,11 @@ PRED_CDEF = _cbuild.csrc('pred.h')
 _CODES = _cbuild.constants(PRED_CDEF)
 BAIL = _cbuild.bails(_CODES, 'PRED_BAIL_')
 DONE, NONE, GENERAL = (_CODES['PRED_' + k] for k in ('DONE', 'NONE', 'GENERAL'))
-#: the largest degree the struct holds (its fit is 5 nodes at most)
-MAX_DEG = 4
+#: the capacities (pred.h): the nodes a history holds, the fit's nodes -- so
+#: the largest degree the struct holds
+_CAP = _cbuild.constants(PRED_CDEF)
+HIST_MAX, FIT_MAX = _CAP['PRED_HIST_MAX'], _CAP['PRED_FIT_MAX']
+MAX_DEG = FIT_MAX - 1
 
 _driver = None
 
@@ -72,7 +75,7 @@ def driver():
 def new_state(ffi, dgesv, dgemv, n):
     """A predictor struct for `n` unknowns and its buffers (kept with it)."""
     s = ffi.new('pred_t *')
-    buf = {'out': np.empty(n), 'xt': np.empty(5 * n), 'motion': np.empty(n)}
+    buf = {'out': np.empty(n), 'xt': np.empty(FIT_MAX * n), 'motion': np.empty(n)}
     keep = [s, buf]
     for k, arr in buf.items():
         h = ffi.from_buffer('double *', arr)
@@ -103,7 +106,7 @@ def predict(tr, ttarget, deg=None):
         return _GENERAL
     if deg is None:
         deg = tr._pred_degree()
-    if not (1 <= int(deg) <= MAX_DEG) or len(hist) > 8:
+    if not (1 <= int(deg) <= MAX_DEG) or len(hist) > HIST_MAX:
         _no('pred_c:deg')
         return _GENERAL
     if getattr(tr, '_periodic_rows', None):

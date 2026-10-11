@@ -4,36 +4,22 @@
    bit, or handed back.  Its glue is `_tran_lte_c`; the C loop (loop.c)
    calls it too.
 
-   THE FLAG RULE -- MUST KEEP, here and in every unit that tests
-   floating-point flags (pred.c follows it).  The C clears the flags,
-   makes the operations numpy would make, and tests all four (overflow,
-   underflow, invalid, division by zero) before anything the caller reads
-   is final -- any flag hands the attempt back, and the Python makes it
-   with whatever warnings its own error state gives.  That is more than
-   numpy reports (its default ignores underflow; parts of the chain run
-   under `np.errstate(divide='ignore', invalid='ignore')`): a flag costs at
-   worst a needless hand-back, never another answer or another warning.
-   A test must see exactly the
-   operations made since the last clear.  GCC does not honour
-   `#pragma STDC FENV_ACCESS`: it may move a floating-point operation
-   across `feclearexcept` / `fetestexcept` (opaque library calls) unless
-   something pins it there.  Here each operation a test covers stores its
-   result through a pointer the call could read (a buffer of the struct),
-   or decides a branch taken before the test.  Keeping such a result only
-   in a local, fusing two loops a test separates, or moving work into or
-   out of a cleared-and-tested region can let a flag escape its test (a
-   warning numpy gives, not given) or reach another one.  Every return
+   It tests floating-point flags under THE FLAG RULE (pcx_fenv.h, MUST
+   KEEP): each operation a test covers stores its result through a buffer
+   of the struct, or decides a branch taken before the test.  Its chain
+   runs partly under `np.errstate(divide='ignore', invalid='ignore')`,
+   so a flag there hands back where numpy would not warn.  Every return
    leaves the flags clear, as the chain's last numpy call leaves them. */
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
 #include <fenv.h>
 #include "pcx_abi.h"
+#include "pcx_fenv.h"
 #include "pcx_dense.h"
 #include "lte.h"
 
 /* the flags numpy checks after its operations (inexact is not one) */
-#define LTE_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
 
 /* every bail: the flags cleared, `why` in `status` and returned */
 static long lte_bail(lte_t *s, long why)
@@ -102,7 +88,7 @@ static long sparse_solve(lte_t *s, long n, long r)
         if (isnan(d)) return LTE_BAIL_RESIDUAL;
         if (d > max_r) max_r = d;
     }
-    if (fetestexcept(LTE_FLAGS)) return LTE_BAIL_FLAGS;
+    if (fetestexcept(PCX_FP_FLAGS)) return LTE_BAIL_FLAGS;
     /* Python's `max(max_b, 1e-300)`: the first argument kept unless the
        second is strictly greater; `not (resid <= tol)` fails a NaN too */
     scale = (1e-300 > max_b) ? 1e-300 : max_b;
@@ -169,7 +155,7 @@ long hdl_fn(lte_t *s)
         double ddb = (d2 - d3) / s->s23;
         s->lte[i] = s->coef * ((dda - ddb) / s->s123);
     }
-    if (fetestexcept(LTE_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
+    if (fetestexcept(PCX_FP_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
     /* remove_row_col and numpy's solve: the reduced J column-major (numpy's
        copy for LAPACK), the reduced Eg, numpy's own dgesv */
     if (s->klu_sym) {
@@ -230,10 +216,10 @@ long hdl_fn(lte_t *s)
        every |lte| finite */
     for (i = 0; i < n; i++)
         s->tq[i] = s->trtol * (s->reltol * s->ref[i] + (s->abs_vec ? s->abst[i] : s->abstol));
-    if (fetestexcept(LTE_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
+    if (fetestexcept(PCX_FP_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
     for (i = 0; i < n; i++) if (!(s->tq[i] > 0.0 && isfinite(s->tq[i]))) return lte_bail(s, LTE_BAIL_TOLERANCE);
     for (i = 0; i < n; i++) s->tq[i] = fabs(s->lte[i]) / s->tq[i];
-    if (fetestexcept(LTE_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
+    if (fetestexcept(PCX_FP_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
     /* `_normalised`'s mask (`Transient.lte_algebraic`): an unknown not
        judged is +0.0, as `np.where(mask, e, 0.0)` makes it (a mask entry
        is true where nonzero: -0.0 false, NaN true, as `== 0.0` decides) */

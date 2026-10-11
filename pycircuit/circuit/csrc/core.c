@@ -9,14 +9,7 @@
    scatter from there -- the passes' writes and bins as before.  bftab, a
    batch's row: its group (-1: none) and its offset in fidxall (each
    element's place in it; -1: the group's own order, the usual case) */
-/* ZW, a ztab row's width (built by `_tran_core._Core.__init__`): zt[0] ne,
-   the group's elements; zt[1] k, inputs per element; zt[2] ti, the
-   temperature's slot in a parameter row (-1: none); zt[3] the group's
-   passes, a PCX_PASS_* mask (q's own bit included); zt[4] its node map's
-   offset in NMall; zt[5] its rows' offset in PRall; then for pass m (0 G,
-   1 C, 2 i, 3 q) zt[6 + 2*m] its output length per element and
-   zt[7 + 2*m] its staging's offset in zst */
-#define ZW 14
+/* a ztab row: core.h's `core_ztab` names its columns */
 /* `body` for each matrix entry the call writes (`patt`: the pattern's; else
    all n x n), `s` the entry.  It captures from the function: `patt`, `pk`
    (the pattern's cursor), `s` (assigned: the entry's row-major index -- an
@@ -35,10 +28,9 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             double *F, double *J)
 {
     /* sizes `_Core.__init__` holds every element to (it refuses, as
-       Unservable, a batch with k > 64 or so > 4096 and a group with
-       k > 64): an element's inputs, a kernel's outputs, a group's x[I]
-       and its product */
-    double X[64], o[4096], y[64], xg[64];
+       Unservable, core.h's `core_cap`): an element's inputs, a kernel's
+       outputs, a group's x[I] and its product */
+    double X[CORE_MAX_INPUTS], o[CORE_MAX_OUTPUTS], y[CORE_MAX_INPUTS], xg[CORE_MAX_INPUTS];
     /* each pass's bins: G's and i's the core's own, C's and q's the
        caller's */
     double *bins[4] = {c->binG, C, c->bini, q};
@@ -53,23 +45,24 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
     const int patt = (want & PCX_WANT_PATTERN) && c->npat;
     const double *Cs;
     for (z = 0; z < c->nz; z++) {
-        const int64_t *zt = c->ztab + ZW * z;
+        const int64_t *zt = c->ztab + ZT_WIDTH * z;
         fused_fn_t ff = (fused_fn_t) c->z_fn[z];
         /* the passes this call makes that the group covers (q always) */
-        long zw = ((want & PCX_WANT_ALL) | PCX_PASS_Q) & zt[3];
+        long zw = ((want & PCX_WANT_ALL) | PCX_PASS_Q) & zt[ZT_PASSES];
         if (!ff || !zw) continue;
         {
-            long ne = zt[0], k = zt[1], ti = zt[2];
-            const int64_t *NM = c->NMall + zt[4];
-            double **PR = c->PRall + zt[5];
-            double *sG = c->zst + zt[7], *sC = c->zst + zt[9], *si = c->zst + zt[11];
-            double *sq = c->zst + zt[13];
+            long ne = zt[ZT_NE], k = zt[ZT_K], ti = zt[ZT_TI];
+            const int64_t *NM = c->NMall + zt[ZT_NM];
+            double **PR = c->PRall + zt[ZT_PR];
+            double *sG = c->zst + zt[ZT_G_AT], *sC = c->zst + zt[ZT_C_AT], *si = c->zst + zt[ZT_I_AT];
+            double *sq = c->zst + zt[ZT_Q_AT];
             for (e = 0; e < ne; e++) {
                 for (j = 0; j < k; j++) X[j] = x[NM[e * k + j]];
                 /* the temperature into the parameter row before the
                    kernel, as the batches' driver (pass.c) writes it */
                 if (ti >= 0) PR[e][ti] = T;
-                ff(X, PR[e], zw, sG + e * zt[6], sC + e * zt[8], si + e * zt[10], sq + e * zt[12]);
+                ff(X, PR[e], zw, sG + e * zt[ZT_G_LEN], sC + e * zt[ZT_C_LEN], si + e * zt[ZT_I_LEN],
+                   sq + e * zt[ZT_Q_LEN]);
             }
         }
     }
@@ -92,7 +85,7 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             if (fz >= 0 && c->z_fn[fz]) {
                 /* from the staging: the fused kernel wrote this pass's
                    rows (so wide: `_fuse_groups` checked the widths) */
-                const double *sz = c->zst + c->ztab[ZW * fz + 7 + 2 * m];
+                const double *sz = c->zst + c->ztab[ZT_WIDTH * fz + ZT_G_AT + 2 * m];
                 long fo = c->bftab[2 * b + 1];
                 const int64_t *fi = fo >= 0 ? c->fidxall + fo : 0;
                 for (e = 0; e < ne; e++) {

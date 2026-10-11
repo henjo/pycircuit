@@ -107,3 +107,19 @@ def test_a_moved_clamp_is_another_prediction(monkeypatch):
     p.PRED_CLAMP = math.nextafter(_P.PRED_CLAMP, 0.0)
     moved = _tran_pred_c.predict(p, 5e-9, 3)
     assert moved is not _GENERAL and moved.tobytes() != c.tobytes()
+
+
+def test_the_capacities_are_one_declaration():
+    """pred.h's `PRED_HIST_MAX` and `PRED_FIT_MAX` are the reference's
+    history capacity, the struct's arrays' lengths and the glue's limits --
+    the struct's sizes are written as numbers (cffi lays it out), so this
+    holds them to the names."""
+    import cffi
+    ffi = cffi.FFI()
+    ffi.cdef(_tran_pred_c.PRED_CDEF)
+    f = dict(ffi.typeof('pred_t').fields)
+    F = _tran_pred_c.FIT_MAX
+    assert _tran_pred_c.HIST_MAX == _StagePredictor.PRED_HIST_MAX
+    assert f['tau'].type.length == f['w'].type.length == f['ipiv'].type.length == F
+    assert f['V'].type.length == F * F
+    assert _tran_pred_c.MAX_DEG == F - 1
