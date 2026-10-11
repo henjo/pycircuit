@@ -52,6 +52,13 @@ CSRC_NAME = 'pycircuit/circuit/csrc/'
 #: a line including a header of `csrc/` (a header includes none of them)
 _LOCAL_INCLUDE = re.compile(r'^#include "([\w.]+)"\n', re.MULTILINE)
 
+#: An n x n input a unit only reads goes to it where it stands
+#: (`ffi.from_buffer`) from this many entries; below, copying it into the
+#: unit's own buffer costs less -- the buffer object and re-pointing the
+#: struct read +0.2 % a step at n <= 25 (2026-10-11), the copy it saves is
+#: 580 KB a call at n = 269.
+INPLACE_MIN_ENTRIES = 4096
+
 
 def _read(name):
     with open(os.path.join(CSRC_DIR, name), encoding='utf-8', newline='') as fh:

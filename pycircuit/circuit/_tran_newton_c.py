@@ -204,6 +204,8 @@ class _Ctx:
 
     __slots__ = (
         'buf',
+        'cC_buf',
+        'cC_inplace',
         'core',
         'ffi',
         'ipiv32',
@@ -263,6 +265,10 @@ class _Ctx:
             h = fb('double *', arr)
             self.keep.append(h)
             setattr(s, k, h)
+        ## (the cached C's own buffer, where it is copied: below
+        ## `_cbuild.INPLACE_MIN_ENTRIES`, or not C-contiguous)
+        self.cC_buf = s.cC
+        self.cC_inplace = n * n >= _cbuild.INPLACE_MIN_ENTRIES
         self.keep.append(fb('int64_t *', self.ipiv64))
         s.ipiv64 = self.keep[-1]
         self.keep.append(fb('int *', self.ipiv32))
@@ -728,7 +734,14 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         if (type(cxa) is np.ndarray and cxa.shape == (n,) and type(cCa) is np.ndarray
                 and (cCa.dtype is _F64 or cCa.dtype == np.float64) and cCa.shape == (n, n)):
             np.copyto(buf['cx'], cxa)
-            np.copyto(buf['cC'], cCa)
+            ## (the cached C read where it stands -- the C only reads it: an
+            ## n x n copy a call saved -- else copied, `INPLACE_MIN_ENTRIES`)
+            if rec.cC_inplace and cCa.flags.c_contiguous:
+                s.cC = ffi.from_buffer('double *', cCa)
+            else:
+                np.copyto(buf['cC'], cCa)
+                if rec.cC_inplace:
+                    s.cC = rec.cC_buf
             s.have_cache = 1
     s.T, s.formula = T, formula
     s.a0, s.a1, s.a2, s.h, s.theta = a0, a1, a2, float(h), float(theta)

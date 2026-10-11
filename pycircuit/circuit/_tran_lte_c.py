@@ -162,8 +162,8 @@ class _Ctx:
     """One controller's struct and buffers for one size and reference row:
     every pointer the C holds is a buffer of this context's, set once."""
 
-    __slots__ = ('buf', 'ffi', 'ipiv', 'iref', 'jbuf', 'keep', 'klu', 'klu_keep', 'klu_sym', 'n',
-                 's')
+    __slots__ = ('buf', 'ffi', 'ipiv', 'iref', 'j_inplace', 'jbuf', 'keep', 'klu', 'klu_keep',
+                 'klu_sym', 'n', 's')
 
     def __init__(self, ffi, dgesv, n, iref):
         m = n - 1
@@ -192,8 +192,10 @@ class _Ctx:
         self.keep.append(fb('int64_t *', self.ipiv))
         s.ipiv = self.keep[-1]
         s.dgesv = ffi.cast('void *', dgesv)
-        ## (J's own buffer, for a J that is not C-contiguous: copied there)
+        ## (J's own buffer, where it is copied: below
+        ## `_cbuild.INPLACE_MIN_ENTRIES`, or not C-contiguous)
         self.jbuf = s.J
+        self.j_inplace = n * n >= _cbuild.INPLACE_MIN_ENTRIES
         s.n, s.iref = n, iref
         s.klu_sym = ffi.NULL
         self.klu = self.klu_sym = None
@@ -375,13 +377,14 @@ def max_error(ctrl, s):
         if not _vec(iq1, n):
             return _no('lte_c:x')
         np.copyto(buf['iq1'], iq1)
-    ## (J read where it stands when C-contiguous -- the C only reads it --
-    ## else copied: an n x n copy a call saved)
-    if J.flags.c_contiguous:
+    ## (J read where it stands -- the C only reads it: an n x n copy a call
+    ## saved -- else copied, `INPLACE_MIN_ENTRIES`)
+    if ctx.j_inplace and J.flags.c_contiguous:
         st.J = ctx.ffi.from_buffer('double *', J)
     else:
         np.copyto(buf['J'], J)
-        st.J = ctx.jbuf
+        if ctx.j_inplace:
+            st.J = ctx.jbuf
     if run is not None:
         np.copyto(buf['run'], run)
     if abs_vec:

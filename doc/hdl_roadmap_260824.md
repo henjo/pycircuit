@@ -8142,3 +8142,22 @@ step_machinery cases no change against an A/A.  "The error test and its C" names
 `AutoSolver.solve`, `StructuralKLU.solve` and `._ours` among its references and `_klu_bind`
 among its twin; "the Newton solve and its C" moved on its twin (pcx_dense.h): re-recorded.  Full suite 5109 passed; the
 sanitizer's fast tier clean (4801 passed).
+
+## 2026-10-11 — 114. Stage 3, step c: the C reads the Newton's and the error test's n x n inputs where they stand -- gm19 -4.9 %, rich3 -2.4 %
+
+What 3c named -- the error test reading the Newton's buffers, no n x n copy of J -- landed with
+3b for J (read in place).  The C Newton made the same copy the other way: every call copied the
+cached `C` at the seed (`_C_cache`, which the C only reads -- the first evaluation's companion,
+the chord's later ones) into its own buffer, 580 KB a call at n = 269, 1.5 MB at n = 429.  Now
+it is read where it stands.  Measured both ways first: in place everywhere read +0.1 .. +0.25
+points of a step on the small cases (n <= 25: the cffi buffer object and re-pointing the struct
+cost more than copying a few hundred doubles), neutral at n = 45 -- so both inputs (this `C` and
+the error test's J) go in place from `_cbuild.INPLACE_MIN_ENTRIES` (4096 entries, n >= 64) and
+are copied below it.
+
+Measured: rich3 6.14 -> 5.99 s (-2.4 %), gm19 17.54 -> 16.68 s (-4.9 %) full length, byte for
+byte; the step_machinery cases no change against an A/A (within 0.12 points).  The Newton and
+error-test byte-identity suites pass both routes (the 250-stage chains in place, the small
+circuits copied).  Two pinned pairs moved on the twin only (`_tran_newton_c`'s `solve` and
+`_Ctx`, `_tran_lte_c`'s): re-recorded.  Full suite 5109
+passed (no C source changed).
