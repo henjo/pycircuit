@@ -8191,3 +8191,34 @@ maximum.  Decks against HEAD, twice each: byte for byte; rich3 5.98 -> 5.79 s (-
 C"; "the transient evaluation and the core" and "the Newton solve and its C" moved on the twin
 (the marker's writes): re-recorded.  Full suite 5119 passed; the sanitizer's fast tier clean (4830
 passed).
+
+## 2026-10-11 — 116. Stage 4 sized, its line re-sized for psp; step a: the stage predictor's fast path in C (not yet wired)
+
+SIZED (scratchpad s4/size.py, size4049.py: the marginal fixed step at 100 vs 300 steps, median of
+5, the C entries timed inside it): stage 157 us a step of which 54 in C (ceiling 2.9x), mos1 107 /
+20.5 (5.2x), gp 131 / 38 (3.4x), psp 901 / 761 (1.18x), spice_4049 91 / 7.8 (11.7x).  mos1's
+Python by the profile: the C Newton's glue ~40 %, the predictor ~15 %, the accept and the rings
+~15 %, the source pass ~12 %, the breakpoint poll ~8 %.  Inside a C loop no Python runs between
+steps, so every check the glue makes per call is made once at the loop's entry.  THE LINE,
+RE-SIZED BEFORE BUILDING: stage, mos1, gp, spice_4049 >= 1.3x each (unchanged); psp >= 1.05x (its
+ceiling is 1.18x: 761 of its 901 us are PSP's evaluation).  Steps: 4a the predictor in C, 4b the
+loop, 4c the write-back proven complete, 4d the line.
+
+STEP 4a: `csrc/pred.c` / `_tran_pred_c` -- `_StagePredictor._predict_fast` with
+`_pred_fast_nodes` and `_fit_fast`: the nodes newest first (the 1e-13 dedupe, the smallest gap,
+the tie test), the fit's times in Python's float order, `np.vander`'s running products, numpy's
+own `dgesv` for the weights (kept for the last `tau`, as the memo keeps them) and its `dgemv` for
+`w @ X` -- `cblas_dgemv(RowMajor, Trans, ...)` IS that product (3000 of 3000 drawn; a plain loop
+1608: the kernel's own order) -- and the clamp in numpy's `clip` order (`m = x > lo ? x : lo; m <
+hi ? m : hi`: every chunk length, signed zeros included, matches the ufunc's vector path).  A
+flag numpy would report, and every case the fast path sends to the general one, hand back.  Not
+yet wired (as stage 1's sources): the loop (4b) calls it.  `pcx_abi.h` gains `PCX_CBLAS_TRANS`
+(every unit's twin moved with it).
+
+Proved: test_pred_c -- a drawn twin (histories uniform, graded, duplicated inside the dedupe,
+tied, out of order, at or past the target; states of every magnitude; degrees 1-4): 3000 drawn,
+437 served and 525 "no prediction" byte for byte the Python's, 1761 to the general path both
+ways, 277 handed back on a flag (extreme magnitudes); the general path's cases; a linear ramp
+predicted exactly; alive: the clamp's factor a ulp off moves a prediction the clamp bites.  New
+pinned pair "the predictor and its C"; every unit's twin re-recorded for pcx_abi.h.  Full suite 5125 passed; the
+sanitizer's fast tier clean (4817 passed).

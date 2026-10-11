@@ -47,7 +47,7 @@ typedef void (*dgetrs64_t)(const char *, const int64_t *, const int64_t *, const
 typedef void (*dgemv64_t)(int, int, int64_t, int64_t, double, const double *, int64_t,
                           const double *, int64_t, double, double *, int64_t);
 /* CBLAS's own values for dgemv64_t's first two arguments */
-enum pcx_cblas { PCX_CBLAS_ROW_MAJOR = 101, PCX_CBLAS_NO_TRANS = 111 };
+enum pcx_cblas { PCX_CBLAS_ROW_MAJOR = 101, PCX_CBLAS_NO_TRANS = 111, PCX_CBLAS_TRANS = 112 };
 typedef void (*dgetrf32_t)(const int *, const int *, double *, const int *, int *, int *);
 typedef void (*dgetrs32_t)(const char *, const int *, const int *, const double *, const int *,
                            const int *, double *, const int *, int *, size_t);

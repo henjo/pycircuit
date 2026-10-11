@@ -37,6 +37,17 @@ import types
 import pytest
 
 PAIRS = {
+    'the predictor and its C': {
+        'why': 'the C makes `_predict_fast`: the nodes newest first with the 1e-13 dedupe '
+               'and the tie test, the fit\'s times in Python\'s float order, np.vander\'s '
+               'running products, numpy\'s own dgesv and dgemv, the clamp in clip\'s '
+               'order; the general path\'s cases and a reported flag are handed back',
+        'reference': ['pycircuit.circuit._tran_predictor:_StagePredictor._predict_fast',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._pred_fast_nodes',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._fit_fast'],
+        'twin': ['pycircuit.circuit._tran_pred_c:PRED_C',
+                 'pycircuit.circuit._tran_pred_c:predict'],
+    },
     'the branch screen and its C': {
         'why': 'the C makes `_branch_screen_C`\'s cheap level -- |C|\'s largest entry '
                '(on the core\'s pattern where the core wrote C), Python\'s `max` of the '
@@ -479,31 +490,32 @@ PAIRS = {
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
 #: module as a script, after the twin was checked.
 RECORD = {
+    'the predictor and its C': ('f2c284eb392d', '46a83fdd35ab'),
     'the branch screen and its C': ('1b848875234f', '67f78befa5b6'),
     'the sources and their C': ('55cf2d3441f8', 'e9ef34a79dd1'),
-    'the kernel call and the pass driver': ('09a9e274bbe8', '6ca70a65d1bf'),
-    'the limiting loop and the walk': ('58c4ce9c8f4d', '10cb4263e632'),
+    'the kernel call and the pass driver': ('09a9e274bbe8', '5ca0c1d6f946'),
+    'the limiting loop and the walk': ('58c4ce9c8f4d', '77b3b89c0a7e'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),
-    'the transient evaluation and the core': ('ce82a66a3520', '2076ab287bcf'),
+    'the transient evaluation and the core': ('ce82a66a3520', '328e2cb91442'),
     'the assembly loops and the plan': ('fa280abb9bf9', '1e6881a772fd'),
     'the sources and their direct pass': ('61c7a4bed013', 'fced12f39974'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('d7ce3151abd4', 'f7f5a41b3026'),
+    'the Newton solve and its C': ('d7ce3151abd4', 'cb85e164320c'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
-    'the error test and its C': ('f801a096927f', 'c155d6ec852e'),
+    'the error test and its C': ('f801a096927f', '3d8475fd3328'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', '9be60e00fe1a'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '0c0764bd821c'),
-    "the stage paths' passes and the core's": ('f83268db1289', 'bc2bb6333e84'),
-    'the coupled stage Newton and its C': ('c9e9adf33989', 'c549ea9edbaa'),
+    "the stage paths' passes and the core's": ('f83268db1289', 'd20bbf28ddf2'),
+    'the coupled stage Newton and its C': ('c9e9adf33989', '3474b7e6790d'),
     'the transform solve and its frozen form': ('258c0a005c28', '9b7970f8fbb7'),
-    'the transform Newton and its C': ('d7c24c3c7e7d', '65d5a8e69c01'),
-    "the step's end passes and the C's": ('0702ce6790c5', 'e3bd9c3373a5'),
+    'the transform Newton and its C': ('d7c24c3c7e7d', '8a498f700ceb'),
+    "the step's end passes and the C's": ('0702ce6790c5', 'cc7f540f5671'),
     'the frozen factors and their C': ('c27dee545b25', '7ea0d60692b2'),
     'the stage block and its one pass': ('a013cd007e0c', '24be0c26211b'),
-    'the stage step map and its C': ('7507f30134bb', '6167091a7842'),
+    'the stage step map and its C': ('7507f30134bb', '0aff35e21ad6'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', 'd5e13aa3b107'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
