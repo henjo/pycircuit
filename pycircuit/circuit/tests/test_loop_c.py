@@ -132,6 +132,11 @@ def _same(build, monkeypatch, steps_min=1, **kw):
         if k == 'state':
             diff = [n for n in a[k] if a[k][n] != b[k][n]]
             assert not diff, ('the state moved', diff)
+        elif k == 'counts':
+            diff = {n: (a[k].get(n), b[k].get(n)) for n in set(a[k]) | set(b[k])
+                    if a[k].get(n) != b[k].get(n)}
+            assert not diff, (('the counts the C loop makes for the Python attempts\' calls '
+                               '(`_tran_loop_c._count`) moved -- (C, Python):'), diff)
         else:
             assert a[k] == b[k], (k, a[k] if k != 'x' else '', b[k] if k != 'x' else '')
     assert ca.get('loop_c:steps', 0) >= steps_min, ca

@@ -80,6 +80,7 @@ PAIRS = {
         'twin': ['pycircuit.circuit._tran_loop_c:LOOP_C',
                  'pycircuit.circuit._tran_loop_c:run',
                  'pycircuit.circuit._tran_loop_c:_write_back',
+                 'pycircuit.circuit._tran_loop_c:_count',
                  'pycircuit.circuit._tran_loop_c:_bind',
                  'pycircuit.circuit._tran_loop_c:_judge'],
     },
@@ -537,7 +538,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('837249250601', '336ee4dd0218'),
-    'the stepping loop and its C': ('5499b8469fa7', '72ee2877b4e4'),
+    'the stepping loop and its C': ('5499b8469fa7', '51599ceb5fa6'),
     'the predictor and its C': ('f2c284eb392d', '0287bf7ff26a'),
     'the branch screen and its C': ('1b848875234f', '38c379de6bd9'),
     'the sources and their C': ('55cf2d3441f8', 'fc040e74f7ab'),

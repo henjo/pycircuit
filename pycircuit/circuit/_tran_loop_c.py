@@ -808,10 +808,19 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     loop.x_new, loop.J = x, None
     loop.h_next = loop.timestep if not adaptive else loop.h
     loop.clamped, loop.hold, loop.imposed = False, not adaptive, False
-    ## the tallies the Python attempts make
+    _count(s, run_, rec, adaptive, k)
+
+
+def _count(s, run_, rec, adaptive, k):
+    """The `_paths` counts the Python attempts' calls make, made for the C's
+    attempts -- each where the Python makes it.  An A/B of the loop compares
+    them all (test_loop_c): a count a unit adds on its served path is added
+    here too."""
     a = s.attempts
     _PC['loop_c:attempts'] += a
     _PC['loop_c:steps'] += k
+    ## the C Newton's serve, an attempt each (`_tran_newton_c.solve`, with the
+    ## Python's own `chord:chosen`)
     if rec.klu is not None:
         _PC['newton_c:sparse'] += a
     _PC['newton_c:served'] += a
@@ -821,17 +830,24 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
         _PC['newton_c:j_unread'] += a
     if rec.s.chord:
         _PC['chord:chosen'] += a
+    ## the seed (`_StagePredictor._predict_fast`), the sources
+    ## (`_stamp_plan.source_direct`, its `u` calls, the source memo
+    ## `_CompanionModel._source_at`), the charge memo (`_CompanionModel._q_at`:
+    ## the accepted point's and, adaptive, the error test's reads)
     if s.pred_fast:
         _PC['pred:fast'] += s.pred_fast
     _PC['src.direct:served'] += a
     _PC['u:called'] += len(run_.tab.entries) * a
     _PC['umemo:miss'] += a
     _PC['memo.q:same'] += k + (s.ltes if adaptive else 0)
+    ## the branch screen (`_tran_branch_c.screen`, its C from
+    ## `_CompanionModel._C_lookup`)
     if s.screens:
         _PC['branch_c:served'] += s.screens
         _PC['memo.C:equal'] += s.screens
         if run_.npat:
             _PC['branch_c:pattern'] += s.screens
+    ## the error test (`_tran_lte_c.max_error`)
     if adaptive and s.ltes:
         _PC['lte_c:served'] += s.ltes
         if s.lte_euler:
