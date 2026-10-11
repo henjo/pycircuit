@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) 2008-2026 Pycircuit Development Team
 # See LICENSE for details.
-"""The C backend for chained `Behavioural` elements.
+"""The C backend for chained `Behavioural` elements: each chained
+function's numpy source (`fn._src`, the reference) compiled from its C
+rendering (`fn._csrc`) and called in its place, bit for bit but for the
+named exceptions under Fidelity.
 
 `generate_code` prints every x-taking let-chain twice: the numpy source
 (`fn._src`, the reference -- what `explain()` shows, what the compile
@@ -10,48 +13,56 @@ cache stores, what every test compares against) and a C rendering
 after that print: finding a compiler, building the shared object,
 caching it, loading it, and calling it.
 
-Why it exists: the chained numpy function is straight-line scalar
-Python -- for the PSP MOSFET's Jacobian, ~21 400 interpreted calls per
-evaluation.  The same statements compiled by the system C compiler run
-219-229x faster at bitwise-identical results (`doc/
-backend_spike_260826.md`); this module is that measurement built out.
+OWNS
+    On the class, `_hdl_backend_status` (what happened, below) and
+    `_hdl_backend_ulp` (the listed functions its C calls, `libm_check`);
+    on the class info, `_c_bound`, `_c_fused`, `_c_fused_status`,
+    `_backend_pending` and `_backend_seen` (and, through `_hdl_climit`,
+    `_c_limit` and `_c_limit_status`); on each chain function, `_hdl_c`
+    (its `CKernel`); on each element, `_hdl_cp` (the packed parameters,
+    `CKernel.pack`'s, dropped by the element's `update` when a parameter
+    moves).  The module keeps `_LIBM` (the C library's check).  `_paths`:
+    `once:backend:` (`c`, `numpy`, `compile_failed`: a class's resolve).
+    Switches: `PYCIRCUIT_HDL_BACKEND` (`c`, `numpy` or `auto`, read by
+    `hdl._backend_requested`) and `PYCIRCUIT_HDL_CFUSE=0` (`FUSE`); the
+    build's are `_cbuild`'s and `_hdl_cache`'s (`PYCIRCUIT_HDL_CC`,
+    `PYCIRCUIT_C_SANITIZE`, `PYCIRCUIT_HDL_CACHE`).
 
 Selection
-    The default is `'auto'` (since 2026-10-02): every chained class runs
-    C where it can be served -- the kernels printed (`_csrc`), cffi
-    installed, the compile cache on (without a store every process would
-    rebuild PSP's kernels, ~30-90 s), a compiler or the stored objects --
-    and numpy otherwise, QUIETLY, saying why in its status.  It is
-    resolved at the class's FIRST INSTANCE (`ensure`, from
-    `Behavioural.__init__`), not at class creation: importing the library
-    compiles nothing, a base class that only spawns collapse variants
-    never builds, and an instance runs one backend from its first
-    evaluation.  An instance on the JAX or symbolic toolkit leaves the
-    class unresolved (its own path is the jax twin).
+    The default is `'auto'`: every chained class runs C where it can be
+    served -- the kernels printed (`_csrc`), cffi installed, the compile
+    cache on (without a store every process would rebuild every kernel), a
+    compiler or the stored objects -- and numpy otherwise, QUIETLY, saying
+    why in its status.  It is resolved at the class's FIRST INSTANCE
+    (`ensure`, from `Behavioural.__init__`), not at class creation:
+    importing the library compiles nothing, a base class that only spawns
+    collapse variants never builds, and an instance runs one backend from
+    its first evaluation.  An instance on the JAX or symbolic toolkit
+    leaves the class unresolved (its own path is the jax twin).
+    `PYCIRCUIT_HDL_BACKEND=c` / `numpy` (or `hdl.set_backend`, or a class
+    attribute `hdl_backend`) pins it, applied at class creation.
+    `cls._hdl_backend_status` always says what actually happened: `'c'`,
+    `'numpy'`, `'numpy (eager path: ...)'`, `'numpy (compile failed:
+    ...)'` (a missing compiler too, when C is asked for), `'numpy (cffi
+    not installed)'`, `'numpy (auto: <why>)'`, `'auto (resolved at the
+    first instance)'`.  When C was REQUESTED and cannot be delivered, a
+    warning is issued as well -- requesting C and silently getting numpy
+    is the failure this refuses; under 'auto' only a build that FAILS with
+    a compiler present warns (a defect, either way).
 
 The limiter
     A class that declares `$limit` gets its generated `limit()` as a
-    kernel of its own (`_hdl_climit`, 2026-10-03): rendered from the spec
-    and the parameter functions' kept statements, built and stored beside
-    the chain functions' objects, bound by `_resolve` after them and
-    unbound by `detach`.  It refuses itself -- an unprintable node,
-    `tanh`, a parameter without ingredients -- and never the class;
+    kernel of its own (`_hdl_climit`): rendered from the spec and the
+    parameter functions' kept statements, built and stored beside the
+    chain functions' objects, bound by `_resolve` after them and unbound
+    by `detach`.  It refuses itself -- an unprintable node, `tanh`, a
+    parameter without ingredients -- and never the class;
     `info['_c_limit_status']` says.  On a C-bound class the closure's
-    parameter functions are not called: a test that counts them pins
-    numpy.  In a circuit's `limit` pass every run of such elements is
-    walked in ONE C call on the live state (`_hdl_climit.limit_walk`,
-    2026-10-03), the loop's order and write-backs kept.
-    `PYCIRCUIT_HDL_BACKEND=c` / `numpy` (or `hdl.set_backend`, or a class
-    attribute `hdl_backend`) pins it, applied at class creation as
-    before.  `cls._hdl_backend_status` always says what actually
-    happened: `'c'`, `'numpy'`, `'numpy (eager path: ...)'`, `'numpy
-    (compile failed: ...)'` (a missing compiler too, when C is asked for),
-    `'numpy (cffi not installed)'`, `'numpy (auto: <why>)'`, `'auto
-    (resolved at the first instance)'`.  When C was REQUESTED and cannot
-    be delivered, a warning is issued as well -- requesting a 200x backend
-    and silently getting the 1x one is the failure mode this refuses to
-    have; under 'auto' only a build that FAILS with a compiler present
-    warns (a defect, either way).
+    parameter functions are not called: a test that counts them switches
+    the limiter kernel off (`_hdl_climit.ENABLED`).  In a circuit's `limit`
+    pass every run of such elements is walked in ONE C call on the live
+    state (`_hdl_climit.limit_walk`), the loop's order and write-backs
+    kept.
 
 Fidelity
     The `.so` is compiled with `-O2` and no fast-math, no FMA
@@ -62,11 +73,11 @@ Fidelity
     bit-identity with the numpy path.  The kernel prelude declares
     those functions `__attribute__((const))` (`hdl._KERNEL_C`), so gcc
     calls an identical one once instead of at every repeat -- still
-    glibc's call, still its value; PSP's `G` 50 -> 22 us (2026-10-02).
-    Two named, measured exceptions (`test_hdl_cbackend.py` pins both):
+    glibc's call, still its value.  Two named exceptions
+    (`test_hdl_cbackend.py` pins both):
 
     * `tanh`: numpy ships its own vectorised tanh, which differs from
-      libm's in ~30% of arguments by an ulp.  A chain that uses `tanh`
+      libm's by an ulp on some arguments.  A chain that uses `tanh`
       agrees with the numpy path to that ulp (amplified where the
       model cancels), and agrees BITWISE with the same numpy source
       run with libm's tanh.
@@ -75,20 +86,18 @@ Fidelity
       sign) where C is all doubles.  Values compare equal; bytes can
       differ on zero entries.
 
-    And one that depends on the CPU (speed round 12, 2026-10-06): numpy
-    picks its loops by the CPU it runs on, and where it brings its own
-    float64 `exp`, `log`, ... (AVX-512 builds, by the evidence of another
-    machine: 50 kernel tests failing there) they are not the C library's.
-    `libm_check` compares each function of the kernel prelude with numpy's,
-    in the forms the numpy path calls it, once a process on a fixed probe
-    set.  A class whose kernels or limiter call a function that differs
-    KEEPS C (Andreas's decision: the speed, with the difference named) and
-    names it: `cls._hdl_backend_ulp`, `explain`'s backend line, and one
-    `PlatformWarning` a process for the functions beyond tanh -- the
-    class then agrees with the numpy path to that function's ulp (amplified
+    And one that depends on the CPU: numpy picks its loops by the CPU it
+    runs on, and where it brings its own float64 `exp`, `log`, ...
+    (AVX-512 builds, for one) they are not the C library's.  `libm_check`
+    compares each function of the kernel prelude with numpy's, in the
+    forms the numpy path calls it, once a process on a fixed probe set.
+    A class whose kernels or limiter call a function that differs KEEPS C
+    (the speed, with the difference named) and names it:
+    `cls._hdl_backend_ulp`, `explain`'s backend line, and one
+    `PlatformWarning` a process for the functions beyond tanh -- the class
+    then agrees with the numpy path to that function's ulp (amplified
     where the model cancels), and bitwise with its numpy source run with
-    the C library's functions, as a tanh class does.  On this box (numpy's
-    X86_V3 loops) tanh is the only one.
+    the C library's functions, as a tanh class does.
 
 Cache
     The `.so` lives beside the pickled compile-cache entries
@@ -116,22 +125,21 @@ Calling convention
 
 The batches
     In a circuit's stamp plan a C-bound class's elements run as ONE call
-    per class per pass (`_hdl_batch`, 2026-10-03): a driver of its own
-    -- one more object under its own key, the entry name with another
-    signature, as the limiter -- loops over the elements calling the
-    kernel's function pointer on each element's `x[nm]` and its own
-    pack, the temperature written into the pack's slot exactly as
-    `CKernel.__call__` writes it.  What a batch cannot serve -- an
-    instance shadow, a patched method, a detached class, a temperature
-    that is not one number -- takes `CKernel.__call__` per element as
-    before.
+    per class per pass (`_hdl_batch`): a driver of its own (`csrc/pass.c`,
+    a runtime unit loaded through `_cbuild.load_unit`) loops over the
+    elements calling the kernel's function pointer on each element's
+    `x[nm]` and its own pack, the temperature written into the pack's
+    slot exactly as `CKernel.__call__` writes it.  What a batch cannot
+    serve -- an instance shadow, a patched method, a detached class, a
+    temperature that is not one number -- takes `CKernel.__call__` per
+    element as before.
 
 The fused kernel
     For the transient's evaluate core a class also gets ONE kernel for
-    its four passes (`fuse_csrc`, 2026-10-05): the printed statements
-    unioned by name, each run under the bits of the passes that print it,
-    each pass's outputs to its own array -- the same statements, so the
-    same values (a NaN's sign aside).  Built with the others, bound as
+    its four passes (`fuse_csrc`): the printed statements unioned by
+    name, each run under the bits of the passes that print it, each
+    pass's outputs to its own array -- the same statements, so the same
+    values (a NaN's sign aside).  Built with the others, bound as
     `info['_c_fused']`, refused on its own (`info['_c_fused_status']`);
     `PYCIRCUIT_HDL_CFUSE=0` leaves it unbuilt and unused.
 """
@@ -149,9 +157,9 @@ import numpy as np
 from pycircuit.circuit import _cbuild
 from pycircuit.circuit import simwarnings as _sw
 
-## (the build and load machinery lives in `_cbuild`, the C stepping loop
-## plan's stage R1b; re-exported for this module's callers -- PATCH THEM
-## ON `_cbuild`: `CFLAGS`, `_compiler` and `_loaded` are read there)
+## (the build and load machinery lives in `_cbuild`, re-exported for this
+## module's callers -- PATCH THEM ON `_cbuild`: `CFLAGS`, `_compiler` and
+## `_loaded` are read there)
 from pycircuit.circuit._cbuild import (  # noqa: F401
     _FALSE,
     CFLAGS,
@@ -178,7 +186,7 @@ from pycircuit.circuit._cbuild import (  # noqa: F401
 ## Kernels.
 
 #: numpy's float64 dtype object, one per process: `x.dtype is _F64` is a
-#: pointer test (27 ns) where `x.dtype == np.float64` is a comparison (64).
+#: pointer test where `x.dtype == np.float64` is a comparison.
 _F64 = np.dtype('float64')
 
 
@@ -186,15 +194,12 @@ class CKernel(object):
     """One compiled chain function, callable as the element methods
     need it: `kernel(element, x, epar)` -> a fresh float64 array.
 
-    THE CALL IS THE COST for a mid-sized model (2026-10-02): MosLevel1's
-    `G` computes in 0.3 us of C and the wrapper around it took 4.3 us --
-    two `ffi.cast('double *', arr.ctypes.data)` (860 ns each),
-    `np.ndim(T)` (485 ns), the rest in small change.  Now `ffi.from_buffer`
-    on the arrays (190 ns each, the buffer protocol; the cdata keeps the
-    array alive for the call), a pre-resolved pointer type, a type test
-    for the usual float `T`: 1.4 us measured, PSP's `G` 23.2 -> 20.1 us.
-    The fresh `out` per call stays (callers keep and even write into what
-    they get); so do the None fallbacks and the ValueError."""
+    THE CALL IS THE COST for a mid-sized model, so it is kept small:
+    `ffi.from_buffer` on the arrays (the buffer protocol; the cdata keeps
+    the array alive for the call), a pre-resolved pointer type (`dptr`), a
+    type test for the usual float `T`.  A fresh `out` every call (callers
+    keep and even write into what they get); None where the numpy function
+    must answer; `ValueError` for a state shorter than the kernel reads."""
 
     __slots__ = ('ffi', 'cfn', 'shape', 'nx', 'n_p', 't_index', 'key',
                  'built_s', 'dptr')
@@ -275,13 +280,13 @@ def kernel_for(fn, nx, rebuild_corrupt=True):
 
 
 ## ----------------------------------------------------------------------
-## The fused kernel (speed round 9, stage 3).
+## The fused kernel.
 
 #: ONE MASKED KERNEL A CLASS for the evaluate core (`_tran_core`): a
 #: class's four passes print four functions that each recompute their
 #: whole chain -- `i` is inside `G`, `q` inside `C`, and `G` and `C` share
 #: about half their statements -- where one function evaluating what a
-#: call wants needs 48-62 % of the work on PSP.  Printed from the passes'
+#: call wants computes each statement once.  Printed from the passes'
 #: C (`fuse_csrc`), built beside them and bound as `info['_c_fused']`;
 #: refused on its own, never the class.  env `PYCIRCUIT_HDL_CFUSE=0`: not
 #: built, and the core calls the passes' own kernels (read at the bind and
@@ -516,7 +521,7 @@ def _build_missing_parallel(fns):
 C_FUNCS = ('i', 'G', 'q', 'C', 'i_dc', 'G_dc')
 
 
-## -- THE C LIBRARY AGAINST NUMPY (speed round 12, stage 1, 2026-10-06) ------------
+## -- THE C LIBRARY AGAINST NUMPY -----------------------------------------------
 
 #: The transcendentals the kernel prelude declares (`hdl._KERNEL_C`), each
 #: with the numpy function the numpy path calls for it (`hdl._C_NAMES`).
@@ -620,7 +625,7 @@ def _libm_probe(numpy_funcs=None):
 def libm_check():
     """The functions of the kernel prelude whose numpy twin gives other
     bits than the C library's on this CPU, as a frozenset of C names;
-    measured once a process (`_libm_probe`, ~10 ms).  Empty where nothing
+    measured once a process (`_libm_probe`).  Empty where nothing
     could be checked (`libm_status` says so).  Where it finds one beyond
     tanh, the process gets ONE `PlatformWarning` naming them."""
     if _LIBM['differ'] is None:
@@ -797,8 +802,8 @@ def _resolve(cls, info, explicit):
                       'hdl.EMIT_C_SOURCE on',
                       'the compiled functions carry no C source')
     ## The kernels load through cffi, which numpy does not need: without
-    ## it a request for C ran into an ImportError out of class creation
-    ## (until 2026-10-02).
+    ## it the class is refused here (numpy), never an ImportError out of
+    ## class creation.
     if importlib.util.find_spec('cffi') is None:
         return refuse('cffi not installed', 'cffi is not installed')
     if not explicit:
@@ -838,8 +843,8 @@ def _resolve(cls, info, explicit):
             cold = cold or was_cold
             fn._hdl_c = kern
     except (_cbuild.CompileError, OSError) as e:
-        ## (an OSError: the store's directory -- a file in its place, no
-        ## permission -- escaped class creation until 2026-10-02)
+        ## (an OSError too: the store's directory -- a file in its place, no
+        ## permission -- refuses the class here, never out of class creation)
         _paths.COUNTS['once:backend:compile_failed'] += 1
         detach(cls, info)
         _note(cls, 'numpy (compile failed: %s)' % e,

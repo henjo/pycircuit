@@ -38,15 +38,17 @@ From the outside in. "Called from" is where the Python reaches the glue.
 | Assembly | `_residual_and_jacobian`, `jacobian_only`, `residual_only` | `csrc/core.c` | `_tran_core` | `PYCIRCUIT_TRAN_CORE` (`PYCIRCUIT_CORE_PASSES`, `PYCIRCUIT_CORE_PATTERN`, `PYCIRCUIT_SKIP_UNREAD_J`) | `core.<want>:`, `core.ready:` | the transient's evaluation sites, `newton.c` |
 | Sources | `_stamp_plan.source_direct` | `csrc/sources.c` | `_tran_sources` | `PYCIRCUIT_SOURCES_C` | `sources_c:` | `loop.c` (its table) |
 | Limiter walk | the Newton's limiter walk; the hand-written limiters | `csrc/walk.c`, `csrc/limit.c`, `csrc/psp_limit.c` | `_hdl_climit` | `PYCIRCUIT_HDL_LIMIT_WALK`, `PYCIRCUIT_HDL_CLIMIT`, `PYCIRCUIT_PSP_LIMIT_C` | `walk:`, `climit:` | the Newtons, `newton.c` |
-| Device passes | the circuit passes `G`, `C`, `i`, `q` of the HDL elements | generated kernels; `csrc/pass.c` (a batch: one kernel over its elements) | `_hdl_cbackend`, `_hdl_batch` | `PYCIRCUIT_HDL_BACKEND`, `PYCIRCUIT_HDL_BATCH` (`PYCIRCUIT_HDL_CFUSE`: the fused kernel a call's passes share; `PYCIRCUIT_HDL_ZERO_U`: the source passes' skip) | `once:` | the stamp plans' batches; `core.c` calls the kernels itself |
+| Device passes | the circuit passes `G`, `C`, `i`, `q` of the HDL elements | generated kernels; `csrc/pass.c` (a batch: one kernel over its elements) | `_hdl_cbackend`, `_hdl_batch` | `PYCIRCUIT_HDL_BACKEND`, `PYCIRCUIT_HDL_BATCH` (`PYCIRCUIT_HDL_CFUSE`: the fused kernel a call's passes share; `PYCIRCUIT_HDL_ZERO_U`: the source passes' skip) | `batch.<pass>:`, `once:backend:` | the stamp plans' batches; `core.c` calls the kernels itself |
 | Invalidation | -- (a dict watcher) | `csrc/watch.c` | `_watch` | `PYCIRCUIT_WATCH` | -- | every readiness check |
 | Build and load | -- | -- | `_cbuild` | `PYCIRCUIT_C_SANITIZE`, `PYCIRCUIT_HDL_CC`, `PYCIRCUIT_HDL_CACHE` (the store; `PYCIRCUIT_HDL_CACHE_DIR` its place) | -- | every glue module |
 
 Outside the multistep loop, the same rules: the Radau stage solve (`csrc/radau.c`, `_tran_radau_c`,
 `PYCIRCUIT_RADAU_C`, `radau_c:`), its tensor-product form and fold (`csrc/radau_tc.c`,
 `csrc/radau_fold.c`, `_tran_radau_tc`, `PYCIRCUIT_RADAU_TC`, `PYCIRCUIT_RADAU_FOLD`,
-`PYCIRCUIT_RADAU_TC_END`, `radau_tc:`), and the shooting sensitivities (`csrc/sens.c`,
-`shooting/_sens_c`, `PYCIRCUIT_SENS_C`, `pss.sens:`).
+`PYCIRCUIT_RADAU_TC_END`, `radau_tc:`, the fold's `radau.frozen:`), and the shooting sensitivities
+(`csrc/sens.c`, `shooting/_sens_c`, `PYCIRCUIT_SENS_C`, `pss.sens:`). A few glue modules also make a
+count the Python would have made on the same path: `umemo:hit` (the source memo, by the Newton and
+Radau glue), `pss.sync:skipped` (the sensitivities), `chord:chosen` (the Newton).
 
 **The linear system** has no unit of its own. Dense solves are numpy's and SciPy's LAPACK
 (`dgesv`, `dgetrf`/`dgetrs`), called by address from `newton.c`, `lte.c` and `pred.c`. Sparse
@@ -64,16 +66,17 @@ signatures, the LAPACK, BLAS and KLU typedefs, the pass bits and formula codes);
 
 ## Who owns what
 
-What each glue module keeps on objects it does not define. Everything a run keeps on the
+What each glue module keeps on objects it does not define. What a multistep run keeps on the
 `Transient` is declared in `transient._RUN_STATE`, with its owner and lifetime
-(`tests/test_run_state.py` holds the list to the code).
+(`tests/test_run_state.py` holds the list to the code); the Radau records `_radau_tc` and
+`_tc_end` are not declared there yet.
 
 | Glue | Keeps | Writes back on a serve |
 |---|---|---|
 | `_tran_loop_c` | on the `_SteppingLoop`: `c_run` (the bound run: structs, buffers, the units' pointers), `c_tab` (the source table), `c_kept` (the watch counter of the last kept decline), `c_skip` / `c_backoff` (the spacing of entries that made no attempt); `c_loop` is set by `_SteppingLoop.__init__` | the loop's position (`t`, `h`, `h_next`, `landing`, `order_drop`, `point_retries`, `t_break`, `J`, `imposed`), the transient's run state and statistics, the controller's `last_err`, `_q_carried`, `_ref_running`, `_retry` |
-| `_tran_newton_c` | on the transient: `_newton_c` (its record: buffers, pointers, the walk's and KLU's bindings, `served`), `_newton_c_no` (a kept decline) | the step's state: `_q_cache`, `_C_cache`, `_Cmat`, `_Geq`, `_companion_coeffs`, `_C_pattern`, `active_integrator`, `_effective_method` |
+| `_tran_newton_c` | on the transient: `_newton_c` (its record: buffers, pointers, the walk's and KLU's bindings, `served`), `_newton_c_no` (a kept decline); on the limiter walk its tables (`F`, `PR`, `mirror`); on each limiting element `_hdl_cp` | the step's state: `_q_cache`, `_C_cache`, `_Cmat`, `_Geq`, `_iq`, `_companion_coeffs`, `_C_pattern`, `active_integrator`, `_effective_method`; the statistics' `newton_iterations`; the `StructuralKLU`'s `numerics` |
 | `_tran_lte_c` | on the step controller: `_lte_c` (its context: buffers, the KLU binding, `served`) | the controller's `_ref_running` |
-| `_tran_core` | on the transient: `_tran_core` (the plan, the core, their stamp), `_passes_no` (a kept decline); on each HDL element: `_hdl_cp` (its packed parameters) | the same step state as the Newton, and `_iq` |
+| `_tran_core` | on the transient: `_tran_core` (the plan, the core, their stamp), `_passes_no` (a kept decline); on each HDL element: `_hdl_cp` (its packed parameters); on the stamp plan, the `methods` it lacks | the same step state as the Newton |
 | `_tran_radau_c`, `_tran_radau_tc`, `_sens_c` | on the transient: `_radau_c`; `_radau_tc`, `_tc_end`; `_sens_c` | their stage state |
 | `_tran_pred_c`, `_tran_ctrl_c`, `_tran_branch_c`, `_tran_sources` | nothing: their state lives in the caller's struct or table | -- |
 
@@ -93,9 +96,10 @@ packed. Checking them costs far more than the work, so they are checked once and
   the Newton's mark (and, adaptive, the error test's) equals the counter now: the last Python
   attempt passed every check, and nothing watched has moved since. With watching off the counter
   reads -1 and the loop never enters.
-* **Kept declines.** A decline whose reason is the run's, not the attempt's, is kept with the
-  counter (`c_kept`, `_newton_c_no`, `_passes_no`) and not re-checked until something watched
-  moves.
+* **Kept declines.** A decline whose reason is the run's, not the attempt's, is kept and not
+  re-checked: the C loop's with the watch counter (`c_kept`, until something watched moves), the
+  Newton's and the core's with the circuit's stamp plan (`_newton_c_no`, `_passes_no`, until the
+  plan is another).
 * **The backoff.** An entry that made no attempt (the screen fired on the first one) doubles the
   Python attempts before the next entry, up to `_tran_loop_c.BACKOFF_MAX`; an entry that makes any
   resets it.

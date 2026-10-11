@@ -1,16 +1,36 @@
-"""RADAU'S TRANSFORM NEWTON IN C (speed round 10, B3.3; 2026-10-05).
+"""RADAU'S TRANSFORM NEWTON IN C: `_RadauStages._transform_loop`, the
+simplified Newton of the cost transform (`_RadauStages._rk_step_transformed`:
+PSS's default on PSP-class circuits under 'auto'), in ONE C call
+(`solve`); and `_RadauStages._radau_frozen`'s two factors in another
+(`fold`).  Bit for bit the Python (pinned in `tests/test_pinned_pairs.py`).
 
-The cost transform (`_RadauStages._rk_step_transformed`: PSS's default on
-PSP-class circuits under 'auto') is a SIMPLIFIED Newton -- `C` and `G`
-frozen at ``x_n``, the coupled solve through ``A^{-1}``'s eigenbasis, its
-factors made once a step (`_radau_frozen`, B3.1).  Its loop spent ~3.5 M
-instructions a step on the PSP stage's radau PSS in Python and numpy
-around ~0.4 M of device kernels: per iteration the three stages' passes
-through `_tran_core.passes`, the residual (`_coupled_stage_system`), the
-frozen solve (`_FrozenTransform.solve`: the right-hand sides, numpy's kept
-LU, the complex factor's KLU solve and its residual check, the update),
-and per stage the step, the limiter and the convergence test.  Here ONE C
-call runs the loop: per iteration the stages' ``q`` and ``i`` through the
+OWNS.  On the transient, `tr._radau_tc` (`_Ctx`: the `radau_tf_t` struct,
+its buffers, what was last set in it -- the tableau, `P` and `V`, the kept
+LU's addresses, the pattern's arrays, the KLU handles -- and the limiter
+walk's fields, which `_tran_newton_c._walk_ready` sets) and `tr._tc_end`
+(the step's end passes, handed to `_RadauStages._stage_end_passes`, which
+pops it).  On a call it writes what the Python loop leaves: the step's
+source memo (`tr._u_memo`) and its count `umemo:hit`, and the frozen
+factors' state -- the kept LU's `NumpyLU._info`, the complex solver's
+`ComplexKLUSolver.refactors` and `_fresh`.  The module keeps `fold`'s
+driver, buffers and last pattern (`_FOLD`).  `_paths`: `radau_tc:` --
+`radau_tc:<why>` a decline, `radau_tc:bail:<why>` a hand-back (`BAIL`),
+`radau_tc:served`, `radau_tc:iterations`, `radau_tc:end` -- and `fold`'s
+`radau.frozen:fold` (made), `radau.frozen:fold.same` (its packed values
+too) and `radau.frozen:fold.<why>` (not made).  Switches, each read on
+every call: `PYCIRCUIT_RADAU_TC=0` (`ENABLED`: the loop),
+`PYCIRCUIT_RADAU_TC_END=0` (`END`: the end passes), `PYCIRCUIT_RADAU_FOLD=0`
+(`FOLD`: the factors); `STATUS` says why the loop's path is off where it
+is, `_FOLD['status']` the factors'.
+
+THE LOOP.  `C` and `G` are frozen at ``x_n`` and the coupled solve goes
+through ``A^{-1}``'s eigenbasis, its factors made once a step
+(`_radau_frozen`).  Per iteration the Python loop makes the three stages'
+passes through `_tran_core.passes`, the residual (`_coupled_stage_system`),
+the frozen solve (`_FrozenTransform.solve`: the right-hand sides, numpy's
+kept LU, the complex factor's KLU solve and its residual check, the
+update), and per stage the step, the limiter and the convergence test.
+The C makes, per iteration, the stages' ``q`` and ``i`` through the
 evaluate core's own C (formula 4, as `passes`), ``K_j = -(i_j + u_j)``,
 ``F_i = (q_i - q_n) - h (((0 + A_i0 K_0) + A_i1 K_1) + A_i2 K_2)`` reduced
 (`_tran_radau_c`'s assembly, without the blocks); the right-hand sides
@@ -23,15 +43,14 @@ after); the complex factor's KLU on the solver's own handles (the refactor
 ``dY_i = V_i0 w0 + 2 Re(V_i1 w1)``; per stage ``Y_prev + insert(dY_i,
 iref, 0.0)``, the limiter walk's own driver and the limited step's largest
 reduced entry; the convergence test after the update, as the Python tests.
-Bit for bit the Python loop (pinned in `tests/test_pinned_pairs.py`).
 
-⚠ NUMPY'S COMPLEX PRODUCT IS READ, NOT ASSUMED.  On this box (numpy's
-X86_V3 loops: AVX2 and FMA3) it FUSES -- ``re = fma(ar, br, -(ai*bi))``,
-``im = fma(ar, bi, ai*br)``, at every position of every length -- and a
-build or CPU without FMA multiplies separately.  `cmul_mode` asks numpy
-itself once, on inputs where the two forms round apart (and on signed
-zeros and underflow, where only the fused form's sign rules hold), and
-the C takes the form numpy showed; neither: the path is off.
+⚠ NUMPY'S COMPLEX PRODUCT IS READ, NOT ASSUMED.  With numpy's X86_V3
+loops (AVX2 and FMA3) it FUSES -- ``re = fma(ar, br, -(ai*bi))``, ``im =
+fma(ar, bi, ai*br)``, at every position of every length -- and a build or
+CPU without FMA multiplies separately.  `cmul_mode` asks numpy itself once,
+on inputs where the two forms round apart (and on signed zeros and
+underflow, where only the fused form's sign rules hold), and the C takes
+the form numpy showed; neither: the path is off.
 
 ⚠ THE RESIDUAL CHECK IS DECIDED WITH A MARGIN.  `solve_prepared` falls
 back to a fresh factor where ``max|A x - b| / max|b|`` exceeds its
@@ -40,8 +59,7 @@ tolerance (1e-8), read with numpy's complex `abs` (its own algorithm, not
 rounding and decides only outside the band their difference can reach
 (``32 (m + 4) eps`` of ``max_k sum_j |A_kj| |x_j|`` over ``max|b|``, plus
 ``16 eps`` of the residual): a residual nearer the tolerance than that, or
-past it, hands the iteration back and the Python decides, as it does --
-in practice the residual sits ~1e-15 below a 1e-8 tolerance.
+past it, hands the iteration back and the Python decides, as it does.
 
 TRANSACTIONAL.  The C writes nothing outside its buffers but the two
 factorisations' state, which the Python would have left the same: numpy's
@@ -60,39 +78,35 @@ fresh factor), the walk stopping, maxiter -- hands the loop back: the
 source memo's entries and counts rolled back, and the Python loop runs
 from the same seed (the same answer, exception, warning).
 
-THE STEP'S END PASSES (speed round 12, stage 5a; `END`, env
-`PYCIRCUIT_RADAU_TC_END`).  Once converged the C makes, in the same call,
-the passes `_stage_end_passes` makes next: all four at the last stage, and
-`C` and `G` at the first two where the shooting reads them (`_stage_G_read`)
--- each `_tran_core.passes`'s core call with its bits, outputs and dummies,
-in its order (the core's own arrays are its scratch, each call writing what
-it reads: a call the Python then does not need leaves nothing behind) -- and
-hands them over with the very stage list it returns (`_tc_end`, the watch
-counter with it).  `_stage_end_passes` takes them for those stages only,
-the counter unmoved, all four passes wanted at the last stage and
-`passes`'s readiness holding as stamped (`_tran_core.passes_held`), making
-the counters each of its calls makes (`passes_count`); else it makes the
-calls (`radau.fuse:unhanded`).  Each hand-off's own `passes` call cost
-~57 k instructions of readiness and marshalling around its kernels.
+THE STEP'S END PASSES (`END`).  Once converged the C makes, in the same
+call, the passes `_stage_end_passes` makes next: all four at the last
+stage, and `C` and `G` at the first two where the shooting reads them
+(`_stage_G_read`) -- each `_tran_core.passes`'s core call with its bits,
+outputs and dummies, in its order (the core's own arrays are its scratch,
+each call writing what it reads: a call the Python then does not need
+leaves nothing behind) -- and hands them over with the very stage list it
+returns (`_tc_end`, the watch counter with it).  `_stage_end_passes` takes
+them for those stages only, the counter unmoved, all four passes wanted at
+the last stage and `passes`'s readiness holding as stamped
+(`_tran_core.passes_held`), making the counters each of its calls makes
+(`passes_count`); else it makes the calls (`radau.fuse:unhanded`).
 
-THE FROZEN FACTORS (speed round 12, stage 5b; `FOLD`, env
-`PYCIRCUIT_RADAU_FOLD`).  `_radau_frozen` makes its two factors -- ``(lam0/h)
-Cr + Gr`` real, ``(lam1/h) Cr + Gr`` complex -- and the complex one's packed
-values by `fold`, one small C call of its own: numpy's operations in its
-order (two roundings for the real one; for the complex one ``Cr`` cast to
-complex, numpy's product in `cmul_mode`'s form, then ``Gr`` cast to
-complex), the four flags its `errstate(all='raise')` raises on, and the
-nonzeros where they fall in the last record's pattern (`_csc_of_dense`'s
-order: column by column, rows ascending).  Every decision stays in
-`_radau_frozen`, in its order: a flag declines as numpy's error does, the
-kept LU is made as before, the record is `prepare`'s own
-(`ComplexKLUSolver.prepare_values`) where the values fell in the pattern and
-`prepare`'s otherwise.  A non-finite input is numpy's (a NaN's payload
-follows its loops).  Its own call, not inside the transform's: inside, a
-factor that would raise surfaces only after the call's readiness checks
-have run, and the step would be made again around them.  The C's work is
-nothing on the PSP stage's 6x6 factors; the call's marshalling is the cost
-(buffers kept per size: `ffi.from_buffer` costs ~3.5 k a call).
+THE FROZEN FACTORS (`FOLD`).  `_radau_frozen` makes its two factors --
+``(lam0/h) Cr + Gr`` real, ``(lam1/h) Cr + Gr`` complex -- and the complex
+one's packed values by `fold`, one small C call of its own: numpy's
+operations in its order (two roundings for the real one; for the complex
+one ``Cr`` cast to complex, numpy's product in `cmul_mode`'s form, then
+``Gr`` cast to complex), the four flags its `errstate(all='raise')` raises
+on, and the nonzeros where they fall in the last record's pattern
+(`_csc_of_dense`'s order: column by column, rows ascending).  Every
+decision stays in `_radau_frozen`, in its order: a flag declines as
+numpy's error does, the kept LU is made as before, the record is
+`prepare`'s own (`ComplexKLUSolver.prepare_values`) where the values fell
+in the pattern and `prepare`'s otherwise.  A non-finite input is numpy's
+(a NaN's payload follows its loops).  Its own call, not inside the
+transform's: inside, a factor that would raise surfaces only after the
+call's readiness checks have run, and the step would be made again around
+them.  Its buffers are kept per size, their handles made once.
 
 DECLINES, before anything is touched (`_paths.no`): the switch (and the
 evaluate core's two), no frozen factors or no kept LU or marshalled record
@@ -106,9 +120,7 @@ not ready, a KLU solver whose numeric is not of the record's pattern (the
 Python analyses and factors), a singular kept LU, inputs of another type
 or size.
 
-`ENABLED` (env `PYCIRCUIT_RADAU_TC=0`) is read on every call; `STATUS` says
-why the path is off where it is.  History: `doc/transient_history.md`,
-`_tran_radau_tc.py`.
+History: `doc/transient_history.md`, `_tran_radau_tc.py`.
 """
 import ctypes
 import itertools
@@ -121,18 +133,18 @@ from pycircuit.circuit import _cbuild, _paths, _watch
 
 _PC = _paths.COUNTS
 #: (float64's dtype: a check by identity first, `==` where it is not the
-#: object -- speed round 11)
+#: object)
 _F64 = np.dtype(np.float64)
 _no = _paths.no
 
 ENABLED = os.environ.get('PYCIRCUIT_RADAU_TC', '1') != '0'
-#: THE STEP'S END PASSES in the same call (speed round 12, stage 5a): the
-#: passes `_stage_end_passes` makes next, made by the C after it converges
-#: and handed over (`_tc_end`); env `PYCIRCUIT_RADAU_TC_END=0` turns it off
+#: THE STEP'S END PASSES in the same call: the passes `_stage_end_passes`
+#: makes next, made by the C after it converges and handed over
+#: (`_tc_end`); env `PYCIRCUIT_RADAU_TC_END=0` turns it off
 END = os.environ.get('PYCIRCUIT_RADAU_TC_END', '1') != '0'
-#: THE FROZEN FACTORS IN C (speed round 12, stage 5b): `_radau_frozen`'s two
-#: factors and the complex one's packed values made by one small C call
-#: (`fold`); env `PYCIRCUIT_RADAU_FOLD=0` turns it off
+#: THE FROZEN FACTORS IN C: `_radau_frozen`'s two factors and the complex
+#: one's packed values made by one small C call (`fold`); env
+#: `PYCIRCUIT_RADAU_FOLD=0` turns it off
 FOLD = os.environ.get('PYCIRCUIT_RADAU_FOLD', '1') != '0'
 STATUS = 'not loaded'
 
@@ -142,9 +154,9 @@ RADAU_TC_CDEF = _cbuild.csrc('radau_tc.h')
 FOLD_C = _cbuild.csrc('radau_fold.c')
 FOLD_CDEF = _cbuild.csrc('radau_fold.h')
 
-#: the C's status codes past 1 (converged): why it handed the loop back
-#: the C's results, named in radau_tc.h and radau_fold.h: {code: why} of
-#: the solve's bails
+#: the C's results, named in radau_tc.h and radau_fold.h (`_CODES`,
+#: `_FOLD_CODES`); `BAIL`: {code: why} of the solve's codes past 1
+#: (converged) -- why it handed the loop back
 _CODES = _cbuild.constants(RADAU_TC_CDEF)
 _FOLD_CODES = _cbuild.constants(FOLD_CDEF)
 BAIL = _cbuild.bails(_CODES, 'RADAU_TC_BAIL_')
@@ -273,10 +285,9 @@ def _fold_driver():
 
 
 def _fold_bufs(m):
-    """`fold`'s buffers for size `m` -- the inputs copied in, the outputs
-    copied out: a buffer's handle is made once (`ffi.from_buffer` costs
-    ~3.5 k instructions a call, more than the C's work on a small factor)
-    -- set in the struct."""
+    """`fold`'s buffers for size `m` (the inputs copied in, the outputs
+    copied out), kept in `_FOLD['m']`: each buffer's handle made once and
+    set in the struct."""
     ffi, _cfn, f = _FOLD['drv']
     bufs = (np.empty((m, m)), np.empty((m, m)), np.empty((m, m)),
             np.empty((m, m), dtype=np.complex128), np.empty(m * m, dtype=np.complex128))
@@ -307,21 +318,20 @@ def _fold_nz(nz, m):
 
 
 def fold(Cr, Gr, s0, c1, last):
-    """`_RadauStages._radau_frozen`'s two factors from ONE C call (speed
-    round 12, stage 5b), or None where the C does not make them -- the
-    switch, no build, inputs other than two float64 square arrays of one
-    size, a non-finite entry (each counted, `radau.frozen:fold.<why>`): the caller
-    makes them in numpy, as before.  Else `(flagged, rf, cf, data)`:
-    `flagged`, an operation raised a flag numpy raises on under
-    `errstate(all='raise')` (the caller declines as it does; nothing else
-    returned); `rf` and `cf`, ``s0 * Cr + Gr`` and ``c1 * Cr + Gr`` -- fresh
-    arrays, numpy's bytes, for the scalars as the caller's expression makes
-    them, finite; `data`, the complex factor's nonzeros where they fall in
-    `last`'s pattern (`ComplexKLUSolver._csc_last`), in its order
+    """`_RadauStages._radau_frozen`'s two factors from ONE C call, or None
+    where the C does not make them -- the switch, no build, inputs other
+    than two float64 square arrays of one size, a non-finite entry (each
+    counted, `radau.frozen:fold.<why>`): the caller makes them in numpy, as
+    before.  Else `(flagged, rf, cf, data)`: `flagged`, an operation raised
+    a flag numpy raises on under `errstate(all='raise')` (the caller
+    declines as it does; nothing else returned); `rf` and `cf`, ``s0 * Cr +
+    Gr`` and ``c1 * Cr + Gr`` -- fresh arrays, numpy's bytes, for the
+    scalars as the caller's expression makes them, finite; `data`, the
+    complex factor's nonzeros where they fall in `last`'s pattern
+    (`ComplexKLUSolver._csc_last`), in its order
     (`ComplexKLUSolver.prepare_values`) -- None where they fall elsewhere,
-    there is no pattern or it has no nonzeros.  It stands in for the numpy calls, their errstate,
-    the mask and the gather: ~85 k instructions a step on the PSP stage's
-    radau PSS."""
+    there is no pattern or it has no nonzeros.  It stands in for the numpy
+    calls, their errstate, the mask and the gather."""
     if not FOLD:
         return _no('radau.frozen:fold.off')
     d = _FOLD.get('drv')
@@ -441,7 +451,7 @@ class _Ctx:
             'ab': np.empty(m), 'dY': np.empty(3 * m), 'stp': np.empty(n), 'tolv': np.empty(2),
             'qn': np.empty(n), 'u': np.empty((3, n)), 'seed': np.empty((3, n)),
             'dummy': np.zeros(max(n * n, 1)),
-            ## (the step's end passes' outputs, stage 5a)
+            ## (the step's end passes' outputs: `END`)
             'e_q': np.empty(n), 'e_i': np.empty(n), 'e_C': np.empty(n * n),
             'e_G': np.empty(n * n), 'e_C01': np.empty(2 * n * n), 'e_G01': np.empty(2 * n * n),
             'e_q01': np.empty(n),
@@ -467,9 +477,7 @@ class _Ctx:
         s.walk_fn = ffi.NULL
         s.wn = 0
         ## (what does not change from step to step is set once: the product
-        ## form, the passes' bits; the rest when it changes -- speed round 10,
-        ## B3.5: a cast from `arr.ctypes.data` cost 13.5 k instructions, 21
-        ## of `P`'s and `V`'s entries ~30 k a step)
+        ## form, the passes' bits; the rest by `solve`, when it changes)
         s.fused = _MOD['cmul']
         s.bits = _MOD['bits']
         self.A_bytes = self.p_of = self.Ap_obj = self.keep_ap = self.klu_kk = None
@@ -485,8 +493,11 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     """The transform's Newton loop from the stages `seed` in C: the three
     converged stages as fresh full-width arrays, the source memo and the
     two factorisations' state as the Python loop leaves them -- or None:
-    declined or handed back, nothing left behind that the Python loop
-    would not make again, and the Python loop runs."""
+    declined (`radau_tc:<why>`) or handed back (`radau_tc:bail:<why>`),
+    nothing left behind that the Python loop would not make again, and the
+    Python loop runs.  `fz` is the step's frozen factors (`_radau_frozen`'s
+    `_FrozenTransform`); where `END` asks, the step's end passes are left
+    in `tr._tc_end` with the very stage list returned."""
     if not ENABLED:
         return _no('radau_tc:off')
     if fz is None or fz.lu is None or fz.prep is None:
@@ -668,7 +679,7 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     s.T = Tc
     s.h, s.reltol, s.abstol = float(h), float(reltol), float(abstol)
     s.rtol, s.maxiter = float(zs.REFACTOR_RESIDUAL_TOL), int(maxit)
-    ## THE STEP'S END PASSES (stage 5a): asked where `_stage_end_passes`
+    ## THE STEP'S END PASSES (`END`): asked where `_stage_end_passes`
     ## would make them -- its switch on and the step's memo rolling (it
     ## reads and records only there); `C` and `G` at the first two stages
     ## where the shooting reads them (`_stage_G_read`)

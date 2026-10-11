@@ -1,7 +1,20 @@
 # Copyright (c) 2008-2026 Pycircuit Development Team
 # See LICENSE for details.
 """Building and loading pycircuit's C objects -- the HDL kernels and the
-transient's runtime units alike.
+transient's runtime units (`csrc/`) alike.  No Python reference: every
+glue module loads its unit here (`load_unit`), every HDL class and limiter
+its kernels (`load_kernel`).
+
+OWNS.  Nothing on others' objects.  In the store (the compile cache's
+directory, `_hdl_cache`, or a per-process temporary one with the cache
+off): the built objects `c-<key>-<compiler tag>.so`, the precompiled FFIs
+`pcx_ffi_<sha>.py` and the build locks `locks/c-<key>.lock`.  Per process:
+`_loaded` (key -> `(ffi, cfn)`), `_ffis` (declaration -> FFI), `_libs`
+(every library opened, held), `_compiler`.  No `_paths` counts.
+Switches: `PYCIRCUIT_HDL_CC` (then `CC`) names the compiler;
+`PYCIRCUIT_C_SANITIZE=1` makes the sanitizer build; the store's
+`PYCIRCUIT_HDL_CACHE` and `PYCIRCUIT_HDL_CACHE_DIR` are `_hdl_cache`'s;
+`enabled_env` reads `PYCIRCUIT_HDL_BACKEND` for its callers.
 
 CONTRACT
     `load_kernel(csrc, cdef)` returns `(ffi, cfn, key, cold, seconds)`
@@ -12,23 +25,28 @@ CONTRACT
     chain kernels' `_fn_cdef()` when None), memoised per process in
     `_loaded`.  `CompileError` when no compiler is found or a build
     fails; a caller turns it into a status.
+    `load_unit(csrc, cdef)` is `load_kernel` for a runtime unit: no
+    prelude, the source as `csrc(name)` gives it (its local headers
+    expanded), so the key is the exact text compiled and the flags.
+    The FFI an object is called through is `_ffi_for(cdef)`'s: one per
+    declaration text a process, precompiled into the store as cffi's
+    out-of-line module, parsed where that cannot be written or read --
+    either declares the same types.  Every opened library is held for
+    the process.
     `CFLAGS` are strict IEEE doubles: no fast-math, no FMA contraction,
     no `-march`, every transcendental a real libm call -- the bit
     identity with the numpy path rests on them.  With
     `PYCIRCUIT_C_SANITIZE=1` the sanitizer flags are added (their own
     keys) and the import refuses without the ASan runtime preloaded.
-    The store is the compile cache's directory, or a per-process temporary
-    one with the cache off; an object's file name carries the compiler's
-    version tag, and another compiler's object for the same source is
-    served where this one is absent (`find_so`).
+    An object's file name carries the compiler's version tag, and
+    another compiler's object for the same source is served where this
+    one is absent (`find_so`).
 
     Patch these names HERE, not on `_hdl_cbackend`, which re-exports them
     for its callers: `CFLAGS`, `_compiler`, `_loaded` are read from this
     module.
 
-Moved out of `_hdl_cbackend` (the C stepping loop plan's stage R1b,
-2026-10-10) byte for byte: every key, and so every stored object, is the
-one it was.  History of the pieces: `_hdl_cbackend`'s module docstring.
+History: `doc/transient_history.md`, `_cbuild.py`.
 """
 
 import contextlib
@@ -39,10 +57,10 @@ import shutil
 import subprocess
 import tempfile
 
-#: The runtime units' C sources, as files (the C loop plan's stage R1c):
-#: `csrc(name)` is the text of `csrc/<name>`, read without newline
-#: translation, its `#include "x.h"` lines replaced by those headers' text
-#: (R1d) -- so what is keyed, compiled and digested is every line compiled.
+#: The runtime units' C sources, as files: `csrc(name)` is the text of
+#: `csrc/<name>`, read without newline translation, its `#include "x.h"`
+#: lines replaced by those headers' text -- so what is keyed, compiled and
+#: digested is every line compiled.
 CSRC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'csrc')
 
 #: the name a `#line` gives a file of `csrc/`: its path from the source
@@ -53,10 +71,9 @@ CSRC_NAME = 'pycircuit/circuit/csrc/'
 _LOCAL_INCLUDE = re.compile(r'^#include "([\w.]+)"\n', re.MULTILINE)
 
 #: An n x n input a unit only reads goes to it where it stands
-#: (`ffi.from_buffer`) from this many entries; below, copying it into the
-#: unit's own buffer costs less -- the buffer object and re-pointing the
-#: struct read +0.2 % a step at n <= 25 (2026-10-11), the copy it saves is
-#: 580 KB a call at n = 269.
+#: (`ffi.from_buffer`) from this many entries; below, it is copied into the
+#: unit's own buffer, which costs less there than a buffer object and
+#: re-pointing the struct.
 INPLACE_MIN_ENTRIES = 4096
 
 
@@ -133,20 +150,20 @@ CFLAGS = ('-O2', '-shared', '-fPIC', '-fno-fast-math', '-ffp-contract=off',
 
 _FALSE = ('0', 'off', 'false', 'no', '')
 
-#: THE SANITIZER BUILD (2026-10-04, testing for development, stage 4).
-#: With `PYCIRCUIT_C_SANITIZE=1` every C object -- the chain kernels, the
-#: limiters, the pass driver, the walk, the evaluate core: all build here --
-#: is compiled with AddressSanitizer and UndefinedBehaviorSanitizer, so an
-#: out-of-bounds access or undefined behaviour stops the process with the
-#: file and line instead of corrupting a neighbour silently.  No float
-#: checks: the kernels make inf and NaN on purpose, where Python raises.
-#: The flags are part of `source_key`, so sanitized objects sit in the same
-#: store under their own keys and a normal process never loads one.  The
-#: interpreter is not instrumented: the ASan runtime must be PRELOADED
+#: THE SANITIZER BUILD.  With `PYCIRCUIT_C_SANITIZE=1` every C object --
+#: the HDL kernels, the limiters, the walk and every runtime unit: all
+#: build here -- is compiled with AddressSanitizer and
+#: UndefinedBehaviorSanitizer, so an out-of-bounds access or undefined
+#: behaviour stops the process with the file and line instead of
+#: corrupting a neighbour silently.  No float checks: the kernels make inf
+#: and NaN on purpose, where Python raises.  The flags are part of
+#: `source_key`, so sanitized objects sit in the same store under their own
+#: keys and a normal process never loads one.  The interpreter is not
+#: instrumented: the ASan runtime must be PRELOADED
 #: (`scripts/sanitize_suite.sh` sets everything).  Without it every object
 #: would fail to load, `load_kernel` would rebuild and fail again, every
-#: class would fall back to numpy and every test would pass having tested
-#: nothing -- so the import refuses instead.
+#: class would fall back to numpy, every C path would decline, and every
+#: test would pass having tested nothing -- so the import refuses instead.
 SANITIZE = os.environ.get('PYCIRCUIT_C_SANITIZE', '').strip().lower() not in _FALSE
 SANITIZE_FLAGS = ('-g', '-fno-omit-frame-pointer', '-fsanitize=address,undefined',
                   '-fno-sanitize-recover=all')
@@ -307,12 +324,12 @@ class CompileError(Exception):
 @contextlib.contextmanager
 def _key_lock(key, blocking=True):
     """Exclusive, across processes, the right to build `key`'s object
-    (`fcntl.flock` on `locks/<key>.lock` in the store): yields whether it
-    was acquired -- with `blocking=False` it may not be, and the caller
-    leaves the build to the holder.  So eight test workers asking for one
-    model's kernels compile it once, not eight times (each a `cc` run of
-    up to a minute for PSP).  Where `flock` is unavailable it yields True
-    and builds proceed unlocked, as before (each still atomic)."""
+    (`fcntl.flock` on `locks/c-<key>.lock` in the store): yields whether
+    it was acquired -- with `blocking=False` it may not be, and the caller
+    leaves the build to the holder.  So processes asking for one object at
+    once (test workers) compile it once.  Where `flock` or the lock file is
+    unavailable it yields True and builds proceed unlocked (each still
+    atomic)."""
     try:
         import fcntl
     except ImportError:                            # pragma: no cover
@@ -410,12 +427,11 @@ def _ffi_for(cdef):
 
 def _precompiled(cdef):
     """`cdef` as cffi's out-of-line ABI mode declares it: its type tables
-    as a generated Python module in the store (`ffi-<sha>.py`, keyed by
-    the text and cffi's version, written by one process and renamed into
-    place), so a process parses neither the declaration nor, later, a
-    type string with pycparser -- a header ~2-3 ms and a first type
-    string ~0.2 ms parsed, microseconds read.  None when the module
-    cannot be written or read: the caller parses."""
+    as a generated Python module in the store (`pcx_ffi_<sha>.py`, keyed
+    by the text and cffi's version, written by one process and renamed
+    into place), so a process parses neither the declaration nor, later,
+    a type string with pycparser.  None when the module cannot be written
+    or read: the caller parses."""
     import importlib.util
 
     import cffi

@@ -1,24 +1,38 @@
-"""THE NEWTON SOLVE IN C (speed round 8, stage 4; 2026-10-04).
+"""THE NEWTON SOLVE IN C: a multistep step's Newton -- `_StepNewton._newton`
+with `nrsolver.StandardNewton` or `ChordNewton` -- and the converged point's
+`jacobian_only`, made in ONE C call (`csrc/newton.c`), bit for bit; pinned
+against the Python in `tests/test_pinned_pairs.py`.  Called from
+`Transient._solve_timestep` (`solve`); the C stepping loop (`_tran_loop_c`)
+drives the same struct.
 
-A multistep step's Newton spent ~750 k instructions an iteration on a
-20-MosLevel1 chain in Python and numpy around ~250 k of C: the evaluate
-core's wrapper (readiness over the elements, sixteen buffer handles, the
-lookup), the reference row cut out of `J` and `F` and put back into `x`,
-numpy's solve wrapper, the limiter's wrapper and the walk's per-element
-checks, the convergence test's dozen small-array calls -- with about one
-iteration a step.  Here ONE C call does the whole solve: per iteration the
-evaluate core's own C (`_tran_core.CORE_C`, through its struct pointer), the
-reduced `J` written column-major as numpy's solve copies it and `-F`, the
-LU (numpy's own `scipy_dgesv_64_` for the plain Newton; SciPy's
-`scipy_dgetrf_`/`scipy_dgetrs_` for the chord, which factors with SciPy's
-OpenBLAS), `x + dx`, the limiter walk's own driver (`_hdl_climit._WALK_C`)
-and `dx = x_next - x` re-taken where a limiter exists, the convergence test
-in `nrsolver`'s order (`|J||x|` through numpy's own `scipy_cblas_dgemv64_`)
-and the chord's shrink test; then the converged point's evaluation
-(`jacobian_only`: G, C, q -- C and q where nothing reads the step's
-Jacobian, a fixed multistep run: speed round 9, C0) in the same call.  Bit for bit `StandardNewton`,
-`ChordNewton` and `jacobian_only` (the stage-0 prototype, pss_log
-2026-10-04; pinned in `tests/test_pinned_pairs.py`).
+OWNS.  On the transient: `_newton_c` (its `_Ctx` record: the struct and
+buffers, the LAPACK and BLAS addresses, the walk's and KLU's bindings, the
+stamped parameter reads `par_rec`, the served mark `served`) and
+`_newton_c_no` (a kept decline, `(stamp plan, _paths key)`: a property of
+the circuit, `_KEPT`, answered at once while the circuit's dict holds that
+plan).  On the circuit's limiter walk (`_hdl_climit._walk_for`): the tables
+`limit_walk`'s setup fills (`F`, `PR`, `mirror`), and on each limiting
+element its pack `_hdl_cp` where it has none.  On the `StructuralKLU` it
+solves with: its `numerics` count.  `_paths`: `newton_c:<why>` a decline,
+`newton_c:bail:<why>` a hand-back, and on a serve `newton_c:served`,
+`newton_c:iterations`, `newton_c:jfold`, `newton_c:j_unread`,
+`newton_c:sparse` -- with the Python's own `chord:chosen` where the Python
+would count it.  Switch: `PYCIRCUIT_NEWTON_C=0` (`ENABLED`, read on every
+call), and the evaluate core's (`PYCIRCUIT_TRAN_CORE`, `_tran_core.CORE`);
+`STATUS` says why the path is off where it is.
+
+ONE CALL.  Per iteration: the evaluate core's own C (`_tran_core.CORE_C`,
+through its struct pointer); the reduced `J`, written column-major as
+numpy's solve copies it, and `-F`; the LU -- numpy's own `scipy_dgesv_64_`
+for the plain Newton, SciPy's `scipy_dgetrf_`/`scipy_dgetrs_` for the dense
+chord (SciPy's OpenBLAS, as the Python's chord factors), KLU on the run's
+own symbolic analysis for the sparse chord (`_klu_bind`); `x + dx`; the
+limiter walk's own driver (`_hdl_climit._WALK_C`) and `dx = x_next - x`
+re-taken where a limiter exists; the convergence test in `nrsolver`'s order
+(`|J||x|` through numpy's own `scipy_cblas_dgemv64_`) and the chord's
+shrink test.  Then, in the same call, the converged point's evaluation:
+`jacobian_only`'s G, C and q -- C and q alone where nothing reads the
+step's Jacobian (`want_j` False: a fixed multistep run).
 
 TRANSACTIONAL.  Nothing is written on the transient or the devices before
 the C has converged; anything unusual -- a LAPACK info, a non-finite value,
@@ -27,31 +41,42 @@ trace (the step's source-memo entry and its counts), and `_newton` repeats
 the same arithmetic from the same seed: the same answer, exception, warning
 and statistics.
 
-DECLINES, before anything is touched (`_paths.no`): the switch (and the
-evaluate core's, `_tran_core.CORE`), no build or no OpenBLAS, a toolkit
-that is not numeric, an instance shadow of the
-circuit's passes or of the transient's machinery, a `provided_function`, no
-step source memo, a stateful limiter, the continuation rescue, a caller's
-solver or scaler, a linear solver that is not `AutoSolver`'s dense choice, a
-circuit the core cannot serve, an integrator outside the core's enum, a
-limiting element that is not its C kernel (structural reasons kept with the
-walk: such a circuit declines at its first check), the core's readiness
-(`_Core.probe`: counted once, by the path that follows).  Between two
-iterations only the C runs, so readiness checked once a solve holds for
-every iteration.  Between two SOLVES the walk's readiness, the core's and
-the parameter reads (the solver options, the linear solver, the
-tolerances) hold as stamped (`_watch`, speed round 9, stage 4): unchecked
-while no dict they read has changed, what no dict watcher sees compared
-on every call.
+THE SERVED MARK.  `_newton_c.served` is the watch counter at a call this
+path served (with no branch confirmation re-solving after it), None after
+any other outcome: the C stepping loop enters only while it equals the
+counter now.
+
+DECLINES, before anything is touched (`_paths.no`, `newton_c:<why>`): the
+switch (`off`) or the evaluate core's (`core`); no build or no OpenBLAS
+(`driver`); a piece of the chain the C stands in for patched or subclassed
+(`patched`, `class`: `_chain`); a toolkit that is not numeric (`toolkit`);
+an instance shadow of the circuit's passes or of the transient's machinery
+(`shadow_cir`, `shadow_tr`); a `provided_function` (`pf`); no step source
+memo (`umemo`); a stateful limiter (`stateful`); the continuation rescue or
+a caller's solver or scaler (`solver`); a linear solver that is not
+`AutoSolver`'s dense or `StructuralKLU` choice (`linsolver`), the sparse
+choice for the full Newton (`sparse_full`) or a KLU not analysed yet or
+whose pattern does not hold the core's (`klu`); a circuit the core cannot
+serve (`unservable`); a reference row out of range (`iref`); a seed that is
+not one finite float64 vector of the circuit's size (`x`); an integrator
+outside the core's enum (`formula`); a history row of the wrong shape
+(`history`); a limiting element that is not its C kernel (`limit`; kept
+where its class has no C limiter at all); the core's readiness (`ready`:
+`_Core.probe`, counted once, by the path that follows); a source pass that
+raises or gives no float64 vector of the circuit's size (`u`: the
+attempt's trace undone).  Between two iterations only the C runs, so
+readiness checked once a solve holds for every iteration.  Between two
+SOLVES the walk's readiness, the core's and the parameter reads (the solver
+options, the linear solver, the tolerances) hold as stamped (`_watch`):
+unchecked while no dict they read has changed, what no dict watcher sees
+compared on every call.
 
 THE BRANCH CHECK follows as in `_newton`; its screen finds `C` at the
 converged point in `_C_cache`.  Where it fires, the confirmation's
 speculative solves overwrite the step's state, and `jacobian_only` runs
-again after it, as before.
+again after it, as in the Python.
 
-`ENABLED` (env `PYCIRCUIT_NEWTON_C=0`) is read on every call; `STATUS` says
-why the path is off where it is.  History: `doc/transient_history.md`,
-`_tran_newton_c.py`.
+History: `doc/transient_history.md`, `_tran_newton_c.py`.
 """
 import ctypes
 import glob
@@ -72,9 +97,10 @@ STATUS = 'not loaded'
 NEWTON_C = _cbuild.csrc('newton.c')
 NEWTON_CDEF = _cbuild.csrc('newton.h')
 
-#: the C's status codes past 1 (converged): why it handed the solve back
-#: the C's results, named in newton.h: {code: why} of its bails
+#: newton.h's named codes: the C's results (`NEWTON_CONVERGED`, the bails
+#: `NEWTON_BAIL_<WHY>`)
 _CODES = _cbuild.constants(NEWTON_CDEF)
+#: {code: why} of the C's bails: why it handed the solve back
 BAIL = _cbuild.bails(_CODES, 'NEWTON_BAIL_')
 #: the counts the step's source pass makes (`_source_at`, `cir.u`; the
 #: source plan's own, `_stamp_plan._SK`, are added at `_mods`): the
@@ -82,6 +108,9 @@ BAIL = _cbuild.bails(_CODES, 'NEWTON_BAIL_')
 _U_KEYS = ('umemo:hit', 'umemo:miss', 'umemo:unhashable', 'u:called')
 
 _driver = None
+#: the modules and names `solve` reads (`_mods`; `_tran_radau_c` and
+#: `_tran_radau_tc` read them too) and the chain it checks (`_chain`),
+#: each filled once
 _MOD = {}
 #: a parameter not stored (`_ParRec.bp_obj`)
 _ABSENT = object()
@@ -198,9 +227,16 @@ def _mods():
 
 
 class _Ctx:
-    """One transient's struct and buffers for one core, size and reference
-    row: every pointer the C holds is a buffer of this context's, set once
-    (a solve copies its inputs in and its state out)."""
+    """One transient's struct (`s`, a `newton_t`) and buffers (`buf`) for
+    one core, size and reference row, set once: a solve copies its inputs
+    in and its state out.  The struct's other pointers: the core's struct
+    and entry, the LAPACK and BLAS addresses, the walk's tables
+    (`_walk_ready`), KLU's arrays and objects (`_klu_bind`), and the cached
+    `C` read where it stands from `_cbuild.INPLACE_MIN_ENTRIES` entries
+    (`cC_inplace`; else copied into `cC_buf`).  Held as `tr._newton_c`; the
+    C loop (`_tran_loop_c`) points its struct at `s` and reads `core`, `klu`
+    and `served`; `_tran_radau_c` and `_tran_radau_tc` call `_walk_ready`
+    with records of their own whose walk fields are named as here."""
 
     __slots__ = (
         'buf',
@@ -337,14 +373,14 @@ def _klu_bind(rec, sk):
 
 class _ParRec:
     """`solve`'s reads of the analysis parameters and of the transient's
-    own caches, stamped (`_watch`): `tr.par`'s dicts watched, and of
-    `tr.epar`'s its instance dict and its parameter table -- its values
-    are not: the analyses write `analysis_kind` there around every solve's
-    operating point (`analysis.analysis_kind`), which moved the counter of
-    every stamp twice a solve (2026-10-06) -- and the one value read there,
-    `bypasstol`, compared by its object on every call (`bp_obj`); the
-    methods that read them and the caches they keep in the transient's dict
-    compared on every call (`_par_stamped`)."""
+    own caches, stamped (`_watch`).  Watched: `tr.par`'s dicts, and
+    `tr.epar`'s instance dict and parameter table -- not its values dict:
+    the analyses write `analysis_kind` there around every solve's operating
+    point (`analysis.analysis_kind`), which would move every stamp's
+    counter twice a solve.  The one value read there, `bypasstol`, is
+    compared by its object on every call (`bp_obj`); the methods that read
+    the parameters and the caches they keep in the transient's dict are
+    compared on every call too (`_par_stamped`)."""
 
     __slots__ = ('analysis', 'bp_obj', 'bypass', 'chord', 'epar', 'f_ls', 'f_tol', 'iref',
                  'ls', 'ls_default', 'maxiter', 'nb', 'nn', 'nrsolver', 'par', 'reltol',
@@ -476,9 +512,9 @@ def _walk_ready(tr, rec):
     `__dict__` the object seen and each hand-written limiter's twin its
     class's still (its `vlimit`, a class attribute) -- ready again.  Where
     the counter moved, the tables still standing as the last setup left
-    them (`_walk_fast`) are ready and stamped again (2026-10-06: they were
-    ready unstamped, the tuple checks on every call from the first move
-    on)."""
+    them (`_walk_fast`) are ready and stamped again.  `rec` is a `_Ctx`, or
+    another unit's record with the same walk fields (`s`, `ffi`, `walk*`:
+    `_tran_radau_c`, `_tran_radau_tc`)."""
     hc = _MOD['climit']
     if not (hc.WALK and hc.ENABLED):
         return False
@@ -563,7 +599,17 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     `fj` `jacobian_only`'s `(None, J)` at it (`(None, None)`, and no G,
     where `want_j` is False: nothing reads it), or None where it must run
     again (a branch confirmation re-solved) -- or None: declined or handed
-    back, nothing left behind, `_newton` runs."""
+    back, nothing left behind, `_newton` runs.
+
+    In order: the checks that decline (module docstring: DECLINES), the
+    record (`_Ctx`) and the walk's and KLU's bindings, the source pass (the
+    attempt's one trace), the inputs copied in, the parameter reads
+    stamped, the call.  A bail undoes the trace (`_undo_source`).  A serve
+    writes the step's state (`_q_cache`, `_C_cache`, `_C_pattern` where
+    the core has a pattern, `_iq`, `_Geq`, `_Cmat`, `active_integrator`,
+    `_companion_coeffs`, `_effective_method`), the statistics' Newton
+    iterations and the counts, runs the branch check, and sets the
+    record's `served`."""
     td, cd = tr.__dict__, tr.cir.__dict__
     last = td.get('_newton_c')
     if last is not None:
@@ -573,10 +619,9 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     kept = td.get('_newton_c_no')
     if kept is not None:
         ## (the circuit's own reason, under the plan the circuit's dict
-        ## holds -- not `_plan_for`'s check, ~1 us inside a step, on every
-        ## step of every such circuit: a plan gone stale is replaced at the
-        ## circuit's next evaluation, which follows, and until then the
-        ## decline is today's Newton, never another answer)
+        ## holds -- not `_plan_for`'s check: a plan gone stale is replaced
+        ## at the circuit's next evaluation, which follows, and until then
+        ## the decline runs the Python Newton, never another answer)
         if cd.get('_stamp_plan') is kept[0]:
             return _no(kept[1])
         del td['_newton_c_no']
@@ -645,7 +690,9 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
             and seed.shape[0] == n and np.isfinite(seed).all()):
         return _no('newton_c:x')
     ## (the step's companion set up as `get_diff` sets it up -- the same
-    ## lines as `_tran_core.evaluate`'s, kept twice on purpose: roadmap 104)
+    ## lines as `_tran_core.evaluate`'s, kept twice on purpose -- why:
+    ## `doc/transient_history.md`, `_tran_core.evaluate` -- a change here is
+    ## a change there)
     h = tr._dt
     h_last = tr._dt_last if tr._dt_last is not None else h
     active = tr.base_integrator.check_order_drop(h, h_last, tr._is_first_step)

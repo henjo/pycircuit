@@ -1,27 +1,34 @@
-"""THE BRANCH CHECK'S CHEAP SCREEN IN C (the C stepping loop plan's stage 3,
-step d; 2026-10-11).  After every converged step the branch check screens
-`C` at the converged point (`_BranchCheck._branch_screen_C`): |C|'s largest
-entry, the run's running maximum of it, the diagonal's largest and its
-smallest positive entry -- six numpy reductions over n x n, ~6 us a step at
-15 unknowns and ~60 us at 269 -- and only where that fires the SVD decides.
-Here one C call makes the cheap level (`csrc/branch.c`), bit for bit the
-same comparisons on the same values; the SVD stays the Python's
+"""THE BRANCH CHECK'S CHEAP SCREEN IN C: the cheap level of
+`_BranchCheck._branch_screen_C` -- after every converged step, `C` at the
+converged point: |C|'s largest entry, the run's running maximum of it, the
+diagonal's largest and its smallest positive entry -- as one call of
+`csrc/branch.c`, bit for bit the same comparisons on the same values.  Only
+where that fires does the SVD decide, and the SVD stays the Python's
 (`_BranchCheck._branch_svd`).
+
+OWNS nothing on others' objects: `screen` reads the transient's
+`_C_pattern`, `_branch_cmax` and `BRANCH_SCREEN_TOL` and returns the new
+running maximum for its caller to assign (`_tran_branch._branch_screen`);
+its struct and the pattern's pointer are the module's (`driver`).  `_paths`
+prefix `branch_c:`: `branch_c:served`, `branch_c:pattern` (served on the
+pattern), the declines below and the hand-backs (`branch_c:bail:<why>`);
+the C loop re-creates `served` and `pattern` for the screens it makes.
+Switch: `ENABLED` (env `PYCIRCUIT_BRANCH_C=0`), read by `screen` on every
+call and by the C loop on every entry (`_tran_loop_c._screen`).
 
 THE PATTERN.  Where `C` is the one the evaluation core wrote on its
 pattern -- the C Newton's converged point or `_tran_core.evaluate`'s, which
 record it with the pattern (`_C_pattern`) -- only the pattern's entries can
 be nonzero, and only they are read (the largest of the others is +0.0).
 Any other `C` is read whole, up to `_cbuild.INPLACE_MIN_ENTRIES` entries;
-a larger one is numpy's (vectorised reductions beat a plain C loop there:
-the error test's lesson, roadmap 113).
+a larger one declines, and numpy's reductions screen it.
 
 EXACT OR NOT AT ALL: an entry that is not finite hands the screen back
-(numpy's reductions and the SVD then say what they said); the running
-maximum is the caller's to assign.  DECLINES (`_paths.no`): the switch, no
-build, a patched or shadowed `_branch_screen_C`, a `C` that is not a
-C-contiguous float64 square array, a large `C` without the pattern.
-`ENABLED` (env `PYCIRCUIT_BRANCH_C=0`) is read on every call.
+(numpy's reductions and the SVD then say what they said).  DECLINES
+(`_paths.no`): the switch, no build, a patched or shadowed
+`_branch_screen_C`, a `C` that is not a C-contiguous float64 square array,
+a large `C` without the pattern, a running maximum or tolerance that is not
+a float.  History: `doc/transient_history.md`.
 """
 import os
 
@@ -47,8 +54,8 @@ _OWN = None
 
 
 def driver():
-    """`(ffi, cfn, the struct, the pattern it points at)` once loaded, or
-    None (`STATUS`)."""
+    """`[ffi, cfn, the struct, the pattern it points at, its pointer]` once
+    loaded, or None (`STATUS`)."""
     global _driver, STATUS
     if _driver is None:
         _driver = False

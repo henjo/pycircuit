@@ -1,15 +1,24 @@
-"""THE STEP CONTROLLER'S LAW IN C (the C stepping loop plan's stage 5, step a;
-2026-10-11): `IntegralController._evaluate` past its error test -- the
-default band's accept or reject, the next step (`0.9 ** p`, the shrink with
-`retry_order`'s exponent from the last rejection at the same point, the
-grow, the cap), `_judged`'s retry state -- as `csrc/ctrl.c`, which the
-adaptive loop in C calls (`csrc/loop.c`).  Bit for bit the Python's: its float
-operations in their order, `pow` and `log` the same libm's, its `min` and
-`max` as Python's builtins pick.  "The same point" is the object the
-controller kept (`is`) in the Python, an index of the accepted points here.
+"""THE STEP CONTROLLER'S LAW IN C: `IntegralController._evaluate` past its
+error test -- the default band's accept or reject, the next step
+(`0.9 ** p`, the shrink with `retry_order`'s exponent from the last
+rejection at the same point, the grow, the cap), `_judged`'s retry state --
+as `csrc/ctrl.c`, which the adaptive loop in C calls (`csrc/loop.c`).
 
-`evaluate(...)` is the twin's entry for its tests.  `ENABLED` (env
-`PYCIRCUIT_CTRL_C=0`) is read on every call.
+OWNS nothing on others' objects: its state is the caller's `ctrl_t` (the C
+loop's, made by `new_state` in `_tran_loop_c._bind`, whose `_write_back`
+leaves the controller's `_retry` and `_q_carried` as `_judged` would).  No
+`_paths` counts of its own: a controller the C loop cannot drive is the
+loop's decline (`loop_c:controller`).  Switch: `ENABLED` (env
+`PYCIRCUIT_CTRL_C=0`), read by the C loop on every adaptive entry
+(`_tran_loop_c._judge`); `evaluate` does not read it.
+
+EXACT.  Bit for bit the Python's: its float operations in their order, `pow`
+and `log` the same libm's, its `min` and `max` as Python's builtins pick.
+"The same point" is the object the controller kept (`is`) in the Python, an
+index of the accepted points here.
+
+`evaluate(...)` is the twin's entry for its tests.  History:
+`doc/transient_history.md`.
 """
 import os
 

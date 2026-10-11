@@ -1,48 +1,52 @@
-"""THE SHOOTING'S COUPLED STAGE STEP MAP IN C (speed round 11, item 4;
-2026-10-06).
+"""THE SHOOTING'S COUPLED STAGE STEP MAP IN C: the plain dense period
+walk's step (`_PeriodWalks._stage_step` and `_StageStep.solve`, as
+`_walk_stage` calls them for a fully implicit stage method, Radau IIA) in
+ONE C call, bit for bit the Python step (pinned in
+`tests/test_pinned_pairs.py`).
 
-A fully implicit stage method's dense period walk (`_walk_stage`, Radau
-IIA) propagates the monodromy through every step: the step's stage system
-``J Z = B``, ``J[i][j] = delta_ij C(Y_i) + h A_ij G(Y_j)``, assembled
-(`_stage_block`), LU-factored by the caller's dense solver (SciPy's
-`lu_factor`) and solved for ``B = [C_n P]_i`` (`_StageStep.solve`, SciPy's
-`getrs`) -- the last stage block of the solution the new `P`.  On the PSP
-stage's radau PSS that was ~530 k instructions a step around ~50 k of
-LAPACK: the readers' memo lookups and reductions, a dozen small numpy
-calls assembling the block, `lu_factor`'s and `lu_solve`'s checks.  Here
-ONE C call does the step map: the block assembled column-major -- as
+OWNS.  On the inner transient (`walks._transient()`), `_sens_c` (`_Ctx`:
+the `sens_t` struct and its buffers, kept per stage count, size,
+monodromy width and reference row).  `_paths`: `pss.sens:` --
+`pss.sens:<why>` a decline or a hand-back (`BAIL`), `pss.sens:served` --
+and, on a serve, `pss.sync:skipped`, the count the readers' skipped sync
+makes.  Switch: `PYCIRCUIT_SENS_C=0` (`SENS_C`, read on every call);
+`STATUS` says why the path is off where it is.
+
+THE STEP.  The dense period walk propagates the monodromy through every
+step: the step's stage system ``J Z = B``, ``J[i][j] = delta_ij C(Y_i) +
+h A_ij G(Y_j)``, assembled (`_stage_block`), LU-factored by the caller's
+dense solver (SciPy's `lu_factor`) and solved for ``B = [C_n P]_i``
+(`_StageStep.solve`, SciPy's `getrs`) -- the last stage block of the
+solution the new `P`.  The C assembles the block column-major -- as
 `lu_factor` copies it for LAPACK -- from the stages' FULL `C` and `G` (the
 step's device memo, the records the readers would read; the reference row
 and column skipped as the readers reduce them) in `_stage_block`'s IEEE
 operations (``h A_ij`` first, then its product with `G_j`, `C_i` added on
-the diagonal blocks), SciPy's own `scipy_dgetrf_`, the right-hand side
-stacked from numpy's ``C_n @ P`` (made in Python as `solve` makes it:
-numpy's own BLAS) and SciPy's own `scipy_dgetrs_`; the new `P` is the last
-stage block of the solution laid out as `getrs` returns it (Fortran
-order), so the next step's product is numpy's same call.  Bit for bit the
-Python step (the stage-0 prototype: 120 of 120 steps' `P`, LU and pivots;
-pinned in `tests/test_pinned_pairs.py`).
+the diagonal blocks), calls SciPy's own `scipy_dgetrf_`, stacks the
+right-hand side from numpy's ``C_n @ P`` (made in Python as `solve` makes
+it: numpy's own BLAS) and calls SciPy's own `scipy_dgetrs_`; the new `P`
+is the last stage block of the solution laid out as `getrs` returns it
+(Fortran order), so the next step's product is numpy's same call.
 
 ONLY THE PLAIN WALK: dense, no step kept, no period or event column -- the
 shooting Newton's monodromy (`_walk_stage` asks only then).
 
-DECLINES, counted, before anything is kept or counted otherwise
-(`_paths.no`): the switch; no build or no SciPy OpenBLAS; a piece the C
-stands in for not its module's own (the stage step, the block, the
-readers, `_factorise`, the solvers' `factor` and choice, `_Factored`,
-`lu_solve`, SciPy's `lu_factor`, `_StageStep.solve` and the solves it
-calls) or shadowed on the walk or the transient; a toolkit that is not
-numeric; a linear solver that is not `AutoSolver`'s dense choice or a
-`DenseSolver`; a tableau that is not float64 ``s x s``, ``s <= MAXS``; a stage system
-past `MAXN` unknowns;
-what the readers would read otherwise -- a junction (PCNR's `G`),
-limiting state kept or the trims off (the sync would run), a stage whose
-reference entry is not +0.0 or that the memo lacks; and the C's own
-hand-backs: a non-finite input (`_stage_block` declines and `lu_factor`
-raises), a floating-point flag in the assembly (`_stage_block`'s
-`errstate`), a non-finite ``C_n P`` (`lu_solve` raises), a singular block
-(`lu_factor` warns), a LAPACK `info`.  The Python step then runs, as
-before: the same answer, exception, warning and counts.
+DECLINES (`pss.sens:<why>`), with nothing written that the Python step
+reads: the switch; no build or no SciPy OpenBLAS; a piece the C stands in
+for not its module's own (the stage step, the block, the readers,
+`_factorise`, the solvers' `factor` and choice, `_Factored`, `lu_solve`,
+SciPy's `lu_factor`, `_StageStep.solve` and the solves it calls) or
+shadowed on the walk or the transient; a toolkit that is not numeric; a
+linear solver that is not `AutoSolver`'s dense choice or a `DenseSolver`;
+a tableau that is not float64 ``s x s``, ``s <= MAXS``; a stage system
+past `MAXN` unknowns; what the readers would read otherwise -- a junction
+(PCNR's `G`), limiting state kept or the trims off (the sync would run), a
+stage whose reference entry is not +0.0 or that the memo lacks; and the
+C's own hand-backs: a non-finite input (`_stage_block` declines and
+`lu_factor` raises), a floating-point flag in the assembly
+(`_stage_block`'s `errstate`), a non-finite ``C_n P`` (`lu_solve` raises),
+a singular block (`lu_factor` warns), a LAPACK `info`.  The Python step
+then runs, as before: the same answer, exception, warning and counts.
 
 History: `doc/shooting_history.md`, `_sens_c.py`.
 """
@@ -77,8 +81,8 @@ SENS_C_SRC = _cbuild.csrc('sens.c')
 
 SENS_CDEF = _cbuild.csrc('sens.h')
 
-#: the C's status codes past 1 (served): why it handed the step back
-#: the C's results, named in sens.h: {code: why} of its bails
+#: the C's results, named in sens.h (`_CODES`); `BAIL`: {code: why} of
+#: the codes past 1 (served) -- why it handed the step back
 _CODES = _cbuild.constants(SENS_CDEF)
 BAIL = _cbuild.bails(_CODES, 'SENS_BAIL_')
 

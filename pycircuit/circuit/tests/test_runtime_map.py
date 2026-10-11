@@ -76,3 +76,26 @@ def test_the_map_s_checks_see_a_missing_row():
     assert _missing_files(text) == ['ctrl.c']
     assert _missing_modules(text) == ['_tran_ctrl_c']
     assert _missing_switches(text) == ['PYCIRCUIT_CTRL_C']
+
+
+#: (history in a docstring or comment: a plan's stage or round, a date, the
+#: logs -- `doc/transient_history.md` and the roadmap keep it)
+_HISTORY = re.compile(r'\b(?:stage [0-9R]|stages [0-9]|speed round|round [0-9]+\b|'
+                      r'20[0-9]{2}-[0-9]{2}-[0-9]{2}|roadmap|pss_log)', re.IGNORECASE)
+
+
+def _history(glue):
+    return {m: found for m, text in glue.items() if (found := _HISTORY.findall(text))}
+
+
+def test_no_module_that_builds_or_loads_c_tells_history():
+    """Their docstrings and comments state contracts: why a module exists
+    and what it measured when it was built is the history's."""
+    assert not _history(_glue())
+
+
+def test_the_history_check_sees_a_planted_line():
+    """Alive: a stage and a date in one module's comment, and nothing in a
+    line naming the next stage of a solve."""
+    glue = {'a': '## (the plan\'s stage 4; 2026-10-11)\n', 'b': '## (the next stage solve)\n'}
+    assert _history(glue) == {'a': ['stage 4', '2026-10-11']}

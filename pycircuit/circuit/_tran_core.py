@@ -1,37 +1,53 @@
-"""THE EVALUATE CORE: a transient's residual, Jacobian and companion
-evaluated in one C call (2026-10-03; speed round 7, commit 1).
+"""THE EVALUATE CORE: a transient's residual, Jacobian and companion --
+`_CompanionModel._residual_and_jacobian` and `Transient._solve_timestep`'s
+`jacobian_only` and `residual_only`, with the four circuit passes they call
+(`G`, `C`, `i`, `q`) -- evaluated in ONE C call (`csrc/core.c`), bit for bit; and the circuit's
+passes alone for the stage methods (`passes`).  Pinned against its Python
+reference in `tests/test_pinned_pairs.py`.
 
-A Newton iterate of the numeric transient spends most of its time in the
-Python around C that already exists: the four circuit passes (`G`, `C`,
-`i`, `q`), each a plan with its batches, templates and bincount, then the
-companion term and the residual in numpy.  Measured warm on a 20-MosLevel1
-chain: the four passes 45 us, the residual 48.5, of which the C work is
-12.7.  Here ONE C call does the passes the caller asked for -- the batches
-through the kernels' own pointers, the constant vector groups through
-numpy's OWN `cblas_dgemv` (the address of the routine numpy loaded, so the
-same kernel runs: measured 1000 of 1000 products equal to `np.dot` and to
-the plan's `matmul`), the templates, the bincounts from +0.0 in array order
--- then the companion in the integrator's own operation order, `f = (i +
-iq) + u` and `J = G + Geq`.  Bit for bit the Python path: measured on every
-trial of the stage-0 prototype (pss_log 2026-10-03), 20-MosLevel1 357 ->
-311 us a step in the run.  The reference-row reduction stays Python's.
+OWNS.  On the transient: `_tran_core` (the record `[plan, core, stamp,
+ParameterDict, arms, held]`: the `_Core` for the circuit's stamp plan, None
+where the circuit cannot be served, and `core_for`'s stamp) and
+`_passes_no` (`passes`'s kept decline: the stamp plan of a circuit the core
+cannot serve).  On each HDL element: `_hdl_cp` (its packed parameters, made
+by `_Core.probe` where it has none).  On the stamp plan: a pass's
+plan where `plan.methods` has none.  `_paths`: `core.<want>:<why>` (`want`
+'fj', 'j', 'c', 'f' for `evaluate`, 'p' for `passes`; `<why>` a decline or
+`served`), `core.ready:<why>` (`_Core.ready`), `once:core.build:<built |
+unservable | nodriver>`, `once:core.fuse:<fused | why not>`.  Switches:
+`PYCIRCUIT_TRAN_CORE=0` (`CORE`, read on every call; the C Newton's too),
+`PYCIRCUIT_CORE_PASSES=0` (`CORE_PASSES`: `passes` alone, read on every
+call), `PYCIRCUIT_CORE_PATTERN=0` (`PATTERN`, read when a core is built),
+`PYCIRCUIT_SKIP_UNREAD_J=0` (`SKIP_UNREAD_J`, read by the transient's
+stepping loop); `STATUS` says why the core is off where it is.
 
-THREE SITES, ONE ENTRY (`evaluate`, `want` in 'fj' | 'j' | 'f'):
+ONE CALL does the passes the caller asked for -- the batches through the
+kernels' own pointers, the constant vector groups through numpy's OWN
+`cblas_dgemv` (the address of the routine numpy loaded, so the same kernel
+runs as `np.dot` and the plan's `matmul`), the templates, the bincounts
+from +0.0 in array order -- then the companion in the integrator's own
+operation order, `f = (i + iq) + u` and `J = G + Geq`.  The reference-row
+reduction stays Python's.
+
+FOUR SITES, ONE ENTRY (`evaluate`, `want` in 'fj' | 'j' | 'c' | 'f'):
 `_residual_and_jacobian` (G, C, i, q; `(f, J)`); `jacobian_only` at the
-converged point (G, C, q; `(None, J)`); the chord's `residual_only` (i, q;
+converged point (G, C, q; `(None, J)`), or its state alone where nothing
+reads its `J` (C, q; `(None, None)`); the chord's `residual_only` (i, q;
 the conductance from the seed's held `C`; `f`).  Each leaves the state the
 Python path leaves: `_C_cache`, `_q_cache`, the memo record `_C_at_state`
 makes, and `get_diff`'s `_iq`, `_Geq`, `_Cmat`, `_companion_coeffs`,
-`_effective_method`, `active_integrator`.  Python still decides the active
-integrator (`check_order_drop`) and computes its scalars (`bdf2_alphas`,
-`theta_at`), and still asks `_C_lookup` first: on a hit the C pass is
-skipped, as `_C_at_state` skips it.
+`_effective_method`, `active_integrator` -- and `_C_pattern` where it wrote
+`C` on the pattern.  Python still decides the active integrator
+(`check_order_drop`) and computes its scalars (`bdf2_alphas`, `theta_at`),
+and still asks `_C_lookup` first: on a hit the C pass is skipped, as
+`_C_at_state` skips it.
 
 THE FORMULA ENUM, each as `_lte_kernels` writes it: gear2 `(a0*q + a1*q1)
 + a2*q2`, `a0*C`; euler `(q - q1)/h`, `C/h`; trap `2.0*(q - q1)/h - iq1`,
 `2.0*C/h`; theta `th = theta*h`, `(q - q1)/th - ((1.0 - theta)/theta)*iq1`,
-`C/th`.  The stage methods, Radau, PCNR, DC and every toolkit but the
-numeric one are not served.
+`C/th`; and `PCX_FORMULA_PASSES` (4), the passes alone (`passes`).
+`evaluate` does not serve the stage methods (Radau, the DIRKs: their passes
+come from `passes`), PCNR, DC or any toolkit but the numeric one.
 
 A DECLINE BEFORE ANY STATE IS TOUCHED (None; the Python path runs): the
 switch off, a toolkit that is not numeric, a state that is not one finite
@@ -46,33 +62,35 @@ pack mirrors are the core's own (`_hdl_batch`'s rule: mirror the tuple the
 element holds, never repack one), the readiness check runs once per call
 over the unique elements rather than once per pass.
 
-THE FUSED KERNELS (speed round 9, stage 3).  A class's four passes print
-four kernels that each recompute their whole chain; its fused kernel
-(`_hdl_cbackend.fuse_csrc`: the printed statements unioned by name, each
-run under the bits of the passes that print it) is called ONCE a call for
-every pass the call wants, before the passes, into a staging buffer --
-where the class's batches cover two or more passes over the same elements
-on the same nodes (`_fuse_groups`) -- and each batch then scatters its
-outputs from there in its own order: the same values in the same places,
-the passes' bins as before.  The readiness check takes the class's fused
-kernel only while it is bound and was printed from the passes' bound
-kernels (and the switch, `_hdl_cbackend.FUSE`, is on); else the batches
-call their own.
+THE PATTERN.  The core's pattern is every entry a matrix pass can write and
+the diagonal; where it is at most `PATTERN_MAX_FILL` of n x n (and
+`PATTERN` is on) a caller whose matrices start at zero asks the core to
+write only its entries (`PCX_WANT_PATTERN`; `_Core.npat` nonzero), and
+every entry otherwise.
 
-READY AS STAMPED (speed round 9, stage 4).  The readiness check (`probe`:
-every batch's kernel the class's bound one, its pass the generated one,
-every element without a shadow, every pack mirrored) and the lookup
-(`core_for`: the circuit's plan) read the same dicts every call, and their
-answer does not change between steps: a check that passed watches what it
-read (`_watch`: one counter any change to a watched dict moves) and passes
-again unchecked while the counter stands -- what no dict watcher sees
-compared on every call: the elements' `__dict__` objects, the passes'
-code, `ParameterDict`'s epoch, the circuit's size.
+THE FUSED KERNELS.  A class's four passes print four kernels that each
+recompute their whole chain; its fused kernel (`_hdl_cbackend.fuse_csrc`:
+the printed statements unioned by name, each run under the bits of the
+passes that print it) is called ONCE a call for every pass the call wants,
+before the passes, into a staging buffer -- where the class's batches cover
+two or more passes over the same elements on the same nodes
+(`_fuse_groups`) -- and each batch then scatters its outputs from there in
+its own order: the same values in the same places, the passes' bins as
+without it.  The readiness check takes the class's fused kernel only while
+it is bound and was printed from the passes' bound kernels (and the switch,
+`_hdl_cbackend.FUSE`, is on); else the batches call their own.
 
-`CORE` (env `PYCIRCUIT_TRAN_CORE=0`) is read on every call; `STATUS` says
-why the core is off where it is.  Pinned against its Python reference in
-`tests/test_pinned_pairs.py`.  History: `doc/transient_history.md`,
-`_tran_core.py`; `doc/hdl_roadmap_260824.md` sec. 65.
+READY AS STAMPED.  The readiness check (`probe`: every batch's kernel the
+class's bound one, its pass the generated one, every element without a
+shadow, every pack mirrored) and the lookup (`core_for`: the circuit's
+plan) read the same dicts every call, and their answer does not change
+between steps: a check that passed watches what it read (`_watch`: one
+counter any change to a watched dict moves) and passes again unchecked
+while the counter stands -- what no dict watcher sees compared on every
+call: the elements' `__dict__` objects, the passes' code, `ParameterDict`'s
+epoch, the circuit's size.
+
+History: `doc/transient_history.md`, `_tran_core.py`.
 """
 import ctypes
 import glob
@@ -84,12 +102,13 @@ import numpy as np
 from pycircuit.circuit import _cbuild, _lte_kernels, _paths, _watch
 from pycircuit.circuit import toolkit as _toolkit
 
-## the counters (`_paths`): each decline by its reason, each served call
 _PC = _paths.COUNTS
 _GETDICT = operator.attrgetter('__dict__')
 #: float64 (an exact array's dtype is this object: `is`, then `==`)
 _F64 = np.dtype(np.float64)
 _no = _paths.no
+#: the counters' keys (`_paths`), by `want` and reason: each decline by its
+#: reason, each served call (`core.<want>:<why>`)
 _K = {w: {r: f'core.{w}:{r}' for r in (
     'off', 'toolkit', 'shadow_cir', 'shadow_tr', 'unservable', 'x', 'formula',
     'history', 'cmat', 'clookup', 'ready', 'u', 'served')} for w in ('fj', 'j', 'f', 'c', 'p')}
@@ -97,31 +116,34 @@ _K = {w: {r: f'core.{w}:{r}' for r in (
 CORE = os.environ.get('PYCIRCUIT_TRAN_CORE', '1') != '0'
 #: where nothing reads a step's Jacobian (a fixed multistep run:
 #: `transient._SteppingLoop.j_unread`), the converged point is evaluated
-#: without G -- `want` 'c' here, the C Newton's fold likewise (speed round
-#: 9, C0); env `PYCIRCUIT_SKIP_UNREAD_J=0` turns it off
+#: without G -- `want` 'c' here, the C Newton's fold likewise; env
+#: `PYCIRCUIT_SKIP_UNREAD_J=0` turns it off
 SKIP_UNREAD_J = os.environ.get('PYCIRCUIT_SKIP_UNREAD_J', '1') != '0'
 STATUS = 'not loaded'
 
 CORE_C = _cbuild.csrc('core.c')
 CORE_CDEF = _cbuild.csrc('core.h')
 
+#: the circuit passes, in the core's order (its tables are laid out pass
+#: by pass; a fused group's pass mask is `1 << PASSES.index(m)`)
 PASSES = ('G', 'C', 'i', 'q')
-#: the integrators the core's companion enum covers, by class name
 #: the core's call codes, named in pcx_abi.h
 _ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
-#: THE CIRCUIT'S PATTERN (the C stepping loop plan's stage 2): a caller whose
-#: matrices are zero off it asks the core to write only the pattern's
-#: entries (`PCX_WANT_PATTERN`) -- for a core whose pattern is at most this
-#: share of n x n (else every entry, as before); env `PYCIRCUIT_CORE_PATTERN=0`
-#: turns it off
+#: THE CIRCUIT'S PATTERN: a caller whose matrices are zero off it asks the
+#: core to write only the pattern's entries (`PCX_WANT_PATTERN`) -- for a
+#: core whose pattern is at most `PATTERN_MAX_FILL` of n x n (else every
+#: entry); env `PYCIRCUIT_CORE_PATTERN=0` turns it off (read when a core is
+#: built)
 PATTERN = os.environ.get('PYCIRCUIT_CORE_PATTERN', '1') != '0'
 PATTERN_MAX_FILL = 0.25
 _WANT_PATTERN = _ABI['PCX_WANT_PATTERN']
+#: the integrators the core's companion enum covers, by class name
 FORMULA = {'Gear2Integrator': _ABI['PCX_FORMULA_GEAR2'],
            'EulerIntegrator': _ABI['PCX_FORMULA_EULER'],
            'TrapezoidalIntegrator': _ABI['PCX_FORMULA_TRAPEZOIDAL'],
            'ThetaIntegrator': _ABI['PCX_FORMULA_THETA']}
 _G, _C, _I = _ABI['PCX_PASS_G'], _ABI['PCX_PASS_C'], _ABI['PCX_PASS_I']
+#: each `want`'s pass bits (q is always made)
 WANT = {'fj': _G | _C | _I, 'j': _G | _C, 'f': _I, 'c': _C}
 
 _driver = None
@@ -171,13 +193,13 @@ def _fuse_groups(batches, b_pass, cb):
     """The classes the core evaluates with their fused kernel:
     `(groups, b_fz, b_fidx)` -- each group `(info, kernel, elements, pass
     bits, node maps)`, per batch its group (-1: none) and each of its
-    elements' place in the group (None: the group's own order).  A class is fused where its fused kernel
-    is bound and its batches cover two or more of its passes, the same
-    elements in each, once each, on the same nodes, with the kernel's
-    widths; each refusal counted once a build (`once:core.fuse:<why>`).
-    (Every pass lists a class's elements in one order, the plan's: the
-    node maps are then compared a batch at a time -- an element at a time
-    cost a 20-element chain's core build 1.7 M instructions.)"""
+    elements' place in the group (None: the group's own order).  A class
+    is fused where its fused kernel is bound and its batches cover two or
+    more of its passes, the same elements in each, once each, on the same
+    nodes, with the kernel's widths; each refusal counted once a build
+    (`once:core.fuse:<why>`).  (Every pass lists a class's elements in one
+    order, the plan's: the node maps are then compared whole; a batch in
+    another order is mapped through the group's element index first.)"""
     by_cls = {}
     for b, bt in enumerate(batches):
         by_cls.setdefault(bt.cls, []).append(b)
@@ -246,8 +268,13 @@ def _fuse_groups(batches, b_pass, cb):
 
 
 class _Core:
-    """One circuit's four plans flattened into the C struct, the batches'
-    pointer tables and the core's own pack mirrors."""
+    """One circuit's four plans flattened into the C struct (`cs`), the
+    batches' pointer tables and the core's own pack mirrors.  Building one
+    fills a pass's plan the stamp plan lacks (`plan.methods`) and raises
+    `Unservable` where an element is neither constant nor C-bound, a
+    constant group is not matmul-exact, or an element is wider than the
+    core holds.  `npat` is the pattern's size, 0 where the core writes
+    every entry; `arrays['pat']` the pattern."""
 
     def __init__(self, cir, plan, ffi, dgemv):
         from pycircuit.circuit import _hdl_batch, _stamp_plan
@@ -332,11 +359,11 @@ class _Core:
                     if parts else np.zeros(1, np.int64))
         self.batches = batches
         self.nb, self.ng = len(batches), len(g_pass)
-        ## THE FUSED KERNELS (speed round 9, stage 3): a class whose fused
-        ## kernel is bound (`_hdl_cbackend.bind_fused`) and whose batches
-        ## cover two or more passes over the same elements -- each once a
-        ## pass, on the same nodes -- is evaluated once a call into a
-        ## staging buffer; its batches scatter from there
+        ## THE FUSED KERNELS: a class whose fused kernel is bound
+        ## (`_hdl_cbackend.bind_fused`) and whose batches cover two or more
+        ## passes over the same elements -- each once a pass, on the same
+        ## nodes -- is evaluated once a call into a staging buffer; its
+        ## batches scatter from there
         zgroups, b_fz, b_fidx = _fuse_groups(batches, b_pass, cb)
         self._cb = cb
         z_proff, ztab, fidx, bftab = [], [], [], []
@@ -457,10 +484,10 @@ class _Core:
             if type(T) is not int and np.ndim(T) != 0:
                 return 'T'
             T = float(T)
-        ## AS STAMPED (speed round 9, stage 4): nothing the check below read
-        ## has changed since it passed -- its dicts and types are watched
-        ## (`_watch`); what no watcher sees, compared here: the elements'
-        ## `__dict__` objects and the passes' code
+        ## AS STAMPED: nothing the check below read has changed since it
+        ## passed -- its dicts are watched (`_watch`); what no watcher sees,
+        ## compared here: the elements' `__dict__` objects and the passes'
+        ## code
         ep = _watch.EPOCH
         if (ep is not None and self.stamp == ep.value
                 and tuple(map(_GETDICT, self.uniq_els)) == self.uniq_dicts
@@ -625,8 +652,8 @@ def _ntk():
     return NumericToolkit
 
 
-#: the circuit's passes for the stage paths from the core (`passes`, speed
-#: round 9, stage 8); env `PYCIRCUIT_CORE_PASSES=0` turns it off
+#: the circuit's passes for the stage methods from the core (`passes`);
+#: env `PYCIRCUIT_CORE_PASSES=0` turns it off
 CORE_PASSES = os.environ.get('PYCIRCUIT_CORE_PASSES', '1') != '0'
 #: each pass's want bit (q is always made)
 _PASS_BITS = {'G': _G, 'C': _C, 'i': _I, 'q': 0}
@@ -642,8 +669,7 @@ def passes(tr, x, which):
     the core cannot serve, a state that is not one finite float64 vector of
     its size, a batch not ready -- each counted (`core.p:<why>`) as
     `evaluate` counts its own.  For the stage methods (Radau, the DIRKs),
-    whose step evaluates the passes at several points a step (speed round
-    9, stage 8)."""
+    whose step evaluates the passes at several points a step."""
     K = _K['p']
     if not (CORE and CORE_PASSES):
         return _no(K['off'])
@@ -653,10 +679,9 @@ def passes(tr, x, which):
     if 'G' in cd or 'C' in cd or 'i' in cd or 'q' in cd:
         return _no(K['shadow_cir'])
     ## A CIRCUIT THE CORE CANNOT SERVE declines at once under the plan its
-    ## dict holds (as `core_for` remembers it per plan): `core_for`'s full
-    ## check ran on every call of such a circuit -- a diode ladder by
-    ## Radau, whose stamps never hold, paid 9 k instructions a call, +0.95 %
-    ## of its run.  A plan gone stale is replaced at the circuit's next
+    ## dict holds (`_passes_no`, as `core_for` remembers it per plan),
+    ## without `core_for`'s full check, which such a circuit's stamps need
+    ## not spare.  A plan gone stale is replaced at the circuit's next
     ## evaluation, which follows; until then the decline is the circuit's
     ## own passes.
     td = tr.__dict__
@@ -710,8 +735,8 @@ def passes_held(tr, core):
     """Whether a call of `passes` on this transient would find its readiness
     as stamped -- `core_for`'s record and `core.ready`'s probe both holding,
     the switches, the toolkit and the circuit's passes as `passes` checks
-    them (speed round 12, stage 5a: for passes another C made in the same
-    step, `_tran_radau_tc`).  Nothing counted: `passes_count` makes the
+    them (for passes another C made in the same step: `_tran_radau_tc`).
+    Nothing counted: `passes_count` makes the
     counters of each such call -- a check that holds holds for every call
     the caller makes before anything it watches can change."""
     if not (CORE and CORE_PASSES) or type(tr.toolkit) is not (_NTK[0] if _NTK else _ntk()):
@@ -748,7 +773,8 @@ def evaluate(tr, x, t, provided_function, want):
     as `jacobian_only`; 'c': `(None, None)`, `jacobian_only`'s state where
     nothing reads its `J` (C and q; no G); 'f': `f` as `residual_only` -- or
     None where the core does not serve the call (nothing touched; the
-    Python path runs)."""
+    Python path runs).  A served call leaves the state the Python path
+    leaves (module docstring: FOUR SITES)."""
     K = _K[want]
     if not CORE:
         return _no(K['off'])
@@ -774,9 +800,9 @@ def evaluate(tr, x, t, provided_function, want):
             and x.flags.c_contiguous and x.shape[0] == n and np.isfinite(x).all()):
         return _no(K['x'])
     ## THE STEP'S COMPANION SET UP as `get_diff` sets it up -- the same lines
-    ## as `_tran_newton_c.solve`'s, kept twice on purpose: one shared function
-    ## (an 11-tuple out) cost +0.3 .. +0.4 % a step, counted against an A/A
-    ## (roadmap 104); a change here is a change there
+    ## as `_tran_newton_c.solve`'s, kept twice on purpose (why:
+    ## `doc/transient_history.md`, `_tran_core.evaluate`): a change here is
+    ## a change there
     h = tr._dt
     h_last = tr._dt_last if tr._dt_last is not None else h
     active = tr.base_integrator.check_order_drop(h, h_last, tr._is_first_step)

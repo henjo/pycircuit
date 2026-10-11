@@ -1,18 +1,30 @@
-"""THE STEPPING LOOP IN C (the C stepping loop plan's stages 4 and 5;
-2026-10-11).  `_SteppingLoop` with a multistep family is, attempt after
-attempt, `where` (the grid or the controller's step, the next breakpoint --
-crossed by a grid, landed on by an adaptive step -- the order drop a landing
-or a force asks for), `take` (the stage predictor's seed, the companion, the
-C Newton, the branch screen), `judge` (adaptive: the error test, the
-controller's law, a rejection retried at the point within its budget) and
-`accept` (the rings, the predictor's node, the outputs, the statistics) --
-~85 us of Python around ~20 us of C a fixed step on the 20-MosLevel1 chain.
-Here `csrc/loop.c` makes those attempts itself, driving the units the Python
-steps call -- the sources' table (stage 1), the predictor (4a), the C Newton
-(its record, as its last served call left it), the branch screen (3d), the
-error test (stage 3), the controller's law (5a) -- and stops before any
-attempt it cannot make as the Python would, which the Python loop then
-makes; the next attempt enters the C again.
+"""THE STEPPING LOOP IN C: `_SteppingLoop`'s attempts with a multistep
+family (`_LMMSteps`), fixed step or adaptive -- `where` (the grid or the
+controller's step, the next breakpoint -- crossed by a grid, landed on by an
+adaptive step -- the order drop a landing or a force asks for), `take` (the
+stage predictor's seed, the companion, the C Newton, the branch screen),
+`judge` (adaptive: the error test, the controller's law, a rejection
+retried at the point within its budget) and `accept` (the rings, the
+predictor's node, the outputs, the statistics) -- made by `csrc/loop.c`.
+It drives the units the Python steps call -- the sources' table
+(`_tran_sources`), the predictor (`_tran_pred_c`), the C Newton (its record,
+as its last served call left it: `_tran_newton_c`), the branch screen
+(`_tran_branch_c`), the error test (`_tran_lte_c`), the controller's law
+(`_tran_ctrl_c`) -- and stops before any attempt it cannot make as the
+Python would, which the Python loop then makes; the next attempt enters
+the C again.
+
+OWNS, on the `_SteppingLoop`: `c_run` (the bound `_Run`: the struct, its
+buffers, the units' structs it drives), `c_tab` (`(the direct source pass,
+its Table)`), `c_kept` (the watch counter at the last kept decline),
+`c_skip` and `c_backoff` (the backoff); `c_loop` (whether to try at all)
+is `_SteppingLoop.__init__`'s.  `_paths` prefix `loop_c:`:
+`loop_c:attempts`, `loop_c:steps`, the declines (`loop_c:<reason>`) and the
+bails (`loop_c:bail:<why>`); for the attempts it makes it re-creates the
+counts the Python attempts' glue would have made (`newton_c:`, `lte_c:`,
+`branch_c:`, `chord:chosen`, `pred:fast`, `src.direct:served`, `u:called`,
+`umemo:miss`, `memo.q:same`, `memo.C:equal`).  Switch: `ENABLED` (env
+`PYCIRCUIT_LOOP_C=0`), read on every entry.
 
 THE RUN CONTEXT.  Inside the C loop no Python runs between attempts: the
 sources are the table, the devices the core's kernels, and a circuit with
@@ -33,8 +45,31 @@ step, the statistics, every attribute the attempts write
 `_iq`, `_Geq`, `_Cmat`, the active integrator and its coefficients, the
 predictor's history, the step record, the screen's running maximum), the
 controller's (`_ref_running`, `_retry`, `_q_carried`, `last_err`), the
-loop's -- and the `_paths` tallies the Python attempts make, under their
-keys.  `ENABLED` (env `PYCIRCUIT_LOOP_C=0`) is read on every entry.
+loop's, the run's KLU counts (`numerics`, `refactors`) -- and the `_paths`
+tallies the Python attempts make, under their keys.
+
+ENTRY (`run`).  Not entered, and not counted: the switch, the backoff (an
+entry that made no attempt doubles the Python attempts made before the
+next, up to `BACKOFF_MAX`; one that made any resets it), watching off, a
+kept decline while nothing watched has moved, the Newton's (adaptive: the
+error test's) last call not served.  DECLINES (`loop_c:<reason>`, kept on
+the loop until something watched moves unless the reason is the
+attempt's): no build, a patched or shadowed piece (`_own`, `_SHADOWS`,
+`_CIRCUIT_SHADOWS`), another statistics class, loop or family, a fixed-step
+loop whose Jacobian something reads, an imposed step, events or a periodic
+state, the continuation rescue or a stateful limiter, a circuit hook, an
+integrator outside the three, the predictor's settings, no source memo, a
+Newton record whose `J` is not formed where the attempts read it, the
+sources (no direct pass, no table or a stale one, a breakpoint the table
+does not make, the toolkit or numpy's error state), the state's types and
+shapes, a device bypass (`bypasstol`), the screen, the adaptive judge
+(`_judge`), the bind.
+
+BAILS (`loop_c:bail:<why>`, `csrc/loop.h`): the C stops before an attempt
+a unit hands back or the Python must make (a source time, the predictor's
+general path or a flag, the Newton, a screen that is not quiet, a
+companion it does not make, the error test, a forced accept); the attempts
+made before it are written back.  History: `doc/transient_history.md`.
 """
 import os
 import time
@@ -228,7 +263,9 @@ def _bind(tr, rec, tab, n, hist_len, screen, judge):
     """The loop's `_Run` for the C Newton's record `rec`, the source table
     `tab`, the branch screen `screen` (`(its ffi, its entry, the core's
     pattern or None)`, or None: nothing screened) and, adaptive, `judge`
-    (`(the controller, the run, the sparse solver or None)`)."""
+    (`_judge`'s `(the controller, the run's settings, the sparse solver or
+    None, the error test's mask or None)`) -- or None: the sparse solver
+    could not be bound."""
     from pycircuit.circuit import (
         _tran_ctrl_c,
         _tran_lte_c,
@@ -361,7 +398,8 @@ def _screen(tr, td, rec, n):
 
 def _judge(loop, tr, O, n):
     """The adaptive attempts' judge, checked: `(the controller, the run's
-    settings, the sparse solver or None)`, or a decline reason (str)."""
+    settings, the sparse solver or None, the error test's mask or None)`,
+    or a decline reason (str)."""
     from pycircuit.circuit import _tran_ctrl_c, _tran_lte_c
     from pycircuit.circuit import stepcontroller as sc
     ctrl = tr.step_controller
@@ -420,9 +458,11 @@ _CONTROLLER_SHADOWS = ('evaluate_step', '_evaluate', '_max_error', '_band_decisi
 def run(loop):
     """Make as many of `loop`'s attempts in C as it can, from where the loop
     stands: True where it made any (the loop's, the transient's and the
-    controller's state written back as the Python attempts leave it), else
-    False -- the Python loop makes the next attempt, and the one after
-    enters again."""
+    controller's state written back as the Python attempts leave it,
+    `_write_back`), else False -- nothing of the run's written; the Python
+    loop makes the next attempt, and the one after enters again.  What
+    keeps it out, what it declines and where the C bails: the module's
+    ENTRY."""
     if not ENABLED:
         return False
     ## (entries that made no attempt -- a screen that fires every step, the
@@ -494,7 +534,8 @@ def run(loop):
     ## attempts read it)
     if rec.s.fold_j != (3 if adaptive else 2):
         return _declined(loop, 'newton', keep=False)
-    ## the sources: the direct pass's table, every other breakpoint inf
+    ## the sources: the direct pass's table; every other element's
+    ## breakpoint inf (`Behavioural.next_event`)
     from pycircuit.circuit import _tran_sources, func
     plan = cd.get('_stamp_plan')
     sp = plan.methods.get('src:u') if plan is not None else None
@@ -557,7 +598,8 @@ def run(loop):
             or not (stats.min_step is None or type(stats.min_step) is float)
             or not (stats.max_step is None or type(stats.max_step) is float)
             or type(loop.t) is not float or type(loop.h) is not float):
-        ## (`loop_c:steps` counts the steps made in C: not a reason)
+        ## (declined as `history`, not `steps`: `loop_c:steps` counts the
+        ## steps made in C)
         return _declined(loop, 'history', keep=False)
     screen = _screen(tr, td, rec, n)
     if screen is None:
@@ -569,7 +611,8 @@ def run(loop):
         judge = _judge(loop, tr, O, n)
         if type(judge) is str:
             return _declined(loop, judge, keep=judge not in ('sparse', 'reference'))
-    ## bound once a loop (again where the Newton's record or the table moved)
+    ## bound once a loop (again where the Newton's record, the table, the
+    ## screen's presence, the sizes or the judge's solver or mask moved)
     run_ = loop.c_run
     if (run_ is None or run_.nrec is not rec or run_.tab is not tab
             or (run_.br is None) != (screen is None) or len(run_.buf['xlast']) != n
@@ -667,7 +710,9 @@ _SHADOWS = ('_next_breakpoint', '_attempt_step', 'solve_timestep', '_solve_times
 
 
 def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
-    """The state after the C's attempts, as the Python attempts leave it."""
+    """The state after the C's attempts, as the Python attempts leave it
+    (the module's THE STATE), and the `_paths` counts their glue would have
+    made."""
     k, adaptive = s.k, bool(s.adaptive)
     Xo, To = buf['X'], buf['T']
     X, tl = loop.X, loop.timelist

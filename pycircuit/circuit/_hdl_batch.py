@@ -1,13 +1,22 @@
 """ONE C CALL PER CLASS PER PASS: the stamp plan's batches of C-bound hdl
-elements (2026-10-03; speed round 6).
+elements.  A batch stands for the plan's per-element loop over a class's
+elements (`el.G` -> the generated method -> `hdl._chained_eval` ->
+`CKernel.__call__`), bit for bit; and `zero_source` lets the source passes
+skip a class whose generated `u` / `dudt` adds only exact zeros.
 
-Rounds 2 and 5 made every device evaluation of a chained hdl class a C
-kernel; what a mid-sized model's pass was made of after them was the CALL
-around each kernel.  Measured on a 20-MosLevel1 chain: `cir.G` 56 us, of
-which the kernels' C work was 6.7 -- the other 50 us were twenty wrapped
-calls (`el.G` -> the generated method -> `_chained_eval` -> `CKernel.
-__call__`, 2.0 us each) through the plan's per-element loop (0.8-1.1 us
-each).  Here the plan calls ONE driver per class per pass: a loop in C over
+OWNS.  On each element, `_hdl_cp` (its packed parameters, `CKernel.pack`'s:
+built where absent, mirrored, never repacked); on the class info,
+`info['_u_zero']` (`zero_source`'s verdict per method, a runtime key of the
+compile cache).  The batches themselves are held by the stamp plan
+(`_stamp_plan`, through `split`) and the evaluate core (`_tran_core`).
+`_paths`: `batch.<m>:` (`m` the pass) -- `batch.<m>:<why>` a class or an
+element handed to the per-element path, `batch.<m>:served`,
+`batch.<m>:partial`.  Switches: `PYCIRCUIT_HDL_BATCH=0` (`ENABLED`, read
+on every pass, so a measurement can A/B it) and `PYCIRCUIT_HDL_ZERO_U=0`
+(`SKIP_ZERO_SOURCE`, the source passes' skip); `STATUS` says why batching
+is off where it is.
+
+THE CALL.  The plan calls ONE driver per class per pass: a loop in C over
 the class's elements calling the kernel's own function pointer -- the very
 machine code the per-element path calls, on the same bytes:
 
@@ -24,13 +33,13 @@ machine code the per-element path calls, on the same bytes:
 * `OUT[e]` is written into the element's slots of the pass's buffer, so the
   `bincount` sums the same values in the same order.
 
-Measured before it was built (the prototype, this box): the 20-MosLevel1
-`G` pass 59.4 -> 7.5 us, `i` 64.9 -> 12.1, the Gummel-Poon chain the same,
-20-PSP `G` -14 % and `i` -34 % (its C work dominates); every pass bit for
-bit today's.
+The driver is `csrc/pass.c` (its entry declared in `pass.h`: the chain
+functions' entry name with its own signature), built and loaded once per
+process through `_cbuild.load_unit`; a build that fails turns batching off
+quietly (`STATUS`).
 
 WHICH ELEMENTS, decided when the plan is built (`split`): a chained class
-with no DC pins (the three that have them keep the per-element path's
+with no DC pins (a class with them keeps the per-element path's
 `G_dc`/`i_dc` choice), the method the metaclass generated -- CODE identity
 against the metaclass's nested definitions (`generated_code`), since a
 spy, a `functools.wraps` spy and a Python override each carry their own
@@ -51,28 +60,18 @@ handed back to the caller for the per-element path and the rest of its
 class stays one call; a class that fails a class check takes the
 per-element path for the pass.
 
-THE SOURCE PASSES (`zero_source`, commit 2 of the round): every chained
-library class's `u`, `u_dc` and `dudt` return a list of literal zeros (22
-of 22 on 2026-10-03), and `cir.u` called each of them -- 44 calls at 1.3
-us on the 20-MosLevel1 chain, 10 % of a step -- to add exact zeros to
-bins that start at +0.0, which changes no bit.  `_add_element_subvectors`
+THE SOURCE PASSES (`zero_source`): a chained class whose compiled `u` and
+`u_dc` (or `dudt`) return a list of literal zeros adds exact zeros to bins
+that start at +0.0, which changes no bit.  `_add_element_subvectors`
 skips such an element as it skips `Circuit.u`'s default, on the same
 conditions (a numeric toolkit's scatter path, no instance shadow) plus no
 `dtype` and not the 'ac' analysis (the complex `uac` path), decided once
-per class by parsing the compiled function's source (`info['_u_zero']`,
-a runtime key of the compile cache) and checked per call against the
-method's code identity (a subclass override has its own code).
+per class by parsing the compiled function's source (`info['_u_zero']`)
+and checked per call against the method's code identity (a subclass
+override has its own code); the stamp plan's source pass
+(`_stamp_plan._SourcePlan`) asks the same verdict.
 
-`ENABLED` (env `PYCIRCUIT_HDL_BATCH=0`) is read on every pass, so a
-measurement can A/B it; `SKIP_ZERO_SOURCE` (`PYCIRCUIT_HDL_ZERO_U=0`) the
-source passes' skip.  The driver is one small C source of its own,
-exporting the chain functions' entry name with its own signature, built
-and loaded once per process through `_hdl_cbackend.load_kernel` under its
-own key (the limiter's precedent, `_hdl_climit`); a build that fails turns
-batching off quietly (`STATUS`).
-
-History: `doc/transient_history.md`, `_stamp_plan`; `doc/hdl_roadmap_260824.md`
-sec. 63.
+History: `doc/transient_history.md`, `_stamp_plan`.
 """
 import ast
 import os

@@ -1,19 +1,29 @@
-"""THE STAGE PREDICTOR'S FAST PATH IN C (the C stepping loop plan's stage 4,
-step a; 2026-10-11): `_StagePredictor._predict_fast` -- the seed every
-multistep step starts its Newton from, extrapolated from the accepted
-history -- as `csrc/pred.c`, which the stepping loop in C calls (`csrc/loop.c`).
-Bit for bit the Python's: the nodes newest first with the 1e-13 dedupe and
-the tie test, the fit's times in Python's float order, `np.vander`'s
-running products, numpy's own `dgesv` (the weights) and `dgemv` (`w @ X`:
-`cblas_dgemv(RowMajor, Trans, ...)` is that product, 3000 of 3000 drawn),
-the clamp in numpy's `clip` order.  A floating-point flag numpy would
-report, and every case the fast path sends to the general one, hand the
-prediction back.
+"""THE STAGE PREDICTOR'S FAST PATH IN C: `_StagePredictor._predict_fast` --
+the seed every multistep step starts its Newton from, extrapolated from the
+accepted history -- as `csrc/pred.c`, which the stepping loop in C calls
+(`csrc/loop.c`).
+
+OWNS nothing on others' objects: the C loop keeps its `pred_t` (made by
+`new_state` in `_tran_loop_c._bind`) and the history in its own buffers;
+`predict` reads `tr._pred_hist` and writes nothing.  `_paths` prefix
+`pred_c:`, counted by `predict` only: `pred_c:served`, its declines
+(`pred_c:off`, `driver`, `hist`, `deg`, `periodic`), the general path
+(`pred_c:general`) and the hand-backs (`pred_c:bail:<why>`); inside the C
+loop a prediction counts as the Python's `pred:fast`, re-created by
+`_tran_loop_c._write_back`.  Switch: `ENABLED` (env `PYCIRCUIT_PRED_C=0`),
+read by `predict` on every call; the C loop does not read it.
+
+EXACT OR NOT AT ALL.  Bit for bit the Python's: the nodes newest first with
+the 1e-13 dedupe and the tie test, the fit's times in Python's float order,
+`np.vander`'s running products, numpy's own `dgesv` (the weights) and
+`dgemv` (`w @ X`: `cblas_dgemv(RowMajor, Trans, ...)` is that product), the
+clamp in numpy's `clip` order.  A floating-point flag numpy would report,
+and every case the fast path sends to the general one, hand the prediction
+back.
 
 `predict(tr, ttarget, deg)` packs `tr._pred_hist` and answers as
 `_predict_fast` does -- the prediction, None, or `_tran_predictor._GENERAL`
--- for the twin's tests; the loop keeps its history in C.  `ENABLED` (env
-`PYCIRCUIT_PRED_C=0`) is read on every call.
+-- for the twin's tests.  History: `doc/transient_history.md`.
 """
 import os
 

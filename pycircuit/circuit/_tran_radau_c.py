@@ -1,14 +1,24 @@
-"""RADAU'S DENSE STAGE NEWTON IN C (speed round 9, B2; 2026-10-05).
+"""RADAU'S DENSE STAGE NEWTON IN C: a Radau IIA(3) step's coupled ``3m``
+Newton (`_coupled_stage_solver`'s `_stage_newton`, undamped and without a
+shunt) in ONE C call, bit for bit the Python Newton (pinned in
+`tests/test_pinned_pairs.py`).
 
-A Radau IIA(3) step's coupled ``3m`` Newton (`_coupled_stage_solver`'s
-`_stage_newton`, undamped and without a shunt) spent ~5 M instructions a
-step on a 20-MosLevel1 chain in Python and numpy around ~1.5 M of C: per
-iteration the block system (`_coupled_stage_system`: nine blocks, each
-through `remove_row_col`, ~0.7 M), the three stage evaluations' wrappers,
-the limiter's wrapper per stage, numpy's solve wrapper and the convergence
-test.  Here ONE C call does the Newton: per assembly the three stages'
-passes through the evaluate core's own C (`_tran_core.CORE_C`, formula 4,
-as `_tran_core.passes`), `K_j = -(i_j + u_j)`, ``F_i = (q_i - q_n) - h
+OWNS.  On the transient, `tr._radau_c` (`_Ctx`: the `radau_t` struct, its
+buffers for `MAXA` assemblies, and the limiter walk's fields, which
+`_tran_newton_c._walk_ready` sets; declared in `transient._RUN_STATE`).  On
+a serve it writes what the Python Newton leaves: the device memo
+(`tr._memo_put`), the step's source memo (`tr._u_memo`) and its count
+`umemo:hit`.  `_paths`: `radau_c:` -- `radau_c:<why>` a decline,
+`radau_c:bail:<why>` a hand-back (`BAIL`), `radau_c:served`,
+`radau_c:assemblies`.  Switch: `PYCIRCUIT_RADAU_C=0` (`ENABLED`, read on
+every call); `STATUS` says why the path is off where it is.
+
+THE NEWTON.  Per iteration the Python makes the block system
+(`_coupled_stage_system`: nine blocks, each through `remove_row_col`), the
+three stage evaluations, the limiter per stage, numpy's solve and the
+convergence test.  The C makes, per assembly, the three stages' passes
+through the evaluate core's own C (`_tran_core.CORE_C`, formula 4, as
+`_tran_core.passes`), ``K_j = -(i_j + u_j)``, ``F_i = (q_i - q_n) - h
 (((0 + A_i0 K_0) + A_i1 K_1) + A_i2 K_2)`` and the blocks ``C_i + (h
 A_ij) G_j`` (``(h A_ij) G_j`` off the diagonal) over the full width, then
 reduced and written column-major as numpy's solve copies them; numpy's own
@@ -18,7 +28,6 @@ reduced and written column-major as numpy's solve copies them; numpy's own
 reduced entry; the convergence test (`_stages_converged`: the step within
 ``reltol`` of the largest reduced stage plus ``abstol``) after the
 assembly at the new stages, as the Python assembles before it tests.
-Bit for bit the Python Newton (pinned in `tests/test_pinned_pairs.py`).
 
 TRANSACTIONAL.  The C writes nothing outside its buffers.  Where it
 converges, what the Python Newton leaves is made here: every assembly's
@@ -42,9 +51,7 @@ shadow of the circuit's passes or limiter or of the transient's pieces, a
 no source memo, a circuit the core cannot serve, a limiting element that
 is not its C kernel, a batch not ready, inputs of another type or size.
 
-`ENABLED` (env `PYCIRCUIT_RADAU_C=0`) is read on every call; `STATUS` says
-why the path is off where it is.  History: `doc/transient_history.md`,
-`_tran_radau_c.py`.
+History: `doc/transient_history.md`, `_tran_radau_c.py`.
 """
 import os
 from itertools import repeat
@@ -64,8 +71,8 @@ MAXA = 8
 RADAU_C = _cbuild.csrc('radau.c')
 RADAU_CDEF = _cbuild.csrc('radau.h')
 
-#: the C's status codes past 1 (converged): why it handed the solve back
-#: the C's results, named in radau.h: {code: why} of its bails
+#: the C's results, named in radau.h (`_CODES`); `BAIL`: {code: why} of
+#: the codes past 1 (converged) -- why it handed the solve back
 _CODES = _cbuild.constants(RADAU_CDEF)
 BAIL = _cbuild.bails(_CODES, 'RADAU_BAIL_')
 
@@ -220,8 +227,12 @@ def _undo_source(memo, keys, had, counts):
 def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol, maxit):
     """`_stage_newton(seed)` (undamped, no shunt) in C: the three converged
     stages as fresh full-width arrays, the device memo and the source memo
-    as the Python Newton leaves them -- or None: declined or handed back,
-    nothing left behind, the Python Newton runs."""
+    as the Python Newton leaves them -- or None: declined (`radau_c:<why>`)
+    or handed back (`radau_c:bail:<why>`), nothing left behind, the Python
+    Newton runs.  `ctx` is the step's stage context (`h`, `iref`, `m`,
+    `qn`, `Amat`, `tstage`), `src` the source at a stage time, `lims` the
+    stateful limiters (any declines); the record `tr._radau_c` is made or
+    remade where the core, size or reference row changed."""
     if not ENABLED:
         return _no('radau_c:off')
     if provided_function is not None:

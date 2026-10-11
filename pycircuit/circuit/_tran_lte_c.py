@@ -1,24 +1,39 @@
-"""THE ADAPTIVE ERROR TEST IN C (speed round 8, stage 3; 2026-10-04).
+"""THE ADAPTIVE ERROR TEST IN C: `StepController._max_error` --
+`_charge_lte`, `_normalised` and their maximum, the one call the integral
+and PI controllers make on every attempt -- as one call of `csrc/lte.c`.
 
-The default transient (adaptive gear) judges every step attempt: the
-charge LTE `Eg` of the active integrator (`compute_lte`: Gear-2's third
-divided difference of the charges), mapped to solution units by `J^-1`
-(the reference row cut and restored around `np.linalg.solve`), against the
-tolerance `TRTOL (reltol ref + abstol)` with `ref` by `relref` (the
-controller's running maximum, `sigglobal_reference`), normalised
-(`normalised_error`) and its maximum taken -- ~370 k instructions an
-attempt on a 20-MosLevel1 chain, some forty numpy calls around one LU of
-82 k.  Here ONE C call: the third divided difference in numpy's
+The Python judges an attempt by the charge LTE `Eg` of the active
+integrator (`compute_lte`: Gear-2's or the trapezoid's third divided
+difference of the charges, Euler's first difference at an order drop),
+mapped to solution units by `J^-1` (the reference row cut and restored
+around `np.linalg.solve`), against the tolerance
+`TRTOL (reltol ref + abstol)` with `ref` by `relref` (the controller's
+running maximum, `sigglobal_reference`), normalised (`normalised_error`)
+and its maximum taken.  Here ONE C call: the divided difference in numpy's
 elementwise order, the reduced `J` column-major as numpy's solve copies it
-and numpy's own `scipy_dgesv_64_`, the reference (the running maximum into
-a fresh array), the tolerance and the normalised error's maximum.  Bit for
-bit `StepController._charge_lte`, `_normalised` and `np.max` (pinned in
-`tests/test_pinned_pairs.py`).
+and numpy's own `scipy_dgesv_64_` (or the run's `StructuralKLU`), the
+reference (the running maximum into a fresh array), the tolerance and the
+normalised error's maximum.  Bit for bit `StepController._charge_lte`,
+`_normalised` and `np.max` (pinned in `tests/test_pinned_pairs.py`).
+
+OWNS, on the step controller: `_lte_c` (a `_Ctx`: the struct, its buffers,
+the KLU binding, the `served` mark -- the watch counter at its last serve,
+None after any other outcome; the C loop enters only on a mark equal to
+the counter now).  A serve writes the controller's `_ref_running` (any
+`relref` but pointlocal) and adds the refactor `StructuralKLU.solve`
+counts to the run's solver (`refactors`).  The C loop binds a `_Ctx` of
+its own (`_tran_loop_c._bind`).  `_paths` prefix `lte_c:`:
+`lte_c:served`, `lte_c:sparse_served`, `lte_c:euler`, the declines below
+and the hand-backs (`lte_c:bail:<why>`); the C loop re-creates the first
+three for the tests it makes.  Switch: `ENABLED` (env `PYCIRCUIT_LTE_C=0`),
+read on every call and by the C loop on every adaptive entry.
 
 SERVED: `IntegralController` and `PIController` exactly (their laws stay
 Python: `StepController._max_error` is the one call both make), Gear-2 and
 the trapezoid on the charge form (`h_last2` known: from a run's third
-step), the numeric toolkit, float64 vectors and `J` of the run's size.
+step), Euler's step at an order drop, the numeric toolkit, float64 vectors
+and `J` of the run's size, a dense solve or the run's `StructuralKLU` once
+its first factor is made.
 
 EXACT OR NOT AT ALL.  Every input finite; the floating-point flags cleared
 on entry and tested after each part whose numpy calls would check them --
@@ -30,16 +45,17 @@ and errors and the solve's fallback then happen as they did).  The
 controller's running maximum is assigned only on success, and the flags
 are left clear, as the chain's last numpy call leaves them.
 
-DECLINES before anything is touched (`_paths.no`): the switch, no build,
-another controller or integrator, a patched or shadowed piece of the chain
-(the controller's methods, the module functions they call, the
-integrator's `compute_lte`, the toolkit's solve), the g-form step and the
-Euler order drop, a non-numeric toolkit, an input that is not a float64
-array of the run's size, a step that is not a float.
+DECLINES before anything is touched (`_paths.no`): the switch, no build (or
+numpy's OpenBLAS not found), another controller or integrator, a patched or
+shadowed piece of the chain (the controller's methods, the module functions
+they call, the integrator's `compute_lte`, the toolkit's solve), a sparse
+solver that is not the run's `AutoSolver` over `StructuralKLU` or has made
+no factor yet, the g-form step (`h_last2` not yet known) and a step with no
+history, a non-numeric toolkit, an input that is not a float64 array of the
+run's size, a step that is not a float, a `relref` that is not a str.
 
-`ENABLED` (env `PYCIRCUIT_LTE_C=0`) is read on every call; `STATUS` says
-why the path is off where it is.  History: `doc/transient_history.md`,
-`_tran_lte_c.py`.
+`STATUS` says why the path is off where it is.  History:
+`doc/transient_history.md`, `_tran_lte_c.py`.
 """
 import math
 import os
@@ -57,9 +73,10 @@ STATUS = 'not loaded'
 LTE_C = _cbuild.csrc('lte.c')
 LTE_CDEF = _cbuild.csrc('lte.h')
 
-#: the C's status codes past 1 (done): why it handed the attempt back
-#: the C's results, named in lte.h: {code: why} of its bails
+#: the codes lte.h names: its results, its formulas, its `relref` modes
 _CODES = _cbuild.constants(LTE_CDEF)
+#: `{code: why}` of the results past 1 (done): why the C handed the attempt
+#: back
 BAIL = _cbuild.bails(_CODES, 'LTE_BAIL_')
 
 _driver = None
@@ -243,8 +260,15 @@ def _vec(a, n):
 
 
 def max_error(ctrl, s):
-    """`StepController._max_error` in C: `(err, p)`, or None -- declined or
-    handed back, nothing written, the Python chain runs."""
+    """`StepController._max_error` in C for `ctrl` on the attempt `s` (a
+    `StepLTEInputs`): `(err, p)`, or None -- declined or handed back,
+    nothing of the run's written, the Python chain runs.
+
+    Every call first clears the context's `served` mark.  A serve sets it
+    to the watch counter, writes `ctrl._ref_running` (any `relref` but
+    pointlocal) and, sparse, adds the refactor to the solver's `refactors`;
+    the context (`ctrl._lte_c`) is made, or remade for another size or
+    reference row, before the call."""
     last = ctrl.__dict__.get('_lte_c')
     if last is not None:
         last.served = None

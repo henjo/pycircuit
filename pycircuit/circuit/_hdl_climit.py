@@ -1,15 +1,22 @@
-"""THE hdl LIMITER IN C (speed round 5, 2026-10-03): a chained model's
-generated `limit()` -- the probes' parameter chains, the laws, the
-canonical orders and the device write-back -- as ONE C kernel per class,
-the Python closure's answer bit for bit.
+"""THE hdl LIMITERS IN C, each the Python's answer bit for bit: a chained
+hdl class's generated `limit()` closure (`hdl.py`, `BehaviouralMeta`: the
+probes' parameter chains, the laws, the canonical orders and the device
+write-back) as ONE C kernel per class; `SubCircuit.limit`'s loop over the
+limiting elements as ONE C call per run of kernel elements (THE WALK,
+below); and PSP's hand-written `limit` as a C twin the walk calls
+(HAND-WRITTEN LIMITERS, below).
 
-WHY.  After speed round 3 trimmed the closure (`hdl.py`, `BehaviouralMeta`:
-the parameter cache, the lists, the reused ranking) `cir.limit` was still
-33 % of a 20-MosLevel1 gear step: 18.8 us a call, of which the Python body
-17.6 (lists, the two rankings, the sorts, the write-back), the
-solution-reading parameter chain `von` 6.2, the laws 2.6.  A C kernel call
-costs 1.7 us.  The parameter chains alone in C would recover a quarter of
-that; the whole closure recovers nearly all of it.
+OWNS.  On the class info, `info['_c_limit']` (the kernel, or None) and
+`info['_c_limit_status']` ('c' or 'numpy (<why>)'); on each element,
+`_hdl_cp` (its packed parameters: the one pack `CKernel`, the batches, the
+evaluate core and the C Newton share, built where absent and dropped by
+the element's `update`); on the circuit, `_limit_walk` (`_Walk`, rebuilt
+when stale); in the module, `_HW` (the hand-written twins, by class info
+and `vlimit`).  `_paths`: `climit:` (the kernel's hand-backs to the
+closure) and `walk:` (the walk's declines and counts).  Switches:
+`PYCIRCUIT_HDL_CLIMIT=0` (`ENABLED`: the class kernels, and the walk),
+`PYCIRCUIT_HDL_LIMIT_WALK=0` (`WALK`: the walk), `PYCIRCUIT_PSP_LIMIT_C=0`
+(`PSP_LIMIT`: the hand-written twins).
 
 WHAT IS PRINTED.  Every parameter function of the spec keeps its
 ingredients (`_hdl_limit_par`: the chain statements it reaches, its
@@ -31,13 +38,12 @@ zero's sign follow Python's.
 
 THE ONE THING C DOES NOT ANSWER.  Python's `sorted` and `min` on keys
 holding a NaN order by timsort's and the set's accidents, which no other
-sort reproduces (measured: a stable insertion sort disagrees in 29 % of
-random NaN-keyed lists).  So the kernel DECLINES -- returns 1 and leaves
-`out` as it came -- whenever a key it is about to sort or minimise is NaN
-(a NaN or inf row of the state at a probe, a NaN parameter, infinities
-meeting in the shifts), and the Python closure answers that call with its
-own order and its own warnings.  With finite keys the orders are total
-(the probes' row pairs are unique), and any stable sort is `sorted`.
+sort reproduces.  So the kernel DECLINES -- returns 1 and leaves `out` as
+it came -- whenever a key it is about to sort or minimise is NaN (a NaN or
+inf row of the state at a probe, a NaN parameter, infinities meeting in
+the shifts), and the Python closure answers that call with its own order
+and its own warnings.  With finite keys the orders are total (the probes'
+row pairs are unique), and any stable sort is `sorted`.
 
 THE CALL.  `int hdl_fn(const double *x, const double *p, double *out)`: the
 chain functions' entry name and pointer layout, so the object is built,
@@ -60,7 +66,7 @@ off (`ENABLED`, `PYCIRCUIT_HDL_CLIMIT=0`) -- and a spec list mutated in place
 AFTER the kernel was bound is not seen by it, as the stamp plan's contract
 has it.
 
-History: `doc/pss_log_260902.md`, 2026-10-03 (speed round 5).
+History: `doc/transient_history.md`.
 """
 import os
 import types
@@ -77,11 +83,11 @@ _no = _paths.no
 KINDS = {'pnj': 0, 'fet': 1, 'vds': 2, 'delta': 3, 'id': 4}
 
 #: THE SWITCH: False keeps the Python closure on every class (the chain
-#: functions stay on C) -- `PYCIRCUIT_HDL_CLIMIT=0`, read at import; the
-#: closure reads the attribute per call, so a test can flip it.  The
-#: tests that count the closure's parameter functions do: a numpy pin of
-#: the WHOLE class moved their recorded transients, since the 'auto'
-#: Newton options read a numpy class differently (2026-10-03).
+#: functions stay on C) and the walk off -- `PYCIRCUIT_HDL_CLIMIT=0`, read
+#: at import; the closure and the walk read the attribute per call, so a
+#: test can flip it.  A test that counts the closure's parameter functions
+#: flips this, not the class's backend: the 'auto' Newton options read a
+#: numpy-pinned class differently.
 ENABLED = os.environ.get('PYCIRCUIT_HDL_CLIMIT', '1') != '0'
 
 
@@ -377,30 +383,28 @@ def unbind(info):
 
 
 ## ---------------------------------------------------------------------------
-## THE WALK (speed round 6, commit 3, 2026-10-03).  `SubCircuit.limit` is a
-## loop in dict order over the limiting elements: gather `x[nm]` and
-## `x0[nm]`, call `el.limit`, write the result back -- so the NEXT element
-## reads the earlier writes (every chain device shares gnd; a cascode
-## shares a node), `x0` often IS `x`, and duplicate rows take the last
-## value.  After round 5 the loop cost 57 us for twenty kernels of 0.34 us:
-## twenty wrapped `el.limit` calls (2.3 us each) and the loop's own Python.
-## Here every run of C-kernel elements is walked in ONE C call on the live
-## state, in the same order with the same gathers and scatters, and the
-## driver returns at the first element Python must answer -- an element
-## without a kernel (a hand-written limiter -- `Diode`, PSP's own -- a
-## nested SubCircuit, a class whose `limit` is patched or shadowed, a pack
-## that failed) or a call the kernel declines (a NaN among the keys) --
-## which the caller handles with the loop's own statement before the walk
-## resumes behind it.  A circuit with no kernel-capable element at all (an
-## hdl class with a `$limit` spec and the generated `limit`; the PSP
-## cases) is answered from the cache before any other check: the loop,
-## at under a microsecond a call.  The pack
-## is the element's own, mirrored as `_hdl_batch` mirrors it; the
-## temperature is written into its slot as `CLimitKernel.__call__` writes
-## it.  Nothing is touched where the walk does not serve (a state that is
-## not one writeable float64 vector of the circuit's size, a temperature
-## that is not one number, a JAX or symbolic toolkit): None, and the loop
-## runs.  `WALK` (env `PYCIRCUIT_HDL_LIMIT_WALK=0`) is read per call.
+## THE WALK.  `SubCircuit.limit` is a loop in dict order over the limiting
+## elements: gather `x[nm]` and `x0[nm]`, call `el.limit`, write the result
+## back -- so the NEXT element reads the earlier writes (every chain device
+## shares gnd; a cascode shares a node), `x0` often IS `x`, and duplicate
+## rows take the last value.  Here every run of C-kernel elements is walked
+## in ONE C call on the live state, in the same order with the same gathers
+## and scatters, and the driver returns at the first element Python must
+## answer -- an element without a kernel (a hand-written limiter without a
+## twin -- `Diode`; PSP's while its twin is off -- a nested SubCircuit, a
+## class whose `limit` is patched or shadowed, a pack that failed) or a call
+## the kernel declines (a NaN among the keys) -- which the caller handles
+## with the loop's own statement before the walk resumes behind it.  A
+## circuit with no kernel-capable element at all (capable: an hdl class
+## with a `$limit` spec and the generated `limit`, or a hand-written
+## limiter with a twin) is declined from its cached walk (`walk:incapable`)
+## before its state is checked.  The pack is the element's own, mirrored as
+## `_hdl_batch` mirrors it; the temperature is written into its slot as
+## `CLimitKernel.__call__` writes it.  Nothing is touched where the walk
+## does not serve (a state that is not one writeable float64 vector of the
+## circuit's size, a temperature that is not one number, a JAX or symbolic
+## toolkit): None, and the loop runs.  `WALK` (env
+## `PYCIRCUIT_HDL_LIMIT_WALK=0`) is read per call.
 ## ---------------------------------------------------------------------------
 
 WALK = os.environ.get('PYCIRCUIT_HDL_LIMIT_WALK', '1') != '0'
@@ -412,12 +416,12 @@ _walk_driver = None
 WALK_STATUS = 'not loaded'
 
 ## ---------------------------------------------------------------------------
-## HAND-WRITTEN LIMITERS (speed round 9, stage 1; 2026-10-05).  A class whose
-## `limit` is hand-written Python has no spec to print: PSP's
-## (`compact.PspMosLongChannel.limit`, which PMOS inherits) moved d, g and b
-## about the source in the walk's Python loop, so the C Newton
-## (`_tran_newton_c`) declined every PSP circuit.  Its twin is written here,
-## the law transliterated in Python's own order: `vold = x0[k] - vs0`,
+## HAND-WRITTEN LIMITERS.  A class whose `limit` is hand-written Python has
+## no spec to print.  PSP's (`compact.PspMosLongChannel.limit`, which PMOS
+## inherits: d, g and b moved about the source) has its twin written here,
+## so the walk -- and the C Newton, which needs every limiting element
+## capable (`_tran_newton_c._walk_ready`) -- serves a PSP circuit.  The
+## law is transliterated in Python's own order: `vold = x0[k] - vs0`,
 ## `delta = (x[k] - vs) - vold`, and where `|delta| > lim`, `x[k] = (vs +
 ## vold) + (+-lim)` -- for the external g, as the Python does.  The Python
 ## computes in numpy float64 scalars, which WARN on an overflow or an invalid
@@ -431,7 +435,8 @@ WALK_STATUS = 'not loaded'
 ## its `vlimit` the baked one -- and on such an entry an instance `vlimit`
 ## declines like an instance `limit` does on every entry (one more dict
 ## lookup, for the hand-written entries alone).  `PSP_LIMIT` (env
-## `PYCIRCUIT_PSP_LIMIT_C=0`) is read per call.
+## `PYCIRCUIT_PSP_LIMIT_C=0`) is read per call to switch a twin off; a walk
+## built while it was off has no twin until it is rebuilt (`_walk_for`).
 ## ---------------------------------------------------------------------------
 PSP_LIMIT = os.environ.get('PYCIRCUIT_PSP_LIMIT_C', '1') != '0'
 
@@ -504,11 +509,14 @@ def _walk_drv():
 
 class _Walk:
     """A circuit's limiting elements in dict order; for each, whether its
-    class could carry a limit kernel (`capable`: an hdl class with a
-    `$limit` spec, the generated `limit`, the circuit's toolkit, a state
-    the driver's buffers hold), the kernel it has now, its node rows and
-    its mirrored pack.  The driver's handles are made at the first call
-    that needs them (`prepare`)."""
+    class could carry a limit kernel (`capable`: the class info of an hdl
+    class with a `$limit` spec and the generated `limit`, or the
+    `_Handwritten` of a hand-written limiter with a twin -- the circuit's
+    toolkit, a state the driver's buffers hold; else None), the kernel it
+    has now, its node rows and its mirrored pack.  The driver's handles are
+    made at the first call that needs them (`prepare`).  Its fields are
+    read by `_tran_newton_c._walk_ready` too (the C Newton's and the Radau
+    C's walk)."""
 
     __slots__ = ('F', 'K', 'NM', 'OFF', 'PR', 'TI', 'addr', 'any_capable',
                  'cF', 'cK', 'cNM', 'cOFF', 'cPR', 'cTI', 'cap_idx', 'capable',

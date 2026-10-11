@@ -1,12 +1,23 @@
-"""THE SOURCES IN C (the C stepping loop plan's stage 1, 2026-10-10).
+"""THE SOURCES IN C: the direct source pass (`_stamp_plan.source_direct`)
+-- `u(t)` of a circuit of VS- and IS-family sources -- and the earliest of
+their `next_event(t)`, as `csrc/sources.c`.
 
-The direct source pass (`_stamp_plan.source_direct`) evaluates a circuit
-of VS- and IS-family sources in Python: per source `v = a + f(t)` (`a` its
-DC value, `f` its `function`: `func.TimeFunction`, `Sin`, `Pulse`, `PWL`,
-`Exp`, `AM`, `SFFM`), scattered in element order into bins from +0.0.  A
-`Table` holds the same sources as the C reads them (`csrc/sources.c`): one
-call makes the vector `u(t)`, another the earliest event after `t` --
-bit for bit the Python's, or declined.
+The Python evaluates per source `v = a + f(t)` (`a` its DC value, `f` its
+`function`: `func.TimeFunction`, `Sin`, `Pulse`, `PWL`, `Exp`, `AM`,
+`SFFM`), scattered in element order into bins from +0.0.  A `Table` holds
+the same sources as the C reads them: one call makes the vector `u(t)`,
+another the earliest event after `t` -- bit for bit the Python's, or
+declined.
+
+OWNS nothing on others' objects: a `Table` holds what it read.  The C loop
+keeps the table it uses on the stepping loop (`c_tab`, `_tran_loop_c`),
+checks `holds` once an entry and calls the C on the table's struct itself,
+every attempt.  `_paths` prefix `sources_c:`: `sources_c:built` (a table
+made), `sources_c:u` and `sources_c:next` (the Python entries' serves), the
+declines (`sources_c:<reason>`) and the hand-backs (`sources_c:bail:<why>`);
+inside the C loop the pass counts as the Python's (`src.direct:served`,
+`u:called`), re-created by `_tran_loop_c._write_back`.  Switch: `ENABLED`
+(env `PYCIRCUIT_SOURCES_C=0`), read by `table_for` at every build.
 
 DECLINE, NEVER DIFFER.  A table is built only where every source's value
 comes the fast float way -- the waveform one of the seven exactly (no
@@ -22,8 +33,9 @@ holds its inputs as it read them and `holds` compares them all (each
 source's `function`, its class, its attributes, a PWL's points, the DC
 value): stale, it is not used.
 
-A prerequisite of the C loop (stage 4: the sources per step in C, their
-validity once a loop call); no line of its own.
+`Table.u` and `Table.next_event` are the Python entries (the twin's tests);
+the C loop checks what `_call` checks once an entry (`_tran_loop_c.run`).
+History: `doc/transient_history.md`.
 """
 import os
 
@@ -43,7 +55,8 @@ _CODES = _cbuild.constants(SOURCES_CDEF)
 BAIL = _cbuild.bails(_CODES, 'SOURCES_BAIL_')
 
 _driver = None
-#: an int parameter whose float is exact, and whose differences are
+#: an int parameter's bound in magnitude (exclusive): below it its float is
+#: exact, and so is the difference of two of them
 _INT_MAX = 2 ** 52
 _F64 = np.float64
 

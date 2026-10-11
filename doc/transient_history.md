@@ -4780,3 +4780,136 @@ map; `tests/test_c_abi.py` keeps history out of `csrc/`). The tags they carried,
 * `radau_tc.c`: "THE STEP'S END PASSES (speed round 12, stage 5a)"; at the hypot locals: "(the
   arithmetic, and its order, as before)" -- now "the same values, the same operations in the
   same order".
+
+## The C glue modules -- what their docstrings and comments said of their history (moved 2026-10-11, the C loop plan's R3a)
+
+The glue modules' text now states contracts only (`doc/transient_runtime.md` is the map;
+`tests/test_runtime_map.py` keeps history out of every module that builds or loads C). What they
+said of when and why each piece was built, verbatim, by module:
+
+**`_tran_loop_c`.** "(the C stepping loop plan's stages 4 and 5; 2026-10-11)"; "~85 us of Python
+around ~20 us of C a fixed step on the 20-MosLevel1 chain."; the units it drives were tagged "(stage
+1)" (the sources' table), "(4a)" (the predictor), "(3d)" (the branch screen), "(stage 3)" (the error
+test), "(5a)" (the controller's law).
+
+**`_tran_ctrl_c`.** "(the C stepping loop plan's stage 5, step a; 2026-10-11)".
+
+**`_tran_pred_c`.** "(the C stepping loop plan's stage 4, step a; 2026-10-11)"; "`cblas_dgemv(RowMajor,
+Trans, ...)` is that product, 3000 of 3000 drawn".
+
+**`_tran_branch_c`.** "(the C stepping loop plan's stage 3, step d; 2026-10-11)"; "six numpy reductions
+over n x n, ~6 us a step at 15 unknowns and ~60 us at 269"; "(vectorised reductions beat a plain C
+loop there: the error test's lesson, roadmap 113)".
+
+**`_tran_sources`.** "(the C stepping loop plan's stage 1, 2026-10-10)"; "A prerequisite of the C loop
+(stage 4: the sources per step in C, their validity once a loop call); no line of its own."
+
+**`_tran_lte_c`.** "(speed round 8, stage 3; 2026-10-04)"; "~370 k instructions an attempt on a
+20-MosLevel1 chain, some forty numpy calls around one LU of 82 k".
+
+**`_tran_newton_c`.** Module: "(speed round 8, stage 4; 2026-10-04)"; "A multistep step's Newton spent
+~750 k instructions an iteration on a 20-MosLevel1 chain in Python and numpy around ~250 k of C: the
+evaluate core's wrapper (readiness over the elements, sixteen buffer handles, the lookup), the
+reference row cut out of `J` and `F` and put back into `x`, numpy's solve wrapper, the limiter's
+wrapper and the walk's per-element checks, the convergence test's dozen small-array calls -- with
+about one iteration a step."; ": speed round 9, C0"; "(the stage-0 prototype, pss_log 2026-10-04;
+...)"; "(`_watch`, speed round 9, stage 4)". `_ParRec`: "which moved the counter of every stamp twice
+a solve (2026-10-06)". `_walk_ready`: "(2026-10-06: they were ready unstamped, the tuple checks on
+every call from the first move on)". `solve`: "~1 us inside a step, on every step of every such
+circuit"; the companion lines "kept twice on purpose: roadmap 104" (one shared function with
+`_tran_core.evaluate`, an 11-tuple out, cost +0.3 .. +0.4 % a step against an A/A).
+
+**`_tran_core`.** Module: "(2026-10-03; speed round 7, commit 1)"; "A Newton iterate of the numeric
+transient spends most of its time in the Python around C that already exists: the four circuit
+passes (`G`, `C`, `i`, `q`), each a plan with its batches, templates and bincount, then the
+companion term and the residual in numpy.  Measured warm on a 20-MosLevel1 chain: the four passes 45
+us, the residual 48.5, of which the C work is 12.7."; "measured 1000 of 1000 products equal to
+`np.dot` and to the plan's `matmul`"; "Bit for bit the Python path: measured on every trial of the
+stage-0 prototype (pss_log 2026-10-03), 20-MosLevel1 357 -> 311 us a step in the run."; section
+titles "(speed round 9, stage 3)", "(speed round 9, stage 4)"; the pointer "`doc/hdl_roadmap_260824.md`
+sec. 65". `SKIP_UNREAD_J`: "(speed round 9, C0)". `PATTERN`: "(the C stepping loop plan's stage 2)".
+`_fuse_groups`: "an element at a time cost a 20-element chain's core build 1.7 M instructions."
+`_Core.__init__`: "(speed round 9, stage 3)". `_Core.probe`: "(speed round 9, stage 4)". `CORE_PASSES`
+and `passes`: "speed round 9, stage 8"; "`core_for`'s full check ran on every call of such a circuit
+-- a diode ladder by Radau, whose stamps never hold, paid 9 k instructions a call, +0.95 % of its
+run." `passes_held`: "(speed round 12, stage 5a: for passes another C made in the same step,
+`_tran_radau_tc`)".
+
+**`_watch`.** "(speed round 9, stage 4; 2026-10-05)"; "and cost ~110 k instructions a step on a
+20-element chain, every step, for an answer that does not change between steps"; "~1 us a dict";
+"History: `doc/pss_log_260902.md`, 2026-10-05." `HOLD`: "(2026-10-06)"; "Counted from the first arm
+on, the cap stopped every stamp of a circuit object after ~8 to 16 solves, each solve moving the
+counter at least once: 20 solves of the PSP stage cost 13 % more each from the 16th".
+
+**`_cbuild`.** "Moved out of `_hdl_cbackend` (the C stepping loop plan's stage R1b, 2026-10-10) byte
+for byte: every key, and so every stored object, is the one it was."; `CSRC_DIR`: "(the C loop
+plan's stage R1c)", "(R1d)"; `INPLACE_MIN_ENTRIES`: "the buffer object and re-pointing the struct
+read +0.2 % a step at n <= 25 (2026-10-11), the copy it saves is 580 KB a call at n = 269.";
+`SANITIZE`: "(2026-10-04, testing for development, stage 4)"; `_key_lock`: "So eight test workers
+asking for one model's kernels compile it once, not eight times (each a `cc` run of up to a minute
+for PSP)."; `_precompiled`: "a header ~2-3 ms and a first type string ~0.2 ms parsed, microseconds
+read" (the C loop plan's stage 5e, 0f7c735d).
+
+**`_tran_radau_c`.** "(speed round 9, B2; 2026-10-05)"; "spent ~5 M instructions a step on a
+20-MosLevel1 chain in Python and numpy around ~1.5 M of C"; "~0.7 M".
+
+**`_tran_radau_tc`.** "(speed round 10, B3.3; 2026-10-05)"; "(`_radau_frozen`, B3.1)"; "Its loop spent
+~3.5 M instructions a step on the PSP stage's radau PSS in Python and numpy around ~0.4 M of device
+kernels"; "On this box (numpy's X86_V3 loops: AVX2 and FMA3)"; "in practice the residual sits ~1e-15
+below a 1e-8 tolerance."; "THE STEP'S END PASSES (speed round 12, stage 5a ...)"; "Each hand-off's
+own `passes` call cost ~57 k instructions of readiness and marshalling around its kernels."; "THE
+FROZEN FACTORS (speed round 12, stage 5b ...)"; "The C's work is nothing on the PSP stage's 6x6
+factors; the call's marshalling is the cost (buffers kept per size: `ffi.from_buffer` costs ~3.5 k a
+call)."; `_F64`: "speed round 11"; `fold`: "~85 k instructions a step on the PSP stage's radau PSS.";
+`_Ctx.__init__`: "speed round 10, B3.5: a cast from `arr.ctypes.data` cost 13.5 k instructions, 21 of
+`P`'s and `V`'s entries ~30 k a step".
+
+**`shooting/_sens_c`.** "(speed round 11, item 4; 2026-10-06)"; "On the PSP stage's radau PSS that was
+~530 k instructions a step around ~50 k of LAPACK: the readers' memo lookups and reductions, a dozen
+small numpy calls assembling the block, `lu_factor`'s and `lu_solve`'s checks."; "(the stage-0
+prototype: 120 of 120 steps' `P`, LU and pivots; ...)".
+
+**`_hdl_climit`.** "(speed round 5, 2026-10-03)"; "WHY.  After speed round 3 trimmed the closure
+(`hdl.py`, `BehaviouralMeta`: the parameter cache, the lists, the reused ranking) `cir.limit` was
+still 33 % of a 20-MosLevel1 gear step: 18.8 us a call, of which the Python body 17.6 (lists, the two
+rankings, the sorts, the write-back), the solution-reading parameter chain `von` 6.2, the laws 2.6.
+A C kernel call costs 1.7 us.  The parameter chains alone in C would recover a quarter of that; the
+whole closure recovers nearly all of it."; "(measured: a stable insertion sort disagrees in 29 % of
+random NaN-keyed lists)"; "History: `doc/pss_log_260902.md`, 2026-10-03 (speed round 5)."; `ENABLED`:
+"a numpy pin of the WHOLE class moved their recorded transients, since the 'auto' Newton options
+read a numpy class differently (2026-10-03)"; THE WALK: "(speed round 6, commit 3, 2026-10-03)";
+"After round 5 the loop cost 57 us for twenty kernels of 0.34 us: twenty wrapped `el.limit` calls
+(2.3 us each) and the loop's own Python."; HAND-WRITTEN: "(speed round 9, stage 1; 2026-10-05)";
+"moved d, g and b about the source in the walk's Python loop, so the C Newton (`_tran_newton_c`)
+declined every PSP circuit."
+
+**`_hdl_batch`.** "(2026-10-03; speed round 6)"; "Rounds 2 and 5 made every device evaluation of a
+chained hdl class a C kernel; what a mid-sized model's pass was made of after them was the CALL
+around each kernel.  Measured on a 20-MosLevel1 chain: `cir.G` 56 us, of which the kernels' C work was
+6.7 -- the other 50 us were twenty wrapped calls (`el.G` -> the generated method -> `_chained_eval`
+-> `CKernel.__call__`, 2.0 us each) through the plan's per-element loop (0.8-1.1 us each)."; "Measured
+before it was built (the prototype, this box): the 20-MosLevel1 `G` pass 59.4 -> 7.5 us, `i` 64.9 ->
+12.1, the Gummel-Poon chain the same, 20-PSP `G` -14 % and `i` -34 % (its C work dominates); every
+pass bit for bit today's."; "(`zero_source`, commit 2 of the round): every chained library class's
+`u`, `u_dc` and `dudt` return a list of literal zeros (22 of 22 on 2026-10-03), and `cir.u` called
+each of them -- 44 calls at 1.3 us on the 20-MosLevel1 chain, 10 % of a step --"; "`doc/hdl_roadmap_260824.md`
+sec. 63."
+
+**`_hdl_cbackend`.** "Why it exists: the chained numpy function is straight-line scalar Python -- for
+the PSP MOSFET's Jacobian, ~21 400 interpreted calls per evaluation.  The same statements compiled
+by the system C compiler run 219-229x faster at bitwise-identical results
+(`doc/backend_spike_260826.md`); this module is that measurement built out."; Selection: "(since
+2026-10-02)"; "rebuild PSP's kernels, ~30-90 s"; "requesting a 200x backend and silently getting the
+1x one is the failure mode this refuses to have"; the limiter "(`_hdl_climit`, 2026-10-03)",
+"(`_hdl_climit.limit_walk`, 2026-10-03)"; fidelity: "PSP's `G` 50 -> 22 us (2026-10-02)"; "in ~30% of
+arguments"; "(speed round 12, 2026-10-06)"; "by the evidence of another machine: 50 kernel tests
+failing there"; "Andreas's decision: "; "On this box (numpy's X86_V3 loops) tanh is the only one.";
+the batches "(`_hdl_batch`, 2026-10-03)"; the fused kernel "(`fuse_csrc`, 2026-10-05)"; the
+re-export "the C stepping loop plan's stage R1b"; `CKernel`: "THE CALL IS THE COST for a mid-sized
+model (2026-10-02): MosLevel1's `G` computes in 0.3 us of C and the wrapper around it took 4.3 us --
+two `ffi.cast('double *', arr.ctypes.data)` (860 ns each), `np.ndim(T)` (485 ns), the rest in small
+change.  Now `ffi.from_buffer` on the arrays (190 ns each, the buffer protocol; the cdata keeps the
+array alive for the call), a pre-resolved pointer type, a type test for the usual float `T`: 1.4 us
+measured, PSP's `G` 23.2 -> 20.1 us."; "## The fused kernel (speed round 9, stage 3)."; `FUSE`: "needs
+48-62 % of the work on PSP"; "(speed round 12, stage 1, 2026-10-06)"; `libm_check`: "~10 ms";
+`_resolve`: "a request for C ran into an ImportError out of class creation (until 2026-10-02)".

@@ -1,33 +1,42 @@
-"""EXACT INVALIDATION (speed round 9, stage 4; 2026-10-05).
+"""EXACT INVALIDATION: one counter that moves on any change to a watched
+dict, so that a C path's readiness check that passed holds, unchecked,
+while the counter stands.  No Python reference: without it every checker
+(`_tran_core`, `_tran_newton_c`, `_tran_lte_c`, `_tran_loop_c`,
+`_tran_radau`, `_tran_radau_tc`, `_stamp_plan`) runs its check in full on
+every call.
 
-The C paths' readiness checks -- is every batch's kernel still its class's
-bound one, every element without an instance shadow, every pack the one
-mirrored, the limiter walk's tables as built, the plan the circuit's --
-read mostly dicts, and cost ~110 k instructions a step on a 20-element
-chain, every step, for an answer that does not change between steps.
-CPython (3.12+) lets a C callback watch a dict: here one callback bumps ONE
-counter on any change to a watched dict (an item set, added or deleted,
-the dict cleared, cloned or freed).  A checker that passed stamps the
-counter (`arm`); while the counter stands, no dict it read has changed,
-and the check passes again.
+OWNS.  Nothing on others' objects but CPython's watcher mark on each dict a
+checker arms (one dict watcher id, registered by `load`, cleared at exit by
+`_clear`); the stamps are the checkers' own.  No `_paths` counts.  Switch:
+`PYCIRCUIT_WATCH=0` (`ENABLED`, read at import; `load` consults it once).
 
-`arm(dicts, before)` watches every dict the checker read -- idempotent,
-~1 us a dict -- and returns the stamp: the counter's value, or -1 where a
-stamp would not be exact.  The counter read BEFORE the full check
-(`before`) must still stand after the arming (a change during the check
--- the checker's own write into a watched dict, a thread -- leaves the
-next call to check again).  What no dict watcher sees each checker
-compares on every call, cheaply: an instance's `__dict__` REASSIGNED (the
-objects' identities), a class attribute (a pass's code, `ParameterDict`'s
-epoch, a hand-written limiter's `vlimit`), a list's length.  (CPython's
-TYPE watchers fire only while the type holds a version tag, which no
-public API can confirm: none are used.)
+THE COUNTER.  CPython (3.12+) lets a C callback watch a dict: here one
+callback (`csrc/watch.c`) bumps ONE counter on any change to a watched dict
+(an item set, added or deleted, the dict cleared, cloned or freed).  The
+checks it serves -- is every batch's kernel still its class's bound one,
+every element without an instance shadow, every pack the one mirrored, the
+limiter walk's tables as built, the plan the circuit's -- read mostly
+dicts, and their answer does not change between steps.  A checker that
+passed stamps the counter (`arm`); while the counter stands, no dict it
+read has changed, and the check passes again.
+
+`arm(dicts, before)` watches every dict the checker read (idempotent) and
+returns the stamp: the counter's value, or -1 where a stamp would not be
+exact.  The counter read BEFORE the full check (`before`) must still stand
+after the arming (a change during the check -- the checker's own write
+into a watched dict, a thread -- leaves the next call to check again).
+What no dict watcher sees each checker compares on every call, cheaply: an
+instance's `__dict__` REASSIGNED (the objects' identities), a class
+attribute (a pass's code, `ParameterDict`'s epoch, a hand-written
+limiter's `vlimit`), a list's length.  (CPython's TYPE watchers fire only
+while the type holds a version tag, which no public API can confirm: none
+are used.)
 
 `EPOCH` is the counter (a `ctypes.c_int64` over the C variable), or None
-where watching is off -- `ENABLED` (env `PYCIRCUIT_WATCH=0`), the API
-missing (before 3.12) or the build failing (`STATUS` says): every check
-then runs in full, as before.  History: `doc/pss_log_260902.md`,
-2026-10-05.
+where watching is off -- `ENABLED` false, the API missing (before 3.12),
+the build failing or the watcher cleared at exit (`STATUS` says): every
+check then runs in full.  History: `doc/transient_history.md`,
+`_watch.py`.
 """
 import atexit
 import ctypes
@@ -41,15 +50,14 @@ EPOCH = None
 #: A CHECKER STOPS ARMING after this many stamps: a circuit whose watched
 #: dicts change every step (a stateful limiter's state, written into its
 #: element's dict each iteration) would otherwise pay the full check AND
-#: the arming on every call -- past the cap it pays today's check alone
+#: the arming on every call -- past the cap it pays the full check alone
+#: (its stamp -1)
 MAX_ARMS = 16
-#: ... COUNTING ONLY THE STAMPS THAT CHURN (2026-10-06): a stamp that held
-#: `HOLD` checks or more before it broke watched dicts that change between
-#: runs, not within them -- a parameter set between the solves of a sweep, a
-#: Monte Carlo draw -- and its re-arm starts the count again (`counted`).
-#: Counted from the first arm on, the cap stopped every stamp of a circuit
-#: object after ~8 to 16 solves, each solve moving the counter at least
-#: once: 20 solves of the PSP stage cost 13 % more each from the 16th
+#: ... COUNTING ONLY THE STAMPS THAT CHURN: a stamp that held `HOLD` checks
+#: or more before it broke watched dicts that change between runs, not
+#: within them -- a parameter set between the solves of a sweep, a Monte
+#: Carlo draw -- and its re-arm starts the count again (`counted`), so a
+#: circuit object solved many times keeps its stamps
 HOLD = 8
 
 WATCH_C = _cbuild.csrc('watch.c')
@@ -94,6 +102,8 @@ def load():
 
 
 def _clear():
+    """The watcher removed (registered at exit by `load`): `EPOCH` None,
+    every check in full from then."""
     global EPOCH, STATUS
     did = _API.get('did')
     if did is not None:
