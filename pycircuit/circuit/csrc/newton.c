@@ -19,38 +19,176 @@
    in `status`.  NEWTON_CONVERGED: `x` the reduced solution, `iters`, and
    where fold_j is nonzero xc, Cj, qj, iqj, Geqj (and Jj where it has
    PCX_PASS_G).  A bail writes none of xc .. Jj.  Every return: `*num` the
-   sparse chord's numeric where it made one (the caller frees it) */
+   sparse chord's numeric where it made one (the caller frees it).  Its
+   phases come first below, then `iterate`, which runs them. */
+
+/* the result, left in `status` too */
+static long finish(newton_t *s, long code)
+{
+    s->status = code;
+    return code;
+}
+
+/* `_C_lookup`'s equality test of the full seed it evaluates against the
+   cached state: elementwise == (`alltrue(x_cached == x)`, a NaN never
+   equal), the full seed being insert_row(x) -- +0.0 at the reference, so
+   cx[r] is compared with 0.0.  The cached C where it holds (a hit), else
+   NULL */
+static const double *cache_hit(const newton_t *s, long m, long r)
+{
+    long i;
+    if (!s->have_cache) return 0;
+    for (i = 0; i < r; i++) if (!(s->cx[i] == s->x[i])) return 0;
+    if (!(s->cx[r] == 0.0)) return 0;
+    for (i = r; i < m; i++) if (!(s->cx[i + 1] == s->x[i])) return 0;
+    return s->cC;
+}
+
+/* The step, in `b` (-F reduced in, the step out), as the Python's solver
+   makes it on iteration `it`: the sparse chord (`StructuralKLU.factor`'s
+   numeric made on the first, `*num`; `_KLUNumeric.solve` every one), the
+   dense chord (SciPy's lu_factor -- dgetrf -- once, lu_solve -- dgetrs, 'N'
+   -- every one), or the full Newton's numpy.linalg.solve (numpy's own dgesv
+   on the column-major copy).  A non-finite matrix or right-hand side, and
+   any LAPACK info or KLU failure, hands back (the Python chord breaks to its
+   fallback; numpy raises LinAlgError).  `finite`: the dense J's entries.
+   0, or the bail */
+static long solve_step(newton_t *s, long it, int finite, void **num)
+{
+    long m = s->n - 1, i, k;
+    int m32 = (int) m, one32 = 1, info32 = 0;
+    int64_t m64 = m, one64 = 1, info64 = 0;
+    char trans = 'N';
+    if (s->chord && s->klu_sym) {
+        if (it == 0) {
+            for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) return NEWTON_BAIL_JNONFINITE;
+            *num = ((klu_factor_t) s->klu_factor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
+                                                  s->klu_common);
+            if (!*num) return NEWTON_BAIL_KLU_FACTOR;
+        }
+        for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return NEWTON_BAIL_BNONFINITE;
+        if (!((klu_solve_t) s->klu_solve)(s->klu_sym, *num, m32, 1, s->b, s->klu_common))
+            return NEWTON_BAIL_KLU_SOLVE;
+    } else if (s->chord) {
+        if (it == 0) {
+            if (!finite) return NEWTON_BAIL_JNONFINITE;
+            ((dgetrf32_t) s->dgetrf)(&m32, &m32, s->A, &m32, s->ipiv32, &info32);
+            if (info32 != 0) return NEWTON_BAIL_GETRF;
+        }
+        for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return NEWTON_BAIL_BNONFINITE;
+        ((dgetrs32_t) s->dgetrs)(&trans, &m32, &one32, s->A, &m32, s->ipiv32, s->b, &m32,
+                               &info32, 1);
+        if (info32 != 0) return NEWTON_BAIL_GETRS;
+    } else {
+        ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv64, s->b, &m64, &info64);
+        if (info64 != 0) return NEWTON_BAIL_DGESV;
+    }
+    return 0;
+}
+
+/* `xdiff`: `_newton_limiter`'s closure where an element limits -- `cir.limit`
+   on insert_row of x_next and of x, the reference dropped after, then
+   `xdiff = x_next - x` (x_next limited in place) -- else the step itself.
+   0, or the bail (a limiter declined: the walk stopped) */
+static long limit_step(newton_t *s, walk_fn_t walk, long n, long r)
+{
+    long m = n - 1, i, e;
+    if (!walk) {
+        for (i = 0; i < m; i++) s->xd[i] = s->b[i];
+        return 0;
+    }
+    pcx_put_ref(s->xn, s->xnf, n, r);
+    pcx_put_ref(s->x, s->x0f, n, r);
+    e = walk(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK, s->xnf, s->x0f, 0, s->wn);
+    if (e < s->wn) return NEWTON_BAIL_WALKSTOP;
+    pcx_drop_ref(s->xnf, s->xn, n, r);
+    for (i = 0; i < m; i++) s->xd[i] = s->xn[i] - s->x[i];
+    return 0;
+}
+
+/* nrsolver's convergence test, entry by entry, in its operations and
+   order: `I_scale = toolkit.dot(abs(J), ax_next) + aF` (numpy's own dgemv,
+   row-major, as np.dot calls it on a C-ordered matrix), `abs(xdiff) <
+   reltol * maximum(ax_next, abs(x)) + xtol`, `aF < reltol * I_scale +
+   abstol` -- written `!(a < b)` so a NaN fails, as numpy's `<`.  Assumes x
+   and x_next finite (checked) */
+static int converged(newton_t *s, long m)
+{
+    long i;
+    int conv_x = 1, conv_f = 1;
+    for (i = 0; i < m; i++) s->ax[i] = fabs(s->xn[i]);
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->absJ, m,
+                           s->ax, 1, 0.0, s->Is, 1);
+    for (i = 0; i < m; i++) {
+        double aF = fabs(s->Fr[i]);
+        double Is = s->Is[i] + aF;
+        double axi = s->ax[i], axo = fabs(s->x[i]);
+        /* np.maximum(ax_next, abs(x)): both finite here, where this ternary
+           is the same value; it would not propagate a NaN as np.maximum
+           does */
+        double mx = (axi >= axo) ? axi : axo;
+        if (!(fabs(s->xd[i]) < s->reltol * mx + s->xtol[i])) conv_x = 0;
+        if (!(aF < s->reltol * Is + s->abstol[i])) conv_f = 0;
+    }
+    return conv_x && conv_f;
+}
+
+/* `jacobian_only` at the converged point x: G, C, q -- C and q alone where
+   J is unread (fold_j holds the passes).  Cj is both Cin and C: fold_j
+   always has the C pass, so the companion reads the C just made; F is not
+   written (no PCX_PASS_I) */
+static void fold(newton_t *s, core_fn_t core, long n, long r)
+{
+    pcx_put_ref(s->x, s->xc, n, r);
+    core(s->core, s->xc, s->T, s->fold_j | s->pattern, s->formula, s->a0, s->a1, s->a2, s->h,
+         s->theta, s->q1, s->q2, s->iq1, s->u, s->Cj, s->Cj, s->qj, s->iqj, s->Geqj, s->F,
+         s->Jj);
+}
+
+/* the chord's contraction test: `size = float(np.max(np.abs(xdiff)))` --
+   np.max propagates a NaN, which a plain `>` scan would skip; from
+   -INFINITY, below any |v| -- then `not np.isfinite(size) or not size <
+   prev`, as the Python spells it.  1: the chord breaks; else `prev` is the
+   size */
+static int chord_breaks(const newton_t *s, long m, double *prev, int *have_prev)
+{
+    long i;
+    double size = -INFINITY;
+    for (i = 0; i < m; i++) {
+        double v = fabs(s->xd[i]);
+        if (isnan(v)) { size = v; break; }
+        if (v > size) size = v;
+    }
+    if (!isfinite(size) || (*have_prev && !(size < *prev))) return 1;
+    *prev = size;
+    *have_prev = 1;
+    return 0;
+}
+
+/* The Newton loop (`StandardNewton` / `ChordNewton.solve_system` on the
+   reduced system `_newton` hands them): per iteration the evaluation at
+   insert_row(x) (the core: its residual, and J where the iteration forms
+   it), the step (`solve_step`), x_next and the limiter (`limit_step`), the
+   convergence test (`converged`, then `jacobian_only` there: `fold`), the
+   chord's contraction (`chord_breaks`).  Contract: THE ITERATION, at the
+   top of this file. */
 static long iterate(newton_t *s, void **num)
 {
-    long n = s->n, m = n - 1, r = s->iref, it, i, k;
+    long n = s->n, m = n - 1, r = s->iref, it, i, k, st;
     int finite = 1;   /* the last full iteration's J: every entry finite */
     core_fn_t core = (core_fn_t) s->core_fn;
     walk_fn_t walk = (walk_fn_t) s->walk_fn;
-    dgemv64_t gemv = (dgemv64_t) s->dgemv;
     double prev = 0.0;   /* the chord's last step size (`prev`) */
     int have_prev = 0;   /* (`prev is not None`) */
-    int64_t m64 = m, one64 = 1, info64 = 0;
-    int m32 = (int) m, one32 = 1, info32 = 0;
-    char trans = 'N';
-    const double *Cin0 = 0;   /* cC where the full seed equals cx (a cache hit), else NULL */
-    long first_bits;          /* the first evaluation's want bits */
+    const double *Cin0;  /* cC where the full seed equals cx (a cache hit), else NULL */
+    long first_bits;     /* the first evaluation's want bits */
     s->iters = 0;
     s->status = NEWTON_RUNNING;
-    /* the seed, reduced (remove_row_col), and _C_lookup's equality test of
-       the full seed it evaluates against the cached state: elementwise ==
-       (`alltrue(x_cached == x)`, a NaN never equal), the full seed being
-       insert_row(x) -- +0.0 at the reference, so cx[r] is compared with
-       0.0 */
+    /* the seed, reduced (remove_row_col); a hit evaluates without the C
+       pass, its C the cached one: as `_tran_core.evaluate` drops its C bit
+       on `_C_lookup`'s hit */
     pcx_drop_ref(s->xseed, s->x, n, r);
-    if (s->have_cache) {
-        int eq = 1;
-        for (i = 0; i < r; i++) if (!(s->cx[i] == s->x[i])) { eq = 0; break; }
-        if (eq && !(s->cx[r] == 0.0)) eq = 0;
-        if (eq) for (i = r; i < m; i++) if (!(s->cx[i + 1] == s->x[i])) { eq = 0; break; }
-        if (eq) Cin0 = s->cC;
-    }
-    /* a hit evaluates without the C pass, its C the cached one: as
-       `_tran_core.evaluate` drops its C bit on `_C_lookup`'s hit */
+    Cin0 = cache_hit(s, m, r);
     first_bits = Cin0 ? (PCX_PASS_G | PCX_PASS_I) : PCX_WANT_ALL;
     for (it = 0; it < s->maxiter; it++) {
         const double *Cin;
@@ -64,7 +202,7 @@ static long iterate(newton_t *s, void **num)
            back (`_tran_core.evaluate` declines one: the Python's course is
            not the core's) */
         pcx_put_ref(s->x, s->xf, n, r);
-        for (i = 0; i < n; i++) if (!isfinite(s->xf[i])) { s->status = NEWTON_BAIL_X; return NEWTON_BAIL_X; }
+        for (i = 0; i < n; i++) if (!isfinite(s->xf[i])) return finish(s, NEWTON_BAIL_X);
         if (full) {
             bits = (it == 0) ? first_bits : PCX_WANT_ALL;
             Cin = (it == 0 && Cin0) ? Cin0 : C;
@@ -96,122 +234,28 @@ static long iterate(newton_t *s, void **num)
                the convergence test's dgemv reads it */
             finite = pcx_reduce_cm_abs(J, s->A, s->absJ, n, r);
         }
-        if (s->chord && s->klu_sym) {
-            /* StructuralKLU.factor's numeric, then `_KLUNumeric.solve`; a
-               non-finite matrix or right-hand side hands back */
-            if (it == 0) {
-                for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) { s->status = NEWTON_BAIL_JNONFINITE; return NEWTON_BAIL_JNONFINITE; }
-                *num = ((klu_factor_t) s->klu_factor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
-                                                      s->klu_common);
-                if (!*num) { s->status = NEWTON_BAIL_KLU_FACTOR; return NEWTON_BAIL_KLU_FACTOR; }
-            }
-            for (i = 0; i < m; i++) if (!isfinite(s->b[i])) { s->status = NEWTON_BAIL_BNONFINITE; return NEWTON_BAIL_BNONFINITE; }
-            if (!((klu_solve_t) s->klu_solve)(s->klu_sym, *num, m32, 1, s->b, s->klu_common)) {
-                s->status = NEWTON_BAIL_KLU_SOLVE;
-                return NEWTON_BAIL_KLU_SOLVE;
-            }
-        } else if (s->chord) {
-            /* the dense chord: SciPy's lu_factor (dgetrf) once, lu_solve
-               (dgetrs, 'N') every iteration; both refuse a non-finite
-               matrix or right-hand side (the Python chord then breaks to
-               its fallback) -- handed back, as is any LAPACK info */
-            if (it == 0) {
-                if (!finite) { s->status = NEWTON_BAIL_JNONFINITE; return NEWTON_BAIL_JNONFINITE; }
-                ((dgetrf32_t) s->dgetrf)(&m32, &m32, s->A, &m32, s->ipiv32, &info32);
-                if (info32 != 0) { s->status = NEWTON_BAIL_GETRF; return NEWTON_BAIL_GETRF; }
-            }
-            for (i = 0; i < m; i++) if (!isfinite(s->b[i])) { s->status = NEWTON_BAIL_BNONFINITE; return NEWTON_BAIL_BNONFINITE; }
-            ((dgetrs32_t) s->dgetrs)(&trans, &m32, &one32, s->A, &m32, s->ipiv32, s->b, &m32,
-                                   &info32, 1);
-            if (info32 != 0) { s->status = NEWTON_BAIL_GETRS; return NEWTON_BAIL_GETRS; }
-        } else {
-            /* numpy.linalg.solve: numpy's own dgesv on the column-major
-               copy; info != 0 (singular: numpy's LinAlgError) hands back */
-            ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv64, s->b, &m64, &info64);
-            if (info64 != 0) { s->status = NEWTON_BAIL_DGESV; return NEWTON_BAIL_DGESV; }
-        }
+        if ((st = solve_step(s, it, finite, num)) != 0) return finish(s, st);
         /* `x_next = x + xdiff` */
         for (i = 0; i < m; i++) s->xn[i] = s->x[i] + s->b[i];
-        if (walk) {
-            /* `_newton_limiter`'s closure: `cir.limit` on insert_row of
-               x_next and of x, the reference dropped after; then
-               `xdiff = x_next - x` */
-            long e;
-            pcx_put_ref(s->xn, s->xnf, n, r);
-            pcx_put_ref(s->x, s->x0f, n, r);
-            e = walk(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK, s->xnf, s->x0f, 0, s->wn);
-            if (e < s->wn) { s->status = NEWTON_BAIL_WALKSTOP; return NEWTON_BAIL_WALKSTOP; }
-            pcx_drop_ref(s->xnf, s->xn, n, r);
-            for (i = 0; i < m; i++) s->xd[i] = s->xn[i] - s->x[i];
-        } else {
-            for (i = 0; i < m; i++) s->xd[i] = s->b[i];
-        }
+        if ((st = limit_step(s, walk, n, r)) != 0) return finish(s, st);
         /* a non-finite x_next hands back: the next evaluation would not be
-           the core's (and below, every |x| and |x_next| is finite) */
-        for (i = 0; i < m; i++) if (!isfinite(s->xn[i])) { s->status = NEWTON_BAIL_XNEXT; return NEWTON_BAIL_XNEXT; }
-        /* `toolkit.dot(abs(J), ax_next)`: numpy's own dgemv, row-major, as
-           np.dot calls it on a C-ordered matrix */
-        for (i = 0; i < m; i++) s->ax[i] = fabs(s->xn[i]);
-        gemv(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->absJ, m, s->ax, 1, 0.0, s->Is, 1);
-        {
-            /* nrsolver's test, entry by entry, in its operations and order:
-               `I_scale = dot(...) + aF`, `abs(xdiff) < reltol *
-               maximum(ax_next, abs(x)) + xtol`, `aF < reltol * I_scale +
-               abstol`; written `!(a < b)` so a NaN fails, as numpy's `<` */
-            int conv_x = 1, conv_f = 1;
-            for (i = 0; i < m; i++) {
-                double aF = fabs(s->Fr[i]);
-                double Is = s->Is[i] + aF;
-                double axi = s->ax[i], axo = fabs(s->x[i]);
-                /* np.maximum(ax_next, abs(x)): both finite here (x checked
-                   at its evaluation, x_next above), where this ternary is
-                   the same value; it would not propagate a NaN as
-                   np.maximum does */
-                double mx = (axi >= axo) ? axi : axo;
-                if (!(fabs(s->xd[i]) < s->reltol * mx + s->xtol[i])) conv_x = 0;
-                if (!(aF < s->reltol * Is + s->abstol[i])) conv_f = 0;
-            }
-            /* the Python's count: `i + 1`, the chord's `done` */
-            s->iters = it + 1;
-            if (conv_x && conv_f) {
-                for (i = 0; i < m; i++) s->x[i] = s->xn[i];
-                if (s->fold_j) {
-                    /* jacobian_only at the converged point: G, C, q -- C and
-                       q alone where J is unread (fold_j holds the passes).
-                       Cj is both Cin and C: fold_j always has the C pass, so
-                       the companion reads the C just made; F is not written
-                       (no PCX_PASS_I) */
-                    pcx_put_ref(s->x, s->xc, n, r);
-                    core(s->core, s->xc, s->T, s->fold_j | s->pattern, s->formula, s->a0, s->a1,
-                         s->a2, s->h,
-                         s->theta, s->q1, s->q2, s->iq1, s->u, s->Cj, s->Cj, s->qj, s->iqj,
-                         s->Geqj, s->F, s->Jj);
-                }
-                s->status = NEWTON_CONVERGED;
-                return NEWTON_CONVERGED;
-            }
+           the core's (and the test below reads every |x| and |x_next|
+           finite) */
+        for (i = 0; i < m; i++) if (!isfinite(s->xn[i])) return finish(s, NEWTON_BAIL_XNEXT);
+        st = converged(s, m);
+        /* the Python's count: `i + 1`, the chord's `done` */
+        s->iters = it + 1;
+        if (st) {
+            for (i = 0; i < m; i++) s->x[i] = s->xn[i];
+            if (s->fold_j) fold(s, core, n, r);
+            return finish(s, NEWTON_CONVERGED);
         }
-        if (s->chord) {
-            /* the chord's contraction test: `size =
-               float(np.max(np.abs(xdiff)))` -- np.max propagates a NaN,
-               which a plain `>` scan would skip; from -INFINITY, below any
-               |v| -- then `not np.isfinite(size) or not size < prev`, as
-               the Python spells it */
-            double size = -INFINITY;
-            for (i = 0; i < m; i++) {
-                double v = fabs(s->xd[i]);
-                if (isnan(v)) { size = v; break; }
-                if (v > size) size = v;
-            }
-            if (!isfinite(size) || (have_prev && !(size < prev))) { s->status = NEWTON_BAIL_CHORDBREAK; return NEWTON_BAIL_CHORDBREAK; }
-            prev = size;
-            have_prev = 1;
-        }
+        if (s->chord && chord_breaks(s, m, &prev, &have_prev))
+            return finish(s, NEWTON_BAIL_CHORDBREAK);
         /* `x = x_next` */
         for (i = 0; i < m; i++) s->x[i] = s->xn[i];
     }
-    s->status = NEWTON_BAIL_MAXITER;
-    return NEWTON_BAIL_MAXITER;
+    return finish(s, NEWTON_BAIL_MAXITER);
 }
 
 /* the entry (contract: newton.h); the sparse chord's numeric is the

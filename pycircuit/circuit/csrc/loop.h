@@ -76,6 +76,29 @@ typedef struct {
 } loop_t;
 long pcx_loop(loop_t *s);
 
+/* one attempt's own values while loop.c makes it -- loop.c's working state,
+   not the glue's: `where` sets its start and step, `take` its companion and
+   buffer, `judge` its error and the next step */
+typedef struct {
+    double t, h, tn;            /* where: its start, its step, its end */
+    double t_break;             /* where: the next breakpoint (`_next_breakpoint`) */
+    int is_first, landing;      /* where: the order drop asked; an adaptive step
+                                   truncated onto t_break, or a grid's landing */
+    double h_last;              /* take: the last accepted step (h on a run's first) */
+    long formula;               /* take: the companion, PCX_FORMULA_* */
+    double a0, a1, a2;          /* take: Gear-2's alphas (`bdf2_alphas`), else 0 */
+    long nxt;                   /* take: the C and Geq buffer its Newton writes */
+    double err, h_next;         /* judge: the error test's error (adaptive);
+                                   the next step */
+} loop_attempt_t;
+
+/* `judge`'s outcome inside loop.c, never a status: the attempt accepted, or
+   rejected and retried at the point (the loop takes another attempt) */
+enum loop_judged {
+    LOOP_JUDGE_ACCEPT = 0,
+    LOOP_JUDGE_RETRY = -1
+};
+
 /* pcx_loop's result, left in `status` too: why the loop stopped */
 enum loop_status {
     LOOP_DONE = 1,              /* the run's end: `tend` reached */
