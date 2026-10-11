@@ -637,36 +637,11 @@ def _walk_for(cir):
     return w
 
 
-def limit_walk(cir, x, x0, epar):
-    """`SubCircuit.limit`'s loop with every run of C-kernel elements walked
-    in one C call on the live state `x` (see the note above); `x`, or None
-    where the walk does not serve -- nothing touched, the loop runs."""
-    if not (WALK and ENABLED):
-        return _no('walk:off')
-    tk = cir.toolkit
-    if getattr(tk, 'jax', False) or getattr(tk, 'symbolic', False):
-        return _no('walk:toolkit')
-    w = _walk_for(cir)
-    if not w.any_capable:
-        return _no('walk:incapable')
-    n_cir = w.n
-    if not (type(x) is np.ndarray and x.dtype is _cb._F64 and x.ndim == 1
-            and x.flags.c_contiguous and x.flags.writeable
-            and x.shape[0] == n_cir):
-        return _no('walk:x')
-    if x0 is not x and not (type(x0) is np.ndarray and x0.dtype is _cb._F64
-                            and x0.ndim == 1 and x0.flags.c_contiguous
-                            and x0.shape[0] == n_cir):
-        return _no('walk:x0')
-    T = getattr(epar, 'T', 300.0)
-    if type(T) is not float and type(T) is not int and type(T) is not np.float64:
-        return _no('walk:T')
-    drv = _walk_drv()
-    if drv is None:
-        return _no('walk:nodriver')
-    ffi, cfn = drv
-    if w.cF is None:
-        w.prepare(ffi)
+def _take_elements(w, ffi):
+    """Each capable element taken for the walk -- its class's kernel bound
+    and the one taken (`retake`), unshadowed, packed, its pack's address
+    in the table where the pack moved -- or left to the loop (`F` 0, its
+    reason counted): True where any is taken."""
     entries, capable, kerns, addr, F, PR, mirror = (
         w.entries, w.capable, w.kerns, w.addr, w.F, w.PR, w.mirror)
     served = False
@@ -706,9 +681,14 @@ def limit_walk(cir, x, x0, epar):
         if cp is not mirror[e]:
             mirror[e] = cp
             PR[e] = cp[0].ctypes.data
-    if not served:
-        return _no('walk:none')
-    _PC['walk:served'] += 1
+    return served
+
+
+def _run_walk(w, cfn, ffi, x, x0, T, epar):
+    """The walk on the live state `x`: the driver from element 0, and
+    where it stops at an element, the loop's own statement for it, then on
+    from the next."""
+    entries = w.entries
     cx = ffi.from_buffer('double *', x)
     cx0 = cx if x0 is x else ffi.from_buffer('double *', x0)
     Tf = float(T)
@@ -725,3 +705,40 @@ def limit_walk(cir, x, x0, epar):
                 x[nm] = limited
             e += 1
     return x
+
+
+def limit_walk(cir, x, x0, epar):
+    """`SubCircuit.limit`'s loop with every run of C-kernel elements walked
+    in one C call on the live state `x` (see the note above); `x`, or None
+    where the walk does not serve -- nothing touched, the loop runs."""
+    if not (WALK and ENABLED):
+        return _no('walk:off')
+    tk = cir.toolkit
+    if getattr(tk, 'jax', False) or getattr(tk, 'symbolic', False):
+        return _no('walk:toolkit')
+    w = _walk_for(cir)
+    if not w.any_capable:
+        return _no('walk:incapable')
+    n_cir = w.n
+    if not (type(x) is np.ndarray and x.dtype is _cb._F64 and x.ndim == 1
+            and x.flags.c_contiguous and x.flags.writeable
+            and x.shape[0] == n_cir):
+        return _no('walk:x')
+    if x0 is not x and not (type(x0) is np.ndarray and x0.dtype is _cb._F64
+                            and x0.ndim == 1 and x0.flags.c_contiguous
+                            and x0.shape[0] == n_cir):
+        return _no('walk:x0')
+    T = getattr(epar, 'T', 300.0)
+    if type(T) is not float and type(T) is not int and type(T) is not np.float64:
+        return _no('walk:T')
+    drv = _walk_drv()
+    if drv is None:
+        return _no('walk:nodriver')
+    ffi, cfn = drv
+    if w.cF is None:
+        w.prepare(ffi)
+    served = _take_elements(w, ffi)
+    if not served:
+        return _no('walk:none')
+    _PC['walk:served'] += 1
+    return _run_walk(w, cfn, ffi, x, x0, T, epar)

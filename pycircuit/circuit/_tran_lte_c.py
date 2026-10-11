@@ -268,10 +268,10 @@ def max_error(ctrl, s):
     the context (`ctrl._lte_c`) is made, or remade for another size or
     reference row, before the call.
 
-    In order, its sections: 1. the checks that decline (module docstring:
-    DECLINES); 2. the integrator's scalars, in Python floats; 3. the
-    context and the attempt's arrays copied in (or read where they stand);
-    4. the call and the serve."""
+    In order: the checks that decline (`_admit`, `_arrays`; module
+    docstring: DECLINES) with the integrator's scalars between them, in
+    Python floats (`_scalars`); the context and the attempt's arrays copied
+    in or read where they stand (`_load`); the call and the serve."""
     last = ctrl.__dict__.get('_lte_c')
     if last is not None:
         last.served = None
@@ -280,8 +280,41 @@ def max_error(ctrl, s):
     drv = _driver or driver()
     if not drv:
         return _no('lte_c:driver')
-    ## ---- 1. the checks that decline: the build, the pieces, the solver,
-    ## the controller, the integrator, the steps, the arrays' types ----
+    adm = _admit(ctrl, s)
+    if adm is None:
+        return None    # paths: counted by _admit
+    sk, form, euler = adm
+    sc = _scalars(s, form, euler)
+    if sc is None:
+        return None    # paths: counted by _scalars
+    arr = _arrays(ctrl, s)
+    if arr is None:
+        return None    # paths: counted by _arrays
+    ctx = _load(ctrl, s, drv, sk, euler, sc, arr)
+    if ctx is None:
+        return None    # paths: counted by _load
+    status = drv[1](ctx.s)
+    if status != _CODES['LTE_DONE']:
+        return _no('lte_c:bail:' + BAIL.get(status, str(status)))
+    _PC['lte_c:served'] += 1
+    ctx.served = _watch.now()
+    if sk is not None:
+        ## (the refactor `StructuralKLU.solve` counts)
+        sk.refactors += 1
+        _PC['lte_c:sparse_served'] += 1
+    if euler:
+        _PC['lte_c:euler'] += 1
+    if ctx.s.relref:
+        ## (relref not pointlocal: the running reference kept)
+        ctrl._ref_running = ctx.buf['out'].copy()
+    return float(ctx.s.err), (2.0 if euler else 3.0)
+
+
+def _admit(ctrl, s):
+    """The checks that decline before the scalars: the pieces, the solver,
+    the controller, the integrator, the toolkit, the steps' presence and
+    types -- `(the sparse solver or None, the integrator's formula entry,
+    euler)`, or None: declined (counted)."""
     G = _G or _globals()
     if G is None:
         return _no('lte_c:patched')
@@ -326,12 +359,16 @@ def max_error(ctrl, s):
     if not ((th is float or th is _NPF) and (tl is float or tl is _NPF or (euler and hl is None))
             and (tl2 is float or tl2 is _NPF or euler)):
         return _no('lte_c:h')
-    ## ---- 2. the integrator's scalars ----
-    ## (the integrator's scalars -- its coefficient, the divided
-    ## difference's step sums -- in Python floats: the IEEE operations
-    ## numpy's scalars make, without their warnings; one that overflows
-    ## takes the Python chain, which warns as before)
-    h = float(h)
+    return sk, form, euler
+
+
+def _scalars(s, form, euler):
+    """The integrator's scalars -- its coefficient, the divided difference's
+    step sums -- in Python floats: the IEEE operations numpy's scalars
+    make, without their warnings; one that overflows takes the Python
+    chain, which warns as before.  `(h, h_last, h_last2, coef, s12, s23,
+    s123)`, or None: declined (counted)."""
+    h, hl, hl2 = float(s.h_curr), s.h_last, s.h_last2
     try:
         if euler:
             ## (Euler's: `-0.5 * scale`, the variable-step correction
@@ -350,6 +387,14 @@ def max_error(ctrl, s):
     if not (math.isfinite(coef) and math.isfinite(s12) and math.isfinite(s23)
             and math.isfinite(s123)):
         return _no('lte_c:h')
+    return h, hl, hl2, coef, s12, s23, s123
+
+
+def _arrays(ctrl, s):
+    """The attempt's arrays and settings checked: `(J, iref, n, x_curr,
+    x_last, q_curr, the three past charges, the running reference or None,
+    relref's code, abstol, reltol, TRTOL, n_nodes)`, or None: declined
+    (counted)."""
     J, iref = s.J, s.irefnode
     if not (type(J) is np.ndarray and J.dtype is _F64 and J.ndim == 2):
         return _no('lte_c:x')
@@ -377,8 +422,7 @@ def max_error(ctrl, s):
     if run is not None and not _vec(run, n):
         return _no('lte_c:x')
     ab, reltol, trtol, nn = s.abstol, s.reltol, s.TRTOL, s.n_nodes
-    abs_vec = type(ab) is np.ndarray
-    if abs_vec:
+    if type(ab) is np.ndarray:
         if not _vec(ab, n):
             return _no('lte_c:x')
     elif type(ab) not in (float, int, np.float64):
@@ -387,7 +431,17 @@ def max_error(ctrl, s):
         return _no('lte_c:x')
     if nn is not None and type(nn) is not int:
         return _no('lte_c:x')
-    ## ---- 3. the context and the attempt's arrays ----
+    return J, iref, n, xc, xl, q, ql3, run, mode, ab, reltol, trtol, nn
+
+
+def _load(ctrl, s, drv, sk, euler, sc, arr):
+    """The context (made, or remade for another size or reference row; KLU
+    bound where the run is sparse) and the attempt's arrays and scalars in
+    it -- copied, or J read where it stands: the context, or None: declined
+    (counted)."""
+    h, hl, hl2, coef, s12, s23, s123 = sc
+    J, iref, n, xc, xl, q, ql3, run, mode, ab, reltol, trtol, nn = arr
+    cd = ctrl.__dict__
     ctx = cd.get('_lte_c')
     if ctx is None or ctx.n != n or ctx.iref != iref:
         ffi, _cfn, dgesv = drv
@@ -425,6 +479,7 @@ def max_error(ctrl, s):
             st.J = ctx.jbuf
     if run is not None:
         np.copyto(buf['run'], run)
+    abs_vec = type(ab) is np.ndarray
     if abs_vec:
         np.copyto(buf['abst'], ab)
         st.abstol = 0.0
@@ -446,18 +501,4 @@ def max_error(ctrl, s):
     st.h1, st.h2, st.h3, st.coef = h, hl, hl2, coef
     st.s12, st.s23, st.s123 = s12, s23, s123
     st.reltol, st.trtol = float(reltol), float(trtol)
-    ## ---- 4. the call and the serve ----
-    status = drv[1](st)
-    if status != _CODES['LTE_DONE']:
-        return _no('lte_c:bail:' + BAIL.get(status, str(status)))
-    _PC['lte_c:served'] += 1
-    ctx.served = _watch.now()
-    if sk is not None:
-        ## (the refactor `StructuralKLU.solve` counts)
-        sk.refactors += 1
-        _PC['lte_c:sparse_served'] += 1
-    if euler:
-        _PC['lte_c:euler'] += 1
-    if mode:
-        ctrl._ref_running = buf['out'].copy()
-    return float(st.err), (2.0 if euler else 3.0)
+    return ctx

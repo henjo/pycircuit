@@ -12,6 +12,7 @@ comparison names a fast path that stopped serving.
 import ast
 import inspect
 import os
+import re
 import textwrap
 
 import pytest
@@ -41,9 +42,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 #: the fast paths' entry functions: every decline in them returns `_paths.no(...)`
 DECLINING = [
     (_tran_core, 'evaluate'),
+    (_tran_core, '_companion'),
+    (_tran_core, '_c_inputs'),
     (_tran_core, '_Core.ready'),
     (_tran_core, 'passes'),
     (_tran_newton_c, 'solve'),
+    (_tran_newton_c, '_admit'),
+    (_tran_newton_c, '_companion'),
+    (_tran_newton_c, '_record'),
+    (_tran_newton_c, '_source'),
     (_tran_radau_c, 'solve'),
     (_tran_radau, '_RadauStages._radau_frozen'),
     (_tran_radau, '_RadauStages._stage_end_passes'),
@@ -53,6 +60,10 @@ DECLINING = [
     (_tran_radau_tc, 'solve'),
     (_tran_radau_tc, 'fold'),
     (_tran_lte_c, 'max_error'),
+    (_tran_lte_c, '_admit'),
+    (_tran_lte_c, '_scalars'),
+    (_tran_lte_c, '_arrays'),
+    (_tran_lte_c, '_load'),
     (_hdl_batch, 'Batch.run'),
     (_hdl_climit, 'CLimitKernel.__call__'),
     (_hdl_climit, 'limit_walk'),
@@ -65,6 +76,9 @@ DECLINING = [
 ]
 #: a `return None` that is not a decline says so on its line, and why
 EXEMPT = '# paths: not a decline'
+#: a `return None` passing on a decline a helper counted names the helper --
+#: itself one of `DECLINING`, of the same module (checked there)
+PASSED = re.compile(r'# paths: counted by (\w+)')
 
 
 def _returns(fn):
@@ -79,18 +93,21 @@ def _returns(fn):
         stack.extend(ast.iter_child_nodes(n))
 
 
-def uncounted(src):
+def uncounted(src, helpers=()):
     """The lines of a function's source whose `return` gives None without a
-    count (and without the exemption)."""
+    count -- and without the exemption, or a helper of `helpers` named as
+    the one that counted it."""
     src = textwrap.dedent(src)
     lines = src.splitlines()
     fn = ast.parse(src).body[0]
     bad = []
     for r in _returns(fn):
         v = r.value
-        if (v is None or (isinstance(v, ast.Constant) and v.value is None)) \
-                and EXEMPT not in lines[r.lineno - 1]:
-            bad.append(lines[r.lineno - 1].strip())
+        if v is None or (isinstance(v, ast.Constant) and v.value is None):
+            line = lines[r.lineno - 1]
+            m = PASSED.search(line)
+            if EXEMPT not in line and not (m and m.group(1) in helpers):
+                bad.append(line.strip())
     return sorted(bad)
 
 
@@ -99,7 +116,8 @@ def test_every_decline_is_counted(mod, qual):
     obj = mod
     for part in qual.split('.'):
         obj = getattr(obj, part)
-    assert uncounted(inspect.getsource(obj)) == []
+    helpers = {q for m, q in DECLINING if m is mod}
+    assert uncounted(inspect.getsource(obj), helpers) == []
 
 
 def test_the_check_sees_an_uncounted_decline():
@@ -112,8 +130,13 @@ def test_the_check_sees_an_uncounted_decline():
            "        return None    # paths: not a decline (a lookup's miss)\n"
            "    def g():\n"
            "        return None\n"
+           "    if x > 4:\n"
+           "        return None    # paths: counted by h\n"
+           "    if x > 5:\n"
+           "        return None    # paths: counted by elsewhere\n"
            "    return _paths.no('k')\n")
-    assert uncounted(src) == ['return', 'return None']
+    assert uncounted(src, {'h'}) == ['return', 'return None',
+                                     'return None    # paths: counted by elsewhere']
 
 
 def test_no_counts_and_returns_none():

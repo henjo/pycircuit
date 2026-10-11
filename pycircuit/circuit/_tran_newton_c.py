@@ -594,30 +594,76 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     again (a branch confirmation re-solved) -- or None: declined or handed
     back, nothing left behind, `_newton` runs.
 
-    In order, its sections: 1. the checks that decline (module docstring:
-    DECLINES); 2. the step's companion and whether anything limits; 3. the
-    record (`_Ctx`) and the walk's, the core's and KLU's bindings; 4. the
-    source pass (the attempt's one trace), the inputs copied in, the
-    parameter reads stamped, the call; 5. converged, the write-back.  A bail
-    undoes the trace (`_undo_source`).  A serve
-    writes the step's state (`_q_cache`, `_C_cache`, `_C_pattern` where
-    the core has a pattern, `_iq`, `_Geq`, `_Cmat`, `active_integrator`,
-    `_companion_coeffs`, `_effective_method`), the statistics' Newton
-    iterations and the counts, runs the branch check, and sets the
-    record's `served`."""
-    td, cd = tr.__dict__, tr.cir.__dict__
+    In order: the checks that decline (`_admit`; module docstring:
+    DECLINES); the step's companion (`_companion`); the record and its
+    bindings (`_record`); the source pass, the attempt's one trace
+    (`_source`); the inputs copied in (`_load`), the parameter reads
+    stamped, the call -- a bail undoes the trace (`_undo_source`); the
+    serve (`_serve`).  A serve writes the step's state (`_q_cache`,
+    `_C_cache`, `_C_pattern` where the core has a pattern, `_iq`, `_Geq`,
+    `_Cmat`, `active_integrator`, `_companion_coeffs`, `_effective_method`),
+    the statistics' Newton iterations and the counts, runs the branch
+    check, and sets the record's `served`."""
+    td = tr.__dict__
     last = td.get('_newton_c')
     if last is not None:
         last.served = None
     if not ENABLED:
         return _no('newton_c:off')
-    ## ---- 1. the checks that decline: a kept reason, the build, the
-    ## machinery, the circuit, the settings, the solver, the core, the seed ----
+    adm = _admit(tr, td, provided_function, seed)
+    if adm is None:
+        return None    # paths: counted by _admit
+    drv, M, P, before, nrsolver, scaler, ls, ch, core, memo = adm
+    n, iref = core.n, tr.irefnode
+    comp = _companion(tr, M, n)
+    if comp is None:
+        return None    # paths: counted by _companion
+    h, h_last, active, formula, rows, coeffs = comp
+    got = _record(tr, td, M, core, drv, P, nrsolver, residual, ls, ch)
+    if got is None:
+        return None    # paths: counted by _record
+    rec, T, chord, sparse = got
+    ## from here the attempt leaves one trace: the step's source memo
+    src = _source(tr, M, P, memo, t, n)
+    if src is None:
+        return None    # paths: counted by _source
+    u, trace = src
+    tol = _load(tr, td, rec, P, rows, u, seed)
+    s = rec.s
+    s.T, s.formula = T, formula
+    a0, a1, a2, theta = coeffs
+    s.a0, s.a1, s.a2, s.h, s.theta = a0, a1, a2, float(h), float(theta)
+    par = tr.par
+    if P is None:
+        s.maxiter, s.reltol = int(par.maxiter), float(par.reltol)
+    else:
+        s.maxiter, s.reltol = int(P.maxiter), float(P.reltol)
+    s.chord = 1 if chord else 0
+    s.fold_j = FOLD_J if want_j else FOLD_C
+    if P is None:
+        ## (every read above in full, every check passed: stamp them)
+        _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)
+    status = drv[1](s)
+    if status != _CODES['NEWTON_CONVERGED']:
+        key, had, cvals = trace
+        _undo_source(memo, (key,), (had,), dict(zip(M['u_keys'], cvals)))
+        if status == _CODES['NEWTON_BAIL_WALKSTOP']:
+            ## (the walk stopped: its tables are taken again next time)
+            rec.walk_ok = None
+        return _no('newton_c:bail:' + BAIL.get(status, str(status)))
+    return _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, want_j)
+
+
+def _admit(tr, td, provided_function, seed):
+    """The checks that decline, in order (module docstring: DECLINES) --
+    `(the driver, the modules, the stamped reads or None, the watch counter
+    before them, nrsolver, scaler, the linear solver, its choice, the core,
+    the source memo)`, or None: declined (counted)."""
+    cd = tr.cir.__dict__
     kept = td.get('_newton_c_no')
     if kept is not None:
-        ## (the circuit's own reason, under the plan the circuit's dict
-        ## holds -- not `_plan_for`'s check: a plan gone stale is replaced
-        ## at the circuit's next evaluation, which follows, and until then
+        ## (the circuit's own reason, under the plan its dict holds -- a stale
+        ## plan is replaced at the next evaluation, which follows: until then
         ## the decline runs the Python Newton, never another answer)
         if cd.get('_stamp_plan') is kept[0]:
             return _no(kept[1])
@@ -625,7 +671,6 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     drv = _driver or driver()
     if not drv:
         return _no('newton_c:driver')
-    ffi, cfn, lapack = drv
     M = _MOD or _mods()
     ## (the machinery the C stands in for, as defined: a subclass, or a
     ## piece patched on its class or module, takes the Python Newton)
@@ -660,6 +705,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     par = tr.par
     ## (the parameter reads, as stamped where they stand: `_par_stamped`)
     P = _par_stamped(tr, td, par, td.get('_newton_c'))
+    before = None
     if P is None:
         before = M['watch'].now()
         nrsolver, scaler = par.nrsolver, getattr(par, 'scaler', None)
@@ -686,11 +732,16 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if not (type(seed) is np.ndarray and (seed.dtype is _F64 or seed.dtype == np.float64) and seed.ndim == 1
             and seed.shape[0] == n and np.isfinite(seed).all()):
         return _no('newton_c:x')
-    ## ---- 2. the step's companion and whether anything limits ----
-    ## (the step's companion set up as `get_diff` sets it up -- the same
-    ## lines as `_tran_core.evaluate`'s, kept twice on purpose -- why:
-    ## `doc/transient_history.md`, `_tran_core.evaluate` -- a change here is
-    ## a change there)
+    return drv, M, P, before, nrsolver, scaler, ls, ch, core, memo
+
+
+def _companion(tr, M, n):
+    """The step's companion, set up as `get_diff` sets it up -- the same
+    lines as `_tran_core._companion`'s, kept twice on purpose (why:
+    `doc/transient_history.md`, `_tran_core.evaluate`; a change here is a
+    change there): `(h, h_last, the active integrator, its formula, (q1,
+    q2, iq1), (a0, a1, a2, theta))`, or None: declined (counted)."""
+    tc = M['core']
     h = tr._dt
     h_last = tr._dt_last if tr._dt_last is not None else h
     active = tr.base_integrator.check_order_drop(h, h_last, tr._is_first_step)
@@ -707,21 +758,29 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         a0, a1, a2 = M['bdf2_alphas'](h, h_last)
     elif formula == tc._THETA:
         theta = active.theta_at(h)
+    return h, h_last, active, formula, (q1, q2, iq1), (a0, a1, a2, theta)
+
+
+def _record(tr, td, M, core, drv, P, nrsolver, residual, ls, ch):
+    """The record (`_Ctx`, made again for another core, size or reference
+    row) and its bindings: the walk where anything limits, the core's
+    readiness, the chord, KLU -- `(the record, the temperature, chord,
+    sparse)`, or None: declined (counted)."""
+    ffi, _cfn, lapack = drv
+    n, iref = core.n, tr.irefnode
     ## (whether anything limits: what the genuine `_newton_limiter` -- the
-    ## chain above holds it so -- answers by its memo, read without building
-    ## the closure it returns; the method only where the memo is unset)
+    ## chain `_admit` checks holds it so -- answers by its memo, read without
+    ## building the closure it returns; the method only where the memo is
+    ## unset.  A limiting element whose class has no C limiter at all --
+    ## PSP's -- is a property of the circuit: `_walk_ready` finds it, kept)
     _has = getattr(tr, '_has_limiters', None)
     has_limiter = bool(_has) if _has is not None else tr._newton_limiter() is not None
-    ## (a limiting element whose class has no C limiter at all -- PSP's -- is
-    ## a property of the circuit: `_walk_ready` finds it, kept below)
-    ## ---- 3. the record and its bindings: the walk, the core's readiness,
-    ## the chord, KLU ----
     rec = td.get('_newton_c')
     if rec is None or rec.core is not core or rec.n != n or rec.iref != iref:
-        cffi_core, cfn_core, _dg = tc.driver()
+        cffi_core, cfn_core, _dg = M['core'].driver()
         rec = _Ctx(core, n, iref, ffi, cfn_core, cffi_core, lapack)
         td['_newton_c'] = rec
-    s, buf = rec.s, rec.buf
+    s = rec.s
     if has_limiter:
         if not _walk_ready(tr, rec):
             if rec.walk_ok is False:
@@ -734,6 +793,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     T = core.probe(tr.epar)
     if T.__class__ is str:
         return _no('newton_c:ready')
+    par = tr.par
     chord = bool(residual is not None and nrsolver is None
                  and tr._newton_option(par.chord_jacobian if P is None else P.chord,
                                        'chord_jacobian'))
@@ -749,9 +809,15 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         s.klu_sym = ffi.NULL
         rec.klu = rec.klu_sym = None
         rec.klu_keep = ()
-    ## ---- 4. from here the attempt leaves one trace: the step's source memo;
-    ## then the inputs, the stamps, the call ----
-    key = (t, par.analysis if P is None else P.analysis)
+    return rec, T, chord, sparse
+
+
+def _source(tr, M, P, memo, t, n):
+    """The source pass at the step's end, the attempt's one trace in the
+    source memo `memo`: `(u, (its key, whether the memo held it, the counts
+    before))` -- what `_undo_source` takes back -- or None: declined
+    (counted), the trace undone."""
+    key = (t, tr.par.analysis if P is None else P.analysis)
     try:
         had = key in memo
     except TypeError:
@@ -770,54 +836,53 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
             and u.shape[0] == n):
         _undo_source(memo, (key,), (had,), dict(zip(u_keys, cvals)))
         return _no('newton_c:u')
+    return u, (key, had, cvals)
+
+
+def _load(tr, td, rec, P, rows, u, seed):
+    """The record's inputs: the tolerances (copied when they move), the
+    history rows, u, the seed, and `_C_lookup`'s cached state at the seed
+    (the multistep memo is empty; no stateful limiter -- declined -- and no
+    bypass: its other routes).  Returns the tolerances."""
+    s, buf = rec.s, rec.buf
     tol = tr._newton_tolerances() if P is None else P.tol
     if tol is not rec.tol:
         rec.tol = tol
         buf['abstol'][...] = tol[2]
         buf['xtol'][...] = tol[3]
+    q1, q2, iq1 = rows
     np.copyto(buf['q1'], q1)
     np.copyto(buf['q2'], q2)
     np.copyto(buf['iq1'], iq1)
     np.copyto(buf['u'], u)
     np.copyto(buf['xseed'], seed)
-    ## `_C_lookup`'s cached state at the seed (the multistep memo is empty;
-    ## no stateful limiter -- declined -- and no bypass: its other routes)
     cached = td.get('_C_cache')
     s.have_cache = 0
     if cached is not None and float((getattr(tr.epar, 'bypasstol', -1.0) if P is None
                                      else P.bypass) or -1.0) < 0.0:
         cxa, cCa = cached
+        n = rec.n
         if (type(cxa) is np.ndarray and cxa.shape == (n,) and type(cCa) is np.ndarray
                 and (cCa.dtype is _F64 or cCa.dtype == np.float64) and cCa.shape == (n, n)):
             np.copyto(buf['cx'], cxa)
             ## (the cached C read where it stands -- the C only reads it: an
             ## n x n copy a call saved -- else copied, `INPLACE_MIN_ENTRIES`)
             if rec.cC_inplace and cCa.flags.c_contiguous:
-                s.cC = ffi.from_buffer('double *', cCa)
+                s.cC = rec.ffi.from_buffer('double *', cCa)
             else:
                 np.copyto(buf['cC'], cCa)
                 if rec.cC_inplace:
                     s.cC = rec.cC_buf
             s.have_cache = 1
-    s.T, s.formula = T, formula
-    s.a0, s.a1, s.a2, s.h, s.theta = a0, a1, a2, float(h), float(theta)
-    if P is None:
-        s.maxiter, s.reltol = int(par.maxiter), float(par.reltol)
-    else:
-        s.maxiter, s.reltol = int(P.maxiter), float(P.reltol)
-    s.chord = 1 if chord else 0
-    s.fold_j = FOLD_J if want_j else FOLD_C
-    if P is None:
-        ## (every read above in full, every check passed: stamp them)
-        _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)
-    status = cfn(s)
-    if status != _CODES['NEWTON_CONVERGED']:
-        _undo_source(memo, (key,), (had,), dict(zip(u_keys, cvals)))
-        if status == _CODES['NEWTON_BAIL_WALKSTOP']:
-            ## (the walk stopped: its tables are taken again next time)
-            rec.walk_ok = None
-        return _no('newton_c:bail:' + BAIL.get(status, str(status)))
-    ## ---- 5. converged: the converged point's state, the counts, the check ----
+    return tol
+
+
+def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, want_j):
+    """Converged: the counts, the statistics' iterations, the converged
+    point's state written as `_newton` and `get_diff` leave it, the branch
+    check -- `(x, fj)`, `fj` None where the confirmation re-solved (the
+    record's `served` set otherwise)."""
+    s, buf = rec.s, rec.buf
     iters = int(s.iters)
     if chord:
         _PC['chord:chosen'] += 1
@@ -845,7 +910,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         ## (written on the core's pattern: the branch screen reads only it)
         tr._C_pattern = (Cj, core.arrays['pat'])
     ## (the step's companion left as `get_diff` leaves it -- the same writes
-    ## as `_tran_core.evaluate`'s; `transient._RUN_STATE`'s 'step' block)
+    ## as `_tran_core._leave`'s; `transient._RUN_STATE`'s 'step' block)
     tr._iq, tr._Geq = buf['iqj'].copy(), buf['Geqj'].copy()
     tr._Cmat = Cj
     tr.active_integrator = active

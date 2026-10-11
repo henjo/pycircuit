@@ -868,6 +868,81 @@ def passes_count(tr, core):
     _PC[_K['p']['served']] += 1
 
 
+def _companion(tr, n, K):
+    """THE STEP'S COMPANION SET UP as `get_diff` sets it up -- the same lines
+    as `_tran_newton_c._companion`'s, kept twice on purpose (why:
+    `doc/transient_history.md`, `_tran_core.evaluate`): a change here is a
+    change there.  `(h, h_last, the active integrator, its formula, (q1,
+    q2, iq1), (a0, a1, a2, theta))`, or None: declined (counted, `K`)."""
+    h = tr._dt
+    h_last = tr._dt_last if tr._dt_last is not None else h
+    active = tr.base_integrator.check_order_drop(h, h_last, tr._is_first_step)
+    formula = FORMULA.get(type(active).__name__)
+    if formula is None:
+        return _no(K['formula'])
+    q1 = _row(tr._qlast[0], n)
+    q2 = _row(tr._qlast[1], n) if formula == _GEAR2 else q1
+    iq1 = _row(tr._iqlast[0], n) if formula in _IQ_FORMS else q1
+    if q1 is None or q2 is None or iq1 is None:
+        return _no(K['history'])
+    a0 = a1 = a2 = theta = 0.0
+    if formula == _GEAR2:
+        a0, a1, a2 = _lte_kernels.bdf2_alphas(h, h_last)
+    elif formula == _THETA:
+        theta = active.theta_at(h)
+    return h, h_last, active, formula, (q1, q2, iq1), (a0, a1, a2, theta)
+
+
+def _c_inputs(tr, x, want, n, core, K):
+    """The call's passes (`WANT`'s bits) and its C: 'f' the held `_Cmat`;
+    else `_C_lookup`'s at x where it has one (no C pass), or a fresh buffer
+    the C pass writes.  `(bits, the companion's C in, C out)`, or None:
+    declined (counted, `K`)."""
+    bits = WANT[want]
+    if want == 'f':
+        Cin = tr._Cmat
+        if not (type(Cin) is np.ndarray and (Cin.dtype is _F64 or Cin.dtype == np.float64) and Cin.shape == (n, n)
+                and Cin.flags.c_contiguous):
+            return _no(K['cmat'])
+        C = Cin
+    else:
+        Cin = tr._C_lookup(x)
+        if Cin is not None:
+            if not (type(Cin) is np.ndarray and (Cin.dtype is _F64 or Cin.dtype == np.float64)
+                    and Cin.shape == (n, n) and Cin.flags.c_contiguous):
+                return _no(K['clookup'])
+            bits &= ~_C
+            C = Cin
+        else:
+            C = (np.zeros if core.npat else np.empty)((n, n))
+            Cin = C
+    return bits, Cin, C
+
+
+def _leave(tr, x, want, bits, core, C, q, iq, Geq, active, h, h_last):
+    """The state the Python path leaves behind: the memo's C, the q and C
+    caches, the C's pattern (all but 'f'), and the step's companion as
+    `get_diff` leaves it."""
+    ## the state the Python path leaves behind
+    if want != 'f':
+        if bits & _C and tr._memo_ok():
+            tr._memo_put(x, {'C': C})
+        tr._q_cache = (x, q)
+        tr._C_cache = (x, C)
+        if bits & _C and core.npat:
+            ## (this C the core wrote on its pattern: the branch screen reads
+            ## only the pattern's entries of it -- `_tran_branch_c`)
+            tr._C_pattern = (C, core.arrays['pat'])
+    ## (the step's companion left as `get_diff` leaves it -- the same writes
+    ## as `_tran_newton_c._serve`'s; `transient._RUN_STATE`'s 'step' block)
+    tr.active_integrator = active
+    tr._iq = iq
+    tr._Geq = Geq
+    tr._Cmat = C
+    tr._companion_coeffs = active.companion_coefficients(h, h_last)
+    tr._effective_method = type(active).__name__
+
+
 def evaluate(tr, x, t, provided_function, want):
     """`want` 'fj': `(f, J)` as `_residual_and_jacobian`; 'j': `(None, J)`
     as `jacobian_only`; 'c': `(None, None)`, `jacobian_only`'s state where
@@ -899,44 +974,14 @@ def evaluate(tr, x, t, provided_function, want):
     if not (type(x) is np.ndarray and (x.dtype is _F64 or x.dtype == np.float64) and x.ndim == 1
             and x.flags.c_contiguous and x.shape[0] == n and np.isfinite(x).all()):
         return _no(K['x'])
-    ## THE STEP'S COMPANION SET UP as `get_diff` sets it up -- the same lines
-    ## as `_tran_newton_c.solve`'s, kept twice on purpose (why:
-    ## `doc/transient_history.md`, `_tran_core.evaluate`): a change here is
-    ## a change there
-    h = tr._dt
-    h_last = tr._dt_last if tr._dt_last is not None else h
-    active = tr.base_integrator.check_order_drop(h, h_last, tr._is_first_step)
-    formula = FORMULA.get(type(active).__name__)
-    if formula is None:
-        return _no(K['formula'])
-    q1 = _row(tr._qlast[0], n)
-    q2 = _row(tr._qlast[1], n) if formula == _GEAR2 else q1
-    iq1 = _row(tr._iqlast[0], n) if formula in _IQ_FORMS else q1
-    if q1 is None or q2 is None or iq1 is None:
-        return _no(K['history'])
-    a0 = a1 = a2 = theta = 0.0
-    if formula == _GEAR2:
-        a0, a1, a2 = _lte_kernels.bdf2_alphas(h, h_last)
-    elif formula == _THETA:
-        theta = active.theta_at(h)
-    bits = WANT[want]
-    if want == 'f':
-        Cin = tr._Cmat
-        if not (type(Cin) is np.ndarray and (Cin.dtype is _F64 or Cin.dtype == np.float64) and Cin.shape == (n, n)
-                and Cin.flags.c_contiguous):
-            return _no(K['cmat'])
-        C = Cin
-    else:
-        Cin = tr._C_lookup(x)
-        if Cin is not None:
-            if not (type(Cin) is np.ndarray and (Cin.dtype is _F64 or Cin.dtype == np.float64)
-                    and Cin.shape == (n, n) and Cin.flags.c_contiguous):
-                return _no(K['clookup'])
-            bits &= ~_C
-            C = Cin
-        else:
-            C = (np.zeros if core.npat else np.empty)((n, n))
-            Cin = C
+    comp = _companion(tr, n, K)
+    if comp is None:
+        return None    # paths: counted by _companion
+    h, h_last, active, formula, (q1, q2, iq1), (a0, a1, a2, theta) = comp
+    cin = _c_inputs(tr, x, want, n, core, K)
+    if cin is None:
+        return None    # paths: counted by _c_inputs
+    bits, Cin, C = cin
     T = core.ready(tr.epar)
     if T is None:
         return _no(K['ready'])
@@ -959,24 +1004,7 @@ def evaluate(tr, x, t, provided_function, want):
         fb(dptr, q1), fb(dptr, q2), fb(dptr, iq1), fb(dptr, u if u is not None else q1),
         fb(dptr, Cin), fb(dptr, C), fb(dptr, q), fb(dptr, iq), fb(dptr, Geq),
         fb(dptr, F), fb(dptr, J))
-    ## the state the Python path leaves behind
-    if want != 'f':
-        if bits & _C and tr._memo_ok():
-            tr._memo_put(x, {'C': C})
-        tr._q_cache = (x, q)
-        tr._C_cache = (x, C)
-        if bits & _C and core.npat:
-            ## (this C the core wrote on its pattern: the branch screen reads
-            ## only the pattern's entries of it -- `_tran_branch_c`)
-            tr._C_pattern = (C, core.arrays['pat'])
-    ## (the step's companion left as `get_diff` leaves it -- the same writes
-    ## as `_tran_newton_c.solve`'s; `transient._RUN_STATE`'s 'step' block)
-    tr.active_integrator = active
-    tr._iq = iq
-    tr._Geq = Geq
-    tr._Cmat = C
-    tr._companion_coeffs = active.companion_coefficients(h, h_last)
-    tr._effective_method = type(active).__name__
+    _leave(tr, x, want, bits, core, C, q, iq, Geq, active, h, h_last)
     if want == 'fj':
         return F, J
     if want == 'j':

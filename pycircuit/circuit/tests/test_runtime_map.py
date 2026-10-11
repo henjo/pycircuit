@@ -120,3 +120,95 @@ def test_the_code_check_sees_a_planted_number():
                  'ct.retry_point != -2', "x if form[0] == 0 else y"):
         assert _BARE_CODE.findall(text), text
     assert not _BARE_CODE.findall('if formula == _GEAR2 and bits & _C:')
+
+
+#: THE LONG FUNCTIONS: in the loop units and their glue no function is
+#: longer than a reader holds at once (`_LONG` lines, its docstring and its
+#: leading comment aside from the count's start: the def or the C head to
+#: the last line), unless it says `KEPT WHOLE:` and the measured cost of
+#: the split it refused (the C loop plan's R3h)
+_LONG = 80
+_LONG_PY = ('_tran_loop_c', '_tran_newton_c', '_tran_lte_c', '_tran_core', '_tran_pred_c',
+            '_tran_ctrl_c', '_tran_branch_c', '_tran_sources', '_hdl_climit', '_cbuild')
+_LONG_C = ('loop.c', 'newton.c', 'lte.c', 'core.c', 'pred.c', 'ctrl.c', 'branch.c', 'sources.c',
+           'walk.c')
+
+
+def _long_py(text, limit=_LONG):
+    """`(name, lines)` of each function over `limit` lines without the mark."""
+    import ast
+    lines = text.split('\n')
+    out = []
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            k = node.end_lineno - node.lineno + 1
+            if k > limit and 'KEPT WHOLE:' not in '\n'.join(lines[node.lineno - 1:node.end_lineno]):
+                out.append((node.name, k))
+    return out
+
+
+def _long_c(text, limit=_LONG):
+    """`(name, lines)` of each C function over `limit` lines -- its head (the
+    text after the last top-level `;` or `}`) to its closing brace -- whose
+    span and leading comment do not carry the mark."""
+    bare = re.sub(r'/\*.*?\*/', lambda m: re.sub(r'[^\n]', ' ', m.group(0)), text, flags=re.DOTALL)
+    ## (a preprocessor line blank, its continuation lines too: a macro's braces
+    ## are not a function's)
+    bare = re.sub(r'^#(?:[^\n]*\\\n)*[^\n]*', lambda m: re.sub(r'[^\n]', ' ', m.group(0)), bare,
+                  flags=re.MULTILINE)
+    out, depth, item, head = [], 0, 0, None
+    for i, ch in enumerate(bare):
+        if ch == '{':
+            if depth == 0:
+                h = bare[item:i]
+                m = re.search(r'(\w+)\s*\(', h)
+                head = (m.group(1), item + len(h) - len(h.lstrip())) if (
+                    m and '=' not in h.split('(')[0] and not re.search(r'\b(?:struct|enum|union)\b\s*\w*\s*$', h)) else None
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                if head is not None:
+                    name, start = head
+                    k = bare.count('\n', start, i) + 1
+                    if k > limit and 'KEPT WHOLE:' not in text[item:i]:
+                        out.append((name, k))
+                item, head = i + 1, None
+        elif ch == ';' and depth == 0:
+            item = i + 1
+    return out
+
+
+def _long_functions():
+    found = []
+    for mod in _LONG_PY:
+        with open(os.path.join(_PKG, 'circuit', mod + '.py'), encoding='utf-8') as fh:
+            found += [(mod, f, k) for f, k in _long_py(fh.read())]
+    for unit in _LONG_C:
+        with open(os.path.join(_cbuild.CSRC_DIR, unit), encoding='utf-8') as fh:
+            found += [(unit, f, k) for f, k in _long_c(fh.read())]
+    return found
+
+
+def test_no_function_of_the_loop_units_is_longer_than_a_reader_holds():
+    assert not _long_functions(), f'over {_LONG} lines, no KEPT WHOLE: cost'
+
+
+def test_the_long_function_check_sees_a_planted_function():
+    """Alive: an 81-line function in Python and in C is caught, an 80-line
+    one is not, and the mark lets a long one stand -- and the C scan finds
+    every unit's entry (a scan that saw none would pass everything)."""
+    body = ''.join(f'    x{k} = {k}\n' for k in range(_LONG - 1))
+    assert _long_py('def f():\n' + body + '    x = 0\n') == [('f', _LONG + 1)]
+    assert _long_py('def f():\n' + body) == []
+    assert _long_py('def f():\n    """KEPT WHOLE: 1 us a call."""\n' + body + '    x = 0\n') == []
+    cbody = ''.join(f'    x += {k};\n' for k in range(_LONG - 3))
+    c = 'static long f(long x)\n{\n' + cbody + '    return x;\n}\n'
+    assert _long_c('typedef struct { long a; } t;\n' + c) == [('f', _LONG + 1)]
+    assert _long_c(c.replace('    return x;\n', '')) == []
+    assert _long_c('/* KEPT WHOLE: 1 us a call */\n' + c) == []
+    for unit in _LONG_C:
+        with open(os.path.join(_cbuild.CSRC_DIR, unit), encoding='utf-8') as fh:
+            text = fh.read()
+        names = {f for f, _k in _long_c(text, limit=3)}
+        assert 'pcx_' + unit[:-2] in names, (unit, names)
