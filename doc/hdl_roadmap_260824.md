@@ -8553,3 +8553,40 @@ MET, each held by a test. "No function over ~80 lines without a measured cost in
 `pcx_pred` 110, `judge` 97, `iterate` 85. Left for a follow-up: split the run-once ones (`_bind`,
 `_Core.__init__`, `judge`); measure a split's cost on the per-step ones and write it where they
 stay whole.
+
+## 2026-10-12 — 125. Readability stage R3h: the long functions split -- every function of the loop units and their glue at most 80 lines, a test holds it; no answer moved; the per-step split's cost measured, inside the line
+
+Andreas: "Split now" (R3's one unmet criterion: fourteen functions over 80 lines). The line,
+written first: every answer byte-identical; `--check` no case SLOWER and the four gold decks
+the C loop does not cover >= 0.99x; every function in scope <= 80 lines or `KEPT WHOLE:` with
+its measured cost, a test holding it.
+
+* (a) 3d7473be, the run-once Python: `_tran_loop_c._bind` (its buffers, the units, the screen,
+  the judge; `_plug` one way to point the loop at a unit) and `run`'s checks (`_eligible`; the
+  gate stays: a cheap return made once a Python attempt), `_Core.__init__` (`_Flat`,
+  `_lone_batches`, `_struct`, `_index_elements`) and `probe`'s re-check, `_hdl_climit.render`.
+  Shown unchanged: every core build's digest on 29 circuits (A/A-stable; two planted faults
+  moved it), every limiter's C text on 32 classes.
+* (b) 52b02a42, the C: loop.c `judge` (`error_test`, `retry_at_point`), newton.c `iterate`
+  (`evaluate`), lte.c `pcx_lte` (five helpers, each flag-tested region whole in one), core.c
+  `pcx_core` (`fused_groups`, `one_pass`), pred.c `pcx_pred` (`fast_nodes`, `fit`,
+  `clamped_product`) -- moved along anchors by script; the five units' machine code moved
+  (contraction off: no result can), the two flag-testing units run against their old selves
+  on 400 000 / ~360 000 drawn calls, identical, each harness alive to a planted flag test.
+  `test_c_abi`'s bare-code check widened to a returned code.
+* (c) f8a95566, the per-step Python: `_tran_newton_c.solve` (`_admit`, `_companion`, `_record`,
+  `_source`, `_load`, `_serve`), `_tran_lte_c.max_error` (`_admit`, `_scalars`, `_arrays`,
+  `_load`), `_tran_core.evaluate` (`_companion`, `_c_inputs`, `_leave`), `_hdl_climit.limit_walk`
+  (`_take_elements`, `_run_walk`). Timed standalone against 52b02a42: `solve` +1.8 us a call,
+  `max_error` +0.37, `evaluate` +0.06, `limit_walk` +0.13 where it serves -- about 2.3 us of a
+  ~240 us mosrect step; the four uncovered decks over seven rounds mosrect 0.9954x, ab_integ
+  0.9977x, e1480 0.9991x, g1310 0.9990x. `test_runtime_map` holds the 80 lines;
+  `test_paths` accepts a decline passed on (`# paths: counted by <helper>`) only from a
+  helper it checks itself.
+
+Proved at R3h's end against 445d5a2f: `--check` 18 of 18 no change (SLOWER none, FASTER none);
+all 27 gold decks one digest, the same in both trees; full suite 5233 (+12 tests). One round's
+outliers re-measured: nand 0.9996x, hussamp 0.9956x, voter25 0.9986x over five rounds.
+opampal is unresolvable: its run takes 31.5..43 s from process to process in either tree
+(a fixed hash seed does not remove it), nine paired rounds median 1.02x, the answer the same
+-- a per-process mode like gm19's operating point, an open item.

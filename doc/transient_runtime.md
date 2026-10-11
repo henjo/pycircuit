@@ -165,3 +165,9 @@ the process.
 4. If the C loop drives it: `loop.h` fields and a bail code, `loop.c`'s call, and in
    `_tran_loop_c` the genuine pieces, the bind and the write-back, with the counts it re-creates.
 5. This page: its row in the layers, what it owns, its switch.
+6. No function of the unit or its glue over 80 lines (`tests/test_runtime_map.py`, which lists
+   the files): a long one is split into its jobs, or says `KEPT WHOLE:` with the measured cost
+   of the split it refused.  A split of a per-step function adds a call to every step -- time it
+   standalone against its parent before the check.  A glue helper that declines counts its own
+   reason; its caller passes the None on with `# paths: counted by <helper>`, the helper itself
+   in `tests/test_paths.py`'s `DECLINING`.
