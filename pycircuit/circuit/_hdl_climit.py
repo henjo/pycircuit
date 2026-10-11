@@ -118,25 +118,13 @@ def _c_list(vals):
     return '{' + ', '.join(str(int(v)) for v in vals) + '}'
 
 
-def render(info):
-    """`(csrc, nx, layout)` for the class's limiter, or `Refused`.
-
-    `csrc` is the prelude above and the class's `hdl_fn`; `nx` the length
-    of the local state the kernel reads (`i`'s, the class's `len(xsyms)`:
-    the rows of the spec index it, and it is longer than the terminal
-    count), `layout` the packed parameters' `(n_p, t_index)` -- `i`'s, and
-    every parameter function's signature is checked against it."""
+def _parameter_chains(spec, n_p, t_index):
+    """The probes' parameter functions as C statements: each reach once
+    (`L_<sym>`), then each parameter's value (`pv_<probe>_<k>`) -- or
+    `Refused` where a probe or its functions are of a form the kernel
+    does not take, they differ in signature or unknowns, they are not in
+    the packed layout `(n_p, t_index)`, or they cannot be printed."""
     from pycircuit.circuit import hdl
-    spec = info.get('limit_spec') or []
-    if not spec:
-        raise Refused('the class declares no $limit')
-    fi = (info.get('funcs') or {}).get('i')
-    if fi is None or getattr(fi, '_csrc', None) is None:
-        raise Refused('the class carries no C source')
-    nx = int(fi._cshape[0])
-    n_p, t_index = fi._clayout
-    if nx > 32 or len(spec) > 32:
-        raise Refused('more rows or probes than the kernel holds')
     stmts, seen = [], set()
     trailing = None
     xnames = None
@@ -183,6 +171,106 @@ def render(info):
     text = '\n'.join(lines + pv_lines)
     if 'tanh(' in text:
         raise Refused('a parameter chain calls tanh (an ulp-level exception)')
+    return text
+
+
+def _group_c(seq, idx):
+    """One `limit_together` group's C (`seq`: sequential, the minus
+    terminal moving, in declaration order; else ranked by how far each
+    probe is limited, the terminal that drifted further moving)."""
+    ng = len(idx)
+    out = []
+    out.append('  {   /* a limit_together group' + (', sequential' if seq else '') + ' */')
+    out.append(f'    int order[{ng}] = {_c_list(idx)};')
+    if not seq:
+        out.append(f'    for (int m = 0; m < {ng}; m++) {{')
+        out.append('      int j = order[m];')
+        out.append('      double vn = o[RA[j]] - o[RB[j]];')
+        out.append('      double vo = x[RA[j]] - x[RB[j]];')
+        out.append('      double vl = _lim(KIND[j], vn, vo, P0[j], P1[j]);')
+        out.append('      k0[j] = -fabs(vl - vn);')
+        out.append('      if (isnan(k0[j])) return 1;')
+        out.append('    }')
+        out.append(f'    _sort_by(order, {ng}, k0, RA, RB);')
+    out.append('    double shift[NX]; int taken[NX];')
+    out.append('    for (int k = 0; k < NX; k++) { shift[k] = 0.0; taken[k] = 0; }')
+    out.append(f'    int tra[{ng}], trb[{ng}]; double tvn[{ng}], tvl[{ng}]; int nt = 0;')
+    out.append(f'    for (int m = 0; m < {ng}; m++) {{')
+    out.append('      int j = order[m];')
+    out.append('      int ra = RA[j], rb = RB[j];')
+    out.append('      double vorig = o[ra] - o[rb];')
+    out.append('      double vold = x[ra] - x[rb];')
+    out.append('      double vin = (vorig + shift[ra]) - shift[rb];')
+    out.append('      double vlim = _lim(KIND[j], vin, vold, P0[j], P1[j]);')
+    out.append('      if (vlim != vin) {')
+    if seq:
+        out.append('        int n = rb;')
+    else:
+        out.append('        int n = (drift[ra] >= drift[rb]) ? ra : rb;')
+        out.append('        if (taken[n]) n = (n == ra) ? rb : ra;')
+    out.append('        taken[n] = 1;')
+    out.append('        shift[n] = shift[n] + (vlim - vin) * ((n == ra) ? 1.0 : -1.0);')
+    out.append('      }')
+    out.append('      tra[nt] = ra; trb[nt] = rb; tvn[nt] = vorig; tvl[nt] = vlim; nt++;')
+    out.append('    }')
+    out.append('    if (_writeback(o, tra, trb, tvn, tvl, nt, drift, moved, NX) < 0) return 1;')
+    out.append('  }')
+    return out
+
+
+def _singles_c(singles):
+    """The single probes' C: ranked by how far each is limited, each
+    limited one moving the terminal that drifted further, or its `MOVE`."""
+    ns = len(singles)
+    out = []
+    out.append('  {   /* the single probes */')
+    out.append(f'    int order[{ns}] = {_c_list(singles)};')
+    out.append(f'    for (int m = 0; m < {ns}; m++) {{')
+    out.append('      int i = order[m];')
+    out.append('      double vn = o[RA[i]] - o[RB[i]];')
+    out.append('      double vo = x[RA[i]] - x[RB[i]];')
+    out.append('      double vl = _lim(KIND[i], vn, vo, P0[i], P1[i]);')
+    out.append('      k0[i] = -fabs(vl - vn);')
+    out.append('      if (isnan(k0[i])) return 1;')
+    out.append('    }')
+    out.append(f'    _sort_by(order, {ns}, k0, RA, RB);')
+    out.append(f'    for (int m = 0; m < {ns}; m++) {{')
+    out.append('      int i = order[m];')
+    out.append('      int ra = RA[i], rb = RB[i];')
+    out.append('      double vnew = o[ra] - o[rb];')
+    out.append('      double vold = x[ra] - x[rb];')
+    out.append('      double vlim = _lim(KIND[i], vnew, vold, P0[i], P1[i]);')
+    out.append('      if (vlim == vnew) continue;')
+    out.append('      int cand = (drift[ra] >= drift[rb]) ? ra : rb;')
+    out.append('      if (moved[cand]) cand = (cand == ra) ? rb : ra;')
+    out.append('      if (moved[cand]) cand = MOVE[i];')
+    out.append('      moved[cand] = 1;')
+    out.append('      if (cand == ra) o[ra] = o[rb] + vlim; else o[rb] = o[ra] - vlim;')
+    out.append('    }')
+    out.append('  }')
+    return out
+
+
+def render(info):
+    """`(csrc, nx, layout)` for the class's limiter, or `Refused`.
+
+    `csrc` is the prelude above and the class's `hdl_fn`; `nx` the length
+    of the local state the kernel reads (`i`'s, the class's `len(xsyms)`:
+    the rows of the spec index it, and it is longer than the terminal
+    count), `layout` the packed parameters' `(n_p, t_index)` -- `i`'s, and
+    every parameter function's signature is checked against it."""
+    from pycircuit.circuit import hdl
+    spec = info.get('limit_spec') or []
+    if not spec:
+        raise Refused('the class declares no $limit')
+    fi = (info.get('funcs') or {}).get('i')
+    if fi is None or getattr(fi, '_csrc', None) is None:
+        raise Refused('the class carries no C source')
+    nx = int(fi._cshape[0])
+    n_p, t_index = fi._clayout
+    if nx > 32 or len(spec) > 32:
+        raise Refused('more rows or probes than the kernel holds')
+    text = _parameter_chains(spec, n_p, t_index)
 
     npr = len(spec)
     groups = info.get('limit_groups') or []
@@ -212,69 +300,9 @@ def render(info):
     out.append('    o[k] = out[k]; drift[k] = fabs(out[k] - x[k]); moved[k] = 0;')
     out.append('  }')
     for seq, idx in groups:
-        ng = len(idx)
-        out.append('  {   /* a limit_together group' + (', sequential' if seq else '') + ' */')
-        out.append(f'    int order[{ng}] = {_c_list(idx)};')
-        if not seq:
-            out.append(f'    for (int m = 0; m < {ng}; m++) {{')
-            out.append('      int j = order[m];')
-            out.append('      double vn = o[RA[j]] - o[RB[j]];')
-            out.append('      double vo = x[RA[j]] - x[RB[j]];')
-            out.append('      double vl = _lim(KIND[j], vn, vo, P0[j], P1[j]);')
-            out.append('      k0[j] = -fabs(vl - vn);')
-            out.append('      if (isnan(k0[j])) return 1;')
-            out.append('    }')
-            out.append(f'    _sort_by(order, {ng}, k0, RA, RB);')
-        out.append('    double shift[NX]; int taken[NX];')
-        out.append('    for (int k = 0; k < NX; k++) { shift[k] = 0.0; taken[k] = 0; }')
-        out.append(f'    int tra[{ng}], trb[{ng}]; double tvn[{ng}], tvl[{ng}]; int nt = 0;')
-        out.append(f'    for (int m = 0; m < {ng}; m++) {{')
-        out.append('      int j = order[m];')
-        out.append('      int ra = RA[j], rb = RB[j];')
-        out.append('      double vorig = o[ra] - o[rb];')
-        out.append('      double vold = x[ra] - x[rb];')
-        out.append('      double vin = (vorig + shift[ra]) - shift[rb];')
-        out.append('      double vlim = _lim(KIND[j], vin, vold, P0[j], P1[j]);')
-        out.append('      if (vlim != vin) {')
-        if seq:
-            out.append('        int n = rb;')
-        else:
-            out.append('        int n = (drift[ra] >= drift[rb]) ? ra : rb;')
-            out.append('        if (taken[n]) n = (n == ra) ? rb : ra;')
-        out.append('        taken[n] = 1;')
-        out.append('        shift[n] = shift[n] + (vlim - vin) * ((n == ra) ? 1.0 : -1.0);')
-        out.append('      }')
-        out.append('      tra[nt] = ra; trb[nt] = rb; tvn[nt] = vorig; tvl[nt] = vlim; nt++;')
-        out.append('    }')
-        out.append('    if (_writeback(o, tra, trb, tvn, tvl, nt, drift, moved, NX) < 0) return 1;')
-        out.append('  }')
+        out += _group_c(seq, idx)
     if singles:
-        ns = len(singles)
-        out.append('  {   /* the single probes */')
-        out.append(f'    int order[{ns}] = {_c_list(singles)};')
-        out.append(f'    for (int m = 0; m < {ns}; m++) {{')
-        out.append('      int i = order[m];')
-        out.append('      double vn = o[RA[i]] - o[RB[i]];')
-        out.append('      double vo = x[RA[i]] - x[RB[i]];')
-        out.append('      double vl = _lim(KIND[i], vn, vo, P0[i], P1[i]);')
-        out.append('      k0[i] = -fabs(vl - vn);')
-        out.append('      if (isnan(k0[i])) return 1;')
-        out.append('    }')
-        out.append(f'    _sort_by(order, {ns}, k0, RA, RB);')
-        out.append(f'    for (int m = 0; m < {ns}; m++) {{')
-        out.append('      int i = order[m];')
-        out.append('      int ra = RA[i], rb = RB[i];')
-        out.append('      double vnew = o[ra] - o[rb];')
-        out.append('      double vold = x[ra] - x[rb];')
-        out.append('      double vlim = _lim(KIND[i], vnew, vold, P0[i], P1[i]);')
-        out.append('      if (vlim == vnew) continue;')
-        out.append('      int cand = (drift[ra] >= drift[rb]) ? ra : rb;')
-        out.append('      if (moved[cand]) cand = (cand == ra) ? rb : ra;')
-        out.append('      if (moved[cand]) cand = MOVE[i];')
-        out.append('      moved[cand] = 1;')
-        out.append('      if (cand == ra) o[ra] = o[rb] + vlim; else o[rb] = o[ra] - vlim;')
-        out.append('    }')
-        out.append('  }')
+        out += _singles_c(singles)
     out.append('  for (int k = 0; k < NX; k++) out[k] = o[k];')
     out.append('  return 0;')
     out.append('}')

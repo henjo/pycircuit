@@ -279,16 +279,33 @@ def _bind(tr, rec, tab, n, hist_len, screen, judge):
     (`_judge`'s `(the controller, the run's settings, the sparse solver or
     None, the error test's mask or None)`) -- or None: the sparse solver
     could not be bound."""
-    from pycircuit.circuit import (
-        _tran_ctrl_c,
-        _tran_lte_c,
-        _tran_newton_c,
-        _tran_pred_c,
-    )
     ffi, _cfn = driver()
     run = _Run()
     run.ffi, run.nrec, run.tab = ffi, rec, tab
     s = run.s = ffi.new('loop_t *')
+    _bind_buffers(run, n, hist_len)
+    _bind_steps(run, tr, rec, tab, n)
+    _bind_screen(run, tr, n, screen)
+    run.lte = run.ct = run.sk = None
+    s.lte = s.lte_fn = s.ctrl = s.ctrl_fn = ffi.NULL
+    if judge is not None and not _bind_judge(run, tr, n, judge):
+        return None
+    s.n, s.hist_len, s.cap = n, hist_len, CAP_MAX
+    return run
+
+
+def _plug(s, ffi, unit, uffi, state, entry):
+    """The loop pointed at a unit (`loop.h`'s `<unit>`, `<unit>_fn`): its
+    struct and its entry, made by the unit's own `uffi`."""
+    setattr(s, unit, ffi.cast('void *', _addr(uffi, state)))
+    setattr(s, unit + '_fn', ffi.cast('void *', _addr(uffi, entry)))
+
+
+def _bind_buffers(run, n, hist_len):
+    """The loop's own buffers -- the rings, the predictor's nodes, the two
+    cached C and Geq, the attempt's point, the outputs -- each pointed at by
+    its field and kept (`run.keep`)."""
+    ffi, s = run.ffi, run.s
     cap = CAP_MAX
     run.buf = buf = {
         'qring': np.empty(hist_len * n), 'iqring': np.empty(hist_len * n),
@@ -310,9 +327,16 @@ def _bind(tr, rec, tab, n, hist_len, screen, judge):
         s.cC[i] = keep[-1]
         keep.append(fb('double *', buf[f'Geq{i}']))
         s.Geq[i] = keep[-1]
+
+
+def _bind_steps(run, tr, rec, tab, n):
+    """The units every attempt calls: the C Newton (its record `rec`), the
+    predictor (a state of its own, its nodes the loop's `ht` and `hx`) and
+    the sources' table `tab`."""
+    from pycircuit.circuit import _tran_newton_c, _tran_pred_c
+    ffi, s = run.ffi, run.s
     nffi, ncfn, _lapack = _tran_newton_c.driver()
-    s.newton = ffi.cast('void *', _addr(nffi, rec.s))
-    s.newton_fn = ffi.cast('void *', _addr(nffi, ncfn))
+    _plug(s, ffi, 'newton', nffi, rec.s, ncfn)
     pffi, pcfn, dgesv, dgemv = _tran_pred_c.driver()
     ps, pbuf, pkeep = _tran_pred_c.new_state(pffi, dgesv, dgemv, n)
     ps.ht = pffi.cast('double *', _addr(ffi, s.ht))
@@ -320,62 +344,68 @@ def _bind(tr, rec, tab, n, hist_len, screen, judge):
     ps.deg = int(tr._pred_degree())
     ps.clamp = float(tr.PRED_CLAMP)
     run.pr = (ps, pbuf, pkeep)
-    s.pred = ffi.cast('void *', _addr(pffi, ps))
-    s.pred_fn = ffi.cast('void *', _addr(pffi, pcfn))
-    s.src = ffi.cast('void *', _addr(tab.ffi, tab.s))
-    s.src_fn = ffi.cast('void *', _addr(tab.ffi, tab.cfn))
+    _plug(s, ffi, 'pred', pffi, ps, pcfn)
+    _plug(s, ffi, 'src', tab.ffi, tab.s, tab.cfn)
+
+
+def _bind_screen(run, tr, n, screen):
+    """The branch screen (`screen`: `(its ffi, its entry, the core's pattern
+    or None)`), or none: `branch` NULL."""
+    ffi, s = run.ffi, run.s
     run.br, run.npat = None, 0
     if screen is None:
         s.branch = s.branch_fn = ffi.NULL
+        return
+    bffi, bcfn, pat = screen
+    bs = bffi.new('branch_t *')
+    bs.n, bs.npat = n, 0
+    bs.tol_rel = float(tr.BRANCH_SCREEN_TOL)
+    bkeep = [bs]
+    if pat is not None:
+        bkeep += [pat, bffi.from_buffer('int64_t *', pat)]
+        bs.pat, bs.npat = bkeep[-1], len(pat)
+        run.npat = len(pat)
+    run.br = bkeep
+    _plug(s, ffi, 'branch', bffi, bs, bcfn)
+
+
+def _bind_judge(run, tr, n, judge):
+    """The adaptive loop's judge (`judge`, `_judge`'s): the error test -- a
+    context of its own, set as the controller's `_tran_lte_c` sets one, KLU
+    bound where the run solves sparse -- and the controller's law.  False:
+    the sparse solver could not be bound."""
+    from pycircuit.circuit import _tran_ctrl_c, _tran_lte_c
+    ffi, s = run.ffi, run.s
+    ctrl, rset, sk, mask = judge
+    lffi, lcfn, ldgesv = _tran_lte_c.driver()
+    ctx = _tran_lte_c._Ctx(lffi, ldgesv, n, tr.irefnode)
+    if sk is not None and not _tran_lte_c._klu_bind(ctx, sk):
+        return False
+    le = ctx.s
+    ab = rset.abstol
+    if type(ab) is np.ndarray:
+        ctx.buf['abst'][:] = ab
+        le.abs_vec, le.abstol = 1, 0.0
     else:
-        bffi, bcfn, pat = screen
-        bs = bffi.new('branch_t *')
-        bs.n, bs.npat = n, 0
-        bs.tol_rel = float(tr.BRANCH_SCREEN_TOL)
-        bkeep = [bs]
-        if pat is not None:
-            bkeep += [pat, bffi.from_buffer('int64_t *', pat)]
-            bs.pat, bs.npat = bkeep[-1], len(pat)
-            run.npat = len(pat)
-        run.br = bkeep
-        s.branch = ffi.cast('void *', _addr(bffi, bs))
-        s.branch_fn = ffi.cast('void *', _addr(bffi, bcfn))
-    run.lte = run.ct = run.sk = None
-    s.lte = s.lte_fn = s.ctrl = s.ctrl_fn = ffi.NULL
-    if judge is not None:
-        ctrl, rset, sk, mask = judge
-        lffi, lcfn, ldgesv = _tran_lte_c.driver()
-        ctx = _tran_lte_c._Ctx(lffi, ldgesv, n, tr.irefnode)
-        if sk is not None and not _tran_lte_c._klu_bind(ctx, sk):
-            return None
-        le = ctx.s
-        ab = rset.abstol
-        if type(ab) is np.ndarray:
-            ctx.buf['abst'][:] = ab
-            le.abs_vec, le.abstol = 1, 0.0
-        else:
-            le.abs_vec, le.abstol = 0, float(ab)
-        le.reltol, le.trtol = float(tr.par.reltol), float(tr.LTERATIO)
-        le.relref = _tran_lte_c._RELREF.get(ctrl.relref, _tran_lte_c._CODES['LTE_RELREF_SIGGLOBAL'])
-        le.nn = len(tr.cir.nodes)
-        ## (the unknowns the test judges, `lte_algebraic`: the run's own)
-        le.has_mask = int(mask is not None)
-        if mask is not None:
-            ctx.buf['mask'][:] = mask
-        if sk is not None:
-            le.klu_num = lffi.cast('void *', sk._numeric)
-            le.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
-        run.lte, run.sk = ctx, sk
-        s.lte = ffi.cast('void *', _addr(lffi, le))
-        s.lte_fn = ffi.cast('void *', _addr(lffi, lcfn))
-        cffi_, ccfn = _tran_ctrl_c.driver()
-        ct = _tran_ctrl_c.new_state(cffi_, ctrl.retry_order)
-        run.ct = ct
-        s.ctrl = ffi.cast('void *', _addr(cffi_, ct))
-        s.ctrl_fn = ffi.cast('void *', _addr(cffi_, ccfn))
-        s.keeps_run = int(le.relref != _tran_lte_c._CODES['LTE_RELREF_POINTLOCAL'])
-    s.n, s.hist_len, s.cap = n, hist_len, cap
-    return run
+        le.abs_vec, le.abstol = 0, float(ab)
+    le.reltol, le.trtol = float(tr.par.reltol), float(tr.LTERATIO)
+    le.relref = _tran_lte_c._RELREF.get(ctrl.relref, _tran_lte_c._CODES['LTE_RELREF_SIGGLOBAL'])
+    le.nn = len(tr.cir.nodes)
+    ## (the unknowns the test judges, `lte_algebraic`: the run's own)
+    le.has_mask = int(mask is not None)
+    if mask is not None:
+        ctx.buf['mask'][:] = mask
+    if sk is not None:
+        le.klu_num = lffi.cast('void *', sk._numeric)
+        le.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+    run.lte, run.sk = ctx, sk
+    _plug(s, ffi, 'lte', lffi, le, lcfn)
+    cffi_, ccfn = _tran_ctrl_c.driver()
+    ct = _tran_ctrl_c.new_state(cffi_, ctrl.retry_order)
+    run.ct = ct
+    _plug(s, ffi, 'ctrl', cffi_, ct, ccfn)
+    s.keeps_run = int(le.relref != _tran_lte_c._CODES['LTE_RELREF_POINTLOCAL'])
+    return True
 
 
 #: THE DECLINES (`loop_c:<reason>`), each the run's -- kept on the loop
@@ -750,16 +780,54 @@ def _call(drv, rec, s, stats):
     return status
 
 
+def _eligible(loop, tr, td, rec, adaptive):
+    """What an entry that passed the gate runs with -- `(the driver, the
+    pieces (`_own`), the source table, minbreak, the state (`_read`), the
+    screen or None, the judge or None)` -- or why not (a reason, `_KEEPS`):
+    the run (`_why_not_the_run`), the sources (`_sources`), the state
+    (`_read`), the screen, the predictor, the judge (`_judge`), in turn."""
+    drv = _driver or driver()
+    if not drv:
+        return 'driver'
+    O = _OWN or _own()
+    why = _why_not_the_run(loop, tr, td, rec, O, adaptive)
+    if why is not None:
+        return why
+    got = _sources(loop, tr, O)
+    if type(got) is str:
+        return got
+    tab, minbreak = got
+    rd = _read(loop, tr, td, rec, adaptive)
+    if type(rd) is str:
+        return rd
+    screen = _screen(tr, td, rec, rd.n)
+    if screen is None:
+        return 'screen'
+    if screen[0] is None:
+        screen = None
+    ## (the predictor: off by its switch, or unbuilt -- as the screen's and
+    ## the law's, read on every entry)
+    from pycircuit.circuit import _tran_pred_c
+    if not _tran_pred_c.ENABLED or _tran_pred_c.driver() is None:
+        return 'pred'
+    judge = None
+    if adaptive:
+        judge = _judge(loop, tr, O, rd.n)
+        if type(judge) is str:
+            return judge
+    return drv, O, tab, minbreak, rd, screen, judge
+
+
 def run(loop):
     """Make as many of `loop`'s attempts in C as it can, from where the loop
     stands: True where it made any (the loop's, the transient's and the
     controller's state written back as the Python attempts leave it,
     `_write_back`), else False -- nothing of the run's written; the Python
     loop makes the next attempt, and the one after enters again.  The
-    entry's gate first (the cheap returns, uncounted), then each job in
-    turn: the run (`_why_not_the_run`), the sources (`_sources`), the state
-    (`_read`), the screen, the predictor and the judge, the bind
-    (`_bound`), the load (`_load`), the call (`_call`), the write-back.
+    entry's gate first (the cheap returns, uncounted, made once a Python
+    attempt: kept here, no call), then each job in turn: what the run
+    reads, each check that declines (`_eligible`), the bind (`_bound`), the
+    load (`_load`), the call (`_call`), the write-back.
     What keeps it out, what it declines and where the C bails: the module's
     ENTRY."""
     if not ENABLED:
@@ -790,36 +858,11 @@ def run(loop):
         lc = tr.step_controller.__dict__.get('_lte_c') if tr.step_controller is not None else None
         if lc is None or lc.served != now:
             return False
-    drv = _driver or driver()
-    if not drv:
-        return _declined(loop, 'driver')
-    O = _OWN or _own()
-    why = _why_not_the_run(loop, tr, td, rec, O, adaptive)
-    if why is not None:
-        return _declined(loop, why)
-    got = _sources(loop, tr, O)
+    got = _eligible(loop, tr, td, rec, adaptive)
     if type(got) is str:
         return _declined(loop, got)
-    tab, minbreak = got
-    rd = _read(loop, tr, td, rec, adaptive)
-    if type(rd) is str:
-        return _declined(loop, rd)
+    drv, O, tab, minbreak, rd, screen, judge = got
     n = rd.n
-    screen = _screen(tr, td, rec, n)
-    if screen is None:
-        return _declined(loop, 'screen')
-    if screen[0] is None:
-        screen = None
-    ## (the predictor: off by its switch, or unbuilt -- as the screen's and
-    ## the law's, read on every entry)
-    from pycircuit.circuit import _tran_pred_c
-    if not _tran_pred_c.ENABLED or _tran_pred_c.driver() is None:
-        return _declined(loop, 'pred')
-    judge = None
-    if adaptive:
-        judge = _judge(loop, tr, O, n)
-        if type(judge) is str:
-            return _declined(loop, judge)
     run_ = _bound(loop, tr, rec, tab, rd, screen, judge)
     if run_ is None:
         return _declined(loop, 'bind')
@@ -841,8 +884,8 @@ def run(loop):
 #: perturbed source, as the shooting tests make): the Python attempts call
 #: the shadow, the C the table and the core
 _CIRCUIT_SHADOWS = ('u', 'G', 'C', 'i', 'q', 'limit', 'next_event', 'accept_step')
-#: the transient's methods the attempts call, shadowed on the instance: the
-#: Python attempts call the shadow
+
+
 def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     """The state after the C's attempts, as the Python attempts leave it
     (the module's THE STATE), and the `_paths` counts their glue would have

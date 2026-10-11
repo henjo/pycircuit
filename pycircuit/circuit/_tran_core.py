@@ -269,6 +269,183 @@ def _fuse_groups(batches, b_pass, cb):
     return groups, b_fz, b_fidx
 
 
+def _i64(a):
+    return np.ascontiguousarray(np.asarray(a, dtype=np.int64))
+
+
+def _cat64(parts):
+    return (np.ascontiguousarray(np.concatenate(parts).astype(np.int64))
+            if parts else np.zeros(1, np.int64))
+
+
+def _lone_batches(cir, m, mp, cb):
+    """Pass `m`'s lone C-bound elements (`mp.calls`), each a batch of one --
+    `split` batches two or more, the core serves a lone one too -- or
+    `Unservable` where one is not a chained, C-bound element the core can
+    take whole."""
+    from pycircuit.circuit import _hdl_batch
+    mat = m in ('G', 'C')
+    extra = []
+    for c_ in mp.calls:
+        _inst, el, nm, a, b = c_
+        cls = type(el)
+        info = getattr(cls, '_hdl_info', None)
+        fn = (info or {}).get('funcs', {}).get(m)
+        kern = fn.__dict__.get('_hdl_c') if fn is not None else None
+        k = len(nm)
+        if not (a >= 0 and info is not None and info.get('chained')
+                and not info['state_meta']['dc_pins'] and el.toolkit is cir.toolkit
+                and m not in el.__dict__ and _hdl_batch.is_generated(cls, m)
+                and isinstance(kern, cb.CKernel) and kern.nx == k
+                and kern.shape == ((k, k) if mat else (k,))
+                and b - a == (k * k if mat else k)):
+            raise Unservable(f'{_inst} in the {m} pass')
+        extra.append(_hdl_batch.Batch(cls, m, [c_], kern))
+    return extra
+
+
+class _Flat:
+    """The four plans flattened, as `_Core` lays them out for the struct:
+    per pass its template, its slots (`flat`) and its bins; per batch its
+    pass, node map, destinations and first place in the pointer table; per
+    constant group (a vector pass's) its pass, matrix, inputs, selection
+    and destinations; per fused group (`add_fused`) its `core_ztab` row.
+    Each list's running offset beside it."""
+
+    def __init__(self):
+        self.p_L, self.p_toff, self.tmpl, self.flat, self.p_nbins = [], [], [], [], []
+        self.batches, self.b_pass, self.NM, self.b_nmoff = [], [], [], []
+        self.dst, self.b_dstoff, self.b_proff = [], [], []
+        self.g_pass, self.S, self.g_soff, self.I, self.g_ioff = [], [], [], [], []
+        self.sel, self.gdst, self.g_seloff = [], [], []
+        self.off = self.nmoff = self.dstoff = self.pr_len = 0
+        self.soff = self.ioff = self.seloff = 0
+        self.maxy = 1
+
+    def add_pass(self, mi, m, mp, n, extra):
+        """Pass `m` (`PASSES[mi]`), its plan `mp`: its template and slots,
+        its constant groups (a vector pass's), its batches and then `extra`
+        (its lone elements, `_lone_batches`)."""
+        if m in ('G', 'C'):
+            L = mp.template.size
+            self.tmpl.append(mp.template)
+            self.flat.append(mp.flat)
+            self.p_nbins.append(n * n)
+        else:
+            L = mp.length
+            self.tmpl.append(np.zeros(L))
+            self.flat.append(mp.idx)
+            self.p_nbins.append(n)
+            for Sg, Ig, selg, dstg, ok in mp.groups:
+                if not ok:
+                    raise Unservable(f'a constant group of the {m} pass is not matmul-exact')
+                self._add_group(mi, Sg, Ig, selg, dstg)
+        self.p_L.append(L)
+        self.p_toff.append(self.off)
+        self.off += L
+        for bt in list(mp.batches) + extra:
+            self._add_batch(mi, bt)
+
+    def _add_group(self, mi, Sg, Ig, selg, dstg):
+        E, k = Ig.shape
+        self.g_pass.append(mi)
+        self.S.append(Sg.reshape(-1))
+        self.g_soff.append((self.soff, E, k))
+        self.soff += Sg.size
+        self.I.append(Ig.reshape(-1))
+        self.g_ioff.append(self.ioff)
+        self.ioff += Ig.size
+        self.sel.append(selg)
+        self.gdst.append(dstg)
+        self.g_seloff.append((self.seloff, selg.size))
+        self.seloff += selg.size
+        self.maxy = max(self.maxy, E * k)
+
+    def _add_batch(self, mi, bt):
+        self.batches.append(bt)
+        self.b_pass.append(mi)
+        self.NM.append(bt.NM.reshape(-1))
+        self.b_nmoff.append(self.nmoff)
+        self.nmoff += bt.NM.size
+        self.dst.append(bt.dst)
+        self.b_dstoff.append(self.dstoff)
+        self.dstoff += bt.dst.size
+        self.b_proff.append(self.pr_len)
+        self.pr_len += bt.n
+
+    def add_fused(self, zgroups, b_fz, b_fidx):
+        """The fused groups (`_fuse_groups`'s): each one's `core_ztab` row,
+        its node map and its elements' places in the pointer table (after
+        every batch's), its staging; per batch its group and its elements'
+        order in it (`bftab`, `fidx`).  Returns each group's first place in
+        the pointer table."""
+        z_proff, self.ztab, self.fidx, self.bftab = [], [], [], []
+        self.st_len = fo = 0
+        for _info, fk, els, mask, znm in zgroups:
+            ## (a row in core.h's `core_ztab` order: ZT_NE, ZT_K, ZT_TI,
+            ## ZT_PASSES, ZT_NM, ZT_PR, then each pass's _LEN and _AT)
+            ne = len(els)
+            row = (ne, fk.nx, -1 if fk.layout[1] is None else fk.layout[1], mask, self.nmoff,
+                   self.pr_len)
+            z_proff.append(self.pr_len)
+            self.pr_len += ne
+            self.NM.append(znm.reshape(-1))
+            self.nmoff += znm.size
+            for m in PASSES:
+                sz = fk.sizes.get(m, 0)
+                row += (sz, self.st_len)
+                self.st_len += sz * ne
+            assert len(row) == _ZT_WIDTH
+            self.ztab += row
+        if zgroups:
+            for b in range(len(self.batches)):
+                rows = b_fidx[b]
+                if rows is None:
+                    ## (the group's own order: no table)
+                    self.bftab += (b_fz[b], -1)
+                else:
+                    self.bftab += (b_fz[b], fo)
+                    self.fidx.append(rows)
+                    fo += len(rows)
+        return z_proff
+
+    def arrays(self, n, fused):
+        """The struct's arrays by their `hdl_core_t` names, the pattern among
+        them (and, `fused`, the fused groups' tables): `(arrays, npat)`."""
+        g_soff, batches = self.g_soff, self.batches
+        arrays = {
+            'p_L': _i64(self.p_L), 'p_toff': _i64(self.p_toff), 'p_nbins': _i64(self.p_nbins),
+            'tmplall': np.ascontiguousarray(np.concatenate(self.tmpl)), 'flatall': _cat64(self.flat),
+            'b_pass': _i64(self.b_pass), 'b_ne': _i64([bt.n for bt in batches]),
+            'b_k': _i64([bt.k for bt in batches]), 'b_so': _i64([bt.so for bt in batches]),
+            'b_ti': _i64([bt.ti for bt in batches]), 'NMall': _cat64(self.NM),
+            'b_nmoff': _i64(self.b_nmoff), 'b_proff': _i64(self.b_proff),
+            'bdstall': _cat64(self.dst), 'b_dstoff': _i64(self.b_dstoff),
+            'g_pass': _i64(self.g_pass), 'g_E': _i64([e for _o, e, _k in g_soff]),
+            'g_k': _i64([k for _o, _e, k in g_soff]),
+            'Sall': np.ascontiguousarray(np.concatenate(self.S)) if self.S else np.zeros(1),
+            'g_soff': _i64([o for o, _e, _k in g_soff]), 'Iall': _cat64(self.I),
+            'g_ioff': _i64(self.g_ioff), 'g_nsel': _i64([sz for _o, sz in self.g_seloff]),
+            'selall': _cat64(self.sel), 'gdstall': _cat64(self.gdst),
+            'g_seloff': _i64([o for o, _sz in self.g_seloff]),
+            'work': np.empty(max(int(max(self.p_L)), 1)), 'ywork': np.empty(self.maxy),
+            'binG': np.zeros(n * n), 'bini': np.empty(n),
+        }
+        ## THE PATTERN: every entry a matrix pass can write (G's and C's
+        ## slots) and the diagonal -- `binG` above starts at zero, and a
+        ## caller's matrices are zero off it where it asks for it
+        mats = [f for f, nb in zip(self.flat, self.p_nbins) if nb == n * n]
+        pat = np.unique(np.concatenate(mats + [np.arange(n, dtype=np.int64) * (n + 1)]))
+        npat = len(pat) if PATTERN and len(pat) <= PATTERN_MAX_FILL * n * n else 0
+        arrays['pat'] = np.ascontiguousarray(pat, dtype=np.int64)
+        if fused:
+            ## (the fused groups' tables: none at all where nothing fuses)
+            arrays.update(ztab=np.array(self.ztab, dtype=np.int64),
+                          zst=np.empty(max(self.st_len, 1)),
+                          bftab=np.array(self.bftab, dtype=np.int64), fidxall=_cat64(self.fidx))
+        return arrays, npat
+
+
 class _Core:
     """One circuit's four plans flattened into the C struct (`cs`), the
     batches' pointer tables and the core's own pack mirrors.  Building one
@@ -279,122 +456,28 @@ class _Core:
     every entry; `arrays['pat']` the pattern."""
 
     def __init__(self, cir, plan, ffi, dgemv):
-        from pycircuit.circuit import _hdl_batch, _stamp_plan
         from pycircuit.circuit import _hdl_cbackend as cb
+        from pycircuit.circuit import _stamp_plan
         self.plan = plan
         self.n = n = cir.n
         for m in PASSES:
             if plan.methods.get(m) is None:
                 plan.methods[m] = (_stamp_plan._MatrixPlan(cir, m) if m in ('G', 'C')
                                    else _stamp_plan._VectorPlan(cir, m))
-        p_L, p_toff, tmpl, flat, p_nbins = [], [], [], [], []
-        batches, b_pass, NM, b_nmoff, dst, b_dstoff, b_proff = [], [], [], [], [], [], []
-        g_pass, S, g_soff, I, g_ioff, sel, gdst, g_seloff = [], [], [], [], [], [], [], []
-        off = nmoff = dstoff = pr_len = soff = ioff = seloff = 0
-        maxy = 1
+        fl = _Flat()
         for mi, m in enumerate(PASSES):
             mp = plan.methods[m]
-            mat = m in ('G', 'C')
-            extra = []
-            for c_ in mp.calls:
-                ## a lone C-bound element is not batched by `split` (two or
-                ## more): the core serves it as a batch of one
-                _inst, el, nm, a, b = c_
-                cls = type(el)
-                info = getattr(cls, '_hdl_info', None)
-                fn = (info or {}).get('funcs', {}).get(m)
-                kern = fn.__dict__.get('_hdl_c') if fn is not None else None
-                k = len(nm)
-                if not (a >= 0 and info is not None and info.get('chained')
-                        and not info['state_meta']['dc_pins'] and el.toolkit is cir.toolkit
-                        and m not in el.__dict__ and _hdl_batch.is_generated(cls, m)
-                        and isinstance(kern, cb.CKernel) and kern.nx == k
-                        and kern.shape == ((k, k) if mat else (k,))
-                        and b - a == (k * k if mat else k)):
-                    raise Unservable(f'{_inst} in the {m} pass')
-                extra.append(_hdl_batch.Batch(cls, m, [c_], kern))
-            if mat:
-                L = mp.template.size
-                tmpl.append(mp.template)
-                flat.append(mp.flat)
-                p_nbins.append(n * n)
-            else:
-                L = mp.length
-                tmpl.append(np.zeros(L))
-                flat.append(mp.idx)
-                p_nbins.append(n)
-                for Sg, Ig, selg, dstg, ok in mp.groups:
-                    if not ok:
-                        raise Unservable(f'a constant group of the {m} pass is not matmul-exact')
-                    E, k = Ig.shape
-                    g_pass.append(mi)
-                    S.append(Sg.reshape(-1))
-                    g_soff.append((soff, E, k))
-                    soff += Sg.size
-                    I.append(Ig.reshape(-1))
-                    g_ioff.append(ioff)
-                    ioff += Ig.size
-                    sel.append(selg)
-                    gdst.append(dstg)
-                    g_seloff.append((seloff, selg.size))
-                    seloff += selg.size
-                    maxy = max(maxy, E * k)
-            p_L.append(L)
-            p_toff.append(off)
-            off += L
-            for bt in list(mp.batches) + extra:
-                batches.append(bt)
-                b_pass.append(mi)
-                NM.append(bt.NM.reshape(-1))
-                b_nmoff.append(nmoff)
-                nmoff += bt.NM.size
-                dst.append(bt.dst)
-                b_dstoff.append(dstoff)
-                dstoff += bt.dst.size
-                b_proff.append(pr_len)
-                pr_len += bt.n
-        def i64(a):
-            return np.ascontiguousarray(np.asarray(a, dtype=np.int64))
-
-        def cat64(parts):
-            return (np.ascontiguousarray(np.concatenate(parts).astype(np.int64))
-                    if parts else np.zeros(1, np.int64))
-        self.batches = batches
-        self.nb, self.ng = len(batches), len(g_pass)
+            fl.add_pass(mi, m, mp, n, _lone_batches(cir, m, mp, cb))
+        batches = self.batches = fl.batches
+        self.nb, self.ng = len(batches), len(fl.g_pass)
         ## THE FUSED KERNELS: a class whose fused kernel is bound
         ## (`_hdl_cbackend.bind_fused`) and whose batches cover two or more
         ## passes over the same elements -- each once a pass, on the same
         ## nodes -- is evaluated once a call into a staging buffer; its
         ## batches scatter from there
-        zgroups, b_fz, b_fidx = _fuse_groups(batches, b_pass, cb)
+        zgroups, b_fz, b_fidx = _fuse_groups(batches, fl.b_pass, cb)
         self._cb = cb
-        z_proff, ztab, fidx, bftab = [], [], [], []
-        st_len = fo = 0
-        for _info, fk, els, mask, znm in zgroups:
-            ## (a row in core.h's `core_ztab` order: ZT_NE, ZT_K, ZT_TI,
-            ## ZT_PASSES, ZT_NM, ZT_PR, then each pass's _LEN and _AT)
-            ne = len(els)
-            row = (ne, fk.nx, -1 if fk.layout[1] is None else fk.layout[1], mask, nmoff, pr_len)
-            z_proff.append(pr_len)
-            pr_len += ne
-            NM.append(znm.reshape(-1))
-            nmoff += znm.size
-            for m in PASSES:
-                sz = fk.sizes.get(m, 0)
-                row += (sz, st_len)
-                st_len += sz * ne
-            assert len(row) == _ZT_WIDTH
-            ztab += row
-        if zgroups:
-            for b in range(len(batches)):
-                rows = b_fidx[b]
-                if rows is None:
-                    ## (the group's own order: no table)
-                    bftab += (b_fz[b], -1)
-                else:
-                    bftab += (b_fz[b], fo)
-                    fidx.append(rows)
-                    fo += len(rows)
+        z_proff = fl.add_fused(zgroups, b_fz, b_fidx)
         self.zgroups = zgroups
         self.nz = len(zgroups)
         self.b_fz = b_fz
@@ -405,45 +488,26 @@ class _Core:
         self.z_fn = np.zeros(max(self.nz, 1), dtype=np.uintp)
         self.zk = [None] * self.nz
         self.b_fn = np.zeros(max(self.nb, 1), dtype=np.uintp)
-        self.PRall = np.zeros(max(pr_len, 1), dtype=np.uintp)
-        self.b_proff = b_proff
-        arrays = {
-            'p_L': i64(p_L), 'p_toff': i64(p_toff), 'p_nbins': i64(p_nbins),
-            'tmplall': np.ascontiguousarray(np.concatenate(tmpl)), 'flatall': cat64(flat),
-            'b_pass': i64(b_pass), 'b_ne': i64([bt.n for bt in batches]),
-            'b_k': i64([bt.k for bt in batches]), 'b_so': i64([bt.so for bt in batches]),
-            'b_ti': i64([bt.ti for bt in batches]), 'NMall': cat64(NM), 'b_nmoff': i64(b_nmoff),
-            'b_proff': i64(b_proff), 'bdstall': cat64(dst), 'b_dstoff': i64(b_dstoff),
-            'g_pass': i64(g_pass), 'g_E': i64([e for _o, e, _k in g_soff]),
-            'g_k': i64([k for _o, _e, k in g_soff]),
-            'Sall': np.ascontiguousarray(np.concatenate(S)) if S else np.zeros(1),
-            'g_soff': i64([o for o, _e, _k in g_soff]), 'Iall': cat64(I), 'g_ioff': i64(g_ioff),
-            'g_nsel': i64([sz for _o, sz in g_seloff]), 'selall': cat64(sel), 'gdstall': cat64(gdst),
-            'g_seloff': i64([o for o, _sz in g_seloff]),
-            'work': np.empty(max(int(max(p_L)), 1)), 'ywork': np.empty(maxy),
-            'binG': np.zeros(n * n), 'bini': np.empty(n),
-        }
-        ## THE PATTERN: every entry a matrix pass can write (G's and C's
-        ## slots) and the diagonal -- `binG` above starts at zero, and a
-        ## caller's matrices are zero off it where it asks for it
-        mats = [f for f, nb in zip(flat, p_nbins) if nb == n * n]
-        pat = np.unique(np.concatenate(mats + [np.arange(n, dtype=np.int64) * (n + 1)]))
-        self.npat = len(pat) if PATTERN and len(pat) <= PATTERN_MAX_FILL * n * n else 0
-        arrays['pat'] = np.ascontiguousarray(pat, dtype=np.int64)
-        if zgroups:
-            ## (the fused groups' tables: none at all where nothing fuses)
-            arrays.update(ztab=np.array(ztab, dtype=np.int64), zst=np.empty(max(st_len, 1)),
-                          bftab=np.array(bftab, dtype=np.int64), fidxall=cat64(fidx))
+        self.PRall = np.zeros(max(fl.pr_len, 1), dtype=np.uintp)
+        self.b_proff = fl.b_proff
+        arrays, self.npat = fl.arrays(n, bool(zgroups))
         if any(bt.k > _MAX_IN or bt.so > _MAX_OUT for bt in batches) \
-                or any(k > _MAX_IN for _o, _e, k in g_soff):
+                or any(k > _MAX_IN for _o, _e, k in fl.g_soff):
             raise Unservable('an element wider than the core holds')
         self.arrays = arrays
+        self._struct(ffi, dgemv)
+        self._index_elements(z_proff)
+        self.dptr = ffi.typeof('double *')
+
+    def _struct(self, ffi, dgemv):
+        """The C struct (`cs`): the sizes, every array by its field's name,
+        the pointer tables, numpy's dgemv -- each buffer's handle kept."""
         cs = ffi.new('hdl_core_t *')
-        cs.n = n
+        cs.n = self.n
         cs.nb, cs.ng = self.nb, self.ng
         cs.npat = self.npat
         self.handles = []
-        for name, arr in arrays.items():
+        for name, arr in self.arrays.items():
             h = ffi.from_buffer('double *' if arr.dtype == np.float64 else 'int64_t *', arr)
             self.handles.append(h)
             setattr(cs, name, h)
@@ -457,19 +521,20 @@ class _Core:
         cs.dgemv = ffi.cast('void *', dgemv)
         self.cs = cs
         self.ffi = ffi
-        ## the unique elements across the batches, each with its positions in
-        ## the pointer table (a fused group's too): one shadow-and-pack check
-        ## per call
+
+    def _index_elements(self, z_proff):
+        """The unique elements across the batches, each with its places in
+        the pointer table (a fused group's too: `z_proff`, its first): one
+        shadow-and-pack check per call (`uniq`, `mirror`)."""
         pos = {}
-        for b, bt in enumerate(batches):
+        for b, bt in enumerate(self.batches):
             for e, el in enumerate(bt.els):
-                pos.setdefault(id(el), (el, []))[1].append(b_proff[b] + e)
-        for z, g in enumerate(zgroups):
+                pos.setdefault(id(el), (el, []))[1].append(self.b_proff[b] + e)
+        for z, g in enumerate(self.zgroups):
             for e, el in enumerate(g[2]):
                 pos[id(el)][1].append(z_proff[z] + e)
         self.uniq = [(el, tuple(ps)) for el, ps in pos.values()]
         self.mirror = [None] * len(self.uniq)
-        self.dptr = ffi.typeof('double *')
 
     def ready(self, epar):
         """`Batch.run`'s checks, once: per batch the class (bound, the
@@ -484,7 +549,10 @@ class _Core:
     def probe(self, epar):
         """`ready` without the count: the temperature, or why not (a str).
         For a caller that falls back to a path which asks `ready` itself
-        (`_tran_newton_c`): the decline is counted once, there."""
+        (`_tran_newton_c`): the decline is counted once, there.  As stamped,
+        the stamp's checks alone; else the batches' kernels
+        (`_check_batches`), the fused kernels (`_check_fused`), the elements
+        (`_check_elements`), and a new stamp."""
         T = getattr(epar, 'T', 300.0)
         if type(T) is not float:
             if type(T) is not int and np.ndim(T) != 0:
@@ -502,6 +570,21 @@ class _Core:
             return T
         before = _watch.now()
         from pycircuit.circuit import _hdl_batch
+        kern_of = self._check_batches(_hdl_batch)
+        if kern_of.__class__ is str:
+            return kern_of
+        if self.nz:
+            self._check_fused()
+        why = self._check_elements(kern_of)
+        if why is not None:
+            return why
+        self._stamp(before, _hdl_batch)
+        return T
+
+    def _check_batches(self, _hdl_batch):
+        """Each batch's class bound, its kernel the one taken (`b_fn`), its
+        method generated: per class one of its kernels (`_check_elements`
+        packs by it), or why not."""
         ffi, b_fn = self.ffi, self.b_fn
         kern_of = {}
         for b, bt in enumerate(self.batches):
@@ -522,22 +605,29 @@ class _Core:
                 return 'generated'
             ## (a class's kernels share its layout: any of them packs it)
             kern_of.setdefault(bt.cls, kern)
-        if self.nz:
-            ## A FUSED KERNEL SERVES while it is the class's bound one and
-            ## was printed from the passes' bound kernels; else the batches
-            ## call their own (the switch `_hdl_cbackend.FUSE` too)
-            zk, z_fn, on = self.zk, self.z_fn, self._cb.FUSE
-            for z, g in enumerate(self.zgroups):
-                info = g[0]
-                fk = info.get('_c_fused') if on else None
-                if fk is not zk[z] or (fk is None and z_fn[z]):
-                    zk[z] = fk
-                    funcs, fk0 = info['funcs'], self.zgroups[z][1]
-                    ok = (fk is not None and fk.sizes == fk0.sizes and fk.nx == fk0.nx
-                          and fk.layout == fk0.layout and all(
-                              k is funcs[m].__dict__.get('_hdl_c')
-                              for m, k in fk.parts.items()))
-                    z_fn[z] = int(ffi.cast('uintptr_t', fk.cfn)) if ok else 0
+        return kern_of
+
+    def _check_fused(self):
+        """A FUSED KERNEL SERVES while it is the class's bound one and was
+        printed from the passes' bound kernels; else the batches call their
+        own (the switch `_hdl_cbackend.FUSE` too): `z_fn` 0."""
+        ffi, zk, z_fn, on = self.ffi, self.zk, self.z_fn, self._cb.FUSE
+        for z, g in enumerate(self.zgroups):
+            info = g[0]
+            fk = info.get('_c_fused') if on else None
+            if fk is not zk[z] or (fk is None and z_fn[z]):
+                zk[z] = fk
+                funcs, fk0 = info['funcs'], self.zgroups[z][1]
+                ok = (fk is not None and fk.sizes == fk0.sizes and fk.nx == fk0.nx
+                      and fk.layout == fk0.layout and all(
+                          k is funcs[m].__dict__.get('_hdl_c')
+                          for m, k in fk.parts.items()))
+                z_fn[z] = int(ffi.cast('uintptr_t', fk.cfn)) if ok else 0
+
+    def _check_elements(self, kern_of):
+        """Each unique element unshadowed and packed (`_hdl_cp`, packed by
+        its class's kernel where it is not yet), its pack's address in the
+        pointer table wherever the pack moved: None, or why not."""
         mirror, PR = self.mirror, self.PRall
         for ui, (el, ps) in enumerate(self.uniq):
             d = el.__dict__
@@ -562,8 +652,7 @@ class _Core:
                 a = cp[0].ctypes.data
                 for p_ in ps:
                     PR[p_] = a
-        self._stamp(before, _hdl_batch)
-        return T
+        return None
 
     def _stamp(self, before, _hdl_batch):
         """Watch what the check read and stamp it (`_watch.arm`): the

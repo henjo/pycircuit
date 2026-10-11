@@ -349,7 +349,7 @@ def test_a_law_a_hair_off_is_another_adaptive_run(monkeypatch):
 
 
 #: (the functions whose returned strings are decline reasons)
-_REASONERS = ('_judge', '_why_not_the_run', '_sources', '_read')
+_REASONERS = ('_eligible', '_judge', '_why_not_the_run', '_sources', '_read')
 
 
 def _reasons(text):
