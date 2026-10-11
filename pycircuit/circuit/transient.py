@@ -639,6 +639,11 @@ _RUN_STATE = {
     '_newton_c': ('run', 'the C Newton\'s record'),
     '_newton_c_no': ('run', 'why the C Newton declined, kept until the stamp moves'),
     '_radau_c': ('run', 'the C Radau stage solve\'s record'),
+    '_radau_tc': ('run', 'the C Radau transform loop\'s record'),
+    '_sens_c': ('run', ('the C shooting sensitivities\' record, on a shooting walk\'s inner '
+                       'transient')),
+    '_tc_end': ('step', ('the step\'s end passes the C transform loop made, with their stamp: '
+                        'taken by `_stage_end_passes` in the same step')),
     '_passes_no': ('run', 'why the passes\' C declined, kept until the stamp moves'),
     '_has_limiters': ('run', 'whether any element limits its Newton step'),
     '_jacobian_expensive': ('run', 'the \'auto\' Newton options\' verdict on the circuit'),

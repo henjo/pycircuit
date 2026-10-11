@@ -204,6 +204,11 @@ def _waveform(fn, func, tk, differ, a):
                    and -func._BIG < getattr(fn, k) < func._BIG for k in names):
             return 'param'
     elif cls is func.Pulse:
+        ## (a zero edge -- `__init__` floors both at `MIN_EDGE`, an assignment
+        ## after it does not: the Python's eager `where` divides by it and
+        ## raises)
+        if not (fn.tr and fn.tf):
+            return 'edge'
         names = ('v1', 'v2', 'td', 'tr', 'tf', 'pw', 'per')
         kind = C['SOURCES_PULSE']
     elif cls is func.Exp:

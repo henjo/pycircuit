@@ -66,10 +66,9 @@ signatures, the LAPACK, BLAS and KLU typedefs, the pass bits and formula codes);
 
 ## Who owns what
 
-What each glue module keeps on objects it does not define. What a multistep run keeps on the
-`Transient` is declared in `transient._RUN_STATE`, with its owner and lifetime
-(`tests/test_run_state.py` holds the list to the code); the Radau records `_radau_tc` and
-`_tc_end` are not declared there yet.
+What each glue module keeps on objects it does not define. What a run keeps on the `Transient` is
+declared in `transient._RUN_STATE`, with its owner and lifetime
+(`tests/test_run_state.py` holds the list to the code).
 
 | Glue | Keeps | Writes back on a serve |
 |---|---|---|

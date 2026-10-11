@@ -269,6 +269,21 @@ def test_an_adaptive_run_is_the_python_one(name, build, make, kw, monkeypatch):
         assert ca.get('loop_c:attempts', 0) > ca.get('loop_c:steps', 0), ca
 
 
+def test_a_predictor_off_or_unbuilt_is_declined(monkeypatch):
+    """The predictor's switch off, or its unit not built: the loop declines
+    (`loop_c:pred`), as for the screen and the law -- the Python attempts,
+    nothing raised."""
+    from pycircuit.circuit import _tran_pred_c
+    kw = {'tend': 1e-6, 'timestep': 2e-8}
+    monkeypatch.setattr(_tran_pred_c, 'ENABLED', False)
+    _, ca = _run(_mos, True, monkeypatch, **dict(kw))
+    assert ca.get('loop_c:steps', 0) == 0 and ca.get('loop_c:pred', 0) > 0
+    monkeypatch.setattr(_tran_pred_c, 'ENABLED', True)
+    monkeypatch.setattr(_tran_pred_c, 'driver', lambda: None)
+    _, ca = _run(_mos, True, monkeypatch, **dict(kw))
+    assert ca.get('loop_c:steps', 0) == 0 and ca.get('loop_c:pred', 0) > 0
+
+
 def test_the_adaptive_declines(monkeypatch):
     """Another controller (a subclass: its law may be another) -- the
     Python attempts, every one -- and an excursion bound, which the judge's

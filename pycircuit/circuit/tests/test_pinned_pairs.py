@@ -537,10 +537,10 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('837249250601', '336ee4dd0218'),
-    'the stepping loop and its C': ('5499b8469fa7', '508055dfbc08'),
+    'the stepping loop and its C': ('5499b8469fa7', '81304c6bd032'),
     'the predictor and its C': ('f2c284eb392d', '0287bf7ff26a'),
     'the branch screen and its C': ('1b848875234f', '38c379de6bd9'),
-    'the sources and their C': ('55cf2d3441f8', '155395f719f0'),
+    'the sources and their C': ('55cf2d3441f8', 'fc040e74f7ab'),
     'the kernel call and the pass driver': ('09a9e274bbe8', '9f8884d43a95'),
     'the limiting loop and the walk': ('58c4ce9c8f4d', 'b8ea0f4815ad'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '770bc2e815cc'),

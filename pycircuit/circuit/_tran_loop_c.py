@@ -62,8 +62,8 @@ integrator outside the three, the predictor's settings, no source memo, a
 Newton record whose `J` is not formed where the attempts read it, the
 sources (no direct pass, no table or a stale one, a breakpoint the table
 does not make, the toolkit or numpy's error state), the state's types and
-shapes, a device bypass (`bypasstol`), the screen, the adaptive judge
-(`_judge`), the bind.
+shapes, a device bypass (`bypasstol`), the screen, the predictor (off or
+unbuilt), the adaptive judge (`_judge`), the bind.
 
 BAILS (`loop_c:bail:<why>`, `csrc/loop.h`): the C stops before an attempt
 a unit hands back or the Python must make (a source time, the predictor's
@@ -606,6 +606,11 @@ def run(loop):
         return _declined(loop, 'screen')
     if screen[0] is None:
         screen = None
+    ## (the predictor: off by its switch, or unbuilt -- as the screen's and
+    ## the law's, read on every entry)
+    from pycircuit.circuit import _tran_pred_c
+    if not _tran_pred_c.ENABLED or _tran_pred_c.driver() is None:
+        return _declined(loop, 'pred')
     judge = None
     if adaptive:
         judge = _judge(loop, tr, O, n)

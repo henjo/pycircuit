@@ -169,11 +169,22 @@ def _declined(c):
 
 def test_each_route_the_python_takes_otherwise_declines():
     """An int DC value (the Python adds two ints), an exponential's zero
-    `tau` (the Python raises), a waveform subclass (its `f` may be
-    another), a libm that differs from numpy's on this CPU."""
+    `tau` and a pulse's zero edge (the Python raises), a waveform subclass
+    (its `f` may be another), a libm that differs from numpy's on this CPU."""
     assert _declined(_one(lambda: E.VS('a', gnd, v=2))) == {'sources_c:int'}
     assert _declined(_one(lambda: E.VExp('a', gnd, v1=0.0, v2=1.0, td1=1e-9, tau1=0.0,
                                          td2=2e-9, tau2=1e-9))) == {'sources_c:tau'}
+    for edge in ('tr', 'tf'):
+        ## (zeroed after the direct pass is built: building it calls the
+        ## Python, which raises)
+        c = _one(lambda: E.VPulse('a', gnd, v1=0.0, v2=1.0, td=1e-9, tr=1e-10, tf=1e-10,
+                                  pw=1e-9, per=0.0))
+        sd = _direct(c)
+        setattr(c.elements['s'].function, edge, 0.0)
+        before = dict(_paths.COUNTS)
+        assert ts.table_for(sd) is None
+        assert {k for k, v in _paths.COUNTS.items() if k.startswith('sources_c:')
+                and v != before.get(k, 0)} == {'sources_c:edge'}, edge
 
     class MyPulse(func.Pulse):
         pass
