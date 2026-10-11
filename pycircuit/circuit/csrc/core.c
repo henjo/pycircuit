@@ -6,28 +6,46 @@
 /* passes 0 G, 1 C, 2 i, 3 q; their want bits pcx_pass (pcx_abi.h).  A class
    with a fused kernel (z_fn) is evaluated once a call, before the passes,
    for every pass the call wants, into its staging (zst); its batches then
-   scatter from there -- the passes' writes and bins as before.  ztab, a
-   group's row: ne, k, ti, mask, nmoff, proff, then per pass G C i q its
-   output length and its staging offset; bftab, a batch's row: its group
-   (-1: none) and its offset in fidxall (each element's place in it; -1:
-   the group's own order, the usual case) */
+   scatter from there -- the passes' writes and bins as before.  bftab, a
+   batch's row: its group (-1: none) and its offset in fidxall (each
+   element's place in it; -1: the group's own order, the usual case) */
+/* ZW, a ztab row's width (built by `_tran_core._Core.__init__`): zt[0] ne,
+   the group's elements; zt[1] k, inputs per element; zt[2] ti, the
+   temperature's slot in a parameter row (-1: none); zt[3] the group's
+   passes, a PCX_PASS_* mask (q's own bit included); zt[4] its node map's
+   offset in NMall; zt[5] its rows' offset in PRall; then for pass m (0 G,
+   1 C, 2 i, 3 q) zt[6 + 2*m] its output length per element and
+   zt[7 + 2*m] its staging's offset in zst */
 #define ZW 14
 /* `body` for each matrix entry the call writes (`patt`: the pattern's; else
-   all n x n), `s` the entry */
+   all n x n), `s` the entry.  It captures from the function: `patt`, `pk`
+   (the pattern's cursor), `s` (assigned: the entry's row-major index -- an
+   entry index here, not a struct), `c` (the core: npat, pat) and `n`.  The
+   entries off the pattern are left as the caller's buffers hold them
+   (zero) */
 #define EACH_ENTRY(body) do { \
         if (patt) { for (pk = 0; pk < c->npat; pk++) { s = c->pat[pk]; body; } } \
         else { for (s = 0; s < n * n; s++) { body; } } \
     } while (0)
+/* the entry (contract: core.h) */
 long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long formula,
             double a0, double a1, double a2, double h, double theta,
             const double *q1, const double *q2, const double *iq1, const double *u,
             const double *Cin, double *C, double *q, double *iq, double *Geq,
             double *F, double *J)
 {
+    /* sizes `_Core.__init__` holds every element to (it refuses, as
+       Unservable, a batch with k > 64 or so > 4096 and a group with
+       k > 64): an element's inputs, a kernel's outputs, a group's x[I]
+       and its product */
     double X[64], o[4096], y[64], xg[64];
+    /* each pass's bins: G's and i's the core's own, C's and q's the
+       caller's */
     double *bins[4] = {c->binG, C, c->bini, q};
+    /* each pass's want bit; q's 0: always made */
     const long bits[4] = {PCX_PASS_G, PCX_PASS_C, PCX_PASS_I, 0};
     dgemv64_t gemv = (dgemv64_t) c->dgemv;
+    /* (`s`: an entry, a selected product or a slot -- an index) */
     long n = c->n, m, b, g, e, j, s, z, pk;
     /* the matrices' entries this call writes: the pattern's where the caller
        asks (its matrices zero off the pattern, which no stamp reaches), or
@@ -37,6 +55,7 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
     for (z = 0; z < c->nz; z++) {
         const int64_t *zt = c->ztab + ZW * z;
         fused_fn_t ff = (fused_fn_t) c->z_fn[z];
+        /* the passes this call makes that the group covers (q always) */
         long zw = ((want & PCX_WANT_ALL) | PCX_PASS_Q) & zt[3];
         if (!ff || !zw) continue;
         {
@@ -47,6 +66,8 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             double *sq = c->zst + zt[13];
             for (e = 0; e < ne; e++) {
                 for (j = 0; j < k; j++) X[j] = x[NM[e * k + j]];
+                /* the temperature into the parameter row before the
+                   kernel, as the batches' driver (pass.c) writes it */
                 if (ti >= 0) PR[e][ti] = T;
                 ff(X, PR[e], zw, sG + e * zt[6], sC + e * zt[8], si + e * zt[10], sq + e * zt[12]);
             }
@@ -56,6 +77,8 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
         double *buf = c->work;
         long L = c->p_L[m];
         if (bits[m] && !(want & bits[m])) continue;
+        /* the slots: G's and C's from the template (the constant stamps'
+           entries), i's and q's from zeros */
         if (m < 2) memcpy(buf, c->tmplall + c->p_toff[m], (size_t) L * sizeof(double));
         else memset(buf, 0, (size_t) L * sizeof(double));
         for (b = 0; b < c->nb; b++) {
@@ -67,6 +90,8 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             const int64_t *dst = c->bdstall + c->b_dstoff[b];
             double **PR = c->PRall + c->b_proff[b];
             if (fz >= 0 && c->z_fn[fz]) {
+                /* from the staging: the fused kernel wrote this pass's
+                   rows (so wide: `_fuse_groups` checked the widths) */
                 const double *sz = c->zst + c->ztab[ZW * fz + 7 + 2 * m];
                 long fo = c->bftab[2 * b + 1];
                 const int64_t *fi = fo >= 0 ? c->fidxall + fo : 0;
@@ -84,6 +109,11 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             }
         }
         for (g = 0; g < c->ng; g++) {
+            /* a constant group: `np.dot(S, x[I])` per element through
+               numpy's own dgemv, the routine np.dot calls (the plan's
+               batched np.matmul is taken only where `_matmul_ok` found it
+               equal to that; else the core is Unservable), then
+               `buf[dst] = Y.reshape(-1)[sel]` */
             if (c->g_pass[g] != m) continue;
             long E = c->g_E[g], k = c->g_k[g], nsel = c->g_nsel[g];
             const double *S = c->Sall + c->g_soff[g];
@@ -98,6 +128,10 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
             for (s = 0; s < nsel; s++) buf[gdst[s]] = c->ywork[sel[s]];
         }
         {
+            /* `np.bincount(flat, weights=buf, minlength=nbins)`: every bin
+               from +0.0, the slots added in their order -- a bin started
+               at its first value would keep a lone -0.0 (bincount's is
+               +0.0), and another order rounds differently */
             const int64_t *flat = c->flatall + c->p_toff[m];
             double *bin = bins[m];
             long nbins = c->p_nbins[m];
@@ -111,21 +145,33 @@ long hdl_fn(const hdl_core_t *c, const double *x, double T, long want, long form
     /* formula 4: the passes alone (`passes`: G in binG, i in bini, C and q
        in the caller's buffers) -- no companion, no residual, no Jacobian */
     if (formula == PCX_FORMULA_PASSES) return 0;
+    /* the companion's C: the one just made, else the caller's held one
+       (`_C_lookup`'s hit, the chord's held C, `residual_only`'s `_Cmat`) */
     Cs = (want & PCX_PASS_C) ? C : Cin;
+    /* the companions as `_lte_kernels` writes them, in Python's
+       left-to-right order: the parentheses below are the ones Python's
+       evaluation puts there, and another grouping rounds differently */
     if (formula == PCX_FORMULA_GEAR2) {
+        /* `a0 * q + a1 * q1 + a2 * q2`, `a0 * C` */
         for (j = 0; j < n; j++) iq[j] = (a0 * q[j] + a1 * q1[j]) + a2 * q2[j];
         EACH_ENTRY(Geq[s] = a0 * Cs[s]);
     } else if (formula == PCX_FORMULA_EULER) {
+        /* `(q - q1) / h`, `C / h` */
         for (j = 0; j < n; j++) iq[j] = (q[j] - q1[j]) / h;
         EACH_ENTRY(Geq[s] = Cs[s] / h);
     } else if (formula == PCX_FORMULA_TRAPEZOIDAL) {
+        /* `2.0 * (q - q1) / h - iq1`, `2.0 * C / h` */
         for (j = 0; j < n; j++) iq[j] = (2.0 * (q[j] - q1[j])) / h - iq1[j];
         EACH_ENTRY(Geq[s] = (2.0 * Cs[s]) / h);
     } else {  /* PCX_FORMULA_THETA */
+        /* `th = theta * h`, `(q - q1) / th - ((1.0 - theta) / theta) * iq1`,
+           `C / th`: the two scalars once, as Python computes them before
+           the array operations */
         double th = theta * h, w = (1.0 - theta) / theta;
         for (j = 0; j < n; j++) iq[j] = (q[j] - q1[j]) / th - w * iq1[j];
         EACH_ENTRY(Geq[s] = Cs[s] / th);
     }
+    /* `f = (i + iq) + u`, `J = G + Geq` */
     if (want & PCX_PASS_I) for (j = 0; j < n; j++) F[j] = (c->bini[j] + iq[j]) + u[j];
     if (want & PCX_PASS_G) EACH_ENTRY(J[s] = c->binG[s] + Geq[s]);
     return 0;

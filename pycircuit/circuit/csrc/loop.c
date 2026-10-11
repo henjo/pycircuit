@@ -32,7 +32,12 @@
 /* `_next_breakpoint` on the table: `cir.next_event` is numpy's maximum of t
    and the sources' earliest event after it (every other element's answer
    is inf: checked at the loop's entry); a corner closer than `minbreak`
-   (relative) is passed over */
+   (relative) is passed over, looking again `minbreak * 1e3` on, as
+   `_StepEvents._next_breakpoint` does.  `m` is Python's `max(abs(t), 1.0)`
+   (the first argument kept unless the second is strictly greater); `nb` is
+   numpy's `maximum(t, t_next)`, `t >= t_next ? t : t_next` for a finite t
+   (a NaN `t_next` propagates, as numpy's does).  0: the table handed the
+   time back, nothing written to `out`. */
 static int next_breakpoint(loop_t *s, double t, double *out)
 {
     sources_t *src = (sources_t *) s->src;
@@ -56,7 +61,8 @@ static int next_breakpoint(loop_t *s, double t, double *out)
    Python's `_tran_newton_c` write-back and error test leave it: the
    converged point, its charge and current, its C and Geq (the buffer `nxt`
    the Newton wrote), the step and companion it was made with, the screen's
-   maximum, the error test's running reference and error */
+   maximum, the error test's running reference and error.  The Newton's
+   `xc`, `qj`, `iqj` hold only until its next call: copied here. */
 static void attempt_made(loop_t *s, newton_t *nt, long nxt, long formula, double h, double h_last,
                          double tn, int screened, double ref, int judged, double err)
 {
@@ -92,7 +98,11 @@ static void attempt_made(loop_t *s, newton_t *nt, long nxt, long formula, double
    multistep family whose every piece it was checked to stand in for, fixed
    or adaptive: the steps taken into X, T and the state; it stops BEFORE an
    attempt it cannot make as the Python would, that attempt's state
-   untouched */
+   untouched.  On any status the state is the last MADE attempt's: `cur`
+   names the C and Geq buffer it wrote (the other may hold a discarded
+   attempt's), the `att_*` fields its step, and the rings, the predictor's
+   nodes, `xlast`, X and T accepted steps only.  The counts are this call's
+   (zeroed here). */
 long hdl_fn(loop_t *s)
 {
     newton_t *nt = (newton_t *) s->newton;
@@ -126,6 +136,7 @@ long hdl_fn(loop_t *s)
             }
             if (t + h > s->tend) h = s->tend - t;
         } else {
+            /* (`_SteppingLoop.where`'s tolerances, both of them) */
             landing = t_break <= t + h * (1.0 + 1e-9);
             if (t + h > s->tend) {
                 h = s->tend - t;
@@ -135,7 +146,9 @@ long hdl_fn(loop_t *s)
                 if (h <= 1e-9 * s->timestep) return s->status = LOOP_DONE;
             }
         }
-        /* 2. take: the companion (`check_order_drop`, `bdf2_alphas`) */
+        /* 2. take: the companion (`check_order_drop`, `bdf2_alphas`; 0.1 is
+           `check_order_drop`'s own literal shrink guard, `zs_ratio` its growth
+           limit `ZERO_STABILITY_RATIO`) */
         tn = t + h;
         h_last = s->have_dt_last ? s->dt_last : h;
         formula = s->base;
@@ -200,7 +213,12 @@ long hdl_fn(loop_t *s)
             double kept_h = ct->retry_h, kept_err = ct->retry_err, kept_q = ct->q_carried;
             double coef, hl = h_last, hl2 = 0.0, s12 = 0.0, s23 = 0.0, s123 = 0.0;
             int euler = formula == PCX_FORMULA_EULER;
-            /* the estimate's scalars, as `_tran_lte_c` makes them in Python floats */
+            /* the estimate's scalars, as `_tran_lte_c` makes them in Python
+               floats: Euler `-0.5 * (2.0 * h / (h + hl) if hl else 1.0)`, Gear
+               `-h * (h + hl)` (the unary minus first), the trapezoid `-(h ** 2)`
+               -- Python's `**` on floats is libm `pow`, which can differ from
+               `h * h` in the last bit, so `pow` it is (`-fno-builtin-pow`
+               keeps the call) */
             if (euler) {
                 coef = -0.5 * ((hl != 0.0) ? (2.0 * h) / (h + hl) : 1.0);
                 hl = 0.0;
@@ -235,6 +253,8 @@ long hdl_fn(loop_t *s)
             if (CALL(s->lte_fn, lte_t, le) != LTE_DONE) return s->status = LOOP_BAIL_LTE;
             err = le->err;
             ct->err = err;
+            /* (`_max_error`'s exponent: the order + 1; the point the attempt
+               left from as an index, where the Python keeps the object) */
             ct->p = euler ? 2.0 : 3.0;
             ct->h = h;
             ct->max_step = s->max_step;
@@ -256,6 +276,7 @@ long hdl_fn(loop_t *s)
                     s->order_drop = 0;
                     s->att_rejected = 1;
                     s->t_break = t_break;
+                    /* (`_LMMSteps.judge`'s `max(h, minstep)`) */
                     s->h = (s->minstep > hn) ? s->minstep : hn;
                     continue;
                 }
@@ -274,7 +295,10 @@ long hdl_fn(loop_t *s)
         } else {
             h_next = s->timestep;
         }
-        /* 5. accept */
+        /* 4. events: none -- a circuit with a declared state event declines
+           at the loop's entry, so no step is cut here */
+        /* 5. accept (`on_break`'s tolerance is `accept`'s; the statistics'
+           extremes set first, then replaced only when strictly beyond) */
         attempt_made(s, nt, nxt, formula, h, h_last, tn, br != NULL, br ? br->ref : 0.0,
                      (int) s->adaptive, err);
         s->att_rejected = 0;
@@ -298,8 +322,10 @@ long hdl_fn(loop_t *s)
         COPY(s->qring, nt->qj, n);
         COPY(s->iqring, nt->iqj, n);
         /* the predictor's node (`_pred_note`: appended past every node, so
-           its sort keeps it last and its dedupe compares it with the one
-           before alone; the newest eight kept) */
+           its sort keeps it last and its dedupe -- `1e-14 * max(abs(t), 1.0)`,
+           `_StagePredictor`'s -- compares it with the one before alone; the
+           newest eight kept: the capacity pred.c's `nodes[8]` and the glue's
+           `ht` / `hx` buffers share) */
         {
             double a = fabs(tn), m = (1.0 > a) ? 1.0 : a;
             if (s->hk && fabs(tn - s->ht[s->hk - 1]) <= 1e-14 * m) {
@@ -319,6 +345,8 @@ long hdl_fn(loop_t *s)
         s->dt_last = h;
         s->have_dt_last = 1;
         s->t_break = t_break;
+        /* (`accept`'s `min(h_next, max_step)`: the first argument kept unless
+           the second is strictly smaller) */
         s->h = s->adaptive ? ((s->max_step < h_next) ? s->max_step : h_next) : s->timestep;
         s->npoint++;
         s->k++;

@@ -1,14 +1,35 @@
-/* sources.h -- the independent sources' waveforms in C (the C stepping loop
- * plan's stage 1): the interface `_tran_sources` loads sources.c through.
- * cffi lays the struct out from this text and sources.c includes it, so the
- * compiler checks the entry against it. */
+/* sources.h -- the independent sources' waveforms in C: the interface
+ * `_tran_sources` loads sources.c through.  cffi lays the struct out from
+ * this text and sources.c includes it, so the compiler checks the entry
+ * against it.
+ *
+ * WHO SETS WHAT.  `_tran_sources.Table` builds one struct per direct source
+ * pass: `n`, `ns`, the per-source arrays and `out` (numpy arrays the table
+ * keeps), once -- `Table.holds` re-checks what they were read from.  At
+ * each call `Table._call`, or in the C loop loop.c (the breakpoint search
+ * and each attempt's u), sets `mode` and `t`; hdl_fn writes `out` or
+ * `t_next`, `status` and `bad`. */
 typedef struct {
-    long n, ns, mode;
-    const int64_t *kind, *isv, *row0, *row1, *row2, *poff, *npts;
-    const double *a, *par;
-    double t, t_next;
-    double *out;
-    long status, bad;
+    long n,                 /* the unknowns: `out` holds n */
+        ns,                 /* the sources: every per-source array holds ns */
+        mode;               /* what this call makes: enum sources_mode */
+    /* per source, in the pass's element order (int64) */
+    const int64_t *kind,    /* the waveform: enum sources_kind */
+        *isv,               /* 1: a voltage source (-v into row2); 0: a current
+                               source (+v into row0, -v into row1) */
+        *row0, *row1,       /* a current source's two node rows (0 otherwise) */
+        *row2,              /* a voltage source's branch row (0 otherwise) */
+        *poff,              /* its first parameter's place in `par` */
+        *npts;              /* a PWL's points (0 otherwise) */
+    const double *a,        /* ns: each source's DC value */
+        *par;               /* the parameters, source after source, each kind's
+                               in enum sources_kind's order */
+    double t,               /* the time, each call */
+        t_next;             /* OUT (SOURCES_NEXT): the earliest event strictly
+                               after t, inf where none */
+    double *out;            /* OUT (SOURCES_U), n: u(t) */
+    long status,            /* OUT: hdl_fn's result, enum sources_status */
+        bad;                /* OUT: the source a bail stopped at, -1 otherwise */
 } sources_t;
 long hdl_fn(sources_t *s);
 
@@ -33,6 +54,9 @@ enum sources_mode {
 enum sources_status {
     SOURCES_DONE = 1,
     SOURCES_BAIL_VALUE = 2,     /* a value the Python would make otherwise:
-                                   non-finite, or past the fast add's 1e300 */
+                                   non-finite, past the fast add's 1e300, past
+                                   `_sin_scalar`'s guards or exp's range; in
+                                   SOURCES_NEXT a pulse's period index past
+                                   2^52 */
     SOURCES_BAIL_PWL = 3        /* PWL found no segment (a NaN time) */
 };

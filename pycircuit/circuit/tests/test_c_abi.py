@@ -347,3 +347,64 @@ def test_the_precompiled_check_sees_a_planted_difference():
     moved.cdef(cdef.replace(m.group(0), f'{m.group(1)} = {int(m.group(2)) + 100}', 1))
     path = _cbuild.find_so(_cbuild.load_unit(_cbuild.csrc('newton.c'), cdef)[2])
     assert _opened(pre, path) != _opened(moved, path)
+
+
+#: (history in a comment: a plan's stage or round, a date, the logs -- the
+#: history is `doc/transient_history.md`'s and the roadmap's)
+_HISTORY = re.compile(r'\b(?:stage [0-9R]|stages [0-9]|speed round|round [0-9]+\b|'
+                      r'20[0-9]{2}-[0-9]{2}-[0-9]{2}|roadmap|pss_log)', re.IGNORECASE)
+
+
+def _undocumented(text):
+    """`(struct, line)` for every field line of `text`'s structs that no
+    comment covers: none on its line, and no comment line heading its group
+    (a blank line ends a group)."""
+    out = []
+    for m in re.finditer(r'typedef struct(?:\s+\w+)?\s*\{(.*?)\}\s*(\w+)\s*;', text, re.DOTALL):
+        in_comment = covered = False
+        for raw in m.group(1).split('\n'):
+            line = raw.strip()
+            if in_comment:
+                if '*/' not in line:
+                    continue
+                in_comment = False
+                line = line.split('*/', 1)[1].strip()
+                if not line:
+                    covered = True
+                    continue
+            if not line:
+                covered = False
+            elif line.startswith('/*'):
+                in_comment = '*/' not in line
+                covered = True
+            elif ';' in line:
+                has = '/*' in line
+                in_comment = has and '*/' not in line.split('/*', 1)[1]
+                if not (has or covered):
+                    out.append((m.group(2), line))
+    return out
+
+
+def test_every_field_of_a_unit_s_struct_says_what_it_holds():
+    """A field's comment, or its group's, says what it holds, who sets it
+    and when it is valid."""
+    for path in sorted(glob.glob(os.path.join(_cbuild.CSRC_DIR, '*.h'))):
+        assert not _undocumented(_raw(os.path.basename(path))), path
+
+
+def test_no_c_file_tells_history():
+    """Comments state contracts; why a unit exists and what it measured when
+    it was built is the history's (`doc/transient_history.md`)."""
+    for path in sorted(glob.glob(os.path.join(_cbuild.CSRC_DIR, '*.[ch]'))):
+        found = _HISTORY.findall(_raw(os.path.basename(path)))
+        assert not found, (path, found)
+
+
+def test_the_comment_checks_see_a_planted_gap():
+    """Alive: a field with no comment, a comment telling a stage and a date."""
+    assert _undocumented('typedef struct {\n    /* a */\n    long a;\n\n    long b;\n} t_t;\n') \
+        == [('t_t', 'long b;')]
+    assert not _undocumented('typedef struct {\n    long a;   /* a */\n    /* b,\n       c */\n'
+                             '    long b;\n    long c;\n} t_t;\n')
+    assert _HISTORY.findall('/* the plan\'s stage 4, 2026-10-11 */') == ['stage 4', '2026-10-11']
+    assert not _HISTORY.findall('/* the next stage, the stage solve, a round-off */')

@@ -4761,3 +4761,22 @@ coarse (3400-6100x the median step); the test now builds that.
 `PSS.lte_grid(fold=False)` is NOT affected: its window ends at the last
 NATURAL step and a settled run's steps recur each period, so the
 shortfall is 0.004 (all six tstab 1200-1210 converge at -21.5 ppm).
+
+## `csrc/` -- the plan tags the C comments carried (moved 2026-10-11, the C loop plan's R3a)
+
+The comments of the runtime units now state contracts only (`doc/transient_runtime.md` is the
+map; `tests/test_c_abi.py` keeps history out of `csrc/`). The tags they carried, by comment:
+
+* `loop.h`, the file's head: "the stepping loop in C (the C stepping loop plan's stages 4 and 5)"
+  -- the fixed-step loop (stage 4, 0ed05512) and the adaptive one (stage 5, 47d782b7).
+* `pcx_abi.h`, the file's head: "declared once (the C stepping loop plan's stage R1d)"; at
+  `PCX_WANT_PATTERN`: "the core's `npat`, `pat`; the C stepping loop plan's stage 2".
+* `pcx_dense.h`, the file's head: "the reduced system's dense plumbing, written once (the C
+  stepping loop plan's stage 2)".
+* `newton.h`: "THE SPARSE CHORD (the C loop plan's stage 2, step d)".
+* `lte.h`: "THE SPARSE SOLVE (the C loop plan's stage 3, step b)".
+* `sources.h`, the file's head: "(the C stepping loop plan's stage 1)"; `sources.c`, the file's
+  head: "(the C stepping loop plan's stage 1, 2026-10-10)".
+* `radau_tc.c`: "THE STEP'S END PASSES (speed round 12, stage 5a)"; at the hypot locals: "(the
+  arithmetic, and its order, as before)" -- now "the same values, the same operations in the
+  same order".

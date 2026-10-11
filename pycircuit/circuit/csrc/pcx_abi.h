@@ -1,5 +1,5 @@
 /* pcx_abi.h -- the function types pycircuit's runtime C units share, declared
- * once (the C stepping loop plan's stage R1d).
+ * once.
  *
  * A unit includes it as `#include "pcx_abi.h"`; `_cbuild.csrc` expands that
  * line in place, so the text a unit is keyed by, compiled from and digested
@@ -72,7 +72,7 @@ enum pcx_pass {
     PCX_WANT_ALL = PCX_PASS_G | PCX_PASS_C | PCX_PASS_I,
     /* (not a pass: the caller's matrices are zero off the circuit's
        pattern, so the core writes only the pattern's entries -- the
-       core's `npat`, `pat`; the C stepping loop plan's stage 2) */
+       core's `npat`, `pat`) */
     PCX_WANT_PATTERN = 16
 };
 /* the companion the core forms: an integrator's, or none at all (the

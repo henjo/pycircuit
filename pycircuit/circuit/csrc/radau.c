@@ -1,4 +1,11 @@
-
+/* radau.c -- the Radau IIA(3) coupled stage Newton in one call: `_stage_newton`
+   (`_RadauStages._coupled_stage_solver`, _tran_radau.py) undamped, without a
+   shunt or a stateful limiter, bit for bit -- its assembly
+   (`_coupled_stage_system`), numpy's solve, the update and the limiter walk,
+   and the test (`_stages_converged`).  The glue, `_tran_radau_c.solve`,
+   checks the case, fills radau_t (radau.h), and on RADAU_CONVERGED records
+   every assembly in the device memo; on any other status it rolls back the
+   source memo and the Python Newton runs from the same seed. */
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -7,8 +14,20 @@
 #include "pcx_abi.h"
 #include "radau.h"
 
+/* the four flags numpy's errstate governs (inexact is not one).  One
+   raised in the C's own arithmetic hands the solve back: the Python makes
+   the same operation and numpy reports it as the caller's errstate says.
+   The flags the core, the walk and LAPACK raise are cleared, not tested:
+   the Python calls the same core and walk C, and numpy's solve clears
+   LAPACK's.
+   MUST KEEP, at every fetestexcept below: each result it judges is stored
+   to a buffer before it.  The compiler does not model the flags (no
+   FENV_ACCESS), so an operation whose result stays in a register may move
+   past the test; one whose result is stored to memory the call could read
+   may not. */
 #define RC_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
 
+/* every hand-back: the flags cleared, `status` set; returns `why` */
 static long rc_bail(radau_t *s, long why)
 {
     feclearexcept(FE_ALL_EXCEPT);
@@ -19,7 +38,12 @@ static long rc_bail(radau_t *s, long why)
 /* one assembly at the stages Ya[a]: each stage's passes through the core
    (formula 4: G in binG, i in bini, C and q in place), then the residual and
    the blocks in `_coupled_stage_system`'s operations over the full width
-   (each result stored, so each operation precedes the flag test) */
+   (each result stored, so each operation precedes the flag test).
+   Assumes: slot a exists (a < maxa) and Ya[a] holds three stages; u, qn, A,
+   h set.  Writes slot a's qa, ia, Ca, Ga, and K, F, R, Jf (unfactored), blk.
+   Returns 0; RADAU_BAIL_NONFINITE where a stage is not finite (checked
+   before that stage's core call, the earlier stages' passes already made);
+   RADAU_BAIL_FLAGS where the residual or the blocks raised a flag. */
 static long assemble(radau_t *s, long a)
 {
     long n = s->n, m = n - 1, r = s->iref, M = 3 * m, nn = n * n;
@@ -37,18 +61,26 @@ static long assemble(radau_t *s, long a)
         memcpy(G + j * nn, s->binG, (size_t) nn * sizeof(double));
         memcpy(iv + j * n, s->bini, (size_t) n * sizeof(double));
     }
+    /* (the core's flags are not numpy's: cleared) */
     feclearexcept(FE_ALL_EXCEPT);
+    /* K_j = -(i_j + u_j): the sum, then its negation, as the Python's
+       `-(i_j + src(t_j))` */
     for (j = 0; j < 3; j++)
         for (k = 0; k < n; k++) s->K[j * n + k] = -(iv[j * n + k] + s->u[j * n + k]);
     for (i = 0; i < 3; i++) {
         const double a0 = s->A[3 * i], a1 = s->A[3 * i + 1], a2 = s->A[3 * i + 2];
         double *f = s->F + i * n;
         for (k = 0; k < n; k++) {
+            /* F_i = (q_i - q_n) - h sum(A_ij K_j): Python's `sum` starts at
+               the int 0, so its first addition is 0 + A_i0 K_0 -- a -0.0
+               product becomes +0.0 (`0.0 +`, not the product alone); then
+               left to right, as `sum` adds */
             double sm = 0.0 + a0 * s->K[k];
             sm = sm + a1 * s->K[n + k];
             sm = sm + a2 * s->K[2 * n + k];
             f[k] = (q[i * n + k] - s->qn[k]) - h * sm;
         }
+        /* R_i = red(F_i): row iref dropped */
         for (k = 0, rr = 0; k < n; k++) {
             if (k == r) continue;
             s->R[i * m + rr] = f[k];
@@ -57,11 +89,16 @@ static long assemble(radau_t *s, long a)
     }
     for (i = 0; i < 3; i++) {
         for (j = 0; j < 3; j++) {
+            /* the block C_i + (h A_ij) G_j (diagonal) or (h A_ij) G_j: the
+               scalar h A_ij rounded first, as Python's left-to-right
+               `h * A[i, j] * Gi[j]` makes it -- h (A_ij G_j) rounds apart */
             const double hA = h * s->A[3 * i + j];
             const double *Gj = G + j * nn, *Ci = C + i * nn;
             double *blk = s->blk;
             if (i == j) for (k = 0; k < nn; k++) blk[k] = Ci[k] + hA * Gj[k];
             else for (k = 0; k < nn; k++) blk[k] = hA * Gj[k];
+            /* `remove_row_col`, then the block at rows i m.., columns
+               j m.. of Jbig, stored column-major (numpy's solve's copy) */
             for (ri = 0, rr = 0; ri < n; ri++) {
                 if (ri == r) continue;
                 for (ci = 0, cc = 0; ci < n; ci++) {
@@ -77,6 +114,21 @@ static long assemble(radau_t *s, long a)
     return 0;
 }
 
+/* the undamped coupled Newton from `seed`.
+   Assumes what `_tran_radau_c.solve` checks and `_Ctx` sizes: n >= 2,
+   0 <= iref < n, the buffers of radau.h's sizes, the core bound to this
+   circuit and its readiness probed (T), walk_fn NULL or a walk ready.
+   Per iteration: dY = solve(Jbig, -R) by dgesv; per stage Y_prev +
+   insert(dY_i, iref, 0.0), limited by the walk against Y_prev, and the
+   limited step's largest reduced entry; the assembly at the new stages;
+   then the test -- the Python assembles before it tests.
+   Returns RADAU_CONVERGED with Ya..Ga slots 0 .. assemblies-1 written
+   (radau.h), `assemblies`, `iters` and `status` set.  Else a bail code
+   (radau_status), also in `status`: `assemblies` 0, the buffers partly
+   written and not read by the glue, the flags cleared.  Outside the
+   struct's buffers only the core's and the walk's own writes are made (the
+   core's bins, its scratch; the temperature in the elements' parameter
+   rows), as the Python's calls of the same C make them. */
 long hdl_fn(radau_t *s)
 {
     long n = s->n, m = n - 1, r = s->iref, M = 3 * m, a = 0, it, i, k, e;
@@ -96,11 +148,14 @@ long hdl_fn(radau_t *s)
     for (it = 0; it < s->maxiter; it++) {
         double scale = 0.0, ynorm = 0.0;
         double *Yp = s->Ya + a * 3 * n, *Yn;
+        /* (the new stages go to slot a + 1: past the buffers, hand back) */
         if (a + 1 >= s->maxa) return rc_bail(s, RADAU_BAIL_ASSEMBLIES);
         Yn = Yp + 3 * n;
         /* np.linalg.solve(Jbig, -R), then sum|R| (the undamped Newton reads
            it for its overflow alone: a bound, numpy's pairwise sum not
-           mirrored) */
+           mirrored).  Every |R_k| below 2^1000, so no sum of 3m of them
+           overflows; a larger entry or a NaN hands back.  A non-finite
+           Jacobian entry hands back too. */
         for (k = 0; k < M; k++) {
             if (!(fabs(s->R[k]) < 0x1p1000)) return rc_bail(s, RADAU_BAIL_RBOUND);
             s->b[k] = -s->R[k];
@@ -114,17 +169,28 @@ long hdl_fn(radau_t *s)
         for (i = 0; i < 3; i++) {
             const double *yp = Yp + i * n, *d = s->b + i * m;
             double *yn = Yn + i * n, mx = 0.0;
+            /* Y_prev + insert(dY_i, iref, 0.0), Y_prev the left operand */
             for (k = 0; k < r; k++) yn[k] = yp[k] + d[k];
+            /* the reference row adds the inserted 0.0, not a copy: a -0.0
+               there becomes +0.0, as numpy's elementwise sum makes it */
             yn[r] = yp[r] + 0.0;
             for (k = r + 1; k < n; k++) yn[k] = yp[k] + d[k - 1];
             if (fetestexcept(RC_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
+            /* `cir.limit(Y_trial, Y_prev)`: the walk limits yn in place and
+               returns wn, or the element whose limiter declined (the
+               Python limits); its flags are not tested */
             if (walk) {
                 e = walk(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK, yn, yp, 0, s->wn);
                 if (e < s->wn) return rc_bail(s, RADAU_BAIL_WALKSTOP);
                 feclearexcept(FE_ALL_EXCEPT);
             }
+            /* step_i = red(Y_new - Y_prev) (stored: its flags tested) */
             for (k = 0; k < n; k++) s->stp[k] = yn[k] - yp[k];
             if (fetestexcept(RC_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
+            /* np.max(np.abs(step_i)), then Python's max(scale, it): each
+               takes a later value only where it is greater.  Every value is
+               finite and >= +0.0 here, so starting from 0.0 and any tie
+               give the same bits */
             for (k = 0; k < n; k++) {
                 double v;
                 if (k == r) continue;
@@ -137,6 +203,9 @@ long hdl_fn(radau_t *s)
         a++;
         e = assemble(s, a);
         if (e) return rc_bail(s, e);
+        /* `_stages_converged`: ynorm = max over stages of np.max(np.abs(
+           red(Y_i))) -- finite (`assemble` checked the stages) and >= +0.0,
+           so the running maximum from 0.0 is numpy's */
         for (i = 0; i < 3; i++)
             for (k = 0; k < n; k++) {
                 double v;
@@ -144,6 +213,9 @@ long hdl_fn(radau_t *s)
                 v = fabs(Yn[i * n + k]);
                 if (v > ynorm) ynorm = v;
             }
+        /* scale <= reltol * ynorm + abstol: two roundings (no fma), each
+           stored before the test (numpy's scalar arithmetic reports their
+           flags) */
         feclearexcept(FE_ALL_EXCEPT);
         s->tolv[0] = s->reltol * ynorm;
         s->tolv[1] = s->tolv[0] + s->abstol;

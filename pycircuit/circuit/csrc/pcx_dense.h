@@ -1,5 +1,5 @@
-/* pcx_dense.h -- the reduced system's dense plumbing, written once (the C
- * stepping loop plan's stage 2): the Python solves with the reference row
+/* pcx_dense.h -- the reduced system's dense plumbing, written once: the
+ * Python solves with the reference row
  * and column removed (`analysis.remove_row_col`) and puts the reference back
  * as +0.0 (`insert_row`); its dense solves hand LAPACK a column-major copy
  * (numpy's, before `dgesv`; SciPy's, before `dgetrf`).

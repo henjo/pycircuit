@@ -1,4 +1,29 @@
 
+/* lte.c -- the adaptive error test in C: `StepController._max_error`'s
+   chain on one attempt (`_charge_lte`, `_normalised`, `np.max`), bit for
+   bit, or handed back.  Its glue is `_tran_lte_c`; the C loop (loop.c)
+   calls it too.
+
+   THE FLAG RULE -- MUST KEEP, here and in every unit that tests
+   floating-point flags (pred.c follows it).  The C clears the flags,
+   makes the operations numpy would make, and tests all four (overflow,
+   underflow, invalid, division by zero) before anything the caller reads
+   is final -- any flag hands the attempt back, and the Python makes it
+   with whatever warnings its own error state gives.  That is more than
+   numpy reports (its default ignores underflow; parts of the chain run
+   under `np.errstate(divide='ignore', invalid='ignore')`): a flag costs at
+   worst a needless hand-back, never another answer or another warning.
+   A test must see exactly the
+   operations made since the last clear.  GCC does not honour
+   `#pragma STDC FENV_ACCESS`: it may move a floating-point operation
+   across `feclearexcept` / `fetestexcept` (opaque library calls) unless
+   something pins it there.  Here each operation a test covers stores its
+   result through a pointer the call could read (a buffer of the struct),
+   or decides a branch taken before the test.  Keeping such a result only
+   in a local, fusing two loops a test separates, or moving work into or
+   out of a cleared-and-tested region can let a flag escape its test (a
+   warning numpy gives, not given) or reach another one.  Every return
+   leaves the flags clear, as the chain's last numpy call leaves them. */
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
@@ -7,8 +32,10 @@
 #include "pcx_dense.h"
 #include "lte.h"
 
+/* the flags numpy checks after its operations (inexact is not one) */
 #define LTE_FLAGS (FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)
 
+/* every bail: the flags cleared, `why` in `status` and returned */
 static long lte_bail(lte_t *s, long why)
 {
     feclearexcept(FE_ALL_EXCEPT);
@@ -16,8 +43,19 @@ static long lte_bail(lte_t *s, long why)
     return why;
 }
 
-/* StructuralKLU.solve(the reduced J, the reduced Eg): the solution in `b`;
-   0, or why it is handed back */
+/* StructuralKLU.solve(the reduced J, the reduced Eg) on its refactor path
+   (`_ours`, `klu_refactor` on the run's numeric, `klu_solve`, the
+   residual's validation): 0 with the solution in `b` (m), or why it is
+   handed back -- LTE_BAIL_FOREIGN (a nonzero off the pattern: the
+   Python's `_ours` sends the matrix to its fallback solver), LTE_BAIL_KLU
+   (the refactor or the solve failed: the Python factors afresh),
+   LTE_BAIL_FLAGS, LTE_BAIL_RESIDUAL (the validation failed or is NaN: the
+   Python factors afresh).  Assumes the sparse block bound (lte.h) and
+   `lte` holding Eg.  Writes `R`, `kAx`, `x`, `y`, `b`, and refactors
+   `klu_num` in place: on a hand-back after the refactor the Python's own
+   solve refactors it again, from the same values.  Flags: what KLU raised
+   is cleared; on 0 the flags hold at most what the last division raised
+   (hdl_fn's next test sees it), on a bail the caller clears them. */
 static long sparse_solve(lte_t *s, long n, long r)
 {
     long m = n - 1, k, i, nz_r = 0, nz_a = 0;
@@ -26,7 +64,8 @@ static long sparse_solve(lte_t *s, long n, long r)
        nonzero the count hands back, and one on it reaches the residual,
        which it makes non-finite -- handed back too) */
     pcx_reduce_rm(s->J, s->R, n, r);
-    /* `_ours`: the pattern's values, and as many nonzeros as the matrix */
+    /* `_ours`: the pattern's values, and as many nonzeros as the matrix
+       (`v != 0.0` counts a NaN, as numpy's count_nonzero does) */
     nz_r = pcx_count_nonzero(s->R, m * m);
     for (k = 0; k < s->knnz; k++) {
         double v = s->R[s->ktake[k]];
@@ -43,25 +82,48 @@ static long sparse_solve(lte_t *s, long n, long r)
         return LTE_BAIL_KLU;
     /* (what KLU raised inside: the Python's ctypes call never sees it) */
     feclearexcept(FE_ALL_EXCEPT);
-    /* the refactor's validation, numpy's operations in their order */
+    /* the refactor's validation, numpy's operations in their order: R x
+       is `arr @ x` (numpy's matmul calls this dgemv), then |R x - b|, its
+       maximum, the scale */
     ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m, s->x, 1,
                            0.0, s->y, 1);
+    /* (np.max of |b|: b is finite -- the estimate passed its flag test --
+       and no |.| is -0.0, so a running `>` from +0.0 is numpy's maximum
+       in any order) */
     for (i = 0; i < m; i++) {
         double a = fabs(s->b[i]);
         if (a > max_b) max_b = a;
     }
+    /* (numpy's max propagates a NaN, which a running `>` would drop: a NaN
+       is handed back -- the Python's NaN residual fails its test and it
+       factors afresh) */
     for (i = 0; i < m; i++) {
         double d = fabs(s->y[i] - s->b[i]);
         if (isnan(d)) return LTE_BAIL_RESIDUAL;
         if (d > max_r) max_r = d;
     }
     if (fetestexcept(LTE_FLAGS)) return LTE_BAIL_FLAGS;
+    /* Python's `max(max_b, 1e-300)`: the first argument kept unless the
+       second is strictly greater; `not (resid <= tol)` fails a NaN too */
     scale = (1e-300 > max_b) ? 1e-300 : max_b;
     if (!(max_r / scale <= s->resid_tol)) return LTE_BAIL_RESIDUAL;
     for (i = 0; i < m; i++) s->b[i] = s->x[i];
     return 0;
 }
 
+/* `StepController._max_error` on one attempt: `compute_lte` by `formula`,
+   `J^-1 Eg` with the reference row cut and restored (dense: numpy's
+   `dgesv`; sparse: `sparse_solve`), `_reference` by `relref` folded into
+   the running maximum, `tolerance`, `normalised_error`, `_normalised`'s
+   mask and `np.max` -- numpy's operations in numpy's order.
+   Assumes: the struct as lte.h says it (n >= 2, 0 <= iref < n, every
+   pointer valid for its size; sparse, a bound StructuralKLU whose numeric
+   exists).
+   LTE_DONE: `err` the largest normalised error, `out` the new running
+   maximum (relref not POINTLOCAL).
+   A bail (enum lte_status): `err` is not written; `out` and the work
+   buffers may hold part of the work -- no caller reads them on a bail --
+   and the inputs are only read.  Every return leaves the flags clear. */
 long hdl_fn(lte_t *s)
 {
     long n = s->n, m = n - 1, r = s->iref, i;
@@ -76,6 +138,9 @@ long hdl_fn(lte_t *s)
         if (!(isfinite(s->xc[i]) && isfinite(s->xl[i]) && isfinite(s->q[i])
               && isfinite(s->q1[i]) && isfinite(s->q2[i]) && isfinite(s->q3[i])))
             return lte_bail(s, LTE_BAIL_NONFINITE);
+    /* (a running maximum also not negative, -0.0 included: a -0.0 could
+       reach sigglobal's np.max, whose pairing of +0.0 and -0.0 -- numpy's
+       reduction is SIMD-paired -- a running `>` does not follow) */
     if (s->have_run)
         for (i = 0; i < n; i++)
             if (!isfinite(s->run[i]) || signbit(s->run[i])) return lte_bail(s, LTE_BAIL_NONFINITE);
@@ -86,12 +151,17 @@ long hdl_fn(lte_t *s)
     feclearexcept(FE_ALL_EXCEPT);
     /* compute_lte: coef * third_divided_difference, numpy's elementwise
        operations in their order (each result stored, so each operation
-       precedes the flag test); the step sums and the coefficient are the
-       glue's, in the integrator's own scalar arithmetic */
+       precedes the flag test -- the flag rule, above); the step sums and
+       the coefficient are the caller's (the glue's, or loop.c's), in the
+       integrator's own scalar arithmetic.  The coefficient multiplies last: the Python makes the
+       scalar `coef` first (`-h * (h + hl)`, `-(h**2)`, `-0.5 * scale`) and
+       multiplies the finished vector by it */
     if (s->formula == LTE_FORMULA_EULER) {
         /* EulerIntegrator.compute_lte: gn = (q - q1) / h, gn - iq1, scaled */
         for (i = 0; i < n; i++) s->lte[i] = s->coef * ((s->q[i] - s->q1[i]) / s->h1 - s->iq1[i]);
     } else for (i = 0; i < n; i++) {
+        /* third_divided_difference: d1..d3, dd_a, dd_b, then over the sum
+           of the three steps -- each a numpy temporary, rounded as here */
         double d1 = (s->q[i] - s->q1[i]) / s->h1;
         double d2 = (s->q1[i] - s->q2[i]) / s->h2;
         double d3 = (s->q2[i] - s->q3[i]) / s->h3;
@@ -113,11 +183,16 @@ long hdl_fn(lte_t *s)
         feclearexcept(FE_ALL_EXCEPT);
         if (info64 != 0) return lte_bail(s, LTE_BAIL_DGESV);
     }
+    /* (a non-finite J^-1 Eg is the Python's: its normalised_error makes
+       it +inf, a rejection) */
     for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return lte_bail(s, LTE_BAIL_LTE);
-    /* the full vector, the reference row restored as +0.0 */
+    /* the full vector, the reference row restored as +0.0 (the Python's
+       concatenate of the two halves around [0.0]) */
     pcx_put_ref(s->b, s->lte, n, r);
     /* _reference: numpy's maximum (the first where they compare equal) of
-       |x_curr| and |x_last|, folded into the running maximum */
+       |x_curr| and |x_last|, folded into the running maximum.  The ternary
+       is numpy's maximum, `(a >= b || isnan(a)) ? a : b`, on finite values
+       (fmax would not promise which of two equal zeros it keeps) */
     for (i = 0; i < n; i++) {
         double a = fabs(s->xc[i]), c = fabs(s->xl[i]);
         double loc = (a >= c) ? a : c;
@@ -133,7 +208,10 @@ long hdl_fn(lte_t *s)
     if (s->relref == LTE_RELREF_ALLLOCAL) {
         for (i = 0; i < n; i++) s->ref[i] = s->out[i];
     } else if (s->relref == LTE_RELREF_SIGGLOBAL) {
-        /* sigglobal_reference: each unit group's maximum, broadcast back */
+        /* sigglobal_reference: each unit group's maximum, broadcast back --
+           np.max over values with no NaN and no -0.0 (both excluded
+           above), so a running `>` is its answer in any order; one group
+           where n_nodes is None, <= 0 or >= n, as the Python splits */
         long nn = s->nn, lo, hi, g;
         long cut = (nn <= 0 || nn >= n) ? n : nn;
         for (g = 0; g < 2; g++) {
@@ -146,7 +224,10 @@ long hdl_fn(lte_t *s)
             for (i = lo; i < hi; i++) s->ref[i] = mx;
         }
     }
-    /* the tolerance TRTOL (reltol ref + abstol) and |lte| / tol */
+    /* the tolerance TRTOL (reltol ref + abstol) and |lte| / tol, in
+       `tolerance`'s order.  normalised_error's two `where`s (0/0 -> 0, NaN
+       -> inf) cannot fire past the tests: every tol positive and finite,
+       every |lte| finite */
     for (i = 0; i < n; i++)
         s->tq[i] = s->trtol * (s->reltol * s->ref[i] + (s->abs_vec ? s->abst[i] : s->abstol));
     if (fetestexcept(LTE_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
@@ -154,7 +235,8 @@ long hdl_fn(lte_t *s)
     for (i = 0; i < n; i++) s->tq[i] = fabs(s->lte[i]) / s->tq[i];
     if (fetestexcept(LTE_FLAGS)) return lte_bail(s, LTE_BAIL_FLAGS);
     /* `_normalised`'s mask (`Transient.lte_algebraic`): an unknown not
-       judged is +0.0, as `np.where(mask, e, 0.0)` makes it */
+       judged is +0.0, as `np.where(mask, e, 0.0)` makes it (a mask entry
+       is true where nonzero: -0.0 false, NaN true, as `== 0.0` decides) */
     if (s->has_mask)
         for (i = 0; i < n; i++) if (s->mask[i] == 0.0) s->tq[i] = 0.0;
     /* np.max: no NaN, no negative zero (|lte| / a positive tolerance) */
