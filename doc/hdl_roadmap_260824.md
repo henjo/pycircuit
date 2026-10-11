@@ -8393,3 +8393,49 @@ fixed-step loop and its C", its reference list grown by the judge's pieces: `_LM
 `_lte_inputs`, `IntegralController._evaluate`, `_tran_lte_c.max_error`, the event breakpoint),
 re-recorded with "the error test and its C", "the Newton solve and its C" and "the stepping loop
 and its unread Jacobian" (twin side only).  Full suite 5158 passed; sanitizer fast tier clean.
+
+## 2026-10-11 — 121. Stage 5, step d: THE LINE MET -- the median gain over the 23 gold decks the loop covers is 1.53x (line >= 1.4x); stage 5 closed
+
+Every gold deck full length, the parent tree (8fc455a8: the fixed-step loop in C, the adaptive
+in Python) and this one (47d782b7) alternated per round and per deck, five rounds, one process
+each, no address randomisation, the 15-min load below 3 at the start (scratchpad s5/line.py).
+The paired ratio's median per deck; "covered" = the C makes more than half of the run's attempts.
+
+| deck | parent | child | gain | C makes |
+|---|---|---|---|---|
+| 4049osc | 1.37 s | 0.15 s | 9.08x | 100 % |
+| gm2 | 0.31 | 0.11 | 2.97x | 99 % |
+| gm6 | 0.21 | 0.09 | 2.34x | 99 % |
+| mike2 | 0.22 | 0.10 | 2.25x | 99 % |
+| latch | 0.33 | 0.15 | 2.14x | 95 % |
+| nand | 1.05 | 0.53 | 1.98x | 98 % |
+| ring | 2.06 | 1.11 | 1.85x | 100 % |
+| gm1 | 1.11 | 0.65 | 1.72x | 99 % |
+| arom | 5.50 | 3.38 | 1.63x | 100 % |
+| rich3 | 5.85 | 3.62 | 1.62x | 99 % |
+| toronto | 1.17 | 0.73 | 1.59x | 98 % |
+| slowlatch | 0.36 | 0.23 | 1.53x | 94 % |
+| gm3 | 0.96 | 0.66 | 1.45x | 99 % |
+| rca | 0.09 | 0.06 | 1.45x | 99 % |
+| gm19 | 15.42 | 10.96 | 1.41x | 100 % |
+| mux8 | 28.17 | 20.01 | 1.41x | 98 % |
+| hussamp | 0.09 | 0.07 | 1.35x | 97 % |
+| todd3 | 0.40 | 0.31 | 1.29x | 86 % |
+| jge | 45.21 | 35.68 | 1.26x | 99 % |
+| voter25 | 9.14 | 7.56 | 1.21x | 92 % |
+| schmitecl | 0.07 | 0.06 | 1.19x | 97 % |
+| gm17 | 0.32 | 0.29 | 1.09x | 95 % |
+| opampal | 36.22 | 36.73 | 0.99x | 100 % |
+| ab_integ | 5.53 | 5.59 | 0.99x | 0 % |
+| e1480 | 1.07 | 1.08 | 1.00x | 0 % |
+| g1310 | 1.19 | 1.20 | 0.99x | 0 % |
+| mosrect | 0.26 | 0.27 | 0.94x | 0 % |
+
+Median over the 23 covered: 1.53x; over all 27: 1.45x.  The rounds agree within ~2 % on every
+deck but opampal (0.77-1.16: its KLU operating point, ~36 s, is the run) and ab_integ.  No A/A
+beside it: the margin (9 %) is several times the 1-2 % a tree-and-role offset reads.  Where the
+gain is small the run is elsewhere: the core's C on jge, voter25, mux8, gm19 (the sizing's
+ceiling there was 1.25-1.6x), the operating point on opampal and gm17.  NOT a gain: the four
+decks the screen hands back pay a cost -- mosrect 0.94x in all five rounds (~15 ms on 0.26 s),
+the other three 0.99-1.00x; not yet located (the unit's load and bind, the entries before the
+backoff: to be measured, not guessed).
