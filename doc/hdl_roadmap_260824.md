@@ -8609,3 +8609,34 @@ for an n^2 and an (n-1)^2) took the pair of large arrays a call away, and the mo
 f7d0be3a, against 658e6756: opampal 1.524x pinned, 1.22x unpinned (26.6 s every round); gm19
 1.31x / 1.67x; jge 1.13x; gold decks full length: opampal 1.50x, gm19 1.08x, none below 0.99x,
 every digest the same. Next: D4 (the evaluations on the C core), sized from what remains.
+
+## 2026-10-12 — 127. The DC operating point, D4: the base Newton solve in C -- opampal's operating point 4.0x pinned, 5.5x unpinned over D3, every base solve of every gold deck the Python's, byte for byte
+
+Sized first (no code changed): opampal's operating point makes 448 base Newton solves (19 737
+iterations), 186 failing at the iteration limit -- so the C must run failing solves to their
+end, not hand them back; StructuralKLU never foreign on the DC, the J on its pattern by
+construction. Built (0389f9b0): `csrc/dcnewton.c`, one `StandardNewton.solve_system` on the
+compositions the ladders make -- the DC residual, source stepping's factor, gshunt, junction
+gmin -- read from tags the wrappers carry; numpy's dgesv or StructuralKLU's own refactor /
+fresh factor / residual sequence; the limiter walk; the convergence test with numpy's dgemv.
+A flag, a non-finite value, a failed factor or a walk stop hands the solve back with KLU's
+numeric as it was, the Python's rerun replaying it exactly; the iteration limit is served and
+raised by the Python's own `_standard_failure`.
+
+The census: 717 base solves of the 27 gold decks, each solution's bytes and iterations (or
+exception text), KLU's counters, x0 and the warnings -- C on against off, 27 of 27. Line, against
+67bda752: opampal's operating point 4.03x pinned / 5.54x unpinned (>= 3x), gm19 2.45x / 2.43x
+(>= 2x), gm3 2.44x, mike2 1.28x; full gold runs pinned: opampal 3.54x, gm3 1.57x, gm19 1.19x,
+none below 0.99x.
+
+The first gold line failed on seven tiny decks (0.97..0.99x), none of them served. Two causes,
+both outside the solve: a `PCX_SKIP_Q` bit added to the core's pass loop (the DC never reads
+q) cost the transient's core -- 4049osc, no DC solve at all, 0.988x with it and 0.999x without,
+so the bit was dropped and core.c is untouched; and the glue's import, 0.2 ms (plus 0.35 ms of
+C source reads at import), landing inside a small deck's first operating point because
+nrsolver itself is imported there: rca's operating point read 0.90x, hussamp's 0.88x, though
+rca's one solve was declined. The fix is a gate in nrsolver ahead of a lazy import: below
+`DC_C_MIN_N` = 32 unknowns (gm6, 20: 0.97x served) and the run's first solve (AutoSolver's
+choice not made) are declined there, counted; the C sources are read at the first load. rca,
+schmitecl, hussamp's operating points then 1.00x, 1.00x, 0.99x. Not served yet: held solves
+(`.ic` without UIC: gm17, jge's 1.2 s).
