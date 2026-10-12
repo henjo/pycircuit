@@ -99,7 +99,7 @@ class PcnrDevice(object):
     consumer.
     """
     __slots__ = ('instance', 'element', 'rows', 'probes', 'local', 'kinds',
-                 'off', 'scalar', 'redundant')
+                 'off', 'scalar', 'redundant', '_kmap')
 
     def __init__(self, instance, element, rows, local, kinds, scalar,
                  off=0, redundant=()):
@@ -121,6 +121,7 @@ class PcnrDevice(object):
         self.redundant = tuple(((int(a), int(b)), k, tuple(int(c_) for c_
                                                            in c))
                                for (a, b), k, c in redundant)
+        self._kmap = None
 
     @property
     def m(self):
@@ -176,17 +177,105 @@ class PcnrDevice(object):
                 block[la, j] += float(di_terms[0])
                 block[lb, j] += float(di_terms[1])
             return block
-        vv = np.asarray(v, dtype=float)
-        cur = np.asarray(element.pcnr_i(vv, params, epar, toolkit),
-                         dtype=float).reshape(self.t)
+        ## THE KERNEL ROUTE (2026-10-12, `dc-pcnr-c`): the device's
+        ## ORDINARY evaluation -- the compiled kernel where it has one --
+        ## at a local point that realises `v`, not the SymPy `pcnr_i` /
+        ## `pcnr_didv`: the same numbers to rounding on every gold class
+        ## (7e-15), 13x faster, and the evaluation a C unit can call.
+        cur, block[:, :] = self._kernel_stamp(np.asarray(v, dtype=float),
+                                              params, epar)
         ## `add.at`, not fancy-index `+=`: a diode-connected transistor
         ## has two terminals on ONE node, and `g[rows] += cur` would keep
         ## only the last of the duplicates.
         np.add.at(g_mna, self.rows, cur)
-        block[:, :] = np.asarray(element.pcnr_didv(vv, params, epar,
-                                                   toolkit),
-                                 dtype=float).reshape(self.t, self.m)
         return block
+
+    def _kernel_map(self, params, epar):
+        """`(G_lin, walk, mirror, T)`: the affine remainder (or None), the
+        probe tree's walk -- `(row, parent, probe, sign)` in visiting order,
+        `pot[row] = pot[parent] + sign * v[probe]`, the root at 0 -- the
+        rows it does not reach, each with the reached row it mirrors
+        (tied through the remainder, so that branch carries exactly
+        zero), and `T = d pot / d v` (entries -1, 0, +1).  Cached per
+        temperature."""
+        key = float(getattr(epar, 'T', 300.0))
+        if self._kmap is not None and self._kmap[0] == key:
+            return self._kmap[1]
+        el = self.element
+        lin = getattr(el, 'pcnr_lin_G', None)
+        G_lin = (None if lin is None else
+                 np.asarray(lin(params, epar, el.toolkit), dtype=float))
+        t, m = self.t, self.m
+        T = np.zeros((t, m))
+        reached = [False] * t
+        walk = []
+        ## every component of the probes from its own root at 0 -- a
+        ## thermal or optical port is a component apart from the junctions,
+        ## and the currents read differences within a component only
+        for _j0, (_la0, root) in enumerate(self.local):
+            if reached[root] or reached[_la0]:
+                continue
+            reached[root] = True
+            stack = [root]
+            while stack:
+                a = stack.pop()
+                for j, (la, lb) in enumerate(self.local):
+                    ## v_j = pot[la] - pot[lb]
+                    for b, sign in ((la, +1.0), (lb, -1.0)):
+                        other = lb if b == la else la
+                        if other == a and not reached[b]:
+                            reached[b] = True
+                            T[b] = T[a]
+                            T[b, j] += sign
+                            walk.append((b, a, j, sign))
+                            stack.append(b)
+        mirror = []
+        changed = True
+        while changed:
+            changed = False
+            for r in range(t):
+                if reached[r] or G_lin is None:
+                    continue
+                for c in range(t):
+                    if reached[c] and G_lin[r, c] != 0.0:
+                        reached[r] = True
+                        T[r] = T[c]
+                        mirror.append((r, c))
+                        changed = True
+                        break
+        out = (G_lin, tuple(walk), tuple(mirror), T)
+        self._kmap = (key, out)
+        return out
+
+    def _kernel_stamp(self, v, params, epar):
+        """`(current, block)` on the device's rows at its own `v`: its
+        ordinary `i` and `G` at the local point `pot` (`_kernel_map`), the
+        affine remainder taken off (`G_lin pot`, `G - G_lin`), and
+        `block[:, j] = sum_r G_nl[:, r] T[r, j]` -- every sum in a fixed
+        order, the C unit's (`csrc/pcnrdc.c`)."""
+        el = self.element
+        G_lin, walk, mirror, T = self._kernel_map(params, epar)
+        t, m = self.t, self.m
+        pot = np.zeros(t)
+        for row, parent, j, sign in walk:
+            pot[row] = pot[parent] + sign * v[j]
+        for row, src in mirror:
+            pot[row] = pot[src]
+        cur = np.array(el.i(pot, epar), dtype=float).reshape(t)
+        G = np.array(el.G(pot, epar), dtype=float).reshape(t, t)
+        if G_lin is not None:
+            for r in range(t):
+                acc = 0.0
+                for c in range(t):
+                    acc += G_lin[r, c] * pot[c]
+                cur[r] -= acc
+            G -= G_lin
+        block = np.zeros((t, m))
+        for j in range(m):
+            for r in range(t):
+                if T[r, j] != 0.0:
+                    block[:, j] += G[:, r] * T[r, j]
+        return cur, block
 
     def limit(self, v_new, v_old, params, epar, x_old_sub):
         """The CORRECT phase for this device's block."""

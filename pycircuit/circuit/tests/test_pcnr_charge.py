@@ -544,15 +544,19 @@ def test_augmented_jacobian_is_the_derivative_on_a_vector_participant_with_charg
 def test_a_dropped_didv_column_fails_the_finite_difference_check():
     """Mutation control for the test above, on the same point: with the
     BJT's ``d/dvbc`` column zeroed the augmented Jacobian disagrees with
-    FD by the transport current's slope, far outside the tolerance."""
+    FD by the transport current's slope, far outside the tolerance.  (The
+    column is dropped where PCNR forms it: `PcnrDevice._kernel_stamp`,
+    the kernel route, since 2026-10-12.)"""
+    from pycircuit.circuit import pcnr as P
     c = _bjt_circuit()
-    cls = type(c['q1'])
-    real = cls.pcnr_didv
+    cls = P.PcnrDevice
+    real = cls._kernel_stamp
 
-    def dropped(v, params, epar, toolkit):
-        blk = np.array(real(v, params, epar, toolkit), dtype=float)
+    def dropped(self, v, params, epar):
+        cur, blk = real(self, v, params, epar)
+        blk = np.array(blk, dtype=float)
         blk[:, 1] = 0.0
-        return blk
+        return cur, blk
 
     n = c.n
     x, v_lim = _bjt_fd_point(c)
@@ -562,11 +566,11 @@ def test_a_dropped_didv_column_fails_the_finite_difference_check():
     x[c.get_node_index('nc')] = 0.05
     v_lim[1] = 0.76 - 0.05
     h, q_last = 1e-9, np.zeros(n)
-    cls.pcnr_didv = staticmethod(dropped)
+    cls._kernel_stamp = dropped
     try:
         _g, J_bad = _augmented(c, x, v_lim, h, q_last)
     finally:
-        cls.pcnr_didv = staticmethod(real)
+        cls._kernel_stamp = real
     _g, J_ok = _augmented(c, x, v_lim, h, q_last)
     eps = 1e-7
     dv = np.zeros(2)

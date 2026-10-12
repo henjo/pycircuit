@@ -855,15 +855,18 @@ def test_a_circuit_level_forest_is_order_independent_and_worse(
 
 ## --- Stage 2: the same clash under vector PCNR ---------------------------
 
-def _pcnr_solve(c, x0=None, maxiter=100):
-    """`pcnr.solve_dc` -- no ladder, no anchor, no node limiting.  NOT
-    `DC(pcnr=True)`: that entry gates on `pcnr_junctions()`, the
-    pnj-only gmin pair view, so a circuit of `fetlim`/`limvds` devices
-    and no junction falls through to the ordinary solver there."""
+def _pcnr_solve(c, x0=None, maxiter=100, continued=False):
+    """`pcnr.solve_dc` -- no ladder, no anchor, no node limiting -- or with
+    `continued`, `pcnr.solve_dc_continued`, PCNR with its own ladders (what
+    `DC(pcnr=True)` runs since 2026-10-12).  NOT `DC(pcnr=True)` itself:
+    that entry gates on `pcnr_junctions()`, the pnj-only gmin pair view,
+    so a circuit of `fetlim`/`limvds` devices and no junction falls
+    through to the ordinary solver there."""
     from pycircuit.circuit import pcnr as P
     try:
-        x, _v, its = P.solve_dc(c, gnd, x0=x0, reltol=1e-4, abstol=1e-6,
-                                maxiter=maxiter)
+        solve = P.solve_dc_continued if continued else P.solve_dc
+        x, _v, its = solve(c, gnd, x0=x0, reltol=1e-4, abstol=1e-6,
+                           maxiter=maxiter)[:3]
     except (RuntimeError, np.linalg.LinAlgError, FloatingPointError,
             OverflowError, ValueError):
         return None, None
@@ -1008,6 +1011,13 @@ def test_the_grid_under_pcnr_converges_everywhere_plain_newton_did(cls_name):
     step creep down a 1e25 A subthreshold exponential; it is slow, not
     divergent.  The window is wide; what is pinned is "nothing that
     converged stops converging" at a 200 budget, and the answers.
+
+    ⚠ PCNR AS IT RUNS: WITH ITS LADDERS (2026-10-12).  The kernel route
+    (`PcnrDevice._kernel_stamp`, rounding-level against the SymPy forms)
+    crossed the knife edge below again: plain PCNR at (20, 2, 2.0) is a
+    limit cycle at budgets 200 and 400 alike, and its own source-stepping
+    ladder carries it in 43 iterations.  `DC(pcnr=True)` runs the ladders,
+    so the grid is measured through `solve_dc_continued`.
     """
     from pycircuit.circuit.tests.test_limit_fet import _cascode
     if cls_name == 'fet-both':
@@ -1025,7 +1035,7 @@ def test_the_grid_under_pcnr_converges_everywhere_plain_newton_did(cls_name):
     for cond in GRID:
         ip, xp = _count_x(cls, cond, mk)
         c = mk(cls, *cond)
-        iq, xq = _pcnr_solve(c, maxiter=200)
+        iq, xq = _pcnr_solve(c, maxiter=200, continued=True)
         assert ip is not None and iq is not None, (cond, ip, iq)
         nn = len(c.nodes)
         assert_allclose(xq[:nn], xp[:nn], rtol=0, atol=1e-3)
