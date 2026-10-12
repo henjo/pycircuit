@@ -438,6 +438,93 @@ def _adaptive_conductance_ladder(solve_rung, solve_pure, x0,
     return solve_pure(x_curr)
 
 
+
+#: the sizes from which the in-place forms below beat what they stand for
+#: (measured 2026-10-12: the diagonal 6.1 -> 4.0 us at n = 64, 2.3 -> 3.1 us at
+#: n = 32; the junctions 16.0 -> 12.3 us at 16 of them, 8.1 -> 12.2 us at 8)
+_DIAGONAL_INPLACE_MIN = 64
+_JUNCTION_VECTOR_MIN = 16
+
+
+def _plus_diagonal(J, d, toolkit):
+    """`J + toolkit.eye(len(J)) * d` -- `d` a conductance, or a vector of
+    them, each row's -- with the same bytes and without the n x n identity
+    and its product (three n x n arrays a call; 301 -> 100 us at n = 519):
+    `J + 0.0` -- every -0.0 off the diagonal becomes +0.0, as adding
+    `0.0 * d` makes it -- then `d` added on the diagonal.  The identity holds
+    for a `d` finite and not negative, -0.0 included (`0.0 * -0.0` is -0.0);
+    any other `d`, a J that is not a C-ordered float64 matrix (another
+    toolkit's), or one below `_DIAGONAL_INPLACE_MIN`, takes the expression
+    itself."""
+    n = len(J)
+    if (n >= _DIAGONAL_INPLACE_MIN and type(J) is np.ndarray and J.dtype == np.float64 and J.ndim == 2 and J.shape[1] == n
+            and J.flags.c_contiguous):
+        if type(d) is float or type(d) is np.float64:
+            ok = bool(np.isfinite(d)) and d >= 0.0 and not np.signbit(d)
+        else:
+            ok = (type(d) is np.ndarray and d.dtype == np.float64 and d.shape == (n,)
+                  and bool(np.isfinite(d).all()) and not np.signbit(d).any())
+        if ok:
+            out = J + 0.0
+            out.flat[::n + 1] += d
+            return out
+    return J + toolkit.eye(len(J)) * d
+
+
+def _junction_tables(rows):
+    """The junction pairs `rows` as index arrays for `_junction_gmin`: `(ra,
+    rb, F's rows in the loop's order -- ra0, rb0, ra1, rb1, ... --, J's flat
+    indices by size)`."""
+    ra = np.array([a for a, _b in rows], dtype=np.intp)
+    rb = np.array([b for _a, b in rows], dtype=np.intp)
+    fidx = np.empty(2 * len(rows), dtype=np.intp)
+    fidx[0::2], fidx[1::2] = ra, rb
+    return ra, rb, fidx, {}
+
+
+def _junction_gmin(F, J, x, g, rows, tables):
+    """Each junction's conductance `g` added in place, as the loop over
+    `rows` adds it -- `F[ra] += g * vj`, `F[rb] -= g * vj` (vj = x[ra] -
+    x[rb]), then J's four entries -- and in its order: one `np.add.at` for F
+    and one for J, whose repeated rows accumulate in index order (a row two
+    junctions share sums as the loop sums it), a subtraction as the addition
+    of the negated term (the same bits for any term but a NaN).
+
+    Taken only where neither form can warn, so the warnings are the loop's
+    too (numpy's scalar operations and its array operations word theirs
+    differently): numpy ignoring underflow, and every term, F row and J
+    entry touched below 1e300 in magnitude -- no sum of them can overflow,
+    no NaN can arise.  Anything else -- another array type, a non-finite or
+    huge value, fewer than `_JUNCTION_VECTOR_MIN` junctions -- takes the
+    loop."""
+    ra, rb, fidx, by_n = tables
+    n = len(F)
+    if (len(rows) >= _JUNCTION_VECTOR_MIN and type(x) is np.ndarray and x.dtype == np.float64 and x.ndim == 1
+            and type(J) is np.ndarray and J.dtype == np.float64 and J.shape == (n, n)
+            and J.flags.c_contiguous and type(F) is np.ndarray and F.dtype == np.float64
+            and F.ndim == 1 and g < 1e300 and np.geterr()['under'] == 'ignore'):
+        jidx = by_n.get(n)
+        if jidx is None:
+            jidx = by_n[n] = np.stack((ra * n + ra, ra * n + rb, rb * n + ra, rb * n + rb),
+                                      axis=1).reshape(-1)
+        Jf = J.reshape(-1)
+        with np.errstate(all='ignore'):
+            gv = g * (x[ra] - x[rb])
+        if ((np.abs(gv) < 1e300).all() and (np.abs(F[fidx]) < 1e300).all()
+                and (np.abs(Jf[jidx]) < 1e300).all()):
+            fv = np.empty(2 * len(gv))
+            fv[0::2], fv[1::2] = gv, -gv
+            np.add.at(F, fidx, fv)
+            np.add.at(Jf, jidx, np.tile((g, -g, -g, g), len(rows)))
+            return
+    for a, b in rows:
+        vj = x[a] - x[b]
+        F[a] += g * vj
+        F[b] -= g * vj
+        J[a, a] += g; J[a, b] -= g
+        J[b, a] -= g; J[b, b] += g
+
+
 class JunctionGminSteppingNewton(NonLinearSolver):
     """Continuation: junction-parallel gmin stepping -- P18's PRIMARY ladder.
 
@@ -465,18 +552,15 @@ class JunctionGminSteppingNewton(NonLinearSolver):
                 raise
 
         import numpy as _np
+        rows = self.junction_rows
+        tables = _junction_tables(rows)
 
         def solve_rung(x_seed, g):
             def eval_FJ_with_gmin(x):
                 F, J = eval_FJ(x)
                 F = _np.array(F, dtype=float, copy=True)
                 J = _np.array(J, dtype=float, copy=True)
-                for ra, rb in self.junction_rows:
-                    vj = x[ra] - x[rb]
-                    F[ra] += g * vj
-                    F[rb] -= g * vj
-                    J[ra, ra] += g; J[ra, rb] -= g
-                    J[rb, ra] -= g; J[rb, rb] += g
+                _junction_gmin(F, J, x, g, rows, tables)
                 return F, J
             x, _ = self.base_solver.solve_system(
                 x_seed, eval_FJ_with_gmin, toolkit, reltol, abstol,
@@ -522,7 +606,7 @@ class GminSteppingNewton(NonLinearSolver):
         def solve_rung(x_seed, g):
             def eval_FJ_with_gshunt(x):
                 F, J = eval_FJ(x)
-                return F + x * g, J + toolkit.eye(len(J)) * g
+                return F + x * g, _plus_diagonal(J, g, toolkit)
             ## STAGE 6's keep-the-inner-diagnosis rule now lives in the
             ## adaptive driver's chained raises.
             x, _ = self.base_solver.solve_system(
@@ -666,7 +750,7 @@ class PseudoTransientNewton(NonLinearSolver):
             def eval_FJ_ptc(x):
                 F, J = eval_FJ(x)
                 return (F + g * (x - x_seed),
-                        J + toolkit.eye(len(J)) * g)
+                        _plus_diagonal(J, g, toolkit))
             x, _ = self.rung_solver.solve_system(
                 x_seed, eval_FJ_ptc, toolkit, reltol, abstol,
                 xtol, maxiter, limiter, scaler, row_names=row_names,
@@ -797,7 +881,7 @@ class GminAnchorNewton(NonLinearSolver):
             gv = mask * g
             def eval_FJ_anchored(x):
                 F, J = eval_FJ(x)
-                return F + gv * x, J + toolkit.eye(len(J)) * gv
+                return F + gv * x, _plus_diagonal(J, gv, toolkit)
             return eval_FJ_anchored
 
         def _solve(x_seed, ev):

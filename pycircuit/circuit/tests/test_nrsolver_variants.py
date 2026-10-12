@@ -422,3 +422,89 @@ def test_source_stepping_keeps_its_fixed_ladder_and_falls_back_to_adaptive_steps
         ss.solve_system(0.0, target, None, 1e-3, 1e-9, 1e-9, 100)
     assert 'fixed ladder' in str(e.value) and 'stalled at lambda=' in str(e.value)
     assert isinstance(ss, SourceSteppingNewton)
+
+
+class _AddAtSpy:
+    """numpy for `nrsolver`, its `np.add.at` counted (the in-place forms'
+    sign that their fast path ran)."""
+
+    def __init__(self):
+        import types
+        self.at = 0
+        spy = self
+        self.add = types.SimpleNamespace(at=lambda *a: (setattr(spy, 'at', spy.at + 1),
+                                                        np.add.at(*a)))
+
+    def __getattr__(self, name):
+        return getattr(np, name)
+
+
+def _recorded(fn):
+    import warnings
+    with warnings.catch_warnings(record=True) as W:
+        warnings.simplefilter('always')
+        fn()
+    return [(w.category.__name__, str(w.message)) for w in W]
+
+
+def test_the_ladders_in_place_forms_are_the_expressions_they_stand_for(monkeypatch):
+    """`nrsolver._plus_diagonal` is `J + eye(n) * d` and `_junction_gmin`
+    the per-junction loop, in bytes AND warnings: drawn across their size
+    cutoffs, with -0.0, NaN, inf and huge entries, numpy's underflow
+    ignored or reported; each fast path taken (a toolkit whose `eye`
+    raises, the spied `np.add.at`) where its cutoff and values allow."""
+    from pycircuit.circuit import nrsolver as N
+    rng = np.random.default_rng(23)
+    special = np.array([0.0, -0.0, np.inf, -np.inf, np.nan, 1e-310, -1e-310, 1e308,
+                        -1.7e308, 1e301, -1.0, 2.5])
+
+    def mat(n, p=0.05):
+        J = rng.standard_normal((n, n)) * 10.0 ** rng.integers(-5, 5)
+        m = rng.random((n, n)) < p
+        J[m] = rng.choice(special, m.sum())
+        return J
+
+    for t in range(400):
+        n = int(rng.choice([8, 63, 64, 65, 130]))
+        J = mat(n)
+        d = (float(rng.choice([1e-12, 1e-3, 0.0, -0.0, 1.0, -1e-3, np.inf, np.nan, 1e308]))
+             if rng.random() < 0.6 else np.where(rng.random(n) < 0.5, 0.0, 10.0 ** rng.uniform(-12, 2, n)))
+        out = {}
+        with np.errstate(under='warn' if t % 10 == 0 else 'ignore'):
+            wa = _recorded(lambda: out.__setitem__('a', J + numeric.eye(n) * d))
+            wb = _recorded(lambda: out.__setitem__('b', N._plus_diagonal(J, d, numeric)))
+        assert out['a'].tobytes() == out['b'].tobytes() and wa == wb, (n, d)
+    ## (taken: no identity built at the cutoff for a conductance it holds for)
+
+    class NoEye:
+        def eye(self, n):
+            raise AssertionError('the expression ran')
+    N._plus_diagonal(mat(N._DIAGONAL_INPLACE_MIN), 1e-6, NoEye())
+
+    spy = _AddAtSpy()
+    monkeypatch.setattr(N, 'np', spy)
+    for t in range(400):
+        n = int(rng.choice([20, 64, 200]))
+        k = int(rng.choice([8, 15, 16, 17, 40]))
+        rows = [(int(rng.integers(0, n)), int(rng.integers(0, n))) for _ in range(k)]
+        x = rng.standard_normal(n) * 10.0 ** rng.integers(-3, 3)
+        ## (moderate values mostly, as a run's are -- the fast path's ground --
+        ## a special one now and then: the loop's)
+        if rng.random() < 0.1:
+            x[rng.integers(0, n)] = rng.choice(special)
+        F0 = rng.standard_normal(n)
+        F0[rng.random(n) < 0.002] = rng.choice(special)
+        J0, g = mat(n, 0.0005), float(10.0 ** rng.uniform(-12, 1))
+        Fa, Ja, Fb, Jb = F0.copy(), J0.copy(), F0.copy(), J0.copy()
+
+        def loop():
+            for ra, rb in rows:
+                vj = x[ra] - x[rb]
+                Fa[ra] += g * vj
+                Fa[rb] -= g * vj
+                Ja[ra, ra] += g; Ja[ra, rb] -= g; Ja[rb, ra] -= g; Ja[rb, rb] += g
+        with np.errstate(under='warn' if t % 10 == 0 else 'ignore'):
+            wa = _recorded(loop)
+            wb = _recorded(lambda: N._junction_gmin(Fb, Jb, x, g, rows, N._junction_tables(rows)))
+        assert Fa.tobytes() == Fb.tobytes() and Ja.tobytes() == Jb.tobytes() and wa == wb, (n, k)
+    assert spy.at > 300, spy.at     # (two a fast call: over 150 of the 400)

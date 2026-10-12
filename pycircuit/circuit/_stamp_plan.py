@@ -139,7 +139,7 @@ class _MatrixPlan:
     """One matrix method's plan: the template buffer, the flat indices, the
     non-constant calls with their slots (see the module note)."""
 
-    __slots__ = ('batches', 'calls', 'flat', 'template')
+    __slots__ = ('batches', 'calls', 'flat', 'reduced', 'template')
 
     def __init__(self, cir, m):
         n = cir.n
@@ -178,6 +178,8 @@ class _MatrixPlan:
                      else np.zeros(0, dtype=np.intp))
         self.template = np.concatenate(parts) if parts else np.zeros(0)
         self.calls, self.batches = _hdl_batch.split(cir, m, calls)
+        ## (`_reduced_matrix`'s slots and bins, by the index it drops)
+        self.reduced = {}
 
 
 class _VectorPlan:
@@ -370,8 +372,11 @@ def _every_call(p):
         yield from bt.entries
 
 
-def assemble_matrix(cir, m, x, args):
-    """`m` ('G' or 'C') at `x` through the plan, or None for the legacy loop."""
+def assemble_matrix(cir, m, x, args, drop=None):
+    """`m` ('G' or 'C') at `x` through the plan, or None for the legacy loop.
+    `drop` an index: the matrix without that row and column -- the bytes of
+    the full one cut (`analysis.remove_row_col`), assembled so
+    (`_reduced_matrix`) where the plan serves."""
     K = _PK[m]
     why = _ineligible(cir, x)
     if why is not None:
@@ -390,17 +395,47 @@ def assemble_matrix(cir, m, x, args):
         val = np.asarray(rhs).ravel()
         if val.dtype.kind not in 'fiub' or val.size != b - a:
             _PC[K['legacy']] += 1
-            return _legacy_matrix(cir, m, x, args, mp, got)
+            return _dropped(_legacy_matrix(cir, m, x, args, mp, got), drop, cir)
         buf[a:b] = val
     if mp.batches and not _run_batches(x, args, mp, buf, got, _call, m):
         _PC[K['legacy']] += 1
-        return _legacy_matrix(cir, m, x, args, mp, got)
+        return _dropped(_legacy_matrix(cir, m, x, args, mp, got), drop, cir)
     _PC[K['served']] += 1
     n = plan.n
+    if drop is not None:
+        return _reduced_matrix(mp, buf, n, drop)
     if not mp.flat.size:
         ## (an EMPTY bincount is int64 even with weights: the loop's zeros)
         return np.zeros((n, n))
     return np.bincount(mp.flat, weights=buf, minlength=n * n).reshape(n, n)
+
+
+def _reduced_matrix(mp, buf, n, k):
+    """The plan's matrix without row and column `k`, from the slots `buf`:
+    each kept entry's bin summed from its slots in the plan's order -- the
+    sum its bin in the full matrix makes, so `remove_row_col`'s bytes --
+    without the n x n matrix and its copy (one (n-1)^2 array instead of an
+    n^2 and an (n-1)^2: at n = 520, 1.39 ms -> 0.11 ms, the pair of large
+    arrays a call being what glibc's allocator made slow)."""
+    m = n - 1
+    red = mp.reduced.get(k)
+    if red is None:
+        rows, cols = np.divmod(mp.flat, n)
+        keep = (rows != k) & (cols != k)
+        red = mp.reduced[k] = (keep, ((rows - (rows > k)) * m + (cols - (cols > k)))[keep])
+    keep, rflat = red
+    if not rflat.size:
+        ## (an EMPTY bincount is int64 even with weights: the cut zeros)
+        return np.zeros((m, m))
+    return np.bincount(rflat, weights=buf[keep], minlength=m * m).reshape(m, m)
+
+
+def _dropped(A, k, cir):
+    """`A` without row and column `k` (`analysis.remove_row_col`), or `A`."""
+    if k is None:
+        return A
+    from pycircuit.circuit.analysis import remove_row_col
+    return remove_row_col((A,), k, cir.toolkit)[0]
 
 
 def constant_matrix(cir, m, x):

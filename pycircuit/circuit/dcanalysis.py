@@ -4,6 +4,8 @@ import numpy as np
 from numpy.linalg import LinAlgError
 
 from pycircuit.circuit.analysis import *
+from pycircuit.circuit import _stamp_plan
+from pycircuit.circuit.circuit import SubCircuit
 
 class DC(Analysis):
     """DC analyis class
@@ -273,12 +275,15 @@ class DC(Analysis):
                     'PCNR probe, so the ordinary Newton chain is used. '
                     'Check `dc.pcnr_status` if this is unexpected.')
 
-        def func(x):
-            return self.cir.i(x, self.epar) + self.cir.u(0, analysis='dc', epar=self.epar), self.cir.G(x, self.epar)
-            
-        def source_callback(x, lambda_):
+        ## (`G`: `refnode_removed`'s `_ReducedG` where it applies -- G already
+        ## without the reference row and column -- else the circuit's own)
+        def func(x, G=None):
+            return (self.cir.i(x, self.epar) + self.cir.u(0, analysis='dc', epar=self.epar),
+                    (self.cir.G if G is None else G)(x, self.epar))
+
+        def source_callback(x, lambda_, G=None):
             f = self.cir.i(x, self.epar) + lambda_ * self.cir.u(0, analysis='dc', epar=self.epar)
-            dFdx = self.cir.G(x, self.epar)
+            dFdx = (self.cir.G if G is None else G)(x, self.epar)
             return f, dFdx
 
         if nodeset:
@@ -317,11 +322,13 @@ class DC(Analysis):
         _node_rows = [i - (i > self.irefnode)
                       for i in range(len(self.cir.nodes)) if i != self.irefnode]
         anchored_chain = self._chain(
-            refnode_removed(source_callback, self.irefnode, self.toolkit), _jrows,
+            refnode_removed(source_callback, self.irefnode, self.toolkit,
+                            reduced_G=_ReducedG(self.cir, self.irefnode)), _jrows,
             _node_rows)
 
         try:
-            x = self._newton(func, x0, anchored_chain)
+            x = self._newton(func, x0, anchored_chain,
+                             reduced_G=_ReducedG(self.cir, self.irefnode))
         except (NoConvergenceError, SingularMatrix) as last_e:
             logging.warning('Problems encountered: ' + str(last_e))
             raise last_e
@@ -475,7 +482,7 @@ class DC(Analysis):
         self.gmin_anchor_retained = solver.anchor_retained
         return red.full(x_res)
 
-    def _newton(self, func, x0, solver):
+    def _newton(self, func, x0, solver, reduced_G=None):
         ones_nodes = self.toolkit.ones(len(self.cir.nodes))
         ones_branches = self.toolkit.ones(len(self.cir.branches))
 
@@ -497,7 +504,7 @@ class DC(Analysis):
             scaler = self._get_scaler()
             x_res, _ = solver.solve_system(
                 x0,
-                refnode_removed(func, self.irefnode, self.toolkit),
+                refnode_removed(func, self.irefnode, self.toolkit, reduced_G=reduced_G),
                 self.toolkit,
                 self.par.reltol,
                 abstol,
@@ -560,12 +567,43 @@ class _Held:
         return np.asarray(F)[self.keep], np.asarray(J)[np.ix_(self.keep, self.keep)]
 
 
-def refnode_removed(func, irefnode,toolkit):
+def refnode_removed(func, irefnode, toolkit, reduced_G=None):
+    """`func` on the reduced x: the reference row inserted, `func`
+    evaluated, its row and column cut.  `reduced_G` (`_ReducedG`): where it
+    applies at x, `func` takes it as `G=` and gives the matrix already cut --
+    the same bytes, without the n x n matrix and its copy."""
     def new(x, *args, **kvargs):
         newx = insert_row(x, irefnode, toolkit)
+        if reduced_G is not None and reduced_G.applies(newx):
+            f, J = func(newx, *args, G=reduced_G, **kvargs)
+            return remove_row_col((f,), irefnode, toolkit)[0], J
         f, J = func(newx, *args, **kvargs)
         return remove_row_col((f, J), irefnode, toolkit)
     return new
+
+
+class _ReducedG:
+    """The circuit's own G without row and column `drop`, assembled so
+    (`_stamp_plan.assemble_matrix`'s `drop`) -- `refnode_removed`'s `G=`.
+    It `applies` where the circuit's G is the genuine `SubCircuit.G` (no
+    subclass's, no instance's) and the stamp plan serves x: the call
+    `cir.G(x, epar)` would make, its matrix then cut."""
+
+    __slots__ = ('cir', 'drop')
+
+    def __init__(self, cir, drop):
+        self.cir, self.drop = cir, drop
+
+    def applies(self, x):
+        cir = self.cir
+        cls, d = type(cir), cir.__dict__
+        return (isinstance(cir, SubCircuit) and cls.G is SubCircuit.G
+                and cls._add_element_submatrices is SubCircuit._add_element_submatrices
+                and 'G' not in d and '_add_element_submatrices' not in d
+                and _stamp_plan._ineligible(cir, x) is None)
+
+    def __call__(self, x, epar):
+        return _stamp_plan.assemble_matrix(self.cir, 'G', x, (epar,), drop=self.drop)
 
 if __name__ == "__main__":
     import doctest

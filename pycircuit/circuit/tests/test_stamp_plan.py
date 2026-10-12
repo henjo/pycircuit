@@ -259,3 +259,31 @@ def test_a_transient_builds_the_plan_once_and_steps_bit_for_bit():
         if on:
             assert cir.__dict__['_stamp_plan'].builds == 1
     assert got[True].tobytes() == got[False].tobytes()
+
+
+def test_a_matrix_without_a_row_and_column_is_the_full_one_cut():
+    """`assemble_matrix(..., drop=k)` -- the DC's reduced Jacobian
+    (`dcanalysis._ReducedG`) -- is, for every k and drawn state, the full
+    matrix with row and column k cut (`remove_row_col`), byte for byte:
+    G and C of the mixed circuit, and a pass with nothing to stamp."""
+    from pycircuit.circuit.analysis import remove_row_col
+    from pycircuit.circuit.circuit import defaultepar
+    cir = mixed()
+    n = cir.n
+    for x in states(n, k=30, seed=3):
+        for m in ('G', 'C'):
+            with plan(True), np.errstate(all='ignore'):
+                full = getattr(cir, m)(x)
+                for k in range(n):
+                    red = _stamp_plan.assemble_matrix(cir, m, x, (defaultepar,), drop=k)
+                    want = remove_row_col((full,), k, cir.toolkit)[0]
+                    assert red.dtype == want.dtype and red.shape == want.shape, (m, k)
+                    assert red.tobytes() == want.tobytes(), (m, k)
+    lone = SubCircuit()
+    lone['r'] = R('a', 'b', r=1e3)
+    x = np.array([0.5, -0.25])
+    with plan(True):
+        for k in range(lone.n):
+            red = _stamp_plan.assemble_matrix(lone, 'C', x, (defaultepar,), drop=k)
+            want = remove_row_col((lone.C(x),), k, lone.toolkit)[0]
+            assert red.dtype == want.dtype and red.tobytes() == want.tobytes(), k
