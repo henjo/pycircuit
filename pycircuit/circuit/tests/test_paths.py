@@ -18,6 +18,7 @@ import textwrap
 import pytest
 
 from pycircuit.circuit import (
+    _dc_newton_c,
     _hdl_batch,
     _hdl_climit,
     _hdl_cse,
@@ -30,6 +31,7 @@ from pycircuit.circuit import (
     _tran_radau,
     _tran_radau_c,
     _tran_radau_tc,
+    nrsolver,
 )
 from pycircuit.circuit import circuit as cm
 from pycircuit.circuit.shooting import _pss_walks, _sens_c
@@ -60,6 +62,8 @@ DECLINING = [
     (_tran_radau_tc, 'solve'),
     (_tran_radau_tc, 'fold'),
     (_tran_lte_c, 'max_error'),
+    (_dc_newton_c, 'solve'),
+    (nrsolver, '_dc_solve'),
     (_tran_lte_c, '_admit'),
     (_tran_lte_c, '_scalars'),
     (_tran_lte_c, '_arrays'),

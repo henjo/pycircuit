@@ -285,6 +285,8 @@ class DC(Analysis):
             f = self.cir.i(x, self.epar) + lambda_ * self.cir.u(0, analysis='dc', epar=self.epar)
             dFdx = (self.cir.G if G is None else G)(x, self.epar)
             return f, dFdx
+        ## (whose they are: `_dc_newton_c.composition`)
+        func.dc_owner, source_callback.dc_owner = (self, 'func'), (self, 'source')
 
         if nodeset:
             ## SPICE's `.nodeset`: a solve with the nodes held, then one
@@ -499,6 +501,7 @@ class DC(Analysis):
             
             x = self.cir.limit(x, x0_full, self.epar)
             return self.toolkit.concatenate((x[:self.irefnode], x[self.irefnode+1:]))
+        limiter_func.dc_owner = self
 
         try:
             scaler = self._get_scaler()
@@ -579,6 +582,10 @@ def refnode_removed(func, irefnode, toolkit, reduced_G=None):
             return remove_row_col((f,), irefnode, toolkit)[0], J
         f, J = func(newx, *args, **kvargs)
         return remove_row_col((f, J), irefnode, toolkit)
+    if reduced_G is not None:
+        ## (the DC's own base: `_dc_newton_c.composition`; another caller's
+        ## untagged, so its solves never reach the DC's glue)
+        new.dc_base = (func, irefnode, reduced_G)
     return new
 
 

@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix
+from pycircuit.circuit import _paths
 from pycircuit.circuit.scaler import NoneScaler
 
 def _structural_singularity(J, row_names, toolkit):
@@ -138,6 +139,14 @@ class StandardNewton(NonLinearSolver):
     """
     
     def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
+        if (getattr(eval_FJ, 'dc_layer', None) is not None
+                or getattr(eval_FJ, 'dc_base', None) is not None):
+            ## (a DC operating point's composition: the solve in C where it
+            ## serves -- `_dc_newton_c`)
+            got = _dc_solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter,
+                            scaler, row_names, linsolver)
+            if got is not None:
+                return got
         x = x0
         if scaler is None:
             scaler = NoneScaler()
@@ -195,12 +204,44 @@ class StandardNewton(NonLinearSolver):
                 
             x = x_next
             
-        ## STAGE 6(b).
-        detail = _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol,
-                                   row_names, toolkit)
-        raise NoConvergenceError(
-            'StandardNewton failed to converge after %d iterations%s'
-            % (maxiter, ('; ' + detail) if detail else ''))
+        raise _standard_failure(F, xdiff, x_next, x, maxiter, reltol, abstol, xtol, row_names,
+                                toolkit)
+
+
+def _standard_failure(F, xdiff, x_next, x, maxiter, reltol, abstol, xtol, row_names, toolkit):
+    """StandardNewton's exception at its iteration limit, from the last
+    iteration's arrays (the C's too: `_dc_newton_c`)."""
+    ## STAGE 6(b).
+    detail = _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol,
+                               row_names, toolkit)
+    return NoConvergenceError(
+        'StandardNewton failed to converge after %d iterations%s'
+        % (maxiter, ('; ' + detail) if detail else ''))
+
+
+#: the DC's C (`_dc_newton_c`) from this many unknowns: below them it does
+#: not repay its setup (gm6's operating point, 20 unknowns: 0.97x; mike2's,
+#: 40: 1.29x)
+DC_C_MIN_N = 32
+_DC = None
+
+
+def _dc_solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler,
+              row_names, linsolver):
+    """`_dc_newton_c.solve`, the module imported at the first solve it may
+    serve: a solve below `DC_C_MIN_N` unknowns, or the run's first (its
+    solver not chosen yet: `AutoSolver` decides on its first matrix), is
+    declined here -- before the import, 0.2 ms: a small operating point's
+    3 %."""
+    global _DC
+    if len(x0) < DC_C_MIN_N:
+        return _paths.no('dcnewton_c:small')
+    if getattr(linsolver, '_choice', None) is None:
+        return _paths.no('dcnewton_c:linsolver')
+    if _DC is None:
+        from pycircuit.circuit import _dc_newton_c as _DC
+    return _DC.solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler,
+                     row_names, linsolver)
 
 
 class ChordNewton(NonLinearSolver):
@@ -562,6 +603,8 @@ class JunctionGminSteppingNewton(NonLinearSolver):
                 J = _np.array(J, dtype=float, copy=True)
                 _junction_gmin(F, J, x, g, rows, tables)
                 return F, J
+            ## (what it is: `_dc_newton_c.composition`)
+            eval_FJ_with_gmin.dc_layer = ('jgmin', g, eval_FJ, rows)
             x, _ = self.base_solver.solve_system(
                 x_seed, eval_FJ_with_gmin, toolkit, reltol, abstol,
                 xtol, maxiter, limiter, scaler, row_names=row_names,
@@ -607,6 +650,7 @@ class GminSteppingNewton(NonLinearSolver):
             def eval_FJ_with_gshunt(x):
                 F, J = eval_FJ(x)
                 return F + x * g, _plus_diagonal(J, g, toolkit)
+            eval_FJ_with_gshunt.dc_layer = ('gshunt', g, eval_FJ)
             ## STAGE 6's keep-the-inner-diagnosis rule now lives in the
             ## adaptive driver's chained raises.
             x, _ = self.base_solver.solve_system(
@@ -652,6 +696,7 @@ class SourceSteppingNewton(NonLinearSolver):
                 # In PyCircuit, F = i(x) + lambda_ * u(0)
                 # But evaluating this requires access to the circuit elements.
                 return self.source_callback(x, lambda_)
+            eval_FJ_with_source.dc_layer = ('source', lambda_, self.source_callback)
 
             try:
                 x_curr, _ = self.base_solver.solve_system(x_curr, eval_FJ_with_source, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names=row_names, linsolver=linsolver)
@@ -684,9 +729,12 @@ class SourceSteppingNewton(NonLinearSolver):
         step = self.ADAPT_STEP
         while lam < 1.0:
             nxt = min(1.0, lam + step)
+            def eval_FJ_at(xx, l=nxt):
+                return self.source_callback(xx, l)
+            eval_FJ_at.dc_layer = ('source', nxt, self.source_callback)
             try:
                 x, _ = self.base_solver.solve_system(
-                    x, lambda xx, l=nxt: self.source_callback(xx, l), toolkit, reltol,
+                    x, eval_FJ_at, toolkit, reltol,
                     abstol, xtol, maxiter, limiter, scaler, row_names=row_names,
                     linsolver=linsolver)
                 lam, step = nxt, step * self.ADAPT_GROW

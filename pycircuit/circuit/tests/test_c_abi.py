@@ -36,6 +36,7 @@ import pytest
 
 from pycircuit.circuit import (
     _cbuild,
+    _dc_newton_c,
     _hdl_batch,
     _hdl_cbackend,
     _hdl_climit,
@@ -70,6 +71,7 @@ UNITS = [
     ('pred', _tran_pred_c.PRED_CDEF),
     ('ctrl', _tran_ctrl_c.CTRL_CDEF),
     ('loop', _tran_loop_c.LOOP_CDEF),
+    ('dcnewton', _dc_newton_c.DCNEWTON_CDEF),
 ]
 
 

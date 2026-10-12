@@ -299,6 +299,40 @@ PAIRS = {
                  'pycircuit.circuit._tran_lte_c:_Ctx',
                  'pycircuit.circuit._tran_lte_c:_klu_bind'],
     },
+    'the DC base solve and its C': {
+        'why': 'the C base solve is `StandardNewton.solve_system` on the DC operating '
+               'point\'s compositions: `dcanalysis`\'s residual (`func`, '
+               '`source_callback`, `refnode_removed`, the reduced G), gshunt (`F + x '
+               'g`, `_plus_diagonal`), junction gmin (`_junction_gmin`), source '
+               'stepping\'s factor; the solve (numpy\'s dgesv, or StructuralKLU\'s '
+               'refactor, fresh factor and residual check), the DC\'s limiter, the '
+               'convergence test and the iteration limit\'s exception',
+        'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
+                      'pycircuit.circuit.nrsolver:_standard_failure',
+                      'pycircuit.circuit.nrsolver:_plus_diagonal',
+                      'pycircuit.circuit.nrsolver:_junction_gmin',
+                      'pycircuit.circuit.nrsolver:GminSteppingNewton.solve_system',
+                      'pycircuit.circuit.nrsolver:JunctionGminSteppingNewton.solve_system',
+                      'pycircuit.circuit.nrsolver:SourceSteppingNewton.solve_system',
+                      'pycircuit.circuit.nrsolver:SourceSteppingNewton._adaptive',
+                      'pycircuit.circuit.dcanalysis:DC._solve_dc',
+                      'pycircuit.circuit.dcanalysis:DC._newton',
+                      'pycircuit.circuit.dcanalysis:refnode_removed',
+                      'pycircuit.circuit.dcanalysis:_ReducedG',
+                      'pycircuit.circuit.linearsolver:AutoSolver.solve',
+                      'pycircuit.circuit.linearsolver:StructuralKLU.solve',
+                      'pycircuit.circuit.linearsolver:StructuralKLU._ours'],
+        'twin': ['pycircuit.circuit._dc_newton_c:DCNEWTON_C',
+                 'pycircuit.circuit._dc_newton_c:solve',
+                 'pycircuit.circuit._dc_newton_c:composition',
+                 'pycircuit.circuit._dc_newton_c:_load',
+                 'pycircuit.circuit._dc_newton_c:_record',
+                 'pycircuit.circuit._dc_newton_c:_solver',
+                 'pycircuit.circuit._dc_newton_c:_walk',
+                 'pycircuit.circuit._dc_newton_c:_klu_bind',
+                 'pycircuit.circuit._dc_newton_c:_write_back',
+                 'pycircuit.circuit._dc_newton_c:_Rec'],
+    },
     'the stage predictor and its multistep fast path': {
         'why': 'behind the target nearest-first is newest-first: the fast path '
                'keeps the general path\'s order, its 1e-13 dedupe, the fit\'s '
@@ -557,9 +591,10 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('477169e3d1cf', '80a496916cfd'),
+    'the Newton solve and its C': ('f7509d6b5900', '80a496916cfd'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1650ca5eabf8', '3925aca9bd1c'),
+    'the DC base solve and its C': ('884d89923085', '8c18582f0653'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),

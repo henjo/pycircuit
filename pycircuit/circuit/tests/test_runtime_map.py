@@ -129,9 +129,10 @@ def test_the_code_check_sees_a_planted_number():
 #: the split it refused (the C loop plan's R3h)
 _LONG = 80
 _LONG_PY = ('_tran_loop_c', '_tran_newton_c', '_tran_lte_c', '_tran_core', '_tran_pred_c',
-            '_tran_ctrl_c', '_tran_branch_c', '_tran_sources', '_hdl_climit', '_cbuild')
+            '_tran_ctrl_c', '_tran_branch_c', '_tran_sources', '_hdl_climit', '_cbuild',
+            '_dc_newton_c')
 _LONG_C = ('loop.c', 'newton.c', 'lte.c', 'core.c', 'pred.c', 'ctrl.c', 'branch.c', 'sources.c',
-           'walk.c')
+           'walk.c', 'dcnewton.c')
 
 
 def _long_py(text, limit=_LONG):
