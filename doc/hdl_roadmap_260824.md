@@ -8640,3 +8640,31 @@ rca's one solve was declined. The fix is a gate in nrsolver ahead of a lazy impo
 choice not made) are declined there, counted; the C sources are read at the first load. rca,
 schmitecl, hussamp's operating points then 1.00x, 1.00x, 0.99x. Not served yet: held solves
 (`.ic` without UIC: gm17, jge's 1.2 s).
+
+## 2026-10-12 — 128. PCNR's own ladders: 24 of the 26 gold operating points solved by PCNR, from 17
+
+The road here. KLU below 250 (entry 127's sequel) "failed" gm3's transient and e1480's operating
+point; traced, both were non-unique or non-contracting Newton solves -- seven gold operating
+points are SINGULAR today (a MOS2/3 series-stack node with no DC path), and the ordinary DC
+Newton's failing ladders come from the state-free limiter's write-back (a later device moves a
+shared or source-held node and undoes an earlier device's junction limit; gm3 fails 21 of its 27
+solves that way). A standing junction gmin (roadmap Ag) makes the seven unique and matches
+ngspice-47 (e1480 5.0000 V against 4.99992); a SPICE-style limiter prototype (each device
+evaluated at its own limited point) converged all 26 with a ladder. Andreas chose the PCNR route
+-- PCNR gives each limited quantity its own unknown, so no write-back exists -- and asked first
+for PCNR's own ladders, in Python. Full record: the plan `dc-final-gmin`.
+
+fc4999a5: `pcnr.solve_dc` gains `gshunt`, `source`, `v_lim0` (inert at their defaults);
+`pcnr.solve_dc_continued` runs the plain solve, then a gshunt ladder (1e-2 down by decades,
+geometric retries), then source stepping; `DC(pcnr=True)` reports `pcnr_path` and falls back to
+the ordinary chain only where all three fail. Ladders had been tried once (2026-08-26) and failed
+because every rung began from an unlimited seed -- since fixed in `v_lim_init`.
+
+Line met. With the standing gmin (scratch elements): PCNR solves 24/26 without falling back
+(plain 17, gshunt 6, source 1 -- opampal); gm1 and jge fall back. Without it 23/26. Bytes
+unchanged wherever PCNR solved plainly; 18 decks equal the ordinary chain to 1e-6, the other
+four non-unique points (both answers satisfy KCL to 1.1e-11 A). PCNR is off by default: no
+default answer moved; suite 5253. Speed is Python's: e1480 200 s, opampal 161 s, gm19 104 s,
+jge 812 s before falling back. Measured for the next step: batching `pcnr_didv` per model class
+is bit-identical and 3x; evaluating devices through the compiled C kernels at their own points
+is the real lever, moving PCNR's answers at rounding level.
