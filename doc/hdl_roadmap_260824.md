@@ -8590,3 +8590,22 @@ outliers re-measured: nand 0.9996x, hussamp 0.9956x, voter25 0.9986x over five r
 opampal is unresolvable: its run takes 31.5..43 s from process to process in either tree
 (a fixed hash seed does not remove it), nine paired rounds median 1.02x, the answer the same
 -- a per-process mode like gm19's operating point, an open item.
+
+## 2026-10-12 — 126. The DC operating point, D0-D3: the ladders' dense temporaries out, the Jacobian assembled reduced -- opampal's operating point 1.52x pinned, 1.22x unpinned, the per-process modes gone; every answer and warning the same
+
+The C loop plan done, its "after this plan" list sized (D0): the operating point was a third of
+the 27 gold decks' time, nearly all opampal's -- ~19 900 Newton iterations in the gmin /
+gshunt ladders, each dense 519 x 519 numpy work (the gshunt `J + eye(n) * g`, junction gmin's
+copy and Python loop, the dense G, its reduced copy, KLU's whole-matrix nonzero count), the
+KLU solve under 5 %. Its 31..43 s spread by process was glibc's dynamic mmap threshold.
+Plan `dc-operating-point`; D1 the instrument (an operating-point census, x0 and warnings
+digests, a timer pinned and unpinned -- unpinned A/A reads up to 7.8 %).
+
+D2 (`_plus_diagonal`, `_junction_gmin`: bytes and warnings the expressions') read opampal 1.35x
+pinned but 0.93x unpinned: the in-place diagonal, allocating less, put glibc into its
+trim-and-regrow mode (12-17 M minor faults against 4-6 M). Andreas: fold it into D3. D3
+(`assemble_matrix(drop=)`: each kept bin summed from its slots in order -- one (n-1)^2 array
+for an n^2 and an (n-1)^2) took the pair of large arrays a call away, and the mode with it.
+f7d0be3a, against 658e6756: opampal 1.524x pinned, 1.22x unpinned (26.6 s every round); gm19
+1.31x / 1.67x; jge 1.13x; gold decks full length: opampal 1.50x, gm19 1.08x, none below 0.99x,
+every digest the same. Next: D4 (the evaluations on the C core), sized from what remains.
