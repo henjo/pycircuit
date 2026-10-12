@@ -765,8 +765,15 @@ def lim_converged(g_lim, v_new, reltol, abstol):
 
 
 def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
-             reltol=1e-6, abstol=1e-12, iabstol=1e-12, gmin=0.0):
+             reltol=1e-6, abstol=1e-12, iabstol=1e-12, gmin=0.0,
+             gshunt=0.0, source=1.0, v_lim0=None):
     """DC operating point by PCNR.  Returns ``(x, v_lim, iterations)``.
+
+    ``gshunt``, ``source`` and ``v_lim0`` are :func:`solve_dc_continued`'s:
+    a conductance from every node to ground IN the equations (a
+    deformation, unlike ``gmin`` below), the independent sources scaled,
+    and the limited unknowns to start from.  At their defaults nothing is
+    added and nothing is scaled: the plain solve is unchanged.
 
     The flow is Figure 2's: initialise, then repeat predict-then-correct until
     converged.  There is no limiting of the MNA vector anywhere -- the only thing
@@ -845,14 +852,25 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     x = np.zeros(n) if x0 is None else np.array(x0, dtype=float, copy=True)
     x[irefnode] = 0.0
 
-    ## `limit=True`: `x0` is the caller's, and may be a wild start.
-    v_lim = v_lim_init(devices, x, epar, limit=True)
+    ## `limit=True`: `x0` is the caller's, and may be a wild start.  A
+    ## rung of `solve_dc_continued` passes `v_lim0`, the previous rung's
+    ## converged unknowns -- a real point, not clamped (`v_lim_init`).
+    v_lim = (v_lim_init(devices, x, epar, limit=True) if v_lim0 is None
+             else np.array(v_lim0, dtype=float, copy=True))
 
     u = np.asarray(circuit.u(0.0, epar, analysis='dc'), dtype=float)
+    if source != 1.0:
+        u = u * source
+    shunt = (np.array([i for i in range(len(circuit.nodes)) if i != irefnode],
+                      dtype=int) if gshunt else None)
 
     for it in range(maxiter):
         g_mna, g_lim, J_mm, J_ml, J_lm, didv = augmented_system(
             circuit, x, v_lim, devices, epar, u_extra=u, dense_blocks=False)
+        if shunt is not None:
+            ## (a conductance from every node to ground, IN the equations)
+            g_mna[shunt] += gshunt * x[shunt]
+            J_mm[shunt, shunt] += gshunt
 
         dx_mna, dx_lim = predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode,
                                  junctions=devices, didv=didv, gmin=gmin)
@@ -887,3 +905,99 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
         'max|dx| = %g, max|f| = %g'
         % (maxiter, float(np.max(np.abs(g_lim))), float(np.max(np.abs(dx_mna))),
            float(np.max(np.abs(f_eff)))))
+
+
+#: `solve_dc_continued`'s gshunt ladder: the first rung, the last before the
+#: pure solve, and the geometric halvings a failed rung is retried with
+GSHUNT_START, GSHUNT_END, GSHUNT_RETRIES = 1e-2, 1e-12, 4
+
+
+def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
+                       reltol=1e-6, abstol=1e-12, iabstol=1e-12):
+    """The DC operating point by PCNR, with ladders of its own.
+
+    Returns ``(x, v_lim, iterations, path)`` -- ``path`` is ``'plain'``,
+    ``'gshunt'`` or ``'source'``.  The plain :func:`solve_dc` first; where
+    it raises, a gshunt ladder (:func:`_gshunt_ladder`), then source
+    stepping (:func:`_source_steps`), every rung a PCNR solve seeded with
+    the previous rung's ``x`` and limited unknowns.  Raises the plain
+    solve's exception where both ladders fail.  (Ladders were tried once
+    before, 2026-08-26, and failed on a BJT mirror from 20 V -- every rung
+    then began from an UNLIMITED seed, since fixed in :func:`v_lim_init`.)
+    """
+    kw = {'epar': epar, 'maxiter': maxiter, 'reltol': reltol, 'abstol': abstol,
+          'iabstol': iabstol}
+    try:
+        x, v_lim, its = solve_dc(circuit, refnode, x0=x0, **kw)
+        return x, v_lim, its, 'plain'
+    except _RUNG_FAILURES as exc:
+        first = exc
+    for path, ladder in (('gshunt', _gshunt_ladder), ('source', _source_steps)):
+        got = ladder(circuit, refnode, x0, kw)
+        if got is not None:
+            return got + (path,)
+    raise first
+
+
+#: what a failed rung raises: no convergence, a singular Schur matrix, an
+#: arithmetic fault
+_RUNG_FAILURES = (RuntimeError, ArithmeticError, np.linalg.LinAlgError)
+
+
+def _rung(circuit, refnode, x, v_lim, kw, **deform):
+    """One rung: `(x, v_lim, iterations)`, or None where it raises."""
+    try:
+        return solve_dc(circuit, refnode, x0=x, v_lim0=v_lim, **kw, **deform)
+    except _RUNG_FAILURES:
+        return None
+
+
+def _gshunt_ladder(circuit, refnode, x0, kw):
+    """gshunt from `GSHUNT_START` down by decades to `GSHUNT_END`, a failed
+    rung retried at the geometric mean with the last that converged, then
+    the pure solve: `(x, v_lim, iterations)`, or None."""
+    got = _rung(circuit, refnode, x0, None, kw, gshunt=GSHUNT_START)
+    if got is None:
+        return None
+    x, v_lim, total = got
+    g = GSHUNT_START
+    while g > GSHUNT_END:
+        g_try = max(g / 10.0, GSHUNT_END)
+        for _retry in range(GSHUNT_RETRIES + 1):
+            got = _rung(circuit, refnode, x, v_lim, kw, gshunt=g_try)
+            if got is not None:
+                break
+            g_try = (g_try * g) ** 0.5
+        if got is None:
+            return None
+        x, v_lim, its = got
+        total += its
+        g = g_try
+    got = _rung(circuit, refnode, x, v_lim, kw)
+    return None if got is None else (got[0], got[1], total + got[2])
+
+
+#: `_source_steps`: the first step, the largest, and the smallest before it
+#: gives up
+SOURCE_STEP, SOURCE_STEP_MAX, SOURCE_STEP_MIN = 0.1, 0.5, 1e-3
+
+
+def _source_steps(circuit, refnode, x0, kw):
+    """The sources raised from 0 to 1, the step doubled after a rung that
+    converged and halved after one that did not: `(x, v_lim, iterations)`
+    at full sources, or None."""
+    n = circuit.n
+    x, v_lim, lam, step, total = np.zeros(n), None, 0.0, SOURCE_STEP, 0
+    while lam < 1.0:
+        target = min(1.0, lam + step)
+        got = _rung(circuit, refnode, x, v_lim, kw, source=target)
+        if got is None:
+            step /= 2.0
+            if step < SOURCE_STEP_MIN:
+                return None
+            continue
+        x, v_lim, its = got
+        total += its
+        lam, step = target, min(step * 2.0, SOURCE_STEP_MAX)
+    return x, v_lim, total
+

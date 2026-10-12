@@ -217,6 +217,9 @@ class DC(Analysis):
         ## AttributeError rather than an answer.
         self.pcnr_status = 'off'
         self.pcnr_fell_back = False
+        ## (where PCNR solved it: 'plain', or its own ladder's, 'gshunt' or
+        ## 'source' -- `pcnr.solve_dc_continued`; None otherwise)
+        self.pcnr_path = None
         pin, nodeset = self._held(self.par.pin), self._held(self.par.nodeset)
         if (pin or nodeset) and self.par.pcnr:
             raise ValueError('DC(pcnr=True) with held nodes (pin, nodeset) is not '
@@ -232,7 +235,7 @@ class DC(Analysis):
             ## Stage 2, 2026-08-26).
             if _pcnr.pcnr_devices(self.cir):
                 try:
-                    x, _v_lim, _its = _pcnr.solve_dc(
+                    x, _v_lim, _its, self.pcnr_path = _pcnr.solve_dc_continued(
                         self.cir, self.cir.nodes[self.irefnode], x0=x0,
                         epar=self.epar, maxiter=self.par.maxiter,
                         reltol=self.par.reltol, abstol=self.par.vabstol)
@@ -240,16 +243,16 @@ class DC(Analysis):
                     self.result = CircuitResult(self.cir, x)
                     return self.result
                 except Exception as exc:               # noqa: BLE001
-                    ## PCNR HAS NO RESCUE LADDER OF ITS OWN, and building one
-                    ## was tried and measured (2026-08-26): a gmin shunt,
-                    ## source stepping and Jacobian damping, each as an
-                    ## adaptive ladder around `solve_dc`, all fail on a BJT
-                    ## mirror from a 20 V start that the ordinary chain solves
-                    ## in 146 evaluations.  The failure is PCNR's undamped
-                    ## first step from a wild start, and it is the same on
-                    ## every rung.  So a PCNR failure falls through to the
-                    ## ordinary chain -- losing order-independence for THIS
-                    ## solve, never the answer -- and says so.
+                    ## PCNR'S OWN LADDERS FAILED TOO (`solve_dc_continued`:
+                    ## the plain solve, a gshunt ladder, source stepping).
+                    ## They were tried once before, 2026-08-26, and failed
+                    ## on a BJT mirror from a 20 V start because every rung
+                    ## began from an unlimited seed -- fixed since in
+                    ## `pcnr.v_lim_init` -- and were rebuilt 2026-10-12 on
+                    ## the gold decks' measurement.  What remains falls
+                    ## through to the ordinary chain -- losing order-
+                    ## independence for THIS solve, never the answer -- and
+                    ## says so.
                     logging.warning(
                         'DC(pcnr=True): PCNR failed (%s: %s); falling back to '
                         'the ordinary Newton chain for this solve',

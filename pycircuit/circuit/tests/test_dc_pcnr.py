@@ -375,3 +375,75 @@ def test_a_partly_failing_transient_reports_partial():
     assert t.pcnr_solves > 0, 'nothing was carried by PCNR either'
     assert t.pcnr_status == 'partial', (
         t.pcnr_status, t.pcnr_solves, t.pcnr_fallbacks)
+
+
+def _failing(which):
+    """`pcnr.solve_dc` raising for the calls `which(kw)` names -- the plain
+    solve, a gshunt rung -- and running every other; returns the patched
+    function and the calls made, as `(gshunt, source)` pairs."""
+    from pycircuit.circuit import pcnr
+    real, calls = pcnr.solve_dc, []
+
+    def solve_dc(*a, **k):
+        calls.append((k.get('gshunt', 0.0), k.get('source', 1.0)))
+        if which(k):
+            raise RuntimeError('forced PCNR failure')
+        return real(*a, **k)
+    return solve_dc, calls
+
+
+def _plain_call(k):
+    return (k.get('gshunt', 0.0) == 0.0 and k.get('source', 1.0) == 1.0
+            and k.get('v_lim0') is None)
+
+
+@pytest.mark.parametrize('ladder', ['gshunt', 'source'])
+def test_pcnr_continues_on_its_own_ladders_where_the_plain_solve_fails(ladder, monkeypatch):
+    """`pcnr.solve_dc_continued`: the plain PCNR solve forced to fail, the
+    gshunt ladder carries it -- and with every gshunt rung failing too,
+    source stepping does; PCNR solves it either way (`pcnr_status`
+    'used', `pcnr_path` the ladder), the answer the ordinary chain's."""
+    from pycircuit.circuit import gnd, pcnr
+    from pycircuit.circuit.dcanalysis import DC
+    if ladder == 'gshunt':
+        fails = _plain_call
+    else:
+        def fails(k):
+            return _plain_call(k) or k.get('gshunt', 0.0) > 0.0
+    patched, calls = _failing(fails)
+    monkeypatch.setattr(pcnr, 'solve_dc', patched)
+    c, _x0 = _bjt_mirror_20v()
+    a = DC(c, pcnr=True)
+    r = a.solve()
+    ref = DC(_bjt_mirror_20v()[0]).solve()
+    assert a.pcnr_status == 'used' and a.pcnr_path == ladder, (a.pcnr_status, a.pcnr_path)
+    assert any(g > 0.0 for g, _s in calls) and (ladder == 'gshunt'
+                                                 or any(s < 1.0 for _g, s in calls))
+    assert abs(float(r.v('no', gnd)) - float(ref.v('no', gnd))) < 1e-6
+
+
+def test_a_gold_deck_pcnr_solves_on_its_own_gshunt_ladder():
+    """slowlatch's plain PCNR solve fails (2026-10-12) and PCNR's own
+    gshunt ladder carries it, where it used to fall back to the ordinary
+    chain; the point satisfies KCL.  Skips where the benchmark data is not
+    fetched."""
+    import numpy as np
+
+    from pycircuit._testing import benchdata
+    from pycircuit.circuit import circuit, spice_import
+    from pycircuit.circuit.dcanalysis import DC
+    text = benchdata.spice_data('Netlists/CircuitSim90/MOS2/slowlatch.cir')
+    if text is None:
+        pytest.skip('benchmark data not fetched (benchmarks/fetch_spice_suite.py)')
+    tr, _kw = spice_import.import_netlist(text).transient()
+    cir = tr.cir
+    a = DC(cir, toolkit=circuit.numeric, epar=tr.epar, pcnr=True)
+    with quiet():
+        r = a.solve()
+    assert a.pcnr_status == 'used' and a.pcnr_path == 'gshunt', (a.pcnr_status, a.pcnr_path)
+    x = np.asarray(r.x, dtype=float)
+    f = np.asarray(cir.i(x, tr.epar), dtype=float) + np.asarray(
+        cir.u(0, analysis='dc', epar=tr.epar), dtype=float)
+    keep = np.arange(cir.n) != a.irefnode
+    assert np.abs(f[keep]).max() < 1e-9
+
