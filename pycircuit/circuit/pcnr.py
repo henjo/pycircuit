@@ -1068,12 +1068,16 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
 
     Returns ``(x, v_lim, iterations, path)`` -- ``path`` is ``'plain'``,
     ``'gshunt'`` or ``'source'``.  The plain :func:`solve_dc` first; where
-    it raises, a gshunt ladder (:func:`_gshunt_ladder`), then source
-    stepping (:func:`_source_steps`), every rung a PCNR solve seeded with
-    the previous rung's ``x`` and limited unknowns.  Raises the plain
-    solve's exception where both ladders fail.  (Ladders were tried once
-    before, 2026-08-26, and failed on a BJT mirror from 20 V -- every rung
-    then began from an UNLIMITED seed, since fixed in :func:`v_lim_init`.)
+    it raises, a gshunt ladder (:func:`_gshunt_ladder`) and the pure solve
+    from its last rung, then source stepping (:func:`_source_steps`) --
+    but not after a ladder that came all the way down: where only the
+    pure solve failed, the trouble is the system without a shunt (its
+    conditioning), which source stepping, at no shunt throughout, cannot
+    change.  Every rung is a PCNR solve seeded with the previous rung's
+    ``x`` and limited unknowns.  Raises the plain solve's exception where
+    the ladders fail.  (Ladders were tried once before, 2026-08-26, and
+    failed on a BJT mirror from 20 V -- every rung then began from an
+    UNLIMITED seed, since fixed in :func:`v_lim_init`.)
     """
     kw = {'epar': epar, 'maxiter': maxiter, 'reltol': reltol, 'abstol': abstol,
           'iabstol': iabstol, 'linsolver': linsolver}
@@ -1082,10 +1086,16 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
         return x, v_lim, its, 'plain'
     except _RUNG_FAILURES as exc:
         first = exc
-    for path, ladder in (('gshunt', _gshunt_ladder), ('source', _source_steps)):
-        got = ladder(circuit, refnode, x0, kw)
-        if got is not None:
-            return got + (path,)
+    got = _gshunt_ladder(circuit, refnode, x0, kw)
+    if got is not None:
+        x, v_lim, total = got
+        pure = _rung(circuit, refnode, x, v_lim, kw)
+        if pure is None:
+            raise first
+        return pure[0], pure[1], total + pure[2], 'gshunt'
+    got = _source_steps(circuit, refnode, x0, kw)
+    if got is not None:
+        return got + ('source',)
     raise first
 
 
@@ -1104,14 +1114,19 @@ def _rung(circuit, refnode, x, v_lim, kw, **deform):
 
 def _gshunt_ladder(circuit, refnode, x0, kw):
     """gshunt from `GSHUNT_START` down by decades to `GSHUNT_END`, a failed
-    rung retried at the geometric mean with the last that converged, then
-    the pure solve: `(x, v_lim, iterations)`, or None."""
+    rung retried at the geometric mean with the last that converged:
+    `(x, v_lim, iterations)` at the last rung (the pure solve is the
+    caller's), or None where a rung failed on the way down."""
     got = _rung(circuit, refnode, x0, None, kw, gshunt=GSHUNT_START)
     if got is None:
         return None
     x, v_lim, total = got
     g = GSHUNT_START
-    while g > GSHUNT_END:
+    ## (with a relative slack: ten divisions by 10 leave 1.0000000000000002e-12,
+    ## which IS the last decade -- compared exactly, it bought one more rung at
+    ## GSHUNT_END from a point converged two ulps away, and gm1 failed it five
+    ## times at the iteration limit)
+    while g > GSHUNT_END * (1.0 + 1e-9):
         g_try = max(g / 10.0, GSHUNT_END)
         for _retry in range(GSHUNT_RETRIES + 1):
             got = _rung(circuit, refnode, x, v_lim, kw, gshunt=g_try)
@@ -1123,13 +1138,14 @@ def _gshunt_ladder(circuit, refnode, x0, kw):
         x, v_lim, its = got
         total += its
         g = g_try
-    got = _rung(circuit, refnode, x, v_lim, kw)
-    return None if got is None else (got[0], got[1], total + got[2])
+    return x, v_lim, total
 
 
 #: `_source_steps`: the first step, the largest, and the smallest before it
-#: gives up
-SOURCE_STEP, SOURCE_STEP_MAX, SOURCE_STEP_MIN = 0.1, 0.5, 1e-3
+#: gives up -- four failing rungs from the start (0.1, 0.05, 0.025, 0.0125):
+#: source stepping rescues none of the 26 gold operating points, and at 1e-3
+#: it spent seven 100-iteration failures on each that it did not
+SOURCE_STEP, SOURCE_STEP_MAX, SOURCE_STEP_MIN = 0.1, 0.5, 0.0125
 
 
 def _source_steps(circuit, refnode, x0, kw):

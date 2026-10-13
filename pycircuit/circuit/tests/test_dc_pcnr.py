@@ -422,6 +422,40 @@ def test_pcnr_continues_on_its_own_ladders_where_the_plain_solve_fails(ladder, m
     assert abs(float(r.v('no', gnd)) - float(ref.v('no', gnd))) < 1e-6
 
 
+def test_a_ladder_that_came_down_does_not_step_the_sources(monkeypatch):
+    """The plain solve and the pure solve after the gshunt ladder forced to
+    fail, every rung converging: the ladder runs its eleven decades once
+    -- 1e-2 down to the last at ~1e-12, not one more rung at exactly
+    GSHUNT_END (ten divisions by 10 leave 1.0000000000000002e-12) -- and
+    source stepping is not tried after it (only the system without a shunt
+    failed); the plain solve's error is raised."""
+    from pycircuit.circuit import gnd, pcnr
+    patched, calls = _failing(lambda k: k.get('gshunt', 0.0) == 0.0
+                              and k.get('source', 1.0) == 1.0)
+    monkeypatch.setattr(pcnr, 'solve_dc', patched)
+    c, x0 = _bjt_mirror_20v()
+    with pytest.raises(RuntimeError, match='forced PCNR failure'):
+        pcnr.solve_dc_continued(c, gnd, x0=x0)
+    g = [gs for gs, _s in calls if gs > 0.0]
+    assert len(g) == 11 and g[0] == pcnr.GSHUNT_START, g
+    assert abs(g[-1] / pcnr.GSHUNT_END - 1.0) < 1e-9, g
+    assert len(calls) == 13 and all(s == 1.0 for _g, s in calls), calls
+
+
+def test_source_stepping_gives_up_after_four_failing_rungs(monkeypatch):
+    """Every PCNR solve forced to fail: the plain solve, the ladder's first
+    rung, then source stepping's four rungs from the start (0.1 halved to
+    SOURCE_STEP_MIN) and no more."""
+    from pycircuit.circuit import gnd, pcnr
+    patched, calls = _failing(lambda k: True)
+    monkeypatch.setattr(pcnr, 'solve_dc', patched)
+    c, x0 = _bjt_mirror_20v()
+    with pytest.raises(RuntimeError, match='forced PCNR failure'):
+        pcnr.solve_dc_continued(c, gnd, x0=x0)
+    assert calls == [(0.0, 1.0), (pcnr.GSHUNT_START, 1.0),
+                     (0.0, 0.1), (0.0, 0.05), (0.0, 0.025), (0.0, 0.0125)], calls
+
+
 def test_a_gold_deck_pcnr_solves_itself():
     """slowlatch, which used to fall back to the ordinary chain, is solved
     by PCNR itself, and the point satisfies KCL.  Which path is a knife
