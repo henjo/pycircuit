@@ -1,10 +1,11 @@
+import contextlib
 import logging
 
 import numpy as np
 from numpy.linalg import LinAlgError
 
 from pycircuit.circuit.analysis import *
-from pycircuit.circuit import _stamp_plan
+from pycircuit.circuit import _blas, _stamp_plan
 from pycircuit.circuit.circuit import SubCircuit
 
 class DC(Analysis):
@@ -189,9 +190,29 @@ class DC(Analysis):
         stamps differ at DC (the ``Idt``/``Idtmod`` ic pin, idtmod.md sec. 5.1)
         can see it from ``G``/``i``/``u`` alike -- ``analysis='dc'`` reaches
         only ``u``.  Scoping notes on the shared ``analysis_kind`` helper.
+
+        BLAS is held at one thread for the solve where the AutoSolver's dense
+        LU is past the size OpenBLAS threads (`_blas_held`).
         """
-        with analysis_kind(self.epar, 'dc'):
+        with analysis_kind(self.epar, 'dc'), self._blas_held():
             return self._solve_dc(x0)
+
+    def _blas_held(self):
+        """One BLAS thread for this solve (`_blas`) where the AutoSolver
+        factors dense from `_blas.THREADED_FROM` unknowns up to its sparse
+        floor -- the C Newton's ladders make hundreds of small solves there,
+        and the threads cost up to 30x; elsewhere a no-op: a smaller system
+        is not threaded, KLU is not reached by the threads, and another
+        solver is the caller's choice (unmeasured)."""
+        from pycircuit.circuit.linearsolver import AutoSolver
+        ls = self._get_linearsolver()
+        if type(ls) is not AutoSolver:
+            return contextlib.nullcontext()
+        m = self.cir.n - 1
+        dense = ls._choice is ls._dense if ls._choice is not None else m < ls.min_n
+        if dense and m >= _blas.THREADED_FROM:
+            return _blas._single_threaded_blas()
+        return contextlib.nullcontext()
 
     def _solve_dc(self, x0=None):
         ## STAGE 8(d) -- see Circuit.reset_state.  A DC solve must not inherit a

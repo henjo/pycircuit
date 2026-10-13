@@ -74,6 +74,29 @@ operations and PREFERS threads at every size measured (0.57x at n=28 down to
 over a 500-point sweep (0.80x-0.98x).  Extending this context manager to
 them is a measured regression, not an oversight.
 
+2026-10-13 -- **THE REFUSAL FOR DC ABOVE NO LONGER HOLDS, AND THE LIMIT MOVED TO `_blas`**
+(Andreas: "Size the BLAS-thread fix", then "Yes do it"; plan `blas-threads.md`).  The 2a-bis
+measurement was an R-ladder: a linear circuit, one Newton solve, dense LU up to n = 2503.  The DC
+it described is gone: the C Newton (D4) runs gmin / gshunt ladders of hundreds to thousands of
+small solves on a nonlinear deck -- 2a-bis's own variable, the CALL COUNT -- and the AutoSolver
+factors with KLU above 250 unknowns (no threaded dense LU there at all).  Re-measured, standalone
+`DC().solve()` on the 26 gold operating points, pinned, 3 rounds: 17.90 s threaded against 11.05 s
+on one thread (PCNR 17.00 -> 9.59), voter25 30x (0.81 -> 0.027 s; its threaded rounds bimodal),
+gm1 6.6x, gm17 3.3x, toronto 3.1x, e1480 2.4x, mux8 1.7x, no deck slower, and the threaded runs'
+10-30x round-to-round swings gone; 2a-bis's ladders (R and diode, n 16 .. 1253) neutral on today's
+DC (0.99-1.11x).  Four answers move on one thread: gm17 1.8e-13 V, mux8 5e-22, voter25 5.7e-14
+(rounding), e1480 3.3e-5 V on its floating MOS3 stack (non-unique for any solver).  The gold runs
+never moved: `Transient.solve` held the limit for its whole run, its operating point included --
+which also means the C3 timings of the standalone operating point were not the gold run's (gm17's
+standalone op 7-10 s, inside its `.tran` 0.18 s with the `.ic` holds).
+
+So `DC.solve` holds it too, where the AutoSolver's dense LU is past `_blas.THREADED_FROM` (100)
+and below its sparse floor (`DC._blas_held`; elsewhere a no-op, since a first controller build is
+5.8 ms in a fresh process and a 7 ms KLU deck gains nothing).  The helper, its controller and the
+stage-2a explanation moved to `pycircuit/circuit/_blas.py` (transient re-exports
+`_single_threaded_blas` and `blas_single_thread_available`).  AC was not re-measured (2a-bis:
+0.80-0.98x) and stays threaded.
+
 ### `resample_uniform`
 
 2026-09-27 (moved from the code):

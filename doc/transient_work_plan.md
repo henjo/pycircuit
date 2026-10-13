@@ -1465,6 +1465,11 @@ interleaved, min of 3:
 DC performs a handful of large operations, so the arithmetic dominates. Limiting it would
 cost up to 2.3x.
 
+⚠ **SUPERSEDED 2026-10-13** (`doc/transient_history.md`, `_threadpool_limits`): today's DC runs
+ladders of hundreds of small solves and factors with KLU above 250 unknowns; one thread is
+1.62x over the 26 gold operating points (voter25 30x), and `DC.solve` now holds the limit on its
+dense LU from 100 unknowns.
+
 **AC: REFUSED, neutral at best.** AC solves once per frequency point, so a long sweep looked
 like the "many small calls" case -- but its per-point work (building `s*C + G` and solving)
 is large enough that it never flips: 0.80x (n=73, 5 points), 0.98x (n=73, 500), 0.88x

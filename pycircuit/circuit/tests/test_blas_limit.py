@@ -1,4 +1,4 @@
-"""The transient's BLAS thread limit (`transient._single_threaded_blas`)."""
+"""The BLAS thread limit (`_blas._single_threaded_blas`): held by the transient, PSS and the DC's dense LU."""
 import pytest
 
 from pycircuit.circuit import transient as tmod
@@ -62,3 +62,40 @@ def test_a_pss_solve_holds_blas_at_one_thread(monkeypatch):
                    if lc.user_api == 'blas')
         pss.solve(period=1e-3, timestep=1e-5)
     assert seen and all(t == 1 for t in seen[0]), seen
+
+
+@pytest.mark.parametrize('stages,held', [(120, True), (20, False), (300, False)])
+def test_a_dc_solve_holds_blas_at_one_thread_where_its_dense_lu_is_threaded(
+        stages, held, monkeypatch):
+    """`DC.solve` holds the limit where the AutoSolver factors dense from
+    `_blas.THREADED_FROM` unknowns up to its sparse floor -- a diode ladder
+    of 122 -- and leaves the pool alone below it (22) and on KLU (302): the
+    C Newton's ladders make hundreds of small solves there, and the threads
+    cost up to 30x (voter25's operating point, 2026-10-13).  Read inside
+    the solve, the pool opened to 4 threads first."""
+    if not tmod.blas_single_thread_available():
+        pytest.skip('no threadpoolctl')
+    import threadpoolctl
+
+    from pycircuit.circuit import circuit, gnd
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.elements import VS, R, SubCircuit
+    probe = threadpoolctl.ThreadpoolController()
+    if not any(c.user_api == 'blas' for c in probe.lib_controllers):
+        pytest.skip('no BLAS threadpoolctl can see')
+    c = SubCircuit()
+    c['v'] = VS('n0', gnd, v=5.0)
+    for k in range(1, stages + 1):
+        c[f'r{k}'] = R(f'n{k - 1}', f'n{k}', r=100.0)
+        c[f'd{k}'] = eh.DiodeSpiceHdl(f'n{k}', gnd, IS=1e-14 * (1 + k % 7))
+    seen = []
+    orig = DC._solve_dc
+
+    def spy(self, x0=None):
+        seen.append([lc.num_threads for lc in probe.lib_controllers if lc.user_api == 'blas'])
+        return orig(self, x0)
+    monkeypatch.setattr(DC, '_solve_dc', spy)
+    with probe.limit(limits=4, user_api='blas'):
+        DC(c, toolkit=circuit.numeric).solve()
+    assert seen and all(t == (1 if held else 4) for t in seen[0]), (c.n, seen)

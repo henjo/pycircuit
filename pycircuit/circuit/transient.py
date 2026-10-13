@@ -1,8 +1,6 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
-import contextlib
-import sys
 import time
 
 import numpy as np
@@ -42,62 +40,12 @@ from pycircuit.circuit._tran_glm import _NordsieckGLM
 from pycircuit.circuit._tran_radau import _RadauStages
 from pycircuit.circuit._tran_events import _StepEvents
 
-## STAGE 2a -- BLAS thread control, discovered rather than required.
-##
-## Circuit matrices are small (n ~ 10^2), so a threaded LAPACK spends more time
-## spawning and synchronising threads than doing the work.  The overhead scales
-## with the core count the thread pool spans: on the leapfrog the transient runs
-## 1.72x faster with BLAS limited to one thread on 4 cores, **14-20x** on 24.
-##
-## `threadpoolctl` is a dependency.  The import stays guarded anyway, and
-## `blas_single_thread_available()` stays in the API, so a stripped environment
-## degrades to threaded BLAS rather than failing to import a circuit simulator.
-##
-## ⚠ THIS LIMIT BELONGS TO THE TRANSIENT AND SHOULD NOT BE COPIED TO `DC` OR
-## `AC`: the penalty is per-call thread-pool overhead, crossing over around
-## 50-100 solves, NOT a property of problem size.  A transient runs thousands
-## of small assemblies and solves in a Python loop; DC PREFERS threads at every
-## size measured (limiting it would cost up to 2.3x), and AC never flips.
-## History: `doc/transient_history.md`, `transient.py`.
-try:
-    from threadpoolctl import threadpool_limits as _threadpool_limits
-except ImportError:
-    _threadpool_limits = None
+## STAGE 2a -- BLAS held at one thread for the whole run (`_blas`: why, where
+## else -- PSS, DC's dense LU -- and the measurements).  Re-exported here for
+## `shooting.pss` and the API (`blas_single_thread_available`).
+from pycircuit.circuit._blas import _single_threaded_blas
+from pycircuit.circuit._blas import blas_single_thread_available  # noqa: F401 (the API's name)
 
-
-def blas_single_thread_available():
-    """True if the BLAS thread limit can be applied from inside the process."""
-    return _threadpool_limits is not None
-
-
-## THE CONTROLLER, KEPT (speed round 8, stage 2c, 2026-10-04): building
-## one rescans every shared library the process has loaded -- 3.4 M
-## instructions, two steps of a 20-MosLevel1 transient, on every `solve`
-## (`threadpool_limits` builds one per call) -- for a set that changes when
-## a package is imported: a BLAS arrives with its package.  So one,
-## rebuilt when `len(sys.modules)` moved; a library loaded through ctypes
-## alone is not seen until then.  The limit itself is the same call on it.
-## In a container: the leak detector reads module-level scalars.
-_BLAS_CONTROLLER = {}
-
-
-def _single_threaded_blas():
-    """Limit BLAS to one thread for the duration, if that is possible here.
-
-    NOTE ON REPRODUCIBILITY: a threaded LAPACK reduces in a different order, so
-    results differ in the last bits between one and many threads.  Measured on the
-    leapfrog: identical step count, `max|dv| = 2.16e-15 V`.  That is BLAS
-    non-associativity, not a change of method -- but it does mean a run is only
-    bit-reproducible against another run with the same thread count.
-    """
-    if _threadpool_limits is None:
-        return contextlib.nullcontext()
-    n = len(sys.modules)
-    rec = _BLAS_CONTROLLER.get('blas')
-    if rec is None or rec[0] != n:
-        from threadpoolctl import ThreadpoolController
-        rec = _BLAS_CONTROLLER['blas'] = (n, ThreadpoolController())
-    return rec[1].limit(limits=1, user_api='blas')
 
 def resample_uniform(t, x, npoints=None, step=None, grid=None):
     """Interpolate a transient result onto a UNIFORM time grid.
