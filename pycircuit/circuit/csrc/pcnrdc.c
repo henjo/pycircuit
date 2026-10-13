@@ -5,8 +5,12 @@
    kernels raise inside is cleared after them -- the Python's calls of them
    (cffi) never report it; a flag numpy would report (the assembly's, the
    Schur updates', the step's, the refine's, the convergence tests'
-   arithmetic) or a value that is not finite hands the solve back, and the
-   Python's solve gives its warnings.  Every return leaves the flags clear. */
+   arithmetic) hands the solve back, and the Python's solve gives its
+   warnings.  A NaN is carried quietly, as numpy carries it, from the
+   assembly through the dense solve to x_new, whose test the Python makes
+   (PCNRDC_NONFINITE); a value that is not finite anywhere else -- KLU's
+   entries, v_new, g_lim -- hands back.  Every return leaves the flags
+   clear. */
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
@@ -68,7 +72,9 @@ static void device(pcnrdc_t *s, long d)
 
 /* `augmented_system` and the gshunt rows: the view's core at x (F = i + u,
    J = G), each participant, then `g[shunt] += gshunt x[shunt]`,
-   `J[shunt, shunt] += gshunt`.  0, or PCNRDC_BAIL_FLAGS */
+   `J[shunt, shunt] += gshunt`.  F and J may carry a NaN on (the kernels'
+   at a wild point); g_lim, from the finite x and v, may not.  0, or
+   PCNRDC_BAIL_FLAGS */
 static long assemble(pcnrdc_t *s)
 {
     const hdl_core_t *c = (const hdl_core_t *) s->core;
@@ -88,8 +94,6 @@ static long assemble(pcnrdc_t *s)
         }
     }
     if (fetestexcept(PC_FLAGS)) return PCNRDC_BAIL_FLAGS;
-    for (i = 0; i < n; i++) if (!isfinite(s->F[i])) return PCNRDC_BAIL_FLAGS;
-    for (i = 0; i < n * n; i++) if (!isfinite(s->J[i])) return PCNRDC_BAIL_FLAGS;
     for (i = 0; i < s->k; i++) if (!isfinite(s->gl[i])) return PCNRDC_BAIL_FLAGS;
     return 0;
 }
@@ -141,11 +145,12 @@ static long solve_dense(pcnrdc_t *s)
 /* StructuralKLU.solve(schur[keep, keep], -f_eff): the reduced matrix (R),
    `_ours`'s test (as many nonzeros on the pattern as in all of it, else
    its fallback solve: handed back), its entries in the pattern's order, its
-   own sequence (pcx_kluseq.h).  A failed factor is its LinAlgError
-   (PCNRDC_SINGULAR).  The solution in `kx` */
+   own sequence (pcx_kluseq.h; an entry or rhs that is not finite hands
+   back: the sequence's guards are twinned on finite values only).  A failed
+   factor is its LinAlgError (PCNRDC_SINGULAR).  The solution in `kx` */
 static long solve_klu(pcnrdc_t *s)
 {
-    long n = s->n, m = n - 1, ir = s->iref, i, j, nz = 0, nzp = 0, st;
+    long n = s->n, m = n - 1, ir = s->iref, i, j, nz = 0, nzp = 0, fin = 1, st;
     for (i = 0; i < n; i++) {
         if (i == ir) continue;
         for (j = 0; j < n; j++)
@@ -155,8 +160,11 @@ static long solve_klu(pcnrdc_t *s)
     for (i = 0; i < s->nact; i++) {
         s->klu.kAx[i] = s->R[s->act_r[i]];
         nzp += s->klu.kAx[i] != 0.0;
+        fin &= isfinite(s->klu.kAx[i]) != 0;
     }
     if (nz != nzp) return PCNRDC_BAIL_FOREIGN;
+    for (i = 0; i < m; i++) fin &= isfinite(s->b[i]) != 0;
+    if (!fin) return PCNRDC_BAIL_FLAGS;
     st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, m, s->dgemv);
     if (st == PCX_KLU_FACTOR) return PCNRDC_SINGULAR;
     if (st == PCX_KLU_SOLVE) return PCNRDC_BAIL_KLU;
@@ -179,8 +187,9 @@ static long solve(pcnrdc_t *s)
 }
 
 /* x_new = x + dx (the reference 0.0); v_new = v + dx_lim, dx_lim =
-   -(g_lim + (-dx[ra] + dx[rb])); then each device's refine (its class's
-   kernel at its last accepted sub-vector).  0, or why it is handed back */
+   -(g_lim + (-dx[ra] + dx[rb])); x_new not finite is the Python's
+   RuntimeError (PCNRDC_NONFINITE); then each device's refine (its class's
+   kernel at its last accepted sub-vector).  0, or why not */
 static long update(pcnrdc_t *s)
 {
     long n = s->n, i, d, j, r;
@@ -191,6 +200,7 @@ static long update(pcnrdc_t *s)
         s->vn[i] = s->v[i] + -(s->gl[i] + (-s->dx[ra] + s->dx[rb]));
     }
     if (fetestexcept(PC_FLAGS)) return PCNRDC_BAIL_FLAGS;
+    for (i = 0; i < n; i++) if (!isfinite(s->xn[i])) return PCNRDC_NONFINITE;
     for (d = 0; d < s->nd; d++) {
         long t = s->d_t[d], m = s->d_m[d], off = s->d_off[d];
         const int64_t *rows = s->rows + s->d_rows[d];
@@ -201,7 +211,6 @@ static long update(pcnrdc_t *s)
         if (fetestexcept(PC_FLAGS)) return PCNRDC_BAIL_FLAGS;
         for (j = 0; j < m; j++) s->vn[off + j] = s->rio[j];
     }
-    for (i = 0; i < n; i++) if (!isfinite(s->xn[i])) return PCNRDC_BAIL_FLAGS;
     for (i = 0; i < s->k; i++) if (!isfinite(s->vn[i])) return PCNRDC_BAIL_FLAGS;
     return 0;
 }

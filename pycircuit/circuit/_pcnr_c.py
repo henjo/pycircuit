@@ -618,9 +618,9 @@ def _vector(a, m):
 def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol, iabstol,
           gmin, gshunt, linsolver):
     """`pcnr.solve_dc`'s loop in C from its start: `(x, v_lim, iterations)`,
-    or its exception raised (the iteration limit's RuntimeError, a singular
-    solve's LinAlgError) -- or None: declined or handed back, nothing
-    written; the Python's loop runs."""
+    or its exception raised (the iteration limit's RuntimeError, a non-finite
+    iterate's, a singular solve's LinAlgError) -- or None: declined or
+    handed back, nothing written; the Python's loop runs."""
     if not ENABLED:
         return _no('pcnr_c:off')
     if maxiter < 1:
@@ -698,6 +698,13 @@ def _outcome(rec, status, maxiter):
         ## (StructuralKLU's `_factor` says it in its own words)
         raise np.linalg.LinAlgError('Singular matrix' if rec.klu is not None
                                     else _singular_text())
+    if status == codes['PCNRDC_NONFINITE']:
+        from pycircuit.circuit.pcnr import NONFINITE
+        rec.write_back()
+        _PC['pcnr_c:served'] += 1
+        _PC['pcnr_c:nonfinite'] += 1
+        _PC['pcnr_c:iterations'] += int(s.iters) + 1
+        raise RuntimeError(NONFINITE % (int(s.iters) + 1))
     return _no('pcnr_c:bail:' + bails.get(status, str(status)))
 
 

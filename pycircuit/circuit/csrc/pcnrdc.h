@@ -94,12 +94,17 @@ enum pcnrdc_status {
     PCNRDC_SINGULAR = 3,        /* dgesv's info, or KLU's failed factor: the
                                    Python's LinAlgError at iteration `iters + 1`
                                    (the glue raises) */
-    PCNRDC_CHOOSE = 4,          /* `choose`: the first Schur matrix in J */
-    PCNRDC_BAIL_FLAGS = 5,      /* a floating-point flag numpy would report,
-                                   or a value that is not finite: the
-                                   Python's solve, its warnings */
-    PCNRDC_BAIL_REFINE = 6,     /* a refine kernel declined (a NaN key) */
-    PCNRDC_BAIL_FOREIGN = 7,    /* a nonzero off KLU's pattern: the Python's
+    PCNRDC_NONFINITE = 4,       /* x_new not finite: the Python's RuntimeError
+                                   (`pcnr.NONFINITE`) at iteration `iters + 1`
+                                   (the glue raises) */
+    PCNRDC_CHOOSE = 5,          /* `choose`: the first Schur matrix in J (this
+                                   and each code after it: not an outcome) */
+    PCNRDC_BAIL_FLAGS = 6,      /* a floating-point flag numpy would report,
+                                   or a value that is not finite where the
+                                   C does not carry one: the Python's solve,
+                                   its warnings */
+    PCNRDC_BAIL_REFINE = 7,     /* a refine kernel declined (a NaN key) */
+    PCNRDC_BAIL_FOREIGN = 8,    /* a nonzero off KLU's pattern: the Python's
                                    fallback solve */
-    PCNRDC_BAIL_KLU = 8         /* klu_solve failed */
+    PCNRDC_BAIL_KLU = 9         /* klu_solve failed */
 };

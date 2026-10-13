@@ -890,6 +890,11 @@ def lim_converged(g_lim, v_new, reltol, abstol):
     return bool(np.all(g < reltol * scale + abstol))
 
 
+#: :func:`solve_dc`'s RuntimeError where an iterate is not finite (the
+#: iteration's number); `_pcnr_c` raises the same
+NONFINITE = 'PCNR iterate not finite at iteration %d: it cannot converge from there'
+
+
 def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
              reltol=1e-6, abstol=1e-12, iabstol=1e-12, gmin=0.0,
              gshunt=0.0, source=1.0, v_lim0=None, linsolver=None):
@@ -900,6 +905,11 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     deformation, unlike ``gmin`` below), the independent sources scaled,
     and the limited unknowns to start from.  At their defaults nothing is
     added and nothing is scaled: the plain solve is unchanged.
+
+    Raises RuntimeError at the iteration limit, and at the first iterate
+    that is not finite (:data:`NONFINITE`): `x + dx` keeps a non-finite
+    unknown so and a NaN fails every test, so the solve has failed there --
+    a rung's outcome is the same, found up to `maxiter` iterations sooner.
 
     The flow is Figure 2's: initialise, then repeat predict-then-correct until
     converged.  There is no limiting of the MNA vector anywhere -- the only thing
@@ -1013,6 +1023,10 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
 
         x_new = x + dx_mna
         x_new[irefnode] = 0.0
+        ## A non-finite unknown stays so (`x + dx`), and a NaN fails every
+        ## test: the rung's failure now, not at the iteration limit
+        if not np.all(np.isfinite(x_new)):
+            raise RuntimeError(NONFINITE % (it + 1))
         v_new = v_lim + dx_lim
 
         ## CORRECT: each device limits only what it owns.

@@ -148,6 +148,40 @@ def test_a_singular_solve_is_numpys_error(monkeypatch):
     assert counts['pcnr_c:singular'] == 1
 
 
+def test_a_non_finite_iterate_is_the_pythons_error(monkeypatch):
+    """A start with a NaN where no device probes (the supply node): the
+    assembly and the dense solve carry it quietly, as numpy does, x_new is
+    not finite, and the Python's RuntimeError (`pcnr.NONFINITE`) is served
+    at the first iteration -- not handed back."""
+    c = _cascode(5.0, 3.0, 1.5)
+    x0 = _start(c, 1.0)
+    x0[c.get_node_index('vdd')] = np.nan
+    got, counts = _twin(c, monkeypatch, x0=x0)
+    assert got == ('raise', RuntimeError, pcnr.NONFINITE % 1), got
+    assert counts['pcnr_c:nonfinite'] == 1
+
+
+def test_a_non_finite_klu_rhs_is_handed_back(monkeypatch):
+    """On StructuralKLU a value that is not finite hands back (KLU's
+    sequence is twinned on finite values only): the same NaN start on the
+    ladder, the Python's RuntimeError the outcome with the C on and off
+    (each on a fresh DC's own solver, the AutoSolver over the pattern: the
+    DC held, since the solver reaches its pattern through it weakly)."""
+    from pycircuit.circuit.dcanalysis import DC
+
+    def run(on):
+        c = _ladder()
+        dc = DC(c, toolkit=circuit.numeric, pcnr=True)
+        got = _solve(c, on, monkeypatch, x0=x0, linsolver=dc._get_linearsolver())
+        assert type(dc._get_linearsolver()._choice).__name__ == 'StructuralKLU'
+        return got
+    x0 = _start(_ladder(), 0.5)
+    x0[_ladder().get_node_index('n0')] = np.nan
+    (got, counts), (ref, _) = run(True), run(False)
+    assert got == ref == ('raise', RuntimeError, pcnr.NONFINITE % 1), (got, ref)
+    assert counts.get('pcnr_c:bail:flags') == 1 and 'pcnr_c:served' not in counts, counts
+
+
 def test_the_klu_solve_in_c_is_the_pythons():
     """Above the AutoSolver's floor PCNR solves on StructuralKLU: the C
     stops at its first Schur matrix for the AutoSolver's own choice

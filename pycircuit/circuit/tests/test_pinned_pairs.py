@@ -342,8 +342,8 @@ PAIRS = {
                '(numpy\'s dgesv, or StructuralKLU\'s sequence after the AutoSolver\'s '
                'own first choice), `dx_lim_of`, `refine` -- each class\'s law '
                'parameters, its laws (`apply_limit`) and `limit_block`\'s Kruskal and '
-               'potentials -- the three tests, and the iteration limit\'s and a '
-               'singular solve\'s exceptions',
+               'potentials -- the three tests, and the iteration limit\'s, a '
+               'non-finite iterate\'s and a singular solve\'s exceptions',
         'reference': ['pycircuit.circuit.pcnr:solve_dc',
                       'pycircuit.circuit.pcnr:augmented_system',
                       'pycircuit.circuit.pcnr:schur_reduce',
@@ -642,7 +642,7 @@ RECORD = {
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1650ca5eabf8', '3925aca9bd1c'),
     'the DC base solve and its C': ('d17203656044', '60e5fa192106'),
-    'the PCNR DC solve and its C': ('699e2a857ec7', 'c21b0ca973b8'),
+    'the PCNR DC solve and its C': ('4e03c4945c40', '7de17f7ea16e'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
