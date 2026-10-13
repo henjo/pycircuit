@@ -594,7 +594,7 @@ RECORD = {
     'the Newton solve and its C': ('f7509d6b5900', '80a496916cfd'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1650ca5eabf8', '3925aca9bd1c'),
-    'the DC base solve and its C': ('37c8ec82fd94', '8c18582f0653'),
+    'the DC base solve and its C': ('d17203656044', '8c18582f0653'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),

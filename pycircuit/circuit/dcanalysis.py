@@ -238,7 +238,8 @@ class DC(Analysis):
                     x, _v_lim, _its, self.pcnr_path = _pcnr.solve_dc_continued(
                         self.cir, self.cir.nodes[self.irefnode], x0=x0,
                         epar=self.epar, maxiter=self.par.maxiter,
-                        reltol=self.par.reltol, abstol=self.par.vabstol)
+                        reltol=self.par.reltol, abstol=self.par.vabstol,
+                        linsolver=self._get_linearsolver())
                     self.pcnr_status = 'used'
                     self.result = CircuitResult(self.cir, x)
                     return self.result

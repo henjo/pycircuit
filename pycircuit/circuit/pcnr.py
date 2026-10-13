@@ -50,41 +50,6 @@ from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit._limiting import _pnjlim
 
 
-_MISSING = object()
-
-
-def _zero_vector(t):
-    def _i(x, epar=defaultepar, params_tree=None):
-        return np.zeros(t)
-    return _i
-
-
-def _linear_vector(gl):
-    """``i(x) = gl @ x`` -- the remainder's own current.
-
-    `x` is already the element's LOCAL sub-vector: `circuit.py` slices
-    `subx = x[elementnodemap[instance]]` before calling `element.i`.
-    Re-indexing by the device's global `rows` here would read the wrong
-    entries, and would do it silently -- the shapes agree.
-    """
-    def _i(x, epar=defaultepar, params_tree=None):
-        return gl.dot(np.asarray(x, dtype=float))
-    return _i
-
-
-def _linear_matrix(gl):
-    """``G(x) = gl`` -- constant, so the node voltages are not read."""
-    def _G(x, epar=defaultepar, params_tree=None):
-        return gl
-    return _G
-
-
-def _zero_matrix(t):
-    def _G(x, epar=defaultepar, params_tree=None):
-        return np.zeros((t, t))
-    return _G
-
-
 class PcnrDevice(object):
     """One participating device: its rows, its probes, and how to ask it.
 
@@ -338,6 +303,86 @@ def pcnr_devices(circuit):
     return found
 
 
+_REMAINDER_CLASSES = {}
+
+
+def _remainder_class(nterm, branches):
+    """The constant-stamp element a participant stands as in `pcnr_view`:
+    `nterm` terminals (`p0`, `p1`, ...), the participant's `branches` as
+    `(plus, minus)` terminal indices, `G` its stored matrix and `i` the
+    stamp plan's `G x` (`i` is not overridden, so `pair_kind` says
+    'cached')."""
+    key = (nterm, tuple(branches))
+    cls = _REMAINDER_CLASSES.get(key)
+    if cls is None:
+        from pycircuit.circuit.circuit import Branch, Circuit, Node
+
+        def G(self, x, epar=defaultepar):
+            return self._G
+        cls = _REMAINDER_CLASSES[key] = type(
+            f'_PcnrRemainder{nterm}', (Circuit,),
+            {'terminals': tuple(f'p{k}' for k in range(nterm)),
+             'branches': [Branch(Node(f'p{a}'), Node(f'p{b}')) for a, b in branches],
+             '_constant_stamps': ('G',), 'instparams': [], 'G': G,
+             '__doc__': "A participant's affine remainder (`pcnr_view`)."})
+    return cls
+
+
+def _remainder_of(circuit, dev, epar):
+    """The stub standing for `dev` in `pcnr_view`, or None where it has
+    neither a remainder nor a branch: its node rows as terminals, its
+    branch rows re-declared between them, `G` the remainder (zeros where
+    none) over all its rows."""
+    nn = len(circuit.nodes)
+    node_rows = [r for r in dev.rows if r < nn]
+    lin = getattr(dev.element, 'pcnr_lin_G', None)
+    branch_rows = [r for r in dev.rows if r >= nn]
+    if lin is None and not branch_rows:
+        return None, None
+    index = {}
+    for k, r in enumerate(node_rows):
+        index.setdefault(circuit.nodes[r], k)
+    brs = []
+    for r in branch_rows:
+        b = circuit.branches[r - nn]
+        brs.append((index[b.plus], index[b.minus]))
+    stub = _remainder_class(len(node_rows), brs)()
+    stub._G = (np.zeros((dev.t, dev.t)) if lin is None else
+               np.asarray(lin(dev.params(), epar, dev.element.toolkit), dtype=float))
+    return stub, {f'p{k}': circuit.nodes[r] for k, r in enumerate(node_rows)}
+
+
+def pcnr_view(circuit, devices, epar=defaultepar):
+    """`circuit` without its participating `devices`: every other element
+    in its order on the SAME nodes in the same order, and in each
+    participant's place the constant stamp of its affine remainder
+    (`pcnr_lin_G`) carrying its branches (`_remainder_of`) -- so the same
+    rows, branches included.  Cached on the circuit per participants and
+    temperature."""
+    from pycircuit.circuit.circuit import SubCircuit
+    key = (tuple(d.instance for d in devices), float(getattr(epar, 'T', 300.0)))
+    cached = getattr(circuit, '_pcnr_view', None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    part = {d.instance: d for d in devices}
+    view = SubCircuit()
+    view.toolkit = circuit.toolkit
+    for node in circuit.nodes:
+        view.append_node(node)
+    for inst, el in circuit.elements.items():
+        dev = part.get(inst)
+        if dev is None:
+            view.add_instance(inst, el, **circuit.term_node_map[inst])
+            continue
+        stub, nodes = _remainder_of(circuit, dev, epar)
+        if stub is not None:
+            view.add_instance(inst + '#pcnr_lin', stub, **nodes)
+    if view.n != circuit.n:                              # pragma: no cover
+        raise ValueError(f'pcnr_view: {view.n} unknowns, the circuit {circuit.n}')
+    circuit._pcnr_view = (key, view)
+    return view
+
+
 def pcnr_junction_pairs(circuit):
     """The p-n junctions, as ``(instance, device, row_anode, row_cathode)``.
 
@@ -530,40 +575,18 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
     ## Proven, not argued: `test_pcnr_charge.py` finite-differences the
     ## augmented residual to confirm `J_eff == df_eff/dx` with a
     ## charge-storing participant, and compares pcnr on/off transients.
-    saved = []
-    try:
-        for dev in devices:
-            el, t = dev.element, dev.t
-            saved.append((el, el.__dict__.get('i', _MISSING),
-                          el.__dict__.get('G', _MISSING)))
-            ## THE AFFINE REMAINDER (roadmap sec. 40).  A participating
-            ## device is normally zeroed out of the ordinary assembly
-            ## and re-stamped at `v_lim`.  When part of its current is a
-            ## CONSTANT CONDUCTANCE -- a series resistance to an
-            ## internal node -- that part reaches the solution through
-            ## node voltages, not through any probe, and PCNR's rule
-            ## refuses the whole device for it.  Newton solves a linear
-            ## term exactly and limiting it would mean nothing, so the
-            ## remainder is shadowed IN rather than zeroed out, and the
-            ## ordinary assembly stamps it exactly as on `pcnr=False`.
-            lin = getattr(el, 'pcnr_lin_G', None)
-            if lin is None:
-                el.i = _zero_vector(t)
-                el.G = _zero_matrix(t)
-            else:
-                gl = np.asarray(lin(dev.params(), epar, el.toolkit),
-                                dtype=float)
-                el.i = _linear_vector(gl)
-                el.G = _linear_matrix(gl)
-        g_mna = np.array(circuit.i(x, epar), dtype=float)
-        J_mm = np.array(circuit.G(x, epar), dtype=float)
-    finally:
-        for el, old_i, old_G in saved:
-            for name, old in (('i', old_i), ('G', old_G)):
-                if old is _MISSING:
-                    el.__dict__.pop(name, None)
-                else:
-                    el.__dict__[name] = old
+    ## THE ORDINARY PART ON A VIEW (2026-10-12, `dc-pcnr-c` C1b): the
+    ## circuit without its participants, each one's AFFINE REMAINDER (roadmap
+    ## sec. 40: a series resistance to an internal node reaches the solution
+    ## through node voltages, not through a probe, so it is stamped here
+    ## exactly as on `pcnr=False`) in its place as a constant stamp -- the
+    ## same nodes in the same order (`pcnr_view`).  It used to SHADOW each
+    ## participant's `i` and `G` for the duration of the two calls; the view
+    ## sums the same terms in the stamp plan's one order, which a C core
+    ## built on it repeats bit for bit.
+    view = pcnr_view(circuit, devices, epar)
+    g_mna = np.array(view.i(x, epar), dtype=float)
+    J_mm = np.array(view.G(x, epar), dtype=float)
     if u_extra is not None:
         g_mna = g_mna + np.asarray(u_extra, dtype=float)
     if J_extra is not None:
@@ -665,7 +688,7 @@ def dx_lim_of(junctions, g_lim, dx_mna):
 
 
 def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
-            didv=None, gmin=0.0):
+            didv=None, gmin=0.0, linsolver=None, toolkit=None):
     """One Newton step on the coupled system, by Schur complement.
 
         dx_MNA = -(J_mm - J_ml J_lm)^-1 (g_mna - J_ml g_lim)
@@ -710,7 +733,14 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
         schur[d, d] += gmin
 
     keep = [i for i in range(len(g_mna)) if i != irefnode]
-    dx_r = np.linalg.solve(schur[np.ix_(keep, keep)], rhs[keep])
+    ## (`linsolver`: the DC's own -- dense below its floor, StructuralKLU on
+    ## the circuit's pattern above -- which the C unit repeats; numpy's
+    ## dense solve where none is given)
+    if linsolver is None:
+        dx_r = np.linalg.solve(schur[np.ix_(keep, keep)], rhs[keep])
+    else:
+        dx_r = np.asarray(linsolver.solve(schur[np.ix_(keep, keep)], rhs[keep],
+                                          toolkit), dtype=float).ravel()
     dx_mna = np.zeros(len(g_mna))
     dx_mna[keep] = dx_r
 
@@ -756,8 +786,15 @@ def limit_block(probes, coeffs, v_new, v_old, laws):
     vn = np.asarray(v_new, dtype=float)
     vo = np.asarray(v_old, dtype=float)
     C = np.asarray(coeffs, dtype=float).reshape(len(probes), m)
-    raw = C @ vn
-    old = C @ vo
+    ## (each probe's value as a loop in the unknowns' order -- the C unit's
+    ## order; `C @ v` left the summation to BLAS)
+    raw = np.zeros(len(probes))
+    old = np.zeros(len(probes))
+    for p in range(len(probes)):
+        for j in range(m):
+            if C[p, j] != 0.0:
+                raw[p] += C[p, j] * vn[j]
+                old[p] += C[p, j] * vo[j]
     lim = np.array([float(law(float(r), float(o)))
                     for law, r, o in zip(laws, raw, old)])
     bit = [p for p in range(len(probes)) if lim[p] != raw[p]]
@@ -855,7 +892,7 @@ def lim_converged(g_lim, v_new, reltol, abstol):
 
 def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
              reltol=1e-6, abstol=1e-12, iabstol=1e-12, gmin=0.0,
-             gshunt=0.0, source=1.0, v_lim0=None):
+             gshunt=0.0, source=1.0, v_lim0=None, linsolver=None):
     """DC operating point by PCNR.  Returns ``(x, v_lim, iterations)``.
 
     ``gshunt``, ``source`` and ``v_lim0`` are :func:`solve_dc_continued`'s:
@@ -962,7 +999,8 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
             J_mm[shunt, shunt] += gshunt
 
         dx_mna, dx_lim = predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode,
-                                 junctions=devices, didv=didv, gmin=gmin)
+                                 junctions=devices, didv=didv, gmin=gmin,
+                                 linsolver=linsolver, toolkit=circuit.toolkit)
 
         x_new = x + dx_mna
         x_new[irefnode] = 0.0
@@ -1002,7 +1040,7 @@ GSHUNT_START, GSHUNT_END, GSHUNT_RETRIES = 1e-2, 1e-12, 4
 
 
 def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
-                       reltol=1e-6, abstol=1e-12, iabstol=1e-12):
+                       reltol=1e-6, abstol=1e-12, iabstol=1e-12, linsolver=None):
     """The DC operating point by PCNR, with ladders of its own.
 
     Returns ``(x, v_lim, iterations, path)`` -- ``path`` is ``'plain'``,
@@ -1015,7 +1053,7 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     then began from an UNLIMITED seed, since fixed in :func:`v_lim_init`.)
     """
     kw = {'epar': epar, 'maxiter': maxiter, 'reltol': reltol, 'abstol': abstol,
-          'iabstol': iabstol}
+          'iabstol': iabstol, 'linsolver': linsolver}
     try:
         x, v_lim, its = solve_dc(circuit, refnode, x0=x0, **kw)
         return x, v_lim, its, 'plain'

@@ -422,11 +422,13 @@ def test_pcnr_continues_on_its_own_ladders_where_the_plain_solve_fails(ladder, m
     assert abs(float(r.v('no', gnd)) - float(ref.v('no', gnd))) < 1e-6
 
 
-def test_a_gold_deck_pcnr_solves_on_its_own_gshunt_ladder():
-    """slowlatch's plain PCNR solve fails (2026-10-12) and PCNR's own
-    gshunt ladder carries it, where it used to fall back to the ordinary
-    chain; the point satisfies KCL.  Skips where the benchmark data is not
-    fetched."""
+def test_a_gold_deck_pcnr_solves_itself():
+    """slowlatch, which used to fall back to the ordinary chain, is solved
+    by PCNR itself, and the point satisfies KCL.  Which path is a knife
+    edge at rounding level: its gshunt ladder at this commit, its plain
+    solve when the view's stubs sat after every other element (the
+    ladders themselves are pinned by the forced-failure tests above).
+    Skips where the benchmark data is not fetched."""
     import numpy as np
 
     from pycircuit._testing import benchdata
@@ -440,7 +442,8 @@ def test_a_gold_deck_pcnr_solves_on_its_own_gshunt_ladder():
     a = DC(cir, toolkit=circuit.numeric, epar=tr.epar, pcnr=True)
     with quiet():
         r = a.solve()
-    assert a.pcnr_status == 'used' and a.pcnr_path == 'gshunt', (a.pcnr_status, a.pcnr_path)
+    assert a.pcnr_status == 'used' and a.pcnr_path in ('plain', 'gshunt', 'source'), (
+        a.pcnr_status, a.pcnr_path)
     x = np.asarray(r.x, dtype=float)
     f = np.asarray(cir.i(x, tr.epar), dtype=float) + np.asarray(
         cir.u(0, analysis='dc', epar=tr.epar), dtype=float)
