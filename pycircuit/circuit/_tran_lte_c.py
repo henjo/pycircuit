@@ -8,8 +8,9 @@ difference of the charges, Euler's first difference at an order drop),
 mapped to solution units by `J^-1` (the reference row cut and restored
 around `np.linalg.solve`), against the tolerance
 `TRTOL (reltol ref + abstol)` with `ref` by `relref` (the controller's
-running maximum, `sigglobal_reference`), normalised (`normalised_error`)
-and its maximum taken.  Here ONE C call: the divided difference in numpy's
+running maximum, `sigglobal_reference`) and `abstol` floored on the rows
+`lte_algebraic='charge'` marks (`charge_floor`), normalised
+(`normalised_error`) and its maximum taken.  Here ONE C call: the divided difference in numpy's
 elementwise order, the reduced `J` column-major as numpy's solve copies it
 and numpy's own `scipy_dgesv_64_` (or the run's `StructuralKLU`), the
 reference (the running maximum into a fresh array), the tolerance and the
@@ -141,6 +142,7 @@ def _globals():
                (SC.tolerance, 'StepController.tolerance'),
                (sc.normalised_error, 'normalised_error'),
                (sc.sigglobal_reference, 'sigglobal_reference'),
+               (sc.charge_floor, 'charge_floor'),
                (sc.IntegralController, 'IntegralController'),
                (sc.PIController, 'PIController'),
                (integrator.third_divided_difference, 'third_divided_difference',
@@ -164,7 +166,7 @@ def _globals():
         _G['sparse'] = (AutoSolver, StructuralKLU, AutoSolver.solve, StructuralKLU.solve,
                         StructuralKLU._ours)
         _G['chain'] = (SC._charge_lte, SC._normalised, SC._reference, SC.tolerance,
-                       sc.normalised_error, sc.sigglobal_reference,
+                       sc.normalised_error, sc.sigglobal_reference, sc.charge_floor,
                        integrator.third_divided_difference, analysis.remove_row_col,
                        analysis._reduce_ndarray, _NP[0], _numeric.linearsolver,
                        _NP[1], _NP[2], _numeric.array)
@@ -191,7 +193,7 @@ class _Ctx:
             'J': np.empty((n, n)), 'run': np.empty(n),
             'abst': np.empty(n), 'A': np.empty(m * m), 'b': np.empty(m), 'lte': np.empty(n),
             'ref': np.empty(n), 'out': np.empty(n), 'tq': np.empty(n),
-            'mask': np.empty(n), 'iq1': np.empty(n),
+            'mask': np.empty(n), 'charge': np.empty(n), 'iq1': np.empty(n),
         }
         self.ipiv = np.empty(m, dtype=np.int64)
         fb = ffi.from_buffer
@@ -347,7 +349,8 @@ def _admit(ctrl, s):
     if ('_charge_lte' in cd or '_normalised' in cd or '_reference' in cd or 'tolerance' in cd
             or 'compute_lte' in ai.__dict__ or type(ai).compute_lte is not form[1]
             or (cls._charge_lte, cls._normalised, cls._reference, cls.tolerance,
-                sc.normalised_error, sc.sigglobal_reference, ig.third_divided_difference,
+                sc.normalised_error, sc.sigglobal_reference, sc.charge_floor,
+                ig.third_divided_difference,
                 an.remove_row_col, an._reduce_ndarray, np.linalg.solve, tk.linearsolver,
                 tk.maximum, tk.concatenate, tk.array) != G['chain']):
         return _no('lte_c:patched')
@@ -494,6 +497,16 @@ def _load(ctrl, s, drv, sk, euler, sc, arr):
             return _no('lte_c:x')
         np.copyto(buf['mask'], mask)
         st.has_mask = 1
+    ## (`lte_algebraic='charge'`'s rows and charge, `charge_floor`)
+    charge, chgtol = s.lte_charge, s.lte_chgtol
+    if charge is None:
+        st.has_charge = 0
+    else:
+        if not (type(charge) is np.ndarray and charge.shape == (n,)
+                and type(chgtol) in (float, int)):
+            return _no('lte_c:x')
+        np.copyto(buf['charge'], charge)
+        st.has_charge, st.chgtol = 1, float(chgtol)
     st.have_run = 0 if run is None else 1
     st.relref = mode
     st.nn = -1 if nn is None else nn

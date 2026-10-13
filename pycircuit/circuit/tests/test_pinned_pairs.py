@@ -276,7 +276,8 @@ PAIRS = {
                '`J`), `_normalised` (the running reference by `relref`, '
                '`sigglobal_reference`, `tolerance`, `normalised_error`) and '
                '`np.max`, the running reference written only on success; an unknown '
-               '`lte_mask` leaves out is +0.0 before the maximum',
+               '`lte_mask` leaves out is +0.0 before the maximum; on the rows '
+               '`lte_charge` marks the absolute tolerance is `charge_floor`\'s',
         'reference': ['pycircuit.circuit.stepcontroller:StepController._charge_lte',
                       'pycircuit.circuit.stepcontroller:StepController._normalised',
                       'pycircuit.circuit.stepcontroller:StepController._reference',
@@ -284,6 +285,7 @@ PAIRS = {
                       'pycircuit.circuit.stepcontroller:StepController._max_error',
                       'pycircuit.circuit.stepcontroller:normalised_error',
                       'pycircuit.circuit.stepcontroller:sigglobal_reference',
+                      'pycircuit.circuit.stepcontroller:charge_floor',
                       'pycircuit.circuit.integrator:Gear2Integrator.compute_lte',
                       'pycircuit.circuit.integrator:TrapezoidalIntegrator.compute_lte',
                       'pycircuit.circuit.integrator:EulerIntegrator.compute_lte',
@@ -625,7 +627,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('837249250601', '716b6f29ec13'),
-    'the stepping loop and its C': ('e53da75e4a21', '0b35540e1573'),
+    'the stepping loop and its C': ('c64a84391f00', '19ed9d14db21'),
     'the predictor and its C': ('f2c284eb392d', '2f1a2f96e90f'),
     'the branch screen and its C': ('1b848875234f', '63344f5461eb'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
@@ -640,7 +642,7 @@ RECORD = {
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
     'the Newton solve and its C': ('f7509d6b5900', '80a496916cfd'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
-    'the error test and its C': ('1650ca5eabf8', '3925aca9bd1c'),
+    'the error test and its C': ('74be4a356f21', '635e690bbe3d'),
     'the DC base solve and its C': ('d17203656044', '60e5fa192106'),
     'the PCNR DC solve and its C': ('4e03c4945c40', '23189979e665'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),

@@ -46,19 +46,14 @@ XYCE = os.environ.get('PYCIRCUIT_XYCE', os.path.expanduser('~/local/xyce/serial/
 #: name -> (deck, gold or None): the decks with a `.tran` that import
 #: (stage 2's census; latch and opampal since stage 7's substrate
 #: junction; the MOS level-2 decks since stage 9)
-#: name -> the Transient keywords a deck runs with beyond its own: slowlatch
-#: collapses its step on the source currents' error test (stiff internal
-#: nodes behind 40 ohm sheet resistances, coupled by the gate charge), and
-#: runs as ngspice judges -- device charges, not source currents
-#: (`Transient.lte_algebraic`; doc/hdl_roadmap_260824.md, 76)
-OVERRIDES = {'slowlatch': {'lte_algebraic': 'skip'},
-             ## (gm17: the same collapse, on its supply's current; 2026-10-10)
-             'gm17': {'lte_algebraic': 'skip'},
-             ## (the ring: 7885 steps / 729 forced -> 2877 / 0, the same
-             ## accuracy; its PSS's grid needs it, 2026-10-10)
-             'ring': {'lte_algebraic': 'skip'},
-             ## (voter25: 14463 steps / 890 forced -> 3989 / 2)
-             'voter25': {'lte_algebraic': 'skip'}}
+#: name -> the Transient keywords a deck runs with beyond its own: none since
+#: 2026-10-13.  slowlatch, gm17, the ring and voter25 ran `lte_algebraic=
+#: 'skip'` -- their step collapsed on the error test of the sources' currents
+#: (doc/hdl_roadmap_260824.md, 76) -- until the default 'charge' judged those
+#: currents by the charge they move: the four as under 'skip' or better
+#: (voter25 4014 steps, gm17 99, the ring 2968, slowlatch 710 with no step
+#: forced), jge's 143 forced steps gone with them
+OVERRIDES = {}
 
 _X = 'Netlists/'
 _G = 'OutputData/'

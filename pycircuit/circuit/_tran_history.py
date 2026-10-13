@@ -29,6 +29,90 @@ def _ring_push(v, ring, toolkit):
     return toolkit.concatenate((toolkit.array([v]), ring))[:-1]
 
 
+def _charge_free(C, nn):
+    """Per branch current of `C`'s circuit (the unknowns from `nn` on): True
+    where no charge depends on it -- its column and row of `C` zero (an
+    inductor's current carries its flux; a voltage source's nothing)."""
+    br = slice(nn, None)
+    return ~(np.any(C[:, br] != 0.0, axis=0) | np.any(C[br, :] != 0.0, axis=1))
+
+
+def capacitive_loop_currents(C, nn, ends):
+    """Per unknown of `C`'s circuit, True on the currents MNA's index 2 comes
+    from: a branch current no charge depends on (`_charge_free`) whose ends
+    `ends[k]` (node indices) are joined by capacitive couplings -- a nonzero
+    of `C` between two node rows -- and the other such currents: a loop of
+    capacitors and voltage-defined branches.  Such a current is the slope of
+    capacitor voltages (a source driving a gate's charge), not a quantity a
+    step integrates.  A branch with both ends on one node closes nothing."""
+    out = np.zeros(C.shape[0], dtype=bool)
+    root = list(range(nn))
+
+    def find(a):
+        while root[a] != a:
+            root[a] = root[root[a]]
+            a = root[a]
+        return a
+
+    ii, jj = np.nonzero(C[:nn, :nn] != 0.0)
+    for a, b in zip(ii.tolist(), jj.tolist()):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            root[ra] = rb
+    ## (each current an edge between the groups the couplings join: one
+    ## whose ends are one group closes a loop alone, the others where they
+    ## lie on a cycle of those edges)
+    edges, rows = [], []
+    for k in np.flatnonzero(_charge_free(C, nn)).tolist():
+        a, b = ends[k]
+        if a == b:
+            continue
+        ga, gb = find(a), find(b)
+        if ga == gb:
+            out[nn + k] = True
+        else:
+            edges.append((ga, gb))
+            rows.append(nn + k)
+    for e in _on_cycles(edges):
+        out[rows[e]] = True
+    return out
+
+
+def _on_cycles(edges):
+    """The indices of the edges of a multigraph (vertex pairs) that lie on a
+    cycle: all but its bridges, by Tarjan's low-link, iterative (a parallel
+    pair is a cycle: an edge skips only its own way back)."""
+    adj = {}
+    for e, (u, v) in enumerate(edges):
+        adj.setdefault(u, []).append((v, e))
+        adj.setdefault(v, []).append((u, e))
+    disc, low, bridges = {}, {}, set()
+    for top, around in adj.items():
+        if top in disc:
+            continue
+        disc[top] = low[top] = len(disc)
+        stack = [(top, -1, iter(around))]
+        while stack:
+            u, back, it = stack[-1]
+            for v, e in it:
+                if e == back:
+                    continue
+                if v in disc:
+                    low[u] = min(low[u], disc[v])
+                else:
+                    disc[v] = low[v] = len(disc)
+                    stack.append((v, e, iter(adj[v])))
+                    break
+            else:
+                stack.pop()
+                if stack:
+                    p = stack[-1][0]
+                    low[p] = min(low[p], low[u])
+                    if low[u] > disc[p]:
+                        bridges.add(back)
+    return [e for e in range(len(edges)) if e not in bridges]
+
+
 class _RunHistory:
     """The run's history (begin, push, roll, freeze, the periodic shifts) and
     what the shooting reads off a step (`step_lte`, `residual_dh`,
@@ -363,7 +447,8 @@ class _RunHistory:
             'abstol': abstol, 'toolkit': self.toolkit, 'max_step': max_step,
             'TRTOL': self.LTERATIO, 'n_nodes': len(self.cir.nodes),
             'h_clamped': clamped, 'x_hist': x_hist, 'lte_mask': self._lte_mask(),
-            'linsolver': self._sparse_linsolver()}
+            'linsolver': self._sparse_linsolver(),
+            'lte_charge': self._lte_charge(), 'lte_chgtol': self.par.lte_chgtol}
 
     def _sparse_linsolver(self):
         """The run's linear solver where it factors on the circuit's
@@ -395,16 +480,52 @@ class _RunHistory:
         nn = len(self.cir.nodes)
         mask = np.ones(n, dtype=bool)
         if n > nn:
-            try:
-                xr = np.random.RandomState(20261009).uniform(-1.0, 1.0, n)
-                C = np.asarray(self.cir.C(xr, self.epar), dtype=float)
-                br = np.arange(nn, n)
-                charged = (np.any(C[:, br] != 0.0, axis=0) | np.any(C[br, :] != 0.0, axis=1))
-                mask[nn:] = charged
-            except Exception:                                  # noqa: BLE001
-                mask[:] = True
+            C = self._generic_C()
+            if C is not None:
+                mask[nn:] = ~_charge_free(C, nn)
         self._lte_mask_cache = mask
         return mask
+
+    def _lte_charge(self):
+        """The unknowns `lte_algebraic='charge'` judges by the charge they
+        move in a step (`stepcontroller.charge_floor`): the branch currents
+        no charge depends on that close a loop of capacitive couplings and
+        other such currents (`capacitive_loop_currents`, from `C` at
+        `_generic_C`'s state).  None: another mode, no such current, or a
+        circuit whose `C` or branch ends cannot be read (every unknown then
+        judged as under 'judge').  Once a run (`_solve` clears it)."""
+        if self.par.lte_algebraic != 'charge':
+            return None
+        n = self.cir.n
+        cached = self.__dict__.get('_lte_charge_cache')
+        if cached is not None and cached[0] == n:
+            return cached[1]
+        nn = len(self.cir.nodes)
+        rows = None
+        if n > nn:
+            C = self._generic_C()
+            index = {node: i for i, node in enumerate(self.cir.nodes)}
+            try:
+                ends = [(index[b.plus], index[b.minus]) for b in self.cir.branches]
+            except (KeyError, AttributeError):
+                ends = None
+            if C is not None and ends is not None:
+                rows = capacitive_loop_currents(C, nn, ends)
+                if not rows.any():
+                    rows = None
+        self._lte_charge_cache = (n, rows)
+        return rows
+
+    def _generic_C(self):
+        """`C` at a generic state -- `RandomState(20261009)`, uniform in
+        [-1, 1] -- where a charge's structural dependence shows (the error
+        test's masks read it there): a float array, or None where the
+        circuit cannot evaluate it."""
+        xr = np.random.RandomState(20261009).uniform(-1.0, 1.0, self.cir.n)
+        try:
+            return np.asarray(self.cir.C(xr, self.epar), dtype=float)
+        except Exception:                                      # noqa: BLE001
+            return None
 
     def residual_dh(self, x, t, h=None):
         """Fang's ``p = df_ckt/dh_m``, at fixed solution ``x``.

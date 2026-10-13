@@ -2357,7 +2357,8 @@ def test_a_node_with_no_error_and_no_tolerance_does_not_blind_the_step_control(i
 def test_lte_algebraic_skip_leaves_out_only_the_currents_no_charge_depends_on():
     """`lte_algebraic='skip'` (doc/hdl_roadmap_260824.md, 76): every node
     voltage and an inductor's current (its flux is a charge) are judged, a
-    voltage source's current is not; the default judges every unknown."""
+    voltage source's current is not; 'judge' and the default judge every
+    unknown."""
     from pycircuit.circuit.elements import VS
     c = SubCircuit()
     c['V1'] = VS(1, gnd, vac=0, v=1.0)
@@ -2365,9 +2366,128 @@ def test_lte_algebraic_skip_leaves_out_only_the_currents_no_charge_depends_on():
     c['C1'] = C(2, gnd, c=1e-9)
     c['L1'] = L(2, gnd, L=1e-3)
     nn = len(c.nodes)
-    assert Transient(c).par.lte_algebraic == 'judge'
+    assert Transient(c).par.lte_algebraic == 'charge'
     assert Transient(c)._lte_mask() is None
+    assert Transient(c, lte_algebraic='judge')._lte_mask() is None
     mask = Transient(c, lte_algebraic='skip')._lte_mask()
     assert mask[:nn].all()
     judged = sorted(bool(m) for m in mask[nn:])
     assert judged == [False, True], mask
+
+
+def _charge_rows(c, **kw):
+    """`Transient(c)._lte_charge()`'s rows as branch names (sorted), or None."""
+    tr = Transient(c, **kw)
+    rows = tr._lte_charge()
+    if rows is None:
+        return None
+    nn = len(c.nodes)
+    return sorted(f'{b.plus}-{b.minus}' for k, b in enumerate(c.branches) if rows[nn + k])
+
+
+def test_lte_algebraic_charge_takes_the_currents_that_close_a_capacitive_loop():
+    """`lte_algebraic='charge'` (the default; doc/hdl_roadmap_260824.md, 76):
+    a voltage source across a capacitor closes a loop of capacitors and
+    sources -- MNA index 2, its current the capacitor's dq/dt -- and so does
+    a pair of sources around one; a source feeding a capacitor through a
+    resistor, or an inductor, closes none, and an inductor's own current
+    carries its flux.  Under 'judge' and 'skip' no row is floored."""
+    from pycircuit.circuit.elements import VS
+    c = SubCircuit()
+    c['V1'] = VS(1, gnd, vac=0, v=1.0)
+    c['C1'] = C(1, gnd, c=1e-12)
+    assert _charge_rows(c) == ['1-gnd!']
+    assert _charge_rows(c, lte_algebraic='judge') is None
+    assert _charge_rows(c, lte_algebraic='skip') is None
+    c = SubCircuit()
+    c['V1'] = VS(1, gnd, vac=0, v=1.0)
+    c['R1'] = R(1, 2, r=1e3)
+    c['C1'] = C(2, gnd, c=1e-12)
+    c['L1'] = L(2, 3, L=1e-6)
+    c['C2'] = C(3, gnd, c=1e-12)
+    assert _charge_rows(c) is None
+    c = SubCircuit()
+    c['V1'] = VS(1, gnd, vac=0, v=1.0)
+    c['V2'] = VS(2, 1, vac=0, v=0.5)
+    c['C1'] = C(2, gnd, c=1e-12)
+    c['R1'] = R(2, 3, r=1e3)
+    c['V3'] = VS(3, gnd, vac=0, v=0.0)
+    assert _charge_rows(c) == ['1-gnd!', '2-1']
+
+
+def test_the_capacitive_loop_test_is_the_loops_definition():
+    """`capacitive_loop_currents` (a bridge test on the groups capacitors
+    join) against its definition -- a current whose ends the capacitors and
+    the OTHER charge-free currents join -- on drawn circuits: 300 of up to 7
+    nodes, couplings and branches drawn at random, parallel branches and
+    branches on one node included."""
+    from pycircuit.circuit._tran_history import capacitive_loop_currents
+
+    def defined(C, nn, ends):
+        free = [k for k in range(len(ends))
+                if not (np.any(C[:, nn + k]) or np.any(C[nn + k, :]))]
+        out = np.zeros(C.shape[0], dtype=bool)
+        for k in free:
+            a, b = ends[k]
+            if a == b:
+                continue
+            root = list(range(nn))
+
+            def find(x, root=root):
+                while root[x] != x:
+                    x = root[x]
+                return x
+            for i, j in zip(*np.nonzero(C[:nn, :nn])):
+                root[find(i)] = find(j)
+            for m in free:
+                if m != k:
+                    root[find(ends[m][0])] = find(ends[m][1])
+            out[nn + k] = find(a) == find(b)
+        return out
+
+    rng = np.random.RandomState(20261013)
+    for _ in range(300):
+        nn, nb = rng.randint(2, 8), rng.randint(1, 7)
+        n = nn + nb
+        C = np.zeros((n, n))
+        for _c in range(rng.randint(0, 6)):
+            i, j = rng.randint(nn, size=2)
+            C[i, i] += 1.0
+            C[j, j] += 1.0
+            C[i, j] -= 1.0
+            C[j, i] -= 1.0
+        ## (a few branches carry a charge: an inductor's flux)
+        for k in range(nb):
+            if rng.rand() < 0.2:
+                C[nn + k, nn + k] = 1.0
+        ends = [tuple(rng.randint(nn, size=2)) for _k in range(nb)]
+        np.testing.assert_array_equal(capacitive_loop_currents(C, nn, ends),
+                                      defined(C, nn, ends))
+
+
+def test_lte_algebraic_charge_floors_only_its_rows_at_the_charge_per_step():
+    """`charge_floor`: on the floored rows the absolute tolerance is
+    max(abstol, chgtol / h) -- never below `abstol` -- elsewhere `abstol`,
+    a scalar or per unknown; no rows, `abstol` itself."""
+    from pycircuit.circuit.stepcontroller import charge_floor
+    ## (powers of two: the floor 2^-50 / 2^-40 = 2^-10 exactly)
+    rows = np.array([False, True, True])
+    ab = np.array([2.0 ** -20, 2.0 ** -40, 2.0 ** -8])
+    np.testing.assert_array_equal(charge_floor(ab, rows, 2.0 ** -50, 2.0 ** -40),
+                                  [2.0 ** -20, 2.0 ** -10, 2.0 ** -8])
+    np.testing.assert_array_equal(charge_floor(2.0 ** -40, rows, 2.0 ** -50, 2.0 ** -40),
+                                  [2.0 ** -40, 2.0 ** -10, 2.0 ** -10])
+    np.testing.assert_array_equal(charge_floor(2.0 ** -40, rows, 2.0 ** -50, 1.0),
+                                  [2.0 ** -40, 2.0 ** -40, 2.0 ** -40])
+    assert charge_floor(ab, None, 2.0 ** -50, 2.0 ** -40) is ab
+
+
+def test_lte_algebraic_rejects_an_unknown_mode():
+    """`lte_algebraic` is one of `LTE_ALGEBRAIC_MODES`, checked when a run
+    starts."""
+    from pycircuit.circuit.elements import VS
+    c = SubCircuit()
+    c['V1'] = VS(1, gnd, vac=0, v=1.0)
+    c['R1'] = R(1, gnd, r=1e3)
+    with pytest.raises(ValueError, match='lte_algebraic'):
+        Transient(c, lte_algebraic='skipp').solve(tend=1e-9, timestep=1e-10)

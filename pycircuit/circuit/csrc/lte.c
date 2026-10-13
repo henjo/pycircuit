@@ -225,18 +225,25 @@ static void reference(lte_t *s, long n)
     }
 }
 
-/* `tolerance`, `normalised_error`, `_normalised`'s mask and `np.max`:
-   `err`.  0, or why it is handed back */
+/* `charge_floor`, `tolerance`, `normalised_error`, `_normalised`'s mask and
+   `np.max`: `err`.  0, or why it is handed back */
 static long normalised_error(lte_t *s, long n)
 {
     long i;
-    double err;
-    /* the tolerance TRTOL (reltol ref + abstol) and |lte| / tol, in
+    double err, ab, floor = 0.0;
+    /* `charge_floor` (`lte_algebraic='charge'`): on the rows `charge` marks
+       the absolute tolerance is np.maximum(abstol, chgtol / h) -- the
+       Python's one division, h its `h_curr` -- elsewhere abstol.  Then the
+       tolerance TRTOL (reltol ref + abstol) and |lte| / tol, in
        `tolerance`'s order.  normalised_error's two `where`s (0/0 -> 0, NaN
        -> inf) cannot fire past the tests: every tol positive and finite,
        every |lte| finite */
-    for (i = 0; i < n; i++)
-        s->tq[i] = s->trtol * (s->reltol * s->ref[i] + (s->abs_vec ? s->abst[i] : s->abstol));
+    if (s->has_charge) floor = s->chgtol / s->h1;
+    for (i = 0; i < n; i++) {
+        ab = s->abs_vec ? s->abst[i] : s->abstol;
+        if (s->has_charge && s->charge[i] != 0.0) ab = pcx_np_maximum(ab, floor);
+        s->tq[i] = s->trtol * (s->reltol * s->ref[i] + ab);
+    }
     if (fetestexcept(PCX_FP_FLAGS)) return LTE_BAIL_FLAGS;
     for (i = 0; i < n; i++) if (!(s->tq[i] > 0.0 && isfinite(s->tq[i]))) return LTE_BAIL_TOLERANCE;
     for (i = 0; i < n; i++) s->tq[i] = fabs(s->lte[i]) / s->tq[i];

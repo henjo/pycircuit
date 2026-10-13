@@ -75,6 +75,14 @@ def _pulsed(n=6):
     return c
 
 
+def _pulsed_load(n=6):
+    """The pulsed chain with a capacitor on the pulse's node: the source and
+    it close a loop (`lte_algebraic='charge'` floors the source's current)."""
+    c = _pulsed(n)
+    c['cg'] = C('g0', gnd, c=1e-13)
+    return c
+
+
 ## (what the steps leave that is not state they compute from: the
 ## predictor's memos, the core's check counters, a cache keyed by ids)
 _NOT_STATE = {'_pred_fast', '_pred_wmemo', '_tran_core', '_row_names_cache'}
@@ -262,6 +270,8 @@ def _hard_mos(n=8):
     ('assumed', _pulsed, {'retry_order': 'assumed'}, {'tend': 4e-8, 'timestep': 1e-9}),
     ('carried', _pulsed, {'retry_order': 'carried'}, {'tend': 4e-8, 'timestep': 1e-9}),
     ('mask', _pulsed, {'lte_algebraic': 'skip'}, {'tend': 4e-8, 'timestep': 1e-9}),
+    ('judge', _pulsed, {'lte_algebraic': 'judge'}, {'tend': 4e-8, 'timestep': 1e-9}),
+    ('charge', _pulsed_load, None, {'tend': 4e-8, 'timestep': 1e-9}),
 ])
 def test_an_adaptive_run_is_the_python_one(name, build, make, kw, monkeypatch):
     """Every attempt -- accepted, rejected at a point and retried, a landing,
@@ -272,6 +282,20 @@ def test_an_adaptive_run_is_the_python_one(name, build, make, kw, monkeypatch):
     if build is _pulsed:
         ## (the pulse's corners reject: retried at the point, in C)
         assert ca.get('loop_c:attempts', 0) > ca.get('loop_c:steps', 0), ca
+
+
+def test_the_charge_floor_is_alive_in_an_adaptive_run(monkeypatch):
+    """`lte_algebraic='charge'`, the default: the pulse and the capacitor on
+    its node close a loop, the C loop floors the source's current -- the
+    same run as the Python's (the 'charge' case above) -- and the floor
+    moves the run: under 'judge' it is another."""
+    rows = Transient(_pulsed_load(), toolkit=circuit.numeric)._lte_charge()
+    assert rows is not None and rows.sum() == 1
+    kw = {'tend': 4e-8, 'timestep': 1e-9, 'fixed_timestep': False}
+    a, ca = _run(_pulsed_load, True, monkeypatch, **kw)
+    b, _cb = _run(_pulsed_load, True, monkeypatch, make={'lte_algebraic': 'judge'}, **kw)
+    assert ca.get('loop_c:steps', 0) >= 10, ca
+    assert a['x'] != b['x'] and a['stats'] != b['stats']
 
 
 def test_a_piece_shadowed_on_the_transient_is_declined(monkeypatch):

@@ -8668,3 +8668,75 @@ default answer moved; suite 5253. Speed is Python's: e1480 200 s, opampal 161 s,
 jge 812 s before falling back. Measured for the next step: batching `pcnr_didv` per model class
 is bit-identical and 3x; evaluating devices through the compiled C kernels at their own points
 is the real lever, moving PCNR's answers at rounding level.
+
+## 2026-10-13 — 129. `lte_algebraic='charge'`, the default: a current that closes a capacitive loop judged by the charge it moves
+
+**Why now.**  The standing gmin (the DC plan's final stage) broke jge's
+transient at 2.186 ns.  Traced, the error test's worst component was the
+clock source VPh1H's current -- section 76's mechanism, not the gmin's:
+with the gmin the step had to fall below ~4e-18 s, where the step matrix
+breaks; without it the run survived by 143 force-accepted steps.  And
+'judge' already gave up on the gold decks: 384 steps force-accepted over
+tolerance, on 15 of the 27.
+
+**What those currents are.**  A voltage source whose two ends are joined
+by capacitors and other voltage-defined branches -- a supply or a clock
+driving gate capacitance -- is where MNA's index is 2: its current is the
+slope of capacitor voltages, determined by them, not integrated, and its
+truncation estimate does not fall with the step (76: ~5e-6 A from h =
+1e-12 to 1e-16 s).  RADAU5 scales such components' error by h; ngspice
+judges device charges in charge units with a charge floor, never a
+source's current.
+
+**`lte_algebraic='charge'`, the default**: those currents judged by the
+charge they move in a step -- the absolute tolerance max(lte_iabstol,
+lte_chgtol / h), `lte_chgtol` 1e-15 C (`stepcontroller.charge_floor`),
+never below 'judge''s -- every other unknown as under 'judge'.  Which
+currents: structural, from C at the error test's generic state, once a run
+(`_RunHistory._lte_charge`; `_tran_history.capacitive_loop_currents`: the
+charge-free branch currents whose ends the capacitive couplings and the
+other such currents join, a bridge test on the groups the couplings make,
+checked against the definition on 300 drawn circuits).  The multistep
+error test and the stage family's take the floor; the coupled path already
+leaves every charge-free row out (P22).  The C error test floors the same
+rows the same way (lte.c: `pcx_np_maximum(abstol, chgtol / h)`), the C
+loop binds them once a run; both pinned pairs re-recorded after the twins
+(the drawn bit-for-bit test with drawn rows, a pulse driving a capacitor
+in the C loop: the same run, and another under 'judge').  The suite's four
+'skip' OVERRIDES are gone.
+
+**Sized before it was built** (a prototype, the Python loop; the DC plan's
+"ALGEBRAIC ERROR CONTROL"):
+
+| the 27 gold decks | steps | rejected | forced | time | gold columns passing |
+|---|---|---|---|---|---|
+| 'judge' (+ the four 'skip' overrides) | 73 342 | 17 685 | 384 | 133 s | 69 / 99 |
+| 'skip' everywhere | 51 020 | 7 155 | 1 | 81 s | 69 / 99 |
+| **'charge'** | 53 228 | 8 224 | **1** | 87 s | 69 / 99 |
+| a looser band, gamma_max 3 / 8 | 77 920 / 71 077 | 7 324 / 3 054 | 173 / 38 | 123 / 107 s | 69 / 99 |
+
+The one forced step is 4049osc's, in every mode.  'charge' moves 44
+columns closer to Xyce's gold, 29 further, 26 not at all; none crosses the
+pass line.  jge: 11 036 steps / 143 forced / 44.5 s -> 4 490 / 0 / 17.7 s.
+A looser band (VACASK accepts ~55x the raw tolerance before a rejection,
+we 7x) is no remedy: jge still forces 26 steps at gamma_max 3, and without
+the overrides voter25 goes 4 006 -> 11 962 steps.  chgtol: 1e-16 takes
+8 % more steps, 1e-14 (ngspice's) 3 % fewer but forces a step on two
+decks.  On radau: 227 147 forced (todd3 224 646) -> 20, steps 486 220 ->
+39 280, the same 69 columns passing.
+
+**The suite.**  'skip' as the default fails 10 tests, 76's six accuracy
+ones among them; 'charge' none -- those circuits' currents close no
+capacitive loop, so 'charge' judges them as 'judge' does.  Of 655 tests
+that reach the error test, 46 see such currents and 11 have a step
+decided otherwise; all pass.
+
+**Not decision 0.3d's charge guard** (`benchmarks/transient_decisions.py`):
+that was a second acceptance test on every unknown, and it switched step
+control off; this floors only the index-2 rows, and the decks keep 8 224
+rejections.
+
+**Gate.**  The full suite: 5306 passed (11 of them new), none failed.  Every
+gold deck on the C paths -- the C loop served 47 330 of the 53 228 steps --
+gives the prototype's numbers exactly, deck by deck: steps, rejections,
+forced steps and every gold metric.

@@ -33,6 +33,10 @@ typedef struct {
                                    `abst`, 0: the scalar `abstol` */
         has_mask,               /* [run] 1: only the unknowns `mask` marks are
                                    judged (`Transient.lte_algebraic`) */
+        has_charge,             /* [run] 1: on the unknowns `charge` marks the
+                                   absolute tolerance is at least chgtol / h1
+                                   (`stepcontroller.charge_floor`,
+                                   `lte_algebraic='charge'`) */
         formula;                /* [step] the estimate: enum lte_formula */
     double h1, h2, h3,          /* [step] h_curr, h_last, h_last2 (Euler reads h1
                                    alone, the callers pass 0.0 for the others) */
@@ -43,6 +47,7 @@ typedef struct {
                                    caller in the integrator's scalar arithmetic */
         reltol, abstol, trtol;  /* [run] the tolerance TRTOL (reltol ref + abstol):
                                    trtol is TRTOL; `abstol` is 0.0 where abs_vec */
+    double chgtol;              /* [run] `lte_chgtol`, read where has_charge */
     const double *xc, *xl,      /* [step] x_curr, x_last (n each) */
         *q, *q1, *q2, *q3,      /* [step] q_curr and the three past charges, most
                                    recent first (n each) */
@@ -56,6 +61,9 @@ typedef struct {
                                    read where abs_vec */
         *mask;                  /* [run] n: an unknown is judged where its entry
                                    is nonzero (a NaN counts); read where has_mask */
+    const double *charge;       /* [run] n: an unknown's absolute tolerance is
+                                   floored where its entry is nonzero -- read
+                                   where has_charge */
     /* work buffers and the one output vector: the context's own (`_Ctx`),
        pointed at once; their contents are this call's */
     double *A,                  /* m x m: the reduced J column-major, LAPACK's

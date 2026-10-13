@@ -186,7 +186,8 @@ def test_the_controllers_take_one_set_of_inputs_by_keyword_or_position(ctrl_cls)
           'active_integrator': integ, 'irefnode': 2, 'reltol': 1e-3,
           'abstol': 1e-12, 'toolkit': numeric, 'max_step': 1e-3, 'TRTOL': 7.0,
           'n_nodes': None, 'h_last2': 1e-6, 'h_clamped': False,
-          'x_hist': hist, 'lte_mask': None, 'linsolver': None}
+          'x_hist': hist, 'lte_mask': None, 'linsolver': None, 'lte_charge': None,
+          'lte_chgtol': 0.0}
     names = list(StepLTEInputs.__dataclass_fields__)
     assert names == list(kw), names
     by_kw = ctrl_cls().evaluate_step(**kw)
@@ -213,6 +214,27 @@ def test_an_unknown_the_mask_leaves_out_does_not_judge_the_step(ctrl_cls):
     assert not ctrl_cls().evaluate_step(**kw)[0]
     assert ctrl_cls().evaluate_step(lte_mask=np.array([True, False, True]), **kw)[0]
     assert not ctrl_cls().evaluate_step(lte_mask=np.array([False, True, True]), **kw)[0]
+
+
+@pytest.mark.parametrize('ctrl_cls', [IntegralController, PIController])
+def test_a_floored_unknown_is_judged_by_the_charge_it_moves(ctrl_cls):
+    """`lte_charge` (`Transient.lte_algebraic='charge'`): on a floored
+    unknown the absolute tolerance is at least `lte_chgtol / h_curr` -- an
+    error the charge per step allows does not reject (here 1e-2 A against
+    7 (1e-3 + 1e-8 C / 1e-6 s)); the others judge as before, and a floor
+    below `abstol` changes nothing."""
+    integ = StubIntegrator(Eg=[1e-9, 1e-2, 0.0])
+    kw = {'x_curr': np.ones(3), 'x_last': np.ones(3), 'q_curr': np.zeros(3),
+          'q_last_hist': [np.zeros(3)], 'iq_last_hist': [np.zeros(3)], 'h_curr': 1e-6,
+          'h_last': 1e-6, 'no_history': False, 'J': np.eye(3), 'active_integrator': integ,
+          'irefnode': 2, 'reltol': 1e-3, 'abstol': 1e-12, 'toolkit': numeric,
+          'max_step': 1e-3, 'TRTOL': 7.0, 'n_nodes': None, 'h_last2': None,
+          'h_clamped': False, 'x_hist': None}
+    rows = np.array([False, True, False])
+    assert not ctrl_cls().evaluate_step(**kw)[0]
+    assert ctrl_cls().evaluate_step(lte_charge=rows, lte_chgtol=1e-8, **kw)[0]
+    assert not ctrl_cls().evaluate_step(lte_charge=~rows, lte_chgtol=1e-8, **kw)[0]
+    assert not ctrl_cls().evaluate_step(lte_charge=rows, lte_chgtol=1e-30, **kw)[0]
 
 
 @pytest.mark.parametrize('ctrl_cls', [IntegralController, PIController])

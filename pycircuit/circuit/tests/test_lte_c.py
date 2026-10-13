@@ -119,7 +119,8 @@ def _vec(data, n, elems=_plain):
        h=st.floats(1e-15, 1e-3), r2=st.floats(0.01, 50.0), r3=st.floats(0.01, 50.0))
 def test_the_c_is_the_chain_bit_for_bit(data, n, pi, kind, relref, h, r2, r3):
     """Drawn inputs -- huge and tiny charges (overflow, underflow), singular
-    and ill-conditioned `J`, vector and scalar `abstol`, every unit split:
+    and ill-conditioned `J`, vector and scalar `abstol` (floored on drawn
+    rows, `lte_algebraic='charge'`), every unit split:
     the same `(err, p)` bits, running reference, warnings and exception, the
     C served or handed back.  The steps Python floats or numpy's (a period's
     grid gives numpy's)."""
@@ -158,6 +159,11 @@ def test_the_c_is_the_chain_bit_for_bit(data, n, pi, kind, relref, h, r2, r3):
           'irefnode': iref, 'reltol': data.draw(st.sampled_from([1e-3, 1e-6, 0.0])),
           'abstol': abstol, 'toolkit': circuit.numeric, 'max_step': 1.0,
           'n_nodes': data.draw(st.sampled_from([None, 0, 1, n - 1, n]))}
+    ## (`lte_algebraic='charge'`'s floor on drawn rows, in half the examples;
+    ## chgtol / h from far below to far above `abstol`)
+    if data.draw(st.booleans()):
+        kw['lte_charge'] = np.array(data.draw(st.lists(st.booleans(), min_size=n, max_size=n)))
+        kw['lte_chgtol'] = data.draw(st.sampled_from([1e-15, 0.0, 1e-9, 1e-3]))
     out = []
     for on in (False, True):
         ctrl = sc.PIController() if pi else sc.IntegralController()

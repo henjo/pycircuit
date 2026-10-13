@@ -10,6 +10,9 @@ from pycircuit.circuit.simwarnings import AccuracyWarning, warn
 ## Valid values for `relref`, matching a commercial simulator's parameter of the same name.
 RELREF_MODES = ('pointlocal', 'alllocal', 'sigglobal')
 
+## Valid values for `Transient(lte_algebraic=...)` (`charge_floor`, `_RunHistory._lte_mask`).
+LTE_ALGEBRAIC_MODES = ('charge', 'judge', 'skip')
+
 ## STAGE 4b -- the largest factor by which one ACCEPTED step may exceed the one
 ## before it.  This is a stability bound, not a taste parameter.  Variable-step
 ## BDF-2 is zero-stable only for `h_n/h_{n-1} < 1 + sqrt(2) = 2.414214`
@@ -80,6 +83,21 @@ def normalised_error(err, tol):
     return np.where(np.isnan(q), np.inf, q)
 
 
+def charge_floor(abstol, charge, chgtol, h):
+    """The absolute LTE tolerance under `Transient(lte_algebraic='charge')`:
+    on the rows `charge` marks -- a branch current no charge depends on that
+    closes a loop of capacitive couplings and other such currents (MNA index
+    2: the current is the slope of capacitor voltages, and its estimate does
+    not fall with the step) -- at least `chgtol / h`, the current that moves
+    the charge `chgtol` in the step; `abstol` elsewhere, and everywhere with
+    `charge` None.  Never below `abstol`, so never stricter than 'judge'.
+    The LMM error test and the stage family's share it; lte.c's
+    `normalised_error` floors the same rows the same way."""
+    if charge is None:
+        return abstol
+    return np.where(charge, np.maximum(abstol, chgtol / h), abstol)
+
+
 def sigglobal_reference(running, n_nodes):
     """`relref='sigglobal'`'s reference from a running maximum: each unit
     group -- the first `n_nodes` entries (node voltages), the rest (branch
@@ -139,6 +157,10 @@ class StepLTEInputs:
     ## pattern (a sparse run: `linearsolver.StructuralKLU`, the C loop plan's
     ## stage 2) -- `J^-1 Eg` is solved with it; None: the toolkit's solve
     linsolver: Any = None
+    ## True where an unknown's absolute tolerance is floored at `lte_chgtol /
+    ## h_curr` (`charge_floor`; `Transient.lte_algebraic` 'charge'); None: no floor
+    lte_charge: Any = None
+    lte_chgtol: float = 0.0
 
     @classmethod
     def bind(cls, *args, **kwargs):
@@ -426,8 +448,8 @@ class StepController(ABC):
         """`|lte| / tolerance` per entry, the reference by `relref`."""
         ref = self._reference(s.x_curr, s.x_last, s.no_history, s.n_nodes,
                               s.toolkit)
-        e = normalised_error(lte, self.tolerance(ref, s.reltol, s.abstol,
-                                                 s.TRTOL))
+        abstol = charge_floor(s.abstol, s.lte_charge, s.lte_chgtol, s.h_curr)
+        e = normalised_error(lte, self.tolerance(ref, s.reltol, abstol, s.TRTOL))
         if s.lte_mask is not None:
             e = np.where(s.lte_mask, e, 0.0)
         return e

@@ -20,8 +20,10 @@ from pycircuit.circuit.simwarnings import (
 ## path in `solve()` included: one bound, named once.  `stepcontroller` imports
 ## nothing from this package, so this is import-safe at module level.
 ## History: `doc/transient_history.md`, `transient.py`.
-from pycircuit.circuit.stepcontroller import (MAX_GROWTH_RATIO,
+from pycircuit.circuit.stepcontroller import (LTE_ALGEBRAIC_MODES,
+                                              MAX_GROWTH_RATIO,
                                               MIN_SHRINK_RATIO,
+                                              charge_floor,
                                               normalised_error)
 ## THE THEMES `Transient` is assembled from (`_tran_*.py`, 2026-10-01; the
 ## review's O8) -- the stepping loop, its policy and the Parameters stay
@@ -413,8 +415,11 @@ class _StageSteps(_StepFamily):
     def judge(self, X, x_new, h, _J, _clamped):
         tk = self.tr.toolkit
         est = tk.array(self.tr._rk_est)
+        ## (`lte_algebraic='charge'`'s floor, as the LMM error test's)
+        abstol = charge_floor(self.run.abstol, self.tr._lte_charge(),
+                              self.tr.par.lte_chgtol, h)
         wt = (self.tr.par.reltol * tk.array(self._reference(X[-1], x_new))
-              + tk.array(self.run.abstol))
+              + tk.array(abstol))
         ## (`normalised_error`: a 0/0 entry is 0, not a NaN that rejects the
         ## step and then grows it)
         ek = tk.array(normalised_error(np.asarray(est)[self.keep],
@@ -598,6 +603,7 @@ _RUN_STATE = {
     '_newton_tol_cache': ('run', 'the Newton tolerances per unknown'),
     '_row_names_cache': ('run', 'the reduced system\'s row names'),
     '_lte_mask_cache': ('run', 'the error test\'s algebraic-unknown mask'),
+    '_lte_charge_cache': ('run', 'the error test\'s capacitive-loop currents, with the size'),
     '_default_linearsolver': ('run', 'the linear solver, made at the first solve'),
     '_branch_rank0': ('run', 'the branch check\'s structural rank'),
     '_branch_const': ('run', 'the branch check\'s constant part'),
@@ -1079,19 +1085,36 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                    unit='',
                    default='sigglobal'),
          ## The error test on ALGEBRAIC unknowns -- a branch current no charge
-         ## depends on (a voltage source's, a controlled source's).  'judge'
-         ## (the default): judged as every unknown.  'skip': left out, as
-         ## ngspice judges only device charges (its sources declare no
-         ## truncation).  Judged, a source driving a MOS gate carries the gate
-         ## charge's derivative, and femtosecond content from stiff internal
-         ## nodes collapsed slowlatch's step; skipped as a default it cost
-         ## accuracy six tests measure (an HDL Laplace element, a VCO phase,
-         ## a BJT turn-off ...): an opt-in, `doc/hdl_roadmap_260824.md`, 76.
+         ## depends on (a voltage source's, a controlled source's).  'charge'
+         ## (the default since 2026-10-13): those that close a loop of
+         ## capacitors and other such branches (MNA index 2: a source driving
+         ## a MOS gate carries the gate charge's slope, whose estimate does
+         ## not fall with the step) judged by the charge they move in a step,
+         ## the absolute tolerance at least `lte_chgtol / h`
+         ## (`stepcontroller.charge_floor`); every other unknown as under
+         ## 'judge'.  'judge': every unknown alike -- those currents collapsed
+         ## slowlatch's step, and on the 27 gold decks 384 steps were
+         ## force-accepted over tolerance on 15 ('charge': one, which every
+         ## mode keeps; 27 % fewer steps; every gold column as it was).
+         ## 'skip': every charge-free current left out, as ngspice judges only
+         ## device charges -- it cost accuracy six tests measure (an HDL
+         ## Laplace element, a VCO phase, a BJT turn-off ...), whose currents
+         ## close no capacitive loop.  `doc/hdl_roadmap_260824.md`, 76.
          Parameter(name='lte_algebraic',
                    desc="The LTE test on algebraic branch currents (no charge "
-                        "depends on them): 'judge' or 'skip' (ngspice's)",
+                        "depends on them): 'charge' (those closing a capacitive "
+                        "loop judged by the charge they move in a step), 'judge' "
+                        "(as every unknown) or 'skip' (ngspice's)",
                    unit='',
-                   default='judge'),
+                   default='charge'),
+         ## 'charge''s floor.  Of 1e-16, 1e-15 and 1e-14 (ngspice's chgtol) on
+         ## the 27 gold decks, 1e-15 is the one with no forced step of its
+         ## own (1e-16: 8 % more steps; 1e-14: 3 % fewer, two decks force one).
+         Parameter(name='lte_chgtol',
+                   desc="The charge a current closing a capacitive loop may move "
+                        "in a step in error (lte_algebraic='charge')",
+                   unit='C',
+                   default=1e-15),
          ## The order a rejected step's retry assumes (`stepcontroller.
          ## RETRY_ORDER_MODES`): 'assumed' every retry h^p; 'measured' (the
          ## default) from the second retry at a point the order its two tries
@@ -1771,7 +1794,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         self._branch_error = None
         self._branch_warned = False
         self._branch_cmax = 0.0
+        if self.par.lte_algebraic not in LTE_ALGEBRAIC_MODES:
+            raise ValueError(f"lte_algebraic must be one of {LTE_ALGEBRAIC_MODES!r}, "
+                             f"not {self.par.lte_algebraic!r}")
         self.__dict__.pop('_lte_mask_cache', None)
+        self.__dict__.pop('_lte_charge_cache', None)
         _t_run_start = time.perf_counter()
         max_step = self._run_max_step(tend, timestep, fixed_timestep)
 

@@ -229,8 +229,9 @@ def test_the_ring_oscillator_s_periodic_steady_state():
 
 def test_gm17_s_supply_currents_in_the_error_test_force_few_steps():
     """The step controller's retry order (2026-10-10): gm17 (CircuitSim90,
-    MOS level 3) with its supply currents JUDGED -- the error test's
-    default, not the suite's skip.  Their estimates fall as ~h^1.1-1.4
+    MOS level 3) with its supply currents JUDGED -- 'judge', the error
+    test's default until 2026-10-13, not the suite's skip then.  Their
+    estimates fall as ~h^1.1-1.4
     between retries at a point; the cube-law retries undershot and 26
     steps were force-accepted over tolerance (and until the gate charge's
     onset split, 10700247, the run stopped at 5.75 ns).  With the second
@@ -243,3 +244,29 @@ def test_gm17_s_supply_currents_in_the_error_test_force_few_steps():
         warnings.simplefilter('ignore')
         tr.solve(**kw)
     assert tr.statistics.force_accepts <= 5, tr.statistics.force_accepts
+
+
+@pytest.mark.parametrize('radau', [False, True])
+def test_gm3_s_supply_current_by_the_charge_it_moves_forces_no_step(radau):
+    """`lte_algebraic='charge'`, the default since 2026-10-13
+    (doc/hdl_roadmap_260824.md, 76 and 129): gm3 (CircuitSim90, MOS level 3)
+    with its supply's current judged as every unknown force-accepts steps
+    over tolerance -- the current is the gate charges' slope (it closes a
+    loop of capacitors), and its estimate does not fall with the step;
+    judged by the charge it moves, no step is forced, in a quarter of the
+    steps -- the multistep error test's (measured 854 / 7 forced -> 197 / 0)
+    and the stage family's (radau 593 / 40 -> 184 / 0)."""
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    deck, = _data('Netlists/CircuitSim90/MOS3/gm3.cir')
+    circuit.default_toolkit = circuit.numeric
+    got = {}
+    for mode in ('judge', 'charge'):
+        imp = spice_import.import_netlist(deck)
+        extra = {'integrator': RadauIIA3Integrator()} if radau else {}
+        tr, kw = imp.transient(lte_algebraic=mode, **extra)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr.solve(**kw)
+        got[mode] = (tr.statistics.accepted_steps, tr.statistics.force_accepts)
+    assert got['judge'][1] > 0 and got['charge'][1] == 0, got
+    assert got['charge'][0] < 0.5 * got['judge'][0], got

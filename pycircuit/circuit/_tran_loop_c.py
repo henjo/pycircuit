@@ -178,6 +178,7 @@ _PIECES = (
     ('T', '_lte_inputs', '_RunHistory._lte_inputs', '_tran_history'),
     ('T', '_excursion_ratio', '_StepEvents._excursion_ratio', '_tran_events'),
     ('T', '_lte_mask', '_RunHistory._lte_mask', '_tran_history'),
+    ('T', '_lte_charge', '_RunHistory._lte_charge', '_tran_history'),
     ('T', '_sparse_linsolver', '_RunHistory._sparse_linsolver', '_tran_history'),
     ('IC', '_evaluate', 'IntegralController._evaluate', 'stepcontroller'),
     ('SC', 'evaluate_step', 'StepController.evaluate_step', 'stepcontroller'),
@@ -376,7 +377,7 @@ def _bind_judge(run, tr, n, judge):
     the sparse solver could not be bound."""
     from pycircuit.circuit import _tran_ctrl_c, _tran_lte_c
     ffi, s = run.ffi, run.s
-    ctrl, rset, sk, mask = judge
+    ctrl, rset, sk, mask, charge = judge
     lffi, lcfn, ldgesv = _tran_lte_c.driver()
     ctx = _tran_lte_c._Ctx(lffi, ldgesv, n, tr.irefnode)
     if sk is not None and not _tran_lte_c._klu_bind(ctx, sk):
@@ -395,6 +396,11 @@ def _bind_judge(run, tr, n, judge):
     le.has_mask = int(mask is not None)
     if mask is not None:
         ctx.buf['mask'][:] = mask
+    ## (the rows `lte_algebraic='charge'` floors, and its charge)
+    le.has_charge = int(charge is not None)
+    if charge is not None:
+        ctx.buf['charge'][:] = charge
+        le.chgtol = float(tr.par.lte_chgtol)
     if sk is not None:
         le.klu_num = lffi.cast('void *', sk._numeric)
         le.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
@@ -418,7 +424,8 @@ _KEEPS = {
     'umemo': True, 'sources': True, 'table': True, 'breakpoints': True, 'minbreak': True,
     'screen': True, 'pred': True, 'bind': True,
     ## (the adaptive judge's, `_judge`)
-    'controller': True, 'veto': True, 'mask': True, 'abstol': True, 'step_bounds': True,
+    'controller': True, 'veto': True, 'mask': True, 'charge': True, 'abstol': True,
+    'step_bounds': True,
     'tolerance': True, 'budget': True,
     ## the attempt's: what the last Python attempt left, or a state the next
     ## one may change
@@ -484,8 +491,8 @@ def _screen(tr, td, rec, n):
 
 def _judge(loop, tr, O, n):
     """The adaptive attempts' judge, checked: `(the controller, the run's
-    settings, the sparse solver or None, the error test's mask or None)`,
-    or a decline reason (str)."""
+    settings, the sparse solver or None, the error test's mask or None, the
+    rows its charge floor takes or None)`, or a decline reason (str)."""
     from pycircuit.circuit import _tran_ctrl_c, _tran_lte_c
     from pycircuit.circuit import stepcontroller as sc
     ctrl = tr.step_controller
@@ -504,6 +511,10 @@ def _judge(loop, tr, O, n):
     mask = tr._lte_mask()
     if mask is not None and not (type(mask) is np.ndarray and mask.shape == (n,)):
         return 'mask'
+    charge = tr._lte_charge()
+    if charge is not None and not (type(charge) is np.ndarray and charge.shape == (n,)
+                                   and type(tr.par.lte_chgtol) in (float, int)):
+        return 'charge'
     rset = loop.run
     ab = rset.abstol
     if not ((type(ab) is np.ndarray and ab.dtype is _F64 and ab.shape == (n,))
@@ -532,7 +543,7 @@ def _judge(loop, tr, O, n):
         sk = sk._choice
         if not (sk._numeric and sk._symbolic):
             return 'sparse'
-    return (ctrl, rset, sk, mask)
+    return (ctrl, rset, sk, mask, charge)
 
 
 #: the controller's methods the judge calls, shadowed on the instance
@@ -693,7 +704,8 @@ def _bound(loop, tr, rec, tab, rd, screen, judge):
             or len(run_.buf['qring']) != hist_len * n
             or (run_.lte is None) != (judge is None)
             or (judge is not None and (run_.sk is not judge[2] or run_.lte.s.has_mask
-                                       != (judge[3] is not None)))):
+                                       != (judge[3] is not None) or run_.lte.s.has_charge
+                                       != (judge[4] is not None)))):
         run_ = _bind(tr, rec, tab, n, hist_len, screen, judge)
         if run_ is not None:
             loop.c.run = run_
