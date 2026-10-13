@@ -301,20 +301,32 @@ class _LMMSteps(_StepFamily):
     divided-difference charge LTE (`IntegralController` unless the caller
     injected one).
 
-    ⚠ THREE REJECTIONS, THEN FORCE-ACCEPT.  Near a source corner the LTE
-    estimate can stay above tolerance for arbitrarily small steps while the
-    stored history is frozen; without a cap the step collapses and the solve
-    grinds.  After `max_reject` the already-converged step is accepted (only
-    its LTE was too high) with an order drop, so time advances and the history
+    ⚠ THREE REJECTIONS, THEN FORCE-ACCEPT -- SIX WHERE `lte_algebraic=
+    'charge'` FLOORS A CURRENT.  Near a source corner the LTE estimate can stay above
+    tolerance for arbitrarily small steps while the stored history is
+    frozen; without a cap the step collapses and the solve grinds.  After
+    `max_reject` the already-converged step is accepted (only its LTE was
+    too high) with an order drop, so time advances and the history
     refreshes.  The controller's lower-band GROWTH retries (a too-accurate
-    step redone larger, F14) are not rejections and do not count here."""
+    step redone larger, F14) are not rejections and do not count here.
+    'charge''s floor makes a loop-closing current's estimate fall below
+    tolerance at a corner, after up to five rejections (gm2: 714, 227, 44,
+    4.8 times its tolerance), where the third cut those retries off;
+    without the floor ('judge', 'skip', or no such current) the estimate
+    may never fall, and six let gm3's step under 'judge' shrink to minstep
+    and fail where three force-accept it (2026-10-13)."""
 
     max_reject = 3
+    ## (the budget of a run whose currents `lte_algebraic='charge'` floors,
+    ## set on the instance)
+    max_reject_charge = 6
     ## F14: the growth retries count here, bounding over/under alternation
     max_retries = 10
 
     def __init__(self, tr, run):
         self.tr, self.run = tr, run
+        if tr._lte_charge() is not None:
+            self.max_reject = self.max_reject_charge
         if getattr(tr, 'step_controller', None) is None:
             from pycircuit.circuit.stepcontroller import IntegralController
             tr.step_controller = IntegralController()
@@ -1094,8 +1106,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
          ## (`stepcontroller.charge_floor`); every other unknown as under
          ## 'judge'.  'judge': every unknown alike -- those currents collapsed
          ## slowlatch's step, and on the 27 gold decks 384 steps were
-         ## force-accepted over tolerance on 15 ('charge': one, which every
-         ## mode keeps; 27 % fewer steps; every gold column as it was).
+         ## force-accepted over tolerance on 15 ('charge': none, every gold
+         ## column and those currents as accurate as before, 8 % more steps).
          ## 'skip': every charge-free current left out, as ngspice judges only
          ## device charges -- it cost accuracy six tests measure (an HDL
          ## Laplace element, a VCO phase, a BJT turn-off ...), whose currents
@@ -1107,14 +1119,19 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         "(as every unknown) or 'skip' (ngspice's)",
                    unit='',
                    default='charge'),
-         ## 'charge''s floor.  Of 1e-16, 1e-15 and 1e-14 (ngspice's chgtol) on
-         ## the 27 gold decks, 1e-15 is the one with no forced step of its
-         ## own (1e-16: 8 % more steps; 1e-14: 3 % fewer, two decks force one).
+         ## 'charge''s floor, 1e-18 C: it binds where the step falls below
+         ## picoseconds -- where such a current's estimate stops being
+         ## truncation error -- and not at ordinary steps.  At 1e-15 C (built
+         ## first) it was 0.7 mA at a 10 ps step: those currents' waveforms
+         ## came out 3.2x less accurate than under 'judge' against fixed-step
+         ## references (the median over 21 gold decks, up to 16x), near
+         ## ngspice's; at 1e-18 C as accurate (median 1.00x, worst 1.6x).
+         ## `doc/hdl_roadmap_260824.md`, 130.
          Parameter(name='lte_chgtol',
                    desc="The charge a current closing a capacitive loop may move "
                         "in a step in error (lte_algebraic='charge')",
                    unit='C',
-                   default=1e-15),
+                   default=1e-18),
          ## The order a rejected step's retry assumes (`stepcontroller.
          ## RETRY_ORDER_MODES`): 'assumed' every retry h^p; 'measured' (the
          ## default) from the second retry at a point the order its two tries

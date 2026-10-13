@@ -8740,3 +8740,51 @@ rejections.
 gold deck on the C paths -- the C loop served 47 330 of the 53 228 steps --
 gives the prototype's numbers exactly, deck by deck: steps, rejections,
 forced steps and every gold metric.
+
+## 2026-10-13 — 130. 'charge''s floor 1e-18 C, and six rejections where it floors a current: those currents as accurate as under 'judge', no step forced
+
+**What 129's gate could not see.**  Its score was the gold columns, node
+voltages but one floored current of 99.  Measured on the currents
+themselves -- the 21 gold decks with a loop-closing source, each against a
+fixed-step Gear-2 reference of 1e5 steps; the waveform's RMS error over the
+reference's, from 1 % of the run on (a start from zeros puts a spike in the
+first step whose height is the step's), sources carrying only rounding left
+out -- the worst current per deck was 15.1 % at 1e-15 C (the median over
+the decks), 3.2x 'judge''s (up to 15.8x) and near 'skip''s 20.2 %; the
+charge it moved within 2.5 %; node voltages within tolerance in every mode.
+The floor's size was the cause: TRTOL chgtol / h is 0.7 mA at a 10 ps
+step, so those currents went almost unjudged at ordinary steps.  (A
+reference of 4e5 steps moves the larger errors by less than 0.3 points.)
+
+**The fix.**  A smaller floor restores them -- 1e-17 C: 6.1 % (1.06x
+'judge''s), 1e-18 C: 4.2 % (1.00x, the worst deck 1.6x) -- but forced
+steps return, and traced they are the multistep family's cap: at a corner
+the floored current's error falls 714, 227, 44, 4.8 times its tolerance
+over four tries, and the third rejection forced the step.  So six
+rejections where 'charge' floors a current, and none forced.  Not where it
+does not: without the floor such an estimate may never fall -- six let
+gm3's step under 'judge' shrink to minstep and fail where three
+force-accept it -- and the comparator oscillator, with no floored current,
+took six as a change in its event timing.  A floor on retries only (the
+first try judged in full) bought nothing (gm3: 6.3 % against 7.1 %).
+
+| the 27 gold decks | steps | rejected | forced | gold columns passing |
+|---|---|---|---|---|
+| 'judge', the default until 129 | 73 342 | 17 685 | 384 | 69 / 99 |
+| 129: 1e-15 C, three rejections | 53 228 | 8 224 | 1 | 69 / 99 |
+| **1e-18 C, six where it floors** | 78 883 | 21 867 | **0** | 69 / 99 |
+
+jge with the standing gmin completes at 1e-18 C: 10 667 steps, none forced.
+
+**Radau** keeps its own budget of twelve: at 1e-18 C it forces near
+'judge''s counts at the corners (jge 1 007, mux8 633, arom 92); a budget of
+40 removes them but lets arom's step reach minstep and fail.  Its step
+controller -- the RMS norm over every unknown, a fixed-order retry -- is
+the limit; sized next (the DC plan's R).
+
+**Gate.**  The full suite: 5306 passed, none failed (the first run caught
+the two force-accept tests and the comparator's jitter while six applied
+to every 'charge' run).  Every gold deck on the C paths gives the
+candidate's numbers exactly, deck by deck -- steps, rejections, forced
+steps and every gold metric; the C loop served 72 825 of the 78 883
+steps.  jge with the standing gmin: 10 667 steps, none forced.
