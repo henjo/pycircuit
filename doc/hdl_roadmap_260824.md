@@ -8788,3 +8788,65 @@ to every 'charge' run).  Every gold deck on the C paths gives the
 candidate's numbers exactly, deck by deck -- steps, rejections, forced
 steps and every gold metric; the C loop served 72 825 of the 78 883
 steps.  jge with the standing gmin: 10 667 steps, none forced.
+
+## 2026-10-13 — 131. The stage family's retry: the worst unknown at the order its tries measured -- radau's forced steps 2 190 -> 2, gm19 completes
+
+**What 130 left.**  Radau, TR-BDF2 and ESDIRK43 judge a step by their
+embedded estimate's RMS over the unknowns and, until now, sized a retry by
+the accepted step's law: that RMS at the fixed order p, the shrink bounded
+by one half.  At a loop-closing source current's corners one unknown is
+over its tolerance and the rest are not, so the RMS diluted a 7x excess to
+~1.1, each retry shrank ~12 %, and the twelfth rejection force-accepted
+the step: radau at 1e-18 C forced 2 190 steps on the 27 gold decks
+(jge 1 007, mux8 633, rich3 132, arom 92) and failed gm19 on a singular
+matrix.  A budget of 40 removed the forced steps but let arom's step reach
+minstep.
+
+**The fix.**  The multistep family's retry (2026-10-10,
+`stepcontroller.RETRY_ORDER_MIN`) on the WORST unknown: from a point's
+second try, the order its two tries measured, clamped to [1, p]; the
+shrink bounded by `MIN_SHRINK_RATIO` (0.2).  Acceptance is unchanged --
+the RMS <= 1 -- so nothing is loosened: only the step after a rejection
+moves.  `retry_order` now means the same in both families ('assumed' keeps
+p, 'carried' carries the last measured order).  Three rules were sized on
+radau, every gold deck (the DC plan's R):
+
+| radau, 27 gold decks | steps | rejected | forced | failed | solve time |
+|---|---|---|---|---|---|
+| the old retry | 63 537 | 45 733 | 2 190 | gm19 | 599 s |
+| RMS, measured order, bound 0.5 | 68 771 | 34 036 | 438 | -- | 627 s |
+| RMS, measured order, bound 0.2 | 70 340 | 23 970 | 56 | -- | 554 s |
+| **worst unknown, measured order, bound 0.2** | 72 949 | 17 879 | **2** | -- | 515 s |
+
+The 2 are 4049osc's start (the all-zero state jumping to the sources' in
+the first step), forced under every rule.  Without gm19: 10 % more steps,
+27 % less time.  Every gold column passes or fails as before (69 / 99);
+each column's metric against the old retry's has median 1.00, range
+0.70-1.45.  Against the budget-40 runs (9 decks): 2-13 % more steps,
+faster on all nine (jge 212 -> 118 s).
+
+The same rule on the family's other members (the old retry against the
+new, 27 decks each):
+
+| | steps | rejected | forced | solve time | gold |
+|---|---|---|---|---|---|
+| esdirk43 | 30 887 -> 32 502 | 3 868 -> 2 273 | 35 -> 1 | 353 -> 305 s | same |
+| trbdf2 | 84 495 -> 96 383 | 57 714 -> 25 306 | 1 583 -> 2 | 938 -> 719 s | same |
+
+No run fails under either, the 2 and the 1 are 4049osc's start, and each
+column's metric has median 1.00 (TR-BDF2 0.69-1.41, ESDIRK43 0.63-1.65);
+the counts were taken in a worktree at 130's commit with the new rule
+patched in, the times beside a running suite (both rules interleaved deck
+by deck).  The GLMs step through the same judge; the suite covers them, no
+gold deck was run on them.
+
+One case differs from the multistep rule, as measured: a worst error that
+did not fall since the previous try is retried at p (the multistep rule
+takes 1 there).  Under the old 'judge' mode (not the default) radau on
+gm3 now takes 1 213 steps (39 forced) against 593 (40): the supply's
+unfloored current cannot be satisfied, and the stronger shrink spends
+steps on it.
+
+**Gate.**  The full suite: 5 309 passed, none failed.  Every gold deck on
+radau with the built code gives the prototype's numbers exactly, deck by
+deck -- steps, rejections, forced steps and every gold metric.

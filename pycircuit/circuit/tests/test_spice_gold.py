@@ -254,9 +254,9 @@ def test_gm3_s_supply_current_by_the_charge_it_moves_forces_no_step(radau):
     steps over tolerance -- the current is the gate charges' slope (it closes
     a loop of capacitors), and its estimate does not fall with the step;
     judged by the charge it moves, the multistep error test forces none, in
-    fewer steps (measured 854 / 7 forced -> 631 / 0).  Radau gains too (593
-    / 40 -> 435 / 23); its own step controller -- an RMS norm, fixed-order
-    retries -- still forces some at the corners."""
+    fewer steps (measured 854 / 7 forced -> 631 / 0).  Radau too since its
+    retry follows the multistep family's (131): 1213 / 39 -> 523 / 0 (before
+    131 its RMS-norm, fixed-order retries forced 23 of 435 under 'charge')."""
     from pycircuit.circuit.integrator import RadauIIA3Integrator
     deck, = _data('Netlists/CircuitSim90/MOS3/gm3.cir')
     circuit.default_toolkit = circuit.numeric
@@ -270,7 +270,4 @@ def test_gm3_s_supply_current_by_the_charge_it_moves_forces_no_step(radau):
             tr.solve(**kw)
         got[mode] = (tr.statistics.accepted_steps, tr.statistics.force_accepts)
     assert got['judge'][1] > 0 and got['charge'][0] < got['judge'][0], got
-    if radau:
-        assert got['charge'][1] < got['judge'][1], got
-    else:
-        assert got['charge'][1] == 0, got
+    assert got['charge'][1] == 0, got

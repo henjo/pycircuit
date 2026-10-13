@@ -312,6 +312,42 @@ Tests: `test_the_stage_reference_follows_relref_over_accepted_points`,
 `test_adaptive_glm4_does_not_crawl_at_a_source_current_zero` (each fails
 on the old code; the last hangs there).
 
+### `judge` -- the retry after a rejection
+
+2026-10-13 (Andreas: "Build for the family (Recommended)";
+`doc/hdl_roadmap_260824.md`, 131).  The class docstring's sentence before
+the change:
+
+Accept at ``err <= 1``, the RMS over the unknowns of ``est / (reltol ref +
+abstol)``; the next step is ``h * clamp(0.9 err^(-1/(p+1)), 0.5, 2)``
+with ``p = EMBEDDED_ORDER`` (TR-BDF2 2(3) -> 1/3, Radau 5(3) -> 1/4), so
+one anomalous estimate cannot swing the step wildly.
+
+and the end of `judge`, one law for an accepted and a rejected step:
+
+    order = int(self.tr.base_integrator.EMBEDDED_ORDER)
+    grow = self.SAFETY * (err if err > 1e-16 else 1e-16) ** (
+        -1.0 / (order + 1))
+    return err <= 1.0, h * min(1.0 / self.K, max(self.K, grow))
+
+Why it went: at a loop-closing source current's corners the RMS diluted
+the one unknown over its tolerance (7x) to ~1.1, so each retry shrank
+~12 % and the twelfth rejection forced the step -- under
+`lte_chgtol` 1e-18 C radau forced 2 190 steps on the 27 gold decks and
+failed gm19 on a singular matrix; a budget of 40 removed the forced steps
+but let arom's step reach minstep.  Three retries were sized (the DC
+plan's R, every gold deck on radau; acceptance unchanged in each): the
+RMS at the order the point's tries measured, bounded by K (438 forced);
+the same bounded by `MIN_SHRINK_RATIO` (56); the WORST unknown at the
+measured order, bounded by `MIN_SHRINK_RATIO` (2 -- 4049osc's start,
+forced under every rule).  The third was built.  It differs from
+`StepController._retry_exponent` in one case, as measured: a worst error
+that did not fall since the previous try is retried at ``p``, where the
+multistep rule takes `RETRY_ORDER_MIN`.
+Tests: `test_a_stage_retry_shrinks_by_the_worst_unknown_at_its_measured_order`
+(fails on the old law), `test_gm3_s_supply_current_by_the_charge_it_moves_forces_no_step`
+(radau now 0 forced under 'charge').
+
 
 ## `transient.py` -- `Transient`
 

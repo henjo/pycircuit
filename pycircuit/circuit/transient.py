@@ -1,6 +1,7 @@
 # Copyright (c) 2008 Pycircuit Development Team
 # See LICENSE for details.
 
+import math
 import time
 
 import numpy as np
@@ -23,6 +24,8 @@ from pycircuit.circuit.simwarnings import (
 from pycircuit.circuit.stepcontroller import (LTE_ALGEBRAIC_MODES,
                                               MAX_GROWTH_RATIO,
                                               MIN_SHRINK_RATIO,
+                                              RETRY_ORDER_MIN,
+                                              RETRY_ORDER_MODES,
                                               charge_floor,
                                               normalised_error)
 ## THE THEMES `Transient` is assembled from (`_tran_*.py`, 2026-10-01; the
@@ -366,10 +369,14 @@ class _StageSteps(_StepFamily):
     method's own embedded estimate, the filtered `_rk_est` the step leaves
     (a GLM delivers `_glm_error_estimate` through the same slot).  Accept at
     ``err <= 1``, the RMS over the unknowns of ``est / (reltol ref +
-    abstol)``; the next step is ``h * clamp(0.9 err^(-1/(p+1)), 0.5, 2)``
-    with ``p = EMBEDDED_ORDER`` (TR-BDF2 2(3) -> 1/3, Radau 5(3) -> 1/4), so
-    one anomalous estimate cannot swing the step wildly.  No history to
-    freeze at a corner, so more rejections are meaningful than for an LMM.
+    abstol)``; after an accepted step the next is ``h * clamp(0.9
+    err^(-1/(p+1)), 0.5, 2)`` with ``p = EMBEDDED_ORDER`` (TR-BDF2 2(3) ->
+    1/3, Radau 5(3) -> 1/4), so one anomalous estimate cannot swing the step
+    wildly.  After a REJECTED step the retry is sized as the multistep
+    family's: by the WORST unknown's normalised error, at the order the
+    point's tries measured (`retry_order`), the shrink bounded by
+    `MIN_SHRINK_RATIO` -- see `judge`.  No history to freeze at a corner,
+    so more rejections are meaningful than for an LMM.
 
     ⚠ `ref` IS THE MULTISTEP FAMILY'S `relref`, default 'sigglobal': each
     unknown against the largest value of its unit group (node voltages,
@@ -401,6 +408,13 @@ class _StageSteps(_StepFamily):
             raise ValueError("relref must be one of %r, not %r"
                              % (RELREF_MODES, tr.par.relref))
         self.relref = tr.par.relref
+        if tr.par.retry_order not in RETRY_ORDER_MODES:
+            raise ValueError(f"retry_order must be one of {RETRY_ORDER_MODES!r}, "
+                             f"not {tr.par.retry_order!r}")
+        self.retry_order = tr.par.retry_order
+        ## (x_last, h, worst) of the last rejection, None after an acceptance;
+        ## the order the last retry measured, for 'carried'
+        self._retry = self._q_carried = None
         self.n_nodes = len(tr.cir.nodes)
         self.running = None
         ## an adaptive run asks the step for its estimate; a fixed grid leaves
@@ -440,10 +454,53 @@ class _StageSteps(_StepFamily):
         if mask is not None:
             ek = ek * np.asarray(mask, dtype=float)[self.keep]
         err = float((tk.sum(ek * ek) / len(self.keep)) ** 0.5)
-        order = int(self.tr.base_integrator.EMBEDDED_ORDER)
-        grow = self.SAFETY * (err if err > 1e-16 else 1e-16) ** (
-            -1.0 / (order + 1))
-        return err <= 1.0, h * min(1.0 / self.K, max(self.K, grow))
+        p = int(self.tr.base_integrator.EMBEDDED_ORDER) + 1
+        if err <= 1.0:
+            self._retry = None
+            grow = self.SAFETY * (err if err > 1e-16 else 1e-16) ** (-1.0 / p)
+            return True, h * min(1.0 / self.K, max(self.K, grow))
+        ## THE RETRY (2026-10-13; Andreas: "Build for the family";
+        ## doc/hdl_roadmap_260824.md, 131).  A rejection used to shrink by the
+        ## accepted step's law -- the RMS, at the fixed order p, bounded by K
+        ## -- and at a loop-closing source current's corners it ran out: the
+        ## RMS dilutes one unknown 7x over its tolerance to ~1.1, each retry
+        ## shrank ~12 %, and the twelfth rejection forced the step (radau, 27
+        ## gold decks at lte_chgtol 1e-18: 2 190 forced, gm19 failing on a
+        ## singular matrix).  Now the multistep family's retry
+        ## (`stepcontroller`, `RETRY_ORDER_MIN`): the WORST unknown's error,
+        ## from the point's second try at the order its two tries measured,
+        ## the shrink bounded by MIN_SHRINK_RATIO; acceptance unchanged.
+        ## Radau: 2 190 -> 2 forced (4049osc's start, under every rule), gm19
+        ## completes, 27 % less time for 10 % more steps, every gold column
+        ## passing as before.
+        worst = float(np.max(np.asarray(ek)))
+        q = self._retry_order(X[-1], h, worst, p)
+        self._retry = (X[-1], h, worst)
+        return False, h * max(MIN_SHRINK_RATIO,
+                              (self.SAFETY ** p / worst) ** (1.0 / q))
+
+    def _retry_order(self, x_last, h, worst, p):
+        """The order the retry after this rejection is sized by: `p` at a
+        point's first rejection; from its second (the previous try left the
+        same accepted state, `x_last` by identity, and was larger) the order
+        the two tries measured, ``ln(e1/e2)/ln(h1/h2)`` clamped to
+        ``[RETRY_ORDER_MIN, p]`` -- `StepController._retry_exponent`'s rule
+        on the worst unknown.  Unlike that rule, a worst error that did not
+        fall since the previous try is retried at `p` (as measured, R).
+        `retry_order` 'assumed' keeps `p`; 'carried' takes the last measured
+        order at a first rejection too."""
+        if self.retry_order == 'assumed':
+            return p
+        prev = self._retry
+        if (prev is not None and prev[0] is x_last
+                and prev[1] > h * (1.0 + 1e-9) and prev[2] > worst > 0.0):
+            q = min(max(math.log(prev[2] / worst) / math.log(prev[1] / h),
+                        RETRY_ORDER_MIN), p)
+            self._q_carried = q
+            return q
+        if self.retry_order == 'carried' and self._q_carried is not None:
+            return min(self._q_carried, p)
+        return p
 
     def finish(self):
         if not self.run.fixed:
@@ -1136,7 +1193,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
          ## RETRY_ORDER_MODES`): 'assumed' every retry h^p; 'measured' (the
          ## default) from the second retry at a point the order its two tries
          ## measured; 'carried' the first retry too, at the order the last
-         ## point measured.
+         ## point measured.  The multistep and (since 2026-10-13) the stage
+         ## family's (`_StageSteps._retry_order`).
          Parameter(name='retry_order',
                    desc="The error order a rejected step's retry is sized by: "
                         "'assumed' (the method's), 'measured' (from the second "

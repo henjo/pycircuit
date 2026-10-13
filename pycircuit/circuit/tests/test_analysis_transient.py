@@ -2291,6 +2291,76 @@ def test_a_stage_method_refuses_an_unknown_relref():
         tr.solve(tend=1e-5, timestep=1e-6, x0=np.zeros(c.n))
 
 
+def test_a_stage_retry_shrinks_by_the_worst_unknown_at_its_measured_order():
+    """The stage family's retry (2026-10-13, doc/hdl_roadmap_260824.md 131):
+    acceptance stays the RMS ``<= 1``, but after a rejection the next try is
+    sized by the WORST unknown's normalised error -- the RMS diluted one
+    unknown 7x over its tolerance to ~1.1 and each retry shrank ~12 % until
+    the twelfth forced the step -- at p = EMBEDDED_ORDER + 1 on a point's
+    first try, from its second at the order the two tries measured (clamped
+    to ``[1, p]``), the shrink bounded by `MIN_SHRINK_RATIO`.  Each clause:
+    the worst unknown, not the RMS; the measured order; a worst error that
+    did not fall, at p; an acceptance, by the RMS and its old law, clearing
+    the point; 'assumed' at p throughout; 'carried' a new point's first
+    rejection at the last measured order; an unknown `retry_order`
+    refused."""
+    from types import SimpleNamespace
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.integrator import TRBDF2Integrator
+    from pycircuit.circuit.stepcontroller import MIN_SHRINK_RATIO
+    from pycircuit.circuit.transient import _StageSteps
+    circuit.default_toolkit = circuit.numeric
+    c = _driven_diode(Diode)            # x = [v1, gnd, v2, i_vs]: 3 judged
+    p, target = 3, 0.9 ** 3             # TR-BDF2's 2(3) pair
+
+    def family(mode='measured'):
+        tr = Transient(c, integrator=TRBDF2Integrator(), relref='pointlocal',
+                       retry_order=mode)
+        ## (no floored and no masked row: the weight is `abstol`, 1; the
+        ## integrator a run sets)
+        tr._lte_charge = tr._lte_mask = lambda: None
+        tr.base_integrator = TRBDF2Integrator()
+        return tr, _StageSteps(tr, SimpleNamespace(fixed=True, abstol=np.ones(4)))
+
+    def judge(f, worst, h, x_last, rest=0.0):
+        tr, steps = f
+        tr._rk_est = np.array([worst, 0.0, rest, rest])
+        return steps.judge([x_last], np.zeros(4), h, None, False)
+
+    f, a = family(), np.zeros(4)
+    ok, h1 = judge(f, 7.0, 1e-6, a)     # RMS 7/sqrt(3) = 4.04
+    assert not ok and h1 == pytest.approx(1e-6 * (target / 7.0) ** (1 / p), rel=1e-12)
+    ok, h2 = judge(f, 3.0, h1, a)
+    q = np.log(7.0 / 3.0) / np.log(1e-6 / h1)
+    assert 1.0 < q < p
+    assert not ok and h2 == pytest.approx(h1 * (target / 3.0) ** (1 / q), rel=1e-12)
+    ok, h3 = judge(f, 3.0, h2, a)       # did not fall: p (the multistep rule: 1)
+    assert not ok and h3 == pytest.approx(h2 * (target / 3.0) ** (1 / p), rel=1e-12)
+    ok, h4 = judge(f, 1e3, h3, a)       # (a growing one: p, and the bound)
+    assert not ok and h4 == pytest.approx(MIN_SHRINK_RATIO * h3, rel=1e-12)
+    ok, h5 = judge(f, 0.5, h4, a, rest=0.5)
+    assert ok and h5 == pytest.approx(h4 * min(2.0, 0.9 * 0.5 ** (-1 / p)), rel=1e-12)
+    ok, h6 = judge(f, 7.0, h5, a)       # the acceptance cleared the point
+    assert not ok and h6 == pytest.approx(h5 * (target / 7.0) ** (1 / p), rel=1e-12)
+
+    f = family('assumed')
+    _, h1 = judge(f, 7.0, 1e-6, a)
+    _, h2 = judge(f, 3.0, h1, a)
+    assert h2 == pytest.approx(h1 * (target / 3.0) ** (1 / p), rel=1e-12)
+
+    f = family('carried')
+    _, h1 = judge(f, 7.0, 1e-6, a)
+    _, h2 = judge(f, 3.0, h1, a)
+    q = np.log(7.0 / 3.0) / np.log(1e-6 / h1)
+    ok, _ = judge(f, 0.1, 0.5 * h2, a)
+    assert ok
+    ok, h3 = judge(f, 2.0, 1e-6, np.zeros(4))
+    assert not ok and h3 == pytest.approx(1e-6 * (target / 2.0) ** (1 / q), rel=1e-12)
+
+    with pytest.raises(ValueError, match='retry_order'):
+        family('guessed')
+
+
 def test_adaptive_glm4_does_not_crawl_at_a_source_current_zero():
     """⚠ Measured (2026-09-28): adaptive GLM4 on the hard-driven diode
     crawled at h ~ 1e-20 s near t = 0 under the stage family's old
