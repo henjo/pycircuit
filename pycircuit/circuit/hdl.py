@@ -62,6 +62,7 @@ import collections
 import math
 import inspect
 import keyword
+import struct
 import itertools
 import re
 import types
@@ -7137,14 +7138,21 @@ class BehaviouralMeta(type):
             _lin_fns = pv.get('lin_fns')
             if _lin_fns:
                 _t_lin = pv['t']
+                _lin_memo = {}
+                _lin_key = struct.Struct(f'{len(_pn_vec) + 1}d')
 
                 def pcnr_lin_G(params, epar, toolkit, _fns=_lin_fns,
-                               _t=_t_lin, _pn=_pn_vec):
+                               _t=_t_lin, _pn=_pn_vec, _memo=_lin_memo,
+                               _key=_lin_key):
                     """The device's constant conductance block.
 
                     Stamped by the ordinary MNA assembly at the NODE
                     voltages, which is where a linear term belongs;
-                    PCNR re-stamps only what is left at `v_lim`.
+                    PCNR re-stamps only what is left at `v_lim`.  Made
+                    once per card and temperature (`_memo`, keyed by the
+                    arguments' float64 bytes: -0.0 and every NaN their
+                    own; a value only numpy converts is not memoised), a
+                    copy returned.
                     """
                     ## numpy scalars, not python floats.  A compiled
                     ## coefficient is a `select` over both arms, and the
@@ -7155,13 +7163,22 @@ class BehaviouralMeta(type):
                     ## that raises ZeroDivisionError; in numpy it is inf,
                     ## which `select` then discards.  This is the same
                     ## both-arms hazard `hdl.select` exists for (sec. 21).
-                    args = [np.float64(params[nm]) for nm in _pn] + \
-                        [np.float64(epar.T)]
-                    out = np.zeros((_t, _t))
-                    with np.errstate(divide='ignore', invalid='ignore'):
-                        for r, c, fn in _fns:
-                            out[r, c] += float(fn(*args))
-                    return out
+                    vals = [params[nm] for nm in _pn]
+                    try:
+                        key = _key.pack(*vals, epar.T)
+                    except (TypeError, ValueError, OverflowError, struct.error):
+                        key = None
+                    out = None if key is None else _memo.get(key)
+                    if out is None:
+                        args = [np.float64(v) for v in vals] + \
+                            [np.float64(epar.T)]
+                        out = np.zeros((_t, _t))
+                        with np.errstate(divide='ignore', invalid='ignore'):
+                            for r, c, fn in _fns:
+                                out[r, c] += float(fn(*args))
+                        if key is not None:
+                            _memo[key] = out
+                    return out.copy()
 
                 cls.pcnr_lin_G = staticmethod(pcnr_lin_G)
             ## `(kind, parameter callables)` for every probe whose law is

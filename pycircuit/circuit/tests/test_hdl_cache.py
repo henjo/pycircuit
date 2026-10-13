@@ -283,6 +283,39 @@ def test_collapse_variant_is_cached(cache_dir):
     assert len(_entries(cache_dir)) == 2
 
 
+def test_a_side_text_is_made_once_under_its_tag(cache_dir, monkeypatch):
+    """`side_text`: made and written on the first call, read back after
+    (the same text, `make` not called), made again under another tag;
+    what `make` raises is raised and nothing is written; a class without
+    a key -- compiled with the cache off -- makes it every call."""
+    made = []
+
+    def make(text='// chains'):
+        made.append(text)
+        return text
+    cls = _reclass(ChainedLimited)
+    assert cls.__dict__.get('_hdl_cache_key')
+    before = len(_entries(cache_dir))
+    assert hc.side_text(cls, 'tag a', make) == '// chains' and len(made) == 1
+    assert hc.side_text(cls, 'tag a', make) == '// chains' and len(made) == 1
+    assert len(_entries(cache_dir)) == before + 1
+    assert hc.side_text(cls, 'tag b', lambda: make('// other')) == '// other'
+    assert len(made) == 2
+
+    def refuse():
+        raise ValueError('refused')
+    with pytest.raises(ValueError, match='refused'):
+        hc.side_text(cls, 'tag c', refuse)
+    assert len(_entries(cache_dir)) == before + 2
+    monkeypatch.setattr(hc, 'ENABLED', False)
+    off = _reclass(ChainedLimited, 'ChainedLimitedOff')
+    monkeypatch.setattr(hc, 'ENABLED', True)
+    assert off.__dict__.get('_hdl_cache_key') is None
+    hc.side_text(off, 'tag a', make)
+    hc.side_text(off, 'tag a', make)
+    assert len(made) == 4
+
+
 def test_symbolic_toolkit_served_from_cache(cache_dir):
     """`sym_spec` comes back as equal sympy expressions."""
     from pycircuit.circuit.toolkit import symbolic

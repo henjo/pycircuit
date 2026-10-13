@@ -55,6 +55,12 @@ Location
     same class cannot leave a torn file and a reader never sees a
     partial one.  An unreadable, truncated or foreign file is a miss.
 
+Side entries
+    `side_text(cls, tag, make)`: a text made from a class after its
+    compile (PCNR's refine kernel's parameter chains, `_pcnr_c`), in its
+    own pickle under the class's key and a tag naming the renderer's
+    source -- the class's compile is not repeated, only `make` is saved.
+
 Switches
     `PYCIRCUIT_HDL_CACHE=0` (or `off`, `false`, `no`) disables the
     cache for the process; so does setting `ENABLED = False` here.
@@ -66,6 +72,7 @@ not a format for exchanging compiled models between machines or users.
 """
 
 import builtins
+import contextlib
 import dis
 import hashlib
 import importlib.util
@@ -941,6 +948,8 @@ def compiled_info(cls, compile_fn):
         info = compile_fn(cls)
         _note(cls, 'uncacheable: %s' % _brief(e))
         return info
+    ## (kept for `side_text`: a text made from this class later)
+    cls._hdl_cache_key = key
     payload, why = _read(key)
     if payload is not None:
         try:
@@ -966,3 +975,24 @@ def compiled_info(cls, compile_fn):
         return info
     _note(cls, 'miss' if why == 'no entry' else 'miss (%s)' % why)
     return info
+
+
+def side_text(cls, tag, make):
+    """`make()`'s text for `cls`, kept beside its compiled info: the entry
+    under the class's key and `tag` -- which must name everything else the
+    text depends on (its renderer's own source) -- when it is there, else
+    made and written.  A class without a key (the cache off, the class
+    uncacheable) makes it every time; what `make` raises is raised, and
+    nothing is written; a write that fails is not an error (the text is
+    the same)."""
+    key = cls.__dict__.get('_hdl_cache_key')
+    if key is None or not enabled():
+        return make()
+    side = hashlib.sha256(f'{key}\0{tag}'.encode()).hexdigest()
+    payload, _why = _read(side)
+    if type(payload) is str:
+        return payload
+    text = make()
+    with contextlib.suppress(OSError):
+        _write(side, text)
+    return text

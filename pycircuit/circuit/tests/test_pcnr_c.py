@@ -112,6 +112,33 @@ def test_the_refine_kernel_is_the_devices_limit(which):
     assert bit > 100, bit
 
 
+def test_the_refine_chains_from_the_cache_are_the_printed_ones(tmp_path, monkeypatch):
+    """`render_refine`'s parameter chains -- the SymPy printing -- are kept
+    beside the class's compiled info (`_pcnr_c._chains`): the first render
+    prints them, the second reads them back without printing, and both
+    are the text rendered with the cache off, for each class here."""
+    from pycircuit.circuit import _hdl_cache, _hdl_climit
+    monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
+    monkeypatch.setattr(_hdl_cache, 'ENABLED', True)
+    real = _hdl_climit._parameter_chains
+    for c in (_cascode(5.0, 3.0, 1.5), _bjt_mirror_20v()[0]):
+        cls = type(pcnr.pcnr_devices(c)[0].element)
+        assert cls.__dict__.get('_hdl_cache_key'), cls
+        printed = []
+
+        def spy(*a, _printed=printed):
+            _printed.append(1)
+            return real(*a)
+        monkeypatch.setattr(_hdl_climit, '_parameter_chains', spy)
+        first, second = _pcnr_c.render_refine(cls), _pcnr_c.render_refine(cls)
+        assert len(printed) == 1
+        monkeypatch.setattr(_hdl_climit, '_parameter_chains', real)
+        monkeypatch.setattr(_hdl_cache, 'ENABLED', False)
+        ref = _pcnr_c.render_refine(cls)
+        monkeypatch.setattr(_hdl_cache, 'ENABLED', True)
+        assert first == second == ref
+
+
 ## ------------------------------------------------------------------------
 ## The solve.
 

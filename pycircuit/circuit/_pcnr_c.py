@@ -169,6 +169,17 @@ def _block_c(probes, coeffs, m):
     return lines
 
 
+def _chains(cls, spec, n_p, t_index):
+    """`_hdl_climit._parameter_chains`'s text -- its SymPy printing, most of
+    a small deck's first PCNR solve -- kept beside the class's compiled
+    info (`_hdl_cache.side_text`), keyed by the printers' own sources."""
+    from pycircuit.circuit import _hdl_cache, _hdl_climit
+    tag = (f'pcnr refine chains {_hdl_cache._file_hash(_hdl_climit.__file__)} '
+           f'{_hdl_cache._file_hash(__file__)} {(n_p, t_index)!r}')
+    return _hdl_cache.side_text(
+        cls, tag, lambda: _hdl_climit._parameter_chains(spec, n_p, t_index))
+
+
 def render_refine(cls):
     """`(csrc, nx, layout)` of the class's refine kernel, or `Refused`."""
     from pycircuit.circuit import _hdl_climit, hdl
@@ -184,7 +195,7 @@ def render_refine(cls):
         raise Refused('more rows or probes than the kernel holds')
     spec = [(tuple(probes[j]), kind, 0, pfs) for j, (kind, pfs) in enumerate(laws)]
     try:
-        text = _hdl_climit._parameter_chains(spec, n_p, t_index)
+        text = _chains(cls, spec, n_p, t_index)
     except _hdl_climit.Refused as e:
         raise Refused(str(e))
     npf = [len(pfs) for _k, pfs in laws]
