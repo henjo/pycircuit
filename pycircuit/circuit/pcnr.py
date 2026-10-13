@@ -990,6 +990,15 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     shunt = (np.array([i for i in range(len(circuit.nodes)) if i != irefnode],
                       dtype=int) if gshunt else None)
 
+    ## THE LOOP IN C (`_pcnr_c`, the PCNR-in-C plan's C2): from this start,
+    ## bit for bit the loop below -- or None, declined or handed back, and
+    ## the loop below runs
+    from pycircuit.circuit import _pcnr_c
+    got = _pcnr_c.solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol,
+                        abstol, iabstol, gmin, gshunt, linsolver)
+    if got is not None:
+        return got
+
     for it in range(maxiter):
         g_mna, g_lim, J_mm, J_ml, J_lm, didv = augmented_system(
             circuit, x, v_lim, devices, epar, u_extra=u, dense_blocks=False)

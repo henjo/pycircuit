@@ -11,6 +11,9 @@ compiler checks the definition against the very declaration cffi reads.
 The function types the units share are declared once, in `pcx_abi.h`.
 These tests hold that construction: each cdef is its header, each unit
 includes its own, no C file declares a type, no header includes another.
+A struct two units embed has its own header (`pcx_klu.h`): such a unit's
+cdef is that header's text and then its own (`EMBEDS`), and the unit
+includes the two in that order.
 
 The codes the C returns and is called with (a unit's results, the core's
 passes and formulas) are named once, in the headers, and Python reads its
@@ -40,6 +43,7 @@ from pycircuit.circuit import (
     _hdl_batch,
     _hdl_cbackend,
     _hdl_climit,
+    _pcnr_c,
     _tran_branch_c,
     _tran_core,
     _tran_ctrl_c,
@@ -72,7 +76,11 @@ UNITS = [
     ('ctrl', _tran_ctrl_c.CTRL_CDEF),
     ('loop', _tran_loop_c.LOOP_CDEF),
     ('dcnewton', _dc_newton_c.DCNEWTON_CDEF),
+    ('pcnrdc', _pcnr_c.PCNRDC_CDEF),
 ]
+
+#: the struct headers a unit's own header embeds: its cdef reads them first
+EMBEDS = {'dcnewton': ('pcx_klu.h',), 'pcnrdc': ('pcx_klu.h',)}
 
 
 def _raw(name):
@@ -138,11 +146,15 @@ def _signature(text, name):
 
 @pytest.mark.parametrize('unit,cdef', UNITS, ids=[u for u, _ in UNITS])
 def test_each_unit_is_loaded_through_the_header_it_compiles_with(unit, cdef):
-    """The cdef is the header's text; the unit includes the header once, and
-    its compiled text holds it."""
+    """The cdef is the header's text (after the struct headers it embeds);
+    the unit includes each once, in that order, and its compiled text holds
+    them."""
     header = _raw(unit + '.h')
-    assert cdef == header
-    assert _raw(unit + '.c').count(f'#include "{unit}.h"\n') == 1
+    names = (*EMBEDS.get(unit, ()), unit + '.h')
+    assert cdef == ''.join(_raw(h) for h in names)
+    raw = _raw(unit + '.c')
+    at = [raw.find(f'#include "{h}"\n') for h in names]
+    assert all(raw.count(f'#include "{h}"\n') == 1 for h in names) and at == sorted(at)
     assert _cbuild.csrc(unit + '.c').count(header) == 1
 
 

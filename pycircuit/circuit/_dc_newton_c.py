@@ -72,7 +72,8 @@ def _sources():
     point, where a file read is 0.35 ms)."""
     global _SOURCES
     if _SOURCES is None:
-        c, h = _cbuild.csrc('dcnewton.c'), _cbuild.csrc('dcnewton.h')
+        c = _cbuild.csrc('dcnewton.c')
+        h = _cbuild.csrc('pcx_klu.h') + _cbuild.csrc('dcnewton.h')
         codes = _cbuild.constants(h)
         _SOURCES = (c, h, codes, _cbuild.bails(codes, 'DCNEWTON_BAIL_'),
                     _cbuild.constants(_cbuild.csrc('pcx_abi.h')))
@@ -214,7 +215,7 @@ class _Rec:
         self.act = (act_r, act_f, kAx, ffi.from_buffer('int64_t *', act_r),
                     ffi.from_buffer('int64_t *', act_f), ffi.from_buffer('double *', kAx))
         s.nact = len(act_r)
-        s.act_r, s.act_f, s.kAx = self.act[3:]
+        s.act_r, s.act_f, s.klu.kAx = self.act[3:]
 
 
 def _klu_bind(rec, sk):
@@ -237,13 +238,14 @@ def _klu_bind(rec, sk):
     rec._set_active(sk.take, act_f)
     ffi, s, lib = rec.ffi, rec.s, sk._lib
     keep = (sk, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai))
-    s.kAp, s.kAi = keep[1:]
-    s.klu_factor, s.klu_refactor, s.klu_solve, s.klu_free = (
+    k = s.klu
+    k.kAp, k.kAi = keep[1:]
+    k.klu_factor, k.klu_refactor, k.klu_solve, k.klu_free = (
         ffi.cast('void *', _cbuild.address(f))
         for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))
-    s.klu_common = ffi.cast('void *', sk._ct.addressof(sk._common))
-    s.klu_sym = ffi.cast('void *', sk._symbolic)
-    s.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+    k.klu_common = ffi.cast('void *', sk._ct.addressof(sk._common))
+    k.klu_sym = ffi.cast('void *', sk._symbolic)
+    k.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
     rec.klu, rec.klu_keep = sk, keep
     return True
 
@@ -303,12 +305,12 @@ def _solver(rec, ls):
     if ch is ls._dense:
         if rec.klu is not None:
             rec.klu, rec.klu_keep = None, ()
-            rec.s.klu_sym = rec.ffi.NULL
+            rec.s.klu.klu_sym = rec.ffi.NULL
             rec._dense_active()
         return None
     if type(ch) is not StructuralKLU:
         return 'linsolver'
-    if rec.klu is ch and rec.s.klu_sym == rec.ffi.cast('void *', ch._symbolic or 0):
+    if rec.klu is ch and rec.s.klu.klu_sym == rec.ffi.cast('void *', ch._symbolic or 0):
         return None
     return None if _klu_bind(rec, ch) else 'klu'
 
@@ -377,7 +379,7 @@ def _load(rec, dc, x0, lam, gs, jg, maxiter, reltol, abstol, xtol):
         s.ja, s.jb = rec.jrows[3], rec.jrows[4]
     if rec.klu is not None:
         num = rec.klu._numeric
-        s.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
+        s.klu.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
     return None
 
 
@@ -387,12 +389,13 @@ def _write_back(rec):
     sk, s = rec.klu, rec.s
     if sk is None:
         return
-    out = int(rec.ffi.cast('uintptr_t', s.klu_out))
+    out = int(rec.ffi.cast('uintptr_t', s.klu.klu_out))
     sk._numeric = out or None
-    sk.refactors += s.refactors
-    sk.factors += s.factors
-    sk.pivot_fallbacks += s.pivot_fallbacks
-    sk.residual_fallbacks += s.residual_fallbacks
+    k = s.klu
+    sk.refactors += k.refactors
+    sk.factors += k.factors
+    sk.pivot_fallbacks += k.pivot_fallbacks
+    sk.residual_fallbacks += k.residual_fallbacks
 
 
 def solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, row_names,

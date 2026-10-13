@@ -1,6 +1,7 @@
 /* dcnewton.h -- the DC operating point's base Newton solve in C: its struct,
  * entry and codes, the interface `_dc_newton_c` loads dcnewton.c through
- * (cffi lays the struct out from this text; dcnewton.c includes it).
+ * (cffi lays the struct out from this text, after pcx_klu.h's; dcnewton.c
+ * includes both).
  *
  * One `StandardNewton.solve_system` of the DC's continuation chain, for an
  * evaluation the ladders compose from the DC's own residual -- `cut(i + u)`
@@ -13,13 +14,10 @@
  * the residual against REFACTOR_RESIDUAL_TOL, a fresh factor where it fails);
  * x_next, the limiter walk, `xdiff = x_next - x`, nrsolver's convergence test.
  *
- * THE NUMERIC.  `klu_num` is StructuralKLU's `_numeric` at entry.  A fresh
- * factor during the solve does not free it: it is kept until the solve
- * ends, so a hand-back (any DCNEWTON_BAIL_*) leaves it as it was -- the
- * Python's own solve then repeats the same refactors on the same pivot
- * order.  On DCNEWTON_CONVERGED and DCNEWTON_MAXITER, `klu_out` is the
- * numeric the Python's sequence ends with (the entry's freed where another
- * replaced it) and the counters are this call's. */
+ * THE NUMERIC (pcx_klu.h): a hand-back (any DCNEWTON_BAIL_*) leaves
+ * StructuralKLU's numeric as it was at entry; on DCNEWTON_CONVERGED and
+ * DCNEWTON_MAXITER, `klu.klu_out` is the numeric the Python's sequence ends
+ * with and the counters are this call's. */
 
 typedef struct {
     /* THE CORE (CTX: the record's; T per call) */
@@ -80,16 +78,9 @@ typedef struct {
     long nact;
     const int64_t *act_r, /* (nact) the entry in the reduced, row-major J */
                   *act_f; /* (nact) its place in the core's full n x n G */
-    /* KLU (CTX; klu_sym NULL: the dense solve) */
-    int *kAp, *kAi;       /* StructuralKLU's CSC pattern */
-    double *kAx;          /* (nact) OWN: J's values in its order */
-    void *klu_sym, *klu_common;
-    void *klu_factor, *klu_refactor, *klu_solve, *klu_free;
-    double resid_tol;     /* StructuralKLU.REFACTOR_RESIDUAL_TOL */
-    void *klu_num;        /* CALL: its `_numeric` at entry (NULL: none yet) */
-    void *klu_out;        /* OUT: its `_numeric` after (CONVERGED, MAXITER); through
-                             the solve the one the Python's sequence holds now */
-    long refactors, factors, pivot_fallbacks, residual_fallbacks;   /* OUT */
+    /* KLU (pcx_klu.h; klu.klu_sym NULL: the dense solve; kAx (nact) J's
+       values in its order; klu_out, the counters: on CONVERGED and MAXITER) */
+    pcx_klu_t klu;
     /* OUT */
     long iters,           /* the iterations made: the Python's `i + 1` */
          status;          /* enum dcnewton_status, as returned */

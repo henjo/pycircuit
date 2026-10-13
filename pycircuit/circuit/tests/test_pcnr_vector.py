@@ -863,9 +863,12 @@ def test_convergence_is_judged_per_component():
                            reltol, abstol)
 
 
-def test_solve_dc_uses_the_per_component_criterion():
+def test_solve_dc_uses_the_per_component_criterion(monkeypatch):
     """`solve_dc` stops on the shared function, not a private formula: a
-    spy that refuses once forces one more iteration on the BJT stage."""
+    spy that refuses once forces one more iteration on the BJT stage.
+    (The Python's loop: the C twin's test is its own, `test_pcnr_c`.)"""
+    from pycircuit.circuit import _pcnr_c
+    monkeypatch.setattr(_pcnr_c, 'ENABLED', False)
     calls = []
     real = P.lim_converged
 
@@ -1127,14 +1130,17 @@ def test_solve_dc_judges_the_residual_and_not_only_the_step():
     assert its > 5
 
 
-def test_the_redundant_law_is_load_bearing_on_level_1():
+def test_the_redundant_law_is_load_bearing_on_level_1(monkeypatch):
     """THE CYCLE DECISION'S MEASUREMENT.  The alternative -- carry the
     tree and DROP the redundant `(b,d)` law -- was priced: with it a
     no-op, Level 1's cascode from a uniform 20 V start fails at all 48
     grid points (`vbd = vbs - vds` is then unbounded forward and the
     bulk-drain diode overflows); with the law applied over the tree 38
     converge.  `_mos4` from the same start: 1676 Jacobians and 4
-    failures against 2838 and 5.  One point of that, as the pin."""
+    failures against 2838 and 5.  One point of that, as the pin.  (A
+    measurement of the Python's rule, swapped: the C twin off.)"""
+    from pycircuit.circuit import _pcnr_c
+    monkeypatch.setattr(_pcnr_c, 'ENABLED', False)
     real = P.limit_block
 
     def noop_redundant(probes, coeffs, v_new, v_old, laws):

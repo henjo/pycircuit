@@ -35,6 +35,7 @@ From the outside in. "Called from" is where the Python reaches the glue.
 | Stage predictor | `_StagePredictor._predict_fast` | `csrc/pred.c` | `_tran_pred_c` | `PYCIRCUIT_PRED_C` | `pred_c:` | `loop.c` |
 | Newton solve | `StandardNewton`, `ChordNewton`, `jacobian_only` | `csrc/newton.c` | `_tran_newton_c` | `PYCIRCUIT_NEWTON_C` | `newton_c:` | `Transient._solve_timestep`, `loop.c` |
 | DC base solve | `StandardNewton.solve_system` on the DC operating point's compositions (`dcanalysis`'s residual, source stepping, gshunt, junction gmin: `_dc_newton_c.composition`) | `csrc/dcnewton.c` | `_dc_newton_c` | `PYCIRCUIT_DCNEWTON_C` | `dcnewton_c:` | `StandardNewton.solve_system` (the DC's ladders) |
+| PCNR DC solve | `pcnr.solve_dc`'s loop from its start: the view's assembly (`pcnr_view`), each participant at its own unknowns (`PcnrDevice._kernel_stamp`), the Schur step, the solve, `refine` (each class's refine kernel: its law parameters, `limit.c`'s laws, `limit_block`'s Kruskal), the three tests | `csrc/pcnrdc.c`; per class `csrc/pcnr_refine.c` after `csrc/limit.c` | `_pcnr_c` | `PYCIRCUIT_PCNR_C` | `pcnr_c:` | `pcnr.solve_dc` (`DC(pcnr=True)`'s ladders, `solve_dc_continued`) |
 | Branch screen | `_BranchCheck._branch_screen_C` (the SVD stays Python) | `csrc/branch.c` | `_tran_branch_c` | `PYCIRCUIT_BRANCH_C` | `branch_c:` | `_tran_branch._branch_screen`, `loop.c` |
 | Assembly | `_residual_and_jacobian`, `jacobian_only`, `residual_only` | `csrc/core.c` | `_tran_core` | `PYCIRCUIT_TRAN_CORE` (`PYCIRCUIT_CORE_PASSES`, `PYCIRCUIT_CORE_PATTERN`, `PYCIRCUIT_SKIP_UNREAD_J`) | `core.<want>:`, `core.ready:` | the transient's evaluation sites, `newton.c` |
 | Sources | `_stamp_plan.source_direct` | `csrc/sources.c` | `_tran_sources` | `PYCIRCUIT_SOURCES_C` | `sources_c:` | `loop.c` (its table) |
@@ -54,8 +55,8 @@ Radau glue), `pss.sync:skipped` (the sensitivities), `chord:chosen` (the Newton)
 **The linear system** has no unit of its own. Dense solves are numpy's and SciPy's LAPACK
 (`dgesv`, `dgetrf`/`dgetrs`), called by address from `newton.c`, `lte.c` and `pred.c` -- the very
 libraries the packages mapped, found one way (`_cbuild.openblas`, `_cbuild.address`). Sparse
-solves are `linearsolver.StructuralKLU` (KLU on the circuit's structure): `newton.c` and `lte.c`
-call KLU through the run's own symbolic and numeric objects, and the glue adds to the solver
+solves are `linearsolver.StructuralKLU` (KLU on the circuit's structure): `newton.c`, `lte.c`,
+`dcnewton.c` and `pcnrdc.c` call KLU through the run's own symbolic and numeric objects, and the glue adds to the solver
 object's counts (`factors`, `refactors`, `numerics`) what the Python would; a refactor that meets
 a zero pivot bails to the Python, which factors afresh and counts it (`pivot_fallbacks`).
 
@@ -65,6 +66,9 @@ includes it; and a glue module that checks the case, fills the struct, calls the
 status, and writes back. `csrc/pcx_abi.h` holds what units share (the core's and the walk's
 signatures, the LAPACK, BLAS and KLU typedefs, the pass bits and formula codes);
 `csrc/pcx_dense.h` the small dense helpers;
+`csrc/pcx_klu.h` the run's StructuralKLU as a unit holds it (a struct `dcnewton.h` and `pcnrdc.h`
+embed: their cdef is its text and then their own) and `csrc/pcx_kluseq.h` StructuralKLU.solve's
+own sequence, written once for `dcnewton.c` and `pcnrdc.c`;
 `csrc/pcx_fenv.h` the floating-point flags a unit tests and THE FLAG RULE every such unit keeps
 (each operation a flag test covers stores its result before the test).
 `csrc/pcx_minmax.h` min and max as Python and numpy pick them (which operand a tie or a NaN
@@ -81,6 +85,7 @@ declared in `transient._RUN_STATE`, with its owner and lifetime
 | `_tran_loop_c` | on the `_SteppingLoop`: `c`, a `LoopState` (`attach`; None where the loop never tries) -- `run` (the bound run: structs, buffers, the units' pointers), `tab` (the source table), `kept` (the watch counter of the last kept decline), `skip` / `backoff` (the spacing of entries that made no attempt) | the loop's position (`t`, `h`, `h_next`, `landing`, `order_drop`, `point_retries`, `t_break`, `J`, `imposed`), the transient's run state and statistics, the controller's `last_err`, `_q_carried`, `_ref_running`, `_retry` |
 | `_tran_newton_c` | on the transient: `_newton_c` (its record: buffers, pointers, the walk's and KLU's bindings, `served`), `_newton_c_no` (a kept decline); on the limiter walk its tables (`F`, `PR`, `mirror`); on each limiting element `_hdl_cp` | the step's state: `_q_cache`, `_C_cache`, `_Cmat`, `_Geq`, `_iq`, `_companion_coeffs`, `_C_pattern`, `active_integrator`, `_effective_method`; the statistics' `newton_iterations`; the `StructuralKLU`'s `numerics` |
 | `_dc_newton_c` | on the DC analysis: `_dc_newton_c` (its record: buffers, the core, the KLU and walk bindings) | the `StructuralKLU`'s `_numeric`, `refactors`, `factors`, `pivot_fallbacks`, `residual_fallbacks` |
+| `_pcnr_c` | on the circuit: `_pcnr_c` (its record: the view's core, the participants' tables, buffers, the KLU binding); on each participating class's `_hdl_info`: `_c_pcnr_refine` (its refine kernel), `_c_pcnr_refine_status`, `_c_pcnr_kernels` | the `StructuralKLU`'s `_numeric` (None after a failed factor), `refactors`, `factors`, `pivot_fallbacks`, `residual_fallbacks` |
 | `_tran_lte_c` | on the step controller: `_lte_c` (its context: buffers, the KLU binding, `served`) | the controller's `_ref_running` |
 | `_tran_core` | on the transient: `_tran_core` (the plan, the core, their stamp), `_passes_no` (a kept decline); on each HDL element: `_hdl_cp` (its packed parameters); on the stamp plan, the `methods` it lacks | the same step state as the Newton |
 | `_tran_radau_c`, `_tran_radau_tc`, `_sens_c` | on the transient: `_radau_c`; `_radau_tc`, `_tc_end`; `_sens_c` | their stage state |

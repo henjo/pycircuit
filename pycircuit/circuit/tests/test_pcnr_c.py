@@ -1,0 +1,238 @@
+"""PCNR's DC solve in C (`_pcnr_c`, `csrc/pcnrdc.c`) against its Python
+reference, `pcnr.solve_dc`: the same solve with the C on and off, bit for
+bit -- the answer, the limited unknowns and the iterations, or the
+exception and its text -- and the C having SERVED it (a comparison the C
+declined would compare the Python with itself).  The gold decks' census,
+every rung of every deck, is the PCNR-in-C plan's C2 (`doc/transient_
+runtime.md`); these are the circuits the suite carries."""
+import itertools
+import warnings
+
+import numpy as np
+import pytest
+
+from pycircuit.circuit import _paths, _pcnr_c, circuit, gnd, pcnr
+from pycircuit.circuit import elements_hdl as eh
+from pycircuit.circuit.elements import VS, R, SubCircuit
+from pycircuit.circuit.linearsolver import AutoSolver, DenseSolver
+from pycircuit.circuit.tests.test_dc_pcnr import _bjt_mirror_20v
+
+#: a level-3 card (`test_mos_gate_charge`'s) with its bulk junctions on
+CARD = {'vto': 0.62, 'nsub': 1.066e16, 'kp': 6.3e-5, 'gamma': 0.64, 'phi': 0.31,
+        'tox': 225e-10, 'vmax': 177269.0, 'l': 2e-6, 'w': 10e-6, 'IS': 1e-14}
+
+
+def _cascode(vdd, vg2, vg1, drive_g2=True):
+    """Two level-3 MOSFETs in a cascode, the bulk below ground: SPICE's
+    four probes a device, the redundant `(b,d)` decided by `limit_block`'s
+    Kruskal rule.  Without `drive_g2` the upper gate floats: the reduced
+    matrix is singular."""
+    c = SubCircuit()
+    c['vdd'] = VS('vdd', gnd, v=vdd)
+    if drive_g2:
+        c['vg2'] = VS('g2', gnd, v=vg2)
+    c['vg1'] = VS('g1', gnd, v=vg1)
+    c['vb'] = VS('bulk', gnd, v=-0.5)
+    c['rl'] = R('vdd', 'out', r=10e3)
+    c['M2'] = eh.MosLevel3Hdl('out', 'g2', 'mid', 'bulk', **CARD)
+    c['M1'] = eh.MosLevel3Hdl('mid', 'g1', gnd, 'bulk', **CARD)
+    return c
+
+
+def _ladder(stages=250):
+    """A source, then `stages` x (a series resistor, a SPICE diode to
+    ground): 252 unknowns, so the DC's AutoSolver takes StructuralKLU."""
+    c = SubCircuit()
+    c['v'] = VS('n0', gnd, v=5.0)
+    for k in range(1, stages + 1):
+        c[f'r{k}'] = R(f'n{k - 1}', f'n{k}', r=100.0)
+        c[f'd{k}'] = eh.DiodeSpiceHdl(f'n{k}', gnd, IS=1e-14 * (1 + k % 7))
+    return c
+
+
+def _start(c, v):
+    x0 = np.full(c.n, float(v))
+    x0[c.get_node_index(gnd)] = 0.0
+    return x0
+
+
+def _solve(c, on, monkeypatch, **kw):
+    """`pcnr.solve_dc` with the C on or off: `(the outcome, the C's
+    counts during it)` -- the outcome `('ok', x bytes, v_lim bytes,
+    iterations)` or `('raise', type, text)`."""
+    monkeypatch.setattr(_pcnr_c, 'ENABLED', on)
+    before = dict(_paths.COUNTS)
+    kw.setdefault('linsolver', AutoSolver())
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        try:
+            x, v, its = pcnr.solve_dc(c, gnd, **kw)
+            out = ('ok', x.tobytes(), v.tobytes(), its)
+        except Exception as e:                           # noqa: BLE001
+            out = ('raise', type(e), str(e))
+    counts = {k: v - before.get(k, 0) for k, v in _paths.COUNTS.items()
+              if k.startswith('pcnr_c:') and v != before.get(k, 0)}
+    return out, counts
+
+
+def _twin(c, monkeypatch, **kw):
+    """The solve C on and C off: the C's outcome, asserted equal to the
+    Python's and served."""
+    got, counts = _solve(c, True, monkeypatch, **kw)
+    ref, _ = _solve(c, False, monkeypatch, **kw)
+    assert got == ref, (got[:1] + got[3:], ref[:1] + ref[3:])
+    assert counts.get('pcnr_c:served') == 1, counts
+    return got, counts
+
+
+## ------------------------------------------------------------------------
+## The refine kernel.
+
+@pytest.mark.parametrize('which', ['mos3', 'gummel-poon'])
+def test_the_refine_kernel_is_the_devices_limit(which):
+    """Each class's refine kernel (`_pcnr_c.render_refine`) gives
+    `PcnrDevice.limit` bit for bit: the law parameters (von at the last
+    accepted sub-vector), the laws, and for a redundant probe the Kruskal
+    and potentials of `limit_block` -- on draws where the laws bite."""
+    c = _cascode(5.0, 3.0, 1.5) if which == 'mos3' else _bjt_mirror_20v()[0]
+    dev = pcnr.pcnr_devices(c)[0]
+    params, epar = dev.params(), circuit.defaultepar
+    rng = np.random.default_rng(3)
+    scale = np.array([0.8 if k == 'pnj' else 5.0 for k in dev.kinds])
+    bit = 0
+    for _ in range(500):
+        vo = rng.uniform(-1, 1, dev.m) * scale
+        vn = vo + rng.standard_normal(dev.m) * scale * 10.0 ** rng.uniform(-3, 1.5)
+        xs = rng.uniform(-6, 6, dev.t)
+        ref = dev.limit(vn.copy(), vo.copy(), params, epar, xs.copy())
+        got = _pcnr_c.refine(dev, vn, vo, epar, xs)
+        assert got is not None
+        assert np.array_equal(np.asarray(ref).view(np.int64), got.view(np.int64))
+        bit += not np.array_equal(ref, vn)
+    assert bit > 100, bit
+
+
+## ------------------------------------------------------------------------
+## The solve.
+
+@pytest.mark.parametrize('vdd,vg2,vg1,start', [
+    (vdd, vg2, vg1, s) for (vdd, vg2, vg1), s in itertools.product(
+        [(5.0, 3.0, 1.5), (20.0, 6.0, 0.5), (5.0, 1.0, 2.0)], [0.0, 20.0, -3.0])])
+def test_a_cascode_solve_in_c_is_the_pythons(vdd, vg2, vg1, start, monkeypatch):
+    _twin(_cascode(vdd, vg2, vg1), monkeypatch, x0=_start(_cascode(vdd, vg2, vg1), start))
+
+
+@pytest.mark.parametrize('rev', [False, True])
+@pytest.mark.parametrize('deform', ['plain', 'gshunt', 'source', 'maxiter'])
+def test_a_mirror_solve_in_c_is_the_pythons(rev, deform, monkeypatch):
+    """The BJT mirror from its 20 V start, both instance orders, under each
+    deformation `solve_dc_continued` makes -- and the iteration limit,
+    served as the Python's RuntimeError, text and all."""
+    c, x0 = _bjt_mirror_20v(rev)
+    kw = {'plain': {}, 'gshunt': {'gshunt': 1e-3}, 'source': {'source': 0.3, 'x0': None},
+          'maxiter': {'maxiter': 3}}[deform]
+    kw.setdefault('x0', x0)
+    got, counts = _twin(c, monkeypatch, **kw)
+    if deform == 'maxiter':
+        assert got[0] == 'raise' and got[1] is RuntimeError and counts['pcnr_c:maxiter'] == 1
+    else:
+        assert got[0] == 'ok'
+
+
+def test_a_singular_solve_is_numpys_error(monkeypatch):
+    """A floating gate: the reduced matrix is singular at the first solve
+    and numpy's LinAlgError is served, its own text."""
+    c = _cascode(5.0, 3.0, 1.5, drive_g2=False)
+    got, counts = _twin(c, monkeypatch, x0=_start(c, 0.0))
+    assert got[0] == 'raise' and got[1] is np.linalg.LinAlgError, got
+    assert counts['pcnr_c:singular'] == 1
+
+
+def test_the_klu_solve_in_c_is_the_pythons():
+    """Above the AutoSolver's floor PCNR solves on StructuralKLU: the C
+    stops at its first Schur matrix for the AutoSolver's own choice
+    (`_choose`), then runs KLU's sequence.  Two fresh DC analyses, C on
+    and off: every PCNR call's outcome and StructuralKLU's counters and
+    numeric after it the same."""
+    from pycircuit.circuit.dcanalysis import DC
+
+    def run(on):
+        _pcnr_c.ENABLED = on
+        c = _ladder()
+        dc = DC(c, toolkit=circuit.numeric, pcnr=True)
+        log, real = [], pcnr.solve_dc
+
+        def spy(*a, **k):
+            try:
+                x, v, its = real(*a, **k)
+                log.append(('ok', x.tobytes(), v.tobytes(), its))
+            except Exception as e:
+                log.append(('raise', type(e), str(e)))
+                raise
+            sk = dc._default_linearsolver._choice
+            log.append((type(sk).__name__, sk.refactors, sk.factors, sk.pivot_fallbacks,
+                        sk.residual_fallbacks, sk._numeric is None, sk.analyses))
+            return x, v, its
+        pcnr.solve_dc = spy
+        try:
+            before = _paths.COUNTS['pcnr_c:served']
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                x = np.asarray(dc.solve().x, dtype=float)
+            return log, x.tobytes(), _paths.COUNTS['pcnr_c:served'] - before
+        finally:
+            pcnr.solve_dc = real
+            _pcnr_c.ENABLED = True
+    got, ref = run(True), run(False)
+    assert got[0] == ref[0] and got[1] == ref[1]
+    assert got[0][1][0] == 'StructuralKLU', got[0][1]
+    assert got[2] == len(got[0]) // 2 and ref[2] == 0
+
+
+## ------------------------------------------------------------------------
+## The declines: counted, and the Python answers.
+
+@pytest.mark.parametrize('why', ['gmin', 'underflow', 'scalar', 'linsolver', 'class', 'off'])
+def test_each_decline_is_counted_and_the_python_answers(why, monkeypatch):
+    from pycircuit.circuit import elements
+    from pycircuit.circuit.tests.test_device_limiter import _cascode4, _mos4
+    kw = {}
+    c = _cascode(5.0, 3.0, 1.5)
+    if why == 'gmin':
+        kw['gmin'] = 1e-12
+    elif why == 'scalar':
+        c = SubCircuit()
+        c['v'] = VS('a', gnd, v=1.0)
+        c['r'] = R('a', 'b', r=1e3)
+        c['d'] = elements.Diode('b', gnd)
+    elif why == 'linsolver':
+        kw['linsolver'] = DenseSolver()
+    elif why == 'class':
+        c = _cascode4(_mos4('group'), 5.0, 3.0, 1.5)        # a flat model: no C kernels
+    monkeypatch.setattr(_pcnr_c, 'ENABLED', why != 'off')
+    ref, _ = _solve(c, False, monkeypatch, **kw)
+    monkeypatch.setattr(_pcnr_c, 'ENABLED', why != 'off')
+    before = dict(_paths.COUNTS)
+    with np.errstate(under='warn' if why == 'underflow' else 'ignore'), \
+            warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        x, v, its = pcnr.solve_dc(c, gnd, linsolver=kw.pop('linsolver', AutoSolver()), **kw)
+    assert ('ok', x.tobytes(), v.tobytes(), its) == ref
+    assert _paths.COUNTS['pcnr_c:' + why] == before.get('pcnr_c:' + why, 0) + 1
+    assert _paths.COUNTS['pcnr_c:served'] == before.get('pcnr_c:served', 0)
+
+
+def test_a_one_ulp_fault_in_the_reference_is_seen(monkeypatch):
+    """The comparison can see one ulp: the reference's device current moved
+    by one ulp on every stamp, and the twin test's two answers differ."""
+    c = _cascode(5.0, 3.0, 1.5)
+    good, _ = _solve(c, True, monkeypatch, x0=_start(c, 20.0))
+    real = pcnr.PcnrDevice._kernel_stamp
+
+    def nudged(self, v, params, epar):
+        cur, block = real(self, v, params, epar)
+        cur[0] = np.nextafter(cur[0], np.inf)
+        return cur, block
+    monkeypatch.setattr(pcnr.PcnrDevice, '_kernel_stamp', nudged)
+    bad, _ = _solve(c, False, monkeypatch, x0=_start(c, 20.0))
+    assert good[0] == bad[0] == 'ok' and good != bad

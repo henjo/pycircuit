@@ -19,32 +19,20 @@
 #include "pcx_fenv.h"
 #include "pcx_dense.h"
 #include "core.h"
+#include "pcx_klu.h"
+#include "pcx_kluseq.h"
 #include "dcnewton.h"
 
 /* the flags numpy reports here: underflow is not one -- numpy ignores it by
    default, and the glue declines where it does not (`_dc_newton_c`) */
 #define DC_FLAGS (FE_OVERFLOW | FE_INVALID | FE_DIVBYZERO)
 
-static void klu_free_num(dcnewton_t *s, void *num)
-{
-    if (num) ((klu_free_numeric_t) s->klu_free)(&num, s->klu_common);
-}
-
-/* every return: the numeric as the outcome leaves it (`klu_out`, through
-   the solve the one the Python's sequence holds now; `klu_num` the entry's,
-   kept unfreed until here) -- a hand-back the entry's (any other freed),
-   CONVERGED and MAXITER the sequence's (the entry's freed where another
-   replaced it) -- the flags clear */
+/* every return: the numeric as the outcome leaves it (`pcx_klu_finish`: a
+   hand-back the entry's, CONVERGED and MAXITER the sequence's) -- the flags
+   clear */
 static long finish(dcnewton_t *s, long status)
 {
-    if (s->klu_sym) {
-        if (status >= DCNEWTON_BAIL_FLAGS) {
-            if (s->klu_out != s->klu_num) klu_free_num(s, s->klu_out);
-            s->klu_out = s->klu_num;
-        } else if (s->klu_out != s->klu_num) {
-            klu_free_num(s, s->klu_num);
-        }
-    }
+    if (s->klu.klu_sym) pcx_klu_finish(&s->klu, status >= DCNEWTON_BAIL_FLAGS);
     feclearexcept(FE_ALL_EXCEPT);
     return s->status = status;
 }
@@ -95,74 +83,16 @@ static long evaluate(dcnewton_t *s)
     return 0;
 }
 
-/* a fresh factor, as StructuralKLU's `_factor` after freeing its numeric
-   (the entry's kept: `finish`) -- 0, or DCNEWTON_BAIL_SINGULAR */
-static long fresh_factor(dcnewton_t *s)
-{
-    if (s->klu_out != s->klu_num) klu_free_num(s, s->klu_out);
-    s->klu_out = ((klu_factor_t) s->klu_factor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
-                                                s->klu_common);
-    if (!s->klu_out) return DCNEWTON_BAIL_SINGULAR;
-    s->factors++;
-    return 0;
-}
-
-/* klu_solve of `b` into `kx`: 0, or DCNEWTON_BAIL_SINGULAR */
-static long klu_solve_b(dcnewton_t *s, long m)
-{
-    long i;
-    for (i = 0; i < m; i++) s->kx[i] = s->b[i];
-    if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_out, (int) m, 1, s->kx, s->klu_common))
-        return DCNEWTON_BAIL_SINGULAR;
-    return 0;
-}
-
-/* StructuralKLU.solve(J, -F) on its own sequence: a refactor on the
-   numeric it holds (a fresh factor on a zero pivot), klu_solve, and after a
-   refactor the residual `max |J x - b| / max(max |b|, 1e-300)` against
-   REFACTOR_RESIDUAL_TOL (`not <=`: a NaN fails it) -- a fresh factor where
-   it fails.  The step in `kx`; 0, or why it is handed back */
+/* StructuralKLU.solve(J, -F) on its own sequence (pcx_kluseq.h): J's active
+   entries gathered in its order; the step in `kx`.  0, or why it is handed
+   back (a failed factor or solve is the Python's raise) */
 static long klu_step(dcnewton_t *s, long m)
 {
-    long i, st, reused = s->klu_out != NULL;
-    double max_b = 0.0, max_r = 0.0;
-    int nan_r = 0;
-    for (i = 0; i < s->nact; i++) s->kAx[i] = s->R[s->act_r[i]];
-    if (reused) {
-        int ok = ((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
-                                                  s->klu_out, s->klu_common);
-        s->refactors++;
-        if (!ok) {
-            s->pivot_fallbacks++;
-            if ((st = fresh_factor(s)) != 0) return st;
-            reused = 0;
-        }
-    } else if ((st = fresh_factor(s)) != 0) {
-        return st;
-    }
-    if ((st = klu_solve_b(s, m)) != 0) return st;
-    /* (what KLU raised inside: the Python's ctypes calls never see it) */
-    feclearexcept(FE_ALL_EXCEPT);
-    if (!reused) return 0;
-    /* `arr @ x` (numpy's matmul: this dgemv), `- rhs`, |.|, the maxima --
-       numpy's max propagates a NaN: so does `nan_r` */
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m, s->kx, 1,
-                           0.0, s->ky, 1);
-    for (i = 0; i < m; i++) s->ky[i] = s->ky[i] - s->b[i];
-    if (fetestexcept(DC_FLAGS)) return DCNEWTON_BAIL_FLAGS;
-    for (i = 0; i < m; i++) {
-        double a = fabs(s->b[i]), d = fabs(s->ky[i]);
-        if (a > max_b) max_b = a;
-        if (isnan(d)) nan_r = 1;
-        else if (d > max_r) max_r = d;
-    }
-    if (nan_r || !(max_r / pcx_py_max(max_b, 1e-300) <= s->resid_tol)) {
-        s->residual_fallbacks++;
-        if ((st = fresh_factor(s)) != 0) return st;
-        if ((st = klu_solve_b(s, m)) != 0) return st;
-        feclearexcept(FE_ALL_EXCEPT);
-    }
-    return 0;
+    long i, st;
+    for (i = 0; i < s->nact; i++) s->klu.kAx[i] = s->R[s->act_r[i]];
+    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, m, s->dgemv);
+    if (st == PCX_KLU_FLAGS) return DCNEWTON_BAIL_FLAGS;
+    return st ? DCNEWTON_BAIL_SINGULAR : 0;
 }
 
 /* numpy.linalg.solve(J, -F): dgesv on J's column-major copy -- an info, or
@@ -242,9 +172,9 @@ static long iterate(dcnewton_t *s)
     for (it = 0; it < s->maxiter; it++) {
         if ((st = evaluate(s)) != 0) return st;
         for (i = 0; i < m; i++) s->b[i] = -s->Fr[i];
-        st = s->klu_sym ? klu_step(s, m) : dense_step(s, m);
+        st = s->klu.klu_sym ? klu_step(s, m) : dense_step(s, m);
         if (st != 0) return st;
-        if ((st = step(s, s->klu_sym ? s->kx : s->b)) != 0) return st;
+        if ((st = step(s, s->klu.klu_sym ? s->kx : s->b)) != 0) return st;
         if ((conv = converged(s, m)) < 0) return DCNEWTON_BAIL_FLAGS;
         s->iters = it + 1;
         for (i = 0; i < m; i++) s->x[i] = s->xn[i];
@@ -257,8 +187,9 @@ static long iterate(dcnewton_t *s)
 long pcx_dcnewton(dcnewton_t *s)
 {
     s->iters = 0;
-    s->refactors = s->factors = s->pivot_fallbacks = s->residual_fallbacks = 0;
-    s->klu_out = s->klu_num;
+    s->klu.refactors = s->klu.factors = s->klu.pivot_fallbacks = 0;
+    s->klu.residual_fallbacks = 0;
+    s->klu.klu_out = s->klu.klu_num;
     feclearexcept(FE_ALL_EXCEPT);
     return finish(s, iterate(s));
 }

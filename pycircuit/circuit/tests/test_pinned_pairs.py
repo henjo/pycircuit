@@ -333,6 +333,53 @@ PAIRS = {
                  'pycircuit.circuit._dc_newton_c:_write_back',
                  'pycircuit.circuit._dc_newton_c:_Rec'],
     },
+    'the PCNR DC solve and its C': {
+        'why': 'the C solve is `pcnr.solve_dc`\'s loop from its start: the ordinary '
+               'part on the circuit\'s view (`pcnr_view`, the core on it), each '
+               'participant at its own unknowns (`_kernel_map`, `_kernel_stamp`: the '
+               'walk, the mirrors, the remainder, the block), `augmented_system`\'s '
+               'order, gshunt\'s rows, `schur_reduce`\'s rank-one updates, the solve '
+               '(numpy\'s dgesv, or StructuralKLU\'s sequence after the AutoSolver\'s '
+               'own first choice), `dx_lim_of`, `refine` -- each class\'s law '
+               'parameters, its laws (`apply_limit`) and `limit_block`\'s Kruskal and '
+               'potentials -- the three tests, and the iteration limit\'s and a '
+               'singular solve\'s exceptions',
+        'reference': ['pycircuit.circuit.pcnr:solve_dc',
+                      'pycircuit.circuit.pcnr:augmented_system',
+                      'pycircuit.circuit.pcnr:schur_reduce',
+                      'pycircuit.circuit.pcnr:predict',
+                      'pycircuit.circuit.pcnr:dx_lim_of',
+                      'pycircuit.circuit.pcnr:refine',
+                      'pycircuit.circuit.pcnr:limit_block',
+                      'pycircuit.circuit.pcnr:lim_converged',
+                      'pycircuit.circuit.pcnr:pcnr_view',
+                      'pycircuit.circuit.pcnr:_remainder_of',
+                      'pycircuit.circuit.pcnr:PcnrDevice.stamp',
+                      'pycircuit.circuit.pcnr:PcnrDevice._kernel_map',
+                      'pycircuit.circuit.pcnr:PcnrDevice._kernel_stamp',
+                      'pycircuit.circuit.pcnr:PcnrDevice.limit',
+                      'pycircuit.circuit._limiting:apply_limit',
+                      'pycircuit.circuit.linearsolver:AutoSolver.solve',
+                      'pycircuit.circuit.linearsolver:AutoSolver._select',
+                      'pycircuit.circuit.linearsolver:StructuralKLU.solve',
+                      'pycircuit.circuit.linearsolver:StructuralKLU._ours',
+                      'pycircuit.circuit.linearsolver:StructuralKLU._factor'],
+        'twin': ['pycircuit.circuit._pcnr_c:PCNRDC_C',
+                 'pycircuit.circuit._pcnr_c:REFINE_C',
+                 'pycircuit.circuit._pcnr_c:render_refine',
+                 'pycircuit.circuit._pcnr_c:_block_c',
+                 'pycircuit.circuit._pcnr_c:refine',
+                 'pycircuit.circuit._pcnr_c:solve',
+                 'pycircuit.circuit._pcnr_c:_outcome',
+                 'pycircuit.circuit._pcnr_c:_settings',
+                 'pycircuit.circuit._pcnr_c:_solver',
+                 'pycircuit.circuit._pcnr_c:_choose',
+                 'pycircuit.circuit._pcnr_c:_record',
+                 'pycircuit.circuit._pcnr_c:_class_ok',
+                 'pycircuit.circuit._pcnr_c:_tables',
+                 'pycircuit.circuit._pcnr_c:_Rec',
+                 'pycircuit.circuit._hdl_climit:_parameter_chains'],
+    },
     'the stage predictor and its multistep fast path': {
         'why': 'behind the target nearest-first is newest-first: the fast path '
                'keeps the general path\'s order, its 1e-13 dedupe, the fit\'s '
@@ -594,7 +641,8 @@ RECORD = {
     'the Newton solve and its C': ('f7509d6b5900', '80a496916cfd'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1650ca5eabf8', '3925aca9bd1c'),
-    'the DC base solve and its C': ('d17203656044', '8c18582f0653'),
+    'the DC base solve and its C': ('d17203656044', '60e5fa192106'),
+    'the PCNR DC solve and its C': ('699e2a857ec7', 'c21b0ca973b8'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('16a27211f0a2', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
