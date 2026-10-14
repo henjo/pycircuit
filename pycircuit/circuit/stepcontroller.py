@@ -606,19 +606,33 @@ class IntegralController(StepController):
         ## can move it.
         target = self._band_target(safety, p)
         h = s.h_curr
-        def shrink(e):
-            ## a second retry at one point shrinks at the order the two tries
-            ## measured (`RETRY_ORDER_MIN`, `retry_order`) -- measured on a
-            ## rejection only, as in PIController
-            retry = self._retry_exponent(s, e, p, target)
-            return h * max(MIN_SHRINK_RATIO,
-                           (target / e) ** (exponent if retry is None else retry))
         accepted, h_next = self._band_decision(
-            s, err, shrink=shrink,
+            s, err, shrink=lambda e: self._shrink(s, e, p, target),
             grow=lambda e: h * min(MAX_GROWTH_RATIO,
                                    (target / max(e, 1e-12)) ** exponent))
         self._judged(s, accepted, err)
         return accepted, h_next
+
+    def _shrink(self, s, e, p, target):
+        """The step after a rejection at the normalised error `e`: a second
+        retry at one point shrinks at the order the two tries measured
+        (`RETRY_ORDER_MIN`, `retry_order`) -- measured on a rejection only,
+        as in PIController -- the first at ``1/p``, MIN_SHRINK_RATIO-bounded.
+        `_evaluate`'s and an early abort's (`reject_early`) one law."""
+        retry = self._retry_exponent(s, e, p, target)
+        return s.h_curr * max(MIN_SHRINK_RATIO,
+                              (target / e) ** (1.0 / p if retry is None else retry))
+
+    def reject_early(self, s, err, p):
+        """An attempt abandoned at its first Newton iterate, its error
+        estimate there `err` already over `Transient.early_abort`: judged a
+        rejection at `err` -- the shrink (`_shrink`, the default band's
+        target) and the retry record (`_judged`) as `_evaluate` makes them
+        on a rejection.  `last_err` is left as the last judged step's.
+        Returns the next step."""
+        h_next = self._shrink(s, err, p, self._band_target(0.9, p))
+        self._judged(s, False, err)
+        return h_next
 
 class PIController(StepController):
     """

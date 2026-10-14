@@ -4867,7 +4867,8 @@ def test_the_period_column_carries_the_constant_source_vector_of_an_autonomous_c
         prev = e
 
 
-def test_the_closing_period_column_is_the_default_again_and_its_polished_answer_does_not_depend_on_the_seed():
+def test_the_closing_period_column_is_the_default_again_and_its_polished_answer_does_not_depend_on_the_seed(
+        monkeypatch):
     """The 'closing' period column (B7c completed on every kind, 2026-09-21)
     and what its evidence was.  On a RAW single window of an adaptive run
     (`lte_grid(fold=False)`), whose seam sits on the slow branch, a free-period
@@ -4894,9 +4895,19 @@ def test_the_closing_period_column_is_the_default_again_and_its_polished_answer_
     closing from 0, 2 and 5 % low agrees with itself to 5e-6 and with
     proportional to 1e-4;
     proportional fails from 16 % low where closing takes it.
+
+    ⚠ THE WINDOW IS CUT WITH THE EARLY ABORT OFF (`Transient`'s default
+    patched to 0 for this test; 2026-10-14, roadmap 132): the raw window is
+    an adaptive run's grid, the abort moves where its steps fall, and every
+    figure above -- the low seed's failure under 'proportional' included --
+    is that grid's.  With it on, a run here no longer converged (a damped
+    Newton failing in a period step).
     """
     import warnings as _w
+    from pycircuit.circuit.transient import Transient
     circuit.default_toolkit = circuit.numeric
+    monkeypatch.setattr(next(p_ for p_ in Transient.parameters if p_.name == 'early_abort'),
+                        'default', 0.0)
     MU = 10.0
     T_REF = 19.098600502
 

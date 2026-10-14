@@ -269,6 +269,9 @@ class ChordNewton(NonLinearSolver):
         self.eval_F = eval_F
         self.fallback = fallback
         self.fallbacks = 0
+        ## the held Jacobian's factorisation, once made (None until then, or
+        ## where the linear solver gives none)
+        self.fac = None
 
     def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol,
                      maxiter, limiter=None, scaler=None, row_names=None,
@@ -289,7 +292,9 @@ class ChordNewton(NonLinearSolver):
             J_s, F_s, s_vec = scaler.scale(J, F, toolkit)
             try:
                 if i == 0 and linsolver is not None:
-                    fac = linsolver.factor(J_s, toolkit)
+                    ## (kept: an early abort's estimate solves with it --
+                    ## `_StepNewton._early_estimate`)
+                    fac = self.fac = linsolver.factor(J_s, toolkit)
                 if fac is not None:
                     xdiff = fac.solve(-F_s)
                 elif linsolver is not None:

@@ -32,6 +32,47 @@ from pycircuit.circuit.dcanalysis import refnode_removed
 C_KERNEL_SHARE = 1.0 / 100.0
 
 
+class _EarlyArm:
+    """The early abort armed for one multistep attempt (`Transient.
+    early_abort`; `_SteppingLoop.take` sets it as `tr._early_arm`, `_newton`
+    and `_tran_newton_c.solve` read it): the threshold and what the error
+    test needs of the attempt that the Newton does not hold -- the point it
+    left from, its step, whether `where` clamped it, the run's absolute
+    tolerance and largest step."""
+
+    __slots__ = ('abstol', 'clamped', 'h', 'max_step', 'th', 'x_last')
+
+    def __init__(self, th, x_last, h, clamped, abstol, max_step):
+        self.th, self.x_last, self.h, self.clamped = th, x_last, h, clamped
+        self.abstol, self.max_step = abstol, max_step
+
+
+class _EarlyAbort(Exception):
+    """An attempt abandoned at its first Newton iterate: its error estimate
+    there `err`, the error test's inputs `s` (`StepLTEInputs`) and exponent
+    denominator `p` -- what the controller's rejection reads
+    (`IntegralController.reject_early`).  Not a `NoConvergenceError`: the
+    Newton's own failure handling must not see it."""
+
+    def __init__(self, err, s, p):
+        super().__init__(err)
+        self.err, self.s, self.p = err, s, p
+
+
+class _Factored:
+    """A held factorisation as the error test's `linsolver` (`_charge_lte`
+    calls ``solve(J, b, toolkit)``): ``J^-1 b`` by the Newton's own factors,
+    `J` -- the matrix they factor -- not read again."""
+
+    __slots__ = ('fac',)
+
+    def __init__(self, fac):
+        self.fac = fac
+
+    def solve(self, _J, b, _toolkit):
+        return self.fac.solve(b)
+
+
 def compiled_jacobian_size(cir):
     """The bytecode, in bytes, of the compiled `G` and `C` of every hdl
     element of `cir` at any depth (`Behavioural` classes: `_hdl_info`) --
@@ -298,6 +339,46 @@ class _StepNewton:
         
         limiter_func = self._newton_limiter()
 
+        ## THE EARLY ABORT (`Transient.early_abort`, 2026-10-14): where the
+        ## stepping loop armed this attempt (`_EarlyArm`, read once: nothing
+        ## nested is armed), the solve's SECOND evaluation -- the first
+        ## iterate x1, its charge -- is judged by the error test with J^-1 the
+        ## seed's factorisation the Newton holds (`_early_estimate`); over
+        ## the threshold, the attempt is abandoned there (`_EarlyAbort`, its
+        ## one iteration counted) and the loop rejects it at that error.
+        ## Armed for the solvers the C twins make (newton.c): the chord on
+        ## its factors, the full Newton on a dense matrix (numpy's solve of
+        ## J0 is dgetrs on dgesv's factors, bit for bit); no scaler, no
+        ## rescue.  `func_s` / `residual_s` are the solve's; the branch check
+        ## and the damped retry below see the plain ones.
+        arm = self.__dict__.pop('_early_arm', None)
+        func_s, residual_s = func, residual
+        if arm is not None:
+            seen = []
+
+            def judged(x, J):
+                ## (the seed's J copied: an evaluation may write the next
+                ## one into the same buffer)
+                seen.append(np.array(J, copy=True) if not seen else J)
+                if len(seen) == 2 and armed:
+                    est = self._early_estimate(arm, x, seen[0], chord, linsolver)
+                    _paths.COUNTS['early:checks'] += est is not None
+                    if est is not None and est[0] > arm.th:
+                        _paths.COUNTS['early:aborts'] += 1
+                        self.statistics.newton_iterations += 1
+                        raise _EarlyAbort(*est)
+
+            def func_s(x):
+                F, J = func(x)
+                judged(x, J)
+                return F, J
+
+            if residual is not None:
+                def residual_s(x):
+                    F = residual(x)
+                    judged(x, None)
+                    return F
+
         solver = self._get_nrsolver()
         chord = None
         if getattr(self, '_continuation_rescue', False):
@@ -309,17 +390,22 @@ class _StepNewton:
             iref, tk = self.irefnode, self.toolkit
 
             def residual_reduced(xr):
-                f = residual(insert_row(xr, iref, tk))
+                f = residual_s(insert_row(xr, iref, tk))
                 (f,) = remove_row_col((f,), iref, tk)
                 return f
             solver = chord = ChordNewton(residual_reduced, solver)
             _paths.COUNTS['chord:chosen'] += 1
         scaler = self._get_scaler()
         linsolver = self._get_linearsolver()
+        if arm is not None:
+            from pycircuit.circuit.linearsolver import AutoSolver
+            from pycircuit.circuit.scaler import NoneScaler
+            armed = (not getattr(self, '_continuation_rescue', False)
+                     and type(scaler) is NoneScaler and type(linsolver) is AutoSolver)
         try:
             x_res, _iters = solver.solve_system(
                 x0,
-                refnode_removed(func, self.irefnode, self.toolkit),
+                refnode_removed(func_s, self.irefnode, self.toolkit),
                 self.toolkit,
                 self.par.reltol,
                 abstol,
@@ -409,6 +495,48 @@ class _StepNewton:
         
         # Insert reference node voltage
         return insert_row(x, self.irefnode, self.toolkit)
+
+    def _early_estimate(self, arm, x1, J0, chord, linsolver):
+        """The early abort's estimate (`_newton`): the error test's chain --
+        `_lte_inputs` at the first iterate `x1` (its charge, `_q_at`) with
+        the seed's Jacobian `J0` -- J^-1 by the Newton's own factorisation:
+        the chord's held factors (`ChordNewton.fac`), or numpy's solve of J0
+        where the full Newton's matrix is dense (dgetrs on dgesv's factors,
+        which the C reuses).  `(err, s, p)`, or None where no estimate is
+        made: the full Newton on a sparse matrix (no factors held), a chord
+        without its factors, a 2nd-order step with no third point, a
+        non-finite estimate (the C's error test hands those back: no abort).
+        Under `np.errstate(all='ignore')`: a check warns about nothing, and
+        lte.c's estimate tests no flag.  The running reference is left as it
+        was."""
+        from pycircuit.circuit.integrator import EulerIntegrator
+        from pycircuit.circuit.stepcontroller import StepLTEInputs
+        if chord is not None:
+            if chord.fac is None:
+                return None
+            ls = _Factored(chord.fac)
+        elif linsolver._choice is linsolver._dense:
+            ls = None
+        else:
+            return None
+        inp = self._lte_inputs(x1, arm.x_last, J0, arm.h, arm.abstol, arm.max_step,
+                               arm.clamped)
+        if inp['h_last2'] is None and type(inp['active_integrator']) is not EulerIntegrator:
+            return None
+        inp['linsolver'] = ls
+        s = StepLTEInputs.bind(**inp)
+        ctrl = self.step_controller
+        ref = ctrl.__dict__.get('_ref_running')
+        ## (no warning from a check: lte.c's estimate tests no flag here)
+        try:
+            with np.errstate(all='ignore'):
+                lte, p = ctrl._charge_lte(s)
+                e = ctrl._normalised(s, lte)
+        finally:
+            ctrl._ref_running = ref
+        if not np.isfinite(e).all():
+            return None
+        return float(np.max(e)), s, p
 
     ## STAGE 12B -- small helpers the coupled path needs, factored out of `_solve`
     ## rather than re-derived, so the two paths cannot drift apart on tolerances.

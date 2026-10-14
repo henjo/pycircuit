@@ -125,6 +125,26 @@ static long where(loop_t *s, loop_attempt_t *a)
    last point), u at the attempt's end, the Newton -- its inputs as
    `_tran_newton_c.solve` sets them -- and the branch screen after it.  0,
    or the status to stop with */
+static long lte_setup(loop_t *s, const loop_attempt_t *a, const double *xc, const double *q,
+                      const double *J);
+
+/* THE EARLY ABORT, armed for the attempt as `_SteppingLoop.early_arm` arms
+   it: history (two accepted points), a full attempt left in the point's
+   budget, above minstep -- the error test set up for the attempt, its x, q
+   and J the Newton's at its first iterate (a 2nd-order step with no third
+   point is not armed: `lte_setup`) */
+static void arm_early(loop_t *s, const loop_attempt_t *a, newton_t *nt)
+{
+    nt->early_lte = 0;
+    if (s->early_th > 0.0 && s->adaptive && s->npoint >= 2 && s->rejects + 1 < s->max_reject
+            && s->point_retries + 1 < s->max_retries && a->h > s->minstep
+            && lte_setup(s, a, s->xlast, s->qring, 0) == 0) {
+        nt->early_lte = s->lte;
+        nt->early_lte_fn = s->lte_fn;
+        nt->early_th = s->early_th;
+    }
+}
+
 static long take(loop_t *s, loop_attempt_t *a)
 {
     newton_t *nt = (newton_t *) s->newton;
@@ -183,7 +203,12 @@ static long take(loop_t *s, loop_attempt_t *a)
     }
     nt->Cj = s->cC[a->nxt];
     nt->Geqj = s->Geq[a->nxt];
-    if (CALL(s->newton_fn, pcx_newton, nt) != NEWTON_CONVERGED) return LOOP_BAIL_NEWTON;
+    arm_early(s, a, nt);
+    st = CALL(s->newton_fn, pcx_newton, nt);
+    nt->early_lte = 0;
+    if (st == NEWTON_EARLY || st == NEWTON_CONVERGED) s->early_checks += nt->early_checks;
+    if (st == NEWTON_EARLY) return LOOP_JUDGE_EARLY;
+    if (st != NEWTON_CONVERGED) return LOOP_BAIL_NEWTON;
     if (br) {
         br->C = nt->Cj;
         br->cmax = s->cmax;
@@ -199,9 +224,9 @@ static long take(loop_t *s, loop_attempt_t *a)
    `pow`, which can differ from `h * h` in the last bit, so `pow` it is
    (`-fno-builtin-pow` keeps the call) -- its vectors the attempt's and the
    rings'.  0 (`err` set), or LOOP_BAIL_LTE */
-static long error_test(loop_t *s, loop_attempt_t *a)
+static long lte_setup(loop_t *s, const loop_attempt_t *a, const double *xc, const double *q,
+                      const double *J)
 {
-    newton_t *nt = (newton_t *) s->newton;
     lte_t *le = (lte_t *) s->lte;
     long n = s->n;
     double h = a->h;
@@ -228,16 +253,27 @@ static long error_test(loop_t *s, loop_attempt_t *a)
     le->s12 = s12;
     le->s23 = s23;
     le->s123 = s123;
-    le->xc = nt->xc;
+    le->xc = xc;
     le->xl = s->xlast;
-    le->q = nt->qj;
+    le->q = q;
     le->q1 = s->qring;
     le->q2 = s->qring + n;
     le->q3 = s->qring + 2 * n;
     le->iq1 = s->iqring;
-    le->J = nt->Jj;
+    le->J = J;
     le->run = s->run;
     le->have_run = s->have_run;
+    return 0;
+}
+
+/* the error test on the attempt's converged point (`lte_setup`, then
+   pcx_lte).  0 (`err` set), or LOOP_BAIL_LTE */
+static long error_test(loop_t *s, loop_attempt_t *a)
+{
+    newton_t *nt = (newton_t *) s->newton;
+    lte_t *le = (lte_t *) s->lte;
+    long st;
+    if ((st = lte_setup(s, a, nt->xc, nt->qj, nt->Jj)) != 0) return st;
     if (CALL(s->lte_fn, pcx_lte, le) != LTE_DONE) return LOOP_BAIL_LTE;
     a->err = le->err;
     return 0;
@@ -266,6 +302,35 @@ static int retry_at_point(loop_t *s, loop_attempt_t *a)
     s->t_break = a->t_break;
     s->h = pcx_py_max(hn, s->minstep);
     return 1;
+}
+
+/* THE EARLY ABORT's rejection (`_SteppingLoop.take`'s, `IntegralController.
+   reject_early`): the law at the estimate the Newton stopped at, its retry
+   record; the point's counts and the next step as `retry_at_point` keeps
+   them; the Newton's iteration counted.  Nothing of the attempt is recorded
+   as made: the cache, the rings and the `att_*` fields stay the last made
+   attempt's, as the Python's raise leaves its state */
+static void early_reject(loop_t *s, const loop_attempt_t *a)
+{
+    ctrl_t *ct = (ctrl_t *) s->ctrl;
+    newton_t *nt = (newton_t *) s->newton;
+    ct->err = nt->early_err;
+    ct->p = (a->formula == PCX_FORMULA_EULER) ? 2.0 : 3.0;
+    ct->h = a->h;
+    ct->max_step = s->max_step;
+    ct->point = s->npoint - 1;
+    CALL(s->ctrl_fn, pcx_ctrl, ct);
+    s->iters += nt->iters;
+    if (s->hk >= 2) s->pred_fast++;
+    s->rejected++;
+    s->early_aborts++;
+    s->point_retries++;
+    s->rejects++;
+    s->landing = a->landing;
+    s->is_first = a->is_first;
+    s->order_drop = 0;
+    s->t_break = a->t_break;
+    s->h = pcx_py_max(ct->h_next, s->minstep);
 }
 
 /* 3. judge (`_SteppingLoop.judge`, `_LMMSteps.judge`): a fixed grid's next
@@ -391,12 +456,18 @@ long pcx_loop(loop_t *s)
     long st;
     s->k = 0;
     s->attempts = s->rejected = s->iters = s->euler_steps = s->breaks = s->screens = 0;
-    s->pred_fast = s->ltes = s->lte_euler = 0;
+    s->pred_fast = s->ltes = s->lte_euler = s->early_aborts = s->early_checks = 0;
     for (;;) {
         /* `while self.t < self.tend` */
         if (!(s->t < s->tend)) return s->status = LOOP_DONE;
         if (s->k >= s->cap) return s->status = LOOP_FULL;
-        if ((st = where(s, &a)) != 0 || (st = take(s, &a)) != 0) return s->status = st;
+        if ((st = where(s, &a)) != 0) return s->status = st;
+        st = take(s, &a);
+        if (st == LOOP_JUDGE_EARLY) {
+            early_reject(s, &a);
+            continue;
+        }
+        if (st != 0) return s->status = st;
         st = judge(s, &a);
         if (st == LOOP_JUDGE_RETRY) continue;
         if (st != LOOP_JUDGE_ACCEPT) return s->status = st;

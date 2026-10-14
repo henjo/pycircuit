@@ -4972,3 +4972,36 @@ array alive for the call), a pre-resolved pointer type, a type test for the usua
 measured, PSP's `G` 23.2 -> 20.1 us."; "## The fused kernel (speed round 9, stage 3)."; `FUSE`: "needs
 48-62 % of the work on PSP"; "(speed round 12, stage 1, 2026-10-06)"; `libm_check`: "~10 ms";
 `_resolve`: "a request for C ran into an ImportError out of class creation (until 2026-10-02)".
+
+## `transient.py` -- `_SteppingLoop.take`, the early abort (2026-10-14)
+
+2026-10-14 (Andreas: "Build it now"; `doc/hdl_roadmap_260824.md`, 132).
+The docstring before the change: "2. Take it: smaller on a Newton
+failure.  False: retry smaller."  `take` now arms the early abort for the
+attempt (`early_arm`, set as `tr._early_arm` and removed after it) and
+catches `_EarlyAbort`: a rejection at the estimate the Newton stopped at
+(`IntegralController.reject_early`, the shrink `_evaluate` gives a
+rejection, factored into `_shrink` for both), the point's counts, the
+Newton's one iteration counted where it was abandoned.
+
+What was sized before it was built (the DC plan's REJECTIONS SIZED and
+BUILD EA, scratch g5/): the rejections' census (84 % on a floored
+loop-closing current; 28.5 % of the Newton iterations); three first-retry
+rules (rejections -20 %, Newton work -1..3 %: refused); the estimate at the
+first iterate against the final error (over 2: 18 063 of 21 863 rejections,
+9 accepted attempts); the update size |x1 - x0| as the estimate (thousands
+of accepted attempts flagged: refused); the retry from the estimate itself
+(-9.4 % Newton), from a quarter of it and halving the step (both forced
+steps: refused); a C prototype in a worktree against a 3 % line (-6.5 %
+unpinned, -7.1 % pinned).  Its rule differs from `judge` in one way: the
+retry is sized from the estimate at x1, which runs 1.4-22x the final error
+(p10-p90) -- the controller's measured order absorbs it from the second
+retry.
+
+The equal-solutions-equal-steps property is gone with it on: whether an
+attempt is abandoned depends on its first Newton iterate, so two Newton
+routes to the same converged points (PCNR and limiting) take different
+step sequences; the gate 13-6 test compares them with it off.
+Tests: `test_early_abort.py` (one rule on the three paths, full Newton and
+chord, dense and KLU; a check that never aborts changes nothing; the
+controller's law; the arm's budget; the threshold refused below 1).

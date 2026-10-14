@@ -6,6 +6,7 @@
 #include "pcx_minmax.h"
 #include "pcx_dense.h"
 #include "newton.h"
+#include "lte.h"
 
 /* THE ITERATION: `StandardNewton.solve_system` (chord 0) or
    `ChordNewton.solve_system` up to its fallback (chord 1), on the reduced
@@ -173,8 +174,41 @@ static int chord_breaks(const newton_t *s, long m, double *prev, int *have_prev)
    right-hand side `-F_s` and, formed, J reduced for the solve and |J| for
    the test (`finite`: every entry of J finite).  0, or the status to stop
    with */
+/* THE EARLY ABORT's check (newton.h): the error test on the first iterate
+   -- `xf`, its q -- by the factors the solve holds, the record's x, q and
+   factorisation put back after the one call.  1 over `early_th` (`early_err`
+   set), else 0 (a hand-back of the test is no abort: the Python's
+   `_early_estimate` makes none there either) */
+static int early(newton_t *s, const double *q, void *num)
+{
+    lte_t *le = (lte_t *) s->early_lte;
+    const double *xc0 = le->xc, *q0 = le->q;
+    long st;
+    le->xc = s->xf;
+    le->q = q;
+    le->lu_mode = s->chord ? (s->klu_sym ? LTE_LU_KLU : LTE_LU_GETRS32) : LTE_LU_GETRS64;
+    le->luA = s->A;
+    le->lu_ipiv64 = s->ipiv64;
+    le->lu_ipiv32 = s->ipiv32;
+    le->lu_num = num;
+    le->lu_sym = s->klu_sym;
+    le->lu_common = s->klu_common;
+    le->lu_klu_solve = s->klu_solve;
+    le->lu_dgetrs64 = s->dgetrs64;
+    le->lu_dgetrs32 = s->dgetrs;
+    st = ((__typeof__(&pcx_lte)) s->early_lte_fn)(le);
+    le->lu_mode = LTE_LU_NONE;
+    le->xc = xc0;
+    le->q = q0;
+    if (st != LTE_DONE) return 0;
+    s->early_checks = 1;
+    if (!(le->err > s->early_th)) return 0;
+    s->early_err = le->err;
+    return 1;
+}
+
 static long evaluate(newton_t *s, long it, int full, long first_bits, const double *Cin0,
-                     int *finite)
+                     int *finite, void *num)
 {
     long n = s->n, m = n - 1, r = s->iref, i, k;
     core_fn_t core = (core_fn_t) s->core_fn;
@@ -201,6 +235,11 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
     core(s->core, s->xf, s->T, bits | s->pattern, s->formula, s->a0, s->a1, s->a2, s->h,
          s->theta,
          s->q1, s->q2, s->iq1, s->u, Cin, C, q, iq, Geq, F, J);
+    /* the first iterate evaluated, the seed's factors still in place (A is
+       written below, the numeric only by the next solve): the early abort's
+       check where armed -- the chord on its factors, the full Newton dense */
+    if (it == 1 && s->early_lte && (s->chord || !s->klu_sym) && early(s, q, num))
+        return NEWTON_EARLY;
     /* `-F_s`: F reduced, negated (no scaler: `_tran_newton_c` declines
        one, and NoneScaler's leaves J and F as they are) */
     pcx_drop_ref(F, s->Fr, n, r);
@@ -240,6 +279,7 @@ static long iterate(newton_t *s, void **num)
     const double *Cin0;  /* cC where the full seed equals cx (a cache hit), else NULL */
     long first_bits;     /* the first evaluation's want bits */
     s->iters = 0;
+    s->early_checks = 0;
     s->status = NEWTON_RUNNING;
     /* the seed, reduced (remove_row_col); a hit evaluates without the C
        pass, its C the cached one: as `_tran_core.evaluate` drops its C bit
@@ -250,7 +290,8 @@ static long iterate(newton_t *s, void **num)
     for (it = 0; it < s->maxiter; it++) {
         /* J evaluated: every iteration of the full Newton, the chord's first */
         int full = (it == 0) || !s->chord;
-        if ((st = evaluate(s, it, full, first_bits, Cin0, &finite)) != 0) return finish(s, st);
+        if ((st = evaluate(s, it, full, first_bits, Cin0, &finite, *num)) != 0)
+            return finish(s, st);
         if ((st = solve_step(s, it, finite, num)) != 0) return finish(s, st);
         /* `x_next = x + xdiff` */
         for (i = 0; i < m; i++) s->xn[i] = s->x[i] + s->b[i];

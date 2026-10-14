@@ -15,6 +15,11 @@
  *     a context of the run's own, and loop.c sets the [step] fields at each
  *     attempt, re-pointing the [step] pointers at its own and the Newton's
  *     buffers.
+ * And the early abort (`Transient.early_abort`): the C loop's `take` or
+ * `_tran_lte_c.early_context` fills a context for an attempt but its x, q
+ * and J; newton.c's check at the first iterate points `xc` and `q` at the
+ * iterate's, sets the factorisation (`lu_mode`, the THE EARLY ABORT'S
+ * SOLVE block) and puts all three back after its one call.
  * pcx_lte reads the inputs and writes the work buffers, `out`, `err` and
  * `status` -- lte.c says what holds after a bail. */
 typedef struct {
@@ -109,6 +114,21 @@ typedef struct {
         *klu_common,            /* the solver's KLU common block */
         *klu_refactor, *klu_solve,  /* KLU's entries (klu_refactor_t, klu_solve_t) */
         *dgemv;                 /* numpy's own cblas dgemv (dgemv64_t), for R x */
+    /* THE EARLY ABORT'S SOLVE (`Transient.early_abort`; newton.c's check at
+       the first iterate): with `lu_mode` set, J^-1 Eg is by a factorisation
+       in hand -- the Newton's own, of the seed's J -- and `J` is not read.
+       newton.c sets these for its one call and puts `lu_mode` back to
+       LTE_LU_NONE; zero elsewhere (the context's struct is made zeroed) */
+    long lu_mode;               /* enum lte_lu */
+    const double *luA;          /* m x m: the LU in LAPACK's layout (GETRS64, GETRS32) */
+    const int64_t *lu_ipiv64;   /* m: dgesv's pivots (GETRS64) */
+    const int *lu_ipiv32;       /* m: dgetrf's pivots (GETRS32) */
+    void *lu_num;               /* the chord's KLU numeric (KLU) */
+    void *lu_sym;               /* its symbolic analysis (KLU) */
+    void *lu_common;            /* its KLU common block (KLU) */
+    void *lu_klu_solve;         /* klu_solve, klu_solve_t (KLU) */
+    void *lu_dgetrs64;          /* numpy's own `scipy_dgetrs_64_`, dgetrs64_t (GETRS64) */
+    void *lu_dgetrs32;          /* SciPy's `scipy_dgetrs_`, dgetrs32_t (GETRS32) */
 } lte_t;
 long pcx_lte(lte_t *s);
 
@@ -124,6 +144,15 @@ enum lte_status {
     LTE_BAIL_FOREIGN = 7,        /* the sparse solve: a nonzero off the pattern */
     LTE_BAIL_KLU = 8,            /* the sparse solve: KLU's refactor or solve failed */
     LTE_BAIL_RESIDUAL = 9        /* the sparse solve: the refactor's residual too large */
+};
+/* `lu_mode`: J^-1 Eg by the matrix J (NONE), or by factors in hand (the early
+   abort's): dgetrs on dgesv's LU (numpy's solve of the same matrix, bit for
+   bit), on dgetrf's (SciPy's lu_solve), or klu_solve on a numeric */
+enum lte_lu {
+    LTE_LU_NONE = 0,
+    LTE_LU_GETRS64 = 1,
+    LTE_LU_GETRS32 = 2,
+    LTE_LU_KLU = 3
 };
 /* `formula`, the estimate (the integrator's `compute_lte`): `coef` the
    glue's, in the integrator's own scalar arithmetic */

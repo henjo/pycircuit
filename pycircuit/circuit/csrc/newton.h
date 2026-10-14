@@ -148,6 +148,21 @@ typedef struct {
          *klu_factor,     /* KLU's klu_factor (klu_factor_t, pcx_abi.h) */
          *klu_solve,      /* klu_solve (klu_solve_t) */
          *klu_free;       /* klu_free_numeric (klu_free_numeric_t) */
+    /* THE EARLY ABORT (`Transient.early_abort`; the caller arms it for one
+       call, NULL `early_lte` otherwise): at the solve's evaluation of its
+       first iterate -- x1 and its q -- the error test (`early_lte`, an lte_t
+       its caller filled for the attempt but x, q and J; `early_lte_fn`, lte.c's
+       `pcx_lte`) by the seed's factorisation the solve holds (dgesv's LU:
+       `dgetrs64`; the dense chord's: `dgetrs`; the sparse chord's numeric) --
+       above `early_th`, the solve stops there with NEWTON_EARLY.  Not on the
+       full Newton of a sparse matrix (no factors held) */
+    void *early_lte;      /* CALL: the error test's record, or NULL: not armed */
+    void *early_lte_fn;   /* CALL: its entry (pcx_lte) */
+    double early_th;      /* CALL: the threshold */
+    double early_err;     /* OWN: the estimate, on NEWTON_EARLY */
+    long early_checks;    /* OWN: 1 where this call's estimate was made, else 0 */
+    void *dgetrs64;       /* CTX: numpy's own `scipy_dgetrs_64_` (dgetrs64_t), on
+                             dgesv's LU */
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and
@@ -184,5 +199,7 @@ enum newton_status {
     NEWTON_BAIL_CHORDBREAK = 10, /* the chord's steps stopped shrinking */
     NEWTON_BAIL_MAXITER = 11,    /* no convergence in maxiter */
     NEWTON_BAIL_KLU_FACTOR = 12, /* the sparse chord's factorisation: singular */
-    NEWTON_BAIL_KLU_SOLVE = 13   /* the sparse chord's solve failed */
+    NEWTON_BAIL_KLU_SOLVE = 13,  /* the sparse chord's solve failed */
+    NEWTON_EARLY = 14            /* the early abort's estimate over `early_th`: the
+                                    attempt abandoned (not a hand-back) */
 };

@@ -9,7 +9,11 @@
    of the struct, or decides a branch taken before the test.  Its chain
    runs partly under `np.errstate(divide='ignore', invalid='ignore')`,
    so a flag there hands back where numpy would not warn.  Every return
-   leaves the flags clear, as the chain's last numpy call leaves them. */
+   leaves the flags clear, as the chain's last numpy call leaves them.
+   The early abort's estimate (`lu_mode`) tests none: its Python
+   (`_StepNewton._early_estimate`) runs under `np.errstate(all='ignore')`,
+   so its values are the IEEE ones whatever a flag says, and it warns
+   about nothing. */
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
@@ -150,20 +154,54 @@ static long charge_lte(lte_t *s, long n)
         double ddb = (d2 - d3) / s->s23;
         s->lte[i] = s->coef * ((dda - ddb) / s->s123);
     }
-    if (fetestexcept(PCX_FP_FLAGS)) return LTE_BAIL_FLAGS;
+    if (fetestexcept(PCX_FP_FLAGS) && !s->lu_mode) return LTE_BAIL_FLAGS;
     return 0;
 }
 
-/* J^-1 Eg into `lte`, the reference row cut and restored as +0.0: dense,
-   numpy's own dgesv on the reduced J; sparse, `sparse_solve`.  0, or why
-   it is handed back */
+/* J^-1 Eg by the factors in hand (`lu_mode`, the early abort's): the
+   reduced Eg back-substituted -- dgetrs on dgesv's LU is numpy's solve of
+   that matrix, on dgetrf's SciPy's lu_solve, klu_solve the chord's
+   `_KLUNumeric.solve`.  0, or why it is handed back (an info, a KLU failure:
+   the flags cleared, as numpy's solve and the ctypes call leave them) */
+static long factored_solve(lte_t *s, long n, long r)
+{
+    long m = n - 1;
+    char tr = 'N';
+    pcx_drop_ref(s->lte, s->b, n, r);
+    if (s->lu_mode == LTE_LU_GETRS64) {
+        int64_t m64 = m, one64 = 1, info64 = 0;
+        ((dgetrs64_t) s->lu_dgetrs64)(&tr, &m64, &one64, s->luA, &m64, s->lu_ipiv64, s->b, &m64,
+                                      &info64, 1);
+        feclearexcept(FE_ALL_EXCEPT);
+        if (info64 != 0) return LTE_BAIL_DGESV;
+    } else if (s->lu_mode == LTE_LU_GETRS32) {
+        int m32 = (int) m, one32 = 1, info32 = 0;
+        ((dgetrs32_t) s->lu_dgetrs32)(&tr, &m32, &one32, s->luA, &m32, s->lu_ipiv32, s->b, &m32,
+                                      &info32, 1);
+        feclearexcept(FE_ALL_EXCEPT);
+        if (info32 != 0) return LTE_BAIL_DGESV;
+    } else {
+        int ok = ((klu_solve_t) s->lu_klu_solve)(s->lu_sym, s->lu_num, (int) m, 1, s->b,
+                                                 s->lu_common);
+        feclearexcept(FE_ALL_EXCEPT);
+        if (!ok) return LTE_BAIL_KLU;
+    }
+    return 0;
+}
+
+/* J^-1 Eg into `lte`, the reference row cut and restored as +0.0: by the
+   factors in hand (`lu_mode`, `factored_solve`); dense, numpy's own dgesv
+   on the reduced J; sparse, `sparse_solve`.  0, or why it is handed back */
 static long solve_lte(lte_t *s, long n, long r)
 {
     long m = n - 1, i;
     int64_t m64 = m, one64 = 1, info64 = 0;
     /* remove_row_col and numpy's solve: the reduced J column-major (numpy's
        copy for LAPACK), the reduced Eg, numpy's own dgesv */
-    if (s->klu_sym) {
+    if (s->lu_mode) {
+        long why = factored_solve(s, n, r);
+        if (why) return why;
+    } else if (s->klu_sym) {
         long why = sparse_solve(s, n, r);
         if (why) return why;
     } else {
@@ -244,10 +282,10 @@ static long normalised_error(lte_t *s, long n)
         if (s->has_charge && s->charge[i] != 0.0) ab = pcx_np_maximum(ab, floor);
         s->tq[i] = s->trtol * (s->reltol * s->ref[i] + ab);
     }
-    if (fetestexcept(PCX_FP_FLAGS)) return LTE_BAIL_FLAGS;
+    if (fetestexcept(PCX_FP_FLAGS) && !s->lu_mode) return LTE_BAIL_FLAGS;
     for (i = 0; i < n; i++) if (!(s->tq[i] > 0.0 && isfinite(s->tq[i]))) return LTE_BAIL_TOLERANCE;
     for (i = 0; i < n; i++) s->tq[i] = fabs(s->lte[i]) / s->tq[i];
-    if (fetestexcept(PCX_FP_FLAGS)) return LTE_BAIL_FLAGS;
+    if (fetestexcept(PCX_FP_FLAGS) && !s->lu_mode) return LTE_BAIL_FLAGS;
     /* `_normalised`'s mask (`Transient.lte_algebraic`): an unknown not
        judged is +0.0, as `np.where(mask, e, 0.0)` makes it (a mask entry
        is true where nonzero: -0.0 false, NaN true, as `== 0.0` decides) */

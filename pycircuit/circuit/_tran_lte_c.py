@@ -312,6 +312,64 @@ def max_error(ctrl, s):
     return float(ctx.s.err), (2.0 if euler else 3.0)
 
 
+def early_context(tr, arm, active):
+    """The early abort's error test (`Transient.early_abort`) for the Python
+    loop's C Newton (`_tran_newton_c.solve`): a context of the controller's
+    own (`_lte_c_early`) filled for the attempt `arm` (`_EarlyArm`) with the
+    step's companion `active` -- every input but x, q and J, which newton.c's
+    check supplies at the first iterate (the placeholders here: the point
+    it left from, its charge, a zero J the check does not read).  Its
+    J^-1 is the Newton's factors, so no sparse binding.  `(the context, the
+    attempt's inputs, euler)`, or None: declined (counted) -- the Python
+    Newton then makes the check.  The checks are `max_error`'s."""
+    import dataclasses
+
+    from pycircuit.circuit.stepcontroller import StepLTEInputs
+    if not ENABLED:
+        return _no('lte_c:off')
+    drv = _driver or driver()
+    if not drv:
+        return _no('lte_c:driver')
+    ctrl = tr.step_controller
+    n = len(arm.x_last)
+    cd = ctrl.__dict__
+    J0 = cd.get('_lte_c_early_J')
+    if J0 is None or J0.shape != (n, n):
+        J0 = cd['_lte_c_early_J'] = np.zeros((n, n))
+    dl = tr._dt_last
+    s = StepLTEInputs(
+        x_curr=arm.x_last, x_last=arm.x_last, q_curr=tr._qlast[0],
+        q_last_hist=tr._qlast, iq_last_hist=tr._iqlast, h_curr=arm.h,
+        h_last=dl if dl is not None else arm.h, h_last2=tr._dt_last2,
+        no_history=tr._no_history, J=J0, active_integrator=active,
+        irefnode=tr.irefnode, reltol=tr.par.reltol, abstol=arm.abstol,
+        toolkit=tr.toolkit, max_step=arm.max_step, TRTOL=tr.LTERATIO,
+        n_nodes=len(tr.cir.nodes), h_clamped=arm.clamped, x_hist=None,
+        lte_mask=tr._lte_mask(), linsolver=None, lte_charge=tr._lte_charge(),
+        lte_chgtol=tr.par.lte_chgtol)
+    adm = _admit(ctrl, s)
+    if adm is None:
+        return None    # paths: counted by _admit
+    _sk, form, euler = adm
+    ql = s.q_last_hist
+    if euler and type(ql) is np.ndarray and ql.ndim == 2 and 1 <= ql.shape[0] < 3:
+        ## (an Euler run's ring is shorter than the three charges the
+        ## context holds; Euler's estimate reads the newest alone: the rest
+        ## its copies)
+        s = dataclasses.replace(
+            s, q_last_hist=np.concatenate([ql] + [ql[:1]] * (3 - ql.shape[0])))
+    sc = _scalars(s, form, euler)
+    if sc is None:
+        return None    # paths: counted by _scalars
+    arr = _arrays(ctrl, s)
+    if arr is None:
+        return None    # paths: counted by _arrays
+    ctx = _load(ctrl, s, drv, None, euler, sc, arr, key='_lte_c_early')
+    if ctx is None:
+        return None    # paths: counted by _load
+    return ctx, s, euler
+
+
 def _admit(ctrl, s):
     """The checks that decline before the scalars: the pieces, the solver,
     the controller, the integrator, the toolkit, the steps' presence and
@@ -437,18 +495,19 @@ def _arrays(ctrl, s):
     return J, iref, n, xc, xl, q, ql3, run, mode, ab, reltol, trtol, nn
 
 
-def _load(ctrl, s, drv, sk, euler, sc, arr):
+def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c'):
     """The context (made, or remade for another size or reference row; KLU
     bound where the run is sparse) and the attempt's arrays and scalars in
     it -- copied, or J read where it stands: the context, or None: declined
-    (counted)."""
+    (counted).  `key`: the controller's slot for it (the early abort's
+    context is one of its own, `early_context`)."""
     h, hl, hl2, coef, s12, s23, s123 = sc
     J, iref, n, xc, xl, q, ql3, run, mode, ab, reltol, trtol, nn = arr
     cd = ctrl.__dict__
-    ctx = cd.get('_lte_c')
+    ctx = cd.get(key)
     if ctx is None or ctx.n != n or ctx.iref != iref:
         ffi, _cfn, dgesv = drv
-        ctx = cd['_lte_c'] = _Ctx(ffi, dgesv, n, iref)
+        ctx = cd[key] = _Ctx(ffi, dgesv, n, iref)
     buf, st = ctx.buf, ctx.s
     if sk is not None:
         if (ctx.klu is not sk or ctx.klu_sym != sk._symbolic) and not _klu_bind(ctx, sk):

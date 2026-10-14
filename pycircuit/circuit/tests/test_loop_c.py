@@ -126,7 +126,10 @@ def _run(build, on, monkeypatch, make=None, setup=None, **kw):
     ## carried order, its last error -- its C error test's context aside)
     ctrl = getattr(tr, 'step_controller', None)
     if ctrl is not None:
-        state['controller'] = _norm({k: v for k, v in vars(ctrl).items() if k != '_lte_c'})
+        ## (its C error tests' contexts aside: the judge's, and the early
+        ## abort's -- `_tran_lte_c.early_context` -- with its zero J)
+        state['controller'] = _norm({k: v for k, v in vars(ctrl).items()
+                                     if k not in ('_lte_c', '_lte_c_early', '_lte_c_early_J')})
     return {'x': np.asarray(res.x, float).tobytes(),
             't': np.asarray(res.sweep_values, float).tobytes(), 'stats': stats,
             'warnings': sorted(str(w.message) for w in W), 'counts': counts,

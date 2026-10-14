@@ -8850,3 +8850,72 @@ steps on it.
 **Gate.**  The full suite: 5 309 passed, none failed.  Every gold deck on
 radau with the built code gives the prototype's numbers exactly, deck by
 deck -- steps, rejections, forced steps and every gold metric.
+
+## 2026-10-14 — 132. The early abort: an attempt whose error estimate at its first Newton iterate is already over twice the tolerance is rejected there -- 9 % fewer Newton iterations, 6 % less solve time
+
+**Where the rejections are.**  Andreas asked how to reduce the rejections
+(21 867 of 100 750 attempts on the 27 gold decks after 130).  Classified
+on every deck (the Python loop, which made the C census exactly): all but
+two are the error test's; 84 % have a loop-closing source current as the
+worst unknown (node voltages alone would pass 79 %); rejected attempts
+take 28.5 % of the Newton iterations.  They are the price of judging those
+currents at 1e-18 C (130): where node voltages set the step our rejection
+rate is ngspice-47's (arom 24 vs 23 %, mux8 24 vs 20), where the currents
+do it is not (jge 26 vs 0.4 %) -- ngspice's error test reads charges only.
+A first retry sized for the currents' measured order (three variants) cut
+the rejections 20 % and the Newton work 1-3 %, the larger shrink paid back
+in steps: refused.  `lte_chgtol` 1e-17 would save 17 % at 1.06x the
+currents' error (the worst deck 4.0x): left as it is.
+
+**The fix: stop paying for a rejection's Newton.**  The error estimate at
+the attempt's first iterate -- the error test's own chain on x1 and its
+charge, J^-1 by the factorisation of the seed's Jacobian the Newton already
+holds (dgesv's LU, the chord's factors, KLU's numeric) -- told the
+rejections apart: over 2, 18 063 of the 21 863 and 9 accepted steps.
+Abandoned there, the attempt is rejected at that estimate (the controller's
+law, its measured-order record; `IntegralController.reject_early`).  Sized
+first in Python (the retry sized from the estimate: -9.4 % Newton
+iterations, none forced; from a quarter of it, or halving the step, the
+point's budget ran out and steps were forced -- refused), then in C in a
+worktree against a refusal line of 3 % (-6.5 % unpinned, -7.1 % pinned,
+A/A within 0.6 / 2.9 %).
+
+**Built** (`Transient(early_abort=2.0)`, 0 off): armed by the stepping
+loop for an adaptive multistep attempt with history while a rejection
+would leave a full attempt in the point's budget (`_SteppingLoop.
+early_arm`); the check in `_StepNewton._newton` at the solve's second
+evaluation (`_early_estimate`, under `np.errstate(all='ignore')`), its C
+twins in newton.c (`early`, on lte.c's factored solve) for the Python
+loop's C Newton (`_tran_lte_c.early_context`) and the C loop (loop.c's
+`take` and `early_reject`).  Not on the full Newton of a sparse matrix (no
+factors held), a 2nd-order step with no third point, or a non-finite
+estimate.  `TransientStatistics.early_aborts`.
+
+| the 27 gold decks | steps | rejected | Newton iterations | forced | solve time |
+|---|---|---|---|---|---|
+| before (130 + 131) | 78 883 | 21 867 | 240 476 | 0 | 96.6 s |
+| **early abort at 2** | 78 989 | 21 901 (9 302 abandoned) | **217 833** | 0 | 90.6 s |
+
+Every gold column passes or fails as before.  Solve time, the built code, `early_abort` 0 and 2 in one
+process per deck, [off, on, off] x 3: pinned -6.2 % (sum of minima; A/A
+0.0 %), -5.7 % (medians; A/A +0.1 %); unpinned -6.9 % (A/A -0.6 %), -6.4 %
+(A/A -0.1 %); per deck median 0.955 -- todd3 0.49, schmitecl 0.60, latch
+0.70, voter25 0.90.  ⚠ THE PYTHON LOOP PAYS FOR THE ARM: the four decks the
+C loop does not serve (mosrect, ab_integ, e1480, g1310) prepare the error
+test's context in Python at every armed attempt (`_tran_lte_c.
+early_context`, ~22 us), so a deck with no rejection loses: mosrect 1.12x
+(388 checks, no abort, 0.23 s), ab_integ 1.03x; on the C loop a check costs
+~1 us (4049osc 1.02x on 3 676 checks).  The context kept across a run, its
+step fields alone refreshed, is the follow-up.  ⚠ EQUAL CONVERGED POINTS
+NO LONGER MEAN EQUAL STEPS: whether an attempt is abandoned is decided at
+its first Newton iterate, so two Newton routes to the same points take
+different sequences (PCNR 186 / limiting 197 steps on gate 13-6's
+rectifier); three tests whose subject was measured on the old stepping run
+with it off (gate 13-6, the comparator's jitter, PSS's closing column).
+
+**Gate.**  The three paths -- the Python loop and Newton, the Python loop
+on the C Newton, the C loop -- give the same steps, rejections, Newton
+iterations, aborts, checks and every gold metric on all 27 decks; with
+`early_abort=0` every deck is the census before.  The full suite: 5 318 passed (9 new), none failed; the
+pairs re-recorded after their twins (the controller law, the stepping
+loop, the Newton solve, the error test, the loop's unread Jacobian).

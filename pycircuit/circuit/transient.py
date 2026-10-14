@@ -23,6 +23,7 @@ from pycircuit.circuit.simwarnings import (
 ## History: `doc/transient_history.md`, `transient.py`.
 from pycircuit.circuit.stepcontroller import (LTE_ALGEBRAIC_MODES,
                                               MAX_GROWTH_RATIO,
+                                              IntegralController,
                                               MIN_SHRINK_RATIO,
                                               RETRY_ORDER_MIN,
                                               RETRY_ORDER_MODES,
@@ -31,7 +32,7 @@ from pycircuit.circuit.stepcontroller import (LTE_ALGEBRAIC_MODES,
 ## THE THEMES `Transient` is assembled from (`_tran_*.py`, 2026-10-01; the
 ## review's O8) -- the stepping loop, its policy and the Parameters stay
 ## here.
-from pycircuit.circuit._tran_newton import _StepNewton
+from pycircuit.circuit._tran_newton import _EarlyAbort, _EarlyArm, _StepNewton
 from pycircuit.circuit._tran_branch import _BranchCheck
 from pycircuit.circuit import _paths, _tran_companion, _tran_core, _tran_loop_c, _tran_newton_c
 from pycircuit.circuit._tran_companion import _CompanionModel
@@ -141,6 +142,7 @@ class TransientStatistics(object):
                  'force_accepts', 'order_drops', 'breakpoints_hit',
                  'gmin_rescues', 'state_events_hit', 'state_event_cuts',
                  'branch_screens', 'branch_points', 'chord_fallbacks',
+                 'early_aborts',
                  'min_step', 'max_step', 'solve_seconds', 'total_seconds')
 
     def __init__(self):
@@ -167,6 +169,9 @@ class TransientStatistics(object):
         ## `chord_jacobian`: steps whose chord iterations stopped contracting
         ## and were handed to the full Newton
         self.chord_fallbacks = 0
+        ## `early_abort`: attempts abandoned at their first Newton iterate
+        ## (each one of `rejected_steps` too)
+        self.early_aborts = 0
         self.min_step = None
         self.max_step = None
         self.solve_seconds = 0.0
@@ -348,6 +353,9 @@ class _LMMSteps(_StepFamily):
                                         tr.par.lte_gamma_max,
                                         tr.par.lte_eta)
         tr.step_controller.set_retry_order(tr.par.retry_order)
+        th = tr.par.early_abort
+        if th and not th >= 1.0:
+            raise ValueError(f"early_abort must be 0 (off) or at least 1, not {th!r}")
 
     def judge(self, X, x_new, h, J, clamped):
         tr, run = self.tr, self.run
@@ -694,6 +702,7 @@ _RUN_STATE = {
     '_effective_method': ('step', 'the integrator this step uses (Euler on an order drop)'),
     'active_integrator': ('step', 'that integrator'),
     '_dt': ('step', 'the step being attempted'),
+    '_early_arm': ('step', 'the early abort armed for the attempt (`_EarlyArm`); removed after it'),
     '_u_memo': ('step', 'the step\'s source values'),
     '_pred_pending': ('step', 'the predictor\'s pending point'),
     '_conv_session': ('step', 'the converged point\'s evaluation session'),
@@ -884,14 +893,36 @@ class _SteppingLoop:
         return True
 
     def take(self):
-        """2. Take it: smaller on a Newton failure.  False: retry smaller."""
+        """2. Take it: smaller on a Newton failure, or where the attempt was
+        abandoned at its first Newton iterate (`early_abort`).  False: retry
+        smaller."""
         tr, h = self.tr, self.h
         tr._dt = h
+        arm = self.early_arm()
+        if arm is not None:
+            tr._early_arm = arm
         try:
             self.x_new, self.h, self.J = tr._attempt_step(
                 self.family, self.X, self.t, h, self.hold,
                 self.provided_function)
+        except _EarlyAbort as abort:
+            ## THE EARLY ABORT (`Transient.early_abort`): the attempt's error
+            ## estimate at its first iterate was already over the threshold.
+            ## A rejection at that error, as `judge` makes one -- the
+            ## controller's shrink and retry record (`reject_early`), the
+            ## point's counts -- its Newton's one iteration counted where it
+            ## was abandoned
+            tr.statistics.rejected_steps += 1
+            tr.statistics.early_aborts += 1
+            self.point_retries += 1
+            self.rejects += 1
+            self.h = max(tr.step_controller.reject_early(abort.s, abort.err, abort.p),
+                         self.minstep)
+            self.imposed = False
+            return False
         except NoConvergenceError:
+            ## (the rescue below is not armed)
+            tr.__dict__.pop('_early_arm', None)
             ## A failed attempt is retried smaller: a rejection in all but
             ## name, and counted as one (F13).
             tr.statistics.rejected_steps += 1
@@ -918,7 +949,31 @@ class _SteppingLoop:
             self.x_new, self.h, self.J = tr._rescue_step(
                 self.family, self.X, self.t, h, self.hold,
                 self.provided_function)
+        finally:
+            tr.__dict__.pop('_early_arm', None)
         return True
+
+    def early_arm(self):
+        """The early abort armed for this attempt (`_EarlyArm`, which
+        `_newton` and `_tran_newton_c.solve` read), or None.  Armed -- as
+        loop.c's `take` arms it -- on an adaptive multistep step with history
+        (two accepted points), while a rejection there would leave a full
+        attempt in the point's budget (`max_reject`, `max_retries`), above
+        `minstep`, under the integral controller with its default band, PCNR
+        off."""
+        tr, fam = self.tr, self.family
+        th = tr.par.early_abort
+        if not th or self.fixed or type(fam) is not _LMMSteps or len(self.X) < 2:
+            return None
+        if not (self.rejects + 1 < fam.max_reject and self.point_retries + 1 < fam.max_retries
+                and self.h > self.minstep):
+            return None
+        ctrl = tr.step_controller
+        if (type(ctrl) is not IntegralController or tr.par.pcnr
+                or (ctrl.lte_gamma_min, ctrl.lte_gamma_max, ctrl.lte_eta) != (0.0, 1.0, None)):
+            return None
+        return _EarlyArm(float(th), self.X[-1], self.h, self.clamped, self.run.abstol,
+                         self.run.max_step)
 
     def judge(self):
         """3. Judge it: the family's error test, then the excursion veto
@@ -1203,6 +1258,22 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         "order the previous point measured)",
                    unit='',
                    default='measured'),
+         ## THE EARLY ABORT (2026-10-14; Andreas: "Build it now";
+         ## doc/hdl_roadmap_260824.md, 132): a multistep attempt whose error
+         ## estimate at its FIRST Newton iterate -- the step's own chain on
+         ## x1 and its charge, J^-1 by the seed's factorisation, which the
+         ## Newton holds -- is already over this many times the tolerance is
+         ## abandoned there as a rejection at that error, saving the rest of
+         ## its Newton.  Measured on the 27 gold decks: 9 % fewer Newton
+         ## iterations, ~6 % less solve time, no forced step, every gold
+         ## column passing as before (`_SteppingLoop.take`).  0: off; else at
+         ## least 1 (a smaller one would abandon steps the error test passes).
+         Parameter(name='early_abort',
+                   desc='A multistep attempt whose error estimate at its first '
+                        'Newton iterate exceeds this many times the tolerance is '
+                        'abandoned there as a rejection (0: never)',
+                   unit='',
+                   default=2.0),
          ## STAGE 12A -- Fang's acceptance band (DAC 2013 eq 15) and step-change
          ## damper (eq 16).  The defaults are the historical one-sided test, so
          ## nothing changes until a caller asks; see `StepController.set_lte_band`

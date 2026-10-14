@@ -41,8 +41,12 @@ PAIRS = {
         'why': 'the C makes `IntegralController._evaluate` past its error test with the '
                'default band: `0.9 ** p`, the shrink with `_retry_exponent` (the same point '
                'an index where the Python compares by `is`), the grow, the cap, `_judged` -- '
-               'Python\'s float operations, `pow` and `log`, its `min` and `max` in order',
+               'Python\'s float operations, `pow` and `log`, its `min` and `max` in order; '
+               'an early abort\'s rejection (`reject_early`) is the same law at its estimate, '
+               'which loop.c\'s `early_reject` hands it',
         'reference': ['pycircuit.circuit.stepcontroller:IntegralController._evaluate',
+                      'pycircuit.circuit.stepcontroller:IntegralController._shrink',
+                      'pycircuit.circuit.stepcontroller:IntegralController.reject_early',
                       'pycircuit.circuit.stepcontroller:StepController._retry_exponent',
                       'pycircuit.circuit.stepcontroller:StepController._band_decision',
                       'pycircuit.circuit.stepcontroller:StepController._band_target',
@@ -58,9 +62,12 @@ PAIRS = {
                '`bdf2_alphas`, the C Newton set up as its glue sets it up, the screen), judge '
                '(the C error test as its glue sets it up, the controller\'s law, a rejection '
                'retried within the budget) and accept (the rings, `_pred_note`, the '
-               'statistics) -- and writes back what the Python attempts leave',
+               'statistics) -- and writes back what the Python attempts leave; the early '
+               'abort armed as `early_arm` arms it, an abandoned attempt rejected as `take` '
+               'rejects it (the law, the point\'s counts, nothing recorded as made)',
         'reference': ['pycircuit.circuit.transient:_SteppingLoop.where',
                       'pycircuit.circuit.transient:_SteppingLoop.take',
+                      'pycircuit.circuit.transient:_SteppingLoop.early_arm',
                       'pycircuit.circuit.transient:_SteppingLoop.judge',
                       'pycircuit.circuit.transient:_SteppingLoop.accept',
                       'pycircuit.circuit.transient:_LMMSteps.judge',
@@ -80,6 +87,7 @@ PAIRS = {
         'twin': ['pycircuit.circuit._tran_loop_c:LOOP_C',
                  'pycircuit.circuit._tran_loop_c:run',
                  'pycircuit.circuit._tran_loop_c:_write_back',
+                 'pycircuit.circuit._tran_loop_c:_stats_back',
                  'pycircuit.circuit._tran_loop_c:_count',
                  'pycircuit.circuit._tran_loop_c:_why_not_the_run',
                  'pycircuit.circuit._tran_loop_c:_sources',
@@ -241,7 +249,10 @@ PAIRS = {
         'why': 'the C solve is `nrsolver`\'s plain and chord Newton on the reduced '
                'system (numpy\'s and SciPy\'s own LAPACK, the walk, the test in its '
                'order, `dx` re-taken where a limiter exists), `jacobian_only`\'s '
-               'converged-point evaluation, `_newton`\'s statistics and branch check',
+               'converged-point evaluation, `_newton`\'s statistics and branch check; the '
+               'early abort\'s check at the first iterate (`_early_estimate` on the seed\'s '
+               'factors -- numpy\'s solve of J0 is dgetrs on dgesv\'s LU, the chord\'s '
+               '`fac`) and its stop (`_early`: the counts `_newton` makes up to it)',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:ChordNewton.solve_system',
                       'pycircuit.circuit.dcanalysis:refnode_removed',
@@ -249,6 +260,7 @@ PAIRS = {
                       'pycircuit.circuit.analysis:remove_row_col',
                       'pycircuit.circuit._tran_newton:_StepNewton._newton',
                       'pycircuit.circuit._tran_newton:_StepNewton._newton_limiter',
+                      'pycircuit.circuit._tran_newton:_StepNewton._early_estimate',
                       'pycircuit.circuit.transient:Transient._solve_timestep',
                       ## (the sparse chord: StructuralKLU's factor, the
                       ## owned numeric's solve -- stage 2, step d)
@@ -259,7 +271,10 @@ PAIRS = {
                  'pycircuit.circuit._tran_newton_c:solve',
                  'pycircuit.circuit._tran_newton_c:_klu_bind',
                  'pycircuit.circuit._tran_newton_c:_Ctx',
-                 'pycircuit.circuit._tran_newton_c:_walk_full'],
+                 'pycircuit.circuit._tran_newton_c:_walk_full',
+                 'pycircuit.circuit._tran_newton_c:_arm',
+                 'pycircuit.circuit._tran_newton_c:_arm_set',
+                 'pycircuit.circuit._tran_newton_c:_early'],
     },
     'the PSP limiter and its C twin': {
         'why': 'the twin is `PspMosLongChannel.limit` transliterated -- d, g, b moved '
@@ -277,8 +292,12 @@ PAIRS = {
                '`sigglobal_reference`, `tolerance`, `normalised_error`) and '
                '`np.max`, the running reference written only on success; an unknown '
                '`lte_mask` leaves out is +0.0 before the maximum; on the rows '
-               '`lte_charge` marks the absolute tolerance is `charge_floor`\'s',
+               '`lte_charge` marks the absolute tolerance is `charge_floor`\'s; the early '
+               'abort\'s estimate (`_early_estimate`) is the same chain at the first iterate, '
+               'J^-1 by factors in hand (lte.c\'s `factored_solve`, its context '
+               '`early_context`)',
         'reference': ['pycircuit.circuit.stepcontroller:StepController._charge_lte',
+                      'pycircuit.circuit._tran_newton:_StepNewton._early_estimate',
                       'pycircuit.circuit.stepcontroller:StepController._normalised',
                       'pycircuit.circuit.stepcontroller:StepController._reference',
                       'pycircuit.circuit.stepcontroller:StepController.tolerance',
@@ -297,6 +316,8 @@ PAIRS = {
                       'pycircuit.circuit.analysis:remove_row_col'],
         'twin': ['pycircuit.circuit._tran_lte_c:LTE_C',
                  'pycircuit.circuit._tran_lte_c:max_error',
+                 'pycircuit.circuit._tran_lte_c:early_context',
+                 'pycircuit.circuit._tran_lte_c:_load',
                  'pycircuit.circuit._tran_lte_c:_globals',
                  'pycircuit.circuit._tran_lte_c:_Ctx',
                  'pycircuit.circuit._tran_lte_c:_klu_bind'],
@@ -396,7 +417,8 @@ PAIRS = {
         'why': 'a fixed multistep run reads no step\'s Jacobian -- `judge` returns '
                'first, `event` does nothing, the other pieces carry it -- so '
                '`j_unread` marks its attempts (the converged point without G), '
-               'every piece checked as defined at the run\'s start',
+               'every piece checked as defined at the run\'s start; `take`\'s early abort '
+               'is never armed on a fixed grid (`early_arm`)',
         'reference': ['pycircuit.circuit.transient:_SteppingLoop.where',
                       'pycircuit.circuit.transient:_SteppingLoop.take',
                       'pycircuit.circuit.transient:_SteppingLoop.judge',
@@ -626,8 +648,8 @@ PAIRS = {
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
 #: module as a script, after the twin was checked.
 RECORD = {
-    'the controller law and its C': ('837249250601', '716b6f29ec13'),
-    'the stepping loop and its C': ('c64a84391f00', '19ed9d14db21'),
+    'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
+    'the stepping loop and its C': ('94f9a8c46d2e', 'de32bfb7cb2b'),
     'the predictor and its C': ('f2c284eb392d', '2f1a2f96e90f'),
     'the branch screen and its C': ('1b848875234f', '63344f5461eb'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
@@ -640,13 +662,13 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('f7509d6b5900', '80a496916cfd'),
+    'the Newton solve and its C': ('c9b5c33382cc', 'd4123cb65349'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
-    'the error test and its C': ('74be4a356f21', '635e690bbe3d'),
+    'the error test and its C': ('1736570f3f0e', 'a1bf1ec171ad'),
     'the DC base solve and its C': ('d17203656044', '60e5fa192106'),
     'the PCNR DC solve and its C': ('4e03c4945c40', '23189979e665'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
-    'the stepping loop and its unread Jacobian': ('16a27211f0a2', 'a0ac4588446c'),
+    'the stepping loop and its unread Jacobian': ('1b3acd898b48', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
     "the stage paths' passes and the core's": ('f83268db1289', '131833be2877'),
     'the coupled stage Newton and its C': ('c9e9adf33989', '2895432d069c'),

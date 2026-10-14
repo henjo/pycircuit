@@ -746,6 +746,11 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     s.max_step = float(loop.run.max_step)
     s.minstep = float(loop.minstep)
     s.max_retries, s.max_reject = loop.family.max_retries, loop.family.max_reject
+    ## (the early abort's threshold where `_SteppingLoop.early_arm` arms it:
+    ## the loop's integral controller and band are this loop's own
+    ## precondition -- `_judge` -- PCNR off)
+    th = tr.par.early_abort
+    s.early_th = float(th) if (adaptive and th and not tr.par.pcnr) else 0.0
     s.base = code
     s.zs_ratio = float(O['zs_ratio'])
     s.shrink_guard = int(bool(getattr(base, 'shrink_guard', True)))
@@ -908,14 +913,7 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     for i in range(k):
         X.append(Xo[i * n:(i + 1) * n].copy())
         tl.append(float(To[i]))
-    stats = tr.statistics
-    stats.accepted_steps += k
-    stats.rejected_steps += s.rejected
-    stats.newton_iterations += s.iters
-    stats.breakpoints_hit += s.breaks
-    stats.order_drops += s.euler_steps
-    if s.have_hm:
-        stats.min_step, stats.max_step = float(s.hmin), float(s.hmax)
+    _stats_back(tr.statistics, s, k)
     ## the last attempt's write-back (`_tran_newton_c`'s), accepted or not
     x = buf['xatt'].copy()
     cur = s.cur
@@ -949,7 +947,8 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     if run_.br is not None:
         tr._branch_cmax = float(s.cmax)
     if rec.klu is not None:
-        rec.klu.numerics += s.attempts
+        ## (an abandoned attempt's sparse chord factored too)
+        rec.klu.numerics += s.attempts + s.early_aborts
     if adaptive:
         ctrl, ct = tr.step_controller, run_.ct
         if s.keeps_run and s.have_run:
@@ -979,6 +978,19 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     _count(s, run_, rec, adaptive, k)
 
 
+def _stats_back(stats, s, k):
+    """The statistics the C's attempts add, as the Python attempts count
+    them (`k` the steps taken)."""
+    stats.accepted_steps += k
+    stats.rejected_steps += s.rejected
+    stats.early_aborts += s.early_aborts
+    stats.newton_iterations += s.iters
+    stats.breakpoints_hit += s.breaks
+    stats.order_drops += s.euler_steps
+    if s.have_hm:
+        stats.min_step, stats.max_step = float(s.hmin), float(s.hmax)
+
+
 def _count(s, run_, rec, adaptive, k):
     """The `_paths` counts the Python attempts' calls make, made for the C's
     attempts -- each where the Python makes it.  An A/B of the loop compares
@@ -996,17 +1008,23 @@ def _count(s, run_, rec, adaptive, k):
     _PC['newton_c:jfold'] += a
     if not adaptive:
         _PC['newton_c:j_unread'] += a
+    ## (the early abort's: its checks and aborts, and an abandoned attempt's
+    ## chord chosen as the Python Newton chooses it before it stops)
+    _PC['early:checks'] += s.early_checks
+    _PC['early:aborts'] += s.early_aborts
     if rec.s.chord:
-        _PC['chord:chosen'] += a
+        _PC['chord:chosen'] += a + s.early_aborts
     ## the seed (`_StagePredictor._predict_fast`), the sources
     ## (`_stamp_plan.source_direct`, its `u` calls, the source memo
     ## `_CompanionModel._source_at`), the charge memo (`_CompanionModel._q_at`:
     ## the accepted point's and, adaptive, the error test's reads)
+    ## (an abandoned attempt's too: its seed and sources were made)
     if s.pred_fast:
         _PC['pred:fast'] += s.pred_fast
-    _PC['src.direct:served'] += a
-    _PC['u:called'] += len(run_.tab.entries) * a
-    _PC['umemo:miss'] += a
+    made = a + s.early_aborts
+    _PC['src.direct:served'] += made
+    _PC['u:called'] += len(run_.tab.entries) * made
+    _PC['umemo:miss'] += made
     _PC['memo.q:same'] += k + (s.ltes if adaptive else 0)
     ## the branch screen (`_tran_branch_c.screen`, its C from
     ## `_CompanionModel._C_lookup`)

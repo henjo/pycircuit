@@ -37,6 +37,8 @@ typedef struct {
     long adaptive;              /* 0: `fixed_timestep` */
     double tend, timestep, minbreak, max_step, minstep;
     long max_retries, max_reject;   /* the family's budget at one point */
+    double early_th;            /* `Transient.early_abort` where the Python arms it
+                                   (`_SteppingLoop.early_arm`), else 0.0: off */
     long base;                  /* the base integrator, PCX_FORMULA_*: GEAR2, EULER
                                    or TRAPEZOIDAL */
     double zs_ratio;            /* Gear-2's ZERO_STABILITY_RATIO */
@@ -70,6 +72,9 @@ typedef struct {
     double *X, *T;              /* k x n, k */
     double t_break;             /* the last attempt's breakpoint */
     long attempts, rejected, iters, euler_steps, breaks, screens, pred_fast, ltes, lte_euler;
+    long early_aborts;          /* attempts abandoned at their first iterate (each
+                                   one of `rejected`, not of `attempts`) */
+    long early_checks;          /* the early abort's estimates made */
     long have_hm;               /* the statistics' min/max step are set */
     double hmin, hmax;
     long status;
@@ -96,7 +101,8 @@ typedef struct {
    rejected and retried at the point (the loop takes another attempt) */
 enum loop_judged {
     LOOP_JUDGE_ACCEPT = 0,
-    LOOP_JUDGE_RETRY = -1
+    LOOP_JUDGE_RETRY = -1,
+    LOOP_JUDGE_EARLY = -2       /* take's: the attempt abandoned at its first iterate */
 };
 
 /* pcx_loop's result, left in `status` too: why the loop stopped */

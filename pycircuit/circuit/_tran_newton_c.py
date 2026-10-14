@@ -144,6 +144,8 @@ def driver():
             addr = _cbuild.address
             lapack = {'dgesv': addr(npl.scipy_dgesv_64_),
                       'dgemv': addr(npl.scipy_cblas_dgemv64_),
+                      ## (the early abort's back-substitution on dgesv's LU)
+                      'dgetrs64': addr(npl.scipy_dgetrs_64_),
                       'dgetrf': addr(spl.scipy_dgetrf_), 'dgetrs': addr(spl.scipy_dgetrs_)}
         except (ImportError, OSError, AttributeError) as e:
             STATUS = f'off ({e})'
@@ -201,8 +203,10 @@ def _mods():
             _stamp_plan,
             _tran_companion,
             _tran_core,
+            _tran_lte_c,
             _watch,
         )
+        from pycircuit.circuit.integrator import EulerIntegrator
         from pycircuit.circuit._lte_kernels import bdf2_alphas
         from pycircuit.circuit.dcanalysis import refnode_removed
         from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
@@ -213,6 +217,7 @@ def _mods():
                     refnode_removed=refnode_removed, AutoSolver=AutoSolver,
                     StructuralKLU=StructuralKLU,
                     NumericToolkit=NumericToolkit,
+                    lte_c=_tran_lte_c, Euler=EulerIntegrator,
                     u_keys=_U_KEYS + tuple(_stamp_plan._SK['u'].values())
                     + tuple(_stamp_plan._SD.values()))
     return _MOD
@@ -302,7 +307,7 @@ class _Ctx:
         s.ipiv64 = self.keep[-1]
         self.keep.append(fb('int *', self.ipiv32))
         s.ipiv32 = self.keep[-1]
-        for k in ('dgesv', 'dgetrf', 'dgetrs', 'dgemv'):
+        for k in ('dgesv', 'dgetrf', 'dgetrs', 'dgemv', 'dgetrs64'):
             setattr(s, k, ffi.cast('void *', lapack[k]))
         s.core = ffi.cast('void *', int(cffi_core.cast('uintptr_t', core.cs)))
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
@@ -623,6 +628,9 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if got is None:
         return None    # paths: counted by _record
     rec, T, chord, sparse = got
+    early = _arm(tr, td, M, chord, sparse, active)
+    if early is False:
+        return _no('newton_c:early')
     ## from here the attempt leaves one trace: the step's source memo
     src = _source(tr, M, P, memo, t, n)
     if src is None:
@@ -643,7 +651,13 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if P is None:
         ## (every read above in full, every check passed: stamp them)
         _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)
+    _arm_set(rec, M, early)
     status = drv[1](s)
+    s.early_lte = rec.ffi.NULL
+    if status == _CODES['NEWTON_EARLY']:
+        _early(tr, rec, early, chord, sparse, ch)
+    if early is not None and status == _CODES['NEWTON_CONVERGED']:
+        _PC['early:checks'] += s.early_checks
     if status != _CODES['NEWTON_CONVERGED']:
         key, had, cvals = trace
         _undo_source(memo, (key,), (had,), dict(zip(M['u_keys'], cvals)))
@@ -875,6 +889,60 @@ def _load(tr, td, rec, P, rows, u, seed):
                     s.cC = rec.cC_buf
             s.have_cache = 1
     return tol
+
+
+def _arm(tr, td, M, chord, sparse, active):
+    """THE EARLY ABORT (`Transient.early_abort`): an attempt the loop armed
+    (`tr._early_arm`) is checked at its first iterate by newton.c, on an
+    error-test context filled for it (`_tran_lte_c.early_context`) -- not on
+    the full Newton of a sparse matrix or a 2nd-order step with no third
+    point, where `_newton` makes no estimate either.  `(the context, the
+    attempt's inputs, euler, the threshold)`, None: not armed, or False: the
+    context declined -- the Python Newton makes the check."""
+    arm = td.get('_early_arm')
+    if (arm is None or not (chord or not sparse)
+            or (tr._dt_last2 is None and type(active) is not M['Euler'])):
+        return None
+    got = M['lte_c'].early_context(tr, arm, active)
+    return False if got is None else (*got, float(arm.th))
+
+
+def _arm_set(rec, M, early):
+    """The Newton record armed with `_arm`'s context, or not (`early_lte`
+    NULL): the context's struct and lte.c's entry, by address -- another
+    unit's cffi made them."""
+    s = rec.s
+    if early is None:
+        s.early_lte = rec.ffi.NULL
+        return
+    lffi, lcfn, _dgesv = M['lte_c'].driver()
+    s.early_lte = rec.ffi.cast('void *', int(lffi.cast('uintptr_t', early[0].s)))
+    s.early_lte_fn = rec.ffi.cast('void *', int(lffi.cast('uintptr_t', lcfn)))
+    s.early_th = early[3]
+
+
+def _early(tr, rec, early, chord, sparse, ch):
+    """The early abort's stop (NEWTON_EARLY): the counts the Python Newton
+    makes up to its abort -- the chord chosen, the sparse chord's numeric,
+    the check and the abort -- and the statistics' iteration (the trace is
+    the attempt's: nothing repeats it), then the abort `_newton` raises:
+    the estimate, the attempt's error-test inputs, its exponent's
+    denominator."""
+    from pycircuit.circuit._tran_newton import _EarlyAbort
+    s = rec.s
+    iters = int(s.iters)
+    if chord:
+        _PC['chord:chosen'] += 1
+    if sparse:
+        ch.numerics += 1
+    _PC['newton_c:iterations'] += iters
+    _PC['early:checks'] += 1
+    _PC['early:aborts'] += 1
+    stats = getattr(tr, 'statistics', None)
+    if stats is not None:
+        stats.newton_iterations += iters
+    _ctx, inputs, euler, _th = early
+    raise _EarlyAbort(float(s.early_err), inputs, 2.0 if euler else 3.0)
 
 
 def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, want_j):

@@ -1103,7 +1103,14 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
     solved state); the Runge-Kutta loop, wired the same day, landing the
     same edges for radau; and the coupled-LTE loop, wired last, where
     landing does buy accuracy (gear coupled: mean +1.4e-3 -> +1.9e-4,
-    spread 2.7e-3 -> 2.7e-6 at reltol 1e-6)."""
+    spread 2.7e-3 -> 2.7e-6 at reltol 1e-6).
+
+    ⚠ THE EARLY ABORT IS OFF HERE (`early_abort=0`; 2026-10-14, roadmap
+    132): it moves where steps fall, and a 6-period spread at the 1e-5 scale
+    is that placement's -- measured with it on, landed 1.0e-5 -> 2.3e-5,
+    unlanded 6.3e-5 -> 3.8e-5, the mean +4.2e-4 either way: the landed run
+    still under 5e-5, the unlanded control no longer over it.  The contrast
+    is measured on the stepping it was found on."""
     from pycircuit.circuit.transient import Transient
     circuit.default_toolkit = circuit.numeric
     T_ex = 1.3918372887e-6
@@ -1114,7 +1121,8 @@ def test_the_transient_lands_declared_state_events_and_its_period_stops_jitterin
     ifb1, iref = names.index('fb1'), names.index('ref')
     out = {}
     for se in (True, False):
-        tr = Transient(cir, toolkit=circuit.numeric, reltol=1e-6, state_events=se)
+        tr = Transient(cir, toolkit=circuit.numeric, reltol=1e-6, state_events=se,
+                       early_abort=0)
         with quiet(AccuracyWarning):
             res = tr.solve(refnode=gnd, tend=14 * T_ex, timestep=T_ex / 200, x0=x0)
         tt = np.asarray(res.sweep_values, dtype=float)

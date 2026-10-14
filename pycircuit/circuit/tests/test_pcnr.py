@@ -388,6 +388,13 @@ def test_gate_13_6_pcnr_and_limiting_take_the_same_steps(monkeypatch):
     predictor ON this asserts what still holds: the same step COUNT, and the
     same distance from that reference.  `test_stage_predictor.py` is where the
     predictor itself is gated.
+
+    ⚠ THE EARLY ABORT IS OFF HERE (`early_abort=0`, 2026-10-14), for the
+    same reason: whether an attempt is abandoned is decided at its FIRST
+    Newton iterate, which is exactly where the two routes differ (PCNR's
+    step is not armed at all).  With it on, limiting took 197 steps to
+    PCNR's 186 -- equal converged points no longer mean equal step
+    sequences.  `test_early_abort.py` gates the abort.
     """
     import numpy as np
     from pycircuit.circuit import gnd, numeric
@@ -398,7 +405,7 @@ def test_gate_13_6_pcnr_and_limiting_take_the_same_steps(monkeypatch):
     acc = {}
     for pcnr in (False, True):
         tran = Transient(_mains_rectifier(), toolkit=numeric, reltol=1e-5,
-                         pcnr=pcnr)
+                         pcnr=pcnr, early_abort=0)
         with quiet():
             res = tran.solve(tend=0.01, timestep=1e-4)
         w = res.v(2, gnd)
@@ -420,7 +427,8 @@ def test_gate_13_6_pcnr_and_limiting_take_the_same_steps(monkeypatch):
     monkeypatch.setattr(Transient, 'stage_predictor', 'off')
     out = {}
     for pcnr in (False, True):
-        tran = Transient(_mains_rectifier(), toolkit=numeric, reltol=1e-5, pcnr=pcnr)
+        tran = Transient(_mains_rectifier(), toolkit=numeric, reltol=1e-5, pcnr=pcnr,
+                         early_abort=0)
         with quiet():
             res = tran.solve(tend=0.01, timestep=1e-4)
         w = res.v(2, gnd)
