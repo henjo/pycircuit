@@ -149,6 +149,11 @@ _PIECES = (
     ('T', '_branch_screen', '_BranchCheck._branch_screen', '_tran_branch'),
     ('T', '_branch_screen_C', '_BranchCheck._branch_screen_C', '_tran_branch'),
     ('T', '_branch_on', '_BranchCheck._branch_on', '_tran_branch'),
+    ('T', '_branch_certify', '_BranchCheck._branch_certify', '_tran_branch'),
+    ('T', '_branch_cert_data', '_BranchCheck._branch_cert_data', '_tran_branch'),
+    ('T', '_branch_cert_kept', '_BranchCheck._branch_cert_kept', '_tran_branch'),
+    ('branch', '_certify', '_certify', '_tran_branch'),
+    ('branch', '_cert_data', '_cert_data', '_tran_branch'),
     ('stats', '_note_step', 'TransientStatistics._note_step', 'transient'),
     ('Sub', 'next_event', 'SubCircuit.next_event', 'circuit'),
     ('Sub', 'accept_step', 'SubCircuit.accept_step', 'circuit'),
@@ -210,6 +215,7 @@ def _own():
     global _OWN
     if _OWN is None:
         from pycircuit.circuit import (
+            _tran_branch,
             _tran_companion,
             _tran_history,
             _tran_lte_c,
@@ -235,7 +241,7 @@ def _own():
                   'Sub': SubCircuit, 'VS': E.VS, 'IS': E.IS, 'Behavioural': hdl.Behavioural,
                   'family': F, 'newton_c': _tran_newton_c, 'Gear2': I.Gear2Integrator,
                   'Euler': I.EulerIntegrator, 'Trap': I.TrapezoidalIntegrator, 'Loop': L,
-                  'LMM': LMM, 'IC': IC, 'SC': SC, 'lte_c': _tran_lte_c}
+                  'LMM': LMM, 'IC': IC, 'SC': SC, 'lte_c': _tran_lte_c, 'branch': _tran_branch}
         if not all(_paths.genuine(getattr(owners[o], a), q, M + m) for o, a, q, m in _PIECES):
             return None
         names = {}
@@ -266,7 +272,8 @@ class _Run:
     structs it drives -- bound to the C Newton's record, the source table and
     the screen it was made for (and, adaptive, the error test's context)."""
 
-    __slots__ = ('br', 'buf', 'ct', 'ffi', 'keep', 'lte', 'npat', 'nrec', 'pr', 's', 'sk', 'tab')
+    __slots__ = ('br', 'buf', 'cert', 'ct', 'ffi', 'keep', 'lte', 'npat', 'nrec', 'pr', 's', 'sk',
+                 'tab')
 
 
 def _addr(ffi, obj):
@@ -351,13 +358,15 @@ def _bind_steps(run, tr, rec, tab, n):
 
 def _bind_screen(run, tr, n, screen):
     """The branch screen (`screen`: `(its ffi, its entry, the core's pattern
-    or None)`), or none: `branch` NULL."""
+    or None, the run's certificate data or None, their growth, numpy's
+    dgesv)`), or none: `branch` NULL."""
+    from pycircuit.circuit import _tran_branch_c
     ffi, s = run.ffi, run.s
-    run.br, run.npat = None, 0
+    run.br, run.npat, run.cert = None, 0, None
     if screen is None:
         s.branch = s.branch_fn = ffi.NULL
         return
-    bffi, bcfn, pat = screen
+    bffi, bcfn, pat, cert, growth, dgesv = screen
     bs = bffi.new('branch_t *')
     bs.n, bs.npat = n, 0
     bs.tol_rel = float(tr.BRANCH_SCREEN_TOL)
@@ -366,6 +375,8 @@ def _bind_screen(run, tr, n, screen):
         bkeep += [pat, bffi.from_buffer('int64_t *', pat)]
         bs.pat, bs.npat = bkeep[-1], len(pat)
         run.npat = len(pat)
+    bkeep += _tran_branch_c.cert_bind(bffi, bs, cert, growth, dgesv)
+    run.cert = (cert, growth)
     run.br = bkeep
     _plug(s, ffi, 'branch', bffi, bs, bcfn)
 
@@ -470,8 +481,9 @@ def _declined(loop, why):
 
 def _screen(tr, td, rec, n):
     """The branch screen the attempts make: `(None,)` -- nothing screened
-    (off, or `C` structurally empty) -- `(ffi, entry, pattern or None)` in
-    C, or None: not in C."""
+    (off, or `C` structurally empty) -- `(ffi, entry, pattern or None, the
+    run's certificate data or None, their growth, numpy's dgesv)` in C, or
+    None: not in C."""
     if not tr._branch_on():
         return (None,)
     r0, scale0 = tr._branch_structural_rank()
@@ -486,7 +498,14 @@ def _screen(tr, td, rec, n):
     pat = core.arrays['pat'] if core.npat else None
     if pat is None and n * n > _cbuild.INPLACE_MIN_ENTRIES:
         return None
-    return (bd[0], bd[1], pat)
+    ## (the run's certificate where the Python made it -- its first fired
+    ## screen, `_tran_branch_c.screen` -- else none yet: the C's first fired
+    ## screen bails, the Python attempt makes it)
+    cert = tr._branch_cert_kept()[1]
+    growth = tr.BRANCH_CERT_GROWTH
+    if type(growth) is not float or (cert is not None and (cert.n != n or bd[7] is None)):
+        return None
+    return (bd[0], bd[1], pat, cert, growth, bd[7])
 
 
 def _judge(loop, tr, O, n):
@@ -701,6 +720,8 @@ def _bound(loop, tr, rec, tab, rd, screen, judge):
     run_ = loop.c.run
     if (run_ is None or run_.nrec is not rec or run_.tab is not tab
             or (run_.br is None) != (screen is None) or len(run_.buf['xlast']) != n
+            or (screen is not None and (run_.cert[0] is not screen[3]
+                                        or run_.cert[1] != screen[4]))
             or len(run_.buf['qring']) != hist_len * n
             or (run_.lte is None) != (judge is None)
             or (judge is not None and (run_.sk is not judge[2] or run_.lte.s.has_mask
@@ -734,6 +755,8 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     buf['cC0'][:] = cC.reshape(-1)
     s.cur = 0
     s.cmax = td.get('_branch_cmax', 0.0)
+    if run_.br is not None:
+        run_.br[0].ncert = 0
     s.t, s.h = loop.t, loop.h
     s.landing, s.is_first = int(bool(loop.landing)), int(bool(tr._is_first_step))
     s.order_drop = int(bool(loop.order_drop))
@@ -1033,6 +1056,8 @@ def _count(s, run_, rec, adaptive, k):
         _PC['memo.C:equal'] += s.screens
         if run_.npat:
             _PC['branch_c:pattern'] += s.screens
+        if run_.br[0].ncert:
+            _PC['branch_c:cert'] += run_.br[0].ncert
     ## the error test (`_tran_lte_c.max_error`)
     if adaptive and s.ltes:
         _PC['lte_c:served'] += s.ltes

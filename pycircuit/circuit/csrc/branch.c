@@ -1,13 +1,63 @@
 /* branch.c -- the branch check's cheap screen in C, bit for bit the
-   verdict of `_BranchCheck._branch_screen_C` up to its SVD; its glue is
-   `_tran_branch_c`, and the C loop (loop.c) calls it after each solve.
-   No floating-point flag is tested: past the finiteness test every
-   operation is a fabs, a comparison or a product of finite values, and
-   the Python's reductions and products warn about none of them. */
+   verdict of `_BranchCheck._branch_screen_C` up to its SVD, the
+   certificate included; its glue is `_tran_branch_c`, and the C loop
+   (loop.c) calls it after each solve.
+   No floating-point flag is tested: past the finiteness test the cheap
+   level's every operation is a fabs, a comparison or a product of finite
+   values, and the Python's reductions and products warn about none of
+   them; the certificate's (numpy's own dgesv, a sum of squares, a square
+   root) the Python makes under `np.errstate(all='ignore')`, deciding by
+   the same comparisons on the same values. */
 #include <stdint.h>
+#include <float.h>
 #include <math.h>
+#include "pcx_abi.h"
 #include "pcx_minmax.h"
 #include "branch.h"
+
+/* THE CERTIFICATE (`_tran_branch._certify`, operation for operation): 1
+   where every entry of B = C[ci, cj] between two of its blocks is zero and
+   every block's bound 1 / ||B_k^-1||_F -- |b| for a block of one -- is
+   above tol (1 + delta_k), delta_k = growth k eps ||B_k||_F ||B_k^-1||_F
+   (the inverse's rounding, at the block's own conditioning); `bound` the
+   smallest.  0 otherwise: an entry between blocks, a singular block
+   (dgesv's info), a bound not above (NaN included).  B_k and its inverse in
+   `work` column-major, as numpy's inv hands them to LAPACK; each sum of
+   squares sequential in that order (numpy's cumsum). */
+static int certify(branch_t *s, const double *C, double tol)
+{
+    long n = s->n, r0 = s->r0, b, i, j;
+    double worst = INFINITY;
+    for (i = 0; i < r0; i++) {
+        const double *row = C + s->ci[i] * n;
+        for (j = 0; j < r0; j++)
+            if (s->bid[i] != s->bid[j] && row[s->cj[j]] != 0.0) return 0;
+    }
+    for (b = 0; b < s->nb; b++) {
+        int64_t o = s->bstart[b], k = s->bstart[b + 1] - o, info = 0, p, q;
+        double bound, delta = 0.0;
+        if (k == 1) {
+            bound = fabs(C[s->ci[o] * n + s->cj[o]]);
+        } else {
+            double *A = s->work, *X = s->work + k * k, a2 = 0.0, f = 0.0;
+            for (q = 0; q < k; q++)
+                for (p = 0; p < k; p++) {
+                    A[p + q * k] = C[s->ci[o + p] * n + s->cj[o + q]];
+                    X[p + q * k] = p == q ? 1.0 : 0.0;
+                }
+            for (p = 0; p < k * k; p++) a2 += A[p] * A[p];
+            ((dgesv64_t) s->dgesv)(&k, &k, A, &k, s->ipiv, X, &k, &info);
+            if (info != 0) return 0;
+            for (p = 0; p < k * k; p++) f += X[p] * X[p];
+            bound = f > 0.0 ? 1.0 / sqrt(f) : INFINITY;
+            delta = s->growth * (double) k * DBL_EPSILON * sqrt(a2) * sqrt(f);
+        }
+        if (!(bound > tol * (1.0 + delta))) return 0;
+        if (bound < worst) worst = bound;
+    }
+    s->bound = worst;
+    return 1;
+}
 
 /* `_BranchCheck._branch_screen_C` up to its SVD: |C|'s largest entry, the
    running maximum (Python's `max(cmax, nrm)`: the first where they are
@@ -18,6 +68,9 @@
    is +0.0 (the core wrote C on its pattern: the glue's to ensure) -- only
    the pattern's entries are then read for |C|'s maximum and tested
    finite, the diagonal read whole.
+   Where the cheap level fires and C has not collapsed, the certificate
+   (r0 > 0): QUIET where it proves the rank (`ncert` counted, `bound`
+   written), else SVD.
    QUIET, COLLAPSED, SVD: `nrm` and `ref` written.  BRANCH_BAIL_NONFINITE:
    an entry read is not finite, `nrm` and `ref` not written.  `verdict` is
    always set; the running maximum is the caller's to assign. */
@@ -60,5 +113,9 @@ long pcx_branch(branch_t *s)
     /* the Python's two tests, in its order */
     if (nrm > tol && dmax > tol && pmin > 1e-6 * ref) return s->verdict = BRANCH_QUIET;
     if (nrm <= tol) return s->verdict = BRANCH_COLLAPSED;
+    if (s->r0 > 0 && certify(s, C, tol)) {
+        s->ncert++;
+        return s->verdict = BRANCH_QUIET;
+    }
     return s->verdict = BRANCH_SVD;
 }

@@ -59,7 +59,8 @@ PAIRS = {
                'where (the grid or the controller\'s step, the next breakpoint as '
                '`_next_breakpoint` makes it, crossed or landed on, the order drop a landing '
                'or a force asks for), take (the predictor, `check_order_drop`, '
-               '`bdf2_alphas`, the C Newton set up as its glue sets it up, the screen), judge '
+               '`bdf2_alphas`, the C Newton set up as its glue sets it up, the screen with the '
+               'run\'s certificate where the Python made it), judge '
                '(the C error test as its glue sets it up, the controller\'s law, a rejection '
                'retried within the budget) and accept (the rings, `_pred_note`, the '
                'statistics) -- and writes back what the Python attempts leave; the early '
@@ -113,12 +114,24 @@ PAIRS = {
         'why': 'the C makes `_branch_screen_C`\'s cheap level -- |C|\'s largest entry '
                '(on the core\'s pattern where the core wrote C), Python\'s `max` of the '
                'running maximum, the diagonal\'s largest and smallest positive entry, the '
-               'two tests -- the same comparisons on the same values; the SVD stays the '
-               'Python\'s (`_branch_svd`); a non-finite entry is handed back',
+               'two tests -- and where it fires the certificate (`_certify`: the entries '
+               'between B\'s blocks, each block\'s numpy inv as dgesv on the identity, its '
+               'sums of squares in cumsum\'s order, the bound against tol (1 + delta)) on '
+               'the run\'s data as `_branch_cert_data` makes them, at the same screen -- the '
+               'same comparisons on the same values; the SVD stays the Python\'s '
+               '(`_branch_svd`); a non-finite entry is handed back',
         'reference': ['pycircuit.circuit._tran_branch:_BranchCheck._branch_screen_C',
-                      'pycircuit.circuit._tran_branch:_BranchCheck._branch_screen'],
+                      'pycircuit.circuit._tran_branch:_BranchCheck._branch_screen',
+                      'pycircuit.circuit._tran_branch:_BranchCheck._branch_certify',
+                      'pycircuit.circuit._tran_branch:_BranchCheck._branch_cert_data',
+                      'pycircuit.circuit._tran_branch:_BranchCheck._branch_cert_kept',
+                      'pycircuit.circuit._tran_branch:_BranchCheck._branch_structural_rank',
+                      'pycircuit.circuit._tran_branch:_certify',
+                      'pycircuit.circuit._tran_branch:_cert_data'],
         'twin': ['pycircuit.circuit._tran_branch_c:BRANCH_C',
-                 'pycircuit.circuit._tran_branch_c:screen'],
+                 'pycircuit.circuit._tran_branch_c:screen',
+                 'pycircuit.circuit._tran_branch_c:cert_bind',
+                 'pycircuit.circuit._tran_branch_c:_cert'],
     },
     'the sources and their C': {
         'why': 'the C makes each waveform\'s `f` in its operations and order (Python\'s '
@@ -649,9 +662,9 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('94f9a8c46d2e', 'de32bfb7cb2b'),
+    'the stepping loop and its C': ('94f9a8c46d2e', 'f5420901bd65'),
     'the predictor and its C': ('f2c284eb392d', '2f1a2f96e90f'),
-    'the branch screen and its C': ('1b848875234f', '63344f5461eb'),
+    'the branch screen and its C': ('adb832d7aae0', '1da8be0e9b2e'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
     'the kernel call and the pass driver': ('09a9e274bbe8', 'f44eb4ff41df'),
     'the limiting loop and the walk': ('58c4ce9c8f4d', '4ed13cca30aa'),

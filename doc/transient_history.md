@@ -5005,3 +5005,47 @@ step sequences; the gate 13-6 test compares them with it off.
 Tests: `test_early_abort.py` (one rule on the three paths, full Newton and
 chord, dense and KLU; a check that never aborts changes nothing; the
 controller's law; the arm's budget; the threshold refused below 1).
+
+## `_tran_branch.py`, `csrc/branch.c` -- the branch check's certificate (2026-10-14)
+
+2026-10-14 (Andreas: "size the refresh in C and size moving the branch's
+screen's SVD into C", "Prototype in C", "Build it properly";
+`doc/hdl_roadmap_260824.md`, 133).  `_branch_screen_C`'s docstring before:
+"`_branch_screen`'s verdict on the dense `C` and `C`'s largest entry,
+`_branch_cmax` moved."  Between its cheap level and its SVD it now tries
+`_branch_certify`: quiet where it proves `rank C >= r0`.
+`_branch_structural_rank` keeps its first random state's `C` and the three
+states' pattern (`_branch_generic`, up to `BRANCH_CERT_MAX_N` unknowns) for
+the certificate's data (`_branch_cert_data`, `_cert_data`: made at the
+first screen the cheap level fires on, kept with `_branch_rank0`).
+branch.c's comment before: "the branch check's cheap screen in C, bit for
+bit the verdict of `_BranchCheck._branch_screen_C` up to its SVD"; it makes
+the certificate too (`certify`).  `_tran_branch_c`'s docstring before:
+"Only where that fires does the SVD decide"; now only where neither the
+cheap level nor the certificate does.
+
+What was sized before it was built (the DC plan's SETUP COST SIZED, REFRESH
+IN C + SCREEN SVD IN C SIZED and CERTIFICATE PROTOTYPED IN C; scratch g6/):
+the four Python-loop decks' screens (every converged attempt to the SVD,
+never fired, most of their time); the ceiling (`branch_check` off: the
+same runs, the C loop takes them, 7.76 -> 1.40 s); the SVD's alternatives
+on captured matrices (full, values only, by blocks); the certificate's
+bounds on them (Johnson's diagonal dominance proved mosrect only; the
+inverse's Frobenius norm all four, e1480 only block by block); a C
+prototype in a worktree (identical runs on all 27, every proof re-judged
+quiet by the SVD, 7.83 -> 1.61 s).
+
+Bit for bit: numpy's `inv` is dgesv on the identity and its `dot` is
+cblas_ddot, both measured identical to direct calls on 2..256 unknowns,
+threaded and on one thread (300 cases); the sums of squares are sequential
+(numpy's cumsum, measured) rather than ddot -- no BLAS pointer, no new
+function type -- the C's build flags forbid FMA contraction.  The margin
+delta_k = growth k eps ||B_k||_F ||B_k^-1||_F bounds the inverse's rounding;
+the certificate can differ from the SVD only where the SVD's own rounding
+puts sigma_r0 across tol.
+Tests: `test_branch_certificate.py` (a proof is the SVD's verdict without
+it; a bound under tol, an entry between blocks, a singular block -- the SVD
+decides; a rank that drops is never proved; the C's certificate the
+Python's bit for bit across block sizes and margins, threaded and on one
+thread; a run the same on and off on the three paths, the C loop taking
+the attempts; its data made once; mosrect in the C loop).

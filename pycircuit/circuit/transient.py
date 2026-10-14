@@ -683,6 +683,8 @@ _RUN_STATE = {
     '_lte_charge_cache': ('run', 'the error test\'s capacitive-loop currents, with the size'),
     '_default_linearsolver': ('run', 'the linear solver, made at the first solve'),
     '_branch_rank0': ('run', 'the branch check\'s structural rank'),
+    '_branch_generic': ('run', 'the branch certificate\'s generic C and pattern'),
+    '_branch_cert': ('run', 'the branch certificate\'s data'),
     '_branch_const': ('run', 'the branch check\'s constant part'),
     '_branch_varying': ('run', 'the branch check\'s varying part'),
     '_j_unread': ('run', 'the loop\'s mark: no attempt reads its Jacobian'),

@@ -8919,3 +8919,59 @@ iterations, aborts, checks and every gold metric on all 27 decks; with
 `early_abort=0` every deck is the census before.  The full suite: 5 318 passed (9 new), none failed; the
 pairs re-recorded after their twins (the controller law, the stepping
 loop, the Newton solve, the error test, the loop's unread Jacobian).
+
+## 2026-10-14 — 133. The branch check's certificate: the rank proved before the SVD -- four gold decks run in the C loop, 6.8 % less solve time on the 27
+
+**What the screen cost.**  Sizing the early abort's setup on the four gold
+decks that ran outside the C loop (mosrect, ab_integ, e1480, g1310) found
+why they were there: the branch screen's cheap level handed every
+converged attempt to the SVD -- a constant small capacitance at 1e-8 to
+4e-7 of the running maximum, under its `1e-6 * ref` test -- and the SVD
+never fired (0 of 5 834; the rank at its structural value, the smallest
+singular value above tol 1.6x to 191x it).  The C loop bails on such a
+screen.  The SVD was most of their time (ab_integ 3.29 of 5.54 s, e1480
+0.67 of 0.99), and with the screen costing nothing they ran 5-8x faster in
+the C loop (the four 7.76 -> 1.40 s).  Sized and refused on the way: the
+early abort's context kept per run (a third of its setup back), that
+refresh in C (slower than the Python's: the glue is the cost).  Sized: the
+SVD in C (full 5.60 s, values only 3.32 s -- the LAPACK time stays).
+
+**The certificate.**  The screen asks whether sigma_r0(C) <= tol.  For any
+r0 x r0 submatrix B of C, sigma_r0(C) >= sigma_min(B) (interlacing); a
+block-diagonal B has its blocks' singular values; sigma_min(B_k) >=
+1 / ||B_k^-1||_F.  So every block's 1 / ||B_k^-1||_F above tol (1 + delta_k),
+delta_k = 10 k eps ||B_k||_F ||B_k^-1||_F (the inverse's rounding at the
+block's own conditioning), proves the rank without the SVD.  B: C's
+structurally nonzero rows and columns without the reference (where they
+are more than r0, an r0 subset by pivoted QR), its blocks the generic
+pattern's pieces -- made once, from the structural rank's generic C, at the
+first screen the cheap level fires on.  It never fires: what it cannot
+prove (a bound under tol, an entry between two blocks, a singular block)
+the SVD decides, as before.  Prototyped in C in a worktree first:
+identical runs on all 27 decks, 5 834 of 5 834 proved, the four 7.83 ->
+1.61 s.
+
+**Built** in the reference (`_BranchCheck._branch_screen_C`: the cheap
+level, the certificate, the SVD; `_branch_certify`, `_branch_cert_data`,
+`_certify`, `_cert_data`) and its C twin (branch.c's `certify`, on numpy's
+own dgesv -- numpy's inv is dgesv on the identity -- with the sums of
+squares sequential as numpy's cumsum makes them, bit for bit), bound by
+`_tran_branch_c` on the Python loop's screen and by `_tran_loop_c` on the C
+loop's own once the Python has the run's data.  `Transient.BRANCH_CERT`
+(True; False: every fired cheap level to the SVD), `BRANCH_CERT_GROWTH`
+(10), `BRANCH_CERT_MAX_N` (1000: a larger generic C is not kept for it).
+`_paths` `branch_c:cert`.
+
+**Gate.**  Suite 5 328 passed.  The census on all 27 gold decks, three
+paths (every C off, the Python loop, the C loop): every count and gold
+metric as at 132 (78 989 steps, 21 901 rejections, 217 833 Newton
+iterations, 0 forced, 9 302 aborts); every screen the cheap level fired on
+was proved -- 5 837 on the pure Python path, all on the four decks, each
+one the SVD also found quiet; the C loop's steps 73 108 -> 78 829.  Timing
+(one process a deck, `BRANCH_CERT` off / on / off interleaved, three
+rounds, pinned and unpinned malloc): the 27's min-sum 90.78 -> 84.62 s
+pinned (-6.8 %, A/A +0.1 %), 90.89 -> 84.73 s unpinned (-6.8 %, A/A
+-0.1 %); mosrect 0.13x, e1480 0.22x, g1310 0.32x, ab_integ 0.19x; the
+other 23 +0.03 % / +0.07 %, none outside 3 %.  e1480's tightest proof
+stands 1.4 % above its bound: a step the certificate cannot prove there is
+one SVD, as before.

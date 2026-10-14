@@ -3,6 +3,7 @@
 """
 
 import contextlib
+import math
 
 import numpy as np
 
@@ -18,6 +19,8 @@ from pycircuit.utilities import param as _param
 #: the screen's verdicts where no direction comes with them: quiet, and C
 #: collapsed entirely (`_branch_screen`)
 _QUIET, _COLLAPSED = (False, None), (True, None)
+#: the doubles' unit roundoff, as the C's DBL_EPSILON (`_certify`)
+_EPS = float(np.finfo(float).eps)
 
 
 def _rank_by_blocks(C, tol, band=None):
@@ -61,6 +64,99 @@ def _rank_by_blocks(C, tol, band=None):
     return rank
 
 
+class _Cert:
+    """THE CERTIFICATE's data for a run (`_cert_data`): B = C[ci, cj], r0 x r0,
+    block diagonal by `bstart` (the blocks `bid`; `off` marks B's entries
+    between two blocks), and the C's work for its largest block (`kmax`)."""
+
+    __slots__ = ('bid', 'bstart', 'ci', 'cj', 'ipiv', 'kmax', 'n', 'nb', 'off', 'r0', 'work')
+
+    def __init__(self, n, ci, cj, bstart, bid):
+        self.n, self.r0, self.nb = n, len(ci), len(bstart) - 1
+        self.ci = np.ascontiguousarray(ci, dtype=np.int64)
+        self.cj = np.ascontiguousarray(cj, dtype=np.int64)
+        self.bstart = np.ascontiguousarray(bstart, dtype=np.int64)
+        self.bid = np.ascontiguousarray(bid, dtype=np.int64)
+        self.off = self.bid[:, None] != self.bid[None, :]
+        self.kmax = int(np.diff(self.bstart).max())
+        self.work = np.empty(2 * self.kmax * self.kmax)
+        self.ipiv = np.empty(self.kmax, dtype=np.int64)
+
+
+def _cert_data(generic, r0, iref):
+    """THE CERTIFICATE's data from the structural rank's generic `C` and its
+    pattern (`generic`, `_BranchCheck._branch_structural_rank`): `_Cert`, or
+    None where fewer than r0 rows and columns are structurally nonzero.
+
+    B's rows and columns are C's structurally nonzero ones without the
+    reference row; where they are more than r0, an r0 x r0 submatrix of the
+    generic C by pivoted QR (r0 independent columns, then r0 independent
+    rows of those) -- interlacing makes ANY submatrix a lower bound, the QR
+    picks one likely to be well conditioned.  Its blocks are the connected
+    pieces of the generic pattern (the three random states' union):
+    singular values of a block-diagonal matrix are its blocks' together."""
+    import scipy.linalg as sl
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import connected_components
+    C0, pat = generic
+    nz = pat.any(axis=1) & pat.any(axis=0)
+    if 0 <= iref < len(nz):
+        nz[iref] = False
+    core = np.flatnonzero(nz)
+    if r0 <= 0 or core.size < r0:
+        return None
+    rows = cols = core
+    if core.size > r0:
+        piv = sl.qr(C0[np.ix_(core, core)], mode='r', pivoting=True)[1]
+        cols = np.sort(core[piv[:r0]])
+        piv = sl.qr(C0[np.ix_(core, cols)].T, mode='r', pivoting=True)[1]
+        rows = np.sort(core[piv[:r0]])
+    r, c = np.nonzero(pat[np.ix_(rows, cols)])
+    nb, lab = connected_components(
+        csr_matrix((np.ones(r.size, dtype=np.int8), (r, c)), shape=(r0, r0)),
+        directed=True, connection='weak')
+    order = np.argsort(lab, kind='stable')
+    sizes = np.bincount(lab, minlength=nb)
+    return _Cert(C0.shape[0], rows[order], cols[order], np.r_[0, np.cumsum(sizes)], lab[order])
+
+
+def _certify(C, cert, tol, growth):
+    """THE CERTIFICATE on `C` (`_BranchCheck._branch_certify`): `(proved,
+    the smallest block's bound or None)`.  Proved: every entry of
+    B = C[ci, cj] between two blocks is zero and every block's bound is
+    above tol (1 + delta_k) -- |b| for a block of one, else 1 / ||B_k^-1||_F,
+    delta_k = growth k eps ||B_k||_F ||B_k^-1||_F (the inverse's rounding at
+    the block's own conditioning).  Then sigma_r0(C) >= sigma_min(B) =
+    min_k sigma_min(B_k) >= min_k 1 / ||B_k^-1||_F > tol.
+    The C's (branch.c's `certify`) operation for operation: the inverse is
+    numpy's inv = dgesv on the identity, each sum of squares sequential in
+    column-major order (cumsum), errors ignored as the C tests no flag."""
+    B = C[np.ix_(cert.ci, cert.cj)]
+    if B[cert.off].any():
+        return False, None
+    worst, bs = math.inf, cert.bstart
+    with np.errstate(all='ignore'):
+        for b in range(cert.nb):
+            o, e = int(bs[b]), int(bs[b + 1])
+            k, delta = e - o, 0.0
+            if k == 1:
+                bound = abs(float(B[o, o]))
+            else:
+                a = B[o:e, o:e].ravel(order='F')
+                a2 = float(np.cumsum(a * a)[-1])
+                try:
+                    x = np.linalg.inv(B[o:e, o:e]).ravel(order='F')
+                except np.linalg.LinAlgError:
+                    return False, None
+                f = float(np.cumsum(x * x)[-1])
+                bound = 1.0 / math.sqrt(f) if f > 0.0 else math.inf
+                delta = growth * k * _EPS * math.sqrt(a2) * math.sqrt(f)
+            if not bound > tol * (1.0 + delta):
+                return False, None
+            worst = min(worst, bound)
+    return True, worst
+
+
 class _BranchCheck:
     """Branch detection: did the step equation have more than one root.  A
     theme of `Transient` (see `transient.py`)."""
@@ -100,6 +196,19 @@ class _BranchCheck:
     ## evidence; silence is not.
     ## History: `doc/transient_history.md`, `Transient.BRANCH_SCREEN_TOL`.
     BRANCH_SCREEN_TOL = 1e-9
+    ## THE CERTIFICATE (2026-10-14, `_branch_certify`): where the cheap level
+    ## fires, a proof of `rank C >= r0` before the SVD.  MEASURED on the 27
+    ## gold decks: four (mosrect, ab_integ, e1480, g1310) fired the cheap
+    ## level on EVERY step -- a constant small capacitance under its
+    ## `1e-6 * ref` -- and the SVD never fired (0 of 5 834), yet it was most
+    ## of their time (ab_integ 3.3 of 5.5 s) and it kept them out of the C
+    ## loop.  The certificate proved all 5 834.  `BRANCH_CERT` False: every
+    ## fired cheap level goes to the SVD, as before; `BRANCH_CERT_GROWTH`
+    ## the rounding factor of its margin; a `C` above `BRANCH_CERT_MAX_N`
+    ## unknowns is not kept for it (the SVD decides there).
+    BRANCH_CERT = True
+    BRANCH_CERT_GROWTH = 10.0
+    BRANCH_CERT_MAX_N = 1000
 
     def _branch_structural_rank(self):
         """`rank C` at a GENERIC operating point, computed once per run.
@@ -116,6 +225,9 @@ class _BranchCheck:
         rng = np.random.RandomState(20260910)
         best = 0
         scale = 0.0
+        ## (the certificate's generic C -- the first state's -- and the
+        ## three states' pattern, `_branch_cert_data`)
+        generic = None
         for _ in range(3):
             xr = rng.uniform(-1.0, 1.0, self.cir.n)
             try:
@@ -131,6 +243,8 @@ class _BranchCheck:
                 return self._branch_rank0
             if C.size == 0:
                 continue
+            if self.BRANCH_CERT and C.shape[0] <= self.BRANCH_CERT_MAX_N:
+                generic = (C, C != 0) if generic is None else (generic[0], generic[1] | (C != 0))
             nrm = float(np.max(np.abs(C)))
             scale = max(scale, nrm)
             if nrm > 0:
@@ -146,8 +260,47 @@ class _BranchCheck:
                 if r is None:
                     r = int((np.linalg.svd(C, compute_uv=False) > tol).sum())
                 best = max(best, r)
+        self._branch_generic = generic
         self._branch_rank0 = (best, scale)
         return self._branch_rank0
+
+    def _branch_cert_kept(self):
+        """`(known, data)`: THE CERTIFICATE's data where this run made them
+        (keyed by the structural rank's tuple: `_branch_cert_data`), else
+        `(False, None)`."""
+        got = self.__dict__.get('_branch_cert')
+        if got is not None and got[0] is not None and got[0] is self.__dict__.get('_branch_rank0'):
+            return True, got[1]
+        return False, None
+
+    def _branch_cert_data(self):
+        """THE CERTIFICATE's data for this run (`_cert_data`, `_Cert`), or
+        None (off, no generic C, or no r0 x r0 submatrix) -- made once a
+        run, at the first screen whose cheap level fires."""
+        known, cert = self._branch_cert_kept()
+        if known:
+            return cert
+        rk = self.__dict__.get('_branch_rank0')
+        generic = self.__dict__.get('_branch_generic')
+        cert = None
+        if self.BRANCH_CERT and rk is not None and generic is not None:
+            cert = _cert_data(generic, rk[0], self.irefnode)
+        self._branch_cert = (rk, cert)
+        return cert
+
+    def _branch_certify(self, C, tol):
+        """THE CERTIFICATE: True where it proves `rank C >= r0` -- the SVD's
+        quiet verdict -- without the SVD (`_certify`; History:
+        `doc/transient_history.md`, `Transient._branch_certify`).
+
+        It proves the rank in exact arithmetic up to its inverses' rounding,
+        so it can differ from the SVD only where the SVD's own rounding puts
+        sigma_r0 across `tol` -- a rank within rounding of the threshold,
+        which the screen does not resolve either.  It never fires: what it
+        cannot prove, the SVD decides."""
+        cert = self._branch_cert_data()
+        return (cert is not None and cert.n == C.shape[0]
+                and _certify(C, cert, tol, self.BRANCH_CERT_GROWTH)[0])
 
     def _reduced_rank(self, C, tol, eps):
         """The count of `C`'s singular values above `tol`, from `C` without
@@ -236,8 +389,9 @@ class _BranchCheck:
             if ref == kept[3]:
                 self._branch_cmax = ref
                 return kept[4]
-        ## (the cheap level in C where it serves: the same verdict, the SVD
-        ## the Python's -- `_tran_branch_c`, the C loop plan's stage 3)
+        ## (the cheap level in C where it serves, the certificate with it:
+        ## the same verdict, the SVD the Python's -- `_tran_branch_c`, the C
+        ## loop plan's stage 3)
         got = _tran_branch_c.screen(self, C)
         if got is None:
             verdict, nrm = self._branch_screen_C(C, r0)
@@ -253,7 +407,9 @@ class _BranchCheck:
 
     def _branch_screen_C(self, C, r0):
         """`_branch_screen`'s verdict on the dense `C` and `C`'s largest
-        entry, `_branch_cmax` moved."""
+        entry, `_branch_cmax` moved: the cheap level, where it fires the
+        certificate (`_branch_certify`), where neither decides the SVD
+        (`_branch_svd`)."""
         ## ⚠ THE SCALE IS THE LARGEST `C` THIS RUN HAS SEEN, not the random
         ## states' (`scale0`).  Those sit anywhere in +-1 V, where a forward
         ## junction's diffusion capacitance is e^38 above any state the
@@ -280,6 +436,9 @@ class _BranchCheck:
                 return (False, None), nrm
         if nrm <= tol:
             return (True, None), nrm     # C has collapsed entirely
+        ## (the rank proved without the SVD where it can be: quiet)
+        if self._branch_certify(C, tol):
+            return (False, None), nrm
         return self._branch_svd(C, r0, ref), nrm
 
     def _branch_svd(self, C, r0, ref):
