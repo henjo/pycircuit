@@ -193,6 +193,24 @@ def test_a_screen_that_fires_hands_the_step_back(monkeypatch):
     assert ca.get('loop_c:bail:screen', 0) > 0
 
 
+def test_an_early_check_before_a_screen_that_fires_is_counted_once(monkeypatch):
+    """Adaptive, the early abort armed: an attempt whose Newton made the
+    early abort's check and whose screen then fires is the Python's to make
+    again -- its check is the Python's count alone (counted in C as well, a
+    run read one check more on the C loop: rich3 at early_abort 1.25,
+    2026-10-14).  The same run, the same counts."""
+    def build():
+        c = _psp_stage()
+        c['vg'] = VSin('g', gnd, v=0.7, va=0.5, freq=1e6)
+        return c
+
+    def setup(tr):
+        tr.BRANCH_SCREEN_TOL = 0.9
+    ca = _same(build, monkeypatch, steps_min=5, setup=setup, tend=80 * 2e-8, timestep=2e-8,
+               fixed_timestep=False)
+    assert ca.get('loop_c:bail:screen', 0) > 0 and ca.get('early:checks', 0) > 0, ca
+
+
 def test_a_newton_that_fails_hands_the_step_back(monkeypatch):
     """Two Newton iterations at most: the steps that need more fail in C and
     are the Python's (its failure, its smaller retry) -- the same run."""

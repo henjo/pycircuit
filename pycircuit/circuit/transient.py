@@ -1270,12 +1270,19 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
          ## iterations, ~6 % less solve time, no forced step, every gold
          ## column passing as before (`_SteppingLoop.take`).  0: off; else at
          ## least 1 (a smaller one would abandon steps the error test passes).
+         ## THE DEFAULT 1.25 (2026-10-14; roadmap 134), was 2: every rejection
+         ## that still ran to the end estimated 2 or less at its first
+         ## iterate, and only 7 of 78 989 accepted attempts above 1.25 --
+         ## 5.8 % fewer Newton iterations, 3.3-3.7 % less solve time, no
+         ## forced step, no gold column moved across its pass, no deck more
+         ## than 3 % slower; 1.5 and 1.1 each slowed a deck (todd3,
+         ## slowlatch) by more than 5 %.
          Parameter(name='early_abort',
                    desc='A multistep attempt whose error estimate at its first '
                         'Newton iterate exceeds this many times the tolerance is '
                         'abandoned there as a rejection (0: never)',
                    unit='',
-                   default=2.0),
+                   default=1.25),
          ## STAGE 12A -- Fang's acceptance band (DAC 2013 eq 15) and step-change
          ## damper (eq 16).  The defaults are the historical one-sided test, so
          ## nothing changes until a caller asks; see `StepController.set_lte_band`

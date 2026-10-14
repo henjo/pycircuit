@@ -989,7 +989,8 @@ def test_the_recurrence_detector_picks_one_crossing_per_period_by_the_hint():
     assert len(tc) >= 30 and np.max(np.abs(d / T - 1.0)) < 1e-6, (len(tc), d[:5])
 
 
-def test_the_folds_walk_ends_at_the_period_so_two_folds_of_one_orbit_agree_and_gear_no_longer_swings():
+def test_the_folds_walk_ends_at_the_period_so_two_folds_of_one_orbit_agree_and_gear_no_longer_swings(
+        monkeypatch):
     """Item 3 of the non-uniform-grid list (2026-09-21): the "gear swing" on
     folded grids was the FOLD's alignment, not gear.  `_fold_periods` walked
     past the period by up to one coarse step and rescaled every fraction to
@@ -1006,7 +1007,19 @@ def test_the_folds_walk_ends_at_the_period_so_two_folds_of_one_orbit_agree_and_g
     0.0005 / 0.0042; were 0.007 / 0.020 apart), no consecutive ratio exceeds 2 in either grid, and gear's
     period on each is within 120 ppm of the reference and the two within
     40 ppm of each other (were 1100 ppm apart).
+
+    ⚠ THE GRIDS ARE CUT WITH THE EARLY ABORT OFF (`Transient`'s default
+    patched to 0 for this test; 2026-10-14, roadmap 134): they are adaptive
+    runs' grids, measured before the abort existed, and "no consecutive
+    ratio exceeds 2" is their step sequence's -- the controller caps growth
+    at 2x, not a shrink after a rejection.  At the default 1.25 a retry
+    leaves one accepted step 2.09x / 2.13x under the one before (and 286 /
+    287 points, were 273 / 272); at 0 and at 2 the largest ratio is the 2x
+    growth cap.
     """
+    from pycircuit.circuit.transient import Transient
+    monkeypatch.setattr(next(p_ for p_ in Transient.parameters if p_.name == 'early_abort'),
+                        'default', 0.0)
     circuit.default_toolkit = circuit.numeric
     MU = 10.0
     T_REF = 19.098600502

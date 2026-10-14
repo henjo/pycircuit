@@ -8975,3 +8975,52 @@ pinned (-6.8 %, A/A +0.1 %), 90.89 -> 84.73 s unpinned (-6.8 %, A/A
 other 23 +0.03 % / +0.07 %, none outside 3 %.  e1480's tightest proof
 stands 1.4 % above its bound: a step the certificate cannot prove there is
 one SVD, as before.
+
+## 2026-10-14 — 134. The early abort's threshold 1.25 (was 2): 5.8 % fewer Newton iterations, 3.3-3.7 % less solve time; seeding a retry from the rejected attempt refused
+
+**Where the rejections' work was.**  Andreas asked what more could cut the
+rejections or their cost.  The census on the current code (after 132 and
+133; the pure Python path, the same run): 100 889 attempts, 78 989
+accepted, 9 302 abandoned at their first iterate, 12 598 judged and
+rejected -- those took 16.7 % of the Newton iterations (2.9 each), the
+abandoned 4.3 %.  Every judged rejection had estimated 2 or less at its
+first iterate (5 507 in (1, 1.25]); of the accepted attempts only 74 were
+in (1, 1.25] and 7 above.  Retries cost 2.46 Newton iterations against
+2.07 for first tries, 29 % of them rejected again; first rejections came
+mostly at a constant step with the error 2-5x what the last step
+predicted -- an edge arriving, which a controller looking back cannot
+foresee; 79 % were judged on a floored loop-closing current (the accuracy
+target, 129-130).
+
+**Sized against lines written first** (the Python loop and Newton, 27
+decks): (1) a lower threshold alone needs >= 2 % of the Newton
+iterations with no forced step, no gold column across its pass and no
+deck's Newton up over 5 %; (2) seeding a retry needs >= 3 points more than
+that threshold alone, likewise; (3) then >= 2 % solve on the C paths.
+SEEDING -- the retry predicted with the rejected attempt's converged point
+(an abandoned one's first iterate) as an extra node, `_predict_state`'s
+`extra`, an interpolation inside the rejected step -- brought a retry to a
+first try's cost: alone at 2, -4.07 %.  Thresholds alone: 1.5 -2.88 %, 1.25
+-5.79 %, 1.1 -7.37 % (1.5 and 1.1 each slowed a deck -- todd3, slowlatch --
+by over 5 %); seeding on top of 1.25 added 2.56 points and slowed
+slowlatch 14.9 %: REFUSED by (2).  1.25 passed (1); on the C paths (one
+process a deck, 2 / 1.25 / 2 interleaved, three rounds): min-sum
+84.76 -> 81.66 s pinned (-3.7 %, A/A 0.0 %), 84.98 -> 82.15 s unpinned
+(-3.3 %, A/A -0.6 %), the C paths' counts the Python sizing's on every
+deck, no deck more than 3 % slower, hussamp 0.67x, slowlatch 0.85x, todd3
+0.87x.
+
+**Built**: `Transient.early_abort`'s default 1.25.  Gate: suite 5 329 passed.  The census on all
+27 gold decks, three paths: the same run on each (counts and gold
+metrics), every deck as the Python sizing measured it -- 78 925 steps,
+21 935 rejections, 205 231 Newton iterations (-5.79 %), 0 forced, 16 258
+attempts abandoned (were 9 302); no gold column across its pass.  It found
+the C loop counting one early check more than the Python on rich3: an
+attempt whose check was made and whose screen then fired was counted in
+C and again by the Python attempt that made it again -- loop.c now counts
+an attempt's checks where it is made or abandoned (`attempt_made`,
+`early_reject`; `test_loop_c`'s adaptive run with the screen made to
+fire).  One test cut with the abort off (as three were at 132): the
+folds' walk (`test_shooting_events`), its vdP grids measured before the
+abort -- at 1.25 a retry leaves one accepted step 2.1x under the one
+before, and 286 / 287 points where there were 273 / 272.

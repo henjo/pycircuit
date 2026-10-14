@@ -84,6 +84,7 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
         s->lte_euler += a->formula == PCX_FORMULA_EULER;
     }
     s->iters += nt->iters;
+    s->early_checks += a->early_checks;
     if (s->hk >= 2) s->pred_fast++;
     s->attempts++;
 }
@@ -206,7 +207,7 @@ static long take(loop_t *s, loop_attempt_t *a)
     arm_early(s, a, nt);
     st = CALL(s->newton_fn, pcx_newton, nt);
     nt->early_lte = 0;
-    if (st == NEWTON_EARLY || st == NEWTON_CONVERGED) s->early_checks += nt->early_checks;
+    a->early_checks = (st == NEWTON_EARLY || st == NEWTON_CONVERGED) ? nt->early_checks : 0;
     if (st == NEWTON_EARLY) return LOOP_JUDGE_EARLY;
     if (st != NEWTON_CONVERGED) return LOOP_BAIL_NEWTON;
     if (br) {
@@ -321,6 +322,7 @@ static void early_reject(loop_t *s, const loop_attempt_t *a)
     ct->point = s->npoint - 1;
     CALL(s->ctrl_fn, pcx_ctrl, ct);
     s->iters += nt->iters;
+    s->early_checks += a->early_checks;
     if (s->hk >= 2) s->pred_fast++;
     s->rejected++;
     s->early_aborts++;

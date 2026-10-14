@@ -74,7 +74,9 @@ typedef struct {
     long attempts, rejected, iters, euler_steps, breaks, screens, pred_fast, ltes, lte_euler;
     long early_aborts;          /* attempts abandoned at their first iterate (each
                                    one of `rejected`, not of `attempts`) */
-    long early_checks;          /* the early abort's estimates made */
+    long early_checks;          /* the early abort's estimates the attempts made
+                                   or abandoned made (a handed-back attempt's are
+                                   the Python's: it makes the attempt again) */
     long have_hm;               /* the statistics' min/max step are set */
     double hmin, hmax;
     long status;
@@ -93,6 +95,9 @@ typedef struct {
     long formula;               /* take: the companion, PCX_FORMULA_* */
     double a0, a1, a2;          /* take: Gear-2's alphas (`bdf2_alphas`), else 0 */
     long nxt;                   /* take: the C and Geq buffer its Newton writes */
+    long early_checks;          /* take: the early abort's estimates its Newton
+                                   made -- counted where it is made or abandoned,
+                                   not where it is handed back */
     double err, h_next;         /* judge: the error test's error (adaptive);
                                    the next step */
 } loop_attempt_t;

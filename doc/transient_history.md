@@ -5049,3 +5049,29 @@ decides; a rank that drops is never proved; the C's certificate the
 Python's bit for bit across block sizes and margins, threaded and on one
 thread; a run the same on and off on the three paths, the C loop taking
 the attempts; its data made once; mosrect in the C loop).
+
+## `transient.py` -- `Transient.early_abort`'s default 1.25 (2026-10-14)
+
+2026-10-14 (Andreas: "what more can we do to reduce the number of
+rejections and speedup handling of rejections?", "Size with threshold
+first", "Change the default"; `doc/hdl_roadmap_260824.md`, 134).  The
+parameter's default was 2.0 (132's: the threshold its sizing compared at
+1.5, 2 and 3 on the run before the abort).  On the run with it, every
+rejection that still ran to the end estimated 2 or less at its first
+iterate; 1.25 abandons most of them and 7 accepted attempts of 78 989.
+Sized against lines written first (the DC plan's REJECTIONS RE-SIZED and
+SEEDING x THRESHOLD SIZING; scratch g8/): 1.5 and 1.1 each slowed a deck by
+over 5 % (todd3, slowlatch -- a step sequence moves per deck, not
+monotonically in the threshold); seeding a retry from the rejected
+attempt (`_predict_state(extra=)`) was refused: 2.56 points on top of
+1.25, slowlatch +14.9 %.
+With it, loop.c's early-check count: `take` added the Newton's checks
+to the run's count before the screen, so an attempt the screen handed
+back was counted in C and again by the Python attempt that made it
+again (rich3 at 1.25: one check more on the C loop; the census at 2 had
+none such).  The attempt now carries its checks (`loop_attempt_t.
+early_checks`) and `attempt_made` / `early_reject` count them.
+`test_shooting_events`' folds' walk runs with the abort off: its grids
+were measured before it, and its "no consecutive ratio exceeds 2" is
+their sequence's (the controller caps growth, not a shrink after a
+rejection; at 1.25 one shrink is 2.1x).

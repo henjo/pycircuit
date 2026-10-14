@@ -9,7 +9,8 @@ rejections of the 27 gold decks apart from the accepted attempts (over 2:
 18 063 of them, 9 accepted steps), so an attempt over the threshold there
 is abandoned and rejected at that error.  Measured: 9 % fewer Newton
 iterations, ~6 % less solve time, no forced step, every gold column
-passing as before.
+passing as before.  The default threshold 1.25 since roadmap 134 (was 2):
+5.8 % fewer Newton iterations again, 3.3-3.7 % less solve time.
 
 What these hold: the rule is ONE rule on the three paths that make a
 multistep attempt -- the Python loop and Newton (`_newton`'s check), the
@@ -71,9 +72,10 @@ def _record(tr, res):
 
 
 def test_an_attempt_far_over_at_its_first_iterate_is_abandoned(monkeypatch):
-    """gm2, default against `early_abort=0` (measured: 835 / 263 / 2165 Newton
-    iterations, 148 abandoned, against 822 / 256 / 2376): every abandoned
-    attempt is a rejection, none is forced, and the Newton work falls."""
+    """gm2, default against `early_abort=0` (measured at the default 1.25:
+    834 / 257 / 2061 Newton iterations, 205 abandoned; at 2, 835 / 263 / 2165
+    and 148; off, 822 / 256 / 2376): every abandoned attempt is a rejection,
+    none is forced, and the Newton work falls."""
     tr, _res, counts = _gm2(monkeypatch)
     off, _r, off_counts = _gm2(monkeypatch, early_abort=0)
     st, so = tr.statistics, off.statistics
