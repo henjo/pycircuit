@@ -48,6 +48,7 @@ import numpy as np
 
 from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit._limiting import _pnjlim
+from pycircuit.utilities.param import ParameterDict
 
 
 class PcnrDevice(object):
@@ -104,17 +105,25 @@ class PcnrDevice(object):
         iteration.  A generated element's `$param_given` flags ride along
         under ``'$given:<name>'`` so a limiter parameter that reads one
         (SPICE's `RBM defaults to RB`) can be evaluated without `self`.
+
+        Rebuilt where the parameter epoch moved (every parameter write moves
+        it, `ParameterDict.notify`).  ⚠ Until 2026-10-14 it was kept for the
+        element's life: a parameter written after the first PCNR solve was
+        never seen by anything reading it (`pcnr_view`'s remainder stub, the
+        limiter's law parameters).
         """
         element = self.element
-        params = getattr(element, '_pcnr_params', None)
-        if params is None:
-            params = {p.name: getattr(element.iparv, p.name)
-                     for p in element.instparams}
-            ipar = getattr(element, 'ipar', None)
-            for nm in getattr(element, '_hdl_given_names', ()) or ():
-                params['$given:' + nm] = (1.0 if ipar is not None
-                                          and ipar.is_given(nm) else 0.0)
-            element._pcnr_params = params
+        cached = getattr(element, '_pcnr_params', None)
+        epoch = ParameterDict._epoch
+        if cached is not None and cached[0] is epoch:
+            return cached[1]
+        params = {p.name: getattr(element.iparv, p.name)
+                 for p in element.instparams}
+        ipar = getattr(element, 'ipar', None)
+        for nm in getattr(element, '_hdl_given_names', ()) or ():
+            params['$given:' + nm] = (1.0 if ipar is not None
+                                      and ipar.is_given(nm) else 0.0)
+        element._pcnr_params = (epoch, params)
         return params
 
     ## -- the adapter -----------------------------------------------------
@@ -358,11 +367,21 @@ def pcnr_view(circuit, devices, epar=defaultepar):
     participant's place the constant stamp of its affine remainder
     (`pcnr_lin_G`) carrying its branches (`_remainder_of`) -- so the same
     rows, branches included.  Cached on the circuit per participants and
-    temperature."""
+    temperature, and rebuilt where the stamp plan is (`_stamp_plan._plan_for`):
+    the parameter epoch moved or the element node map is a new object.
+
+    ⚠ The participants and temperature alone were the key until 2026-10-14,
+    and a circuit edited between two solves kept its first view: an added
+    resistor was not in the second solve (the old answer, status 'used'), an
+    added unknown left PCNR's C core on a view one size short of its buffers
+    (ASan: a heap-buffer-overflow in core.c), and a Gummel-Poon's `re`
+    changed moved the device but not its remainder's stub (v(c) -0.682 V,
+    a fresh circuit 4.230).  `test_pcnr_c`'s "between two solves" tests."""
     from pycircuit.circuit.circuit import SubCircuit
     key = (tuple(d.instance for d in devices), float(getattr(epar, 'T', 300.0)))
     cached = getattr(circuit, '_pcnr_view', None)
-    if cached is not None and cached[0] == key:
+    if (cached is not None and cached[0] == key and cached[2] is circuit.elementnodemap
+            and cached[3] is ParameterDict._epoch):
         return cached[1]
     part = {d.instance: d for d in devices}
     view = SubCircuit()
@@ -379,7 +398,9 @@ def pcnr_view(circuit, devices, epar=defaultepar):
             view.add_instance(inst + '#pcnr_lin', stub, **nodes)
     if view.n != circuit.n:                              # pragma: no cover
         raise ValueError(f'pcnr_view: {view.n} unknowns, the circuit {circuit.n}')
-    circuit._pcnr_view = (key, view)
+    ## (the epoch read after the build: adding the circuit's elements to the
+    ## view writes their parameters, which may move it)
+    circuit._pcnr_view = (key, view, circuit.elementnodemap, ParameterDict._epoch)
     return view
 
 

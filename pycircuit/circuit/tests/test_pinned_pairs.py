@@ -679,7 +679,7 @@ RECORD = {
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', 'a1bf1ec171ad'),
     'the DC base solve and its C': ('d17203656044', '60e5fa192106'),
-    'the PCNR DC solve and its C': ('4e03c4945c40', '23189979e665'),
+    'the PCNR DC solve and its C': ('705c96a1fb6f', '23189979e665'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('1b3acd898b48', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),

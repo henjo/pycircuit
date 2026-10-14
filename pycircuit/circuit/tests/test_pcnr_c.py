@@ -297,3 +297,90 @@ def test_a_one_ulp_fault_in_the_reference_is_seen(monkeypatch):
     monkeypatch.setattr(pcnr.PcnrDevice, '_kernel_stamp', nudged)
     bad, _ = _solve(c, False, monkeypatch, x0=_start(c, 20.0))
     assert good[0] == bad[0] == 'ok' and good != bad
+
+
+## ------------------------------------------------------------------------
+## The view after the circuit changes (2026-10-14).  `pcnr_view` was cached on
+## the participants and the temperature alone, so a circuit edited between
+## two solves kept the first one's view: an added element was missing from
+## the second solve (its answer the OLD circuit's, status 'used'), an added
+## unknown left the C's core on a view one size short of its buffers (ASan:
+## a heap-buffer-overflow in core.c's groups_into, from pcnrdc.c), and a
+## participant's parameter moved the device but not its remainder's stub.
+
+def _clamp():
+    """A source, a resistor, a SPICE diode to ground."""
+    c = SubCircuit()
+    c['v'] = VS('a', gnd, v=5.0)
+    c['r'] = R('a', 'b', r=1e3)
+    c['d'] = eh.DiodeSpiceHdl('b', gnd, IS=1e-14)
+    return c
+
+
+def _with_resistor(c):
+    """A resistor across the diode: the same unknowns."""
+    c['r2'] = R('b', gnd, r=1e3)
+    return c
+
+
+def _with_ammeter(c):
+    """A resistor across the diode through a 0 V source: a node and a branch
+    more."""
+    c['vm'] = VS('b', 'c', v=0.0)
+    c['r2'] = R('c', gnd, r=1e3)
+    return c
+
+
+@pytest.mark.parametrize('on', [True, False])
+@pytest.mark.parametrize('add', [_with_resistor, _with_ammeter])
+def test_an_element_added_between_two_solves_is_in_the_second(add, on, monkeypatch):
+    """The second solve is a fresh circuit's, served by the C where it is on."""
+    c = _clamp()
+    first, _ = _solve(c, on, monkeypatch)
+    assert first[0] == 'ok'
+    add(c)
+    got, counts = _solve(c, on, monkeypatch)
+    ref, _ = _solve(add(_clamp()), on, monkeypatch)
+    assert got[0] == 'ok' and got[1] != first[1][:len(got[1])]
+    assert got == ref
+    assert counts.get('pcnr_c:served') == (1 if on else None), counts
+
+
+def _common_emitter(re):
+    """A Gummel-Poon stage: `re` is in the device's affine remainder, which
+    the view stamps from its own stub."""
+    c = SubCircuit()
+    c['vcc'] = VS('vcc', gnd, v=5.0)
+    c['rc'] = R('vcc', 'c', r=1e3)
+    c['vb'] = VS('vb', gnd, v=1.0)
+    c['rb'] = R('vb', 'b', r=10e3)
+    c['q'] = eh.GummelPoonNpn4Hdl('c', 'b', gnd, gnd, re=re)
+    return c
+
+
+@pytest.mark.parametrize('on', [True, False])
+def test_a_participants_parameter_changed_between_two_solves_is_in_the_second(on, monkeypatch):
+    """`re` 1 -> 200 ohm between two solves read v(c) -0.682 V -- the device at
+    the new card, its stub at the old -- where a fresh circuit reads 4.230."""
+    c = _common_emitter(1.0)
+    first, _ = _solve(c, on, monkeypatch)
+    assert first[0] == 'ok'
+    c['q'].ipar.re = 200.0
+    got, counts = _solve(c, on, monkeypatch)
+    ref, _ = _solve(_common_emitter(200.0), on, monkeypatch)
+    assert got[0] == 'ok' and got[1] != first[1]
+    assert got == ref
+    assert counts.get('pcnr_c:served') == (1 if on else None), counts
+
+
+def test_an_unchanged_circuit_keeps_its_view():
+    """Solves of an unchanged circuit share one view (the core built on it is
+    the C's record)."""
+    c = _clamp()
+    devs = pcnr.pcnr_devices(c)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pcnr.solve_dc(c, gnd)
+        view = pcnr.pcnr_view(c, devs)
+        pcnr.solve_dc(c, gnd)
+    assert pcnr.pcnr_view(c, devs) is view
