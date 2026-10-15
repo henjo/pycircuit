@@ -9192,3 +9192,43 @@ Python's with the C serving, the merge's reach (only within `minbreak`, either s
 `where` on a stub: a step two ulps short of the end ends at it, a one-ulp residue ends the run (both red on the old
 loop), a step 1e-13 s short and a fixed grid as before.  (A natural reproducer of the accumulation was not found
 outside schmitecl: the controller's ramp and a step cap tied to `tend` break the uniform sum.)
+
+## 2026-10-15 — 138. The lift's remainder joined to the nodes it physically joins: a series resistance no longer measured from the gate
+
+**Found** sizing the gmin route's ladder (plan `dc-final-gmin.md`, 'gm1 DIAGNOSED'). gm1's operating point never
+converged on PCNR: every iteration passed the residual and limited tests and failed the step test, |dx| 2e-5 to 6e-5 V
+against ~1e-6 V, on nodes of a latch whose supply is 0 V at DC -- a cluster held only by cut-off channels and junction
+leakage (the reduced Jacobian's smallest singular values 5e-13 to 6.7e-13).  The step scaled as 1/gmin (from the same
+start, 2e-6 V at 1e-11, 1.7e-7 V at 1e-10): a fixed 2e-17 A of noise along the cluster's mode.  The noise was in the
+raw KCL sum: on the internal drain and source rows of the ON transistors (gate at 5 V) the view's remainder carried
++-1.05 A and the devices' probe currents -+1.05 A, cancelling to what flows and leaving ulp(1.05) = 2.2e-16 A.  The
+remainder of `MosLevel3GateChargeHdl` stamped rd between the drain and the GATE column: `_affine_in_nodes` splits a
+current after the probes are substituted, when x_di is the probe tree's root plus probe voltages (x_g - vgs + vds,
+the root the first probe's plus terminal), so the lift kept G (x_d - x_g) and the probe current G (vgs - vds) -- each
+0.21 S x 5 V, exact in sum (every answer right), ulp(1 A) of KCL lost.  `_kernel_map` followed it, mirroring d and s
+onto the gate.  (The same root bit the first version of the lift, sec. 40: the internal drain out by exactly the gate
+voltage.)  The element-gmin prototype's 'solve' of gm1 was a lucky step: the same jitter, one step 2.4e-8 V at
+iteration 15.
+
+**Built.**  `hdl._paired_lift`, called after the lift in `_pcnr_declared_route`: the remainder completed from the
+columns of the unprobed nodes, which carry the physical entries (column q as lifted, row q its transpose, each
+reached row's diagonal its zero row sum), and what leaves it folded into the rest, `rest += (L - K) pot` -- probe-only,
+since the difference's rows sum to zero and the root cancels.  Node unknowns only: a V-contributed branch's stamp
+(`LedHdl`'s) is no conductance and is kept as lifted; where a rest would still read a node voltage the lift's own
+split is kept.  `pcnr_lin_G` and `pcnr_i`/`pcnr_didv` change together; the device's total is unchanged by
+construction; the compile cache keys on hdl.py's source.  Re-paired: MOS levels 1, 2, 3 (NMOS, PMOS, gate charge) and
+the Statz MESFET -- rd d-di, rs s-si, `_kernel_map` mirroring d onto di and s onto si.  PCNR is off by default in DC
+and Transient, so no gold deck's production run calls either.
+
+**Gate**: Suite 5 442 passed, 6 skipped, 3 xfailed (5 412 + the 30 new).  The PCNR operating point of all 27 gold decks (DC pcnr=True, the continued solve, no gmin;
+HEAD's tree against the fix, Python loop): PCNR iterations 4 343 -> 2 658 (-39 %) -- gm1 1 288 and a fallback -> 7
+PLAIN, mux8 200 (gshunt) -> 66 plain, slowlatch 126 (gshunt) -> 48 plain, g1310 126 -> 35, e1480 564 -> 468, opampal
+277 -> 233; up on toronto 60 -> 73, voter25 466 -> 495; fallbacks 2 -> 1 (opampal); answers within 1 mV, most within
+1e-9 V, but slowlatch (17 nodes, bistable) and e1480's one floating group (78 nodes moving together 0.63 -> 8.89 V:
+both points solve the circuit, max|f| 4e-14 A, 99.93 % of the difference along a mode of sigma 3.6e-14 -- without a
+gmin nothing fixes it).  The gold census on the three paths against HEAD's: identical -- no deck moved, no crossing, 0 forced (PCNR off in production, as it must be).  `test_pcnr_affine.py` +4: the lift serves the series-resistance models
+(the control); every lifted class's remainder joins each terminal only to its own internal node, rows summing to zero
+(red before on 13 classes); remainder + probe current is the element at drawn points; at a 5 V gate the remainder
+carries what flows (red before: +-1.000004 A).  (A one-transistor cluster held by 1e-12 S converges either way --
+each device's +-1 A lands as an equal and opposite pair on rows the stiff cluster's mode weights alike -- so the stall
+itself is gm1's, rows shared by several devices summing different roundings.)

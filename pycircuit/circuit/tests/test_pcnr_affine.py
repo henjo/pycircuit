@@ -36,6 +36,7 @@ at `v_lim`, so the remainder has a natural home: shadow with the affine
 remainder instead of with zeros.
 """
 
+import numpy as np
 import sympy
 import pytest
 
@@ -771,3 +772,126 @@ def test_the_growth_probe_can_tell_the_two_populations_apart():
     assert diode > 1e60, 'the exponential device no longer reads as one: %r' % diode
     assert tanh_block is not None and tanh_block < 1e3, tanh_block
     assert diode / tanh_block > 1e50, (diode, tanh_block)
+
+
+## ======================================================================
+## The remainder joins the nodes it physically joins (`hdl._paired_lift`).
+## ======================================================================
+
+def _lifted_classes():
+    """Every HDL class the lift serves, with each series resistance it
+    declares at 5 ohm."""
+    out = []
+    for name in sorted(dir(eh)):
+        cls = getattr(eh, name)
+        if not (isinstance(cls, type) and getattr(cls, '_hdl_info', None) is not None
+                and getattr(cls, 'pcnr_lin_G', None) is not None):
+            continue
+        names = {p.name for p in cls.instparams}
+        card = {r: 5.0 for r in ('rd', 'rs', 'rb', 'rc', 're') if r in names}
+        if 'w' in names:
+            card.update(w=10e-6, l=1e-6)
+        out.append((name, card))
+    return out
+
+
+LIFTED = _lifted_classes()
+
+
+def _device(name, card):
+    from pycircuit.circuit import pcnr as P
+    from pycircuit.circuit.elements import SubCircuit
+    cls = getattr(eh, name)
+    c = SubCircuit()
+    pins = ['n%d' % k for k in range(len(cls.terminals))]
+    for nd in pins:
+        c.add_node(nd)
+    c['m1'] = cls(*pins, **card)
+    dev, = P.pcnr_devices(c)
+    return dev, c
+
+
+def test_the_lift_serves_the_series_resistance_models():
+    """The control for the two tests below: they enumerate what they check."""
+    names = {n for n, _c in LIFTED}
+    assert {'MosLevel1Hdl', 'MosLevel3Hdl', 'MosLevel3GateChargeHdl'} <= names, names
+
+
+@pytest.mark.parametrize('name,card', LIFTED, ids=[n for n, _ in LIFTED])
+def test_the_remainder_joins_each_terminal_to_its_own_internal_node(name, card):
+    """`G (x_d - x_di)`, not `G (x_d - x_gate)`.
+
+    The lift splits after the probes are substituted, when every probed
+    row is measured from its tree's root -- MOS level 3's gate -- and it
+    used to keep the series resistance between the terminal and THE ROOT:
+    the remainder and the probe current each carried 0.21 S x 5 V = 1.05 A
+    on the internal drain and source rows, cancelling to the microamps
+    that flow and leaving ulp(1 A) of KCL noise (gm1's stall).  Every
+    entry of the remainder must now sit between an unprobed node and a
+    node that node's own current reads, and its rows sum to zero."""
+    from pycircuit.circuit import pcnr as P
+    dev, cir = _device(name, card)
+    G = np.asarray(dev.element.pcnr_lin_G(dev.params(), P.defaultepar, dev.element.toolkit), dtype=float)
+    probed = {a for pr in dev.local for a in pr}
+    ## node rows only: a V-contributed branch's stamp (LedHdl's) is no
+    ## conductance and is kept as lifted
+    nodes = [k for k, r in enumerate(dev.rows) if r < len(cir.nodes)]
+    pot = np.random.default_rng(7).uniform(-0.3, 0.3, dev.t)
+    Gfull = np.asarray(dev.element.G(pot, P.defaultepar), dtype=float).reshape(dev.t, dev.t)
+    groups = [{q} | set(np.flatnonzero(Gfull[q]).tolist()) for q in nodes if q not in probed]
+    Gn = G[np.ix_(nodes, nodes)]
+    for r, c in zip(*np.nonzero(Gn)):
+        r, c = nodes[r], nodes[c]
+        assert any(r in g and c in g for g in groups), (
+            '%s: remainder entry (%d, %d) joins nodes no unprobed current reads together\n%s'
+            % (name, r, c, G))
+    assert np.allclose(Gn.sum(axis=1), 0.0, atol=1e-12 * max(np.abs(G).max(), 1.0)), (name, G)
+
+
+@pytest.mark.parametrize('name,card', LIFTED, ids=[n for n, _ in LIFTED])
+def test_the_remainder_and_the_probe_current_are_the_device(name, card):
+    """Whatever the split, its two halves sum to the element's own current:
+    `G_lin pot + pcnr_i(v)` against `i(pot)`, at drawn points."""
+    from pycircuit.circuit import pcnr as P
+    dev, _cir = _device(name, card)
+    el, params = dev.element, dev.params()
+    G = np.asarray(el.pcnr_lin_G(params, P.defaultepar, el.toolkit), dtype=float)
+    rng = np.random.default_rng(11)
+    for _ in range(5):
+        pot = rng.uniform(-1.0, 1.0, dev.t)
+        v = np.array([pot[a] - pot[b] for a, b in dev.local])
+        whole = np.asarray(el.i(pot, P.defaultepar), dtype=float).reshape(dev.t)
+        split = G @ pot + np.asarray(el.pcnr_i(v, params, P.defaultepar, el.toolkit),
+                                     dtype=float).reshape(dev.t)
+        scale = max(np.abs(whole).max(), np.abs(G @ pot).max(), 1e-30)
+        assert np.max(np.abs(split - whole)) <= 1e-12 * scale, (name, whole, split)
+
+
+def test_the_remainder_carries_what_flows_not_the_gate_voltage():
+    """gm1's stall, at its cause.  An ON transistor (gate 5 V) between two
+    nodes near 0 V: the remainder must carry what its resistors conduct,
+    `G (x_d - x_di)` = 0.2 S x 1 uV, and it carried `G (x_d - x_gate)`
+    = 1.0 A on the drain and source rows, which the probe current undid
+    to ulp(1 A).  (A one-transistor cluster held by 1e-12 S converges
+    either way -- each device's +-1 A lands as an equal and opposite pair
+    on rows the stiff cluster's common mode weights alike -- so the stall
+    itself is gm1's: rows shared by several devices summed different
+    roundings.  The cancellation is what is tested here.)"""
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit import pcnr as P
+    from pycircuit.circuit.elements import VS, R, SubCircuit
+    c = SubCircuit()
+    for nd in ('g', 'a', 'b'):
+        c.add_node(nd)
+    c['vg'] = VS('g', gnd, v=5.0)
+    c['m1'] = eh.MosLevel1Hdl('a', 'g', 'b', gnd, rd=5.0, rs=5.0, w=10e-6, l=1e-6)
+    c['ra'] = R('a', gnd, r=1e12)
+    c['rb'] = R('b', gnd, r=1e12)
+    dev, = P.pcnr_devices(c)
+    d, g, s, _b, di, si = dev.rows
+    x = np.zeros(c.n)
+    x[g], x[d], x[s] = 5.0, 1e-5, -2e-5
+    x[di], x[si] = x[d] - 1e-6, x[s] + 1e-6
+    view = P.pcnr_view(c, [dev], P.defaultepar)
+    vi = np.asarray(view.i(x, P.defaultepar), dtype=float)
+    assert np.max(np.abs(vi[[d, s, di, si]])) < 1e-6, vi[[d, s, di, si]]

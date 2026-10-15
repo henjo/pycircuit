@@ -5471,6 +5471,67 @@ def _affine_in_nodes(expr, node_syms, xset, probe_syms, defs_map=None):
     return rest, coeffs
 
 
+def _paired_lift(lin_terms, i_exprs, pot, xsyms, npot):
+    """The lift's remainder joined to the nodes it physically joins.
+
+    `_affine_in_nodes` splits a current AFTER the probes are substituted,
+    when every probed row is its tree's root plus probe voltages -- so a
+    series resistance from an unprobed node q to its internal partner p,
+    ``G (x_q - x_p)``, comes out as ``G (x_q - x_root)`` in the remainder
+    and ``G (x_root - x_p)`` in the probe current.  Both are exact and
+    their sum is the device's, but each is ``G`` times the root's voltage:
+    MOS level 3's root is the gate, and at 5 V on the gate the remainder
+    and the probe current each carried 1.05 A on the internal drain and
+    source rows, cancelling to the 0.2 uA that flows and leaving ulp(1 A),
+    2.2e-16 A, in the KCL sum.  Behind a node held only by gmin (an
+    unpowered latch, sigma ~1e-11 S) that is a 2e-5 V step every
+    iteration, and the step test never passes.
+
+    The remainder is completed here from the columns of the unprobed
+    nodes, which carry the physical entries (x_q is read only where it
+    flows): column q as lifted, row q its transpose, each reached row's
+    diagonal its zero row sum -- rd between d and di, rs between s and
+    si.  What moves out of the remainder moves into the rest,
+    ``rest += (L - K) pot``: probe-only, since the difference's rows sum
+    to zero and the root cancels.  Only node rows and columns are paired
+    (the first `npot` unknowns): a V-contributed branch's stamp -- its
+    current into two nodes, its voltage equation -- is no conductance
+    and is kept as lifted.  Where a rest would still read a node voltage,
+    or no node is unprobed, the lift's own split is returned unchanged.
+    Returns ``(lin_terms, i_exprs)``."""
+    L, kept = {}, []
+    for r, c, e in lin_terms:
+        if r < npot and c < npot:
+            L[(r, c)] = L.get((r, c), 0) + e
+        else:
+            kept.append((r, c, e))
+    unprobed = sorted({c for (_r, c) in L if c not in pot})
+    if not unprobed:
+        return lin_terms, i_exprs
+    K = {}
+    for (r, c), e in L.items():
+        if c in pot:
+            continue
+        K[(r, c)] = K.get((r, c), 0) + e
+        if r in pot:
+            K[(c, r)] = K.get((c, r), 0) + e
+            K[(r, r)] = K.get((r, r), 0) - e
+    xset = set(xsyms)
+    out = list(i_exprs)
+    for r in sorted({r for (r, _c) in L} | {r for (r, _c) in K}):
+        cols = sorted({c for (rr, c) in L if rr == r} | {c for (rr, c) in K if rr == r})
+        delta = sympy.expand(sum((L.get((r, c), 0) - K.get((r, c), 0)) * pot.get(c, xsyms[c])
+                                 for c in cols))
+        if delta == 0:
+            continue
+        if set(delta.free_symbols) & xset:
+            return lin_terms, i_exprs
+        out[r] = out[r] + delta
+    paired = [(r, c, e) for (r, c), e in sorted(K.items())
+              if not (e == 0 or sympy.expand(e) == 0)]
+    return paired + kept, out
+
+
 def _resolve_through_chain(expr, defs):
     """`expr` with every chain variable replaced by its definition.
 
@@ -5693,6 +5754,10 @@ def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
             i_exprs[krow] = rest
             for q, c in coeffs.items():
                 lin_terms.append((krow, xsyms.index(q), c))
+        ## ... joined to the nodes it physically joins, not to the root
+        ## the substitution measured from (`_paired_lift`)
+        lin_terms, i_exprs = _paired_lift(lin_terms, i_exprs, pot, xsyms,
+                                          len(xsyms) - len(vbranches))
     return dict(vsyms=vsyms, probes=probes, kinds=kinds, spec_idx=spec_idx,
                 redundant=redundant, defs=defs_v, i_exprs=i_exprs,
                 lin_terms=lin_terms, t=len(xsyms)), None
