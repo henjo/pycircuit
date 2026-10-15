@@ -371,9 +371,15 @@ class _RadauStages:
         OFF.  Measured with per-stage states and the step test alone: a
         diode driven through 1 ohm came back at 6.18 V on a 50 us step (the
         whole source voltage), "converged" after two iterations.  The
-        ordinary Newton is saved by its residual test (`conv_f`); the
-        coupled one tests the step alone, so it asks the limiters.  Each
-        stage's state is put back."""
+        coupled Newton tests the step alone, so it asks the limiters.  Each
+        stage's state is put back.
+
+        (This said the ordinary Newton was saved by its residual test,
+        `conv_f`.  It was not: `F` is read with the junction at `_vlim`
+        too, and KCL can hold there -- a 5 V clamp with a parallel 1 k
+        returned the bare divider's 2.5 V, both tests met (D-b,
+        2026-10-15).  The ordinary Newtons now refuse an iteration on which
+        a stateful limiter limited, SPICE's noncon: `_limiting.NONCON`.)"""
         epar = self.epar
         reltol = float(self.par.reltol)
         iabstol = float(self.par.iabstol)

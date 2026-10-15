@@ -4,6 +4,7 @@
 
 import numpy as np
 
+from pycircuit.circuit import _limiting
 from pycircuit.circuit import pcnr as _pcnr
 
 ## The clamp the step controller applies to every accepted step, the force-accept
@@ -233,11 +234,18 @@ class _CoupledLTE:
                 v_stage1 = _pcnr.refine(junctions, v_lim, v_lim + dx_lim,
                                         self.epar, x_old=x)
             else:
+                n0 = _limiting.NONCON[0]
                 x_stage1 = self.cir.limit(x + dx0, x, self.epar)
                 ## The limiter may shorten the step, so the convergence test must
                 ## use what was actually taken, not what was asked for.
                 dx0 = x_stage1 - x
                 v_stage1 = v_lim
+                ## ... and a STATEFUL limiter (`Diode`) does not shorten it: it
+                ## moves its own `_vlim`, where its `i` / `G` are read, so a
+                ## small update can sit beside a clamped junction (SPICE's
+                ## noncon, `_limiting.NONCON`; the PCNR branch's
+                ## `lim_converged` below is the same question)
+                limited = _limiting.limited_since(n0)
 
             ## --- STAGE 2: has the step size earned any attention?
             h_hist = [hh for hh in (self._dt_last,
@@ -258,6 +266,8 @@ class _CoupledLTE:
                 ## the circuit at all -- and the LTE built from it then reads low.
                 converged_x = converged_x and _pcnr.lim_converged(
                     g_lim, v_stage1, reltol, self.par.vabstol)
+            else:
+                converged_x = converged_x and not limited
 
             ## `hold_h` -- the step size is IMPOSED, not free.  A step truncated
             ## onto a breakpoint or onto `tend` has its size decided by where it

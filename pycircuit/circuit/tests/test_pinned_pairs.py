@@ -265,7 +265,10 @@ PAIRS = {
                'converged-point evaluation, `_newton`\'s statistics and branch check; the '
                'early abort\'s check at the first iterate (`_early_estimate` on the seed\'s '
                'factors -- numpy\'s solve of J0 is dgetrs on dgesv\'s LU, the chord\'s '
-               '`fac`) and its stop (`_early`: the counts `_newton` makes up to it)',
+               '`fac`) and its stop (`_early`: the counts `_newton` makes up to it); '
+               'not the noncon test (`_limiting.NONCON`, 2026-10-15): only a stateful '
+               'limiter counts, and the C declines every circuit with one '
+               '(`newton_c:stateful`)',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:ChordNewton.solve_system',
                       'pycircuit.circuit.dcanalysis:refnode_removed',
@@ -342,7 +345,9 @@ PAIRS = {
                'g`, `_plus_diagonal`), junction gmin (`_junction_gmin`), source '
                'stepping\'s factor; the solve (numpy\'s dgesv, or StructuralKLU\'s '
                'refactor, fresh factor and residual check), the DC\'s limiter, the '
-               'convergence test and the iteration limit\'s exception',
+               'convergence test and the iteration limit\'s exception; not the noncon '
+               'test (`_limiting.NONCON`, 2026-10-15): only a stateful limiter counts, '
+               'and the C declines every circuit with one (`dcnewton_c:unservable`)',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:_standard_failure',
                       'pycircuit.circuit.nrsolver:_plus_diagonal',
@@ -675,10 +680,10 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('c9b5c33382cc', 'd4123cb65349'),
+    'the Newton solve and its C': ('245ee6562f9e', 'd4123cb65349'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', 'a1bf1ec171ad'),
-    'the DC base solve and its C': ('d17203656044', '60e5fa192106'),
+    'the DC base solve and its C': ('49610d40ee8d', '60e5fa192106'),
     'the PCNR DC solve and its C': ('705c96a1fb6f', '23189979e665'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('1b3acd898b48', 'a0ac4588446c'),

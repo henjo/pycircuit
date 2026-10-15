@@ -6,6 +6,7 @@ from __future__ import division
 import math
 from .circuit import *
 from . import func as func
+from . import _limiting
 from ._limiting import _pnjlim
 
 class R(Circuit):
@@ -1181,6 +1182,14 @@ class Diode(Circuit):
         VT = self.toolkit.kboltzmann * epar.T / self.toolkit.qelectron
         ## The one shared implementation -- this is what 13-2 actually achieved.
         self._vlim = _pnjlim(vnew, vold, VT, self.iparv.IS, self.toolkit)
+        ## NONCON (D-b, 2026-10-15): `_pnjlim` hands `vnew` itself back
+        ## wherever it does not limit, so a new object is a limited junction
+        ## -- and `i` / `G` will read the tangent there, not at the node voltage:
+        ## the Newton must not accept this iteration (`_limiting.NONCON`).
+        ## Not under an autodiff toolkit: there `i` / `G` read the node
+        ## voltage and `_vlim` is never read.
+        if self._vlim is not vnew and not self.toolkit.supports('autodiff'):
+            _limiting.NONCON[0] += 1
 
     def G(self, x, epar=defaultepar):
         if self.toolkit.supports('autodiff'):

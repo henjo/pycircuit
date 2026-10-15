@@ -9024,3 +9024,74 @@ fire).  One test cut with the abort off (as three were at 132): the
 folds' walk (`test_shooting_events`), its vdP grids measured before the
 abort -- at 1.25 a retry leaves one accepted step 2.1x under the one
 before, and 286 / 287 points where there were 273 / 272.
+
+## 2026-10-15 — 135. SPICE's noncon for the stateful limiter: a Newton iteration on which `elements.Diode` limited is not converged -- a diode clamp with a parallel path no longer returns the bare divider
+
+**The defect** (found 2026-10-14 on the way to the gmin build; plan
+`dc-final-gmin.md`, D-b).  5 V - 1 k - b, a diode b to ground and 1 k
+from b to ground: `DC()` returned v(b) = 2.500000, the bare divider, where
+the clamp holds 0.6297 V (PCNR and the SPICE importer's state-free diode);
+a fresh evaluation at 2.5 V reads a KCL residual of 9.5e28 A.
+`elements.Diode` is the one STATEFUL limiter: `limit` keeps the limited
+junction voltage `_vlim` on the instance and returns None, and `i` / `G`
+read the device as the tangent at `_vlim`.  `StandardNewton` accepted on
+|dx| and |F|, and `F` was the circuit with that tangent at the clamped
+voltage (0.24 V when it returned, iteration 2), which carries nothing: the
+divider's first iterate does not move, both tests hold.  Present at every
+commit tried back to 64d7ac19 (2026-08-21), C and Python paths alike; the
+plain clamp escaped only because its source current is ~0 (the relative
+update test failed on it).  Reach: of 36 clamps (V1 0.5..20 V x R2 none,
+100 ohm..1 Mohm) 14 returned the bare divider (V1 10 V, R2 100 ohm:
+0.909 V); a fixed-step transient through the clamp passed false points at
+the source's edge on every path -- Newton, the chord (`chord_jacobian`),
+Fang's coupled step -- 0.25 .. 11.8 V off, one chord run ENDING at
+9.84 V.  The radau stage Newton already asked its limiters
+(`_limiters_at_rest`); its docstring's claim that the ordinary Newton was
+saved by its residual test was wrong and is corrected.
+
+**Sized before building** (a pytest plugin patching the solvers' own
+source, nothing in the tree): the full suite with the veto, 107 failures
+-- the SAME 107 in an A/A control (the same patched source, no veto), so
+every one the patching's own (pinned pairs reading the source, the C paths
+declining a patched solver); no test result moved.  The veto met 15
+acceptances in 12 tests, all `StandardNewton`'s: every one FALSE, a fresh
+residual of 254 A .. 3.4e5 A (9e66 A on the loop-gain test, NaN on the
+minstep test).  Under the veto each of those solves converged true -- the
+acceptance after it within 2e-12 .. 2e-9 A, at most 4e-5 of the solver's
+tolerance -- or failed where its test expects a failure (the minstep
+test; gate 1.3, an absurd bypass tolerance that must raise, now raising
+from the inner DC its docstring names).  So those 12 tests had passed on
+false operating points: none reads the operating point's KCL.  The chord
+never met the veto in the suite; the gold decks have no `elements.Diode`.
+
+**Built.**  `_limiting.NONCON`, SPICE's `CKTnoncon`: `Diode.limit` adds one
+where `_pnjlim` moved the junction (`_pnjlim` hands `vnew` itself back
+wherever it does not limit, so a new object is a limited junction; not
+under an autodiff toolkit, where `i` / `G` read the node voltage).
+`StandardNewton`, `DampedNewton`, `ChordNewton`, `SchurCoupledNewton` and
+Fang's coupled step (its non-PCNR branch; PCNR's has `lim_converged`) read
+it around their limiter call (`limited_since`) and do not accept an
+iteration that moved it.  `NONCON_CHECK` switches it off, for the tests
+that prove the check alive.  No C twin: the transient's C Newton declines
+every circuit with a stateful limiter (`newton_c:stateful`), the DC's
+(`dcnewton_c:unservable`) -- the two pinned pairs say so; their references
+re-recorded, the twins unchanged.  State-free limiters never count: they
+move the node, and the update the test reads is the limited one.
+
+**Tried, not built**: counting also an evaluation OFF the node voltage
+(`Diode.i` at a `_vlim` the previous limiter call left -- SPICE's own
+reading of noncon, which counts the load's evaluation): it did not move
+the one discrepancy left.
+
+**Known gap, open**: the chord on this diode reads 1.8 .. 2.4 mV off the
+state-free diode on the three clamp transients, where the chord on the
+state-free diode is within 5e-6 V of the full Newton and the full Newton
+on this diode within 2e-8 V; `test_the_chord_through_the_clamp_...`
+bounds it at 1e-2 V, which separates it from the defect.
+
+**Gate**: suite 5 393 passed, 6 skipped, 3 xfailed (5 336 + the 57 new).  The gold census on all 27 decks identical to f2a500d5's on every deck (steps, rejections, Newton iterations, forced steps, the operating point's and the waveform's digests, the gold metrics: 78 925 steps, 205 231 Newton iterations, 0 forced).  `test_noncon.py` (57): the clamp
+DC by both Newtons, the 36-clamp grid by a fresh residual, the three
+transients on Newton / Fang (2e-8 V of the state-free diode) and chord,
+each solver refusing a limited iteration on a bumped count, the count's
+owners (a state-free limiter and an autodiff toolkit never count), and
+the check switched off bringing every face of the defect back.

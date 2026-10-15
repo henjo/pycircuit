@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix
-from pycircuit.circuit import _paths
+from pycircuit.circuit import _limiting, _paths
 from pycircuit.circuit.scaler import NoneScaler
 
 def _structural_singularity(J, row_names, toolkit):
@@ -175,13 +175,16 @@ class StandardNewton(NonLinearSolver):
                 raise NoConvergenceError(f"Singular Jacobian: {str(e)}")
             
             x_next = x + xdiff
+            limited = False
             if limiter is not None:
+                n0 = _limiting.NONCON[0]
                 x_next = limiter(x_next, x)
                 # Recompute xdiff based on limited step
                 xdiff = x_next - x
+                limited = _limiting.limited_since(n0)
                 
             # --- CONVERGENCE CRITERIA ---
-            # To declare victory, two conditions must be met:
+            # To declare victory, three conditions must be met:
             # 1. Voltage/Current Update (conv_x): The state vector (x) must stop changing.
             #    We check if the difference (xdiff) is smaller than a relative tolerance
             #    based on the current values, plus an absolute floor (xtol) to prevent 
@@ -191,6 +194,11 @@ class StandardNewton(NonLinearSolver):
             #    However, 1mA error is huge for a micro-power circuit, but tiny for a 100A power 
             #    supply. Therefore, we scale the tolerance dynamically (I_scale) by looking at the 
             #    absolute magnitude of currents flowing into the node.
+
+            # 3. No stateful limiter limited (`limited`, SPICE's noncon): such a
+            #    device is read as the tangent at its clamped voltage, where (1) and
+            #    (2) can both hold at a point that is not a solution
+            #    (`_limiting.NONCON`).
             ## (each magnitude once: `abs(F)` and `abs(x_next)` were taken
             ## twice an iteration -- speed round 4, stage C)
             aF, ax_next = abs(F), abs(x_next)
@@ -199,7 +207,7 @@ class StandardNewton(NonLinearSolver):
             conv_x = toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(ax_next, abs(x)) + xtol)
             conv_f = toolkit.alltrue(aF < reltol * I_scale + abstol)
             
-            if conv_x and conv_f:
+            if conv_x and conv_f and not limited:
                 return x_next, i + 1
                 
             x = x_next
@@ -307,9 +315,12 @@ class ChordNewton(NonLinearSolver):
                 break
             xdiff = scaler.unscale_solution(xdiff, s_vec, toolkit)
             x_next = x + xdiff
+            limited = False
             if limiter is not None:
+                n0 = _limiting.NONCON[0]
                 x_next = limiter(x_next, x)
                 xdiff = x_next - x
+                limited = _limiting.limited_since(n0)
             done = i + 1
             aF, ax_next = abs(F), abs(x_next)
             I_scale = toolkit.dot(absJ, ax_next) + aF
@@ -317,7 +328,9 @@ class ChordNewton(NonLinearSolver):
                 abs(xdiff) < reltol * toolkit.maximum(ax_next, abs(x))
                 + xtol)
             conv_f = toolkit.alltrue(aF < reltol * I_scale + abstol)
-            if conv_x and conv_f:
+            ## (and no stateful limiter limited: `StandardNewton`'s third
+            ## condition)
+            if conv_x and conv_f and not limited:
                 return x_next, done
             ## A CHORD CONTRACTS OR IT IS NOT GOING TO CONVERGE: the
             ## increments of a linearly convergent iteration shrink by the
@@ -376,9 +389,12 @@ class DampedNewton(NonLinearSolver):
             
             alpha = 1.0
             x_full = x + xdiff
+            limited = False
             if limiter is not None:
+                n0 = _limiting.NONCON[0]
                 x_full = limiter(x_full, x)
                 xdiff = x_full - x
+                limited = _limiting.limited_since(n0)
 
             ## Backtracking line search -- F15 (doc/transient_review_260820.md).
             ## On failure this used to take the FULL step (the candidate the
@@ -407,7 +423,9 @@ class DampedNewton(NonLinearSolver):
             conv_x = toolkit.alltrue(abs(alpha * xdiff) < reltol * toolkit.maximum(ax_next, abs(x)) + xtol)
             conv_f = toolkit.alltrue(aF < reltol * I_scale + abstol)
             
-            if conv_x and conv_f:
+            ## (and no stateful limiter limited: `StandardNewton`'s condition
+            ## 3 -- `F` here, the line search's, is read at the clamp too)
+            if conv_x and conv_f and not limited:
                 return x_next, i + 1
                 
             x = x_next
@@ -1083,10 +1101,13 @@ class SchurCoupledNewton(NonLinearSolver):
 
             x_next = x_curr + dx
             
+            limited = False
             if limiter is not None:
+                n0 = _limiting.NONCON[0]
                 x_next = limiter(x_next, x_curr)
                 # Re-compute dx after limiting
                 dx = x_next - x_curr
+                limited = _limiting.limited_since(n0)
                 
             I_scale = toolkit.dot(abs(J_x), abs(x_next)) + abs(F)
             
@@ -1094,7 +1115,9 @@ class SchurCoupledNewton(NonLinearSolver):
             conv_h = abs(dh) < 0.15 * h_curr
             conv_F = toolkit.alltrue(abs(F) < reltol * I_scale + abstol)
             
-            if conv_x and conv_h and conv_F:
+            ## (and no stateful limiter limited: `StandardNewton`'s third
+            ## condition)
+            if conv_x and conv_h and conv_F and not limited:
                 return (x_next, h_next), i + 1
                 
             x_curr = x_next

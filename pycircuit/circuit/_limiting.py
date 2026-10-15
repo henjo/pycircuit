@@ -683,6 +683,43 @@ def has_limiters(cir):
     return any(has_limiters(e) for e in elems.values())
 
 
+#: SPICE's `CKTnoncon` (D-b, 2026-10-15): how many times a stateful limiter
+#: has LIMITED -- left its device at a voltage other than the terminal
+#: voltage it was handed (`elements.Diode.limit`, where `_pnjlim` moved it).
+#: A Newton that applies a limiter reads it before and after the call
+#: (`limited_since`) and does not accept that iteration: its device was
+#: evaluated where the node is not.
+#:
+#: (Counting also a READ off the node voltage -- `Diode.i` at a `_vlim` the
+#: previous limiter call left, SPICE's own reading of noncon -- was tried:
+#: it did not move the one discrepancy left, the chord's ~2 mV on a clamp
+#: driven through its knee (roadmap 135), so it is not built.)
+#:
+#: ⚠ THE RESIDUAL TEST DOES NOT CATCH IT.  A `Diode` reads `i` and `G` as
+#: the tangent at `_vlim`, so `F` is the circuit with the junction's tangent
+#: at the CLAMPED voltage, and KCL can hold there: a 5 V source, 1 k, a diode and 1 k to ground
+#: returned 2.5 V -- the bare divider, the diode clamped at 0.24 V carrying
+#: nothing -- with every update and residual within tolerance; a fresh
+#: evaluation there read 9.5e28 A (the answer is 0.6297 V).  Suite-wide the
+#: check refused 15 acceptances in 12 tests, every one false (a fresh
+#: residual of 254 A .. 9e66 A), and each solve then converged within
+#: tolerance or failed where its test expects a failure
+#: (`doc/hdl_roadmap_260824.md`, roadmap 135).
+#:
+#: State-free limiters never count: they move the node itself, so the
+#: update the convergence test reads is the limited one.
+NONCON = [0]
+#: the check's switch (False: every Newton accepts as before 2026-10-15 --
+#: for the tests that prove the check is alive)
+NONCON_CHECK = True
+
+
+def limited_since(n0):
+    """Whether a stateful limiter has limited since `NONCON[0]` read `n0`
+    (and the check is on): the iteration is not converged."""
+    return NONCON[0] != n0 and NONCON_CHECK
+
+
 def stateful_limiters(cir):
     """The elements of `cir`, at any depth, that KEEP limiting state -- the
     ones with `reset_limit_state` (`elements.Diode`).  Every other limiter
