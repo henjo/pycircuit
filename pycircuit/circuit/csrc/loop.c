@@ -28,8 +28,10 @@
    `_StepEvents._next_breakpoint` does.  `m` is Python's `max(abs(t), 1.0)`
    (the first argument kept unless the second is strictly greater); `nb` is
    numpy's `maximum(t, t_next)`, `t >= t_next ? t : t_next` for a finite t
-   (a NaN `t_next` propagates, as numpy's does).  0: the table handed the
-   time back, nothing written to `out`. */
+   (a NaN `t_next` propagates, as numpy's does).  A corner within
+   `minbreak` of the run's end (relative to it) is the end, `tend`, as the
+   families pass it.  0: the table handed the time back, nothing written to
+   `out`. */
 static int next_breakpoint(loop_t *s, double t, double *out)
 {
     sources_t *src = (sources_t *) s->src;
@@ -45,6 +47,7 @@ static int next_breakpoint(loop_t *s, double t, double *out)
         if (CALL(s->src_fn, pcx_sources, src) != SOURCES_DONE) return 0;
         nb = pcx_np_maximum(t2, src->t_next);
     }
+    if (fabs(nb - s->tend) <= s->minbreak * pcx_py_max(fabs(s->tend), 1.0)) nb = s->tend;
     *out = nb;
     return 1;
 }
@@ -95,6 +98,10 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
 static long where(loop_t *s, loop_attempt_t *a)
 {
     double t = s->t, h = s->h;
+    double mb = s->minbreak * pcx_py_max(fabs(s->tend), 1.0);
+    /* (an adaptive run's residue under `minbreak` at its end is rounding,
+       not a step: the run is over, nothing written -- the Python's) */
+    if (s->adaptive && s->tend - t <= mb) return LOOP_DONE;
     a->t = t;
     a->is_first = s->is_first || s->landing || s->order_drop;
     if (!next_breakpoint(s, t, &a->t_break)) return LOOP_BAIL_SOURCES;
@@ -106,6 +113,8 @@ static long where(loop_t *s, loop_attempt_t *a)
             a->landing = 0;
         }
         if (t + h > s->tend) h = s->tend - t;
+        /* (a step ending within `minbreak` short of the end ends at it) */
+        else if (s->tend - (t + h) <= mb) h = s->tend - t;
     } else {
         /* (`_SteppingLoop.where`'s tolerances, both of them) */
         a->landing = a->t_break <= t + h * (1.0 + 1e-9);

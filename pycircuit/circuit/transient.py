@@ -286,7 +286,8 @@ class _StepFamily(object):
     proposed, and nothing is kept between accepts or after the run."""
 
     def next_breakpoint(self, t):
-        return self.tr._next_breakpoint(t)
+        ## (the run's end merges a corner within `minbreak` of it)
+        return self.tr._next_breakpoint(t, self.run.tend)
 
     def attempt(self, X, t, h, _hold, provided_function):
         x_new, _feval, J, _f = self.tr.solve_timestep(
@@ -565,7 +566,7 @@ class _CoupledSteps(_StepFamily):
 
     def next_breakpoint(self, t):
         tr, run = self.tr, self.run
-        t_break = tr._next_breakpoint(t)
+        t_break = tr._next_breakpoint(t, run.tend)
         if self.tline_tds:
             if t_break < run.tend and t_break not in self.seen_corners:
                 self.seen_corners.add(t_break)
@@ -859,6 +860,11 @@ class _SteppingLoop:
         pulse train fires four per period; a sine none since stage 4g(a),
         `Sin.next_event`)."""
         tr, t, h = self.tr, self.t, self.h
+        ## (roadmap 137: a residue under `minbreak` at the run's end is
+        ## rounding, not a step -- the adaptive twin of the grid's rule below)
+        mb = tr.par.minbreak * max(abs(self.tend), 1.0)
+        if not self.fixed and self.tend - t <= mb:
+            return False
         if self.landing or self.order_drop:
             tr._is_first_step = True
         self.order_drop = False
@@ -887,6 +893,12 @@ class _SteppingLoop:
             if self.fixed and h <= 1e-9 * self.timestep:
                 self.h = h
                 return False
+        elif not self.fixed and self.tend - (t + h) <= mb:
+            ## a step ending within `minbreak` short of the end ends AT it:
+            ## max-size steps accumulate to an ulp or two under `tend` (a
+            ## final 2e-22 s step against 5e-9 ones, schmitecl)
+            h = self.tend - t
+            clamped = True
         self.h, self.clamped = h, clamped
         ## a step whose size was decided by where it must land is HELD: the
         ## coupled family has nothing to solve for (F3: unheld, its final

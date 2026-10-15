@@ -9161,3 +9161,34 @@ signed-ratio table, and on a falling-edge clamp of state-free diodes the C
 chord byte for byte the Python's, the rule acting there (off, the answer
 moves), a patched rule taking the Python Newton.  The clamp chord test of
 135 tightened from 1e-2 to 1e-6 V against the state-free diode's chord.
+
+## 2026-10-15 — 137. No rounding-level final step: the run's end merges a source corner within `minbreak`, and a step ending within it short of the end ends at it
+
+**Found** diagnosing the gmin route's slow small decks (plan `dc-final-gmin.md`, '(2) DIAGNOSED'). With the standing
+gmin inside the junction devices, hussamp, nand and schmitecl each ran one transient Newton to 100 iterations per run
+before a rescue: their LAST step.  hussamp's `.tran` stop and its pulse's corner round one ulp apart (the end
+1.0000000000000001e-07, the corner 1e-07 -- a stop of 100n read as 100 x 1e-9 against the card's 100E-9; nand the
+same): the loop landed on the corner and then stepped h = 1.3e-23 s to the end; schmitecl's 5 ns capped steps summed
+to 4.999999999999999e-07 against an end of 5.000000000000001e-07 (500 x 1e-9) and left a 2.1e-22 s step.  At
+that step the companion conductances are ~1e23 and J is numerically singular (singular values 7.8e11 .. 4.7e-11,
+the near-null modes the sources' branch currents): the solve returned noise (|J dx + F| = |F|), the Newton
+repeated a useless step.  Without the gmin the same step happened to converge.  `_next_breakpoint` merged two
+corners within `minbreak` of each other, but never a corner with the run's end; and an adaptive step had no residue
+rule (the fixed grid's: a residue under 1e-9 of its step ends the run).
+
+**Built.**  SPICE keeps its stop time in the breakpoint table, so a corner that close merges into it: here
+`_StepEvents._next_breakpoint(t, tend)` returns `tend` for a corner within `minbreak` of it (relative to `tend`), the
+three step families passing `run.tend`; loop.c's `next_breakpoint` the same with `s->tend` (its twin, the same
+operations; the pinned pair 'the stepping loop and its C' re-recorded).  The step that would land on the corner
+lands on the end, and the run's last time is `tend` exactly.  And in `_SteppingLoop.where` (loop.c's `where`, its
+twin), adaptive runs only: a step ending within `minbreak` short of the end ends AT it (`h = tend - t`, exact
+there: Sterbenz), and a residue under `minbreak` left at the end ends the run -- the adaptive twin of the grid's
+rule.  A fixed grid keeps its own (its landing flag reads the merged time).  The pairs 'the stepping loop and its C'
+and '... its unread Jacobian' (reference; a fixed run's pieces unchanged) re-recorded.
+
+**Gate**: Suite 5 412 passed, 6 skipped, 3 xfailed (5 404 + the 8 new).  The gold census on the three paths, each against the A2 commit's: hussamp and nand (the corner merge), schmitecl and mosrect (the near-miss rule) one step fewer each (Newton -6 / -8 / -4 / -1), their gold metrics within 3e-16, the other 23 decks identical, every path the same, no crossing, 0 forced.  `test_final_step.py` (8): an end one ulp past a corner landed on in one
+step with no rounding-level step (red before), an end one ulp before a corner, the C loop byte for byte the
+Python's with the C serving, the merge's reach (only within `minbreak`, either side; without `tend` as before), and
+`where` on a stub: a step two ulps short of the end ends at it, a one-ulp residue ends the run (both red on the old
+loop), a step 1e-13 s short and a fixed grid as before.  (A natural reproducer of the accumulation was not found
+outside schmitecl: the controller's ramp and a step cap tied to `tend` break the uniform sum.)

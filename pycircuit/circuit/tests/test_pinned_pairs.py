@@ -57,7 +57,7 @@ PAIRS = {
     'the stepping loop and its C': {
         'why': 'the C makes `_SteppingLoop`\'s multistep attempts, fixed and adaptive -- '
                'where (the grid or the controller\'s step, the next breakpoint as '
-               '`_next_breakpoint` makes it, crossed or landed on, the order drop a landing '
+               '`_next_breakpoint` makes it, the run\'s end merging a corner within minbreak, crossed or landed on, the order drop a landing '
                'or a force asks for), take (the predictor, `check_order_drop`, '
                '`bdf2_alphas`, the C Newton set up as its glue sets it up, the screen with the '
                'run\'s certificate where the Python made it), judge '
@@ -669,7 +669,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('94f9a8c46d2e', '2c0fbbde5bf1'),
+    'the stepping loop and its C': ('c7c3ea89fda0', 'bd2a1320b1ac'),
     'the predictor and its C': ('f2c284eb392d', '2f1a2f96e90f'),
     'the branch screen and its C': ('adb832d7aae0', '1da8be0e9b2e'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
@@ -688,7 +688,7 @@ RECORD = {
     'the DC base solve and its C': ('49610d40ee8d', '60e5fa192106'),
     'the PCNR DC solve and its C': ('705c96a1fb6f', '23189979e665'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
-    'the stepping loop and its unread Jacobian': ('1b3acd898b48', 'a0ac4588446c'),
+    'the stepping loop and its unread Jacobian': ('de8b4b288065', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
     "the stage paths' passes and the core's": ('f83268db1289', '131833be2877'),
     'the coupled stage Newton and its C': ('c9e9adf33989', '2895432d069c'),

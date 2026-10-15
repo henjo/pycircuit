@@ -99,13 +99,20 @@ class _StepEvents:
             ratio = max(ratio, float(np.max(_d[_nn:])) / _bi)
         return ratio
 
-    def _next_breakpoint(self, t):
+    def _next_breakpoint(self, t, tend=None):
         """The next source breakpoint after `t`, strictly advancing: a
         corner closer than `minbreak` (relative) is skipped so a step of
-        `dt = 0` cannot loop."""
+        `dt = 0` cannot loop.  A corner within `minbreak` of the run's end
+        `tend` (relative to it) IS the end, as SPICE keeps its stop time in
+        the breakpoint table and a corner that close merges into it: an end
+        one ulp past a corner (a stop of 100n read as 100 x 1e-9 against a
+        pulse's 100E-9) used to cost a final 1.3e-23 s step whose matrix is
+        singular (roadmap 137)."""
         nb = self.cir.next_event(t)
         if nb <= t + self.par.minbreak * max(abs(t), 1.0):
             nb = self.cir.next_event(t + (self.par.minbreak * 1e3) * max(abs(t), 1.0))
+        if tend is not None and abs(nb - tend) <= self.par.minbreak * max(abs(tend), 1.0):
+            nb = tend
         return nb
 
     def _state_event_step(self, x_prev, x_new, h, t_end, cuts, minstep):
