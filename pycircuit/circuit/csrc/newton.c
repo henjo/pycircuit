@@ -167,6 +167,44 @@ static int chord_breaks(const newton_t *s, long m, double *prev, int *have_prev)
     return 0;
 }
 
+/* `_chord_settled`'s dominant component of the increment just taken:
+   `int(np.argmax(np.abs(xdiff) / tol))`, tol the update
+   test's (`reltol * np.maximum(ax_next, abs(x)) + xtol`), the first of
+   equal maxima as the strict `>` scan finds it (every |xd| is finite here:
+   the contraction test passed); `d` its increment, for the next iteration */
+static long chord_dominant(const newton_t *s, long m, double *d)
+{
+    long i, k = 0;
+    double best = -1.0;
+    for (i = 0; i < m; i++) {
+        double mx = pcx_np_maximum(fabs(s->xn[i]), fabs(s->x[i]));
+        double w = fabs(s->xd[i]) / (s->reltol * mx + s->xtol[i]);
+        if (w > best) { best = w; k = i; }
+    }
+    *d = s->xd[k];
+    return k;
+}
+
+/* `_chord_settled`: 1 where an iterate the update test accepts is settled
+   -- lambda (this increment over the last at the last's dominant component
+   `k`, its increment `d`) under 1/2, or under 1 with max |xd|/tol x
+   lambda/(1-lambda) under 1; the same operations in the same order */
+static int chord_settled(const newton_t *s, long m, long k, double d)
+{
+    long i;
+    double lam, w = 0.0;
+    if (d == 0.0) return 1;
+    lam = s->xd[k] / d;
+    if (lam < 0.5) return 1;
+    if (!(lam < 1.0)) return 0;
+    for (i = 0; i < m; i++) {
+        double mx = pcx_np_maximum(fabs(s->xn[i]), fabs(s->x[i]));
+        double v = fabs(s->xd[i]) / (s->reltol * mx + s->xtol[i]);
+        if (v > w) w = v;
+    }
+    return w * (lam / (1.0 - lam)) < 1.0;
+}
+
 /* One evaluation at insert_row(x) (`_tran_core.evaluate`): the
    iteration's buffers (the first's kept apart -- the chord's companion and
    the write-back read them), the full x, the core's passes -- every one
@@ -265,9 +303,10 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
    reduced system `_newton` hands them): per iteration the evaluation at
    insert_row(x) (`evaluate`: the core's residual, and J where the
    iteration forms it), the step (`solve_step`), x_next and the limiter
-   (`limit_step`), the convergence test (`converged`, then `jacobian_only`
-   there: `fold`), the chord's contraction (`chord_breaks`).  Contract: THE
-   ITERATION, at the top of this file. */
+   (`limit_step`), the convergence test (`converged`, a chord's also
+   `chord_settled`, then `jacobian_only` there: `fold`), the chord's
+   contraction (`chord_breaks`) and its dominant component (`chord_dominant`).
+   Contract: THE ITERATION, at the top of this file. */
 static long iterate(newton_t *s, void **num)
 {
     long n = s->n, m = n - 1, r = s->iref, it, i, st;
@@ -276,6 +315,8 @@ static long iterate(newton_t *s, void **num)
     walk_fn_t walk = (walk_fn_t) s->walk_fn;
     double prev = 0.0;   /* the chord's last step size (`prev`) */
     int have_prev = 0;   /* (`prev is not None`) */
+    long dom = -1;       /* the last increment's dominant component (`prev_dx`; none: -1) */
+    double dom_d = 0.0;  /* its increment */
     const double *Cin0;  /* cC where the full seed equals cx (a cache hit), else NULL */
     long first_bits;     /* the first evaluation's want bits */
     s->iters = 0;
@@ -303,6 +344,8 @@ static long iterate(newton_t *s, void **num)
         st = converged(s, m);
         /* the Python's count: `i + 1`, the chord's `done` */
         s->iters = it + 1;
+        /* (and a chord iterate settled: `_chord_settled`) */
+        if (st && s->chord && dom >= 0 && !chord_settled(s, m, dom, dom_d)) st = 0;
         if (st) {
             for (i = 0; i < m; i++) s->x[i] = s->xn[i];
             if (s->fold_j) fold(s, core, n, r);
@@ -310,6 +353,7 @@ static long iterate(newton_t *s, void **num)
         }
         if (s->chord && chord_breaks(s, m, &prev, &have_prev))
             return finish(s, NEWTON_BAIL_CHORDBREAK);
+        if (s->chord) dom = chord_dominant(s, m, &dom_d);
         /* `x = x_next` */
         for (i = 0; i < m; i++) s->x[i] = s->xn[i];
     }

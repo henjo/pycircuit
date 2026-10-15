@@ -9095,3 +9095,69 @@ transients on Newton / Fang (2e-8 V of the state-free diode) and chord,
 each solver refusing a limited iteration on a bumped count, the count's
 owners (a state-free limiter and an autodiff toolkit never count), and
 the check switched off bringing every face of the defect back.
+
+## 2026-10-15 — 136. The chord's settled test: a chord iterate whose increments contract monotonically is not accepted until its estimated error is under the tolerance -- the diode clamp's 2 mV gone, slowlatch's 21-tolerance early stops gone, every oscillating chord as before
+
+**The gap 135 left.**  After noncon the chord (`chord_jacobian`, 'auto' --
+on by default where compiled device Jacobians are expensive: 22 of the 27
+gold decks) still read 1.8 .. 2.4 mV off the state-free diode on the clamp
+transients, where the full Newton on the same diode was within 2e-8 V and
+the chord on the state-free diode within 5e-6 V of the full Newton.  The
+cause: a few solves at the source's edge whose increments contracted at
+0.97 a step -- the held Jacobian taken with the junction at a clamped
+voltage, its conductance far under the root's -- crawled 80 .. 90
+iterations until an increment passed the update test (|dx| under its
+tolerance), and stopped ~30 tolerances from the root: a linearly
+convergent iteration's error after an increment dx is lambda/(1-lambda)
+|dx|.  Counting also the diode's reads off its node voltage (SPICE's own
+reading of noncon) did not move it.
+
+**Sized against lines written first** (plan `dc-final-gmin.md`, 'A1
+SIZING' and 'A1 REFINEMENT'; a source patch of `ChordNewton`, the C paths
+off so the Python chord saw every solve).  A1 -- refuse where |dx| x
+theta/(1-theta) reaches the tolerance, theta the ratio of the increments'
+max norms -- refused 20 acceptances on 7 gold decks: no gold crossing, no
+forced step, Newton -0.03 %; but the truth (each step re-solved from the
+accepted point by the full Newton to 1e-3 of the tolerances; the chord
+itself continued lands on that same root, 0.00 tolerances away, every case)
+put only 8 of them early (slowlatch 2.3 .. 21 tolerances, todd3 1.85, arom
+1.01) and 12 within 0.26 .. 0.41 tolerances where A1 estimated 1.04 ..
+2.9.  Over 56 689 multi-increment acceptances with their truth, no
+magnitude refinement separated them (weighted / RMS norms, two-ratio
+means; a theta threshold 0.7 did, cutting at slowlatch's and todd3's 0.707
+.. 0.710 -- a fitted constant).  THE SIGN did, as predicted before it was
+measured: every one of the 12 oscillates (lambda -0.55 .. -0.78, error
+|lambda|/(1+|lambda|) |dx|, which reproduces each truth to 2 decimals),
+every early stop is monotone (+0.57 .. +0.97, lambda/(1-lambda) |dx| = the
+truth).  A2 -- the signed ratio at the last increment's dominant weighted
+component -- refuses the 11 monotone ones and none of the 12; gold census
+in its mode: 24 of 27 decks bit-identical, arom +1.18 %, slowlatch -4.17 %,
+todd3 0 Newton iterations, no gold crossing, no forced step, +0.008 % in
+total.  Beyond any ratio rule: one rich3 acceptance 1.81 tolerances off at
+theta 0.05.
+
+**Built.**  `nrsolver._chord_settled`: lambda = this increment over the
+last at the last one's dominant weighted component (`np.argmax`, the
+first); settled under 1/2 (the oscillating estimate is then under half a
+tolerance at any accepted increment), never at 1 or above, else where max
+|dx|/tol x lambda/(1-lambda) is under 1.  `ChordNewton` asks it of an
+iterate its update and residual tests accept, after its second increment.
+Its twin is newton.c's `chord_settled` / `chord_dominant` (the same
+operations in the same order); `_tran_newton_c`'s chain holds
+`_chord_settled`, so a patched rule takes the Python Newton.  The pinned
+pair 'the Newton solve and its C' carries it, both sides re-recorded.
+
+**Cost seen**: a refused monotone acceptance keeps the chord crawling until
+it settles (the clamp 16 more iterations; a falling-edge clamp of
+state-free diodes +9 % Newton iterations, 437 vs 400) -- today's chord
+already crawls 80-90 iterations on those solves before its early stop;
+handing a slow chord to the full Newton is sized next.
+
+**Gate**: Suite 5 404 passed, 6 skipped, 3 xfailed (5 393 + the 11 new).  The gold census on all 27 decks on the three paths (Python loop and Newton, Python loop and C Newton, the C loop) each identical to the A2 sizing on every deck (steps, rejections, Newton iterations, forced steps, the waveform's digest) and to 135's but on arom, slowlatch and todd3; no gold crossing; 0 forced; 205 247 Newton iterations on each path (135: 205 231).  `test_chord_settled.py` (11): a
+scalar chord with a held slope 10 (monotone 0.9: the update test alone
+stops ~9 tolerances short, the settled one within one) and 0.625
+(oscillating -0.6: the same iterate as the update test), the rule's
+signed-ratio table, and on a falling-edge clamp of state-free diodes the C
+chord byte for byte the Python's, the rule acting there (off, the answer
+moves), a patched rule taking the Python Newton.  The clamp chord test of
+135 tightened from 1e-2 to 1e-6 V against the state-free diode's chord.

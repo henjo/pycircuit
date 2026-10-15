@@ -268,9 +268,11 @@ PAIRS = {
                '`fac`) and its stop (`_early`: the counts `_newton` makes up to it); '
                'not the noncon test (`_limiting.NONCON`, 2026-10-15): only a stateful '
                'limiter counts, and the C declines every circuit with one '
-               '(`newton_c:stateful`)',
+               '(`newton_c:stateful`); the chord\'s settled test (`_chord_settled`, '
+               'newton.c\'s `chord_settled` and `chord_dominant`, roadmap 136)',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:ChordNewton.solve_system',
+                      'pycircuit.circuit.nrsolver:_chord_settled',
                       'pycircuit.circuit.dcanalysis:refnode_removed',
                       'pycircuit.circuit.analysis:insert_row',
                       'pycircuit.circuit.analysis:remove_row_col',
@@ -680,7 +682,7 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('245ee6562f9e', 'd4123cb65349'),
+    'the Newton solve and its C': ('2b8ff6cc553a', '8623c7a69055'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', 'a1bf1ec171ad'),
     'the DC base solve and its C': ('49610d40ee8d', '60e5fa192106'),

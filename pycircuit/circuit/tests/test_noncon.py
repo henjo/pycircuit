@@ -140,18 +140,15 @@ def test_a_fixed_step_transient_through_the_clamp_is_the_state_free_diodes(v1, r
 @pytest.mark.parametrize('v1, r2', CASES)
 def test_the_chord_through_the_clamp_passes_no_false_point(v1, r2):
     """`chord_jacobian`'s Newton (`ChordNewton`): before the fix 0.25 ..
-    11.9 V off (one run ENDED at 9.84 V).
-
-    ⚠ KNOWN GAP, NOT FIXED HERE: it still reads 1.8 .. 2.4 mV off the
-    state-free diode, where the chord on the state-free diode is within
-    5e-6 V of the full Newton and the full Newton on this diode within
-    2e-8 V -- so it is the chord with the stateful diode.  Counting a read
-    off the node voltage as well (SPICE's own noncon) did not move it.
-    The bound below separates the defect from that gap; tighten it when
-    the gap is understood (roadmap 135)."""
+    11.9 V off (one run ENDED at 9.84 V); after it (roadmap 135) still
+    1.8 .. 2.4 mV, the chord accepting an iterate whose increments
+    contracted monotonically at 0.97 -- ~30 tolerances from the root.  With
+    the chord's settled test (roadmap 136, `test_chord_settled`) it is the
+    state-free diode's chord to 1e-7 V (both 5e-6 V or less from the full
+    Newton: the chord's own tolerance)."""
     got = _tran(_clamp(v1, r2, pulsed=True), chord_jacobian=True)
-    ref = _tran(_clamp(v1, r2, kind='spice', pulsed=True))
-    assert _off(got, ref) < 1e-2
+    ref = _tran(_clamp(v1, r2, kind='spice', pulsed=True), chord_jacobian=True)
+    assert _off(got, ref) < 1e-6
 
 
 @pytest.mark.parametrize('kw', [{}, {'chord_jacobian': True},

@@ -252,6 +252,38 @@ def _dc_solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scal
                      row_names, linsolver)
 
 
+def _chord_settled(xdiff, tol, prev_dx, prev_tol):
+    """Whether a chord iterate the update test accepts is SETTLED (roadmap
+    136): a linearly convergent iteration's error after an increment dx is
+    lambda/(1-lambda) |dx| where its slow mode contracts monotonically
+    (lambda > 0) and |lambda|/(1+|lambda|) |dx| where it oscillates -- so the
+    update test (|dx| under its tolerance) leaves an error up to
+    lambda/(1-lambda) tolerances on a monotone chord.  lambda: this
+    increment over the last at the last one's dominant weighted component
+    (`np.argmax`: the first).  Not settled where lambda >= 1, or where
+    lambda >= 1/2 and max |dx|/tol x lambda/(1-lambda) >= 1; settled
+    otherwise -- the oscillating estimate is under half a tolerance here.
+
+    Measured (2026-10-15, the 27 gold decks and a diode clamp): the update
+    test alone accepted 11 iterates 1.0 .. 31 tolerances from the root, every
+    one monotone (lambda 0.57 .. 0.97), the estimate equal to the truth; the
+    12 others it would refuse on |lambda| alone sat 0.26 .. 0.41 tolerances
+    away, every one oscillating (lambda -0.55 .. -0.78).  The twin is
+    newton.c's `chord_settled` (the same operations, in the same order)."""
+    w_prev = np.abs(prev_dx) / prev_tol
+    k = int(np.argmax(w_prev))
+    d = float(prev_dx[k])
+    if d == 0.0:
+        return True
+    lam = float(xdiff[k]) / d
+    if lam < 0.5:
+        return True
+    if not lam < 1.0:
+        return False
+    w = float(np.max(np.abs(xdiff) / tol))
+    return w * (lam / (1.0 - lam)) < 1.0
+
+
 class ChordNewton(NonLinearSolver):
     """THE CHORD METHOD: Newton with the Jacobian HELD at the seed.
 
@@ -265,11 +297,14 @@ class ChordNewton(NonLinearSolver):
     step starts from the stage predictor.
 
     The convergence test is `StandardNewton`'s, its current scale read with
-    the held Jacobian.  When the increments stop contracting (or turn
-    non-finite, or the held matrix will not factor) or `maxiter` is spent,
-    the SAME SEED goes to `fallback`, the full Newton -- so this fails only
-    where that does, and its answer is the full Newton's there.  `fallbacks`
-    counts those hand-overs; the iterations returned include the chord's.
+    the held Jacobian, and the iterate SETTLED (`_chord_settled`): a chord
+    contracting slowly and monotonically is still far from the root when
+    its increment first passes the update test.  When the increments stop
+    contracting (or turn non-finite, or the held matrix will not factor) or
+    `maxiter` is spent, the SAME SEED goes to `fallback`, the full Newton --
+    so this fails only where that does, and its answer is the full Newton's
+    there.  `fallbacks` counts those hand-overs; the iterations returned
+    include the chord's.
 
     History: `doc/transient_history.md`, `ChordNewton`."""
 
@@ -293,6 +328,8 @@ class ChordNewton(NonLinearSolver):
         absJ = abs(J)
         fac = None
         prev = None
+        ## (the last increment and its tolerances, for `_chord_settled`)
+        prev_dx = prev_tol = None
         done = 0
         for i in range(maxiter):
             if i:
@@ -324,12 +361,14 @@ class ChordNewton(NonLinearSolver):
             done = i + 1
             aF, ax_next = abs(F), abs(x_next)
             I_scale = toolkit.dot(absJ, ax_next) + aF
-            conv_x = toolkit.alltrue(
-                abs(xdiff) < reltol * toolkit.maximum(ax_next, abs(x))
-                + xtol)
+            tol_x = reltol * toolkit.maximum(ax_next, abs(x)) + xtol
+            conv_x = toolkit.alltrue(abs(xdiff) < tol_x)
             conv_f = toolkit.alltrue(aF < reltol * I_scale + abstol)
             ## (and no stateful limiter limited: `StandardNewton`'s third
-            ## condition)
+            ## condition; and a slow monotone chord SETTLED, `_chord_settled`)
+            if (conv_x and conv_f and not limited and prev_dx is not None
+                    and not _chord_settled(xdiff, tol_x, prev_dx, prev_tol)):
+                conv_x = False
             if conv_x and conv_f and not limited:
                 return x_next, done
             ## A CHORD CONTRACTS OR IT IS NOT GOING TO CONVERGE: the
@@ -341,6 +380,9 @@ class ChordNewton(NonLinearSolver):
                                          and not size < prev):
                 break
             prev = size
+            ## (a copy: a linear solver may hand back a buffer it reuses)
+            prev_dx = np.array(xdiff, dtype=float, copy=True)
+            prev_tol = tol_x
             x = x_next
         self.fallbacks += 1
         x_res, iters = self.fallback.solve_system(

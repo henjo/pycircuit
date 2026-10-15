@@ -162,10 +162,11 @@ def driver():
 
 def _chain():
     """The machinery `solve` stands in for, as defined -- the transient's
-    class and its Newton methods, `nrsolver`'s two loops, the reference-row
-    helpers `_newton` calls, the evaluate core's Python entry -- read once a
-    call finds every piece its module's own (`_paths.genuine`); None: not
-    yet.  A call then compares what the Python path would call now."""
+    class and its Newton methods, `nrsolver`'s two loops and the chord's
+    settled test, the reference-row helpers `_newton` calls, the evaluate
+    core's Python entry -- read once a call finds every piece its module's
+    own (`_paths.genuine`); None: not yet.  A call then compares what the
+    Python path would call now."""
     if 'chain' not in _MOD:
         from pycircuit.circuit import _tran_core, _tran_newton, nrsolver
         from pycircuit.circuit.transient import Transient as T
@@ -183,12 +184,13 @@ def _chain():
                 'pycircuit.circuit.nrsolver'),
                (nrsolver.ChordNewton.solve_system, 'ChordNewton.solve_system',
                 'pycircuit.circuit.nrsolver'),
+               (nrsolver._chord_settled, '_chord_settled', 'pycircuit.circuit.nrsolver'),
                (_tran_core.evaluate, 'evaluate', 'pycircuit.circuit._tran_core'))
         if not all(_paths.genuine(*o) for o in own):
             return None
         _MOD['chain'] = tuple(o for o, _q, _m in own)
         _MOD['chain_mods'] = (_tran_newton, nrsolver.StandardNewton, nrsolver.ChordNewton,
-                              _tran_core)
+                              _tran_core, nrsolver)
     return _MOD['chain']
 
 
@@ -694,10 +696,10 @@ def _admit(tr, td, provided_function, seed):
     T = chain[0]
     if type(tr) is not T:
         return _no('newton_c:class')
-    tn, SN, CN, tcm = M['chain_mods']
+    tn, SN, CN, tcm, nrs = M['chain_mods']
     if (T._newton, T._newton_limiter, T._residual_and_jacobian, T._get_nrsolver,
             T._get_scaler, tn.refnode_removed, tn.remove_row_col, SN.solve_system,
-            CN.solve_system, tcm.evaluate) != chain[1:]:
+            CN.solve_system, nrs._chord_settled, tcm.evaluate) != chain[1:]:
         return _no('newton_c:patched')
     if type(tr.toolkit) is not M['NumericToolkit']:
         return _no('newton_c:toolkit')
