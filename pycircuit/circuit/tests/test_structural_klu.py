@@ -217,6 +217,53 @@ def test_a_sparse_operating_point_factors_on_the_structure(monkeypatch):
     np.testing.assert_allclose(got, ref, rtol=1e-12, atol=1e-15)
 
 
+
+def _held_op(monkeypatch, c_on, dense=False):
+    """The SPICE-diode DC ladder's operating point with a node held (SPICE's
+    `.nodeset`: PCNR's held solve, then the release): `(x, the DC, the paths
+    it took)`."""
+    from pycircuit.circuit import _paths, _pcnr_c
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit.dcanalysis import DC
+    c = SubCircuit()
+    c['vs'] = E.VS('n0', gnd, v=2.0)
+    for k in range(300):
+        a, b = f'n{k}', f'n{k + 1}'
+        c[f'R{k}'] = E.R(a, b, r=50.0)
+        c[f'G{k}'] = E.R(b, gnd, r=5e3)
+        if k % 10 == 5:
+            c[f'D{k}'] = eh.DiodeSpiceHdl(b, gnd, IS=1e-14)
+    monkeypatch.setattr(_pcnr_c, 'ENABLED', c_on)
+    dc = DC(c, toolkit=numeric, nodeset={'n150': 0.5})
+    if dense:
+        monkeypatch.setattr(dc, '_get_linearsolver', lambda: None)
+    before = _paths.snapshot()
+    x = np.asarray(dc.solve().x, dtype=float)
+    got = _paths.since(before)
+    monkeypatch.undo()
+    return x, dc, got
+
+
+def test_a_held_operating_point_factors_without_its_held_rows(monkeypatch):
+    """A sparse operating point with a node held: the held solve on the
+    circuit's structure without the held row (`AutoSolver.held`), the
+    release on the circuit's own -- both StructuralKLU, PCNR's C serving
+    both.  Until 2026-10-16 the held solve's smaller matrix made DC's solver
+    SuperLU, kept for the release, and PCNR's C declined every solve
+    (`pcnr_c:linsolver`): rich3's and arom's operating points.  The answer
+    the Python's byte for byte, and the dense solve's."""
+    x, dc, got = _held_op(monkeypatch, True)
+    ls = dc._get_linearsolver()
+    assert type(ls._choice) is linearsolver.StructuralKLU and ls._choice.m == 302
+    (child,) = ls._held.values()
+    assert type(child._choice) is linearsolver.StructuralKLU and child._choice.m == 301
+    assert got.get('pcnr_c:served', 0) == 2 and got.get('pcnr_c:linsolver', 0) == 0, got
+    py, _dc, _got = _held_op(monkeypatch, False)
+    assert x.tobytes() == py.tobytes()
+    ref, _dc, _got = _held_op(monkeypatch, True, dense=True)
+    np.testing.assert_allclose(x, ref, rtol=1e-12, atol=1e-15)
+
+
 def test_a_refactor_that_meets_a_zero_pivot_factors_again():
     """The reused pivot order on a matrix that is regular under another: a
     fresh factor (counted), not "singular" -- the gmin and source ladders

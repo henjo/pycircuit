@@ -9430,3 +9430,30 @@ under 40 unknowns and from 250 within +-1.2 %.  Forced onto the full Newton (thr
 against dense in the build: every deck from 41 unknowns 0.50 .. 0.93x (mike2 0.93, voter25 0.58, e1480 0.50); a
 full-Newton run from 250 unknowns, the C against HEAD's Python loop: rich3 11.56 -> 4.68 s, arom 12.79 -> 4.28, gm19
 24.96 -> 9.60, opampal 4.21 -> 1.28.
+
+## 2026-10-16 — 145. A held operating point's solve on the structure without its held rows
+
+**Why** (plan `dc-final-gmin.md`, 'THE HELD-NODE DEFECT').  Found while sizing the transient's sparse floor: a DC
+operating point with nodes held (`.ic`, `.nodeset`: PCNR eliminates them, roadmap 140) on a circuit at or above DC's
+sparse floor (250 unknowns) handed DC's one `AutoSolver` the held solve's smaller matrix first.  It did not match the
+circuit's structure, so the solver chose SuperLU on it -- and kept that choice for the release too -- and PCNR's C
+declined every solve (`pcnr_c:linsolver`): the whole operating point ran PCNR's Python loop.  Two gold decks today,
+rich3 (269 unknowns, `.ic` on 2 nodes) and arom (295, 3), both converging plain, so it cost little there; with DC's
+floor forced to 0, jge's operating point (its ladders) took 31.9 s against 0.68 dense.
+
+**Built.**  `AutoSolver.held(drop)`: the solver of this one's matrices with the rows and columns `drop` removed -- its
+floors, and its structure without them, renumbered (the reduced matrix's own pattern: `predict`'s keep, the C's row
+map) -- one per set of rows, kept on the parent with its choice and factorisation.  `pcnr.solve_dc` hands a held solve
+that solver, to the C and the Python alike; DC's own then chooses on the release's full matrix.
+
+**Checked.**  rich3 and arom: the held solve on StructuralKLU, served by PCNR's C, byte for byte the Python PCNR's on the
+same solvers; their operating points move 5.0e-18 and 6.5e-19 V.  A test: a 300-section SPICE-diode ladder with a node
+held, the held and the release solves both StructuralKLU (301 and 302 unknowns), PCNR's C serving both, the answer the
+Python's byte for byte and the dense solve's to 1e-12 -- on the code before, its solver is SuperLU.  jge with DC's floor
+forced to 0: 31.9 -> 0.16 s (the dense solve 0.69).  Pinned pairs: the PCNR DC solve's and the frozen transform's
+re-recorded (`AutoSolver`, `pcnr.solve_dc` on their reference side; their twins take the same solver object).
+
+**Gate**: suite 5 483 passed, 6 skipped, 3 xfailed (19:31 under another session's simulations: the slow tests
+uniformly 1.4-1.8x).  Every gold operating point identical but rich3's and arom's (now served in C).  The gold census on
+the three paths, identical to each other: only rich3 (3 618 -> 3 625 steps) and arom (3 119 -> 3 115) move, their
+metrics by at most 1.1e-9; no crossing, 0 forced.

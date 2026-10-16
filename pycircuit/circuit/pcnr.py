@@ -48,6 +48,7 @@ import numpy as np
 
 from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit._limiting import _pnjlim
+from pycircuit.circuit.linearsolver import AutoSolver
 from pycircuit.utilities.param import ParameterDict
 
 
@@ -1027,6 +1028,11 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     hrows = sorted(held) if held else ()
     for r in hrows:
         x[r] = source * held[r]
+    if hrows and type(linsolver) is AutoSolver:
+        ## (the held solve's own solver: its reduced matrix is not the
+        ## circuit's structure -- `AutoSolver.held`, the rows numbered
+        ## without the reference's, as the structure numbers them)
+        linsolver = linsolver.held([r - (r > irefnode) for r in hrows])
 
     ## `limit=True`: `x0` is the caller's, and may be a wild start.  A
     ## rung of `solve_dc_continued` passes `v_lim0`, the previous rung's

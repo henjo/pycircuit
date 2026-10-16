@@ -1105,6 +1105,8 @@ class AutoSolver(LinearSolver):
         self._dense = DenseSolver()
         self._sparse = None
         self._choice = None
+        ## (`held`'s solvers, one per set of rows dropped)
+        self._held = {}
 
     def _select(self, A):
         if self._choice is not None:
@@ -1191,6 +1193,37 @@ class AutoSolver(LinearSolver):
 
     def solve(self, A, b, toolkit):
         return self._select(A).solve(A, b, toolkit)
+
+    def held(self, drop):
+        """The AutoSolver of this one's matrices with the rows and columns
+        `drop` removed -- a DC's held nodes, which PCNR eliminates: this
+        one's floors, and its structure without them, renumbered (the
+        reduced matrix's own pattern).  One per set of rows, kept, as this
+        one is: its choice and its factorisation outlive a solve.  Before
+        it (2026-10-16) the held solve's smaller matrix was not the
+        structure's: this one chose SuperLU on it and kept that choice for
+        the release too, and PCNR's C declined every solve
+        (`pcnr_c:linsolver`): rich3's and arom's operating points."""
+        key = tuple(sorted({int(i) for i in drop}))
+        got = self._held.get(key)
+        if got is None:
+            parent = self.structure
+
+            def structure():
+                st = parent()
+                if st is None:
+                    return None
+                m, rows, cols = st
+                keep = numpy.ones(m, dtype=bool)
+                keep[list(key)] = False
+                new = numpy.cumsum(keep) - 1
+                rows, cols = numpy.asarray(rows), numpy.asarray(cols)
+                on = keep[rows] & keep[cols]
+                return int(keep.sum()), new[rows[on]], new[cols[on]]
+            got = self._held[key] = AutoSolver(
+                self.min_n, self.max_fill, structure=structure if parent is not None else None,
+                structural_min_n=self.structural_min_n)
+        return got
 
     def factor(self, A, toolkit):
         """The selected solver's factorisation.  ⚠ Until 2026-09-25 this
