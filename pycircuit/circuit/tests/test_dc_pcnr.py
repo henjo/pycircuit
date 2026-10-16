@@ -467,19 +467,22 @@ def test_a_ladder_that_came_down_is_followed_by_the_junction_ladder(monkeypatch)
     assert calls[24][2] < 1.0, calls[24]
 
 
-def test_source_stepping_gives_up_after_four_failing_rungs(monkeypatch):
+def test_source_stepping_gives_up_at_its_smallest_step(monkeypatch):
     """Every PCNR solve forced to fail: the plain solve, the gshunt ladder's
-    first rung, the junction-gmin ladder's, then source stepping's four steps
-    from the start (0.1 halved to SOURCE_STEP_MIN), each tried plain and by
-    both ladders' first rungs at its level, and no more."""
+    first rung, the junction-gmin ladder's, then source stepping's three steps
+    from the start (0.05 halved to SOURCE_STEP_MIN), each tried plain and by
+    both ladders' first rungs at its level -- the junction ladder first --
+    and no more."""
     from pycircuit.circuit import gnd, pcnr
     patched, calls = _failing_kinds(lambda k: True)
     monkeypatch.setattr(pcnr, 'solve_dc', patched)
     c, x0 = _bjt_mirror_20v()
     with pytest.raises(RuntimeError, match='forced PCNR failure'):
         pcnr.solve_dc_continued(c, gnd, x0=x0)
-    step = [('p', 0.0), ('g', pcnr.GSHUNT_START), ('j', pcnr.JGMIN_START)]
-    assert calls == [(k, v, s) for s in (1.0, 0.1, 0.05, 0.025, 0.0125) for k, v in step], calls
+    top = [('p', 0.0), ('g', pcnr.GSHUNT_START), ('j', pcnr.JGMIN_START)]
+    step = [('p', 0.0), ('j', pcnr.JGMIN_START), ('g', pcnr.GSHUNT_START)]
+    assert calls == ([(k, v, 1.0) for k, v in top]
+                     + [(k, v, s) for s in (0.05, 0.025, 0.0125) for k, v in step]), calls
 
 
 def test_a_gold_deck_pcnr_solves_itself():

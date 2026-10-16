@@ -9356,3 +9356,30 @@ their OTHER exact state (both points solve the circuit to 1e-17 A; a latch's sta
 same first iterate, then swings): todd3 fails two columns (i(vseu) 0.68 -> 3.21, i(vamp) 0.25 -> 2.74), slowlatch passes
 two it failed (v(4) 32 -> 0.73, v(5) 43 -> 0.62).  The gold decks' transient solve time (production, the C path, pinned malloc, median of runs 2-4) against 97089a2d: 81.52 -> 79.42 s in total (-2.6 %), no deck over max(1.10x, +0.5 s) -- opampal 5.80 -> 2.83 s, g1310 0.32 -> 0.19, gm3 0.31 -> 0.16, gm17 0.41 -> 0.26, gm19 6.87 -> 6.22; jge 27.6 -> 29.3 (its +8 % steps), e1480 0.21 -> 0.36 and todd3 0.08 -> 0.17 (within +0.5 s).  New tests: the importer's gmin (default, ngspice,
 Xyce), DC's default (PCNR where a device takes part, silently the chain where none, reported when asked).
+
+## 2026-10-16 — 143. PCNR's source steps: the junction-gmin ladder first in a failed step, and the first step 0.05
+
+**Why** (plan `dc-final-gmin.md`, 'PCNR SPEED').  Where PCNR's operating-point work goes, every rung of every gold deck's
+operating point logged (the Python loop): of 5 461 iterations, 3 668 (67 %) are spent in rungs that fail and 3 030 (55 %)
+in rungs that run to the 100-iteration limit.  Stopping a failing rung sooner is not safe: successful rungs run to 98
+iterations (nand's plain solve), and wander first -- up to 81 iterations without a new minimum of max|f| before
+converging (gm19's gshunt rung at 1e-4 goes from 9e-3 to 4e22 and converges at 61) -- so every 'no new minimum in N'
+rule below ~82 kills successful rungs (N 20: 17 of 149; N 50: 8, jge's and mux8's plain solves among them).  The waste
+that can go is structural and nearly all opampal's (2 571 of 5 461), the one gold deck whose operating point steps its
+sources: its first step 0.1 failed on every try (~300 iterations), and at 0.05 the gshunt ladder spent ~900 in a dead end
+(its 1e-9 rung and eight retries at the limit) before the junction-gmin ladder succeeded there in ~150.
+
+**Built.**  `_source_step`: a failed source step tries the junction-gmin ladder before the gshunt ladder (the route's own
+order at full sources is unchanged: plain, gshunt, junction gmin); `SOURCE_STEP` 0.1 -> 0.05 (the steps before giving up
+0.05, 0.025, 0.0125).  Sized first, with its lines written before measuring (both alone and together): opampal's PCNR
+iterations 2 522 -> 1 563 (order) / 2 225 (start) / 1 266 (both); its answer within 3.7e-12 V; the 25 other decks that
+solve identical (path, iterations, the operating point's bytes); its operating point on the C path 1.898 -> 0.992 s
+(median of rounds 2-4, interleaved).  Tests: the nested-step route test now asks for the junction ladder first and, where
+it fails, the gshunt ladder after it at the same level; the give-up test for three steps from 0.05.
+
+**Gate**: suite 5 478 passed, 6 skipped, 3 xfailed (as commit B).  Every gold operating point by production `DC`
+identical to commit B's but opampal's (C-path PCNR iterations 2 552 -> 1 286, the answer within 3.7e-12 V); 26 of 27 on
+PCNR, 4049osc failing there as before.  The gold census on the three paths against commit B's: only opampal moves -- the
+same steps, Newton iterations and 0 forced, its metric by 1.6e-14 -- no crossing.  The 27 decks' runs against commit B,
+quiet (1-min load <= 2.7), alternating trees per deck: opampal 2.828 -> 1.925 s (0.68x; the operating point's 0.9 s),
+the total 79.30 -> 78.35 s (-1.2 %), every other deck within +-3 % on identical steps (code they do not run).

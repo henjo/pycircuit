@@ -106,17 +106,27 @@ def test_the_junction_gmin_ladder_comes_after_the_gshunt_ladder(monkeypatch):
 
 def test_a_failed_source_step_is_retried_by_both_ladders_at_its_level(monkeypatch):
     """Everything fails at full sources until the stepping starts; the first
-    step (0.1) is reached only through the junction-gmin ladder, which runs
-    -- after its own plain rung and the gshunt ladder -- at 0.1."""
+    step (0.05) is reached through the junction-gmin ladder, which a failed
+    step tries first, after its own plain rung, at 0.05; and where that fails
+    too the gshunt ladder follows at the same level."""
     def ok(source, kind, fake):
-        if abs(source - 0.1) < 1e-12:
+        if abs(source - 0.05) < 1e-12:
             return kind == 'j' or _after_a_junction_rung(fake)
         return any(c[0] < 1.0 for c in fake.calls)
     path, calls = _route(monkeypatch, ok)
     assert path == 'source'
-    at = [k for s, k, _v in calls if abs(s - 0.1) < 1e-12]
-    assert at == ['p', 'g'] + ['j'] * 10 + ['p'], at
+    at = [k for s, k, _v in calls if abs(s - 0.05) < 1e-12]
+    assert at == ['p'] + ['j'] * 10 + ['p'], at
     assert calls[-1][0] == 1.0 and calls[-1][1] == 'p', calls[-3:]
+
+    def gshunt_only(source, kind, fake):
+        if abs(source - 0.05) < 1e-12:
+            return kind == 'g' or (kind == 'p' and len(fake.calls) > 1 and fake.calls[-2][1] == 'g'
+                                   and fake.done[-1])
+        return any(c[0] < 1.0 for c in fake.calls)
+    path, calls = _route(monkeypatch, gshunt_only)
+    at = [k for s, k, _v in calls if abs(s - 0.05) < 1e-12]
+    assert path == 'source' and at[:2] == ['p', 'j'] and 'g' in at, at
 
 
 def test_the_plain_solve_needs_no_ladder(monkeypatch):

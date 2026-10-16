@@ -1132,7 +1132,8 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     (:func:`_jgmin_ladder`, true gmin stepping -- it deforms only the
     junctions, so it can come down where the node shunt's last rungs or its
     pure solve could not); then source stepping (:func:`_source_steps`),
-    a step that fails retried by both ladders at its source level -- the
+    a step that fails retried by both ladders at its source level (the
+    junction ladder first, :func:`_source_step`) -- the
     ordinary chain's shape, which a hard circuit needs: opampal fails the
     first rung of every ladder alone and reaches PCNR's answer only so.
     Every rung is a PCNR solve seeded with the previous rung's ``x`` and
@@ -1211,10 +1212,13 @@ def _gshunt_ladder(circuit, refnode, x0, kw):
 
 
 #: `_source_steps`: the first step, the largest, and the smallest before it
-#: gives up -- four failing rungs from the start (0.1, 0.05, 0.025, 0.0125):
-#: source stepping rescues none of the 26 gold operating points, and at 1e-3
-#: it spent seven 100-iteration failures on each that it did not
-SOURCE_STEP, SOURCE_STEP_MAX, SOURCE_STEP_MIN = 0.1, 0.5, 0.0125
+#: gives up -- three failing steps from the start (0.05, 0.025, 0.0125).  0.05,
+#: not 0.1: on opampal, the one gold deck whose operating point steps its
+#: sources, every try at 0.1 failed (~300 iterations); with the junction-gmin
+#: ladder first in a failed step (`_source_step`) its operating point went
+#: from 1.90 to 0.99 s, the answer within 3.7e-12 V.  A smallest step of 1e-3
+#: spent seven 100-iteration failures on each deck it did not rescue
+SOURCE_STEP, SOURCE_STEP_MAX, SOURCE_STEP_MIN = 0.05, 0.5, 0.0125
 
 
 
@@ -1249,19 +1253,27 @@ def _jgmin_ladder(circuit, refnode, x0, kw):
 
 
 def _source_step(circuit, refnode, x, v_lim, kw, target):
-    """One source step: the plain rung, else the gshunt ladder and its pure
-    solve, else the junction-gmin ladder -- all at `target`'s source level:
-    `(x, v_lim, iterations)`, or None."""
+    """One source step: the plain rung, else the junction-gmin ladder, else
+    the gshunt ladder and its pure solve -- all at `target`'s source level:
+    `(x, v_lim, iterations)`, or None.  The junction ladder FIRST here (the
+    route's own order is gshunt first): on opampal, at its source 0.05, the
+    gshunt ladder spent ~900 iterations in a dead end (its 1e-9 rung and eight
+    retries at the iteration limit) before the junction ladder succeeded in
+    ~150."""
     got = _rung(circuit, refnode, x, v_lim, kw, source=target)
     if got is not None:
         return got
     kws = dict(kw, source=target)
+    got = _jgmin_ladder(circuit, refnode, x, kws)
+    if got is not None:
+        return got
     lad = _gshunt_ladder(circuit, refnode, x, kws)
     if lad is not None:
         pure = _rung(circuit, refnode, lad[0], lad[1], kws)
         if pure is not None:
             return pure[0], pure[1], lad[2] + pure[2]
-    return _jgmin_ladder(circuit, refnode, x, kws)
+    return None
+
 
 def _source_steps(circuit, refnode, x0, kw):
     """The sources raised from 0 to 1, each step by :func:`_source_step`,
