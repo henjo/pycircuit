@@ -28,6 +28,9 @@ typedef struct {
     double reltol, abstol, iabstol;   /* CALL: `solve_dc`'s */
     double gshunt;        /* CALL: the deformation's conductance, 0 none */
     long nn;              /* CTX: the node rows (gshunt's: each but iref) */
+    double gjgmin;        /* CALL: the junctions' added conductance, 0 none */
+    long nj;              /* CTX: the junction pairs */
+    const int64_t *ja, *jb;   /* CTX (nj): each pair's rows */
     const double *u;      /* CALL (n): the sources, scaled (`u * source`) */
     void *dgesv, *dgemv;  /* CTX: numpy's own LAPACK and BLAS */
     long choose;          /* CALL: 1 -- stop at the first Schur matrix */

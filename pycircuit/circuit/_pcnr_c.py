@@ -466,6 +466,15 @@ class _Rec:
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
         s.pattern = _sources()[4]['PCX_WANT_PATTERN'] if core.npat else 0
         s.n, s.iref, s.nn, s.nd, s.k = n, iref, len(cir.nodes), nd, k
+        ## the junction pairs `jgmin` is put across (`pcnr_junction_pairs`)
+        from pycircuit.circuit import pcnr as _pcnr
+        pairs = _pcnr.pcnr_junction_pairs(cir)
+        for nm, col in (('ja', 2), ('jb', 3)):
+            a = np.array([p[col] for p in pairs], dtype=I64).reshape(-1)
+            h = fb('int64_t *', a)
+            keep += [a, h]
+            setattr(s, nm, h)
+        s.nj, s.gjgmin = len(pairs), 0.0
         self.klu, self.klu_keep = None, ()
         s.klu.klu_sym = ffi.NULL
 
@@ -627,7 +636,7 @@ def _vector(a, m):
 
 
 def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol, iabstol,
-          gmin, gshunt, linsolver):
+          gmin, gshunt, linsolver, jgmin=0.0):
     """`pcnr.solve_dc`'s loop in C from its start: `(x, v_lim, iterations)`,
     or its exception raised (the iteration limit's RuntimeError, a non-finite
     iterate's, a singular solve's LinAlgError) -- or None: declined or
@@ -662,6 +671,7 @@ def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol
     s.T, s.maxiter = T, int(maxiter)
     s.reltol, s.abstol, s.iabstol, s.gshunt = (float(reltol), float(abstol), float(iabstol),
                                                float(gshunt))
+    s.gjgmin = float(jgmin)
     codes = _sources()[2]
     s.choose = ch == 'choose'
     if s.choose:

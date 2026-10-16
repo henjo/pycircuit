@@ -918,12 +918,14 @@ NONFINITE = 'PCNR iterate not finite at iteration %d: it cannot converge from th
 
 def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
              reltol=1e-6, abstol=1e-12, iabstol=1e-12, gmin=0.0,
-             gshunt=0.0, source=1.0, v_lim0=None, linsolver=None):
+             gshunt=0.0, source=1.0, v_lim0=None, linsolver=None, jgmin=0.0):
     """DC operating point by PCNR.  Returns ``(x, v_lim, iterations)``.
 
-    ``gshunt``, ``source`` and ``v_lim0`` are :func:`solve_dc_continued`'s:
-    a conductance from every node to ground IN the equations (a
-    deformation, unlike ``gmin`` below), the independent sources scaled,
+    ``gshunt``, ``jgmin``, ``source`` and ``v_lim0`` are
+    :func:`solve_dc_continued`'s: a conductance from every node to ground
+    IN the equations (a deformation, unlike ``gmin`` below), a conductance
+    across every junction pair (:func:`pcnr_junction_pairs`) -- SPICE's
+    gmin stepped, true gmin stepping -- the independent sources scaled,
     and the limited unknowns to start from.  At their defaults nothing is
     added and nothing is scaled: the plain solve is unchanged.
 
@@ -1026,9 +1028,11 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     ## the loop below runs
     from pycircuit.circuit import _pcnr_c
     got = _pcnr_c.solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol,
-                        abstol, iabstol, gmin, gshunt, linsolver)
+                        abstol, iabstol, gmin, gshunt, linsolver, jgmin)
     if got is not None:
         return got
+    jpairs = ([(int(p[2]), int(p[3])) for p in pcnr_junction_pairs(circuit)] if jgmin
+              else None)
 
     for it in range(maxiter):
         g_mna, g_lim, J_mm, J_ml, J_lm, didv = augmented_system(
@@ -1037,6 +1041,17 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
             ## (a conductance from every node to ground, IN the equations)
             g_mna[shunt] += gshunt * x[shunt]
             J_mm[shunt, shunt] += gshunt
+        if jpairs is not None:
+            ## (a conductance across every junction pair, IN the equations:
+            ## C's `assemble`, in its order)
+            for a, b in jpairs:
+                vj = x[a] - x[b]
+                g_mna[a] = g_mna[a] + jgmin * vj
+                g_mna[b] = g_mna[b] - jgmin * vj
+                J_mm[a, a] = J_mm[a, a] + jgmin
+                J_mm[a, b] = J_mm[a, b] - jgmin
+                J_mm[b, a] = J_mm[b, a] - jgmin
+                J_mm[b, b] = J_mm[b, b] + jgmin
 
         dx_mna, dx_lim = predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode,
                                  junctions=devices, didv=didv, gmin=gmin,
@@ -1082,23 +1097,30 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
 #: pure solve, and the geometric halvings a failed rung is retried with
 GSHUNT_START, GSHUNT_END, GSHUNT_RETRIES = 1e-2, 1e-12, 4
 
+#: its junction-gmin ladder (`jgmin`): the first rung and the last before the
+#: pure solve, by decades; a failed rung is retried as gshunt's
+JGMIN_START, JGMIN_END = 1e-2, 1e-11
+
 
 def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
                        reltol=1e-6, abstol=1e-12, iabstol=1e-12, linsolver=None):
     """The DC operating point by PCNR, with ladders of its own.
 
     Returns ``(x, v_lim, iterations, path)`` -- ``path`` is ``'plain'``,
-    ``'gshunt'`` or ``'source'``.  The plain :func:`solve_dc` first; where
-    it raises, a gshunt ladder (:func:`_gshunt_ladder`) and the pure solve
-    from its last rung, then source stepping (:func:`_source_steps`) --
-    but not after a ladder that came all the way down: where only the
-    pure solve failed, the trouble is the system without a shunt (its
-    conditioning), which source stepping, at no shunt throughout, cannot
-    change.  Every rung is a PCNR solve seeded with the previous rung's
-    ``x`` and limited unknowns.  Raises the plain solve's exception where
-    the ladders fail.  (Ladders were tried once before, 2026-08-26, and
-    failed on a BJT mirror from 20 V -- every rung then began from an
-    UNLIMITED seed, since fixed in :func:`v_lim_init`.)
+    ``'gshunt'``, ``'jgmin'`` or ``'source'``.  The plain :func:`solve_dc`
+    first; where it raises, a gshunt ladder (:func:`_gshunt_ladder`) and the
+    pure solve from its last rung; then a junction-gmin ladder
+    (:func:`_jgmin_ladder`, true gmin stepping -- it deforms only the
+    junctions, so it can come down where the node shunt's last rungs or its
+    pure solve could not); then source stepping (:func:`_source_steps`),
+    a step that fails retried by both ladders at its source level -- the
+    ordinary chain's shape, which a hard circuit needs: opampal fails the
+    first rung of every ladder alone and reaches PCNR's answer only so.
+    Every rung is a PCNR solve seeded with the previous rung's ``x`` and
+    limited unknowns.  Raises the plain solve's exception where the ladders
+    fail.  (Ladders were tried once before, 2026-08-26, and failed on a BJT
+    mirror from 20 V -- every rung then began from an UNLIMITED seed, since
+    fixed in :func:`v_lim_init`.)
     """
     kw = {'epar': epar, 'maxiter': maxiter, 'reltol': reltol, 'abstol': abstol,
           'iabstol': iabstol, 'linsolver': linsolver}
@@ -1111,9 +1133,11 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     if got is not None:
         x, v_lim, total = got
         pure = _rung(circuit, refnode, x, v_lim, kw)
-        if pure is None:
-            raise first
-        return pure[0], pure[1], total + pure[2], 'gshunt'
+        if pure is not None:
+            return pure[0], pure[1], total + pure[2], 'gshunt'
+    got = _jgmin_ladder(circuit, refnode, x0, kw)
+    if got is not None:
+        return got + ('jgmin',)
     got = _source_steps(circuit, refnode, x0, kw)
     if got is not None:
         return got + ('source',)
@@ -1169,15 +1193,61 @@ def _gshunt_ladder(circuit, refnode, x0, kw):
 SOURCE_STEP, SOURCE_STEP_MAX, SOURCE_STEP_MIN = 0.1, 0.5, 0.0125
 
 
+
+def _jgmin_ladder(circuit, refnode, x0, kw):
+    """`jgmin` from `JGMIN_START` down by decades to `JGMIN_END`, a failed
+    rung retried at the geometric mean with the last that converged, then
+    the pure solve: `(x, v_lim, iterations)`, or None -- at once where the
+    circuit has no junction pair."""
+    if not pcnr_junction_pairs(circuit):
+        return None
+    got = _rung(circuit, refnode, x0, None, kw, jgmin=JGMIN_START)
+    if got is None:
+        return None
+    x, v_lim, total = got
+    g = JGMIN_START
+    while g > JGMIN_END * (1 + 1e-9):
+        g_try = max(g / 10.0, JGMIN_END)
+        for _r in range(GSHUNT_RETRIES + 1):
+            got = _rung(circuit, refnode, x, v_lim, kw, jgmin=g_try)
+            if got is not None:
+                break
+            g_try = (g_try * g) ** 0.5
+        if got is None:
+            return None
+        x, v_lim, its = got
+        total += its
+        g = g_try
+    pure = _rung(circuit, refnode, x, v_lim, kw)
+    if pure is None:
+        return None
+    return pure[0], pure[1], total + pure[2]
+
+
+def _source_step(circuit, refnode, x, v_lim, kw, target):
+    """One source step: the plain rung, else the gshunt ladder and its pure
+    solve, else the junction-gmin ladder -- all at `target`'s source level:
+    `(x, v_lim, iterations)`, or None."""
+    got = _rung(circuit, refnode, x, v_lim, kw, source=target)
+    if got is not None:
+        return got
+    kws = dict(kw, source=target)
+    lad = _gshunt_ladder(circuit, refnode, x, kws)
+    if lad is not None:
+        pure = _rung(circuit, refnode, lad[0], lad[1], kws)
+        if pure is not None:
+            return pure[0], pure[1], lad[2] + pure[2]
+    return _jgmin_ladder(circuit, refnode, x, kws)
+
 def _source_steps(circuit, refnode, x0, kw):
-    """The sources raised from 0 to 1, the step doubled after a rung that
-    converged and halved after one that did not: `(x, v_lim, iterations)`
-    at full sources, or None."""
+    """The sources raised from 0 to 1, each step by :func:`_source_step`,
+    the step doubled after one that converged and halved after one that did
+    not: `(x, v_lim, iterations)` at full sources, or None."""
     n = circuit.n
     x, v_lim, lam, step, total = np.zeros(n), None, 0.0, SOURCE_STEP, 0
     while lam < 1.0:
         target = min(1.0, lam + step)
-        got = _rung(circuit, refnode, x, v_lim, kw, source=target)
+        got = _source_step(circuit, refnode, x, v_lim, kw, target)
         if got is None:
             step /= 2.0
             if step < SOURCE_STEP_MIN:

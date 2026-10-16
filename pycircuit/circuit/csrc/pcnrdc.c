@@ -72,7 +72,8 @@ static void device(pcnrdc_t *s, long d)
 
 /* `augmented_system` and the gshunt rows: the view's core at x (F = i + u,
    J = G), each participant, then `g[shunt] += gshunt x[shunt]`,
-   `J[shunt, shunt] += gshunt`.  F and J may carry a NaN on (the kernels'
+   `J[shunt, shunt] += gshunt`, then `gjgmin` across each junction pair
+   (`F[a] += g vj`, `F[b] -= g vj`, J's four entries, in pair order).  F and J may carry a NaN on (the kernels'
    at a wild point); g_lim, from the finite x and v, may not.  0, or
    PCNRDC_BAIL_FLAGS */
 static long assemble(pcnrdc_t *s)
@@ -91,6 +92,20 @@ static long assemble(pcnrdc_t *s)
             if (i == s->iref) continue;
             s->F[i] = s->F[i] + s->gshunt * s->x[i];
             s->J[i * n + i] = s->J[i * n + i] + s->gshunt;
+        }
+    }
+    if (s->gjgmin != 0.0) {
+        double g = s->gjgmin;
+        long j;
+        for (j = 0; j < s->nj; j++) {
+            long a = s->ja[j], b = s->jb[j];
+            double vj = s->x[a] - s->x[b];
+            s->F[a] = s->F[a] + g * vj;
+            s->F[b] = s->F[b] - g * vj;
+            s->J[a * n + a] = s->J[a * n + a] + g;
+            s->J[a * n + b] = s->J[a * n + b] - g;
+            s->J[b * n + a] = s->J[b * n + a] - g;
+            s->J[b * n + b] = s->J[b * n + b] + g;
         }
     }
     if (fetestexcept(PC_FLAGS)) return PCNRDC_BAIL_FLAGS;

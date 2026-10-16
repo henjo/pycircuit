@@ -9232,3 +9232,37 @@ gmin nothing fixes it).  The gold census on the three paths against HEAD's: iden
 carries what flows (red before: +-1.000004 A).  (A one-transistor cluster held by 1e-12 S converges either way --
 each device's +-1 A lands as an equal and opposite pair on rows the stiff cluster's mode weights alike -- so the stall
 itself is gm1's, rows shared by several devices summing different roundings.)
+
+## 2026-10-16 — 139. PCNR's junction-gmin term and the continued solve's route: true gmin stepping, nested in source stepping where a step fails
+
+**Why** (plan `dc-final-gmin.md`, from 'C2's NO-REBUILD KNOB' to 'ARM N MEETS ALL FOUR LINES').  The gmin build needs
+the SPICE decks' operating points on PCNR, and PCNR's continued solve -- plain, a gshunt ladder, source steps of plain
+solves -- left two gold decks to the ordinary chain: jge (with the standing gmin, its gshunt ladder's last rungs fail
+on modes the gmin holds) and opampal (148 Gummel-Poon BJTs from a 35 V supply: PCNR's equations right -- at the
+chain's point its residual 2e-14 A and one iteration from there -- but from a cold start every ladder's first rung
+ran away, junctions predicted at 34-736 V and cut back by volts each step).  The chain itself solves opampal only by
+source stepping with node-gmin AND junction-gmin ladders nested in each step.  Sized on all 27 decks, in order: true
+gmin stepping by device-parameter writes rebuilt PCNR's record every rung (~55 ms of a 63 ms rung); as a term in the
+equations instead (the 'knob') FIRST, it costs g1310 2.09x (a hard stretch of g1310's junction-gmin path, 2e-4 to
+6e-4 S: failed rungs, each a solver call) -- refused, and 100x rungs did not help; AFTER gshunt (C1) it missed its time
+line by 0.19 %, all opampal's failing ladder; nesting the junction ladder in the source steps (the chain's shape) PCNR
+solves opampal itself (1.99 s against the chain's 5.41) and that route met every line: answers as before, every gold
+operating point on PCNR, the operating points 52 % faster in total (measured with device gmin and the held-node
+prototype, in a worktree).
+
+**Built.**  `pcnr.solve_dc(jgmin=g)`: `g` across every junction pair (`pcnr_junction_pairs`) IN the equations --
+`F[a] += g vj`, `F[b] -= g vj`, J's four entries, after gshunt's rows -- in the Python loop and in `pcnrdc.c`'s
+`assemble`, its twin (the pairs' rows set once per record; the pinned pair 'the PCNR DC solve and its C' re-recorded,
+its reason naming the term).  `solve_dc_continued`: plain -> the gshunt ladder and its pure solve -> `_jgmin_ladder`
+(1e-2 down by decades to 1e-11, a failed rung retried as gshunt's, then the pure solve) -> `_source_steps`, a step
+that fails retried by `_source_step`: the gshunt ladder and then the junction-gmin ladder at its source level.  A
+gshunt ladder that came down with its pure solve failing no longer ends the route: the junction ladder deforms the
+junctions, not the nodes.  Behind DC(pcnr=True): no production default moves (held nodes in PCNR are the next commit).
+
+**Gate**: Suite 5 448 passed, 6 skipped, 3 xfailed (5 442 + the 6 new).  The 27 gold decks' PCNR operating points against 8e8d33c0 (no gmin, the Python loop): every deck but opampal bit-identical, answer and iterations; opampal from the chain's fallback to PCNR's own nested source steps (2 271 its), within 2.8e-14 V of the chain's answer; fallbacks 1 -> 0.  The gold census on the three paths identical (PCNR off in production).  `test_pcnr_jgmin.py` (6): the term in C bit for bit the Python's
+(two conductances, the C serving); the circuit with explicit conductances across the junction pairs has the term's
+solution as a fixed point (one iteration, 1e-12 relative); the route's order on a stand-in solve -- the junction
+ladder after gshunt, by decades from 1e-2 to 1e-11 with its pure solve; a failed source step retried by both ladders
+at its level; the plain solve alone.  `test_dc_pcnr.py`'s two forced-failure tests now pin the new route (the gshunt
+ladder's eleven decades, then the junction ladder's ten; every solve failing: each of the five source levels tried
+plain and by both ladders' first rungs).
