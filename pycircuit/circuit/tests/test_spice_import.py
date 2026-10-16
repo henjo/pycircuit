@@ -75,15 +75,18 @@ def _by_hand():
     c['c1'] = elements.C('a', gnd, c=1e-12)
     c['r2'] = elements.R('b', 'out', r=1000.0)
     c['g1'] = elements.VCCS('in', gnd, 'out', gnd, gm=1e-3)
-    c['d1'] = elements_hdl.DiodeSpiceHdl('out', gnd, IS=1e-14, rs=10.0, cjo=1e-12, area=2.0)
-    c['q1'] = elements_hdl.GummelPoonNpnHdl('c', 'clk', gnd, bf=100.0, IS=1e-16, vaf=50.0)
+    ## (each junction device with SPICE's gmin, as the importer builds it)
+    c['d1'] = elements_hdl.DiodeSpiceHdl('out', gnd, IS=1e-14, rs=10.0, cjo=1e-12, area=2.0,
+                                         gmin=1e-12)
+    c['q1'] = elements_hdl.GummelPoonNpnHdl('c', 'clk', gnd, bf=100.0, IS=1e-16, vaf=50.0,
+                                            gmin=1e-12)
     c['rc'] = elements.R('vcc', 'c', r=2e3)
     c['vcc'] = elements.VS('vcc', gnd, v=5.0, vac=0.0)
     c['x1:m1'] = elements_hdl.MosLevel1Hdl('y', 'c', gnd, gnd, vto=0.7, kp=1e-4, phi=0.6,
-                                           w=2e-6, l=1e-6)
+                                           w=2e-6, l=1e-6, gmin=1e-12)
     c['x1:m2'] = elements_hdl.MosLevel3PmosGateChargeHdl('y', 'c', 'x1:vdd', 'x1:vdd', vto=0.8,
                                                u0=200.0, tox=2e-8, phi=0.6, w=4e-6, l=1e-6,
-                                               qpart=1.0)
+                                               qpart=1.0, gmin=1e-12)
     c['x1:vdd'] = elements.VS('x1:vdd', gnd, v=5.0, vac=0.0)
     c['rl'] = elements.R('y', gnd, r=10e3)
     c['k1'] = elements.CoupledInductors('a', 'b', 'b', gnd, L1=1e-6, L2=2e-6, K=0.5)
@@ -485,3 +488,30 @@ def test_a_nodeset_on_a_source_held_node_is_dropped_as_spice_ignores_it(tmp_path
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         tr.solve(tend=2e-9, timestep=1e-9)
+
+
+_JUNCTIONS = """
+    title
+    D1 a 0 dm
+    Q1 c b 0 qm
+    M1 d g 0 0 nm
+    .model dm d is=1e-14
+    .model qm npn bf=100
+    .model nm nmos level=1 vto=1 kp=2e-5
+    V1 a 0 1
+"""
+
+
+@pytest.mark.parametrize('extra, dialect, g', [
+    ('', 'xyce', 1e-12),
+    ('.options gmin=1e-10\n', 'ngspice', 1e-10),
+    ('.options device gmin=1e-9\n', 'xyce', 1e-9),
+], ids=['default', 'ngspice', 'xyce'])
+def test_every_junction_device_is_built_with_spices_gmin(tmp_path, extra, dialect, g):
+    """SPICE's junction gmin (`CKTgmin`) on every element that takes it --
+    diode, BJT, MOSFET -- 1e-12 unless the deck's `.options` set it."""
+    imp = import_netlist(_write(tmp_path, _JUNCTIONS + extra), dialect=dialect)
+    got = {name: float(el.ipar.gmin) for name, el in imp.circuit.elements.items()
+           if any(p.name == 'gmin' for p in el.instparams)}
+    assert set(got) == {'d1', 'q1', 'm1'} and all(v == g for v in got.values()), got
+    assert not any('gmin' in r for r in imp.report), imp.report

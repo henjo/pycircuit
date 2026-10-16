@@ -94,6 +94,7 @@ def test_every_clamp_of_the_grid_solves_its_circuit(v1, r2):
     assert _fresh_kcl(lambda: _clamp(v1, r2), x) < 1e-6
 
 
+@pytest.mark.usefixtures('ordinary_dc')
 def test_with_the_check_off_the_clamp_is_the_divider_again(monkeypatch):
     """The tests above can fail: without the check the defect is back."""
     monkeypatch.setattr(_limiting, 'NONCON_CHECK', False)

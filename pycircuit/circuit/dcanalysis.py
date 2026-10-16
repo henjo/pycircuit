@@ -70,11 +70,16 @@ class DC(Analysis):
                   ## `pcnr_fell_back` is the older boolean and is kept, but
                   ## it cannot separate the middle two: both read False.
                   ## Check `pcnr_status` when it matters which happened.
+                  ## PCNR by default since 2026-10-16 (the gmin plan's commit B):
+                  ## None takes it wherever a device declares a probe and falls
+                  ## through to the chain silently where none does
                   Parameter(name='pcnr',
                             desc='Use Predictor/Corrector Newton-Raphson instead '
-                                 'of limiting (Aadithya et al.); off by default. '
-                                 'The outcome is reported as `pcnr_status`',
-                            unit='', default=False),
+                                 'of limiting (Aadithya et al.): None (the default) '
+                                 'where a device takes part, else the ordinary '
+                                 'chain; True asks for it; False the chain. The '
+                                 'outcome is reported as `pcnr_status`',
+                            unit='', default=None),
                   ## 1e-6 since 2026-09-19 -- DC, Transient, JAXTransient and PSS share one
                   ## meaning and one default; the reason is at `Transient.vabstol`
                   Parameter(name='vabstol', 
@@ -242,7 +247,13 @@ class DC(Analysis):
         ## 'source' -- `pcnr.solve_dc_continued`; None otherwise)
         self.pcnr_path = None
         pin, nodeset = self._held(self.par.pin), self._held(self.par.nodeset)
-        if (pin or nodeset) and self.par.pcnr:
+        ## `pcnr`: None (the default) PCNR where a device takes part, the
+        ## chain silently where none does; True asks for it; False the chain
+        participants = False
+        if self.par.pcnr is not False:
+            from pycircuit.circuit import pcnr as _pcnr
+            participants = bool(_pcnr.pcnr_devices(self.cir))
+        if (pin or nodeset) and participants:
             ## (the chain's refusal, before PCNR's held solve: `_solve_held`)
             xh = np.array(x0, dtype=float)
             both = {**nodeset, **pin}
@@ -256,15 +267,14 @@ class DC(Analysis):
                     'them at DC, so the hold leaves its current undetermined (SPICE lets the '
                     'source win, through a 1e10 S pin)')
 
-        if self.par.pcnr:
-            from pycircuit.circuit import pcnr as _pcnr
+        if self.par.pcnr is not False:
             ## Gate PARTICIPATION on the device records, not on the
             ## pnj-only pair view: that view exists for the gmin ladders
             ## and is empty for a circuit of pure fetlim/limvds devices,
             ## so `pcnr=True` on a MOSFET differential pair used to fall
             ## through to the ordinary solver SILENTLY (vector PCNR
             ## Stage 2, 2026-08-26).
-            if _pcnr.pcnr_devices(self.cir):
+            if participants:
                 try:
                     kw = {'epar': self.epar, 'maxiter': self.par.maxiter,
                           'reltol': self.par.reltol, 'abstol': self.par.vabstol,
@@ -308,7 +318,7 @@ class DC(Analysis):
                         type(exc).__name__, str(exc)[:80])
                     self.pcnr_status = 'fell-back'
                     self.pcnr_fell_back = True
-            else:
+            elif self.par.pcnr:
                 ## No participating device: PCNR has nothing to do, and
                 ## falling through to the ordinary solver is the honest
                 ## answer rather than raising -- the circuit simply has no

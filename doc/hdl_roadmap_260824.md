@@ -9312,3 +9312,47 @@ compile at gmin = 0 bit for bit as before.  `test_device_gmin.py` (19): the 16 c
 `G(g) - G(0)` exactly `g` across each junction pair (`pcnr_junction_pairs`) and `i(g) - i(0)` that matrix times the
 potentials, at drawn points, every carrier; the class C kernels with the gmin on bit for bit the Python's (PCNR's
 solve on a latch, the C serving, at 1e-12 and 1e-6).
+
+## 2026-10-16 — 142. The operating point by PCNR by default, and SPICE's junction gmin on every imported junction
+
+**Why** (plan `dc-final-gmin.md`, S2 commit B).  With roadmap 139-141 PCNR solves every gold deck's operating point on
+its own (true gmin stepping, nested source steps, held nodes) and the device models carry SPICE's junction gmin; this
+commit makes them the default: `DC` takes PCNR wherever a device declares a probe, and the importer builds every
+junction element with SPICE's `CKTgmin`.
+
+**Built.**  `DC`'s `pcnr` default is None -- AUTO: PCNR where a device takes part, the ordinary chain silently where none
+does; True still asks for it (and reports 'no-participants'), False is the chain.  The transient's operating point is a
+`DC`, so it follows.  The importer: `Imported.gmin`, SPICE's 1e-12 unless `.options gmin` (ngspice's ungrouped, Xyce's
+`.options device gmin`) sets it, given to every element that takes `gmin` (MOS 1-3, the SPICE diode family, the
+Gummel-Poon BJTs); `import_netlist(gmin=)` overrides both (0, the cards' physics alone); `write_ngspice` writes a
+non-default.  `pcnr.solve_dc` builds its view FIRST: adding the elements to it notifies their parameters, which moves the
+epoch, and a transient's stamp plan, built earlier in its operating point, was rebuilt once after it (two plan tests).
+
+**The suite's moved tests, each with its cause.**  Fifteen tests OF THE CHAIN now took PCNR's operating point: a conftest
+fixture `ordinary_dc` (DC's default False for the test) keeps them on it -- the DC Newton C twin and the gmin anchor
+(module-wide), noncon's check-off, gate 1.3's bypasstol, the DC sweep's continuation count, two FET-limiting counts,
+gate 13.7 (its operating point assumed the classic path) -- and explicit `pcnr=False` on `test_pcnr_affine`'s five
+ordinary-path references and the status test.  The DC twin's decks import with `gmin=0`: with SPICE's gmin mike2 and gm3
+converge on the plain solve at once and leave no ladder for the C to serve.  The level-2 channel test imports with
+`gmin=0` (the junction gmin puts 1e-12 S x vbd = 2e-12 A on the drain).  The BJT excess-phase test's operating-point
+agreement 1e-12 -> 1e-10 (PCNR solves the two circuits -- PTF adds unknowns -- to 8.4e-12 of each other).  The SPICE
+diode's rs test asks the solve for reltol 1e-12 and asserts 1e-12: its old 1e-8 "logarithmic shift" was solver
+tolerance (PCNR at the default reltol 1.3e-7 off, the chain 6.7e-10, asked 2.2e-15) -- DC's default answer is accurate
+to its tolerances, no longer to the chain's quadratic luck.  The imported-deck test builds its hand circuit with gmin.
+
+**Not built: a bound on PCNR's node steps.**  From a cold start PCNR's iterates swing far (slowlatch 1.7e5 V, opampal
+1.3e4) where the chain's stay near +-50 V: the chain limits the node vector itself, PCNR only each device's unknowns.
+Three bounds were sized (ngspice's node damping, the update scaled uniformly to the largest source, each node clipped to
++-max(U, |x|)): each cut the gold decks' swings and work (the last -17 % iterations, four decks newly plain) and each
+broke what PCNR's hard-start tests pin -- an EKV diff pair's convergence (unbounded it returns from -5.7e5 V in a step:
+the devices see their limited unknowns, so the excursion is harmless; bounded it cycled), order independence, parity with
+plain Newton, and an LED's optical node (nodes are untyped: 3.8e18 in its fixture).  Recorded in the plan.
+
+**Gate**: Suite 5 478 passed, 6 skipped, 3 xfailed.  Every gold operating point on PCNR (production `DC`), 4049osc failing there as before.  The gold
+census on the three paths against 97089a2d, identical to each other: every deck moves (gmin, PCNR's operating point),
+0 forced; e1480's v(8) 0.0084 -> 0.0001 (its floating group pinned by gmin), gm17 v(5) 96 -> 28, toronto and mux8
+better, gm1 marginally worse on columns it already failed, jge +8 % steps; two latches with no .ic / .nodeset land in
+their OTHER exact state (both points solve the circuit to 1e-17 A; a latch's state is the solver's early dynamics --
+same first iterate, then swings): todd3 fails two columns (i(vseu) 0.68 -> 3.21, i(vamp) 0.25 -> 2.74), slowlatch passes
+two it failed (v(4) 32 -> 0.73, v(5) 43 -> 0.62).  The gold decks' transient solve time (production, the C path, pinned malloc, median of runs 2-4) against 97089a2d: 81.52 -> 79.42 s in total (-2.6 %), no deck over max(1.10x, +0.5 s) -- opampal 5.80 -> 2.83 s, g1310 0.32 -> 0.19, gm3 0.31 -> 0.16, gm17 0.41 -> 0.26, gm19 6.87 -> 6.22; jge 27.6 -> 29.3 (its +8 % steps), e1480 0.21 -> 0.36 and todd3 0.08 -> 0.17 (within +0.5 s).  New tests: the importer's gmin (default, ngspice,
+Xyce), DC's default (PCNR where a device takes part, silently the chain where none, reported when asked).

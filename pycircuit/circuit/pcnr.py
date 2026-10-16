@@ -1014,6 +1014,11 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     devices = pcnr_devices(circuit)
     if not devices:
         raise ValueError('no device in this circuit declares a PCNR junction')
+    ## The view first (cached): building it adds every element to a new
+    ## circuit, a parameter notification that moves the epoch -- after the
+    ## circuit's own stamp plan was built that plan went stale and a
+    ## transient rebuilt it once after its operating point
+    pcnr_view(circuit, devices, epar)
 
     n = circuit.n
     irefnode = circuit.get_node_index(refnode)

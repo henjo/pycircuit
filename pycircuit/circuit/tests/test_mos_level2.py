@@ -225,7 +225,9 @@ def test_a_level2_card_imports_with_vto_from_nsub(model_constants, tmp_path):
     deck.write_text('* l2\nM1 d g 0 b NX L=2u W=20u\nVD d 0 1\nVG g 0 1.5\nVB b 0 -1\n'
                     '.MODEL NX NMOS (LEVEL=2 IS=1e-30 NSUB=2e16 TOX=4e-8 UO=500 NSS=1e10)\n'
                     '.op\n.end\n')
-    imp = spice_import.import_netlist(str(deck))
+    ## (the channel's current against the reference's: without SPICE's
+    ## junction gmin, which puts 1e-12 S x vbd = -2 V on the drain too)
+    imp = spice_import.import_netlist(str(deck), gmin=0.0)
     m1 = next(e for k, e in imp.circuit.elements.items() if k.lower() == 'm1')
     ## (the importer builds the class's collapse variant: a subclass)
     assert isinstance(m1, eh.MosLevel2GateChargeHdl), type(m1)

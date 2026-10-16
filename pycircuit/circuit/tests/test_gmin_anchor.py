@@ -45,6 +45,10 @@ LIM_CARD = dict(vto=0.5, gamma=0.7, phi=0.7, kp=1.5e-4, cox=6.9e-3,
                 w=20e-6, l=2e-6)
 
 
+## the chain's tests: DC's operating point by the ordinary Newton chain
+pytestmark = pytest.mark.usefixtures('ordinary_dc')
+
+
 def _stacked_pair(vdd=40.0, vg=0.2, rleak=None):
     """The circuit item 12.3 was written against.
 

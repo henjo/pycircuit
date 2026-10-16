@@ -74,6 +74,7 @@ def test_dcsweep_rejects_unknown_instance_and_parameter():
         DCSweep(cir, toolkit=numeric).solve('V1', 'v', [])
 
 
+@pytest.mark.usefixtures('ordinary_dc')
 def test_continuation_cuts_the_work_and_not_the_answer():
     """Seeding each point with the previous solution is the point of a sweep.
 

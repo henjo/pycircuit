@@ -240,7 +240,10 @@ def test_ptf_is_spices_excess_phase(tmp_path):
         assert abs(np.interp(tt, t, v) - want) < 5e-4, (tt, np.interp(tt, t, v), want)
     g = np.linspace(20e-9, 40e-9, 801)
     assert np.abs(np.interp(g, t, v) - np.interp(g, t0, v0)).max() > 0.05
-    assert v[0] == pytest.approx(v0[0], rel=1e-12)
+    ## (1e-10, not 1e-12: PCNR's operating point, DC's default since
+    ## 2026-10-16, solves the two circuits -- PTF adds the delay's unknowns --
+    ## to 8.4e-12 of each other, the chain did to 1e-12)
+    assert v[0] == pytest.approx(v0[0], rel=1e-10)
 
 
 def test_spice_gmin_holds_every_junction():

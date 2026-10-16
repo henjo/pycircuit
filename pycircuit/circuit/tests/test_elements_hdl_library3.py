@@ -2235,6 +2235,7 @@ def _cascode_stage(cls, rleak=1e9):
     return c, nd
 
 
+@pytest.mark.usefixtures('ordinary_dc')
 def test_a_stacked_pair_without_a_dc_path_is_singular_at_the_start_not_at_the_answer():
     """The hazard `_cascode_stage` documents, pinned so that it is a
     known property rather than a surprise.
@@ -2302,6 +2303,7 @@ def test_a_stacked_pair_without_a_dc_path_is_singular_at_the_start_not_at_the_an
     assert 0.10 < vals[1] < 0.12, vals
 
 
+@pytest.mark.usefixtures('ordinary_dc')
 def test_fet_limiting_cuts_the_iteration_count_on_a_hard_solve():
     """From the origin, the 40 V cascode takes 13 Jacobians with the
     limiters and 25 without -- on a solve that both reach, and reach to

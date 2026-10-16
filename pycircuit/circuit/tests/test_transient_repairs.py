@@ -215,6 +215,7 @@ def test_gate_1_3_bypass_changes_evaluation_count():
         'tolerance that permitted it' % abs(on_v - off_v)
 
 
+@pytest.mark.usefixtures('ordinary_dc')
 def test_gate_1_3_a_loose_bypasstol_is_not_silently_tolerated():
     """A bypass tolerance that breaks Newton must fail loudly.
 

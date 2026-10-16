@@ -226,7 +226,7 @@ def test_pcnr_status_is_always_defined_even_when_pcnr_is_off():
     from pycircuit.circuit.circuit import gnd
     from pycircuit.circuit.dcanalysis import DC
 
-    dc = DC(_with_diode(), refnode=gnd)          # pcnr defaults to False
+    dc = DC(_with_diode(), refnode=gnd, pcnr=False)
     dc.solve()
     assert dc.pcnr_status == 'off'
     assert dc.pcnr_fell_back is False

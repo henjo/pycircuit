@@ -262,16 +262,19 @@ class TestSpiceDiodeSeriesResistance(object):
             c.update_iparv()
             with warnings.catch_warnings():
                 _quiet()
-                return float(DC(c, toolkit=numeric).solve().v(a, gnd))
+                return float(DC(c, toolkit=numeric, reltol=1e-12).solve().v(a, gnd))
 
         for rs, area in ((1.5, 1.0), (1.5, 4.0), (12.0, 1.0)):
             ## Baseline at the SAME area: area moves the junction
             ## voltage too, and only the rs difference is under test.
-            ## rtol 1e-8, not 1e-9: the junction's own logarithmic shift
-            ## between the two solves is 3.7e-9 of the drop with the exact
-            ## Boltzmann constant (it sat just under 1e-9 with 1.38e-23).
+            ## The junction carries the same current in both, so the drop
+            ## is exactly I*rs/area: what this used to allow (rtol 1e-8,
+            ## "the junction's logarithmic shift", 3.7e-9) was the solve's
+            ## tolerance -- at the default reltol PCNR's operating point
+            ## (DC's default since 2026-10-16) lands 1.3e-7 off, the chain
+            ## 6.7e-10; asked for 1e-12, 2.2e-15.
             assert_allclose(solve(rs, area) - solve(0.0, area),
-                            0.1 * rs / area, rtol=1e-8)
+                            0.1 * rs / area, rtol=1e-12)
 
 
 ## ======================================================================

@@ -27,11 +27,17 @@ _DECKS = {name: 'Netlists/CircuitSim90/' + path for name, path in (
     ('gm19', 'MOS3/gm19.cir'))}
 
 
+## the chain's tests: DC's operating point by the ordinary Newton chain
+pytestmark = pytest.mark.usefixtures('ordinary_dc')
+
+
 def _imported(name):
     text = benchdata.spice_data(_DECKS[name])
     if text is None:
         pytest.skip('benchmark data not fetched (benchmarks/fetch_spice_suite.py)')
-    return spice_import.import_netlist(text)
+    ## (without SPICE's junction gmin: with it mike2 and gm3 converge on the
+    ## plain solve at once, and there is no ladder for the C to serve)
+    return spice_import.import_netlist(text, gmin=0.0)
 
 
 def _record(name, monkeypatch, on, x0=None):

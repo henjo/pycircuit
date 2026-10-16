@@ -20,3 +20,14 @@ def restore_default_toolkit():
     old = pycircuit.circuit.circuit.default_toolkit
     yield
     pycircuit.circuit.circuit.default_toolkit = old
+
+
+@pytest.fixture
+def ordinary_dc(monkeypatch):
+    """`DC`'s operating point by the ordinary Newton chain, its default until
+    2026-10-16 (PCNR since, wherever a device takes part): for the tests OF the
+    chain -- its C twin, its gmin anchor, its noncon check, bypass, the DC
+    sweep's continuation, the limiters' iteration counts -- which must keep
+    measuring it."""
+    from pycircuit.circuit.dcanalysis import DC
+    monkeypatch.setattr(next(p for p in DC.parameters if p.name == 'pcnr'), 'default', False)

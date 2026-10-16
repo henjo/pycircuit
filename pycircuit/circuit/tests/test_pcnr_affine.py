@@ -182,7 +182,7 @@ def test_the_lifted_device_reaches_the_same_operating_point(name, card):
                                       else {})))
         return c
 
-    x_ref = np.asarray(DC(build(), refnode=gnd).solve().x, dtype=float)
+    x_ref = np.asarray(DC(build(), refnode=gnd, pcnr=False).solve().x, dtype=float)
     out = P.solve_dc(build(), gnd)
     x_lim = np.asarray(out[0] if isinstance(out, tuple) else out, dtype=float)
 
@@ -355,7 +355,7 @@ def test_a_gummel_poon_stage_reaches_the_same_operating_point(extra):
         return c
 
     assert len(P.pcnr_devices(build())) == 1, 'the BJT is not participating'
-    x_ref = np.asarray(DC(build(), refnode=gnd).solve().x, dtype=float)
+    x_ref = np.asarray(DC(build(), refnode=gnd, pcnr=False).solve().x, dtype=float)
     out = P.solve_dc(build(), gnd)
     x_lim = np.asarray(out[0] if isinstance(out, tuple) else out, dtype=float)
     den = max(1e-30, float(np.max(np.abs(x_ref))))
@@ -484,7 +484,7 @@ def test_a_device_carrying_a_branch_unknown_reaches_the_same_point():
         return c
 
     assert len(P.pcnr_devices(build())) == 1
-    x_ref = np.asarray(DC(build(), refnode=gnd).solve().x, dtype=float)
+    x_ref = np.asarray(DC(build(), refnode=gnd, pcnr=False).solve().x, dtype=float)
     out = P.solve_dc(build(), gnd)
     x_lim = np.asarray(out[0] if isinstance(out, tuple) else out, dtype=float)
     den = max(1e-30, float(np.max(np.abs(x_ref))))
@@ -541,7 +541,7 @@ def test_the_new_probes_do_not_move_the_operating_point(name, pins, card):
         return c
 
     assert len(P.pcnr_devices(build())) == 1, 'device is not participating'
-    x_ref = np.asarray(DC(build(), refnode=gnd).solve().x, dtype=float)
+    x_ref = np.asarray(DC(build(), refnode=gnd, pcnr=False).solve().x, dtype=float)
     out = P.solve_dc(build(), gnd)
     x_lim = np.asarray(out[0] if isinstance(out, tuple) else out, dtype=float)
     den = max(1e-30, float(np.max(np.abs(x_ref))))
@@ -647,7 +647,7 @@ def test_pcnr_solves_a_solar_cell_more_accurately(build, label):
              + np.asarray(probe.u(0, analysis='dc'), dtype=float))
         return float(np.max(np.abs(np.delete(f, ref))))
 
-    x_ord = np.asarray(DC(build(), refnode=gnd).solve().x, dtype=float)
+    x_ord = np.asarray(DC(build(), refnode=gnd, pcnr=False).solve().x, dtype=float)
     out = P.solve_dc(build(), gnd)
     x_lim = np.asarray(out[0] if isinstance(out, tuple) else out, dtype=float)
 

@@ -120,3 +120,26 @@ def test_pcnr_refuses_what_the_chain_refuses():
     refuses it."""
     with pytest.raises(ValueError, match='a voltage source or an inductor holds'):
         DC(_latch(), pcnr=True, pin={'vdd': 5.0}).solve()
+
+
+def test_dc_takes_pcnr_by_default_where_a_device_takes_part(caplog):
+    """`DC`'s `pcnr` default (None): PCNR on a circuit whose devices declare
+    probes; the chain, silently, on one with none; `pcnr=True` on that one
+    says so; `pcnr=False` the chain."""
+    import logging
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        dc = DC(_latch())
+        dc.solve()
+        assert dc.pcnr_status == 'used'
+        dc = DC(_latch(), pcnr=False)
+        dc.solve()
+        assert dc.pcnr_status == 'off'
+        with caplog.at_level(logging.WARNING):
+            caplog.clear()
+            dc = DC(_divider())
+            dc.solve()
+            assert dc.pcnr_status == 'off' and not caplog.records, caplog.records
+            dc = DC(_divider(), pcnr=True)
+            dc.solve()
+            assert dc.pcnr_status == 'no-participants' and caplog.records

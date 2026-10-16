@@ -446,6 +446,7 @@ def test_gate_13_6_pcnr_and_limiting_take_the_same_steps(monkeypatch):
     assert np.max(np.abs(v_pc - v_lim)) < 1e-9 * max(1.0, np.max(np.abs(v_lim)))
 
 
+@pytest.mark.usefixtures('ordinary_dc')
 def test_gate_13_7_pcnr_is_honoured_on_the_coupled_path():
     """`pcnr=True` must not be silently ignored when `coupled_lte=True`.
 
@@ -496,8 +497,9 @@ def test_gate_13_7_pcnr_is_honoured_on_the_coupled_path():
     assert counts[True]['aug'] > 10, \
         'pcnr=True on the coupled path assembled the PCNR system only %d times ' \
         '-- the parameter is being ignored' % counts[True]['aug']
-    ## The DC operating point still runs the classic path, so this is "no
-    ## limiting in the transient loop", not "never called".
+    ## The DC operating point runs the classic path here (`ordinary_dc`: DC
+    ## takes PCNR by default since 2026-10-16), so this is "no limiting in the
+    ## transient loop", not "never called".
     assert counts[True]['limit'] < counts[False]['limit'] / 100, \
         'pcnr=True still called the classic limiter %d times against %d ' \
         '-- device limiting is active under PCNR' \

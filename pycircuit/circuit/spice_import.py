@@ -188,6 +188,9 @@ class Imported:
         self.integrator = None
         self.merged = {}
         self.report = []
+        ## SPICE's junction gmin (`CKTgmin`), 1e-12 unless `.options gmin`
+        ## sets it: every element that takes `gmin` is built with it
+        self.gmin = 1e-12
 
     def epar(self):
         """The analysis' environment: the netlist's temperature."""
@@ -301,6 +304,8 @@ class Imported:
             lines.append(f'.temp {self.temp!r}')
         if 'reltol' in self.options:
             lines.append(f'.options reltol={self.options["reltol"]!r}')
+        if self.gmin != 1e-12:
+            lines.append(f'.options gmin={self.gmin!r}')
         columns, shown = {}, []
         for pr in (probes if probes is not None else list(nodes.names)):
             if isinstance(pr, tuple):
@@ -372,7 +377,8 @@ for (_level, _mtype), _cls in list(MOS_CLASSES.items()) + list(MOS_CHARGE_CLASSE
                              {k: k for k in MOS_INSTANCE} | {'asrc': 'as'})
 
 
-def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qpart=1.0):
+def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qpart=1.0,
+                   gmin=None):
     """Read and map the netlist `path` (see the module note).  `dialect`
     (``'xyce'`` or ``'ngspice'``) chooses where the two read a deck
     differently: the option and temperature statements.  `merge_shorts`:
@@ -385,20 +391,25 @@ def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qp
     use, and after the bulk-referred depletion better on 10 of the gold
     decks than Ward-Dutton (todd3 passes), worse on gm6 alone; 0 is
     Ward-Dutton, the class's own default; None keeps the class's.  Not a
-    SPICE parameter, so `Imported.write_ngspice` leaves it out."""
+    SPICE parameter, so `Imported.write_ngspice` leaves it out.  `gmin`:
+    SPICE's junction gmin on every element that takes it -- None, the
+    deck's `.options gmin` or SPICE's 1e-12; a number overrides both (0, the
+    cards' physics alone)."""
     if dialect not in ('xyce', 'ngspice'):
         raise ValueError(f'dialect {dialect!r}: xyce or ngspice')
-    return _Importer(spicenetlist.read(path), dialect, strict, merge_shorts, mos_qpart).run()
+    return _Importer(spicenetlist.read(path), dialect, strict, merge_shorts, mos_qpart,
+                     gmin).run()
 
 
 class _Importer:
 
-    def __init__(self, net, dialect, strict, merge_shorts=False, mos_qpart=None):
+    def __init__(self, net, dialect, strict, merge_shorts=False, mos_qpart=None, gmin=None):
         self.net = net
         self.dialect = dialect
         self.strict = strict
         self.merge_shorts = merge_shorts
         self.mos_qpart = mos_qpart
+        self.gmin = gmin
         self.out = Imported(net)
         self.errors = []
         self.inductors = {}         # flat name -> [Mapped, coupled by]
@@ -434,6 +445,8 @@ class _Importer:
         self.analyses()
         self.temperature()
         self.option_groups()
+        if self.gmin is not None:
+            self.out.gmin = float(self.gmin)
         for f in self.flatten():
             try:
                 self.element(f)
@@ -525,7 +538,11 @@ class _Importer:
         cir = SubCircuit()
         for m in self.out.elements:
             nodes = [gnd if n == '0' else n for n in m.nodes]
-            cir[m.name] = m.cls(*nodes, **m.params)
+            params = m.params
+            if 'gmin' not in params and any(p.name == 'gmin'
+                                            for p in getattr(m.cls, 'instparams', ())):
+                params = {**params, 'gmin': self.out.gmin}
+            cir[m.name] = m.cls(*nodes, **params)
         return cir
 
     def add(self, f, kind, nodes, cls, params, model=None):
@@ -639,13 +656,18 @@ class _Importer:
         for d in self.net.options:
             if self.dialect == 'xyce':
                 group = d.words[0] if d.words else ''
-                if group == 'device' and set(d.params) <= {'temp'}:
+                if group == 'device' and set(d.params) <= {'temp', 'gmin'}:
+                    if 'gmin' in d.params:
+                        self.out.gmin = spicecard.number(d.params['gmin'])
                     continue
                 read = group == 'timeint'
             else:
                 group, read = '', True
             for k, v in d.params.items():
-                if read and k == 'reltol':
+                if k == 'gmin' and (self.dialect != 'xyce' or group == 'device'):
+                    ## (ngspice's `.options gmin=`, Xyce's `.options device gmin=`)
+                    self.out.gmin = spicecard.number(v)
+                elif read and k == 'reltol':
                     self.out.options['reltol'] = spicecard.number(v)
                 elif read and k == 'method' and v.lower() in methods:
                     self.out.integrator = methods[v.lower()]
