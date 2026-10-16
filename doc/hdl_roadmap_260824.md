@@ -9383,3 +9383,50 @@ PCNR, 4049osc failing there as before.  The gold census on the three paths again
 same steps, Newton iterations and 0 forced, its metric by 1.6e-14 -- no crossing.  The 27 decks' runs against commit B,
 quiet (1-min load <= 2.7), alternating trees per deck: opampal 2.828 -> 1.925 s (0.68x; the operating point's 0.9 s),
 the total 79.30 -> 78.35 s (-1.2 %), every other deck within +-3 % on identical steps (code they do not run).
+
+## 2026-10-16 — 144. The full Newton's sparse solve in C, and the transient's KLU from 40 unknowns
+
+**Why** (plan `dc-final-gmin.md`, 'TRANSIENT SPEED', 'SPARSE FULL NEWTON IN C').  Where the big decks' time goes (perf,
+one BLAS thread, leaf samples): jge (244 unknowns), mux8 (171) and voter25 (200) spend 34-43 % in dense LAPACK -- below
+`MIN_N_FOR_SPARSE` (250), set 2026-10-02 on the Python loop with SuperLU, before the C stepping loop and KLU on the
+circuit's structure (2026-10-10).  On today's C loop KLU on the structure makes every gold deck's transient from 40
+unknowns faster (mike2 (40) 0.97x .. voter25 0.53x, jge 0.64x; three rounds interleaved), the 27 decks' transients 77.0
+-> ~52.6 s, no gold column crossing.  But the C Newton served the sparse solve on the chord alone: a run on the FULL
+Newton (chord 'auto' is off for cheap devices) was declined (`newton_c:sparse_full`) and its whole transient ran the
+Python loop -- the small decks that run it on KLU 4-10x slower, and every full-Newton circuit of 250+ unknowns on the
+Python loop today.  So the floor could not come down for every transient until the full Newton's sparse solve was in C.
+Sized first (its lines in the plan): on each deck's own Jacobians, warm, the full Newton's solve 6.8 -> 2.8 us at 40
+unknowns, 38.5 -> 6.5 at 97, 692 -> 25 at 243 (dense LU goes threaded from ~100 unknowns: 5x its cubic trend); the
+forced-full-Newton transients predicted 0.93 .. 0.32x, the floor 40.
+
+**Built.**  newton.c's `sparse_full`: each iteration's solve is `StructuralKLU.solve` on its refactor path -- klu_refactor
+of the run's numeric, klu_solve, the validation in numpy's operations and order (`arr @ x` is numpy's matmul's dgemv, the
+NaN-propagating maximum, `max(max |b|, 1e-300)`, `not (resid <= tol)`) -- as lte.c's twin of the same path.  Every other
+course is handed back and the Python's repeats it from the same seed: no numeric yet, a non-finite matrix or right-hand
+side, a zero pivot, a failed solve or validation, a nonzero off the pattern -- exact, because a refactor writes the
+numeric's values, never its pivot order.  A core with no pattern reduces J whole and makes `_ours`'s count.  The glue
+gives each call the run's numeric (`_record`; the C loop before its call) and counts a refactor an iteration on a serve.
+The floor: `linearsolver.MIN_N_FOR_STRUCTURAL_KLU = 40`, `AutoSolver(structural_min_n=)`; the transient asks for it on
+the multistep methods the C loop serves (Gear-2 -- the default -- Euler, trapezoidal, theta); Radau, the stage methods
+and the GLMs keep 250 (not measured), as do DC and every other analysis, a matrix the structure does not cover and a run
+without one.
+
+**Checked.**  The C against the Python (C loop and C Newton off), the full Newton forced, KLU from 0: 21 decks byte for
+byte -- waveform, times, steps, rejections, Newton iterations, the StructuralKLU's counts (voter25 through a maxiter
+hand-back and two loop hand-backs).  Tests: the full Newton on a sparse ladder byte for byte the Python's and served in
+C; every validation refused (tolerance 0) and every refactor refused in C (a stand-in), each handed back with the run the
+Python's; a core with no pattern.  The byte test is alive: a one-ulp perturbation of the accepted step fails it (a
+skipped refactor is caught by the validation and handed back -- the bytes hold).  `test_linearsolver`'s historical-path
+test sized below the new floor.  Pinned pairs: the Newton pair gains `StructuralKLU.solve` and `_ours`, `_record` and
+`_serve`; five re-recorded.
+
+**Gate**: suite 5 482 passed, 6 skipped, 3 xfailed (5 478 + the four new).  Every gold operating point identical to
+HEAD's (DC's floor unchanged; 26 of 27 on PCNR, 4049osc as before).  The gold census on the three paths, identical to
+each other, against HEAD: the 16 decks of 40-249 unknowns move (KLU's last bits: mux8 17 000 -> 17 356 steps, voter25
+9 971 -> 9 924, jge 10 745 -> 10 692, the largest metric change toronto's 0.018), the 11 others identical; no column
+crosses, 0 forced.  The 27 decks' runs against HEAD, quiet, alternating trees per deck: 78.27 -> 55.12 s (0.70x) --
+voter25 0.56x, gm1 0.60x, mux8 0.62x, gm17 0.62x, toronto 0.65x, jge 0.66x, latch 0.69x, ab_integ 0.74x -- the decks
+under 40 unknowns and from 250 within +-1.2 %.  Forced onto the full Newton (three rounds interleaved, medians), sparse
+against dense in the build: every deck from 41 unknowns 0.50 .. 0.93x (mike2 0.93, voter25 0.58, e1480 0.50); a
+full-Newton run from 250 unknowns, the C against HEAD's Python loop: rich3 11.56 -> 4.68 s, arom 12.79 -> 4.28, gm19
+24.96 -> 9.60, opampal 4.21 -> 1.28.

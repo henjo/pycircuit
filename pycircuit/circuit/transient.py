@@ -34,6 +34,7 @@ from pycircuit.circuit.stepcontroller import (LTE_ALGEBRAIC_MODES,
 ## here.
 from pycircuit.circuit._tran_newton import _EarlyAbort, _EarlyArm, _StepNewton
 from pycircuit.circuit._tran_branch import _BranchCheck
+from pycircuit.circuit.linearsolver import MIN_N_FOR_STRUCTURAL_KLU
 from pycircuit.circuit import _paths, _tran_companion, _tran_core, _tran_loop_c, _tran_newton_c
 from pycircuit.circuit._tran_companion import _CompanionModel
 from pycircuit.circuit._tran_history import _RunHistory
@@ -1150,7 +1151,17 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 "integrator must be an Integrator instance (e.g. EulerIntegrator(), "
                 "TrapezoidalIntegrator(), Gear2Integrator()), not %r" % (integrator,))
         return integrator
-    
+
+    @property
+    def _STRUCTURAL_KLU_MIN_N(self):
+        """KLU on the circuit's structure from `MIN_N_FOR_STRUCTURAL_KLU`
+        (40) unknowns on the multistep methods the C stepping loop serves
+        (`_tran_core.FORMULA`: Gear-2, the default, Euler, trapezoidal,
+        theta) -- their crossover, measured 2026-10-16; None, `min_n`, on
+        the others (Radau, the stage methods, the GLMs: not measured)."""
+        integ = getattr(self.par, 'integrator', None)
+        name = 'Gear2Integrator' if integ is None else type(integ).__name__
+        return MIN_N_FOR_STRUCTURAL_KLU if name in _tran_core.FORMULA else None
 
     parameters = Analysis.parameters + \
         [Parameter(name='analysis', desc='Analysis name', 

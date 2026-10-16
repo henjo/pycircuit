@@ -232,3 +232,99 @@ def test_a_refactor_that_meets_a_zero_pivot_factors_again():
     assert s.pivot_fallbacks == 1 and s.factors == 2
     with pytest.raises(np.linalg.LinAlgError):
         s.solve(np.outer([1.0, 1.0, 1.0], [1.0, 2.0, 3.0]), b, None)     # (rank one)
+
+
+## -- the sparse full Newton in C (2026-10-16) --------------------------------
+
+def _hdl_ladder(sections):
+    """`_ladder` with the SPICE diode (`DiodeSpiceHdl`): a circuit the C
+    Newton serves -- the core compiles it, its limiter is the walk's (the
+    built-in `Diode`'s is stateful: `newton_c:stateful`)."""
+    from pycircuit.circuit import elements_hdl as eh
+    c = SubCircuit()
+    c['vs'] = E.VPulse('n0', gnd, v1=0.0, v2=1.0, td=1e-9, tr=1e-9, tf=1e-9, pw=2e-8, per=5e-8)
+    for k in range(sections):
+        a, b = f'n{k}', f'n{k + 1}'
+        c[f'R{k}'] = E.R(a, b, r=100.0)
+        c[f'C{k}'] = E.C(b, gnd, c=1e-12)
+        if k % 10 == 5:
+            c[f'D{k}'] = eh.DiodeSpiceHdl(b, gnd, IS=1e-14)
+    return c
+
+
+def _full_newton_run(monkeypatch, c_on, sections=300):
+    """The SPICE-diode ladder's run on the full Newton (no chord) with the C
+    Newton and loop on or off: `(the run's bytes and counts, the paths it
+    took)`."""
+    from pycircuit.circuit import _paths, _tran_loop_c, _tran_newton_c
+    monkeypatch.setattr(_tran_newton_c, 'ENABLED', c_on)
+    monkeypatch.setattr(_tran_loop_c, 'ENABLED', c_on)
+    before = _paths.snapshot()
+    tr = Transient(_hdl_ladder(sections), reltol=1e-6, chord_jacobian=False)
+    with quiet(AccuracyWarning):
+        res = tr.solve(tend=1e-8, timestep=1e-10)
+    got = _paths.since(before)
+    ch = tr._get_linearsolver()._choice
+    assert type(ch) is linearsolver.StructuralKLU
+    st = tr.statistics
+    return ((np.asarray(res.x).tobytes(), st.accepted_steps, st.rejected_steps,
+             st.newton_iterations, ch.analyses, ch.factors, ch.refactors, ch.residual_fallbacks,
+             ch.pivot_fallbacks, ch.foreign), got)
+
+
+def test_the_full_newton_on_a_sparse_run_is_solved_in_c_byte_for_byte(monkeypatch):
+    """The full Newton on a sparse run: each iteration's `StructuralKLU.solve`
+    -- the refactor of the run's numeric, the solve, the residual's
+    validation -- in C (newton.c's `sparse_full`; declined as `sparse_full`
+    until 2026-10-16), the run and the solver's counts byte for byte the
+    Python's."""
+    c, got = _full_newton_run(monkeypatch, True)
+    py, _ = _full_newton_run(monkeypatch, False)
+    assert c == py
+    assert got.get('newton_c:sparse', 0) > 0 and got.get('loop_c:steps', 0) > 0
+    assert not any(k.startswith('newton_c:bail:klu') for k in got), got
+
+
+def test_a_refactor_its_validation_refuses_is_handed_back(monkeypatch):
+    """Every refactor's validation refused (a tolerance of 0): the C hands
+    each such solve back (`klu_residual`) and the Python factors afresh --
+    the run the Python's byte for byte, its fallbacks counted once."""
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 0.0)
+    c, got = _full_newton_run(monkeypatch, True, sections=260)
+    py, _ = _full_newton_run(monkeypatch, False, sections=260)
+    assert c == py
+    assert got.get('newton_c:bail:klu_residual', 0) > 0 and c[7] > 0
+
+
+def test_a_refactor_that_fails_in_c_is_handed_back(monkeypatch):
+    """KLU's refactor failing in C (a stand-in that refuses every one, as a
+    zero pivot does): the solve handed back (`klu_refactor`) with nothing
+    left behind -- the Python's own refactor serves it, the run its bytes."""
+    import ctypes
+
+    from pycircuit.circuit import _tran_newton_c
+    refuse = ctypes.CFUNCTYPE(ctypes.c_int, *(ctypes.c_void_p,) * 6)(lambda *a: 0)
+    bind = _tran_newton_c._klu_bind
+
+    def refusing(rec, sk):
+        ok = bind(rec, sk)
+        if ok:
+            rec.s.klu_refactor = rec.ffi.cast('void *', ctypes.cast(refuse, ctypes.c_void_p).value)
+        return ok
+    monkeypatch.setattr(_tran_newton_c, '_klu_bind', refusing)
+    c, got = _full_newton_run(monkeypatch, True, sections=260)
+    monkeypatch.setattr(_tran_newton_c, '_klu_bind', bind)
+    py, _ = _full_newton_run(monkeypatch, False, sections=260)
+    assert c == py
+    assert got.get('newton_c:bail:klu_refactor', 0) > 0
+
+
+def test_a_core_without_a_pattern_reduces_j_whole(monkeypatch):
+    """A core that writes every entry (no pattern): the C's validation reads
+    J reduced whole, after `_ours`'s count -- the run the Python's."""
+    from pycircuit.circuit import _tran_core
+    monkeypatch.setattr(_tran_core, 'PATTERN', False)
+    c, got = _full_newton_run(monkeypatch, True, sections=260)
+    py, _ = _full_newton_run(monkeypatch, False, sections=260)
+    assert c == py
+    assert got.get('newton_c:sparse', 0) > 0

@@ -46,15 +46,54 @@ static const double *cache_hit(const newton_t *s, long m, long r)
     return s->cC;
 }
 
+/* The sparse full Newton's solve (newton.h): `StructuralKLU.solve` on its
+   refactor path, in `b` -- klu_refactor of the run's numeric, klu_solve,
+   then the validation in numpy's operations and order: `arr @ x` (numpy's
+   matmul calls this dgemv), |R x - rhs|, its maximum (a NaN handed back:
+   numpy's max propagates one, and the Python's NaN residual fails its
+   test), the scale `max(max |rhs|, 1e-300)` (rhs finite: a running `>`
+   from +0.0 is numpy's maximum in any order), `not (resid <= tol)`.  Every
+   other course is the Python's: no numeric, a non-finite matrix or
+   right-hand side, a zero pivot, a failed solve or validation.  0, or the
+   bail */
+static long sparse_full(newton_t *s, long m)
+{
+    long i, k;
+    double max_b = 0.0, max_r = 0.0, scale;
+    if (!s->klu_num) return NEWTON_BAIL_KLU_NONUMERIC;
+    for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) return NEWTON_BAIL_JNONFINITE;
+    for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return NEWTON_BAIL_BNONFINITE;
+    for (i = 0; i < m; i++) s->rb[i] = s->b[i];
+    if (!((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym, s->klu_num,
+                                            s->klu_common))
+        return NEWTON_BAIL_KLU_REFACTOR;
+    if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_num, (int) m, 1, s->b, s->klu_common))
+        return NEWTON_BAIL_KLU_SOLVE;
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m, s->b, 1,
+                           0.0, s->ry, 1);
+    for (i = 0; i < m; i++) {
+        double a = fabs(s->rb[i]);
+        if (a > max_b) max_b = a;
+    }
+    for (i = 0; i < m; i++) {
+        double d = fabs(s->ry[i] - s->rb[i]);
+        if (isnan(d)) return NEWTON_BAIL_KLU_RESIDUAL;
+        if (d > max_r) max_r = d;
+    }
+    scale = pcx_py_max(max_b, 1e-300);
+    if (!(max_r / scale <= s->resid_tol)) return NEWTON_BAIL_KLU_RESIDUAL;
+    return 0;
+}
+
 /* The step, in `b` (-F reduced in, the step out), as the Python's solver
    makes it on iteration `it`: the sparse chord (`StructuralKLU.factor`'s
    numeric made on the first, `*num`; `_KLUNumeric.solve` every one), the
    dense chord (SciPy's lu_factor -- dgetrf -- once, lu_solve -- dgetrs, 'N'
-   -- every one), or the full Newton's numpy.linalg.solve (numpy's own dgesv
-   on the column-major copy).  A non-finite matrix or right-hand side, and
-   any LAPACK info or KLU failure, hands back (the Python chord breaks to its
-   fallback; numpy raises LinAlgError).  `finite`: the dense J's entries.
-   0, or the bail */
+   -- every one), the sparse full Newton (`sparse_full`), or the full
+   Newton's numpy.linalg.solve (numpy's own dgesv on the column-major copy).
+   A non-finite matrix or right-hand side, and any LAPACK info or KLU
+   failure, hands back (the Python chord breaks to its fallback; numpy
+   raises LinAlgError).  `finite`: the dense J's entries.  0, or the bail */
 static long solve_step(newton_t *s, long it, int finite, void **num)
 {
     long m = s->n - 1, i, k;
@@ -81,6 +120,8 @@ static long solve_step(newton_t *s, long it, int finite, void **num)
         ((dgetrs32_t) s->dgetrs)(&trans, &m32, &one32, s->A, &m32, s->ipiv32, s->b, &m32,
                                &info32, 1);
         if (info32 != 0) return NEWTON_BAIL_GETRS;
+    } else if (s->klu_sym) {
+        return sparse_full(s, m);
     } else {
         ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv64, s->b, &m64, &info64);
         if (info64 != 0) return NEWTON_BAIL_DGESV;
@@ -283,11 +324,23 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
     pcx_drop_ref(F, s->Fr, n, r);
     for (i = 0; i < m; i++) s->b[i] = -s->Fr[i];
     if (full && s->klu_sym) {
-        /* the pattern's values, and |J| on it (zero off it) */
+        /* the pattern's values, and |J| on it (zero off it); the full
+           Newton's validation reads J reduced itself (`R`) */
         for (k = 0; k < s->knnz; k++) {
             double v = J[s->kat[k]];
             s->kAx[k] = v;
             s->absJ[s->kabs[k]] = fabs(v);
+        }
+        if (!s->chord && s->pattern) {
+            for (k = 0; k < s->knnz; k++) s->R[s->kabs[k]] = s->kAx[k];
+        } else if (!s->chord) {
+            /* (no pattern: J reduced whole, and `_ours`'s count -- as many
+               nonzeros as the pattern's values, `v != 0.0` counting a NaN
+               as numpy's count_nonzero does) */
+            long nz_a = 0;
+            pcx_reduce_rm(J, s->R, n, r);
+            for (k = 0; k < s->knnz; k++) nz_a += s->kAx[k] != 0.0;
+            if (pcx_count_nonzero(s->R, m * m) != nz_a) return NEWTON_BAIL_KLU_FOREIGN;
         }
     } else if (full) {
         /* remove_row_col of J: A column-major, the copy numpy's solve

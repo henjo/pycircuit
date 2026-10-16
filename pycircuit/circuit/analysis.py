@@ -320,6 +320,11 @@ class Analysis(sim.Analysis):
                                  'SinkhornKnoppScaler()); default NoneScaler()',
                             default=None)]
 
+    #: the floor of KLU on the circuit's structure for the default
+    #: `AutoSolver` (`linearsolver.MIN_N_FOR_STRUCTURAL_KLU`); None: its
+    #: `min_n`, as every analysis but the transient
+    _STRUCTURAL_KLU_MIN_N = None
+
     def __init__(self, cir, toolkit=None, **kvargs):
         
         self.parameters = super().parameters + self.parameters
@@ -405,7 +410,8 @@ class Analysis(sim.Analysis):
                     a = ref()
                     return None if a is None else jacobian_structure(
                         a.cir, getattr(a, 'irefnode', None))
-                solver = self._default_linearsolver = AutoSolver(structure=structure)
+                solver = self._default_linearsolver = AutoSolver(
+                    structure=structure, structural_min_n=self._STRUCTURAL_KLU_MIN_N)
             return solver
         if not isinstance(solver, LinearSolver):
             raise TypeError(

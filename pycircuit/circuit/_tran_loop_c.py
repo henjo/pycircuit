@@ -908,6 +908,11 @@ def run(loop):
         return _declined(loop, 'bind')
     retry0 = _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O)
     s = run_.s
+    if rec.klu is not None:
+        ## (the run's numeric as it stands, for the sparse full Newton: the
+        ## Python's solves replace it -- newton.h)
+        num = rec.klu._numeric
+        rec.s.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
     status = _call(drv, rec, s, tr.statistics)
     if status not in (_CODES['LOOP_DONE'], _CODES['LOOP_FULL']):
         _no('loop_c:bail:' + BAIL.get(status, str(status)))
@@ -970,8 +975,13 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     if run_.br is not None:
         tr._branch_cmax = float(s.cmax)
     if rec.klu is not None:
-        ## (an abandoned attempt's sparse chord factored too)
-        rec.klu.numerics += s.attempts + s.early_aborts
+        if rec.s.chord:
+            ## (an abandoned attempt's sparse chord factored too)
+            rec.klu.numerics += s.attempts + s.early_aborts
+        else:
+            ## (the sparse full Newton: a refactor of the run's numeric an
+            ## iteration)
+            rec.klu.refactors += s.iters
     if adaptive:
         ctrl, ct = tr.step_controller, run_.ct
         if s.keeps_run and s.have_run:

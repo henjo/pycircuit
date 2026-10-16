@@ -1054,6 +1054,26 @@ MIN_N_FOR_SPARSE = 250
 ## a number.
 MAX_FILL_FOR_SPARSE = 0.20
 
+## KLU ON THE CIRCUIT'S STRUCTURAL PATTERN (`StructuralKLU`) from this many
+## unknowns, where an analysis asks for it (`structural_min_n`: the
+## transient's, `Transient._STRUCTURAL_KLU_MIN_N`; every other analysis keeps
+## `MIN_N_FOR_SPARSE`).  `MIN_N_FOR_SPARSE` was measured on the Python loop
+## with SuperLU; the C stepping loop solves on the structure in C -- the chord
+## its own factor each step, the full Newton a refactor of the run's numeric
+## each iteration (newton.c's `sparse_full`, 2026-10-16) -- and its crossover
+## sits far lower.  Measured (2026-10-16, the 27 gold decks, three rounds
+## interleaved, medians): the chord's transient on KLU against dense, every
+## deck from 40 unknowns faster -- mike2 (40) 0.97x, latch (65) 0.75x, ring
+## (87) 0.78x, gm1 (129) 0.62x, mux8 (170) 0.61x, voter25 (199) 0.53x, jge
+## (243) 0.64x -- the 27 decks' transients 77.0 -> ~52.6 s; and the full
+## Newton's solve, timed per deck on its own Jacobians, 6.8 -> 2.8 us at 40
+## unknowns, 38.5 -> 6.5 at 97, 692 -> 25 at 243 (dense LU goes threaded from
+## ~100 unknowns and costs 5x its cubic trend).  Below 40 (rca, 33; gm2, 22;
+## mosrect, 19) dense, where KLU was measured slower or not measured.  A
+## matrix the structure does not cover (`StructuralKLU`'s fallback), and a
+## run with no structure, keep `MIN_N_FOR_SPARSE`.
+MIN_N_FOR_STRUCTURAL_KLU = 40
+
 ## Above this many unknowns KLU's reused ordering repays its per-call cost and it
 ## overtakes SuperLU; below it, SuperLU's lighter setup wins.  Measured (see
 ## `AutoSolver._select`): KLU is 0.52x the dense path at n=152, 1.00x at n=402,
@@ -1070,8 +1090,12 @@ class AutoSolver(LinearSolver):
     counting non-zeros every time would give back the saving.
     """
 
-    def __init__(self, min_n=MIN_N_FOR_SPARSE, max_fill=MAX_FILL_FOR_SPARSE, structure=None):
+    def __init__(self, min_n=MIN_N_FOR_SPARSE, max_fill=MAX_FILL_FOR_SPARSE, structure=None,
+                 structural_min_n=None):
         self.min_n = min_n
+        ## (the floor of `StructuralKLU` alone, where a structure is given:
+        ## `MIN_N_FOR_STRUCTURAL_KLU` -- `min_n` unless an analysis asks)
+        self.structural_min_n = min_n if structural_min_n is None else structural_min_n
         self.max_fill = max_fill
         ## a callable giving the circuit's structural pattern -- `(m, rows,
         ## cols)` or None (`analysis.jacobian_structure`): an analysis hands
@@ -1087,7 +1111,9 @@ class AutoSolver(LinearSolver):
             return self._choice
         from pycircuit.circuit import _paths
         arr = numpy.asarray(A)
-        if arr.ndim != 2 or arr.shape[0] < self.min_n or arr.dtype == object:
+        floor = (min(self.min_n, self.structural_min_n) if self.structure is not None
+                 else self.min_n)
+        if arr.ndim != 2 or arr.shape[0] < floor or arr.dtype == object:
             _paths.COUNTS['solver.auto:dense_small'] += 1
             self._choice = self._dense
             return self._choice
@@ -1121,15 +1147,25 @@ class AutoSolver(LinearSolver):
         ## THE CIRCUIT'S PATTERN, where the analysis gave one: KLU on it for
         ## every sparse run (the C stepping loop plan's stage 2) -- today's
         ## choice below for a matrix it does not cover, and where none
-        st = self.structure() if self.structure is not None else None
+        ## (from `structural_min_n` -- the transient's floor is lower than
+        ## `min_n`: `MIN_N_FOR_STRUCTURAL_KLU`)
+        st = (self.structure() if self.structure is not None
+              and n_unknowns >= self.structural_min_n else None)
         if st is not None and st[0] == n_unknowns:
             try:
                 self._sparse = self._choice = StructuralKLU(
-                    *st, fallback=lambda: self._value_sparse(n_unknowns, count=False))
+                    *st, fallback=lambda: (self._value_sparse(n_unknowns, count=False)
+                                           if n_unknowns >= self.min_n else self._dense))
                 _paths.COUNTS['solver.auto:StructuralKLU'] += 1
                 return self._choice
             except ImportError:
                 pass
+        if n_unknowns < self.min_n:
+            ## (below the floor a sparse solve on the values' pattern was
+            ## measured for: dense, as where no structure lowers it)
+            _paths.COUNTS['solver.auto:dense_small'] += 1
+            self._choice = self._dense
+            return self._choice
         sp = self._value_sparse(n_unknowns)
         if sp is not None:
             self._sparse = self._choice = sp
@@ -1163,5 +1199,5 @@ class AutoSolver(LinearSolver):
         return self._select(A).factor(A, toolkit)
 
     def __repr__(self):
-        return ('AutoSolver(min_n=%d, max_fill=%.2f, chose=%r)'
-                % (self.min_n, self.max_fill, self._choice))
+        return ('AutoSolver(min_n=%d, structural_min_n=%d, max_fill=%.2f, chose=%r)'
+                % (self.min_n, self.structural_min_n, self.max_fill, self._choice))

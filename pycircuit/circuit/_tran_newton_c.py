@@ -54,9 +54,8 @@ an instance shadow of the circuit's passes or of the transient's machinery
 (`shadow_cir`, `shadow_tr`); a `provided_function` (`pf`); no step source
 memo (`umemo`); a stateful limiter (`stateful`); the continuation rescue or
 a caller's solver or scaler (`solver`); a linear solver that is not
-`AutoSolver`'s dense or `StructuralKLU` choice (`linsolver`), the sparse
-choice for the full Newton (`sparse_full`) or a KLU not analysed yet or
-whose pattern does not hold the core's (`klu`); a circuit the core cannot
+`AutoSolver`'s dense or `StructuralKLU` choice (`linsolver`), a KLU not
+analysed yet or whose pattern does not hold the core's (`klu`); a circuit the core cannot
 serve (`unservable`); a reference row out of range (`iref`); a seed that is
 not one finite float64 vector of the circuit's size (`x`); an integrator
 outside the core's enum (`formula`); a history row of the wrong shape
@@ -334,9 +333,10 @@ class _Ctx:
 
 
 def _klu_bind(rec, sk):
-    """Point the C chord at `sk`, the run's `StructuralKLU`: its pattern's
-    places in the core's full J (`kat`) and in the reduced |J| (`kabs`), its
-    analysis and its common, the library's entries.  False -- declined --
+    """Point the C's sparse solves at `sk`, the run's `StructuralKLU`: its
+    pattern's places in the core's full J (`kat`) and in the reduced |J|
+    (`kabs`), its analysis and its common, the library's entries, the full
+    Newton's validation (its buffers, `REFACTOR_RESIDUAL_TOL`).  False -- declined --
     where it is not analysed yet (its first solve does that) or where the
     core's pattern does not lie within its own: there a nonzero off its
     pattern would go to its fallback in the Python."""
@@ -355,13 +355,19 @@ def _klu_bind(rec, sk):
     addr = _cbuild.address
     kabs = np.ascontiguousarray(sk.take, dtype=np.int64)
     kAx = np.empty(max(sk.nnz, 1))
+    ## (the sparse full Newton's: J reduced, zero off the pattern, and its
+    ## validation's two vectors -- newton.h)
+    R, rb, ry = np.zeros(m * m), np.empty(m), np.empty(m)
     keep = (sk, kat, kabs, kAx, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai),
             ffi.from_buffer('int64_t *', kat), ffi.from_buffer('int64_t *', kabs),
-            ffi.from_buffer('double *', kAx))
+            ffi.from_buffer('double *', kAx), R, rb, ry, ffi.from_buffer('double *', R),
+            ffi.from_buffer('double *', rb), ffi.from_buffer('double *', ry))
     s.knnz = sk.nnz
-    s.kAp, s.kAi, s.kat, s.kabs, s.kAx = keep[4:]
-    s.klu_factor, s.klu_solve, s.klu_free = (ffi.cast('void *', addr(f)) for f in (
-        lib.klu_factor, lib.klu_solve, lib.klu_free_numeric))
+    s.kAp, s.kAi, s.kat, s.kabs, s.kAx = keep[4:9]
+    s.R, s.rb, s.ry = keep[12:]
+    s.klu_factor, s.klu_solve, s.klu_free, s.klu_refactor = (ffi.cast('void *', addr(f)) for f in (
+        lib.klu_factor, lib.klu_solve, lib.klu_free_numeric, lib.klu_refactor))
+    s.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
     s.klu_common = ffi.cast('void *', ct.addressof(sk._common))
     s.klu_sym = ffi.cast('void *', sk._symbolic)
     rec.klu, rec.klu_sym, rec.klu_keep = sk, sk._symbolic, keep
@@ -816,11 +822,12 @@ def _record(tr, td, M, core, drv, P, nrsolver, residual, ls, ch):
     sparse = ch is not ls._dense
     if sparse:
         ## (the full Newton's sparse solve refactors the run's own numeric,
-        ## validated by its residual: the Python's)
-        if not chord:
-            return _no('newton_c:sparse_full')
+        ## validated by its residual: newton.h's THE SPARSE FULL NEWTON)
         if (rec.klu is not ch or ch._symbolic != rec.klu_sym) and not _klu_bind(rec, ch):
             return _no('newton_c:klu')
+        ## (the run's numeric as it stands: the Python's solves replace it)
+        num = ch._numeric
+        s.klu_num = ffi.cast('void *', num) if num else ffi.NULL
     elif rec.klu is not None:
         s.klu_sym = ffi.NULL
         rec.klu = rec.klu_sym = None
@@ -957,8 +964,12 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
     if chord:
         _PC['chord:chosen'] += 1
     if sparse:
-        ## (the numeric `StructuralKLU.factor` would have made: counted)
-        ch.numerics += 1
+        if chord:
+            ## (the numeric `StructuralKLU.factor` would have made: counted)
+            ch.numerics += 1
+        else:
+            ## (the full Newton's solves: a refactor of the run's numeric each)
+            ch.refactors += iters
         _PC['newton_c:sparse'] += 1
     _PC['newton_c:served'] += 1
     _PC['newton_c:iterations'] += iters

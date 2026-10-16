@@ -10,7 +10,7 @@ from pycircuit.circuit.tests._warnpolicy import quiet
 from pycircuit.circuit.transient import Transient
 from pycircuit.circuit.linearsolver import (LinearSolver, DenseSolver,
                                             SuperLUSolver, AutoSolver,
-                                            MIN_N_FOR_SPARSE)
+                                            MIN_N_FOR_SPARSE, MIN_N_FOR_STRUCTURAL_KLU)
 
 
 def _ladder(N):
@@ -41,10 +41,14 @@ def test_default_is_the_historical_path_bit_for_bit():
     `numpy.linalg.solve` and SuperLU round differently, so an AutoSolver default
     would change the last bits of every circuit large and sparse enough to
     qualify.  Gate 7b-1 asks for identical results on the existing tests, and this
-    is what keeps that true: `DenseSolver()` must reproduce passing nothing at all.
+    is what keeps that true: `DenseSolver()` must reproduce passing nothing at all
+    -- below the transient's floor of KLU on the circuit's structure
+    (`MIN_N_FOR_STRUCTURAL_KLU`, 40 since 2026-10-16: above it a transient's
+    default factors on the structure, and its last bits move).
     """
-    t0, v0 = _run(40, None)
-    t1, v1 = _run(40, DenseSolver())
+    N = MIN_N_FOR_STRUCTURAL_KLU - 5
+    t0, v0 = _run(N, None)
+    t1, v1 = _run(N, DenseSolver())
     assert np.array_equal(t0, t1)
     assert np.array_equal(v0, v1), 'DenseSolver is not the historical path'
 

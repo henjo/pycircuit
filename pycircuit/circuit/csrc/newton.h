@@ -132,8 +132,8 @@ typedef struct {
     /* THE SPARSE CHORD (KLU): where `klu_sym` is set, the chord factors and
        solves with KLU on the circuit's structural pattern --
        `StructuralKLU`'s own analysis and common, so the factors are the
-       ones its `factor` makes -- in place of LAPACK.  (The chord only:
-       `_tran_newton_c` declines a full Newton on KLU.)  The arrays are the
+       ones its `factor` makes -- in place of LAPACK.  (The full Newton on
+       KLU: THE SPARSE FULL NEWTON below.)  The arrays are the
        StructuralKLU's own or the bind's (`_Ctx.klu_keep`). */
     long knnz;            /* the pattern's entries */
     int *kAp, *kAi;       /* the pattern in CSC (StructuralKLU's Ap, Ai) */
@@ -148,6 +148,26 @@ typedef struct {
          *klu_factor,     /* KLU's klu_factor (klu_factor_t, pcx_abi.h) */
          *klu_solve,      /* klu_solve (klu_solve_t) */
          *klu_free;       /* klu_free_numeric (klu_free_numeric_t) */
+    /* THE SPARSE FULL NEWTON (KLU, chord 0): each iteration's solve is
+       `StructuralKLU.solve` on its refactor path -- klu_refactor of the
+       RUN's numeric (`klu_num`: the StructuralKLU's own, which its every
+       solve refactors), klu_solve, the refactor's validation (numpy's
+       matmul -- dgemv -- on `R`, against `resid_tol`) -- and it hands back
+       where the Python takes another course: no numeric yet, a zero pivot,
+       a failed or NaN validation (the Python factors afresh), a non-finite
+       matrix or right-hand side.  A refactor writes the numeric's values,
+       never its pivot order, so the Python's repeat from the same seed
+       refactors it again from the same values.  `R` is J reduced: written
+       on StructuralKLU's pattern where `pattern` is set (the core writes
+       the pattern alone, J zero off it), else J reduced whole and `_ours`'s
+       count made (a nonzero off the pattern: the Python's fallback solver,
+       handed back). */
+    void *klu_num,        /* CALL: the run's numeric (`StructuralKLU._numeric`), NULL: none yet */
+         *klu_refactor;   /* KLU: klu_refactor (klu_refactor_t) */
+    double *R,            /* (m x m, row-major) J reduced, written on the pattern (zero off it) */
+           *rb,           /* (m) OWN: the right-hand side, kept for the validation */
+           *ry;           /* (m) OWN: R x */
+    double resid_tol;     /* KLU: `StructuralKLU.REFACTOR_RESIDUAL_TOL` */
     /* THE EARLY ABORT (`Transient.early_abort`; the caller arms it for one
        call, NULL `early_lte` otherwise): at the solve's evaluation of its
        first iterate -- x1 and its q -- the error test (`early_lte`, an lte_t
@@ -200,6 +220,15 @@ enum newton_status {
     NEWTON_BAIL_MAXITER = 11,    /* no convergence in maxiter */
     NEWTON_BAIL_KLU_FACTOR = 12, /* the sparse chord's factorisation: singular */
     NEWTON_BAIL_KLU_SOLVE = 13,  /* the sparse chord's solve failed */
-    NEWTON_EARLY = 14            /* the early abort's estimate over `early_th`: the
+    NEWTON_EARLY = 14,           /* the early abort's estimate over `early_th`: the
                                     attempt abandoned (not a hand-back) */
+    NEWTON_BAIL_KLU_NONUMERIC = 15, /* the sparse full Newton: the run has no
+                                       numeric yet (the Python factors one) */
+    NEWTON_BAIL_KLU_REFACTOR = 16,  /* its refactor met a zero pivot (the
+                                       Python factors afresh) */
+    NEWTON_BAIL_KLU_RESIDUAL = 17,  /* its validation failed or is NaN (the
+                                       Python factors afresh) */
+    NEWTON_BAIL_KLU_FOREIGN = 18    /* its matrix has a nonzero off the
+                                       pattern (`_ours`: the Python's fallback
+                                       solver) */
 };

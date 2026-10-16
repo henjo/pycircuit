@@ -269,7 +269,12 @@ PAIRS = {
                'not the noncon test (`_limiting.NONCON`, 2026-10-15): only a stateful '
                'limiter counts, and the C declines every circuit with one '
                '(`newton_c:stateful`); the chord\'s settled test (`_chord_settled`, '
-               'newton.c\'s `chord_settled` and `chord_dominant`, roadmap 136)',
+               'newton.c\'s `chord_settled` and `chord_dominant`, roadmap 136); the full '
+               'Newton\'s sparse solve (`StructuralKLU.solve` on its refactor path -- '
+               'the run\'s numeric refactored, the residual\'s validation by numpy\'s '
+               'matmul -- newton.c\'s `sparse_full`, every other course handed back; '
+               '`_record` gives it the run\'s numeric, `_serve` counts its refactors, '
+               '2026-10-16)',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:ChordNewton.solve_system',
                       'pycircuit.circuit.nrsolver:_chord_settled',
@@ -284,10 +289,15 @@ PAIRS = {
                       ## owned numeric's solve -- stage 2, step d)
                       'pycircuit.circuit.linearsolver:StructuralKLU.factor',
                       'pycircuit.circuit.linearsolver:StructuralKLU._factor',
-                      'pycircuit.circuit.linearsolver:_KLUNumeric._run'],
+                      'pycircuit.circuit.linearsolver:_KLUNumeric._run',
+                      ## (the sparse full Newton: StructuralKLU's refactor path)
+                      'pycircuit.circuit.linearsolver:StructuralKLU.solve',
+                      'pycircuit.circuit.linearsolver:StructuralKLU._ours'],
         'twin': ['pycircuit.circuit._tran_newton_c:NEWTON_C',
                  'pycircuit.circuit._tran_newton_c:solve',
                  'pycircuit.circuit._tran_newton_c:_klu_bind',
+                 'pycircuit.circuit._tran_newton_c:_record',
+                 'pycircuit.circuit._tran_newton_c:_serve',
                  'pycircuit.circuit._tran_newton_c:_Ctx',
                  'pycircuit.circuit._tran_newton_c:_walk_full',
                  'pycircuit.circuit._tran_newton_c:_arm',
@@ -672,7 +682,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('c7c3ea89fda0', 'bd2a1320b1ac'),
+    'the stepping loop and its C': ('c7c3ea89fda0', 'ed148322c3cc'),
     'the predictor and its C': ('f2c284eb392d', '2f1a2f96e90f'),
     'the branch screen and its C': ('adb832d7aae0', '1da8be0e9b2e'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
@@ -685,17 +695,17 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('2b8ff6cc553a', '8623c7a69055'),
+    'the Newton solve and its C': ('07b811013bb8', 'b393c22f15df'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', 'a1bf1ec171ad'),
     'the DC base solve and its C': ('0db2906ca846', '60e5fa192106'),
-    'the PCNR DC solve and its C': ('056aab3d3fec', '64a5819e64c9'),
+    'the PCNR DC solve and its C': ('818043efa34e', '64a5819e64c9'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('de8b4b288065', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
     "the stage paths' passes and the core's": ('f83268db1289', '131833be2877'),
     'the coupled stage Newton and its C': ('c9e9adf33989', '2895432d069c'),
-    'the transform solve and its frozen form': ('258c0a005c28', '9b7970f8fbb7'),
+    'the transform solve and its frozen form': ('fae3de6ce9eb', '9b7970f8fbb7'),
     'the transform Newton and its C': ('d7c24c3c7e7d', 'deb779100728'),
     "the step's end passes and the C's": ('5501fef13bd5', 'cc482038c73e'),
     'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
@@ -704,7 +714,7 @@ RECORD = {
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
-    'the readiness reads and their stamps': ('816c68ec5531', '76e34cda0583'),
+    'the readiness reads and their stamps': ('61efd629dd90', '76e34cda0583'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
 }
 
