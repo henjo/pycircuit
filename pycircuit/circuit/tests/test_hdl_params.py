@@ -683,18 +683,22 @@ _RECORDED = [
     ##
     ## Old explain digests: DiodeSpiceHdl 4faadd376cafc95a,
     ## DiodeSpiceThermalHdl b2230da8487...dbfb58d3a752 (see git).
+    ## 2026-10-16: explain re-recorded (was 7f32ae944ed6839e): SPICE's junction
+    ## `gmin` (default 0) joined the parameters, its own contribution across
+    ## the junction; the three POINT digests did not move.
     ('DiodeSpiceHdl', _DIO, ('a', 'c'), 3,
      ['8e1ceb0656630b6a', 'cf492a8cebc0fd2e', 'd94a839a65f0c877'],
-     '7f32ae944ed6839e'),
+     'f1c69c2d8d10a0d8'),
     ## Old: points b2230da8487a876f / cda54034e9a55933 / 8361dbfb58d3a752,
     ## explain 0dcf03f6b937d283.  Moved by 1.213e-15 relative -- see the
     ## note above.
     ## 2026-09-19: explain re-recorded (was 1a44be911a0da312).  The flicker term gained a
     ## named sign factor `sgnfl`, which RENUMBERS the intermediate after it
     ## (`_v29_pdiss` -> `_v30_pdiss`); the three POINT digests did not move.
+    ## 2026-10-16: explain re-recorded (was 38a3b45aa096f320), as DiodeSpiceHdl's.
     ('DiodeSpiceThermalHdl', _DIO, ('a', 'c', 'th', 'tha'), 5,
      ['304cd81bdc921677', '5436b44b35812ab8', 'c55e46b8b22ded83'],
-     '38a3b45aa096f320'),
+     '9887d2600294f1dd'),
 ]
 
 

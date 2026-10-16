@@ -755,6 +755,9 @@ def _spice_diode_params():
                   default=1.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
                   unit='C', default=_TNOM_DEFAULT_C),
+        Parameter(name='gmin', desc="SPICE's junction GMIN, a conductance across "
+                  'each junction: 0 (the default -- the card\'s physics) or '
+                  "SPICE's 1e-12 for parity", unit='S', default=0.0),
     ]
 
 
@@ -898,6 +901,10 @@ def _spice_diode(p, a, c, T, junction=None):
         ## collapsed variant never compiles the `1/rs`.
         Collapse(brs, p.rs <= 0),
         Contribution(bd.I, idio),
+        ## SPICE's junction GMIN, `dioload.c`'s `CKTgmin*vd` (not area-
+        ## scaled): a numerical conductance across the junction, not its
+        ## current -- no shot noise, no dissipation, no light from it
+        Contribution(bd.I, p.gmin * vd),
         Contribution(bd.I, ddt(qtot)))
     if junction is not None:
         stmts = stmts + (Contribution(bd.I, junction(bd)),)
@@ -2885,6 +2892,9 @@ def _mos1_params():
                   unit='', default=0.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
                   unit='C', default=_TNOM_DEFAULT_C),
+        Parameter(name='gmin', desc="SPICE's junction GMIN, a conductance across "
+                  'each junction: 0 (the default -- the card\'s physics) or '
+                  "SPICE's 1e-12 for parity", unit='S', default=0.0),
     ]
 
 
@@ -3327,8 +3337,9 @@ def _mos1_analog(T, nmos, limiting='group', gate_charge=False):
         ids = _var(ids0 * clm, 'ids')
 
         ## -- the two bulk junctions -------------------------------------
-        ibs = _var(isbs * (_expl(vbs / vtT) - 1.0), 'ibs')
-        ibd = _var(isbd * (_expl(vbd / vtT) - 1.0), 'ibd')
+        ## (SPICE's junction GMIN, `mos1load.c`'s `CKTgmin*vbs`)
+        ibs = _var(isbs * (_expl(vbs / vtT) - 1.0) + gmin * vbs, 'ibs')       # noqa
+        ibd = _var(isbd * (_expl(vbd / vtT) - 1.0) + gmin * vbd, 'ibd')       # noqa
         ## Bottom capacitance: the absolute `cbd`/`cbs` if the card gives
         ## it, `cj` times the area otherwise -- SPICE's rule again.
         cbdb = _var(cfacb * sympy.Piecewise((cbd, cbd > 0.0),       # noqa
@@ -4344,6 +4355,9 @@ def _mos3_params():
                   unit='', default=0.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
                   unit='C', default=_TNOM_DEFAULT_C),
+        Parameter(name='gmin', desc="SPICE's junction GMIN, a conductance across "
+                  'each bulk junction: 0 (the default -- the card\'s physics) or '
+                  "SPICE's 1e-12 for parity", unit='S', default=0.0),
     ]
 
 
@@ -4609,8 +4623,9 @@ def _mos3_analog(T, nmos, gate_charge=False):
         ids = _var(sympy.Piecewise((idf, vds >= 0.0), (-idr, True)), 'ids')
 
         ## -- the two bulk junctions ---------------------------------
-        ibs = _var(isbs * (_expl(vbs / vtT) - 1.0), 'ibs')
-        ibd = _var(isbd * (_expl(vbd / vtT) - 1.0), 'ibd')
+        ## (SPICE's junction GMIN, `mos3load.c`'s `CKTgmin*vbs`)
+        ibs = _var(isbs * (_expl(vbs / vtT) - 1.0) + p.gmin * vbs, 'ibs')
+        ibd = _var(isbd * (_expl(vbd / vtT) - 1.0) + p.gmin * vbd, 'ibd')
         cbdb = _var(cfacb * sympy.Piecewise((p.cbd, p.cbd > 0.0),
                                             (p.cj * p.ad, True)), 'cbdb')
         cbsb = _var(cfacb * sympy.Piecewise((p.cbs, p.cbs > 0.0),
@@ -4861,6 +4876,9 @@ def _mos2_params():
                   unit='', default=0.0),
         Parameter(name='tnom', desc='Parameter measurement temperature',
                   unit='C', default=_TNOM_DEFAULT_C),
+        Parameter(name='gmin', desc="SPICE's junction GMIN, a conductance across "
+                  'each junction: 0 (the default -- the card\'s physics) or '
+                  "SPICE's 1e-12 for parity", unit='S', default=0.0),
     ]
 
 def _mos2_channel(p, vgs, vds, vbs, c, tag):
@@ -5150,8 +5168,9 @@ def _mos2_analog(T, nmos, gate_charge=False):
         ids = _var(sympy.Piecewise((idf, vds >= 0.0), (-idr, True)), 'ids')
 
         ## -- the two bulk junctions ---------------------------------
-        ibs = _var(isbs * (_expl(vbs / vtT) - 1.0), 'ibs')
-        ibd = _var(isbd * (_expl(vbd / vtT) - 1.0), 'ibd')
+        ## (SPICE's junction GMIN, `mos2load.c`'s `CKTgmin*vbs`)
+        ibs = _var(isbs * (_expl(vbs / vtT) - 1.0) + p.gmin * vbs, 'ibs')
+        ibd = _var(isbd * (_expl(vbd / vtT) - 1.0) + p.gmin * vbd, 'ibd')
         cbdb = _var(cfacb * sympy.Piecewise((p.cbd, p.cbd > 0.0),
                                             (p.cj * p.ad, True)), 'cbdb')
         cbsb = _var(cfacb * sympy.Piecewise((p.cbs, p.cbs > 0.0),

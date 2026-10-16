@@ -9290,3 +9290,25 @@ its reason) and 'the DC base solve and its C' (reference only: `DC._solve_dc`'s 
 by PCNR's holds against the chain's on the latch (a pin, each nodeset state, a pin with a nodeset: the chain's answer
 to 0.0 relative) and the same source-hold refusal; `test_pcnr_jgmin.py` -- a held solve in C bit for bit the
 Python's, the C serving (full sources, half -- the hold scales -- and with the junction term).
+
+## 2026-10-16 — 141. SPICE's junction gmin inside the device models: `gmin` on MOS levels 1-3 and the SPICE diode
+
+**Why** (plan `dc-final-gmin.md`, S2).  SPICE puts `CKTgmin` (1e-12 S) across every junction inside the device
+loads -- `mos*load.c`'s `CKTgmin*vbs` and `CKTgmin*vbd` on the bulk junctions, `dioload.c`'s `CKTgmin*vd` -- and
+our models carried none, so a node held only by junctions floats (e1480's group of 78 nodes, gm1's unpowered latch).
+Sized in the gmin plan, the standing gmin inside the devices costs nothing per step where elements across the pairs
+cost 1-4 % (MOS3 decks).  The Gummel-Poon BJTs had it already.
+
+**Built.**  A `gmin` parameter, SPICE's semantics, default 0 (the card's physics; the importer will set SPICE's
+1e-12): MOS levels 1, 2 and 3, NMOS and PMOS, plain and gate charge (12 classes), `gmin*vbs` and `gmin*vbd` on the two
+bulk junctions; the SPICE diode (with its thermal, LED and photodiode variants) a contribution of its own across the
+junction, `gmin*vd` at the limited voltage, not area-scaled -- NOT inside the junction current `id`, which also feeds
+the shot noise, the dissipation and the LED's light (inside it, the LED emitted light from the gmin leakage: the
+first test run caught it).  The importer is untouched: no gold answer moves.
+
+**Gate**: Suite 5 474 passed, 6 skipped, 3 xfailed (5 455 + the 19 new).  The gold census on the three paths identical.  `test_hdl_params.py`'s records: the diodes'
+explain digests re-recorded (the parameter and the contribution added), their numeric POINT digests unmoved -- the
+compile at gmin = 0 bit for bit as before.  `test_device_gmin.py` (19): the 16 carriers enumerated (the control);
+`G(g) - G(0)` exactly `g` across each junction pair (`pcnr_junction_pairs`) and `i(g) - i(0)` that matrix times the
+potentials, at drawn points, every carrier; the class C kernels with the gmin on bit for bit the Python's (PCNR's
+solve on a latch, the C serving, at 1e-12 and 1e-6).
