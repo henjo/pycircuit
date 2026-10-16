@@ -151,9 +151,9 @@ class DC(Analysis):
                   ## eliminated form, so no gmin ladder touches a held row.
                   ## A held node a voltage source or an inductor holds at DC
                   ## is refused (SPICE lets the source win, through a 1e10 S
-                  ## pin carrying a meaningless current).  `pcnr` with held
-                  ## nodes is refused.  None (the default) is today's solve,
-                  ## untouched.
+                  ## pin carrying a meaningless current).  `pcnr` holds them in
+                  ## PCNR's own solve, eliminated alike (`pcnr.solve_dc`'s
+                  ## `held`).  None (the default) is today's solve, untouched.
                   Parameter(name='pin',
                             desc="Node voltages held while the operating point is "
                                  "solved, {node: volts} (SPICE's .ic for a "
@@ -243,8 +243,18 @@ class DC(Analysis):
         self.pcnr_path = None
         pin, nodeset = self._held(self.par.pin), self._held(self.par.nodeset)
         if (pin or nodeset) and self.par.pcnr:
-            raise ValueError('DC(pcnr=True) with held nodes (pin, nodeset) is not '
-                             'supported')
+            ## (the chain's refusal, before PCNR's held solve: `_solve_held`)
+            xh = np.array(x0, dtype=float)
+            both = {**nodeset, **pin}
+            xh[self.irefnode] = 0.0
+            for i, volts in both.items():
+                xh[i] = volts
+            by = self._source_held(both, xh)
+            if by:
+                raise ValueError(
+                    f'held node(s) {", ".join(by)}: a voltage source or an inductor holds '
+                    'them at DC, so the hold leaves its current undetermined (SPICE lets the '
+                    'source win, through a 1e10 S pin)')
 
         if self.par.pcnr:
             from pycircuit.circuit import pcnr as _pcnr
@@ -256,11 +266,28 @@ class DC(Analysis):
             ## Stage 2, 2026-08-26).
             if _pcnr.pcnr_devices(self.cir):
                 try:
+                    kw = {'epar': self.epar, 'maxiter': self.par.maxiter,
+                          'reltol': self.par.reltol, 'abstol': self.par.vabstol,
+                          'linsolver': self._get_linearsolver()}
+                    ref = self.cir.nodes[self.irefnode]
+                    v_lim0 = None
+                    if nodeset:
+                        ## SPICE's `.nodeset` as the chain's: held, then released
+                        ## from that answer (but for the pins); a held solve
+                        ## that fails leaves the hint unused
+                        both = dict(nodeset)
+                        both.update(pin)
+                        try:
+                            ## (released from its limited unknowns too: the state
+                            ## it found, not a clamped re-seed of it)
+                            x0, v_lim0 = _pcnr.solve_dc_continued(
+                                self.cir, ref, x0=x0, held=both, **kw)[:2]
+                        except _pcnr._RUNG_FAILURES as exc:
+                            logging.getLogger(__name__).warning(
+                                'DC(pcnr=True): the solve with the nodesets held failed '
+                                '(%s); solving without them', str(exc)[:120])
                     x, _v_lim, _its, self.pcnr_path = _pcnr.solve_dc_continued(
-                        self.cir, self.cir.nodes[self.irefnode], x0=x0,
-                        epar=self.epar, maxiter=self.par.maxiter,
-                        reltol=self.par.reltol, abstol=self.par.vabstol,
-                        linsolver=self._get_linearsolver())
+                        self.cir, ref, x0=x0, held=pin or None, v_lim0=v_lim0, **kw)
                     self.pcnr_status = 'used'
                     self.result = CircuitResult(self.cir, x)
                     return self.result

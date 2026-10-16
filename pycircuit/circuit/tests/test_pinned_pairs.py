@@ -383,7 +383,8 @@ PAIRS = {
                'walk, the mirrors, the remainder, the block), `augmented_system`\'s '
                'order, gshunt\'s rows and the junction-gmin term\'s (`jgmin` across '
                '`pcnr_junction_pairs`, in pair order), `schur_reduce`\'s rank-one '
-               'updates, the solve '
+               'updates, the reduction (the reference and each held row out: '
+               '`predict`\'s keep, the C\'s row map `red`), the solve '
                '(numpy\'s dgesv, or StructuralKLU\'s sequence after the AutoSolver\'s '
                'own first choice), `dx_lim_of`, `refine` -- each class\'s law '
                'parameters, its laws (`apply_limit`) and `limit_block`\'s Kruskal and '
@@ -687,8 +688,8 @@ RECORD = {
     'the Newton solve and its C': ('2b8ff6cc553a', '8623c7a69055'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', 'a1bf1ec171ad'),
-    'the DC base solve and its C': ('49610d40ee8d', '60e5fa192106'),
-    'the PCNR DC solve and its C': ('fc0cc845a7c3', 'b45a7f994a65'),
+    'the DC base solve and its C': ('1af93df918c5', '60e5fa192106'),
+    'the PCNR DC solve and its C': ('f505b05383b7', '64a5819e64c9'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('de8b4b288065', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),

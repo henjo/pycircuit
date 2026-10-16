@@ -1,4 +1,5 @@
-"""The junction-gmin term in PCNR's equations, and the continued solve's route.
+"""The junction-gmin term in PCNR's equations, held nodes, and the continued
+solve's route.
 
 `solve_dc(jgmin=g)` puts `g` across every junction pair
 (`pcnr_junction_pairs`) IN the equations -- SPICE's gmin, stepped: true gmin
@@ -25,6 +26,20 @@ def test_the_junction_term_in_c_is_the_pythons(g, monkeypatch):
     c, _x0 = _bjt_mirror_20v()
     got, _counts = _twin(c, monkeypatch, jgmin=g)
     assert got[0] == 'ok', got
+
+
+@pytest.mark.parametrize('kw', [{}, {'source': 0.5}, {'jgmin': 1e-4}],
+                         ids=['full', 'half-sources', 'with-jgmin'])
+def test_a_held_solve_in_c_is_the_pythons(kw, monkeypatch):
+    """`held` -- the mirror's output held at 2 V, at `source` times that --
+    the reduction a row map in C (`red`), the step and the KCL test of the
+    held row out: bit for bit the Python's, the C serving."""
+    c, _x0 = _bjt_mirror_20v()
+    held = {c.get_node_index('no'): 2.0}
+    got, _counts = _twin(c, monkeypatch, held=held, **kw)
+    assert got[0] == 'ok', got
+    x = np.frombuffer(got[1])
+    assert x[c.get_node_index('no')] == kw.get('source', 1.0) * 2.0
 
 
 def test_the_junction_term_is_a_conductance_across_each_junction():

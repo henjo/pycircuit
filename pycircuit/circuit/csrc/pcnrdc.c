@@ -145,12 +145,13 @@ static long schur(pcnrdc_t *s)
    hand-back.  The solution in `b` */
 static long solve_dense(pcnrdc_t *s)
 {
-    long n = s->n, m = n - 1, ir = s->iref, i, j;
+    long n = s->n, m = s->m, i, j;
+    const int64_t *red = s->red;
     int64_t m64 = m, one64 = 1, info64 = 0;
     for (i = 0; i < n; i++) {
-        if (i == ir) continue;
+        if (red[i] < 0) continue;
         for (j = 0; j < n; j++)
-            if (j != ir) s->A[(j - (j > ir)) * m + (i - (i > ir))] = s->J[i * n + j];
+            if (red[j] >= 0) s->A[red[j] * m + red[i]] = s->J[i * n + j];
     }
     ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv64, s->b, &m64, &info64);
     feclearexcept(FE_ALL_EXCEPT);
@@ -165,11 +166,12 @@ static long solve_dense(pcnrdc_t *s)
    factor is its LinAlgError (PCNRDC_SINGULAR).  The solution in `kx` */
 static long solve_klu(pcnrdc_t *s)
 {
-    long n = s->n, m = n - 1, ir = s->iref, i, j, nz = 0, nzp = 0, fin = 1, st;
+    long n = s->n, m = s->m, i, j, nz = 0, nzp = 0, fin = 1, st;
+    const int64_t *red = s->red;
     for (i = 0; i < n; i++) {
-        if (i == ir) continue;
+        if (red[i] < 0) continue;
         for (j = 0; j < n; j++)
-            if (j != ir) s->R[(i - (i > ir)) * m + (j - (j > ir))] = s->J[i * n + j];
+            if (red[j] >= 0) s->R[red[i] * m + red[j]] = s->J[i * n + j];
     }
     for (i = 0; i < m * m; i++) nz += s->R[i] != 0.0;
     for (i = 0; i < s->nact; i++) {
@@ -187,17 +189,18 @@ static long solve_klu(pcnrdc_t *s)
     return 0;
 }
 
-/* the step dx_MNA in `dx` (the reference row 0.0): `-f_eff` reduced, the
-   DC's solve.  0, or why not */
+/* the step dx_MNA in `dx` (the reference row and each held row 0.0):
+   `-f_eff` reduced, the DC's solve.  0, or why not */
 static long solve(pcnrdc_t *s)
 {
-    long n = s->n, ir = s->iref, i, st;
+    long n = s->n, i, st;
+    const int64_t *red = s->red;
     const double *x;
-    for (i = 0; i < n; i++) if (i != ir) s->b[i - (i > ir)] = -s->fe[i];
+    for (i = 0; i < n; i++) if (red[i] >= 0) s->b[red[i]] = -s->fe[i];
     st = s->klu.klu_sym ? solve_klu(s) : solve_dense(s);
     if (st != 0) return st;
     x = s->klu.klu_sym ? s->kx : s->b;
-    for (i = 0; i < n; i++) s->dx[i] = i == ir ? 0.0 : x[i - (i > ir)];
+    for (i = 0; i < n; i++) s->dx[i] = red[i] < 0 ? 0.0 : x[red[i]];
     return 0;
 }
 
@@ -232,13 +235,14 @@ static long update(pcnrdc_t *s)
 
 /* the three tests (`solve_dc`): conv_x, conv_f with `I = |J_eff| |x_new|`
    (numpy's own dgemv on the full |J_eff|: BLAS's summation order) +
-   |f_eff|, and `lim_converged`.  1 converged, 0 not, -1 a flag */
+   |f_eff| -- each over the reduced rows (`red`) -- and `lim_converged`.
+   1 converged, 0 not, -1 a flag */
 static int converged(pcnrdc_t *s)
 {
     long n = s->n, i;
     int cx = 1, cf = 1, cl = 1;
     for (i = 0; i < n; i++) {
-        if (i == s->iref) continue;
+        if (s->red[i] < 0) continue;
         if (!(fabs(s->dx[i]) < s->reltol * pcx_np_maximum(fabs(s->xn[i]), fabs(s->x[i]))
                                + s->abstol)) cx = 0;
     }
@@ -248,7 +252,7 @@ static int converged(pcnrdc_t *s)
                            s->ax, 1, 0.0, s->Is, 1);
     for (i = 0; i < n; i++) {
         double af = fabs(s->fe[i]);
-        if (i == s->iref) continue;
+        if (s->red[i] < 0) continue;
         if (!(af < s->reltol * (s->Is[i] + af) + s->iabstol)) cf = 0;
     }
     for (i = 0; i < s->k; i++)

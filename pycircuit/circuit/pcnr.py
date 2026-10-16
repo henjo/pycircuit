@@ -709,7 +709,7 @@ def dx_lim_of(junctions, g_lim, dx_mna):
 
 
 def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
-            didv=None, gmin=0.0, linsolver=None, toolkit=None):
+            didv=None, gmin=0.0, linsolver=None, toolkit=None, held=()):
     """One Newton step on the coupled system, by Schur complement.
 
         dx_MNA = -(J_mm - J_ml J_lm)^-1 (g_mna - J_ml g_lim)
@@ -723,6 +723,9 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
     measured **+62% per iteration** against classic limiting on 60 diodes -- a
     gate-13-4 failure that was entirely the implementation's.  Pass
     ``junctions``/``didv`` to take the sparse path.
+
+    ``held`` rows leave the solve with the reference's (their step 0): the
+    nodes :func:`solve_dc` holds.
     """
     f_eff, schur = schur_reduce(g_mna, g_lim, J_mm, J_ml, J_lm, junctions, didv)
     rhs = -f_eff
@@ -753,7 +756,8 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
         d = np.arange(schur.shape[0])
         schur[d, d] += gmin
 
-    keep = [i for i in range(len(g_mna)) if i != irefnode]
+    out = {irefnode, *held}
+    keep = [i for i in range(len(g_mna)) if i not in out]
     ## (`linsolver`: the DC's own -- dense below its floor, StructuralKLU on
     ## the circuit's pattern above -- which the C unit repeats; numpy's
     ## dense solve where none is given)
@@ -918,7 +922,7 @@ NONFINITE = 'PCNR iterate not finite at iteration %d: it cannot converge from th
 
 def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
              reltol=1e-6, abstol=1e-12, iabstol=1e-12, gmin=0.0,
-             gshunt=0.0, source=1.0, v_lim0=None, linsolver=None, jgmin=0.0):
+             gshunt=0.0, source=1.0, v_lim0=None, linsolver=None, jgmin=0.0, held=None):
     """DC operating point by PCNR.  Returns ``(x, v_lim, iterations)``.
 
     ``gshunt``, ``jgmin``, ``source`` and ``v_lim0`` are
@@ -928,6 +932,11 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     gmin stepped, true gmin stepping -- the independent sources scaled,
     and the limited unknowns to start from.  At their defaults nothing is
     added and nothing is scaled: the plain solve is unchanged.
+
+    ``held`` ({row: volts}) holds nodes at ``source`` times their volts --
+    `DC`'s ``pin`` and ``nodeset``, eliminated as the ordinary chain's
+    `_Held` eliminates them: not unknowns of the solve, their step 0 and
+    their KCL rows out of the residual test (the hold supplies that current).
 
     Raises RuntimeError at the iteration limit, and at the first iterate
     that is not finite (:data:`NONFINITE`): `x + dx` keeps a non-finite
@@ -1010,6 +1019,9 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     irefnode = circuit.get_node_index(refnode)
     x = np.zeros(n) if x0 is None else np.array(x0, dtype=float, copy=True)
     x[irefnode] = 0.0
+    hrows = sorted(held) if held else ()
+    for r in hrows:
+        x[r] = source * held[r]
 
     ## `limit=True`: `x0` is the caller's, and may be a wild start.  A
     ## rung of `solve_dc_continued` passes `v_lim0`, the previous rung's
@@ -1028,7 +1040,7 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     ## the loop below runs
     from pycircuit.circuit import _pcnr_c
     got = _pcnr_c.solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol,
-                        abstol, iabstol, gmin, gshunt, linsolver, jgmin)
+                        abstol, iabstol, gmin, gshunt, linsolver, jgmin, hrows)
     if got is not None:
         return got
     jpairs = ([(int(p[2]), int(p[3])) for p in pcnr_junction_pairs(circuit)] if jgmin
@@ -1055,7 +1067,7 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
 
         dx_mna, dx_lim = predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode,
                                  junctions=devices, didv=didv, gmin=gmin,
-                                 linsolver=linsolver, toolkit=circuit.toolkit)
+                                 linsolver=linsolver, toolkit=circuit.toolkit, held=hrows)
 
         x_new = x + dx_mna
         x_new[irefnode] = 0.0
@@ -1069,6 +1081,7 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
         v_new = refine(devices, v_lim, v_new, epar, x_old=x)
 
         keep = np.arange(n) != irefnode
+        keep[list(hrows)] = False
         conv_x = bool(np.all(np.abs(dx_mna)[keep]
                              < reltol * np.maximum(np.abs(x_new), np.abs(x))[keep]
                              + abstol))
@@ -1103,7 +1116,8 @@ JGMIN_START, JGMIN_END = 1e-2, 1e-11
 
 
 def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
-                       reltol=1e-6, abstol=1e-12, iabstol=1e-12, linsolver=None):
+                       reltol=1e-6, abstol=1e-12, iabstol=1e-12, linsolver=None, held=None,
+                       v_lim0=None):
     """The DC operating point by PCNR, with ladders of its own.
 
     Returns ``(x, v_lim, iterations, path)`` -- ``path`` is ``'plain'``,
@@ -1117,15 +1131,20 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     ordinary chain's shape, which a hard circuit needs: opampal fails the
     first rung of every ladder alone and reaches PCNR's answer only so.
     Every rung is a PCNR solve seeded with the previous rung's ``x`` and
-    limited unknowns.  Raises the plain solve's exception where the ladders
-    fail.  (Ladders were tried once before, 2026-08-26, and failed on a BJT
+    limited unknowns, with the nodes ``held`` held (:func:`solve_dc`);
+    ``v_lim0`` seeds the plain solve's limited unknowns -- a converged point
+    is no wild start, and re-seeding from ``x0`` clamped would lose its
+    state (`DC`'s nodeset release).  Raises the plain solve's exception
+    where the ladders fail.  (Ladders were tried once before, 2026-08-26, and failed on a BJT
     mirror from 20 V -- every rung then began from an UNLIMITED seed, since
     fixed in :func:`v_lim_init`.)
     """
     kw = {'epar': epar, 'maxiter': maxiter, 'reltol': reltol, 'abstol': abstol,
           'iabstol': iabstol, 'linsolver': linsolver}
+    if held:
+        kw['held'] = held
     try:
-        x, v_lim, its = solve_dc(circuit, refnode, x0=x0, **kw)
+        x, v_lim, its = solve_dc(circuit, refnode, x0=x0, v_lim0=v_lim0, **kw)
         return x, v_lim, its, 'plain'
     except _RUNG_FAILURES as exc:
         first = exc

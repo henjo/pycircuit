@@ -25,6 +25,9 @@ typedef struct {
     long n,               /* CTX: unknowns (full) */
          iref,            /* CTX: the reference row */
          maxiter;         /* CALL */
+    long m;               /* CALL: the reduced system's rows (n - 1 - held) */
+    const int64_t *red;   /* CALL (n): each row's reduced index, -1 the
+                             reference and each held row (`held`) */
     double reltol, abstol, iabstol;   /* CALL: `solve_dc`'s */
     double gshunt;        /* CALL: the deformation's conductance, 0 none */
     long nn;              /* CTX: the node rows (gshunt's: each but iref) */

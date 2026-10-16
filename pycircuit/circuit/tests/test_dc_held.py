@@ -64,11 +64,6 @@ def test_unholdable_names_the_nodes_a_source_holds():
     assert dc.unholdable({'mid': 3.0}) == [] and dc.unholdable(None) == []
 
 
-def test_pcnr_with_held_nodes_is_refused():
-    with pytest.raises(ValueError, match='with held nodes'):
-        DC(_divider(), pcnr=True, nodeset={'mid': 1.0}).solve()
-
-
 def _latch():
     """Two resistor-loaded NMOS inverters, cross-coupled: bistable, and from
     zeros its symmetric metastable point."""
@@ -96,3 +91,32 @@ def test_a_nodeset_picks_each_state_of_a_latch():
             assert res.v(hi) > 4.0 and res.v(lo) < 1.0, (hi, res.v(hi), res.v(lo))
             again = DC(_latch()).solve(x0=np.asarray(res.x))
             assert np.allclose(np.asarray(again.x), np.asarray(res.x), rtol=1e-9, atol=1e-12)
+
+
+@pytest.mark.parametrize('held', [
+    {'pin': {'q': 3.0}},
+    {'nodeset': {'q': 5.0, 'qb': 0.0}},
+    {'nodeset': {'qb': 5.0, 'q': 0.0}},
+    {'pin': {'q': 3.0}, 'nodeset': {'qb': 1.0}},
+], ids=['pin', 'nodeset-q', 'nodeset-qb', 'both'])
+def test_pcnr_holds_nodes_as_the_chain_does(held):
+    """`DC(pcnr=True)` with held nodes: PCNR's own solve, the nodes
+    eliminated as the chain eliminates them (`pcnr.solve_dc`'s `held`), and
+    the chain's answer -- a nodeset's state kept through its release, which
+    starts from the held solve's limited unknowns (re-seeded from x, clamped,
+    the latch fell to its metastable point, q = qb = 2.56 V)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ref = DC(_latch(), **held).solve()
+        dc = DC(_latch(), pcnr=True, **held)
+        res = dc.solve()
+    assert dc.pcnr_status == 'used', dc.pcnr_status
+    x, xr = np.asarray(res.x), np.asarray(ref.x)
+    assert np.max(np.abs(x - xr)) <= 1e-9 * np.max(np.abs(xr)), (x, xr)
+
+
+def test_pcnr_refuses_what_the_chain_refuses():
+    """A node a voltage source holds: refused before PCNR runs, as the chain
+    refuses it."""
+    with pytest.raises(ValueError, match='a voltage source or an inductor holds'):
+        DC(_latch(), pcnr=True, pin={'vdd': 5.0}).solve()

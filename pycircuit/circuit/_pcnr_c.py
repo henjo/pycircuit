@@ -403,6 +403,7 @@ class _Rec:
         'packs',
         'plan',
         'prow',
+        'red',
         's',
         'view',
     )
@@ -466,6 +467,11 @@ class _Rec:
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
         s.pattern = _sources()[4]['PCX_WANT_PATTERN'] if core.npat else 0
         s.n, s.iref, s.nn, s.nd, s.k = n, iref, len(cir.nodes), nd, k
+        ## each row's reduced index (`solve` sets it per call: the reference
+        ## and the held rows out)
+        self.red = np.empty(n, dtype=I64)
+        keep += [self.red, fb('int64_t *', self.red)]
+        s.red = keep[-1]
         ## the junction pairs `jgmin` is put across (`pcnr_junction_pairs`)
         from pycircuit.circuit import pcnr as _pcnr
         pairs = _pcnr.pcnr_junction_pairs(cir)
@@ -577,14 +583,14 @@ def _choose(rec, ls):
     `_analysed` first) -- then the record bound to it.  None, or why not:
     the Python's solve runs ('foreign': `_ours` declines the matrix)."""
     from pycircuit.circuit.linearsolver import StructuralKLU
-    n, iref = rec.n, rec.iref
-    keep = np.arange(n) != iref
+    n = rec.n
+    keep = rec.red >= 0
     R = rec.buf['J'].reshape(n, n)[np.ix_(keep, keep)]
     ch = ls._select(R)
     if ch is ls._dense:
         rec.bind(None)
         return None
-    if type(ch) is not StructuralKLU or ch.m != n - 1:
+    if type(ch) is not StructuralKLU or ch.m != int(rec.s.m):
         return 'linsolver'
     if ch._ours(R) is None:
         return 'foreign'
@@ -636,7 +642,7 @@ def _vector(a, m):
 
 
 def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol, iabstol,
-          gmin, gshunt, linsolver, jgmin=0.0):
+          gmin, gshunt, linsolver, jgmin=0.0, held=()):
     """`pcnr.solve_dc`'s loop in C from its start: `(x, v_lim, iterations)`,
     or its exception raised (the iteration limit's RuntimeError, a non-finite
     iterate's, a singular solve's LinAlgError) -- or None: declined or
@@ -647,7 +653,7 @@ def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol
         return _no('pcnr_c:maxiter')
     why = _settings(circuit, gmin)
     if why is None:
-        ch = _solver(linsolver, circuit.n - 1)
+        ch = _solver(linsolver, circuit.n - 1 - len(held))
         why = ch if type(ch) is str and ch != 'choose' else None
     if why is not None:
         return _no('pcnr_c:' + why)
@@ -665,6 +671,13 @@ def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol
     if not rec.point_packs():
         return _no('pcnr_c:pack')
     s, buf = rec.s, rec.buf
+    ## the reduction: the reference row and each held row out (`predict`'s)
+    red = rec.red
+    red.fill(-1)
+    kept = np.ones(rec.n, dtype=bool)
+    kept[[rec.iref, *held]] = False
+    red[kept] = np.arange(int(kept.sum()), dtype=np.int64)
+    s.m = int(kept.sum())
     np.copyto(buf['x'], x)
     np.copyto(buf['v'][:rec.k], v_lim)
     np.copyto(buf['u'], u)

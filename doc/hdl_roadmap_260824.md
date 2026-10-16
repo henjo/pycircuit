@@ -9266,3 +9266,27 @@ ladder after gshunt, by decades from 1e-2 to 1e-11 with its pure solve; a failed
 at its level; the plain solve alone.  `test_dc_pcnr.py`'s two forced-failure tests now pin the new route (the gshunt
 ladder's eleven decades, then the junction ladder's ten; every solve failing: each of the five source levels tried
 plain and by both ladders' first rungs).
+
+## 2026-10-16 — 140. Held nodes in PCNR, eliminated as the chain eliminates them: DC(pcnr=True) with .ic / .nodeset
+
+**Why.**  `DC(pcnr=True)` with `pin` or `nodeset` raised ("not supported"), so a SPICE deck's `.ic` or `.nodeset`
+kept its operating point off PCNR -- the gmin build's sizing held such nodes through temporary voltage sources in a
+harness (plan `dc-final-gmin.md`, S1).  The ordinary chain eliminates a held node (`_Held`, roadmap's stage 3 of the
+SPICE benchmark plan): not an unknown, its KCL row and column out, its value `lam` times its volts.
+
+**Built.**  `pcnr.solve_dc(held={row: volts})`: `x[held] = source * volts`, the held rows left out of the reduced
+Schur solve with the reference's (`predict`'s `held`: their step 0) and out of the step and residual tests (the hold
+supplies their current).  In C a row map replaces the single reference (`pcnrdc.h`'s `m` and `red`, set per call by
+the glue: `solve_dense`, `solve_klu`, `solve` and `converged` read it; without a hold it is the old arithmetic's
+positions exactly) and the KLU choice is made on the same reduction.  `solve_dc_continued(held=, v_lim0=)`.  `DC`:
+with `pcnr`, the chain's refusal first (a node a voltage source or an inductor holds), then PCNR -- a nodeset held
+and released from that answer (but for the pins), a failed held solve leaving the hint unused as the chain's does;
+the RELEASE starts from the held solve's limited unknowns: re-seeded from x (clamped, as a cold start is), the
+cross-coupled latch fell from its picked state to its metastable point (q = qb = 2.56 V).  A PCNR failure falls
+back to the chain as before.  Pinned pairs re-recorded: 'the PCNR DC solve and its C' (both sides; the reduction in
+its reason) and 'the DC base solve and its C' (reference only: `DC._solve_dc`'s PCNR branch; its C twin's tests pass).
+
+**Gate**: Suite 5 455 passed, 6 skipped, 3 xfailed (5 448 + 7).  Every gold operating point without a hold, production DC(pcnr=True) on the C path, bit-identical to 99af7e86's (answer, path, the C's iterations).  The six gold decks with .ic / .nodeset (arom, gm17, hussamp, jge, rich3, ring), which raised before, solved by DC(pcnr=True) on PCNR, no fallback; against the chain's held operating points within 1.3e-6 V but jge -- its held solves agree off its 18 floating modes (both solve the circuit to 2e-17 A; 99.93 % of a 44 mV difference along them) and the release lands in another valid state of a multistable deck (neither answer keeps every nodeset).  The gold census on the three paths identical (PCNR off in production).  Tests: `test_dc_held.py` -- the refusal test replaced
+by PCNR's holds against the chain's on the latch (a pin, each nodeset state, a pin with a nodeset: the chain's answer
+to 0.0 relative) and the same source-hold refusal; `test_pcnr_jgmin.py` -- a held solve in C bit for bit the
+Python's, the C serving (full sources, half -- the hold scales -- and with the junction term).
