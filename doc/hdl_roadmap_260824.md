@@ -9457,3 +9457,33 @@ re-recorded (`AutoSolver`, `pcnr.solve_dc` on their reference side; their twins 
 uniformly 1.4-1.8x).  Every gold operating point identical but rich3's and arom's (now served in C).  The gold census on
 the three paths, identical to each other: only rich3 (3 618 -> 3 625 steps) and arom (3 119 -> 3 115) move, their
 metrics by at most 1.1e-9; no crossing, 0 forced.
+
+## 2026-10-17 — 146. A square is one multiplication: `_sq(x)`, `x * x`, in the numpy chain and the C alike
+
+**Why** (plan `dc-final-gmin.md`, 'POW IN THE DEVICE MODELS'; Andreas: squares only).  libm `pow` was 13-26 % of the
+big MOS decks' time (perf).  ~90 % of the MOS models' `pow` calls take an INTEGER exponent from their symbolic
+derivatives, most of them 2 (MOS3's Jacobian pass: 194 of 218).  They were `pow` because the C backend's contract is
+bit-identity with the numpy path, whose scalar `x ** 2` is glibc `pow` -- which differs from `x * x` in 0.07 % of
+arguments.  So both printers change together.  Sized first (a timing prototype rewriting the kernels' C at load): the
+four big decks' transients -26 % on squares alone, -29 % with cubes and fourth powers too -- but `x*x*x` differs from
+`pow(x, 3)` on 25 % of arguments (two roundings, where `x * x` is correctly rounded), so squares only.
+
+**Built.**  The numpy chain printer prints a power whose exponent is the number 2 (`2`, `2.0`: sympy's Float(2.0) is not
+Integer(2)) as `_sq(base)` -- `_sq_numpy`, `x * x`, registered in `_KERNEL_NUMPY`, numpy's `square` on an array -- and
+the C printer, derived from it, inherits the rule (the prelude's `_sq`, `a * a`); its array-square branch is gone.  Every
+HDL model's value moves in its last bit on those 0.07 % of squares, toward the correctly rounded one.  Tests: the `pow`
+sentinel (`-fno-builtin-pow`) moved to `u ** -1.0` -- gcc folds `pow(x, -1.0)` to `1.0/x`, which glibc's differs from on
+44 in 50 000 arguments, and its mutation arm still fires (`u ** -1` itself prints as a division); a square at a double
+where `pow` and `x * x` differ is `x * x` in both paths, byte for byte; the fast path's `where` guard's test moved to a
+`-1.0` exponent (numpy reciprocates a 0-d array where a scalar goes through `pow`; a square no longer reaches it); four
+adopter records' `explain` digests re-recorded (the explanation shows the chain source, now `_sq(..)`; their value
+digests did not move).
+
+**Gate**: suite 5 479 passed + the 5 above, re-made (137 of 137 in the three changed files); the C-against-numpy suites
+green, no pinned pair moved.  The gold census on the three paths, identical to each other: 25 decks move (the last bits),
+no column crosses, 0 forced, the largest metric change ring's 0.011.  The 27 decks against HEAD (quiet, alternating
+trees): 54.92 -> 42.02 s (0.77x) -- jge 0.68x, gm19 0.81x, mux8 0.79x, voter25 0.80x, rich3 0.76x, arom 0.77x; the four
+big decks 42.27 -> 31.51 s (-25.5 %).  One deck the other way: opampal 1.91 -> 2.06 s -- its transient faster (0.98 ->
+0.92 s), its operating point slower (1.00 -> 1.21 s): the same route (source steps, the junction-gmin ladder) taking
+another path through its failing rungs (PCNR iterations 1 286 -> 1 632) -- a hard operating point's sensitivity to its
+last bits, as a latch's state is.

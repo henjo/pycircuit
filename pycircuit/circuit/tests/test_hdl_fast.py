@@ -146,7 +146,7 @@ def test_a_numpy_scalar_and_a_0d_array_part_ways_only_where_guarded():
                 assert r0.tobytes() == r1.tobytes(), (v, q)
 
 
-class _SquaredWhere(Behavioural):
+class _ReciprocalWhere(Behavioural):
     instparams = [Parameter(name='gg', desc='g', unit='S', default=1.0)]
 
     @staticmethod
@@ -155,24 +155,27 @@ class _SquaredWhere(Behavioural):
         u = var(b.V, 'u')
         w = var(sympy.Piecewise((u + 1.0, u > 0), (1.0 - u, True)), 'w')
         w2 = var(w, 'w2')
-        return Contribution(b.I, gg * (w2 ** 2 + w))          # noqa: F821
+        ## (a FLOAT exponent: `w2 ** -1` prints as a division)
+        return Contribution(b.I, gg * (w2 ** -1.0 + w))       # noqa: F821
 
 
-def test_a_where_value_that_is_squared_keeps_numpy_where():
-    """The `**` guard, through a plain rename: the squared value's `where`
-    stays `numpy.where` (a 0-d array, squared exactly), the others go fast,
-    and the twin returns the reference's bytes where `pow` and the square
-    differ."""
-    fn = _SquaredWhere._hdl_info['funcs']['i']
+def test_a_where_value_raised_to_minus_one_keeps_numpy_where():
+    """The `**` guard, through a plain rename: the reciprocated value's
+    `where` stays `numpy.where` (a 0-d array, which numpy reciprocates
+    where a scalar goes through glibc `pow`), the others go fast, and the
+    twin returns the reference's bytes where `pow` and the division differ.
+    (A square was the case until 2026-10-16: it prints `_sq(..)`, `x * x`,
+    and no longer reaches the guard.)"""
+    fn = _ReciprocalWhere._hdl_info['funcs']['i']
     text = fn._src_cse
     tree = cs.ast.parse(text).body[0]
     assert cs._kept_wheres(tree), text
     assert 'numpy.where(' in text
     x0 = next(float(x) for x in np.random.default_rng(2).uniform(
-        0.1, 3.0, 5000)
-        if (np.array(x + 1.0) ** 2).tobytes()
-        != (np.float64(x + 1.0) ** 2).tobytes())
-    args = list(hdl._args_of(_inst(_SquaredWhere), defaultepar))
+        0.1, 3.0, 50000)
+        if (np.array(x + 1.0) ** -1.0).tobytes()
+        != (np.float64(x + 1.0) ** -1.0).tobytes())
+    args = list(hdl._args_of(_inst(_ReciprocalWhere), defaultepar))
     x = np.array([x0, 0.0])
     assert np.asarray(fn(x, *args)).tobytes() == \
         np.asarray(fn._hdl_ref(x, *args)).tobytes()

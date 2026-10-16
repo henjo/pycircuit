@@ -587,32 +587,34 @@ class TestBothArmsPreserved(object):
 ## The pow sentinel.
 
 def _pow_sentinel():
-    """A double where glibc's `pow(x, 2.0)` differs from `x*x` -- the
-    value that catches a compiler folding `pow` (measured rate ~1 in
-    1200, so 50 000 draws miss with probability ~1e-18)."""
+    """A double where glibc's `pow(x, -1.0)` differs from `1.0/x` -- the
+    value that catches a compiler folding `pow` (measured: 44 in 50 000
+    draws, so they miss with probability ~1e-38)."""
     rng = np.random.default_rng(7)
     for x in rng.uniform(0.5, 2.0, 50000):
-        if math.pow(x, 2.0) != x * x:
+        if math.pow(x, -1.0) != 1.0 / x:
             return float(x)
     return None
 
 
-class _SquareModel(Behavioural):
+class _ReciprocalModel(Behavioural):
     instparams = [Parameter(name='gg', desc='scale', unit='A', default=1.0)]
 
     @staticmethod
     def analog(p, m):
         b = Branch(p, m)
         u = var(b.V, 'u')            # an intermediate, so ** stays **
-        return Contribution(b.I, gg * u ** 2)                  # noqa: F821
+        ## (a FLOAT exponent: `u ** -1` is printed `gg/u`, a division)
+        return Contribution(b.I, gg * u ** -1.0)               # noqa: F821
 
 
 @needs_cc
 class TestPowSentinel(object):
-    """numpy's scalar `x ** 2` is glibc `pow`; gcc folds `pow(x, 2.0)`
-    to the (more accurate) `x*x` at -O1+ unless told not to.  The
+    """numpy's scalar `x ** -1.0` is glibc `pow`; gcc folds `pow(x, -1.0)`
+    to the (more accurate) `1.0/x` at -O1+ unless told not to.  The
     sentinel pins the `-fno-builtin-pow` contract, and its mutation arm
-    proves the sentinel can fail."""
+    proves the sentinel can fail.  (A square was the sentinel until
+    2026-10-16: both printers now print it `x * x`, `_sq`.)"""
 
     def _x(self):
         s = _pow_sentinel()
@@ -622,16 +624,16 @@ class TestPowSentinel(object):
 
     def test_emitted_pow_is_a_real_pow(self):
         x = self._x()
-        e = _instance(_SquareModel)
-        assert 'pow(' in _SquareModel._hdl_info['funcs']['i']._csrc
-        with numpy_backend(_SquareModel):
+        e = _instance(_ReciprocalModel)
+        assert 'pow(' in _ReciprocalModel._hdl_info['funcs']['i']._csrc
+        with numpy_backend(_ReciprocalModel):
             ref = e.i(x).copy()
-        with c_backend(_SquareModel):
+        with c_backend(_ReciprocalModel):
             got = e.i(x)
         assert ref.tobytes() == got.tobytes()
-        ## and the point is a real sentinel: pow and mul DO differ here
+        ## and the point is a real sentinel: pow and the division DO differ here
         s = float(x[0])
-        assert math.pow(s, 2.0) != s * s
+        assert math.pow(s, -1.0) != 1.0 / s
 
     def test_without_the_flag_the_sentinel_fires(self, tmp_path,
                                                  monkeypatch):
@@ -639,12 +641,12 @@ class TestPowSentinel(object):
         machinery, produces DIFFERENT bytes at the sentinel -- the
         test's power, measured."""
         x = self._x()
-        e = _instance(_SquareModel)
-        with numpy_backend(_SquareModel):
+        e = _instance(_ReciprocalModel)
+        with numpy_backend(_ReciprocalModel):
             ref = e.i(x).copy()
         ## ⚠ THE CLASS IS RE-BOUND AFTER THE FLAGS ARE RESTORED (2026-10-03):
         ## `c_backend`'s un-pin runs while the flags are still patched, so it
-        ## re-bound `_SquareModel` to kernels compiled WITHOUT
+        ## re-bound `_ReciprocalModel` to kernels compiled WITHOUT
         ## `-fno-builtin-pow`, and the module's later tests ran them (the
         ## leak detector's report).  The patches end in this test now, and
         ## the class is re-resolved under the real flags.
@@ -654,13 +656,43 @@ class TestPowSentinel(object):
                 mp.setattr(_cbuild, 'CFLAGS', tuple(
                     f for f in _cbuild.CFLAGS if f != '-fno-builtin-pow'))
                 mp.setattr(_cbuild, '_loaded', {})
-                with c_backend(_SquareModel):
-                    assert _SquareModel._hdl_backend_status == 'c'
+                with c_backend(_ReciprocalModel):
+                    assert _ReciprocalModel._hdl_backend_status == 'c'
                     got = e.i(x)
         finally:
-            hdl.set_backend(None, _SquareModel)
+            hdl.set_backend(None, _ReciprocalModel)
         assert ref.tobytes() != got.tobytes()
         assert np.allclose(ref, got, rtol=1e-14)   # one ulp, not garbage
+
+
+class _SquareModel(Behavioural):
+    instparams = [Parameter(name='gg', desc='scale', unit='A', default=1.0)]
+
+    @staticmethod
+    def analog(p, m):
+        b = Branch(p, m)
+        u = var(b.V, 'u')
+        return Contribution(b.I, gg * u ** 2)                  # noqa: F821
+
+
+@needs_cc
+def test_a_square_is_one_multiplication_in_both_paths():
+    """A square prints `_sq(base)` -- `x * x`, correctly rounded -- in the
+    numpy chain and the C alike (Andreas, 2026-10-16; `pow` until then):
+    at a double where glibc's `pow(x, 2.0)` differs from `x * x`, both
+    paths give `x * x`, byte for byte."""
+    rng = np.random.default_rng(7)
+    s = next(float(v) for v in rng.uniform(0.5, 2.0, 50000) if math.pow(v, 2.0) != v * v)
+    x = np.array([s, 0.0])
+    e = _instance(_SquareModel)
+    src = _SquareModel._hdl_info['funcs']['i']._csrc
+    assert '_sq(' in src and 'pow(' not in src
+    with numpy_backend(_SquareModel):
+        ref = e.i(x).copy()
+    with c_backend(_SquareModel):
+        got = e.i(x)
+    assert ref.tobytes() == got.tobytes()
+    assert ref[0] == s * s and ref[0] != math.pow(s, 2.0)
 
 
 ## ----------------------------------------------------------------------
@@ -1406,7 +1438,7 @@ def test_without_cffi_a_request_for_c_runs_numpy_and_says_why(tmp_path,
     an ImportError out of class creation."""
     ## ⚠ THE UN-PIN RUNS AFTER cffi IS VISIBLE AGAIN (2026-10-03): it used to
     ## run in this test's `finally`, while `monkeypatch` still hid cffi (it
-    ## is undone at fixture teardown, later), so `_SquareModel` re-resolved
+    ## is undone at fixture teardown, later), so `_ReciprocalModel` re-resolved
     ## to numpy and stayed there for the module's later tests -- the leak
     ## detector's report; the same teardown-order shape as the one-worker
     ## anomaly (test_hdl_cse's reference swap).
@@ -1417,15 +1449,15 @@ def test_without_cffi_a_request_for_c_runs_numpy_and_says_why(tmp_path,
             real = cb.importlib.util.find_spec
             mp.setattr(cb.importlib.util, 'find_spec',
                        lambda n, *a: None if n == 'cffi' else real(n, *a))
-            e = _instance(_SquareModel)
+            e = _instance(_ReciprocalModel)
             with pytest.warns(CostWarning, match='cffi is not installed'):
-                hdl.set_backend('c', _SquareModel)
-            assert _SquareModel._hdl_backend_status == \
+                hdl.set_backend('c', _ReciprocalModel)
+            assert _ReciprocalModel._hdl_backend_status == \
                 'numpy (cffi not installed)'
-            assert not _SquareModel._hdl_info.get('_c_bound')
+            assert not _ReciprocalModel._hdl_info.get('_c_bound')
             e.i(np.array([0.5, 0.0]))
     finally:
-        hdl.set_backend(None, _SquareModel)
+        hdl.set_backend(None, _ReciprocalModel)
 
 
 @needs_cc
@@ -1473,7 +1505,7 @@ def test_a_key_being_built_elsewhere_is_left_to_its_builder(tmp_path,
     it once the lock is free."""
     monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
     monkeypatch.setattr(_cbuild, '_loaded', {})
-    fn = _SquareModel._hdl_info['funcs']['i']
+    fn = _ReciprocalModel._hdl_info['funcs']['i']
     key = cb.source_key(fn._csrc)
     assert cb.find_so(key) is None
     with cb._key_lock(key) as mine:

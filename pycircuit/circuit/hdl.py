@@ -922,6 +922,16 @@ def _recip2_numpy(b, e):
     return 1.0 / (b * b + e * e)
 
 
+def _sq_numpy(x):
+    """A square as the chain printer prints it (`_ChainPrinter`): `x * x`
+    -- correctly rounded, and numpy's `square` on an array; the C prelude's
+    `_sq` is the same multiplication.  Not `x ** 2`: on a scalar that is
+    libm `pow`, which differs from `x * x` in 0.07 % of arguments and costs
+    tens of nanoseconds a call (Andreas, 2026-10-16: squares are ~80 % of
+    the MOS models' `pow` calls; the four big MOS decks' transients -26 %)."""
+    return x * x
+
+
 class _rdiv(sympy.Function):
     """``b/(b^2 + eps^2)`` -- the whole of `safe_div` bar its numerator.
 
@@ -1374,6 +1384,7 @@ def mxe(x, y, a=0.0):
 ## ----------------------------------------------------------------------
 
 _KERNEL_NUMPY = {
+    '_sq': _sq_numpy,
     '_recip2': _recip2_numpy,
     '_rdiv': _rdiv_numpy,
     'quartic_root': _quartic_root_numpy,
@@ -4655,6 +4666,17 @@ class _ChainPrinter(object):
             def _print_Piecewise(self, expr):
                 return outer._piecewise(self, expr)
 
+            ## A SQUARE is `_sq(base)`: `x * x`, correctly rounded, in this
+            ## numpy path and in the C printer below alike (`_sq_numpy`,
+            ## the prelude's `_sq`) -- not `x ** 2`, which is libm `pow` on
+            ## a scalar (Andreas, 2026-10-16).  Every other power is
+            ## NumPyPrinter's.
+            def _print_Pow(self, expr, rational=False):
+                ## (`2` and `2.0` alike: sympy's Float(2.0) != Integer(2))
+                if expr.exp.is_Number and float(expr.exp) == 2.0:
+                    return '_sq(%s)' % self._print(expr.base)
+                return super()._print_Pow(expr, rational=rational)
+
             def _print_Min(self, expr):
                 return outer._minmax(self, expr, 'minimum')
 
@@ -4796,13 +4818,13 @@ class _CChainPrinter(_ChainPrinter):
     `pow(x, n)` for every `n` (`benchmarks/backend_spike.py` measured
     it; glibc's `pow(x, 2)` differs from `x*x` in 0.07% of arguments),
     so the printer emits a real `pow` and the compiler is told not to
-    fold it (`-fno-builtin-pow`).  ONE exception, and it is a fact about
-    numpy rather than about C: `numpy.where` returns a 0-d ARRAY, and
-    `ndarray.__pow__` with exponent 2 is `numpy.square` -- `x*x`, not
-    `pow`.  So a square whose base is a `Piecewise`, or a chain symbol
-    bound to one (`array_syms`), is printed as `_sq`.  Exponents -1 and
-    1/2 take the same fast path in numpy, and land on `1.0/x` and
-    `sqrt` here, which agree with `pow` bitwise anyway.
+    fold it (`-fno-builtin-pow`).  A SQUARE is the exception, decided in
+    the numpy printer this one derives from: both print `_sq(base)`, `x *
+    x` (2026-10-16 -- until then a square was `pow` but where its base
+    was a `numpy.where` 0-d ARRAY, whose `__pow__(2)` is `numpy.square`).
+    Exponents -1 and 1/2 take numpy's fast path on such an array, and
+    land on `1.0/x` and `sqrt` here, which agree with `pow` bitwise
+    anyway.
     """
 
     def __init__(self, symmap, array_syms=()):
@@ -4880,8 +4902,6 @@ class _CChainPrinter(_ChainPrinter):
                                                         strict=False)
                 is_array = isinstance(base_, _s.Piecewise) or \
                     (isinstance(base_, _s.Symbol) and base_ in array_syms)
-                if is_array and expr.exp == 2:
-                    return '_sq(%s)' % self._print(base_)
                 if is_array and expr.exp == -1:
                     ## `ndarray.__pow__(-1.0)` is `reciprocal`, i.e. a
                     ## correctly rounded division, where glibc's `pow`
@@ -5185,7 +5205,8 @@ def _c_symmap(stmts, trailing_names, xnames):
     name, in `xnames` order), the trailing arguments `p[k]` (the packed
     layout: parameters, T, the givenness flags), every statement symbol
     `L_<name>`; and the statement symbols bound to a `Piecewise`, which
-    the printer squares as numpy squares a `where` (`_sq`).  One
+    the printer reciprocates as numpy reciprocates a `where` (`1.0/(..)`)
+    and refuses as an exponent.  One
     function for `_render_c` and the limiter's renderer (`_hdl_climit`),
     so the two print through the same map by construction."""
     symmap = {}

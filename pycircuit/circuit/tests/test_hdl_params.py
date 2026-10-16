@@ -657,18 +657,24 @@ _RECORDED = [
     ## junction GMIN, default 0): the three POINT digests did not move
     ## (measured); previous explain Npn 12f9bd59d4d4f203, Pnp
     ## a27aaf1b487efcf6, Thermal b48032c5efaed323.
+    ## 2026-10-16: explain re-recorded (was f59fa02d9bbea957): a square prints `_sq(..)` (x * x) in the
+    ## chain source the explanation shows, not `..**2`; the three POINT digests did not move.
     ('GummelPoonNpnHdl', _BJT, ('c', 'b', 'e'), 6,
      ['86f6b89d43855a39', '2f85a7792aa1201e', '5ff8e2d4c0347086'],
-     'f59fa02d9bbea957'),
+     'a9c3c2c2290cfb34'),
+    ## 2026-10-16: explain re-recorded (was d26dff1ba7bbb30b): a square prints `_sq(..)` (x * x) in the
+    ## chain source the explanation shows, not `..**2`; the three POINT digests did not move.
     ('GummelPoonPnpHdl', _BJT, ('c', 'b', 'e'), 6,
      ['1fdb986ba17c1931', 'f2463ed66739ca8e', '186e9ba75b76412b'],
-     'd26dff1ba7bbb30b'),
+     '0383778119a47d54'),
     ## 2026-09-19: explain re-recorded (was d498f022d01f0c10).  The flicker term gained a
     ## named sign factor `sgnfl`, which RENUMBERS the intermediate after it
     ## (`_v73_pdiss` -> `_v74_pdiss`); the three POINT digests did not move.
+    ## 2026-10-16: explain re-recorded (was f4b7fe86a2dfddfc): a square prints `_sq(..)` (x * x) in the
+    ## chain source the explanation shows, not `..**2`; the three POINT digests did not move.
     ('GummelPoonNpnThermalHdl', _BJT, ('c', 'b', 'e', 'th', 'tha'), 8,
      ['f5a076b126f68f66', '929ed86f421a4875', '725e30e46a092a66'],
-     'f4b7fe86a2dfddfc'),
+     'a74bb6aa360ede71'),
     ## ⚠ The two SPICE-diode `explain` digests were RE-RECORDED
     ## 2026-08-27 for `_autohold` (roadmap sec. 36): the regularisers now
     ## hold their own arguments, so the chain carries more named
@@ -696,9 +702,11 @@ _RECORDED = [
     ## named sign factor `sgnfl`, which RENUMBERS the intermediate after it
     ## (`_v29_pdiss` -> `_v30_pdiss`); the three POINT digests did not move.
     ## 2026-10-16: explain re-recorded (was 38a3b45aa096f320), as DiodeSpiceHdl's.
+    ## 2026-10-16: explain re-recorded (was 9887d2600294f1dd): a square prints `_sq(..)` (x * x) in the
+    ## chain source the explanation shows, not `..**2`; the three POINT digests did not move.
     ('DiodeSpiceThermalHdl', _DIO, ('a', 'c', 'th', 'tha'), 5,
      ['304cd81bdc921677', '5436b44b35812ab8', 'c55e46b8b22ded83'],
-     '9887d2600294f1dd'),
+     '2524f0d67853e63b'),
 ]
 
 
