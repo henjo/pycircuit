@@ -1041,6 +1041,32 @@ def test_level3_jacobians_by_finite_differences(name, card, x):
             assert abs(e.ana) < e.floor, (name, e)
 
 
+
+#: gm1's n-channel card (CircuitSim90) without its `vmax` -- SPICE's default 0
+GM1_NOVMAX = dict(vto=0.925, u0=634.0, kappa=0.02, eta=1.45, theta=0.0696, delta=7.23,
+                  nsub=3.43e16, tox=4.5e-8, xj=6e-7, w=7e-6, l=3e-6, tnom=_T0C)
+
+
+@pytest.mark.parametrize('card', [dict(FULL, vmax=0.0), GM1_NOVMAX], ids=['full', 'gm1'])
+def test_level3_without_vmax_is_finite_at_every_bias(card):
+    """No `vmax` (the card's default 0): the current and the Jacobian finite at
+    every bias of a grid, forward and reverse, cut off to saturated.  Until
+    2026-10-17 the reverse-mode copy's `vds/vdsat` ratio was clamped above
+    only: with `vds < 0` there and `vdsat` floored at 1e-9 it reached -2.5e9,
+    its fourth power made `delxl` round to `leff` and `xlfact` divide by zero
+    -- a NaN Jacobian (gm1's card at vds 2.5, vgs 4), and the operating point
+    of an inverter chain on such cards failed."""
+    el = _mk(eh.MosLevel3Hdl, 'd', 'g', 's', 'b', **card)
+    bad = []
+    for vds in np.linspace(-5.0, 5.0, 11):
+        for vgs in np.linspace(-1.0, 5.0, 13):
+            for vbs in (0.0, -2.0):
+                x = np.array([vds, vgs, 0.0, vbs])
+                if not all(np.isfinite(np.asarray(f(x), float)).all() for f in (el.i, el.G)):
+                    bad.append((float(vds), float(vgs), vbs))
+    assert not bad, bad
+
+
 def test_level3_jacobian_check_fails_on_a_corrupted_derivative():
     el = _mk(eh.MosLevel3Hdl, 'd', 'g', 's', 'b', **FULL)
     x = np.array([3.0, 2.0, 0.0, -0.5])

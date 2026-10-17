@@ -4448,7 +4448,13 @@ def _mos3_channel(p, vgs, vds, vbs, c, tag):
     ## is clamped at 1 -- it is only SELECTED below vdsat, where it is
     ## at most 1, and unclamped it is a 1e120 in the discarded arm.
     vdsatf = v(_maxc(vdsat, 1e-9), 'vdsatf')
-    ratio = v(_minc(vds / vdsatf, 1.0), 'ratio')
+    ## Clamped BELOW at 0 too (2026-10-17): the reverse-mode copy runs with
+    ## `vds < 0` at every bias, where `vdsat` floors at 1e-9 and the ratio
+    ## was ~ -2.5e9 -- its fourth power 4e37 made `delxl` round to `leff` and
+    ## `xlfact` divide by zero: a NaN Jacobian for every card without
+    ## `vmax` (the default), whose operating points then failed.  Selected
+    ## the ratio is in [0, 1], where the clamp is the identity.
+    ratio = v(_maxc(_minc(vds / vdsatf, 1.0), 0.0), 'ratio')
     ka = v(p.kappa * c['alpha'], 'ka')
     ## `sqrt(ka*vdsat/8)` is differentiated as `sqrt(u)/(2u)`, which is
     ## 0/0 at `vdsat = 0` -- every cut-off device's reverse arm.  The

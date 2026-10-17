@@ -9487,3 +9487,25 @@ big decks 42.27 -> 31.51 s (-25.5 %).  One deck the other way: opampal 1.91 -> 2
 0.92 s), its operating point slower (1.00 -> 1.21 s): the same route (source steps, the junction-gmin ladder) taking
 another path through its failing rungs (PCNR iterations 1 286 -> 1 632) -- a hard operating point's sensitivity to its
 last bits, as a latch's state is.
+
+## 2026-10-17 — 147. Level 3 without `vmax`: a finite Jacobian (the reverse-mode ratio clamped below)
+
+**Found** diagnosing the gold decks' MOS failures (plan `dc-final-gmin.md`, 'THE OPEN TOPICS'): an inverter chain on
+gm1's level-3 cards with `vmax=0` -- SPICE's default, every card that does not give it -- had no operating point (PCNR's
+iterate not finite at iteration 2, the chain exhausted).  The device's current was finite and its Jacobian NaN in
+saturation and near threshold.  Cause: `ratio = minc(vds/vdsatf, 1)` was clamped above only.  The reverse-mode copy of
+the channel runs with `vds < 0` at every bias, where `vdsat` floors at 1e-9: the ratio reached -2.5e9, its fourth power
+in `dl_below` 4e37, `delxl` rounded to `leff` and `xlfact = 1/(1 - delxl/leff)` divided by zero.  With `vmax > 0` that
+branch is the constant 0, so no gold card (all give `vmax`) met it, and the finite-difference test's no-`vmax` points
+on the library's card did not either.
+
+**Fixed.**  The ratio is clamped below at 0 as well: where its arm is selected it is in [0, 1] already, the clamp the
+identity there -- every selected value and derivative bit-identical.
+
+**Checked.**  gm1's card without `vmax`: the current and Jacobian finite on a 1 050-point grid (forward and reverse, cut
+off to saturated); the inverter chain's operating point solves; its DC current agrees with ngspice's on the same deck
+text (48 points, within 0.5 %, one 1 nA subthreshold point 3 %).  Test: `test_level3_without_vmax_is_finite_at_every_
+bias` (the library's card and gm1's; gm1's fails on the code before).
+
+**Gate**: suite 5 486 passed, 6 skipped, 3 xfailed (5 484 + the two cases); every gold operating point identical; the gold
+census on the three paths: no deck moves.
