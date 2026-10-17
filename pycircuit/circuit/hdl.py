@@ -4249,7 +4249,10 @@ def generate_code(cls):
     pcnr_refusal = None
     pcnr_vector = None
     pcnr_affine = {}
-    if limits:
+    if getattr(cls, 'pcnr_declined', None):
+        ## (the class declines PCNR itself: `Behavioural.pcnr_declined`)
+        pcnr_refusal = str(cls.pcnr_declined)
+    elif limits:
         pcnr_vector, pcnr_refusal = _pcnr_declared_route(
             limits, ivec, chain_defs, xsyms, xlabels, paramsyms, given_syms,
             states, vbranches, affine_out=pcnr_affine)
@@ -7485,6 +7488,14 @@ class Behavioural(circuit.Circuit, metaclass=BehaviouralMeta):
     #: parameters as bare names.  `None` is the bare-name style.  The
     #: compiled element is identical either way; see `ParamNamespace`.
     params_as = None
+
+    #: A class that declines vector PCNR itself: the reason (a string), or
+    #: None.  Set, the compiler records it as the refusal and skips the
+    #: declared-probe route's analysis -- which, for a current whose
+    #: probe-dependent coefficient multiplies another node (SPICE's Meyer
+    #: integration, `elements_hdl._meyer_currents`), resolves the whole chain
+    #: only to refuse.  The operating point is then the ordinary chain's.
+    pcnr_declined = None
 
     def __init__(self, *args, **kvargs):
         aliases = type(self).aliasparams

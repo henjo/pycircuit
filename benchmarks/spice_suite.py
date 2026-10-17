@@ -6,6 +6,7 @@
     python benchmarks/spice_suite.py --peers         # ngspice and Xyce too
     python benchmarks/spice_suite.py --json out.json
     python benchmarks/spice_suite.py --qpart 1 gm2   # the MOS gate charge's channel split
+    python benchmarks/spice_suite.py --meyer gm1     # SPICE's Meyer integration (mos_charge='meyer')
 
 Each deck runs in a process of its own (its peak RSS is its own): read,
 import, the `.tran` (`Imported.transient`), its wall times, steps, Newton
@@ -124,7 +125,7 @@ def _gold_column(names, col):
     return lower.index(key) if key in lower else None
 
 
-def run_one(name, peers, qpart=None):
+def run_one(name, peers, qpart=None, mos_charge='conserving'):
     """One deck, in this process: its record (see the module note)."""
     import numpy as np
 
@@ -141,7 +142,8 @@ def run_one(name, peers, qpart=None):
     net = spicenetlist.read(deck)
     rec['read_s'] = time.perf_counter() - t0
     t0 = time.perf_counter()
-    imp = spice_import.import_netlist(deck, **({} if qpart is None else {'mos_qpart': qpart}))
+    imp = spice_import.import_netlist(deck, mos_charge=mos_charge,
+                                      **({} if qpart is None else {'mos_qpart': qpart}))
     rec['import_s'] = time.perf_counter() - t0
     rec['elements'], rec['unknowns'] = len(imp.elements), imp.circuit.n
     tr, kw = imp.transient(**OVERRIDES.get(name, {}))
@@ -283,8 +285,10 @@ def main(argv):
     peers = '--peers' in argv
     qpart = float(argv[argv.index('--qpart') + 1]) if '--qpart' in argv else None
     out_json = argv[argv.index('--json') + 1] if '--json' in argv else None
+    meyer = '--meyer' in argv
     if '--one' in argv:
-        print(json.dumps(run_one(argv[argv.index('--one') + 1], peers, qpart)))
+        print(json.dumps(run_one(argv[argv.index('--one') + 1], peers, qpart,
+                                 'meyer' if meyer else 'conserving')))
         return 0
     values = {out_json, argv[argv.index('--qpart') + 1] if '--qpart' in argv else None}
     names = [a for a in argv if not a.startswith('--') and a not in values] or list(CASES)
@@ -294,7 +298,8 @@ def main(argv):
     recs = []
     for name in names:
         cmd = [sys.executable, os.path.abspath(__file__), '--one', name] + (
-            ['--peers'] if peers else []) + (['--qpart', str(qpart)] if qpart is not None else [])
+            ['--peers'] if peers else []) + (['--qpart', str(qpart)] if qpart is not None else []) + (
+            ['--meyer'] if meyer else [])
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, check=False,
                                timeout=CASE_TIMEOUT)

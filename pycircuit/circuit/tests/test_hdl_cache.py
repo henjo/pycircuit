@@ -66,6 +66,9 @@ def _reclass(base, name=None):
         ## A `params_as` class hands analog() its namespace first; a
         ## reclass that dropped it would make `p` a terminal.
         params_as=getattr(base, 'params_as', None),
+        ## and a class that declines PCNR keeps declining: dropped, the
+        ## route analysis runs on it (the Meyer classes': hours)
+        pcnr_declined=getattr(base, 'pcnr_declined', None),
         __module__=base.__module__,
         __qualname__=base.__qualname__))
 

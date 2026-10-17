@@ -3080,6 +3080,69 @@ def _mos_gate_charge(us, ud, phi, coxt, qpart, tag='', mdep=None, sat=None):
     return qg, qd, qs
 
 
+#: ngspice's floor on Meyer's `vdsat` (devsup.c's MAGIC_VDS)
+_MEYER_MAGIC_VDS = 0.025
+#: the Meyer currents' scratch node scale: `V(y) = tau dv/dt` in volts for
+#: the nanosecond edges these models switch on
+_MEYER_TAU = 1e-12
+
+
+def _meyer_caps(vgs, vgd, vgb, von, vdsat, phi, coxt, tag):
+    """Meyer's intrinsic capacitances ``(cgs, cgd, cgb)`` as SPICE computes
+    them: ngspice's `DEVqmeyer` (devsup.c), ``vdsat`` floored at
+    `_MEYER_MAGIC_VDS`, its halves doubled -- SPICE adds this step's half
+    and the last step's to make the capacitance it integrates.  Regions by
+    ``vgst = vgs - von``: accumulation (``cgb = coxt``), depletion
+    (``cgb = -vgst coxt/phi``), the near-threshold strip ``-phi/2 < vgst
+    <= 0`` (``cgs = (4/3) coxt (vgst/phi + 1/2)``, split with the drain
+    below ``vdsat``), and inversion (``2/3 coxt`` to the source in
+    saturation; Meyer's triode forms below ``vdsat``)."""
+    def v(expr, name):
+        return _var(expr, name + tag)
+    vgst = v(vgs - von, 'mvgst')
+    vdsm = v(_maxc(vdsat, _MEYER_MAGIC_VDS), 'mvdsat')
+    vds = v(vgs - vgd, 'mvds')
+    vddif = v(2.0 * vdsm - vds, 'mvddif')
+    tri_d = v(1.0 - vdsm * vdsm / (vddif * vddif), 'mtrid')
+    tri_s = v(1.0 - (vdsm - vds) * (vdsm - vds) / (vddif * vddif), 'mtris')
+    sat = vds >= vdsm
+    ctr = v(2.0 * (vgst * coxt / (1.5 * phi) + coxt / 3.0), 'mctr')
+    cin = 2.0 * coxt / 3.0
+    cgb = v(sympy.Piecewise((coxt, vgst <= -phi), (-vgst * coxt / phi, vgst <= 0.0),
+                            (0.0, True)), 'mcgb')
+    cgs = v(sympy.Piecewise(
+        (0.0, vgst <= -0.5 * phi),
+        (sympy.Piecewise((ctr, sat), (ctr * tri_s, True)), vgst <= 0.0),
+        (sympy.Piecewise((cin, sat), (cin * tri_s, True)), True)), 'mcgs')
+    cgd = v(sympy.Piecewise(
+        (0.0, vgst <= -0.5 * phi),
+        (sympy.Piecewise((0.0, sat), (ctr * tri_d, True)), vgst <= 0.0),
+        (sympy.Piecewise((0.0, sat), (cin * tri_d, True)), True)), 'mcgd')
+    return cgs, cgd, cgb
+
+
+def _meyer_currents(forward, reverse, vds, bgs, bgd, bgb):
+    """The capacitance-defined currents ``i = C(v) dv/dt`` of SPICE's Meyer
+    integration -- which no charge has (the capacitances are not a
+    gradient), so they conserve nothing, as SPICE's do not -- on the gate's
+    three branches.  ``forward``/``reverse`` are `_meyer_caps` of the two
+    modes (the reverse with the drain as the source); SPICE's mode by
+    ``vds``.  Each current through a scratch node ``y`` whose own equation
+    is ``I(y) = V(y) - tau ddt(v)`` -- nothing else touches it, so
+    ``V(y) = tau dv/dt`` -- and the branch current ``(C/tau) V(y)`` (the
+    memristor's idiom); at DC ``y = 0`` and the current is 0."""
+    fwd = vds >= 0.0
+    cgs = _var(sympy.Piecewise((forward[0], fwd), (reverse[1], True)), 'mcs')
+    cgd = _var(sympy.Piecewise((forward[1], fwd), (reverse[0], True)), 'mcd')
+    cgb = _var(sympy.Piecewise((forward[2], fwd), (reverse[2], True)), 'mcb')
+    out = ()
+    for name, br, cap in (('ygs', bgs, cgs), ('ygd', bgd, cgd), ('ygb', bgb, cgb)):
+        by = Branch(Node(name), br.minus)
+        out += (Contribution(by.I, by.V - _MEYER_TAU * ddt(br.V)),
+                Contribution(br.I, cap / _MEYER_TAU * by.V))
+    return out
+
+
 def _mos1_analog(T, nmos, limiting='group', gate_charge=False):
     """Build the ``analog()`` body of a SPICE level-1 MOSFET.
 
@@ -4499,7 +4562,7 @@ def _mos3_channel(p, vgs, vds, vbs, c, tag):
     return cdrain, von, vdsat, xn
 
 
-def _mos3_analog(T, nmos, gate_charge=False):
+def _mos3_analog(T, nmos, gate_charge=False, meyer=False):
     """Build the ``analog()`` body of a SPICE level-3 MOSFET.
 
     Equations: `mos3load.c` / `mos3temp.c` (Berkeley SPICE3, ngspice-44
@@ -4728,6 +4791,15 @@ def _mos3_analog(T, nmos, gate_charge=False):
             stmts += (Contribution(bgb.I, ddt(qg)),
                       Contribution(bbd.I, ddt(-qd)),
                       Contribution(bbs.I, ddt(-qs)))
+        if meyer:
+            ## SPICE's Meyer integration (`_meyer_currents`): each mode's own
+            ## `von` and `vdsat` -- `von` with eta's DIBL, as SPICE's
+            coxt = _var(cox * leff * weff, 'coxt')
+            vgb = _var(vgs - vbs, 'vgb')
+            stmts += _meyer_currents(
+                _meyer_caps(vgs, vgd, vgb, vonf, vdsatf, phiT, coxt, 'f'),
+                _meyer_caps(vgd, vgs, vgb, _vonr, _vdsatr, phiT, coxt, 'r'),
+                vds, bgs, bgd, bgb)
         return stmts
     return analog
 
@@ -4782,6 +4854,36 @@ class MosLevel3PmosGateChargeHdl(Behavioural):
     instparams = _mos3_params() + _qpart_param()
 
     analog = staticmethod(_mos3_analog(TEMP, -1, gate_charge=True))
+
+
+class MosLevel3MeyerHdl(Behavioural):
+    """`MosLevel3Hdl` with SPICE's Meyer integration in place of the
+    charge-conserving gate charge (`_meyer_currents`): Meyer's capacitances
+    as ngspice computes them, integrated as capacitance-defined currents
+    -- conserving no charge, as SPICE does not.  For parity with SPICE
+    (`import_netlist(mos_charge='meyer')`); `MosLevel3GateChargeHdl` is the
+    default.  Three scratch nodes more per device."""
+    pcnr_declined = ("SPICE's Meyer integration: a capacitance-defined current reads its "
+                     "scratch node through a probe-dependent capacitance, which no PCNR "
+                     "block carries -- the operating point is the ordinary chain's, as "
+                     "SPICE's")
+    params_as = 'p'
+    instparams = _mos3_params()
+
+    analog = staticmethod(_mos3_analog(TEMP, +1, meyer=True))
+
+
+class MosLevel3PmosMeyerHdl(Behavioural):
+    """`MosLevel3PmosHdl` with SPICE's Meyer integration (see
+    `MosLevel3MeyerHdl`)."""
+    pcnr_declined = ("SPICE's Meyer integration: a capacitance-defined current reads its "
+                     "scratch node through a probe-dependent capacitance, which no PCNR "
+                     "block carries -- the operating point is the ordinary chain's, as "
+                     "SPICE's")
+    params_as = 'p'
+    instparams = _mos3_params()
+
+    analog = staticmethod(_mos3_analog(TEMP, -1, meyer=True))
 
 
 def _mos2_params():
@@ -5044,7 +5146,7 @@ def _mos2_channel(p, vgs, vds, vbs, c, tag):
     return cdrain, von, vdsat, v(_maxc(xn, 1.0), 'xnn')
 
 
-def _mos2_analog(T, nmos, gate_charge=False):
+def _mos2_analog(T, nmos, gate_charge=False, meyer=False):
     """Build the ``analog()`` body of a SPICE level-2 MOSFET (the SPICE
     benchmark plan's stage 9, 2026-10-09).
 
@@ -5258,6 +5360,15 @@ def _mos2_analog(T, nmos, gate_charge=False):
             stmts += (Contribution(bgb.I, ddt(qg)),
                       Contribution(bbd.I, ddt(-qd)),
                       Contribution(bbs.I, ddt(-qs)))
+        if meyer:
+            ## SPICE's Meyer integration (`_meyer_currents`), each mode's own
+            ## `von` and `vdsat`, as level 3's
+            coxt = _var(cox * leff * weff, 'coxt')
+            vgb = _var(vgs - vbs, 'vgb')
+            stmts += _meyer_currents(
+                _meyer_caps(vgs, vgd, vgb, vonf, vdsatf, phiT, coxt, 'f'),
+                _meyer_caps(vgd, vgs, vgb, _vonr, _vdsatr, phiT, coxt, 'r'),
+                vds, bgs, bgd, bgb)
         return stmts
     return analog
 
@@ -5296,3 +5407,29 @@ class MosLevel2PmosGateChargeHdl(Behavioural):
     instparams = _mos2_params() + _qpart_param()
 
     analog = staticmethod(_mos2_analog(TEMP, -1, gate_charge=True))
+
+
+class MosLevel2MeyerHdl(Behavioural):
+    """`MosLevel2Hdl` with SPICE's Meyer integration (see
+    `MosLevel3MeyerHdl`)."""
+    pcnr_declined = ("SPICE's Meyer integration: a capacitance-defined current reads its "
+                     "scratch node through a probe-dependent capacitance, which no PCNR "
+                     "block carries -- the operating point is the ordinary chain's, as "
+                     "SPICE's")
+    params_as = 'p'
+    instparams = _mos2_params()
+
+    analog = staticmethod(_mos2_analog(TEMP, +1, meyer=True))
+
+
+class MosLevel2PmosMeyerHdl(Behavioural):
+    """`MosLevel2PmosHdl` with SPICE's Meyer integration (see
+    `MosLevel3MeyerHdl`)."""
+    pcnr_declined = ("SPICE's Meyer integration: a capacitance-defined current reads its "
+                     "scratch node through a probe-dependent capacitance, which no PCNR "
+                     "block carries -- the operating point is the ordinary chain's, as "
+                     "SPICE's")
+    params_as = 'p'
+    instparams = _mos2_params()
+
+    analog = staticmethod(_mos2_analog(TEMP, -1, meyer=True))

@@ -113,10 +113,21 @@ MOS_CHARGE_CLASSES = {
     (2, 'pmos'): elements_hdl.MosLevel2PmosGateChargeHdl,
     (3, 'nmos'): elements_hdl.MosLevel3GateChargeHdl,
     (3, 'pmos'): elements_hdl.MosLevel3PmosGateChargeHdl}
+#: `import_netlist(mos_charge='meyer')`: SPICE's Meyer integration in place of
+#: the charge-conserving gate charge -- capacitance-defined currents,
+#: conserving nothing, as SPICE's (`elements_hdl._meyer_currents`), for parity
+#: with SPICE (Andreas, 2026-10-17).  Levels 2 and 3.
+MOS_MEYER_CLASSES = {
+    (2, 'nmos'): elements_hdl.MosLevel2MeyerHdl,
+    (2, 'pmos'): elements_hdl.MosLevel2PmosMeyerHdl,
+    (3, 'nmos'): elements_hdl.MosLevel3MeyerHdl,
+    (3, 'pmos'): elements_hdl.MosLevel3PmosMeyerHdl}
 _MOS2 = (elements_hdl.MosLevel2Hdl, elements_hdl.MosLevel2PmosHdl,
-         elements_hdl.MosLevel2GateChargeHdl, elements_hdl.MosLevel2PmosGateChargeHdl)
+         elements_hdl.MosLevel2GateChargeHdl, elements_hdl.MosLevel2PmosGateChargeHdl,
+         elements_hdl.MosLevel2MeyerHdl, elements_hdl.MosLevel2PmosMeyerHdl)
 _MOS3 = (elements_hdl.MosLevel3Hdl, elements_hdl.MosLevel3PmosHdl,
-         elements_hdl.MosLevel3GateChargeHdl, elements_hdl.MosLevel3PmosGateChargeHdl)
+         elements_hdl.MosLevel3GateChargeHdl, elements_hdl.MosLevel3PmosGateChargeHdl,
+         elements_hdl.MosLevel3MeyerHdl, elements_hdl.MosLevel3PmosMeyerHdl)
 
 #: A source's waveform: its pycircuit classes (V, I) and its parameters' names.
 WAVES = {'pulse': (elements.VPulse, elements.IPulse, ('1', '2', 'td', 'tr', 'tf', 'pw', 'per')),
@@ -372,13 +383,14 @@ _DEVICE_CLASSES = {
     elements_hdl.GummelPoonNpn4Hdl: ('q', 'npn', {'IS': 'is'}, {'area': 'area'}),
     elements_hdl.GummelPoonPnp4Hdl: ('q', 'pnp', {'IS': 'is'}, {'area': 'area'}),
 }
-for (_level, _mtype), _cls in list(MOS_CLASSES.items()) + list(MOS_CHARGE_CLASSES.items()):
+for (_level, _mtype), _cls in (list(MOS_CLASSES.items()) + list(MOS_CHARGE_CLASSES.items())
+                               + list(MOS_MEYER_CLASSES.items())):
     _DEVICE_CLASSES[_cls] = ('m', _mtype, {'IS': 'is', 'lambd': 'lambda', 'u0': 'uo'},
                              {k: k for k in MOS_INSTANCE} | {'asrc': 'as'})
 
 
 def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qpart=1.0,
-                   gmin=None):
+                   gmin=None, mos_charge='conserving'):
     """Read and map the netlist `path` (see the module note).  `dialect`
     (``'xyce'`` or ``'ngspice'``) chooses where the two read a deck
     differently: the option and temperature statements.  `merge_shorts`:
@@ -394,17 +406,25 @@ def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qp
     SPICE parameter, so `Imported.write_ngspice` leaves it out.  `gmin`:
     SPICE's junction gmin on every element that takes it -- None, the
     deck's `.options gmin` or SPICE's 1e-12; a number overrides both (0, the
-    cards' physics alone)."""
+    cards' physics alone).  `mos_charge`: the MOSFETs' intrinsic gate
+    capacitance -- 'conserving' (the default: the charge-conserving gate
+    charge whose capacitances follow Meyer's, `_mos_gate_charge`) or 'meyer'
+    (SPICE's own integration of Meyer's capacitances, conserving nothing:
+    `MOS_MEYER_CLASSES`, levels 2 and 3), for parity with SPICE."""
     if dialect not in ('xyce', 'ngspice'):
         raise ValueError(f'dialect {dialect!r}: xyce or ngspice')
+    if mos_charge not in ('conserving', 'meyer'):
+        raise ValueError(f"mos_charge {mos_charge!r}: 'conserving' or 'meyer'")
     return _Importer(spicenetlist.read(path), dialect, strict, merge_shorts, mos_qpart,
-                     gmin).run()
+                     gmin, mos_charge).run()
 
 
 class _Importer:
 
-    def __init__(self, net, dialect, strict, merge_shorts=False, mos_qpart=None, gmin=None):
+    def __init__(self, net, dialect, strict, merge_shorts=False, mos_qpart=None, gmin=None,
+                 mos_charge='conserving'):
         self.net = net
+        self.mos_charge = mos_charge
         self.dialect = dialect
         self.strict = strict
         self.merge_shorts = merge_shorts
@@ -1014,6 +1034,11 @@ class _Importer:
             raise SpiceImportError(f'model {m.name}: MOS LEVEL {level} is not supported')
         if level in (2, 3) or values.get('tox', 0.0) != 0.0:
             cls = MOS_CHARGE_CLASSES[(level, m.type)]
+            if self.mos_charge == 'meyer':
+                cls = MOS_MEYER_CLASSES.get((level, m.type))
+                if cls is None:
+                    raise SpiceImportError(f"model {m.name}: mos_charge='meyer' has no "
+                                           f'level {level} yet (levels 2 and 3)')
         geometry = {k: values.pop(k) for k in ('l', 'w') if k in values}
         if level == 1:
             uo = values.pop('uo', values.pop('u0', 600.0))

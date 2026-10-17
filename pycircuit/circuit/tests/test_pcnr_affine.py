@@ -746,6 +746,11 @@ def test_no_model_that_needs_limiting_is_refused_by_pcnr():
             continue
         if ratio is None or ratio <= _NEEDS_LIMITING:
             continue
+        if cls.pcnr_declined:
+            ## (a class that declines PCNR ITSELF, its reason declared --
+            ## SPICE's Meyer integration: a decision, named, not a gap)
+            assert cls._hdl_info.get('pcnr_refusal') == cls.pcnr_declined, name
+            continue
         el = cls(*[Node('m%d' % i) for i in range(len(cls.terminals))])
         el.update_iparv()
         if not (getattr(el, 'pcnr_probes', None)

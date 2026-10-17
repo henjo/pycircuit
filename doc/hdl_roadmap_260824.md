@@ -9509,3 +9509,43 @@ bias` (the library's card and gm1's; gm1's fails on the code before).
 
 **Gate**: suite 5 486 passed, 6 skipped, 3 xfailed (5 484 + the two cases); every gold operating point identical; the gold
 census on the three paths: no deck moves.
+
+## 2026-10-17 — 148. An opt-in SPICE Meyer mode for MOS levels 2 and 3 (`import_netlist(mos_charge='meyer')`)
+
+**Why** (plan `dc-final-gmin.md`, 'THE OPEN TOPICS', 'AN OPT-IN SPICE MEYER MODE'; Andreas: "Opt-in SPICE Meyer mode").
+The gold decks' failing columns, classified by the three-way check (ngspice on the same imported circuit against the same
+gold): 14 of 30 fail in ngspice too; 16, in 8 decks -- all MOS level 2 / 3 -- fail in ours alone.  Measured, not
+assumed: not integration (tolerances x0.1 move nothing), not DC (the drain current is ngspice's on a 48-point grid, both
+devices, the same deck text read by both), but our edges LATE -- 20..30 ps a gate stage on gm1's cards, g1310's chain
+accumulating +60 a stage -- the gate's total capacitance Meyer's, its split not.  On a 5-stage chain switched off one at
+a time on both sides: eta's DIBL left out of the charge's threshold ~30 %, the junctions a little, the body effect and
+velocity saturation nothing; the rest is a charge-conserving model against Meyer's capacitances, which no charge has --
+and which Xyce's gold and ngspice integrate without conserving anything (the choice declined at design time, 2026-10-07).
+
+**Built.**  `_meyer_caps`: Meyer's capacitances as ngspice's `DEVqmeyer` computes them (its 25 mV `MAGIC_VDS` floor,
+its halves doubled), each mode's own `von` (eta's DIBL in, as SPICE's) and `vdsat`, SPICE's mode swap.  `_meyer_currents`:
+each as a capacitance-defined current `i = C(v) dv/dt` through a scratch node (`V(y) - V(minus) = tau dv/dt`, the
+memristor's idiom; the branch current `(C/tau) V(y)`; tau = 1 ps), compiled, on the core and the C loop, nothing at DC.
+`MosLevel{2,3}[Pmos]MeyerHdl`; `import_netlist(mos_charge='meyer')` ('conserving', today's, the default; level 1 refused);
+`spice_suite --meyer`.  Found building: (a) the compile took over 30 minutes -- vector PCNR's route analysis resolved the
+Meyer coefficient through the whole chain (sympy `subs` on nested `Piecewise`) only to refuse it: `Behavioural.
+pcnr_declined`, a class's own reason, skips that analysis, and the Meyer classes set it (their operating points the
+ordinary chain's, as SPICE's); (b) with tau = 1 ns a 5-stage chain collapsed its step at 1e-14 s -- the scratch value
+carries v's Newton jitter times tau/h.
+
+**Measured.**  M1: the capacitances against ngspice's own (`@m[cgs/cgd/cgb]`, gm1's card, 24 biases): 2.7e-6 in inversion
+and accumulation (the oxide constant), 6e-4 .. 4e-3 near threshold -- the formula fed ngspice's own `von` and `vdsat`
+leaves the same residual: the DC model's `phi` / `von` constants there, not Meyer's.  M2: the 5-stage chain against
+ngspice, per node, -2 .. +1 ps (the conserving model +134 / +147 ps by the fifth).  M3 (the gold decks under the mode):
+the 16 ours-only columns pass but slowlatch's (not run), the ring passes both (48.6 / 39.8 by default), no column passing
+by default fails; failing columns 30 -> 7, each one ngspice fails too and ours at or below its (rich3 2.1-2.7 against
+~90).  M4: the default path bit-identical -- the gold census on the three paths moves no deck, every operating point
+identical.  Cost: gm19 12.1 s against 5.0, mux8 11.6 against 7.7.  NOT RUN under the mode: jge (its operating point,
+PCNR declined, the chain alone fails it), slowlatch and todd3 (the step collapses mid-run: their 1.5e-12 A tolerance
+against the scratch coupling C/tau ~ 10 S).  Tests: `test_mos_meyer.py` -- DEVqmeyer in both modes on levels 2 and 3 to
+1e-9 Cox, the PMOS mirror, the DC current the charge classes' byte for byte (gmin on), PCNR declined by the reason, the
+importer, an imported chain on the C core switching sooner than the conserving model's; `test_hdl_cache`'s reclass keeps
+`pcnr_declined` (dropped, its copies ran the route analysis for hours); `test_device_gmin` and the PCNR coverage guard
+take a declared decline.
+
+**Gate**: suite 5 542 passed, 6 skipped, 3 xfailed; the gold census (default) on the three paths: no deck moves.
