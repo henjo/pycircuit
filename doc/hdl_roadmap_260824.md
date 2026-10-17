@@ -9549,3 +9549,24 @@ importer, an imported chain on the C core switching sooner than the conserving m
 take a declared decline.
 
 **Gate**: suite 5 542 passed, 6 skipped, 3 xfailed; the gold census (default) on the three paths: no deck moves.
+
+## 2026-10-17 — 149. The Meyer mode runs every gold deck: its scratch relation potential-contributed
+
+**Why** (Andreas: "Make the Meyer mode run everywhere").  Under roadmap 148's mode three decks did not run: jge had no
+operating point and slowlatch and todd3 collapsed their step.  One cause: each scratch node's relation `V(y) - V(minus)
+= tau dv/dt` was a node equation, and the conductances a solver adds to every node -- the gshunt ladder, pseudo-transient
+continuation, the step rescues -- moved it; through `C/tau ~ 10 S` that was a fake gate current (jge's operating point:
+a residual of 1.2e4 A at node 20, the continuation failing at g = 1e6).
+
+**Built.**  The relation is POTENTIAL-contributed (`Contribution(by.V, tau*ddt(br.V))`): a branch-current unknown
+enforces it exactly, and no added conductance moves it -- at DC the Meyer currents are exactly 0 whatever a ladder
+does.  One unknown more a capacitance.  The prototype (a constant capacitance this way against a linear capacitor) is
+unchanged: 1.9e-13 V, the same 274 steps.
+
+**Measured.**  All 27 gold decks run under the mode (jge 207 s).  Its failing columns: 12, every one but slowlatch's a
+column ngspice fails too and ours at or below its (todd3 3.16 / 2.73 against 3.18 / 2.73 -- the same latch state);
+slowlatch's three (v(3) 136, v(4) 32, v(5) 43) are its OTHER latch state -- no .ic or .nodeset, so the operating point's
+solver picks it, and under the mode that is the ordinary chain (the Meyer classes decline PCNR), which picks the other
+one, as it did by default before roadmap 142.  The chain against ngspice: -2 .. 0 ps a node.
+
+**Gate**: suite 5 542 passed, 6 skipped, 3 xfailed; the gold census (default) on the three paths: no deck moves.

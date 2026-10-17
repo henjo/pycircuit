@@ -3,7 +3,8 @@
 Andreas, 2026-10-17): Meyer's capacitances as ngspice computes them,
 integrated as capacitance-defined currents ``i = C(v) dv/dt`` -- which no
 charge has, so they conserve nothing, as SPICE's do not.  Each current runs
-through a scratch node ``y`` with ``V(y) - V(minus) = tau dv/dt``.
+through a scratch branch ``y``, potential-contributed ``V(y) - V(minus) = tau
+dv/dt``.
 
 The reference is `test_mos_gate_charge.meyer`: ngspice's `DEVqmeyer`
 (devsup.c) transcribed and doubled, its `MAGIC_VDS` floor on `vdsat`.
@@ -49,7 +50,9 @@ def _meyer_row(e, vd, vg, vs, vb):
         warnings.simplefilter('ignore')
         Gm = np.asarray(e.G(x, defaultepar), float)
         Cm = np.asarray(e.C(x, defaultepar), float)
-    A = [k for k, lab in enumerate(lay) if lab in _SCRATCH]
+    ## (every unknown but the four terminals: the scratch nodes and their
+    ## branch currents)
+    A = [k for k, lab in enumerate(lay) if lab not in ('d', 'g', 's', 'b')]
     K = [k for k in range(len(lay)) if k not in A]
     w = 1e3
     Y = Gm + 1j * w * Cm

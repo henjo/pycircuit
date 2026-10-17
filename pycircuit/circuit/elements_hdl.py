@@ -3127,10 +3127,13 @@ def _meyer_currents(forward, reverse, vds, bgs, bgd, bgb):
     gradient), so they conserve nothing, as SPICE's do not -- on the gate's
     three branches.  ``forward``/``reverse`` are `_meyer_caps` of the two
     modes (the reverse with the drain as the source); SPICE's mode by
-    ``vds``.  Each current through a scratch node ``y`` whose own equation
-    is ``I(y) = V(y) - tau ddt(v)`` -- nothing else touches it, so
-    ``V(y) = tau dv/dt`` -- and the branch current ``(C/tau) V(y)`` (the
-    memristor's idiom); at DC ``y = 0`` and the current is 0."""
+    ``vds``.  Each current through a scratch branch ``y`` to the gate
+    branch's minus node, POTENTIAL-contributed ``V(y) = tau dv/dt`` -- a
+    branch-current unknown enforces it exactly, so no conductance a solver
+    adds to a node (gshunt, pseudo-transient continuation) moves it: written
+    as a node equation it did, and ``C/tau ~ 10 S`` made the shunt a 1e4 A
+    gate current (jge's operating point, 2026-10-17) -- and the branch
+    current ``(C/tau) V(y)``; at DC ``V(y) = 0`` and the current is 0."""
     fwd = vds >= 0.0
     cgs = _var(sympy.Piecewise((forward[0], fwd), (reverse[1], True)), 'mcs')
     cgd = _var(sympy.Piecewise((forward[1], fwd), (reverse[0], True)), 'mcd')
@@ -3138,7 +3141,7 @@ def _meyer_currents(forward, reverse, vds, bgs, bgd, bgb):
     out = ()
     for name, br, cap in (('ygs', bgs, cgs), ('ygd', bgd, cgd), ('ygb', bgb, cgb)):
         by = Branch(Node(name), br.minus)
-        out += (Contribution(by.I, by.V - _MEYER_TAU * ddt(br.V)),
+        out += (Contribution(by.V, _MEYER_TAU * ddt(br.V)),
                 Contribution(br.I, cap / _MEYER_TAU * by.V))
     return out
 
