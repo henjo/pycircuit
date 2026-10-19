@@ -5075,3 +5075,20 @@ early_checks`) and `attempt_made` / `early_reject` count them.
 were measured before it, and its "no consecutive ratio exceeds 2" is
 their sequence's (the controller caps growth, not a shrink after a
 rejection; at 1.25 one shrink is 2.1x).
+
+## `csrc/pcnrdc.c` -- a NaN through KLU's sequence (2026-10-19)
+
+2026-10-19 (Andreas: "Fix the C core's flag bail"; `doc/hdl_roadmap_260824.md`,
+151).  `solve_klu` handed back on any KLU entry or rhs that was not finite,
+the sequence's guards then twinned on finite values only.  Under the Meyer
+mode e1480 (373 unknowns, StructuralKLU) met NaN -- only NaN -- at the last
+solve of five failing gshunt rungs a run, and the Python's loop reran each
+(0.3 .. 0.8 s; the operating point 2.64 s, the chain's 0.06).  The reruns
+warned of nothing and ended as the C would have: two non-finite iterates,
+three failed factors.  `pcx_kluseq.h`'s residual guard propagates a NaN as
+numpy's `max` (`nan_r`), so a NaN now goes through and an infinite value
+still hands back.  The 22 rungs all served, each bit-identical C on and
+off; the operating point 0.26 s.
+Tests: `test_pcnr_c.py` (a NaN on the rhs, in the matrix, on a held
+numeric: served as the Python's error, StructuralKLU's counters the same;
+an infinite rhs handed back).

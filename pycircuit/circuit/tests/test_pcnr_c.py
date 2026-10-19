@@ -10,10 +10,12 @@ import warnings
 
 import numpy as np
 import pytest
+import sympy
 
 from pycircuit.circuit import _paths, _pcnr_c, circuit, gnd, pcnr
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit.elements import VS, R, SubCircuit
+from pycircuit.circuit.hdl import Behavioural, Branch, Contribution, limit_identity, var
 from pycircuit.circuit.linearsolver import AutoSolver, DenseSolver
 from pycircuit.circuit.tests.test_dc_pcnr import _bjt_mirror_20v
 
@@ -188,24 +190,82 @@ def test_a_non_finite_iterate_is_the_pythons_error(monkeypatch):
     assert counts['pcnr_c:nonfinite'] == 1
 
 
-def test_a_non_finite_klu_rhs_is_handed_back(monkeypatch):
-    """On StructuralKLU a value that is not finite hands back (KLU's
-    sequence is twinned on finite values only): the same NaN start on the
-    ladder, the Python's RuntimeError the outcome with the C on and off
-    (each on a fresh DC's own solver, the AutoSolver over the pattern: the
-    DC held, since the solver reaches its pattern through it weakly)."""
-    from pycircuit.circuit.dcanalysis import DC
+class _Root(Behavioural):
+    """A conductance through a square root: NaN at a negative probe -- a
+    kernel's NaN at a finite point, as a wild iterate's (`exp` overflowing
+    into `inf * 0`)."""
 
-    def run(on):
-        c = _ladder()
-        dc = DC(c, toolkit=circuit.numeric, pcnr=True)
-        got = _solve(c, on, monkeypatch, x0=x0, linsolver=dc._get_linearsolver())
-        assert type(dc._get_linearsolver()._choice).__name__ == 'StructuralKLU'
-        return got
-    x0 = _start(_ladder(), 0.5)
-    x0[_ladder().get_node_index('n0')] = np.nan
-    (got, counts), (ref, _) = run(True), run(False)
+    @staticmethod
+    def analog(p, n):
+        b = Branch(p, n)
+        r = var(sympy.sqrt(limit_identity(b.V)), 'r')
+        return (Contribution(b.I, 1e-3 * r),)
+
+
+def _ladder_and_root():
+    c = _ladder()
+    c['q'] = _Root('z', 'n100')
+    return c
+
+
+def _klu(on, monkeypatch, build, x0, first=None):
+    """`_solve` on a fresh DC's own solver -- the AutoSolver over the
+    pattern, the DC held, since the solver reaches its pattern through it
+    weakly -- after a solve from `first` where one is given (KLU's numeric
+    then held: the next solve refactors).  `(outcome, the C's counts,
+    StructuralKLU's counters and whether it holds a numeric)`."""
+    from pycircuit.circuit.dcanalysis import DC
+    c = build()
+    dc = DC(c, toolkit=circuit.numeric, pcnr=True)
+    ls = dc._get_linearsolver()
+    if first is not None:
+        assert _solve(c, on, monkeypatch, x0=first, linsolver=ls)[0][0] == 'ok'
+    got, counts = _solve(c, on, monkeypatch, x0=x0, linsolver=ls)
+    sk = ls._choice
+    assert type(sk).__name__ == 'StructuralKLU'
+    return got, counts, (sk.refactors, sk.factors, sk.pivot_fallbacks, sk.residual_fallbacks,
+                         sk._numeric is None)
+
+
+def _poisoned(build, node, value, rest=0.5):
+    c = build()
+    x0 = _start(c, rest)
+    x0[c.get_node_index(node)] = value
+    return x0
+
+
+@pytest.mark.parametrize('case', ['rhs', 'matrix', 'refactor'])
+def test_a_nan_in_the_klu_solve_is_the_pythons_error(case, monkeypatch):
+    """On StructuralKLU a NaN goes through KLU's sequence in C -- the same
+    library on the same values, its residual guard propagating the NaN as
+    numpy's max does -- and the Python's RuntimeError (`pcnr.NONFINITE`) is
+    SERVED: a NaN on the rhs (a NaN start on the source node), in the matrix
+    (`_Root` at a negative probe), and on a held numeric (the refactor, then
+    the residual's fresh factor), StructuralKLU's counters the same.  Handed
+    back until 2026-10-19: the Meyer mode's e1480 reran five failing rungs a
+    run in the Python's loop (0.3 .. 0.8 s each; three ended in KLU's failed
+    factor, served the same way, `Singular matrix`)."""
+    if case == 'matrix':
+        build, x0, first = _ladder_and_root, _poisoned(_ladder_and_root, 'z', -0.5), None
+    else:
+        build, x0 = _ladder, _poisoned(_ladder, 'n0', np.nan)
+        first = _start(_ladder(), 0.5) if case == 'refactor' else None
+    got, counts, klu = _klu(True, monkeypatch, build, x0, first)
+    ref, _counts, klu_ref = _klu(False, monkeypatch, build, x0, first)
     assert got == ref == ('raise', RuntimeError, pcnr.NONFINITE % 1), (got, ref)
+    assert klu == klu_ref, (klu, klu_ref)
+    assert counts.get('pcnr_c:nonfinite') == 1 and 'pcnr_c:bail:flags' not in counts, counts
+    if case == 'refactor':
+        assert klu[0] >= 1 and klu[3] >= 1, klu          # (refactored, then refactored again)
+
+
+def test_an_infinite_klu_rhs_is_still_handed_back(monkeypatch):
+    """An infinite value still hands back (unmeasured: the residual's `arr
+    @ x - rhs` may be numpy's warning), the Python's outcome the C off's."""
+    x0 = _poisoned(_ladder, 'n0', np.inf)
+    got, counts, klu = _klu(True, monkeypatch, _ladder, x0)
+    ref, _counts, klu_ref = _klu(False, monkeypatch, _ladder, x0)
+    assert got == ref and klu == klu_ref, (got, ref)
     assert counts.get('pcnr_c:bail:flags') == 1 and 'pcnr_c:served' not in counts, counts
 
 

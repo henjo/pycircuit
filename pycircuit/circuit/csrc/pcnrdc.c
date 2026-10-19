@@ -161,9 +161,11 @@ static long solve_dense(pcnrdc_t *s)
 /* StructuralKLU.solve(schur[keep, keep], -f_eff): the reduced matrix (R),
    `_ours`'s test (as many nonzeros on the pattern as in all of it, else
    its fallback solve: handed back), its entries in the pattern's order, its
-   own sequence (pcx_kluseq.h; an entry or rhs that is not finite hands
-   back: the sequence's guards are twinned on finite values only).  A failed
-   factor is its LinAlgError (PCNRDC_SINGULAR).  The solution in `kx` */
+   own sequence (pcx_kluseq.h).  A NaN entry or rhs goes through: KLU is the
+   same library on the same values, and the sequence's residual guard
+   propagates a NaN as numpy's max does.  An infinite one hands back (the
+   residual's `arr @ x - rhs` may be numpy's warning).  A failed factor is
+   its LinAlgError (PCNRDC_SINGULAR).  The solution in `kx` */
 static long solve_klu(pcnrdc_t *s)
 {
     long n = s->n, m = s->m, i, j, nz = 0, nzp = 0, fin = 1, st;
@@ -177,10 +179,10 @@ static long solve_klu(pcnrdc_t *s)
     for (i = 0; i < s->nact; i++) {
         s->klu.kAx[i] = s->R[s->act_r[i]];
         nzp += s->klu.kAx[i] != 0.0;
-        fin &= isfinite(s->klu.kAx[i]) != 0;
+        fin &= isinf(s->klu.kAx[i]) == 0;
     }
     if (nz != nzp) return PCNRDC_BAIL_FOREIGN;
-    for (i = 0; i < m; i++) fin &= isfinite(s->b[i]) != 0;
+    for (i = 0; i < m; i++) fin &= isinf(s->b[i]) == 0;
     if (!fin) return PCNRDC_BAIL_FLAGS;
     st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, m, s->dgemv);
     if (st == PCX_KLU_FACTOR) return PCNRDC_SINGULAR;

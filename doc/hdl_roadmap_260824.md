@@ -9605,3 +9605,32 @@ against the default's 244, 489 C iterations).
 **Gate**: suite 5 557 passed, 6 skipped, 3 xfailed; the gold census (default) on the three paths: no deck moves; all 27
 decks under the mode, 12 failing columns as in 149 (gm17 v(5) 10.0 -> 10.9, ngspice 12.9; slowlatch's three its other
 latch state); the chain against ngspice -2 .. 0 ps a node.
+
+## 2026-10-19 — 151. A NaN goes through the C PCNR core's KLU sequence: the failing rungs it handed back are served
+
+**Why** (roadmap 150's open cost; Andreas: "Fix the C core's flag bail").  Under the Meyer mode e1480's operating point
+took 2.64 s against the chain's 0.06: five rungs of its gshunt ladder the C core handed back (`pcnr_c:bail:flags`) and
+the Python's loop reran, 0.3 .. 0.8 s each.  The default circuit (205 unknowns) solves dense and the same rungs fail in
+C; the Meyer circuit (373) takes StructuralKLU, and `solve_klu` handed back on any entry or rhs that was not finite --
+"the sequence's guards are twinned on finite values only".
+
+**Measured first.**  The five reruns emit no numpy warning; in each the first non-finite KLU input is the rung's LAST
+solve, NaN only (8 .. 54 entries, 2 .. 14 rhs values, no inf), and it ends as the C would have said: two non-finite
+iterates (`NONFINITE`), three failed factors (`Singular matrix`).  `pcx_kluseq.h`'s residual guard already propagates
+a NaN as numpy's `max` does (`nan_r`): every decision the sequence makes on a NaN is the Python's.
+
+**Built.**  `solve_klu` lets a NaN through; an infinite entry or rhs still hands back (unmeasured: the residual's `arr @
+x - rhs` may be numpy's warning).  `test_pcnr_c`: a NaN on the rhs, in the matrix (`_Root`, a square-root conductance at
+a negative probe -- a `var` so that the class is chained, which the C core requires) and on a held numeric (the refactor,
+then the residual's fresh factor) served as the Python's error with StructuralKLU's counters the same, each failing on
+the old C; an infinite rhs still handed back.  The hand-back test it replaces pinned the old behaviour.  The pinned pair
+"the PCNR DC solve and its C" re-recorded (its reference unchanged).  `dcnewton.c` keeps its own, broader finite checks
+(StandardNewton's semantics; not measured here).
+
+**Measured.**  e1480 under the mode: all 22 rungs served in C (2 non-finite, 3 singular), each rung's outcome and the
+operating point bit-identical C on and off; the operating point 2.64 -> 0.26 s (back to back; the chain 0.06).  jge
+11.5 s against the chain's 3.9 (its 2 332 unknowns), gm19 2.8 against 6.1.
+
+**Gate**: suite 5 559 passed, 6 skipped, 3 xfailed (`test_c_abi`'s no-history rule then moved the measurement out of the
+C comment, here); the gold census (default) on the three paths: no deck moves; the 27 decks under the mode: no metric and
+no step count moves; the chain -2 .. 0 ps a node.
