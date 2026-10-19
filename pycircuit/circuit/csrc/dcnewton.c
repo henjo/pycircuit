@@ -90,7 +90,7 @@ static long klu_step(dcnewton_t *s, long m)
 {
     long i, st;
     for (i = 0; i < s->nact; i++) s->klu.kAx[i] = s->R[s->act_r[i]];
-    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, m, s->dgemv);
+    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, NULL, m, s->dgemv, 1, NULL);
     if (st == PCX_KLU_FLAGS) return DCNEWTON_BAIL_FLAGS;
     return st ? DCNEWTON_BAIL_SINGULAR : 0;
 }

@@ -7,10 +7,10 @@
    Schur updates', the step's, the refine's, the convergence tests'
    arithmetic) hands the solve back, and the Python's solve gives its
    warnings.  A NaN is carried quietly, as numpy carries it, from the
-   assembly through the dense solve to x_new, whose test the Python makes
-   (PCNRDC_NONFINITE); a value that is not finite anywhere else -- KLU's
-   entries, v_new, g_lim -- hands back.  Every return leaves the flags
-   clear. */
+   assembly through the solve (dense, or KLU's) to x_new, whose test the
+   Python makes (PCNRDC_NONFINITE); an infinite KLU entry or rhs, and a
+   value that is not finite in v_new or g_lim, hands back.  Every return
+   leaves the flags clear. */
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
@@ -85,7 +85,10 @@ static long assemble(pcnrdc_t *s)
                              NULL, NULL, s->Cs, s->q, NULL, NULL, NULL, NULL);
     feclearexcept(FE_ALL_EXCEPT);
     for (i = 0; i < n; i++) s->F[i] = c->bini[i] + s->u[i];
-    for (i = 0; i < n * n; i++) s->J[i] = c->binG[i];
+    if (s->np)
+        for (i = 0; i < s->np; i++) s->J[s->P[i]] = c->binG[s->P[i]];
+    else
+        for (i = 0; i < n * n; i++) s->J[i] = c->binG[i];
     for (d = 0; d < s->nd; d++) device(s, d);
     if (s->gshunt != 0.0) {
         for (i = 0; i < s->nn; i++) {
@@ -165,26 +168,40 @@ static long solve_dense(pcnrdc_t *s)
    same library on the same values, and the sequence's residual guard
    propagates a NaN as numpy's max does.  An infinite one hands back (the
    residual's `arr @ x - rhs` may be numpy's warning).  A failed factor is
-   its LinAlgError (PCNRDC_SINGULAR).  The solution in `kx` */
+   its LinAlgError (PCNRDC_SINGULAR).  The solution in `kx`.
+   On the pattern (`kfull`): the entries gathered from J where they stand,
+   the foreign test over the pattern's entries off KLU's (J is zero
+   elsewhere: the same count), the residual's test on the CSC -- R is not
+   made */
 static long solve_klu(pcnrdc_t *s)
 {
     long n = s->n, m = s->m, i, j, nz = 0, nzp = 0, fin = 1, st;
     const int64_t *red = s->red;
-    for (i = 0; i < n; i++) {
-        if (red[i] < 0) continue;
-        for (j = 0; j < n; j++)
-            if (red[j] >= 0) s->R[red[i] * m + red[j]] = s->J[i * n + j];
+    if (s->kfull) {
+        for (i = 0; i < s->nact; i++) {
+            s->klu.kAx[i] = s->J[s->kfull[i]];
+            fin &= isinf(s->klu.kAx[i]) == 0;
+        }
+        for (i = 0; i < s->nfor; i++)
+            if (s->J[s->ffull[i]] != 0.0) return PCNRDC_BAIL_FOREIGN;
+    } else {
+        for (i = 0; i < n; i++) {
+            if (red[i] < 0) continue;
+            for (j = 0; j < n; j++)
+                if (red[j] >= 0) s->R[red[i] * m + red[j]] = s->J[i * n + j];
+        }
+        for (i = 0; i < m * m; i++) nz += s->R[i] != 0.0;
+        for (i = 0; i < s->nact; i++) {
+            s->klu.kAx[i] = s->R[s->act_r[i]];
+            nzp += s->klu.kAx[i] != 0.0;
+            fin &= isinf(s->klu.kAx[i]) == 0;
+        }
+        if (nz != nzp) return PCNRDC_BAIL_FOREIGN;
     }
-    for (i = 0; i < m * m; i++) nz += s->R[i] != 0.0;
-    for (i = 0; i < s->nact; i++) {
-        s->klu.kAx[i] = s->R[s->act_r[i]];
-        nzp += s->klu.kAx[i] != 0.0;
-        fin &= isinf(s->klu.kAx[i]) == 0;
-    }
-    if (nz != nzp) return PCNRDC_BAIL_FOREIGN;
     for (i = 0; i < m; i++) fin &= isinf(s->b[i]) == 0;
     if (!fin) return PCNRDC_BAIL_FLAGS;
-    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, m, s->dgemv);
+    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->kt, m, s->dgemv, s->kfull == NULL,
+                      &s->dense_resid);
     if (st == PCX_KLU_FACTOR) return PCNRDC_SINGULAR;
     if (st == PCX_KLU_SOLVE) return PCNRDC_BAIL_KLU;
     if (st == PCX_KLU_FLAGS) return PCNRDC_BAIL_FLAGS;
@@ -235,27 +252,76 @@ static long update(pcnrdc_t *s)
     return 0;
 }
 
+/* conv_f's verdict on the pattern: each kept row's S_i = sum |J_ij|
+   |x_new_j| over P (J is zero off it; every row holds its diagonal there),
+   in P's order.  A sum rounds only where two operands holding a nonzero
+   term meet -- a zero product joins exactly, fused or not -- so with k_i
+   entries of P in the row numpy's dgemv (any summation tree of the same
+   products, all >= 0) is within 2 gamma_(k_i + 1) S_i of it; with d_i =
+   4 (k_i + 2) eps it lies in [S_i (1 - d_i), S_i (1 + d_i)] -- the
+   endpoints rounded outward -- and the test, monotone in it, holds where
+   it holds at the lower end and fails where it fails at the upper:
+   PCX_HOLDS every row, PCX_FAILS one, or PCX_UNDECIDED -- also where a sum
+   is not finite or reaches 1e300 (there numpy's flags could be raised).
+   Where it decides, no flag numpy reports is raised here or in the dense
+   test */
+static int cf_sparse(pcnrdc_t *s)
+{
+    long n = s->n, e = 0, r, k;
+    int open = 0;
+    while (e < s->np) {
+        int64_t base = (s->P[e] / n) * n;
+        double S = 0.0, af, d;
+        r = (long) (base / n);
+        for (k = 0; e < s->np && s->P[e] < base + n; e++, k++)
+            S += fabs(s->J[s->P[e]]) * fabs(s->xn[s->P[e] - base]);
+        if (s->red[r] < 0) continue;
+        if (!(S < 1e300)) return PCX_UNDECIDED;
+        d = 4.0 * ((double) k + 2.0) * DBL_EPSILON;
+        af = fabs(s->fe[r]);
+        if (af < s->reltol * ((S - d * S) + af) + s->iabstol) continue;
+        if (!(af < s->reltol * ((S + d * S) + af) + s->iabstol)) return PCX_FAILS;
+        open = 1;
+    }
+    return open ? PCX_UNDECIDED : PCX_HOLDS;
+}
+
 /* the three tests (`solve_dc`): conv_x, conv_f with `I = |J_eff| |x_new|`
-   (numpy's own dgemv on the full |J_eff|: BLAS's summation order) +
-   |f_eff| -- each over the reduced rows (`red`) -- and `lim_converged`.
-   1 converged, 0 not, -1 a flag */
+   (numpy's own dgemv on the full |J_eff|: BLAS's summation order; on the
+   pattern its verdict, `cf_sparse`, where that decides) + |f_eff| -- each
+   over the reduced rows (`red`) -- and `lim_converged`.  1 converged, 0
+   not, -1 a flag */
 static int converged(pcnrdc_t *s)
 {
     long n = s->n, i;
-    int cx = 1, cf = 1, cl = 1;
+    int cx = 1, cf = 1, cl = 1, verdict = PCX_UNDECIDED;
+    fexcept_t entry;
     for (i = 0; i < n; i++) {
         if (s->red[i] < 0) continue;
         if (!(fabs(s->dx[i]) < s->reltol * pcx_np_maximum(fabs(s->xn[i]), fabs(s->x[i]))
                                + s->abstol)) cx = 0;
     }
-    for (i = 0; i < n * n; i++) s->Jabs[i] = fabs(s->J[i]);
-    for (i = 0; i < n; i++) s->ax[i] = fabs(s->xn[i]);
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, s->Jabs, n,
-                           s->ax, 1, 0.0, s->Is, 1);
-    for (i = 0; i < n; i++) {
-        double af = fabs(s->fe[i]);
-        if (s->red[i] < 0) continue;
-        if (!(af < s->reltol * (s->Is[i] + af) + s->iabstol)) cf = 0;
+    if (s->np) {
+        fegetexceptflag(&entry, FE_ALL_EXCEPT);
+        verdict = cf_sparse(s);
+        if (verdict == PCX_UNDECIDED) {
+            /* (the dense test: what the sparse sums raised is not the Python's) */
+            fesetexceptflag(&entry, FE_ALL_EXCEPT);
+            s->dense_conv++;
+        }
+        cf = verdict == PCX_HOLDS;
+    }
+    if (verdict == PCX_UNDECIDED) {
+        cf = 1;
+        for (i = 0; i < n * n; i++) s->Jabs[i] = fabs(s->J[i]);
+        for (i = 0; i < n; i++) s->ax[i] = fabs(s->xn[i]);
+        ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, s->Jabs, n,
+                               s->ax, 1, 0.0, s->Is, 1);
+        for (i = 0; i < n; i++) {
+            double af = fabs(s->fe[i]);
+            if (s->red[i] < 0) continue;
+            if (!(af < s->reltol * (s->Is[i] + af) + s->iabstol)) cf = 0;
+        }
     }
     for (i = 0; i < s->k; i++)
         if (!(fabs(s->gl[i]) < s->reltol * pcx_np_maximum(fabs(s->vn[i]), 1.0) + s->abstol))
@@ -291,6 +357,7 @@ long pcx_pcnrdc(pcnrdc_t *s)
 {
     long st;
     s->iters = 0;
+    s->dense_conv = s->dense_resid = 0;
     s->klu.refactors = s->klu.factors = s->klu.pivot_fallbacks = 0;
     s->klu.residual_fallbacks = 0;
     s->klu.klu_out = s->klu.klu_num;

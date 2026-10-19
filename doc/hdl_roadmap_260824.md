@@ -9634,3 +9634,37 @@ operating point bit-identical C on and off; the operating point 2.64 -> 0.26 s (
 **Gate**: suite 5 559 passed, 6 skipped, 3 xfailed (`test_c_abi`'s no-history rule then moved the measurement out of the
 C comment, here); the gold census (default) on the three paths: no deck moves; the 27 decks under the mode: no metric and
 no step count moves; the chain -2 .. 0 ps a node.
+
+## 2026-10-19 — 152. The C PCNR core on the Jacobian's pattern: no dense pass, every verdict the Python's -- jge's Meyer operating point 11.7 -> 1.1 s, opampal's 1.37 -> 0.36 s
+
+**Why** (Andreas: "jge's Meyer operating point", then "Build the sparse PCNR core").  Sized first (plan 'JGE'S MEYER
+OPERATING POINT, SIZED'): the Meyer mode's jge took as many PCNR iterations as the default's (489 against 579) at 23.9 ms
+each against 1.0 -- perf: 67 % the C's own dense n x n passes (2 332 unknowns), 12 % two dense dgemv's, KLU 0.7 %.
+
+**Design: the Python reference unchanged, bit for bit.**  Everything dense but two products is data movement and adds
+at known positions; the two products -- `|J_eff| |x_new|` for the convergence test, StructuralKLU's refactor residual
+`arr @ x - rhs` -- feed only VERDICTS.  (a) J stays a dense buffer, zero off a pattern P (the view's core pattern -- binG
+is zero off it -- each Schur position, the junction pairs' entries, the diagonal): allocated zero and written only on P,
+so `J[P] = binG[P]` is the dense copy, KLU's entries are gathered where they stand and `_ours`' foreign count is a test
+of P's entries off KLU's pattern.  (b) A sum rounds only where two operands holding a nonzero term meet (a zero product
+joins exactly, fused or not), so a row with k nonzeros summed in order is within 2 gamma_(k+1) T of numpy's dgemv in any
+summation tree (T = sum |a| |x|); with d = 4 (k + 2) eps both tests -- monotone in the product, rounding monotone -- are
+decided where they hold or fail at both ends of the band, and the dense product decides where they do not (also any
+non-finite value, any row reaching 1e300).  (c) `pcx_kluseq.h`'s sequence takes the sparse verdict behind a flag
+(`a_built`); `dcnewton.c` keeps the dense test.  The premise -- numpy's BLAS rounds a row once a nonzero term -- is a
+test against the installed BLAS: `test_numpys_dgemv_rounds_a_row_once_a_nonzero_term` (sizes 2 .. 3001, cancelling and
+nonnegative rows, one thread and the pool; alive: 29 % of rows differ from the in-order sum, the worst 2.8 eps T, 0.07
+of the bound).
+
+**Measured.**  jge under the Meyer mode: every rung bit-identical C on and off, the operating point 11.7 -> 1.08 s
+(line: 3.0 s); e1480 under the mode 0.26 -> 0.15 s.  The convergence test never needed the dense product; the residual
+test did where the residual sits at its rounding floor (rhs tiny against |A| |x|: T / scale 1e6 .. 1e11; jge 31 times,
+e1480 57), where the reference's own verdict is set by its dgemv's rounding and no bound can decide.  **The default
+decks gain too** (my sizing said they would not): their operating points, old C against new interleaved twice, the best
+of 12, a loaded box with free cores -- opampal 1 373 -> 361 ms, gm19 344 -> 136, rich3 26.9 -> 12.4, jge 689 -> 499,
+mux8 30.7 -> 25.4, voter25 315 -> 265, e1480 224 -> 199, toronto 57.3 -> 53.2, arom 13.5 -> 13.2, gm1 5.34 -> 5.19;
+no deck slower (line: +2 %).
+
+**Gate**: suite 5 562 passed, 6 skipped, 3 xfailed; the gold census (default) on the three paths: no deck moves; the 27
+decks under the Meyer mode: no metric, no step count moves; the chain -2 .. 0 ps a node.  Pinned pairs "the PCNR DC
+solve and its C" and "the DC base solve and its C" re-recorded (their references unchanged).

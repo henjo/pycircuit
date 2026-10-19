@@ -300,7 +300,9 @@ def test_the_klu_solve_in_c_is_the_pythons():
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 x = np.asarray(dc.solve().x, dtype=float)
-            return log, x.tobytes(), _paths.COUNTS['pcnr_c:served'] - before
+            rec = c.__dict__.get('_pcnr_c')
+            return (log, x.tobytes(), _paths.COUNTS['pcnr_c:served'] - before,
+                    rec is not None and rec.P is not None and bool(rec.kmaps))
         finally:
             pcnr.solve_dc = real
             _pcnr_c.ENABLED = True
@@ -308,6 +310,61 @@ def test_the_klu_solve_in_c_is_the_pythons():
     assert got[0] == ref[0] and got[1] == ref[1]
     assert got[0][1][0] == 'StructuralKLU', got[0][1]
     assert got[2] == len(got[0]) // 2 and ref[2] == 0
+    ## (the C on the pattern: KLU's entries gathered where they stand, the
+    ## verdicts the sparse sums' -- pcnrdc.h's THE PATTERN)
+    assert got[3], 'the C did not solve on the pattern'
+
+
+@pytest.mark.parametrize('threads', ['one', 'pool'])
+def test_numpys_dgemv_rounds_a_row_once_a_nonzero_term(threads):
+    """The premise of the C's sparse verdicts (pcx_kluseq.h's
+    `pcx_klu_resid_sparse`, pcnrdc.c's `cf_sparse`): numpy's matmul -- its
+    dgemv -- rounds a row at most once a NONZERO term (a zero product joins
+    exactly, fused or not), so a row with k nonzeros is within 4 (k + 2) eps
+    T of the same row summed in order, products rounded (T = sum |a| |x|).
+    Drawn across the kernels' sizes (row counts off their widths, 2 .. 3001),
+    signed rows cancelling to near zero and nonnegative ones, on one BLAS
+    thread and on the pool."""
+    import contextlib
+
+    from pycircuit.circuit import _blas
+    rng = np.random.default_rng(20261019)
+    eps = np.finfo(float).eps
+    hold = _blas._single_threaded_blas() if threads == 'one' else contextlib.nullcontext()
+    worst, rows, differ = 0.0, 0, 0
+    with hold:
+        for n in (2, 3, 5, 17, 63, 64, 65, 250, 251, 999, 2333, 3001):
+            for signed in (True, False):
+                A = np.zeros((n, n))
+                cols = []
+                for i in range(n):
+                    k = int(rng.integers(1, min(n, 12) + 1))
+                    c = np.sort(rng.choice(n, size=k, replace=False))
+                    v = rng.normal(size=k) * 10.0 ** rng.integers(-6, 7, size=k)
+                    if signed and k > 1:
+                        v[-1] = -float(np.sum(v[:-1])) * (1 + 1e-12 * rng.normal())
+                    A[i, c] = v if signed else np.abs(v)
+                    cols.append(c)
+                x = rng.normal(size=n) * 10.0 ** rng.integers(-3, 4, size=n)
+                if not signed:
+                    x = np.abs(x)
+                D = A @ x
+                for i in range(n):
+                    S = T = 0.0
+                    for j in cols[i]:
+                        S += A[i, j] * x[j]
+                        T += abs(A[i, j]) * abs(x[j])
+                    bound = 4.0 * (len(cols[i]) + 2) * eps * T
+                    assert abs(D[i] - S) <= bound, (n, signed, i, D[i], S, T)
+                    rows += 1
+                    differ += D[i] != S
+                    if T:
+                        worst = max(worst, abs(D[i] - S) / bound)
+    ## (alive: the dgemv sums in its own order -- measured 2026-10-19, 29 %
+    ## of rows differ from the in-order sum, the worst 2.8 eps T, 0.07 of
+    ## the bound)
+    assert differ > rows // 10, (differ, rows)
+    assert worst < 1.0, worst
 
 
 ## ------------------------------------------------------------------------

@@ -5092,3 +5092,20 @@ off; the operating point 0.26 s.
 Tests: `test_pcnr_c.py` (a NaN on the rhs, in the matrix, on a held
 numeric: served as the Python's error, StructuralKLU's counters the same;
 an infinite rhs handed back).
+
+## `csrc/pcnrdc.c`, `pcx_kluseq.h` -- the PCNR core on the pattern (2026-10-19)
+
+2026-10-19 (Andreas: "Build the sparse PCNR core"; `doc/hdl_roadmap_260824.md`,
+152).  The Meyer mode's jge (2 332 unknowns) spent 80 % of its operating point
+in the unit's dense n x n passes and two dense dgemv's (23.9 ms an iteration,
+1.0 ms at the default's 244).  J is now zero off THE PATTERN and touched only
+on it (the copy, KLU's gather, the foreign test); the two products feed only
+verdicts, decided by a sparse sum and its bound (a row with k nonzeros rounds at
+most k times in any summation tree: 4 (k + 2) eps T), the dense product where
+the bound does not decide.  The reference is unchanged and every outcome the
+same bit for bit.  jge's Meyer operating point 11.7 -> 1.08 s; opampal's (519
+unknowns, default) 1.37 -> 0.36 s, no default deck slower.  The residual test
+needed the dense product only at its rounding floor (31 times on jge).
+`dcnewton.c` keeps the dense residual test (`a_built`).
+Tests: `test_pcnr_c.py` (the BLAS premise against the installed BLAS, sizes and
+threads; the KLU twin solved on the pattern).

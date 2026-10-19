@@ -42,6 +42,16 @@ typedef struct {
     pcx_klu_t klu;
     long nact;
     const int64_t *act_r; /* (nact) the entry in the reduced, row-major matrix */
+    /* THE PATTERN (CTX; np 0: none): every entry of J that can be nonzero --
+       the core's pattern (binG is zero off it), each Schur position and the
+       junction pairs' entries.  J is zero off it at every point (allocated
+       zero, written only on it), so a pass over it is the dense pass */
+    long np;
+    const int64_t *P;     /* (np) row-major indices of n x n, ascending */
+    /* KLU ON THE PATTERN (CALL; kfull NULL: the reduced R made dense) */
+    const int64_t *kfull; /* (nact) each KLU entry's index in J */
+    long nfor;            /* P's entries in the reduced matrix off KLU's pattern */
+    const int64_t *ffull; /* (nfor) their indices in J: `_ours`' foreign test */
     /* THE PARTICIPANTS (CTX) */
     long nd,              /* devices */
          k;               /* limited unknowns, all devices */
@@ -76,7 +86,8 @@ typedef struct {
            *A,            /* (m x m, column-major) the dense solve's copy */
            *R,            /* (m x m, row-major) KLU's: the reduced Schur matrix */
            *b,            /* (m) the solve's rhs, then the dense solve's solution */
-           *kx, *ky,      /* (m) KLU's solution, the residual's A x */
+           *kx, *ky, *kt, /* (m, m, 2 m) KLU's solution, the residual's A x, its
+                             |A| |x| and its rows' entry counts */
            *xn, *ax, *Is, /* (n) x_new, |x_new|, |J| |x_new| */
            *vn,           /* (k) v_new */
            *blk,          /* each device's block (t x m, at d_tm) */
@@ -87,6 +98,8 @@ typedef struct {
            *Cs, *q;       /* (n x n, n) the core's C and q bins (q always made) */
     int64_t *ipiv64;      /* (m) dgesv's pivots */
     /* OUT */
+    long dense_conv,      /* the convergence tests the dense dgemv decided */
+         dense_resid;     /* the residual tests the dense one decided */
     long iters,           /* the iterations made: the Python's `it + 1` */
          status;          /* enum pcnrdc_status, as returned */
 } pcnrdc_t;

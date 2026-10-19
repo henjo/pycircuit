@@ -388,6 +388,7 @@ class _Rec:
     inputs in and points `prow` at the packs."""
 
     __slots__ = (
+        'P',
         'buf',
         'core',
         'els',
@@ -399,6 +400,7 @@ class _Rec:
         'kerns',
         'klu',
         'klu_keep',
+        'kmaps',
         'n',
         'packs',
         'plan',
@@ -427,9 +429,10 @@ class _Rec:
         E, Z = np.empty, np.zeros
         self.buf = buf = {
             'u': E(n), 'x': E(n), 'v': E(max(k, 1)), 'fe': E(n), 'dx': E(n), 'gl': E(max(k, 1)),
-            'F': E(n), 'J': E(n * n), 'Jabs': E(n * n), 'rc': E(n), 'A': E(max(m * m, 1)),
+            ## (J zero: off the pattern nothing writes it -- pcnrdc.h)
+            'F': E(n), 'J': Z(n * n), 'Jabs': E(n * n), 'rc': E(n), 'A': E(max(m * m, 1)),
             'b': E(max(m, 1)), 'xn': E(n), 'ax': E(n), 'Is': E(n), 'vn': E(max(k, 1)),
-            'R': E(max(m * m, 1)), 'kx': E(max(m, 1)), 'ky': E(max(m, 1)),
+            'R': E(max(m * m, 1)), 'kx': E(max(m, 1)), 'ky': E(max(m, 1)), 'kt': E(max(2 * m, 1)),
             'blk': E(max(ntm, 1)), 'pot': E(tmax), 'cur': E(tmax), 'Gl': E(tmax * tmax),
             'xs': E(tmax), 'rio': E(2 * mmax), 'Cs': Z(n * n), 'q': E(n),
         }
@@ -481,8 +484,27 @@ class _Rec:
             keep += [a, h]
             setattr(s, nm, h)
         s.nj, s.gjgmin = len(pairs), 0.0
+        ## THE PATTERN (pcnrdc.h): the core's, each Schur position -- a
+        ## device row and a probe's ra or rb -- and the junction pairs'
+        ## entries; none where the core writes every entry
+        self.P, self.kmaps = None, {}
+        s.np, s.P = 0, ffi.NULL
+        if core.npat:
+            parts = [np.asarray(core.arrays['pat'], dtype=I64),
+                     np.arange(n, dtype=I64) * (n + 1)]
+            for d in devices:
+                rows = np.asarray(d.rows, dtype=I64) * n
+                for ra, rb in d.probes:
+                    parts += [rows + ra, rows + rb]
+            for p in pairs:
+                a, b = int(p[2]), int(p[3])
+                parts.append(np.array([a * n + a, a * n + b, b * n + a, b * n + b], dtype=I64))
+            self.P = np.ascontiguousarray(np.unique(np.concatenate(parts)), dtype=I64)
+            keep += [self.P, fb('int64_t *', self.P)]
+            s.np, s.P = len(self.P), keep[-1]
         self.klu, self.klu_keep = None, ()
         s.klu.klu_sym = ffi.NULL
+        s.kfull, s.nfor, s.ffull = ffi.NULL, 0, ffi.NULL
 
     def bind(self, ch):
         """The solve: None the dense one, else `ch` -- an analysed
@@ -490,6 +512,7 @@ class _Rec:
         reduced matrix), arrays, analysis, common and the library's entries
         (D4's `_klu_bind`)."""
         ffi, s = self.ffi, self.s
+        s.kfull, s.nfor, s.ffull = ffi.NULL, 0, ffi.NULL
         if ch is None:
             self.klu, self.klu_keep = None, ()
             s.klu.klu_sym = ffi.NULL
@@ -511,6 +534,30 @@ class _Rec:
         k.klu_sym = ffi.cast('void *', ch._symbolic)
         k.resid_tol = float(ch.REFACTOR_RESIDUAL_TOL)
         self.klu, self.klu_keep = ch, keep
+
+    def on_pattern(self, held):
+        """KLU on the pattern (pcnrdc.h's KLU ON THE PATTERN) for the bound
+        solve and this call's reduction: each KLU entry's index in J, and the
+        pattern's entries in the reduced matrix off KLU's -- made once per
+        solver and held set.  Nothing where there is no pattern or no KLU."""
+        s, ch = self.s, self.klu
+        if ch is None or self.P is None:
+            return
+        key = (id(ch), tuple(held))
+        got = self.kmaps.get(key)
+        if got is None or got[0] is not ch:
+            n, m, P, red = self.n, int(s.m), self.P, self.red
+            take = self.klu_keep[1]
+            unred = np.flatnonzero(red >= 0).astype(np.int64)
+            kfull = np.ascontiguousarray(unred[take // m] * n + unred[take % m], dtype=np.int64)
+            r, c = P // n, P % n
+            act = (red[r] >= 0) & (red[c] >= 0)
+            pos = red[r[act]] * m + red[c[act]]
+            ffull = np.ascontiguousarray(P[act][~np.isin(pos, take)], dtype=np.int64)
+            fb = self.ffi.from_buffer
+            got = self.kmaps[key] = (ch, kfull, ffull, fb('int64_t *', kfull),
+                                     fb('int64_t *', ffull) if len(ffull) else self.ffi.NULL)
+        s.kfull, s.nfor, s.ffull = got[3], len(got[2]), got[4]
 
     def write_back(self):
         """StructuralKLU as its own solve leaves it after a served outcome:
@@ -701,6 +748,7 @@ def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol
     if rec.klu is not None:
         num = rec.klu._numeric
         s.klu.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
+    rec.on_pattern(held)
     return _outcome(rec, drv[1](s), maxiter)
 
 
@@ -710,6 +758,11 @@ def _outcome(rec, status, maxiter):
     or None (handed back)."""
     codes, bails = _sources()[2:4]
     s, buf = rec.s, rec.buf
+    ## (the verdicts the dense tests made: pcnrdc.h's OUT)
+    if s.dense_conv:
+        _PC['pcnr_c:dense_conv'] += int(s.dense_conv)
+    if s.dense_resid:
+        _PC['pcnr_c:dense_resid'] += int(s.dense_resid)
     if status == codes['PCNRDC_CONVERGED']:
         rec.write_back()
         _PC['pcnr_c:served'] += 1
