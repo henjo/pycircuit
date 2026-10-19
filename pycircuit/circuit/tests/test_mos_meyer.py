@@ -98,9 +98,8 @@ def test_the_pmos_is_the_nmos_mirrored():
                          ids=['level3', 'level2'])
 def test_the_dc_current_is_the_charge_classes(pair):
     """Meyer adds nothing at DC: at a state with no time derivative every
-    terminal current is the gate-charge class's, byte for byte -- SPICE's
-    junction gmin on (`test_device_gmin` leaves these classes out: they have
-    no PCNR device)."""
+    terminal current is the gate-charge class's, byte for byte, SPICE's
+    junction gmin on."""
     m, c = _device(pair[0], gmin=1e-3), _device(pair[1], gmin=1e-3)
     for vd, vg, vb in ((0.1, 2.0, 0.0), (2.5, 1.5, -1.0), (-1.0, 2.0, 0.0), (1.0, 0.3, 0.0)):
         xm, lm = _state(m, vd, vg, 0.0, vb)
@@ -110,10 +109,54 @@ def test_the_dc_current_is_the_charge_classes(pair):
             assert im[lm.index(t)] == ic[lc.index(t)], (vd, vg, vb, t)
 
 
-def test_the_meyer_classes_decline_pcnr_by_their_own_reason():
-    for cls in (eh.MosLevel3MeyerHdl, eh.MosLevel2PmosMeyerHdl):
-        _device(cls)
-        assert cls._hdl_info['pcnr_refusal'] == cls.pcnr_declined
+@pytest.mark.parametrize('pair', [(eh.MosLevel3MeyerHdl, eh.MosLevel3GateChargeHdl),
+                                  (eh.MosLevel2PmosMeyerHdl, eh.MosLevel2PmosGateChargeHdl)],
+                         ids=['level3', 'level2-pmos'])
+def test_the_meyer_classes_take_part_in_pcnr(pair):
+    """Vector PCNR carries a Meyer device: the charge class's probes, then
+    an identity probe on each scratch voltage -- and the redundant `(b,d)`
+    row spans all six unknowns, zeros past its own three (it was three wide
+    until 2026-10-17, and every solve fell back)."""
+    m, c = _device(pair[0]), _device(pair[1])
+    assert pair[0]._hdl_info['pcnr_refusal'] is None
+    assert m.pcnr_probes[:3] == c.pcnr_probes
+    assert [k for _p, k in m.pcnr_probes[3:]] == ['id'] * 3
+    (pm, km, cm), = m.pcnr_redundant
+    (pc, kc, cc), = c.pcnr_redundant
+    assert (pm, km) == (pc, kc) and cm == cc + (0, 0, 0)
+
+
+def test_an_operating_point_is_the_default_modes(tmp_path):
+    """At DC the scratch block decouples -- the branch row pins each scratch
+    voltage at 0, and the Meyer current with it -- so PCNR's iterates on the
+    shared unknowns are the default mode's in exact arithmetic: two
+    inverters biased mid-rail, both solved by PCNR, agree to rounding."""
+    from pycircuit.circuit import spice_import
+    from pycircuit.circuit.dcanalysis import DC
+    deck = tmp_path / 'pair.cir'
+    deck.write_text("""two inverters
+vdd vdd 0 dc 5
+vin in 0 dc 2.2
+.model n nmos level=3 vto=0.8 uo=600 tox=3e-8 nsub=1e16 vmax=1.5e5 theta=0.05
+.model p pmos level=3 vto=-0.8 uo=250 tox=3e-8 nsub=1e16 vmax=1.5e5 theta=0.05
+mp1 a in vdd vdd p w=20u l=2u
+mn1 a in 0 0 n w=10u l=2u
+mp2 b a vdd vdd p w=20u l=2u
+mn2 b a 0 0 n w=10u l=2u
+.op
+.end
+""")
+    v = {}
+    for mode in ('meyer', 'conserving'):
+        imp = spice_import.import_netlist(str(deck), mos_charge=mode)
+        dc = DC(imp.circuit, epar=imp.epar())
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = dc.solve()
+        assert dc.pcnr_status == 'used', mode
+        v[mode] = np.array([float(res.v(n)) for n in ('in', 'a', 'b')])
+    assert 0.1 < v['meyer'][1] < 4.9                        # (a mid-rail stage)
+    assert np.max(np.abs(v['meyer'] - v['conserving'])) < 1e-12, v
 
 
 def test_the_importer_builds_them_on_request_and_only_then(tmp_path):

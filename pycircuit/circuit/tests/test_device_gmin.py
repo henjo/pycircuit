@@ -17,16 +17,12 @@ CARRIERS = sorted(n for n in dir(eh)
                   if (n.startswith('MosLevel') or n in ('DiodeSpiceHdl', 'DiodeSpiceThermalHdl',
                                                         'LedHdl', 'PhotodiodeHdl'))
                   and isinstance(getattr(eh, n), type)
-                  and any(p.name == 'gmin' for p in getattr(eh, n).instparams)
-                  ## (not a class that declines PCNR -- SPICE's Meyer
-                  ## integration: it has no PCNR device, and its junction gmin
-                  ## is the charge class's, byte for byte -- `test_mos_meyer`)
-                  and getattr(eh, n).pcnr_declined is None)
+                  and any(p.name == 'gmin' for p in getattr(eh, n).instparams))
 
 
 def test_every_series_carries_it():
     """The control for the test below: what it enumerates."""
-    assert len(CARRIERS) == 16, CARRIERS
+    assert len(CARRIERS) == 20, CARRIERS
 
 
 def _device(name, g):

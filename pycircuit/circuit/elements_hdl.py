@@ -3133,7 +3133,16 @@ def _meyer_currents(forward, reverse, vds, bgs, bgd, bgb):
     adds to a node (gshunt, pseudo-transient continuation) moves it: written
     as a node equation it did, and ``C/tau ~ 10 S`` made the shunt a 1e4 A
     gate current (jge's operating point, 2026-10-17) -- and the branch
-    current ``(C/tau) V(y)``; at DC ``V(y) = 0`` and the current is 0."""
+    current ``(C/tau) V(y)``; at DC ``V(y) = 0`` and the current is 0.
+
+    ``V(y)`` is read through an identity probe (`limit_identity`), so vector
+    PCNR carries the device: the current a function of its probes, the
+    scratch unknown pinned at 0 by the branch row.  The Meyer mode's
+    operating points are then the default's: the same PCNR iterates on the
+    shared unknowns in exact arithmetic (jge's first two bit for bit).
+    Without it the route analysis ran over 30 minutes (resolving the
+    coefficient through the chain) only to refuse, and the ordinary chain
+    solved the operating point (2026-10-17)."""
     fwd = vds >= 0.0
     cgs = _var(sympy.Piecewise((forward[0], fwd), (reverse[1], True)), 'mcs')
     cgd = _var(sympy.Piecewise((forward[1], fwd), (reverse[0], True)), 'mcd')
@@ -3142,7 +3151,7 @@ def _meyer_currents(forward, reverse, vds, bgs, bgd, bgb):
     for name, br, cap in (('ygs', bgs, cgs), ('ygd', bgd, cgd), ('ygb', bgb, cgb)):
         by = Branch(Node(name), br.minus)
         out += (Contribution(by.V, _MEYER_TAU * ddt(br.V)),
-                Contribution(br.I, cap / _MEYER_TAU * by.V))
+                Contribution(br.I, cap / _MEYER_TAU * limit_identity(by.V)))
     return out
 
 
@@ -4865,11 +4874,8 @@ class MosLevel3MeyerHdl(Behavioural):
     as ngspice computes them, integrated as capacitance-defined currents
     -- conserving no charge, as SPICE does not.  For parity with SPICE
     (`import_netlist(mos_charge='meyer')`); `MosLevel3GateChargeHdl` is the
-    default.  Three scratch nodes more per device."""
-    pcnr_declined = ("SPICE's Meyer integration: a capacitance-defined current reads its "
-                     "scratch node through a probe-dependent capacitance, which no PCNR "
-                     "block carries -- the operating point is the ordinary chain's, as "
-                     "SPICE's")
+    default.  Six unknowns more per device: three scratch nodes and their
+    branch currents."""
     params_as = 'p'
     instparams = _mos3_params()
 
@@ -4879,10 +4885,6 @@ class MosLevel3MeyerHdl(Behavioural):
 class MosLevel3PmosMeyerHdl(Behavioural):
     """`MosLevel3PmosHdl` with SPICE's Meyer integration (see
     `MosLevel3MeyerHdl`)."""
-    pcnr_declined = ("SPICE's Meyer integration: a capacitance-defined current reads its "
-                     "scratch node through a probe-dependent capacitance, which no PCNR "
-                     "block carries -- the operating point is the ordinary chain's, as "
-                     "SPICE's")
     params_as = 'p'
     instparams = _mos3_params()
 
@@ -5415,10 +5417,6 @@ class MosLevel2PmosGateChargeHdl(Behavioural):
 class MosLevel2MeyerHdl(Behavioural):
     """`MosLevel2Hdl` with SPICE's Meyer integration (see
     `MosLevel3MeyerHdl`)."""
-    pcnr_declined = ("SPICE's Meyer integration: a capacitance-defined current reads its "
-                     "scratch node through a probe-dependent capacitance, which no PCNR "
-                     "block carries -- the operating point is the ordinary chain's, as "
-                     "SPICE's")
     params_as = 'p'
     instparams = _mos2_params()
 
@@ -5428,10 +5426,6 @@ class MosLevel2MeyerHdl(Behavioural):
 class MosLevel2PmosMeyerHdl(Behavioural):
     """`MosLevel2PmosHdl` with SPICE's Meyer integration (see
     `MosLevel3MeyerHdl`)."""
-    pcnr_declined = ("SPICE's Meyer integration: a capacitance-defined current reads its "
-                     "scratch node through a probe-dependent capacitance, which no PCNR "
-                     "block carries -- the operating point is the ordinary chain's, as "
-                     "SPICE's")
     params_as = 'p'
     instparams = _mos2_params()
 

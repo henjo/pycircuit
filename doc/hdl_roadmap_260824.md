@@ -9570,3 +9570,38 @@ solver picks it, and under the mode that is the ordinary chain (the Meyer classe
 one, as it did by default before roadmap 142.  The chain against ngspice: -2 .. 0 ps a node.
 
 **Gate**: suite 5 542 passed, 6 skipped, 3 xfailed; the gold census (default) on the three paths: no deck moves.
+
+## 2026-10-17 — 150. Meyer devices take part in PCNR: their operating points are the default mode's; a redundant probe's row spans the whole block
+
+**Why** (Andreas: "Do the follow-up now" -- roadmap 149's: let the Meyer devices take part in PCNR, since their currents
+vanish at DC).  The Meyer classes declined vector PCNR (`Behavioural.pcnr_declined`, roadmap 148): the route analysis ran
+over 30 minutes resolving the Meyer coefficient through the chain (`_reads_a_probe`) only to refuse, so the ordinary chain
+solved the mode's operating points.
+
+**Built.**  `_meyer_currents` reads each scratch voltage through an identity probe (`limit_identity(by.V)`): the Meyer
+current is then a function of the device's probes, the route analysis takes 2.6 s and qualifies the device -- the charge
+class's three unknowns and three more, the scratch voltages, which the branch row pins at 0 at DC.  `pcnr_declined`
+removed (no class declines any more) with its test exemptions; `test_device_gmin` sweeps the four Meyer classes too
+(16 -> 20).  **A latent PCNR defect, found by it**: a redundant probe's coefficients were taken over the unknowns that
+existed when it closed its cycle, so a probe declared AFTER it (the Meyer MOSFETs' identity probes, after the group's
+redundant `(b,d)`) left the row short -- `limit_block` raised on the ragged matrix and every solve fell back.  The row is
+padded with zeros to the block's width (`_pcnr_declared_route`); no library device had declared a probe after its
+redundant one.  `test_pcnr_vector::test_a_probe_declared_after_the_redundant_one_widens_its_row` fails without the fix.
+
+**Measured.**  The operating points under the mode against the default's: gm1, rich3, todd3 within 1e-14 V, PCNR used
+in both.  jge: the two modes' PCNR iterates on the shared nodes are bit-identical for two iterations; the third differs
+by 1.4e-7 -- the default's own held solve is heading into a near-singular step (the next iterates reach 7e5 V and 5e10 V)
+that amplifies rounding ~1e9x -- and the two take different ladders (the default's held solve fails, the Meyer's does
+not) to the same point within 3e-6 V.  Seeding the scratch nodes consistently changes nothing (the inconsistent start
+was refuted).  **slowlatch's operating point is a coin flip in BOTH modes**: from starts nudged by 1e-12 V, DC lands in
+each latch state about half the time (default 8 / 8, Meyer 7 / 9 of 16) -- a symmetric latch with no .ic or .nodeset.
+The default matched ngspice by luck; roadmap 149's "the chain picks the other one" attributed a lottery to a solver.
+Cost (the operating point, PCNR against the chain under the mode, interleaved, minimum of 3, on a loaded machine): gm19
+3.6 s against 14.3, gm17 0.05 against 0.58, gm3 0.01 against 0.20; e1480 2.75 against 0.06 -- five failing rungs of the
+same gshunt ladder the default climbs, which the C core hands back on floating-point flags (`pcnr_c:bail:flags`) and the
+Python loop reruns, 0.3 .. 0.8 s each, where the default's fail in C as non-finite; jge 13.3 against 3.9 (2 332 unknowns
+against the default's 244, 489 C iterations).
+
+**Gate**: suite 5 557 passed, 6 skipped, 3 xfailed; the gold census (default) on the three paths: no deck moves; all 27
+decks under the mode, 12 failing columns as in 149 (gm17 v(5) 10.0 -> 10.9, ngspice 12.9; slowlatch's three its other
+latch state); the chain against ngspice -2 .. 0 ps a node.

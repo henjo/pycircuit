@@ -983,6 +983,67 @@ def test_the_cycle_is_carried_as_a_tree_and_the_redundant_probe_is_named():
             assert abs(implied - (x[dev.rows[la]] - x[dev.rows[lb]])) < 1e-12
 
 
+def _m4_and_a_late_probe():
+    """`_mos4`'s group (`test_device_limiter`), then an identity probe on a
+    fifth row -- declared AFTER the redundant `(b,d)`, as the Meyer MOSFETs'
+    scratch probes are."""
+    from pycircuit.circuit.hdl import (
+        limit_fet,
+        limit_identity,
+        limit_together,
+        limit_vds,
+    )
+    from pycircuit.circuit.tests.test_device_limiter import _mos4
+
+    class _M4Late(Behavioural):
+        instparams = _mos4('group').instparams
+
+        @staticmethod
+        def analog(d, g, s, b, y):
+            bgs, bds = Branch(g, s), Branch(d, s)
+            bbs, bbd, bys = Branch(b, s), Branch(b, d), Branch(y, s)
+            vgs, vds, vbs, vbd = limit_together(
+                limit_fet(bgs.V, VTO), limit_vds(bds.V),             # noqa: F821
+                limit_pnj(bbs.V, ISB, vt()), limit_pnj(bbd.V, ISB, vt()))  # noqa: F821
+            ids = IS0 * limexp((vgs - VTO) / (N * vt())) \
+                * (1.0 - limexp(-vds / VE))                          # noqa: F821
+            return (Contribution(bds.I, ids),
+                    Contribution(bbs.I, ISB * (limexp(vbs / vt()) - 1.0)),  # noqa: F821
+                    Contribution(bbd.I, ISB * (limexp(vbd / vt()) - 1.0)),  # noqa: F821
+                    Contribution(bys.I, 1e-3 * limit_identity(bys.V)))
+    return _M4Late
+
+
+def test_a_probe_declared_after_the_redundant_one_widens_its_row():
+    """A redundant probe's coefficients span EVERY unknown of the block --
+    zeros for those declared after it.  They spanned the unknowns that
+    existed when it closed its cycle until 2026-10-17, and `limit_block`
+    raised on the ragged matrix: every solve of a device declaring a probe
+    after its redundant one fell back (the Meyer MOSFETs' identity probes).
+    At convergence the implied `(b,d)` is the branch it stands for."""
+    cls = _m4_and_a_late_probe()
+    el = cls('d', 'g', 's', 'b', 'y')
+    el.update_iparv()
+    assert [k for _p, k in el.pcnr_probes] == ['fet', 'vds', 'pnj', 'id']
+    assert el.pcnr_redundant == (((3, 0), 'pnj', (0, -1, 1, 0)),)
+    c = SubCircuit()
+    c['vd'] = VS('d', gnd, v=3.0)
+    c['vg'] = VS('g', gnd, v=1.2)
+    c['vb'] = VS('b', gnd, v=-0.5)
+    c['vy'] = VS('yy', gnd, v=0.7)
+    c['ry'] = R('yy', 'y', r=1e3)
+    c['M'] = cls('d', 'g', 's', 'b', 'y')
+    c['rs'] = R('s', gnd, r=1e3)
+    x, v_lim, _its = P.solve_dc(c, gnd, reltol=1e-9, abstol=1e-12)
+    dev, = P.pcnr_devices(c)
+    assert dev.m == 4
+    for j, (ra, rb) in enumerate(dev.probes):
+        assert abs(v_lim[dev.off + j] - (x[ra] - x[rb])) < 1e-12
+    (la, lb), _k, coeffs = dev.redundant[0]
+    implied = float(np.dot(coeffs, v_lim[dev.off:dev.off + dev.m]))
+    assert abs(implied - (x[dev.rows[la]] - x[dev.rows[lb]])) < 1e-12
+
+
 def test_limit_block_is_the_per_probe_loop_without_a_redundant_probe():
     """Bit for bit: a tree of probes is limited probe by probe, and a
     block no law touched is returned as it came."""
