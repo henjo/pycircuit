@@ -7,6 +7,7 @@ from numpy.linalg import LinAlgError
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit import _blas, _stamp_plan
 from pycircuit.circuit.circuit import SubCircuit
+from pycircuit.circuit.linearsolver import MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES
 
 class DC(Analysis):
     """DC analyis class
@@ -44,6 +45,11 @@ class DC(Analysis):
     0.7
 
     """
+    #: KLU on the circuit's structure from 150 unknowns
+    #: (`linearsolver.MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES`): every
+    #: operating point, a transient's included
+    _STRUCTURAL_KLU_MIN_N = MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES
+
     parameters = [Parameter(name='reltol', desc='Relative tolerance', unit='', 
                             default=1e-4),
                   Parameter(name='iabstol', 

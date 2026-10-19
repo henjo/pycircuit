@@ -1074,6 +1074,18 @@ MAX_FILL_FOR_SPARSE = 0.20
 ## run with no structure, keep `MIN_N_FOR_SPARSE`.
 MIN_N_FOR_STRUCTURAL_KLU = 40
 
+## KLU on the structure from this many unknowns for DC (and so every
+## analysis's operating point) and the stage methods (TRBDF2, ESDIRK43); 40
+## was measured and refused for them (2026-10-19, roadmap 153: below ~100
+## unknowns KLU's fixed cost lost up to +31 %), and Radau and the GLMs keep
+## `MIN_N_FOR_SPARSE` -- Radau's C transformed solve twins only a dense real
+## factor, and losing it cancelled the gain.  Measured (2026-10-20, the five
+## gold decks it moves, three rounds interleaved, best of 3): DC's operating
+## points 927 -> 328 ms, every deck faster (toronto -40 %, jge -83 %), within
+## 2e-9 V; TRBDF2's transients -15.1 % (each deck -3 .. -18 %), ESDIRK43's
+## -18.9 % (-11 .. -23 %), no gold column changed pass/fail.
+MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES = 150
+
 ## Above this many unknowns KLU's reused ordering repays its per-call cost and it
 ## overtakes SuperLU; below it, SuperLU's lighter setup wins.  Measured (see
 ## `AutoSolver._select`): KLU is 0.52x the dense path at n=152, 1.00x at n=402,

@@ -210,6 +210,36 @@ def test_a_small_operating_point_is_the_dense_call_byte_for_byte(monkeypatch):
     assert ls._choice is ls._dense
 
 
+@pytest.mark.parametrize('sections,klu', [(140, False), (160, True)])
+def test_an_operating_point_takes_klu_from_150_unknowns(sections, klu, monkeypatch):
+    """DC's floor is 150 (`MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES`; measured
+    2026-10-20): below it the dense call byte for byte, above it KLU on the
+    structure, agreeing with the dense call to rounding."""
+    got, ls = _op(_dc_ladder(sections), False, monkeypatch)
+    ref, _ = _op(_dc_ladder(sections), True, monkeypatch)
+    if klu:
+        assert type(ls._choice) is linearsolver.StructuralKLU and ls._choice.foreign == 0
+        np.testing.assert_allclose(got, ref, rtol=1e-12, atol=1e-15)
+    else:
+        assert ls._choice is ls._dense and got.tobytes() == ref.tobytes()
+
+
+@pytest.mark.parametrize('integ,sections,klu', [
+    ('TRBDF2Integrator', 140, False), ('TRBDF2Integrator', 160, True),
+    ('ESDIRK43Integrator', 160, True), ('RadauIIA3Integrator', 160, False),
+    ('Gear2Integrator', 60, True)])
+def test_each_method_takes_klu_from_its_floor(integ, sections, klu):
+    """The transient's floor per method (`Transient._STRUCTURAL_KLU_MIN_N`):
+    40 on the C loop's multistep methods, 150 on TRBDF2 and ESDIRK43, Radau's
+    250 (its C transformed solve twins only a dense real factor)."""
+    from pycircuit.circuit import integrator as I
+    tr = Transient(_ladder(sections), reltol=1e-6, integrator=getattr(I, integ)())
+    with quiet(AccuracyWarning):
+        tr.solve(tend=2e-9, timestep=1e-10)
+    ch = tr._get_linearsolver()._choice
+    assert (type(ch) is linearsolver.StructuralKLU) == klu, (integ, sections, type(ch).__name__)
+
+
 def test_a_sparse_operating_point_factors_on_the_structure(monkeypatch):
     got, ls = _op(_dc_ladder(300), False, monkeypatch)
     ref, _ = _op(_dc_ladder(300), True, monkeypatch)

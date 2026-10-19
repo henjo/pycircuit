@@ -9725,3 +9725,29 @@ Newton and its C" and "the stage paths' passes and the core's" re-recorded (thei
 every gold column the same.
 
 **Gate**: suite 5 564 passed, 6 skipped, 3 xfailed; the gold census on the three paths: no deck moves.
+
+## 2026-10-20 — 155. KLU on the structure from 150 unknowns for DC (every operating point) and the stage methods
+
+**Why** (roadmap 153's finding; Andreas: "handle the two findings").  Floor 40 was refused for DC, TRBDF2 and
+ESDIRK43 by its per-deck line, but every deck from ~150 up had gained.  A floor of 150 was a NEW line, written before a
+fresh measurement (plan 'A FLOOR OF 150 FOR DC AND THE STAGE METHODS'): over the five decks it moves (toronto 153,
+mux8 171, voter25 200, e1480 205, jge 244; gm17 at 149, a rounding-lottery operating point, stays dense), each of
+DC's operating point, TRBDF2's and ESDIRK43's transient: summed time -5 % or better, no deck slower than +3 %, no gold
+column flipping, DC's operating points within 1e-8 V.  Radau keeps 250: its C transformed solve twins only a dense
+real factor, and losing it cancelled the gain (roadmap 153).
+
+**Measured** (fresh processes, three rounds interleaved, best of 3; both floors lowered together, as built): DC's
+operating points 927 -> 328 ms (-64.6 %: toronto -40, mux8 -35, voter25 -57, e1480 -28, jge -83 %), within 2e-9 V;
+TRBDF2 308.7 -> 262.2 s (-15.1 %, each deck -3.0 .. -18 %); ESDIRK43 106.0 -> 86.0 s (-18.9 %, -11 .. -23 %); no gold
+column flipped.  The line met by all three.
+
+**Built.**  `linearsolver.MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES = 150`; `DC._STRUCTURAL_KLU_MIN_N` (so every
+analysis's operating point, a transient's included); `Transient._STRUCTURAL_KLU_MIN_N` per method -- 40 on the C
+loop's multistep methods, 150 on TRBDF2 and ESDIRK43, `min_n` on Radau and the GLMs.  The C PCNR core serves the band
+since roadmap 153's solver-check fix.  `test_structural_klu`: an operating point at 140 sections the dense call byte
+for byte and at 160 on KLU within rounding; each method's floor from both sides.
+
+**Gate**: suite 5 571 passed, 6 skipped, 3 xfailed.  The gold census on the three paths moves EXACTLY the five decks
+-- their operating points now on KLU, their transients' last bits and step counts with them (jge 10 746 -> 10 734,
+mux8 17 000 -> 16 921, toronto 766 -> 774, voter25 9 959 -> 9 988, e1480 unchanged) -- metrics within 0.006, no
+pass/fail crossing: the re-baseline this line named.
