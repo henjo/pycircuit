@@ -315,6 +315,31 @@ def test_the_klu_solve_in_c_is_the_pythons():
     assert got[3], 'the C did not solve on the pattern'
 
 
+def test_a_structural_floor_below_the_sparse_one_is_served(monkeypatch):
+    """An AutoSolver whose structural floor is below `min_n` (a DC asking
+    for KLU from 40 unknowns; a 62-unknown ladder between the floors) has
+    not chosen at the first solve, and the choice reads the matrix: the C
+    stops at the first Schur matrix for it ('choose') and serves the solve,
+    the same as the Python's.  Until 2026-10-19 the C made the choice on a
+    zero matrix (fill 0: an unanalysed StructuralKLU), declined it
+    ('linsolver'), and the Python then solved on a choice its own first
+    matrix had not made."""
+    from pycircuit.circuit.dcanalysis import DC
+    monkeypatch.setattr(DC, '_STRUCTURAL_KLU_MIN_N', 40)
+    out = []
+    for on in (True, False):
+        c = _ladder(60)
+        dc = DC(c, toolkit=circuit.numeric, pcnr=True)
+        ls = dc._get_linearsolver()
+        assert ls.structural_min_n == 40 and c.n - 1 < ls.min_n
+        got, counts = _solve(c, on, monkeypatch, x0=_start(c, 0.5), linsolver=ls)
+        out.append((got, counts, type(ls._choice).__name__))
+    (got, counts, ch), (ref, _c, ch_ref) = out
+    assert got == ref and got[0] == 'ok', (got[:1], ref[:1])
+    assert ch == ch_ref == 'StructuralKLU', (ch, ch_ref)
+    assert counts.get('pcnr_c:served') == 1, counts
+
+
 @pytest.mark.parametrize('threads', ['one', 'pool'])
 def test_numpys_dgemv_rounds_a_row_once_a_nonzero_term(threads):
     """The premise of the C's sparse verdicts (pcx_kluseq.h's

@@ -610,9 +610,14 @@ def _solver(ls, m):
     if type(ls) is not AutoSolver:
         return 'linsolver'
     ch = ls._choice
-    if ch is None and m < ls.min_n:
-        ## (the AutoSolver's own first choice below its floor: made as its
-        ## first solve would make it, the count included)
+    floor = min(ls.min_n, ls.structural_min_n) if ls.structure is not None else ls.min_n
+    if ch is None and m < floor:
+        ## (the AutoSolver's own first choice below its floor -- `_select`'s
+        ## first test, which reads no value: dense, made as its first solve
+        ## would make it, the count included.  Above it the choice reads the
+        ## matrix (its fill), so the first Schur matrix makes it: 'choose' --
+        ## between a structural floor and `min_n` too, where a zero matrix
+        ## would choose a StructuralKLU the real one might not)
         ch = ls._select(np.zeros((m, m)))
     if ch is None:
         return 'choose'

@@ -214,6 +214,10 @@ class DC(Analysis):
         if type(ls) is not AutoSolver:
             return contextlib.nullcontext()
         m = self.cir.n - 1
+        ## (not yet chosen: dense taken below `min_n` -- between a lower
+        ## structural floor and it the choice reads the first matrix, and the
+        ## hold is harmless to a KLU solve, while a dense one there would
+        ## run threaded)
         dense = ls._choice is ls._dense if ls._choice is not None else m < ls.min_n
         if dense and m >= _blas.THREADED_FROM:
             return _blas._single_threaded_blas()

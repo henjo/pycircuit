@@ -5109,3 +5109,16 @@ needed the dense product only at its rounding floor (31 times on jge).
 `dcnewton.c` keeps the dense residual test (`a_built`).
 Tests: `test_pcnr_c.py` (the BLAS premise against the installed BLAS, sizes and
 threads; the KLU twin solved on the pattern).
+
+## `_pcnr_c._solver` -- the first choice between the two floors (2026-10-19)
+
+2026-10-19 (Andreas: "Fix it after the runs finish"; `doc/hdl_roadmap_260824.md`,
+153).  The check made the AutoSolver's first choice on a zero matrix wherever
+the size was below `min_n`; with a structural floor below it (a DC asking for
+KLU from 40 unknowns, measured for the floor study) that chose an unanalysed
+StructuralKLU, the C declined and the Python solved on a choice its first
+matrix might not have made (the band's operating points +861 %).  The check
+takes `_select`'s own floor now; between the floors the first Schur matrix
+chooses.  Unreachable before (DC's floors are both 250).
+Tests: `test_pcnr_c.py` (a DC with a lowered floor on a 62-unknown ladder:
+served, the same as the Python's).

@@ -9668,3 +9668,38 @@ no deck slower (line: +2 %).
 **Gate**: suite 5 562 passed, 6 skipped, 3 xfailed; the gold census (default) on the three paths: no deck moves; the 27
 decks under the Meyer mode: no metric, no step count moves; the chain -2 .. 0 ps a node.  Pinned pairs "the PCNR DC
 solve and its C" and "the DC base solve and its C" re-recorded (their references unchanged).
+
+## 2026-10-19 — 153. KLU below 250 for DC, Radau and the stage methods: measured, refused at 40; the C PCNR core's solver check fixed
+
+**Why** (Andreas: "Start Radau's and DC's sparse thresholds").  StructuralKLU starts at 40 unknowns for the multistep
+methods (measured 2026-10-16) and at 250 for everything else, `MIN_N_FOR_SPARSE`, measured on the Python loop with
+SuperLU.  The question: do DC, Radau (RadauIIA3), TRBDF2 and ESDIRK43 gain from KLU in the 16 gold decks with 40 <= n <
+250?  NB the transient's initial operating point is DC's own solve: DC's floor moves every band deck's operating point.
+
+**Lines** (plan, before measuring): floor 40 for an analysis/method only if the band's summed time falls >= 5 %, no
+deck is slower than +3 % (best of 3 interleaved, fresh processes) and no gold column flips pass/fail.
+
+**Measured** (scratch g12/thr/).  All four REFUSED by the per-deck line; no gold column flips anywhere.  DC: the band's
+operating points 1019 -> 379 ms with the C serving, but mike2 +31, gm3 +15, ring +14, gm1 +11.5, latch +5.5, slowlatch
++4.9 %; every deck from 149 faster (-33 .. -83 %); gm17's operating point flips latch state (a rounding lottery).
+Radau: band +2.0 % (ring +49, mike2 +21 ...; from 130 gm1 -28 %, voter25 and jge flat).  TRBDF2: band -12.4 % (mike2
++13, todd3 +10, gm3 +9, slowlatch +7 %; from 130 all -5 .. -19 %).  ESDIRK43: band -13.8 % (todd3 +11, mike2 +9 %; from
+130 all -6 .. -20 %).  Below ~100 unknowns KLU's fixed cost loses; from ~150 it wins for DC and the stage methods.
+**Radau stays flat on the big decks** because its C transformed stage solve (`radau_tc`) twins only the DENSE real
+factor -- numpy's LU, with the complex factor on complex KLU always -- so with a KLU real factor every iteration runs
+in Python: `radau_tc:served` 0 on every deck at 40.  Where the C served most iterations (jge: 17 139 of 20 332 frozen
+transforms) losing it cancels the cheaper solve (110.97 -> 111.82 s); where it rarely served -- it hands back on
+floating-point flags, gm1 833 bails against 175 served -- the cheaper solve shows (gm1 -28 %).
+
+**Found, fixed: the C PCNR core's solver check** (`_pcnr_c._solver`) took the AutoSolver's first choice below `min_n`
+as dense and made it on a zero matrix.  With a structural floor below `min_n` that chose an unanalysed StructuralKLU,
+the C declined ('linsolver': the band's operating points +861 % in the first measurement) and the Python then solved on
+a choice its own first matrix might not have made.  The check now uses `_select`'s own floor (the lower one where a
+structure exists) and lets the first Schur matrix choose above it.  Unreachable today (DC's two floors are both 250);
+`test_a_structural_floor_below_the_sparse_one_is_served` fails on the old code.  `dcanalysis._blas_held`'s same
+assumption is kept, commented: holding BLAS to one thread is the safe guess there (harmless to KLU, needed by dense).
+**Found, open: Radau crashes** on mux8 at floor 40 -- its dense coupled stage Newton (`_stage_newton`) calls
+`np.linalg.solve` bare, and a singular matrix's LinAlgError escapes the transient past its own rescues.
+
+**Gate**: suite 5 562 passed (the no-history rule then moved a date out of `_pcnr_c`'s comment); the gold census on the
+three paths: no deck moves.  The pair "the PCNR DC solve and its C" re-recorded (its reference unchanged).
