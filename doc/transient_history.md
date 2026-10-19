@@ -5122,3 +5122,14 @@ takes `_select`'s own floor now; between the floors the first Schur matrix
 chooses.  Unreachable before (DC's floors are both 250).
 Tests: `test_pcnr_c.py` (a DC with a lowered floor on a 62-unknown ladder:
 served, the same as the Python's).
+
+## `Transient._coupled_stage_solver` -- a singular system fails the attempt (2026-10-19)
+
+2026-10-19 (`doc/hdl_roadmap_260824.md`, 154).  The dense coupled stage
+Newton's `np.linalg.solve` was bare: a singular 3m x 3m system's LinAlgError
+passed the coupled step's rescues (they catch `NoConvergenceError`) and ended the
+transient -- mux8 under Radau with KLU's floor at 40.  It is the attempt's
+failure now, as the DC solvers wrap one: rejected and retried smaller, and at
+`minstep` the gshunt ladder (which makes the matrix regular).
+Tests: `test_radau_c.py` (a zero Jacobian planted once: the run finishes and
+agrees with the clean run).

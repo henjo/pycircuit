@@ -511,7 +511,19 @@ class _RadauStages:
             R, Jbig = assemble(Y, S)
             converged = False
             for _ in range(maxit):
-                dY = np.linalg.solve(Jbig, -R)
+                ## A SINGULAR SYSTEM FAILS THE ATTEMPT -- NoConvergenceError, as
+                ## the DC solvers wrap one -- so the caller's rescues take their
+                ## turn: the step rejected and retried smaller, and at `minstep`
+                ## the gshunt ladder, whose conductance makes this matrix
+                ## regular.  numpy's LinAlgError passed every one of them and
+                ## ended the run.
+                ## History: `doc/transient_history.md`, `Transient._coupled_stage_solver`.
+                try:
+                    dY = np.linalg.solve(Jbig, -R)
+                except np.linalg.LinAlgError as exc:
+                    raise NoConvergenceError(
+                        'Radau IIA(3) coupled stage Newton met a singular Jacobian'
+                        + ('' if not gshunt else ' at gshunt=%g S' % gshunt)) from exc
                 Rnorm = float(np.sum(np.abs(R)))
                 alpha = 1.0
                 while True:

@@ -213,9 +213,12 @@ def test_every_hand_back_answers_as_the_python():
     a, b, db = _both(_seed(), qn=qn)
     assert a == b
     _bail(db, 'rbound')
-    ## a singular system (no step: J = C, singular without capacitors)
+    ## a singular system (no step: J = C, singular without capacitors): the
+    ## attempt's failure, as the Python Newton wraps one (numpy's LinAlgError
+    ## until 2026-10-19, which ended the run)
     a, b, db = _both(_seed(), h=0.0)
-    assert a == b and a[0][0] == 'LinAlgError', a[0]
+    assert a == b and a[0] == ('NoConvergenceError',
+                               'Radau IIA(3) coupled stage Newton met a singular Jacobian'), a[0]
     _bail(db, 'dgesv')
 
 
@@ -434,3 +437,39 @@ def test_inputs_of_another_kind_decline():
         declined('shadow_tr')
     finally:
         del tr.__dict__['_memo_put']
+
+
+def test_a_singular_coupled_system_fails_the_attempt_not_the_run(monkeypatch):
+    """The dense coupled stage Newton (`radau_transform=False`) meeting a
+    singular system fails the ATTEMPT -- `NoConvergenceError`, as the DC
+    solvers wrap one -- so the step is rejected and retried smaller and the
+    run finishes, where it agrees with the run that never met one.  The
+    system is made singular once (a zero Jacobian at the fifth assembly of
+    the Python's Newton: its C twin, which hands a singular system back,
+    off); numpy's LinAlgError used to end the run (mux8 under Radau, its
+    sparse floor at 40, 2026-10-19)."""
+    from pycircuit.circuit._tran_radau import _RadauStages
+
+    def run(fault):
+        monkeypatch.setattr(RC, 'ENABLED', False)
+        tr = Transient(_mos_chain(cap=1e-13), toolkit=circuit.numeric, radau_transform=False,
+                       integrator=RadauIIA3Integrator())
+        if fault:
+            real, n = _RadauStages._coupled_stage_system, [0]
+
+            def zeroed(self, *a, **k):
+                R, J = real(self, *a, **k)
+                n[0] += 1
+                return (R, np.zeros_like(J)) if n[0] == 5 else (R, J)
+            monkeypatch.setattr(_RadauStages, '_coupled_stage_system', zeroed)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(tend=6e-7, timestep=2e-8)
+        monkeypatch.undo()
+        return tr, np.asarray(res.v('d3').y, dtype=float)
+
+    tr0, v0 = run(False)
+    tr1, v1 = run(True)
+    assert tr1.statistics.rejected_steps > tr0.statistics.rejected_steps
+    assert abs(v1[-1] - v0[-1]) < 1e-6, (v0[-1], v1[-1])
+

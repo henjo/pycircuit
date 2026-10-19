@@ -9703,3 +9703,25 @@ assumption is kept, commented: holding BLAS to one thread is the safe guess ther
 
 **Gate**: suite 5 562 passed (the no-history rule then moved a date out of `_pcnr_c`'s comment); the gold census on the
 three paths: no deck moves.  The pair "the PCNR DC solve and its C" re-recorded (its reference unchanged).
+
+## 2026-10-19 — 154. A singular coupled Radau system fails the attempt, not the run
+
+**Why** (roadmap 153's open finding; Andreas: "handle the two findings").  Radau's mux8 with KLU's floor at 40 crashed:
+on that trajectory the transform fell back to the dense coupled stage Newton (`_tran_radau._stage_newton`), its
+3m x 3m solve met a singular matrix, and numpy's LinAlgError left the transient -- past the step's own rescues, which
+catch `NoConvergenceError` only: the rejection and smaller retry, and at `minstep` the gshunt ladder, whose
+conductance makes exactly this matrix regular.  The DC solvers wrap a singular factorisation as `NoConvergenceError`;
+the coupled PCNR path already falls back on any exception (Andreas's rule there: "a singular Jacobian included -- must
+not end the run"); this was the one bare solve on a Radau step path.  Its C twin (`_tran_radau_c`) hands a singular
+system back to the Python, which therefore always answered it.
+
+**Built.**  `_stage_newton`'s solve raises `NoConvergenceError('Radau IIA(3) coupled stage Newton met a singular
+Jacobian' [at gshunt=...])` from the LinAlgError.  `test_radau_c`: a zero Jacobian planted once in the Python Newton's
+fifth assembly -- the run finishes, one rejection more, its end within 1e-6 V of the run without it (fails on the old
+code with the LinAlgError); the C's singular hand-back now answers that error.  Pinned pairs "the coupled stage
+Newton and its C" and "the stage paths' passes and the core's" re-recorded (their references moved, the twins not).
+
+**Measured.**  mux8 under Radau with the floor at 40 now runs: 13 726 steps (13 722 at 250), 4 268 rejections (4 234),
+every gold column the same.
+
+**Gate**: suite 5 564 passed, 6 skipped, 3 xfailed; the gold census on the three paths: no deck moves.
