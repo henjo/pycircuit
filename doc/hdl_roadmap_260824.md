@@ -9751,3 +9751,41 @@ for byte and at 160 on KLU within rounding; each method's floor from both sides.
 -- their operating points now on KLU, their transients' last bits and step counts with them (jge 10 746 -> 10 734,
 mux8 17 000 -> 16 921, toronto 766 -> 774, voter25 9 959 -> 9 988, e1480 unchanged) -- metrics within 0.006, no
 pass/fail crossing: the re-baseline this line named.
+
+## 2026-10-20 — 156. Radau's transform C: an underflow no longer hands the loop back, and maxiter is served
+
+**Why** (Andreas: "Address the two points related to Radau now").  By default `radau_tc` handed the transform loop
+back on floating-point flags on most calls (gm1 833 of 1 205, voter25 5 983 of 9 670), and the Python loop ran them.
+**Measured first** (the C's flag tests instrumented, eight decks): about 23 000 hand-backs, every one FE_UNDERFLOW (the
+residual's products, a few in the right-hand sides) but 6 FE_INVALID on voter25, every call under numpy's default
+error state, which ignores underflow.  The C tested underflow too (pcx_fenv.h: "a needless hand-back at worst");
+`dcnewton.c` and `pcnrdc.c` test only what numpy reports and their glue declines where underflow is not ignored.
+A flag never changes a value.
+
+**Built.**  `radau_tc.c` tests overflow, invalid and divide (`TC_FLAGS`); `_tran_radau_tc.solve` declines where numpy's
+error state does not ignore underflow (`radau_tc:underflow`, `func._underflow_ignored`).  Found before measuring: with
+underflow no longer handing back, a loop that does not converge ran all 100 iterations in C, handed back, and the
+Python repeated them before the dense fallback (latch 1.88 -> 2.08 s).  The C's maxiter is the Python loop's own False
+(its iterates, bit for bit): served as such (`RADAU_TC_MAXITER`, `radau_tc:noconv`; the source memo's hits counted as
+the loop makes them), and `_rk_step_transformed` raises as before.  `test_radau_tc`: an underflow in the residual (the
+tableau scaled by 1e-300) served bit for bit, and under `errstate(under='warn')` declined with the Python's warning;
+maxiter the Python's False at 1 and 3 iterations; the drawn-seed liveness test now asks for both served outcomes --
+each failing on the old code.  Pinned pairs "the transform Newton and its C", "the step's end passes and the C's" and
+"the stage paths' passes and the core's" re-recorded.
+
+**Measured** (Radau's default transient on the 16 decks from 40 to 249 unknowns and the four from 250; today's tree
+against this one, fresh processes, three rounds interleaved, best of 3; the line written first): every waveform
+bit-identical; 454.6 -> 421.6 s (-7.3 %): latch -61, slowlatch -47, todd3 -37, gm17 -19, gm1 -18, mux8 -18, nand -17,
+toronto -14, voter25 -12, e1480 -10, mike2 -6, jge -3.8 %; the decks the C never serves within -0.5 .. +0.8 %.
+
+**Refused on the way** (plan 'RADAU'S TWO C GAPS').  (1) The same rule in `radau.c`, the coupled stage Newton's C:
+built with the above and measured with it -- arom +5.4 % (each round, both orders): its coupled C then served 39 solves
+it had handed back, and at 3m = 882 a served solve costs more than numpy's (unmeasured why).  Dropped; the line
+re-measured without it (above).  (2) The transform's real factor on StructuralKLU in C (`pcx_kluseq.h`'s sequence, the
+C serving 99 % of the steps of rich3, arom, gm19 and opampal, every waveform bit-identical): -3.5 % summed against a
+-5 % line (rich3 -7.7, arom -6.7, gm19 -0.9, opampal -0.3 %).  Not committed.  Why flat: on opampal (single-threaded
+profile, 15.7 s) the whole transform loop is 1.7 s; Radau's error estimate is 6.6 s, 3.6 s of it a dense
+`numpy.linalg.solve` of `(gamma_r/h) C + G` every step -- the transform's real factor in principle, built again from
+`GAMMA_REAL` (2 ulp from the transform's `eig` value) and factored afresh, dense even on a KLU run.
+
+**Gate**: suite 5 573 passed, 6 skipped, 3 xfailed.  The gold census does not run Radau (no deck sets the integrator): not run.

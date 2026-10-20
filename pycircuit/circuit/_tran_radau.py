@@ -1213,16 +1213,18 @@ class _RadauStages:
         S = self._stage_limiter_states(Y, lims, epar)
         ## (the loop in one C call where it serves -- its iterates, the
         ## source memo and the two factorisations' state as the loop leaves
-        ## them: `_tran_radau_tc`, speed round 10, B3.3; None -- declined or
-        ## handed back, and the loop runs from the same seed)
+        ## them: `_tran_radau_tc`, speed round 10, B3.3; False -- the loop's
+        ## own False; None -- declined or handed back, and the loop runs from
+        ## the same seed)
         _nobypass = float(getattr(epar, 'bypasstol', -1.0) or -1.0) < 0.0
         Yc = _tran_radau_tc.solve(self, ctx, fz, Y, src, provided_function, lims,
                                   _nobypass, reltol, abstol, maxit)
-        if Yc is not None:
-            Y = Yc
-        elif not self._transform_loop(ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, maxit):
+        if Yc is False or (Yc is None and not self._transform_loop(
+                ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, maxit)):
             raise NoConvergenceError(
                 'Radau IIA(3) transform (simplified Newton) did not converge')
+        if Yc is not None:
+            Y = Yc
         ## the step end (the last stage) is what the epilogue reads
         if S[2] is not None:
             state_restore(S[2])

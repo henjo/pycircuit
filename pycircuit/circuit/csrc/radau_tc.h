@@ -103,9 +103,10 @@ typedef struct {
 long pcx_radau_tc(radau_tf_t *s);
 
 /* pcx_radau_tc's result, left in `status` too (`_tran_radau_tc.BAIL` names the
-   bails from these).  A bail hands the loop back: the glue reads the
-   status and the factorisations' state (lu_info, refactored), and the
-   Python loop runs from the same seed: */
+   bails from these).  CONVERGED and MAXITER are the loop's own outcomes,
+   served.  A bail hands the loop back: the glue reads the status and the
+   factorisations' state (lu_info, refactored), and the Python loop runs
+   from the same seed: */
 enum radau_tc_status {
     RADAU_TC_RUNNING = 0,
     RADAU_TC_CONVERGED = 1,
@@ -118,5 +119,5 @@ enum radau_tc_status {
     RADAU_TC_BAIL_RESIDUAL = 8,  /* the complex block's residual check failed or not decided */
     RADAU_TC_BAIL_STEP = 9,      /* a step not finite */
     RADAU_TC_BAIL_WALKSTOP = 10, /* a limiter declined: the walk stopped */
-    RADAU_TC_BAIL_MAXITER = 11   /* no convergence in maxiter */
+    RADAU_TC_MAXITER = 11        /* no convergence in maxiter: the Python loop's False */
 };

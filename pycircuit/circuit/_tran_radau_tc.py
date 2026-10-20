@@ -15,7 +15,8 @@ factors' state -- the kept LU's `NumpyLU._info`, the complex solver's
 `ComplexKLUSolver.refactors` and `_fresh`.  The module keeps `fold`'s
 driver, buffers and last pattern (`_FOLD`).  `_paths`: `radau_tc:` --
 `radau_tc:<why>` a decline, `radau_tc:bail:<why>` a hand-back (`BAIL`),
-`radau_tc:served`, `radau_tc:iterations`, `radau_tc:end` -- and `fold`'s
+`radau_tc:served` (the loop's outcome made), `radau_tc:noconv` (of them,
+maxiter reached), `radau_tc:iterations`, `radau_tc:end` -- and `fold`'s
 `radau.frozen:fold` (made), `radau.frozen:fold.same` (its packed values
 too) and `radau.frozen:fold.<why>` (not made).  Switches, each read on
 every call: `PYCIRCUIT_RADAU_TC=0` (`ENABLED`: the loop),
@@ -29,7 +30,9 @@ through ``A^{-1}``'s eigenbasis, its factors made once a step
 passes through `_tran_core.passes`, the residual (`_coupled_stage_system`),
 the frozen solve (`_FrozenTransform.solve`: the right-hand sides, numpy's
 kept LU, the complex factor's KLU solve and its residual check, the
-update), and per stage the step, the limiter and the convergence test.
+update), and per stage the step, the limiter and the convergence test;
+False after `maxiter` iterations, and the step raises (the dense coupled
+Newton takes it).
 The C makes, per iteration, the stages' ``q`` and ``i`` through the
 evaluate core's own C (formula 4, as `passes`), ``K_j = -(i_j + u_j)``,
 ``F_i = (q_i - q_n) - h (((0 + A_i0 K_0) + A_i1 K_1) + A_i2 K_2)`` reduced
@@ -43,6 +46,8 @@ after); the complex factor's KLU on the solver's own handles (the refactor
 ``dY_i = V_i0 w0 + 2 Re(V_i1 w1)``; per stage ``Y_prev + insert(dY_i,
 iref, 0.0)``, the limiter walk's own driver and the limited step's largest
 reduced entry; the convergence test after the update, as the Python tests.
+Its two outcomes are served: converged, and `maxiter` iterations without
+(the Python loop's own iterates, so its False).
 
 ⚠ NUMPY'S COMPLEX PRODUCT IS READ, NOT ASSUMED.  With numpy's X86_V3
 loops (AVX2 and FMA3) it FUSES -- ``re = fma(ar, br, -(ai*bi))``, ``im =
@@ -74,9 +79,9 @@ a non-finite value, a floating-point exception in its own arithmetic
 (numpy would warn), a non-finite real right-hand side (the analysis
 solver's), a singular real factor (numpy's error), the KLU refactor or
 solve failing, the residual check not decided or failing (the fallback's
-fresh factor), the walk stopping, maxiter -- hands the loop back: the
-source memo's entries and counts rolled back, and the Python loop runs
-from the same seed (the same answer, exception, warning).
+fresh factor), the walk stopping -- hands the loop back: the source memo's
+entries and counts rolled back, and the Python loop runs from the same
+seed (the same answer, exception, warning).
 
 THE STEP'S END PASSES (`END`).  Once converged the C makes, in the same
 call, the passes `_stage_end_passes` makes next: all four at the last
@@ -110,15 +115,16 @@ them.  Its buffers are kept per size, their handles made once.
 
 DECLINES, before anything is touched (`_paths.no`): the switch (and the
 evaluate core's two), no frozen factors or no kept LU or marshalled record
-(`_radau_frozen`'s own), no build, numpy's complex product of neither
-form, a toolkit that is not numeric, a subclass of the transient or a
-patched piece of the loop, an instance shadow of the circuit's passes or
-limiter or of the transient's pieces, a `provided_function`, a stateful
-limiter or circuit-level limiting, a bypass, no source memo, a circuit the
-core cannot serve, a limiting element that is not its C kernel, a batch
-not ready, a KLU solver whose numeric is not of the record's pattern (the
-Python analyses and factors), a singular kept LU, inputs of another type
-or size.
+(`_radau_frozen`'s own), no build, numpy's complex product of neither form,
+numpy's error state not ignoring underflow (the C does not test it: numpy's
+default ignores it), a toolkit that is not numeric, a subclass of the
+transient or a patched piece of the loop, an instance shadow of the
+circuit's passes or limiter or of the transient's pieces, a
+`provided_function`, a stateful limiter or circuit-level limiting, a
+bypass, no source memo, a circuit the core cannot serve, a limiting element
+that is not its C kernel, a batch not ready, a KLU solver whose numeric is
+not of the record's pattern (the Python analyses and factors), a singular
+kept LU, inputs of another type or size.
 
 History: `doc/transient_history.md`, `_tran_radau_tc.py`.
 """
@@ -256,8 +262,8 @@ def driver():
             STATUS = f'off ({e})'
             return None
         _ct, gesv, getrs = lap
-        from pycircuit.circuit import _tran_newton_c, _tran_radau_c
-        _MOD['NC'], _MOD['RC'] = _tran_newton_c, _tran_radau_c
+        from pycircuit.circuit import _tran_newton_c, _tran_radau_c, func
+        _MOD['NC'], _MOD['RC'], _MOD['func'] = _tran_newton_c, _tran_radau_c, func
         _driver = (ffi, cfn, _cbuild.address(gesv), _cbuild.address(getrs))
         STATUS = 'c'
     return _driver or None
@@ -490,11 +496,12 @@ class _Ctx:
 
 def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abstol, maxit):
     """The transform's Newton loop from the stages `seed` in C: the three
-    converged stages as fresh full-width arrays, the source memo and the
-    two factorisations' state as the Python loop leaves them -- or None:
-    declined (`radau_tc:<why>`) or handed back (`radau_tc:bail:<why>`),
-    nothing left behind that the Python loop would not make again, and the
-    Python loop runs.  `fz` is the step's frozen factors (`_radau_frozen`'s
+    converged stages as fresh full-width arrays, or False where `maxit`
+    iterations did not converge (the Python loop's False), the source memo
+    and the two factorisations' state as the Python loop leaves them -- or
+    None: declined (`radau_tc:<why>`) or handed back
+    (`radau_tc:bail:<why>`), nothing left behind that the Python loop would
+    not make again, and the Python loop runs.  `fz` is the step's frozen factors (`_radau_frozen`'s
     `_FrozenTransform`); where `END` asks, the step's end passes are left
     in `tr._tc_end` with the very stage list returned."""
     if not ENABLED:
@@ -510,6 +517,8 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     drv = _driver or driver()
     if not drv:
         return _no('radau_tc:driver')
+    if not _MOD['func']._underflow_ignored():
+        return _no('radau_tc:underflow')
     ffi, cfn = drv[0], drv[1]
     chain = _MOD.get('chain') or _chain()
     if chain is None:
@@ -693,6 +702,15 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     if s.refactored:
         zs.refactors += int(s.refactored)
         zs._fresh = prep
+    if status == _CODES['RADAU_TC_MAXITER']:
+        ## (the Python loop's False: its iterations made, the source calls
+        ## after the first its memo's hits)
+        it = int(s.iters)
+        _PC['umemo:hit'] += 3 * (it - 1)
+        _PC['radau_tc:served'] += 1
+        _PC['radau_tc:noconv'] += 1
+        _PC['radau_tc:iterations'] += it
+        return False
     if status != _CODES['RADAU_TC_CONVERGED']:
         NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         if status == _CODES['RADAU_TC_BAIL_WALKSTOP']:

@@ -5133,3 +5133,18 @@ failure now, as the DC solvers wrap one: rejected and retried smaller, and at
 `minstep` the gshunt ladder (which makes the matrix regular).
 Tests: `test_radau_c.py` (a zero Jacobian planted once: the run finishes and
 agrees with the clean run).
+
+## `radau_tc.c` -- underflow not tested; maxiter served (2026-10-20)
+
+2026-10-20 (Andreas: "Address the two points related to Radau now";
+`doc/hdl_roadmap_260824.md`, 156).  The unit tested PCX_FP_FLAGS, underflow
+included, and every hand-back on flags measured on eight decks (~23 000) was an
+underflow numpy's default error state ignores.  It tests `TC_FLAGS` (overflow,
+invalid, divide) now, as `dcnewton.c` and `pcnrdc.c` do, and its glue declines
+where underflow is not ignored.  Its maxiter, once a hand-back the Python loop
+repeated for 100 iterations, is `RADAU_TC_MAXITER`: the Python loop's own False,
+served.  Radau's default 454.6 -> 421.6 s over 20 decks, every waveform
+bit-identical.  `radau.c` keeps PCX_FP_FLAGS: the same change made arom (3m =
+882) +5.4 %, its served solves costlier than numpy's there.
+Tests: `test_radau_tc.py` (an underflow served, and declined under
+`errstate(under='warn')`; maxiter the Python's False).

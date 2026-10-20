@@ -16,7 +16,8 @@
 #include "pcx_fenv.h"
 #include "radau_tc.h"
 
-/* the four flags numpy's errstate governs (inexact is not one).  One
+/* the flags numpy reports here: underflow is not one -- numpy ignores it by
+   default, and the glue declines where it does not (`_tran_radau_tc`).  One
    raised in the C's own arithmetic hands the loop back: the Python makes
    the same operation and numpy reports it as the caller's errstate says.
    The flags the core, the walk, LAPACK and KLU raise are cleared, not
@@ -26,6 +27,7 @@
    FENV_ACCESS), so an operation whose result stays in a register may move
    past the test; one whose result is stored to memory the call could read
    may not. */
+#define TC_FLAGS (FE_OVERFLOW | FE_INVALID | FE_DIVBYZERO)
 
 /* every hand-back: the flags cleared, `status` set; returns `why` */
 static long tf_bail(radau_tf_t *s, long why)
@@ -64,9 +66,11 @@ static void cmul(long fused, double ar, double ai, double br, double bi, double 
    walk and the limited step's largest reduced entry; the test after the
    update.
    Returns RADAU_TC_CONVERGED: Y the converged stages, `iters`, `status`,
-   and where end_bits the end passes (`end_done`, the e_ buffers).  Else a
-   bail code, also in `status`: Y partly updated and not read, the flags
-   cleared.  On every return lu_a, lu_ipiv and lu_info, the KLU numeric,
+   and where end_bits the end passes (`end_done`, the e_ buffers).
+   RADAU_TC_MAXITER: maxiter iterations made, the test failing after each --
+   the Python loop's own iterates, so its False -- `iters` maxiter, Y not
+   read, the flags cleared.  Else a bail code, also in `status`: Y partly
+   updated and not read, the flags cleared.  On every return lu_a, lu_ipiv and lu_info, the KLU numeric,
    `refactored` and `klu_fresh` hold the factorisations as made so far --
    what the Python's loop would have left: a refactor of the same values
    repeats its bits and dgetrs on dgesv's factors is dgesv's solve, so the
@@ -126,7 +130,7 @@ long pcx_radau_tc(radau_tf_t *s)
                 rr++;
             }
         }
-        if (fetestexcept(PCX_FP_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
+        if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
         /* `_transform_rhs`: -((P_k0 F0 + P_k1 F1) + P_k2 F2), each F cast to
            complex (F + 0j) and multiplied as numpy multiplies; rhs0's
            imaginary part made as numpy makes it (its flags), then dropped.
@@ -153,7 +157,7 @@ long pcx_radau_tc(radau_tf_t *s)
                 }
             }
         }
-        if (fetestexcept(PCX_FP_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
+        if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
         /* a non-finite real right-hand side is the analysis solver's */
         for (k = 0; k < m; k++) if (!isfinite(s->b0[k])) return tf_bail(s, RADAU_TC_BAIL_RHS);
         /* numpy's kept LU: `dgesv` at its first solve, `dgetrs` after
@@ -226,8 +230,8 @@ long pcx_radau_tc(radau_tf_t *s)
                 if (ab[k] > bnd) bnd = ab[k];
             }
             /* an overflow, invalid or divide in the check's own arithmetic
-               hands back (underflow is not tested here) */
-            if (fetestexcept(FE_OVERFLOW | FE_INVALID | FE_DIVBYZERO)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
+               hands back */
+            if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
             res = res / sc;
             /* the band: 32 (m + 4) eps of max_k sum_j |A_kj| |x_j| over
                max|b|, plus 16 eps of the residual */
@@ -249,7 +253,7 @@ long pcx_radau_tc(radau_tf_t *s)
                 s->dY[i * m + k] = t1 + t2;
             }
         }
-        if (fetestexcept(PCX_FP_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
+        if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
         /* per stage: Y_prev + insert(dY_i, iref, 0.0), the walk against
            Y_prev, the limited step's largest reduced entry */
         memcpy(s->Yp, s->Y, (size_t) (3 * n) * sizeof(double));
@@ -261,7 +265,7 @@ long pcx_radau_tc(radau_tf_t *s)
                there becomes +0.0, as numpy's elementwise sum makes it */
             yn[r] = yp[r] + 0.0;
             for (k = r + 1; k < n; k++) yn[k] = yp[k] + d[k - 1];
-            if (fetestexcept(PCX_FP_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
+            if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
             /* `cir.limit(Y_trial, Y_prev)`: the walk limits yn in place and
                returns wn, or the element whose limiter declined (the
                Python limits); its flags are not tested */
@@ -272,7 +276,7 @@ long pcx_radau_tc(radau_tf_t *s)
             }
             /* step_i = red(Y_new - Y_prev) (stored: its flags tested) */
             for (k = 0; k < n; k++) s->stp[k] = yn[k] - yp[k];
-            if (fetestexcept(PCX_FP_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
+            if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
             /* np.max(np.abs(step_i)), then Python's max(scale, it): each
                takes a later value only where it is greater.  Every value is
                finite and >= +0.0 here, so starting from 0.0 and any tie
@@ -303,7 +307,7 @@ long pcx_radau_tc(radau_tf_t *s)
         feclearexcept(FE_ALL_EXCEPT);
         s->tolv[0] = s->reltol * ynorm;
         s->tolv[1] = s->tolv[0] + s->abstol;
-        if (fetestexcept(PCX_FP_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
+        if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
         s->iters = it + 1;
         if (scale <= s->tolv[1]) {
             s->status = RADAU_TC_CONVERGED;
@@ -340,5 +344,7 @@ long pcx_radau_tc(radau_tf_t *s)
             return RADAU_TC_CONVERGED;
         }
     }
-    return tf_bail(s, RADAU_TC_BAIL_MAXITER);
+    /* (not a hand-back: the outcome the Python loop reaches) */
+    feclearexcept(FE_ALL_EXCEPT);
+    return s->status = RADAU_TC_MAXITER;
 }

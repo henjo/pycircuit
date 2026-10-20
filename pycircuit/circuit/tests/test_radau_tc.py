@@ -4,9 +4,10 @@ call.  Its stages, the source memo, the kept LU's and the complex solver's
 state and the warnings are the Python loop's -- on whole transients and a
 PSS, and on one captured step driven from drawn seeds, step sizes and
 entering charges; every hand-back (a non-finite stage, a floating-point
-exception, a singular real factor, a failed refactor, the residual check,
-the walk stopping, maxiter) leaves the Python loop to answer as before,
-with no trace; numpy's complex product read, not assumed; the inputs
+exception numpy reports, a singular real factor, a failed refactor, the
+residual check, the walk stopping) leaves the Python loop to answer as
+before, with no trace; maxiter is the Python's False and an underflow
+numpy ignores is served; numpy's complex product read, not assumed; the inputs
 it keeps from step to step set again wherever they change (B3.5); and
 the declines."""
 import ctypes
@@ -163,7 +164,7 @@ _FAIL6 = ctypes.CFUNCTYPE(ctypes.c_int, *([ctypes.c_void_p] * 6))(lambda *a: 0)
 
 
 def _attempt(seed, on, h=None, qn=None, Cr=None, Gr=None, maxit=None, tol=None,
-             zero_record=False, fail=None):
+             zero_record=False, fail=None, amat=None, under=None):
     """The captured step's loop from `seed`, as `_rk_step_transformed` runs
     it -- the C, and the Python loop where the C declines or hands back --
     the C on or off, from one state: the source memo as the loop found it,
@@ -171,11 +172,12 @@ def _attempt(seed, on, h=None, qn=None, Cr=None, Gr=None, maxit=None, tol=None,
     leaves it (the record analysed and factored; its next call refactors).
     The stages' bytes (or the exception, or 'noconv'), the source memo and
     its counts, both factorisations' state, the warnings with their lines;
-    and every count."""
+    and every count.  `amat` the tableau the loop reads (`ctx.Amat`),
+    `under` numpy's underflow mode around it."""
     tr, got = _cap()
     ctx = got['ctx']
     reltol, abstol, maxit0 = got['tols']
-    h0, qn0 = ctx.h, ctx.qn
+    h0, qn0, A0 = ctx.h, ctx.qn, ctx.Amat
     h = h0 if h is None else h
     tr.__dict__['_u_memo'] = dict(got['u'])
     zs = tr._radau_zsolver = LS.ComplexKLUSolver()
@@ -185,7 +187,9 @@ def _attempt(seed, on, h=None, qn=None, Cr=None, Gr=None, maxit=None, tol=None,
         ctx.h = h
         if qn is not None:
             ctx.qn = qn
-        with warnings.catch_warnings(record=True) as W:
+        if amat is not None:
+            ctx.Amat = amat
+        with warnings.catch_warnings(record=True) as W, np.errstate(under=under or 'ignore'):
             warnings.simplefilter('always')
             warnings.simplefilter('ignore', ResourceWarning)
             fz = tr._radau_frozen(got['Cr'] if Cr is None else Cr,
@@ -209,7 +213,9 @@ def _attempt(seed, on, h=None, qn=None, Cr=None, Gr=None, maxit=None, tol=None,
             try:
                 Yc = TC.solve(tr, ctx, fz, Y, got['src'], None, [], True, reltol, abstol,
                               maxit0 if maxit is None else maxit)
-                if Yc is not None:
+                if Yc is False:
+                    out = 'noconv'
+                elif Yc is not None:
                     out = [y.tobytes() for y in Yc]
                 elif tr._transform_loop(ctx, fz, Y, [None] * 3, [], None, None, reltol,
                                         abstol, maxit0 if maxit is None else maxit):
@@ -223,7 +229,7 @@ def _attempt(seed, on, h=None, qn=None, Cr=None, Gr=None, maxit=None, tol=None,
                 if fail is not None:
                     TC._MOD.pop('klu', None)
     finally:
-        ctx.h, ctx.qn = h0, qn0
+        ctx.h, ctx.qn, ctx.Amat = h0, qn0, A0
     d = _paths.since(before)
     um = sorted((repr(k), np.asarray(v).tobytes())
                 for k, v in tr.__dict__['_u_memo'].items())
@@ -312,11 +318,47 @@ def test_every_hand_back_answers_as_the_python():
     a, b, db = _both(_seed(), tol=-1.0)
     assert a == b and a[3][4] >= 1, a[3]
     _bail(db, 'residual')
-    ## maxiter: the Python loop does not converge either
-    far = _seed({j: 0.3 for j in range(3)})
-    a, b, db = _both(far, maxit=1)
-    assert a == b and a[0] == 'noconv', a[0]
-    _bail(db, 'maxiter')
+
+
+def test_maxiter_is_the_pythons_false_not_a_hand_back():
+    """A loop that does not converge in maxiter iterations is the Python
+    loop's own False (its iterates, so its source memo's hits): served as
+    such, and the step raises -- the C does not hand back for the Python
+    to repeat every iteration."""
+    rng = np.random.default_rng(7)
+    n = len(_seed()[0])
+    ## (2.0 V scattered: converges in its fifth iteration)
+    far = _seed({j: 2.0 * rng.standard_normal(n) for j in range(3)})
+    for maxit in (1, 3):
+        a, b, db = _both(far, maxit=maxit)
+        assert a == b and a[0] == 'noconv', a[0]
+        c = _counts(db)
+        assert (c.get('radau_tc:noconv') == 1 and c.get('radau_tc:served') == 1
+                and c.get('radau_tc:iterations') == maxit
+                and not any(k.startswith('radau_tc:bail') for k in c)), c
+    assert any(v for k, v in a[2].items() if k == 'umemo:hit'), a[2]
+
+
+def test_an_underflow_is_served_where_numpy_ignores_it():
+    """An underflow in the residual's products (the tableau scaled by
+    1e-300: ``h sum A_ij K_j`` subnormal) is not a flag numpy reports under
+    its default error state: served, the Python loop's iterates.  Where the
+    error state does not ignore it the C declines and the Python warns."""
+    _on()
+    A0 = _cap()[1]['ctx'].Amat
+    amat = A0 * 1e-300
+    with np.errstate(under='raise'):
+        h = _cap()[1]['ctx'].h
+        with pytest.raises(FloatingPointError):
+            _ = h * (amat[0, 0] * 1e-4)
+    a, b, db = _both(_seed(), amat=amat, maxit=2)
+    assert a == b and not a[4], a[4]
+    c = _counts(db)
+    assert c.get('radau_tc:served') == 1 and not any(k.startswith('radau_tc:bail') for k in c), c
+    a, b, db = _both(_seed(), amat=amat, maxit=2, under='warn')
+    assert a == b and any('underflow' in w[1] for w in a[4]), a[4]
+    c = _counts(db)
+    assert c.get('radau_tc:underflow') == 1 and 'radau_tc:served' not in c, c
 
 
 def test_a_stopped_walk_hands_back_and_is_taken_again():
@@ -417,12 +459,13 @@ def test_drawn_seeds_steps_and_charges_are_the_pythons(data):
     assert a == b
 
 
-def test_drawn_seeds_reach_the_c_and_its_hand_backs():
-    """Not vacuous: on a walk of drawn seeds the C serves most loops, over
-    one iteration and several, and hands some back."""
+def test_drawn_seeds_reach_the_c_and_both_its_outcomes():
+    """Not vacuous: on a walk of drawn seeds the C serves most loops to
+    convergence, over one iteration and several, and some to maxiter (the
+    Python's False) -- hand-backs are planted above."""
     _on()
     rng = np.random.default_rng(5)
-    served = handed = 0
+    served = noconv = 0
     iters = set()
     for k in range(48):
         sc = (1e-9, 1e-3, 0.05, 0.5, 2.0, 1e3)[k % 6]
@@ -430,12 +473,13 @@ def test_drawn_seeds_reach_the_c_and_its_hand_backs():
         a, b, db = _both(seed)
         assert a == b
         c = _counts(db)
-        if c.get('radau_tc:served'):
+        assert c.get('radau_tc:served') == 1, c
+        if c.get('radau_tc:noconv'):
+            noconv += 1
+        else:
             served += 1
             iters.add(c.get('radau_tc:iterations'))
-        else:
-            handed += 1
-    assert served >= 24 and handed >= 1 and len(iters) >= 2, (served, handed, iters)
+    assert served >= 24 and noconv >= 1 and len(iters) >= 2, (served, noconv, iters)
 
 
 ## -- numpy's complex product, read ----------------------------------------------------
