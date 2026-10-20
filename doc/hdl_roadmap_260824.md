@@ -9822,3 +9822,55 @@ GAMMA_REAL alone moved by -2 / +2 ulp -- moves those step counts as much (gm3 -7
 accepted despite the line.
 
 **Gate**: suite 5 576 passed, 6 skipped, 3 xfailed.  The gold census does not run Radau: not run.
+
+## 2026-10-21 — 158. glibc's allocator mode pinned on request; Radau's frozen factors made in place, refused
+
+**Why** (Andreas: "Do 1 and 2", the open topics after 157 -- the cost of `fold`, Radau's frozen factors, and the
+coupled stage Newton's C `radau.c` at large n; then, on what item 2 found, "Do as you suggest").
+
+**Item 2, sized: the allocator's, not the C's.**  `radau.c` under 156's underflow rule made arom +5.4 % and was dropped.
+It is not slower than the Python: arom on that tree, C on against off -- unpinned 28.37 / 26.60 s; a cache-friendly
+tiled assembly 28.72 s (a strided-write hypothesis refuted); MALLOC_MMAP_THRESHOLD_ 128 KB 40.84 / 41.88 s; 32 MB
+30.61 / 30.60 s; 32 MB with MALLOC_TRIM_THRESHOLD_ 256 MB 26.07 / 26.22 s; bits identical everywhere.  The
+single-threaded profile puts its 39 solves at +0.3 s net and +1.6 s on functions every step runs.  glibc serves an
+allocation above `M_MMAP_THRESHOLD` (128 KB at start) with fresh mmap'ed pages and raises the threshold (and the trim
+threshold to twice it) when such a chunk is freed: a process settles into a MODE by its allocation history, which the
+C's changes.  Nothing built for `radau.c`.
+
+**The allocator's mode: a decision rule written first** (plan 'GLIBC'S ALLOCATOR MODE'): pin both thresholds BY
+DEFAULT if, pinned, the 27 gold decks' summed time falls >= 3 %, no deck is slower than +3 % (the 27 and Radau's 20),
+every waveform is bit-identical and no deck's peak RSS grows more than 10 %; else on request, which the timing
+harnesses make.  **Measured** (the 27 decks' default transient, unpinned against MALLOC_MMAP_THRESHOLD_ 32 MB +
+MALLOC_TRIM_THRESHOLD_ 256 MB, fresh processes, three rounds interleaved, best of 3): every waveform bit-identical;
+summed 40.61 -> 40.62 s (+0.0 %); the decks under 0.2 s -15.8 .. +9.0 % (noise at 30 ms), the rest -0.9 .. +0.8 %;
+peak RSS at most +4.3 % (mux8, 501 -> 522 MB), but a pinned process keeps more at its end (mux8 459 -> 508, jge 354 ->
+402, voter25 336 -> 366 MB).  Radau on its 20 decks (the fold A/B's today's-tree rows): 366.24 -> 362.69 s (-1.0 %),
+opampal -5.1 %, worst +1.1 %, bits identical.  The rule says ON REQUEST.
+
+**Built.**  `pycircuit.circuit._malloc`, imported first by `pycircuit.circuit`: with env `PYCIRCUIT_MALLOC_PIN=1`, or
+on `_malloc.pin()`, `mallopt` sets `M_MMAP_THRESHOLD` 32 MB (glibc's ceiling for it on 64 bits) and `M_TRIM_THRESHOLD`
+256 MB, which also switches the adjustment off; glibc only; a threshold the user set (the `MALLOC_*_` variables, a
+`glibc.malloc.` tunable) wins; `STATUS` says which.  Pinned at import is the variables' pinning at process start
+(opampal 9.41 / 9.49 s, arom 23.24 / 23.15; unpinned 10.00, 23.56; three rounds, bits identical).
+`benchmarks/_bench.pin_malloc()` beside `pin_threads()` in `micro`, `insitu` and `loop_split`, and the gold census
+(`spice_suite`) sets the variable for its decks' processes unless it is set: an A/B there measures a change, not the
+mode its allocations flip.  `test_malloc_pin`: by glibc's own count of mmap'ed chunks (`mallinfo2`), a 24 MB array
+comes from the heap once pinned (on import and by `pin()`) and from mmap under a threshold the user set.
+
+**Item 1, built and refused.**  With the error estimate on the transform's factor, `fold` -- `_radau_frozen`'s two
+factors and the complex one's packed values in one C call -- was the largest single piece of opampal's step (518
+unknowns, single-threaded profile: 3.3 ms a step, 28 % of the run).  Sized on opampal's own factors (warm, a call):
+2.28 ms -- the inputs copied into the C's buffers 0.18, the C 1.53 (the gather of the packed values column by column
+through the m x m factor 0.66), the factors copied out 0.27.  Built, byte for byte as before: the C read `Cr` and `Gr` in
+place and wrote the two factors into the arrays `fold` returns; the gather took the last record's own CSC and proved
+the pattern exact by count (every position nonzero, rows strictly ascending, the spans in order, as many nonzeros in
+the factor as the pattern holds); 2.28 -> 1.04 ms a call.  Measured (line written first; Radau's default transient on
+the 20 decks, three rounds interleaved, best of 3, unpinned and pinned): -0.9 / -0.7 % after 1.5 rounds -- `fold` ran
+only where the step's `P` was cached, so an adaptive run made its factors in numpy almost every step (latch: 31 folds
+in 402 steps).  A new stage with its own line (>= 3 % in each mode): `P` first under its own `errstate`, `fold` on every
+step whose scalars fold.  Every waveform bit-identical; summed 366.24 -> 359.73 s unpinned, 362.69 -> 356.00 pinned
+(-1.8 % each); opampal -22.8 / -23.2 %, the rest -3.4 .. +0.4 %.  Below its line: REFUSED, not committed (the patch
+kept outside the repository).  The gain is a fixed-step dense deck's alone.
+
+**Gate**: suite 5 579 passed, 6 skipped, 3 xfailed.  Nothing changes by default; the 27 gold decks pinned are bit-identical
+to unpinned (above).

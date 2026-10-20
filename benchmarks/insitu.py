@@ -114,6 +114,7 @@ def _setup(tree):
     sys.path.insert(1, os.path.join(tree, 'benchmarks'))
     import _bench
     _bench.pin_threads()
+    _bench.pin_malloc()
     _bench.pin_cpu()
     import step_machinery
     return _bench, step_machinery

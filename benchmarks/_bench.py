@@ -13,6 +13,10 @@ it -- their test suites, their benchmarks.  So:
 * `pin_threads()` -- the BLAS/OpenMP thread variables to 1, which has to
   happen BEFORE numpy is imported (a pool opened before it keeps its 24
   threads); `step_machinery`'s `pss` case ran on 24 threads until it did.
+* `pin_malloc()` -- glibc's malloc thresholds pinned (`PYCIRCUIT_MALLOC_PIN`,
+  `pycircuit.circuit._malloc`), so a change that allocates differently
+  cannot flip a deck's allocator mode and read as its cost (roadmap 156's
+  +5.4 % on arom was one; 158).
 * `pin_cpu()` -- the process on one P-core (CPU 8 unless
   `PYCIRCUIT_BENCH_CPU`), so parent and child never land on different core
   types or migrate.
@@ -48,6 +52,15 @@ def pin_threads():
         raise RuntimeError('pin_threads() after numpy was imported: its BLAS pool is open')
     for v in THREAD_VARS:
         os.environ[v] = '1'
+
+
+def pin_malloc():
+    """glibc's malloc thresholds pinned in this process and its children:
+    the variable first (`pycircuit.circuit` pins on import, a child
+    inherits it), and now where the package is already imported."""
+    os.environ['PYCIRCUIT_MALLOC_PIN'] = '1'
+    m = sys.modules.get('pycircuit.circuit._malloc')
+    return m.pin() if m is not None else 'on import'
 
 
 def equal_paths(trees):

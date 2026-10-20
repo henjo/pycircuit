@@ -5163,3 +5163,18 @@ its line failed on per-deck time and step counts, which a last-bit change of
 GAMMA_REAL alone moves as much; accepted by Andreas.
 Tests: `test_radau_frozen.py` (the kept LU's estimate is numpy's solve of the
 transform's factor bit for bit, StructuralKLU's its solve; another C the old one).
+
+## `_malloc` -- glibc's allocator mode, pinned on request (2026-10-21)
+
+2026-10-21 (Andreas: "Do as you suggest"; `doc/hdl_roadmap_260824.md`, 158).
+glibc's dynamic mmap and trim thresholds settle per process by its allocation
+history, so a change that allocates differently could flip a deck's mode and
+read as its cost (156's +5.4 % on arom with `radau.c` was that, not the C).
+With env `PYCIRCUIT_MALLOC_PIN=1` (or `_malloc.pin()`) both thresholds are
+pinned high when `pycircuit.circuit` is imported; a threshold the user set
+wins.  Not the default: on the 27 gold decks pinning moved the summed time
++0.0 % (Radau's 20: -1.0 %) against a 3 % line, and a pinned process keeps
+more memory at its end.  The timing harnesses pin it (`_bench.pin_malloc`, the
+gold census).  Every waveform bit-identical either way.
+Tests: `test_malloc_pin.py` (a 24 MB array from the heap once pinned, from
+mmap under the user's threshold; by `mallinfo2`).

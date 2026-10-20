@@ -298,6 +298,7 @@ def child(deck, fraction, plant):
     sys.path.insert(0, HERE)
     import _bench
     _bench.pin_threads()
+    _bench.pin_malloc()
     _bench.pin_cpu()
     sys.path.insert(0, ROOT)
     import warnings

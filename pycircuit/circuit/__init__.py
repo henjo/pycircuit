@@ -1,3 +1,8 @@
+## THE ALLOCATOR'S MODE (2026-10-21): with env `PYCIRCUIT_MALLOC_PIN=1` glibc's
+## malloc thresholds are pinned before anything allocates an array, so a
+## process's speed does not depend on its allocation history (`_malloc`; the
+## timing harnesses set it).
+from . import _malloc  # noqa: F401 (imported for its effect)
 from .circuit import *
 from .elements import *
 from .analysis import *

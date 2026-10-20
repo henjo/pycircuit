@@ -282,6 +282,9 @@ def _fmt(rec):
 
 
 def main(argv):
+    ## glibc's malloc thresholds pinned in every deck's process (`_malloc`,
+    ## roadmap 158): a deck's time is then not its allocation history's
+    os.environ.setdefault('PYCIRCUIT_MALLOC_PIN', '1')
     peers = '--peers' in argv
     qpart = float(argv[argv.index('--qpart') + 1]) if '--qpart' in argv else None
     out_json = argv[argv.index('--json') + 1] if '--json' in argv else None
