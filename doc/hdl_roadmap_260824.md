@@ -9789,3 +9789,36 @@ profile, 15.7 s) the whole transform loop is 1.7 s; Radau's error estimate is 6.
 `GAMMA_REAL` (2 ulp from the transform's `eig` value) and factored afresh, dense even on a KLU run.
 
 **Gate**: suite 5 573 passed, 6 skipped, 3 xfailed.  The gold census does not run Radau (no deck sets the integrator): not run.
+
+## 2026-10-20 — 157. Radau's error estimate solves on the transform's real factor
+
+**Why** (roadmap 156's profile; Andreas: "Do the next lever").  On opampal (518 unknowns; cProfile, single-threaded)
+Radau's error estimate took 6.6 of 15.7 s, 3.6 s of it a fresh dense `numpy.linalg.solve` of `(GAMMA_REAL / h) C(x_n)
++ G(x_n)` every step -- the toolkit's solver, dense even on a KLU run.  On the transform path that is the step's real
+factor in principle: the same C and G at x_n, already factored once a step (`_radau_frozen`); radau5 uses the one
+factor for both.  Its scalar is the transform's `lam_0` (`eig`'s), 5 ulp above GAMMA_REAL (3.637834252744498 against
+...496, the exact 3 + 3^(2/3) - 3^(1/3)).
+
+**Built.**  `_rk_step_transformed` hands `_finish_radau` its real solve with the C and G at x_n it is of:
+`_FrozenTransform.real_solve` (the frozen solve's own real solve, extracted: the kept LU for a finite right-hand side,
+the analysis solver otherwise), or, where no frozen factors were made, the per-iteration solve's own
+(`_radau_transform_solve`'s factor and solver: the same bytes, so the frozen transform stays the per-iteration one's).
+`_radau_error_estimate` solves on it where its own C and G at x_n are those (compared: a stateful limiter's sync may
+move them) on the numeric toolkit (`radau.est:transform`); elsewhere -- the coupled paths, a mismatch -- as before
+(`radau.est:fresh`).  A RE-BASELINE of Radau's adaptive answers: the estimate moves by the 5 ulp (and by KLU's
+rounding from 250 unknowns), the next step size with it.  `test_radau_frozen`: the estimate on the kept LU is numpy's
+solve of `(lam_0 / h) Cr + Gr` bit for bit, on StructuralKLU its solve; within rounding of the old one; another C ->
+the fresh solve, the old bytes; a KLU run the same with the frozen factors off.  Pinned pairs "the stage paths'
+passes and the core's", "the transform solve and its frozen form" and "the transform Newton and its C" re-recorded.
+
+**Measured** (line written first: plan 'THE ERROR ESTIMATE ON THE STEP'S REAL FACTOR'; Radau's default transient on
+the 20 decks, fresh processes, three rounds interleaved, best of 3 -- the disk filled during round 3, the 8 largest
+decks have 2): summed 425.2 -> 372.9 s (-12.3 %): gm19 -34, opampal -34, rich3 -13, gm3 -13, arom -12, jge -9.3, mux8
+-7.6 %; no gold column flips.  THE LINE FAILED on two criteria: gm1 +19.1 % and slowlatch +13.9 % (3 rounds each), and
+accepted steps beyond +-2 % on gm3 -10.9, g1310 -7.0, gm17 -3.9, arom -3.4 %.  A lottery check on today's code --
+GAMMA_REAL alone moved by -2 / +2 ulp -- moves those step counts as much (gm3 -7.0 / -12.2, g1310 -3.6 / +9.5, gm17
+-0.8 / +3.1 %): the controller's sensitivity to the last bits of its estimate, which no reuse of the factor can avoid
+(its matrix must be the transform's).  Andreas's decision, offered refusal, a new lottery-aware line, or acceptance:
+accepted despite the line.
+
+**Gate**: suite 5 576 passed, 6 skipped, 3 xfailed.  The gold census does not run Radau: not run.

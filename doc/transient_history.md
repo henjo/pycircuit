@@ -5148,3 +5148,18 @@ bit-identical.  `radau.c` keeps PCX_FP_FLAGS: the same change made arom (3m =
 882) +5.4 %, its served solves costlier than numpy's there.
 Tests: `test_radau_tc.py` (an underflow served, and declined under
 `errstate(under='warn')`; maxiter the Python's False).
+
+## `_RadauStages._radau_error_estimate` -- on the transform's real factor (2026-10-20)
+
+2026-10-20 (Andreas: "Do the next lever"; `doc/hdl_roadmap_260824.md`, 157).
+The estimate made a fresh dense `numpy.linalg.solve` of `(GAMMA_REAL / h) C + G`
+at x_n every step, even on a KLU run (opampal 3.6 of 15.7 s).  On the transform
+path it solves now as the transform solves its real factor `(lam_0 / h) Cr + Gr`
+-- the frozen factor already made (`_FrozenTransform.real_solve`), or the
+per-iteration solve's own -- where its C and G at x_n are the transform's; the
+coupled paths as before.  `lam_0` (`eig`'s) is 5 ulp above GAMMA_REAL (the
+exact value), so Radau's adaptive answers re-baseline.  -12.3 % over 20 decks;
+its line failed on per-deck time and step counts, which a last-bit change of
+GAMMA_REAL alone moves as much; accepted by Andreas.
+Tests: `test_radau_frozen.py` (the kept LU's estimate is numpy's solve of the
+transform's factor bit for bit, StructuralKLU's its solve; another C the old one).

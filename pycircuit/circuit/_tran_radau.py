@@ -30,6 +30,7 @@ from pycircuit.circuit.simwarnings import (
     UsageWarning,
     warn,
 )
+from pycircuit.circuit.toolkit import NumericToolkit
 
 #: the transform's frozen factors made once a step (`_radau_frozen`, speed
 #: round 10, B3.1); env `PYCIRCUIT_RADAU_FROZEN=0` makes them every iteration
@@ -71,24 +72,33 @@ class _FrozenTransform:
 
     __slots__ = ('__weakref__', 'cf', 'cs', 'ls', 'lu', 'm', 'p', 'prep', 'rf', 'tk', 'v', 'zs')
 
+    def real_solve(self, b0):
+        """``((lam_0 / h) Cr + Gr)^{-1} b0``: the kept LU's for a finite
+        right-hand side (numpy's solve, bit for bit), the analysis solver's
+        otherwise."""
+        if self.lu is not None and np.isfinite(b0).all():
+            return self.lu.solve(b0)
+        return np.asarray(self.ls.solve(self.rf, b0, self.tk), dtype=float)
+
     def solve(self, R3):
         """`_RadauStages._radau_transform_solve(R3, Cr, Gr, h)` against the
-        frozen factors: its operations, in its order.  The real solve is the
-        kept LU's for a finite right-hand side (numpy's solve, bit for bit),
-        the analysis solver's otherwise."""
+        frozen factors: its operations, in its order (the real solve
+        `real_solve`)."""
         m = self.m
         R3 = np.asarray(R3, dtype=float)
         rhs0, rhs1 = _transform_rhs(R3[0:m], R3[m:2 * m], R3[2 * m:3 * m], self.p)
-        b0 = np.real(rhs0)
-        if self.lu is not None and np.isfinite(b0).all():
-            w0 = self.lu.solve(b0)
-        else:
-            w0 = np.asarray(self.ls.solve(self.rf, b0, self.tk), dtype=float)
+        w0 = self.real_solve(np.real(rhs0))
         if self.prep is not None:
             w1 = np.asarray(self.zs.solve_prepared(self.prep, rhs1), dtype=complex)
         else:
             w1 = np.asarray(self.cs(self.cf, rhs1), dtype=complex)
         return _transform_back(w0, w1, self.v)
+
+
+def _same_matrix(a, b):
+    """`a` and `b` the same matrix: one object, or equal entries of one
+    shape."""
+    return a is b or (np.shape(a) == np.shape(b) and np.array_equal(a, b))
 
 
 def _lam_folds(lam):
@@ -765,7 +775,7 @@ class _RadauStages:
         return self._finish_radau(ctx, x0, t, provided_function, Y,
                                   solver=(_stage_newton, seed0, _block_residual))
 
-    def _finish_radau(self, ctx, x0, t, provided_function, Y, solver=None):
+    def _finish_radau(self, ctx, x0, t, provided_function, Y, solver=None, real=None):
         """The end every Radau IIA(3) coupled step shares, once its stages `Y`
         are solved and the devices sit at the last stage's limiting state: the
         branch check, the step end, the embedded error estimate.
@@ -773,7 +783,8 @@ class _RadauStages:
         `solver` is the dense path's own ``(stage_newton, seed0, residual)``.
         The paths with their own Newton (PCNR, the transform) pass None: the
         branch check's confirmation then re-solves the same step equation with
-        the dense coupled solver, built only if the screen fires."""
+        the dense coupled solver, built only if the screen fires.  `real`:
+        the transform's ``(C, G, real solve)`` (the error estimate's)."""
         ## (the passes the step's readers make at its stages, one core call
         ## a stage: `_stage_end_passes`, speed round 10, B3.2 -- on the paths
         ## with a Newton of their own; the dense Newton has recorded all
@@ -807,7 +818,7 @@ class _RadauStages:
         ## :meth:`_radau_error_estimate` for the construction and its gates.
         if getattr(self, '_rk_want_est', False):
             self._rk_est = self._radau_error_estimate(x0, Y, ctx.tn, ctx.h,
-                                                      ctx.src, ctx.arr)
+                                                      ctx.src, ctx.arr, real=real)
         return xnp1, None, J, None
 
     def _stage_end_passes(self, Y):
@@ -877,7 +888,7 @@ class _RadauStages:
                     put(y, vals)
         _paths.COUNTS['radau.fuse:served'] += 1
 
-    def _radau_error_estimate(self, xn, Y, tn, h, src, arr):
+    def _radau_error_estimate(self, xn, Y, tn, h, src, arr, real=None):
         """The filtered embedded 5(3) error estimate for one Radau IIA(3) step
         (Hairer & Wanner Vol II, IV.8 -- the radau5 estimator), in STATE units.
 
@@ -900,6 +911,18 @@ class _RadauStages:
         exactly the transient the method exists to step over; the real-factor
         inverse maps it back to a bounded state error.  Solved in the
         reference-removed space (the full factor is singular on that row).
+
+        ⚠ ON THE TRANSFORM'S OWN REAL SOLVE where the step took it (`real`:
+        its ``(C, G, solve)``, used where those are the very `C` and `G`
+        read here -- compared: a stateful limiter's sync may move them -- on
+        the numeric toolkit): radau5's one factor for the Newton and the
+        estimate, ``(lam_0 / h) Cr + Gr`` with the transform's ``lam_0``
+        (`eig`'s, 5 ulp above GAMMA_REAL), solved as the transform solves it
+        -- the frozen factor already made (numpy's kept LU, or the analysis
+        solver's KLU: `_FrozenTransform.real_solve`), or the per-iteration
+        solve's analysis solver, the same bytes -- where a fresh dense LU
+        was made every step (opampal, 518 unknowns: 3.6 of 15.7 s).
+        Elsewhere (the coupled paths) as before.
 
         ⚠ THE dd WEIGHTS WERE VALIDATED, NOT TRUSTED (roadmap 0j).  On the
         smooth RC the estimate scales as ``h^4`` (the order-3 embedded), and
@@ -943,10 +966,16 @@ class _RadauStages:
             if snap is not None:
                 state_restore(snap)
         rhs = np.asarray(Cn @ F1) + np.asarray(f0)
-        real_factor = (gamma_r / h) * np.asarray(Cn) + np.asarray(Gn)
-        (Rf,) = remove_row_col((real_factor,), iref, tk)
         rhs_r = tk.concatenate((rhs[:iref], rhs[iref + 1:]))
-        est_r = self.toolkit.linearsolver(Rf, rhs_r)
+        if (real is not None and type(tk) is NumericToolkit
+                and _same_matrix(Cn, real[0]) and _same_matrix(Gn, real[1])):
+            _paths.COUNTS['radau.est:transform'] += 1
+            est_r = real[2](np.asarray(rhs_r, dtype=float))
+        else:
+            _paths.COUNTS['radau.est:fresh'] += 1
+            real_factor = (gamma_r / h) * np.asarray(Cn) + np.asarray(Gn)
+            (Rf,) = remove_row_col((real_factor,), iref, tk)
+            est_r = self.toolkit.linearsolver(Rf, rhs_r)
         return self.toolkit.insert(est_r, iref, 0.0)
 
     def _radau_transform_matrices(self):
@@ -1228,7 +1257,17 @@ class _RadauStages:
         ## the step end (the last stage) is what the epilogue reads
         if S[2] is not None:
             state_restore(S[2])
-        return self._finish_radau(ctx, x0, t, provided_function, Y)
+        ## (the transform's real solve, for the error estimate: the frozen
+        ## factor's, or the per-iteration solve's own -- `_radau_transform_
+        ## solve`'s real factor and solver -- with the C and G at x_n it is of)
+        if fz is not None:
+            real = (Cn, Gn, fz.real_solve)
+        else:
+            lam0 = self._radau_transform_matrices()[0][0].real
+            ls = self._get_linearsolver()
+            real = (Cn, Gn, lambda b: np.asarray(ls.solve((lam0 / h) * Cr + Gr, b, tk),
+                                                 dtype=float))
+        return self._finish_radau(ctx, x0, t, provided_function, Y, real=real)
 
     def _transform_loop(self, ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, maxit):
         """The transform's simplified Newton from the stages `Y` (updated in

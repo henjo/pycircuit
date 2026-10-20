@@ -23,6 +23,7 @@ from hypothesis import strategies as st
 from pycircuit.circuit import _paths, _tran_radau, _tran_radau_tc, circuit
 from pycircuit.circuit import linearsolver as LS
 from pycircuit.circuit._tran_radau import _RadauStages
+from pycircuit.circuit.analysis import remove_row_col
 from pycircuit.circuit.integrator import RadauIIA3Integrator
 from pycircuit.circuit.tests.test_newton_c import _mos_chain
 from pycircuit.circuit.tests.test_psp_limit_c import _stage
@@ -124,6 +125,92 @@ def test_a_radau_pss_is_the_same_with_the_frozen_transform_off():
 
 
 ## -- one step's factors, captured: drawn right-hand sides and step sizes --------------
+
+## -- the error estimate on the transform's real factor --------------------------------
+
+def _estimates(build, make, floor=None):
+    """An adaptive transform run's last error estimate, its arguments and
+    the transform's ``(C, G, real solve)`` it was handed; `floor` the run's
+    structural KLU floor."""
+    if floor is not None:
+        prop = Transient.__dict__['_STRUCTURAL_KLU_MIN_N']
+        Transient._STRUCTURAL_KLU_MIN_N = property(lambda self: floor)
+    try:
+        tr = Transient(build(), toolkit=circuit.numeric, integrator=RadauIIA3Integrator(),
+                       **make)
+        tr._get_linearsolver()
+    finally:
+        if floor is not None:
+            Transient._STRUCTURAL_KLU_MIN_N = prop
+    got = {}
+    real_est = tr._radau_error_estimate
+
+    def spy(*a, **k):
+        got['a'], got['k'] = a, k
+        return real_est(*a, **k)
+    tr._radau_error_estimate = spy
+    before = _paths.snapshot()
+    tr.solve(tend=6e-7, timestep=2e-8)
+    d = _paths.since(before)
+    del tr._radau_error_estimate
+    return tr, real_est, got['a'], got['k']['real'], d
+
+
+@pytest.mark.parametrize('kind', ['dense', 'klu'])
+def test_the_error_estimate_solves_on_the_transforms_real_factor(kind):
+    """On the transform path the estimate solves ``(lam_0 / h) Cr + Gr`` as
+    the transform solves it -- the frozen factor's kept LU (numpy's solve
+    of that matrix, bit for bit) or the analysis solver's StructuralKLU --
+    where its own C and G at x_n are the transform's; with others the fresh
+    dense solve of GAMMA_REAL's factor, as before (5 ulp apart: the two
+    within rounding)."""
+    _klu_or_skip()
+    if kind == 'dense':
+        tr, est, a, real, d = _estimates(_stage, {})
+    else:
+        tr, est, a, real, d = _estimates(lambda: _mos_chain(24, cap=1e-13),
+                                         {'radau_transform': True}, floor=2)
+        assert type(tr._get_linearsolver()._choice) is LS.StructuralKLU
+    assert d.get('radau.est:transform', 0) > 0 and 'radau.est:fresh' not in d, d
+    Cn, Gn, _solve = real
+    h = a[3]
+    lam0 = tr._radau_transform_matrices()[0][0].real
+    (Cr,) = remove_row_col((Cn,), tr.irefnode, tr.toolkit)
+    (Gr,) = remove_row_col((Gn,), tr.irefnode, tr.toolkit)
+    ls = tr._get_linearsolver()
+    before = _paths.snapshot()
+    kept = est(*a, real=real)
+    assert _paths.since(before).get('radau.est:transform') == 1
+    if kind == 'dense':
+        ref = est(*a, real=(Cn, Gn, lambda b: _NP_SOLVE((lam0 / h) * Cr + Gr, b)))
+    else:
+        ref = est(*a, real=(Cn, Gn, lambda b: ls.solve((lam0 / h) * Cr + Gr, b, tr.toolkit)))
+    assert kept.tobytes() == ref.tobytes()
+    fresh = est(*a)
+    assert np.allclose(kept, fresh, rtol=1e-11, atol=1e-30)
+    ## another C at x_n than the transform's (a stateful limiter's sync):
+    ## the fresh solve
+    C2 = np.array(Cn, dtype=float)
+    C2.flat[np.flatnonzero(C2)[0]] *= 2.0
+    before = _paths.snapshot()
+    other = est(*a, real=(C2, Gn, _solve))
+    assert _paths.since(before).get('radau.est:fresh') == 1
+    assert other.tobytes() == fresh.tobytes()
+
+
+def test_a_klu_radau_transient_is_the_same_with_the_frozen_transform_off(monkeypatch):
+    """With the real factor on StructuralKLU the frozen factor's estimate is
+    the per-iteration solve's: the same bytes, statistics and warnings."""
+    _klu_or_skip()
+    monkeypatch.setattr(Transient, '_STRUCTURAL_KLU_MIN_N', property(lambda self: 2))
+    kw = {'tend': 6e-7, 'timestep': 2e-8}
+    make = {'radau_transform': True}
+    build = lambda: _mos_chain(24, cap=1e-13)
+    a, da = _run(build, False, make, **dict(kw))
+    b, db = _run(build, True, make, **dict(kw))
+    assert a[:4] == b[:4]
+    assert da.get('radau.est:transform', 0) > 0 and db.get('radau.est:transform', 0) > 0
+
 
 def _captured(build=_stage, steps=3, **make):
     """A radau transient on the transform path and its last step's frozen
