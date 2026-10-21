@@ -256,8 +256,9 @@ class DC(Analysis):
         ## AttributeError rather than an answer.
         self.pcnr_status = 'off'
         self.pcnr_fell_back = False
-        ## (where PCNR solved it: 'plain', or its own ladder's, 'gshunt' or
-        ## 'source' -- `pcnr.solve_dc_continued`; None otherwise)
+        ## (where PCNR solved it: 'plain', or its own routes', 'gshunt',
+        ## 'jgmin', 'source' or 'ptc' -- `pcnr.solve_dc_continued`; None
+        ## otherwise)
         self.pcnr_path = None
         pin, nodeset = self._held(self.par.pin), self._held(self.par.nodeset)
         ## `pcnr`: None (the default) PCNR where a device takes part, the

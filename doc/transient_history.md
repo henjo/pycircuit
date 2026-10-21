@@ -5229,3 +5229,17 @@ for nodes far beyond the sources was refused: behavioural models' internal
 state nodes (a VCO's phase) are not voltages.  Every gold deck bit-identical.
 Tests: `test_dc_pcnr.py` (planted non-solutions refused or raised),
 `test_noncon.py` (the clamp refused with the noncon check off).
+
+## `pcnr._ptc_ladder` -- pseudo-transient continuation, PCNR's last route (2026-10-21)
+
+2026-10-21 (Andreas: "Finish 1"; `doc/hdl_roadmap_260824.md`, 163).
+The chain ends with pseudo-transient continuation; PCNR's three routes
+(gshunt, junction gmin, source stepping) ended at the fallback to the chain.
+Now, last, the chain's schedule with each rung a gshunt rung anchored at its
+seed (`solve_dc(anchor=)`, carried in the sources the C loop is handed: no C
+change), then the pure solve and the acceptance check.  Sized alone on the
+gold decks it is weaker than the ladders (5 of the 7 decks they solve) and
+can land a latch in its other state, so it sits last, where no gold deck
+reaches it (every gold deck bit-identical).
+Tests: `test_dc_pcnr.py` (the route alone solves the 1 A diode and the 20 V
+BJT mirror; an anchored rung; the forced-failure sequence ends in its rungs).

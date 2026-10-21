@@ -472,7 +472,9 @@ def test_source_stepping_gives_up_at_its_smallest_step(monkeypatch):
     first rung, the junction-gmin ladder's, then source stepping's three steps
     from the start (0.05 halved to SOURCE_STEP_MIN), each tried plain and by
     both ladders' first rungs at its level -- the junction ladder first --
-    and no more."""
+    then the pseudo-transient route's rungs (`_ptc_ladder`: anchored gshunt
+    rungs at full sources from g = 1, escalating and halving within its rung
+    budget), and no more."""
     from pycircuit.circuit import gnd, pcnr
     patched, calls = _failing_kinds(lambda k: True)
     monkeypatch.setattr(pcnr, 'solve_dc', patched)
@@ -481,8 +483,12 @@ def test_source_stepping_gives_up_at_its_smallest_step(monkeypatch):
         pcnr.solve_dc_continued(c, gnd, x0=x0)
     top = [('p', 0.0), ('g', pcnr.GSHUNT_START), ('j', pcnr.JGMIN_START)]
     step = [('p', 0.0), ('j', pcnr.JGMIN_START), ('g', pcnr.GSHUNT_START)]
-    assert calls == ([(k, v, 1.0) for k, v in top]
-                     + [(k, v, s) for s in (0.05, 0.025, 0.0125) for k, v in step]), calls
+    head = ([(k, v, 1.0) for k, v in top]
+            + [(k, v, s) for s in (0.05, 0.025, 0.0125) for k, v in step])
+    assert calls[:len(head)] == head, calls
+    ptc = calls[len(head):]
+    assert ptc and ptc[0] == ('g', 1.0, 1.0) and len(ptc) <= 60, ptc
+    assert all(k == 'g' and s == 1.0 and 1e-13 < v < 1e7 for k, v, s in ptc), ptc
 
 
 def test_a_gold_deck_pcnr_solves_itself():
@@ -616,3 +622,60 @@ def test_a_chain_answer_that_does_not_solve_the_circuit_raises(monkeypatch):
     with pytest.raises(NoConvergenceError, match='does not solve the circuit'):
         DC(_diode_1a(), pcnr=False).solve()
 
+
+def _other_routes_failing(monkeypatch):
+    """PCNR's plain solve and its three ladders made to fail: only the
+    pseudo-transient route is left."""
+    from pycircuit.circuit import pcnr
+    for k in ('_gshunt_ladder', '_jgmin_ladder', '_source_steps'):
+        monkeypatch.setattr(pcnr, k, lambda *a, **kw: None)
+    real = pcnr.solve_dc
+
+    def solve(c, ref, x0=None, **kw):
+        if not kw.get('gshunt') and kw.get('v_lim0') is None:
+            raise RuntimeError('forced: the plain solve')
+        return real(c, ref, x0=x0, **kw)
+    monkeypatch.setattr(pcnr, 'solve_dc', solve)
+
+
+def test_the_pseudo_transient_route_solves_where_every_other_route_fails(monkeypatch):
+    """PCNR's LAST route (`pcnr._ptc_ladder`, the chain's
+    `PseudoTransientNewton`): with the plain solve and the three ladders
+    failing, it alone solves the diode at 1 A from zeros and the BJT mirror
+    from its 20 V start, to the chain's answers."""
+    import numpy as np
+
+    from pycircuit.circuit import gnd, pcnr
+    from pycircuit.circuit.dcanalysis import DC
+    op = np.asarray(DC(_diode_1a(), pcnr=False).solve().x, dtype=float)
+    cm, x0 = _bjt_mirror_20v()
+    ref = np.asarray(DC(_bjt_mirror_20v()[0], pcnr=False).solve(x0=x0).x, dtype=float)
+    _other_routes_failing(monkeypatch)
+    x, _v, _its, path = pcnr.solve_dc_continued(_diode_1a(), gnd)
+    assert path == 'ptc' and np.max(np.abs(x - op)) < 1e-9
+    x, _v, _its, path = pcnr.solve_dc_continued(cm, gnd, x0=x0)
+    assert path == 'ptc' and np.max(np.abs(x - ref)) < 1e-9
+    dc = DC(_diode_1a())
+    res = dc.solve()
+    assert dc.pcnr_status == 'used' and dc.pcnr_path == 'ptc'
+    assert np.max(np.abs(np.asarray(res.x, dtype=float) - op)) < 1e-9
+
+
+def test_a_pseudo_transient_step_is_anchored_at_its_seed():
+    """`solve_dc(anchor=)`: the shunt is ``gshunt (x - anchor)`` -- anchored
+    at the solution it solves to the solution; anchored at 0 V it is the
+    plain gshunt rung, byte for byte (the anchor rides in the sources the
+    loop, C or Python, is handed)."""
+    import numpy as np
+
+    from pycircuit.circuit import gnd, pcnr
+    from pycircuit.circuit.dcanalysis import DC
+    op = np.asarray(DC(_diode_1a(), pcnr=False).solve().x, dtype=float)
+    x, _v, _its = pcnr.solve_dc(_diode_1a(), gnd, x0=op, gshunt=1e-2, anchor=op)
+    assert np.max(np.abs(x - op)) < 1e-9
+    a = pcnr.solve_dc(_diode_1a(), gnd, gshunt=1e-2, anchor=np.zeros(len(op)))
+    b = pcnr.solve_dc(_diode_1a(), gnd, gshunt=1e-2)
+    assert a[0].tobytes() == b[0].tobytes() and a[2] == b[2]
+    ## (and the unanchored rung is the deformed problem's: 0.2 mV off at
+    ## 1e-2 S against the diode's ~38 S)
+    assert np.max(np.abs(b[0] - op)) > 1e-6

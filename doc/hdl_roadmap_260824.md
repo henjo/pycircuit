@@ -10021,3 +10021,40 @@ criterion means something only beyond 3 %.  The table describes the tree it was 
 change moves the step controller.
 
 **Gate**: suite 5 594 passed, 6 skipped, 3 xfailed.
+
+## 2026-10-21 — 163. PCNR's last route: pseudo-transient continuation; opampal's operating point, its path measured
+
+**Why** (Andreas: "Can we make PCNR more robust to handle these cases without falling back", then "Do 1 and 2 now",
+"Finish 2", "Finish 1").  On a user's converter (161) PCNR's three routes all fail from zeros and `DC` falls back to the
+chain; the chain ends with pseudo-transient continuation (`nrsolver.PseudoTransientNewton`), PCNR had nothing like it.
+
+**Built.**  `pcnr._ptc_ladder`, `solve_dc_continued`'s LAST route (path 'ptc'): the chain's schedule
+(`nrsolver._adaptive_conductance_ladder`, g from 1 down to 1e-12 by halving steps in exponent space, escalating to
+1e6 before the first rung converges), each rung a gshunt rung ANCHORED at its seed, ``g (x - x_seed)``, the limited
+unknowns carried from rung to rung, then the pure solve and the acceptance check (161).  `solve_dc(anchor=)` carries
+the anchor in the sources the loop is handed (``-g anchor`` on the node rows), so the C loop takes it as the Python
+loop does -- no C change.  `test_dc_pcnr`: with the plain solve and the three ladders failing, the route alone solves
+the diode at 1 A from zeros and the BJT mirror from its 20 V start to the chain's answers (and `DC()` reports 'ptc');
+anchored at the solution a rung solves to it, anchored at 0 V it is the plain gshunt rung byte for byte.  The ladder
+test that forces every solve to fail now sees the route's rungs after source stepping.  Pinned pairs "the PCNR DC
+solve and its C" and "the DC base solve and its C" re-recorded (the anchor rides in the sources the C is handed; a
+comment in `DC._solve_dc`).
+
+**Measured, and decided** (plan 'PCNR'S MISSING ROUTE'; line written first).  Sized ALONE on the 27 gold decks (the plain
+solve and the ladders skipped): 24 solved, often in fewer rungs (voter25 13 of today's 18), but only 5 of the 7 decks
+today's ladders solve (not e1480, opampal), and slowlatch and todd3 to the OTHER state of their latches (it follows the
+pseudo-time trajectory from the zeros seed): its line's clause "solves at least what the ladders solve" FAILED.  As the
+LAST route no gold deck reaches it: every gold deck's default transient and operating point bit-identical (54 runs).
+Andreas's decision: build it last.  Whether it rescues the user's cases is the user's to measure.
+
+**opampal's operating point** (the open item "sensitive to last-bit changes").  Its ANSWER is robust: one operating
+point from six random starts (+-1 V; PCNR the base bit for bit, the chain within 3.5e-12 V), a resistor x (1 + 1e-12)
+moving it 2.5e-12 V.  Its PATH is not: under 12 live nudges (each of 12 resistors x (1 + 1e-12)) 916 .. 1 841 Newton
+iterations, 0.28 .. 0.41 s, 29 .. 46 rungs, 9 failure patterns -- the cost is 11 .. 16 rungs failing AT THE ITERATION
+LIMIT, which ones moving with the last bits.  No exit rule tells them from rungs that converge (557 solves over the 27
+decks and the nudges): converged rungs take up to 93 iterations (no cap is free); a residual plateau of 30 iterations
+cuts 13 that converge; an exact cycle catches 1 of 141; a rate prediction cuts 20 .. 42 -- PCNR rungs converge by a
+sudden drop after a long plateau or rise (the limiter's slew: a thermal voltage a step).  Closed without a fix; its
+time is covered by 162's lottery rule.
+
+**Gate**: suite 5 596 passed, 6 skipped, 3 xfailed; every gold deck bit-identical (54 runs).
