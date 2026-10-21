@@ -10112,3 +10112,32 @@ route is now its four escalating rungs at a thousandth of the sources; the route
 the 20 V BJT mirror to the chain's answers.
 
 **Gate**: suite 5 598 passed, 6 skipped, 3 xfailed; every gold deck bit-identical as the last route (54 runs).
+
+## 2026-10-21 — 166. The pseudo-transient route's second pass at full sources; its steps during the power-up, refused
+
+**Why** (Andreas: "What more can we improve in the pseudo transient", "Do as you suggest", then "Build it").  Alone on
+the gold decks 165's route takes 23 of 27 decks in exactly 24 solves -- its schedule's minimum: the residual its steps
+read is at full sources and cannot fall while the sources come up, so the ramp is all halvings -- and leaves jge to
+the chain.
+
+**Measured first** (plan 'THE ROUTE'S STEPS DURING ITS POWER-UP, AND JGE', lines written first; each variant alone on the
+27 decks against 165's route and today's PCNR answers; the instrument -- a scratch copy of the route -- reproducing
+165's on 27 of 27 decks).  (1) The steps' progress read at the rung's OWN source level, two readings: both residuals at
+the new level -- 285 rungs against 664, but 3 586 Newton iterations against 2 768 (+30 %) and gm17 in its other
+state; each at its own level -- hussamp unsolved, gm17 in its other state.  REFUSED: the halving ramp is what keeps
+the states.  (2) jge traced: every rung converges, in both of DC's passes; the route ends at its pure solve, failing
+at the iteration limit.  A guess that the ramp's last two steps (each the largest, 1e-3: the residual before them
+read at full sources from an answer made at 0.72 of them) caused it is REFUTED: a halving there and honest steps after
+still leave jge unsolved (its iterations -8.9 % on 26 decks, every deck's path moved; refused on its line).  A SECOND
+PASS at full sources where the powered-up one fails -- the steps-by-progress variant that solved jge alone -- meets its
+line: jge solved in 0.5 s (72 s of failing and the chain's fallback before), within DC's tolerance of today's PCNR and
+in its state; the other 26 decks' answers, rungs and iterations identical to 165's.
+
+**Built.**  `pcnr._ptc_ladder(powerup=False)`: every rung at full sources; `solve_dc_continued` calls it where the
+powered-up pass returns nothing or a point the acceptance check refuses (path 'ptc' either way).  Second, not first:
+at full sources alone it takes slowlatch to its other state and does not solve opampal.  The sizing re-run with the
+built route reproduces the variant's on all 27 decks.  `test_dc_pcnr`: the second pass at full sources where the first
+returns nothing and where its point is refused (the 1 A diode's operating point); the forced-failure sequence ends in
+both passes' four escalating rungs, at a thousandth of the sources, then full.
+
+**Gate**: suite 5 600 passed, 6 skipped, 3 xfailed; every gold deck bit-identical as the last route (54 runs).

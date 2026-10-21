@@ -1165,9 +1165,9 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     ordinary chain's shape, which a hard circuit needs: opampal fails the
     first rung of every ladder alone and reaches PCNR's answer only so;
     LAST, pseudo-transient continuation (:func:`_ptc_ladder`, its sources
-    powered up with it, its steps by progress), the chain's own last route,
-    which PCNR lacked: where every ladder above fails, the solve is not
-    handed to the chain yet.
+    powered up with it, its steps by progress; where that fails, once more
+    at full sources), the chain's own last route, which PCNR lacked: where
+    every ladder above fails, the solve is not handed to the chain yet.
     Every rung is a PCNR solve seeded with the previous rung's ``x`` and
     limited unknowns, with the nodes ``held`` held (:func:`solve_dc`);
     ``v_lim0`` seeds the plain solve's limited unknowns -- a converged point
@@ -1245,6 +1245,10 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     if got is not None:
         return got + ('source',)
     got = solves(_ptc_ladder(circuit, refnode, x0, kw))
+    if got is None:
+        ## (its second pass: at full sources, where the powered-up pass
+        ## returns nothing or a point that does not solve)
+        got = solves(_ptc_ladder(circuit, refnode, x0, kw, powerup=False))
     if got is not None:
         return got + ('ptc',)
     raise first
@@ -1394,7 +1398,7 @@ def _ptc_source(g):
                          PTC_SOURCE_MIN, 1.0))
 
 
-def _ptc_ladder(circuit, refnode, x0, kw):
+def _ptc_ladder(circuit, refnode, x0, kw, powerup=True):
     """PSEUDO-TRANSIENT CONTINUATION, PCNR's last route (2026-10-21):
     backward-Euler pseudo-time steps, each a gshunt rung ANCHORED at its
     seed, ``g (x - x_seed)`` on the node rows (`solve_dc`'s `anchor`), so the
@@ -1404,7 +1408,9 @@ def _ptc_ladder(circuit, refnode, x0, kw):
 
     POWERED UP: each rung's sources at `_ptc_source(g)` -- a thousandth at
     g = 1, in full from 1e-6 down -- so the trajectory starts near the
-    circuit unpowered and the supplies come up as the anchor lets go.
+    circuit unpowered and the supplies come up as the anchor lets go;
+    ``powerup=False``, every rung at full sources: the route's SECOND PASS
+    (`solve_dc_continued`), where the powered-up one fails.
     STEPPED BY PROGRESS (switched evolution relaxation): after a converged
     rung the next g is its g times the ratio of the residual at its answer
     to the residual before (the DC equations at full sources,
@@ -1421,7 +1427,14 @@ def _ptc_ladder(circuit, refnode, x0, kw):
     (`nrsolver._adaptive_conductance_ladder`, PCNR's route before) did not
     solve, and that schedule took slowlatch and todd3 to the other state of
     their latches.  4.4 % more Newton iterations than that schedule on the
-    decks both solve.  Last: no gold deck reaches it."""
+    decks both solve.  The one it did not solve, jge: every rung converged,
+    its pure solve failed at the iteration limit; the second pass at full
+    sources solves it (0.5 s, where the fallback to the chain took 72), the
+    other 26 decks never reaching that pass (plan 'THE ROUTE'S STEPS DURING
+    ITS POWER-UP, AND JGE').  Powered up it keeps every latch in the state
+    PCNR picks; at full sources alone it took slowlatch to its other state
+    and did not solve opampal -- hence second.  Last: no gold deck reaches
+    it."""
     epar, held = kw['epar'], kw.get('held')
     v_lim, total = None, 0
     x = None if x0 is None else np.asarray(x0, dtype=float)
@@ -1431,7 +1444,7 @@ def _ptc_ladder(circuit, refnode, x0, kw):
     for _rung_no in range(PTC_RUNGS):
         a = np.zeros(circuit.n) if x is None else x
         got = _rung(circuit, refnode, a, v_lim, kw, gshunt=g, anchor=a,
-                    source=_ptc_source(g))
+                    source=_ptc_source(g) if powerup else 1.0)
         if got is None:
             if g_ok is None:
                 ## (no rung converged yet: a stronger anchor)

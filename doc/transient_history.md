@@ -5270,3 +5270,16 @@ failed (all 27, iterations), built on Andreas's decision.  Last: no gold deck
 reaches it.
 Tests: `test_dc_pcnr.py` (the schedule on the 1 A diode; the forced-failure
 sequence's escalation at a thousandth of the sources).
+
+## `pcnr._ptc_ladder(powerup=False)` -- the route's second pass (2026-10-21)
+
+2026-10-21 (Andreas: "Build it"; `doc/hdl_roadmap_260824.md`, 166).  Where
+the powered-up pseudo-transient pass returns nothing or a point that does
+not solve, `solve_dc_continued` runs it once more with every rung at full
+sources.  jge's operating point (alone on the route): its powered-up pass
+converges every rung and fails its pure solve; the second pass solves it
+in 0.5 s, where the chain's fallback followed 72 s of failing.  Steps read
+at each rung's own source level were sized and refused (gm17 flipped,
+iterations +30 % or a deck lost).
+Tests: `test_dc_pcnr.py` (the second pass where the first returns nothing
+and where its point is refused; the forced-failure sequence's two passes).

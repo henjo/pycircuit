@@ -474,7 +474,8 @@ def test_source_stepping_gives_up_at_its_smallest_step(monkeypatch):
     both ladders' first rungs at its level -- the junction ladder first --
     then the pseudo-transient route's (`_ptc_ladder`): anchored gshunt rungs
     from g = 1, its sources powered down to a thousandth, escalating by 100
-    to 1e6 while none converges, and no more."""
+    to 1e6 while none converges, then its second pass the same at full
+    sources, and no more."""
     from pycircuit.circuit import gnd, pcnr
     patched, calls = _failing_kinds(lambda k: True)
     monkeypatch.setattr(pcnr, 'solve_dc', patched)
@@ -487,7 +488,8 @@ def test_source_stepping_gives_up_at_its_smallest_step(monkeypatch):
             + [(k, v, s) for s in (0.05, 0.025, 0.0125) for k, v in step])
     assert calls[:len(head)] == head, calls
     s = pcnr.PTC_SOURCE_MIN
-    assert calls[len(head):] == [('g', 1.0, s), ('g', 1e2, s), ('g', 1e4, s), ('g', 1e6, s)], calls
+    assert calls[len(head):] == [('g', g, s) for g in (1.0, 1e2, 1e4, 1e6)] + [
+        ('g', g, 1.0) for g in (1.0, 1e2, 1e4, 1e6)], calls
 
 
 def test_a_gold_deck_pcnr_solves_itself():
@@ -701,6 +703,35 @@ def test_the_pseudo_transient_route_powers_up_and_steps_by_progress(monkeypatch)
         step = float(np.clip(r / r_prev, pcnr.PTC_RATIO_MIN, pcnr.PTC_RATIO_MAX))
         assert ptc[k + 1][0] == max(g * step, pcnr.PTC_G_END), (k, ptc[k + 1][0], g, step)
         r_prev = r
+
+
+@pytest.mark.parametrize('first', ['nothing', 'not a solution'])
+def test_the_pseudo_transient_route_s_second_pass_is_at_full_sources(monkeypatch, first):
+    """Where the powered-up pass returns nothing (jge: its pure solve fails)
+    or a point the acceptance check refuses, the route runs once more at
+    full sources, and that pass's answer is the route's -- the 1 A diode's
+    operating point, the other routes failing."""
+    import numpy as np
+
+    from pycircuit.circuit import gnd, pcnr
+    from pycircuit.circuit.dcanalysis import DC
+    op = np.asarray(DC(_diode_1a(), pcnr=False).solve().x, dtype=float)
+    ## (the diode's node 1 V on: the reference row moved too would be the
+    ## same point, a gauge shift)
+    far = op + 1.0
+    far[_diode_1a().get_node_index(gnd)] = 0.0
+    _other_routes_failing(monkeypatch)
+    real, passes = pcnr._ptc_ladder, []
+
+    def ladder(c, ref, x0, kw, powerup=True):
+        passes.append(powerup)
+        if powerup:
+            return None if first == 'nothing' else (far, None, 3)
+        return real(c, ref, x0, kw, powerup=powerup)
+    monkeypatch.setattr(pcnr, '_ptc_ladder', ladder)
+    x, _v, _its, path = pcnr.solve_dc_continued(_diode_1a(), gnd)
+    assert passes == [True, False] and path == 'ptc'
+    assert np.max(np.abs(x - op)) < 1e-9
 
 
 def test_a_pseudo_transient_step_is_anchored_at_its_seed():
