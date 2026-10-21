@@ -1128,7 +1128,7 @@ JGMIN_START, JGMIN_END = 1e-2, 1e-11
 
 def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
                        reltol=1e-6, abstol=1e-12, iabstol=1e-12, linsolver=None, held=None,
-                       v_lim0=None):
+                       v_lim0=None, raw_seed=False):
     """The DC operating point by PCNR, with ladders of its own.
 
     Returns ``(x, v_lim, iterations, path)`` -- ``path`` is ``'plain'``,
@@ -1147,7 +1147,19 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     ``v_lim0`` seeds the plain solve's limited unknowns -- a converged point
     is no wild start, and re-seeding from ``x0`` clamped would lose its
     state (`DC`'s nodeset release).  Raises the plain solve's exception
-    where the ladders fail.  (Ladders were tried once before, 2026-08-26, and failed on a BJT
+    where the ladders fail.
+
+    ``raw_seed``: `x0` may be a solution -- a caller's operating point, a
+    sweep's previous point (`DC`) -- so the plain solve is tried first from
+    its UNCLAMPED seed (``v_lim_init(limit=False)``), where the clamp would
+    move it; failing, the plain solve from the clamped seed and the ladders
+    as above.  The clamp limits each junction's voltage as a step from 0 V
+    (pnjlim takes a forward-biased 1.155 V LED to 0.098 V): from a settled
+    point it switches the conducting junctions off, and the ladders may
+    then converge to another root (an LED load's converter: vout -189 V
+    where the chain finds 1.655 V, 2026-10-21).  A wild start's unclamped
+    solve fails at once (the 20 V BJT mirror: a singular matrix at its first
+    iterate) and the clamped solve follows.  (Ladders were tried once before, 2026-08-26, and failed on a BJT
     mirror from 20 V -- every rung then began from an UNLIMITED seed, since
     fixed in :func:`v_lim_init`.)
     """
@@ -1155,6 +1167,19 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
           'iabstol': iabstol, 'linsolver': linsolver}
     if held:
         kw['held'] = held
+    if raw_seed and v_lim0 is None and x0 is not None:
+        ## (the caller's point as `solve_dc` starts from it: the reference
+        ## row 0, the held rows at their volts)
+        xs = np.array(x0, dtype=float, copy=True)
+        xs[circuit.get_node_index(refnode)] = 0.0
+        for r, volts in (held or {}).items():
+            xs[r] = volts
+        devices = pcnr_devices(circuit)
+        raw = v_lim_init(devices, xs, epar)
+        if not np.array_equal(raw, v_lim_init(devices, xs, epar, limit=True)):
+            got = _rung(circuit, refnode, x0, raw, kw)
+            if got is not None:
+                return got + ('plain',)
     try:
         x, v_lim, its = solve_dc(circuit, refnode, x0=x0, v_lim0=v_lim0, **kw)
         return x, v_lim, its, 'plain'

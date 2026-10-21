@@ -9927,3 +9927,29 @@ decision, offered refusal or acceptance: accepted despite the line.  Every gold 
 operating point bit-identical to before (54 runs).
 
 **Gate**: suite 5 585 passed, 6 skipped, 3 xfailed.
+
+## 2026-10-21 — 160. DC from a caller's x0: PCNR seeds its limited unknowns unclamped first
+
+**Why** (a bug report from a user project, bisected to 327df7e3, PCNR by default).  `DC(circuit).solve(x0=x)`
+from a settled transient's last point -- a current-sense amplifier driving a P-FET into an LED load at 0.25 A -- returned
+vout -189 V on a 3.3 V circuit, load -1e-20 A, as a success (path 'jgmin'); the chain (`pcnr=False`) finds 1.655 V.
+`DC` passed the caller's `x0` with no limited unknowns, so `pcnr.solve_dc` seeded them through `v_lim_init(limit=True)`,
+which limits each junction voltage as a step from 0 V -- built to tame a wild start (a 20 V uniform start overflowing
+the first Jacobian), and documented as never for a converged point.  It moved two of the 34 seeds, both in the load:
+the LED 1.155 -> 0.098 V and the opto-transistor's base-emitter 0.935 -> 0.093 V.  The load switched off, the plain
+solve and the gshunt ladder failed, and the junction-gmin ladder came down to a far root.  A DC sweep's continuation,
+which hands each point the previous one's answer, went through the same clamp.
+
+**Built.**  `pcnr.solve_dc_continued(raw_seed=True)`: where the clamp would move `x0`'s seed, the plain solve first
+from the UNCLAMPED seed (`v_lim_init(limit=False)`); failing, the plain solve from the clamped seed and the ladders as
+before.  `DC` asks for it wherever the caller gave `x0` (its plain solve and a nodeset's held solve).  `x0=None` (zeros:
+the clamp is inert) is unchanged, and so is every operating point the transient and the gold census make.  A wild
+start's unclamped solve fails at once (the 20 V BJT mirror: singular at its first iterate, 2 ms) and the clamped one
+follows, its answer as before.  `test_dc_pcnr`: from its own operating point a diode at 1 A converges at the first
+iterate on the plain path (the clamped seed, 0.774 -> 0.088 V, takes three), `DC(x0=op)` returns it; the 20 V mirror
+through `DC` still solves, both instance orders.  Pinned pair "the DC base solve and its C" re-recorded (`DC._solve_dc`
+moved in its PCNR branch alone; the chain's C, its twin, unchanged).  The reporter's circuit is not in this repository
+(its macromodels are the project's); the fix is to be confirmed there.  Not built: rejecting a PCNR answer far outside
+the supplies (the -189 V root) -- a boost converter or an inductive kick is outside them legitimately; for Andreas.
+
+**Gate**: every gold deck's default transient (Gear2) and operating point bit-identical (54 runs); suite 5 587 passed, 6 skipped, 3 xfailed.

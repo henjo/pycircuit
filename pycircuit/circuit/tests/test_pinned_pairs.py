@@ -706,7 +706,7 @@ RECORD = {
     'the Newton solve and its C': ('07b811013bb8', 'b393c22f15df'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', 'a1bf1ec171ad'),
-    'the DC base solve and its C': ('0db2906ca846', 'e57dff49b502'),
+    'the DC base solve and its C': ('e443b47737a0', 'e57dff49b502'),
     'the PCNR DC solve and its C': ('5fdb41d12cc2', '317f8e27978e'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),

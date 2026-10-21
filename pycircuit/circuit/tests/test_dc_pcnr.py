@@ -513,3 +513,53 @@ def test_a_gold_deck_pcnr_solves_itself():
     keep = np.arange(cir.n) != a.irefnode
     assert np.abs(f[keep]).max() < 1e-9
 
+
+def _diode_1a():
+    from pycircuit.circuit.circuit import SubCircuit, gnd
+    from pycircuit.circuit.elements import IS, Diode
+    c = SubCircuit()
+    c['is'] = IS(gnd, 1, i=1.0)
+    c['D1'] = Diode(1, gnd)
+    return c
+
+
+def test_a_callers_converged_x0_is_solved_from_where_it_is():
+    """A caller's `x0` may be a solution (a settled transient's last point, a
+    sweep's previous point): PCNR seeds its limited unknowns from it
+    UNCLAMPED first (`solve_dc_continued(raw_seed=True)`, `DC`'s).  The
+    clamp limits each junction as a step from 0 V -- the diode's 0.774 V to
+    0.088 V, the conducting junction switched off -- and an LED load's
+    converter then came down a ladder to vout -189 V where the chain finds
+    1.655 V (a user's circuit, 2026-10-21).  From its own operating point the
+    diode is converged at the first iterate; the clamped seed takes three."""
+    import numpy as np
+
+    from pycircuit.circuit import gnd, pcnr
+    from pycircuit.circuit.dcanalysis import DC
+    c = _diode_1a()
+    op = np.asarray(DC(c).solve().x, dtype=float)
+    dev = pcnr.pcnr_devices(c)
+    raw, clamped = pcnr.v_lim_init(dev, op), pcnr.v_lim_init(dev, op, limit=True)
+    assert raw[0] > 0.7 and clamped[0] < 0.1, (raw, clamped)
+    x, _v, its, path = pcnr.solve_dc_continued(c, gnd, x0=op, raw_seed=True)
+    _x, _v, its_clamped, _p = pcnr.solve_dc_continued(c, gnd, x0=op)
+    assert (its, path) == (1, 'plain') and its_clamped == 3, (its, path, its_clamped)
+    assert np.max(np.abs(x - op)) < 1e-12
+    dc = DC(_diode_1a())
+    res = dc.solve(x0=op)
+    assert dc.pcnr_status == 'used' and dc.pcnr_path == 'plain'
+    assert np.max(np.abs(np.asarray(res.x, dtype=float) - op)) < 1e-12
+
+
+def test_a_callers_wild_x0_is_still_clamped_where_unclamped_fails():
+    """The 20 V BJT mirror through `DC`: from the unclamped seed PCNR's first
+    iterate is singular, and the clamped solve follows -- the answer it
+    always gave, in both instance orders."""
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit.dcanalysis import DC
+    for rev in (False, True):
+        c, x0 = _bjt_mirror_20v(rev)
+        dc = DC(c)
+        res = dc.solve(x0=x0)
+        assert dc.pcnr_status == 'used' and dc.pcnr_path == 'plain'
+        assert abs(float(res.v('no', gnd)) - 3.9956) < 5e-3

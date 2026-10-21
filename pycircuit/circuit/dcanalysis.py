@@ -235,6 +235,9 @@ class DC(Analysis):
         ## v(b) = 0.0 where 0.5 is correct.
         if hasattr(self.cir, 'reset_state'):
             self.cir.reset_state(self.epar)
+        ## (a caller's `x0` may be a solution: PCNR seeds its limited unknowns
+        ## from it unclamped first -- `pcnr.solve_dc_continued`'s `raw_seed`)
+        given = x0 is not None
         ## Refer the voltages to the reference node by removing
         ## the rows and columns that corresponds to this node
 
@@ -301,13 +304,14 @@ class DC(Analysis):
                             ## (released from its limited unknowns too: the state
                             ## it found, not a clamped re-seed of it)
                             x0, v_lim0 = _pcnr.solve_dc_continued(
-                                self.cir, ref, x0=x0, held=both, **kw)[:2]
+                                self.cir, ref, x0=x0, held=both, raw_seed=given, **kw)[:2]
                         except _pcnr._RUNG_FAILURES as exc:
                             logging.getLogger(__name__).warning(
                                 'DC(pcnr=True): the solve with the nodesets held failed '
                                 '(%s); solving without them', str(exc)[:120])
                     x, _v_lim, _its, self.pcnr_path = _pcnr.solve_dc_continued(
-                        self.cir, ref, x0=x0, held=pin or None, v_lim0=v_lim0, **kw)
+                        self.cir, ref, x0=x0, held=pin or None, v_lim0=v_lim0,
+                        raw_seed=given, **kw)
                     self.pcnr_status = 'used'
                     self.result = CircuitResult(self.cir, x)
                     return self.result

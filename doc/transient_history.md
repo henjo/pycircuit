@@ -5199,3 +5199,17 @@ attempt is abandoned.
 Tests: `test_radau_early_abort.py` (abandoned on the latch, none forced; a
 check that never fires changes nothing byte for byte; C and Python loop the
 same run; `judge`'s retry law; the arm's budget).
+
+## `pcnr.solve_dc_continued(raw_seed=)` -- a caller's x0 seeded unclamped first (2026-10-21)
+
+2026-10-21 (a bug report, bisected to 327df7e3; `doc/hdl_roadmap_260824.md`, 160).
+`DC(...).solve(x0=x)` seeded PCNR's limited unknowns through
+`v_lim_init(limit=True)`, which limits each junction voltage as a step from
+0 V: from a settled operating point it switched an LED load off (1.155 ->
+0.098 V) and the ladders came down to vout -189 V on a 3.3 V circuit, where
+the chain finds 1.655 V.  Now, where the caller gave `x0` and the clamp
+would move its seed, the plain solve runs first from the unclamped seed;
+failing, the clamped solve and the ladders as before.  `x0=None` unchanged
+(the clamp is inert at zeros); a wild start's unclamped solve fails at once.
+Tests: `test_dc_pcnr.py` (a diode from its own operating point converged at
+the first iterate, not three; the 20 V mirror through `DC` as before).
