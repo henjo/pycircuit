@@ -9993,3 +9993,31 @@ the reporter's circuit -- not in this repository, its macromodels are the projec
 zeros at 1.655 V) is the reporter's to make.
 
 **Gate**: suite 5 590 passed, 6 skipped, 3 xfailed.
+
+## 2026-10-21 — 162. A lottery that is alive: each deck's own noise, for the lines that cite it
+
+**Why** (Andreas: "Do as you suggest", then "Commit"; item 2 of the list after 158).  159's line had an escape for a
+deck slower than +3 %: a lottery of GAMMA_REAL moved by +-2 ulp on today's tree, slower than its slowest arm.  It was
+DEAD -- since 157 the transform path's estimate does not read GAMMA_REAL; mike2's digest was the same at -2, 0, +2 ulp
+-- so it excused nothing, and the line failed on mike2 +6.8 %.  And a live last-bits lottery can still be flat: mike2
+under reltol +-2 ulp took 614 steps every time, every digest different, while a 1e-5 nudge -- the scale 159's abort
+moved a retry -- spans 614 .. 651 steps and 0.575 .. 0.639 s.
+
+**Built.**  `benchmarks/lottery.py`: per deck the base run and four arms with `reltol` scaled by 1 -+ 1e-5 and
+1 -+ 3e-5; an arm counts only where it is ALIVE (its waveform's digest differs from the base's), a deck with none is
+DEAD; each run a process of its own (one BLAS thread, the allocator pinned, as the A/B lines run), rounds interleaved
+with the order reversed every other round, best of the rounds, under the benchmark lock, the conditions stamped.
+`table` reads the runs (raising where a base or an arm gave two digests: no lottery in a run that is not
+deterministic); `bound` is the rule a line cites -- a deck fails only if slower than its slowest live arm by more than
+3 % (a dead deck: than its base).  `test_benchmark_lottery`: the liveness, the best of the rounds, the span over the
+live arms, the bound, a dead deck, a run that is not deterministic, a failed run left out.
+
+**Measured** (a740330e, Radau's 20 decks, 2 rounds, pinned; the table rebuilt by `table` from the same 200 runs
+equals the one read when they were made): 19 decks alive at all four arms, AB_INTEG DEAD (its digest unmoved by
+reltol at 3e-5).  Over the base and the live arms: arom -4.0 .. +18.3 %, todd3 -4.4 .. +11.3, gm19 -7.8 .. +8.4, gm3
+-1.3 .. +5.4, gm17 -9.6 .. +3.9, latch 0 .. +3.0, gm1 -31.9 .. 0 (its base its slowest), the others within -6.5 ..
++2.2 %; the 20-deck sum -3.4 .. +2.9 %.  So a per-deck "+3 %" fails on noise alone on five decks, and a summed
+criterion means something only beyond 3 %.  The table describes the tree it was measured on: measured again where a
+change moves the step controller.
+
+**Gate**: suite 5 594 passed, 6 skipped, 3 xfailed.
