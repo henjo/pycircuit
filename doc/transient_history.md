@@ -5213,3 +5213,19 @@ failing, the clamped solve and the ladders as before.  `x0=None` unchanged
 (the clamp is inert at zeros); a wild start's unclamped solve fails at once.
 Tests: `test_dc_pcnr.py` (a diode from its own operating point converged at
 the first iterate, not three; the 20 V mirror through `DC` as before).
+
+## `pcnr.dc_residual` -- DC's acceptance check (2026-10-21)
+
+2026-10-21 (Andreas: "YEs, do it"; `doc/hdl_roadmap_260824.md`, 161).
+The Newton tests are per row and relative (``|F| < reltol (|J||x| + |F|) +
+abstol``), so a point far off passes them: on a user's converter `DC()` from
+zeros returned its supply side at 1.4e10 V, a KCL residual of 5.6e79 A, and
+the chain started there accepted it too.  Now every DC answer -- PCNR's
+plain solve and each ladder's pure solve, the chain's -- must leave a
+residual under `DC_ACCEPT_RESIDUAL` (1, A or V) with the devices at its node
+voltages: a PCNR answer that does not is that route failing (the next is
+tried, then the chain); the chain's raises `NoConvergenceError`.  A warning
+for nodes far beyond the sources was refused: behavioural models' internal
+state nodes (a VCO's phase) are not voltages.  Every gold deck bit-identical.
+Tests: `test_dc_pcnr.py` (planted non-solutions refused or raised),
+`test_noncon.py` (the clamp refused with the noncon check off).

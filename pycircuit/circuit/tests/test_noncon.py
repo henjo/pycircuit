@@ -96,11 +96,25 @@ def test_every_clamp_of_the_grid_solves_its_circuit(v1, r2):
 
 @pytest.mark.usefixtures('ordinary_dc')
 def test_with_the_check_off_the_clamp_is_the_divider_again(monkeypatch):
-    """The tests above can fail: without the check the defect is back."""
+    """The tests above can fail: without the check the defect is back (DC's
+    acceptance check off too, which would refuse it: the next test)."""
+    from pycircuit.circuit import pcnr
     monkeypatch.setattr(_limiting, 'NONCON_CHECK', False)
+    monkeypatch.setattr(pcnr, 'DC_ACCEPT_RESIDUAL', float('inf'))
     x = _dc(_clamp())
     assert abs(x[_clamp().get_node_index('b')] - 2.5) < 1e-3
     assert _fresh_kcl(_clamp, x) > 1e20
+
+
+@pytest.mark.usefixtures('ordinary_dc')
+def test_with_the_check_off_dcs_acceptance_check_refuses_the_clamp(monkeypatch):
+    """The clamp passes the Newton test but not DC's acceptance check
+    (`pcnr.dc_residual`: the devices at the node voltages, a 1e28 A residual
+    at b): the solve raises where it returned the divider."""
+    from pycircuit.circuit.analysis import NoConvergenceError
+    monkeypatch.setattr(_limiting, 'NONCON_CHECK', False)
+    with pytest.raises(NoConvergenceError, match='does not solve the circuit'):
+        _dc(_clamp())
 
 
 def _tran(c, check=True, monkeypatch=None, tend=3e-6, **kw):

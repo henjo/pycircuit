@@ -563,3 +563,56 @@ def test_a_callers_wild_x0_is_still_clamped_where_unclamped_fails():
         res = dc.solve(x0=x0)
         assert dc.pcnr_status == 'used' and dc.pcnr_path == 'plain'
         assert abs(float(res.v('no', gnd)) - 3.9956) < 5e-3
+
+
+def _planted(op):
+    """`op` with its diode node at 1e10 V: not a solution (its residual is
+    the diode's current there), as PCNR's ladders returned on a converter
+    whose supply side sat at 1.4e10 V (2026-10-21)."""
+    import numpy as np
+    bad = np.array(op, dtype=float)
+    bad[1] = 1e10
+    return bad
+
+
+def test_a_pcnr_answer_that_does_not_solve_the_circuit_is_not_returned(monkeypatch):
+    """THE ACCEPTANCE CHECK (`pcnr.dc_residual`): the Newton tests are per
+    row and relative, so a point far off passes them (a 5.6e79 A KCL residual
+    at 1.4e10 V; `DC()` returned it where the chain finds 1.655 V).  Planted:
+    the plain solve "converges" there -- the answer is refused and the next
+    route is taken, to the circuit's own operating point."""
+    import numpy as np
+
+    from pycircuit.circuit import gnd, pcnr
+    from pycircuit.circuit.dcanalysis import DC
+    op = np.asarray(DC(_diode_1a(), pcnr=False).solve().x, dtype=float)
+    real, calls = pcnr.solve_dc, []
+
+    def plant(*a, **k):
+        got = real(*a, **k)
+        calls.append(1)
+        return (_planted(op),) + tuple(got[1:]) if len(calls) == 1 else got
+    monkeypatch.setattr(pcnr, 'solve_dc', plant)
+    r, _row = pcnr.dc_residual(_diode_1a(), gnd, _planted(op))
+    assert r > pcnr.DC_ACCEPT_RESIDUAL
+    x, _v, _its, path = pcnr.solve_dc_continued(_diode_1a(), gnd)
+    assert path != 'plain' and np.max(np.abs(x - op)) < 1e-9, (path, x)
+    calls.clear()
+    dc = DC(_diode_1a())
+    res = dc.solve()
+    assert dc.pcnr_status == 'used' and dc.pcnr_path != 'plain'
+    assert np.max(np.abs(np.asarray(res.x, dtype=float) - op)) < 1e-9
+
+
+def test_a_chain_answer_that_does_not_solve_the_circuit_raises(monkeypatch):
+    """The chain's answer is checked alike (`DC._accept`): a planted one
+    that does not solve raises, naming the row, where it was returned."""
+    import numpy as np
+
+    from pycircuit.circuit.analysis import NoConvergenceError
+    from pycircuit.circuit.dcanalysis import DC
+    op = np.asarray(DC(_diode_1a(), pcnr=False).solve().x, dtype=float)
+    monkeypatch.setattr(DC, '_newton', lambda self, *a, **k: _planted(op))
+    with pytest.raises(NoConvergenceError, match='does not solve the circuit'):
+        DC(_diode_1a(), pcnr=False).solve()
+

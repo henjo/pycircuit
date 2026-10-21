@@ -9953,3 +9953,43 @@ moved in its PCNR branch alone; the chain's C, its twin, unchanged).  The report
 the supplies (the -189 V root) -- a boost converter or an inductive kick is outside them legitimately; for Andreas.
 
 **Gate**: every gold deck's default transient (Gear2) and operating point bit-identical (54 runs); suite 5 587 passed, 6 skipped, 3 xfailed.
+
+## 2026-10-21 — 161. DC's acceptance check: an answer must solve the circuit's equations, not only pass the Newton test
+
+**Why** (160's report, item 2; Andreas: "Then investigate item 2", then "YEs, do it").  The user project's diagnostic
+on its real circuit (a current-sense amplifier regulating a P-FET into an LED load) at 780882fc: PCNR's ladders
+returned a point with the whole supply side near 1.37e10 V on a 3.3 V circuit as a success -- `DC()` from zeros returned
+1.18e10 V (gshunt ladder) where the chain finds 1.655 V.  It is NOT A ROOT: its KCL residual, the devices at its node
+voltages, is 5.6e79 A.  It passed because the Newton tests are per row and relative, ``|F| < reltol (|J||x| + |F|) +
+abstol``, and at 1.4e10 V ``|J||x|`` is ~2.4e91 (relative residual 2.3e-12).  The test is shared: the chain, started
+there, accepts it too.  The gshunt rungs show the jump: 3.07 V at gshunt 5.6e-4 and 3.2e-4, then 1.36e10 V at 3.2e-5,
+kept down to the pure solve.
+
+**Built.**  `pcnr.dc_residual`: the largest ``|i(x) + u_dc|`` at an answer, the devices at its node voltages (a stateful
+limiter synced for the read and put back; the sources read first), over the rows a solve tests;
+`pcnr.DC_ACCEPT_RESIDUAL` = 1 (A on a node row, V on a branch row: a true root at reltol 1e-6 exceeds it only on a row
+carrying over 1e6 A).  `pcnr.solve_dc_continued` checks every answer it would return -- the plain solve's, each
+ladder's pure solve -- and one that does not solve counts as that route failing: the next is tried, and where all fail
+`DC` falls back to the chain as before.  `DC._accept` checks the chain's answer (and a pinned solve's, its held rows not
+tested): one that does not solve raises `NoConvergenceError` naming the row.  `test_dc_pcnr`: a planted non-solution
+from PCNR's plain solve is refused and the next route gives the operating point (`solve_dc_continued` and `DC()`); one
+from the chain raises.  It also refuses what the noncon check exists for -- a limiter holding a device short of its
+node voltages, `_limiting.NONCON_CHECK` off: a 1e28 A residual (`test_noncon`: the old test runs with the acceptance
+check off too, a sibling pins the refusal).  The other tests it touched: the ladder-order tests' fake circuits stub
+it (`test_pcnr_jgmin`); the coupled-path PCNR gate does not count its read of the devices as limiting (`test_pcnr`); the
+source stamp's arming bound measures its subject -- a few arms against ~105 served calls, `<= 4` -- where `<= 2` held
+only in the suite's order (alone it arms 3 times at 333fe000; the check's read after PCNR's solve makes 4).  Pinned pair
+"the DC base solve and its C" re-recorded (`DC._solve_dc`'s tail, after the base solve; its C twin unchanged).
+
+**Refused: the far-voltage warning** (a node beyond 1e3 times the largest voltage source, warned and kept; in the same
+line, which asked the suite to pass).  The suite failed 13 tests on it: the internal state nodes of behavioural models
+are not voltages -- a VCO's phase integral (1.05e4 against a 0.5 V source), an op-amp model's gain node (1.59e4
+against 15 V), a macromodel's mid node (-1 V against a 1e-5 V input) -- and an ideal open-loop amplifier (3.8e18 V) and
+a gmin-anchored floating node (5e8 V) reach it by design.  Not built; the acceptance check is the fix.
+
+**Measured** (line written first: plan 'PCNR'S FAR ROOT').  Every gold deck's default transient (Gear2) and
+standalone operating point bit-identical to 780882fc (54 runs); no gold deck's operating point fails the check.  On
+the reporter's circuit -- not in this repository, its macromodels are the project's -- the confirmation (csa_pfet from
+zeros at 1.655 V) is the reporter's to make.
+
+**Gate**: suite 5 590 passed, 6 skipped, 3 xfailed.

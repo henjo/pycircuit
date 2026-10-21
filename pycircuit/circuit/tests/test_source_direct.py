@@ -338,7 +338,12 @@ class _RU(R):
 def test_the_stamp_holds_where_a_limiter_writes_its_dict():
     """A diode writes its limiting state into its dict every iteration; the
     pass's stamp watches the sources' dicts only, and holds: a transient of
-    an RC ladder ending in a diode arms it twice."""
+    an RC ladder ending in a diode arms it a few times against its ~105
+    served calls, not once an iteration.  (The count was `<= 2` and held only
+    in the suite's order: alone the run arms it 3 times at 333fe000 -- the
+    operating point's solve and the transient's first steps -- and DC's
+    acceptance check, reading the sources after PCNR's solve moved the
+    watch, makes it 4, 2026-10-21.)"""
     circuit.default_toolkit = circuit.numeric
     cir = SubCircuit()
     cir['vs'] = VSin('n0', gnd, va=2.0, freq=1e3)
@@ -351,7 +356,7 @@ def test_the_stamp_holds_where_a_limiter_writes_its_dict():
     tr.solve(tend=3e-4, timestep=1e-5)
     d = _paths.since(before)
     sd = cir.__dict__['_stamp_plan'].methods['src:u'].direct
-    assert d.get('src.direct:served', 0) > 30 and sd.arms <= 2, (d, sd.arms)
+    assert d.get('src.direct:served', 0) > 30 and sd.arms <= 4, (d, sd.arms)
 
 
 @pytest.mark.parametrize('method', ['gear', 'radau'])

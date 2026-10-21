@@ -83,6 +83,9 @@ def _route(monkeypatch, ok):
     fake = _FakeSolve(ok)
     monkeypatch.setattr(pcnr, 'solve_dc', fake)
     monkeypatch.setattr(pcnr, 'pcnr_junction_pairs', lambda _c: [('pair',)])
+    ## (the routes alone: the fake's answers have no circuit to be checked
+    ## against -- the acceptance check, `test_dc_pcnr`)
+    monkeypatch.setattr(pcnr, 'dc_residual', lambda *a, **k: (0.0, 0))
     out = pcnr.solve_dc_continued(SimpleNamespace(n=3), gnd)
     return out[3], fake.calls
 

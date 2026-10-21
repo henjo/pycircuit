@@ -467,19 +467,32 @@ def test_gate_13_7_pcnr_is_honoured_on_the_coupled_path():
     import pycircuit.circuit.pcnr as _pcnr
 
     counts = {}
+    real_residual = _pcnr.dc_residual
+    reading = [False]
     for pcnr in (False, True):
         hits = {'limit': 0, 'aug': 0}
         real_limit, real_aug = Diode.limit, _pcnr.augmented_system
 
         def spy_limit(self, *a, **k):
-            hits['limit'] += 1
+            ## (the DC acceptance check's read of the devices at its answer
+            ## -- `dc_residual`'s `limit_sync` -- is not a limiting)
+            if not reading[0]:
+                hits['limit'] += 1
             return real_limit(self, *a, **k)
 
         def spy_aug(*a, **k):
             hits['aug'] += 1
             return real_aug(*a, **k)
 
+        def spy_residual(*a, **k):
+            reading[0] = True
+            try:
+                return real_residual(*a, **k)
+            finally:
+                reading[0] = False
+
         Diode.limit, _pcnr.augmented_system = spy_limit, spy_aug
+        _pcnr.dc_residual = spy_residual
         try:
             tran = Transient(_mains_rectifier(), toolkit=numeric,
                              reltol=1e-5, pcnr=pcnr)
@@ -487,6 +500,7 @@ def test_gate_13_7_pcnr_is_honoured_on_the_coupled_path():
                 tran.solve(tend=2e-3, timestep=1e-4, coupled_lte=True)
         finally:
             Diode.limit, _pcnr.augmented_system = real_limit, real_aug
+            _pcnr.dc_residual = real_residual
         counts[pcnr] = hits
 
     assert counts[False]['aug'] == 0, \

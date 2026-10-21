@@ -378,6 +378,7 @@ class DC(Analysis):
                     'them', str(exc)[:120])
         if pin:
             x = self._solve_held(func, source_callback, x0, pin)
+            self._accept(x, pin)
             self.result = CircuitResult(self.cir, x)
             return self.result
 
@@ -410,6 +411,7 @@ class DC(Analysis):
         except (NoConvergenceError, SingularMatrix) as last_e:
             logging.warning('Problems encountered: ' + str(last_e))
             raise last_e
+        self._accept(x)
         ## Reported rather than hidden: a caller that needs to know whether the
         ## number it just got still has 1 pS of invented conductance in it can
         ## ask, and a `True` here is the signal to give the node a real path.
@@ -426,6 +428,26 @@ class DC(Analysis):
 
         self.result = CircuitResult(self.cir, x)
         return self.result
+
+    def _accept(self, x, held=None):
+        """THE ACCEPTANCE CHECK on the chain's answer `x` (PCNR's are checked
+        in `pcnr.solve_dc_continued`): it must solve the DC equations to
+        `pcnr.DC_ACCEPT_RESIDUAL` (`pcnr.dc_residual`; the `held` rows not
+        tested), else `NoConvergenceError` naming the row -- the relative
+        Newton test passes a point far off (a 5.6e79 A residual at 1.4e10 V,
+        2026-10-21), and so does a limiter holding a device short of its
+        node voltages (`_limiting.NONCON_CHECK` off: a 1e28 A residual), and a
+        DC that returns either says nothing."""
+        from pycircuit.circuit import pcnr as _pcnr
+        r, row = _pcnr.dc_residual(self.cir, self.cir.nodes[self.irefnode], x, self.epar,
+                                   held, u=self.cir.u(0, analysis='dc', epar=self.epar))
+        if r > _pcnr.DC_ACCEPT_RESIDUAL:
+            names = reduced_row_names(self.cir, -1)
+            where = names[row] if names is not None and 0 <= row < len(names) else f'row {row}'
+            raise NoConvergenceError(
+                f'DC: the solve converged to a point that does not solve the circuit\'s '
+                f'equations (residual {r:.3g} at {where}; the Newton test is relative, and '
+                f'far off it passes) -- try a nodeset or another start')
 
     def _chain(self, source_callback, jrows, node_rows):
         """The solver chain on the reduced system: `source_callback` its

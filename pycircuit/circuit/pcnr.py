@@ -1149,6 +1149,11 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     state (`DC`'s nodeset release).  Raises the plain solve's exception
     where the ladders fail.
 
+    THE ACCEPTANCE CHECK: every answer it would return -- the plain
+    solve's, a ladder's pure solve -- must solve the DC equations to
+    `DC_ACCEPT_RESIDUAL` (`dc_residual`); one that does not counts as that
+    solve failing, and the next route is tried.
+
     ``raw_seed``: `x0` may be a solution -- a caller's operating point, a
     sweep's previous point (`DC`) -- so the plain solve is tried first from
     its UNCLAMPED seed (``v_lim_init(limit=False)``), where the clamp would
@@ -1167,6 +1172,18 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
           'iabstol': iabstol, 'linsolver': linsolver}
     if held:
         kw['held'] = held
+    rejected = []
+
+    def solves(got):
+        ## (the acceptance check: `got` where its point solves the DC
+        ## equations, else None and the residual kept for the message)
+        if got is None:
+            return None
+        r, row = dc_residual(circuit, refnode, got[0], epar, held)
+        if r <= DC_ACCEPT_RESIDUAL:
+            return got
+        rejected.append((r, row))
+        return None
     if raw_seed and v_lim0 is None and x0 is not None:
         ## (the caller's point as `solve_dc` starts from it: the reference
         ## row 0, the held rows at their volts)
@@ -1177,24 +1194,28 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
         devices = pcnr_devices(circuit)
         raw = v_lim_init(devices, xs, epar)
         if not np.array_equal(raw, v_lim_init(devices, xs, epar, limit=True)):
-            got = _rung(circuit, refnode, x0, raw, kw)
+            got = solves(_rung(circuit, refnode, x0, raw, kw))
             if got is not None:
                 return got + ('plain',)
     try:
-        x, v_lim, its = solve_dc(circuit, refnode, x0=x0, v_lim0=v_lim0, **kw)
-        return x, v_lim, its, 'plain'
+        got = solves(solve_dc(circuit, refnode, x0=x0, v_lim0=v_lim0, **kw))
+        if got is not None:
+            return got + ('plain',)
+        first = RuntimeError(
+            'PCNR converged to a point that does not solve the DC equations '
+            f'(residual {rejected[-1][0]:.3g} at row {rejected[-1][1]})')
     except _RUNG_FAILURES as exc:
         first = exc
     got = _gshunt_ladder(circuit, refnode, x0, kw)
     if got is not None:
         x, v_lim, total = got
-        pure = _rung(circuit, refnode, x, v_lim, kw)
+        pure = solves(_rung(circuit, refnode, x, v_lim, kw))
         if pure is not None:
             return pure[0], pure[1], total + pure[2], 'gshunt'
-    got = _jgmin_ladder(circuit, refnode, x0, kw)
+    got = solves(_jgmin_ladder(circuit, refnode, x0, kw))
     if got is not None:
         return got + ('jgmin',)
-    got = _source_steps(circuit, refnode, x0, kw)
+    got = solves(_source_steps(circuit, refnode, x0, kw))
     if got is not None:
         return got + ('source',)
     raise first
@@ -1203,6 +1224,58 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
 #: what a failed rung raises: no convergence, a singular Schur matrix, an
 #: arithmetic fault
 _RUNG_FAILURES = (RuntimeError, ArithmeticError, np.linalg.LinAlgError)
+
+#: THE DC ACCEPTANCE CHECK's bound (`dc_residual`): the largest residual a DC
+#: answer may leave -- A on a node row, V on a branch row.  The Newton tests
+#: are per row and RELATIVE, ``|F| < reltol (|J||x| + |F|) + abstol``, and at
+#: a point far off -- a converter's supply side at 1.4e10 V -- ``|J||x|`` is
+#: ~2.4e91, so a KCL residual of 5.6e79 A passed both PCNR's test and the
+#: chain's (2026-10-21; `DC()` from zeros returned it, the chain from zeros
+#: finds 1.655 V).  A true root at reltol 1e-6 exceeds 1 only on a row
+#: carrying over 1e6 A.
+DC_ACCEPT_RESIDUAL = 1.0
+
+
+def dc_residual(circuit, refnode, x, epar=defaultepar, held=None, u=None):
+    """``(r, row)``: the largest ``|i(x) + u_dc|`` -- the DC equations, the
+    devices at `x`'s node voltages (a stateful limiter synced to `x` for the
+    read and put back: a read, not a limiting) -- over the rows a solve
+    tests (not the reference's, not a `held` node's), and its row; ``(inf,
+    row)`` where an entry is not finite, ``(inf, -1)`` where the evaluation
+    raises.  `u`: the DC sources as the caller reads them (None: `solve_dc`'s
+    call).  `DC`'s acceptance check (`DC_ACCEPT_RESIDUAL`), on PCNR's answers
+    and the chain's."""
+    from pycircuit.circuit._limiting import (
+        limit_sync,
+        limiter_snapshot,
+        state_restore,
+        stateful_limiters,
+    )
+    x = np.asarray(x, dtype=float)
+    ## (the sources first: they do not read a limiter's state, and read after
+    ## the sync writes it they would re-arm their stamp, `_stamp_plan`)
+    if u is None:
+        u = circuit.u(0.0, epar, analysis='dc')
+    lims = stateful_limiters(circuit)
+    snap = limiter_snapshot(lims) if lims else None
+    try:
+        if lims:
+            limit_sync(circuit, x, epar, lims)
+        with np.errstate(all='ignore'):
+            f = np.abs(np.asarray(circuit.i(x, epar), dtype=float) + np.asarray(u, dtype=float))
+    except (ArithmeticError, ValueError):
+        return float('inf'), -1
+    finally:
+        if snap is not None:
+            state_restore(snap)
+    f[circuit.get_node_index(refnode)] = 0.0
+    for r in (held or ()):
+        f[r] = 0.0
+    bad = np.flatnonzero(~np.isfinite(f))
+    if len(bad):
+        return float('inf'), int(bad[0])
+    k = int(np.argmax(f))
+    return float(f[k]), k
 
 
 def _rung(circuit, refnode, x, v_lim, kw, **deform):
