@@ -1136,11 +1136,16 @@ GSHUNT_START, GSHUNT_END, GSHUNT_RETRIES = 1e-2, 1e-12, 4
 #: pure solve, by decades; a failed rung is retried as gshunt's
 JGMIN_START, JGMIN_END = 1e-2, 1e-11
 
-#: its pseudo-transient route (`_ptc_ladder`): the exponents of the anchored
-#: conductance -- the first rung, the last before the pure solve, and the
-#: largest an unconverged first rung escalates to (the chain's
-#: `PseudoTransientNewton`'s)
-PTC_E_START, PTC_E_END, PTC_E_MAX = 0.0, -12.0, 6.0
+#: its pseudo-transient route (`_ptc_ladder`): the anchored conductance's
+#: first rung, its last before the pure solve, the largest an unconverged
+#: first rung escalates to (by `PTC_ESCALATE` a rung), and the rungs it tries
+PTC_G_START, PTC_G_END, PTC_G_MAX, PTC_ESCALATE, PTC_RUNGS = 1.0, 1e-12, 1e6, 100.0, 60
+#: its steps by progress: a converged rung's g times the ratio of the
+#: residual at its answer to the residual before, clipped to these
+PTC_RATIO_MIN, PTC_RATIO_MAX = 1e-3, 0.5
+#: its power-up: the sources at `PTC_SOURCE_MIN` from g = 1 up, in full from
+#: g = `PTC_SOURCE_FULL` down, a power of g between (`_ptc_source`)
+PTC_SOURCE_MIN, PTC_SOURCE_FULL = 1e-3, 1e-6
 
 
 def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
@@ -1159,9 +1164,10 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     junction ladder first, :func:`_source_step`) -- the
     ordinary chain's shape, which a hard circuit needs: opampal fails the
     first rung of every ladder alone and reaches PCNR's answer only so;
-    LAST, pseudo-transient continuation (:func:`_ptc_ladder`), the chain's
-    own last route, which PCNR lacked: where every ladder above fails, the
-    solve is not handed to the chain yet.
+    LAST, pseudo-transient continuation (:func:`_ptc_ladder`, its sources
+    powered up with it, its steps by progress), the chain's own last route,
+    which PCNR lacked: where every ladder above fails, the solve is not
+    handed to the chain yet.
     Every rung is a PCNR solve seeded with the previous rung's ``x`` and
     limited unknowns, with the nodes ``held`` held (:func:`solve_dc`);
     ``v_lim0`` seeds the plain solve's limited unknowns -- a converged point
@@ -1379,47 +1385,79 @@ def _jgmin_ladder(circuit, refnode, x0, kw):
     return pure[0], pure[1], total + pure[2]
 
 
+def _ptc_source(g):
+    """The power-up's source level at the anchored conductance `g`:
+    `PTC_SOURCE_MIN` from g = 1 up, 1 from `PTC_SOURCE_FULL` down, between
+    its logarithm linear in g's."""
+    e_min, e_full = np.log10(PTC_SOURCE_MIN), np.log10(PTC_SOURCE_FULL)
+    return float(np.clip(10.0 ** (e_min * (np.log10(g) - e_full) / -e_full),
+                         PTC_SOURCE_MIN, 1.0))
+
+
 def _ptc_ladder(circuit, refnode, x0, kw):
-    """PSEUDO-TRANSIENT CONTINUATION, PCNR's last route (2026-10-21): the
-    chain's `PseudoTransientNewton` -- backward-Euler pseudo-time steps, each
-    a gshunt rung ANCHORED at its seed, ``g (x - x_seed)`` on the node rows
-    (`solve_dc`'s `anchor`), so the homotopy follows the pseudo-transient
-    trajectory from the start rather than a deformation anchored at 0 V --
-    on its schedule (`nrsolver._adaptive_conductance_ladder`: g from 1 down
-    to 1e-12 by halving steps in exponent space, escalating to 1e6 before
-    the first rung converges), the limited unknowns carried from rung to
-    rung, then the pure solve: ``(x, v_lim, iterations)``, or None.
+    """PSEUDO-TRANSIENT CONTINUATION, PCNR's last route (2026-10-21):
+    backward-Euler pseudo-time steps, each a gshunt rung ANCHORED at its
+    seed, ``g (x - x_seed)`` on the node rows (`solve_dc`'s `anchor`), so the
+    homotopy follows the pseudo-transient trajectory from the start rather
+    than a deformation anchored at 0 V; the limited unknowns carried from
+    rung to rung, then the pure solve: ``(x, v_lim, iterations)``, or None.
 
-    Last because it is the most robust and the slowest: measured alone on
-    the gold decks (scratch, 2026-10-21) it solved 24 of 27 -- not e1480 and
-    opampal, which the ladders above solve -- and took slowlatch and todd3
-    to the other state of their latches (it follows the trajectory from the
-    zeros seed); last, no gold deck reaches it."""
-    from pycircuit.circuit.analysis import NoConvergenceError
-    from pycircuit.circuit.nrsolver import _adaptive_conductance_ladder
-    state = {'v_lim': None, 'its': 0}
+    POWERED UP: each rung's sources at `_ptc_source(g)` -- a thousandth at
+    g = 1, in full from 1e-6 down -- so the trajectory starts near the
+    circuit unpowered and the supplies come up as the anchor lets go.
+    STEPPED BY PROGRESS (switched evolution relaxation): after a converged
+    rung the next g is its g times the ratio of the residual at its answer
+    to the residual before (the DC equations at full sources,
+    `dc_residual`), clipped to [`PTC_RATIO_MIN`, `PTC_RATIO_MAX`]; a rung
+    that fails is retried halfway in exponent to the last that converged,
+    and the route gives up where that is within 5 % of it; before any rung
+    converges g escalates by `PTC_ESCALATE` up to `PTC_G_MAX`.  From
+    `PTC_G_END` the pure solve; `PTC_RUNGS` rungs at most.
 
-    def rung(x_seed, g):
-        a = np.zeros(circuit.n) if x_seed is None else np.asarray(x_seed, dtype=float)
-        got = _rung(circuit, refnode, a, state['v_lim'], kw, gshunt=g, anchor=a)
+    Measured alone on the 27 gold decks (scratch, 2026-10-21; plan
+    'IMPROVING THE PSEUDO-TRANSIENT ROUTE'): 26 solved (not jge), every
+    answer within DC's tolerance of PCNR's and no latch in its other state;
+    e1480 and opampal among them, which the chain's own schedule
+    (`nrsolver._adaptive_conductance_ladder`, PCNR's route before) did not
+    solve, and that schedule took slowlatch and todd3 to the other state of
+    their latches.  4.4 % more Newton iterations than that schedule on the
+    decks both solve.  Last: no gold deck reaches it."""
+    epar, held = kw['epar'], kw.get('held')
+    v_lim, total = None, 0
+    x = None if x0 is None else np.asarray(x0, dtype=float)
+    r_prev = dc_residual(circuit, refnode, np.zeros(circuit.n) if x is None else x,
+                         epar, held)[0]
+    g, g_ok = PTC_G_START, None
+    for _rung_no in range(PTC_RUNGS):
+        a = np.zeros(circuit.n) if x is None else x
+        got = _rung(circuit, refnode, a, v_lim, kw, gshunt=g, anchor=a,
+                    source=_ptc_source(g))
         if got is None:
-            raise NoConvergenceError(f'pseudo-transient rung at g={g:g}')
-        state['v_lim'] = got[1]
-        state['its'] += got[2]
-        return got[0]
-
-    def pure(x_seed):
-        got = _rung(circuit, refnode, x_seed, state['v_lim'], kw)
-        if got is None:
-            raise NoConvergenceError('pseudo-transient: the pure solve')
-        return got[0], got[1], state['its'] + got[2]
-
-    try:
-        return _adaptive_conductance_ladder(rung, pure, x0, e_start=PTC_E_START,
-                                            e_end=PTC_E_END, e_max=PTC_E_MAX,
-                                            label='PCNR pseudo-transient continuation')
-    except NoConvergenceError:
-        return None
+            if g_ok is None:
+                ## (no rung converged yet: a stronger anchor)
+                if g >= PTC_G_MAX:
+                    return None
+                g = min(g * PTC_ESCALATE, PTC_G_MAX)
+                continue
+            g_try = (g * g_ok) ** 0.5
+            if g_try > g_ok / 1.05:
+                return None
+            g = g_try
+            continue
+        x, v_lim, its = got
+        total += its
+        g_ok = g
+        if g <= PTC_G_END:
+            pure = _rung(circuit, refnode, x, v_lim, kw)
+            if pure is None:
+                return None
+            return pure[0], pure[1], total + pure[2]
+        r = dc_residual(circuit, refnode, x, epar, held)[0]
+        ratio = (r / r_prev if np.isfinite(r) and np.isfinite(r_prev) and r_prev > 0
+                 else PTC_RATIO_MAX)
+        g = max(g * float(np.clip(ratio, PTC_RATIO_MIN, PTC_RATIO_MAX)), PTC_G_END)
+        r_prev = r
+    return None
 
 
 def _source_step(circuit, refnode, x, v_lim, kw, target):

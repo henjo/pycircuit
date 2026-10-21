@@ -10082,3 +10082,33 @@ left.  Time: 159's three pinned rounds stand (+0.3 %, within noise); this round'
 spread (87 .. 144 s in 159's rounds, either tree), one coupled solve apart.
 
 **Gate**: suite 5 597 passed, 6 skipped, 3 xfailed.  The gold census does not run Radau: not run.
+
+## 2026-10-21 — 165. PCNR's pseudo-transient route powered up and stepped by progress
+
+**Why** (Andreas: "Can the Pseudo-transient be improved?", "push the size items 1, 2 and 3", "Do it", then "take
+power-up combined with adaptive steps despite its line").  163's route ran the chain's schedule at full sources:
+alone on the gold decks it solved 24 of 27, not e1480 and opampal, and took slowlatch and todd3 to the other state of
+their latches.
+
+**Measured first** (plan 'IMPROVING THE PSEUDO-TRANSIENT ROUTE', lines written first; each variant ALONE on the 27 gold
+decks, PCNR's other routes skipped, against today's PCNR answer).  Three changes sized alone: the circuit's own
+capacitance as the pseudo-term (left 4 unsolved, gm17 to its other state); the sources POWERED UP with the anchored
+conductance (2 unsolved, no state changed); the steps BY PROGRESS, switched evolution relaxation (1 unsolved, slowlatch
+to its other state).  Power-up and progress together (both ride in `solve_dc`'s inputs: no C change): 26 of 27 (jge
+falls back to the chain; progress alone solved it), every answer within DC's tolerance of today's PCNR (worst 0.85 of
+it), NO deck in another state, e1480 and opampal solved; 2 062 Newton iterations against the old route's 1 976 on the
+decks both solve (+4.4 %); 73.2 against 79.7 s.  Its line asked all 27 and no more iterations: FAILED on both.
+Andreas's decision: build it despite the line.
+
+**Built.**  `pcnr._ptc_ladder`, the same anchored gshunt rungs (`solve_dc(anchor=)`), now: each rung's sources at
+`_ptc_source(g)` -- `PTC_SOURCE_MIN` (1e-3) from g = 1 up, in full from `PTC_SOURCE_FULL` (1e-6) down, the logarithm
+linear in g's between; after a converged rung the next g is its g times the ratio of `dc_residual` at its answer (full
+sources) to the one before, clipped to [`PTC_RATIO_MIN`, `PTC_RATIO_MAX`] = [1e-3, 0.5]; a failed rung retried halfway
+in exponent to the last converged, giving up within 5 % of it; before any rung converges g escalates by 100 up to 1e6;
+from `PTC_G_END` (1e-12) the pure solve; 60 rungs at most.  The sizing re-run with the built route reproduced the
+prototype's on all 27 decks (answer, rungs, iterations, failures).  `test_dc_pcnr`: the schedule on the 1 A diode (each
+rung's sources, each next g from the residuals, the pure solve after `PTC_G_END`); the forced-failure sequence's
+route is now its four escalating rungs at a thousandth of the sources; the route alone still solves the diode and
+the 20 V BJT mirror to the chain's answers.
+
+**Gate**: suite 5 598 passed, 6 skipped, 3 xfailed; every gold deck bit-identical as the last route (54 runs).

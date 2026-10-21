@@ -5255,3 +5255,18 @@ where underflow is not ignored.  Radau's 20 decks bit-identical, every flag
 hand-back served; no time change measured (159: +0.3 %, noise).
 Tests: `test_radau_c.py` (an underflow served, and declined under
 `errstate(under='warn')`).
+
+## `pcnr._ptc_ladder` -- powered up, stepped by progress (2026-10-21)
+
+2026-10-21 (Andreas: "take power-up combined with adaptive steps despite its
+line"; `doc/hdl_roadmap_260824.md`, 165).  PCNR's last route ran the chain's
+schedule at full sources.  Now each rung's sources rise with the anchored
+conductance (a thousandth at g = 1, full from 1e-6 down: `_ptc_source`) and
+each next g follows the residual's progress (switched evolution relaxation:
+g times the ratio of the residuals, clipped to [1e-3, 0.5]).  Alone on the 27
+gold decks: 26 solved (jge not), e1480 and opampal among them, no latch in its
+other state, 4.4 % more Newton iterations than the old schedule; its line
+failed (all 27, iterations), built on Andreas's decision.  Last: no gold deck
+reaches it.
+Tests: `test_dc_pcnr.py` (the schedule on the 1 A diode; the forced-failure
+sequence's escalation at a thousandth of the sources).

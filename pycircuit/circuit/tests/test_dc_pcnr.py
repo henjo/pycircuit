@@ -472,9 +472,9 @@ def test_source_stepping_gives_up_at_its_smallest_step(monkeypatch):
     first rung, the junction-gmin ladder's, then source stepping's three steps
     from the start (0.05 halved to SOURCE_STEP_MIN), each tried plain and by
     both ladders' first rungs at its level -- the junction ladder first --
-    then the pseudo-transient route's rungs (`_ptc_ladder`: anchored gshunt
-    rungs at full sources from g = 1, escalating and halving within its rung
-    budget), and no more."""
+    then the pseudo-transient route's (`_ptc_ladder`): anchored gshunt rungs
+    from g = 1, its sources powered down to a thousandth, escalating by 100
+    to 1e6 while none converges, and no more."""
     from pycircuit.circuit import gnd, pcnr
     patched, calls = _failing_kinds(lambda k: True)
     monkeypatch.setattr(pcnr, 'solve_dc', patched)
@@ -486,9 +486,8 @@ def test_source_stepping_gives_up_at_its_smallest_step(monkeypatch):
     head = ([(k, v, 1.0) for k, v in top]
             + [(k, v, s) for s in (0.05, 0.025, 0.0125) for k, v in step])
     assert calls[:len(head)] == head, calls
-    ptc = calls[len(head):]
-    assert ptc and ptc[0] == ('g', 1.0, 1.0) and len(ptc) <= 60, ptc
-    assert all(k == 'g' and s == 1.0 and 1e-13 < v < 1e7 for k, v, s in ptc), ptc
+    s = pcnr.PTC_SOURCE_MIN
+    assert calls[len(head):] == [('g', 1.0, s), ('g', 1e2, s), ('g', 1e4, s), ('g', 1e6, s)], calls
 
 
 def test_a_gold_deck_pcnr_solves_itself():
@@ -659,6 +658,49 @@ def test_the_pseudo_transient_route_solves_where_every_other_route_fails(monkeyp
     res = dc.solve()
     assert dc.pcnr_status == 'used' and dc.pcnr_path == 'ptc'
     assert np.max(np.abs(np.asarray(res.x, dtype=float) - op)) < 1e-9
+
+
+def test_the_pseudo_transient_route_powers_up_and_steps_by_progress(monkeypatch):
+    """`_ptc_ladder`'s schedule, on the 1 A diode with every other route
+    failing: each rung's sources at `_ptc_source(g)` (a thousandth from
+    g = 1 up, in full from 1e-6 down), each converged rung's next g its own
+    times the ratio of the residual at its answer to the one before
+    (clipped to [1e-3, 0.5]), down to `PTC_G_END`, then the pure solve."""
+    import numpy as np
+
+    from pycircuit.circuit import gnd, pcnr
+    assert pcnr._ptc_source(1.0) == pcnr.PTC_SOURCE_MIN == pcnr._ptc_source(1e3)
+    assert pcnr._ptc_source(1e-6) == 1.0 == pcnr._ptc_source(1e-9)
+    assert abs(pcnr._ptc_source(1e-3) / 10 ** -1.5 - 1.0) < 1e-12
+    _other_routes_failing(monkeypatch)
+    inner, calls = pcnr.solve_dc, []
+
+    def solve(c, ref, x0=None, **kw):
+        k = (kw.get('gshunt', 0.0), kw.get('source', 1.0))
+        try:
+            got = inner(c, ref, x0=x0, **kw)
+        except Exception:
+            calls.append((*k, None))
+            raise
+        calls.append((*k, got[0]))
+        return got
+    monkeypatch.setattr(pcnr, 'solve_dc', solve)
+    c = _diode_1a()
+    x, _v, _its, path = pcnr.solve_dc_continued(c, gnd)
+    assert path == 'ptc'
+    plain, ptc, pure = calls[0], calls[1:-1], calls[-1]
+    assert plain[:2] == (0.0, 1.0) and plain[2] is None
+    assert pure[:2] == (0.0, 1.0) and pure[2].tobytes() == x.tobytes()
+    assert all(s == pcnr._ptc_source(g) for g, s, _x in ptc), ptc
+    ok = [(k, g, y) for k, (g, _s, y) in enumerate(ptc) if y is not None]
+    assert ok[-1][1] == pcnr.PTC_G_END and ok[-1][0] == len(ptc) - 1
+    assert min(s for _g, s, _x in ptc) < 0.01 and ptc[-1][1] == 1.0
+    r_prev = pcnr.dc_residual(c, gnd, np.zeros(c.n))[0]
+    for k, g, y in ok[:-1]:
+        r = pcnr.dc_residual(c, gnd, y)[0]
+        step = float(np.clip(r / r_prev, pcnr.PTC_RATIO_MIN, pcnr.PTC_RATIO_MAX))
+        assert ptc[k + 1][0] == max(g * step, pcnr.PTC_G_END), (k, ptc[k + 1][0], g, step)
+        r_prev = r
 
 
 def test_a_pseudo_transient_step_is_anchored_at_its_seed():
