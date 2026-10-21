@@ -65,7 +65,9 @@ PAIRS = {
                'retried within the budget) and accept (the rings, `_pred_note`, the '
                'statistics) -- and writes back what the Python attempts leave; the early '
                'abort armed as `early_arm` arms it, an abandoned attempt rejected as `take` '
-               'rejects it (the law, the point\'s counts, nothing recorded as made)',
+               'rejects it (the law, the point\'s counts, nothing recorded as made); the '
+               'stage family\'s early abort (`radau_arm`, `_RadauAbort`) is not the C\'s -- '
+               'it runs the multistep family alone',
         'reference': ['pycircuit.circuit.transient:_SteppingLoop.where',
                       'pycircuit.circuit.transient:_SteppingLoop.take',
                       'pycircuit.circuit.transient:_SteppingLoop.early_arm',
@@ -450,8 +452,8 @@ PAIRS = {
         'why': 'a fixed multistep run reads no step\'s Jacobian -- `judge` returns '
                'first, `event` does nothing, the other pieces carry it -- so '
                '`j_unread` marks its attempts (the converged point without G), '
-               'every piece checked as defined at the run\'s start; `take`\'s early abort '
-               'is never armed on a fixed grid (`early_arm`)',
+               'every piece checked as defined at the run\'s start; `take`\'s early aborts '
+               'are never armed on a fixed grid (`early_arm`, `radau_arm`)',
         'reference': ['pycircuit.circuit.transient:_SteppingLoop.where',
                       'pycircuit.circuit.transient:_SteppingLoop.take',
                       'pycircuit.circuit.transient:_SteppingLoop.judge',
@@ -482,6 +484,7 @@ PAIRS = {
                       'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_solver',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_error_estimate',
                       'pycircuit.circuit._tran_radau:_RadauStages._rk_step_transformed',
+                      'pycircuit.circuit._tran_radau:_RadauStages._radau_early_check',
                       'pycircuit.circuit._tran_radau:_RadauStages._transform_loop',
                       'pycircuit.circuit._tran_radau:_RadauStages._stage_end_passes',
                       'pycircuit.circuit._tran_stages:_SequentialStages._solve_implicit_stage',
@@ -526,7 +529,9 @@ PAIRS = {
                '`_transform_rhs` and `_transform_back` with numpy\'s complex product as '
                '`cmul_mode` reads it, the kept LU\'s `dgesv`-then-`dgetrs`, '
                '`solve_prepared`\'s refactor once a record and its residual check '
-               '(decided with a margin), the walk, the test after the update',
+               '(decided with a margin), the walk, the test after the update; split at the '
+               'first iteration for the early abort (`probe`, then `resume` from the '
+               'buffer\'s iterate: the iterates one call makes, its counts)',
         'reference': ['pycircuit.circuit._tran_radau:_RadauStages._transform_loop',
                       'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_system',
                       'pycircuit.circuit._tran_radau:_RadauStages._stages_converged',
@@ -537,6 +542,8 @@ PAIRS = {
                       'pycircuit.circuit.linearsolver:ComplexKLUSolver.solve_prepared'],
         'twin': ['pycircuit.circuit._tran_radau_tc:RADAU_TC',
                  'pycircuit.circuit._tran_radau_tc:solve',
+                 'pycircuit.circuit._tran_radau_tc:_outcome',
+                 'pycircuit.circuit._tran_radau_tc:resume',
                  'pycircuit.circuit._tran_radau_tc:cmul_mode'],
     },
     "the step's end passes and the C's": {
@@ -553,6 +560,7 @@ PAIRS = {
                       'pycircuit.circuit._tran_core:_Core.probe'],
         'twin': ['pycircuit.circuit._tran_radau_tc:RADAU_TC',
                  'pycircuit.circuit._tran_radau_tc:solve',
+                 'pycircuit.circuit._tran_radau_tc:_outcome',
                  'pycircuit.circuit._tran_core:passes_held',
                  'pycircuit.circuit._tran_core:passes_count'],
     },
@@ -682,7 +690,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('c7c3ea89fda0', 'ed148322c3cc'),
+    'the stepping loop and its C': ('ed3550969baa', 'ed148322c3cc'),
     'the predictor and its C': ('f2c284eb392d', '2f1a2f96e90f'),
     'the branch screen and its C': ('adb832d7aae0', '1da8be0e9b2e'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
@@ -701,13 +709,13 @@ RECORD = {
     'the DC base solve and its C': ('0db2906ca846', 'e57dff49b502'),
     'the PCNR DC solve and its C': ('5fdb41d12cc2', '317f8e27978e'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
-    'the stepping loop and its unread Jacobian': ('de8b4b288065', 'a0ac4588446c'),
+    'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
-    "the stage paths' passes and the core's": ('53407fabb2e6', '131833be2877'),
+    "the stage paths' passes and the core's": ('8e1c04a8b525', '131833be2877'),
     'the coupled stage Newton and its C': ('92bfabb5da8c', '2895432d069c'),
     'the transform solve and its frozen form': ('2347fd7082f9', '61256542c9d4'),
-    'the transform Newton and its C': ('57fd43705940', 'e484c49332b0'),
-    "the step's end passes and the C's": ('5501fef13bd5', '47498b78cd32'),
+    'the transform Newton and its C': ('57fd43705940', 'fceb72d88ac1'),
+    "the step's end passes and the C's": ('5501fef13bd5', '62689dfa9137'),
     'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
     'the stage block and its one pass': ('a013cd007e0c', '24be0c26211b'),
     'the stage step map and its C': ('7507f30134bb', 'a2de0dd5aa86'),

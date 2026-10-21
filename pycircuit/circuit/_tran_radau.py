@@ -2,6 +2,7 @@
 theme of `Transient` (see `transient.py`).
 """
 
+import math
 import os
 import weakref
 
@@ -22,6 +23,7 @@ from pycircuit.circuit._limiting import (
     state_restore,
     stateful_limiters,
 )
+from pycircuit.circuit._tran_newton import _EarlyAbort
 from pycircuit.circuit.analysis import (
     NoConvergenceError,
     remove_row_col,
@@ -41,6 +43,9 @@ RADAU_FROZEN = os.environ.get('PYCIRCUIT_RADAU_FROZEN', '1') != '0'
 STAGE_FUSE = os.environ.get('PYCIRCUIT_STAGE_FUSE', '1') != '0'
 #: numpy's solve as imported: a caller's stand-in takes the per-iteration path
 _NP_SOLVE = np.linalg.solve
+#: radau5's embedded weights (`_radau_error_estimate`'s ``dd1, dd2, dd3``)
+_DD = (-(13.0 + 7.0 * math.sqrt(6.0)) / 3.0, (-13.0 + 7.0 * math.sqrt(6.0)) / 3.0, -1.0 / 3.0)
+_NOCONV = 'Radau IIA(3) transform (simplified Newton) did not converge'
 _FROZEN = {}
 
 
@@ -146,6 +151,31 @@ def _frozen_chain():
         _FROZEN['chain'] = tuple(o for o, _q, _m in own)
         _FROZEN['types'] = (ComplexKLUSolver, AutoSolver, DenseSolver, NumericToolkit, _numeric)
     return _FROZEN['chain']
+
+
+class _RadauArm:
+    """The early abort armed for one adaptive Radau attempt
+    (`Transient.radau_early_abort`; `_SteppingLoop.take` sets it as
+    `tr._radau_arm`, `_rk_step_transformed` pops it): the threshold `th`,
+    the stepping family `fam` (`_StageSteps`: its normalisation) and the
+    point the attempt left, `x_last`, with its step `h`."""
+
+    __slots__ = ('fam', 'h', 'th', 'x_last')
+
+    def __init__(self, th, fam, x_last, h):
+        self.th, self.fam, self.x_last, self.h = th, fam, x_last, h
+
+
+class _RadauAbort(_EarlyAbort):
+    """A Radau attempt abandoned at the transform's first iterate: its
+    estimate there normalised as `judge` normalises it -- the RMS `err`, the
+    worst unknown `worst` -- and the attempt's point and step (the arm's),
+    what the family's rejection reads (`_StageSteps.reject_early`)."""
+
+    def __init__(self, err, worst, x_last, h):
+        Exception.__init__(self, err)
+        self.err, self.worst, self.x_last, self.h = err, worst, x_last, h
+        self.s = self.p = None
 
 
 class _RadauStages:
@@ -1246,17 +1276,6 @@ class _RadauStages:
         ## own False; None -- declined or handed back, and the loop runs from
         ## the same seed)
         _nobypass = float(getattr(epar, 'bypasstol', -1.0) or -1.0) < 0.0
-        Yc = _tran_radau_tc.solve(self, ctx, fz, Y, src, provided_function, lims,
-                                  _nobypass, reltol, abstol, maxit)
-        if Yc is False or (Yc is None and not self._transform_loop(
-                ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, maxit)):
-            raise NoConvergenceError(
-                'Radau IIA(3) transform (simplified Newton) did not converge')
-        if Yc is not None:
-            Y = Yc
-        ## the step end (the last stage) is what the epilogue reads
-        if S[2] is not None:
-            state_restore(S[2])
         ## (the transform's real solve, for the error estimate: the frozen
         ## factor's, or the per-iteration solve's own -- `_radau_transform_
         ## solve`'s real factor and solver -- with the C and G at x_n it is of)
@@ -1267,7 +1286,98 @@ class _RadauStages:
             ls = self._get_linearsolver()
             real = (Cn, Gn, lambda b: np.asarray(ls.solve((lam0 / h) * Cr + Gr, b, tk),
                                                  dtype=float))
+        ## THE EARLY ABORT (`radau_early_abort`, 2026-10-21): where the
+        ## stepping loop armed this attempt (`_RadauArm`, read once), the
+        ## loop's first iteration alone -- the C's (its False the loop's own,
+        ## its iterate read back) or the Python's -- and, not converged
+        ## there, the estimate at that iterate (`_radau_early_check`): over
+        ## the threshold the attempt is abandoned (`_RadauAbort`), else the
+        ## loop goes on from the iterate for the rest of its iterations --
+        ## the iterates one call makes.
+        arm = self.__dict__.pop('_radau_arm', None)
+        done = False
+        if arm is not None and maxit > 1:
+            Yc = _tran_radau_tc.solve(self, ctx, fz, Y, src, provided_function, lims,
+                                      _nobypass, reltol, abstol, 1, probe=True)
+            if Yc is False:
+                ## (the C's iterate, read in its buffer; then the C goes on
+                ## from it -- or, handed back, the Python loop)
+                self._radau_early_check(arm, ctx, x0, _tran_radau_tc.iterate(self), lims, real)
+                Yc = _tran_radau_tc.resume(self, fz, maxit - 1)
+                if Yc is None:
+                    Y = _tran_radau_tc.seed(self)
+                    if not self._transform_loop(ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol,
+                                                maxit - 1):
+                        raise NoConvergenceError(_NOCONV)
+                elif Yc is False:
+                    raise NoConvergenceError(_NOCONV)
+                done = True
+            elif Yc is None:
+                done = self._transform_loop(ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, 1)
+                if not done:
+                    self._radau_early_check(arm, ctx, x0, Y, lims, real)
+                    maxit -= 1
+            else:
+                done = True
+        if not done:
+            Yc = _tran_radau_tc.solve(self, ctx, fz, Y, src, provided_function, lims,
+                                      _nobypass, reltol, abstol, maxit)
+            if Yc is False or (Yc is None and not self._transform_loop(
+                    ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, maxit)):
+                raise NoConvergenceError(_NOCONV)
+        if Yc is not None:
+            Y = Yc
+        ## the step end (the last stage) is what the epilogue reads
+        if S[2] is not None:
+            state_restore(S[2])
         return self._finish_radau(ctx, x0, t, provided_function, Y, real=real)
+
+    def _radau_early_check(self, arm, ctx, x0, Y, lims, real):
+        """THE EARLY ABORT's test (`radau_early_abort`) at the transform's
+        first iterate `Y`, not converged there: the step's embedded estimate
+        at `Y` -- `_radau_error_estimate`'s, ``((lam_0/h) C + G)^-1 (C F1 +
+        f0)``, on the step's frozen ``C`` at `x0` and its real solve `real`,
+        made in the reduced space; ``f0 = -(i(x0) + u(t_n))`` once a point
+        (its retries share it: `_StageSteps.early_f0`), ``i`` from the memo
+        or one pass; with a stateful limiter, the estimate itself, which
+        reads them synced to `x0` -- normalised as the family's `judge`
+        normalises it.  Over the arm's threshold: `_RadauAbort`.
+
+        Why (roadmap 159, 2026-10-21): over Radau's 20 decks 736 attempts
+        ran the transform to `maxiter` and the dense fallback, 31 % of the
+        time, 614 of them rejected after; the estimate at the first iterate
+        is the final one to a few % (median ratio 1.00).  Measured at the
+        default 2: -32.5 % summed, the fallbacks 736 -> 220.  ~75 us a check
+        in Python (ring, n = 88), so `f0` is made once a point and the
+        estimate in the reduced space, where `_radau_error_estimate` would
+        read the devices again and insert the reference row."""
+        h, fam = ctx.h, arm.fam
+        if lims:
+            est = self._radau_error_estimate(x0, Y, ctx.tn, h, ctx.src, ctx.arr, real=real)
+            err, ek = fam.normalised(arm.x_last, Y[2], arm.h, est)
+        else:
+            pt = fam.early_f0
+            if pt is None or pt[0] is not x0:
+                rec = self._memo_get(x0) or {}
+                i_n = rec.get('i')
+                if i_n is None:
+                    P = _tran_core.passes(self, x0, 'i')
+                    if P is not None:
+                        i_n = P['i']
+                    else:
+                        with _evalhint.evaluating('i'):
+                            i_n = ctx.arr(self.cir.i(x0, self.epar))
+                pt = fam.early_f0 = (x0, -(i_n + ctx.src(ctx.tn)))
+            xn = np.asarray(x0, dtype=float)
+            F1 = (_DD[0] * (Y[0] - xn) + _DD[1] * (Y[1] - xn) + _DD[2] * (Y[2] - xn)) / h
+            rhs = np.asarray(real[0] @ F1) + pt[1]
+            iref = ctx.iref
+            est_r = real[2](np.concatenate((rhs[:iref], rhs[iref + 1:])))
+            err, ek = fam.normalised(arm.x_last, Y[2], arm.h, est_r, kept=True)
+        _paths.COUNTS['radau.early:checks'] += 1
+        if err > arm.th:
+            _paths.COUNTS['radau.early:aborts'] += 1
+            raise _RadauAbort(err, float(np.max(np.asarray(ek))), arm.x_last, arm.h)
 
     def _transform_loop(self, ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, maxit):
         """The transform's simplified Newton from the stages `Y` (updated in

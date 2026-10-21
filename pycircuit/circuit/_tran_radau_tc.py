@@ -16,7 +16,9 @@ factors' state -- the kept LU's `NumpyLU._info`, the complex solver's
 driver, buffers and last pattern (`_FOLD`).  `_paths`: `radau_tc:` --
 `radau_tc:<why>` a decline, `radau_tc:bail:<why>` a hand-back (`BAIL`),
 `radau_tc:served` (the loop's outcome made), `radau_tc:noconv` (of them,
-maxiter reached), `radau_tc:iterations`, `radau_tc:end` -- and `fold`'s
+maxiter reached), `radau_tc:probe` (the early abort's first iteration alone,
+not converged: `solve(..., probe=True)`), `radau_tc:iterations`,
+`radau_tc:end` -- and `fold`'s
 `radau.frozen:fold` (made), `radau.frozen:fold.same` (its packed values
 too) and `radau.frozen:fold.<why>` (not made).  Switches, each read on
 every call: `PYCIRCUIT_RADAU_TC=0` (`ENABLED`: the loop),
@@ -47,7 +49,12 @@ after); the complex factor's KLU on the solver's own handles (the refactor
 iref, 0.0)``, the limiter walk's own driver and the limited step's largest
 reduced entry; the convergence test after the update, as the Python tests.
 Its two outcomes are served: converged, and `maxiter` iterations without
-(the Python loop's own iterates, so its False).
+(the Python loop's own iterates, so its False).  THE EARLY ABORT
+(`Transient.radau_early_abort`) calls it for one iteration (`probe`),
+reads the iterate in the buffer (`iterate`) and, not abandoned, goes on
+from it (`resume`: no readiness checks, no source call -- nothing the C
+reads moved -- the iterates one call makes; handed back, the Python loop
+runs from the iterate, `seed`).
 
 ⚠ NUMPY'S COMPLEX PRODUCT IS READ, NOT ASSUMED.  With numpy's X86_V3
 loops (AVX2 and FMA3) it FUSES -- ``re = fma(ar, br, -(ai*bi))``, ``im =
@@ -494,7 +501,8 @@ class _Ctx:
         self.walk_watch = ()
 
 
-def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abstol, maxit):
+def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abstol, maxit,
+          probe=False):
     """The transform's Newton loop from the stages `seed` in C: the three
     converged stages as fresh full-width arrays, or False where `maxit`
     iterations did not converge (the Python loop's False), the source memo
@@ -503,7 +511,10 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     (`radau_tc:bail:<why>`), nothing left behind that the Python loop would
     not make again, and the Python loop runs.  `fz` is the step's frozen factors (`_radau_frozen`'s
     `_FrozenTransform`); where `END` asks, the step's end passes are left
-    in `tr._tc_end` with the very stage list returned."""
+    in `tr._tc_end` with the very stage list returned.  `probe`: the early
+    abort's first iteration (`_RadauStages._rk_step_transformed`) -- its
+    False counted `radau_tc:probe`, not as the loop's outcome, and the
+    iterate it reached read by `iterate`."""
     if not ENABLED:
         return _no('radau_tc:off')
     if fz is None or fz.lu is None or fz.prep is None:
@@ -694,6 +705,19 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     s.end_bits = 7 if end else 0
     s.end_cg = 3 if end and td.get('_stage_G_read') else 0
     status = cfn(s)
+    return _outcome(tr, rec, fz, status, probe, 1,
+                    lambda: NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals))))
+
+
+def _outcome(tr, rec, fz, status, probe, first, undo):
+    """What a call of the C (`solve`, `resume`) made of the loop, as `solve`
+    returns it: the factorisations' state written back, the counts, the
+    converged stages and the end passes.  `first`: the call's iterations
+    whose source values were taken before it (1 for `solve`'s first
+    iteration; 0 for `resume`, the step's later iterations all); `undo`:
+    the source memo's rollback on a hand-back, or None."""
+    s, buf, n = rec.s, rec.buf, rec.n
+    lu, zs, prep = fz.lu, fz.zs, fz.prep
     ## the factorisations' state, as the Python would have left it: the
     ## kept LU after its first `dgesv`, the numeric holding the record's
     ## refactor (a failed refactor is the Python's to make and count again)
@@ -706,21 +730,26 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
         ## (the Python loop's False: its iterations made, the source calls
         ## after the first its memo's hits)
         it = int(s.iters)
-        _PC['umemo:hit'] += 3 * (it - 1)
+        _PC['umemo:hit'] += 3 * (it - first)
+        _PC['radau_tc:iterations'] += it
+        if probe:
+            _PC['radau_tc:probe'] += 1
+            return False
         _PC['radau_tc:served'] += 1
         _PC['radau_tc:noconv'] += 1
-        _PC['radau_tc:iterations'] += it
         return False
     if status != _CODES['RADAU_TC_CONVERGED']:
-        NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
+        if undo is not None:
+            undo()
         if status == _CODES['RADAU_TC_BAIL_WALKSTOP']:
             ## (the walk stopped: its tables are taken again next time)
             rec.walk_ok = None
         return _no('radau_tc:bail:' + BAIL.get(status, str(status)))
     it = int(s.iters)
-    _PC['umemo:hit'] += 3 * (it - 1)
+    _PC['umemo:hit'] += 3 * (it - first)
     _PC['radau_tc:served'] += 1
     _PC['radau_tc:iterations'] += it
+    td = tr.__dict__
     Y = buf['Y']
     out = [Y[j].copy() for j in range(3)]
     if s.end_done:
@@ -735,6 +764,43 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
             C01, G01 = buf['e_C01'], buf['e_G01']
             cg = [{'C': C01[j * n * n:(j + 1) * n * n].reshape(nn).copy(),
                    'G': G01[j * n * n:(j + 1) * n * n].reshape(nn).copy()} for j in (0, 1)]
-        td['_tc_end'] = (out, _watch.now(), last, cg, core)
+        td['_tc_end'] = (out, _watch.now(), last, cg, rec.core)
         _PC['radau_tc:end'] += 1
     return out
+
+
+def iterate(tr):
+    """The iterate a `solve(..., probe=True)` on `tr` that returned False
+    reached -- the loop's after its iteration, bit for bit the Python
+    loop's -- as the three rows of the C's buffer: read them before the
+    next call."""
+    Y = tr.__dict__['_radau_tc'].buf['Y']
+    return [Y[0], Y[1], Y[2]]
+
+
+def resume(tr, fz, maxit):
+    """The loop after a `solve(..., probe=True)` on this step returned False,
+    resumed from the iterate it reached for `maxit` more iterations: what
+    one `solve` call of ``maxit + 1`` would have returned -- the converged
+    stages, or False -- or None, handed back, and the Python loop runs from
+    the iterate (`seed`).  Nothing the C reads moved between the two calls:
+    the early abort's check between them (`_RadauStages._radau_early_check`)
+    reads the iterate, its source call at the step's start is another key
+    of the step's memo, and a device pass at ``x_n`` writes the core's own
+    scratch, which the C's calls write before they read; the stages' source
+    values are in the buffer since the probe, so no source call is made
+    and none is rolled back."""
+    rec = tr.__dict__['_radau_tc']
+    s, buf = rec.s, rec.buf
+    np.copyto(buf['seed'], buf['Y'])
+    s.lu_info = -1 if fz.lu._info is None else 0
+    s.klu_fresh = 1 if fz.zs._fresh is fz.prep else 0
+    s.maxiter = int(maxit)
+    return _outcome(tr, rec, fz, _driver[1](s), False, 0, None)
+
+
+def seed(tr):
+    """The stages a `resume` that handed back started from (the probe's
+    iterate), as fresh full-width arrays."""
+    Y = tr.__dict__['_radau_tc'].buf['seed']
+    return [Y[j].copy() for j in range(3)]

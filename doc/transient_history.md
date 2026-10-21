@@ -5178,3 +5178,24 @@ more memory at its end.  The timing harnesses pin it (`_bench.pin_malloc`, the
 gold census).  Every waveform bit-identical either way.
 Tests: `test_malloc_pin.py` (a 24 MB array from the heap once pinned, from
 mmap under the user's threshold; by `mallinfo2`).
+
+## `Transient.radau_early_abort` -- Radau's attempts abandoned at the first iterate (2026-10-21)
+
+2026-10-21 (Andreas: "build prototype", then "accept"; `doc/hdl_roadmap_260824.md`, 159).
+A Radau attempt whose transform did not converge ran it to `maxiter` (100)
+and then the dense coupled Newton before the judge said no: 31 % of Radau's
+time on its 20 decks, 614 of 736 such attempts rejected after.  Now an
+adaptive attempt runs the transform's first iteration alone (the C's
+`probe`, or the Python loop's) and, not converged, checks the embedded
+estimate there, normalised as the step is judged (`_radau_early_check`,
+`_StageSteps.normalised`): over `radau_early_abort` (2) the attempt is a
+rejection sized by `judge`'s retry law (`_StageSteps.reject_early`); else
+the loop goes on from the iterate (`_tran_radau_tc.resume`), the iterates
+one call makes.  -32.5 % summed over the 20 decks, no gold column moved
+across its pass; its line failed on mike2 (+6.8 %, a step-control lottery at
+the 1e-5 its retry moves; the line's own lottery instrument was dead);
+accepted by Andreas.  A re-baseline of Radau's adaptive answers where an
+attempt is abandoned.
+Tests: `test_radau_early_abort.py` (abandoned on the latch, none forced; a
+check that never fires changes nothing byte for byte; C and Python loop the
+same run; `judge`'s retry law; the arm's budget).

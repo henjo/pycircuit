@@ -9874,3 +9874,56 @@ kept outside the repository).  The gain is a fixed-step dense deck's alone.
 
 **Gate**: suite 5 579 passed, 6 skipped, 3 xfailed.  Nothing changes by default; the 27 gold decks pinned are bit-identical
 to unpinned (above).
+
+## 2026-10-21 — 159. Radau's early abort: an attempt over its tolerance at the transform's first iterate is abandoned there
+
+**Why** (Andreas: "Start with 1 and 4", then "build prototype", then "accept").  158 left item 4 -- `radau.c`'s
+underflow rule re-measured with the allocator pinned -- and item 1, an early abort for Radau, which the multistep
+family's (132, 134) does not reach.  **Item 4: refused** (line: the summed time falls, no deck +3 %, bits identical;
+measured +0.3 %, bits identical, every deck -2.7 .. +1.5 %): the C now served the solves it handed back (voter25 323
+against 47), worth nothing measurable -- the coupled path is rare -- and it settles that 156's +5.4 % on arom was the
+allocator (pinned, arom -1.2 %).  Nothing committed for it.
+
+**Item 1, sized first** (a time census in the default configuration and a separation census with the transform loop
+in Python, the same bytes, attempt by attempt; 394 s over Radau's 20 decks).  Rejected attempts are 45.9 % of Radau's
+time.  736 attempts ran the transform's simplified Newton to `maxiter` (100; the loop has no rate test) and then the
+dense coupled Newton: 31.0 % of the time, 614 of them REJECTED after (voter25 73 % of its time, todd3 63 %).  The
+embedded estimate at the transform's first iterate, normalised as the step is judged, is the final one to a few %
+(median ratio 1.00, p10 0.99, p90 1.04).  Over 2 there: 27.8 % of the time saved gross, 81 accepted attempts wrongly
+abandoned.  radau5's rate exit to the fallback was sized too and is NOT built: it sends slow convergers to the dense
+fallback (gm19 -36 % at NIT 20).
+
+**Built.**  `Transient.radau_early_abort` (default 2; 0 off; else >= 1).  The stepping loop arms an adaptive Radau
+attempt whose estimate the step makes (`_SteppingLoop.radau_arm` -> `tr._radau_arm`, a `_RadauArm`) while a rejection
+would leave a full attempt in the point's budget, above `minstep`, as the multistep abort is armed.
+`_rk_step_transformed` runs the transform's first iteration alone -- the C's (`_tran_radau_tc.solve(..., probe=True)`:
+its False the loop's own, the iterate read in its buffer) or the Python loop's -- and, not converged there,
+`_radau_early_check`: `_radau_error_estimate`'s formula on the step's frozen C at x_n and its real solve, made in the
+reduced space, `f0 = -(i(x_n) + u(t_n))` once a point (its retries share it), normalised by `_StageSteps.normalised`
+(`judge`'s, extracted).  Over the threshold the attempt is abandoned (`_RadauAbort`) and `take` rejects it by the
+family's retry law (`_StageSteps.reject_early` -> `_retry_after`, `judge`'s, extracted: the worst unknown, the order
+two tries measured) -- no iterations after the first, no step end, no dense fallback; counted in `rejected_steps`
+and `early_aborts`.  Else the loop goes on from the iterate: `_tran_radau_tc.resume` (no readiness checks and no
+source call -- nothing the C reads moved; the iterates one call makes), or, handed back, the Python loop from the
+iterate.  `test_radau_early_abort`: abandoned attempts on the latch (none forced, fewer fallbacks and iterations);
+a check that never fires is the run without it byte for byte; the C and the Python loop the same run; `judge`'s retry
+law; the arm's budget; a threshold under 1 refused.  Pinned pairs re-recorded after checking their twins (`radau_tc.c`
+unchanged; loop.c runs the multistep family alone): "the stepping loop and its C", "... and its unread Jacobian",
+"the transform Newton and its C", "the stage paths' passes and the core's", "the step's end passes and the C's".
+
+**Measured** (line written first: plan 'THE EARLY ABORT FOR RADAU, PROTOTYPED'; Radau's default transient on the 20
+decks, pinned, today's tree against this one, fresh processes, three rounds interleaved, best of 3).  (a) With the
+threshold at 1e300 (every check made, none firing) every waveform bit-identical.  (b) Summed 363.99 -> 245.80 s
+(-32.5 %): voter25 -71.5, todd3 -58.9, rich3 -36.4, gm19 -33.7, slowlatch -31.6, latch -30.5, gm1 -29.0, mux8 -24.1,
+arom -16.2, jge -6.9, g1310 -6.1 %; the transform's dense fallbacks 736 -> 220.  (d) No gold column flips pass/fail,
+no forced step, no run fails.  (c) FAILED: mike2 +6.8 % (0.57 -> 0.61 s, steps 614 -> 656, 31 aborts); every other deck
+within +1.4 %.  The line's escape for (c), a lottery of GAMMA_REAL +-2 ulp on today's tree, was a dead instrument --
+since 157 the transform path's estimate does not read GAMMA_REAL (mike2's digest identical at -2, 0, +2 ulp).  Read for
+the decision: mike2's runs part at its point 55, the abort's retry 1.2e-5 apart from the judged one (the estimate at
+the first iterate, not the last); today's tree under reltol * (1 +- 1e-5 .. 1e-4) spans 614 .. 651 steps, 0.575 ..
+0.639 s, where reltol +-2 ulp leaves it at 614 every time: 614 is its low end.  The first build's check cost ~110 us
+and its two C calls ~26 us (ring +7 %); rebuilt before the A/B (`resume`; the lean check): ring +0.7 %.  Andreas's
+decision, offered refusal or acceptance: accepted despite the line.  Every gold deck's default transient (Gear2) and
+operating point bit-identical to before (54 runs).
+
+**Gate**: suite 5 585 passed, 6 skipped, 3 xfailed.

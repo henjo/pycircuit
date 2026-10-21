@@ -47,7 +47,7 @@ from pycircuit.circuit._tran_fang import _CoupledLTE
 from pycircuit.circuit._tran_pcnr import _PCNRSteps
 from pycircuit.circuit._tran_stages import _SequentialStages
 from pycircuit.circuit._tran_glm import _NordsieckGLM
-from pycircuit.circuit._tran_radau import _RadauStages
+from pycircuit.circuit._tran_radau import _RadauAbort, _RadauArm, _RadauStages
 from pycircuit.circuit._tran_events import _StepEvents
 
 ## STAGE 2a -- BLAS held at one thread for the whole run (`_blas`: why, where
@@ -425,9 +425,15 @@ class _StageSteps(_StepFamily):
             raise ValueError(f"retry_order must be one of {RETRY_ORDER_MODES!r}, "
                              f"not {tr.par.retry_order!r}")
         self.retry_order = tr.par.retry_order
+        th = tr.par.radau_early_abort
+        if th and not th >= 1.0:
+            raise ValueError(f"radau_early_abort must be 0 (off) or at least 1, not {th!r}")
         ## (x_last, h, worst) of the last rejection, None after an acceptance;
         ## the order the last retry measured, for 'carried'
         self._retry = self._q_carried = None
+        ## (the early abort's ``(x_n, f0)`` at the point its attempts leave:
+        ## `_RadauStages._radau_early_check`)
+        self.early_f0 = None
         self.n_nodes = len(tr.cir.nodes)
         self.running = None
         ## an adaptive run asks the step for its estimate; a fixed grid leaves
@@ -451,22 +457,30 @@ class _StageSteps(_StepFamily):
             return ref
         return sigglobal_reference(ref, self.n_nodes)
 
-    def judge(self, X, x_new, h, _J, _clamped):
+    def normalised(self, x_last, x_new, h, est, kept=False):
+        """``(err, ek)``: the estimate `est` of the step from `x_last` to
+        `x_new` normalised as `judge` judges it -- each kept unknown's
+        ``est / (reltol ref + abstol)`` (`ek`) and their RMS (`err`).
+        `judge`'s, and the early abort's at the transform's first iterate
+        (`_RadauStages._radau_early_check`; `kept`: `est` holds the kept
+        unknowns alone, in their order)."""
         tk = self.tr.toolkit
-        est = tk.array(self.tr._rk_est)
         ## (`lte_algebraic='charge'`'s floor, as the LMM error test's)
         abstol = charge_floor(self.run.abstol, self.tr._lte_charge(),
                               self.tr.par.lte_chgtol, h)
-        wt = (self.tr.par.reltol * tk.array(self._reference(X[-1], x_new))
+        wt = (self.tr.par.reltol * tk.array(self._reference(x_last, x_new))
               + tk.array(abstol))
         ## (`normalised_error`: a 0/0 entry is 0, not a NaN that rejects the
         ## step and then grows it)
-        ek = tk.array(normalised_error(np.asarray(est)[self.keep],
+        ek = tk.array(normalised_error(np.asarray(est) if kept else np.asarray(est)[self.keep],
                                        np.asarray(wt)[self.keep]))
         mask = self.tr._lte_mask()
         if mask is not None:
             ek = ek * np.asarray(mask, dtype=float)[self.keep]
-        err = float((tk.sum(ek * ek) / len(self.keep)) ** 0.5)
+        return float((tk.sum(ek * ek) / len(self.keep)) ** 0.5), ek
+
+    def judge(self, X, x_new, h, _J, _clamped):
+        err, ek = self.normalised(X[-1], x_new, h, self.tr.toolkit.array(self.tr._rk_est))
         p = int(self.tr.base_integrator.EMBEDDED_ORDER) + 1
         if err <= 1.0:
             self._retry = None
@@ -487,10 +501,22 @@ class _StageSteps(_StepFamily):
         ## completes, 27 % less time for 10 % more steps, every gold column
         ## passing as before.
         worst = float(np.max(np.asarray(ek)))
-        q = self._retry_order(X[-1], h, worst, p)
-        self._retry = (X[-1], h, worst)
-        return False, h * max(MIN_SHRINK_RATIO,
-                              (self.SAFETY ** p / worst) ** (1.0 / q))
+        return False, self._retry_after(X[-1], h, worst, p)
+
+    def _retry_after(self, x_last, h, worst, p):
+        """The step after a rejection whose worst unknown's normalised error
+        is `worst`, the retry's order and record made (`_retry_order`):
+        `judge`'s and an early abort's (`reject_early`) one law."""
+        q = self._retry_order(x_last, h, worst, p)
+        self._retry = (x_last, h, worst)
+        return h * max(MIN_SHRINK_RATIO, (self.SAFETY ** p / worst) ** (1.0 / q))
+
+    def reject_early(self, abort):
+        """An attempt abandoned at the transform's first iterate
+        (`_RadauAbort`): a rejection at its estimate there, the retry sized
+        as `judge` sizes one (`_retry_after`).  Returns the next step."""
+        p = int(self.tr.base_integrator.EMBEDDED_ORDER) + 1
+        return self._retry_after(abort.x_last, abort.h, abort.worst, p)
 
     def _retry_order(self, x_last, h, worst, p):
         """The order the retry after this rejection is sized by: `p` at a
@@ -710,6 +736,7 @@ _RUN_STATE = {
     'active_integrator': ('step', 'that integrator'),
     '_dt': ('step', 'the step being attempted'),
     '_early_arm': ('step', 'the early abort armed for the attempt (`_EarlyArm`); removed after it'),
+    '_radau_arm': ('step', 'the Radau early abort armed for the attempt (`_RadauArm`); removed after it'),
     '_u_memo': ('step', 'the step\'s source values'),
     '_pred_pending': ('step', 'the predictor\'s pending point'),
     '_conv_session': ('step', 'the converged point\'s evaluation session'),
@@ -918,7 +945,10 @@ class _SteppingLoop:
         tr._dt = h
         arm = self.early_arm()
         if arm is not None:
-            tr._early_arm = arm
+            if type(arm) is _RadauArm:
+                tr._radau_arm = arm
+            else:
+                tr._early_arm = arm
         try:
             self.x_new, self.h, self.J = tr._attempt_step(
                 self.family, self.X, self.t, h, self.hold,
@@ -934,13 +964,18 @@ class _SteppingLoop:
             tr.statistics.early_aborts += 1
             self.point_retries += 1
             self.rejects += 1
-            self.h = max(tr.step_controller.reject_early(abort.s, abort.err, abort.p),
-                         self.minstep)
+            ## (a Radau attempt's: its family's retry law, `judge`'s)
+            if type(abort) is _RadauAbort:
+                h_next = self.family.reject_early(abort)
+            else:
+                h_next = tr.step_controller.reject_early(abort.s, abort.err, abort.p)
+            self.h = max(h_next, self.minstep)
             self.imposed = False
             return False
         except NoConvergenceError:
             ## (the rescue below is not armed)
             tr.__dict__.pop('_early_arm', None)
+            tr.__dict__.pop('_radau_arm', None)
             ## A failed attempt is retried smaller: a rejection in all but
             ## name, and counted as one (F13).
             tr.statistics.rejected_steps += 1
@@ -969,6 +1004,7 @@ class _SteppingLoop:
                 self.provided_function)
         finally:
             tr.__dict__.pop('_early_arm', None)
+            tr.__dict__.pop('_radau_arm', None)
         return True
 
     def early_arm(self):
@@ -980,6 +1016,8 @@ class _SteppingLoop:
         `minstep`, under the integral controller with its default band, PCNR
         off."""
         tr, fam = self.tr, self.family
+        if type(fam) is _StageSteps:
+            return self.radau_arm()
         th = tr.par.early_abort
         if not th or self.fixed or type(fam) is not _LMMSteps or len(self.X) < 2:
             return None
@@ -992,6 +1030,22 @@ class _SteppingLoop:
             return None
         return _EarlyArm(float(th), self.X[-1], self.h, self.clamped, self.run.abstol,
                          self.run.max_step)
+
+    def radau_arm(self):
+        """The Radau early abort armed for this attempt (`_RadauArm`, which
+        the transform step reads: `_RadauStages._rk_step_transformed`), or
+        None.  Armed on an adaptive stage-family step whose estimate the
+        step makes (`_rk_want_est`), while a rejection there would leave a
+        full attempt in the point's budget (`max_reject`, `max_retries`),
+        above `minstep`."""
+        tr, fam = self.tr, self.family
+        th = tr.par.radau_early_abort
+        if not th or self.fixed or not getattr(tr, '_rk_want_est', False):
+            return None
+        if not (self.rejects + 1 < fam.max_reject and self.point_retries + 1 < fam.max_retries
+                and self.h > self.minstep):
+            return None
+        return _RadauArm(float(th), fam, self.X[-1], self.h)
 
     def judge(self):
         """3. Judge it: the family's error test, then the excursion veto
@@ -1316,6 +1370,24 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         'abandoned there as a rejection (0: never)',
                    unit='',
                    default=1.25),
+         ## THE RADAU EARLY ABORT (2026-10-21; roadmap 159): an adaptive
+         ## Radau attempt whose embedded estimate at the transform's first
+         ## iterate, normalised as the step is judged, is over this is
+         ## abandoned there as a rejection, its retry sized by the stage
+         ## family's law -- not run to `maxiter` and the dense fallback
+         ## first (`_RadauStages._radau_early_check`).  Measured at 2 on
+         ## Radau's 20 decks: -32.5 % summed time (voter25 -72 %, todd3 -59,
+         ## rich3 -36, gm19 -34, mux8 -24 %), the transform's dense fallbacks
+         ## 736 -> 220, no gold column moved across its pass, no forced
+         ## step; mike2 +6.8 % (a retry sized 1e-5 apart moves its step
+         ## sequence: today's run under reltol * (1 +- 1e-5) spans the same
+         ## range) -- under its line's +3 %, accepted by Andreas.  0: off.
+         Parameter(name='radau_early_abort',
+                   desc='An adaptive Radau attempt whose error estimate at its '
+                        'first transform iterate exceeds this many times the '
+                        'tolerance is abandoned there as a rejection (0: never)',
+                   unit='',
+                   default=2.0),
          ## STAGE 12A -- Fang's acceptance band (DAC 2013 eq 15) and step-change
          ## damper (eq 16).  The defaults are the historical one-sided test, so
          ## nothing changes until a caller asks; see `StepController.set_lte_band`
