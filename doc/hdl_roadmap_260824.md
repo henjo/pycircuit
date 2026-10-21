@@ -10058,3 +10058,27 @@ sudden drop after a long plateau or rise (the limiter's slew: a thermal voltage 
 time is covered by 162's lottery rule.
 
 **Gate**: suite 5 596 passed, 6 skipped, 3 xfailed; every gold deck bit-identical (54 runs).
+
+## 2026-10-21 — 164. Radau's coupled stage C: an underflow no longer hands the solve back
+
+**Why** (Andreas: "Fix Radau's C solve flag bails").  `radau.c`, the C twin of the coupled stage Newton
+(`_stage_newton`), still tested PCX_FP_FLAGS -- underflow included -- after 156 took underflow out of `radau_tc.c`'s
+test: an underflow numpy's default error state ignores handed the solve back and the Python Newton repeated it.  The
+same rule was refused twice on time, not on its answers: in 156 (arom +5.4 %, the allocator's mode) and in 159's item 4
+(pinned, three rounds: +0.3 % summed, every deck -2.7 .. +1.5 %, its line asked the sum to fall).  Built now on
+Andreas's decision; `radau.c` now tests what numpy reports, as `radau_tc.c` (156), `dcnewton.c` and `pcnrdc.c` do.
+
+**Built** (the patch measured in 159, unchanged on today's tree).  `radau.c` tests overflow, invalid and divide
+(`RC_FLAGS`) where it tested PCX_FP_FLAGS; `_tran_radau_c.solve` declines where numpy's error state does not ignore
+underflow (`radau_c:underflow`, `func._underflow_ignored`).  `test_radau_c`: a 1e300-ohm resistor across a load (a
+1e-300 S entry, the blocks' products underflow) is served, the Python Newton's stages and memos bit for bit, and under
+`errstate(under='warn')` declined with the Python's warning -- failing on the old C (`radau_c:bail:flags`).  Pinned pair
+"the coupled stage Newton and its C" re-recorded (the twin; the reference did not move).
+
+**Measured** (Radau's default transient on its 20 decks, today's tree against this one, one round, pinned): every
+waveform and step count bit-identical; every flag hand-back of the coupled C now served (voter25 107 solves against 17,
+gm19 20 / 1, arom 20 / 0, slowlatch 18 / 2, latch 19 / 8, rich3 16 / 1, gm1 2 / 1, todd3 14 / 13, jge 1 / 0), none
+left.  Time: 159's three pinned rounds stand (+0.3 %, within noise); this round's jge 167 -> 87 s is that deck's own
+spread (87 .. 144 s in 159's rounds, either tree), one coupled solve apart.
+
+**Gate**: suite 5 597 passed, 6 skipped, 3 xfailed.  The gold census does not run Radau: not run.

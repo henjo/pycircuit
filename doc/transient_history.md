@@ -5243,3 +5243,15 @@ can land a latch in its other state, so it sits last, where no gold deck
 reaches it (every gold deck bit-identical).
 Tests: `test_dc_pcnr.py` (the route alone solves the 1 A diode and the 20 V
 BJT mirror; an anchored rung; the forced-failure sequence ends in its rungs).
+
+## `radau.c` -- underflow not tested (2026-10-21)
+
+2026-10-21 (Andreas: "Fix Radau's C solve flag bails"; `doc/hdl_roadmap_260824.md`,
+164).  The coupled stage Newton's C tested PCX_FP_FLAGS, underflow included,
+and handed back solves whose only flag was an underflow numpy's default error
+state ignores.  It tests `RC_FLAGS` (overflow, invalid, divide) now, as
+`radau_tc.c` (156), `dcnewton.c` and `pcnrdc.c` do, and its glue declines
+where underflow is not ignored.  Radau's 20 decks bit-identical, every flag
+hand-back served; no time change measured (159: +0.3 %, noise).
+Tests: `test_radau_c.py` (an underflow served, and declined under
+`errstate(under='warn')`).

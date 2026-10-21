@@ -3,9 +3,10 @@ undamped coupled Newton of a Radau IIA(3) step in one C call.  Its stages,
 the device memo and the source memo are the bytes of the Python Newton's,
 with its counts and warnings -- on whole transients and on drawn seeds,
 step sizes and charges at one step; every hand-back (a non-finite value, a
-floating-point exception, the residual's bound, a singular system, the walk
-stopping, the assembly cap) leaves the Python Newton to answer as before;
-and the declines."""
+floating-point exception numpy reports, the residual's bound, a singular
+system, the walk stopping, the assembly cap) leaves the Python Newton to
+answer as before; an underflow numpy ignores is served; and the
+declines."""
 import types
 import warnings
 
@@ -117,10 +118,11 @@ def _cap():
     return _CAP['mos']
 
 
-def _attempt(tr, got, seed, on):
-    """`_stage_newton(seed)` from the captured step's memos, the C on or off:
-    the stages' bytes (or the exception), the device and source memos, the
-    source counts and the warnings; and every count."""
+def _attempt(tr, got, seed, on, under='ignore'):
+    """`_stage_newton(seed)` from the captured step's memos, the C on or off
+    (numpy's underflow mode `under` around it): the stages' bytes (or the
+    exception), the device and source memos, the source counts and the
+    warnings; and every count."""
     sn = got['out'][1]
     tr.__dict__['_u_memo'] = dict(got['u'])
     tr._dev_memo = tuple({k: dict(v) for k, v in g.items()} for g in got['dev'])
@@ -128,7 +130,7 @@ def _attempt(tr, got, seed, on):
     RC.ENABLED = on
     before = _paths.snapshot()
     try:
-        with warnings.catch_warnings(record=True) as W:
+        with warnings.catch_warnings(record=True) as W, np.errstate(under=under):
             warnings.simplefilter('always')
             warnings.simplefilter('ignore', ResourceWarning)
             try:
@@ -220,6 +222,34 @@ def test_every_hand_back_answers_as_the_python():
     assert a == b and a[0] == ('NoConvergenceError',
                                'Radau IIA(3) coupled stage Newton met a singular Jacobian'), a[0]
     _bail(db, 'dgesv')
+
+
+def _tiny_g():
+    """The MOS chain with a 1e300-ohm resistor across a load: a 1e-300 S
+    entry in G, so the blocks' ``(h A_ij) G_j`` underflow."""
+    c = _mos_chain()
+    c['rt'] = R('d0', 'd1', r=1e300)
+    return c
+
+
+def test_an_underflow_is_served_where_numpy_ignores_it():
+    """An underflow in the blocks is not a flag numpy reports under its
+    default error state: served, the Python Newton's stages and memos.
+    Where the error state does not ignore it the C declines and the Python
+    warns."""
+    _on()
+    tr, got = _captured(build=_tiny_g)
+    seed = [np.array(y, dtype=float) for y in got['out'][3]]
+    a, _da = _attempt(tr, got, seed, False)
+    b, db = _attempt(tr, got, seed, True)
+    assert a == b and not a[4], a[4]
+    c = _counts(db)
+    assert c.get('radau_c:served') == 1 and not any(k.startswith('radau_c:bail') for k in c), c
+    a, _da = _attempt(tr, got, seed, False, under='warn')
+    b, db = _attempt(tr, got, seed, True, under='warn')
+    assert a == b and any('underflow' in w for w in a[4]), a[4]
+    c = _counts(db)
+    assert c.get('radau_c:underflow') == 1 and 'radau_c:served' not in c, c
 
 
 def test_the_assembly_cap_hands_back(monkeypatch):

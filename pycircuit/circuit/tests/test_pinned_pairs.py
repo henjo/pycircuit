@@ -712,7 +712,7 @@ RECORD = {
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
     "the stage paths' passes and the core's": ('8e1c04a8b525', '131833be2877'),
-    'the coupled stage Newton and its C': ('92bfabb5da8c', '2895432d069c'),
+    'the coupled stage Newton and its C': ('92bfabb5da8c', 'aa68068f57a9'),
     'the transform solve and its frozen form': ('2347fd7082f9', '61256542c9d4'),
     'the transform Newton and its C': ('57fd43705940', 'fceb72d88ac1'),
     "the step's end passes and the C's": ('5501fef13bd5', '62689dfa9137'),

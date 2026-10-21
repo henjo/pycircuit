@@ -44,7 +44,9 @@ rolled back, and the Python Newton runs from the same seed (the same
 answer, exception, warning).
 
 DECLINES, before anything is touched (`_paths.no`): the switch (and the
-evaluate core's two), no build, a toolkit that is not numeric, a subclass
+evaluate core's two), no build, numpy's error state not ignoring underflow
+(the C does not test it: numpy's default ignores it), a toolkit that is
+not numeric, a subclass
 of the transient or a patched piece of the Newton (`_chain`), an instance
 shadow of the circuit's passes or limiter or of the transient's pieces, a
 `provided_function`, a stateful limiter or circuit-level limiting, a bypass,
@@ -98,6 +100,8 @@ def driver():
         except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None
+        from pycircuit.circuit import func
+        _MOD['func'] = func
         _driver = (ffi, cfn, nd[2]['dgesv'])
         STATUS = 'c'
     return _driver or None
@@ -235,6 +239,8 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     drv = _driver or driver()
     if not drv:
         return _no('radau_c:driver')
+    if not _MOD['func']._underflow_ignored():
+        return _no('radau_c:underflow')
     ffi, cfn, dgesv = drv
     chain = _MOD.get('chain') or _chain()
     if chain is None:

@@ -15,7 +15,8 @@
 #include "pcx_fenv.h"
 #include "radau.h"
 
-/* the four flags numpy's errstate governs (inexact is not one).  One
+/* the flags numpy reports here: underflow is not one -- numpy ignores it by
+   default, and the glue declines where it does not (`_tran_radau_c`).  One
    raised in the C's own arithmetic hands the solve back: the Python makes
    the same operation and numpy reports it as the caller's errstate says.
    The flags the core, the walk and LAPACK raise are cleared, not tested:
@@ -26,6 +27,7 @@
    FENV_ACCESS), so an operation whose result stays in a register may move
    past the test; one whose result is stored to memory the call could read
    may not. */
+#define RC_FLAGS (FE_OVERFLOW | FE_INVALID | FE_DIVBYZERO)
 
 /* every hand-back: the flags cleared, `status` set; returns `why` */
 static long rc_bail(radau_t *s, long why)
@@ -110,7 +112,7 @@ static long assemble(radau_t *s, long a)
             }
         }
     }
-    if (fetestexcept(PCX_FP_FLAGS)) return RADAU_BAIL_FLAGS;
+    if (fetestexcept(RC_FLAGS)) return RADAU_BAIL_FLAGS;
     return 0;
 }
 
@@ -175,7 +177,7 @@ long pcx_radau(radau_t *s)
                there becomes +0.0, as numpy's elementwise sum makes it */
             yn[r] = yp[r] + 0.0;
             for (k = r + 1; k < n; k++) yn[k] = yp[k] + d[k - 1];
-            if (fetestexcept(PCX_FP_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
+            if (fetestexcept(RC_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
             /* `cir.limit(Y_trial, Y_prev)`: the walk limits yn in place and
                returns wn, or the element whose limiter declined (the
                Python limits); its flags are not tested */
@@ -186,7 +188,7 @@ long pcx_radau(radau_t *s)
             }
             /* step_i = red(Y_new - Y_prev) (stored: its flags tested) */
             for (k = 0; k < n; k++) s->stp[k] = yn[k] - yp[k];
-            if (fetestexcept(PCX_FP_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
+            if (fetestexcept(RC_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
             /* np.max(np.abs(step_i)), then Python's max(scale, it): each
                takes a later value only where it is greater.  Every value is
                finite and >= +0.0 here, so starting from 0.0 and any tie
@@ -219,7 +221,7 @@ long pcx_radau(radau_t *s)
         feclearexcept(FE_ALL_EXCEPT);
         s->tolv[0] = s->reltol * ynorm;
         s->tolv[1] = s->tolv[0] + s->abstol;
-        if (fetestexcept(PCX_FP_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
+        if (fetestexcept(RC_FLAGS)) return rc_bail(s, RADAU_BAIL_FLAGS);
         s->iters = it + 1;
         if (scale <= s->tolv[1]) {
             s->assemblies = a + 1;
