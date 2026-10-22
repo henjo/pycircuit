@@ -1814,6 +1814,14 @@ class IdtmodCircular(_WrapEvents, Circuit):
     def update(self, subject):
         if self._cos_index is None:
             return
+        ## ⚠ `gamma_tau` > 0 ADDS the filter state (its node, at
+        ## construction): a write that would add or remove it is refused --
+        ## until 2026-10-22 it was silently ignored.  A positive value
+        ## written over a positive one is a value, read when called.
+        if (self.iparv.gamma_tau > 0) != (self._filt_index is not None):
+            raise ValueError(
+                'IdtmodCircular: gamma_tau > 0 adds the filter state at '
+                'construction; build a new element to add or remove it')
         m = self.iparv.modulus
         if m is None or m <= 0:
             raise ValueError(

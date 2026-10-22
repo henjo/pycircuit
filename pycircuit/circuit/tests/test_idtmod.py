@@ -1069,3 +1069,17 @@ def test_the_filter_trades_radius_tightness_for_smoothness():
         'longer does, check that it is still filtering', rad_raw, rad_filt)
     ## The output is the thing that must survive: within 10%.
     assert err_filt < 1.1 * err_raw, (err_raw, err_filt)
+
+
+def test_a_circular_integrator_refuses_a_gamma_tau_that_adds_or_removes_its_filter():
+    """`gamma_tau` > 0 adds the filter state at construction: a write that
+    would add or remove it is refused (it was silently ignored until
+    2026-10-22); one positive value over another is a value."""
+    e = IdtmodCircular('iplus', 'iminus', 'oplus', 'ominus', modulus=1.0)
+    with pytest.raises(ValueError, match='filter state'):
+        e.ipar.gamma_tau = 0.1
+    f = IdtmodCircular('iplus', 'iminus', 'oplus', 'ominus', modulus=1.0, gamma_tau=0.1)
+    f.ipar.gamma_tau = 0.2
+    assert f.iparv.gamma_tau == 0.2
+    with pytest.raises(ValueError, match='filter state'):
+        f.ipar.gamma_tau = 0.0

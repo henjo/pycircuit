@@ -10608,3 +10608,15 @@ on the old code).
 with one failure -- a test that reads the source of OpAmp for its limiter's per-call JAX import, which 180 moved from
 __init__ to _functions; pointed there, it passes; the 27 gold decks, transient and standalone DC, over the four
 against 178: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-10-22 — 181. IdtmodCircular refuses a `gamma_tau` write that would add or remove its filter state (it was silently ignored)
+
+**Why**  `gamma_tau` > 0 adds the circular integrator's filter state -- a node -- at construction, by design; a write
+after construction from 0 to a positive value, or back, was silently ignored.  elements: `update` raises ValueError
+when the written value would add or remove the state; one positive value over another is a value, as before.  tests:
+test_idtmod (failing on the old code).
+
+**Gate**: the suite, run once over this commit and the three after it (179-182): 5 713 passed (6 skipped, 3 xfailed)
+with one failure -- a test that reads the source of OpAmp for its limiter's per-call JAX import, which 180 moved from
+__init__ to _functions; pointed there, it passes; the 27 gold decks, transient and standalone DC, over the four
+against 178: every digest, step, rejection, Newton count and path count identical.
