@@ -5340,3 +5340,19 @@ faster (0.338 -> 0.187 s), bit-identical; the 27 gold transients bit-identical
 (never fires there).  `imposed` carried through the C and written back.
 Tests: `test_loop_c.py` (an adaptive run at `maxiter` 2: rejected in C, the
 Python loop's run).
+
+## `csrc/pcx_verdict.h` -- the sparse path's verdicts made sparse (2026-10-22)
+
+2026-10-22 (Andreas: "Build the C loop and try to improve";
+`doc/hdl_roadmap_260824.md`, 171).  On the sparse (KLU) path the error test
+reduced and counted the whole J and validated its refactor with a dense dgemv,
+and the Newton formed |J| |x_next| densely every iteration: O(m^2) passes
+feeding only verdicts, ~70 % of opampal's C loop.  Now the verdicts come from
+the sparse sums and their rounding bound where that decides (152's
+`pcx_resid_sparse`, moved to `pcx_verdict.h`, and `pcx_scale_sparse`), the
+dense test where it does not; the Newton makes the residual's test only where
+the step's holds; the C loop's error test gathers its values from its Newton's
+J on the pattern.  The 27 gold transients' summed time -11.4 % (opampal -25 %,
+gm19 -23 %), the buck -7.6 %, everything bit-identical.
+Tests: `test_verdict_c.py` (both verdicts against numpy's, rows at the
+threshold); `test_loop_c.py`.

@@ -194,6 +194,7 @@ class _Ctx:
             'abst': np.empty(n), 'A': np.empty(m * m), 'b': np.empty(m), 'lte': np.empty(n),
             'ref': np.empty(n), 'out': np.empty(n), 'tq': np.empty(n),
             'mask': np.empty(n), 'charge': np.empty(n), 'iq1': np.empty(n),
+            'vt': np.empty(2 * n),
         }
         self.ipiv = np.empty(m, dtype=np.int64)
         fb = ffi.from_buffer

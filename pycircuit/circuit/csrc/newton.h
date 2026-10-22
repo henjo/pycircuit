@@ -105,12 +105,16 @@ typedef struct {
            *xn,           /* (m) x + dx, limited where the walk runs */
            *xd,           /* (m) the step taken: xn - x (limited), else dx */
            *ax,           /* (m) |xn| */
-           *Is;           /* (m) |J| |xn| (dgemv) */
+           *Is;           /* (m) |J| |xn| (dgemv); the verdicts' sums
+                             (pcx_verdict.h: with `ry`, or `ax` in the
+                             validation, as their counts) */
     int64_t *ipiv64;      /* (m) dgesv's pivots */
     int *ipiv32;          /* (m) dgetrf's, held for the chord's dgetrs */
     /* OUTPUTS AND STATUS (OWN) */
     long iters,           /* the iterations made: the Python's count */
          status;          /* the result (enum newton_status), as returned */
+    long vdense;          /* OUT, added to: the verdicts on a KLU path the sparse
+                             bound left to the dense dgemv (pcx_verdict.h) */
     /* THE CONVERGED POINT: `jacobian_only` there, in the same call.  xc ..
        Jj are written only on NEWTON_CONVERGED with fold_j nonzero, and hold
        until the next Newton call (`solve` copies them out; loop.c copies

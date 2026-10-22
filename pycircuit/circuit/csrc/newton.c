@@ -5,6 +5,7 @@
 #include "pcx_abi.h"
 #include "pcx_minmax.h"
 #include "pcx_dense.h"
+#include "pcx_verdict.h"
 #include "newton.h"
 #include "lte.h"
 
@@ -48,7 +49,9 @@ static const double *cache_hit(const newton_t *s, long m, long r)
 
 /* The sparse full Newton's solve (newton.h): `StructuralKLU.solve` on its
    refactor path, in `b` -- klu_refactor of the run's numeric, klu_solve,
-   then the validation in numpy's operations and order: `arr @ x` (numpy's
+   then the validation in numpy's operations and order -- its verdict by
+   the sparse sum's bound where that decides (pcx_verdict.h; R is zero off
+   the pattern), else: `arr @ x` (numpy's
    matmul calls this dgemv), |R x - rhs|, its maximum (a NaN handed back:
    numpy's max propagates one, and the Python's NaN residual fails its
    test), the scale `max(max |rhs|, 1e-300)` (rhs finite: a running `>`
@@ -69,6 +72,15 @@ static long sparse_full(newton_t *s, long m)
         return NEWTON_BAIL_KLU_REFACTOR;
     if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_num, (int) m, 1, s->b, s->klu_common))
         return NEWTON_BAIL_KLU_SOLVE;
+    /* the validation's verdict by the sparse sum's bound where it decides
+       (pcx_verdict.h; R is J reduced, zero off the pattern) */
+    {
+        int v = pcx_resid_sparse(s->kAp, s->kAi, s->kAx, s->resid_tol, s->rb, s->b, s->ry,
+                                 s->Is, s->ax, m);
+        if (v == PCX_HOLDS) return 0;
+        if (v == PCX_FAILS) return NEWTON_BAIL_KLU_RESIDUAL;
+        s->vdense++;
+    }
     ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m, s->b, 1,
                            0.0, s->ry, 1);
     for (i = 0; i < m; i++) {
@@ -150,30 +162,46 @@ static long limit_step(newton_t *s, walk_fn_t walk, long n, long r)
 }
 
 /* nrsolver's convergence test, entry by entry, in its operations and
-   order: `I_scale = toolkit.dot(abs(J), ax_next) + aF` (numpy's own dgemv,
-   row-major, as np.dot calls it on a C-ordered matrix), `abs(xdiff) <
-   reltol * maximum(ax_next, abs(x)) + xtol`, `aF < reltol * I_scale +
-   abstol` -- written `!(a < b)` so a NaN fails, as numpy's `<`.  Assumes x
-   and x_next finite (checked) */
+   order: `abs(xdiff) < reltol * maximum(ax_next, abs(x)) + xtol`, then --
+   only where that holds: the product feeds nothing else and no flag is
+   read here -- `aF < reltol * I_scale + abstol` with `I_scale =
+   toolkit.dot(abs(J), ax_next) + aF`: on a KLU path (|J| zero off the
+   pattern) its verdict by the sparse sum's bound where that decides
+   (pcx_verdict.h), else numpy's own dgemv (row-major, as np.dot calls it on
+   a C-ordered matrix) -- written `!(a < b)` so a NaN fails, as numpy's `<`.
+   Assumes x and x_next finite (checked) */
 static int converged(newton_t *s, long m)
 {
     long i;
     int conv_x = 1, conv_f = 1;
-    for (i = 0; i < m; i++) s->ax[i] = fabs(s->xn[i]);
+    for (i = 0; i < m; i++) {
+        double axi = fabs(s->xn[i]), axo = fabs(s->x[i]);
+        /* np.maximum(ax_next, abs(x)): both finite here, where this ternary
+           is the same value; it would not propagate a NaN as np.maximum
+           does */
+        double mx = pcx_np_maximum(axi, axo);
+        s->ax[i] = axi;
+        if (!(fabs(s->xd[i]) < s->reltol * mx + s->xtol[i])) conv_x = 0;
+    }
+    /* (the residual's test only where the step's holds: its product feeds
+       nothing else, and no flag is read here) */
+    if (!conv_x) return 0;
+    if (s->klu_sym) {
+        /* on KLU's pattern (|J| zero off it): the verdict by the sparse
+           sum's bound where it decides (pcx_verdict.h) */
+        int v = pcx_scale_sparse(s->kAp, s->kAi, s->kAx, s->ax, s->Fr, s->reltol, s->abstol,
+                                 s->Is, s->ry, m);
+        if (v != PCX_UNDECIDED) return v == PCX_HOLDS;
+        s->vdense++;
+    }
     ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->absJ, m,
                            s->ax, 1, 0.0, s->Is, 1);
     for (i = 0; i < m; i++) {
         double aF = fabs(s->Fr[i]);
         double Is = s->Is[i] + aF;
-        double axi = s->ax[i], axo = fabs(s->x[i]);
-        /* np.maximum(ax_next, abs(x)): both finite here, where this ternary
-           is the same value; it would not propagate a NaN as np.maximum
-           does */
-        double mx = pcx_np_maximum(axi, axo);
-        if (!(fabs(s->xd[i]) < s->reltol * mx + s->xtol[i])) conv_x = 0;
         if (!(aF < s->reltol * Is + s->abstol[i])) conv_f = 0;
     }
-    return conv_x && conv_f;
+    return conv_f;
 }
 
 /* `jacobian_only` at the converged point x: G, C, q -- C and q alone where

@@ -22,6 +22,7 @@
 #include "pcx_minmax.h"
 #include "pcx_fenv.h"
 #include "pcx_dense.h"
+#include "pcx_verdict.h"
 #include "lte.h"
 
 /* the flags numpy checks after its operations (inexact is not one) */
@@ -36,8 +37,9 @@ static long lte_bail(lte_t *s, long why)
 
 /* StructuralKLU.solve(the reduced J, the reduced Eg) on its refactor path
    (`_ours`, `klu_refactor` on the run's numeric, `klu_solve`, the
-   residual's validation): 0 with the solution in `b` (m), or why it is
-   handed back -- LTE_BAIL_FOREIGN (a nonzero off the pattern: the
+   residual's validation; `on_pattern`: the values gathered from J, the
+   validation's verdict by the sparse sum's bound where that decides --
+   lte.h): 0 with the solution in `b` (m), or why it is handed back -- LTE_BAIL_FOREIGN (a nonzero off the pattern: the
    Python's `_ours` sends the matrix to its fallback solver), LTE_BAIL_KLU
    (the refactor or the solve failed: the Python factors afresh),
    LTE_BAIL_FLAGS, LTE_BAIL_RESIDUAL (the validation failed or is NaN: the
@@ -54,16 +56,21 @@ static long sparse_solve(lte_t *s, long n, long r)
     /* (no finiteness test of J here: a non-finite entry off the pattern is a
        nonzero the count hands back, and one on it reaches the residual,
        which it makes non-finite -- handed back too) */
-    pcx_reduce_rm(s->J, s->R, n, r);
-    /* `_ours`: the pattern's values, and as many nonzeros as the matrix
-       (`v != 0.0` counts a NaN, as numpy's count_nonzero does) */
-    nz_r = pcx_count_nonzero(s->R, m * m);
-    for (k = 0; k < s->knnz; k++) {
-        double v = s->R[s->ktake[k]];
-        s->kAx[k] = v;
-        nz_a += v != 0.0;
+    if (s->on_pattern) {
+        /* (J zero off the pattern: `_ours`'s count holds) */
+        for (k = 0; k < s->knnz; k++) s->kAx[k] = s->J[s->kat[k]];
+    } else {
+        pcx_reduce_rm(s->J, s->R, n, r);
+        /* `_ours`: the pattern's values, and as many nonzeros as the matrix
+           (`v != 0.0` counts a NaN, as numpy's count_nonzero does) */
+        nz_r = pcx_count_nonzero(s->R, m * m);
+        for (k = 0; k < s->knnz; k++) {
+            double v = s->R[s->ktake[k]];
+            s->kAx[k] = v;
+            nz_a += v != 0.0;
+        }
+        if (nz_r != nz_a) return LTE_BAIL_FOREIGN;
     }
-    if (nz_r != nz_a) return LTE_BAIL_FOREIGN;
     pcx_drop_ref(s->lte, s->b, n, r);
     for (i = 0; i < m; i++) s->x[i] = s->b[i];
     if (!((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym, s->klu_num,
@@ -73,6 +80,22 @@ static long sparse_solve(lte_t *s, long n, long r)
         return LTE_BAIL_KLU;
     /* (what KLU raised inside: the Python's ctypes call never sees it) */
     feclearexcept(FE_ALL_EXCEPT);
+    if (s->on_pattern) {
+        /* the validation's verdict by the bound where it decides and its
+           sums raised no flag; else the dense test on R as the Python holds
+           it (zero off the pattern), what the sums raised cleared */
+        int v = pcx_resid_sparse(s->kAp, s->kAi, s->kAx, s->resid_tol, s->b, s->x, s->y, s->vt,
+                                 s->vt + n, m);
+        if (v != PCX_UNDECIDED && !fetestexcept(PCX_FP_FLAGS)) {
+            if (v == PCX_FAILS) return LTE_BAIL_RESIDUAL;
+            for (i = 0; i < m; i++) s->b[i] = s->x[i];
+            return 0;
+        }
+        feclearexcept(FE_ALL_EXCEPT);
+        for (i = 0; i < m * m; i++) s->R[i] = 0.0;
+        for (k = 0; k < s->knnz; k++) s->R[s->ktake[k]] = s->kAx[k];
+        s->vdense++;
+    }
     /* the refactor's validation, numpy's operations in their order: R x
        is `arr @ x` (numpy's matmul calls this dgemv), then |R x - b|, its
        maximum, the scale */

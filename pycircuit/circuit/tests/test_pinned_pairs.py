@@ -270,6 +270,9 @@ PAIRS = {
                'early abort\'s check at the first iterate (`_early_estimate` on the seed\'s '
                'factors -- numpy\'s solve of J0 is dgetrs on dgesv\'s LU, the chord\'s '
                '`fac`) and its stop (`_early`: the counts `_newton` makes up to it); '
+               'on a KLU path the residual test\'s verdict -- made only where the step\'s '
+               'test holds -- and the sparse full Newton\'s validation from the sparse '
+               'sum\'s bound (pcx_verdict.h), numpy\'s dgemv where that does not decide; '
                'not the noncon test (`_limiting.NONCON`, 2026-10-15): only a stateful '
                'limiter counts, and the C declines every circuit with one '
                '(`newton_c:stateful`); the chord\'s settled test (`_chord_settled`, '
@@ -329,7 +332,9 @@ PAIRS = {
                '`lte_charge` marks the absolute tolerance is `charge_floor`\'s; the early '
                'abort\'s estimate (`_early_estimate`) is the same chain at the first iterate, '
                'J^-1 by factors in hand (lte.c\'s `factored_solve`, its context '
-               '`early_context`)',
+               '`early_context`); on the C loop\'s pattern (`on_pattern`) the sparse solve\'s '
+               'values from J itself and its validation\'s verdict from the sparse sum\'s '
+               'bound (pcx_verdict.h), the dense test where that does not decide',
         'reference': ['pycircuit.circuit.stepcontroller:StepController._charge_lte',
                       'pycircuit.circuit._tran_newton:_StepNewton._early_estimate',
                       'pycircuit.circuit.stepcontroller:StepController._normalised',
@@ -694,7 +699,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('c5cbdafaf290', '0ede8c048467'),
+    'the stepping loop and its C': ('c5cbdafaf290', 'deafd0d1c0a9'),
     'the predictor and its C': ('f2c284eb392d', '2f1a2f96e90f'),
     'the branch screen and its C': ('adb832d7aae0', '1da8be0e9b2e'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
@@ -707,11 +712,11 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('07b811013bb8', 'acd980f89d1c'),
+    'the Newton solve and its C': ('07b811013bb8', '09b8b2e394dd'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
-    'the error test and its C': ('1736570f3f0e', 'a1bf1ec171ad'),
-    'the DC base solve and its C': ('cf01fb504664', 'e57dff49b502'),
-    'the PCNR DC solve and its C': ('c5b3cbb18581', '317f8e27978e'),
+    'the error test and its C': ('1736570f3f0e', '9f6fb7d03377'),
+    'the DC base solve and its C': ('cf01fb504664', 'cee591e0ea0b'),
+    'the PCNR DC solve and its C': ('c5b3cbb18581', '67b9fed88fb1'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),

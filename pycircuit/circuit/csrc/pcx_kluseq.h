@@ -3,7 +3,8 @@
  * refactor on the numeric it holds, a fresh factor on a zero pivot,
  * klu_solve, and after a refactor the residual `max |A x - b| / max(max |b|,
  * 1e-300)` against REFACTOR_RESIDUAL_TOL -- a fresh factor where it fails.
- * The struct and THE NUMERIC: pcx_klu.h (included before this).
+ * The struct and THE NUMERIC: pcx_klu.h, the verdicts pcx_verdict.h (both
+ * included before this).
  *
  * A step returns 0, or what stopped it: PCX_KLU_FACTOR (a fresh factor
  * failed: `_factor`'s LinAlgError('Singular matrix'), `klu_out` NULL),
@@ -24,9 +25,6 @@
 
 enum pcx_klu_stop { PCX_KLU_FACTOR = 1, PCX_KLU_SOLVE = 2, PCX_KLU_FLAGS = 3 };
 
-/* a test's verdict where a rounding bound decides it (`pcx_klu_resid_sparse`,
-   pcnrdc.c's `cf_sparse`): it holds, it fails, or the dense test decides */
-enum pcx_verdict { PCX_HOLDS = 0, PCX_FAILS = 1, PCX_UNDECIDED = 2 };
 
 static void pcx_klu_free(pcx_klu_t *k, void *num)
 {
@@ -78,57 +76,12 @@ static int pcx_klu_resid_dense(pcx_klu_t *k, const double *A, const double *b,
     return nan_r || !(max_r / pcx_py_max(max_b, 1e-300) <= k->resid_tol);
 }
 
-/* the same verdict on KLU's CSC (A zero off its pattern).  A sum of terms
-   rounds only where two operands holding a nonzero term meet -- a zero
-   product joins exactly, fused or not -- so a row with k_i entries on the
-   pattern rounds at most k_i times on any path of any summation tree: its
-   S_i = sum A_ij x_j, in the pattern's order, is within 2 gamma_(k_i + 1)
-   T_i of the dgemv's (T_i = sum |A_ij| |x_j|), and with e_i = 4 (k_i + 2)
-   eps T_i the row's `fl(dgemv - b)` lies between `(S_i - e_i) - b_i` and
-   `(S_i + e_i) - b_i` (rounding is monotone), max |.| between the rows'
-   lower and upper ends, and the test
-   -- monotone in it, the scale exact -- holds where it holds at the upper
-   end, fails where it fails at the lower.  PCX_UNDECIDED also where a value
-   is not finite or a row's T_i + |b_i| reaches 1e300 (there numpy's flags
-   could be raised).  Where it decides, no flag numpy reports is raised here
-   or in the dense test */
+/* the same verdict on KLU's CSC (A zero off its pattern): pcx_verdict.h's
+   `pcx_resid_sparse`.  `t` 2 m scratch */
 static int pcx_klu_resid_sparse(pcx_klu_t *k, const double *b, const double *x,
                                 double *y, double *t, long m)
 {
-    long i, j, p;
-    double max_b = 0.0, hi = 0.0, lo = 0.0, sc, *cnt = t + m;
-    for (i = 0; i < m; i++) {
-        if (!isfinite(b[i]) || !isfinite(x[i])) return PCX_UNDECIDED;
-        y[i] = 0.0;
-        t[i] = 0.0;
-        cnt[i] = 0.0;
-    }
-    for (j = 0; j < m; j++)
-        for (p = k->kAp[j]; p < k->kAp[j + 1]; p++) {
-            double a = k->kAx[p];
-            i = k->kAi[p];
-            y[i] += a * x[j];
-            t[i] += fabs(a) * fabs(x[j]);
-            cnt[i] += 1.0;
-        }
-    for (i = 0; i < m; i++) {
-        double ab = fabs(b[i]), e, u, v, au, av, h, l;
-        if (!(t[i] + ab < 1e300)) return PCX_UNDECIDED;
-        e = 4.0 * (cnt[i] + 2.0) * DBL_EPSILON * t[i];
-        u = (y[i] + e) - b[i];
-        v = (y[i] - e) - b[i];
-        au = fabs(u);
-        av = fabs(v);
-        h = au > av ? au : av;
-        l = (u > 0.0 && v > 0.0) || (u < 0.0 && v < 0.0) ? (au < av ? au : av) : 0.0;
-        if (h > hi) hi = h;
-        if (l > lo) lo = l;
-        if (ab > max_b) max_b = ab;
-    }
-    sc = pcx_py_max(max_b, 1e-300);
-    if (hi / sc <= k->resid_tol) return PCX_HOLDS;
-    if (!(lo / sc <= k->resid_tol)) return PCX_FAILS;
-    return PCX_UNDECIDED;
+    return pcx_resid_sparse(k->kAp, k->kAi, k->kAx, k->resid_tol, b, x, y, t, t + m, m);
 }
 
 /* StructuralKLU.solve(A, b) on its own sequence, `kAx` A's values in its

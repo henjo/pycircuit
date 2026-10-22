@@ -316,6 +316,9 @@ def test_an_adaptive_run_is_the_python_one(name, build, make, kw, monkeypatch):
     if build is _pulsed:
         ## (the pulse's corners reject: retried at the point, in C)
         assert ca.get('loop_c:attempts', 0) > ca.get('loop_c:steps', 0), ca
+    if name == 'sparse':
+        ## (its error test on the Newton's J, the pattern's: pcx_verdict.h)
+        assert ca.get('loop_c:lte_on_pattern', 0) > 0, ca
 
 
 def test_the_charge_floor_is_alive_in_an_adaptive_run(monkeypatch):

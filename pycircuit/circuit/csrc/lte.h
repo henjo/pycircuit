@@ -114,6 +114,16 @@ typedef struct {
         *klu_common,            /* the solver's KLU common block */
         *klu_refactor, *klu_solve,  /* KLU's entries (klu_refactor_t, klu_solve_t) */
         *dgemv;                 /* numpy's own cblas dgemv (dgemv64_t), for R x */
+    /* ON THE PATTERN (the C loop's: `J` is its Newton's, which the core writes
+       on its pattern alone -- zero off it -- and the pattern lies within
+       KLU's): the values gathered from J by `kat`, no reduce and no count;
+       the validation's verdict by the sparse sum's bound (pcx_verdict.h),
+       the dense test -- R scattered from the values -- where it does not
+       decide (`vdense`) */
+    long on_pattern;
+    const int64_t *kat;         /* knnz: each pattern entry's place in the full J */
+    double *vt;                 /* work, 2 n: the bound's sums and counts */
+    long vdense;                /* OUT, added to: the dense tests made */
     /* THE EARLY ABORT'S SOLVE (`Transient.early_abort`; newton.c's check at
        the first iterate): with `lu_mode` set, J^-1 Eg is by a factorisation
        in hand -- the Newton's own, of the seed's J -- and `J` is not read.

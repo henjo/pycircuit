@@ -20,6 +20,7 @@
 #include "pcx_dense.h"
 #include "core.h"
 #include "pcx_klu.h"
+#include "pcx_verdict.h"
 #include "pcx_kluseq.h"
 #include "dcnewton.h"
 

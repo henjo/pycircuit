@@ -73,6 +73,14 @@ general path or a flag, the Newton, a screen that is not quiet, a
 companion it does not make, the error test, a forced accept); the attempts
 made before it are written back.
 
+THE ERROR TEST ON THE PATTERN.  The loop's error test reads its Newton's
+J, which the core writes on its pattern alone (zero off it, the pattern
+within the run's KLU pattern): where both are one StructuralKLU's
+(`_on_pattern`), its sparse solve gathers the values from J itself and
+takes the validation's verdict from the sparse sum's bound (`lte.h`'s ON
+THE PATTERN; `loop_c:lte_on_pattern`, and `loop_c:lte_dense` where the
+dense test decided).
+
 THE NEWTON'S ITERATION LIMIT is not a bail where `_tran_newton_c` would
 raise it (`_unconverged`: the full Newton, no damped retry or rescue
 armed) on an adaptive step: the C rejects the attempt as `take` rejects
@@ -743,6 +751,18 @@ def _bound(loop, tr, rec, tab, rd, screen, judge):
     return run_
 
 
+def _on_pattern(run_, rec):
+    """The error test on the Newton's J -- the core's, on its pattern, which
+    lies within the run's KLU pattern -- where both are the same
+    StructuralKLU's, so the same entries in the same order (`lte.h`'s ON
+    THE PATTERN)."""
+    le = run_.lte.s
+    on = run_.sk is not None and rec.klu is run_.sk and bool(rec.s.pattern)
+    le.on_pattern = int(on)
+    if on:
+        le.kat = rec.s.kat
+
+
 def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     """The struct loaded with the state as the Python loop leaves it -- the
     rings, the history, the cached C, the step record, the run's constants
@@ -792,6 +812,8 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
                           and not getattr(tr, '_damped_last_resort', False)
                           and not getattr(tr, '_continuation_rescue', False))
     s.imposed = int(bool(loop.imposed))
+    if adaptive:
+        _on_pattern(run_, td['_newton_c'])
     s.base = code
     s.zs_ratio = float(O['zs_ratio'])
     s.shrink_guard = int(bool(getattr(base, 'shrink_guard', True)))
@@ -1090,7 +1112,14 @@ def _count(s, run_, rec, adaptive, k):
             _PC['branch_c:pattern'] += s.screens
         if run_.br[0].ncert:
             _PC['branch_c:cert'] += run_.br[0].ncert
-    ## the error test (`_tran_lte_c.max_error`)
+    ## the error test (`_tran_lte_c.max_error`; on the Newton's J, its
+    ## pattern's -- `_on_pattern` -- and the dense validations it made)
+    if adaptive and run_.lte.s.on_pattern:
+        le = run_.lte.s
+        _PC['loop_c:lte_on_pattern'] += s.ltes
+        if le.vdense:
+            _PC['loop_c:lte_dense'] += le.vdense
+            le.vdense = 0
     if adaptive and s.ltes:
         _PC['lte_c:served'] += s.ltes
         if s.lte_euler:

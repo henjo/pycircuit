@@ -10309,3 +10309,44 @@ the Python loop's -- failing on the old code.  Pinned pair "the stepping loop an
 **Gate**: the suite, 5 628 passed (6 skipped, 3 xfailed); the 27 gold transients bit-identical on the build
 (digest, steps, rejections, Newton count, every count), the buck bit-identical (`loop_c:newton_rejects` 65,
 `loop_c:bail:newton` 0).
+
+## 2026-10-22 — 171. The sparse path's verdicts made sparse: the error test and the Newton stop forming dense products whose only use is a yes or no
+
+**Why** (Andreas: "Build the C loop and try to improve").  Profiled with DWARF call graphs (perf), the C stepping loop
+is 96 % of the large gold decks' solves (62 % of opampal's), and inside it, on the sparse (KLU) path, four O(m^2)
+passes over matrices that are zero off the circuit's pattern each fed only a VERDICT: the error test's sparse solve
+reduced the whole J (a memmove), counted its nonzeros (`_ours`'s foreign test) and validated the refactor with a dense
+dgemv; the Newton's convergence test formed |J| |x_next| with a dense dgemv every iteration, and the sparse full Newton
+validated each refactor with another.  On opampal they were ~70 % of the C loop, on gm19 ~25 %, on jge ~9 % (its
+devices dominate).  152 had made the same verdicts sparse in PCNR's DC (`pcx_klu_resid_sparse`).
+
+**Sized first** (plan 'THE SPARSE PATH'S DENSE VERDICTS', the line written before measuring: (a) the 27 gold
+transients and the buck bit-identical, every count; (b) the summed time at least 5 % lower, no deck slower than its
+lottery bound against an A/A tree; (c) the fallback alive, the sparse verdict never contradicting the dense one; (d)
+the suite, tests failing on the old code, pinned pairs re-recorded).  Measured: (a) the 27 gold transients
+bit-identical (digest, steps, rejections, Newton count, every count), the buck bit-identical; (b) the 27 decks' summed
+transient time -11.4 % (39.67 -> 35.16 s; the A/A tree -0.01 %), best of 5 in a process (best of 1 after a warm-up over
+3 s), 3 rounds rotated, quiet box: opampal -25.3 %, gm19 -22.8, arom -17.9, rich3 -16.6, voter25 -11.1, gm1 -9.7,
+mux8 -9.6, toronto -8.9, gm17 -7.7, jge -6.5, the rest -6.0..+0.2 % (the A/A tree -0.8..+0.6 %); the buck -7.6 %;
+(c) `test_verdict_c`: rows drawn at the threshold, each verdict seen holding, failing and undecided, never against
+numpy's; opampal's run left 2 of ~1 000 validations to the dense test, its Newton none.
+
+**Built.**  `csrc/pcx_verdict.h` (new): `pcx_resid_sparse` (152's residual verdict, moved from pcx_kluseq.h, which now
+calls it; dcnewton.c and pcnrdc.c include the header) and `pcx_scale_sparse` (nrsolver's residual test: every term
+non-negative, so T_i = S_i and the dgemv's row lies in [max(S_i - e_i, 0), S_i + e_i]; one row failing decides).
+newton.c: the convergence test makes the step's test first and the residual's only where it holds (its product feeds
+nothing else, no flag is read); on a KLU path its verdict by `pcx_scale_sparse`, numpy's dgemv where undecided; the
+sparse full Newton's validation by `pcx_resid_sparse`, the dense dgemv where undecided (`vdense` counts them).  lte.c:
+where the loop's error test reads its Newton's J -- the core's, on its pattern alone, which lies within the run's KLU
+pattern, both one StructuralKLU's (`_tran_loop_c._on_pattern`) -- the sparse solve gathers the values from J by `kat`,
+no reduce and no count, and takes the validation's verdict from the bound where it decides and its sums raised no
+flag, else the dense test on R scattered from the values (`loop_c:lte_on_pattern`, `loop_c:lte_dense`).  Where the
+bound does not decide nothing changes; a decided verdict is numpy's (the premise: test_pcnr_c's
+`test_numpys_dgemv_rounds_a_row_once_a_nonzero_term`).  Tests: `test_verdict_c` (both verdicts against numpy's at the
+threshold, failing on the old code: no header); `test_loop_c` (the sparse adaptive run's error test on the pattern).
+Pinned pairs "the stepping loop and its C", "the Newton solve and its C", "the error test and its C", "the DC base
+solve and its C", "the PCNR DC solve and its C" re-recorded (each reference unchanged; their reasons name the
+verdicts).
+
+**Gate**: the suite, 5 638 passed (6 skipped, 3 xfailed); the 27 gold transients bit-identical on the build
+(digest, steps, rejections, Newton count, every count but the new `loop_c:lte_on_pattern`), the buck bit-identical.
