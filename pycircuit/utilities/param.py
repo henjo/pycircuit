@@ -40,17 +40,38 @@ class Parameter(object):
 
 class EvalError(Exception): pass
 
+def _unchanged(a, b):
+    """`b` is `a` for a write: the same object, or an equal number or
+    string of the same type (NaN is never equal: a change).  Anything else
+    -- a list, an array, a symbol -- counts as changed unless it is the
+    same object."""
+    if a is b:
+        return True
+    if type(a) is not type(b) or type(a) not in (float, int, bool, str, complex):
+        return False
+    return a == b
+
+
 class ParameterDict(ObserverSubject):
     ## THE PARAMETER EPOCH: a new sentinel on every notification that reaches
     ## an observer -- an element's `update()`, which may replace its stamps --
-    ## so the constant-stamp plans (`circuit._stamp_plan`) know to rebuild.
-    ## Every parameter write goes through `notify` (`set`, attribute
-    ## assignment, `update_values`).  A sentinel rather than a counter: a
-    ## deepcopy or a pickle cannot falsely match.
+    ## so the per-circuit caches keyed on it (the constant-stamp plans,
+    ## `circuit._stamp_plan`; the PCNR view and its C record; the cores)
+    ## know to rebuild.  Every parameter write goes through `notify` (`set`,
+    ## attribute assignment, `update_values`).  A sentinel rather than a
+    ## counter: a deepcopy or a pickle cannot falsely match.
     _epoch = object()
+    ## ... EXCEPT A WRITE OF LIVE NAMES ONLY: the parameters the owning
+    ## element only reads at evaluation time -- a source's value, its AC
+    ## magnitude and phase, its noise -- which no cache holds
+    ## (`Circuit._live_params`, set on an element's `ipar` and `iparv` once
+    ## it is built).  Its observers are still notified; only the epoch
+    ## holds.  `update_values` names only the values it CHANGED, so a
+    ## re-resolution that changes nothing (`update_iparv`) moves nothing.
+    _live = frozenset()
 
-    def notify(self, modifier=None, args=None):
-        if self._observers:
+    def notify(self, modifier=None, args=None, names=None):
+        if self._observers and (names is None or not self._live.issuperset(names)):
             ParameterDict._epoch = object()
         super().notify(modifier, args)
 
@@ -92,7 +113,7 @@ class ParameterDict(ObserverSubject):
             self._values[k] = v
             self._given.add(k)
 
-        self.notify(kvargs.keys())
+        self.notify(kvargs.keys(), names=kvargs.keys())
 
     def _check_range(self, name, value):
         """Enforce a Parameter's declared range, if it has one.
@@ -140,6 +161,8 @@ class ParameterDict(ObserverSubject):
         newpd._given = copy.copy(getattr(self, '_given', set()))
         newpd.append(*parameters)
         newpd.set(**kvargs)
+        if '_live' in self.__dict__:
+            newpd._live = self._live
 
         return newpd
 
@@ -210,13 +233,22 @@ class ParameterDict(ObserverSubject):
         re-checked, which is where a violation introduced by a resolved
         string expression is caught.
         """
+        changed = []
         for k, v in d._values.items():
             if k not in self._values:
                 raise KeyError('parameter %s not in parameter dictionary' % k)
             self._check_range(k, v)
+            if not _unchanged(self._values[k], v):
+                changed.append(k)
             self._values[k] = v
-        self._given = set(getattr(d, '_given', ()))
-        self.notify(d._values.keys())
+        ## (a GIVEN flag that changes alone is a change -- a compact model
+        ## branches on it, `$param_given` -- and the set is replaced only
+        ## when it differs: the dict-watch stamps read this dict, `_watch`)
+        given = set(getattr(d, '_given', ()))
+        if given != self._given:
+            self._given = given
+            changed = None
+        self.notify(d._values.keys(), names=changed)
 
     def __getitem__(self, key):
         return self._parameters[key]
@@ -243,7 +275,7 @@ class ParameterDict(ObserverSubject):
     def __setattr__(self, key, value):
         if hasattr(self, '_parameters') and key in self._parameters:
             self._values[key] = value
-            self.notify(args=(key,))
+            self.notify(args=(key,), names=(key,))
         else:
             self.__dict__[key] = value
     

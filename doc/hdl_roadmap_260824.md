@@ -10469,3 +10469,60 @@ diode: the DC equals the numeric circuit's to the bit, and the element keeps its
 C" (its reference holds `pcnr_view`; the twin, the C solve, runs on the same view, unchanged) -- re-recorded,
 its file rerun (72 passed); the 27 gold decks, transient and standalone DC, against 174: every digest, step,
 rejection, Newton count and path count identical.
+
+## 2026-10-22 — 176. A source's value written between two solves keeps the circuit's set-up: live parameters
+
+**Why** (Andreas: "HO can we speed up the Howland circuits even more", then the item-2 plan's S1).  A DC sweep point on
+the Howland session's converters (n 85..164) cost 6.7..12.7 ms for ~1 ms of Newton: every per-circuit cache -- the
+stamp plan, the PCNR view and its C record, the cores, the limiter walk -- is keyed on ONE global sentinel,
+`ParameterDict._epoch`, replaced on any parameter write, so writing the DAC's `v` threw all of it away although none
+of it holds a source's value (`u` is read on every pass, and the C records copy it in per solve).  One `ipar.v` write
+moved the epoch twice; `update_iparv` on a two-element circuit five times (every element's `update()` runs twice).
+pycircuit's own `DCSweep` writes and calls `update_iparv` at every point: 20..24 ms a point.  The ceiling, the epoch
+put back after the write (scratch g19/ceiling.py): 2.4..3.5x a point, every answer bit-identical.
+
+**Built.**
+* `Circuit._live_params`: the parameters a class only reads at evaluation time -- VS `v`, `vac`, `phase`, `noisePSD`;
+  IS `i`, `iac`, `phase` and its three noise parameters; every parameter of the twelve waveform sources (read, or made
+  into their waveform by `update()`, 174).  Valid only while the class's `update` is the declaring class's own
+  (`_live_names`): a subclass that overrides it may bake them and is not live.  Set on an element's `ipar` and
+  `iparv` (`ParameterDict._live`) once it is built.
+* `ParameterDict.notify(names=...)`: the epoch moves unless every written name is live; observers are notified as
+  before.  `update_values` names only the values it CHANGED (`_unchanged`: the same object, or an equal number or
+  string of the same type; NaN a change) and a given-flag set that changes counts as a change (a compact model
+  branches on `$param_given`) -- so an `update_iparv` that changes nothing moves nothing.
+* No-op rewrites removed from the elements' dicts, which the dict-watch stamps read (`_watch`): `update_values`
+  replaces `_given` only when it differs, VS builds its topology-only `_G` once per toolkit, and a waveform source
+  rebuilds `function` only when an argument or the toolkit changed.  Over a 25-point sweep the source pass's stamp now
+  holds (2..3 arms, 50..66 checks served; every point re-armed before).
+* `ParameterDict.copy` keeps the live names (a copied circuit's sources keep the set-up).
+* `DC`'s docstring says what a solve keeps for the next; `_stamp_plan`'s rebuild rule names the exception.
+
+Tests (`test_live_parameters`, 13; 8 failing on the old code): a source's value written between two DCs (VS, VSin,
+VPulse; an IS) keeps the plan, the view and the C record and gives a fresh circuit's answer to the bit; a written
+`v`, `vac`, `phase`, `noisePSD` reach the transient, AC and noise as a fresh circuit's; a pulse's width written after a
+DC keeps the set-up and gives the fresh pulse's transient; a resistor's `r` and a participant's `IS` still rebuild; a
+subclass overriding `update` is not live; an `update_iparv` that changes nothing keeps everything; a given flag
+changed alone moves the epoch; a copied element keeps its live names; each class's live names are its own.
+
+**Measured** (scratch g20/s1_bench.py, the Howland session's seven 25-point sweeps as they run them -- `ipar.v`
+written, a new `DC` per point from the last answer -- and `DCSweep` on three; every answer bit-identical to 175):
+  | converter | n | 175 ms/pt | S1 ms/pt | x |
+  |---|---|---|---|---|
+  | two_opamps | 153 | 10.54 | 3.82 | 2.76 |
+  | csa_inverting | 118 | 10.58 | 4.56 | 2.32 |
+  | low_side_sink | 85 | 5.72 | 1.62 | 3.54 |
+  | csa_ref | 119 | 8.76 | 2.65 | 3.31 |
+  | current_monitor | 90 | 6.14 | 1.66 | 3.71 |
+  | csa_pfet | 111 | 7.53 | 2.10 | 3.58 |
+  | parallel_howland | 164 | 10.83 | 3.30 | 3.28 |
+
+  Median 3.31x, lowest 2.32x (the line: median >= 2x, none < 1.5x).  `DCSweep` (26 points, continuation): two_opamps
+  21.81 -> 12.19 ms a point (1.79x), csa_ref 18.79 -> 11.10 (1.69x), parallel_howland 18.45 -> 10.97 (1.68x) (the
+  line: >= 1.5x each).  Quiet box, AC power, warm best of 5 per process, 3 processes per tree interleaved, the
+  process minima spread < 1 %.
+
+**Gate**: the suite, 5 695 passed (6 skipped, 3 xfailed) before `ParameterDict.copy` kept the live names, 5 699 with it and the next
+entry; the 27 gold decks, transient and standalone DC, against 175: every digest, step, rejection, Newton count and path
+count identical.  The line's last clause -- no gold transient slower than its lottery band + 3 % -- is
+NOT YET MEASURED (the box was not quiet); it is measured after this commit.

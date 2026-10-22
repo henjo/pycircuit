@@ -8,6 +8,7 @@ from .circuit import *
 from . import func as func
 from . import _limiting
 from ._limiting import _pnjlim
+from pycircuit.utilities.param import _unchanged
 
 class R(Circuit):
     """Resistor element
@@ -290,7 +291,8 @@ class _FunctionOfParameters:
     parameters (VSin, VPulse, VPWL, VExp, VAM, VSFFM and their current
     twins): `function` is rebuilt in `update()`, which runs on every
     parameter write, so a write after construction reaches the waveform.
-    Each class names its function in `_time_function`.
+    Each class names its function and the parameters it is made from, in
+    order, in `_time_function`.
 
     ⚠ Until 2026-10-22 it was built once, in `__init__`: a frequency, a
     delay or a pulse width written later was never seen (`u`, `dudt` and
@@ -302,7 +304,16 @@ class _FunctionOfParameters:
         base = getattr(super(), 'update', None)
         if base is not None:
             base(subject)
-        self.function = self._time_function()
+        make, names = self._time_function
+        args = tuple(getattr(self.iparv, n) for n in names)
+        ## (rebuilt only when an argument or the toolkit changed: a write of
+        ## the source's value alone leaves its waveform as it is, and the
+        ## dict-watch stamps that read this element's dict hold, `_watch`)
+        kept = self.__dict__.get('_function_of')
+        if (kept is None or kept[0] is not self.toolkit
+                or not all(map(_unchanged, kept[1], args))):
+            self.function = make(*args, toolkit=self.toolkit)
+            self._function_of = (self.toolkit, args)
 
 
 class VS(Circuit):
@@ -319,6 +330,9 @@ class VS(Circuit):
     """
     ## (constant stamps, built only in `update()`: `_stamp_plan`)
     _constant_stamps = ('G',)
+    ## (read only at evaluation time, `Circuit._live_params`: a write keeps
+    ## the circuit's set-up)
+    _live_params = ('v', 'vac', 'phase', 'noisePSD')
     terminals = ('plus', 'minus')
     branches = (Branch(Node('plus'), Node('minus')),)
     def signal_scale(self):
@@ -337,9 +351,14 @@ class VS(Circuit):
     function = _OwnTimeFunction()
 
     def update(self, subject):
-        self._G = self.toolkit.array([[0 ,  0,  1],
-                                      [0 ,  0, -1],
-                                      [1 , -1,  0]])
+        ## (the topology alone: built once per toolkit -- a rebuild on every
+        ## parameter write would break the dict-watch stamps that read this
+        ## element's dict, `_watch`)
+        if self.__dict__.get('_G_toolkit') is not self.toolkit:
+            self._G = self.toolkit.array([[0 ,  0,  1],
+                                          [0 ,  0, -1],
+                                          [1 , -1,  0]])
+            self._G_toolkit = self.toolkit
 
 
     def G(self, x, epar=defaultepar):
@@ -428,15 +447,7 @@ class VSin(_FunctionOfParameters, VS):
     def _ac_phase(self):
         return self.iparv.acphase
 
-    def _time_function(self):
-        return func.Sin(self.iparv.vo,
-                        self.iparv.va,
-                        self.iparv.freq,
-                        self.iparv.td,
-                        self.iparv.theta,
-                        self.iparv.phase,
-                        toolkit = self.toolkit
-                        )
+    _time_function = (func.Sin, ('vo', 'va', 'freq', 'td', 'theta', 'phase'))
 
 class IS(Circuit):
     """Independent DC current source
@@ -486,6 +497,9 @@ class IS(Circuit):
                             unit='Hz', default=0.0)]
     terminals = ('plus', 'minus')
     function = _OwnTimeFunction()
+    ## (read only at evaluation time, `Circuit._live_params`: a write keeps
+    ## the circuit's set-up)
+    _live_params = ('i', 'iac', 'phase', 'noisePSD', 'noiseTau', 'noiseFc')
 
     def _ac_phase(self):
         """The AC phasor's phase in degrees (`phase`; a sine source's own
@@ -552,15 +566,7 @@ class ISin(_FunctionOfParameters, IS):
     def _ac_phase(self):
         return self.iparv.acphase
 
-    def _time_function(self):
-        return func.Sin(self.iparv.io,
-                        self.iparv.ia,
-                        self.iparv.freq,
-                        self.iparv.td,
-                        self.iparv.theta,
-                        self.iparv.phase,
-                        toolkit = self.toolkit
-                        )
+    _time_function = (func.Sin, ('io', 'ia', 'freq', 'td', 'theta', 'phase'))
 
 class IPulse(_FunctionOfParameters, IS):
     """Independent pulse current source
@@ -586,16 +592,7 @@ class IPulse(_FunctionOfParameters, IS):
         Parameter(name='per', desc='Period', 
                   unit='s', default=0)]
 
-    def _time_function(self):
-        return func.Pulse(self.iparv.i1,
-                          self.iparv.i2,
-                          self.iparv.td,
-                          self.iparv.tr,
-                          self.iparv.tf,
-                          self.iparv.pw,
-                          self.iparv.per,
-                          toolkit = self.toolkit
-                          )
+    _time_function = (func.Pulse, ('i1', 'i2', 'td', 'tr', 'tf', 'pw', 'per'))
 
 class VPulse(_FunctionOfParameters, VS):
     """Independent pulse voltage source
@@ -621,16 +618,7 @@ class VPulse(_FunctionOfParameters, VS):
         Parameter(name='per', desc='Period', 
                   unit='s', default=0)]
 
-    def _time_function(self):
-        return func.Pulse(self.iparv.v1,
-                          self.iparv.v2,
-                          self.iparv.td,
-                          self.iparv.tr,
-                          self.iparv.tf,
-                          self.iparv.pw,
-                          self.iparv.per,
-                          toolkit = self.toolkit
-                          )
+    _time_function = (func.Pulse, ('v1', 'v2', 'td', 'tr', 'tf', 'pw', 'per'))
 
 
 class VCVS(Circuit):
@@ -2092,16 +2080,14 @@ class VPWL(_FunctionOfParameters, VS):
     instparams = VS.instparams + [
         Parameter(name='tvpairs', desc='List of time/voltage pairs', default=[])]
 
-    def _time_function(self):
-        return func.PWL(self.iparv.tvpairs, toolkit=self.toolkit)
+    _time_function = (func.PWL, ('tvpairs',))
 
 class IPWL(_FunctionOfParameters, IS):
     """Independent piecewise linear current source"""
     instparams = IS.instparams + [
         Parameter(name='tvpairs', desc='List of time/current pairs', default=[])]
 
-    def _time_function(self):
-        return func.PWL(self.iparv.tvpairs, toolkit=self.toolkit)
+    _time_function = (func.PWL, ('tvpairs',))
 
 class VExp(_FunctionOfParameters, VS):
     """Independent exponential voltage source"""
@@ -2113,10 +2099,7 @@ class VExp(_FunctionOfParameters, VS):
         Parameter(name='td2', desc='Fall delay time', unit='s', default=0),
         Parameter(name='tau2', desc='Fall time constant', unit='s', default=0)]
 
-    def _time_function(self):
-        return func.Exp(self.iparv.v1, self.iparv.v2, self.iparv.td1,
-                        self.iparv.tau1, self.iparv.td2, self.iparv.tau2,
-                        toolkit=self.toolkit)
+    _time_function = (func.Exp, ('v1', 'v2', 'td1', 'tau1', 'td2', 'tau2'))
 
 class IExp(_FunctionOfParameters, IS):
     """Independent exponential current source"""
@@ -2128,10 +2111,7 @@ class IExp(_FunctionOfParameters, IS):
         Parameter(name='td2', desc='Fall delay time', unit='s', default=0),
         Parameter(name='tau2', desc='Fall time constant', unit='s', default=0)]
 
-    def _time_function(self):
-        return func.Exp(self.iparv.i1, self.iparv.i2, self.iparv.td1,
-                        self.iparv.tau1, self.iparv.td2, self.iparv.tau2,
-                        toolkit=self.toolkit)
+    _time_function = (func.Exp, ('i1', 'i2', 'td1', 'tau1', 'td2', 'tau2'))
 
 class VAM(_FunctionOfParameters, VS):
     """Independent Amplitude Modulated voltage source"""
@@ -2142,9 +2122,7 @@ class VAM(_FunctionOfParameters, VS):
         Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2),
         Parameter(name='m', desc='Modulation index', unit='', default=1.0)]
 
-    def _time_function(self):
-        return func.AM(self.iparv.vo, self.iparv.va, self.iparv.fc,
-                       self.iparv.fm, self.iparv.m, toolkit=self.toolkit)
+    _time_function = (func.AM, ('vo', 'va', 'fc', 'fm', 'm'))
 
 class IAM(_FunctionOfParameters, IS):
     """Independent Amplitude Modulated current source"""
@@ -2155,9 +2133,7 @@ class IAM(_FunctionOfParameters, IS):
         Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2),
         Parameter(name='m', desc='Modulation index', unit='', default=1.0)]
 
-    def _time_function(self):
-        return func.AM(self.iparv.io, self.iparv.ia, self.iparv.fc,
-                       self.iparv.fm, self.iparv.m, toolkit=self.toolkit)
+    _time_function = (func.AM, ('io', 'ia', 'fc', 'fm', 'm'))
 
 class VSFFM(_FunctionOfParameters, VS):
     """Independent Single Frequency FM voltage source"""
@@ -2168,9 +2144,7 @@ class VSFFM(_FunctionOfParameters, VS):
         Parameter(name='mdi', desc='Modulation index', unit='', default=1.0),
         Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2)]
 
-    def _time_function(self):
-        return func.SFFM(self.iparv.vo, self.iparv.va, self.iparv.fc,
-                         self.iparv.mdi, self.iparv.fm, toolkit=self.toolkit)
+    _time_function = (func.SFFM, ('vo', 'va', 'fc', 'mdi', 'fm'))
 
 class ISFFM(_FunctionOfParameters, IS):
     """Independent Single Frequency FM current source"""
@@ -2181,9 +2155,17 @@ class ISFFM(_FunctionOfParameters, IS):
         Parameter(name='mdi', desc='Modulation index', unit='', default=1.0),
         Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2)]
 
-    def _time_function(self):
-        return func.SFFM(self.iparv.io, self.iparv.ia, self.iparv.fc,
-                         self.iparv.mdi, self.iparv.fm, toolkit=self.toolkit)
+    _time_function = (func.SFFM, ('io', 'ia', 'fc', 'mdi', 'fm'))
+
+
+## The waveform sources' parameters are all read at evaluation time or made
+## into their waveform by `update()` (`_FunctionOfParameters`), which no
+## per-circuit cache holds: every one is live (`Circuit._live_params`).
+## Declared on each class, so a subclass that overrides `update` is not.
+for _c in (VSin, ISin, IPulse, VPulse, VPWL, IPWL, VExp, IExp, VAM, IAM,
+           VSFFM, ISFFM):
+    _c._live_params = tuple(p.name for p in _c.instparams)
+del _c
 
 class CoupledInductors(Circuit):
     """Coupled Inductors (Mutual Inductance)"""

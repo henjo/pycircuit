@@ -7,6 +7,7 @@ from pycircuit.utilities.misc import indent, inplace_add_selected, \
     inplace_add_selected_2d, create_index_vectors
 from copy import copy
 import contextlib
+import weakref
 from .toolkit import numeric
 from .toolkit import symbolic
 from . import _hdl_batch, _limiting, _paths, _stamp_plan
@@ -154,6 +155,25 @@ defaultepar = ParameterDict(
     ## amount of bypassing always happened, unasked.
     Parameter("bypasstol", "Device bypass tolerance", unit="V", default = -1.0))
 
+## (weakly keyed: generated classes come and go -- the leak detector's)
+_LIVE = weakref.WeakKeyDictionary()
+
+
+def _live_names(cls):
+    """`cls`'s live parameters (`Circuit._live_params`): those of the
+    nearest class declaring them, while `cls.update` is that class's."""
+    live = _LIVE.get(cls)
+    if live is None:
+        live = frozenset()
+        for k in cls.__mro__:
+            if '_live_params' in k.__dict__:
+                if getattr(cls, 'update', None) is getattr(k, 'update', None):
+                    live = frozenset(k.__dict__['_live_params'])
+                break
+        _LIVE[cls] = live
+    return live
+
+
 class Circuit():
     """Basic circuit class 
 
@@ -203,6 +223,14 @@ class Circuit():
           A boolean value that is true if i(x) and q(x) are linear 
           functions
 
+        *_live_params*
+          The parameters the class only READS at evaluation time (a
+          source's value, its AC magnitude and phase, its noise): no
+          per-circuit cache holds them, so a write of those alone keeps
+          the circuit's set-up (`ParameterDict._live`).  Valid only while
+          the class's `update` is the declaring class's own -- a subclass
+          that overrides it may bake them, and is not live (`_live_names`).
+
     """
 
     
@@ -251,6 +279,12 @@ class Circuit():
         if hasattr(self, 'update'):
             self.iparv.attach(self)
             self.update(self.ipar)
+
+        ## (after the construction's own writes, which move the epoch as any
+        ## new element's do)
+        live = _live_names(type(self))
+        if live:
+            self.ipar._live = self.iparv._live = live
             
     def __eq__(self, a):
         return self.__class__ == a.__class__ and \

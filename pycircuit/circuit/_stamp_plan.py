@@ -40,8 +40,9 @@ non-real stamp a non-constant element returns, takes the legacy loop.
 
 WHEN IT IS REBUILT: the parameter epoch moved (`ParameterDict._epoch`, a new
 sentinel on every notification an element observes -- every parameter write
-goes through it), the element node map is a new object (topology), or the
-circuit's size changed.  `invalidate()` for what none of those see (a stamp
+goes through it, except a write of parameters the element only reads at
+evaluation time, `Circuit._live_params`, or one that changes no value), the
+element node map is a new object (topology), or the circuit's size changed.  `invalidate()` for what none of those see (a stamp
 mutated in place).  `ENABLED` (env `PYCIRCUIT_STAMP_PLAN=0` turns it off) is
 read on every pass, so a measurement can A/B it.
 

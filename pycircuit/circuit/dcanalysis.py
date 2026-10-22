@@ -44,6 +44,15 @@ class DC(Analysis):
     >>> print(np.around(res.v('net2'), 2))
     0.7
 
+    WHAT A SOLVE KEEPS FOR THE NEXT: the circuit's set-up -- its stamp plan,
+    its PCNR view and that view's C record -- stays on the circuit until its
+    topology or a parameter something there holds changes.  A source's
+    value, AC magnitude and phase, noise or waveform written between two
+    solves (a DC sweep: ``c['V1'].ipar.v = v`` then ``DC(c).solve(x0=x)``)
+    keeps it, as does ``update_iparv`` where no value changes;
+    a resistor's value or a device's parameter rebuilds it
+    (`Circuit._live_params`, `ParameterDict._live`).
+
     """
     #: KLU on the circuit's structure from 150 unknowns
     #: (`linearsolver.MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES`): every
