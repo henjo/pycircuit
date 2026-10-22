@@ -306,7 +306,15 @@ class Circuit():
         if hasattr(newc, 'update'):
             newc.iparv.detach(self)
             newc.iparv.attach(newc)
-            newc.update(newc.ipar)
+            ## ⚠ NOT for a SubCircuit: its copy replaces these elements
+            ## next (`SubCircuit.__copy__`), and they are the fresh
+            ## construction's -- on the default toolkit, not this one's -- so
+            ## an update would resolve the copied parameters into elements
+            ## that cannot take them (MOS under the symbolic toolkit:
+            ## `Cannot convert expression to float`, 2026-10-22, once its
+            ## children took expressions of its parameters)
+            if not isinstance(newc, SubCircuit):
+                newc.update(newc.ipar)
         newc.linear = copy(self.linear)        
         newc.terminals = copy(self.terminals)
         if '_resolved_in' in self.__dict__:

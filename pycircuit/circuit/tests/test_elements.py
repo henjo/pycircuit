@@ -200,6 +200,26 @@ def test_a_macromodel_s_parameter_written_after_construction_reaches_its_childre
                     == np.asarray(getattr(fresh, m)(x)).tobytes()), (pname, m)
 
 
+def test_a_circuit_holding_a_mos_copies_under_the_symbolic_toolkit():
+    """`copy` of a symbolic circuit holding a MOS: the copy's children are
+    the original's (until 2026-10-22's fix the copy first updated the fresh
+    construction's children -- numeric -- with the symbolic parameters, and
+    raised `Cannot convert expression to float`, once MOS's children took
+    expressions of its parameters)."""
+    from copy import copy
+
+    from pycircuit.circuit.mos import MOS
+    pycircuit.circuit.circuit.default_toolkit = pycircuit.circuit.circuit.numeric
+    c = SubCircuit(toolkit=symbolic)
+    inp = c.add_node('inp')
+    out = c.add_node('outp')
+    c['q1'] = MOS(inp, out, gnd, gnd, gm=Symbol('gm'), gds=Symbol('gds'),
+                  toolkit=symbolic)
+    d = copy(c)
+    assert d['q1']['Igm'].iparv.gm == Symbol('gm')
+    assert d['q1']['gds'].iparv.g == Symbol('gds')
+
+
 def test_an_opamp_s_sources_are_rebuilt_only_when_their_parameters_change():
     """A re-resolution that changes nothing keeps the sources' functions
     (and so the circuit's set-up); a write of `Aol` replaces the gain's."""

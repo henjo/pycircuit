@@ -10643,3 +10643,23 @@ and its deletion leaves it; after a deletion each later instance's branch rows a
 with one failure -- a test that reads the source of OpAmp for its limiter's per-call JAX import, which 180 moved from
 __init__ to _functions; pointed there, it passes; the 27 gold decks, transient and standalone DC, over the four
 against 178: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-10-22 — 184. Copying a SubCircuit no longer updates the fresh construction's elements before replacing them -- a symbolic circuit holding a MOS copies again (raised TypeError since MOS's children took expressions, 03a5413f)
+
+**Why**  `Circuit.__copy__` builds a fresh instance, copies the parameters into it and calls its `update`;
+`SubCircuit.__copy__` then replaces the fresh instance's elements with copies of the original's.  The update ran on
+the fresh construction's elements -- on the default toolkit, not the copied circuit's -- and once MOS's children took
+expressions of its parameters (03a5413f) it resolved a symbolic `gm` into a numeric VCCS: `Cannot convert expression
+to float`, so TwoPortAnalysis (which copies its circuit) on the regulated-cascode example failed.  The gates of
+03a5413f missed it: they ran in a worktree, and the example runs in a fresh interpreter that imports the main tree's
+installed package.
+
+**Built.**  circuit: `Circuit.__copy__` skips the update for a SubCircuit, whose elements are replaced next (the final
+copy is what it was).
+
+**Tests.**  tests: test_elements -- a symbolic circuit holding a MOS, copied with the default toolkit numeric: the
+copy's children are the original's (failing on the old code with that TypeError).
+
+**Gate**: the suite IN THE MAIN TREE (the examples' interpreter imports it), 5 715 passed (6 skipped, 3 xfailed), the
+regulated-cascode example among them; the 27 gold decks, transient and standalone DC, against 182: every digest, step,
+rejection, Newton count and path count identical.
