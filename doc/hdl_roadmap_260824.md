@@ -10816,3 +10816,35 @@ standalone DC, against 187: every digest, step, rejection, Newton count and path
 idle, three processes per tree interleaved: the seven flat Howland sweeps 0.984..1.012x against 187 (median 0.994; the
 view's own cost measured 0.4 us a DC point, 0.05 %, the rest within the trees' +-1 % spread), bits identical; the
 hierarchical IMD testbench 13..14x (DC from zeros 231 -> 17 ms, a 20 us transient 205 -> 15 ms).
+
+## 2026-10-22 — 189. The dense multistep walk carries its monodromy on the live columns -- the columns a charge reaches, after the opening (a Howland testbench's gear PSS 1.48x, 11.84 -> 8.01 s, the orbit bit-identical)
+
+**Why**  The shooting Newton's monodromy rides along every step of a multistep walk (`_lmm_recursion`): ``S = sum a_k
+C_{n-k} P_{n-k}``, ``P_n = -Jf^-1 S``, ``Pq_n = a_0 C_n P_n + S`` -- every column of the unknown, a dense product and
+a dense solve on each.  Every step reads the state through a capacitance, so after the opening a column survives only
+where a charge reaches it; the rest are exactly zero for good (the recursion is linear in the state and the
+monodromy's carries no forcing).  Measured on a user's Howland current pump testbench (90 unknowns, its two-tone gear
+PSS: 5 walks of 3 200 steps): the recursion was 6.9 s of 11.8, on gear's pair 180 columns of which 42 are ever nonzero
+-- twice the 21 columns of its 90 x 90 capacitance.
+
+**Built.**  _steps: `_LiveMonodromy` carries ``(P_n, P_{n-1}, Pq_n)`` and drops a column once it is zero in all three;
+`full`/`ring` put the zeros back. Each kept column is computed as it was.  A step whose result is not finite runs
+again at full width from the full state, and the walk keeps every column from there on: a dropped column multiplied
+into a non-finite `C` or factor is NaN at full width (``0 * inf``), not zero (`pss.live:nonfinite`).  `LIVE_COLUMNS`
+(True) switches it.  _pss_walks: `_walk_lmm` carries its dense monodromy through it; a capture and the walk's `P` read
+it at full width.
+
+**Tests.**  Measured, the box idle, three processes per tree interleaved: the testbench's gear PSS 11.84 -> 8.01 s
+(1.48x), the orbit's digest identical in all six.
+
+tests: test_shooting_live_columns, 9 (all failing on the old code: no live columns) -- the walk's monodromy on the
+live columns equal to every column's (an RLC and a diode clipper, trap, euler and gear's pair; zero pattern identical,
+values to 1e-13; the steps past the opening solve the columns a charge reaches); a PSS answering as on every column
+(trap, gear); a non-finite step run at full width, its NaN where every column puts it.  test_shooting_pss: the
+explicit-inverse test's width assertion -- one matrix solve a step, the opening's at full width, the rest on the live
+columns.
+
+**Gate**: the suite in the main tree, 5 739 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 188: every digest identical; the shooting files 645 + 9 passed before it (the explicit-inverse
+test's width assertion updated).  Timing, the box idle (1-min load 1.5..1.8), three processes per tree interleaved:
+the Howland testbench's gear PSS 11.84 -> 8.01 s (1.48x; the line 1.3x), the orbit's digest identical in all six.

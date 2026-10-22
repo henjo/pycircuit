@@ -3,6 +3,9 @@ methods), `_LMMStep` (linear multistep, plain and gear's pair), `_GLMStep`
 (Nordsieck GLMs), and the recursions they share.
 """
 import numpy as np
+
+from pycircuit.circuit import _paths
+
 from ._numerics import _complex_solve
 from ._numerics import _complex_solve_transposed
 from ._numerics import _lu_solve_split
@@ -249,6 +252,84 @@ def _lmm_recursion(Px, Cs, Pq, C_new, alphas, b, solve, source=None,
     Px_new = -solve(S_solve)
     Pq_new = alphas[0] * (C_new @ Px_new) + S
     return Px_new, Pq_new
+
+
+#: carry the dense multistep monodromy on its live columns (`_LiveMonodromy`);
+#: False -- every column, as before (read per walk)
+LIVE_COLUMNS = True
+
+
+class _LiveMonodromy:
+    """The dense multistep walk's monodromy state ``(P_n, P_{n-1}, Pq_n)``
+    (`_lmm_recursion`) carried on its LIVE columns only.
+
+    A column of the state is a direction of the unknown; once it is zero in
+    all three it is zero for the rest of the walk -- the recursion is linear
+    in the state and the monodromy's carries no forcing or source -- so it
+    is dropped, and `full` puts the zeros back.  The live ones are few: every
+    step reads the state through capacitances (``C_{n-k} P_{n-k}``), so
+    after the opening the columns left are those of the nodes a charge
+    reaches (a Howland testbench: 42 of gear's pair's 180, its `C` 21
+    columns of 90; the PSS 1.40x, the orbit bit-identical).  The products
+    and the solves run on those columns alone; each column is computed as it
+    was.
+
+    ⚠ A NON-FINITE STEP RUNS AT FULL WIDTH: a dropped column multiplied into
+    a non-finite `C` or factor is NaN at full width (``0 * inf``), not
+    zero, so a step whose result is not finite is recomputed from the full
+    state and the walk carries every column from there on."""
+    __slots__ = ('P', 'Pq', 'cols', 'off', 'width')
+
+    def __init__(self, P0, P1, Pq):
+        self.P, self.Pq = [P0, P1], Pq
+        self.width = P0.shape[1]
+        self.cols = None
+        self.off = not LIVE_COLUMNS
+
+    def step(self, Cs, C_new, alphas, b, solve):
+        """One step of the recursion; the new ``P_n`` on the live columns."""
+        prev, Pq = self.P, self.Pq
+        P_new, Pq_new = _lmm_recursion(prev, Cs, Pq, C_new, alphas, b, solve)
+        if self.cols is not None and not (np.isfinite(P_new).all()
+                                          and np.isfinite(Pq_new).all()):
+            _paths.no('pss.live:nonfinite')
+            prev = [self._full(p) for p in prev]
+            Pq = self._full(Pq)
+            self.cols, self.off = None, True
+            P_new, Pq_new = _lmm_recursion(prev, Cs, Pq, C_new, alphas, b,
+                                           solve)
+        self.P, self.Pq = [P_new, prev[0]], Pq_new
+        if not self.off:
+            self._prune()
+        return P_new
+
+    def _prune(self):
+        P0, P1, Pq = self.P[0], self.P[1], self.Pq
+        live = np.any(P0 != 0, axis=0)
+        live |= np.any(P1 != 0, axis=0)
+        live |= np.any(Pq != 0, axis=0)
+        if live.all():
+            return
+        keep = np.flatnonzero(live)
+        self.P = [P0[:, keep], P1[:, keep]]
+        self.Pq = Pq[:, keep]
+        self.cols = keep if self.cols is None else self.cols[keep]
+
+    def _full(self, A):
+        if self.cols is None:
+            return A
+        out = np.zeros((A.shape[0], self.width), dtype=A.dtype)
+        out[:, self.cols] = A
+        return out
+
+    def full(self, k=0):
+        """``P_{n-k}`` at full width (a new array where columns were
+        dropped)."""
+        return self._full(self.P[k])
+
+    def ring(self):
+        """``[P_n, P_{n-1}]`` at full width -- the walk's `P`."""
+        return [self.full(0), self.full(1)]
 
 
 def dense_c(C):

@@ -233,9 +233,14 @@ def test_pss_uses_a_solve_not_an_explicit_inverse(monkeypatch):
                           T=per).monodromy()
         assert np.all(np.isfinite(M)) and M.shape == (width * m, width * m)
         ## one matrix solve per step of the loop (the plain map's opening
-        ## step is the manufacturing step, not a step of the map)
+        ## step is the manufacturing step, not a step of the map), on the
+        ## monodromy's live columns -- every column while the opening's
+        ## identity is in the ring, then those a charge reaches
+        ## (`_LiveMonodromy`)
         matrix = [r for r in solver.rhs if len(r) == 2]
-        assert matrix == [(m, width * m)] * (len(times) - 1), (method, matrix)
+        assert len(matrix) == len(times) - 1, (method, matrix)
+        assert matrix[0] == (m, width * m), (method, matrix)
+        assert all(r[0] == m and 1 <= r[1] <= width * m for r in matrix), (method, matrix)
 
 
 def test_pss_still_matches_the_ac_reference_with_a_fine_step():

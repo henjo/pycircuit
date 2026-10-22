@@ -17,6 +17,7 @@ from ._steps import (
     _GLMStartup,
     _GLMStartupMatrix,
     _GLMStep,
+    _LiveMonodromy,
     _lmm_recursion,
     _StageStep,
 )
@@ -385,6 +386,8 @@ class _PeriodWalks(object):
                     self.Cvec = self.Jtvec = None
         if dense:
             self.times = times
+        ## (the monodromy carried on its live columns: `_LiveMonodromy`)
+        mono = _LiveMonodromy(Px[0], Px[1], Pq) if dense else None
         if dense or capture is not None:
             ## the nodes a staged residual reads (`capture`); on a factored
             ## walk (the matrix-free event stage) without the dense map
@@ -450,8 +453,7 @@ class _PeriodWalks(object):
             ## (`_lmm_recursion`): the monodromy, the period column and the
             ## event columns differ only in the forcing each step adds.
             if dense:
-                Px_new, Pq = _lmm_recursion(Px, Cs, Pq, C_new, alphas, b,
-                                            solve)
+                mono.step(Cs, C_new, alphas, b, solve)
             if Pk is not None:
                 ## ⚠ `residual_dh` is Fang's `p`: the coefficients' partial
                 ## PLUS `du/dt`, because the residual sits at `t_n + h_n` and
@@ -503,7 +505,7 @@ class _PeriodWalks(object):
                 _tau = _tau + hsens[_j]
                 if capture is not None and (_j + 1) in capture:
                     self._captured[_j + 1] = (copy(x),
-                                              (np.asarray(Px_new).copy()
+                                              (mono.full(0).copy()
                                                if dense else None),
                                               [pk[0].copy() for pk in Pk])
             if want_dT:
@@ -534,14 +536,13 @@ class _PeriodWalks(object):
                 Pt_new, Pqt = _lmm_recursion(Pt, Cs, Pqt, C_new, alphas, b,
                                              solve, forcing=fT)
                 Pt = [Pt_new, Pt[0]]
-            if dense:
-                Px = [Px_new, Px[0]]
             Cs = [C_new, Cs[0]]
         self._want_dfdh = False
         self._want_event_cols = False
         return _PeriodWalk(kind=opening[0],
                            fp_kind='solved_history' if pair else 'plain',
-                           x0=x0, x_end=x, x_prev=x_prev, P=Px,
+                           x0=x0, x_end=x, x_prev=x_prev,
+                           P=mono.ring() if dense else None,
                            Pt=Pt if want_dT else None, Pk=Pk, steps=steps,
                            opening=opened,
                            open_at_x0=(not pair) and bool(opening[2]))
