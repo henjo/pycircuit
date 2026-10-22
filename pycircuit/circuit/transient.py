@@ -2231,7 +2231,10 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             if honours:
                 self.statistics.gmin_rescues += 1
             return out
-        except NoConvergenceError as e:
+        ## (a ladder whose last rung ends on a singular Jacobian raises
+        ## `SingularMatrix`: the step's failure all the same, so it is this
+        ## error, a `NoConvergenceError`, with that as its cause)
+        except (NoConvergenceError, SingularMatrix) as e:
             if honours:
                 raise TransientStepError(
                     'Transient solver failed to converge: timestep shrank below '

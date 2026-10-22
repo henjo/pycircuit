@@ -1728,6 +1728,31 @@ def test_the_continuation_rescue_reaches_the_full_coupled_path():
     assert tr.statistics.gmin_rescues == 0
 
 
+def test_a_rescue_ending_singular_is_the_step_s_error():
+    """A failed rescue is a `TransientStepError` -- a `NoConvergenceError`
+    -- whichever way the ladder's last rung failed: one ending on a singular
+    Jacobian raised a bare `SingularMatrix`, past a caller's ``except
+    NoConvergenceError`` (a user's step Monte Carlo, 2026-10-22)."""
+    from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix
+    from pycircuit.circuit.transient import TransientStatistics, TransientStepError
+    c = SubCircuit()
+    c['R'] = R(1, gnd, r=1e3)
+    c['C'] = C(1, gnd, c=1e-9)
+    tr = Transient(c, toolkit=circuit.numeric)
+    tr.statistics = TransientStatistics()
+
+    def singular(*a, **k):
+        raise SingularMatrix('pseudo-transient continuation: Singular Jacobian')
+    tr._attempt_step = singular
+    for honours, said in ((True, 'could not rescue the point'),
+                          (False, 'carries no continuation rescue')):
+        tr._honours_continuation_rescue = lambda h=honours: h
+        with pytest.raises(TransientStepError, match=said) as exc:
+            tr._rescue_step(None, [], 0.0, 1e-12, False, None)
+        assert isinstance(exc.value, NoConvergenceError)
+        assert isinstance(exc.value.__cause__, SingularMatrix)
+
+
 def test_a_bad_circuit_reaches_the_continuation_ladder_on_the_default_path():
     """A circuit bad enough to need the rescue must actually GET it -- on the
     DEFAULT adaptive path, with and without PCNR.

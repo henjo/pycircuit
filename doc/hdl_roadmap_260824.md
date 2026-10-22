@@ -10881,3 +10881,24 @@ standalone DC, against 189: every digest identical; the pinned pairs 72 passed (
 called on the live columns).  Timing, the box idle (1-min load < 1.6), three processes per tree interleaved, against
 189: the Howland testbench's Radau PSS 62.42 -> 54.68 s (1.14x), its gear PSS 7.94 -> 7.61 s (1.04x); the orbit's
 digest identical in all twelve.
+
+## 2026-10-22 — 191. A failed rescue is a TransientStepError whichever way the ladder's last rung failed -- one ending on a singular Jacobian raised a bare SingularMatrix, past a caller's `except NoConvergenceError` (a user's step Monte Carlo)
+
+**Why**  `Transient._rescue_step` re-solves a step stuck at `minstep` with the continuation chain armed (gmin, gshunt,
+pseudo-transient) and, where that fails, raises `TransientStepError` -- a `NoConvergenceError` -- naming the point.
+It caught only `NoConvergenceError` from the chain: a ladder whose last rung ends on a singular Jacobian raises
+`SingularMatrix`, which is not one, and escaped bare.  Found by a user's Howland current pump testbench, whose step
+Monte Carlo retries a failed transient at a looser tolerance on `NoConvergenceError`: on their machine the
+pseudo-transient rung ended "Singular Jacobian" and the retry never ran (on ours the same step's ladder ends
+non-converged, and the error was the TransientStepError).  The step itself failed on its tolerance -- reltol 1e-9 with
+iabstol 1e-15, below the Newton update's noise on near-zero source currents at 0.04..1 ohm nodes -- not on a path.
+
+**Built.**  transient: `_rescue_step` catches `SingularMatrix` with `NoConvergenceError`; the error is the
+`TransientStepError` either way, the singular matrix its cause.
+
+**Tests.**  tests: test_analysis_transient -- a rescue ending singular is the step's TransientStepError, a
+NoConvergenceError with the SingularMatrix as its cause, whether or not the path carries a ladder (failing on the old
+code: the SingularMatrix escaped).
+
+**Gate**: the suite in the main tree, 5 747 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone
+DC, against 190: every digest identical; the new test failing on the old code, passing on the new.
