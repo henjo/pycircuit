@@ -10141,3 +10141,39 @@ returns nothing and where its point is refused (the 1 A diode's operating point)
 both passes' four escalating rungs, at a thousandth of the sources, then full.
 
 **Gate**: suite 5 600 passed, 6 skipped, 3 xfailed; every gold deck bit-identical as the last route (54 runs).
+
+## 2026-10-21 — 167. A PCNR rung that jumps far fails as a rung: a user's converter solved by PCNR's own routes
+
+**Why** (Andreas: "Can we make PCNR more robust to handle these cases without falling back", "Ask the peer to send the
+circuit", then on the cases "Do as you suggest" and "Do it").  A user's three far-root circuits arrived as a generated,
+self-contained script (scratch only: vendor model numbers).  On it the CSA + P-FET converter from zeros raises with PCNR
+on and off: PCNR's routes all end refused by the acceptance check (161) or failing, and the chain converges to a
+non-solution (residual 2.5e62).  Traced (every rung's deformation, iterations and largest node voltage): in the gshunt
+ladder, in source stepping's gshunt rungs and in the pseudo-transient route's full-source pass alike, ONE rung near
+1e-5 S goes from ~3 V to 6.8..12 kV after 46..98 iterations and "converges" there by the relative Newton test; every
+later rung and the pure solve stay at that far point, refused only at the end.  The pseudo-transient route (163, 165,
+166) rescues none of the three cases.
+
+**Sized first** (plan 'PCNR ROBUST ON ITS OWN', its line written before the cases arrived: (a) PCNR's own routes solve
+the three cases; (b) every gold deck's standalone operating point the same, none falling back, no gold column flipping,
+the 27 decks' summed DC time no worse than +3 %; (c) the suite).  Rung continuity -- a rung moving more than JUMP x
+(its start's largest node voltage + the largest DC source) counts as failed -- sized on the gold decks at JUMP 1e3
+before the cases (bit-identical; the largest in-ladder move 0.50 of that scale, jge).  On the cases at 1e3 the
+converter still falls back (retried rungs jump just under it); at 100 and at 10 PCNR SOLVES IT by source stepping, the
+expected 1.65518481 V, in 0.29 s against 1.93 s of failing; the other cases unchanged; the gold decks' operating points
+bit-identical at both.  100 chosen after 1e3 failed (the line's clauses unchanged): 200x above the gold decks' largest
+move, under the converter's jumps.
+
+**Built.**  `pcnr._rung`: handed a previous rung's limited unknowns (inside a ladder, not its first rung), a rung whose
+answer moves more than `RUNG_JUMP` (100) x (max |x| of its start + the largest DC source) over the nodes is a failed
+rung (`_jumps`): the ladder retries smaller.  Every route's rungs go through it (the gshunt and junction ladders,
+source stepping, both pseudo-transient passes, the pure solves after a ladder).  The sources are read only where the
+move exceeds `RUNG_JUMP` x max |x| -- never on the gold decks.  No C change.  `test_dc_pcnr`: the jump's scale (from 0 V
+the source alone, from 5 V both; the sources unread below it); a jumping rung is None, a first rung is not judged; the
+gshunt ladder on the 1 A diode, its 1e-3 rung planted to jump 1e9 V, retried at the geometric mean and coming down to
+the diode's operating point -- each failing without the check.
+
+**Gate**: (a) met -- the converter solved by PCNR's source stepping (1.65518481 V), the other cases unchanged;
+(b) the 54 gold runs (each deck's default transient and standalone operating point) bit-identical, none falling
+back; the 27 decks' summed standalone DC time +0.34 % (0.8553 -> 0.8581 s, best of 3 interleaved rounds, pinned,
+a quiet box; single decks -0.8 .. +2.2 %, every answer and path counter the same); (c) the suite, 5 603 passed.

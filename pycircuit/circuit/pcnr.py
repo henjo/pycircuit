@@ -1178,7 +1178,9 @@ def solve_dc_continued(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     THE ACCEPTANCE CHECK: every answer it would return -- the plain
     solve's, a ladder's pure solve -- must solve the DC equations to
     `DC_ACCEPT_RESIDUAL` (`dc_residual`); one that does not counts as that
-    solve failing, and the next route is tried.
+    solve failing, and the next route is tried.  And inside the routes, a
+    rung whose answer jumps far from where it started fails as a rung
+    (:func:`_rung`, `RUNG_JUMP`), before a ladder follows it there.
 
     ``raw_seed``: `x0` may be a solution -- a caller's operating point, a
     sweep's previous point (`DC`) -- so the plain solve is tried first from
@@ -1311,12 +1313,45 @@ def dc_residual(circuit, refnode, x, epar=defaultepar, held=None, u=None):
     return float(f[k]), k
 
 
+#: a rung's CONTINUITY (`_rung`): a rung handed a previous rung's limited
+#: unknowns whose answer moves more than this times (its start's largest node
+#: voltage + the largest DC source) from where it started counts as failed
+RUNG_JUMP = 100.0
+
+
 def _rung(circuit, refnode, x, v_lim, kw, **deform):
-    """One rung: `(x, v_lim, iterations)`, or None where it raises."""
+    """One rung: `(x, v_lim, iterations)`, or None where it raises -- or,
+    handed a previous rung's limited unknowns (inside a ladder, not its
+    first rung), where its answer JUMPS (:func:`_jumps`): the relative
+    Newton test converges far off a solution too (161), and a ladder that
+    follows such a rung stays there -- on a user's converter one gshunt rung
+    near 1e-5 S went from ~3 V to 6.8..12 kV in every route, each refused
+    only at its end (2026-10-21).  A jump counts as the rung failing: the
+    ladder retries smaller, as after a rung that did not converge."""
     try:
-        return solve_dc(circuit, refnode, x0=x, v_lim0=v_lim, **kw, **deform)
+        got = solve_dc(circuit, refnode, x0=x, v_lim0=v_lim, **kw, **deform)
     except _RUNG_FAILURES:
         return None
+    if v_lim is not None and x is not None and _jumps(circuit, x, got[0], kw):
+        return None
+    return got
+
+
+def _jumps(circuit, x, y, kw):
+    """Whether `y` moved more than `RUNG_JUMP` x (max |x| + the largest DC
+    source) from `x` over the nodes.  The sources are read only where the
+    move exceeds `RUNG_JUMP` x max |x| -- below that no source can make it
+    a jump (on the gold decks the largest move is 0.50 of the scale)."""
+    nn = len(circuit.nodes)
+    a = np.asarray(x, dtype=float)[:nn]
+    move = float(np.max(np.abs(np.asarray(y, dtype=float)[:nn] - a)))
+    scale = float(np.max(np.abs(a)))
+    if not move > RUNG_JUMP * scale:
+        return False
+    u = np.abs(np.asarray(circuit.u(0.0, kw.get('epar', defaultepar), analysis='dc'),
+                          dtype=float))[nn:]
+    span = float(np.max(u)) if len(u) else 1.0
+    return move > RUNG_JUMP * (scale + span)
 
 
 def _gshunt_ladder(circuit, refnode, x0, kw):

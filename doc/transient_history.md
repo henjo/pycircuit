@@ -5283,3 +5283,17 @@ at each rung's own source level were sized and refused (gm17 flipped,
 iterations +30 % or a deck lost).
 Tests: `test_dc_pcnr.py` (the second pass where the first returns nothing
 and where its point is refused; the forced-failure sequence's two passes).
+
+## `pcnr._rung`, `_jumps` -- a rung that jumps far fails as a rung (2026-10-21)
+
+2026-10-21 (Andreas: "Do it"; `doc/hdl_roadmap_260824.md`, 167).  A rung
+inside a PCNR ladder whose answer moves more than `RUNG_JUMP` (100) x (its
+start's largest node voltage + the largest DC source) counts as a failed
+rung and is retried smaller.  On a user's CSA + P-FET converter one rung near
+1e-5 S went from ~3 V to kilovolts in every route and converged there by the
+relative Newton test; with the check PCNR solves it from zeros by source
+stepping (1.65518481 V), where PCNR and the chain both failed before.  The
+gold decks' largest in-ladder move is 0.50 of that scale: their operating
+points are unchanged.
+Tests: `test_dc_pcnr.py` (the jump's scale; a jumping rung refused; a ladder
+retrying a planted jump smaller).

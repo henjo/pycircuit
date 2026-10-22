@@ -752,3 +752,97 @@ def test_a_pseudo_transient_step_is_anchored_at_its_seed():
     ## (and the unanchored rung is the deformed problem's: 0.2 mV off at
     ## 1e-2 S against the diode's ~38 S)
     assert np.max(np.abs(b[0] - op)) > 1e-6
+
+
+def _supply_divider():
+    """A 3.3 V source on a two-resistor divider: `_jumps`' largest DC
+    source is 3.3 V."""
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit.elements import VS, R, SubCircuit
+    c = SubCircuit()
+    a, b = c.add_node('a'), c.add_node('b')
+    c['v'] = VS(a, gnd, v=3.3)
+    c['r1'] = R(a, b, r=1e3)
+    c['r2'] = R(b, gnd, r=1e3)
+    return c
+
+
+def test_a_jump_is_measured_against_the_start_and_the_largest_source(monkeypatch):
+    """`pcnr._jumps`: a move over the nodes beyond `RUNG_JUMP` x (the
+    start's largest node voltage + the largest DC source) -- from 0 V the
+    3.3 V source alone sets the scale; from 5 V both.  The sources are read
+    only where the move exceeds `RUNG_JUMP` x the start."""
+    import numpy as np
+
+    from pycircuit.circuit import pcnr
+    c = _supply_divider()
+    kw = {'epar': pcnr.defaultepar}
+    reads = []
+    real_u = c.u
+
+    def u(*a, **k):
+        reads.append(1)
+        return real_u(*a, **k)
+    monkeypatch.setattr(c, 'u', u)
+    zero = np.zeros(c.n)
+    k = c.get_node_index(c.nodes[1])
+
+    def moved(x, dv):
+        y = np.array(x, dtype=float)
+        y[k] += dv
+        return y
+    assert pcnr.RUNG_JUMP == 100.0
+    assert not pcnr._jumps(c, zero, moved(zero, 300.0), kw)
+    assert pcnr._jumps(c, zero, moved(zero, 400.0), kw)
+    five = moved(zero, 5.0)
+    assert not pcnr._jumps(c, five, moved(five, 800.0), kw)
+    assert pcnr._jumps(c, five, moved(five, 900.0), kw)
+    n = len(reads)
+    assert not pcnr._jumps(c, five, moved(five, 499.0), kw) and len(reads) == n
+
+
+def test_a_rung_that_jumps_fails_as_a_rung(monkeypatch):
+    """`pcnr._rung`: handed a previous rung's limited unknowns, a rung whose
+    answer jumps (`_jumps`) is a failed rung (None); a ladder's first rung
+    (no limited unknowns) is not judged, nor an answer that stays near."""
+    import numpy as np
+
+    from pycircuit.circuit import gnd, pcnr
+    c = _supply_divider()
+    start = np.zeros(c.n)
+    answer = {}
+    monkeypatch.setattr(pcnr, 'solve_dc', lambda *a, **k: (answer['x'], 'v_lim', 3))
+    kw = {'epar': pcnr.defaultepar}
+    answer['x'] = np.full(c.n, 1e4)
+    assert pcnr._rung(c, gnd, start, None, kw)[2] == 3
+    assert pcnr._rung(c, gnd, start, 'v_lim', kw) is None
+    answer['x'] = np.full(c.n, 2.0)
+    assert pcnr._rung(c, gnd, start, 'v_lim', kw)[2] == 3
+
+
+def test_a_ladder_retries_a_rung_that_jumped_smaller(monkeypatch):
+    """The gshunt ladder from zeros on the 1 A diode, its rung at 1e-3 S
+    planted to jump 1e9 V: refused as a failed rung, retried at the
+    geometric mean with the rung before (1e-2), and the ladder comes down
+    to the diode's operating point."""
+    import numpy as np
+
+    from pycircuit.circuit import gnd, pcnr
+    from pycircuit.circuit.dcanalysis import DC
+    op = np.asarray(DC(_diode_1a(), pcnr=False).solve().x, dtype=float)
+    real, seen = pcnr.solve_dc, []
+
+    def solve(c, ref, x0=None, **kw):
+        x, v, its = real(c, ref, x0=x0, **kw)
+        g = kw.get('gshunt', 0.0)
+        seen.append(g)
+        if g == 1e-3 and seen.count(1e-3) == 1:
+            x = x + 1e9
+            x[c.get_node_index(gnd)] = 0.0
+        return x, v, its
+    monkeypatch.setattr(pcnr, 'solve_dc', solve)
+    kw = {'epar': pcnr.defaultepar, 'maxiter': 200, 'reltol': 1e-6, 'abstol': 1e-12,
+          'iabstol': 1e-12, 'linsolver': None}
+    got = pcnr._gshunt_ladder(_diode_1a(), gnd, None, kw)
+    assert seen[:3] == [1e-2, 1e-3, (1e-3 * 1e-2) ** 0.5], seen[:3]
+    assert got is not None and np.max(np.abs(got[0] - op)) < 1e-6
