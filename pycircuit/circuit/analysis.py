@@ -91,6 +91,9 @@ class CircuitResult(IVResultDict, InternalResultDict):
         if sweep_values is None:
             sweep_values = []
 
+        ## (a flat view's solution is its circuit's, the same unknowns in the
+        ## same order: reported against the circuit -- `SubCircuit._flat_view`)
+        circuit = getattr(circuit, '_flat_of', None) or circuit
         nodes = circuit.nodes
 
         self.circuit = circuit
@@ -368,9 +371,24 @@ class Analysis(sim.Analysis):
         if hasattr(toolkit, 'setup_analysis'):
             toolkit.setup_analysis(epar)
 
-        self.cir = cir
+        ## (a hierarchical circuit is evaluated through its flat view, the
+        ## leaves on one level -- `SubCircuit._flat_view`; `circuit` the one
+        ## given, which results report against)
+        self.circuit = cir
+        flat = getattr(cir, '_flat_view', None)
+        self.cir = cir if flat is None else flat()
         self.result = None
         self.epar = epar
+
+    def _sync_cir(self):
+        """The circuit given, as the analyses evaluate it NOW: its flat view
+        rebuilt where its topology changed since this analysis was made
+        (`SubCircuit._flat_view`) -- unless `cir` was set to another
+        circuit since, which then stands."""
+        c = self.__dict__.get('circuit')
+        flat = getattr(c, '_flat_view', None)
+        if flat is not None and (self.cir is c or getattr(self.cir, '_flat_of', None) is c):
+            self.cir = flat()
 
     def _get_nrsolver(self):
         from pycircuit.circuit.nrsolver import NonLinearSolver, StandardNewton

@@ -10776,3 +10776,43 @@ solver's to 1e-12.
 (test_dcsweep's helper then given f-strings for the lint; its file rerun, 11 passed); the pinned pairs 72 passed; the
 27 gold decks, transient and standalone DC, against 186: every digest, step, rejection, Newton count and path count
 identical (one DC a process: nothing kept to reuse).
+
+## 2026-10-22 — 188. A hierarchical circuit is evaluated through its flat view -- the C paths serve circuits of subcircuit instances (they declined them: every element ran the Python paths, 7..40x slower; a user's Howland testbench, its first DC 40x)
+
+**Why**  The C paths -- the evaluation core, the C Newton and stepping loop, PCNR's C solve -- take a flat list of
+leaf elements, each a constant stamp or a compiled HDL kernel.  A subcircuit instance is neither: a container its own
+Python assembly sums.  The core declined a circuit that held one ('unservable') and every element of it ran the Python
+paths; PCNR, which collects its participants from the top level, did not see the devices inside the instances at all.
+The SPICE importer flattens .subckt instances, so no gold deck ever met it.  Measured: a Howland current pump's
+testbench, hierarchical (its op-amp, transistors and optocoupler as subcircuit instances), took 1.667 s for its first
+DC against 0.042 s flattened; with only its op-amp wrapped in one instance a DC from zeros took 231 ms against 21 ms,
+a 20 us transient 205 ms against 29 ms.
+
+**Built.**  circuit: `SubCircuit._flat_view` -- the circuit itself where it holds no subcircuit instance, else its
+leaves (the same objects) placed on one level, each on its own nodes as seen from the top (an instance's terminals its
+connections, its internal nodes `inst.node`), the circuit's nodes and branches in its own order, so a solution vector
+means the same in both; kept per topology; an instance whose class overrides an evaluation method stays whole; a view
+whose nodes or branches would differ is not used (counted).  The leaves are placed, not added, so their parameters
+stay resolved in their own parents and their toolkit as it was (a circuit may mix them); the view's `update_iparv` is
+the circuit's.  An element whose own name has dots (a view's leaf) is found by that name first.  analysis: an analysis
+keeps the circuit given (`circuit`) and evaluates its view (`cir`), re-synced at a DC's or transient's solve where the
+topology changed since (`_sync_cir`); `CircuitResult` reports against the circuit.  dcanalysis: DCSweep writes the
+swept parameter into the circuit given (a subcircuit instance's own parameter, which the view's leaves resolve).
+
+**Tests.**  Measured, the IMD testbench with its op-amp in one instance: a DC from zeros 231 -> 17 ms, a 20 us
+transient 205 -> 15 ms, the answers within 1e-10 V; a flat circuit gets no view and runs as before.
+
+tests: test_initial_conditions -- an ic inside a subcircuit, refused until now (a nested instance owned one span over
+its children's branches), is placed on its inductor's own branch row: the test that pinned the refusal now pins the
+placement.  test_flat_view, 7 (4 failing on the old code) -- a hierarchical circuit served by the PCNR C solve and the
+C Newton, its answers the hierarchical evaluation's; the view's unknowns the circuit's and its results reported
+against it; a subcircuit's parameter swept by DCSweep; a topology change after the analysis was made in its solve; a
+leaf's own toolkit kept; a flat circuit without a view and a nested one complete.
+
+**Gate**: the suite in the main tree, 5 729 passed (6 skipped, 3 xfailed) and one failure: test_initial_conditions'
+refusal of an ic inside a subcircuit, which the view now places -- the test rewritten to pin the placement, its file
+rerun, 24 passed; the pinned pairs and the runtime map 82 passed; the 27 gold decks (flat: no view), transient and
+standalone DC, against 187: every digest, step, rejection, Newton count and path count identical.  Timing, the box
+idle, three processes per tree interleaved: the seven flat Howland sweeps 0.984..1.012x against 187 (median 0.994; the
+view's own cost measured 0.4 us a DC point, 0.05 %, the rest within the trees' +-1 % spread), bits identical; the
+hierarchical IMD testbench 13..14x (DC from zeros 231 -> 17 ms, a 20 us transient 205 -> 15 ms).

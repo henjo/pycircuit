@@ -254,6 +254,7 @@ class DC(Analysis):
         BLAS is held at one thread for the solve where the AutoSolver's dense
         LU is past the size OpenBLAS threads (`_blas_held`).
         """
+        self._sync_cir()
         with analysis_kind(self.epar, 'dc'), self._blas_held():
             return self._solve_dc(x0)
 
@@ -824,11 +825,14 @@ class DCSweep(Analysis):
         """
         import numpy
 
-        if instance not in self.cir.elements:
+        if instance not in self.circuit.elements:
             raise ValueError(
                 '%r is not an instance in this circuit; have %s'
-                % (instance, sorted(self.cir.elements)))
-        element = self.cir[instance]
+                % (instance, sorted(self.circuit.elements)))
+        ## (the circuit given: a subcircuit instance's own parameter is
+        ## written there -- the analyses evaluate its flat view, whose leaves
+        ## follow, `SubCircuit._flat_view`)
+        element = self.circuit[instance]
         if not hasattr(element.ipar, param):
             raise ValueError(
                 '%r has no parameter %r; have %s'

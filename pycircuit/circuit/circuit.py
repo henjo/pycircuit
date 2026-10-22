@@ -164,6 +164,53 @@ def _traced(*values):
     return tracer is not None and any(isinstance(v, tracer) for v in values)
 
 
+_FLAT_METHODS = ('G', 'C', 'i', 'q', 'u', 'dudt', 'CY', 'next_event')
+
+
+def _plain_subcircuit(el):
+    """A subcircuit instance whose evaluation is its elements' -- no
+    evaluation method of its class its own (`SubCircuit._flat_view`)."""
+    return isinstance(el, SubCircuit) and all(
+        getattr(type(el), m, None) is getattr(SubCircuit, m, None) for m in _FLAT_METHODS)
+
+
+def _flat_view_of(cir):
+    """`SubCircuit._flat_view`'s view: the leaves PLACED (not added: their
+    parameters stay resolved in their own parents) in depth-first order,
+    after the circuit's nodes in its order; `update_iparv` the circuit's."""
+    view = SubCircuit()
+    view.toolkit = cir.toolkit
+    for node in cir.nodes:
+        view.append_node(node)
+
+    def walk(c, prefix, to_top):
+        for inst, el in c.elements.items():
+            conn = c.term_node_map[inst]
+            if _plain_subcircuit(el):
+                outer = {el.nodenames[t]: to_top(n) for t, n in conn.items()}
+
+                def inner(node, outer=outer, p=prefix + inst + '.'):
+                    got = outer.get(node)
+                    if got is not None:
+                        return got
+                    return node if node.isglobal else Node(p + node.name)
+                walk(el, prefix + inst + '.', inner)
+            else:
+                ## (placing would set the leaf's toolkit to the view's: a
+                ## circuit may mix them -- symbolic devices in a numeric
+                ## circuit -- and the leaf is the circuit's own)
+                tk = el.__dict__.get('toolkit')
+                view._place_instance(prefix + inst, el,
+                                     **{t: to_top(n) for t, n in conn.items()})
+                if tk is not None and el.__dict__.get('toolkit') is not tk:
+                    el.toolkit = tk
+    walk(cir, '', lambda n: n)
+    view._flat_of = cir
+    ## (parameters resolve in the hierarchy, never against the view's own)
+    view.update_iparv = cir.update_iparv
+    return view
+
+
 ## (weakly keyed: generated classes come and go -- the leak detector's)
 _LIVE = weakref.WeakKeyDictionary()
 
@@ -1290,6 +1337,36 @@ class SubCircuit(Circuit):
         self._nodemap_dirty = True
         self._restructured()
 
+    def _flat_view(self):
+        """The circuit the analyses evaluate: this one where it holds no
+        subcircuit instance, else its FLAT VIEW -- its leaf elements (the
+        same objects) placed on one level, each on its own nodes as seen
+        from here (an instance's terminals its connections, its internal
+        nodes ``inst.node``), this circuit's nodes and branches in its own
+        order, so a solution vector means the same in both.  Kept per
+        topology (the element node map object).  The C paths -- the
+        evaluation core, the C Newton and stepping loop, PCNR's C solve --
+        take a flat list of leaves and decline a subcircuit instance, so a
+        hierarchical circuit ran on the Python paths, 7..40x slower
+        (`doc/hdl_roadmap_260824.md`, 188).  An instance whose class
+        overrides an evaluation method stays whole (the view then declines
+        as the circuit did); a view whose nodes or branches would not be
+        the circuit's is not used."""
+        nodemap = self.elementnodemap
+        kept = self.__dict__.get('_flat')
+        if kept is not None and kept[0] is nodemap and kept[1] == self.n:
+            return kept[2]
+        view = self
+        if any(_plain_subcircuit(el) for el in self.elements.values()):
+            view = _flat_view_of(self)
+            if view.nodes != self.nodes or view.branches != self.branches:
+                _paths.COUNTS['flat:mismatch'] += 1
+                view = self
+            else:
+                _paths.COUNTS['flat:view'] += 1
+        self.__dict__['_flat'] = (nodemap, self.n, view)
+        return view
+
     def _rebuild_branches(self):
         """The branch list and each instance's span, from the instances in
         their order -- what `add_instance` appends, one instance after the
@@ -1404,6 +1481,10 @@ class SubCircuit(Circuit):
 
         if instancename == '':
             return self
+        ## (an element whose own name has dots -- a flat view's leaf,
+        ## `_flat_view` -- before the hierarchical reading)
+        if instancename in self.elements:
+            return self.elements[instancename]
         if len(instname_parts) == 1:
             return self.elements[instname_parts[0]]
         else:

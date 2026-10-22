@@ -1923,7 +1923,9 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         instead of the predict/accept loop.  The steps themselves are
         `_solve`'s.
         """
-        ## (the caller may have changed the circuit since the last run)
+        ## (the caller may have changed the circuit since the last run --
+        ## its flat view too, `Analysis._sync_cir`)
+        self._sync_cir()
         self._memo_clear()
         ## Stage 2a: hold BLAS to one thread for the whole run.  It wraps the whole
         ## transient rather than just the linear solve because the win is not in the

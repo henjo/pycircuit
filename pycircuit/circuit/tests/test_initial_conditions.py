@@ -221,11 +221,14 @@ def test_an_element_ic_without_uic_raises():
     assert 'uic=True' in str(exc.value)
 
 
-def test_an_ic_inside_a_subcircuit_is_refused_not_ignored():
-    """A nested instance owns a span covering all its children's branches, so a
-    flat walk cannot place an ic inside one. Refused with the reason, because
-    accepting the parameter and ignoring it is the defect this stage exists to
-    stop repeating."""
+def test_an_ic_inside_a_subcircuit_is_placed_on_its_branch():
+    """An ic inside a subcircuit instance is placed on its own element's
+    branch row.  Until 2026-10-22 a nested instance owned one span covering
+    all its children's branches, a flat walk could not place it, and it was
+    refused (NotImplementedError, as accepting and ignoring it was the defect
+    the stage existed to stop); the transient now evaluates the circuit's
+    flat view (`SubCircuit._flat_view`), where the inductor is a leaf with
+    its own branch -- the same row of the solution vector."""
     ## A SubCircuit used as an element must be a class with `terminals`,
     ## instantiated with the nodes it connects to -- assigning a bare
     ## `SubCircuit()` raises KeyError from `_instance_nodes`, because nothing
@@ -242,9 +245,10 @@ def test_an_ic_inside_a_subcircuit_is_refused_not_ignored():
     ck['C'] = C(1, gnd, c=1e-9)
 
     tran = Transient(ck, toolkit=numeric, uic=True)
-    with pytest.raises(NotImplementedError) as exc:
-        tran._initial_state(gnd)
-    assert 'subcircuit' in str(exc.value).lower()
+    x0 = np.asarray(tran._initial_state(gnd), dtype=float)
+    (row,) = ck.instance_branch_indices('X1')
+    assert x0[row] == 0.5
+    assert np.count_nonzero(x0) == 1
 
 
 def test_a_tank_started_by_inductor_current_has_the_analytic_amplitude():
