@@ -177,7 +177,8 @@ def _now():
 #: the walk's and the transient's names an instance shadow of would send the
 #: Python step elsewhere
 _WALK_NAMES = ('_stage_step', '_factorise', '_C_at', '_G_at', '_sync_limit_at',
-               '_insert_refnode', '_get_linearsolver', '_pcnr_junctions', '_transient')
+               '_insert_refnode', '_get_linearsolver', '_pcnr_junctions', '_transient',
+               '_step_klu')
 
 
 class _Ctx:
@@ -247,6 +248,10 @@ def step(walks, xn, h, tab, P):
         lims = _limiting.stateful_limiters(tr.cir)
     if lims:
         return _no('pss.sens:limits')
+    ## (a block the Python step factors on its structure, `_step_klu`: the
+    ## C's dense LU is not its twin, whatever the caller's solver)
+    if np.ndim(tab[0]) == 2 and walks._step_klu(np.shape(tab[0])[0] * (walks.cir.n - 1)) is not None:
+        return _no('pss.sens:sparse')
     ## the caller's solver: `AutoSolver`'s dense choice, or a `DenseSolver`
     ## (`_factorise`: its `factor` is SciPy's `lu_factor`)
     ls = walks._get_linearsolver()

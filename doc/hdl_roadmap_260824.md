@@ -10902,3 +10902,38 @@ code: the SingularMatrix escaped).
 
 **Gate**: the suite in the main tree, 5 747 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone
 DC, against 190: every digest identical; the new test failing on the old code, passing on the new.
+
+## 2026-10-22 — 192. A fully implicit stage method's coupled stage block factored with KLU on its structural pattern -- a Howland testbench's Radau PSS 1.28x (54.88 -> 42.86 s), the orbit bit-identical
+
+**Why**  The stage walk factors every step's coupled stage block (Radau's `3 m`: ``J[i][j] = delta_ij C(Y_i) + h A_ij
+G(Y_j)``) through the analysis's solver, and that solver decides dense or sparse once, on the first matrix it sees: on
+the testbench (90 unknowns) a 90-unknown Jacobian, so every 270-unknown block was a dense LU -- 540 us a step, of a
+block with 2 580 nonzeros.  On a circuit whose first matrix was a block, the same choice is SuperLU on the values'
+pattern.
+
+**Built.**  _pss_inner: `_InnerTransient._step_klu(n)` -- for a coupled stage block (``n = s m``, ``s >= 2``) from
+`SPARSE_BLOCK_MIN_N` unknowns (`linearsolver.MIN_N_FOR_SPARSE`), on the numeric toolkit and where no `linearsolver=`
+was given, a `StructuralKLU` on the block's structural pattern (the circuit's, `analysis.jacobian_structure`, in every
+block), one per size and topology; `_factorise` factors such a block there, each factor a numeric of its own (a
+function of its block alone), a matrix off the pattern going on to the caller's solver.  Measured on the testbench's
+block: KLU's factor and 21-column solve 227 + 65 us against dense LAPACK's 540 + ~150.  `PYCIRCUIT_SHOOT_KLU=0`
+(`SHOOT_KLU`) switches it.  A step's own Jacobian is not routed: on the testbench's gear PSS (90 unknowns) KLU's
+per-call cost lost 3 % (7.57 -> 7.78 s).
+
+**Tests.**  _sens_c: the C step map declines a block the Python step factors on its structure (`pss.sens:sparse`,
+before its solver check) -- its dense LU is not that step's twin; `_step_klu` joins the walk names an instance shadow
+of declines.
+
+tests: test_shooting_step_klu, 3 (failing on the old code: no `_step_klu`) -- a large block factored on its structure,
+the C step map declining it, the orbit the old solver's to 1e-9; a step's Jacobian, a small block and a caller's
+solver left alone; a factored period's block factors and their transposed solves (PAC's adjoint row and sideband
+response) answering as without.  test_pinned_pairs: 'the stage step map and its C' re-recorded -- the Python step's
+`_factorise` routes a large block to KLU, the C declines exactly those (its twin unchanged where it serves: the
+caller's dense solver); `_step_klu` added to its reference.
+
+**Gate**: the suite in the main tree, 5 750 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 191: every digest identical; the shooting files, pinned pairs and runtime map 674 passed before
+it (the stage step map's pair re-recorded).  Timing, the box idle (1-min load < 1.4), three processes per tree
+interleaved, against 191: the Howland testbench's Radau PSS 54.88 -> 42.86 s (1.28x), its gear PSS 7.61 -> 7.57 s
+(unchanged); the orbit's digest identical in all twelve.  KLU on the step Jacobian, measured and refused: gear 7.57 ->
+7.78 s (pinned), 7.70 -> 7.84 (unpinned).

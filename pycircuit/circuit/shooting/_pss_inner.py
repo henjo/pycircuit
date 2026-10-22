@@ -2,19 +2,35 @@
 at a point (C, G, the stage derivative).
 """
 import os
+import weakref
 
 import numpy as np
 
 from pycircuit.circuit import _limiting, _paths
 from pycircuit.circuit import pcnr as _pcnr
 from pycircuit.circuit._limiting import devices_at
-from pycircuit.circuit.analysis import insert_row, remove_row_col
+from pycircuit.circuit.analysis import insert_row, jacobian_structure, remove_row_col
+from pycircuit.circuit.linearsolver import MIN_N_FOR_SPARSE, StructuralKLU
+from pycircuit.circuit.toolkit import NumericToolkit
 
 #: a stage walk's per-step trims (speed round 10, B3.4): no limit sync where
 #: nothing keeps limiting state, the stage block in one pass, the step's
 #: reduced matrices only where a walk reads them; env
 #: `PYCIRCUIT_SHOOT_TRIM=0` makes each as before
 SHOOT_TRIM = os.environ.get('PYCIRCUIT_SHOOT_TRIM', '1') != '0'
+
+#: a fully implicit stage method's coupled stage block (Radau's `3 m`)
+#: factored with KLU on its structural pattern
+#: (`_InnerTransient._step_klu`); env `PYCIRCUIT_SHOOT_KLU=0`: the caller's
+#: solver, as before
+SHOOT_KLU = os.environ.get('PYCIRCUIT_SHOOT_KLU', '1') != '0'
+#: from this many unknowns -- the dense/sparse floor
+#: (`linearsolver.MIN_N_FOR_SPARSE`).  Measured on a Howland testbench
+#: (90 unknowns, its block 270): the block's factor and 21-column solve
+#: 227 + 65 us on KLU against dense LAPACK's 540 + ~150, its Radau PSS
+#: 53.77 -> 42.05 s.  A step's own Jacobian is not routed: on the same
+#: testbench's gear PSS (90 unknowns) KLU's per-call cost lost 3 %.
+SPARSE_BLOCK_MIN_N = MIN_N_FOR_SPARSE
 
 
 class _InnerTransient(object):
@@ -34,9 +50,15 @@ class _InnerTransient(object):
         the cost matrix-free exists to avoid.  It is a fallback, not a mode
         to run in.
 
+        A coupled stage block the walk factors on its structure
+        (`_step_klu`) is factored there; a matrix its pattern does not cover
+        goes on to the caller's solver.
+
         History: `doc/shooting_history.md`, `_InnerTransient._factorise`.
         """
-        solver = self._get_linearsolver()
+        solver = (self._step_klu(Jf.shape[0]) if np.ndim(Jf) == 2 else None)
+        if solver is None:
+            solver = self._get_linearsolver()
         fac = solver.factor(Jf, self.toolkit)
         if fac is not None:
             return fac
@@ -53,6 +75,43 @@ class _InnerTransient(object):
                 return solver.solve(A.T, b, toolkit)
         return _PerSolve()
 
+
+    def _step_klu(self, n):
+        """The `StructuralKLU` a coupled stage block of `n` unknowns (``n =
+        s m``, ``s >= 2``: every block on the circuit's structural pattern)
+        is factored with from `SPARSE_BLOCK_MIN_N`, or None (the caller's
+        solver) -- on the numeric toolkit, where no `linearsolver=` was
+        given.  One per size and topology, its symbolic analysis the walk's;
+        each factor is a numeric of its own (`StructuralKLU.factor`), so a
+        step's factors are a function of its block alone.  The last bits
+        move against the dense LU (another pivot order)."""
+        if (not SHOOT_KLU or getattr(self.par, 'linearsolver', None) is not None
+                or not isinstance(self.toolkit, NumericToolkit)):
+            return None
+        m = self.cir.n - 1
+        if m <= 0 or n % m or n == m or n < SPARSE_BLOCK_MIN_N:
+            return None
+        nodemap = self.cir.elementnodemap
+        kept = self.__dict__.setdefault('_step_klus', {})
+        got = kept.get(n)
+        if got is not None and got[0] is nodemap:
+            return got[1]
+        klu = None
+        st = jacobian_structure(self.cir, self.irefnode)
+        if st is not None and st[0] == m:
+            s = n // m
+            _m, r, c = st
+            rows = np.concatenate([r + i * m for j in range(s) for i in range(s)])
+            cols = np.concatenate([c + j * m for j in range(s) for i in range(s)])
+            order = np.lexsort((rows, cols))
+            ref = weakref.ref(self)
+            try:
+                klu = StructuralKLU(n, rows[order], cols[order],
+                                    fallback=lambda: ref()._get_linearsolver())
+            except ImportError:
+                klu = None
+        kept[n] = (nodemap, klu)
+        return klu
 
     def _k_at(self, x_reduced, t=0.0):
         """The reduced STAGE DERIVATIVE `dq/dt = -(i(x) + u(t))` at a point --
