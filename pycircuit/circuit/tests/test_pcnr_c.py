@@ -578,3 +578,48 @@ def test_a_parameter_from_a_parent_s_expression_survives_the_pcnr_view(nested):
     assert np.asarray(got.x).tobytes() == np.asarray(want.x).tobytes()
     v = c['X']['V'] if nested else c['V']
     assert v.iparv.v == 2.0
+
+
+def test_the_device_list_is_kept_until_a_participant_or_the_topology_changes():
+    """`pcnr_devices` keeps its records on the circuit under the view's key:
+    a source's value written keeps them, a participant's parameter or a new
+    element brings new ones -- a new list each call either way."""
+    c = _clamp()
+    first = pcnr.pcnr_devices(c)
+    again = pcnr.pcnr_devices(c)
+    assert again is not first and all(a is b for a, b in zip(first, again))
+    c['v'].ipar.v = 4.0
+    assert all(a is b for a, b in zip(first, pcnr.pcnr_devices(c)))
+    c['d'].ipar.IS = 2e-14
+    moved = pcnr.pcnr_devices(c)
+    assert not any(a is b for a, b in zip(first, moved))
+    _with_resistor(c)
+    assert not any(a is b for a, b in zip(moved, pcnr.pcnr_devices(c)))
+
+
+def test_the_seed_s_refine_through_the_c_kernel_is_the_python_one(monkeypatch):
+    """`pcnr.refine` runs each device's C refine kernel where it has one --
+    the C solve's own -- and gives the Python law's answer to the bit; with
+    the C off, the Python law."""
+    c = _clamp()
+    devs = pcnr.pcnr_devices(c)
+    m = sum(d.m for d in devs)
+    rng = np.random.default_rng(5)
+    served = []
+    real = _pcnr_c.refine
+
+    def spy(*a, **k):
+        out = real(*a, **k)
+        served.append(out is not None)
+        return out
+    monkeypatch.setattr(_pcnr_c, 'refine', spy)
+    for _ in range(20):
+        x = rng.uniform(-1.0, 6.0, c.n)
+        v_old, v_new = rng.uniform(-1.0, 3.0, m), rng.uniform(-2.0, 8.0, m)
+        monkeypatch.setattr(_pcnr_c, 'ENABLED', True)
+        on = pcnr.refine(devs, v_old, v_new, x_old=x)
+        monkeypatch.setattr(_pcnr_c, 'ENABLED', False)
+        off = pcnr.refine(devs, v_old, v_new, x_old=x)
+        assert on.tobytes() == off.tobytes()
+    assert served and all(served)
+

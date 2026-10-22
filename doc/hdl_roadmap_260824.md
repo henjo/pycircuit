@@ -10723,3 +10723,30 @@ pending note).  test_hdl_diagnostics run alone in the main tree: 34 passed, the 
 failed only test_runtime_map's no-history-in-C-modules rule on this change's own docstring, fixed);
 test_hdl_diagnostics alone in the main tree 34 passed; the pinned pairs 72 passed; the 27 gold decks, transient and
 standalone DC, against 183: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-10-22 — 186. The PCNR device list kept on the circuit and the seed's limiting through each class's C refine kernel -- the Howland session's seven DAC sweeps 1.28..2.08x a point again (median 1.68x), every answer bit-identical
+
+**Why**  Item 2's S2a.  After the set-up was kept across source writes, a sweep point still redid two things on every
+solve: `pcnr_devices` built new device records up to three times a solve (13..15 % of a point, profiled), and the
+seed's limiting -- `v_lim_init` -> `refine` -- ran each participant's generated Python law (37..48 %), though each
+class has a C refine kernel, the one PCNR's C solve runs and pinned to `PcnrDevice.limit` bit for bit.
+
+**Built.**  pcnr: `pcnr_devices` keeps its records on the circuit under the view's key (the parameter epoch, the
+elements dict, the node map, the size), a new list each call; `refine` runs `_pcnr_c.refine` per device where the
+class has a kernel and the C is on, the device's Python law where it declines or the C is off.  _pcnr_c: `_packed`
+declines a class whose `i` has no C binding (it raised AttributeError, asked for a refine alone). Pinned pair "the
+PCNR DC solve and its C" re-recorded (its reference holds `refine`; the twin's digest unchanged).
+
+**Tests.**  Measured (scratch bench, the sweeps as the Howland session runs them -- `ipar.v` written, a new DC per
+point -- quiet box, warm best of 5, two processes per tree interleaved), b06c28fe -> this, ms a point: two_opamps 3.86
+-> 2.33, csa_inverting 4.56 -> 3.57, low_side_sink 1.63 -> 0.78, csa_ref 2.66 -> 1.71, current_monitor 1.67 -> 0.83,
+csa_pfet 2.11 -> 1.26, parallel_howland 3.31 -> 1.80 (median 1.68x, the line >= 1.25x); DCSweep 1.12..1.46x; every
+answer bit-identical.
+
+tests: test_pcnr_c, 2, failing on the old code -- the device records kept through a source write and renewed by a
+participant's parameter or an element added; the seed's refine with the C on equals it with the C off, to the bit, and
+the kernel served.
+
+**Gate**: the suite in the main tree, 5 719 passed (6 skipped, 3 xfailed), no failure, no error, no leak (before the
+two tests were added; test_pcnr_c with them, 48 passed); the pinned pairs 72 passed; the 27 gold decks, transient and
+standalone DC, against 185: every digest, step, rejection, Newton count and path count identical.

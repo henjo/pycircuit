@@ -296,12 +296,24 @@ def _device_of(instance, element, rows):
 
 
 def pcnr_devices(circuit):
-    """Every PCNR-participating device, with its offset into ``v_lim``."""
-    found = []
+    """Every PCNR-participating device, with its offset into ``v_lim``.
+
+    KEPT on the circuit, keyed as its view (`pcnr_view`): the parameter
+    epoch, the elements dict and the node map -- a solve asks for them up
+    to three times and a sweep at every point, and they follow the topology
+    and the participants' parameters alone (a device's `_kmap` memo is keyed
+    on the temperature, and its parameters under the epoch).  A new list
+    each call, the same records in it."""
     elements = getattr(circuit, 'elements', None)
     if not elements:
-        return found
+        return []
     nodemap = circuit.elementnodemap
+    key = (ParameterDict._epoch, elements, nodemap, circuit.n)
+    kept = circuit.__dict__.get('_pcnr_devices')
+    if (kept is not None and kept[0][0] is key[0] and kept[0][1] is key[1]
+            and kept[0][2] is key[2] and kept[0][3] == key[3]):
+        return list(kept[1])
+    found = []
     off = 0
     for instance, element in elements.items():
         dev = _device_of(instance, element, nodemap[instance])
@@ -310,7 +322,8 @@ def pcnr_devices(circuit):
         dev.off = off
         off += dev.m
         found.append(dev)
-    return found
+    circuit.__dict__['_pcnr_devices'] = (key, tuple(found))
+    return list(found)
 
 
 _REMAINDER_CLASSES = {}
@@ -892,11 +905,12 @@ def refine(junctions, v_old, v_new, epar=defaultepar, x_old=None):
     reading between probes: that was forced on the ordinary path by node
     write-back, and PCNR writes no node.
     """
+    from pycircuit.circuit import _pcnr_c
     devices = _as_devices(None, junctions)
     out = np.array(v_new, dtype=float, copy=True)
+    c_on = _pcnr_c.ENABLED
     for dev in devices:
         off, m = dev.off, dev.m
-        params = dev.params()
         x_sub = None
         if x_old is not None and dev.rows is not None:
             x_sub = np.asarray(x_old, dtype=float)[np.asarray(dev.rows,
@@ -905,8 +919,19 @@ def refine(junctions, v_old, v_new, epar=defaultepar, x_old=None):
         ## architecture -- one unknown per limited quantity, nothing shared,
         ## so no device's limiter can disturb another's -- and the device
         ## supplies the limiter, which is the paper's modularity claim.
-        out[off:off + m] = dev.limit(out[off:off + m], v_old[off:off + m],
-                                     params, epar, x_sub)
+        ## (Through its class's C refine kernel where it has one -- the
+        ## kernel PCNR's C solve runs, `PcnrDevice.limit`'s answer bit for
+        ## bit, `_pcnr_c.refine`: a solve's seed and a sweep point's are
+        ## then a call each, not a generated Python function per device.
+        ## With the C switched off, or declined, the device's own.)
+        got = None
+        if c_on and x_sub is not None and not dev.scalar:
+            got = _pcnr_c.refine(dev, out[off:off + m], v_old[off:off + m],
+                                 epar, x_sub)
+        if got is None:
+            got = dev.limit(out[off:off + m], v_old[off:off + m],
+                            dev.params(), epar, x_sub)
+        out[off:off + m] = got
     return out
 
 

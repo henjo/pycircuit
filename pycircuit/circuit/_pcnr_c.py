@@ -259,7 +259,9 @@ def _packed(el):
     if packed is None:
         try:
             packed = type(el)._hdl_info['funcs']['i']._hdl_c.pack(el)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, AttributeError):
+            ## (AttributeError: a class whose `i` has no C binding -- one
+            ## the C solve declines, asked for its refine alone)
             packed = False
         el.__dict__['_hdl_cp'] = packed
     return packed or None
