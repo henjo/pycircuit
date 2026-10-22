@@ -360,6 +360,67 @@ def test_parameter_propagation_at_instantiation():
     a['R1'].update_iparv(a.iparv, gp)
     assert a['R1'].iparv.r == 30
 
+def _resolved_hierarchy(nested=True):
+    """A parameterised circuit `a` (x = 20) holding R1 (r = '10+x'), and
+    (`nested`) an instance I1 of the same class (x = 'x') holding R1
+    (r = 'x+20')."""
+    pycircuit.circuit.circuit.default_toolkit = numeric
+
+    class A(SubCircuit):
+        instparams = [Parameter('x', default=0.0)]  # noqa: RUF012
+
+    a = A(x=20.0)
+    a['R1'] = R(1, 0, r='10+x')
+    if nested:
+        a['I1'] = A(x='x')
+        a['I1']['R1'] = R(1, 0, r='x+20')
+    return a
+
+
+def test_an_element_s_own_write_resolves_against_its_parent():
+    """An element's own parameter write re-resolves its parameters against
+    the parent it was last resolved in: another parameter given as an
+    expression of the parent's keeps its value, and a new expression
+    written onto it resolves (until 2026-10-22 it resolved against nothing:
+    r fell back to its default, 1 kohm, after `noisy` was written)."""
+    a = _resolved_hierarchy()
+    assert a['R1'].iparv.r == 30.0
+    a['R1'].ipar.noisy = False
+    assert a['R1'].iparv.r == 30.0
+    a['R1'].ipar.r = '5+x'
+    assert a['R1'].iparv.r == 25.0
+    ## (a nested instance's own write: its parameter from the top's, its
+    ## element's from it)
+    a['I1'].ipar.x = 'x*2'
+    assert a['I1'].iparv.x == 40.0
+    assert a['I1']['R1'].iparv.r == 60.0
+    a['I1']['R1'].ipar.noisy = False
+    assert a['I1']['R1'].iparv.r == 60.0
+
+
+def test_a_copied_circuit_s_elements_resolve_against_the_copy():
+    """(A flat circuit: copying one that holds a subcircuit instance raises
+    KeyError in `update_node_map`, before and after.)"""
+    a = _resolved_hierarchy(nested=False)
+    b = copy(a)
+    b.ipar.x = 50.0
+    assert b['R1'].iparv.r == 60.0
+    b['R1'].ipar.noisy = False
+    assert b['R1'].iparv.r == 60.0
+    assert a['R1'].iparv.r == 30.0
+
+
+def test_an_unchanged_resolution_context_is_not_rewritten():
+    """The remembered context is stored only when it changes: a re-resolution
+    in the same parent leaves the element's dict as it was (the dict-watch
+    stamps read it)."""
+    a = _resolved_hierarchy()
+    ctx = a['R1'].__dict__['_resolved_in']
+    a.update_iparv()
+    a['R1'].ipar.noisy = False
+    assert a['R1'].__dict__['_resolved_in'] is ctx
+
+
 def test_parameter_at_instantiation_with_add_instance ():
     """Test instance parameter value propagation through hierarchy with add_instance"""
     pycircuit.circuit.circuit.default_toolkit = symbolic

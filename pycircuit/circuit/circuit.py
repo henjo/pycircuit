@@ -309,10 +309,14 @@ class Circuit():
             newc.update(newc.ipar)
         newc.linear = copy(self.linear)        
         newc.terminals = copy(self.terminals)
+        if '_resolved_in' in self.__dict__:
+            newc._resolved_in = self._resolved_in
         return newc
 
     def _ipar_changed(self, subject):
-        self.update_iparv(ignore_errors=True)
+        ## (against the context it was last resolved in, `update_iparv`)
+        parent_ipar, globalparams = self.__dict__.get('_resolved_in', (None, None))
+        self.update_iparv(parent_ipar, globalparams, ignore_errors=True)
 
     def add_nodes(self, *names):
         """Create internal nodes in the circuit and return the new nodes
@@ -974,8 +978,24 @@ class Circuit():
 
     def update_iparv(self, parent_ipar=None, globalparams=None,
                      ignore_errors=False):
-        """Calculate numeric values of instance parameters"""
-        
+        """Calculate numeric values of instance parameters, against the
+        parent's resolved parameters and the globals where given.
+
+        The context is REMEMBERED (`_resolved_in`; a missing part keeps the
+        one remembered): the element's own write (`_ipar_changed`) resolves
+        against it.  ⚠ Until 2026-10-22 an element's own write resolved
+        against nothing, and every OTHER parameter given as an expression of
+        a parent's fell back to its default (`R(r='10+x')`, x = 20: 30 ohm,
+        and 1 kohm after its `noisy` was written).  Stored only when it
+        changes: the dict-watch stamps read the element's dict (`_watch`).
+        """
+        if parent_ipar is not None or globalparams is not None:
+            old = self.__dict__.get('_resolved_in', (None, None))
+            ctx = (old[0] if parent_ipar is None else parent_ipar,
+                   old[1] if globalparams is None else globalparams)
+            if ctx[0] is not old[0] or ctx[1] is not old[1]:
+                self._resolved_in = ctx
+
         substvalues = tuple(p for p in (globalparams, parent_ipar) if p)
             
         newipar = self.ipar.eval_expressions(substvalues, 
@@ -1129,7 +1149,11 @@ class SubCircuit(Circuit):
         newc = super().__copy__()        
         newc.elements = {}
         for instance_name, element in self.elements.items():
-            newc.elements[instance_name] = copy(self.elements[instance_name])
+            newc.elements[instance_name] = el = copy(self.elements[instance_name])
+            ## (a copied element resolves against the copy's parameters)
+            ctx = el.__dict__.get('_resolved_in')
+            if ctx is not None and ctx[0] is self.iparv:
+                el._resolved_in = (newc.iparv, ctx[1])
         newc.elementnodemap = copy(self.elementnodemap)
         newc.term_node_map = copy(self.term_node_map)
         

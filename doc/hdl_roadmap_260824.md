@@ -10526,3 +10526,29 @@ written, a new `DC` per point from the last answer -- and `DCSweep` on three; ev
 entry; the 27 gold decks, transient and standalone DC, against 175: every digest, step, rejection, Newton count and path
 count identical.  The line's last clause -- no gold transient slower than its lottery band + 3 % -- is
 NOT YET MEASURED (the box was not quiet); it is measured after this commit.
+
+## 2026-10-22 — 177. An element's own parameter write resolves against its parent: expressions of a parent's parameter survive it
+
+**Why** (found while planning item 2, confirmed by running it; Andreas: "Build A", of three options).  An element's
+own write (`elem.ipar.x = ...`) re-resolved ALL its parameters through `_ipar_changed` -> `update_iparv()` with no
+parent, so every other parameter given as an expression of a parent's failed to resolve -- under `ignore_errors` --
+and fell back to its default: `R(r='10+x')` in a circuit with x = 20 read 30 ohm, and 1 kohm after its `noisy` was
+written.  A new expression written onto a leaf never resolved at all.  The two other options -- keep the last value
+where an expression cannot resolve; re-resolve only the written names -- leave a new parent expression written onto
+a leaf silently stale.
+
+**Built.**  `Circuit.update_iparv` REMEMBERS the context it resolved in (`_resolved_in`: the parent's resolved
+parameters and the globals; a missing part keeps the one remembered, so the parent's observer path, which passes no
+globals, does not drop them), stored only when it changes -- the dict-watch stamps read the element's dict.
+`_ipar_changed` resolves against it, so a nested instance's own write resolves against its parent and re-resolves
+its children.  `Circuit.__copy__` keeps the context; `SubCircuit.__copy__` points a copied element whose context was
+the original circuit at the copy.  The PCNR view places elements without resolving them (175), so it never becomes
+their context.  Tests (`test_circuit`, 3, failing on the old code): a leaf's own write keeps another parameter's
+parent expression, and a new parent expression written onto it resolves, a nested instance's too; a copied circuit's
+element resolves against the copy; a re-resolution in the same parent leaves the context object as it was.
+
+**Found, not changed**: copying a circuit that holds a subcircuit instance raises `KeyError` in `update_node_map`
+(before and after this change).
+
+**Gate**: the suite, 5 699 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone DC, against 176: every
+digest, step, rejection, Newton count and path count identical.
