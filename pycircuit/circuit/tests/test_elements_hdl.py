@@ -1484,3 +1484,22 @@ def test_ddx_sees_through_var_intermediates():
     assert_allclose(i[2], 3 * 2.0 * 0.7 ** 2 + 1.7 * np.exp(0.7), rtol=1e-14)
     assert_allclose(i[2], np.asarray(el.G(x), dtype=float)[0, 0], rtol=1e-14)
     assert_allclose(i[4], 2.0 * 0.7, rtol=1e-14)
+
+
+@pytest.mark.parametrize('cls, name, value', [
+    (eh.MosLevel1Hdl, 'gamma', 0.5),
+    (eh.MosLevel3Hdl, 'gamma', 0.5),
+    (eh.MosLevel1GateChargeHdl, 'phi', 0.8),
+], ids=['level1-gamma', 'level3-gamma', 'level1-gate-charge-phi'])
+def test_a_given_or_derived_parameter_written_by_attribute_is_the_given_one(cls, name, value):
+    """`gamma` and `phi` follow SPICE's rule -- given, or derived from `nsub`
+    and `tox`; one written by attribute after construction is GIVEN, and
+    the device is the one built with it (until 2026-10-22 the attribute
+    write left it underived-from: the written value was ignored)."""
+    x = np.array([1.2, 0.9, 0.1, 0.0])
+    m = cls('d', 'g', 's', 'b', toolkit=numeric, nsub=1e16, tox=2e-8)
+    setattr(m.ipar, name, value)
+    fresh = cls('d', 'g', 's', 'b', toolkit=numeric, nsub=1e16, tox=2e-8, **{name: value})
+    for meth in ('G', 'i', 'C', 'q'):
+        assert np.asarray(getattr(m, meth)(x)).tobytes() == np.asarray(getattr(fresh, meth)(x)).tobytes(), meth
+

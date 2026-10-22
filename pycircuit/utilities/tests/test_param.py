@@ -197,3 +197,29 @@ def test_update_parameterdict():
     assert paramdict1.gm == 30
     assert paramdict2.gm == 30
     
+
+
+def test_an_attribute_write_gives_the_parameter_and_checks_its_range():
+    """`pd.x = v` is `pd.set(x=v)`: the name GIVEN (a compact model branches
+    on `$param_given`) and its declared range enforced -- until 2026-10-22
+    an attribute write did neither."""
+    pd = ParameterDict(Parameter('x', default=1.0, minval=0.0), Parameter('y', default=2.0))
+    assert not pd.is_given('x')
+    pd.x = 3.0
+    assert pd.is_given('x') and pd.x == 3.0
+    with pytest.raises(ValueError):
+        pd.x = -1.0
+    pd.forget('x')
+    assert not pd.is_given('x') and pd.x == 3.0
+
+
+def test_resolving_expressions_carries_what_was_given():
+    """The resolved dict is GIVEN what the source was given -- not every
+    name it resolved."""
+    parent = ParameterDict(Parameter('w', default=1.0))
+    pd = ParameterDict(Parameter('x', default=1.0), Parameter('y', default=2.0))
+    pd.set(y='w+1')
+    out = pd.eval_expressions((parent,))
+    assert out.y == 2.0
+    assert out.is_given('y') and not out.is_given('x')
+

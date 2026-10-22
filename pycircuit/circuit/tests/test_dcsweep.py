@@ -54,6 +54,21 @@ def test_dcsweep_restores_the_swept_parameter():
     assert float(cir['V1'].ipar.v) == pytest.approx(1.25)
 
 
+def test_dcsweep_restores_whether_the_swept_parameter_was_given():
+    """The sweep's writes GIVE the parameter (a model may branch on
+    `$param_given`): one that was not given is left not given, one that was
+    is left given."""
+    cir = _divider()
+    assert not cir['R1'].ipar.is_given('noisy')
+    DCSweep(cir, toolkit=numeric).solve('R1', 'r', [1e3, 2e3])
+    assert cir['R1'].ipar.is_given('r')
+    cir2 = _divider()
+    cir2['V1'].ipar.forget('v')
+    DCSweep(cir2, toolkit=numeric).solve('V1', 'v', [0.0, 1.0])
+    assert not cir2['V1'].ipar.is_given('v')
+    assert cir2['V1'].ipar.v == 0.0
+
+
 def test_dcsweep_restores_the_parameter_even_when_a_point_fails():
     """The restore is in a `finally`, and this is what proves it."""
     cir = _divider()

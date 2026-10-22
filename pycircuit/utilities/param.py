@@ -146,6 +146,13 @@ class ParameterDict(ObserverSubject):
         """Was `name` set explicitly, rather than left at its default?"""
         return name in self._given
 
+    def forget(self, name):
+        """Mark `name` as not given, its value kept: what a caller that wrote
+        a parameter for a while (`DCSweep`) restores."""
+        if name in self._given:
+            self._given.discard(name)
+            self.notify(names=None)
+
     def get(self, param):
         """Get value by parameter object or parameter name"""
         if isinstance(param, Parameter):
@@ -211,7 +218,10 @@ class ParameterDict(ObserverSubject):
                         msg = "Can't evaluate %s (%s)" % (paramname, expr)
                         raise EvalError(msg)
                 else:
-                    setattr(out, paramname, value)
+                    ## (the value alone: what was GIVEN is what the user
+                    ## wrote, carried across below, not every name resolved)
+                    out._values[paramname] = value
+        out._given = set(self._given)
 
         return out
 
@@ -246,8 +256,9 @@ class ParameterDict(ObserverSubject):
         ## when it differs: the dict-watch stamps read this dict, `_watch`)
         given = set(getattr(d, '_given', ()))
         if given != self._given:
+            flipped = given ^ self._given
             self._given = given
-            changed = None
+            changed = changed + sorted(flipped) if self._live.issuperset(flipped) else None
         self.notify(d._values.keys(), names=changed)
 
     def __getitem__(self, key):
@@ -274,7 +285,13 @@ class ParameterDict(ObserverSubject):
 
     def __setattr__(self, key, value):
         if hasattr(self, '_parameters') and key in self._parameters:
+            ## (as `set`: the range checked and the name GIVEN -- until
+            ## 2026-10-22 an attribute write did neither, and a model that
+            ## branches on `$param_given` ignored the written value: the MOS
+            ## levels' `gamma` and `phi`, derived from `nsub` and `tox`)
+            self._check_range(key, value)
             self._values[key] = value
+            self._given.add(key)
             self.notify(args=(key,), names=(key,))
         else:
             self.__dict__[key] = value

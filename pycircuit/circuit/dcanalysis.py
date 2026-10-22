@@ -799,6 +799,7 @@ class DCSweep(Analysis):
             raise ValueError('values is empty; nothing to sweep')
 
         original = getattr(element.ipar, param)
+        was_given = element.ipar.is_given(param)
         dc = DC(self.cir, toolkit=self.toolkit,
                 refnode=self.refnode if refnode is None else refnode,
                 epar=self.par.epar,
@@ -822,6 +823,10 @@ class DCSweep(Analysis):
             ## subsequent analysis on the same circuit depend on it -- exactly the
             ## defect stage 8(d) found in TLine.
             setattr(element.ipar, param, original)
+            ## (and whether it was GIVEN: the sweep's writes give it, and a
+            ## model may branch on that, `$param_given`)
+            if not was_given:
+                element.ipar.forget(param)
             self.cir.update_iparv()
 
         X = numpy.array(columns).T

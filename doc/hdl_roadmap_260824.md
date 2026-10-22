@@ -10552,3 +10552,24 @@ element resolves against the copy; a re-resolution in the same parent leaves the
 
 **Gate**: the suite, 5 699 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone DC, against 176: every
 digest, step, rejection, Newton count and path count identical.
+
+## 2026-10-22 — 178. A parameter written by attribute is given and range-checked, as one written by set -- the MOS levels' `gamma` and `phi` written after construction are the device's (an attribute write was ignored: they stayed derived from nsub and tox)
+
+**Why**  `pd.x = v` stored the value and nothing else: the name was not GIVEN and its declared range was not checked,
+both of which `set` does.  A model that branches on $param_given -- SPICE's MOS levels 1-3 take `gamma` and `phi` as
+given or derive them from `nsub` and `tox` -- ignored a value written the usual way, `m.ipar.gamma = 0.5`: 21
+class/parameter pairs in the library (a sweep of every element class's parameters written after construction against a
+fresh instance built with them).
+
+**Built.**  param: `__setattr__` checks the range and gives the name; `eval_expressions` writes the resolved values
+without giving them and carries what the source was given; `forget(name)` un-gives a name; a change of given flags
+that only live names make keeps the epoch. dcanalysis: DCSweep restores whether the swept parameter was given.
+
+**Tests.**  tests (6, failing on the old code): test_param -- an attribute write gives and range-checks, forget
+un-gives, resolution carries what was given; test_elements_hdl -- MOS level 1 and 3 `gamma`, level 1 gate charge
+`phi`, written by attribute, give the stamps of a device built with them, to the bit; test_dcsweep -- a swept
+parameter that was not given is left not given.
+
+**Gate**: the suite, 5 705 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone DC, against 177:
+every digest, step, rejection, Newton count and path count identical; the library sweep of parameters written after
+construction: 34 pairs differing before, 13 after (the 21 given-or-derived MOS ones gone).
