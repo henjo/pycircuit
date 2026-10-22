@@ -217,3 +217,57 @@ def test_dcsweep_takes_the_dc_tolerances_and_hands_them_to_its_inner_dc():
     assert seen['vabstol'] == 1e-12 and seen['reltol'] == 1e-6 \
         and seen['maxiter'] == 57, seen
     assert np.asarray(res.v('n4', gnd), dtype=float).shape[-1] == 3
+
+
+def _ladder(n_sections=160):
+    """A source, a resistor ladder of `n_sections` (over the 150 unknowns
+    from which a DC factors on the circuit's structure with KLU) and a diode
+    at its end."""
+    cir = SubCircuit(toolkit=numeric)
+    cir['V1'] = VS('n0', gnd, v=1.0)
+    for k in range(n_sections):
+        cir[f'R{k}'] = R(f'n{k}', f'n{k + 1}', r=10.0)
+        cir[f'G{k}'] = R(f'n{k + 1}', gnd, r=1e5)
+    cir['D'] = Diode(f'n{n_sections}', gnd)
+    return cir
+
+
+def test_a_dc_per_point_keeps_the_circuit_s_solver():
+    """A new DC per point of a sweep -- the usual way to write one -- keeps
+    the circuit's default solver: its choice (KLU on the structure, here),
+    its analysis and its factorisation; an explicit solver is the DC's
+    own; a topology change brings a new one."""
+    from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
+    cir = _ladder()
+    a = DC(cir)
+    with quiet():
+        x = a.solve().x
+    solver = a._get_linearsolver()
+    assert type(solver) is AutoSolver and isinstance(solver._choice, StructuralKLU)
+    cir['V1'].ipar.v = 0.9
+    b = DC(cir)
+    with quiet():
+        b.solve(x0=x)
+    assert b._get_linearsolver() is solver
+    own = AutoSolver()
+    assert DC(cir, linearsolver=own)._get_linearsolver() is own
+    cir['Rx'] = R('n1', gnd, r=1e3)
+    c = DC(cir)
+    with quiet():
+        c.solve()
+    assert c._get_linearsolver() is not solver
+
+
+def test_a_kept_klu_solver_answers_as_a_fresh_one_to_the_rounding():
+    """A point solved on the kept solver reuses the last point's pivots:
+    its answer is a fresh solver's to the rounding."""
+    from pycircuit.circuit.linearsolver import AutoSolver
+    cir = _ladder()
+    with quiet():
+        x = DC(cir).solve().x
+        cir['V1'].ipar.v = 0.9
+        kept = np.asarray(DC(cir).solve(x0=x).x, dtype=float)
+        fresh = np.asarray(DC(cir, linearsolver=AutoSolver(
+            structure=None)).solve(x0=x).x, dtype=float)
+    assert np.allclose(kept, fresh, rtol=1e-12, atol=1e-15)
+

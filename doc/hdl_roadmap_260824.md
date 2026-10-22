@@ -10750,3 +10750,29 @@ the kernel served.
 **Gate**: the suite in the main tree, 5 719 passed (6 skipped, 3 xfailed), no failure, no error, no leak (before the
 two tests were added; test_pcnr_c with them, 48 passed); the pinned pairs 72 passed; the 27 gold decks, transient and
 standalone DC, against 185: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-10-22 — 187. A DC's default linear solver kept on the circuit -- one DC per sweep point keeps the solver's choice, its KLU analysis and its factorisation, as one DC object across the points always did (answers move at the rounding level where KLU reuses its pivots)
+
+**Why**  Item 2's S2b (Andreas: "Build s2a and s2b", the bit moves accepted). The usual way to write a DC sweep makes
+a new DC per point, and each new DC made a new AutoSolver: on a circuit of 150 unknowns or more it chose StructuralKLU
+again, built the circuit's structure and ran KLU's symbolic analysis, every point.  One DC object kept across the
+points (and DCSweep) never paid that.
+
+**Built.**  dcanalysis: `DC._get_linearsolver` takes, where no solver is given, the circuit's kept AutoSolver
+(`_circuit_solver`: per element node map object, size, reference node and structural floor; its structural pattern
+read from the circuit, held weakly).  An explicit solver is the DC's own.  Where the solver is KLU a point's
+factorisation reuses the last point's pivots: against a fresh solver the answers move at the rounding level (the
+Howland sweeps: two_opamps 2.2e-16 V at most, parallel_howland 8.8e-14 V; the five dense ones bit-identical).
+
+**Tests.**  Measured (scratch bench, the sweeps as the Howland session runs them, the box idle, two processes per tree
+interleaved), 1ea29982 -> this, ms a point: two_opamps 2.37 -> 1.29 (1.84x) and parallel_howland 1.80 -> 0.70 (2.57x)
+-- the two that factor with KLU; the five dense ones and DCSweep unchanged (0.99..1.02x).
+
+tests: test_dcsweep -- a new DC per point keeps the circuit's solver (KLU on a 160-section ladder), an explicit one is
+the DC's, a topology change brings a new one (failing on the old code); a point on the kept solver equals a fresh
+solver's to 1e-12.
+
+**Gate**: the suite in the main tree, 5 723 passed (6 skipped, 3 xfailed), no failure, no error, no leak
+(test_dcsweep's helper then given f-strings for the lint; its file rerun, 11 passed); the pinned pairs 72 passed; the
+27 gold decks, transient and standalone DC, against 186: every digest, step, rejection, Newton count and path count
+identical (one DC a process: nothing kept to reuse).

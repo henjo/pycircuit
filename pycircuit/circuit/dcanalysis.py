@@ -9,6 +9,30 @@ from pycircuit.circuit import _blas, _stamp_plan
 from pycircuit.circuit.circuit import SubCircuit
 from pycircuit.circuit.linearsolver import MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES
 
+def _circuit_solver(cir, iref, floor):
+    """The DC default AutoSolver of `cir`, kept on it (`_dc_solver`) per
+    topology -- the element node map object -- size, reference node and
+    structural floor; its structural pattern read from the circuit (held
+    weakly: the circuit holds the solver)."""
+    import weakref
+
+    from pycircuit.circuit.analysis import jacobian_structure
+    from pycircuit.circuit.linearsolver import AutoSolver
+    nodemap = cir.elementnodemap
+    key = (cir.n, iref, floor)
+    kept = cir.__dict__.get('_dc_solver')
+    if kept is not None and kept[0] is nodemap and kept[1] == key:
+        return kept[2]
+    ref = weakref.ref(cir)
+
+    def structure():
+        c = ref()
+        return None if c is None else jacobian_structure(c, iref)
+    solver = AutoSolver(structure=structure, structural_min_n=floor)
+    cir.__dict__['_dc_solver'] = (nodemap, key, solver)
+    return solver
+
+
 class DC(Analysis):
     """DC analyis class
     
@@ -58,6 +82,22 @@ class DC(Analysis):
     #: (`linearsolver.MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES`): every
     #: operating point, a transient's included
     _STRUCTURAL_KLU_MIN_N = MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES
+
+    def _get_linearsolver(self):
+        """The default solver KEPT ON THE CIRCUIT (`_circuit_solver`), an
+        explicit one as given: one DC per point of a sweep -- the usual way
+        to write one -- then keeps the AutoSolver's choice, its KLU symbolic
+        analysis and its factorisation from point to point, as a DC object
+        kept across them (and `DCSweep`) always did.  Where the solver is
+        KLU, a point's factorisation reuses the last point's pivots: the
+        answers move at the rounding level against a fresh solver."""
+        if getattr(self.par, 'linearsolver', None) is not None:
+            return super()._get_linearsolver()
+        solver = self.__dict__.get('_default_linearsolver')
+        if solver is None:
+            solver = self._default_linearsolver = _circuit_solver(
+                self.cir, getattr(self, 'irefnode', None), self._STRUCTURAL_KLU_MIN_N)
+        return solver
 
     parameters = [Parameter(name='reltol', desc='Relative tolerance', unit='', 
                             default=1e-4),
