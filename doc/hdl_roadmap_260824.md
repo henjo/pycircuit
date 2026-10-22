@@ -10374,3 +10374,42 @@ reference `VS.u` / `IS.u` changed in the AC branch alone; the twin, the time-dom
 
 **Gate**: the suite, 5 642 passed (6 skipped, 3 xfailed) -- its first run failed six tests, the probe's PAC
 Jacobian and three references that divided by the sine's phase as the AC phase, each now giving `acphase` = `phase`.
+
+## 2026-10-22 — 173. A circuit written out as standalone Python: `export.to_python`, checked against the original
+
+**Why** (the Howland session's proposal, 2026-10-22; Andreas: "build exporter", after its sizing met the line).
+Every reproduction a user sent needed a flat circuit written out as Python, and each went wrong on a pycircuit
+internal a hand copy cannot keep in step: the node order (the unknowns' order steers the solver from zeros), the
+parameters' givenness (a level 3 MOS computes PHI from NSUB only where PHI is not given), a keyword-named parameter
+(`as`), a collapse variant (`X_collapseNN`), a `BSourceHdl_<hash>` class, a user class.
+
+**Sized first** (plan 'A CIRCUIT-TO-PYTHON EXPORTER', the line written before measuring; prototype in scratch): (a)
+all 27 gold decks round-trip exactly (node and branch order, i/G/C/q at random x, u, the DC answer bit for bit, the 22
+transients under 5 s identical); (b) 90 library classes, 180 of 180 cases exact or refused by name; (c) the user
+session's 13 circuits exact, its buck's transient identical; (d) the check alive (givenness dropped, first-use node
+order, a replaced source function: each caught); (e) jge exported and checked in 0.74 s.  It also found 172's
+doubled `phase`.
+
+**Built.**  `pycircuit/circuit/export.py`: `to_python(cir, name, check=True, allow_source=True)` -- the source of a
+module whose `name()` rebuilds the flat circuit: the nodes in `cir.nodes` order first (gnd in its slot), the elements
+in order, each its class (a collapse variant as its base; a BSourceHdl from `bsource_exprs` by `sympy.srepr`; a class
+outside the library from its source) and only its GIVEN parameters, raw from `ipar`, a keyword through `**{}`, values
+by `repr`; refused by name (`ExportError`): hierarchy, another toolkit, a callable or object parameter, a class local
+to a function.  The check rebuilds each element beside the original and compares i/q/G/C at random x, u (dc, tran,
+ac), `next_event` and CY bit for bit, the stateful limiters' analysis state cleared on both sides and put back --
+state the parameters do not hold raises, never a silently different circuit.  `selfcheck(cir, src)` compares the
+whole rebuilt circuit the same way (None, or the first difference); `rebuild(src, name)`; `x0_to_python(x)`.
+Measured on the build: the gold decks rca, mosrect, gm1, opampal, jge exact with the DC bit for bit (jge's 568
+elements: export with its check 0.64 s, the selfcheck 0.52 s, best of 3 under a suite's load -- the noise matrix
+compared at one x, an HDL class's CY being Python's); the user session's 13 circuits exact, the buck's transient identical
+(scratch only).  Tests: `test_export.py` -- an imported deck (level 3 MOS with `as`, a collapsed diode, a pulse, a
+sine with its two phases) round-trips with its DC and transient bit for bit; a copy with every parameter given, and
+one with its nodes in first-use order, caught; a BSourceHdl and a user class; the refusals; a replaced source
+function; a diode's limiter state compared from none and put back; a sine's AC phase seen by the check; a resistance
+an ulp off caught; a start vector exact; another toolkit refused.  `test_radau_fold`'s counted A/B runs now hold the
+collector off (test_watch's convention): in this build's first full run one xdist worker freed a watched dict in the
+middle of a run -- the watch counter moved and one fused hand-off was dropped (`radau.fuse:unhanded`, a count, never a
+value), which the test's exact count comparison read as a difference.
+
+**Gate**: the suite, 5 653 passed (6 skipped, 3 xfailed); the exporter's module doctest; the user session's 13
+circuits exact on the build (scratch only).

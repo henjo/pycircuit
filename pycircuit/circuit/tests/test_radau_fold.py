@@ -6,6 +6,7 @@ flags, enumerated and drawn; the packed values `_csc_of_dense`'s where the
 pattern is the last record's, none elsewhere; a non-finite entry numpy's;
 `prepare_values` `prepare`'s record; the frozen transform, a radau PSS and
 the transform transients the same with the fold off."""
+import gc
 import warnings
 
 import numpy as np
@@ -279,10 +280,15 @@ def _pss(on):
             warnings.simplefilter('always')
             warnings.simplefilter('ignore', ResourceWarning)
             p = PSS(_stage(), method='radau', reltol=1e-8)
+            ## (the counts compared: a watched dict the collector frees moves
+            ## the watch counter, and a hand-off is then dropped -- test_watch)
+            gc.collect()
+            gc.disable()
             before = _paths.snapshot()
             p.solve(period=1e-6, timestep=1e-6 / 40, maxiterations=60)
             d = _paths.since(before)
     finally:
+        gc.enable()
         TC.FOLD = old
     out = (np.asarray(p.waveform[1], float).tobytes(), np.asarray(p._monodromy, float).tobytes(),
            sorted(str(w.message) for w in W))
@@ -297,10 +303,14 @@ def _transient_run(on, **kw):
             warnings.simplefilter('always')
             warnings.simplefilter('ignore', ResourceWarning)
             tr = _transient()
+            ## (the counts compared: as `_pss`)
+            gc.collect()
+            gc.disable()
             before = _paths.snapshot()
             res = tr.solve(tend=6e-7, timestep=2e-8, **kw)
             d = _paths.since(before)
     finally:
+        gc.enable()
         TC.FOLD = old
     out = (np.asarray(res.x, float).tobytes(), sorted(str(w.message) for w in W))
     return out, {k: v for k, v in d.items() if not k.startswith('once:')}
