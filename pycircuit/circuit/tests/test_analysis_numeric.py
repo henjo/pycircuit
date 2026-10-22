@@ -6,6 +6,7 @@ import pycircuit.circuit.circuit
 from pycircuit.circuit import *
 from pycircuit.circuit.tests._warnpolicy import quiet
 import numpy as np
+import pytest
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 from .test_circuit import create_current_divider
 import unittest
@@ -160,3 +161,35 @@ def test_ac_and_noise_at_a_given_operating_point_read_the_devices_there():
     c = build(5.0)
     DC(c).solve()                 # the diode's state now at a forward bias
     assert np.allclose(zin(c), zin(build(5.0)), rtol=1e-12, atol=0.0)
+
+
+@pytest.mark.parametrize('analysis', ['AC', 'Noise'])
+def test_ac_and_noise_without_an_operating_point_solve_it_at_their_temperature(analysis):
+    """Without `dcx`, AC and noise solve the operating point themselves: at
+    their own temperature, so the answer is the one given that temperature's
+    operating point (until 2026-10-22 at the default 300.15 K: a diode stage
+    at 400 K read a gain of 0.95 for 0.12)."""
+    from copy import copy
+
+    from pycircuit.circuit import circuit as _cc
+    from pycircuit.circuit.analysis_ss import AC, Noise
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.elements import VS, Diode, R, SubCircuit
+    tk = _cc.numeric
+    c = SubCircuit(toolkit=tk)
+    n1, n2 = c.add_nodes('1', '2')
+    c['V'] = VS(n1, gnd, v=1.0, vac=1.0, toolkit=tk)
+    c['R'] = R(n1, n2, r=1e3, toolkit=tk)
+    c['D'] = Diode(n2, gnd, toolkit=tk)
+    ep = copy(defaultepar)
+    ep.T = 400.0
+    f = np.array([1e3])
+    x400 = DC(c, epar=ep).solve().x
+    if analysis == 'AC':
+        own = AC(c, epar=ep).solve(f).v(n2, gnd).get_y()
+        given = AC(c, epar=ep, dcx=x400).solve(f).v(n2, gnd).get_y()
+    else:
+        own = Noise(c, inputsrc='V', outputnodes=(n2, gnd), epar=ep).solve(f)['Svnout']
+        given = Noise(c, inputsrc='V', outputnodes=(n2, gnd), epar=ep, dcx=x400).solve(f)['Svnout']
+    assert np.asarray(own).tobytes() == np.asarray(given).tobytes()

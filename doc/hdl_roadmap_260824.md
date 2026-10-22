@@ -10573,3 +10573,17 @@ parameter that was not given is left not given.
 **Gate**: the suite, 5 705 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone DC, against 177:
 every digest, step, rejection, Newton count and path count identical; the library sweep of parameters written after
 construction: 34 pairs differing before, 13 after (the 21 given-or-derived MOS ones gone).
+
+## 2026-10-22 — 179. AC and noise without a given operating point solve it at their own temperature (at the default 300.15 K until now: a diode stage at 400 K read a gain of 0.95 for 0.12)
+
+**Why**  `dc_steady_state` solved its operating point with `DC(cir)` -- the default temperature, whatever the
+analysis's `epar` said -- and then linearised at the analysis's temperature around it.  FeedbackLoopAnalysis and
+TwoPortAnalysis, which run AC, inherited it.
+
+**Built.**  analysis_ss: `DC(cir, epar=epar)`.  tests: test_analysis_numeric -- AC and noise at 400 K without dcx
+equal the ones given the 400 K operating point, to the bit (failing on the old code).
+
+**Gate**: the suite, run once over this commit and the three after it (179-182): 5 713 passed (6 skipped, 3 xfailed)
+with one failure -- a test that reads the source of OpAmp for its limiter's per-call JAX import, which 180 moved from
+__init__ to _functions; pointed there, it passes; the 27 gold decks, transient and standalone DC, over the four
+against 178: every digest, step, rejection, Newton count and path count identical.

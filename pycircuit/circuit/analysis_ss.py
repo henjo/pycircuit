@@ -558,8 +558,11 @@ def dc_steady_state(cir, freqs, refnode, toolkit, complexfreq = False,
         if toolkit.symbolic:
             x=None
         else:
-        #x = zeros(n) ## FIXME, this should be calculated from the dc analysis
-            resdc=DC(cir).solve()
+            ## ⚠ AT THE ANALYSIS'S TEMPERATURE: until 2026-10-22 this was
+            ## `DC(cir)`, the default 300.15 K whatever `epar` said -- an AC
+            ## at 400 K linearised its diode at the 300.15 K operating point
+            ## (a stage's gain read 0.95 for 0.12)
+            resdc = DC(cir, epar=epar).solve()
             x = resdc.x
     else:
         x = x0 #provide the DC steady-state FIXME: need to add parameter to AC
