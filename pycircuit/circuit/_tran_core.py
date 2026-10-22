@@ -282,7 +282,10 @@ def _lone_batches(cir, m, mp, cb):
     """Pass `m`'s lone C-bound elements (`mp.calls`), each a batch of one --
     `split` batches two or more, the core serves a lone one too -- or
     `Unservable` where one is not a chained, C-bound element the core can
-    take whole."""
+    take whole.  A class with DC pins is taken: it evaluates
+    its pinned functions only in a DC analysis, which the core declines
+    (`_Core.probe`); `split` keeps such a class out of its batches, which
+    serve the DC analyses too."""
     from pycircuit.circuit import _hdl_batch
     mat = m in ('G', 'C')
     extra = []
@@ -294,7 +297,7 @@ def _lone_batches(cir, m, mp, cb):
         kern = fn.__dict__.get('_hdl_c') if fn is not None else None
         k = len(nm)
         if not (a >= 0 and info is not None and info.get('chained')
-                and not info['state_meta']['dc_pins'] and el.toolkit is cir.toolkit
+                and el.toolkit is cir.toolkit
                 and m not in el.__dict__ and _hdl_batch.is_generated(cls, m)
                 and isinstance(kern, cb.CKernel) and kern.nx == k
                 and kern.shape == ((k, k) if mat else (k,))
@@ -470,6 +473,9 @@ class _Core:
             fl.add_pass(mi, m, mp, n, _lone_batches(cir, m, mp, cb))
         batches = self.batches = fl.batches
         self.nb, self.ng = len(batches), len(fl.g_pass)
+        ## a class with DC pins among them (`_lone_batches`): `probe` declines
+        ## a DC analysis's epar
+        self.pins = any(b.info['state_meta']['dc_pins'] for b in batches)
         ## THE FUSED KERNELS: a class whose fused kernel is bound
         ## (`_hdl_cbackend.bind_fused`) and whose batches cover two or more
         ## passes over the same elements -- each once a pass, on the same
@@ -552,12 +558,17 @@ class _Core:
         (`_tran_newton_c`): the decline is counted once, there.  As stamped,
         the stamp's checks alone; else the batches' kernels
         (`_check_batches`), the fused kernels (`_check_fused`), the elements
-        (`_check_elements`), and a new stamp."""
+        (`_check_elements`), and a new stamp.  Declined first: a DC
+        analysis's epar where the core holds a class with DC pins."""
         T = getattr(epar, 'T', 300.0)
         if type(T) is not float:
             if type(T) is not int and np.ndim(T) != 0:
                 return 'T'
             T = float(T)
+        ## (the pinned functions are a DC analysis's, and the core evaluates
+        ## the transient's: `_lone_batches`)
+        if self.pins and getattr(epar, 'analysis_kind', None) == 'dc':
+            return 'pins_dc'
         ## AS STAMPED: nothing the check below read has changed since it
         ## passed -- its dicts are watched (`_watch`); what no watcher sees,
         ## compared here: the elements' `__dict__` objects and the passes'
@@ -854,6 +865,9 @@ def passes_held(tr, core):
     ## (`probe`'s temperature test: a float, an int, or one number)
     T = getattr(tr.epar, 'T', 300.0)
     if type(T) is not float and type(T) is not int and np.ndim(T) != 0:
+        return False
+    ## (`probe`'s DC-pin test)
+    if core.pins and getattr(tr.epar, 'analysis_kind', None) == 'dc':
         return False
     return (core.stamp == ep.value
             and tuple(map(_GETDICT, core.uniq_els)) == core.uniq_dicts

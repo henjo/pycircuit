@@ -10177,3 +10177,61 @@ the diode's operating point -- each failing without the check.
 (b) the 54 gold runs (each deck's default transient and standalone operating point) bit-identical, none falling
 back; the 27 decks' summed standalone DC time +0.34 % (0.8553 -> 0.8581 s, best of 3 interleaved rounds, pinned,
 a quiet box; single decks -0.8 .. +2.2 %, every answer and path counter the same); (c) the suite, 5 603 passed.
+
+## 2026-10-22 — 168. Eager nonlinear HDL classes and DC-pinned ones on the evaluate core: one class without `var()` no longer takes a circuit off C
+
+**Why** (Andreas: "Size the auto-chaining for unchained Behavioural classes", then "Try to get meristor setved by the C
+core", then "Build both once the suite passes").  The transient's evaluate core (`_tran_core`) serves a non-constant
+HDL element only if its class is chained -- compiled through the let-chain because its `analog()` declares a `var()`
+-- and C-bound; one element that is not makes the whole circuit Unservable, and every step runs in Python.  A user's
+buck converter: one comparator output class without `var()`, 20.2 s; with `va = var(ba.V, 'va')` 2.9 s (the user's
+session measured it).  Nothing said so.  In the library three classes were eager and non-constant -- `DiodeHdl`,
+`MixerHdl`, `MemristorHdl` -- and the memristor was refused a second time for its DC pins.  No gold deck holds one (all
+27 are served today).
+
+**Sized first** (plan 'AUTO-CHAINING EAGER BEHAVIOURAL CLASSES', the line written before measuring: (a) one small
+transient each for the three classes, the user's comparator and a 6-stage Cockcroft-Walton multiplier of 12
+`DiodeHdl`, served by the core, summed at least 2x faster, none slower; (b) the moved classes keep `eval_i_pure`,
+`solve_batched`, the JAX path and the symbolic forms, every other library class compiled the same, the 54 gold runs
+bit-identical; (c) each moved circuit moved no more than a 1e-12 V nudge of its start moves it on today's code; (d)
+cold compile within max(+1 s, 2x), warm import unchanged, the suite).  ⚠ hdl.py's own rule: NEVER turn an eager model
+into a chained one -- a chained model has no `eval_i_pure` and loses `solve_batched` (20.7x at 512 lanes) and the JAX
+path.  So the design is dual: the numeric functions through the chain, the eager pure and symbolic forms kept.
+
+Measured (best of 3 interleaved rounds): rectifier 871.9 -> 10.2 ms, multiplier 1 527 -> 30.0, mixer 33.6 -> 2.8,
+comparator 356.5 -> 6.5, memristor 262 -> 193 (not served: its DC pins), summed 3.05 -> 0.24 s; 51 of the library's 54
+classes compile to the same sources, the three keep `eval_i_pure` where they had it; the 54 gold runs bit-identical;
+the rectifier and mixer bit-identical, the comparator 8.0e-12 V against its nudges' 8.2e-12 and 1.3e-11, the
+memristor 3.2e-15 against 2.0e-12; the multiplier NOT EVALUABLE as written -- under both +-1e-12 V nudges today's code
+fails (SingularMatrix) -- on the prototype a nudge moves it 8.33 mV and the change 8.38 mV; cold compile + first C build
++0.04..0.11 s a class, the warm import 1.119 -> 1.100 s.  Then the memristor: the core takes a class with DC pins and
+declines a DC epar; served, bit-identical to the Python path, 193 -> 9.5 ms.
+
+**Built.**  `hdl.generate_code`: a model with no `var()` whose G or C depends on the unknowns compiles its numeric
+functions through the let-chain (no definitions) -- the C kernel, the core -- with `pure_spec` and `sym_spec` still the
+eager forms; `_hdl_info['auto_chain']`; a model with constant G and C stays eager.  Its methods take the chain except on
+a symbolic toolkit, which keeps the eager symbolic forms.  `_tran_core._lone_batches` no longer refuses a class with DC
+pins -- it evaluates its pinned functions only where the epar's `analysis_kind` is 'dc', and the core serves a
+transient's evaluations; the core records `pins`, and `probe` -- and its twin `passes_held`, for Radau's C --
+declines a DC epar ('pins_dc').  `_hdl_batch.split` still keeps such a class out of its batches (they serve DC too).  `test_tran_core`: `DiodeHdl` chained and auto-chained,
+keeping `eval_i_pure` and its symbolic forms, `RHdl` eager; a `DiodeHdl` rectifier served, bit for bit with the core
+off; a memristor served, bit for bit, and a DC epar declined -- each failing on the old code.  Six tests that told the eager
+code generator by `chained is False`, or took a flat class for one without C kernels, now read `auto_chain` or pin
+a class to numpy; the sequential-limiter test switches the C limiter off (built from the spec as the class bound,
+it cannot see a spec reversed in place).  Pinned pairs "the transient evaluation and the core" and "the step's end
+passes and the C's" re-recorded.  Side findings, not
+fixed: `DiodeHdl` has no limiting, and a transient at a 5 V or 2 V drive (or 1 V with the default first step) goes
+numerically SINGULAR and ABORTS rather than retrying the step smaller, on the old code as on the new; nine hand-written
+nonlinear elements (`Diode`, `VSwitch`, `ISwitch`, `BSource`, `NonLinearVCCS`, `VCVS_limited`, three `Idtmod`) still
+take a circuit off the core.
+
+**A correction to 167.**  The user's far-root script was not faithful to their circuits (the user's session found
+it: the nodes created in another order, which steers the solver's paths from zeros, and every parameter written as
+given, which moves a MOSFET model that reads givenness -- the rebuilt P-FET differed by up to ~1 A).  On the
+corrected script HEAD's PCNR solves the converter from zeros by the JUNCTION-GMIN ladder (1.65518481 V), where
+a740330e fails it with PCNR and without; 167's result holds, its route was jgmin, not source stepping.  The user's
+other circuits (two op-amps, an inverting and a referenced current-sense, a low-side sink, a current monitor, the
+buck) solve from zeros with PCNR, and all thirteen are served by the evaluate core.
+
+**Gate**: (a) met but for the memristor in the first stage (then served); (b) met; (c) met where evaluable (the
+multiplier's as above); (d) met; the 54 gold runs on the built tree bit-identical; the suite, 5 626 passed.

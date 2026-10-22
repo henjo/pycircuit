@@ -317,7 +317,10 @@ def test_limit_fet_compiles_through_both_code_generators():
     """
     eager = _fet('both', chained=False)('d', 'g', 's')
     chained = _fet('both', chained=True)('d', 'g', 's')
-    assert chained._hdl_info['chained'] and not eager._hdl_info['chained']
+    ## (written flat, its limiter's parameters compile through the eager
+    ## generator; its numeric functions through a chain of no definitions
+    ## since roadmap 168)
+    assert eager._hdl_info['auto_chain'] and not chained._hdl_info['auto_chain']
     for el in (eager, chained):
         el.update_iparv()
     rng = np.random.default_rng(20260825)

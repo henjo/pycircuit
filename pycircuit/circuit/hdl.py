@@ -4046,6 +4046,22 @@ def generate_code(cls):
         G = sympy.Matrix([ivec]).jacobian(xsyms)
         C = sympy.Matrix([qvec]).jacobian(xsyms)
         G_dc = sympy.Matrix([ivec_dc]).jacobian(xsyms) if dc_pins else G
+    ## AN EAGER MODEL ON THE C PATH (roadmap 168).  A model that declares no
+    ## intermediates and whose G or C depends on the unknowns compiles its
+    ## numeric functions through the let-chain below too -- a chain of no
+    ## definitions -- so it gets the C kernel, and the transient's evaluate
+    ## core, which serves only chained classes and took a WHOLE circuit off
+    ## C for one that was not (a user's buck converter, every step in Python
+    ## for one comparator class: 20.2 -> 2.9 s chained by hand; nothing said
+    ## so).  Its eager `pure_spec` and `sym_spec` are still built below, so
+    ## it keeps `eval_i_pure`, `solve_batched`, the JAX path and the
+    ## symbolic toolkit: the disjointness the ⚠⚠ rule at `_autohold` guards
+    ## is not given up.  A model with constant G and C stays eager: its
+    ## stamps are cached, and the core serves it as constants.
+    _xs = set(xsyms)
+    auto_chain = bool(not chain_defs
+                      and (any(e.free_symbols & _xs for e in G)
+                           or any(e.free_symbols & _xs for e in C)))
     CY = sympy.zeros(n)
     for (r_, c_), psd in CYacc.items():
         CY[r_, c_] = psd
@@ -4069,7 +4085,7 @@ def generate_code(cls):
         return sympy.lambdify([TIME] + paramsyms + [TEMP] + given_syms,
                               exprs, modules=NUMPY_MODULES, cse=True)
 
-    if chain_defs:
+    if chain_defs or auto_chain:
         ## THE LET-CHAIN PATH.  Four chain compilations replace the eager
         ## stamps; each walks the DAG once and accumulates derivatives
         ## forward, so cost is linear in the number of intermediates
@@ -4586,7 +4602,7 @@ def generate_code(cls):
                 limit_groups=limit_groups,
                 cross_spec=cross_spec, sym_spec=sym_spec,
                 has_ac=any(e != 0 for e in acvec),
-                chained=bool(chain_defs),
+                chained=bool(chain_defs) or auto_chain, auto_chain=auto_chain,
                 collapse_mask=collapse_mask,
                 collapse_conds=[
                     sympy.lambdify(paramsyms, st.when,
@@ -6511,9 +6527,14 @@ class BehaviouralMeta(type):
         ## used for truthiness only at all five sites, so the order is free
         ## to change.
         has_dc_pins = bool(state_meta['dc_pins'])
+        ## An auto-chained model (roadmap 168) evaluates through its chain,
+        ## except on a symbolic toolkit: the chain is numeric, and the model's
+        ## eager symbolic forms are kept for exactly that.
+        auto_chain = bool(info.get('auto_chain'))
 
         def i(self, x, epar=defaultepar, params_tree=None):
-            if info['chained']:
+            if info['chained'] and not (
+                    auto_chain and getattr(self.toolkit, 'symbolic', False)):
                 ## The DC pin applies on the chained path too.  Until
                 ## 2026-08-26 this returned `funcs['i']` unconditionally,
                 ## so a `var()` model with `idt(expr, ic)` or `idtmod(...,
@@ -6599,7 +6620,8 @@ class BehaviouralMeta(type):
                         % (type(self).__name__, seen, now))
 
         def G(self, x, epar=defaultepar, params_tree=None):
-            if info['chained']:
+            if info['chained'] and not (
+                    auto_chain and getattr(self.toolkit, 'symbolic', False)):
                 dc = has_dc_pins and _dc(epar)
                 if (not dc and params_tree is None
                         and not info.get('_c_bound')
@@ -6626,7 +6648,8 @@ class BehaviouralMeta(type):
             return np.asarray(f(x, *_args_of(self, epar)))
 
         def q(self, x, epar=defaultepar, params_tree=None):
-            if info['chained']:
+            if info['chained'] and not (
+                    auto_chain and getattr(self.toolkit, 'symbolic', False)):
                 if (params_tree is None and not info.get('_c_bound')
                         and _evalhint.current() is not None
                         and not (has_dc_pins and _dc(epar))):
@@ -6639,7 +6662,8 @@ class BehaviouralMeta(type):
             return funcs['q'](x, *_args_of(self, epar))
 
         def C(self, x, epar=defaultepar, params_tree=None):
-            if info['chained']:
+            if info['chained'] and not (
+                    auto_chain and getattr(self.toolkit, 'symbolic', False)):
                 if (params_tree is None and not info.get('_c_bound')
                         and _evalhint.current() is not None
                         and not (has_dc_pins and _dc(epar))):

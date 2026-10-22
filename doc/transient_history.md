@@ -5297,3 +5297,18 @@ gold decks' largest in-ladder move is 0.50 of that scale: their operating
 points are unchanged.
 Tests: `test_dc_pcnr.py` (the jump's scale; a jumping rung refused; a ladder
 retrying a planted jump smaller).
+
+## `hdl.generate_code` auto-chain, `_tran_core` DC pins -- eager nonlinear and DC-pinned HDL classes on the evaluate core (2026-10-22)
+
+2026-10-22 (Andreas: "Build both once the suite passes";
+`doc/hdl_roadmap_260824.md`, 168). The evaluate core served a non-constant
+HDL element only if its class was chained (a `var()`) and had no DC pins;
+one element that was not took the whole circuit to Python. Now a model with
+no `var()` whose G or C depends on the unknowns compiles its numeric
+functions through the let-chain as well (its eager pure and symbolic forms
+kept), and the core takes a class with DC pins, declining a DC analysis's
+epar. The library's `DiodeHdl`, `MixerHdl` and `MemristorHdl` circuits run
+12..86x faster (rectifier 0.87 s -> 10 ms, memristor 262 -> 9.5 ms); the 54
+gold runs are bit-identical.
+Tests: `test_tran_core.py` (an eager diode served bit for bit, keeping its
+eager forms; a memristor served bit for bit and a DC epar declined).

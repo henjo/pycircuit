@@ -411,7 +411,12 @@ def test_each_decline_is_counted_and_the_python_answers(why, monkeypatch):
     elif why == 'linsolver':
         kw['linsolver'] = DenseSolver()
     elif why == 'class':
-        c = _cascode4(_mos4('group'), 5.0, 3.0, 1.5)        # a flat model: no C kernels
+        ## a model with no C kernels: pinned to numpy (a flat one has them
+        ## since roadmap 168)
+        from pycircuit.circuit import hdl
+        cls = _mos4('group')
+        hdl.set_backend('numpy', cls)
+        c = _cascode4(cls, 5.0, 3.0, 1.5)
     monkeypatch.setattr(_pcnr_c, 'ENABLED', why != 'off')
     ref, _ = _solve(c, False, monkeypatch, **kw)
     monkeypatch.setattr(_pcnr_c, 'ENABLED', why != 'off')

@@ -469,6 +469,22 @@ silently registering the device as having nothing to limit.
 The path is chosen per model: declare no intermediates and nothing
 changes. `_hdl_info['chained']` says which path a class took.
 
+**An eager model on the C path (2026-10-22, roadmap 168).** One
+exception to "nothing changes": a model with no intermediates whose G or
+C depends on the unknowns compiles its *numeric* functions through the
+let-chain too -- a chain of no definitions -- and reports
+`chained = auto_chain = True`. It gets the C kernel and the transient's
+evaluate core, which serves only chained classes and used to take a
+whole circuit to Python for one eager element (a user's buck converter:
+20.2 s, 2.9 s with one `var()` added by hand; the library's `DiodeHdl`
+rectifier 0.87 s -> 10 ms). It keeps its eager `pure_spec` and
+`sym_spec`, so `eval_i_pure`, `solve_batched`, the JAX path and the
+symbolic toolkit are all still there -- the auto-hold rule below is not
+broken. Its numbers move by the evaluation order at most (the rectifier
+and a mixer bit-identical, a comparator 8e-12 V). A model with constant
+G and C stays eager: its stamps are cached and the core serves them as
+constants.
+
 #### Where the compiler holds for you (2026-08-27, roadmap §36)
 
 Roadmap S4 asked whether the compiler could hold *every* non-atomic

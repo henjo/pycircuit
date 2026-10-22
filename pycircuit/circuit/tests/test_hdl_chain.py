@@ -87,7 +87,11 @@ class TestAgreesWithEagerPath(object):
     def test_the_two_paths_are_actually_different_paths(self):
         """Guard against the test passing because nothing was chained."""
         assert _DiodeChained._hdl_info['chained'] is True
-        assert _DiodeEager._hdl_info['chained'] is False
+        assert _DiodeChained._hdl_info['auto_chain'] is False
+        ## the flat diode's numeric functions are a chain of NO definitions
+        ## since roadmap 168 (`auto_chain`), the chained one's of one: two
+        ## chains, still printed apart
+        assert _DiodeEager._hdl_info['auto_chain'] is True
 
     def test_dc_solution_matches(self):
         got = []

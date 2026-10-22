@@ -212,7 +212,10 @@ def test_a_group_compiles_through_both_code_generators():
     chained path dead, roadmap 12.1)."""
     eager = _fet('group', chained=False)('d', 'g', 's')
     chained = _fet('group', chained=True)('d', 'g', 's')
-    assert chained._hdl_info['chained'] and not eager._hdl_info['chained']
+    ## (written flat, its limiter's parameters compile through the eager
+    ## generator; its numeric functions through a chain of no definitions
+    ## since roadmap 168)
+    assert eager._hdl_info['auto_chain'] and not chained._hdl_info['auto_chain']
     for el in (eager, chained):
         el.update_iparv()
     rng = np.random.default_rng(20260825)
@@ -505,11 +508,15 @@ def test_sequential_is_mos1load_s_order_and_the_difference_is_a_number():
         assert out[0] - out[2] == expect, (which, out)
 
 
-def test_sequential_is_order_dependent_and_that_is_the_point():
+def test_sequential_is_order_dependent_and_that_is_the_point(monkeypatch):
     """"In this order" has to mean something.  The independent group is
     order-independent by construction; the sequential one is not, and
     reversing it must actually change the answer -- otherwise the flag
-    is decorative."""
+    is decorative.  (The spec is reversed in place, which the C limiter --
+    built from the spec as the class bound; the flat class is C-bound
+    since roadmap 168 -- does not see: the Python closure answers.)"""
+    from pycircuit.circuit import _hdl_climit
+    monkeypatch.setattr(_hdl_climit, 'ENABLED', False)
     x0 = np.array([0.2, 0.0, 0.0])
     x = np.array([9.0, 40.0, 0.0])
     el = _fet('seq')('d', 'g', 's', VTO=0.5)

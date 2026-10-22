@@ -241,6 +241,80 @@ def test_a_constant_only_circuit_is_served_with_no_kernel_at_all():
     assert got[True] == got[False]
 
 
+def _served_and_python(build, **solve):
+    """`build()`'s transient with the core on and off: the two results'
+    bytes, and whether the core served it (None: no C driver here)."""
+    got, served = {}, None
+    for on in (True, False):
+        cm.default_toolkit = cm.numeric
+        cir, kw = build()
+        with core(on):
+            tr = Transient(cir, toolkit=cm.numeric, **kw)
+            res = tr.solve(**solve)
+        got[on] = np.asarray(res.x, float).tobytes()
+        if on and _tran_core.STATUS == 'c':
+            served = _tran_core.core_for(tr)
+    return got, served
+
+
+def test_an_eager_nonlinear_class_is_served_and_keeps_its_eager_forms():
+    """Roadmap 168: an HDL class with no `var()` whose G depends on the
+    unknowns (`DiodeHdl`) compiles through the let-chain too, so the core
+    serves its circuit -- before, one such element took the WHOLE circuit
+    to Python -- bit for bit with the Python path; it keeps its eager forms
+    (`eval_i_pure` for `solve_batched` and the JAX path, the symbolic
+    ones), and a class with constant G and C (`RHdl`) stays eager."""
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit.elements import C
+    info = eh.DiodeHdl._hdl_info
+    assert info['chained'] and info['auto_chain']
+    assert info['pure_spec'] is not None and info['sym_spec'] is not None
+    assert hasattr(eh.DiodeHdl, 'eval_i_pure')
+    assert not eh.RHdl._hdl_info['chained']
+    assert not eh.RHdl._hdl_info['auto_chain']
+
+    def build():
+        cir = SubCircuit()
+        cir['vs'] = VSin('a', gnd, va=1.0, freq=1e3)
+        cir['r'] = R('a', 'b', r=1e3)
+        cir['d'] = eh.DiodeHdl('b', 'o')
+        cir['c'] = C('o', gnd, c=1e-6)
+        cir['rl'] = R('o', gnd, r=1e3)
+        return cir, {}
+    got, served = _served_and_python(build, tend=25 * 4e-5, timestep=4e-5,
+                                     fixed_timestep=True)
+    if _tran_core.STATUS == 'c':
+        assert served is not None
+    assert got[True] == got[False]
+
+
+def test_a_class_with_dc_pins_is_served_and_declines_a_dc_epar():
+    """Roadmap 168: a class with DC pins (`MemristorHdl`'s state) evaluates
+    its pinned functions only in a DC analysis, so the core takes it --
+    it refused the whole circuit before -- bit for bit with the Python
+    path, and declines a DC analysis's epar ('pins_dc')."""
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit.analysis import analysis_kind
+    assert eh.MemristorHdl._hdl_info['state_meta']['dc_pins']
+
+    def build():
+        cir = SubCircuit()
+        cir['vs'] = VSin('n1', gnd, va=1.0, freq=1.0)
+        cir['m'] = eh.MemristorHdl('n1', gnd, ron=100.0, roff=16e3,
+                                   muv=1e-14, d=10e-9, ic=0.1, p=1.0)
+        return cir, {'uic': True}
+    got, served = _served_and_python(build, tend=0.25, timestep=5e-3,
+                                     fixed_timestep=True)
+    assert got[True] == got[False]
+    if _tran_core.STATUS != 'c':
+        return
+    assert served is not None and served.pins
+    ep = cm.defaultepar.copy()
+    assert type(served.probe(ep)) is float
+    with analysis_kind(ep, 'dc'):
+        assert served.probe(ep) == 'pins_dc'
+
+
 @pytest.mark.parametrize('method', METHODS)
 def test_a_transient_steps_bit_for_bit(method):
     got = {}

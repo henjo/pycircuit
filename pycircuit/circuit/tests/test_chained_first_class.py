@@ -329,17 +329,20 @@ class TestTheThreeElementTable(object):
 
     def test_flat_no_charge(self):
         el = _inst(_FlatNoQ)
-        assert _FlatNoQ._hdl_info['chained'] is False
+        ## written flat (no `var()`): the compiler chains its numeric
+        ## functions itself since roadmap 168 (`auto_chain`)
+        assert _FlatNoQ._hdl_info['auto_chain'] is True
         assert hasattr(el, 'pcnr_i')
 
     def test_flat_with_charge(self):
         el = _inst(_FlatQ)
-        assert _FlatQ._hdl_info['chained'] is False
+        assert _FlatQ._hdl_info['auto_chain'] is True
         assert hasattr(el, 'pcnr_i')
 
     def test_chained_with_charge(self):
         el = _inst(_ChainedQ)
         assert _ChainedQ._hdl_info['chained'] is True
+        assert _ChainedQ._hdl_info['auto_chain'] is False
         assert hasattr(el, 'pcnr_i')
         assert el.pcnr_junctions == ((0, 1),)
         assert 'PCNR: 1 junction' in explain(el, source=False,
