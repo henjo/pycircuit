@@ -10674,3 +10674,29 @@ each: every digest identical; summed 35.927 s against 35.932 s.  Seven decks rea
 all of 30..250 ms, where one cold solve is known to read 9..12 % as noise -- so those seven were re-timed WARM
 (best of 10 in a process, three processes per tree, the base run twice as an A/A, rotated): 84dc36d7 / base 0.993 ..
 0.999 on every one of them, the A/A 0.993 .. 1.005, digests identical.  The clause is met: 176's line is met in full.
+
+## 2026-10-22 — 183. Under the JAX toolkit a parameter written after the evaluation groups were built is evaluated, and a JAX transient solves its operating point at its own temperature (the write was ignored; a run at 400 K started from the 300.15 K point)
+
+**Why**  Two defects of the kinds the previous commits fixed, on the JAX path. The JAX toolkit evaluates a circuit's
+elements in groups whose parameters are copied when the groups are built -- by `update_iparv` alone: a parameter
+written afterwards was not evaluated (a diode's `IS` written, the circuit's `i` and `G` unchanged).  And the JAX
+transient, given no start, solved its operating point with `DC(self.cir)`, the default temperature: at 400 K it
+started 0.17 V off.
+
+**Built.**  circuit: `SubCircuit._current_groups` rebuilds the groups where the parameter epoch moved since they were
+built -- except inside a JAX transformation (an argument a tracer), where arrays built would leak out of it: the
+groups as built serve, and the next evaluation outside rebuilds them (a JAX transient evaluates the circuit outside
+its compiled step first).  jaxtransient: `DC(self.cir, epar=self.epar)`.
+
+**Tests.**  tests: test_jaxtransient, 3, failing on the old code -- a parameter written after the groups were built
+gives a fresh circuit's `i` and `G`, to the bit; a JAX transient given its start after such a write runs as the fresh
+circuit; a JAX transient at 400 K starts from the 400 K operating point.
+
+**Gate**: the suite in the main tree, 5 718 passed (6 skipped, 3 xfailed) and 1 error: the leak detector at
+test_hdl_diagnostics' module teardown (DiodeHdl's 'auto' class resolved while a test hid the compiler) -- NOT this
+change: the module run alone gives the same 2 errors in the main tree at 9baca22f, before today's commits, and none in
+a clean worktree at any of today's commits (an environment- and order-dependent leak of the main tree, open); pinned
+pairs 'the assembly loops and the plan' and 'the sources and their direct pass' re-recorded (their references, the
+assembly loops, now fetch the groups through _current_groups; the twins -- the stamp plan, the direct source pass --
+serve the numeric toolkit, where the groups are empty: unchanged); the 27 gold decks, transient and standalone DC,
+against 184: every digest, step, rejection, Newton count and path count identical.

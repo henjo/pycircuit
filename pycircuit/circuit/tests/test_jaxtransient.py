@@ -1176,3 +1176,84 @@ def test_jax_retry_order_is_the_cpu_s_rule():
     tr = _with_jax_toolkit(lambda: JAXTransient(rect(), retry_order='guessed'))
     with pytest.raises(ValueError, match='retry_order'):
         _with_jax_toolkit(lambda: tr.solve(gnd, tend=5e-6, timestep=1e-7))
+
+
+def _jax_diodes(is2, monkeypatch):
+    """A source, a resistor and three diodes on the JAX toolkit, its
+    evaluation groups built (`update_iparv`)."""
+    import pycircuit.circuit.circuit as circuit_mod
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit.elements import VS, Diode, R, SubCircuit
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    monkeypatch.setattr(circuit_mod, 'default_toolkit', jaxtoolkit)
+    c = SubCircuit(toolkit=jaxtoolkit)
+    a, b = c.add_nodes('a', 'b')
+    c['V'] = VS(a, gnd, v=1.0, toolkit=jaxtoolkit)
+    c['R1'] = R(a, b, r=1e3, toolkit=jaxtoolkit)
+    c['D1'] = Diode(b, gnd, IS=1e-14, toolkit=jaxtoolkit)
+    c['D2'] = Diode(b, gnd, IS=is2, toolkit=jaxtoolkit)
+    c['D3'] = Diode(a, b, IS=3e-14, toolkit=jaxtoolkit)
+    c.update_iparv()
+    return c
+
+
+def test_a_parameter_written_after_the_groups_are_built_is_evaluated(monkeypatch):
+    """Under the JAX toolkit the circuit evaluates its elements in groups
+    whose parameters are copied when built: a parameter written later is the
+    one evaluated -- `i` and `G` as a circuit built with it (until 2026-10-22
+    the groups were rebuilt by `update_iparv` alone, and the write was
+    ignored)."""
+    c = _jax_diodes(1e-14, monkeypatch)
+    assert c._eval_groups
+    x = np.linspace(0.2, 0.7, c.n)
+    c['D2'].ipar.IS = 4e-14
+    fresh = _jax_diodes(4e-14, monkeypatch)
+    assert np.asarray(c.i(x)).tobytes() == np.asarray(fresh.i(x)).tobytes()
+    assert np.asarray(c.G(x)).tobytes() == np.asarray(fresh.G(x)).tobytes()
+
+
+def test_the_jax_transient_starts_from_the_operating_point_at_its_temperature(monkeypatch):
+    """A JAX transient without `x0` solves its operating point at its own
+    temperature (until 2026-10-22 at the default 300.15 K: at 400 K it
+    started 0.17 V off)."""
+    from copy import copy
+
+    import pycircuit.circuit.circuit as circuit_mod
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.elements import VS, Diode, R, SubCircuit
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    monkeypatch.setattr(circuit_mod, 'default_toolkit', jaxtoolkit)
+    d = SubCircuit(toolkit=jaxtoolkit)
+    n1, n2 = d.add_nodes('1', '2')
+    d['V'] = VS(n1, gnd, v=1.0, toolkit=jaxtoolkit)
+    d['R'] = R(n1, n2, r=1e3, toolkit=jaxtoolkit)
+    d['D'] = Diode(n2, gnd, toolkit=jaxtoolkit)
+    ep = copy(defaultepar)
+    ep.T = 400.0
+    x400 = np.asarray(DC(d, toolkit=jaxtoolkit, epar=ep).solve().x, dtype=float)
+    with quiet():
+        r = JAXTransient(d, epar=ep).solve(tend=1e-9, timestep=1e-10)
+    assert float(np.asarray(r.v(n2, gnd).get_y(), dtype=float)[0]) == float(x400[1])
+
+
+def test_a_parameter_written_before_a_jax_transient_is_its_device_s(monkeypatch):
+    """A parameter written after the groups were built, then a JAX transient
+    given its start: the run of a circuit built with the value (the run
+    evaluates the circuit outside its compiled step first, where the groups
+    are rebuilt -- inside it they cannot be)."""
+    from pycircuit.circuit import gnd
+    from pycircuit.circuit.jaxtransient import JAXTransient
+
+    def run(c):
+        with quiet():
+            r = JAXTransient(c).solve(tend=2e-9, timestep=1e-10,
+                                      x0=np.linspace(0.0, 0.6, c.n))
+        return np.asarray(r.v('b', gnd).get_y(), dtype=float)
+
+    c = _jax_diodes(1e-14, monkeypatch)
+    c['D2'].ipar.IS = 4e-14
+    assert np.array_equal(run(c), run(_jax_diodes(4e-14, monkeypatch)))
+

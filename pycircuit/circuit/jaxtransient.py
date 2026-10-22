@@ -4115,8 +4115,11 @@ class JAXTransient(Analysis):
                 x0 = self._initial_state(refnode)
             else:
                 # Run a fast DC operating point if none provided
+                ## (at the transient's temperature: until 2026-10-22 at the
+                ## default 300.15 K, so a run at 400 K started from the
+                ## 300.15 K operating point)
                 from pycircuit.circuit.dcanalysis import DC
-                x0 = DC(self.cir).solve().x
+                x0 = DC(self.cir, epar=self.epar).solve().x
             
         dt_min = float(self.par.minstep) if minstep is None else minstep
         dt_max = self._element_cap(self._timestep_max(tend))

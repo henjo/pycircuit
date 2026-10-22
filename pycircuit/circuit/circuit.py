@@ -7,6 +7,7 @@ from pycircuit.utilities.misc import indent, inplace_add_selected, \
     inplace_add_selected_2d, create_index_vectors
 from copy import copy
 import contextlib
+import sys
 import weakref
 from .toolkit import numeric
 from .toolkit import symbolic
@@ -154,6 +155,14 @@ defaultepar = ParameterDict(
     ## satisfy against a negative tolerance.  The old implicit 1e-12 meant a small
     ## amount of bypassing always happened, unasked.
     Parameter("bypasstol", "Device bypass tolerance", unit="V", default = -1.0))
+
+def _traced(*values):
+    """Is any of `values` a JAX tracer (inside a transformation)?  (Only
+    asked where JAX is loaded: the groups exist only under its toolkit.)"""
+    jc = sys.modules.get('jax.core')
+    tracer = getattr(jc, 'Tracer', None) if jc is not None else None
+    return tracer is not None and any(isinstance(v, tracer) for v in values)
+
 
 ## (weakly keyed: generated classes come and go -- the leak detector's)
 _LIVE = weakref.WeakKeyDictionary()
@@ -1586,6 +1595,25 @@ class SubCircuit(Circuit):
         module needs no knowledge of JAX to offer the opportunity.
         """
         self._eval_groups = self.toolkit.evaluation_groups(self)
+        self._eval_groups_epoch = ParameterDict._epoch
+
+    def _current_groups(self, x=None, args=()):
+        """The evaluation groups, rebuilt where a parameter they copied may
+        have moved since they were built -- the parameter epoch moved (a
+        write that changes no grouped value, `Circuit._live_params`, does
+        not move it) -- except inside a JAX transformation (`x` or an
+        argument a tracer): arrays built there would leak out of it, so the
+        groups as built serve, and the next call outside rebuilds them.
+
+        ⚠ Until 2026-10-22 they were rebuilt by `update_iparv` alone: under
+        the JAX toolkit a parameter written after it was ignored (a diode's
+        `IS` written, its `i` and `G` unchanged)."""
+        groups = self.__dict__.get('_eval_groups')
+        if (groups and self.__dict__.get('_eval_groups_epoch') is not ParameterDict._epoch
+                and not _traced(x, *args)):
+            self._build_evaluation_groups()
+            groups = self._eval_groups
+        return groups
         
     def G(self, x, epar=defaultepar, params_tree=None):
         return self._add_element_submatrices('G', x, (epar,), params_tree=params_tree)
@@ -1910,7 +1938,7 @@ class SubCircuit(Circuit):
         ## (declared on `Toolkit`, None where absent: the probe never misses)
         build_sparse = getattr(toolkit, 'build_sparse', None) is not None
         has_add_at = getattr(toolkit, 'add_at', None) is not None
-        groups = getattr(self, '_eval_groups', None)
+        groups = self._current_groups(x, args)
         idxmap = self._map_indices_2d
         elementnodemap = self.elementnodemap
 
@@ -2033,7 +2061,7 @@ class SubCircuit(Circuit):
         toolkit = self.toolkit
         lhs = toolkit.zeros(n, dtype=dtype)
         has_add_at = getattr(toolkit, 'add_at', None) is not None
-        groups = getattr(self, '_eval_groups', None)
+        groups = self._current_groups(x, args)
         idxmap = self._map_indices_1d
         ## AN ELEMENT WITH THE DEFAULT SOURCE (`Circuit.u` / `dudt`: zeros)
         ## IS SKIPPED, on the scatter path of a numeric toolkit: its entries
