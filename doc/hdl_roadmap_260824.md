@@ -10620,3 +10620,26 @@ test_idtmod (failing on the old code).
 with one failure -- a test that reads the source of OpAmp for its limiter's per-call JAX import, which 180 moved from
 __init__ to _functions; pointed there, it passes; the 27 gold decks, transient and standalone DC, over the four
 against 178: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-10-22 — 182. A subcircuit instance's later structure reaches the circuits holding it, and a deletion rebuilds the branch rows after it (an instance given its elements after it was added raised KeyError in every analysis and copy)
+
+**Why**  A subcircuit instance added to its parent and given its elements afterwards left the parent without them: its
+nodes and branches stayed as at the addition, and DC (or a copy) raised KeyError on the instance's internal node.
+Deleting an instance removed its branches by equality -- ambiguous for parallel elements -- and left every later
+instance's branch span unshifted, the deleted one's kept: after `del c['V0']` an inductor's row pointed one past the
+end.
+
+**Built.**  circuit: an instance added with `add_instance` remembers its parents (weakly); a change to its own
+structure -- an element or node added, an element deleted -- refreshes them (`_refresh_instance`: its internal nodes
+follow, the branches are rebuilt), and theirs in turn.  The branch list and the spans are rebuilt from the instances
+in order (`_rebuild_branches`), on a deletion too.  A copied circuit's subcircuit instances remember the copy.
+Circuits built elements first are unchanged.
+
+**Tests.**  tests: test_circuit -- an instance given its elements after it was added: the elements-first circuit's
+nodes, branches and DC to the bit, and its copy; two levels, an element added to the inner instance reaches the top
+and its deletion leaves it; after a deletion each later instance's branch rows are its own (failing on the old code).
+
+**Gate**: the suite, run once over this commit and the three after it (179-182): 5 713 passed (6 skipped, 3 xfailed)
+with one failure -- a test that reads the source of OpAmp for its limiter's per-call JAX import, which 180 moved from
+__init__ to _functions; pointed there, it passes; the 27 gold decks, transient and standalone DC, over the four
+against 178: every digest, step, rejection, Newton count and path count identical.

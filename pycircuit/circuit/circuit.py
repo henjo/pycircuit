@@ -334,11 +334,20 @@ class Circuit():
             newnodes.append(Node(name))
             self.append_node(newnodes[-1])
 
+        self._restructured()
         return tuple(newnodes)
 
     def add_node(self, name):
         """Create and internal node in the circuit and return the new node"""
         return self.add_nodes(name)[0]
+
+    def _restructured(self):
+        """Tell the circuits holding this one as an instance that its
+        structure changed (`SubCircuit._refresh_instance`)."""
+        for ref, name in list(self.__dict__.get('_parents', ())):
+            parent = ref()
+            if parent is not None and parent.elements.get(name) is self:
+                parent._refresh_instance(name)
 
     def append_node(self, node):
         """Append node object to circuit"""
@@ -1154,6 +1163,8 @@ class SubCircuit(Circuit):
             ctx = el.__dict__.get('_resolved_in')
             if ctx is not None and ctx[0] is self.iparv:
                 el._resolved_in = (newc.iparv, ctx[1])
+            if isinstance(el, SubCircuit):
+                el._parented(newc, instance_name)
         newc.elementnodemap = copy(self.elementnodemap)
         newc.term_node_map = copy(self.term_node_map)
         
@@ -1219,9 +1230,60 @@ class SubCircuit(Circuit):
         instance to nodes of the circuit
         """
         self._place_instance(instancename, instance, **connection)
+        if isinstance(instance, SubCircuit):
+            instance._parented(self, instancename)
 
         ## update iparv
         instance.update_iparv(self.iparv, ignore_errors=True)
+
+    def _parented(self, parent, name):
+        """Remember that `parent` holds this circuit as `name` (weakly): a
+        later change to this circuit's structure refreshes it."""
+        kept = [(r, nm) for r, nm in self.__dict__.get('_parents', ())
+                if r() is not None and not (r() is parent and nm == name)]
+        self._parents = kept + [(weakref.ref(parent), name)]
+
+    def _unparented(self, parent, name):
+        kept = [(r, nm) for r, nm in self.__dict__.get('_parents', ())
+                if r() is not None and not (r() is parent and nm == name)]
+        if '_parents' in self.__dict__:
+            self._parents = kept
+
+    def _refresh_instance(self, name):
+        """Instance `name` changed its own structure after it was added
+        (an element or a node added to it, or one removed): its internal
+        nodes here follow -- the new ones appended, the gone ones removed --
+        and the branches are rebuilt; then this circuit's own parents.
+
+        ⚠ Until 2026-10-22 a subcircuit instance given its elements AFTER it
+        was added left its parent without them: the parent's nodes and
+        branches stayed as at the addition, and the next analysis or copy
+        raised `KeyError` on the instance's internal node."""
+        inst = self.elements[name]
+        want = list(inst.non_terminal_nodes(name))
+        prefix = name + '.'
+        for node in [n for n in self.nodes
+                     if not n.isglobal and n.name.startswith(prefix)]:
+            if node not in want:
+                self.nodes.remove(node)
+                self.nodenames.pop(node.name, None)
+        for node in want:
+            self.append_node(node)
+        self._rebuild_branches()
+        self._nodemap_dirty = True
+        self._restructured()
+
+    def _rebuild_branches(self):
+        """The branch list and each instance's span, from the instances in
+        their order -- what `add_instance` appends, one instance after the
+        other (a SubCircuit's branches are its instances')."""
+        branches, spans = [], {}
+        for nm, inst in self.elements.items():
+            start = len(branches)
+            branches.extend(self._instance_branches(inst, nm))
+            spans[nm] = (start, len(branches))
+        self.branches[:] = branches
+        self._instance_branch_span = spans
 
     def _place_instance(self, instancename, instance, **connection):
         """`add_instance` without resolving the instance's parameters
@@ -1266,6 +1328,7 @@ class SubCircuit(Circuit):
         ## Update circuit node - instance map.  STAGE 2+.5: mark, do not rebuild --
         ## the rebuild happens once, when the map is first read.
         self._nodemap_dirty = True
+        self._restructured()
 
     def __setitem__(self, instancename, element):
         """Adds an instance to the circuit"""
@@ -1304,12 +1367,18 @@ class SubCircuit(Circuit):
             self.nodes.remove(node)
             del self.nodenames[node.name] 
 
-        for branch in self._instance_branches(element, instancename):
-            self.branches.remove(branch)
+        ## ⚠ REBUILT, not removed one by one: `branches.remove` compares node
+        ## pairs, so a parallel element's equal branch could go instead, and
+        ## the later instances' spans were left unshifted (until 2026-10-22:
+        ## after a deletion an inductor's row pointed one past its own)
+        self._rebuild_branches()
 
         del self.term_node_map[instancename]
+        if isinstance(element, SubCircuit):
+            element._unparented(self, instancename)
 
         self.update_node_map()
+        self._restructured()
 
     def __getitem__(self, instancename):
         """Get local or hierarchical instance by name"""

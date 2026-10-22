@@ -421,6 +421,78 @@ def test_an_unchanged_resolution_context_is_not_rewritten():
     assert a['R1'].__dict__['_resolved_in'] is ctx
 
 
+def _divider(added_first):
+    """A source across a two-resistor divider in a subcircuit instance,
+    the instance given its elements before or AFTER it is added."""
+    from pycircuit.circuit.dcanalysis import DC  # noqa: F401
+    pycircuit.circuit.circuit.default_toolkit = numeric
+
+    class Div(SubCircuit):
+        terminals = ('a', 'b')
+
+    top = SubCircuit()
+    n1 = top.add_node('in')
+    top['V'] = VS(n1, gnd, v=2.0)
+    d = Div(n1, gnd)
+    if added_first:
+        top['X'] = d
+    d['R1'] = R('a', 'm', r=1e3)
+    d['R2'] = R('m', 'b', r=3e3)
+    if not added_first:
+        top['X'] = d
+    return top
+
+
+def test_an_instance_given_its_elements_after_it_was_added():
+    """The parent follows the instance's later elements -- its internal
+    node and the answer are the elements-first circuit's (until 2026-10-22
+    the parent kept its structure from the addition: DC and copy raised
+    KeyError on Node('X.m'))."""
+    from pycircuit.circuit.dcanalysis import DC
+    late, early = _divider(True), _divider(False)
+    assert late.nodes == early.nodes and late.branches == early.branches
+    got = DC(late).solve()
+    assert np.asarray(got.x).tobytes() == np.asarray(DC(early).solve().x).tobytes()
+    assert np.isclose(float(got.v('X.m', gnd)), 1.5, rtol=1e-12)
+    c = copy(late)
+    assert np.asarray(DC(c).solve().x).tobytes() == np.asarray(got.x).tobytes()
+
+
+def test_a_nested_instance_s_later_structure_reaches_the_top():
+    """Two levels: an element added to the inner instance after both were
+    added reaches the top circuit; one removed from it leaves it."""
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    top = SubCircuit()
+    mid = SubCircuit()
+    inner = SubCircuit()
+    top['M'] = mid
+    mid['I'] = inner
+    inner['R'] = R('p', 'q', r=1.0)
+    assert {'M.I.p', 'M.I.q'} <= {n.name for n in top.nodes}
+    del inner['R']
+    assert not {'M.I.p', 'M.I.q'} & {n.name for n in top.nodes}
+
+
+def test_a_deleted_instance_leaves_the_later_branch_rows_right():
+    """After a deletion each later instance's branch rows are its own (the
+    spans were left unshifted until 2026-10-22: a row past the end), and
+    of two parallel inductors the deleted one's branch goes."""
+    pycircuit.circuit.circuit.default_toolkit = numeric
+    c = SubCircuit()
+    a = c.add_node('a')
+    c['V0'] = VS(a, gnd, v=1.0)
+    c['L1'] = L(a, gnd, L=1e-6)
+    c['L2'] = L(a, gnd, L=2e-6)
+    del c['V0']
+    nn = len(c.nodes)
+    assert c.instance_branch_indices('L1') == [nn]
+    assert c.instance_branch_indices('L2') == [nn + 1]
+    assert 'V0' not in c._instance_branch_span
+    del c['L1']
+    assert c.instance_branch_indices('L2') == [nn]
+    assert len(c.branches) == 1
+
+
 def test_parameter_at_instantiation_with_add_instance ():
     """Test instance parameter value propagation through hierarchy with add_instance"""
     pycircuit.circuit.circuit.default_toolkit = symbolic
