@@ -1421,8 +1421,10 @@ def test_what_the_hdl_opamp_does_and_does_not_take_over_from_macromodels():
     src = inspect.getsource(macromodels)
     assert 'import jax.numpy as jnp' in src
     ## and it is inside a function, not at module scope -- which is what
-    ## makes it a per-call cost.
-    fn = inspect.getsource(macromodels.OpAmp.__init__)
+    ## makes it a per-call cost.  (In the function that builds the
+    ## limiter's closure, `_functions`, since its parameters were made to
+    ## follow writes, 2026-10-22; in `__init__` before.)
+    fn = inspect.getsource(macromodels.OpAmp._functions)
     assert 'import jax.numpy as jnp' in fn
 
     ## The HDL element has no callable parameters at all.

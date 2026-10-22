@@ -40,36 +40,47 @@ class MOS(SubCircuit):
                   Parameter(name='gamma', desc='Excessive noise factor', 
                             unit='', default=1)
                   ]
+    ## ⚠ The children take EXPRESSIONS of this element's parameters, so a
+    ## write after construction reaches them (`update_iparv` resolves them
+    ## against it); the noise term is rebuilt in `update`.  Until 2026-10-22
+    ## each child got the value at construction, and a later write of `gm`,
+    ## `gds`, `Cgs` ... changed nothing.
     def __init__(self, *args, **kvargs):
         super(MOS, self).__init__(*args, **kvargs)
 
-        self['Igm'] = VCCS('g', 's', 
-                           'd', 's', 
-                           gm=self.ipar.gm,
+        self['Igm'] = VCCS('g', 's',
+                           'd', 's',
+                           gm='gm',
                            toolkit=self.toolkit)
 
-        self['Igmb'] = VCCS('b', 's', 
-                            'd', 's', 
-                            gm=self.ipar.gmb,
+        self['Igmb'] = VCCS('b', 's',
+                            'd', 's',
+                            gm='gmb',
                             toolkit=self.toolkit)
 
-        self['gds'] = G('d', 's', 
-                        g = self.ipar.gds, noisy = False)
+        self['gds'] = G('d', 's',
+                        g = 'gds', noisy = False)
 
-        self['Cgs'] = C('g', 's', 
-                        c = self.ipar.Cgs)
-        self['Cgd'] = C('g', 'd', 
-                        c = self.ipar.Cgd)
-        self['Cdb'] = C('d', 'b', 
-                        c = self.ipar.Cdb)
+        self['Cgs'] = C('g', 's',
+                        c = 'Cgs')
+        self['Cgd'] = C('g', 'd',
+                        c = 'Cgd')
+        self['Cdb'] = C('d', 'b',
+                        c = 'Cdb')
 
-        toolkit = self.toolkit
-        kt = toolkit.kboltzmann * Symbol('T')
+        self['idnoise'] = IS('d', 's',
+                             i = 0, iac = 0,
+                             noisePSD = self._noise_psd())
 
-        inoisepsd = 4 * kt * self.ipar.gamma * self.ipar.gm
-        self['idnoise'] = IS('d', 's', 
-                             i = 0, iac = 0, 
-                             noisePSD = inoisepsd)
+    def _noise_psd(self):
+        kt = self.toolkit.kboltzmann * Symbol('T')
+        return 4 * kt * self.iparv.gamma * self.iparv.gm
+
+    def update(self, subject):
+        ## (`Circuit.__init__` calls this before the children exist)
+        if 'idnoise' in self.__dict__.get('elements', {}):
+            self.elements['idnoise'].ipar.noisePSD = self._noise_psd()
+        super().update(subject)
 
 ## `MOS_ACM` WAS DELETED HERE (stage 5+.2), and the reason is worth keeping.
 ##

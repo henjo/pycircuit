@@ -169,6 +169,50 @@ def test_a_transfer_function_s_coefficients_written_after_construction():
         e.ipar.set(numerator=(1.0,), denominator=(1.0, 2.0))
 
 
+_MACROMODELS = [
+    ('OpAmp', {'Aol': 2e4, 'GBW': 3e6, 'Rin': 1e5, 'Rout': 75.0, 'Vdd': 5.0, 'Vss': -2.0}),
+    ('MOS', {'gm': 3e-3, 'gmb': 2e-4, 'gds': 1e-5, 'Cgs': 1e-13, 'Cgd': 2e-14, 'Cdb': 3e-14}),
+]
+
+
+def _macromodel(name):
+    if name == 'OpAmp':
+        from pycircuit.circuit.macromodels import OpAmp
+        return OpAmp
+    from pycircuit.circuit.mos import MOS
+    return MOS
+
+
+@pytest.mark.parametrize('name, written', _MACROMODELS, ids=[m for m, _w in _MACROMODELS])
+def test_a_macromodel_s_parameter_written_after_construction_reaches_its_children(name, written):
+    """MOS and OpAmp are built from child elements: each parameter written
+    after construction gives the stamps of one built with it, to the bit
+    (until 2026-10-22 the children kept the values of the construction)."""
+    tk = pycircuit.circuit.circuit.numeric
+    cls = _macromodel(name)
+    for pname, value in written.items():
+        e = cls('a', 'b', 'c', 'd', toolkit=tk)
+        setattr(e.ipar, pname, value)
+        fresh = cls('a', 'b', 'c', 'd', toolkit=tk, **{pname: value})
+        x = np.random.default_rng(1).uniform(-1.0, 1.0, e.n)
+        for m in ('G', 'C', 'i', 'q'):
+            assert (np.asarray(getattr(e, m)(x)).tobytes()
+                    == np.asarray(getattr(fresh, m)(x)).tobytes()), (pname, m)
+
+
+def test_an_opamp_s_sources_are_rebuilt_only_when_their_parameters_change():
+    """A re-resolution that changes nothing keeps the sources' functions
+    (and so the circuit's set-up); a write of `Aol` replaces the gain's."""
+    from pycircuit.circuit.macromodels import OpAmp
+    o = OpAmp('a', 'b', 'c', 'd', toolkit=pycircuit.circuit.circuit.numeric)
+    gain = o['Gm1'].iparv.i_func
+    o.update_iparv()
+    assert o['Gm1'].iparv.i_func is gain
+    o.ipar.Aol = 3e4
+    assert o['Gm1'].iparv.i_func is not gain
+    assert o['Gm1'].iparv.i_func(2.0) == 6e4
+
+
 def test_vsin():
     var('vo va freq td theta phase t')
     vsin = VSin(toolkit = symbolic,

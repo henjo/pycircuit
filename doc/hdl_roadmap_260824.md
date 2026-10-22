@@ -10587,3 +10587,24 @@ equal the ones given the 400 K operating point, to the bit (failing on the old c
 with one failure -- a test that reads the source of OpAmp for its limiter's per-call JAX import, which 180 moved from
 __init__ to _functions; pointed there, it passes; the 27 gold decks, transient and standalone DC, over the four
 against 178: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-10-22 — 180. MOS's and OpAmp's parameters written after construction reach their child elements (the children kept the values of the construction)
+
+**Why**  MOS and OpAmp are built from child elements, each given a parameter's value at construction; OpAmp's two
+behavioural sources captured theirs in closures.  A later write of `gm`, `gmb`, `gds`, `Cgs`, `Cgd`, `Cdb` (MOS) or
+`Aol`, `GBW`, `Rin`, `Rout`, `Vdd`, `Vss` (OpAmp) changed nothing (12 of the library sweep's pairs).
+
+**Built.**  mos: the children take expressions of MOS's parameters (resolved against it, so a write reaches them); the
+noise term rebuilt in `update`.  macromodels: the resistors and the pole capacitor take expressions (the capacitor's
+in the order its arithmetic always ran, so its value is the same to the bit); the sources' functions are rebuilt by
+`update` only when their parameters changed, so a re-resolution that changes nothing keeps the circuit's set-up.
+Stamps at construction unchanged, to the bit.
+
+**Tests.**  tests: test_elements -- each parameter of both written after construction gives the stamps of one built
+with it, to the bit; the OpAmp's sources kept through a no-op re-resolution and replaced by a write of `Aol` (failing
+on the old code).
+
+**Gate**: the suite, run once over this commit and the three after it (179-182): 5 713 passed (6 skipped, 3 xfailed)
+with one failure -- a test that reads the source of OpAmp for its limiter's per-call JAX import, which 180 moved from
+__init__ to _functions; pointed there, it passes; the 27 gold decks, transient and standalone DC, over the four
+against 178: every digest, step, rejection, Newton count and path count identical.
