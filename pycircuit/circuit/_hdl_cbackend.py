@@ -766,7 +766,20 @@ def ensure(cls, info, toolkit=None):
     info['_backend_seen'] = True
     if info.get('_backend_pending'):
         info['_backend_pending'] = False
-        _resolve(cls, info, explicit=False)
+        _resolve(_owner(cls, info), info, explicit=False)
+
+
+def _owner(cls, info):
+    """The class whose `_hdl_info` `info` is: a plain Python subclass (one
+    that overrides a method, say) shares its base's, and the resolution --
+    its status, its ULP list, its limiter -- is the base's.  Noted on the
+    subclass that happens to be built first, the base's info would be
+    resolved and bound while its own status still read 'auto (resolved at
+    the first instance)'.  History: `doc/hdl_roadmap_260824.md`, 185."""
+    for k in cls.__mro__:
+        if k.__dict__.get('_hdl_info') is info:
+            return k
+    return cls
 
 
 def _resolve(cls, info, explicit):

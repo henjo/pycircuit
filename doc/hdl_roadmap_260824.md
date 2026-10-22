@@ -10700,3 +10700,26 @@ pairs 'the assembly loops and the plan' and 'the sources and their direct pass' 
 assembly loops, now fetch the groups through _current_groups; the twins -- the stamp plan, the direct source pass --
 serve the numeric toolkit, where the groups are empty: unchanged); the 27 gold decks, transient and standalone DC,
 against 184: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-10-22 — 185. An 'auto' class's backend resolved through a subclass is noted on the class that owns it -- the leak detector's intermittent report at test_hdl_diagnostics' teardown, fixed at its cause
+
+**Why**  A plain Python subclass of a Behavioural class (one that overrides a method, as test_hdl_diagnostics'
+HalfG(DiodeHdl) does) shares its base's `_hdl_info`.  Built before the base was, its first instance resolved the
+SHARED info's 'auto' backend -- C bound, pending cleared -- but `_resolve` noted the status, the ULP list and the
+limiter on the subclass: the base's own status still read 'auto (resolved at the first instance)'.  The leak detector
+compares the base's state before and after each test and reported "an 'auto' class resolved ... (not C: a compiler,
+cffi or the compile cache was hidden from it)" -- whenever no earlier test in that worker had built the base itself,
+so in the main tree only, and in the full suite only for some orders (it surfaced on the previous commit's gate; the
+module run alone reproduced it in the main tree at 9baca22f, before today's commits).
+
+**Built.**  _hdl_cbackend: `ensure` resolves against `_owner(cls, info)`, the class in the MRO whose `_hdl_info` the
+info is.
+
+**Tests.**  tests: test_hdl_cbackend -- a fresh 'auto' class, a subclass of it built first: the base's info resolved
+and the base's status 'c', the subclass reading it through (failing on the old code: the base's status still the
+pending note).  test_hdl_diagnostics run alone in the main tree: 34 passed, the two leak errors gone.
+
+**Gate**: the suite in the main tree, 5 719 passed (6 skipped, 3 xfailed), no failure, no error, no leak (a first run
+failed only test_runtime_map's no-history-in-C-modules rule on this change's own docstring, fixed);
+test_hdl_diagnostics alone in the main tree 34 passed; the pinned pairs 72 passed; the 27 gold decks, transient and
+standalone DC, against 183: every digest, step, rejection, Newton count and path count identical.

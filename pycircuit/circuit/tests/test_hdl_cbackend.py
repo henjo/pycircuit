@@ -1520,3 +1520,34 @@ def test_a_key_being_built_elsewhere_is_left_to_its_builder(tmp_path,
 
 if __name__ == '__main__':                        # pragma: no cover
     sys.exit(pytest.main([__file__, '-v']))
+
+
+@needs_cc
+def test_a_subclass_built_first_resolves_its_base_s_backend_under_the_base():
+    """A plain Python subclass of an 'auto' class shares its base's
+    `_hdl_info`; built first, it resolves the base's backend -- and the
+    status is the base's, which the subclass reads through (until
+    2026-10-22 it was noted on the subclass alone: the base's info bound C
+    while its status still read 'auto (resolved at the first instance)')."""
+    from pycircuit.circuit.toolkit import numeric
+
+    def analog(p, m):
+        b = Branch(p, m)
+        u = var(b.V, 'u')
+        return Contribution(b.I, gg * u * u)                    # noqa: F821
+
+    base = hdl.BehaviouralMeta(
+        '_FreshAuto', (Behavioural,),
+        {'instparams': [Parameter(name='gg', desc='scale', unit='A', default=1e-3)],
+         'analog': staticmethod(analog)})
+    assert base._hdl_backend_status == 'auto (resolved at the first instance)'
+
+    class Sub(base):
+        def G(self, x, epar=defaultepar, params_tree=None):
+            return 0.5 * np.asarray(super().G(x, epar), float)
+
+    Sub('p', 'n', toolkit=numeric)
+    assert base._hdl_info['_backend_pending'] is False
+    assert base._hdl_backend_status == 'c', base._hdl_backend_status
+    assert '_hdl_backend_status' not in Sub.__dict__
+
