@@ -17,6 +17,7 @@ from ._steps import (
     _GLMStartup,
     _GLMStartupMatrix,
     _GLMStep,
+    _LiveColumns,
     _LiveMonodromy,
     _lmm_recursion,
     _StageStep,
@@ -1010,7 +1011,9 @@ class _PeriodWalks(object):
         x = copy(x_in)
         x0 = copy(x_in)
         x_prev = copy(x_in)
-        P = np.asarray(toolkit.eye(m), dtype=float) if dense else None
+        ## (the monodromy carried on its live columns: `_LiveColumns`)
+        live = (_LiveColumns(np.asarray(toolkit.eye(m), dtype=float))
+                if dense else None)
         Pt = np.zeros(m)
         Pk = ([np.zeros(m) for _ in range(hsens.shape[1])]
               if hsens is not None else None)
@@ -1053,15 +1056,16 @@ class _PeriodWalks(object):
             if plain:
                 ## (the step map in one C call: `_sens_c`, speed round 11;
                 ## None -- the Python step)
-                Pn = _sens_c.step(self, xn, h, tab, P)
+                Pn = _sens_c.step(self, xn, h, tab, live.P)
                 if Pn is not None:
-                    P = Pn
+                    live.advance(Pn, lambda Pf, xn=xn, h=h: self._stage_step(
+                        xn, h, tab, coupled)[0].solve(Pf))
                     continue
             st, Ys = self._stage_step(xn, h, tab, coupled)
             if keep:
                 steps.append(st)
             if dense:
-                P = st.solve(P)
+                live.advance(st.solve(live.P), st.solve)
             if Pk is not None:
                 _t0 = float(times[_j])
                 Ks = [np.asarray(self._k_at(Ys[jj], _t0 + float(_cabs[jj]) * h))
@@ -1080,7 +1084,8 @@ class _PeriodWalks(object):
                 _tau = _tau + hsens[_j]
                 if capture is not None and (_j + 1) in capture:
                     self._captured[_j + 1] = (copy(x),
-                                              None if P is None else P.copy(),
+                                              None if live is None
+                                              else live.full().copy(),
                                               [pk.copy() for pk in Pk])
             if want_dT:
                 Ks = [np.asarray(self._k_at(y)) for y in Ys]
@@ -1092,5 +1097,6 @@ class _PeriodWalks(object):
                 Pt = st.solve(Pt, forcing)
         self._want_dfdh = False
         return _PeriodWalk(kind='stage', fp_kind='full' if coupled else 'dirk',
-                           x0=x0, x_end=x, x_prev=x_prev, P=P,
+                           x0=x0, x_end=x, x_prev=x_prev,
+                           P=None if live is None else live.full(),
                            Pt=Pt if want_dT else None, Pk=Pk, steps=steps)

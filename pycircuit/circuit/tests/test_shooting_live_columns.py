@@ -74,7 +74,24 @@ def test_the_monodromy_on_the_live_columns_is_every_column_s(make, method, kind,
     assert widths[0] == width * m and widths[-1] == 2 * width
 
 
-@pytest.mark.parametrize('method', ['trap', 'gear2'])
+@pytest.mark.parametrize('make', [_q20_rlc, _clipper], ids=['rlc', 'clipper'])
+@pytest.mark.parametrize('method', ['radau', 'trbdf2', 'esdirk43'])
+def test_a_stage_walk_s_monodromy_on_the_live_columns_is_every_column_s(make, method, monkeypatch):
+    """`_LiveColumns`: the stage family's walk, through the C step map where
+    it serves (`_sens_c`; the RLC's Radau) and the Python step elsewhere
+    (a junction: the clipper's diode)."""
+    full, m = _walk(make, method, 'stage', 1, False, monkeypatch)
+    before = _paths.snapshot()
+    got, _ = _walk(make, method, 'stage', 1, True, monkeypatch)
+    served = _paths.since(before).get('pss.sens:served', 0)
+    assert got.shape == full.shape == (m, m)
+    assert np.array_equal(got != 0, full != 0)
+    assert np.allclose(got, full, rtol=1e-13, atol=0)
+    if make is _q20_rlc and method == 'radau':
+        assert served > 0
+
+
+@pytest.mark.parametrize('method', ['trap', 'gear2', 'radau'])
 def test_a_pss_on_the_live_columns_answers_as_on_every_column(method, monkeypatch):
     circuit.default_toolkit = circuit.numeric
     out = {}
@@ -124,5 +141,8 @@ def test_a_non_finite_step_runs_at_full_width():
     assert mono.off and mono.cols is None
     got = mono.ring()
     assert np.isnan(ref[0]).any()
+    ## (the NaN where every column puts it; the finite entries the full
+    ## width's to the rounding -- the products read `C`'s nonzero columns)
     for g, r in zip(got, ref):
-        assert np.array_equal(g, r, equal_nan=True)
+        assert np.array_equal(np.isnan(g), np.isnan(r))
+        assert np.allclose(np.nan_to_num(g), np.nan_to_num(r), rtol=1e-13, atol=0)

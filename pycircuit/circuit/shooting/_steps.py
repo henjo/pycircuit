@@ -278,30 +278,51 @@ class _LiveMonodromy:
     a non-finite `C` or factor is NaN at full width (``0 * inf``), not
     zero, so a step whose result is not finite is recomputed from the full
     state and the walk carries every column from there on."""
-    __slots__ = ('P', 'Pq', 'cols', 'off', 'width')
+    __slots__ = ('P', 'Pq', 'cols', 'n', 'off', 'reads', 'width')
 
     def __init__(self, P0, P1, Pq):
         self.P, self.Pq = [P0, P1], Pq
         self.width = P0.shape[1]
         self.cols = None
         self.off = not LIVE_COLUMNS
+        self.n = 0
+        self.reads = []
 
     def step(self, Cs, C_new, alphas, b, solve):
         """One step of the recursion; the new ``P_n`` on the live columns."""
         prev, Pq = self.P, self.Pq
-        P_new, Pq_new = _lmm_recursion(prev, Cs, Pq, C_new, alphas, b, solve)
-        if self.cols is not None and not (np.isfinite(P_new).all()
-                                          and np.isfinite(Pq_new).all()):
-            _paths.no('pss.live:nonfinite')
-            prev = [self._full(p) for p in prev]
-            Pq = self._full(Pq)
-            self.cols, self.off = None, True
+        if self.off:
             P_new, Pq_new = _lmm_recursion(prev, Cs, Pq, C_new, alphas, b,
                                            solve)
+        else:
+            P_new, Pq_new = _lmm_recursion(
+                prev, [self._read(c) for c in Cs], Pq, self._read(C_new),
+                alphas, b, solve)
+            if not (np.isfinite(P_new).all() and np.isfinite(Pq_new).all()):
+                _paths.no('pss.live:nonfinite')
+                prev = [self._full(p) for p in prev]
+                Pq = self._full(Pq)
+                self.cols, self.off = None, True
+                P_new, Pq_new = _lmm_recursion(prev, Cs, Pq, C_new, alphas,
+                                               b, solve)
         self.P, self.Pq = [P_new, prev[0]], Pq_new
-        if not self.off:
+        self.n += 1
+        ## (a column dies in the opening's steps -- the identity leaving
+        ## the ring -- or not at all, but for a coincidence: checked on
+        ## those, then now and then)
+        if not self.off and (self.n <= 4 or self.n % 64 == 0):
             self._prune()
         return P_new
+
+    def _read(self, C):
+        """`C` as the products read it: through its nonzero columns
+        (`_ColumnsOf`), kept for the steps that read it again."""
+        for r in self.reads:
+            if r.C is C:
+                return r
+        r = _ColumnsOf(C)
+        self.reads = [r] + self.reads[:2]
+        return r
 
     def _prune(self):
         P0, P1, Pq = self.P[0], self.P[1], self.Pq
@@ -330,6 +351,72 @@ class _LiveMonodromy:
     def ring(self):
         """``[P_n, P_{n-1}]`` at full width -- the walk's `P`."""
         return [self.full(0), self.full(1)]
+
+
+class _LiveColumns:
+    """A stage walk's dense monodromy `P` carried on its live columns only,
+    as `_LiveMonodromy` carries a multistep walk's: every step reads `P`
+    through ``C_n P``, so after the first step a column survives only where
+    a charge reaches it, and a zero column stays zero (the step map is
+    linear in `P` and the monodromy's carries no forcing).  Each kept column
+    is computed as it was.
+
+    ⚠ A NON-FINITE STEP RUNS AT FULL WIDTH (`advance`'s `full_step`), and
+    the walk carries every column from there on, as `_LiveMonodromy`."""
+    __slots__ = ('P', 'cols', 'n', 'off', 'width')
+
+    def __init__(self, P):
+        self.P = P
+        self.width = P.shape[1]
+        self.cols = None
+        self.off = not LIVE_COLUMNS
+        self.n = 0
+
+    def advance(self, P_new, full_step):
+        """`P_new`: the step on the carried columns; `full_step(P)` the same
+        step on a full-width `P`, for a result that is not finite."""
+        if self.cols is not None and not np.isfinite(P_new).all():
+            _paths.no('pss.live:nonfinite')
+            P_new = full_step(self.full())
+            self.cols, self.off = None, True
+        self.P = P_new
+        self.n += 1
+        ## (as `_LiveMonodromy.step`: the first steps, then now and then)
+        if not self.off and (self.n <= 4 or self.n % 64 == 0):
+            live = np.any(P_new != 0, axis=0)
+            if not live.all():
+                keep = np.flatnonzero(live)
+                self.P = P_new[:, keep]
+                self.cols = keep if self.cols is None else self.cols[keep]
+
+    def full(self):
+        """`P` at full width (a new array where columns were dropped)."""
+        if self.cols is None:
+            return self.P
+        out = np.zeros((self.P.shape[0], self.width), dtype=self.P.dtype)
+        out[:, self.cols] = self.P
+        return out
+
+
+class _ColumnsOf:
+    """A capacitance as `_LiveMonodromy`'s products read it: ``C @ P`` as
+    ``C[:, k] @ P[k]`` over its nonzero columns `k` (a NaN or inf is
+    nonzero, so it is read) -- the terms dropped are exact zeros, so the
+    product is the dense one's to the rounding (its sums grouped
+    otherwise)."""
+    __slots__ = ('C', 'Ck', 'k')
+
+    def __init__(self, C):
+        self.C = C
+        C = np.asarray(C)
+        k = np.flatnonzero(np.any(C != 0, axis=0))
+        self.k = None if len(k) == C.shape[1] else k
+        self.Ck = C if self.k is None else np.ascontiguousarray(C[:, k])
+
+    def __matmul__(self, P):
+        if self.k is None:
+            return self.Ck @ P
+        return self.Ck @ P[self.k]
 
 
 def dense_c(C):

@@ -10848,3 +10848,36 @@ columns.
 standalone DC, against 188: every digest identical; the shooting files 645 + 9 passed before it (the explicit-inverse
 test's width assertion updated).  Timing, the box idle (1-min load 1.5..1.8), three processes per tree interleaved:
 the Howland testbench's gear PSS 11.84 -> 8.01 s (1.48x; the line 1.3x), the orbit's digest identical in all six.
+
+## 2026-10-22 — 190. The stage walk carries its monodromy on the live columns too, and the multistep walk's products read the capacitance's nonzero columns -- a Howland testbench's Radau PSS 1.14x (62.4 -> 54.7 s), its gear PSS a further 1.04x (7.94 -> 7.61 s), the orbits bit-identical
+
+**Why**  The stage family's dense walk (Radau IIA, TR-BDF2, ESDIRK; `_walk_stage`) propagates its `m x m` monodromy
+through every step as the multistep walk did: ``C_n P`` stacked per stage and solved against the stage block (the C
+step map, `_sens_c`, or the Python `_StageStep.solve`).  After the first step a column survives only where a charge
+reaches it -- 21 of the testbench's 90 -- and the block's solve ran on all 90.
+
+**Built.**  _steps: `_LiveColumns` carries a stage walk's `P` on its live columns, as `_LiveMonodromy` (189) carries
+the multistep walk's; a step whose result is not finite runs again at full width through the Python step, and the walk
+keeps every column from there on.  _pss_walks: `_walk_stage` carries its dense monodromy through it -- the C step map
+and the Python step alike; a capture and the walk's `P` read it at full width.
+
+**Tests.**  _steps: `_LiveMonodromy` reads each capacitance through its nonzero columns (`_ColumnsOf`: ``C[:, k] @
+P[k]``; a NaN or inf is nonzero, so it is read) -- the terms dropped are exact zeros, so a product is the dense one's
+to the rounding, its sums grouped otherwise -- and a step whose result is not finite runs at full width on the dense
+products. It looks for newly dead columns on the first four steps and every 64th after, not on every step: a column
+dies with the opening's identity leaving the ring, or by a coincidence.
+
+Measured, the box idle, three processes per tree interleaved, against 189: the testbench's Radau PSS 62.42 -> 54.68 s
+(1.14x), its gear PSS 7.94 -> 7.61 s (1.04x); the orbit's digest identical in all twelve. OpenBLAS's threads do not
+enter: the gear PSS 7.62 s with the default, 7.57 s on one.
+
+tests: test_shooting_live_columns, 7 more (failing on the old code: no live columns in a stage walk) -- a stage walk's
+monodromy on the live columns equal to every column's (an RLC and a diode clipper; Radau through the C step map on the
+RLC, the Python step where a junction declines it; TR-BDF2, ESDIRK43); a Radau PSS answering as on every column.  The
+non-finite test compares the finite entries to the rounding.
+
+**Gate**: the suite in the main tree, 5 746 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 189: every digest identical; the pinned pairs 72 passed (the C step map's twin unchanged: it is
+called on the live columns).  Timing, the box idle (1-min load < 1.6), three processes per tree interleaved, against
+189: the Howland testbench's Radau PSS 62.42 -> 54.68 s (1.14x), its gear PSS 7.94 -> 7.61 s (1.04x); the orbit's
+digest identical in all twelve.
