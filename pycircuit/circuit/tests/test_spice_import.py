@@ -171,6 +171,9 @@ def _one(tmp_path, line, extra='', tran='.tran 1n 100n'):
     ('I1 a 0 SIN(1m 2m 1meg 1n 0 30)', elements.ISin, ['a', '0'],
      {'i': 0.0, 'iac': 0.0, 'io': 1e-3, 'ia': 2e-3, 'freq': 1e6, 'td': 1e-9, 'theta': 0.0,
       'phase': 30.0}),
+    ('V1 a 0 AC 1 60 SIN(0 1 1meg 0 0 30)', elements.VSin, ['a', '0'],
+     {'v': 0.0, 'vac': 1.0, 'acphase': 60.0, 'vo': 0.0, 'va': 1.0, 'freq': 1e6, 'td': 0.0,
+      'theta': 0.0, 'phase': 30.0}),
     ('V1 a 0 EXP(0 1 2n)', elements.VExp, ['a', '0'],
      {'v': 0.0, 'vac': 0.0, 'v1': 0.0, 'v2': 1.0, 'td1': 2e-9, 'tau1': 1e-9,
       'td2': 2e-9 + 1e-9, 'tau2': 1e-9}),
@@ -185,6 +188,23 @@ def test_each_two_terminal_maps_as_spice_defines_it(tmp_path, line, cls, nodes, 
     control pins first."""
     m = _one(tmp_path, line)
     assert (m.cls, m.nodes, m.params) == (cls, nodes, params)
+
+
+def test_a_sine_source_keeps_its_ac_phase_apart_from_its_sine_phase(tmp_path):
+    """SPICE's `AC mag phase` and SIN's phase are two values: the sine
+    source's `acphase` and `phase` (one parameter until 2026-10-22, when a
+    SIN phase other than the AC phase was refused); written back and read
+    again, both are kept."""
+    m = _one(tmp_path, 'I1 a 0 AC 2m 45 SIN(0 1m 1meg 0 0 -30)')
+    assert (m.cls, m.params['acphase'], m.params['phase']) == (elements.ISin, 45.0, -30.0)
+    imp = _import(tmp_path, 'title\nV1 a 0 AC 1 60 SIN(0 1 1meg 0 0 30)\nR1 a 0 1k\n'
+                            '.tran 1n 100n\n')
+    path = str(tmp_path / 'w.cir')
+    imp.write_ngspice(path)
+    again = import_netlist(path, dialect='ngspice')
+    (a,) = [e for e in imp.elements if e.cls is elements.VSin]
+    (b,) = [e for e in again.elements if e.cls is elements.VSin]
+    assert a.params == b.params and (b.params['acphase'], b.params['phase']) == (60.0, 30.0)
 
 
 @pytest.mark.parametrize('model, inst, cls, params', [

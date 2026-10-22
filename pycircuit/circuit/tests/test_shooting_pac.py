@@ -1953,7 +1953,9 @@ def test_pac_on_a_staged_solve_borders_its_sideband_solve_with_the_event_rows_an
         del cir['Vin']
         cir.add_node('vin0')
         cir['Vin'] = VS('vin0', gnd, v=5.0, vac=0.0)
-        cir['Vp'] = VSin('vin', 'vin0', vo=0.0, va=eps, freq=f0, phase=90.0, vac=vac)
+        ## (its AC phase the sine's: the reconstruction below divides by it)
+        cir['Vp'] = VSin('vin', 'vin0', vo=0.0, va=eps, freq=f0, phase=90.0, acphase=90.0,
+                         vac=vac)
         cir['Vramp'].iparv.vac = 0.0
         return cir
 

@@ -23,6 +23,24 @@ import pytest
 pytestmark = pytest.mark.usefixtures('restore_default_toolkit')
 
 
+@pytest.mark.parametrize('cls, amp', [(VSin, {'vac': 1.0, 'va': 1.0}),
+                                      (ISin, {'iac': 1.0, 'ia': 1.0})])
+def test_a_sine_source_s_phase_turns_its_sine_and_acphase_its_ac_phasor(cls, amp):
+    """`phase` is the sine's (degrees), `acphase` the AC phasor's -- two
+    parameters (until 2026-10-22 one value: a sine's phase turned its AC
+    phasor too, and the AC phase moved the sine)."""
+    tk = pycircuit.circuit.circuit.numeric
+    row = 2 if cls is VSin else 0
+    sign = -1.0 if cls is VSin else 1.0
+    s = cls(1, gnd, freq=1e3, phase=90.0, toolkit=tk, **amp)
+    assert complex(s.u(analysis='ac')[row]) == sign * 1.0
+    assert np.isclose(float(s.u(0.0, analysis='tran')[row]), sign * 1.0)
+    a = cls(1, gnd, freq=1e3, acphase=90.0, toolkit=tk, **amp)
+    assert np.isclose(complex(a.u(analysis='ac')[row]), sign * 1j)
+    assert float(a.u(0.0, analysis='tran')[row]) == 0.0
+    assert [p.name for p in cls.instparams].count('phase') == 1
+
+
 def test_vsin():
     var('vo va freq td theta phase t')
     vsin = VSin(toolkit = symbolic,

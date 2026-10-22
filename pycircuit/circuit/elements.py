@@ -328,9 +328,14 @@ class VS(Circuit):
         ## with it.  The base class derives i(x) as dot(G(x), x).
         return self._G
 
+    def _ac_phase(self):
+        """The AC phasor's phase in degrees (`phase`; a sine source's own
+        `phase` is its waveform's, its AC phase `acphase`)."""
+        return self.iparv.phase
+
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
-            phase = self.iparv.phase * self.toolkit.pi / 180
+            phase = self._ac_phase() * self.toolkit.pi / 180
             vac = self.iparv.vac * self.toolkit.exp(1j*phase)
             return self.toolkit.array([0, 0, -vac])
         elif analysis in timedomain_analyses:
@@ -366,8 +371,17 @@ class VS(Circuit):
         return self.branches[0]
 
 class VSin(VS):
-    """ Independent sinus volatge source
+    """Independent sine voltage source.
 
+    `phase` is the SINE's phase in degrees (SPICE's SIN phase); the AC
+    analysis phasor's phase is `acphase` -- VS's `phase` renamed here, so
+    the two are separate parameters (until 2026-10-22 both were `phase`,
+    one value: a sine's phase turned its AC phasor too).
+
+    >>> from pycircuit.circuit import gnd
+    >>> v = VSin(1, gnd, vac=1.0, va=2.0, freq=1e6, phase=90, acphase=0)
+    >>> complex(v.u(analysis='ac')[2])
+    (-1-0j)
     """
 
     def signal_scale(self):
@@ -375,7 +389,9 @@ class VSin(VS):
         ## offset excursion from a uic start.
         return (abs(self.iparv.va) + abs(self.iparv.vo), 0.0)
 
-    instparams = VS.instparams + [
+    instparams = [p for p in VS.instparams if p.name != 'phase'] + [
+        Parameter(name='acphase', desc='AC analysis phase',
+                  unit='deg', default=0),
         Parameter(name='vo', desc='Offset voltage', 
                   unit='V', default=0),
         Parameter(name='va', desc='Voltage amplitude', 
@@ -388,6 +404,10 @@ class VSin(VS):
                   unit='1/s', default=0),
         Parameter(name='phase', desc='Phase in degrees', 
                   unit='deg', default=0)]
+
+    def _ac_phase(self):
+        return self.iparv.acphase
+
     def __init__(self, *args, **kvargs):
         super().__init__(*args, **kvargs)
         self.function = func.Sin(self.iparv.vo,
@@ -448,9 +468,14 @@ class IS(Circuit):
     terminals = ('plus', 'minus')
     function = _OwnTimeFunction()
 
+    def _ac_phase(self):
+        """The AC phasor's phase in degrees (`phase`; a sine source's own
+        `phase` is its waveform's, its AC phase `acphase`)."""
+        return self.iparv.phase
+
     def u(self, t=0.0, epar=defaultepar, analysis=None):
         if analysis == 'ac':
-            phase = self.iparv.phase * self.toolkit.pi / 180.            
+            phase = self._ac_phase() * self.toolkit.pi / 180.
             iac = self.iparv.iac * self.toolkit.exp(1j*phase)
             return self.toolkit.array([iac, -iac])
         elif analysis in timedomain_analyses:
@@ -483,14 +508,15 @@ class IS(Circuit):
         return self.toolkit.array([[psd, -psd], [-psd, psd]])
 
 class ISin(IS):
-    """ Independent sinus current source
-
-    """
+    """Independent sine current source: `phase` the sine's phase in
+    degrees, `acphase` the AC phasor's (VSin's note)."""
 
     def signal_scale(self):
         return (0.0, abs(self.iparv.ia) + abs(self.iparv.io))
 
-    instparams = IS.instparams + [
+    instparams = [p for p in IS.instparams if p.name != 'phase'] + [
+        Parameter(name='acphase', desc='AC analysis phase',
+                  unit='deg', default=0),
         Parameter(name='io', desc='Offset current', 
                   unit='A', default=0),
         Parameter(name='ia', desc='Current amplitude', 
@@ -503,6 +529,10 @@ class ISin(IS):
                   unit='1/s', default=0),
         Parameter(name='phase', desc='Phase in degrees', 
                   unit='deg', default=0)]
+
+    def _ac_phase(self):
+        return self.iparv.acphase
+
     def __init__(self, *args, **kvargs):
         super().__init__(*args, **kvargs)
         self.function = func.Sin(self.iparv.io,

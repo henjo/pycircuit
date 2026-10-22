@@ -708,7 +708,7 @@ RECORD = {
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '7e8f23b73019'),
     'the transient evaluation and the core': ('ecdae2231dae', 'd59ae0c11019'),
     'the assembly loops and the plan': ('fa280abb9bf9', '14651de8716f'),
-    'the sources and their direct pass': ('61c7a4bed013', 'fced12f39974'),
+    'the sources and their direct pass': ('9cf6a996322c', 'fced12f39974'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),

@@ -10350,3 +10350,27 @@ verdicts).
 
 **Gate**: the suite, 5 638 passed (6 skipped, 3 xfailed); the 27 gold transients bit-identical on the build
 (digest, steps, rejections, Newton count, every count but the new `loop_c:lte_on_pattern`), the buck bit-identical.
+
+## 2026-10-22 — 172. A sine source's phase and its AC phase made two parameters
+
+**Why** (Andreas: "fix sine bugs", after the exporter's sizing found it).  `VSin` and `ISin` declared `phase` twice:
+VS's (IS's) AC analysis phase and the sine's phase in degrees -- one value in the ParameterDict, so a sine's phase
+turned its AC phasor too (`VSin(vac=1, phase=90)`: AC source -1j), and an AC phase moved the transient's sine.  The
+PSS log (`doc/pss_log_260902.md`, 2026-09-22) met it as an instrument trap ("divide by the perturbed source's AC
+phase"); the SPICE importer refused a SIN phase other than the AC phase.
+
+**Built.**  `VSin` / `ISin`: `phase` is the sine's (SPICE's SIN phase, as every caller in the tree passes it); the
+AC phasor's phase is `acphase` (VS's `phase` dropped from their parameters), read through `_ac_phase` (VS and IS:
+`phase`).  `spice_import`: `AC mag phase` on a SIN source maps to `acphase`, the refusal removed; the deck written
+back (`_source_spec`) carries it.  A sine source given `phase` alone now has an AC phase of 0 -- an AC or PAC result
+that read the sine's phase as its AC phase changes by that rotation.  Where the code meant the two to be one it now
+says so: `ProbeShooting._build` gives its probes `acphase` = `phase` (`_pac_response`'s image sideband is right only
+with the excitation in the probe's own phase -- its PAC Jacobian 100 % off otherwise, which its validation caught), as
+do three tests whose reference divides by the source's AC phase (`test_shooting`, the staged PAC's three methods).
+Tests: `test_elements` (each phase turns only
+its own: VSin and ISin), `test_spice_import` (a SIN with AC phase 60 and SIN phase 30 maps both; written back and read
+again, both kept) -- failing on the old code.  Pinned pair "the sources and their direct pass" re-recorded (the
+reference `VS.u` / `IS.u` changed in the AC branch alone; the twin, the time-domain add, unchanged).
+
+**Gate**: the suite, 5 642 passed (6 skipped, 3 xfailed) -- its first run failed six tests, the probe's PAC
+Jacobian and three references that divided by the sine's phase as the AC phase, each now giving `acphase` = `phase`.

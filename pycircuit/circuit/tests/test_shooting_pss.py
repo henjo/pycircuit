@@ -99,7 +99,8 @@ def test_shooting():
     N = 500
     period = 1e-3
 
-    cir['vs'] = VSin(1,gnd, vac=2.0, va=2.0, freq=1/period, phase=20)
+    ## (the AC reference in the sine's own phase: `acphase` with `phase`)
+    cir['vs'] = VSin(1,gnd, vac=2.0, va=2.0, freq=1/period, phase=20, acphase=20)
     cir['R'] = R(1,2, r=1e4)
     cir['C'] = C(2,gnd, c=1e-8)
 

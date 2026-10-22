@@ -103,9 +103,12 @@ class ProbeShooting:
             ## probe source in the chain would be AC-excited at once -- and in
             ## series they share one current, so the PAC response would come
             ## back K times too large (invisible at K=1).
+            ## (`acphase` with it: the AC excitation in the probe's own
+            ## phase, the convention `_pac_response` divides out)
             cir['__probe%d' % j] = VSin(prev, nxt, va=float(amps[j]),
                                         freq=float(k) * float(f),
-                                        phase=float(phases[j]), vac=0.0)
+                                        phase=float(phases[j]),
+                                        acphase=float(phases[j]), vac=0.0)
             prev = nxt
         return cir
 
@@ -450,12 +453,14 @@ class ProbeShooting:
           by frequency (see below).
         * **A factor of two**: this file's probe spectrum uses the peak-amplitude
           convention `(2/N) sum(...)`; PAC returns a phasor.
-        * **A 90 degree rotation that is OURS, not PAC's**: `VS` builds its AC
-          phasor as `vac * exp(j*phase)`, and the operating-point probe sets
-          `phase = 90` to make the forcing a cosine -- so the same parameter
-          rotates the AC excitation.  Dividing by the excitation phasor removes
-          it, which is why the excitation is read from the circuit rather than
-          assumed to be 1.
+        * **A 90 degree rotation that is OURS, not PAC's**: `VSin` builds its
+          AC phasor as `vac * exp(j*acphase)`, and the operating-point probe
+          sets `phase = 90` to make the forcing a cosine and `acphase = 90`
+          with it (`_build`: the image sideband's conjugation makes the
+          column right only with the excitation in the probe's own phase;
+          until 2026-10-22 one parameter was both).  Dividing by the
+          excitation phasor removes it, which is why the excitation is read
+          from the circuit rather than assumed to be 1.
 
         History: `doc/shooting_history.md`, `ProbeShooting._pac_response`.
         """

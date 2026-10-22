@@ -366,6 +366,8 @@ def _source_spec(cls, p):
     out = f'dc {p[pre]!r} ac {p[pre + "ac"]!r}'
     if 'phase' in p and cls in (elements.VS, elements.IS):
         out += f' {p["phase"]!r}'
+    elif 'acphase' in p and cls in (elements.VSin, elements.ISin):
+        out += f' {p["acphase"]!r}'
     for wave, (v, i, names) in WAVES.items():
         if cls in (v, i):
             vals = p['tvpairs'] if names is None else [
@@ -849,7 +851,8 @@ class _Importer:
         pre = 'vi'[which]
         kw = {pre: 0.0 if wave else (dc or 0.0), pre + 'ac': ac or 0.0}
         if acphase:
-            kw['phase'] = acphase
+            ## (a sine source's AC phase is `acphase`: its `phase` is SIN's)
+            kw['acphase' if wave == 'sin' else 'phase'] = acphase
         if wave is None:
             self.add(f, c.kind, nodes, (elements.VS, elements.IS)[which], kw)
             return
@@ -859,11 +862,7 @@ class _Importer:
                 raise SpiceImportError('PWL needs time-value pairs')
             kw['tvpairs'] = args
         else:
-            wkw = self.waveform(wave, args, pre)
-            if wkw.get('phase', 0.0) != kw.get('phase', wkw.get('phase', 0.0)):
-                ## (one parameter is both: pycircuit's SIN phase is its AC phase)
-                raise SpiceImportError('a SIN phase and a different AC phase')
-            kw.update(wkw)
+            kw.update(self.waveform(wave, args, pre))
         self.add(f, c.kind, nodes, classes[which], kw)
 
     def waveform(self, wave, args, pre):
