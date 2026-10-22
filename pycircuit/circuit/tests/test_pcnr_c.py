@@ -14,10 +14,12 @@ import sympy
 
 from pycircuit.circuit import _paths, _pcnr_c, circuit, gnd, pcnr
 from pycircuit.circuit import elements_hdl as eh
-from pycircuit.circuit.elements import VS, R, SubCircuit
+from pycircuit.circuit.dcanalysis import DC
+from pycircuit.circuit.elements import VS, Diode, R, SubCircuit
 from pycircuit.circuit.hdl import Behavioural, Branch, Contribution, limit_identity, var
 from pycircuit.circuit.linearsolver import AutoSolver, DenseSolver
 from pycircuit.circuit.tests.test_dc_pcnr import _bjt_mirror_20v
+from pycircuit.utilities.param import Parameter
 
 #: a level-3 card (`test_mos_gate_charge`'s) with its bulk junctions on
 CARD = {'vto': 0.62, 'nsub': 1.066e16, 'kp': 6.3e-5, 'gamma': 0.64, 'phi': 0.31,
@@ -531,3 +533,48 @@ def test_an_unchanged_circuit_keeps_its_view():
         view = pcnr.pcnr_view(c, devs)
         pcnr.solve_dc(c, gnd)
     assert pcnr.pcnr_view(c, devs) is view
+
+
+def _with_a_participant(vdd_expr, nested):
+    """A parameterised circuit -- `vdd` its parameter -- whose source takes
+    its value through an expression, beside a diode (a PCNR participant,
+    so a DC builds the PCNR view).  `nested`: the source inside a
+    subcircuit instance whose own parameter is that expression."""
+    tk = circuit.numeric
+
+    class Top(SubCircuit):
+        instparams = [Parameter('vdd', default=0.0)]  # noqa: RUF012
+
+    class Inner(SubCircuit):
+        instparams = [Parameter('v', default=0.0)]  # noqa: RUF012
+        terminals = ('p', 'n')
+
+    top = Top(vdd=2.0, toolkit=tk)
+    n1, n2 = top.add_nodes('1', '2')
+    if nested:
+        inner = Inner(n1, gnd, v=vdd_expr, toolkit=tk)
+        inner['V'] = VS('p', 'n', v='v', toolkit=tk)
+        top['X'] = inner
+    else:
+        top['V'] = VS(n1, gnd, v=vdd_expr, toolkit=tk)
+    top['R'] = R(n1, n2, r=1e3, toolkit=tk)
+    top['D'] = Diode(n2, gnd, toolkit=tk)
+    return top, n1
+
+
+@pytest.mark.parametrize('nested', [False, True], ids=['top', 'nested'])
+def test_a_parameter_from_a_parent_s_expression_survives_the_pcnr_view(nested):
+    """A DC on a circuit with a PCNR participant builds the PCNR view, which
+    holds the circuit's own elements; a parameter given as an expression of
+    a parent's keeps its value through it, and the answer is the circuit's
+    (until 2026-10-22 the view's build re-resolved every element against
+    the view's own, empty, parameters: the source's `v` reset to its
+    default 0 V -- the answer 0 V, and the circuit left so)."""
+    c, n1 = _with_a_participant('vdd', nested)
+    ref, _n1 = _with_a_participant(2.0, nested)
+    got = DC(c).solve()
+    want = DC(ref).solve()
+    assert float(got.v(n1, gnd)) == 2.0
+    assert np.asarray(got.x).tobytes() == np.asarray(want.x).tobytes()
+    v = c['X']['V'] if nested else c['V']
+    assert v.iparv.v == 2.0

@@ -10445,3 +10445,27 @@ against the view's own (empty) parameters, so a parameter given as an expression
 
 **Gate**: the suite, 5 681 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone DC, against
 3c7451a2: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-10-22 — 175. The PCNR view no longer re-resolves the circuit's own elements: a parameter from a parent's expression survives a DC
+
+**Why** (found on the way to 174, reproduced before the fix).  `pcnr_view` builds a circuit that HOLDS the circuit's
+own element objects, and it added each with `add_instance` -- whose last step resolves the instance's parameters
+against its new parent's, here the view's, which has none.  A parameter given as an expression of a parent's (a
+`SubCircuit` subclass's `vdd`, a source written `v='vdd'`) failed to resolve, under `ignore_errors`, to the parameter's
+DEFAULT -- in the circuit's own element.  Any DC that built the view (a circuit with a PCNR participant: a diode, a
+BJT, a MOSFET) returned the answer for the defaults (0 V at the source for 2 V) and left the circuit so; the second
+solve repeated it.  A source inside a subcircuit instance whose own parameter is that expression went the same way
+(the instance re-resolved, its children with it).  SPICE decks were not reached: the importer resolves `.param` to
+numbers.
+
+**Built.**  `SubCircuit._place_instance`: `add_instance` without the parameter resolution (`add_instance` is it
+followed by `update_iparv`).  `pcnr_view` places the circuit's own elements and adds only its stubs.  Building the view
+therefore no longer runs every shared element's `update()` (an R's or a VS's stamp rebuilt, an HDL element's packs
+dropped) -- only the view's and its stubs' construction move the parameter epoch.  Tests (`test_pcnr_c`, failing on
+the old code at 0 V): a top-level source and a source in a subcircuit instance, each from the parent's `vdd`, beside a
+diode: the DC equals the numeric circuit's to the bit, and the element keeps its value.
+
+**Gate**: the suite, 5 682 passed (6 skipped, 3 xfailed) and one failure, the pinned pair "the PCNR DC solve and its
+C" (its reference holds `pcnr_view`; the twin, the C solve, runs on the same view, unchanged) -- re-recorded,
+its file rerun (72 passed); the 27 gold decks, transient and standalone DC, against 174: every digest, step,
+rejection, Newton count and path count identical.

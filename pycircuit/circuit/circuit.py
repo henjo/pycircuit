@@ -1156,10 +1156,20 @@ class SubCircuit(Circuit):
 
     def add_instance(self, instancename, instance, **connection):
         """Add instance to the circuit.
-        
-        optional named arguments are used to map terminals of the 
+
+        optional named arguments are used to map terminals of the
         instance to nodes of the circuit
         """
+        self._place_instance(instancename, instance, **connection)
+
+        ## update iparv
+        instance.update_iparv(self.iparv, ignore_errors=True)
+
+    def _place_instance(self, instancename, instance, **connection):
+        """`add_instance` without resolving the instance's parameters
+        against this circuit's: for a circuit that HOLDS another circuit's
+        elements (`pcnr.pcnr_view`), whose parameters are resolved against
+        their own parent's already."""
 
         ## Propagate parent toolkit to instance
         instance.toolkit = self.toolkit
@@ -1198,9 +1208,6 @@ class SubCircuit(Circuit):
         ## Update circuit node - instance map.  STAGE 2+.5: mark, do not rebuild --
         ## the rebuild happens once, when the map is first read.
         self._nodemap_dirty = True
-
-        ## update iparv
-        instance.update_iparv(self.iparv, ignore_errors=True)
 
     def __setitem__(self, instancename, element):
         """Adds an instance to the circuit"""

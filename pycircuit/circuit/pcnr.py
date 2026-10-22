@@ -392,15 +392,22 @@ def pcnr_view(circuit, devices, epar=defaultepar):
     for inst, el in circuit.elements.items():
         dev = part.get(inst)
         if dev is None:
-            view.add_instance(inst, el, **circuit.term_node_map[inst])
+            ## ⚠ PLACED, not added: the view holds the circuit's own element
+            ## objects, and `add_instance` re-resolves an element's
+            ## parameters against its new parent's -- here the view's, which
+            ## has none.  Until 2026-10-22 a parameter given as an
+            ## expression of a parent's (`v='vdd'`) reset to its default on
+            ## every view build: the circuit's own element with it, and the
+            ## DC answer (0 V for 2 V).
+            view._place_instance(inst, el, **circuit.term_node_map[inst])
             continue
         stub, nodes = _remainder_of(circuit, dev, epar)
         if stub is not None:
             view.add_instance(inst + '#pcnr_lin', stub, **nodes)
     if view.n != circuit.n:                              # pragma: no cover
         raise ValueError(f'pcnr_view: {view.n} unknowns, the circuit {circuit.n}')
-    ## (the epoch read after the build: adding the circuit's elements to the
-    ## view writes their parameters, which may move it)
+    ## (the epoch read after the build: constructing the view and its stubs
+    ## writes their parameters, which moves it)
     circuit._pcnr_view = (key, view, circuit.elementnodemap, ParameterDict._epoch)
     return view
 
@@ -1022,8 +1029,8 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     devices = pcnr_devices(circuit)
     if not devices:
         raise ValueError('no device in this circuit declares a PCNR junction')
-    ## The view first (cached): building it adds every element to a new
-    ## circuit, a parameter notification that moves the epoch -- after the
+    ## The view first (cached): building it constructs a circuit and its
+    ## stubs, parameter notifications that move the epoch -- after the
     ## circuit's own stamp plan was built that plan went stale and a
     ## transient rebuilt it once after its operating point
     pcnr_view(circuit, devices, epar)
