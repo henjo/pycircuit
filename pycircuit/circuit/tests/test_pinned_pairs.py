@@ -628,6 +628,27 @@ PAIRS = {
                  'pycircuit.circuit.shooting._sens_c:_map',
                  'pycircuit.circuit.shooting._sens_c:_Ctx'],
     },
+    'the multistep step map and its C': {
+        'why': 'the dense multistep walk\'s monodromy step on its live columns in one call: '
+               'each capacitance\'s nonzero columns found as `_ColumnsOf` finds them, the '
+               'products numpy\'s own `cblas_dgemm` on the gathered arrays (row-major, '
+               'neither transposed; numpy\'s own loop for one column, zeros for none), the '
+               'solve numpy\'s own `dgesv` on the column-major copies `linalg.solve` makes, '
+               'every elementwise operation in `_lmm_recursion`\'s order; it hands back '
+               'where numpy\'s solve raises and where the result is not finite',
+        'reference': ['pycircuit.circuit.shooting._steps:_LiveMonodromy.step',
+                      'pycircuit.circuit.shooting._steps:_LiveMonodromy._read',
+                      'pycircuit.circuit.shooting._steps:_ColumnsOf',
+                      'pycircuit.circuit.shooting._steps:_lmm_recursion',
+                      'pycircuit.circuit.shooting._pss_walks:_PeriodWalks._walk_lmm',
+                      'pycircuit.circuit.linearsolver:AutoSolver.solve',
+                      'pycircuit.circuit.linearsolver:DenseSolver.solve',
+                      'pycircuit.circuit._numeric:linearsolver'],
+        'twin': ['pycircuit.circuit.shooting._lmmsens_c:LMMSENS_C_SRC',
+                 'pycircuit.circuit.shooting._lmmsens_c:step',
+                 'pycircuit.circuit.shooting._lmmsens_c:_call',
+                 'pycircuit.circuit.shooting._lmmsens_c:_Ctx'],
+    },
     'the stage readers and their one read': {
         'why': 'where the readers would read just that -- no junction, nothing keeping '
                'limiting state (the sync skips), each full stage\'s reference entry +0.0 '
@@ -729,6 +750,7 @@ RECORD = {
     'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
     'the stage block and its one pass': ('a013cd007e0c', '24be0c26211b'),
     'the stage step map and its C': ('b4f8fbaaee15', '95a58cab26a4'),
+    'the multistep step map and its C': ('b072302c5297', 'd7fefa35858c'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),

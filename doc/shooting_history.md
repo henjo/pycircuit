@@ -12421,3 +12421,25 @@ returns it -- the Python step's bytes, and its exceptions and warnings
 where the C hands the step back (a non-finite value, a floating-point
 flag in the assembly, a singular block).  Measured: the radau PSS of the
 PSP stage -7.6 % instructions and -11.1 % in time.
+
+## `_lmmsens_c.py` -- the dense multistep walk's monodromy step in C (roadmap 193, 2026-10-23)
+
+### `step`, `_call`, `_Ctx`, `LMMSENS_C_SRC`
+
+The multistep walk's monodromy step on its live columns (`_LiveMonodromy.step`:
+`_lmm_recursion` with each capacitance read through its nonzero columns,
+the step's solve through the caller's dense solver) was, on a Howland
+current pump testbench's gear PSS (90 unknowns, 38..42 live columns),
+165 us a step in place around ~80 us of numpy's own products and solve.
+Where the walk keeps no step and the caller's solver is the dense one, one
+C call makes it: numpy's own `cblas_dgemm` on the gathered columns (what
+numpy's matmul of those arrays calls: checked equal on 336 shapes, threaded
+and single), numpy's own `dgesv` on the column-major copies `linalg.solve`
+makes, numpy's own loop for a one-column factor, every elementwise
+operation in the Python step's order -- every walk's monodromy and the
+orbit bit-identical.  The column lists and the pointers of the arrays the
+last call made are kept: the ring moves them on one place a step.
+Measured: the testbench's gear PSS 7.57 -> 6.83 s (1.108x, three rounds
+interleaved in one process); the C 108 us a step in place against ~74 of
+LAPACK and BLAS.  It was built under a 1.12x line it missed by a hair,
+and committed on Andreas's decision.

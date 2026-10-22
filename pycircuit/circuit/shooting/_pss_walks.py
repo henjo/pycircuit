@@ -10,7 +10,7 @@ import scipy.sparse as _sp
 
 from pycircuit.circuit import _limiting, _paths
 
-from . import _pss_inner, _sens_c
+from . import _lmmsens_c, _pss_inner, _sens_c
 from ._factored import _PeriodWalk
 from ._steps import (
     _butcher,
@@ -454,7 +454,14 @@ class _PeriodWalks(object):
             ## (`_lmm_recursion`): the monodromy, the period column and the
             ## event columns differ only in the forcing each step adds.
             if dense:
-                mono.step(Cs, C_new, alphas, b, solve)
+                ## (the step in one C call where the walk keeps no step:
+                ## `_lmmsens_c`; None -- the Python step)
+                got = (None if keep else
+                       _lmmsens_c.step(self, mono, Cs, C_new, alphas, b, Jf))
+                if got is None:
+                    mono.step(Cs, C_new, alphas, b, solve)
+                else:
+                    mono.advance(*got)
             if Pk is not None:
                 ## ⚠ `residual_dh` is Fang's `p`: the coefficients' partial
                 ## PLUS `du/dt`, because the residual sits at `t_n + h_n` and

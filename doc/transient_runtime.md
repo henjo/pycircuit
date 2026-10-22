@@ -48,7 +48,8 @@ Outside the multistep loop, the same rules: the Radau stage solve (`csrc/radau.c
 `PYCIRCUIT_RADAU_C`, `radau_c:`), its tensor-product form and fold (`csrc/radau_tc.c`,
 `csrc/radau_fold.c`, `_tran_radau_tc`, `PYCIRCUIT_RADAU_TC`, `PYCIRCUIT_RADAU_FOLD`,
 `PYCIRCUIT_RADAU_TC_END`, `radau_tc:`, the fold's `radau.frozen:`), and the shooting sensitivities
-(`csrc/sens.c`, `shooting/_sens_c`, `PYCIRCUIT_SENS_C`, `pss.sens:`). A few glue modules also make a
+(`csrc/sens.c`, `shooting/_sens_c`, `PYCIRCUIT_SENS_C`, `pss.sens:`; the multistep walk's
+`csrc/lmmsens.c`, `shooting/_lmmsens_c`, `PYCIRCUIT_LMMSENS_C`, `pss.lmm:`). A few glue modules also make a
 count the Python would have made on the same path: `umemo:hit` (the source memo, by the Newton and
 Radau glue), `pss.sync:skipped` (the sensitivities), `chord:chosen` (the Newton).
 
@@ -89,6 +90,7 @@ declared in `transient._RUN_STATE`, with its owner and lifetime
 | `_tran_lte_c` | on the step controller: `_lte_c` (its context: buffers, the KLU binding, `served`) | the controller's `_ref_running` |
 | `_tran_core` | on the transient: `_tran_core` (the plan, the core, their stamp), `_passes_no` (a kept decline); on each HDL element: `_hdl_cp` (its packed parameters); on the stamp plan, the `methods` it lacks | the same step state as the Newton |
 | `_tran_radau_c`, `_tran_radau_tc`, `_sens_c` | on the transient: `_radau_c`; `_radau_tc`, `_tc_end`; `_sens_c` | their stage state |
+| `_lmmsens_c` | on the walk object (the PSS): `_lmmsens_c` (its record: the struct, buffers, the last call's arrays and the column lists they keep) | -- |
 | `_tran_pred_c`, `_tran_ctrl_c`, `_tran_branch_c`, `_tran_sources` | nothing: their state lives in the caller's struct or table | -- |
 
 ## When a C path may run: the run context

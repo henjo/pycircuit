@@ -305,14 +305,21 @@ class _LiveMonodromy:
                 self.cols, self.off = None, True
                 P_new, Pq_new = _lmm_recursion(prev, Cs, Pq, C_new, alphas,
                                                b, solve)
-        self.P, self.Pq = [P_new, prev[0]], Pq_new
+        ## (the state the step ran from: at full width after a fallback)
+        self.P = prev
+        self.advance(P_new, Pq_new)
+        return P_new
+
+    def advance(self, P_new, Pq_new):
+        """The state one step on, ``(P_new, P_n, Pq_new)`` -- the step's
+        result, made here (`step`) or by the C (`_lmmsens_c`)."""
+        self.P, self.Pq = [P_new, self.P[0]], Pq_new
         self.n += 1
         ## (a column dies in the opening's steps -- the identity leaving
         ## the ring -- or not at all, but for a coincidence: checked on
         ## those, then now and then)
         if not self.off and (self.n <= 4 or self.n % 64 == 0):
             self._prune()
-        return P_new
 
     def _read(self, C):
         """`C` as the products read it: through its nonzero columns

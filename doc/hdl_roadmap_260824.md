@@ -10937,3 +10937,46 @@ it (the stage step map's pair re-recorded).  Timing, the box idle (1-min load < 
 interleaved, against 191: the Howland testbench's Radau PSS 54.88 -> 42.86 s (1.28x), its gear PSS 7.61 -> 7.57 s
 (unchanged); the orbit's digest identical in all twelve.  KLU on the step Jacobian, measured and refused: gear 7.57 ->
 7.78 s (pinned), 7.70 -> 7.84 (unpinned).
+
+## 2026-10-22 — 193. The dense multistep walk's monodromy step in C -- bit for bit the Python step, a Howland testbench's gear PSS 1.11x (7.57 -> 6.83 s; built under a 1.12x line it missed by a hair, committed on Andreas's decision)
+
+**Why**  The multistep walk's monodromy step on its live columns (`_LiveMonodromy.step`: `_lmm_recursion`, each
+capacitance read through its nonzero columns by `_ColumnsOf`, the step's solve through the caller's dense solver --
+numpy's `linalg.solve`) took 165 us a step in place on the testbench's gear PSS (90 unknowns, 38..42 live columns),
+around ~80 us of numpy's own products and solve.
+
+**Built.**  csrc/lmmsens.c, lmmsens.h: the step in one call, `pcx_lmmsens` -- numpy's own `cblas_dgemm` (row-major,
+neither transposed) on each capacitance's nonzero columns and the monodromy's rows they read, gathered C-contiguous as
+numpy gathers them (numpy's matmul of those arrays is that call: checked equal on 336 shapes, threaded and single),
+numpy's own loop for a one-column factor (``0 + a b``) and zeros for none (numpy's special cases); numpy's own `dgesv`
+on the column-major copies `linalg.solve` makes; every elementwise operation in `_lmm_recursion`'s order.  It hands
+back where numpy's solve raises (a singular `Jf`) and where the result is not finite (the Python step's full-width
+fallback).  The capacitances' column lists are kept from call to call: the ring moves each array on one place a step.
+`dgemm64_t` is declared in its own header, the one unit that multiplies matrices.
+
+**Tests.**  shooting/_lmmsens_c: the glue -- the switch `PYCIRCUIT_LMMSENS_C` (`LMMSENS_C`), numpy's OpenBLAS by
+address, the pieces the C stands in for checked genuine (the step, the recursion, `_ColumnsOf`, the solvers' `solve`
+and choice, the toolkit's `linearsolver`, numpy's `linalg.solve`: an array-function dispatcher, told by its type), the
+toolkit and solver checked again where they change, the arrays' kind and layout (an array the last call made or read
+known); `pss.lmm:` counts each decline and hand-back and `pss.lmm:served`.  _steps: `_LiveMonodromy.advance` -- the
+state one step on, the step's own bookkeeping, shared by the Python step and the C's.  _pss_walks: a dense walk
+keeping no step asks the C first.
+
+Measured, the box idle, three rounds interleaved in one process: the testbench's gear PSS 7.57..7.63 -> 6.83 s (1.108x
+best, 1.116x median), every walk's monodromy and the orbit bit-identical in every round, 15 974 of 16 000 steps served
+(25 at each walk's opening: the Python step's results, numpy's solve's, are F-ordered until the first prune copies
+them; one before the solver chose).  The C 108 us a step in place against ~74 us of LAPACK and BLAS; the glue ~20.
+
+tests: test_lmmsens_c, 34 -- the C step against the Python recursion bit for bit over every product branch (no, one,
+several and all columns), with and without the companion's `b`, two- and three-term companions; kept column lists and
+pointers answering as fresh ones; a singular Jacobian and a non-finite result handed back; a walk's monodromy the
+Python step's (RLC, a diode clipper, a one-capacitor clipper; gear's pair, trap, euler), a PSS's orbit; the declines
+(every column carried, a caller's solver, a patched piece) and a kept walk left alone. test_pinned_pairs: 'the
+multistep step map and its C' recorded. test_c_abi, test_paths: the unit and its entry listed.  _testing/leaks:
+`LMMSENS_C`, `MAXM` -- and `SHOOT_KLU` (192), `LIVE_COLUMNS` (189), the switches those stages added unlisted.
+
+**Gate**: the suite in the main tree, 5 792 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 192: every digest identical; the sanitized fast tier (scripts/sanitize_suite.sh:
+AddressSanitizer and UndefinedBehaviorSanitizer on every C object) 5 511 passed, no sanitizer report, and the two
+allocator-pin tests failing as they fail on 192 under the sanitizer (ASan's allocator refuses glibc's mallopt; the
+script does not deselect them); the pinned pairs, ABI, paths and runtime-map checks 231 passed.

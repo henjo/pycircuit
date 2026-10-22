@@ -34,7 +34,7 @@ from pycircuit.circuit import (
     nrsolver,
 )
 from pycircuit.circuit import circuit as cm
-from pycircuit.circuit.shooting import _pss_walks, _sens_c
+from pycircuit.circuit.shooting import _lmmsens_c, _pss_walks, _sens_c
 from pycircuit.circuit.transient import Transient
 
 pytest_plugins = ['pytester']
@@ -59,6 +59,7 @@ DECLINING = [
     (_pss_walks, '_stage_block'),
     (_pss_walks, '_stage_reads'),
     (_sens_c, 'step'),
+    (_lmmsens_c, 'step'),
     (_tran_radau_tc, 'solve'),
     (_tran_radau_tc, 'fold'),
     (_tran_lte_c, 'max_error'),
