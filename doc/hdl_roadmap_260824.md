@@ -10235,3 +10235,41 @@ buck) solve from zeros with PCNR, and all thirteen are served by the evaluate co
 
 **Gate**: (a) met but for the memristor in the first stage (then served); (b) met; (c) met where evaluable (the
 multiplier's as above); (d) met; the 54 gold runs on the built tree bit-identical; the suite, 5 626 passed.
+
+## 2026-10-22 — 169. A C Newton's iteration limit raised from the C: a failing step no longer repeats its iterations in Python
+
+**Why** (Andreas: "Continue improving speed", and the user's session's circuits).  The user's buck converter (20 us
+of its own testbench), served by the evaluate core and the C stepping loop, profiled: 4.9 s of 6.3 s were 66 PYTHON
+Newton solves of ~98 iterations each -- the steps whose Newton fails.  By design (`_tran_newton_c`, TRANSACTIONAL)
+any unusual outcome, the iteration limit included, rolled the C attempt back and `_newton` repeated the same
+arithmetic in Python, for the same exception, warnings and statistics: a failing step was solved three times (the C
+loop's attempt, the C Newton's, the Python's), the last ~10x the cost of a C one.  The DC's C Newton already served
+its limit (`_dc_newton_c`: `nrsolver._standard_failure` on its last iteration).
+
+**Sized first** (plan 'A C NEWTON'S MAXITER FAILURE', the line written before measuring: (a) the 27 gold transients
+and the buck bit-identical, no warning lost; (b) the buck at least 2x faster; (c) no gold deck slower than its
+lottery bound, the summed time no worse; (d) the suite, and a test failing on the old code).  Measured: (a) the 27
+gold transients and the buck bit-identical (digest, steps, rejections, Newton count), no warning on either tree; the
+limit is never raised on a gold deck (their remaining maxiter hand-backs, slowlatch 2 and todd3 10, are chord solves,
+which fall back to the full Newton); (b) the buck's 20 us 1.044 -> 0.337 s (x3.1, best of 5 in a process, quiet box; x3.06 interleaved under load);
+(c) the 27 gold transients' summed time -0.03 % (one solve a process, 3 rounds interleaved, under a falling load);
+the two it read over +3 % -- mosrect +8.7 %, schmitecl +11.5 %, a cold single solve of 25..50 ms, mosrect's lottery
+dead -- re-timed warm, best of 10 in a process, against an A/A tree: mosrect 29.03 / 29.08 (A/A) / 29.00 ms,
+schmitecl 8.73 / 8.73 / 8.74 ms.
+
+**Built.**  `_tran_newton_c.solve`: where the full Newton stops at `maxiter` with every iterate finite, and no damped
+retry or rescue is armed, StandardNewton's exception is raised from the C's last iteration (`_unconverged`,
+`_maxiter`: `nrsolver._standard_failure` on its residual, limited step and iterate, read as `_newton` reads it -- a
+message naming a singularity promoted to SingularMatrix; `newton_c:maxiter`), the attempt's trace kept as the repeat
+leaves it and the early-abort arm popped as `_newton` pops it.  A chord's limit still hands back
+(the Python chord falls back to the full Newton).  `test_newton_c`: a transient whose `maxiter` is 1 (its operating
+point given) raises 31 limits from the C, its answer, statistics and warnings the Python's -- failing on the old
+code; the two bail tests that faked code 11 after a converged solve fake a non-finite iterate (still a hand-back).
+Pinned pairs "the Newton solve and its C" (its twin now names `_unconverged` and `_maxiter`) and "the stepping loop
+and its C" re-recorded.
+What remains on the buck (6.3 -> 1.36 s under cProfile): the C loop 0.69 s and the C Newton 0.42 s, ~0.27 s of it
+the C Newton re-solving each step the C loop hands back on its Newton failure -- a next stage, the loop rejecting
+such a step itself.
+
+**Gate**: (a) met; (b) met (x3.1); (c) met (summed -0.03 %, the two flagged decks flat against their A/A); (d)
+met; the suite, 5 627 passed.

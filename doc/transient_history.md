@@ -5312,3 +5312,17 @@ epar. The library's `DiodeHdl`, `MixerHdl` and `MemristorHdl` circuits run
 gold runs are bit-identical.
 Tests: `test_tran_core.py` (an eager diode served bit for bit, keeping its
 eager forms; a memristor served bit for bit and a DC epar declined).
+
+## `_tran_newton_c._maxiter` -- the full Newton's iteration limit raised from the C (2026-10-22)
+
+2026-10-22 (Andreas: "Continue improving speed"; `doc/hdl_roadmap_260824.md`,
+169).  A C Newton that stopped at `maxiter` handed the step back, and
+`_newton` repeated the same iterations in Python to raise the same
+exception: on a user's buck converter 77 % of the run.  Now the full
+Newton's limit is raised from the C's last iteration
+(`nrsolver._standard_failure`, as `_dc_newton_c` raises it), unless a damped
+retry or the rescue is armed; a chord's limit still hands back.  The buck's
+20 us 2.9x faster under load, bit-identical; the 27 gold transients
+bit-identical (the limit never raised there).
+Tests: `test_newton_c.py` (a transient at `maxiter` 1 raises its limits from
+the C, the run the Python's).

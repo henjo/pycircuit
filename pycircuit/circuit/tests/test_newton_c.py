@@ -129,9 +129,10 @@ def test_drawn_chains_are_the_python_ones(n, va, rl, cap):
 
 def test_a_bail_leaves_no_trace(monkeypatch):
     """Every C solve runs to its end and then hands the step back (its
-    entry wrapped to report `maxiter`): the Python Newton repeats each one
-    -- the same answer, statistics, warnings, and every count but the
-    bail's own (the source memo's entry and counts rolled back)."""
+    entry wrapped to report a non-finite iterate): the Python Newton
+    repeats each one -- the same answer, statistics, warnings, and every
+    count but the bail's own (the source memo's entry and counts rolled
+    back).  (Not `maxiter`: that one is raised from the C.)"""
     drv = _tran_newton_c.driver()
     if drv is None:
         pytest.skip(f'the C solve is off: {_tran_newton_c.STATUS}')
@@ -143,13 +144,32 @@ def test_a_bail_leaves_no_trace(monkeypatch):
 
     def bailing(s):
         cfn(s)
-        return 11
+        return 2
     monkeypatch.setattr(_tran_newton_c, '_driver', (ffi, bailing, lapack))
     b = _run(_mos_chain, True, tend=6e-7, timestep=2e-8)
     assert a[:4] == b[:4]
-    assert b[4].get('newton_c:served', 0) == 0 and b[4].get('newton_c:bail:maxiter', 0) > 10
+    assert b[4].get('newton_c:served', 0) == 0 and b[4].get('newton_c:bail:x', 0) > 10
     rest = {k: v for k, v in b[4].items() if not k.startswith('newton_c:')}
     assert rest == {k: v for k, v in a[4].items() if not k.startswith('newton_c:')}
+
+
+def test_the_iteration_limit_is_raised_from_the_c():
+    """A full Newton stopped at `maxiter` with every iterate finite raises
+    StandardNewton's exception from the C's last iteration -- no Python
+    repeat -- and the run is the Python's: the same answer, statistics and
+    warnings, the C counting `newton_c:maxiter` and handing nothing back.
+    A `maxiter` of 1 for the transient alone (its operating point given):
+    steps fail, and the controller retries them smaller."""
+    from pycircuit.circuit.dcanalysis import DC
+    if _tran_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_tran_newton_c.STATUS}')
+    x0 = DC(_mos_chain()).solve().x
+    kw = {'tend': 6e-7, 'timestep': 2e-8, 'x0': x0, 'make': {'maxiter': 1}}
+    a = _run(_mos_chain, False, **dict(kw))
+    b = _run(_mos_chain, True, **dict(kw))
+    assert a[:4] == b[:4]
+    assert b[4].get('newton_c:maxiter', 0) > 0, b[4]
+    assert b[4].get('newton_c:bail:maxiter', 0) == 0, b[4]
 
 
 def test_the_declines():
@@ -279,11 +299,11 @@ def test_a_sparse_bail_leaves_no_trace(monkeypatch):
 
     def bailing(s):
         cfn(s)
-        return 11
+        return 2
     monkeypatch.setattr(_tran_newton_c, '_driver', (ffi, bailing, lapack))
     b = _sparse_run(True, **dict(kw))
     assert a[0] == b[0] and a[1] == b[1]
-    assert b[2].get('newton_c:served', 0) == 0 and b[2].get('newton_c:bail:maxiter', 0) > 10
+    assert b[2].get('newton_c:served', 0) == 0 and b[2].get('newton_c:bail:x', 0) > 10
 
 
 def test_a_core_pattern_outside_the_klu_pattern_declines(monkeypatch):

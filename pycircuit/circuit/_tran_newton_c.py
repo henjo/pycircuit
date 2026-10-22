@@ -14,7 +14,8 @@ plan).  On the circuit's limiter walk (`_hdl_climit._walk_for`): the tables
 `limit_walk`'s setup fills (`F`, `PR`, `mirror`), and on each limiting
 element its pack `_hdl_cp` where it has none.  On the `StructuralKLU` it
 solves with: its `numerics` count.  `_paths`: `newton_c:<why>` a decline,
-`newton_c:bail:<why>` a hand-back, and on a serve `newton_c:served`,
+`newton_c:bail:<why>` a hand-back, `newton_c:maxiter` the iteration limit
+raised from the C, and on a serve `newton_c:served`,
 `newton_c:iterations`, `newton_c:jfold`, `newton_c:j_unread`,
 `newton_c:sparse` -- with the Python's own `chord:chosen` where the Python
 would count it.  Switch: `PYCIRCUIT_NEWTON_C=0` (`ENABLED`, read on every
@@ -36,10 +37,13 @@ step's Jacobian (`want_j` False: a fixed multistep run).
 
 TRANSACTIONAL.  Nothing is written on the transient or the devices before
 the C has converged; anything unusual -- a LAPACK info, a non-finite value,
-the walk stopping, a chord break, maxiter -- rolls back the attempt's one
-trace (the step's source-memo entry and its counts), and `_newton` repeats
-the same arithmetic from the same seed: the same answer, exception, warning
-and statistics.
+the walk stopping, a chord break -- rolls back the attempt's one trace (the
+step's source-memo entry and its counts), and `_newton` repeats the same
+arithmetic from the same seed: the same answer, exception, warning and
+statistics.  The full Newton's iteration limit is served:
+StandardNewton's exception from the C's last iteration (`_maxiter`), the
+trace kept -- what the repeat would raise and leave, as the DC's C
+(`_dc_newton_c`) raises it -- unless a damped retry or the rescue is armed.
 
 THE SERVED MARK.  `_newton_c.served` is the watch counter at a call this
 path served (with no branch confirmation re-solving after it), None after
@@ -667,13 +671,49 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if early is not None and status == _CODES['NEWTON_CONVERGED']:
         _PC['early:checks'] += s.early_checks
     if status != _CODES['NEWTON_CONVERGED']:
-        key, had, cvals = trace
-        _undo_source(memo, (key,), (had,), dict(zip(M['u_keys'], cvals)))
-        if status == _CODES['NEWTON_BAIL_WALKSTOP']:
-            ## (the walk stopped: its tables are taken again next time)
-            rec.walk_ok = None
-        return _no('newton_c:bail:' + BAIL.get(status, str(status)))
+        return _unconverged(tr, td, rec, P, M, status, chord, trace, memo)
     return _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, want_j)
+
+
+def _unconverged(tr, td, rec, P, M, status, chord, trace, memo):
+    """A solve the C did not converge.  THE ITERATION LIMIT IS SERVED: the
+    full Newton's exception from the C's last iteration (`_maxiter`), where
+    `_newton`'s repeat would raise it and nothing more -- the trace kept, as
+    the repeat leaves it (a chord's limit falls back to the full Newton, and
+    an armed damped retry or rescue runs after the plain failure: both hand
+    back).  Else the trace undone and the step handed back, counted."""
+    if (status == _CODES['NEWTON_BAIL_MAXITER'] and not chord
+            and not getattr(tr, '_continuation_rescue', False)
+            and not getattr(tr, '_damped_last_resort', False)):
+        _maxiter(tr, td, rec, P)
+    key, had, cvals = trace
+    _undo_source(memo, (key,), (had,), dict(zip(M['u_keys'], cvals)))
+    if status == _CODES['NEWTON_BAIL_WALKSTOP']:
+        ## (the walk stopped: its tables are taken again next time)
+        rec.walk_ok = None
+    return _no('newton_c:bail:' + BAIL.get(status, str(status)))
+
+
+def _maxiter(tr, td, rec, P):
+    """StandardNewton's exception at its iteration limit, raised from the C's
+    last iteration (`nrsolver._standard_failure` on its residual, step and
+    iterate, as `_dc_newton_c` raises it), counted (`newton_c:maxiter`), as
+    `_newton` reads it -- a message naming a singularity (the worst row's
+    node, say) promoted to SingularMatrix; the early-abort arm popped, as
+    `_newton` pops it."""
+    from pycircuit.circuit.analysis import SingularMatrix
+    from pycircuit.circuit.nrsolver import _standard_failure
+    td.pop('_early_arm', None)
+    par = tr.par if P is None else P
+    abstol, xtol = tr._newton_tolerances()[2:]
+    buf = rec.buf
+    xn = buf['xn'].copy()
+    _PC['newton_c:maxiter'] += 1
+    e = _standard_failure(buf['Fr'].copy(), buf['xd'].copy(), xn, xn, int(par.maxiter),
+                          float(par.reltol), abstol, xtol, tr._reduced_row_names(), tr.toolkit)
+    if 'Singular' in str(e) or 'linalgerror' in str(e).lower():
+        raise SingularMatrix(str(e)) from e
+    raise e
 
 
 def _admit(tr, td, provided_function, seed):
