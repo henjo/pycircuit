@@ -10663,3 +10663,14 @@ copy's children are the original's (failing on the old code with that TypeError)
 **Gate**: the suite IN THE MAIN TREE (the examples' interpreter imports it), 5 715 passed (6 skipped, 3 xfailed), the
 regulated-cascode example among them; the 27 gold decks, transient and standalone DC, against 182: every digest, step,
 rejection, Newton count and path count identical.
+
+## 2026-10-22 — 176b. Live parameters (176): the line's last clause measured -- no gold transient slower
+
+176 (84dc36d7) went in with its line's last clause -- no gold transient slower than its lottery band + 3 % -- NOT YET
+MEASURED (the box was busy).  Measured on a quiet box (AC power, each deck run only when the 1-minute load was under
+1.5): the 27 gold transients by `run.py` (one cold solve a process), 9baca22f against 84dc36d7 interleaved, twice
+each: every digest identical; summed 35.927 s against 35.932 s.  Seven decks read over 3 % slower there -- mosrect
+1.20x (a load spike to 4.5 during its runs), schmitecl 1.14x, latch 1.10x, mike2 1.08x, gm2, gm6, toronto 1.03..1.04x,
+all of 30..250 ms, where one cold solve is known to read 9..12 % as noise -- so those seven were re-timed WARM
+(best of 10 in a process, three processes per tree, the base run twice as an A/A, rotated): 84dc36d7 / base 0.993 ..
+0.999 on every one of them, the A/A 0.993 .. 1.005, digests identical.  The clause is met: 176's line is met in full.
