@@ -41,6 +41,134 @@ def test_a_sine_source_s_phase_turns_its_sine_and_acphase_its_ac_phasor(cls, amp
     assert [p.name for p in cls.instparams].count('phase') == 1
 
 
+## (each waveform source's parameters at construction, then a second set
+## written into it -- every waveform parameter changes)
+_WAVEFORMS = [
+    (VSin, {'vo': 0.1, 'va': 1.0, 'freq': 1e3, 'td': 1e-4, 'theta': 10.0, 'phase': 30.0},
+     {'vo': 0.2, 'va': 0.5, 'freq': 3e3, 'td': 2e-4, 'theta': 20.0, 'phase': 60.0}),
+    (ISin, {'io': 0.1, 'ia': 1.0, 'freq': 1e3, 'td': 1e-4, 'theta': 10.0, 'phase': 30.0},
+     {'io': 0.2, 'ia': 0.5, 'freq': 3e3, 'td': 2e-4, 'theta': 20.0, 'phase': 60.0}),
+    (VPulse, {'v1': 0.0, 'v2': 1.0, 'td': 1e-6, 'tr': 1e-7, 'tf': 2e-7, 'pw': 1e-6, 'per': 3e-6},
+     {'v1': 0.5, 'v2': -1.0, 'td': 2e-6, 'tr': 3e-7, 'tf': 1e-7, 'pw': 2e-6, 'per': 5e-6}),
+    (IPulse, {'i1': 0.0, 'i2': 1.0, 'td': 1e-6, 'tr': 1e-7, 'tf': 2e-7, 'pw': 1e-6, 'per': 3e-6},
+     {'i1': 0.5, 'i2': -1.0, 'td': 2e-6, 'tr': 3e-7, 'tf': 1e-7, 'pw': 2e-6, 'per': 5e-6}),
+    (VPWL, {'tvpairs': [0.0, 0.0, 1e-6, 1.0, 2e-6, 0.5]},
+     {'tvpairs': [0.0, 1.0, 2e-6, 0.0, 3e-6, 2.0, 1e-3, 1.5]}),
+    (IPWL, {'tvpairs': [0.0, 0.0, 1e-6, 1.0, 2e-6, 0.5]},
+     {'tvpairs': [0.0, 1.0, 2e-6, 0.0, 3e-6, 2.0, 1e-3, 1.5]}),
+    (VExp, {'v1': 0.0, 'v2': 1.0, 'td1': 1e-6, 'tau1': 1e-6, 'td2': 4e-6, 'tau2': 2e-6},
+     {'v1': 0.5, 'v2': -1.0, 'td1': 2e-6, 'tau1': 3e-7, 'td2': 6e-6, 'tau2': 1e-6}),
+    (IExp, {'i1': 0.0, 'i2': 1.0, 'td1': 1e-6, 'tau1': 1e-6, 'td2': 4e-6, 'tau2': 2e-6},
+     {'i1': 0.5, 'i2': -1.0, 'td1': 2e-6, 'tau1': 3e-7, 'td2': 6e-6, 'tau2': 1e-6}),
+    (VAM, {'vo': 0.1, 'va': 1.0, 'fc': 1e3, 'fm': 1e2, 'm': 0.5},
+     {'vo': 0.2, 'va': 0.7, 'fc': 5e3, 'fm': 3e2, 'm': 0.8}),
+    (IAM, {'io': 0.1, 'ia': 1.0, 'fc': 1e3, 'fm': 1e2, 'm': 0.5},
+     {'io': 0.2, 'ia': 0.7, 'fc': 5e3, 'fm': 3e2, 'm': 0.8}),
+    (VSFFM, {'vo': 0.1, 'va': 1.0, 'fc': 1e3, 'mdi': 1.0, 'fm': 1e2},
+     {'vo': 0.2, 'va': 0.7, 'fc': 5e3, 'mdi': 2.5, 'fm': 3e2}),
+    (ISFFM, {'io': 0.1, 'ia': 1.0, 'fc': 1e3, 'mdi': 1.0, 'fm': 1e2},
+     {'io': 0.2, 'ia': 0.7, 'fc': 5e3, 'mdi': 2.5, 'fm': 3e2}),
+]
+_TIMES = np.concatenate([np.linspace(0.0, 1e-5, 41), np.linspace(0.0, 1e-2, 41)])
+
+
+def _same_waveform(a, b):
+    for t in _TIMES:
+        assert a.u(t, analysis='tran').tobytes() == b.u(t, analysis='tran').tobytes(), t
+        assert a.dudt(t, analysis='tran').tobytes() == b.dudt(t, analysis='tran').tobytes(), t
+        assert a.next_event(t) == b.next_event(t), t
+
+
+@pytest.mark.parametrize('how', ['attribute', 'set'])
+@pytest.mark.parametrize('cls, first, second', _WAVEFORMS,
+                         ids=[c.__name__ for c, _f, _s in _WAVEFORMS])
+def test_a_waveform_parameter_written_after_construction_reaches_the_waveform(
+        cls, first, second, how):
+    """Every waveform source's time function follows its parameters: written
+    after construction, the source equals one built with the new values, to
+    the bit (until 2026-10-22 the function was built once, in `__init__`,
+    and a later write was never seen)."""
+    tk = pycircuit.circuit.circuit.numeric
+    src = cls(1, gnd, toolkit=tk, **first)
+    if how == 'set':
+        src.ipar.set(**second)
+    else:
+        for k, v in second.items():
+            setattr(src.ipar, k, v)
+    _same_waveform(src, cls(1, gnd, toolkit=tk, **second))
+
+
+def test_a_waveform_parameter_from_a_parent_s_expression_is_resolved():
+    """A sine's frequency given as an expression of its parent's parameter
+    is unresolved at construction; the waveform follows the resolved value,
+    and a later write of the parent's parameter (it kept the parameter's
+    DEFAULT, 0 Hz, until 2026-10-22)."""
+    tk = pycircuit.circuit.circuit.numeric
+
+    class A(SubCircuit):
+        instparams = [Parameter('fs', default=1.0)]  # noqa: RUF012
+
+    a = A(fs=2e3, toolkit=tk)
+    a['S'] = VSin(1, gnd, va=1.0, freq='fs', toolkit=tk)
+    _same_waveform(a['S'], VSin(1, gnd, va=1.0, freq=2e3, toolkit=tk))
+    a.ipar.fs = 5e3
+    _same_waveform(a['S'], VSin(1, gnd, va=1.0, freq=5e3, toolkit=tk))
+
+
+def test_a_sine_s_frequency_written_after_construction_reaches_the_transient():
+    """The transient (its C source table included) runs the written sine:
+    the same waveform, to the bit, as a circuit built with the new value."""
+    tk = pycircuit.circuit.circuit.numeric
+
+    def build(freq):
+        c = SubCircuit(toolkit=tk)
+        n1, n2 = c.add_nodes('1', '2')
+        c['S'] = VSin(n1, gnd, va=1.0, freq=freq, toolkit=tk)
+        c['R'] = R(n1, n2, r=1e3, toolkit=tk)
+        c['C'] = C(n2, gnd, c=1e-7, toolkit=tk)
+        return c
+
+    def run(c):
+        r = Transient(c, toolkit=tk).solve(tend=1e-3, timestep=1e-6)
+        return np.asarray(r.v('2', gnd).get_y(), dtype=float)
+
+    c = build(1e3)
+    first = run(c)
+    c['S'].ipar.freq = 4e3
+    written = run(c)
+    assert written.tobytes() == run(build(4e3)).tobytes()
+    assert written.tobytes() != first.tobytes()
+
+
+def test_a_limiter_s_level_written_after_construction_reaches_g_and_i():
+    """VCVS_limited's `G` differentiates its limiter object while `i` reads
+    `level` itself: a `level` written later reaches both (until 2026-10-22
+    `G` kept the first level)."""
+    tk = pycircuit.circuit.circuit.numeric
+    x = np.array([0.3, -0.1, 0.0, 0.0, 0.0])
+    e = VCVS_limited(1, gnd, 2, gnd, g=3.0, level=0.5, toolkit=tk)
+    e.ipar.level = 0.2
+    fresh = VCVS_limited(1, gnd, 2, gnd, g=3.0, level=0.2, toolkit=tk)
+    assert e.G(x).tobytes() == fresh.G(x).tobytes()
+    assert e.i(x).tobytes() == fresh.i(x).tobytes()
+
+
+def test_a_transfer_function_s_coefficients_written_after_construction():
+    """SVCVS's stamps follow its coefficients; a write that changes the
+    denominator's ORDER -- the element's state nodes -- is refused."""
+    tk = pycircuit.circuit.circuit.numeric
+    e = SVCVS(1, gnd, 2, gnd, numerator=(1.0,), denominator=(1.0, 2.0, 3.0),
+              toolkit=tk)
+    e.ipar.set(numerator=(2.0, 5.0), denominator=(4.0, 1.0, 7.0))
+    fresh = SVCVS(1, gnd, 2, gnd, numerator=(2.0, 5.0),
+                  denominator=(4.0, 1.0, 7.0), toolkit=tk)
+    z = np.zeros(e.n)
+    assert e.G(z).tobytes() == fresh.G(z).tobytes()
+    assert e.C(z).tobytes() == fresh.C(z).tobytes()
+    with pytest.raises(ValueError, match="denominator's order"):
+        e.ipar.set(numerator=(1.0,), denominator=(1.0, 2.0))
+
+
 def test_vsin():
     var('vo va freq td theta phase t')
     vsin = VSin(toolkit = symbolic,

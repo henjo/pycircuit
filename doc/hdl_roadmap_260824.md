@@ -10413,3 +10413,35 @@ value), which the test's exact count comparison read as a difference.
 
 **Gate**: the suite, 5 653 passed (6 skipped, 3 xfailed); the exporter's module doctest; the user session's 13
 circuits exact on the build (scratch only).
+
+## 2026-10-22 — 174. A waveform source's parameters written after construction reach its waveform
+
+**Why** (Andreas: "Start with S3", the item-2 plan's correctness stage, found while mapping which parameters the
+per-circuit caches hold).  Every source whose time function is made from its parameters -- `VSin`, `ISin`, `VPulse`,
+`IPulse`, `VPWL`, `IPWL`, `VExp`, `IExp`, `VAM`, `IAM`, `VSFFM`, `ISFFM` -- built `self.function` once, in
+`__init__`.  A frequency, a delay, a pulse width or a PWL point written afterwards reached `iparv` and nothing else:
+`u`, `dudt` and `next_event` kept the first waveform, so a sweep of a sine's frequency returned the unswept answer
+(checked: a 1 kHz `VSin` written to 2 kHz, `update_iparv` called, still drove 1 kHz).  A waveform parameter given as an
+expression of a parent's parameter, unresolved at construction, kept its DEFAULT forever (a `freq='fs'` sine ran at
+0 Hz).  Two more elements had the same shape: `SVCVS` built its stamps in `__init__` (a coefficient written later
+never seen) and `VCVS_limited`'s `G` differentiated a limiter built in `__init__` while its `i` read `level` itself
+(a `level` written later left the two limiting at different levels).
+
+**Built.**  `_FunctionOfParameters` (elements): the twelve sources build `function` in `update()` -- which runs on
+every parameter write (the `iparv` observer) and once at construction -- from a per-class `_time_function`; the IS
+family, which had no `update`, gets one through it (its `iparv` is now observed).  `SVCVS`: the checks and stamps
+moved to `_check_coefficients` / `_stamps`, run at construction and in `update()`; the state nodes stay its
+topology, added at construction, and a write that changes the denominator's ORDER is refused (ValueError).
+`VCVS_limited`: its limiter built in `update()`.  Tests (`test_elements`, each failing on the old code, 28 cases):
+every waveform class written after construction (by attribute and by `set`) equals one built with the new values,
+`u` / `dudt` / `next_event` to the bit; a sine's frequency from a parent's expression follows the parent's parameter;
+a sine's frequency written into a circuit gives the transient (its C source table included) of a circuit built with
+it, to the bit; `VCVS_limited`'s `G` and `i` after a `level` write; `SVCVS` after a coefficient write, and the order
+change refused.
+
+**Not changed, found on the way** (the next entry): a PCNR view's build re-evaluates every shared element's parameters
+against the view's own (empty) parameters, so a parameter given as an expression of a parent's resets to its default
+-- the circuit's own element, and the DC answer, with it.
+
+**Gate**: the suite, 5 681 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone DC, against
+3c7451a2: every digest, step, rejection, Newton count and path count identical.

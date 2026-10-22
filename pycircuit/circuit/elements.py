@@ -285,6 +285,26 @@ class _OwnTimeFunction(object):
         obj.__dict__['function'] = value
 
 
+class _FunctionOfParameters:
+    """The independent sources whose time function is MADE FROM their
+    parameters (VSin, VPulse, VPWL, VExp, VAM, VSFFM and their current
+    twins): `function` is rebuilt in `update()`, which runs on every
+    parameter write, so a write after construction reaches the waveform.
+    Each class names its function in `_time_function`.
+
+    ⚠ Until 2026-10-22 it was built once, in `__init__`: a frequency, a
+    delay or a pulse width written later was never seen (`u`, `dudt` and
+    `next_event` kept the first waveform, so a sweep of a sine's frequency
+    returned the unswept answer), and a parameter given as an expression of
+    a parent's parameter -- unresolved at construction -- kept its DEFAULT.
+    """
+    def update(self, subject):
+        base = getattr(super(), 'update', None)
+        if base is not None:
+            base(subject)
+        self.function = self._time_function()
+
+
 class VS(Circuit):
     """Independent DC voltage source
 
@@ -370,7 +390,7 @@ class VS(Circuit):
         """Return the branch (plus, minus)"""
         return self.branches[0]
 
-class VSin(VS):
+class VSin(_FunctionOfParameters, VS):
     """Independent sine voltage source.
 
     `phase` is the SINE's phase in degrees (SPICE's SIN phase); the AC
@@ -408,16 +428,15 @@ class VSin(VS):
     def _ac_phase(self):
         return self.iparv.acphase
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.Sin(self.iparv.vo,
-                                 self.iparv.va,
-                                 self.iparv.freq,
-                                 self.iparv.td,
-                                 self.iparv.theta,
-                                 self.iparv.phase,
-                                 toolkit = self.toolkit
-                                 )
+    def _time_function(self):
+        return func.Sin(self.iparv.vo,
+                        self.iparv.va,
+                        self.iparv.freq,
+                        self.iparv.td,
+                        self.iparv.theta,
+                        self.iparv.phase,
+                        toolkit = self.toolkit
+                        )
 
 class IS(Circuit):
     """Independent DC current source
@@ -507,7 +526,7 @@ class IS(Circuit):
             psd = psd * (1.0 + 2.0 * self.toolkit.pi * fc / wa)
         return self.toolkit.array([[psd, -psd], [-psd, psd]])
 
-class ISin(IS):
+class ISin(_FunctionOfParameters, IS):
     """Independent sine current source: `phase` the sine's phase in
     degrees, `acphase` the AC phasor's (VSin's note)."""
 
@@ -533,18 +552,17 @@ class ISin(IS):
     def _ac_phase(self):
         return self.iparv.acphase
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.Sin(self.iparv.io,
-                                 self.iparv.ia,
-                                 self.iparv.freq,
-                                 self.iparv.td,
-                                 self.iparv.theta,
-                                 self.iparv.phase,
-                                 toolkit = self.toolkit
-                                 )
+    def _time_function(self):
+        return func.Sin(self.iparv.io,
+                        self.iparv.ia,
+                        self.iparv.freq,
+                        self.iparv.td,
+                        self.iparv.theta,
+                        self.iparv.phase,
+                        toolkit = self.toolkit
+                        )
 
-class IPulse(IS):
+class IPulse(_FunctionOfParameters, IS):
     """Independent pulse current source
 
     """
@@ -568,19 +586,18 @@ class IPulse(IS):
         Parameter(name='per', desc='Period', 
                   unit='s', default=0)]
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.Pulse(self.iparv.i1,
-                                   self.iparv.i2,
-                                   self.iparv.td,
-                                   self.iparv.tr,
-                                   self.iparv.tf,
-                                   self.iparv.pw,
-                                   self.iparv.per,
-                                   toolkit = self.toolkit
-                                 )
+    def _time_function(self):
+        return func.Pulse(self.iparv.i1,
+                          self.iparv.i2,
+                          self.iparv.td,
+                          self.iparv.tr,
+                          self.iparv.tf,
+                          self.iparv.pw,
+                          self.iparv.per,
+                          toolkit = self.toolkit
+                          )
 
-class VPulse(VS):
+class VPulse(_FunctionOfParameters, VS):
     """Independent pulse voltage source
 
     """
@@ -604,17 +621,16 @@ class VPulse(VS):
         Parameter(name='per', desc='Period', 
                   unit='s', default=0)]
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.Pulse(self.iparv.v1,
-                                   self.iparv.v2,
-                                   self.iparv.td,
-                                   self.iparv.tr,
-                                   self.iparv.tf,
-                                   self.iparv.pw,
-                                   self.iparv.per,
-                                   toolkit = self.toolkit
-                                 )
+    def _time_function(self):
+        return func.Pulse(self.iparv.v1,
+                          self.iparv.v2,
+                          self.iparv.td,
+                          self.iparv.tr,
+                          self.iparv.tf,
+                          self.iparv.pw,
+                          self.iparv.per,
+                          toolkit = self.toolkit
+                          )
 
 
 class VCVS(Circuit):
@@ -713,9 +729,35 @@ class SVCVS(Circuit):
 
     def __init__(self, *args, **kvargs):
         super().__init__(*args, **kvargs)
+        self._check_coefficients()
 
-        tk = self.toolkit
-        
+        # store number of nodes/states in inital G and C matrix
+        self.first_state_node = len(self.nodes)
+
+        # Add nodes for new states, one for each pole in denominator
+        newnodes = ["_a%d"%state
+                    for state in range(len(self.iparv.denominator) - 1)]
+        self.add_nodes(*newnodes)
+        self._stamps()
+
+    def update(self, subject):
+        ## ⚠ The stamps are rebuilt on every parameter write (until
+        ## 2026-10-22 they were built once, in `__init__`, and a coefficient
+        ## written later was never seen).  The state nodes are the element's
+        ## topology, one per pole, added at construction: a write that
+        ## changes the denominator's ORDER is refused.  (`Circuit.__init__`
+        ## calls this before the state nodes exist: nothing to build yet.)
+        if 'first_state_node' not in self.__dict__:
+            return
+        self._check_coefficients()
+        if (len(self.iparv.denominator) - 1
+                != len(self.nodes) - self.first_state_node):
+            raise ValueError(
+                "SVCVS: the denominator's order fixes the element's state "
+                "nodes at construction; build a new element for another order")
+        self._stamps()
+
+    def _check_coefficients(self):
         if not(self.iparv.numerator) and not(self.iparv.denominator):
             raise Exception("Numerator and denominator not defined")
         elif not(self.iparv.numerator):
@@ -734,6 +776,8 @@ class SVCVS(Circuit):
             raise Exception("The first coefficient in the denominator must" + 
                             " not be equal to 0")
 
+    def _stamps(self):
+        tk = self.toolkit
         self.den = tk.array(self.iparv.denominator)
         self.num = tk.array(self.iparv.numerator)
 
@@ -744,13 +788,6 @@ class SVCVS(Circuit):
 
         self.denlen = len(self.den)
         self.numlen = len(self.num)
-
-        # store number of nodes/states in inital G and C matrix
-        self.first_state_node = len(self.nodes)
-
-        # Add nodes for new states, one for each pole in denominator
-        newnodes = ["_a%d"%state for state in range(self.denlen-1)]
-        self.add_nodes(*newnodes)
 
         n = self.n
         ## NOT `dtype=int`: `self.num` and `self.den` are the coefficients
@@ -1303,11 +1340,14 @@ class VCVS_limited(Circuit):
     branches = (Branch(Node('outp'), Node('outn')),)
     linear = False
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
+    def update(self, subject):
         ## A pure limiter, saturating at +/-level.  The offset is applied by
         ## this element to its *input*, not by the limiter, because `offset` is
         ## an input-referred offset voltage while `level` clamps the output.
+        ## ⚠ Built here, on every parameter write: `G` differentiates this
+        ## object while `i` reads `level` itself, and until 2026-10-22 it was
+        ## built once in `__init__` -- a `level` written later left the two
+        ## limiting at different levels.
         self.function = func.Tanh(0.0, self.iparv.level,
                                   toolkit = self.toolkit)
     
@@ -2047,25 +2087,23 @@ class IdtmodQuadrature(Circuit):
     def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
         return self.toolkit.zeros(self.n)
 
-class VPWL(VS):
+class VPWL(_FunctionOfParameters, VS):
     """Independent piecewise linear voltage source"""
     instparams = VS.instparams + [
         Parameter(name='tvpairs', desc='List of time/voltage pairs', default=[])]
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.PWL(self.iparv.tvpairs, toolkit=self.toolkit)
+    def _time_function(self):
+        return func.PWL(self.iparv.tvpairs, toolkit=self.toolkit)
 
-class IPWL(IS):
+class IPWL(_FunctionOfParameters, IS):
     """Independent piecewise linear current source"""
     instparams = IS.instparams + [
         Parameter(name='tvpairs', desc='List of time/current pairs', default=[])]
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.PWL(self.iparv.tvpairs, toolkit=self.toolkit)
+    def _time_function(self):
+        return func.PWL(self.iparv.tvpairs, toolkit=self.toolkit)
 
-class VExp(VS):
+class VExp(_FunctionOfParameters, VS):
     """Independent exponential voltage source"""
     instparams = VS.instparams + [
         Parameter(name='v1', desc='Initial voltage', unit='V', default=0),
@@ -2075,13 +2113,12 @@ class VExp(VS):
         Parameter(name='td2', desc='Fall delay time', unit='s', default=0),
         Parameter(name='tau2', desc='Fall time constant', unit='s', default=0)]
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.Exp(self.iparv.v1, self.iparv.v2, self.iparv.td1, 
-                                 self.iparv.tau1, self.iparv.td2, self.iparv.tau2, 
-                                 toolkit=self.toolkit)
+    def _time_function(self):
+        return func.Exp(self.iparv.v1, self.iparv.v2, self.iparv.td1,
+                        self.iparv.tau1, self.iparv.td2, self.iparv.tau2,
+                        toolkit=self.toolkit)
 
-class IExp(IS):
+class IExp(_FunctionOfParameters, IS):
     """Independent exponential current source"""
     instparams = IS.instparams + [
         Parameter(name='i1', desc='Initial current', unit='A', default=0),
@@ -2091,13 +2128,12 @@ class IExp(IS):
         Parameter(name='td2', desc='Fall delay time', unit='s', default=0),
         Parameter(name='tau2', desc='Fall time constant', unit='s', default=0)]
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.Exp(self.iparv.i1, self.iparv.i2, self.iparv.td1, 
-                                 self.iparv.tau1, self.iparv.td2, self.iparv.tau2, 
-                                 toolkit=self.toolkit)
+    def _time_function(self):
+        return func.Exp(self.iparv.i1, self.iparv.i2, self.iparv.td1,
+                        self.iparv.tau1, self.iparv.td2, self.iparv.tau2,
+                        toolkit=self.toolkit)
 
-class VAM(VS):
+class VAM(_FunctionOfParameters, VS):
     """Independent Amplitude Modulated voltage source"""
     instparams = VS.instparams + [
         Parameter(name='vo', desc='Offset voltage', unit='V', default=0),
@@ -2106,12 +2142,11 @@ class VAM(VS):
         Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2),
         Parameter(name='m', desc='Modulation index', unit='', default=1.0)]
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.AM(self.iparv.vo, self.iparv.va, self.iparv.fc, 
-                                self.iparv.fm, self.iparv.m, toolkit=self.toolkit)
+    def _time_function(self):
+        return func.AM(self.iparv.vo, self.iparv.va, self.iparv.fc,
+                       self.iparv.fm, self.iparv.m, toolkit=self.toolkit)
 
-class IAM(IS):
+class IAM(_FunctionOfParameters, IS):
     """Independent Amplitude Modulated current source"""
     instparams = IS.instparams + [
         Parameter(name='io', desc='Offset current', unit='A', default=0),
@@ -2120,12 +2155,11 @@ class IAM(IS):
         Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2),
         Parameter(name='m', desc='Modulation index', unit='', default=1.0)]
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.AM(self.iparv.io, self.iparv.ia, self.iparv.fc, 
-                                self.iparv.fm, self.iparv.m, toolkit=self.toolkit)
+    def _time_function(self):
+        return func.AM(self.iparv.io, self.iparv.ia, self.iparv.fc,
+                       self.iparv.fm, self.iparv.m, toolkit=self.toolkit)
 
-class VSFFM(VS):
+class VSFFM(_FunctionOfParameters, VS):
     """Independent Single Frequency FM voltage source"""
     instparams = VS.instparams + [
         Parameter(name='vo', desc='Offset voltage', unit='V', default=0),
@@ -2134,12 +2168,11 @@ class VSFFM(VS):
         Parameter(name='mdi', desc='Modulation index', unit='', default=1.0),
         Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2)]
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.SFFM(self.iparv.vo, self.iparv.va, self.iparv.fc, 
-                                  self.iparv.mdi, self.iparv.fm, toolkit=self.toolkit)
+    def _time_function(self):
+        return func.SFFM(self.iparv.vo, self.iparv.va, self.iparv.fc,
+                         self.iparv.mdi, self.iparv.fm, toolkit=self.toolkit)
 
-class ISFFM(IS):
+class ISFFM(_FunctionOfParameters, IS):
     """Independent Single Frequency FM current source"""
     instparams = IS.instparams + [
         Parameter(name='io', desc='Offset current', unit='A', default=0),
@@ -2148,10 +2181,9 @@ class ISFFM(IS):
         Parameter(name='mdi', desc='Modulation index', unit='', default=1.0),
         Parameter(name='fm', desc='Modulation frequency', unit='Hz', default=1e2)]
 
-    def __init__(self, *args, **kvargs):
-        super().__init__(*args, **kvargs)
-        self.function = func.SFFM(self.iparv.io, self.iparv.ia, self.iparv.fc, 
-                                  self.iparv.mdi, self.iparv.fm, toolkit=self.toolkit)
+    def _time_function(self):
+        return func.SFFM(self.iparv.io, self.iparv.ia, self.iparv.fc,
+                         self.iparv.mdi, self.iparv.fm, toolkit=self.toolkit)
 
 class CoupledInductors(Circuit):
     """Coupled Inductors (Mutual Inductance)"""
