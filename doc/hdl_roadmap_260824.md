@@ -10273,3 +10273,39 @@ such a step itself.
 
 **Gate**: (a) met; (b) met (x3.1); (c) met (summed -0.03 %, the two flagged decks flat against their A/A); (d)
 met; the suite, 5 627 passed.
+
+## 2026-10-22 — 170. The C stepping loop rejects its own failed Newton step: a failing step no longer leaves the C
+
+**Why** (Andreas: "Build the C loop and try to improve", after the sizing).  On the user's buck converter (20 us of
+its testbench) after 169, every one of the C loop's 88 hand-backs was the C Newton at its iteration limit (100
+iterations): the loop stopped, `run` returned and `execute` entered again at once -- 37 times the same attempt failed
+again in C, 0 attempts -- and then the Python attempt solved it a third time to raise the limit from the C and reject
+it (`take`: a quarter of the step).  Failing steps cost 15 300 C Newton iterations against 7 975 converged.
+
+**Sized first** (plan 'THE C LOOP REJECTS ITS OWN FAILED NEWTON STEP', the line written before measuring: (a) the 27
+gold transients and the buck bit-identical, every count but the loop's own the same; (b) the buck at least 1.3x
+faster; (c) no gold deck slower than its lottery bound, the summed time no worse; (d) the suite, and a test failing on
+the old code).  Measured: (a) the 27 gold transients bit-identical (digest, steps, rejections, Newton count) and their
+loop counts too -- the rejection never fires there (their maxiter hand-backs are chord solves); the buck bit-identical
+(061ac43ff24c, 1 730 steps, 593 rejected, 7 976 Newton), every count but `loop_c:*` the same, no warning on either
+tree; (b) the buck's 20 us 0.338 -> 0.187 s (x1.80;
+best of 5 in a process, 5 rounds rotated, quiet box; an A/A tree of the same commit read -0.4 %); (c) every gold deck
+-0.5..+0.8 % (the A/A tree -0.7..+0.7 %), the 27 decks' summed time -0.05 % (A/A -0.20 %), every digest the same.
+
+**Built.**  loop.c's `take`: where the C Newton stops at its limit (`NEWTON_BAIL_MAXITER`) and the run allows it
+(`newton_reject`: adaptive, the full Newton, no damped retry or rescue armed -- where `_tran_newton_c._unconverged`
+would raise the limit) and a quarter of the step is not under `minstep`, the attempt is rejected in C
+(`LOOP_JUDGE_NEWTON`, `newton_reject`) as `_SteppingLoop.take` rejects the exception: the step a quarter, `imposed`
+where the step was held (`clamped`, now set by `where`), the point's flags kept as a judged rejection keeps them, a
+rejection counted, the seed's `pred:fast`, nothing of the attempt recorded as made, its iterations not counted.
+`imposed` is carried in and written back (judged rejections, early aborts and accepts clear it, as the Python's do).
+The glue counts what the Python's failed attempt counted (`newton_c:maxiter`, the source pass's counts) and
+`loop_c:newton_rejects`.  Below `minstep` (the rescue), on a fixed grid (the fallback's warning record), a chord's
+limit (the full Newton after it) and every other status still hand back.  `test_loop_c`: an adaptive run at
+`maxiter` 2 rejects its failed steps in C (`loop_c:bail:newton` 0), its bytes, statistics, warnings, counts and state
+the Python loop's -- failing on the old code.  Pinned pair "the stepping loop and its C" re-recorded (the twin
+`_SteppingLoop.take` unchanged; its reason names the rejection).
+
+**Gate**: the suite, 5 628 passed (6 skipped, 3 xfailed); the 27 gold transients bit-identical on the build
+(digest, steps, rejections, Newton count, every count), the buck bit-identical (`loop_c:newton_rejects` 65,
+`loop_c:bail:newton` 0).

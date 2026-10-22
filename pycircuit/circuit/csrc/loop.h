@@ -44,11 +44,18 @@ typedef struct {
     double zs_ratio;            /* Gear-2's ZERO_STABILITY_RATIO */
     long shrink_guard;          /* Gear-2's shrink branch on */
     long keeps_run;             /* the error test keeps a running reference (relref) */
+    long newton_reject;         /* the full Newton's iteration limit rejected here, as
+                                   `_SteppingLoop.take` rejects its exception (adaptive,
+                                   no chord, no damped retry or rescue armed); 0: the
+                                   Newton's failure handed back */
     long cap;                   /* the outputs' rows */
     /* the state, in and out: `_tran_loop_c.run` writes it from the Python
        loop's before each call and reads it back after */
     double t, h, dt_last, dt_last2;
     long have_dt_last, have_dt_last2, landing, is_first, order_drop;
+    long imposed;               /* `_SteppingLoop.imposed`: a failed Newton's smaller
+                                   retry of a held step (the multistep family reads
+                                   no hold; the glue writes it back) */
     long rejects, point_retries;    /* this point's, as `judge` counts them */
     long npoint;                /* the accepted points (`X`'s length) */
     double *qring, *iqring;     /* hist_len x n each, newest first */
@@ -74,6 +81,8 @@ typedef struct {
     long attempts, rejected, iters, euler_steps, breaks, screens, pred_fast, ltes, lte_euler;
     long early_aborts;          /* attempts abandoned at their first iterate (each
                                    one of `rejected`, not of `attempts`) */
+    long newton_rejects;        /* attempts rejected at their Newton's iteration limit
+                                   (each one of `rejected`, not of `attempts`) */
     long early_checks;          /* the early abort's estimates the attempts made
                                    or abandoned made (a handed-back attempt's are
                                    the Python's: it makes the attempt again) */
@@ -91,6 +100,8 @@ typedef struct {
     double t_break;             /* where: the next breakpoint (`_next_breakpoint`) */
     int is_first, landing;      /* where: the order drop asked; an adaptive step
                                    truncated onto t_break, or a grid's landing */
+    int clamped;                /* where: its end decided its size (a landing, the
+                                   run's end): `_SteppingLoop.clamped` */
     double h_last;              /* take: the last accepted step (h on a run's first) */
     long formula;               /* take: the companion, PCX_FORMULA_* */
     double a0, a1, a2;          /* take: Gear-2's alphas (`bdf2_alphas`), else 0 */
@@ -107,7 +118,8 @@ typedef struct {
 enum loop_judged {
     LOOP_JUDGE_ACCEPT = 0,
     LOOP_JUDGE_RETRY = -1,
-    LOOP_JUDGE_EARLY = -2       /* take's: the attempt abandoned at its first iterate */
+    LOOP_JUDGE_EARLY = -2,      /* take's: the attempt abandoned at its first iterate */
+    LOOP_JUDGE_NEWTON = -3      /* take's: the Newton's iteration limit, rejected here */
 };
 
 /* pcx_loop's result, left in `status` too: why the loop stopped */
@@ -116,7 +128,9 @@ enum loop_status {
     LOOP_FULL = 2,              /* the outputs are full: take them, come back */
     LOOP_BAIL_SOURCES = 3,      /* the table handed a time back */
     LOOP_BAIL_PRED = 4,         /* the predictor handed back (general path, a flag) */
-    LOOP_BAIL_NEWTON = 5,       /* the Newton bailed: the Python takes the attempt */
+    LOOP_BAIL_NEWTON = 5,       /* the Newton bailed: the Python takes the attempt (the
+                                   full Newton's limit on an adaptive step above
+                                   minstep is rejected here: LOOP_JUDGE_NEWTON) */
     LOOP_BAIL_SCREEN = 6,       /* the screen fired or handed back: the SVD is Python's */
     LOOP_BAIL_FORMULA = 7,      /* a companion this loop does not make */
     LOOP_BAIL_LTE = 8,          /* the error test handed back (or has no history) */

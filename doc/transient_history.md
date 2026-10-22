@@ -5326,3 +5326,17 @@ retry or the rescue is armed; a chord's limit still hands back.  The buck's
 bit-identical (the limit never raised there).
 Tests: `test_newton_c.py` (a transient at `maxiter` 1 raises its limits from
 the C, the run the Python's).
+
+## `loop.c`'s `newton_reject` -- the C stepping loop rejects a failed Newton step (2026-10-22)
+
+2026-10-22 (Andreas: "Build the C loop and try to improve";
+`doc/hdl_roadmap_260824.md`, 170).  Where the C Newton stops at its iteration
+limit on an adaptive step (the full Newton, no damped retry or rescue armed, a
+quarter of the step above `minstep`), the C loop rejects the attempt as
+`_SteppingLoop.take` rejects the exception instead of handing it back: before,
+the loop stopped, entered again at once (the same attempt failing again in C)
+and the Python attempt solved it a third time.  A user's buck converter 1.80x
+faster (0.338 -> 0.187 s), bit-identical; the 27 gold transients bit-identical
+(never fires there).  `imposed` carried through the C and written back.
+Tests: `test_loop_c.py` (an adaptive run at `maxiter` 2: rejected in C, the
+Python loop's run).

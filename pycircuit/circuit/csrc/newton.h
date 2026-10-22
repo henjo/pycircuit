@@ -204,7 +204,8 @@ long pcx_newton(newton_t *s);
    bails from these).  Every code from 2 is a hand-back: `_tran_newton_c`
    rolls the attempt's trace back and the Python Newton repeats the solve
    from the same seed (loop.c stops, LOOP_BAIL_NEWTON: the attempt is the
-   Python's). */
+   Python's -- but for the full Newton's limit on an adaptive step, which
+   loop.c rejects as the Python's `take` rejects the exception). */
 enum newton_status {
     NEWTON_RUNNING = 0,          /* in `status` while it runs; never returned */
     NEWTON_CONVERGED = 1,

@@ -220,6 +220,19 @@ def test_a_newton_that_fails_hands_the_step_back(monkeypatch):
     assert ca.get('loop_c:bail:newton', 0) > 0
 
 
+def test_an_adaptive_newton_that_fails_is_rejected_in_c(monkeypatch):
+    """Adaptive, two Newton iterations at most: an attempt whose Newton
+    stops at the limit is rejected in C as `take` rejects the exception (a
+    quarter of the step, a rejection counted) -- nothing handed back, the
+    same run, statistics, counts and state as the Python loop's."""
+    def setup(tr):
+        tr.par.maxiter = 2
+    ca = _same(_pulsed, monkeypatch, steps_min=5, setup=setup, tend=4e-8, timestep=1e-9,
+               fixed_timestep=False)
+    assert ca.get('loop_c:newton_rejects', 0) > 0, ca
+    assert ca.get('loop_c:bail:newton', 0) == 0, ca
+
+
 def test_the_declines(monkeypatch):
     """An element with an `accept_step` hook, a patched piece of the step,
     a shadowed method, a source perturbed on the circuit: the Python loop,

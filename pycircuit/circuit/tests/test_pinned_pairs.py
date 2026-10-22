@@ -65,7 +65,9 @@ PAIRS = {
                'retried within the budget) and accept (the rings, `_pred_note`, the '
                'statistics) -- and writes back what the Python attempts leave; the early '
                'abort armed as `early_arm` arms it, an abandoned attempt rejected as `take` '
-               'rejects it (the law, the point\'s counts, nothing recorded as made); the '
+               'rejects it (the law, the point\'s counts, nothing recorded as made), a full '
+               'Newton\'s iteration limit rejected as `take` rejects the exception (a quarter '
+               'of the step, imposed where held, nothing recorded as made); the '
                'stage family\'s early abort (`radau_arm`, `_RadauAbort`) is not the C\'s -- '
                'it runs the multistep family alone',
         'reference': ['pycircuit.circuit.transient:_SteppingLoop.where',
@@ -692,7 +694,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('c5cbdafaf290', 'ed148322c3cc'),
+    'the stepping loop and its C': ('c5cbdafaf290', '0ede8c048467'),
     'the predictor and its C': ('f2c284eb392d', '2f1a2f96e90f'),
     'the branch screen and its C': ('adb832d7aae0', '1da8be0e9b2e'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
@@ -705,7 +707,7 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('07b811013bb8', 'bce2de7bef9f'),
+    'the Newton solve and its C': ('07b811013bb8', 'acd980f89d1c'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', 'a1bf1ec171ad'),
     'the DC base solve and its C': ('cf01fb504664', 'e57dff49b502'),

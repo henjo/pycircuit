@@ -104,6 +104,7 @@ static long where(loop_t *s, loop_attempt_t *a)
     if (s->adaptive && s->tend - t <= mb) return LOOP_DONE;
     a->t = t;
     a->is_first = s->is_first || s->landing || s->order_drop;
+    a->clamped = 0;
     if (!next_breakpoint(s, t, &a->t_break)) return LOOP_BAIL_SOURCES;
     if (s->adaptive) {
         if (t + h > a->t_break) {
@@ -112,9 +113,15 @@ static long where(loop_t *s, loop_attempt_t *a)
         } else {
             a->landing = 0;
         }
-        if (t + h > s->tend) h = s->tend - t;
+        a->clamped = a->landing;
+        if (t + h > s->tend) {
+            h = s->tend - t;
+            a->clamped = 1;
         /* (a step ending within `minbreak` short of the end ends at it) */
-        else if (s->tend - (t + h) <= mb) h = s->tend - t;
+        } else if (s->tend - (t + h) <= mb) {
+            h = s->tend - t;
+            a->clamped = 1;
+        }
     } else {
         /* (`_SteppingLoop.where`'s tolerances, both of them) */
         a->landing = a->t_break <= t + h * (1.0 + 1e-9);
@@ -218,6 +225,8 @@ static long take(loop_t *s, loop_attempt_t *a)
     nt->early_lte = 0;
     a->early_checks = (st == NEWTON_EARLY || st == NEWTON_CONVERGED) ? nt->early_checks : 0;
     if (st == NEWTON_EARLY) return LOOP_JUDGE_EARLY;
+    if (st == NEWTON_BAIL_MAXITER && s->newton_reject && h * 0.25 >= s->minstep)
+        return LOOP_JUDGE_NEWTON;
     if (st != NEWTON_CONVERGED) return LOOP_BAIL_NEWTON;
     if (br) {
         br->C = nt->Cj;
@@ -305,6 +314,7 @@ static int retry_at_point(loop_t *s, loop_attempt_t *a)
     s->rejected++;
     s->point_retries++;
     s->rejects += !growth;
+    s->imposed = 0;
     s->landing = a->landing;
     s->is_first = a->is_first;
     s->order_drop = 0;
@@ -337,11 +347,31 @@ static void early_reject(loop_t *s, const loop_attempt_t *a)
     s->early_aborts++;
     s->point_retries++;
     s->rejects++;
+    s->imposed = 0;
     s->landing = a->landing;
     s->is_first = a->is_first;
     s->order_drop = 0;
     s->t_break = a->t_break;
     s->h = pcx_py_max(ct->h_next, s->minstep);
+}
+
+/* THE NEWTON'S ITERATION LIMIT, rejected as `_SteppingLoop.take` rejects
+   its exception: the attempt retried at a quarter of its step (above
+   minstep: below it the rescue is the Python's), still imposed where its
+   step was held; a rejection counted, its seed made; nothing of the attempt
+   recorded as made, its iterations not counted (a failed solve adds none),
+   the point's rejection counts and the law's record untouched */
+static void newton_reject(loop_t *s, const loop_attempt_t *a)
+{
+    if (s->hk >= 2) s->pred_fast++;
+    s->rejected++;
+    s->newton_rejects++;
+    s->imposed = a->clamped || s->imposed;
+    s->landing = a->landing;
+    s->is_first = a->is_first;
+    s->order_drop = 0;
+    s->t_break = a->t_break;
+    s->h = a->h * 0.25;
 }
 
 /* 3. judge (`_SteppingLoop.judge`, `_LMMSteps.judge`): a fixed grid's next
@@ -402,6 +432,7 @@ static void accept(loop_t *s, const loop_attempt_t *a)
     int on_break;
     attempt_made(s, a, (int) s->adaptive);
     s->att_rejected = 0;
+    s->imposed = 0;
     on_break = a->t + h >= a->t_break * (1.0 - 1e-12);
     s->landing = a->landing || on_break;
     s->is_first = 0;
@@ -468,6 +499,7 @@ long pcx_loop(loop_t *s)
     s->k = 0;
     s->attempts = s->rejected = s->iters = s->euler_steps = s->breaks = s->screens = 0;
     s->pred_fast = s->ltes = s->lte_euler = s->early_aborts = s->early_checks = 0;
+    s->newton_rejects = 0;
     for (;;) {
         /* `while self.t < self.tend` */
         if (!(s->t < s->tend)) return s->status = LOOP_DONE;
@@ -476,6 +508,10 @@ long pcx_loop(loop_t *s)
         st = take(s, &a);
         if (st == LOOP_JUDGE_EARLY) {
             early_reject(s, &a);
+            continue;
+        }
+        if (st == LOOP_JUDGE_NEWTON) {
+            newton_reject(s, &a);
             continue;
         }
         if (st != 0) return s->status = st;

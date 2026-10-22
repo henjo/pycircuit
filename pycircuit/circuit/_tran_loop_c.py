@@ -71,7 +71,17 @@ BAILS (`loop_c:bail:<why>`, `csrc/loop.h`): the C stops before an attempt
 a unit hands back or the Python must make (a source time, the predictor's
 general path or a flag, the Newton, a screen that is not quiet, a
 companion it does not make, the error test, a forced accept); the attempts
-made before it are written back.  History: `doc/transient_history.md`.
+made before it are written back.
+
+THE NEWTON'S ITERATION LIMIT is not a bail where `_tran_newton_c` would
+raise it (`_unconverged`: the full Newton, no damped retry or rescue
+armed) on an adaptive step: the C rejects the attempt as `take` rejects
+the exception -- a quarter of the step, imposed where its step was held, a
+rejection counted, nothing of the attempt recorded as made
+(`loop_c:newton_rejects`, and the Python's `newton_c:maxiter`).  Below
+`minstep` (the rescue), on a fixed grid (its fallback's record), a
+chord's limit (the full Newton after it) and every other status: a bail.
+History: `doc/transient_history.md`.
 """
 import collections
 import operator
@@ -774,6 +784,14 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     ## precondition -- `_judge` -- PCNR off)
     th = tr.par.early_abort
     s.early_th = float(th) if (adaptive and th and not tr.par.pcnr) else 0.0
+    ## (the full Newton's iteration limit rejected in the loop, as `take`
+    ## rejects its exception -- where `_tran_newton_c` would raise it: no
+    ## chord, no damped retry or rescue armed; a fixed grid's failures, and
+    ## their warning's record, stay the Python's)
+    s.newton_reject = int(adaptive and not td['_newton_c'].s.chord
+                          and not getattr(tr, '_damped_last_resort', False)
+                          and not getattr(tr, '_continuation_rescue', False))
+    s.imposed = int(bool(loop.imposed))
     s.base = code
     s.zs_ratio = float(O['zs_ratio'])
     s.shrink_guard = int(bool(getattr(base, 'shrink_guard', True)))
@@ -1007,7 +1025,7 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     loop.t_break = s.t_break
     loop.x_new, loop.J = x, None
     loop.h_next = loop.timestep if not adaptive else loop.h
-    loop.clamped, loop.hold, loop.imposed = False, not adaptive, False
+    loop.clamped, loop.hold, loop.imposed = False, not adaptive, bool(s.imposed)
     _count(s, run_, rec, adaptive, k)
 
 
@@ -1054,7 +1072,11 @@ def _count(s, run_, rec, adaptive, k):
     ## (an abandoned attempt's too: its seed and sources were made)
     if s.pred_fast:
         _PC['pred:fast'] += s.pred_fast
-    made = a + s.early_aborts
+    ## (an attempt rejected at its Newton's limit: the Python's raise counted)
+    if s.newton_rejects:
+        _PC['loop_c:newton_rejects'] += s.newton_rejects
+        _PC['newton_c:maxiter'] += s.newton_rejects
+    made = a + s.early_aborts + s.newton_rejects
     _PC['src.direct:served'] += made
     _PC['u:called'] += len(run_.tab.entries) * made
     _PC['umemo:miss'] += made
