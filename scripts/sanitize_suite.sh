@@ -38,12 +38,15 @@ echo "sanitize_suite: output in $OUT"
 ## (JAX on the CPU only: its CUDA plugin's cuDNN aborts under the
 ## sanitizer runtime, and no JAX path runs the package's C)
 ## the tests a sanitized build changes by design, deselected by name:
-## the objdump count of `pow` calls (instrumented code calls differently)
-## and the wall-time guards (ASan's allocator and checks are not the
-## product's speed)
+## the objdump count of `pow` calls (instrumented code calls differently),
+## the wall-time guards (ASan's allocator and checks are not the
+## product's speed) and the two that pin glibc's malloc (ASan's allocator
+## stands in for it: its `mallopt` refuses and `mallinfo2` counts nothing)
 DESELECT=(
     --deselect 'pycircuit/circuit/tests/test_hdl_cbackend.py::test_const_merges_the_repeated_calls_and_keeps_the_bytes'
     --deselect 'pycircuit/circuit/tests/test_perf_guards.py'
+    --deselect 'pycircuit/circuit/tests/test_malloc_pin.py::test_a_24_mb_array_lives_in_the_heap_once_pinned'
+    --deselect 'pycircuit/circuit/tests/test_malloc_pin.py::test_a_threshold_the_user_set_wins'
     ## (the two JAX tests that held on the GPU backend only -- here JAX runs
     ## on the CPU -- were made backend-independent on 2026-10-04: the traced
     ## blocks to eight ulps, the cold start an expected failure off the GPU)
