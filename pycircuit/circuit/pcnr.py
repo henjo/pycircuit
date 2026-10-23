@@ -702,15 +702,23 @@ def schur_reduce(g_mna, g_lim, J_mm, J_ml=None, J_lm=None, junctions=None,
         schur = np.array(J_mm, copy=True)
         rhs_corr = np.zeros(len(g_mna))
         off = 0
-        for rows, probes, block in didv:
-            rows = np.asarray(rows, dtype=int)
-            for j, (ra, rb) in enumerate(probes):
-                col = block[:, j]
-                np.add.at(schur[:, ra], rows, col)
-                np.subtract.at(schur[:, rb], rows, col)
-                np.add.at(rhs_corr, rows, col * g_lim[off + j])
-            off += len(probes)
-        return g_mna - rhs_corr, schur
+        ## (an invalid operation in this sum -- `inf * 0`, `inf - inf` -- comes
+        ## only from a device's derivative overflowed at a run-away iterate,
+        ## an infinite `didv` entry times its consistent probe's `g_lim` of 0:
+        ## the NaN is kept, and fails the step at the solve or at `solve_dc`'s
+        ## non-finite test as before; numpy's warning is not raised -- it was a
+        ## user's only sign of a rung the ladder recovers from.  History:
+        ## `doc/transient_history.md`, `schur_reduce`.)
+        with np.errstate(invalid='ignore'):
+            for rows, probes, block in didv:
+                rows = np.asarray(rows, dtype=int)
+                for j, (ra, rb) in enumerate(probes):
+                    col = block[:, j]
+                    np.add.at(schur[:, ra], rows, col)
+                    np.subtract.at(schur[:, rb], rows, col)
+                    np.add.at(rhs_corr, rows, col * g_lim[off + j])
+                off += len(probes)
+            return g_mna - rhs_corr, schur
     return g_mna - J_ml @ g_lim, J_mm - J_ml @ J_lm
 
 

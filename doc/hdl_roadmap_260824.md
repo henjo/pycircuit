@@ -11464,3 +11464,27 @@ reference unmoved.  doc/transient_history.md: its entry.
 **Gate** (one run, 206's change beside it): the suite in the main tree, 5 902 passed (6 skipped, 3 xfailed); the 27
 gold decks, transient and standalone DC, against 204: every digest, step, rejection, Newton count and path count
 identical (DC but for its timing).  No C changed (the sanitizer tier not run).
+
+## 2026-10-23 — 206. A PCNR rung that runs away fails unwarned -- numpy's "invalid value encountered in multiply" at the Schur sum was an overflowed diode derivative times a consistent probe's zero
+
+**Why**  A peer session's report (its user approved sending the case; it carries vendor models, kept in scratch): a laser
+driver testbench's DC printed numpy's "invalid value encountered in multiply" at `schur_reduce` (`col * g_lim`), and under
+`np.seterr(invalid='raise')` the FloatingPointError was swallowed by `solve_dc_continued`'s ladder; the answer the same.
+Its capture: by iteration 53 the rung's iterate had run away (to 1e174, a junction's limited unknown to -1.6e164), a
+diode's `didv` column `[0, -inf, inf]` met its consistent probe's `g_lim` of 0.  It reproduces only on the peer's AVX-512
+Zen 4, whose numpy `exp` differs from the C library's (the C kernels decline, the Newton takes another path); on this
+box's i7-12800HX the same DC never runs away (f326cb88 and e5521385, the C PCNR on and off).
+
+**Built.**  `pcnr.schur_reduce`'s sum under `np.errstate(invalid='ignore')`: an invalid operation there (`inf * 0`,
+`inf - inf`) comes only from an overflowed derivative at a run-away iterate; its NaN is kept -- the same bytes -- and fails
+the step at the solve or at `solve_dc`'s non-finite test as before; no warning.  One `errstate` a call, not a probe (0.7 us
+each).  A finite check before `predict` was weighed and refused: it would change the C twin's served NONFINITE path (its
+KLU counts) and needs a C change for no other gain.  The C twin still hands such a step back on its invalid flag.
+
+**Tests.**  test_pcnr_vector (+1): the reported column on a four-row system -- the bytes numpy makes unwarned, no warning
+and no error under `invalid='raise'` (fails on the old sum: `FloatingPointError`).  test_pinned_pairs: 'the PCNR DC solve
+and its C' re-recorded on its reference (`schur_reduce`), the twin unmoved.  doc/transient_history.md: its entry.
+
+**Gate** (one run, 205's change beside it): the suite in the main tree, 5 902 passed (6 skipped, 3 xfailed); the 27
+gold decks, transient and standalone DC, against 204: every digest, step, rejection, Newton count and path count
+identical (DC but for its timing).  No C changed (the sanitizer tier not run).

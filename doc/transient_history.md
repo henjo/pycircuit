@@ -5463,3 +5463,23 @@ Tests: `test_tran_sources.py` -- `Sin.f`, `Sin.next_event`, `_sin_scalar`,
 `Pulse.f` patched on the class: no table under it, a held table refused, a
 gear transient (the C loop) and a Radau one (the direct pass) the runs
 without the table; alive: with the check emptied the run differs again.
+
+## `pcnr.schur_reduce` -- an overflowed derivative's NaN, unwarned (2026-10-23)
+
+2026-10-23 (a peer session's report on a laser driver testbench;
+`doc/hdl_roadmap_260824.md`, 206).  A DC whose PCNR rung ran away -- the
+iterate to 1e174 by iteration 53, a junction's limited unknown to -1.6e164 --
+printed numpy's "invalid value encountered in multiply" at the Schur sum: a
+diode's `didv` column `[0, -inf, inf]` times its consistent probe's `g_lim`
+of 0.  The NaN failed the rung and the ladder's next rung converged to the
+answer, so the warning was a user's only, and misleading, sign of it; under
+`np.seterr(invalid='raise')` the FloatingPointError was swallowed by the
+ladder.  It shows only where numpy's SIMD `exp` differs from the C library's
+(an AVX-512 Zen 4: the C kernels decline, the Newton takes another path); on
+an i7-12800HX, without AVX-512, the same DC never runs away.  The sum runs
+under `np.errstate(invalid='ignore')`: the same bytes, the NaN kept, no
+warning.  The C twin still hands such a step back on its invalid flag (a
+decline).
+Tests: `test_pcnr_vector.py` -- the reported column on a four-row system: the
+bytes numpy makes unwarned, no warning and no error under `invalid='raise'`
+(the old sum raised `FloatingPointError`).

@@ -1782,3 +1782,35 @@ def test_a_chained_compact_model_runs_a_pcnr_transient_on_the_jax_backend():
     err = np.max(np.abs(y_j - np.interp(t_j, t_c, y_c)))
     span = float(np.max(np.abs(y_c)))
     assert err < 1e-3 * span, (err, span)
+
+
+def test_an_infinite_derivative_at_a_consistent_probe_is_the_steps_nan_unwarned():
+    """A device's `didv` column infinite at a run-away iterate, times its
+    consistent probe's `g_lim` of 0 (a far start's diode: `[0, -inf, inf]`):
+    the Schur sum keeps the NaN that fails the step -- the same bytes as
+    numpy makes them unwarned -- and raises no warning, nor an error under a
+    caller's `np.seterr(invalid='raise')`.  (numpy's 'invalid value
+    encountered in multiply' was a user's only sign of a rung the ladder
+    recovers from.)"""
+    import warnings
+    inf = np.inf
+    g_mna = np.array([1.0, inf, -inf, 0.5])
+    g_lim = np.array([0.0, 0.25])
+    J_mm = np.eye(4)
+    didv = [([1, 2, 3], [(3, 2), (1, 3)], np.array([[0.0, 0.2], [-inf, 0.0], [inf, -0.2]]))]
+
+    def reference():
+        schur, rhs = J_mm.copy(), np.zeros(4)
+        for rows, probes, block in didv:
+            for j, (ra, rb) in enumerate(probes):
+                np.add.at(schur[:, ra], rows, block[:, j])
+                np.subtract.at(schur[:, rb], rows, block[:, j])
+                np.add.at(rhs, rows, block[:, j] * g_lim[j])
+        return g_mna - rhs, schur
+    with np.errstate(all='ignore'):
+        f_ref, J_ref = reference()
+    with warnings.catch_warnings(), np.errstate(invalid='raise'):
+        warnings.simplefilter('error')
+        f, J = P.schur_reduce(g_mna, g_lim, J_mm, didv=didv)
+    assert np.isnan(f).any() and np.isinf(J).any()
+    assert f.tobytes() == f_ref.tobytes() and J.tobytes() == J_ref.tobytes()
