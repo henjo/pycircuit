@@ -709,8 +709,11 @@ def _maxiter(tr, td, rec, P):
     buf = rec.buf
     xn = buf['xn'].copy()
     _PC['newton_c:maxiter'] += 1
+    ## (the residual's scale `|J| |x_next| + |F|`: the C's last `Is`, made at
+    ## the limit, and F)
     e = _standard_failure(buf['Fr'].copy(), buf['xd'].copy(), xn, xn, int(par.maxiter),
-                          float(par.reltol), abstol, xtol, tr._reduced_row_names(), tr.toolkit)
+                          float(par.reltol), abstol, xtol, tr._reduced_row_names(), tr.toolkit,
+                          I_scale=buf['Is'] + np.abs(buf['Fr']))
     if 'Singular' in str(e) or 'linalgerror' in str(e).lower():
         raise SingularMatrix(str(e)) from e
     raise e

@@ -758,7 +758,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('c5cbdafaf290', 'deafd0d1c0a9'),
+    'the stepping loop and its C': ('c5cbdafaf290', 'bb880ef91cbb'),
     'the predictor and its C': ('f2c284eb392d', '2f1a2f96e90f'),
     'the branch screen and its C': ('adb832d7aae0', '1da8be0e9b2e'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
@@ -771,10 +771,10 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('799c5ad2d0a2', '09b8b2e394dd'),
+    'the Newton solve and its C': ('2ff6c6b1bb4b', 'fe04120dc1a4'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', '9f6fb7d03377'),
-    'the DC base solve and its C': ('cf01fb504664', 'cee591e0ea0b'),
+    'the DC base solve and its C': ('1ca96ccdb1c8', '0423dea8a05d'),
     'the PCNR DC solve and its C': ('fb7013b47665', '67b9fed88fb1'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),

@@ -11060,3 +11060,31 @@ the pattern-only assembly 9.35, the memo's views 8.74.
 **Gate**: the suite in the main tree, 5 809 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
 standalone DC, against 194: every digest identical; the sanitized fast tier (scripts/sanitize_suite.sh) 5 557
 passed, no sanitizer report: clean.
+
+## 2026-10-23 — 196. A Newton that fails at its iteration limit reports the solver's own tests -- the residual against `reltol (|J| |x| + |f|) + abstol` and a stateful limiter that held it (a user's 4 mV step reported a residual 1e8x over a tolerance it met 1e5x under; the update had failed)
+
+**Why**  A peer's step test (a 4 mV step into an amplifier macromodel, tolerances reltol 1e-9, iabstol 1e-13)
+fell to the minimum step at the step's corner with "StandardNewton failed to converge after 100 iterations;
+residual worst at vgate: |f| = 1.319e-06 against a tolerance of 1.013e-13".  The report judged the residual
+against `reltol |f| + abstol`; the solver's test is `reltol (|J| |x_next| + |f|) + abstol`, and at h = 1e-18 s
+a 354 pF capacitor's companion makes `|J| |x|` ~ 1e8: the residual met its test ~1e5x under, and what had
+failed -- the update of a 0 V source's current inside the macromodel, changing by 7.1e-8 A each iteration, about one
+unit of rounding in the voltages times C/h -- came second, unnamed.  (Why the update cannot settle at that h is
+a separate matter, not this entry's.)
+
+**Built.**  `_worst_row_report` takes the residual's scale `I_scale` (the solver's `|J| |x_next| + |f|`) and
+judges against it; without one it says the tolerance is "at least" `reltol |f| + abstol`.  A stateful limiter
+that limited the last step (the solver's noncon) is named: both tests can hold at a point that is not a
+solution.  StandardNewton and DampedNewton pass their own (DampedNewton the step it took, `alpha dx`).  The C
+Newton (newton.c) makes the last iteration's `|J| |x_next|` at the limit -- its test makes it only where the
+update held -- and `_tran_newton_c` and `_dc_newton_c` pass it with `|F|`, so the C's message is the Python's.
+
+**Tests.**  test_nrsolver_variants: a Jacobian ~1e8 with a weak direction and a residual of 1e-6 -- inside its
+own test, the step along the weak direction over the update's -- names the update and not the residual
+(standard and damped; the old report named the residual 1e6x over); a limiter that limits every step names
+itself.  test_pinned_pairs: 'the Newton solve and its C', 'the DC base solve and its C', 'the stepping loop
+and its C' re-recorded.
+
+**Gate**: the suite in the main tree, 5 812 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 195: every digest identical (a report changed, no iterate); the sanitized fast tier
+(scripts/sanitize_suite.sh) 5 573 passed, no sanitizer report: clean.

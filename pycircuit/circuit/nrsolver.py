@@ -63,12 +63,23 @@ def _structural_singularity(J, row_names, toolkit):
     return None
 
 
-def _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol, row_names, toolkit):
-    """Which unknown failed to converge, by how much, and against what tolerance.
+def _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol, row_names, toolkit,
+                      I_scale=None, limited=False):
+    """Which of the solver's tests failed at its last iteration, at which
+    unknown, by how much, and against what tolerance -- the solver's own:
+    the update ``|dx| < reltol max(|x_next|, |x|) + xtol`` (`xdiff` the step
+    it tested), the residual ``|f| < reltol I_scale + abstol`` (``I_scale =
+    |J| |x_next| + |f|``), and a stateful limiter that limited (SPICE's
+    noncon: the two tests can both hold at a point that is not a solution).
+    `I_scale` None: the residual against ``reltol |f| + abstol``, a lower
+    bound of its tolerance (said so).
 
     STAGE 6(b).  Everything here was already in scope at the point the old message
     was raised; it said "DampedNewton failed to converge after N iterations" and
-    threw all of it away.
+    threw all of it away.  (2026-10-23) It judged the residual against ``reltol
+    |f| + abstol``, without the solver's ``|J| |x|``: a step at 1e-18 s, whose
+    companion makes ``|J| |x|`` ~ 1e8, had its residual reported 1e8x over a
+    tolerance it met 1e5x under, and the update that failed came second.
     """
     def _name(i):
         if row_names is not None and 0 <= i < len(row_names):
@@ -88,7 +99,12 @@ def _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol, row_names, tool
     ## Normalised misses: >1 means that row failed its test.  Reporting the
     ## normalised value rather than the raw residual is what makes the number
     ## actionable -- "2.3x its tolerance" says how far off, "4.7e-9 A" does not.
-    f_tol = reltol * abs(F) + ab
+    try:
+        f_scale = (abs(F) if I_scale is None
+                   else np.broadcast_to(np.asarray(I_scale, dtype=float), F.shape))
+    except (TypeError, ValueError):
+        return ''
+    f_tol = reltol * f_scale + ab
     x_tol = reltol * np.maximum(abs(xn), abs(xo)) + xt
     with np.errstate(divide='ignore', invalid='ignore'):
         f_miss = np.where(f_tol > 0, abs(F) / f_tol, 0.0)
@@ -97,12 +113,17 @@ def _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol, row_names, tool
     parts = []
     if f_miss.size and np.nanmax(f_miss) > 1.0:
         i = int(np.nanargmax(f_miss))
-        parts.append('residual worst at %s: |f| = %.4g against a tolerance of '
-                     '%.4g (%.3gx over)' % (_name(i), abs(F[i]), f_tol[i], f_miss[i]))
+        parts.append('residual worst at %s: |f| = %.4g against a tolerance of %s%.4g '
+                     '(%.3gx over)' % (_name(i), abs(F[i]),
+                                       'at least ' if I_scale is None else '',
+                                       f_tol[i], f_miss[i]))
     if x_miss.size and np.nanmax(x_miss) > 1.0:
         i = int(np.nanargmax(x_miss))
         parts.append('update worst at %s: |dx| = %.4g against a tolerance of '
                      '%.4g (%.3gx over)' % (_name(i), xd[i], x_tol[i], x_miss[i]))
+    if limited:
+        parts.append('a stateful limiter limited the last step (both tests can hold at '
+                     'a point that is not a solution)')
     return '; '.join(parts)
 
 
@@ -213,15 +234,18 @@ class StandardNewton(NonLinearSolver):
             x = x_next
             
         raise _standard_failure(F, xdiff, x_next, x, maxiter, reltol, abstol, xtol, row_names,
-                                toolkit)
+                                toolkit, I_scale=I_scale, limited=limited)
 
 
-def _standard_failure(F, xdiff, x_next, x, maxiter, reltol, abstol, xtol, row_names, toolkit):
+def _standard_failure(F, xdiff, x_next, x, maxiter, reltol, abstol, xtol, row_names, toolkit,
+                      I_scale=None, limited=False):
     """StandardNewton's exception at its iteration limit, from the last
-    iteration's arrays (the C's too: `_dc_newton_c`)."""
+    iteration's arrays -- `I_scale` its residual's scale, `limited` its
+    noncon (`_worst_row_report`) -- the C's too: `_dc_newton_c`,
+    `_tran_newton_c`."""
     ## STAGE 6(b).
     detail = _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol,
-                               row_names, toolkit)
+                               row_names, toolkit, I_scale=I_scale, limited=limited)
     return NoConvergenceError(
         'StandardNewton failed to converge after %d iterations%s'
         % (maxiter, ('; ' + detail) if detail else ''))
@@ -474,8 +498,8 @@ class DampedNewton(NonLinearSolver):
             
         ## STAGE 6(b) -- SAY WHICH UNKNOWN FAILED, BY HOW MUCH, AND AGAINST WHAT.
         ## All of this was already in scope when the old message threw it away.
-        detail = _worst_row_report(F, xdiff, x_next, x, reltol, abstol, xtol,
-                                   row_names, toolkit)
+        detail = _worst_row_report(F, alpha * xdiff, x_next, x, reltol, abstol, xtol,
+                                   row_names, toolkit, I_scale=I_scale, limited=limited)
         raise NoConvergenceError(
             'DampedNewton failed to converge after %d iterations%s'
             % (maxiter, ('; ' + detail) if detail else ''))

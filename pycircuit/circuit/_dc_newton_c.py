@@ -435,6 +435,9 @@ def solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, 
         _PC['dcnewton_c:maxiter'] += 1
         from pycircuit.circuit.nrsolver import _standard_failure
         x_next = buf['xn'].copy()
+        ## (the residual's scale `|J| |x_next| + |F|`: the C's last test's `Is`
+        ## and F)
         raise _standard_failure(buf['Fr'].copy(), buf['xd'].copy(), x_next, x_next, maxiter,
-                                reltol, abstol, xtol, row_names, toolkit)
+                                reltol, abstol, xtol, row_names, toolkit,
+                                I_scale=buf['Is'] + np.abs(buf['Fr']))
     return _no('dcnewton_c:bail:' + bails.get(status, str(status)))

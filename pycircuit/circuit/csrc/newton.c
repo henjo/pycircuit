@@ -438,6 +438,11 @@ static long iterate(newton_t *s, void **num)
         /* `x = x_next` */
         for (i = 0; i < m; i++) s->x[i] = s->xn[i];
     }
+    /* the last iteration's residual scale |J| |x_next| (its test made it
+       only where the update's held), for the iteration limit's report
+       (`nrsolver._worst_row_report`): numpy's own dgemv, as the test's */
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->absJ, m,
+                           s->ax, 1, 0.0, s->Is, 1);
     return finish(s, NEWTON_BAIL_MAXITER);
 }
 

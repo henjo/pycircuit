@@ -508,3 +508,53 @@ def test_the_ladders_in_place_forms_are_the_expressions_they_stand_for(monkeypat
             wb = _recorded(lambda: N._junction_gmin(Fb, Jb, x, g, rows, N._junction_tables(rows)))
         assert Fa.tobytes() == Fb.tobytes() and Ja.tobytes() == Jb.tobytes() and wa == wb, (n, k)
     assert spy.at > 300, spy.at     # (two a fast call: over 150 of the 400)
+
+
+def _weak_direction(n_calls):
+    """``J`` with entries ~1e8 and a weak direction (`|J| |x|` ~ 2e8), a
+    residual of 1e-6 flipping its sign each evaluation: inside the residual's
+    own test (reltol |J| |x| ~ 0.2), its step along the weak direction ~1e-6
+    -- far over the update's tolerance (reltol |x| ~ 1e-9) every time."""
+    a = 1e8
+    J = np.array([[a, a], [a, a + 1.0]])
+
+    def eval_FJ(x):
+        n_calls.append(1)
+        return np.array([1e-6 * (-1) ** len(n_calls), 0.0]), J
+    return eval_FJ
+
+
+@pytest.mark.parametrize('solver', [StandardNewton(), DampedNewton()], ids=['standard', 'damped'])
+def test_the_failure_names_the_test_that_failed(solver):
+    """At the iteration limit the message reports the solver's own tests
+    (2026-10-23): the residual against `reltol (|J| |x_next| + |F|) +
+    abstol` -- it met it here, so it is not named -- and the update that
+    failed.  The report had judged the residual against `reltol |F| +
+    abstol`, without `|J| |x|`, and named it 1e6x over (a step at 1e-18 s,
+    where the companion makes `|J| |x|` ~ 1e8, failed on a source current's
+    update and was reported as a residual at a gate)."""
+    tol = np.full(2, 1e-12)
+    with pytest.raises(NoConvergenceError) as e:
+        solver.solve_system(np.array([1.0, 1.0]), _weak_direction([]), numeric, 1e-9, tol, tol, 6)
+    msg = str(e.value)
+    assert 'update worst at' in msg and 'residual worst' not in msg, msg
+
+
+def test_the_failure_names_a_limiter_that_held_the_iteration():
+    """Both tests met, a stateful limiter limiting every step (SPICE's
+    noncon): the message says the limiter held the iteration."""
+    from pycircuit.circuit import _limiting
+    J = np.eye(2)
+
+    def eval_FJ(x):
+        return np.zeros(2), J
+
+    def limiter(x_next, x):
+        _limiting.NONCON[0] += 1
+        return x_next
+    tol = np.full(2, 1e-12)
+    with pytest.raises(NoConvergenceError) as e:
+        StandardNewton().solve_system(np.ones(2), eval_FJ, numeric, 1e-9, tol, tol, 3,
+                                      limiter=limiter)
+    msg = str(e.value)
+    assert 'stateful limiter' in msg and 'worst at' not in msg, msg

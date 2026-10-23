@@ -107,7 +107,8 @@ typedef struct {
            *ax,           /* (m) |xn| */
            *Is;           /* (m) |J| |xn| (dgemv); the verdicts' sums
                              (pcx_verdict.h: with `ry`, or `ax` in the
-                             validation, as their counts) */
+                             validation, as their counts); on
+                             NEWTON_BAIL_MAXITER the last iteration's |J| |xn| */
     int64_t *ipiv64;      /* (m) dgesv's pivots */
     int *ipiv32;          /* (m) dgetrf's, held for the chord's dgetrs */
     /* OUTPUTS AND STATUS (OWN) */
