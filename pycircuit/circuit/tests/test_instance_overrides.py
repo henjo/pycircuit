@@ -38,7 +38,7 @@ OFF = (('_dc_newton_c', 'ENABLED'), ('_hdl_batch', 'ENABLED'), ('_hdl_batch', 'S
        ('_tran_loop_c', 'ENABLED'), ('_tran_lte_c', 'ENABLED'), ('_tran_newton_c', 'ENABLED'),
        ('_tran_pred_c', 'ENABLED'), ('_tran_radau_c', 'ENABLED'), ('_tran_radau', 'STAGE_FUSE'),
        ('_tran_radau_tc', 'ENABLED'), ('_tran_radau_tc', 'END'), ('_tran_radau_tc', 'FOLD'),
-       ('_tran_sources', 'ENABLED'))
+       ('_tran_sources', 'ENABLED'), ('_tran_stageloop_c', 'ENABLED'))
 
 #: the period of the drives (1 MHz)
 T = 1e-6

@@ -21,6 +21,7 @@
 #include "branch.h"
 #include "sensklu.h"
 #include "lmmsens.h"
+#include "pcx_stagestep.h"
 #include "stagewalk.h"
 
 /* a call to a unit through its pointer, typed by the unit's own declaration */
@@ -61,84 +62,6 @@ static void reduce_mat(const double *C, double *dst, long n, long r)
         if (i == r) continue;
         for (j = 0; j < n; j++) if (j != r) dst[o++] = C[i * n + j];
     }
-}
-
-/* `_pred_note`'s merge of the step's nodes -- the three stages at their
-   times and the point at the step's end, sorted by time as Python's stable
-   sort sorts them (`ord`), each after the history's newest: appended, one
-   within `1e-14 * max(abs(t), 1.0)` of the newest replacing it, the newest
-   PRED_HIST_MAX kept (an append past them drops the oldest) */
-static void note(stagewalk_t *t, const double *tn, const double *const *xv, const long *ord)
-{
-    long n = t->n, e;
-    for (e = 0; e < 4; e++) {
-        double te = tn[ord[e]];
-        double mx = pcx_py_max(fabs(te), 1.0);
-        if (t->hk && fabs(te - t->ht[t->hk - 1]) <= 1e-14 * mx) {
-            t->hk--;
-        } else if (t->hk == PRED_HIST_MAX) {
-            memmove(t->ht, t->ht + 1, (PRED_HIST_MAX - 1) * sizeof(double));
-            memmove(t->hx, t->hx + n, (size_t) ((PRED_HIST_MAX - 1) * n) * sizeof(double));
-            t->hk = PRED_HIST_MAX - 1;
-        }
-        t->ht[t->hk] = te;
-        COPY(t->hx + t->hk * n, xv[ord[e]], n);
-        t->hk++;
-    }
-}
-
-/* the step's nodes -- its stage times and its end -- into `tn`, and the
-   order Python's stable sort takes them in into `ord`: 0, or the bail where
-   the first is not after the history's newest */
-static long order_nodes(stagewalk_t *t, const double *ts, double tj, double *tn, long *ord)
-{
-    long i, e;
-    for (i = 0; i < 3; i++) tn[i] = ts[i];
-    tn[3] = tj;
-    for (e = 0; e < 4; e++) ord[e] = e;
-    for (e = 1; e < 4; e++) {
-        long v = ord[e], f = e;
-        while (f > 0 && tn[ord[f - 1]] > tn[v]) {
-            ord[f] = ord[f - 1];
-            f--;
-        }
-        ord[f] = v;
-    }
-    if (t->hk && !(tn[ord[0]] >= t->ht[t->hk - 1])) return STAGEWALK_BAIL_NODES;
-    return 0;
-}
-
-/* the seeds, `_pred_or(np.array(x), t)` at each stage time: 0, or the bail
-   where the predictor's general path makes one */
-static long seeds(stagewalk_t *t, const double *ts)
-{
-    pred_t *pr = (pred_t *) t->pred;
-    long i, n = t->n, st;
-    for (i = 0; i < 3; i++) {
-        pr->hk = t->hk;
-        pr->ttarget = ts[i];
-        st = CALL(t->pred_fn, pcx_pred, pr);
-        if (st == PRED_DONE) COPY(t->seed + i * n, pr->out, n);
-        else if (st == PRED_NONE) COPY(t->seed + i * n, t->x, n);
-        else return STAGEWALK_BAIL_PRED;
-    }
-    return 0;
-}
-
-/* the screen of the last assembly's stages (`A` of them made), the running
-   maximum carried into `*cmax`: 0, or the bail at a stage not QUIET */
-static long screen(stagewalk_t *t, const radau_t *rs, long A, double *cmax)
-{
-    branch_t *br = (branch_t *) t->branch;
-    long i, nn = t->n * t->n;
-    if (!br) return 0;
-    for (i = 0; i < 3; i++) {
-        br->C = rs->Ca + (A - 1) * 3 * nn + i * nn;
-        br->cmax = *cmax;
-        if (CALL(t->branch_fn, pcx_branch, br) != BRANCH_QUIET) return STAGEWALK_BAIL_SCREEN;
-        *cmax = br->ref;
-    }
-    return 0;
 }
 
 /* the walk's step map into `Xw`: `C_n P`, the block refactored and solved
@@ -187,7 +110,7 @@ static void commit(stagewalk_t *t, const radau_t *rs, long A, double cmax, const
     for (i = 0; i < n; i++) t->iqring[i] = -(i3[i] + Uj[3 * n + i]);
     for (i = 0; i < 3; i++) xv[i] = Y + i * n;
     xv[3] = Y + 2 * n;
-    note(t, tn, xv, ord);
+    pcx_stage_note(&t->hk, t->ht, t->hx, n, tn, xv, ord);
     COPY(t->x, Y + 2 * n, n);
     reduce_vec(t->x, t->xr, n, t->iref);
     COPY(t->qn, q3, n);
@@ -255,8 +178,12 @@ long pcx_stagewalk(stagewalk_t *t)
         double *Xw = t->P >= t->Xs && t->P < t->Xs + 3 * m * m ? t->Xs2 : t->Xs;
         /* (a walk with no live column: `_sensklu_c.step` declines it) */
         if (t->k < 1) return t->status = STAGEWALK_BAIL_LIVE;
-        if ((st = order_nodes(t, ts, t->tend[j], tn, ord))) return t->status = st;
-        if ((st = seeds(t, ts))) return t->status = st;
+        /* (the step's nodes not after the history's: `_pred_note`'s general
+           merge, the Python's; a seed the predictor's general path makes) */
+        if (!pcx_stage_order(ts, t->tend[j], t->hk, t->ht, tn, ord))
+            return t->status = STAGEWALK_BAIL_NODES;
+        if (pcx_stage_seeds(t->pred_fn, (pred_t *) t->pred, t->hk, ts, t->x, t->seed, n) < 0)
+            return t->status = STAGEWALK_BAIL_PRED;
         /* the C stage Newton, as `_tran_radau_c.solve` calls it -- a
            hand-back leaves the numeric it was given (the glue's reading) */
         rs->qn = t->qn;
@@ -274,7 +201,9 @@ long pcx_stagewalk(stagewalk_t *t)
            this one's reference entry that, bit for bit) */
         if (Y[2 * n + t->iref] != 0.0 || signbit(Y[2 * n + t->iref]))
             return t->status = STAGEWALK_BAIL_REF;
-        if ((st = screen(t, rs, A, &cmax))) return t->status = st;
+        if (!pcx_stage_screen(t->branch_fn, (branch_t *) t->branch,
+                              rs->Ca + (A - 1) * 3 * n * n, n, &cmax))
+            return t->status = STAGEWALK_BAIL_SCREEN;
         st = step_map(t, rs, Xw);
         /* (a hand-back commits nothing of the step map: `block_step`'s) */
         if (st == SENSKLU_BAIL_FLAGS) return t->status = STAGEWALK_BAIL_SENS;

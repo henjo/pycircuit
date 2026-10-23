@@ -15,7 +15,13 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from pycircuit.circuit import _hdl_climit, _paths, _tran_core, circuit
+from pycircuit.circuit import (
+    _hdl_climit,
+    _paths,
+    _tran_core,
+    _tran_stageloop_c,
+    circuit,
+)
 from pycircuit.circuit import _tran_radau_c as RC
 from pycircuit.circuit._tran_radau import _RadauStages
 from pycircuit.circuit.elements import C, Diode, R, gnd
@@ -160,6 +166,9 @@ def test_the_memo_holds_the_output_slots_and_never_one_still_held(monkeypatch):
     held from a run keep their bytes through the next run's serves; with no
     set free (`OUT_SETS` 0) the memo takes copies, the same values."""
     _on()
+    ## (the serve's own memo: the C stage loop's write-back copies its sets,
+    ## `_tran_stageloop_c._memo_back`)
+    monkeypatch.setattr(_tran_stageloop_c, 'ENABLED', False)
     kw = {'tend': 4e-7, 'timestep': 2e-8, 'fixed_timestep': True}
     tr = Transient(_mos_chain(), toolkit=circuit.numeric, integrator=RadauIIA3Integrator())
     tr.solve(**dict(kw))

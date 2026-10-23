@@ -83,8 +83,10 @@ typedef struct {
         *tq;                    /* n: the tolerance, then |lte| / it */
     int64_t *ipiv;              /* m: dgesv's pivots */
     void *dgesv;                /* [ctx] numpy's own `scipy_dgesv_64_` (dgesv64_t) */
-    double err;                 /* OUT: the largest normalised error; written on
-                                   LTE_DONE only */
+    double err;                 /* OUT: the largest normalised error (STAGE: their
+                                   RMS); written on LTE_DONE only */
+    double worst;               /* OUT, STAGE: the largest normalised error;
+                                   written on LTE_DONE only */
     long status;                /* OUT: pcx_lte's result, enum lte_status */
     /* THE SPARSE SOLVE: where `klu_sym` is set, J^-1 Eg is
        `StructuralKLU.solve`'s -- the reduced J row-major
@@ -139,6 +141,9 @@ typedef struct {
     void *lu_klu_solve;         /* klu_solve, klu_solve_t (KLU) */
     void *lu_dgetrs64;          /* numpy's own `scipy_dgetrs_64_`, dgetrs64_t (GETRS64) */
     void *lu_dgetrs32;          /* SciPy's `scipy_dgetrs_`, dgetrs32_t (GETRS32) */
+    long under_ok;              /* [run] STAGE: numpy ignores underflow
+                                   (`func._underflow_ignored`): an underflow is
+                                   not a flag it would warn of (0 elsewhere) */
 } lte_t;
 long pcx_lte(lte_t *s);
 
@@ -169,7 +174,18 @@ enum lte_lu {
 enum lte_formula {
     LTE_FORMULA_DD3 = 0,         /* gear, trapezoid: coef * the third divided
                                     difference of the charge (q, q1..q3) */
-    LTE_FORMULA_EULER = 1        /* Euler: coef * ((q - q1) / h1 - iq1) */
+    LTE_FORMULA_EULER = 1,       /* Euler: coef * ((q - q1) / h1 - iq1) */
+    LTE_FORMULA_STAGE = 2        /* the stage family's judgement
+                                    (`_StageSteps.normalised`): the estimate
+                                    given in `lte` (n, +0.0 at iref), its own
+                                    reference -- the running maximum over
+                                    accepted points (`xl`), `out`, and this
+                                    judgement's against `xc` -- the tolerance
+                                    with trtol 1.0, the mask multiplied in,
+                                    then over the kept unknowns the RMS (`err`)
+                                    and the largest (`worst`); `b` the squares.
+                                    Only h1, reltol, trtol, abstol, xc, xl,
+                                    lte, run, abst, mask, charge read */
 };
 /* `relref`, the reference the tolerance scales (Transient's `relref`) */
 enum lte_relref {

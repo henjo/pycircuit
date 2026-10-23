@@ -895,13 +895,89 @@ PAIRS = {
                  'pycircuit.circuit.elements_hdl:_bsource_class',
                  'pycircuit.circuit.elements_hdl:_bsource_trace'],
     },
+    'the stage loop and its C': {
+        'why': 'a plain run\'s Radau steps in C (roadmap 207): `_SteppingLoop`\'s attempts under '
+               '`_StageSteps`, the cost transform off -- where (the multistep family\'s), take '
+               '(`_rk_step_coupled`: the stage times from the step\'s end as '
+               '`_coupled_stage_context` makes them, the start\'s record from the memo or the '
+               'core\'s passes as `_tran_core.passes` counts them, the seeds by pred.c, the '
+               'sources at the stage times in the step\'s memo, the C stage Newton as '
+               '`_tran_radau_c.solve` calls it, each stage\'s screen as `_branch_after_coupled`, '
+               '`_finish_stage_step`\'s `iq`, `_radau_error_estimate` with the transform off: '
+               'numpy\'s dgemv and dgesv in its order), judge (lte.c\'s STAGE judgement: '
+               '`_StageSteps.normalised` -- `_reference`\'s running maximum over ACCEPTED points, '
+               '`charge_floor`, `normalised_error`, numpy\'s pairwise sum -- and `judge`\'s law, '
+               '`_retry_after` with `_retry_order`) and accept (`_roll_history`, `_pred_note`\'s '
+               'merge); the state written back as the Python leaves it (the memo\'s two '
+               'generations: the last made attempt\'s, the one before rebuilt by the core '
+               'calls its Newton made), a stop before an attempt\'s Newton the Python\'s, one '
+               'after it held for the Python\'s repeat (`_tran_radau_c.hold`)',
+        'reference': ['pycircuit.circuit.transient:_SteppingLoop.where',
+                      'pycircuit.circuit.transient:_SteppingLoop.take',
+                      'pycircuit.circuit.transient:_SteppingLoop.judge',
+                      'pycircuit.circuit.transient:_SteppingLoop.accept',
+                      'pycircuit.circuit.transient:_StepFamily.attempt',
+                      'pycircuit.circuit.transient:_StageSteps.judge',
+                      'pycircuit.circuit.transient:_StageSteps.normalised',
+                      'pycircuit.circuit.transient:_StageSteps._reference',
+                      'pycircuit.circuit.transient:_StageSteps._retry_after',
+                      'pycircuit.circuit.transient:_StageSteps._retry_order',
+                      'pycircuit.circuit.transient:Transient.solve_timestep',
+                      'pycircuit.circuit.transient:Transient._solve_timestep',
+                      'pycircuit.circuit._tran_stages:_SequentialStages._solve_timestep_rk',
+                      'pycircuit.circuit._tran_stages:_SequentialStages._finish_stage_step',
+                      'pycircuit.circuit._tran_radau:_RadauStages._rk_step_coupled',
+                      'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_context',
+                      'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_solver',
+                      'pycircuit.circuit._tran_radau:_RadauStages._finish_radau',
+                      'pycircuit.circuit._tran_radau:_RadauStages._radau_error_estimate',
+                      'pycircuit.circuit._tran_branch:_BranchCheck._branch_after_coupled',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._pred_stages',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._pred_note',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._pred_promote',
+                      'pycircuit.circuit._tran_history:_RunHistory._roll_history',
+                      'pycircuit.circuit._tran_companion:_CompanionModel._memo_step',
+                      'pycircuit.circuit._tran_companion:_CompanionModel._memo_get',
+                      'pycircuit.circuit._tran_companion:_CompanionModel._memo_put',
+                      'pycircuit.circuit._tran_companion:_CompanionModel._source_at',
+                      'pycircuit.circuit._tran_core:passes',
+                      'pycircuit.circuit.stepcontroller:charge_floor',
+                      'pycircuit.circuit.stepcontroller:normalised_error',
+                      'pycircuit.circuit.stepcontroller:sigglobal_reference'],
+        'twin': ['pycircuit.circuit._tran_loop_c:LOOP_C',
+                 'pycircuit.circuit._tran_loop_c:LOOP_CDEF',
+                 'pycircuit.circuit._tran_lte_c:LTE_C',
+                 'pycircuit.circuit._tran_stageloop_c:run',
+                 'pycircuit.circuit._tran_stageloop_c:_eligible',
+                 'pycircuit.circuit._tran_stageloop_c:_sets_fit',
+                 'pycircuit.circuit._tran_stageloop_c:_run_ready',
+                 'pycircuit.circuit._tran_stageloop_c:_family_ready',
+                 'pycircuit.circuit._tran_stageloop_c:_state_ready',
+                 'pycircuit.circuit._tran_stageloop_c:_judge_ready',
+                 'pycircuit.circuit._tran_stageloop_c:_sum_ok',
+                 'pycircuit.circuit._tran_stageloop_c:_bound',
+                 'pycircuit.circuit._tran_stageloop_c:_bind',
+                 'pycircuit.circuit._tran_stageloop_c:_bind_stage',
+                 'pycircuit.circuit._tran_stageloop_c:_load',
+                 'pycircuit.circuit._tran_stageloop_c:_load_stage',
+                 'pycircuit.circuit._tran_stageloop_c:_load_judge',
+                 'pycircuit.circuit._tran_stageloop_c:_call',
+                 'pycircuit.circuit._tran_stageloop_c:_settle',
+                 'pycircuit.circuit._tran_stageloop_c:_write_back',
+                 'pycircuit.circuit._tran_stageloop_c:_stage_back',
+                 'pycircuit.circuit._tran_stageloop_c:_memo_back',
+                 'pycircuit.circuit._tran_stageloop_c:_rebuild',
+                 'pycircuit.circuit._tran_stageloop_c:_family_back',
+                 'pycircuit.circuit._tran_stageloop_c:_count',
+                 'pycircuit.circuit._tran_radau_c:hold'],
+    },
 }
 
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('02966d22fff9', '663c790d259b'),
+    'the stepping loop and its C': ('02966d22fff9', '3f0993cb3502'),
     'the predictor and its C': ('9e611c84de5a', '0d37cf280c92'),
     'the branch screen and its C': ('adb832d7aae0', '213a22d4c01e'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -914,16 +990,16 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('3ca9f9451f6f', '53df12ed0bd5'),
+    'the Newton solve and its C': ('3ca9f9451f6f', 'c7ead8a7f8e8'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
-    'the error test and its C': ('1736570f3f0e', 'd946a8e69c20'),
+    'the error test and its C': ('1736570f3f0e', 'ac91030f078c'),
     'the DC base solve and its C': ('64fd25ecd5da', '1e12937f72b9'),
     'the PCNR DC solve and its C': ('20b804fddf35', '30741a9ce570'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
     "the stage paths' passes and the core's": ('6baa9d0e9097', '3f00bb235faa'),
-    'the coupled stage Newton and its C': ('c87ff9fb31be', 'b7bf1ac18f62'),
+    'the coupled stage Newton and its C': ('c87ff9fb31be', '65157c1e371d'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
     'the transform solve and its frozen form': ('6f35dca48644', '61256542c9d4'),
@@ -933,14 +1009,15 @@ RECORD = {
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('39f2d0f63b0f', '591052196b6b'),
     'the KLU step map and its C': ('5b9b1f672523', '776fd7afe705'),
-    'the stage walk and its C': ('a918e57085a2', 'a7c412d87bc9'),
-    'the multistep walk and its C': ('57f6fd18a3eb', 'd2b3a85337dd'),
+    'the stage walk and its C': ('a918e57085a2', 'ddb2f076a0e3'),
+    'the multistep walk and its C': ('57f6fd18a3eb', '595cfdecdac4'),
     'the multistep step map and its C': ('985dde19187d', 'be14cb8c5221'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
     'the readiness reads and their stamps': ('61efd629dd90', '76e34cda0583'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
+    'the stage loop and its C': ('9b77e46fd9eb', '7118e466c1d5'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

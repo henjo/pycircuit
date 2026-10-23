@@ -115,6 +115,74 @@ typedef struct {
     long mono_n;                /* the steps the monodromy took (`_LiveMonodromy.n`) */
     long maps;                  /* out: the step maps made this call */
     long map_status;            /* out, LOOP_WALK_MAP: the map's status */
+    /* THE STAGE FAMILY (`family` 1, `_tran_loop_c`'s stage binding):
+       `_StageSteps` on a Radau IIA(3) step -- the dense coupled Newton
+       `_rk_step_coupled` makes, radau.c on the transient's record.  An
+       attempt is the stage walk's step on the loop's grid (pcx_stagestep.h:
+       the seeds, each stage's screen; the nodes' merge at accept), the
+       sources at the stage times, the end and the start (the table, each
+       time once an attempt, in the order the Python asks), the embedded
+       estimate (`_radau_error_estimate`), lte.c's STAGE judgement and the
+       family's law (`_StageSteps.judge`).  The device memo the Python
+       steps keep, two generations rolled at each attempt: an attempt writes
+       the output set the last made attempt's is not in (`gen0`), so a stop
+       after its Newton leaves both; the made attempt before that keeps only
+       its stages (`ygen1`), from which the glue rebuilds the older
+       generation by the core's passes at them (the very calls its Newton
+       made).  The step's start is looked up by its bytes, as `_memo_get`
+       keys it: in this attempt's set, then the last made attempt's (the
+       first attempt: the entry's memo, `first_rec`) */
+    long family;                /* enum loop_family */
+    void *radau_fn, *radau;     /* radau.c, its radau_t (`_tran_radau_c`'s record) */
+    double *oset[2][5];         /* the two output sets: Ya, qa, ia, Ca, Ga, each
+                                   `maxa` slots (radau.h) */
+    long gen0;                  /* the set the last made attempt wrote; -1: none
+                                   (the entry's memo is the Python's) */
+    long A0;                    /* its assemblies */
+    double *ygen1;              /* (maxa x 3 x n) the made attempt before it: its
+                                   stages, A1 assemblies (0: none since entry) */
+    long A1;
+    long made;                  /* the attempts made since entry */
+    long first_rec;             /* 1: the start's record is in the glue's `xr_*`
+                                   (the entry's: the memo the Python left holds it) */
+    double ct[3], a33;          /* the tableau's c and A[2][2] */
+    double gamma_r, dd1, dd2, dd3;  /* the estimate's constants (`GAMMA_REAL`, dd1..3) */
+    double *ust;                /* (5 x n) work: the sources at the stage times, the
+                                   end and the start */
+    double *useed;              /* (3 x n) work: the stage seeds */
+    double *xr_q, *xr_C, *xr_G, *xr_i;  /* (n, n x n, n x n, n) the start's passes
+                                   where no record holds them (the core's) */
+    long pass_bits, pass_zero;  /* those passes as `_tran_core.passes` asks them:
+                                   the want bits (the pattern's where the core has
+                                   one), C zeroed first where it writes the pattern */
+    double *eF;                 /* (n) work: the estimate's F1, then its rhs */
+    double *eA;                 /* (m x m) work: the real factor, column-major */
+    double *eb;                 /* (m) work: the reduced rhs, then the solution */
+    int64_t *eipiv;             /* (m) work: dgesv's pivots */
+    void *dgesv, *dgemv;        /* numpy's own (dgesv64_t, dgemv64_t) */
+    long under_ok;              /* numpy ignores underflow (`func._underflow_ignored`):
+                                   the estimate's flag test does not count it */
+    double safety, kclamp, pst; /* the law: SAFETY, K, p (EMBEDDED_ORDER + 1) */
+    double min_shrink, rq_min;  /* MIN_SHRINK_RATIO, RETRY_ORDER_MIN */
+    long retry_order;           /* enum loop_retry_order (`retry_order`) */
+    long have_sretry, sretry_point;  /* the family's `_retry`: its point (an index
+                                   into X, as the loop's ctrl keeps it), */
+    double sretry_h, sretry_worst;   /* its step and worst */
+    long have_sq;               /* `_q_carried` set */
+    double sq;                  /* `_q_carried` */
+    void *klu_cur;              /* the stage KLU's numeric (NULL: dense, or none yet) */
+    double *hq;                 /* (n) the attempt's start charge, as its Newton reads it */
+    double *liq;                /* (n) the last made attempt's `iq = -(i + u(t_end))` */
+    double *lest;               /* (n) the last made attempt's estimate (adaptive) */
+    long held;                  /* out: the attempt the loop stopped in converged its
+                                   Newton -- its result for the glue's hold */
+    double cur_h;               /* out: that attempt's step */
+    /* out: the last attempt made's -- its set, stage times, end, step and
+       estimate (in the error test's `lte`) -- and the family's counts */
+    long att_set;
+    double att_ts[3], att_tend;
+    long st_fast, st_umiss, st_uhit, st_passes, st_estmemo, st_assemblies;
+    long st_klu_refactors, st_klu_factors, st_klu_pivot, st_klu_resid, st_klu_on;
 } loop_t;
 long pcx_loop(loop_t *s);
 
@@ -138,7 +206,32 @@ typedef struct {
                                    not where it is handed back */
     double err, h_next;         /* judge: the error test's error (adaptive);
                                    the next step */
+    /* the stage family's (stage_take): the set its Newton writes, its
+       assemblies, the stage times, the start time (`t_end - h`), the step's
+       nodes in merge order; the start's record (q, C, G, i: a set's slot or
+       the glue's `xr_*`); the sources it asked (each time once: `ut`, the
+       row `us` of `ust` holding it) and its counts */
+    long set, A;
+    double ts[3], t0, nodes[4];
+    long ord[4];
+    const double *rq, *rC, *rG, *ri;
+    double ut[5];
+    long us[5], nu, umiss, uhit, passes, estmemo, fast;
+    double cmax;                /* the screen's running maximum after its stages */
 } loop_attempt_t;
+
+/* `family`: whose attempts the loop makes */
+enum loop_family {
+    LOOP_FAMILY_LMM = 0,        /* the multistep family (`_LMMSteps`) */
+    LOOP_FAMILY_STAGE = 1       /* the stage family (`_StageSteps`, Radau IIA(3)) */
+};
+
+/* `retry_order`: the order a rejection's retry assumes (`_retry_order`) */
+enum loop_retry_order {
+    LOOP_RETRY_ASSUMED = 0,     /* the method's */
+    LOOP_RETRY_MEASURED = 1,    /* from a point's second rejection, measured */
+    LOOP_RETRY_CARRIED = 2      /* measured, and carried to later first rejections */
+};
 
 /* `judge`'s outcome inside loop.c, never a status: the attempt accepted, or
    rejected and retried at the point (the loop takes another attempt) */
@@ -165,7 +258,13 @@ enum loop_status {
     LOOP_WALK_MAP = 10,         /* the walk: the step made, its map handed back
                                    (`map_status`: singular, not finite) -- the
                                    Python's `_LiveMonodromy.step` makes it */
-    LOOP_WALK_PRUNE = 11        /* the walk: the step and its map made, a column
+    LOOP_WALK_PRUNE = 11,       /* the walk: the step and its map made, a column
                                    of the monodromy dead -- the prune is
                                    `_LiveMonodromy._prune`'s (its views) */
+    /* the stage family's, before the attempt's Newton (nothing of it made) */
+    LOOP_BAIL_NODES = 12,       /* the step's nodes not after the history's */
+    LOOP_BAIL_RADAU = 13,       /* the C stage Newton handed the attempt back */
+    /* after its converged Newton: the result held for the Python's repeat */
+    LOOP_BAIL_ESTIMATE = 14     /* the estimate: a flag numpy would warn of, or
+                                   its real factor singular */
 };

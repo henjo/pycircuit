@@ -5483,3 +5483,48 @@ decline).
 Tests: `test_pcnr_vector.py` -- the reported column on a four-row system: the
 bytes numpy makes unwarned, no warning and no error under `invalid='raise'`
 (the old sum raised `FloatingPointError`).
+
+## `_tran_stageloop_c`, `csrc/loop.c`'s stage family -- a plain run's Radau attempts in C (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 207).  A plain Radau transient --
+the default analysis -- spent about half of each attempt in Python around
+the C stage Newton (a Howland testbench, 4 periods: ~515 of ~954 us an
+attempt -- the seeds, the sources, the screens, the embedded estimate, the
+judge, the bookkeeping).  The C stepping loop now makes the stage family's
+attempts too (`loop.c`'s `stage_loop`, `family` LOOP_FAMILY_STAGE): where
+(the multistep family's), take (the stage times from the step's end as
+`_coupled_stage_context` makes them; the start's record from the last made
+attempt's set, the entry's memo or the core's passes, counted as
+`_tran_core.passes` counts them; the seeds by pred.c; the sources at the
+stage times, a time asked twice in an attempt answered once as the step's
+memo answers it; radau.c on the transient's record and its stage KLU; each
+stage's screen; `_finish_stage_step`'s `iq`; the embedded estimate,
+numpy's dgemv and dgesv in `_radau_error_estimate`'s order), judge
+(`lte.c`'s STAGE judgement -- `_StageSteps.normalised`: the running maximum
+over ACCEPTED points, `charge_floor`, `normalised_error`, the RMS by
+numpy's pairwise sum, checked once a process -- then `judge`'s law, a
+rejection's order by `_retry_order`) and accept (the rings, `_pred_note`'s
+merge: `csrc/pcx_stagestep.h`, shared with the stage walk).  The glue
+writes back what the Python attempts leave -- the device memo's two
+generations among it, the older rebuilt by the very core calls its Newton
+made; the family's running reference, retry record and carried order --
+and the counts their calls make.  A stop before an attempt's Newton leaves
+the attempt to the Python; after it, its result is held for the Python's
+repeat (`_tran_radau_c.hold`), and the next entry waits for that repeat:
+at once it would make the attempt again, on the stage KLU from the numeric
+its first Newton moved.  The output sets: the radau record's own (no record
+views it) and one of the loop's, within `_tran_radau_c.OUT_BYTES` (`size`
+declines above it, where an attempt's dense estimate outweighs the loop).
+The Howland testbench: 0.384 -> 0.196 s (1.96x) over 4 periods, 1.835 ->
+0.875 s (2.10x) over 20, the waveform and the statistics the same bytes.
+`lte.c`'s STAGE judgement leaves out an underflow where numpy ignores it
+(`under_ok`, as pred.c): counted, it handed back 9 of a pulsed chain's 46
+attempts for nothing.
+Tests: `test_stageloop_c.py` -- 16 runs (adaptive and fixed, dense and on
+the stage KLU, the PSP behind its screen, each reference, retry order and
+`lte_algebraic` mode, the measured order clamped behind a 10-ps edge) the
+Python's to the byte, with every `_RUN_STATE` attribute, the family and the
+stage KLU's counts; an entry that fills its outputs; the stops (a screen
+that fires, the estimate's solve and the sources failing in the C, the
+budget spent: each held and taken; a Newton handed back); the declines;
+alive: the law's safety factor or the estimate's eigenvalue a ulp off.

@@ -30,6 +30,7 @@ From the outside in. "Called from" is where the Python reaches the glue.
 | Layer | Python reference | C unit | Glue module | Switch | `_paths` | Called from |
 |---|---|---|---|---|---|---|
 | Stepping loop | `_SteppingLoop.where / take / judge / accept` with a multistep family | `csrc/loop.c` | `_tran_loop_c` | `PYCIRCUIT_LOOP_C` | `loop_c:` | `_SteppingLoop.execute` |
+| Stepping loop, stage family | `_SteppingLoop.where / take / judge / accept` with `_StageSteps` (Radau IIA(3), the cost transform off): `_rk_step_coupled`, `_radau_error_estimate`, `_StageSteps.judge` | `csrc/loop.c` (`stage_loop`; `csrc/pcx_stagestep.h`, shared with `stagewalk.c`; `lte.c`'s STAGE judgement) | `_tran_stageloop_c` | `PYCIRCUIT_STAGELOOP_C` | `stageloop_c:` | `_tran_loop_c.run` |
 | Controller law | `IntegralController._evaluate` (past its error test) | `csrc/ctrl.c` | `_tran_ctrl_c` | `PYCIRCUIT_CTRL_C` | -- | `loop.c` |
 | Error test | `StepController._charge_lte`, `_normalised`, the maximum | `csrc/lte.c` | `_tran_lte_c` | `PYCIRCUIT_LTE_C` | `lte_c:` | `StepController._max_error`, `loop.c` |
 | Stage predictor | `_StagePredictor._predict_fast` | `csrc/pred.c` | `_tran_pred_c` | `PYCIRCUIT_PRED_C` | `pred_c:` | `loop.c`, `_StagePredictor._pred_stages` (`stages`), `stagewalk.c` |
@@ -96,6 +97,7 @@ declared in `transient._RUN_STATE`, with its owner and lifetime
 | Glue | Keeps | Writes back on a serve |
 |---|---|---|
 | `_tran_loop_c` | on the `_SteppingLoop`: `c`, a `LoopState` (`attach`; None where the loop never tries) -- `run` (the bound run: structs, buffers, the units' pointers), `tab` (the source table), `kept` (the watch counter of the last kept decline), `skip` / `backoff` (the spacing of entries that made no attempt) | the loop's position (`t`, `h`, `h_next`, `landing`, `order_drop`, `point_retries`, `t_break`, `J`, `imposed`), the transient's run state and statistics, the controller's `last_err`, `_q_carried`, `_ref_running`, `_retry` |
+| `_tran_stageloop_c` | on the `_SteppingLoop`'s `LoopState` (`stage`): `run`, a `_StageRun` (the C loop's run; two output sets -- the radau record's own, which no record views, and one of its own, within `_tran_radau_c.OUT_BYTES` -- the stage buffers, its error test's context) | the loop's position and statistics as `_tran_loop_c` writes them; the stage state (`_qlast`, `_iqlast`, `_pred_hist`, `_rk_Y`, `_q_cache`, `_iq`, `_Cmat`, `_Geq`, `_rk_est`, `_pred_pending`, `_C_pattern`, `_C_cache`, `_branch_cmax`, `_dt` and its history); the device memo's two generations (copies; the older rebuilt by the core calls its Newton made); the family's `running`, `_retry`, `_q_carried`; the stage KLU's `_numeric` and counts; on a stop after a converged Newton, `_radau_c.pre` |
 | `_tran_newton_c` | on the transient: `_newton_c` (its record: buffers, pointers, the walk's and KLU's bindings, `served`), `_newton_c_no` (a kept decline); on the limiter walk its tables (`F`, `PR`, `mirror`); on each limiting element `_hdl_cp` | the step's state: `_q_cache`, `_C_cache`, `_Cmat`, `_Geq`, `_iq`, `_companion_coeffs`, `_C_pattern`, `active_integrator`, `_effective_method`; the statistics' `newton_iterations`; the `StructuralKLU`'s `numerics` |
 | `_dc_newton_c` | on the DC analysis: `_dc_newton_c` (its record: buffers, the core, the KLU and walk bindings) | the `StructuralKLU`'s `_numeric`, `refactors`, `factors`, `pivot_fallbacks`, `residual_fallbacks` |
 | `_pcnr_c` | on the circuit: `_pcnr_c` (its record: the view's core, the participants' tables, buffers, the KLU binding); on each participating class's `_hdl_info`: `_c_pcnr_refine` (its refine kernel), `_c_pcnr_refine_status`, `_c_pcnr_kernels` | the `StructuralKLU`'s `_numeric` (None after a failed factor), `refactors`, `factors`, `pivot_fallbacks`, `residual_fallbacks` |
@@ -132,7 +134,9 @@ packed. Checking them costs far more than the work, so they are checked once and
   plan is another).
 * **The backoff.** An entry that made no attempt (the screen fired on the first one) doubles the
   Python attempts before the next entry, up to `_tran_loop_c.BACKOFF_MAX`; an entry that makes any
-  resets it.
+  resets it. The stage family's entry that stopped at an attempt after making others leaves that
+  attempt to the Python before the next entry (an entry at once would make it again, on the stage
+  KLU from the numeric its first Newton moved).
 * **Genuine pieces.** Each glue checks that the Python it stands for is the genuine one (not
   patched, subclassed or shadowed): `_tran_loop_c._own`, `_tran_newton_c._chain`,
   `_tran_lte_c._globals`. A test that patches one of them gets the Python, every time.
@@ -147,7 +151,9 @@ The `_paths` counts say WHICH path ran, not what its arithmetic was: a unit coun
 core's passes, the limiter walk, the memos, inside a C Newton -- are not made at all. The C loop
 is the one exception: it stands in for the Python loop calling the same C units, so
 `_tran_loop_c._write_back` re-creates the counts their glue would have made (`newton_c:`,
-`lte_c:`, `branch_c:`, the sources' and the predictor's). The A/B tests compare, between a unit on
+`lte_c:`, `branch_c:`, the sources' and the predictor's), and so does its stage family
+(`_tran_stageloop_c._count`: `radau_c:`, `radau.est:`, `core.p:`, `umemo:`, `src.direct:`,
+`u:called`, `pred:`, `branch_c:`, `memo.C:`, `memo.q:`). The A/B tests compare, between a unit on
 and off: the bytes of every output, the times, the statistics, the warnings, every `_RUN_STATE`
 attribute and the controller's state -- and, for the loop, every count but its own `loop_c:`.
 

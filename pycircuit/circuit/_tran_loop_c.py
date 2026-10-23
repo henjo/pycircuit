@@ -473,23 +473,27 @@ class LoopState:
     (`run`, `_bound`), the source table it reads (`tab`: `(the direct pass,
     its Table)`, `_sources`), the watch counter at the last kept decline
     (`kept`, `_declined`), and the backoff (`skip`: the Python attempts left
-    before the next entry; `backoff`: the spacing that set it)."""
+    before the next entry; `backoff`: the spacing that set it); `stage`:
+    the stage family's loop (`_tran_stageloop_c`)."""
 
-    __slots__ = ('backoff', 'kept', 'run', 'skip', 'tab')
+    __slots__ = ('backoff', 'kept', 'run', 'skip', 'stage', 'tab')
 
-    def __init__(self):
+    def __init__(self, stage=False):
         self.run = self.tab = self.kept = None
         self.skip = self.backoff = 0
+        self.stage = stage
 
 
 def attach(loop):
     """The C loop's state for a `_SteppingLoop` that may enter it -- a fixed
     run whose attempts read no Jacobian (`loop.j_unread`), or an adaptive
-    multistep one -- else None, and the loop never tries.  `run` checks the
-    rest at every entry."""
-    from pycircuit.circuit.transient import _LMMSteps
+    multistep one, or the stage family's (`_tran_stageloop_c`) -- else None,
+    and the loop never tries.  `run` checks the rest at every entry."""
+    from pycircuit.circuit.transient import _LMMSteps, _StageSteps
     if loop.j_unread or (not loop.fixed and type(loop.family) is _LMMSteps):
         return LoopState()
+    if type(loop.family) is _StageSteps:
+        return LoopState(stage=True)
     return None
 
 
@@ -917,6 +921,9 @@ def run(loop):
     ENTRY."""
     if not ENABLED:
         return False
+    if loop.c.stage:
+        from pycircuit.circuit import _tran_stageloop_c
+        return _tran_stageloop_c.run(loop)
     ## (entries that made no attempt -- a screen that fires every step, the
     ## SVD the Python's -- are spaced out: each such entry doubles the
     ## Python attempts made before the next one, up to `BACKOFF_MAX`, whatever

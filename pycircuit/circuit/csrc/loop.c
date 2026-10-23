@@ -2,8 +2,11 @@
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
+#include <fenv.h>
 #include "pcx_abi.h"
 #include "pcx_minmax.h"
+#include "pcx_fenv.h"
+#include "pcx_dense.h"
 /* the units this one calls through the pointers it is handed: their
    structs and entries */
 #include "newton.h"
@@ -13,6 +16,9 @@
 #include "lte.h"
 #include "ctrl.h"
 #include "lmmsens.h"
+#include "pcx_klu.h"
+#include "radau.h"
+#include "pcx_stagestep.h"
 #include "loop.h"
 
 /* a call to a unit through its pointer, typed by the unit's own declaration:
@@ -306,18 +312,21 @@ static long error_test(loop_t *s, loop_attempt_t *a)
 }
 
 /* a rejection the budget allows -- a growth always, a shrink while the
-   point's rejections and the step allow -- retried at the point: the
-   attempt recorded as made, the next step `_LMMSteps.judge`'s `max(h,
-   minstep)`.  0: the budget is spent */
-static int retry_at_point(loop_t *s, loop_attempt_t *a)
+   point's rejections and the step allow (either family's budget at one
+   point): 1, or 0 where it is spent */
+static int retry_fits(const loop_t *s, const loop_attempt_t *a, double hn)
 {
-    ctrl_t *ct = (ctrl_t *) s->ctrl;
-    double h = a->h, hn = ct->h_next;
+    double h = a->h;
     int growth = hn > h;
-    if (!(s->point_retries < s->max_retries
-          && (growth || (s->rejects < s->max_reject && h > s->minstep))))
-        return 0;
-    attempt_made(s, a, 1);
+    return s->point_retries < s->max_retries
+           && (growth || (s->rejects < s->max_reject && h > s->minstep));
+}
+
+/* the rejection retried at the point: its counts, the next step `max(hn,
+   minstep)` -- either family's (`_SteppingLoop.judge`) */
+static void retry_note(loop_t *s, const loop_attempt_t *a, double hn)
+{
+    int growth = hn > a->h;
     s->rejected++;
     s->point_retries++;
     s->rejects += !growth;
@@ -328,6 +337,14 @@ static int retry_at_point(loop_t *s, loop_attempt_t *a)
     s->att_rejected = 1;
     s->t_break = a->t_break;
     s->h = pcx_py_max(hn, s->minstep);
+}
+
+static int retry_at_point(loop_t *s, loop_attempt_t *a)
+{
+    ctrl_t *ct = (ctrl_t *) s->ctrl;
+    if (!retry_fits(s, a, ct->h_next)) return 0;
+    attempt_made(s, a, 1);
+    retry_note(s, a, ct->h_next);
     return 1;
 }
 
@@ -427,30 +444,48 @@ static long judge(loop_t *s, loop_attempt_t *a)
     return LOOP_JUDGE_ACCEPT;
 }
 
-/* 5. accept (`_SteppingLoop.accept`): the attempt recorded, its step into X
-   and T, the statistics' extremes (set first, then replaced only when
-   strictly beyond), the landing (`on_break`'s tolerance is `accept`'s), the
-   rings, the predictor's node, the step history, the next step */
-static void accept(loop_t *s, const loop_attempt_t *a)
+/* the accepted point's bookkeeping either family makes (`_SteppingLoop.
+   accept`): its step into X and T, the statistics' extremes (set first,
+   then replaced only when strictly beyond), the landing (`on_break`'s
+   tolerance is `accept`'s), the point, the step history, the next step */
+static void accept_point(loop_t *s, const loop_attempt_t *a, const double *x)
 {
-    newton_t *nt = (newton_t *) s->newton;
-    long n = s->n, r;
+    long n = s->n;
     double h = a->h, tn = a->tn;
-    int on_break;
-    attempt_made(s, a, (int) s->adaptive);
+    int on_break = a->t + h >= a->t_break * (1.0 - 1e-12);
     s->att_rejected = 0;
     s->imposed = 0;
-    on_break = a->t + h >= a->t_break * (1.0 - 1e-12);
     s->landing = a->landing || on_break;
     s->is_first = 0;
     s->order_drop = 0;
     s->t = tn;
-    COPY(s->X + s->k * n, nt->xc, n);
+    COPY(s->X + s->k * n, x, n);
     s->T[s->k] = tn;
     if (!s->have_hm || h < s->hmin) s->hmin = h;
     if (!s->have_hm || h > s->hmax) s->hmax = h;
     s->have_hm = 1;
     s->breaks += on_break;
+    COPY(s->xlast, x, n);
+    s->have_dt_last2 = s->have_dt_last;
+    s->dt_last2 = s->dt_last;
+    s->dt_last = h;
+    s->have_dt_last = 1;
+    s->t_break = a->t_break;
+    /* (`accept`'s `min(h_next, max_step)`: the first argument kept unless
+       the second is strictly smaller) */
+    s->h = s->adaptive ? pcx_py_min(a->h_next, s->max_step) : s->timestep;
+    s->npoint++;
+    s->k++;
+}
+
+/* 5. accept, the multistep family's: the attempt recorded, its order drop
+   counted, the rings, the predictor's node, then the point's bookkeeping */
+static void accept(loop_t *s, const loop_attempt_t *a)
+{
+    newton_t *nt = (newton_t *) s->newton;
+    long n = s->n, r;
+    double tn = a->tn;
+    attempt_made(s, a, (int) s->adaptive);
     s->euler_steps += (a->formula == PCX_FORMULA_EULER && s->base != PCX_FORMULA_EULER);
     /* the rings (`_ring_push`): the newest first, the oldest dropped */
     for (r = s->hist_len - 1; r > 0; r--) {
@@ -477,19 +512,8 @@ static void accept(loop_t *s, const loop_attempt_t *a)
         COPY(s->hx + s->hk * n, nt->xc, n);
         s->hk++;
     }
-    COPY(s->xlast, nt->xc, n);
-    s->have_dt_last2 = s->have_dt_last;
-    s->dt_last2 = s->dt_last;
-    s->dt_last = h;
-    s->have_dt_last = 1;
-    s->t_break = a->t_break;
-    /* (`accept`'s `min(h_next, max_step)`: the first argument kept unless
-       the second is strictly smaller) */
-    s->h = s->adaptive ? pcx_py_min(a->h_next, s->max_step) : s->timestep;
-    s->npoint++;
-    s->k++;
+    accept_point(s, a, nt->xc);
 }
-
 /* `remove_row_col` of the full `C` (n x n, row-major) into `dst` (m x m) */
 static void reduce_mat(const double *C, double *dst, long n, long r)
 {
@@ -601,6 +625,386 @@ static long walk(loop_t *s)
     return LOOP_DONE;
 }
 
+/* THE STAGE FAMILY (loop.h) */
+
+/* the start `x`'s record in output set `o` (`A` assemblies): the stage
+   whose bytes are `x`'s -- `_memo_get`'s key -- the latest put where
+   several are (`_memo_put`'s update): its q, C, G, i into `a`.  1, or 0 */
+static int stage_find(const loop_t *s, long o, long A, const double *x, loop_attempt_t *a)
+{
+    long n = s->n, nn = n * n, k;
+    for (k = 3 * A - 1; k >= 0; k--) {
+        if (memcmp(s->oset[o][0] + k * n, x, (size_t) n * sizeof(double))) continue;
+        a->rq = s->oset[o][1] + k * n;
+        a->ri = s->oset[o][2] + k * n;
+        a->rC = s->oset[o][3] + k * nn;
+        a->rG = s->oset[o][4] + k * nn;
+        return 1;
+    }
+    return 0;
+}
+
+/* the core's passes at the start as `_tran_core.passes` makes them
+   (formula 4; its want bits -- the pattern's where the core has one, into
+   a C zeroed first -- C its own input and output, q in place, G and i from
+   the core's bins) into `xr_*`, the record no generation holds: one call
+   for the context's 'q' and the estimate's 'CGi', each output the same
+   bits; the core's flags are not numpy's: cleared */
+static void stage_pass(loop_t *s, loop_attempt_t *a)
+{
+    radau_t *rs = (radau_t *) s->radau;
+    core_fn_t core = (core_fn_t) rs->core_fn;
+    long n = s->n;
+    if (s->pass_zero) memset(s->xr_C, 0, (size_t) (n * n) * sizeof(double));
+    core(rs->core, s->xlast, rs->T, s->pass_bits, PCX_FORMULA_PASSES, 0.0, 0.0, 0.0, 1.0, 0.0,
+         rs->dummy, rs->dummy, rs->dummy, rs->dummy, s->xr_C, s->xr_C, s->xr_q, rs->dummy,
+         rs->dummy, rs->dummy, rs->dummy);
+    COPY(s->xr_G, rs->binG, n * n);
+    COPY(s->xr_i, rs->bini, n);
+    feclearexcept(FE_ALL_EXCEPT);
+    a->rq = s->xr_q;
+    a->rC = s->xr_C;
+    a->rG = s->xr_G;
+    a->ri = s->xr_i;
+}
+
+/* the start's record as `_coupled_stage_context` reads its charge: in the
+   last made attempt's generation (the first attempt: the entry's memo,
+   which the glue copied into `xr_*` where it holds the start), else the
+   core's passes -- counted, as `_tran_core.passes` counts them */
+static void stage_start(loop_t *s, loop_attempt_t *a)
+{
+    if (s->made == 0 && s->first_rec) {
+        a->rq = s->xr_q;
+        a->rC = s->xr_C;
+        a->rG = s->xr_G;
+        a->ri = s->xr_i;
+        return;
+    }
+    if (s->made > 0 && stage_find(s, s->gen0, s->A0, s->xlast, a)) return;
+    stage_pass(s, a);
+    a->passes++;
+}
+
+/* the start's record as the estimate reads it (`_memo_get` after the
+   Newton's puts): this attempt's own set first (a stage the start's very
+   bytes), else the context's -- a generation's, or the passes then made,
+   made again (counted: the estimate's own; the same bits).  A record
+   found is the estimate's memo hit (`radau.est:memo`) */
+static void stage_est_rec(loop_t *s, loop_attempt_t *a)
+{
+    if (stage_find(s, a->set, a->A, s->xlast, a) || a->passes == 0) {
+        a->estmemo = 1;
+        return;
+    }
+    a->passes++;
+}
+
+/* u(tt) into row `row` of `ust`: a time this attempt asked before is that
+   answer (the step's source memo, `_source_at`'s, by Python's `==`), else
+   the table's -- a direct pass, counted.  0, or LOOP_BAIL_SOURCES */
+static long stage_u(loop_t *s, loop_attempt_t *a, double tt, long row)
+{
+    sources_t *src = (sources_t *) s->src;
+    long n = s->n, k;
+    for (k = 0; k < a->nu; k++) {
+        if (a->ut[k] != tt) continue;
+        if (a->us[k] != row) COPY(s->ust + row * n, s->ust + a->us[k] * n, n);
+        a->uhit++;
+        return 0;
+    }
+    src->mode = SOURCES_U;
+    src->t = tt;
+    if (CALL(s->src_fn, pcx_sources, src) != SOURCES_DONE) return LOOP_BAIL_SOURCES;
+    COPY(s->ust + row * n, src->out, n);
+    a->ut[a->nu] = tt;
+    a->us[a->nu] = row;
+    a->nu++;
+    a->umiss++;
+    return 0;
+}
+
+/* `_radau_error_estimate` with the cost transform off (a fresh real
+   factor) into the error test's `lte`: F1 = (dd1 Z1 + dd2 Z2 + dd3 Z3) / h
+   (Z_i = Y_i - x_n), the right-hand side C_n F1 + f0 (numpy's matmul,
+   dgemv row-major; f0 = -(i_n + u(t_n))), the real factor (gamma_r / h)
+   C_n + G_n over the full width then reduced, numpy's solve (dgesv on its
+   column-major copy; numpy's errstate there raises only on invalid), the
+   estimate with +0.0 at the reference row -- numpy's operations in their
+   order.  0, or LOOP_BAIL_ESTIMATE where numpy would warn or raise */
+static long stage_estimate(loop_t *s, const loop_attempt_t *a, const double *Y)
+{
+    lte_t *le = (lte_t *) s->lte;
+    long n = s->n, r = s->iref, i, j, ri, cj;
+    int64_t m = n - 1, one = 1, info = 0;
+    double h = a->h, g, *F = s->eF, *rhs = le->lte;
+    volatile double sink;
+    const double *x = s->xlast, *u0 = s->ust + 4 * n;
+    int flags = s->under_ok ? (PCX_FP_FLAGS & ~FE_UNDERFLOW) : PCX_FP_FLAGS;
+    feclearexcept(FE_ALL_EXCEPT);
+    for (i = 0; i < n; i++)
+        F[i] = ((s->dd1 * (Y[i] - x[i]) + s->dd2 * (Y[n + i] - x[i]))
+                + s->dd3 * (Y[2 * n + i] - x[i])) / h;
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, a->rC, n, F, 1,
+                           0.0, rhs, 1);
+    for (i = 0; i < n; i++) rhs[i] = rhs[i] + (-(a->ri[i] + u0[i]));
+    for (i = 0, ri = 0; i < n; i++) if (i != r) s->eb[ri++] = rhs[i];
+    g = s->gamma_r / h;
+    for (j = 0, cj = 0; j < n; j++) {
+        for (i = 0, ri = 0; i < n; i++) {
+            double v = g * a->rC[i * n + j] + a->rG[i * n + j];
+            /* (the reference row and column: made, as numpy makes the full
+               factor before it drops them -- their flags count) */
+            if (i == r || j == r) {
+                sink = v;
+                continue;
+            }
+            s->eA[cj * m + ri] = v;
+            ri++;
+        }
+        if (j != r) cj++;
+    }
+    (void) sink;
+    if (fetestexcept(flags)) return LOOP_BAIL_ESTIMATE;
+    feclearexcept(FE_ALL_EXCEPT);
+    ((dgesv64_t) s->dgesv)(&m, &one, s->eA, &m, s->eipiv, s->eb, &m, &info);
+    if (info != 0 || fetestexcept(FE_INVALID)) {
+        feclearexcept(FE_ALL_EXCEPT);
+        return LOOP_BAIL_ESTIMATE;
+    }
+    feclearexcept(FE_ALL_EXCEPT);
+    pcx_put_ref(s->eb, rhs, n, r);
+    return 0;
+}
+
+/* 2. take, the stage family's (`_rk_step_coupled`: the dense coupled
+   Newton, the cost transform off): the stage times from the step's end as
+   `_coupled_stage_context` makes them (`tn = t_end - h`, `tn + c_i h`), the
+   step's nodes in merge order, the start's record, the sources at the stage
+   times, the seeds, the C stage Newton writing the set the last made
+   attempt's is not in, each stage's screen, the sources at the end
+   (`_finish_stage_step`'s `iq`) and, adaptive, the start's record again,
+   its sources and the estimate.  0, or the status to stop with: before the
+   Newton nothing of the attempt is made; after it, its result is held for
+   the Python's repeat (the glue's `_tran_radau_c.hold`) */
+static long stage_take(loop_t *s, loop_attempt_t *a)
+{
+    radau_t *rs = (radau_t *) s->radau;
+    long n = s->n, i, st, o;
+    double h = a->h;
+    const double *Y;
+    a->tn = a->t + h;
+    a->t0 = a->tn - h;
+    for (i = 0; i < 3; i++) a->ts[i] = a->t0 + s->ct[i] * h;
+    a->formula = 0;
+    a->nu = a->umiss = a->uhit = a->passes = a->estmemo = 0;
+    s->held = 0;
+    s->cur_h = h;
+    if (!pcx_stage_order(a->ts, a->tn, s->hk, s->ht, a->nodes, a->ord)) return LOOP_BAIL_NODES;
+    stage_start(s, a);
+    a->fast = pcx_stage_seeds(s->pred_fn, (pred_t *) s->pred, s->hk, a->ts, s->xlast, s->useed,
+                              n);
+    if (a->fast < 0) return LOOP_BAIL_PRED;
+    for (i = 0; i < 3; i++) if ((st = stage_u(s, a, a->ts[i], i)) != 0) return st;
+    o = a->set = (s->gen0 == 0) ? 1 : 0;
+    COPY(s->hq, a->rq, n);
+    rs->qn = s->hq;
+    rs->u = s->ust;
+    rs->seed = s->useed;
+    rs->h = h;
+    rs->Ya = s->oset[o][0];
+    rs->qa = s->oset[o][1];
+    rs->ia = s->oset[o][2];
+    rs->Ca = s->oset[o][3];
+    rs->Ga = s->oset[o][4];
+    rs->klu.klu_num = s->klu_cur;
+    if (CALL(s->radau_fn, pcx_radau, rs) != RADAU_CONVERGED) return LOOP_BAIL_RADAU;
+    s->held = 1;
+    if (rs->klu.klu_sym) s->klu_cur = rs->klu.klu_out;
+    a->A = rs->assemblies;
+    Y = s->oset[o][0] + (a->A - 1) * 3 * n;
+    a->cmax = s->cmax;
+    if (!pcx_stage_screen(s->branch_fn, (branch_t *) s->branch,
+                          s->oset[o][3] + (a->A - 1) * 3 * n * n, n, &a->cmax))
+        return LOOP_BAIL_SCREEN;
+    if ((st = stage_u(s, a, a->tn, 3)) != 0) return st;
+    if (!s->adaptive) return 0;
+    stage_est_rec(s, a);
+    if ((st = stage_u(s, a, a->t0, 4)) != 0) return st;
+    return stage_estimate(s, a, Y);
+}
+
+/* an attempt judged (accepted, or retried at its point): its set the last
+   made attempt's (`gen0`), the one before kept by its stages (`ygen1`);
+   the screen's maximum; the running maximum the judgement made; the stage
+   KLU's counts and the family's; the last attempt made's record */
+static void stage_made(loop_t *s, const loop_attempt_t *a)
+{
+    radau_t *rs = (radau_t *) s->radau;
+    lte_t *le = (lte_t *) s->lte;
+    long n = s->n, i;
+    if (s->gen0 >= 0) {
+        COPY(s->ygen1, s->oset[s->gen0][0], s->A0 * 3 * n);
+        s->A1 = s->A0;
+    }
+    s->gen0 = a->set;
+    s->A0 = a->A;
+    s->made++;
+    if (s->branch) {
+        s->cmax = a->cmax;
+        s->screens += 3;
+    }
+    if (s->adaptive) {
+        COPY(s->lest, le->lte, n);
+        if (s->keeps_run) {
+            COPY(s->run, le->out, n);
+            s->have_run = 1;
+        }
+    }
+    s->st_fast += a->fast;
+    s->st_umiss += a->umiss;
+    s->st_uhit += a->uhit;
+    s->st_passes += a->passes;
+    s->st_estmemo += a->estmemo;
+    s->st_assemblies += a->A;
+    if (rs->klu.klu_sym) {
+        s->st_klu_refactors += rs->klu.refactors;
+        s->st_klu_factors += rs->klu.factors;
+        s->st_klu_pivot += rs->klu.pivot_fallbacks;
+        s->st_klu_resid += rs->klu.residual_fallbacks;
+        s->st_klu_on++;
+    }
+    {
+        long b = ((a->A - 1) * 3 + 2) * n;
+        const double *i3 = s->oset[a->set][2] + b, *ue = s->ust + 3 * n;
+        for (i = 0; i < n; i++) s->liq[i] = -(i3[i] + ue[i]);
+    }
+    s->held = 0;
+    s->att_set = a->set;
+    for (i = 0; i < 3; i++) s->att_ts[i] = a->ts[i];
+    s->att_tend = a->tn;
+    s->att_h = a->h;
+    s->att_t = a->tn;
+    s->attempts++;
+}
+
+/* `_StageSteps._retry_after`: the retry's order (`_retry_order`: 'assumed'
+   p; from a point's second rejection -- the previous try left this point
+   and was larger -- the order the two measured, `ln(e1/e2) / ln(h1/h2)`
+   clamped to [RETRY_ORDER_MIN, p], kept as `_q_carried`; 'carried' takes
+   it at a first rejection too), the record made, the next step
+   `h max(MIN_SHRINK_RATIO, (SAFETY^p / worst)^(1/q))` -- Python's float
+   arithmetic, `pow` C's (CPython's `**`) */
+static double stage_retry(loop_t *s, const loop_attempt_t *a, double worst, double p)
+{
+    double q = p, h = a->h;
+    long pt = s->npoint - 1;
+    if (s->retry_order != LOOP_RETRY_ASSUMED) {
+        if (s->have_sretry && s->sretry_point == pt && s->sretry_h > h * (1.0 + 1e-9)
+            && s->sretry_worst > worst && worst > 0.0) {
+            q = pcx_py_min(pcx_py_max(log(s->sretry_worst / worst) / log(s->sretry_h / h),
+                                      s->rq_min), p);
+            s->have_sq = 1;
+            s->sq = q;
+        } else if (s->retry_order == LOOP_RETRY_CARRIED && s->have_sq) {
+            q = pcx_py_min(s->sq, p);
+        }
+    }
+    s->have_sretry = 1;
+    s->sretry_point = pt;
+    s->sretry_h = h;
+    s->sretry_worst = worst;
+    return h * pcx_py_max(s->min_shrink, pow(pow(s->safety, p) / worst, 1.0 / q));
+}
+
+/* 3. judge, the stage family's (`_SteppingLoop.judge`, `_StageSteps.
+   judge`): a fixed grid's next step; adaptive, lte.c's STAGE judgement of
+   the estimate against the point, accepted at `err <= 1` (the step grown
+   by `SAFETY err^(-1/p)` clamped to [K, 1/K], the retry record dropped),
+   else `stage_retry` and the loop's budget.  LOOP_JUDGE_ACCEPT,
+   LOOP_JUDGE_RETRY, or the status to stop with (the budget spent: the
+   force-accept is the Python's, the family's retry record put back) */
+static long stage_judge(loop_t *s, loop_attempt_t *a)
+{
+    lte_t *le = (lte_t *) s->lte;
+    double h = a->h, p = s->pst, hn, kh = s->sretry_h, kw = s->sretry_worst, kq = s->sq;
+    long khave = s->have_sretry, kpt = s->sretry_point, khq = s->have_sq;
+    a->err = 0.0;
+    if (!s->adaptive) {
+        a->h_next = s->timestep;
+        stage_made(s, a);
+        return LOOP_JUDGE_ACCEPT;
+    }
+    le->xc = s->oset[a->set][0] + ((a->A - 1) * 3 + 2) * s->n;
+    le->xl = s->xlast;
+    le->h1 = h;
+    le->run = s->run;
+    le->have_run = s->have_run;
+    if (CALL(s->lte_fn, pcx_lte, le) != LTE_DONE) return LOOP_BAIL_LTE;
+    a->err = le->err;
+    if (le->err <= 1.0) {
+        double e = le->err > 1e-16 ? le->err : 1e-16;
+        s->have_sretry = 0;
+        a->h_next = h * pcx_py_min(1.0 / s->kclamp,
+                                   pcx_py_max(s->kclamp, s->safety * pow(e, -1.0 / p)));
+        stage_made(s, a);
+        s->rejects = s->point_retries = 0;
+        return LOOP_JUDGE_ACCEPT;
+    }
+    hn = stage_retry(s, a, le->worst, p);
+    if (retry_fits(s, a, hn)) {
+        stage_made(s, a);
+        retry_note(s, a, hn);
+        return LOOP_JUDGE_RETRY;
+    }
+    s->have_sretry = khave;
+    s->sretry_point = kpt;
+    s->sretry_h = kh;
+    s->sretry_worst = kw;
+    s->have_sq = khq;
+    s->sq = kq;
+    return LOOP_BAIL_FORCE;
+}
+
+/* 5. accept, the stage family's (`_roll_history` of a stage step): the
+   rings -- the point's charge, its `iq` (`stage_made`'s) -- the stages and
+   the point noted (`_pred_note`'s merge), then the point's bookkeeping */
+static void stage_accept(loop_t *s, const loop_attempt_t *a)
+{
+    long n = s->n, k, b = ((a->A - 1) * 3 + 2) * n;
+    const double *Y = s->oset[a->set][0] + (a->A - 1) * 3 * n, *xv[4];
+    const double *q3 = s->oset[a->set][1] + b;
+    for (k = s->hist_len - 1; k > 0; k--) {
+        COPY(s->qring + k * n, s->qring + (k - 1) * n, n);
+        COPY(s->iqring + k * n, s->iqring + (k - 1) * n, n);
+    }
+    COPY(s->qring, q3, n);
+    COPY(s->iqring, s->liq, n);
+    for (k = 0; k < 3; k++) xv[k] = Y + k * n;
+    xv[3] = Y + 2 * n;
+    pcx_stage_note(&s->hk, s->ht, s->hx, n, a->nodes, xv, a->ord);
+    accept_point(s, a, Y + 2 * n);
+}
+
+/* the stage family's loop (`_SteppingLoop.execute` over `_StageSteps`):
+   where, take, judge, accept -- the multistep family's `where` and point
+   bookkeeping; its early abort and Newton rejection are not this family's */
+static long stage_loop(loop_t *s)
+{
+    loop_attempt_t a;
+    long st;
+    for (;;) {
+        if (!(s->t < s->tend)) return LOOP_DONE;
+        if (s->k >= s->cap) return LOOP_FULL;
+        if ((st = where(s, &a)) != 0) return st;
+        if ((st = stage_take(s, &a)) != 0) return st;
+        st = stage_judge(s, &a);
+        if (st == LOOP_JUDGE_RETRY) continue;
+        if (st != LOOP_JUDGE_ACCEPT) return st;
+        stage_accept(s, &a);
+    }
+}
+
 /* `_SteppingLoop.execute` for a multistep family whose every piece it was
    checked to stand in for, fixed or adaptive: attempt after attempt,
    where / take / judge / accept, the steps taken into X, T and the state.
@@ -620,6 +1024,10 @@ long pcx_loop(loop_t *s)
     s->newton_rejects = 0;
     s->maps = 0;
     if (s->walk) return s->status = walk(s);
+    s->st_fast = s->st_umiss = s->st_uhit = s->st_passes = s->st_estmemo = s->st_assemblies = 0;
+    s->st_klu_refactors = s->st_klu_factors = s->st_klu_pivot = s->st_klu_resid = 0;
+    s->st_klu_on = 0;
+    if (s->family == LOOP_FAMILY_STAGE) return s->status = stage_loop(s);
     for (;;) {
         /* `while self.t < self.tend` */
         if (!(s->t < s->tend)) return s->status = LOOP_DONE;

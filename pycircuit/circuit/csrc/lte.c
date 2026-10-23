@@ -244,6 +244,26 @@ static long solve_lte(lte_t *s, long n, long r)
     return 0;
 }
 
+/* `sigglobal_reference` of `src` into `ref`: each unit group's maximum,
+   broadcast back -- np.max over values with no NaN and no -0.0 (both
+   excluded by the inputs' test), so a running `>` is its answer in any
+   order; one group where n_nodes is None, <= 0 or >= n, as the Python
+   splits */
+static void groups(lte_t *s, long n, const double *src)
+{
+    long nn = s->nn, lo, hi, g, i;
+    long cut = (nn <= 0 || nn >= n) ? n : nn;
+    for (g = 0; g < 2; g++) {
+        double mx;
+        lo = g ? cut : 0;
+        hi = g ? n : cut;
+        if (lo >= hi) continue;
+        mx = src[lo];
+        for (i = lo + 1; i < hi; i++) if (src[i] > mx) mx = src[i];
+        for (i = lo; i < hi; i++) s->ref[i] = mx;
+    }
+}
+
 /* `_reference` by `relref` into `ref`, folded into the running maximum
    `out` */
 static void reference(lte_t *s, long n)
@@ -268,30 +288,35 @@ static void reference(lte_t *s, long n)
     if (s->relref == LTE_RELREF_ALLLOCAL) {
         for (i = 0; i < n; i++) s->ref[i] = s->out[i];
     } else if (s->relref == LTE_RELREF_SIGGLOBAL) {
-        /* sigglobal_reference: each unit group's maximum, broadcast back --
-           np.max over values with no NaN and no -0.0 (both excluded
-           above), so a running `>` is its answer in any order; one group
-           where n_nodes is None, <= 0 or >= n, as the Python splits */
-        long nn = s->nn, lo, hi, g;
-        long cut = (nn <= 0 || nn >= n) ? n : nn;
-        for (g = 0; g < 2; g++) {
-            double mx;
-            lo = g ? cut : 0;
-            hi = g ? n : cut;
-            if (lo >= hi) continue;
-            mx = s->out[lo];
-            for (i = lo + 1; i < hi; i++) if (s->out[i] > mx) mx = s->out[i];
-            for (i = lo; i < hi; i++) s->ref[i] = mx;
-        }
+        groups(s, n, s->out);
     }
 }
 
-/* `charge_floor`, `tolerance`, `normalised_error`, `_normalised`'s mask and
-   `np.max`: `err`.  0, or why it is handed back */
-static long normalised_error(lte_t *s, long n)
+/* the stage family's `_reference` (`_StageSteps._reference`): the running
+   maximum over ACCEPTED points -- |x_last| folded in, into `out` -- and this
+   judgement's `np.maximum(running, |x_new|)` alone, by relref ('pointlocal':
+   `np.maximum(|x_last|, |x_new|)`, the running maximum untouched) */
+static void reference_stage(lte_t *s, long n)
 {
     long i;
-    double err, ab, floor = 0.0;
+    for (i = 0; i < n; i++) {
+        double last = fabs(s->xl[i]), nw = fabs(s->xc[i]);
+        if (s->relref == LTE_RELREF_POINTLOCAL) {
+            s->ref[i] = pcx_np_maximum(last, nw);
+            continue;
+        }
+        s->out[i] = s->have_run ? pcx_np_maximum(s->run[i], last) : last;
+        s->ref[i] = pcx_np_maximum(s->out[i], nw);
+    }
+    if (s->relref == LTE_RELREF_SIGGLOBAL) groups(s, n, s->ref);
+}
+
+/* `charge_floor`, `tolerance` and `normalised_error`'s quotients into `tq`,
+   `flags` the ones numpy would warn of.  0, or why it is handed back */
+static long quotients(lte_t *s, long n, int flags)
+{
+    long i;
+    double ab, floor = 0.0;
     /* `charge_floor` (`lte_algebraic='charge'`): on the rows `charge` marks
        the absolute tolerance is np.maximum(abstol, chgtol / h) -- the
        Python's one division, h its `h_curr` -- elsewhere abstol.  Then the
@@ -305,10 +330,20 @@ static long normalised_error(lte_t *s, long n)
         if (s->has_charge && s->charge[i] != 0.0) ab = pcx_np_maximum(ab, floor);
         s->tq[i] = s->trtol * (s->reltol * s->ref[i] + ab);
     }
-    if (fetestexcept(PCX_FP_FLAGS) && !s->lu_mode) return LTE_BAIL_FLAGS;
+    if (fetestexcept(flags) && !s->lu_mode) return LTE_BAIL_FLAGS;
     for (i = 0; i < n; i++) if (!(s->tq[i] > 0.0 && isfinite(s->tq[i]))) return LTE_BAIL_TOLERANCE;
     for (i = 0; i < n; i++) s->tq[i] = fabs(s->lte[i]) / s->tq[i];
-    if (fetestexcept(PCX_FP_FLAGS) && !s->lu_mode) return LTE_BAIL_FLAGS;
+    if (fetestexcept(flags) && !s->lu_mode) return LTE_BAIL_FLAGS;
+    return 0;
+}
+
+/* `charge_floor`, `tolerance`, `normalised_error`, `_normalised`'s mask and
+   `np.max`: `err`.  0, or why it is handed back */
+static long normalised_error(lte_t *s, long n)
+{
+    long i, why;
+    double err;
+    if ((why = quotients(s, n, PCX_FP_FLAGS)) != 0) return why;
     /* `_normalised`'s mask (`Transient.lte_algebraic`): an unknown not
        judged is +0.0, as `np.where(mask, e, 0.0)` makes it (a mask entry
        is true where nonzero: -0.0 false, NaN true, as `== 0.0` decides) */
@@ -319,6 +354,106 @@ static long normalised_error(lte_t *s, long n)
     for (i = 1; i < n; i++) if (s->tq[i] > err) err = s->tq[i];
     s->err = err;
     return 0;
+}
+
+/* the stage family's inputs finite -- and a running maximum not negative,
+   as `inputs_finite` asks: anything else is the Python's.  1, or 0 */
+static int stage_inputs_finite(const lte_t *s, long n)
+{
+    long i;
+    if (!(isfinite(s->h1) && isfinite(s->reltol) && isfinite(s->trtol) && isfinite(s->abstol)))
+        return 0;
+    for (i = 0; i < n; i++)
+        if (!(isfinite(s->xc[i]) && isfinite(s->xl[i]) && isfinite(s->lte[i]))) return 0;
+    if (s->have_run)
+        for (i = 0; i < n; i++)
+            if (!isfinite(s->run[i]) || signbit(s->run[i])) return 0;
+    if (s->abs_vec)
+        for (i = 0; i < n; i++) if (!isfinite(s->abst[i])) return 0;
+    return 1;
+}
+
+/* numpy's pairwise sum of `n` contiguous doubles (`DOUBLE_pairwise_sum`):
+   under 8 a running sum from +0.0; to 128 eight accumulators, their tree,
+   then the rest; beyond, the halves split at a multiple of 8.  `np.sum` is
+   +0.0 plus it (the glue checks it against numpy where it binds) */
+static double pairwise_sum(const double *a, long n)
+{
+    long i, n2;
+    double r[8], res;
+    if (n < 8) {
+        res = 0.0;
+        for (i = 0; i < n; i++) res += a[i];
+        return res;
+    }
+    if (n > 128) {
+        n2 = n / 2;
+        n2 -= n2 % 8;
+        return pairwise_sum(a, n2) + pairwise_sum(a + n2, n - n2);
+    }
+    for (i = 0; i < 8; i++) r[i] = a[i];
+    for (i = 8; i < n - (n % 8); i += 8) {
+        r[0] += a[i];
+        r[1] += a[i + 1];
+        r[2] += a[i + 2];
+        r[3] += a[i + 3];
+        r[4] += a[i + 4];
+        r[5] += a[i + 5];
+        r[6] += a[i + 6];
+        r[7] += a[i + 7];
+    }
+    res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+    for (; i < n; i++) res += a[i];
+    return res;
+}
+
+/* the stage family's `normalised` past the quotients, over the kept
+   unknowns (the reference row out, `tq` compacted): the mask multiplied in
+   (`ek * mask[keep]`), the squares into `b` (`ek * ek`), the RMS --
+   `(np.sum(ek * ek) / len(keep)) ** 0.5`, numpy's sum +0.0 plus its pairwise
+   sum, its power C's `pow` -- and `worst`, `np.max(ek)`.  0, or why it is
+   handed back (a NaN from the mask: numpy's max keeps it, a running `>`
+   would not; a flag numpy would warn of) */
+static long stage_norm(lte_t *s, long n, long r, int flags)
+{
+    long i, k, m = n - 1;
+    double worst, sum;
+    for (i = 0, k = 0; i < n; i++) {
+        if (i == r) continue;
+        s->tq[k] = s->has_mask ? s->tq[i] * s->mask[i] : s->tq[i];
+        if (isnan(s->tq[k])) return LTE_BAIL_LTE;
+        k++;
+    }
+    for (k = 0; k < m; k++) s->b[k] = s->tq[k] * s->tq[k];
+    if (fetestexcept(flags)) return LTE_BAIL_FLAGS;
+    sum = 0.0 + pairwise_sum(s->b, m);
+    s->err = pow(sum / (double) m, 0.5);
+    if (fetestexcept(flags)) return LTE_BAIL_FLAGS;
+    /* (np.max: no NaN, and no -0.0 -- |est| / a positive tolerance, a mask
+       of 0 or 1 -- so a running `>` is its answer) */
+    worst = s->tq[0];
+    for (k = 1; k < m; k++) if (s->tq[k] > worst) worst = s->tq[k];
+    s->worst = worst;
+    return 0;
+}
+
+/* the stage family's judgement (LTE_FORMULA_STAGE, lte.h): the estimate
+   given, `reference_stage`, the quotients (trtol 1.0: `1.0 * x` is x), then
+   `stage_norm` -- an underflow no flag where numpy ignores it (`under_ok`).
+   LTE_DONE: `err` the RMS, `worst` the largest, `out` the new running
+   maximum (relref not POINTLOCAL) */
+static long stage_lte(lte_t *s, long n, long r)
+{
+    long why;
+    int flags = s->under_ok ? (PCX_FP_FLAGS & ~FE_UNDERFLOW) : PCX_FP_FLAGS;
+    if (!stage_inputs_finite(s, n)) return lte_bail(s, LTE_BAIL_NONFINITE);
+    feclearexcept(FE_ALL_EXCEPT);
+    reference_stage(s, n);
+    if ((why = quotients(s, n, flags)) != 0) return lte_bail(s, why);
+    if ((why = stage_norm(s, n, r, flags)) != 0) return lte_bail(s, why);
+    feclearexcept(FE_ALL_EXCEPT);
+    s->status = LTE_DONE;
+    return LTE_DONE;
 }
 
 /* `StepController._max_error` on one attempt: `compute_lte` by `formula`,
@@ -337,6 +472,7 @@ static long normalised_error(lte_t *s, long n)
 long pcx_lte(lte_t *s)
 {
     long n = s->n, r = s->iref, why;
+    if (s->formula == LTE_FORMULA_STAGE) return stage_lte(s, n, r);
     if (!inputs_finite(s, n)) return lte_bail(s, LTE_BAIL_NONFINITE);
     if ((why = charge_lte(s, n)) != 0) return lte_bail(s, why);
     if ((why = solve_lte(s, n, r)) != 0) return lte_bail(s, why);

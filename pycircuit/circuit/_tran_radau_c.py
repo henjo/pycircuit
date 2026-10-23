@@ -215,6 +215,7 @@ class _Ctx:
         'pool',
         'pre',
         's',
+        'served',
         'walk',
         'walk_arms',
         'walk_dicts',
@@ -260,6 +261,10 @@ class _Ctx:
         self.fin = self.fin_buf = None
         ## (a converged result held for the next call with its inputs: `hold`)
         self.pre = None
+        ## (the watch counter at the last serve, None after any other
+        ## outcome: the plain run's C stepping loop enters only on a serve
+        ## nothing watched has moved since -- `_tran_stageloop_c`)
+        self.served = None
         s.core = ffi.cast('void *', int(cffi_core.cast('uintptr_t', core.cs)))
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
         ## the core's own bins: G and i of the pass just run
@@ -491,6 +496,7 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     if got.__class__ is str:
         return _no('radau_c:' + got)
     rec, Tc, sk, Y0, drv, M = got
+    rec.served = None
     from pycircuit.circuit import _tran_newton_c as NC
     ffi, cfn, _dgesv, _dgemv = drv
     s, buf, h, qn, Amat, n = rec.s, rec.buf, ctx.h, ctx.qn, ctx.Amat, rec.n
@@ -583,6 +589,7 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     Y = [Ya[A - 1, j].copy() for j in range(3)]
     if sk is not None and s.fin_ok:
         rec.fin = (tuple(Y), float(h), Amat.tobytes(), rec.fin_buf.copy(), sk)
+    rec.served = M['watch'].now()
     return Y
 
 
@@ -596,7 +603,7 @@ def _held_key(rec, sk, qn, u, seed, Amat, Tc, h, reltol, abstol, maxit):
                                      sk.residual_fallbacks, sk.numerics))
 
 
-def hold(rec, sk, qn, u, seed, Amat, Tc, h, reltol, abstol, maxit):
+def hold(rec, sk, qn, u, seed, Amat, Tc, h, reltol, abstol, maxit, outs=None):
     """THE C STAGE NEWTON'S CONVERGED RESULT JUST MADE on the record `rec`
     -- its output slots (`own`'s), the final block, its counts, the stage
     KLU's numeric it ended on -- held for the next `solve`, which serves it
@@ -604,13 +611,16 @@ def hold(rec, sk, qn, u, seed, Amat, Tc, h, reltol, abstol, maxit):
     the stage KLU (its numeric and counts) and the limiter walk are as they
     stand now.  The shooting's stage walk (`_stagewalk_c`) stops after a
     converged Newton it cannot finish the step of: the Python's repeat of
-    the step takes the very Newton, its numeric moved once."""
+    the step takes the very Newton, its numeric moved once; so does the plain
+    run's C stepping loop (`_tran_stageloop_c`), its outputs in a set of its
+    own (`outs`: {name: array}; the record's own where None)."""
     s = rec.s
     A = int(s.assemblies)
     k = s.klu
+    src = rec.own[0] if outs is None else outs
     rec.pre = (_held_key(rec, sk, qn, u, seed, Amat, Tc, h, reltol, abstol, maxit),
                (sk, rec.walk, rec.walk_ok), A,
-               {nm: rec.own[0][nm][:A].copy() for nm in _OUTS}, int(s.fin_ok),
+               {nm: src[nm][:A].copy() for nm in _OUTS}, int(s.fin_ok),
                None if rec.fin_buf is None else rec.fin_buf.copy(),
                int(rec.ffi.cast('uintptr_t', k.klu_out)),
                (int(k.refactors), int(k.factors), int(k.pivot_fallbacks),

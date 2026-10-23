@@ -11488,3 +11488,65 @@ and its C' re-recorded on its reference (`schur_reduce`), the twin unmoved.  doc
 **Gate** (one run, 205's change beside it): the suite in the main tree, 5 902 passed (6 skipped, 3 xfailed); the 27
 gold decks, transient and standalone DC, against 204: every digest, step, rejection, Newton count and path count
 identical (DC but for its timing).  No C changed (the sanitizer tier not run).
+
+## 2026-10-24 — 207. A plain Radau transient's attempts in C -- the C stepping loop's stage family: a Howland testbench's Radau transient 1.96x (0.384 -> 0.196 s), every byte the same
+
+**Why**  Item 3 of Andreas's "1, 2 and 3 then continue to 4": the default analysis, a plain Radau transient, spent about
+half of each attempt in Python around the C stage Newton.  Measured at ba0bcd9a (a Howland testbench, 4 periods, 399
+attempts): ~954 us an attempt -- the C stage Newton 439, the estimate 160 (its dense solve 36), the sources 70, the
+screens 42, the seeds 26, the breakpoints 17, the attempt's and the loop's bookkeeping ~140.  Planned ~1.7x; the line
+1.4x, interleaved against HEAD in separate processes.
+
+**Built.**  `csrc/loop.c`'s stage family (`family`: loop.h's `loop_family`), beside the multistep one: `stage_take` (the
+stage times from the step's end, the step's nodes in merge order, the start's record -- `stage_find` in the last made
+attempt's set, the entry's memo, or `stage_pass`: the core's passes as `_tran_core.passes` makes them, counted --
+pred.c's seeds, `stage_u`'s sources with the step memo's dedupe, radau.c into the set the last made attempt's is not
+in, the screens, the end's sources, `stage_estimate`: F1, numpy's dgemv, the real factor made over the full width and
+reduced, numpy's dgesv on it), `stage_judge` (lte.c's new LTE_FORMULA_STAGE: `reference_stage`, the quotients,
+`stage_norm` -- the kept unknowns, the mask, the squares, numpy's pairwise sum, the RMS and the worst; then the law,
+`stage_retry` with the retry order, the budget), `stage_made` (the generations, the counts), `stage_accept` (the
+rings, the note); `csrc/pcx_stagestep.h` (the nodes' order, the seeds, the screen, the note) shared with stagewalk.c,
+whose walk is bit-identical on it.  `_tran_stageloop_c`: the entry (on the C stage Newton's last serve at the watch
+counter as it stands), the checks (the C loop's of the run; the family, the pieces genuine and unshadowed, the
+transform and PCNR off, numpy's underflow ignored, the core's passes as stamped, numpy's sum the C's), the bind (the
+C loop's buffers and units, the radau record, an lte.c context, the stage buffers; two output sets: the radau
+record's own, which no record views, and one of its own), the load, the hold after a converged Newton, and the
+write-back: the loop's and the statistics' as the C loop's, `_finish_stage_step`'s outputs, `_rk_est`, the pending
+nodes of a rejected attempt, the pattern mark, the screen's `_C_cache`, the memo's two generations (copies; the older
+rebuilt by the core calls its Newton made, or the entry's memo after one attempt), the family's `running`, `_retry`,
+`_q_carried`, the stage KLU's numeric and counts, and every count the Python's calls make.  `_tran_loop_c.attach` and
+`run` hand a stage-family loop to it; `_tran_radau_c`: `served` (the stamp of the last serve), `hold`'s `outs`.
+
+**Found.**  (1) lte.c's flags test took an underflow numpy ignores as a hand-back: 9 of a pulsed chain's 46 attempts
+handed back for nothing, now `under_ok` as pred.c's.  (2) An entry right after a stop that followed made attempts made
+the stopped attempt again: on the stage KLU from the numeric its first Newton moved, so a held result could have been
+another's; the stage loop now leaves that attempt to the Python before its next entry.  The multistep loop's entry
+does the same (an attempt's work spent twice at such a stop; its Newton holds nothing, so no answer moves) -- not
+changed here.  (3) Two output sets of the loop's own, each `MAXA` 3 (2 n^2 + 3 n) doubles, would have added ~770 MB
+at n = 1000: the loop borrows the radau record's own set and keeps its one within `_tran_radau_c.OUT_BYTES` (48 MiB,
+n <= 362; `size` above it, where the estimate's dense O(n^3) solve outweighs what the loop saves).
+
+**Measured** (interleaved against ba0bcd9a, separate processes, 7 rounds and 3): the Howland testbench's plain Radau
+transient 0.384 -> 0.196 s (1.96x) over 4 periods, 1.835 -> 0.875 s (2.10x) over 20; the waveform's and the
+statistics' digests the same, 397 of 399 attempts in C.
+
+**Tests.**  test_stageloop_c (new, 29): 16 runs the Python's to the byte (the state, the family, the stage KLU's
+counts); an entry filling its outputs; the stops (a screen that fires, the estimate's solve and the sources failing
+in the C -- before and after the Newton -- the budget spent: each after-Newton stop held and taken; a Newton handed
+back); the declines; the decline table; alive: the law's safety factor and the estimate's eigenvalue a ulp off.
+test_radau_c: the serve's memo-views test with the stage loop off (its write-back copies).  test_instance_overrides:
+the stage loop among the twins switched off.  test_runtime_map: the glue among the loop units' (no function over 80
+lines).  test_pinned_pairs: 'the stage loop and its C' (new); re-recorded on their twins, each twin's tests run
+first: the stepping loop, the multistep walk (loop.c), the stage walk (pcx_stagestep.h, `hold`), the error test
+(lte.c's STAGE judgement), the Newton solve (lte.h's `under_ok` in NEWTON_C), the coupled stage Newton (`served`,
+`hold`).  doc/transient_runtime.md: its rows; doc/transient_history.md: its entry.
+
+**Gate** (the main tree): the suite, 5 932 passed (6 skipped, 3 xfailed); the 27 gold decks, gear2 transient and
+standalone DC, against 205's: every digest, step, rejection, Newton count and path count identical (DC but for its
+timing); the 27 under Radau against HEAD (ba0bcd9a, run from its worktree): every digest, step, rejection and path
+count but the loop's own identical.  A first HEAD baseline, run from the main tree, had imported the main tree --
+`benchmarks/spice_suite.py` puts its own root first on `sys.path` -- and was caught by its `stageloop_c:` counts.
+Under Radau the loop serves 5 decks (one run each, not interleaved: 4049osc 3.29 -> 0.33 s, mosrect 0.415 -> 0.098,
+gm2 0.533 -> 0.148, rca 0.158 -> 0.073, schmitecl 0.091 -> 0.041); the other 22 run the cost transform ('auto': their
+compiled Jacobians expensive), which it leaves to the Python.  The sanitizer's fast tier, 5 703 passed, and its deep
+tier on the loop tests, 111, clean.
