@@ -11440,3 +11440,27 @@ leave to the Python).
 DC, against 203: every digest, step, rejection, Newton count and path count identical (DC but for its timing); the
 sanitized fast tier (scripts/sanitize_suite.sh) 5 653 passed, clean, and under `--deep` the walk's and the C loop's
 tests (49), clean.
+
+## 2026-10-23 — 205. The C sources' table against a waveform patched on its CLASS -- one more wrong answer: the table made the genuine sine where `func.Sin.f` was patched
+
+**Why**  Found building 204: a twin test patched `func.Sin.f` on the class (a drive that raises) and the patch never ran --
+the C sources' table, which picks its arithmetic by a source's waveform class, declined an instance's own `f` or
+`next_event` (201) but not the class's.  Checked: a plain gear transient of a MOSFET chain with `func.Sin.f` patched
+gives another waveform with the table on (the C loop's sources, the direct pass's `_direct_c`) than off.  The same
+family as 203's (a C path that does not see what the Python calls).
+
+**Built.**  `_tran_sources`: the seven waveforms' own `f` and `next_event`, with `Sin.f`'s scalar path
+`func._sin_scalar`, read once as `func` defines them (`_genuine`, `_paths.genuine`); `table_for` declines a source whose
+class holds another (`_patched`, `sources_c:patched`); a table records the classes it was built under and is neither
+held (`holds`, the C loop's entry and the direct pass's stamp) nor called (`_call`, every direct pass) once one of them
+is patched (`Table.genuine`: a few `is` tests on its own classes).
+
+**Tests.**  test_tran_sources (+5): `Sin.f`, `Sin.next_event`, `_sin_scalar`, `Pulse.f` patched on the class -- no table
+under the patch, a held one refused (`sources_c:patched` twice), a gear transient (the C loop) and a Radau one (the
+direct pass) the runs without the table, each moved by its patch; alive: the check emptied, the run differs again.
+test_pinned_pairs: 'the sources and their C' re-recorded on its twin, `_genuine` and `_patched` added to it, the
+reference unmoved.  doc/transient_history.md: its entry.
+
+**Gate** (one run, 206's change beside it): the suite in the main tree, 5 902 passed (6 skipped, 3 xfailed); the 27
+gold decks, transient and standalone DC, against 204: every digest, step, rejection, Newton count and path count
+identical (DC but for its timing).  No C changed (the sanitizer tier not run).

@@ -143,7 +143,9 @@ PAIRS = {
                'float `%` and `//` for the pulse\'s period, the `where` chain\'s last true '
                'branch, `_sin_scalar` and its guards), the direct pass\'s fast add and '
                'its scatter in element order from +0.0, and each `next_event`; it '
-               'declines where the Python takes another route',
+               'declines where the Python takes another route -- and where a waveform\'s '
+               'class holds another `f` or `next_event` than these (or `_sin_scalar` another '
+               'body), at its build and at every use',
         'reference': ['pycircuit.circuit.func:_sin_scalar',
                       'pycircuit.circuit.func:Sin.f', 'pycircuit.circuit.func:Sin.next_event',
                       'pycircuit.circuit.func:Pulse.f', 'pycircuit.circuit.func:Pulse.next_event',
@@ -154,6 +156,8 @@ PAIRS = {
         'twin': ['pycircuit.circuit._tran_sources:SOURCES_C',
                  'pycircuit.circuit._tran_sources:table_for',
                  'pycircuit.circuit._tran_sources:_waveform',
+                 'pycircuit.circuit._tran_sources:_genuine',
+                 'pycircuit.circuit._tran_sources:_patched',
                  'pycircuit.circuit._tran_sources:Table'],
     },
     'the kernel call and the pass driver': {
@@ -900,7 +904,7 @@ RECORD = {
     'the stepping loop and its C': ('02966d22fff9', '663c790d259b'),
     'the predictor and its C': ('9e611c84de5a', '0d37cf280c92'),
     'the branch screen and its C': ('adb832d7aae0', '213a22d4c01e'),
-    'the sources and their C': ('55cf2d3441f8', 'dd4a622bf839'),
+    'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
     'the kernel call and the pass driver': ('09a9e274bbe8', 'b34c658afd6f'),
     'the limiting loop and the walk': ('58c4ce9c8f4d', '3a565db6207f'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '7e8f23b73019'),

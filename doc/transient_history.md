@@ -5444,3 +5444,22 @@ declines a participant whose instance holds `i`, `G` or `pcnr_limit`
 Tests: `test_instance_overrides.py` (two circuits x five analyses x eight
 plants, the twins on against off, in-process; alive: the decline emptied,
 exactly the device's `i` and `G` are seen).
+
+## `_tran_sources._genuine`, `Table.genuine` -- a waveform patched on its class is the Python's (2026-10-23)
+
+2026-10-23 (found building 204; `doc/hdl_roadmap_260824.md`, 205).  The C
+sources' table chose its arithmetic by a source's waveform CLASS and declined
+an instance's own `f` or `next_event` (201), but not the class's: with
+`func.Sin.f` patched -- a test's or a user's wrapper -- the Python's direct
+pass called the patch while the table made the genuine sine, and a plain
+transient (the C loop's sources, the direct pass's `_direct_c`) gave another
+answer with the table on than off.  The seven waveforms' own `f` and
+`next_event`, with `Sin.f`'s scalar path `_sin_scalar`, are now read once as
+`func` defines them (`_genuine`, `_paths.genuine`); no table is built where a
+source's class holds another (`_patched`, `sources_c:patched`), and one built
+before is neither held (`holds`) nor called (`_call`) once a class it was
+built under is patched (`Table.genuine`).
+Tests: `test_tran_sources.py` -- `Sin.f`, `Sin.next_event`, `_sin_scalar`,
+`Pulse.f` patched on the class: no table under it, a held table refused, a
+gear transient (the C loop) and a Radau one (the direct pass) the runs
+without the table; alive: with the check emptied the run differs again.

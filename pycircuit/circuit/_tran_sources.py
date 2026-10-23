@@ -21,7 +21,9 @@ inside the C loop the pass counts as the Python's (`src.direct:served`,
 
 DECLINE, NEVER DIFFER.  A table is built only where every source's value
 comes the fast float way -- the waveform one of the seven exactly (no
-subclass, no `f` or `next_event` of its own on the instance), the numeric
+subclass, no `f` or `next_event` of its own on the instance, its class's
+`f` and `next_event` -- and a sine's `_sin_scalar` -- `func`'s own:
+`_genuine`), the numeric
 toolkit's own `exp`, `sin`, `where` and `pi`, every
 parameter a float (or a small int: its float exact), the DC value and the
 waveform not both ints (the Python adds those as ints), an exponential's
@@ -32,7 +34,9 @@ guard, a sine past `_sin_scalar`'s guards, numpy's error state not
 ignoring underflow -- returns None, and the Python makes it.  A table
 holds its inputs as it read them and `holds` compares them all (each
 source's `function`, its class, its attributes, a PWL's points, the DC
-value): stale, it is not used.
+value): stale, it is not used; nor is it once a class's `f` or
+`next_event` (or `_sin_scalar`) is patched after its build (`genuine`,
+checked by `holds` and by every call).
 
 `Table.u` and `Table.next_event` are the Python entries (the twin's tests);
 the C loop checks what `_call` checks once an entry (`_tran_loop_c.run`);
@@ -87,6 +91,47 @@ def driver():
     return _driver or None
 
 
+#: THE WAVEFORMS' OWN `f` AND `next_event` -- what the C makes in their
+#: place -- and `Sin.f`'s scalar path, `func._sin_scalar`, as `func` defines
+#: them (`_genuine`, read once every one is): the Python's pass calls a
+#: class's patch, which the C would not see
+_GEN = {}
+_WAVEFORMS = ('TimeFunction', 'Sin', 'Pulse', 'PWL', 'Exp', 'AM', 'SFFM')
+
+
+def _genuine():
+    """`{class: (its f, its next_event)}` of the seven waveforms, and
+    `_sin_scalar` under None, as `func` defines them -- or None: one is a
+    stand-in (read again next time)."""
+    g = _GEN.get('g')
+    if g is None:
+        from pycircuit.circuit import func
+        M = 'pycircuit.circuit.func'
+        classes = [getattr(func, nm) for nm in _WAVEFORMS]
+        objs = [(getattr(c, a), f'{c.__name__}.{a}', M) for c in classes
+                for a in ('f', 'next_event')]
+        objs.append((func._sin_scalar, '_sin_scalar', M))
+        if not all(_paths.genuine(*o) for o in objs):
+            return None
+        g = {c: (c.f, c.next_event) for c in classes}
+        g[None] = func._sin_scalar
+        _GEN['func'], _GEN['g'] = func, g
+    return g
+
+
+def _patched(cls):
+    """Whether the waveform class `cls`'s `f` or `next_event` -- or, for a
+    sine, `_sin_scalar` -- is not `func`'s own as it stands."""
+    g = _GEN.get('g') or _genuine()
+    if g is None:
+        return True
+    own = g.get(cls)
+    if own is None:
+        return False                    # (not one of the seven: `_waveform`'s 'class')
+    return (cls.f is not own[0] or cls.next_event is not own[1]
+            or (cls is _GEN['func'].Sin and _GEN['func']._sin_scalar is not g[None]))
+
+
 def _num(v):
     """`v` as the C's double, or None: a float, numpy's, or an int whose
     float is exact (not a bool)."""
@@ -106,8 +151,8 @@ class Table:
     """One direct source pass's sources as the C reads them, and what they
     were read from (`holds`)."""
 
-    __slots__ = ('arrays', 'cfn', 'entries', 'ffi', 'has_sin', 'kinds', 'n', 'ns', 'out', 'pts',
-                 's', 'tk', 'uses_libm')
+    __slots__ = ('arrays', 'cfn', 'entries', 'ffi', 'funcs', 'has_sin', 'kinds', 'n', 'ns', 'out',
+                 'pts', 's', 'sin_scalar', 'tk', 'uses_libm')
 
     def __init__(self, ffi, cfn, n, rows, kinds, a, params, npts, entries, tk):
         self.ffi, self.cfn, self.n, self.ns = ffi, cfn, n, len(kinds)
@@ -141,11 +186,27 @@ class Table:
                                             _CODES['SOURCES_AM'], _CODES['SOURCES_SFFM']})
         self.has_sin = _CODES['SOURCES_SIN'] in self.kinds
         self.entries, self.tk = entries, tk
+        ## (its waveforms' classes and the `f`, `next_event` they held --
+        ## `func`'s own, as `table_for` found them -- and `_sin_scalar`)
+        self.funcs = tuple((c, c.f, c.next_event) for c in dict.fromkeys(e[3] for e in entries))
+        self.sin_scalar = _GEN['g'][None]
+
+    def genuine(self):
+        """Whether each waveform's class holds the `f` and `next_event` --
+        and a sine `_sin_scalar` -- it was built under: one patched since is
+        the Python's pass."""
+        for c, f, e in self.funcs:
+            if c.f is not f or c.next_event is not e:
+                return False
+        return not self.has_sin or _GEN['func']._sin_scalar is self.sin_scalar
 
     def holds(self):
         """Whether every input the table was built from is as it was read:
         each source's `function` (the object, its class, its attributes,
-        a PWL's points) and its DC value."""
+        a PWL's points) and its DC value -- and its classes' pieces
+        (`genuine`)."""
+        if not self.genuine():
+            return False
         for el, key, fn, cls, attrs, pts, a in self.entries:
             d = el.__dict__
             if d.get('function', fn) is not fn or type(fn) is not cls:
@@ -167,6 +228,8 @@ class Table:
         tk = self.tk
         if not (tk.exp is np.exp and tk.sin is np.sin and tk.where is np.where):
             return no('sources_c:toolkit')
+        if not self.genuine():
+            return no('sources_c:patched')
         if self.uses_libm:
             from pycircuit.circuit import func
             if (self.has_sin and not func.SIN_SCALAR) or not func._underflow_ignored():
@@ -283,6 +346,10 @@ def table_for(sd, quiet=False):
         fd = fn.__dict__
         if 'f' in fd or 'next_event' in fd:
             return no('sources_c:own')
+        ## (its class's `f` or `next_event` patched: the Python's pass calls
+        ## the patch)
+        if _patched(type(fn)):
+            return no('sources_c:patched')
         tk = fd.get('toolkit')
         if type(tk) is not NumericToolkit or tk.exp is not np.exp or tk.sin is not np.sin \
                 or tk.where is not np.where:

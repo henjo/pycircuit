@@ -272,3 +272,84 @@ def test_the_comparison_sees_a_planted_difference():
     par[k + 1] = math.nextafter(par[k + 1], math.inf)
     with pytest.raises(AssertionError):
         _same(c, tab, 3e-9)
+
+
+#: (the class or module patched, the name, the source that reads it)
+_CLASS_PATCHES = {
+    'Sin.f': (func.Sin, 'f', 'sin'),
+    'Sin.next_event': (func.Sin, 'next_event', 'sin'),
+    '_sin_scalar': (func, '_sin_scalar', 'sin'),
+    'Pulse.f': (func.Pulse, 'f', 'pulse'),
+}
+
+
+def _planted(owner, name):
+    """`owner.name` moved: a waveform 0.125 V up, or a breakpoint every
+    0.1 us added."""
+    orig = getattr(owner, name)
+    if name == 'next_event':
+        def planted(self, t):
+            return min(orig(self, t), (math.floor(t / 1e-7) + 1) * 1e-7)
+    elif name == '_sin_scalar':
+        def planted(fn, t):
+            r = orig(fn, t)
+            return None if r is None else r + 0.125
+    else:
+        def planted(self, t):
+            return orig(self, t) + 0.125
+    return planted
+
+
+def _rc(kind):
+    """A sine or a pulse into an RC."""
+    c = SubCircuit()
+    c['v'] = (E.VSin('a', gnd, vo=0.1, va=1.0, freq=1e6) if kind == 'sin'
+              else E.VPulse('a', gnd, v1=0.0, v2=1.0, td=1e-7, tr=1e-8, tf=1e-8, pw=4e-7,
+                            per=1e-6))
+    c['R'] = E.R('a', 'o', r=1e3)
+    c['C'] = E.C('o', gnd, c=1e-10)
+    return c
+
+
+def _rc_run(kind, srcs, method):
+    """A transient of `_rc(kind)` with the C sources on or off: through the
+    C loop (gear) or the direct pass (Radau, the default)."""
+    from pycircuit.circuit import circuit
+    from pycircuit.circuit.integrator import Gear2Integrator
+    from pycircuit.circuit.transient import Transient
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ts, 'ENABLED', srcs)
+        kw = {'integrator': Gear2Integrator()} if method == 'gear' else {}
+        tr = Transient(_rc(kind), toolkit=circuit.numeric, **kw)
+        return np.asarray(tr.solve(tend=3e-6, timestep=1e-8).x).tobytes()
+
+
+@pytest.mark.parametrize('what', sorted(_CLASS_PATCHES))
+def test_a_waveform_patched_on_its_class_is_the_pythons(monkeypatch, what):
+    """A waveform's `f` or `next_event` patched on its CLASS -- or the sine's
+    scalar path -- is what the Python's pass calls: no table is built under
+    it, one built before is not used (`holds`, its every call), and a run
+    through the C loop or the direct pass is the run without the table.
+    (Until roadmap 205 the C made the class's own waveform.)"""
+    owner, name, kind = _CLASS_PATCHES[what]
+    before = {m: _rc_run(kind, True, m) for m in ('gear', 'radau')}
+    sd = _direct(_rc(kind))
+    tab = ts.table_for(sd)
+    assert tab is not None and tab.holds()
+    monkeypatch.setattr(owner, name, _planted(owner, name))
+    counts = _paths.snapshot()
+    assert not tab.holds() and tab.u(2e-7) is None
+    assert ts.table_for(sd) is None
+    assert _paths.since(counts) == {'sources_c:patched': 2}
+    for m in ('gear', 'radau'):
+        got = _rc_run(kind, True, m)
+        assert got == _rc_run(kind, False, m) and got != before[m], m
+
+
+def test_the_class_check_sees_a_patch_the_c_ignores(monkeypatch):
+    """Alive: with the check emptied the C makes the class's own sine again,
+    and the run is another than the Python's."""
+    monkeypatch.setattr(func.Sin, 'f', _planted(func.Sin, 'f'))
+    monkeypatch.setattr(ts, '_patched', lambda cls: False)
+    monkeypatch.setattr(ts.Table, 'genuine', lambda self: True)
+    assert _rc_run('sin', True, 'gear') != _rc_run('sin', False, 'gear')
