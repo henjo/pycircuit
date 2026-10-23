@@ -700,6 +700,8 @@ _RUN_STATE = {
     '_newton_c': ('run', 'the C Newton\'s record'),
     '_newton_c_no': ('run', 'why the C Newton declined, kept until the stamp moves'),
     '_radau_c': ('run', 'the C Radau stage solve\'s record'),
+    '_stage_klu': ('run', ('the StructuralKLU a shooting walk\'s coupled stage Newton solves '
+                           'on (set by the PSS)')),
     '_radau_tc': ('run', 'the C Radau transform loop\'s record'),
     '_sens_c': ('run', ('the C shooting sensitivities\' record, on a shooting walk\'s inner '
                        'transient')),

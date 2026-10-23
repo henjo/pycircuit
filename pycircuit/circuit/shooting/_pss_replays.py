@@ -2,6 +2,9 @@
 the sideband fold.
 """
 import numpy as np
+
+from pycircuit.circuit import _paths
+
 from ._factored import FactoredPeriod
 from ._numerics import _cx_collect
 from ._steps import _at_point, _butcher
@@ -475,6 +478,31 @@ class _FactoredReplays(object):
             ## (`benchmarks/pss_transient_boundary.py` V7).
             fp._walk_tr = walk_tr
         return fp
+
+    def _stage_walk_reused(self, x0, T, times, hs):
+        """The converged replay of a stage map taken from the shooting's
+        last walk (`PSS._shoot`'s `_pmap` records it) where that walk was
+        the map at this very point -- `x0`'s bytes, `T`, the solve's `times`
+        and `hs` -- on the PSS's method: `(its states, what
+        `_stage_walk_recorded` returns)`, the walk not made again.  The
+        record is taken once; None where it does not match (the replay
+        walks).  The waveform is the shooting walk's: a rounding apart from
+        a replay on a transient of its own."""
+        last, self._last_stage_walk = getattr(self, '_last_stage_walk', None), None
+        if last is None:
+            return None
+        zb, Tw, tms, hss, xs, steps, w, walk_tr = last
+        x0 = np.asarray(x0, dtype=float)
+        if x0.shape[0] == self.cir.n:
+            x0 = np.concatenate((x0[:self.irefnode], x0[self.irefnode + 1:]))
+        if (zb != x0.tobytes() or Tw != float(T) or len(xs) != len(times) - 1
+                or np.asarray(tms, dtype=float).tobytes() != np.asarray(times, dtype=float).tobytes()
+                or np.asarray(hss, dtype=float).tobytes() != np.asarray(hs, dtype=float).tobytes()
+                or type(walk_tr.base_integrator)
+                is not type(self._integrator_for(getattr(self.par, 'method', 'euler')))):
+            return None
+        _paths.COUNTS['pss.replay:reused'] += 1
+        return xs, (walk_tr, w, steps, times, float(T))
 
     def _stage_walk_recorded(self, x0, T, npts, method=None, grid=None,
                              record=None, solved=None):

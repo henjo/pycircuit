@@ -774,7 +774,13 @@ class StructuralKLU(KLUSolver):
         got = self._ours(A)
         if got is None:
             return self._other().factor(A, toolkit)
-        num = self._factor(got[1])
+        return self.factor_values(got[1])
+
+    def factor_values(self, Ax):
+        """`factor` of the matrix whose values in this pattern's order are
+        `Ax`, for a caller that gathered them from a matrix zero off the
+        pattern (`_ours`'s test made: `_tran_radau_c.final_block`)."""
+        num = self._factor(numpy.ascontiguousarray(Ax, dtype=numpy.float64))
         self.numerics += 1
         fac = _KLUNumeric(self, self._symbolic, num, self.m)
         return _Factored(fac, lambda f, b: f.solve(b),

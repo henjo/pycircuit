@@ -6,7 +6,8 @@
  * makes it and its buffers (kept on the transient as `_radau_c`), `solve` fills
  * the per-call fields and reads the outputs.  Sizes: n the full unknowns, m = n - 1
  * the reduced ones (row and column `iref` dropped), M = 3 m the coupled system.
- * Arrays are C order (row-major) unless said otherwise. */
+ * Arrays are C order (row-major) unless said otherwise.  The struct embeds
+ * pcx_klu.h's, whose text cffi reads first and radau.c includes first. */
 typedef struct {
     /* wiring, set once by `_Ctx.__init__`: the evaluate core's struct
        (`core.cs`) and its entry (core.c's `pcx_core`, a core_fn_t, called with
@@ -28,8 +29,9 @@ typedef struct {
        the circuit limits; walk_fn NULL and wn 0 where it does not */
     void *walk_fn; void **wF; double **wPR; const int64_t *wTI, *wNM, *wOFF, *wK; long wn;
     /* wiring, set once: numpy's own OpenBLAS `scipy_dgesv_64_` (64-bit
-       integers, a dgesv64_t), by address (`_tran_newton_c.driver`) */
-    void *dgesv;
+       integers, a dgesv64_t) and `scipy_cblas_dgemv64_` (a dgemv64_t: the
+       KLU solve's dense residual test), by address (`_tran_newton_c.driver`) */
+    void *dgesv, *dgemv;
     /* n, iref (0 <= iref < n, n >= 2) and maxa (the assembly slots of Ya..Ga:
        `MAXA`) set once by `_Ctx.__init__`; maxiter (the Newton's iterations)
        per call */
@@ -52,13 +54,39 @@ typedef struct {
     double *Ya, *qa, *ia, *Ca, *Ga;
     /* work (`_Ctx.buf`): K (3 x n) -(i + u); F (3 x n) the full residual;
        R (M) the reduced residual; Jf (M x M, column-major: numpy's solve's
-       LAPACK copy) the reduced block Jacobian, dgesv's LU after the solve;
-       b (M) -R, then the solution dY; blk (n x n) one block before its
-       reduction; stp (n) one stage's limited step; tolv (2) reltol * ynorm,
-       then plus abstol (stored: see radau.c) */
+       LAPACK copy) the reduced block Jacobian, dgesv's LU after the dense
+       solve; b (M) -R, then the dense solve's dY; blk (n x n) one block
+       before its reduction; stp (n) one stage's limited step; tolv (2)
+       reltol * ynorm, then plus abstol (stored: see radau.c) */
     double *K, *F, *R, *Jf, *b, *blk, *stp, *tolv;
     /* work: dgesv's pivots (max(M, 1), `_Ctx.buf['ipiv']`) */
     int64_t *ipiv;
+    /* THE KLU SOLVE, where the transient solves the stage block on a
+       StructuralKLU (`tr._stage_klu`, bound by `_tran_radau_c._klu_ready`):
+       StructuralKLU.solve's own sequence (pcx_kluseq.h); klu.klu_sym NULL,
+       numpy's dense solve.  The core's pattern lies within the KLU's in
+       every block (the glue checks it), so the block is zero off the
+       KLU's and an assembly makes the pattern's entries alone, into
+       klu.kAx (Jf unwritten): nact the entries; act_b (nact) each one's
+       block, 3 i + j; act_f (nact) its place in the full n x n C_i and G_j.
+       nref, ref_b, ref_f: the same for the core's pattern on the reference
+       row and column, made into refv (nref) for their flags alone (the
+       Python makes the full blocks before it drops them).
+       kx (M) the solution, the step dY; ky (M) and kt (2 M) the residual
+       test's scratch; Ad (M x M) the dense residual test's matrix,
+       scattered from the CSC where the sparse test does not decide.  THE
+       NUMERIC (pcx_klu.h): a hand-back leaves the entry's; on
+       RADAU_CONVERGED klu.klu_out is the one the Python's sequence ends
+       with, and the counters are this call's */
+    long nact, nref;
+    const int64_t *act_b, *act_f, *ref_b, *ref_f;
+    double *kx, *ky, *kt, *Ad, *refv;
+    pcx_klu_t klu;
+    /* output on RADAU_CONVERGED with the KLU bound: fin_ok 1 where the
+       converged stages' block -- the last assembly, klu.kAx, unfactored: the
+       walk's sensitivities' matrix (`_tran_radau_c.final_block`) -- is
+       finite, else 0 */
+    long fin_ok;
     /* outputs, set by pcx_radau on every call: assemblies (0 until
        RADAU_CONVERGED, then the assemblies made), iters (the iterations
        completed), status (a radau_status, also pcx_radau's result) */
@@ -67,7 +95,7 @@ typedef struct {
 long pcx_radau(radau_t *s);
 
 /* pcx_radau's result, left in `status` too (`_tran_radau_c.BAIL` names the
-   bails from these; 7 and 10 unused).  A bail hands the solve back: the
+   bails from these; 10 unused).  A bail hands the solve back: the
    glue reads nothing but the status, and the Python Newton runs from the
    same seed: */
 enum radau_status {
@@ -78,6 +106,7 @@ enum radau_status {
     RADAU_BAIL_RBOUND = 4,       /* a residual entry not below 2^1000, or a Jacobian entry not finite */
     RADAU_BAIL_DGESV = 5,        /* the stage system's solve: singular (dgesv's info) */
     RADAU_BAIL_ASSEMBLIES = 6,   /* more assemblies than the buffers hold (maxa) */
+    RADAU_BAIL_KLU = 7,          /* a KLU factor or solve failed: StructuralKLU's LinAlgError */
     RADAU_BAIL_WALKSTOP = 8,     /* a limiter declined: the walk stopped */
     RADAU_BAIL_STEP = 9,         /* a step not finite */
     RADAU_BAIL_MAXITER = 11      /* no convergence in maxiter */

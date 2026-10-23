@@ -610,6 +610,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         self._period_state = None
         self._factored_period_cache = None
         self._stage_replay = None
+        self._last_stage_walk = None
         ## ⚠ WHICH MONODROMY THE OSCILLATOR SURFACES READ -- see
         ## `monodromy_twin`.  Selects the method that supplies the PPV,
         ## Floquet modes and factored period when a one-step LMM (trap/euler)
@@ -1611,6 +1612,7 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         self._period_state = None
         self._factored_period_cache = None
         self._stage_replay = None
+        self._last_stage_walk = None
         self.waveform = None
 
         ## ⚠ `theta`'s bias is PER-PERIOD (`_theta_biased`), so it must be
@@ -1956,8 +1958,20 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
             their own.
 
             History: `doc/shooting_history.md`, `PSS._shoot`."""
+            ## (a stage walk records its states and stage states as the
+            ## converged replay would -- `_stage_walk_reused`: the replay of
+            ## the point the solve ends on, walked already; only the last
+            ## walk's record kept)
+            self._last_stage_walk = None
+            xs = [] if _kind == 'stage' else None
+            steps = [] if _kind == 'stage' else None
             w = self._walk(_kind, z, tms_, hs_, T=T, want_dT=want_dT,
-                           open_at_x0=x0_unknown)
+                           open_at_x0=x0_unknown,
+                           record=None if xs is None else (lambda x, t: xs.append(copy(x))),
+                           stage_record=steps)
+            if xs is not None:
+                self._last_stage_walk = (np.array(z, dtype=float).tobytes(), float(T),
+                                         tms_, hs_, xs, steps, w, self._transient())
             M = w.monodromy()
             ## kept for the checks after the solve: the spectrum is the only
             ## place a free period announces itself.  (A GLM's too: its map
@@ -2321,7 +2335,14 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
                 lte_seen.append((float(self._lte), float(t), self._lte_seam,
                                  self._lte_valid))
             X.append(copy(x))
-        if self.converged and self._map_kind() == 'stage':
+        reused = (self._stage_walk_reused(x0_ss, period, times, hs)
+                  if self.converged and self._map_kind() == 'stage' else None)
+        if reused is not None:
+            ## (the shooting's last walk WAS this replay's: its states and
+            ## its record, `_stage_walk_reused`)
+            X.extend(reused[0])
+            self._stage_replay = reused[1]
+        elif self.converged and self._map_kind() == 'stage':
             ## ⚠ A STAGE METHOD'S REPLAY IS THE WALK ITS FACTORED PERIOD
             ## TAKES (the speed plan's P3, 2026-10-02): a transient of its
             ## own on the solve's own `(t, h)`, the waveform read off it and

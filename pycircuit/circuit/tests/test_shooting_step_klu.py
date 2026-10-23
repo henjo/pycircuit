@@ -90,3 +90,69 @@ def test_a_factored_period_on_the_structure_answers_as_dense(monkeypatch):
             assert pss._step_klus[3 * (pss.cir.n - 1)][1].numerics > 0
     for a, b in zip(got[True], got[False]):
         assert np.allclose(a, b, rtol=1e-8, atol=1e-14 * np.max(np.abs(b)))
+
+
+def test_the_c_stage_newton_on_the_walk_s_klu_is_the_python_s(monkeypatch):
+    """The walk's transient solves its stage block on the walk's KLU
+    (`tr._stage_klu`, `_new_transient`): the C stage Newton makes
+    StructuralKLU.solve's sequence on it, and a live stage step factors the
+    C's last assembly (`_tran_radau_c.final_block`) -- the orbit and the
+    monodromy the bytes of the Python Newton's and of `_stage_block`'s.
+    (The linear ladder: the diode's limiter keeps a state, which the C
+    declines; `test_radau_c` holds the KLU path on a nonlinear circuit.)"""
+    from pycircuit.circuit import _tran_radau_c
+    out = {}
+    for on in (False, True):
+        monkeypatch.setattr(_tran_radau_c, 'ENABLED', on)
+        before = _paths.snapshot()
+        pss, y = _pss(_ladder(SECTIONS, diode=False), True, monkeypatch)
+        out[on] = (y.tobytes(), np.asarray(pss._monodromy).tobytes(), _paths.since(before))
+        assert pss._tran.__dict__.get('_stage_klu') is pss._step_klus[3 * (pss.cir.n - 1)][1]
+    assert out[True][:2] == out[False][:2]
+    d1, d0 = out[True][2], out[False][2]
+    assert d1.get('radau_c:on_klu', 0) > 0 and d1.get('radau_c:final', 0) > 0, d1
+    assert not d0.get('radau_c:on_klu') and not d0.get('radau_c:final')
+
+
+def _replay_runs(monkeypatch, alter=None):
+    """The PSS and a PAC on it, with the converged replay as `alter` leaves
+    `_stage_walk_reused` (None: as it is)."""
+    from pycircuit.circuit.shooting._pss_replays import _FactoredReplays
+    if alter is not None:
+        monkeypatch.setattr(_FactoredReplays, '_stage_walk_reused', alter)
+    before = _paths.snapshot()
+    pss, y = _pss(_ladder(SECTIONS), True, monkeypatch)
+    d = _paths.since(before)
+    pac = PAC(pss.cir, toolkit=circuit.numeric)
+    with quiet(AccuracyWarning):
+        res = pac.solve(pss, [300.0])
+    return y, np.asarray(res.v(f'n{SECTIONS}', gnd)), d
+
+
+def test_the_converged_replay_is_the_shooting_s_last_walk(monkeypatch):
+    """A stage map's converged replay takes the shooting's last walk -- the
+    map at the point the solve returned, its period and grid -- instead of
+    walking it again: the waveform the walked replay's to the rounding, and
+    the factored period's answer (PAC, from the record) as walked."""
+    y1, v1, d1 = _replay_runs(monkeypatch)
+    y0, v0, d0 = _replay_runs(monkeypatch, lambda self, *a: None)
+    assert d1.get('pss.replay:reused') == 1 and not d0.get('pss.replay:reused')
+    assert np.allclose(y1, y0, rtol=1e-12, atol=1e-14 * np.max(np.abs(y0)))
+    assert np.allclose(v1, v0, rtol=1e-10, atol=1e-14 * np.max(np.abs(v0)))
+
+
+def test_a_last_walk_at_another_point_is_not_the_replay(monkeypatch):
+    """The record of a walk at another point (its bytes), another period or
+    grid is not taken: the replay walks, as without it."""
+    from pycircuit.circuit.shooting._pss_replays import _FactoredReplays
+    orig = _FactoredReplays._stage_walk_reused
+
+    def elsewhere(self, x0, T, times, hs):
+        last = self._last_stage_walk
+        self._last_stage_walk = (bytes(len(last[0])),) + last[1:]
+        return orig(self, x0, T, times, hs)
+    y1, v1, d1 = _replay_runs(monkeypatch, elsewhere)
+    monkeypatch.setattr(_FactoredReplays, '_stage_walk_reused', orig)
+    y0, v0, _d0 = _replay_runs(monkeypatch, lambda self, *a: None)
+    assert not d1.get('pss.replay:reused')
+    assert y1.tobytes() == y0.tobytes() and v1.tobytes() == v0.tobytes()

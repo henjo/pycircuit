@@ -44,7 +44,10 @@ def _umemo(tr):
     return sorted((repr(k), np.asarray(v).tobytes()) for k, v in um.items())
 
 
-def _run(build, on, make=None, **kw):
+def _run(build, on, make=None, stage_klu=None, **kw):
+    """The run's answer and the paths it took; `stage_klu(tr)` a
+    StructuralKLU the transient solves its stage block on (as a shooting
+    walk's), whose counters and numeric then join the answer."""
     old = RC.ENABLED
     RC.ENABLED = on
     try:
@@ -53,14 +56,40 @@ def _run(build, on, make=None, **kw):
             warnings.simplefilter('ignore', ResourceWarning)
             tr = Transient(build(), toolkit=circuit.numeric, integrator=RadauIIA3Integrator(),
                            **(make or {}))
+            sk = None if stage_klu is None else stage_klu(tr)
+            if sk is not None:
+                tr._stage_klu = sk
             before = _paths.snapshot()
             res = tr.solve(**kw)
             d = _paths.since(before)
     finally:
         RC.ENABLED = old
     st_ = {k: getattr(tr.statistics, k) for k in tr.statistics.__slots__ if 'seconds' not in k}
-    return (np.asarray(res.x, float).tobytes(), np.asarray(res.sweep_values, float).tobytes(),
-            st_, sorted(str(w.message) for w in W), _memo(tr)), d
+    out = (np.asarray(res.x, float).tobytes(), np.asarray(res.sweep_values, float).tobytes(),
+           st_, sorted(str(w.message) for w in W), _memo(tr))
+    if sk is not None:
+        out += ((sk.refactors, sk.factors, sk.pivot_fallbacks, sk.residual_fallbacks,
+                 sk.foreign, sk._numeric is not None),)
+    return out, d
+
+
+def _stage_klu(tr, pattern='structure'):
+    """The StructuralKLU a shooting walk solves its stage block on
+    (`_InnerTransient._step_klu`): the circuit's structural pattern tiled
+    over the 3 x 3 blocks -- or, 'diagonal', the diagonal alone, analysed
+    (the core's pattern not within it)."""
+    from pycircuit.circuit.analysis import jacobian_structure
+    from pycircuit.circuit.linearsolver import DenseSolver, StructuralKLU
+    m, r, c = jacobian_structure(tr.cir, tr.irefnode)
+    if pattern == 'diagonal':
+        r = c = np.arange(m)
+    rows = np.concatenate([r + i * m for j in range(3) for i in range(3)])
+    cols = np.concatenate([c + j * m for j in range(3) for i in range(3)])
+    o = np.lexsort((rows, cols))
+    sk = StructuralKLU(3 * m, rows[o], cols[o], fallback=DenseSolver)
+    if pattern == 'diagonal':
+        sk._analysed()
+    return sk
 
 
 CASES = {
@@ -86,6 +115,67 @@ def test_a_radau_transient_is_the_same_with_the_c_off(case, fixed):
     assert a[3] == b[3], 'the warnings moved'
     assert a[4] == b[4], 'the device memo moved'
     assert db.get('radau_c:served', 0) > 0, db
+
+
+@pytest.mark.parametrize('case', list(CASES))
+def test_on_a_stage_klu_the_c_newton_is_the_pythons(case):
+    """A transient solving its stage block on a StructuralKLU (`tr._stage_klu`,
+    as a shooting walk's): the C makes StructuralKLU.solve's own sequence on
+    the pattern's entries -- the solution, statistics, warnings and memo, the
+    KLU's counters and numeric, the Python Newton's.  (Its first solve is the
+    Python's: it analyses the KLU.)"""
+    _on()
+    build, make = CASES[case]
+    kw = {'tend': 6e-7, 'timestep': 2e-8, 'fixed_timestep': True}
+    a, da = _run(build, False, make, stage_klu=_stage_klu, **dict(kw))
+    b, db = _run(build, True, make, stage_klu=_stage_klu, **dict(kw))
+    assert a == b
+    assert db.get('radau_c:on_klu', 0) > 0 and db.get('radau_c:klu_unanalysed') == 1, db
+    assert not da.get('radau_c:on_klu')
+
+
+def test_a_stage_klu_without_the_cores_pattern_declines():
+    """A KLU whose pattern does not hold the core's in every block: the block
+    is not zero off it, `_ours` hands it to the fallback -- the C declines."""
+    _declines('klu_pattern', stage_klu=lambda tr: _stage_klu(tr, 'diagonal'))
+
+
+def test_on_a_stage_klu_a_hand_back_leaves_the_pythons_sequence(monkeypatch):
+    """A hand-back after the C's refactors (the assembly cap at two: a Newton
+    of a second iteration) leaves the KLU's numeric as it was at entry, so
+    the Python's own refactors repeat on it: the same bits, counters and
+    numeric as without the C."""
+    _on()
+    kw = {'tend': 6e-7, 'timestep': 2e-8, 'fixed_timestep': True}
+    a, _da = _run(_mos_chain, False, stage_klu=_stage_klu, **dict(kw))
+    monkeypatch.setattr(RC, 'MAXA', 2)
+    b, db = _run(_mos_chain, True, stage_klu=_stage_klu, **dict(kw))
+    assert a == b
+    assert db.get('radau_c:bail:assemblies', 0) > 0 and db.get('radau_c:on_klu', 0) > 0, db
+
+
+def test_the_memo_holds_the_output_slots_and_never_one_still_held(monkeypatch):
+    """A serve's device memo records the C's output slots themselves, views of
+    a pooled set (`_out`) -- never a set a record still holds one of: arrays
+    held from a run keep their bytes through the next run's serves; with no
+    set free (`OUT_SETS` 0) the memo takes copies, the same values."""
+    _on()
+    kw = {'tend': 4e-7, 'timestep': 2e-8, 'fixed_timestep': True}
+    tr = Transient(_mos_chain(), toolkit=circuit.numeric, integrator=RadauIIA3Integrator())
+    tr.solve(**dict(kw))
+    held = [v for g in tr._dev_memo for rec in g.values() for v in rec.values()
+            if isinstance(v, np.ndarray)]
+    assert held and all(v.base is not None for v in held)
+    snap = [v.tobytes() for v in held]
+    before = _paths.snapshot()
+    tr.solve(**dict(kw))
+    assert _paths.since(before).get('radau_c:served', 0) > 0
+    assert [v.tobytes() for v in held] == snap
+    assert 1 <= len(tr.__dict__['_radau_c'].pool) <= RC.OUT_SETS
+    a, _da = _run(_mos_chain, True, **dict(kw))
+    monkeypatch.setattr(RC, 'OUT_SETS', 0)
+    b, db = _run(_mos_chain, True, **dict(kw))
+    assert a == b and db.get('radau_c:served', 0) > 0
 
 
 ## -- one step's Newton, captured: drawn seeds, steps and charges ---------------
@@ -346,14 +436,14 @@ def test_drawn_seeds_reach_the_c_and_its_hand_backs():
 
 ## -- declines -------------------------------------------------------------------
 
-def _declines(why, build=_mos_chain, make=None, setup=None, **kw):
+def _declines(why, build=_mos_chain, make=None, setup=None, stage_klu=None, **kw):
     _on()
     kw = {'tend': 2e-7, 'timestep': 2e-8, 'fixed_timestep': True, **kw}
-    a, _da = _run(build, False, make, **dict(kw))
+    a, _da = _run(build, False, make, stage_klu=stage_klu, **dict(kw))
     if setup is not None:
         undo = setup()
     try:
-        b, db = _run(build, True, make, **dict(kw))
+        b, db = _run(build, True, make, stage_klu=stage_klu, **dict(kw))
     finally:
         if setup is not None and undo is not None:
             undo()

@@ -8,7 +8,7 @@ from math import factorial
 import numpy as np
 import scipy.sparse as _sp
 
-from pycircuit.circuit import _limiting, _paths
+from pycircuit.circuit import _limiting, _paths, _tran_radau_c
 
 from . import _lmmsens_c, _pss_inner, _sens_c
 from ._factored import _PeriodWalk
@@ -55,6 +55,25 @@ def _stage_block(Cs, Gs, h, A):
         return _paths.no('pss.block:fp')
     _paths.COUNTS['pss.block:served'] += 1
     return T.transpose(0, 2, 1, 3).reshape(s * m, s * m)
+
+
+#: the walk's own factorisation, as defined: a caller's stand-in makes the block
+_FACTORISE = _pss_inner._InnerTransient._factorise
+
+
+def _final_lu(walks, Y, h, A, n):
+    """The step's coupled block factored from the values the C stage
+    Newton left for these stages (`_tran_radau_c.final_block`), on the
+    walk's StructuralKLU for `n` unknowns -- what `_factorise` makes of the
+    block `_stage_block` builds -- or None: no such values, another KLU, or
+    a `_factorise` not the walk's own."""
+    if (type(walks)._factorise is not _FACTORISE or '_factorise' in walks.__dict__
+            or '_step_klu' in walks.__dict__):
+        return None
+    got = _tran_radau_c.final_block(walks._transient(), Y, h, A)
+    if got is None or got[1] is not walks._step_klu(n):
+        return None
+    return got[1].factor_values(got[0])
 
 
 #: the readers `_stage_reads` stands in for, as their modules define them,
@@ -577,13 +596,22 @@ class _PeriodWalks(object):
         A, b, c = tab
         s = A.shape[0]
         iref = self.irefnode
-        if Y is None:
+        live = Y is None
+        if live:
             Y = self._transient().last_step.Y
         Yf = [np.array(yf, dtype=float) for yf in Y]
         Ys = [self.toolkit.concatenate((yf[:iref], yf[iref + 1:]))
               for yf in Y]
         Cn = np.asarray(self._C_at(xn))
         m = Cn.shape[0]
+        if coupled and live:
+            ## (the block the C stage Newton made at these very stages, in
+            ## the walk's KLU's order -- `_tran_radau_c.final_block`: the
+            ## same bits `_stage_block` makes from them -- factored there,
+            ## as `_factorise` would; None -- made below)
+            fin = _final_lu(self, Y, h, A, s * m)
+            if fin is not None:
+                return _StageStep(Cn, None, h, A, b, c, lu=fin, Ys=Yf), Ys
         ## (each stage's pair read once where the readers would read just
         ## that: `_stage_reads`, speed round 11; None -- the readers)
         CG = _stage_reads(self, Yf) if coupled and _pss_inner.SHOOT_TRIM else None

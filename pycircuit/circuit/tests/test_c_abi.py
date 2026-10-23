@@ -81,7 +81,7 @@ UNITS = [
 ]
 
 #: the struct headers a unit's own header embeds: its cdef reads them first
-EMBEDS = {'dcnewton': ('pcx_klu.h',), 'pcnrdc': ('pcx_klu.h',)}
+EMBEDS = {'dcnewton': ('pcx_klu.h',), 'pcnrdc': ('pcx_klu.h',), 'radau': ('pcx_klu.h',)}
 
 
 def _raw(name):

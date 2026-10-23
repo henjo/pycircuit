@@ -89,7 +89,8 @@ declared in `transient._RUN_STATE`, with its owner and lifetime
 | `_pcnr_c` | on the circuit: `_pcnr_c` (its record: the view's core, the participants' tables, buffers, the KLU binding); on each participating class's `_hdl_info`: `_c_pcnr_refine` (its refine kernel), `_c_pcnr_refine_status`, `_c_pcnr_kernels` | the `StructuralKLU`'s `_numeric` (None after a failed factor), `refactors`, `factors`, `pivot_fallbacks`, `residual_fallbacks` |
 | `_tran_lte_c` | on the step controller: `_lte_c` (its context: buffers, the KLU binding, `served`) | the controller's `_ref_running` |
 | `_tran_core` | on the transient: `_tran_core` (the plan, the core, their stamp), `_passes_no` (a kept decline); on each HDL element: `_hdl_cp` (its packed parameters); on the stamp plan, the `methods` it lacks | the same step state as the Newton |
-| `_tran_radau_c`, `_tran_radau_tc`, `_sens_c` | on the transient: `_radau_c`; `_radau_tc`, `_tc_end`; `_sens_c` | their stage state |
+| `_tran_radau_c` | on the transient: `_radau_c` (its record: buffers, the output sets the device memo takes as views, the stage KLU's binding -- a shooting walk's `_stage_klu` -- and the last serve's converged block) | the stage state; on the stage KLU its `_numeric`, `refactors`, `factors`, `pivot_fallbacks`, `residual_fallbacks` |
+| `_tran_radau_tc`, `_sens_c` | on the transient: `_radau_tc`, `_tc_end`; `_sens_c` | their stage state |
 | `_lmmsens_c` | on the walk object (the PSS): `_lmmsens_c` (its record: the struct, buffers, the last call's arrays and the column lists they keep) | -- |
 | `_tran_pred_c`, `_tran_ctrl_c`, `_tran_branch_c`, `_tran_sources` | nothing: their state lives in the caller's struct or table | -- |
 

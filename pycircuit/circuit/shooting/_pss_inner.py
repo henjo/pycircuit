@@ -489,6 +489,15 @@ class _InnerTransient(object):
         if frozen:
             tr._freeze_grid()
         tr.irefnode = self.irefnode
+        ## the shooting's own traversal of a fully implicit tableau (Radau's
+        ## coupled stage Newton) solves its 3m block on the walk's
+        ## StructuralKLU, the one its sensitivities factor with
+        ## (`_step_klu`): its own sequence, a refactor on the pivot order it
+        ## holds -- the last bits move against the dense solve
+        if frozen and getattr(integ, 'is_fully_implicit', lambda: False)():
+            klu = self._step_klu(3 * (self.cir.n - 1))
+            if klu is not None:
+                tr._stage_klu = klu
         return tr
 
     def _begin_period(self, x_reduced):

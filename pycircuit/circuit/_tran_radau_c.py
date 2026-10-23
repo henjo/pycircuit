@@ -4,14 +4,18 @@ shunt) in ONE C call, bit for bit the Python Newton (pinned in
 `tests/test_pinned_pairs.py`).
 
 OWNS.  On the transient, `tr._radau_c` (`_Ctx`: the `radau_t` struct, its
-buffers for `MAXA` assemblies, and the limiter walk's fields, which
-`_tran_newton_c._walk_ready` sets; declared in `transient._RUN_STATE`).  On
-a serve it writes what the Python Newton leaves: the device memo
-(`tr._memo_put`), the step's source memo (`tr._u_memo`) and its count
-`umemo:hit`.  `_paths`: `radau_c:` -- `radau_c:<why>` a decline,
+buffers, the output sets for `MAXA` assemblies (`_out`), the stage KLU's
+binding (`_klu_ready`), the last serve's converged block (`final_block`),
+and the limiter walk's fields, which `_tran_newton_c._walk_ready` sets;
+declared in `transient._RUN_STATE`).  On a serve it writes what the Python
+Newton leaves: the device memo (`tr._memo_put`), the step's source memo
+(`tr._u_memo`) and its count `umemo:hit`, and on the stage KLU its numeric
+and counters.  `_paths`: `radau_c:` -- `radau_c:<why>` a decline,
 `radau_c:bail:<why>` a hand-back (`BAIL`), `radau_c:served`,
-`radau_c:assemblies`.  Switch: `PYCIRCUIT_RADAU_C=0` (`ENABLED`, read on
-every call); `STATUS` says why the path is off where it is.
+`radau_c:assemblies`, `radau_c:on_klu` (a serve on the stage KLU),
+`radau_c:final` (a converged block a walk's step took).  Switch:
+`PYCIRCUIT_RADAU_C=0` (`ENABLED`, read on every call); `STATUS` says why
+the path is off where it is.
 
 THE NEWTON.  Per iteration the Python makes the block system
 (`_coupled_stage_system`: nine blocks, each through `remove_row_col`), the
@@ -28,6 +32,25 @@ reduced and written column-major as numpy's solve copies them; numpy's own
 reduced entry; the convergence test (`_stages_converged`: the step within
 ``reltol`` of the largest reduced stage plus ``abstol``) after the
 assembly at the new stages, as the Python assembles before it tests.
+
+ON A STAGE KLU.  A shooting walk's transient solves the block on the walk's
+StructuralKLU (`tr._stage_klu`, `_InnerTransient._new_transient`), the
+Python Newton by its `solve`: a refactor on the numeric it holds, a fresh
+factor on a zero pivot, the residual's check.  The C makes that sequence
+(pcx_kluseq.h, as the DC Newton's) on the block's pattern entries alone:
+the core's pattern lies within the KLU's in every block (checked when it is
+bound), so the block is zero off it -- what `_ours` takes -- and an
+assembly makes the KLU's values and, for their flags, the core's entries on
+the reference row and column (the Python makes the full blocks).  The
+numeric is StructuralKLU's (pcx_klu.h): a hand-back leaves the entry's, a
+serve the one the Python's sequence ends with.  The last assembly, at the
+converged stages, is the walk's sensitivities' block at those stages: a
+live stage step takes its values (`final_block`) instead of making them.
+
+THE MEMO'S ARRAYS.  A serve records the output slots themselves, views of
+a pooled set no earlier record still holds one of (`_out`: the arrays'
+reference counts as made), or copies from the transient's own set where
+none is free -- the same values, the Python's fresh arrays.
 
 TRANSACTIONAL.  The C writes nothing outside its buffers.  Where it
 converges, what the Python Newton leaves is made here: every assembly's
@@ -51,11 +74,14 @@ of the transient or a patched piece of the Newton (`_chain`), an instance
 shadow of the circuit's passes or limiter or of the transient's pieces, a
 `provided_function`, a stateful limiter or circuit-level limiting, a bypass,
 no source memo, a circuit the core cannot serve, a limiting element that
-is not its C kernel, a batch not ready, inputs of another type or size.
+is not its C kernel, a batch not ready, inputs of another type or size; a
+stage KLU not StructuralKLU as defined, of another size, not analysed yet
+or not holding the core's pattern.
 
 History: `doc/transient_history.md`, `_tran_radau_c.py`.
 """
 import os
+import sys
 from itertools import repeat
 
 import numpy as np
@@ -69,9 +95,19 @@ ENABLED = os.environ.get('PYCIRCUIT_RADAU_C', '1') != '0'
 STATUS = 'not loaded'
 #: the assemblies one call holds (a Newton of more iterations is handed back)
 MAXA = 8
+#: THE OUTPUT SETS: the slots the C writes its assemblies to (`Ya` .. `Ga`).
+#: A served call's device memo takes them as they are -- views, no copies --
+#: from a set of the pool (`_Ctx.pool`) no earlier record still holds a view
+#: of (its arrays' reference counts as made); at most `OUT_SETS` sets and
+#: `OUT_BYTES` of them.  Where none is free the call writes to the
+#: transient's own set (`_Ctx.own`, never viewed) and the memo takes copies.
+OUT_SETS = 3
+OUT_BYTES = 48 * 2 ** 20
+_OUTS = ('Ya', 'qa', 'ia', 'Ca', 'Ga')
 
 RADAU_C = _cbuild.csrc('radau.c')
-RADAU_CDEF = _cbuild.csrc('radau.h')
+## (radau_t embeds pcx_klu.h's struct: its text first)
+RADAU_CDEF = _cbuild.csrc('pcx_klu.h') + _cbuild.csrc('radau.h')
 
 #: the C's results, named in radau.h (`_CODES`); `BAIL`: {code: why} of
 #: the codes past 1 (converged) -- why it handed the solve back
@@ -86,7 +122,8 @@ _SOLVE = np.linalg.solve
 
 
 def driver():
-    """`(ffi, cfn, dgesv address)` once loaded, or None (`STATUS`)."""
+    """`(ffi, cfn, dgesv address, dgemv address)` once loaded, or None
+    (`STATUS`)."""
     global _driver, STATUS
     if _driver is None:
         _driver = False
@@ -102,7 +139,7 @@ def driver():
             return None
         from pycircuit.circuit import func
         _MOD['func'] = func
-        _driver = (ffi, cfn, nd[2]['dgesv'])
+        _driver = (ffi, cfn, nd[2]['dgesv'], nd[2]['dgemv'])
         STATUS = 'c'
     return _driver or None
 
@@ -134,6 +171,15 @@ def _chain():
                (_hdl_climit.limit_walk, 'limit_walk', 'pycircuit.circuit._hdl_climit'))
         if not all(_paths.genuine(*o) for o in own):
             return None
+        from pycircuit.circuit import linearsolver as LS
+        sk = LS.StructuralKLU
+        L = 'pycircuit.circuit.linearsolver'
+        klu_own = ((sk, 'StructuralKLU', L), (sk.solve, 'StructuralKLU.solve', L),
+                   (sk._ours, 'StructuralKLU._ours', L), (sk._factor, 'StructuralKLU._factor', L),
+                   (sk._analysed, 'StructuralKLU._analysed', L), (sk._free, 'StructuralKLU._free', L))
+        if not all(_paths.genuine(*o) for o in klu_own):
+            return None
+        _MOD['klu'] = tuple(o for o, _q, _m in klu_own)
         _MOD['chain'] = tuple(o for o, _q, _m in own)
         _MOD['mods'] = (_tran_radau, _tran_core, _hdl_climit)
     return _MOD['chain']
@@ -151,15 +197,22 @@ def _now(T, mods, cir):
 class _Ctx:
     """One transient's struct and buffers for one core, size and reference
     row (the walk's fields named as `_tran_newton_c._Ctx`'s, whose
-    `_walk_ready` sets them)."""
+    `_walk_ready` sets them); `klu` the StructuralKLU the struct is bound to
+    (`_klu_ready`), None: numpy's dense solve."""
 
     __slots__ = (
         'buf',
         'core',
         'ffi',
+        'fin',
+        'fin_buf',
         'iref',
         'keep',
+        'klu',
+        'klu_keep',
         'n',
+        'own',
+        'pool',
         's',
         'walk',
         'walk_arms',
@@ -175,15 +228,15 @@ class _Ctx:
         'walk_watch',
     )
 
-    def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, dgesv):
+    def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, dgesv, dgemv):
         m = n - 1
         M = 3 * m
         A = MAXA
         self.core, self.n, self.iref, self.ffi = core, n, iref, ffi
         self.s = s = ffi.new('radau_t *')
+        ## (the output slots: `own`, and the pool's, `_out`)
+        self.own, self.pool = self._new_out(), []
         self.buf = buf = {
-            'Ya': np.empty((A, 3, n)), 'qa': np.empty((A, 3, n)), 'ia': np.empty((A, 3, n)),
-            'Ca': np.empty((A, 3, n, n)), 'Ga': np.empty((A, 3, n, n)),
             'qn': np.empty(n), 'u': np.empty((3, n)), 'seed': np.empty((3, n)),
             'K': np.empty((3, n)), 'F': np.empty((3, n)), 'R': np.empty(M),
             'Jf': np.empty(M * M), 'b': np.empty(M), 'blk': np.empty(n * n),
@@ -199,7 +252,11 @@ class _Ctx:
         buf['ipiv'] = ipiv
         self.keep.append(fb('int64_t *', ipiv))
         s.ipiv = self.keep[-1]
-        s.dgesv = ffi.cast('void *', dgesv)
+        s.dgesv, s.dgemv = ffi.cast('void *', dgesv), ffi.cast('void *', dgemv)
+        self.klu, self.klu_keep = None, ()
+        ## (the last served call's converged block for the walk's
+        ## sensitivities: `final_block`)
+        self.fin = self.fin_buf = None
         s.core = ffi.cast('void *', int(cffi_core.cast('uintptr_t', core.cs)))
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
         ## the core's own bins: G and i of the pass just run
@@ -215,6 +272,105 @@ class _Ctx:
         self.walk_hw_els = self.walk_hwk = ()
         self.walk_stamp, self.walk_arms, self.walk_held = -1, 0, 0
         self.walk_watch = ()
+
+    def _new_out(self):
+        """An output set: `(its arrays, their pointers, their reference
+        counts as made)` -- slots for `MAXA` assemblies."""
+        A, n, fb = MAXA, self.n, self.ffi.from_buffer
+        arrs = {'Ya': np.empty((A, 3, n)), 'qa': np.empty((A, 3, n)), 'ia': np.empty((A, 3, n)),
+                'Ca': np.empty((A, 3, n, n)), 'Ga': np.empty((A, 3, n, n))}
+        ptrs = {k: fb('double *', a) for k, a in arrs.items()}
+        return arrs, ptrs, {k: sys.getrefcount(arrs[k]) for k in _OUTS}
+
+
+def _out(rec):
+    """The output set a call writes to, and whether the memo may take its
+    slots as views: a pooled set no record holds a view of (each array's
+    reference count as made), or a new one within `OUT_SETS` and
+    `OUT_BYTES`; else the transient's own, copied from."""
+    for o in rec.pool:
+        arrs, rc = o[0], o[2]
+        if all(sys.getrefcount(arrs[k]) == rc[k] for k in _OUTS):
+            return o, True
+    per = 2 * MAXA * 3 * (rec.n * rec.n + 2 * rec.n) * 8
+    if len(rec.pool) < OUT_SETS and (len(rec.pool) + 1) * per <= OUT_BYTES:
+        o = rec._new_out()
+        rec.pool.append(o)
+        return o, True
+    return rec.own, False
+
+
+def _klu_ready(rec, sk):
+    """The record bound to the transient's stage-block solve -- numpy's
+    dense solve where `sk` (`tr._stage_klu`) is None, else that
+    StructuralKLU: its pattern (each entry's block and place in the full
+    `C_i`, `G_j`; the core's pattern on the reference row and column, for
+    the flags), arrays, analysis, common and the library's entries -- or why
+    not: not StructuralKLU as defined, another size, not analysed yet (the
+    Python's first solve analyses it), a core pattern it does not hold in
+    every block (the block would not be zero off it)."""
+    s, ffi = rec.s, rec.ffi
+    if sk is None:
+        if rec.klu is not None:
+            rec.klu, rec.klu_keep = None, ()
+            s.klu.klu_sym = ffi.NULL
+        return None
+    SK = _MOD['klu'][0]
+    if type(sk) is not SK:
+        return 'klu_kind'
+    if (SK.solve, SK._ours, SK._factor, SK._analysed, SK._free) != _MOD['klu'][1:]:
+        return 'patched'
+    if any(k in sk.__dict__ for k in ('solve', '_ours', '_factor', '_analysed', '_free',
+                                      '_other')):
+        return 'shadow_klu'
+    M = 3 * (rec.n - 1)
+    if sk.m != M:
+        return 'klu_size'
+    if not sk._symbolic:
+        return 'klu_unanalysed'
+    sym = ffi.cast('void *', sk._symbolic)
+    if rec.klu is sk and s.klu.klu_sym == sym:
+        return None
+    ## (the core's pattern -- every entry its G and C passes write, the
+    ## block zero off it -- within the KLU's in each of the nine blocks: the
+    ## C then makes the pattern's entries alone)
+    n, iref, m = rec.n, rec.iref, rec.n - 1
+    pat = np.asarray(rec.core.arrays['pat'], dtype=np.int64)
+    pr, pc = np.divmod(pat, n)
+    inner = (pr != iref) & (pc != iref)
+    rr = pr[inner] - (pr[inner] > iref)
+    cc = pc[inner] - (pc[inner] > iref)
+    tiled = np.concatenate([(i * m + rr) * M + (j * m + cc) for i in range(3) for j in range(3)])
+    take = np.asarray(sk.take, dtype=np.int64)
+    if not np.isin(tiled, take).all():
+        return 'klu_pattern'
+    r, c = np.divmod(take, M)
+    bi, rk = np.divmod(r, m)
+    bj, ck = np.divmod(c, m)
+    edge = pat[~inner]
+    ints = (3 * bi + bj, (rk + (rk >= iref)) * n + (ck + (ck >= iref)),
+            np.repeat(np.arange(9, dtype=np.int64), len(edge)), np.tile(edge, 9))
+    ints = tuple(np.ascontiguousarray(a, dtype=np.int64) for a in ints)
+    dbls = (np.empty(len(take)), np.empty(M), np.empty(M), np.empty(2 * M), np.empty(M * M),
+            np.empty(max(len(ints[2]), 1)))
+    fb = ffi.from_buffer
+    ip = tuple(fb('int64_t *', a) for a in ints)
+    dp = tuple(fb('double *', a) for a in dbls)
+    keep = (sk, fb('int *', sk.Ap), fb('int *', sk.Ai)) + ints + dbls + ip + dp
+    s.nact, s.nref = len(take), len(ints[2])
+    s.act_b, s.act_f, s.ref_b, s.ref_f = ip
+    s.klu.kAx, s.kx, s.ky, s.kt, s.Ad, s.refv = dp
+    k = s.klu
+    k.kAp, k.kAi = keep[1:3]
+    lib = sk._lib
+    k.klu_factor, k.klu_refactor, k.klu_solve, k.klu_free = (
+        ffi.cast('void *', _cbuild.address(f))
+        for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))
+    k.klu_common = ffi.cast('void *', sk._ct.addressof(sk._common))
+    k.klu_sym = sym
+    k.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+    rec.klu, rec.klu_keep, rec.fin_buf = sk, keep, dbls[0]
+    return None
 
 
 def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol, maxit):
@@ -241,7 +397,7 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
         return _no('radau_c:driver')
     if not _MOD['func']._underflow_ignored():
         return _no('radau_c:underflow')
-    ffi, cfn, dgesv = drv
+    ffi, cfn, dgesv, dgemv = drv
     chain = _MOD.get('chain') or _chain()
     if chain is None:
         return _no('radau_c:patched')
@@ -298,7 +454,7 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     rec = td.get('_radau_c')
     if rec is None or rec.core is not core or rec.n != n or rec.iref != iref:
         cffi_core, cfn_core, _dg = tc.driver()
-        rec = _Ctx(core, n, iref, ffi, cfn_core, cffi_core, dgesv)
+        rec = _Ctx(core, n, iref, ffi, cfn_core, cffi_core, dgesv, dgemv)
         td['_radau_c'] = rec
     s, buf = rec.s, rec.buf
     if has_limiter:
@@ -311,6 +467,14 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     Tc = core.probe(tr.epar)
     if Tc.__class__ is str:
         return _no('radau_c:ready')
+    sk = td.get('_stage_klu')
+    why = _klu_ready(rec, sk)
+    if why is not None:
+        return _no('radau_c:' + why)
+    rec.fin = None
+    if sk is not None:
+        num = sk._numeric
+        s.klu.klu_num = ffi.cast('void *', num) if num else ffi.NULL
     ## ---- from here the attempt leaves one trace: the step's source memo ----
     analysis = tr.par.analysis
     keys = [(tt, analysis) for tt in ctx.tstage]
@@ -332,6 +496,9 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
                for u in us):
         NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         return _no('radau_c:u')
+    out, viewed = _out(rec)
+    for k in _OUTS:
+        setattr(s, k, out[1][k])
     for j in range(3):
         buf['u'][j] = us[j]
         buf['seed'][j] = Y0[j]
@@ -349,13 +516,51 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
         return _no('radau_c:bail:' + BAIL.get(status, str(status)))
     ## ---- converged: the memo as the Python Newton leaves it ----
     A = int(s.assemblies)
-    Ya, qa, ia, Ca, Ga = buf['Ya'], buf['qa'], buf['ia'], buf['Ca'], buf['Ga']
+    o = out[0]
+    Ya, qa, ia, Ca, Ga = o['Ya'], o['qa'], o['ia'], o['Ca'], o['Ga']
     put = tr._memo_put
-    for a in range(A):
-        for j in range(3):
-            put(Ya[a, j], {'q': qa[a, j].copy(), 'i': ia[a, j].copy(),
-                           'C': Ca[a, j].copy(), 'G': Ga[a, j].copy()})
+    if viewed:
+        ## (the slots themselves: `_out`'s set, which no call writes to
+        ## again while a record holds one)
+        for a in range(A):
+            for j in range(3):
+                put(Ya[a, j], {'q': qa[a, j], 'i': ia[a, j], 'C': Ca[a, j], 'G': Ga[a, j]})
+    else:
+        for a in range(A):
+            for j in range(3):
+                put(Ya[a, j], {'q': qa[a, j].copy(), 'i': ia[a, j].copy(),
+                               'C': Ca[a, j].copy(), 'G': Ga[a, j].copy()})
+    if sk is not None:
+        ## (StructuralKLU as its own solve leaves it: the numeric the
+        ## sequence ends with, its counters)
+        out = int(ffi.cast('uintptr_t', s.klu.klu_out))
+        sk._numeric = out or None
+        k = s.klu
+        sk.refactors += k.refactors
+        sk.factors += k.factors
+        sk.pivot_fallbacks += k.pivot_fallbacks
+        sk.residual_fallbacks += k.residual_fallbacks
+        _PC['radau_c:on_klu'] += 1
     _PC['umemo:hit'] += 3 * (A - 1)
     _PC['radau_c:served'] += 1
     _PC['radau_c:assemblies'] += A
-    return [Ya[A - 1, j].copy() for j in range(3)]
+    Y = [Ya[A - 1, j].copy() for j in range(3)]
+    if sk is not None and s.fin_ok:
+        rec.fin = (tuple(Y), float(h), Amat.tobytes(), rec.fin_buf.copy(), sk)
+    return Y
+
+
+def final_block(tr, Y, h, A):
+    """The converged stages' block of the step just taken, in the stage
+    StructuralKLU's order, where the transient's last call here served it on
+    that KLU for `Y` -- the very arrays it returned -- at this `h` and
+    tableau `A`: `(the values, the StructuralKLU)`, the block `_stage_block`
+    makes from the same stages (the same operations, each entry the same
+    bits) and `_ours` would take.  Else None (the walk makes it)."""
+    rec = tr.__dict__.get('_radau_c')
+    fin = None if rec is None else rec.fin
+    if (fin is None or len(Y) != 3 or any(a is not b for a, b in zip(Y, fin[0]))
+            or float(h) != fin[1] or np.asarray(A, dtype=float).tobytes() != fin[2]):
+        return None
+    _PC['radau_c:final'] += 1
+    return fin[3], fin[4]

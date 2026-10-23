@@ -11013,3 +11013,50 @@ and again the box idle (load < 1.5) 43.50 / 42.27 -> 20.14 / 20.23 s, 8 -> 4 tra
 
 **Gate**: the suite in the main tree, 5 795 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
 standalone DC, against 193: every digest identical.  No C changed.
+
+## 2026-10-23 — 195. Radau's PSS on the walk's KLU: the C stage Newton solves its block on it, the walk's step factors the C's last assembly, the converged replay is the last shooting walk, the memo takes the C's slots -- a Howland testbench's Radau PSS 2.33x (20.32 -> 8.73 s), the orbit within 5.2e-14 V
+
+**Why**  Re-profiled after 194 (Andreas: "continue with next", then "implement all 4 items"), the testbench's
+default Radau PSS (90 unknowns, a 270-unknown stage block, 3200 steps a period) took 20.1 s: the C stage
+Newton 12.0 s (its dense `dgesv` on the 270 block ~470 us a step, its glue ~200), the sensitivities' steps
+4.6 s (the block made again, 1.3 s, and factored on KLU, 2.5 s), the converged replay 3.6 s -- a walk of the
+period the solve had just made.
+
+**Built.**  (1) `_InnerTransient._new_transient` gives a frozen-grid, fully implicit traversal the walk's
+StructuralKLU (`_step_klu(3 m)`) as `tr._stage_klu`; the coupled stage Newton solves its block on it
+(`StructuralKLU.solve`: a refactor on the numeric it holds, a fresh factor on a zero pivot, the residual's
+check), and the C stage Newton (radau.c) makes that sequence (pcx_kluseq.h, as the DC Newton's) with
+StructuralKLU's numeric handed in and out (pcx_klu.h: a hand-back leaves the entry's).  The core's pattern
+lies within the KLU's in each of the nine blocks (checked when it is bound), so the block is zero off it:
+with the KLU bound an assembly makes the pattern's entries alone, in its order, no dense block, scan or
+gather -- and, for their flags, the core's entries on the reference row and column, which the Python makes
+before it drops them.  (3) The last assembly, at the converged stages, is the block the walk's step makes
+from them, the same bits: a live stage step takes its values (`_tran_radau_c.final_block`, the very arrays
+the C returned, the same `h` and tableau) and factors them (`StructuralKLU.factor_values`, `factor`'s own
+second half).  (2) The shooting's period map records a stage walk's states and stage states as the
+converged replay would; the replay takes the record where the solve returned the very point that walk
+started from, at the same period and grid (`_stage_walk_reused`), and walks otherwise.  (4) The device
+memo records the C's output slots themselves, views of a pooled set no earlier record holds a view of (its
+arrays' reference counts as made; at most 3 sets and 48 MB), copies where none is free.
+
+**Tests.**  test_radau_c: on a stage KLU the C Newton is the Python's (solution, statistics, warnings, memo,
+the KLU's counters and numeric) on the four fixtures; a KLU without the core's pattern declines; a
+hand-back after the C's refactors (the assembly cap at two) leaves the Python's sequence; the memo holds
+the output slots and never one still held, copies where no set is free.  test_shooting_step_klu: on the
+walk's KLU the orbit and the monodromy are the bytes of the Python Newton's and `_stage_block`'s; the
+converged replay is the last walk (the waveform and PAC as walked, to the rounding); a record at another
+point is not taken.  test_pinned_pairs: 'the coupled stage Newton and its C', 'the stage paths' passes and
+the core's', 'the stage block and its one pass', 'the stage step map and its C', 'the Newton solve and its
+C' re-recorded; 'the walk's stage block and the C stage Newton's last assembly' and 'the converged stage
+replay and the shooting's last walk' recorded.  test_c_abi: the unit embeds pcx_klu.h.
+
+Measured, the box idle, separate processes, HEAD (a worktree) and this tree interleaved, two rounds:
+Radau 20.40 / 20.32 -> 8.73 / 8.77 s (3 walks of the period where 4 were: the replay taken); gear 4.49 /
+4.56 -> 4.55 / 4.60 s, its orbit bit-identical (none of it is gear's); every one of the 60 nodes' Radau
+orbits within 5.2e-14 V of HEAD's on a 3.3 V scale (1.6e-14 relative), IM3 -63.57360 dBc both.  The steps
+on the way, one process: KLU in the C Newton 20.1 -> 15.5 s, the converged block 14.3, the replay 11.5,
+the pattern-only assembly 9.35, the memo's views 8.74.
+
+**Gate**: the suite in the main tree, 5 809 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 194: every digest identical; the sanitized fast tier (scripts/sanitize_suite.sh) 5 557
+passed, no sanitizer report: clean.

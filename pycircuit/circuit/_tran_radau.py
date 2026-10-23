@@ -459,6 +459,7 @@ class _RadauStages:
         ## (a bypassed device returns its last evaluation for a NEARBY point,
         ## so its values depend on history: no memo then)
         _nobypass = float(getattr(epar, 'bypasstol', -1.0) or -1.0) < 0.0
+        stage_klu = self.__dict__.get('_stage_klu')
 
         def _stage_newton(seed, gshunt=0.0, damped=False):
             """The coupled `3m` Newton, optionally with a node-to-ground shunt.
@@ -558,8 +559,12 @@ class _RadauStages:
                 ## regular.  numpy's LinAlgError passed every one of them and
                 ## ended the run.
                 ## History: `doc/transient_history.md`, `Transient._coupled_stage_solver`.
+                ## (a shooting walk's transient solves the block on the walk's
+                ## StructuralKLU, its own sequence -- `tr._stage_klu`, set by
+                ## `_InnerTransient._new_transient`; else numpy's dense solve)
                 try:
-                    dY = np.linalg.solve(Jbig, -R)
+                    dY = (np.linalg.solve(Jbig, -R) if stage_klu is None
+                          else stage_klu.solve(Jbig, -R, tk))
                 except np.linalg.LinAlgError as exc:
                     raise NoConvergenceError(
                         'Radau IIA(3) coupled stage Newton met a singular Jacobian'

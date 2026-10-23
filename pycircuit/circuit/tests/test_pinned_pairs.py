@@ -295,6 +295,7 @@ PAIRS = {
                       ## (the sparse chord: StructuralKLU's factor, the
                       ## owned numeric's solve -- stage 2, step d)
                       'pycircuit.circuit.linearsolver:StructuralKLU.factor',
+                      'pycircuit.circuit.linearsolver:StructuralKLU.factor_values',
                       'pycircuit.circuit.linearsolver:StructuralKLU._factor',
                       'pycircuit.circuit.linearsolver:_KLUNumeric._run',
                       ## (the sparse full Newton: StructuralKLU's refactor path)
@@ -506,14 +507,49 @@ PAIRS = {
                'operations and order over the full width, numpy\'s solve, the '
                'reference row\'s `+ 0.0`, the walk against the previous stage, the '
                'convergence test after the assembly, every assembly\'s memo record '
-               'and the source memo\'s calls and hits',
+               'and the source memo\'s calls and hits; on a shooting walk\'s stage '
+               'KLU (`tr._stage_klu`) StructuralKLU.solve\'s own sequence '
+               '(pcx_kluseq.h: the refactor on its numeric, the fresh factor, the '
+               'residual\'s verdict) on the pattern\'s entries alone -- the core\'s '
+               'pattern checked within it, the reference row\'s and column\'s '
+               'entries made for their flags -- and the memo records the output '
+               'slots themselves where no record holds a view of them (`_out`)',
         'reference': ['pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_solver',
                       'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_system',
                       'pycircuit.circuit._tran_radau:_RadauStages._stages_converged',
                       'pycircuit.circuit._tran_companion:_CompanionModel._memo_put',
-                      'pycircuit.circuit._tran_companion:_CompanionModel._source_at'],
+                      'pycircuit.circuit._tran_companion:_CompanionModel._source_at',
+                      'pycircuit.circuit.linearsolver:StructuralKLU.solve',
+                      'pycircuit.circuit.linearsolver:StructuralKLU._ours'],
         'twin': ['pycircuit.circuit._tran_radau_c:RADAU_C',
-                 'pycircuit.circuit._tran_radau_c:solve'],
+                 'pycircuit.circuit._tran_radau_c:RADAU_CDEF',
+                 'pycircuit.circuit._tran_radau_c:solve',
+                 'pycircuit.circuit._tran_radau_c:_klu_ready',
+                 'pycircuit.circuit._tran_radau_c:_out',
+                 'pycircuit.circuit._tran_radau_c:_Ctx'],
+    },
+    'the walk\'s stage block and the C stage Newton\'s last assembly': {
+        'why': 'a live stage step on the walk\'s KLU factors the values the C stage '
+               'Newton\'s last assembly made at the very stages it returned (the same '
+               '`C_i + (h A_ij) G_j`, each entry the same bits, zero off the pattern) '
+               'instead of `_stage_block`\'s, at the same `h` and tableau, as '
+               '`_factorise` would (`StructuralKLU.factor_values`)',
+        'reference': ['pycircuit.circuit.shooting._pss_walks:_stage_block',
+                      'pycircuit.circuit.shooting._pss_inner:_InnerTransient._factorise',
+                      'pycircuit.circuit.linearsolver:StructuralKLU.factor'],
+        'twin': ['pycircuit.circuit._tran_radau_c:final_block',
+                 'pycircuit.circuit.shooting._pss_walks:_final_lu',
+                 'pycircuit.circuit.linearsolver:StructuralKLU.factor_values'],
+    },
+    'the converged stage replay and the shooting\'s last walk': {
+        'why': 'the stage map\'s converged replay takes the shooting\'s last walk -- '
+               'the map at the very point the solve returned, its period and grid -- '
+               'for what `_stage_walk_recorded` walks: each step\'s state as the '
+               'replay\'s `record` appends it, and its `(x_n, h, Y)`',
+        'reference': ['pycircuit.circuit.shooting._pss_replays:_FactoredReplays._stage_walk_recorded',
+                      'pycircuit.circuit.shooting.pss:PSS._replay_orbit'],
+        'twin': ['pycircuit.circuit.shooting._pss_replays:_FactoredReplays._stage_walk_reused',
+                 'pycircuit.circuit.shooting.pss:PSS._shoot'],
     },
     'the transform solve and its frozen form': {
         'why': 'the frozen solve makes once a step what the per-iteration solve '
@@ -612,6 +648,7 @@ PAIRS = {
                'step declines, warns or raises, and counts the readers\' sync skips',
         'reference': ['pycircuit.circuit.shooting._pss_walks:_PeriodWalks._stage_step',
                       'pycircuit.circuit.shooting._pss_walks:_stage_block',
+                      'pycircuit.circuit.shooting._pss_walks:_final_lu',
                       'pycircuit.circuit.shooting._pss_walks:_stage_reads',
                       'pycircuit.circuit.shooting._steps:_StageStep.solve',
                       'pycircuit.circuit.shooting._numerics:_lu_solve_split',
@@ -734,7 +771,7 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('07b811013bb8', '09b8b2e394dd'),
+    'the Newton solve and its C': ('799c5ad2d0a2', '09b8b2e394dd'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', '9f6fb7d03377'),
     'the DC base solve and its C': ('cf01fb504664', 'cee591e0ea0b'),
@@ -742,14 +779,16 @@ RECORD = {
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
-    "the stage paths' passes and the core's": ('8e1c04a8b525', '131833be2877'),
-    'the coupled stage Newton and its C': ('92bfabb5da8c', 'aa68068f57a9'),
+    "the stage paths' passes and the core's": ('fcda68098a8b', '131833be2877'),
+    'the coupled stage Newton and its C': ('e09350a62d0e', '10e71f9e55f5'),
+    "the walk's stage block and the C stage Newton's last assembly": ('d0a6a92a1527', '2928e6b65003'),
+    "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
     'the transform solve and its frozen form': ('2347fd7082f9', '61256542c9d4'),
     'the transform Newton and its C': ('57fd43705940', 'fceb72d88ac1'),
     "the step's end passes and the C's": ('d9dfad6d6b96', '8fd51f89aae0'),
     'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
-    'the stage block and its one pass': ('a013cd007e0c', '24be0c26211b'),
-    'the stage step map and its C': ('b4f8fbaaee15', '95a58cab26a4'),
+    'the stage block and its one pass': ('bb801fac4766', '24be0c26211b'),
+    'the stage step map and its C': ('327f9c2281e6', '95a58cab26a4'),
     'the multistep step map and its C': ('b072302c5297', 'd7fefa35858c'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
