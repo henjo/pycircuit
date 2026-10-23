@@ -4798,6 +4798,40 @@ def test_the_free_period_and_matrix_free_solves_record_the_stalled_step_signatur
     np.testing.assert_allclose(z2, [1.0, -1.0], rtol=0, atol=1e-12)
 
 
+def test_the_matrix_free_newton_does_not_halve_a_full_step_that_settles():
+    """`_matrix_free_newton(line_search=True)` (2026-10-23), as `fsolve`: a
+    full step that passes the step test, to a point whose own residual
+    passes the residual test, is taken -- not halved because rounding at
+    the solution did not fall (each halving a `build`, a traversal of the
+    period).  The residual reads 3e-15 after one step and grows with every
+    `build`: it took the trial and four halvings; now the trial alone, at
+    the undamped loop's point."""
+    circuit.default_toolkit = circuit.numeric
+    cir = SubCircuit()
+    cir.add_node('v')
+    cir['C'] = C('v', gnd, c=1.0)
+    cir['L'] = L('v', gnd, L=1.0)
+    pss = PSS(cir, method='gear', reltol=1e-9)
+    A = np.array([[2.0, 0.5], [0.1, 1.0]])
+    xs = np.array([0.3, -0.7])
+    out = {}
+    for ls in (False, True):
+        calls = []
+
+        def build(z, calls=calls):
+            calls.append(1)
+            k = len(calls)
+            return (A @ (np.asarray(z, dtype=float) - xs) + 1e-15 * k * k * np.array([1.0, -1.0]),
+                    lambda v: A @ np.asarray(v, dtype=float))
+        z, _info, ier, _m = pss._matrix_free_newton(
+            build, np.zeros(2), np.array([1e-12, 1e-12]), np.array([1e-6, 1e-6]),
+            1e-6, 20, line_search=ls)
+        assert ier == 1, (ls, ier)
+        out[ls] = (z, len(calls))
+    assert (out[False][1], out[True][1]) == (2, 3), (out[False][1], out[True][1])
+    assert out[True][0].tobytes() == out[False][0].tobytes()
+
+
 def test_the_period_column_carries_the_constant_source_vector_of_an_autonomous_circuit():
     """`dphi/dT` for the DIRK and coupled-Radau kinds is built from the stage
     derivative `-(i(Y) + u)`, and `u` is the CONSTANT source vector of an

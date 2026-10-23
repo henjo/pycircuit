@@ -419,7 +419,8 @@ class _ShootingNewton(object):
                 return z, {}, 2, 'No convergence (inner Krylov solve failed)'
             if _d is not None:
                 xdiff = _d * xdiff
-            z_new = z + xdiff
+            z_new = z_full = z + xdiff
+            mv_full = []
             if line_search:
                 F0 = float(np.linalg.norm(F))
 
@@ -432,8 +433,23 @@ class _ShootingNewton(object):
                     return bt, float(np.linalg.norm(bt[0]))
                 step = 1.0
                 bt, nt = _trial(z_new)
+
+                ## ⚠ a full step that settles is not halved (2026-10-23):
+                ## `analysis.fsolve`'s rule, for its reason -- at the solution
+                ## a trial reads rounding, which need not fall, and each
+                ## halving is a traversal.  The point's residual scale costs
+                ## a matvec: made only where the step test holds, and kept
+                ## for the test below.
+                def _settles(Ft, z=z, z_full=z_full, xdiff=xdiff, mv=mv, mv_full=mv_full):
+                    if not np.all(np.abs(xdiff)
+                                  < reltol * np.maximum(np.abs(z_full), np.abs(z)) + xtol):
+                        return False
+                    if not mv_full:
+                        mv_full.append(mv(z_full))
+                    return bool(np.all(np.abs(Ft) < reltol * (
+                        np.abs(z_full) + np.abs(mv_full[0]) + np.abs(Ft)) + abstol))
                 for _k in range(self.LINE_SEARCH_MAX_HALVINGS):
-                    if nt < F0:
+                    if nt < F0 or (step == 1.0 and bt is not None and _settles(bt[0])):
                         break
                     step *= 0.5
                     z_new = z + step * xdiff
@@ -448,7 +464,8 @@ class _ShootingNewton(object):
 
             ## `|J| . |x|` is not available without the matrix; see
             ## this docstring for what this substitute is and is not.
-            I_scale = np.abs(z_new) + np.abs(mv(z_new)) + np.abs(F)
+            I_scale = np.abs(z_new) + np.abs(mv_full[0] if mv_full and z_new is z_full
+                                              else mv(z_new)) + np.abs(F)
             conv_x = np.all(np.abs(xdiff)
                             < reltol * np.maximum(np.abs(z_new), np.abs(z))
                             + xtol)

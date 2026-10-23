@@ -10980,3 +10980,36 @@ standalone DC, against 192: every digest identical; the sanitized fast tier (scr
 AddressSanitizer and UndefinedBehaviorSanitizer on every C object) 5 511 passed, no sanitizer report, and the two
 allocator-pin tests failing as they fail on 192 under the sanitizer (ASan's allocator refuses glibc's mallopt; the
 script does not deselect them); the pinned pairs, ABI, paths and runtime-map checks 231 passed.
+
+## 2026-10-23 — 194. A shooting Newton's full step that settles is not halved -- a Howland testbench's Radau PSS 2.10x (42.27 -> 20.14 s), its gear PSS 1.52x (6.83 -> 4.48 s), the orbit within 6.3e-14 V
+
+**Why**  Profiled (Andreas: "do it"), the testbench's default Radau PSS spent 8 traversals of the period where 4
+would do.  The first shooting step put the residual at the arithmetic's floor (1e-14); the next full step (6e-15)
+did not lower that rounding, so `fsolve`'s line search halved it four times -- four more traversals with
+sensitivities, 5.5 s each -- and the convergence test, run after the search, then took a step it would have taken
+from the full one: a halved step passes the step test whenever the full one does, so the halvings could change only
+the point returned, never the verdict.  `radau_transform=True` had looked 1.31x faster on this case for the same
+reason: its rounding fell on the first halving.
+
+**Built.**  `analysis.fsolve(line_search=True)`, without a `limiter`: a full step that passes the step test, to a
+point whose OWN residual passes the residual test, is taken -- not halved.  `_ShootingNewton._matrix_free_newton` the
+same (the point's residual scale, a matvec, made only where the step test holds and reused by the convergence test).
+⚠ The trial stays.  Built first without it -- the convergence test run before the trial, the undamped loop's verdict
+at its point, 2.90x and 2.04x -- the suite refused it: the convergence test reads the step and the PREVIOUS point's
+residual, and only the trial sees the point returned.  On a period map with a jump (a state reset landing on a grid
+point, `test_a_state_reset_needs_no_saltation_but_grid_alignment_is_a_cliff`) a 3.4e-10 step crossed it to a residual
+of 8.27e-3, and the solve returned that point as converged; the line search had evaluated it and halved back to
+1.7e-10.  With the trial kept that step does not settle and is halved as before.
+
+**Tests.**  test_transient_branch_and_dae: a full step at a growing rounding floor settles -- three residuals, the
+undamped point bit for bit (seven before); a step across a jump in the map is still halved to the side the solve
+stood on (it fails under the version without the trial).  test_shooting_pss: the matrix-free Newton's floor the same
+(seven builds before, three now).
+
+Measured, separate processes, HEAD (a worktree) and this tree interleaved: Radau 42.93 / 42.69 -> 20.22 / 20.33 s,
+and again the box idle (load < 1.5) 43.50 / 42.27 -> 20.14 / 20.23 s, 8 -> 4 traversals; gear 6.83 / 6.90 -> 4.48 /
+4.54 s, 5 -> 3; every one of the 60 nodes' orbits within 4.7e-14 V
+(Radau) and 6.3e-14 V (gear) of HEAD's on a 3.3 V scale, IM3 -63.57360 and -63.57383 dBc both, to five decimals.
+
+**Gate**: the suite in the main tree, 5 795 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 193: every digest identical.  No C changed.

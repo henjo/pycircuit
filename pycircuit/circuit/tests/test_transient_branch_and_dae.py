@@ -198,6 +198,69 @@ def test_a_line_search_trial_that_cannot_be_evaluated_is_halved_not_fatal():
                    full_output=True, line_search=True)
 
 
+def _noisy_affine(calls):
+    """``A (x - xs)`` plus a residual that GROWS with every evaluation
+    (``1e-15 k^2`` at the k-th): rounding at the solution that no trial
+    lowers -- the full step and every halving read uphill."""
+    A = np.array([[2.0, 0.5], [0.1, 1.0]])
+    xs = np.array([0.3, -0.7])
+    u = np.array([1.0, -1.0])
+
+    def f(x):
+        calls.append(1)
+        k = len(calls)
+        return A @ (np.asarray(x, dtype=float) - xs) + 1e-15 * k * k * u, A
+    return f
+
+
+def test_a_full_step_that_settles_is_not_halved():
+    """`fsolve(line_search=True)` (2026-10-23): a full step that passes the
+    step test, to a point whose own residual passes the residual test, is
+    taken -- not halved because rounding at the solution did not fall.  It
+    used to be halved four times: four more residuals, each a traversal of
+    the period for a shooting caller, for a verdict a halved step cannot
+    change.  The trial is still evaluated (the undamped loop's two
+    residuals, and the trial's), and the point is the undamped loop's.
+    Here the residual reads 3e-15 after one step and grows with every
+    evaluation."""
+    import pycircuit.circuit.analysis as _an
+    from pycircuit.circuit import numeric as _tk
+    out = {}
+    for ls in (False, True):
+        calls = []
+        x, info, ier, _m = _an.fsolve(_noisy_affine(calls), np.zeros(2), toolkit=_tk,
+                                      full_output=True, line_search=ls)
+        assert ier == 1, (ls, ier)
+        out[ls] = (x, len(calls), info['ls_unimproved'])
+    assert (out[False][1], out[True][1]) == (2, 3), (out[False][1], out[True][1])
+    assert out[True][0].tobytes() == out[False][0].tobytes()
+    assert out[True][2] == 0
+
+
+def test_a_full_step_across_a_jump_is_still_halved():
+    """The trial the settling rule keeps (2026-10-23): the convergence test
+    reads the step and the PREVIOUS point's residual, so only the trial
+    sees the point returned.  Here the step that passes the test crosses a
+    jump in the map (residual 1e-3 where the point's was 4e-5): it does not
+    settle, and is halved back to the side the solve stood on, as before --
+    a period map with a state reset on a grid point did this."""
+    import pycircuit.circuit.analysis as _an
+    from pycircuit.circuit import numeric as _tk
+    calls = []
+    xs, c = 0.3, 0.3 - 7e-6
+
+    def f(x):
+        v = float(x[0])
+        calls.append(v)
+        ## (a Jacobian 25 % stiff: the iterates close on xs from below, the
+        ## gap 0.2x a step; the step the test passes lands past `c`)
+        return np.array([2.0 * (v - xs) + (1e-3 if v > c else 0.0)]), np.array([[2.5]])
+    x, _i, ier, _m = _an.fsolve(f, np.array([0.0]), toolkit=_tk, full_output=True,
+                                line_search=True)
+    assert ier == 1 and max(calls) > c, (ier, calls)
+    assert float(x[0]) < c, (float(x[0]), c)
+
+
 
 def test_the_sources_off_numerical_floor_drops_all_the_way_to_the_arithmetic(monkeypatch):
     """⚠⚠ THE SOURCES-OFF NOISE FLOOR, measured on THIS tree's construction

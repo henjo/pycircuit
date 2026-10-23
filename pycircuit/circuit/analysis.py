@@ -611,9 +611,29 @@ def fsolve(f, x0, args=(), full_output=False, maxiter=200,
                     return None, None
             Ft, Jt = trial(x)
             improved = False
+            ## ⚠ A FULL STEP THAT SETTLES IS NOT HALVED (2026-10-23): one
+            ## that passes the step test, to a point whose OWN residual
+            ## passes the residual test.  At the solution a trial's residual
+            ## is rounding, and rounding need not fall: on a Howland
+            ## testbench's two-tone PSS it reached 1e-14 in one step, the
+            ## next full step (6e-15) did not lower it, and four halvings
+            ## were four more traversals of the period, for a verdict a
+            ## halved step cannot change (it passes the step test whenever
+            ## the full one does) -- Radau's PSS 42.7 -> 20 s.  ⚠ THE TRIAL
+            ## IS STILL EVALUATED: the convergence test below judges the
+            ## step and the PREVIOUS point's residual, and only the trial
+            ## sees the point returned.  On a period map with a jump (a
+            ## state reset on a grid point) a 3e-10 step crossed it to a
+            ## residual of 8e-3; that trial does not settle, and is halved.
+            def settles(Ft, x=x, x0=x0, xdiff=xdiff, J=J):
+                return (toolkit.alltrue(
+                    abs(xdiff) < reltol * toolkit.maximum(abs(x), abs(x0)) + xtol)
+                    and toolkit.alltrue(
+                        abs(Ft) < reltol * (toolkit.dot(abs(J), abs(x)) + abs(Ft)) + abstol))
             for _k in range(_LS_MAX_HALVINGS):
-                if Ft is not None and \
-                        float(toolkit.sqrt(toolkit.sum(Ft * Ft))) < F0:
+                if Ft is not None and (
+                        float(toolkit.sqrt(toolkit.sum(Ft * Ft))) < F0
+                        or (step == 1.0 and limiter is None and settles(Ft))):
                     improved = True
                     break
                 step *= 0.5
