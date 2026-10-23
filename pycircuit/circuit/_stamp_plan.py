@@ -656,13 +656,46 @@ def source_direct(cir, args):
         sd.held += 1
     if sd.ent is None:
         return _no(K['kind'])
-    out = sd.run(cir, args)
+    out = _direct_c(sd, args, ep)
+    if out is None:
+        out = sd.run(cir, args)
     if key is not None:
         if len(held[0]) >= held[1]:
             held[0].clear()
         held[0][key] = out.copy()
     _PC[K['served']] += 1
     return out
+
+
+def _direct_c(sd, args, ep):
+    """`sd.run(cir, args)`'s vector made by the C sources' table
+    (`_tran_sources`, the pass's pinned twin) where the program's stamp
+    holds -- `_SourceDirect.arm` watches what the table read: each source's
+    element, its values and its time function's attributes -- the table
+    checked once a stamp (`holds`), and a PWL's points, which no watcher
+    sees, left to the Python.  Its count the pass's own (`u:called`), and
+    no other: the table made and called quietly, so a watched run counts
+    what an unwatched one does.  None: the Python's run."""
+    an = args[2] if len(args) > 2 else None
+    if (ep is None or sd.stamp < 0 or sd.stamp != ep.value
+            or an not in _LAZY['gen']['cir'].timedomain_analyses):
+        return None                     # paths: not a decline (the Python's run)
+    from pycircuit.circuit import _tran_sources
+    if sd.tab_at != sd.stamp:
+        tab = sd.tab
+        if not tab or not tab.holds():
+            ## (a PWL's points, which no watcher sees: the Python's pass)
+            from pycircuit.circuit import func
+            tab = (None if any(type(e[0].__dict__.get('function')) is func.PWL for e in sd.ent)
+                   else _tran_sources.table_for(sd, quiet=True))
+        sd.tab, sd.tab_at = tab or False, sd.stamp
+    tab = sd.tab
+    if tab is False:
+        return None                     # paths: not a decline (the Python's run)
+    if tab._call(_tran_sources._CODES['SOURCES_U'], args[0] if args else 0.0, quiet=True) is None:
+        return None                     # paths: not a decline (the Python's run)
+    _PC['u:called'] += len(sd.ent)
+    return tab.out[:tab.n].copy()
 
 
 @contextlib.contextmanager
@@ -695,7 +728,7 @@ class _SourceDirect:
     and what a full check read, stamped."""
 
     __slots__ = ('arms', 'dicts', 'els', 'ent', 'held', 'n', 'others', 'same_cls', 'stamp',
-                 'types')
+                 'tab', 'tab_at', 'types')
 
     @classmethod
     def build(cls, cir, sp, n):
@@ -708,6 +741,8 @@ class _SourceDirect:
         self.n, self.arms, self.held, self.stamp = n, 0, 0, -1
         self.els = self.dicts = self.types = self.same_cls = self.others = ()
         self.ent = None
+        ## (the C sources' table and the stamp it was checked at: `_direct_c`)
+        self.tab, self.tab_at = None, -2
         ent = []
         for el, idx in sp.call:
             fn = type(el).u
@@ -775,6 +810,13 @@ class _SourceDirect:
             d = el.__dict__
             ip = d['iparv']
             dicts += [d, ip.__dict__, ip._parameters, d['toolkit'].__dict__]
+            ## (what the C sources' table read too -- the values, the time
+            ## function's attributes -- which the pass reads afresh each call)
+            dicts.append(ip._values)
+            fn = d.get('function')
+            if fn is not None:
+                dicts.append(fn.__dict__)
+        self.tab_at = -2
         for c in sp.zero_classes:
             info = c._hdl_info
             dicts += [info, info['funcs']]

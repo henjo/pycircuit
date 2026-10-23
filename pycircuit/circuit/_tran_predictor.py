@@ -9,7 +9,7 @@ import struct
 import numpy as np
 from numpy._core import umath as _um
 
-from pycircuit.circuit import _paths
+from pycircuit.circuit import _paths, _tran_pred_c
 
 #: THE WEIGHTS MEMO (speed round 4, stage D; 2026-10-02): the Vandermonde
 #: solve of `_fit` is a pure function of the normalised node times, and
@@ -150,9 +150,11 @@ class _StagePredictor:
         dtype=float), t) for t in ttargets]`` -- where `_predict_fast` serves
         every target, its work for them made once (the history's nodes, the
         last step's motion, the nodes' values: `_fit_fast`'s matrix) and per
-        target its own operations and count (roadmap 198); else that list.
-        The predictor's methods as defined, or that list (a caller's patch
-        sees its calls)."""
+        target its own operations and count (roadmap 198) -- the targets
+        made by pred.c where it serves them (`_tran_pred_c.stages`, the
+        twin of `_predict_fast`; roadmap 201); else that list.  The
+        predictor's methods as defined, or that list (a caller's patch sees
+        its calls)."""
         G = _PRED_GENUINE
         cls, d = type(self), self.__dict__
         hist = getattr(self, '_pred_hist', None) or ()
@@ -176,6 +178,12 @@ class _StagePredictor:
                 _PC['pred:fast'] += 1
                 out.append(np.array(x, dtype=float))
             return out
+        ## (the targets in C where it serves them: pred.c, `_predict_fast`'s
+        ## pinned twin, a target a call -- the same seeds and counts)
+        got = _tran_pred_c.stages(self, hist, x, ttargets, deg)
+        if got is not None:
+            _PC['pred:fast'] += len(got)
+            return got
         motion = np.abs(take[0][1] - take[1][1])
         V = np.array([e[1] for e in take], dtype=float)
         xref = take[0][1]

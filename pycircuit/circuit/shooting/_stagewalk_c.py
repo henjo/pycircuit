@@ -59,7 +59,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths, _tran_radau_c
+from pycircuit.circuit import _cbuild, _paths, _tran_radau_c, func
 
 #: `PYCIRCUIT_STAGEWALK_C=0` makes the Python walk every step
 STAGEWALK_C = os.environ.get('PYCIRCUIT_STAGEWALK_C', '1') != '0'
@@ -470,6 +470,8 @@ def _bind(e, walks, x, live, walk_lu):
     t.dgemm, t.dgemv = ffi.cast('void *', e.drv[2]), ffi.cast('void *', e.drv[3])
     c.ps.deg = int(tr._pred_degree())
     c.ps.clamp = float(tr.PRED_CLAMP)
+    ## (an underflow numpy ignores is no hand-back, as `_tran_pred_c.stages`)
+    c.ps.under_ok = 1 if func._underflow_ignored() else 0
     ## the radau record: the transient's own output set (`own`: never
     ## viewed), the temperature, the tableau, the tolerances; its sources',
     ## seeds' and charge's pointers given back after the calls (`_chunks`)

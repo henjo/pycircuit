@@ -176,8 +176,14 @@ def screen(tr, C):
         return _no('branch_c:C')
     n = C.shape[0]
     td = tr.__dict__
+    ## (the core's pattern where `C` is the C the core wrote on it -- or one
+    ## of a stage step's C's, `_tran_radau_c.solve`'s mark)
     mark = td.get('_C_pattern')
-    pat = mark[1] if mark is not None and mark[0] is C else None
+    pat = None
+    if mark is not None:
+        m0 = mark[0]
+        if m0 is C or (m0.__class__ is tuple and any(o is C for o in m0)):
+            pat = mark[1]
     if pat is None and n * n > _cbuild.INPLACE_MIN_ENTRIES:
         return _no('branch_c:large')
     cmax = td.get('_branch_cmax', 0.0)

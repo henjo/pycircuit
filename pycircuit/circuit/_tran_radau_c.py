@@ -558,6 +558,14 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
             for j in range(3):
                 put(Ya[a, j], {'q': qa[a, j].copy(), 'i': ia[a, j].copy(),
                                'C': Ca[a, j].copy(), 'G': Ga[a, j].copy()})
+    ## (the stage C's the branch screen reads next -- the memo's, every
+    ## entry the core's (`PCX_WANT_ALL`) -- marked with the core's pattern,
+    ## which `_tran_branch_c.screen` takes for them)
+    core = rec.core
+    if core.npat:
+        got = [tr._memo_get(Ya[A - 1, j]) for j in range(3)]
+        if all(g is not None and 'C' in g for g in got):
+            tr._C_pattern = (tuple(g['C'] for g in got), core.arrays['pat'])
     if sk is not None:
         ## (StructuralKLU as its own solve leaves it: the numeric the
         ## sequence ends with, its counters)

@@ -17,6 +17,11 @@
 #include "pcx_fenv.h"
 #include "pred.h"
 
+/* the flags a test sees: every flag of PCX_FP_FLAGS, or all but underflow
+   where numpy's error state ignores it (`under_ok`: an underflow numpy would
+   not report is no hand-back -- the arithmetic, and so the answer, the same) */
+#define PRED_FLAGS(s) ((s)->under_ok ? (PCX_FP_FLAGS & ~FE_UNDERFLOW) : PCX_FP_FLAGS)
+
 /* the flags numpy checks after its operations (inexact is not one) */
 
 /* every return: the flags cleared, `status` set and returned */
@@ -100,7 +105,7 @@ static long fit(pred_t *s, const long *nodes, long take)
                 for (c = 2; c < take; c++) { p = p * tau[j]; s->V[j * take + c] = p; }
             }
             /* (numpy's vander is a ufunc: what it raised, it reports) */
-            if (fetestexcept(PCX_FP_FLAGS)) return PRED_BAIL_FLAGS;
+            if (fetestexcept(PRED_FLAGS(s))) return PRED_BAIL_FLAGS;
             for (j = 0; j < take; j++) s->w[j] = (j == 0) ? 1.0 : 0.0;
             s->wk = 0;
             ((dgesv64_t) s->dgesv)(&m64, &one64, s->V, &m64, s->ipiv, s->w, &m64, &info64);
@@ -145,7 +150,7 @@ static long clamped_product(pred_t *s, const long *nodes, long take, const doubl
         double m = (p > lo) ? p : lo;
         s->out[i] = (m < hi) ? m : hi;
     }
-    if (fetestexcept(PCX_FP_FLAGS)) return PRED_BAIL_FLAGS;
+    if (fetestexcept(PRED_FLAGS(s))) return PRED_BAIL_FLAGS;
     return 0;
 }
 
@@ -180,7 +185,7 @@ long pcx_pred(pred_t *s)
     x0 = s->hx + nodes[0] * n;
     x1 = s->hx + nodes[1] * n;
     for (i = 0; i < n; i++) s->motion[i] = fabs(x0[i] - x1[i]);
-    if (fetestexcept(PCX_FP_FLAGS)) return done(s, PRED_BAIL_FLAGS);
+    if (fetestexcept(PRED_FLAGS(s))) return done(s, PRED_BAIL_FLAGS);
     if ((st = fit(s, nodes, take)) != 0) return done(s, st);
     if ((st = clamped_product(s, nodes, take, x0)) != 0) return done(s, st);
     return done(s, PRED_DONE);

@@ -11283,3 +11283,53 @@ orbit the same bytes.  9 599 of 9 600 steps made in C (the run's first: the stag
 standalone DC, against 199: every digest, step, rejection, Newton count and path count identical (DC but for its
 timing); the sanitized fast tier (scripts/sanitize_suite.sh) 5 562 passed, clean, and under `--deep` the stage
 walk's, the step KLU's and the radau C's tests (57, the stage walk's ten among them), clean.
+
+## 2026-10-23 — 201. A plain Radau transient's Python trimmed -- the estimate from the memo and the run's limiters, the seeds from pred.c, the screens in C on the core's pattern, the sources from the C table -- a Howland testbench's Radau transient 1.095x (0.877 -> 0.801 s), every answer bit-identical
+
+**Why**  Andreas, on S2a after 200 ("Both, trims first"): S2a as planned (the PSS step's Python) was moot -- the C walk
+replaced it -- and a plain Radau transient, which the C walk does not serve, spent 2.22 ms an attempt on the Howland
+testbench (91 unknowns, adaptive, from DC): 1.47 ms in the C stage Newton's dense LU, the rest Python -- the embedded
+estimate 224 us, the sources 126, the seeds 103, the screens 67 (in situ wrappers, every path count unmoved).  Plan
+g24/plan_s2a_trims.md: four bit-identical trims, ~1.14x expected, LINE 1.08x.  The stage block on KLU (~2x, a
+rounding-level change) follows as 202.
+
+**Built.**  T1, `_RadauStages._radau_error_estimate`: the run's stateful limiters (`_stateful_lims`, as 198 made the
+stage solver read them) instead of a walk of the circuit's elements every attempt, and x_n's C, G and i from the device
+memo, which the step that reached x_n recorded (no stateful limiter: the memo's premise -- the core's values), else the
+core's passes as before (`radau.est:memo`, 302 of 399 attempts).  T2, `_StagePredictor._pred_stages`: the three seeds
+from pred.c (`_tran_pred_c.stages`: `_predict_fast`'s pinned twin a target, on a state kept on the transient, `_pred_c`;
+the count `pred:fast` the Python's); pred.c hands back an underflow only where numpy's error state reports one
+(`pred_t.under_ok`, set by `stages` and the stage walk; the C loop's and `predict`'s unchanged) -- the Howland's tiny
+states raised it on 323 of 399 calls.  T3, `_tran_radau_c.solve`: the three stage C's the screen reads next (the memo's,
+every entry the core's) marked with the core's pattern (`_C_pattern` a tuple of them; `_tran_branch_c.screen` takes one
+of them), so the C screen serves where a large dense C declined.  T4, `_stamp_plan.source_direct`: the vector from the C
+sources' table kept on the direct pass's program (`_direct_c`) where the program's stamp holds -- `_SourceDirect.arm`
+now watches each source's values and time function, the table checked once a stamp (`holds`), a PWL (whose points no
+watcher sees) the Python's; the table made and called quietly (`quiet`), so a watched run counts what an unwatched one
+does, `u:called` the pass's own.  `_RUN_STATE` declares `_pred_c`, and `_stagewalk_c` (200's, set only on a shooting
+walk's inner transient, which the registry's loops never observe).
+  ⚠ FOUND ON THE WAY, A WRONG ANSWER IN THE C LOOP: `_tran_sources.table_for` made a time function's CLASS waveform
+where the function carried its own `f` (a user's injected noise: `IS.function.f = ...`) -- the C stepping loop ran such
+a source as its class's (a DC 0: a noisy RC's adaptive gear run 74 steps where the Python takes 124, another waveform),
+since the C loop's sources (2026-10-10).  T4's table met it on test_shooting_sampled's noisy-transient jitter (the
+scatter 2.5e-18 s where 3.3e-11).  `table_for` now declines a function with its own `f` or `next_event`
+(`sources_c:own`), for the loop and the direct pass alike.
+
+**Tests.**  test_radau_trims (8): each trim switched off -- pred.c, the C screen (a 68-unknown chain, past the dense
+screen's size), the C sources -- the same run (waveform, sweep, statistics, warnings, the device memo, the counts the
+Python makes); the estimate's memo read made unavailable, the same run; the run's limiters read once; a source's value
+and its time function's attribute written between runs, each run the C-free one's; a PWL source the Python's; pred.c
+through an underflow, the Python's seeds, and handed back under `np.errstate(under='warn')`.  test_tran_sources: a
+time function of its own declined, and run through the C loop and the direct pass, the Python's.  test_pinned_pairs: the
+moved pairs re-recorded after checking (the coupled stage Newton, the branch screen, the predictor, the stage predictor's
+fast path, the stage paths' passes, the sources and their C, the sources and their direct pass, the stepping loop (pred.c
+in its twin), the stage walk); `stages` and `_direct_c` joined their pairs' twins.
+
+Measured, HEAD (a worktree, 85190140) and this tree interleaved, separate processes, load ~2.6-3.8: the plain Radau
+transient (4 periods) 0.883 / 0.877 / 0.875 -> 0.801 / 0.813 / 0.800 s (1.095x, over the 1.08x line); the Howland's
+Radau PSS 3.19 -> 3.05 s, gear 4.12 -> 4.07 s; every waveform and statistic the same bytes.
+
+**Gate**: the suite in the main tree, 5 865 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone
+DC, against 200: every digest, step, rejection, Newton count and path count identical (DC but for its timing); the
+sanitized fast tier 5 535 passed, clean, and under `--deep` the trims', the predictor's, the sources', the screen's and
+the stage walk's tests (88), clean.

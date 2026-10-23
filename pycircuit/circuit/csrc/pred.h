@@ -5,9 +5,12 @@
  *
  * WHO SETS WHAT.  `_tran_pred_c.new_state` makes the struct: `n`, the
  * buffers `out`, `xt`, `motion` (numpy arrays it keeps with the struct),
- * `dgesv`, `dgemv`, and `wk` = 0.  Then either `_tran_pred_c.predict` (the
- * twin's tests: a fresh struct each call) sets `hk`, `ht`, `hx`, `ttarget`,
- * `deg`, `clamp`; or, in the C loop, `_tran_loop_c._bind` points `ht` and
+ * `dgesv`, `dgemv`, `wk` = 0 and `under_ok` = 0.  Then either
+ * `_tran_pred_c.predict` (the twin's tests: a fresh struct each call) or
+ * `_tran_pred_c.stages` (a coupled stage step's seeds, a struct kept on the
+ * transient) sets `hk`, `ht`, `hx`, `ttarget`, `deg`, `clamp` -- `stages`,
+ * and the shooting's stage walk, `under_ok` where numpy's error state
+ * ignores underflow; or, in the C loop, `_tran_loop_c._bind` points `ht` and
  * `hx` at the loop's own history buffers and sets `deg` and `clamp` once a
  * run, and loop.c sets `hk` and `ttarget` at each attempt (it keeps the
  * history's contents: the accepted points, the newest eight).
@@ -27,6 +30,9 @@ typedef struct {
     double ttarget;         /* the time predicted for: the attempt's end */
     long deg;               /* the fit's degree (`_pred_degree`), <= 4 */
     double clamp;           /* PRED_CLAMP */
+    long under_ok;          /* 1: an underflow is no flag -- numpy's error
+                               state ignores it (the glue checked,
+                               `func._underflow_ignored`); 0: every flag */
     double *out;            /* n: the prediction (read on PRED_DONE only) */
     double *xt;             /* work: the nodes taken, newest first, 5 x n */
     double *motion;         /* work: n */

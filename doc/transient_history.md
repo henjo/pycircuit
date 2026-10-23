@@ -5356,3 +5356,43 @@ J on the pattern.  The 27 gold transients' summed time -11.4 % (opampal -25 %,
 gm19 -23 %), the buck -7.6 %, everything bit-identical.
 Tests: `test_verdict_c.py` (both verdicts against numpy's, rows at the
 threshold); `test_loop_c.py`.
+
+## `_radau_error_estimate`, `_tran_pred_c.stages`, `_stamp_plan._direct_c`, `_tran_radau_c`'s pattern mark -- a plain Radau transient's Python trimmed (2026-10-23)
+
+2026-10-23 (Andreas: "Both, trims first"; `doc/hdl_roadmap_260824.md`, 201).
+A plain Radau transient's attempt on a Howland current pump testbench (91
+unknowns, adaptive) was 2.22 ms: 1.47 in the C stage Newton's dense LU, the
+rest Python -- the embedded estimate 224 us, the sources 126, the seeds 103,
+the screens 67.  Four trims, each bit-identical (waveform, statistics,
+warnings, the device memo, every path count but the new ones):
+the estimate takes the run's stateful limiters (`_stateful_lims`) rather than
+walking the circuit's elements every attempt, and x_n's C, G and i from the
+device memo, which the step that reached x_n recorded (no stateful limiter:
+the memo's premise -- the core's values; 302 of 399 attempts);
+`_pred_stages` makes its three seeds with pred.c (`stages`, the twin of
+`_predict_fast`), which now hands back an underflow only where numpy's error
+state reports one (`pred_t.under_ok`, set by `stages` and the stage walk; the
+C loop and `predict` as before) -- before, the Howland's tiny states raised
+it on 323 of 399 calls; the C stage Newton marks the three stage C's the
+screen reads next with the core's pattern (`_C_pattern` a tuple of them), so
+the C screen takes them where a large dense C declined; and `source_direct`
+makes its vector with the C sources' table kept on its program where the
+program's stamp holds the table's inputs -- `arm` now watches each source's
+values and time function, the table is checked once a stamp (`holds`), a
+PWL's points (no watcher sees them) stay the Python's, and the table is made
+and called quietly so a watched run counts what an unwatched one does.  The
+plain Radau transient 1.095x (0.877 -> 0.801 s, 4 periods), the Howland's
+Radau PSS 3.19 -> 3.05 s, all bit-identical.
+Tests: `test_radau_trims.py` (each trim switched off, the same run; the memo
+read made unavailable; the run's limiters read once; a source written
+between runs read again; a PWL source the Python's; pred.c through an
+underflow, and handed back where numpy reports it).
+⚠ FOUND ON THE WAY, A WRONG ANSWER: the C sources' table made a time
+function's CLASS waveform where the function carried its own `f` -- a user's
+injected noise, `IS.function.f = ...` -- so the C stepping loop ran such a
+source as its class's (a DC 0: a noisy RC's adaptive gear run took 74 steps
+where the Python takes 124, another waveform), since the C loop's sources
+(2026-10-10); the direct pass's table met it on the noisy-transient jitter
+test.  `table_for` now declines a function with its own `f` or `next_event`
+(`sources_c:own`); `test_tran_sources.py` runs such a source through the C
+loop and the direct pass against the Python.

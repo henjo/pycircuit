@@ -32,13 +32,13 @@ From the outside in. "Called from" is where the Python reaches the glue.
 | Stepping loop | `_SteppingLoop.where / take / judge / accept` with a multistep family | `csrc/loop.c` | `_tran_loop_c` | `PYCIRCUIT_LOOP_C` | `loop_c:` | `_SteppingLoop.execute` |
 | Controller law | `IntegralController._evaluate` (past its error test) | `csrc/ctrl.c` | `_tran_ctrl_c` | `PYCIRCUIT_CTRL_C` | -- | `loop.c` |
 | Error test | `StepController._charge_lte`, `_normalised`, the maximum | `csrc/lte.c` | `_tran_lte_c` | `PYCIRCUIT_LTE_C` | `lte_c:` | `StepController._max_error`, `loop.c` |
-| Stage predictor | `_StagePredictor._predict_fast` | `csrc/pred.c` | `_tran_pred_c` | `PYCIRCUIT_PRED_C` | `pred_c:` | `loop.c` |
+| Stage predictor | `_StagePredictor._predict_fast` | `csrc/pred.c` | `_tran_pred_c` | `PYCIRCUIT_PRED_C` | `pred_c:` | `loop.c`, `_StagePredictor._pred_stages` (`stages`), `stagewalk.c` |
 | Newton solve | `StandardNewton`, `ChordNewton`, `jacobian_only` | `csrc/newton.c` | `_tran_newton_c` | `PYCIRCUIT_NEWTON_C` | `newton_c:` | `Transient._solve_timestep`, `loop.c` |
 | DC base solve | `StandardNewton.solve_system` on the DC operating point's compositions (`dcanalysis`'s residual, source stepping, gshunt, junction gmin: `_dc_newton_c.composition`) | `csrc/dcnewton.c` | `_dc_newton_c` | `PYCIRCUIT_DCNEWTON_C` | `dcnewton_c:` | `StandardNewton.solve_system` (the DC's ladders) |
 | PCNR DC solve | `pcnr.solve_dc`'s loop from its start: the view's assembly (`pcnr_view`), each participant at its own unknowns (`PcnrDevice._kernel_stamp`), the Schur step, the solve, `refine` (each class's refine kernel: its law parameters, `limit.c`'s laws, `limit_block`'s Kruskal), the three tests; a NaN carried as numpy carries it to the non-finite iterate's RuntimeError (`pcnr.NONFINITE`) | `csrc/pcnrdc.c`; per class `csrc/pcnr_refine.c` after `csrc/limit.c` | `_pcnr_c` | `PYCIRCUIT_PCNR_C` | `pcnr_c:` | `pcnr.solve_dc` (`DC(pcnr=True)`'s ladders, `solve_dc_continued`) |
 | Branch screen | `_BranchCheck._branch_screen_C` (the SVD stays Python) | `csrc/branch.c` | `_tran_branch_c` | `PYCIRCUIT_BRANCH_C` | `branch_c:` | `_tran_branch._branch_screen`, `loop.c` |
 | Assembly | `_residual_and_jacobian`, `jacobian_only`, `residual_only` | `csrc/core.c` | `_tran_core` | `PYCIRCUIT_TRAN_CORE` (`PYCIRCUIT_CORE_PASSES`, `PYCIRCUIT_CORE_PATTERN`, `PYCIRCUIT_SKIP_UNREAD_J`) | `core.<want>:`, `core.ready:` | the transient's evaluation sites, `newton.c` |
-| Sources | `_stamp_plan.source_direct` | `csrc/sources.c` | `_tran_sources` | `PYCIRCUIT_SOURCES_C` | `sources_c:` | `loop.c` (its table) |
+| Sources | `_stamp_plan.source_direct` | `csrc/sources.c` | `_tran_sources` | `PYCIRCUIT_SOURCES_C` | `sources_c:` | `loop.c` (its table), `_stamp_plan.source_direct` (`_direct_c`: a table on the direct pass's program) |
 | Limiter walk | the Newton's limiter walk; the hand-written limiters | `csrc/walk.c`, `csrc/limit.c`, `csrc/psp_limit.c` | `_hdl_climit` | `PYCIRCUIT_HDL_LIMIT_WALK`, `PYCIRCUIT_HDL_CLIMIT`, `PYCIRCUIT_PSP_LIMIT_C` | `walk:`, `climit:` | the Newtons, `newton.c` |
 | Device passes | the circuit passes `G`, `C`, `i`, `q` of the HDL elements | generated kernels; `csrc/pass.c` (a batch: one kernel over its elements) | `_hdl_cbackend`, `_hdl_batch` | `PYCIRCUIT_HDL_BACKEND`, `PYCIRCUIT_HDL_BATCH` (`PYCIRCUIT_HDL_CFUSE`: the fused kernel a call's passes share; `PYCIRCUIT_HDL_ZERO_U`: the source passes' skip) | `batch.<pass>:`, `once:backend:` | the stamp plans' batches; `core.c` calls the kernels itself |
 | Invalidation | -- (a dict watcher) | `csrc/watch.c` | `_watch` | `PYCIRCUIT_WATCH` | -- | every readiness check |
@@ -102,7 +102,8 @@ declared in `transient._RUN_STATE`, with its owner and lifetime
 | `_lmmsens_c` | on the walk object (the PSS): `_lmmsens_c` (its record: the struct, buffers, the last call's arrays and the column lists they keep) | -- |
 | `_sensklu_c` | on the walk's StructuralKLU: `_sensklu_c` (its context: the struct, the probe's buffers, the binding) | the walk's `_KLUWalk`: its numeric, generation, `factors`, `refactors`, `fallbacks`; the solver's `numerics` |
 | `_stagewalk_c` | on the inner transient: `_stagewalk_c` (its context: the struct, the state's and a chunk's buffers, the predictor state, the screen's struct) | the stage state (`_qlast`, `_iqlast`, `_pred_hist`, `_q_cache`, `_rk_Y`, `_iq`, `_Cmat`, `_Geq`, `_C_cache`, `_branch_cmax`, `_dt` and its history), the device memo's records of the last step's stages; the stage KLU's `_numeric` and counts; the walk's `_KLUWalk` and the solver's `numerics` as `_sensklu_c`; the live columns; on a stop after a converged Newton, `_radau_c.pre` |
-| `_tran_pred_c`, `_tran_ctrl_c`, `_tran_branch_c`, `_tran_sources` | nothing: their state lives in the caller's struct or table | -- |
+| `_tran_pred_c` | on the transient: `_pred_c` (`stages`' struct and history buffers) | -- (the seeds, returned) |
+| `_tran_ctrl_c`, `_tran_branch_c`, `_tran_sources` | nothing: their state lives in the caller's struct or table (the direct pass keeps its table on its program, `_SourceDirect.tab`) | -- |
 
 ## When a C path may run: the run context
 

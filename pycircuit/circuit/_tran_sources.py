@@ -21,7 +21,8 @@ inside the C loop the pass counts as the Python's (`src.direct:served`,
 
 DECLINE, NEVER DIFFER.  A table is built only where every source's value
 comes the fast float way -- the waveform one of the seven exactly (no
-subclass), the numeric toolkit's own `exp`, `sin`, `where` and `pi`, every
+subclass, no `f` or `next_event` of its own on the instance), the numeric
+toolkit's own `exp`, `sin`, `where` and `pi`, every
 parameter a float (or a small int: its float exact), the DC value and the
 waveform not both ints (the Python adds those as ints), an exponential's
 `tau` nonzero (the Python raises), numpy's `exp` and `sin` the C library's
@@ -34,7 +35,10 @@ source's `function`, its class, its attributes, a PWL's points, the DC
 value): stale, it is not used.
 
 `Table.u` and `Table.next_event` are the Python entries (the twin's tests);
-the C loop checks what `_call` checks once an entry (`_tran_loop_c.run`).
+the C loop checks what `_call` checks once an entry (`_tran_loop_c.run`);
+the direct pass keeps a table on its program and calls `_call` itself
+where the program's stamp holds the table's inputs
+(`_stamp_plan._direct_c`).
 History: `doc/transient_history.md`.
 """
 import os
@@ -45,6 +49,11 @@ from pycircuit.circuit import _cbuild, _paths
 
 _PC = _paths.COUNTS
 _no = _paths.no
+
+
+def _quiet(_why):
+    """A decline not counted (`quiet`): None."""
+
 
 ENABLED = os.environ.get('PYCIRCUIT_SOURCES_C', '1') != '0'
 STATUS = 'not loaded'
@@ -150,23 +159,25 @@ class Table:
                 return False
         return True
 
-    def _call(self, mode, t):
+    def _call(self, mode, t, quiet=False):
         ## (what the Python reads on every call: the toolkit's functions, the
-        ## sine's scalar switch, numpy's error state for underflow)
+        ## sine's scalar switch, numpy's error state for underflow; `quiet`:
+        ## nothing counted, the direct pass's call -- `_stamp_plan._direct_c`)
+        no = _quiet if quiet else _no
         tk = self.tk
         if not (tk.exp is np.exp and tk.sin is np.sin and tk.where is np.where):
-            return _no('sources_c:toolkit')
+            return no('sources_c:toolkit')
         if self.uses_libm:
             from pycircuit.circuit import func
             if (self.has_sin and not func.SIN_SCALAR) or not func._underflow_ignored():
-                return _no('sources_c:errstate')
+                return no('sources_c:errstate')
         if not (type(t) is float or type(t) is _F64):
-            return _no('sources_c:t')
+            return no('sources_c:t')
         s = self.s
         s.mode, s.t = mode, float(t)
         status = self.cfn(s)
         if status != _CODES['SOURCES_DONE']:
-            return _no('sources_c:bail:' + BAIL.get(status, str(status)))
+            return no('sources_c:bail:' + BAIL.get(status, str(status)))
         return s
 
     def u(self, t):
@@ -243,20 +254,22 @@ def _waveform(fn, func, tk, differ, a):
     return 'param' if None in p else (kind, tuple(p), 0, None)
 
 
-def table_for(sd):
+def table_for(sd, quiet=False):
     """The `Table` of a direct source pass `sd` (`_stamp_plan._SourceDirect`:
-    its sources, rows and order), or None (declined, counted)."""
+    its sources, rows and order), or None (declined, counted -- `quiet`:
+    nothing counted, the direct pass's own table)."""
+    no = _quiet if quiet else _no
     if not ENABLED:
-        return _no('sources_c:off')
+        return no('sources_c:off')
     drv = driver()
     if drv is None:
-        return _no('sources_c:driver')
+        return no('sources_c:driver')
     ffi, cfn, differ = drv
     from pycircuit.circuit import func
     from pycircuit.circuit.toolkit import NumericToolkit
     n = sd.n
     if not sd.ent:
-        return _no('sources_c:empty')
+        return no('sources_c:empty')
     rows, kinds, avals, params, npts, entries = [], [], [], [], [], []
     tk0 = None
     for el, key, _desc, r in sd.ent:
@@ -264,32 +277,39 @@ def table_for(sd):
         fn = d.get('function')
         if fn is None:
             fn = el.function
-        tk = fn.__dict__.get('toolkit')
+        ## (a time function with its own `f` or `next_event` -- set on the
+        ## instance, as a user's injected noise sets it -- is the Python's:
+        ## the C makes its class's waveform)
+        fd = fn.__dict__
+        if 'f' in fd or 'next_event' in fd:
+            return no('sources_c:own')
+        tk = fd.get('toolkit')
         if type(tk) is not NumericToolkit or tk.exp is not np.exp or tk.sin is not np.sin \
                 or tk.where is not np.where:
-            return _no('sources_c:toolkit')
+            return no('sources_c:toolkit')
         if tk0 is None:
             tk0 = tk
         a = d['iparv']._values.get(key)
         af = _num(a)
         if af is None:
-            return _no('sources_c:param')
+            return no('sources_c:param')
         w = _waveform(fn, func, tk, differ, a)
         if w.__class__ is str:
-            return _no('sources_c:' + w)
+            return no('sources_c:' + w)
         kind, p, npt, pts = w
         if key == 'v':
             if not 0 <= r[2] < n:
-                return _no('sources_c:rows')
+                return no('sources_c:rows')
             rows.append((1, 0, 0, r[2]))
         else:
             if not (0 <= r[0] < n and 0 <= r[1] < n):
-                return _no('sources_c:rows')
+                return no('sources_c:rows')
             rows.append((0, r[0], r[1], 0))
         kinds.append(kind)
         avals.append(af)
         params.append(p)
         npts.append(npt)
         entries.append((el, key, fn, type(fn), tuple(fn.__dict__.items()), pts, a))
-    _PC['sources_c:built'] += 1
+    if not quiet:
+        _PC['sources_c:built'] += 1
     return Table(ffi, cfn, n, rows, kinds, avals, params, npts, entries, tk0)

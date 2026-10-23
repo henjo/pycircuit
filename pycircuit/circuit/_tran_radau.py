@@ -987,22 +987,34 @@ class _RadauStages:
         ## limiter sits at the step END, and `i(x_n)` read there is the
         ## tangent at `x_{n+1}` -- so it is synced to `x_n` for these reads
         ## and put back (`limit_sync`).
-        lims = stateful_limiters(self.cir)
-        snap = limiter_snapshot(lims) if lims else None
-        try:
-            if lims:
-                limit_sync(self.cir, xn, epar, lims)
-            P = _tran_core.passes(self, xn, 'CGi')
-            if P is not None:
-                Cn, Gn = P['C'], P['G']
-                f0 = -(P['i'] + src(tn))
-            else:
-                Cn = arr(self.cir.C(xn, epar))
-                Gn = arr(self.cir.G(xn, epar))
-                f0 = -(arr(self.cir.i(xn, epar)) + src(tn))
-        finally:
-            if snap is not None:
-                state_restore(snap)
+        ## (the run's, as the stage solver reads them: `_begin_run` makes
+        ## them -- a walk of the circuit's elements every attempt otherwise)
+        lims = self.__dict__.get('_stateful_lims')
+        if lims is None:
+            lims = self._stateful_lims = stateful_limiters(self.cir)
+        ## (x_n's where the step that reached it recorded them -- without a
+        ## stateful limiter, the memo's premise: the values recomputing gives)
+        rec = None if lims else self._memo_get(xn)
+        if rec is not None and 'C' in rec and 'G' in rec and 'i' in rec:
+            _paths.COUNTS['radau.est:memo'] += 1
+            Cn, Gn = rec['C'], rec['G']
+            f0 = -(rec['i'] + src(tn))
+        else:
+            snap = limiter_snapshot(lims) if lims else None
+            try:
+                if lims:
+                    limit_sync(self.cir, xn, epar, lims)
+                P = _tran_core.passes(self, xn, 'CGi')
+                if P is not None:
+                    Cn, Gn = P['C'], P['G']
+                    f0 = -(P['i'] + src(tn))
+                else:
+                    Cn = arr(self.cir.C(xn, epar))
+                    Gn = arr(self.cir.G(xn, epar))
+                    f0 = -(arr(self.cir.i(xn, epar)) + src(tn))
+            finally:
+                if snap is not None:
+                    state_restore(snap)
         rhs = np.asarray(Cn @ F1) + np.asarray(f0)
         rhs_r = tk.concatenate((rhs[:iref], rhs[iref + 1:]))
         if (real is not None and type(tk) is NumericToolkit

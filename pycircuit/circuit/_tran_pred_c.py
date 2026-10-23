@@ -1,17 +1,21 @@
 """THE STAGE PREDICTOR'S FAST PATH IN C: `_StagePredictor._predict_fast` --
 the seed every multistep step starts its Newton from, extrapolated from the
 accepted history -- as `csrc/pred.c`, which the stepping loop in C calls
-(`csrc/loop.c`).
+(`csrc/loop.c`), the shooting's stage walk (`shooting/_stagewalk_c`) and,
+for a coupled stage step's three seeds, `_StagePredictor._pred_stages`
+(`stages`).
 
-OWNS nothing on others' objects: the C loop keeps its `pred_t` (made by
-`new_state` in `_tran_loop_c._bind`) and the history in its own buffers;
-`predict` reads `tr._pred_hist` and writes nothing.  `_paths` prefix
-`pred_c:`, counted by `predict` only: `pred_c:served`, its declines
-(`pred_c:off`, `driver`, `hist`, `deg`, `periodic`), the general path
-(`pred_c:general`) and the hand-backs (`pred_c:bail:<why>`); inside the C
-loop a prediction counts as the Python's `pred:fast`, re-created by
-`_tran_loop_c._write_back`.  Switch: `ENABLED` (env `PYCIRCUIT_PRED_C=0`),
-read by `predict` on every call; the C loop does not read it.
+OWNS on the transient `_pred_c` (`stages`' struct and history buffers);
+the C loop keeps its `pred_t` (made by `new_state` in `_tran_loop_c._bind`)
+and the history in its own buffers; `predict` reads `tr._pred_hist` and
+writes nothing.  `_paths` prefix `pred_c:`, counted by `predict` and
+`stages`: `pred_c:served` (`predict`'s), the declines (`pred_c:off`,
+`driver`, `hist`, `deg`, `periodic`), the general path (`pred_c:general`)
+and the hand-backs (`pred_c:bail:<why>`); a seed `stages` makes counts as
+the Python's `pred:fast` (its caller's), and inside the C loop a prediction
+counts so too, re-created by `_tran_loop_c._write_back`.  Switch: `ENABLED`
+(env `PYCIRCUIT_PRED_C=0`), read by `predict` and `stages` on every call;
+the C loop does not read it.
 
 EXACT OR NOT AT ALL.  Bit for bit the Python's: the nodes newest first with
 the 1e-13 dedupe and the tie test, the fit's times in Python's float order,
@@ -19,7 +23,9 @@ the 1e-13 dedupe and the tie test, the fit's times in Python's float order,
 `dgemv` (`w @ X`: `cblas_dgemv(RowMajor, Trans, ...)` is that product), the
 clamp in numpy's `clip` order.  A floating-point flag numpy would report,
 and every case the fast path sends to the general one, hand the prediction
-back.
+back -- an underflow only where numpy's error state reports it, for
+`stages` and the stage walk (`pred_t.under_ok`); the C loop and `predict`
+hand it back always.
 
 `predict(tr, ttarget, deg)` packs `tr._pred_hist` and answers as
 `_predict_fast` does -- the prediction, None, or `_tran_predictor._GENERAL`
@@ -29,7 +35,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths
+from pycircuit.circuit import _cbuild, _paths, func
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -85,6 +91,7 @@ def new_state(ffi, dgesv, dgemv, n):
     s.dgesv = ffi.cast('void *', dgesv)
     s.dgemv = ffi.cast('void *', dgemv)
     s.wk = 0
+    s.under_ok = 0
     return s, buf, keep
 
 
@@ -137,3 +144,55 @@ def predict(tr, ttarget, deg=None):
         return None
     _no('pred_c:general' if status == GENERAL else 'pred_c:bail:' + BAIL.get(status, str(status)))
     return _GENERAL
+
+
+def stages(tr, hist, x, ttargets, deg):
+    """`_pred_stages`' seeds for `ttargets` in C where its fast path serves
+    them: pcx_pred a target (`_predict_fast`'s twin) on a state kept on the
+    transient (`_pred_c`), the history's nodes copied in once a call --
+    each seed a fresh array, a target with no prediction the point `x` --
+    or None (counted): the Python's loop makes them."""
+    if not ENABLED:
+        return _no('pred_c:off')
+    drv = _driver or driver()
+    if not drv:
+        return _no('pred_c:driver')
+    hk = len(hist)
+    if not (2 <= hk <= HIST_MAX and 1 <= int(deg) <= MAX_DEG):
+        return _no('pred_c:deg')
+    if getattr(tr, '_periodic_rows', None):
+        return _no('pred_c:periodic')
+    n = len(hist[-1][1])
+    td = tr.__dict__
+    st = td.get('_pred_c')
+    if st is None or st[0] != n:
+        ffi, _cfn, dgesv, dgemv = drv
+        s, buf, keep = new_state(ffi, dgesv, dgemv, n)
+        ht, hx = np.empty(HIST_MAX), np.empty((HIST_MAX, n))
+        keep += [ht, hx]
+        s.ht = ffi.from_buffer('double *', ht)
+        s.hx = ffi.from_buffer('double *', hx)
+        st = td['_pred_c'] = (n, s, buf, keep, ht, hx)
+    _n, s, buf, _keep, ht, hx = st
+    for i, e in enumerate(hist):
+        xi = e[1]
+        if not (type(xi) is np.ndarray and xi.dtype == np.float64 and xi.shape == (n,)):
+            return _no('pred_c:hist')
+        ht[i] = e[0]
+        hx[i] = xi
+    s.hk, s.deg, s.clamp = hk, int(deg), float(tr.PRED_CLAMP)
+    ## (an underflow numpy ignores is no hand-back)
+    s.under_ok = 1 if func._underflow_ignored() else 0
+    cfn = drv[1]
+    out = []
+    for tt in ttargets:
+        s.ttarget = float(tt)
+        status = cfn(s)
+        if status == DONE:
+            out.append(buf['out'].copy())
+        elif status == NONE:
+            out.append(np.array(x, dtype=float))
+        else:
+            return _no('pred_c:general' if status == GENERAL
+                       else 'pred_c:bail:' + BAIL.get(status, str(status)))
+    return out

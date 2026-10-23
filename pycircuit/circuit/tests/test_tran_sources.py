@@ -202,6 +202,36 @@ def test_each_route_the_python_takes_otherwise_declines():
         ts._driver = drv
 
 
+def test_a_time_function_of_its_own_is_the_pythons():
+    """A time function with its own `f` or `next_event` on the instance -- a
+    user's injected noise -- is declined: the C makes its class's waveform
+    (the C loop's table once did, the run another).  A run through the C
+    loop and one through the direct pass are the Python's."""
+    for name in ('f', 'next_event'):
+        c = _one(lambda: E.VSin('a', gnd, vo=0.0, va=1.0, freq=1e6))
+        fn = c.elements['s'].function
+        setattr(fn, name, getattr(fn, name))
+        assert _declined(c) == {'sources_c:own'}, name
+    from pycircuit.circuit import _tran_loop_c, circuit
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    from pycircuit.circuit.transient import Transient
+
+    def run(loop, srcs, integ=None):
+        c = SubCircuit()
+        c['In'] = E.IS(gnd, 'o', i=0.0)
+        c['In'].function.f = lambda t: 1e-3 * math.sin(2e6 * math.pi * t) + 2e-4
+        c['R'] = E.R('o', gnd, r=1e3)
+        c['C'] = E.C('o', gnd, c=1e-10)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_tran_loop_c, 'ENABLED', loop)
+            mp.setattr(ts, 'ENABLED', srcs)
+            tr = Transient(c, toolkit=circuit.numeric,
+                           **({} if integ is None else {'integrator': integ()}))
+            return np.asarray(tr.solve(tend=3e-6, timestep=1e-8).x).tobytes()
+    assert run(True, True) == run(False, False)
+    assert run(True, True, RadauIIA3Integrator) == run(True, False, RadauIIA3Integrator)
+
+
 def test_a_call_off_the_fast_route_declines():
     """numpy's error state raising on underflow (the Python's exp would);
     a NaN time where a PWL finds no segment (the Python's None raises)."""
