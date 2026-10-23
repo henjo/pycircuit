@@ -5396,3 +5396,29 @@ where the Python takes 124, another waveform), since the C loop's sources
 test.  `table_for` now declines a function with its own `f` or `next_event`
 (`sources_c:own`); `test_tran_sources.py` runs such a source through the C
 loop and the direct pass against the Python.
+
+## `_RadauStages._run_stage_klu` -- a plain run's stage block on a StructuralKLU (2026-10-23)
+
+2026-10-23 (Andreas: "Build, default on"; `doc/hdl_roadmap_260824.md`, 202).
+After 201 a plain Radau transient's attempt on a Howland current pump
+testbench (91 unknowns) spent ~1.46 of ~2.0 ms in the C stage Newton's dense
+LU of the 270-unknown stage block, which the shooting walks already solve on
+a StructuralKLU of its tiled structural pattern (`_InnerTransient._step_klu`).
+A plain run (`_open_run`) now makes the same for a fully implicit tableau on
+the numeric toolkit with no `linearsolver=` given, from `MIN_N_FOR_SPARSE`
+(250) block unknowns -- once per topology and size (`_stage_klu_run`), set as
+`_stage_klu`, which the C stage Newton and the Python's already solve on; a
+caller's own (a PSS's) is never replaced; `PYCIRCUIT_RADAU_KLU=0` keeps the
+dense solve.  As the analysis' sparse solver from 250 unknowns (Andreas,
+2026-10-02), the answers move against the dense LU's -- and NOT to the
+rounding, as first said: on a fixed grid over four periods the Howland's
+waveform moves up to 1.13e-8 V on 3.3 V (the circuit's conditioning
+amplifying the other rounding), an adaptive run takes the same 302 steps
+(its `max_step` 1e-9 relative apart, the waveform within 9.6e-10 V at the
+dense run's times); Andreas chose it with those numbers.  The plain Radau
+transient 2.09x (0.801 -> 0.383 s, 4 periods).
+Tests: `test_radau_stage_klu.py` (a chain past the threshold on its KLU,
+near the dense run's, the same steps adaptive; the C and the Python stage
+Newton the same bits on it; none for a small block, a multistep method, a
+given `linearsolver=`, the switch off; a caller's own kept; one per
+topology, kept from run to run).

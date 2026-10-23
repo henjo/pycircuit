@@ -701,8 +701,11 @@ _RUN_STATE = {
     '_newton_c': ('run', 'the C Newton\'s record'),
     '_newton_c_no': ('run', 'why the C Newton declined, kept until the stamp moves'),
     '_radau_c': ('run', 'the C Radau stage solve\'s record'),
-    '_stage_klu': ('run', ('the StructuralKLU a shooting walk\'s coupled stage Newton solves '
-                           'on (set by the PSS)')),
+    '_stage_klu': ('run', ('the StructuralKLU a fully implicit tableau\'s coupled stage Newton '
+                           'solves on (set by the PSS for its walks, or by a plain run: '
+                           '`_run_stage_klu`)')),
+    '_stage_klu_run': ('run', ('a plain run\'s own stage KLU: (the topology, the size, the '
+                               'StructuralKLU or None)')),
     '_radau_tc': ('run', 'the C Radau transform loop\'s record'),
     '_sens_c': ('run', ('the C shooting sensitivities\' record, on a shooting walk\'s inner '
                        'transient')),
@@ -2179,6 +2182,9 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             ## P22: eq (6)'s state-row mask, built once at the seed
             self._lte_state_mask = self._state_row_mask(x0)
         self._begin_run(x, n)
+        ## (a fully implicit tableau's stage block on a StructuralKLU from
+        ## 250 unknowns, a plain run's own: `_run_stage_klu`)
+        self._run_stage_klu()
 
         X.append(copy(x))
         if hasattr(self.cir, 'accept_step'):

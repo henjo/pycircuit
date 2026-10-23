@@ -26,6 +26,7 @@ from pycircuit.circuit._limiting import (
 from pycircuit.circuit._tran_newton import _EarlyAbort
 from pycircuit.circuit.analysis import (
     NoConvergenceError,
+    jacobian_structure,
     remove_row_col,
 )
 from pycircuit.circuit.simwarnings import (
@@ -41,6 +42,10 @@ RADAU_FROZEN = os.environ.get('PYCIRCUIT_RADAU_FROZEN', '1') != '0'
 #: speed round 10, B3.2); env `PYCIRCUIT_STAGE_FUSE=0` leaves each reader its
 #: own evaluation
 STAGE_FUSE = os.environ.get('PYCIRCUIT_STAGE_FUSE', '1') != '0'
+#: a plain run's coupled stage block on a StructuralKLU from
+#: `linearsolver.MIN_N_FOR_SPARSE` unknowns (`_run_stage_klu`, roadmap 202);
+#: env `PYCIRCUIT_RADAU_KLU=0` leaves it to numpy's dense solve
+RADAU_KLU = os.environ.get('PYCIRCUIT_RADAU_KLU', '1') != '0'
 #: numpy's solve as imported: a caller's stand-in takes the per-iteration path
 _NP_SOLVE = np.linalg.solve
 #: radau5's embedded weights (`_radau_error_estimate`'s ``dd1, dd2, dd3``)
@@ -432,6 +437,55 @@ class _RadauStages:
             if np.any(np.abs(i_state - i_exact) > reltol * np.abs(i_exact) + iabstol):
                 at_rest = False
         return at_rest
+
+    def _run_stage_klu(self):
+        """A plain run's coupled stage block solver (`_open_run`): where the
+        tableau is fully implicit, on the numeric toolkit, with no
+        `linearsolver=` given and from `MIN_N_FOR_SPARSE` block unknowns, a
+        StructuralKLU on the circuit's structural pattern tiled over the
+        stage blocks -- the shooting walk's (`_InnerTransient._step_klu`) --
+        made once per topology and size (`_stage_klu_run`), set as
+        `_stage_klu`, which the C stage Newton and the Python's solve on; a
+        caller's own `_stage_klu` (a PSS's) is never replaced.  As the
+        analysis' sparse solver from 250 unknowns (Andreas, 2026-10-02), the
+        answers move against the dense LU's: ~1e-8 V on a 3.3 V testbench
+        over four periods, the circuit's conditioning amplifying the other
+        rounding -- Andreas: "Build, default on" (roadmap 202)."""
+        from pycircuit.circuit.linearsolver import MIN_N_FOR_SPARSE, StructuralKLU
+        td = self.__dict__
+        cur, run = td.get('_stage_klu'), td.get('_stage_klu_run')
+        if cur is not None and (run is None or cur is not run[2]):
+            return
+        integ = self.base_integrator
+        m = self.cir.n - 1
+        s = len(getattr(integ, 'A', ()))
+        klu = None
+        if (RADAU_KLU and m > 0 and s >= 2
+                and getattr(integ, 'is_fully_implicit', lambda: False)()
+                and isinstance(self.toolkit, NumericToolkit)
+                and getattr(self.par, 'linearsolver', None) is None
+                and s * m >= MIN_N_FOR_SPARSE):
+            nodemap = self.cir.elementnodemap
+            if run is not None and run[0] is nodemap and run[1] == (s, m):
+                klu = run[2]
+            else:
+                st = jacobian_structure(self.cir, self.irefnode)
+                if st is not None and st[0] == m:
+                    _m, r, c = st
+                    rows = np.concatenate([r + i * m for j in range(s) for i in range(s)])
+                    cols = np.concatenate([c + j * m for j in range(s) for i in range(s)])
+                    order = np.lexsort((rows, cols))
+                    ref = weakref.ref(self)
+                    try:
+                        klu = StructuralKLU(s * m, rows[order], cols[order],
+                                            fallback=lambda: ref()._get_linearsolver())
+                    except ImportError:
+                        klu = None
+                td['_stage_klu_run'] = (nodemap, (s, m), klu)
+        if klu is None:
+            td.pop('_stage_klu', None)
+        else:
+            td['_stage_klu'] = klu
 
     def _coupled_stage_solver(self, x0, t, provided_function):
         """The dense coupled step's Newton and residual for the step

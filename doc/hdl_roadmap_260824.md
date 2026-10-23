@@ -11333,3 +11333,33 @@ Radau PSS 3.19 -> 3.05 s, gear 4.12 -> 4.07 s; every waveform and statistic the 
 DC, against 200: every digest, step, rejection, Newton count and path count identical (DC but for its timing); the
 sanitized fast tier 5 535 passed, clean, and under `--deep` the trims', the predictor's, the sources', the screen's and
 the stage walk's tests (88), clean.
+
+## 2026-10-23 — 202. A plain run's coupled stage block on a StructuralKLU from 250 unknowns (default on) -- a Howland testbench's Radau transient 2.09x (0.801 -> 0.383 s), the answers ~1e-8 V from the dense LU's
+
+**Why**  The second half of Andreas's "Both, trims first": after 201 a plain Radau transient's attempt on the Howland
+testbench spent ~1.46 of ~2.0 ms in the C stage Newton's dense LU of the 270-unknown stage block, which the shooting
+walks already solve on a StructuralKLU (`_InnerTransient._step_klu`).  Prototyped (g24/klu_proto.py): 2.1-2.5x -- and
+the answers NOT to the rounding, as Andreas had been told: a fixed grid's waveform 1.13e-8 V apart on 3.3 V over four
+periods.  Asked again with those numbers, Andreas: "Build, default on".  Plan g24/plan_202_stage_klu.md, LINE 1.5x.
+
+**Built.**  `_RadauStages._run_stage_klu`, called by `_open_run` (a plain run's start, never a PSS walk's): for a fully
+implicit tableau on the numeric toolkit with no `linearsolver=` given, from `MIN_N_FOR_SPARSE` (250) block unknowns,
+a StructuralKLU on the circuit's structural pattern tiled over the stage blocks (the shooting walk's), made once per
+topology and size (`_stage_klu_run`), set as `_stage_klu` -- which the C stage Newton and the Python's already solve on;
+a caller's own `_stage_klu` (a PSS's) never replaced; `PYCIRCUIT_RADAU_KLU=0` keeps the dense solve.  `_RUN_STATE`
+declares `_stage_klu_run` and says who sets `_stage_klu`.
+
+**Tests.**  test_radau_stage_klu (3): an 84-stage MOSFET chain (its block past 250) on its KLU, the C serving on it,
+the fixed-grid waveform within 1e-9 relative of the dense run's and an adaptive run's steps the same; the C and the
+Python stage Newton the same bits on the run's KLU; none for a small block, a multistep method, a given
+`linearsolver=`, the switch off; a caller's own kept; one per topology, kept from run to run.
+
+Measured, HEAD (a worktree, aad6c5f3) and this tree interleaved, separate processes, load ~1-3: the Howland plain
+Radau transient (4 periods, adaptive) 0.808 / 0.797 / 0.801 -> 0.383 / 0.383 / 0.394 s (2.09x, over the 1.5x line), the
+same 302 steps, `max_step` 1e-9 relative apart, the waveform within 9.6e-10 V at the dense run's times; on a fixed grid
+(12 800 steps) 1.13e-8 V apart.
+
+**Gate**: the suite in the main tree, 5 868 passed (6 skipped, 3 xfailed); the 27 gold decks (gear: none takes the
+change), transient and standalone DC, against 201: every digest, step, rejection, Newton count and path count
+identical (DC but for its timing); the sanitized fast tier 5 614 passed, clean, and under `--deep` the stage KLU's, the
+radau C's, the trims' and the stage walk's tests (59), clean.
