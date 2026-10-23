@@ -11139,3 +11139,54 @@ as recorded with the header as it was).
 standalone DC, against 196: every digest, step, rejection and Newton count identical -- the floor fires on none
 of them; the sanitized fast tier (scripts/sanitize_suite.sh) 5 516 passed, clean (the tier deselects by the last
 full run's durations: fewer than at 196), and the four C-twin cases of the floor under `--deep`, clean.
+
+## 2026-10-23 — 198. A Radau PSS's walks refactor one KLU numeric, take a stage time's sources once a solve, and seed the three stages at once -- a Howland testbench's Radau PSS 1.27x (8.88 -> 6.99 s), its gear PSS 1.09x (4.52 -> 4.14 s), every orbit bit-identical
+
+**Why**  Re-profiled after 197 (Andreas: "start as is"), the testbench's default Radau PSS took 8.8 s, three walks of
+3 200 steps; the C stage Newton is two assemblies a step already.  Around it, per step: the sensitivity factored
+the C's last assembly afresh (klu_factor, 167 us) and freed it at once; the sources at the three stage times were
+assembled again every walk (the step's memo lives one step: 28 800 vectors for 9 600 times); the three stage
+seeds each gathered the predictor's nodes, the last step's motion and the nodes' values anew; the coupled solver
+walked the circuit for its stateful limiters every step (45 us) though the run holds them; the accept re-sorted
+the predictor's whole node list.
+
+**Built.**  (C) `StructuralKLU.walk`: a `_KLUWalk` holds one numeric for a walk -- the first block factored, every
+later one refactored on it (klu_refactor, 57 us) and checked as `StructuralKLU.solve` checks its refactor, by a
+residual (of a probe: the block times ones) against REFACTOR_RESIDUAL_TOL, a fresh factor where it fails or meets
+a zero pivot; a factorisation it handed out refuses to answer after the next block's (`_KLUBorrowed`).
+`_walk_stage` gives it to every coupled step of a walk that keeps none (the shooting Newton's monodromy:
+`_final_lu`, `_walk_factor`); a kept walk -- PAC's and pnoise's factored period -- factors each step on its own.
+(B) `_stamp_plan.source_memo(cir)`, opened by `PSS.solve` for the whole solve: `source_direct` keeps each vector it
+makes by time and analysis and hands a copy for that time asked again, before its checks -- the opener vouches
+that nothing a source reads moves within the solve (a sweep writes between solves, which drop the memo).  (A
+memo on the program itself, renewed when its checks re-arm, never hit -- the program re-arms at every walk's
+start -- and could not have seen a time function replaced in place.)  (A) `_coupled_stage_solver` reads the run's
+`_stateful_lims`, as `_newton` does.  The extension (Andreas: "extend first"): `_pred_stages`, the three seeds at
+once -- per target `_pred_or`'s bytes and counts, the nodes, motion and values made once (`_fit_fast` takes the
+values); `_pred_note` merges new nodes after the history without sorting it again (the same list).  Not built: the
+branch screen of the stages in C (`branch_c:large`: no pattern mark on the Radau C's matrices) -- served whole,
+it measured no faster than numpy's reductions; the time is the Python around it.
+
+**Tests.**  test_structural_klu: a walk refactors one numeric and checks it (a zero pivot factored afresh, a stale
+factorisation refused); the transposed solve as before.  test_shooting_step_klu: a shooting walk factors once and
+refactors 19 times in 20 steps, no check failing, the orbit and the monodromy within the rounding of a fresh factor
+every step.  test_source_direct: a solve's memo hands a copy of the vector made at a time (nested, scoped, the
+counts); a PSS by radau and by gear makes each time's sources once, its orbit the bytes of one without the memo;
+the PSP stage's direct-pass count split into served and memo.  test_radau_c: the coupled solver reads the run's
+stateful limiters.  test_predictor_fast: the seeds at once are the per-target ones, bytes and counts (hypothesis,
+targets behind and ahead of the history); a patched `_pred_or` sees every stage; the accept's merge is the whole
+sort's list (hypothesis, new nodes before, among and after the history, within the dedupe's tolerance).
+test_pinned_pairs: nine re-recorded after checking their twins -- 'the walk's stage block and the C stage
+Newton's last assembly', 'the sources and their direct pass' and 'the stage predictor and its multistep fast
+path' take the new pieces; 'the stepping loop and its C' (`_pred_note`: loop.c's history is the same list), 'the
+predictor and its C' (`_fit_fast`'s arithmetic as before), 'the coupled stage Newton and its C', 'the stage paths'
+passes and the core's', 'the stage block and its one pass', 'the stage step map and its C' (its C declines the
+KLU blocks).
+
+Measured, HEAD (a worktree) and this tree interleaved, separate processes, load ~2: Radau 8.84 / 8.92 -> 6.91 /
+7.06 s, gear 4.52 / 4.51 -> 4.12 / 4.15 s; the whole orbit (`tpss.x`) the same bytes, both methods.  The pieces,
+one at a time against 8.8 s: the walk's numeric -1.2 s, the solve's sources -0.5 s, the stateful limiters ~0.1 s,
+the seeds at once, the accept's merge and the memo before the checks -0.35 s.
+
+**Gate**: the suite in the main tree, 5 829 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 197: every digest, step, rejection, Newton count and path count identical.  No C changed.

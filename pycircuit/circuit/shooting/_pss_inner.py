@@ -82,9 +82,11 @@ class _InnerTransient(object):
         is factored with from `SPARSE_BLOCK_MIN_N`, or None (the caller's
         solver) -- on the numeric toolkit, where no `linearsolver=` was
         given.  One per size and topology, its symbolic analysis the walk's;
-        each factor is a numeric of its own (`StructuralKLU.factor`), so a
-        step's factors are a function of its block alone.  The last bits
-        move against the dense LU (another pivot order)."""
+        each factor a kept walk makes is a numeric of its own
+        (`StructuralKLU.factor`), a function of its block alone; a walk that
+        keeps no step refactors one numeric of its own from its first block
+        on (`StructuralKLU.walk`, roadmap 198), a function of the walk.  The
+        last bits move against the dense LU (another pivot order)."""
         if (not SHOOT_KLU or getattr(self.par, 'linearsolver', None) is not None
                 or not isinstance(self.toolkit, NumericToolkit)):
             return None

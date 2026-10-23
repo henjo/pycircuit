@@ -238,7 +238,8 @@ PAIRS = {
                  'pycircuit.circuit._stamp_plan:_SourceDirect',
                  'pycircuit.circuit._stamp_plan:_added',
                  'pycircuit.circuit._stamp_plan:_u_add_site',
-                 'pycircuit.circuit._stamp_plan:_genuine'],
+                 'pycircuit.circuit._stamp_plan:_genuine',
+                 'pycircuit.circuit._stamp_plan:source_memo'],
     },
     'the sine and its scalar form': {
         'why': '`Sin.f` at a scalar time is its expression in Python floats around '
@@ -471,12 +472,16 @@ PAIRS = {
     'the stage predictor and its multistep fast path': {
         'why': 'behind the target nearest-first is newest-first: the fast path '
                'keeps the general path\'s order, its 1e-13 dedupe, the fit\'s '
-               'IEEE arithmetic and memo key bytes, and the same clip ufunc',
+               'IEEE arithmetic and memo key bytes, and the same clip ufunc; a coupled '
+               'stage method\'s seeds at once (`_pred_stages`, roadmap 198) are '
+               '`_pred_or` per target, its fast path\'s work made once for them',
         'reference': ['pycircuit.circuit._tran_predictor:_StagePredictor._predict_state',
-                      'pycircuit.circuit._tran_predictor:_StagePredictor._fit'],
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._fit',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._pred_or'],
         'twin': ['pycircuit.circuit._tran_predictor:_StagePredictor._predict_fast',
                  'pycircuit.circuit._tran_predictor:_StagePredictor._pred_fast_nodes',
-                 'pycircuit.circuit._tran_predictor:_StagePredictor._fit_fast'],
+                 'pycircuit.circuit._tran_predictor:_StagePredictor._fit_fast',
+                 'pycircuit.circuit._tran_predictor:_StagePredictor._pred_stages'],
     },
     'the stepping loop and its unread Jacobian': {
         'why': 'a fixed multistep run reads no step\'s Jacobian -- `judge` returns '
@@ -553,13 +558,17 @@ PAIRS = {
                'Newton\'s last assembly made at the very stages it returned (the same '
                '`C_i + (h A_ij) G_j`, each entry the same bits, zero off the pattern) '
                'instead of `_stage_block`\'s, at the same `h` and tableau, as '
-               '`_factorise` would (`StructuralKLU.factor_values`)',
+               '`_factorise` would (`StructuralKLU.factor_values`); in a walk that keeps '
+               'no step both on the walk\'s one numeric, refactored (`_walk_factor`, '
+               '`StructuralKLU.walk`, roadmap 198)',
         'reference': ['pycircuit.circuit.shooting._pss_walks:_stage_block',
                       'pycircuit.circuit.shooting._pss_inner:_InnerTransient._factorise',
-                      'pycircuit.circuit.linearsolver:StructuralKLU.factor'],
+                      'pycircuit.circuit.linearsolver:StructuralKLU.factor',
+                      'pycircuit.circuit.shooting._pss_walks:_walk_factor'],
         'twin': ['pycircuit.circuit._tran_radau_c:final_block',
                  'pycircuit.circuit.shooting._pss_walks:_final_lu',
-                 'pycircuit.circuit.linearsolver:StructuralKLU.factor_values'],
+                 'pycircuit.circuit.linearsolver:StructuralKLU.factor_values',
+                 'pycircuit.circuit.linearsolver:_KLUWalk'],
     },
     'the converged stage replay and the shooting\'s last walk': {
         'why': 'the stage map\'s converged replay takes the shooting\'s last walk -- '
@@ -778,8 +787,8 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('c5cbdafaf290', '3e12902bb8e7'),
-    'the predictor and its C': ('f2c284eb392d', '83cd2479857f'),
+    'the stepping loop and its C': ('02966d22fff9', '3e12902bb8e7'),
+    'the predictor and its C': ('9e611c84de5a', '83cd2479857f'),
     'the branch screen and its C': ('adb832d7aae0', 'd49b47d996e0'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
     'the kernel call and the pass driver': ('09a9e274bbe8', 'b34c658afd6f'),
@@ -787,7 +796,7 @@ RECORD = {
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '7e8f23b73019'),
     'the transient evaluation and the core': ('ecdae2231dae', 'b11b9f035724'),
     'the assembly loops and the plan': ('a822abce557c', '14651de8716f'),
-    'the sources and their direct pass': ('133b68c3262d', 'fced12f39974'),
+    'the sources and their direct pass': ('133b68c3262d', '8a9dea29a23b'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
@@ -796,19 +805,19 @@ RECORD = {
     'the error test and its C': ('1736570f3f0e', 'd946a8e69c20'),
     'the DC base solve and its C': ('64fd25ecd5da', '1e12937f72b9'),
     'the PCNR DC solve and its C': ('fb7013b47665', 'df592485484c'),
-    'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
+    'the stage predictor and its multistep fast path': ('c010f907bf3e', '1b8a812e67a9'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
-    "the stage paths' passes and the core's": ('fcda68098a8b', '3f00bb235faa'),
-    'the coupled stage Newton and its C': ('e09350a62d0e', 'bd459fa630f6'),
-    "the walk's stage block and the C stage Newton's last assembly": ('d0a6a92a1527', '2928e6b65003'),
+    "the stage paths' passes and the core's": ('918e07986a3b', '3f00bb235faa'),
+    'the coupled stage Newton and its C': ('c87ff9fb31be', 'bd459fa630f6'),
+    "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
     'the transform solve and its frozen form': ('6f35dca48644', '61256542c9d4'),
     'the transform Newton and its C': ('57fd43705940', '69b7678f62d7'),
     "the step's end passes and the C's": ('d9dfad6d6b96', 'b2c803a6a33c'),
     'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
-    'the stage block and its one pass': ('bb801fac4766', '24be0c26211b'),
-    'the stage step map and its C': ('327f9c2281e6', '591052196b6b'),
+    'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
+    'the stage step map and its C': ('39f2d0f63b0f', '591052196b6b'),
     'the multistep step map and its C': ('b072302c5297', 'be14cb8c5221'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),

@@ -180,6 +180,24 @@ def test_the_memo_holds_the_output_slots_and_never_one_still_held(monkeypatch):
 
 ## -- one step's Newton, captured: drawn seeds, steps and charges ---------------
 
+def test_the_coupled_stage_solver_reads_the_runs_stateful_limiters(monkeypatch):
+    """The coupled stage solver takes the run's stateful limiters
+    (`_stateful_lims`, `_begin_run`'s) -- a walk of the circuit's elements
+    -- rather than walking for them every step (roadmap 198)."""
+    from pycircuit.circuit import _tran_radau
+    calls = []
+    orig = _tran_radau.stateful_limiters
+
+    def counted(cir):
+        calls.append(1)
+        return orig(cir)
+    monkeypatch.setattr(_tran_radau, 'stateful_limiters', counted)
+    a, _ = _run(_mos_chain, False, tend=4e-7, timestep=2e-8, fixed_timestep=True)
+    assert calls == []
+    monkeypatch.setattr(_tran_radau, 'stateful_limiters', orig)
+    assert _run(_mos_chain, False, tend=4e-7, timestep=2e-8, fixed_timestep=True)[0] == a
+
+
 def _captured(build=_mos_chain, steps=4, **make):
     """A transient whose last step's coupled solve was kept: the step's
     `(ctx, _stage_newton, _block_residual, seed0)` and copies of the device

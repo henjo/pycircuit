@@ -1309,7 +1309,11 @@ class PSS(_ShootingNewton, _PeriodGrids, _StateEvents,
         ## system of 3m unknowns crosses its threading size near 100: a
         ## Gilbert cell (m = 49) took 221 s, 1.2 s on one thread (the same
         ## answer; doc/pss_log_260902.md, 2026-10-09).
-        with _single_threaded_blas():
+        ## THE SOURCES OF THE SOLVE (`_stamp_plan.source_memo`, roadmap 198):
+        ## the walks ask the same stage times every walk -- each vector made
+        ## once, nothing a source reads moving inside the solve
+        from pycircuit.circuit import _stamp_plan
+        with _single_threaded_blas(), _stamp_plan.source_memo(self.cir):
             return self._solve_run(_args, x0)
 
     def _solve_run(self, _args, x0):

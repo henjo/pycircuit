@@ -109,14 +109,22 @@ class _StagePredictor:
         ## corrupted.  The bookkeeping runs with the predictor switched OFF
         ## too, so 'off' is a control for the SEED, not for this.
         ## History: `doc/transient_history.md`, `Transient._pred_note`.
-        for ts, ys in stages:
-            h.append((float(ts), np.array(ys, dtype=float)))
-        h.append((float(t), np.array(x, dtype=float)))
+        new = [(float(ts), np.array(ys, dtype=float)) for ts, ys in stages]
+        new.append((float(t), np.array(x, dtype=float)))
         ## keep the newest nodes; ties (a stiffly accurate method's last stage
         ## IS the step) are harmless, the nearest-node pick drops duplicates
-        h.sort(key=lambda e: e[0])
-        uniq = []
-        for e in h:
+        new.sort(key=lambda e: e[0])
+        if h and new[0][0] >= h[-1][0]:
+            ## (every new node at or after the history -- a run moving
+            ## forward: the stable sort of the whole list is the history, which
+            ## is sorted and deduplicated already, then the new nodes sorted;
+            ## the dedupe goes on from its newest -- the same list, roadmap 198)
+            uniq = list(h)
+        else:
+            new = h + new
+            new.sort(key=lambda e: e[0])
+            uniq = []
+        for e in new:
             if uniq and abs(e[0] - uniq[-1][0]) <= 1e-14 * max(abs(e[0]), 1.0):
                 uniq[-1] = e
             else:
@@ -136,6 +144,56 @@ class _StagePredictor:
         """:meth:`_predict_state`, or ``fallback`` when it declines."""
         p = self._predict_state(ttarget, extra=extra)
         return fallback if p is None else p
+
+    def _pred_stages(self, x, ttargets):
+        """A coupled stage method's seeds: ``[self._pred_or(np.array(x,
+        dtype=float), t) for t in ttargets]`` -- where `_predict_fast` serves
+        every target, its work for them made once (the history's nodes, the
+        last step's motion, the nodes' values: `_fit_fast`'s matrix) and per
+        target its own operations and count (roadmap 198); else that list.
+        The predictor's methods as defined, or that list (a caller's patch
+        sees its calls)."""
+        G = _PRED_GENUINE
+        cls, d = type(self), self.__dict__
+        hist = getattr(self, '_pred_hist', None) or ()
+        if (self.stage_predictor == 'off' or not PRED_FAST or type(hist) is not list
+                or len(hist) < 2 or cls._fit is not _FIT or '_fit' in d
+                or any(getattr(cls, k) is not f or k in d for k, f in G.items())):
+            return [self._pred_or(np.array(x, dtype=float), t) for t in ttargets]
+        found = self._pred_fast_nodes(hist)
+        if found is None:
+            return [self._pred_or(np.array(x, dtype=float), t) for t in ttargets]
+        nodes, gap = found
+        t_last, t_first = hist[-1][0], hist[0][0]
+        for t in ttargets:
+            if not (t_last < t and gap > 4.5e-16 * (t - t_first)):
+                return [self._pred_or(np.array(x, dtype=float), t) for t in ttargets]
+        out = []
+        deg = self._pred_degree()
+        take = nodes[:min(int(deg) + 1, len(nodes))]
+        if len(take) < 2:
+            for _t in ttargets:
+                _PC['pred:fast'] += 1
+                out.append(np.array(x, dtype=float))
+            return out
+        motion = np.abs(take[0][1] - take[1][1])
+        V = np.array([e[1] for e in take], dtype=float)
+        xref = take[0][1]
+        dt_last = abs(take[0][0] - take[1][0])
+        rows = getattr(self, '_periodic_rows', None) or ()
+        for t in ttargets:
+            _PC['pred:fast'] += 1
+            pred = self._fit_fast(take, t, V)
+            if pred is None:
+                out.append(np.array(x, dtype=float))
+                continue
+            ratio = (abs(t - take[0][0]) / dt_last) if dt_last > 0 else 1.0
+            w = self.PRED_CLAMP * motion * max(ratio, 1.0)
+            p = _CLIP(pred, xref - w, xref + w)
+            for row, _m, _o in rows:
+                p[row] = xref[row]
+            out.append(p)
+        return out
 
     def _predict_state(self, ttarget, extra=(), deg=None):
         """The trajectory at ``ttarget``, from the ``deg + 1`` recorded nodes
@@ -329,9 +387,11 @@ class _StagePredictor:
         self.__dict__['_pred_fast'] = (hist, ents, out)
         return out
 
-    def _fit_fast(self, sub, tat):
+    def _fit_fast(self, sub, tat, V=None):
         """`_fit` with the node times in Python floats: the same IEEE
-        operations, the same memo key bytes, the same solve on a miss."""
+        operations, the same memo key bytes, the same solve on a miss.  `V`:
+        the nodes' values as the last line makes them, made by the caller
+        (`_pred_stages`: once for its targets)."""
         tat = float(tat)
         d = [e[0] - tat for e in sub]
         for v in d:
@@ -360,7 +420,9 @@ class _StagePredictor:
                 elif len(memo) >= PRED_WEIGHT_MEMO_SIZE:
                     memo.clear()
                 memo[key] = w
-        return w @ np.array([e[1] for e in sub], dtype=float)
+        if V is None:
+            V = np.array([e[1] for e in sub], dtype=float)
+        return w @ V
 
     def _fit(self, sub, tat):
         """The polynomial through ``sub`` evaluated at ``tat``, or None.
@@ -406,3 +468,9 @@ class _StagePredictor:
 #: the general fit, as defined: `_predict_fast` declines where it is not
 #: the one a call would reach
 _FIT = _StagePredictor._fit
+
+#: what `_pred_stages` stands in for, as defined: a patch on the class or a
+#: shadow on the instance takes the per-target calls
+_PRED_GENUINE = {k: getattr(_StagePredictor, k) for k in (
+    '_pred_or', '_predict_state', '_predict_fast', '_fit_fast', '_pred_fast_nodes',
+    '_pred_degree')}

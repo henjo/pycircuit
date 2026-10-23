@@ -125,3 +125,90 @@ def test_a_patched_fit_takes_the_general_path(monkeypatch):
     before = _paths.snapshot()
     tr._predict_state(4e-6, deg=2)
     assert seen == [3] and _paths.since(before).get('pred:patched', 0) == 1
+
+
+## -- a coupled stage method's seeds at once, and the accept's merge (roadmap 198)
+
+def _per_target(tr, x, ttargets):
+    """`_pred_stages`'s definition: `_pred_or` per target."""
+    return [tr._pred_or(np.array(x, dtype=float), t) for t in ttargets]
+
+
+@given(times=st.lists(st.floats(0.0, 1e-3, allow_nan=False), min_size=1, max_size=8, unique=True),
+       ahead=st.lists(st.floats(-1e-4, 1e-3), min_size=1, max_size=4), deg=st.sampled_from([1, 2, 3, 4]),
+       data=st.data())
+def test_the_stage_seeds_at_once_are_the_per_target_ones(times, ahead, deg, data):
+    """`_pred_stages` on any history and targets -- behind or ahead of it,
+    near-duplicate times included: per target the bytes `_pred_or` gives
+    (its fallback a new array each), and the same path counts."""
+    tr = Transient(_rc(), toolkit=circuit.numeric)
+    tr.stage_predictor_degree = deg
+    n = 4
+    times = sorted(times)
+    tr._pred_hist = [(float(t), np.array(data.draw(st.lists(_finite, min_size=n, max_size=n))))
+                     for t in times]
+    x = np.array(data.draw(st.lists(_finite, min_size=n, max_size=n)))
+    targets = [times[-1] + a for a in ahead]
+    got = []
+    for fn in (tr._pred_stages, lambda x, ts: _per_target(tr, x, ts)):
+        tr.__dict__.pop('_pred_fast', None)
+        tr.__dict__.pop('_pred_wmemo', None)
+        before = _paths.snapshot()
+        out = fn(x, targets)
+        got.append(([o.tobytes() for o in out], {k: v for k, v in _paths.since(before).items()
+                                                  if k.startswith('pred:')}))
+        assert len({id(o) for o in out}) == len(out) and all(o is not x for o in out)
+    assert got[0] == got[1]
+
+
+def test_a_patched_pred_or_sees_every_stage(monkeypatch):
+    """A `_pred_or` patched on the class takes the per-target calls."""
+    calls = []
+    orig = _tran_predictor._StagePredictor._pred_or
+
+    def counted(self, fallback, ttarget, extra=()):
+        calls.append(ttarget)
+        return orig(self, fallback, ttarget, extra)
+    monkeypatch.setattr(_tran_predictor._StagePredictor, '_pred_or', counted)
+    tr = Transient(_rc(), toolkit=circuit.numeric)
+    tr.stage_predictor_degree = 2
+    tr._pred_hist = [(0.0, np.zeros(4)), (1e-6, np.ones(4))]
+    tr._pred_stages(np.ones(4), [1.5e-6, 2e-6, 2.5e-6])
+    assert calls == [1.5e-6, 2e-6, 2.5e-6]
+
+
+def _note_full(h, t, x, stages):
+    """`_pred_note`'s list as the whole sort and dedupe made it."""
+    h = list(h)
+    for ts, ys in stages:
+        h.append((float(ts), np.array(ys, dtype=float)))
+    h.append((float(t), np.array(x, dtype=float)))
+    h.sort(key=lambda e: e[0])
+    uniq = []
+    for e in h:
+        if uniq and abs(e[0] - uniq[-1][0]) <= 1e-14 * max(abs(e[0]), 1.0):
+            uniq[-1] = e
+        else:
+            uniq.append(e)
+    return uniq[-Transient.PRED_HIST_MAX:]
+
+
+@given(old=st.lists(st.floats(0.0, 1e-3, allow_nan=False), max_size=9, unique=True),
+       new=st.lists(st.floats(0.0, 1.2e-3, allow_nan=False), min_size=1, max_size=4),
+       near=st.booleans())
+def test_the_accept_s_merge_is_the_whole_sort(old, new, near):
+    """`_pred_note` on any history and new nodes -- after it, before it,
+    among it, a new node within the dedupe's tolerance of the newest old
+    one: the list the whole sort and dedupe made, entry for entry."""
+    tr = Transient(_rc(), toolkit=circuit.numeric)
+    hist = _note_full([], 0.0, np.zeros(2), ())[:0]
+    for k, t in enumerate(sorted(old)):
+        hist = _note_full(hist, t, np.full(2, float(k)), ())
+    if near and hist:
+        new = [hist[-1][0] * (1.0 + 1e-15)] + new
+    tr._pred_hist = list(hist)
+    *stages, t = new
+    stages = [(ts, np.full(2, 10.0 + i)) for i, ts in enumerate(stages)]
+    tr._pred_note(t, np.full(2, 99.0), stages)
+    want = _note_full(hist, t, np.full(2, 99.0), stages)
+    assert [(e[0], e[1].tobytes()) for e in tr._pred_hist] == [(e[0], e[1].tobytes()) for e in want]

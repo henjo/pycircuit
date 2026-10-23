@@ -822,6 +822,12 @@ class StructuralKLU(KLUSolver):
         return _Factored(fac, lambda f, b: f.solve(b),
                          lambda f, b: f.solve_transposed(b), sparse=True)
 
+    def walk(self):
+        """A `_KLUWalk`: `factor_values` for a caller that solves with each
+        block's factorisation before it hands the next one and keeps none --
+        on one numeric, refactored."""
+        return _KLUWalk(self)
+
     def __repr__(self):
         return (f'StructuralKLU(m={self.m}, nnz={self.nnz}, analyses={self.analyses}, '
                 f'factors={self.factors}, refactors={self.refactors}, numerics={self.numerics}, '
@@ -866,6 +872,101 @@ class _KLUNumeric(object):
                     ct.byref(ct.c_void_p(num)), ct.byref(self._solver._common))
             except Exception:                         # pragma: no cover
                 pass                                  # interpreter shutdown
+
+
+class _KLUWalk:
+    """ONE NUMERIC FOR A WALK'S BLOCKS (`StructuralKLU.walk`): `factor_values`
+    of each block a walk hands it, the first factored, every later one
+    refactored on the same numeric -- klu_refactor on the pivot order the
+    first factor chose -- and checked as `StructuralKLU.solve` checks its
+    refactor, by a residual against `REFACTOR_RESIDUAL_TOL` (of a probe:
+    the block times ones, solved), a fresh factor where it fails or meets a
+    zero pivot.  For a caller that solves with each block's factorisation
+    before it hands the next, and keeps none: a shooting walk's monodromy
+    (`_pss_walks._PeriodWalks._walk_stage` without `keep`).  A factorisation
+    it handed out answers until the next block's (`_KLUBorrowed`: a later
+    use raises); the numeric is freed with this object.  Measured on a
+    270-unknown stage block (a Howland testbench's Radau PSS): klu_refactor
+    57 us, klu_factor 167 us; the solves within 6e-16 of a fresh factor's.
+    `factors`, `refactors`, `fallbacks` count them (each fresh factor in the
+    solver's `numerics` too)."""
+
+    __slots__ = ('_cols', '_num', 'factors', 'fallbacks', 'gen', 'refactors', 'solver')
+
+    def __init__(self, solver):
+        self.solver = solver
+        self._num = None
+        self.gen = 0
+        ## (each CSC entry's column, for the probe's product)
+        self._cols = numpy.repeat(numpy.arange(solver.m), numpy.diff(solver.Ap))
+        self.factors = self.refactors = self.fallbacks = 0
+
+    def factor_values(self, Ax):
+        sk = self.solver
+        ct = sk._ct
+        Ax = numpy.ascontiguousarray(Ax, dtype=numpy.float64)
+        num = self._num
+        self.gen += 1
+        if num is not None:
+            ok = sk._lib.klu_refactor(
+                sk._ptr(sk.Ap, ct.c_int), sk._ptr(sk.Ai, ct.c_int), sk._ptr(Ax, ct.c_double),
+                ct.c_void_p(sk._analysed()), ct.c_void_p(num), ct.byref(sk._common))
+            self.refactors += 1
+            if not (ok and self._holds(Ax)):
+                self.fallbacks += 1
+                self._num = None
+                sk._free(num)
+                num = None
+        if num is None:
+            num = self._num = sk._factor(Ax)
+            self.factors += 1
+            ## (a numeric of its own, as `factor_values` makes: counted there)
+            sk.numerics += 1
+        fac = _KLUBorrowed(self, num)
+        return _Factored(fac, lambda f, b: f.solve(b),
+                         lambda f, b: f.solve_transposed(b), sparse=True)
+
+    def _holds(self, Ax):
+        """The refactored numeric's check: ``b = A 1``, ``x = A^-1 b``, ``max
+        |A x - b| / max(max |b|, 1e-300)`` within `REFACTOR_RESIDUAL_TOL` (a
+        NaN fails); a failed solve fails."""
+        sk = self.solver
+        ct = sk._ct
+        b = numpy.bincount(sk.Ai, weights=Ax, minlength=sk.m)
+        x = b.copy()
+        if not sk._lib.klu_solve(ct.c_void_p(sk._symbolic), ct.c_void_p(self._num), sk.m, 1,
+                                 sk._ptr(x, ct.c_double), ct.byref(sk._common)):
+            return False
+        r = numpy.bincount(sk.Ai, weights=Ax * x[self._cols], minlength=sk.m) - b
+        scale = max(float(numpy.abs(b).max()), 1e-300)
+        return float(numpy.abs(r).max()) / scale <= sk.REFACTOR_RESIDUAL_TOL
+
+    def __del__(self):
+        num, self._num = getattr(self, '_num', None), None
+        if num:
+            try:
+                self.solver._free(num)
+            except Exception:                         # noqa: BLE001, S110  # pragma: no cover
+                pass                                  # interpreter shutdown
+
+
+class _KLUBorrowed(_KLUNumeric):
+    """A `_KLUWalk`'s numeric as one block's factorisation: it answers while
+    the walk has not refactored it for another (its generation), raises
+    after, and frees nothing."""
+
+    def __init__(self, walk, num):
+        sk = walk.solver
+        _KLUNumeric.__init__(self, sk, sk._symbolic, num, sk.m)
+        self._walk, self._gen = walk, walk.gen
+
+    def _run(self, fn, b):
+        if self._walk.gen != self._gen or self._walk._num != self._num:
+            raise RuntimeError('a walk\'s KLU factorisation used after the next block\'s')
+        return _KLUNumeric._run(self, fn, b)
+
+    def __del__(self):
+        self._num = None
 
 
 class ComplexKLUSolver(object):

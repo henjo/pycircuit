@@ -279,8 +279,7 @@ class _RadauStages:
         ## reads the stage guess, and limiting the seed is what fixed PCNR's
         ## one documented failure (`pcnr.py`), so a seed nearer the answer is
         ## the same medicine.
-        Y = [self._pred_or(np.array(xn, dtype=float), tstage[j])
-             for j in range(3)]
+        Y = self._pred_stages(xn, tstage)
         v_lim = [_pcnr.v_lim_init(junctions, Y[j]) for j in range(3)]
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
@@ -455,7 +454,12 @@ class _RadauStages:
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)
-        lims = stateful_limiters(self.cir)
+        ## (the run's, as `_newton` reads them: `_begin_run` makes them --
+        ## a walk of the circuit's elements, 45 us a step on a Howland
+        ## testbench, roadmap 198)
+        lims = self.__dict__.get('_stateful_lims')
+        if lims is None:
+            lims = self._stateful_lims = stateful_limiters(self.cir)
         ## (a bypassed device returns its last evaluation for a NEARBY point,
         ## so its values depend on history: no memo then)
         _nobypass = float(getattr(epar, 'bypasstol', -1.0) or -1.0) < 0.0
@@ -656,8 +660,7 @@ class _RadauStages:
                 worst = max(worst, float(np.max(np.abs(np.asarray(Fi)))))
             return worst
 
-        seed0 = [self._pred_or(np.array(xn, dtype=float), tstage[i])
-                 for i in range(3)]
+        seed0 = self._pred_stages(xn, tstage)
         return ctx, _stage_newton, _block_residual, seed0
 
     def _rk_step_coupled(self, x0, t, provided_function=None):
@@ -1264,8 +1267,7 @@ class _RadauStages:
         ## step), so it is the one that benefits most from starting near the
         ## root and the one that most needs the clamp: it has no fresh Jacobian
         ## to recover from a wild guess, only the dense fallback.
-        Y = [self._pred_or(np.array(xn, dtype=float), tstage[i])
-             for i in range(3)]
+        Y = self._pred_stages(xn, tstage)
         reltol = self.par.reltol
         abstol = float(self.par.vabstol)
         maxit = int(self.par.maxiter)

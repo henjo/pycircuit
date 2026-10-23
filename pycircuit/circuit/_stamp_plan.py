@@ -57,6 +57,7 @@ an element a batch hands back is called here as before, in its order.
 
 History: `doc/transient_history.md`, `_stamp_plan`.
 """
+import contextlib
 import itertools
 import operator
 import os
@@ -91,7 +92,12 @@ _SK = {m: {r: f'src.{m}:{r}' for r in ('off', 'toolkit', 'gate', 'groups', 'shad
 #: every circuit size; env `PYCIRCUIT_SOURCE_DIRECT=0` turns it off
 SOURCE_DIRECT = os.environ.get('PYCIRCUIT_SOURCE_DIRECT', '1') != '0'
 _SD = {r: f'src.direct:{r}' for r in ('off', 'toolkit', 'gate', 'groups', 'shadowed', 'patched',
-                                       'element', 'kind', 'served')}
+                                       'element', 'kind', 'served', 'memo')}
+#: THE SOURCES OF ONE SOLVE (`source_memo`, roadmap 198): per circuit (its
+#: `id`) open, `[the vectors source_direct made by (t, analysis), how many it
+#: keeps]`; kept up to `SOURCE_MEMO_BYTES` of them, then begun again
+_MEMO = {}
+SOURCE_MEMO_BYTES = 16 << 20
 
 _PARTNER = {'G': 'i', 'C': 'q'}
 _MATRIX = {'i': 'G', 'q': 'C'}
@@ -591,6 +597,22 @@ def source_direct(cir, args):
     (speed round 10, B3.7: a pass on the PSP stage was 117 k instructions,
     ~55 k of them the loop around its two sources, ~60 k their `u`.)"""
     K = _SD
+    ## THE SOURCES OF ONE SOLVE (`source_memo`, roadmap 198): where one is
+    ## open for this circuit, a time asked again is the vector made then,
+    ## before any check -- only a pass this program served is kept, and the
+    ## opener vouches that nothing it read moves within the solve -- a copy
+    ## (a caller may write it); a time that cannot be a key is made as before
+    held = _MEMO.get(id(cir)) if _MEMO else None
+    key = None
+    if held is not None and len(args) > 2:
+        key = (args[0], args[2])
+        try:
+            got = held[0].get(key)
+        except TypeError:
+            key = got = None
+        if got is not None:
+            _PC[K['memo']] += 1
+            return got.copy()
     if not (ENABLED and SOURCE_DIRECT):
         return _no(K['off'])
     Circuit, NumericToolkit = _SRC['t'] if _SRC else _src_types()
@@ -635,8 +657,36 @@ def source_direct(cir, args):
     if sd.ent is None:
         return _no(K['kind'])
     out = sd.run(cir, args)
+    if key is not None:
+        if len(held[0]) >= held[1]:
+            held[0].clear()
+        held[0][key] = out.copy()
     _PC[K['served']] += 1
     return out
+
+
+@contextlib.contextmanager
+def source_memo(cir):
+    """THE SOURCES OF ONE SOLVE (roadmap 198): while it is open,
+    `source_direct` keeps each vector it makes for `cir`, by time and
+    analysis, and hands a copy of it for that time asked again -- a PSS's
+    walks traverse one grid, every stage time once a walk (a Howland
+    testbench's Radau PSS: 28 800 vectors for 9 600 times; 8.7 -> 8.2 s).
+    The values are the program's -- each source's parameter plus its time
+    function's `f(t)` -- so the opener vouches that neither moves while it
+    is open: one solve, no parameter written and no time function replaced
+    in it (a sweep writes between its solves, which drop the memo).  Up to
+    `SOURCE_MEMO_BYTES` of vectors kept, then begun again; nested, the
+    outer one serves."""
+    k = id(cir)
+    if k in _MEMO:
+        yield
+        return
+    _MEMO[k] = [{}, max(64, SOURCE_MEMO_BYTES // (8 * max(int(getattr(cir, 'n', 1)), 1)))]
+    try:
+        yield
+    finally:
+        _MEMO.pop(k, None)
 
 
 class _SourceDirect:

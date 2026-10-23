@@ -114,6 +114,31 @@ def test_the_c_stage_newton_on_the_walk_s_klu_is_the_python_s(monkeypatch):
     assert not d0.get('radau_c:on_klu') and not d0.get('radau_c:final')
 
 
+def test_a_shooting_walk_refactors_one_numeric_and_keeps_its_answer(monkeypatch):
+    """A walk that keeps no step (the shooting Newton's monodromy) factors
+    its first block and refactors one numeric for every later one
+    (`StructuralKLU.walk`, roadmap 198): one fresh factor and `steps - 1`
+    refactors a walk, none failing its check; a kept walk (PAC's factored
+    period) factors each step on its own.  The orbit and the monodromy
+    within the rounding of a fresh factor every step (the walk's numeric
+    left out)."""
+    walks = []
+    orig = StructuralKLU.walk
+
+    def walk(self):
+        walks.append(orig(self))
+        return walks[-1]
+    monkeypatch.setattr(StructuralKLU, 'walk', walk)
+    pss, y = _pss(_ladder(SECTIONS), True, monkeypatch)
+    P = np.asarray(pss._monodromy)
+    assert walks and all(w.factors == 1 and w.refactors == 19 and w.fallbacks == 0
+                         for w in walks), [(w.factors, w.refactors, w.fallbacks) for w in walks]
+    monkeypatch.setattr(StructuralKLU, 'walk', lambda self: None)
+    pss0, y0 = _pss(_ladder(SECTIONS), True, monkeypatch)
+    assert np.allclose(y, y0, rtol=1e-12, atol=1e-15)
+    assert np.allclose(P, np.asarray(pss0._monodromy), rtol=1e-10, atol=1e-14)
+
+
 def _replay_runs(monkeypatch, alter=None):
     """The PSS and a PAC on it, with the converged replay as `alter` leaves
     `_stage_walk_reused` (None: as it is)."""

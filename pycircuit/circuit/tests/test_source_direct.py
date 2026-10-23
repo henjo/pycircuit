@@ -388,7 +388,67 @@ def test_a_transient_and_a_pss_are_the_same(method, monkeypatch):
     a, _da = run(False)
     b, db = run(True)
     assert a == b
-    assert db.get('src.direct:served', 0) > 100, db
+    ## (each time made once, the walks after it served by the solve's memo)
+    assert db.get('src.direct:served', 0) > 30 and db.get('src.direct:memo', 0) > 60, db
+
+
+## -- the sources of one solve (`source_memo`, roadmap 198) ------------------------------
+
+def _two_sines():
+    c = SubCircuit()
+    c['v1'] = VSin('a', gnd, v=1.0, va=0.3, freq=1e6)
+    c['i1'] = ISin('b', gnd, i=1e-3, ia=2e-4, freq=2e6)
+    c['r1'] = R('a', 'b', r=1e3)
+    c['r2'] = R('b', gnd, r=2e3)
+    return c
+
+
+def test_a_solve_s_memo_hands_a_copy_of_the_vector_made_at_a_time():
+    """Inside `source_memo` a time asked again is the vector made then --
+    the same bytes, counted `src.direct:memo`, a copy (writing one leaves
+    the next whole); a nested memo is the outer one; outside, every time is
+    made again."""
+    c = _two_sines()
+    t = 3.7e-7
+    before = _paths.snapshot()
+    with _stamp_plan.source_memo(c):
+        u0 = c.u(t, defaultepar, analysis='tran')
+        u0[0] = 99.0
+        u1 = c.u(t, defaultepar, analysis='tran')
+        with _stamp_plan.source_memo(c):
+            u2 = c.u(t, defaultepar, analysis='tran')
+        u3 = c.u(t, defaultepar, analysis='tran')
+    d = _paths.since(before)
+    u4 = c.u(t, defaultepar, analysis='tran')
+    assert u1.tobytes() == u2.tobytes() == u3.tobytes() == u4.tobytes() and u1[0] != 99.0
+    assert d.get('src.direct:memo') == 3 and d.get('src.direct:served') == 1, d
+    assert not _stamp_plan._MEMO
+
+
+@pytest.mark.parametrize('method', ['radau', 'gear'])
+def test_a_pss_makes_each_time_s_sources_once(method, monkeypatch):
+    """A PSS opens the memo for its solve: each walk after the first takes
+    its stage times' sources from it -- the orbit the bytes of one made
+    without it."""
+    from contextlib import nullcontext
+
+    from pycircuit.circuit.shooting import PSS
+
+    def orbit():
+        c = _two_sines()
+        c['c1'] = C('b', gnd, c=1e-12)
+        before = _paths.snapshot()
+        p = PSS(c, method=method, reltol=1e-9)
+        with warnings.catch_warnings():
+            ## (the grid's accuracy is not this test's)
+            warnings.simplefilter('ignore')
+            p.solve(period=1e-6, timestep=1e-6 / 40)
+        return np.asarray(p.waveform[1], float).tobytes(), _paths.since(before)
+    a, da = orbit()
+    monkeypatch.setattr(_stamp_plan, 'source_memo', lambda cir: nullcontext())
+    b, db = orbit()
+    assert a == b
+    assert da.get('src.direct:memo', 0) > 40 and not db.get('src.direct:memo'), (da, db)
 
 
 ## -- `Sin.f` at a scalar time -------------------------------------------------------------

@@ -61,19 +61,42 @@ def _stage_block(Cs, Gs, h, A):
 _FACTORISE = _pss_inner._InnerTransient._factorise
 
 
-def _final_lu(walks, Y, h, A, n):
+def _own_factorise(walks):
+    """Whether the walk factors with its own `_factorise` and `_step_klu`
+    (neither patched on its class nor shadowed on the instance)."""
+    return (type(walks)._factorise is _FACTORISE and '_factorise' not in walks.__dict__
+            and '_step_klu' not in walks.__dict__)
+
+
+def _final_lu(walks, Y, h, A, n, walk_lu=None):
     """The step's coupled block factored from the values the C stage
     Newton left for these stages (`_tran_radau_c.final_block`), on the
     walk's StructuralKLU for `n` unknowns -- what `_factorise` makes of the
-    block `_stage_block` builds -- or None: no such values, another KLU, or
-    a `_factorise` not the walk's own."""
-    if (type(walks)._factorise is not _FACTORISE or '_factorise' in walks.__dict__
-            or '_step_klu' in walks.__dict__):
+    block `_stage_block` builds, or on `walk_lu` (`_walk_factor`) -- or
+    None: no such values, another KLU, or a `_factorise` not the walk's
+    own."""
+    if not _own_factorise(walks):
         return None
     got = _tran_radau_c.final_block(walks._transient(), Y, h, A)
     if got is None or got[1] is not walks._step_klu(n):
         return None
+    if walk_lu is not None and walk_lu.solver is got[1]:
+        return walk_lu.factor_values(got[0])
     return got[1].factor_values(got[0])
+
+
+def _walk_factor(walks, Jb, walk_lu):
+    """`_factorise(Jb)` for a step whose factorisation nothing keeps past
+    it: on `walk_lu` -- the walk's StructuralKLU's one numeric, refactored
+    (`StructuralKLU.walk`) -- where `Jb` is that KLU's matrix and the walk
+    factors with its own, else `_factorise`."""
+    if walk_lu is not None and _own_factorise(walks):
+        sk = walks._step_klu(Jb.shape[0])
+        if sk is walk_lu.solver:
+            got = sk._ours(Jb)
+            if got is not None:
+                return walk_lu.factor_values(got[1])
+    return walks._factorise(Jb)
 
 
 #: the readers `_stage_reads` stands in for, as their modules define them,
@@ -585,14 +608,16 @@ class _PeriodWalks(object):
     ## doc/integrator_architecture_260906.md.
     ## ------------------------------------------------------------------
 
-    def _stage_step(self, xn, h, tab, coupled, Y=None):
+    def _stage_step(self, xn, h, tab, coupled, Y=None, walk_lu=None):
         """The factored stage system of the step just taken from `xn` -- its
         stage states read off the inner transient, or `Y` (full width) as a
         walk recorded them (`_stage_period_from`) -- as a `_StageStep`, and
         those stage states (reduced).  ``C(Y_i)`` and ``G(Y_j)`` are at the
         DISTINCT stage points, which is why `_C_at`/`_G_at` exist rather
         than a stored `Geq`; both read the POINT alone, so the step can be
-        factored after the walk as well as during it."""
+        factored after the walk as well as during it.  `walk_lu` (a
+        `StructuralKLU.walk`): the coupled block factored on its numeric --
+        for a step the caller keeps nothing of past its own solves."""
         A, b, c = tab
         s = A.shape[0]
         iref = self.irefnode
@@ -609,7 +634,7 @@ class _PeriodWalks(object):
             ## the walk's KLU's order -- `_tran_radau_c.final_block`: the
             ## same bits `_stage_block` makes from them -- factored there,
             ## as `_factorise` would; None -- made below)
-            fin = _final_lu(self, Y, h, A, s * m)
+            fin = _final_lu(self, Y, h, A, s * m, walk_lu)
             if fin is not None:
                 return _StageStep(Cn, None, h, A, b, c, lu=fin, Ys=Yf), Ys
         ## (each stage's pair read once where the readers would read just
@@ -639,7 +664,7 @@ class _PeriodWalks(object):
             ## History: `doc/shooting_history.md`, `_PeriodWalks._stage_step`.
             ## (no `Gs` kept: the coupled step's solves never read them --
             ## 3 of its 13 m^2 per step, the review's M3)
-            return _StageStep(Cn, None, h, A, b, c, lu=self._factorise(Jb),
+            return _StageStep(Cn, None, h, A, b, c, lu=_walk_factor(self, Jb, walk_lu),
                               Ys=Yf), Ys
         Kf = []
         for i in range(s):
@@ -1067,6 +1092,11 @@ class _PeriodWalks(object):
         ## (the shooting Newton's monodromy alone: dense, nothing kept, no
         ## period or event column)
         plain = coupled and dense and not keep and not want_dT and Pk is None
+        ## (a coupled step nothing keeps is solved with before the next: its
+        ## block factored on one numeric for the walk, refactored --
+        ## `StructuralKLU.walk`, roadmap 198)
+        klu = self._step_klu(s * m) if coupled and not keep else None
+        walk_lu = klu.walk() if klu is not None else None
         for _j, t in enumerate(times[1:]):
             h = hs[min(_j, len(hs) - 1)]
             xn = x
@@ -1094,9 +1124,9 @@ class _PeriodWalks(object):
                 Pn = _sens_c.step(self, xn, h, tab, live.P)
                 if Pn is not None:
                     live.advance(Pn, lambda Pf, xn=xn, h=h: self._stage_step(
-                        xn, h, tab, coupled)[0].solve(Pf))
+                        xn, h, tab, coupled, walk_lu=walk_lu)[0].solve(Pf))
                     continue
-            st, Ys = self._stage_step(xn, h, tab, coupled)
+            st, Ys = self._stage_step(xn, h, tab, coupled, walk_lu=walk_lu)
             if keep:
                 steps.append(st)
             if dense:

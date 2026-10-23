@@ -320,6 +320,33 @@ def test_the_transposed_solve_is_on_the_numeric_the_solve_left():
     assert s.foreign == 1 and len(made) == 1
 
 
+def test_a_walk_refactors_one_numeric_and_checks_it():
+    """`StructuralKLU.walk` (roadmap 198): the first block factored, every
+    later one refactored on the same numeric -- the solves numpy's to the
+    rounding; a factorisation it handed out refuses to answer once the next
+    block's is made; a block the old pivot order cannot take (a zero pivot)
+    factored afresh, counted."""
+    m = 3
+    cols, rows = np.nonzero(np.ones((m, m)))                 # (CSC order: by column)
+    s = linearsolver.StructuralKLU(m, rows, cols, fallback=linearsolver.SuperLUSolver)
+    w = s.walk()
+    b = np.array([1.0, 2.0, 3.0])
+    A0 = np.eye(m) + 0.1 * np.ones((m, m))
+    f0 = w.factor_values(A0[rows, cols])
+    np.testing.assert_allclose(f0.solve(b), np.linalg.solve(A0, b), rtol=1e-12)
+    A1 = 2.0 * np.eye(m) + 0.3 * np.arange(m * m).reshape(m, m) / m ** 2
+    f1 = w.factor_values(A1[rows, cols])
+    np.testing.assert_allclose(f1.solve(b), np.linalg.solve(A1, b), rtol=1e-12)
+    np.testing.assert_allclose(f1.solve_transposed(b), np.linalg.solve(A1.T, b), rtol=1e-12)
+    with pytest.raises(RuntimeError):
+        f0.solve(b)
+    assert (w.factors, w.refactors, w.fallbacks, s.numerics) == (1, 1, 0, 1)
+    P = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+    f2 = w.factor_values(P[rows, cols])
+    np.testing.assert_allclose(f2.solve(b), np.linalg.solve(P, b), rtol=1e-12)
+    assert (w.factors, w.refactors, w.fallbacks, s.numerics) == (2, 2, 1, 2)
+
+
 def test_a_refactor_that_meets_a_zero_pivot_factors_again():
     """The reused pivot order on a matrix that is regular under another: a
     fresh factor (counted), not "singular" -- the gmin and source ladders
