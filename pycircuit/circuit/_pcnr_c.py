@@ -39,8 +39,10 @@ own RuntimeError, from the last iteration's arrays.
 DECLINES (`_paths.no`, prefix `pcnr_c:`): the switch, no build, gmin (the
 damper), a solver that is not numpy's dense solve (none given, or the
 DC's AutoSolver choosing its dense solve), a toolkit that is not numeric,
-numpy not ignoring underflow, a participant that is scalar or whose class
-the kernels do not serve (`_class_ok`), an evaluation session over a
+numpy not ignoring underflow, a participant that is scalar, whose class
+the kernels do not serve (`_class_ok`), or whose instance holds its own
+`i`, `G` or `pcnr_limit` (`_OWN`: the Python's `el.i(pot)` reads it, the C
+its class's kernels and law), an evaluation session over a
 class not C-bound, a circuit the core cannot serve or its readiness, and
 inputs that are not float64 vectors of their sizes.  A singular solve is
 served too: numpy's LinAlgError, its own message (`_singular_text`).  Switch:
@@ -56,6 +58,12 @@ from pycircuit.circuit import _hdl_cbackend as _cb
 
 ENABLED = os.environ.get('PYCIRCUIT_PCNR_C', '1') != '0'
 STATUS = 'not loaded'
+
+#: what the C stands in for on a participant: its `i` and `G` (the class's
+#: kernels) and its limiter (the class's refine law) -- an instance holding
+#: its own is the Python's, which reads it (`PcnrDevice._kernel_stamp`'s
+#: `el.i`, `el.G`; `PcnrDevice.limit`'s `pcnr_limit`)
+_OWN = ('i', 'G', 'pcnr_limit')
 
 _no = _paths.no
 _PC = _paths.COUNTS
@@ -663,6 +671,9 @@ def _record(circuit, devices, iref, epar, drv):
     for d in devices:
         if d.scalar or d.rows is None:
             return 'scalar'
+        ed = d.element.__dict__
+        if any(nm in ed for nm in _OWN):
+            return 'own'
         if type(d.element.toolkit) is not type(circuit.toolkit):
             return 'toolkit'
         kern = _class_ok(type(d.element), d.t)

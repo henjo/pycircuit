@@ -11363,3 +11363,32 @@ same 302 steps, `max_step` 1e-9 relative apart, the waveform within 9.6e-10 V at
 change), transient and standalone DC, against 201: every digest, step, rejection, Newton count and path count
 identical (DC but for its timing); the sanitized fast tier 5 614 passed, clean, and under `--deep` the stage KLU's, the
 radau C's, the trims' and the stage walk's tests (59), clean.
+
+## 2026-10-23 — 203. Every C path against a method set on an element's instance -- one more wrong answer: the PCNR operating point's C made a participant's class kernels where the instance held its own `i` or `G`
+
+**Why**  Andreas, "to 1, 2 and 3 then continue to 4" -- 1, the audit 201's sources bug called for: a C path that
+picks its work by an object's CLASS while the Python calls a method set on the INSTANCE gives another answer, silently
+(201's: a time function's own `f`, the C loop's sources making its class's waveform for two weeks).
+
+**Measured.**  A sweep (g24/ovr_sweep.py, ovr_drive.sh): six circuits -- HDL MOS level 1 and gate-charge chains, a
+built-in diode with its stateful limiter, a charged SPICE diode, Gummel-Poon chains plain and charged -- x DC, gear and
+Radau transients, Radau and gear PSS, with an instance override planted on a device or a source (`i`, `q`, `G`, `C`,
+`u`, `dudt`, `limit`, `next_event`, `accept_step`; values moved by 1e-3, limiting removed, calls counted, breakpoints
+added), each run as is against the run with every twin claimed bit-identical switched off (their env switches; the dict
+watcher and the algorithmic choices as they are): 820 runs.  30 differed, every one an HDL device's `i` or `G` in DC
+or in a transient opened on its DC point -- bisected to the PCNR operating point's C (`_pcnr_c`), whose `_class_ok`
+checked the class's methods but not the participant's instance.  Every other override (charges, sources, limiters,
+events, the step hook) agreed, each shown to take effect in its analyses.
+
+**Built.**  `_pcnr_c._record` declines a participant whose instance holds its own `i`, `G` or `pcnr_limit` (`_OWN`,
+`pcnr_c:own`): the Python PCNR reads them (`PcnrDevice._kernel_stamp`'s `el.i`, `el.G`; `PcnrDevice.limit`'s
+`pcnr_limit`).  The sweep again: 820 runs, none differing.
+
+**Tests.**  test_instance_overrides (12): a charged SPICE diode and a gate-charge MOSFET chain x DC, gear and Radau
+transients, Radau and gear PSS x eight plants, every twin on against every twin off, in-process; alive: the decline
+emptied, exactly the device's `i` and `G` differ; the decline counted and the operating point moved.
+test_pinned_pairs: 'the PCNR DC solve and its C' re-recorded (the decline).
+
+**Gate**: the suite in the main tree, 5 880 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone
+DC, against 202: every digest, step, rejection, Newton count and path count identical (DC but for its timing).  No C
+changed (the sanitizer tier not run).

@@ -5422,3 +5422,25 @@ near the dense run's, the same steps adaptive; the C and the Python stage
 Newton the same bits on it; none for a small block, a multistep method, a
 given `linearsolver=`, the switch off; a caller's own kept; one per
 topology, kept from run to run).
+
+## `_pcnr_c._record` -- a participant with its own `i` or `G` is the Python PCNR's (2026-10-23)
+
+2026-10-23 (Andreas: "to 1, 2 and 3 then continue to 4" -- 1, the audit after
+201's sources bug; `doc/hdl_roadmap_260824.md`, 203).  An audit of every C
+path and second path against methods set on an element's INSTANCE: six
+circuits (HDL MOS level 1 and gate-charge chains, a built-in diode with its
+stateful limiter, a charged SPICE diode, Gummel-Poon chains plain and
+charged) x DC, gear and Radau transients, Radau and gear PSS, each with an
+instance override planted on a device or a source (`i`, `q`, `G`, `C`, `u`,
+`dudt`, `limit`, `next_event`, `accept_step`) -- every run with the twins on
+against every run with every bit-identical twin off: 820 runs.  One defect:
+the PCNR operating point's C evaluated a participant's CLASS kernels (and
+its class's refine law) where the instance held its own `i` or `G` -- the
+Python PCNR reads them (`PcnrDevice._kernel_stamp`'s `el.i`, `el.G`) -- so
+the DC point, and every transient opened on it, ignored the override (30
+differing runs, every one an HDL device's `i` or `G`).  `_record` now
+declines a participant whose instance holds `i`, `G` or `pcnr_limit`
+(`_OWN`, `pcnr_c:own`); the 820 runs agree.
+Tests: `test_instance_overrides.py` (two circuits x five analyses x eight
+plants, the twins on against off, in-process; alive: the decline emptied,
+exactly the device's `i` and `G` are seen).
