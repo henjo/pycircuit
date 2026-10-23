@@ -549,8 +549,11 @@ PAIRS = {
         'twin': ['pycircuit.circuit._tran_radau_c:RADAU_C',
                  'pycircuit.circuit._tran_radau_c:RADAU_CDEF',
                  'pycircuit.circuit._tran_radau_c:solve',
+                 'pycircuit.circuit._tran_radau_c:_ready',
                  'pycircuit.circuit._tran_radau_c:_klu_ready',
                  'pycircuit.circuit._tran_radau_c:_out',
+                 'pycircuit.circuit._tran_radau_c:_held_for',
+                 'pycircuit.circuit._tran_radau_c:_take_held',
                  'pycircuit.circuit._tran_radau_c:_Ctx'],
     },
     'the walk\'s stage block and the C stage Newton\'s last assembly': {
@@ -712,7 +715,45 @@ PAIRS = {
         'twin': ['pycircuit.circuit.shooting._sensklu_c:SENSKLU_SRC',
                  'pycircuit.circuit.shooting._sensklu_c:block_step',
                  'pycircuit.circuit.shooting._sensklu_c:step',
+                 'pycircuit.circuit.shooting._sensklu_c:full_step',
                  'pycircuit.circuit.shooting._sensklu_c:_Ctx'],
+    },
+    'the stage walk and its C': {
+        'why': 'the plain stage walk\'s steps in C a chunk a call (roadmap 200): the seeds '
+               '(`_pred_stages`, pred.c), the C stage Newton (radau.c as `_tran_radau_c.solve` '
+               'calls it), each stage\'s screen (branch.c as `_branch_after_coupled`), the '
+               'finish and the roll (`_finish_stage_step`, `_roll_history`, `_pred_note`\'s '
+               'merge), the step map (sensklu.c, `C_n P` numpy\'s BLAS) and the live columns\' '
+               'drop (`_LiveColumns.advance`); the state written back as the Python leaves it, '
+               'a stop before a step the Python\'s to repeat, a converged Newton\'s result '
+               'held for that repeat (`_tran_radau_c.hold`), `advance` and the LinAlgErrors '
+               'after a step map as the Python\'s',
+        'reference': ['pycircuit.circuit.shooting._pss_walks:_PeriodWalks._walk_stage',
+                      'pycircuit.circuit.shooting._pss_inner:_InnerTransient.solve_timestep',
+                      'pycircuit.circuit._tran_radau:_RadauStages._rk_step_coupled',
+                      'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_context',
+                      'pycircuit.circuit._tran_radau:_RadauStages._finish_radau',
+                      'pycircuit.circuit._tran_stages:_SequentialStages._finish_stage_step',
+                      'pycircuit.circuit._tran_history:_RunHistory._roll_history',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._pred_stages',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._pred_note',
+                      'pycircuit.circuit._tran_branch:_BranchCheck._branch_after_coupled',
+                      'pycircuit.circuit._tran_branch:_BranchCheck._branch_screen',
+                      'pycircuit.circuit.shooting._steps:_LiveColumns.advance'],
+        'twin': ['pycircuit.circuit.shooting._stagewalk_c:STAGEWALK_SRC',
+                 'pycircuit.circuit.shooting._stagewalk_c:STAGEWALK_CDEF',
+                 'pycircuit.circuit.shooting._stagewalk_c:walk',
+                 'pycircuit.circuit.shooting._stagewalk_c:_eligible',
+                 'pycircuit.circuit.shooting._stagewalk_c:_screen_ready',
+                 'pycircuit.circuit.shooting._stagewalk_c:_state_ready',
+                 'pycircuit.circuit.shooting._stagewalk_c:_bind',
+                 'pycircuit.circuit.shooting._stagewalk_c:_table',
+                 'pycircuit.circuit.shooting._stagewalk_c:_chunks',
+                 'pycircuit.circuit.shooting._stagewalk_c:_settle',
+                 'pycircuit.circuit.shooting._stagewalk_c:_write_back',
+                 'pycircuit.circuit.shooting._stagewalk_c:_after',
+                 'pycircuit.circuit.shooting._stagewalk_c:_Ctx',
+                 'pycircuit.circuit._tran_radau_c:hold'],
     },
     'the multistep step map and its C': {
         'why': 'the dense multistep walk\'s monodromy step on its live columns in one call: '
@@ -829,7 +870,7 @@ RECORD = {
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
     "the stage paths' passes and the core's": ('918e07986a3b', '3f00bb235faa'),
-    'the coupled stage Newton and its C': ('c87ff9fb31be', 'bd459fa630f6'),
+    'the coupled stage Newton and its C': ('c87ff9fb31be', '4119a835d44e'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
     'the transform solve and its frozen form': ('6f35dca48644', '61256542c9d4'),
@@ -838,7 +879,8 @@ RECORD = {
     'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('39f2d0f63b0f', '591052196b6b'),
-    'the KLU step map and its C': ('5b9b1f672523', '5c950691cca4'),
+    'the KLU step map and its C': ('5b9b1f672523', '776fd7afe705'),
+    'the stage walk and its C': ('2c0ff7d5f400', '815b54a57ba1'),
     'the multistep step map and its C': ('b072302c5297', 'be14cb8c5221'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),

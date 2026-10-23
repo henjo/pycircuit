@@ -11227,3 +11227,59 @@ the same bytes, both methods.  9 599 of 9 600 steps served (the run's first: no 
 **Gate**: the suite in the main tree, 5 838 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
 standalone DC, against 198: every digest, step, rejection, Newton count and path count identical; the sanitized
 fast tier (scripts/sanitize_suite.sh) 5 553 passed, clean, and the KLU step map's ten tests under `--deep`, clean.
+
+## 2026-10-23 — 200. A shooting walk's plain stage steps in C, a chunk a call -- the seeds, the C stage Newton, the screen, the finish and roll, the step map on the walk's KLU (`csrc/stagewalk.c`) -- a Howland testbench's Radau PSS 1.92x (6.10 -> 3.17 s), every orbit bit-identical
+
+**Why**  S2 of the stage-walk plan (g24/plan_s2_stagewalk.md; Andreas: "Do both in the order you think is best"):
+S2b, the whole plain walk in one C call, first -- S2a's Python trims proved smaller (the guards stamp-based
+already, the memo puts twin-compared).  After 199 a plain Radau walk's step was the C stage Newton, the C step
+map and the predictor's numpy fit with the Python between them -- the inner transient's step chain, the stage
+context and sources, three screens, the finish and roll, the walk's loop, `C_n P`, `advance` -- about as much
+again as the C.
+
+**Built.**  `csrc/stagewalk.c` (`pcx_stagewalk`, contract `stagewalk.h`) and its glue `shooting/_stagewalk_c`:
+a chunk of steps a call (16, doubling to 256), each made as the inner transient's step and the walk's step map
+make it -- pred.c's three seeds (`_fit_fast`'s twin), radau.c as `_tran_radau_c.solve` calls it (its readiness
+checks factored out as `_ready`), branch.c on each stage's `C` (the core's pattern, the run's certificate),
+sensklu.c on the walk's numeric with `C_n P` numpy's own dgemm / dgemv, the live columns' drop; the finish and
+the roll (the rings, `_pred_note`'s merge in Python's stable-sort order with its dedupe and cap) in C.  The
+stage times and sources for a chunk are made first, in the Python's order.  The state is read from the Python
+walk and the inner transient before a call and written back after it as the Python leaves it: the rings,
+`_pred_hist`, `_q_cache`, `_rk_Y`, `_iq`, `_Cmat`, `_Geq`, `_C_cache`, `_branch_cmax`, `_dt` and its history,
+the device memo's last step's records, both numerics with their counts and generation, the live columns, each
+step's records.
+  A stop is exact three ways: before the step's Newton nothing of it is made; after a converged Newton its
+result is held (`_tran_radau_c.hold`) and the next `solve` serves it once where its inputs are the same bytes
+and the stage KLU and limiter walk as held -- without it, a Newton that factored afresh is repeated as a
+refactor of what it left (forced: refactors / factors 170 / 1 against the Python's 168 / 3); after the step map
+the step is made and the glue does what the Python does next (`advance` at full width, the LinAlgError).  The
+step map writes to the one of two buffers the carried `P` is not in; a point whose reference entry is not +0.0
+stops (the next step starts from the inserted +0.0); a constant `C` is screened (the Python's kept verdict is
+the same screen).  `_walk_stage` resumes the C after a step it stopped before, and spaces out calls that made
+none (1, 2, 4 ... 64 Python steps).  `_sensklu_c.full_step` factored out of `step` for the full-width step.
+Serves what the C stage Newton serves on the walk's KLU: no stateful limiter, no PCNR, the cost transform off.
+No function of the unit or its glue over 80 lines (both now in test_runtime_map's lists): the C walk is its jobs
+(the node order, the seeds, the screen, the step map, the commit, the live drop), the glue its own (`_eligible`,
+`_screen_ready`, `_state_ready`, `_bind`, `_table`, `_chunks`, `_settle`, `_write_back`, `_after`) -- the split
+timed against the whole: 3.17 against 3.16 s.
+
+**Tests.**  test_stagewalk_c (10): a PSS with the C walk and without -- the orbit, the monodromy, the replay's
+records, the inner transient's state, every walk's and the stage KLU's counts the same -- on a linear ladder and
+a MOSFET chain; Python steps between calls and chunks of one to three; the C Newton's assembly cap handing steps
+back mid-walk; a stop after a fresh-factor Newton served from the hold, and with the hold spoiled or dropped the
+counts parting; a NaN in a carried column (`advance` at full width); a singular step map raised with the same
+state; the declines (switch, a patched piece, the transform); one ulp planted in the C's points showing in the
+orbit.  test_shooting_step_klu: its three unit tests switch the stage walk off.  test_c_abi: the unit.
+test_runtime_map: the unit and its glue in the long-function lists; test_paths: `walk` among the declining.
+test_pinned_pairs: 'the stage walk and its C' recorded; 'the coupled stage Newton and its C' and 'the KLU step
+map and its C' re-recorded on their twins (`_ready`, the held serve; `full_step`), the references unmoved.
+doc/transient_runtime.md: its rows; doc/shooting_history.md: its entry.
+
+Measured, HEAD (a worktree) and this tree interleaved, separate processes, load ~1.5-3: Radau 6.10 / 6.09 / 6.17
+-> 3.19 / 3.15 / 3.17 s (1.92x, over the stage's 1.4x line), gear 4.06 -> 4.09 s (none of it gear's); the whole
+orbit the same bytes.  9 599 of 9 600 steps made in C (the run's first: the stage KLU not yet analysed).
+
+**Gate**: the suite in the main tree, 5 856 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 199: every digest, step, rejection, Newton count and path count identical (DC but for its
+timing); the sanitized fast tier (scripts/sanitize_suite.sh) 5 562 passed, clean, and under `--deep` the stage
+walk's, the step KLU's and the radau C's tests (57, the stage walk's ten among them), clean.

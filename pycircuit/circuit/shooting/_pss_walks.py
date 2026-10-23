@@ -10,7 +10,7 @@ import scipy.sparse as _sp
 
 from pycircuit.circuit import _limiting, _paths, _tran_radau_c
 
-from . import _lmmsens_c, _pss_inner, _sens_c, _sensklu_c
+from . import _lmmsens_c, _pss_inner, _sens_c, _sensklu_c, _stagewalk_c
 from ._factored import _PeriodWalk
 from ._steps import (
     _butcher,
@@ -1097,7 +1097,24 @@ class _PeriodWalks(object):
         ## `StructuralKLU.walk`, roadmap 198)
         klu = self._step_klu(s * m) if coupled and not keep else None
         walk_lu = klu.walk() if klu is not None else None
+        ## (the plain walk's steps in C from where it may take them:
+        ## `_stagewalk_c`, roadmap 200 -- a step it stops before is the
+        ## Python's, the C taking over again after it; a call that makes
+        ## none is asked again after one Python step, then two, four, ... up
+        ## to 64, and after one that makes any, from one again)
+        cw_at, cw_back, skip_to = 0, 1, 0
         for _j, t in enumerate(times[1:]):
+            if _j < skip_to:
+                continue
+            if plain and walk_lu is not None and _j >= cw_at:
+                got = _stagewalk_c.walk(self, _j, x, times, hs, tab, live, walk_lu, record,
+                                        stage_record)
+                if got is None:
+                    cw_at, cw_back = _j + cw_back, min(2 * cw_back, 64)
+                else:
+                    skip_to, x, x_prev = got
+                    cw_at, cw_back = skip_to + 1, 1
+                    continue
             h = hs[min(_j, len(hs) - 1)]
             xn = x
             tr_in._stage_G_read = read_now

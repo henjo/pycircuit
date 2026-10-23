@@ -50,7 +50,11 @@ Outside the multistep loop, the same rules: the Radau stage solve (`csrc/radau.c
 `PYCIRCUIT_RADAU_TC_END`, `radau_tc:`, the fold's `radau.frozen:`), and the shooting sensitivities
 (`csrc/sens.c`, `shooting/_sens_c`, `PYCIRCUIT_SENS_C`, `pss.sens:`; on the walk's KLU
 `csrc/sensklu.c`, `shooting/_sensklu_c`, `PYCIRCUIT_SENSKLU_C`, `pss.sensklu:`; the multistep walk's
-`csrc/lmmsens.c`, `shooting/_lmmsens_c`, `PYCIRCUIT_LMMSENS_C`, `pss.lmm:`). A few glue modules also make a
+`csrc/lmmsens.c`, `shooting/_lmmsens_c`, `PYCIRCUIT_LMMSENS_C`, `pss.lmm:`), and the plain stage
+walk that drives the stage solve, the predictor, the branch screen and the step map on the walk's
+KLU a chunk of steps a call (`csrc/stagewalk.c`, `shooting/_stagewalk_c`, `PYCIRCUIT_STAGEWALK_C`,
+`pss.stagewalk:`; a stop after a converged Newton held for the Python's repeat of the step,
+`_tran_radau_c.hold`, `radau_c:held`). A few glue modules also make a
 count the Python would have made on the same path: `umemo:hit` (the source memo, by the Newton and
 Radau glue), `pss.sync:skipped` (the sensitivities), `chord:chosen` (the Newton).
 
@@ -93,10 +97,11 @@ declared in `transient._RUN_STATE`, with its owner and lifetime
 | `_pcnr_c` | on the circuit: `_pcnr_c` (its record: the view's core, the participants' tables, buffers, the KLU binding); on each participating class's `_hdl_info`: `_c_pcnr_refine` (its refine kernel), `_c_pcnr_refine_status`, `_c_pcnr_kernels` | the `StructuralKLU`'s `_numeric` (None after a failed factor), `refactors`, `factors`, `pivot_fallbacks`, `residual_fallbacks` |
 | `_tran_lte_c` | on the step controller: `_lte_c` (its context: buffers, the KLU binding, `served`) | the controller's `_ref_running` |
 | `_tran_core` | on the transient: `_tran_core` (the plan, the core, their stamp), `_passes_no` (a kept decline); on each HDL element: `_hdl_cp` (its packed parameters); on the stamp plan, the `methods` it lacks | the same step state as the Newton |
-| `_tran_radau_c` | on the transient: `_radau_c` (its record: buffers, the output sets the device memo takes as views, the stage KLU's binding -- a shooting walk's `_stage_klu` -- and the last serve's converged block) | the stage state; on the stage KLU its `_numeric`, `refactors`, `factors`, `pivot_fallbacks`, `residual_fallbacks` |
+| `_tran_radau_c` | on the transient: `_radau_c` (its record: buffers, the output sets the device memo takes as views, the stage KLU's binding -- a shooting walk's `_stage_klu` -- the last serve's converged block, and `pre`: a converged result held for the next call, `hold`) | the stage state; on the stage KLU its `_numeric`, `refactors`, `factors`, `pivot_fallbacks`, `residual_fallbacks` |
 | `_tran_radau_tc`, `_sens_c` | on the transient: `_radau_tc`, `_tc_end`; `_sens_c` | their stage state |
 | `_lmmsens_c` | on the walk object (the PSS): `_lmmsens_c` (its record: the struct, buffers, the last call's arrays and the column lists they keep) | -- |
 | `_sensklu_c` | on the walk's StructuralKLU: `_sensklu_c` (its context: the struct, the probe's buffers, the binding) | the walk's `_KLUWalk`: its numeric, generation, `factors`, `refactors`, `fallbacks`; the solver's `numerics` |
+| `_stagewalk_c` | on the inner transient: `_stagewalk_c` (its context: the struct, the state's and a chunk's buffers, the predictor state, the screen's struct) | the stage state (`_qlast`, `_iqlast`, `_pred_hist`, `_q_cache`, `_rk_Y`, `_iq`, `_Cmat`, `_Geq`, `_C_cache`, `_branch_cmax`, `_dt` and its history), the device memo's records of the last step's stages; the stage KLU's `_numeric` and counts; the walk's `_KLUWalk` and the solver's `numerics` as `_sensklu_c`; the live columns; on a stop after a converged Newton, `_radau_c.pre` |
 | `_tran_pred_c`, `_tran_ctrl_c`, `_tran_branch_c`, `_tran_sources` | nothing: their state lives in the caller's struct or table | -- |
 
 ## When a C path may run: the run context

@@ -12462,3 +12462,52 @@ klu_solve of the columns at once -- the walk's numeric, generation and
 counts left as `factor_values` leaves them, its two LinAlgErrors raised by
 the glue, a check whose arithmetic numpy would warn of handed back.  Every
 walk's monodromy and the orbit bit-identical.
+
+## `_stagewalk_c.py` -- the plain stage walk in C (roadmap 200, 2026-10-23)
+
+### `walk`, `_Ctx`, `STAGEWALK_SRC`, `STAGEWALK_CDEF`; `_tran_radau_c.hold`
+
+After 199 a plain Radau walk's step on the walk's KLU was three C calls --
+the stage Newton, the step map, the predictor's numpy fit -- and the Python
+between them: the inner transient's step chain (`solve_timestep` through
+`_rk_step_coupled`, the stage context, `_stage_source`, the screen of three
+stages, `_finish_stage_step` and `_roll_history`), the walk's loop, its
+`C_n P` and `_LiveColumns.advance` -- about as much again as the C.  One C
+call (`csrc/stagewalk.c`) now drives the units through their own structs, a
+chunk of steps a call (16, doubling to 256): pred.c for the three seeds (the
+twin of `_fit_fast`, as the C loop uses it), radau.c as `_tran_radau_c.solve`
+calls it, branch.c on each stage's `C` with the running maximum carried,
+sensklu.c for the step map with `C_n P` numpy's own dgemm (dgemv for one
+column), the live columns' drop; the step's finish and roll in C -- the
+rings (`iq = -(i + u(t))`), `_pred_note`'s merge in Python's stable-sort
+order with its dedupe and its cap.  The stage times and the sources at them
+and at each step's end are made for a chunk first, in the Python's order:
+the sources a function of time, the shooting's own premise.  The glue reads
+the state from the Python walk and the inner transient before a call and
+writes it back as the Python leaves it after the last step made.
+
+A STOP is made exact three ways.  Before the step's Newton (the predictor's
+general path, the C Newton handed back, no live column, nodes out of order)
+nothing of the step is made and the Python repeats it.  After a converged
+Newton (no final block, a stage the screen does not find quiet, the step
+map's flag, a reference entry not +0.0) the Newton has moved the stage
+KLU's numeric: `_tran_radau_c.hold` keeps its result and the next `solve`
+serves it once, where its inputs are the same bytes and the KLU (numeric,
+counts) and the limiter walk as held -- without it a Newton that factored
+afresh is repeated as a refactor of what it left (forced on a MOSFET chain:
+the stage KLU's refactors and factors 170 / 1 against the Python's 168 / 3).
+After the step map (not finite on dropped columns; a singular block or a
+failed solve) the step is made, its map's numeric and counts committed as
+`block_step` commits them, and the glue does what the Python does next:
+`advance` at the full width, or the Python's LinAlgError.  The step map
+writes to the one of two buffers the carried `P` is not in, so a stop after
+it leaves `P` as the step found it.  A constant `C` is screened like any
+other: the Python's kept verdict (`_branch_const`) is a screen of the same
+`C` at the same running maximum.  `_walk_stage` asks again after a step it
+stopped before; a call that made none is asked again after 1, 2, 4 ... 64
+Python steps.
+
+It serves what the C stage Newton serves on the walk's KLU: no stateful
+limiter, no PCNR, the cost transform off (`radau_transform` 'auto' leaves
+it off for a cheap compiled Jacobian).  A Howland current pump testbench's
+Radau PSS 1.92x (6.10 -> 3.17 s), the orbit bit-identical; gear untouched.

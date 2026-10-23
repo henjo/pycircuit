@@ -212,7 +212,7 @@ def step(walks, xn, h, tab, P, walk_lu):
     g = _MOD.get('g') or _pieces()
     if g is None or _now() != g:
         return _no('pss.sensklu:patched')
-    W, _IN, RC, LS, ST, _NU = _MOD['mods']
+    W, _IN, RC, LS, _ST, _NU = _MOD['mods']
     d = walks.__dict__
     if any(name in d for name in _WALK_NAMES) or type(walk_lu) is not LS._KLUWalk:
         return _no('pss.sensklu:patched')
@@ -238,11 +238,20 @@ def step(walks, xn, h, tab, P, walk_lu):
     if X is None:
         return None    # paths: counted by block_step
     _PC['pss.sensklu:served'] += 1
-    _A, b, c = tab
+    return X[(s - 1) * m:s * m], full_step(Cn, h, tab, walk_lu)
+
+
+def full_step(Cn, h, tab, walk_lu):
+    """`step`'s second: the step from a point whose capacitance is `Cn`
+    on a full-width `P`, through the walk's numeric as it stands -- the
+    step just taken's factorisation, as `st.solve` holds it."""
+    from pycircuit.circuit import linearsolver as LS
+
+    from . import _steps as ST
+    A, b, c = tab
 
     def full(Pf):
-        ## (this step's factorisation, as `st.solve` holds it)
         lu = LS._Factored(LS._KLUBorrowed(walk_lu, walk_lu._num), lambda f, v: f.solve(v),
                           lambda f, v: f.solve_transposed(v), sparse=True)
         return ST._StageStep(Cn, None, h, A, b, c, lu=lu).solve(Pf)
-    return X[(s - 1) * m:s * m], full
+    return full

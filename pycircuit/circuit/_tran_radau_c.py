@@ -213,6 +213,7 @@ class _Ctx:
         'n',
         'own',
         'pool',
+        'pre',
         's',
         'walk',
         'walk_arms',
@@ -257,6 +258,8 @@ class _Ctx:
         ## (the last served call's converged block for the walk's
         ## sensitivities: `final_block`)
         self.fin = self.fin_buf = None
+        ## (a converged result held for the next call with its inputs: `hold`)
+        self.pre = None
         s.core = ffi.cast('void *', int(cffi_core.cast('uintptr_t', core.cs)))
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
         ## the core's own bins: G and i of the pass just run
@@ -373,6 +376,108 @@ def _klu_ready(rec, sk):
     return None
 
 
+def _ready(tr, ctx, seed, provided_function, lims, nobypass, reltol, step_memo=True):
+    """`solve`'s checks before it touches anything, in its order, the record
+    made or remade and bound (the limiter walk, the stage KLU): `(the
+    record, the temperature, the stage KLU or None, the seeds copied, the
+    driver, the Newton glue's modules)` -- or why not (the decline's name,
+    `radau_c:<why>`).  `seed` None: no seeds checked, and `step_memo` False:
+    no step's source memo asked for (the stage walk's, `_stagewalk_c`,
+    which makes its seeds and its sources' table itself)."""
+    if not ENABLED:
+        return 'off'
+    if provided_function is not None:
+        ## (the Python calls it at every assembly's stage times: a caller may
+        ## count it)
+        return 'pf'
+    if lims:
+        return 'stateful'
+    if not nobypass:
+        return 'bypass'
+    drv = _driver or driver()
+    if not drv:
+        return 'driver'
+    if not _MOD['func']._underflow_ignored():
+        return 'underflow'
+    ffi, _cfn, dgesv, dgemv = drv
+    chain = _MOD.get('chain') or _chain()
+    if chain is None:
+        return 'patched'
+    T = chain[0]
+    if type(tr) is not T:
+        return 'class'
+    cir = tr.cir
+    if _now(T, _MOD['mods'], cir) != chain[1:] or np.linalg.solve is not _SOLVE:
+        return 'patched'
+    from pycircuit.circuit import _tran_newton_c as NC
+    M = NC._MOD or NC._mods()
+    if type(tr.toolkit) is not M['NumericToolkit']:
+        return 'toolkit'
+    cd, td = cir.__dict__, tr.__dict__
+    if 'G' in cd or 'C' in cd or 'i' in cd or 'q' in cd or 'limit' in cd:
+        return 'shadow_cir'
+    if ('_memo_put' in td or '_source_at' in td or '_coupled_stage_system' in td
+            or '_stages_converged' in td or '_stage_limiter_states' in td
+            or '_limiters_at_rest' in td or '_newton_limiter' in td):
+        return 'shadow_tr'
+    if M['limiting'].CIRCUIT_LEVEL:
+        return 'stateful'
+    memo = td.get('_u_memo')
+    if step_memo and (memo is None or not M['companion'].U_MEMO):
+        return 'umemo'
+    tc = M['core']
+    if not (tc.CORE and tc.CORE_PASSES):
+        return 'core'
+    core = tc.core_for(tr)
+    if core is None:
+        return 'unservable'
+    n, iref = core.n, ctx.iref
+    if not (0 <= iref < n) or n < 2 or ctx.m != n - 1:
+        return 'iref'
+    h = ctx.h
+    if type(h) is not float and type(h) is not np.float64:
+        return 'h'
+    if (type(reltol) is not float and type(reltol) is not int
+            and type(reltol) is not np.float64) or type(reltol) is bool:
+        return 'tol'
+    qn, Amat = ctx.qn, ctx.Amat
+    if not (type(qn) is np.ndarray and qn.dtype == np.float64 and qn.shape == (n,)
+            and type(Amat) is np.ndarray and Amat.dtype == np.float64 and Amat.shape == (3, 3)):
+        return 'ctx'
+    Y0 = None
+    if seed is not None:
+        Y0 = [np.array(y, dtype=float) for y in seed]
+        if len(Y0) != 3 or any(y.shape != (n,) for y in Y0):
+            return 'seed'
+    has_limiter = tr._newton_limiter() is not None
+    if has_limiter:
+        Tw = getattr(tr.epar, 'T', 300.0)
+        if type(Tw) is not float and type(Tw) is not int and type(Tw) is not np.float64:
+            ## (`limit_walk` declines such a temperature: the Python loop limits)
+            return 'T'
+    rec = td.get('_radau_c')
+    if rec is None or rec.core is not core or rec.n != n or rec.iref != iref:
+        cffi_core, cfn_core, _dg = tc.driver()
+        rec = _Ctx(core, n, iref, ffi, cfn_core, cffi_core, dgesv, dgemv)
+        td['_radau_c'] = rec
+    s = rec.s
+    if has_limiter:
+        if not NC._walk_ready(tr, rec):
+            return 'limit'
+    elif s.wn:
+        s.walk_fn = ffi.NULL
+        s.wn = 0
+        rec.walk = rec.walk_ok = None
+    Tc = core.probe(tr.epar)
+    if Tc.__class__ is str:
+        return 'ready'
+    sk = td.get('_stage_klu')
+    why = _klu_ready(rec, sk)
+    if why is not None:
+        return why
+    return rec, Tc, sk, Y0, drv, M
+
+
 def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol, maxit):
     """`_stage_newton(seed)` (undamped, no shunt) in C: the three converged
     stages as fresh full-width arrays, the device memo and the source memo
@@ -382,95 +487,14 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     `qn`, `Amat`, `tstage`), `src` the source at a stage time, `lims` the
     stateful limiters (any declines); the record `tr._radau_c` is made or
     remade where the core, size or reference row changed."""
-    if not ENABLED:
-        return _no('radau_c:off')
-    if provided_function is not None:
-        ## (the Python calls it at every assembly's stage times: a caller may
-        ## count it)
-        return _no('radau_c:pf')
-    if lims:
-        return _no('radau_c:stateful')
-    if not nobypass:
-        return _no('radau_c:bypass')
-    drv = _driver or driver()
-    if not drv:
-        return _no('radau_c:driver')
-    if not _MOD['func']._underflow_ignored():
-        return _no('radau_c:underflow')
-    ffi, cfn, dgesv, dgemv = drv
-    chain = _MOD.get('chain') or _chain()
-    if chain is None:
-        return _no('radau_c:patched')
-    T = chain[0]
-    if type(tr) is not T:
-        return _no('radau_c:class')
-    cir = tr.cir
-    if _now(T, _MOD['mods'], cir) != chain[1:] or np.linalg.solve is not _SOLVE:
-        return _no('radau_c:patched')
+    got = _ready(tr, ctx, seed, provided_function, lims, nobypass, reltol)
+    if got.__class__ is str:
+        return _no('radau_c:' + got)
+    rec, Tc, sk, Y0, drv, M = got
     from pycircuit.circuit import _tran_newton_c as NC
-    M = NC._MOD or NC._mods()
-    if type(tr.toolkit) is not M['NumericToolkit']:
-        return _no('radau_c:toolkit')
-    cd, td = cir.__dict__, tr.__dict__
-    if 'G' in cd or 'C' in cd or 'i' in cd or 'q' in cd or 'limit' in cd:
-        return _no('radau_c:shadow_cir')
-    if ('_memo_put' in td or '_source_at' in td or '_coupled_stage_system' in td
-            or '_stages_converged' in td or '_stage_limiter_states' in td
-            or '_limiters_at_rest' in td or '_newton_limiter' in td):
-        return _no('radau_c:shadow_tr')
-    if M['limiting'].CIRCUIT_LEVEL:
-        return _no('radau_c:stateful')
-    memo = td.get('_u_memo')
-    if memo is None or not M['companion'].U_MEMO:
-        return _no('radau_c:umemo')
-    tc = M['core']
-    if not (tc.CORE and tc.CORE_PASSES):
-        return _no('radau_c:core')
-    core = tc.core_for(tr)
-    if core is None:
-        return _no('radau_c:unservable')
-    n, iref = core.n, ctx.iref
-    if not (0 <= iref < n) or n < 2 or ctx.m != n - 1:
-        return _no('radau_c:iref')
-    h = ctx.h
-    if type(h) is not float and type(h) is not np.float64:
-        return _no('radau_c:h')
-    if (type(reltol) is not float and type(reltol) is not int
-            and type(reltol) is not np.float64) or type(reltol) is bool:
-        return _no('radau_c:tol')
-    qn, Amat = ctx.qn, ctx.Amat
-    if not (type(qn) is np.ndarray and qn.dtype == np.float64 and qn.shape == (n,)
-            and type(Amat) is np.ndarray and Amat.dtype == np.float64 and Amat.shape == (3, 3)):
-        return _no('radau_c:ctx')
-    Y0 = [np.array(y, dtype=float) for y in seed]
-    if len(Y0) != 3 or any(y.shape != (n,) for y in Y0):
-        return _no('radau_c:seed')
-    has_limiter = tr._newton_limiter() is not None
-    if has_limiter:
-        Tw = getattr(tr.epar, 'T', 300.0)
-        if type(Tw) is not float and type(Tw) is not int and type(Tw) is not np.float64:
-            ## (`limit_walk` declines such a temperature: the Python loop limits)
-            return _no('radau_c:T')
-    rec = td.get('_radau_c')
-    if rec is None or rec.core is not core or rec.n != n or rec.iref != iref:
-        cffi_core, cfn_core, _dg = tc.driver()
-        rec = _Ctx(core, n, iref, ffi, cfn_core, cffi_core, dgesv, dgemv)
-        td['_radau_c'] = rec
-    s, buf = rec.s, rec.buf
-    if has_limiter:
-        if not NC._walk_ready(tr, rec):
-            return _no('radau_c:limit')
-    elif s.wn:
-        s.walk_fn = ffi.NULL
-        s.wn = 0
-        rec.walk = rec.walk_ok = None
-    Tc = core.probe(tr.epar)
-    if Tc.__class__ is str:
-        return _no('radau_c:ready')
-    sk = td.get('_stage_klu')
-    why = _klu_ready(rec, sk)
-    if why is not None:
-        return _no('radau_c:' + why)
+    ffi, cfn, _dgesv, _dgemv = drv
+    s, buf, h, qn, Amat, n = rec.s, rec.buf, ctx.h, ctx.qn, ctx.Amat, rec.n
+    memo = tr.__dict__.get('_u_memo')
     rec.fin = None
     if sk is not None:
         num = sk._numeric
@@ -507,7 +531,11 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
         s.A[k] = v
     s.T = Tc
     s.h, s.reltol, s.abstol, s.maxiter = float(h), float(reltol), float(abstol), int(maxit)
-    status = cfn(s)
+    pre, rec.pre = rec.pre, None
+    if pre is not None and _held_for(pre, rec, sk, buf, Amat, Tc, h, reltol, abstol, maxit):
+        status = _take_held(rec, pre, out[0])
+    else:
+        status = cfn(s)
     if status != _CODES['RADAU_CONVERGED']:
         NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         if status == _CODES['RADAU_BAIL_WALKSTOP']:
@@ -548,6 +576,63 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     if sk is not None and s.fin_ok:
         rec.fin = (tuple(Y), float(h), Amat.tobytes(), rec.fin_buf.copy(), sk)
     return Y
+
+
+def _held_key(rec, sk, qn, u, seed, Amat, Tc, h, reltol, abstol, maxit):
+    """What a held result was made from, as `solve` compares it: the
+    inputs' bytes, and the stage KLU's numeric and counts as the call finds
+    them."""
+    return (qn.tobytes(), u.tobytes(), seed.tobytes(), Amat.tobytes(), float(Tc), float(h),
+            float(reltol), float(abstol), int(maxit), int(rec.s.wn),
+            None if sk is None else (sk._numeric, sk.refactors, sk.factors, sk.pivot_fallbacks,
+                                     sk.residual_fallbacks, sk.numerics))
+
+
+def hold(rec, sk, qn, u, seed, Amat, Tc, h, reltol, abstol, maxit):
+    """THE C STAGE NEWTON'S CONVERGED RESULT JUST MADE on the record `rec`
+    -- its output slots (`own`'s), the final block, its counts, the stage
+    KLU's numeric it ended on -- held for the next `solve`, which serves it
+    as made, once, where that call's inputs are these, byte for byte, and
+    the stage KLU (its numeric and counts) and the limiter walk are as they
+    stand now.  The shooting's stage walk (`_stagewalk_c`) stops after a
+    converged Newton it cannot finish the step of: the Python's repeat of
+    the step takes the very Newton, its numeric moved once."""
+    s = rec.s
+    A = int(s.assemblies)
+    k = s.klu
+    rec.pre = (_held_key(rec, sk, qn, u, seed, Amat, Tc, h, reltol, abstol, maxit),
+               (sk, rec.walk, rec.walk_ok), A,
+               {nm: rec.own[0][nm][:A].copy() for nm in _OUTS}, int(s.fin_ok),
+               None if rec.fin_buf is None else rec.fin_buf.copy(),
+               int(rec.ffi.cast('uintptr_t', k.klu_out)),
+               (int(k.refactors), int(k.factors), int(k.pivot_fallbacks),
+                int(k.residual_fallbacks)), int(s.iters))
+
+
+def _held_for(pre, rec, sk, buf, Amat, Tc, h, reltol, abstol, maxit):
+    """The held result `pre` is this call's (`hold`)."""
+    ids = pre[1]
+    return (ids[0] is sk and ids[1] is rec.walk and ids[2] is rec.walk_ok
+            and pre[0] == _held_key(rec, sk, buf['qn'], buf['u'], buf['seed'], Amat, Tc, h,
+                                    reltol, abstol, maxit))
+
+
+def _take_held(rec, pre, o):
+    """The held result `pre` written where the C writes it -- the output set
+    `o`, the final block, the struct's counts and numeric: the call's
+    result as the C made it."""
+    _key, _ids, A, slots, fin_ok, fin, klu_out, counts, iters = pre
+    s = rec.s
+    for nm in _OUTS:
+        o[nm][:A] = slots[nm]
+    s.assemblies, s.fin_ok, s.iters = A, fin_ok, iters
+    if fin is not None:
+        rec.fin_buf[:] = fin
+    k = s.klu
+    k.klu_out = rec.ffi.cast('void *', klu_out)
+    k.refactors, k.factors, k.pivot_fallbacks, k.residual_fallbacks = counts
+    _PC['radau_c:held'] += 1
+    return _CODES['RADAU_CONVERGED']
 
 
 def final_block(tr, Y, h, A):

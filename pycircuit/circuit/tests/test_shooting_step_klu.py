@@ -9,7 +9,7 @@ from pycircuit.circuit import _paths, circuit, gnd
 from pycircuit.circuit.circuit import SubCircuit
 from pycircuit.circuit.elements import C, Diode, R, VSin
 from pycircuit.circuit.linearsolver import DenseSolver, StructuralKLU
-from pycircuit.circuit.shooting import PAC, PSS, _pss_inner
+from pycircuit.circuit.shooting import PAC, PSS, _pss_inner, _stagewalk_c
 from pycircuit.circuit.simwarnings import AccuracyWarning
 from pycircuit.circuit.tests._warnpolicy import quiet
 
@@ -49,6 +49,9 @@ def test_a_large_stage_block_factors_on_its_structure_and_the_c_step_declines(mo
     not that step's twin; the KLU step map (`_sensklu_c`) is.  (Without it
     the analysis's solver chose on the first matrix it saw, here SuperLU on
     the block.)"""
+    ## (the unit itself: the stage walk, which makes these steps in C with it,
+    ## off -- `_stagewalk_c`)
+    monkeypatch.setattr(_stagewalk_c, 'STAGEWALK_C', False)
     out = {}
     for klu in (False, True):
         before = _paths.snapshot()
@@ -102,6 +105,9 @@ def test_the_c_stage_newton_on_the_walk_s_klu_is_the_python_s(monkeypatch):
     monodromy the bytes of the Python Newton's and of `_stage_block`'s.
     (The linear ladder: the diode's limiter keeps a state, which the C
     declines; `test_radau_c` holds the KLU path on a nonlinear circuit.)"""
+    ## (the unit itself: the stage walk, which makes these steps in C with it,
+    ## off -- `_stagewalk_c`)
+    monkeypatch.setattr(_stagewalk_c, 'STAGEWALK_C', False)
     from pycircuit.circuit import _tran_radau_c
     out = {}
     for on in (False, True):
@@ -146,6 +152,9 @@ def test_the_klu_step_map_in_c_is_the_python_one(monkeypatch):
     roadmap 199): the orbit and the monodromy the bytes of the Python
     step's, every walk's numeric made as often (factors, refactors,
     fallbacks, generation) and the solver's `numerics` the same."""
+    ## (the unit itself: the stage walk, which makes these steps in C with it,
+    ## off -- `_stagewalk_c`)
+    monkeypatch.setattr(_stagewalk_c, 'STAGEWALK_C', False)
     from pycircuit.circuit.shooting import _sensklu_c
     if _sensklu_c.driver() is None:
         pytest.skip(f'the KLU step map in C is off: {_sensklu_c.STATUS}')
