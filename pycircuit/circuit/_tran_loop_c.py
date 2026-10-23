@@ -300,7 +300,7 @@ def _addr(ffi, obj):
 
 def _bind(tr, rec, tab, n, hist_len, screen, judge):
     """The loop's `_Run` for the C Newton's record `rec`, the source table
-    `tab`, the branch screen `screen` (`(its ffi, its entry, the core's
+    `tab` (None: a shooting walk's, `_lmmwalk_c`), the branch screen `screen` (`(its ffi, its entry, the core's
     pattern or None)`, or None: nothing screened) and, adaptive, `judge`
     (`_judge`'s `(the controller, the run's settings, the sparse solver or
     None, the error test's mask or None)`) -- or None: the sparse solver
@@ -358,7 +358,7 @@ def _bind_buffers(run, n, hist_len):
 def _bind_steps(run, tr, rec, tab, n):
     """The units every attempt calls: the C Newton (its record `rec`), the
     predictor (a state of its own, its nodes the loop's `ht` and `hx`) and
-    the sources' table `tab`."""
+    the sources' table `tab` (None: a walk's own rows)."""
     from pycircuit.circuit import _tran_newton_c, _tran_pred_c
     ffi, s = run.ffi, run.s
     nffi, ncfn, _lapack = _tran_newton_c.driver()
@@ -371,7 +371,12 @@ def _bind_steps(run, tr, rec, tab, n):
     ps.clamp = float(tr.PRED_CLAMP)
     run.pr = (ps, pbuf, pkeep)
     _plug(s, ffi, 'pred', pffi, ps, pcfn)
-    _plug(s, ffi, 'src', tab.ffi, tab.s, tab.cfn)
+    if tab is not None:
+        _plug(s, ffi, 'src', tab.ffi, tab.s, tab.cfn)
+    else:
+        ## (none: a shooting walk's sources come in its own table --
+        ## `shooting/_lmmwalk_c`, loop.h's THE WALK)
+        s.src = s.src_fn = ffi.NULL
 
 
 def _bind_screen(run, tr, n, screen):

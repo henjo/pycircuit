@@ -10,7 +10,7 @@ import scipy.sparse as _sp
 
 from pycircuit.circuit import _limiting, _paths, _tran_radau_c
 
-from . import _lmmsens_c, _pss_inner, _sens_c, _sensklu_c, _stagewalk_c
+from . import _lmmsens_c, _lmmwalk_c, _pss_inner, _sens_c, _sensklu_c, _stagewalk_c
 from ._factored import _PeriodWalk
 from ._steps import (
     _butcher,
@@ -456,7 +456,25 @@ class _PeriodWalks(object):
         _tau = np.zeros(hsens.shape[1]) if hsens is not None else None
         steps = [] if keep else None
         last = len(times) - 2
+        ## (the plain dense walk's steps in C from where it may take them --
+        ## the C stepping loop's attempts on the walk's grid and the step map
+        ## after each: `_lmmwalk_c`, roadmap 204 -- once a Python step's C
+        ## Newton served; a step it stops before is the Python's, the C taking
+        ## over again after it; a call that makes none is asked again after
+        ## one Python step, then two, four ... up to 64)
+        plain = dense and not keep and not want_dT and Pk is None
+        cw_at, cw_back, skip_to = 0, 1, 0
         for _j, t in enumerate(times[1:]):
+            if _j < skip_to:
+                continue
+            if plain and _j >= cw_at:
+                got = _lmmwalk_c.walk(self, _j, x, times, hs, mono, Cs, record)
+                if got is None:
+                    cw_at, cw_back = _j + cw_back, min(2 * cw_back, 64)
+                else:
+                    skip_to, x, x_prev, Cs = got
+                    cw_at, cw_back = skip_to + 1, 1
+                    continue
             dt = hs[min(_j, len(hs) - 1)]
             x_prev = x
             x = copy(self.solve_timestep(x, t, dt))

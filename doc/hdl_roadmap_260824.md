@@ -11392,3 +11392,51 @@ test_pinned_pairs: 'the PCNR DC solve and its C' re-recorded (the decline).
 **Gate**: the suite in the main tree, 5 880 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone
 DC, against 202: every digest, step, rejection, Newton count and path count identical (DC but for its timing).  No C
 changed (the sanitizer tier not run).
+
+## 2026-10-23 — 204. A shooting walk's plain multistep steps in C, a chunk a call -- the C stepping loop's own attempt on the walk's grid and the step map after it (`csrc/loop.c`'s walk) -- a Howland testbench's gear PSS 1.86x (4.05 -> 2.18 s), every orbit and count bit-identical
+
+**Why**  Andreas, "to 1, 2 and 3 then continue to 4" -- 2, a C walk for gear PSS.  After 193 and 198 a gear walk's
+step was the Python's inner-transient step around the C Newton, and one C call for its step map: on the Howland
+testbench the walks were 3.24 of the PSS's 4.03 s, the C Newton 0.55 and the map 1.03 of those -- the rest Python.
+
+**Built.**  A walk mode of the C stepping loop (`csrc/loop.c`: `walk`, `walk_map`, `walk_dies`; loop.h's THE WALK) --
+the loop already made the multistep attempt bit for bit, so no second unit: on the walk's grid each step is `take`
+(the end time the grid's, `have_tn`) and `accept`, every step accepted, then the step map (lmmsens.c through its own
+struct).  Its glue `shooting/_lmmwalk_c`: a chunk of steps a call (16, doubling to 256), entered where the C Newton's
+last call served at the watch counter as it stands (as the C loop enters), its checks the C loop's for the run and the
+walk's own (a plain dense walk, its pieces read off the walk object's class, the step map's toolkit and solver, the
+monodromy's arrays as the step map takes them).  Each chunk's sources are the Python's own: `_source_at` at each step's
+end in a step memo of its own (`_tran_newton_c._source`'s pass), so the solve's source memo is read, written and
+counted as the Python's steps do; the rows of steps not made are taken back (`_undo`).  The state is read before a
+call and written back after it as the Python leaves it -- the C loop's write-back with the step lengths the grid's own
+objects (numpy floats, as `_dt`, its history and the coefficients hold them), the walk object's `_Jf`, `_Geq`, `_C`,
+`_coeffs`, the monodromy, each step's record.  A prune that drops a column is the Python's (`advance`: its views,
+which the Python's next maps decline as 'layout' and take in numpy); a map handed back (singular, not finite) is made
+as `_walk_lmm` makes it.  `_walk_lmm` asks the C from where a Python step's Newton served; a call that made none is
+asked again after 1, 2, 4 ... 64 Python steps.  `_tran_loop_c._bind` takes no sources table (the walk's, `wu`).
+
+**Found on the way** (not changed here): the C sources table (`_tran_sources`, the C loop's and the direct pass's)
+makes a waveform's class sine where the class's `f` is patched -- a plain transient with `func.Sin.f` patched gives
+another answer with the table on than off.  205's.
+
+**Tests.**  test_lmmwalk_c (13): a PSS with the C walk and without -- the orbit, the monodromy, the inner transient's
+and the walk object's state (the step lengths' and coefficients' types with their values), the Newton KLU's counts,
+every count but the walk's own -- under Gear-2 (dense and on the KLU), the trapezoid and Euler; a call cut short every
+third step and chunks of one or two; the C Newton handing back steps keyed by their seed; the step map handing back
+(singular, not finite) steps keyed by their J; every plain walk recording, the records the same; a drive whose own `f`
+raises, the same error behind the same state; the declines (switch, a patched piece, `_record_cj`); one ulp planted
+in a call's last point showing.  test_paths: `walk` among the declining; test_runtime_map: the glue among the long-
+function list; test_instance_overrides: its switch in OFF.  test_pinned_pairs: 'the multistep walk and its C'
+recorded; 'the stepping loop and its C' re-recorded on its twin (the walk mode, `_bind`'s sources) and 'the multistep
+step map and its C' on its reference (`_walk_lmm`'s call), the other sides unmoved.  doc/transient_runtime.md: its
+rows; doc/shooting_history.md: its entry.
+
+Measured, HEAD (a worktree) and this tree interleaved, separate processes, load ~1.3: gear 4.07 / 4.05 / 4.00 ->
+2.18 / 2.20 / 2.14 s (1.86x, over the 1.4x line), Radau 3.04 -> 3.01 s (none of it Radau's); the orbit the same bytes.
+9 579 of the walks' 9 599 steps made in C (the rest: each walk's first served step and the steps a prune's views
+leave to the Python).
+
+**Gate**: the suite in the main tree, 5 896 passed (6 skipped, 3 xfailed); the 27 gold decks, transient and standalone
+DC, against 203: every digest, step, rejection, Newton count and path count identical (DC but for its timing); the
+sanitized fast tier (scripts/sanitize_suite.sh) 5 653 passed, clean, and under `--deep` the walk's and the C loop's
+tests (49), clean.

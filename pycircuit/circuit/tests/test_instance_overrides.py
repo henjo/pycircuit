@@ -29,6 +29,7 @@ from pycircuit.circuit.transient import Transient
 OFF = (('_dc_newton_c', 'ENABLED'), ('_hdl_batch', 'ENABLED'), ('_hdl_batch', 'SKIP_ZERO_SOURCE'),
        ('_hdl_climit', 'ENABLED'), ('_hdl_climit', 'PSP_LIMIT'), ('_hdl_climit', 'WALK'),
        ('_pcnr_c', 'ENABLED'), ('shooting._lmmsens_c', 'LMMSENS_C'),
+       ('shooting._lmmwalk_c', 'LMMWALK_C'),
        ('shooting._sens_c', 'SENS_C'), ('shooting._sensklu_c', 'SENSKLU_C'),
        ('shooting._stagewalk_c', 'STAGEWALK_C'), ('_stamp_plan', 'ENABLED'),
        ('_stamp_plan', 'SOURCE_DIRECT'), ('_stamp_plan', 'SOURCE_PLAN'),

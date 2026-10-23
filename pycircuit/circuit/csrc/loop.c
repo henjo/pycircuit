@@ -12,6 +12,7 @@
 #include "sources.h"
 #include "lte.h"
 #include "ctrl.h"
+#include "lmmsens.h"
 #include "loop.h"
 
 /* a call to a unit through its pointer, typed by the unit's own declaration:
@@ -103,6 +104,7 @@ static long where(loop_t *s, loop_attempt_t *a)
        not a step: the run is over, nothing written -- the Python's) */
     if (s->adaptive && s->tend - t <= mb) return LOOP_DONE;
     a->t = t;
+    a->have_tn = 0;
     a->is_first = s->is_first || s->landing || s->order_drop;
     a->clamped = 0;
     if (!next_breakpoint(s, t, &a->t_break)) return LOOP_BAIL_SOURCES;
@@ -171,7 +173,7 @@ static long take(loop_t *s, loop_attempt_t *a)
     long n = s->n, r, st;
     double h = a->h, h_last;
     const double *seed;
-    a->tn = a->t + h;
+    a->tn = a->have_tn ? a->tn : a->t + h;
     h_last = s->have_dt_last ? s->dt_last : h;
     a->h_last = h_last;
     a->formula = s->base;
@@ -197,9 +199,15 @@ static long take(loop_t *s, loop_attempt_t *a)
     else if (st == PRED_NONE) seed = s->xlast;
     else return LOOP_BAIL_PRED;
     for (r = 0; r < n; r++) if (!isfinite(seed[r])) return LOOP_BAIL_NEWTON;
-    src->mode = SOURCES_U;
-    src->t = a->tn;
-    if (CALL(s->src_fn, pcx_sources, src) != SOURCES_DONE) return LOOP_BAIL_SOURCES;
+    if (s->walk) {
+        /* (the walk's sources: the table's row, the Python's own vector) */
+        nt->u = s->wu + s->wj * n;
+    } else {
+        src->mode = SOURCES_U;
+        src->t = a->tn;
+        if (CALL(s->src_fn, pcx_sources, src) != SOURCES_DONE) return LOOP_BAIL_SOURCES;
+        nt->u = src->out;
+    }
     nt->formula = a->formula;
     nt->a0 = a->a0;
     nt->a1 = a->a1;
@@ -210,7 +218,6 @@ static long take(loop_t *s, loop_attempt_t *a)
     nt->q2 = (a->formula == PCX_FORMULA_GEAR2) ? s->qring + n : s->qring;
     nt->iq1 = (a->formula == PCX_FORMULA_TRAPEZOIDAL || a->formula == PCX_FORMULA_THETA)
               ? s->iqring : s->qring;
-    nt->u = src->out;
     nt->xseed = seed;
     nt->have_cache = s->cur >= 0;
     a->nxt = (s->cur == 0) ? 1 : 0;
@@ -483,6 +490,117 @@ static void accept(loop_t *s, const loop_attempt_t *a)
     s->k++;
 }
 
+/* `remove_row_col` of the full `C` (n x n, row-major) into `dst` (m x m) */
+static void reduce_mat(const double *C, double *dst, long n, long r)
+{
+    long i, j, o = 0;
+    for (i = 0; i < n; i++) {
+        if (i == r) continue;
+        for (j = 0; j < n; j++) if (j != r) dst[o++] = C[i * n + j];
+    }
+}
+
+/* `_LiveMonodromy._prune`'s test on the state one step on: 1 where a
+   column is zero in P_n, P_{n-1} and Pq_n alike (`np.any(P != 0, axis=0)`:
+   a NaN live) -- the prune then the Python's */
+static int walk_dies(const loop_t *s)
+{
+    long m = s->m, w = s->w, r, c;
+    const double *P0 = s->Pb[s->p0], *P1 = s->Pb[s->p1], *Pq = s->Pqb[s->pq];
+    for (c = 0; c < w; c++) {
+        int live = 0;
+        for (r = 0; r < m && !live; r++)
+            live = P0[r * w + c] != 0.0 || P1[r * w + c] != 0.0 || Pq[r * w + c] != 0.0;
+        if (!live) return 1;
+    }
+    return 0;
+}
+
+/* the walk's step map after step `a` (`_walk_lmm`'s, `_lmmsens_c.step`): the
+   step's J and C reduced, its coefficients (`companion_coefficients`:
+   Gear-2's alphas, Euler's `1.0 / h` and `-1.0 / h`, the trapezoid's
+   `2.0 / h`, `-2.0 / h` and -1), lmmsens.c on the live columns, then the
+   rings moved on (`_LiveMonodromy.advance`; its prune, on its first steps
+   and then every 64th, tested).  0, LOOP_WALK_MAP: the map handed back,
+   the rings as they were, or LOOP_WALK_PRUNE: a column dead, the rings
+   moved on and the prune the Python's */
+static long walk_map(loop_t *s, const loop_attempt_t *a)
+{
+    newton_t *nt = (newton_t *) s->newton;
+    lmmsens_t *mp = (lmmsens_t *) s->map;
+    long fr = 3 - s->cn - s->cp, p2 = 3 - s->p0 - s->p1, st;
+    double h = a->h;
+    reduce_mat(nt->Jj, s->Jf, s->n, s->iref);
+    reduce_mat(nt->Cj, s->Cr[fr], s->n, s->iref);
+    mp->b = 0.0;
+    if (a->formula == PCX_FORMULA_GEAR2) {
+        mp->L = 3;
+        mp->alpha[0] = a->a0;
+        mp->alpha[1] = a->a1;
+        mp->alpha[2] = a->a2;
+    } else {
+        mp->L = 2;
+        mp->alpha[0] = (a->formula == PCX_FORMULA_EULER ? 1.0 : 2.0) / h;
+        mp->alpha[1] = (a->formula == PCX_FORMULA_EULER ? -1.0 : -2.0) / h;
+        if (a->formula != PCX_FORMULA_EULER) mp->b = -1.0;
+    }
+    mp->w = s->w;
+    mp->P0 = s->Pb[s->p0];
+    mp->P1 = s->Pb[s->p1];
+    mp->Pq = s->Pqb[s->pq];
+    mp->C1 = s->Cr[s->cn];
+    mp->C2 = s->Cr[s->cp];
+    mp->Cn = s->Cr[fr];
+    mp->Jf = s->Jf;
+    mp->Pn = s->Pb[p2];
+    mp->Pqn = s->Pqb[1 - s->pq];
+    /* (the capacitances' column lists the last map made, moved on one
+       place: the first map of a call reads them afresh) */
+    mp->reuse = s->maps ? 3 : 0;
+    st = CALL(s->map_fn, pcx_lmmsens, mp);
+    if (st != LMMSENS_DONE) {
+        s->map_status = st;
+        return LOOP_WALK_MAP;
+    }
+    s->maps++;
+    s->p1 = s->p0;
+    s->p0 = p2;
+    s->pq = 1 - s->pq;
+    s->cp = s->cn;
+    s->cn = fr;
+    s->mono_n++;
+    if ((s->mono_n <= 4 || s->mono_n % 64 == 0) && walk_dies(s)) return LOOP_WALK_PRUNE;
+    return 0;
+}
+
+/* the walk (`_lmmwalk_c`): the table's steps from `wj`, each made by `take`
+   with its end the grid's, accepted (every one: no judge), then its map.
+   It stops before a step a unit hands back, nothing of it made; or after a
+   step whose map handed back or whose prune is the Python's
+   (LOOP_WALK_MAP, LOOP_WALK_PRUNE: `wj` past it) */
+static long walk(loop_t *s)
+{
+    loop_attempt_t a;
+    long st;
+    for (; s->wj < s->wsteps; s->wj++) {
+        if (s->k >= s->cap) return LOOP_FULL;
+        memset(&a, 0, sizeof a);
+        a.t = s->t;
+        a.h = s->wh[s->wj];
+        a.tn = s->wt[s->wj];
+        a.have_tn = 1;
+        a.is_first = (int) s->is_first;
+        a.t_break = INFINITY;
+        if ((st = take(s, &a)) != 0) return st;
+        accept(s, &a);
+        if ((st = walk_map(s, &a)) != 0) {
+            s->wj++;
+            return st;
+        }
+    }
+    return LOOP_DONE;
+}
+
 /* `_SteppingLoop.execute` for a multistep family whose every piece it was
    checked to stand in for, fixed or adaptive: attempt after attempt,
    where / take / judge / accept, the steps taken into X, T and the state.
@@ -500,6 +618,8 @@ long pcx_loop(loop_t *s)
     s->attempts = s->rejected = s->iters = s->euler_steps = s->breaks = s->screens = 0;
     s->pred_fast = s->ltes = s->lte_euler = s->early_aborts = s->early_checks = 0;
     s->newton_rejects = 0;
+    s->maps = 0;
+    if (s->walk) return s->status = walk(s);
     for (;;) {
         /* `while self.t < self.tend` */
         if (!(s->t < s->tend)) return s->status = LOOP_DONE;

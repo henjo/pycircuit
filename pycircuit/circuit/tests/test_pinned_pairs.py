@@ -757,6 +757,53 @@ PAIRS = {
                  'pycircuit.circuit.shooting._stagewalk_c:_Ctx',
                  'pycircuit.circuit._tran_radau_c:hold'],
     },
+    'the multistep walk and its C': {
+        'why': 'the plain multistep walk\'s steps in C a chunk a call (roadmap 204): each step '
+               'the C stepping loop\'s attempt on the walk\'s grid (loop.c\'s walk: `take` -- '
+               '`check_order_drop`, `bdf2_alphas`, the predictor, the C Newton with its J '
+               'formed, the screen -- and `accept`: the rings, `_pred_note`, the step record), '
+               'its sources the Python\'s own (`_source_at` in its step memo, the solve memo\'s '
+               'entries and counts; the rows no step read taken back), then the step map '
+               '(lmmsens.c as `_lmmsens_c.step` calls it) and `_LiveMonodromy.advance` (its '
+               'prune\'s test in C, the prune the Python\'s); the state written back as the '
+               'Python leaves it (the step lengths the grid\'s own objects), a stop before a '
+               'step the Python\'s to make, a map handed back made as `_walk_lmm` makes it',
+        'reference': ['pycircuit.circuit.shooting._pss_walks:_PeriodWalks._walk_lmm',
+                      'pycircuit.circuit.shooting._pss_inner:_InnerTransient.solve_timestep',
+                      'pycircuit.circuit.shooting._pss_inner:_InnerTransient._transient_step',
+                      'pycircuit.circuit.transient:Transient.solve_timestep',
+                      'pycircuit.circuit.transient:Transient._solve_timestep',
+                      'pycircuit.circuit._tran_history:_RunHistory._roll_history',
+                      'pycircuit.circuit._tran_history:_RunHistory._push_history',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._pred_note',
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._pred_promote',
+                      'pycircuit.circuit._tran_companion:_CompanionModel._source_at',
+                      'pycircuit.circuit._tran_newton_c:_source',
+                      'pycircuit.circuit._tran_newton_c:_undo_source',
+                      'pycircuit.circuit._tran_newton_c:_serve',
+                      'pycircuit.circuit._stamp_plan:source_direct',
+                      'pycircuit.circuit.shooting._steps:_LiveMonodromy.advance',
+                      'pycircuit.circuit.shooting._steps:_LiveMonodromy._prune',
+                      'pycircuit.circuit.integrator:Gear2Integrator.companion_coefficients',
+                      'pycircuit.circuit.integrator:EulerIntegrator.companion_coefficients',
+                      'pycircuit.circuit.integrator:TrapezoidalIntegrator.companion_coefficients'],
+        'twin': ['pycircuit.circuit._tran_loop_c:LOOP_C',
+                 'pycircuit.circuit._tran_loop_c:LOOP_CDEF',
+                 'pycircuit.circuit.shooting._lmmwalk_c:walk',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_eligible',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_map_ready',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_run_ready',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_state_ready',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_bind',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_load',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_table',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_undo',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_chunks',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_settle',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_write_back',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_walk_back',
+                 'pycircuit.circuit.shooting._lmmwalk_c:_Ctx'],
+    },
     'the multistep step map and its C': {
         'why': 'the dense multistep walk\'s monodromy step on its live columns in one call: '
                'each capacitance\'s nonzero columns found as `_ColumnsOf` finds them, the '
@@ -850,7 +897,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('02966d22fff9', '505e654ba466'),
+    'the stepping loop and its C': ('02966d22fff9', '663c790d259b'),
     'the predictor and its C': ('9e611c84de5a', '0d37cf280c92'),
     'the branch screen and its C': ('adb832d7aae0', '213a22d4c01e'),
     'the sources and their C': ('55cf2d3441f8', 'dd4a622bf839'),
@@ -883,7 +930,8 @@ RECORD = {
     'the stage step map and its C': ('39f2d0f63b0f', '591052196b6b'),
     'the KLU step map and its C': ('5b9b1f672523', '776fd7afe705'),
     'the stage walk and its C': ('a918e57085a2', 'a7c412d87bc9'),
-    'the multistep step map and its C': ('b072302c5297', 'be14cb8c5221'),
+    'the multistep walk and its C': ('57f6fd18a3eb', 'd2b3a85337dd'),
+    'the multistep step map and its C': ('985dde19187d', 'be14cb8c5221'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),

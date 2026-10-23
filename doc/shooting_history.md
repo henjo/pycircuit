@@ -12511,3 +12511,50 @@ It serves what the C stage Newton serves on the walk's KLU: no stateful
 limiter, no PCNR, the cost transform off (`radau_transform` 'auto' leaves
 it off for a cheap compiled Jacobian).  A Howland current pump testbench's
 Radau PSS 1.92x (6.10 -> 3.17 s), the orbit bit-identical; gear untouched.
+
+## `_lmmwalk_c.py` -- the plain multistep walk in C (roadmap 204, 2026-10-23)
+
+### `walk`, `_table`, `_undo`, `_walk_back`, `_Ctx`; loop.c's walk (`LOOP_WALK_MAP`, `LOOP_WALK_PRUNE`)
+
+After 193 a plain multistep walk's step was the Python's inner-transient
+step (`solve_timestep` through `Transient._solve_timestep`, the C Newton's
+serve, `_roll_history`) and one C call for its step map -- the Python about
+two thirds of the walk (a Howland testbench's gear PSS: the walks 3.24 of
+4.03 s, the C Newton 0.55 and the map 1.03 of those).  The stepping loop's
+C already made that step's attempt bit for bit (`_tran_loop_c`), so it
+gained a walk mode rather than a second unit: on a grid of the caller's,
+each step `take` (the companion with its order drop, the predictor, the C
+Newton with its J formed, the screen) and `accept` (the rings,
+`_pred_note`, the step record) with the grid's end time, every step
+accepted (no judge, no breakpoint), then the step map (lmmsens.c on the
+walk's live columns, the struct `_lmmsens_c.step` fills) -- a chunk of
+steps a call (16, doubling to 256).
+
+THE SOURCES ARE THE PYTHON'S.  A chunk's table is made first, each row the
+step's `_source_at` at its end in a step memo of its own --
+`_tran_newton_c._source`'s pass -- so the solve's source memo (roadmap 198)
+is read, written and counted as the Python's steps read it: with the C
+loop's own sources table the walk's passes were served where the Python's
+were memo hits (12 794 served against 9 601 memo hits on the Howland gear
+PSS).  The rows of steps no call made are taken back (`_undo`: the counts,
+the memo entries they added), as `_undo_source` takes back a handed-back
+attempt's.
+
+THE PRUNE IS THE PYTHON'S.  `_LiveMonodromy._prune` leaves its three arrays
+as `P[:, keep]` views, not C-contiguous; the Python's step map declines them
+('layout') on the next two steps and runs numpy's recursion on the views,
+its products then numpy's for that layout.  The C tests the prune where
+`advance` makes it and, where a column dies, hands the step back with its
+map made: the glue moves the monodromy on with `advance` itself, and the
+walk declines while the views are carried.  (A first build pruned in C on
+contiguous copies: the Howland orbit was the same, but nothing bounds a
+BLAS kernel's bits across layouts.)
+
+A STOP before a step (the predictor's general path, the Newton, the
+screen, a source that raises) makes nothing of it; a map handed back
+(singular, not finite) leaves the step made and its map made as
+`_walk_lmm` makes it -- `_lmmsens_c.step`, then `_LiveMonodromy.step`.  The
+step lengths written back are the grid's own objects (`hs[j]`, numpy
+floats), as the Python's steps leave them in `_dt`, its history and the
+coefficients made from them.  A Howland current pump testbench's gear PSS
+1.86x (4.05 -> 2.18 s), the orbit and every count bit-identical.

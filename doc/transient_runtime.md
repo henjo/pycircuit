@@ -55,7 +55,10 @@ Outside the multistep loop, the same rules: the Radau stage solve (`csrc/radau.c
 walk that drives the stage solve, the predictor, the branch screen and the step map on the walk's
 KLU a chunk of steps a call (`csrc/stagewalk.c`, `shooting/_stagewalk_c`, `PYCIRCUIT_STAGEWALK_C`,
 `pss.stagewalk:`; a stop after a converged Newton held for the Python's repeat of the step,
-`_tran_radau_c.hold`, `radau_c:held`). A few glue modules also make a
+`_tran_radau_c.hold`, `radau_c:held`), and the plain multistep walk on the C stepping loop's own walk
+mode, a chunk of steps a call -- each step `take` and `accept` on the walk's grid, its sources the Python's
+in a table, then the step map (`csrc/loop.c`, `shooting/_lmmwalk_c`, `PYCIRCUIT_LMMWALK_C`, `pss.lmmwalk:`;
+a column's prune and a map handed back the Python's). A few glue modules also make a
 count the Python would have made on the same path: `umemo:hit` (the source memo, by the Newton and
 Radau glue), `pss.sync:skipped` (the sensitivities), `chord:chosen` (the Newton).
 
@@ -103,6 +106,7 @@ declared in `transient._RUN_STATE`, with its owner and lifetime
 | `_lmmsens_c` | on the walk object (the PSS): `_lmmsens_c` (its record: the struct, buffers, the last call's arrays and the column lists they keep) | -- |
 | `_sensklu_c` | on the walk's StructuralKLU: `_sensklu_c` (its context: the struct, the probe's buffers, the binding) | the walk's `_KLUWalk`: its numeric, generation, `factors`, `refactors`, `fallbacks`; the solver's `numerics` |
 | `_stagewalk_c` | on the inner transient: `_stagewalk_c` (its context: the struct, the state's and a chunk's buffers, the predictor state, the screen's struct) | the stage state (`_qlast`, `_iqlast`, `_pred_hist`, `_q_cache`, `_rk_Y`, `_iq`, `_Cmat`, `_Geq`, `_C_cache`, `_branch_cmax`, `_dt` and its history), the device memo's records of the last step's stages; the stage KLU's `_numeric` and counts; the walk's `_KLUWalk` and the solver's `numerics` as `_sensklu_c`; the live columns; on a stop after a converged Newton, `_radau_c.pre` |
+| `_lmmwalk_c` | on the walk object (the PSS): `_lmmwalk_c` (its context: the C loop's run bound for the walk without a sources unit, the walk's buffers -- the reduced C ring, the monodromy's, a chunk's lengths, ends and sources -- its step map's struct) | the multistep state as `_tran_loop_c` writes a stepping loop's (`_qlast`, `_iqlast`, `_pred_hist`, `_q_cache`, `_C_cache`, `_C_pattern`, `_iq`, `_Cmat`, `_Geq`, the active integrator and `_companion_coeffs`, `_dt` and its history -- the grid's own objects -- `_branch_cmax`); the C Newton's KLU counts; the walk object's `_Jf`, `_Geq`, `_C`, `_coeffs`; the live monodromy (`P`, `Pq`, `n`); the solve's source memo and its counts, by the Python's own passes |
 | `_tran_pred_c` | on the transient: `_pred_c` (`stages`' struct and history buffers) | -- (the seeds, returned) |
 | `_tran_ctrl_c`, `_tran_branch_c`, `_tran_sources` | nothing: their state lives in the caller's struct or table (the direct pass keeps its table on its program, `_SourceDirect.tab`) | -- |
 

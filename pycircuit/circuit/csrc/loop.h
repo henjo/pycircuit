@@ -89,6 +89,32 @@ typedef struct {
     long have_hm;               /* the statistics' min/max step are set */
     double hmin, hmax;
     long status;
+    /* THE WALK (`shooting/_lmmwalk_c`; `walk` 0: the stepping loop above):
+       a shooting walk's multistep steps on a grid of its own -- each made by
+       `take` with its end the grid's time and its sources the table's (the
+       Python's own vectors), accepted as `accept` accepts it (no breakpoint,
+       no judge), then the walk's step map on the monodromy's live columns
+       (lmmsens.c, `_LiveMonodromy`).  The state above is the walk's inner
+       transient's; X and T take each step's point */
+    long walk;                  /* 1: the walk's steps (`wsteps` of the table) */
+    long wsteps, wj;            /* the table's steps; in: the first to make, out:
+                                   the next (`wsteps`: the table made) */
+    const double *wh, *wt;      /* (wsteps) each step's length and end */
+    const double *wu;           /* (wsteps x n) each step's sources at its end */
+    void *map_fn, *map;         /* lmmsens.c, its lmmsens_t (the walk's) */
+    long m, iref;               /* the reduced unknowns, the reference row */
+    double *Jf;                 /* (m x m) the step's J, reduced */
+    double *Cr[3];              /* (m x m) the reduced C ring: Cr[cn] C_n, Cr[cp]
+                                   C_{n-1}, the third the step's own */
+    long cn, cp;
+    double *Pb[3];              /* (m x wcap) P_n (Pb[p0]), P_{n-1} (Pb[p1]) and
+                                   the map's output, row-major on the live columns */
+    double *Pqb[2];             /* (m x wcap) Pq_n (Pqb[pq]) and the map's */
+    long p0, p1, pq;
+    long w;                     /* the live columns (the call keeps them all) */
+    long mono_n;                /* the steps the monodromy took (`_LiveMonodromy.n`) */
+    long maps;                  /* out: the step maps made this call */
+    long map_status;            /* out, LOOP_WALK_MAP: the map's status */
 } loop_t;
 long pcx_loop(loop_t *s);
 
@@ -97,6 +123,7 @@ long pcx_loop(loop_t *s);
    buffer, `judge` its error and the next step */
 typedef struct {
     double t, h, tn;            /* where: its start, its step, its end */
+    int have_tn;                /* the walk's: `tn` the grid's, not t + h */
     double t_break;             /* where: the next breakpoint (`_next_breakpoint`) */
     int is_first, landing;      /* where: the order drop asked; an adaptive step
                                    truncated onto t_break, or a grid's landing */
@@ -134,5 +161,11 @@ enum loop_status {
     LOOP_BAIL_SCREEN = 6,       /* the screen fired or handed back: the SVD is Python's */
     LOOP_BAIL_FORMULA = 7,      /* a companion this loop does not make */
     LOOP_BAIL_LTE = 8,          /* the error test handed back (or has no history) */
-    LOOP_BAIL_FORCE = 9         /* the budget spent: the force-accept is the Python's */
+    LOOP_BAIL_FORCE = 9,        /* the budget spent: the force-accept is the Python's */
+    LOOP_WALK_MAP = 10,         /* the walk: the step made, its map handed back
+                                   (`map_status`: singular, not finite) -- the
+                                   Python's `_LiveMonodromy.step` makes it */
+    LOOP_WALK_PRUNE = 11        /* the walk: the step and its map made, a column
+                                   of the monodromy dead -- the prune is
+                                   `_LiveMonodromy._prune`'s (its views) */
 };
