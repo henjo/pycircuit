@@ -56,7 +56,7 @@ from pycircuit.circuit import (
     _tran_sources,
     _watch,
 )
-from pycircuit.circuit.shooting import _lmmsens_c, _sens_c
+from pycircuit.circuit.shooting import _lmmsens_c, _sens_c, _sensklu_c
 
 #: (the unit, the cdef its module loads it through)
 UNITS = [
@@ -67,6 +67,7 @@ UNITS = [
     ('radau_tc', _tran_radau_tc.RADAU_TC_CDEF),
     ('radau_fold', _tran_radau_tc.FOLD_CDEF),
     ('sens', _sens_c.SENS_CDEF),
+    ('sensklu', _sensklu_c.SENSKLU_CDEF),
     ('lmmsens', _lmmsens_c.LMMSENS_CDEF),
     ('pass', _hdl_batch.PASS_CDEF),
     ('walk', _hdl_climit._WALK_CDEF),

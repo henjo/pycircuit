@@ -12443,3 +12443,22 @@ Measured: the testbench's gear PSS 7.57 -> 6.83 s (1.108x, three rounds
 interleaved in one process); the C 108 us a step in place against ~74 of
 LAPACK and BLAS.  It was built under a 1.12x line it missed by a hair,
 and committed on Andreas's decision.
+
+## `_sensklu_c.py` -- the coupled stage step map on the walk's KLU in C (roadmap 199, 2026-10-23)
+
+### `step`, `block_step`, `_Ctx`, `SENSKLU_SRC`
+
+A shooting walk that keeps no step factors its coupled blocks on one KLU
+numeric, refactored (`StructuralKLU.walk`, roadmap 198); the dense step map
+in C (`_sens_c`) declines those blocks, and on a Howland current pump
+testbench's Radau PSS (90 unknowns, a 267-unknown block, 19 live columns)
+the Python step took 243 us a step around ~110 us of KLU: the refactor 57,
+its probe's check 41 in eight small numpy calls, the solve of the stacked
+`C_n P` 62.  One C call makes it from the C stage Newton's last assembly
+(`_tran_radau_c.final_block`): the refactor, the probe in `np.bincount`'s
+order with numpy's and Python's max, a fresh factor where either fails, the
+right-hand side copied column-major as `_KLUNumeric._run` copies it,
+klu_solve of the columns at once -- the walk's numeric, generation and
+counts left as `factor_values` leaves them, its two LinAlgErrors raised by
+the glue, a check whose arithmetic numpy would warn of handed back.  Every
+walk's monodromy and the orbit bit-identical.

@@ -347,6 +347,61 @@ def test_a_walk_refactors_one_numeric_and_checks_it():
     assert (w.factors, w.refactors, w.fallbacks, s.numerics) == (2, 2, 1, 2)
 
 
+def _block_twin(M, blocks, base, s=1):
+    """Each block through a walk's numeric by the C (`_sensklu_c.block_step`)
+    and by the Python (`factor_values`, then `_StageStep.solve`'s stacked
+    solve): per block the solution's bytes, or the exception's, and the
+    walks' counts after."""
+    from pycircuit.circuit.shooting import _sensklu_c
+    cols, rows = np.nonzero(np.ones((M, M)))                 # (CSC order: by column)
+    got = []
+    for c_side in (True, False):
+        sk = linearsolver.StructuralKLU(M, rows, cols, fallback=linearsolver.SuperLUSolver)
+        sk._analysed()
+        w = sk.walk()
+        outs = []
+        for B in blocks:
+            Ax = np.ascontiguousarray(B[rows, cols])
+            try:
+                if c_side:
+                    X = _sensklu_c.block_step(w, Ax, base, s)
+                    assert X is not None
+                else:
+                    X = w.factor_values(Ax).solve(np.vstack([base] * s))
+                outs.append(('ok', np.asarray(X).tobytes(), np.asarray(X).strides))
+            except np.linalg.LinAlgError as e:
+                outs.append(('raise', str(e)))
+        got.append((outs, (w.factors, w.refactors, w.fallbacks, w.gen, sk.numerics,
+                           w._num is None)))
+    return got
+
+
+def test_the_walk_s_block_step_in_c_is_the_python_one():
+    """`_sensklu_c.block_step` (roadmap 199): a walk's blocks -- the first
+    factored, later ones refactored and checked, one its pivot order cannot
+    take (a zero pivot: a fresh factor), a singular one (raised, the numeric
+    gone, as `factor_values` leaves it) and one after it -- the solution's
+    bytes and layout, the exceptions and every count the Python's."""
+    from pycircuit.circuit.shooting import _sensklu_c
+    if _sensklu_c.driver() is None:
+        pytest.skip(f'the KLU step map in C is off: {_sensklu_c.STATUS}')
+    m = 3
+    base = np.array([[1.0, -2.0], [0.5, 3.0], [2.0, 0.25]])
+    P = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+    blocks = [np.eye(m) + 0.1 * np.ones((m, m)),
+              2.0 * np.eye(m) + 0.3 * np.arange(m * m).reshape(m, m) / m ** 2,
+              P,
+              np.outer([1.0, 1.0, 1.0], [1.0, 2.0, 3.0]),
+              np.eye(m) * 3.0 + 0.2]
+    c, py = _block_twin(m, blocks, base)
+    assert c == py
+    assert [o[0] for o in c[0]] == ['ok', 'ok', 'ok', 'raise', 'ok'] and c[1][2] == 2
+    rng = np.random.default_rng(7)
+    big = [np.eye(3 * m) * 4.0 + rng.normal(size=(3 * m, 3 * m)) for _ in range(3)]
+    c2, py2 = _block_twin(3 * m, big, base, s=3)
+    assert c2 == py2 and [o[0] for o in c2[0]] == ['ok'] * 3
+
+
 def test_a_refactor_that_meets_a_zero_pivot_factors_again():
     """The reused pivot order on a matrix that is regular under another: a
     fresh factor (counted), not "singular" -- the gmin and source ladders

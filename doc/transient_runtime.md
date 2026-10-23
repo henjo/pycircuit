@@ -48,7 +48,8 @@ Outside the multistep loop, the same rules: the Radau stage solve (`csrc/radau.c
 `PYCIRCUIT_RADAU_C`, `radau_c:`), its tensor-product form and fold (`csrc/radau_tc.c`,
 `csrc/radau_fold.c`, `_tran_radau_tc`, `PYCIRCUIT_RADAU_TC`, `PYCIRCUIT_RADAU_FOLD`,
 `PYCIRCUIT_RADAU_TC_END`, `radau_tc:`, the fold's `radau.frozen:`), and the shooting sensitivities
-(`csrc/sens.c`, `shooting/_sens_c`, `PYCIRCUIT_SENS_C`, `pss.sens:`; the multistep walk's
+(`csrc/sens.c`, `shooting/_sens_c`, `PYCIRCUIT_SENS_C`, `pss.sens:`; on the walk's KLU
+`csrc/sensklu.c`, `shooting/_sensklu_c`, `PYCIRCUIT_SENSKLU_C`, `pss.sensklu:`; the multistep walk's
 `csrc/lmmsens.c`, `shooting/_lmmsens_c`, `PYCIRCUIT_LMMSENS_C`, `pss.lmm:`). A few glue modules also make a
 count the Python would have made on the same path: `umemo:hit` (the source memo, by the Newton and
 Radau glue), `pss.sync:skipped` (the sensitivities), `chord:chosen` (the Newton).
@@ -95,6 +96,7 @@ declared in `transient._RUN_STATE`, with its owner and lifetime
 | `_tran_radau_c` | on the transient: `_radau_c` (its record: buffers, the output sets the device memo takes as views, the stage KLU's binding -- a shooting walk's `_stage_klu` -- and the last serve's converged block) | the stage state; on the stage KLU its `_numeric`, `refactors`, `factors`, `pivot_fallbacks`, `residual_fallbacks` |
 | `_tran_radau_tc`, `_sens_c` | on the transient: `_radau_tc`, `_tc_end`; `_sens_c` | their stage state |
 | `_lmmsens_c` | on the walk object (the PSS): `_lmmsens_c` (its record: the struct, buffers, the last call's arrays and the column lists they keep) | -- |
+| `_sensklu_c` | on the walk's StructuralKLU: `_sensklu_c` (its context: the struct, the probe's buffers, the binding) | the walk's `_KLUWalk`: its numeric, generation, `factors`, `refactors`, `fallbacks`; the solver's `numerics` |
 | `_tran_pred_c`, `_tran_ctrl_c`, `_tran_branch_c`, `_tran_sources` | nothing: their state lives in the caller's struct or table | -- |
 
 ## When a C path may run: the run context

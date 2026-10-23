@@ -10,7 +10,7 @@ import scipy.sparse as _sp
 
 from pycircuit.circuit import _limiting, _paths, _tran_radau_c
 
-from . import _lmmsens_c, _pss_inner, _sens_c
+from . import _lmmsens_c, _pss_inner, _sens_c, _sensklu_c
 from ._factored import _PeriodWalk
 from ._steps import (
     _butcher,
@@ -1118,7 +1118,14 @@ class _PeriodWalks(object):
                              for y in self._transient().last_step.Y]))
                 if not (dense or keep or want_dT or Pk is not None):
                     continue
-            if plain:
+            if plain and walk_lu is not None:
+                ## (the step map on the walk's KLU in one C call: `_sensklu_c`,
+                ## roadmap 199; None -- the Python step)
+                got = _sensklu_c.step(self, xn, h, tab, live.P, walk_lu)
+                if got is not None:
+                    live.advance(*got)
+                    continue
+            elif plain:
                 ## (the step map in one C call: `_sens_c`, speed round 11;
                 ## None -- the Python step)
                 Pn = _sens_c.step(self, xn, h, tab, live.P)

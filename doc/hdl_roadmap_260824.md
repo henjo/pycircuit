@@ -11190,3 +11190,40 @@ the seeds at once, the accept's merge and the memo before the checks -0.35 s.
 
 **Gate**: the suite in the main tree, 5 829 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
 standalone DC, against 197: every digest, step, rejection, Newton count and path count identical.  No C changed.
+
+## 2026-10-23 — 199. A shooting walk's step on its KLU in one C call -- the refactor, its check and the stage system's solve (`csrc/sensklu.c`) -- a Howland testbench's Radau PSS 1.13x (6.94 -> 6.15 s), every orbit bit-identical
+
+**Why**  The plan after 198 (g24/plan_stage_walk.md; Andreas: "start with the next lever"): the Radau PSS's step was
+~730 us, ~300 of it arithmetic (the C stage Newton 179, KLU, BLAS) and ~400 Python around it.  Its first stage, the
+sensitivity: the plain walk's step on the walk's KLU (198's `StructuralKLU.walk`) took 243 us -- `_stage_step` 152
+(the refactor 57, its probe's check 41 in eight small numpy calls, `_C_at` 15) and `_StageStep.solve` 91 (the
+solve of the stacked `C_n P`, 19 live columns, 62) -- and the dense C step map (`_sens_c`) declines KLU blocks.
+
+**Built.**  `csrc/sensklu.c` (`pcx_sensklu`) and its glue `shooting/_sensklu_c`: `block_step(walk, Ax, base, s)`
+makes `_KLUWalk.factor_values` of the C stage Newton's last assembly (`_tran_radau_c.final_block`'s values) --
+the numeric refactored, the probe in `np.bincount`'s order with numpy's max and Python's `max`, a fresh factor
+where the refactor or the check fails, the first block factored -- then the stage system's right-hand side,
+`C_n P` (numpy's product, made in the glue as `_StageStep.solve` makes it) once a stage, laid column-major as
+`_KLUNumeric._run` copies it, and klu_solve of its columns at once; the new `P` is the last stage block of the
+transpose of a C-ordered buffer (the Fortran strides `_run` returns).  The walk's numeric, generation and counts
+and the solver's `numerics` are left as `factor_values` leaves them; a fresh factor that fails raises its
+LinAlgError, a failed solve `_run`'s; a flag numpy would warn of in the check hands the step back (after a
+refactor in place, which the Python's repeat makes again).  `_walk_stage` asks it for a KLU walk's plain step
+(the dense map keeps the dense walks); `step` returns, with `P`, the step on a full-width `P` on this step's
+factorisation (`_LiveColumns.advance`'s non-finite case).
+
+**Tests.**  test_structural_klu: a walk's blocks through the C and through `factor_values` and the stacked solve --
+the first factored, refactors, a zero pivot factored afresh, a singular block raised with the numeric gone, one
+after it, and three stages -- the solution's bytes and strides, the exceptions and every count the Python's.
+test_shooting_step_klu: a PSS with the C step map and without -- the orbit and the monodromy the same bytes,
+every walk's counts and the solver's `numerics` the same; the large-block test reads the KLU map's count.
+test_c_abi: the unit.  test_pinned_pairs: 'the KLU step map and its C' recorded.  doc/transient_runtime.md: its
+row; doc/shooting_history.md: its entry.
+
+Measured, HEAD (a worktree) and this tree interleaved, separate processes, load ~2.5: Radau 6.91 / 6.97 -> 6.17 /
+6.13 s (1.13x, over the stage's 1.10x line), gear 4.13 / 4.09 -> 4.08 / 4.08 s (none of it gear's); the whole orbit
+the same bytes, both methods.  9 599 of 9 600 steps served (the run's first: no C last assembly yet).
+
+**Gate**: the suite in the main tree, 5 838 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 198: every digest, step, rejection, Newton count and path count identical; the sanitized
+fast tier (scripts/sanitize_suite.sh) 5 553 passed, clean, and the KLU step map's ten tests under `--deep`, clean.

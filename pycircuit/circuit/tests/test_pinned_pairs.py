@@ -694,6 +694,26 @@ PAIRS = {
                  'pycircuit.circuit.shooting._sens_c:_map',
                  'pycircuit.circuit.shooting._sens_c:_Ctx'],
     },
+    'the KLU step map and its C': {
+        'why': 'the plain walk\'s step on the walk\'s KLU in one call (roadmap 199): '
+               '`_KLUWalk.factor_values` of the C stage Newton\'s last assembly -- the '
+               'numeric refactored, the probe\'s check (`np.bincount`\'s order, numpy\'s '
+               'max, Python\'s max), a fresh factor where either fails -- `_StageStep.solve`\'s '
+               '`C_n P` stacked per stage and copied column-major as `_KLUNumeric._run` '
+               'copies it, klu_solve of the columns at once, the new `P` its last stage '
+               'block; the walk\'s numeric, generation and counts as `factor_values` leaves '
+               'them, its LinAlgErrors raised, a check flag handed back',
+        'reference': ['pycircuit.circuit.shooting._pss_walks:_PeriodWalks._stage_step',
+                      'pycircuit.circuit.shooting._pss_walks:_final_lu',
+                      'pycircuit.circuit.linearsolver:_KLUWalk',
+                      'pycircuit.circuit.linearsolver:_KLUBorrowed',
+                      'pycircuit.circuit.linearsolver:_KLUNumeric._run',
+                      'pycircuit.circuit.shooting._steps:_StageStep.solve'],
+        'twin': ['pycircuit.circuit.shooting._sensklu_c:SENSKLU_SRC',
+                 'pycircuit.circuit.shooting._sensklu_c:block_step',
+                 'pycircuit.circuit.shooting._sensklu_c:step',
+                 'pycircuit.circuit.shooting._sensklu_c:_Ctx'],
+    },
     'the multistep step map and its C': {
         'why': 'the dense multistep walk\'s monodromy step on its live columns in one call: '
                'each capacitance\'s nonzero columns found as `_ColumnsOf` finds them, the '
@@ -818,6 +838,7 @@ RECORD = {
     'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('39f2d0f63b0f', '591052196b6b'),
+    'the KLU step map and its C': ('5b9b1f672523', '5c950691cca4'),
     'the multistep step map and its C': ('b072302c5297', 'be14cb8c5221'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),

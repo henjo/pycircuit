@@ -3,6 +3,7 @@ on its structural pattern (`_InnerTransient._step_klu`) from
 `SPARSE_BLOCK_MIN_N` unknowns; the answers the dense LU's to the
 rounding."""
 import numpy as np
+import pytest
 
 from pycircuit.circuit import _paths, circuit, gnd
 from pycircuit.circuit.circuit import SubCircuit
@@ -43,10 +44,11 @@ def _pss(cir, klu, monkeypatch, npts=20, **kw):
 
 def test_a_large_stage_block_factors_on_its_structure_and_the_c_step_declines(monkeypatch):
     """Radau's `3 m` block from `SPARSE_BLOCK_MIN_N`, on a linear ladder
-    the C step map (`_sens_c`) would otherwise take: it declines the block
-    ('pss.sens:sparse') -- the Python step factors it on its structure, and
-    the C's dense LU is not that step's twin.  (Without it the analysis's
-    solver chose on the first matrix it saw, here SuperLU on the block.)"""
+    the dense C step map (`_sens_c`) would otherwise take: the block is
+    factored on its structure, and the dense map is not asked -- its LU is
+    not that step's twin; the KLU step map (`_sensklu_c`) is.  (Without it
+    the analysis's solver chose on the first matrix it saw, here SuperLU on
+    the block.)"""
     out = {}
     for klu in (False, True):
         before = _paths.snapshot()
@@ -55,8 +57,8 @@ def test_a_large_stage_block_factors_on_its_structure_and_the_c_step_declines(mo
     (y0, d0, _), (y1, d1, pss1) = out[False], out[True]
     n = 3 * (pss1.cir.n - 1)
     assert n >= _pss_inner.SPARSE_BLOCK_MIN_N
-    assert not d0.get('pss.sens:sparse')
-    assert d1.get('pss.sens:sparse', 0) > 0 and not d1.get('pss.sens:served')
+    assert not d0.get('pss.sensklu:served')
+    assert d1.get('pss.sensklu:served', 0) > 0 and not d1.get('pss.sens:served')
     klu = pss1._step_klus[n][1]
     assert type(klu) is StructuralKLU and klu.numerics > 0 and klu.foreign == 0
     assert np.allclose(y1, y0, rtol=1e-9, atol=1e-12)
@@ -137,6 +139,34 @@ def test_a_shooting_walk_refactors_one_numeric_and_keeps_its_answer(monkeypatch)
     pss0, y0 = _pss(_ladder(SECTIONS), True, monkeypatch)
     assert np.allclose(y, y0, rtol=1e-12, atol=1e-15)
     assert np.allclose(P, np.asarray(pss0._monodromy), rtol=1e-10, atol=1e-14)
+
+
+def test_the_klu_step_map_in_c_is_the_python_one(monkeypatch):
+    """The plain walk's step on the walk's KLU in one C call (`_sensklu_c`,
+    roadmap 199): the orbit and the monodromy the bytes of the Python
+    step's, every walk's numeric made as often (factors, refactors,
+    fallbacks, generation) and the solver's `numerics` the same."""
+    from pycircuit.circuit.shooting import _sensklu_c
+    if _sensklu_c.driver() is None:
+        pytest.skip(f'the KLU step map in C is off: {_sensklu_c.STATUS}')
+    orig = StructuralKLU.walk
+    out = {}
+    for on in (False, True):
+        monkeypatch.setattr(_sensklu_c, 'SENSKLU_C', on)
+        walks = []
+
+        def walk(self, walks=walks):
+            walks.append(orig(self))
+            return walks[-1]
+        monkeypatch.setattr(StructuralKLU, 'walk', walk)
+        before = _paths.snapshot()
+        pss, y = _pss(_ladder(SECTIONS, diode=False), True, monkeypatch)
+        sk = pss._step_klus[3 * (pss.cir.n - 1)][1]
+        out[on] = (y.tobytes(), np.asarray(pss._monodromy).tobytes(),
+                   [(w.factors, w.refactors, w.fallbacks, w.gen) for w in walks], sk.numerics,
+                   _paths.since(before))
+    assert out[True][:4] == out[False][:4]
+    assert out[True][4].get('pss.sensklu:served', 0) > 30 and not out[False][4].get('pss.sensklu:served')
 
 
 def _replay_runs(monkeypatch, alter=None):
