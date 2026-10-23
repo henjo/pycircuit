@@ -11088,3 +11088,54 @@ and its C' re-recorded.
 **Gate**: the suite in the main tree, 5 812 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
 standalone DC, against 195: every digest identical (a report changed, no iterate); the sanitized fast tier
 (scripts/sanitize_suite.sh) 5 573 passed, no sanitizer report: clean.
+
+## 2026-10-23 — 197. A Newton update that has stopped contracting is judged against the rounding its own solve carries -- a user's 4 mV supply step, which fell to the minimum step at the step's corner, completes in 0.07 s (the 2 mV step's waveform within 1.6e-11 V)
+
+**Why**  The step test of 196 (a 4 mV step into an op-amp macromodel's supply; reltol 1e-9, iabstol 1e-13) failed
+because one update could not settle: a 0 V source's current in the macromodel, set by the KCL of a node a 354 pF
+capacitor loads.  At a small step the capacitor's companion makes that KCL a difference of terms ~C/h |v|, and
+the residual is evaluated to eps of them, so the current moves by ~eps C |v| / h every iteration -- 7e-8 A at
+h = 1e-18 s against a tolerance of 1e-13 A -- while the residual's own test holds.  It crosses the tolerance at
+h ~ 1e-12 s, where the failures began; each retry halved h and doubled the noise, down to `minstep`.  The current
+is not a capacitive loop's (the node's other side is a state through 1 ohm), so the error test's 'charge' mode is
+right to leave it alone: what failed is the Newton's update test, which no tolerance setting reaches.  The 2 mV
+step converged only because each such Newton happened to draw a noise sample under the tolerance.
+
+**Built.**  `StandardNewton`'s fourth condition (`nrsolver._within_rounding`): where the residual's test holds,
+no stateful limiter limited, and the update fails and has stopped contracting (its largest entry not under half
+the last one's: `_step_size`), every unknown failing the update test passes if it moved by less than its
+tolerance plus ``eps (|J^-1| I_scale)_i`` -- the residual's own scale (``|J| |x_next| + |F|``) through row i of
+J^-1.  The rows by transposed solves with the failing unknowns' unit vectors, `FLOOR_ROWS` (32) at a time, on the
+factorisation the step was just solved with (`LinearSolver.solve_transposed`, new: numpy's solve of J^T on a
+dense J, `klu_tsolve` on the numeric `StructuralKLU` refactored; numpy's solve of J^T where a scaler
+equilibrated the step), each floor ``eps * np.dot(|row|, I_scale)``.  A Newton that converges by (1)-(3) is
+untouched; the floor is consulted only on a stall.  Accepted, the point is as good as the arithmetic allows: the
+residual's test, which holds, already bounds its error by reltol / eps (~4.5e6) times this floor.  The C Newtons
+make it bit for bit: newton.c (`step_size`, `floor_holds`; the dense rows by dgesv on J reduced row-major --
+J^T's column-major copy -- the KLU rows by klu_tsolve on the run's numeric; the floors by numpy's own ddot) and
+dcnewton.c (the same, its flags read before the verdict); `_tran_newton_c._chain` and `_dc_newton_c` take the
+Python where either helper is patched.
+
+**Measured** on the peer's case (scratch only; its macromodels are vendor files), every failing Newton before
+this change: over 217 000 stalled iterations the observed moves were 0.023 (median) .. 0.27 (max) of the floor;
+the moves above it were genuine first steps from the predictor, which the floor refuses (it needs a stall).
+After: the 4 mV step passes (309 steps, 15 rejected, 666 Newton iterations; 0.07 s with the C, the Python's
+bytes); the 2 mV step's three node waveforms move by at most 1.6e-11 V (tolerance ~2e-9 V), 515 Newton
+iterations against 525.
+
+**Tests.**  test_nrsolver_variants: an update at its residual's rounding converges at the second iteration, one
+11x over the floor is refused; a contracting update never consults the floor; one block or two, the same answer.
+test_structural_klu: the transposed solve is on the numeric the solve left (numpy's to the rounding, nothing
+factored or counted again; a foreign matrix answered by the fallback).  test_newton_c: a VCVS-and-354 pF chain at
+femtosecond steps, dense and on KLU -- the C's bytes, statistics and warnings the Python's, whose Newtons the
+floor converged.  test_dc_newton_c: the stalled step as an operating point (a behavioural g V for the companion, a
+current source for its history), dense and on KLU (130 cells, five blocks) -- the C's bytes the Python's, and
+neither converges without the floor.  test_pinned_pairs: 'the Newton solve and its C' and 'the DC base solve and
+its C' take the floor's pieces and are re-recorded, 'the stepping loop and its C' (newton.h) and 'the transform
+solve and its frozen form' (AutoSolver) too, and thirteen more whose C includes pcx_abi.h (a ddot typedef: each
+as recorded with the header as it was).
+
+**Gate**: the suite in the main tree, 5 820 passed (6 skipped, 3 xfailed); the 27 gold decks (no PSS), transient and
+standalone DC, against 196: every digest, step, rejection and Newton count identical -- the floor fires on none
+of them; the sanitized fast tier (scripts/sanitize_suite.sh) 5 516 passed, clean (the tier deselects by the last
+full run's durations: fewer than at 196), and the four C-twin cases of the floor under `--deep`, clean.

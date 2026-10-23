@@ -108,7 +108,8 @@ typedef struct {
            *Is;           /* (m) |J| |xn| (dgemv); the verdicts' sums
                              (pcx_verdict.h: with `ry`, or `ax` in the
                              validation, as their counts); on
-                             NEWTON_BAIL_MAXITER the last iteration's |J| |xn| */
+                             NEWTON_BAIL_MAXITER the last iteration's |J| |xn|
+                             (as after the rounding floor's test) */
     int64_t *ipiv64;      /* (m) dgesv's pivots */
     int *ipiv32;          /* (m) dgetrf's, held for the chord's dgetrs */
     /* OUTPUTS AND STATUS (OWN) */
@@ -188,6 +189,24 @@ typedef struct {
     long early_checks;    /* OWN: 1 where this call's estimate was made, else 0 */
     void *dgetrs64;       /* CTX: numpy's own `scipy_dgetrs_64_` (dgetrs64_t), on
                              dgesv's LU */
+    /* THE ROUNDING FLOOR (`nrsolver._within_rounding`, the full Newton's
+       fourth condition: newton.c's `floor_holds`): the failing unknowns'
+       rows of J^-1 by one transposed solve -- numpy's dgesv of J^T (its
+       column-major copy is J's row-major one), or klu_tsolve on the run's
+       numeric -- and each floor by numpy's own ddot.  Its buffers: CTX */
+    void *ddot;           /* CTX: numpy's own `scipy_cblas_ddot64_` (ddot64_t) */
+    void *klu_tsolve;     /* KLU: klu_tsolve (klu_solve_t) */
+    long floor_rows;      /* CTX: `nrsolver.FLOOR_ROWS` as the record was
+                             made, the rows solved for at a time */
+    double *Tf,           /* (m x m, row-major) J reduced: J^T column-major
+                             for dgesv, then its LU */
+           *Ef,           /* (m x floor_rows, column-major) a block of the
+                             failing unknowns' unit vectors, then their rows
+                             of J^-1 */
+           *af,           /* (m) one row's magnitudes */
+           *Isf;          /* (m) I_scale = |J| |x_next| + |F| */
+    int64_t *ipivf,       /* (m) the transposed dgesv's pivots */
+            *ffail;       /* (m) the failing unknowns, in order */
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and

@@ -147,6 +147,8 @@ def driver():
             addr = _cbuild.address
             lapack = {'dgesv': addr(npl.scipy_dgesv_64_),
                       'dgemv': addr(npl.scipy_cblas_dgemv64_),
+                      ## (the rounding floor's: np.dot of two vectors)
+                      'ddot': addr(npl.scipy_cblas_ddot64_),
                       ## (the early abort's back-substitution on dgesv's LU)
                       'dgetrs64': addr(npl.scipy_dgetrs_64_),
                       'dgetrf': addr(spl.scipy_dgetrf_), 'dgetrs': addr(spl.scipy_dgetrs_)}
@@ -165,11 +167,11 @@ def driver():
 
 def _chain():
     """The machinery `solve` stands in for, as defined -- the transient's
-    class and its Newton methods, `nrsolver`'s two loops and the chord's
-    settled test, the reference-row helpers `_newton` calls, the evaluate
-    core's Python entry -- read once a call finds every piece its module's
-    own (`_paths.genuine`); None: not yet.  A call then compares what the
-    Python path would call now."""
+    class and its Newton methods, `nrsolver`'s two loops, the chord's
+    settled test and the rounding floor's two helpers, the reference-row
+    helpers `_newton` calls, the evaluate core's Python entry -- read once a
+    call finds every piece its module's own (`_paths.genuine`); None: not
+    yet.  A call then compares what the Python path would call now."""
     if 'chain' not in _MOD:
         from pycircuit.circuit import _tran_core, _tran_newton, nrsolver
         from pycircuit.circuit.transient import Transient as T
@@ -188,7 +190,9 @@ def _chain():
                (nrsolver.ChordNewton.solve_system, 'ChordNewton.solve_system',
                 'pycircuit.circuit.nrsolver'),
                (nrsolver._chord_settled, '_chord_settled', 'pycircuit.circuit.nrsolver'),
-               (_tran_core.evaluate, 'evaluate', 'pycircuit.circuit._tran_core'))
+               (_tran_core.evaluate, 'evaluate', 'pycircuit.circuit._tran_core'),
+               (nrsolver._step_size, '_step_size', 'pycircuit.circuit.nrsolver'),
+               (nrsolver._within_rounding, '_within_rounding', 'pycircuit.circuit.nrsolver'))
         if not all(_paths.genuine(*o) for o in own):
             return None
         _MOD['chain'] = tuple(o for o, _q, _m in own)
@@ -275,6 +279,7 @@ class _Ctx:
     )
 
     def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, lapack):
+        from pycircuit.circuit.nrsolver import FLOOR_ROWS
         m = n - 1
         nn = (n, n)
         self.core, self.n, self.iref, self.ffi = core, n, iref, ffi
@@ -295,6 +300,9 @@ class _Ctx:
             'cx': np.empty(n), 'cC': Z(nn),
             'xc': np.empty(n), 'Cj': Z(nn), 'qj': np.empty(n), 'iqj': np.empty(n),
             'Geqj': Z(nn), 'Jj': Z(nn),
+            ## (the rounding floor's, `nrsolver.FLOOR_ROWS` as the record is made)
+            'Tf': np.empty(m * m), 'Ef': np.empty(m * FLOOR_ROWS),
+            'af': np.empty(m), 'Isf': np.empty(m),
         }
         self.ipiv64 = np.empty(max(m, 1), dtype=np.int64)
         self.ipiv32 = np.empty(max(m, 1), dtype=np.int32)
@@ -312,7 +320,11 @@ class _Ctx:
         s.ipiv64 = self.keep[-1]
         self.keep.append(fb('int *', self.ipiv32))
         s.ipiv32 = self.keep[-1]
-        for k in ('dgesv', 'dgetrf', 'dgetrs', 'dgemv', 'dgetrs64'):
+        floor = (np.empty(max(m, 1), dtype=np.int64), np.empty(max(m, 1), dtype=np.int64))
+        self.keep += [*floor, fb('int64_t *', floor[0]), fb('int64_t *', floor[1])]
+        s.ipivf, s.ffail = self.keep[-2:]
+        s.floor_rows = FLOOR_ROWS
+        for k in ('dgesv', 'dgetrf', 'dgetrs', 'dgemv', 'dgetrs64', 'ddot'):
             setattr(s, k, ffi.cast('void *', lapack[k]))
         s.core = ffi.cast('void *', int(cffi_core.cast('uintptr_t', core.cs)))
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
@@ -369,8 +381,9 @@ def _klu_bind(rec, sk):
     s.knnz = sk.nnz
     s.kAp, s.kAi, s.kat, s.kabs, s.kAx = keep[4:9]
     s.R, s.rb, s.ry = keep[12:]
-    s.klu_factor, s.klu_solve, s.klu_free, s.klu_refactor = (ffi.cast('void *', addr(f)) for f in (
-        lib.klu_factor, lib.klu_solve, lib.klu_free_numeric, lib.klu_refactor))
+    s.klu_factor, s.klu_solve, s.klu_free, s.klu_refactor, s.klu_tsolve = (
+        ffi.cast('void *', addr(f)) for f in (lib.klu_factor, lib.klu_solve, lib.klu_free_numeric,
+                                              lib.klu_refactor, lib.klu_tsolve))
     s.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
     s.klu_common = ffi.cast('void *', ct.addressof(sk._common))
     s.klu_sym = ffi.cast('void *', sk._symbolic)
@@ -748,7 +761,8 @@ def _admit(tr, td, provided_function, seed):
     tn, SN, CN, tcm, nrs = M['chain_mods']
     if (T._newton, T._newton_limiter, T._residual_and_jacobian, T._get_nrsolver,
             T._get_scaler, tn.refnode_removed, tn.remove_row_col, SN.solve_system,
-            CN.solve_system, nrs._chord_settled, tcm.evaluate) != chain[1:]:
+            CN.solve_system, nrs._chord_settled, tcm.evaluate, nrs._step_size,
+            nrs._within_rounding) != chain[1:]:
         return _no('newton_c:patched')
     if type(tr.toolkit) is not M['NumericToolkit']:
         return _no('newton_c:toolkit')

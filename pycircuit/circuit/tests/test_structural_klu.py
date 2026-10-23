@@ -294,6 +294,32 @@ def test_a_held_operating_point_factors_without_its_held_rows(monkeypatch):
     np.testing.assert_allclose(x, ref, rtol=1e-12, atol=1e-15)
 
 
+def test_the_transposed_solve_is_on_the_numeric_the_solve_left():
+    """`solve_transposed` (the Newton's rounding floor reads rows of J^-1
+    through it): klu_tsolve on the numeric the last `solve` refactored --
+    numpy's solve of J^T to the rounding, nothing factored or counted again
+    -- and a matrix off the pattern answered by the fallback `solve` chose,
+    not counted foreign twice."""
+    c = _ladder()
+    iref, st, s, made = _structural(c)
+    m = st[0]
+    rng = np.random.default_rng(5)
+    x = rng.normal(0.0, 0.5, c.n)
+    J = _reduced(c.G(x, defaultepar), iref) + 1e10 * _reduced(c.C(x, defaultepar), iref)
+    s.solve(J, np.ones(m), numeric)
+    E = np.zeros((m, 3))
+    E[[0, m // 2, m - 1], [0, 1, 2]] = 1.0
+    counts = (s.analyses, s.factors, s.refactors, s.foreign)
+    np.testing.assert_allclose(s.solve_transposed(J, E, numeric), np.linalg.solve(J.T, E),
+                               rtol=1e-9, atol=1e-12)
+    assert (s.analyses, s.factors, s.refactors, s.foreign) == counts
+    D = rng.normal(size=(m, m)) + m * np.eye(m)
+    s.solve(D, np.ones(m), numeric)
+    np.testing.assert_allclose(s.solve_transposed(D, E, numeric), np.linalg.solve(D.T, E),
+                               rtol=1e-9)
+    assert s.foreign == 1 and len(made) == 1
+
+
 def test_a_refactor_that_meets_a_zero_pivot_factors_again():
     """The reused pivot order on a matrix that is regular under another: a
     fresh factor (counted), not "singular" -- the gmin and source ladders

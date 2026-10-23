@@ -12,6 +12,7 @@
    Python's solve gives its warnings.  Every return leaves the flags clear. */
 #include <stdint.h>
 #include <stddef.h>
+#include <float.h>
 #include <math.h>
 #include <fenv.h>
 #include "pcx_abi.h"
@@ -142,8 +143,8 @@ static long step(dcnewton_t *s, const double *dx)
    ax_next) + aF` (numpy's own dgemv on the dense |J|: BLAS's summation
    order), `abs(xdiff) < reltol * maximum(ax_next, abs(x)) + xtol`, `aF <
    reltol * I_scale + abstol`.  1 converged, 0 not, -1 a flag (np.dot and
-   the arithmetic report it: handed back) */
-static int converged(dcnewton_t *s, long m)
+   the arithmetic report it: handed back); `*held` the residual's test */
+static int converged(dcnewton_t *s, long m, int *held)
 {
     long i, k;
     int conv_x = 1, conv_f = 1;
@@ -159,25 +160,103 @@ static int converged(dcnewton_t *s, long m)
         if (!(aF < s->reltol * Is + s->abstol[i])) conv_f = 0;
     }
     if (fetestexcept(DC_FLAGS)) return -1;
+    *held = conv_f;
     return conv_x && conv_f;
 }
 
+/* the update's largest entry, `float(np.max(np.abs(xdiff)))`: every |xd|
+   finite here (`step`), where a scan from -INFINITY is numpy's maximum */
+static double step_size(const dcnewton_t *s, long m)
+{
+    long i;
+    double size = -INFINITY;
+    for (i = 0; i < m; i++) if (fabs(s->xd[i]) > size) size = fabs(s->xd[i]);
+    return size;
+}
+
+/* THE ROUNDING FLOOR (`nrsolver._within_rounding`, as newton.c's
+   `floor_holds`), on an iteration whose residual's test held and whose
+   update failed and stopped contracting: `I_scale` (Isf) the test's
+   `Is + |F|`; the unknowns failing the update (`np.flatnonzero`'s order),
+   `floor_rows` at a time: their rows of J^-1 -- `np.linalg.solve(J.T, E)`
+   on the dense J (dgesv on R's row-major copy, J^T's column-major one,
+   made afresh for each block as numpy's solve makes it; what it raises
+   with info 0 numpy's linalg clears), klu_tsolve on the numeric this
+   iteration's sequence holds (`klu.klu_out`) on KLU's (its flags, as KLU's
+   every call's, never the Python's) -- each floor `eps * np.dot(|row|,
+   I_scale)` (0.0 plus ddot) and the tolerance plus it, a block's all made
+   before the flags are read (THE FLAG RULE: kept in Ef), then the update
+   within them.  1 where every failing unknown is; 0 at the first block
+   with one that is not, and where a solve fails (numpy's LinAlgError;
+   KLU's); -1 a flag */
+static int floor_holds(dcnewton_t *s, long m)
+{
+    long i, j, c, k = 0, lo, kk;
+    for (i = 0; i < m; i++) s->Isf[i] = s->Is[i] + fabs(s->Fr[i]);
+    for (i = 0; i < m; i++) {
+        double mx = pcx_np_maximum(s->ax[i], fabs(s->x[i]));
+        if (!(fabs(s->xd[i]) < s->reltol * mx + s->xtol[i])) s->ffail[k++] = i;
+    }
+    if (k == 0) return 0;
+    for (lo = 0; lo < k; lo += s->floor_rows) {
+        kk = k - lo < s->floor_rows ? k - lo : s->floor_rows;
+        for (j = 0; j < kk * m; j++) s->Ef[j] = 0.0;
+        for (c = 0; c < kk; c++) s->Ef[c * m + s->ffail[lo + c]] = 1.0;
+        if (s->klu.klu_sym) {
+            int ok = ((klu_solve_t) s->klu_tsolve)(s->klu.klu_sym, s->klu.klu_out, (int) m,
+                                                   (int) kk, s->Ef, s->klu.klu_common);
+            feclearexcept(FE_ALL_EXCEPT);
+            if (!ok) return 0;
+        } else {
+            int64_t m64 = m, k64 = kk, info64 = 0;
+            for (j = 0; j < m * m; j++) s->Tf[j] = s->R[j];
+            ((dgesv64_t) s->dgesv)(&m64, &k64, s->Tf, &m64, s->ipivf, s->Ef, &m64, &info64);
+            feclearexcept(FE_ALL_EXCEPT);
+            if (info64 != 0) return 0;
+        }
+        for (c = 0; c < kk; c++) {
+            double mx;
+            i = s->ffail[lo + c];
+            for (j = 0; j < m; j++) s->af[j] = fabs(s->Ef[c * m + j]);
+            mx = pcx_np_maximum(s->ax[i], fabs(s->x[i]));
+            s->Ef[c * m] = s->reltol * mx + s->xtol[i]
+                           + DBL_EPSILON * (0.0 + ((ddot64_t) s->ddot)(m, s->af, 1, s->Isf, 1));
+        }
+        if (fetestexcept(DC_FLAGS)) return -1;
+        for (c = 0; c < kk; c++)
+            if (!(fabs(s->xd[s->ffail[lo + c]]) < s->Ef[c * m])) return 0;
+    }
+    return 1;
+}
+
 /* the Newton loop (StandardNewton.solve_system): evaluate, solve, step,
-   test; `x = x_next` after each.  CONVERGED (x the solution), MAXITER
+   test (the rounding floor's too); `x = x_next` after each.  CONVERGED (x the solution), MAXITER
    (the last iteration's Fr, xd, xn, and x = x_next as the Python's loop
    leaves it), or a hand-back */
 static long iterate(dcnewton_t *s)
 {
     long m = s->n - 1, it, i, st;
-    int conv;
+    int conv, held = 0;
+    double size_prev = 0.0;  /* the last update's largest entry (`size_prev`) */
+    int have_size = 0;       /* (`size_prev is not None`) */
     for (it = 0; it < s->maxiter; it++) {
         if ((st = evaluate(s)) != 0) return st;
         for (i = 0; i < m; i++) s->b[i] = -s->Fr[i];
         st = s->klu.klu_sym ? klu_step(s, m) : dense_step(s, m);
         if (st != 0) return st;
         if ((st = step(s, s->klu.klu_sym ? s->kx : s->b)) != 0) return st;
-        if ((conv = converged(s, m)) < 0) return DCNEWTON_BAIL_FLAGS;
+        if ((conv = converged(s, m, &held)) < 0) return DCNEWTON_BAIL_FLAGS;
         s->iters = it + 1;
+        /* (or the update stalled -- not under half the last one's largest
+           entry -- with the residual's test held: the rounding floor) */
+        if (!conv) {
+            double size = step_size(s, m);
+            if (held && have_size && !(size < 0.5 * size_prev)
+                    && (conv = floor_holds(s, m)) < 0)
+                return DCNEWTON_BAIL_FLAGS;
+            size_prev = size;
+            have_size = 1;
+        }
         for (i = 0; i < m; i++) s->x[i] = s->xn[i];
         if (conv) return DCNEWTON_CONVERGED;
     }

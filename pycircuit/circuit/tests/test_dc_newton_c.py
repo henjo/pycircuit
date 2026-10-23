@@ -161,3 +161,76 @@ def test_a_planted_fault_is_seen(monkeypatch):
     c, counts = _record('mike2', monkeypatch, True)
     assert counts.get('dcnewton_c:served', 0) > 0
     assert c != py
+
+
+## -- the rounding floor (roadmap 197) ----------------------------------------
+
+def _companion_dc(cells=16, g=3.5e5):
+    """The transient's stalled step as an operating point: per cell a VCVS
+    sets `b{k}` to 0.7 V(a) (`a` a divider's node), a behavioural g V(b{k})
+    to ground stands in for a capacitor's companion C/h v and a current
+    source g (0.7 V(a) + 6e-10 (k + 1)) for its history -- the VCVS's
+    current their ~2e-4 A difference, its update at the rounding of its
+    residual (`nrsolver._within_rounding`); 16 cells: past `DC_C_MIN_N`."""
+    from pycircuit.circuit.elements import IS, VCVS, VS, R, SubCircuit, gnd
+    from pycircuit.circuit.elements_hdl import BSourceHdl
+    c = SubCircuit()
+    c['vs'] = VS('s', gnd, v=3.3)
+    c['r1'] = R('s', 'a', r=1e3)
+    c['r2'] = R('a', gnd, r=3e3)
+    for k in range(cells):
+        c[f'e{k}'] = VCVS('a', gnd, f'b{k}', gnd, g=0.7)
+        c[f'gq{k}'] = BSourceHdl(f'b{k}', gnd, f'b{k}', gnd, i_func=lambda v: g * v)
+        c[f'ih{k}'] = IS(gnd, f'b{k}', i=g * (0.7 * 2.475 + 6e-10 * (k + 1)))
+    return c
+
+
+def _floor_dc(cells, on, within=None):
+    """`_companion_dc`'s operating point twice -- the second from zeros, a
+    solve the C may serve (the first chose the solver) -- its bytes or its
+    exception's type, the second's counts, and the solver chosen; `within`
+    stands in for `nrsolver._within_rounding`."""
+    from pycircuit.circuit.dcanalysis import DC
+    kept = _dc_newton_c.ENABLED, nrsolver._within_rounding
+    _dc_newton_c.ENABLED = on
+    if within is not None:
+        nrsolver._within_rounding = within
+    out = []
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            dc = DC(_companion_dc(cells), toolkit=circuit.numeric, reltol=1e-9, iabstol=1e-13,
+                    vabstol=1e-12)
+            for k in range(2):
+                before = _paths.snapshot()
+                try:
+                    out.append(np.asarray(dc.solve(x0=np.zeros(dc.cir.n) if k else None).x,
+                                          float).tobytes())
+                except nrsolver.NoConvergenceError as e:
+                    out.append(type(e).__name__)
+    finally:
+        _dc_newton_c.ENABLED, nrsolver._within_rounding = kept
+    return out, _paths.since(before), type(dc._get_linearsolver()._choice).__name__
+
+
+@pytest.mark.parametrize('cells, solver', [(16, 'DenseSolver'), (130, 'StructuralKLU')])
+def test_the_rounding_floor_is_the_python_one(cells, solver):
+    """dcnewton.c's rounding floor (`floor_holds`: the rows of J^-1 by
+    numpy's dgesv of J^T or klu_tsolve, a block at a time -- 130 failing
+    unknowns, five blocks -- the flags read before the verdict): the second
+    operating point's bytes the Python's, the C serving it -- and the
+    Python's converged by the floor, without which neither converges at all
+    (every rung of the ladder stalls at the rounding)."""
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    seen, orig = [], nrsolver._within_rounding
+
+    def within(*a):
+        seen.append(orig(*a))
+        return seen[-1]
+    py, _, kind = _floor_dc(cells, False, within)
+    got, counts, _ = _floor_dc(cells, True)
+    assert got == py and all(type(x) is bytes for x in py) and kind == solver
+    assert sum(seen) >= 2 and counts.get('dcnewton_c:served', 0) == 1, (seen, counts)
+    refused = _floor_dc(cells, False, lambda *a: False)[0]
+    assert refused == ['NoConvergenceError'] * 2

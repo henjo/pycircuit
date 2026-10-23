@@ -351,3 +351,51 @@ def test_the_sparse_comparison_sees_a_planted_difference(monkeypatch):
     monkeypatch.setattr(_tran_newton_c, '_klu_bind', planted)
     b = _sparse_run(True, **dict(kw))
     assert a[0] != b[0]
+
+
+## -- the full Newton's rounding floor (roadmap 197) -------------------------
+
+def _companion_chain(cells):
+    """Per cell a VCVS setting `b{k}` to 0.7 V(s{k}) -- `s{k}` a divider's
+    node, fed by the cell before -- and 354 pF on `b{k}`: at a femtosecond
+    step the capacitor's companion makes the VCVS's current a ~2e-4 A
+    difference of ~6e5 A terms, and its update meets the rounding of its
+    residual (`nrsolver._within_rounding`).  One cell: a dense run; 16:
+    StructuralKLU."""
+    from pycircuit.circuit.elements import VCVS
+    c = SubCircuit()
+    c['v'] = VSin('in', gnd, v=1.65, va=0.1, freq=1e6)
+    prev = 'in'
+    for k in range(cells):
+        c[f'r1{k}'] = R(prev, f's{k}', r=1e3)
+        c[f'r2{k}'] = R(f's{k}', gnd, r=3e3)
+        c[f'e{k}'] = VCVS(f's{k}', gnd, f'b{k}', gnd, g=0.7)
+        c[f'c{k}'] = C(f'b{k}', gnd, c=354e-12)
+        prev = f'b{k}'
+    return c
+
+
+@pytest.mark.parametrize('cells', [1, 16])
+def test_the_rounding_floor_is_the_python_one(cells, monkeypatch):
+    """The full Newton's rounding floor in C (newton.c's `floor_holds`: the
+    rows of J^-1 by numpy's dgesv of J^T, or by klu_tsolve on the step's
+    numeric): twenty femtosecond steps, the same bytes, statistics and
+    warnings as the Python's -- whose Newtons the floor converged."""
+    from pycircuit.circuit import nrsolver
+    if _tran_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_tran_newton_c.STATUS}')
+    kw = {'tend': 2e-14, 'timestep': 1e-15, 'fixed_timestep': True,
+          'make': {'reltol': 1e-9, 'iabstol': 1e-13, 'vabstol': 1e-12}}
+    seen, orig = [], nrsolver._within_rounding
+
+    def within(*a):
+        seen.append(orig(*a))
+        return seen[-1]
+    monkeypatch.setattr(nrsolver, '_within_rounding', within)
+    a = _run(lambda: _companion_chain(cells), False, **dict(kw, make=dict(kw['make'])))
+    monkeypatch.setattr(nrsolver, '_within_rounding', orig)
+    b = _run(lambda: _companion_chain(cells), True, **kw)
+    assert a[0] == b[0] and a[1] == b[1] and a[2] == b[2] and a[3] == b[3]
+    assert sum(seen) >= 10, seen
+    assert b[4].get('newton_c:served', 0) == 19, b[4]
+    assert (b[4].get('newton_c:sparse', 0) > 0) == (cells > 1), b[4]

@@ -510,17 +510,20 @@ def test_the_ladders_in_place_forms_are_the_expressions_they_stand_for(monkeypat
     assert spy.at > 300, spy.at     # (two a fast call: over 150 of the 400)
 
 
-def _weak_direction(n_calls):
+def _weak_direction(n_calls, noise=1e-6, rate=1.0):
     """``J`` with entries ~1e8 and a weak direction (`|J| |x|` ~ 2e8), a
-    residual of 1e-6 flipping its sign each evaluation: inside the residual's
-    own test (reltol |J| |x| ~ 0.2), its step along the weak direction ~1e-6
-    -- far over the update's tolerance (reltol |x| ~ 1e-9) every time."""
+    residual of `noise` (1e-6) flipping its sign each evaluation, times
+    `rate` each evaluation: inside the residual's own test (reltol |J| |x| ~
+    0.2), its step along the weak direction ~`noise` -- far over the update's
+    tolerance (reltol |x| ~ 1e-9) every time, and over the rounding floor
+    (eps (|J^-1| I_scale) ~ 9e-8: `_within_rounding`) at 1e-6."""
     a = 1e8
     J = np.array([[a, a], [a, a + 1.0]])
 
     def eval_FJ(x):
         n_calls.append(1)
-        return np.array([1e-6 * (-1) ** len(n_calls), 0.0]), J
+        k = len(n_calls)
+        return np.array([noise * rate ** k * (-1) ** k, 0.0]), J
     return eval_FJ
 
 
@@ -558,3 +561,63 @@ def test_the_failure_names_a_limiter_that_held_the_iteration():
                                       limiter=limiter)
     msg = str(e.value)
     assert 'stateful limiter' in msg and 'worst at' not in msg, msg
+
+
+## -- THE ROUNDING FLOOR (roadmap 197) ----------------------------------------
+
+def _floor_calls(monkeypatch):
+    """`nrsolver._within_rounding` wrapped: its verdicts, in order."""
+    from pycircuit.circuit import nrsolver
+    seen, orig = [], nrsolver._within_rounding
+
+    def within(*a):
+        seen.append(orig(*a))
+        return seen[-1]
+    monkeypatch.setattr(nrsolver, '_within_rounding', within)
+    return seen
+
+
+def test_an_update_at_its_residuals_rounding_converges(monkeypatch):
+    """The weak direction's residual flipping at 1e-8 -- inside its own
+    test, ~0.1 of the rounding floor eps (|J^-1| I_scale) -- moves the update
+    1e-8 each iteration, 10x its tolerance: it has stopped contracting and is
+    within the floor, so the second iteration converges.  At 1e-6, 11x over
+    the floor, it is refused (`test_the_failure_names_the_test_that_failed`)."""
+    seen = _floor_calls(monkeypatch)
+    tol = np.full(2, 1e-12)
+    _x, iters = StandardNewton().solve_system(np.array([1.0, 1.0]), _weak_direction([], 1e-8),
+                                             numeric, 1e-9, tol, tol, 6)
+    assert iters == 2 and seen == [True]
+    seen.clear()
+    with pytest.raises(NoConvergenceError):
+        StandardNewton().solve_system(np.array([1.0, 1.0]), _weak_direction([]), numeric,
+                                      1e-9, tol, tol, 6)
+    assert seen == [False] * 5
+
+
+def test_a_contracting_update_is_not_judged_by_the_floor(monkeypatch):
+    """An update that halves each iteration has not stalled -- however near
+    its rounding -- so the floor is never consulted: the update test alone
+    decides (here at the fourth iteration, the residual shrinking 4x an
+    evaluation)."""
+    seen = _floor_calls(monkeypatch)
+    tol = np.full(2, 1e-12)
+    _x, iters = StandardNewton().solve_system(np.array([1.0, 1.0]),
+                                             _weak_direction([], 1e-7, rate=0.25), numeric,
+                                             1e-9, tol, tol, 8)
+    assert iters == 4 and seen == []
+
+
+def test_the_floor_judges_the_failing_unknowns_a_block_at_a_time(monkeypatch):
+    """Both unknowns fail the update; `FLOOR_ROWS` at one solves their rows
+    of J^-1 one at a time, at two together: the same verdict, iteration and
+    answer."""
+    from pycircuit.circuit import nrsolver
+    tol = np.full(2, 1e-12)
+    got = []
+    for rows in (1, 2):
+        monkeypatch.setattr(nrsolver, 'FLOOR_ROWS', rows)
+        x, iters = StandardNewton().solve_system(np.array([1.0, 1.0]), _weak_direction([], 1e-8),
+                                                 numeric, 1e-9, tol, tol, 6)
+        got.append((x.tobytes(), iters))
+    assert got[0] == got[1] and got[0][1] == 2

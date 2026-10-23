@@ -11,7 +11,7 @@ terms).  Here ONE C call makes the whole solve: the C core's G and i
 (`_tran_core`), the residual and the layers, the solve -- numpy's own
 dgesv, or the run's StructuralKLU in its own sequence -- the step, the
 limiter walk (`_hdl_climit`'s, set up by `_tran_newton_c._walk_ready`) and
-nrsolver's convergence test.  Bit for bit `StandardNewton.solve_system` on
+nrsolver's convergence test, its rounding floor's too.  Bit for bit `StandardNewton.solve_system` on
 that evaluation (pinned in `tests/test_pinned_pairs.py`).
 
 THE COMPOSITION.  The wrappers say what they are: each layer's closure its
@@ -44,8 +44,8 @@ served: the last iteration's arrays, and the Python's own exception
 
 DECLINES (`_paths.no`): before this module is imported (`nrsolver._dc_solve`)
 a solve below `nrsolver.DC_C_MIN_N` unknowns and the run's first (its
-solver not chosen yet); here the switch, no build, a scaler that is not
-NoneScaler, a limiter that is not the DC's, a linear solver that is not
+solver not chosen yet); here the switch, no build, the rounding floor's
+helpers patched, a scaler that is not NoneScaler, a limiter that is not the DC's, a linear solver that is not
 the DC's AutoSolver over its dense solve or an analysed StructuralKLU whose
 pattern holds the core's, a toolkit that is not numeric, numpy not ignoring
 underflow, the circuit-level limiter or a limiting element the walk cannot
@@ -96,7 +96,7 @@ _driver = None
 
 
 def driver():
-    """`(ffi, cfn, dgesv, dgemv)` once loaded, or None (`STATUS`)."""
+    """`(ffi, cfn, dgesv, dgemv, ddot)` once loaded, or None (`STATUS`)."""
     global _driver, STATUS
     if _driver is None:
         _driver = False
@@ -107,6 +107,8 @@ def driver():
                 return None
             dgesv = _cbuild.address(npl.scipy_dgesv_64_)
             dgemv = _cbuild.address(npl.scipy_cblas_dgemv64_)
+            ## (the rounding floor's: np.dot of two vectors)
+            ddot = _cbuild.address(npl.scipy_cblas_ddot64_)
         except (OSError, AttributeError) as e:
             STATUS = f'off ({e})'
             return None
@@ -117,7 +119,7 @@ def driver():
         except (_cbuild.CompileError, OSError) as e:
             STATUS = f'off ({e})'
             return None
-        _driver = (ffi, cfn, dgesv, dgemv)
+        _driver = (ffi, cfn, dgesv, dgemv, ddot)
         STATUS = 'c'
     return _driver or None
 
@@ -163,7 +165,8 @@ class _Rec:
                  'walk_stamp', 'walk_watch')
 
     def __init__(self, core, plan, n, iref, drv, core_drv):
-        ffi, _cfn, dgesv, dgemv = drv
+        from pycircuit.circuit.nrsolver import FLOOR_ROWS
+        ffi, _cfn, dgesv, dgemv, ddot = drv
         cffi_core, cfn_core, _dg = core_drv
         m = n - 1
         self.core, self.plan, self.n, self.iref, self.ffi = core, plan, n, iref, ffi
@@ -175,6 +178,8 @@ class _Rec:
             'x0f': E(n), 'Cs': Z(n * n), 'q': E(n), 'R': Z(m * m), 'absJ': Z(m * m),
             'A': E(m * m), 'b': E(m), 'kx': E(m), 'ax': E(m), 'Is': E(m), 'ky': E(m),
             'u': E(n), 'abstol': E(m), 'xtol': E(m),
+            ## (the rounding floor's, `nrsolver.FLOOR_ROWS` as the record is made)
+            'Tf': E(m * m), 'Ef': E(m * FLOOR_ROWS), 'af': E(m), 'Isf': E(m),
         }
         fb = ffi.from_buffer
         self.keep = [fb('double *', a) for a in buf.values()]
@@ -183,7 +188,13 @@ class _Rec:
         ipiv = np.empty(max(m, 1), dtype=np.int64)
         self.keep += [ipiv, fb('int64_t *', ipiv)]
         s.ipiv64 = self.keep[-1]
+        floor = (np.empty(max(m, 1), dtype=np.int64), np.empty(max(m, 1), dtype=np.int64))
+        self.keep += [*floor, fb('int64_t *', floor[0]), fb('int64_t *', floor[1])]
+        s.ipivf, s.ffail = self.keep[-2:]
+        s.floor_rows = FLOOR_ROWS
         s.dgesv, s.dgemv = ffi.cast('void *', dgesv), ffi.cast('void *', dgemv)
+        s.ddot = ffi.cast('void *', ddot)
+        s.klu_tsolve = ffi.NULL
         s.core = ffi.cast('void *', int(cffi_core.cast('uintptr_t', core.cs)))
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
         s.pattern = _sources()[4]['PCX_WANT_PATTERN'] if core.npat else 0
@@ -243,6 +254,7 @@ def _klu_bind(rec, sk):
     k.klu_factor, k.klu_refactor, k.klu_solve, k.klu_free = (
         ffi.cast('void *', _cbuild.address(f))
         for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))
+    s.klu_tsolve = ffi.cast('void *', _cbuild.address(lib.klu_tsolve))
     k.klu_common = ffi.cast('void *', sk._ct.addressof(sk._common))
     k.klu_sym = ffi.cast('void *', sk._symbolic)
     k.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
@@ -250,12 +262,25 @@ def _klu_bind(rec, sk):
     return True
 
 
+#: the rounding floor's helpers as `nrsolver` defines them, read once
+#: genuine (`_settings`)
+_FLOOR = []
+
+
 def _settings(dc, toolkit, limiter, scaler):
     """Why the solve's settings take the Python (a reason), or None: the
-    toolkit, the scaler, the limiter, numpy's error state."""
-    from pycircuit.circuit import _limiting
+    toolkit, the scaler, the limiter, numpy's error state, the rounding
+    floor's helpers patched (`nrsolver._step_size`, `_within_rounding`)."""
+    from pycircuit.circuit import _limiting, nrsolver
     from pycircuit.circuit import toolkit as _toolkit
     from pycircuit.circuit.scaler import NoneScaler
+    floor = (nrsolver._step_size, nrsolver._within_rounding)
+    if not _FLOOR:
+        if not all(_paths.genuine(f, f.__name__, 'pycircuit.circuit.nrsolver') for f in floor):
+            return 'patched'
+        _FLOOR.extend(floor)
+    if floor != tuple(_FLOOR):
+        return 'patched'
     if type(toolkit) is not _toolkit.NumericToolkit:
         return 'toolkit'
     if scaler is not None and type(scaler) is not NoneScaler:

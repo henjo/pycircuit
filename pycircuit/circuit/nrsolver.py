@@ -144,7 +144,9 @@ class NonLinearSolver(ABC):
         continuation solvers reach through their base solver: converged when
         every update is below ``reltol * max(|x_new|, |x|) + xtol`` AND every
         residual below ``reltol * (|J| |x_new| + |F|) + abstol`` (`abstol`,
-        `xtol` per unknown).  `limiter(x_new, x)` limits a step, `scaler` equilibrates
+        `xtol` per unknown) -- an update that has stopped contracting where
+        the residual's test holds also within the rounding its own solve
+        carries (`_within_rounding`).  `limiter(x_new, x)` limits a step, `scaler` equilibrates
         `J` and `F` before the linear solve (`NoneScaler` when None),
         `linsolver` replaces the dense solve, and `row_names` names the rows
         in a failure message.  Raises `NoConvergenceError` after `maxiter`
@@ -171,6 +173,8 @@ class StandardNewton(NonLinearSolver):
         x = x0
         if scaler is None:
             scaler = NoneScaler()
+        ## (the last update's largest entry: the rounding floor's stall)
+        size_prev = None
             
         for i in range(maxiter):
             F, J = eval_FJ(x)
@@ -224,12 +228,24 @@ class StandardNewton(NonLinearSolver):
             ## twice an iteration -- speed round 4, stage C)
             aF, ax_next = abs(F), abs(x_next)
             I_scale = toolkit.dot(abs(J), ax_next) + aF
+            tol_x = reltol * toolkit.maximum(ax_next, abs(x)) + xtol
             
-            conv_x = toolkit.alltrue(abs(xdiff) < reltol * toolkit.maximum(ax_next, abs(x)) + xtol)
+            conv_x = toolkit.alltrue(abs(xdiff) < tol_x)
             conv_f = toolkit.alltrue(aF < reltol * I_scale + abstol)
             
             if conv_x and conv_f and not limited:
                 return x_next, i + 1
+
+            # 4. THE ROUNDING FLOOR (`_within_rounding`): (2) and (3) hold, the
+            #    update fails and has stopped contracting -- its largest entry not
+            #    under half the last one's -- and every unknown failing (1) moved
+            #    less than its tolerance plus the rounding its own solve carries.
+            size = _step_size(xdiff)
+            if (conv_f and not limited and size_prev is not None
+                    and not size < 0.5 * size_prev
+                    and _within_rounding(J, xdiff, tol_x, I_scale, linsolver, scaler, toolkit)):
+                return x_next, i + 1
+            size_prev = size
                 
             x = x_next
             
@@ -306,6 +322,74 @@ def _chord_settled(xdiff, tol, prev_dx, prev_tol):
         return False
     w = float(np.max(np.abs(xdiff) / tol))
     return w * (lam / (1.0 - lam)) < 1.0
+
+
+#: THE ROUNDING FLOOR's block (`_within_rounding`): the failing unknowns'
+#: rows of J^-1 are solved for this many at a time -- the right-hand sides of
+#: one transposed solve, the C Newtons' buffer of them
+FLOOR_ROWS = 32
+
+
+def _step_size(xdiff):
+    """The update's largest entry, ``float(np.max(np.abs(xdiff)))`` (a NaN
+    propagated), the rounding floor's stall measure -- None for an update
+    that is not a float64 array (a symbolic or traced toolkit's: no floor)."""
+    if type(xdiff) is not np.ndarray or xdiff.dtype != np.float64:
+        return None
+    return float(np.max(np.abs(xdiff)))
+
+
+def _within_rounding(J, xdiff, tol_x, I_scale, linsolver, scaler, toolkit):
+    """THE ROUNDING FLOOR (`StandardNewton`'s fourth condition, roadmap 197):
+    True where every unknown failing the update test moved by less than its
+    tolerance plus ``eps (|J^-1| I_scale)_i`` -- the residual's own scale
+    (``I_scale = |J| |x_next| + |F|``, what one evaluation of F rounds at),
+    carried to unknown i by row i of J^-1.
+
+    An update cannot settle below the rounding of the residual it solves
+    for.  At a small step a capacitor's companion makes ``|J| |x|`` ~ C/h
+    |v|, and an unknown whose row of J^-1 reads that residual -- a source's
+    current in the KCL of a node a capacitor loads -- moves by ~eps C |v| / h
+    every iteration: 7e-8 A at h = 1e-18 s through 354 pF, against an
+    iabstol of 1e-13 A.  No iteration settles it, the step is retried
+    smaller, which raises it, and the run ends at the minimum step (a
+    user's 4 mV step on an op-amp macromodel's supply; the 2 mV step
+    converged its Newtons by a noise sample landing under the tolerance).
+    Measured there, over 217 000 stalled iterations: the moves 0.02
+    (median) .. 0.27 (max) of this floor; the moves over it were genuine
+    first steps, which it refuses.  Accepted, the point is as good as the
+    rounding allows: the residual's test (2), which holds, already bounds
+    its error by reltol / eps (~4.5e6) times this floor.
+
+    Rows of J^-1 by transposed solves with the failing unknowns' unit
+    vectors, `FLOOR_ROWS` at a time, in order: `linsolver.solve_transposed`
+    -- on the numeric KLU just refactored for this step, or numpy's dgesv
+    of J^T -- where the step's matrix is J itself (no scaler), numpy's solve
+    of J^T otherwise; each floor ``eps * np.dot(|row|, I_scale)`` (ddot, as
+    the C Newtons make it: newton.c's and dcnewton.c's `floor_holds`); the
+    first block with an unknown over its floor decides.  False too for a J
+    that is not a float64 array and for a solve that fails."""
+    if type(J) is not np.ndarray or J.dtype != np.float64 or J.ndim != 2:
+        return False
+    fail = np.flatnonzero(~(abs(xdiff) < tol_x))
+    if not fail.size:
+        return False
+    eps = np.finfo(np.float64).eps
+    for lo in range(0, fail.size, FLOOR_ROWS):
+        part = fail[lo:lo + FLOOR_ROWS]
+        k = part.size
+        E = np.zeros((J.shape[0], k))
+        E[part, np.arange(k)] = 1.0
+        try:
+            Y = (linsolver.solve_transposed(J, E, toolkit)
+                 if linsolver is not None and type(scaler) is NoneScaler
+                 else np.linalg.solve(J.T, E))
+        except np.linalg.LinAlgError:
+            return False
+        floor = np.array([eps * np.dot(np.abs(Y[:, c]), I_scale) for c in range(k)])
+        if not np.all(abs(xdiff[part]) < tol_x[part] + floor):
+            return False
+    return True
 
 
 class ChordNewton(NonLinearSolver):

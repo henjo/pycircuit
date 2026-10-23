@@ -1,6 +1,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <float.h>
 #include <math.h>
 #include "pcx_abi.h"
 #include "pcx_minmax.h"
@@ -204,6 +205,71 @@ static int converged(newton_t *s, long m)
     return conv_f;
 }
 
+/* the update's largest entry, `float(np.max(np.abs(xdiff)))`: every |xd|
+   finite here, where a scan from -INFINITY is numpy's maximum */
+static double step_size(const newton_t *s, long m)
+{
+    long i;
+    double size = -INFINITY;
+    for (i = 0; i < m; i++) if (fabs(s->xd[i]) > size) size = fabs(s->xd[i]);
+    return size;
+}
+
+/* THE ROUNDING FLOOR (`nrsolver._within_rounding`), on a full Newton's
+   iteration whose update failed and stopped contracting: the residual's
+   test made whole -- |J| |x_next| by numpy's own dgemv, as the test's, and
+   `I_scale` (Isf) that plus |F| -- then, where it holds, the unknowns
+   failing the update (`np.flatnonzero`'s order), `floor_rows` at a time:
+   their rows of J^-1 by `np.linalg.solve(J.T, E)` on a dense J (dgesv on J
+   reduced row-major, which is J^T's column-major copy, made afresh for each
+   block as numpy's solve makes it; the iteration's J is `J`, the floor
+   needing a previous iteration), klu_tsolve on the run's numeric (this
+   iteration's refactor) on KLU's; each floor `eps * np.dot(|row|,
+   I_scale)` (numpy's DOUBLE_dot: 0.0 plus ddot) and the update within its
+   tolerance plus it.  1 where every failing unknown is; 0 at the first
+   block with one that is not, and where a solve fails (dgesv's info:
+   numpy's LinAlgError; KLU's) */
+static int floor_holds(newton_t *s, long m)
+{
+    long n = s->n, r = s->iref, i, j, c, k = 0, lo, kk;
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->absJ, m,
+                           s->ax, 1, 0.0, s->Is, 1);
+    for (i = 0; i < m; i++) {
+        double aF = fabs(s->Fr[i]);
+        s->Isf[i] = s->Is[i] + aF;
+        if (!(aF < s->reltol * s->Isf[i] + s->abstol[i])) return 0;
+    }
+    for (i = 0; i < m; i++) {
+        double mx = pcx_np_maximum(fabs(s->xn[i]), fabs(s->x[i]));
+        if (!(fabs(s->xd[i]) < s->reltol * mx + s->xtol[i])) s->ffail[k++] = i;
+    }
+    if (k == 0) return 0;
+    for (lo = 0; lo < k; lo += s->floor_rows) {
+        kk = k - lo < s->floor_rows ? k - lo : s->floor_rows;
+        for (j = 0; j < kk * m; j++) s->Ef[j] = 0.0;
+        for (c = 0; c < kk; c++) s->Ef[c * m + s->ffail[lo + c]] = 1.0;
+        if (s->klu_sym) {
+            if (!((klu_solve_t) s->klu_tsolve)(s->klu_sym, s->klu_num, (int) m, (int) kk, s->Ef,
+                                               s->klu_common))
+                return 0;
+        } else {
+            int64_t m64 = m, k64 = kk, info64 = 0;
+            pcx_reduce_rm(s->J, s->Tf, n, r);
+            ((dgesv64_t) s->dgesv)(&m64, &k64, s->Tf, &m64, s->ipivf, s->Ef, &m64, &info64);
+            if (info64 != 0) return 0;
+        }
+        for (c = 0; c < kk; c++) {
+            double fl, mx;
+            i = s->ffail[lo + c];
+            for (j = 0; j < m; j++) s->af[j] = fabs(s->Ef[c * m + j]);
+            fl = DBL_EPSILON * (0.0 + ((ddot64_t) s->ddot)(m, s->af, 1, s->Isf, 1));
+            mx = pcx_np_maximum(fabs(s->xn[i]), fabs(s->x[i]));
+            if (!(fabs(s->xd[i]) < s->reltol * mx + s->xtol[i] + fl)) return 0;
+        }
+    }
+    return 1;
+}
+
 /* `jacobian_only` at the converged point x: G, C, q -- C and q alone where
    J is unread (fold_j holds the passes).  Cj is both Cin and C: fold_j
    always has the C pass, so the companion reads the C just made; F is not
@@ -385,9 +451,10 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
    insert_row(x) (`evaluate`: the core's residual, and J where the
    iteration forms it), the step (`solve_step`), x_next and the limiter
    (`limit_step`), the convergence test (`converged`, a chord's also
-   `chord_settled`, then `jacobian_only` there: `fold`), the chord's
-   contraction (`chord_breaks`) and its dominant component (`chord_dominant`).
-   Contract: THE ITERATION, at the top of this file. */
+   `chord_settled`, the full Newton's stalled update its rounding floor --
+   `step_size`, `floor_holds` -- then `jacobian_only` there: `fold`), the
+   chord's contraction (`chord_breaks`) and its dominant component
+   (`chord_dominant`).  Contract: THE ITERATION, at the top of this file. */
 static long iterate(newton_t *s, void **num)
 {
     long n = s->n, m = n - 1, r = s->iref, it, i, st;
@@ -398,6 +465,8 @@ static long iterate(newton_t *s, void **num)
     int have_prev = 0;   /* (`prev is not None`) */
     long dom = -1;       /* the last increment's dominant component (`prev_dx`; none: -1) */
     double dom_d = 0.0;  /* its increment */
+    double size_prev = 0.0;  /* the full Newton's last update's largest entry (`size_prev`) */
+    int have_size = 0;       /* (`size_prev is not None`) */
     const double *Cin0;  /* cC where the full seed equals cx (a cache hit), else NULL */
     long first_bits;     /* the first evaluation's want bits */
     s->iters = 0;
@@ -427,6 +496,14 @@ static long iterate(newton_t *s, void **num)
         s->iters = it + 1;
         /* (and a chord iterate settled: `_chord_settled`) */
         if (st && s->chord && dom >= 0 && !chord_settled(s, m, dom, dom_d)) st = 0;
+        /* (or the full Newton's update stalled -- not under half the last
+           one's largest entry -- within the rounding floor) */
+        if (!st && !s->chord) {
+            double size = step_size(s, m);
+            if (have_size && !(size < 0.5 * size_prev) && floor_holds(s, m)) st = 1;
+            size_prev = size;
+            have_size = 1;
+        }
         if (st) {
             for (i = 0; i < m; i++) s->x[i] = s->xn[i];
             if (s->fold_j) fold(s, core, n, r);

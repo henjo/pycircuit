@@ -59,7 +59,10 @@ libraries the packages mapped, found one way (`_cbuild.openblas`, `_cbuild.addre
 solves are `linearsolver.StructuralKLU` (KLU on the circuit's structure): `newton.c`, `lte.c`,
 `dcnewton.c` and `pcnrdc.c` call KLU through the run's own symbolic and numeric objects, and the glue adds to the solver
 object's counts (`factors`, `refactors`, `numerics`) what the Python would; a refactor that meets
-a zero pivot bails to the Python, which factors afresh and counts it (`pivot_fallbacks`).
+a zero pivot bails to the Python, which factors afresh and counts it (`pivot_fallbacks`). The
+Newtons' rounding floor (`nrsolver._within_rounding`, in `newton.c` and `dcnewton.c`) solves with
+J^T -- numpy's `dgesv` of it, or `klu_tsolve` on the numeric the step refactored -- and makes its
+floors with numpy's own `ddot`.
 
 Every unit has the same shape: a header `csrc/X.h` that is both what the C compiles and what cffi
 reads (its structs, its entry `pcx_X(X_t *)`, named for the unit, its codes as named enums); a `csrc/X.c` that

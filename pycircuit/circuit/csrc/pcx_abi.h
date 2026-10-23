@@ -37,8 +37,8 @@ typedef int (*lim_fn_t)(const double *, const double *, double *);
 
 /* ---- LAPACK and BLAS, named by the width of their integers: 64 from
         numpy's own OpenBLAS (libscipy_openblas64_: scipy_dgesv_64_,
-        scipy_dgetrs_64_, scipy_cblas_dgemv64_), 32 from SciPy's
-        (libscipy_openblas: scipy_dgetrf_, scipy_dgetrs_) -------------- */
+        scipy_dgetrs_64_, scipy_cblas_dgemv64_, scipy_cblas_ddot64_), 32
+        from SciPy's (libscipy_openblas: scipy_dgetrf_, scipy_dgetrs_) ----- */
 typedef void (*dgesv64_t)(const int64_t *, const int64_t *, double *, const int64_t *,
                           int64_t *, double *, const int64_t *, int64_t *);
 typedef void (*dgetrs64_t)(const char *, const int64_t *, const int64_t *, const double *,
@@ -46,6 +46,8 @@ typedef void (*dgetrs64_t)(const char *, const int64_t *, const int64_t *, const
                            int64_t *, size_t);
 typedef void (*dgemv64_t)(int, int, int64_t, int64_t, double, const double *, int64_t,
                           const double *, int64_t, double, double *, int64_t);
+/* (np.dot of two float64 vectors: numpy's DOUBLE_dot calls it) */
+typedef double (*ddot64_t)(int64_t, const double *, int64_t, const double *, int64_t);
 /* CBLAS's own values for dgemv64_t's first two arguments */
 enum pcx_cblas { PCX_CBLAS_ROW_MAJOR = 101, PCX_CBLAS_NO_TRANS = 111, PCX_CBLAS_TRANS = 112 };
 typedef void (*dgetrf32_t)(const int *, const int *, double *, const int *, int *, int *);
@@ -53,7 +55,8 @@ typedef void (*dgetrs32_t)(const char *, const int *, const int *, const double 
                            const int *, double *, const int *, int *, size_t);
 
 /* ---- KLU's int interface: klu_factor (a numeric, NULL where singular);
-        klu_refactor, klu_solve, klu_free_numeric (nonzero on success) -- */
+        klu_refactor, klu_solve (klu_tsolve, A^T x = b, its type too),
+        klu_free_numeric (nonzero on success) -------------------------- */
 typedef void *(*klu_factor_t)(int *, int *, double *, void *, void *);
 typedef int (*klu_refactor_t)(int *, int *, double *, void *, void *, void *);
 typedef int (*klu_solve_t)(void *, void *, int, int, double *, void *);

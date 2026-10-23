@@ -81,6 +81,24 @@ typedef struct {
     /* KLU (pcx_klu.h; klu.klu_sym NULL: the dense solve; kAx (nact) J's
        values in its order; klu_out, the counters: on CONVERGED and MAXITER) */
     pcx_klu_t klu;
+    /* THE ROUNDING FLOOR (`nrsolver._within_rounding`: dcnewton.c's
+       `floor_holds`, as newton.c's): the failing unknowns' rows of J^-1 by
+       numpy's dgesv of J^T (R row-major is J^T column-major: copied into
+       Tf) or klu_tsolve on klu.klu_out, each floor by numpy's own ddot.
+       CTX, klu_tsolve with klu */
+    void *ddot;           /* numpy's own `scipy_cblas_ddot64_` (ddot64_t) */
+    void *klu_tsolve;     /* KLU's klu_tsolve (klu_solve_t) */
+    long floor_rows;      /* `nrsolver.FLOOR_ROWS` as the record was made,
+                             the rows solved for at a time */
+    double *Tf,           /* (m x m) J^T column-major for dgesv, then its LU */
+           *Ef,           /* (m x floor_rows, column-major) a block of the
+                             failing unknowns' unit vectors, then their rows
+                             of J^-1; each column's first entry then its
+                             tolerance plus floor */
+           *af,           /* (m) one row's magnitudes */
+           *Isf;          /* (m) I_scale = |J| |x_next| + |F| */
+    int64_t *ipivf,       /* (m) the transposed dgesv's pivots */
+            *ffail;       /* (m) the failing unknowns, in order */
     /* OUT */
     long iters,           /* the iterations made: the Python's `i + 1` */
          status;          /* enum dcnewton_status, as returned */

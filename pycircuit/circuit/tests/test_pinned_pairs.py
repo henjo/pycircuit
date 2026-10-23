@@ -281,10 +281,19 @@ PAIRS = {
                'the run\'s numeric refactored, the residual\'s validation by numpy\'s '
                'matmul -- newton.c\'s `sparse_full`, every other course handed back; '
                '`_record` gives it the run\'s numeric, `_serve` counts its refactors, '
-               '2026-10-16)',
+               '2026-10-16); the full Newton\'s rounding floor (`_step_size`, '
+               '`_within_rounding`: rows of J^-1 by numpy\'s solve of J^T or klu_tsolve on '
+               'the numeric the step refactored, a block at a time, each floor by ddot -- '
+               'newton.c\'s `step_size` and `floor_holds`, roadmap 197)',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:ChordNewton.solve_system',
                       'pycircuit.circuit.nrsolver:_chord_settled',
+                      'pycircuit.circuit.nrsolver:_step_size',
+                      'pycircuit.circuit.nrsolver:_within_rounding',
+                      'pycircuit.circuit.linearsolver:LinearSolver.solve_transposed',
+                      'pycircuit.circuit.linearsolver:KLUSolver.solve_transposed',
+                      'pycircuit.circuit.linearsolver:StructuralKLU.solve_transposed',
+                      'pycircuit.circuit.linearsolver:AutoSolver.solve_transposed',
                       'pycircuit.circuit.dcanalysis:refnode_removed',
                       'pycircuit.circuit.analysis:insert_row',
                       'pycircuit.circuit.analysis:remove_row_col',
@@ -312,7 +321,8 @@ PAIRS = {
                  'pycircuit.circuit._tran_newton_c:_walk_full',
                  'pycircuit.circuit._tran_newton_c:_arm',
                  'pycircuit.circuit._tran_newton_c:_arm_set',
-                 'pycircuit.circuit._tran_newton_c:_early'],
+                 'pycircuit.circuit._tran_newton_c:_early',
+                 'pycircuit.circuit._tran_newton_c:_chain'],
     },
     'the PSP limiter and its C twin': {
         'why': 'the twin is `PspMosLongChannel.limit` transliterated -- d, g, b moved '
@@ -371,9 +381,18 @@ PAIRS = {
                'refactor, fresh factor and residual check), the DC\'s limiter, the '
                'convergence test and the iteration limit\'s exception; not the noncon '
                'test (`_limiting.NONCON`, 2026-10-15): only a stateful limiter counts, '
-               'and the C declines every circuit with one (`dcnewton_c:unservable`)',
+               'and the C declines every circuit with one (`dcnewton_c:unservable`); the '
+               'rounding floor (`_step_size`, `_within_rounding`, the solvers\' '
+               '`solve_transposed` -- dcnewton.c\'s `step_size` and `floor_holds`, its '
+               'verdict after the flags are read, roadmap 197)',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:_standard_failure',
+                      'pycircuit.circuit.nrsolver:_step_size',
+                      'pycircuit.circuit.nrsolver:_within_rounding',
+                      'pycircuit.circuit.linearsolver:LinearSolver.solve_transposed',
+                      'pycircuit.circuit.linearsolver:KLUSolver.solve_transposed',
+                      'pycircuit.circuit.linearsolver:StructuralKLU.solve_transposed',
+                      'pycircuit.circuit.linearsolver:AutoSolver.solve_transposed',
                       'pycircuit.circuit.nrsolver:_plus_diagonal',
                       'pycircuit.circuit.nrsolver:_junction_gmin',
                       'pycircuit.circuit.nrsolver:GminSteppingNewton.solve_system',
@@ -396,7 +415,8 @@ PAIRS = {
                  'pycircuit.circuit._dc_newton_c:_walk',
                  'pycircuit.circuit._dc_newton_c:_klu_bind',
                  'pycircuit.circuit._dc_newton_c:_write_back',
-                 'pycircuit.circuit._dc_newton_c:_Rec'],
+                 'pycircuit.circuit._dc_newton_c:_Rec',
+                 'pycircuit.circuit._dc_newton_c:_settings'],
     },
     'the PCNR DC solve and its C': {
         'why': 'the C solve is `pcnr.solve_dc`\'s loop from its start: the ordinary '
@@ -758,38 +778,38 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('c5cbdafaf290', 'bb880ef91cbb'),
-    'the predictor and its C': ('f2c284eb392d', '2f1a2f96e90f'),
-    'the branch screen and its C': ('adb832d7aae0', '1da8be0e9b2e'),
+    'the stepping loop and its C': ('c5cbdafaf290', '3e12902bb8e7'),
+    'the predictor and its C': ('f2c284eb392d', '83cd2479857f'),
+    'the branch screen and its C': ('adb832d7aae0', 'd49b47d996e0'),
     'the sources and their C': ('55cf2d3441f8', '41b0a7d59bbe'),
-    'the kernel call and the pass driver': ('09a9e274bbe8', 'f44eb4ff41df'),
-    'the limiting loop and the walk': ('58c4ce9c8f4d', '4ed13cca30aa'),
+    'the kernel call and the pass driver': ('09a9e274bbe8', 'b34c658afd6f'),
+    'the limiting loop and the walk': ('58c4ce9c8f4d', '3a565db6207f'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '7e8f23b73019'),
-    'the transient evaluation and the core': ('ecdae2231dae', 'd59ae0c11019'),
+    'the transient evaluation and the core': ('ecdae2231dae', 'b11b9f035724'),
     'the assembly loops and the plan': ('a822abce557c', '14651de8716f'),
     'the sources and their direct pass': ('133b68c3262d', 'fced12f39974'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('2ff6c6b1bb4b', 'fe04120dc1a4'),
+    'the Newton solve and its C': ('3ca9f9451f6f', '53df12ed0bd5'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
-    'the error test and its C': ('1736570f3f0e', '9f6fb7d03377'),
-    'the DC base solve and its C': ('1ca96ccdb1c8', '0423dea8a05d'),
-    'the PCNR DC solve and its C': ('fb7013b47665', '67b9fed88fb1'),
+    'the error test and its C': ('1736570f3f0e', 'd946a8e69c20'),
+    'the DC base solve and its C': ('64fd25ecd5da', '1e12937f72b9'),
+    'the PCNR DC solve and its C': ('fb7013b47665', 'df592485484c'),
     'the stage predictor and its multistep fast path': ('739b71ddbace', 'f2c284eb392d'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
-    "the stage paths' passes and the core's": ('fcda68098a8b', '131833be2877'),
-    'the coupled stage Newton and its C': ('e09350a62d0e', '10e71f9e55f5'),
+    "the stage paths' passes and the core's": ('fcda68098a8b', '3f00bb235faa'),
+    'the coupled stage Newton and its C': ('e09350a62d0e', 'bd459fa630f6'),
     "the walk's stage block and the C stage Newton's last assembly": ('d0a6a92a1527', '2928e6b65003'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
-    'the transform solve and its frozen form': ('2347fd7082f9', '61256542c9d4'),
-    'the transform Newton and its C': ('57fd43705940', 'fceb72d88ac1'),
-    "the step's end passes and the C's": ('d9dfad6d6b96', '8fd51f89aae0'),
+    'the transform solve and its frozen form': ('6f35dca48644', '61256542c9d4'),
+    'the transform Newton and its C': ('57fd43705940', '69b7678f62d7'),
+    "the step's end passes and the C's": ('d9dfad6d6b96', 'b2c803a6a33c'),
     'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
     'the stage block and its one pass': ('bb801fac4766', '24be0c26211b'),
-    'the stage step map and its C': ('327f9c2281e6', '95a58cab26a4'),
-    'the multistep step map and its C': ('b072302c5297', 'd7fefa35858c'),
+    'the stage step map and its C': ('327f9c2281e6', '591052196b6b'),
+    'the multistep step map and its C': ('b072302c5297', 'be14cb8c5221'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),

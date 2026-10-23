@@ -304,6 +304,16 @@ class LinearSolver(ABC):
         """
         return None
 
+    def solve_transposed(self, A, B, toolkit):
+        """``A^T X = B`` for the `A` the last `solve` was handed (`B` m x k):
+        on that solve's factorisation where the solver keeps one (KLU's
+        numeric, `KLUSolver`), else ``toolkit.linearsolver`` of ``A^T`` --
+        numpy's solve, its dgesv on the column-major copy, which is A's
+        row-major layout (the C Newtons make the same call).  The Newton's
+        rounding floor reads rows of J^-1 through it
+        (`nrsolver._within_rounding`)."""
+        return toolkit.linearsolver(numpy.asarray(A).T, B)
+
 
 class DenseSolver(LinearSolver):
     """The historical path: whatever ``toolkit.linearsolver`` does.
@@ -581,6 +591,21 @@ class KLUSolver(LinearSolver):
                     raise numpy.linalg.LinAlgError('klu_solve failed')
         return x
 
+    def solve_transposed(self, A, B, toolkit):
+        """``A^T X = B`` on the numeric the last `solve` made of `A`
+        (`klu_tsolve`, `B` m x k column-major, as `klu_solve` takes it);
+        none yet: the base's own solve."""
+        if not self._numeric or not self._symbolic:
+            return LinearSolver.solve_transposed(self, A, B, toolkit)
+        ctypes = self._ct
+        x = numpy.array(B, dtype=numpy.float64, order='F', copy=True)
+        nrhs = 1 if x.ndim < 2 else x.shape[1]
+        if not self._lib.klu_tsolve(
+                ctypes.c_void_p(self._symbolic), ctypes.c_void_p(self._numeric), x.shape[0],
+                nrhs, self._ptr(x, ctypes.c_double), ctypes.byref(self._common)):
+            raise numpy.linalg.LinAlgError('klu_tsolve failed')
+        return x
+
     def factor(self, A, toolkit):
         """A reusable KLU factorisation of `A` that OWNS its numeric object
         (freed with it), with ``A x = b`` and ``A^T x = b`` (`klu_tsolve`)
@@ -767,6 +792,17 @@ class StructuralKLU(KLUSolver):
                         nrhs, self._ptr(x, ctypes.c_double), ctypes.byref(self._common)):
                     raise numpy.linalg.LinAlgError('klu_solve failed')
         return x
+
+    def solve_transposed(self, A, B, toolkit):
+        """``A^T X = B`` on the numeric `solve` refactored for `A` -- this
+        circuit's matrix; another (`_ours`: None) went to the fallback,
+        which answers it (not counted again in `foreign`), or numpy's
+        solve where none was made."""
+        if self._ours(A) is None:
+            if self._fb is None:
+                return LinearSolver.solve_transposed(self, A, B, toolkit)
+            return self._fb.solve_transposed(A, B, toolkit)
+        return KLUSolver.solve_transposed(self, A, B, toolkit)
 
     def factor(self, A, toolkit):
         """A factorisation of its own (`_KLUNumeric`, freed with it, with the
@@ -1211,6 +1247,10 @@ class AutoSolver(LinearSolver):
 
     def solve(self, A, b, toolkit):
         return self._select(A).solve(A, b, toolkit)
+
+    def solve_transposed(self, A, B, toolkit):
+        """The selected solver's (`LinearSolver.solve_transposed`)."""
+        return self._select(A).solve_transposed(A, B, toolkit)
 
     def held(self, drop):
         """The AutoSolver of this one's matrices with the rows and columns
