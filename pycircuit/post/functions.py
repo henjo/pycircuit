@@ -9,8 +9,6 @@ from .waveform import Waveform, reducedim, applyfunc, applyfunc_and_reducedim,\
 import numpy as np
 from numpy import array, pi, sign, all, where, arange, vstack, \
     sin, log10, sqrt, nan
-import scipy as sp
-import scipy.optimize as optimize
 
 def db10(w):
     """Return x in dB where x is assumed to be a non-power quantity
@@ -93,6 +91,10 @@ def cross(w, crossval = 0.0, n=0, crosstype=either, axis=-1):
 
     x = w.get_x(axis)
 
+    ## (scipy's optimize and interpolate here, not at the module's import:
+    ## `pycircuit` imports this module, and they cost every run's startup)
+    from scipy import interpolate, optimize
+
     def findedge(y):
         ## Find edges
         if crosstype == either:
@@ -108,8 +110,8 @@ def cross(w, crossval = 0.0, n=0, crosstype=either, axis=-1):
         iedge = where(edges)[0][n]
 
         ## Find exact location of the crossing using interpolated x-values
-        finterp = sp.interpolate.interp1d(x, y)
-        return optimize.zeros.brenth(finterp, x[iedge], x[iedge+1])
+        finterp = interpolate.interp1d(x, y)
+        return optimize.brenth(finterp, x[iedge], x[iedge+1])
 
     return applyfunc_and_reducedim(findedge, w - crossval, yunit = w.xunits[0],
                                    ylabel = w.xlabels[-1], axis=axis)

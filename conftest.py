@@ -79,13 +79,28 @@ def _is_xdist_worker(config):
 
 def pytest_configure(config):
     """Limit BLAS pools already open in this process to one thread (see the
-    environment pin at the top: that covers pools opened AFTER it)."""
+    environment pin at the top: that covers pools opened AFTER it); make the
+    JAX toolkit."""
     try:
         from threadpoolctl import threadpool_limits
         threadpool_limits(1)
     except Exception:
         pass
+    _jax_toolkit()
     _bench_lock_shared(config)
+
+
+# THE JAX TOOLKIT, MADE AT THE SESSION'S START: the package makes it on its
+# first use (`toolkit.__getattr__`), and importing JAX sets environment
+# defaults of its own (TF_CPP_MIN_LOG_LEVEL, TPU_SKIP_MDS_QUERY), which the
+# leak detector would report against whichever test asked for JAX first.  Made
+# here, each process of the session starts with it, as the package's import
+# made it until roadmap 221; after the environment above (JAX reads it as it
+# starts a backend).  A start without it is test_startup's, in fresh
+# interpreters.
+def _jax_toolkit():
+    from pycircuit.circuit import toolkit
+    toolkit.jaxtoolkit  # noqa: B018 (made on first use; None without JAX)
 
 
 # ---------------------------------------------------------------------------

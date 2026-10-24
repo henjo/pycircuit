@@ -19,8 +19,10 @@ import sys
 import pytest
 
 
-def _reimport_without(blocked):
-    """Import ``pycircuit.circuit.toolkit`` with ``blocked`` unavailable."""
+def _reimport_without(blocked, probe=lambda tk: tk):
+    """Import ``pycircuit.circuit.toolkit`` with ``blocked`` unavailable:
+    ``probe(toolkit)``, made while it still is (the JAX toolkit is made on
+    first use, so its absence is decided there)."""
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
@@ -37,7 +39,7 @@ def _reimport_without(blocked):
     builtins.__import__ = fake_import
     try:
         import pycircuit.circuit.toolkit as tk
-        return tk
+        return probe(tk)
     finally:
         builtins.__import__ = real_import
         for key in list(sys.modules):
@@ -54,9 +56,9 @@ def test_toolkit_imports_without_jax():
 
 
 def test_jaxtoolkit_is_none_without_jax():
-    """The guard's actual contract: absent JAX yields a None singleton."""
-    tk = _reimport_without('jax')
-    assert tk.jaxtoolkit is None
+    """The guard's actual contract: absent JAX yields a None singleton --
+    absent when the JAX toolkit is first asked for."""
+    assert _reimport_without('jax', lambda tk: tk.jaxtoolkit) is None
 
 
 def test_toolkit_module_does_not_import_jaxtoolkit_eagerly():

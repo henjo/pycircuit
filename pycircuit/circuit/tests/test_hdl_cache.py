@@ -15,6 +15,7 @@ whose source cannot be recovered must compile and say so.
 """
 
 import builtins
+import dis
 import importlib.util
 import os
 import pickle
@@ -567,6 +568,94 @@ def test_body_that_writes_outside_itself_is_uncacheable(cache_dir):
             d['b'] = Branch(plus, minus)
             return Contribution(d['b'].I, d['b'].V / r)
     assert Local._hdl_cache_status == 'miss'
+
+
+def _walked(code):
+    """`_writes_outside` with every code object's instructions walked: the
+    reference of its opcode scan."""
+    ins = list(dis.get_instructions(code))
+    for k, i in enumerate(ins):
+        back = hc._STORES.get(i.opname)
+        if back is None:
+            continue
+        for j in range(max(0, k - back), k):
+            if ins[j].opname in hc._OUTER_LOADS:
+                return ins[j].argval
+    for c in code.co_consts:
+        if isinstance(c, types.CodeType):
+            found = _walked(c)
+            if found is not None:
+                return found
+    return None
+
+
+def _codes(code):
+    yield code
+    for c in code.co_consts:
+        if isinstance(c, types.CodeType):
+            yield from _codes(c)
+
+
+def test_the_store_scan_answers_as_the_walk(monkeypatch):
+    """`_writes_outside` walks a code object's instructions only where one
+    of the store opcodes is among its bytes: on every function and method of
+    `hdl`, `_hdl_cache` and the library, and every code object nested in
+    them, its answer is the full walk's (501 code objects: 13 outer writes,
+    59 walked, 442 not); a body without a store is not walked, one with a
+    store is."""
+    from pycircuit.circuit import elements_hdl
+    codes = []
+    for mod in (hdl, hc, elements_hdl):
+        for v in vars(mod).values():
+            for f in (vars(v).values() if isinstance(v, type) else (v,)):
+                f = getattr(f, '__func__', f)
+                if isinstance(f, types.FunctionType) and f.__module__ == mod.__name__:
+                    codes.extend(_codes(f.__code__))
+    got = [hc._writes_outside(c) for c in codes]
+    assert got == [_walked(c) for c in codes]
+    walked = sum(not hc._STORE_OPS.isdisjoint(c.co_code[::2]) for c in codes)
+    assert len(codes) > 400 and sum(g is not None for g in got) > 5
+    assert walked > 30 and len(codes) - walked > 300
+    seen = {}
+
+    def outer():
+        seen['k'] = 1
+
+    def own():
+        d = {}
+        d['k'] = 1
+        return d
+
+    def none(x):
+        return x + 1
+    walks = []
+    real = dis.get_instructions
+    monkeypatch.setattr(dis, 'get_instructions', lambda c: walks.append(c) or real(c))
+    assert hc._writes_outside(none.__code__) is None and walks == []
+    assert hc._writes_outside(own.__code__) is None and walks == [own.__code__]
+    assert hc._writes_outside(outer.__code__) == 'seen' and walks[-1] is outer.__code__
+
+
+def test_a_read_rebuilds_the_trees_as_stored(cache_dir):
+    """An entry's sympy trees come back as written -- sympy's evaluation off
+    while they load, so no node is evaluated again: an unevaluated `1 + 2`
+    stays one (an evaluating load made it 3) -- and the evaluation flag is
+    put back as found, on or off."""
+    from sympy.core.parameters import global_parameters
+    x = sympy.Symbol('x', real=True)
+    trees = [sympy.Add(1, 2, evaluate=False), x ** 2 + sympy.exp(-x),
+             sympy.Piecewise((x, x > 0), (0, True)), sympy.Max(x, 1), x >= 2]
+    key = 'f' * 64
+    hc._write(key, {'trees': trees})
+    payload, why = hc._read(key)
+    assert why == 'hit'
+    assert [sympy.srepr(t) for t in payload['trees']] == [sympy.srepr(t) for t in trees]
+    assert sympy.srepr(payload['trees'][0]) == 'Add(Integer(1), Integer(2))'
+    assert global_parameters.evaluate is True
+    with sympy.evaluate(False):
+        assert hc._read(key)[1] == 'hit'
+        assert global_parameters.evaluate is False
+    assert global_parameters.evaluate is True
 
 
 def test_key_fields(cache_dir):

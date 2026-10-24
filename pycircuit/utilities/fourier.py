@@ -1,11 +1,12 @@
 from __future__ import division
 import numpy as np
-from scipy.special import factorial
-from scipy import interpolate, linalg
 
 
 def fourier_analysis(t, x, harmonics=range(9)):
     """Evaluate the fourier series of fitted piecewise polynomial"""
+    ## (scipy here, not at the module's import: `pycircuit` imports this
+    ## module, and scipy.special costs a SPICE run's startup ~0.2 s)
+    from scipy.special import factorial
     t = np.array(t)
 
     M = 1

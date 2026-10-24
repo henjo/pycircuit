@@ -13,8 +13,6 @@ from numpy import array,concatenate,max,min,log10,arange,pi,sin, \
     sign, where, newaxis, r_, vstack, apply_along_axis, nan, isscalar, \
     inf, isscalar
 from numpy.linalg import matrix_rank
-import scipy as sp
-import scipy.interpolate as interpolate
 import types
 import operator
 from copy import copy
@@ -364,11 +362,14 @@ class Waveform(object):
         Waveform(array([1, 2]), array([ 4. ,  6.5]))
 
         """
+        ## (scipy.interpolate here, not at the module's import: `pycircuit`
+        ## imports this module, and it cost every run's startup ~0.2 s)
+        from scipy import interpolate
         axis = self.getaxis(axis)
         def findvalue(y):
             if len(self._xlist[axis]) == 1 and axis == -1:
                 return y[-1]
-            res = sp.interpolate.interp1d(self._xlist[axis], y)(x)
+            res = interpolate.interp1d(self._xlist[axis], y)(x)
             try:
                 return res.item()
             except TypeError:
@@ -378,7 +379,7 @@ class Waveform(object):
             xindex = list(i)
             del xindex[axis]
             xindex = tuple(xindex)
-            res = sp.interpolate.interp1d(self._xlist[axis], y)(x._y[xindex])
+            res = interpolate.interp1d(self._xlist[axis], y)(x._y[xindex])
             try:
                 return res.item()
             except TypeError:

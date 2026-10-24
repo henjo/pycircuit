@@ -42,3 +42,18 @@ def test_deriv():
     maxerror = Waveform(f, 2 * np.pi * f * 5e-2)
 
     assert ymax(error) < maxerror
+
+
+def test_cross():
+    """Crossings (scipy's interp1d and brenth, imported in `cross` where they
+    are used): a sine's rising and falling zero crossings, the second of
+    either kind, each row's of a 2-d waveform, and none."""
+    phi = np.arange(0, 4 * np.pi, np.pi / 10) - np.pi / 4
+    y = Waveform(phi, np.sin(phi))
+    assert abs(cross(y)) < 1e-9
+    assert abs(cross(y, crosstype=falling) - np.pi) < 1e-9
+    assert abs(cross(y, n=1) - np.pi) < 1e-9
+    x1 = [np.pi / 4, np.pi / 2]
+    rows = cross(Waveform([x1, phi], np.sin(np.vstack([phi for _ in x1]))))
+    assert np.allclose(rows.get_x()[0], x1) and np.allclose(rows.get_y(), 0.0, atol=1e-9)
+    assert np.isnan(cross(Waveform([[0, 1, 2, 3]], np.array([1, 1, 1, 1]))))

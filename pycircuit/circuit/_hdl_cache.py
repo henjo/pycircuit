@@ -87,6 +87,8 @@ import tempfile
 import types
 import weakref
 
+import sympy
+
 from pycircuit.circuit import simwarnings as _sw
 from pycircuit.utilities import param
 
@@ -336,6 +338,12 @@ _STORES = {'STORE_SUBSCR': 3, 'STORE_ATTR': 2, 'DELETE_SUBSCR': 3,
            'DELETE_ATTR': 2}
 _OUTER_LOADS = ('LOAD_DEREF', 'LOAD_GLOBAL', 'LOAD_NAME', 'LOAD_CLASSDEREF',
                 'LOAD_FROM_DICT_OR_DEREF')
+#: `_STORES`' opcodes by number.  A code object with none of them among its
+#: bytes at even offsets -- `co_code`, the deoptimised bytes `dis` walks,
+#: every instruction starting at one -- has no store to look behind, and its
+#: instruction walk is not made (the walks were 0.075 s of the library's
+#: 0.106 s of keys; no library body has a store).
+_STORE_OPS = frozenset(dis.opmap[n] for n in _STORES)
 
 
 def _writes_outside(code):
@@ -349,7 +357,10 @@ def _writes_outside(code):
     the body, cannot replay it.  Stores into the body's own locals are
     its business.
     """
-    ins = list(dis.get_instructions(code))
+    if _STORE_OPS.isdisjoint(code.co_code[::2]):
+        ins = []
+    else:
+        ins = list(dis.get_instructions(code))
     for k, i in enumerate(ins):
         back = _STORES.get(i.opname)
         if back is None:
@@ -860,12 +871,24 @@ def _path(key):
 
 def _read(key):
     """`(payload, reason)`: the frozen payload for `key`, or None and
-    why not.  Every failure is a miss; the reason is for the status."""
+    why not.  Every failure is a miss; the reason is for the status.
+
+    The payload's sympy expressions are rebuilt AS STORED: sympy's
+    evaluation is off while they load.  pickle rebuilds each node through
+    its constructor, and an evaluating constructor evaluates again -- every
+    Pow's and Relational's evaluation and the assumption queries behind
+    them, 0.18 s of the library's 0.32 s of loads.  A stored tree is the
+    compile's own, evaluated as it was built, so the trees come back the
+    same (the srepr of every tree in 4 430 entries, 2026-10-24); only
+    which equal subtrees are one object can differ, and nothing reading
+    them asks.  The flag is sympy's own thread-local one, put back as
+    found; its change clears sympy's cache going in and coming out, so a
+    node built unevaluated is never served to an evaluating caller."""
     path = _path(key)
     if not os.path.exists(path):
         return None, 'no entry'
     try:
-        with open(path, 'rb') as fh:
+        with open(path, 'rb') as fh, sympy.evaluate(False):
             entry = pickle.load(fh)
     except Exception as e:
         return None, 'unreadable entry: %s' % _brief(e)

@@ -21,6 +21,10 @@ the objects passed as ``toolkit=`` to analyses and stored as
 *modules* -- ``toolkit.zeros(...)``, ``toolkit.symbolic`` etc. keep working.
 """
 
+import os
+import sys
+import threading
+
 import numpy as np
 import sympy
 from sympy.polys.matrices import DomainMatrix
@@ -979,8 +983,31 @@ try:
 except ImportError:
     ginac_toolkit = None
 
-try:
-    import pycircuit.circuit._jaxtoolkit as _jaxtoolkit
-    jaxtoolkit = JAXToolkit(_jaxtoolkit)
-except ImportError:
-    jaxtoolkit = None
+## THE JAX TOOLKIT, MADE ON FIRST USE (`jaxtoolkit`, served by the module's
+## `__getattr__`): importing JAX costs a process ~0.2 s, and a numeric run
+## never touches it.  JAX's 64-bit mode -- which `_jaxtoolkit` switches on as
+## it loads, and every use of JAX in the package assumes -- is asked for here,
+## whichever module imports JAX first: in a JAX already imported, directly;
+## else by its environment variable, which JAX reads as it loads.
+if sys.modules.get('jax') is not None:
+    sys.modules['jax'].config.update('jax_enable_x64', True)
+else:
+    os.environ['JAX_ENABLE_X64'] = 'true'
+
+_JAX_LOCK = threading.Lock()
+
+
+def __getattr__(name):
+    """`jaxtoolkit`, made on first use -- None where JAX does not import
+    -- and one instance whichever thread asks first."""
+    if name != 'jaxtoolkit':
+        raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+    with _JAX_LOCK:
+        if 'jaxtoolkit' not in globals():
+            try:
+                import pycircuit.circuit._jaxtoolkit as _jaxtoolkit
+                tk = JAXToolkit(_jaxtoolkit)
+            except ImportError:
+                tk = None
+            globals()['jaxtoolkit'] = tk
+    return globals()['jaxtoolkit']

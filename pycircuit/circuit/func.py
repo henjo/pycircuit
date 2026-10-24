@@ -1,7 +1,6 @@
 import os
 
 import numpy as _np
-from scipy import interpolate
 
 from .toolkit import NumericToolkit, numeric
 
@@ -601,12 +600,18 @@ class TabFunc(ScalarFunction):
     
     """
 
+    ## (scipy.interpolate in the methods, not at the module's import:
+    ## `pycircuit.circuit` imports this module, and it cost every run's
+    ## startup ~0.1 s)
     def __init__(self, xvec, yvec, s=None):
+        from scipy import interpolate
         self.xyspline=interpolate.splrep(xvec, yvec, s=s)
 
     def f(self,x):
+        from scipy import interpolate
         return interpolate.splev(x,self.xyspline,der=0)
 
     def fprime(self,x,order=1):
+        from scipy import interpolate
         return interpolate.splev(x,self.xyspline,der=order)
 

@@ -12084,3 +12084,70 @@ interleaved per deck), standalone DC against 219's gate runs, and under Radau ag
 the default four threads: every digest, step, rejection, Newton count and path count identical but the loops' own.
 The sanitizer's fast tier, 5 778 passed, and its deep tier on the core, thread, loop, Radau, DC and solver tests, 721,
 clean -- the pool's workers under the address sanitizer.
+
+## 2026-10-24 — 221. The startup -- JAX and scipy's special, interpolate and optimize imported where they are used, the HDL cache's sympy trees read as stored and its keys' write scan past store-free code: a SPICE transient's imports 1.24 -> 0.67 s (0.57 s saved, 1.85x), each gold process ~0.7 s sooner, every result the same
+
+**Why**  Andreas: "Do as you suggest" (the survey after 219, its second item; plan g24's `plan_220_221.md`).  Each
+process spent ~1.5 s before its solve -- ~1.25 s of imports (a SPICE transient's: `spice_suite`, `spice_import`), 0.1 s
+the netlist, ~0.3 s the interpreter -- on the small gold decks more than the solve itself.  LINE: a SPICE transient's
+imports at least 0.4 s faster, every result the same.  Refused under.
+
+**Found.**  JAX (~0.2 s) came in at the toolkit's import, the JAX toolkit made there; scipy.special, scipy.interpolate
+and scipy.optimize (~0.2 s together) at `pycircuit`'s, through the post-processing (`post.waveform`, `post.functions`),
+`utilities.fourier` and `circuit.func` -- none of them used by a SPICE run.  `elements_hdl`'s 0.53 s was its 51
+classes' cache hits: 0.32 s their entries' loads -- pickle rebuilds every sympy node through its constructor, and the
+constructor EVALUATES: every Pow's and Relational's evaluation again, the assumption queries behind them (sympy's
+`_ask`, ~70 000 shuffles of its prerequisites), `pcnr_vector`'s chains alone 0.24 s cold -- and 0.106 s their keys,
+0.075 s of it `_writes_outside`'s instruction walks (`dis`), on bodies that hold no store at all.  scipy.sparse and
+scipy.linalg stay: the run imports them (the linear solver).  sympy stays, unlike the plan's first guess: the cached
+trees and the symbolic toolkits are sympy's.  The library's classes stay compiled at import (the plan's "lazy where it
+can be"): made cheaper instead, every class as before.
+
+**Built.**  `toolkit.jaxtoolkit` made on first use (the module's `__getattr__`, under a lock: one instance), None where
+JAX does not import, as before; JAX's 64-bit mode asked for at the toolkit's import, whichever module imports JAX first
+(`JAX_ENABLE_X64`, or the config of a JAX already imported).  scipy imported where it is used: `fourier_analysis`,
+`Waveform.value`, `cross` (its `optimize.zeros.brenth`, deprecated, now `optimize.brenth`: the same function),
+`TabFunc`.  `_hdl_cache._read` loads with sympy's evaluation off (`sympy.evaluate(False)`): the trees rebuilt as
+stored -- the compile's own, evaluated as they were built; the flag sympy's thread-local one, put back as found, its
+change clearing sympy's cache going in and coming out, so a node built unevaluated is never served to an evaluating
+caller.  `_writes_outside` walks a code object's instructions only where one of the store opcodes is among its bytes
+(`co_code`, the deoptimised bytes `dis` walks; every instruction starts at an even offset).  A change to
+`_hdl_cache.py` changes every key (its source is in them): each class compiles once more on its next use -- the
+library 37 s cold, the suite's first run ~2 min longer.
+
+**Shown the same.**  Every entry of the user's cache (4 430), each loaded with sympy's evaluation off and on: every
+sympy tree's srepr identical.  278 entries re-pickle to other bytes -- sharing alone (an equal subtree one object where
+the evaluating load built two; the symbols' keyword dicts), and nothing reading the trees asks: the numeric path reads
+the generated text (the functions, `_hdl_cse`, the C), and the one printer of them after a hit (PCNR's refine chains,
+`_hdl_climit._parameter_chains`, which names by name) printed all 25 library kernels identically from both loads
+(328 KB of C).  The store scan's answer is the walk's on 501 code objects (13 outer writes, 59 walked, 442 not).
+
+**Measured** (a quiet box, HEAD 83b73800 from its worktree and this tree, separate processes, interleaved): a SPICE
+transient's imports (`spice_suite`, `spice_import`, `circuit`), 15 pairs: 1.244 -> 0.673 s (medians), 0.571 s saved
+(0.526 to 0.618 in every pair; the line 0.4 s), 1.85x.  `elements_hdl` with the package already imported, 10 pairs:
+0.532 -> 0.297 s.  The 27 gold decks' processes, start to end (the gate's runs): under gear2 67.9 -> 48.2 s (1.41x),
+each process 0.71 s sooner (median; 0.42 to 1.15), under Radau 93.6 -> 74.5 s (1.26x), 0.73 s (0.40 to 0.81).  Their
+solves alone summed 0.987x and 0.989x -- jge and gm19, re-timed in 4 pairs each: gm19 under gear2 2.615 -> 2.686 s,
+jge under Radau 12.60 -> 12.70 s, slower in every pair -- a property of which native libraries the process loaded
+before the solve, not of code the solve runs: in this tree, importing any one of scipy.special, scipy.interpolate,
+scipy.optimize or JAX before the solve made gm19's 1-4 % faster (2.711 -> 2.683, 2.596, 2.637, 2.641 s, medians of
+three rounds), while the solve's page faults (~16 000), its memory growth (89 MB) and the process's threads (47) were
+the same either way, and 44 MB of small objects allocated first moved nothing; the mechanism not found.  Every deck's
+process ends at least 0.40 s sooner.
+
+**Tests.**  test_startup (new, 3; fresh interpreters importing this tree): a numeric start imports neither JAX nor
+scipy.special, scipy.interpolate or scipy.optimize; JAX imported directly afterwards is 64-bit; eight threads asking
+for the JAX toolkit at once get one, 64-bit.  test_jax_optional: JAX's absence decided when the JAX toolkit is first
+asked for.  test_hdl_cache: a read rebuilds the trees as stored (an unevaluated 1 + 2 stays one; the flag put back, on
+or off); the store scan's answer the walk's on every code object of `hdl`, `_hdl_cache` and the library, a body without
+a store not walked.  test_functions `cross` and test_func `TabFunc` (untested before; their scipy now imported in
+them).  Six mutations caught: no lock, no 64-bit switch, fourier's scipy back at its import, the read evaluating, the
+scan always and never skipping.  conftest: the JAX toolkit made at the session's start (JAX's import sets environment
+defaults of its own, which the leak detector would report against whichever test asked for JAX first).  hdl.md: the
+warm and cold import figures.
+
+**Gate** (the main tree): the TELL (each tree imports its own toolkit: HEAD's imports JAX at its import, this tree's
+does not); the suite, 6 028 passed (6 skipped, 3 xfailed; its first run under the new keys, each class compiled once
+more: 14:55 against ~13 min); the 27 gold decks -- standalone DC against 220's gate runs, gear2 transient and Radau
+against HEAD (wt_head, 83b73800, run from inside it, interleaved per deck): every digest, step, rejection, Newton count
+and path count identical but the loops' own.  No C changed: no sanitizer run.

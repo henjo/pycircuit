@@ -118,3 +118,18 @@ def test_pulse():
         assert nxt > t_walk, \
             'next_event(%r) returned %r, which does not advance' % (t_walk, nxt)
         t_walk = nxt
+
+
+def test_tabfunc():
+    """A table's spline (scipy.interpolate, imported in `TabFunc` where it is
+    used): its value and slope splev's of splrep's, near tanh's."""
+    from scipy import interpolate
+    xvec = np.linspace(-2, 2, 100)
+    yvec = np.tanh(xvec)
+    f = func.TabFunc(xvec, yvec)
+    tck = interpolate.splrep(xvec, yvec, s=None)
+    x = np.array([-1.3, 0.0, 0.7, np.pi])
+    assert f.f(x).tobytes() == interpolate.splev(x, tck, der=0).tobytes()
+    assert f.fprime(x).tobytes() == interpolate.splev(x, tck, der=1).tobytes()
+    assert_almost_equal(f.f(x[:3]), np.tanh(x[:3]), 4)
+    assert_almost_equal(f.fprime(0.0), 1.0, 4)

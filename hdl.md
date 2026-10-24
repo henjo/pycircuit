@@ -798,8 +798,9 @@ smoothing escape hatch.
 
 Compile cost: **0.6–0.9 ms per element**, once, at class definition —
 and served from the on-disk compile cache after that, so importing all
-**37** classes of `elements_hdl` costs **~220 ms** warm with the package
-already loaded (about 10 s cold, when the cache key changes). That is
+**51** classes of `elements_hdl` costs **~0.30 s** warm with the package
+already loaded (about 37 s cold, when the cache key changes; 2026-10-24,
+roadmap 221). That is
 the price of the exactness — symbolic assembly, two Jacobians,
 `lambdify` with CSE — and it is why `elements.py` stays the default
 catalogue while `elements_hdl.py` is imported on demand.
@@ -896,9 +897,9 @@ the 26 classes of the day; it is 37 now). A cache hit is bit-identical to a cold
 CACHE=0` disables it. Profiling first found one waste worth 15% before
 caching anything: `G_dc` was a second full Jacobian compile, identical
 to `G` for every class without a DC-pinned state.
-`elements_hdl` cold import is **~10 s** for its **37** classes (the
-"3.5 s for seventeen models" this line used to quote was two library
-batches stale), and ~0.2 s warm with the package already imported.
+`elements_hdl` cold import is **~37 s** for its **51** classes, and
+~0.30 s warm with the package already imported (2026-10-24, roadmap 221:
+the entries' sympy trees read as stored, not evaluated again).
 
 ### Folding a model card (2026-08-26, roadmap 30-31)
 
