@@ -5,8 +5,9 @@ loop's attempts under the stage family where the transform makes them
 transform mode (`tmode`): where (the breakpoints, the run's end), take
 (x_n's charge, the device memo's roll, x_n's C and G frozen; the two
 factors by radau_fold.c with P's rows by numpy's division, the real one's
-LU in the loop's buffer, the complex one's values for the transient's
-ComplexKLUSolver; the seeds by pred.c; the sources at the stage times;
+LU in the loop's buffer -- or its values at the analysis solver's
+StructuralKLU pattern, each real solve that solver's sequence -- the
+complex one's values for the transient's ComplexKLUSolver; the seeds by pred.c; the sources at the stage times;
 radau_tc.c's Newton and its end passes on the loop's own struct; the
 end's record; each stage's screen on C by a core pass where the memo lacks
 it; the sources at the end and the start; the estimate on the frozen real
@@ -20,7 +21,9 @@ then the C stage loop's checks of the run and the family
 (`_tran_stageloop_c`'s, the transform's in place of its 'transform'), and
 the transform's own: its pieces genuine (the frozen factors' chain, the C
 Newton's, the step's), its switches, the analysis solver the dense one
-(`NumpyLU`), the complex solver analysed on the last record's pattern, the
+(`NumpyLU`) or an AutoSolver whose choice is the circuit's StructuralKLU,
+analysed (`_tran_radau_tc._real_klu`; not yet: a later entry's), the
+complex solver analysed on the last record's pattern, the
 transform's matrices made, the early abort's threshold one the C arms as
 `_SteppingLoop.radau_arm` does, the device memo's generations within the
 loop's model (`LOOP_TG_MAX` records each).  A decline is
@@ -38,11 +41,14 @@ attempt's stage outputs (`_rk_Y`, `_q_cache`, `_iq`, `_Cmat`, `_Geq`,
 `_C_cache`); the device memo's two generations (each record made again by
 the core's passes at its state, or the entry's own arrays); `_radau_Pc`
 for the last made attempt's step; the complex solver's refactors; the
-family's; the counts the Python's calls make.
+real factor's StructuralKLU, its numeric and counts as its solves leave
+them; the family's; the counts the Python's calls make.
 
 A STOP before an attempt is made hands it back, nothing of it made (its
 memo roll taken back); none holds a result: the Python's repeat refactors
-the same complex values, deterministic, and the LU is the loop's own.
+the same complex values, deterministic, and the LU is the loop's own --
+on KLU the real factor's numeric the one the attempt found, any it made
+freed.
 
 OWNS: on the `_SteppingLoop`'s C state (`_tran_loop_c.LoopState`) the
 bound run (`_TcRun`).  `_paths`: `tcloop_c:` (the declines, the bails
@@ -81,6 +87,7 @@ _KEEPS = {
     'switch': True,
     'passes': False, 'table_stale': False, 'toolkit': False, 'rings': False,
     'history': False, 'underflow': False, 'complex': False, 'memo': False, 'mats': False,
+    'unchosen': False,
 }
 
 _M = 'pycircuit.circuit.'
@@ -244,11 +251,16 @@ def _eligible(loop, tr, td, rec):
     mem = _memo_ready(td, n)
     if mem is None:
         return 'memo'
+    rk = _real_solver(tr, n)
+    if rk.__class__ is str:
+        return rk
+    ## (the fallback's dense estimate is numpy's solve; where the real factor
+    ## is on KLU the Python's is the analysis solver's: not bound then)
     return SimpleNamespace(drv=drv, O=O, tr=tr, rec=rec, n=n, iref=rec.iref, tab=tab,
                            minbreak=minbreak, st=st, screen=None if screen[0] is None else screen,
                            cfg=cfg, sk=None, fam=loop.family, integ=tr.base_integrator, mem=mem,
                            zs=td['_radau_zsolver'], mats=tr._radau_transform_matrices(),
-                           fb=_fb_ready(tr, td, rec, n))
+                           rk=rk, fb=None if rk is not None else _fb_ready(tr, td, rec, n))
 
 
 def _fb_ready(tr, td, rec, n):
@@ -370,7 +382,8 @@ def _solver_ready(tr, fc):
     """Why the real factor's solve is not numpy's kept LU as
     `_radau_frozen` makes it (`solver`), or '': the analysis solver the dense
     one (an AutoSolver that chose it, or a DenseSolver), each piece as
-    defined, on the numeric toolkit, numpy's LAPACK found."""
+    defined, on the numeric toolkit, numpy's LAPACK found -- an AutoSolver
+    that chose another, '' here (`_real_solver` reads it)."""
     from pycircuit.circuit import _tran_radau, linearsolver
     _ZS, AS, DS, NTK, NUM = _tran_radau._FROZEN['types']
     ls = tr._get_linearsolver()
@@ -379,6 +392,8 @@ def _solver_ready(tr, fc):
         if not (AS.solve is fc[4] and AS._select is fc[5] and 'solve' not in ls.__dict__
                 and '_select' not in ls.__dict__):
             return 'solver'
+        if type(dense) is not DS:
+            return ''
     else:
         dense = ls
     if not (type(dense) is DS and DS.solve is fc[6] and 'solve' not in dense.__dict__
@@ -387,6 +402,25 @@ def _solver_ready(tr, fc):
             and linearsolver._numpy_lapack() is not None):
         return 'solver'
     return ''
+
+
+def _real_solver(tr, n):
+    """The real factor's solver the C's real solves stand in for: None --
+    numpy's kept LU (`_solver_ready`'s) -- or the analysis solver's
+    StructuralKLU (`_tran_radau_tc._real_klu`: each piece as defined, of this
+    size), or why not: `unchosen` (the AutoSolver's choice not made, or its
+    StructuralKLU not analysed: a later entry's), `solver`."""
+    from pycircuit.circuit import _tran_radau, _tran_radau_tc
+    from pycircuit.circuit.linearsolver import StructuralKLU
+    AS, DS = _tran_radau._FROZEN['types'][1:3]
+    ls = tr._get_linearsolver()
+    if type(ls) is not AS or type(ls._choice) is DS:
+        return None
+    sk = ls._choice
+    if sk is None or (type(sk) is StructuralKLU and not sk._symbolic):
+        return 'unchosen'
+    sk = _tran_radau_tc._real_klu(ls, n - 1)
+    return 'solver' if sk.__class__ is str else sk
 
 
 def _memo_ready(td, n):
@@ -427,7 +461,7 @@ def _bound(loop, e):
     fb = e.fb or (None, None, None)
     key = (e.rec, e.tab, zs, zs._symbolic, zs._numeric, zs._csc_last[1],
            None if scr is None else scr[3], None if scr is None else scr[4], e.n,
-           e.st[0].shape[0], fb[0], fb[2])
+           e.st[0].shape[0], fb[0], fb[2], e.rk)
     if not (type(run_) is _TcRun and len(run_.key) == len(key)
             and all(a is b or (type(a) is int and a == b) for a, b in zip(run_.key, key))):
         run_ = _bind(e)
@@ -457,9 +491,48 @@ def _bind(e):
     s.fb_ok = 0
     if e.fb is not None:
         _bind_fb(run, e)
+    s.rk_klu = run.tctx.s.rk_on = 0
+    if e.rk is not None:
+        _bind_rk(run, e)
     run.ccounts = _cir_c_counts(e)
     s.tmode = 1
     return run
+
+
+def _bind_rk(run, e):
+    """The real factor on KLU (radau_tc.h's `rk`, the loop's to hold:
+    `rk_hold`): the analysis solver's pattern, library entries, common and
+    analysis; its values' buffer; the residual's dense work; the pattern's
+    flat indices for `tc_frozen`'s take; the solves' work (its numeric and
+    tolerance each call's, `_load`)."""
+    from pycircuit.circuit import _cbuild
+    sk, tctx = e.rk, run.tctx
+    tffi, ts, s, ffi = tctx.ffi, tctx.s, run.s, run.ffi
+    tb, keep = run.tbuf, run.tkeep
+    tb['rk_take'] = np.ascontiguousarray(sk.take, dtype=np.int64)
+    tb['rk_ax'] = np.empty(max(int(sk.nnz), 1))
+    tb['rkx'] = np.empty(max(e.n - 1, 1))
+    k = ts.rk
+    for name, arr, kind in (('kAp', sk.Ap, 'int *'), ('kAi', sk.Ai, 'int *'),
+                            ('kAx', tb['rk_ax'], 'double *')):
+        keep.append(tffi.from_buffer(kind, arr))
+        setattr(k, name, keep[-1])
+    tb['rk_A'] = np.empty(max((e.n - 1) ** 2, 1))
+    keep.append(tffi.from_buffer('double *', tb['rk_A']))
+    ts.rk_A = keep[-1]
+    lib = sk._lib
+    k.klu_factor, k.klu_refactor, k.klu_solve, k.klu_free = (
+        tffi.cast('void *', _cbuild.address(f))
+        for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))
+    k.klu_common = tffi.cast('void *', sk._ct.addressof(sk._common))
+    k.klu_sym = tffi.cast('void *', sk._symbolic)
+    keep.append(ffi.from_buffer('int64_t *', tb['rk_take']))
+    s.rk_take = keep[-1]
+    keep.append(ffi.from_buffer('double *', tb['rkx']))
+    s.rkx = keep[-1]
+    s.rk_nnz = int(sk.nnz)
+    ts.rk_on = ts.rk_hold = 1
+    s.rk_klu = 1
 
 
 def _bind_fb(run, e):
@@ -661,6 +734,13 @@ def _load_tc(e, run_, xl):
     s.fbx = 0
     if e.fb is not None:
         _load_fb(e, run_)
+    if e.rk is not None:
+        ## (the analysis solver's numeric now: the attempts' sequences start
+        ## from it, `tc_take`)
+        tffi, k = run_.tctx.ffi, run_.tctx.s.rk
+        num = e.rk._numeric
+        k.klu_num = k.klu_out = tffi.cast('void *', num) if num else tffi.NULL
+        k.resid_tol = float(e.rk.REFACTOR_RESIDUAL_TOL)
 
 
 def _load_fb(e, run_):
@@ -754,6 +834,15 @@ def _settle(e, run_):
     `Ap`, `Ai` and mask as `_csc_of_dense` makes them) and its handles, the
     analysis and factor it replaced freed by the C."""
     s, zs = run_.s, e.zs
+    if e.rk is not None:
+        ## (the analysis solver as its own solves leave it: the numeric the
+        ## made attempts' sequences end on, their counts)
+        sk, kr = e.rk, run_.tctx.s.rk
+        sk._numeric = int(run_.tctx.ffi.cast('uintptr_t', kr.klu_out)) or None
+        sk.refactors += int(s.tc_rkref)
+        sk.factors += int(s.tc_rkfac)
+        sk.pivot_fallbacks += int(s.tc_rkpiv)
+        sk.residual_fallbacks += int(s.tc_rkres)
     k = int(s.tc_refactors)
     if k:
         zs.refactors += k
@@ -930,6 +1019,10 @@ def _count(e, run_, k):
     s = run_.s
     _PC['tcloop_c:attempts'] += int(s.tc_frozen)
     _PC['tcloop_c:steps'] += k
+    if s.tc_rkdense:
+        ## (the real factor on KLU: the residual tests its sparse verdict
+        ## left to the dense one)
+        _PC['tcloop_c:klu_dense'] += int(s.tc_rkdense)
     for key, v in (('radau_tc:served', s.tc_served), ('radau_tc:iterations', s.tc_iters),
                    ('radau_tc:probe', s.tc_probes), ('radau_tc:end', s.tc_ends - s.tc_pyends),
                    ('radau_tc:klu', s.tc_klu),

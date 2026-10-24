@@ -13,7 +13,11 @@
 #include <float.h>
 #include <fenv.h>
 #include "pcx_abi.h"
+#include "pcx_minmax.h"
 #include "pcx_fenv.h"
+#include "pcx_klu.h"
+#include "pcx_verdict.h"
+#include "pcx_kluseq.h"
 #include "radau_tc.h"
 
 /* the flags numpy reports here: underflow is not one -- numpy ignores it by
@@ -71,14 +75,15 @@ static void cmul(long fused, double ar, double ai, double br, double bi, double 
    the Python loop's own iterates, so its False -- `iters` maxiter, Y not
    read, the flags cleared.  Else a bail code, also in `status`: Y partly
    updated and not read, the flags cleared.  On every return lu_a, lu_ipiv and lu_info, the KLU numeric,
-   `refactored` and `klu_fresh` hold the factorisations as made so far --
+   `refactored` and `klu_fresh` hold the factorisations as made so far (the
+   real factor on KLU: `pcx_radau_tc`'s rule) --
    what the Python's loop would have left: a refactor of the same values
    repeats its bits and dgetrs on dgesv's factors is dgesv's solve, so the
    Python loop run after a bail makes the C's iterates again.  Outside the
    struct's buffers and the factorisations only the core's and the walk's
    own writes are made (the core's bins; the temperature in the elements'
    parameter rows), as the Python's calls of the same C make them. */
-long pcx_radau_tc(radau_tf_t *s)
+static long tf_newton(radau_tf_t *s)
 {
     long n = s->n, m = n - 1, r = s->iref, it, i, j, k, e;
     core_fn_t core = (core_fn_t) s->core_fn;
@@ -160,20 +165,29 @@ long pcx_radau_tc(radau_tf_t *s)
         if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
         /* a non-finite real right-hand side is the analysis solver's */
         for (k = 0; k < m; k++) if (!isfinite(s->b0[k])) return tf_bail(s, RADAU_TC_BAIL_RHS);
-        /* numpy's kept LU: `dgesv` at its first solve, `dgetrs` after
-           (`NumpyLU.solve`; lu_info as radau_tc.h says) */
-        memcpy(s->x0, s->b0, (size_t) m * sizeof(double));
-        if (s->lu_info < 0) {
-            ((dgesv64_t) s->dgesv)(&m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0, &m64, &info64);
-            s->lu_info = info64;
-        } else if (s->lu_info == 0) {
-            ((dgetrs64_t) s->dgetrs)("N", &m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0, &m64,
-                                   &info64, (size_t) 1);
+        if (s->rk_on) {
+            /* the analysis solver's StructuralKLU.solve (radau_tc.h) */
+            if (pcx_klu_step(&s->rk, s->rk_A, s->b0, s->x0, s->rk_y, s->rk_t, m, s->rk_dgemv, 0,
+                             &s->rk_dense))
+                return tf_bail(s, RADAU_TC_BAIL_KLUREAL);
+            feclearexcept(FE_ALL_EXCEPT);
+        } else {
+            /* numpy's kept LU: `dgesv` at its first solve, `dgetrs` after
+               (`NumpyLU.solve`; lu_info as radau_tc.h says) */
+            memcpy(s->x0, s->b0, (size_t) m * sizeof(double));
+            if (s->lu_info < 0) {
+                ((dgesv64_t) s->dgesv)(&m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0, &m64,
+                                       &info64);
+                s->lu_info = info64;
+            } else if (s->lu_info == 0) {
+                ((dgetrs64_t) s->dgetrs)("N", &m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0,
+                                       &m64, &info64, (size_t) 1);
+            }
+            /* (LAPACK's flags are not numpy's: cleared; a nonzero info is
+               numpy's LinAlgError) */
+            feclearexcept(FE_ALL_EXCEPT);
+            if (s->lu_info != 0) return tf_bail(s, RADAU_TC_BAIL_LU);
         }
-        /* (LAPACK's flags are not numpy's: cleared; a nonzero info is
-           numpy's LinAlgError) */
-        feclearexcept(FE_ALL_EXCEPT);
-        if (s->lu_info != 0) return tf_bail(s, RADAU_TC_BAIL_LU);
         for (k = 0; k < m; k++) if (!isfinite(s->x0[k])) return tf_bail(s, RADAU_TC_BAIL_STEP);
         /* the complex factor: its refactor at most once a record, then the solve */
         if (!s->klu_fresh) {
@@ -347,4 +361,23 @@ long pcx_radau_tc(radau_tf_t *s)
     /* (not a hand-back: the outcome the Python loop reaches) */
     feclearexcept(FE_ALL_EXCEPT);
     return s->status = RADAU_TC_MAXITER;
+}
+
+/* the entry (contract: radau_tc.h): the Newton loop (`tf_newton`).  The
+   real factor on KLU (`rk_on`; not `rk_hold`: the caller's then) starts
+   from its numeric at entry, the counts this call's; on return the numeric
+   as `pcx_klu_finish` leaves it
+   -- a bail hands the loop back, so the entry's (any other freed: the
+   Python loop makes the same sequence again from it); converged or at
+   maxiter, the sequence's (the entry's freed where another replaced it) */
+long pcx_radau_tc(radau_tf_t *s)
+{
+    long status, own = s->rk_on && !s->rk_hold;
+    if (own) {
+        s->rk.klu_out = s->rk.klu_num;
+        s->rk.refactors = s->rk.factors = s->rk.pivot_fallbacks = s->rk.residual_fallbacks = 0;
+    }
+    status = tf_newton(s);
+    if (own) pcx_klu_finish(&s->rk, status != RADAU_TC_CONVERGED && status != RADAU_TC_MAXITER);
+    return status;
 }

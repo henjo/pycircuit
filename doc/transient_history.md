@@ -5662,3 +5662,33 @@ analyses).  The C borrowers of a `StructuralKLU` hold the solver and read
 its numeric before each call; the C's own sequences already freed what
 they replace.  2 000 pattern changes of a 400-unknown plain solver: +115 ->
 +9 MB peak.
+
+## The transform's real factor on the circuit's StructuralKLU in C (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 215).  Above 250 unknowns the
+analysis solver's choice is the circuit's `StructuralKLU`: `_radau_frozen`
+keeps no dense LU and `_FrozenTransform.real_solve` calls `AutoSolver.solve`.
+The transform's C Newton declined there (`radau_tc:frozen`) and 208's loop
+too (`solver`): gm19, rich3, arom and opampal ran every iteration in
+Python, 69 of the 147 s the gold decks spend under Radau.  Both now solve
+the real factor as `StructuralKLU.solve` does -- pcx_kluseq.h, the sequence
+the DC Newton and PCNR already run in C: the refactor on the numeric it
+holds, a fresh factor at a zero pivot or a failed residual, the residual's
+verdict sparse then dense -- on the factor's values at the pattern, taken
+with `_ours`'s count (a nonzero off it stays the Python's).  The loop runs
+each attempt's sequence from the numeric it finds: kept when the attempt is
+made, taken back when it stops (the numerics it made freed); the solver's
+numeric and counts written back as its own solves leave them.  The 210
+fallback is not bound there (its dense estimate is numpy's solve, the
+Python's the analysis solver's).  gm19, rich3, arom and opampal 2.06x
+together (65.3 -> 31.7 s).  Measured alone (the loop off), the C Newton
+is about even with the Python loop (opampal 8.42 against 8.36 s): a
+step's Python work was elsewhere, and the loop's steps carry the gain.
+Tests: `test_radau_tc.py`, `test_tcloop_c.py` -- a 40-stage MOSFET chain on
+an AutoSolver of its own whose choice is the StructuralKLU, its library a
+wrapper the Python and the C both call (numerics counted, zero pivots
+forced on chosen values): fixed, adaptive, rejected and abandoned attempts,
+every residual failing, some failing, zero pivots, a nonzero off the
+pattern, a failed solve in C, seven rows an entry -- the Python's to the
+byte with one numeric left, the solver's; alive: the values or the
+solutions a ulp up.

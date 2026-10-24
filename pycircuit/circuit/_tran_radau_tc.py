@@ -11,8 +11,9 @@ walk's fields, which `_tran_newton_c._walk_ready` sets) and `tr._tc_end`
 (the step's end passes, handed to `_RadauStages._stage_end_passes`, which
 pops it).  On a call it writes what the Python loop leaves: the step's
 source memo (`tr._u_memo`) and its count `umemo:hit`, and the frozen
-factors' state -- the kept LU's `NumpyLU._info`, the complex solver's
-`ComplexKLUSolver.refactors` and `_fresh`.  The module keeps `fold`'s
+factors' state -- the kept LU's `NumpyLU._info` (or, the real factor on
+the analysis solver's StructuralKLU, its `_numeric` and counts), the
+complex solver's `ComplexKLUSolver.refactors` and `_fresh`.  The module keeps `fold`'s
 driver, buffers and last pattern (`_FOLD`).  `_paths`: `radau_tc:` --
 `radau_tc:<why>` a decline, `radau_tc:bail:<why>` a hand-back (`BAIL`),
 `radau_tc:served` (the loop's outcome made), `radau_tc:noconv` (of them,
@@ -43,7 +44,13 @@ evaluate core's own C (formula 4, as `passes`), ``K_j = -(i_j + u_j)``,
 vector, as numpy multiplies it: the vector cast to complex, numpy's
 complex product; numpy's kept LU (`linearsolver.NumpyLU`'s protocol: its
 OpenBLAS's `dgesv` at the first solve, `dgetrs` on the kept factors
-after); the complex factor's KLU on the solver's own handles (the refactor
+after) -- or, where `_radau_frozen` keeps none (the analysis solver an
+AutoSolver whose choice is the circuit's StructuralKLU, `_real_klu`),
+`StructuralKLU.solve`'s sequence (pcx_kluseq.h: the refactor on the
+numeric it holds, a fresh factor at a zero pivot or a failed residual --
+the sparse verdict, numpy's dgemv where it does not decide) on the
+factor's values at the pattern, taken once a call with `_ours`'s count (a
+nonzero off the pattern declines: `klu_foreign`); the complex factor's KLU on the solver's own handles (the refactor
 `solve_prepared` would make, at most once a record, then `klu_z_solve`);
 ``dY_i = V_i0 w0 + 2 Re(V_i1 w1)``; per stage ``Y_prev + insert(dY_i,
 iref, 0.0)``, the limiter walk's own driver and the limited step's largest
@@ -75,9 +82,11 @@ past it, hands the iteration back and the Python decides, as it does.
 
 TRANSACTIONAL.  The C writes nothing outside its buffers but the two
 factorisations' state, which the Python would have left the same: numpy's
-kept LU after its first `dgesv` (`NumpyLU._info`), and the KLU numeric
-holding a refactor of the step's record (`ComplexKLUSolver._fresh`,
-`refactors`).  A refactor of the same values with the same pivots repeats
+kept LU after its first `dgesv` (`NumpyLU._info`) -- or the real factor's
+StructuralKLU, its sequence's numeric and counts where the outcome is
+served, the one it found where handed back (any other freed:
+`pcx_klu_finish`) -- and the KLU numeric holding a refactor of the step's
+record (`ComplexKLUSolver._fresh`, `refactors`).  A refactor of the same values with the same pivots repeats
 its bits and `dgetrs` on `dgesv`'s factors is `dgesv`'s solve, so a Python
 loop run after a hand-back makes the C's iterates again.  The step's
 source memo holds the three stage times (their calls made here, before
@@ -162,7 +171,7 @@ FOLD = os.environ.get('PYCIRCUIT_RADAU_FOLD', '1') != '0'
 STATUS = 'not loaded'
 
 RADAU_TC = _cbuild.csrc('radau_tc.c')
-RADAU_TC_CDEF = _cbuild.csrc('radau_tc.h')
+RADAU_TC_CDEF = _cbuild.csrc('pcx_klu.h') + _cbuild.csrc('radau_tc.h')
 
 FOLD_C = _cbuild.csrc('radau_fold.c')
 FOLD_CDEF = _cbuild.csrc('radau_fold.h')
@@ -436,6 +445,7 @@ class _Ctx:
         'lu_addr',
         'n',
         'p_of',
+        'rk_keep',
         's',
         'served',
         'walk',
@@ -468,6 +478,7 @@ class _Ctx:
             'e_q': np.empty(n), 'e_i': np.empty(n), 'e_C': np.empty(n * n),
             'e_G': np.empty(n * n), 'e_C01': np.empty(2 * n * n), 'e_G01': np.empty(2 * n * n),
             'e_q01': np.empty(n),
+            'rk_y': np.empty(max(m, 1)), 'rk_t': np.empty(max(2 * m, 2)),
         }
         self.keep = []
         fb = ffi.from_buffer
@@ -487,6 +498,9 @@ class _Ctx:
         self.keep.append(g)
         s.binG = ffi.cast('double *', g.ctypes.data)
         s.n, s.iref = n, iref
+        s.rk_on = 0
+        s.rk_dgemv = ffi.cast('void *', _MOD['RC'].driver()[3])
+        self.rk_keep = None
         s.walk_fn = ffi.NULL
         s.wn = 0
         ## (what does not change from step to step is set once: the product
@@ -518,7 +532,7 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     iterate it reached read by `iterate`."""
     if not ENABLED:
         return _no('radau_tc:off')
-    if fz is None or fz.lu is None or fz.prep is None:
+    if fz is None or fz.prep is None:
         return _no('radau_tc:frozen')
     if provided_function is not None:
         return _no('radau_tc:pf')
@@ -593,10 +607,18 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     ## the two factorisations as `_FrozenTransform.solve` would use them
     lu, zs, prep = fz.lu, fz.zs, fz.prep
     _ZS, _LU = _MOD['mods'][3], _MOD['mods'][2]
-    if (type(lu) is not _LU or type(zs) is not _ZS or lu.n != m or prep[1] != m
-            or 'solve' in zs.__dict__ or 'solve_prepared' in zs.__dict__):
+    sk = None
+    if lu is None:
+        ## (no dense LU kept: the analysis solver's StructuralKLU, `_real_klu`)
+        sk = _real_klu(fz.ls, m)
+        if sk.__class__ is str:
+            return _no('radau_tc:frozen')
+    elif type(lu) is not _LU or lu.n != m:
         return _no('radau_tc:frozen')
-    if lu._info is not None and lu._info != 0:
+    if (type(zs) is not _ZS or prep[1] != m or 'solve' in zs.__dict__
+            or 'solve_prepared' in zs.__dict__):
+        return _no('radau_tc:frozen')
+    if lu is not None and lu._info is not None and lu._info != 0:
         ## (singular: the Python raises numpy's error at its first solve)
         return _no('radau_tc:lu')
     if not (zs._symbolic and zs._numeric and prep[5] == zs._pattern):
@@ -672,13 +694,20 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
             s.v[3 * i + 2] = float(b.imag)
         rec.p_of = fz.p
     ## (the kept LU by its addresses -- a refilled one keeps them; the
-    ## pattern's arrays by their identity -- a kept pattern keeps them)
-    addr = lu.addr
-    if addr != rec.lu_addr:
-        s.lu_a = ffi.cast('double *', addr[0])
-        s.lu_ipiv = ffi.cast('int64_t *', addr[1])
-        rec.lu_addr = addr
-    s.lu_info = -1 if lu._info is None else 0
+    ## pattern's arrays by their identity -- a kept pattern keeps them; or
+    ## the real factor on KLU, `_rk_bind`)
+    if sk is not None:
+        if not _rk_bind(rec, sk, fz):
+            NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
+            return _no('radau_tc:klu_foreign')
+    else:
+        s.rk_on = 0
+        addr = lu.addr
+        if addr != rec.lu_addr:
+            s.lu_a = ffi.cast('double *', addr[0])
+            s.lu_ipiv = ffi.cast('int64_t *', addr[1])
+            rec.lu_addr = addr
+        s.lu_info = -1 if lu._info is None else 0
     Ap, Ai = prep[2], prep[3]
     if Ap is not rec.Ap_obj or Ai is not rec.keep_ap[1]:
         rec.keep_ap = (Ap, Ai, ffi.from_buffer('int *', Ap), ffi.from_buffer('int *', Ai))
@@ -711,6 +740,91 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
                     lambda: NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals))))
 
 
+def _real_klu(ls, m):
+    """The real factor's solver where `_radau_frozen` keeps no dense LU: the
+    analysis solver `ls` an AutoSolver whose choice is the circuit's
+    `StructuralKLU` -- each piece `_FrozenTransform.real_solve` calls as
+    defined and unshadowed, the solver analysed and of this size -- or why
+    not (`klu_real`)."""
+    g = _MOD.get('klu_real')
+    if g is None:
+        from pycircuit.circuit import _tran_radau
+        from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
+        L = 'pycircuit.circuit.linearsolver'
+        own = ((_tran_radau._FrozenTransform.real_solve, '_FrozenTransform.real_solve',
+                'pycircuit.circuit._tran_radau'),
+               (AutoSolver.solve, 'AutoSolver.solve', L),
+               (AutoSolver._select, 'AutoSolver._select', L),
+               (StructuralKLU.solve, 'StructuralKLU.solve', L),
+               (StructuralKLU._ours, 'StructuralKLU._ours', L),
+               (StructuralKLU._factor, 'StructuralKLU._factor', L),
+               (StructuralKLU._analysed, 'StructuralKLU._analysed', L),
+               (StructuralKLU._free, 'StructuralKLU._free', L))
+        if not all(_paths.genuine(*o) for o in own):
+            return 'klu_real'
+        g = _MOD['klu_real'] = (_tran_radau, AutoSolver, StructuralKLU,
+                                tuple(o for o, _q, _m in own))
+    tr_, AS, SK, pieces = g
+    if (tr_._FrozenTransform.real_solve, AS.solve, AS._select, SK.solve, SK._ours, SK._factor,
+            SK._analysed, SK._free) != pieces:
+        return 'klu_real'
+    if type(ls) is not AS or 'solve' in ls.__dict__ or '_select' in ls.__dict__:
+        return 'klu_real'
+    sk = ls._choice
+    if (type(sk) is not SK or sk.m != m or not sk._symbolic
+            or any(k in sk.__dict__ for k in ('solve', '_ours', '_factor', '_analysed', '_free',
+                                              '_other'))):
+        return 'klu_real'
+    return sk
+
+
+def _rk_bind(rec, sk, fz):
+    """The real factor on KLU bound for this call (radau_tc.h's `rk`): the
+    factor's values at the solver's pattern (`_ours`'s take, once: it is
+    frozen) -- False where a nonzero lies off it (`_ours` hands that to the
+    fallback solver) -- the residual's dense work, the solver's pattern,
+    analysis, common, library entries, and its numeric and tolerance now."""
+    rf = fz.rf
+    if not (type(rf) is np.ndarray and rf.dtype == np.float64 and rf.flags.c_contiguous):
+        return False
+    ax = rf.ravel().take(sk.take)
+    if np.count_nonzero(rf) != np.count_nonzero(ax):
+        return False
+    ffi, s, m = rec.ffi, rec.s, rec.n - 1
+    k = s.rk
+    keep = rec.rk_keep
+    if keep is None or keep[0] is not sk:
+        lib = sk._lib
+        work = np.empty(max(m * m, 1))
+        keep = rec.rk_keep = [sk, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai),
+                              None, work, ffi.from_buffer('double *', work)]
+        k.kAp, k.kAi = keep[1], keep[2]
+        s.rk_A = keep[5]
+        k.klu_factor, k.klu_refactor, k.klu_solve, k.klu_free = (
+            ffi.cast('void *', _cbuild.address(f))
+            for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))
+        k.klu_common = ffi.cast('void *', sk._ct.addressof(sk._common))
+    keep[3] = ax
+    k.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+    k.kAx = ffi.from_buffer('double *', ax)
+    k.klu_sym = ffi.cast('void *', sk._symbolic)
+    num = sk._numeric
+    k.klu_num = ffi.cast('void *', num) if num else ffi.NULL
+    s.rk_on = 1
+    return True
+
+
+def _rk_back(rec, sk):
+    """The analysis solver as the C's real solves leave it, as its own
+    `solve` would: the numeric the sequence ends on, the counts."""
+    k = rec.s.rk
+    sk._numeric = int(rec.ffi.cast('uintptr_t', k.klu_out)) or None
+    sk.refactors += int(k.refactors)
+    sk.factors += int(k.factors)
+    sk.pivot_fallbacks += int(k.pivot_fallbacks)
+    sk.residual_fallbacks += int(k.residual_fallbacks)
+
+
 def _outcome(tr, rec, fz, status, probe, first, undo):
     """What a call of the C (`solve`, `resume`) made of the loop, as `solve`
     returns it: the factorisations' state written back, the counts, the
@@ -721,9 +835,14 @@ def _outcome(tr, rec, fz, status, probe, first, undo):
     s, buf, n = rec.s, rec.buf, rec.n
     lu, zs, prep = fz.lu, fz.zs, fz.prep
     ## the factorisations' state, as the Python would have left it: the
-    ## kept LU after its first `dgesv`, the numeric holding the record's
-    ## refactor (a failed refactor is the Python's to make and count again)
-    if s.lu_info >= 0:
+    ## kept LU after its first `dgesv` -- or the real factor on KLU, its
+    ## sequence's numeric and counts where it stands (a bail took it back) --
+    ## the numeric holding the record's refactor (a failed refactor is the
+    ## Python's to make and count again)
+    if s.rk_on:
+        if status in (_CODES['RADAU_TC_CONVERGED'], _CODES['RADAU_TC_MAXITER']):
+            _rk_back(rec, fz.ls._choice)
+    elif s.lu_info >= 0:
         lu._info = int(s.lu_info)
     if s.refactored:
         zs.refactors += int(s.refactored)
@@ -801,7 +920,11 @@ def resume(tr, fz, maxit):
     rec = tr.__dict__['_radau_tc']
     s, buf = rec.s, rec.buf
     np.copyto(buf['seed'], buf['Y'])
-    s.lu_info = -1 if fz.lu._info is None else 0
+    if s.rk_on:
+        num = fz.ls._choice._numeric
+        s.rk.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
+    else:
+        s.lu_info = -1 if fz.lu._info is None else 0
     s.klu_fresh = 1 if fz.zs._fresh is fz.prep else 0
     s.maxiter = int(maxit)
     return _outcome(tr, rec, fz, _driver[1](s), False, 0, None)

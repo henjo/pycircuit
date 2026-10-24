@@ -11799,3 +11799,71 @@ the sampled noise).  Source introspection is unchanged (`inspect` follows `__wra
 
 **Gate** (the main tree): the suite, 5 974 passed (6 skipped, 3 xfailed).  No C, and no transient, DC or solver path
 changed (the gold decks run neither AC nor PAC): the gold decks and the sanitizer not run.
+
+## 2026-10-24 — 215. The transform's real factor on the circuit's StructuralKLU in C -- the transform Newton and the C stepping loop solve it as `StructuralKLU.solve` does: gm19, rich3, arom and opampal 2.06x together (65.3 -> 31.7 s), every byte the same
+
+**Why**  Andreas: "Follow your recommendation" (the speed survey's first item).  Four gold decks never reached the C:
+above 250 unknowns the analysis solver's choice is the circuit's `StructuralKLU`, `_radau_frozen` keeps no dense LU,
+and `_FrozenTransform.real_solve` calls `AutoSolver.solve` -- `_tran_radau_tc.solve` declined (`radau_tc:frozen`),
+208's loop declined (`solver`), and the Python transform loop made every iteration.  gm19 25.7 s, rich3 18.0, arom
+16.6, opampal 8.9: 69 of the 147 s the 27 gold decks spend under Radau; gm19's profile about three quarters glue
+(numpy 38 %, Python 29 %, libc's copies 10 %), KLU 4 %.  LINE: the four together at least 1.8x against 214 in the gold
+A/B, no deck slower, every byte the same.
+
+**Built.**  radau_tc.c: a real-factor mode on KLU (`rk_on`; radau_tc.h's `pcx_klu_t rk`): each real solve
+`pcx_klu_step` (pcx_kluseq.h, `StructuralKLU.solve`'s sequence as dcnewton.c and pcnrdc.c run it: the refactor on the
+numeric it holds, a fresh factor at a zero pivot or a failed residual, the residual's verdict sparse then numpy's dgemv
+on the factor scattered into a work buffer); the entry starts the sequence from the numeric it is handed and finishes
+it (`pcx_klu_finish`: served, the sequence's -- the one it started from freed where replaced; handed back, the one it
+found, any other freed); `rk_hold` leaves both to the caller.  `_tran_radau_tc`: `_real_klu` (the AutoSolver's choice
+a genuine StructuralKLU of this size, analysed; `real_solve` and every piece it calls as defined, no instance
+override), `_rk_bind` (the factor's values at the pattern taken once a call with `_ours`'s count -- a nonzero off it
+declines, `radau_tc:klu_foreign` -- the numeric and the tolerance each call's), `_rk_back` (the numeric and the counts
+as `StructuralKLU.solve` leaves them).  loop.c's transform mode: `tc_frozen` takes the fold's real factor's values at
+the pattern once a step (`tc_rkgather`, `_ours`'s count: off it the attempt stops, `fold`); `tc_rsolve`, the early
+check's and the estimate's real solves -- dgetrs on the kept LU, or `pcx_klu_step`; each attempt's sequence starts
+from the numeric it finds (`tc_take`), stands where the attempt is made or abandoned at the early abort (`tc_kept`),
+and is taken back where it stops (`tc_undo`: the numerics it made freed); the residual's dense tests counted
+(`tcloop_c:klu_dense`).  The glue: `_real_solver` (a solver not yet chosen or analysed a later entry's: `unchosen`),
+`_bind_rk`, the numeric and tolerance loaded each call (`_load_tc`), the numeric and counts written back (`_settle`);
+the fallback (210) not bound where the real factor is KLU -- its dense estimate is numpy's solve, the Python's the
+analysis solver's -- so a transform that does not converge stops the C there, as before 210.
+
+**Measured** (the 27 gold decks under Radau, HEAD 980b3d82 from its worktree and this tree, separate processes,
+interleaved per deck): opampal 8.25 -> 4.01 s (2.05x), rich3 16.97 -> 8.30 (2.05x), arom 15.74 -> 7.12 (2.21x), gm19
+24.35 -> 12.27 (1.99x) -- the four 65.3 -> 31.7 s, 2.06x (the line 1.8x); the 27 decks 142.2 -> 109.2 s.  The rest
+unchanged: gm17 and schmitecl read 0.73x and 0.84x on one run, 0.99x and 1.09x on five interleaved runs each (gm3
+1.02x and mike2 0.97x beside them).  The C transform loop now steps 22 of the 27 decks; on the four it makes rich3's
+4 151 attempts (3 147 steps), arom's 3 681, gm19's 3 144, opampal's 997, and stops at a transform that does not
+converge (gm19 32, arom 15, rich3 14, opampal 3: the fallback stays the Python's) and once at the memo (rich3).  At the
+default tolerance the residual's sparse verdict decided every refactor: no dense test on any of the four.  Measured
+alone (the loop off), the transform Newton's C is about even with the Python loop (opampal 8.42 against 8.36 s, three
+runs each; 0.90x before the sparse verdict, when every refactor's residual was numpy's dgemv): a step's Python work
+was elsewhere, and the loop's steps carry the gain.
+
+**Tests.**  test_radau_tc (+7, 28): the KLU chain -- the pulsed MOSFET chain at 40 stages (45 unknowns) on an
+AutoSolver of its own whose choice is the StructuralKLU, chosen before the run, its library a wrapper the Python and the
+C both call (`_KLULib`: its numerics counted, its refactor failing on chosen values as KLU reports a zero pivot) --
+fixed, adaptive, every residual failing, some failing, zero pivots: the C Newton (the loop off) the Python loop's to
+the byte, the solver's counts, one numeric left and the solver's; a nonzero off the pattern (the structure without the
+first MOSFET's gm) declined; alive: every value at the pattern a ulp up (one value's ulp is not seen: the simplified
+Newton's answer is its residual's, the factor only steers it).  test_tcloop_c (+12, 41): the loop on the KLU chain --
+fixed, adaptive, a tight tolerance (attempts rejected at a point and abandoned at the early abort), every residual
+failing, some failing (the dense test reached), zero pivots -- the Python's to the byte with the solver's state; seven
+rows an entry (the numeric handed from entry to entry); a nonzero off the pattern stopping the C; the C's KLU solve
+said failed at every 13th call with every refactor's residual failing (the numerics an attempt made freed, the one it
+found the solver's again); the fallback the Python's; alive: the C's KLU solutions a ulp up.  Two mutations of
+loop.c's bookkeeping caught: the take-back at a stop removed (1 test fails), the free of a replaced numeric (6).
+test_pinned_pairs: 'the transform Newton and its C' and 'the transform loop and its C' gain `real_solve`,
+`AutoSolver.solve`, `StructuralKLU.solve`, `_ours` and the KLU glue; they, the end passes, the stage loop, the stepping
+loop and the multistep walk re-recorded, the twins' tests run first (the last four moved by the shared C text alone).
+doc/transient_runtime.md: the transform's rows; doc/transient_history.md: its entry.
+
+**Gate** (the main tree): the suite, 5 992 passed and one failed -- test_c_abi's registry of the units that embed
+pcx_klu.h, radau_tc now one of them (added; the file 116 passed) -- then the suite again on the final tree, 5 993 passed (6 skipped, 3 xfailed);
+the 27 gold decks, gear2 transient and standalone DC, against HEAD's (wt_head, run from inside it), and under Radau,
+interleaved per deck: every digest, step, rejection, Newton count and path count identical but the loops' own and, on
+the four KLU decks, the counts of the C path that now serves them (`radau_tc:` serves, iterations, probes, end passes,
+residual hand-backs; `core.p:served`, `walk:served`, `radau.fuse:handed`; `radau_tc:frozen` once where HEAD declined
+every step).  The sanitizer's fast tier, 5 769 passed, and its deep tier on the loop, Radau, DC and solver tests, 654,
+clean -- the KLU tests' library wrapper and its callbacks under the address sanitizer.

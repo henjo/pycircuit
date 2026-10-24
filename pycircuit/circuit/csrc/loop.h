@@ -278,6 +278,20 @@ typedef struct {
     double *fbY;
     long have_fbY;
     long tc_noconv, tc_fb, tc_fbcert;
+    /* THE REAL FACTOR ON KLU (`rk_klu` 1: the analysis solver's
+       StructuralKLU, radau_tc.h's `rk`, held by the loop -- `rk_hold`): its
+       pattern's flat indices into the reduced m x m factor (`rk_take`,
+       `rk_nnz`), where `tc_frozen` takes the fold's real factor's values
+       once a step (a nonzero off them is the Python's: `_ours` hands it to
+       the fallback solver); `rkx` (m) the solves' work.  An attempt starts
+       the numeric's sequence from the one it finds; made, its sequence
+       stands (`pcx_klu_finish`: the one it started from freed where another
+       replaced it); not made, taken back.  The counts its made attempts'
+       solves made (`tc_rkdense`: the residual's dense tests) */
+    long rk_klu, rk_nnz;
+    const int64_t *rk_take;
+    double *rkx;
+    long tc_rkref, tc_rkfac, tc_rkpiv, tc_rkres, tc_rkdense;
 } loop_t;
 long pcx_loop(loop_t *s);
 

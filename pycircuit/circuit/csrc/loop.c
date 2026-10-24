@@ -17,6 +17,8 @@
 #include "ctrl.h"
 #include "lmmsens.h"
 #include "pcx_klu.h"
+#include "pcx_verdict.h"
+#include "pcx_kluseq.h"
 #include "radau.h"
 #include "radau_tc.h"
 #include "radau_fold.h"
@@ -947,6 +949,9 @@ static void tc_undo(loop_t *s, const loop_attempt_t *a)
     s->tg_prev = a->tg_prev0;
     s->have_f0 = a->had_f0;
     s->f0_point = a->f0_point0;
+    /* (the real factor on KLU: the numeric the attempt found, any other
+       freed -- the Python's repeat makes the sequence again from it) */
+    if (s->rk_klu) pcx_klu_finish(&((radau_tf_t *) s->tc)->rk, 1);
     if (a->repat) {
         /* (the new pattern's analysis and factor freed, the old put back:
            the Python's repeat makes its own) */
@@ -1101,6 +1106,45 @@ static long tc_repattern(loop_t *s, loop_attempt_t *a)
     return 0;
 }
 
+/* the real factor's values at the analysis solver's pattern (`_ours`'s
+   take, once a step: the factor is frozen) into the KLU's `kAx`; 1 where a
+   nonzero lies off the pattern (`_ours`'s count: the Python's fallback
+   solver then) */
+static int tc_rkgather(loop_t *s)
+{
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    const double *rf = ((radau_fold_t *) s->fold)->rf;
+    long m = s->n - 1, k, nz = 0, nk = 0;
+    for (k = 0; k < m * m; k++) nz += rf[k] != 0.0;
+    for (k = 0; k < s->rk_nnz; k++) {
+        tf->rk.kAx[k] = rf[s->rk_take[k]];
+        nk += tf->rk.kAx[k] != 0.0;
+    }
+    return nz != nk;
+}
+
+/* `_FrozenTransform.real_solve` of `eb` in place: dgetrs on the kept LU,
+   or the analysis solver's StructuralKLU (`pcx_klu_step`, its sequence on
+   the numeric the attempt holds).  0, or LOOP_BAIL_ESTIMATE where the
+   Python raises (a singular factor, the solve failing, a flag numpy
+   reports in the residual) */
+static long tc_rsolve(loop_t *s)
+{
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    int64_t m = s->n - 1, one = 1, info = 0;
+    if (s->rk_klu) {
+        long st = pcx_klu_step(&tf->rk, tf->rk_A, s->eb, s->rkx, tf->rk_y, tf->rk_t, m,
+                               tf->rk_dgemv, 0, &tf->rk_dense);
+        feclearexcept(FE_ALL_EXCEPT);
+        if (st) return LOOP_BAIL_ESTIMATE;
+        COPY(s->eb, s->rkx, m);
+        return 0;
+    }
+    ((dgetrs64_t) tf->dgetrs)("N", &m, &one, s->lua, &m, s->lupiv, s->eb, &m, &info, (size_t) 1);
+    feclearexcept(FE_ALL_EXCEPT);
+    return info != 0 ? LOOP_BAIL_ESTIMATE : 0;
+}
+
 /* `_radau_frozen`'s factors for the step (radau_fold.c, numpy's bytes) of
    x_n's C and G reduced: the real one into the loop's LU buffer
    column-major (`NumpyLU.make`; the Newton's first solve factors it), the
@@ -1122,6 +1166,7 @@ static long tc_frozen(loop_t *s, loop_attempt_t *a)
         long st = tc_repattern(s, a);
         if (st) return st;
     }
+    if (s->rk_klu) return tc_rkgather(s) ? LOOP_BAIL_FOLD : 0;
     for (j = 0; j < m; j++)
         for (i = 0; i < m; i++) s->lua[j * m + i] = fo->rf[i * m + j];
     return 0;
@@ -1156,7 +1201,6 @@ static long tc_check(loop_t *s, loop_attempt_t *a)
     radau_tf_t *tf = (radau_tf_t *) s->tc;
     lte_t *le = (lte_t *) s->lte;
     long n = s->n, r = s->iref, i, ri, st;
-    int64_t m = n - 1, one = 1, info = 0;
     double h = a->h, *F = s->eF, *rhs = le->lte;
     const double *x = s->xlast, *Y = tf->Y, *Cn;
     int flags = s->under_ok ? (PCX_FP_FLAGS & ~FE_UNDERFLOW) : PCX_FP_FLAGS;
@@ -1178,9 +1222,7 @@ static long tc_check(loop_t *s, loop_attempt_t *a)
     for (i = 0; i < n; i++) rhs[i] = rhs[i] + s->tcf0[i];
     if (fetestexcept(flags)) return LOOP_BAIL_ESTIMATE;
     for (i = 0, ri = 0; i < n; i++) if (i != r) s->eb[ri++] = rhs[i];
-    ((dgetrs64_t) tf->dgetrs)("N", &m, &one, s->lua, &m, s->lupiv, s->eb, &m, &info, (size_t) 1);
-    feclearexcept(FE_ALL_EXCEPT);
-    if (info != 0) return LOOP_BAIL_ESTIMATE;
+    if ((st = tc_rsolve(s)) != 0) return st;
     pcx_put_ref(s->eb, rhs, n, r);
     le->xc = Y + 2 * n;
     le->xl = x;
@@ -1383,10 +1425,8 @@ static long tc_screen(loop_t *s, loop_attempt_t *a)
 static long tc_estimate(loop_t *s, loop_attempt_t *a)
 {
     lte_t *le = (lte_t *) s->lte;
-    radau_tf_t *tf = (radau_tf_t *) s->tc;
     const long need = LOOP_TG_C | LOOP_TG_G | LOOP_TG_I;
-    long n = s->n, r = s->iref, i, ri;
-    int64_t m = n - 1, one = 1, info = 0;
+    long n = s->n, r = s->iref, i, ri, st;
     double h = a->h, *F = s->eF, *rhs = le->lte;
     const double *x = s->xlast, *u0 = s->ust + 4 * n, *Y = a->Ys, *Cn, *in;
     int flags = s->under_ok ? (PCX_FP_FLAGS & ~FE_UNDERFLOW) : PCX_FP_FLAGS;
@@ -1405,9 +1445,7 @@ static long tc_estimate(loop_t *s, loop_attempt_t *a)
     for (i = 0; i < n; i++) rhs[i] = rhs[i] + (-(in[i] + u0[i]));
     if (fetestexcept(flags)) return LOOP_BAIL_ESTIMATE;
     for (i = 0, ri = 0; i < n; i++) if (i != r) s->eb[ri++] = rhs[i];
-    ((dgetrs64_t) tf->dgetrs)("N", &m, &one, s->lua, &m, s->lupiv, s->eb, &m, &info, (size_t) 1);
-    feclearexcept(FE_ALL_EXCEPT);
-    if (info != 0) return LOOP_BAIL_ESTIMATE;
+    if ((st = tc_rsolve(s)) != 0) return st;
     pcx_put_ref(s->eb, rhs, n, r);
     return 0;
 }
@@ -1542,6 +1580,13 @@ static long tc_take(loop_t *s, loop_attempt_t *a)
     if (!pcx_stage_order(a->ts, a->tn, s->hk, s->ht, a->nodes, a->ord)) return LOOP_BAIL_NODES;
     a->had_f0 = s->have_f0;
     a->f0_point0 = s->f0_point;
+    if (s->rk_klu) {
+        /* (the real factor's sequence from the numeric the attempt finds) */
+        radau_tf_t *tf = (radau_tf_t *) s->tc;
+        tf->rk.klu_num = tf->rk.klu_out;
+        tf->rk.refactors = tf->rk.factors = tf->rk.pivot_fallbacks = 0;
+        tf->rk.residual_fallbacks = tf->rk_dense = 0;
+    }
     tc_start(s, a);
     st = tc_body(s, a);
     /* (abandoned at the early abort, its roll and puts stand: the Python's
@@ -1565,6 +1610,14 @@ static void tc_count(loop_t *s, const loop_attempt_t *a)
     /* (a non-convergence is the C Newton's serve too, `_outcome`'s) */
     s->tc_served += a->served + a->noconv;
     s->tc_noconv += a->noconv;
+    if (s->rk_klu) {
+        radau_tf_t *tf = (radau_tf_t *) s->tc;
+        s->tc_rkref += tf->rk.refactors;
+        s->tc_rkfac += tf->rk.factors;
+        s->tc_rkpiv += tf->rk.pivot_fallbacks;
+        s->tc_rkres += tf->rk.residual_fallbacks;
+        s->tc_rkdense += tf->rk_dense;
+    }
     if (a->fb) {
         /* (the fallback's: its seeds, its Newton's assemblies and source
            memo hits after its first, its screen's certificates) */
@@ -1599,11 +1652,19 @@ static void tc_count(loop_t *s, const loop_attempt_t *a)
 
 /* a made attempt's new pattern kept: the analysis and factor it replaced
    freed, as `ComplexKLUSolver.solve_prepared` frees them at its new key
-   (an attempt not made frees its own instead, `tc_undo`) */
+   (an attempt not made frees its own instead, `tc_undo`); and the real
+   factor's sequence on KLU kept */
 static void tc_kept(loop_t *s, const loop_attempt_t *a)
 {
     radau_tf_t *tf = (radau_tf_t *) s->tc;
     void *sym = a->old_sym, *num = a->old_num;
+    /* (the real factor on KLU: its sequence stands, the numeric it started
+       from freed where another replaced it, as `StructuralKLU.solve`; the
+       sequence's the entry from here) */
+    if (s->rk_klu) {
+        pcx_klu_finish(&tf->rk, 0);
+        tf->rk.klu_num = tf->rk.klu_out;
+    }
     if (!a->repat) return;
     if (num) {
         ((klu_free_numeric_t) s->klu_free_znum)(&num, tf->Common);
@@ -1872,6 +1933,7 @@ long pcx_loop(loop_t *s)
     s->tc_analyses = s->tc_factors = s->tc_foldoff = s->tc_klu = s->tc_pyiters = 0;
     s->tc_symfreed = s->tc_numfreed = 0;
     s->tc_noconv = s->tc_fb = s->tc_fbcert = s->have_fbY = 0;
+    s->tc_rkref = s->tc_rkfac = s->tc_rkpiv = s->tc_rkres = s->tc_rkdense = 0;
     s->tc_pyends = 0;
     if (s->family == LOOP_FAMILY_STAGE) return s->status = stage_loop(s);
     for (;;) {

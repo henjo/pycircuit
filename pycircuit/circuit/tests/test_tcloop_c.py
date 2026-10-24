@@ -12,7 +12,11 @@ complex factor made in C (its analysis and fresh factor, the Python loop's
 counts); an entry that fills its outputs; its stops (a screen that fires,
 the estimate's solve or the sources failing in the C, a transform that
 does not converge, the budget spent; a stop after a new pattern); its
-declines; and alive: P or the estimate a hair off is another run.
+declines; and alive: P or the estimate a hair off is another run.  The
+real factor on the circuit's StructuralKLU: every attempt's real solves on
+the numeric it found, zero pivots and residual fallbacks, a nonzero off the
+pattern and a failed solve stopping the C (the numerics it made freed), the
+fallback the Python's; the solver's counts and its one numeric compared.
 """
 import gc
 import inspect
@@ -34,6 +38,13 @@ from pycircuit.circuit.tests.test_loop_c import (
     _norm,
     _psp_stage,
     _pulsed,
+)
+from pycircuit.circuit.tests.test_radau_tc import (
+    _crc,
+    _klu,
+    _klu_chain,
+    _klu_state,
+    _without_gm0,
 )
 from pycircuit.circuit.transient import Transient, _StageSteps
 
@@ -102,6 +113,7 @@ def _run(build, on, monkeypatch, make=None, setup=None, **kw):
     state['_radau_Pc'] = None if pc is None else (
         repr(pc[0]), np.array(pc[1], dtype=complex).tobytes())
     state['fallbacks'] = tr.__dict__.get('_radau_transform_fallbacks')
+    state['real solver'] = _klu_state(tr)
     state['family'] = _norm({k: v for k, v in vars(fams[-1]).items() if k != 'tr'})
     return {'family': fams[-1], 'x': np.asarray(res.x, float).tobytes(),
             't': np.asarray(res.sweep_values, float).tobytes(),
@@ -447,10 +459,137 @@ def test_the_fallbacks_newton_a_hair_off_is_another_run(monkeypatch):
     assert cb.get('tcloop_c:fallbacks', 0) > 0 and a['x'] != b['x']
 
 
+## -- the real factor on the circuit's structural KLU ------------------------------------
+
+#: (the KLU chain at a tight tolerance: attempts rejected at a point and
+#: abandoned at the early abort)
+_TIGHT = {'reltol': 1e-7}
+
+
+def _setups(*fns):
+    def setup(tr):
+        for f in fns:
+            f(tr)
+    return setup
+
+
+@pytest.mark.parametrize('name, make, setup, kw', [
+    ('fixed', None, _klu(), dict(_PULSE, fixed_timestep=True)),
+    ('adaptive', None, _klu(), _PULSE),
+    ('tight', _TIGHT, _klu(), _PULSE),
+    ('residual-every', _TIGHT, _klu(tol=-1.0), _PULSE),
+    ('residual-some', None, _klu(tol=1e-16), dict(_PULSE, fixed_timestep=True)),
+    ('residual-some-tight', _TIGHT, _klu(tol=1e-16), _PULSE),
+    ('zero-pivots', _TIGHT, _klu(fail=_crc(3)), _PULSE),
+])
+def test_a_run_on_the_klu_real_factor_is_the_python_one(name, make, setup, kw, monkeypatch):
+    """The transform's real factor on the circuit's StructuralKLU, every
+    attempt in C -- accepted, rejected at a point, abandoned at the early
+    abort -- its real solves (the Newton's, the early check's, the
+    estimate's) on the numeric the attempt found, a zero pivot's and a
+    failed residual's fresh factors, the sparse verdict and the dense one:
+    the run the Python's -- bytes, statistics, warnings, tallies, state, the
+    solver's counts, one numeric left and the solver's."""
+    ca = _same(_klu_chain, monkeypatch, steps_min=10, make=make, setup=setup, **kw)
+    real, numerics = _same.last['state']['real solver']
+    assert numerics == (1, True), numerics
+    if make:
+        assert ca.get('tcloop_c:attempts', 0) > ca.get('tcloop_c:steps', 0), ca
+        assert ca.get('radau.early:aborts', 0) > 0, ca
+    if name == 'residual-every':
+        assert real[3] == real[0] > 0, real
+    if name.startswith('residual-some'):
+        assert 0 < real[3] < real[0] and ca.get('tcloop_c:klu_dense', 0) > 0, (real, ca)
+    if name == 'zero-pivots':
+        assert real[2] > 0, real
+
+
+def test_klu_entries_that_fill_their_outputs_hand_the_numeric_on(monkeypatch):
+    """Seven rows an entry on the KLU chain, some residuals failing: the
+    numeric each entry ends on the solver's, the next entry's start -- the
+    same run, one numeric left."""
+    monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', 7)
+    ca = _same(_klu_chain, monkeypatch, steps_min=40, setup=_klu(tol=1e-16), **_PULSE)
+    assert ca['tcloop_c:steps'] > 7 * 5, ca
+    assert _same.last['state']['real solver'][1] == (1, True)
+
+
+def test_a_nonzero_off_the_klu_pattern_stops_the_c(monkeypatch):
+    """The structure given without the first MOSFET's gm: while the pulse
+    holds it on, the real factor has a nonzero off the pattern (`_ours`:
+    the fallback solver's) -- the C stops at that attempt's factors, the
+    Python's makes it; the others in C; the same run."""
+    ca = _same(_klu_chain, monkeypatch, steps_min=10, setup=_klu(pattern=_without_gm0), **_PULSE)
+    assert ca.get('tcloop_c:bail:fold', 0) > 0, ca
+    assert _same.last['state']['real solver'][0][4] > 0
+
+
+def _klu_solve_planted(after):
+    """A plant: the C's KLU solves of the real factor (the Newton's, the
+    early check's, the estimate's) made, then `after(calls, n, B)` -- its
+    count, the size and the solution -- returning the status the C reads;
+    the Python's own solves untouched."""
+    sig = 'int(void *, void *, int, int, double *, void *)'
+
+    def plant(run):
+        if not run.s.rk_klu:
+            return
+        tffi, k = run.tctx.ffi, run.tctx.s.rk
+        real = tffi.cast(sig.replace('int(', 'int(*)(', 1), k.klu_solve)
+        calls = []
+
+        def solve(sym, num, n, nrhs, B, common):
+            ok = real(sym, num, n, nrhs, B, common)
+            calls.append(1)
+            return after(len(calls), n * nrhs, B) and ok
+        cb = tffi.callback(sig, solve)
+        run.tkeep.append(cb)
+        k.klu_solve = tffi.cast('void *', cb)
+    return plant
+
+
+def test_a_klu_solve_failing_in_c_takes_the_attempts_numerics_back(monkeypatch):
+    """The C's KLU solves of the real factor said failed at every 13th call,
+    each refactor's residual failing (every solve a fresh factor): the C
+    stops at that attempt, the numerics it made freed and the one it found
+    the solver's again -- the Python's repeat makes it; the same run, one
+    numeric left."""
+    _planted(monkeypatch, _klu_solve_planted(lambda k, n, B: k % 13 != 0))
+    ca = _same(_klu_chain, monkeypatch, steps_min=10, make=_TIGHT, setup=_klu(tol=-1.0),
+               **_PULSE)
+    stops = sum(v for k, v in ca.items() if k.startswith('tcloop_c:bail:'))
+    assert stops > 2, ca
+    assert _same.last['state']['real solver'][1] == (1, True)
+
+
+def test_where_the_real_factor_is_klu_the_fallback_is_the_pythons(monkeypatch):
+    """Three Newton iterations at most on the KLU chain: a transform that
+    does not converge stops the C -- the fallback's dense estimate is
+    numpy's solve, the Python's the analysis solver's: not bound -- and the
+    Python's repeat falls back; the same run."""
+    ca = _same(_klu_chain, monkeypatch, steps_min=10, setup=_setups(_klu(), _maxiter(3)),
+               **_FB_FIXED)
+    assert ca.get('tcloop_c:bail:transform', 0) > 0 and not ca.get('tcloop_c:fallbacks'), ca
+
+
+def test_the_klu_solutions_a_hair_off_are_another_run(monkeypatch):
+    """Alive: the C's KLU solutions of the real factor each a ulp up -- the
+    waveform another run's."""
+    a, _ = _run(_klu_chain, False, monkeypatch, setup=_klu(), **_PULSE)
+
+    def up(k, n, B):
+        for i in range(n):
+            B[i] = math.nextafter(B[i], math.inf)
+        return True
+    _planted(monkeypatch, _klu_solve_planted(up))
+    b, cb = _run(_klu_chain, True, monkeypatch, setup=_klu(), **_PULSE)
+    assert cb.get('tcloop_c:steps', 0) > 10 and a['x'] != b['x']
+
+
 #: (the functions whose returned strings are decline reasons: the module's,
 #: the stage loop's it calls, and the C loop's sources check)
-_REASONERS = ('_eligible', '_family_ready', '_tc_ready', '_solver_ready', '_run_ready',
-              '_state_ready', '_judge_ready', '_sources')
+_REASONERS = ('_eligible', '_family_ready', '_tc_ready', '_solver_ready', '_real_solver',
+              '_run_ready', '_state_ready', '_judge_ready', '_sources')
 
 
 def _reasons(text):

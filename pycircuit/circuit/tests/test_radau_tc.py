@@ -9,21 +9,28 @@ residual check, the walk stopping) leaves the Python loop to answer as
 before, with no trace; maxiter is the Python's False and an underflow
 numpy ignores is served; numpy's complex product read, not assumed; the inputs
 it keeps from step to step set again wherever they change (B3.5); and
-the declines."""
+the declines.  The real factor on the circuit's StructuralKLU (no dense LU
+kept): each solve its sequence, its zero pivots and residual fallbacks, a
+nonzero off its pattern declined, its numerics -- and alive."""
 import ctypes
+import gc
 import math
 import warnings
+import zlib
 
 import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from pycircuit.circuit import _hdl_climit, _paths, circuit
+from pycircuit.circuit import _hdl_climit, _paths, _tran_tcloop_c, circuit
 from pycircuit.circuit import _tran_radau_tc as TC
 from pycircuit.circuit import linearsolver as LS
 from pycircuit.circuit._tran_radau import _RadauStages
+from pycircuit.circuit.analysis import jacobian_structure
+from pycircuit.circuit.elements import gnd
 from pycircuit.circuit.integrator import RadauIIA3Integrator
+from pycircuit.circuit.tests.test_loop_c import _pulsed
 from pycircuit.circuit.tests.test_newton_c import _mos_chain
 from pycircuit.circuit.tests.test_psp_limit_c import _stage
 from pycircuit.circuit.transient import Transient
@@ -587,3 +594,188 @@ def test_a_subclass_declines():
     tr.solve(tend=1e-7, timestep=2e-8, fixed_timestep=True)
     d = _paths.since(before)
     assert d.get('radau_tc:class', 0) > 0 and 'radau_tc:served' not in d, d
+
+
+## -- the real factor on the circuit's structural KLU ------------------------------------
+
+class _KLULib:
+    """A StructuralKLU's library as the Python and the C both call it (the
+    C binds these entries): its numerics counted -- `live`, made by
+    klu_factor and not yet freed -- and its klu_refactor failing, as KLU
+    reports a zero pivot, on the values `fail` picks (a function of the
+    values alone: a stop's repeat meets the same)."""
+
+    def __init__(self, sk, fail=None):
+        lib, nnz = sk._lib, sk.nnz
+        self._lib, self.live = lib, set()
+        ip, dp = ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_double)
+        vp = ctypes.c_void_p
+
+        @ctypes.CFUNCTYPE(vp, ip, ip, dp, vp, vp)
+        def factor(Ap, Ai, Ax, sym, common):
+            num = lib.klu_factor(Ap, Ai, Ax, sym, common)
+            if num:
+                self.live.add(num)
+            return num
+
+        @ctypes.CFUNCTYPE(ctypes.c_int, ip, ip, dp, vp, vp, vp)
+        def refactor(Ap, Ai, Ax, sym, num, common):
+            if fail is not None and fail(np.ctypeslib.as_array(Ax, (nnz,))):
+                return 0
+            return lib.klu_refactor(Ap, Ai, Ax, sym, num, common)
+
+        @ctypes.CFUNCTYPE(ctypes.c_int, vp, vp)
+        def free(handle, common):
+            self.live.discard(ctypes.c_void_p.from_address(handle).value)
+            return lib.klu_free_numeric(handle, common)
+        self.klu_factor, self.klu_refactor, self.klu_free_numeric = factor, refactor, free
+
+    def __getattr__(self, name):
+        return getattr(self._lib, name)
+
+
+def _klu_chain():
+    """The pulsed MOSFET chain at 40 stages: 45 unknowns, sparse enough for
+    the structural KLU (`_klu`)."""
+    return _pulsed(40)
+
+
+def _klu(fail=None, tol=None, pattern=None):
+    """A setup putting the transient on an AutoSolver of its own whose
+    choice is the circuit's StructuralKLU (the analyses' floor is 250
+    unknowns): the transform's real factor on KLU, chosen before the run,
+    its library a `_KLULib`; `tol` its residual tolerance, `pattern(cir,
+    iref, structure)` the structure it is given."""
+    def setup(tr):
+        cir, iref = tr.cir, tr.irefnode
+
+        def structure():
+            st = jacobian_structure(cir, iref)
+            return st if pattern is None else pattern(cir, iref, st)
+        ls = tr.par.linearsolver = LS.AutoSolver(structure=structure, structural_min_n=8)
+        sk = ls._select(np.eye(cir.n - 1))
+        assert type(sk) is LS.StructuralKLU
+        sk._lib = _KLULib(sk, fail)
+        if tol is not None:
+            sk.REFACTOR_RESIDUAL_TOL = tol
+    return setup
+
+
+def _crc(k):
+    """A `_KLULib` failure: the refactors whose values' CRC is 0 mod `k`."""
+    return lambda ax: zlib.crc32(ax.tobytes()) % k == 0
+
+
+def _without_gm0(cir, iref, st):
+    """The structure without the first MOSFET's gm (row d0, column g0): a
+    nonzero off the pattern while the pulse holds it on."""
+    m, rows, cols = st
+    r, c = (cir.get_node_index(cir.get_node(nm), refnode=gnd) for nm in ('d0', 'g0'))
+    keep = ~((rows == r) & (cols == c))
+    assert int((~keep).sum()) == 1
+    return m, rows[keep], cols[keep]
+
+
+def _klu_state(tr):
+    """The real factor's solver as the run left it -- its counts; its
+    numerics live and whether the one live is the one it holds -- or None
+    where it is not a `_klu` one."""
+    sk = getattr(tr._get_linearsolver(), '_choice', None)
+    if type(sk) is not LS.StructuralKLU or type(sk._lib) is not _KLULib:
+        return None
+    return ((sk.refactors, sk.factors, sk.pivot_fallbacks, sk.residual_fallbacks, sk.foreign,
+             sk.analyses), (len(sk._lib.live), sk._lib.live == {sk._numeric}))
+
+
+#: (the pulse's corners on the KLU chain)
+_KLU_PULSE = {'tend': 4e-8, 'timestep': 2.5e-10}
+
+
+def _klu_run(on, setup, **kw):
+    """The KLU chain's run, `setup` one of `_klu`'s, the transform Newton's
+    C on or off and the C stepping loop off (its twins: test_tcloop_c): the
+    bytes, statistics, warnings and the solver's state; the paths."""
+    old = TC.ENABLED, _tran_tcloop_c.ENABLED
+    TC.ENABLED, _tran_tcloop_c.ENABLED = on, False
+    gc.collect()
+    try:
+        with warnings.catch_warnings(record=True) as W:
+            warnings.simplefilter('always')
+            warnings.simplefilter('ignore', ResourceWarning)
+            tr = Transient(_klu_chain(), toolkit=circuit.numeric,
+                           integrator=RadauIIA3Integrator(), radau_transform=True)
+            setup(tr)
+            before = _paths.snapshot()
+            res = tr.solve(**kw)
+            d = _paths.since(before)
+    finally:
+        TC.ENABLED, _tran_tcloop_c.ENABLED = old
+    st_ = {k: getattr(tr.statistics, k) for k in tr.statistics.__slots__ if 'seconds' not in k}
+    return (np.asarray(res.x, float).tobytes(), np.asarray(res.sweep_values, float).tobytes(),
+            st_, sorted(str(w.message) for w in W), _klu_state(tr)), d
+
+
+@pytest.mark.parametrize('name, setup, fixed', [
+    ('fixed', _klu(), True),
+    ('adaptive', _klu(), False),
+    ('residual-every', _klu(tol=-1.0), False),
+    ('residual-some', _klu(tol=1e-16), True),
+    ('zero-pivots', _klu(fail=_crc(3)), False),
+])
+def test_the_real_factor_on_klu_is_the_same_with_the_c_off(name, setup, fixed):
+    """The transform's real factor on the circuit's StructuralKLU: each of
+    the Newton's real solves in C as `StructuralKLU.solve` makes it -- the
+    refactor on the numeric it holds, a zero pivot's and a failed residual's
+    fresh factor, the sparse verdict and the dense one -- the run the Python
+    loop's: bytes, statistics, warnings, the solver's counts, one numeric
+    left and the solver's."""
+    _on()
+    kw = dict(_KLU_PULSE, fixed_timestep=fixed)
+    a, da = _klu_run(True, setup, **kw)
+    b, _db = _klu_run(False, setup, **kw)
+    assert a == b
+    assert da.get('radau_tc:served', 0) > 10, da
+    real, numerics = a[4]
+    assert numerics == (1, True), numerics
+    if name == 'residual-every':
+        assert real[3] == real[0] > 0, real
+    if name == 'residual-some':
+        assert 0 < real[3] < real[0], real
+    if name == 'zero-pivots':
+        assert real[2] > 0, real
+
+
+def test_a_nonzero_off_the_klu_pattern_is_declined():
+    """The structure given without the first MOSFET's gm: while the pulse
+    holds it on, the real factor has a nonzero off the pattern -- `_ours`
+    sends it to the fallback solver and the C declines that step (counted);
+    the others served; the same run."""
+    _on()
+    setup = _klu(pattern=_without_gm0)
+    a, da = _klu_run(True, setup, **_KLU_PULSE)
+    b, _db = _klu_run(False, setup, **_KLU_PULSE)
+    assert a == b
+    assert da.get('radau_tc:klu_foreign', 0) > 0 and da.get('radau_tc:served', 0) > 10, da
+    assert a[4][0][4] > 0, a[4]
+
+
+def test_the_klu_values_a_hair_off_is_another_run(monkeypatch):
+    """Alive: every nonzero of the real factor's values at the pattern a ulp
+    up in the C -- another run.  (One entry's ulp is not seen: the
+    simplified Newton's answer is its residual's, the factor only steers
+    it; the first, the supply's node, not at all -- its source's branch
+    fixes that voltage.)"""
+    _on()
+    a, _ = _klu_run(False, _klu(), **_KLU_PULSE)
+    bind = TC._rk_bind
+
+    def planted(rec, sk, fz):
+        ok = bind(rec, sk, fz)
+        if ok:
+            ax = rec.rk_keep[3]
+            nz = ax != 0.0
+            ax[nz] = np.nextafter(ax[nz], np.inf)
+        return ok
+    monkeypatch.setattr(TC, '_rk_bind', planted)
+    b, db = _klu_run(True, _klu(), **_KLU_PULSE)
+    assert db.get('radau_tc:served', 0) > 10 and (a[0] != b[0] or a[1] != b[1])

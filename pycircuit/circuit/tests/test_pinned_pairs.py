@@ -614,7 +614,12 @@ PAIRS = {
                '`solve_prepared`\'s refactor once a record and its residual check '
                '(decided with a margin), the walk, the test after the update; split at the '
                'first iteration for the early abort (`probe`, then `resume` from the '
-               'buffer\'s iterate: the iterates one call makes, its counts)',
+               'buffer\'s iterate: the iterates one call makes, its counts); where no LU is '
+               'kept, the real factor on the analysis solver\'s StructuralKLU (roadmap 215): '
+               'its values at the pattern taken once with `_ours`\'s count, each real solve '
+               '`StructuralKLU.solve`\'s sequence (pcx_kluseq.h: the refactor on the numeric '
+               'it holds, a zero pivot\'s and a failed residual\'s fresh factor, the sparse '
+               'verdict then the dense), the numeric and counts written back as it leaves them',
         'reference': ['pycircuit.circuit._tran_radau:_RadauStages._transform_loop',
                       'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_system',
                       'pycircuit.circuit._tran_radau:_RadauStages._stages_converged',
@@ -622,12 +627,19 @@ PAIRS = {
                       'pycircuit.circuit._tran_radau:_transform_rhs',
                       'pycircuit.circuit._tran_radau:_transform_back',
                       'pycircuit.circuit.linearsolver:NumpyLU.solve',
-                      'pycircuit.circuit.linearsolver:ComplexKLUSolver.solve_prepared'],
+                      'pycircuit.circuit.linearsolver:ComplexKLUSolver.solve_prepared',
+                      'pycircuit.circuit._tran_radau:_FrozenTransform.real_solve',
+                      'pycircuit.circuit.linearsolver:AutoSolver.solve',
+                      'pycircuit.circuit.linearsolver:StructuralKLU.solve',
+                      'pycircuit.circuit.linearsolver:StructuralKLU._ours'],
         'twin': ['pycircuit.circuit._tran_radau_tc:RADAU_TC',
                  'pycircuit.circuit._tran_radau_tc:solve',
                  'pycircuit.circuit._tran_radau_tc:_outcome',
                  'pycircuit.circuit._tran_radau_tc:resume',
-                 'pycircuit.circuit._tran_radau_tc:cmul_mode'],
+                 'pycircuit.circuit._tran_radau_tc:cmul_mode',
+                 'pycircuit.circuit._tran_radau_tc:_real_klu',
+                 'pycircuit.circuit._tran_radau_tc:_rk_bind',
+                 'pycircuit.circuit._tran_radau_tc:_rk_back'],
     },
     "the step's end passes and the C's": {
         'why': 'once converged the C makes the calls `_stage_end_passes` makes next -- '
@@ -988,7 +1000,12 @@ PAIRS = {
                'attempt (roadmap 210): the memo rolled again, `_coupled_stage_solver`\'s '
                'context and seeds, `_tran_radau_c.solve` on the transient\'s record (`_ready` '
                'at entry, nothing remade), its records, the dense finish; a stop after its '
-               'Newton held (`_tran_radau_c.hold`)',
+               'Newton held (`_tran_radau_c.hold`).  The real factor on the analysis '
+               'solver\'s StructuralKLU (roadmap 215): its values at the pattern taken in '
+               '`tc_frozen` with `_ours`\'s count, every real solve -- the Newton\'s, the '
+               'early check\'s, the estimate\'s -- `StructuralKLU.solve`\'s sequence on the '
+               'numeric the attempt found, kept when the attempt is made, taken back when not; '
+               'the fallback the Python\'s there',
         'reference': ['pycircuit.circuit._tran_radau:_RadauStages._rk_step_transformed',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_frozen',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_early_check',
@@ -1022,7 +1039,10 @@ PAIRS = {
                       'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_context',
                       'pycircuit.circuit._tran_radau_c:solve',
                       'pycircuit.circuit._tran_radau_c:_ready',
-                      'pycircuit.circuit._tran_radau_c:hold'],
+                      'pycircuit.circuit._tran_radau_c:hold',
+                      'pycircuit.circuit.linearsolver:AutoSolver.solve',
+                      'pycircuit.circuit.linearsolver:StructuralKLU.solve',
+                      'pycircuit.circuit.linearsolver:StructuralKLU._ours'],
         'twin': ['pycircuit.circuit._tran_loop_c:LOOP_C',
                  'pycircuit.circuit._tran_loop_c:LOOP_CDEF',
                  'pycircuit.circuit._tran_radau_tc:_outcome',
@@ -1058,7 +1078,10 @@ PAIRS = {
                  'pycircuit.circuit._tran_tcloop_c:_load_fb',
                  'pycircuit.circuit._tran_tcloop_c:_fb_settle',
                  'pycircuit.circuit._tran_tcloop_c:_fb_back',
-                 'pycircuit.circuit._tran_tcloop_c:_count_fb'],
+                 'pycircuit.circuit._tran_tcloop_c:_count_fb',
+                 'pycircuit.circuit._tran_tcloop_c:_real_solver',
+                 'pycircuit.circuit._tran_tcloop_c:_bind_rk',
+                 'pycircuit.circuit._tran_radau_tc:_real_klu'],
     },
 }
 
@@ -1066,7 +1089,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('02966d22fff9', '49596de4bd19'),
+    'the stepping loop and its C': ('02966d22fff9', 'a40c0576df99'),
     'the predictor and its C': ('9e611c84de5a', '0d37cf280c92'),
     'the branch screen and its C': ('adb832d7aae0', '213a22d4c01e'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -1092,22 +1115,22 @@ RECORD = {
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
     'the transform solve and its frozen form': ('6f35dca48644', '16cad74bb049'),
-    'the transform Newton and its C': ('e1cd75fcba85', '7d0970f18a61'),
-    "the step's end passes and the C's": ('d9dfad6d6b96', '3cc4fd239c48'),
+    'the transform Newton and its C': ('fec75db05899', '489272418ff6'),
+    "the step's end passes and the C's": ('d9dfad6d6b96', 'a03d697f547a'),
     'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('39f2d0f63b0f', '591052196b6b'),
     'the KLU step map and its C': ('5b9b1f672523', '776fd7afe705'),
     'the stage walk and its C': ('a918e57085a2', '9cba9bb2445d'),
-    'the multistep walk and its C': ('57f6fd18a3eb', '431ae307ba9b'),
+    'the multistep walk and its C': ('57f6fd18a3eb', 'f22ecf8a34ab'),
     'the multistep step map and its C': ('985dde19187d', 'be14cb8c5221'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
     'the readiness reads and their stamps': ('61efd629dd90', '76e34cda0583'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('9b77e46fd9eb', '957fa262705d'),
-    'the transform loop and its C': ('b7818dc82a45', 'a4958cc34145'),
+    'the stage loop and its C': ('9b77e46fd9eb', '493049ffb772'),
+    'the transform loop and its C': ('ac5b2f9b540e', '22a832ca1809'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

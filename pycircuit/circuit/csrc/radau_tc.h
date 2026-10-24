@@ -74,6 +74,29 @@ typedef struct {
        by the refactor.  refactored, out: the refactors made (0 or 1) --
        `solve` adds them to `refactors` and sets `_fresh`, on a bail too */
     long klu_fresh, refactored;
+    /* THE REAL FACTOR ON KLU (`rk_on` 1): where `_radau_frozen` keeps no
+       dense LU -- the analysis solver an AutoSolver whose choice is the
+       circuit's `StructuralKLU` -- each real solve is that solver's `solve`
+       (pcx_kluseq.h's `pcx_klu_step`): `rk.kAx` the real factor's values in
+       its pattern's order (taken once a call: the factor is frozen), a
+       refactor of the numeric it holds, a fresh factor on a zero pivot,
+       klu_solve, and after a refactor the residual's verdict -- the sparse
+       sum with its rounding bound where it decides, else the dense test on
+       the factor scattered into `rk_A` (m x m work: numpy's matmul by
+       `rk_dgemv`) -- with a fresh factor where it fails.  `rk.klu_num` its numeric at entry; on return
+       `rk.klu_out` as `pcx_klu_finish` leaves it -- a bail the entry's (any
+       other freed: the Python loop makes the sequence again from it), else
+       the sequence's -- and the counts this call's.  `rk_y` (m) and `rk_t`
+       (2 m) its work.  `rk_on` 0: the kept LU above.  `rk_hold` 1 (the C
+       stepping loop's): the numeric and the counts the caller's -- a call
+       neither starts them nor finishes them, the caller's attempt does */
+    long rk_on, rk_hold;
+    /* (the residual's dense tests its solves made, pcx_kluseq.h's `dense`:
+       the caller's to read and reset) */
+    long rk_dense;
+    pcx_klu_t rk;
+    double *rk_A, *rk_y, *rk_t;
+    void *rk_dgemv;
     /* work and outputs (`_Ctx.buf`): Y (3 x n) the stages -- the seed
        copied in, the converged stages out; Yp (3 x n) the stages before the
        update; q, iv, K, F (3 x n) the stages' q and i, -(i + u), the full
@@ -119,5 +142,7 @@ enum radau_tc_status {
     RADAU_TC_BAIL_RESIDUAL = 8,  /* the complex block's residual check failed or not decided */
     RADAU_TC_BAIL_STEP = 9,      /* a step not finite */
     RADAU_TC_BAIL_WALKSTOP = 10, /* a limiter declined: the walk stopped */
-    RADAU_TC_MAXITER = 11        /* no convergence in maxiter: the Python loop's False */
+    RADAU_TC_MAXITER = 11,       /* no convergence in maxiter: the Python loop's False */
+    RADAU_TC_BAIL_KLUREAL = 12   /* the real factor's KLU (`rk_on`): a fresh factor singular,
+                                    its solve failed, a flag numpy reports in its residual */
 };
