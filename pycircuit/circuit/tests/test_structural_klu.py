@@ -226,14 +226,17 @@ def test_an_operating_point_takes_klu_from_150_unknowns(sections, klu, monkeypat
 
 @pytest.mark.parametrize('integ,sections,klu', [
     ('TRBDF2Integrator', 140, False), ('TRBDF2Integrator', 160, True),
-    ('ESDIRK43Integrator', 160, True), ('RadauIIA3Integrator', 160, False),
-    ('Gear2Integrator', 60, True)])
+    ('ESDIRK43Integrator', 160, True), ('RadauIIA3Integrator', 140, False),
+    ('RadauIIA3Integrator', 160, True), ('Gear2Integrator', 60, True)])
 def test_each_method_takes_klu_from_its_floor(integ, sections, klu):
     """The transient's floor per method (`Transient._STRUCTURAL_KLU_MIN_N`):
-    40 on the C loop's multistep methods, 150 on TRBDF2 and ESDIRK43, Radau's
-    250 (its C transformed solve twins only a dense real factor)."""
+    40 on the C loop's multistep methods, 150 on TRBDF2, ESDIRK43 and Radau
+    (whose C transform solves the KLU real factor since roadmap 215; the
+    transform asked for, which solves on the analysis solver -- the coupled
+    Newton does not)."""
     from pycircuit.circuit import integrator as I
-    tr = Transient(_ladder(sections), reltol=1e-6, integrator=getattr(I, integ)())
+    make = {'radau_transform': True} if integ == 'RadauIIA3Integrator' else {}
+    tr = Transient(_ladder(sections), reltol=1e-6, integrator=getattr(I, integ)(), **make)
     with quiet(AccuracyWarning):
         tr.solve(tend=2e-9, timestep=1e-10)
     ch = tr._get_linearsolver()._choice

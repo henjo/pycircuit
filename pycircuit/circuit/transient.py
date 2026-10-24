@@ -1225,14 +1225,15 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         (`_tran_core.FORMULA`: Gear-2, the default, Euler, trapezoidal,
         theta) -- their crossover, measured 2026-10-16; from
         `MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES` (150) on the stage methods
-        TRBDF2 and ESDIRK43 (measured 2026-10-20: 40 lost on small decks);
-        None, `min_n`, on Radau (its C transformed solve twins only a dense
-        real factor: measured, no gain) and the GLMs (not measured)."""
+        TRBDF2 and ESDIRK43 (measured 2026-10-20: 40 lost on small decks)
+        and Radau (measured 2026-10-24, roadmap 219: its C transform solves
+        the KLU real factor since 215; 40 lost on small decks too); None,
+        `min_n`, on the GLMs (not measured)."""
         integ = getattr(self.par, 'integrator', None)
         name = 'Gear2Integrator' if integ is None else type(integ).__name__
         if name in _tran_core.FORMULA:
             return MIN_N_FOR_STRUCTURAL_KLU
-        if name in ('TRBDF2Integrator', 'ESDIRK43Integrator'):
+        if name in ('TRBDF2Integrator', 'ESDIRK43Integrator', 'RadauIIA3Integrator'):
             return MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES
         return None
 

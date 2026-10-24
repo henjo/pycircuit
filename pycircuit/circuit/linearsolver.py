@@ -1306,15 +1306,21 @@ MAX_FILL_FOR_SPARSE = 0.20
 MIN_N_FOR_STRUCTURAL_KLU = 40
 
 ## KLU on the structure from this many unknowns for DC (and so every
-## analysis's operating point) and the stage methods (TRBDF2, ESDIRK43); 40
-## was measured and refused for them (2026-10-19, roadmap 153: below ~100
-## unknowns KLU's fixed cost lost up to +31 %), and Radau and the GLMs keep
-## `MIN_N_FOR_SPARSE` -- Radau's C transformed solve twins only a dense real
-## factor, and losing it cancelled the gain.  Measured (2026-10-20, the five
-## gold decks it moves, three rounds interleaved, best of 3): DC's operating
-## points 927 -> 328 ms, every deck faster (toronto -40 %, jge -83 %), within
-## 2e-9 V; TRBDF2's transients -15.1 % (each deck -3 .. -18 %), ESDIRK43's
-## -18.9 % (-11 .. -23 %), no gold column changed pass/fail.
+## analysis's operating point) and the stage methods (TRBDF2, ESDIRK43,
+## Radau); 40 was measured and refused for them (2026-10-19, roadmap 153:
+## below ~100 unknowns KLU's fixed cost lost up to +31 %); the GLMs keep
+## `MIN_N_FOR_SPARSE`.  Measured (2026-10-20, the five gold decks it moves,
+## three rounds interleaved, best of 3): DC's operating points 927 -> 328 ms,
+## every deck faster (toronto -40 %, jge -83 %), within 2e-9 V; TRBDF2's
+## transients -15.1 % (each deck -3 .. -18 %), ESDIRK43's -18.9 % (-11 ..
+## -23 %), no gold column changed pass/fail.  Radau kept `MIN_N_FOR_SPARSE`
+## until its C transformed solve took the KLU real factor (roadmap 215);
+## measured 2026-10-24 (roadmap 219, the 16 gold decks from 40 to 250
+## unknowns, three rounds interleaved, medians): at 150 the five decks it
+## moves 56.0 -> 45.0 s (1.25x; toronto 1.22x, mux8 1.22x, voter25 1.19x,
+## e1480 1.10x, jge 1.28x), their gold metrics as before; at 40, 1.22x but
+## g1310 (98) 0.94x, todd3 0.97x, latch 0.98x; nothing measured between 98
+## and 130.
 MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES = 150
 
 ## Above this many unknowns KLU's reused ordering repays its per-call cost and it

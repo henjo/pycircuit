@@ -11994,3 +11994,40 @@ standalone DC, against 217's gate runs (fab3ab29's code), and under Radau agains
 inside it), interleaved per deck: every digest, step, rejection, Newton count and path count identical but the loops'
 own.  No C changed: the sanitizer's deep tier on the loop, Radau and KLU tests, 196 passed, clean (the fallback on the
 KLU real factor under the address sanitizer).
+
+## 2026-10-24 — 219. Radau's KLU floor in the transient -- Radau's analysis solver on the circuit's StructuralKLU from 150 unknowns, the stage methods' floor: the five gold decks it moves 1.24x (55.9 -> 45.0 s; jge 1.28x), their gold metrics as before
+
+**Why**  Andreas: "Do all three" (the third lever offered after 216: jge's per-step dense LU, 21 % of its time; his
+OK given for the answers moving).  `Transient._STRUCTURAL_KLU_MIN_N` gave Radau no structural floor -- dense below
+`MIN_N_FOR_SPARSE` (250) -- because "its C transformed solve twins only a dense real factor: measured, no gain", the
+reason 215 removed.  LINE: the gold decks it moves together at least 1.15x against 218 under Radau, none slower than
+0.97x, the suite green.
+
+**Measured first** (the 16 gold decks from 40 to 250 unknowns under Radau, Radau's floor 40, 100 and 150 against
+today's, three rounds interleaved, each run its own process, medians): at 40 the 16 decks 62.3 -> 50.9 s (1.22x) but
+g1310 (98 unknowns) 0.94x, todd3 0.97x and latch 0.98x -- KLU's fixed cost on small decks, as TRBDF2's and ESDIRK43's at
+40 (roadmap 153); at 100 the seven above it 1.24x, gm1 (130) 1.06x the least; at 150 the five above it 56.0 -> 45.0 s,
+1.25x -- toronto 1.22x, mux8 1.22x, voter25 1.19x, e1480 1.10x, jge 1.28x.  Taken: 150, the stage methods' floor
+(`MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES`): no deck was measured between 98 and 130, and 100 adds only gm1's 1.06x and
+gm17's hundredths.  The five decks' gold metrics (`xyce_verify` against their references) as before -- toronto's
+worst column 0.3125 either way, mux8's 0.280 and 0.279, e1480's to six digits; voter25 and jge have none.  A Radau
+PSS of 155 unknowns (the 150-stage MOSFET chain): byte-identical at both floors, the same time -- its walks solve on
+PSS's own solver.
+
+**Built.**  `Transient._STRUCTURAL_KLU_MIN_N`: Radau with TRBDF2 and ESDIRK43 (150); its docstring and the comment at
+`MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES` with the measurement.
+
+**Measured** (the 27 gold decks under Radau, HEAD 4262eb8c from its worktree and this tree, separate processes,
+interleaved per deck): toronto 0.41 -> 0.34 s (1.21x), mux8 13.21 -> 10.83 (1.22x), voter25 12.20 -> 10.21 (1.19x),
+e1480 0.27 -> 0.24 (1.11x), jge 29.85 -> 23.32 (1.28x) -- the five 55.9 -> 45.0 s, 1.24x (the line 1.15x); the 27
+decks 83.3 -> 72.3 s (147 s before 215).  Their steps moved under 3 % (toronto 695 -> 714, mux8 13 875 -> 13 806,
+voter25 7 316 -> 7 249, e1480 124 either way, jge 15 148 -> 15 161), their gold metrics as before.  The 22 other decks
+byte for byte; rca and gm3 read 0.94x and 0.95x on one run, 1.05x and 1.00x on five interleaved runs each.
+
+**Tests.**  test_structural_klu (+1): the floor per method -- Radau dense at 140 sections, on the StructuralKLU at 160
+(the transform asked for: the coupled Newton does not solve on the analysis solver).
+
+**Gate** (the main tree): the suite, 6 010 passed (6 skipped, 3 xfailed); the 27 gold decks, gear2 transient and
+standalone DC, against 218's gate runs (4262eb8c's code): identical; under Radau against HEAD (wt_head, 4262eb8c, run
+from inside it), interleaved per deck: the 22 decks the floor does not move identical (every digest, step, rejection,
+Newton count and path count but the loops' own), the five it moves as above.  No C changed: the sanitizer not run.

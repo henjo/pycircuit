@@ -5744,3 +5744,16 @@ once Radau's floor moves them onto KLU (219); gm19 and opampal do not fit
 and stay the Python's.  rich3 and arom: their fallbacks made in C (12 and 13), the two 1.07x.
 Tests: `test_tcloop_c.py` -- the fallback made in C on the KLU chain, fixed
 and adaptive, the Python's to the byte, one numeric left.
+
+## Radau's analysis solver on KLU from 150 unknowns (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 219).  `Transient._STRUCTURAL_KLU_MIN_N`
+kept Radau dense below 250 unknowns because its C transformed solve twinned
+only a dense real factor; 215 made it solve the StructuralKLU real factor.
+Measured on the gold decks from 40 to 250 unknowns: at a floor of 40 small
+decks lost (g1310 0.94x), as TRBDF2's and ESDIRK43's did; at 150 every deck
+it moves gained.  Radau now takes the stage methods' floor,
+`MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES` (150).  The answers of the circuits
+it moves change at the method's tolerance (another pivot order, then the
+adaptive steps), the gold metrics as before.  toronto, mux8, voter25, e1480 and jge 1.24x together (jge 29.9 -> 23.3 s).
+Tests: `test_structural_klu.py` -- Radau dense at 140 sections, on KLU at 160.
