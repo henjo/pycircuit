@@ -1049,7 +1049,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('02966d22fff9', '163e9bb2ce59'),
+    'the stepping loop and its C': ('02966d22fff9', '09fbd271412d'),
     'the predictor and its C': ('9e611c84de5a', '0d37cf280c92'),
     'the branch screen and its C': ('adb832d7aae0', '213a22d4c01e'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -1074,23 +1074,23 @@ RECORD = {
     'the coupled stage Newton and its C': ('c87ff9fb31be', '65157c1e371d'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
-    'the transform solve and its frozen form': ('6f35dca48644', '61256542c9d4'),
-    'the transform Newton and its C': ('57fd43705940', '7d0970f18a61'),
+    'the transform solve and its frozen form': ('6f35dca48644', '16cad74bb049'),
+    'the transform Newton and its C': ('e1cd75fcba85', '7d0970f18a61'),
     "the step's end passes and the C's": ('d9dfad6d6b96', '3cc4fd239c48'),
     'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('39f2d0f63b0f', '591052196b6b'),
     'the KLU step map and its C': ('5b9b1f672523', '776fd7afe705'),
     'the stage walk and its C': ('a918e57085a2', '9cba9bb2445d'),
-    'the multistep walk and its C': ('57f6fd18a3eb', '7ac6eaa22fc8'),
+    'the multistep walk and its C': ('57f6fd18a3eb', '4a798279a959'),
     'the multistep step map and its C': ('985dde19187d', 'be14cb8c5221'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
     'the readiness reads and their stamps': ('61efd629dd90', '76e34cda0583'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('9b77e46fd9eb', 'c0090d00fcf8'),
-    'the transform loop and its C': ('d97e1a2d7405', '5ea94649f614'),
+    'the stage loop and its C': ('9b77e46fd9eb', 'e00c687052d7'),
+    'the transform loop and its C': ('a2fb96e04722', 'dbabf023560d'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

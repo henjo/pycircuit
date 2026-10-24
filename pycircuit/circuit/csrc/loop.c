@@ -1480,6 +1480,24 @@ static void tc_count(loop_t *s, const loop_attempt_t *a)
     s->tc_foldoff += a->fold && a->repat;
 }
 
+/* a made attempt's new pattern kept: the analysis and factor it replaced
+   freed, as `ComplexKLUSolver.solve_prepared` frees them at its new key
+   (an attempt not made frees its own instead, `tc_undo`) */
+static void tc_kept(loop_t *s, const loop_attempt_t *a)
+{
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    void *sym = a->old_sym, *num = a->old_num;
+    if (!a->repat) return;
+    if (num) {
+        ((klu_free_numeric_t) s->klu_free_znum)(&num, tf->Common);
+        s->tc_numfreed++;
+    }
+    if (sym) {
+        ((klu_free_numeric_t) s->klu_free_sym)(&sym, tf->Common);
+        s->tc_symfreed++;
+    }
+}
+
 /* THE EARLY ABORT's rejection (`_SteppingLoop.take`'s `_RadauAbort`, the
    family's `reject_early`): the retry law at the check's worst unknown
    (`_retry_after`, its record), the point's counts and the next step as
@@ -1488,6 +1506,7 @@ static void tc_count(loop_t *s, const loop_attempt_t *a)
 static void tc_abort(loop_t *s, const loop_attempt_t *a)
 {
     double hn = stage_retry(s, a, a->worst, s->pst);
+    tc_kept(s, a);
     tc_count(s, a);
     s->tc_aborts++;
     s->rejected++;
@@ -1503,12 +1522,13 @@ static void tc_abort(loop_t *s, const loop_attempt_t *a)
 }
 
 /* the transform's part of an attempt made: its stages kept (`tcY`), the
-   step `_radau_Pc` then holds, its counts */
+   step `_radau_Pc` then holds, its pattern, its counts */
 static void tc_made(loop_t *s, const loop_attempt_t *a)
 {
     COPY(s->tcY, a->Ys, 3 * s->n);
     s->ph_made = a->h;
     s->have_ph = 1;
+    tc_kept(s, a);
     tc_count(s, a);
 }
 
@@ -1706,6 +1726,7 @@ long pcx_loop(loop_t *s)
     s->tc_ends = s->tc_handed = s->tc_endpass = s->tc_unhanded = s->tc_screened = 0;
     s->tc_mcmemo = s->tc_ests = s->tc_folds = 0;
     s->tc_analyses = s->tc_factors = s->tc_foldoff = s->tc_klu = s->tc_pyiters = 0;
+    s->tc_symfreed = s->tc_numfreed = 0;
     s->tc_pyends = 0;
     if (s->family == LOOP_FAMILY_STAGE) return s->status = stage_loop(s);
     for (;;) {

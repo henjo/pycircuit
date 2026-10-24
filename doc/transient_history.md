@@ -5578,3 +5578,22 @@ entry that fills its outputs; the stops (a screen that fires, the real
 solves and the sources failing in the C, a transform that does not
 converge, a stop after a new pattern, the budget spent); the declines;
 alive: P's first entry or the real factor's eigenvalue a ulp off.
+
+## `ComplexKLUSolver` and `csrc/loop.c`'s transform mode free what they replace (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 209).  `solve_prepared` overwrote
+its analysis and factor at a new pattern, and its factor at a residual
+fallback, without freeing them: a voter25 Radau run left 1 152 of each
+(about 58 MB of its peak); the C stepping loop's transform mode mirrored
+it.  Now the solver frees the factor and analysis it holds before a new
+pattern's analysis, the factor before a residual fallback's, and both at
+its end (`__del__`), counting the first two (`analyses_freed`,
+`factors_freed`); loop.c's `tc_kept` frees what a made attempt's new
+pattern replaced (an attempt handed back frees its own, `tc_undo`), its
+counts settled into the solver.  Whoever holds the handles compares them
+with the solver's before each use (`_tran_radau_tc`'s key, the loop's
+binding key), so a freed handle is never used.  `KLUSolver.solve` (real)
+has the same overwrite; four C units borrow its handles: not changed here.
+Tests: test_linearsolver (each handle freed where it is replaced, both at
+the end); test_tcloop_c (the twins compare the frees; a run with new
+patterns made in C leaves one of each).

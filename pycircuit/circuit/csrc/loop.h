@@ -260,6 +260,9 @@ typedef struct {
        iterations (each stage's 'qi' pass and limiter walk), the end records
        its passes made (no hand-off) */
     long tc_analyses, tc_factors, tc_foldoff, tc_klu, tc_pyiters, tc_pyends;
+    /* the analyses and factors a made attempt's new pattern freed (the
+       solver's `analyses_freed`, `factors_freed`) */
+    long tc_symfreed, tc_numfreed;
 } loop_t;
 long pcx_loop(loop_t *s);
 

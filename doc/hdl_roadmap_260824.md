@@ -11611,3 +11611,41 @@ the 18 served 159.7 -> 80.1 s (2.00x), mux8 34.06 -> 16.70 s (2.04x), voter25 25
 sanitizer's fast tier, 5 718 passed, and its deep tier on the loop tests, 169, clean.  A first gate's suite had failed
 two rules -- an argument never read (`_tc_ready`'s), a type declared in loop.c (the analysis's pointer type, now
 loop.h's: in pcx_abi.h it would have moved 21 pinned pairs) -- and ran again.
+
+## 2026-10-24 — 209. The complex KLU solver frees what it replaces -- `ComplexKLUSolver` and the C stepping loop's transform mode: voter25's peak memory 448 -> 390 MB, every byte the same
+
+**Why**  Found building 208 (Andreas: fix it): `ComplexKLUSolver.solve_prepared` overwrote its analysis and factor at a
+new pattern, and its factor at a residual fallback, without freeing either -- a voter25 Radau run left 1 152 of each
+(a new pattern every eight attempts), mux8 912 patterns and 94 fallbacks -- and the C stepping loop's transform mode
+(208) mirrored it.
+
+**Built.**  `ComplexKLUSolver._free_numeric` / `_free_symbolic` (`klu_z_free_numeric`, `klu_free_symbolic`, declared
+with its other entries): at a new key the factor and the analysis it holds are freed before the new analysis; at a
+residual fallback the factor before the fresh one; at the solver's end (`__del__`) both.  `analyses_freed` and
+`factors_freed` count the first two.  loop.c's `tc_kept`: a made attempt's new pattern (an attempt judged, or abandoned
+at the early abort) frees the analysis and factor it replaced; an attempt handed back frees its own and puts the old
+back (`tc_undo`), as before.  Its counts (`tc_symfreed`, `tc_numfreed`) are settled into the solver by
+`_tran_tcloop_c._settle`, which now runs however the call ends.  The holders of the handles compare them with the
+solver's before each use (`_tran_radau_tc`'s key, the loop's binding key): a freed handle is never used, and a new
+object at a freed address is the solver's own.
+
+**Not changed (found).**  `KLUSolver.solve` (real) overwrites its analysis and factor the same way at a new pattern
+and a residual fallback.  Its handles are borrowed by four C units (`_tran_newton_c`, `_dc_newton_c`, `_pcnr_c`,
+`_tran_lte_c`), each its own audit before a free can be added: an item of its own.
+
+**Measured.**  voter25 under Radau, each tree from its own directory: peak RSS 448 -> 390 MB (the run's growth 154 ->
+95 MB), 1 152 analyses and 1 152 factors freed, one of each left; 17.0 s both.
+
+**Tests.**  test_linearsolver: the complex solver frees the handle it held at a new pattern and at a residual
+fallback, one of each live, both at its end (a library wrapper noting each free).  test_tcloop_c: the twins compare
+the frees as well (the C frees what the Python frees); a run with new patterns made in C leaves one analysis and one
+factor.  test_pinned_pairs: 'the transform Newton' on its reference, 'the transform loop' on both sides, 'the transform
+solve and its frozen form', the stepping loop, the stage loop and the multistep walk on their twin, re-recorded, each
+twin's tests run first.  doc/transient_runtime.md: the transform loop's row; doc/transient_history.md:
+its entry.
+
+**Gate** (the main tree): the suite, 5 958 passed (6 skipped, 3 xfailed); the 27 gold decks, gear2 transient and
+standalone DC, against 208's, and under Radau against HEAD (28bf80ef, run from its worktree, which lacks the free: a
+tell): every digest, step, rejection, Newton count and path count identical, the time the same (the 18 transform
+decks 80.0 -> 79.9 s).  The sanitizer's fast tier, 5 723 passed, and its deep tier on the loop and solver tests, 254,
+clean -- the frees and the loop's twins under the address sanitizer.

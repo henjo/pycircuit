@@ -84,7 +84,8 @@ def _run(build, on, monkeypatch, make=None, setup=None, **kw):
              if k not in _NOT_STATE_T}
     zs = tr.__dict__.get('_radau_zsolver')
     state['complex solver'] = None if zs is None else (
-        zs.refactors, zs.factors, zs.analyses, zs.residual_fallbacks)
+        zs.refactors, zs.factors, zs.analyses, zs.residual_fallbacks, zs.analyses_freed,
+        zs.factors_freed)
     pc = tr.__dict__.get('_radau_Pc')
     state['_radau_Pc'] = None if pc is None else (
         repr(pc[0]), np.array(pc[1], dtype=complex).tobytes())
@@ -164,11 +165,16 @@ def test_the_early_abort_and_a_new_pattern_are_made_in_c(monkeypatch):
     """The pulsed chain at its defaults: the early abort armed and firing,
     the complex factor's pattern moving -- both made in C (the checks and
     aborts counted as the Python's; the new patterns' analyses and fresh
-    factors on the complex solver), the run the Python's."""
+    factors on the complex solver, the ones they replaced freed), the run
+    the Python's."""
     ca = _same(_pulsed, monkeypatch, steps_min=10, **_PULSE)
     assert ca.get('radau.early:checks', 0) > 0 and ca.get('radau.early:aborts', 0) > 0, ca
     assert ca.get('radau_tc:klu', 0) > 0, ca
     assert not ca.get('tcloop_c:bail:fold'), ca
+    ## (each pattern's analysis and factor freed where the next replaced it,
+    ## by the C as by the Python: one of each left)
+    _r, factors, analyses, _f, a_freed, f_freed = _same.last['state']['complex solver']
+    assert (analyses - a_freed, factors - f_freed) == (1, 1), _same.last['state']['complex solver']
 
 
 def test_an_entry_that_fills_its_outputs_comes_back(monkeypatch):

@@ -333,6 +333,57 @@ def test_complex_klu_reuses_the_ordering_across_solves():
     assert k.refactors == 3, 'the refactor path was not taken: %r' % k
 
 
+
+class _CountedFrees:
+    """A KLU library whose two frees note the handle each frees."""
+
+    NAMES = ('klu_free_symbolic', 'klu_z_free_numeric')
+
+    def __init__(self, lib):
+        self._real = lib
+        self.freed = {k: [] for k in self.NAMES}
+
+    def __getattr__(self, name):
+        f = getattr(self._real, name)
+        if name not in self.NAMES:
+            return f
+
+        def counted(pp, common):
+            self.freed[name].append(pp._obj.value)
+            return f(pp, common)
+        return counted
+
+
+def test_complex_klu_frees_what_it_replaces():
+    """The analysis and the factor freed where a new pattern replaces them,
+    the factor where a residual fallback does -- each the handle it held,
+    one of each live at a time -- and both at the solver's end."""
+    import gc
+    k = _complex_klu_or_skip()
+    lib = k._lib = _CountedFrees(k._lib)
+    b = np.ones(3, dtype=complex)
+    A1 = np.array([[5. + 2j, -1., 0.], [-1., 5. + 2j, -1.], [0., -1., 5. + 2j]])
+    A2 = A1.copy()
+    A2[0, 2] = 0.5j
+    k.solve(A1, b)
+    sym1, num1 = k._symbolic, k._numeric
+    assert lib.freed == {'klu_free_symbolic': [], 'klu_z_free_numeric': []}
+    x = k.solve(A2, b)
+    assert np.abs(A2.dot(x) - b).max() < 1e-10
+    assert lib.freed == {'klu_free_symbolic': [sym1], 'klu_z_free_numeric': [num1]}
+    ## (a residual fallback: every reused solve's check fails)
+    k.REFACTOR_RESIDUAL_TOL = -1.0
+    num2 = k._numeric
+    x = k.solve(A2 * 2.0, b)
+    assert np.abs((A2 * 2.0).dot(x) - b).max() < 1e-10
+    assert k.residual_fallbacks == 1 and lib.freed['klu_z_free_numeric'] == [num1, num2]
+    assert (k.analyses - k.analyses_freed, k.factors - k.factors_freed) == (1, 1), k
+    last = (k._symbolic, k._numeric)
+    del k
+    gc.collect()
+    assert (lib.freed['klu_free_symbolic'][-1], lib.freed['klu_z_free_numeric'][-1]) == last
+
+
 ## ---------------------------------------------------------------------------
 ## The shooting replays under every solver (2026-09-25).
 ## ---------------------------------------------------------------------------

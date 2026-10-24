@@ -990,6 +990,12 @@ class ComplexKLUSolver(object):
     subclass: that ABC's contract is real (`factor`/transpose semantics tuned
     for the shooting replays), and this solves complex systems for the Radau
     transform only.
+
+    KLU's objects are freed where they are replaced -- the analysis and the
+    factor at a new pattern, the factor at a residual fallback -- and at the
+    solver's end (`analyses_freed`, `factors_freed` count the first two).
+    Whoever holds their handles (`_tran_radau_tc`, the C stepping loop's
+    transform mode) compares them with the solver's before each use.
     """
 
     REFACTOR_RESIDUAL_TOL = 1e-8
@@ -1023,7 +1029,9 @@ class ComplexKLUSolver(object):
                                     ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int),
                 ('klu_z_solve', [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
                                  ctypes.c_int, c_dbl_p, ctypes.c_void_p],
-                 ctypes.c_int)):
+                 ctypes.c_int),
+                ('klu_free_symbolic', [ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int),
+                ('klu_z_free_numeric', [ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int)):
             f = getattr(lib, nm)
             f.argtypes = argt
             f.restype = rest
@@ -1042,9 +1050,37 @@ class ComplexKLUSolver(object):
         self.factors = 0
         self.refactors = 0
         self.residual_fallbacks = 0
+        ## (the analyses and factors freed where they were replaced)
+        self.analyses_freed = 0
+        self.factors_freed = 0
 
     def _ptr(self, arr, ctype):
         return arr.ctypes.data_as(self._ct.POINTER(ctype))
+
+    def _free_numeric(self):
+        """The factor held, freed (`klu_z_free_numeric`): None after."""
+        num, self._numeric = self._numeric, None
+        if num:
+            ct = self._ct
+            self._lib.klu_z_free_numeric(ct.byref(ct.c_void_p(num)), ct.byref(self._common))
+            self.factors_freed += 1
+
+    def _free_symbolic(self):
+        """The analysis held, freed (`klu_free_symbolic`): None after."""
+        sym, self._symbolic = self._symbolic, None
+        if sym:
+            ct = self._ct
+            self._lib.klu_free_symbolic(ct.byref(ct.c_void_p(sym)), ct.byref(self._common))
+            self.analyses_freed += 1
+
+    def __del__(self):
+        try:
+            if getattr(self, '_numeric', None):
+                self._free_numeric()
+            if getattr(self, '_symbolic', None):
+                self._free_symbolic()
+        except Exception:                                     # noqa: BLE001, S110  # pragma: no cover
+            pass                                              # interpreter shutdown
 
     def prepare(self, A):
         """``A`` as `solve` marshals it -- its product with a vector (the
@@ -1117,6 +1153,9 @@ class ComplexKLUSolver(object):
 
         reused = key == self._pattern and self._symbolic and self._numeric
         if not reused:
+            ## (the last pattern's factor and analysis freed first)
+            self._free_numeric()
+            self._free_symbolic()
             self._symbolic = self._lib.klu_analyze(
                 n, self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
                 ctypes.byref(self._common))
@@ -1156,6 +1195,7 @@ class ComplexKLUSolver(object):
             if not (resid <= self.REFACTOR_RESIDUAL_TOL):
                 self.residual_fallbacks += 1
                 self._fresh = None
+                self._free_numeric()
                 self._numeric = self._lib.klu_z_factor(
                     self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
                     self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._symbolic),

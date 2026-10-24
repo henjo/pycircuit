@@ -186,11 +186,15 @@ def run(loop):
     if run_ is None:
         return _declined(loop, 'bind')
     _SL._load(loop, e, run_, stage=_load_tc)
-    status = _call(e, run_)
+    ## (settled whatever happens after the call: the C may have freed the
+    ## solver's handles for a new pattern's)
+    try:
+        status = _call(e, run_)
+    finally:
+        _settle(e, run_)
     s = run_.s
     if status not in (_CODES['LOOP_DONE'], _CODES['LOOP_FULL']):
         _no('tcloop_c:bail:' + BAIL.get(status, str(status)))
-    _settle(e, run_)
     if not (s.attempts or s.early_aborts):
         c.backoff = min(2 * c.backoff + 1, _LC.BACKOFF_MAX)
         c.skip = c.backoff
@@ -660,7 +664,8 @@ def _settle(e, run_):
     (each attempt's record refactored once; an attempt not made refactored
     values the Python's repeat refactors again), and a new pattern's
     analyses and fresh factors -- its record (`_csc_last`, `_pattern`, its
-    `Ap`, `Ai` and mask as `_csc_of_dense` makes them) and its handles."""
+    `Ap`, `Ai` and mask as `_csc_of_dense` makes them) and its handles, the
+    analysis and factor it replaced freed by the C."""
     s, zs = run_.s, e.zs
     k = int(s.tc_refactors)
     if k:
@@ -668,6 +673,8 @@ def _settle(e, run_):
     if s.tc_analyses:
         zs.analyses += int(s.tc_analyses)
         zs.factors += int(s.tc_factors)
+        zs.analyses_freed += int(s.tc_symfreed)
+        zs.factors_freed += int(s.tc_numfreed)
     if s.pcur < 0:
         return
     tb, ts, m = run_.tbuf, run_.tctx.s, e.n - 1
