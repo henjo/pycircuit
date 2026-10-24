@@ -17,18 +17,22 @@ solves holds BLAS at one thread for its whole run:
   threads do not reach: there the limit would only cost its own call.
 
 * the small-signal analyses -- `AC.solve`, `Noise.solve`,
-  `TransimpedanceAnalysis.solve` (`blas_held`) and what is built on them
-  (`TwoPortAnalysis`, `FeedbackLoopAnalysis`): one dense solve or more at
-  each frequency.  Over 61 frequencies at eight gold decks' operating
-  points, 1.19-1.48x from 171 to 295 unknowns, the same at 88 and 429,
-  0.95x at 519 (where a dense complex LU starts to pay for its threads);
-  the answers move at rounding level (5e-9 relative at worst, an
-  ill-conditioned system's).  And a sweep's parallel workers no longer
-  oversubscribe the cores: one measured ~1 s a point threaded against
-  0.35-4.5 ms on one thread.
-
-The periodic small-signal analyses after a PSS (`PAC`, `pnoise`) are not
-held: not measured past the threading size.
+  `TransimpedanceAnalysis.solve` (`blas_held_below`) and what is built on
+  them (`TwoPortAnalysis`, `FeedbackLoopAnalysis`) -- below
+  `AC_THREADS_FROM` unknowns: one dense complex solve or more at each
+  frequency.  Over 61 frequencies at eight gold decks' operating points,
+  1.19-1.48x from 171 to 295 unknowns; on an RC ladder 1.11-1.27x from 303
+  to 423, and from 443 up the threads pay (0.84-0.97x to 503, 0.46x at
+  1503).  The answers move at rounding level (5e-9 relative at worst, an
+  ill-conditioned system's), and a sweep's parallel workers no longer
+  oversubscribe the cores below the size (one measured ~1 s a point
+  threaded against 0.35-4.5 ms on one thread);
+* the periodic small-signal analyses after a PSS -- every public method
+  of `PAC` (`blas_held_methods`: `solve`, `pnoise`, the spectra, the
+  covariances, the adjoint rows): many circuit-size operations through the
+  period, where the threads never paid -- one thread 0.97-1.76x for
+  `solve`, 1.11-1.57x for `pnoise`, from 53 to 803 unknowns under gear and
+  Radau.
 
 `threadpoolctl` is a dependency.  The import stays guarded anyway, and
 `blas_single_thread_available()` stays in the API, so a stripped environment
@@ -87,12 +91,45 @@ def _single_threaded_blas():
     return rec[1].limit(limits=1, user_api='blas')
 
 
+#: the size from which the small-signal analyses' dense complex solve, one a
+#: frequency, pays for OpenBLAS's threads: on an RC ladder (61 frequencies)
+#: one thread 1.11-1.27x from 303 to 423 unknowns, 0.84-0.97x from 443 to
+#: 503, 0.46x at 1503; gm19 (429) even, opampal (519) 0.95x
+AC_THREADS_FROM = 440
+
+
 def blas_held(solve):
     """`solve` with BLAS held at one thread for its whole run
-    (`_single_threaded_blas`): the small-signal analyses' (the module's
-    list)."""
+    (`_single_threaded_blas`)."""
     @functools.wraps(solve)
     def held(*args, **kwargs):
         with _single_threaded_blas():
             return solve(*args, **kwargs)
     return held
+
+
+def blas_held_below(threads_from):
+    """`blas_held` for an analysis's method where its circuit has fewer
+    than `threads_from` unknowns, BLAS's own threads from there (the
+    small-signal analyses', `AC_THREADS_FROM`)."""
+    def sized(solve):
+        held = blas_held(solve)
+
+        @functools.wraps(solve)
+        def run(self, *args, **kwargs):
+            if self.cir.n >= threads_from:
+                return solve(self, *args, **kwargs)
+            return held(self, *args, **kwargs)
+        return run
+    return sized
+
+
+def blas_held_methods(cls):
+    """`cls` with each public method, its own and its bases', `blas_held`
+    (`PAC`'s: the module's list)."""
+    import inspect
+    for name in dir(cls):
+        fn = inspect.getattr_static(cls, name)
+        if not name.startswith('_') and inspect.isfunction(fn):
+            setattr(cls, name, blas_held(fn))
+    return cls

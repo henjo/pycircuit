@@ -13,7 +13,7 @@ from pycircuit.post.result import IVResultDict
 from pycircuit.post.internalresult import InternalResultDict
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit._limiting import limit_sync, stateful_limiters
-from pycircuit.circuit._blas import blas_held
+from pycircuit.circuit._blas import AC_THREADS_FROM, blas_held_below
 
 from .toolkit import numeric
 from .transferfunction import TransferFunction
@@ -170,7 +170,7 @@ class AC(SSAnalysis):
         self.parameters = super().parameters + self.parameters            
         super().__init__(cir, toolkit=toolkit, **kvargs)
 
-    @blas_held
+    @blas_held_below(AC_THREADS_FROM)
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
         G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode,
                                               complexfreq = complexfreq, u = u)
@@ -235,7 +235,7 @@ class TransimpedanceAnalysis(SSAnalysis):
         super().__init__(cir, toolkit=toolkit, **kvargs)
 
             
-    @blas_held
+    @blas_held_below(AC_THREADS_FROM)
     def solve(self, freqs, outbranches, currentoutput=False,
               complexfreq=False, refnode=gnd):
         toolkit = self.toolkit 
@@ -406,7 +406,7 @@ class Noise(SSAnalysis):
         else:
             return myfunc(ss)
 
-    @blas_held
+    @blas_held_below(AC_THREADS_FROM)
     def solve(self, freqs, refnode=gnd, complexfreq = False, u = None):
         G, C, CY, u, x, ss = self.dc_steady_state(freqs, refnode,
                                               complexfreq = complexfreq, u = u)

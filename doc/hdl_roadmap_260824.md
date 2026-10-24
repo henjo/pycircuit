@@ -11773,3 +11773,29 @@ decks, gear2 transient and standalone DC, against 210's, and under Radau against
 worktree): every digest, step, rejection, Newton count and path count identical, the time the same.  The sanitizer's
 fast tier, 5 723 passed, and its deep tier on the loop, Radau, solver and BLAS tests, 297, clean -- the new tests
 among them.
+
+## 2026-10-24 — 214. The BLAS hold sized for AC and extended to PAC -- AC's family holds below 440 unknowns (from there the threads pay: 0.46x on one thread at 1 503), every `PAC` surface holds (1.1-1.8x)
+
+**Why**  Andreas: take on the two items 212 left open -- AC's hold above ~400 unknowns (one thread 5 % slower at
+opampal's 519), and PAC and pnoise, not measured past the threading size.
+
+**Measured**  AC over 61 frequencies on an RC ladder (the dense solve's cost the circuit's size, whatever its kind),
+one thread against OpenBLAS's 24, three rounds each, alternating: 303 unknowns 1.23x, 403 1.27x, 423 1.11-1.13x;
+443 0.97x, 463 0.87-0.90x, 483 0.94x, 503 0.80-0.85x, 603 0.72x, 803 0.60x, 1 003 0.58x, 1 503 0.46x; the gold
+decks gm19 (429) 1.00x, opampal (519) 0.95x.  With the box busy (a desktop's bursts) two threaded runs, at 443 and
+483, took 2.4-4x the one-thread time.  PAC on a driven noisy RC ladder with a diode (PSS of 60 points; `solve` at
+three frequencies, `pnoise` at one; five rounds): under gear, 53 to 803 unknowns, `solve` 0.92-1.76x and `pnoise`
+1.10-1.28x on one thread (a threaded `pnoise` at 103 once 35x slower, the box busy); under Radau, 103 to 503, `solve`
+0.97-1.09x and `pnoise` 1.23-1.57x.  PAC's work is many circuit-size operations through the period, not one large
+dense solve a frequency: its threads never paid.
+
+**Built**  `_blas.AC_THREADS_FROM` (440) and `blas_held_below(n)`: AC, Noise and Transimpedance hold below it and
+leave BLAS its threads from it.  `_blas.blas_held_methods`, a class decorator holding every public method of a class,
+its own and its bases', on `PAC`: 30 surfaces (`solve`, `pnoise`, the spectra, the covariances, the adjoint rows,
+the sampled noise).  Source introspection is unchanged (`inspect` follows `__wrapped__`): no pinned pair moved.
+
+**Tests**  test_blas_limit (+5, 13): AC, Noise and Transimpedance hold below the size and leave the pool alone on a
+450-section ladder; PAC's `solve` and `pnoise` read one thread inside -- each failing without the hold.
+
+**Gate** (the main tree): the suite, 5 974 passed (6 skipped, 3 xfailed).  No C, and no transient, DC or solver path
+changed (the gold decks run neither AC nor PAC): the gold decks and the sanitizer not run.

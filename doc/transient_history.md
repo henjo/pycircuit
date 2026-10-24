@@ -106,6 +106,14 @@ ms on one.  `_blas.blas_held` now holds `AC.solve`, `Noise.solve` and
 `TransimpedanceAnalysis.solve`; the answers move at rounding level (5e-9
 relative at worst, an ill-conditioned system's).
 
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 214): AC's hold sized, PAC's
+added.  On an RC ladder one thread wins below ~440 unknowns (1.11-1.27x
+from 303 to 423) and the threads from there (0.84-0.97x to 503, 0.46x at
+1503): `AC_THREADS_FROM` 440, `blas_held_below`.  PAC's surfaces never
+gained from the threads (one thread 0.92-1.76x for `solve`, 1.10-1.57x for
+`pnoise`, 53 to 803 unknowns, gear and Radau): `blas_held_methods` holds
+every one.
+
 ### `resample_uniform`
 
 2026-09-27 (moved from the code):

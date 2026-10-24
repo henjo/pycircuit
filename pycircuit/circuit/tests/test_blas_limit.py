@@ -1,6 +1,8 @@
-"""The BLAS thread limit (`_blas._single_threaded_blas`): held by the transient, PSS and the DC's dense LU."""
+"""The BLAS thread limit (`_blas._single_threaded_blas`): held by the transient, PSS, the DC's dense LU, the
+small-signal analyses below their size and every PAC surface."""
 import pytest
 
+from pycircuit.circuit import _blas
 from pycircuit.circuit import transient as tmod
 
 
@@ -102,12 +104,16 @@ def test_a_dc_solve_holds_blas_at_one_thread_where_its_dense_lu_is_threaded(
 
 
 @pytest.mark.parametrize('kind', ['ac', 'noise', 'transimpedance'])
-def test_the_small_signal_analyses_hold_blas_at_one_thread(kind, monkeypatch):
+@pytest.mark.parametrize('stages', [1, 450], ids=['small', 'large'])
+def test_the_small_signal_analyses_hold_blas_at_one_thread_below_its_size(
+        kind, stages, monkeypatch):
     """`AC.solve`, `Noise.solve` and `TransimpedanceAnalysis.solve` hold the
-    limit for their whole run (`_blas.blas_held`): a dense solve or more at
-    each frequency, 1.19-1.48x from 171 to 295 unknowns on the gold decks'
-    operating points (2026-10-24).  Read inside the analysis, the pool
-    opened to 4 threads first."""
+    limit for their whole run below `_blas.AC_THREADS_FROM` unknowns
+    (`blas_held_below`): a dense complex solve or more at each frequency,
+    1.19-1.48x from 171 to 295 unknowns on the gold decks' operating
+    points; from 440 the threads pay, and the pool is left alone (a ladder
+    of 450 sections).  Read inside the analysis, the pool opened to 4
+    threads first."""
     if not tmod.blas_single_thread_available():
         pytest.skip('no threadpoolctl')
     import numpy as np
@@ -121,7 +127,10 @@ def test_the_small_signal_analyses_hold_blas_at_one_thread(kind, monkeypatch):
         pytest.skip('no BLAS threadpoolctl can see')
     c = circuit.SubCircuit()
     c['vs'] = VS('in', gnd, vac=1.0)
-    c['r'] = R('in', 'out', r=1e3)
+    c['r'] = R('in', 'n1', r=1e3)
+    for k in range(1, stages):
+        c[f'r{k}'] = R(f'n{k}', f'n{k + 1}', r=1e3)
+    c['rl'] = R(f'n{stages}', 'out', r=1e3)
     c['c'] = C('out', gnd, c=1e-9)
     c['is'] = IS('out', gnd, iac=0.0)
     seen = []
@@ -141,6 +150,54 @@ def test_the_small_signal_analyses_hold_blas_at_one_thread(kind, monkeypatch):
         else:
             analysis_ss.TransimpedanceAnalysis(c, toolkit=circuit.numeric).solve(
                 1e3, [Branch('out', gnd)])
+        outside = [lc.num_threads for lc in threadpoolctl.ThreadpoolController().lib_controllers
+                   if lc.user_api == 'blas']
+    held = c.n < _blas.AC_THREADS_FROM
+    assert held == (stages == 1), c.n
+    assert seen and all(t == (1 if held else 4) for s in seen for t in s), (c.n, seen)
+    assert outside and all(t == 4 for t in outside), outside
+
+
+@pytest.mark.parametrize('surface', ['solve', 'pnoise'])
+def test_the_periodic_small_signal_analysis_holds_blas_at_one_thread(surface, monkeypatch):
+    """Every public method of `PAC` holds the limit for its call
+    (`_blas.blas_held_methods`): many circuit-size operations through the
+    period, where the threads never paid -- one thread 0.97-1.76x for
+    `solve`, 1.11-1.57x for `pnoise`, from 53 to 803 unknowns (2026-10-24).
+    Read inside the surface, the pool opened to 4 threads first."""
+    if not tmod.blas_single_thread_available():
+        pytest.skip('no threadpoolctl')
+    import threadpoolctl
+
+    from pycircuit.circuit import circuit
+    from pycircuit.circuit.elements import C, R, VSin, gnd
+    from pycircuit.circuit.shooting.pac import PAC
+    from pycircuit.circuit.shooting.pss import PSS
+    from pycircuit.circuit.simwarnings import AccuracyWarning
+    from pycircuit.circuit.tests._warnpolicy import quiet
+    probe = threadpoolctl.ThreadpoolController()
+    if not any(c.user_api == 'blas' for c in probe.lib_controllers):
+        pytest.skip('no BLAS threadpoolctl can see')
+    c = circuit.SubCircuit()
+    c['vs'] = VSin('in', gnd, vac=1.0, va=1.0, freq=1e3)
+    c['R'] = R('in', 'out', r=1e3, noisy=True)
+    c['C'] = C('out', gnd, c=1e-7)
+    pss = PSS(c, method='gear', reltol=1e-10)
+    with quiet(AccuracyWarning):
+        pss.solve(period=1e-3, timestep=1e-3 / 60, maxiterations=40)
+    pac = PAC(c, toolkit=circuit.numeric)
+    seen = []
+    orig = PAC._check_circuit
+
+    def spy(self, pss_):
+        seen.append([lc.num_threads for lc in probe.lib_controllers if lc.user_api == 'blas'])
+        return orig(self, pss_)
+    monkeypatch.setattr(PAC, '_check_circuit', spy)
+    with probe.limit(limits=4, user_api='blas'), quiet(AccuracyWarning):
+        if surface == 'solve':
+            pac.solve(pss, [300.0])
+        else:
+            pac.pnoise(pss, 300.0, 'out')
         outside = [lc.num_threads for lc in threadpoolctl.ThreadpoolController().lib_controllers
                    if lc.user_api == 'blas']
     assert seen and all(t == 1 for s in seen for t in s), seen

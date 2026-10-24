@@ -19,6 +19,7 @@ History: `doc/shooting_history.md`, `pac` (module level).
 import numpy as np
 import weakref
 from pycircuit.circuit import _paths
+from pycircuit.circuit._blas import blas_held_methods
 from pycircuit.circuit.analysis import Analysis
 from pycircuit.circuit.analysis import Parameter
 from pycircuit.circuit.analysis import remove_row_col
@@ -150,6 +151,7 @@ class SidebandResponse(object):
                 % (self.f_out, self.f0, self.sidebands))
 
 
+@blas_held_methods
 class PAC(_NoiseSources, _DrivenNoise, _LyapunovCovariance,
           _OscillatorCovariance, _SampledNoise, _ModalSpectra,
           _PhaseNoise, Analysis):
