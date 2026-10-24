@@ -1107,7 +1107,7 @@ RECORD = {
     'the readiness reads and their stamps': ('61efd629dd90', '76e34cda0583'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
     'the stage loop and its C': ('9b77e46fd9eb', '957fa262705d'),
-    'the transform loop and its C': ('b7818dc82a45', '1d554484ef47'),
+    'the transform loop and its C': ('b7818dc82a45', 'a4958cc34145'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

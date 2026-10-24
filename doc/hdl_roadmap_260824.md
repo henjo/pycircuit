@@ -11692,3 +11692,27 @@ slowlatch 17, todd3 13, jge 1 -- each deck's first the Python's (it makes the re
 standalone DC, against 209's, and under Radau against HEAD (a tell: HEAD made no `tcloop_c:fallbacks`): every digest,
 step, rejection, Newton count and path count but the loops' own identical.  The sanitizer's fast tier, 5 728 passed,
 and its deep tier on the loop, Radau and solver tests, 285, clean -- the fallback's tests under the address sanitizer.
+
+## 2026-10-24 — 211. The transform's fallback in C left the dense Newton's record on the loop's buffers -- a fallback the Python made after the C's read the C's last attempt's charge, sources and seeds
+
+**Found**  210's fallback twin, run alone (the first transient of a fresh process), counted otherwise: one fallback's
+dense Newton not converging where the Python-only run's did; the waveform the same, the Python's own Newton then
+converging.  210's glue let the C point the transient's `_radau_c` record's inputs and outputs (`qn`, `u`, `seed`,
+`Ya` ...) at the loop's buffers and left them there; `_tran_radau_c.solve` writes its own buffers, set once at the
+record's making, and the C read the loop's.  A Python fallback after the C's -- here where a cold process split the
+attempts otherwise -- read the C's last attempt's charge, sources and seeds; a Newton converging on them would have
+handed back another step's stages.  207's glue saves and restores them around its call; 210's did not.  The gold decks
+never met it: past a deck's first fallback every one was the C's.
+
+**Fixed**  `_tran_tcloop_c._call` saves the record's pointers before the C and restores them after, as
+`_tran_stageloop_c._call` does.
+
+**Tests**  test_tcloop_c (+2, 29): after the C's fallbacks the record's `qn`, `u` and `seed` its own buffers; the
+fixed-grid fallback twin in a fresh process (the C's run its first transient) the Python's -- both failing on 210's
+glue.  test_pinned_pairs: 'the transform loop and its C' re-recorded on its twin.
+
+**Gate** (one for 211, 212 and 213; the main tree): the suite, 5 969 passed (6 skipped, 3 xfailed); the 27 gold
+decks, gear2 transient and standalone DC, against 210's, and under Radau against HEAD (06c34cd0, run from its
+worktree): every digest, step, rejection, Newton count and path count identical, the time the same.  The sanitizer's
+fast tier, 5 723 passed, and its deep tier on the loop, Radau, solver and BLAS tests, 297, clean -- the new tests
+among them.

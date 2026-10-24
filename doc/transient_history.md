@@ -5624,3 +5624,13 @@ grid (the early abort armed) the Python's to the byte, the fallbacks on the
 transient compared too; a stop after a fallback's Newton held and served; a
 transform and dense Newton both not converging, the Python's; alive: the
 fallback's tableau a ulp off.
+
+## `_tran_tcloop_c._call` restores the fallback's record (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 211).  The transform mode's
+fallback (210) pointed the transient's `_radau_c` record's inputs and
+outputs at the loop's buffers and left them there: a fallback the Python
+made after the C's read the C's last attempt's charge, sources and seeds.
+Shown by the fallback twin run as a fresh process's first transient (the
+C and the Python then split the attempts otherwise).  `_call` saves and
+restores them, as `_tran_stageloop_c._call` does.

@@ -731,11 +731,18 @@ def _load_memo(e, run_):
 
 
 def _call(e, run_):
-    """The C's attempts: its status, the time the solve's."""
+    """The C's attempts: its status, the time the solve's.  The fallback's
+    record's inputs and outputs, pointed at the loop's buffers while the C
+    runs, pointed back at its own after (`_tran_stageloop_c._call`): the
+    Python's next `_tran_radau_c.solve` reads and writes those."""
+    rs = None if e.fb is None else e.fb[0].s
+    saved = None if rs is None else (rs.qn, rs.u, rs.seed, rs.Ya, rs.qa, rs.ia, rs.Ca, rs.Ga)
     t0 = time.perf_counter()
     try:
         return e.drv[1](run_.s)
     finally:
+        if saved is not None:
+            rs.qn, rs.u, rs.seed, rs.Ya, rs.qa, rs.ia, rs.Ca, rs.Ga = saved
         e.tr.statistics.solve_seconds += time.perf_counter() - t0
 
 

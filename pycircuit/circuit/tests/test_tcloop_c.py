@@ -234,6 +234,40 @@ def test_a_fallback_is_made_in_c(kw, make, monkeypatch):
         assert ca.get('radau.early:checks', 0) > 0, ca
 
 
+def test_after_the_cs_fallbacks_the_record_reads_its_own_inputs(monkeypatch):
+    """The C's fallbacks point the transient's dense Newton record at the
+    loop's buffers while they run, and back at its own after (`_call`): the
+    Python's next fallback writes its charge, sources and seeds there.  Left
+    on the loop's, it read the C's last attempt's -- the twin below, its
+    first transient in a fresh process, counted otherwise."""
+    a, ca = _run(_pulsed, True, monkeypatch, setup=_maxiter(3), **_FB_FIXED)
+    assert ca.get('tcloop_c:fallbacks', 0) > 0, ca
+    rec = a['family'].tr.__dict__['_radau_c']
+    for k in ('qn', 'u', 'seed'):
+        assert int(rec.ffi.cast('uintptr_t', getattr(rec.s, k))) == rec.buf[k].ctypes.data, k
+
+
+def test_the_fallback_twin_as_a_processs_first_transient():
+    """The fixed-grid fallback twin, the C's run the first transient of a
+    fresh process (no earlier test warming the watch): the C and the Python
+    then split the attempts otherwise -- a fallback the Python's after the
+    C's -- and the run is still the Python's."""
+    import subprocess
+    import sys
+    code = '''
+import pytest
+from pycircuit.circuit.tests import test_tcloop_c as T
+from pycircuit.circuit.tests.test_loop_c import _pulsed
+mp = pytest.MonkeyPatch()
+ca = T._same(_pulsed, mp, steps_min=10, setup=T._maxiter(3), **T._FB_FIXED)
+assert ca.get('tcloop_c:fallbacks', 0) > 1, ca
+print('OK', ca.get('tcloop_c:fallbacks'))
+'''
+    r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=600,
+                       check=False)
+    assert r.returncode == 0 and 'OK' in r.stdout, (r.stdout[-2000:], r.stderr[-4000:])
+
+
 def test_a_stop_after_a_fallbacks_newton_holds_it(monkeypatch):
     """The dense estimate's solve (numpy's dgesv, the fallback's alone) said
     failed at every call: each fallback stops after its converged Newton,
