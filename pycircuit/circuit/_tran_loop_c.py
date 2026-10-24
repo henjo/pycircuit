@@ -474,12 +474,14 @@ class LoopState:
     its Table)`, `_sources`), the watch counter at the last kept decline
     (`kept`, `_declined`), and the backoff (`skip`: the Python attempts left
     before the next entry; `backoff`: the spacing that set it); `stage`:
-    the stage family's loop (`_tran_stageloop_c`)."""
+    the stage family's loop (`_tran_stageloop_c`); `tkept`: its transform
+    mode's own kept decline (`_tran_tcloop_c`: the coupled mode's does not
+    keep it out)."""
 
-    __slots__ = ('backoff', 'kept', 'run', 'skip', 'stage', 'tab')
+    __slots__ = ('backoff', 'kept', 'run', 'skip', 'stage', 'tab', 'tkept')
 
     def __init__(self, stage=False):
-        self.run = self.tab = self.kept = None
+        self.run = self.tab = self.kept = self.tkept = None
         self.skip = self.backoff = 0
         self.stage = stage
 
@@ -922,7 +924,11 @@ def run(loop):
     if not ENABLED:
         return False
     if loop.c.stage:
-        from pycircuit.circuit import _tran_stageloop_c
+        ## (the transform's C Newton served last: its loop, `_tran_tcloop_c`;
+        ## else the coupled Newton's)
+        from pycircuit.circuit import _tran_stageloop_c, _tran_tcloop_c
+        if _tran_tcloop_c.serving(loop.tr, _watch.now()):
+            return _tran_tcloop_c.run(loop)
         return _tran_stageloop_c.run(loop)
     ## (entries that made no attempt -- a screen that fires every step, the
     ## SVD the Python's -- are spaced out: each such entry doubles the

@@ -18,6 +18,8 @@
 #include "lmmsens.h"
 #include "pcx_klu.h"
 #include "radau.h"
+#include "radau_tc.h"
+#include "radau_fold.h"
 #include "pcx_stagestep.h"
 #include "loop.h"
 
@@ -822,7 +824,14 @@ static long stage_take(loop_t *s, loop_attempt_t *a)
     s->held = 1;
     if (rs->klu.klu_sym) s->klu_cur = rs->klu.klu_out;
     a->A = rs->assemblies;
-    Y = s->oset[o][0] + (a->A - 1) * 3 * n;
+    Y = a->Ys = s->oset[o][0] + (a->A - 1) * 3 * n;
+    {
+        long b = ((a->A - 1) * 3 + 2) * n;
+        a->q3 = s->oset[o][1] + b;
+        a->i3 = s->oset[o][2] + b;
+        a->C3 = s->oset[o][3] + b * n;
+        a->G3 = s->oset[o][4] + b * n;
+    }
     a->cmax = s->cmax;
     if (!pcx_stage_screen(s->branch_fn, (branch_t *) s->branch,
                           s->oset[o][3] + (a->A - 1) * 3 * n * n, n, &a->cmax))
@@ -834,21 +843,687 @@ static long stage_take(loop_t *s, loop_attempt_t *a)
     return stage_estimate(s, a, Y);
 }
 
-/* an attempt judged (accepted, or retried at its point): its set the last
-   made attempt's (`gen0`), the one before kept by its stages (`ygen1`);
-   the screen's maximum; the running maximum the judgement made; the stage
-   KLU's counts and the family's; the last attempt made's record */
-static void stage_made(loop_t *s, const loop_attempt_t *a)
+/* the coupled family's part of an attempt made: its set the last made
+   attempt's (`gen0`), the one before kept by its stages (`ygen1`), its
+   assemblies, the stage KLU's counts */
+static void co_made(loop_t *s, const loop_attempt_t *a)
 {
     radau_t *rs = (radau_t *) s->radau;
-    lte_t *le = (lte_t *) s->lte;
-    long n = s->n, i;
+    long n = s->n;
     if (s->gen0 >= 0) {
         COPY(s->ygen1, s->oset[s->gen0][0], s->A0 * 3 * n);
         s->A1 = s->A0;
     }
     s->gen0 = a->set;
     s->A0 = a->A;
+    s->st_assemblies += a->A;
+    if (rs->klu.klu_sym) {
+        s->st_klu_refactors += rs->klu.refactors;
+        s->st_klu_factors += rs->klu.factors;
+        s->st_klu_pivot += rs->klu.pivot_fallbacks;
+        s->st_klu_resid += rs->klu.residual_fallbacks;
+        s->st_klu_on++;
+    }
+}
+
+/* ---- the transform's attempts (`tmode`: `_rk_step_transformed`) ---- */
+
+/* (the family's retry law, below: the early abort's rejection takes it) */
+static double stage_retry(loop_t *s, const loop_attempt_t *a, double worst, double p);
+
+/* the memo's generation in slot g: its record k's state (n) */
+static double *tg_state(const loop_t *s, long g, long k)
+{
+    return s->tg + (g * LOOP_TG_MAX + k) * s->n;
+}
+
+/* the record of the state x in slot g (`_memo_get`'s key: the state's
+   bytes): its index, or -1 */
+static long tg_find(const loop_t *s, long g, const double *x)
+{
+    long k;
+    for (k = 0; k < s->tg_n[g]; k++)
+        if (!memcmp(tg_state(s, g, k), x, (size_t) s->n * sizeof(double))) return k;
+    return -1;
+}
+
+/* `_memo_get`'s record at x: its passes (LOOP_TG_*) -- this attempt's
+   generation's, else the one before's; 0 where neither holds one */
+static long tg_get(const loop_t *s, const double *x)
+{
+    long k = tg_find(s, s->tg_gen, x);
+    if (k >= 0) return s->tg_f[s->tg_gen][k];
+    k = tg_find(s, s->tg_prev, x);
+    return k >= 0 ? s->tg_f[s->tg_prev][k] : 0;
+}
+
+/* `_memo_put` of the passes f at x: into this attempt's record, made from
+   the one before's where that holds one (an attempt puts four at most
+   into its new generation: LOOP_TG_MAX holds them) */
+static void tg_put(loop_t *s, const double *x, long f)
+{
+    long g = s->tg_gen, k = tg_find(s, g, x), j;
+    if (k < 0) {
+        k = s->tg_n[g]++;
+        memcpy(tg_state(s, g, k), x, (size_t) s->n * sizeof(double));
+        j = tg_find(s, s->tg_prev, x);
+        s->tg_f[g][k] = j >= 0 ? s->tg_f[s->tg_prev][j] : 0;
+    }
+    s->tg_f[g][k] |= f;
+}
+
+/* `_memo_step`: the last made attempt's generation becomes the one before
+   and the attempt's own opens in the slot neither holds -- the two kept
+   until it is made, so a stop takes the roll back (`tg_undo`) */
+static void tg_roll(loop_t *s, loop_attempt_t *a)
+{
+    a->tg_gen0 = s->tg_gen;
+    a->tg_prev0 = s->tg_prev;
+    s->tg_prev = s->tg_gen;
+    s->tg_gen = 3 - a->tg_gen0 - a->tg_prev0;
+    s->tg_n[s->tg_gen] = 0;
+}
+
+/* an attempt not made, taken back: the memo's roll, and the point's f0
+   where it made it (the Python's repeat makes and counts both) */
+static void tc_undo(loop_t *s, const loop_attempt_t *a)
+{
+    s->tg_gen = a->tg_gen0;
+    s->tg_prev = a->tg_prev0;
+    s->have_f0 = a->had_f0;
+    s->f0_point = a->f0_point0;
+    if (a->repat) {
+        /* (the new pattern's analysis and factor freed, the old put back:
+           the Python's repeat makes its own) */
+        radau_tf_t *tf = (radau_tf_t *) s->tc;
+        radau_fold_t *fo = (radau_fold_t *) s->fold;
+        void *sym = tf->Symbolic, *num = tf->Numeric;
+        ((klu_free_numeric_t) s->klu_free_znum)(&num, tf->Common);
+        ((klu_free_numeric_t) s->klu_free_sym)(&sym, tf->Common);
+        tf->Symbolic = a->old_sym;
+        tf->Numeric = a->old_num;
+        tf->Ap = (int *) a->old_Ap;
+        tf->Ai = (int *) a->old_Ai;
+        fo->nz = (const uint8_t *) a->old_nz;
+        fo->nnz = a->old_nnz;
+        fo->nz_at = a->old_at;
+        s->pcur = a->old_pcur;
+    }
+}
+
+/* x_n's record's pass k (0 q, 1 i, 2 C, 3 G) as the C reads it: in the
+   end set it was made in (`te_x`), else `xr_*` */
+static const double *tc_xv(const loop_t *s, long k)
+{
+    if (s->te_x >= 0) return s->te[s->te_x][k];
+    return k == 0 ? s->xr_q : k == 1 ? s->xr_i : k == 2 ? s->xr_C : s->xr_G;
+}
+
+/* one core call at x as `_tran_core.passes` makes it (formula 4, the want
+   bits `bits` -- the pattern's where the core has one, C zeroed first
+   then -- each pass's values whatever else is asked): q and C into the
+   buffers given, G and i from the core's bins where given; the core's
+   flags are not numpy's: cleared */
+static void tc_pass(loop_t *s, const double *x, long bits, double *q, double *C, double *G,
+                    double *iv)
+{
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    core_fn_t core = (core_fn_t) tf->core_fn;
+    long n = s->n;
+    if (s->pass_zero) memset(C, 0, (size_t) (n * n) * sizeof(double));
+    core(tf->core, x, tf->T, bits, PCX_FORMULA_PASSES, 0.0, 0.0, 0.0, 1.0, 0.0,
+         tf->dummy, tf->dummy, tf->dummy, tf->dummy, C, C, q, tf->dummy, tf->dummy, tf->dummy,
+         tf->dummy);
+    if (G) COPY(G, tf->binG, n * n);
+    if (iv) COPY(iv, tf->bini, n);
+    feclearexcept(FE_ALL_EXCEPT);
+}
+
+/* x_n's passes made into `xr_*` where the C holds none of `need` (one
+   call makes them all: each pass's values whatever else it is asked) */
+static void tc_xmake(loop_t *s, long need)
+{
+    if (s->te_x >= 0 || (s->xfields & need) == need) return;
+    tc_pass(s, s->xlast, s->pass_bits, s->xr_q, s->xr_C, s->xr_G, s->xr_i);
+    s->xfields = LOOP_TG_Q | LOOP_TG_I | LOOP_TG_C | LOOP_TG_G;
+}
+
+/* numpy's division of the complex (re, im) by the real h: its loop's form
+   (Smith's, the divisor's imaginary part +0.0) */
+static void tc_cdiv(double re, double im, double h, double *qr, double *qi)
+{
+    double rat = 0.0 / h, scl = 1.0 / (h + 0.0 * rat);
+    *qr = (re + im * rat) * scl;
+    *qi = (im - re * rat) * scl;
+}
+
+/* `_radau_frozen`'s scalars for the step h: P's rows 0 and 1 (the
+   Newton's `p`) where h is not the step they were made for (numpy's
+   `(diag(lam) @ Tinv) / h` under its errstate(all='raise'), the product
+   numpy's in `tcm`), then the factors' s0 = lam0.real / h and c1 = lam1 /
+   h.  0, or 1: a flag that errstate raises on, or h outside the fold's
+   range (the Python's) */
+static int tc_scalars(loop_t *s, double h)
+{
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    radau_fold_t *fo = (radau_fold_t *) s->fold;
+    long k;
+    if (!(1e-290 < h && h < 1e290)) return 1;
+    feclearexcept(FE_ALL_EXCEPT);
+    if (!s->tc_hp || h != s->tc_h) {
+        for (k = 0; k < 6; k++)
+            tc_cdiv(s->tcm[2 * k], s->tcm[2 * k + 1], h, &tf->p[2 * k], &tf->p[2 * k + 1]);
+        if (fetestexcept(PCX_FP_FLAGS)) {
+            feclearexcept(FE_ALL_EXCEPT);
+            s->tc_hp = 0;
+            return 1;
+        }
+        s->tc_h = h;
+        s->tc_hp = 1;
+    }
+    fo->s0 = s->lam0r / h;
+    tc_cdiv(s->lam1r, s->lam1i, h, &fo->c1r, &fo->c1i);
+    feclearexcept(FE_ALL_EXCEPT);
+    return 0;
+}
+
+/* the complex factor's new pattern (the fold's nonzeros off the last
+   record's: `ComplexKLUSolver.prepare`'s new record, `_csc_of_dense`'s
+   gather) into the loop's pattern buffer the current one is not in -- Ap,
+   Ai and the mask laid out as A.T, its values into the fold's `ax` -- then
+   `solve_prepared`'s new pattern: `klu_analyze` and a fresh
+   `klu_z_factor` on it.  What it replaces is kept in the attempt for
+   `tc_undo`.  0, or LOOP_BAIL_FOLD (KLU refused: the Python's) */
+static long tc_repattern(loop_t *s, loop_attempt_t *a)
+{
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    radau_fold_t *fo = (radau_fold_t *) s->fold;
+    long m = s->n - 1, i, j, k = 0, b = s->pcur == 0 ? 1 : 0;
+    int *Ap = s->pAp[b], *Ai = s->pAi[b];
+    uint8_t *nz = s->pnz[b];
+    void *sym, *num;
+    Ap[0] = 0;
+    for (j = 0; j < m; j++) {
+        for (i = 0; i < m; i++) {
+            const double re = fo->cf[2 * (i * m + j)], im = fo->cf[2 * (i * m + j) + 1];
+            const int on = re != 0.0 || im != 0.0;
+            nz[j * m + i] = (uint8_t) on;
+            if (on) {
+                Ai[k] = (int) i;
+                fo->ax[2 * k] = re;
+                fo->ax[2 * k + 1] = im;
+                k++;
+            }
+        }
+        Ap[j + 1] = (int) k;
+    }
+    sym = ((klu_analyze_t) s->klu_analyze)((int) m, Ap, Ai, tf->Common);
+    if (!sym) return LOOP_BAIL_FOLD;
+    num = ((klu_factor_t) s->klu_zfactor)(Ap, Ai, fo->ax, sym, tf->Common);
+    if (!num) {
+        ((klu_free_numeric_t) s->klu_free_sym)(&sym, tf->Common);
+        return LOOP_BAIL_FOLD;
+    }
+    a->repat = 1;
+    a->old_sym = tf->Symbolic;
+    a->old_num = tf->Numeric;
+    a->old_Ap = tf->Ap;
+    a->old_Ai = tf->Ai;
+    a->old_nz = (void *) fo->nz;
+    a->old_nnz = fo->nnz;
+    a->old_at = fo->nz_at;
+    a->old_pcur = s->pcur;
+    tf->Symbolic = sym;
+    tf->Numeric = num;
+    tf->Ap = Ap;
+    tf->Ai = Ai;
+    fo->nz = nz;
+    fo->nnz = k;
+    fo->nz_at = 1;
+    s->pcur = b;
+    return 0;
+}
+
+/* `_radau_frozen`'s factors for the step (radau_fold.c, numpy's bytes) of
+   x_n's C and G reduced: the real one into the loop's LU buffer
+   column-major (`NumpyLU.make`; the Newton's first solve factors it), the
+   complex one's nonzeros in the last record's pattern for KLU (the fold's
+   `ax`, the Newton's `Ax`).  The fold counted where the Python takes it
+   (P the step's already).  0, or LOOP_BAIL_FOLD: a flag, a non-finite
+   input, nonzeros off the pattern (the Python's own path) */
+static long tc_frozen(loop_t *s, loop_attempt_t *a)
+{
+    radau_fold_t *fo = (radau_fold_t *) s->fold;
+    long n = s->n, m = n - 1, i, j;
+    a->fold = s->tc_hp && a->h == s->tc_h;
+    if (tc_scalars(s, a->h)) return LOOP_BAIL_FOLD;
+    reduce_mat(tc_xv(s, 2), s->crr, n, s->iref);
+    reduce_mat(tc_xv(s, 3), s->grr, n, s->iref);
+    CALL(s->fold_fn, pcx_radau_fold, fo);
+    if (fo->status != FOLD_STATUS_MADE) return LOOP_BAIL_FOLD;
+    if (!fo->same) {
+        long st = tc_repattern(s, a);
+        if (st) return st;
+    }
+    for (j = 0; j < m; j++)
+        for (i = 0; i < m; i++) s->lua[j * m + i] = fo->rf[i * m + j];
+    return 0;
+}
+
+/* x_n's charge for the context (`_coupled_stage_context`, before the
+   memo's roll: the record's, else a 'q' pass), the roll, then its C and G
+   frozen (the record's, else a 'CG' pass, put) */
+static void tc_start(loop_t *s, loop_attempt_t *a)
+{
+    const long cg = LOOP_TG_C | LOOP_TG_G;
+    if (!(tg_get(s, s->xlast) & LOOP_TG_Q)) a->xpass++;
+    tc_xmake(s, LOOP_TG_Q);
+    tg_roll(s, a);
+    if ((tg_get(s, s->xlast) & cg) != cg) {
+        a->xpass++;
+        tg_put(s, s->xlast, cg);
+    }
+    tc_xmake(s, cg);
+}
+
+/* THE EARLY ABORT's check at the probe's iterate (`_radau_early_check`):
+   f0 = -(i_n + u(t_n)) once a point (`early_f0`: x_n's i -- the memo's,
+   else an 'i' pass -- and the start's source), F1 at the iterate, `C_n F1 +
+   f0` (numpy's dgemv), reduced, dgetrs on the probe's LU, normalised by
+   lte.c's STAGE judgement (`normalised(kept=True)`: the reference row out,
+   the running reference folded in as `_reference` folds it).  0 to go on,
+   LOOP_JUDGE_EARLY (over the threshold: abandoned, `worst` the rejection's),
+   or the status to stop with */
+static long tc_check(loop_t *s, loop_attempt_t *a)
+{
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    lte_t *le = (lte_t *) s->lte;
+    long n = s->n, r = s->iref, i, ri, st;
+    int64_t m = n - 1, one = 1, info = 0;
+    double h = a->h, *F = s->eF, *rhs = le->lte;
+    const double *x = s->xlast, *Y = tf->Y, *Cn;
+    int flags = s->under_ok ? (PCX_FP_FLAGS & ~FE_UNDERFLOW) : PCX_FP_FLAGS;
+    if (!s->have_f0 || s->f0_point != s->npoint - 1) {
+        if (!(tg_get(s, x) & LOOP_TG_I)) a->xpass++;
+        tc_xmake(s, LOOP_TG_I);
+        if ((st = stage_u(s, a, a->t0, 4)) != 0) return st;
+        for (i = 0; i < n; i++) s->tcf0[i] = -(tc_xv(s, 1)[i] + s->ust[4 * n + i]);
+        s->have_f0 = 1;
+        s->f0_point = s->npoint - 1;
+    }
+    Cn = tc_xv(s, 2);
+    feclearexcept(FE_ALL_EXCEPT);
+    for (i = 0; i < n; i++)
+        F[i] = ((s->dd1 * (Y[i] - x[i]) + s->dd2 * (Y[n + i] - x[i]))
+                + s->dd3 * (Y[2 * n + i] - x[i])) / h;
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, Cn, n, F, 1,
+                           0.0, rhs, 1);
+    for (i = 0; i < n; i++) rhs[i] = rhs[i] + s->tcf0[i];
+    if (fetestexcept(flags)) return LOOP_BAIL_ESTIMATE;
+    for (i = 0, ri = 0; i < n; i++) if (i != r) s->eb[ri++] = rhs[i];
+    ((dgetrs64_t) tf->dgetrs)("N", &m, &one, s->lua, &m, s->lupiv, s->eb, &m, &info, (size_t) 1);
+    feclearexcept(FE_ALL_EXCEPT);
+    if (info != 0) return LOOP_BAIL_ESTIMATE;
+    pcx_put_ref(s->eb, rhs, n, r);
+    le->xc = Y + 2 * n;
+    le->xl = x;
+    le->h1 = h;
+    le->run = s->run;
+    le->have_run = s->have_run;
+    if (CALL(s->lte_fn, pcx_lte, le) != LTE_DONE) return LOOP_BAIL_LTE;
+    if (s->keeps_run) {
+        COPY(s->run, le->out, n);
+        s->have_run = 1;
+    }
+    a->checked = 1;
+    a->worst = le->worst;
+    return le->err > s->tc_th ? LOOP_JUDGE_EARLY : 0;
+}
+
+/* radau_tc.c's Newton on the loop's struct for `maxit` iterations from the
+   seeds in `useed`, its end passes into the end set `o`: its status, its
+   iterations and refactors added to the attempt's */
+static long tc_call(loop_t *s, loop_attempt_t *a, long maxit, long o)
+{
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    long st;
+    tf->maxiter = maxit;
+    tf->e_q = s->te[o][0];
+    tf->e_i = s->te[o][1];
+    tf->e_C = s->te[o][2];
+    tf->e_G = s->te[o][3];
+    st = CALL(s->tc_fn, pcx_radau_tc, tf);
+    a->iters += tf->iters;
+    a->refact += tf->refactored;
+    return st;
+}
+
+/* on a new pattern (`tc_repattern`) the C Newton declines in the Python
+   (`radau_tc:klu`) and the Python loop iterates: its first complex solve
+   on the fresh factor, its second refactoring the same values (both made
+   here: radau_tc.c with the numeric fresh, then with a refactor).  Armed,
+   its first iteration alone, the check, then the C Newton serves the rest
+   from the iterate -- the pattern now analysed -- its source reads the
+   memo's hits; not armed, the Python loop makes every iteration.  The
+   loop's iterations counted as its (`pyit`), the C's as the C's */
+static long tc_newton_repat(loop_t *s, loop_attempt_t *a, long o)
+{
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    long n = s->n, st, it;
+    tf->klu_fresh = 1;
+    st = tc_call(s, a, 1, o);
+    a->pyit = 1;
+    a->iters = 0;
+    if (st != RADAU_TC_MAXITER) return st;
+    if (a->armed && s->tc_maxit > 1) {
+        if ((st = tc_check(s, a)) != 0) return st;
+        COPY(s->useed, tf->Y, 3 * n);
+        tf->klu_fresh = 0;
+        st = tc_call(s, a, s->tc_maxit - 1, o);
+        a->tuhit = 3 + 3 * (a->iters - 1);
+        a->served = st == RADAU_TC_CONVERGED;
+        return st;
+    }
+    if (s->tc_maxit <= 1) return st;
+    COPY(s->useed, tf->Y, 3 * n);
+    tf->klu_fresh = 0;
+    it = a->iters;
+    st = tc_call(s, a, s->tc_maxit - 1, o);
+    a->pyit += a->iters - it;
+    a->iters = 0;
+    return st;
+}
+
+/* the transform's Newton from the seeds: radau_tc.c on the loop's struct
+   -- x_n's charge, the stage sources, the factors as `tc_frozen` left them
+   (the LU made at the first real solve, the complex values refactored at
+   the first complex one) -- with its end passes into the end set x_n's
+   record is not in.  Armed, its first iteration alone (the probe), the
+   check, then the rest from the iterate (`resume`: the factors kept); on a
+   new pattern, `tc_newton_repat`.  0, LOOP_JUDGE_EARLY (abandoned at the
+   check), or LOOP_BAIL_TRANSFORM (handed back, or not converged: the
+   Python's dense fallback), LOOP_BAIL_END (no end passes: a non-finite
+   stage), the check's stop */
+static long tc_newton(loop_t *s, loop_attempt_t *a)
+{
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    long n = s->n, o = s->te_x == 0 ? 1 : 0, st, it;
+    tf->qn = tc_xv(s, 0);
+    tf->u = s->ust;
+    tf->seed = s->useed;
+    tf->h = a->h;
+    tf->lu_a = s->lua;
+    tf->lu_ipiv = s->lupiv;
+    tf->lu_info = -1;
+    tf->klu_fresh = 0;
+    if (a->repat) {
+        st = tc_newton_repat(s, a, o);
+        if (st == LOOP_JUDGE_EARLY) return st;
+    } else if (a->armed && s->tc_maxit > 1) {
+        st = tc_call(s, a, 1, o);
+        if (st == RADAU_TC_MAXITER) {
+            a->probed = 1;
+            if ((st = tc_check(s, a)) != 0) return st;
+            COPY(s->useed, tf->Y, 3 * n);
+            it = a->iters;
+            st = tc_call(s, a, s->tc_maxit - 1, o);
+            a->tuhit = 3 * (a->iters - it);
+        }
+        a->served = st == RADAU_TC_CONVERGED;
+    } else {
+        st = tc_call(s, a, s->tc_maxit, o);
+        a->tuhit = 3 * (a->iters - 1);
+        a->served = st == RADAU_TC_CONVERGED;
+    }
+    if (st != RADAU_TC_CONVERGED) return LOOP_BAIL_TRANSFORM;
+    if (!tf->end_done) return LOOP_BAIL_END;
+    a->pyend = !a->served;
+    a->set = o;
+    a->Ys = tf->Y;
+    a->q3 = s->te[o][0];
+    a->i3 = s->te[o][1];
+    a->C3 = s->te[o][2];
+    a->G3 = s->te[o][3];
+    return 0;
+}
+
+/* `_stage_end_passes`: the end's record where the memo lacks passes of it
+   -- the Newton's end passes handed and put whole (`radau.fuse:handed`,
+   the pass they stand for counted where any was missing), or, the memo
+   holding some, the missing ones by a pass (`:unhanded`) */
+static void tc_end(loop_t *s, loop_attempt_t *a)
+{
+    const long all = LOOP_TG_Q | LOOP_TG_I | LOOP_TG_C | LOOP_TG_G;
+    const double *y3 = a->Ys + 2 * s->n;
+    long need = all & ~tg_get(s, y3);
+    if (a->pyend) {
+        /* (the Python loop converged: no hand-off -- the missing passes by
+           one call, put) */
+        a->fuse = need ? 4 : 5;
+        if (need) tg_put(s, y3, need);
+        return;
+    }
+    if (need == all) {
+        a->fuse = 2;
+        tg_put(s, y3, all);
+    } else if (need) {
+        a->fuse = 3;
+        tg_put(s, y3, need);
+    } else {
+        a->fuse = 1;
+    }
+}
+
+/* `_branch_after_coupled` on the stages: each one's C as `_C_at_state`
+   reads it -- the memo's (`memo.C:memo`), else `cir.C`, the core's pass
+   bit for bit, put -- and branch.c on it, the screen's maximum carried.
+   Nothing read where nothing is screened.  0, or LOOP_BAIL_SCREEN */
+static long tc_screen(loop_t *s, loop_attempt_t *a)
+{
+    branch_t *br = (branch_t *) s->branch;
+    long n = s->n, nn = n * n, j;
+    double cm = s->cmax;
+    a->cmax = s->cmax;
+    if (!br) return 0;
+    a->screened = 1;
+    for (j = 0; j < 3; j++) {
+        const double *y = a->Ys + j * n, *Cj = a->C3;
+        if (tg_get(s, y) & LOOP_TG_C) {
+            a->mcmemo++;
+        } else {
+            a->cpass++;
+            tg_put(s, y, LOOP_TG_C);
+        }
+        if (j < 2) {
+            /* (C alone: `cir.C`'s, the pattern's where the core has one) */
+            tc_pass(s, y, PCX_PASS_C | (s->pass_bits & PCX_WANT_PATTERN), s->tcq,
+                    s->tcC + j * nn, NULL, NULL);
+            Cj = s->tcC + j * nn;
+        }
+        br->C = Cj;
+        br->cmax = cm;
+        if (PCX_SCALL(s->branch_fn, pcx_branch, br) != BRANCH_QUIET) return LOOP_BAIL_SCREEN;
+        cm = br->ref;
+    }
+    a->cmax = cm;
+    return 0;
+}
+
+/* the estimate on the frozen real solve (`_radau_error_estimate` given the
+   transform's `real`): x_n's record -- the memo's (`radau.est:memo`), else
+   the core's 'CGi' -- F1, `C_n F1 + f0` (numpy's dgemv), reduced, dgetrs
+   on the Newton's LU (`NumpyLU.solve`), +0.0 at the reference row, into
+   the error test's `lte`.  0, or LOOP_BAIL_ESTIMATE where numpy would warn
+   or the solve fails */
+static long tc_estimate(loop_t *s, loop_attempt_t *a)
+{
+    lte_t *le = (lte_t *) s->lte;
+    radau_tf_t *tf = (radau_tf_t *) s->tc;
+    const long need = LOOP_TG_C | LOOP_TG_G | LOOP_TG_I;
+    long n = s->n, r = s->iref, i, ri;
+    int64_t m = n - 1, one = 1, info = 0;
+    double h = a->h, *F = s->eF, *rhs = le->lte;
+    const double *x = s->xlast, *u0 = s->ust + 4 * n, *Y = a->Ys, *Cn, *in;
+    int flags = s->under_ok ? (PCX_FP_FLAGS & ~FE_UNDERFLOW) : PCX_FP_FLAGS;
+    a->estimated = 1;
+    if ((tg_get(s, x) & need) == need) a->estmemo = 1;
+    else a->xpass++;
+    tc_xmake(s, need);
+    Cn = tc_xv(s, 2);
+    in = tc_xv(s, 1);
+    feclearexcept(FE_ALL_EXCEPT);
+    for (i = 0; i < n; i++)
+        F[i] = ((s->dd1 * (Y[i] - x[i]) + s->dd2 * (Y[n + i] - x[i]))
+                + s->dd3 * (Y[2 * n + i] - x[i])) / h;
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, Cn, n, F, 1,
+                           0.0, rhs, 1);
+    for (i = 0; i < n; i++) rhs[i] = rhs[i] + (-(in[i] + u0[i]));
+    if (fetestexcept(flags)) return LOOP_BAIL_ESTIMATE;
+    for (i = 0, ri = 0; i < n; i++) if (i != r) s->eb[ri++] = rhs[i];
+    ((dgetrs64_t) tf->dgetrs)("N", &m, &one, s->lua, &m, s->lupiv, s->eb, &m, &info, (size_t) 1);
+    feclearexcept(FE_ALL_EXCEPT);
+    if (info != 0) return LOOP_BAIL_ESTIMATE;
+    pcx_put_ref(s->eb, rhs, n, r);
+    return 0;
+}
+
+/* the transform's attempt past its start (`tc_take`): the factors, the
+   seeds, the sources at the stage times, the Newton and its end passes,
+   the end's record, the screens, the sources at the end and, adaptive, at
+   the start, and the estimate -- `_rk_step_transformed` and
+   `_finish_radau`'s order */
+static long tc_body(loop_t *s, loop_attempt_t *a)
+{
+    long i, st;
+    if ((st = tc_frozen(s, a)) != 0) return st;
+    a->fast = pcx_stage_seeds(s->pred_fn, (pred_t *) s->pred, s->hk, a->ts, s->xlast, s->useed,
+                              s->n);
+    if (a->fast < 0) return LOOP_BAIL_PRED;
+    for (i = 0; i < 3; i++) if ((st = stage_u(s, a, a->ts[i], i)) != 0) return st;
+    if ((st = tc_newton(s, a)) != 0) return st;
+    tc_end(s, a);
+    if ((st = tc_screen(s, a)) != 0) return st;
+    if ((st = stage_u(s, a, a->tn, 3)) != 0) return st;
+    if (!s->adaptive) return 0;
+    if ((st = stage_u(s, a, a->t0, 4)) != 0) return st;
+    return tc_estimate(s, a);
+}
+
+/* 2. take, the transform's (`_rk_step_transformed`): the stage times from
+   the step's end, the step's nodes in merge order, x_n's charge, the
+   memo's roll and x_n's C and G frozen (`tc_start`), then `tc_body`.  0,
+   or the status to stop with -- the memo's roll taken back: nothing of
+   the attempt made (the Python's repeat refactors the same values, and
+   the LU is the loop's own) */
+static long tc_take(loop_t *s, loop_attempt_t *a)
+{
+    long i, st;
+    double h = a->h;
+    a->tn = a->t + h;
+    a->t0 = a->tn - h;
+    for (i = 0; i < 3; i++) a->ts[i] = a->t0 + s->ct[i] * h;
+    a->formula = 0;
+    a->nu = a->umiss = a->uhit = a->passes = a->estmemo = 0;
+    a->iters = a->refact = a->xpass = a->cpass = a->fuse = a->mcmemo = a->fold = 0;
+    a->tuhit = a->served = a->probed = a->checked = a->screened = a->estimated = 0;
+    a->repat = a->pyit = a->pyend = 0;
+    /* (armed as the stepping loop's `radau_arm` arms it: adaptive, a
+       threshold, a full attempt left in the point's budget, above minstep) */
+    a->armed = s->adaptive && s->tc_th > 0.0 && s->rejects + 1 < s->max_reject
+               && s->point_retries + 1 < s->max_retries && h > s->minstep;
+    s->held = 0;
+    s->cur_h = h;
+    if (!pcx_stage_order(a->ts, a->tn, s->hk, s->ht, a->nodes, a->ord)) return LOOP_BAIL_NODES;
+    a->had_f0 = s->have_f0;
+    a->f0_point0 = s->f0_point;
+    tc_start(s, a);
+    st = tc_body(s, a);
+    /* (abandoned at the early abort, its roll and puts stand: the Python's
+       raise leaves them) */
+    if (st != 0 && st != LOOP_JUDGE_EARLY) tc_undo(s, a);
+    return st;
+}
+
+/* an attempt's counts, made or abandoned at the early abort: its passes,
+   sources, seeds and stage counts and the transform's own */
+static void tc_count(loop_t *s, const loop_attempt_t *a)
+{
+    s->st_fast += a->fast;
+    s->st_umiss += a->umiss;
+    s->st_uhit += a->uhit;
+    s->st_estmemo += a->estmemo;
+    s->tc_frozen++;
+    s->tc_iters += a->iters;
+    s->tc_uhit += a->tuhit;
+    s->tc_refactors += a->refact;
+    s->tc_served += a->served;
+    s->tc_probes += a->probed;
+    s->tc_checks += a->checked;
+    s->tc_xpasses += a->xpass;
+    s->tc_cpasses += a->cpass;
+    s->tc_ends += a->fuse != 0;
+    s->tc_handed += a->fuse == 1 || a->fuse == 2;
+    s->tc_endpass += a->fuse == 2 || a->fuse == 4;
+    s->tc_unhanded += a->fuse == 3;
+    s->tc_analyses += a->repat;
+    s->tc_factors += a->repat;
+    s->tc_klu += a->repat;
+    s->tc_pyiters += a->pyit;
+    /* (the Python loop's iterations after its first read the stage sources
+       from the step's memo) */
+    if (a->pyit > 1) s->tc_uhit += 3 * (a->pyit - 1);
+    s->tc_pyends += a->pyend;
+    s->tc_screened += a->screened;
+    s->tc_mcmemo += a->mcmemo;
+    s->tc_ests += a->estimated;
+    s->tc_folds += a->fold;
+    s->tc_foldoff += a->fold && a->repat;
+}
+
+/* THE EARLY ABORT's rejection (`_SteppingLoop.take`'s `_RadauAbort`, the
+   family's `reject_early`): the retry law at the check's worst unknown
+   (`_retry_after`, its record), the point's counts and the next step as
+   `take` keeps them; the attempt's counts made, its memo roll and puts
+   standing; nothing of its outcome recorded as made */
+static void tc_abort(loop_t *s, const loop_attempt_t *a)
+{
+    double hn = stage_retry(s, a, a->worst, s->pst);
+    tc_count(s, a);
+    s->tc_aborts++;
+    s->rejected++;
+    s->early_aborts++;
+    s->point_retries++;
+    s->rejects++;
+    s->imposed = 0;
+    s->landing = a->landing;
+    s->is_first = a->is_first;
+    s->order_drop = 0;
+    s->t_break = a->t_break;
+    s->h = pcx_py_max(hn, s->minstep);
+}
+
+/* the transform's part of an attempt made: its stages kept (`tcY`), the
+   step `_radau_Pc` then holds, its counts */
+static void tc_made(loop_t *s, const loop_attempt_t *a)
+{
+    COPY(s->tcY, a->Ys, 3 * s->n);
+    s->ph_made = a->h;
+    s->have_ph = 1;
+    tc_count(s, a);
+}
+
+
+/* an attempt judged (accepted, or retried at its point): the family's part
+   (`co_made`, `tc_made`); the screen's maximum; the running maximum the
+   judgement made and the estimate; the counts; the made attempt's `iq =
+   -(i + u(t_end))`; the last attempt made's record */
+static void stage_made(loop_t *s, const loop_attempt_t *a)
+{
+    lte_t *le = (lte_t *) s->lte;
+    long n = s->n, i;
+    const double *ue = s->ust + 3 * n;
+    if (s->tmode) tc_made(s, a);
+    else co_made(s, a);
     s->made++;
     if (s->branch) {
         s->cmax = a->cmax;
@@ -861,24 +1536,14 @@ static void stage_made(loop_t *s, const loop_attempt_t *a)
             s->have_run = 1;
         }
     }
-    s->st_fast += a->fast;
-    s->st_umiss += a->umiss;
-    s->st_uhit += a->uhit;
-    s->st_passes += a->passes;
-    s->st_estmemo += a->estmemo;
-    s->st_assemblies += a->A;
-    if (rs->klu.klu_sym) {
-        s->st_klu_refactors += rs->klu.refactors;
-        s->st_klu_factors += rs->klu.factors;
-        s->st_klu_pivot += rs->klu.pivot_fallbacks;
-        s->st_klu_resid += rs->klu.residual_fallbacks;
-        s->st_klu_on++;
+    if (!s->tmode) {
+        s->st_fast += a->fast;
+        s->st_umiss += a->umiss;
+        s->st_uhit += a->uhit;
+        s->st_passes += a->passes;
+        s->st_estmemo += a->estmemo;
     }
-    {
-        long b = ((a->A - 1) * 3 + 2) * n;
-        const double *i3 = s->oset[a->set][2] + b, *ue = s->ust + 3 * n;
-        for (i = 0; i < n; i++) s->liq[i] = -(i3[i] + ue[i]);
-    }
+    for (i = 0; i < n; i++) s->liq[i] = -(a->i3[i] + ue[i]);
     s->held = 0;
     s->att_set = a->set;
     for (i = 0; i < 3; i++) s->att_ts[i] = a->ts[i];
@@ -935,7 +1600,7 @@ static long stage_judge(loop_t *s, loop_attempt_t *a)
         stage_made(s, a);
         return LOOP_JUDGE_ACCEPT;
     }
-    le->xc = s->oset[a->set][0] + ((a->A - 1) * 3 + 2) * s->n;
+    le->xc = a->Ys + 2 * s->n;
     le->xl = s->xlast;
     le->h1 = h;
     le->run = s->run;
@@ -971,9 +1636,9 @@ static long stage_judge(loop_t *s, loop_attempt_t *a)
    the point noted (`_pred_note`'s merge), then the point's bookkeeping */
 static void stage_accept(loop_t *s, const loop_attempt_t *a)
 {
-    long n = s->n, k, b = ((a->A - 1) * 3 + 2) * n;
-    const double *Y = s->oset[a->set][0] + (a->A - 1) * 3 * n, *xv[4];
-    const double *q3 = s->oset[a->set][1] + b;
+    long n = s->n, k;
+    const double *Y = a->Ys, *xv[4];
+    const double *q3 = a->q3;
     for (k = s->hist_len - 1; k > 0; k--) {
         COPY(s->qring + k * n, s->qring + (k - 1) * n, n);
         COPY(s->iqring + k * n, s->iqring + (k - 1) * n, n);
@@ -984,6 +1649,7 @@ static void stage_accept(loop_t *s, const loop_attempt_t *a)
     xv[3] = Y + 2 * n;
     pcx_stage_note(&s->hk, s->ht, s->hx, n, a->nodes, xv, a->ord);
     accept_point(s, a, Y + 2 * n);
+    if (s->tmode) s->te_x = a->set;
 }
 
 /* the stage family's loop (`_SteppingLoop.execute` over `_StageSteps`):
@@ -997,10 +1663,18 @@ static long stage_loop(loop_t *s)
         if (!(s->t < s->tend)) return LOOP_DONE;
         if (s->k >= s->cap) return LOOP_FULL;
         if ((st = where(s, &a)) != 0) return st;
-        if ((st = stage_take(s, &a)) != 0) return st;
+        if ((st = s->tmode ? tc_take(s, &a) : stage_take(s, &a)) != 0) {
+            if (st != LOOP_JUDGE_EARLY) return st;
+            tc_abort(s, &a);
+            continue;
+        }
         st = stage_judge(s, &a);
         if (st == LOOP_JUDGE_RETRY) continue;
-        if (st != LOOP_JUDGE_ACCEPT) return st;
+        if (st != LOOP_JUDGE_ACCEPT) {
+            /* (the transform's attempt not made: its memo roll taken back) */
+            if (s->tmode) tc_undo(s, &a);
+            return st;
+        }
         stage_accept(s, &a);
     }
 }
@@ -1027,6 +1701,12 @@ long pcx_loop(loop_t *s)
     s->st_fast = s->st_umiss = s->st_uhit = s->st_passes = s->st_estmemo = s->st_assemblies = 0;
     s->st_klu_refactors = s->st_klu_factors = s->st_klu_pivot = s->st_klu_resid = 0;
     s->st_klu_on = 0;
+    s->tc_frozen = s->tc_iters = s->tc_uhit = s->tc_refactors = s->tc_served = 0;
+    s->tc_probes = s->tc_checks = s->tc_aborts = s->tc_xpasses = s->tc_cpasses = 0;
+    s->tc_ends = s->tc_handed = s->tc_endpass = s->tc_unhanded = s->tc_screened = 0;
+    s->tc_mcmemo = s->tc_ests = s->tc_folds = 0;
+    s->tc_analyses = s->tc_factors = s->tc_foldoff = s->tc_klu = s->tc_pyiters = 0;
+    s->tc_pyends = 0;
     if (s->family == LOOP_FAMILY_STAGE) return s->status = stage_loop(s);
     for (;;) {
         /* `while self.t < self.tend` */

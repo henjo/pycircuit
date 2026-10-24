@@ -21,6 +21,9 @@ from pycircuit.circuit.transient import Transient
 
 #: the hand-offs' own counts: nothing else moves
 OWN = ('radau_tc:end', 'radau.fuse:handed', 'radau.fuse:unhanded')
+#: (the C stepping loop's own: with the end passes off its transform mode
+#: declines, `_tran_tcloop_c`'s 'switch', and builds no sources table)
+OWN_PREFIXES = ('tcloop_c:', 'sources_c:')
 
 
 def _pss(on):
@@ -61,7 +64,7 @@ def _transient(on, **kw):
 
 
 def _moved_but_own(da, db):
-    keys = (set(da) | set(db)) - set(OWN)
+    keys = {k for k in (set(da) | set(db)) - set(OWN) if not k.startswith(OWN_PREFIXES)}
     return {k: (da.get(k, 0), db.get(k, 0)) for k in sorted(keys) if da.get(k, 0) != db.get(k, 0)}
 
 

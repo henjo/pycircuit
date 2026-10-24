@@ -437,6 +437,7 @@ class _Ctx:
         'n',
         'p_of',
         's',
+        'served',
         'walk',
         'walk_arms',
         'walk_dicts',
@@ -493,7 +494,7 @@ class _Ctx:
         s.fused = _MOD['cmul']
         s.bits = _MOD['bits']
         self.A_bytes = self.p_of = self.Ap_obj = self.keep_ap = self.klu_kk = None
-        self.lu_addr = None
+        self.lu_addr = self.served = None
         self.walk = self.walk_ok = None
         self.walk_els = self.walk_dicts = self.walk_packs = self.walk_kern = ()
         self.walk_hw_els = self.walk_hwk = ()
@@ -613,6 +614,7 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
         rec = _Ctx(core, n, iref, ffi, cfn_core, cffi_core, drv)
         td['_radau_tc'] = rec
     s, buf = rec.s, rec.buf
+    rec.served = None
     if has_limiter:
         if not NC._walk_ready(tr, rec):
             return _no('radau_tc:limit')
@@ -737,6 +739,9 @@ def _outcome(tr, rec, fz, status, probe, first, undo):
             return False
         _PC['radau_tc:served'] += 1
         _PC['radau_tc:noconv'] += 1
+        ## (its checks made at this watch counter all the same: the C
+        ## stepping loop may enter after the dense fallback, `_tran_tcloop_c`)
+        rec.served = _watch.now()
         return False
     if status != _CODES['RADAU_TC_CONVERGED']:
         if undo is not None:
@@ -749,6 +754,9 @@ def _outcome(tr, rec, fz, status, probe, first, undo):
     _PC['umemo:hit'] += 3 * (it - first)
     _PC['radau_tc:served'] += 1
     _PC['radau_tc:iterations'] += it
+    ## (the stamp the C stepping loop enters on: its checks made at this
+    ## watch counter, `_tran_tcloop_c`)
+    rec.served = _watch.now()
     td = tr.__dict__
     Y = buf['Y']
     out = [Y[j].copy() for j in range(3)]

@@ -317,7 +317,11 @@ def _transient_run(on, **kw):
 
 
 def _moved_but_own(da, db):
-    keys = {k for k in set(da) | set(db) if not k.startswith('radau.frozen:fold')}
+    ## (the fold's, and the C stepping loop's own: with the fold off its
+    ## transform mode declines, `_tran_tcloop_c`'s 'switch', and builds no
+    ## sources table)
+    keys = {k for k in set(da) | set(db)
+            if not k.startswith(('radau.frozen:fold', 'tcloop_c:', 'sources_c:'))}
     return {k: (da.get(k, 0), db.get(k, 0)) for k in sorted(keys) if da.get(k, 0) != db.get(k, 0)}
 
 

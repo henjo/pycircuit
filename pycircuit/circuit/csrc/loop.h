@@ -183,6 +183,83 @@ typedef struct {
     double att_ts[3], att_tend;
     long st_fast, st_umiss, st_uhit, st_passes, st_estmemo, st_assemblies;
     long st_klu_refactors, st_klu_factors, st_klu_pivot, st_klu_resid, st_klu_on;
+    /* THE TRANSFORM (`tmode` 1): the stage family's attempts by the cost
+       transform, `_rk_step_transformed` -- x_n's C and G frozen for the
+       step; the two factors (radau_fold.c; P from diag(lam) Tinv by numpy's
+       complex division by h); the real one's LU in the loop's buffer
+       (`NumpyLU`: dgesv at its first solve, then dgetrs); the complex one's
+       values in the last record's pattern for the transient's
+       ComplexKLUSolver, which radau_tc.c refactors at its first solve;
+       radau_tc.c's Newton and its end passes on the loop's own radau_tf_t;
+       each stage's screen on C by a core pass at the first two stages
+       (`_C_at_state`'s `cir.C`, which the core makes bit for bit) and the
+       end's at the last; the estimate on the frozen real solve.  The device
+       memo as the Python's transform step keeps it, by state and passes in
+       two generations (`tg`): the glue makes the records at write-back */
+    long tmode;                 /* 1: the transform's attempts; 0: the coupled Newton's */
+    void *tc_fn, *tc;           /* radau_tc.c, the loop's radau_tf_t */
+    void *fold_fn, *fold;       /* radau_fold.c, its radau_fold_t */
+    double tcm[12];             /* rows 0 and 1 of diag(lam) @ Tinv, numpy's (complex) */
+    double lam0r, lam1r, lam1i; /* lam[0].real and lam[1]: the factors' scalars over h */
+    double *lua;                /* (m x m, column-major) the real factor, then its LU */
+    int64_t *lupiv;             /* (m) its pivots */
+    double *crr, *grr;          /* (m x m) x_n's C and G reduced, the fold's inputs */
+    double *tcC;                /* (2 x n x n) C at the first two stages (the screen's) */
+    double *tcq;                /* (n) work: a pass's q not kept */
+    double *tcY;                /* (3 x n) the last made attempt's stages */
+    double *te[2][4];           /* the end passes' two sets: q, i (n), C, G (n x n); an
+                                   attempt writes the one x_n's record is not in */
+    long te_x;                  /* the set holding x_n's record; -1: `xr_*` holds what
+                                   the C made or the entry's memo had (`xfields`) */
+    long xfields;               /* the passes `xr_*` holds (LOOP_TG_*) */
+    double *tg;                 /* (3 x LOOP_TG_MAX x n) the memo's generations by
+                                   state: three slots, an attempt's own the one neither
+                                   the made attempts' two hold (loop.c's tg_*) */
+    long tg_n[3], tg_f[3][32];  /* each slot's records and their passes (32:
+                                   LOOP_TG_MAX) */
+    long tg_gen, tg_prev;       /* the slots of the last made attempt's generation
+                                   and the one before (the attempt's own while made) */
+    double tc_h;                /* the step `p` (P's rows) was made for; `tc_hp` 0: none */
+    long tc_hp;
+    double ph_made;             /* the last made attempt's step: `_radau_Pc`'s (`have_ph`) */
+    long have_ph;
+    long tc_maxit;              /* the Newton's `maxiter` */
+    /* the early abort (`radau_early_abort`, the stepping loop's `radau_arm`):
+       its threshold (0: never armed); f0 = -(i_n + u(t_n)) once a point
+       (`_StageSteps.early_f0`): made for the point `f0_point` (`have_f0`) */
+    double tc_th;
+    double *tcf0;               /* (n) */
+    long have_f0, f0_point;
+    /* a new pattern of the complex factor (the fold's nonzeros off the last
+       record's: `ComplexKLUSolver.prepare` gathers a new record and
+       `solve_prepared` analyses and factors it afresh): the loop's two
+       pattern buffers (Ap m + 1, Ai m x m, the mask m x m laid out as A.T),
+       the one holding the current pattern (`pcur`, -1: the solver's own,
+       the entry's) and KLU's entries for the analysis, the complex factor
+       and the frees (`klu_analyze`, `klu_z_factor`, `klu_free_symbolic`,
+       `klu_z_free_numeric`) */
+    int *pAp[2], *pAi[2];
+    uint8_t *pnz[2];
+    long pcur;
+    void *klu_analyze, *klu_zfactor, *klu_free_sym, *klu_free_znum;
+    /* the counts the Python transform attempts' calls make, this call's --
+       of every attempt its frozen factors reached (`tc_frozen`: made, or
+       abandoned at the early abort): the Newton's iterations, its source
+       memo hits and its complex refactors; its serves, its probes; the
+       early abort's checks and aborts; the core passes at x_n (the
+       context's q, the frozen C and G, the estimate's CGi, the check's i)
+       and at the first two stages (`cir.C`); the end's records (made,
+       handed, with a pass counted, unhanded); the screens and their memo
+       hits; the estimates; the fold taken (`radau.frozen:fold`) */
+    long tc_frozen, tc_iters, tc_uhit, tc_refactors, tc_served, tc_probes, tc_checks,
+         tc_aborts, tc_xpasses, tc_cpasses, tc_ends, tc_handed, tc_endpass, tc_unhanded,
+         tc_screened, tc_mcmemo, tc_ests, tc_folds;
+    /* ... and of the attempts on a new pattern: the analyses and fresh
+       factors, the folds whose values fell off the pattern, the C Newton's
+       declines (`radau_tc:klu`: the Python loop then iterates), that loop's
+       iterations (each stage's 'qi' pass and limiter walk), the end records
+       its passes made (no hand-off) */
+    long tc_analyses, tc_factors, tc_foldoff, tc_klu, tc_pyiters, tc_pyends;
 } loop_t;
 long pcx_loop(loop_t *s);
 
@@ -218,7 +295,42 @@ typedef struct {
     double ut[5];
     long us[5], nu, umiss, uhit, passes, estmemo, fast;
     double cmax;                /* the screen's running maximum after its stages */
+    /* its outcome, either take's: the three converged stages (3 x n), and
+       the last one's record -- q, i (n), C, G (n x n) */
+    const double *Ys, *q3, *i3, *C3, *G3;
+    /* the transform's (tc_take): the memo's slots before its roll; its
+       Newton's iterations and refactors; the core passes the Python's calls
+       would make at x_n and at the first two stages; the end's record
+       (`fuse`: 1 handed, 2 handed with a pass counted, 3 unhanded); the
+       screen's memo hits; the fold taken */
+    long tg_gen0, tg_prev0, had_f0, f0_point0;
+    long iters, refact, xpass, cpass, fuse, mcmemo, fold;
+    /* ... and its outcome: armed (the early abort), its Newton's source memo
+       hits, served, probed (not converged at the first iterate), checked,
+       screened, estimated; the check's worst unknown.  `tg_gen0`, `tg_prev0`,
+       `had_f0`, `f0_point0`: the memo's slots and the point's f0 before it,
+       taken back where it is not made (`tc_undo`) */
+    long armed, tuhit, served, probed, checked, screened, estimated;
+    double worst;
+    /* a new pattern (`tc_repattern`): set; the Python loop's iterations, its
+       end record made by its passes; what it replaced, put back where the
+       attempt is not made (`tc_undo`) */
+    long repat, pyit, pyend, old_pcur, old_nnz, old_at;
+    void *old_sym, *old_num, *old_Ap, *old_Ai, *old_nz;
 } loop_attempt_t;
+
+/* KLU's analysis (`klu_analyze(n, Ap, Ai, Common)`: a symbolic, NULL where
+   it fails), a new pattern's in the transform's take; its factor, refactor,
+   solve and free are pcx_abi.h's */
+typedef void *(*klu_analyze_t)(int, int *, int *, void *);
+
+/* the device memo's records a generation holds (`tg`): a transform
+   attempt puts four at most -- x_n's, the first two stages' C, the end's */
+enum loop_tg {
+    LOOP_TG_MAX = 32,
+    /* a record's passes */
+    LOOP_TG_Q = 1, LOOP_TG_I = 2, LOOP_TG_C = 4, LOOP_TG_G = 8
+};
 
 /* `family`: whose attempts the loop makes */
 enum loop_family {
@@ -265,6 +377,14 @@ enum loop_status {
     LOOP_BAIL_NODES = 12,       /* the step's nodes not after the history's */
     LOOP_BAIL_RADAU = 13,       /* the C stage Newton handed the attempt back */
     /* after its converged Newton: the result held for the Python's repeat */
-    LOOP_BAIL_ESTIMATE = 14     /* the estimate: a flag numpy would warn of, or
+    LOOP_BAIL_ESTIMATE = 14,    /* the estimate: a flag numpy would warn of, or
                                    its real factor singular */
+    /* the transform's (`tmode`): before its Newton, nothing of the attempt
+       made; after it, nothing held -- the Python's repeat refactors the same
+       values (deterministic) and the LU is the loop's own */
+    LOOP_BAIL_FOLD = 15,        /* the factors: a flag, a non-finite input, or the
+                                   complex one's nonzeros off the last pattern */
+    LOOP_BAIL_TRANSFORM = 16,   /* radau_tc.c handed back, or did not converge (the
+                                   Python's dense fallback) */
+    LOOP_BAIL_END = 17          /* the end passes not made (a non-finite stage) */
 };

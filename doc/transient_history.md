@@ -5528,3 +5528,53 @@ stage KLU's counts; an entry that fills its outputs; the stops (a screen
 that fires, the estimate's solve and the sources failing in the C, the
 budget spent: each held and taken; a Newton handed back); the declines;
 alive: the law's safety factor or the estimate's eigenvalue a ulp off.
+
+## `_tran_tcloop_c`, `csrc/loop.c`'s transform mode -- a plain run's Radau attempts on the cost transform in C (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 208).  'auto' sends a Radau run to
+the cost transform wherever the compiled Jacobian is 10 KB or more -- 22 of
+the 27 gold decks -- and 207's loop serves the coupled Newton only: there an
+attempt was the C transform Newton (`pcx_radau_tc`, 8 to 39 % of it) and
+Python and numpy around it.  The C stage loop gains the transform's take
+(`tmode`): x_n's charge before the memo's roll (`_coupled_stage_context`'s
+order), its C and G frozen (the end record of the attempt before, the
+entry's memo, or a 'CG' pass); `_radau_frozen`'s factors by radau_fold.c,
+P's rows from numpy's `diag(lam) @ Tinv` divided by h as numpy divides
+(Smith's form: 20 000 samples the same, array and scalar), the real one's
+LU in the loop's buffer as `NumpyLU` keeps it (dgesv at the first solve,
+dgetrs after), the complex one's values for the transient's
+`ComplexKLUSolver`; the seeds; the stage sources; radau_tc.c on a struct of
+the loop's own with its end passes; armed (the default adaptive run), the
+early abort's probe, check (`_radau_early_check`: `early_f0` once a point,
+the estimate on the probe's LU, lte.c's STAGE judgement) and resume, or its
+rejection (`reject_early`'s law); `_stage_end_passes`' record; the screens
+on C by a core pass at the first two stages -- C alone, `cir.C`'s values --
+and the end's; the estimate on the frozen real solve.  A complex factor
+whose nonzeros leave the last record's pattern (a device switching to exact
+zeros: one attempt in eight on voter25) is gathered as `_csc_of_dense`
+gathers it and analysed and factored afresh in C, the Python transform
+loop's counts made for it.  The device memo is kept by state and passes in
+three slots (an attempt the C stops in rolled back); the write-back makes
+its records again by the core or takes the entry's arrays.  A stop leaves
+the attempt to the Python, nothing held.  The gold decks under Radau
+(separate processes, interleaved with 207's commit): 18 of the 22 transform
+decks served (the 4 on a StructuralKLU real factor stay the Python's: no
+dense LU), 164.6 -> 81.2 s over them (2.03x; the gate's run 2.00x); voter25 25.9 -> 17.0 s, mux8
+35.9 -> 16.9, jge 79.9 -> 39.0, ring 6.82 -> 2.39, gm6 0.30 -> 0.06; every
+byte the same.
+Found building it: a twin's watch epoch moves when the garbage collector
+frees a watched dict -- the earlier runs' objects: each twin run collects
+first; pcx_stagestep.h counted a seed with no prediction as none where
+`_pred_stages` counts it (two nodes or more), the stage walk's and 207's
+loop's counts too; `ComplexKLUSolver` frees no KLU object (each new pattern
+leaks the old analysis and factor: ~1 150 each a voter25 run), which the C
+mirrors.
+Tests: `test_tcloop_c.py` -- eleven runs (fixed and adaptive, the early
+abort armed or not or at its lowest threshold, the PSP stage and the MOSFET
+chains with the transform asked for, tight tolerance, a reference mode, a
+mask) the Python's to the byte, with the state, `_radau_Pc`, the family and
+the complex solver's counts; the early abort and new patterns made in C; an
+entry that fills its outputs; the stops (a screen that fires, the real
+solves and the sources failing in the C, a transform that does not
+converge, a stop after a new pattern, the budget spent); the declines;
+alive: P's first entry or the real factor's eigenvalue a ulp off.

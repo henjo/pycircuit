@@ -11550,3 +11550,64 @@ Under Radau the loop serves 5 decks (one run each, not interleaved: 4049osc 3.29
 gm2 0.533 -> 0.148, rca 0.158 -> 0.073, schmitecl 0.091 -> 0.041); the other 22 run the cost transform ('auto': their
 compiled Jacobians expensive), which it leaves to the Python.  The sanitizer's fast tier, 5 703 passed, and its deep
 tier on the loop tests, 111, clean.
+
+## 2026-10-24 — 208. A plain Radau transient's attempts on the cost transform in C -- the C stepping loop's transform mode: 18 of the 22 transform gold decks served, 2.0x over them, every byte the same
+
+**Why**  Item 4 measured (Andreas chose B: keep 'auto' and its answers, build the loop): 'auto' sends 22 of the 27 gold
+decks to the cost transform (a compiled Jacobian of 10 KB or more; one SPICE diode is 20 KB), where 207's loop does not
+serve; on them the C transform Newton was 8-39 % of an attempt (gm6 43 of ~510 us, ring 312 of ~1 080, mux8 575 of
+~1 880, voter25 1 005 of ~2 610, jge 1 259 of ~4 000), the rest Python and numpy.  Planned ~1.85x over the 18 dense
+decks; the line 1.4x on mux8 AND voter25, against HEAD in separate processes, default settings.
+
+**Built.**  `csrc/loop.c`'s stage family in a transform mode (`tmode`): `tc_take` (`tc_start`: x_n's charge before the
+memo's roll, the roll, x_n's C and G; `tc_frozen`: `tc_scalars` -- P's rows from numpy's M = diag(lam) Tinv by numpy's
+complex division by h, Smith's form (20 000 samples the same), s0 and c1 -- radau_fold.c, the LU buffer column-major;
+`tc_repattern` where the complex nonzeros leave the pattern: the CSC gathered as `_csc_of_dense`, `klu_analyze`,
+`klu_z_factor`; the seeds, the stage sources; `tc_newton`: radau_tc.c on the loop's own radau_tf_t -- armed, the
+probe, `tc_check` (the early abort's estimate, f0 once a point) and the resume; on a new pattern the Python loop's
+sequence, a fresh factor then a refactor; `tc_end`; `tc_screen`, C alone by a core pass at the first two stages;
+`tc_estimate`, dgetrs on the Newton's LU), `tc_abort` (`reject_early`'s law, the attempt's counts), `tc_undo` (the
+memo's roll, f0, a new pattern's analysis taken back from an attempt not made), the memo by state and passes
+(`tg_*`, three slots).  `_tran_tcloop_c`: the entry (`_tran_radau_tc`'s record now stamps `served` when its checks
+ran, converged or not), the checks (the run, the family with the transform on, its pieces genuine and unshadowed --
+the frozen factors' chain, the C Newton's, the step's --, the switches, the analysis solver dense, the complex solver
+analysed on the last pattern, the early abort's threshold one the C arms alike), the bind (the stage loop's units by
+`_tran_stageloop_c.bind_common`; its own radau_tf_t, radau_fold_t and buffers), the load, the settle (the complex
+solver's refactors, a new pattern's analyses, factors, handles and record), the write-back (the stage outputs, the memo
+made again, `_radau_Pc`, `early_f0`) and the counts.  `_tran_loop_c.run` sends a stage family whose transform served
+to it; `LoopState.tkept`: its own kept decline (207's 'transform' decline had kept it out of nearly every entry).
+pcx_stagestep.h: a seed with no prediction counted as `_pred_stages` counts it (with two nodes or more).
+
+**Found.**  (1) A twin run's watch epoch moved 28 times inside one attempt where the garbage collector freed the
+earlier runs' watched dicts (`linearsolver.py:214`, a ctypes call's allocations): each twin run collects first.  (2)
+`ComplexKLUSolver` never frees a KLU analysis or factor: each new pattern leaks the old two (~1 150 each a voter25
+run) -- the C mirrors it; a fix of its own (the Python and the C together), no answer moves.  (3) 207's shared kept
+decline blocked the transform's entries.
+
+**Measured** (the 27 gold decks under Radau, HEAD 8bfd4ccf from its worktree and this tree, separate processes,
+interleaved per deck, one run each, default settings): over the 18 served 164.6 -> 81.2 s (2.03x); mux8 35.88 ->
+16.89 s (2.12x), voter25 25.88 -> 17.02 (1.52x) -- over the line on both --, jge 79.94 -> 38.95 (2.05x), ring 6.82 ->
+2.39 (2.86x), ab_integ 6.17 -> 1.64 (3.76x), gm1 2.38 -> 1.43, toronto 1.26 -> 0.55, nand 1.19 -> 0.38, gm6 0.30 ->
+0.06, mike2 0.51 -> 0.10; the 27, 236.6 -> 151.8 s.  What the C leaves to the Python on voter25: 253 of its 9 742
+attempts -- the 121 it stops at (102 where the transform does not converge, its dense fallback the Python's: the
+plan's third step, not built; 19 the C Newton's other stops), those after them until the C Newton serves again, the
+run's first --; outside the C and its glue ~3 s of the 17, the setup and the operating point among them.
+
+**Tests.**  test_tcloop_c (new, 23): eleven runs the Python's to the byte (the state, `_radau_Pc`, the family, the
+complex solver's counts); the early abort and new patterns made in C; an entry filling its outputs; the stops (a
+screen that fires, the real solves and the sources failing in the C, a transform not converging, a stop after a new
+pattern, the budget spent); the declines; the decline table; alive: P's first entry and the real factor's eigenvalue
+a ulp off.  test_radau_tc_end, test_radau_fold: their switch-off comparisons leave out the loop's own counts (its
+declines and sources table); test_instance_overrides: the transform loop among the twins switched off;
+test_runtime_map: its glue among the loop units'.  test_pinned_pairs: 'the transform loop and its C' (new); the
+stepping loop, the stage loop, the stage and multistep walks, the transform Newton and the end passes re-recorded on
+their twins, each twin's tests run first.  doc/transient_runtime.md: its rows; doc/transient_history.md: its entry.
+
+**Gate** (the main tree): the suite, 5 957 passed (6 skipped, 3 xfailed); the 27 gold decks, gear2 transient and
+standalone DC, against 207's: every digest, step, rejection, Newton count and path count identical (DC but for its
+timing); the 27 under Radau against HEAD (8bfd4ccf, run from its worktree; a tell: HEAD made no `tcloop_c:` count):
+every digest, step, rejection and path count but the loops' own identical, and the A/B again, interleaved per deck:
+the 18 served 159.7 -> 80.1 s (2.00x), mux8 34.06 -> 16.70 s (2.04x), voter25 25.18 -> 16.94 (1.49x).  The
+sanitizer's fast tier, 5 718 passed, and its deep tier on the loop tests, 169, clean.  A first gate's suite had failed
+two rules -- an argument never read (`_tc_ready`'s), a type declared in loop.c (the analysis's pointer type, now
+loop.h's: in pcx_abi.h it would have moved 21 pinned pairs) -- and ran again.

@@ -130,7 +130,8 @@ def test_the_code_check_sees_a_planted_number():
 _LONG = 80
 _LONG_PY = ('_tran_loop_c', '_tran_newton_c', '_tran_lte_c', '_tran_core', '_tran_pred_c',
             '_tran_ctrl_c', '_tran_branch_c', '_tran_sources', '_hdl_climit', '_cbuild',
-            '_dc_newton_c', 'shooting/_stagewalk_c', 'shooting/_lmmwalk_c', '_tran_stageloop_c')
+            '_dc_newton_c', 'shooting/_stagewalk_c', 'shooting/_lmmwalk_c', '_tran_stageloop_c',
+            '_tran_tcloop_c')
 _LONG_C = ('loop.c', 'newton.c', 'lte.c', 'core.c', 'pred.c', 'ctrl.c', 'branch.c', 'sources.c',
            'walk.c', 'dcnewton.c', 'stagewalk.c')
 

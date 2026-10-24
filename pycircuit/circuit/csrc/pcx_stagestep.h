@@ -37,8 +37,10 @@ static inline int pcx_stage_order(const double *ts, double tj, long hk, const do
 
 /* the seeds, `_pred_or(np.array(x), t)` at each stage time `ts`, into
    `seed` (3 x n), the predictor's state `pr` reading `hk` nodes: the
-   number made by its fast path (`pred:fast`), or -1 where the predictor's
-   general path makes one */
+   number its fast path served (`pred:fast`, `_pred_stages`'s count: with
+   two nodes or more, a target with no prediction -- its seed the point --
+   one of them; with fewer, none: `_predict_fast` returns before it
+   counts), or -1 where the predictor's general path makes one */
 static inline long pcx_stage_seeds(void *pred_fn, pred_t *pr, long hk, const double *ts,
                                    const double *x, double *seed, long n)
 {
@@ -52,6 +54,7 @@ static inline long pcx_stage_seeds(void *pred_fn, pred_t *pr, long hk, const dou
             fast++;
         } else if (st == PRED_NONE) {
             memcpy(seed + i * n, x, (size_t) n * sizeof(double));
+            if (hk >= 2) fast++;
         } else {
             return -1;
         }

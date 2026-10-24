@@ -456,17 +456,30 @@ def _bound(loop, e):
 
 
 def _bind(e):
-    """The stage run for this entry's record, table and screen: the C loop's
-    buffers, the predictor's state, the sources' table, the screen, the
-    radau record, an error test of its own (lte.c), the stage buffers."""
-    from pycircuit.circuit import _tran_lte_c, _tran_pred_c, _tran_radau_c
-    tr, rec, n, iref = e.tr, e.rec, e.n, e.iref
+    """The stage run for this entry's record, table and screen: the
+    family's units (`bind_common`), the radau record, the stage buffers."""
+    from pycircuit.circuit import _tran_radau_c
+    rec, n = e.rec, e.n
     if int(rec.s.maxa) != _tran_radau_c.MAXA:
         ## (the record's slots and the sets made here: one count)
         return None
+    run = bind_common(e, _StageRun())
+    s, ffi = run.s, run.ffi
+    rffi, rcfn, rdgesv, rdgemv = _tran_radau_c.driver()
+    _LC._plug(s, ffi, 'radau', rffi, rec.s, rcfn)
+    _bind_stage(run, rec, n, rdgesv, rdgemv)
+    return run
+
+
+def bind_common(e, run):
+    """`run` (a `_StageRun`, or the transform's) bound to what both stage
+    modes call: the C loop's buffers, the predictor's state, the sources'
+    table, the screen, an error test of its own (lte.c), the sizes; the
+    Newton's units left to the mode."""
+    from pycircuit.circuit import _tran_lte_c, _tran_pred_c
+    tr, rec, n, iref = e.tr, e.rec, e.n, e.iref
     hist_len = e.st[0].shape[0]
     ffi, _cfn = _LC.driver()
-    run = _StageRun()
     run.ffi, run.nrec, run.tab = ffi, rec, e.tab
     s = run.s = ffi.new('loop_t *')
     _LC._bind_buffers(run, n, hist_len)
@@ -481,13 +494,11 @@ def _bind(e):
     _LC._plug(s, ffi, 'src', e.tab.ffi, e.tab.s, e.tab.cfn)
     _LC._bind_screen(run, tr, n, e.screen)
     s.newton = s.newton_fn = s.ctrl = s.ctrl_fn = ffi.NULL
-    rffi, rcfn, rdgesv, rdgemv = _tran_radau_c.driver()
-    _LC._plug(s, ffi, 'radau', rffi, rec.s, rcfn)
+    s.radau = s.radau_fn = s.tc = s.tc_fn = s.fold = s.fold_fn = ffi.NULL
     lffi, lcfn, ldgesv = _tran_lte_c.driver()
     run.lctx = _tran_lte_c._Ctx(lffi, ldgesv, n, iref)
     _LC._plug(s, ffi, 'lte', lffi, run.lctx.s, lcfn)
     run.lte = run.ct = run.sk = None
-    _bind_stage(run, rec, n, rdgesv, rdgemv)
     s.n, s.hist_len, s.cap, s.iref = n, hist_len, _LC.CAP_MAX, iref
     s.family = _CODES['LOOP_FAMILY_STAGE']
     return run
@@ -525,9 +536,10 @@ def _bind_stage(run, rec, n, dgesv, dgemv):
     s.dgesv, s.dgemv = ffi.cast('void *', dgesv), ffi.cast('void *', dgemv)
 
 
-def _load(loop, e, run_):
+def _load(loop, e, run_, stage=None):
     """The struct loaded with the state as the Python leaves it: the loop's,
-    the transient's rings and nodes, the run's constants, the stage's, the
+    the transient's rings and nodes, the run's constants, the stage's
+    (`stage`: the transform's, `_tran_tcloop_c`; else `_load_stage`), the
     judge's."""
     tr, n = e.tr, e.n
     s, buf = run_.s, run_.buf
@@ -557,7 +569,7 @@ def _load(loop, e, run_):
     s.have_hm = int(stats.min_step is not None)
     s.hmin = stats.min_step if stats.min_step is not None else 0.0
     s.hmax = stats.max_step if stats.max_step is not None else 0.0
-    _load_stage(e, run_, xl)
+    (stage or _load_stage)(e, run_, xl)
     if e.cfg is not None:
         _load_judge(e, run_, X)
     else:
@@ -676,9 +688,10 @@ def _settle(e, run_, status):
                            int(rs.maxiter), outs=run_.sets[o][0])
 
 
-def _write_back(loop, e, run_):
+def _write_back(loop, e, run_, stage=None, count=None):
     """The state after the C's attempts as the Python attempts leave it (the
-    module's THE STATE), and the counts their calls make."""
+    module's THE STATE), and the counts their calls make (`stage`, `count`:
+    the transform's, `_tran_tcloop_c`; else `_stage_back`, `_count`)."""
     s, buf, tr, n = run_.s, run_.buf, e.tr, e.n
     k = int(s.k)
     Xo, To = buf['X'], buf['T']
@@ -699,7 +712,7 @@ def _write_back(loop, e, run_):
     tr._is_first_step = bool(s.is_first)
     if run_.br is not None:
         tr._branch_cmax = float(s.cmax)
-    x = _stage_back(e, run_)
+    x = (stage or _stage_back)(e, run_)
     _family_back(e, run_, X)
     adaptive = bool(s.adaptive)
     loop.t, loop.h = float(s.t), float(s.h)
@@ -710,7 +723,7 @@ def _write_back(loop, e, run_):
     loop.x_new, loop.J = x, None
     loop.h_next = loop.timestep if not adaptive else loop.h
     loop.clamped, loop.hold, loop.imposed = False, not adaptive, bool(s.imposed)
-    _count(e, run_, k)
+    (count or _count)(e, run_, k)
 
 
 def _stage_back(e, run_):
