@@ -16,7 +16,8 @@ declines; and alive: P or the estimate a hair off is another run.  The
 real factor on the circuit's StructuralKLU: every attempt's real solves on
 the numeric it found, zero pivots and residual fallbacks, a nonzero off the
 pattern and a failed solve stopping the C (the numerics it made freed), the
-fallback the Python's; the solver's counts and its one numeric compared.
+fallback made in C there too; the solver's counts and its one numeric
+compared.
 The fold on the core's pattern (a chain past the core's fill): x_n's C and
 G read in place, the factors made at its positions, dense and on KLU.
 """
@@ -573,14 +574,21 @@ def test_a_klu_solve_failing_in_c_takes_the_attempts_numerics_back(monkeypatch):
     assert _same.last['state']['real solver'][1] == (1, True)
 
 
-def test_where_the_real_factor_is_klu_the_fallback_is_the_pythons(monkeypatch):
-    """Three Newton iterations at most on the KLU chain: a transform that
-    does not converge stops the C -- the fallback's dense estimate is
-    numpy's solve, the Python's the analysis solver's: not bound -- and the
-    Python's repeat falls back; the same run."""
-    ca = _same(_klu_chain, monkeypatch, steps_min=10, setup=_setups(_klu(), _maxiter(3)),
-               **_FB_FIXED)
-    assert ca.get('tcloop_c:bail:transform', 0) > 0 and not ca.get('tcloop_c:fallbacks'), ca
+@pytest.mark.parametrize('kw, make', [(_FB_FIXED, None), (_FB_ADAPT, {'reltol': 3e-2})],
+                         ids=['fixed', 'adaptive'])
+def test_a_fallback_on_the_klu_real_factor_is_made_in_c(kw, make, monkeypatch):
+    """Three Newton iterations at most on the KLU chain: the transform's
+    fallback made in C as on the dense real factor -- its estimate is the
+    fresh one, numpy's solve whatever the real factor's solver, and its
+    Newton the stage KLU's -- after the first, the Python's (it makes the
+    record); the transform's KLU sequence before it in the same attempt.
+    The run the Python's, the fallbacks counted on the transient, one
+    numeric left."""
+    ca = _same(_klu_chain, monkeypatch, steps_min=10, make=make,
+               setup=_setups(_klu(), _maxiter(3)), **kw)
+    assert ca.get('tcloop_c:fallbacks', 0) > 1, ca
+    assert _same.last['state']['fallbacks'] >= ca['tcloop_c:fallbacks']
+    assert _same.last['state']['real solver'][1] == (1, True)
 
 
 def test_the_klu_solutions_a_hair_off_are_another_run(monkeypatch):

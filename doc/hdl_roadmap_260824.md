@@ -11955,3 +11955,42 @@ standalone DC, against 216's gate runs (4ad9df3b's code), and under Radau agains
 inside it), interleaved per deck: every digest, step, rejection, Newton count and path count identical but the loops'
 own.  The sanitizer's fast tier, 5 778 passed, and its deep tier on the loop, Radau, fold, DC and solver tests, 669,
 clean.
+
+## 2026-10-24 — 218. The transform's fallback on the KLU real factor -- 210's fallback in C bound where the real factor is the StructuralKLU (215's reason was wrong): rich3's and arom's transforms that do not converge made in C as fallbacks (12 of 13 and 13 of 14), the two 1.07x, every byte the same
+
+**Why**  Andreas: "Do all three" (the second lever offered after 216; g24's `plan_217_219.md`).  215 left 210's
+fallback unbound on the KLU real factor, reasoning that its estimate solves the fresh real factor with numpy's dgesv
+where the Python's used the analysis solver.  That was wrong: after a fallback `_rk_step_coupled` calls `_finish_radau`
+without the transform's real solve, and `_radau_error_estimate`'s fresh path solves with the toolkit's `linearsolver`
+(`_numeric.linearsolver`: numpy's solve) on every deck, dense or KLU; the coupled Newton is radau.c on the stage KLU,
+the analysis solver untouched.  On the KLU decks each transform that did not converge stopped the C: two Python
+attempts (gm19 32, arom 15, rich3 14, opampal 3).  The first LINE (the four KLU decks at least 1.02x against 217) was
+RE-SIZED before measuring: the fallback's coupled sets must fit the C stage Newton's budget (`_sets_fit`, `OUT_BYTES`
+48 MB), which gm19 (429 unknowns) and opampal (519) do not -- their fallbacks stay the Python's -- and rich3 and arom
+alone were sized at about 1 %.  The binding's worth is itself and 219: voter25's 101 fallbacks, made in C by 210, would
+return to the Python when 219 moves it onto KLU.  LINE: rich3's and arom's stops made in C as fallbacks (all but the
+first, which makes the record), every byte the same, no gold deck slower than 0.97x.
+
+**Built.**  `_tran_tcloop_c._eligible` binds the fallback (`_fb_ready`) whatever the real factor's solver; 215's
+comment there corrected.
+
+**Measured** (the 27 gold decks under Radau, HEAD fab3ab29 from its worktree and this tree, separate processes,
+interleaved per deck): rich3 6.39 -> 6.05 s (1.06x), arom 5.07 -> 4.67 (1.08x) -- the two 1.07x; the four KLU decks
+21.1 -> 20.3 s (1.04x), gm19 and opampal unchanged (their 32 and 3 stops at the transform remain: their sets over the
+budget).  rich3's 13 transforms that do not converge and arom's 14 (`radau_tc:noconv`): all but each deck's first --
+the Python's, which makes the record -- made in C as fallbacks, 12 and 13; the one other stop on each is a hand-back
+of the C Newton (its complex residual check undecided), not a transform that does not converge.  Three decks under
+0.25 s read 0.89-0.94x on one run: latch 1.03x and gm17 1.02x on five interleaved runs each; rca -- which runs in the
+stage loop alone, the transform loop never entered -- 0.90x on nine runs with the box quieter, and 1.04x on nine with
+both trees at HEAD (an A/A: its runs scatter 0.063-0.079 s either way).
+
+**Tests.**  test_tcloop_c (+1, 52): 215's test that the C stops at a non-converging transform on the KLU chain becomes
+the fallback made in C on it, fixed and adaptive (the early abort armed): the Python's to the byte, the fallbacks
+counted on the transient, one numeric left.  test_pinned_pairs: 'the transform loop and its C' -- its why corrected --
+re-recorded.
+
+**Gate** (the main tree): the suite, 6 009 passed (6 skipped, 3 xfailed); the 27 gold decks, gear2 transient and
+standalone DC, against 217's gate runs (fab3ab29's code), and under Radau against HEAD (wt_head, fab3ab29, run from
+inside it), interleaved per deck: every digest, step, rejection, Newton count and path count identical but the loops'
+own.  No C changed: the sanitizer's deep tier on the loop, Radau and KLU tests, 196 passed, clean (the fallback on the
+KLU real factor under the address sanitizer).

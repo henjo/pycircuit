@@ -1017,7 +1017,8 @@ PAIRS = {
                '`tc_frozen` with `_ours`\'s count, every real solve -- the Newton\'s, the '
                'early check\'s, the estimate\'s -- `StructuralKLU.solve`\'s sequence on the '
                'numeric the attempt found, kept when the attempt is made, taken back when not; '
-               'the fallback the Python\'s there',
+               'the fallback (210) made there too -- its estimate the fresh one, numpy\'s solve '
+               'whatever the real factor\'s solver (roadmap 218)',
         'reference': ['pycircuit.circuit._tran_radau:_RadauStages._rk_step_transformed',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_frozen',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_early_check',
@@ -1144,7 +1145,7 @@ RECORD = {
     'the readiness reads and their stamps': ('61efd629dd90', '76e34cda0583'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
     'the stage loop and its C': ('9b77e46fd9eb', '7eba12021987'),
-    'the transform loop and its C': ('ac5b2f9b540e', '253fca2f4555'),
+    'the transform loop and its C': ('ac5b2f9b540e', '92a1258d9de6'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

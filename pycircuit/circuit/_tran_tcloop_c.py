@@ -256,13 +256,13 @@ def _eligible(loop, tr, td, rec):
     rk = _real_solver(tr, n)
     if rk.__class__ is str:
         return rk
-    ## (the fallback's dense estimate is numpy's solve; where the real factor
-    ## is on KLU the Python's is the analysis solver's: not bound then)
+    ## (the fallback's estimate is the fresh one -- numpy's solve, the
+    ## toolkit's, whatever the real factor's solver: bound on KLU too)
     return SimpleNamespace(drv=drv, O=O, tr=tr, rec=rec, n=n, iref=rec.iref, tab=tab,
                            minbreak=minbreak, st=st, screen=None if screen[0] is None else screen,
                            cfg=cfg, sk=None, fam=loop.family, integ=tr.base_integrator, mem=mem,
                            zs=td['_radau_zsolver'], mats=tr._radau_transform_matrices(),
-                           rk=rk, fb=None if rk is not None else _fb_ready(tr, td, rec, n))
+                           rk=rk, fb=_fb_ready(tr, td, rec, n))
 
 
 def _fb_ready(tr, td, rec, n):

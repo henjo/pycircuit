@@ -5728,3 +5728,19 @@ Tests: `test_tcloop_c.py` -- the loop's buffers still zero off the pattern
 after a run, dense and on KLU; alive: a nonzero planted off it (nothing
 zeroes it now) is another run; a 40-stage chain in the transform Newton's
 and the stage loop's twins.
+
+## The transform's fallback in C on the KLU real factor; 215's reason withdrawn (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 218).  215 left 210's fallback
+unbound where the transform's real factor is the StructuralKLU, reasoning
+that the fallback's estimate solves with numpy where the Python's used the
+analysis solver.  WRONG: after a fallback `_rk_step_coupled` calls
+`_finish_radau` without the transform's real solve, and the estimate's
+fresh path solves with the toolkit's `linearsolver` -- numpy's solve -- on
+every deck; the coupled Newton is radau.c on the stage KLU.  So the
+fallback is bound there too.  Where its coupled sets fit the C stage
+Newton's budget (`_sets_fit`): rich3 and arom now, voter25, mux8 and jge
+once Radau's floor moves them onto KLU (219); gm19 and opampal do not fit
+and stay the Python's.  rich3 and arom: their fallbacks made in C (12 and 13), the two 1.07x.
+Tests: `test_tcloop_c.py` -- the fallback made in C on the KLU chain, fixed
+and adaptive, the Python's to the byte, one numeric left.
