@@ -97,6 +97,15 @@ stage-2a explanation moved to `pycircuit/circuit/_blas.py` (transient re-exports
 `_single_threaded_blas` and `blas_single_thread_available`).  AC was not re-measured (2a-bis:
 0.80-0.98x) and stays threaded.
 
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 212): AC's exemption overturned
+as DC's was.  The note "threads never lost (0.80-0.98x)" did not hold on
+the gold decks' operating points: over 61 frequencies one thread was
+1.19-1.48x from 171 to 295 unknowns, the same at 88 and 429, 0.95x at 519;
+a peer's parallel workers took ~1 s a frequency threaded against 0.35-4.5
+ms on one.  `_blas.blas_held` now holds `AC.solve`, `Noise.solve` and
+`TransimpedanceAnalysis.solve`; the answers move at rounding level (5e-9
+relative at worst, an ill-conditioned system's).
+
 ### `resample_uniform`
 
 2026-09-27 (moved from the code):

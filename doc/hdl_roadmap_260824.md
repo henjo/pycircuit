@@ -11716,3 +11716,29 @@ decks, gear2 transient and standalone DC, against 210's, and under Radau against
 worktree): every digest, step, rejection, Newton count and path count identical, the time the same.  The sanitizer's
 fast tier, 5 723 passed, and its deep tier on the loop, Radau, solver and BLAS tests, 297, clean -- the new tests
 among them.
+
+## 2026-10-24 — 212. The small-signal analyses hold BLAS at one thread -- AC, Noise and Transimpedance (TwoPort and FeedbackLoop through them): 1.19-1.48x from 171 to 295 unknowns
+
+**Why**  Andreas chose to hold AC to one thread as transient, PSS and DC are held.  `_blas.py` said threads never
+lost on AC (0.80-0.98x); measured 2026-10-22 on three converters (119-164 unknowns) one thread was 1.4-1.7x, and a
+peer's parallel workers took ~1 s a frequency threaded against 0.35-4.5 ms on one.
+
+**Built**  `_blas.blas_held`, a decorator holding `_single_threaded_blas` for the call, on `AC.solve`, `Noise.solve`
+and `TransimpedanceAnalysis.solve`; `TwoPortAnalysis` and `FeedbackLoopAnalysis` reach it through them.  The periodic
+small-signal analyses after a PSS (`PAC`, `pnoise`, the spectra) are not held: not measured past the threading size.
+
+**Measured** (AC over 61 frequencies at eight gold decks' operating points, the first voltage source driven, one
+process alternating three rounds, a quiet box): ring (88 unknowns) 1.00x, the answers bit for bit; mux8 (171) 1.30x,
+voter25 (200) 1.32x, jge (244) 1.19x, rich3 (269) 1.32x, arom (295) 1.48x, gm19 (429) 1.00x, opampal (519) 0.95x.
+The answers move at rounding level -- 4e-16 to 5e-11 relative, rich3's 5e-9 (an ill-conditioned system).  The hold
+is unconditional above 400 unknowns too: the answers the same whatever the core count, and no oversubscription in a
+parallel sweep, against 5 % at 519.
+
+**Tests**  test_blas_limit (+3): AC, Noise and Transimpedance read one BLAS thread inside, the pool opened to four
+outside -- each failing without the hold.
+
+**Gate** (one for 211, 212 and 213; the main tree): the suite, 5 969 passed (6 skipped, 3 xfailed); the 27 gold
+decks, gear2 transient and standalone DC, against 210's, and under Radau against HEAD (06c34cd0, run from its
+worktree): every digest, step, rejection, Newton count and path count identical, the time the same.  The sanitizer's
+fast tier, 5 723 passed, and its deep tier on the loop, Radau, solver and BLAS tests, 297, clean -- the new tests
+among them.

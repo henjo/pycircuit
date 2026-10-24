@@ -99,3 +99,49 @@ def test_a_dc_solve_holds_blas_at_one_thread_where_its_dense_lu_is_threaded(
     with probe.limit(limits=4, user_api='blas'):
         DC(c, toolkit=circuit.numeric).solve()
     assert seen and all(t == (1 if held else 4) for t in seen[0]), (c.n, seen)
+
+
+@pytest.mark.parametrize('kind', ['ac', 'noise', 'transimpedance'])
+def test_the_small_signal_analyses_hold_blas_at_one_thread(kind, monkeypatch):
+    """`AC.solve`, `Noise.solve` and `TransimpedanceAnalysis.solve` hold the
+    limit for their whole run (`_blas.blas_held`): a dense solve or more at
+    each frequency, 1.19-1.48x from 171 to 295 unknowns on the gold decks'
+    operating points (2026-10-24).  Read inside the analysis, the pool
+    opened to 4 threads first."""
+    if not tmod.blas_single_thread_available():
+        pytest.skip('no threadpoolctl')
+    import numpy as np
+    import threadpoolctl
+
+    from pycircuit.circuit import analysis_ss, circuit
+    from pycircuit.circuit.circuit import Branch
+    from pycircuit.circuit.elements import IS, VS, C, R, gnd
+    probe = threadpoolctl.ThreadpoolController()
+    if not any(c.user_api == 'blas' for c in probe.lib_controllers):
+        pytest.skip('no BLAS threadpoolctl can see')
+    c = circuit.SubCircuit()
+    c['vs'] = VS('in', gnd, vac=1.0)
+    c['r'] = R('in', 'out', r=1e3)
+    c['c'] = C('out', gnd, c=1e-9)
+    c['is'] = IS('out', gnd, iac=0.0)
+    seen = []
+    orig = analysis_ss.remove_row_col
+
+    def spy(*args, **kwargs):
+        seen.append([lc.num_threads for lc in probe.lib_controllers if lc.user_api == 'blas'])
+        return orig(*args, **kwargs)
+    monkeypatch.setattr(analysis_ss, 'remove_row_col', spy)
+    freqs = np.array([1e3, 1e6])
+    with probe.limit(limits=4, user_api='blas'):
+        if kind == 'ac':
+            analysis_ss.AC(c, toolkit=circuit.numeric).solve(freqs)
+        elif kind == 'noise':
+            analysis_ss.Noise(c, inputsrc='vs', outputnodes=('out', gnd),
+                              toolkit=circuit.numeric).solve(freqs)
+        else:
+            analysis_ss.TransimpedanceAnalysis(c, toolkit=circuit.numeric).solve(
+                1e3, [Branch('out', gnd)])
+        outside = [lc.num_threads for lc in threadpoolctl.ThreadpoolController().lib_controllers
+                   if lc.user_api == 'blas']
+    assert seen and all(t == 1 for s in seen for t in s), seen
+    assert outside and all(t == 4 for t in outside), outside

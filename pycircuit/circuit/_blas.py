@@ -16,17 +16,30 @@ solves holds BLAS at one thread for its whole run:
   systems are not threaded, and the sparse ones factor with KLU, which the
   threads do not reach: there the limit would only cost its own call.
 
-AC is not limited: it solves once per frequency point, enough work per call
-that threads never lost (0.80-0.98x).
+* the small-signal analyses -- `AC.solve`, `Noise.solve`,
+  `TransimpedanceAnalysis.solve` (`blas_held`) and what is built on them
+  (`TwoPortAnalysis`, `FeedbackLoopAnalysis`): one dense solve or more at
+  each frequency.  Over 61 frequencies at eight gold decks' operating
+  points, 1.19-1.48x from 171 to 295 unknowns, the same at 88 and 429,
+  0.95x at 519 (where a dense complex LU starts to pay for its threads);
+  the answers move at rounding level (5e-9 relative at worst, an
+  ill-conditioned system's).  And a sweep's parallel workers no longer
+  oversubscribe the cores: one measured ~1 s a point threaded against
+  0.35-4.5 ms on one thread.
+
+The periodic small-signal analyses after a PSS (`PAC`, `pnoise`) are not
+held: not measured past the threading size.
 
 `threadpoolctl` is a dependency.  The import stays guarded anyway, and
 `blas_single_thread_available()` stays in the API, so a stripped environment
 degrades to threaded BLAS rather than failing to import a circuit simulator.
 
-History (the measurements, and the 2026-08-31 refusal for DC that today's DC
-overturned): `doc/transient_history.md`, `_threadpool_limits`.
+History (the measurements, the 2026-08-31 refusal for DC that DC's later
+measurement overturned, and AC's, overturned the same way):
+`doc/transient_history.md`, `_threadpool_limits`.
 """
 import contextlib
+import functools
 import sys
 
 try:
@@ -72,3 +85,14 @@ def _single_threaded_blas():
         from threadpoolctl import ThreadpoolController
         rec = _BLAS_CONTROLLER['blas'] = (n, ThreadpoolController())
     return rec[1].limit(limits=1, user_api='blas')
+
+
+def blas_held(solve):
+    """`solve` with BLAS held at one thread for its whole run
+    (`_single_threaded_blas`): the small-signal analyses' (the module's
+    list)."""
+    @functools.wraps(solve)
+    def held(*args, **kwargs):
+        with _single_threaded_blas():
+            return solve(*args, **kwargs)
+    return held
