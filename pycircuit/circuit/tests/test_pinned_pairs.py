@@ -666,18 +666,24 @@ PAIRS = {
                'with the four flags its `errstate(all=\'raise\')` raises on, a '
                'non-finite input left to numpy, and the complex one\'s nonzeros where '
                'they fall in the last record\'s pattern, in `_csc_of_dense`\'s order; '
-               '`prepare_values` makes `prepare`\'s record of them',
+               '`prepare_values` makes `prepare`\'s record of them.  On the core\'s pattern '
+               '(the C stepping loop\'s, roadmap 216: its C and G zero off it, read in '
+               'place) the same operations at its positions alone, the factors +0.0 off '
+               'them as the whole fold makes them, the gather over its positions in the '
+               'same order',
         'reference': ['pycircuit.circuit._tran_radau:_RadauStages._radau_frozen',
                       'pycircuit.circuit.linearsolver:_csc_of_dense',
                       'pycircuit.circuit.linearsolver:ComplexKLUSolver.prepare',
-                      'pycircuit.circuit._tran_radau_tc:cmul_mode'],
+                      'pycircuit.circuit._tran_radau_tc:cmul_mode',
+                      'pycircuit.circuit._tran_core:_Flat.arrays'],
         'twin': ['pycircuit.circuit._tran_radau_tc:FOLD_C',
                  'pycircuit.circuit._tran_radau_tc:fold',
                  'pycircuit.circuit._tran_radau_tc:_fold_bufs',
                  'pycircuit.circuit._tran_radau_tc:_fold_nz',
                  'pycircuit.circuit._tran_radau:_lam_folds',
                  'pycircuit.circuit.linearsolver:_csc_of_values',
-                 'pycircuit.circuit.linearsolver:ComplexKLUSolver.prepare_values'],
+                 'pycircuit.circuit.linearsolver:ComplexKLUSolver.prepare_values',
+                 'pycircuit.circuit._tran_tcloop_c:_bind_fold_pattern'],
     },
     'the stage block and its one pass': {
         'why': 'the one pass makes the block loop\'s elementwise products `(h A_ij) G_j` '
@@ -1081,7 +1087,8 @@ PAIRS = {
                  'pycircuit.circuit._tran_tcloop_c:_count_fb',
                  'pycircuit.circuit._tran_tcloop_c:_real_solver',
                  'pycircuit.circuit._tran_tcloop_c:_bind_rk',
-                 'pycircuit.circuit._tran_radau_tc:_real_klu'],
+                 'pycircuit.circuit._tran_radau_tc:_real_klu',
+                 'pycircuit.circuit._tran_tcloop_c:_bind_fold_pattern'],
     },
 }
 
@@ -1089,7 +1096,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('02966d22fff9', 'a40c0576df99'),
+    'the stepping loop and its C': ('02966d22fff9', '3ab644f0ec3f'),
     'the predictor and its C': ('9e611c84de5a', '0d37cf280c92'),
     'the branch screen and its C': ('adb832d7aae0', '213a22d4c01e'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -1117,20 +1124,20 @@ RECORD = {
     'the transform solve and its frozen form': ('6f35dca48644', '16cad74bb049'),
     'the transform Newton and its C': ('fec75db05899', '489272418ff6'),
     "the step's end passes and the C's": ('d9dfad6d6b96', 'a03d697f547a'),
-    'the frozen factors and their C': ('c27dee545b25', '00491721f3f9'),
+    'the frozen factors and their C': ('24792172cbc8', '7fed902a5d3e'),
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('39f2d0f63b0f', '591052196b6b'),
     'the KLU step map and its C': ('5b9b1f672523', '776fd7afe705'),
     'the stage walk and its C': ('a918e57085a2', '9cba9bb2445d'),
-    'the multistep walk and its C': ('57f6fd18a3eb', 'f22ecf8a34ab'),
+    'the multistep walk and its C': ('57f6fd18a3eb', '06c729c00ac6'),
     'the multistep step map and its C': ('985dde19187d', 'be14cb8c5221'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
     'the readiness reads and their stamps': ('61efd629dd90', '76e34cda0583'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('9b77e46fd9eb', '493049ffb772'),
-    'the transform loop and its C': ('ac5b2f9b540e', '22a832ca1809'),
+    'the stage loop and its C': ('9b77e46fd9eb', '9c3d69aca832'),
+    'the transform loop and its C': ('ac5b2f9b540e', '9c985a3f3c0c'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

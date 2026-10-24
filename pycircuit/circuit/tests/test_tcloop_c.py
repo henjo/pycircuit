@@ -17,6 +17,8 @@ real factor on the circuit's StructuralKLU: every attempt's real solves on
 the numeric it found, zero pivots and residual fallbacks, a nonzero off the
 pattern and a failed solve stopping the C (the numerics it made freed), the
 fallback the Python's; the solver's counts and its one numeric compared.
+The fold on the core's pattern (a chain past the core's fill): x_n's C and
+G read in place, the factors made at its positions, dense and on KLU.
 """
 import gc
 import inspect
@@ -69,6 +71,12 @@ _TRANSFORM = {'radau_transform': True}
 #: adaptive one)
 _FB_FIXED = {'tend': 1.6e-7, 'timestep': 2e-9, 'fixed_timestep': True}
 _FB_ADAPT = {'tend': 1.6e-7, 'timestep': 1e-9}
+
+
+def _pulsed40():
+    """The pulsed chain at 40 stages (45 unknowns): sparse enough for the
+    core's pattern (the fold on it), on the dense real factor."""
+    return _pulsed(40)
 
 
 def _maxiter(k):
@@ -175,6 +183,9 @@ def _hard_psp():
     ('pulse-tight', _pulsed, {'reltol': 1e-7}, _PULSE),
     ('pulse-pointlocal', _pulsed, {'relref': 'pointlocal'}, _PULSE),
     ('pulse-skip', _pulsed, {'lte_algebraic': 'skip'}, _PULSE),
+    ('pulse-40', _pulsed40, None, _PULSE),
+    ('pulse-40-fixed', _pulsed40, None, dict(_PULSE, fixed_timestep=True)),
+    ('pulse-40-tight', _pulsed40, {'reltol': 1e-7}, _PULSE),
 ])
 def test_a_run_is_the_python_one(name, build, make, kw, monkeypatch):
     """Every attempt -- accepted, rejected at a point and retried, abandoned
@@ -584,6 +595,52 @@ def test_the_klu_solutions_a_hair_off_are_another_run(monkeypatch):
     _planted(monkeypatch, _klu_solve_planted(up))
     b, cb = _run(_klu_chain, True, monkeypatch, setup=_klu(), **_PULSE)
     assert cb.get('tcloop_c:steps', 0) > 10 and a['x'] != b['x']
+
+
+## -- the fold on the core's pattern -----------------------------------------------------
+
+def _fold_modes(monkeypatch):
+    """Each binding's fold: `(onpat, pn, m)` as bound."""
+    seen = []
+
+    def plant(run):
+        seen.append((int(run.fo.onpat), int(run.fo.pn), int(run.fo.m)))
+    _planted(monkeypatch, plant)
+    return seen
+
+
+@pytest.mark.parametrize('build, setup, onpat', [(_pulsed, None, 0), (_pulsed40, None, 1),
+                                                 (_klu_chain, _klu(), 1)],
+                         ids=['small', 'dense', 'klu'])
+def test_the_fold_is_on_the_cores_pattern_past_its_fill(build, setup, onpat, monkeypatch):
+    """The core writes only its pattern past its fill (`_tran_core.
+    PATTERN_MAX_FILL`): the loop's fold then makes the factors at its
+    positions alone -- fewer than m x m -- on the dense real factor and on
+    KLU; the small chain's core writes every entry and the fold is the whole
+    one.  The run the Python's either way."""
+    seen = _fold_modes(monkeypatch)
+    _same(build, monkeypatch, steps_min=10, setup=setup, **_PULSE)
+    assert seen and all(o == onpat for o, _pn, _m in seen), seen
+    if onpat:
+        assert all(0 < pn < m * m for _o, pn, m in seen), seen
+
+
+def test_a_pattern_position_left_out_is_another_run(monkeypatch):
+    """Alive: the fold on the pattern given one position fewer (the middle
+    one, a stage's node: its factors' entry left zero; the last, a source
+    branch's diagonal, is zero anyway) -- another run."""
+    a, _ = _run(_pulsed40, False, monkeypatch, **_PULSE)
+
+    def plant(run):
+        if run.fo.onpat:
+            k = int(run.fo.pn) // 2
+            for name in ('pfull', 'pred', 'ptr'):
+                at = run.tbuf['fold_' + name]
+                at[k:-1] = at[k + 1:].copy()
+            run.fo.pn -= 1
+    _planted(monkeypatch, plant)
+    b, cb = _run(_pulsed40, True, monkeypatch, **_PULSE)
+    assert cb.get('tcloop_c:steps', 0) > 10 and (a['x'] != b['x'] or a['t'] != b['t'])
 
 
 #: (the functions whose returned strings are decline reasons: the module's,

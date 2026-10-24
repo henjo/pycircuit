@@ -4,7 +4,9 @@ loop's attempts under the stage family where the transform makes them
 `_rk_step_transformed`) in C -- `csrc/loop.c`'s stage family in its
 transform mode (`tmode`): where (the breakpoints, the run's end), take
 (x_n's charge, the device memo's roll, x_n's C and G frozen; the two
-factors by radau_fold.c with P's rows by numpy's division, the real one's
+factors by radau_fold.c -- on the core's pattern alone where the core
+writes only that, x_n's C and G read in place -- with P's rows by numpy's
+division, the real one's
 LU in the loop's buffer -- or its values at the analysis solver's
 StructuralKLU pattern, each real solve that solver's sequence -- the
 complex one's values for the transient's ComplexKLUSolver; the seeds by pred.c; the sources at the stage times;
@@ -665,7 +667,8 @@ def _bind_buffers(run, e):
 def _bind_fold(run, e, m):
     """The loop's fold struct: its inputs the loop's reduced C and G, its
     outputs its own, the complex solver's last pattern (`_csc_last`'s
-    mask, laid out as `_tran_radau_tc._fold_nz` reads it)."""
+    mask, laid out as `_tran_radau_tc._fold_nz` reads it); on the core's
+    pattern, the pattern's positions (`_bind_fold_pattern`)."""
     fo, tb = run.fo, run.tbuf
     fffi = _owners()['TC']._fold_driver()[0]
     fo.m, fo.fused = m, int(_owners()['TC']._MOD['cmul'])
@@ -688,6 +691,30 @@ def _bind_fold(run, e, m):
     run.tctx.s.Ax = keep[-1]
     keep.append(fffi.from_buffer('uint8_t *', tb['fold_nz']))
     fo.nz, fo.nz_at, fo.nnz = keep[-1], at, int(Ai.shape[0])
+    fo.onpat = 0
+    if e.rec.core.npat:
+        _bind_fold_pattern(run, e, m, fffi)
+
+
+def _bind_fold_pattern(run, e, m, fffi):
+    """The fold on the core's pattern (radau_fold.h's `onpat`): where the
+    core writes only its pattern into a C and G zero off it, the factors
+    are made at its positions alone -- reduced (the reference row and
+    column out), column by column and rows ascending: their flat indices
+    into x_n's n x n matrices, into the factors and into their transpose;
+    the factors zeroed off it by the first call."""
+    fo, tb, keep = run.fo, run.tbuf, run.tkeep
+    n, r0 = e.n, e.iref
+    i, j = np.divmod(np.asarray(e.rec.core.arrays['pat'], dtype=np.int64), n)
+    on = (i != r0) & (j != r0)
+    i, j = i[on], j[on]
+    ri, rj = i - (i > r0), j - (j > r0)
+    o = np.lexsort((ri, rj))
+    for name, at in (('pfull', i * n + j), ('pred', ri * m + rj), ('ptr', rj * m + ri)):
+        tb['fold_' + name] = np.ascontiguousarray(at[o], dtype=np.int64)
+        keep.append(fffi.from_buffer('int64_t *', tb['fold_' + name]))
+        setattr(fo, name, keep[-1])
+    fo.pn, fo.pclean, fo.onpat = int(o.shape[0]), 0, 1
 
 
 def _load_tc(e, run_, xl):

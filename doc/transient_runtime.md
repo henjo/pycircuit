@@ -49,7 +49,8 @@ From the outside in. "Called from" is where the Python reaches the glue.
 Outside the multistep loop, the same rules: the Radau stage solve (`csrc/radau.c`, `_tran_radau_c`,
 `PYCIRCUIT_RADAU_C`, `radau_c:`; on a StructuralKLU of the stage block -- a shooting walk's, or a plain run's from
 250 block unknowns, `_RadauStages._run_stage_klu`, `PYCIRCUIT_RADAU_KLU`), its tensor-product form and fold (`csrc/radau_tc.c`,
-`csrc/radau_fold.c`, `_tran_radau_tc`, `PYCIRCUIT_RADAU_TC`, `PYCIRCUIT_RADAU_FOLD`,
+`csrc/radau_fold.c` -- in the C stepping loop on the core's pattern alone where the core writes only that --
+`_tran_radau_tc`, `PYCIRCUIT_RADAU_TC`, `PYCIRCUIT_RADAU_FOLD`,
 `PYCIRCUIT_RADAU_TC_END`, `radau_tc:`, the fold's `radau.frozen:`; the real factor on numpy's kept LU or the
 analysis solver's StructuralKLU, `csrc/pcx_kluseq.h`), and the shooting sensitivities
 (`csrc/sens.c`, `shooting/_sens_c`, `PYCIRCUIT_SENS_C`, `pss.sens:`; on the walk's KLU

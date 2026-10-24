@@ -5,7 +5,9 @@ decision left where it was.  The factors numpy's bytes and its errstate's
 flags, enumerated and drawn; the packed values `_csc_of_dense`'s where the
 pattern is the last record's, none elsewhere; a non-finite entry numpy's;
 `prepare_values` `prepare`'s record; the frozen transform, a radau PSS and
-the transform transients the same with the fold off."""
+the transform transients the same with the fold off.  On the core's
+pattern (the C stepping loop's: C and G zero off it, read in place) the
+fold the whole fold's, drawn."""
 import gc
 import warnings
 
@@ -194,6 +196,119 @@ def test_drawn_factors_are_numpys(data):
         Z = Cr if data.draw(st.booleans()) else Gr
         Z.flat[data.draw(st.integers(0, m * m - 1))] = data.draw(st.sampled_from(SPECIAL))
     _check(Cr, Gr, s0, c1, last)
+
+
+def _modes(C, G, pat, iref, s0, c1, mask, at):
+    """The fold's two modes on x_n's n x n C and G (zero off the core's
+    pattern `pat`, flat indices): the whole fold on them reduced, and the
+    fold on the pattern (radau_fold.h's `onpat`; its outputs NaN before the
+    call, which zeroes them off the pattern) -- each `(status, same, rf,
+    cf, ax)`, the factors' and the packed values' bytes where made."""
+    ffi, cfn, _f = TC._fold_driver()
+    n = C.shape[0]
+    m = n - 1
+    keep = [i for i in range(n) if i != iref]
+    Cr, Gr = np.ascontiguousarray(C[np.ix_(keep, keep)]), np.ascontiguousarray(G[np.ix_(keep, keep)])
+    i, j = np.divmod(np.asarray(pat, dtype=np.int64), n)
+    on = (i != iref) & (j != iref)
+    i, j = i[on], j[on]
+    ri, rj = i - (i > iref), j - (j > iref)
+    o = np.lexsort((ri, rj))
+    idx = [np.ascontiguousarray(a[o], dtype=np.int64) for a in (i * n + j, ri * m + rj, rj * m + ri)]
+    out, hold = [], []
+    for onpat in (0, 1):
+        f = ffi.new('radau_fold_t *')
+        f.m, f.fused, f.s0, f.c1r, f.c1i = m, TC._MOD['cmul'], s0, c1.real, c1.imag
+        rf, cf, ax = (np.full(m * m, np.nan), np.full(2 * m * m, np.nan),
+                      np.full(2 * m * m, np.nan))
+        hold += [rf, cf, ax, Cr, Gr, C, G, *idx]
+        f.rf, f.cf, f.ax = (ffi.from_buffer('double *', a) for a in (rf, cf, ax))
+        if mask is None:
+            f.nz = ffi.NULL
+        else:
+            mk = np.ascontiguousarray(mask.T if at else mask, dtype=np.uint8)
+            hold.append(mk)
+            f.nz, f.nz_at, f.nnz = ffi.from_buffer('uint8_t *', mk), at, int(mask.sum())
+        if onpat:
+            f.onpat, f.pn, f.pclean = 1, int(o.shape[0]), 0
+            f.pfull, f.pred, f.ptr = (ffi.from_buffer('int64_t *', a) for a in idx)
+            f.Cf, f.Gf = ffi.from_buffer('double *', C), ffi.from_buffer('double *', G)
+        else:
+            f.Cr, f.Gr = ffi.from_buffer('double *', Cr), ffi.from_buffer('double *', Gr)
+        cfn(f)
+        made = f.status == 0
+        out.append((int(f.status), int(f.same), rf.tobytes() if made else None,
+                    cf.tobytes() if made else None,
+                    ax[:2 * int(f.nnz)].tobytes() if made and f.same and mask is not None else None))
+    return out
+
+
+@settings(deadline=None, max_examples=300)
+@given(data=st.data())
+def test_the_pattern_fold_is_the_whole_folds(data):
+    """Drawn: a pattern (the diagonal and some more), C and G at its
+    positions (zero off it), the reference row anywhere, a step, special
+    values at its positions; the record's mask the factor's own, one with a
+    zero more or a nonzero off the pattern, laid out as `A` or `A.T`, or
+    none: the fold on the pattern makes the whole fold's status, factors,
+    packed values and `same`."""
+    _fold_or_skip()
+    n = data.draw(st.integers(2, 10))
+    rng = np.random.default_rng(data.draw(st.integers(0, 2 ** 32 - 1)))
+    p = data.draw(st.sampled_from((0.0, 0.15, 0.4, 1.0)))
+    on = (rng.random((n, n)) < p) | np.eye(n, dtype=bool)
+    pat = np.flatnonzero(on)
+    sc, sg = data.draw(st.sampled_from(((1e-12, 1e-3), (1.0, 1.0), (1e-160, 1e-160),
+                                        (1e150, 1e150))))
+    C = np.where(on, sc * rng.standard_normal((n, n)), 0.0)
+    G = np.where(on, sg * rng.standard_normal((n, n)), 0.0)
+    for _ in range(data.draw(st.integers(0, 2))):
+        Z = C if data.draw(st.booleans()) else G
+        Z.flat[pat[data.draw(st.integers(0, len(pat) - 1))]] = data.draw(st.sampled_from(SPECIAL))
+    iref = data.draw(st.integers(0, n - 1))
+    s0, c1 = _scalars(data.draw(st.sampled_from((2.5e-8, 1e-12, 1.0, 1e-280))))
+    keep = [i for i in range(n) if i != iref]
+    with np.errstate(all='ignore'):
+        cf = c1 * C[np.ix_(keep, keep)] + G[np.ix_(keep, keep)]
+    mask = data.draw(st.sampled_from(('own', 'none', 'zero', 'off')))
+    if mask == 'none':
+        mask = None
+    else:
+        mk = cf != 0
+        if data.draw(st.booleans()) and mk.any() and mask == 'zero':
+            mk.flat[np.flatnonzero(mk)[0]] = False
+        if mask == 'off' and not mk.all():
+            mk.flat[np.flatnonzero(~mk)[0]] = True
+        mask = mk
+    whole, onpat = _modes(C, G, pat, iref, s0, c1, mask, data.draw(st.integers(0, 1)))
+    assert onpat == whole
+
+
+def test_the_pattern_folds_kinds_are_reached():
+    """The drawn kinds all occur on the pattern: made, flagged, left to
+    numpy, the same pattern and another (a nonzero off the pattern in the
+    record's mask)."""
+    _fold_or_skip()
+    n, iref = 6, 2
+    rng = np.random.default_rng(3)
+    on = (rng.random((n, n)) < 0.3) | np.eye(n, dtype=bool)
+    pat = np.flatnonzero(on)
+    C = np.where(on, 1e-12 * rng.standard_normal((n, n)), 0.0)
+    G = np.where(on, 1e-3 * rng.standard_normal((n, n)), 0.0)
+    s0, c1 = _scalars(2.5e-8)
+    keep = [i for i in range(n) if i != iref]
+    own = (c1 * C[np.ix_(keep, keep)] + G[np.ix_(keep, keep)]) != 0
+    off = own.copy()
+    off.flat[np.flatnonzero(~own)[0]] = True
+    big, nan = C.copy(), G.copy()
+    big.flat[pat[-1]], nan.flat[pat[0]] = 1e305, np.nan
+    kinds = []
+    for args in ((C, G, own, 0), (C, G, own, 1), (C, G, off, 0), (big, G, own, 0),
+                 (C, nan, own, 0)):
+        whole, onpat = _modes(args[0], args[1], pat, iref, s0, c1, args[2], args[3])
+        assert onpat == whole
+        kinds.append((whole[0], whole[1]))
+    assert kinds == [(0, 1), (0, 1), (0, 0), (1, 0), (2, 0)], kinds
 
 
 def test_inputs_of_another_kind_are_numpys(monkeypatch):

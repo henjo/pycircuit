@@ -1113,9 +1113,14 @@ static long tc_repattern(loop_t *s, loop_attempt_t *a)
 static int tc_rkgather(loop_t *s)
 {
     radau_tf_t *tf = (radau_tf_t *) s->tc;
-    const double *rf = ((radau_fold_t *) s->fold)->rf;
+    const radau_fold_t *fo = (const radau_fold_t *) s->fold;
+    const double *rf = fo->rf;
     long m = s->n - 1, k, nz = 0, nk = 0;
-    for (k = 0; k < m * m; k++) nz += rf[k] != 0.0;
+    /* (on the core's pattern the factor is +0.0 off it) */
+    if (fo->onpat)
+        for (k = 0; k < fo->pn; k++) nz += rf[fo->pred[k]] != 0.0;
+    else
+        for (k = 0; k < m * m; k++) nz += rf[k] != 0.0;
     for (k = 0; k < s->rk_nnz; k++) {
         tf->rk.kAx[k] = rf[s->rk_take[k]];
         nk += tf->rk.kAx[k] != 0.0;
@@ -1158,8 +1163,14 @@ static long tc_frozen(loop_t *s, loop_attempt_t *a)
     long n = s->n, m = n - 1, i, j;
     a->fold = s->tc_hp && a->h == s->tc_h;
     if (tc_scalars(s, a->h)) return LOOP_BAIL_FOLD;
-    reduce_mat(tc_xv(s, 2), s->crr, n, s->iref);
-    reduce_mat(tc_xv(s, 3), s->grr, n, s->iref);
+    if (fo->onpat) {
+        /* (on the core's pattern the fold reads x_n's C and G in place) */
+        fo->Cf = tc_xv(s, 2);
+        fo->Gf = tc_xv(s, 3);
+    } else {
+        reduce_mat(tc_xv(s, 2), s->crr, n, s->iref);
+        reduce_mat(tc_xv(s, 3), s->grr, n, s->iref);
+    }
     CALL(s->fold_fn, pcx_radau_fold, fo);
     if (fo->status != FOLD_STATUS_MADE) return LOOP_BAIL_FOLD;
     if (!fo->same) {
@@ -1167,6 +1178,13 @@ static long tc_frozen(loop_t *s, loop_attempt_t *a)
         if (st) return st;
     }
     if (s->rk_klu) return tc_rkgather(s) ? LOOP_BAIL_FOLD : 0;
+    if (fo->onpat) {
+        /* (the real factor +0.0 off the pattern: its entries put
+           transposed, the rest zero) */
+        memset(s->lua, 0, (size_t) (m * m) * sizeof(double));
+        for (i = 0; i < fo->pn; i++) s->lua[fo->ptr[i]] = fo->rf[fo->pred[i]];
+        return 0;
+    }
     for (j = 0; j < m; j++)
         for (i = 0; i < m; i++) s->lua[j * m + i] = fo->rf[i * m + j];
     return 0;

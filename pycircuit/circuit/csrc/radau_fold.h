@@ -31,6 +31,19 @@ typedef struct {
     /* outputs, set every call: status (a radau_fold_status); same, 1 where
        the nonzeros fall exactly on the pattern (ax then complete) */
     long status, same;
+    /* THE CORE'S PATTERN (the C stepping loop's; `onpat` 0 elsewhere):
+       where the core writes only its pattern into a C and G zero off it,
+       the factors are made at its positions alone -- `pn` of them, column
+       by column and rows ascending: `pfull` their flat indices into x_n's
+       n x n C and G (`Cf`, `Gf`, set each call and read in place of `Cr`
+       and `Gr`), `pred` into the m x m factors, `ptr` into their transpose
+       (the dense LU's layout, and the pattern's mask laid out as `A.T`).
+       Off the pattern every factor's entry is +0.0 as the whole fold makes
+       it (s0 * +0.0 + +0.0; the complex one's likewise): zeroed by the call
+       that finds `pclean` 0, which sets it */
+    long onpat, pn, pclean;
+    const int64_t *pfull, *pred, *ptr;
+    const double *Cf, *Gf;
 } radau_fold_t;
 long pcx_radau_fold(radau_fold_t *f);
 

@@ -11867,3 +11867,51 @@ the four KLU decks, the counts of the C path that now serves them (`radau_tc:` s
 residual hand-backs; `core.p:served`, `walk:served`, `radau.fuse:handed`; `radau_tc:frozen` once where HEAD declined
 every step).  The sanitizer's fast tier, 5 769 passed, and its deep tier on the loop, Radau, DC and solver tests, 654,
 clean -- the KLU tests' library wrapper and its callbacks under the address sanitizer.
+
+## 2026-10-24 — 216. The fold on the core's pattern -- the C stepping loop's transform mode makes the two factors at the core's positions alone, x_n's C and G read in place: jge, voter25 and mux8 1.21x together (68.3 -> 56.6 s), the four KLU decks 1.41x, every byte the same
+
+**Why**  Andreas: "Follow your recommendation" (the speed survey's second item).  radau_fold.c formed the real factor,
+the complex one and its packed values over all m x m entries -- after the loop reduced x_n's C and G (two n x n copies)
+and before it copied the real factor transposed for the dense LU -- where the core can write only its pattern: 2.6 %
+of jge's reduced matrix (1 517 of 59 049 entries), 3.8 % of voter25's, 4.4 % of mux8's, 1.8 % of gm19's.  The fold
+alone was 13.8 % of jge's profile, 10.1 % of voter25's and 15.7 % of gm19's (215).  LINE: jge, voter25 and mux8
+together at least 1.06x against 215 in the gold A/B, every byte the same.
+
+**Built.**  radau_fold.c: `fold_pattern` (radau_fold.h's `onpat`, the whole fold `fold_whole` otherwise): where the
+core writes only its pattern into a C and G zero off it, the same operations at its positions alone -- the finite
+check, the real factor in its two roundings, the complex one in `cmul_mode`'s form, the four flags, the gather column
+by column and rows ascending -- reading x_n's n x n C and G in place (`Cf`, `Gf`); the factors +0.0 off the pattern,
+zeroed once (`pclean`), as the whole fold makes them there (s0 times +0.0 plus +0.0; the complex product of a finite
+c1 with +0.0 is a pair of signed zeros, and Gr's +0.0 added -- its imaginary part +0.0 -- makes both +0.0, in either
+product form); `same` only where every nonzero of the record's mask was met on the pattern (its `nnz`).  loop.c's
+`tc_frozen`: on the pattern no reduction of C and G, the dense LU's input a memset and the pattern's entries put
+transposed (`ptr`); `tc_rkgather`'s nonzero count over the pattern.  `_tran_tcloop_c._bind_fold_pattern`: the core's
+pattern reduced, column by column and rows ascending, its indices into the n x n matrices (`pfull`), the factors
+(`pred`) and their transpose (`ptr`) -- bound only where the core writes only its pattern (`_Core.npat`: its fill at
+most `PATTERN_MAX_FILL`, 0.25); the small circuits keep the whole fold.
+
+**Measured** (the 27 gold decks under Radau, HEAD 107da83f from its worktree and this tree, separate processes,
+interleaved per deck): jge 37.44 -> 30.64 s (1.22x), voter25 14.58 -> 12.45 (1.17x), mux8 16.31 -> 13.51 (1.21x) --
+the three 68.3 -> 56.6 s, 1.21x (the line 1.06x).  The KLU decks: opampal 4.10 -> 1.58 s (2.60x: 519 unknowns, its
+whole-matrix passes most of what 215 left), rich3 8.26 -> 6.61 (1.25x), arom 7.10 -> 5.32 (1.34x), gm19 12.22 -> 8.94
+(1.37x) -- the four 31.7 -> 22.4 s, 1.41x.  The other decks the loop steps 1.03-1.27x where they run a few tenths of
+a second or more; none under 0.98x.  The 27 decks 108.8 -> 86.9 s (147 s before 215).
+
+**Tests.**  test_radau_fold (+2, 43): the fold's two modes on drawn n x n C and G zero off a drawn pattern (the
+diagonal and more, special values at its positions, the reference row anywhere, four step sizes; the record's mask the
+factor's own, with a zero more, with a nonzero off the pattern, laid out as `A` or `A.T`, or none): the same status,
+factors, packed values and `same`, their outputs NaN before the call; the kinds reached (made, flagged, left to numpy,
+the same pattern and another).  Three mutations caught by both: no zeroing off the pattern, the mask's layout ignored,
+no finite check.  test_tcloop_c (+7, 48): the 40-stage pulsed chain on the dense real factor (adaptive, fixed, a
+tight tolerance) the Python's to the byte; the loop's fold on the pattern there and on the KLU real factor, the whole
+fold on the small chain; alive: the middle pattern position left out (the last, a source branch's diagonal, is zero
+anyway).  test_pinned_pairs: 'the frozen factors and their C' gains the core's pattern maker (`_Flat.arrays`) and the
+binding, 'the transform loop and its C' the binding; they and the stage loop, stepping loop and multistep walk
+re-recorded (the last three by the shared C text alone).  doc/transient_runtime.md: the fold's line;
+doc/transient_history.md: its entry.
+
+**Gate** (the main tree): the suite, 6 002 passed (6 skipped, 3 xfailed); the 27 gold decks, gear2 transient and
+standalone DC, against 215's gate runs (107da83f's code), and under Radau against HEAD (wt_head, 107da83f, run from
+inside it), interleaved per deck: every digest, step, rejection, Newton count and path count identical but the loops'
+own.  The sanitizer's fast tier, 5 774 passed, and its deep tier on the loop, Radau, fold, DC and solver tests, 663,
+clean.

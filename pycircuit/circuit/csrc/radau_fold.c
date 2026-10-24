@@ -4,8 +4,11 @@
    and the complex one's nonzeros where they fall in the last record's
    pattern.  The glue, `_tran_radau_tc.fold`, fills radau_fold_t
    (radau_fold.h) and returns what it read; every decision stays in
-   `_radau_frozen`. */
+   `_radau_frozen`.  The C stepping loop's own struct may ask for the
+   factors on the core's pattern alone (`onpat`, `fold_pattern`): the same
+   bytes where its C and G are zero off it. */
 #include <stdint.h>
+#include <string.h>
 #include <math.h>
 #include <fenv.h>
 #include "pcx_fenv.h"
@@ -48,7 +51,7 @@ static void cmul(long fused, double ar, double ai, double br, double bi, double 
    call; rf and cf unless status 2 (read by the glue only on status 0); ax
    only past status 0 with a pattern, partly where `same` stays 0 (not
    read then).  Returns 0 always: the outcome is `status`. */
-long pcx_radau_fold(radau_fold_t *f)
+static long fold_whole(radau_fold_t *f)
 {
     const long m = f->m, mm = m * m;
     long i, j, k;
@@ -96,4 +99,63 @@ long pcx_radau_fold(radau_fold_t *f)
         }
     f->same = k == f->nnz;
     return 0;
+}
+
+/* `fold_whole` on the core's pattern (radau_fold.h): the same operations
+   in the same roundings at its positions, the factors +0.0 off them (as
+   the whole fold makes them from a C and G zero there), the flags the
+   same (an operation off the pattern raises none), and the complex
+   factor's gather in the same order -- column by column, rows ascending --
+   over the pattern: off it the factor is zero, and where `same` every
+   nonzero of the record's mask was met on it (`nnz` of them) */
+static long fold_pattern(radau_fold_t *f)
+{
+    const long m = f->m, pn = f->pn;
+    long k, j = 0;
+    f->same = 0;
+    for (k = 0; k < pn; k++)
+        if (!isfinite(f->Cf[f->pfull[k]]) || !isfinite(f->Gf[f->pfull[k]])) {
+            f->status = FOLD_STATUS_NONFINITE;
+            return 0;
+        }
+    if (!f->pclean) {
+        memset(f->rf, 0, (size_t) (m * m) * sizeof(double));
+        memset(f->cf, 0, (size_t) (2 * m * m) * sizeof(double));
+        f->pclean = 1;
+    }
+    feclearexcept(FE_ALL_EXCEPT);
+    for (k = 0; k < pn; k++) {
+        const double t = f->s0 * f->Cf[f->pfull[k]];
+        f->rf[f->pred[k]] = t + f->Gf[f->pfull[k]];
+    }
+    for (k = 0; k < pn; k++) {
+        const int64_t q = f->pred[k];
+        double re, im;
+        cmul(f->fused, f->c1r, f->c1i, f->Cf[f->pfull[k]], 0.0, &re, &im);
+        f->cf[2 * q] = re + f->Gf[f->pfull[k]];
+        f->cf[2 * q + 1] = im + 0.0;
+    }
+    f->status = fetestexcept(PCX_FP_FLAGS) != 0;
+    feclearexcept(FE_ALL_EXCEPT);
+    if (f->status || !f->nz) return 0;
+    for (k = 0; k < pn; k++) {
+        const int64_t q = f->pred[k];
+        const double re = f->cf[2 * q], im = f->cf[2 * q + 1];
+        const long nz = re != 0.0 || im != 0.0;
+        const long was = f->nz[f->nz_at ? f->ptr[k] : q] != 0;
+        if (nz != was) return 0;
+        if (nz) {
+            if (j == f->nnz) return 0;
+            f->ax[2 * j] = re;
+            f->ax[2 * j + 1] = im;
+            j++;
+        }
+    }
+    f->same = j == f->nnz;
+    return 0;
+}
+
+long pcx_radau_fold(radau_fold_t *f)
+{
+    return f->onpat ? fold_pattern(f) : fold_whole(f);
 }

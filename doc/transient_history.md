@@ -5692,3 +5692,22 @@ every residual failing, some failing, zero pivots, a nonzero off the
 pattern, a failed solve in C, seven rows an entry -- the Python's to the
 byte with one numeric left, the solver's; alive: the values or the
 solutions a ulp up.
+
+## The C stepping loop's fold on the core's pattern (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 216).  radau_fold.c formed the
+transform's two factors over every entry of the m x m matrix -- after the
+loop reduced x_n's C and G (two n x n copies), and before it copied the
+real factor transposed for the dense LU -- where the core can write only its
+pattern (1.8-4.4 % of the gold decks' matrices).  Where the core writes
+only its pattern (`_Core.npat`) the loop's fold now makes the factors at
+its positions alone (`fold_pattern`), reading x_n's C and G in place: the
+same operations and roundings, the same flags, the gather in the same order;
+off the pattern the factors are +0.0 as the whole fold makes them (zeroed
+once).  The dense LU's input is a memset and the pattern's entries put
+transposed; the KLU real factor's nonzero count runs over the pattern.
+jge, voter25 and mux8 1.21x together, the four KLU decks 1.41x (opampal 2.60x).
+Tests: `test_radau_fold.py` -- the two modes on drawn C and G zero off a
+drawn pattern, the record's mask its own, wrong or absent, either layout;
+`test_tcloop_c.py` -- a 40-stage chain on the dense and the KLU real
+factor in pattern mode, the small chain not; alive: a position left out.
