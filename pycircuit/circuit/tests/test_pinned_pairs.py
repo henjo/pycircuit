@@ -983,7 +983,12 @@ PAIRS = {
                'abort\'s probe, `_radau_early_check` and `resume`, its rejection by '
                '`reject_early`), `_stage_end_passes`\' record, the screens on `cir.C` by the '
                'core, the estimate on `real_solve`; the device memo by state and passes, made '
-               'again at write-back; a stop leaves the attempt to the Python, nothing held',
+               'again at write-back; a stop leaves the attempt to the Python, nothing held. '
+               'The transform not converging, `_rk_step_coupled`\'s fallback in the same '
+               'attempt (roadmap 210): the memo rolled again, `_coupled_stage_solver`\'s '
+               'context and seeds, `_tran_radau_c.solve` on the transient\'s record (`_ready` '
+               'at entry, nothing remade), its records, the dense finish; a stop after its '
+               'Newton held (`_tran_radau_c.hold`)',
         'reference': ['pycircuit.circuit._tran_radau:_RadauStages._rk_step_transformed',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_frozen',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_early_check',
@@ -1011,7 +1016,13 @@ PAIRS = {
                       'pycircuit.circuit.transient:_StageSteps.reject_early',
                       'pycircuit.circuit.transient:_StageSteps._retry_after',
                       'pycircuit.circuit._tran_predictor:_StagePredictor._pred_stages',
-                      'pycircuit.circuit._tran_predictor:_StagePredictor._predict_fast'],
+                      'pycircuit.circuit._tran_predictor:_StagePredictor._predict_fast',
+                      'pycircuit.circuit._tran_radau:_RadauStages._rk_step_coupled',
+                      'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_solver',
+                      'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_context',
+                      'pycircuit.circuit._tran_radau_c:solve',
+                      'pycircuit.circuit._tran_radau_c:_ready',
+                      'pycircuit.circuit._tran_radau_c:hold'],
         'twin': ['pycircuit.circuit._tran_loop_c:LOOP_C',
                  'pycircuit.circuit._tran_loop_c:LOOP_CDEF',
                  'pycircuit.circuit._tran_radau_tc:_outcome',
@@ -1041,7 +1052,13 @@ PAIRS = {
                  'pycircuit.circuit._tran_tcloop_c:_record',
                  'pycircuit.circuit._tran_tcloop_c:_count',
                  'pycircuit.circuit._tran_tcloop_c:_f0_back',
-                 'pycircuit.circuit._tran_tcloop_c:_count_screen'],
+                 'pycircuit.circuit._tran_tcloop_c:_count_screen',
+                 'pycircuit.circuit._tran_tcloop_c:_fb_ready',
+                 'pycircuit.circuit._tran_tcloop_c:_bind_fb',
+                 'pycircuit.circuit._tran_tcloop_c:_load_fb',
+                 'pycircuit.circuit._tran_tcloop_c:_fb_settle',
+                 'pycircuit.circuit._tran_tcloop_c:_fb_back',
+                 'pycircuit.circuit._tran_tcloop_c:_count_fb'],
     },
 }
 
@@ -1049,7 +1066,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('02966d22fff9', '09fbd271412d'),
+    'the stepping loop and its C': ('02966d22fff9', '49596de4bd19'),
     'the predictor and its C': ('9e611c84de5a', '0d37cf280c92'),
     'the branch screen and its C': ('adb832d7aae0', '213a22d4c01e'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -1082,15 +1099,15 @@ RECORD = {
     'the stage step map and its C': ('39f2d0f63b0f', '591052196b6b'),
     'the KLU step map and its C': ('5b9b1f672523', '776fd7afe705'),
     'the stage walk and its C': ('a918e57085a2', '9cba9bb2445d'),
-    'the multistep walk and its C': ('57f6fd18a3eb', '4a798279a959'),
+    'the multistep walk and its C': ('57f6fd18a3eb', '431ae307ba9b'),
     'the multistep step map and its C': ('985dde19187d', 'be14cb8c5221'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
     'the readiness reads and their stamps': ('61efd629dd90', '76e34cda0583'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('9b77e46fd9eb', 'e00c687052d7'),
-    'the transform loop and its C': ('a2fb96e04722', 'dbabf023560d'),
+    'the stage loop and its C': ('9b77e46fd9eb', '957fa262705d'),
+    'the transform loop and its C': ('b7818dc82a45', '1d554484ef47'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

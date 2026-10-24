@@ -212,11 +212,12 @@ typedef struct {
     long te_x;                  /* the set holding x_n's record; -1: `xr_*` holds what
                                    the C made or the entry's memo had (`xfields`) */
     long xfields;               /* the passes `xr_*` holds (LOOP_TG_*) */
-    double *tg;                 /* (3 x LOOP_TG_MAX x n) the memo's generations by
-                                   state: three slots, an attempt's own the one neither
-                                   the made attempts' two hold (loop.c's tg_*) */
-    long tg_n[3], tg_f[3][32];  /* each slot's records and their passes (32:
-                                   LOOP_TG_MAX) */
+    double *tg;                 /* (LOOP_TG_SLOTS x LOOP_TG_MAX x n) the memo's
+                                   generations by state: an attempt's own in a slot
+                                   the made attempts' two do not hold, a fallback's
+                                   second in the fourth (loop.c's tg_*) */
+    long tg_n[4], tg_f[4][32];  /* each slot's records and their passes (4:
+                                   LOOP_TG_SLOTS, 32: LOOP_TG_MAX) */
     long tg_gen, tg_prev;       /* the slots of the last made attempt's generation
                                    and the one before (the attempt's own while made) */
     double tc_h;                /* the step `p` (P's rows) was made for; `tc_hp` 0: none */
@@ -263,6 +264,20 @@ typedef struct {
     /* the analyses and factors a made attempt's new pattern freed (the
        solver's `analyses_freed`, `factors_freed`) */
     long tc_symfreed, tc_numfreed;
+    /* THE FALLBACK (`_rk_step_coupled` after the transform's
+       NoConvergenceError: the dense coupled Newton, radau.c on the
+       transient's record and its stage KLU, the coupled family's sets
+       above): `fb_ok` 1 where the glue bound it (else the loop stops there,
+       the Python's); x_n's record in the coupled set the last made fallback
+       wrote (`fbx`: its q, i, C, G at `fbv`); the last fallback's stages
+       made this call (`fbY`, `have_fbY`); the transform Newton's
+       non-convergences the Python counts (`radau_tc:noconv`), the fallbacks
+       made, the certificates their screens made */
+    long fb_ok, fbx;
+    const double *fbv[4];
+    double *fbY;
+    long have_fbY;
+    long tc_noconv, tc_fb, tc_fbcert;
 } loop_t;
 long pcx_loop(loop_t *s);
 
@@ -320,6 +335,11 @@ typedef struct {
        attempt is not made (`tc_undo`) */
     long repat, pyit, pyend, old_pcur, old_nnz, old_at;
     void *old_sym, *old_num, *old_Ap, *old_Ai, *old_nz;
+    /* the fallback's (`tc_fallback`): made; the transform Newton's
+       non-convergence counted as the C Newton's (`noconv`; the Python
+       loop's own is not, `pyloop`); its seeds' count; the coupled set its
+       Newton wrote; its screen's certificates */
+    long fb, noconv, pyloop, fast2, fbset, fbcert;
 } loop_attempt_t;
 
 /* KLU's analysis (`klu_analyze(n, Ap, Ai, Common)`: a symbolic, NULL where
@@ -328,12 +348,17 @@ typedef struct {
 typedef void *(*klu_analyze_t)(int, int *, int *, void *);
 
 /* the device memo's records a generation holds (`tg`): a transform
-   attempt puts four at most -- x_n's, the first two stages' C, the end's */
+   attempt puts four at most -- x_n's, the first two stages' C, the end's;
+   a fallback's Newton three a stage's assembly (radau.h's maxa: 24) */
 enum loop_tg {
     LOOP_TG_MAX = 32,
     /* a record's passes */
     LOOP_TG_Q = 1, LOOP_TG_I = 2, LOOP_TG_C = 4, LOOP_TG_G = 8
 };
+
+/* the memo's slots (`tg`): the made attempts' two generations, an
+   attempt's own, a fallback's second roll */
+enum loop_tg_slots { LOOP_TG_SLOTS = 4 };
 
 /* `family`: whose attempts the loop makes */
 enum loop_family {
@@ -387,7 +412,7 @@ enum loop_status {
        values (deterministic) and the LU is the loop's own */
     LOOP_BAIL_FOLD = 15,        /* the factors: a flag, a non-finite input, or the
                                    complex one's nonzeros off the last pattern */
-    LOOP_BAIL_TRANSFORM = 16,   /* radau_tc.c handed back, or did not converge (the
-                                   Python's dense fallback) */
+    LOOP_BAIL_TRANSFORM = 16,   /* radau_tc.c handed back, or did not converge where
+                                   no fallback is bound (the Python's dense one) */
     LOOP_BAIL_END = 17          /* the end passes not made (a non-finite stage) */
 };

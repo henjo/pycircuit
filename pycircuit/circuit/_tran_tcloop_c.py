@@ -187,11 +187,14 @@ def run(loop):
         return _declined(loop, 'bind')
     _SL._load(loop, e, run_, stage=_load_tc)
     ## (settled whatever happens after the call: the C may have freed the
-    ## solver's handles for a new pattern's)
+    ## solver's handles for a new pattern's, moved the stage KLU's numeric)
+    status = None
     try:
         status = _call(e, run_)
     finally:
         _settle(e, run_)
+        if e.fb is not None:
+            _fb_settle(e, run_, status)
     s = run_.s
     if status not in (_CODES['LOOP_DONE'], _CODES['LOOP_FULL']):
         _no('tcloop_c:bail:' + BAIL.get(status, str(status)))
@@ -244,7 +247,32 @@ def _eligible(loop, tr, td, rec):
     return SimpleNamespace(drv=drv, O=O, tr=tr, rec=rec, n=n, iref=rec.iref, tab=tab,
                            minbreak=minbreak, st=st, screen=None if screen[0] is None else screen,
                            cfg=cfg, sk=None, fam=loop.family, integ=tr.base_integrator, mem=mem,
-                           zs=td['_radau_zsolver'], mats=tr._radau_transform_matrices())
+                           zs=td['_radau_zsolver'], mats=tr._radau_transform_matrices(),
+                           fb=_fb_ready(tr, td, rec, n))
+
+
+def _fb_ready(tr, td, rec, n):
+    """The fallback's C Newton as `_tran_radau_c.solve` would serve it now --
+    `(the transient's record, its temperature, the stage KLU)` -- or None,
+    the loop then stopping at a fallback (the Python's): the record the
+    Python's first fallback made, on this core, `_ready`'s checks passing on
+    it (nothing remade), its slots and the loop's set within the budget."""
+    from pycircuit.circuit import _tran_core, _tran_radau_c
+    rc = td.get('_radau_c')
+    ## (`_ready` remakes a record whose core, size or reference row moved:
+    ## here it never does)
+    if (rc is None or rc.core is not rec.core or rc.n != n or rc.iref != rec.iref
+            or int(rc.s.maxa) != _tran_radau_c.MAXA or not _SL._sets_fit(n)
+            or _tran_core.core_for(tr) is not rc.core):
+        return None
+    ctx = SimpleNamespace(iref=rec.iref, m=n - 1, h=1.0, qn=np.zeros(n),
+                          Amat=np.array(tr.base_integrator.A, dtype=float))
+    nobypass = float(getattr(tr.epar, 'bypasstol', -1.0) or -1.0) < 0.0
+    got = _tran_radau_c._ready(tr, ctx, None, None, td.get('_stateful_lims'), nobypass,
+                               tr.par.reltol, step_memo=False)
+    if got.__class__ is str or got[0] is not rc:
+        return None
+    return got[0], got[1], got[2]
 
 
 def _fits(n):
@@ -396,9 +424,10 @@ def _bound(loop, e):
     handles or pattern, or the sizes moved; None where it cannot be."""
     run_ = loop.c.run
     scr, zs = e.screen, e.zs
+    fb = e.fb or (None, None, None)
     key = (e.rec, e.tab, zs, zs._symbolic, zs._numeric, zs._csc_last[1],
            None if scr is None else scr[3], None if scr is None else scr[4], e.n,
-           e.st[0].shape[0])
+           e.st[0].shape[0], fb[0], fb[2])
     if not (type(run_) is _TcRun and len(run_.key) == len(key)
             and all(a is b or (type(a) is int and a == b) for a, b in zip(run_.key, key))):
         run_ = _bind(e)
@@ -425,9 +454,39 @@ def _bind(e):
     run.fo = fdrv[0].new('radau_fold_t *')
     _LC._plug(s, ffi, 'fold', fdrv[0], run.fo, fdrv[1])
     _bind_buffers(run, e)
+    s.fb_ok = 0
+    if e.fb is not None:
+        _bind_fb(run, e)
     run.ccounts = _cir_c_counts(e)
     s.tmode = 1
     return run
+
+
+def _bind_fb(run, e):
+    """The fallback's units: radau.c on the transient's record (plugged as
+    `_tran_stageloop_c._bind` plugs it), the coupled family's two output sets
+    (the record's own and one of the loop's), the dense estimate's work and
+    numpy's dgesv, the held charge, the last fallback's stages."""
+    from pycircuit.circuit import _tran_radau_c
+    rec = e.fb[0]
+    s, ffi, n, m = run.s, run.ffi, e.n, e.n - 1
+    rffi, rcfn, rdgesv, _rdgemv = _tran_radau_c.driver()
+    _LC._plug(s, ffi, 'radau', rffi, rec.s, rcfn)
+    run.sets = sets = [rec.own, rec._new_out()]
+    tb, keep, fb = run.tbuf, run.tkeep, ffi.from_buffer
+    for k, size in (('eA', max(m * m, 1)), ('hq', n), ('fbY', 3 * n)):
+        tb[k] = np.empty(size)
+        keep.append(fb('double *', tb[k]))
+        setattr(s, k, keep[-1])
+    tb['eipiv'] = np.empty(max(m, 1), dtype=np.int64)
+    keep.append(fb('int64_t *', tb['eipiv']))
+    s.eipiv = keep[-1]
+    for o in range(2):
+        for k, nm in enumerate(_tran_radau_c._OUTS):
+            keep.append(fb('double *', sets[o][0][nm]))
+            s.oset[o][k] = keep[-1]
+    s.dgesv = ffi.cast('void *', rdgesv)
+    s.fb_ok = 1
 
 
 def _cir_c_counts(e):
@@ -500,7 +559,8 @@ def _bind_buffers(run, e):
         'xr_C': np.zeros(nn), 'xr_G': np.empty(nn), 'xr_i': np.empty(n), 'eF': np.empty(n),
         'eb': np.empty(max(m, 1)), 'liq': np.empty(n), 'lest': np.empty(n),
         'crr': np.empty(mm), 'grr': np.empty(mm), 'lua': np.empty(mm), 'tcC': np.zeros(2 * nn),
-        'tcq': np.empty(n), 'tcY': np.empty(3 * n), 'tg': np.empty(3 * mx * n),
+        'tcq': np.empty(n), 'tcY': np.empty(3 * n),
+        'tg': np.empty(_CODES['LOOP_TG_SLOTS'] * mx * n),
         'tcf0': np.empty(n)}
     run.tkeep = keep = []
     fb = ffi.from_buffer
@@ -598,6 +658,26 @@ def _load_tc(e, run_, xl):
     for i in range(3):
         s.ct[i] = cvec[i]
     s.dd1, s.dd2, s.dd3 = _owners()['R']._DD
+    s.fbx = 0
+    if e.fb is not None:
+        _load_fb(e, run_)
+
+
+def _load_fb(e, run_):
+    """The fallback's: its record's run settings as `_tran_radau_c.solve`
+    sets them (the temperature, the tolerances, maxiter, the tableau), no
+    coupled set made yet, the stage KLU's numeric, the estimate's gamma."""
+    rec, Tc, sk = e.fb
+    s, ffi, rs, tr = run_.s, run_.ffi, rec.s, e.tr
+    rs.T = Tc
+    rs.reltol, rs.abstol = float(tr.par.reltol), float(tr.par.vabstol)
+    rs.maxiter = int(tr.par.maxiter)
+    for k, v in enumerate(np.array(e.integ.A, dtype=float).ravel().tolist()):
+        rs.A[k] = v
+    s.gen0, s.A0 = -1, 0
+    num = sk._numeric if sk is not None else None
+    s.klu_cur = ffi.cast('void *', num) if num else ffi.NULL
+    s.gamma_r = e.integ.GAMMA_REAL
 
 
 def _load_early(e, run_):
@@ -646,7 +726,7 @@ def _load_memo(e, run_):
             tg[off:off + n] = np.frombuffer(key, dtype=np.float64)
             s.tg_f[g][k] = f
         s.tg_n[g] = len(states)
-    s.tg_n[2] = 0
+    s.tg_n[2] = s.tg_n[3] = 0
     s.tg_gen, s.tg_prev = 0, 1
 
 
@@ -690,6 +770,32 @@ def _settle(e, run_):
     zs._csc_last = (nz, Ap, Ai, key)
 
 
+def _fb_settle(e, run_, status):
+    """The fallback's after the call: the stage KLU as its made Newtons left
+    it (its numeric, their counts), and where the loop stopped after a
+    fallback's converged Newton, its result held for the Python's repeat
+    (`_tran_radau_c.hold`, as `_tran_stageloop_c._settle` holds it)."""
+    from pycircuit.circuit import _tran_radau_c
+    rec, _Tc, sk = e.fb
+    s, n = run_.s, e.n
+    if (status == _CODES['LOOP_BAIL_RADAU']
+            and rec.s.status == _tran_radau_c._CODES['RADAU_BAIL_WALKSTOP']):
+        rec.walk_ok = None
+    if sk is not None:
+        sk._numeric = int(run_.ffi.cast('uintptr_t', s.klu_cur)) or None
+        sk.refactors += s.st_klu_refactors
+        sk.factors += s.st_klu_factors
+        sk.pivot_fallbacks += s.st_klu_pivot
+        sk.residual_fallbacks += s.st_klu_resid
+    if s.held and status in _SL._AFTER:
+        tb, rs = run_.tbuf, rec.s
+        o = 1 if s.gen0 == 0 else 0
+        _tran_radau_c.hold(rec, sk, tb['hq'], tb['ust'][:3 * n].reshape(3, n),
+                           tb['useed'].reshape(3, n), np.array(e.integ.A, dtype=float),
+                           float(rs.T), float(s.cur_h), float(rs.reltol), float(rs.abstol),
+                           int(rs.maxiter), outs=run_.sets[o][0])
+
+
 def _stage_back(e, run_):
     """The last made attempt's stage outputs as `_finish_stage_step` and the
     estimate leave them, the device memo's two generations, `_radau_Pc`,
@@ -720,7 +826,28 @@ def _stage_back(e, run_):
         tr._C_cache = (Y[2], rec3['C'])
     if s.have_ph:
         _pc_back(e, float(s.ph_made))
+    if s.tc_fb:
+        _fb_back(e, run_, gens, have)
     return Y[2]
+
+
+def _fb_back(e, run_, gens, have):
+    """What the made fallbacks leave on the transient: their count
+    (`_radau_transform_fallbacks`), and the last one's mark of its stages' C
+    with the core's pattern (`_C_pattern`, its memo records' C where the memo
+    still holds them, else made again)."""
+    s, n, tr = run_.s, e.n, e.tr
+    tr._radau_transform_fallbacks = getattr(tr, '_radau_transform_fallbacks', 0) + int(s.tc_fb)
+    core = e.fb[0].core
+    if not (s.have_fbY and core.npat):
+        return
+    recs = []
+    for j in range(3):
+        y = run_.tbuf['fbY'][j * n:(j + 1) * n].copy()
+        key = y.tobytes()
+        r = gens[0].get(key) or gens[1].get(key)
+        recs.append(r if r is not None and 'C' in r else _record(e, y, key, _TG['C'], have))
+    tr._C_pattern = (tuple(r['C'] for r in recs), core.arrays['pat'])
 
 
 def _pc_back(e, h):
@@ -805,7 +932,7 @@ def _count(e, run_, k):
                    ('radau.fuse:handed', s.tc_handed), ('radau.fuse:unhanded', s.tc_unhanded),
                    ('radau.early:checks', s.tc_checks), ('radau.early:aborts', s.tc_aborts),
                    ('radau.est:transform', s.tc_ests), ('radau.est:memo', s.st_estmemo),
-                   ('pred:fast', s.st_fast)):
+                   ('pred:fast', s.st_fast), ('radau_tc:noconv', s.tc_noconv)):
         if v:
             _PC[key] += int(v)
     _PC['umemo:hit'] += int(s.tc_uhit + s.st_uhit)
@@ -821,7 +948,30 @@ def _count(e, run_, k):
     if s.tc_pyiters and int(run_.tctx.s.wn):
         _PC['walk:served'] += 3 * int(s.tc_pyiters)
     _PC['memo.q:same'] += k
+    if s.tc_fb:
+        _count_fb(e, run_)
     _f0_back(e, run_)
+
+
+def _count_fb(e, run_):
+    """The made fallbacks' counts, as the dense path's calls make them
+    (`_tran_stageloop_c._count`'s for its attempts): the fallback itself, the
+    C stage Newton's serves and assemblies on the stage KLU, the screens on
+    the C's its serve marked, the fresh estimates."""
+    s, fb = run_.s, int(run_.s.tc_fb)
+    _PC['tcloop_c:fallbacks'] += fb
+    _PC['radau.transform:fallback'] += fb
+    _PC['radau_c:served'] += fb
+    _PC['radau_c:assemblies'] += int(s.st_assemblies)
+    if s.st_klu_on:
+        _PC['radau_c:on_klu'] += int(s.st_klu_on)
+    if run_.br is not None:
+        _PC['branch_c:served'] += 3 * fb
+        _PC['memo.C:memo'] += 3 * fb
+        if e.fb[0].core.npat:
+            _PC['branch_c:pattern'] += 3 * fb
+    if s.adaptive:
+        _PC['radau.est:fresh'] += fb
 
 
 def _f0_back(e, run_):
@@ -852,6 +1002,9 @@ def _count_screen(e, run_):
     if e.n * e.n > _cbuild.INPLACE_MIN_ENTRIES:
         if a:
             _PC['branch_c:large'] += a
+        ## (the fallbacks' screens alone certified here: their C's marked)
+        if s.tc_fbcert:
+            _PC['branch_c:cert'] += int(s.tc_fbcert)
         return
     if a:
         _PC['branch_c:served'] += a

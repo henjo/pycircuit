@@ -11649,3 +11649,46 @@ standalone DC, against 208's, and under Radau against HEAD (28bf80ef, run from i
 tell): every digest, step, rejection, Newton count and path count identical, the time the same (the 18 transform
 decks 80.0 -> 79.9 s).  The sanitizer's fast tier, 5 723 passed, and its deep tier on the loop and solver tests, 254,
 clean -- the frees and the loop's twins under the address sanitizer.
+
+## 2026-10-24 — 210. The transform's dense fallback in C -- `csrc/loop.c`'s transform mode continues into `_rk_step_coupled`'s fallback in the same attempt
+
+**Why**  Andreas: "do 2" (208's third step, sized at ~2 s on voter25).  208's loop stopped at each attempt whose
+transform Newton did not converge (voter25: 121 stops, 102 of them that; slowlatch 13): the Python repeated the
+attempt -- its transform Newton again (~15 ms of C), then the dense fallback -- and the attempt after it too, the
+fallback having moved the watch (each stop two Python attempts: 245 of voter25's 253).  LINE: voter25 at least 1.07x
+against 209 in the gold A/B, no deck slower, every byte the same.
+
+**Built.**  loop.c: `tc_newton` marks a Newton at `maxiter` (`fb`; `noconv` where the C Newton's own, `_outcome`'s
+count, not the Python loop's on a new pattern, `pyloop`); `tc_body` then runs `tc_fallback` -- `tc_fb_newton`: the
+memo's second roll (`tg_roll2`, the fourth slot: the attempt's start's two stand, a stop restores both), x_n's charge
+as the coupled context reads it (the memo's, else a 'q' pass, not put), the seeds again (`_pred_stages`, counted
+again), the stage sources (the step's memo), radau.c on the transient's record into the coupled set the last made
+fallback's is not in (`gen0`), its assemblies' records put; then the screen on the last assembly's C's, the sources,
+x_n's record as the estimate reads it and `stage_estimate` (207's dense estimate).  A made fallback: `tc_fb_made`
+(the coupled set, its stages for `_C_pattern`, the stage KLU's counts), x_{n+1}'s record in the coupled set (`fbx`,
+`fbv`).  `_tran_tcloop_c`: `_fb_ready` (the transient's `_radau_c` made by the Python's first fallback, on this core,
+size and reference row, `_tran_radau_c._ready` passing -- nothing remade -- the slots and the loop's set within
+OUT_BYTES), `_bind_fb` (the radau plug, the two coupled sets, the dense estimate's work), `_load_fb` (the record's run
+settings as `solve` sets them, the stage KLU's numeric), `_fb_settle` (207's: the numeric and counts, the hold on a
+stop after the Newton), `_fb_back` (`_radau_transform_fallbacks`, `_C_pattern`: the memo's records' C where it holds
+them), `_count_fb` (the fallback, the C Newton's serves and assemblies, the marked screens, the fresh estimates).
+
+**Tests.**  test_tcloop_c (+4, 27): fallbacks made in C on a fixed grid and on an adaptive one with the early abort
+armed (the pulsed chain, three Newton iterations), the Python's to the byte with `_radau_transform_fallbacks`; a stop
+after a fallback's converged Newton (the dense estimate's dgesv said failed) held and served; the transform and the
+dense Newton both not converging (two iterations), the Python's; alive: the fallback record's A[0][0] a ulp off.  The
+scratch twins on the gold decks: gm6 1, slowlatch 17 fallbacks made in C, every state and count the same.
+test_pinned_pairs: 'the transform loop and its C' gains the coupled step's references and the fallback's glue; it, the
+stepping loop, the stage loop and the multistep walk re-recorded, each twin's tests run first.
+doc/transient_runtime.md: the transform loop's rows; doc/transient_history.md: its entry.
+
+**Measured** (the 27 gold decks under Radau, HEAD 9eb458c2 from its worktree and this tree, separate processes,
+interleaved per deck): voter25 16.84 -> 14.62 s (1.15x; the line 1.07x), slowlatch 0.30 -> 0.23, latch 0.23 -> 0.17,
+todd3 0.19 -> 0.14 (about 1.3x each), the 18 served 79.7 -> 77.3 s, the rest unchanged (gm3, mike2 and g1310 read
+0.92-0.98x on one run, 1.04-1.05x on five interleaved runs each).  Fallbacks made in C: voter25 101, latch 18,
+slowlatch 17, todd3 13, jge 1 -- each deck's first the Python's (it makes the record).
+
+**Gate** (the main tree): the suite, 5 962 passed (6 skipped, 3 xfailed); the 27 gold decks, gear2 transient and
+standalone DC, against 209's, and under Radau against HEAD (a tell: HEAD made no `tcloop_c:fallbacks`): every digest,
+step, rejection, Newton count and path count but the loops' own identical.  The sanitizer's fast tier, 5 728 passed,
+and its deep tier on the loop, Radau and solver tests, 285, clean -- the fallback's tests under the address sanitizer.

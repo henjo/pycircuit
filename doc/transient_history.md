@@ -5597,3 +5597,30 @@ has the same overwrite; four C units borrow its handles: not changed here.
 Tests: test_linearsolver (each handle freed where it is replaced, both at
 the end); test_tcloop_c (the twins compare the frees; a run with new
 patterns made in C leaves one of each).
+
+## `csrc/loop.c`'s transform mode makes the dense fallback too (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 210).  Where the transform's
+Newton does not converge in `maxiter`, `_rk_step_coupled` falls back to the
+dense coupled Newton in the same attempt.  208's loop stopped there: the
+Python repeated the attempt -- its transform Newton again, then the
+fallback -- and the one after it (the fallback moves the watch).  On voter25
+that was 101 fallbacks and some 250 attempts in Python.  The transform mode
+now continues into the fallback (`tc_fallback`): `radau.transform:fallback`
+and the transient's `_radau_transform_fallbacks`, the memo's second roll in
+a fourth slot (`tg_roll2`: an attempt that stops restores both rolls), x_n's
+charge as the coupled context reads it, the seeds again, radau.c on the
+transient's `_radau_c` record and its stage KLU (207's coupled take from its
+Newton on, the record's run settings loaded as `_tran_radau_c.solve` sets
+them), its assemblies' records put, the screen on the C's its serve marked
+(`_C_pattern`), the estimate on the fresh real factor.  A stop after its
+converged Newton holds the result for the Python's repeat
+(`_tran_radau_c.hold`, 207's).  The glue binds the fallback only where the
+Python's first fallback made the record and `_tran_radau_c._ready` passes on
+it (nothing remade: the core, the size and the reference row checked
+first); elsewhere the loop stops at a fallback as before.
+Tests: `test_tcloop_c.py` -- fallbacks made in C on a fixed and an adaptive
+grid (the early abort armed) the Python's to the byte, the fallbacks on the
+transient compared too; a stop after a fallback's Newton held and served; a
+transform and dense Newton both not converging, the Python's; alive: the
+fallback's tableau a ulp off.

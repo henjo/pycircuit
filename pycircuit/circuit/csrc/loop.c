@@ -913,15 +913,30 @@ static void tg_put(loop_t *s, const double *x, long f)
 }
 
 /* `_memo_step`: the last made attempt's generation becomes the one before
-   and the attempt's own opens in the slot neither holds -- the two kept
-   until it is made, so a stop takes the roll back (`tg_undo`) */
+   and the attempt's own opens in the lowest slot neither holds -- the two
+   kept until it is made, so a stop takes the roll back (`tc_undo`) */
 static void tg_roll(loop_t *s, loop_attempt_t *a)
 {
+    long k;
     a->tg_gen0 = s->tg_gen;
     a->tg_prev0 = s->tg_prev;
+    for (k = 0; k == s->tg_gen || k == s->tg_prev; k++) {}
     s->tg_prev = s->tg_gen;
-    s->tg_gen = 3 - a->tg_gen0 - a->tg_prev0;
-    s->tg_n[s->tg_gen] = 0;
+    s->tg_gen = k;
+    s->tg_n[k] = 0;
+}
+
+/* the fallback's `_memo_step`, the attempt's second: the transform part's
+   generation becomes the one before, the fallback's own opens in the slot
+   none of the three holds -- the attempt's start's two stand, so a stop
+   takes both rolls back */
+static void tg_roll2(loop_t *s, const loop_attempt_t *a)
+{
+    long k;
+    for (k = 0; k == s->tg_gen || k == s->tg_prev || k == a->tg_prev0; k++) {}
+    s->tg_prev = s->tg_gen;
+    s->tg_gen = k;
+    s->tg_n[k] = 0;
 }
 
 /* an attempt not made, taken back: the memo's roll, and the point's f0
@@ -952,10 +967,12 @@ static void tc_undo(loop_t *s, const loop_attempt_t *a)
 }
 
 /* x_n's record's pass k (0 q, 1 i, 2 C, 3 G) as the C reads it: in the
-   end set it was made in (`te_x`), else `xr_*` */
+   end set it was made in (`te_x`), the coupled set a fallback wrote it in
+   (`fbx`), else `xr_*` */
 static const double *tc_xv(const loop_t *s, long k)
 {
     if (s->te_x >= 0) return s->te[s->te_x][k];
+    if (s->fbx) return s->fbv[k];
     return k == 0 ? s->xr_q : k == 1 ? s->xr_i : k == 2 ? s->xr_C : s->xr_G;
 }
 
@@ -983,7 +1000,7 @@ static void tc_pass(loop_t *s, const double *x, long bits, double *q, double *C,
    call makes them all: each pass's values whatever else it is asked) */
 static void tc_xmake(loop_t *s, long need)
 {
-    if (s->te_x >= 0 || (s->xfields & need) == need) return;
+    if (s->te_x >= 0 || s->fbx || (s->xfields & need) == need) return;
     tc_pass(s, s->xlast, s->pass_bits, s->xr_q, s->xr_C, s->xr_G, s->xr_i);
     s->xfields = LOOP_TG_Q | LOOP_TG_I | LOOP_TG_C | LOOP_TG_G;
 }
@@ -1214,11 +1231,13 @@ static long tc_newton_repat(loop_t *s, loop_attempt_t *a, long o)
     st = tc_call(s, a, 1, o);
     a->pyit = 1;
     a->iters = 0;
+    a->pyloop = 1;
     if (st != RADAU_TC_MAXITER) return st;
     if (a->armed && s->tc_maxit > 1) {
         if ((st = tc_check(s, a)) != 0) return st;
         COPY(s->useed, tf->Y, 3 * n);
         tf->klu_fresh = 0;
+        a->pyloop = 0;
         st = tc_call(s, a, s->tc_maxit - 1, o);
         a->tuhit = 3 + 3 * (a->iters - 1);
         a->served = st == RADAU_TC_CONVERGED;
@@ -1275,7 +1294,13 @@ static long tc_newton(loop_t *s, loop_attempt_t *a)
         a->tuhit = 3 * (a->iters - 1);
         a->served = st == RADAU_TC_CONVERGED;
     }
-    if (st != RADAU_TC_CONVERGED) return LOOP_BAIL_TRANSFORM;
+    if (st != RADAU_TC_CONVERGED) {
+        /* (not converged in maxiter: the Python's NoConvergenceError, its
+           dense fallback -- here where it is bound, `tc_fallback`) */
+        a->fb = st == RADAU_TC_MAXITER && s->fb_ok;
+        a->noconv = a->fb && !a->pyloop;
+        return LOOP_BAIL_TRANSFORM;
+    }
     if (!tf->end_done) return LOOP_BAIL_END;
     a->pyend = !a->served;
     a->set = o;
@@ -1387,11 +1412,90 @@ static long tc_estimate(loop_t *s, loop_attempt_t *a)
     return 0;
 }
 
+/* THE FALLBACK's Newton (`_rk_step_coupled` after the transform's
+   NoConvergenceError): the memo rolled again (`tg_roll2`), x_n's charge as
+   the coupled context reads it (the memo's, else a 'q' pass, not put), the
+   seeds again (`_pred_stages`, counted again), the stage sources (the
+   step's memo), radau.c on the transient's record and its stage KLU into
+   the coupled set the last made fallback's is not in (`_tran_radau_c.solve`),
+   the records of its assemblies' stages put.  0, or the status to stop with
+   (LOOP_BAIL_RADAU: the Python's Newton and its ladder); past the Newton
+   the result is held for the Python's repeat */
+static long tc_fb_newton(loop_t *s, loop_attempt_t *a)
+{
+    radau_t *rs = (radau_t *) s->radau;
+    const long all = LOOP_TG_Q | LOOP_TG_I | LOOP_TG_C | LOOP_TG_G;
+    long n = s->n, i, j, st, o, b;
+    tg_roll2(s, a);
+    if (!(tg_get(s, s->xlast) & LOOP_TG_Q)) a->xpass++;
+    tc_xmake(s, LOOP_TG_Q);
+    a->fast2 = pcx_stage_seeds(s->pred_fn, (pred_t *) s->pred, s->hk, a->ts, s->xlast,
+                               s->useed, n);
+    if (a->fast2 < 0) return LOOP_BAIL_PRED;
+    for (i = 0; i < 3; i++) if ((st = stage_u(s, a, a->ts[i], i)) != 0) return st;
+    o = a->fbset = (s->gen0 == 0) ? 1 : 0;
+    COPY(s->hq, tc_xv(s, 0), n);
+    rs->qn = s->hq;
+    rs->u = s->ust;
+    rs->seed = s->useed;
+    rs->h = a->h;
+    rs->Ya = s->oset[o][0];
+    rs->qa = s->oset[o][1];
+    rs->ia = s->oset[o][2];
+    rs->Ca = s->oset[o][3];
+    rs->Ga = s->oset[o][4];
+    rs->klu.klu_num = s->klu_cur;
+    if (CALL(s->radau_fn, pcx_radau, rs) != RADAU_CONVERGED) return LOOP_BAIL_RADAU;
+    s->held = 1;
+    if (rs->klu.klu_sym) s->klu_cur = rs->klu.klu_out;
+    a->A = rs->assemblies;
+    for (i = 0; i < a->A; i++)
+        for (j = 0; j < 3; j++) tg_put(s, s->oset[o][0] + (i * 3 + j) * n, all);
+    b = ((a->A - 1) * 3 + 2) * n;
+    a->Ys = s->oset[o][0] + (a->A - 1) * 3 * n;
+    a->q3 = s->oset[o][1] + b;
+    a->i3 = s->oset[o][2] + b;
+    a->C3 = s->oset[o][3] + b * n;
+    a->G3 = s->oset[o][4] + b * n;
+    return 0;
+}
+
+/* THE FALLBACK (`fb_ok`): its Newton (`tc_fb_newton`), then the dense
+   path's `_finish_radau` -- the screen on the last assembly's C's (the
+   memo's, the pattern's marks), the sources at the end and, adaptive,
+   x_n's record as the estimate reads it (the memo's, else a 'CGi' pass),
+   the sources at the start and the estimate on the fresh real factor
+   (`stage_estimate`).  0, or the status to stop with */
+static long tc_fallback(loop_t *s, loop_attempt_t *a)
+{
+    const long need = LOOP_TG_C | LOOP_TG_G | LOOP_TG_I;
+    branch_t *br = (branch_t *) s->branch;
+    long n = s->n, st, c0;
+    if ((st = tc_fb_newton(s, a)) != 0) return st;
+    a->cmax = s->cmax;
+    c0 = br ? br->ncert : 0;
+    if (!pcx_stage_screen(s->branch_fn, br, s->oset[a->fbset][3] + (a->A - 1) * 3 * n * n, n,
+                          &a->cmax))
+        return LOOP_BAIL_SCREEN;
+    a->fbcert = br ? br->ncert - c0 : 0;
+    if ((st = stage_u(s, a, a->tn, 3)) != 0) return st;
+    if (!s->adaptive) return 0;
+    if ((tg_get(s, s->xlast) & need) == need) a->estmemo = 1;
+    else a->xpass++;
+    tc_xmake(s, need);
+    a->rq = tc_xv(s, 0);
+    a->ri = tc_xv(s, 1);
+    a->rC = tc_xv(s, 2);
+    a->rG = tc_xv(s, 3);
+    if ((st = stage_u(s, a, a->t0, 4)) != 0) return st;
+    return stage_estimate(s, a, a->Ys);
+}
+
 /* the transform's attempt past its start (`tc_take`): the factors, the
    seeds, the sources at the stage times, the Newton and its end passes,
    the end's record, the screens, the sources at the end and, adaptive, at
    the start, and the estimate -- `_rk_step_transformed` and
-   `_finish_radau`'s order */
+   `_finish_radau`'s order; the Newton not converged, the fallback */
 static long tc_body(loop_t *s, loop_attempt_t *a)
 {
     long i, st;
@@ -1400,7 +1504,7 @@ static long tc_body(loop_t *s, loop_attempt_t *a)
                               s->n);
     if (a->fast < 0) return LOOP_BAIL_PRED;
     for (i = 0; i < 3; i++) if ((st = stage_u(s, a, a->ts[i], i)) != 0) return st;
-    if ((st = tc_newton(s, a)) != 0) return st;
+    if ((st = tc_newton(s, a)) != 0) return a->fb ? tc_fallback(s, a) : st;
     tc_end(s, a);
     if ((st = tc_screen(s, a)) != 0) return st;
     if ((st = stage_u(s, a, a->tn, 3)) != 0) return st;
@@ -1427,6 +1531,8 @@ static long tc_take(loop_t *s, loop_attempt_t *a)
     a->iters = a->refact = a->xpass = a->cpass = a->fuse = a->mcmemo = a->fold = 0;
     a->tuhit = a->served = a->probed = a->checked = a->screened = a->estimated = 0;
     a->repat = a->pyit = a->pyend = 0;
+    a->fb = a->noconv = a->pyloop = a->fast2 = a->fbcert = a->A = 0;
+    a->fbset = a->set = -1;
     /* (armed as the stepping loop's `radau_arm` arms it: adaptive, a
        threshold, a full attempt left in the point's budget, above minstep) */
     a->armed = s->adaptive && s->tc_th > 0.0 && s->rejects + 1 < s->max_reject
@@ -1456,7 +1562,18 @@ static void tc_count(loop_t *s, const loop_attempt_t *a)
     s->tc_iters += a->iters;
     s->tc_uhit += a->tuhit;
     s->tc_refactors += a->refact;
-    s->tc_served += a->served;
+    /* (a non-convergence is the C Newton's serve too, `_outcome`'s) */
+    s->tc_served += a->served + a->noconv;
+    s->tc_noconv += a->noconv;
+    if (a->fb) {
+        /* (the fallback's: its seeds, its Newton's assemblies and source
+           memo hits after its first, its screen's certificates) */
+        s->tc_fb++;
+        s->st_fast += a->fast2;
+        s->st_assemblies += a->A;
+        s->tc_uhit += 3 * (a->A - 1);
+        s->tc_fbcert += a->fbcert;
+    }
     s->tc_probes += a->probed;
     s->tc_checks += a->checked;
     s->tc_xpasses += a->xpass;
@@ -1521,13 +1638,32 @@ static void tc_abort(loop_t *s, const loop_attempt_t *a)
     s->h = pcx_py_max(hn, s->minstep);
 }
 
+/* a fallback made: its coupled set the last made one's (`gen0`), its
+   stages the last fallback's this call (`fbY`), the stage KLU's counts */
+static void tc_fb_made(loop_t *s, const loop_attempt_t *a)
+{
+    radau_t *rs = (radau_t *) s->radau;
+    s->gen0 = a->fbset;
+    s->A0 = a->A;
+    COPY(s->fbY, a->Ys, 3 * s->n);
+    s->have_fbY = 1;
+    if (rs->klu.klu_sym) {
+        s->st_klu_refactors += rs->klu.refactors;
+        s->st_klu_factors += rs->klu.factors;
+        s->st_klu_pivot += rs->klu.pivot_fallbacks;
+        s->st_klu_resid += rs->klu.residual_fallbacks;
+        s->st_klu_on++;
+    }
+}
+
 /* the transform's part of an attempt made: its stages kept (`tcY`), the
-   step `_radau_Pc` then holds, its pattern, its counts */
+   step `_radau_Pc` then holds, its pattern, a fallback's, its counts */
 static void tc_made(loop_t *s, const loop_attempt_t *a)
 {
     COPY(s->tcY, a->Ys, 3 * s->n);
     s->ph_made = a->h;
     s->have_ph = 1;
+    if (a->fb) tc_fb_made(s, a);
     tc_kept(s, a);
     tc_count(s, a);
 }
@@ -1669,7 +1805,15 @@ static void stage_accept(loop_t *s, const loop_attempt_t *a)
     xv[3] = Y + 2 * n;
     pcx_stage_note(&s->hk, s->ht, s->hx, n, a->nodes, xv, a->ord);
     accept_point(s, a, Y + 2 * n);
-    if (s->tmode) s->te_x = a->set;
+    if (s->tmode) {
+        /* (x_{n+1}'s record: the end set's, or a fallback's coupled set's) */
+        s->te_x = a->fb ? -1 : a->set;
+        s->fbx = a->fb;
+        s->fbv[0] = a->q3;
+        s->fbv[1] = a->i3;
+        s->fbv[2] = a->C3;
+        s->fbv[3] = a->G3;
+    }
 }
 
 /* the stage family's loop (`_SteppingLoop.execute` over `_StageSteps`):
@@ -1727,6 +1871,7 @@ long pcx_loop(loop_t *s)
     s->tc_mcmemo = s->tc_ests = s->tc_folds = 0;
     s->tc_analyses = s->tc_factors = s->tc_foldoff = s->tc_klu = s->tc_pyiters = 0;
     s->tc_symfreed = s->tc_numfreed = 0;
+    s->tc_noconv = s->tc_fb = s->tc_fbcert = s->have_fbY = 0;
     s->tc_pyends = 0;
     if (s->family == LOOP_FAMILY_STAGE) return s->status = stage_loop(s);
     for (;;) {

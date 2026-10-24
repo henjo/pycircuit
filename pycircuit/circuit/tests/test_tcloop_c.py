@@ -52,6 +52,18 @@ _PULSE = {'tend': 4e-8, 'timestep': 2.5e-10}
 #: (the cost transform asked for: 'auto' leaves the MOSFET chains, their
 #: Jacobians bound to C kernels, on the coupled Newton)
 _TRANSFORM = {'radau_transform': True}
+#: (steps across the pulse's edges three Newton iterations at most: the
+#: transform's frozen Jacobian does not converge where the dense Newton's
+#: does -- its fallback -- on a fixed grid and, the early abort armed, on an
+#: adaptive one)
+_FB_FIXED = {'tend': 1.6e-7, 'timestep': 2e-9, 'fixed_timestep': True}
+_FB_ADAPT = {'tend': 1.6e-7, 'timestep': 1e-9}
+
+
+def _maxiter(k):
+    def setup(tr):
+        tr.par.maxiter = k
+    return setup
 
 
 def _run(build, on, monkeypatch, make=None, setup=None, **kw):
@@ -89,6 +101,7 @@ def _run(build, on, monkeypatch, make=None, setup=None, **kw):
     pc = tr.__dict__.get('_radau_Pc')
     state['_radau_Pc'] = None if pc is None else (
         repr(pc[0]), np.array(pc[1], dtype=complex).tobytes())
+    state['fallbacks'] = tr.__dict__.get('_radau_transform_fallbacks')
     state['family'] = _norm({k: v for k, v in vars(fams[-1]).items() if k != 'tr'})
     return {'family': fams[-1], 'x': np.asarray(res.x, float).tobytes(),
             't': np.asarray(res.sweep_values, float).tobytes(),
@@ -197,13 +210,53 @@ def test_a_screen_that_fires_hands_the_attempt_back(monkeypatch):
 
 
 def test_a_transform_that_does_not_converge_is_the_pythons(monkeypatch):
-    """Two Newton iterations at most: the attempts the transform does not
-    converge in stop the C -- the Python's repeat falls back to the dense
-    Newton -- the rest in C."""
-    def setup(tr):
-        tr.par.maxiter = 2
-    ca = _same(_pulsed, monkeypatch, steps_min=5, setup=setup, **_PULSE)
+    """Two Newton iterations at most: the run's first fallback (before it the
+    dense Newton's record does not exist: the Python's makes it) and those
+    whose dense Newton does not converge either stop the C -- the Python's
+    repeat falls back, its Newton then its ladder -- the rest in C."""
+    ca = _same(_pulsed, monkeypatch, steps_min=5, setup=_maxiter(2), **_PULSE)
     assert ca.get('tcloop_c:bail:transform', 0) > 0, ca
+    assert ca.get('tcloop_c:bail:radau', 0) > 0, ca
+
+
+@pytest.mark.parametrize('kw, make', [(_FB_FIXED, None), (_FB_ADAPT, {'reltol': 3e-2})],
+                         ids=['fixed', 'adaptive'])
+def test_a_fallback_is_made_in_c(kw, make, monkeypatch):
+    """The transform's Newton not converging in three iterations where the
+    dense one does: the fallback made in C -- the memo rolled again, the
+    dense Newton on the stage KLU, its records, its screen, the estimate on
+    the fresh real factor; adaptive, after the early abort's check -- the
+    run the Python's, the fallbacks counted on the transient too."""
+    ca = _same(_pulsed, monkeypatch, steps_min=10, make=make, setup=_maxiter(3), **kw)
+    assert ca.get('tcloop_c:fallbacks', 0) > 1, ca
+    assert _same.last['state']['fallbacks'] >= ca['tcloop_c:fallbacks']
+    if not kw.get('fixed_timestep'):
+        assert ca.get('radau.early:checks', 0) > 0, ca
+
+
+def test_a_stop_after_a_fallbacks_newton_holds_it(monkeypatch):
+    """The dense estimate's solve (numpy's dgesv, the fallback's alone) said
+    failed at every call: each fallback stops after its converged Newton,
+    the result held -- the Python's repeat makes the transform's part again
+    and its fallback serves the held Newton.  The same run."""
+    sig = 'void(int64_t *, int64_t *, double *, int64_t *, int64_t *, double *, int64_t *, int64_t *)'
+
+    def plant(run):
+        if not run.s.fb_ok:
+            return
+        ffi = run.ffi
+        real = ffi.cast(sig.replace('void(', 'void(*)(', 1), run.s.dgesv)
+
+        def solve(*args):
+            real(*args)
+            args[7][0] = 1
+        cb = ffi.callback(sig, solve)
+        run.tkeep.append(cb)
+        run.s.dgesv = ffi.cast('void *', cb)
+    _planted(monkeypatch, plant)
+    ca = _same(_pulsed, monkeypatch, steps_min=10, make={'reltol': 3e-2}, setup=_maxiter(3),
+               **_FB_ADAPT)
+    assert ca.get('tcloop_c:bail:estimate', 0) > 0 and ca.get('radau_c:held', 0) > 0, ca
 
 
 def _getrs_failing(every):
@@ -341,6 +394,23 @@ def test_p_or_the_factors_a_hair_off_is_another_run(field, monkeypatch):
     monkeypatch.setattr(_tran_tcloop_c, '_load_tc', planted)
     b, cb = _run(_pulsed, True, monkeypatch, **_PULSE)
     assert cb.get('tcloop_c:steps', 0) > 10 and (a['x'] != b['x'] or a['t'] != b['t'])
+
+
+def test_the_fallbacks_newton_a_hair_off_is_another_run(monkeypatch):
+    """Alive: the dense Newton's tableau entry A[0][0] a ulp off in the
+    fallback's record (the transform's Newton keeps its own) -- the C's
+    fallbacks' stages, the waveform, another run."""
+    kw = dict(setup=_maxiter(3), **_FB_FIXED)
+    a, _ = _run(_pulsed, False, monkeypatch, **kw)
+    load = _tran_tcloop_c._load_fb
+
+    def planted(e, run_):
+        load(e, run_)
+        rs = e.fb[0].s
+        rs.A[0] = math.nextafter(rs.A[0], 0.0)
+    monkeypatch.setattr(_tran_tcloop_c, '_load_fb', planted)
+    b, cb = _run(_pulsed, True, monkeypatch, **kw)
+    assert cb.get('tcloop_c:fallbacks', 0) > 0 and a['x'] != b['x']
 
 
 #: (the functions whose returned strings are decline reasons: the module's,
