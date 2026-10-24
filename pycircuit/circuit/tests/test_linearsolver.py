@@ -335,17 +335,17 @@ def test_complex_klu_reuses_the_ordering_across_solves():
 
 
 class _CountedFrees:
-    """A KLU library whose two frees note the handle each frees."""
+    """A KLU library whose two frees (`names`: the complex solver's by
+    default) note the handle each frees."""
 
-    NAMES = ('klu_free_symbolic', 'klu_z_free_numeric')
-
-    def __init__(self, lib):
+    def __init__(self, lib, names=('klu_free_symbolic', 'klu_z_free_numeric')):
         self._real = lib
-        self.freed = {k: [] for k in self.NAMES}
+        self.names = names
+        self.freed = {k: [] for k in names}
 
     def __getattr__(self, name):
         f = getattr(self._real, name)
-        if name not in self.NAMES:
+        if name not in self.names:
             return f
 
         def counted(pp, common):
@@ -382,6 +382,69 @@ def test_complex_klu_frees_what_it_replaces():
     del k
     gc.collect()
     assert (lib.freed['klu_free_symbolic'][-1], lib.freed['klu_z_free_numeric'][-1]) == last
+
+
+def test_klu_frees_what_it_replaces():
+    """The real solver as the complex one: `solve`'s analysis and factor
+    freed where a new pattern replaces them, its factor where a residual
+    fallback does -- each the handle it held, one of each live at a time --
+    and at its end the last of each and `factor`'s analyses (no
+    factorisation made from one left: each holds its solver)."""
+    import gc
+    k = _klu_or_skip()
+    lib = k._lib = _CountedFrees(k._lib, ('klu_free_symbolic', 'klu_free_numeric'))
+    A1 = np.array([[2., -1., 0.], [-1., 2., 0.], [0., 0., 3.]])
+    A2 = np.array([[2., -1., 1.], [-1., 2., -1.], [1., -1., 3.]])
+    b = np.ones(3)
+    k.solve(A1, b, numeric)
+    sym1, num1 = k._symbolic, k._numeric
+    assert lib.freed == {'klu_free_symbolic': [], 'klu_free_numeric': []}
+    x = k.solve(A2, b, numeric)
+    assert np.abs(A2.dot(x) - b).max() < 1e-10
+    assert lib.freed == {'klu_free_symbolic': [sym1], 'klu_free_numeric': [num1]}
+    ## (a residual fallback: every reused solve's check fails)
+    k.REFACTOR_RESIDUAL_TOL = -1.0
+    num2 = k._numeric
+    x = k.solve(A2 * 2.0, b, numeric)
+    assert np.abs((A2 * 2.0).dot(x) - b).max() < 1e-10
+    assert k.residual_fallbacks == 1 and lib.freed['klu_free_numeric'] == [num1, num2]
+    assert (k.analyses - k.analyses_freed, k.factors - k.factors_freed) == (1, 1), k
+    f = k.factor(A1, numeric)
+    assert np.abs(A1.dot(f.solve(b)) - b).max() < 1e-10
+    fsym = next(iter(k._factor_symbolics.values()))
+    last = (k._symbolic, k._numeric)
+    del f
+    gc.collect()
+    assert lib.freed['klu_free_numeric'][-1] != last[1]
+    del k
+    gc.collect()
+    assert lib.freed['klu_free_numeric'][-1] == last[1]
+    assert lib.freed['klu_free_symbolic'][-2:] == [last[0], fsym]
+
+
+def test_structural_klu_frees_its_own_at_its_end():
+    """`StructuralKLU`'s one analysis and the numeric its solves end on --
+    a fresh factor at its first solve, refactored after -- freed at its
+    end (its fallbacks' frees its own, as before)."""
+    import gc
+
+    from pycircuit.circuit.linearsolver import StructuralKLU
+    _klu_or_skip()
+    rows, cols = np.nonzero(np.array([[1, 1, 0], [1, 1, 1], [0, 1, 1]]))
+    order = np.lexsort((rows, cols))
+    sk = StructuralKLU(3, rows[order], cols[order], fallback=lambda: None)
+    lib = sk._lib = _CountedFrees(sk._lib, ('klu_free_symbolic', 'klu_free_numeric'))
+    A = np.array([[4., -1., 0.], [-1., 4., -1.], [0., -1., 4.]])
+    b = np.ones(3)
+    for scale in (1.0, 2.0):
+        x = sk.solve(A * scale, b, numeric)
+        assert np.abs((A * scale).dot(x) - b).max() < 1e-10
+    assert (sk.analyses, sk.factors, sk.refactors) == (1, 1, 1), sk
+    last = (sk._symbolic, sk._numeric)
+    assert lib.freed == {'klu_free_symbolic': [], 'klu_free_numeric': []}
+    del sk
+    gc.collect()
+    assert lib.freed == {'klu_free_symbolic': [last[0]], 'klu_free_numeric': [last[1]]}
 
 
 ## ---------------------------------------------------------------------------

@@ -441,6 +441,12 @@ class KLUSolver(LinearSolver):
     That choice is deliberate given what stage 9 and 7d kept turning up: three
     separate defects this session survived because nothing ever checked the thing
     itself.
+
+    KLU's objects are freed where they are replaced -- `solve`'s analysis and
+    factor at a new pattern, its factor at a residual fallback -- and at the
+    solver's end, with `factor`'s analyses (`analyses_freed`, `factors_freed`
+    count the first two).  The C units that borrow a `StructuralKLU`'s handles
+    hold the solver itself and read its numeric before each call.
     """
 
     ## Relative residual above which a refactor is rejected and the ordering
@@ -482,6 +488,8 @@ class KLUSolver(LinearSolver):
                                 ctypes.c_int, c_dbl_p, ctypes.c_void_p],
                  ctypes.c_int),
                 ('klu_free_numeric', [ctypes.c_void_p, ctypes.c_void_p],
+                 ctypes.c_int),
+                ('klu_free_symbolic', [ctypes.c_void_p, ctypes.c_void_p],
                  ctypes.c_int)):
             f = getattr(lib, nm)
             f.argtypes = argt
@@ -506,9 +514,45 @@ class KLUSolver(LinearSolver):
         self._factor_symbolics = {}
         self.factor_analyses = 0
         self.numerics = 0
+        ## (the analyses and factors `solve` freed where it replaced them)
+        self.analyses_freed = 0
+        self.factors_freed = 0
 
     def _ptr(self, arr, ctype):
         return arr.ctypes.data_as(self._ct.POINTER(ctype))
+
+    def _free_numeric(self):
+        """The factor `solve` holds, freed (`klu_free_numeric`): None after."""
+        num, self._numeric = self._numeric, None
+        if num:
+            ct = self._ct
+            self._lib.klu_free_numeric(ct.byref(ct.c_void_p(num)), ct.byref(self._common))
+            self.factors_freed += 1
+
+    def _free_symbolic(self):
+        """The analysis `solve` holds, freed (`klu_free_symbolic`): None after."""
+        sym, self._symbolic = self._symbolic, None
+        if sym:
+            ct = self._ct
+            self._lib.klu_free_symbolic(ct.byref(ct.c_void_p(sym)), ct.byref(self._common))
+            self.analyses_freed += 1
+
+    def __del__(self):
+        """KLU's objects the solver still holds, freed: `solve`'s factor and
+        analysis, `factor`'s analyses -- no factorisation made from one is
+        left, each holding its solver."""
+        try:
+            if getattr(self, '_numeric', None):
+                self._free_numeric()
+            if getattr(self, '_symbolic', None):
+                self._free_symbolic()
+            syms = getattr(self, '_factor_symbolics', None) or {}
+            ct = self._ct
+            for sym in syms.values():
+                self._lib.klu_free_symbolic(ct.byref(ct.c_void_p(sym)), ct.byref(self._common))
+            syms.clear()
+        except Exception:                                     # noqa: BLE001, S110  # pragma: no cover
+            pass                                              # interpreter shutdown
 
     def solve(self, A, b, toolkit):
         import numpy
@@ -541,6 +585,9 @@ class KLUSolver(LinearSolver):
         if not reused:
             ## The pattern changed (or this is the first solve): a new ordering is
             ## genuinely required, and this is the cost KLU exists to pay ONCE.
+            ## (The last pattern's factor and analysis freed first.)
+            self._free_numeric()
+            self._free_symbolic()
             self._symbolic = self._lib.klu_analyze(
                 n, self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
                 ctypes.byref(self._common))
@@ -577,6 +624,7 @@ class KLUSolver(LinearSolver):
             resid = float(numpy.abs(Acsc.dot(x) - rhs).max()) / scale
             if not (resid <= self.REFACTOR_RESIDUAL_TOL):
                 self.residual_fallbacks += 1
+                self._free_numeric()
                 self._numeric = self._lib.klu_factor(
                     self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
                     self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._symbolic),

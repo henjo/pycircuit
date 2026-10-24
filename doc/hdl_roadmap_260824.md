@@ -11742,3 +11742,34 @@ decks, gear2 transient and standalone DC, against 210's, and under Radau against
 worktree): every digest, step, rejection, Newton count and path count identical, the time the same.  The sanitizer's
 fast tier, 5 723 passed, and its deep tier on the loop, Radau, solver and BLAS tests, 297, clean -- the new tests
 among them.
+
+## 2026-10-24 — 213. The real KLU solvers free what they replace and what they hold at their end -- `KLUSolver` at a new pattern and a residual fallback, every one at its end: 2 000 pattern changes +115 -> +9 MB
+
+**Why**  Andreas: fix the real KLU solver's leak (found at 209).  `KLUSolver.solve` overwrote its analysis and factor
+at a new pattern, and its factor at a residual fallback, without freeing them; and no real KLU solver freed anything
+at its end -- `solve`'s analysis and factor, `factor`'s analyses -- so each run's `StructuralKLU` (one to three a gold
+deck) left its analysis and its last numeric.
+
+**Audited**  The C units that borrow a `StructuralKLU`'s handles (`_tran_newton_c`, `_dc_newton_c`, `_pcnr_c`,
+`_tran_lte_c`, `_tran_radau_c`) hold the solver itself and read its numeric before each call; pcx_kluseq.h frees the
+numeric a sequence replaces, on a serve and on a hand-back, and newton.c frees its chord's; `StructuralKLU.solve`
+frees what its fallbacks replace.  The leaks: the plain solver's two overwrites, and every solver's end.
+
+**Built**  `KLUSolver._free_numeric` / `_free_symbolic` (`klu_free_symbolic` declared beside `klu_free_numeric`),
+`analyses_freed`, `factors_freed`: `solve` frees the factor and the analysis before a new pattern's analysis, the
+factor before a residual fallback's; `__del__` frees `solve`'s factor and analysis and `factor`'s analyses -- none of
+its factorisations is left then, each `_KLUNumeric` holding its solver.  `StructuralKLU` inherits the end.  `factor`'s
+analyses stay one a pattern while the solver lives (its cache).
+
+**Measured** (400 unknowns, each tree from its own directory): the plain solver over 2 000 alternating patterns, peak
+RSS +115 -> +9 MB (1 999 analyses freed); 300 structural solvers made and dropped, +20 -> +4 MB.
+
+**Tests**  test_linearsolver (+2): the plain solver frees the handle it held at a new pattern and at a residual
+fallback, at its end the last of each and `factor`'s analysis; a structural solver frees its analysis and its last
+numeric at its end.
+
+**Gate** (one for 211, 212 and 213; the main tree): the suite, 5 969 passed (6 skipped, 3 xfailed); the 27 gold
+decks, gear2 transient and standalone DC, against 210's, and under Radau against HEAD (06c34cd0, run from its
+worktree): every digest, step, rejection, Newton count and path count identical, the time the same.  The sanitizer's
+fast tier, 5 723 passed, and its deep tier on the loop, Radau, solver and BLAS tests, 297, clean -- the new tests
+among them.

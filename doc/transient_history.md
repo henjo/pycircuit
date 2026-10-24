@@ -5643,3 +5643,14 @@ made after the C's read the C's last attempt's charge, sources and seeds.
 Shown by the fallback twin run as a fresh process's first transient (the
 C and the Python then split the attempts otherwise).  `_call` saves and
 restores them, as `_tran_stageloop_c._call` does.
+
+## The real KLU solvers free what they replace and what they hold at their end (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 213).  As `ComplexKLUSolver`
+(209): `KLUSolver.solve` frees its analysis and factor at a new pattern,
+its factor at a residual fallback, and every real KLU solver frees what it
+holds at its end (`__del__`: `solve`'s factor and analysis, `factor`'s
+analyses).  The C borrowers of a `StructuralKLU` hold the solver and read
+its numeric before each call; the C's own sequences already freed what
+they replace.  2 000 pattern changes of a 400-unknown plain solver: +115 ->
++9 MB peak.
