@@ -900,7 +900,11 @@ to `G` for every class without a DC-pinned state.
 `elements_hdl` cold import is **~37 s** for its **51** classes, and
 ~0.21 s warm with the package already imported (2026-10-25, roadmaps
 221-222: the entries' sympy trees read as stored, not evaluated again, and
-the vector PCNR's loaded on first use).
+the vector PCNR's loaded on first use).  The interpreter's exit walks the
+objects those imports leave again, ~0.12 s: `PYCIRCUIT_GC_FREEZE=1` (or
+`pycircuit.circuit.freeze_imports()`) freezes them for the collector and the
+exit takes ~0.03 s -- a setting of the whole process, off by default; its
+caveats are `_freeze`'s note (roadmap 223).
 
 ### Folding a model card (2026-08-26, roadmap 30-31)
 

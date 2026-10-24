@@ -12189,3 +12189,32 @@ this tree's deferred ones); the suite, 6 031 passed (6 skipped, 3 xfailed; its f
 gold decks -- standalone DC against 221's gate runs, gear2 transient and Radau against HEAD (wt_head, a4ab11da, run
 from inside it, interleaved per deck): every digest, step, rejection, Newton count and path count identical but the
 loops' own.  No C changed: no sanitizer run.
+
+## 2026-10-25 — 223. The start-up's objects frozen, opt-in -- `pycircuit.circuit.freeze_imports()` and `PYCIRCUIT_GC_FREEZE=1` -- the collector's freeze of the start-up's objects, off unless asked: with it a short deck's exit 0.12 -> 0.027 s, without it nothing changes
+
+**Why**  Andreas, on the survey after 221: item 3, "Explain more why not before implementing. Ask again after
+explaining"; explained (process-wide; a reload's old modules never reclaimed; no finalizer at exit for cyclic garbage
+among the frozen; code managing the collector finds a state it did not set), he chose "Opt-in only".  The
+interpreter's exit runs several full collections as it tears the modules down, each walking the objects a SPICE run's
+imports leave: 0.12-0.13 s of a short deck's ~0.8 s process after 222.  A full collection right after the imports finds
+nothing unreachable, so a freeze there traps no garbage of ours.  LINE (functional): with the switch a short deck's
+exit at most 0.04 s, without it as before; every result the same either way.
+
+**Built.**  `pycircuit.circuit.freeze_imports()` -- `gc.freeze()`, its module's note (`_freeze`) stating the four
+caveats -- and `PYCIRCUIT_GC_FREEZE=1`, read at the end of the package's import and again at the end of the device
+library's (`elements_hdl`'s last statement), each then freezing.  Off by default.
+
+**Measured** (this tree, a short deck -- rca -- start to exit, 5 rounds alternating): with `PYCIRCUIT_GC_FREEZE=1` the
+exit 0.026-0.028 s (the line 0.04 s) against 0.115-0.134 s without, the process 0.68-0.73 s against 0.77-0.85 s.  The
+27 gold decks without the switch (the gate's runs): processes and solves as HEAD's (1.003x, 0.996x).
+
+**Tests.**  test_startup (+1, fresh interpreters): with the switch the package's import alone ends frozen, and the
+package's and the library's (nothing left for the collector to walk); without it nothing is frozen until
+`freeze_imports()` is called.  Three mutations caught (the package's call gone; the library's; the switch read
+inverted).  hdl.md: the switch beside the import figures.
+
+**Gate** (the main tree): the TELL (each tree imports its own package: HEAD's has no `freeze_imports`, this tree's
+has); the suite, 6 032 passed (6 skipped, 3 xfailed; `elements_hdl.py` changed, so its first run under the new keys);
+the 27 gold decks -- standalone DC against 222's gate runs, gear2 transient and Radau against HEAD (wt_head, fd3037fe,
+run from inside it, interleaved per deck): every digest, step, rejection, Newton count and path count identical but
+the loops' own.  No C changed: no sanitizer run.

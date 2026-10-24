@@ -21,9 +21,11 @@ import pycircuit
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(pycircuit.__file__)))
 
 
-def _child(script):
-    """`script`'s printed words, from a fresh interpreter."""
-    env = {k: v for k, v in os.environ.items() if k != 'JAX_ENABLE_X64'}
+def _child(script, **extra):
+    """`script`'s printed words, from a fresh interpreter (the environment's
+    `extra` variables added, and PYCIRCUIT_GC_FREEZE's unless given)."""
+    env = {k: v for k, v in os.environ.items() if k not in ('JAX_ENABLE_X64', 'PYCIRCUIT_GC_FREEZE')}
+    env.update(extra)
     out = subprocess.run([sys.executable, '-c', textwrap.dedent(script)], cwd=_ROOT, env=env,
                          capture_output=True, text=True, timeout=600)
     assert out.returncode == 0, out.stderr[-3000:]
@@ -82,3 +84,27 @@ def test_the_jax_toolkit_asked_for_at_once_is_one():
               type(jaxtoolkit).__name__, jnp.asarray(1.0).dtype)
     ''')
     assert got == ['1', '8', 'True', 'JAXToolkit', 'float64']
+
+
+def test_the_start_up_objects_are_frozen_only_when_asked():
+    """`PYCIRCUIT_GC_FREEZE=1`: the package's import ends with the
+    collector's freeze, and the device library's again -- nothing left for
+    it to walk after either; unset, nothing frozen until `freeze_imports()`
+    is called."""
+    report = 'print(gc.get_freeze_count() > 50000, len(gc.get_objects()) < 2000)'
+    package = f'''
+        import gc
+        import pycircuit.circuit
+        {report}
+    '''
+    library = f'''
+        import gc
+        import pycircuit.circuit
+        from pycircuit.circuit import elements_hdl
+        {report}
+        pycircuit.circuit.freeze_imports()
+        {report}
+    '''
+    assert _child(package, PYCIRCUIT_GC_FREEZE='1') == ['True', 'True']
+    assert _child(library, PYCIRCUIT_GC_FREEZE='1') == ['True', 'True', 'True', 'True']
+    assert _child(library) == ['False', 'False', 'True', 'True']

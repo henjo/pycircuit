@@ -24,3 +24,9 @@ from .transient import Transient
 from .shooting import PSS
 
 from .toolkit import numeric, sparse_numeric, symbolic, symbolic_poly
+
+## THE START-UP'S OBJECTS FROZEN, OPT-IN (`_freeze`): `freeze_imports()`, or
+## `PYCIRCUIT_GC_FREEZE=1` at the end of this import and of the device
+## library's -- a setting of the whole process, off unless asked.
+from ._freeze import freeze_imports as freeze_imports, freeze_if_asked as _freeze_if_asked
+_freeze_if_asked()

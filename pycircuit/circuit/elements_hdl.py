@@ -177,6 +177,7 @@ def _tnom_k(tnom_c):
 
 _TNOM_DEFAULT_C = round(float(_defaultepar.T) - _ZERO_C, 6)   # 26.85 C for a 300 K ambient
 from pycircuit.circuit import hdl as _hdl
+from pycircuit.circuit import _freeze
 from pycircuit.circuit.hdl import var as _var
 ## `expl`, not `limexp`, and the reason is measured rather than
 ## stylistic.  `limexp` is deliberately NOT both-arms-safe: its discarded
@@ -5430,3 +5431,8 @@ class MosLevel2PmosMeyerHdl(Behavioural):
     instparams = _mos2_params()
 
     analog = staticmethod(_mos2_analog(TEMP, -1, meyer=True))
+
+
+## THE START-UP'S OBJECTS FROZEN, OPT-IN (`_freeze`): the library's too, where
+## `PYCIRCUIT_GC_FREEZE=1` -- the last statement of its import.
+_freeze.freeze_if_asked()
