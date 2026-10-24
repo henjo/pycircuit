@@ -798,7 +798,7 @@ smoothing escape hatch.
 
 Compile cost: **0.6–0.9 ms per element**, once, at class definition —
 and served from the on-disk compile cache after that, so importing all
-**51** classes of `elements_hdl` costs **~0.30 s** warm with the package
+**51** classes of `elements_hdl` costs **~0.21 s** warm with the package
 already loaded (about 37 s cold, when the cache key changes; 2026-10-24,
 roadmap 221). That is
 the price of the exactness — symbolic assembly, two Jacobians,
@@ -898,8 +898,9 @@ CACHE=0` disables it. Profiling first found one waste worth 15% before
 caching anything: `G_dc` was a second full Jacobian compile, identical
 to `G` for every class without a DC-pinned state.
 `elements_hdl` cold import is **~37 s** for its **51** classes, and
-~0.30 s warm with the package already imported (2026-10-24, roadmap 221:
-the entries' sympy trees read as stored, not evaluated again).
+~0.21 s warm with the package already imported (2026-10-25, roadmaps
+221-222: the entries' sympy trees read as stored, not evaluated again, and
+the vector PCNR's loaded on first use).
 
 ### Folding a model card (2026-08-26, roadmap 30-31)
 

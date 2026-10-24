@@ -658,6 +658,91 @@ def test_a_read_rebuilds_the_trees_as_stored(cache_dir):
     assert global_parameters.evaluate is True
 
 
+def _vector_pair():
+    """The SPICE diode (a vector-PCNR class) compiled cold into the
+    fixture's empty cache, then served from it: `(cold, warm)`."""
+    from pycircuit.circuit import elements_hdl as eh
+    cold, warm = _reclass(eh.DiodeSpiceHdl), _reclass(eh.DiodeSpiceHdl)
+    assert (cold._hdl_cache_status, warm._hdl_cache_status) == ('miss', 'hit')
+    assert type(cold._hdl_info['pcnr_vector']) is dict
+    return cold, warm
+
+
+def _unloaded(cls):
+    """A fresh `pcnr_vector` as a hit thaws it for `cls`: its trees unloaded."""
+    payload, why = hc._read(cls._hdl_cache_key)
+    assert why == 'hit'
+    pv = hc._undefer(hc.thaw(payload))['pcnr_vector']
+    assert type(pv) is hc._Deferred and pv._blob is not None
+    return pv
+
+
+def test_the_pcnr_trees_load_on_their_first_use(cache_dir):
+    """`pcnr_vector`'s trees (`_DEFER`: its chain, flat forms and probe
+    symbols, read only for the JAX twin) are stored apart: a class served
+    from the cache holds them unloaded through its creation, an instance and
+    a numeric PCNR call (its other keys read: probes, kinds, the limiter's
+    parameters); the first read of one loads them as the cold compile made
+    them (srepr).  (The SPICE diode: 25 library classes have the route.)"""
+    from pycircuit.circuit import numeric
+    from pycircuit.circuit.circuit import defaultepar
+    cold, warm = _vector_pair()
+    cpv = cold._hdl_info['pcnr_vector']
+    assert type(cpv) is dict and all(k in cpv for k in hc._DEFER)
+    pv = warm._hdl_info['pcnr_vector']
+    assert type(pv) is hc._Deferred and pv._blob is not None
+    e = _instance(warm)
+    pr = {q.name: getattr(e.iparv, q.name) for q in e.instparams}
+    v = np.linspace(0.7, -0.2, len(pv['probes']))
+    got = np.asarray(warm.pcnr_i(v, pr, defaultepar, numeric), float)
+    assert got.tobytes() == np.asarray(cold.pcnr_i(v, pr, defaultepar, numeric), float).tobytes()
+    assert pv['probes'] == cpv['probes'] and 'kinds' in pv and pv.get('m') == cpv['m']
+    assert pv._blob is not None
+    assert type(pv['chain']) is type(cpv['chain']) and pv._blob is None
+    assert [sympy.srepr(pv[k]) for k in hc._DEFER] == [sympy.srepr(cpv[k]) for k in hc._DEFER]
+
+
+def test_a_view_of_the_whole_pcnr_vector_loads_its_trees_first(cache_dir):
+    """Whatever could see the trees absent loads them first -- `get` and
+    `in` on one of them, its length, iteration, equality, a copy (a plain
+    dict then) -- and its keys are the cold compile's."""
+    import copy
+    cold, warm = _vector_pair()
+    want = set(cold._hdl_info['pcnr_vector'])
+    views = {'get': lambda pv: pv.get('vsyms') is not None,
+             'in': lambda pv: 'sym' in pv,
+             'len': lambda pv: len(pv) == len(want),
+             'iter': lambda pv: set(pv) == want,
+             'items': lambda pv: {k for k, _v in pv.items()} == want,
+             'eq': lambda pv: pv == dict(pv.items()),
+             'copy': lambda pv: type(copy.copy(pv)) is dict and set(copy.copy(pv)) == want}
+    for name, view in views.items():
+        pv = _unloaded(warm)
+        assert view(pv), name
+        assert pv._blob is None, name
+
+
+def test_the_pcnr_jax_twin_from_deferred_trees_is_the_cold_ones(cache_dir):
+    """The trees' one reader: the vector PCNR's JAX twin, made from a class
+    served from the cache (its trees loaded then), gives the cold class's
+    bytes (`pcnr_i`'s: the default card's `pcnr_didv` divides by a zero
+    parameter in either)."""
+    pytest.importorskip('jax')
+    import jax.numpy as jnp
+    from pycircuit.circuit.circuit import defaultepar
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    cold, warm = _vector_pair()
+    e = _instance(warm)
+    pr = {q.name: getattr(e.iparv, q.name) for q in e.instparams}
+    v = jnp.linspace(0.7, -0.2, len(warm._hdl_info['pcnr_vector']['probes']))
+    assert warm._hdl_info['pcnr_vector']._blob is not None
+    a = np.asarray(cold.pcnr_i(v, pr, defaultepar, jaxtoolkit), float)
+    b = np.asarray(warm.pcnr_i(v, pr, defaultepar, jaxtoolkit), float)
+    ## (the default card's rows: one finite, two infinite)
+    assert a.tobytes() == b.tobytes() and np.isfinite(a).any()
+    assert warm._hdl_info['pcnr_vector']._blob is None
+
+
 def test_key_fields(cache_dir):
     """What the key is made of, so a change to that list is deliberate."""
     key = hc.key_for(EagerDiode)

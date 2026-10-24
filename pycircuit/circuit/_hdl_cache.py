@@ -22,7 +22,10 @@ What is cached
     same code bound to the same objects and their results are
     bit-identical to a cold compile's.  The symbolic vectors (`sym_spec`
     and `pure_spec`, the eager path's exact forms) are pickled as sympy
-    expressions and come back equal.  The per-mask classes a collapsing
+    expressions and come back equal.  The vector PCNR's trees
+    (`pcnr_vector`'s `chain`, `sym` and `vsyms`, read only to make its
+    JAX twin) are stored apart in the entry and loaded, as stored, on
+    their first use (`_Deferred`).  The per-mask classes a collapsing
     model builds through `_collapse_variant` are separate classes with
     their own key, so they are cached too.
 
@@ -113,7 +116,9 @@ from pycircuit.utilities import param
 ## entries but the newly written ones dropped the ingredients just the same,
 ## which is the difference between invalidating a cache and fixing what it
 ## stores.
-CACHE_FORMAT = 4
+## 5 (2026-10-25): `pcnr_vector`'s trees stored apart in the entry
+## (`_defer`), loaded on their first use (`_Deferred`).
+CACHE_FORMAT = 5
 
 #: Module-level switch; the environment variable is consulted too.
 ENABLED = True
@@ -794,6 +799,125 @@ _RUNTIME_KEYS = frozenset(('_jax', '_fused', '_fuse_ok', '_c_bound',
                            '_c_pcnr_refine_status', '_c_pcnr_kernels'))
 
 
+#: `pcnr_vector`'s trees: its chain, its flat forms and its probe symbols --
+#: 5 320 of the library's ~6 200 cached sympy trees, read in one place, the
+#: vector PCNR's JAX twin (`hdl._pcnr_vec_compiled`), which a numeric run
+#: never makes.  Their load was 0.045 s of the library's 0.076 s (2026-10-25).
+_DEFER = ('chain', 'sym', 'vsyms')
+#: The entry's key holding them, pickled apart (`_defer`).
+_BLOB = '__hdl_deferred__'
+
+
+class _Deferred(dict):
+    """A thawed `pcnr_vector`: its trees (`_DEFER`) held as the entry's bytes
+    and loaded -- as `_read` loads, as stored -- before any access that could
+    see them absent: one of them read, asked for or written; a view of the
+    whole (iteration, length, equality, a copy, pickling).  Its other keys are
+    read as from any dict, nothing loaded.  Copied or pickled, it is a plain
+    dict."""
+    __slots__ = ('_blob',)
+
+    def __init__(self, base, blob):
+        super().__init__(base)
+        self._blob = blob
+
+    def _load(self):
+        blob = self._blob
+        if blob is not None:
+            with sympy.evaluate(False):
+                more = pickle.loads(blob)
+            dict.update(self, thaw(more))
+            self._blob = None
+
+    def _need(self, key):
+        if self._blob is not None and key in _DEFER and not dict.__contains__(self, key):
+            self._load()
+
+    def __missing__(self, key):
+        if self._blob is not None and key in _DEFER:
+            self._load()
+            return dict.__getitem__(self, key)
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        self._need(key)
+        return dict.get(self, key, default)
+
+    def __contains__(self, key):
+        self._need(key)
+        return dict.__contains__(self, key)
+
+    def __setitem__(self, key, value):
+        self._need(key)
+        dict.__setitem__(self, key, value)
+
+    def __delitem__(self, key):
+        self._need(key)
+        dict.__delitem__(self, key)
+
+    def setdefault(self, key, default=None):
+        self._need(key)
+        return dict.setdefault(self, key, default)
+
+    def pop(self, key, *default):
+        self._need(key)
+        return dict.pop(self, key, *default)
+
+
+def _whole(name):
+    """`_Deferred`'s `name`: dict's, the trees loaded first."""
+    method = getattr(dict, name)
+
+    def whole(self, *args, **kwargs):
+        self._load()
+        return method(self, *args, **kwargs)
+    whole.__name__ = name
+    return whole
+
+
+for _name in ('keys', 'values', 'items', '__iter__', '__reversed__', '__len__', '__eq__',
+              '__ne__', '__repr__', 'copy', 'popitem', 'clear', 'update', '__or__', '__ror__',
+              '__ior__'):
+    setattr(_Deferred, _name, _whole(_name))
+_Deferred.__reduce_ex__ = lambda self, protocol: (dict, (dict(self.items()),))
+
+
+def _has_record(obj):
+    """Whether `obj` holds a frozen function's record (its token may be
+    shared with the rest of the entry: not deferred)."""
+    if isinstance(obj, tuple) and len(obj) == 5 and obj[0] == _FN:
+        return True
+    if isinstance(obj, dict):
+        return any(_has_record(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_has_record(v) for v in obj)
+    return False
+
+
+def _defer(payload):
+    """`payload` with `pcnr_vector`'s trees pickled apart (`_BLOB`) -- or as
+    it is, where it has none or they hold a function's record."""
+    pv = payload.get('pcnr_vector')
+    if type(pv) is not dict or not any(k in pv for k in _DEFER):
+        return payload
+    trees = {k: pv[k] for k in _DEFER if k in pv}
+    if _has_record(trees):
+        return payload
+    rest = {k: v for k, v in pv.items() if k not in _DEFER}
+    rest[_BLOB] = pickle.dumps(trees, protocol=pickle.HIGHEST_PROTOCOL)
+    return {**payload, 'pcnr_vector': rest}
+
+
+def _undefer(info):
+    """A thawed `info` whose `pcnr_vector` carries its trees apart: that
+    dict a `_Deferred`."""
+    pv = info.get('pcnr_vector')
+    if type(pv) is dict and _BLOB in pv:
+        blob = pv.pop(_BLOB)
+        info['pcnr_vector'] = _Deferred(pv, blob)
+    return info
+
+
 def freeze(obj, memo=None):
     """`info` with every function replaced by a picklable record.
 
@@ -976,7 +1100,7 @@ def compiled_info(cls, compile_fn):
     payload, why = _read(key)
     if payload is not None:
         try:
-            info = thaw(payload)
+            info = _undefer(thaw(payload))
         except Exception as e:
             ## An entry that unpickled but will not rebuild -- the
             ## reason goes in the status, because a silent miss here
@@ -987,7 +1111,7 @@ def compiled_info(cls, compile_fn):
             return info
     info = compile_fn(cls)
     try:
-        payload = freeze(info)
+        payload = _defer(freeze(info))
     except Uncacheable as e:
         _note(cls, 'uncacheable: %s' % e)
         return info

@@ -12151,3 +12151,41 @@ does not); the suite, 6 028 passed (6 skipped, 3 xfailed; its first run under th
 more: 14:55 against ~13 min); the 27 gold decks -- standalone DC against 220's gate runs, gear2 transient and Radau
 against HEAD (wt_head, 83b73800, run from inside it, interleaved per deck): every digest, step, rejection, Newton count
 and path count identical but the loops' own.  No C changed: no sanitizer run.
+
+## 2026-10-25 — 222. The PCNR chains on first use -- the vector PCNR's sympy trees (5 320 of the library's ~6 200), read only for its JAX twin, stored apart in the cache entry and loaded on first use: the device library's import 0.295 -> 0.207 s, a short deck's process 0.94 -> 0.81 s, every result the same
+
+**Why**  Andreas, on the survey after 221: "2 Do it" (plan g24's `plan_222_226.md`).  A short deck's process was
+~0.95 s, the device library's import 0.30 s of it with the package loaded, its 51 cache hits' sympy trees the largest
+part, and the interpreter's exit 0.15 s (its collections over the objects the imports leave).  I first sized this at
+0.14 s; measured before building, the trees a numeric run never reads were 0.045 s of the loads, plus the exit's share.
+LINE: `elements_hdl`'s import with the package imported at least 0.03 s faster, a short deck's process at least
+0.04 s faster, every result the same.  Refused under.
+
+**Found.**  Of the library's ~6 200 cached sympy trees, 5 320 are `pcnr_vector`'s `chain`, `sym` and `vsyms`, read in
+one place: `_pcnr_vec_compiled`, making the vector PCNR's JAX twin -- never on a numeric run.  Class creation reads
+`pcnr_vector`'s other keys (probes, kinds, redundant, the limiter's parameters, `t`, `lin_fns`), `explain` those too.
+
+**Built.**  `_hdl_cache`: the three keys pickled apart in the entry (`_defer`, `_BLOB`; CACHE_FORMAT 5); a hit thaws
+`pcnr_vector` as a `_Deferred` -- a dict holding them as bytes and loading them, as `_read` loads (sympy's evaluation
+off), before any access that could see them absent: one of them read, asked for (`get`, `in`), written or removed; a
+view of the whole (iteration, length, equality, a copy -- a plain dict then).  Its other keys read as from any dict.
+A cold compile's `pcnr_vector` is the plain dict as before; trees holding a function's record stay inline.
+
+**Measured** (a quiet box, HEAD a4ab11da from its worktree and this tree, separate processes, interleaved):
+`elements_hdl`'s import with the package imported, 12 pairs: 0.295 -> 0.207 s (medians), 0.087 s saved (0.062 to 0.092
+in every pair; the line 0.03 s); a short deck's process (rca, start to exit), 12 pairs: 0.939 -> 0.810 s, 0.137 s
+saved (0.074 to 0.199; the line 0.04 s) -- more than the import's share: the exit's collections walk the trees no
+more.  The 27 gold decks' processes (the gate's runs): under gear2 48.4 -> 44.9 s, each 0.13 s sooner (median), under
+Radau 74.7 -> 70.9 s, 0.15 s; their solves the same (1.009x, 1.006x).
+
+**Tests.**  test_hdl_cache (+3): a class served from the cache holds the trees unloaded through its creation, an
+instance and a numeric PCNR call, the first read loading them srepr-identical to the cold compile's; every view of the
+whole loads them first, keys the cold's; the JAX twin from the deferred trees gives the cold class's bytes.  Three
+mutations caught (the trees loaded at creation; `get` loading for any key; the length not loading).  hdl.md: the warm
+import's figure.
+
+**Gate** (the main tree): the TELL (each tree imports its own cache: HEAD's library holds plain `pcnr_vector` dicts,
+this tree's deferred ones); the suite, 6 031 passed (6 skipped, 3 xfailed; its first run under the new keys); the 27
+gold decks -- standalone DC against 221's gate runs, gear2 transient and Radau against HEAD (wt_head, a4ab11da, run
+from inside it, interleaved per deck): every digest, step, rejection, Newton count and path count identical but the
+loops' own.  No C changed: no sanitizer run.
