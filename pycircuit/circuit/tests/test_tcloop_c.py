@@ -643,6 +643,56 @@ def test_a_pattern_position_left_out_is_another_run(monkeypatch):
     assert cb.get('tcloop_c:steps', 0) > 10 and (a['x'] != b['x'] or a['t'] != b['t'])
 
 
+## -- the passes on the core's pattern -----------------------------------------------------
+
+#: (the loop's buffers a pass writes: x_n's C and G, the screen's C, the end
+#: passes' C and G in their two sets)
+_PASS_BUFS = ('xr_C', 'xr_G', 'tcC', 'te02', 'te03', 'te12', 'te13')
+
+
+@pytest.mark.parametrize('build, setup', [(_pulsed40, None), (_klu_chain, _klu())],
+                         ids=['dense', 'klu'])
+def test_the_pass_buffers_stay_zero_off_the_pattern(build, setup, monkeypatch):
+    """The core asked for its pattern writes C there alone and G is copied
+    from its bin there alone: the loop's buffers are never zeroed whole, and
+    after a run they are still zero off the pattern -- as every C and G of
+    the circuit is, which the passes rely on."""
+    runs = []
+    _planted(monkeypatch, runs.append)
+    _same(build, monkeypatch, steps_min=10, setup=setup, **_PULSE)
+    assert runs and all(r.s.pass_zero for r in runs)
+    for r in runs:
+        n = r.tctx.n
+        off = np.ones(n * n, dtype=bool)
+        off[np.asarray(r.tctx.core.arrays['pat'])] = False
+        for k in _PASS_BUFS:
+            a = r.tbuf[k].reshape(-1, n * n)
+            assert not a[:, off].any(), k
+
+
+def test_a_nonzero_off_the_pattern_is_another_run(monkeypatch):
+    """Alive: a nonzero off the core's pattern planted in the end passes'
+    two C buffers, in the pulsed input's column (its F1 moves at each edge;
+    a still node's multiplies it by zero), small enough to leave the steps
+    as they were (1e-15 collapses them; 1e-19 is not seen) -- nothing
+    zeroes them now, and the estimate reads x_n's C whole -- another run."""
+    a, _ = _run(_pulsed40, False, monkeypatch, **_PULSE)
+    cir = Transient(_pulsed40(), toolkit=circuit.numeric, integrator=RadauIIA3Integrator()).cir
+    col = cir.get_node_index(cir.get_node('g0'))
+
+    def plant(run):
+        n = run.tctx.n
+        off = np.ones((n, n), dtype=bool)
+        off.flat[np.asarray(run.tctx.core.arrays['pat'])] = False
+        off[int(run.s.iref), :] = False
+        row = int(np.flatnonzero(off[:, col])[0])
+        for name in ('te02', 'te12'):
+            run.tbuf[name][row * n + col] = 1e-17
+    _planted(monkeypatch, plant)
+    b, cb = _run(_pulsed40, True, monkeypatch, **_PULSE)
+    assert cb.get('tcloop_c:steps', 0) > 10 and (a['x'] != b['x'] or a['t'] != b['t'])
+
+
 #: (the functions whose returned strings are decline reasons: the module's,
 #: the stage loop's it calls, and the C loop's sources check)
 _REASONERS = ('_eligible', '_family_ready', '_tc_ready', '_solver_ready', '_real_solver',

@@ -144,6 +144,7 @@ def _planted(monkeypatch, plant):
     ('pulse', _pulsed, None, _PULSE),
     ('pulse-fixed', _pulsed, None, dict(_PULSE, fixed_timestep=True)),
     ('stage-klu', lambda: _mos(90, cap=1e-13), None, {'tend': 20 * 2e-10, 'timestep': 2e-10}),
+    ('pulse-40', lambda: _pulsed(40), None, _PULSE),
     ('pointlocal', _pulsed, {'relref': 'pointlocal'}, _PULSE),
     ('alllocal', _pulsed, {'relref': 'alllocal'}, _PULSE),
     ('measured', _pulsed, _TIGHT, _PULSE),

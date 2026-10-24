@@ -445,6 +445,7 @@ class _Ctx:
         'lu_addr',
         'n',
         'p_of',
+        'patbit',
         'rk_keep',
         's',
         'served',
@@ -474,9 +475,10 @@ class _Ctx:
             'ab': np.empty(m), 'dY': np.empty(3 * m), 'stp': np.empty(n), 'tolv': np.empty(2),
             'qn': np.empty(n), 'u': np.empty((3, n)), 'seed': np.empty((3, n)),
             'dummy': np.zeros(max(n * n, 1)),
-            ## (the step's end passes' outputs: `END`)
-            'e_q': np.empty(n), 'e_i': np.empty(n), 'e_C': np.empty(n * n),
-            'e_G': np.empty(n * n), 'e_C01': np.empty(2 * n * n), 'e_G01': np.empty(2 * n * n),
+            ## (the step's end passes' outputs: `END` -- the matrices zero off
+            ## the core's pattern, which a pattern pass leaves as it finds)
+            'e_q': np.empty(n), 'e_i': np.empty(n), 'e_C': np.zeros(n * n),
+            'e_G': np.zeros(n * n), 'e_C01': np.zeros(2 * n * n), 'e_G01': np.zeros(2 * n * n),
             'e_q01': np.empty(n),
             'rk_y': np.empty(max(m, 1)), 'rk_t': np.empty(max(2 * m, 2)),
         }
@@ -497,6 +499,13 @@ class _Ctx:
         g = core.arrays['binG']
         self.keep.append(g)
         s.binG = ffi.cast('double *', g.ctypes.data)
+        ## (the core's pattern, where it has one: the end passes ask for it,
+        ## `patbit` in their want bits)
+        from pycircuit.circuit import _tran_core
+        pat = np.ascontiguousarray(core.arrays['pat'], dtype=np.int64)
+        self.keep.append(pat)
+        s.pat, s.npat = ffi.cast('int64_t *', pat.ctypes.data), int(pat.shape[0])
+        self.patbit = _tran_core._WANT_PATTERN if core.npat else 0
         s.n, s.iref = n, iref
         s.rk_on = 0
         s.rk_dgemv = ffi.cast('void *', _MOD['RC'].driver()[3])
@@ -733,8 +742,8 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     ## reads and records only there); `C` and `G` at the first two stages
     ## where the shooting reads them (`_stage_G_read`)
     end = END and _MOD['mods'][0].STAGE_FUSE and bool(td.get('_memo_rolling'))
-    s.end_bits = 7 if end else 0
-    s.end_cg = 3 if end and td.get('_stage_G_read') else 0
+    s.end_bits = (7 | rec.patbit) if end else 0
+    s.end_cg = (3 | rec.patbit) if end and td.get('_stage_G_read') else 0
     status = cfn(s)
     return _outcome(tr, rec, fz, status, probe, 1,
                     lambda: NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals))))

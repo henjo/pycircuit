@@ -455,6 +455,17 @@ def _bound(loop, e):
     return run_
 
 
+def _bind_pattern(run, core, keep):
+    """The core's pattern for the loop's passes (loop.h's `cpat`): where the
+    core writes only its pattern (`pass_zero`) C is written there alone and
+    G copied from its bin there alone, the buffers zero off it -- as every
+    C and G of the circuit is."""
+    pat = np.ascontiguousarray(core.arrays['pat'], dtype=np.int64)
+    keep.append(pat)
+    keep.append(run.ffi.from_buffer('int64_t *', pat))
+    run.s.cpat, run.s.cnpat = keep[-1], int(pat.shape[0])
+
+
 def _bind(e):
     """The stage run for this entry's record, table and screen: the
     family's units (`bind_common`), the radau record, the stage buffers."""
@@ -516,7 +527,7 @@ def _bind_stage(run, rec, n, dgesv, dgemv):
     run.sets = sets = [rec.own, rec._new_out()]
     run.sbuf = sb = {
         'ust': np.empty(5 * n), 'useed': np.empty(3 * n), 'xr_q': np.empty(n),
-        'xr_C': np.empty(n * n), 'xr_G': np.empty(n * n), 'xr_i': np.empty(n), 'eF': np.empty(n),
+        'xr_C': np.zeros(n * n), 'xr_G': np.zeros(n * n), 'xr_i': np.empty(n), 'eF': np.empty(n),
         'eA': np.empty(max(m * m, 1)), 'eb': np.empty(max(m, 1)),
         'ygen1': np.empty(_tran_radau_c.MAXA * 3 * n), 'hq': np.empty(n), 'liq': np.empty(n),
         'lest': np.empty(n)}
@@ -525,6 +536,7 @@ def _bind_stage(run, rec, n, dgesv, dgemv):
     for k, a in sb.items():
         keep.append(fb('double *', a))
         setattr(s, k, keep[-1])
+    _bind_pattern(run, rec.core, keep)
     ipiv = np.empty(max(m, 1), dtype=np.int64)
     sb['eipiv'] = ipiv
     keep.append(fb('int64_t *', ipiv))

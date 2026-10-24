@@ -602,7 +602,8 @@ def _bind_newton(run, e):
     for k, z in enumerate((M[0, 0], M[0, 1], M[0, 2], M[1, 0], M[1, 1], M[1, 2])):
         s.tcm[2 * k], s.tcm[2 * k + 1] = float(z.real), float(z.imag)
     s.lam0r, s.lam1r, s.lam1i = float(lam[0].real), float(lam[1].real), float(lam[1].imag)
-    ts.end_bits, ts.end_cg, ts.fused = 7, 0, int(_tran_radau_tc._MOD['cmul'])
+    ts.end_bits, ts.end_cg = 7 | run.tctx.patbit, 0
+    ts.fused = int(_tran_radau_tc._MOD['cmul'])
     ts.klu_refactor = tffi.cast('void *', _cbuild.address(zs._lib.klu_z_refactor))
     ts.klu_solve = tffi.cast('void *', _cbuild.address(zs._lib.klu_z_solve))
     ts.Symbolic = tffi.cast('void *', zs._symbolic)
@@ -631,7 +632,7 @@ def _bind_buffers(run, e):
     nn, mm, mx = n * n, max(m * m, 1), _CODES['LOOP_TG_MAX']
     tb = run.tbuf = {
         'ust': np.empty(5 * n), 'useed': np.empty(3 * n), 'xr_q': np.empty(n),
-        'xr_C': np.zeros(nn), 'xr_G': np.empty(nn), 'xr_i': np.empty(n), 'eF': np.empty(n),
+        'xr_C': np.zeros(nn), 'xr_G': np.zeros(nn), 'xr_i': np.empty(n), 'eF': np.empty(n),
         'eb': np.empty(max(m, 1)), 'liq': np.empty(n), 'lest': np.empty(n),
         'crr': np.empty(mm), 'grr': np.empty(mm), 'lua': np.empty(mm), 'tcC': np.zeros(2 * nn),
         'tcq': np.empty(n), 'tcY': np.empty(3 * n),
@@ -645,6 +646,7 @@ def _bind_buffers(run, e):
     tb['lupiv'] = np.zeros(max(m, 1), dtype=np.int64)
     keep.append(fb('int64_t *', tb['lupiv']))
     s.lupiv = keep[-1]
+    _SL._bind_pattern(run, e.rec.core, keep)
     for o in range(2):
         for k, size in enumerate((n, n, nn, nn)):
             a = tb[f'te{o}{k}'] = np.zeros(size)

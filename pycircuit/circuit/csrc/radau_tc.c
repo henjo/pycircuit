@@ -57,6 +57,17 @@ static void cmul(long fused, double ar, double ai, double br, double bi, double 
     }
 }
 
+/* an end pass's G from the core's bin: at the pattern's entries alone
+   where the pass asked for it (the buffer zero off it), else whole */
+static void end_G(const radau_tf_t *s, double *G, long bits)
+{
+    long k;
+    if (bits & PCX_WANT_PATTERN)
+        for (k = 0; k < s->npat; k++) G[s->pat[k]] = s->binG[s->pat[k]];
+    else
+        memcpy(G, s->binG, (size_t) (s->n * s->n) * sizeof(double));
+}
+
 /* the transform's Newton loop from `seed`.
    Assumes what `_tran_radau_tc.solve` checks and `_Ctx` sizes: n >= 2,
    0 <= iref < n, the buffers of radau_tc.h's sizes; lu_info -1 or 0; the
@@ -341,14 +352,14 @@ static long tf_newton(radau_tf_t *s)
                      s->dummy, s->dummy, s->dummy, s->dummy, s->e_C, s->e_C, s->e_q,
                      s->dummy, s->dummy, s->dummy, s->dummy);
                 memcpy(s->e_i, s->bini, (size_t) n * sizeof(double));
-                memcpy(s->e_G, s->binG, (size_t) (n * n) * sizeof(double));
+                end_G(s, s->e_G, s->end_bits);
                 if (s->end_cg) {
                     for (j = 0; j < 2; j++) {
                         core(s->core, s->Y + j * n, s->T, s->end_cg, PCX_FORMULA_PASSES, 0.0, 0.0, 0.0, 1.0, 0.0,
                              s->dummy, s->dummy, s->dummy, s->dummy, s->e_C01 + j * n * n,
                              s->e_C01 + j * n * n, s->e_q01, s->dummy, s->dummy, s->dummy,
                              s->dummy);
-                        memcpy(s->e_G01 + j * n * n, s->binG, (size_t) (n * n) * sizeof(double));
+                        end_G(s, s->e_G01 + j * n * n, s->end_cg);
                     }
                 }
                 /* (the core's flags are not numpy's: cleared) */

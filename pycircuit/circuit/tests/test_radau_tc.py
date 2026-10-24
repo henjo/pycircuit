@@ -71,6 +71,8 @@ CASES = {
     'psp-transform': (_stage, {'radau_transform': True}),
     'mos-transform': (_mos_chain, {'radau_transform': True}),
     'mos-caps-transform': (lambda: _mos_chain(cap=1e-13), {'radau_transform': True}),
+    ## (past the core's fill: its pattern, the end passes on it)
+    'pulse-40-transform': (lambda: _pulsed(40), {'radau_transform': True}),
 }
 
 

@@ -115,8 +115,13 @@ typedef struct {
        convergence).  binG, wiring set once: the core's own G bin.  end_bits,
        per call: the last stage's want bits (7: G, C, i; 0: none made);
        end_cg, per call: 3 (C, G) at the first two stages where the shooting
-       reads them, else 0; end_done, out: 1 where they were made */
+       reads them, else 0 -- each with PCX_WANT_PATTERN where the core has a
+       pattern (`pat`, `npat` entries of n x n, wiring): the core then writes
+       C at its entries alone and G is copied from the bin at them, the
+       buffers zero off it (as every C and G of the circuit is); end_done,
+       out: 1 where they were made */
     const double *binG; long end_bits, end_cg, end_done;
+    const int64_t *pat; long npat;
     /* the end passes' outputs (`_Ctx.buf`), read where end_done: the last
        stage's e_q, e_i (n), e_C, e_G (n x n); the first two stages' e_C01,
        e_G01 (2 x n x n); e_q01 (n) the q those two calls make (q is always

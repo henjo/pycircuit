@@ -154,7 +154,13 @@ typedef struct {
                                    where no record holds them (the core's) */
     long pass_bits, pass_zero;  /* those passes as `_tran_core.passes` asks them:
                                    the want bits (the pattern's where the core has
-                                   one), C zeroed first where it writes the pattern */
+                                   one: `pass_zero`) */
+    /* the core's pattern (`cnpat` entries of n x n): a pattern pass writes C
+       there alone (the core zeroes them first) and G is copied from its bin
+       there alone -- the buffers zero off it, as every C and G of the
+       circuit is */
+    const int64_t *cpat;
+    long cnpat;
     double *eF;                 /* (n) work: the estimate's F1, then its rhs */
     double *eA;                 /* (m x m) work: the real factor, column-major */
     double *eb;                 /* (m) work: the reduced rhs, then the solution */

@@ -5711,3 +5711,20 @@ Tests: `test_radau_fold.py` -- the two modes on drawn C and G zero off a
 drawn pattern, the record's mask its own, wrong or absent, either layout;
 `test_tcloop_c.py` -- a 40-stage chain on the dense and the KLU real
 factor in pattern mode, the small chain not; alive: a position left out.
+
+## The C passes on the core's pattern (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 217).  The core, asked for its
+pattern, zeroes its pattern's positions of C itself and leaves the rest as
+the caller's buffer holds it; its G bins are zero off the pattern always.
+Every C and G of the circuit is zero off the pattern (it covers every
+position an element can stamp, and the diagonal).  So the C stepping
+loop's passes no longer zero C over the whole matrix first, G is copied
+from the core's bin at the pattern's entries alone, and the transform
+Newton's end passes ask the core for its pattern too (they asked for every
+entry: the core's own whole-matrix zeroing, then a whole G copy) -- their
+buffers allocated zero.  opampal, gm19, arom, rich3 and jge 1.05x together (opampal 1.26x).
+Tests: `test_tcloop_c.py` -- the loop's buffers still zero off the pattern
+after a run, dense and on KLU; alive: a nonzero planted off it (nothing
+zeroes it now) is another run; a 40-stage chain in the transform Newton's
+and the stage loop's twins.

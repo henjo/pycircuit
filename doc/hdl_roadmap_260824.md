@@ -11915,3 +11915,43 @@ standalone DC, against 215's gate runs (107da83f's code), and under Radau agains
 inside it), interleaved per deck: every digest, step, rejection, Newton count and path count identical but the loops'
 own.  The sanitizer's fast tier, 5 774 passed, and its deep tier on the loop, Radau, fold, DC and solver tests, 663,
 clean.
+
+## 2026-10-24 — 217. The passes on the core's pattern -- the C stepping loop's passes and the transform Newton's end passes write C and copy G at the pattern's entries alone: opampal, gm19, arom, rich3 and jge 1.05x together (53.6 -> 51.1 s; opampal 1.26x), every byte the same
+
+**Why**  Andreas: "Do all three" (the levers offered after 216; plan g24's `plan_217_219.md`).  At 216 memset was
+4.9 % of gm19's samples and memmove 3.4 % (jge 3.0 % and 1.6 %): each of the loop's C passes zeroed C over n x n first
+and copied G from the core's bin over n x n (the screen makes two a step), and the end passes asked the core for every
+entry (its own whole-matrix zeroing of C) and copied G whole -- about two zeroings and one copy an attempt, of
+matrices whose pattern is 1.8-4.4 % of their entries.  LINE: opampal, gm19, arom, rich3 and jge together at least
+1.03x against 216 in the gold A/B, every byte the same.
+
+**Built.**  The core asked for its pattern zeroes the pattern's positions of the caller's C itself (C is its own bin)
+and leaves the rest as the buffer holds it; its G bin is zero off the pattern always (no stamp reaches it, and an
+all-entry pass zeroes it whole).  Every C and G of the circuit is zero off the pattern -- it is every position an
+element can stamp, and the diagonal -- the Python's own records included (`passes`: `np.zeros` and the pattern).  So:
+loop.c's `stage_pass` and `tc_pass` zero nothing; G is copied at the pattern alone where the pass wrote the pattern
+(`pass_G`, loop.h's `cpat`, bound by `_tran_stageloop_c._bind_pattern` for both loops); radau_tc.c's end passes ask
+for the pattern where the core has one (`_Ctx.patbit` in `end_bits` and `end_cg`) and copy G at it (`end_G`, radau_tc.h's
+`pat`); the buffers these write -- x_n's C and G in both loops, the end passes' outputs in `_Ctx` -- allocated zero.
+
+**Measured** (the 27 gold decks under Radau, HEAD 4ad9df3b from its worktree and this tree, separate processes,
+interleaved per deck): opampal 1.58 -> 1.26 s (1.26x), gm19 8.91 -> 8.30 (1.07x), arom 5.33 -> 5.07 (1.05x), rich3
+6.63 -> 6.38 (1.04x), jge 31.11 -> 30.07 (1.03x) -- the five 53.6 -> 51.1 s, 1.05x (the line 1.03x); voter25 and mux8
+1.02x, toronto 1.12x; the 27 decks 87.4 -> 84.2 s.  Four decks under 0.1 s read 0.84-0.95x on one run -- their cores
+write every entry (no pattern: nothing of 217 runs there) -- and 0.98-1.00x on five interleaved runs each (schmitecl
+0.86x on five with the box loaded, 0.99x on nine).
+
+**Tests.**  test_tcloop_c (+3, 51): after a run on the 40-stage chain, dense and on KLU, the loop's pass buffers (x_n's
+C and G, the screen's C, the end passes' two sets) still zero off the pattern; alive: a nonzero planted off it in the
+end passes' C buffers, in the pulsed input's column (a still node's column is multiplied by a zero F1), is another run
+(1e-17: 1e-15 collapses the steps, 1e-19 is not seen).  test_radau_tc (+2, 30): the 40-stage chain on the transform,
+fixed and adaptive -- the end passes on the pattern the Python's own.  test_stageloop_c (+1): the 40-stage chain in the
+coupled mode.  test_pinned_pairs: 'the step's end passes and the C's' gains the core's pattern maker and `_Ctx.__init__`,
+the stage loop and the transform loop the binding; they, the transform Newton, the stepping loop and the multistep walk
+re-recorded.  doc/transient_runtime.md: the pattern's line.
+
+**Gate** (the main tree): the suite, 6 008 passed (6 skipped, 3 xfailed); the 27 gold decks, gear2 transient and
+standalone DC, against 216's gate runs (4ad9df3b's code), and under Radau against HEAD (wt_head, 4ad9df3b, run from
+inside it), interleaved per deck: every digest, step, rejection, Newton count and path count identical but the loops'
+own.  The sanitizer's fast tier, 5 778 passed, and its deep tier on the loop, Radau, fold, DC and solver tests, 669,
+clean.

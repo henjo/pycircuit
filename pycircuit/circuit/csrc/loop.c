@@ -648,22 +648,34 @@ static int stage_find(const loop_t *s, long o, long A, const double *x, loop_att
     return 0;
 }
 
+/* a pass's G from the core's bin into `G`: at the pattern's entries
+   alone where the pass wrote the pattern (`pass_zero`; the buffer zero off
+   it), else whole */
+static void pass_G(const loop_t *s, double *G, const double *binG)
+{
+    long k;
+    if (s->pass_zero)
+        for (k = 0; k < s->cnpat; k++) G[s->cpat[k]] = binG[s->cpat[k]];
+    else
+        COPY(G, binG, s->n * s->n);
+}
+
 /* the core's passes at the start as `_tran_core.passes` makes them
-   (formula 4; its want bits -- the pattern's where the core has one, into
-   a C zeroed first -- C its own input and output, q in place, G and i from
-   the core's bins) into `xr_*`, the record no generation holds: one call
-   for the context's 'q' and the estimate's 'CGi', each output the same
-   bits; the core's flags are not numpy's: cleared */
+   (formula 4; its want bits -- the pattern's where the core has one, C
+   written there alone, the buffer zero off it -- C its own input and
+   output, q in place, G and i from the core's bins) into `xr_*`, the
+   record no generation holds: one call for the context's 'q' and the
+   estimate's 'CGi', each output the same bits; the core's flags are not
+   numpy's: cleared */
 static void stage_pass(loop_t *s, loop_attempt_t *a)
 {
     radau_t *rs = (radau_t *) s->radau;
     core_fn_t core = (core_fn_t) rs->core_fn;
     long n = s->n;
-    if (s->pass_zero) memset(s->xr_C, 0, (size_t) (n * n) * sizeof(double));
     core(rs->core, s->xlast, rs->T, s->pass_bits, PCX_FORMULA_PASSES, 0.0, 0.0, 0.0, 1.0, 0.0,
          rs->dummy, rs->dummy, rs->dummy, rs->dummy, s->xr_C, s->xr_C, s->xr_q, rs->dummy,
          rs->dummy, rs->dummy, rs->dummy);
-    COPY(s->xr_G, rs->binG, n * n);
+    pass_G(s, s->xr_G, rs->binG);
     COPY(s->xr_i, rs->bini, n);
     feclearexcept(FE_ALL_EXCEPT);
     a->rq = s->xr_q;
@@ -982,21 +994,20 @@ static const double *tc_xv(const loop_t *s, long k)
 }
 
 /* one core call at x as `_tran_core.passes` makes it (formula 4, the want
-   bits `bits` -- the pattern's where the core has one, C zeroed first
-   then -- each pass's values whatever else is asked): q and C into the
-   buffers given, G and i from the core's bins where given; the core's
-   flags are not numpy's: cleared */
+   bits `bits` -- the pattern's where the core has one, C written there
+   alone, the buffer zero off it -- each pass's values whatever else is
+   asked): q and C into the buffers given, G and i from the core's bins
+   where given (`pass_G`); the core's flags are not numpy's: cleared */
 static void tc_pass(loop_t *s, const double *x, long bits, double *q, double *C, double *G,
                     double *iv)
 {
     radau_tf_t *tf = (radau_tf_t *) s->tc;
     core_fn_t core = (core_fn_t) tf->core_fn;
     long n = s->n;
-    if (s->pass_zero) memset(C, 0, (size_t) (n * n) * sizeof(double));
     core(tf->core, x, tf->T, bits, PCX_FORMULA_PASSES, 0.0, 0.0, 0.0, 1.0, 0.0,
          tf->dummy, tf->dummy, tf->dummy, tf->dummy, C, C, q, tf->dummy, tf->dummy, tf->dummy,
          tf->dummy);
-    if (G) COPY(G, tf->binG, n * n);
+    if (G) pass_G(s, G, tf->binG);
     if (iv) COPY(iv, tf->bini, n);
     feclearexcept(FE_ALL_EXCEPT);
 }
