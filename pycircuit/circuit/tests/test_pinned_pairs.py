@@ -194,7 +194,9 @@ PAIRS = {
                'integrator\'s own operation order and the residual in one C '
                'call, asks the same C lookup first, and leaves the state '
                '`_companion_at` and `get_diff` leave; `_solve_timestep`\'s '
-               '`jacobian_only` and `residual_only` are its other two sites',
+               '`jacobian_only` and `residual_only` are its other two sites.  The fused '
+               'kernels of a call may run on a pool of threads (roadmap 220): each element\'s '
+               'call the same, into its own rows, the bins summed after in their order',
         'reference': ['pycircuit.circuit._tran_companion:_CompanionModel._residual_and_jacobian',
                       'pycircuit.circuit._tran_companion:_CompanionModel._companion_at',
                       'pycircuit.circuit._tran_companion:_CompanionModel._C_at_state',
@@ -1111,7 +1113,7 @@ RECORD = {
     'the kernel call and the pass driver': ('09a9e274bbe8', 'b34c658afd6f'),
     'the limiting loop and the walk': ('58c4ce9c8f4d', '3a565db6207f'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '7e8f23b73019'),
-    'the transient evaluation and the core': ('ecdae2231dae', 'b11b9f035724'),
+    'the transient evaluation and the core': ('ecdae2231dae', '55fe59dc7400'),
     'the assembly loops and the plan': ('a822abce557c', '14651de8716f'),
     'the sources and their direct pass': ('133b68c3262d', '11e5cf691f59'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
@@ -1120,12 +1122,12 @@ RECORD = {
     'the Newton solve and its C': ('3ca9f9451f6f', 'c7ead8a7f8e8'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', 'ac91030f078c'),
-    'the DC base solve and its C': ('64fd25ecd5da', '1e12937f72b9'),
-    'the PCNR DC solve and its C': ('20b804fddf35', '30741a9ce570'),
+    'the DC base solve and its C': ('64fd25ecd5da', 'efe6c046e126'),
+    'the PCNR DC solve and its C': ('20b804fddf35', '7d8a7bce249c'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
-    "the stage paths' passes and the core's": ('6baa9d0e9097', '3f00bb235faa'),
+    "the stage paths' passes and the core's": ('6baa9d0e9097', '1ab5fdb0c9e7'),
     'the coupled stage Newton and its C': ('c87ff9fb31be', '65157c1e371d'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),

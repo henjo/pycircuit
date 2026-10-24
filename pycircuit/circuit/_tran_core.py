@@ -68,6 +68,13 @@ the diagonal; where it is at most `PATTERN_MAX_FILL` of n x n (and
 write only its entries (`PCX_WANT_PATTERN`; `_Core.npat` nonzero), and
 every entry otherwise.
 
+THE THREADS.  A call's fused-group elements may be made on a pool of
+threads (core.c; `THREADS`, `PYCIRCUIT_CORE_THREADS`): each element's
+kernel is a function of its gathered inputs and its parameter row alone,
+writing its own rows of the staging, and the bins are summed after by the
+caller in their order -- every byte, and every floating-point flag, as one
+thread leaves them.
+
 THE FUSED KERNELS.  A class's four passes print four kernels that each
 recompute their whole chain; its fused kernel (`_hdl_cbackend.fuse_csrc`:
 the printed statements unioned by name, each run under the bits of the
@@ -139,6 +146,23 @@ _ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
 #: built)
 PATTERN = os.environ.get('PYCIRCUIT_CORE_PATTERN', '1') != '0'
 PATTERN_MAX_FILL = 0.25
+def _default_threads():
+    """Four, or half the CPUs this process may run on where that is fewer:
+    jge's Radau transient (348 MOSFETs a call) 1.44x on two threads, 1.88x on
+    four, 2.22x on eight; mux8 (64) 1.58x on four, 1.78x on eight -- the
+    workers spinning between calls, half the box held for most of the gain."""
+    try:
+        ncpu = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        ncpu = os.cpu_count() or 1
+    return max(1, min(4, ncpu // 2))
+
+
+#: THE DEVICE KERNELS ON THREADS (core.c's pool): a call's fused groups on
+#: this many threads, the caller one of them, where its elements reach the
+#: pool's minimum -- every byte as one thread makes them
+#: (`PYCIRCUIT_CORE_THREADS`; the test suite's 1, its workers filling the box)
+THREADS = max(1, int(os.environ.get('PYCIRCUIT_CORE_THREADS', '') or _default_threads()))
 _WANT_PATTERN = _ABI['PCX_WANT_PATTERN']
 #: the integrators the core's companion enum covers, by class name
 FORMULA = {'Gear2Integrator': _ABI['PCX_FORMULA_GEAR2'],
@@ -522,6 +546,7 @@ class _Core:
         self.handles.append(ffi.from_buffer('double **', self.PRall))
         cs.PRall = self.handles[-1]
         cs.nz = self.nz
+        cs.nthreads = THREADS
         self.handles.append(ffi.from_buffer('void **', self.z_fn))
         cs.z_fn = self.handles[-1]
         cs.dgemv = ffi.cast('void *', dgemv)

@@ -5757,3 +5757,20 @@ it moves gained.  Radau now takes the stage methods' floor,
 it moves change at the method's tolerance (another pivot order, then the
 adaptive steps), the gold metrics as before.  toronto, mux8, voter25, e1480 and jge 1.24x together (jge 29.9 -> 23.3 s).
 Tests: `test_structural_klu.py` -- Radau dense at 140 sections, on KLU at 160.
+
+## The evaluation core's device kernels on threads (2026-10-24)
+
+2026-10-24 (`doc/hdl_roadmap_260824.md`, 220).  With the solve in C, the
+device kernels were most of it (65 % of jge's Radau run).  core.c makes a
+call's fused-group elements on a pool of threads where they reach 16: the
+caller and `nthreads - 1` workers kept from call to call (spinning a while,
+then asleep), chunks of elements from one counter.  Each element's kernel
+is a function of its gathered inputs and parameter row alone, writing its
+own rows; the bins are summed after by the caller in their order -- every
+byte as one thread makes it.  The workers take the caller's FP environment
+and their flags are raised in the caller (the union).  One call at a time
+on the pool; a forked child starts its own workers; the library pins itself
+(RTLD_NODELETE).  `_tran_core.THREADS` (`PYCIRCUIT_CORE_THREADS`): four, or
+half the CPUs where fewer; the test suite's 1.  the 27 gold decks under Radau 73.3 -> 48.4 s, under gear2 36.0 -> 22.0 s.
+Tests: `test_core_threads.py` -- drawn calls (flags included), transients,
+two at once, a forked child, the workers there.

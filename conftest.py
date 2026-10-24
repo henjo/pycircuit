@@ -15,9 +15,11 @@ import os
 # the suite) while a Newton-ladder test ran only 1.4x slower.  scipy-openblas
 # opens a thread per core (24 here) in EVERY worker, so 10 workers fight over
 # 240 threads.  Set before numpy loads; `pytest_configure` below also limits
-# any pool already open (threadpoolctl) for the controller process.
+# any pool already open (threadpoolctl) for the controller process.  The
+# evaluation core's device threads (`_tran_core.THREADS`) likewise: the tests
+# of its pool ask for them.
 for _var in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
-             'BLIS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+             'BLIS_NUM_THREADS', 'NUMEXPR_NUM_THREADS', 'PYCIRCUIT_CORE_THREADS'):
     os.environ.setdefault(_var, '1')
 
 # JAX preallocates ~75% of the GPU's memory in each process the first time a

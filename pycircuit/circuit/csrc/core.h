@@ -95,6 +95,11 @@ typedef struct {
                                      off) -- every entry written */
     const int64_t *pat;           /* its entries, row-major indices of n x n,
                                      ascending */
+    /* THE THREADS: the fused groups' kernels of a call made on this many
+       threads -- the caller one of them -- where its elements reach the
+       pool's minimum (core.c); 1 (or 0): the caller alone.  Every byte as
+       one thread makes them */
+    long nthreads;
 } hdl_core_t;
 /* THE EVALUATION: the passes `want` asks for (q always) at x, then the
    companion `formula` forms, f = (i + iq) + u and J = G + Geq -- bit for
@@ -125,8 +130,25 @@ long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long fo
    `k`, a fused group's x), a kernel's outputs (a batch's `so`) */
 enum core_cap {
     CORE_MAX_INPUTS = 64,
-    CORE_MAX_OUTPUTS = 4096
+    CORE_MAX_OUTPUTS = 4096,
+    /* the fused groups a call makes on the pool (core.c), at most: more and
+       the caller makes them alone -- `core_pool_job_t`'s rows */
+    CORE_POOL_ZMAX = 64
 };
+
+/* THE POOL'S JOB (core.c): one call's fused groups made on the threads */
+typedef struct {
+    const hdl_core_t *c;          /* the call's core */
+    const double *x;              /* (n) its state */
+    double T;                     /* its temperature */
+    long nr;                      /* the groups it makes, at most
+                                     CORE_POOL_ZMAX (the rows' width) */
+    long total;                   /* their elements together */
+    long zl[64];                  /* (nr) each group's index */
+    long zw[64];                  /* (nr) the passes it makes */
+    long off[65];                 /* (nr + 1) its first element in the
+                                     job's numbering; the last the total */
+} core_pool_job_t;
 
 /* a fused group's row in `ztab` (`_Core.__init__` writes it, core.c reads
    it): the group's elements, an element's inputs, the temperature's slot

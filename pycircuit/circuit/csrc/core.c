@@ -1,6 +1,12 @@
 
+#define _GNU_SOURCE
 #include <stdint.h>
 #include <string.h>
+#include <fenv.h>
+#include <dlfcn.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <unistd.h>
 #include "pcx_abi.h"
 #include "core.h"
 /* passes 0 G, 1 C, 2 i, 3 q; their want bits pcx_pass (pcx_abi.h).  A class
@@ -20,34 +26,221 @@
         if (patt) { for (pk = 0; pk < c->npat; pk++) { s = c->pat[pk]; body; } } \
         else { for (s = 0; s < n * n; s++) { body; } } \
     } while (0)
+/* one element of fused group z into its staging rows, for the passes `zw`:
+   its inputs gathered into X, the temperature into its parameter row (as
+   the batches' driver, pass.c, writes it), its kernel -- a function of
+   those alone, writing its own rows (any thread may make it) */
+static void fused_element(const hdl_core_t *c, long z, long zw, long e, const double *x,
+                          double T, double *X)
+{
+    const int64_t *zt = c->ztab + ZT_WIDTH * z;
+    long k = zt[ZT_K], ti = zt[ZT_TI], j;
+    const int64_t *NM = c->NMall + zt[ZT_NM];
+    double **PR = c->PRall + zt[ZT_PR], *st = c->zst;
+    for (j = 0; j < k; j++) X[j] = x[NM[e * k + j]];
+    if (ti >= 0) PR[e][ti] = T;
+    ((fused_fn_t) c->z_fn[z])(X, PR[e], zw, st + zt[ZT_G_AT] + e * zt[ZT_G_LEN],
+                              st + zt[ZT_C_AT] + e * zt[ZT_C_LEN],
+                              st + zt[ZT_I_AT] + e * zt[ZT_I_LEN],
+                              st + zt[ZT_Q_AT] + e * zt[ZT_Q_LEN]);
+}
+
+/* the passes this call makes that group z covers (q always); 0 where its
+   fused kernel does not serve or the call makes none of them */
+static long group_want(const hdl_core_t *c, long z, long want)
+{
+    if (!c->z_fn[z]) return 0;
+    return ((want & PCX_WANT_ALL) | PCX_PASS_Q) & c->ztab[ZT_WIDTH * z + ZT_PASSES];
+}
+
+/* THE POOL: a call's fused-group elements on `nthreads` threads -- the
+   caller and workers kept from call to call (spinning a while for the
+   next call, then asleep), each taking chunks of the elements from one
+   counter -- where they reach POOL_MIN.  Each element is `fused_element`
+   on the same inputs whatever the thread, into its own rows; the bins are
+   summed after by the caller, in their order: every byte as one thread
+   makes it.  The workers take the caller's FP environment each call and
+   the flags they raise are raised in the caller's after (the union, as
+   one thread leaves them).  One call at a time on the pool (a concurrent
+   caller makes its own alone); a forked child starts workers of its own;
+   the library pins itself (RTLD_NODELETE) before a worker runs in it. */
+/* (POOL_MIN measured on the gold decks, four threads against one: ring's
+   34 elements a call 1.65x, nand's 25 1.31x, gm3's 30 1.14x; at 8, the
+   decks of 11-14 elements 1.00-1.15x -- below 16 no thread is started) */
+enum { POOL_MAX = 31, POOL_CHUNK = 4, POOL_MIN = 16, POOL_SPIN = 1 << 16 };
+_Static_assert(sizeof(((core_pool_job_t *) 0)->zl) == CORE_POOL_ZMAX * sizeof(long),
+               "the pool job's rows are CORE_POOL_ZMAX wide");
+
+static pthread_mutex_t pool_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t pool_wake = PTHREAD_COND_INITIALIZER;
+static long pool_started;
+static pid_t pool_pid;
+static atomic_long pool_gen, pool_next, pool_left;
+static atomic_int pool_flags;
+static atomic_flag pool_busy = ATOMIC_FLAG_INIT;
+static core_pool_job_t pool_job;
+static fenv_t pool_env;
+
+static void pool_relax(void)
+{
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#endif
+}
+
+/* the job's elements, a chunk at a time from the shared counter, until
+   none is left (a thread's chunks come in rising order: its group cursor
+   only moves on) */
+static void pool_take(const core_pool_job_t *j)
+{
+    double X[CORE_MAX_INPUTS];
+    long r = 0, i, end;
+    for (;;) {
+        i = atomic_fetch_add_explicit(&pool_next, POOL_CHUNK, memory_order_relaxed);
+        if (i >= j->total) return;
+        end = i + POOL_CHUNK < j->total ? i + POOL_CHUNK : j->total;
+        for (; i < end; i++) {
+            while (i >= j->off[r + 1]) r++;
+            fused_element(j->c, j->zl[r], j->zw[r], i - j->off[r], j->x, j->T, X);
+        }
+    }
+}
+
+/* a worker's wait for the call after `seen`: spinning, then asleep */
+static long pool_wait(long seen)
+{
+    long spin;
+    for (spin = 0; spin < POOL_SPIN; spin++) {
+        if (atomic_load_explicit(&pool_gen, memory_order_acquire) != seen) goto out;
+        pool_relax();
+    }
+    pthread_mutex_lock(&pool_mu);
+    while (atomic_load_explicit(&pool_gen, memory_order_acquire) == seen)
+        pthread_cond_wait(&pool_wake, &pool_mu);
+    pthread_mutex_unlock(&pool_mu);
+out:
+    return atomic_load_explicit(&pool_gen, memory_order_acquire);
+}
+
+/* a worker: each call (the caller waits for every worker before the
+   next, so none is missed), in the caller's FP environment, its flags
+   handed back */
+static void *pool_worker(void *arg)
+{
+    long seen = (long) (intptr_t) arg;
+    int fl;
+    for (;;) {
+        seen = pool_wait(seen);
+        fesetenv(&pool_env);
+        feclearexcept(FE_ALL_EXCEPT);
+        pool_take(&pool_job);
+        fl = fetestexcept(FE_ALL_EXCEPT);
+        if (fl) atomic_fetch_or_explicit(&pool_flags, fl, memory_order_relaxed);
+        atomic_fetch_sub_explicit(&pool_left, 1, memory_order_release);
+    }
+    return NULL;
+}
+
+/* this library kept loaded while workers may run in it */
+static int pool_pin(void)
+{
+    Dl_info info;
+    if (!dladdr((void *) pool_worker, &info) || !info.dli_fname) return 0;
+    return dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD | RTLD_NODELETE) != NULL;
+}
+
+/* `n - 1` workers (at most POOL_MAX, named "pcx-core") running in this
+   process: 1 where any is.  In a forked child the parent's are gone: its
+   own, from none */
+static int pool_ready(long n)
+{
+    long want = n - 1 < POOL_MAX ? n - 1 : POOL_MAX;
+    pthread_attr_t at;
+    pthread_t t;
+    if (pool_pid != getpid()) {
+        pool_pid = getpid();
+        pool_started = 0;
+        pthread_mutex_init(&pool_mu, NULL);
+        pthread_cond_init(&pool_wake, NULL);
+        if (!pool_pin()) pool_pid = 0;
+    }
+    if (!pool_pid) return 0;
+    while (pool_started < want) {
+        pthread_attr_init(&at);
+        pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&t, &at, pool_worker,
+                           (void *) (intptr_t) atomic_load(&pool_gen)) != 0) {
+            pthread_attr_destroy(&at);
+            break;
+        }
+        pthread_attr_destroy(&at);
+        pthread_setname_np(t, "pcx-core");
+        pool_started++;
+    }
+    return pool_started > 0;
+}
+
+/* one call on the pool: the job published, the caller's share taken, every
+   worker's waited for, their flags raised here */
+static void pool_run(const core_pool_job_t *j)
+{
+    int fl;
+    fegetenv(&pool_env);
+    atomic_store_explicit(&pool_next, 0, memory_order_relaxed);
+    atomic_store_explicit(&pool_flags, 0, memory_order_relaxed);
+    atomic_store_explicit(&pool_left, pool_started, memory_order_relaxed);
+    pthread_mutex_lock(&pool_mu);
+    atomic_fetch_add_explicit(&pool_gen, 1, memory_order_release);
+    pthread_cond_broadcast(&pool_wake);
+    pthread_mutex_unlock(&pool_mu);
+    pool_take(j);
+    while (atomic_load_explicit(&pool_left, memory_order_acquire) > 0) pool_relax();
+    fl = atomic_load_explicit(&pool_flags, memory_order_relaxed);
+    if (fl) feraiseexcept(fl);
+}
+
+/* the fused groups on the pool: 1 where it made them, 0 where the caller
+   makes them alone (too few elements, too many groups, the pool another
+   caller's or not running) */
+static int pool_groups(const hdl_core_t *c, const double *x, double T, long want)
+{
+    core_pool_job_t *j = &pool_job;
+    long z, zw, total = 0;
+    if (c->nz > CORE_POOL_ZMAX) return 0;
+    for (z = 0; z < c->nz; z++)
+        if (group_want(c, z, want)) total += c->ztab[ZT_WIDTH * z + ZT_NE];
+    if (total < POOL_MIN || atomic_flag_test_and_set_explicit(&pool_busy, memory_order_acquire))
+        return 0;
+    if (!pool_ready(c->nthreads)) {
+        atomic_flag_clear_explicit(&pool_busy, memory_order_release);
+        return 0;
+    }
+    j->c = c;
+    j->x = x;
+    j->T = T;
+    for (z = 0, j->nr = 0, total = 0; z < c->nz; z++) {
+        if (!(zw = group_want(c, z, want))) continue;
+        j->zl[j->nr] = z;
+        j->zw[j->nr] = zw;
+        j->off[j->nr++] = total;
+        total += c->ztab[ZT_WIDTH * z + ZT_NE];
+    }
+    j->off[j->nr] = j->total = total;
+    pool_run(j);
+    atomic_flag_clear_explicit(&pool_busy, memory_order_release);
+    return 1;
+}
+
 /* the fused groups this call wants into their staging (`zst`): each
-   group's kernel once an element, for every pass it covers that the call
-   makes (q always) -- the temperature into the parameter row first, as
-   the batches' driver (pass.c) writes it */
+   group's kernel once an element (`fused_element`), for every pass it
+   covers that the call makes (q always) -- on the pool where it serves */
 static void fused_groups(const hdl_core_t *c, const double *x, double T, long want, double *X)
 {
-    long z, e, j;
+    long z, e, zw;
+    if (c->nthreads > 1 && pool_groups(c, x, T, want)) return;
     for (z = 0; z < c->nz; z++) {
-        const int64_t *zt = c->ztab + ZT_WIDTH * z;
-        fused_fn_t ff = (fused_fn_t) c->z_fn[z];
-        /* the passes this call makes that the group covers (q always) */
-        long zw = ((want & PCX_WANT_ALL) | PCX_PASS_Q) & zt[ZT_PASSES];
-        if (!ff || !zw) continue;
-        {
-            long ne = zt[ZT_NE], k = zt[ZT_K], ti = zt[ZT_TI];
-            const int64_t *NM = c->NMall + zt[ZT_NM];
-            double **PR = c->PRall + zt[ZT_PR];
-            double *sG = c->zst + zt[ZT_G_AT], *sC = c->zst + zt[ZT_C_AT], *si = c->zst + zt[ZT_I_AT];
-            double *sq = c->zst + zt[ZT_Q_AT];
-            for (e = 0; e < ne; e++) {
-                for (j = 0; j < k; j++) X[j] = x[NM[e * k + j]];
-                /* the temperature into the parameter row before the
-                   kernel, as the batches' driver (pass.c) writes it */
-                if (ti >= 0) PR[e][ti] = T;
-                ff(X, PR[e], zw, sG + e * zt[ZT_G_LEN], sC + e * zt[ZT_C_LEN], si + e * zt[ZT_I_LEN],
-                   sq + e * zt[ZT_Q_LEN]);
-            }
-        }
+        if (!(zw = group_want(c, z, want))) continue;
+        for (e = 0; e < c->ztab[ZT_WIDTH * z + ZT_NE]; e++) fused_element(c, z, zw, e, x, T, X);
     }
 }
 

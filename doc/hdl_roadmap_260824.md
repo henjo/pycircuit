@@ -12031,3 +12031,56 @@ byte for byte; rca and gm3 read 0.94x and 0.95x on one run, 1.05x and 1.00x on f
 standalone DC, against 218's gate runs (4262eb8c's code): identical; under Radau against HEAD (wt_head, 4262eb8c, run
 from inside it), interleaved per deck: the 22 decks the floor does not move identical (every digest, step, rejection,
 Newton count and path count but the loops' own), the five it moves as above.  No C changed: the sanitizer not run.
+
+## 2026-10-24 — 220. The device kernels on threads -- the evaluation core's fused kernels made on a pool of threads, the bins summed after in their order: jge, mux8 and voter25 under Radau 1.72x together (44.7 -> 26.0 s), jge under gear2 1.96x; the 27 decks under Radau 1.52x and under gear2 1.64x, every byte the same
+
+**Why**  Andreas: "Do as you suggest" (the survey after 219: first, the device evaluation in parallel; plan g24's
+`plan_220_221.md`).  At 219 the solve was C -- the Python inside `Transient.solve` 0.3-4 % of the samples -- and the
+device kernels (the fused `hdl_fn`s and the libm they call) 65 % of jge's Radau run, ~50 % of mux8's and voter25's,
+~32 % of gm19's, 62 % of jge's gear2.  A core call holds a few fused groups (jge 134 and 214 MOSFETs; mux8 two of 32;
+gm19 two of 81), ~100 us in a stage's q and i.  LINE: jge, mux8 and voter25 under Radau together at least 1.3x against
+219 at the default thread count, jge under gear2 at least 1.2x, every byte the same, no deck slower than 0.97x.
+
+**Built.**  core.c: `fused_groups` made of `fused_element` (one element's gather, temperature and kernel -- a function
+of those alone, writing its own rows; the generated source holds no static or file-scope state) and, where a call's
+elements reach 16 and `hdl_core_t.nthreads` exceeds one, a pool: the caller and `nthreads - 1` workers kept from call
+to call (spinning ~2 ms for the next call, then asleep on a condition variable), chunks of four elements taken from
+one atomic counter, the caller waiting for every worker before it returns; each worker takes the caller's FP
+environment and hands back the flags it raised, their union raised in the caller -- as one thread leaves them; one
+call at a time on the pool (a concurrent caller makes its own alone); a forked child starts workers of its own; the
+library pins itself (dladdr, RTLD_NODELETE) before a worker runs in it; the workers named "pcx-core".  core.h: the
+job (`core_pool_job_t`) and `nthreads`.  `_tran_core.THREADS` (`PYCIRCUIT_CORE_THREADS`): four, or half the CPUs the
+process may run on where fewer; the test suite's 1 (conftest, as BLAS's: its workers fill the box).
+
+**Measured first** (Radau, each run its own process): jge 1.44x on two threads, 1.88x on four, 2.11x on six, 2.22x on
+eight; mux8 1.29, 1.58, 1.68, 1.78x; gm19 1.16, 1.27, 1.33, 1.36x -- four the default, most of the gain for half the
+box.  A pool minimum of 48 elements left ring (34 a call), gm1 (46), nand (25) and gm3 (30) alone; at 16 ring 1.65x,
+nand 1.31x, ab_integ 1.28x, gm3 1.14x, gm1 1.08x; at 8 the decks of 11-14 elements 1.00-1.15x -- 16 taken, below it no
+thread started.  A jge twin's C loop made 2 of its 20 381 attempts more in a second run of a process than in a first
+-- at one thread or four alike, every byte the same (where a process's history puts the loop's attempts; the twin
+that seemed to show it with threads had compared a run with itself).
+
+**Measured** (the 27 gold decks, HEAD 6b1672eb from its worktree on one thread and this tree at the default four,
+separate processes, interleaved per deck): under Radau jge 23.46 -> 12.48 s (1.88x), mux8 10.92 -> 7.11 (1.53x),
+voter25 10.33 -> 6.39 (1.62x) -- the three 44.7 -> 26.0 s, 1.72x (the line 1.3x); ring 1.65x, nand 1.42x, arom 1.40x,
+ab_integ 1.28x, gm19 1.27x, rich3 1.26x, toronto 1.24x; the 27 decks 73.3 -> 48.4 s (1.52x), none under 0.97x.  Under
+gear2 jge 11.59 -> 5.90 s (1.96x; the line 1.2x), ring 1.83x, mux8 1.70x, voter25 1.66x; the 27 decks 36.0 -> 22.0 s
+(1.64x).  4049osc, mosrect and latch read 0.92-0.94x under gear2 on one run -- 4, 4 and 14 elements a call, below the
+pool's minimum: they run alone, the code as before.
+
+**Tests.**  test_core_threads (new, 11): drawn core calls on four threads against one (states small to absurd, the
+kernels overflowing and invalid inside, each pass mask) -- every output byte, the bins, the fused staging and the
+flags raised; one element alone overflowing, its flag raised in the caller whichever thread takes it (forty calls);
+transients -- Radau with the transform and without, gear2; 60 stages and 20 -- the one-threaded bytes, statistics,
+warnings and counts; two transients at once from two Python threads (one on the pool, the other alone); a forked
+child (workers of its own; killed after two minutes as a failure); the workers running.  Three mutations caught: the
+workers' flags not handed back, the caller not waiting for them, a forked child keeping the parent's workers.
+test_pinned_pairs: 'the transient evaluation and the core' (its why: the threads), 'the stage paths' passes and the
+core's', the DC base solve's and PCNR's re-recorded.  doc/transient_runtime.md: the switch.
+
+**Gate** (the main tree): the suite, 6 021 passed (6 skipped, 3 xfailed; the core's threads 1 in it, the thread
+tests asking for four); the 27 gold decks, gear2 transient against HEAD (wt_head, 6b1672eb, run from inside it,
+interleaved per deck), standalone DC against 219's gate runs, and under Radau against HEAD interleaved, this tree on
+the default four threads: every digest, step, rejection, Newton count and path count identical but the loops' own.
+The sanitizer's fast tier, 5 778 passed, and its deep tier on the core, thread, loop, Radau, DC and solver tests, 721,
+clean -- the pool's workers under the address sanitizer.
