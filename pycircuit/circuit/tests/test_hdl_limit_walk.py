@@ -3,7 +3,8 @@
 walked in one C call on the live state -- the loop's bytes in every case
 the loop handles (shared nodes, duplicate rows, `x0 is x`, a hand-written
 limiter mid-chain, a shadow, a decline, a rebound kernel, a nested
-circuit), and the loop itself where the walk does not serve."""
+circuit, an iterate gone non-finite), and the loop itself where the walk
+does not serve."""
 import contextlib
 import os
 import subprocess
@@ -99,6 +100,37 @@ def test_the_walk_is_one_call_and_the_loops_bytes(limit_kernel_calls):
     assert len(w.entries) == 20 and w.any_capable
     ## (source and bulk on gnd: duplicate rows, the last value written)
     assert all(len(set(nm.tolist())) < len(nm) for _i, _e, nm in w.entries)
+
+
+def test_a_non_finite_iterate_is_walked_in_c(limit_kernel_calls):
+    """An iterate gone non-finite (NaNs and infinities at random rows): on
+    CPython 3.14 the walk ranks the NaN keys in C and never stops for them --
+    one walk, no element on its per-call path -- with the per-element
+    loop's bytes."""
+    if not cl.NAN_KEYS:
+        pytest.skip('off CPython 3.14 the kernels decline a NaN key')
+    from pycircuit.circuit import _paths
+    cir = mos_chain()
+    _bound(cir)
+    rng = np.random.default_rng(224)
+    nan_out = 0
+    for x, x0 in _pairs(cir.n, 10, seed=3):
+        for r in rng.integers(0, cir.n, 3):
+            x[r] = rng.choice([np.nan, np.inf, -np.inf])
+        before = _paths.snapshot()
+        xa = x.copy()
+        with walking(True):
+            cir.limit(xa, x0.copy(), defaultepar)
+        d = _paths.since(before)
+        assert limit_kernel_calls == [] and d.get('walk:stopped', 0) == 0
+        assert d.get('walk:served', 0) == 1
+        xb = x.copy()
+        with walking(False):
+            cir.limit(xb, x0.copy(), defaultepar)
+        limit_kernel_calls.clear()
+        assert xa.tobytes() == xb.tobytes()
+        nan_out += bool(np.isnan(xa).any())
+    assert nan_out >= 5, nan_out
 
 
 def test_x0_aliasing_x_reads_the_live_state():
@@ -197,10 +229,13 @@ def test_an_instance_shadow_mid_run_is_called_and_the_walk_resumes(limit_kernel_
     assert limit_kernel_calls == [] + [cir[f'M{k}'] for k in range(6)]
 
 
-def test_a_declined_call_is_the_closures_answer(limit_kernel_calls):
-    """A NaN at a device's node: its kernel declines (Python's own sort
+def test_a_nan_at_a_node_is_the_walks_on_314_else_the_closures(limit_kernel_calls):
+    """A NaN at a device's node: on CPython 3.14 the walk ranks its keys in
+    C and never stops; elsewhere its kernel declines (Python's own sort
     order is the answer), the walk stops there, the generated `limit()`
-    tries the kernel again and the closure answers."""
+    tries the kernel again and the closure answers -- either way the
+    per-element loop's bytes.  (The stop and resume on 3.14:
+    `test_a_hand_written_limiter_mid_chain_stops_and_resumes_the_walk`.)"""
     cir = mos_chain(6)
     _bound(cir)
     x, x0 = _pairs(cir.n, 1)[0]
@@ -209,7 +244,10 @@ def test_a_declined_call_is_the_closures_answer(limit_kernel_calls):
     with walking(True), np.errstate(all='ignore'):
         cir.limit(xa, x0.copy(), defaultepar)
     declined = list(limit_kernel_calls)
-    assert 1 <= len(declined) < 6
+    if cl.NAN_KEYS:
+        assert declined == []
+    else:
+        assert 1 <= len(declined) < 6
     limit_kernel_calls.clear()
     xb = x.copy()
     with walking(False), np.errstate(all='ignore'):

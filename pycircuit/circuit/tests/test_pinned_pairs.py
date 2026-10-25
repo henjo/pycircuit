@@ -182,7 +182,8 @@ PAIRS = {
     'the limiter laws and their C prelude': {
         'why': 'the prelude transliterates the laws and the device write-back in '
             'Python\'s own forms (max as `(b > a) ? b : a`, the tuple order on '
-            'the keys, the stable sort); the renderer prints the closure\'s '
+            'the keys, CPython 3.14\'s list.sort -- a NaN key ranked as Python '
+            'ranks it); the renderer prints the closure\'s '
             'ranking and write-back from the spec',
         'reference': ['pycircuit.circuit._limiting:apply_limit',
                    'pycircuit.circuit._limiting:device_writeback'],
@@ -1112,7 +1113,7 @@ RECORD = {
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
     'the kernel call and the pass driver': ('09a9e274bbe8', 'b34c658afd6f'),
     'the limiting loop and the walk': ('58c4ce9c8f4d', '3a565db6207f'),
-    'the limiter laws and their C prelude': ('9b7944f9c0dd', '7e8f23b73019'),
+    'the limiter laws and their C prelude': ('9b7944f9c0dd', 'a48b156b4743'),
     'the transient evaluation and the core': ('ecdae2231dae', '55fe59dc7400'),
     'the assembly loops and the plan': ('a822abce557c', '14651de8716f'),
     'the sources and their direct pass': ('133b68c3262d', '11e5cf691f59'),
@@ -1123,7 +1124,7 @@ RECORD = {
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
     'the error test and its C': ('1736570f3f0e', 'ac91030f078c'),
     'the DC base solve and its C': ('64fd25ecd5da', 'efe6c046e126'),
-    'the PCNR DC solve and its C': ('20b804fddf35', '7d8a7bce249c'),
+    'the PCNR DC solve and its C': ('20b804fddf35', '8d8a2fb8ceda'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),

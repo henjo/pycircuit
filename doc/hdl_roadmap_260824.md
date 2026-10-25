@@ -12218,3 +12218,52 @@ has); the suite, 6 032 passed (6 skipped, 3 xfailed; `elements_hdl.py` changed, 
 the 27 gold decks -- standalone DC against 222's gate runs, gear2 transient and Radau against HEAD (wt_head, fd3037fe,
 run from inside it, interleaved per deck): every digest, step, rejection, Newton count and path count identical but
 the loops' own.  No C changed: no sanitizer run.
+
+## 2026-10-25 — 224. The NaN path -- the limiter's ranking sort is CPython 3.14's own list.sort, so a NaN key is ranked in C as Python ranks it and an iterate gone non-finite is limited in C: rich3 under Radau 4.86 -> 3.53 s (1.38x), gm1 1.20 -> 0.60 s (2.0x), every byte the same
+
+**Why**  Andreas, on the survey after 221: "4 Do it" (plan g24's `plan_222_226.md`).  rich3 spent a quarter of its
+Radau run in Python (25 % of its main thread's samples), gm1 most of its: the C limiter steps aside once Newton's
+iterate goes non-finite.  LINE: rich3 under Radau at least 1.15x, gm1 not slower, every byte the same.  Refused under.
+
+**Found** (sys.monitoring, nothing patched: a class-level patch made the C paths decline and the run 3-4x slower).
+Each deck has ONE Python `_transform_loop` call whose stages went non-finite: 99 iterations, 297 limit walks, each walk
+stopping at ~105 elements for the Python's limiter -- rich3 1.65 s of its 4.88 s solve, gm1 0.76 s of 1.20 s; 31 164
+and 13 386 element calls (`climit:nan_key`).  No other gold deck has a NaN key.  The C limiter's laws already mirror
+Python's `<`, `max` and `min` on a NaN (`_pymax`: `(b > a) ? b : a`); it declined a NaN key only for the ORDER: the
+Python ranks the probes by `sorted(key=(-|vl - vn|, ra, rb))` (and the write-back's Kruskal likewise), and with a NaN
+key every `<` is false, so the order is the one CPython's own sort leaves.  CPython 3.14's list.sort for lists under 64
+(`count_run`, then binary insertion of the rest), modelled in Python, matched `sorted()` on 300 000 random key lists
+of NaNs, signed zeros and ties -- once the test drew a fresh NaN object for each key, as the limiter's keys are (with
+one shared `math.nan`, CPython's tuple compare finds the same object EQUAL: 69 % "mismatches").  The C consumers of the
+walk already hand back on a non-finite limited vector (`newton.c`'s XNEXT check; `radau.c`'s and `radau_tc.c`'s STEP
+bail in their scale loops, a NaN made by `inf - inf` their flags test): a completed walk over a NaN iterate hands back
+where the stopped walk did, under another reason.
+
+**Built.**  `limit.c`: `_sort_by` is that algorithm on `_tless`'s compares (the same order as any stable sort on keys
+without a NaN; the compiled C matched `sorted()` on 200 000 key lists); the write-back's NaN decline only under
+`PCX_NAN_DECLINE`.  `_hdl_climit`: `NAN_KEYS` (CPython 3.14), the kernels' NaN-key decline emitted, and the macro set,
+only off it.  The Python's transform loop then walks in C -- the same laws, the same order, the same bytes (a NaN's
+sign bit aside: unspecified by IEEE-754 and unobservable, `_compare`; no NaN reaches a result).
+
+**Measured** (a quiet box, HEAD 4f91128f from its worktree and this tree, separate processes, interleaved, 3 rounds):
+rich3 under Radau 4.86 -> 3.53 s (1.38x; the line 1.15x), gm1 1.20 -> 0.60 s (2.0x; the line: not slower), every round
+within 0.04 s.  The gate's runs: rich3's process 1.38 s sooner, gm1's 0.6 s; the 27 decks' Radau solves 48.7 -> 47.3 s,
+their gear2 solves as before (23.1, 23.3 s) -- no other deck has a NaN key.  The NaN attempt starts where it did: the C
+transform Newton hands back on a flag of its own arithmetic (`radau_tc:bail:flags`, as before), and the Python's loop
+now walks its 99 iterations in C.
+
+**Tests.**  test_hdl_climit: every limiting library class, 600 random states with NaNs and infinities at random rows --
+served, the closure's answer, NaN keys among them (+21); the ranking sort against `sorted()` on the running
+interpreter, 20 000 key lists (+1); the NaN decline tests made two-sided (served as the closure on 3.14, declined
+elsewhere).  test_hdl_limit_walk: a non-finite iterate walked in C -- one walk, no element on its per-call path, the
+loop's bytes (+1); its decline test two-sided.  Three mutations caught (the insertion sort back; a kernel's NaN decline
+back; the write-back's).  test_pinned_pairs: 'the limiter laws and their C prelude' (its why: CPython's sort) and 'the
+PCNR DC solve and its C' (the prelude it carries) re-recorded, their Python sides unchanged.
+
+**Gate** (the main tree): the TELL (each tree imports its own limiter: HEAD's has no `NAN_KEYS`, this tree's has it on);
+the suite -- its first run failed 16 tests of test_twins_random, every one a NaN's sign bit where the kernel now serves
+a non-finite state (`_compare`'s 'nan-bits'; no value, no zero sign), its two limiter tests then asking the closure's
+bytes on a finite state and `_compare`'s agreement on a non-finite one -- then 6 065 passed (6 skipped, 3 xfailed); the 27 gold decks: standalone DC
+against 223's gate runs, gear2 transient and Radau against HEAD (wt_head, 4f91128f, run from inside it, interleaved per
+deck): every digest, step, rejection, Newton count and recorded path count identical.  The sanitizer's fast tier,
+5 822 passed, and its deep tier on the limiter, walk, Radau, loop, Newton, DC and PCNR tests, 661, clean.

@@ -90,19 +90,56 @@ static int _tless(double a0, int a1, int a2, double b0, int b1, int b2) {
   return a2 < b2;
 }
 
-/* `sorted(order, key=(k0[j], k1[j], k2[j]))` for finite k0: a stable
-   insertion sort (the keys are indexed by the entries of `order`) */
+/* `_tless` on the keys of order[i] and order[j] */
+static int _klt(const int *o, int i, int j, const double *k0, const int *k1,
+                const int *k2) {
+  return _tless(k0[o[i]], k1[o[i]], k2[o[i]], k0[o[j]], k1[o[j]], k2[o[j]]);
+}
+
+static void _rev(int *o, int lo, int hi) {
+  for (hi--; lo < hi; lo++, hi--) { int t = o[lo]; o[lo] = o[hi]; o[hi] = t; }
+}
+
+/* `sorted(order, key=(k0[j], k1[j], k2[j]))` as CPython 3.14's list.sort
+   orders a list under 64 entries -- `count_run` (the ascending prefix, else
+   a descending run with its equal stretches kept in order, reversed, then
+   extended), then binary insertion of the rest -- on `_tless`'s compares
+   (the keys are indexed by the entries of `order`).  A key holding a NaN,
+   never `==` nor `<`, lands where Python's sort leaves it; keys without
+   one, where any stable sort does.  (`_hdl_climit.NAN_KEYS`: off CPython
+   3.14 a NaN key is declined before it gets here.) */
 static void _sort_by(int *order, int n, const double *k0, const int *k1,
                      const int *k2) {
-  for (int i = 1; i < n; i++) {
-    int key = order[i];
-    int j = i - 1;
-    while (j >= 0 && _tless(k0[key], k1[key], k2[key],
-                            k0[order[j]], k1[order[j]], k2[order[j]])) {
-      order[j + 1] = order[j];
-      j--;
+  int m = 1;
+  if (n < 2) return;
+  while (m < n && !_klt(order, m, m - 1, k0, k1, k2)) m++;
+  if (m < n && !(m > 1 && _klt(order, 0, m - 1, k0, k1, k2))) {
+    int neq = 0;
+    if (m > 1) _rev(order, 0, m);
+    for (m++; m < n; m++) {
+      if (_klt(order, m, m - 1, k0, k1, k2)) {
+        if (neq) { neq++; _rev(order, m - neq, m); neq = 0; }
+      } else if (_klt(order, m - 1, m, k0, k1, k2)) {
+        break;
+      } else {
+        neq++;
+      }
     }
-    order[j + 1] = key;
+    if (neq) { neq++; _rev(order, m - neq, m); }
+    _rev(order, 0, m);
+    while (m < n && !_klt(order, m, m - 1, k0, k1, k2)) m++;
+  }
+  for (; m < n; m++) {
+    int L = 0, R = m, pivot = order[m];
+    do {
+      int M = (L + R) >> 1;
+      if (_tless(k0[pivot], k1[pivot], k2[pivot], k0[order[M]], k1[order[M]], k2[order[M]]))
+        R = M;
+      else
+        L = M + 1;
+    } while (L < R);
+    for (int M = m; M > L; M--) order[M] = order[M - 1];
+    order[L] = pivot;
   }
 }
 
@@ -113,7 +150,8 @@ static int _find(int *parent, int n) {
 
 /* `device_writeback(out, targets, drift, pinned=moved)`: the rows it
    wrote are marked in `moved` AFTER the walk (the walk reads the set as it
-   was).  Returns -1 where a Kruskal key is NaN (declined). */
+   was).  Returns -1 where a Kruskal key is NaN and NaN keys are declined
+   (PCX_NAN_DECLINE: off CPython 3.14, `_hdl_climit.NAN_KEYS`). */
 #define _WB_MAX 32
 static int _writeback(double *o, const int *tra, const int *trb,
                       const double *tvn, const double *tvl, int nt,
@@ -125,7 +163,9 @@ static int _writeback(double *o, const int *tra, const int *trb,
   int order[_WB_MAX];
   for (int i = 0; i < nt; i++) {
     k0[i] = -fabs(tvl[i] - tvn[i]);
+#ifdef PCX_NAN_DECLINE
     if (isnan(k0[i])) return -1;
+#endif
     order[i] = i;
   }
   _sort_by(order, nt, k0, tra, trb);

@@ -5,8 +5,10 @@ class and law by law: every library class that declares `$limit` (and
 its collapse variant the library instantiates), the five laws through a
 probe kernel, a chained `limit_together(sequential=True)` model, the
 inputs the closure accepts (lists, int vectors, a longer vector, `limit(x,
-x)`), the temperatures it serves, and the calls it DECLINES -- a NaN or
-an infinity among the keys it would sort -- which the closure answers.
+x)`), the temperatures it serves, and an iterate gone non-finite -- a NaN
+among the keys it sorts, ranked as Python's own sort ranks it on CPython
+3.14 (`_sort_by` is its list.sort: `test_the_ranking_sort_is_pythons_own`),
+declined elsewhere, where the closure answers.
 `test_a_wrong_law_is_caught` and `test_a_wrong_ranking_is_caught` show
 the sweep can fail.
 """
@@ -322,10 +324,12 @@ def test_a_temperature_that_is_not_one_number_is_the_closures():
     assert kern(e, x, x0, types.SimpleNamespace(T=np.array([300.0, 310.0]))) is None
 
 
-def test_a_nan_or_infinite_state_is_declined():
-    """A NaN at a probe terminal makes a ranking key NaN, whose order only
-    Python's own sort knows: the kernel declines (None) and the closure
-    answers; an infinity likewise where it reaches a key."""
+def test_a_nan_or_infinite_state_is_ranked_as_python_ranks_it():
+    """A NaN at a probe terminal makes a ranking key NaN (an infinity too,
+    where it reaches one as `inf - inf`): on CPython 3.14 (`NAN_KEYS`) the
+    kernel ranks it as Python's own sort does and answers as the closure (a
+    NaN's sign bit aside: `_compare`); elsewhere it declines (None) where a
+    NaN key arose, and the closure answers."""
     e = _inst(eh.MosLevel1Hdl)
     info = _bound(e)
     kern = cl.bind(type(e), info)
@@ -335,16 +339,86 @@ def test_a_nan_or_infinite_state_is_declined():
             x = x0 + 0.3
             x[row] = bad
             got = kern(e, x, x0, defaultepar)
-            if got is not None:
-                ## (no key reached: the same bits as the closure)
-                assert got.tobytes() == _py_limit(e, x, x0).tobytes(), (bad, row)
-            elif not np.isnan(bad):
+            if got is None:
+                assert not cl.NAN_KEYS, (bad, row)
                 continue
-            else:
-                assert got is None
+            assert _compare(_py_limit(e, x, x0), got) in ('equal', 'nan-bits'), (bad, row)
     x = x0 + 0.3
     x[1] = np.nan                                   # the gate row
-    assert kern(e, x, x0, defaultepar) is None
+    assert (kern(e, x, x0, defaultepar) is not None) == cl.NAN_KEYS
+
+
+@pytest.mark.parametrize('name', _limiting_classes())
+def test_the_kernel_ranks_nan_keys_as_the_closure(name):
+    """On CPython 3.14: every library class with `$limit`, 600 random states
+    with NaNs and infinities at random rows of the iterate and of the last
+    accepted point -- every call served, the closure's answer (a NaN's sign
+    bit aside: `_compare`), and NaN keys among them (the sweep says
+    something)."""
+    if not cl.NAN_KEYS:
+        pytest.skip('off CPython 3.14 the kernels decline a NaN key')
+    e = _inst(getattr(eh, name))
+    info = _bound(e)
+    kern = cl.bind(type(e), info)
+    n = e.n
+    rng = np.random.default_rng(224 + len(name))
+    tally = {'equal': 0, 'nan-bits': 0, 'zero-sign': 0, 'value': 0}
+    nan_out = 0
+    for k, (x, x0) in enumerate(_cases(rng, n, 600)):
+        for _ in range(int(rng.integers(1, 3))):
+            (x if rng.random() < 0.8 else x0)[rng.integers(0, n)] = rng.choice([np.nan, np.inf, -np.inf])
+        a = _py_limit(e, x, x0)
+        b = kern(e, x, x0, defaultepar)
+        assert b is not None, (name, k)
+        tally[_compare(a, b)] += 1
+        nan_out += bool(np.isnan(b).any())
+    assert tally['value'] == 0 and tally['zero-sign'] == 0, tally
+    assert nan_out > 100, nan_out
+
+
+_SORT_PROBE = cl._LIMIT_C + '''
+int hdl_fn(const double *x, const double *p, double *out) {
+  int n = (int)p[0], order[32], k1[32], k2[32];
+  for (int i = 0; i < n; i++) { order[i] = i; k1[i] = (int)x[n + i]; k2[i] = (int)x[2 * n + i]; }
+  _sort_by(order, n, x, k1, k2);
+  for (int i = 0; i < n; i++) out[i] = order[i];
+  return 0;
+}
+'''
+
+
+def test_the_ranking_sort_is_pythons_own():
+    """`limit.c`'s `_sort_by` against `sorted()` on the running interpreter:
+    20 000 key lists of 1 to 32 entries `(k0, k1, k2)` -- NaNs (a fresh float
+    each, as the limiter's keys are), signed zeros, ties in every element --
+    the same order.  (Off CPython 3.14 the keys hold no NaN: there the
+    kernels decline one, and a stable sort is all that is asked.)"""
+    try:
+        ffi, cfn, _key, _cold, _s = cb.load_kernel(_SORT_PROBE, cl.limit_cdef())
+    except cb.CompileError as e:
+        pytest.skip(f'no C compiler: {e}')
+    dptr = ffi.typeof('double *')
+    rng = np.random.default_rng(1414)
+    nan_share = 0.3 if cl.NAN_KEYS else 0.0
+    nans = 0
+    for t in range(20000):
+        n = int(rng.integers(1, 33))
+        k0 = []
+        for _ in range(n):
+            u = rng.random()
+            k0.append(float('nan') if u < nan_share else
+                      -0.0 if u < 0.4 else 0.0 if u < 0.5 else -float(rng.choice([0.5, 1.0, 1.5, 2.0])))
+        k1 = [int(v) for v in rng.integers(0, 4, n)]
+        k2 = [int(v) for v in rng.integers(0, 4, n)]
+        keys = [(k0[i], k1[i], k2[i]) for i in range(n)]
+        want = sorted(range(n), key=keys.__getitem__)
+        x = np.array(k0 + k1 + k2, dtype=float)
+        out = np.empty(n)
+        cfn(ffi.from_buffer(dptr, x), ffi.from_buffer(dptr, np.array([float(n)])),
+            ffi.from_buffer(dptr, out))
+        assert [int(v) for v in out] == want, (t, keys)
+        nans += any(np.isnan(k0))
+    assert nans > (10000 if cl.NAN_KEYS else -1)
 
 
 def test_a_sequential_group_follows_spice_order():
@@ -523,20 +597,22 @@ def test_the_switch_keeps_the_closure(monkeypatch):
         info['_c_limit'] = kern
 
 
-def test_a_declined_call_is_answered_by_the_closure():
-    """A NaN at a probe terminal: the kernel declines, `limit()` falls
-    through to the closure, whose answer is the numpy-pinned one."""
+def test_a_nan_state_is_the_kernels_on_314_else_the_closures():
+    """A NaN at a probe terminal: on CPython 3.14 the kernel answers and
+    `limit()` takes it; elsewhere the kernel declines and `limit()` falls
+    through to the closure -- either way the numpy-pinned closure's answer
+    (a NaN's sign bit aside)."""
     e = _inst(eh.MosLevel1Hdl)
     info = _bound(e)
     x0 = np.linspace(-0.5, 1.0, e.n)
     x = x0 + 0.3
     x[1] = np.nan
-    assert info['_c_limit'](e, x, x0, defaultepar) is None
+    assert (info['_c_limit'](e, x, x0, defaultepar) is not None) == cl.NAN_KEYS
     with _quiet():
-        out = e.limit(x, x0)                 # the kernel declines, the closure answers
+        out = e.limit(x, x0)
     with numpy_backend(type(e)):
         ref = _py_limit(e, x, x0)
-    assert out.tobytes() == ref.tobytes()
+    assert _compare(ref, out) in ('equal', 'nan-bits')
 
 
 def test_an_instance_on_the_jax_toolkit_never_consults_the_kernel():

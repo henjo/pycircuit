@@ -69,6 +69,7 @@ has it.
 History: `doc/transient_history.md`.
 """
 import os
+import sys
 import types
 
 import numpy as np
@@ -107,7 +108,13 @@ def limit_cdef():
 ## every limit kernel's source (so `source_key` covers it), never of
 ## `hdl._KERNEL_C` (which would rebuild every chain function's object).
 ## ---------------------------------------------------------------------------
-_LIMIT_C = _cbuild.csrc('limit.c')
+#: A ranking key holding a NaN (an iterate gone non-finite) is ordered as
+#: Python's own sort leaves it: `limit.c`'s `_sort_by` is CPython 3.14's
+#: list.sort for lists under 64 (checked against `sorted()` by the tests on
+#: the running interpreter).  Elsewhere -- another version or implementation
+#: -- the kernels decline a NaN key (the element's Python limiter then runs).
+NAN_KEYS = sys.implementation.name == 'cpython' and sys.version_info[:2] == (3, 14)
+_LIMIT_C = ('' if NAN_KEYS else '#define PCX_NAN_DECLINE 1\n') + _cbuild.csrc('limit.c')
 
 
 ## ---------------------------------------------------------------------------
@@ -189,7 +196,8 @@ def _group_c(seq, idx):
         out.append('      double vo = x[RA[j]] - x[RB[j]];')
         out.append('      double vl = _lim(KIND[j], vn, vo, P0[j], P1[j]);')
         out.append('      k0[j] = -fabs(vl - vn);')
-        out.append('      if (isnan(k0[j])) return 1;')
+        if not NAN_KEYS:
+            out.append('      if (isnan(k0[j])) return 1;')
         out.append('    }')
         out.append(f'    _sort_by(order, {ng}, k0, RA, RB);')
     out.append('    double shift[NX]; int taken[NX];')
@@ -231,7 +239,8 @@ def _singles_c(singles):
     out.append('      double vo = x[RA[i]] - x[RB[i]];')
     out.append('      double vl = _lim(KIND[i], vn, vo, P0[i], P1[i]);')
     out.append('      k0[i] = -fabs(vl - vn);')
-    out.append('      if (isnan(k0[i])) return 1;')
+    if not NAN_KEYS:
+        out.append('      if (isnan(k0[i])) return 1;')
     out.append('    }')
     out.append(f'    _sort_by(order, {ns}, k0, RA, RB);')
     out.append(f'    for (int m = 0; m < {ns}; m++) {{')
@@ -281,8 +290,8 @@ def render(info):
     npf = {j: len(pfs) for j, (rows, kind, move, pfs) in enumerate(spec)}
     out = ['/* the hdl limiter of a chained class: x is x0 (the last accepted',
            '   point), out arrives as the copy of the unlimited state and is',
-           '   limited in place; 1 declines the call (a NaN among the keys to',
-           '   sort: the Python closure answers) */',
+           '   limited in place; 1 declines the call (off CPython 3.14, a NaN',
+           '   among the keys to sort: the Python closure answers) */',
            f'int {hdl._C_ENTRY}(const double *x, const double *p, double *out) {{',
            f'  enum {{ NX = {nx}, NP = {npr} }};']
     out.append(text)
@@ -421,7 +430,8 @@ def unbind(info):
 ## answer -- an element without a kernel (a hand-written limiter without a
 ## twin -- `Diode`; PSP's while its twin is off -- a nested SubCircuit, a
 ## class whose `limit` is patched or shadowed, a pack that failed) or a call
-## the kernel declines (a NaN among the keys) -- which the caller handles
+## the kernel declines (off CPython 3.14, a NaN among the keys: `NAN_KEYS`)
+## -- which the caller handles
 ## with the loop's own statement before the walk resumes behind it.  A
 ## circuit with no kernel-capable element at all (capable: an hdl class
 ## with a `$limit` spec and the generated `limit`, or a hand-written

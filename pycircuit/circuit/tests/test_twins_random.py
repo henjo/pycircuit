@@ -433,15 +433,27 @@ def _limiter_matches_on(e, kern, n, epar_strategy, params):
         x = data.draw(states(n, params), label='x')
         got = kern(e, x, x0, epar)
         if got is None:
-            ## the kernel declines only where a sort key is not a number
-            assert not (np.isfinite(x).all() and np.isfinite(x0).all()), (x, x0)
+            ## the kernel declines only where a sort key is not a number,
+            ## and only off CPython 3.14 (`NAN_KEYS`)
+            assert not cl.NAN_KEYS and not (np.isfinite(x).all() and np.isfinite(x0).all()), (x, x0)
             return
         try:
             ref = _py_limit(e, x, x0, epar)
         except (ArithmeticError, ValueError):
             assume(False)
-        assert got.tobytes() == ref.tobytes(), (x.tolist(), x0.tolist(), epar)
+        _limiter_agrees(ref, got, x, x0, epar)
     drawn()
+
+
+def _limiter_agrees(ref, got, x, x0, epar):
+    """The kernel's answer is the closure's: its bytes where the state is
+    finite; where it holds a NaN or an infinity (a NaN key ranked as Python
+    ranks it, `NAN_KEYS`), every value and zero sign, a NaN's sign bit aside
+    (unspecified, unobservable: `_compare`)."""
+    if np.isfinite(x).all() and np.isfinite(x0).all():
+        assert got.tobytes() == ref.tobytes(), (x.tolist(), x0.tolist(), epar)
+    else:
+        assert _compare(ref, got) in ('equal', 'nan-bits'), (x.tolist(), x0.tolist(), epar)
 
 
 @needs_cc
@@ -462,9 +474,9 @@ def test_the_limiter_kernel_takes_every_special_value_at_every_coordinate(name):
         for a, b in ((x, x0), (x0, x)):          # the special in the step and in the old state
             got = kern(e, a, b, defaultepar)
             if got is None:
-                assert not (np.isfinite(a).all() and np.isfinite(b).all()), (a, b)
+                assert not cl.NAN_KEYS and not (np.isfinite(a).all() and np.isfinite(b).all()), (a, b)
                 continue
-            assert got.tobytes() == _py_limit(e, a, b).tobytes(), (a.tolist(), b.tolist())
+            _limiter_agrees(_py_limit(e, a, b), got, a, b, defaultepar)
 
 
 @needs_cc
