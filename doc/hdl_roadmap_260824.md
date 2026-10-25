@@ -12291,3 +12291,36 @@ line was set before measuring, and no form of it could have met it).
 the core's other tests ran on chains too small for the pattern (an 8-stage chain's fill is above `PATTERN_MAX_FILL`),
 so the pattern path had no test with a slot whose bin must be bincount's +0.0; a 20-stage chain has 40 such entries
 (its gate couplings' `-C` of a zero C), each +0.0 in the core's C as in the Python's.
+
+## 2026-10-25 — 226. A predictive step controller, measured -- REFUSED: the big decks' attempts +8.5 % against a line of 10 % fewer; nothing built
+
+**Why**  Andreas, on the survey after 221: "6 Sounds good but explain more first", then "Yes, measure first" (plan
+g24's `plan_222_226.md`).  24-27 % of the big decks' Radau attempts are rejected, nearly all for the error (early
+aborts and the error test; Newton failures at most 101 of voter25's 2 408).  The stage family's accepted-step law
+(`_StageSteps.judge`) is integral -- `h 0.9 err^(-1/p)`, bounded to [0.5, 2] -- so a run of good steps doubles until one
+fails.  Gustafsson's predictive law (Hairer & Wanner's RADAU5) looks at the last two errors and steps and slows the
+growth before a failure.  LINE (to propose building it, a C twin and a default change): the decks' attempts at least
+10 % fewer in total, every deck's error no worse.  Under it: reported, nothing built.
+
+**Measured** (a scratch controller -- the judge patched, so the runs take the Python path; attempts are what count --
+on the 7 big decks at their own tolerances; 'reset': the predictive term left out on a step clamped by a breakpoint or
+the bound, its history restarted):
+
+| deck | today's (integral) | predictive | predictive, reset |
+|---|---|---|---|
+| ring | 5 775 | 6 187 (+7.1 %) | 6 187 |
+| gm19 | 3 207 | 3 729 (+16.3 %) | 3 497 (+9.0 %) |
+| arom | 3 704 | 3 969 (+7.2 %) | 3 900 (+5.3 %) |
+| rich3 | 4 176 | 4 665 (+11.7 %) | 4 667 |
+| voter25 | 9 657 | 10 451 (+8.2 %) | 10 563 |
+| mux8 | 18 093 | 19 921 (+10.1 %) | 20 061 |
+| jge | 20 386 | 21 603 (+6.0 %) | 21 649 |
+| all 7 | 64 998 | 70 525 (+8.5 %) | 70 524 |
+
+The rejections fell 2-21 % (ring 1 546 -> 1 223, jge 5 225 -> 5 083) and the accepted steps rose more (ring 4 229 ->
+4 964): the law's caution costs more steps than the rejections it saves.  Accuracy against a reference at reltol x
+0.01 (each unknown's largest deviation over the run from 1 % on, in units of `reltol |x|max + abstol`): mixed -- better
+on some decks (rich3's worst voltage 3 006 -> 1 674, jge's 277 -> 225), worse on others (mux8's 645 -> 707, gm19's
+'reset' currents 1 895 -> 3 367) -- no gain to set against the extra attempts.  (arom's reference run failed; its error
+was not kept.  jge's reference took only 22 634 attempts: its steps are set by its breakpoints, not its tolerance.)
+Refused under the line; no library code, no C twin, no default changed.
