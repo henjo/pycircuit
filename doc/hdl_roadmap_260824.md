@@ -12267,3 +12267,27 @@ bytes on a finite state and `_compare`'s agreement on a non-finite one -- then 6
 against 223's gate runs, gear2 transient and Radau against HEAD (wt_head, 4f91128f, run from inside it, interleaved per
 deck): every digest, step, rejection, Newton count and recorded path count identical.  The sanitizer's fast tier,
 5 822 passed, and its deep tier on the limiter, walk, Radau, loop, Newton, DC and PCNR tests, 661, clean.
+
+## 2026-10-25 — 225. The core's passes -- REFUSED: jge under gear2 0.97x against the 1.04x line; built, measured, reverted
+
+**Why**  Andreas, on the survey after 221: "5 Do it" (plan g24's `plan_222_226.md`).  The core's serial passes were 19 %
+of jge's main thread under gear2, 11-12 % under Radau (jge, mux8); annotated, ~19 % of `pcx_core` the loop zeroing the
+pattern's entries before each matrix pass's bins are added, ~28 % the companion's two passes (`Geq = a0 C`, then `J =
+G + Geq`).  LINE: jge under gear2 at least 1.04x, no gold deck slower than 0.97x, every byte the same.  Refused under.
+
+**Built.**  `one_pass` on the pattern without the zeroing pass -- each entry's first slot written `0.0 + v` (that very
+addition: a lone -0.0 stays bincount's +0.0), its other slots added after in their order, the pattern's entries no slot
+of the pass reaches written +0.0, the split made once per core (`_Flat.arrays`: `p_split`, `fstall`, `rstall`,
+`bareall`); the companion's `Geq` and `J` in one pass.  Every byte the same: the core's tests, the twins, the pinned
+pairs after re-recording, three mutations caught.
+
+**Measured** (a quiet box, HEAD c7cbad82 against this tree, interleaved, 4 rounds): jge under gear2 6.13 -> 6.24-6.35 s
+(0.97x), jge under Radau 12.92 -> 13.05 s (0.99x), mux8 under Radau even -- slower in every round.  The zeroing is a
+store loop over the pattern; what replaced it reads two index arrays, gathers `buf` out of order and indirects twice --
+and even its whole removal was worth at most ~3.6 % of jge's run, under the line.  Reverted; no variant tried (the
+line was set before measuring, and no form of it could have met it).
+
+**Kept.**  test_tran_core's lone -0.0 slot on the pattern (`test_a_lone_negative_zero_slot_is_bincounts_positive_zero`):
+the core's other tests ran on chains too small for the pattern (an 8-stage chain's fill is above `PATTERN_MAX_FILL`),
+so the pattern path had no test with a slot whose bin must be bincount's +0.0; a 20-stage chain has 40 such entries
+(its gate couplings' `-C` of a zero C), each +0.0 in the core's C as in the Python's.

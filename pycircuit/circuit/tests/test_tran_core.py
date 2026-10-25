@@ -145,6 +145,45 @@ def test_the_converged_point_and_the_chord_residual(make):
         assert f.tobytes() == fp.tobytes() and sa == sb
 
 
+def _patterned():
+    """A chain with the pattern on (20 stages: 161 entries of 27 x 27): `(tr,
+    x, core)`."""
+    tr, x = _tr(mos_chain(20))
+    core_ = _tran_core.core_for(tr)
+    assert core_.npat, 'the pattern is off: the test says nothing'
+    return tr, x, core_
+
+
+def _lone_negative_zeros(tr, x, which):
+    """The entries of `which` ('G' or 'C') whose one stamp at `x` is -0.0."""
+    contrib = {}
+    for name, el in tr.cir.elements.items():
+        idx = np.asarray(tr.cir.elementnodemap[name], dtype=np.int64)
+        M = np.asarray(getattr(el, which)(x[idx], tr.epar), float)
+        for a in range(M.shape[0]):
+            for b in range(M.shape[1]):
+                contrib.setdefault((int(idx[a]), int(idx[b])), []).append(M[a, b])
+    return [rc for rc, v in contrib.items() if len(v) == 1 and v[0] == 0.0 and np.signbit(v[0])]
+
+
+def test_a_lone_negative_zero_slot_is_bincounts_positive_zero():
+    """On the pattern every entry is bincount's -- from +0.0, its slots added
+    in their order: a capacitance entry whose one stamp is -0.0 (the chain's
+    gate couplings, `-C` of a zero C) is +0.0, and every byte of the four
+    passes the Python's.  (The pattern's first test with a lone -0.0 slot:
+    the chains of the core's other tests are too small for the pattern.)"""
+    tr, x, _core = _patterned()
+    lone = _lone_negative_zeros(tr, x, 'C')
+    assert len(lone) >= 10, lone
+    got = _tran_core.passes(tr, x, ('G', 'C', 'i', 'q'))
+    want = {'G': tr.cir.G(x, tr.epar), 'C': tr.cir.C(x, tr.epar),
+            'i': tr.cir.i(x, tr.epar), 'q': tr.cir.q(x, tr.epar)}
+    for m in ('G', 'C', 'i', 'q'):
+        assert np.asarray(got[m]).tobytes() == np.asarray(want[m], float).tobytes(), m
+    for r, c in lone:
+        assert got['C'][r, c] == 0.0 and not np.signbit(got['C'][r, c]), (r, c)
+
+
 def test_a_cached_capacitance_is_used_as_python_uses_it():
     """`_C_at_state` serves `C` from the memo or the converged-point cache
     before evaluating; the core asks the same lookup and skips the pass."""
