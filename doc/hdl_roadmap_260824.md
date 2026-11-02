@@ -12442,3 +12442,38 @@ alone; HEAD's `getsource`).  hdl.md: the warm import's figure.
 passed (6 skipped, 3 xfailed; its first run under the new keys); the 27 gold decks -- standalone DC against 224's gate
 runs, gear2 transient and Radau against HEAD (wt_head, 7badff02, run from inside it, interleaved per deck): every
 digest, step, rejection, Newton count and path count identical but the loops' own.  No C changed: no sanitizer run.
+
+## 2026-11-02 — 230. A currents-only bypass, investigated -- REFUSED: safe (SPICE's check within the solution budget on every sampled step of four decks, 42 % of jge's evaluations skipped), but its ceiling on jge 1.07x against the 1.10x line; nothing built
+
+**Why**  Andreas, after 228: "Investigate 'Reusing only device currents in bypass'" (plan g24's
+`tc/plan_b3_currents_only.md`).  228 found every solution-budget failure of SPICE's check on jge to be a stale CHARGE.
+The scheme: a device whose check passes is evaluated for its charges only (the fused kernel's mask `C|q`) and stamps
+the tangent of its last full evaluation for its current, `i0 + G0 dv`, `G0` in the Jacobian.  LINE (set before
+measuring): a check's sets within the solution budget on at least 99 % of sampled steps on all four decks, and its
+ceiling on jge under Radau at the default threads at least 1.10x.  Under it: nothing built.
+
+**Accuracy** (`tc/census_b2.py`; as 228's census, the error the CURRENT part only; accepted share of device-steps /
+share of steps within the solution budget):
+
+| deck | SPICE's | `G dv` alone | `dv` alone | `dv` x10 | SPICE's set, zeroth order |
+|---|---|---|---|---|---|
+| jge | 42.0 % / 100 % | 71.1 % / 98.2 % | 52.2 % / 98.2 % | 72.6 % / 84.4 % | 56.1 % |
+| mux8 | 9.4 % / 100 % | 9.4 % / 100 % | 28.0 % / 99.5 % | 42.3 % / 97.0 % | 92.1 % |
+| voter25 | 0.5 % / 100 % | 0.6 % / 100 % | 6.8 % / 99.7 % | 18.0 % / 88.5 % | 100 % |
+| gm19 | 1.7 % / 100 % | 3.1 % / 100 % | 9.5 % / 98.1 % | 20.1 % / 72.5 % | 96.2 % |
+
+SPICE's check meets the accuracy half on every deck; every looser one misses 99 % on jge; the tangent matters (the
+same set reusing `i0` alone, 56 % on jge).
+
+**Cost.**  The fused kernels timed at their runs' own points (`tc/kernel_split.py`; each less a call computing
+nothing): jge's MOSFETs ~0.80 us of work for all four passes, 0.34-0.35 us for `C|q` -- skipping `i` and `G` saves
+`s` = 0.56-0.58 of it; mux8's level-2 MOSFETs `s` = 0.36-0.38 (their charges are the dearer half).  jge under Radau
+by the core's threads (medians, quiet box): 1 thread 23.68 s, 2 threads 16.74 s, 4 threads 12.81 s -- the parallel
+part, from 1 vs 2 and 1 vs 4, 13.9 and 14.5 s single-threaded (near-perfect scaling), ~3.5 s of the default run's
+12.8 s.  The bypass's saving: 0.42 x 0.57 = 24 % of that part, ~0.85 s: a CEILING of 1.07x (1.17x at one thread),
+before the check's own cost and the state it keeps; an upper bound, as the parallel part holds more than the kernels'
+arithmetic.  The looser `G dv` check would reach 1.13x but fails the accuracy half.
+
+**Refused** under the line.  220's threads took most of the device kernels off jge's critical path: what is left is
+the serial ~9.3 s (by the survey of 2026-10-25: KLU, Radau's transform, the core's serial passes, the
+Python between them).
