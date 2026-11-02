@@ -87,6 +87,7 @@ def pytest_configure(config):
     except Exception:
         pass
     _jax_toolkit()
+    _device_library()
     _bench_lock_shared(config)
 
 
@@ -101,6 +102,17 @@ def pytest_configure(config):
 def _jax_toolkit():
     from pycircuit.circuit import toolkit
     toolkit.jaxtoolkit  # noqa: B018 (made on first use; None without JAX)
+
+
+# THE DEVICE LIBRARY, COMPILED AT THE SESSION'S START: its classes compile on
+# their first use (`hdl.defer_compile`, roadmap 231), and a class first used by
+# a test would enter the leak detector's state during that test.  Compiled
+# here, each process of the session starts with the library as the package's
+# import made it until roadmap 231.  A start without it is test_hdl_defer's,
+# in fresh interpreters.
+def _device_library():
+    from pycircuit.circuit import elements_hdl, hdl
+    hdl.compile_deferred(elements_hdl.__name__)
 
 
 # ---------------------------------------------------------------------------

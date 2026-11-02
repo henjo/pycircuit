@@ -177,6 +177,11 @@ def _tnom_k(tnom_c):
 
 _TNOM_DEFAULT_C = round(float(_defaultepar.T) - _ZERO_C, 6)   # 26.85 C for a 300 K ambient
 from pycircuit.circuit import hdl as _hdl
+## The classes this module defines compile on their first use
+## (`hdl.defer_compile`, roadmap 231; to the end of the module): a circuit
+## instantiates one to three of them, and creating each compiled it -- the 51
+## together 0.16 s of every import.
+_hdl.defer_compile(__name__)
 from pycircuit.circuit import _freeze
 from pycircuit.circuit.hdl import var as _var
 ## `expl`, not `limexp`, and the reason is measured rather than
@@ -5432,6 +5437,10 @@ class MosLevel2PmosMeyerHdl(Behavioural):
 
     analog = staticmethod(_mos2_analog(TEMP, -1, meyer=True))
 
+
+## (the definitions end: a class created in this module's name from here on --
+## a collapse variant, a folded card's class -- compiles at its creation)
+_hdl.defer_compile(__name__, False)
 
 ## THE START-UP'S OBJECTS FROZEN, OPT-IN (`_freeze`): the library's too, where
 ## `PYCIRCUIT_GC_FREEZE=1` -- the last statement of its import.

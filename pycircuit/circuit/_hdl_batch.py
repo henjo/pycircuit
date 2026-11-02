@@ -121,14 +121,16 @@ _GEN = None
 
 
 def generated_code():
-    """The code objects of the methods `BehaviouralMeta.__init__` defines
-    for every class (`i`, `G`, `q`, `C`, `limit`, ...), by name -- each is
-    defined exactly once there, so a class's method IS the generated one
-    iff its `__code__` is that object."""
+    """The code objects of the methods `BehaviouralMeta._hdl_compile` (the
+    compile, held until a class's first use where its module asks:
+    `hdl.defer_compile`) defines for every class (`i`, `G`, `q`, `C`,
+    `limit`, ...), by name -- each is defined exactly once there, so a
+    class's method IS the generated one iff its `__code__` is that
+    object."""
     global _GEN
     if _GEN is None:
         from pycircuit.circuit.hdl import BehaviouralMeta
-        _GEN = {c.co_name: c for c in BehaviouralMeta.__init__.__code__.co_consts
+        _GEN = {c.co_name: c for c in BehaviouralMeta._hdl_compile.__code__.co_consts
                 if isinstance(c, types.CodeType)}
     return _GEN
 

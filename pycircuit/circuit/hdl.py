@@ -64,6 +64,8 @@ import inspect
 import keyword
 import struct
 import itertools
+import threading
+import weakref
 import re
 import types
 import time
@@ -6474,14 +6476,181 @@ def _warn_if_compile_is_pathological(cls, secs, info):
         _sw.CostWarning)
 
 
+## -- the deferred compile (roadmap 231) -------------------------------------
+##
+## Creating a class compiles it -- from the compile cache, ~3 ms -- so the
+## device library's import (`elements_hdl`, 51 classes) cost 0.16 s where a
+## circuit instantiates one to three of them.  A class a module defines while
+## it defers (`defer_compile(__name__)` at its top, `defer_compile(__name__,
+## False)` at its end) is created as any other and its declaration checked (a
+## wrong `analog()` still fails at import), but its compile waits for its
+## first use; one created in that module's name later (a collapse variant, a
+## folded card's class, a test's copy) compiles at its creation, as before.  Until then each attribute the compile
+## would set, and the class body does not, is a `_Pending` descriptor; the
+## first read of one, on the class or an instance, or an instance of the
+## class or of a subclass (`BehaviouralMeta.__call__`), compiles it.  The
+## descriptors leave the class BEFORE the compile runs, so the compile reads
+## the class exactly as at its creation, and a compile that raises holds the
+## class again, so every later use raises too.
+
+#: the modules defining classes that compile on their first use, while they
+#: do (`defer_compile`)
+_DEFERRED_MODULES = set()
+
+#: `PYCIRCUIT_HDL_DEFER=0`: every class compiles at its creation.
+DEFER = os.environ.get('PYCIRCUIT_HDL_DEFER', '1').strip().lower() not in (
+    '0', 'off', 'false', 'no')
+
+#: Every attribute the compile sets on a class: the metaclass's own
+#: (`BehaviouralMeta._hdl_compile`), the cache's (`_hdl_cache_key`,
+#: `_hdl_cache_status`) and the backend's (`_hdl_backend_status`,
+#: `_hdl_backend_ulp`) -- the union of a scan of their assignments and of
+#: the names the compile added over the library, the cache tests' path
+#: models and five decks' variants (2026-11-02).  A name missing here would
+#: read as the bases give it on a class whose compile is held: each compile
+#: records any name it set that is not here (`_UNLISTED`), and a test keeps
+#: that empty.
+_COMPILED_ATTRS = frozenset((
+    'C', 'CY', 'G', 'IC_KIND', '_hdl_backend_status', '_hdl_backend_ulp',
+    '_hdl_cache_key', '_hdl_cache_status', '_hdl_given_names', '_hdl_info',
+    '_hdl_paramnames', '_hdl_pure_cache', 'accept_step', 'branches', 'dudt',
+    'eval_i_pure', 'eval_q_pure', 'i', 'limit', 'linear', 'next_event',
+    'noise_amplitudes', 'pcnr_didv', 'pcnr_i', 'pcnr_junctions', 'pcnr_limit',
+    'pcnr_limit_branchless', 'pcnr_lin_G', 'pcnr_probes', 'pcnr_redundant',
+    'pcnr_scales', 'periodic_states', 'q', 'reset_state', 'state_ic',
+    'terminals', 'u', 'update'))
+
+#: names a compile set that `_COMPILED_ATTRS` lacks (a test keeps it empty)
+_UNLISTED = set()
+
+_DEFER_LOCK = threading.RLock()
+
+#: the classes whose compile is held, weakly: one dropped uncompiled leaves
+#: (`BehaviouralMeta.__call__`'s fast path: empty, nothing to look for)
+_HELD = weakref.WeakSet()
+
+
+def defer_compile(module_name, on=True):
+    """From now (`on`) until `defer_compile(module_name, False)`, compile the
+    `Behavioural` classes created in `module_name` (a module's `__name__`)
+    on their first use rather than at their creation: an instance of the
+    class or of a subclass, or a read of any attribute the compile sets
+    (`_COMPILED_ATTRS`), on the class or an instance.  The device library
+    (`elements_hdl`) defers its own definitions so, its import's first and
+    last statements; `compile_deferred()` compiles every class still
+    waiting, `PYCIRCUIT_HDL_DEFER=0` defers none."""
+    if on:
+        _DEFERRED_MODULES.add(module_name)
+    else:
+        _DEFERRED_MODULES.discard(module_name)
+
+
+def compile_pending(cls):
+    """True while `cls`'s own compile is held (`defer_compile`)."""
+    return '_hdl_deferred' in cls.__dict__
+
+
+class _Pending:
+    """An attribute `cls`'s compile sets, before it has run: its first read
+    compiles the class, then reads the attribute as compiled -- or as the
+    bases give it, where the compile set none."""
+
+    __slots__ = ('cls', 'name')
+
+    def __init__(self, cls, name):
+        self.cls, self.name = cls, name
+
+    def __get__(self, obj, owner=None):
+        _compile_deferred(self.cls)
+        return getattr(owner if obj is None else obj, self.name)
+
+    def __repr__(self):
+        return f'<{self.cls.__qualname__}.{self.name}: compile pending>'
+
+
+def _hold(cls, held):
+    """`cls`'s compile held: `held` its `(name, bases, dct)`, a `_Pending`
+    for each compiled attribute the body does not set."""
+    for attr in _COMPILED_ATTRS:
+        if attr not in held[2]:
+            type.__setattr__(cls, attr, _Pending(cls, attr))
+    type.__setattr__(cls, '_hdl_deferred', held)
+    _HELD.add(cls)
+
+
+def _defer(cls, name, bases, dct):
+    """Hold `cls`'s compile where its module asked for it (True)."""
+    if not DEFER or cls.__module__ not in _DEFERRED_MODULES:
+        return False
+    with _DEFER_LOCK:
+        _hold(cls, (name, bases, dct))
+    return True
+
+
+def _compile_deferred(cls):
+    """Run `cls`'s held compile, if it is held."""
+    with _DEFER_LOCK:
+        held = cls.__dict__.get('_hdl_deferred')
+        if held is None:
+            return
+        type.__delattr__(cls, '_hdl_deferred')
+        _HELD.discard(cls)
+        for attr in _COMPILED_ATTRS:
+            if type(cls.__dict__.get(attr)) is _Pending:
+                type.__delattr__(cls, attr)
+        try:
+            _compile_class(cls, *held)
+        except BaseException:
+            _hold(cls, held)
+            raise
+
+
+def compile_deferred(module=None):
+    """Compile every `Behavioural` class whose compile is held -- those
+    created in `module` (a module's `__name__`) where given; returns how
+    many.  A compile that raises raises here, as at an eager class's
+    creation."""
+    out = 0
+    for k in list(_HELD):
+        if compile_pending(k) and (module is None or k.__module__ == module):
+            _compile_deferred(k)
+            out += 1
+    return out
+
+
+def _compile_class(cls, name, bases, dct):
+    before = set(cls.__dict__)
+    BehaviouralMeta._hdl_compile(cls, name, bases, dct)
+    _UNLISTED.update(set(cls.__dict__) - before - _COMPILED_ATTRS)
+
+
 class BehaviouralMeta(type):
     def __init__(cls, name, bases, dct):
         if 'analog' not in dct:
             return
         ## The signature checks run on every start; the compile itself
         ## is served from the on-disk cache when its key matches (see
-        ## `_hdl_cache`), and `cls._hdl_cache_status` says which.
+        ## `_hdl_cache`), and `cls._hdl_cache_status` says which -- held
+        ## until the class's first use where its module asks
+        ## (`defer_compile`).
         _check_analog_declaration(cls)
+        if _defer(cls, name, bases, dct):
+            return
+        _compile_class(cls, name, bases, dct)
+
+    def __call__(cls, *args, **kwargs):
+        ## an instance of a class whose compile is held, or of a subclass of
+        ## one: the compile first (`defer_compile`)
+        if _HELD:
+            for k in cls.__mro__:
+                if '_hdl_deferred' in k.__dict__:
+                    _compile_deferred(k)
+        return type.__call__(cls, *args, **kwargs)
+
+    def _hdl_compile(cls, name, bases, dct):
+        """The compile: the generated functions from the compile cache (or
+        compiled), the CSE twins, the backend, and every attribute the
+        class reads them through (`_COMPILED_ATTRS`)."""
         from pycircuit.circuit import _hdl_cache
         _t0 = time.perf_counter()
         info = _hdl_cache.compiled_info(cls, generate_code)

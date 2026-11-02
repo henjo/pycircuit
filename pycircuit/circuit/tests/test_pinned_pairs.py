@@ -1153,7 +1153,7 @@ RECORD = {
 
 #: The generated methods a batch and the walk tell from their doubles by
 #: CODE identity (`_hdl_batch.generated_code`): each must be defined
-#: exactly once in `BehaviouralMeta.__init__`, or the marker is ambiguous.
+#: exactly once in `BehaviouralMeta._hdl_compile`, or the marker is ambiguous.
 GENERATED = ('i', 'G', 'q', 'C', 'limit', 'u', 'dudt')
 
 
@@ -1231,7 +1231,7 @@ def test_a_moved_side_is_named(monkeypatch):
 def test_the_generated_methods_are_defined_once():
     from pycircuit.circuit.hdl import BehaviouralMeta
     counts = {}
-    for c in BehaviouralMeta.__init__.__code__.co_consts:
+    for c in BehaviouralMeta._hdl_compile.__code__.co_consts:
         if isinstance(c, types.CodeType):
             counts[c.co_name] = counts.get(c.co_name, 0) + 1
     assert {m: counts.get(m, 0) for m in GENERATED} == dict.fromkeys(GENERATED, 1)

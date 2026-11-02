@@ -12477,3 +12477,52 @@ arithmetic.  The looser `G dv` check would reach 1.13x but fails the accuracy ha
 **Refused** under the line.  220's threads took most of the device kernels off jge's critical path: what is left is
 the serial ~9.3 s (by the survey of 2026-10-25: KLU, Radau's transform, the core's serial passes, the
 Python between them).
+
+## 2026-11-02 — 231. The device library's classes compiled on first use -- a class `elements_hdl` defines is created at import and compiled when first used: the library's import 0.169 -> 0.012 s, a short deck's process 0.730 -> 0.557 s, every result the same
+
+**Why**  Andreas, on the survey after 230: "Do 1, then 2" (plan g24's `tc/plan_231_232.md`).  Process overhead (start,
+netlist, exit) was ~0.74 s of each gold deck's process, 30-47 % of the gold suite's time.  Measured before building:
+every gold deck uses 1-3 of the library's 51 classes (their creation 0.004-0.016 s), the import created all 51 (0.161 s,
+the metaclass's compile 0.159 s of it, the class bodies ~0.002 s); and `spice_import` holds eighteen MOS classes in
+tables made at its import, so a lazy MODULE would load them anyway -- the classes must exist at import, their COMPILE
+deferred.  LINE (one form): a short deck's process (rca, start to exit) at least 0.10 s faster, the median saving over 15
+interleaved quiet-box pairs against HEAD, every result the same.  Refused under.
+
+**Built.**  `hdl.defer_compile(name)` / `defer_compile(name, False)`: the classes a module defines between the two
+calls -- `elements_hdl`, its first and last statements -- run their declaration checks and stop.  Each of the 38
+attributes the compile sets that the body does not (`hdl._COMPILED_ATTRS`) is a `_Pending` descriptor; the first read
+of one, on the class or an instance, or an instance of the class or a subclass (`BehaviouralMeta.__call__`), compiles
+it -- the descriptors removed FIRST, so the compile reads the class exactly as an eager one; a compile that raises
+holds the class again.  The metaclass's compile is `BehaviouralMeta._hdl_compile` (was `__init__`'s body);
+`compile_deferred(module)` compiles every class still held; `PYCIRCUIT_HDL_DEFER=0` defers none.  A class created in the
+module's name after its definitions -- a collapse variant, a folded card's class, a test's copy -- compiles at its
+creation as before.  The 38 names: the union of a scan of the metaclass's `cls.<name> =` targets and the names a compile
+added over 62 classes; every compile records any name it set outside them (`hdl._UNLISTED`), and a test keeps that
+empty.  The suite's conftest compiles the library at the session's start (the leak detector would see a class first
+used by a test as that test's new state); `_testing.state.hdl_classes` passes over a held class.
+
+**Found on the way.**  `_hdl_batch.generated_code` tells a generated method from a double by its code object -- read
+off `BehaviouralMeta.__init__`'s constants.  With the body moved, every class read as hand-written: the evaluation
+core, the batches and the C Newton declined everything, and rca's solve went 0.04 -> 0.34 s with every answer the same
+(the Python paths) -- caught by timing the change before the gate, read off the paths' counters
+(`once:core.build:unservable`).  It reads `_hdl_compile` now, as does the pinned pairs' test that each generated method
+is defined once.
+
+**Measured** (a quiet box, HEAD f1d92432 from its worktree and this tree, separate processes, interleaved, both warmed):
+a short deck's process (rca, start to exit), 15 pairs: 0.730 -> 0.557 s, 0.173 s saved (0.151 to 0.214; the line 0.10
+s); `elements_hdl`'s import with the package imported, 12 pairs: 0.169 -> 0.012 s. The used classes' compile and the
+backend's first-instance work (the limiter's C source rendered, the libm check: ~0.05 s for a limited class) move from
+the import to the first instance.
+
+**Tests.**  test_hdl_defer (new, 9): the library's and the netlist importer's import compile nothing and open no
+compile cache (fresh interpreters); the switch compiles at creation; each way in (a class attribute, an instance, a
+subclass's instance, a name the compile does not set, `compile_deferred`) compiles the class and reads every one of the
+38 names as an eager compile of the same model, its evaluations bit for bit; a compile that raises holds the class
+again; no compile sets a name the descriptors lack, statically and over every compile of the process.  Three
+mutations caught.
+
+**Gate** (the main tree): the TELL (HEAD's library 0 of 51 classes held after its import, this tree's 51 of 51); the
+suite, 6 076 passed (6 skipped, 3 xfailed; its first run under the new keys); the 27 gold decks -- standalone DC against
+224's gate runs, gear2 transient and Radau against HEAD (wt_head, f1d92432, run from inside it, interleaved per deck):
+every digest, step, rejection, Newton count and path count identical but the loops' own; each gold process 0.10-0.21 s
+sooner (median 0.15 s; the gate's own timings, a busier box), the solves the same. No C changed: no sanitizer run.

@@ -42,7 +42,9 @@ def hdl_classes():
                 continue
             seen.add(s)
             stack.append(s)
-            if '_hdl_info' in s.__dict__:
+            ## (a class whose compile is held has no state yet: its
+            ## `_hdl_info` is the descriptor that compiles it, `hdl._Pending`)
+            if '_hdl_info' in s.__dict__ and '_hdl_deferred' not in s.__dict__:
                 out.append(s)
     return out
 
