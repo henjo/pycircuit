@@ -12359,3 +12359,51 @@ another session's jobs resumed; the rerun was the rule's "rerun if a small effec
 measured 0.198 s, not the plan's 0.21: the line's absolute form (at most 0.16 s) was met, its saving (0.05 s) was not
 -- the saving is the line.  The first build, before the fixes, had measured 0.209 -> 0.158 s.  Reverted; the patch kept
 in g24 (`tc/patch227.diff`).
+
+## 2026-11-02 — 228. Device bypass, measured -- REFUSED: on jge SPICE's check skips 42 % of device evaluations but its set exceeds the solution budget on 38 % of steps, every failure the stale CHARGES; nothing built
+
+**Why**  Andreas, on the survey after 226 (2026-10-25): "Investigate 2 is there any references that we can use for
+better foundation than just what spice does?" -- then, on the research, "plan and run it now" (the census; plan g24's
+`tc/plan_bypass_census.md`).  The waveforms had shown latency on the digital decks: 31 % of jge's (device, step) pairs
+with every terminal moving under 1 uV, 70 % under 100 uV (mux8 21/45 %, voter25 1/7 %, gm19 3/13 %).  Bypass changes
+results within tolerance, so the question was whether an error-controlled rule would skip enough, safely.
+
+**The foundation found** (full report with quotes, provenance and what was not verified: g24's
+`tc/bypass_research/report_2026-11-02.md`).  Newton with errors in the function and the Jacobian -- Kelley, *Solving
+Nonlinear Equations with Iterative Methods* (SIAM FA20, 2022, DOI 10.1137/1.9781611977271), Thm 1.2, `||e+|| <= K(||e||^2
++ ||Delta|| ||e|| + ||eps||)`: a stale Jacobian STAMP changes the rate only, a stale CURRENT or CHARGE moves the
+converged answer by ~`J^-1 eps`; Dembo, Eisenstat & Steihaug (SINUM 19, 1982, DOI 10.1137/0719025) and Catinas's
+perturbed form (JOTA 108, 2001, DOI 10.1023/A:1017583307974) for the residual budget, Eisenstat & Walker (SISC 17,
+1996, DOI 10.1137/0917003) for the forcing term.  The integrator's side: RADAU5's iteration error at `kappa Tol`,
+`kappa` 0.01-0.1 (Hairer & Wanner, *Solving ODE II*, IV.8).  Latency as a zeroth-order integrator under the LTE (Saleh,
+UCB/ERL M87/21, 1987); a multirate interface's error, `(rho0/h) dq + di`, invisible to the LTE estimator and
+controlled on its own (Verhoeven, TU/e thesis 2008, DOI 10.6100/IR631462, Thm 6.3); first-order bypass (Nye, ICCAD-88,
+DOI 10.1109/ICCAD.1988.122543, abstract only); SPICE3's bypass and its failures (Quarles, UCB/ERL M89/42).  ngspice's
+MOS1 bypass (default off) stamps the tangent at the old point; Xyce does not support bypass; two commercial
+simulators' manuals advise against it for accuracy.
+
+**Measured** (the census, `tc/census_b1.py`; Radau, 1 500 accepted step pairs per deck drawn with a fixed seed, every
+MOSFET): each device's tangent error at the new point, its charge part through `c/h`, `c` = 4.06 (Radau IIA's largest
+|eigenvalue of A^-1|), against two budgets -- per row `0.1 (reltol |J||x| + iabstol)` (the Newton residual test's
+scale), and the step's whole skipped set, `J^-1 sum r`, within `0.1 (reltol |x| + xtol)` (the update test's, RADAU5's
+`kappa`).  Two checks a kernel can afford: SPICE's (every `|dv| <= reltol |v| + vabstol`, every `|G dv| <= reltol |i| +
+iabstol`) and a linear-change one.
+
+| deck | row-safe (tangent) | SPICE's check skips | its set within the solution budget | linear check skips | within |
+|---|---|---|---|---|---|
+| jge | 99.5 % | 42.0 % | 61.7 % of steps | 77.5 % | 18.1 % |
+| mux8 | 86.5 % | 9.4 % | 100 % | 26.3 % | 67.5 % |
+| voter25 | 86.1 % | 0.5 % | 100 % | 10.6 % | 79.2 % |
+| gm19 | 85.7 % | 1.7 % | 99.0 % | 29.2 % | 5.5 % |
+
+The per-row residual budget is no guide: devices within it one by one exceed the solution budget together by up to
+1e5-1e7 (its `|J||x|` scale is inflated by the `C/h` terms).  Split (`tc/census_b1_split.py`): of SPICE's set on jge,
+the CURRENT part alone stays within the solution budget on 100 % of steps, the CHARGE part alone on 61.8 % -- every
+failure is a stale charge, amplified by `1/h`, the worst at 10-100 fs steps.
+
+**LINE** (set before the census): on jge an affordable check skips at least 30 % of device evaluations with its step
+sets within the solution budget on at least 99 % of steps.  SPICE's check skips 42 % within it on 61.7 %; the linear
+check 77.5 % on 18.1 %; on the analog-ish decks SPICE's check is safe but skips 0.5-9 %.  Refused; nothing built.  Not
+measured, should it be wanted: a currents-only bypass (the charges evaluated every time) -- the split says SPICE's
+check would pass on jge, but the fused kernel evaluates a call's passes under one mask and `G` and `C` share about
+half their statements (`_hdl_cbackend`), so skipping `i` and `G` alone saves less than half of an evaluation.
