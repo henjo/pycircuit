@@ -751,6 +751,40 @@ def test_key_fields(cache_dir):
     assert hc.key_for(ChainedLimited) != key
 
 
+def _body_one(plus, minus):
+    b = Branch(plus, minus)
+    return Contribution(b.I, b.V * 1e-3)
+
+
+def _body_two(plus, minus):
+    b = Branch(plus, minus)
+    return Contribution(b.I, b.V * 2e-3)
+
+
+def _twin(body):
+    """A class named as every other twin, with `body` as its analog: the
+    body is the only part of the key that differs."""
+    return type('Twin', (Behavioural,), {
+        'analog': staticmethod(body), 'instparams': [],
+        '__module__': __name__, '__qualname__': 'Twin'})
+
+
+def test_the_key_names_the_body_without_reading_its_source(cache_dir,
+                                                           monkeypatch):
+    """The key names the analog body by its file, first line and qualified
+    name -- the file hashed whole -- and reads no source text (roadmap
+    229): two bodies in one file that differ only in a constant key apart
+    with `inspect.getsource` unavailable, and a body keys as itself."""
+    a, b, a2 = _twin(_body_one), _twin(_body_two), _twin(_body_one)
+
+    def no_source(*args, **kwargs):
+        raise AssertionError('the key read the source text')
+    monkeypatch.setattr(hc.inspect, 'getsource', no_source)
+    ka = hc.key_for(a)
+    assert hc.key_for(b) != ka
+    assert hc.key_for(a2) == ka
+
+
 ## ----------------------------------------------------------------------
 ## Damage.
 

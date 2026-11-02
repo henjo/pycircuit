@@ -798,9 +798,9 @@ smoothing escape hatch.
 
 Compile cost: **0.6–0.9 ms per element**, once, at class definition —
 and served from the on-disk compile cache after that, so importing all
-**51** classes of `elements_hdl` costs **~0.21 s** warm with the package
-already loaded (about 37 s cold, when the cache key changes; 2026-10-24,
-roadmap 221). That is
+**51** classes of `elements_hdl` costs **~0.17 s** warm with the package
+already loaded (about 37 s cold, when the cache key changes; 2026-11-02,
+roadmaps 221-229). That is
 the price of the exactness — symbolic assembly, two Jacobians,
 `lambdify` with CSE — and it is why `elements.py` stays the default
 catalogue while `elements_hdl.py` is imported on demand.
@@ -898,9 +898,10 @@ CACHE=0` disables it. Profiling first found one waste worth 15% before
 caching anything: `G_dc` was a second full Jacobian compile, identical
 to `G` for every class without a DC-pinned state.
 `elements_hdl` cold import is **~37 s** for its **51** classes, and
-~0.21 s warm with the package already imported (2026-10-25, roadmaps
-221-222: the entries' sympy trees read as stored, not evaluated again, and
-the vector PCNR's loaded on first use).  The interpreter's exit walks the
+~0.17 s warm with the package already imported (2026-11-02, roadmaps
+221-229: the entries' sympy trees read as stored, not evaluated again, the
+vector PCNR's loaded on first use, and the key naming each analog body by
+its file and line instead of tokenizing it).  The interpreter's exit walks the
 objects those imports leave again, ~0.12 s: `PYCIRCUIT_GC_FREEZE=1` (or
 `pycircuit.circuit.freeze_imports()`) freezes them for the collector and the
 exit takes ~0.03 s -- a setting of the whole process, off by default; its

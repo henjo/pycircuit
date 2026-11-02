@@ -12354,8 +12354,10 @@ mutations caught.
 **Measured** (HEAD b00ee0b5 from its worktree against this tree, separate processes, interleaved, both warmed, each
 run started at a 1-minute load under 1.5): `elements_hdl`'s import, 12 pairs: 0.198 -> 0.149 s, 0.048 s saved (0.046
 to 0.054); rerun, 0.197 -> 0.149 s, 0.048 s (0.044 to 0.050).  A short deck's process (rca, start to exit), 15 pairs:
-0.756 -> 0.707 s, 0.051 s saved; rerun 0.754 -> 0.710 s, 0.046 s.  (The first run's box rose from load 1.2 to 7.1 as
-another session's jobs resumed; the rerun was the rule's "rerun if a small effect decides".)  HEAD's own import
+0.756 -> 0.707 s, 0.051 s saved; rerun 0.754 -> 0.710 s, 0.046 s.  (The first run's box rose from load 1.2 to 7.1 --
+mostly the measurement's own processes, it turned out (229: sampled during its runs, only they were busy, the load
+1.3 -> 4.3); whether another session's jobs added to it was not checked.  The rerun was the rule's "rerun if a small
+effect decides".)  HEAD's own import
 measured 0.198 s, not the plan's 0.21: the line's absolute form (at most 0.16 s) was met, its saving (0.05 s) was not
 -- the saving is the line.  The first build, before the fixes, had measured 0.209 -> 0.158 s.  Reverted; the patch kept
 in g24 (`tc/patch227.diff`).
@@ -12407,3 +12409,36 @@ check 77.5 % on 18.1 %; on the analog-ish decks SPICE's check is safe but skips 
 measured, should it be wanted: a currents-only bypass (the charges evaluated every time) -- the split says SPICE's
 check would pass on jge, but the fused kernel evaluates a call's passes under one mask and `G` and `C` share about
 half their statements (`_hdl_cbackend`), so skipping `i` and `G` alone saves less than half of an evaluation.
+
+## 2026-11-02 — 229. The cache key without tokenizing the analog body -- the body named by its file, first line and qualified name, its file already hashed whole: the device library's import 0.198 -> 0.170 s, every result the same
+
+**Why**  Andreas, after 227 was refused: "add the key change of 227 as 229" (plan g24's `tc/plan_229.md`).  Of 227's
+three parts this one is the simplest: `key_for` read each analog body's source with `inspect.getsource`, which
+tokenizes it (47 000 tokens over the library, 0.031 s of the 0.037 s its 51 keys took) only to put the text in the
+key -- while the body's file is already hashed whole into the key (`deps`).  Sized from 227's stage profile at ~0.028
+s, so the line is not blind; it binds the measured number.  LINE (one form): `elements_hdl`'s import with the package
+imported at least 0.025 s faster (the median saving, 12 interleaved quiet-box pairs against HEAD), every result the
+same.  Refused under.
+
+**Built.**  `_hdl_cache._source_id`: the body's file name, first line and qualified name; a body with no source file
+(a REPL's, an `exec` string's) still `Uncacheable`.  `key_for` puts it in the key where the text was; the module's Key
+section says so.  No record format change and no CACHE_FORMAT bump: the key's parts change and this file's hash is in
+the key, so every class re-keys once (the library recompiles, ~37 s).  An edit to the body misses as before, through
+the file's hash; so does an edit anywhere else in that file, as before.
+
+**Measured** (a quiet box, HEAD 7badff02 from its worktree and this tree, separate processes, interleaved, both
+warmed): `elements_hdl`'s import with the package imported, 12 pairs: 0.198 -> 0.170 s (medians), 0.028 s saved
+(0.025 to 0.034; the line 0.025 s); a short deck's process (rca, start to exit), 15 pairs: 0.766 -> 0.733 s, 0.027 s
+saved (-0.011 to 0.084).  The run that decided was the second: the first, 0.197 -> 0.169 s, 0.028 s saved (0.026 to
+0.031), had seen the load rise from under 1.5 (its start check) to 6.2 and was rerun as 227's was -- and sampling
+during the rerun showed the rise to be the measurement's own processes (the short deck's transients run the core's
+thread pool; nothing else was busy).
+
+**Tests.**  test_hdl_cache (+1): two analog bodies in one file that differ only in a constant key apart, and a body
+keys as itself, with `inspect.getsource` unavailable.  Three mutations caught (one id for every body; the file name
+alone; HEAD's `getsource`).  hdl.md: the warm import's figure.
+
+**Gate** (the main tree): the TELL (HEAD's cache module has no `_source_id`, this tree's has); the suite, 6 067
+passed (6 skipped, 3 xfailed; its first run under the new keys); the 27 gold decks -- standalone DC against 224's gate
+runs, gear2 transient and Radau against HEAD (wt_head, 7badff02, run from inside it, interleaved per deck): every
+digest, step, rejection, Newton count and path count identical but the loops' own.  No C changed: no sanitizer run.

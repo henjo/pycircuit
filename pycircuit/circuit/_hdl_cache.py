@@ -41,7 +41,8 @@ What is not cached
 Key
     SHA-256 over: the cache format number, the source of `hdl.py` and of
     this module, sympy/numpy/Python versions, the class's module and
-    qualified name, `inspect.getsource(cls.analog)`, every `instparams`
+    qualified name, the analog body's file, first line and qualified name
+    (that file's source is hashed whole, below), every `instparams`
     declaration (name, default, range, unit, description), the collapse
     mask, a class-body `terminals` declaration, and the source of every
     module the analog body reaches by name (the class's own module and
@@ -422,6 +423,23 @@ def _bindings(func, depth=0, seen=None):
     return out
 
 
+def _source_id(func):
+    """The analog body named in the key: its file's name, its first line,
+    its qualified name -- the file itself hashed whole into the key
+    (`_dependency_hashes`), so an edit to the body misses.  Not
+    `inspect.getsource`, which tokenizes the body to the same end (0.031 s
+    of the library's 0.037 s of keys, 2026-10-25).  A body with no source
+    file (a REPL's, an `exec` string's) is `Uncacheable`."""
+    try:
+        path = inspect.getsourcefile(func)
+    except TypeError:
+        path = None
+    if not path or not os.path.exists(path):
+        raise Uncacheable('analog() source not recoverable')
+    code = func.__code__
+    return f'{os.path.basename(path)}:{code.co_firstlineno}:{func.__qualname__}'
+
+
 def key_for(cls):
     """The cache key of `cls`.  Raises `Uncacheable` when the class
     cannot be keyed, saying why."""
@@ -430,10 +448,7 @@ def key_for(cls):
         func = func.__func__
     if not isinstance(func, types.FunctionType):
         raise Uncacheable('analog() is not a plain function')
-    try:
-        src = inspect.getsource(func)
-    except (OSError, TypeError):
-        raise Uncacheable('analog() source not recoverable')
+    src = _source_id(func)
     written = _writes_outside(func.__code__)
     if written is not None:
         raise Uncacheable('analog() writes into %s, which is not its own '
