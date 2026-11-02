@@ -12324,3 +12324,38 @@ on some decks (rich3's worst voltage 3 006 -> 1 674, jge's 277 -> 225), worse on
 'reset' currents 1 895 -> 3 367) -- no gain to set against the extra attempts.  (arom's reference run failed; its error
 was not kept.  jge's reference took only 22 634 attempts: its steps are set by its breakpoints, not its tolerance.)
 Refused under the line; no library code, no C twin, no default changed.
+
+## 2026-11-02 — 227. The library's start, the rest -- REFUSED: the device library's import 0.048 s faster against the 0.05 s line, in both quiet-box runs; built, gated, measured, reverted
+
+**Why**  Andreas, on the survey after 226 (2026-10-25): "Do 1" -- the device library's start, what 222 left (plan g24's
+`plan_222_226.md`, sec. 227).  Measured before building, the library's import with the package imported, 0.21 s: the
+entries' loads 0.065 s, the thaw 0.065 s (its code lookups 0.043 s: 787 generated texts each hashed, its file opened
+and unmarshalled), the keys 0.037 s (84 % `inspect.getsource`, tokenizing each analog body: 47 000 tokens), the CSE
+pass 0.021 s, class creation's own work 0.017 s.  Deferring the remaining sympy trees (`sym_spec`, `pure_spec`,
+`pcnr_affine`) was sized at nothing (their loads 0.050-0.059 s with them, 0.053-0.054 s without) and not built.  LINE:
+`elements_hdl`'s import with the package imported at least 0.05 s faster (0.21 -> at most 0.16 s), a short deck's
+process at least 0.05 s faster, every result the same.  Refused under.
+
+**Built.**  `_hdl_cache` (CACHE_FORMAT 6): a chain function's record carried its compiled code's marshal bytes and,
+for a function the CSE pass takes (`_hdl_cse.targets`), the pass's text and code, made at the write; a hit executed
+them and `optimise` took the carried twin.  The key named the analog body by its file, first line and qualified name
+(its file already hashed whole in `deps`) instead of `inspect.getsource`, and `_compiler_hash` hashed `_hdl_cse.py`
+and `_hdl_fast.py`.  Found while resuming after the 2026-10-25 session stopped at a usage limit: its first build keyed
+the carried CSE records by a tag only -- an edit of `_hdl_cse.py` would have left every entry's record stale and the
+start silently back on the store until something else re-keyed the library -- and kept every record on its function
+for the process's life (5.9 MB) and made them for 239 chains the pass never takes (3.7 MB more; peak RSS 139 -> 145
+MB).  Both fixed before the gate (resident memory after the import as HEAD's, 140 MB).
+
+**Gate** (passed): the suite, 6 068 passed (6 skipped, 3 xfailed); the 27 gold decks -- DC against 224's gate runs,
+gear2 and Radau against HEAD interleaved -- every digest, step, rejection, Newton count and path count identical but
+the loops' own.  Tests +2 (a hit takes code and CSE twins from its entry; the pass's files in the compiler hash), three
+mutations caught.
+
+**Measured** (HEAD b00ee0b5 from its worktree against this tree, separate processes, interleaved, both warmed, each
+run started at a 1-minute load under 1.5): `elements_hdl`'s import, 12 pairs: 0.198 -> 0.149 s, 0.048 s saved (0.046
+to 0.054); rerun, 0.197 -> 0.149 s, 0.048 s (0.044 to 0.050).  A short deck's process (rca, start to exit), 15 pairs:
+0.756 -> 0.707 s, 0.051 s saved; rerun 0.754 -> 0.710 s, 0.046 s.  (The first run's box rose from load 1.2 to 7.1 as
+another session's jobs resumed; the rerun was the rule's "rerun if a small effect decides".)  HEAD's own import
+measured 0.198 s, not the plan's 0.21: the line's absolute form (at most 0.16 s) was met, its saving (0.05 s) was not
+-- the saving is the line.  The first build, before the fixes, had measured 0.209 -> 0.158 s.  Reverted; the patch kept
+in g24 (`tc/patch227.diff`).
