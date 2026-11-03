@@ -29,6 +29,15 @@ from +0.0 in array order -- then the companion in the integrator's own
 operation order, `f = (i + iq) + u` and `J = G + Geq`.  The reference-row
 reduction stays Python's.
 
+THE PULL.  Every slot of every pass reads one place in the core's VALUES
+(`vals`: the templates, the groups' staging, the outputs of the batches
+outside a group, the constant groups' products), fixed when the core is
+built (`_Flat._pull`); a pass's bins are made bin by bin -- each from +0.0,
+its slots' values added in slot order, one store: the slots' bincount's
+sums, with no slot buffer filled, zeroed or scattered into.  A slot whose
+value is a constant zero is left out (no addition of a zero changes a sum
+made from +0.0: the sum is never -0.0).
+
 FOUR SITES, ONE ENTRY (`evaluate`, `want` in 'fj' | 'j' | 'c' | 'f'):
 `_residual_and_jacobian` (G, C, i, q; `(f, J)`); `jacobian_only` at the
 converged point (G, C, q; `(None, J)`), or its state alone where nothing
@@ -80,9 +89,8 @@ THE GROUPS.  A class's kernel (`_hdl_cbackend`: one kernel a class, every
 pass a call wants at once) is called ONCE a call for every pass the call
 wants, before the passes, into a staging buffer -- where the class's
 batches cover two or more passes over the same elements on the same nodes
-(`_fuse_groups`) -- and each batch then scatters its outputs from there in
-its own order: the same values in the same places, the passes' bins as
-without it.  The readiness check takes the class's kernel while it is the
+(`_fuse_groups`) -- and the passes' slots read its outputs there: the same
+values, the passes' bins as without it.  The readiness check takes the class's kernel while it is the
 class's bound one (`_check_fused`); a batch outside a group calls it for
 its own pass alone.
 
@@ -395,6 +403,7 @@ def _i64(a):
     return np.ascontiguousarray(np.asarray(a, dtype=np.int64))
 
 
+
 def _cat64(parts):
     return (np.ascontiguousarray(np.concatenate(parts).astype(np.int64))
             if parts else np.zeros(1, np.int64))
@@ -432,20 +441,20 @@ def _lone_batches(cir, m, mp, cb):
 class _Flat:
     """The four plans flattened, as `_Core` lays them out for the struct:
     per pass its template, its slots (`flat`) and its bins; per batch its
-    pass, node map, destinations and first place in the pointer table; per
-    constant group (a vector pass's) its pass, matrix, inputs, selection
-    and destinations; per fused group (`add_fused`) its `core_ztab` row.
-    Each list's running offset beside it."""
+    pass, node map and first place in the pointer table (its slots are its
+    `dst`); per constant group (a vector pass's) its pass, matrix, inputs,
+    selection and destinations; per fused group (`add_fused`) its
+    `core_ztab` row; then the values every slot reads and each pass's pull
+    (`arrays`, `_pull`).  Each list's running offset beside it."""
 
     def __init__(self):
         self.p_L, self.p_toff, self.tmpl, self.flat, self.p_nbins = [], [], [], [], []
         self.batches, self.b_pass, self.NM, self.b_nmoff = [], [], [], []
-        self.dst, self.b_dstoff, self.b_proff = [], [], []
+        self.b_proff = []
         self.g_pass, self.S, self.g_soff, self.I, self.g_ioff = [], [], [], [], []
-        self.sel, self.gdst, self.g_seloff = [], [], []
-        self.off = self.nmoff = self.dstoff = self.pr_len = 0
-        self.soff = self.ioff = self.seloff = 0
-        self.maxy = 1
+        self.sel, self.gdst = [], []
+        self.off = self.nmoff = self.pr_len = 0
+        self.soff = self.ioff = 0
 
     def add_pass(self, mi, m, mp, n, extra):
         """Pass `m` (`PASSES[mi]`), its plan `mp`: its template and slots,
@@ -480,11 +489,8 @@ class _Flat:
         self.I.append(Ig.reshape(-1))
         self.g_ioff.append(self.ioff)
         self.ioff += Ig.size
-        self.sel.append(selg)
-        self.gdst.append(dstg)
-        self.g_seloff.append((self.seloff, selg.size))
-        self.seloff += selg.size
-        self.maxy = max(self.maxy, E * k)
+        self.sel.append(np.asarray(selg, dtype=np.int64))
+        self.gdst.append(np.asarray(dstg, dtype=np.int64))
 
     def _add_batch(self, mi, bt):
         self.batches.append(bt)
@@ -492,9 +498,6 @@ class _Flat:
         self.NM.append(bt.NM.reshape(-1))
         self.b_nmoff.append(self.nmoff)
         self.nmoff += bt.NM.size
-        self.dst.append(bt.dst)
-        self.b_dstoff.append(self.dstoff)
-        self.dstoff += bt.dst.size
         self.b_proff.append(self.pr_len)
         self.pr_len += bt.n
 
@@ -539,21 +542,15 @@ class _Flat:
         them (and, `fused`, the fused groups' tables): `(arrays, npat)`."""
         g_soff, batches = self.g_soff, self.batches
         arrays = {
-            'p_L': _i64(self.p_L), 'p_toff': _i64(self.p_toff), 'p_nbins': _i64(self.p_nbins),
-            'tmplall': np.ascontiguousarray(np.concatenate(self.tmpl)), 'flatall': _cat64(self.flat),
             'b_pass': _i64(self.b_pass), 'b_ne': _i64([bt.n for bt in batches]),
             'b_k': _i64([bt.k for bt in batches]), 'b_so': _i64([bt.so for bt in batches]),
             'b_ti': _i64([bt.ti for bt in batches]), 'NMall': _cat64(self.NM),
             'b_nmoff': _i64(self.b_nmoff), 'b_proff': _i64(self.b_proff),
-            'bdstall': _cat64(self.dst), 'b_dstoff': _i64(self.b_dstoff),
             'g_pass': _i64(self.g_pass), 'g_E': _i64([e for _o, e, _k in g_soff]),
             'g_k': _i64([k for _o, _e, k in g_soff]),
             'Sall': np.ascontiguousarray(np.concatenate(self.S)) if self.S else np.zeros(1),
             'g_soff': _i64([o for o, _e, _k in g_soff]), 'Iall': _cat64(self.I),
-            'g_ioff': _i64(self.g_ioff), 'g_nsel': _i64([sz for _o, sz in self.g_seloff]),
-            'selall': _cat64(self.sel), 'gdstall': _cat64(self.gdst),
-            'g_seloff': _i64([o for o, _sz in self.g_seloff]),
-            'work': np.empty(max(int(max(self.p_L)), 1)), 'ywork': np.empty(self.maxy),
+            'g_ioff': _i64(self.g_ioff),
             'binG': np.zeros(n * n), 'bini': np.empty(n),
         }
         ## THE PATTERN: every entry a matrix pass can write (G's and C's
@@ -564,11 +561,81 @@ class _Flat:
         npat = len(pat) if PATTERN and len(pat) <= PATTERN_MAX_FILL * n * n else 0
         arrays['pat'] = np.ascontiguousarray(pat, dtype=np.int64)
         if fused:
-            ## (the fused groups' tables: none at all where nothing fuses)
-            arrays.update(ztab=np.array(self.ztab, dtype=np.int64),
-                          zst=np.empty(max(self.st_len, 1)),
-                          bftab=np.array(self.bftab, dtype=np.int64), fidxall=_cat64(self.fidx))
+            arrays['ztab'] = np.array(self.ztab, dtype=np.int64)
+        arrays.update(self._pull(n, fused, pat if npat else None))
         return arrays, npat
+
+    def _pull(self, n, fused, pat):
+        """THE VALUES and THE PULL (core.h): `vals` -- the templates, the
+        staging (`zst`, a view of it where `fused`), the outputs of the
+        batches outside a group, the constant groups' products -- each
+        batch's output rows in it (`b_fz`, `orowall`, `b_ooff`), each
+        constant group's products (`g_yoff`); per pass every slot's value
+        in it, the slots of each written bin in slot order (`pl_off`,
+        `wball`, `rpall`, `ixall`), a slot whose value is a constant zero
+        (a template's, a vector pass's slot nothing fills) left out."""
+        batches = self.batches
+        tmpl = np.ascontiguousarray(np.concatenate(self.tmpl))
+        z0 = tmpl.size
+        zlen = self.st_len if fused else 0
+        nxt = z0 + zlen
+        ZW = _ZT_WIDTH
+        fidx = np.concatenate(self.fidx) if fused and self.fidx else np.zeros(0, np.int64)
+        b_fz, orows, b_ooff, off = [], [], [], 0
+        for b, bt in enumerate(batches):
+            fz = self.bftab[2 * b] if fused else -1
+            if fz >= 0:
+                fo = self.bftab[2 * b + 1]
+                rows = fidx[fo:fo + bt.n] if fo >= 0 else np.arange(bt.n)
+                at = self.ztab[ZW * fz + 7 + 2 * self.b_pass[b]]
+                orow = z0 + at + np.asarray(rows, dtype=np.int64) * bt.so
+            else:
+                orow = nxt + np.arange(bt.n, dtype=np.int64) * bt.so
+                nxt += bt.n * bt.so
+            b_fz.append(fz)
+            b_ooff.append(off)
+            orows.append(orow)
+            off += bt.n
+        g_yoff = []
+        for _o, e, k in self.g_soff:
+            g_yoff.append(nxt)
+            nxt += e * k
+        vals = np.zeros(max(nxt, 1))
+        vals[:tmpl.size] = tmpl
+        wball, ixall, counts, pl_off = [], [], [], [0]
+        for m in range(4):
+            L, toff = self.p_L[m], self.p_toff[m]
+            flat = np.asarray(self.flat[m], dtype=np.int64)
+            src = np.full(L, -1, dtype=np.int64)
+            if m < 2:
+                live = np.nonzero(tmpl[toff:toff + L] != 0.0)[0]
+                src[live] = toff + live
+            for b, bt in enumerate(batches):
+                if self.b_pass[b] == m:
+                    src[bt.dst] = (orows[b][:, None] + np.arange(bt.so)).reshape(-1)
+            for g, gm in enumerate(self.g_pass):
+                if gm == m:
+                    src[self.gdst[g]] = g_yoff[g] + self.sel[g]
+            wb = (pat if m < 2 and pat is not None else
+                  np.arange(n * n if m < 2 else n, dtype=np.int64))
+            keep = np.nonzero(src >= 0)[0]
+            pos = np.searchsorted(wb, flat[keep])
+            if keep.size and (pos.max() >= wb.size or not np.array_equal(wb[pos], flat[keep])):
+                raise Unservable(f'a slot of the {PASSES[m]} pass outside its written bins')
+            ## (a stable sort by bin: each bin's slots in slot order)
+            order = np.argsort(pos, kind='stable')
+            ixall.append(src[keep][order])
+            counts.append(np.bincount(pos, minlength=wb.size))
+            wball.append(wb)
+            pl_off.append(pl_off[-1] + wb.size)
+        rp = np.concatenate([np.zeros(1, np.int64), np.cumsum(np.concatenate(counts))])
+        out = {'vals': vals, 'pl_off': _i64(pl_off), 'wball': _cat64(wball), 'rpall': _i64(rp),
+               'ixall': _cat64(ixall), 'b_fz': _i64(b_fz) if batches else np.zeros(1, np.int64),
+               'orowall': _cat64(orows), 'b_ooff': _i64(b_ooff) if batches else np.zeros(1, np.int64),
+               'g_yoff': _i64(g_yoff) if g_yoff else np.zeros(1, np.int64)}
+        if fused:
+            out['zst'] = vals[z0:z0 + max(zlen, 1)]
+        return out
 
 
 class _Core:

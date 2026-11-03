@@ -5,11 +5,11 @@
 #include "pcx_abi.h"
 #include "core.h"
 /* passes 0 G, 1 C, 2 i, 3 q; their want bits pcx_pass (pcx_abi.h).  A class
-   with a fused kernel (z_fn) is evaluated once a call, before the passes,
-   for every pass the call wants, into its staging (zst); its batches then
-   scatter from there -- the passes' writes and bins as before.  bftab, a
-   batch's row: its group (-1: none) and its offset in fidxall (each
-   element's place in it; -1: the group's own order, the usual case) */
+   with a fused group (z_fn) is evaluated once a call, before the passes,
+   for every pass the call wants, into its staging (zst, in vals); each
+   pass then pulls its bins from the values its slots read (`one_pass`) --
+   the bins as the slots' bincount makes them.  b_fz, a batch's group (-1:
+   none) */
 /* a ztab row: core.h's `core_ztab` names its columns */
 /* `body` for each matrix entry the call writes (`patt`: the pattern's; else
    all n x n), `s` the entry.  It captures from the function: `patt`, `pk`
@@ -112,37 +112,25 @@ static void fused_groups(const hdl_core_t *c, const double *x, double T, long wa
     }
 }
 
-/* batch b of pass m into its slots `buf`: from the staging where its
-   class's group served (`fused_groups`), else its class's kernel per
-   element for pass m alone -- its inputs gathered, the temperature into its
-   parameter row -- each output scattered to its destination */
-static void batch_into(const hdl_core_t *c, long b, long m, double *buf, const double *x,
-                       double T, double *X, double *o)
+/* batch b of pass m where it makes its outputs itself -- outside a group,
+   or its group's kernel not serving the call (`fused_groups` made the rest):
+   its class's kernel per element for pass m alone (its inputs gathered, the
+   temperature into its parameter row), the outputs into the element's rows
+   of vals (`orowall`), where the pass's slots read them */
+static void batch_into(const hdl_core_t *c, long b, long m, const double *x, double T,
+                       double *X)
 {
     long e, j;
+    long ne = c->b_ne[b], k = c->b_k[b], ti = c->b_ti[b], fz = c->b_fz[b];
     fused_fn_t f = (fused_fn_t) c->b_fn[b];
-    long ne = c->b_ne[b], k = c->b_k[b], so = c->b_so[b], ti = c->b_ti[b];
-    long fz = c->nz ? c->bftab[2 * b] : -1;
-    const int64_t *NM = c->NMall + c->b_nmoff[b];
-    const int64_t *dst = c->bdstall + c->b_dstoff[b];
-    double **PR = c->PRall + c->b_proff[b];
-    if (fz >= 0 && c->z_fn[fz]) {
-        /* from the staging: the fused kernel wrote this pass's
-           rows (so wide: `_fuse_groups` checked the widths) */
-        const double *sz = c->zst + c->ztab[ZT_WIDTH * fz + ZT_G_AT + 2 * m];
-        long fo = c->bftab[2 * b + 1];
-        const int64_t *fi = fo >= 0 ? c->fidxall + fo : 0;
-        for (e = 0; e < ne; e++) {
-            const double *oz = sz + (fi ? fi[e] : e) * so;
-            for (j = 0; j < so; j++) buf[dst[e * so + j]] = oz[j];
-        }
-        return;
-    }
+    const int64_t *NM = c->NMall + c->b_nmoff[b], *orow = c->orowall + c->b_ooff[b];
+    double **PR = c->PRall + c->b_proff[b], *o;
+    if (fz >= 0 && c->z_fn[fz]) return;
     for (e = 0; e < ne; e++) {
         for (j = 0; j < k; j++) X[j] = x[NM[e * k + j]];
         if (ti >= 0) PR[e][ti] = T;
+        o = c->vals + orow[e];
         f(X, PR[e], 1L << m, o, o, o, o);
-        for (j = 0; j < so; j++) buf[dst[e * so + j]] = o[j];
     }
 }
 
@@ -164,61 +152,59 @@ static void small_gemv(const double *S, const double *x, long k, double *y)
     }
 }
 
-/* pass m's constant groups into its slots `buf` */
-static void groups_into(const hdl_core_t *c, long m, double *buf, const double *x,
-                        double *y, double *xg)
+/* pass m's constant groups: each element's product into the group's
+   products in vals (`g_yoff`), where the slots they fill read them */
+static void groups_into(const hdl_core_t *c, long m, const double *x, double *xg)
 {
     dgemv64_t gemv = (dgemv64_t) c->dgemv;
-    long g, e, j, s;
+    long g, e, j;
     for (g = 0; g < c->ng; g++) {
         /* a constant group: `np.dot(S, x[I])` per element through
            numpy's own dgemv, the routine np.dot calls (the plan's
            batched np.matmul is taken only where `_matmul_ok` found it
-           equal to that; else the core is Unservable), then
-           `buf[dst] = Y.reshape(-1)[sel]` */
+           equal to that; else the core is Unservable) -- or its
+           operation order where checked (`small_gemv`) */
         if (c->g_pass[g] != m) continue;
-        long E = c->g_E[g], k = c->g_k[g], nsel = c->g_nsel[g];
+        long E = c->g_E[g], k = c->g_k[g];
         const double *S = c->Sall + c->g_soff[g];
         const int64_t *I = c->Iall + c->g_ioff[g];
-        const int64_t *sel = c->selall + c->g_seloff[g];
-        const int64_t *gdst = c->gdstall + c->g_seloff[g];
+        double *Y = c->vals + c->g_yoff[g];
         for (e = 0; e < E; e++) {
             for (j = 0; j < k; j++) xg[j] = x[I[e * k + j]];
             if ((k == 2 || k == 3) && (c->small_gemv & (1L << k)))
-                small_gemv(S + e * k * k, xg, k, y);
+                small_gemv(S + e * k * k, xg, k, Y + e * k);
             else
-                gemv(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, k, k, 1.0, S + e * k * k, k, xg, 1, 0.0, y, 1);
-            for (j = 0; j < k; j++) c->ywork[e * k + j] = y[j];
+                gemv(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, k, k, 1.0, S + e * k * k, k, xg, 1, 0.0,
+                     Y + e * k, 1);
         }
-        for (s = 0; s < nsel; s++) buf[gdst[s]] = c->ywork[sel[s]];
     }
 }
 
-/* pass m (0 G, 1 C, 2 i, 3 q) into its bins `bin`: the slots -- G's and
-   C's from the template (the constant stamps' entries), i's and q's
-   from zeros -- each batch's outputs (`batch_into`), the constant
-   groups' (`groups_into`), then the bins */
+/* pass m (0 G, 1 C, 2 i, 3 q) into its bins `bin`: the values its slots
+   read made -- the batches that make their own (`batch_into`), the constant
+   groups (`groups_into`); the templates are set once, the groups' staging by
+   `fused_groups` -- then THE PULL: each written bin from +0.0, its slots'
+   values added in slot order, one store -- `np.bincount(flat,
+   weights=slots, minlength=nbins)`'s sums in its order: a bin started at its
+   first value would keep a lone -0.0 (bincount's is +0.0), and another order
+   rounds differently.  A matrix pass whose caller's buffer is not zero off
+   the pattern (`patt` clear where there is one) has every entry zeroed
+   first */
 static void one_pass(const hdl_core_t *c, long m, const double *x, double T, double *bin,
-                     int patt, double *X, double *o, double *y, double *xg)
+                     int patt, double *X, double *xg)
 {
-    double *buf = c->work;
-    long L = c->p_L[m], n = c->n, b, s, pk;
-    if (m < 2) memcpy(buf, c->tmplall + c->p_toff[m], (size_t) L * sizeof(double));
-    else memset(buf, 0, (size_t) L * sizeof(double));
+    const double *V = c->vals;
+    const int64_t *ix = c->ixall, *rp = c->rpall, *wb = c->wball;
+    long n = c->n, b, q, k;
     for (b = 0; b < c->nb; b++)
-        if (c->b_pass[b] == m) batch_into(c, b, m, buf, x, T, X, o);
-    groups_into(c, m, buf, x, y, xg);
-    /* `np.bincount(flat, weights=buf, minlength=nbins)`: every bin
-       from +0.0, the slots added in their order -- a bin started
-       at its first value would keep a lone -0.0 (bincount's is
-       +0.0), and another order rounds differently */
-    const int64_t *flat = c->flatall + c->p_toff[m];
-    long nbins = c->p_nbins[m];
-    if (patt && nbins == n * n)
-        for (pk = 0; pk < c->npat; pk++) bin[c->pat[pk]] = 0.0;
-    else
-        memset(bin, 0, (size_t) nbins * sizeof(double));
-    for (s = 0; s < L; s++) bin[flat[s]] += buf[s];
+        if (c->b_pass[b] == m) batch_into(c, b, m, x, T, X);
+    groups_into(c, m, x, xg);
+    if (m < 2 && c->npat && !patt) memset(bin, 0, (size_t) (n * n) * sizeof(double));
+    for (q = c->pl_off[m]; q < c->pl_off[m + 1]; q++) {
+        double t = 0.0;
+        for (k = rp[q]; k < rp[q + 1]; k++) t += V[ix[k]];
+        bin[wb[q]] = t;
+    }
 }
 
 /* the entry (contract: core.h) */
@@ -229,9 +215,9 @@ long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long fo
             double *F, double *J)
 {
     /* sizes `_Core.__init__` holds every element to (it refuses, as
-       Unservable, core.h's `core_cap`): an element's inputs, a kernel's
-       outputs, a group's x[I] and its product */
-    double X[CORE_MAX_INPUTS], o[CORE_MAX_OUTPUTS], y[CORE_MAX_INPUTS], xg[CORE_MAX_INPUTS];
+       Unservable, core.h's `core_cap`): an element's inputs, a group's
+       x[I] */
+    double X[CORE_MAX_INPUTS], xg[CORE_MAX_INPUTS];
     /* each pass's bins: G's and i's the core's own, C's and q's the
        caller's */
     double *bins[4] = {c->binG, C, c->bini, q};
@@ -246,7 +232,7 @@ long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long fo
     const double *Cs;
     fused_groups(c, x, T, want, X);
     for (m = 0; m < 4; m++)
-        if (!bits[m] || (want & bits[m])) one_pass(c, m, x, T, bins[m], patt, X, o, y, xg);
+        if (!bits[m] || (want & bits[m])) one_pass(c, m, x, T, bins[m], patt, X, xg);
     /* formula 4: the passes alone (`passes`: G in binG, i in bini, C and q
        in the caller's buffers) -- no companion, no residual, no Jacobian */
     if (formula == PCX_FORMULA_PASSES) return 0;

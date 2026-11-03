@@ -8,21 +8,30 @@
  * (`_Core.arrays`; index arrays int64); `_Core.probe` fills the address
  * tables b_fn, PRall and z_fn before the calls it readies.  An n x n
  * matrix is row-major.  A call reads the tables and writes only its own
- * scratch (work, ywork, binG, bini, zst), the caller's output buffers, and
- * each element's parameter row at its temperature slot. */
+ * scratch (vals beyond its templates, binG, bini), the caller's output
+ * buffers, and each element's parameter row (its temperature slot, its held
+ * statements). */
 typedef struct {
     long n;                       /* the circuit's size (unknowns) */
-    /* THE PASSES, each indexed by m: its slots (L of them) are a work
-       buffer the constant stamps, the batches and the groups fill, then
-       summed into its bins (`np.bincount`) */
-    const int64_t *p_L;           /* (4) its slot count L */
-    const int64_t *p_toff;        /* (4) its offset in tmplall and flatall */
-    const double *tmplall;        /* G's and C's templates (`_MatrixPlan`:
-                                     the constant stamps' entries
-                                     pre-filled); i's and q's zeros, unread */
-    const int64_t *flatall;       /* each slot's bin: its row-major entry
+    /* THE VALUES every slot of every pass is made from (`_Flat.values`):
+       G's and C's templates (`_MatrixPlan`: the constant stamps' entries,
+       set once), the fused groups' staging (zst), the outputs of the
+       batches outside a group, and the constant groups' products */
+    double *vals;
+    /* THE PULL (`np.bincount` of each pass's slots): pass m's bins written
+       a call are wball[pl_off[m] .. pl_off[m + 1]) -- G's and C's the
+       pattern's entries (every entry where npat is 0), i's and q's every
+       row -- each from +0.0 with its slots' values added in slot order,
+       bin q's at vals[ixall[rpall[q] .. rpall[q + 1])] (a slot whose value
+       is a constant zero left out: no addition of a zero changes a sum
+       made from +0.0) */
+    const int64_t *pl_off;        /* (5) pass m's first written bin; the
+                                     last the end */
+    const int64_t *wball;         /* each written bin: its row-major entry
                                      of n x n (G, C) or its row (i, q) */
-    const int64_t *p_nbins;       /* (4) its bin count: n x n or n */
+    const int64_t *rpall;         /* (written bins + 1) its first source
+                                     in ixall */
+    const int64_t *ixall;         /* each source: its index in vals */
     /* THE BATCHES: one generated C kernel over a class's elements in one
        pass (`_hdl_batch.Batch`; a lone C-bound element a batch of one) */
     long nb;                      /* the batch count */
@@ -43,13 +52,16 @@ typedef struct {
                                      pack's array), per batch and then per
                                      fused group: filled by `_Core.probe` */
     const int64_t *b_proff;       /* (nb) its rows' offset in PRall */
-    const int64_t *bdstall;       /* output j of element e: its slot,
-                                     dst[e*so + j] */
-    const int64_t *b_dstoff;      /* (nb) its slots' offset in bdstall */
+    const int64_t *b_fz;          /* (nb) its fused group (-1: none) */
+    const int64_t *orowall;       /* element e's outputs where the batch
+                                     makes them itself: their offset in
+                                     vals (its group's staging rows, or
+                                     the batch's own) */
+    const int64_t *b_ooff;        /* (nb) its elements' offset in orowall */
     /* THE CONSTANT GROUPS of the vector passes (i, q): the elements whose
        stamp is a constant k x k matrix S, one group per pass and k
-       (`_stamp_plan._VectorPlan.groups`): y = S x[I] per element, then
-       the selected entries of the y's into their slots */
+       (`_stamp_plan._VectorPlan.groups`): y = S x[I] per element into the
+       group's products in vals, read by the slots they fill */
     long ng;                      /* the group count */
     const int64_t *g_pass;        /* (ng) its pass m */
     const int64_t *g_E;           /* (ng) its element count E */
@@ -59,37 +71,27 @@ typedef struct {
     const int64_t *g_soff;        /* (ng) its stamps' offset in Sall */
     const int64_t *Iall;          /* the node maps: E x k a group */
     const int64_t *g_ioff;        /* (ng) its node map's offset in Iall */
-    const int64_t *g_nsel;        /* (ng) its selected entries' count */
-    const int64_t *selall;        /* each selected entry's index in the
-                                     group's E x k products */
-    const int64_t *gdstall;       /* its slot (paired with selall) */
-    const int64_t *g_seloff;      /* (ng) its offset in selall and gdstall */
+    const int64_t *g_yoff;        /* (ng) its E x k products' offset in
+                                     vals */
     void *dgemv;                  /* numpy's own `scipy_cblas_dgemv64_`
                                      (`_tran_core._numpy_dgemv`): np.dot's */
-    /* THE CORE'S SCRATCH, written by the calls that make them */
-    double *work;                 /* (max L) a pass's slots */
-    double *ywork;                /* (max E*k) a group's products */
+    /* THE CORE'S BINS, written by the calls that make them */
     double *binG;                 /* (n x n, zero-initialised) G's bins: G
                                      stays here (`_tran_core.passes` reads
                                      it) */
     double *bini;                 /* (n) i's bins */
-    /* THE FUSED GROUPS: a class whose fused kernel makes every pass the
-       call wants at once, before the passes, into the staging zst; its
-       batches scatter from there.  None (nz 0): ztab, zst, bftab and
-       fidxall NULL */
+    /* THE FUSED GROUPS: a class whose kernel makes every pass the call
+       wants at once, before the passes, into the staging zst (in vals),
+       which the passes' slots read.  None (nz 0): ztab and zst NULL */
     long nz;                      /* the group count */
     void **z_fn;                  /* (nz) its fused kernel (fused_fn_t); 0
                                      where it does not serve (`_Core.probe`):
                                      its batches call their own */
     const int64_t *ztab;          /* nz rows of ZW = 14 (core.c names the
                                      columns) */
-    double *zst;                  /* the staging: per group and pass, ne
-                                     rows of that pass's output length */
-    const int64_t *bftab;         /* (2 nb) per batch: its group (-1:
-                                     none), its offset in fidxall (-1: the
-                                     group's own element order) */
-    const int64_t *fidxall;       /* per batch in another order: each of its
-                                     elements' row in its group */
+    double *zst;                  /* the staging (in vals): per group and
+                                     pass, ne rows of that pass's output
+                                     length */
     /* THE PATTERN: every entry a matrix pass can write, and the diagonal */
     long npat;                    /* its entry count; 0: unused (above
                                      `PATTERN_MAX_FILL` of n x n, or switched
@@ -136,7 +138,8 @@ long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long fo
 
 /* what an element may be, for the core's stack buffers (core.c) --
    `_Core.__init__` refuses a wider one as Unservable: its inputs (a batch's
-   `k`, a fused group's x), a kernel's outputs (a batch's `so`) */
+   `k`, a fused group's x), and with them a kernel's outputs (a batch's `so`:
+   k x k at most) */
 enum core_cap {
     CORE_MAX_INPUTS = 64,
     CORE_MAX_OUTPUTS = 4096,

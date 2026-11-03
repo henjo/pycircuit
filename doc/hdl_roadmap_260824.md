@@ -12762,3 +12762,49 @@ twin tests passed and the sanitizer build of the kernel tests ran clean.
 
 **Gate** (the main tree): the TELL; the suite, 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 235's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own (no deck met a held flag 235 would not have raised).
+
+## 2026-11-03 — 237. The passes pulled -- the evaluate core makes each pass's bins bin by bin from the values its slots read, where it filled a slot buffer, zeroed the bins and scattered every slot into them: jge under Radau 9.80 -> 9.49 s (1.032x, run again 1.037x), every result the same
+
+**Why**  The survey after 234 (item 2; plan g24's `tc/plan_235_237.md`): `pcx_core`'s own time was 12 % (Radau) /
+19 % (gear2) of jge's main thread, annotated as gathers and scatters -- the bincount loop ~37 %, the pattern's zeroing
+~21 %, the batches' scatter from the staging ~24 %, the companion's entry loops the rest.  Proposed: those passes
+split by rows over the pool.  Prototype first (225's lesson: index arrays can cost more than the loops they replace;
+scratchpad `pull/dump.py` + `pull.c`): each deck's real core, every slot's source, the bins made as core.c makes them
+and PULLED -- each written bin from +0.0, its slots' values added in slot order, one store -- byte for byte the same:
+all four passes jge 20.2 -> 8.7 us a call (2.34x), mux8 11.2 -> 5.7, gm19 21.3 -> 9.9; by jge's call mix ~1.06x
+(Radau) / ~1.07x (gear2).  The pool on top: a pulled G or C pass is ~3.5 us, i and q under 1 -- four threads would save
+at most ~1.5 us a G or C pass against a region's dispatch, ~1 % of jge: not built (the threads stay a measured
+option).  LINE (one form, set before building): jge under Radau at least 1.03x, the median of 5 interleaved
+quiet-box pairs against 236; GUARD: the 27 decks' total solve under each method not slower; every result the same.
+Refused under.
+
+**Built.**  `csrc/core.c`'s `one_pass`: the batches that make their own outputs (outside a group, or their group's
+kernel not serving the call) write them into their rows of the core's VALUES (`vals`: the templates, set once; the
+fused groups' staging; those batches' outputs; the constant groups' products, each group its own), the constant
+groups write their products there, and the bins are pulled (`pl_off`, `wball`, `rpall`, `ixall`): G's and C's the
+pattern's entries (every entry where the core has none), i's and q's every row; a matrix pass whose caller's buffer is
+not zero off the pattern is zeroed first.  A slot whose value is a constant zero (a template's zero) is left out: no
+addition of a zero changes a sum made from +0.0, which is never -0.0.  Gone: the slot buffer (`work`), the
+products' scratch (`ywork`), `tmplall`, `flatall`, the destination tables (`bdstall`, `selall`, `gdstall` and their
+offsets), `bftab`/`fidxall` (`b_fz`, `orowall`, `b_ooff`, `g_yoff` instead), the per-element output buffer.
+`_tran_core._Flat._pull` builds the tables once a core: each slot's value in `vals`, a stable sort by bin (slot order
+within it).
+
+**Measured** (a quiet box, HEAD 641eac70 from its worktree and this tree, interleaved, 5 pairs): jge under Radau 9.796
+-> 9.508 s, 1.032x (1.026 to 1.033) -- a small effect deciding, so run again: 9.829 -> 9.477 s, 1.037x (1.031 to
+1.050); the line met in both; under gear2 1.015x and 1.009x.  The gate's runs (a busier box): the 27 decks' solves 1.020x under Radau (40.0 -> 39.3 s) and 1.027x under gear2 (19.7 -> 19.2 s), their processes 1.015x and 1.018x -- the guard met.  In situ
+(scratchpad `corebench.py`, jge's real core on 4 threads): C|q 40 -> 36 us a call, i|q 32 -> 29.5, all four 89.6 ->
+80, gear2's G|C|q 96 -> 85 -- the prototype's savings.  The run gains less: perf (two runs a tree) puts `pcx_core`
+1 219/1 183 -> 976/998 main-thread samples under gear2 but KLU 593/574 -> 762/745 -- the same factor and 11 058
+refactors (counted), the matrices byte-identical; with the pool off KLU still +20 % and the byte-identical device
+kernels +2.5 %; neither aligning the values' regions to cache lines nor a software prefetch in the pull changed it.
+OPEN: code that did not change runs slower after the pulled core calls -- a cache or layout interaction, not located;
+recovered, gear2 would see the ~1.07x the passes promise.
+
+**Tests.**  test_tran_core's accumulation-order mutation now reverses a bin's sum in the pull (it reversed the
+bincount loop): caught.  The core's tests, the threads' (every byte and flag on four threads as on one), the fused
+groups', the C loops' twins: 1 883 passed before the pinned pairs were re-recorded (4 twins; 2 references moved,
+`_Flat.arrays` in them: the pattern it computes unchanged).  `_wide_elements`'s note: no per-element output buffer.
+
+**Gate** (the main tree): the TELL; the suite, 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 236's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.

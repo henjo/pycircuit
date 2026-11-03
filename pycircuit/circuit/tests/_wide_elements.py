@@ -3,7 +3,8 @@ testing for development, 2026-10-04); generated once, the signatures
 written out (a class's terminals are its `analog`'s parameters).
 
 The evaluate core's per-element buffers hold 64 unknowns (`_tran_core`:
-`X[64]`, `o[4096]`; wider is `Unservable`), the walk's 64 (`_hdl_climit`,
+`X[64]`, and a kernel's outputs at most 64 x 64; wider is `Unservable`),
+the walk's 64 (`_hdl_climit`,
 `len(nm) <= 64`), the limiter kernel's write-back 32 (`_WB_MAX`; wider
 refuses the kernel).  `Wide64`/`Wide65` and `LimWide32`/`LimWide33` sit on
 each side of those limits: a ring of `k` terminals, each neighbouring pair
