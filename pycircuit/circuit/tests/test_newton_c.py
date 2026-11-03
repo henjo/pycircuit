@@ -266,7 +266,9 @@ def _sparse_run(on, **kw):
     st_ = tr.statistics
     return ((np.asarray(res.x, float).tobytes(), np.asarray(res.sweep_values, float).tobytes(),
              st_.accepted_steps, st_.rejected_steps, st_.newton_iterations),
-            (type(sk).__name__, sk.analyses, sk.factors, sk.refactors, sk.numerics, sk.foreign),
+            (type(sk).__name__, sk.analyses, sk.factors, sk.refactors, sk.numerics, sk.foreign,
+             sk.chord_refactors, sk.chord_factors, sk.chord_pivot_fallbacks,
+             sk.chord_residual_fallbacks),
             _paths.since(before))
 
 
@@ -299,11 +301,201 @@ def test_a_sparse_bail_leaves_no_trace(monkeypatch):
 
     def bailing(s):
         cfn(s)
+        ## (a hand-back's chord counts: none -- newton.h's THE CHORD'S
+        ## NUMERIC; no fallback here, so the numeric is the entry's,
+        ## refactored in place on its pivot order)
+        ck = s.ck
+        ck.refactors = ck.factors = ck.pivot_fallbacks = ck.residual_fallbacks = 0
         return 2
     monkeypatch.setattr(_tran_newton_c, '_driver', (ffi, bailing, lapack))
     b = _sparse_run(True, **dict(kw))
     assert a[0] == b[0] and a[1] == b[1]
+    assert a[1][6] > 10 and a[1][8:] == (0, 0)
     assert b[2].get('newton_c:served', 0) == 0 and b[2].get('newton_c:bail:x', 0) > 10
+
+
+## -- the chord's numeric (roadmap 244) --------------------------------------
+
+@pytest.mark.parametrize('tol', [1e-16, 3e-16])
+def test_the_chord_s_residual_fallbacks_in_c_are_the_python_s(tol, monkeypatch):
+    """The chord's numeric (`StructuralKLU.chord_factor`) under a validation
+    tight enough to refuse some refactors: the C makes those fresh factors
+    itself (no KLU hand-back), and where the loop stops in an attempt whose
+    Newton it served (`loop_c:bail:lte`) it takes the attempt's numeric back
+    (loop.c's `ck_back`; measured 2026-11-03 with a print: at 1e-16 four
+    such attempts, each numeric replaced, at 3e-16 two replaced and two
+    refactored in place) -- the bytes and every count the Python's."""
+    from pycircuit.circuit import linearsolver
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', tol)
+    kw = {'tend': 8e-9, 'timestep': 2e-10}
+    a = _sparse_run(False, **dict(kw))
+    b = _sparse_run(True, **dict(kw))
+    assert a[0] == b[0] and a[1] == b[1]
+    assert a[1][9] > 0 and a[1][6] > a[1][9] and a[1][7] == a[1][9] + 1
+    assert b[2].get('loop_c:bail:lte', 0) > 0 and b[2].get('newton_c:served', 0) > 10
+    assert not any(k.startswith('newton_c:bail:klu') for k in b[2]), b[2]
+
+
+def test_a_chord_refactor_refused_in_c_is_factored_as_the_python_s(monkeypatch):
+    """KLU's refactor refusing the chord's numeric on about a quarter of the
+    matrices -- a stand-in keyed on the values (their CRC), so the Python's
+    and the C's refuse the same ones, as a zero pivot would: the C makes
+    the fresh factors itself, the run and every count the Python's."""
+    import ctypes
+    import zlib
+
+    from pycircuit.circuit import linearsolver
+    c_void_p = ctypes.c_void_p
+    lib = linearsolver.KLUSolver()._lib
+    real = ctypes.CFUNCTYPE(ctypes.c_int, *(c_void_p,) * 6)(
+        ctypes.cast(lib.klu_refactor, c_void_p).value)
+    nnz = []
+
+    def refusing(Ap, Ai, Ax, sym, num, common):
+        vals = (ctypes.c_double * nnz[0]).from_address(Ax)
+        if zlib.crc32(bytes(vals)) % 4 == 0:
+            return 0
+        return real(Ap, Ai, Ax, sym, num, common)
+    stand_in = ctypes.CFUNCTYPE(ctypes.c_int, *(c_void_p,) * 6)(refusing)
+
+    class _Lib:
+        def __init__(self, lib):
+            self._l = lib
+
+        def __getattr__(self, name):
+            return getattr(self._l, name)
+
+        def klu_refactor(self, Ap, Ai, Ax, sym, num, common):
+            return stand_in(*(ctypes.cast(p, c_void_p).value for p in (Ap, Ai, Ax)), sym.value,
+                            num.value, ctypes.addressof(common._obj))
+    make = linearsolver._ChordNumeric._make
+
+    def making(self, rhs):
+        sk = self._solver
+        nnz[:] = [sk.nnz]
+        lib, sk._lib = sk._lib, _Lib(sk._lib)
+        try:
+            return make(self, rhs)
+        finally:
+            sk._lib = lib
+    bind = _tran_newton_c._klu_bind
+
+    def binding(rec, sk):
+        ok = bind(rec, sk)
+        if ok:
+            nnz[:] = [sk.nnz]
+            rec.s.ck.klu_refactor = rec.ffi.cast('void *', ctypes.cast(stand_in, c_void_p).value)
+        return ok
+    monkeypatch.setattr(linearsolver._ChordNumeric, '_make', making)
+    monkeypatch.setattr(_tran_newton_c, '_klu_bind', binding)
+    kw = {'tend': 8e-9, 'timestep': 2e-10}
+    a = _sparse_run(False, **dict(kw))
+    b = _sparse_run(True, **dict(kw))
+    assert a[0] == b[0] and a[1] == b[1]
+    assert a[1][8] > 3 and a[1][6] > a[1][8] and a[1][7] == a[1][8] + 1 and a[1][9] == 0
+    assert b[2].get('newton_c:served', 0) > 10
+    assert not any(k.startswith('newton_c:bail:klu') for k in b[2]), b[2]
+
+
+def test_a_chord_solve_handed_back_after_a_fresh_factor_leaves_the_entry(monkeypatch):
+    """The C's chord solve failing after a fresh factor -- a stand-in for
+    the first solve's klu_solve that refuses, on about half the right-hand
+    sides (their CRC), a numeric that is not the call's entry -- under a
+    validation that refuses some refactors: each such solve is handed back
+    (`klu_solve`) with a numeric made in the call, and the hand-back frees
+    it (the numerics live at the end the solvers' own, `_counted`) and
+    leaves the chord's numeric and counts as at its entry (newton.c's
+    `pcx_newton`): the Python's repeat is the run, byte for byte and count
+    for count."""
+    import ctypes
+    import zlib
+
+    from pycircuit.circuit import linearsolver
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 1e-16)
+    c_void_p, c_int = ctypes.c_void_p, ctypes.c_int
+    proto = ctypes.CFUNCTYPE(c_int, c_void_p, c_void_p, c_int, c_int, c_void_p, c_void_p)
+    real = proto(ctypes.cast(linearsolver.KLUSolver()._lib.klu_solve, c_void_p).value)
+    recs = []
+
+    def failing(sym, num, m, nrhs, b, common):
+        ck = recs[0].s.ck
+        entry = int(recs[0].ffi.cast('uintptr_t', ck.klu_num))
+        if num != entry and zlib.crc32(bytes((ctypes.c_double * m).from_address(b))) % 2 == 0:
+            return 0
+        return real(sym, num, m, nrhs, b, common)
+    stand_in = proto(failing)
+    bind = _tran_newton_c._klu_bind
+
+    def binding(rec, sk):
+        ok = bind(rec, sk)
+        if ok:
+            recs[:] = [rec]
+            rec.s.ck.klu_solve = rec.ffi.cast('void *', ctypes.cast(stand_in, c_void_p).value)
+        return ok
+    kw = {'tend': 8e-9, 'timestep': 2e-10}
+    a = _sparse_run(False, **dict(kw))
+    made = _counted(monkeypatch)
+    monkeypatch.setattr(_tran_newton_c, '_klu_bind', binding)
+    b = _sparse_run(True, **dict(kw))
+    _only_their_own_live(made)
+    assert a[0] == b[0] and a[1] == b[1]
+    assert a[1][9] > 0
+    assert b[2].get('newton_c:bail:klu_solve', 0) > 3 and b[2].get('newton_c:served', 0) > 10
+
+
+def _counted(monkeypatch, fail=None):
+    """Every StructuralKLU made from here on calling a library that counts
+    its numerics (test_radau_tc's `_KLULib`: the C binds its entries too),
+    its refactor refused where `fail(values)`: the list of them."""
+    from pycircuit.circuit import linearsolver
+    from pycircuit.circuit.tests.test_radau_tc import _KLULib
+    made = []
+    init = linearsolver.StructuralKLU.__init__
+
+    def counted(self, *a, **k):
+        init(self, *a, **k)
+        self._lib = _KLULib(self, fail)
+        made.append(self)
+    monkeypatch.setattr(linearsolver.StructuralKLU, '__init__', counted)
+    return made
+
+
+def _only_their_own_live(made):
+    """The numerics live are the solvers' own (`_chord`, `_numeric`)."""
+    import gc
+    gc.collect()
+    assert made and all(sk._lib.live == {p for p in (sk._chord, sk._numeric) if p}
+                        for sk in made), [(sk._lib.live, sk._chord, sk._numeric) for sk in made]
+
+
+@pytest.mark.parametrize('tol, refuse', [(1e-16, False), (None, True)], ids=['residual', 'pivot'])
+def test_the_chord_s_numerics_are_freed_as_the_python_s(tol, refuse, monkeypatch):
+    """Every numeric the chord makes is freed where another replaces it --
+    the C's as the Python's, and where the loop takes an attempt back
+    (`ck_back`: the numeric its Newton made freed, the entry kept) -- so at
+    the run's end the numerics live are the solvers' own (`_chord`,
+    `_numeric`), counted by a library both call (test_radau_tc's
+    `_KLULib`), the fallbacks a tight validation's or a refused refactor's
+    (on the values' CRC)."""
+    import zlib
+
+    from pycircuit.circuit import linearsolver
+    if tol is not None:
+        monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', tol)
+
+    def fail(ax):
+        return refuse and zlib.crc32(ax.tobytes()) % 4 == 0
+    made = _counted(monkeypatch, fail)
+    kw = {'tend': 8e-9, 'timestep': 2e-10}
+    got = []
+    for on in (False, True):
+        made.clear()
+        got.append(_sparse_run(on, **dict(kw)))
+        _only_their_own_live(made)
+    a, b = got
+    assert a[0] == b[0] and a[1] == b[1]
+    assert (a[1][9] if tol else a[1][8]) > 3
+    assert b[2].get('newton_c:served', 0) > 10
 
 
 def test_a_core_pattern_outside_the_klu_pattern_declines(monkeypatch):

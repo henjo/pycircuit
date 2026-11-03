@@ -533,9 +533,8 @@ def _settle(c, e, run):
     sources' the tables' own calls made)."""
     rec, a = e.rec, run.attempts
     if rec.klu is not None:
-        if rec.s.chord:
-            rec.klu.numerics += a
-        else:
+        if not rec.s.chord:
+            ## (the chord's counts its own: `_tran_newton_c.chord_out`)
             rec.klu.refactors += run.iters
         _PC['newton_c:sparse'] += a
     _PC['newton_c:served'] += a

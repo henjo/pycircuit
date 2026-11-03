@@ -27,7 +27,9 @@
  * before its call and restores them after, and `solve` sets the six
  * scalars anew every call.  Every other field the loop takes as the last
  * served `solve` left it (T, maxiter, reltol, chord, fold_j, abstol, xtol,
- * the walk, the sparse chord). */
+ * the walk, the sparse chord) -- but `ck_defer`, which it sets for each
+ * call and clears after, and the chord's numeric `ck`, which it takes back
+ * to an attempt's entry where it stops in that attempt (loop.h). */
 typedef struct {
     /* THE CORE (CTX): `_tran_core._Core.cs` and core.c's entry */
     const void *core;     /* the core's hdl_core_t */
@@ -156,6 +158,23 @@ typedef struct {
          *klu_factor,     /* KLU's klu_factor (klu_factor_t, pcx_abi.h) */
          *klu_solve,      /* klu_solve (klu_solve_t) */
          *klu_free;       /* klu_free_numeric (klu_free_numeric_t) */
+    /* THE CHORD'S NUMERIC (`StructuralKLU.chord_factor`): the sparse
+       chord's first solve is `StructuralKLU.solve`'s sequence (pcx_kluseq.h's
+       `pcx_klu_step`) on the numeric the chord keeps from step to step -- a
+       refactor on its pivot order, a fresh factor where none is held, at a
+       zero pivot or a failed residual -- every later iteration a solve on
+       it.  `ck.klu_num` is its `_chord` at a call's entry; every call
+       leaves there the one the next starts from: a served solve
+       (NEWTON_CONVERGED, NEWTON_EARLY) the numeric it ended with (the
+       entry's freed where another replaced it), a hand-back the entry's
+       and its counts as they were (pcx_klu.h's THE NUMERIC).  `ck` shares
+       the pattern, analysis, common and entries above (`_klu_bind`).
+       `ck_defer` set, a served solve frees nothing: the entry stays the
+       caller's to free or take back (loop.c's attempt, which the Python
+       repeats from its entry where the loop stops in it). */
+    pcx_klu_t ck;
+    double *ckt;          /* (2 m) the residual's sparse verdict's scratch */
+    long ck_defer;        /* CALL: 1 the caller keeps the entry (loop.c), else 0 */
     /* THE SPARSE FULL NEWTON (KLU, chord 0): each iteration's solve is
        `StructuralKLU.solve` on its refactor path -- klu_refactor of the
        RUN's numeric (`klu_num`: the StructuralKLU's own, which its every
@@ -222,8 +241,8 @@ typedef struct {
    fields.  Either way the call writes, outside the record, what the
    Python's evaluation writes -- each element's parameter row at its
    temperature slot (the core's and the walk's kernels) -- the core's own
-   scratch, and on the sparse chord KLU's common; the numeric it factors
-   it frees before it returns. */
+   scratch, and on the sparse chord KLU's common and the chord's numeric
+   (`ck`: THE CHORD'S NUMERIC). */
 long pcx_newton(newton_t *s);
 
 /* pcx_newton's result, left in `status` too (`_tran_newton_c.BAIL` names the

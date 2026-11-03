@@ -422,6 +422,133 @@ def test_a_refactor_that_meets_a_zero_pivot_factors_again():
         s.solve(np.outer([1.0, 1.0, 1.0], [1.0, 2.0, 3.0]), b, None)     # (rank one)
 
 
+## -- the chord's numeric (roadmap 244) --------------------------------------
+
+def _ladder_js(c, iref, k, seed=5):
+    rng = np.random.default_rng(seed)
+    out = []
+    for _ in range(k):
+        x = rng.normal(0.0, 0.5, c.n)
+        out.append(_reduced(c.G(x, defaultepar), iref) + 1e10 * _reduced(c.C(x, defaultepar), iref))
+    return out
+
+
+def test_the_chord_refactors_one_numeric_from_step_to_step():
+    """`chord_factor`: the first step's numeric made afresh -- the answers
+    `factor`'s bit for bit -- every later step's a refactor of it, in place
+    (its pivot order kept), its first solve checked by the residual; every
+    later solve of a step on the numeric as it stands.  `solve`'s numeric
+    and `factor`'s count untouched."""
+    c = _ladder()
+    iref, st, s, _made = _structural(c)
+    J1, J2, J3 = _ladder_js(c, iref, 3)
+    b = np.ones(st[0])
+    b2 = np.linspace(-1.0, 1.0, st[0])
+    f1 = s.chord_factor(J1, numeric)
+    assert (s.chord_factors, s.chord_refactors) == (0, 0)    # (made at its first solve)
+    y1, y2 = f1.solve(b), f1.solve(b2)
+    ref = s.factor(J1, numeric)
+    assert y1.tobytes() == ref.solve(b).tobytes() and y2.tobytes() == ref.solve(b2).tobytes()
+    num = s._chord
+    for J in (J2, J3):
+        f = s.chord_factor(J, numeric)
+        np.testing.assert_allclose(f.solve(b), np.linalg.solve(J, b), rtol=1e-9, atol=1e-12)
+        np.testing.assert_allclose(f.solve(b2), np.linalg.solve(J, b2), rtol=1e-9, atol=1e-12)
+        assert s._chord == num
+    assert (s.chord_factors, s.chord_refactors, s.chord_residual_fallbacks,
+            s.chord_pivot_fallbacks) == (1, 2, 0, 0)
+    assert s._numeric is None and s.numerics == 1 and s.refactors == 0 and s.foreign == 0
+    assert 'chord=2/1/0/0' in repr(s)
+
+
+def test_a_chord_refactor_that_fails_its_residual_is_factored_again():
+    """A refactor its residual refuses: a fresh factor (the held numeric
+    freed), and the step's answer the fresh factor's, `factor`'s bit for
+    bit."""
+    c = _ladder()
+    iref, st, s, _made = _structural(c)
+    J1, J2 = _ladder_js(c, iref, 2)
+    b = np.ones(st[0])
+    s.chord_factor(J1, numeric).solve(b)
+    s.REFACTOR_RESIDUAL_TOL = -1.0                       # every reuse fails its check
+    f = s.chord_factor(J2, numeric)
+    y = f.solve(b)
+    assert y.tobytes() == s.factor(J2, numeric).solve(b).tobytes()
+    assert f.solve(2.0 * b).tobytes() == s.factor(J2, numeric).solve(2.0 * b).tobytes()
+    assert (s.chord_factors, s.chord_refactors, s.chord_residual_fallbacks) == (2, 1, 1)
+
+
+def test_a_chord_refactor_that_meets_a_zero_pivot_factors_again():
+    """The held pivot order on a matrix regular under another: a fresh
+    factor (counted); a matrix singular under every order raises and leaves
+    no numeric -- the next step's made afresh."""
+    m = 3
+    cols, rows = np.nonzero(np.ones((m, m)))
+    s = linearsolver.StructuralKLU(m, rows, cols, fallback=linearsolver.SuperLUSolver)
+    b = np.array([1.0, 2.0, 3.0])
+    s.chord_factor(np.eye(m) + 0.1 * np.ones((m, m)), None).solve(b)
+    P = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+    np.testing.assert_allclose(s.chord_factor(P, None).solve(b), np.linalg.solve(P, b), rtol=1e-12)
+    assert (s.chord_pivot_fallbacks, s.chord_factors, s.chord_refactors) == (1, 2, 1)
+    with pytest.raises(np.linalg.LinAlgError):
+        s.chord_factor(np.outer([1.0, 1.0, 1.0], [1.0, 2.0, 3.0]), None).solve(b)
+    assert s._chord is None
+    np.testing.assert_allclose(s.chord_factor(P, None).solve(b), np.linalg.solve(P, b), rtol=1e-12)
+    assert s.chord_factors == 3
+
+
+def test_a_matrix_the_chord_does_not_cover_goes_to_the_fallback():
+    c = _ladder()
+    iref, st, s, made = _structural(c)
+    m = st[0]
+    b = np.ones(m)
+    s.chord_factor(_ladder_js(c, iref, 1)[0], numeric).solve(b)
+    num = s._chord
+    D = np.random.default_rng(3).normal(size=(m, m)) + m * np.eye(m)
+    f = s.chord_factor(D, numeric)
+    np.testing.assert_allclose(f.solve(b), np.linalg.solve(D, b), rtol=1e-9)
+    assert s.foreign == 1 and len(made) == 1 and s._chord == num and s.chord_refactors == 0
+
+
+def test_the_chord_s_transposed_and_complex_solves():
+    """A transposed solve before any other makes the step's numeric first
+    (a refactor, its residual tested on a zero right-hand side); a complex
+    right-hand side two real solves."""
+    c = _ladder()
+    iref, st, s, _made = _structural(c)
+    J1, J2 = _ladder_js(c, iref, 2)
+    rng = np.random.default_rng(4)
+    b = rng.normal(size=st[0])
+    s.chord_factor(J1, numeric).solve(b)
+    f = s.chord_factor(J2, numeric)
+    np.testing.assert_allclose(f.solve_transposed(b), np.linalg.solve(J2.T, b), rtol=1e-9,
+                               atol=1e-12)
+    assert s.chord_refactors == 1
+    z = b + 1j * rng.normal(size=st[0])
+    np.testing.assert_allclose(f.solve(z), np.linalg.solve(J2, z), rtol=1e-9, atol=1e-12)
+    np.testing.assert_allclose(f.solve_transposed(z), np.linalg.solve(J2.T, z), rtol=1e-9,
+                               atol=1e-12)
+    assert s.chord_refactors == 1 and s.chord_factors == 1
+
+
+def test_the_chord_factor_of_the_other_solvers_is_their_factor():
+    """`AutoSolver` hands the chord to its choice; another solver's chord
+    factor is its `factor` (the dense one's bit for bit)."""
+    c = _ladder()
+    iref = c.get_node_index(gnd)
+    J = _ladder_js(c, iref, 1)[0]
+    b = np.ones(c.n - 1)
+    a = linearsolver.AutoSolver(structure=lambda: jacobian_structure(c, iref))
+    a.solve(J, b, numeric)
+    f = a.chord_factor(J, numeric)
+    assert type(f._f) is linearsolver._ChordNumeric and a._choice.chord_refactors == 0
+    np.testing.assert_allclose(f.solve(b), np.linalg.solve(J, b), rtol=1e-9, atol=1e-12)
+    d = linearsolver.DenseSolver()
+    A = np.array([[4.0, 1.0], [2.0, 3.0]])
+    assert (d.chord_factor(A, numeric).solve(np.ones(2)).tobytes()
+            == d.factor(A, numeric).solve(np.ones(2)).tobytes())
+
+
 ## -- the sparse full Newton in C (2026-10-16) --------------------------------
 
 def _hdl_ladder(sections):

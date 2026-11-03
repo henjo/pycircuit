@@ -86,7 +86,7 @@ UNITS = [
 ]
 
 #: the struct headers a unit's own header embeds: its cdef reads them first
-EMBEDS = {'dcnewton': ('pcx_klu.h',), 'pcnrdc': ('pcx_klu.h',), 'radau': ('pcx_klu.h',),
+EMBEDS = {'newton': ('pcx_klu.h',), 'dcnewton': ('pcx_klu.h',), 'pcnrdc': ('pcx_klu.h',), 'radau': ('pcx_klu.h',),
           'radau_tc': ('pcx_klu.h',)}
 
 

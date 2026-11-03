@@ -46,7 +46,8 @@ step, the statistics, every attribute the attempts write
 `_iq`, `_Geq`, `_Cmat`, the active integrator and its coefficients, the
 predictor's history, the step record, the screen's running maximum), the
 controller's (`_ref_running`, `_retry`, `_q_carried`, `last_err`), the
-loop's, the run's KLU counts (`numerics`, `refactors`) -- and the `_paths`
+loop's, the run's KLU counts (the full Newton's `refactors`; the chord's
+numeric and counts `_call`'s, `_tran_newton_c.chord_out`) -- and the `_paths`
 tallies the Python attempts make, under their keys.
 
 ENTRY (`run`).  Not entered, and not counted: the switch, the backoff (an
@@ -857,16 +858,23 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
 def _call(drv, rec, s, stats):
     """The C's attempts: its status.  The Newton record's own pointers are
     saved before and restored after, whatever the status (the C points
-    them at the loop's buffers while it runs); the time is the solve's."""
+    them at the loop's buffers while it runs); the time is the solve's.
+    The sparse chord's numeric handed in and taken back (`_tran_newton_c.
+    chord_in`, `chord_out`: its counts the StructuralKLU's)."""
+    from pycircuit.circuit import _tran_newton_c
     ## (the Newton's own pointers: the C points them elsewhere while it runs)
     nt = rec.s
     saved = (nt.q1, nt.q2, nt.iq1, nt.u, nt.xseed, nt.cx, nt.cC, nt.Cj, nt.Geqj, nt.have_cache)
+    if rec.klu is not None:
+        _tran_newton_c.chord_in(rec)
     t0 = time.perf_counter()
     try:
         status = drv[1](s)
     finally:
         (nt.q1, nt.q2, nt.iq1, nt.u, nt.xseed, nt.cx, nt.cC, nt.Cj, nt.Geqj,
          nt.have_cache) = saved
+        if rec.klu is not None:
+            _tran_newton_c.chord_out(rec)
         stats.solve_seconds += time.perf_counter() - t0
     return status
 
@@ -968,7 +976,7 @@ def run(loop):
     s = run_.s
     if rec.klu is not None:
         ## (the run's numeric as it stands, for the sparse full Newton: the
-        ## Python's solves replace it -- newton.h)
+        ## Python's solves replace it -- newton.h; and the chord's own)
         num = rec.klu._numeric
         rec.s.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
     status = _call(drv, rec, s, tr.statistics)
@@ -1032,14 +1040,10 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     tr._is_first_step = bool(s.is_first)
     if run_.br is not None:
         tr._branch_cmax = float(s.cmax)
-    if rec.klu is not None:
-        if rec.s.chord:
-            ## (an abandoned attempt's sparse chord factored too)
-            rec.klu.numerics += s.attempts + s.early_aborts
-        else:
-            ## (the sparse full Newton: a refactor of the run's numeric an
-            ## iteration)
-            rec.klu.refactors += s.iters
+    if rec.klu is not None and not rec.s.chord:
+        ## (the sparse full Newton: a refactor of the run's numeric an
+        ## iteration; the chord's counts its own -- `chord_out`)
+        rec.klu.refactors += s.iters
     if adaptive:
         ctrl, ct = tr.step_controller, run_.ct
         if s.keeps_run and s.have_run:

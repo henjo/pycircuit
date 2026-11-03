@@ -7,6 +7,8 @@
 #include "pcx_minmax.h"
 #include "pcx_dense.h"
 #include "pcx_verdict.h"
+#include "pcx_klu.h"
+#include "pcx_kluseq.h"
 #include "newton.h"
 #include "lte.h"
 
@@ -99,8 +101,9 @@ static long sparse_full(newton_t *s, long m)
 }
 
 /* The step, in `b` (-F reduced in, the step out), as the Python's solver
-   makes it on iteration `it`: the sparse chord (`StructuralKLU.factor`'s
-   numeric made on the first, `*num`; `_KLUNumeric.solve` every one), the
+   makes it on iteration `it`: the sparse chord (`StructuralKLU.chord_factor`:
+   on the first `solve`'s sequence on the chord's numeric, `*num` after it;
+   a solve on it every later one), the
    dense chord (SciPy's lu_factor -- dgetrf -- once, lu_solve -- dgetrs, 'N'
    -- every one), the sparse full Newton (`sparse_full`), or the full
    Newton's numpy.linalg.solve (numpy's own dgesv on the column-major copy).
@@ -115,10 +118,19 @@ static long solve_step(newton_t *s, long it, int finite, void **num)
     char trans = 'N';
     if (s->chord && s->klu_sym) {
         if (it == 0) {
+            long st;
             for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) return NEWTON_BAIL_JNONFINITE;
-            *num = ((klu_factor_t) s->klu_factor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
-                                                  s->klu_common);
-            if (!*num) return NEWTON_BAIL_KLU_FACTOR;
+            for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return NEWTON_BAIL_BNONFINITE;
+            /* `solve`'s sequence on the chord's numeric: the right-hand side
+               kept for the residual (`rb`), the step into `b`; R the dense
+               test's scratch (the full Newton's J reduced: not this call's) */
+            for (i = 0; i < m; i++) s->rb[i] = s->b[i];
+            st = pcx_klu_step(&s->ck, s->R, s->rb, s->b, s->ry, s->ckt, m, s->dgemv, 0, NULL);
+            if (st == PCX_KLU_FACTOR) return NEWTON_BAIL_KLU_FACTOR;
+            if (st == PCX_KLU_SOLVE) return NEWTON_BAIL_KLU_SOLVE;
+            if (st) return NEWTON_BAIL_KLU_RESIDUAL;
+            *num = s->ck.klu_out;
+            return 0;
         }
         for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return NEWTON_BAIL_BNONFINITE;
         if (!((klu_solve_t) s->klu_solve)(s->klu_sym, *num, m32, 1, s->b, s->klu_common))
@@ -524,12 +536,28 @@ static long iterate(newton_t *s, void **num)
     return finish(s, NEWTON_BAIL_MAXITER);
 }
 
-/* the entry (contract: newton.h); the sparse chord's numeric is the
-   solve's own, freed on every return */
+/* the entry (contract: newton.h): the sparse chord's numeric as the
+   outcome leaves it (THE CHORD'S NUMERIC) -- a hand-back's counts as they
+   were, the Python's repeat makes its own */
 long pcx_newton(newton_t *s)
 {
     void *num = 0;
-    long status = iterate(s, &num);
-    if (num) ((klu_free_numeric_t) s->klu_free)(&num, s->klu_common);
+    pcx_klu_t *k = &s->ck;
+    const long r0 = k->refactors, f0 = k->factors, p0 = k->pivot_fallbacks,
+               q0 = k->residual_fallbacks;
+    long status;
+    k->klu_out = k->klu_num;
+    status = iterate(s, &num);
+    if (s->chord && s->klu_sym) {
+        const int back = status != NEWTON_CONVERGED && status != NEWTON_EARLY;
+        if (back || !s->ck_defer) pcx_klu_finish(k, back);
+        k->klu_num = k->klu_out;
+        if (back) {
+            k->refactors = r0;
+            k->factors = f0;
+            k->pivot_fallbacks = p0;
+            k->residual_fallbacks = q0;
+        }
+    }
     return status;
 }

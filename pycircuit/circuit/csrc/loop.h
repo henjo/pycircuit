@@ -27,6 +27,12 @@
 typedef struct {
     /* the units: their entries, their structs */
     void *newton_fn, *newton;   /* newton.c, its newton_t (the C Newton's record) */
+    /* the attempt's chord numeric (newton.h's THE CHORD'S NUMERIC, its
+       `ck_defer`): the numeric and the counts at its Newton's call, kept
+       until the attempt is made -- the one the Python repeats where the
+       loop stops in it is taken back to them */
+    void *ck_entry;             /* OWN */
+    long ck_live, ck_r0, ck_f0, ck_p0, ck_q0;   /* OWN */
     void *pred_fn, *pred;       /* pred.c, its pred_t */
     void *branch_fn, *branch;   /* branch.c, its branch_t; NULL: nothing screened */
     void *src_fn, *src;         /* sources.c, its sources_t */

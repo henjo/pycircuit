@@ -12967,3 +12967,57 @@ units' structs.  Both refused: nothing built.
 **What would reopen them.**  R3: a check that falls back to an exact C computation rather than the Python (then a
 looser band costs only that computation).  R4: nothing near -- the verdict's cost is its accumulations through memory
 (`y`, `t` indexed by row), a CSR pass over the same entries in the same order would be the lever there.
+
+## 2026-11-03 — 244. The chord's numeric -- the sparse chord's factor of each step made a refactor of a numeric the chord keeps from step to step (a fresh factor at a zero pivot or a failed residual), in the Python and the C alike: jge under gear2 4.43 -> 4.12 s (1.076x), the answers moved on 4 of 27 decks
+
+**Why**  Plan g24's `tc/plan_239_next5.md`, item 4 (Andreas: "I want item4", on the measured result changes).  The
+chord Newton factors its matrix once a step; on a sparse run that was a fresh KLU factor every step (`StructuralKLU.
+factor`: 23.4 us on jge, against 9 us for a refactor on a held pivot order; ~0.16 s, ~3.5 % of jge under gear2).
+`solve` -- the full Newton's and the operating point's -- has refactored one numeric since stage 2, validated by its
+residual; the chord had no numeric to keep.  It changes results where the pivot order a fresh factor would choose
+differs from the held one.  Measured before building, the Python chord with the C off on the 27 decks under gear2:
+16 byte-identical, 7 dense (untouched), opampal <= 6.2e-16 of the probe's range, todd3 <= 1.1e-12, e1480 <= 4.4e-9,
+mike2 one step more (553 -> 554, rejections 93 -> 91, Newton 1 237 -> 1 229) <= 5.7e-6 of range at common times; the
+gold metric the same to 6 digits; no fallback.  LINE (set after the twin tests, before any timing; one form): jge
+under gear2 at least 1.02x against HEAD 61f7869a, the median of 5 interleaved quiet-box pairs.  GUARD: the 27 decks'
+total solve under gear2 not slower; Radau and DC every digest the same; gear2's the same but where the chord's
+numeric moves them, each within the bounds measured.  Refused under.
+
+**Built.**  `linearsolver.StructuralKLU.chord_factor`: a `_ChordNumeric` (owning nothing) whose first solve is
+`solve`'s sequence on the chord's own numeric `_chord` -- a refactor on its pivot order (a fresh factor where none is
+held or at a zero pivot), klu_solve, the refactor's residual against `REFACTOR_RESIDUAL_TOL` (a fresh factor where it
+fails) -- and every later solve of the step on the numeric as it stands; the transposed solve makes the numeric first.
+Its own counters (`chord_refactors`, `chord_factors`, `chord_pivot_fallbacks`, `chord_residual_fallbacks`, in the
+repr); a matrix it does not cover goes to the fallback's `factor`.  `LinearSolver.chord_factor` is `factor`,
+`AutoSolver`'s its choice's; `ChordNewton` calls it.  The C: `newton_t` embeds a `pcx_klu_t` (`ck`, pcx_klu.h now
+included before newton.h) and the sparse chord's first iteration is pcx_kluseq.h's `pcx_klu_step` on it -- the
+DC Newton's sequence -- its later ones klu_solve on the result.  A call hands its numeric over as pcx_klu.h's THE
+NUMERIC says: a hand-back leaves the entry and its counts, a served solve the numeric it ended with (the entry freed
+where another replaced it); `_tran_newton_c.chord_in` / `chord_out` give it `_chord` and take it back, around the
+Newton's call and the C loop's (`_tran_loop_c._call`, so the multistep walk too).  ⚠ THE LOOP'S ATTEMPT: the C loop
+hands an attempt back after its Newton was served (an error test's flags, `loop_c:bail:lte`), and the Python repeats
+that attempt's Newton from the attempt's entry -- so loop.c keeps each attempt's entry numeric and counts from its
+Newton's call (`ck_open`, which sets `ck_defer`: a served solve then frees nothing) until the attempt is made
+(`ck_commit` in `attempt_made`, `early_reject`, `newton_reject`: the entry freed where replaced) and takes it back on
+any other exit (`ck_back`, at `pcx_loop`'s end; the multistep loop moved into `lmm_loop`).  Found by the twin test:
+the C counted 61 refactors to the Python's 59, the bytes the same.
+
+**Measured** (a quiet box, HEAD 61f7869a from its worktree and this tree, interleaved, 5 pairs): jge under gear2 4.431 -> 4.116 s, 1.076x (1.072 to 1.089; the line 1.02x) -- met, about twice the 0.16 s sized (the factor's own time in situ; the per-step numeric's allocation and free are the untested guess for the rest); under Radau 1.007x (0.997 to 1.008).  The gate's
+runs (a busier box): the 27 decks' gear2 solves 18.4 -> 17.1 s (1.074x; gm19 2.23 -> 1.93, mux8 3.52 -> 3.28, voter25 2.63 -> 2.45), Radau 37.1 -> 36.9 s (1.004x).
+
+**Tests.**  test_structural_klu, six: the chord's numeric made once and refactored in place (the first step's answers
+`factor`'s bit for bit), the residual's and the zero pivot's fallbacks (the fallback's answers `factor`'s bit for
+bit; a matrix singular under every order raises and leaves none), the fallback solver for a foreign matrix, the
+transposed and complex solves, the delegation.  test_newton_c, seven, the C against the Python byte for byte and count
+for count: a validation tight enough to refuse some refactors (1e-16, 3e-16: the loop's take-back met -- a print
+showed four attempts taken back with a replaced numeric at 1e-16, two replaced and two refactored in place at 3e-16),
+a refactor refused on a quarter of the matrices (a stand-in keyed on the values' CRC, so both refuse the same), the
+first solve failing after a fresh factor (a C-only stand-in: each a hand-back with a numeric made in the call), and
+the numerics live at the run's end only the solvers' own (test_radau_tc's counting `_KLULib`, which the C binds
+too).  Fifteen mutations, every one caught; one only by the live count -- the take-back keeping the attempt's fresh
+numeric instead of its entry is invisible in the bits where the two share a pivot order, as they do on these
+fixtures.  The twins' 521 before the six pinned pairs were re-recorded (the Newton pair now names the chord's code).
+
+**Gate** (the main tree): the TELL; the suite, 6 133 passed (10 skipped, 3 xfailed) -- the first run failed one, test_no_dead_knobs: `_tran_newton_c._early` took `sparse` and `ch` and read neither once the chord's count moved to `chord_out` (removed; the pairs re-recorded); the sanitizer builds, fast clean (5 913 passed), deep clean (1 484 passed); the 27 gold
+decks -- standalone DC against 242's gate runs, gear2 and Radau against HEAD interleaved: DC and Radau every digest, step, rejection, Newton count and path count identical; gear2 the same on 23 decks, and on the four the measurement named -- e1480, opampal, mike2, todd3 -- the digests moved (mike2 553 -> 554 steps, 93 -> 91 rejections, 1 237 -> 1 229 Newton iterations; the others' counts the same), the gold metric the same to five digits (mike2 1.900827 -> 1.900812).  The waveforms of
+every gear2 deck that moved, the C on, against the Python-chord measurement: each bit for bit the Python chord's refactor run (C off) of the measurement; against HEAD at the times both runs share e1480 4.4e-9 of the probe's range, opampal 6.2e-16, mike2 5.7e-6, todd3 1.1e-12 -- the bounds measured.  Interpolated onto HEAD's times over the whole run, mike2 reads 1.7e-3 at a pulse edge (`i(vpulse)`, 13.0 ns) -- the grid's: HEAD's own waveform taken through the new grid and back moves 1.70e-3 there, and away from the points where that round trip moves more than 1e-6 (472 of 554) the new run is within 5.74e-6 of HEAD; todd3's 2.3e-7 and e1480's 6.5e-9 interpolated are their round trips' size (2.8e-7, 6.1e-9).

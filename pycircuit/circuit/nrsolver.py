@@ -446,8 +446,9 @@ class ChordNewton(NonLinearSolver):
             try:
                 if i == 0 and linsolver is not None:
                     ## (kept: an early abort's estimate solves with it --
-                    ## `_StepNewton._early_estimate`)
-                    fac = self.fac = linsolver.factor(J_s, toolkit)
+                    ## `_StepNewton._early_estimate`; `chord_factor`: a
+                    ## StructuralKLU's kept numeric, refactored)
+                    fac = self.fac = linsolver.chord_factor(J_s, toolkit)
                 if fac is not None:
                     xdiff = fac.solve(-F_s)
                 elif linsolver is not None:

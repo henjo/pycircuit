@@ -9,6 +9,7 @@
 #include "pcx_dense.h"
 /* the units this one calls through the pointers it is handed: their
    structs and entries */
+#include "pcx_klu.h"
 #include "newton.h"
 #include "pred.h"
 #include "branch.h"
@@ -16,7 +17,6 @@
 #include "lte.h"
 #include "ctrl.h"
 #include "lmmsens.h"
-#include "pcx_klu.h"
 #include "pcx_verdict.h"
 #include "pcx_kluseq.h"
 #include "radau.h"
@@ -63,6 +63,46 @@ static int next_breakpoint(loop_t *s, double t, double *out)
     return 1;
 }
 
+/* THE ATTEMPT'S CHORD NUMERIC (loop.h): at its Newton's call the entry and
+   the counts kept (`ck_open`); a made attempt frees the entry where its
+   Newton replaced it (`ck_commit`); the attempt the loop stops in is the
+   Python's, which repeats it from the entry (`ck_back`) */
+static void ck_commit(loop_t *s)
+{
+    newton_t *nt = (newton_t *) s->newton;
+    if (!s->ck_live) return;
+    s->ck_live = 0;
+    if (s->ck_entry != nt->ck.klu_num) pcx_klu_free(&nt->ck, s->ck_entry);
+}
+
+static void ck_open(loop_t *s, newton_t *nt)
+{
+    pcx_klu_t *k = &nt->ck;
+    ck_commit(s);
+    s->ck_entry = k->klu_num;
+    s->ck_r0 = k->refactors;
+    s->ck_f0 = k->factors;
+    s->ck_p0 = k->pivot_fallbacks;
+    s->ck_q0 = k->residual_fallbacks;
+    s->ck_live = 1;
+    nt->ck_defer = 1;
+}
+
+static void ck_back(loop_t *s)
+{
+    newton_t *nt = (newton_t *) s->newton;
+    pcx_klu_t *k;
+    if (!s->ck_live) return;
+    k = &nt->ck;
+    s->ck_live = 0;
+    if (k->klu_num != s->ck_entry) pcx_klu_free(k, k->klu_num);
+    k->klu_num = k->klu_out = s->ck_entry;
+    k->refactors = s->ck_r0;
+    k->factors = s->ck_f0;
+    k->pivot_fallbacks = s->ck_p0;
+    k->residual_fallbacks = s->ck_q0;
+}
+
 /* What every attempt the loop makes leaves -- accepted or rejected, as the
    Python's `_tran_newton_c` write-back and error test leave it: the
    converged point, its charge and current, its C and Geq (the buffer the
@@ -101,6 +141,7 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
     s->early_checks += a->early_checks;
     if (s->hk >= 2) s->pred_fast++;
     s->attempts++;
+    ck_commit(s);
 }
 
 /* 1. where (`_SteppingLoop.where`): the order drop a landing or a force
@@ -238,7 +279,9 @@ static long take(loop_t *s, loop_attempt_t *a)
     nt->Cj = s->cC[a->nxt];
     nt->Geqj = s->Geq[a->nxt];
     arm_early(s, a, nt);
+    ck_open(s, nt);
     st = CALL(s->newton_fn, pcx_newton, nt);
+    nt->ck_defer = 0;
     nt->early_lte = 0;
     a->early_checks = (st == NEWTON_EARLY || st == NEWTON_CONVERGED) ? nt->early_checks : 0;
     if (st == NEWTON_EARLY) return LOOP_JUDGE_EARLY;
@@ -373,6 +416,7 @@ static void early_reject(loop_t *s, const loop_attempt_t *a)
     if (s->hk >= 2) s->pred_fast++;
     s->rejected++;
     s->early_aborts++;
+    ck_commit(s);
     s->point_retries++;
     s->rejects++;
     s->imposed = 0;
@@ -394,6 +438,7 @@ static void newton_reject(loop_t *s, const loop_attempt_t *a)
     if (s->hk >= 2) s->pred_fast++;
     s->rejected++;
     s->newton_rejects++;
+    ck_commit(s);
     s->imposed = a->clamped || s->imposed;
     s->landing = a->landing;
     s->is_first = a->is_first;
@@ -1965,16 +2010,21 @@ static long stage_loop(loop_t *s)
    a discarded attempt's), the `att_*` fields its step, and the rings, the
    predictor's nodes, `xlast`, X and T accepted steps only.  The counts are
    this call's (zeroed here). */
+static long lmm_loop(loop_t *s);
+
 long pcx_loop(loop_t *s)
 {
-    loop_attempt_t a;
     long st;
     s->k = 0;
     s->attempts = s->rejected = s->iters = s->euler_steps = s->breaks = s->screens = 0;
     s->pred_fast = s->ltes = s->lte_euler = s->early_aborts = s->early_checks = 0;
     s->newton_rejects = 0;
     s->maps = 0;
-    if (s->walk) return s->status = walk(s);
+    if (s->walk) {
+        st = walk(s);
+        ck_back(s);
+        return s->status = st;
+    }
     s->st_fast = s->st_umiss = s->st_uhit = s->st_passes = s->st_estmemo = s->st_assemblies = 0;
     s->st_klu_refactors = s->st_klu_factors = s->st_klu_pivot = s->st_klu_resid = 0;
     s->st_klu_on = 0;
@@ -1988,11 +2038,21 @@ long pcx_loop(loop_t *s)
     s->tc_rkref = s->tc_rkfac = s->tc_rkpiv = s->tc_rkres = s->tc_rkdense = 0;
     s->tc_pyends = 0;
     if (s->family == LOOP_FAMILY_STAGE) return s->status = stage_loop(s);
+    st = lmm_loop(s);
+    ck_back(s);
+    return s->status = st;
+}
+
+/* the multistep family's attempts (`pcx_loop`): its status */
+static long lmm_loop(loop_t *s)
+{
+    loop_attempt_t a;
+    long st;
     for (;;) {
         /* `while self.t < self.tend` */
-        if (!(s->t < s->tend)) return s->status = LOOP_DONE;
-        if (s->k >= s->cap) return s->status = LOOP_FULL;
-        if ((st = where(s, &a)) != 0) return s->status = st;
+        if (!(s->t < s->tend)) return LOOP_DONE;
+        if (s->k >= s->cap) return LOOP_FULL;
+        if ((st = where(s, &a)) != 0) return st;
         st = take(s, &a);
         if (st == LOOP_JUDGE_EARLY) {
             early_reject(s, &a);
@@ -2002,10 +2062,10 @@ long pcx_loop(loop_t *s)
             newton_reject(s, &a);
             continue;
         }
-        if (st != 0) return s->status = st;
+        if (st != 0) return st;
         st = judge(s, &a);
         if (st == LOOP_JUDGE_RETRY) continue;
-        if (st != LOOP_JUDGE_ACCEPT) return s->status = st;
+        if (st != LOOP_JUDGE_ACCEPT) return st;
         /* 4. events: none -- a circuit with a declared state event declines
            at the loop's entry, so no step is cut here */
         accept(s, &a);

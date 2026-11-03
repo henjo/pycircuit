@@ -13,7 +13,9 @@ the circuit, `_KEPT`, answered at once while the circuit's dict holds that
 plan).  On the circuit's limiter walk (`_hdl_climit._walk_for`): the tables
 `limit_walk`'s setup fills (`F`, `PR`, `mirror`), and on each limiting
 element its pack `_hdl_cp` where it has none.  On the `StructuralKLU` it
-solves with: its `numerics` count.  `_paths`: `newton_c:<why>` a decline,
+solves with: the full Newton's `refactors`, and the chord's numeric
+`_chord` with its counts (`chord_in`, `chord_out`: newton.h's THE CHORD'S
+NUMERIC).  `_paths`: `newton_c:<why>` a decline,
 `newton_c:bail:<why>` a hand-back, `newton_c:maxiter` the iteration limit
 raised from the C, and on a serve `newton_c:served`,
 `newton_c:iterations`, `newton_c:jfold`, `newton_c:j_unread`,
@@ -96,7 +98,7 @@ ENABLED = os.environ.get('PYCIRCUIT_NEWTON_C', '1') != '0'
 STATUS = 'not loaded'
 
 NEWTON_C = _cbuild.csrc('newton.c')
-NEWTON_CDEF = _cbuild.csrc('newton.h')
+NEWTON_CDEF = _cbuild.csrc('pcx_klu.h') + _cbuild.csrc('newton.h')
 
 #: newton.h's named codes: the C's results (`NEWTON_CONVERGED`, the bails
 #: `NEWTON_BAIL_<WHY>`)
@@ -374,21 +376,50 @@ def _klu_bind(rec, sk):
     ## (the sparse full Newton's: J reduced, zero off the pattern, and its
     ## validation's two vectors -- newton.h)
     R, rb, ry = np.zeros(m * m), np.empty(m), np.empty(m)
+    ## (the chord's numeric's sequence: its residual's sparse verdict's scratch)
+    ckt = np.empty(2 * m)
     keep = (sk, kat, kabs, kAx, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai),
             ffi.from_buffer('int64_t *', kat), ffi.from_buffer('int64_t *', kabs),
             ffi.from_buffer('double *', kAx), R, rb, ry, ffi.from_buffer('double *', R),
-            ffi.from_buffer('double *', rb), ffi.from_buffer('double *', ry))
+            ffi.from_buffer('double *', rb), ffi.from_buffer('double *', ry), ckt,
+            ffi.from_buffer('double *', ckt))
     s.knnz = sk.nnz
     s.kAp, s.kAi, s.kat, s.kabs, s.kAx = keep[4:9]
-    s.R, s.rb, s.ry = keep[12:]
+    s.R, s.rb, s.ry = keep[12:15]
+    s.ckt = keep[16]
     s.klu_factor, s.klu_solve, s.klu_free, s.klu_refactor, s.klu_tsolve = (
         ffi.cast('void *', addr(f)) for f in (lib.klu_factor, lib.klu_solve, lib.klu_free_numeric,
                                               lib.klu_refactor, lib.klu_tsolve))
     s.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
     s.klu_common = ffi.cast('void *', ct.addressof(sk._common))
     s.klu_sym = ffi.cast('void *', sk._symbolic)
+    ck = s.ck
+    ck.kAp, ck.kAi, ck.kAx = s.kAp, s.kAi, s.kAx
+    ck.klu_sym, ck.klu_common = s.klu_sym, s.klu_common
+    ck.klu_factor, ck.klu_refactor = s.klu_factor, s.klu_refactor
+    ck.klu_solve, ck.klu_free = s.klu_solve, s.klu_free
+    ck.resid_tol = s.resid_tol
     rec.klu, rec.klu_sym, rec.klu_keep = sk, sk._symbolic, keep
     return True
+
+
+def chord_in(rec):
+    """The chord's numeric (`StructuralKLU._chord`) handed to the C, its
+    counts zeroed (newton.h's THE CHORD'S NUMERIC)."""
+    ck, num = rec.s.ck, rec.klu._chord
+    ck.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
+    ck.refactors = ck.factors = ck.pivot_fallbacks = ck.residual_fallbacks = 0
+
+
+def chord_out(rec):
+    """StructuralKLU as its `chord_factor`s leave it: the numeric the C's
+    calls end with, their counts."""
+    sk, ck = rec.klu, rec.s.ck
+    sk._chord = int(rec.ffi.cast('uintptr_t', ck.klu_num)) or None
+    sk.chord_refactors += ck.refactors
+    sk.chord_factors += ck.factors
+    sk.chord_pivot_fallbacks += ck.pivot_fallbacks
+    sk.chord_residual_fallbacks += ck.residual_fallbacks
 
 
 class _ParRec:
@@ -681,10 +712,14 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         ## (every read above in full, every check passed: stamp them)
         _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)
     _arm_set(rec, M, early)
+    if sparse:
+        chord_in(rec)
     status = drv[1](s)
+    if sparse:
+        chord_out(rec)
     s.early_lte = rec.ffi.NULL
     if status == _CODES['NEWTON_EARLY']:
-        _early(tr, rec, early, chord, sparse, ch)
+        _early(tr, rec, early, chord)
     if early is not None and status == _CODES['NEWTON_CONVERGED']:
         _PC['early:checks'] += s.early_checks
     if status != _CODES['NEWTON_CONVERGED']:
@@ -991,20 +1026,18 @@ def _arm_set(rec, M, early):
     s.early_th = early[3]
 
 
-def _early(tr, rec, early, chord, sparse, ch):
+def _early(tr, rec, early, chord):
     """The early abort's stop (NEWTON_EARLY): the counts the Python Newton
-    makes up to its abort -- the chord chosen, the sparse chord's numeric,
-    the check and the abort -- and the statistics' iteration (the trace is
-    the attempt's: nothing repeats it), then the abort `_newton` raises:
-    the estimate, the attempt's error-test inputs, its exponent's
-    denominator."""
+    makes up to its abort -- the chord chosen, the check and the abort (the
+    sparse chord's numeric's: `chord_out`) -- and the statistics' iteration
+    (the trace is the attempt's: nothing repeats it), then the abort
+    `_newton` raises: the estimate, the attempt's error-test inputs, its
+    exponent's denominator."""
     from pycircuit.circuit._tran_newton import _EarlyAbort
     s = rec.s
     iters = int(s.iters)
     if chord:
         _PC['chord:chosen'] += 1
-    if sparse:
-        ch.numerics += 1
     _PC['newton_c:iterations'] += iters
     _PC['early:checks'] += 1
     _PC['early:aborts'] += 1
@@ -1025,11 +1058,9 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
     if chord:
         _PC['chord:chosen'] += 1
     if sparse:
-        if chord:
-            ## (the numeric `StructuralKLU.factor` would have made: counted)
-            ch.numerics += 1
-        else:
-            ## (the full Newton's solves: a refactor of the run's numeric each)
+        if not chord:
+            ## (the full Newton's solves: a refactor of the run's numeric each;
+            ## the chord's counts: `chord_out`)
             ch.refactors += iters
         _PC['newton_c:sparse'] += 1
     _PC['newton_c:served'] += 1

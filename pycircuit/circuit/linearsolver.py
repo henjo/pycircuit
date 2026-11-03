@@ -280,6 +280,11 @@ class LinearSolver(ABC):
     def solve(self, A, b, toolkit):
         """Return ``x`` such that ``A x = b``."""
 
+    def chord_factor(self, A, toolkit):
+        """The chord Newton's factorisation of the step's matrix: `factor`'s
+        here (`StructuralKLU` keeps one from step to step)."""
+        return self.factor(A, toolkit)
+
     def factor(self, A, toolkit):
         """Optional: return a reusable factorisation, or ``None``.
 
@@ -713,8 +718,9 @@ class StructuralKLU(KLUSolver):
     (`analysis.jacobian_structure`: every position an element can stamp,
     and the diagonal), fixed for the run: ONE analysis, and each call takes
     the values at the pattern's positions (one `take`) for a refactor
-    (`solve`, validated by the residual as `KLUSolver`'s) or a factor of its
-    own (`factor`, with the transposed solve).
+    (`solve`, validated by the residual as `KLUSolver`'s), a factor of its
+    own (`factor`, with the transposed solve), or the chord's (`chord_factor`:
+    `solve`'s sequence on a numeric the chord keeps from step to step).
 
     A matrix this pattern does not cover -- another shape, another dtype,
     a nonzero off the pattern (a monodromy, a block system the same size)
@@ -738,6 +744,13 @@ class StructuralKLU(KLUSolver):
         self._fallback, self._fb = fallback, None
         self.foreign = 0
         self.pivot_fallbacks = 0
+        ## THE CHORD'S NUMERIC (`chord_factor`): kept from step to step, its
+        ## own counters (the C Newton's sparse chord writes them back)
+        self._chord = None
+        self.chord_refactors = 0
+        self.chord_factors = 0
+        self.chord_pivot_fallbacks = 0
+        self.chord_residual_fallbacks = 0
 
     def _ours(self, A):
         """`(A as an array, its values in CSC order)` where `A` is this
@@ -870,6 +883,45 @@ class StructuralKLU(KLUSolver):
         return _Factored(fac, lambda f, b: f.solve(b),
                          lambda f, b: f.solve_transposed(b), sparse=True)
 
+    def chord_factor(self, A, toolkit):
+        """THE CHORD'S FACTOR (`ChordNewton`: one matrix a step, solved again
+        at every iteration): `solve`'s sequence on a numeric of the chord's
+        own, kept from step to step (`_chord`) -- at its first solve a
+        refactor of it on its pivot order (where a fresh factor picks the
+        same pivots, the same arithmetic), a fresh factor where none is held
+        or the refactor meets a zero pivot, the refactor's residual tested
+        as `solve` tests it (a fresh factor where it fails); every later
+        solve on the numeric as it stands.  The matrix kept for the test (it
+        is the step's; the chord holds one at a time).  Another matrix
+        (`_ours`: None) is the fallback's `factor`."""
+        got = self._ours(A)
+        if got is None:
+            return self._other().factor(A, toolkit)
+        f = _ChordNumeric(self, got[0], numpy.ascontiguousarray(got[1], dtype=numpy.float64))
+        return _Factored(f, lambda f, b: f.solve(b), lambda f, b: f.solve_transposed(b),
+                         sparse=True)
+
+    def _chord_fresh(self, Ax):
+        """The chord's numeric made afresh (the held one freed first: None
+        after a singular matrix's LinAlgError, as `_numeric` is)."""
+        self._free_chord()
+        self._chord = self._factor(Ax)
+        self.chord_factors += 1
+
+    def _free_chord(self):
+        num, self._chord = self._chord, None
+        if num:
+            ct = self._ct
+            self._lib.klu_free_numeric(ct.byref(ct.c_void_p(num)), ct.byref(self._common))
+
+    def __del__(self):
+        try:
+            if getattr(self, '_chord', None):
+                self._free_chord()
+        except Exception:                                     # noqa: BLE001, S110  # pragma: no cover
+            pass                                              # interpreter shutdown
+        KLUSolver.__del__(self)
+
     def walk(self):
         """A `_KLUWalk`: `factor_values` for a caller that solves with each
         block's factorisation before it hands the next one and keeps none --
@@ -880,7 +932,8 @@ class StructuralKLU(KLUSolver):
         return (f'StructuralKLU(m={self.m}, nnz={self.nnz}, analyses={self.analyses}, '
                 f'factors={self.factors}, refactors={self.refactors}, numerics={self.numerics}, '
                 f'fallbacks={self.residual_fallbacks}, pivot_fallbacks={self.pivot_fallbacks}, '
-                f'foreign={self.foreign})')
+                f'foreign={self.foreign}, chord={self.chord_refactors}/{self.chord_factors}/'
+                f'{self.chord_pivot_fallbacks}/{self.chord_residual_fallbacks})')
 
 
 class _KLUNumeric(object):
@@ -920,6 +973,74 @@ class _KLUNumeric(object):
                     ct.byref(ct.c_void_p(num)), ct.byref(self._solver._common))
             except Exception:                         # pragma: no cover
                 pass                                  # interpreter shutdown
+
+
+class _ChordNumeric:
+    """The chord's factorisation of one step's matrix (`StructuralKLU.
+    chord_factor`): its first solve the sequence `solve` makes, on the
+    chord's kept numeric; every later one a solve on it.  Owns nothing: the
+    numeric is the solver's (`_chord`)."""
+
+    def __init__(self, solver, arr, Ax):
+        self._solver, self._arr, self._Ax, self._made = solver, arr, Ax, False
+
+    def _make(self, rhs):
+        """`solve`'s refactor path on the chord's numeric for `rhs`: the
+        solution."""
+        sk = self._solver
+        ct, Ax = sk._ct, self._Ax
+        reused = sk._chord is not None
+        if reused:
+            ok = sk._lib.klu_refactor(
+                sk._ptr(sk.Ap, ct.c_int), sk._ptr(sk.Ai, ct.c_int), sk._ptr(Ax, ct.c_double),
+                ct.c_void_p(sk._analysed()), ct.c_void_p(sk._chord), ct.byref(sk._common))
+            sk.chord_refactors += 1
+            if not ok:
+                ## (the held pivot order met a zero pivot: a fresh factor
+                ## decides, as `solve`'s)
+                sk.chord_pivot_fallbacks += 1
+                sk._chord_fresh(Ax)
+                reused = False
+        else:
+            sk._chord_fresh(Ax)
+        x = self._klu(sk._lib.klu_solve, rhs)
+        if reused:
+            scale = max(float(numpy.abs(rhs).max()), 1e-300)
+            resid = float(numpy.abs(self._arr @ x - rhs).max()) / scale
+            if not (resid <= sk.REFACTOR_RESIDUAL_TOL):
+                sk.chord_residual_fallbacks += 1
+                sk._chord_fresh(Ax)
+                x = self._klu(sk._lib.klu_solve, rhs)
+        return x
+
+    def _klu(self, fn, b):
+        sk = self._solver
+        ct = sk._ct
+        x = numpy.array(b, dtype=numpy.float64, order='F', copy=True)
+        nrhs = 1 if x.ndim < 2 else x.shape[1]
+        if not fn(ct.c_void_p(sk._symbolic), ct.c_void_p(sk._chord), sk.m, nrhs,
+                  x.ctypes.data_as(ct.POINTER(ct.c_double)), ct.byref(sk._common)):
+            raise numpy.linalg.LinAlgError('klu solve failed')
+        return x
+
+    def solve(self, b):
+        b = numpy.asarray(b)
+        if numpy.iscomplexobj(b):
+            return self.solve(b.real) + 1j * self.solve(b.imag)
+        if not self._made:
+            self._made = True
+            return self._make(numpy.asarray(b, dtype=numpy.float64))
+        return self._klu(self._solver._lib.klu_solve, b)
+
+    def solve_transposed(self, b):
+        b = numpy.asarray(b)
+        if numpy.iscomplexobj(b):
+            return self.solve_transposed(b.real) + 1j * self.solve_transposed(b.imag)
+        if not self._made:
+            ## (the numeric made for this matrix first: on a zero right-hand
+            ## side its residual test holds)
+            self.solve(numpy.zeros(self._solver.m))
+        return self._klu(self._solver._lib.klu_tsolve, b)
 
 
 class _KLUWalk:
@@ -1483,6 +1604,11 @@ class AutoSolver(LinearSolver):
         inherited the base `None`, so the shooting replays under
         `AutoSolver` had no transposed solve (gear's `ppv` raised)."""
         return self._select(A).factor(A, toolkit)
+
+    def chord_factor(self, A, toolkit):
+        """The selected solver's chord factorisation (`StructuralKLU`'s
+        kept numeric)."""
+        return self._select(A).chord_factor(A, toolkit)
 
     def __repr__(self):
         return ('AutoSolver(min_n=%d, structural_min_n=%d, max_fill=%.2f, chose=%r)'

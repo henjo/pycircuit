@@ -63,7 +63,8 @@ def _run(monkeypatch, method, on, patch=None, n=4):
         out['walk' + k] = _b(getattr(pss, k))
     out['walk_coeffs'] = repr(pss._coeffs)
     klu = tr.__dict__['_newton_c'].klu
-    out['klu'] = klu and (klu.refactors, klu.numerics)
+    out['klu'] = klu and (klu.refactors, klu.numerics, klu.chord_refactors, klu.chord_factors,
+                          klu.chord_pivot_fallbacks, klu.chord_residual_fallbacks)
     return out, counts
 
 

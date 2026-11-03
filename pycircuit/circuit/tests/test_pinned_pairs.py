@@ -301,7 +301,11 @@ PAIRS = {
                '2026-10-16); the full Newton\'s rounding floor (`_step_size`, '
                '`_within_rounding`: rows of J^-1 by numpy\'s solve of J^T or klu_tsolve on '
                'the numeric the step refactored, a block at a time, each floor by ddot -- '
-               'newton.c\'s `step_size` and `floor_holds`, roadmap 197)',
+               'newton.c\'s `step_size` and `floor_holds`, roadmap 197); the sparse '
+               'chord\'s factor (`StructuralKLU.chord_factor`: `solve`\'s sequence on a '
+               'numeric the chord keeps from step to step -- newton.c on pcx_kluseq.h\'s '
+               '`pcx_klu_step`, a hand-back leaving the entry, `chord_in` and `chord_out` '
+               'handing it over, roadmap 244)',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:ChordNewton.solve_system',
                       'pycircuit.circuit.nrsolver:_chord_settled',
@@ -318,12 +322,14 @@ PAIRS = {
                       'pycircuit.circuit._tran_newton:_StepNewton._newton_limiter',
                       'pycircuit.circuit._tran_newton:_StepNewton._early_estimate',
                       'pycircuit.circuit.transient:Transient._solve_timestep',
-                      ## (the sparse chord: StructuralKLU's factor, the
-                      ## owned numeric's solve -- stage 2, step d)
-                      'pycircuit.circuit.linearsolver:StructuralKLU.factor',
-                      'pycircuit.circuit.linearsolver:StructuralKLU.factor_values',
+                      ## (the sparse chord: the chord's numeric, refactored
+                      ## from step to step -- roadmap 244)
+                      'pycircuit.circuit.linearsolver:LinearSolver.chord_factor',
+                      'pycircuit.circuit.linearsolver:AutoSolver.chord_factor',
+                      'pycircuit.circuit.linearsolver:StructuralKLU.chord_factor',
+                      'pycircuit.circuit.linearsolver:StructuralKLU._chord_fresh',
                       'pycircuit.circuit.linearsolver:StructuralKLU._factor',
-                      'pycircuit.circuit.linearsolver:_KLUNumeric._run',
+                      'pycircuit.circuit.linearsolver:_ChordNumeric',
                       ## (the sparse full Newton: StructuralKLU's refactor path)
                       'pycircuit.circuit.linearsolver:StructuralKLU.solve',
                       'pycircuit.circuit.linearsolver:StructuralKLU._ours'],
@@ -339,7 +345,9 @@ PAIRS = {
                  'pycircuit.circuit._tran_newton_c:_arm',
                  'pycircuit.circuit._tran_newton_c:_arm_set',
                  'pycircuit.circuit._tran_newton_c:_early',
-                 'pycircuit.circuit._tran_newton_c:_chain'],
+                 'pycircuit.circuit._tran_newton_c:_chain',
+                 'pycircuit.circuit._tran_newton_c:chord_in',
+                 'pycircuit.circuit._tran_newton_c:chord_out'],
     },
     'the PSP limiter and its C twin': {
         'why': 'the twin is `PspMosLongChannel.limit` transliterated -- d, g, b moved '
@@ -1116,7 +1124,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('02966d22fff9', '119372bb925a'),
+    'the stepping loop and its C': ('894b18e07db4', 'c0056f01ee18'),
     'the predictor and its C': ('9e611c84de5a', '634be9aeb63c'),
     'the branch screen and its C': ('adb832d7aae0', '0e770d381c49'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -1129,7 +1137,7 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('3ca9f9451f6f', '449f303a116a'),
+    'the Newton solve and its C': ('46823ababbb4', '55b4cddfaec4'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '3aefa105ff7f'),
     'the error test and its C': ('1736570f3f0e', '813634148684'),
     'the DC base solve and its C': ('64fd25ecd5da', '1599b503dbcd'),
@@ -1141,7 +1149,7 @@ RECORD = {
     'the coupled stage Newton and its C': ('c87ff9fb31be', '04024a5b68a6'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
-    'the transform solve and its frozen form': ('6f35dca48644', '16cad74bb049'),
+    'the transform solve and its frozen form': ('ffd01e693e1e', '16cad74bb049'),
     'the transform Newton and its C': ('fec75db05899', '9c148192a4a5'),
     "the step's end passes and the C's": ('7313b171a1cd', '00ec8aece9b5'),
     'the frozen factors and their C': ('9eb9cd16e3d3', 'd1ffdf33977c'),
@@ -1149,15 +1157,15 @@ RECORD = {
     'the stage step map and its C': ('39f2d0f63b0f', '85365e12a51e'),
     'the KLU step map and its C': ('5b9b1f672523', '2d1e40a66963'),
     'the stage walk and its C': ('a918e57085a2', '0dfec67243fd'),
-    'the multistep walk and its C': ('57f6fd18a3eb', '66f08d7086b2'),
+    'the multistep walk and its C': ('431b9f0bfaae', '22d0b12327dc'),
     'the multistep step map and its C': ('985dde19187d', '8283352350d7'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
     'the readiness reads and their stamps': ('df49581ecd32', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('bbc3a7f0a452', '871024e93db7'),
-    'the transform loop and its C': ('ac5b2f9b540e', '86ca0530bae3'),
+    'the stage loop and its C': ('bbc3a7f0a452', '13a0940624cd'),
+    'the transform loop and its C': ('ac5b2f9b540e', 'e04c5c944098'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by
