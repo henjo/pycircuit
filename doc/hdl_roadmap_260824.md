@@ -12844,3 +12844,23 @@ twins' tests, 1 883, passed before the pinned pairs were re-recorded (4 twins: c
 (test_runtime_map) -- then, the run layout moved into `_runs` (every array of the core byte-identical on jge, mux8,
 gm19, rca and opampal before and after), 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean (its first run failed the same test, clean after), deep clean; the 27 gold
 decks -- standalone DC against 237's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.
+
+## 2026-11-03 — 239 REFUSED. The companion in one sweep -- the core's `Geq` and `J = G + Geq` made in one pass over the pattern where they took two: no change; the cost is the dense matrices' scattered entries, not the sweeps
+
+**Why**  The survey after 238 (plan g24's `tc/plan_239_next5.md`, item 1; Andreas: "Do 1 and 2, then the Radau
+survey"): under gear2 jge's core time is now mostly the companion -- in situ (scratchpad `corebench.py`, the real
+core, 4 threads) ~9 us a call that makes G (all four passes 86.0 against 76.5 us with no companion, G|C|q 83.2 against
+74.4), ~25 400 such calls a run: ~0.23 s of 4.57 s.  Proposed: `EACH_ENTRY(Geq[s] = ...)` and `EACH_ENTRY(J[s] =
+binG[s] + Geq[s])` as one sweep.
+
+**Measured** (a worktree, the sweeps merged -- each entry's operations and their order the same): all four passes
+86.3/86.5 -> 85.9/87.3 us a call, G|C|q 82.4/83.6 -> 83.2/84.8 -- nothing.  Then a timing-only variant (behind an
+unused `want` bit, its matrices deliberately wrong) storing Geq and J at consecutive places instead of their
+row-major entries: 86.1/85.6 -> 79.1/79.7 us, 83.1/82.6 -> 77.1/76.6 -- ~6 of the ~10 us are the STORES into four
+dense n x n arrays (C, Geq, binG, J: 476 KB each on jge) at the pattern's 1 950 scattered entries; the reads of C and G
+there most of the rest.  Refused: nothing built.
+
+**What would reopen it.**  A pattern-ordered layout between the core and the C callers that read only the pattern
+(newton.c gathers J at the pattern into KLU's values; the Radau units copy G and C at the pattern): the companion's
+stores and the callers' gathers both sequential -- an interface change, its ceiling ~6 us a G call (~0.15 s on jge
+under gear2) plus the gathers'.
