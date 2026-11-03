@@ -249,9 +249,10 @@ def test_the_pattern_fold_is_the_whole_folds(data):
     """Drawn: a pattern (the diagonal and some more), C and G at its
     positions (zero off it), the reference row anywhere, a step, special
     values at its positions; the record's mask the factor's own, one with a
-    zero more or a nonzero off the pattern, laid out as `A` or `A.T`, or
-    none: the fold on the pattern makes the whole fold's status, factors,
-    packed values and `same`."""
+    zero more or a nonzero off the pattern, one with a nonzero moved (as
+    many as the factor's, on other places: only the places tell), laid out
+    as `A` or `A.T`, or none: the fold on the pattern makes the whole fold's
+    status, factors, packed values and `same`."""
     _fold_or_skip()
     n = data.draw(st.integers(2, 10))
     rng = np.random.default_rng(data.draw(st.integers(0, 2 ** 32 - 1)))
@@ -270,7 +271,7 @@ def test_the_pattern_fold_is_the_whole_folds(data):
     keep = [i for i in range(n) if i != iref]
     with np.errstate(all='ignore'):
         cf = c1 * C[np.ix_(keep, keep)] + G[np.ix_(keep, keep)]
-    mask = data.draw(st.sampled_from(('own', 'none', 'zero', 'off')))
+    mask = data.draw(st.sampled_from(('own', 'none', 'zero', 'off', 'moved')))
     if mask == 'none':
         mask = None
     else:
@@ -278,6 +279,9 @@ def test_the_pattern_fold_is_the_whole_folds(data):
         if data.draw(st.booleans()) and mk.any() and mask == 'zero':
             mk.flat[np.flatnonzero(mk)[0]] = False
         if mask == 'off' and not mk.all():
+            mk.flat[np.flatnonzero(~mk)[0]] = True
+        if mask == 'moved' and mk.any() and not mk.all():
+            mk.flat[np.flatnonzero(mk)[-1]] = False
             mk.flat[np.flatnonzero(~mk)[0]] = True
         mask = mk
     whole, onpat = _modes(C, G, pat, iref, s0, c1, mask, data.draw(st.integers(0, 1)))

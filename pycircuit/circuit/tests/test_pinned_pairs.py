@@ -1144,7 +1144,7 @@ RECORD = {
     'the transform solve and its frozen form': ('6f35dca48644', '16cad74bb049'),
     'the transform Newton and its C': ('fec75db05899', '9c148192a4a5'),
     "the step's end passes and the C's": ('7313b171a1cd', '00ec8aece9b5'),
-    'the frozen factors and their C': ('9eb9cd16e3d3', '7fed902a5d3e'),
+    'the frozen factors and their C': ('9eb9cd16e3d3', 'd1ffdf33977c'),
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('39f2d0f63b0f', '85365e12a51e'),
     'the KLU step map and its C': ('5b9b1f672523', '2d1e40a66963'),

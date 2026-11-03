@@ -12919,3 +12919,32 @@ the row taken from the column's index.  The C twins' 1 883 before the pinned pai
 
 **Gate** (the main tree): the TELL; the suite, 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 240's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.
+
+## 2026-11-03 — 242. The fold in one pass -- the Radau transform's factors made on the core's pattern in one pass over it, where the finiteness check, the real factor, the complex factor and the record's comparison took four: jge under Radau 8.91 -> 8.79 s (1.015x), every result the same
+
+**Why**  The Radau survey after 240 (plan g24's `tc/plan_239_next5.md`, R2; Andreas: "Yes, do R1, then R2-R4"):
+`pcx_radau_fold` 1.6-3.9 % of the main thread (jge 3.9 %), its lines the passes over the pattern's scattered entries
+of x_n's dense C and G -- the finiteness check (21 % of the function), the real factor, the complex factor, the
+mask's comparison and the values' gather.  Informally against 241 (2 pairs, a busy box, the same digests): jge 8.98
+-> 8.85 s, mux8 5.99 -> 5.93.  LINE (set after those pairs, before the formal measurement; one form): jge under Radau
+at least 1.007x against 241, the median of 5 interleaved quiet-box pairs; GUARD: the 27 decks' total solve under each
+method not slower; every result the same.  Refused under.
+
+**Built.**  `csrc/radau_fold.c`'s `fold_pattern`: one pass -- each position's inputs checked finite, its real factor
+and its complex one made (the operations and roundings as before, each result stored), its nonzero met against the
+record's mask and its value gathered until a difference, the rest then made alone (a new pattern takes the whole
+complex factor); a non-finite input stops it (the Python's fold: whatever was made unread); the flags tested after
+it, as before.
+
+**Measured** (a quiet box, HEAD 4b189988 from its worktree and this tree, interleaved, 5 pairs): jge under Radau 8.912 -> 8.792 s, 1.015x (1.008 to 1.024; the line 1.007x) -- met; under gear2 1.003x.  The gate's
+runs (a busier box): the 27 decks' solves 1.007x under Radau (37.2 -> 36.9 s) and 1.001x under gear2 (18.3 -> 18.3 s) -- the guard met.
+
+**Tests.**  test_radau_fold's drawn pattern fold gained a record mask with a nonzero MOVED -- as many nonzeros as the
+factor's, on other places: only the places tell -- which catches a fold gathering on after a difference (the masks
+with one nonzero more or fewer did not: the count told).  The finiteness check's removal caught.  Two mutations
+unobservable by construction: the imaginary part's `+ 0.0` (the product's imaginary part is `c1r (+0.0) + c1i c` with
+`c1r > 0`: never -0.0) and the more-nonzeros-than-the-record stop (a record's mask and its count agree: kept as the
+old code kept it).  The C twins' 1 921 before the pinned pair was re-recorded ("the frozen factors and their C").
+
+**Gate** (the main tree): the TELL; the suite, 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 241's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.

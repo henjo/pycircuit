@@ -111,46 +111,51 @@ static long fold_whole(radau_fold_t *f)
 static long fold_pattern(radau_fold_t *f)
 {
     const long m = f->m, pn = f->pn;
-    long k, j = 0;
+    long k, j = 0, diff = !f->nz;
     f->same = 0;
-    for (k = 0; k < pn; k++)
-        if (!isfinite(f->Cf[f->pfull[k]]) || !isfinite(f->Gf[f->pfull[k]])) {
-            f->status = FOLD_STATUS_NONFINITE;
-            return 0;
-        }
     if (!f->pclean) {
         memset(f->rf, 0, (size_t) (m * m) * sizeof(double));
         memset(f->cf, 0, (size_t) (2 * m * m) * sizeof(double));
         f->pclean = 1;
     }
     feclearexcept(FE_ALL_EXCEPT);
+    /* ONE PASS over the pattern: each position's inputs checked finite,
+       its real factor and its complex one made -- the operations and their
+       roundings `fold_whole`'s -- and its nonzero met against the record's
+       mask, its value gathered, until a difference: then the rest made
+       alone (a new pattern takes the whole complex factor).  A non-finite
+       input stops it (the Python's own fold, whatever was made here
+       unread); the flags tested after it, as before */
     for (k = 0; k < pn; k++) {
-        const double t = f->s0 * f->Cf[f->pfull[k]];
-        f->rf[f->pred[k]] = t + f->Gf[f->pfull[k]];
-    }
-    for (k = 0; k < pn; k++) {
-        const int64_t q = f->pred[k];
-        double re, im;
-        cmul(f->fused, f->c1r, f->c1i, f->Cf[f->pfull[k]], 0.0, &re, &im);
-        f->cf[2 * q] = re + f->Gf[f->pfull[k]];
-        f->cf[2 * q + 1] = im + 0.0;
+        const int64_t q = f->pred[k], at = f->pfull[k];
+        const double c = f->Cf[at], g = f->Gf[at];
+        double t, re, im;
+        if (!isfinite(c) || !isfinite(g)) {
+            f->status = FOLD_STATUS_NONFINITE;
+            return 0;
+        }
+        t = f->s0 * c;
+        f->rf[q] = t + g;
+        cmul(f->fused, f->c1r, f->c1i, c, 0.0, &re, &im);
+        re = re + g;
+        im = im + 0.0;
+        f->cf[2 * q] = re;
+        f->cf[2 * q + 1] = im;
+        if (!diff) {
+            const long nz = re != 0.0 || im != 0.0;
+            const long was = f->nz[f->nz_at ? f->ptr[k] : q] != 0;
+            if (nz != was || (nz && j == f->nnz)) {
+                diff = 1;
+            } else if (nz) {
+                f->ax[2 * j] = re;
+                f->ax[2 * j + 1] = im;
+                j++;
+            }
+        }
     }
     f->status = fetestexcept(PCX_FP_FLAGS) != 0;
     feclearexcept(FE_ALL_EXCEPT);
-    if (f->status || !f->nz) return 0;
-    for (k = 0; k < pn; k++) {
-        const int64_t q = f->pred[k];
-        const double re = f->cf[2 * q], im = f->cf[2 * q + 1];
-        const long nz = re != 0.0 || im != 0.0;
-        const long was = f->nz[f->nz_at ? f->ptr[k] : q] != 0;
-        if (nz != was) return 0;
-        if (nz) {
-            if (j == f->nnz) return 0;
-            f->ax[2 * j] = re;
-            f->ax[2 * j + 1] = im;
-            j++;
-        }
-    }
+    if (f->status || diff) return 0;
     f->same = j == f->nnz;
     return 0;
 }
