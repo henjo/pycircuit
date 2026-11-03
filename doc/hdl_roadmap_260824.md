@@ -12892,3 +12892,30 @@ chains), the C twins' 1 883 before the pinned pairs were re-recorded (2 twins: p
 
 **Gate** (the main tree): the TELL; the suite, 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 238's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.
+
+## 2026-11-03 — 241. The new pattern on the pattern -- a changed nonzero pattern of the Radau transform's complex factor read from the core's pattern alone, where the whole m x m fold was scanned: gm19 under Radau 5.73 -> 5.27 s (1.088x), every result the same
+
+**Why**  The Radau survey after 240 (plan g24's `tc/plan_239_next5.md`, item 3, R1; Andreas: "Yes, do R1, then
+R2-R4"): perf with a `-g` build put gm19's `pcx_loop` at 8.5 % of its main thread, 90 % of it four lines of
+`tc_repattern` -- each time the complex factor's nonzero pattern changes, a scan of the whole dense m x m fold (183 000
+entries on gm19) for the new KLU pattern.  Re-patterns a run: gm19 1 996, arom 1 205, rich3 1 196, voter25 1 163, mux8
+919, jge 247.  On the core's pattern the fold is zero off it (`fold_pattern` zeroes it once and writes the pattern's
+positions alone) and the run's mask buffers start at zero: the pattern's entries, which `_bind_fold_pattern` lays out
+column by column with rows ascending -- the scan's order -- give the same Ap, Ai, mask and values.  Informally (2 pairs,
+the same digests): gm19 5.81 -> 5.31 s, arom 2.84 -> 2.67, rich3 2.91 -> 2.80, voter25 5.58 -> 5.53.  LINE (set after
+those informal pairs, before the formal measurement; one form): gm19 under Radau at least 1.05x against HEAD, the
+median of 5 interleaved quiet-box pairs; GUARD: the 27 decks' total solve under each method not slower; every result
+the same.  Refused under.
+
+**Built.**  `csrc/loop.c`'s `tc_repattern`: where the fold is on the core's pattern (`onpat`), its entries alone, in
+its order, each column closed as the next begins; else the whole fold as before.
+
+**Measured** (a quiet box, HEAD d55c51be from its worktree and this tree, interleaved, 5 pairs): gm19 under Radau 5.726 -> 5.268 s, 1.088x (1.078 to 1.103; the line 1.05x) -- met; as information arom 2.835 -> 2.693 s (1.051x), rich3 2.915 -> 2.805 s (1.043x).  The gate's
+runs (a busier box): the 27 decks' solves 1.029x under Radau (38.6 -> 37.5 s) and 0.996x under gear2 (18.5 -> 18.6 s) -- R1 is Radau's alone, but loop.c is gear2's stepping loop too, so the gear2 decks were run again on a quiet box, interleaved, twice: 18.72 -> 18.52 s (1.011x) and 18.58 -> 18.53 s (1.003x) -- not slower: the guard met.
+
+**Tests.**  The C loops' tests make and take back new patterns against the Python's records bit for bit
+(test_tcloop_c, test_radau_tc): three mutations caught -- the mask not written (17 tests), a column's end one short,
+the row taken from the column's index.  The C twins' 1 883 before the pinned pairs were re-recorded (4 twins: loop.c).
+
+**Gate** (the main tree): the TELL; the suite, 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 240's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.

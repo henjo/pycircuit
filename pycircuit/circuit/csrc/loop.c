@@ -1076,19 +1076,42 @@ static long tc_repattern(loop_t *s, loop_attempt_t *a)
     uint8_t *nz = s->pnz[b];
     void *sym, *num;
     Ap[0] = 0;
-    for (j = 0; j < m; j++) {
-        for (i = 0; i < m; i++) {
-            const double re = fo->cf[2 * (i * m + j)], im = fo->cf[2 * (i * m + j) + 1];
+    if (fo->onpat) {
+        /* on the core's pattern the fold is zero off it (`fold_pattern`) and
+           the mask off it zero from the buffer's start: its entries alone,
+           in its order -- column by column, rows ascending, the scan's --
+           each column closed as the next begins */
+        long e, c = 0;
+        for (e = 0; e < fo->pn; e++) {
+            const int64_t t = fo->ptr[e], q = fo->pred[e];
+            const long jj = (long) (t / m);
+            const double re = fo->cf[2 * q], im = fo->cf[2 * q + 1];
             const int on = re != 0.0 || im != 0.0;
-            nz[j * m + i] = (uint8_t) on;
+            for (; c < jj; c++) Ap[c + 1] = (int) k;
+            nz[t] = (uint8_t) on;
             if (on) {
-                Ai[k] = (int) i;
+                Ai[k] = (int) (t % m);
                 fo->ax[2 * k] = re;
                 fo->ax[2 * k + 1] = im;
                 k++;
             }
         }
-        Ap[j + 1] = (int) k;
+        for (; c < m; c++) Ap[c + 1] = (int) k;
+    } else {
+        for (j = 0; j < m; j++) {
+            for (i = 0; i < m; i++) {
+                const double re = fo->cf[2 * (i * m + j)], im = fo->cf[2 * (i * m + j) + 1];
+                const int on = re != 0.0 || im != 0.0;
+                nz[j * m + i] = (uint8_t) on;
+                if (on) {
+                    Ai[k] = (int) i;
+                    fo->ax[2 * k] = re;
+                    fo->ax[2 * k + 1] = im;
+                    k++;
+                }
+            }
+            Ap[j + 1] = (int) k;
+        }
     }
     sym = ((klu_analyze_t) s->klu_analyze)((int) m, Ap, Ai, tf->Common);
     if (!sym) return LOOP_BAIL_FOLD;
