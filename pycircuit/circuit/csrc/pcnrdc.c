@@ -28,9 +28,10 @@
 #define PC_FLAGS PCX_NP_FLAGS
 
 /* one participant at its own unknowns (`PcnrDevice._kernel_stamp`): the local
-   point by its walk and mirrors, its i and G kernels there, the affine
-   remainder taken off, `block[:, j] = sum_r G_nl[:, r] T[r, j]`; its current
-   into F (`np.add.at`'s order), its g_lim (`augmented_system`) */
+   point by its walk and mirrors, its class's kernel there (i and G in one
+   call), the affine remainder taken off, `block[:, j] = sum_r G_nl[:, r]
+   T[r, j]`; its current into F (`np.add.at`'s order), its g_lim
+   (`augmented_system`) */
 static void device(pcnrdc_t *s, long d)
 {
     long t = s->d_t[d], m = s->d_m[d], off = s->d_off[d], i, j, r, c;
@@ -44,8 +45,7 @@ static void device(pcnrdc_t *s, long d)
         pot[wk[4 * i]] = pot[wk[4 * i + 1]] + (double) wk[4 * i + 3] * v[wk[4 * i + 2]];
     for (i = 0; i < s->n_mir[d]; i++) pot[mr[2 * i]] = pot[mr[2 * i + 1]];
     if (s->ti[d] >= 0) s->prow[d][s->ti[d]] = s->T;
-    ((pass_fn_t) s->ifn[d])(pot, s->prow[d], cur);
-    ((pass_fn_t) s->Gfn[d])(pot, s->prow[d], G);
+    ((fused_fn_t) s->kfn[d])(pot, s->prow[d], PCX_PASS_G | PCX_PASS_I, G, 0, cur, 0);
     /* (the kernels' flags: the Python's cffi calls never report them) */
     feclearexcept(FE_ALL_EXCEPT);
     if (s->d_lin[d] >= 0) {

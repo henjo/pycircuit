@@ -801,8 +801,9 @@ _FN = '__hdl_fn__'
 #: Keys a class's `info` gains AT RUNTIME, derived from what the cache
 #: records and rebuilt from it: the jax twins, the fused functions and the
 #: flags of `_hdl_cse` (sessions), the C binding flag of `_hdl_cbackend` and
-#: the C kernels it binds beside the functions (the limiter's, the fused
-#: one, PCNR's refine and `_pcnr_c`'s table of the kernels it calls --
+#: the C kernels it binds beside the functions (the class's own and a
+#: DC-pinned class's second, the limiter's, PCNR's refine and `_pcnr_c`'s
+#: table of the kernels it calls --
 #: cffi objects, which do not pickle).  Never frozen -- a fused
 #: function has no record (it is not chain-compiled from a `_src` of its
 #: own), so freezing a live class's `info` after a session had run raised
@@ -810,7 +811,7 @@ _FN = '__hdl_fn__'
 _RUNTIME_KEYS = frozenset(('_jax', '_fused', '_fuse_ok', '_c_bound',
                            '_backend_pending', '_backend_seen',
                            '_c_limit', '_c_limit_status', '_u_zero',
-                           '_c_fused', '_c_fused_status', '_c_pcnr_refine',
+                           '_c_fused', '_c_fused_dc', '_c_fused_status', '_c_pcnr_refine',
                            '_c_pcnr_refine_status', '_c_pcnr_kernels'))
 
 

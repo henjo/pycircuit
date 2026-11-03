@@ -67,7 +67,8 @@ typedef struct {
     const double *Tm;                     /* each device's T (t x m, row-major) */
     const int64_t *d_lin;                 /* (nd) offset in `lin` (t t), -1 none */
     const double *lin;                    /* each device's affine remainder */
-    void **ifn, **Gfn, **rfn;             /* (nd) its i, G and refine kernels */
+    void **kfn, **rfn;                    /* (nd) its class's kernel (i and G in one
+                                             call) and its refine kernel */
     double **prow;                        /* (nd) its packed parameters */
     const int64_t *ti;                    /* (nd) the temperature's slot, -1 none */
     /* THE ITERATE (CALL in, OWN out): x0 and v_lim0 in; the solution (CONVERGED)

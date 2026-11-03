@@ -1540,20 +1540,20 @@ def test_an_exponent_that_is_a_where_value_has_no_c_rendering():
 def test_a_key_being_built_elsewhere_is_left_to_its_builder(tmp_path,
                                                            monkeypatch):
     """The build lock: while another holder has a key, the parallel
-    pre-build leaves it alone (no duplicate `cc`), and `kernel_for` builds
+    pre-build leaves it alone (no duplicate `cc`), and `load_kernel` builds
     it once the lock is free."""
     monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
     monkeypatch.setattr(_cbuild, '_loaded', {})
-    fn = _ReciprocalModel._hdl_info['funcs']['i']
-    key = cb.source_key(fn._csrc)
+    src = cb.fuse_source(_ReciprocalModel._hdl_info)
+    key = cb.source_key(src._csrc)
     assert cb.find_so(key) is None
     with cb._key_lock(key) as mine:
         assert mine
         with cb._key_lock(key, blocking=False) as other:
             assert not other
-        cb._build_missing_parallel([fn])
+        cb._build_missing_parallel([src])
         assert cb.find_so(key) is None
-    _kern, cold = cb.kernel_for(fn, fn._cshape[0])
+    _ffi, _cfn, _key, cold, _secs = _cbuild.load_kernel(src._csrc, cb.fused_cdef())
     assert cold and cb.find_so(key) is not None
 
 

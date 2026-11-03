@@ -113,14 +113,14 @@ static void fused_groups(const hdl_core_t *c, const double *x, double T, long wa
 }
 
 /* batch b of pass m into its slots `buf`: from the staging where its
-   class's fused kernel served (`fused_groups`), else its kernel per
-   element -- its inputs gathered, the temperature into its parameter row
-   -- each output scattered to its destination */
+   class's group served (`fused_groups`), else its class's kernel per
+   element for pass m alone -- its inputs gathered, the temperature into its
+   parameter row -- each output scattered to its destination */
 static void batch_into(const hdl_core_t *c, long b, long m, double *buf, const double *x,
                        double T, double *X, double *o)
 {
     long e, j;
-    pass_fn_t f = (pass_fn_t) c->b_fn[b];
+    fused_fn_t f = (fused_fn_t) c->b_fn[b];
     long ne = c->b_ne[b], k = c->b_k[b], so = c->b_so[b], ti = c->b_ti[b];
     long fz = c->nz ? c->bftab[2 * b] : -1;
     const int64_t *NM = c->NMall + c->b_nmoff[b];
@@ -141,7 +141,7 @@ static void batch_into(const hdl_core_t *c, long b, long m, double *buf, const d
     for (e = 0; e < ne; e++) {
         for (j = 0; j < k; j++) X[j] = x[NM[e * k + j]];
         if (ti >= 0) PR[e][ti] = T;
-        f(X, PR[e], o);
+        f(X, PR[e], 1L << m, o, o, o, o);
         for (j = 0; j < so; j++) buf[dst[e * so + j]] = o[j];
     }
 }

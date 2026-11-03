@@ -76,17 +76,15 @@ writing its own rows of the staging, and the bins are summed after by the
 caller in their order -- every byte, and every floating-point flag, as one
 thread leaves them.
 
-THE FUSED KERNELS.  A class's four passes print four kernels that each
-recompute their whole chain; its fused kernel (`_hdl_cbackend.fuse_csrc`:
-the printed statements unioned by name, each run under the bits of the
-passes that print it) is called ONCE a call for every pass the call wants,
-before the passes, into a staging buffer -- where the class's batches cover
-two or more passes over the same elements on the same nodes
+THE GROUPS.  A class's kernel (`_hdl_cbackend`: one kernel a class, every
+pass a call wants at once) is called ONCE a call for every pass the call
+wants, before the passes, into a staging buffer -- where the class's
+batches cover two or more passes over the same elements on the same nodes
 (`_fuse_groups`) -- and each batch then scatters its outputs from there in
 its own order: the same values in the same places, the passes' bins as
-without it.  The readiness check takes the class's fused kernel only while
-it is bound and was printed from the passes' bound kernels (and the switch,
-`_hdl_cbackend.FUSE`, is on); else the batches call their own.
+without it.  The readiness check takes the class's kernel while it is the
+class's bound one (`_check_fused`); a batch outside a group calls it for
+its own pass alone.
 
 READY AS STAMPED.  The readiness check (`probe`: every batch's kernel the
 class's bound one, its pass the generated one, every element without a
@@ -318,12 +316,12 @@ class Unservable(Exception):
     """The circuit has an element the core cannot evaluate."""
 
 
-def _fuse_groups(batches, b_pass, cb):
-    """The classes the core evaluates with their fused kernel:
+def _fuse_groups(batches, b_pass):
+    """The classes the core evaluates a call at once with their kernel:
     `(groups, b_fz, b_fidx)` -- each group `(info, kernel, elements, pass
     bits, node maps)`, per batch its group (-1: none) and each of its
     elements' place in the group (None: the group's own order).  A class
-    is fused where its fused kernel is bound and its batches cover two or
+    is grouped where its kernel is bound and its batches cover two or
     more of its passes, the same elements in each, once each, on the same
     nodes, with the kernel's widths; each refusal counted once a build
     (`once:core.fuse:<why>`).  (Every pass lists a class's elements in one
@@ -336,17 +334,14 @@ def _fuse_groups(batches, b_pass, cb):
     for bs in by_cls.values():
         first = batches[bs[0]]
         info = first.info
-        fk = info.get('_c_fused') if cb.FUSE else None
-        if fk is None and cb.FUSE and info.get('_c_bound') and info.get('_c_fused_status') == 'off':
-            ## (bound while the switch was off: built now)
-            fk = cb.bind_fused(info, cb.fuse_source(info))
+        fk = info.get('_c_fused')
         passes = [PASSES[b_pass[b]] for b in bs]
         why = None
         if fk is None:
             why = 'nokernel'
         elif len(set(passes)) != len(passes):
             why = 'passes'          # (a class split into two batches in one pass)
-        elif len(passes) < 2 or not set(passes) <= set(fk.parts):
+        elif len(passes) < 2 or not set(passes) <= set(fk.sizes):
             why = 'passes'
         else:
             ti = -1 if fk.layout[1] is None else fk.layout[1]
@@ -603,13 +598,11 @@ class _Core:
         ## a class with DC pins among them (`_lone_batches`): `probe` declines
         ## a DC analysis's epar
         self.pins = any(b.info['state_meta']['dc_pins'] for b in batches)
-        ## THE FUSED KERNELS: a class whose fused kernel is bound
-        ## (`_hdl_cbackend.bind_fused`) and whose batches cover two or more
-        ## passes over the same elements -- each once a pass, on the same
-        ## nodes -- is evaluated once a call into a staging buffer; its
+        ## THE GROUPS: a class whose batches cover two or more passes over
+        ## the same elements -- each once a pass, on the same nodes -- is
+        ## evaluated once a call by its kernel into a staging buffer; its
         ## batches scatter from there
-        zgroups, b_fz, b_fidx = _fuse_groups(batches, fl.b_pass, cb)
-        self._cb = cb
+        zgroups, b_fz, b_fidx = _fuse_groups(batches, fl.b_pass)
         z_proff = fl.add_fused(zgroups, b_fz, b_fidx)
         self.zgroups = zgroups
         self.nz = len(zgroups)
@@ -690,7 +683,7 @@ class _Core:
         For a caller that falls back to a path which asks `ready` itself
         (`_tran_newton_c`): the decline is counted once, there.  As stamped,
         the stamp's checks alone; else the batches' kernels
-        (`_check_batches`), the fused kernels (`_check_fused`), the elements
+        (`_check_batches`), the groups' kernels (`_check_fused`), the elements
         (`_check_elements`), and a new stamp.  Declined first: a DC
         analysis's epar where the core holds a class with DC pins."""
         T = getattr(epar, 'T', 300.0)
@@ -741,7 +734,7 @@ class _Core:
                     return 'kernel'
                 b_fn[b] = int(ffi.cast('uintptr_t', kern.cfn))
                 if self.b_fz[b] >= 0:
-                    ## (its group's fused kernel is checked again below)
+                    ## (its group's kernel is checked again below)
                     self.zk[self.b_fz[b]] = None
             elif not b_fn[b]:
                 b_fn[b] = int(ffi.cast('uintptr_t', kern.cfn))
@@ -752,20 +745,21 @@ class _Core:
         return kern_of
 
     def _check_fused(self):
-        """A FUSED KERNEL SERVES while it is the class's bound one and was
-        printed from the passes' bound kernels; else the batches call their
-        own (the switch `_hdl_cbackend.FUSE` too): `z_fn` 0."""
-        ffi, zk, z_fn, on = self.ffi, self.zk, self.z_fn, self._cb.FUSE
+        """A GROUP'S KERNEL is the class's bound one (a re-attach binds
+        another) with the widths the group was built for, and the one its
+        passes' `CKernel`s call (what `el.G` calls); else the batches call
+        their own a pass at a time: `z_fn` 0."""
+        ffi, zk, z_fn = self.ffi, self.zk, self.z_fn
         for z, g in enumerate(self.zgroups):
             info = g[0]
-            fk = info.get('_c_fused') if on else None
+            fk = info.get('_c_fused')
             if fk is not zk[z] or (fk is None and z_fn[z]):
                 zk[z] = fk
-                funcs, fk0 = info['funcs'], self.zgroups[z][1]
+                funcs, fk0 = info['funcs'], g[1]
                 ok = (fk is not None and fk.sizes == fk0.sizes and fk.nx == fk0.nx
                       and fk.layout == fk0.layout and all(
-                          k is funcs[m].__dict__.get('_hdl_c')
-                          for m, k in fk.parts.items()))
+                          getattr(funcs[m].__dict__.get('_hdl_c'), 'cfn', None) is fk.cfn
+                          for m in fk.sizes))
                 z_fn[z] = int(ffi.cast('uintptr_t', fk.cfn)) if ok else 0
 
     def _check_elements(self, kern_of):
@@ -801,8 +795,8 @@ class _Core:
     def _stamp(self, before, _hdl_batch):
         """Watch what the check read and stamp it (`_watch.arm`): the
         classes' info dicts and pass lists, the passes' function dicts (their
-        bound kernels), the classes, the elements' dicts, the backend's and
-        the batches' modules (their switches and drivers)."""
+        bound kernels), the classes, the elements' dicts, the batches' module
+        (its switch and driver)."""
         infos = {id(bt.info): bt.info for bt in self.batches}
         dicts = list(infos.values())
         dicts += [info['funcs'] for info in infos.values()]
@@ -811,7 +805,7 @@ class _Core:
         self.uniq_els = tuple(el for el, _ps in self.uniq)
         self.uniq_dicts = tuple(map(_GETDICT, self.uniq_els))
         dicts += self.uniq_dicts
-        dicts += [_hdl_batch.__dict__, self._cb.__dict__]
+        dicts += [_hdl_batch.__dict__]
         self.codes = tuple({(bt.cls, bt.m): (bt.cls, bt.m, getattr(bt.cls, bt.m).__code__)
                             for bt in self.batches}.values())
         self.arms, self.held = _watch.counted(self.arms, self.held), 0
@@ -907,7 +901,7 @@ def passes(tr, x, which):
     """`{m: cir.m(x, epar)}` for each pass `m` of `which` (letters of
     'GCiq') -- fresh float64 arrays, bit for bit the circuit's passes --
     from ONE core call (formula 4: the passes alone, through the classes'
-    fused kernels), or None where the core does not serve the call (nothing
+    kernels), or None where the core does not serve the call (nothing
     touched; the caller makes its own calls): the switches, a toolkit that
     is not numeric, an instance shadow of a pass on the circuit, a circuit
     the core cannot serve, a state that is not one finite float64 vector of

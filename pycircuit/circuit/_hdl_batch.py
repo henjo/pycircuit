@@ -17,8 +17,9 @@ on every pass, so a measurement can A/B it) and `PYCIRCUIT_HDL_ZERO_U=0`
 is off where it is.
 
 THE CALL.  The plan calls ONE driver per class per pass: a loop in C over
-the class's elements calling the kernel's own function pointer -- the very
-machine code the per-element path calls, on the same bytes:
+the class's elements calling the class's kernel for the pass (`CKernel`'s
+function pointer and bit) -- the very machine code the per-element path
+calls, on the same bytes:
 
 * `X = x[NM]` is every element's `x[nm]` stacked (a fresh contiguous copy,
   as `x[nm]` is); each kernel reads its row.
@@ -89,8 +90,9 @@ _BATCH_KEYS = ('off', 'nodriver', 'unbound', 'kernel', 'generated', 'T', 'shadow
 ENABLED = os.environ.get('PYCIRCUIT_HDL_BATCH', '1') != '0'
 SKIP_ZERO_SOURCE = os.environ.get('PYCIRCUIT_HDL_ZERO_U', '1') != '0'
 
-#: The pass driver.  `fn` is a chain kernel's function pointer (the object
-#: `_dlopen` resolved, cast to `void *`); `X` is `n` rows of `sx` doubles,
+#: The pass driver.  `fn` is a class kernel's function pointer (the object
+#: `_dlopen` resolved, cast to `void *`), `want` the pass's bit (`CKernel.bit`);
+#: `X` is `n` rows of `sx` doubles,
 #: `OUT` `n` rows of `so`; `PR[e]` the element's pack; `ti` the temperature
 #: slot or -1 when the class reads none.
 PASS_C = _cbuild.csrc('pass.c')
@@ -145,7 +147,7 @@ class Batch:
     """One class's elements in one plan: the stacked node maps, the slots,
     the mirrored packs and the kernel's pointer (see the module note)."""
 
-    __slots__ = ('NM', 'PR', 'cls', 'dst', 'els', 'entries', 'fnptr', 'info',
+    __slots__ = ('NM', 'PR', 'bit', 'cls', 'dst', 'els', 'entries', 'fnptr', 'info',
                  'k', 'kern', 'keys', 'm', 'mirror', 'n', 'shape', 'slots', 'so', 'ti')
 
     def __init__(self, cls, m, entries, kern):
@@ -163,7 +165,7 @@ class Batch:
         self.mirror = [None] * self.n
         self.PR = np.zeros(self.n, dtype=np.uintp)
         self.kern = self.fnptr = None
-        self.ti = -1
+        self.ti, self.bit = -1, 0
         self._take(kern)
 
     def _take(self, kern):
@@ -177,6 +179,7 @@ class Batch:
             return False
         self.kern = kern
         self.fnptr = drv[0].cast('void *', kern.cfn)
+        self.bit = kern.bit
         self.ti = -1 if kern.t_index is None else kern.t_index
         return True
 
@@ -237,7 +240,7 @@ class Batch:
         if skip is None:
             X = x[self.NM]
             OUT = np.empty((self.n,) + self.shape)
-            cfn(self.fnptr, ffi.from_buffer(dptr, X), ffi.from_buffer(pptr, PR),
+            cfn(self.fnptr, self.bit, ffi.from_buffer(dptr, X), ffi.from_buffer(pptr, PR),
                 ffi.from_buffer(dptr, OUT), self.n, self.k, self.so, ti, T)
             _PC[K['served']] += 1
             return OUT, None
@@ -248,7 +251,7 @@ class Batch:
         X = x[self.NM[pos]]
         PRp = np.ascontiguousarray(PR[pos])
         OUT = np.empty((len(pos),) + self.shape)
-        cfn(self.fnptr, ffi.from_buffer(dptr, X), ffi.from_buffer(pptr, PRp),
+        cfn(self.fnptr, self.bit, ffi.from_buffer(dptr, X), ffi.from_buffer(pptr, PRp),
             ffi.from_buffer(dptr, OUT), len(pos), self.k, self.so, ti, T)
         return OUT, pos
 

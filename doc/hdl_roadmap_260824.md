@@ -12664,3 +12664,48 @@ core is off") -- the new bit-for-bit test passed by skipping; read with -rs, fix
 deep (the core, its threads, the Newtons, the loops, PCNR, the pairs, the ABI, the batches) clean; the 27 gold decks --
 standalone DC against 224's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton
 count and path count identical but the loops' own.
+
+## 2026-11-03 — 235. One kernel a class -- a device class compiles one C kernel, every pass a call wants at once, where it compiled one a pass and a fused one beside them: the per-element calls, the stamp plan's batches, the core and the PCNR DC solve all call it (a pass's `CKernel` asks it for that pass), every result the same
+
+**Why**  Andreas, on the survey after 234 ("1 the parameter-only work, 2 the core's serial passes"): "as the effort is
+pointing out the split per kernel. Can we reduce the number of code paths to simplify, reduce code duplication and be
+faster?" -> A (this), B (236: the parameter-only statements once), C (237: the core's passes on the pool) -- plan
+g24's `tc/plan_235_237.md`.  A class printed a kernel per chain function (`i`, `G`, `q`, `C`, a pinned class's `i_dc`
+and `G_dc`) and the core's fused kernel from them, with the checks that the fused one was printed from the bound
+ones; B would have had to hold its statements in each.  Measured first: one pass through the fused kernel against its
+own pass kernel 1.07-1.29x slower (level 3) and 1.08-1.11x (level 2), all four 1.4x / 2.0x faster; the off-core
+single-pass kernel time ~0.25 % of jge's main thread under Radau (perf by object), the 27 decks' DC solves 0.7 s
+together, every gold transient but e1480/g1310 on the core; the pass kernels' loads 2.0-3.2 ms a process -- A is
+speed-neutral, its worth the paths it removes and one place for B.  LINE (a simplification; set before building, one
+form each): jge under Radau not slower, the median of 5 interleaved quiet-box pairs >= 0.99x; gm6's process not
+slower, the median saving of 15 pairs >= -0.003 s; every result the same.  Refused under.
+
+**Built.**  `_hdl_cbackend`: the class's kernel is `fuse_csrc` of its chain functions' C (one pass accepted); a class
+with DC pins whose `G_dc`/`i_dc` are other functions gets a second from them (`_c_fused_dc`, each in its pass's
+place); nothing else is built or loaded.  Each chain function's `_hdl_c` is a `CKernel` VIEW (`view`): the class's
+kernel, its pass's bit, its shape and layout -- `__call__` asks for that pass alone, the output in every pass's place
+(only the wanted pass writes).  A class whose passes cannot be fused runs numpy, its status saying why (none of the
+library's or the decks' classes).  `pass.c` takes `want` and calls the class's kernel; `core.c`'s batch outside a
+group likewise with its pass's bit; `pcnrdc.c` one kernel a device, `G|i` in one call (`kfn` for `ifn`/`Gfn`).
+Removed: `kernel_for`, the pass kernels' builds and loads, `FusedKernel.parts` and the check that the fused kernel
+was printed from the bound pass kernels (`bind_fused`, `_check_fused`: now the group's kernel is the class's bound
+one and the one its passes' `CKernel`s call), the bind while the switch was off, `FUSE` and `PYCIRCUIT_HDL_CFUSE`
+(fast_check.sh's list and HANDOVER: twenty-five switches), `pass_fn_t`.  The core no longer watches the backend's
+module dict (it read the switch there).
+
+**Measured** (a quiet box, HEAD e7e6fbd0 from its worktree and this tree, interleaved): jge under Radau, 5 pairs, 10.824 -> 10.912 s, 0.992x (0.988 to 1.007; the line 0.99x) -- a small effect deciding, so run again: 10.901 -> 10.816 s, 1.010x (0.997 to 1.024); gm6's process, 15 pairs, 0.001 s saved (-0.013 to 0.031) and again 0.005 s (-0.039 to 0.021), the line -0.003 s; jge under gear2 1.000x and 1.002x -- the line met in both runs.  The gate's runs (a
+busier box): the 27 decks' solves 1.009x under gear2 (20.5 -> 20.3 s) and under Radau (42.5 -> 42.1 s), their processes 1.009x and 1.006x.
+
+**Tests.**  test_twins_random's fused checks: every subset of a class's passes against each pass asked alone (its
+`CKernel`, which the kernel tests hold to numpy) -- they compared against the pass kernels.  test_core_fused: the
+grouped core against the same core with every batch a pass at a time (the grouping patched off for one run: no
+switch), answers, statistics and warnings; a pass's `CKernel` rebound to another object for the kernel's code -- the
+group refuses it, the batches call their own; the union refusals (no pass, where it was fewer than two).  test_watch:
+a rebound `CKernel` and the class's kernel gone from its info are seen.  test_hdl_cbackend's build lock on the class's
+kernel's source.  Pinned pairs: "the printed passes and the class's kernel" (renamed from "the printed pass kernels
+and their fused kernel"; `view` joined its twin) and "the kernel call and the pass driver" re-worded; 23 twins and 2
+references moved (`CKernel.__call__`; `_Core.probe`'s and `passes`' docstrings) -- re-recorded after 1 846 tests of
+the twins passed.
+
+**Gate** (the main tree): the TELL; the suite, 6 114 passed (10 skipped, 3 xfailed; the switch's own test gone); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 234's gate runs (HEAD's tree), gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.

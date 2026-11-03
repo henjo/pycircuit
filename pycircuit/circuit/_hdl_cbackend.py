@@ -16,16 +16,17 @@ caching it, loading it, and calling it.
 OWNS
     On the class, `_hdl_backend_status` (what happened, below) and
     `_hdl_backend_ulp` (the listed functions its C calls, `libm_check`);
-    on the class info, `_c_bound`, `_c_fused`, `_c_fused_status`,
+    on the class info, `_c_bound`, `_c_fused` (the class's kernel),
+    `_c_fused_dc` (a DC-pinned class's second), `_c_fused_status`,
     `_backend_pending` and `_backend_seen` (and, through `_hdl_climit`,
     `_c_limit` and `_c_limit_status`); on each chain function, `_hdl_c`
-    (its `CKernel`); on each element, `_hdl_cp` (the packed parameters,
-    `CKernel.pack`'s, dropped by the element's `update` when a parameter
-    moves).  The module keeps `_LIBM` (the C library's check).  `_paths`:
-    `once:backend:` (`c`, `numpy`, `compile_failed`: a class's resolve).
-    Switches: `PYCIRCUIT_HDL_BACKEND` (`c`, `numpy` or `auto`, read by
-    `hdl._backend_requested`) and `PYCIRCUIT_HDL_CFUSE=0` (`FUSE`); the
-    build's are `_cbuild`'s and `_hdl_cache`'s (`PYCIRCUIT_HDL_CC`,
+    (its `CKernel`: its pass of the class's kernel); on each element,
+    `_hdl_cp` (the packed parameters, `CKernel.pack`'s, dropped by the
+    element's `update` when a parameter moves).  The module keeps `_LIBM`
+    (the C library's check).  `_paths`: `once:backend:` (`c`, `numpy`,
+    `compile_failed`: a class's resolve).  Switch: `PYCIRCUIT_HDL_BACKEND`
+    (`c`, `numpy` or `auto`, read by `hdl._backend_requested`); the build's
+    are `_cbuild`'s and `_hdl_cache`'s (`PYCIRCUIT_HDL_CC`,
     `PYCIRCUIT_C_SANITIZE`, `PYCIRCUIT_HDL_CACHE`).
 
 Selection
@@ -103,19 +104,36 @@ Cache
     The `.so` lives beside the pickled compile-cache entries
     (`_hdl_cache.cache_dir()`), keyed by SHA-256 of the complete C
     source, the compiler's version line and the flags.  Cold: one `cc`
-    run per distinct function, launched in parallel across the class's
-    functions.  Warm: `dlopen` only.  A corrupt or unloadable `.so` is
+    run per kernel (the class's, a DC-pinned class's second, its
+    limiter's), launched in parallel.  Warm: `dlopen` only.  A corrupt or unloadable `.so` is
     rebuilt in place.  Writes are `mkstemp` + `os.replace`, so two
     processes on one key cannot tear the file.  With the compile cache
     disabled (`PYCIRCUIT_HDL_CACHE=0`) objects are built in a
     per-process temporary directory instead and discarded at exit.
 
+One kernel a class
+    A class's chain functions `G`, `C`, `i` and `q` each print their whole
+    chain to C (`fn._csrc`); the class compiles ONE kernel from them
+    (`fuse_csrc`): the printed statements unioned by name, each run under
+    the bits of the passes that print it, each pass's outputs to its own
+    array -- the same statements, so the same values (a NaN's sign aside,
+    the caveat the backend carries against numpy).  Bound as
+    `info['_c_fused']`; a class with DC pins (its `G_dc` and `i_dc` other
+    functions) gets a second from those (`_c_fused_dc`).  Each chain
+    function's `_hdl_c` is a `CKernel`: its pass of the class's kernel --
+    the bit it asks for, its output's shape, the pack layout.  A class
+    whose passes cannot be fused (they read different x or packs, a line
+    the printer does not make) runs numpy, saying why in its status.
+
 Calling convention
-    `void hdl_fn(const double *x, const double *p, double *out)` --
-    `x` the solution vector, `p` the packed trailing arguments
-    (parameter values, temperature, givenness flags) in the numpy
-    signature's order, `out` the preallocated result.  `p` is packed
-    once per parameter change (`update_iparv` drops it via the
+    `void hdl_fn(const double *x, const double *p, long want, double *oG,
+    double *oC, double *oi, double *oq)` -- `x` the solution vector, `p`
+    the packed trailing arguments (parameter values, temperature,
+    givenness flags) in the numpy signature's order, `want` the passes'
+    bits (1 `G`, 2 `C`, 4 `i`, 8 `q`: `FUSE_PASSES`), each wanted pass's
+    preallocated result in its array (an unwanted pass's is not touched:
+    a caller of one pass may hand its array in every place).  `p` is
+    packed once per parameter change (`update_iparv` drops it via the
     element's observer), not per call; the temperature slot is written
     per call because `epar` carries it.  A fresh `out` is allocated per
     call so the returned array is independently owned, exactly as
@@ -127,21 +145,13 @@ The batches
     In a circuit's stamp plan a C-bound class's elements run as ONE call
     per class per pass (`_hdl_batch`): a driver of its own (`csrc/pass.c`,
     a runtime unit loaded through `_cbuild.load_unit`) loops over the
-    elements calling the kernel's function pointer on each element's
+    elements calling the class's kernel for the pass on each element's
     `x[nm]` and its own pack, the temperature written into the pack's
     slot exactly as `CKernel.__call__` writes it.  What a batch cannot
     serve -- an instance shadow, a patched method, a detached class, a
     temperature that is not one number -- takes `CKernel.__call__` per
-    element as before.
-
-The fused kernel
-    For the transient's evaluate core a class also gets ONE kernel for
-    its four passes (`fuse_csrc`): the printed statements unioned by
-    name, each run under the bits of the passes that print it, each
-    pass's outputs to its own array -- the same statements, so the same
-    values (a NaN's sign aside).  Built with the others, bound as
-    `info['_c_fused']`, refused on its own (`info['_c_fused_status']`);
-    `PYCIRCUIT_HDL_CFUSE=0` leaves it unbuilt and unused.
+    element as before.  The transient's evaluate core (`_tran_core`)
+    calls a class's kernel once an element for every pass a call wants.
 """
 
 import contextlib
@@ -192,8 +202,10 @@ _F64 = np.dtype('float64')
 
 
 class CKernel(object):
-    """One compiled chain function, callable as the element methods
-    need it: `kernel(element, x, epar)` -> a fresh float64 array.
+    """One chain function's pass of its class's kernel, callable as the
+    element methods need it: `kernel(element, x, epar)` -> a fresh float64
+    array -- the class's kernel (`cfn`) asked for the pass's bit (`bit`)
+    alone.
 
     THE CALL IS THE COST for a mid-sized model, so it is kept small:
     `ffi.from_buffer` on the arrays (the buffer protocol; the cdata keeps
@@ -203,14 +215,15 @@ class CKernel(object):
     must answer; `ValueError` for a state shorter than the kernel reads."""
 
     __slots__ = ('ffi', 'cfn', 'shape', 'nx', 'n_p', 't_index', 'key',
-                 'built_s', 'dptr')
+                 'built_s', 'dptr', 'bit')
 
-    def __init__(self, ffi, cfn, shape, nx, layout, key, built_s):
+    def __init__(self, ffi, cfn, shape, nx, layout, key, built_s, bit=0):
         self.ffi, self.cfn, self.shape = ffi, cfn, shape
         self.dptr = ffi.typeof('double *')
         self.nx = nx
         self.n_p, self.t_index = layout
         self.key, self.built_s = key, built_s
+        self.bit = bit
 
     def pack(self, element):
         """The packed trailing-argument vector for `element`, built
@@ -266,35 +279,29 @@ class CKernel(object):
                              % (np.shape(x), self.nx - 1))
         out = np.empty(self.shape)
         ffi = self.ffi
-        self.cfn(ffi.from_buffer(self.dptr, xa), pcast,
-                 ffi.from_buffer(self.dptr, out))
+        o = ffi.from_buffer(self.dptr, out)
+        self.cfn(ffi.from_buffer(self.dptr, xa), pcast, self.bit, o, o, o, o)
         return out
 
 
-def kernel_for(fn, nx, rebuild_corrupt=True):
-    """The `CKernel` for a chain function carrying `_csrc`: `load_kernel`
-    on its source, wrapped.  Returns `(kernel, cold)`."""
-    ffi, cfn, key, cold, secs = _cbuild.load_kernel(fn._csrc, None, rebuild_corrupt)
-    kern = CKernel(ffi, cfn, tuple(fn._cshape), nx, tuple(fn._clayout),
-                   key, secs)
-    return kern, cold
+def view(fk, m, fn):
+    """Chain function `fn`'s `CKernel`: pass `m` of the class's kernel `fk`
+    (a `FusedKernel`)."""
+    return CKernel(fk.ffi, fk.cfn, tuple(fn._cshape), fk.nx, fk.layout, fk.key, fk.built_s,
+                   bit=1 << FUSE_PASSES.index(m))
 
 
 ## ----------------------------------------------------------------------
-## The fused kernel.
+## The class's kernel.
 
-#: ONE MASKED KERNEL A CLASS for the evaluate core (`_tran_core`): a
-#: class's four passes print four functions that each recompute their
-#: whole chain -- `i` is inside `G`, `q` inside `C`, and `G` and `C` share
-#: about half their statements -- where one function evaluating what a
-#: call wants computes each statement once.  Printed from the passes'
-#: C (`fuse_csrc`), built beside them and bound as `info['_c_fused']`;
-#: refused on its own, never the class.  env `PYCIRCUIT_HDL_CFUSE=0`: not
-#: built, and the core calls the passes' own kernels (read at the bind and
-#: at every readiness check).
-FUSE = os.environ.get('PYCIRCUIT_HDL_CFUSE', '1').strip().lower() not in _FALSE
+#: ONE MASKED KERNEL A CLASS: a class's four passes print four functions
+#: that each recompute their whole chain -- `i` is inside `G`, `q` inside
+#: `C`, and `G` and `C` share about half their statements -- where one
+#: function evaluating what a call wants computes each statement once.
+#: Printed from the passes' C (`fuse_csrc`) and bound as `info['_c_fused']`
+#: (the module note, One kernel a class).
 
-#: the passes a fused kernel computes: bit `1 << k` is `FUSE_PASSES[k]`
+#: the passes a class's kernel computes: bit `1 << k` is `FUSE_PASSES[k]`
 #: (the evaluate core's order)
 FUSE_PASSES = ('G', 'C', 'i', 'q')
 
@@ -308,7 +315,7 @@ class FuseRefused(Exception):
 
 
 def fused_cdef():
-    """The fused kernel's entry: `void hdl_fn(x, p, want, oG, oC, oi, oq)`."""
+    """A class's kernel's entry: `void hdl_fn(x, p, want, oG, oC, oi, oq)`."""
     from pycircuit.circuit import hdl
     return (f'void {hdl._C_ENTRY}(const double *x, const double *p, long want, '
             'double *oG, double *oC, double *oi, double *oq);')
@@ -358,8 +365,8 @@ def fuse_csrc(srcs):
                 raise FuseRefused(f'{m}: a line the printer does not make')
             o.append(mt.group(2))
         outs[m] = o
-    if len(outs) < 2:
-        raise FuseRefused('fewer than two passes')
+    if not outs:
+        raise FuseRefused('no pass')
     ## every name read: printed before its reader and in each of its
     ## reader's passes (so a run its guard skips is read by no run it lets
     ## through)
@@ -400,72 +407,61 @@ def fuse_csrc(srcs):
 
 
 class FusedKernel:
-    """A class's fused kernel: the loaded function, the pass kernels it was
-    printed from (`parts`: the core calls it only while they are the
-    class's bound kernels), each pass's output length (`sizes`), the bits
-    of its passes (`mask`), the x length it reads and the pack layout."""
+    """A class's kernel: the loaded function, the chain functions it was
+    printed from (`fns`, by pass), each pass's output length (`sizes`), the
+    bits of its passes (`mask`), the x length it reads and the pack
+    layout."""
 
-    __slots__ = ('built_s', 'cfn', 'ffi', 'key', 'layout', 'mask', 'nx', 'parts', 'sizes',
+    __slots__ = ('built_s', 'cfn', 'ffi', 'fns', 'key', 'layout', 'mask', 'nx', 'sizes',
                  'stats')
 
-    def __init__(self, ffi, cfn, parts, sizes, nx, layout, key, built_s, stats):
-        self.ffi, self.cfn, self.parts, self.sizes = ffi, cfn, parts, sizes
-        self.mask = sum(1 << FUSE_PASSES.index(m) for m in parts)
+    def __init__(self, ffi, cfn, fns, sizes, nx, layout, key, built_s, stats):
+        self.ffi, self.cfn, self.fns, self.sizes = ffi, cfn, fns, sizes
+        self.mask = sum(1 << FUSE_PASSES.index(m) for m in fns)
         self.nx, self.layout, self.key, self.built_s, self.stats = nx, layout, key, built_s, stats
 
 
-def fuse_source(info):
-    """The class's fused source as `_build_missing_parallel` takes it, or
-    None with `info['_c_fused_status']` saying why: the passes' kernels
-    must agree on the x they read and the pack they take."""
-    if not FUSE:
-        info['_c_fused_status'] = 'off'
-        return None
-    srcs, shapes, nxs, layouts = {}, {}, set(), set()
-    for m in FUSE_PASSES:
-        fn = info['funcs'].get(m)
+#: a DC-pinned class's second kernel: its DC functions, each in the place
+#: of the pass it stands for
+DC_PASSES = {'G': 'G_dc', 'i': 'i_dc'}
+
+
+def fuse_source(info, dc=False):
+    """The class's kernel's source (`dc`: a DC-pinned class's second, from
+    its `G_dc` and `i_dc` where they are other functions than `G` and `i`;
+    None where it has none) as `_build_missing_parallel` takes it, or
+    `FuseRefused`: the chain functions must agree on the x they read and
+    the pack they take."""
+    funcs = info['funcs']
+    names = ({m: nm for m, nm in DC_PASSES.items() if funcs.get(nm) is not funcs.get(m)}
+             if dc else {m: m for m in FUSE_PASSES})
+    srcs, fns, shapes, nxs, layouts = {}, {}, {}, set(), set()
+    for m, nm in names.items():
+        fn = funcs.get(nm)
         if fn is not None and getattr(fn, '_csrc', None) is not None:
-            srcs[m], shapes[m] = fn._csrc, tuple(fn._cshape)
+            srcs[m], fns[m], shapes[m] = fn._csrc, fn, tuple(fn._cshape)
             nxs.add(fn._cshape[0])
             layouts.add(tuple(fn._clayout))
+    if dc and not srcs:
+        return None
     if len(nxs) > 1 or len(layouts) > 1:
-        info['_c_fused_status'] = 'refused (the passes read different x or packs)'
-        return None
-    try:
-        text, stats = fuse_csrc(srcs)
-    except FuseRefused as e:
-        info['_c_fused_status'] = f'refused ({e})'
-        return None
-    return types.SimpleNamespace(_csrc=text, shapes=shapes, nx=nxs.pop(),
+        raise FuseRefused('the passes read different x or packs')
+    text, stats = fuse_csrc(srcs)
+    return types.SimpleNamespace(_csrc=text, fns=fns, shapes=shapes, nx=nxs.pop(),
                                  layout=layouts.pop(), stats=stats)
 
 
-def bind_fused(info, src):
-    """Bind the class's fused kernel from `fuse_source`'s object (None:
-    nothing to bind) once its passes' kernels are bound: `info['_c_fused']`
-    the kernel or None, `info['_c_fused_status']` 'c' or why not."""
-    info['_c_fused'] = None
-    if src is None:
-        return None
-    parts = {m: info['funcs'][m].__dict__.get('_hdl_c') for m in src.shapes}
-    if not all(isinstance(k, CKernel) for k in parts.values()):
-        info['_c_fused_status'] = 'refused (a pass without its kernel)'
-        return None
-    try:
-        ffi, cfn, key, _cold, secs = _cbuild.load_kernel(src._csrc, fused_cdef())
-    except (_cbuild.CompileError, OSError) as e:
-        info['_c_fused_status'] = f'compile failed ({e})'
-        return None
+def bind_fused(src):
+    """The class's kernel loaded from `fuse_source`'s object, or
+    `CompileError` / `OSError`."""
+    ffi, cfn, key, _cold, secs = _cbuild.load_kernel(src._csrc, fused_cdef())
     sizes = {m: int(np.prod(s)) for m, s in src.shapes.items()}
-    fk = FusedKernel(ffi, cfn, parts, sizes, src.nx, src.layout, key, secs, src.stats)
-    info['_c_fused'] = fk
-    info['_c_fused_status'] = 'c'
-    return fk
+    return FusedKernel(ffi, cfn, src.fns, sizes, src.nx, src.layout, key, secs, src.stats)
 
 
 def _build_missing_parallel(fns):
     """Compile, in parallel, every distinct `_csrc` in `fns` whose
-    object is not on disk yet.  Failures fall through to `kernel_for`,
+    object is not on disk yet.  Failures fall through to `load_kernel`,
     which reports them; this only warms the store."""
     from pycircuit.circuit import hdl
     cc, _version = _cbuild.find_compiler()
@@ -482,7 +478,7 @@ def _build_missing_parallel(fns):
             if _cbuild.find_so(key) is not None:
                 continue
             ## a key another process is building is left to it:
-            ## `kernel_for` waits on the lock and then finds its object
+            ## `load_kernel` waits on the lock and then finds its object
             if not held.enter_context(_cbuild._key_lock(key, blocking=False)):
                 continue
             if _cbuild.find_so(key) is not None:
@@ -770,7 +766,7 @@ def detach(cls, info):
         if fn is not None and hasattr(fn, '_hdl_c'):
             del fn._hdl_c
     info['_c_bound'] = False
-    info['_c_fused'] = None
+    info['_c_fused'] = info['_c_fused_dc'] = None
     info['_c_fused_status'] = 'detached'
     if info.get('limit_spec'):
         from pycircuit.circuit import _hdl_climit
@@ -873,6 +869,16 @@ def _resolve(cls, info, explicit):
     ## class creation.
     if importlib.util.find_spec('cffi') is None:
         return refuse('cffi not installed', 'cffi is not installed')
+    ## (the class's kernel, printed from its chain functions' C, and a
+    ## DC-pinned class's second: a class whose passes cannot be fused runs
+    ## numpy)
+    try:
+        srcs = [fuse_source(info), fuse_source(info, dc=True)]
+    except FuseRefused as e:
+        refuse(f'its passes could not be fused: {e}',
+               f'its passes could not be fused into one kernel ({e})')
+        info['_c_fused_status'] = f'refused ({e})'
+        return
     if not explicit:
         from pycircuit.circuit import _hdl_cache
         if not _hdl_cache.enabled():
@@ -883,32 +889,20 @@ def _resolve(cls, info, explicit):
         except OSError:
             return refuse('the compile cache directory is not usable', '')
         if _cbuild.find_compiler()[0] is None and any(
-                _cbuild.find_so(_cbuild.source_key(fn._csrc)) is None
-                for fn in todo.values()):
+                _cbuild.find_so(_cbuild.source_key(s._csrc)) is None
+                for s in srcs if s is not None):
             return refuse('no C compiler', '')
     ## (An explicit request has no compiler check: a warm `.so` store
-    ## serves a machine with no compiler at all -- `kernel_for` only builds
+    ## serves a machine with no compiler at all -- `load_kernel` only builds
     ## on a miss, and raises `CompileError` naming the missing compiler
     ## when it must build.  'auto' looked above, and stays quiet.)
-    cold = False
     ## (the class's limiter, printed from its spec and built beside the
-    ## chain functions; refused on its own, never the class: `_hdl_climit`)
+    ## class's kernel; refused on its own, never the class: `_hdl_climit`)
     from pycircuit.circuit import _hdl_climit
     lsrc = _hdl_climit.source_for(info, cls) if info.get('limit_spec') else None
-    ## (and the evaluate core's fused kernel, printed from the passes' C:
-    ## refused on its own too, `fuse_source`)
-    fsrc = fuse_source(info)
     try:
-        _build_missing_parallel(list(todo.values())
-                                + [s for s in (lsrc, fsrc) if s is not None])
-        for fn in todo.values():
-            ## The x length the kernel reads equals its output row
-            ## count: `i`, `G`, `q`, `C` are all n-per-side.  Taken from
-            ## the function itself because `cls._hdl_info` is not
-            ## assigned yet when the metaclass calls attach.
-            kern, was_cold = kernel_for(fn, fn._cshape[0])
-            cold = cold or was_cold
-            fn._hdl_c = kern
+        _build_missing_parallel([s for s in srcs + [lsrc] if s is not None])
+        fk, fdk = (bind_fused(s) if s is not None else None for s in srcs)
     except (_cbuild.CompileError, OSError) as e:
         ## (an OSError too: the store's directory -- a file in its place, no
         ## permission -- refuses the class here, never out of class creation)
@@ -919,11 +913,16 @@ def _resolve(cls, info, explicit):
                     'running numpy' if explicit else
                     'the C build failed (%s); running numpy') % e)
         return
+    ## each chain function its pass of the class's kernel (a DC function
+    ## that is another function, its pass of the second)
+    for k in (fk, fdk):
+        for m, fn in (k.fns.items() if k is not None else ()):
+            fn._hdl_c = view(k, m, fn)
+    info['_c_fused'], info['_c_fused_dc'], info['_c_fused_status'] = fk, fdk, 'c'
     ## (read by `_hdl_cse.take`: a C-bound class's calls never fuse)
     info['_c_bound'] = True
     _paths.COUNTS['once:backend:c'] += 1
     _note(cls, 'c')
     if lsrc is not None:
         _hdl_climit.bind(cls, info, lsrc)
-    bind_fused(info, fsrc)
     _name_ulp(cls, info, todo.values(), lsrc)

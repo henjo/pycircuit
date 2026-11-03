@@ -112,13 +112,15 @@ def test_a_stamped_core_sees_every_change_its_check_reads(monkeypatch):
     assert any(m is el.__dict__['_hdl_cp'] for m in core.mirror)
 
 
-def test_a_rebound_kernel_and_the_fuse_switch_are_seen(monkeypatch):
+def test_a_rebound_kernel_is_seen(monkeypatch):
+    """A pass's `CKernel` rebound (a function's dict) and the class's kernel
+    gone from its info (the info dict): each seen at the next check."""
     _on()
     tr, core = _served()
     bt = core.batches[0]
     fn = bt.info['funcs'][bt.m]
     old = fn.__dict__['_hdl_c']
-    new = cb.kernel_for(fn, old.nx)[0]
+    new = cb.view(bt.info['_c_fused'], bt.m, fn)
     monkeypatch.setattr(fn, '_hdl_c', new)
     assert core.probe(tr.epar).__class__ is not str
     assert bt.kern is new
@@ -126,7 +128,7 @@ def test_a_rebound_kernel_and_the_fuse_switch_are_seen(monkeypatch):
     assert core.probe(tr.epar).__class__ is not str and bt.kern is old
     if core.nz:
         assert core.z_fn[0]
-        monkeypatch.setattr(cb, 'FUSE', False)       # (the backend's module dict)
+        monkeypatch.setitem(core.zgroups[0][0], '_c_fused', None)
         assert core.probe(tr.epar).__class__ is not str and not core.z_fn[0]
         monkeypatch.undo()
         assert core.probe(tr.epar).__class__ is not str and core.z_fn[0]

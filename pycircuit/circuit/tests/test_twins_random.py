@@ -274,14 +274,15 @@ def test_the_psp_kernels_answer_their_numpy_functions_on_drawn_biases():
 ## -- the fused kernel -----------------------------------------------------------------------
 
 def _check_fused(e, fk, x, epar):
-    """The class's fused kernel at `x` (`_hdl_cbackend.fuse_csrc`), every
-    subset of its passes, against the passes' own kernels: the same bytes
-    (a NaN's sign aside), and nothing written for a pass outside the
-    subset.  False where a pass kernel declines the call."""
+    """The class's kernel at `x` (`_hdl_cbackend.fuse_csrc`), every subset of
+    its passes, against each pass asked alone (its `CKernel`, which the
+    kernel tests hold to the numpy functions): the same bytes (a NaN's sign
+    aside), and nothing written for a pass outside the subset.  False where
+    a pass's `CKernel` declines the call."""
     from pycircuit.circuit import _hdl_cbackend as cb
     funcs = type(e)._hdl_info['funcs']
     ref = {}
-    for m in fk.parts:
+    for m in fk.sizes:
         r = funcs[m].__dict__['_hdl_c'](e, x, epar)
         if r is None:
             return False
@@ -296,7 +297,7 @@ def _check_fused(e, fk, x, epar):
         outs = [np.full(max(fk.sizes.get(m, 0), 1), 1.25) for m in cb.FUSE_PASSES]
         fk.cfn(ffi.from_buffer(dptr, xa), pcast, want, *(ffi.from_buffer(dptr, o) for o in outs))
         for b, m in enumerate(cb.FUSE_PASSES):
-            if m not in fk.parts:
+            if m not in fk.sizes:
                 continue
             got = outs[b][:fk.sizes[m]]
             if want & (1 << b):
@@ -348,9 +349,6 @@ def _fused_device(name, how):
 @needs_cc
 @pytest.mark.parametrize('name, how', FUSED_CASES, ids=[f'{n}-{h}' for n, h in FUSED_CASES])
 def test_the_fused_kernel_takes_every_special_and_parameter_value_at_every_coordinate(name, how):
-    from pycircuit.circuit import _hdl_cbackend as cb
-    if not cb.FUSE:
-        pytest.skip('the fused kernels are off (PYCIRCUIT_HDL_CFUSE=0)')
     e, cls = _fused_device(name, how)
     n = len(hdl.x_layout(cls))
     args = [float(v) for v in hdl._args_of(e, defaultepar)]
@@ -365,9 +363,6 @@ def test_the_fused_kernel_takes_every_special_and_parameter_value_at_every_coord
 @needs_cc
 @pytest.mark.parametrize('name, how', FUSED_CASES, ids=[f'{n}-{h}' for n, h in FUSED_CASES])
 def test_the_fused_kernel_answers_the_passes_on_drawn_states(name, how):
-    from pycircuit.circuit import _hdl_cbackend as cb
-    if not cb.FUSE:
-        pytest.skip('the fused kernels are off (PYCIRCUIT_HDL_CFUSE=0)')
     e, cls = _fused_device(name, how)
     n = len(hdl.x_layout(cls))
     pnames = _numeric(e)
@@ -398,10 +393,7 @@ def test_the_fused_kernel_answers_the_passes_on_drawn_states(name, how):
 
 @needs_cc
 def test_the_psp_fused_kernel_answers_its_passes_on_drawn_biases():
-    from pycircuit.circuit import _hdl_cbackend as cb
     from pycircuit.circuit import compact
-    if not cb.FUSE:
-        pytest.skip('the fused kernels are off (PYCIRCUIT_HDL_CFUSE=0)')
     e = compact.PspMosLongChannel(cm.Node('d'), cm.Node('g'), cm.Node('s'), cm.Node('b'),
                                   fnt=1.0)
     e.update_iparv()

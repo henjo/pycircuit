@@ -6,8 +6,9 @@ REFINE (`refine_kernel`).
 THE SOLVE.  `solve` is called by `pcnr.solve_dc` once its start is set
 (x, the limited unknowns, the sources scaled) and makes the whole loop in
 C: the ordinary part on the circuit's VIEW (`pcnr.pcnr_view`) by the C
-core built on it (`_tran_core`), each participant's `i` and `G` -- the
-very kernels its `el.i` / `el.G` call (`_hdl_cbackend.CKernel`) -- at the
+core built on it (`_tran_core`), each participant's `i` and `G` in one
+call of its class's kernel -- the very kernel its `el.i` / `el.G` call
+(`_hdl_cbackend.CKernel`) -- at the
 local point its probe tree builds (`PcnrDevice._kernel_map`), the Schur
 step, numpy's own dgesv, the refine and the three tests: bit for bit the
 Python's loop (pinned in `tests/test_pinned_pairs.py`).  OWNS, on the
@@ -24,7 +25,7 @@ printer, the same symbol map), the laws of `csrc/limit.c`, and
 `limit_block` -- each probe's value as a loop over the unknowns in order,
 the per-probe laws, the Kruskal and potentials of `csrc/pcnr_refine.c`
 where a redundant probe over-determines them.  `int hdl_fn(const double
-*x, const double *p, double *out)`, the chain functions' entry: `x` the
+*x, const double *p, double *out)` (the kernels' entry name): `x` the
 device's last accepted sub-vector, `p` its packed parameters (the
 temperature at its slot), `out` the new unknowns (limited in place) and
 then the old ones; 1 declines -- a NaN among the keys to sort, whose order
@@ -303,7 +304,8 @@ def refine(dev, v_new, v_old, epar, x_old_sub):
 ## ---------------------------------------------------------------------------
 
 def _class_ok(cls, t):
-    """The class's kernels -- `(i, G, refine)`, each `(ffi, cfn)` -- where
+    """The class's kernels -- `(kernel, refine, t_index)`, each kernel
+    `(ffi, cfn)`, the first the class's own (`i` and `G` in one call) -- where
     `el.i` / `el.G` reach them on every DC call of a device with `t` rows
     (the chained path, no DC pin, C-bound, the hdl methods themselves, one
     packed layout), else a reason (a str).  Cached on the class's info
@@ -329,14 +331,15 @@ def _class_ok(cls, t):
             and all(getattr(f, '__module__', None) == hdl.__name__ for f in meth)):
         pass
     elif not (ki.shape == (t,) and tuple(kG.shape) in ((t, t), (t * t,)) and ki.nx <= t
-              and kG.nx <= t and (ki.n_p, ki.t_index) == (kG.n_p, kG.t_index)):
+              and kG.nx <= t and (ki.n_p, ki.t_index) == (kG.n_p, kG.t_index)
+              and ki.cfn is kG.cfn):
         got = 'shape'
     else:
         rk = refine_kernel(cls)
         if rk is None or rk.layout != (ki.n_p, ki.t_index):
             got = 'refine'
         else:
-            got = ((ki.ffi, ki.cfn), (kG.ffi, kG.cfn), (rk.ffi, rk.cfn), ki.t_index)
+            got = ((ki.ffi, ki.cfn), (rk.ffi, rk.cfn), ki.t_index)
     cache[t] = (ki, kG, got)
     return got
 
@@ -384,7 +387,7 @@ def _tables(devices, kerns, epar):
             tabs['d_lin'].append(nlin)
             lin.append(np.asarray(G_lin, dtype=float).ravel())
             nlin += d.t * d.t
-        tabs['ti'].append(-1 if kern[3] is None else kern[3])
+        tabs['ti'].append(-1 if kern[2] is None else kern[2])
     arrs = {nm: np.ascontiguousarray(v if v else [0], dtype=I64) for nm, v in tabs.items()}
     arrs_f = {'Tm': np.concatenate(Tm) if Tm else np.zeros(1),
               'lin': np.concatenate(lin) if lin else np.zeros(1)}
@@ -463,9 +466,9 @@ class _Rec:
         ipiv = np.empty(max(m, 1), dtype=I64)
         keep += [ipiv, fb('int64_t *', ipiv)]
         s.ipiv64 = keep[-1]
-        fns = {nm: ffi.new('void *[]', max(nd, 1)) for nm in ('ifn', 'Gfn', 'rfn')}
+        fns = {nm: ffi.new('void *[]', max(nd, 1)) for nm in ('kfn', 'rfn')}
         for j, kern in enumerate(kerns):
-            for nm, (kffi, cfn) in zip(('ifn', 'Gfn', 'rfn'), kern[:3]):
+            for nm, (kffi, cfn) in zip(('kfn', 'rfn'), kern[:2]):
                 fns[nm][j] = _addr(ffi, kffi, cfn)
         for nm, h in fns.items():
             setattr(s, nm, h)

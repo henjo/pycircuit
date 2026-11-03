@@ -27,8 +27,9 @@ typedef struct {
        pass (`_hdl_batch.Batch`; a lone C-bound element a batch of one) */
     long nb;                      /* the batch count */
     const int64_t *b_pass;        /* (nb) its pass m */
-    void **b_fn;                  /* (nb) its kernel (pass_fn_t), filled by
-                                     `_Core.probe` */
+    void **b_fn;                  /* (nb) its class's kernel (fused_fn_t),
+                                     asked for the batch's pass alone;
+                                     filled by `_Core.probe` */
     const int64_t *b_ne;          /* (nb) its element count ne */
     const int64_t *b_k;           /* (nb) inputs per element k (<= 64) */
     const int64_t *b_so;          /* (nb) outputs per element so (<= 4096) */
