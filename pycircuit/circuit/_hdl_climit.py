@@ -328,8 +328,8 @@ class CLimitKernel(_cb.CKernel):
 
     __slots__ = ()
 
-    def __init__(self, ffi, cfn, nx, layout, key, built_s):
-        super().__init__(ffi, cfn, (nx,), nx, layout, key, built_s)
+    def __init__(self, ffi, cfn, nx, layout, key, built_s, tail=0):
+        super().__init__(ffi, cfn, (nx,), nx, layout, key, built_s, tail=tail)
 
     def __call__(self, element, x, x0, epar):
         d = element.__dict__
@@ -446,7 +446,10 @@ def bind(cls, info, src=None):
         info['_c_limit'] = None
         info['_c_limit_status'] = f'numpy (compile failed: {e})'
         return None
-    kern = CLimitKernel(ffi, cfn, src._nx, src._layout, key, secs)
+    ## (its packs carry the class's kernel's tail: the element's one pack)
+    fk = info.get('_c_fused')
+    kern = CLimitKernel(ffi, cfn, src._nx, src._layout, key, secs,
+                        tail=fk.tail if fk is not None else 0)
     info['_c_limit'] = kern
     info['_c_limit_status'] = 'c'
     return kern
@@ -580,7 +583,7 @@ def _handwritten(el, cls, info):
         except (_cb.CompileError, OSError):
             return None
         hw = _HW[key] = _Handwritten(cls, info, CLimitKernel(
-            ffi, cfn, ik.nx, (ik.n_p, ik.t_index), k, secs), v)
+            ffi, cfn, ik.nx, (ik.n_p, ik.t_index), k, secs, tail=ik.tail), v)
     return hw
 
 

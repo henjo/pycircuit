@@ -786,6 +786,11 @@ class _Core:
             if cp is False:
                 return 'pack'
             if cp is not mirror[ui]:
+                ## (a pack shorter than its class's kernel writes its held
+                ## statements into -- made by another kernel -- declines)
+                k = kern_of.get(el.__class__)
+                if k is None or cp[0].shape[0] < k.n_p + k.tail:
+                    return 'pack'
                 mirror[ui] = cp
                 a = cp[0].ctypes.data
                 for p_ in ps:

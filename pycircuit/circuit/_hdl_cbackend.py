@@ -125,11 +125,34 @@ One kernel a class
     whose passes cannot be fused (they read different x or packs, a line
     the printer does not make) runs numpy, saying why in its status.
 
+The held statements
+    A statement no `x` reaches -- through what it reads -- is a function of
+    the parameters and the temperature alone (about a sixth of a MOSFET's
+    statements): the class's kernel makes all of them once a parameter
+    state (`hdl_prep`, printed by `fuse_csrc`) and keeps their values in
+    the pack's tail (`CKernel.pack` sizes it, `FusedKernel.tail`), every
+    call reading them as loads.  After the values the tail holds the stamp
+    (made: stored after the values, released), the temperature they were
+    made at (a call whose temperature's bits differ makes them again) and,
+    per pass, the flags PCX_FP_FLAGS (`csrc/pcx_fenv.h`) the prep raised for
+    that pass's statements -- tested after each run of statements with one
+    set of bits, the caller's own flags kept around the prep -- which every
+    call wanting the pass raises again.  The values are the same
+    expressions on the same inputs: every byte (a NaN's sign aside).  The
+    flags are those of the statements made, as numpy makes every statement
+    of a pass; inline, gcc may make a `const` libm call only on the branch
+    that selects its value, raising its flag on that branch alone -- held,
+    the flag reaches every call wanting the pass, as numpy's warning does
+    (at worst a needless hand-back, never another answer: the flag rule).
+    A DC-pinned class's second kernel holds nothing (the pack's tail is the
+    first's).
+
 Calling convention
-    `void hdl_fn(const double *x, const double *p, long want, double *oG,
+    `void hdl_fn(const double *x, double *p, long want, double *oG,
     double *oC, double *oi, double *oq)` -- `x` the solution vector, `p`
     the packed trailing arguments (parameter values, temperature,
-    givenness flags) in the numpy signature's order, `want` the passes'
+    givenness flags) in the numpy signature's order and then the held
+    statements' tail (written by the kernel), `want` the passes'
     bits (1 `G`, 2 `C`, 4 `i`, 8 `q`: `FUSE_PASSES`), each wanted pass's
     preallocated result in its array (an unwanted pass's is not touched:
     a caller of one pass may hand its array in every place).  `p` is
@@ -212,30 +235,41 @@ class CKernel(object):
     the array alive for the call), a pre-resolved pointer type (`dptr`), a
     type test for the usual float `T`.  A fresh `out` every call (callers
     keep and even write into what they get); None where the numpy function
-    must answer; `ValueError` for a state shorter than the kernel reads."""
+    must answer -- a pack shorter than the class's kernel holds its held
+    statements in among them (`tail`: made by another kernel, never
+    written past); `ValueError` for a state shorter than the kernel
+    reads."""
 
     __slots__ = ('ffi', 'cfn', 'shape', 'nx', 'n_p', 't_index', 'key',
-                 'built_s', 'dptr', 'bit')
+                 'built_s', 'dptr', 'bit', 'tail')
 
-    def __init__(self, ffi, cfn, shape, nx, layout, key, built_s, bit=0):
+    def __init__(self, ffi, cfn, shape, nx, layout, key, built_s, bit=0, tail=0):
         self.ffi, self.cfn, self.shape = ffi, cfn, shape
         self.dptr = ffi.typeof('double *')
         self.nx = nx
         self.n_p, self.t_index = layout
         self.key, self.built_s = key, built_s
         self.bit = bit
+        ## (the class's kernel's tail, which every pack of the class's
+        ## elements carries: `pack`)
+        self.tail = tail
 
     def pack(self, element):
         """The packed trailing-argument vector for `element`, built
-        once per parameter state (the iparv observer drops it)."""
+        once per parameter state (the iparv observer drops it), and after
+        it the tail its class's kernel holds its held statements in, their
+        stamp clear (the module note, The held statements)."""
         from pycircuit.circuit import hdl
         vals = hdl._params_of(element)
         n_par = len(element._hdl_paramnames)
-        p = np.empty(self.n_p)
+        tail = self.tail
+        p = np.empty(self.n_p + tail)
         p[:n_par] = vals[:n_par]
         if self.t_index is not None:
             p[self.t_index] = 0.0
-        p[n_par + (1 if self.t_index is not None else 0):] = vals[n_par:]
+        p[n_par + (1 if self.t_index is not None else 0):self.n_p] = vals[n_par:]
+        if tail:
+            p[self.n_p + tail - HELD_TAIL] = 0.0
         cast = self.ffi.cast('double *', p.ctypes.data)
         return (p, cast)
 
@@ -255,6 +289,8 @@ class CKernel(object):
         if packed is False:
             return None
         p, pcast = packed
+        if p.shape[0] < self.n_p + self.tail:
+            return None
         t_index = self.t_index
         if t_index is not None:
             T = getattr(epar, 'T', 300.0)
@@ -284,11 +320,12 @@ class CKernel(object):
         return out
 
 
-def view(fk, m, fn):
+def view(fk, m, fn, tail=None):
     """Chain function `fn`'s `CKernel`: pass `m` of the class's kernel `fk`
-    (a `FusedKernel`)."""
+    (a `FusedKernel`); its packs carry `tail` (the class's kernel's: a
+    DC-pinned class's second kernel's views pack for the first)."""
     return CKernel(fk.ffi, fk.cfn, tuple(fn._cshape), fk.nx, fk.layout, fk.key, fk.built_s,
-                   bit=1 << FUSE_PASSES.index(m))
+                   bit=1 << FUSE_PASSES.index(m), tail=fk.tail if tail is None else tail)
 
 
 ## ----------------------------------------------------------------------
@@ -317,11 +354,84 @@ class FuseRefused(Exception):
 def fused_cdef():
     """A class's kernel's entry: `void hdl_fn(x, p, want, oG, oC, oi, oq)`."""
     from pycircuit.circuit import hdl
-    return (f'void {hdl._C_ENTRY}(const double *x, const double *p, long want, '
+    return (f'void {hdl._C_ENTRY}(const double *x, double *p, long want, '
             'double *oG, double *oC, double *oi, double *oq);')
 
 
-def fuse_csrc(srcs):
+#: the pack's tail after the held values (`fuse_csrc`, the module note):
+#: the stamp, the temperature they were made at, any pass's kept flags, then
+#: each pass's
+HELD_TAIL = 7
+#: the flags a held statement's prep keeps: `csrc/pcx_fenv.h`'s PCX_FP_FLAGS
+#: (a test holds them equal)
+HELD_FLAGS = '(FE_OVERFLOW | FE_UNDERFLOW | FE_INVALID | FE_DIVBYZERO)'
+
+
+def _held_lines(order, text, bits, slot, n_p, ti):
+    """The held statements' C, printed before the kernel: `hdl_held` (the
+    stamp and, where the class reads one, the temperature's bits the values
+    were made at), `hdl_raise` (the kept flags of the passes a call wants)
+    and `hdl_prep` -- each held statement in the kernel's order reading the
+    held values it needs from the tail and storing its own there (a store
+    the flag tests cannot be moved across: the flag rule), the flags tested
+    and cleared after each run of statements with one set of bits and kept
+    for each of its passes, the caller's flags kept around it."""
+    S = n_p + len(slot)
+
+    def tail(e):
+        return _FUSE_REF.sub(lambda m: f'p[{n_p + slot[m.group(1)]}]', e)
+
+    ## (the first line empty: the text follows the prelude, and a
+    ## directive must start its own line)
+    out = ['',
+           '#include <fenv.h>',
+           '#include <string.h>',
+           f'#define HDL_FLAGS {HELD_FLAGS}',
+           'static inline int hdl_held(const double *p)',
+           '{',
+           '  double s;',
+           f'  __atomic_load(&p[{S}], &s, __ATOMIC_ACQUIRE);',
+           (f'  return s == 1.0 && memcmp(&p[{S + 1}], &p[{ti}], sizeof(double)) == 0;'
+            if ti is not None else '  return s == 1.0;'),
+           '}',
+           'static void hdl_raise(const double *p, long want)',
+           '{',
+           '  int f = 0;']
+    out += [f'  if (want & {1 << b}) f |= (int) p[{S + 3 + b}];' for b in range(4)]
+    out += ['  if (f) feraiseexcept(f);',
+            '}',
+            'static __attribute__((noinline, cold)) void hdl_prep(double *p)',
+            '{',
+            '  fexcept_t caller;',
+            '  int f, k0 = 0, k1 = 0, k2 = 0, k3 = 0;',
+            '  const double one = 1.0;',
+            '  fegetexceptflag(&caller, HDL_FLAGS);',
+            '  feclearexcept(HDL_FLAGS);']
+
+    def close(run):
+        return (['  f = fetestexcept(HDL_FLAGS);']
+                + [f'  k{b} |= f;' for b in range(4) if run & (1 << b)]
+                + ['  feclearexcept(HDL_FLAGS);'])
+    run = None
+    for n in order:
+        if n not in slot:
+            continue
+        if run is not None and bits[n] != run:
+            out += close(run)
+        run = bits[n]
+        out.append(f'  p[{n_p + slot[n]}] = {tail(text[n])};')
+    out += close(run)
+    out += [f'  p[{S + 3 + b}] = k{b};' for b in range(4)]
+    out.append(f'  p[{S + 2}] = (k0 | k1 | k2 | k3) ? 1.0 : 0.0;')
+    if ti is not None:
+        out.append(f'  p[{S + 1}] = p[{ti}];')
+    out += [f'  __atomic_store(&p[{S}], &one, __ATOMIC_RELEASE);',
+            '  fesetexceptflag(&caller, HDL_FLAGS);',
+            '}']
+    return out, S
+
+
+def fuse_csrc(srcs, layout=None):
     """One masked C function from a class's printed pass kernels (`srcs`:
     a pass of `FUSE_PASSES` -> its `_csrc`): the union of their
     statements by name, each function's order kept (every statement
@@ -334,6 +444,9 @@ def fuse_csrc(srcs):
     against numpy).  `FuseRefused` for a line the printer does not make
     (`hdl._render_c` is the only printer), one name standing for two
     texts, or a statement or output reading a name outside its passes.
+    With the pack's `layout` (`(n_p, t_index)`) the statements no `x`
+    reaches are HELD (the module note): made once a parameter state into
+    the pack's tail, loads in the kernel.
 
     Returns `(text, stats)`."""
     from pycircuit.circuit import hdl
@@ -380,10 +493,23 @@ def fuse_csrc(srcs):
             for d in _FUSE_REF.findall(e):
                 if d not in pos or not bits[d] & (1 << b):
                     raise FuseRefused(f'an output of {m} reads L_{d} outside it')
-    lines = [(f'void {hdl._C_ENTRY}(const double *x, const double *p, long want, '
-              'double *oG, double *oC, double *oi, double *oq) {')]
+    ## THE HELD STATEMENTS: those no `x` reaches through what they read
+    held = {}
+    if layout is not None:
+        for n in order:
+            held[n] = 'x[' not in text[n] and all(held[d] for d in _FUSE_REF.findall(text[n]))
+    slot = {n: k for k, n in enumerate(n for n in order if held.get(n))}
+    lines = []
+    if slot:
+        prep, S = _held_lines(order, text, bits, slot, *layout)
+        lines += prep
+    lines.append(f'void {hdl._C_ENTRY}(const double *x, double *p, long want, '
+                 'double *oG, double *oC, double *oi, double *oq) {')
     for k in range(0, len(order), 32):
         lines.append('  double {};'.format(', '.join('L_' + n for n in order[k:k + 32])))
+    if slot:
+        lines.append('  if (!hdl_held(p)) hdl_prep(p);')
+        lines.append(f'  if (p[{S + 2}] != 0.0) hdl_raise(p, want);')
     run, runs = None, 0
     for n in order:
         if bits[n] != run:
@@ -391,7 +517,10 @@ def fuse_csrc(srcs):
                 lines.append('  }')
             run, runs = bits[n], runs + 1
             lines.append(f'  if (want & {run}) {{')
-        lines.append(f'    L_{n} = {text[n]};')
+        if n in slot:
+            lines.append(f'    L_{n} = p[{layout[0] + slot[n]}];')
+        else:
+            lines.append(f'    L_{n} = {text[n]};')
     if run is not None:
         lines.append('  }')
     for b, m in enumerate(FUSE_PASSES):
@@ -402,23 +531,25 @@ def fuse_csrc(srcs):
     lines.append('}')
     stats = {'union': len(order), 'runs': runs,
              'printed': sum(1 for m in outs for ln in srcs[m].split('\n')
-                            if _FUSE_STMT.match(ln))}
+                            if _FUSE_STMT.match(ln)),
+             'held': len(slot), 'tail': len(slot) + HELD_TAIL if slot else 0}
     return '\n'.join(lines) + '\n', stats
 
 
 class FusedKernel:
     """A class's kernel: the loaded function, the chain functions it was
     printed from (`fns`, by pass), each pass's output length (`sizes`), the
-    bits of its passes (`mask`), the x length it reads and the pack
-    layout."""
+    bits of its passes (`mask`), the x length it reads, the pack layout and
+    the pack's tail (`tail`: its held values and their stamp; 0, none)."""
 
     __slots__ = ('built_s', 'cfn', 'ffi', 'fns', 'key', 'layout', 'mask', 'nx', 'sizes',
-                 'stats')
+                 'stats', 'tail')
 
     def __init__(self, ffi, cfn, fns, sizes, nx, layout, key, built_s, stats):
         self.ffi, self.cfn, self.fns, self.sizes = ffi, cfn, fns, sizes
         self.mask = sum(1 << FUSE_PASSES.index(m) for m in fns)
         self.nx, self.layout, self.key, self.built_s, self.stats = nx, layout, key, built_s, stats
+        self.tail = stats.get('tail', 0)
 
 
 #: a DC-pinned class's second kernel: its DC functions, each in the place
@@ -444,11 +575,15 @@ def fuse_source(info, dc=False):
             layouts.add(tuple(fn._clayout))
     if dc and not srcs:
         return None
+    if not srcs:
+        raise FuseRefused('no pass')
     if len(nxs) > 1 or len(layouts) > 1:
         raise FuseRefused('the passes read different x or packs')
-    text, stats = fuse_csrc(srcs)
+    layout = layouts.pop()
+    ## (the second kernel holds nothing: the pack's tail is the first's)
+    text, stats = fuse_csrc(srcs, None if dc else layout)
     return types.SimpleNamespace(_csrc=text, fns=fns, shapes=shapes, nx=nxs.pop(),
-                                 layout=layouts.pop(), stats=stats)
+                                 layout=layout, stats=stats)
 
 
 def bind_fused(src):
@@ -917,7 +1052,7 @@ def _resolve(cls, info, explicit):
     ## that is another function, its pass of the second)
     for k in (fk, fdk):
         for m, fn in (k.fns.items() if k is not None else ()):
-            fn._hdl_c = view(k, m, fn)
+            fn._hdl_c = view(k, m, fn, tail=fk.tail)
     info['_c_fused'], info['_c_fused_dc'], info['_c_fused_status'] = fk, fdk, 'c'
     ## (read by `_hdl_cse.take`: a C-bound class's calls never fuse)
     info['_c_bound'] = True

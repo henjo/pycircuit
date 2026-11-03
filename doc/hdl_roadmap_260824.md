@@ -12709,3 +12709,56 @@ the twins passed.
 
 **Gate** (the main tree): the TELL; the suite, 6 114 passed (10 skipped, 3 xfailed; the switch's own test gone); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 234's gate runs (HEAD's tree), gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.
+
+## 2026-11-03 — 236. The held statements -- a class's kernel makes the statements no state reaches once a parameter state, into the element's pack, and reads them as loads after: jge under Radau 10.83 -> 9.83 s (1.106x), every result the same
+
+**Why**  The survey after 234 (item 1; plan g24's `tc/plan_235_237.md`): about a sixth of a MOSFET kernel's statements
+read the parameters and the temperature alone -- jge's level 3 class 100 of 624 (10 of its 48 `pow`), mux8's level 2
+127 of 765 -- yet ran on every call.  235 left one kernel a class, so they are held in one place.  Ceiling first
+(scratch `hoist/ceiling.py`: each grouped class's kernel and a copy whose state-free statements are loads, prepped
+once): per call 1.05-1.10x for all four passes, 1.17-1.39x for `i|q`, which Radau calls most (counted in a worktree
+core: jge 23.2 M `i|q`, 12.3 M `C|q`, 6.2 M all four) -- jge's kernel CPU by that mix 15.5 -> 12.4 s, ~1.08x the run.
+LINE (one form, set before building): jge under Radau at least 1.04x, the median of 5 interleaved quiet-box pairs
+against 235; GUARD: the 27 decks' total solve under each method not slower; every result the same.  Refused under.
+
+**Built.**  `_hdl_cbackend.fuse_csrc(srcs, layout)`: a statement no `x[` reaches (through what it reads) is HELD --
+`hdl_prep` makes them all, each in order, reading the held values it needs from the pack's tail and storing its own
+there; a call reads them as loads under their runs' guards.  The tail's end (`HELD_TAIL`): the stamp (stored after the
+values with release, read with acquire), the temperature's bits they were made at (another temperature makes them
+again), and per pass the flags PCX_FP_FLAGS (`HELD_FLAGS`, a test holds them equal) the prep raised for that pass's
+statements -- tested after each run of one set of bits, the caller's flags kept around the prep -- raised again by
+every call wanting the pass.  The kernel's `p` is writable (`pcx_abi.h`'s `fused_fn_t`).  Every kernel object carries
+its class's tail (`CKernel.tail`: the views, a DC-pinned class's second kernel's views, the limiter kernels) and
+`CKernel.pack` sizes it, the stamp clear; a pack shorter than that -- made by another kernel -- is declined wherever it
+is adopted for the class's kernel (`CKernel.__call__`, `Batch.run`, `_Core._check_elements`, PCNR's `point_packs`):
+never written past.  A DC-pinned class's second kernel holds nothing.
+
+**Flags, found.**  Against 235's kernel on 830 000 calls (the library's loaded cases and jge/mux8/gm19's classes;
+every pass set; drawn and special states; each parameter zeroed, negated, huge, tiny; the temperature moved): outputs
+identical but NaN sign bits (the backend's caveat); the flags a superset of 235's on every call, identical on the
+elements' own packs with ordinary states; the extra ones only on inf/NaN states or moved parameters -- and at every
+such case checked numpy's own pass functions raise them (or more), never 235's set.  235's kernel misses them where gcc
+makes a `const` libm call only on the branch that selects its value; held, the statement is made eagerly, as numpy
+makes it: at worst a needless hand-back (the flag rule), never another answer.
+
+**On the way.**  The first build sized the tail from `info['_c_fused']` at pack time; test_core_fused's no-kernel case
+(the info's kernel removed, the views bound) made packs without it and the kernel wrote past them -- heap corruption
+that surfaced as a different failure in each of three runs of the twin tests (a PCNR DC test, a watch test, a JAX
+abort) and as an ASan use-after-free in `hdl_held` from `pcnrdc.c`.  Hence the tail on the kernel objects and the
+length checks above.
+
+**Measured** (a quiet box, HEAD 71282104 from its worktree and this tree, interleaved): jge under Radau, 5 pairs, 10.831 -> 9.834 s, 1.106x (1.092 to 1.109; the line 1.04x) -- met; as information jge under gear2 5.191 -> 4.847 s (1.069x), mux8 under Radau 1.037x, gm19 1.040x.  The gate's runs (a
+busier box): the 27 decks' solves 1.056x under Radau (42.2 -> 40.0 s) and 1.042x under gear2 (20.4 -> 19.6 s), their processes 1.037x and 1.022x -- the guard met.
+
+**Tests.**  test_hdl_held.py (new, 7): the held statements are those no state reaches (the prep's stores, the
+kernel's loads; none without a layout); the held flags are pcx_fenv.h's; the held values made once a parameter state
+(a planted value is what the next call reads, another temperature makes them again, a parameter set a new pack); a pack
+carries the tail whichever kernel made it (a pass's, the limiter's); a held statement's flag reaches every call wanting
+its pass -- the first and each after -- as numpy's pass raises it, and no other pass's; a short pack declined by the
+per-element call (nothing written) and by the core.  Mutations caught: the stamp never set, the kept flags not raised,
+the flags kept for every pass, the temperature not compared, the core's length check removed.  test_core_fused: the
+union's stats and entry.  Pinned pairs: 23 twins and 2 references (`CKernel.__call__`/`pack`) re-recorded after 1 850
+twin tests passed and the sanitizer build of the kernel tests ran clean.
+
+**Gate** (the main tree): the TELL; the suite, 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 235's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own (no deck met a held flag 235 would not have raised).

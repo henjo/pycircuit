@@ -234,6 +234,12 @@ class Batch:
                 skip = (skip or []) + [e]
                 continue
             if cp is not mirror[e]:
+                ## (a pack shorter than the kernel writes its held statements
+                ## into -- made by another kernel -- is the caller's)
+                if cp[0].shape[0] < kern.n_p + kern.tail:
+                    _PC[K['pack']] += 1
+                    skip = (skip or []) + [e]
+                    continue
                 mirror[e] = cp
                 PR[e] = cp[0].ctypes.data
         ffi, cfn, dptr, pptr = drv

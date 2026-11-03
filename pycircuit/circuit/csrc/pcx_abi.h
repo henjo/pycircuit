@@ -36,9 +36,10 @@ typedef void (*pool_range_t)(const void *ctx, long lo, long hi);
 /* ---- the kernels the HDL printer emits (hdl.py) ---------------------- */
 
 /* a class's kernel (_hdl_cbackend.bind_fused): one element's inputs, its
-   parameter row, the passes wanted (pcx_pass bits), each pass's outputs --
-   an unwanted pass's array not touched */
-typedef void (*fused_fn_t)(const double *, const double *, long, double *, double *, double *,
+   parameter row (written: its held statements' tail), the passes wanted
+   (pcx_pass bits), each pass's outputs -- an unwanted pass's array not
+   touched */
+typedef void (*fused_fn_t)(const double *, double *, long, double *, double *, double *,
                            double *);
 /* one element's limiter (_hdl_climit): nonzero when it declines */
 typedef int (*lim_fn_t)(const double *, const double *, double *);

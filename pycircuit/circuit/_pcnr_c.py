@@ -304,8 +304,9 @@ def refine(dev, v_new, v_old, epar, x_old_sub):
 ## ---------------------------------------------------------------------------
 
 def _class_ok(cls, t):
-    """The class's kernels -- `(kernel, refine, t_index)`, each kernel
-    `(ffi, cfn)`, the first the class's own (`i` and `G` in one call) -- where
+    """The class's kernels -- `(kernel, refine, t_index, pack length)`, each
+    kernel `(ffi, cfn)`, the first the class's own (`i` and `G` in one call),
+    the length its packs must have (its held statements' tail) -- where
     `el.i` / `el.G` reach them on every DC call of a device with `t` rows
     (the chained path, no DC pin, C-bound, the hdl methods themselves, one
     packed layout), else a reason (a str).  Cached on the class's info
@@ -339,7 +340,7 @@ def _class_ok(cls, t):
         if rk is None or rk.layout != (ki.n_p, ki.t_index):
             got = 'refine'
         else:
-            got = ((ki.ffi, ki.cfn), (rk.ffi, rk.cfn), ki.t_index)
+            got = ((ki.ffi, ki.cfn), (rk.ffi, rk.cfn), ki.t_index, ki.n_p + ki.tail)
     cache[t] = (ki, kG, got)
     return got
 
@@ -415,6 +416,7 @@ class _Rec:
         'klu_keep',
         'kmaps',
         'n',
+        'need',
         'packs',
         'plan',
         'prow',
@@ -478,6 +480,9 @@ class _Rec:
         self.keep = keep
         self.els = tuple(d.element for d in devices)
         self.packs = [None] * nd
+        ## (each device's pack length: its class's kernel writes its held
+        ## statements there -- `point_packs`)
+        self.need = tuple(kern[3] for kern in kerns)
         s.dgesv, s.dgemv = ffi.cast('void *', dgesv), ffi.cast('void *', dgemv)
         s.core = ffi.cast('void *', int(cffi_core.cast('uintptr_t', core.cs)))
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
@@ -587,8 +592,10 @@ class _Rec:
 
     def point_packs(self):
         """`prow` at each element's packed parameters as they stand (a
-        parameter change drops the pack: made again here), or False."""
-        packs, prow, ffi = self.packs, self.prow, self.ffi
+        parameter change drops the pack: made again here), or False -- a
+        pack shorter than its class's kernel writes into among the reasons
+        (made by another kernel)."""
+        packs, prow, ffi, need = self.packs, self.prow, self.ffi, self.need
         for j, el in enumerate(self.els):
             packed = el.__dict__.get('_hdl_cp')
             if packed is None or packed is False:
@@ -596,6 +603,8 @@ class _Rec:
                 if packed is None:
                     return False
             if packed is not packs[j]:
+                if packed[0].shape[0] < need[j]:
+                    return False
                 packs[j] = packed
                 prow[j] = ffi.cast('double *', packed[0].ctypes.data)
         return True

@@ -33,9 +33,9 @@ def test_the_union_keeps_each_pass_and_guards_each_run():
                   '  out[0] = L_b;', '  out[1] = L_a;'),
         'q': _src('  const double L_a = x[0]*p[0];', '  const double L_c = 2.0*L_a;',
                   '  out[0] = L_c;')})
-    assert stats == {'union': 3, 'runs': 3, 'printed': 4}
+    assert stats == {'union': 3, 'runs': 3, 'printed': 4, 'held': 0, 'tail': 0}
     body = text.split('\n')
-    assert body[0] == ('void hdl_fn(const double *x, const double *p, long want, '
+    assert body[0] == ('void hdl_fn(const double *x, double *p, long want, '
                        'double *oG, double *oC, double *oi, double *oq) {')
     ## L_a in both passes (bits 1|8), L_b in G's alone, L_c in q's alone
     assert '  if (want & 9) {' in body and '    L_a = x[0]*p[0];' in body
