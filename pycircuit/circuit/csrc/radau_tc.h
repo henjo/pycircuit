@@ -28,6 +28,7 @@ typedef struct {
        tables; `wn` its elements), set by `_tran_newton_c._walk_ready` where
        the circuit limits; walk_fn NULL and wn 0 where it does not */
     void *walk_fn; void **wF; double **wPR; const int64_t *wTI, *wNM, *wOFF, *wK; long wn;
+    void *wctx;           /* the walk's context (walk.h's walk_ctx_t), or NULL */
     /* wiring: numpy's own OpenBLAS `dgesv` and `dgetrs` (64-bit integers:
        dgesv64_t, dgetrs64_t), set once (`linearsolver._numpy_lapack`); the
        complex KLU's `klu_z_refactor` and `klu_z_solve` (klu_refactor_t,

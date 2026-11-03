@@ -69,7 +69,8 @@ write only its entries (`PCX_WANT_PATTERN`; `_Core.npat` nonzero), and
 every entry otherwise.
 
 THE THREADS.  A call's fused-group elements may be made on a pool of
-threads (core.c; `THREADS`, `PYCIRCUIT_CORE_THREADS`): each element's
+threads (pool.c's, `pool_address`: the limiter walk's too; `THREADS`,
+`PYCIRCUIT_CORE_THREADS`): each element's
 kernel is a function of its gathered inputs and its parameter row alone,
 writing its own rows of the staging, and the bins are summed after by the
 caller in their order -- every byte, and every floating-point flag, as one
@@ -128,6 +129,8 @@ STATUS = 'not loaded'
 
 CORE_C = _cbuild.csrc('core.c')
 CORE_CDEF = _cbuild.csrc('core.h')
+POOL_C = _cbuild.csrc('pool.c')
+POOL_CDEF = _cbuild.csrc('pool.h')
 #: what an element may be for the core's stack buffers (core.h)
 _CAP = _cbuild.constants(CORE_CDEF)
 _MAX_IN, _MAX_OUT = _CAP['CORE_MAX_INPUTS'], _CAP['CORE_MAX_OUTPUTS']
@@ -209,6 +212,26 @@ def driver():
                 _driver = (ffi, cfn, dgemv)
                 STATUS = 'c'
     return _driver or None
+
+
+_pool = None
+
+
+def pool_address():
+    """The address of pool.c's `pcx_pool` -- the threads the core's device
+    kernels and the limiter walk (`_hdl_climit`) share -- or 0 where it
+    cannot be had (each then makes its items alone)."""
+    global _pool
+    if _pool is None:
+        from pycircuit.circuit import _hdl_cbackend as cb
+        try:
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(POOL_C, POOL_CDEF, 'pcx_pool')
+        except (cb.CompileError, OSError):
+            _pool = (None, None, 0)
+        else:
+            ## (the unit's ffi kept: it holds the library open)
+            _pool = (ffi, cfn, int(ffi.cast('uintptr_t', cfn)))
+    return _pool[2]
 
 
 class Unservable(Exception):
@@ -547,6 +570,7 @@ class _Core:
         cs.PRall = self.handles[-1]
         cs.nz = self.nz
         cs.nthreads = THREADS
+        cs.pool_fn = ffi.cast('void *', pool_address())
         self.handles.append(ffi.from_buffer('void **', self.z_fn))
         cs.z_fn = self.handles[-1]
         cs.dgemv = ffi.cast('void *', dgemv)

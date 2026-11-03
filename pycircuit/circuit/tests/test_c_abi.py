@@ -21,9 +21,10 @@ tables from them (`_cbuild.constants`): tested here against cffi's own
 reading, against the pass order Python builds the fused masks from, and
 for any bare number left where a name belongs.
 
-What a header cannot check: `core_fn_t` and `walk_fn_t` (pcx_abi.h) re-type
-the core's and the walk's entries for their callers, and the core's first
-argument is a `const void *` there.  Those two are compared with their
+What a header cannot check: `core_fn_t`, `walk_fn_t` and `pool_fn_t`
+(pcx_abi.h) re-type the core's, the walk's and the pool's entries for their
+callers, and the core's first
+argument is a `const void *` there.  Those three are compared with their
 definitions by ABI -- the number of arguments, each one's kind (pointer,
 integer, floating) and size, and the result's -- and the comparison is
 proved alive on planted differences.
@@ -63,6 +64,7 @@ UNITS = [
     ('newton', _tran_newton_c.NEWTON_CDEF),
     ('lte', _tran_lte_c.LTE_CDEF),
     ('core', _tran_core.CORE_CDEF),
+    ('pool', _tran_core.POOL_CDEF),
     ('radau', _tran_radau_c.RADAU_CDEF),
     ('radau_tc', _tran_radau_tc.RADAU_TC_CDEF),
     ('radau_fold', _tran_radau_tc.FOLD_CDEF),
@@ -228,6 +230,16 @@ def test_core_fn_t_is_the_core_s_entry():
     declared = _signature(core_h + _declaration(core_h, 'long', 'pcx_core'), '_decl_t')
     assert defined == declared
     assert _signature(_function_type(_raw('pcx_abi.h'), 'core_fn_t'), 'core_fn_t') == defined
+
+
+def test_pool_fn_t_is_the_pool_s_entry():
+    """`pool_fn_t` (pcx_abi.h) is the thread pool's own entry, as pool.c
+    defines it and pool.h declares it -- the core and the walk call it
+    through it."""
+    defined = _signature(_definition(_raw('pool.c'), 'long', 'pcx_pool'), '_def_t')
+    declared = _signature(_declaration(_raw('pool.h'), 'long', 'pcx_pool'), '_decl_t')
+    assert defined == declared
+    assert _signature(_function_type(_raw('pcx_abi.h'), 'pool_fn_t'), 'pool_fn_t') == defined
 
 
 def test_walk_fn_t_is_the_walk_s_entry():

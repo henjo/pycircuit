@@ -100,6 +100,9 @@ typedef struct {
        pool's minimum (core.c); 1 (or 0): the caller alone.  Every byte as
        one thread makes them */
     long nthreads;
+    /* the pool those threads are (pool.c's `pcx_pool`, a pool_fn_t:
+       `_tran_core.pool_address`), or NULL: the caller alone */
+    void *pool_fn;
 } hdl_core_t;
 /* THE EVALUATION: the passes `want` asks for (q always) at x, then the
    companion `formula` forms, f = (i + iq) + u and J = G + Geq -- bit for
@@ -136,7 +139,8 @@ enum core_cap {
     CORE_POOL_ZMAX = 64
 };
 
-/* THE POOL'S JOB (core.c): one call's fused groups made on the threads */
+/* THE POOL'S JOB (core.c): one call's fused groups made on the threads --
+   the context of its range function (`fused_range`) on pool.c's pool */
 typedef struct {
     const hdl_core_t *c;          /* the call's core */
     const double *x;              /* (n) its state */

@@ -155,7 +155,8 @@ static long limit_step(newton_t *s, walk_fn_t walk, long n, long r)
     }
     pcx_put_ref(s->xn, s->xnf, n, r);
     pcx_put_ref(s->x, s->x0f, n, r);
-    e = walk(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK, s->xnf, s->x0f, 0, s->wn);
+    e = walk(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK, s->xnf, s->x0f, 0, s->wn,
+             s->wctx);
     if (e < s->wn) return NEWTON_BAIL_WALKSTOP;
     pcx_drop_ref(s->xnf, s->xn, n, r);
     for (i = 0; i < m; i++) s->xd[i] = s->xn[i] - s->x[i];

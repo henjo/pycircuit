@@ -28,6 +28,7 @@ typedef struct {
        tables; `wn` its elements), set by `_tran_newton_c._walk_ready` where
        the circuit limits; walk_fn NULL and wn 0 where it does not */
     void *walk_fn; void **wF; double **wPR; const int64_t *wTI, *wNM, *wOFF, *wK; long wn;
+    void *wctx;           /* the walk's context (walk.h's walk_ctx_t), or NULL */
     /* wiring, set once: numpy's own OpenBLAS `scipy_dgesv_64_` (64-bit
        integers, a dgesv64_t) and `scipy_cblas_dgemv64_` (a dgemv64_t: the
        KLU solve's dense residual test), by address (`_tran_newton_c.driver`) */

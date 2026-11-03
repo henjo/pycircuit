@@ -745,7 +745,7 @@ def _load_tc(e, run_, xl):
     ts.rtol = float(e.zs.REFACTOR_RESIDUAL_TOL)
     s.tc_maxit = int(tr.par.maxiter)
     rs = e.rec.s
-    for k in ('walk_fn', 'wF', 'wPR', 'wTI', 'wNM', 'wOFF', 'wK', 'wn'):
+    for k in ('walk_fn', 'wF', 'wPR', 'wTI', 'wNM', 'wOFF', 'wK', 'wn', 'wctx'):
         setattr(ts, k, getattr(rs, k))
     abi = _LC._ABI
     npat = bool(e.rec.core.npat)

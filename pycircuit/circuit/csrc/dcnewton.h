@@ -44,6 +44,7 @@ typedef struct {
     double **wPR;
     const int64_t *wTI, *wNM, *wOFF, *wK;
     long wn;
+    void *wctx;           /* the walk's context (walk.h's walk_ctx_t), or NULL */
     /* LAPACK AND BLAS (CTX): numpy's own `scipy_dgesv_64_` and
        `scipy_cblas_dgemv64_` */
     void *dgesv, *dgemv;

@@ -172,12 +172,16 @@ PAIRS = {
     'the limiting loop and the walk': {
         'why': 'the walk is the loop in C: dict order, both gathers before the call, '
             'the write-back after, the last duplicate row winning, `x0` aliasing '
-            '`x`; it stops where the loop\'s statement must run',
+            '`x`; it stops where the loop\'s statement must run.  Ahead on the pool '
+            '(roadmap 232) every limiter is made first on the state as the walk found '
+            'it and an element on a node an earlier one changed is made again: the '
+            'loop\'s inputs for every element',
         'reference': ['pycircuit.circuit.circuit:SubCircuit.limit',
                    'pycircuit.circuit._hdl_climit:CLimitKernel.__call__'],
         'twin': ['pycircuit.circuit._hdl_climit:_WALK_C',
               'pycircuit.circuit._hdl_climit:_Walk',
-              'pycircuit.circuit._hdl_climit:limit_walk'],
+              'pycircuit.circuit._hdl_climit:limit_walk',
+              'pycircuit.circuit._tran_core:POOL_C'],
     },
     'the limiter laws and their C prelude': {
         'why': 'the prelude transliterates the laws and the device write-back in '
@@ -196,8 +200,9 @@ PAIRS = {
                'call, asks the same C lookup first, and leaves the state '
                '`_companion_at` and `get_diff` leave; `_solve_timestep`\'s '
                '`jacobian_only` and `residual_only` are its other two sites.  The fused '
-               'kernels of a call may run on a pool of threads (roadmap 220): each element\'s '
-               'call the same, into its own rows, the bins summed after in their order',
+               'kernels of a call may run on a pool of threads (roadmap 220; pool.c since '
+               'roadmap 232): each element\'s call the same, into its own rows, the bins '
+               'summed after in their order',
         'reference': ['pycircuit.circuit._tran_companion:_CompanionModel._residual_and_jacobian',
                       'pycircuit.circuit._tran_companion:_CompanionModel._companion_at',
                       'pycircuit.circuit._tran_companion:_CompanionModel._C_at_state',
@@ -210,6 +215,7 @@ PAIRS = {
                       'pycircuit.circuit._stamp_plan:assemble_vector',
                       'pycircuit.circuit.transient:Transient._solve_timestep'],
         'twin': ['pycircuit.circuit._tran_core:CORE_C',
+                 'pycircuit.circuit._tran_core:POOL_C',
                  'pycircuit.circuit._tran_core:_Core',
                  'pycircuit.circuit._tran_core:evaluate',
                  'pycircuit.circuit._tran_core:passes'],
@@ -1107,48 +1113,48 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('02966d22fff9', '6cb00101faf3'),
-    'the predictor and its C': ('9e611c84de5a', '0d37cf280c92'),
-    'the branch screen and its C': ('adb832d7aae0', '213a22d4c01e'),
+    'the stepping loop and its C': ('02966d22fff9', '1fba4069f613'),
+    'the predictor and its C': ('9e611c84de5a', '5e0efc085f58'),
+    'the branch screen and its C': ('adb832d7aae0', '692e005bef5c'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
-    'the kernel call and the pass driver': ('09a9e274bbe8', 'b34c658afd6f'),
-    'the limiting loop and the walk': ('58c4ce9c8f4d', '3a565db6207f'),
+    'the kernel call and the pass driver': ('09a9e274bbe8', '48648a8efb5b'),
+    'the limiting loop and the walk': ('58c4ce9c8f4d', '31bed5f93ef8'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', 'a48b156b4743'),
-    'the transient evaluation and the core': ('ecdae2231dae', '55fe59dc7400'),
+    'the transient evaluation and the core': ('ecdae2231dae', '0f256f8b6238'),
     'the assembly loops and the plan': ('a822abce557c', '14651de8716f'),
     'the sources and their direct pass': ('133b68c3262d', '11e5cf691f59'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('3ca9f9451f6f', 'c7ead8a7f8e8'),
+    'the Newton solve and its C': ('3ca9f9451f6f', '1eea8d46d48a'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '58969d2d34a6'),
-    'the error test and its C': ('1736570f3f0e', 'ac91030f078c'),
-    'the DC base solve and its C': ('64fd25ecd5da', 'efe6c046e126'),
-    'the PCNR DC solve and its C': ('20b804fddf35', '8d8a2fb8ceda'),
+    'the error test and its C': ('1736570f3f0e', 'fa5068e33e12'),
+    'the DC base solve and its C': ('64fd25ecd5da', '1f1c9cd2ee1b'),
+    'the PCNR DC solve and its C': ('20b804fddf35', '827a88b59d35'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
     'the printed pass kernels and their fused kernel': ('e61140203114', '1cc7e58f8006'),
-    "the stage paths' passes and the core's": ('6baa9d0e9097', '1ab5fdb0c9e7'),
-    'the coupled stage Newton and its C': ('c87ff9fb31be', '65157c1e371d'),
+    "the stage paths' passes and the core's": ('6baa9d0e9097', '0f25e5b881ee'),
+    'the coupled stage Newton and its C': ('c87ff9fb31be', 'cfc94f1b9aca'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
     'the transform solve and its frozen form': ('6f35dca48644', '16cad74bb049'),
-    'the transform Newton and its C': ('fec75db05899', 'bf174c68ef0f'),
-    "the step's end passes and the C's": ('8104304428d9', '6ece98126b9e'),
+    'the transform Newton and its C': ('fec75db05899', '705f27f4e220'),
+    "the step's end passes and the C's": ('8104304428d9', '62384e5addff'),
     'the frozen factors and their C': ('24792172cbc8', '7fed902a5d3e'),
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
-    'the stage step map and its C': ('39f2d0f63b0f', '591052196b6b'),
-    'the KLU step map and its C': ('5b9b1f672523', '776fd7afe705'),
-    'the stage walk and its C': ('a918e57085a2', '9cba9bb2445d'),
-    'the multistep walk and its C': ('57f6fd18a3eb', '7e95802e1c44'),
-    'the multistep step map and its C': ('985dde19187d', 'be14cb8c5221'),
+    'the stage step map and its C': ('39f2d0f63b0f', '9ce5f0f21991'),
+    'the KLU step map and its C': ('5b9b1f672523', '8767ac856bbb'),
+    'the stage walk and its C': ('a918e57085a2', 'b31450461571'),
+    'the multistep walk and its C': ('57f6fd18a3eb', '76b71ba43b37'),
+    'the multistep step map and its C': ('985dde19187d', 'c66cf174aceb'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
     'the readiness reads and their stamps': ('61efd629dd90', '76e34cda0583'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('9b77e46fd9eb', '7eba12021987'),
-    'the transform loop and its C': ('ac5b2f9b540e', '92a1258d9de6'),
+    'the stage loop and its C': ('9b77e46fd9eb', '17ad858793ff'),
+    'the transform loop and its C': ('ac5b2f9b540e', '713f0505f9a3'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

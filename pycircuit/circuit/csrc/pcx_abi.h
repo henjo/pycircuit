@@ -20,10 +20,18 @@ typedef long (*core_fn_t)(const void *c, const double *x, double T, long want, l
             const double *Cin, double *C, double *q, double *iq, double *Geq,
             double *F, double *J);
 /* the limiter walk, walk.c's `pcx_walk`: each limited element's limiter on xg
-   from `start`; returns n, or the element whose limiter declined */
+   from `start`; returns n, or the element whose limiter declined.  `ctx`: the
+   walk's context (walk.h's walk_ctx_t: its pool and buffers), or NULL -- the
+   walk alone */
 typedef long (*walk_fn_t)(void **F, double **PR, const int64_t *TI, double T,
             const int64_t *NM, const int64_t *OFF, const int64_t *K,
-            double *xg, const double *x0g, long start, long n);
+            double *xg, const double *x0g, long start, long n, void *ctx);
+/* the thread pool, pool.c's `pcx_pool`: a job's items [0, n) on `nthreads`
+   threads, the caller one of them, `range` (a pool_range_t) called on each
+   chunk; 1 where it ran them there, 0 where the caller runs them alone */
+typedef long (*pool_fn_t)(void *range, const void *ctx, long n, long nthreads);
+/* a pool job's items [lo, hi) of its context */
+typedef void (*pool_range_t)(const void *ctx, long lo, long hi);
 
 /* ---- the kernels the HDL printer emits (hdl.py) ---------------------- */
 

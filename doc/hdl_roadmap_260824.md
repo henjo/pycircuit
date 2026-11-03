@@ -12526,3 +12526,60 @@ suite, 6 076 passed (6 skipped, 3 xfailed; its first run under the new keys); th
 224's gate runs, gear2 transient and Radau against HEAD (wt_head, f1d92432, run from inside it, interleaved per deck):
 every digest, step, rejection, Newton count and path count identical but the loops' own; each gold process 0.10-0.21 s
 sooner (median 0.15 s; the gate's own timings, a busier box), the solves the same. No C changed: no sanitizer run.
+
+## 2026-11-03 — 232. The limiter walk ahead on the pool -- every element's limiter made first on the threads, on the state as the walk found it, then the walk in order, an element on a node an earlier one changed made again; the pool its own unit, shared with the core: jge under Radau 12.83 -> 11.50 s (1.116x), under gear2 6.08 -> 5.36 s (1.135x), every result the same
+
+**Why**  Andreas, on the survey after 230: "Do 1, then 2" -- 2 the limiter's kernels on the core's pool (plan g24's
+`tc/plan_231_232.md`); after the sizing below, "build 232".  Measured (perf by thread, then DWARF-unwound so libm is
+charged to its kernel): the `$limit` kernels ran serially on the main thread -- on jge 12.6 % (Radau) / 13.2 % (gear2)
+of it in their parameter chains and their libm, 3.2 / 2.2 % in the laws, the ranking and the write-back.  LINE (set
+before building, one form): jge under Radau at least 1.05x (the gold runner's solve, the median of 5 interleaved
+quiet-box pairs against HEAD); GUARD: the 27 decks' total solve under Radau and under gear2 not slower; every result the
+same.  Refused under.
+
+**Found before building.**  The walk is ORDER-DEPENDENT -- `walk.c` writes each element's limited values back before the
+next element reads (`SubCircuit.limit`'s loop the same) -- so the limiters cannot simply run in parallel; and under
+Radau and the C Newton it limits each iterate against the PREVIOUS ITERATE (`radau.c`: `walk(..., yn, yp)`), so caching
+the parameter chains per attempt is out.  But a limiter is a pure function of its inputs, its parameter row and its node
+rows (local scratch, `static const` tables only).  A census (`tc/walk_census.py`: the C loops off, every 10th walk
+replayed element by element on a copy with the C kernels, the replay equal to the walk in every case) found the walk's
+writes almost never reach a later element: 100 % of jge's element evaluations would hold on the state the walk found (no
+write-back of 25 749 gear2 walks or 66 435 Radau walks changed a node), 99.95 % of gm19's, 99.97 % of voter25's, 99.98 %
+of mux8's.  Each C runtime unit has ONE entry (`test_c_abi`), so the walk could not reach the core's pool: the pool
+became its own unit.
+
+**Built.**  `csrc/pool.c` (`pcx_pool(range, ctx, n, nthreads)`): `core.c`'s pool moved out and made generic -- a job's
+items in chunks of four from one counter on the caller and its workers (`pcx-core`), the caller's FP environment taken
+and the workers' flags raised back, one call at a time, a forked child's own workers, the library pinned;
+`_tran_core.pool_address`.  `core.c` makes its fused groups through it (`hdl_core_t.pool_fn`, `fused_range`; POOL_MIN 16
+its own).  `walk.c`: where the walk's context wires the pool (`_hdl_climit._Walk.ctx`: `pool_address`, the core's
+`THREADS`, a results buffer at each element's node-map offset and a return each) and a run is WALK_POOL_MIN (16)
+elements or more, `walk_range` makes every element's limiter on the threads into the buffers, and `walk_ahead` walks in
+order: an element none of whose nodes an earlier one changed -- its written value's bits not the value it found -- takes
+its result as made (the same inputs the walk alone gives it), any other is made again in turn, and past WALK_DIRTY_MAX
+(64) changed nodes every later one; else `walk_alone`, the walk as it was.  `walk_fn_t` takes the context: `newton.c`,
+`radau.c`, `radau_tc.c` and `dcnewton.c` pass `wctx` (`_tran_newton_c._walk_ready` sets it, the transform loop copies
+it).  The walk's flags are a superset of the walk alone's where an element is made twice or past a stop; every C caller
+clears them untested and the C Newton tests none -- a test holds the callers to it.  `doc/transient_runtime.md`: the
+pool's row.
+
+**Measured** (a quiet box, HEAD 577f770b from its worktree and this tree, interleaved, after a warm run of each): jge
+under Radau, 5 pairs: 12.829 -> 11.497 s (medians), 1.116x (1.096 to 1.130; the line 1.05x); under gear2 6.081 -> 5.363
+s, 1.135x (1.125 to 1.139).  The gate's interleaved runs (a busier box): the 27 decks' solves under gear2 22.3 -> 20.7 s
+(1.076x), under Radau 46.3 -> 43.2 s (1.072x) -- the guard met; by deck jge 1.13x, gm19, rich3 and arom 1.07-1.08x, the
+smallest decks even, gm1 under Radau 0.981x the lowest (0.6 s, within that box's scatter).
+
+**Tests.**  test_hdl_limit_walk: every test with the walk alone and ahead on the pool (an autouse parameter on the
+core's threads); the walk ahead on 80 stages with a few nodes and with more than WALK_DIRTY_MAX written, on ten
+inverters, stopping at a loop element and resuming, and on 200 diodes in series -- the only family found where the
+past-the-bound fallback decides bytes (`pnjlim`'s answer moves with its input; a FET's laws mostly pass a value or clamp
+it to a bound of the old one) -- each the walk alone's and the loop's bytes, `x0` apart and aliasing `x`; the walk alone
+starts the pool's threads (a fresh interpreter); every C caller clears the walk's flags before any test.  Two mutations
+of `walk.c` caught (every element taking its result; the bound's fallback dropped).  test_c_abi: the pool's unit and
+`pool_fn_t`.  Pinned pairs: 21 twins re-recorded after the 945 tests of every C twin passed (`pcx_abi.h`, expanded into
+every unit, changed; no reference moved); `pool.c` joined the core's pair and the walk's.
+
+**Gate** (the main tree): the TELL (HEAD's walk alone, this tree's ahead, `pool_address`); the suite, 6 102 passed (10
+skipped, 3 xfailed); the sanitizer builds, fast 5 881 passed clean, deep (the walk, the core, the loops, the pairs, the
+ABI; `PYTHONMALLOC=malloc`) 902 passed clean; the 27 gold decks -- standalone DC against 224's gate runs, gear2 and
+Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.

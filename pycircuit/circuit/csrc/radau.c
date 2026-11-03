@@ -252,7 +252,8 @@ long pcx_radau(radau_t *s)
                returns wn, or the element whose limiter declined (the
                Python limits); its flags are not tested */
             if (walk) {
-                e = walk(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK, yn, yp, 0, s->wn);
+                e = walk(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK, yn, yp, 0, s->wn,
+                         s->wctx);
                 if (e < s->wn) return rc_bail(s, RADAU_BAIL_WALKSTOP);
                 feclearexcept(FE_ALL_EXCEPT);
             }

@@ -127,7 +127,7 @@ static long step(dcnewton_t *s, const double *dx)
         pcx_put_ref(s->xn, s->xnf, n, r);
         pcx_put_ref(s->x, s->x0f, n, r);
         e = ((walk_fn_t) s->walk_fn)(s->wF, s->wPR, s->wTI, s->T, s->wNM, s->wOFF, s->wK,
-                                     s->xnf, s->x0f, 0, s->wn);
+                                     s->xnf, s->x0f, 0, s->wn, s->wctx);
         if (e < s->wn) return DCNEWTON_BAIL_WALKSTOP;
         /* (the limiters' flags: the walk's cffi call never reports them) */
         feclearexcept(FE_ALL_EXCEPT);

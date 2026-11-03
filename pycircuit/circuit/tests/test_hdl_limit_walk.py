@@ -4,23 +4,38 @@ walked in one C call on the live state -- the loop's bytes in every case
 the loop handles (shared nodes, duplicate rows, `x0 is x`, a hand-written
 limiter mid-chain, a shadow, a decline, a rebound kernel, a nested
 circuit, an iterate gone non-finite), and the loop itself where the walk
-does not serve."""
+does not serve.  Every test runs with the walk alone (one thread) and
+ahead on the pool (four, `walk_threads`): a circuit of WALK_POOL_MIN
+elements or more takes the pool there, and the bytes must not move; the
+pool's own cases are at the end (THE WALK AHEAD)."""
 import contextlib
+import glob
 import os
+import re
 import subprocess
 import sys
+import textwrap
 import types
 
 import numpy as np
 import pytest
 
+from pycircuit.circuit import _cbuild, _limiting, _tran_core, hdl
 from pycircuit.circuit import _hdl_climit as cl
-from pycircuit.circuit import _limiting, hdl
 from pycircuit.circuit import circuit as cm
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit.elements import VS, Diode, R, SubCircuit, VSin, gnd
 from pycircuit.circuit.tests.test_hdl_batch import mos_chain
+
+
+@pytest.fixture(autouse=True, params=[1, 4], ids=['alone', 'pool'])
+def walk_threads(request, monkeypatch):
+    """The core's thread count, which the walk takes (`_run_walk`,
+    `_tran_newton_c._walk_ready`): one, the walk alone; four, the walk ahead
+    on the pool where its run is long enough."""
+    monkeypatch.setattr(_tran_core, 'THREADS', request.param)
+    return request.param
 
 
 @contextlib.contextmanager
@@ -162,13 +177,14 @@ def test_shared_nodes_are_read_after_the_earlier_write():
         _both(cir, x, None, same=True)
 
 
-def _chain_with(mid):
-    """Six stages with `mid(name)` inserted after the third, in dict order."""
+def _chain_with(mid, stages=6):
+    """`stages` stages with `mid(name)` inserted after the third, in dict
+    order."""
     cm.default_toolkit = cm.numeric
     c = SubCircuit()
     c['vdd'] = VS('vdd', gnd, v=1.8)
     c['vg'] = VSin('g0', gnd, v=0.9, va=2e-2, freq=1e6)
-    for k in range(6):
+    for k in range(stages):
         c[f'rl{k}'] = R('vdd', f'd{k}', r=5e3)
         c[f'M{k}'] = eh.MosLevel1Hdl(f'd{k}', 'g0' if k == 0 else f'd{k - 1}', gnd, gnd)
         if k == 2:
@@ -371,3 +387,183 @@ def test_the_switch_is_read_from_the_environment():
                          capture_output=True, text=True, check=True)
     assert out.stdout.strip() == 'False'
     assert cl.WALK_STATUS in ('c', 'not loaded') or cl.WALK_STATUS.startswith('off')
+
+
+## ---------------------------------------------------------------------------
+## THE WALK AHEAD (walk.c's `walk_range` and `walk_ahead`): every element's
+## limiter made on the pool on the state as the walk found it, then the walk
+## in its order -- an element on a node an earlier one changed made again --
+## the walk alone's bytes in every case.
+
+_WALK_CAPS = _cbuild.constants(cl._WALK_CDEF)
+
+
+@contextlib.contextmanager
+def _threads(n):
+    was = _tran_core.THREADS
+    _tran_core.THREADS = n
+    try:
+        yield
+    finally:
+        _tran_core.THREADS = was
+
+
+def _alone_and_ahead(cir, x, x0, same=False):
+    """`cir.limit` through the walk alone (one thread) and ahead on the pool
+    (four), on copies: byte-equal, and the loop's bytes.  Returns how many of
+    the state's values the walk changed."""
+    got = []
+    for n in (1, 4):
+        xa = x.copy()
+        x0a = xa if same else x0.copy()
+        with _threads(n), walking(True):
+            assert cir.limit(xa, x0a, defaultepar) is xa
+        got.append(xa)
+    assert got[0].tobytes() == got[1].tobytes()
+    _both(cir, x, x0, same=same)
+    return int((got[0].view(np.uint64) != x.view(np.uint64)).sum())
+
+
+def test_the_walk_ahead_where_writes_reach_later_elements(walk_threads):
+    """Eighty stages, each gate on the previous drain: a limited drain is
+    the next element's gate, so the next one is made again in the walk --
+    a few nodes written (a step at three nodes), and more than
+    WALK_DIRTY_MAX (a step at every node: every later element made again)
+    -- x0 apart and aliasing x."""
+    if walk_threads != 1:
+        pytest.skip('(the test sets its own thread counts)')
+    cir = mos_chain(80)
+    _bound(cir)
+    cap = _WALK_CAPS['WALK_DIRTY_MAX']
+    rng = np.random.default_rng(232)
+    few, many = [], []
+    for x, x0 in _pairs(cir.n, 6, seed=5):
+        _alone_and_ahead(cir, x, x0)
+        _alone_and_ahead(cir, x, None, same=True)
+        ## (every node a step of 3 V: every element limits)
+        many.append(_alone_and_ahead(cir, x0 + rng.choice([-3.0, 3.0], cir.n), x0))
+        xs = x0.copy()
+        for r in rng.choice(cir.n, 3, replace=False):
+            xs[r] += rng.choice([-3.0, 3.0])
+        few.append(_alone_and_ahead(cir, xs, x0))
+    assert any(0 < c <= cap for c in few), few
+    assert max(many) > cap, many
+
+
+def _diode_chain(n):
+    """`n` diodes in series, each inner node shared by two: above its
+    critical voltage `pnjlim`'s answer moves with its input (a FET's laws
+    mostly pass a value or clamp it to a bound of the old one), so an element
+    on a node an earlier one wrote answers otherwise than on the state the
+    walk found."""
+    cm.default_toolkit = cm.numeric
+    c = SubCircuit()
+    c['v'] = VS('n0', gnd, v=0.0)
+    for k in range(n):
+        c[f'D{k}'] = eh.DiodeSpiceHdl(f'n{k}', f'n{k + 1}' if k < n - 1 else gnd)
+    return c
+
+
+def test_the_walk_ahead_past_its_written_nodes_bound(walk_threads):
+    """Two hundred diodes in series, every junction stepped: more than
+    WALK_DIRTY_MAX nodes written in one walk, and the elements after them
+    read what was written -- the walk alone's bytes, x0 apart and aliasing
+    x."""
+    if walk_threads != 1:
+        pytest.skip('(the test sets its own thread counts)')
+    cir = _diode_chain(200)
+    _bound(cir, 'D0')
+    rng = np.random.default_rng(232)
+    most = 0
+    for _ in range(6):
+        x0 = np.cumsum(rng.uniform(0.0, 0.7, cir.n))[::-1].copy()
+        x = x0 + rng.uniform(0.5, 3.0, cir.n) * np.sign(rng.normal(size=cir.n))
+        most = max(most, _alone_and_ahead(cir, x, x0))
+        _alone_and_ahead(cir, x, None, same=True)
+    assert most > _WALK_CAPS['WALK_DIRTY_MAX'], most
+
+
+def test_the_walk_ahead_on_shared_drains_and_gates(walk_threads):
+    """Ten inverters (twenty elements: n and p on one drain and one gate),
+    each reading what the previous one wrote."""
+    if walk_threads != 1:
+        pytest.skip('(the test sets its own thread counts)')
+    cm.default_toolkit = cm.numeric
+    cir = SubCircuit()
+    cir['vdd'] = VS('vdd', gnd, v=1.8)
+    cir['vin'] = VSin('g0', gnd, v=0.9, va=0.1, freq=1e6)
+    for k in range(10):
+        g, d = ('g0' if k == 0 else f'd{k - 1}'), f'd{k}'
+        cir[f'N{k}'] = eh.MosLevel1Hdl(d, g, gnd, gnd)
+        cir[f'P{k}'] = eh.MosLevel1PmosHdl(d, g, 'vdd', 'vdd')
+    _bound(cir, 'N0')
+    _bound(cir, 'P0')
+    moved = 0
+    for x, x0 in _pairs(cir.n, 8, seed=6):
+        moved += _alone_and_ahead(cir, x, x0) > 0
+        _alone_and_ahead(cir, x, None, same=True)
+    assert moved > 0
+
+
+def test_the_walk_ahead_stops_at_a_loop_element_and_resumes(walk_threads):
+    """A loop element (a diode with a hand-written limiter, no kernel) after
+    the third of twenty stages: the walk ahead stops there, the loop limits
+    it, and the walk resumes ahead from the next (seventeen elements)."""
+    if walk_threads != 1:
+        pytest.skip('(the test sets its own thread counts)')
+    cir = _chain_with(lambda: Diode('d2', gnd), stages=20)
+    _bound(cir, 'M0')
+    for x, x0 in _pairs(cir.n, 6, seed=7):
+        _alone_and_ahead(cir, x, x0)
+
+
+def test_the_walk_alone_starts_the_pool_s_threads():
+    """In a fresh interpreter at four threads, a circuit's `limit` with no
+    transient (the core never runs) starts the pool's workers: the walk took
+    the pool."""
+    script = textwrap.dedent('''
+        import os
+        import numpy as np
+        from pycircuit.circuit.circuit import defaultepar
+        from pycircuit.circuit.tests.test_hdl_batch import mos_chain
+
+        def workers():
+            out = 0
+            for t in os.listdir('/proc/self/task'):
+                try:
+                    with open(f'/proc/self/task/{t}/comm') as fh:
+                        out += fh.read().strip() == 'pcx-core'
+                except OSError:
+                    pass
+            return out
+
+        cir = mos_chain(20)
+        x0 = np.zeros(cir.n)
+        before = workers()
+        cir.limit(x0 + 0.5, x0, defaultepar)
+        print(before, workers())
+    ''')
+    env = dict(os.environ, PYCIRCUIT_CORE_THREADS='4')
+    out = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True,
+                         timeout=600, env=env, check=False,
+                         cwd=os.path.dirname(os.path.dirname(os.path.dirname(cl.__file__))))
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.split() == ['0', '3']
+
+
+def test_every_caller_clears_the_walk_s_flags_untested():
+    """The walk ahead raises the union of its limiters' flags -- more than
+    the walk alone raises where an element is made twice or past a stop --
+    so no caller may read them: each C caller clears them before its next
+    test of any flag, and the C Newton tests none."""
+    calls = 0
+    for path in sorted(glob.glob(os.path.join(_cbuild.CSRC_DIR, '*.c'))):
+        with open(path, encoding='utf-8') as fh:
+            text = re.sub(r'/\*.*?\*/', ' ', fh.read(), flags=re.DOTALL)
+        for m in re.finditer(r'\bwalk(?:_fn\))?\(s->wF,', text):
+            calls += 1
+            after = text[m.end():]
+            test, clear = after.find('fetestexcept'), after.find('feclearexcept')
+            assert test == -1 or (clear != -1 and clear < test), \
+                f'{os.path.basename(path)}: a flag tested after the walk before a clear'
+    assert calls == 4, calls

@@ -443,6 +443,19 @@ def unbind(info):
 ## circuit's size, a temperature that is not one number, a JAX or symbolic
 ## toolkit): None, and the loop runs.  `WALK` (env
 ## `PYCIRCUIT_HDL_LIMIT_WALK=0`) is read per call.
+##
+## AHEAD ON THE POOL.  Where a run of the walk is WALK_POOL_MIN elements or
+## more and the core's `THREADS` are more than one, the walk's context
+## (`_Walk.ctx`: `_tran_core.pool_address`'s pool, its buffers) makes every
+## element's limiter first, on the threads, on the state as the walk found
+## it; then walks in order, each element on no node an earlier one changed
+## (the bits written not the bits found) taking its result as made -- the
+## same inputs the walk alone gives it, so the same answer -- and any other
+## made again in turn (past WALK_DIRTY_MAX changed nodes, every later one).
+## Every byte as the walk alone leaves it.  Its flags are a superset of the
+## walk alone's (an element made twice, or past a stop), and no caller reads
+## them: each C caller clears them untested, the C Newton tests none
+## (`test_hdl_limit_walk` holds the callers to it).
 ## ---------------------------------------------------------------------------
 
 WALK = os.environ.get('PYCIRCUIT_HDL_LIMIT_WALK', '1') != '0'
@@ -554,13 +567,17 @@ class _Walk:
     `_Handwritten` of a hand-written limiter with a twin -- the circuit's
     toolkit, a state the driver's buffers hold; else None), the kernel it
     has now, its node rows and its mirrored pack.  The driver's handles are
-    made at the first call that needs them (`prepare`).  Its fields are
-    read by `_tran_newton_c._walk_ready` too (the C Newton's and the Radau
-    C's walk)."""
+    made at the first call that needs them (`prepare`), with the walk's
+    context (`ctx`, walk.h's `walk_ctx_t`: the pool its limiters are made
+    on ahead of the walk, `_tran_core.pool_address` and `THREADS`, and the
+    buffers they are made into).  Its fields are read by
+    `_tran_newton_c._walk_ready` too (the C Newton's and the Radau C's
+    walk)."""
 
     __slots__ = ('F', 'K', 'NM', 'OFF', 'PR', 'TI', 'addr', 'any_capable',
-                 'cF', 'cK', 'cNM', 'cOFF', 'cPR', 'cTI', 'cap_idx', 'capable',
-                 'elements', 'entries', 'epoch', 'kerns', 'mirror', 'n', 'nodemap')
+                 'cF', 'cK', 'cNM', 'cOFF', 'cPR', 'cTI', 'cap_idx', 'capable', 'ctx',
+                 'ctx_bufs', 'elements', 'entries', 'epoch', 'kerns', 'mirror', 'n',
+                 'nodemap')
 
     def __init__(self, cir, epoch):
         from pycircuit.circuit import _hdl_batch
@@ -604,6 +621,7 @@ class _Walk:
         self.K = np.asarray(K, dtype=np.int64)
         self.mirror = [None] * n
         self.cF = self.cPR = self.cTI = self.cNM = self.cOFF = self.cK = None
+        self.ctx = self.ctx_bufs = None
 
     def prepare(self, ffi):
         """The driver's handles on the arrays (made once; the arrays are
@@ -614,6 +632,17 @@ class _Walk:
         self.cNM = ffi.from_buffer('int64_t *', self.NM)
         self.cOFF = ffi.from_buffer('int64_t *', self.OFF)
         self.cK = ffi.from_buffer('int64_t *', self.K)
+        from pycircuit.circuit import _tran_core
+        so = np.zeros(max(1, len(self.NM)))
+        rc = np.zeros(max(1, len(self.entries)), dtype=np.int64)
+        hso, hrc = ffi.from_buffer('double *', so), ffi.from_buffer('int64_t *', rc)
+        self.ctx_bufs = (so, rc, hso, hrc)
+        ctx = ffi.new('walk_ctx_t *')
+        ctx.pool_fn = ffi.cast('void *', _tran_core.pool_address())
+        ctx.nthreads = _tran_core.THREADS
+        ctx.n = len(self.entries)
+        ctx.so, ctx.rc = hso, hrc
+        self.ctx = ctx
 
     def retake(self, e, ck, ffi):
         """Element `e`'s class kernel is `ck` now: take it where it fits
@@ -698,14 +727,17 @@ def _run_walk(w, cfn, ffi, x, x0, T, epar):
     """The walk on the live state `x`: the driver from element 0, and
     where it stops at an element, the loop's own statement for it, then on
     from the next."""
+    from pycircuit.circuit import _tran_core
     entries = w.entries
     cx = ffi.from_buffer('double *', x)
     cx0 = cx if x0 is x else ffi.from_buffer('double *', x0)
     Tf = float(T)
     n = len(entries)
+    ctx = w.ctx
+    ctx.nthreads = _tran_core.THREADS
     e = 0
     while e < n:
-        e = cfn(w.cF, w.cPR, w.cTI, Tf, w.cNM, w.cOFF, w.cK, cx, cx0, e, n)
+        e = cfn(w.cF, w.cPR, w.cTI, Tf, w.cNM, w.cOFF, w.cK, cx, cx0, e, n, ctx)
         if e < n:
             ## the loop's own statement for the element the driver stopped at
             _PC['walk:stopped'] += 1

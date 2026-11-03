@@ -579,6 +579,10 @@ def _walk_ready(tr, rec):
         s.wOFF = ffi.cast('int64_t *', w.OFF.ctypes.data)
         s.wK = ffi.cast('int64_t *', w.K.ctypes.data)
         s.wn = len(w.entries)
+        ## (the walk's context: its pool, at the core's thread count)
+        from pycircuit.circuit import _tran_core
+        w.ctx.nthreads = _tran_core.THREADS
+        s.wctx = ffi.cast('void *', int(wffi.cast('uintptr_t', w.ctx)))
         infos = {id(c): c for c in w.capable if isinstance(c, dict)}
         hw = [c.info for c in w.capable if type(c) is hc._Handwritten]
         rec.walk_hwk = tuple((c, k) for c, k in rec.walk_kern if type(c) is hc._Handwritten)

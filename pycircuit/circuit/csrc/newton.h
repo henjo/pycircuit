@@ -59,6 +59,8 @@ typedef struct {
                   *wOFF,  /* (wn) its node map's offset in wNM */
                   *wK;    /* (wn) its node count */
     long wn;              /* the walk's elements */
+    void *wctx;           /* the walk's context (walk.h's walk_ctx_t: its
+                             pool and buffers), or NULL: the walk alone */
     /* LAPACK AND BLAS (CTX, from `_tran_newton_c.driver`): numpy's own
        `scipy_dgesv_64_` (numpy.linalg.solve's: the full Newton) and
        `scipy_cblas_dgemv64_` (np.dot's), SciPy's `scipy_dgetrf_` and
