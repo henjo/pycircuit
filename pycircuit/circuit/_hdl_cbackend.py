@@ -145,6 +145,7 @@ The fused kernel
 """
 
 import contextlib
+import hashlib
 import importlib.util
 import os
 import re
@@ -568,26 +569,48 @@ def _libm_differ(a, b):
     return (~(np.isnan(a) & np.isnan(b))) & (a.view(np.int64) != b.view(np.int64))
 
 
+#: the C library's functions over an array (libm.c): the probe's C side
+LIBM_C = _cbuild.csrc('libm.c')
+LIBM_CDEF = _cbuild.csrc('libm.h')
+
+
+def _libm_unit():
+    """`(ffi, cfn, codes)` of libm.c's unit, or the exception that kept it
+    from loading; once a process."""
+    got = _LIBM.get('unit')
+    if got is None:
+        try:
+            ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(LIBM_C, LIBM_CDEF, 'pcx_libm')
+        except (_cbuild.CompileError, OSError) as e:
+            got = e
+        else:
+            got = (ffi, cfn, _cbuild.constants(LIBM_CDEF))
+        _LIBM['unit'] = got
+    return got
+
+
 def _libm_probe(numpy_funcs=None):
     """`(the C names whose numpy function differs, {name: (differing,
     probed)})` -- or None where the C library cannot be reached from here.
     Each function along an array of the probe set and on every third value
     as a numpy scalar (a CPU's numpy may run the two through different
-    loops); `numpy_funcs` (tests: a planted difference) replaces numpy's
-    functions by their numpy name."""
-    import ctypes
-    import ctypes.util
-    try:
-        lib = ctypes.CDLL(ctypes.util.find_library('m') or None)
-        cfun = {}
-        for c, _n in LIBM_PAIRS:
-            f = getattr(lib, c)
-            f.restype = ctypes.c_double
-            f.argtypes = [ctypes.c_double] * (2 if c in _LIBM_BINARY else 1)
-            cfun[c] = f
-    except (OSError, AttributeError) as e:
-        _LIBM['status'] = f'not checked: the C library is not reachable ({e})'
+    loops), against the C library's own entry point over the same values
+    (libm.c, one call a function); `numpy_funcs` (tests: a planted
+    difference) replaces numpy's functions by their numpy name."""
+    unit = _libm_unit()
+    if isinstance(unit, Exception):
+        _LIBM['status'] = f'not checked: the C library is not reachable ({unit})'
         return None
+    ffi, cfn, codes = unit
+    dptr = ffi.typeof('double *')
+
+    def cmap(c, a, b=None):
+        a = np.ascontiguousarray(a, dtype=float)
+        b = a if b is None else np.ascontiguousarray(b, dtype=float)
+        out = np.empty_like(a)
+        cfn(codes['LIBM_' + c.upper()], ffi.from_buffer(dptr, a), ffi.from_buffer(dptr, b),
+            a.size, ffi.from_buffer(dptr, out))
+        return out
     over = numpy_funcs or {}
     vals = _libm_probe_values()
     third = vals[::3]
@@ -598,9 +621,8 @@ def _libm_probe(numpy_funcs=None):
     with np.errstate(all='ignore'):
         for c, n in LIBM_PAIRS:
             uf = over.get(n) or getattr(np, n)
-            f = cfun[c]
             if c in _LIBM_BINARY:
-                ref = np.array([f(float(a), float(b)) for a, b in zip(A, B)])
+                ref = cmap(c, A, B)
                 got = [_libm_differ(uf(A, B), ref)]
                 if c == 'pow':
                     k = slice(None, None, 4)
@@ -609,7 +631,7 @@ def _libm_probe(numpy_funcs=None):
                     got.append(_libm_differ([np.float64(a) ** np.float64(b)
                                              for a, b in zip(A[k], B[k])], ref[k]))
             else:
-                ref = np.array([f(float(v)) for v in vals])
+                ref = cmap(c, vals)
                 got = [_libm_differ(uf(vals), ref),
                        _libm_differ([uf(np.float64(v)) for v in third], ref[::3])]
             d, m = sum(int(g.sum()) for g in got), sum(g.size for g in got)
@@ -697,8 +719,40 @@ def _name_ulp(cls, info, fns, lsrc):
     if lsrc is not None and info.get('_c_limit') is not None:
         srcs.append(lsrc._csrc)
     listed = libm_check()
-    called = frozenset().union(*(libm_calls(s) for s in srcs)) if srcs else frozenset()
+    called = _libm_calls_of(cls, srcs)
     cls._hdl_backend_ulp = tuple(sorted(called & listed))
+
+
+def _libm_calls_of(cls, srcs):
+    """`libm_calls` over the class's kernel sources `srcs`, kept beside its
+    compiled entry (`_hdl_cache.side_text`: the tag the scanner's own source
+    and the sources' hash) -- a scan of a limited class's kernels is some
+    milliseconds every process."""
+    if not srcs:
+        return frozenset()
+    from pycircuit.circuit import _hdl_cache
+    h = hashlib.sha256()
+    for src in srcs:
+        h.update(src.encode('utf-8'))
+        h.update(b'\0')
+    text = _hdl_cache.side_text(
+        cls, f'libm-calls:{_scan_tag()}:{h.hexdigest()}',
+        lambda: ','.join(sorted(frozenset().union(*(libm_calls(src) for src in srcs)))))
+    return frozenset(t for t in text.split(',') if t)
+
+
+def _scan_tag():
+    """What `libm_calls` depends on beside a source: this module's text and
+    the limiter's prelude (`_hdl_climit._LIMIT_C`), hashed once a process."""
+    got = _LIBM.get('scan_tag')
+    if got is None:
+        from pycircuit.circuit import _hdl_climit
+        h = hashlib.sha256()
+        with open(__file__, 'rb') as fh:
+            h.update(fh.read())
+        h.update(_hdl_climit._LIMIT_C.encode('utf-8'))
+        got = _LIBM['scan_tag'] = h.hexdigest()[:24]
+    return got
 
 
 def _note(cls, status, warn=None):
@@ -840,7 +894,7 @@ def _resolve(cls, info, explicit):
     ## (the class's limiter, printed from its spec and built beside the
     ## chain functions; refused on its own, never the class: `_hdl_climit`)
     from pycircuit.circuit import _hdl_climit
-    lsrc = _hdl_climit.source_for(info) if info.get('limit_spec') else None
+    lsrc = _hdl_climit.source_for(info, cls) if info.get('limit_spec') else None
     ## (and the evaluate core's fused kernel, printed from the passes' C:
     ## refused on its own too, `fuse_source`)
     fsrc = fuse_source(info)

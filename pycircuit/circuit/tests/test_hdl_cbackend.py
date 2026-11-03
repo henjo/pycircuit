@@ -447,6 +447,45 @@ class TestLibmCheck:
         for c in differ:
             assert f'{c} differs' in cb.libm_status()
 
+    def test_the_probe_s_c_side_is_the_c_library_s_own_call(self):
+        """The probe's C side (libm.c: the function over an array, built with
+        the kernels' flags) gives the bits a call of the C library's own
+        function gives, one value at a time (`_libm_fn`, ctypes): over the
+        probe set, and the binary functions over its grid."""
+        ffi, cfn, codes = cb._libm_unit()
+        dptr = ffi.typeof('double *')
+        vals = cb._libm_probe_values()
+        A, B = (m.ravel() for m in np.meshgrid(vals[::12], vals[::29]))
+        for c, _n in cb.LIBM_PAIRS:
+            a, b = (A, B) if c in cb._LIBM_BINARY else (vals, vals)
+            a, b = np.ascontiguousarray(a), np.ascontiguousarray(b)
+            out = np.empty_like(a)
+            assert cfn(codes['LIBM_' + c.upper()], ffi.from_buffer(dptr, a),
+                       ffi.from_buffer(dptr, b), a.size, ffi.from_buffer(dptr, out)) == 0
+            f = _libm_fn(c)
+            with np.errstate(all='ignore'):
+                ref = np.array([f(x, y) if c in cb._LIBM_BINARY else f(x) for x, y in zip(a, b)])
+            assert out.view(np.int64).tolist() == ref.view(np.int64).tolist(), c
+
+    def test_a_class_s_libm_calls_are_kept_beside_its_entry(self, monkeypatch, tmp_path):
+        """`_libm_calls_of`: the scan's answer, kept (`side_text`) under the
+        sources' hash: the same sources read it back without scanning, other
+        sources are scanned."""
+        from pycircuit.circuit import _hdl_cache
+        monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path / 'hdlcache'))
+        monkeypatch.delenv('PYCIRCUIT_HDL_CACHE', raising=False)
+        monkeypatch.setattr(_hdl_cache, 'ENABLED', True)
+        cls = type('Keyed', (), {'_hdl_cache_key': 'k' * 64})
+        srcs = ['double f(double x) { return exp(x) + sin(x); }', 'y = pow(a, b);']
+        scans = []
+        real = cb.libm_calls
+        monkeypatch.setattr(cb, 'libm_calls', lambda src: scans.append(src) or real(src))
+        want = frozenset({'exp', 'sin', 'pow'})
+        assert cb._libm_calls_of(cls, srcs) == want and len(scans) == 2
+        assert cb._libm_calls_of(cls, srcs) == want and len(scans) == 2
+        assert cb._libm_calls_of(cls, srcs[:1]) == {'exp', 'sin'} and len(scans) == 3
+        assert cb._libm_calls_of(cls, []) == frozenset()
+
     def test_a_planted_difference_is_listed(self):
         differ, detail = cb._libm_probe(numpy_funcs={'log': _planted_log})
         assert 'log' in differ and detail['log'][0] > 0

@@ -12583,3 +12583,41 @@ every unit, changed; no reference moved); `pool.c` joined the core's pair and th
 skipped, 3 xfailed); the sanitizer builds, fast 5 881 passed clean, deep (the walk, the core, the loops, the pairs, the
 ABI; `PYTHONMALLOC=malloc`) 902 passed clean; the 27 gold decks -- standalone DC against 224's gate runs, gear2 and
 Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.
+
+## 2026-11-03 — 233. A limited class's first instance -- the libm probe's C side by array (a unit of its own), the limiter's rendered source and its libm scan kept beside the class's entry: gm6's process 0.591 -> 0.555 s, every result the same
+
+**Why**  Andreas, after 232: "push. Then address the two items" (the survey's small levers; plan g24's
+`tc/plan_233_234.md`).  Measured on five short decks (wrapped timers, a process each): the first C-bound class's
+resolve ran the libm probe (`_hdl_cbackend._libm_probe`, numpy's sin, exp, ... against the C library's on a fixed
+set: 0.010-0.025 s in a deck, 0.018 s alone -- ~16 000 ctypes calls of one value each, and `ctypes.util.find_library`
+spawning ldconfig), and each limited class printed its limiter's C through sympy's printer (`_hdl_climit.source_for`,
+4-20 ms a deck) and scanned its kernels' sources for libm calls (`libm_calls`, 4-13 ms): 0.023-0.058 s of a ~0.5 s
+process.  The probe's answer DECIDES (`_tran_sources` takes sin and exp waveforms in C only where they agree), so it
+stays a measurement of each process: no disk cache for it.  LINE (one form): gm6's process at least 0.025 s faster,
+the median saving over 15 interleaved quiet-box pairs against HEAD; every result the same.  Refused under.
+
+**Built.**  `csrc/libm.c` (`pcx_libm(which, a, b, n, out)`: a LIBM_PAIRS function over an array, built with the
+kernels' flags -- no builtin of any of them -- so each is the C library's own entry point, the one a kernel calls):
+the probe's C side in one call a function, numpy's side as before; the C library no longer found through
+`find_library`.  `_hdl_climit._rendered`: `render(info)` kept beside the class's compiled entry
+(`_hdl_cache.side_text`, its tag this module's text and the prelude's, a refusal kept as one).
+`_hdl_cbackend._libm_calls_of`: the scan's answer kept likewise (its tag the scanner's text and the sources' hash).
+Measured after (the same decks, a second process each): the resolve 0.032-0.076 -> 0.011-0.028 s, the probe ~0.003 s,
+the rendering and the scan nothing.
+
+**Measured** (a quiet box, HEAD 757544a3 from its worktree and this tree, interleaved, both warmed): gm6's process, 15
+pairs: 0.591 -> 0.555 s, 0.040 s saved (-0.001 to 0.091; the line 0.025 s); `elements_hdl`'s import 12 pairs as information:
+0.012 -> 0.012 s.  The gate's gold processes (a busier box) ~0.04 s sooner each (median), their solves the same.
+
+**Tests.**  test_hdl_cbackend (+2): the probe's C side gives the bits a call of the C library's own function gives,
+one value at a time (ctypes), over the probe set and the binary functions' grid; a class's libm calls kept under the
+sources' hash -- read back without a scan, other sources scanned.  test_hdl_climit (+2): a class's limiter rendering
+kept -- read back equal without printing, another renderer's tag printing again, a refusal kept as one; the tag is the
+module's text and the prelude's.  Three mutations caught (nothing kept, either; libm.c's sin and cos swapped).
+test_c_abi: the unit.  test_hdl_cache's collapse test counts class entries only (a C-bound limited variant keeps its
+texts beside its entry -- its first run read 4 files where it counted 2).
+
+**Gate** (the main tree): the TELL; the suite, first 1 failed (the count above), then after the test's fix 6 111 passed (10 skipped, 3 xfailed);
+the sanitizer builds, fast clean but that test, deep (the backend, the limiter, libm, the sources, the walk, the pairs,
+the ABI) 519 passed clean; the 27 gold decks -- standalone DC against 224's gate runs, gear2 and Radau against HEAD
+interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.

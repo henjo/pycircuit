@@ -68,6 +68,8 @@ has it.
 
 History: `doc/transient_history.md`.
 """
+import hashlib
+import json
 import os
 import sys
 import types
@@ -379,16 +381,53 @@ class CLimitKernel(_cb.CKernel):
         return out
 
 
-def source_for(info):
+def source_for(info, cls=None):
     """A `_build_missing_parallel`-shaped object for the class's limit
-    kernel, or None where it is refused (the status is set)."""
+    kernel, or None where it is refused (the status is set).  With the
+    class, its rendering is kept beside its compiled entry (`_rendered`)."""
     try:
-        csrc, nx, layout = render(info)
+        csrc, nx, layout = _rendered(info, cls)
     except Refused as e:
         info['_c_limit'] = None
         info['_c_limit_status'] = f'numpy ({e})'
         return None
     return types.SimpleNamespace(_csrc=csrc, _nx=nx, _layout=layout)
+
+
+def _rendered(info, cls):
+    """`render(info)` -- kept, refusal and all, beside the class's compiled
+    entry (`_hdl_cache.side_text`: the tag this module's text and the
+    prelude's, `_render_tag`), so a process prints a class's limiter through
+    sympy's printer only where its entry has none."""
+    if cls is None:
+        return render(info)
+    from pycircuit.circuit import _hdl_cache
+
+    def make():
+        try:
+            csrc, nx, layout = render(info)
+        except Refused as e:
+            return json.dumps({'refused': str(e)})
+        return json.dumps({'csrc': csrc, 'nx': nx, 'layout': list(layout)})
+    rec = json.loads(_hdl_cache.side_text(cls, f'climit-render:{_render_tag()}', make))
+    if 'refused' in rec:
+        raise Refused(rec['refused'])
+    return rec['csrc'], rec['nx'], tuple(rec['layout'])
+
+
+_RENDER_TAG = []
+
+
+def _render_tag():
+    """What `render` depends on beside the class: this module's text and
+    the prelude's, hashed once a process."""
+    if not _RENDER_TAG:
+        h = hashlib.sha256()
+        with open(__file__, 'rb') as fh:
+            h.update(fh.read())
+        h.update(_LIMIT_C.encode('utf-8'))
+        _RENDER_TAG.append(h.hexdigest()[:24])
+    return _RENDER_TAG[0]
 
 
 def bind(cls, info, src=None):

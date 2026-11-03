@@ -55,6 +55,13 @@ def _entries(d):
         if os.path.isdir(d) else []
 
 
+def _class_entries(d):
+    """The class entries among `d`'s: not the side texts a class keeps
+    beside its own (`side_text`: a limiter's rendering, its kernels' libm
+    calls), whose payload is a string."""
+    return [n for n in _entries(d) if type(hc._read(n[:-len('.pkl')])[0]) is not str]
+
+
 def _reclass(base, name=None):
     """A new class with `base`'s analog and parameters -- the same key,
     compiled again under whatever cache state is current."""
@@ -281,7 +288,9 @@ def test_collapse_variant_is_cached(cache_dir):
     assert e1.n == e2.n == 2
     assert _evaluate(e1, np.random.default_rng(3)) == \
         _evaluate(e2, np.random.default_rng(3))
-    assert len(_entries(cache_dir)) == 2
+    ## (the base and its variant; the variant's C limiter keeps its texts
+    ## beside its entry)
+    assert len(_class_entries(cache_dir)) == 2
 
 
 def test_a_side_text_is_made_once_under_its_tag(cache_dir, monkeypatch):

@@ -74,6 +74,7 @@ UNITS = [
     ('lmmsens', _lmmsens_c.LMMSENS_CDEF),
     ('pass', _hdl_batch.PASS_CDEF),
     ('walk', _hdl_climit._WALK_CDEF),
+    ('libm', _hdl_cbackend.LIBM_CDEF),
     ('watch', _watch.WATCH_CDEF),
     ('sources', _tran_sources.SOURCES_CDEF),
     ('branch', _tran_branch_c.BRANCH_CDEF),

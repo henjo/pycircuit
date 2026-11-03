@@ -651,3 +651,47 @@ def test_a_thawed_class_binds_its_kernel_again():
     x0 = np.linspace(-0.5, 1.0, e.n)
     assert back['_c_limit'](e, x0 + 0.8, x0, defaultepar).tobytes() == \
         info['_c_limit'](e, x0 + 0.8, x0, defaultepar).tobytes()
+
+
+
+## ---------------------------------------------------------------------------
+## THE RENDERING KEPT (`_rendered`): a class's limiter as `render` prints it,
+## kept beside its compiled entry under a tag naming the renderer.
+
+def test_a_class_s_limiter_rendering_is_kept_beside_its_entry(monkeypatch, tmp_path):
+    """The first resolve prints the limiter and keeps it; a second reads it
+    back, the same text, without printing; a renderer of other text (its
+    tag) prints again; a refusal is kept as one."""
+    from pycircuit.circuit.tests.test_hdl_cache import ChainedLimited, _reclass
+    monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path / 'hdlcache'))
+    monkeypatch.delenv('PYCIRCUIT_HDL_CACHE', raising=False)
+    monkeypatch.setattr(_hdl_cache, 'ENABLED', True)
+    cls = _reclass(ChainedLimited)
+    info = cls._hdl_info
+    printed = []
+    real = cl.render
+    monkeypatch.setattr(cl, 'render', lambda i: printed.append(1) or real(i))
+    first = cl._rendered(info, cls)
+    assert first == real(info) and len(printed) == 1
+    assert cl._rendered(info, cls) == first and len(printed) == 1
+    monkeypatch.setattr(cl, '_render_tag', lambda: 'another renderer')
+    assert cl._rendered(info, cls) == first and len(printed) == 2
+
+    def refusing(i):
+        printed.append(1)
+        raise cl.Refused('planted')
+    monkeypatch.setattr(cl, '_render_tag', lambda: 'a refusing renderer')
+    monkeypatch.setattr(cl, 'render', refusing)
+    for _ in range(2):
+        with pytest.raises(cl.Refused, match='planted'):
+            cl._rendered(info, cls)
+    assert len(printed) == 3
+
+
+def test_the_render_tag_names_this_module_and_its_prelude():
+    import hashlib
+    h = hashlib.sha256()
+    with open(cl.__file__, 'rb') as fh:
+        h.update(fh.read())
+    h.update(cl._LIMIT_C.encode('utf-8'))
+    assert cl._render_tag() == h.hexdigest()[:24]
