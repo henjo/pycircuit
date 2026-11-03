@@ -12864,3 +12864,31 @@ there most of the rest.  Refused: nothing built.
 (newton.c gathers J at the pattern into KLU's values; the Radau units copy G and C at the pattern): the companion's
 stores and the callers' gathers both sequential -- an interface change, its ceiling ~6 us a G call (~0.15 s on jge
 under gear2) plus the gathers'.
+
+## 2026-11-03 — 240. The pool's chunk -- a thread takes 8 items at a time where every thread gets two such chunks, else 4 as before: jge under Radau 9.21 -> 8.96 s (1.029x), every result the same
+
+**Why**  The survey after 238 (plan g24's `tc/plan_239_next5.md`, item 2; Andreas: "Do 1 and 2, then the Radau
+survey"): mux8's main thread spent 5.7 % in `pcx_pool` itself -- waiting for the workers -- with 64 level-2 MOSFETs
+handed out 4 at a time.  Proposed: smaller or adaptive chunks for balance.  Sized in a worktree (pool.c variants, 2
+runs each of mux8/jge/gm19/voter25 under Radau and jge under gear2): chunk 1 SLOWER everywhere (jge Radau 9.2 -> 10.7
+s), chunk 2 too (9.8 s); a 16x longer spin before the workers sleep no change -- neither imbalance nor wake-up: each
+chunk's cost is its take from the one counter and the output rows its neighbours write beside its own.  Chunk 8: jge
+Radau 9.18 -> 8.95 s, gear2 4.54 -> 4.44 s, mux8 ~1.01x, gm19 and voter25 the same; 16: gm19 and voter25 1-2 %
+slower.  Adaptive -- 8 where n >= 2 x 8 x threads, else 4 (the decks just past the pool's minimum keep their
+spread): jge Radau 9.16/9.23 -> 8.92/8.90 s, gear2 1.025x, the small decks (ring, nand, gm3, rca) unchanged.  mux8's
+waiting is not explained (the next guess: workers on this hybrid CPU's E-cores -- untested).  LINE (one form, set
+before building): jge under Radau at least 1.015x, the median of 5 interleaved quiet-box pairs against HEAD; GUARD:
+the 27 decks' total solve under each method not slower; every result the same.  Refused under.
+
+**Built.**  `csrc/pool.c`: `POOL_CHUNK_BIG` 8, taken where every thread gets two chunks that size; the job carries its
+chunk (`pool_job_t.chunk`, pool.h).  The items and what each thread makes of one are unchanged: every byte and flag as
+before (the threads' tests: test_core_threads, the walk's).
+
+**Measured** (a quiet box, HEAD cc54f597 from its worktree and this tree, interleaved, 5 pairs): jge under Radau 9.214 -> 8.961 s, 1.029x (1.012 to 1.033; the line 1.015x) -- met; under gear2 4.545 -> 4.446 s (1.024x).  The gate's
+runs (a busier box): the 27 decks' solves 1.010x under Radau (38.7 -> 38.3 s) and 1.006x under gear2 (18.5 -> 18.4 s) -- the guard met.
+
+**Tests.**  The pool's tests (test_core_threads: 80 elements, the big chunk; the walk's 80-stage and 200-diode
+chains), the C twins' 1 883 before the pinned pairs were re-recorded (2 twins: pool.c in the core's and the walk's).
+
+**Gate** (the main tree): the TELL; the suite, 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 238's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.

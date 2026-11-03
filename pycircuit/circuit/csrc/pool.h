@@ -8,6 +8,7 @@ typedef struct {
     void *range;          /* pool_range_t (pcx_abi.h): the items [lo, hi) */
     const void *ctx;      /* its context */
     long n;               /* the items */
+    long chunk;           /* the items a thread takes at a time (pcx_pool) */
 } pool_job_t;
 
 long pcx_pool(void *range, const void *ctx, long n, long nthreads);

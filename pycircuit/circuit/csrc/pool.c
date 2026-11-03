@@ -17,7 +17,13 @@
    thread leaves them).  One call at a time (a concurrent caller makes its
    items alone: 0); a forked child starts workers of its own; the library
    pins itself (RTLD_NODELETE) before a worker runs in it. */
-enum { POOL_MAX = 31, POOL_CHUNK = 4, POOL_SPIN = 1 << 16 };
+/* THE CHUNK: a thread takes POOL_CHUNK items at a time, POOL_CHUNK_BIG where
+   every thread gets two chunks that size -- a chunk's cost is its take from
+   the one counter and the output rows its neighbours write beside its own
+   (measured on the gold decks, four threads: 1 or 2 items a take slower
+   everywhere, jge under Radau 9.2 -> 10.7 s at 1; 8 jge 1.03x, the rest the
+   same; 16 gm19 and voter25 1-2 % slower; a longer spin no change) */
+enum { POOL_MAX = 31, POOL_CHUNK = 4, POOL_CHUNK_BIG = 8, POOL_SPIN = 1 << 16 };
 
 static pthread_mutex_t pool_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pool_wake = PTHREAD_COND_INITIALIZER;
@@ -43,9 +49,9 @@ static void pool_take(const pool_job_t *j)
     pool_range_t range = (pool_range_t) j->range;
     long i, end;
     for (;;) {
-        i = atomic_fetch_add_explicit(&pool_next, POOL_CHUNK, memory_order_relaxed);
+        i = atomic_fetch_add_explicit(&pool_next, j->chunk, memory_order_relaxed);
         if (i >= j->n) return;
-        end = i + POOL_CHUNK < j->n ? i + POOL_CHUNK : j->n;
+        end = i + j->chunk < j->n ? i + j->chunk : j->n;
         range(j->ctx, i, end);
     }
 }
@@ -157,6 +163,7 @@ long pcx_pool(void *range, const void *ctx, long n, long nthreads)
     pool_job.range = range;
     pool_job.ctx = ctx;
     pool_job.n = n;
+    pool_job.chunk = n >= 2 * POOL_CHUNK_BIG * (pool_started + 1) ? POOL_CHUNK_BIG : POOL_CHUNK;
     pool_run(&pool_job);
     atomic_flag_clear_explicit(&pool_busy, memory_order_release);
     return 1;
