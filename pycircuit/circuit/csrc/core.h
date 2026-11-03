@@ -103,6 +103,11 @@ typedef struct {
     /* the pool those threads are (pool.c's `pcx_pool`, a pool_fn_t:
        `_tran_core.pool_address`), or NULL: the caller alone */
     void *pool_fn;
+    /* THE SMALL PRODUCTS: bit k (1 << k) set, a constant group's k x k
+       product (k 2 or 3) by OpenBLAS's dgemv's own operation order (core.c's
+       `small_gemv`) -- set where `_tran_core._small_gemv_ok` found this
+       process's dgemv to make exactly that; clear, the dgemv itself */
+    long small_gemv;
 } hdl_core_t;
 /* THE EVALUATION: the passes `want` asks for (q always) at x, then the
    companion `formula` forms, f = (i + iq) + u and J = G + Geq -- bit for

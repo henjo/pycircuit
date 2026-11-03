@@ -12621,3 +12621,46 @@ texts beside its entry -- its first run read 4 files where it counted 2).
 the sanitizer builds, fast clean but that test, deep (the backend, the limiter, libm, the sources, the walk, the pairs,
 the ABI) 519 passed clean; the 27 gold decks -- standalone DC against 224's gate runs, gear2 and Radau against HEAD
 interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.
+
+## 2026-11-03 — 234. The core's small products without a dgemv call each -- a constant group's 2 x 2 and 3 x 3 products in C by OpenBLAS's own operation order, where a check once a process finds this process's dgemv to make exactly that: jge under Radau 11.49 -> 10.87 s (1.056x), every result the same
+
+**Why** Andreas, after 232: "push. Then address the two items" (plan g24's `tc/plan_233_234.md`). jge's BLAS time (8.8 %
+of its main thread under Radau, DWARF perf) is the core's constant groups: numpy's dgemv once an element a pass for 157
+capacitors (2 x 2, q) and 63 sources (3 x 3, i) -- the call's own cost. The products as a plain C loop (timing only, its
+bits not numpy's): jge under Radau 11.44 -> 10.6-10.9 s, under gear2 5.39 -> 5.2 s. LINE (set before building, one
+form): jge under Radau at least 1.04x (the median of 5 interleaved quiet-box pairs); GUARD: the 27 decks' total solve
+under each method not slower; every result the same. Refused under.
+
+**Found.** numpy's np.dot of a small matrix and vector is its OpenBLAS's dgemv (the core's call, equal on 20 000
+products). Every order of a 2 x 2 row's terms, with and without a fused multiply-add, against it: one equal, `t = a1 x1;
+t = fma(a0, x0, t)`; of a 3 x 3 row's 24, one: `t = a1 x1; t = fma(a0, x0, t); t = fma(a2, x2, t)` -- then `0.0 + t`,
+the kernel's addition into its zeroed y (a -0.0 made +0.0). Equal on 120 000 random products of each size with signed
+zeros, overflow, underflow, and a NaN or an infinity left in y; every other order unequal on about a third of random
+products.
+
+**Built.** core.c's `small_gemv`, taken for a constant group of k 2 or 3 where `hdl_core_t.small_gemv`'s bit k is set
+(the C library's `fma`, correctly rounded; the multiplication never contracted, -ffp-contract=off); else numpy's dgemv
+as before. `_tran_core._small_gemv_ok(k)`, once a process at the first core with such a group (as
+`_stamp_plan._matmul_ok`): the formula against this process's dgemv on 96 random products of mixed scale and 7 edge ones
+(signed zeros, overflow, underflow), every bit -- 2 ms for both sizes; any difference, the dgemv. A product's lone -0.0
+reaches no output (the bins add each slot onto +0.0, as bincount), so the `0.0 +` is held by the check, not by the
+core's outputs.
+
+**Measured** (a quiet box, HEAD fe73b100 from its worktree and this tree, interleaved, after a warm run of each): jge
+under Radau, 5 pairs, 11.490 -> 10.865 s, 1.056x (pairs 1.049 to 1.084; the line 1.04x) -- the rerun, which decides; the
+first run 11.422 -> 10.977 s, 1.044x (1.033 to 1.054), rerun as the rule asks where a small effect decides; under gear2
+5.383 -> 5.181 s, 1.040x (the first run 1.034x). The gate's runs (a busier box): the 27 decks' solves under Radau 43.4
+-> 42.3 s (1.027x), under gear2 20.8 -> 20.3 s (1.021x) -- the guard met.
+
+**Tests.** test_tran_core (+4): the check is made once and sets the core's bits on a chain with capacitors (2 x 2) and
+sources (3 x 3); the core with its small products in C and with each a dgemv call, residual and Jacobian bit for bit on
+states with signed zeros, huge and tiny values; another order of the terms, and the formula without its `0.0 +`, fail
+the check (for each size). A mutation of the C order caught (15 core tests fail); the C formula without its `0.0 +`
+changes no output (above). Pinned pairs: 4 twins re-recorded after 524 tests of the core's twins passed. On the way: the
+first build of core.c did not compile (the function after its use) and test_tran_core SKIPPED its 14 core tests ("the
+core is off") -- the new bit-for-bit test passed by skipping; read with -rs, fixed, 26 passed.
+
+**Gate** (the main tree): the TELL; the suite, 6 115 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean,
+deep (the core, its threads, the Newtons, the loops, PCNR, the pairs, the ABI, the batches) clean; the 27 gold decks --
+standalone DC against 224's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton
+count and path count identical but the loops' own.

@@ -1,4 +1,5 @@
 
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 #include "pcx_abi.h"
@@ -145,6 +146,24 @@ static void batch_into(const hdl_core_t *c, long b, long m, double *buf, const d
     }
 }
 
+/* THE SMALL PRODUCTS: a k x k row-major product, k 2 or 3, as OpenBLAS's
+   dgemv makes it (the row's middle term, the first fused onto it, then the
+   third; added into the zeroed y) -- taken only where `small_gemv` says this
+   process's dgemv was checked to make exactly that (`_tran_core`); the
+   multiplication alone is never contracted (-ffp-contract=off) and `0.0 +`
+   keeps a -0.0's sign as the zeroed y's addition does */
+static void small_gemv(const double *S, const double *x, long k, double *y)
+{
+    long r;
+    for (r = 0; r < k; r++) {
+        const double *a = S + r * k;
+        double t = a[1] * x[1];
+        t = fma(a[0], x[0], t);
+        if (k == 3) t = fma(a[2], x[2], t);
+        y[r] = 0.0 + t;
+    }
+}
+
 /* pass m's constant groups into its slots `buf` */
 static void groups_into(const hdl_core_t *c, long m, double *buf, const double *x,
                         double *y, double *xg)
@@ -165,7 +184,10 @@ static void groups_into(const hdl_core_t *c, long m, double *buf, const double *
         const int64_t *gdst = c->gdstall + c->g_seloff[g];
         for (e = 0; e < E; e++) {
             for (j = 0; j < k; j++) xg[j] = x[I[e * k + j]];
-            gemv(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, k, k, 1.0, S + e * k * k, k, xg, 1, 0.0, y, 1);
+            if ((k == 2 || k == 3) && (c->small_gemv & (1L << k)))
+                small_gemv(S + e * k * k, xg, k, y);
+            else
+                gemv(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, k, k, 1.0, S + e * k * k, k, xg, 1, 0.0, y, 1);
             for (j = 0; j < k; j++) c->ywork[e * k + j] = y[j];
         }
         for (s = 0; s < nsel; s++) buf[gdst[s]] = c->ywork[sel[s]];

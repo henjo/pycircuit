@@ -100,6 +100,7 @@ epoch, the circuit's size.
 
 History: `doc/transient_history.md`, `_tran_core.py`.
 """
+import math
 import operator
 import os
 
@@ -232,6 +233,85 @@ def pool_address():
             ## (the unit's ffi kept: it holds the library open)
             _pool = (ffi, cfn, int(ffi.cast('uintptr_t', cfn)))
     return _pool[2]
+
+
+#: `_small_gemv_ok`'s answers by k (a dict: the leak detector watches a module
+#: scalar that moves)
+_SMALL_GEMV = {}
+
+
+def _fma(a, b, c):
+    """`fma(a, b, c)` correctly rounded, as C's: Python's own, and the C
+    library's where Python's raises (an overflow, an invalid operation)."""
+    try:
+        return math.fma(a, b, c)
+    except (OverflowError, ValueError):
+        f = _SMALL_GEMV.get('fma')
+        if f is None:
+            import ctypes
+            f = ctypes.CDLL('libm.so.6').fma
+            f.restype, f.argtypes = ctypes.c_double, [ctypes.c_double] * 3
+            _SMALL_GEMV['fma'] = f
+        return f(a, b, c)
+
+
+def _small_formula(row, x):
+    """A row of a 2 x 2 or 3 x 3 product as core.c's `small_gemv` makes it."""
+    t = float(np.float64(row[1]) * np.float64(x[1]))
+    t = _fma(row[0], x[0], t)
+    if len(x) == 3:
+        t = _fma(row[2], x[2], t)
+    return float(np.float64(0.0) + np.float64(t))
+
+
+def _small_gemv_ok(k):
+    """Whether this process's dgemv (numpy's own, np.dot's) makes a k x k
+    product (k 2 or 3) as core.c's `small_gemv` does, bit for bit: checked
+    once a process on random products and on the edges -- signed zeros,
+    overflow, underflow -- every bit compared (another operation order
+    differs on a third of random products; a lost -0.0 on the edges)."""
+    got = _SMALL_GEMV.get(k)
+    if got is not None:
+        return got
+    import ctypes
+    ok = False
+    try:
+        dgemv = _numpy_dgemv()
+        if dgemv is not None:
+            gemv = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_int, ctypes.c_int64, ctypes.c_int64,
+                                    ctypes.c_double, ctypes.c_void_p, ctypes.c_int64, ctypes.c_void_p,
+                                    ctypes.c_int64, ctypes.c_double, ctypes.c_void_p, ctypes.c_int64)(dgemv)
+            S, X = _small_cases(k)
+            Y = np.full(X.shape, np.nan)
+            sp, xp, yp, n8 = S.ctypes.data, X.ctypes.data, Y.ctypes.data, 8 * k
+            with np.errstate(all='ignore'):
+                for i in range(X.shape[0]):
+                    gemv(101, 111, k, k, 1.0, sp + n8 * k * i, k, xp + n8 * i, 1, 0.0, yp + n8 * i, 1)
+                Sl, Xl = S.tolist(), X.tolist()
+                mine = np.array([[_small_formula(Sl[i][r], Xl[i]) for r in range(k)]
+                                 for i in range(X.shape[0])])
+            ok = bool(np.array_equal(mine.view(np.int64), Y.view(np.int64)))
+    except (OSError, AttributeError):
+        ok = False
+    _SMALL_GEMV[k] = ok
+    return ok
+
+
+def _small_cases(k):
+    """The check's products, `(S, X)` stacked: 96 random ones of mixed
+    scale, then the edges."""
+    rng = np.random.default_rng(234 + k)
+    SS = rng.standard_normal((96, k, k)) * 10.0 ** rng.integers(-8, 8, (96, k, k))
+    XX = rng.standard_normal((96, k)) * 10.0 ** rng.integers(-4, 4, (96, k))
+    out = list(zip(SS, XX))
+    one = np.ones((k, k))
+    zx = np.zeros(k)
+    zx[0] = -0.0
+    out += [(one, zx), (-one, np.zeros(k)), (one, -np.ones(k) * 0.0),
+            (one * 1e300, np.ones(k) * 1e10), (one * 1e-300, np.ones(k) * 1e-20),
+            (np.eye(k), -zx), (-np.eye(k), zx)]
+    return (np.ascontiguousarray([S for S, _x in out], dtype=float),
+            np.ascontiguousarray([x for _S, x in out], dtype=float))
 
 
 class Unservable(Exception):
@@ -571,6 +651,10 @@ class _Core:
         cs.nz = self.nz
         cs.nthreads = THREADS
         cs.pool_fn = ffi.cast('void *', pool_address())
+        ## (a constant group's 2 x 2 and 3 x 3 products without a dgemv call
+        ## each, where this process's dgemv was found to make them so)
+        ks = {int(cs.g_k[g]) for g in range(cs.ng)} & {2, 3}
+        cs.small_gemv = sum(1 << k for k in sorted(ks) if _small_gemv_ok(k))
         self.handles.append(ffi.from_buffer('void **', self.z_fn))
         cs.z_fn = self.handles[-1]
         cs.dgemv = ffi.cast('void *', dgemv)

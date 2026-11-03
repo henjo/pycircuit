@@ -457,3 +457,74 @@ def test_a_fused_group_s_row_is_where_its_column_names_say():
         assert row[Z['ZT_PASSES']] == mask
         for m, p in enumerate(_tran_core.PASSES):
             assert row[Z['ZT_G_LEN'] + 2 * m] == fk.sizes.get(p, 0)
+
+
+## ---------------------------------------------------------------------------
+## THE SMALL PRODUCTS (core.c's `small_gemv`): a constant group's 2 x 2 and
+## 3 x 3 products by OpenBLAS's dgemv's own operation order, where the check
+## made once a process (`_small_gemv_ok`) found this process's dgemv to make
+## exactly that.
+
+def _capacitive_chain():
+    """`mos_chain(8)` with a capacitor at each drain: constant groups of 2 x 2
+    (the capacitors' q, the loads) and 3 x 3 (the sources)."""
+    from pycircuit.circuit.elements import C
+    cir = mos_chain(8)
+    for k in range(8):
+        cir[f'c{k}'] = C(f'd{k}', gnd, c=1e-13 * (k + 1))
+    return cir
+
+
+def test_the_small_products_are_checked_once_and_set_on_the_core():
+    if not (_tran_core._small_gemv_ok(2) and _tran_core._small_gemv_ok(3)):
+        pytest.skip("this process's dgemv makes a small product otherwise: the core calls it")
+    assert _tran_core._small_gemv_ok(2) is _tran_core._small_gemv_ok(2)
+    tr, _x = _tr(_capacitive_chain())
+    cs = _tran_core.core_for(tr).cs
+    ks = {int(cs.g_k[g]) for g in range(cs.ng)}
+    assert {2, 3} <= ks, ks
+    assert cs.small_gemv == (1 << 2) | (1 << 3)
+
+
+def test_the_core_s_small_products_are_dgemv_s_bits():
+    """The core with its small products made in C and with each a dgemv
+    call: the residual and the Jacobian bit for bit, on states with signed
+    zeros, huge and tiny values.  (A product's lone -0.0 reaches no output --
+    the bins add each slot onto +0.0, as bincount does -- so the formula's
+    final `0.0 +` is held by the check against dgemv, `_small_gemv_ok`, not
+    here.)"""
+    tr, x = _tr(_capacitive_chain())
+    cs = _tran_core.core_for(tr).cs
+    if not cs.small_gemv:
+        pytest.skip("this process's dgemv makes a small product otherwise")
+    states = _states(x, 8, seed=234) + [np.full(x.size, -0.0), -x, x * 1e150, x * 1e-160]
+    bits = cs.small_gemv
+    for xt in states:
+        xt = np.ascontiguousarray(xt, dtype=float)
+        got = []
+        for on in (bits, 0):
+            cs.small_gemv = on
+            with np.errstate(all='ignore'):
+                F, J = _tran_core.evaluate(tr, xt.copy(), 1.1e-7, None, 'fj')
+            got.append((np.asarray(F).tobytes(), np.asarray(J).tobytes()))
+        cs.small_gemv = bits
+        assert got[0] == got[1]
+
+
+@pytest.mark.parametrize('k', [2, 3])
+def test_another_order_fails_the_check(monkeypatch, k):
+    """The check sees an order of the terms other than dgemv's on its random
+    products, and a lost `0.0 +` (a -0.0 kept) on its edges."""
+    real = _tran_core._small_formula
+    swapped = (lambda row, x: real(row[::-1], x[::-1]))
+
+    def bare(row, x):
+        t = float(np.float64(row[1]) * np.float64(x[1]))
+        t = _tran_core._fma(row[0], x[0], t)
+        if len(x) == 3:
+            t = _tran_core._fma(row[2], x[2], t)
+        return t
+    for wrong in (swapped, bare):
+        monkeypatch.setattr(_tran_core, '_SMALL_GEMV', {})
+        monkeypatch.setattr(_tran_core, '_small_formula', wrong)
+        assert _tran_core._small_gemv_ok(k) is False
