@@ -180,30 +180,68 @@ static void groups_into(const hdl_core_t *c, long m, const double *x, double *xg
     }
 }
 
+/* a run of `nb` bins of `cnt` sources each (core.h's THE PULL): each bin
+   from +0.0, its sources' values added in order, one store.  The counts up
+   to four written out, a longer one a loop of `cnt` turns -- the same for
+   every bin of the run: no branch that a bin's count decides (a loop
+   whose length changed bin by bin mispredicted its exit at most bins, and
+   left the predictor that much worse for the code after it) */
+static void pull_run(const double *V, const int64_t *ix, const int64_t *wb, double *bin, long cnt,
+                     long nb)
+{
+    long q, k;
+    switch (cnt) {
+    case 0:
+        for (q = 0; q < nb; q++) bin[wb[q]] = 0.0;
+        break;
+    case 1:
+        for (q = 0; q < nb; q++) bin[wb[q]] = 0.0 + V[ix[q]];
+        break;
+    case 2:
+        for (q = 0; q < nb; q++, ix += 2) bin[wb[q]] = (0.0 + V[ix[0]]) + V[ix[1]];
+        break;
+    case 3:
+        for (q = 0; q < nb; q++, ix += 3)
+            bin[wb[q]] = ((0.0 + V[ix[0]]) + V[ix[1]]) + V[ix[2]];
+        break;
+    case 4:
+        for (q = 0; q < nb; q++, ix += 4)
+            bin[wb[q]] = (((0.0 + V[ix[0]]) + V[ix[1]]) + V[ix[2]]) + V[ix[3]];
+        break;
+    default:
+        for (q = 0; q < nb; q++, ix += cnt) {
+            double t = 0.0;
+            for (k = 0; k < cnt; k++) t += V[ix[k]];
+            bin[wb[q]] = t;
+        }
+    }
+}
+
 /* pass m (0 G, 1 C, 2 i, 3 q) into its bins `bin`: the values its slots
    read made -- the batches that make their own (`batch_into`), the constant
    groups (`groups_into`); the templates are set once, the groups' staging by
-   `fused_groups` -- then THE PULL: each written bin from +0.0, its slots'
-   values added in slot order, one store -- `np.bincount(flat,
-   weights=slots, minlength=nbins)`'s sums in its order: a bin started at its
-   first value would keep a lone -0.0 (bincount's is +0.0), and another order
-   rounds differently.  A matrix pass whose caller's buffer is not zero off
-   the pattern (`patt` clear where there is one) has every entry zeroed
-   first */
+   `fused_groups` -- then THE PULL, run by run (`pull_run`): each written bin
+   from +0.0, its slots' values added in slot order, one store --
+   `np.bincount(flat, weights=slots, minlength=nbins)`'s sums in its order:
+   a bin started at its first value would keep a lone -0.0 (bincount's is
+   +0.0), and another order rounds differently.  A matrix pass whose
+   caller's buffer is not zero off the pattern (`patt` clear where there is
+   one) has every entry zeroed first */
 static void one_pass(const hdl_core_t *c, long m, const double *x, double T, double *bin,
                      int patt, double *X, double *xg)
 {
-    const double *V = c->vals;
-    const int64_t *ix = c->ixall, *rp = c->rpall, *wb = c->wball;
-    long n = c->n, b, q, k;
+    const int64_t *run = c->runall + 2 * c->pr_off[m];
+    const int64_t *wb = c->wball + c->pl_off[m], *ix = c->ixall + c->px_off[m];
+    long n = c->n, b, r, nr = c->pr_off[m + 1] - c->pr_off[m];
     for (b = 0; b < c->nb; b++)
         if (c->b_pass[b] == m) batch_into(c, b, m, x, T, X);
     groups_into(c, m, x, xg);
     if (m < 2 && c->npat && !patt) memset(bin, 0, (size_t) (n * n) * sizeof(double));
-    for (q = c->pl_off[m]; q < c->pl_off[m + 1]; q++) {
-        double t = 0.0;
-        for (k = rp[q]; k < rp[q + 1]; k++) t += V[ix[k]];
-        bin[wb[q]] = t;
+    for (r = 0; r < nr; r++) {
+        long cnt = run[2 * r], nb = run[2 * r + 1];
+        pull_run(c->vals, ix, wb, bin, cnt, nb);
+        ix += cnt * nb;
+        wb += nb;
     }
 }
 

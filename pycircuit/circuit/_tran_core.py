@@ -36,7 +36,11 @@ built (`_Flat._pull`); a pass's bins are made bin by bin -- each from +0.0,
 its slots' values added in slot order, one store: the slots' bincount's
 sums, with no slot buffer filled, zeroed or scattered into.  A slot whose
 value is a constant zero is left out (no addition of a zero changes a sum
-made from +0.0: the sum is never -0.0).
+made from +0.0: the sum is never -0.0).  The bins are pulled in runs of one
+source count: a loop whose length changed bin by bin mispredicted its exit
+at most bins -- ~20 M branch misses on jge under gear2 -- and left the
+predictor worse for KLU's factorization and the kernels after it (their
+cycles +20 % and +2 %, the same instructions).
 
 FOUR SITES, ONE ENTRY (`evaluate`, `want` in 'fj' | 'j' | 'c' | 'f'):
 `_residual_and_jacobian` (G, C, i, q; `(f, J)`); `jacobian_only` at the
@@ -571,9 +575,10 @@ class _Flat:
         batches outside a group, the constant groups' products -- each
         batch's output rows in it (`b_fz`, `orowall`, `b_ooff`), each
         constant group's products (`g_yoff`); per pass every slot's value
-        in it, the slots of each written bin in slot order (`pl_off`,
-        `wball`, `rpall`, `ixall`), a slot whose value is a constant zero
-        (a template's, a vector pass's slot nothing fills) left out."""
+        in it, the slots of each written bin in slot order, the bins in
+        runs of one source count (`pl_off`, `wball`, `pr_off`, `runall`,
+        `px_off`, `ixall`), a slot whose value is a constant zero (a
+        template's, a vector pass's slot nothing fills) left out."""
         batches = self.batches
         tmpl = np.ascontiguousarray(np.concatenate(self.tmpl))
         z0 = tmpl.size
@@ -602,7 +607,7 @@ class _Flat:
             nxt += e * k
         vals = np.zeros(max(nxt, 1))
         vals[:tmpl.size] = tmpl
-        wball, ixall, counts, pl_off = [], [], [], [0]
+        wball, ixall, runall, pl_off, pr_off, px_off = [], [], [], [0], [0], [0]
         for m in range(4):
             L, toff = self.p_L[m], self.p_toff[m]
             flat = np.asarray(self.flat[m], dtype=np.int64)
@@ -618,24 +623,44 @@ class _Flat:
                     src[self.gdst[g]] = g_yoff[g] + self.sel[g]
             wb = (pat if m < 2 and pat is not None else
                   np.arange(n * n if m < 2 else n, dtype=np.int64))
-            keep = np.nonzero(src >= 0)[0]
-            pos = np.searchsorted(wb, flat[keep])
-            if keep.size and (pos.max() >= wb.size or not np.array_equal(wb[pos], flat[keep])):
-                raise Unservable(f'a slot of the {PASSES[m]} pass outside its written bins')
-            ## (a stable sort by bin: each bin's slots in slot order)
-            order = np.argsort(pos, kind='stable')
-            ixall.append(src[keep][order])
-            counts.append(np.bincount(pos, minlength=wb.size))
-            wball.append(wb)
+            ix, wbr, runs = _runs(src, flat, wb, PASSES[m])
+            ixall.append(ix)
+            wball.append(wbr)
+            runall.append(runs)
             pl_off.append(pl_off[-1] + wb.size)
-        rp = np.concatenate([np.zeros(1, np.int64), np.cumsum(np.concatenate(counts))])
-        out = {'vals': vals, 'pl_off': _i64(pl_off), 'wball': _cat64(wball), 'rpall': _i64(rp),
+            pr_off.append(pr_off[-1] + runs.size // 2)
+            px_off.append(px_off[-1] + ix.size)
+        out = {'vals': vals, 'pl_off': _i64(pl_off), 'wball': _cat64(wball),
+               'pr_off': _i64(pr_off), 'runall': _cat64(runall), 'px_off': _i64(px_off),
                'ixall': _cat64(ixall), 'b_fz': _i64(b_fz) if batches else np.zeros(1, np.int64),
                'orowall': _cat64(orows), 'b_ooff': _i64(b_ooff) if batches else np.zeros(1, np.int64),
                'g_yoff': _i64(g_yoff) if g_yoff else np.zeros(1, np.int64)}
         if fused:
             out['zst'] = vals[z0:z0 + max(zlen, 1)]
         return out
+
+
+def _runs(src, flat, wb, m):
+    """One pass's pull (core.h): its slots' values in `vals` (`src`, -1 for
+    a constant zero), each slot's bin (`flat`), the bins written (`wb`,
+    ascending) -> `(sources, bins, runs)`: the bins by their source count,
+    stably, in runs of one count (`(count, bins)` pairs), each bin's
+    sources in slot order."""
+    keep = np.nonzero(src >= 0)[0]
+    pos = np.searchsorted(wb, flat[keep])
+    if keep.size and (pos.max() >= wb.size or not np.array_equal(wb[pos], flat[keep])):
+        raise Unservable(f'a slot of the {m} pass outside its written bins')
+    ## (a stable sort by bin: each bin's slots in slot order; then the bins
+    ## by their source count, stably -- the runs)
+    ix = src[keep][np.argsort(pos, kind='stable')]
+    cnt = np.bincount(pos, minlength=wb.size)
+    first = np.cumsum(cnt) - cnt
+    by = np.argsort(cnt, kind='stable')
+    reps = cnt[by]
+    within = np.arange(int(reps.sum())) - np.repeat(np.cumsum(reps) - reps, reps)
+    counts, nbins = np.unique(reps, return_counts=True)
+    return (ix[np.repeat(first[by], reps) + within], wb[by],
+            np.column_stack([counts, nbins]).reshape(-1))
 
 
 class _Core:

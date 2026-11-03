@@ -12808,3 +12808,39 @@ groups', the C loops' twins: 1 883 passed before the pinned pairs were re-record
 
 **Gate** (the main tree): the TELL; the suite, 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 236's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.
+
+## 2026-11-03 — 238. The pull in runs -- the evaluate core pulls its bins in runs of one source count, where each bin's loop ran its own length: the branch misses it left behind slowed KLU and the kernels; jge under gear2 4.78 -> 4.53 s (1.051x against 237), every result the same
+
+**Why**  Andreas, after 237: "Investigate the KLU slowdown" -- 237's core saved what its prototype said a call, but
+in the same runs KLU's identical work ran ~20 % slower (perf, plan g24's `tc/plan_235_237.md`, 238).  Investigated:
+`klu_refactor` and `klu_factor` alone or right after a core call the same in both trees (scratchpad `klubench.py`:
+~9 us and ~23.4 us; after a core call 237's factor ~0.7 us slower) -- the microbenchmark did not reproduce it; not the
+allocator (page faults ~42 000 in both trees, pinned or not); not the heap's layout (three shifts by a held dummy
+array: KLU's extra samples +110 .. +130 at each); not cache misses (KLU's L2 misses fell, 844/871 -> 548/577 x1009;
+its L1 misses the same).  Its instructions the same (27 652 / 28 073 samples), its cycles +23 % (CPI 0.469 -> 0.569):
+BRANCH MISSES (x20 011, the pool off) -- KLU 1 028/1 058 -> 1 833/1 830, the core 56/62 -> 1 077/1 013, the kernels
+964/1 042 -> 1 233/1 222.  237's pull ran a loop of each bin's own length (1 .. ~10 slots): its exit mispredicted at
+most bins, ~20 M times a run in the core itself, and the predictor it left mispredicted KLU's chord factorization
+(the same 11 059 factors, a pattern learned between them) and the kernels after it.  LINE (set after three informal
+pairs against 236 -- jge gear2 4.83 -> 4.54 s, Radau 9.85 -> 9.29 s -- and before the formal measurement; one form):
+jge under gear2 at least 1.03x against 237, the median of 5 interleaved quiet-box pairs; GUARD: the 27 decks' total
+solve under each method not slower; every result the same.  Refused under.
+
+**Built.**  `_tran_core._Flat._pull` lays each pass's written bins out in RUNS of one source count (a stable sort by
+count; each bin's slots still in slot order; `_runs`): `pr_off`, `runall` (count, bins), `px_off` for `rpall`.  `core.c`'s
+`pull_run` makes a run: the counts 0 to 4 written out (`((0.0 + a) + b) + c`, as the loop adds), a longer one a loop
+of a fixed length -- no branch a bin's count decides.  After (the pool off, x20 011): the core's branch misses 238/212
+(236's 69/79), KLU's 1 229/1 144 and its cycles 236's again (22.5-22.9k -> 22.6-23.4k), the core's cycles 36.3-36.8k
+-> 28.2-28.8k.
+
+**Measured** (a quiet box, HEAD 4c2cac4e from its worktree and this tree, interleaved, 5 pairs): jge under gear2 4.783 -> 4.531 s, 1.051x (1.044 to 1.056; the line 1.03x) -- met; as information jge under Radau 9.498 -> 9.206 s, 1.026x (1.025 to 1.040) against 237, and against 236 informally ~1.064x (gear2) and ~1.06x (Radau): what 237's prototype said.  The gate's
+runs (a busier box): the 27 decks' solves 1.034x under gear2 (19.2 -> 18.6 s) and 1.015x under Radau (39.1 -> 38.5 s), their processes 1.017x and 1.012x -- the guard met.
+
+**Tests.**  test_tran_core's accumulation-order mutation reverses every bin of three slots or more (two slots in either
+order are one sum; reversing the three-slot bins alone changed no byte of the small chain's Jacobian): caught.  The C
+twins' tests, 1 883, passed before the pinned pairs were re-recorded (4 twins: core.c, core.h).
+
+**Gate** (the main tree): the TELL; the suite, first 1 failed -- `_Flat._pull` at 81 lines, over the loop units' 80
+(test_runtime_map) -- then, the run layout moved into `_runs` (every array of the core byte-identical on jge, mux8,
+gm19, rca and opampal before and after), 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean (its first run failed the same test, clean after), deep clean; the 27 gold
+decks -- standalone DC against 237's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.

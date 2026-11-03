@@ -19,18 +19,22 @@ typedef struct {
        batches outside a group, and the constant groups' products */
     double *vals;
     /* THE PULL (`np.bincount` of each pass's slots): pass m's bins written
-       a call are wball[pl_off[m] .. pl_off[m + 1]) -- G's and C's the
-       pattern's entries (every entry where npat is 0), i's and q's every
-       row -- each from +0.0 with its slots' values added in slot order,
-       bin q's at vals[ixall[rpall[q] .. rpall[q + 1])] (a slot whose value
-       is a constant zero left out: no addition of a zero changes a sum
-       made from +0.0) */
+       a call -- G's and C's the pattern's entries (every entry where npat
+       is 0), i's and q's every row -- each from +0.0 with its slots'
+       values added in slot order (a slot whose value is a constant zero
+       left out: no addition of a zero changes a sum made from +0.0).  The
+       bins are laid out in RUNS of one source count -- the count the same
+       for every bin of a run, so no branch depends on a bin's -- run r of
+       pass m being runall[2 r] sources a bin over runall[2 r + 1] bins;
+       pass m's runs are runall[2 pr_off[m] ..), its bins wball[pl_off[m]
+       ..) and its sources, bin after bin, ixall[px_off[m] ..) */
     const int64_t *pl_off;        /* (5) pass m's first written bin; the
                                      last the end */
     const int64_t *wball;         /* each written bin: its row-major entry
                                      of n x n (G, C) or its row (i, q) */
-    const int64_t *rpall;         /* (written bins + 1) its first source
-                                     in ixall */
+    const int64_t *pr_off;        /* (5) pass m's first run */
+    const int64_t *runall;        /* (2 a run) its sources a bin, its bins */
+    const int64_t *px_off;        /* (5) pass m's first source in ixall */
     const int64_t *ixall;         /* each source: its index in vals */
     /* THE BATCHES: one generated C kernel over a class's elements in one
        pass (`_hdl_batch.Batch`; a lone C-bound element a batch of one) */

@@ -385,10 +385,18 @@ def test_the_stage_pss_is_bit_for_bit():
 
 def test_a_core_with_the_wrong_accumulation_order_is_caught(monkeypatch):
     tr, x = _tr(mos_chain(6))
-    ## (a bin's slots summed last to first, where the pull sums them in
-    ## slot order, bincount's)
-    src = _tran_core.CORE_C.replace('for (k = rp[q]; k < rp[q + 1]; k++) t += V[ix[k]];',
-                                    'for (k = rp[q + 1] - 1; k >= rp[q]; k--) t += V[ix[k]];')
+    ## (every bin of three slots or more summed last to first, where the
+    ## pull sums them in slot order, bincount's: two slots in either order
+    ## are one sum)
+    src = _tran_core.CORE_C
+    for a, b in (('bin[wb[q]] = ((0.0 + V[ix[0]]) + V[ix[1]]) + V[ix[2]];',
+                  'bin[wb[q]] = ((0.0 + V[ix[2]]) + V[ix[1]]) + V[ix[0]];'),
+                 ('bin[wb[q]] = (((0.0 + V[ix[0]]) + V[ix[1]]) + V[ix[2]]) + V[ix[3]];',
+                  'bin[wb[q]] = (((0.0 + V[ix[3]]) + V[ix[2]]) + V[ix[1]]) + V[ix[0]];'),
+                 ('for (k = 0; k < cnt; k++) t += V[ix[k]];',
+                  'for (k = cnt - 1; k >= 0; k--) t += V[ix[k]];')):
+        assert src.count(a) == 1, a
+        src = src.replace(a, b)
     assert src != _tran_core.CORE_C
     ffi, cfn, key, _cold, _secs = _cbuild.load_unit(src, _tran_core.CORE_CDEF, 'pcx_core')
     assert key != _cbuild.source_key(_tran_core.CORE_C, prelude=False)
