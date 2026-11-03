@@ -12948,3 +12948,22 @@ old code kept it).  The C twins' 1 921 before the pinned pair was re-recorded ("
 
 **Gate** (the main tree): the TELL; the suite, 6 121 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 241's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.
+
+## 2026-11-03 — 243 REFUSED. The Radau checks' small costs -- R3, the complex residual's bound without `hypot`, and R4, the real verdict's counts once a pattern: R3 hands more steps back, R4's ceiling ~0.04 %
+
+**Why**  The Radau survey after 240 (plan g24's `tc/plan_239_next5.md`, R3 and R4; Andreas: "Yes, do R1, then
+R2-R4").  R3: the transform Newton's residual check bounds its rounding by `sum_j |A_kj| |x_j|`, a `hypot` for every
+nonzero and every x (`radau_tc.c`: ~9 % of `pcx_radau_tc`, itself 5.4-7.8 % of the main thread); `|re| + |im|` bounds
+`hypot` from above -- still rigorous, looser.  R4: the real verdict (`pcx_verdict.h`'s `pcx_resid_sparse`: the Radau
+real solve, newton.c, lte.c) counts each row's nonzeros (`cnt += 1.0`) on every check, a constant of the pattern.
+
+**Measured.**  R3 in a worktree (with R2), the Radau gold decks against HEAD: every digest the same, but the check's
+band wider and its hand-backs to the Python more -- mux8's residual hand-backs 94 -> 302 and its transform bails 59 ->
+156, gm19's 28 -> 53 and 32 -> 52, voter25's 39 -> 56, gm3, todd3 and ab_integ a few -- each a Python step, against a
+ceiling of ~0.5 %.  R4: the counts' line (`pcx_verdict.h:49`) ~2 % of `tc_rsolve`'s samples (the bound's accumulation
+62 %, the product's 11 %), `tc_rsolve` 0.8-1.8 % of the main thread: a ceiling ~0.04 %, for per-pattern arrays in three
+units' structs.  Both refused: nothing built.
+
+**What would reopen them.**  R3: a check that falls back to an exact C computation rather than the Python (then a
+looser band costs only that computation).  R4: nothing near -- the verdict's cost is its accumulations through memory
+(`y`, `t` indexed by row), a CSR pass over the same entries in the same order would be the lever there.
