@@ -526,12 +526,17 @@ PAIRS = {
     'the printed passes and the class\'s kernel': {
         'why': 'a class\'s one kernel is its passes\' printed statements unioned by '
                'name, each run under the bits of the passes that print it, the '
-               'outputs per pass -- it parses exactly the lines `_render_c` prints and '
+               'outputs per pass, each kept libm call the union repeats made once '
+               'under the bits of the passes reading it (`_calls_once`) -- it parses '
+               'exactly the lines `_render_c` prints and '
                'refuses any other; each pass\'s `CKernel` asks it for that pass alone, '
                'the core once a call for every pass it wants and scatters from its '
                'staging in the passes\' order',
         'reference': ['pycircuit.circuit.hdl:_render_c'],
         'twin': ['pycircuit.circuit._hdl_cbackend:fuse_csrc',
+                 'pycircuit.circuit._hdl_cbackend:_calls_once',
+                 'pycircuit.circuit._hdl_cbackend:_call_starts',
+                 'pycircuit.circuit._hdl_cbackend:_call_spans',
                  'pycircuit.circuit._hdl_cbackend:fuse_source',
                  'pycircuit.circuit._hdl_cbackend:bind_fused',
                  'pycircuit.circuit._hdl_cbackend:view',
@@ -1144,7 +1149,7 @@ RECORD = {
     'the PCNR DC solve and its C': ('20b804fddf35', 'c07869479956'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'a0ac4588446c'),
-    "the printed passes and the class's kernel": ('e61140203114', '50fd1eb7078a'),
+    "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),
     "the stage paths' passes and the core's": ('6baa9d0e9097', 'f8533895f37c'),
     'the coupled stage Newton and its C': ('c87ff9fb31be', '04024a5b68a6'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),

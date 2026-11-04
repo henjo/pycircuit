@@ -1320,12 +1320,14 @@ class _RepeatedPow(Behavioural):
 @needs_cc
 @pytest.mark.skipif(not shutil.which('objdump'),
                     reason='no objdump')
-def test_const_merges_the_repeated_calls_and_keeps_the_bytes(tmp_path,
+def test_the_repeated_calls_are_made_once_and_keep_the_bytes(tmp_path,
                                                              monkeypatch):
-    """`G` prints the local partial `pow(u, 1.5)` once per unknown: with
-    the declarations gcc calls it once, without them twice -- the
-    declaration's power, measured on the object -- and both kernels
-    return the numpy path's bytes."""
+    """`G` prints the local partial `pow(u, 1.5)` once per unknown: the
+    class's kernel makes each call text once (`_calls_once`), so its object
+    calls `pow` as often with the declarations as without them; without the
+    pass the declarations merged what they could, and without either gcc
+    calls it at every repeat -- each measured on the object -- and every
+    kernel returns the numpy path's bytes."""
     monkeypatch.setenv('PYCIRCUIT_HDL_CACHE_DIR', str(tmp_path))
     monkeypatch.setattr(_cbuild, '_loaded', {})
     e = _instance(_RepeatedPow)
@@ -1346,15 +1348,22 @@ def test_const_merges_the_repeated_calls_and_keeps_the_bytes(tmp_path,
         return sum('<pow@plt>' in ln and 'call' in ln
                    for ln in out.splitlines())
 
-    merged = pow_calls()
+    once = pow_calls()
     plain = hdl._KERNEL_C
     for name in _KEPT:
         plain = '\n'.join(ln for ln in plain.splitlines()
                           if not ln.startswith(f'double {name}('))
     assert not _const_declared(plain)
+    with monkeypatch.context() as mp:
+        mp.setattr(cb, '_calls_once', lambda *a: 0)
+        mp.setattr(_cbuild, '_loaded', {})
+        merged = pow_calls()
+        mp.setattr(hdl, '_KERNEL_C', plain)
+        mp.setattr(_cbuild, '_loaded', {})
+        neither = pow_calls()
     monkeypatch.setattr(hdl, '_KERNEL_C', plain)
     monkeypatch.setattr(_cbuild, '_loaded', {})
-    assert pow_calls() > merged >= 1
+    assert pow_calls() == once <= merged < neither
 
 
 ## ----------------------------------------------------------------------

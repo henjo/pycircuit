@@ -13101,3 +13101,48 @@ decks -- standalone DC against 245's gate runs, gear2 and Radau against HEAD int
 dense coupled fallback takes them, which the C loop makes itself only where `_fb_ready` binds it -- not at gm19's
 size (`_tran_stageloop_c._sets_fit`: the loop's output sets within `_tran_radau_c.OUT_BYTES` to n ~ 361; gm19 has 429).
 Not sized yet.
+
+## 2026-11-04 — 247. The calls made once -- each libm call a class's kernel repeats (one function, one argument text) made once, a statement of its own under the bits of every pass reading it: mux8 under gear2 3.233 -> 3.051 s (1.061x), every result the same
+
+**Why**  Phase 0 of plan g24's `tc/plan_245_next.md` (item A; Andreas: "build in order"): the device kernels are the
+largest block of a run and FLAT (no instruction above 1.5 %), but they repeat their libm calls -- a derivative
+statement calls `exp` again on its value's argument, that argument its own `_npmax`/`_npmin` text, so gcc merges no
+copy although the prelude declares the calls const.  Counted (an LD_PRELOAD shim): jge under gear2 exp 166 M calls,
+84 % repeating an argument just seen; by argument text, 62 % of jge's `exp` and 81-83 % of mux8's removable within
+one evaluation.  A partial text transform of four kernels (Phase 0): jge gear2 1.017x, mux8 gear2 1.046x, Radau
+1.008x.  LINE (set after the twin tests, before any timing of the build; one form): mux8 under gear2 at least 1.03x
+against HEAD 1d6edd1b, the median of 5 interleaved quiet-box pairs; GUARD: the 27 decks' total solve under each
+method not slower and their total process time not slower (the step runs in every process); every digest, step,
+rejection, Newton count and path count the same.  Refused under.
+
+**Built.**  `_hdl_cbackend._calls_once`, in `fuse_csrc` after the union and its checks, before the held statements:
+each kept libm call (the functions `CFLAGS` keeps real calls) the union's statements and outputs make more than
+once becomes ONE statement, `L__m<k> = <call>`, before its first reader, under the bits of every pass reading it
+-- an output's, and through a call made once inside another or inlined into a reader -- so it runs where one of
+its readers runs and only there.  That is exact because no kernel statement is lazy: the printer makes no `?:`,
+`&&` or `||` (every kernel body of the -g store read: none), `_sel` is a function and both its arms are made, so
+every call in a statement runs whenever the statement does; the same function on the same SSA values gives the same
+bits and raises the same flags, sticky.  Nested calls are named innermost first, so equal texts at every depth
+share one name; a call read once goes back into its reader's text.  A name of the union's own is stepped around.
+`stats['once']` counts the statements made.  PSP's two classes: 827 calls in the kernel text -> 171 (146
+statements).  The step's cost per class per process: PSP 34.6 -> 44 ms for its fuse (the call starts found by
+`str.find` once over the joined union, each call's span by its parentheses, the texts kept as pieces: a first
+version cost +73 ms).
+
+**Measured** (a quiet box, HEAD 1d6edd1b from its worktree and this tree, interleaved, 5 pairs): mux8 under gear2 3.233 -> 3.051 s, 1.061x (1.056 to 1.069; the line 1.03x) -- met; jge under gear2 4.046 -> 3.926 s (1.028x); under Radau mux8 4.789 -> 4.721 s (1.015x), jge 8.318 -> 8.200 s (1.013x).  The gate's runs: the 27 decks' solves 1.015x under Radau (32.5 -> 32.0 s), 1.033x under gear2 (16.8 -> 16.3 s); their processes 1.011x under Radau, 1.007x under gear2 -- the guard met.
+
+**Tests.**  test_core_fused: the step's text on two passes (a clamped `exp` twice in G, a `pow` of an `exp` in both
+passes and an output, a `log` once): each repeated call one statement under its readers' bits, the inner `exp` back
+in the `pow` it alone reads, the single `log` in its statement; with the `exp` also read on its own in q, made once
+under both readers' bits; G's clamped `exp` inside a `log` q makes once, under both; a union naming its own `_m0`
+stepped around; both cases compiled with and without the step -- every want 1..15 on states overflowing `exp`,
+taking `log` of zero and of a negative, carrying a NaN: the same output bytes and the same flags.  test_hdl_cbackend
+(the const declarations' test restated): the class's kernel calls `pow` as often with the declarations as without;
+without the step the declarations merge what they can, without either gcc calls it at every repeat; every kernel the
+numpy path's bytes.  Six mutations (a call under its first reader's bits only, no bits from an outer call, a call
+read once made too, a call placed after its reader, its own names not stepped around, an inlined call hiding the
+calls made in it), every one caught.  The kernel twins' 691 before the pinned pair "the printed passes and the
+class's kernel" was re-recorded (its twin now names `_calls_once`, `_call_starts`, `_call_spans`).
+
+**Gate** (the main tree): the TELL; the suite, 6 141 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 246's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical.

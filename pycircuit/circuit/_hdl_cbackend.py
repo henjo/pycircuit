@@ -177,6 +177,7 @@ The batches
     calls a class's kernel once an element for every pass a call wants.
 """
 
+import bisect
 import contextlib
 import hashlib
 import importlib.util
@@ -351,6 +352,165 @@ class FuseRefused(Exception):
     """The passes' printed C cannot be unioned into one masked kernel."""
 
 
+#: THE CALLS MADE ONCE (`_calls_once`): the libm functions `CFLAGS` keeps
+#: real calls -- the prelude declares them const, yet the printed passes
+#: repeat them (a derivative statement calls `exp` again on its value's
+#: argument, that argument its own `_npmax`/`_npmin` text: gcc merges no
+#: copy)
+_ONCE_FNS = tuple(f[len('-fno-builtin-'):] for f in _cbuild.CFLAGS
+                  if f.startswith('-fno-builtin-'))
+
+
+def _call_starts(e):
+    """Where each of `e`'s kept calls starts, in order: its name, not part
+    of a longer one, then its parenthesis."""
+    out = []
+    for fn in _ONCE_FNS:
+        t = fn + '('
+        i = e.find(t)
+        while i != -1:
+            if i == 0 or not (e[i - 1].isalnum() or e[i - 1] in '_.'):
+                out.append(i)
+            i = e.find(t, i + 1)
+    out.sort()
+    return out
+
+
+def _call_spans(e, starts):
+    """`(start, end)` of the kept calls of `e` starting at `starts` (a call
+    holding others holds the next ones to start)."""
+    spans = []
+    for s in starts:
+        i, d = e.find('(', s) + 1, 1
+        while d:
+            o, c = e.find('(', i), e.find(')', i)
+            if o != -1 and o < c:
+                d, i = d + 1, o + 1
+            else:
+                d, i = d - 1, c + 1
+        spans.append((s, i))
+    return spans
+
+
+def _calls_once(order, text, bits, outs):
+    """Each kept libm call the union's statements and outputs make more than
+    once -- one function on one argument text: SSA names, so one value --
+    made ONCE, a statement of its own (`L__m<k> = <call>`) before its first
+    reader, under the bits of every pass that reads it: it runs where one of
+    its readers runs, and only there (no kernel statement is lazy: `_sel`
+    is a function, both its arms made, and the printer makes no `?:`, `&&`
+    or `||`).  Calls inside calls too, innermost first, so equal texts at
+    every depth share one name; a call made once anyway stays in its
+    statement.  The same operations on the same values: the same bits and
+    the same flags.  Changes `order`, `text`, `bits` and `outs` in place;
+    returns how many statements it made."""
+    pre = '_m'
+    while any(n.startswith(pre) and n[len(pre):].isdigit() for n in order):
+        pre += 'm'
+    ## (a text as pieces: strings, and ints -- the k-th call named)
+    names, parts, first = {}, [], []
+
+    def named(e, at, starts):
+        spans = _call_spans(e, starts)
+
+        def piece(lo, hi, j):
+            ## e[lo:hi] as pieces, the calls from spans[j] on that start in
+            ## it named (each call's own calls first); and the index after
+            out, pos = [], lo
+            while j < len(spans) and spans[j][0] < hi:
+                s, t = spans[j]
+                call, j = piece(s, t, j + 1)
+                key = '\0'.join(c if c.__class__ is str else f'\1{c}' for c in call)
+                k = names.get(key)
+                if k is None:
+                    k = names[key] = len(parts)
+                    parts.append(call)
+                    first.append(at)
+                out += [e[pos:s], k]
+                pos = t
+            out.append(e[pos:hi])
+            return out, j
+        return piece(0, len(e), 0)[0]
+    ## the readers: the statements and outputs a call was named in, each
+    ## `(its pieces, its bits, where its text goes)`
+    readers = []
+    offs, k = [], 0
+    for n in order:
+        offs.append(k)
+        k += len(text[n]) + 1
+    found = {}
+    for q in _call_starts('\n'.join(text[n] for n in order)):
+        at = bisect.bisect_right(offs, q) - 1
+        found.setdefault(at, []).append(q - offs[at])
+    for at in sorted(found):
+        n = order[at]
+        readers.append((named(text[n], at, found[at]), bits[n], n, None))
+    for b, m in enumerate(FUSE_PASSES):
+        for j, e in enumerate(outs.get(m, ())):
+            st = _call_starts(e)
+            if st:
+                readers.append((named(e, len(order), st), 1 << b, m, j))
+    if not parts:
+        return 0
+    ## each call's readers: one goes back into its reader's text
+    reads = [0] * len(parts)
+    for r in readers:
+        for c in r[0]:
+            if c.__class__ is int:
+                reads[c] += 1
+    for k in range(len(parts) - 1, -1, -1):
+        for c in parts[k]:
+            if c.__class__ is int:
+                reads[c] += 1
+    keep = [r >= 2 for r in reads]
+    ## each call's full text (its own calls made once by name) and the
+    ## made calls it reads, through those that went back into it
+    full, made_in = [], []
+
+    def join(ps):
+        txt, refs = [], set()
+        for c in ps:
+            if c.__class__ is str:
+                txt.append(c)
+            elif keep[c]:
+                txt.append(f'L_{pre}{c}')
+                refs.add(c)
+            else:
+                txt.append(full[c])
+                refs |= made_in[c]
+        return ''.join(txt), refs
+    for ps in parts:
+        t, refs = join(ps)
+        full.append(t)
+        made_in.append(refs)
+    hb = [0] * len(parts)
+    for ps, bt, n, j in readers:
+        t, refs = join(ps)
+        if j is None:
+            text[n] = t
+        else:
+            outs[n][j] = t
+        for c in refs:
+            hb[c] |= bt
+    made = [k for k in range(len(parts)) if keep[k]]
+    for k in reversed(made):
+        for c in made_in[k]:
+            hb[c] |= hb[k]
+    at = {}
+    for k in made:
+        at.setdefault(first[k], []).append(k)
+    new = []
+    for i, n in enumerate(order + [None]):
+        for k in at.get(i, ()):
+            nm = f'{pre}{k}'
+            new.append(nm)
+            text[nm], bits[nm] = full[k], hb[k]
+        if n is not None:
+            new.append(n)
+    order[:] = new
+    return len(made)
+
+
 def fused_cdef():
     """A class's kernel's entry: `void hdl_fn(x, p, want, oG, oC, oi, oq)`."""
     from pycircuit.circuit import hdl
@@ -444,6 +604,9 @@ def fuse_csrc(srcs, layout=None):
     against numpy).  `FuseRefused` for a line the printer does not make
     (`hdl._render_c` is the only printer), one name standing for two
     texts, or a statement or output reading a name outside its passes.
+    Each kept libm call the union repeats is then made once, a statement
+    of its own before its first reader under its readers' bits
+    (`_calls_once`; `stats['once']` such statements).
     With the pack's `layout` (`(n_p, t_index)`) the statements no `x`
     reaches are HELD (the module note): made once a parameter state into
     the pack's tail, loads in the kernel.
@@ -493,6 +656,8 @@ def fuse_csrc(srcs, layout=None):
             for d in _FUSE_REF.findall(e):
                 if d not in pos or not bits[d] & (1 << b):
                     raise FuseRefused(f'an output of {m} reads L_{d} outside it')
+    union = len(order)
+    once = _calls_once(order, text, bits, outs)
     ## THE HELD STATEMENTS: those no `x` reaches through what they read
     held = {}
     if layout is not None:
@@ -529,7 +694,7 @@ def fuse_csrc(srcs, layout=None):
             lines.extend(f'    o{m}[{k}] = {e};' for k, e in enumerate(outs[m]))
             lines.append('  }')
     lines.append('}')
-    stats = {'union': len(order), 'runs': runs,
+    stats = {'union': union, 'once': once, 'runs': runs,
              'printed': sum(1 for m in outs for ln in srcs[m].split('\n')
                             if _FUSE_STMT.match(ln)),
              'held': len(slot), 'tail': len(slot) + HELD_TAIL if slot else 0}

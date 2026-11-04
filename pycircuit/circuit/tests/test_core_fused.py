@@ -33,7 +33,7 @@ def test_the_union_keeps_each_pass_and_guards_each_run():
                   '  out[0] = L_b;', '  out[1] = L_a;'),
         'q': _src('  const double L_a = x[0]*p[0];', '  const double L_c = 2.0*L_a;',
                   '  out[0] = L_c;')})
-    assert stats == {'union': 3, 'runs': 3, 'printed': 4, 'held': 0, 'tail': 0}
+    assert stats == {'union': 3, 'once': 0, 'runs': 3, 'printed': 4, 'held': 0, 'tail': 0}
     body = text.split('\n')
     assert body[0] == ('void hdl_fn(const double *x, double *p, long want, '
                        'double *oG, double *oC, double *oi, double *oq) {')
@@ -65,6 +65,94 @@ def test_the_union_keeps_each_pass_and_guards_each_run():
 def test_the_union_refuses_what_it_cannot_print(srcs, why):
     with pytest.raises(cb.FuseRefused, match=why):
         cb.fuse_csrc(srcs)
+
+
+#: two passes repeating calls: `exp` of a clamp in G twice, a `pow` of an
+#: `exp` in both passes and in an output, a `log` once
+_ONCE = {
+    'G': _src('  const double L_a = x[0]*p[0];',
+              '  const double L_b = exp(_npmax(L_a, 1.0)) + pow(exp(L_a), 2.0);',
+              '  const double L_c = L_b * exp(_npmax(L_a, 1.0)) - log(x[1]);',
+              '  out[0] = L_c;', '  out[1] = pow(exp(L_a), 2.0) + 1.0;'),
+    'q': _src('  const double L_a = x[0]*p[0];', '  const double L_d = pow(exp(L_a), 2.0) * 3.0;',
+              '  out[0] = L_d;')}
+#: the same with the `pow`'s `exp` read in q on its own too, and G's
+#: clamped `exp` inside a `log` q makes once
+_ONCE_DEEP = {'G': _ONCE['G'],
+              'q': _src('  const double L_a = x[0]*p[0];', '  const double L_d = pow(exp(L_a), 2.0) * 3.0;',
+                        '  const double L_e = exp(L_a) - 1.0;',
+                        '  const double L_f = log(exp(_npmax(L_a, 1.0)));',
+                        '  out[0] = L_d;', '  out[1] = L_e;', '  out[2] = L_f;')}
+
+
+def _guard(body, i):
+    """The `if (want & N) {` line line `i` of a kernel runs under."""
+    return next(body[j] for j in range(i, -1, -1) if body[j].startswith('  if (want & '))
+
+
+def test_a_repeated_call_is_made_once_under_its_readers_bits():
+    """Each call text the union repeats is one statement before its first
+    reader, under the bits of every pass reading it (an output's too); a
+    call inside it read only there, and a call made once anyway, stay in
+    their text; a call inside one that a pass also reads on its own is made
+    once under both readers' bits; a name of the union's own is stepped
+    around."""
+    text, stats = cb.fuse_csrc(_ONCE)
+    assert stats['once'] == 2 and stats['union'] == 4
+    body = text.split('\n')
+    m0, m2 = body.index('    L__m0 = exp(_npmax(L_a, 1.0));'), body.index('    L__m2 = pow(exp(L_a), 2.0);')
+    assert _guard(body, m0) == '  if (want & 1) {' and _guard(body, m2) == '  if (want & 9) {'
+    assert m2 < body.index('    L_b = L__m0 + L__m2;') < body.index('    L_c = L_b * L__m0 - log(x[1]);')
+    assert '    oG[1] = L__m2 + 1.0;' in body and '    L_d = L__m2 * 3.0;' in body
+    assert text.count('exp(') == 2 and text.count('pow(') == 1 and text.count('log(') == 1
+    text, stats = cb.fuse_csrc(_ONCE_DEEP)
+    body = text.split('\n')
+    m1 = body.index('    L__m1 = exp(L_a);')
+    assert stats['once'] == 3 and _guard(body, m1) == '  if (want & 9) {'
+    assert body[m1 + 1] == '    L__m2 = pow(L__m1, 2.0);' and '    L_e = L__m1 - 1.0;' in body
+    m0 = body.index('    L__m0 = exp(_npmax(L_a, 1.0));')
+    assert _guard(body, m0) == '  if (want & 9) {' and '    L_f = log(L__m0);' in body
+    own = {m: s.replace('L_a', 'L__m0') for m, s in _ONCE.items()}
+    text, stats = cb.fuse_csrc(own)
+    assert stats['once'] == 2 and '    L__mm0 = exp(_npmax(L__m0, 1.0));' in text.split('\n')
+
+
+def _runs(libm, flags, src):
+    """A class's kernel from `src`: its outputs and floating-point flags
+    (all but inexact) for every want, on states that overflow `exp`, take
+    `log` of zero and of a negative, and carry a NaN."""
+    from pycircuit.circuit import _cbuild
+    ffi, cfn, *_r = _cbuild.load_kernel(src, cb.fused_cdef())
+    runs = []
+    for x0, x1 in ((0.3, 2.0), (800.0, 1.0), (-3.0, 0.0), (1.0, -1.0), (np.nan, 5.0)):
+        for want in range(1, 16):
+            x, p = np.array([x0, x1]), np.array([1.5])
+            outs = [np.full(3, -7.0) for _ in range(4)]
+            libm.feclearexcept(0x3d)
+            cfn(ffi.from_buffer('double *', x), ffi.from_buffer('double *', p), want,
+                *(ffi.from_buffer('double *', o) for o in outs))
+            runs.append((libm.fetestexcept(flags), b''.join(o.tobytes() for o in outs)))
+            libm.feclearexcept(0x3d)
+    return runs
+
+
+@needs_cc
+def test_a_call_made_once_keeps_every_byte_and_flag(monkeypatch):
+    """The kernel with its calls made once and the kernel without, both
+    cases above: for every set of passes a call can want, the same output
+    bytes and the same floating-point flags."""
+    import ctypes
+    libm = ctypes.CDLL('libm.so.6')
+    flags = 0x3d & ~0x20
+    for srcs in (_ONCE, _ONCE_DEEP):
+        with_once, _ = cb.fuse_csrc(srcs)
+        with monkeypatch.context() as mp:
+            mp.setattr(cb, '_calls_once', lambda *a: 0)
+            without, _ = cb.fuse_csrc(srcs)
+        assert with_once != without
+        got = [_runs(libm, flags, src) for src in (with_once, without)]
+        assert got[0] == got[1]
+        assert {f for f, _o in got[0]} > {0}
 
 
 def _no_groups(batches, b_pass):
