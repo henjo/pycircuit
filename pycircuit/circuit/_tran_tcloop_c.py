@@ -743,6 +743,7 @@ def _load_tc(e, run_, xl):
     ts.T = e.rec.core.probe(tr.epar)
     ts.reltol, ts.abstol = float(tr.par.reltol), float(tr.par.vabstol)
     ts.rtol = float(e.zs.REFACTOR_RESIDUAL_TOL)
+    ts.exact = _owners()['TC'].records_exact()
     s.tc_maxit = int(tr.par.maxiter)
     rs = e.rec.s
     for k in ('walk_fn', 'wF', 'wPR', 'wTI', 'wNM', 'wOFF', 'wK', 'wn', 'wctx'):

@@ -13054,3 +13054,50 @@ no pinned pair moved.
 
 **Gate** (the main tree): the TELL; the suite, 6 135 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 244's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.
+
+## 2026-11-04 — 246. SciPy's product read -- the Radau transform's residual check decided in C where SciPy's sparse product is found, once a process, to be the check's own: a residual far inside the tolerance that the band's product term could not decide no longer hands the step back: gm19 under Radau 5.019 -> 3.990 s (1.259x), every result the same
+
+**Why**  Phase 0 of plan g24's `tc/plan_245_next.md` (item J; Andreas: "build in order"): the C transform's residual
+check hands an iteration back where it cannot decide (`radau_tc:bail:residual`), the C loop then the attempt
+(`tcloop_c:bail:transform`), and the Python repeats it -- gm19 28 % of its Radau solve (~1.5 s, 32 hand-backs of ~47
+ms), mux8 8.6 %, voter25 5 %.  Measured before any design (a worktree printing every residual hand-back of gm19,
+mux8, voter25, ab_integ, opampal): EVERY one a near miss far inside the tolerance -- the residual 1e-13 .. 7e-10
+against 1e-8 -- undecided only by the band's product term, `32 (m + 4) eps max_k sum_j |A_kj| |x_j| / max|b|` (1e-8
+.. 4e-6: the fold cancels, `|A| |x|` far above `|b|`); none failing, none non-finite, none a flag.  The term allows
+for SciPy's product rounding apart from the C's -- but the C's product is already `csc_matvec`'s loop (a zero
+vector, column by column, the two products and their sum, each rounded), so where SciPy's is that, only numpy's `abs`
+rounds apart, and the band's `16 eps` term alone decides every one of them.  LINE (set before building; one form):
+gm19 under Radau at least 1.15x against HEAD 801edacb, the median of 5 interleaved quiet-box pairs (the ceiling
+~1.39x); GUARD: the 27 decks' total solve under each method not slower; every digest, step, rejection and Newton count
+the same; the path counts the same but the hand-backs' and what the Python's repeated attempts count, each listed.
+Refused under.
+
+**Built.**  `_tran_radau_tc.product_exact()`: once a process, SciPy's `csc_matvec` as `solve_prepared`'s `dot` runs
+it (`linearsolver._csc_dot`) against the check's own product in Python floats (`_c_product`) on `_product_samples`
+-- a 24 x 24 matrix, 6 to 13 nonzeros a row, magnitudes over six decades -- bit for bit; False where SciPy has no
+`csc_matvec`.  radau_tc.h `exact`, per call: 1 where the record's `dot` is `_csc_dot` on the SciPy product read
+(`solve`), or, in the C loop whose records are made in C, where `prepare_values` would make it so
+(`records_exact`, `_tran_tcloop_c._load_tc`).  radau_tc.c: exact, the check makes `y = A x` alone -- no `sum |A| |x|`,
+no `hypot` a nonzero -- and its band is the `16 eps` term; else as before.
+
+**Measured** (a quiet box, HEAD 801edacb from its worktree and this tree, interleaved, 5 pairs): gm19 under Radau 5.019 -> 3.990 s, 1.259x (1.246 to 1.264; the line 1.15x) -- met; mux8 5.574 -> 4.788 s (1.164x), voter25 5.186 -> 4.737 s (1.092x).  The gate's runs: the 27 decks' solves 1.095x under Radau (35.4 -> 32.4 s), 1.000x under gear2 (16.8 -> 16.8 s) -- the guard met.  The path counts, under Radau only: the residual hand-backs gone wherever there were any (gm19 28, mux8 94, voter25 39, ab_integ 20, opampal 12, arom 5, rich3 4, gm1 1, gm3 1 -> 0); the C loop's hand-backs gm19 32 -> 15, mux8 59 -> 0, voter25 20 -> 1, ab_integ 6 -> 0; gm19's transform not converging `radau_tc:noconv` 7 -> 15 (steps the Python's repeats made, now the C's); the Python's repeated attempts' counts (`core.p:served`, `walk:served`) fewer by what they made (gm19 14 081 -> 10 634 core calls).  Under gear2 and DC none moved.
+
+**Tests.**  test_radau_tc: `product_exact` is `_makes_the_c_product` of this process's SciPy; a `csc_matvec` of the
+check's own form passes, one fused, one adding a product's halves one at a time and one taking the columns last to
+first each fail; no `csc_matvec`, or one of another form, keeps the band whole (`records_exact` 0); the captured step
+with its tolerance at twice the largest residual its Python run meets -- inside the product term -- served by the C,
+the Python's answer, and with the band whole handed back, the Python's answer.  test_tcloop_c: the pulsed chain's run
+at that tolerance -- the C loop decides every one, no attempt handed back; its records not read as the product's, its
+attempts handed back; the band whole everywhere, the step's own call hands back before the loop is reached -- each
+the Python's run.  Seven mutations (the C ignoring `exact`, its exact path running on into the bound's loop, `solve`
+setting it regardless, the loop setting 0 or 1, the probe passing anything, `records_exact` 1), every one caught.
+The C twins' 414 before six pinned pairs were re-recorded (radau_tc.h's struct is in the loop's text: the stepping
+loop, the transform Newton, the end passes, the multistep walk, the stage loop, the transform loop).
+
+**Gate** (the main tree): the TELL; the suite, 6 139 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 245's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection and Newton count identical; under gear2 and DC every path count too, under Radau those above.
+
+**Left.**  gm19's last 15 hand-backs are transform Newtons that do not converge (`radau_tc:noconv`): the Python's
+dense coupled fallback takes them, which the C loop makes itself only where `_fb_ready` binds it -- not at gm19's
+size (`_tran_stageloop_c._sets_fit`: the loop's output sets within `_tran_radau_c.OUT_BYTES` to n ~ 361; gm19 has 429).
+Not sized yet.

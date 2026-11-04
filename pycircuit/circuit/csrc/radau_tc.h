@@ -51,6 +51,12 @@ typedef struct {
        (`_stages_converged`); rtol, the residual check's tolerance
        (`ComplexKLUSolver.REFACTOR_RESIDUAL_TOL`) */
     double h, reltol, abstol, rtol;
+    /* per call: 1 where the record's product is SciPy's `csc_matvec` and
+       `product_exact` found this process's to make the check's own -- a
+       zero vector, column by column, two products and their difference or
+       sum, each rounded -- bit for bit: the band is then its `abs` term
+       alone and `sum_j |A_kj| |x_j|` is not made; 0, the whole band */
+    long exact;
     /* the tableau's A, A[3 i + j] = A_ij, set when its bytes change */
     double A[9];
     /* `_FrozenTransform.p`: P's entries P00 P01 P02 P10 P11 P12, complex,

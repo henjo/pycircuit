@@ -79,6 +79,13 @@ rounding and decides only outside the band their difference can reach
 (``32 (m + 4) eps`` of ``max_k sum_j |A_kj| |x_j|`` over ``max|b|``, plus
 ``16 eps`` of the residual): a residual nearer the tolerance than that, or
 past it, hands the iteration back and the Python decides, as it does.
+SCIPY'S PRODUCT IS READ, NOT ASSUMED: where the record's product is SciPy's
+`csc_matvec` and `product_exact` found it to make the C's own -- a zero
+vector, column by column, two products and their difference or sum, each
+rounded -- only `abs` rounds apart, and the band is its ``16 eps`` term
+alone (the sum ``|A| |x|`` not made).  Where the fold cancels (``|A| |x|``
+far above ``|b|``) the whole band holds residuals a thousand times inside
+the tolerance; the term alone decides them.
 
 TRANSACTIONAL.  The C writes nothing outside its buffers but the two
 factorisations' state, which the Python would have left the same: numpy's
@@ -145,6 +152,7 @@ kept LU, inputs of another type or size.
 History: `doc/transient_history.md`, `_tran_radau_tc.py`.
 """
 import ctypes
+import functools
 import itertools
 import math
 import os
@@ -255,6 +263,77 @@ def _same(g, f):
             and np.float64(g[1]).tobytes() == np.float64(f[1]).tobytes())
 
 
+def _product_samples():
+    """A complex CSC matrix and a vector, `(n, Ap, Ai, data, x)`, on which a
+    product formed otherwise than the residual check's -- its products fused,
+    a product's two halves added to the sum one at a time, the columns in
+    another order -- rounds apart from it (test_radau_tc reads each), as
+    deterministic arrays: several nonzeros a row and a column, magnitudes
+    over six decades."""
+    rng = np.random.default_rng(20261104)
+    n = 24
+    nz = rng.random((n, n)) < 0.4
+    nz[np.arange(n), np.arange(n)] = True
+    Ap = np.zeros(n + 1, dtype=np.int32)
+    Ap[1:] = np.cumsum(nz.sum(axis=0))
+    Ai = np.ascontiguousarray(np.nonzero(nz.T)[1], dtype=np.int32)
+
+    def draw(k):
+        return ((rng.standard_normal(k) + 1j * rng.standard_normal(k))
+                * 10.0 ** rng.uniform(-3, 3, size=k))
+    return n, Ap, Ai, draw(int(Ap[-1])), draw(n)
+
+
+def _c_product(n, Ap, Ai, data, x):
+    """The residual check's product (radau_tc.c), in Python floats: a zero
+    vector, then column by column ``y_i += a x`` -- ``a.re x.re - a.im x.im``
+    and ``a.re x.im + a.im x.re``, each product and the sum rounded -- as
+    `(re, im)` arrays."""
+    yr, yi = [0.0] * n, [0.0] * n
+    for j in range(n):
+        xr, xi = float(x[j].real), float(x[j].imag)
+        for k in range(int(Ap[j]), int(Ap[j + 1])):
+            i = int(Ai[k])
+            ar, ai = float(data[k].real), float(data[k].imag)
+            yr[i] += ar * xr - ai * xi
+            yi[i] += ar * xi + ai * xr
+    return np.array(yr), np.array(yi)
+
+
+def _makes_the_c_product(mv):
+    """Whether SciPy's `csc_matvec` `mv`, as `solve_prepared`'s `dot` runs
+    it (`linearsolver._csc_dot`), makes the residual check's product bit for
+    bit on `_product_samples`."""
+    from pycircuit.circuit import linearsolver
+    n, Ap, Ai, data, x = _product_samples()
+    y = linearsolver._csc_dot(mv, n, Ap, Ai, data, x)
+    yr, yi = _c_product(n, Ap, Ai, data, x)
+    return y.real.tobytes() == yr.tobytes() and y.imag.tobytes() == yi.tobytes()
+
+
+def product_exact():
+    """True where this process's SciPy product -- the `dot` the record of
+    `ComplexKLUSolver.prepare` carries, `linearsolver._csc_dot` on SciPy's
+    `csc_matvec` -- is the residual check's own (`_makes_the_c_product`),
+    read once; False where it is not or SciPy has no `csc_matvec`."""
+    if 'exact' not in _MOD:
+        from pycircuit.circuit import linearsolver
+        mv = linearsolver._csc_matvec()
+        _MOD['mv'], _MOD['csc_dot'] = mv, linearsolver._csc_dot
+        _MOD['exact'] = mv is not None and _makes_the_c_product(mv)
+    return _MOD['exact']
+
+
+def records_exact():
+    """1 where a record `ComplexKLUSolver.prepare` or `prepare_values`
+    makes now carries the product `product_exact` read -- `_csc_dot` on that
+    `csc_matvec` -- else 0: for the C loop (`_tran_tcloop_c`), whose records
+    are made in C and whose Python twin makes them so."""
+    from pycircuit.circuit import linearsolver
+    return int(product_exact() and linearsolver._csc_dot is _MOD['csc_dot']
+               and linearsolver._csc_matvec() is _MOD['mv'])
+
+
 def driver():
     """`(ffi, cfn, dgesv, dgetrs)` once loaded, or None (`STATUS`)."""
     global _driver, STATUS
@@ -272,6 +351,7 @@ def driver():
         if mode is None:
             STATUS = "off (numpy's complex product is neither form)"
             return None
+        product_exact()
         try:
             ffi, cfn, _key, _cold, _secs = _cbuild.load_unit(RADAU_TC, RADAU_TC_CDEF, 'pcx_radau_tc')
         except (_cbuild.CompileError, OSError) as e:
@@ -737,6 +817,10 @@ def solve(tr, ctx, fz, seed, src, provided_function, lims, nobypass, reltol, abs
     s.T = Tc
     s.h, s.reltol, s.abstol = float(h), float(reltol), float(abstol)
     s.rtol, s.maxiter = float(zs.REFACTOR_RESIDUAL_TOL), int(maxit)
+    ## (the band's product term is dropped only for the product read)
+    dot = prep[0]
+    s.exact = 1 if (_MOD['exact'] and type(dot) is functools.partial and dot.func is _MOD['csc_dot']
+                    and dot.args[0] is _MOD['mv']) else 0
     ## THE STEP'S END PASSES (`END`): asked where `_stage_end_passes`
     ## would make them -- its switch on and the step's memo rolling (it
     ## reads and records only there); `C` and `G` at the first two stages

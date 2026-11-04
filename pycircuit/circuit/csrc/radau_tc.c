@@ -217,7 +217,9 @@ static long tf_newton(radau_tf_t *s)
            SciPy's product can round apart from these: `solve_prepared`'s
            max|A x - b| / max(max|b|, 1e-300) <= rtol passes only where it
            passes by more than the band; anything else (not finite, a flag,
-           failing or too near) hands back and the Python decides */
+           failing or too near) hands back and the Python decides.  Where
+           the product is SciPy's own (`exact`) only `abs` can round apart:
+           the band's product term is zero, its sum not made */
         {
             /* the arrays in locals, the inner bound read once: `hypot` is a
                libm call that may write memory as far as the compiler knows,
@@ -225,6 +227,7 @@ static long tf_newton(radau_tf_t *s)
                (the same values, the same operations in the same order) */
             const double *r1 = s->r1, *x1 = s->x1, *Ax = s->Ax;
             const int *Ap = s->Ap, *Ai = s->Ai;
+            const long exact = s->exact;
             double *y1 = s->y1, *ab = s->ab;
             double sc = 0.0, res = 0.0, bnd = 0.0, band;
             for (k = 0; k < m; k++) {
@@ -236,10 +239,21 @@ static long tf_newton(radau_tf_t *s)
             if (!(sc >= 1e-300)) sc = 1e-300;
             memset(y1, 0, (size_t) (2 * m) * sizeof(double));
             memset(ab, 0, (size_t) m * sizeof(double));
-            /* y1 = A x1 and ab_k = sum_j |A_kj| |x1_j|, column by column */
+            /* y1 = A x1 and, unless exact, ab_k = sum_j |A_kj| |x1_j|,
+               column by column (exact: ab stays zero) */
             for (j = 0; j < m; j++) {
-                const double xr = x1[2 * j], xi = x1[2 * j + 1], xa = hypot(xr, xi);
+                const double xr = x1[2 * j], xi = x1[2 * j + 1];
                 const long kend = Ap[j + 1];
+                if (exact) {
+                    for (k = Ap[j]; k < kend; k++) {
+                        const long row = Ai[k];
+                        const double ar = Ax[2 * k], ai = Ax[2 * k + 1];
+                        y1[2 * row] += ar * xr - ai * xi;
+                        y1[2 * row + 1] += ar * xi + ai * xr;
+                    }
+                    continue;
+                }
+                const double xa = hypot(xr, xi);
                 for (k = Ap[j]; k < kend; k++) {
                     const long row = Ai[k];
                     const double ar = Ax[2 * k], ai = Ax[2 * k + 1];
@@ -259,7 +273,7 @@ static long tf_newton(radau_tf_t *s)
             if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
             res = res / sc;
             /* the band: 32 (m + 4) eps of max_k sum_j |A_kj| |x_j| over
-               max|b|, plus 16 eps of the residual */
+               max|b| (zero where exact), plus 16 eps of the residual */
             band = (32.0 * (double) (m + 4)) * DBL_EPSILON * (bnd / sc) + 16.0 * DBL_EPSILON * res;
             if (!(res + band <= s->rtol)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
             feclearexcept(FE_ALL_EXCEPT);

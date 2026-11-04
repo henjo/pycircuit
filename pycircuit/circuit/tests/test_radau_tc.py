@@ -7,7 +7,9 @@ entering charges; every hand-back (a non-finite stage, a floating-point
 exception numpy reports, a singular real factor, a failed refactor, the
 residual check, the walk stopping) leaves the Python loop to answer as
 before, with no trace; maxiter is the Python's False and an underflow
-numpy ignores is served; numpy's complex product read, not assumed; the inputs
+numpy ignores is served; numpy's complex product read, not assumed, and
+SciPy's sparse product too -- where it is the residual check's own a
+residual inside the band's product term is decided in C; the inputs
 it keeps from step to step set again wherever they change (B3.5); and
 the declines.  The real factor on the circuit's StructuralKLU (no dense LU
 kept): each solve its sequence, its zero pivots and residual fallbacks, a
@@ -520,6 +522,99 @@ def test_numpys_complex_product_is_read_not_assumed():
                 else:
                     want = (x.real * y.real - x.imag * y.imag, x.real * y.imag + x.imag * y.real)
                 assert TC._same((float(got[t].real), float(got[t].imag)), want), (x, y)
+
+
+def _mv_of(form):
+    """A `csc_matvec` that makes its product in `form` -- 'check' the
+    residual check's own, 'fused' its products fused, 'split' a product's
+    two halves added one at a time, 'reversed' the columns last to first --
+    in Python floats, into `Yx` as SciPy's does."""
+    def mv(n_row, n_col, Ap, Ai, Ax, Xx, Yx):
+        cols = range(n_col - 1, -1, -1) if form == 'reversed' else range(n_col)
+        for j in cols:
+            xr, xi = float(Xx[j].real), float(Xx[j].imag)
+            for k in range(int(Ap[j]), int(Ap[j + 1])):
+                i = int(Ai[k])
+                ar, ai = float(Ax[k].real), float(Ax[k].imag)
+                yr, yi = float(Yx[i].real), float(Yx[i].imag)
+                if form == 'fused':
+                    yr += math.fma(ar, xr, -(ai * xi))
+                    yi += math.fma(ar, xi, ai * xr)
+                elif form == 'split':
+                    yr += ar * xr
+                    yr -= ai * xi
+                    yi += ar * xi
+                    yi += ai * xr
+                else:
+                    yr += ar * xr - ai * xi
+                    yi += ar * xi + ai * xr
+                Yx[i] = complex(yr, yi)
+    return mv
+
+
+def test_scipys_product_is_read_not_assumed():
+    """`product_exact` says whether this process's SciPy `csc_matvec` makes
+    the residual check's own product, bit for bit, on `_product_samples` --
+    which a product fused, added in halves or taken in another column order
+    fails: each such `csc_matvec` is told apart, the check's own form
+    passes, and without SciPy's the band stays whole."""
+    _on()
+    assert TC.product_exact() == TC._makes_the_c_product(LS._csc_matvec())
+    assert TC._makes_the_c_product(_mv_of('check'))
+    for form in ('fused', 'split', 'reversed'):
+        assert not TC._makes_the_c_product(_mv_of(form)), form
+    n, Ap, Ai, _data, _x = TC._product_samples()
+    assert len(set(np.diff(Ap).tolist())) > 1 and min(np.bincount(Ai, minlength=n)) >= 2
+
+
+def test_a_product_of_another_form_keeps_the_band_whole(monkeypatch):
+    """Where SciPy has no `csc_matvec`, or one making another product, the
+    band keeps its product term (`exact` 0), whatever the record."""
+    _on()
+    for mv in (None, _mv_of('fused')):
+        monkeypatch.setattr(TC, '_MOD', {k: v for k, v in TC._MOD.items()
+                                         if k not in ('exact', 'mv', 'csc_dot')})
+        monkeypatch.setitem(LS._NPLU, 'mv', mv)
+        assert TC.product_exact() is False and TC.records_exact() == 0
+        monkeypatch.undo()
+    assert TC.records_exact() == int(TC.product_exact())
+
+
+def _residuals(seed):
+    """Each residual `solve_prepared` checks in the Python loop's run of the
+    captured step from `seed`: ``max|A x - b| / max(max|b|, 1e-300)``."""
+    seen = []
+    real = LS.ComplexKLUSolver.solve_prepared
+
+    def spy(self, prep, b):
+        x = real(self, prep, b)
+        rhs = np.asarray(b, dtype=np.complex128).ravel()
+        seen.append(float(np.abs(prep[0](x) - rhs).max()) / max(float(np.abs(rhs).max()), 1e-300))
+        return x
+    LS.ComplexKLUSolver.solve_prepared = spy
+    try:
+        _attempt(seed, False)
+    finally:
+        LS.ComplexKLUSolver.solve_prepared = real
+    return seen
+
+
+def test_a_residual_inside_the_products_band_is_decided_in_c(monkeypatch):
+    """A residual far inside the tolerance that the band's product term
+    cannot decide -- as the fold's cancellation leaves on gm19, mux8 and
+    voter25 -- is decided in C where SciPy's product is the check's own: the
+    step served, the Python's answer; with the whole band (the product not
+    read as the check's) handed back, the Python's answer again."""
+    _on()
+    if not TC.product_exact():
+        pytest.skip("this SciPy's product is not the residual check's own")
+    tol = 2.0 * max(_residuals(_seed()))
+    a, b, db = _both(_seed(), tol=tol)
+    assert a == b and db.get('radau_tc:served') == 1, db
+    monkeypatch.setitem(TC._MOD, 'exact', False)
+    a2, b2, db2 = _both(_seed(), tol=tol)
+    assert a2 == b2 == a
+    _bail(db2, 'residual')
 
 
 def test_a_product_of_neither_form_turns_the_path_off(monkeypatch):

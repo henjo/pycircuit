@@ -31,6 +31,8 @@ import numpy as np
 import pytest
 
 from pycircuit.circuit import _paths, _tran_loop_c, _tran_radau, _tran_tcloop_c, circuit
+from pycircuit.circuit import _tran_radau_tc as TC
+from pycircuit.circuit import linearsolver as LS
 from pycircuit.circuit import transient as trmod
 from pycircuit.circuit.elements import VSin, gnd
 from pycircuit.circuit.integrator import RadauIIA3Integrator
@@ -241,6 +243,40 @@ def test_a_transform_that_does_not_converge_is_the_pythons(monkeypatch):
     ca = _same(_pulsed, monkeypatch, steps_min=5, setup=_maxiter(2), **_PULSE)
     assert ca.get('tcloop_c:bail:transform', 0) > 0, ca
     assert ca.get('tcloop_c:bail:radau', 0) > 0, ca
+
+
+def test_a_residual_inside_the_products_band_is_decided_in_c(monkeypatch):
+    """The complex factor's residual check, its tolerance set at twice the
+    largest residual the Python's run meets -- inside the band's product
+    term, as the fold's cancellation leaves on gm19, mux8 and voter25: where
+    SciPy's product is the check's own, the C loop decides every one (no
+    attempt handed back); its records not read as that product's
+    (`records_exact` 0), the whole band hands its attempts back; and with
+    the whole band everywhere the step's own call hands back before the
+    loop is reached.  The run is the Python's each time."""
+    if not TC.product_exact():
+        pytest.skip("this SciPy's product is not the residual check's own")
+    seen = []
+    real = LS.ComplexKLUSolver.solve_prepared
+
+    def spy(self, prep, b):
+        x = real(self, prep, b)
+        rhs = np.asarray(b, dtype=np.complex128).ravel()
+        seen.append(float(np.abs(prep[0](x) - rhs).max()) / max(float(np.abs(rhs).max()), 1e-300))
+        return x
+    with monkeypatch.context() as mp:
+        mp.setattr(LS.ComplexKLUSolver, 'solve_prepared', spy)
+        _run(_pulsed, False, monkeypatch, **_PULSE)
+    monkeypatch.setattr(LS.ComplexKLUSolver, 'REFACTOR_RESIDUAL_TOL', 2.0 * max(seen))
+    ca = _same(_pulsed, monkeypatch, steps_min=10, **_PULSE)
+    assert not ca.get('tcloop_c:bail:transform') and not ca.get('radau_tc:bail:residual'), ca
+    with monkeypatch.context() as mp:
+        mp.setattr(TC, 'records_exact', lambda: 0)
+        cb = _same(_pulsed, monkeypatch, steps_min=0, **_PULSE)
+    assert cb.get('tcloop_c:bail:transform', 0) > 0, cb
+    monkeypatch.setitem(TC._MOD, 'exact', False)
+    cc = _same(_pulsed, monkeypatch, steps_min=0, **_PULSE)
+    assert cc.get('radau_tc:bail:residual', 0) > 0 and not cc.get('tcloop_c:steps'), cc
 
 
 @pytest.mark.parametrize('kw, make', [(_FB_FIXED, None), (_FB_ADAPT, {'reltol': 3e-2})],
