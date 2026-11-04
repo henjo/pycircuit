@@ -13146,3 +13146,32 @@ class's kernel" was re-recorded (its twin now names `_calls_once`, `_call_starts
 
 **Gate** (the main tree): the TELL; the suite, 6 141 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 246's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-11-04 — 248. The output sets' budget -- 128 MiB where it was 48, and settable (`PYCIRCUIT_RADAU_OUT_MB`): gm19's transform fallbacks made in the C loop, its stage loop bound to 590 unknowns where it was 361: gm19 under Radau 3.977 -> 3.559 s (1.118x), every result the same
+
+**Why**  After 246 gm19's last 15 hand-backs were transform Newtons that do not converge, whose dense coupled fallback
+the C loop binds only where `_tran_stageloop_c._sets_fit(n)` holds: the loop's output sets, `2 MAXA 3 (n^2 + 2 n)`
+doubles, within `_tran_radau_c.OUT_BYTES`, 48 MiB -- n up to 361; gm19 has 429.  Sized in a worktree (128 MiB, its
+own store, 3 interleaved pairs): gm19 under Radau 4.00 -> 3.575 s (1.12x), the digest the same, 14 of the 15 fallbacks
+made in C (the first stays the Python's: it makes the record); opampal (519, no fallbacks) the same.  The budget's
+stated reason ("above it an attempt's dense estimate outweighs what the loop saves") did not hold on gm19, but it is
+also how much memory a run's sets may take -- Andreas's call: "Raise to 128MB, can it be settable so that it later can
+easily be changed?"  LINE (set after the twin tests, before any timing; one form): gm19 under Radau at least 1.06x
+against HEAD a2d1b537, the median of 5 interleaved quiet-box pairs; GUARD: the 27 decks' total solve under each
+method not slower; every digest, step, rejection and Newton count the same, the path counts where a loop now binds
+listed; gm19's peak memory recorded.  Refused under.
+
+**Built.**  `_tran_radau_c.OUT_BYTES` = `PYCIRCUIT_RADAU_OUT_MB` MiB, read at import (a float; 128 unset).  The same
+budget bounds the C stage Newton's pool of output sets (`_out`: up to `OUT_SETS` = 3 sets within it -- jge, rich3 and
+arom now pool three where they pooled one or two), the stage loop's size (`_sets_fit`: n <= 590) and the transform
+loop's buffers (`_fits`: n <= 1057).  The module notes, `_sets_fit`'s docstring and `doc/transient_runtime.md` say so.
+
+**Measured** (a quiet box, HEAD a2d1b537 from its worktree and this tree, interleaved): gm19 under Radau 3.977 -> 3.559 s, 1.118x (1.114 to 1.121, 5 pairs; the line 1.06x) -- met; 3 pairs each: jge 0.997x, rich3 0.995x, arom 0.998x, opampal 0.994x.  Peak memory (one run each): gm19 381 -> 399 MB, jge 301 -> 302 MB.  The gate's runs: the 27 decks' solves 1.014x under Radau (32.1 -> 31.6 s), 1.002x under gear2 -- the guard met (the decks whose pool grew: within their spread, each straddling 1.0).  The path counts moved on gm19 alone: the C loop's fallbacks 0 -> 14, its hand-backs 15 -> 1.
+
+**Tests.**  test_radau_c: `PYCIRCUIT_RADAU_OUT_MB` unset, 48 and 0.5 in a fresh process each -- `OUT_BYTES` 128, 48
+and 0.5 MiB; gm19's 429 unknowns bind the stage loop at 128 and not at 48, 591 at neither, the transform loop's
+buffers at both and not at half a MiB.  (test_stageloop_c already shows a loop over the budget declining.)  The loop
+twins' 181 before the pinned pair "the stage loop and its C" was re-recorded (`_sets_fit`'s text).
+
+**Gate** (the main tree): the TELL; the suite, 6 142 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 247's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection and Newton count identical; every path count too but gm19's above.

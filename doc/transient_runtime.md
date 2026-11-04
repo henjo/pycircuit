@@ -48,7 +48,8 @@ From the outside in. "Called from" is where the Python reaches the glue.
 | Build and load | -- | -- | `_cbuild` | `PYCIRCUIT_C_SANITIZE`, `PYCIRCUIT_HDL_CC`, `PYCIRCUIT_HDL_CACHE` (the store; `PYCIRCUIT_HDL_CACHE_DIR` its place) | -- | every glue module |
 
 Outside the multistep loop, the same rules: the Radau stage solve (`csrc/radau.c`, `_tran_radau_c`,
-`PYCIRCUIT_RADAU_C`, `radau_c:`; on a StructuralKLU of the stage block -- a shooting walk's, or a plain run's from
+`PYCIRCUIT_RADAU_C`, `radau_c:`; `PYCIRCUIT_RADAU_OUT_MB` the MiB its output sets may take, 128 -- the size up to
+which the C stepping loops bind too; on a StructuralKLU of the stage block -- a shooting walk's, or a plain run's from
 250 block unknowns, `_RadauStages._run_stage_klu`, `PYCIRCUIT_RADAU_KLU`), its tensor-product form and fold (`csrc/radau_tc.c`,
 `csrc/radau_fold.c` -- in the C stepping loop on the core's pattern alone where the core writes only that, as are
 the loop's and the end passes' C and G (written and copied there alone, the buffers zero off it) --

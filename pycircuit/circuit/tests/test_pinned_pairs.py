@@ -1169,7 +1169,7 @@ RECORD = {
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '033c4ac51e63'),
     'the readiness reads and their stamps': ('df49581ecd32', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('bbc3a7f0a452', '7c94c2eb35ce'),
+    'the stage loop and its C': ('bbc3a7f0a452', '5a34832ea2cf'),
     'the transform loop and its C': ('ac5b2f9b540e', 'b7f48ce6ed99'),
 }
 

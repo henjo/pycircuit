@@ -266,8 +266,8 @@ def _eligible(loop, tr, td, rec):
 
 def _sets_fit(n):
     """The loop's own output set within the C stage Newton's budget for its
-    sets (`_tran_radau_c.OUT_BYTES`): above it an attempt's dense estimate
-    outweighs what the loop saves."""
+    sets (`_tran_radau_c.OUT_BYTES`, `PYCIRCUIT_RADAU_OUT_MB`): the memory a
+    run's sets may take."""
     from pycircuit.circuit import _tran_radau_c
     return 2 * _tran_radau_c.MAXA * 3 * (n * n + 2 * n) * 8 <= _tran_radau_c.OUT_BYTES
 

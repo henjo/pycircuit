@@ -15,7 +15,9 @@ and counters.  `_paths`: `radau_c:` -- `radau_c:<why>` a decline,
 `radau_c:assemblies`, `radau_c:on_klu` (a serve on the stage KLU),
 `radau_c:final` (a converged block a walk's step took).  Switch:
 `PYCIRCUIT_RADAU_C=0` (`ENABLED`, read on every call); `STATUS` says why
-the path is off where it is.
+the path is off where it is.  `PYCIRCUIT_RADAU_OUT_MB` (read at import,
+`OUT_BYTES`): the memory, in MiB, the output sets may take -- this
+Newton's pool, and the size up to which the C stepping loops bind.
 
 THE NEWTON.  Per iteration the Python makes the block system
 (`_coupled_stage_system`: nine blocks, each through `remove_row_col`), the
@@ -101,8 +103,12 @@ MAXA = 8
 #: of (its arrays' reference counts as made); at most `OUT_SETS` sets and
 #: `OUT_BYTES` of them.  Where none is free the call writes to the
 #: transient's own set (`_Ctx.own`, never viewed) and the memo takes copies.
+#: The C stepping loops bind only where their own sets fit the same budget
+#: (`_tran_stageloop_c._sets_fit`, `_tran_tcloop_c._fits`).  One set takes
+#: `2 MAXA 3 (n^2 + 2 n)` doubles: 128 MiB, the default, holds one up to n =
+#: 590 (gm19, 429: ~71 MB).  `PYCIRCUIT_RADAU_OUT_MB` sets it, in MiB.
 OUT_SETS = 3
-OUT_BYTES = 48 * 2 ** 20
+OUT_BYTES = int(float(os.environ.get('PYCIRCUIT_RADAU_OUT_MB', '') or 128) * 2 ** 20)
 _OUTS = ('Ya', 'qa', 'ia', 'Ca', 'Ga')
 
 RADAU_C = _cbuild.csrc('radau.c')

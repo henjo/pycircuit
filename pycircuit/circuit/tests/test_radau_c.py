@@ -620,3 +620,25 @@ def test_a_singular_coupled_system_fails_the_attempt_not_the_run(monkeypatch):
     assert tr1.statistics.rejected_steps > tr0.statistics.rejected_steps
     assert abs(v1[-1] - v0[-1]) < 1e-6, (v0[-1], v1[-1])
 
+
+
+def test_the_output_sets_budget_is_settable():
+    """`PYCIRCUIT_RADAU_OUT_MB` sets `OUT_BYTES` at import, in MiB (128
+    unset), and the C stepping loops' size checks read it: gm19's 429
+    unknowns bind the stage loop at 128 MiB, not at 48; 591 at neither;
+    the transform loop's buffers at both, not at half a MiB."""
+    import os
+    import subprocess
+    import sys
+    code = ('from pycircuit.circuit import _tran_radau_c as R, _tran_stageloop_c as S, '
+            '_tran_tcloop_c as T; print(R.OUT_BYTES, S._sets_fit(429), S._sets_fit(591), '
+            'T._fits(429))')
+    for mb, want in (('', f'{128 * 2 ** 20} True False True'),
+                     ('48', f'{48 * 2 ** 20} False False True'),
+                     ('0.5', f'{2 ** 19} False False False')):
+        env = {k: v for k, v in os.environ.items() if k != 'PYCIRCUIT_RADAU_OUT_MB'}
+        if mb:
+            env['PYCIRCUIT_RADAU_OUT_MB'] = mb
+        out = subprocess.run([sys.executable, '-c', code], env=env, capture_output=True,
+                             text=True, check=True).stdout.split('\n')[-2]
+        assert out == want, (mb, out)
