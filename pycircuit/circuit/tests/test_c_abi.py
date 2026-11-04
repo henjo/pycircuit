@@ -203,6 +203,52 @@ def test_a_compiler_message_names_the_file_and_line_it_came_from(planted, tmp_pa
     assert f'{_cbuild.CSRC_NAME}{planted}:{k + 1}:' in proc.stderr, proc.stderr
 
 
+def _left_to_libraries(cc, flags, text, path):
+    """The functions an object built from `text` with `flags` leaves to the
+    libraries it links: its undefined dynamic symbols (`nm -D`)."""
+    src = path.with_suffix('.c')
+    src.write_text(text)
+    proc = subprocess.run([cc, *flags, '-o', str(path), str(src), '-lm'], capture_output=True,
+                          text=True, check=False, env=_cbuild._compiler_env())
+    assert proc.returncode == 0, proc.stderr
+    out = subprocess.run(['nm', '-D', '--undefined-only', str(path)], capture_output=True,
+                         text=True, check=True, env=_cbuild._compiler_env()).stdout
+    return {ln.split()[-1].split('@')[0] for ln in out.splitlines() if ln.strip()}
+
+
+#: the units whose compiled text calls `fma`
+_FMA_UNITS = [u for u, _ in UNITS if re.search(r'\bfma\(', _strip(_cbuild.csrc(u + '.c')))]
+
+
+def test_the_fma_flag_is_numpy_s_record_of_the_cpu():
+    """`CFLAGS` carry `-mfma` exactly where numpy records the instruction
+    (FMA3) and the registers it uses (AVX) on this CPU."""
+    assert _cbuild.fma_flags({'FMA3': True, 'AVX': True}) == ('-mfma',)
+    assert _cbuild.fma_flags({'FMA3': True, 'AVX': False}) == ()
+    assert _cbuild.fma_flags({'FMA3': False, 'AVX': True}) == ()
+    assert _cbuild.fma_flags({}) == ()
+    assert ('-mfma' in _cbuild.CFLAGS) == bool(_cbuild.fma_flags(_cbuild._cpu_features()))
+
+
+def test_where_the_cpu_has_fma_no_unit_calls_libm_for_it(tmp_path):
+    """With `-mfma` every `fma()` a unit calls is the instruction: no unit
+    built with `CFLAGS` leaves `fma` to libm -- and the smallest of them
+    built without the flag does, so the check sees a call."""
+    cc = _cbuild.find_compiler()[0]
+    if cc is None or shutil.which('nm') is None:
+        pytest.skip('no C compiler or no nm')
+    if '-mfma' not in _cbuild.CFLAGS:
+        pytest.skip('this CPU has no FMA instruction')
+    assert {'core', 'radau_tc', 'radau_fold'} <= set(_FMA_UNITS)
+    for unit in _FMA_UNITS:
+        assert 'fma' not in _left_to_libraries(cc, _cbuild.CFLAGS, _cbuild.csrc(unit + '.c'),
+                                               tmp_path / (unit + '.so')), unit
+    smallest = min(_FMA_UNITS, key=lambda u: len(_cbuild.csrc(u + '.c')))
+    without = tuple(f for f in _cbuild.CFLAGS if f != '-mfma')
+    assert 'fma' in _left_to_libraries(cc, without, _cbuild.csrc(smallest + '.c'),
+                                       tmp_path / 'planted.so')
+
+
 def test_no_c_file_declares_a_type_and_no_header_includes_another():
     """Every type lives in a header -- a struct in its unit's, a shared
     function type in pcx_abi.h, each declared once; one level of local

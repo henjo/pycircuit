@@ -35,7 +35,9 @@ CONTRACT
     the process.
     `CFLAGS` are strict IEEE doubles: no fast-math, no FMA contraction,
     no `-march`, every transcendental a real libm call -- the bit
-    identity with the numpy path rests on them.  With
+    identity with the numpy path rests on them.  `-mfma` where numpy
+    finds the FMA instruction on this CPU (`fma_flags`): the C's own
+    `fma()` calls inlined, no result moved.  With
     `PYCIRCUIT_C_SANITIZE=1` the sanitizer flags are added (their own
     keys) and the import refuses without the ASan runtime preloaded.
     An object's file name carries the compiler's version tag, and
@@ -134,8 +136,40 @@ def bails(codes, prefix):
 #: already does; this is for changes to the convention itself).
 SO_FORMAT = 1
 
+
+def fma_flags(features):
+    """`('-mfma',)` where `features` -- numpy's record of what this CPU
+    and its OS run, the one numpy's own loops dispatch on -- has the FMA
+    instruction (`FMA3`, and `AVX`, whose registers it uses), else `()`.
+
+    The flag lets the compiler emit the instruction: each `fma()` the C
+    calls (the complex products numpy fuses, the small products OpenBLAS
+    fuses) is then the instruction where it was a call into libm, and the
+    code around it takes the VEX encodings `-mfma` implies.  No result
+    moves: `fma` is correctly rounded by definition, the instruction and
+    libm's alike, and every other operation keeps its own rounding
+    (contraction stays off).  A CPU without it builds without the flag --
+    its own key, so it never loads an object that uses the instruction."""
+    return ('-mfma',) if features.get('FMA3') and features.get('AVX') else ()
+
+
+def _cpu_features():
+    """numpy's `__cpu_features__` (`{name: bool}`), `{}` where this numpy
+    keeps none where it is looked for."""
+    try:
+        from numpy._core._multiarray_umath import __cpu_features__
+    except ImportError:
+        try:
+            from numpy.core._multiarray_umath import __cpu_features__
+        except ImportError:
+            return {}
+    return __cpu_features__
+
+
 #: Compilation flags.  Strict IEEE doubles: no fast-math, no FMA
-#: contraction, no `-march`.  Every `-fno-builtin-<f>` keeps `<f>` a
+#: contraction, no `-march` -- the instruction allowed where the CPU has
+#: it (`fma_flags`: the C's explicit `fma()` calls, the same result).
+#: Every `-fno-builtin-<f>` keeps `<f>` a
 #: real libm call so the compiler cannot substitute its own (usually
 #: MORE accurate) folding for glibc's runtime result -- `pow(x, 2.0)`
 #: is the measured case: glibc is within 0.52 ulp, `x*x` is exact, and
@@ -148,7 +182,7 @@ CFLAGS = ('-O2', '-shared', '-fPIC', '-fno-fast-math', '-ffp-contract=off',
           '-fno-builtin-cos', '-fno-builtin-tan', '-fno-builtin-asin',
           '-fno-builtin-acos', '-fno-builtin-atan', '-fno-builtin-atan2',
           '-fno-builtin-sinh', '-fno-builtin-cosh', '-fno-builtin-tanh',
-          '-fno-builtin-hypot')
+          '-fno-builtin-hypot') + fma_flags(_cpu_features())
 
 _FALSE = ('0', 'off', 'false', 'no', '')
 

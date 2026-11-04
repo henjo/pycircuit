@@ -13021,3 +13021,36 @@ fixtures.  The twins' 521 before the six pinned pairs were re-recorded (the Newt
 **Gate** (the main tree): the TELL; the suite, 6 133 passed (10 skipped, 3 xfailed) -- the first run failed one, test_no_dead_knobs: `_tran_newton_c._early` took `sparse` and `ch` and read neither once the chord's count moved to `chord_out` (removed; the pairs re-recorded); the sanitizer builds, fast clean (5 913 passed), deep clean (1 484 passed); the 27 gold
 decks -- standalone DC against 242's gate runs, gear2 and Radau against HEAD interleaved: DC and Radau every digest, step, rejection, Newton count and path count identical; gear2 the same on 23 decks, and on the four the measurement named -- e1480, opampal, mike2, todd3 -- the digests moved (mike2 553 -> 554 steps, 93 -> 91 rejections, 1 237 -> 1 229 Newton iterations; the others' counts the same), the gold metric the same to five digits (mike2 1.900827 -> 1.900812).  The waveforms of
 every gear2 deck that moved, the C on, against the Python-chord measurement: each bit for bit the Python chord's refactor run (C off) of the measurement; against HEAD at the times both runs share e1480 4.4e-9 of the probe's range, opampal 6.2e-16, mike2 5.7e-6, todd3 1.1e-12 -- the bounds measured.  Interpolated onto HEAD's times over the whole run, mike2 reads 1.7e-3 at a pulse edge (`i(vpulse)`, 13.0 ns) -- the grid's: HEAD's own waveform taken through the new grid and back moves 1.70e-3 there, and away from the points where that round trip moves more than 1e-6 (472 of 554) the new run is within 5.74e-6 of HEAD; todd3's 2.3e-7 and e1480's 6.5e-9 interpolated are their round trips' size (2.8e-7, 6.1e-9).
+
+## 2026-11-04 — 245. The FMA instruction -- the C built with `-mfma` where numpy records the instruction on this CPU: the C's own `fma()` calls inlined where each was a call into libm, contraction still off: jge under Radau 8.819 -> 8.479 s (1.038x), every result the same
+
+**Why**  Phase 0 of plan g24's `tc/plan_245_next.md` (item H; Andreas: "1 keep 4, 2 build in order if you think that
+is optimal" -- the pool's 4 threads kept, the order H first): `core.c` (the small products in OpenBLAS's order),
+`radau_tc.c` and `radau_fold.c` (the complex products in numpy's fused form) call `fma()`; `CFLAGS` had no `-mfma`, so
+each was a PLT call into glibc's `__fma_fma3` -- jge Radau's main thread 0.22 s (2.4 %), mux8 2.8 %.  Sized in a
+worktree (every object rebuilt in its own store, the digests of 4 decks x 2 methods the main tree's; 5 interleaved
+pairs): jge Radau 1.039x, mux8 1.052x, voter25 1.055x, gear2 1.01x; `-march=x86-64-v3` no better.  Split (the same
+worktree, the flag on the runtime units alone or the kernels alone; 5 rounds under Radau, 3 under gear2): under Radau
+the units carry it (units alone jge 1.036x, mux8 1.046x, voter25 1.056x, gm19 1.036x; the kernels alone 1.000-1.009x;
+both 1.036-1.057x), under gear2 the kernels the larger half (jge: units 1.005x, kernels 1.003x, both 1.011x; mux8
+1.000x, 1.010x, 1.011x) -- so one flag for every object.  LINE (set before building; one form): jge under Radau at
+least 1.02x against HEAD 3804e91c, the median of 5 interleaved quiet-box pairs; GUARD: the 27 decks' total solve
+under each method not slower; every result the same.  Refused under.
+
+**Built.**  `_cbuild.fma_flags(features)`: `('-mfma',)` where numpy's `__cpu_features__` -- what its own loops
+dispatch on, the OS's register state checked -- has FMA3 and AVX, else `()`; `CFLAGS` end with it.  No result moves:
+`fma` is correctly rounded by definition, the instruction and libm's alike, every other operation keeps its rounding
+(`-ffp-contract=off` stays) and `-mfma`'s implied AVX changes encodings, not operations.  A CPU without the
+instruction builds without the flag under its own keys, so it never loads an object that uses it.  Every key moves
+once: the first process after this compiles the device library again.
+
+**Measured** (a quiet box, HEAD 3804e91c from its worktree and this tree, interleaved, 5 pairs): jge under Radau 8.819 -> 8.479 s, 1.038x (1.027 to 1.059; the line 1.02x) -- met; under gear2 4.091 -> 4.064 s (1.007x).  The gate's
+runs: the 27 decks' solves 1.045x under Radau (37.0 -> 35.4 s) and 1.019x under gear2 (17.1 -> 16.8 s) -- the guard met.
+
+**Tests.**  test_c_abi: the flag is numpy's record of the CPU (FMA3 and AVX, either missing none); where the CPU has
+it no unit built with `CFLAGS` leaves `fma` to libm (`nm -D` of core, radau_tc, radau_fold built in a temporary
+directory) -- and the smallest built without the flag does, so the check sees a call.  No source of a twin changed:
+no pinned pair moved.
+
+**Gate** (the main tree): the TELL; the suite, 6 135 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 244's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical but the loops' own.
