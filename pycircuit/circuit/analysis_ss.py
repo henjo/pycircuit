@@ -18,7 +18,8 @@ from pycircuit.circuit._blas import AC_THREADS_FROM, blas_held_below
 from .toolkit import numeric
 from .transferfunction import TransferFunction
 import numpy as np
-import sympy
+from pycircuit.circuit import _lazy
+sympy = _lazy.module('sympy')     # imported on first use (`_lazy`)
 import types
 
 

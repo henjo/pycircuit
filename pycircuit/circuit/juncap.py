@@ -28,10 +28,9 @@ Python, so none of the temperature or geometry arithmetic reaches the
 compiled expression.
 """
 
-import sympy
+from pycircuit.circuit import _lazy, hdl
 
-from pycircuit.circuit import hdl
-
+sympy = _lazy.module('sympy')     # imported on first use (`_lazy`)
 
 COMPONENTS = ('bot', 'sti', 'gat')
 

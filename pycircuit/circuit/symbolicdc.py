@@ -1,11 +1,14 @@
 import logging
 
+import numpy as np
+
+from pycircuit.circuit import _lazy
 from pycircuit.circuit.analysis import *
 
-import numpy as np
-import sympy
+sympy = _lazy.module('sympy')     # imported on first use (`_lazy`)
 
 from .toolkit import symbolic
+
 
 class SymbolicDC(Analysis):
     """Symbolic DC analyis class

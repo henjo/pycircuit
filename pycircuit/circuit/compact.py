@@ -13,9 +13,8 @@ Currently: `CapCmomi`.
 """
 
 import numpy as np
-import sympy
 
-from pycircuit.circuit import (defaultepar, juncap, psp_kernel,
+from pycircuit.circuit import (_lazy, defaultepar, juncap, psp_kernel,
                                psp_scaling)
 from pycircuit.circuit.constants import (epsRSiO2, kboltzmann,
                                          qelectron)
@@ -25,6 +24,7 @@ from pycircuit.circuit.hdl import (Behavioural, Branch, Collapse,
                                    ddt, var, vt)
 from pycircuit.utilities.param import Parameter
 
+sympy = _lazy.module('sympy')     # imported on first use (`_lazy`)
 
 #: Permittivities, from the toolkit's own constants so a generated stamp
 #: matches a hand-written one exactly rather than nearly.

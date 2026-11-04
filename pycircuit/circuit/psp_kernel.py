@@ -39,11 +39,10 @@ the reuse does not explode into a tree; outside one they return plain
 expressions, so they can be lambdified and tested directly.
 """
 
-import sympy
-
-from pycircuit.circuit import hdl
+from pycircuit.circuit import _lazy, hdl
 from pycircuit.circuit.psp_scaling import PSP_QELE
 
+sympy = _lazy.module('sympy')     # imported on first use (`_lazy`)
 
 #: PSP's own constants, by their macro names.
 X1 = 1.25

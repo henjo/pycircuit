@@ -23,10 +23,12 @@ both and hold an `ACSolution`; nothing here reaches upward.
 from abc import ABC, abstractmethod
 
 import numpy as np
-import sympy
+
+from pycircuit.circuit import _lazy
+
+sympy = _lazy.module('sympy')     # imported on first use (`_lazy`)
 
 from .transferfunction import TransferFunction
-
 
 __all__ = ['ACSolution', 'NumDenSolution']
 

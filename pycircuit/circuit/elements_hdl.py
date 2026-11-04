@@ -123,10 +123,14 @@ the generated code costs against the hand-written stamps.
 """
 
 
-import sympy
 import hashlib
 
+from pycircuit.circuit import _lazy
 from pycircuit.utilities.param import Parameter
+
+#: sympy, imported on first use (`_lazy`): a numeric run of cached models
+#: builds no expression.
+sympy = _lazy.module('sympy')
 from pycircuit.circuit.hdl import (Behavioural, Branch, Node, Contribution,
                                    Collapse, Cross, ddt, idt, idtmod,
                                    laplace_nd, laplace_zp, TIME, TEMP,
@@ -325,8 +329,14 @@ class VCVSHdl(Behavioural):
 
 ## -- the behavioural source, traced ---------------------------------------------------
 
-#: the control voltage `BSourceHdl` traces its callables with
-_BS_V = sympy.Symbol('v_ctrl', real=True)
+def _bs_v():
+    return sympy.Symbol('v_ctrl', real=True)
+
+
+#: the control voltage `BSourceHdl` traces its callables with (a `_lazy`
+#: stand-in, keyed as the symbol)
+_BS_V = _lazy.standin(__name__, '_bs_v', call=True,
+                      sig="sympy:Symbol('v_ctrl', real=True)")
 #: one compiled class for each pair of traced expressions
 _BS_CLASSES = {}
 
@@ -3843,9 +3853,6 @@ class OpAmpHdl(Behavioural):
 ## its own name and read as ``p['as']``.
 ## ======================================================================
 
-_TWO_PI = 2 * sympy.pi
-
-
 class VcoHdl(Behavioural):
     """A voltage-controlled oscillator whose noise is injected into the
     FREQUENCY, so that jitter accumulates as a random walk.  Terminals
@@ -3906,7 +3913,7 @@ class VcoHdl(Behavioural):
                 Contribution(bf.I, _white_noise(p.sf)),
                 Contribution(bf.I, _flicker_noise(p.kff, 1)),
                 Contribution(bph.V, idtmod(bf.V, 0.0, p.modulus, 0.0)),
-                Contribution(bo.V, p.va * sympy.sin(_TWO_PI * bph.V)))
+                Contribution(bo.V, p.va * sympy.sin(2 * sympy.pi * bph.V)))
 
 
 class DividerHdl(Behavioural):
@@ -3944,7 +3951,7 @@ class DividerHdl(Behavioural):
     @staticmethod
     def analog(p, inp, inn, outp, outn):
         bi, bo = Branch(inp, inn), Branch(outp, outn)
-        s = _var(sympy.sin(_TWO_PI * bi.V / p.n), 's')
+        s = _var(sympy.sin(2 * sympy.pi * bi.V / p.n), 's')
         return (Contribution(bo.V, p.vol + (p.voh - p.vol) / 2
                              * (1 + sympy.tanh(p.gain * s))),
                 Cross(s, 0))

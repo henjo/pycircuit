@@ -26,14 +26,20 @@ import sys
 import threading
 
 import numpy as np
-import sympy
-from sympy.polys.matrices import DomainMatrix
-from sympy.polys.matrices.exceptions import DMError
 
+from . import _lazy
 from . import _numeric
 from . import _sparse_numeric
-from . import _symbolic
 from .acsolution import NumDenSolution
+
+## sympy and the symbolic backend, imported on first use (`_lazy`): a numeric
+## run never touches them, and sympy's import was ~0.15 s of a short deck's
+## process.
+sympy = _lazy.module('sympy')
+DomainMatrix = _lazy.standin('sympy.polys.matrices', 'DomainMatrix',
+                             cls_module='sympy.polys.matrices.domainmatrix')
+DMError = _lazy.standin('sympy.polys.matrices.exceptions', 'DMError')
+_symbolic = _lazy.module('pycircuit.circuit._symbolic')
 
 ## _jaxtoolkit is deliberately NOT imported here: it does `import jax` at module
 ## level, so importing it eagerly made JAX a hard dependency of the whole

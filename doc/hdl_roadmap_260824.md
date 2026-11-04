@@ -13326,3 +13326,55 @@ twenty-one pinned pairs were re-recorded (pcx_abi.h, core.c and newton.c in the 
 
 **Gate** (the main tree): the TELL; the suite, 6 155 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 251's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-11-04 — 253. The warm start-up without sympy -- a numeric run of cached models imports no sympy: the language's sympy classes and symbols in `_hdl_sym`, bound as stand-ins (`_lazy`) settled the moment sympy is imported, and the compile cache's trees apart, loaded on first use: rca's whole process 0.538 -> 0.348 s (1.530x), every result the same
+
+**Why**  Plan g24's `tc/plan_245_next.md`, item E (Andreas: "Keep D for later. Start next item E", then "Do it" on
+the design).  Phase 0: `import sympy` was ~0.15 s of a short deck's ~0.55 s process (rca), and a numeric run of
+cached models builds no expression.  A tripwire (sys.monitoring, warm cache, rca) and an Explore agent's map found
+what forced it: hdl.py's module level (23 Function subclasses, `_IntermediateSymbol`, `Quantity`, `_StateSymbol`,
+TIME/TEMP/FREQ) and the library's names imported from it; nine modules importing sympy at module level for use in
+functions only; the cache entries' sympy trees (`sym_spec`, `pure_spec`, `pcnr_funcs`' sym/chain, `pcnr_affine`,
+the limiter parameters' ingredients), unpickled by every read under `sympy.evaluate(False)` though only the JAX
+twins, `explain()`, the symbolic toolkit and a limiter's C render missing its side entry read them; the key
+(`sympy.__version__`, `srepr` of TEMP); `cls.linear` (sympy queries on every flat class build); lambdify's numpy
+namespace taken from sympy.  All or nothing: one import anywhere costs the whole.  LINE (set before building; one
+form): rca's whole process at least 1.2x against HEAD 5bf4dec8, the median of 5 interleaved quiet-box pairs, the
+cache warm on both; GUARD: every digest, step, rejection, Newton count and path count the same on the 27 decks
+under DC, gear2 and Radau; the suite; a warm run of a deck imports no sympy (a test).
+
+**Built.**  `_lazy` (new): `module(name)` and `standin(module, attr)` -- the object itself where sympy is imported,
+else a stand-in importing it on the first use that needs it (a call, an attribute, arithmetic either way, a
+comparison, a hash, `_sympy_`) and forwarding; `isinstance` against one False while sympy is not imported.  sympy's
+import -- by anyone -- settles every stand-in (an import hook on sympy's loader, taken down after) and puts each
+target in its place in every module's namespace, so code that runs on sympy objects meets the real names; `describe`
+gives the cache key a stand-in's target's text and module.  `_hdl_sym` (new): the 26 classes and the symbols moved
+out of hdl.py unchanged; hdl binds each as a stand-in, settled at hdl's own end where sympy was imported first.
+hdl.py, elements_hdl, compact, juncap, psp_kernel, toolkit (and its `_symbolic` backend, `DomainMatrix`,
+`DMError`), acsolution, analysis_ss, symbolicdc, transferfunction: sympy lazy.  elements_hdl: `_BS_V` a stand-in,
+`_TWO_PI` written in place.  The compiler: `generate_code` settles first; `_run_analog` puts a stand-in a body
+closed over at import (`TEMP` handed to the MOS/EKV factories) to its object; `linear` and the JAX printer's
+presence made at the compile and stored.  The cache (format 6): every value whose rebuild needs sympy -- a dict's
+value holding no function record, a record's `_hdl_limit_par` -- taken out into one pickle per entry (`_TREES`,
+shared values once) and left as a `_Ref`; thawed, a dict holding refs is a `_Deferred` (membership and length
+answered, a read or a whole view loads the entry's trees at once, keys in their stored order), a limiter parameter
+a `_LazyTuple`; the unpickler turns sympy's evaluation off at the first sympy class a pickle names (so a payload
+naming none never imports it); the key reads sympy's version from its `release.py`, keys a stand-in as its target,
+and hashes `_hdl_sym.py` with the compiler; lambdify's numpy namespace built as lambdify builds it.
+
+**Measured** (a quiet box, HEAD 5bf4dec8 from its worktree and this tree, interleaved, the cache warm): rca's whole process 0.538 -> 0.348 s, 1.530x (1.378 to 1.684, 5 pairs; the line 1.2x) -- met; 3 pairs each: g1310 1.422x, mosrect 1.489x, gm6 1.518x; 2 pairs: jge 1.050x -- every process 0.18-0.20 s less (the medians); rca's peak RSS 114 -> 82 MB.  The gate's runs: the 27 decks' solves the same (0.998x under gear2, 0.999x under Radau), their whole processes 29.6 -> 24.7 s under gear2 (1.199x) and 44.6 -> 39.5 s under Radau (1.130x), each 0.14 to 0.25 s less.  Of the package's modules, 11 still import sympy when imported: the symbolic ones (ddd, volterra, `_symbolic`, symbolicapprox, ...), none on a numeric path; the subpackages none.  API: until sympy is imported `hdl.TEMP`, `hdl.ddt` and the language's other sympy names are stand-ins (forwarding; `type()` differs), their objects after.
+
+**Tests.**  test_lazy_sympy (new): three gold decks (Gummel-Poon, MOS with diodes, a MOS rectifier) under gear2 and
+Radau by a second process import no sympy; sympy's import settles every stand-in (none left in any pycircuit
+namespace, sympy its own loader, the hook down); every stand-in the library binds, made without sympy, keyed as its
+target (`_value_sig`, the dependency module); a stand-in forwards as its target (arithmetic both ways, comparison,
+hashing, sympify, calls, `isinstance`, pickling); `resolve_function`; lambdify's numpy namespace; the version read
+without sympy; four library classes compiled cold: the payload outside its trees names nothing from sympy or
+`_hdl_sym`, the trees load on first read equal to the cold compile's (srepr), the limiter parameters unloaded until
+used, the cold tuple, frozen again the tuple.  test_hdl_cache's three deferral tests restated for the entry's trees.
+Mutations: no deferral, evaluation left on in the unpickler, TEMP keyed wrong, no namespace swap, `isinstance`
+loading sympy -- each caught.
+
+**Gate** (the main tree): the TELL; the suite, 6 164 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 252's gate runs, gear2 and Radau against HEAD interleaved: every digest, step,
+rejection, Newton count and path count identical.

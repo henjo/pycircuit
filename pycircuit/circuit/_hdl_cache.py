@@ -20,12 +20,12 @@ What is cached
     names it needs from its namespace.  On a hit the source is executed
     again in a namespace rebuilt the same way, so the functions are the
     same code bound to the same objects and their results are
-    bit-identical to a cold compile's.  The symbolic vectors (`sym_spec`
-    and `pure_spec`, the eager path's exact forms) are pickled as sympy
-    expressions and come back equal.  The vector PCNR's trees
-    (`pcnr_vector`'s `chain`, `sym` and `vsyms`, read only to make its
-    JAX twin) are stored apart in the entry and loaded, as stored, on
-    their first use (`_Deferred`).  The per-mask classes a collapsing
+    bit-identical to a cold compile's.  Every sympy expression the dict
+    holds -- the symbolic vectors (`sym_spec`, `pure_spec`), the PCNR and
+    limiter trees, read only by the JAX twins, `explain()` and the symbolic
+    toolkit -- is stored apart in the entry, one pickle of them all, and
+    loaded, as stored, on the first access to any (`_defer`, `_Deferred`):
+    a numeric run of cached models never imports sympy.  The per-mask classes a collapsing
     model builds through `_collapse_variant` are separate classes with
     their own key, so they are cached too.
 
@@ -39,8 +39,8 @@ What is not cached
     emits are not replayed on a hit; `hdl.py` itself emits none.
 
 Key
-    SHA-256 over: the cache format number, the source of `hdl.py` and of
-    this module, sympy/numpy/Python versions, the class's module and
+    SHA-256 over: the cache format number, the source of `hdl.py`, of
+    `_hdl_sym.py` and of this module, sympy/numpy/Python versions, the class's module and
     qualified name, the analog body's file, first line and qualified name
     (that file's source is hashed whole, below), every `instparams`
     declaration (name, default, range, unit, description), the collapse
@@ -81,18 +81,20 @@ import dis
 import hashlib
 import importlib.util
 import inspect
+import io
 import linecache
 import marshal
 import opcode
 import os
 import pickle
+import re
 import sys
 import tempfile
+import threading
 import types
 import weakref
 
-import sympy
-
+from pycircuit.circuit import _lazy
 from pycircuit.circuit import simwarnings as _sw
 from pycircuit.utilities import param
 
@@ -119,7 +121,7 @@ from pycircuit.utilities import param
 ## stores.
 ## 5 (2026-10-25): `pcnr_vector`'s trees stored apart in the entry
 ## (`_defer`), loaded on their first use (`_Deferred`).
-CACHE_FORMAT = 5
+CACHE_FORMAT = 6
 
 #: Module-level switch; the environment variable is consulted too.
 ENABLED = True
@@ -177,15 +179,47 @@ def _file_hash(path):
 
 
 def _compiler_hash():
-    """Source of hdl.py and of this module."""
+    """Source of hdl.py, of the language's sympy classes (`_hdl_sym`, by
+    path: a numeric run does not import it) and of this module."""
     from pycircuit.circuit import hdl
     parts = []
-    for mod in (hdl, sys.modules[__name__]):
-        h = _file_hash(mod.__file__)
+    for path in (hdl.__file__, os.path.join(os.path.dirname(__file__), '_hdl_sym.py'),
+                 __file__):
+        h = _file_hash(path)
         if h is None:
             return None
         parts.append(h)
     return '/'.join(parts)
+
+
+def _module_file(modname):
+    """The source file of the module `modname`, imported or not."""
+    mod = sys.modules.get(modname)
+    if mod is not None:
+        return getattr(mod, '__file__', None)
+    try:
+        spec = importlib.util.find_spec(modname)
+    except (ImportError, ValueError):
+        return None
+    return getattr(spec, 'origin', None)
+
+
+_SYMPY_VERSION = []
+_VERSION_LINE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _sympy_version():
+    """sympy's `__version__` -- read from its `release.py` where sympy is not
+    imported (a numeric run does not import it)."""
+    m = sys.modules.get('sympy')
+    if m is not None and getattr(m, '__version__', None):
+        return m.__version__
+    if not _SYMPY_VERSION:
+        spec = importlib.util.find_spec('sympy')
+        path = os.path.join(spec.submodule_search_locations[0], 'release.py')
+        with open(path, encoding='utf-8') as fh:
+            _SYMPY_VERSION.append(_VERSION_LINE.search(fh.read()).group(1))
+    return _SYMPY_VERSION[0]
 
 
 def _dependency_hashes(func):
@@ -210,12 +244,13 @@ def _dependency_hashes(func):
     for obj in objs:
         if obj is None:
             continue
-        modname = getattr(obj, '__module__', None)
+        ## (a `_lazy` stand-in: its target's module, imported or not)
+        d = _lazy.describe(obj)
+        modname = d[1] if d is not None else getattr(obj, '__module__', None)
         if not (isinstance(modname, str) and
                 modname.startswith('pycircuit')):
             continue
-        mod = sys.modules.get(modname)
-        path = getattr(mod, '__file__', None)
+        path = _module_file(modname)
         if path:
             files.add(path)
     out = []
@@ -242,8 +277,12 @@ def _value_sig(name, val, depth, seen, in_closure):
     reads `which` from an enclosing function, or `SCALE` from its
     module, compiles differently for each value with the same text --
     and the test suite builds classes exactly that way.  Anything
-    whose value has no stable text is refused, naming the variable.
+    whose value has no stable text is refused, naming the variable.  A
+    `_lazy` stand-in is its target's text.
     """
+    d = _lazy.describe(val)
+    if d is not None:
+        return d[0]
     if isinstance(val, types.ModuleType):
         return 'module:%s' % val.__name__
     if isinstance(val, type):
@@ -273,12 +312,10 @@ def _value_sig(name, val, depth, seen, in_closure):
                                  for v in val)
     if isinstance(val, param.Parameter):
         return _param_decl(val)
-    try:
-        import sympy
-        if isinstance(val, sympy.Basic):
-            return 'sympy:' + sympy.srepr(val)
-    except ImportError:
-        pass
+    ## (no sympy object exists where sympy is not imported)
+    sympy = sys.modules.get('sympy')
+    if sympy is not None and isinstance(val, sympy.Basic):
+        return 'sympy:' + sympy.srepr(val)
     try:
         import numpy
         if isinstance(val, (numpy.ndarray, numpy.generic)):
@@ -460,8 +497,7 @@ def key_for(cls):
         raise Uncacheable('a source file could not be read')
     bindings = _bindings(func)
     import numpy
-    import sympy
-    from pycircuit.circuit import hdl as _hdl_mod
+
     ## ⚠ THE PHYSICAL CONSTANTS ARE PART OF THE KEY.  `vt()` and every
     ## noise density constant-fold `kboltzmann` and `qelectron` at
     ## compile time; a cache keyed on source and versions alone served
@@ -470,6 +506,7 @@ def key_for(cls):
     ## voltage while the tree's constant said another, and the limiting
     ## gate was the only thing that noticed.
     from pycircuit.circuit import constants as _pc
+    from pycircuit.circuit import hdl as _hdl_mod
     consts = tuple(sorted((n, repr(float(getattr(_pc, n))))
                           for n in dir(_pc)
                           if not n.startswith('_')
@@ -478,7 +515,7 @@ def key_for(cls):
         'format=%d' % CACHE_FORMAT,
         'constants=%r' % (consts,),
         'compiler=%s' % comp,
-        'sympy=%s' % sympy.__version__,
+        'sympy=%s' % _sympy_version(),
         'numpy=%s' % numpy.__version__,
         'python=%s' % sys.version,
         'class=%s.%s' % (cls.__module__, cls.__qualname__),
@@ -600,13 +637,32 @@ def _check_namespace(fn, ns, what):
 
 def _imp_registry():
     """Name -> `_imp_` of every DSL function class that has one."""
-    from pycircuit.circuit import hdl
+    from pycircuit.circuit import _hdl_sym
     out = {}
-    for name, obj in vars(hdl).items():
+    for name, obj in vars(_hdl_sym).items():
         imp = getattr(obj, '_imp_', None)
         if isinstance(obj, type) and imp is not None:
             out[name] = imp
     return out
+
+
+_NUMPY_NS = []
+
+
+def _numpy_namespace():
+    """lambdify's numpy namespace -- `MODULES['numpy'][0]` once sympy's
+    `_import('numpy')` has filled it -- built as that fills it, without
+    importing sympy: its default (``I``), its import commands, its
+    translations, and the builtin `abs` for ``Abs``."""
+    if not _NUMPY_NS:
+        ns = {'I': 1j}
+        exec('import numpy; from numpy import *; from numpy.linalg import *',  # noqa: S102
+             {}, ns)
+        ns['Heaviside'] = ns['heaviside']
+        if 'Abs' not in ns:
+            ns['Abs'] = abs
+        _NUMPY_NS.append(ns)
+    return _NUMPY_NS[0]
 
 
 def _lambdify_namespace(imports, extras):
@@ -617,12 +673,11 @@ def _lambdify_namespace(imports, extras):
     (`_imp_`), then the printer's module imports, then `builtins` and
     `range`.
     """
-    from sympy.utilities.lambdify import _import, MODULES
-    from pycircuit.circuit import hdl
     import numpy as np
-    _import('numpy')
+
+    from pycircuit.circuit import hdl
     ns = {}
-    ns.update(MODULES['numpy'][0])
+    ns.update(_numpy_namespace())
     ns.update(dict(hdl._KERNEL_NUMPY, _wrapfloor=np.floor))
     if extras:
         reg = _imp_registry()
@@ -815,53 +870,143 @@ _RUNTIME_KEYS = frozenset(('_jax', '_fused', '_fuse_ok', '_c_bound',
                            '_c_pcnr_refine_status', '_c_pcnr_kernels'))
 
 
-#: `pcnr_vector`'s trees: its chain, its flat forms and its probe symbols --
-#: 5 320 of the library's ~6 200 cached sympy trees, read in one place, the
-#: vector PCNR's JAX twin (`hdl._pcnr_vec_compiled`), which a numeric run
-#: never makes.  Their load was 0.045 s of the library's 0.076 s (2026-10-25).
-_DEFER = ('chain', 'sym', 'vsyms')
-#: The entry's key holding them, pickled apart (`_defer`).
-_BLOB = '__hdl_deferred__'
+## -- the entry's sympy trees, loaded on first use ------------------------------
+
+#: The payload's key holding its sympy trees: one pickle of every value
+#: `_defer` took out of it -- each left as a `_Ref` to its place in that
+#: list.  The library's ~6 200 cached trees were most of its loads (0.076 s,
+#: 2026-10-25), and a numeric run reads none: only the JAX twins,
+#: `explain()`, the symbolic toolkit and a limiter's C render missing its side
+#: entry do.  Loading none, a numeric run never imports sympy.
+_TREES = '__hdl_trees__'
+
+
+class _Ref:
+    """A deferred value's place among its entry's trees (`_defer`)."""
+    __slots__ = ('i',)
+
+    def __init__(self, i):
+        self.i = i
+
+    def __reduce__(self):
+        return (_Ref, (self.i,))
+
+
+class _Trees:
+    """An entry's trees: their pickle, loaded -- as `_read` loads, as
+    stored -- on the first access to any, once."""
+    __slots__ = ('_blob', '_lock', '_vals')
+
+    def __init__(self, blob):
+        self._blob = blob
+        self._vals = None
+        self._lock = threading.Lock()
+
+    def values(self):
+        vals = self._vals
+        if vals is None:
+            with self._lock:
+                vals = self._vals
+                if vals is None:
+                    vals = self._vals = _loads(self._blob)
+                    self._blob = None
+        return vals
+
+
+class _LazyTuple:
+    """A function's `_hdl_limit_par` kept among its entry's trees: the
+    tuple, loaded on its first use -- iterated, indexed, measured, compared,
+    pickled (`unlazy` hands back the tuple)."""
+    __slots__ = ('_i', '_trees')
+
+    def __init__(self, trees, i):
+        self._trees = trees
+        self._i = i
+
+    def value(self):
+        return self._trees.values()[self._i]
+
+    def __iter__(self):
+        return iter(self.value())
+
+    def __getitem__(self, k):
+        return self.value()[k]
+
+    def __len__(self):
+        return len(self.value())
+
+    def __eq__(self, other):
+        return self.value() == unlazy(other)
+
+    def __hash__(self):
+        return hash(self.value())
+
+    def __reduce__(self):
+        return (tuple, (self.value(),))
+
+    def __repr__(self):
+        return repr(self.value())
+
+
+def unlazy(val):
+    """`val` -- the tuple, where it is a `_LazyTuple`."""
+    return val.value() if type(val) is _LazyTuple else val
 
 
 class _Deferred(dict):
-    """A thawed `pcnr_vector`: its trees (`_DEFER`) held as the entry's bytes
-    and loaded -- as `_read` loads, as stored -- before any access that could
-    see them absent: one of them read, asked for or written; a view of the
-    whole (iteration, length, equality, a copy, pickling).  Its other keys are
-    read as from any dict, nothing loaded.  Copied or pickled, it is a plain
-    dict."""
-    __slots__ = ('_blob',)
+    """A thawed dict some of whose values (`refs`: key -> place) are kept
+    among its entry's trees, and loaded -- the entry's trees at once -- before
+    any access that could see them absent: one of them read or written; a
+    view of the whole (iteration, equality, a copy, pickling).  Its other keys
+    are read as from any dict, and membership and length are answered,
+    nothing loaded; loaded, its keys are in their stored order.  Copied or
+    pickled, it is a plain dict."""
+    __slots__ = ('_order', '_refs', '_trees')
 
-    def __init__(self, base, blob):
+    def __init__(self, base, trees, refs, order):
         super().__init__(base)
-        self._blob = blob
+        self._trees = trees
+        self._refs = refs
+        self._order = order
 
     def _load(self):
-        blob = self._blob
-        if blob is not None:
-            with sympy.evaluate(False):
-                more = pickle.loads(blob)
-            dict.update(self, thaw(more))
-            self._blob = None
+        refs = self._refs
+        if refs is None:
+            return
+        vals = self._trees.values()
+        have = dict(dict.items(self))
+        items = [(k, vals[refs[k]] if k in refs else have.pop(k))
+                 for k in self._order if k in refs or k in have]
+        dict.clear(self)
+        dict.update(self, items)
+        dict.update(self, have)         # (keys added before the load)
+        self._refs = self._trees = self._order = None
 
     def _need(self, key):
-        if self._blob is not None and key in _DEFER and not dict.__contains__(self, key):
+        refs = self._refs
+        if refs is not None and key in refs:
             self._load()
 
     def __missing__(self, key):
-        if self._blob is not None and key in _DEFER:
+        refs = self._refs
+        if refs is not None and key in refs:
             self._load()
             return dict.__getitem__(self, key)
         raise KeyError(key)
 
+    def __contains__(self, key):
+        refs = self._refs
+        if refs is not None and key in refs:
+            return True
+        return dict.__contains__(self, key)
+
+    def __len__(self):
+        refs = self._refs
+        return dict.__len__(self) + (len(refs) if refs is not None else 0)
+
     def get(self, key, default=None):
         self._need(key)
         return dict.get(self, key, default)
-
-    def __contains__(self, key):
-        self._need(key)
-        return dict.__contains__(self, key)
 
     def __setitem__(self, key, value):
         self._need(key)
@@ -891,7 +1036,7 @@ def _whole(name):
     return whole
 
 
-for _name in ('keys', 'values', 'items', '__iter__', '__reversed__', '__len__', '__eq__',
+for _name in ('keys', 'values', 'items', '__iter__', '__reversed__', '__eq__',
               '__ne__', '__repr__', 'copy', 'popitem', 'clear', 'update', '__or__', '__ror__',
               '__ior__'):
     setattr(_Deferred, _name, _whole(_name))
@@ -910,28 +1055,71 @@ def _has_record(obj):
     return False
 
 
+_PLAIN = (str, bytes, int, float, complex, bool, type(None))
+
+
+def _needs_sympy(obj):
+    """Whether rebuilding `obj` needs sympy: it holds an instance of a class
+    sympy defines (or a subclass: the language's own), a sympy class, or a
+    `_lazy` stand-in."""
+    if isinstance(obj, _PLAIN):
+        return False
+    if isinstance(obj, dict):
+        return any(_needs_sympy(k) or _needs_sympy(v) for k, v in obj.items())
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return any(_needs_sympy(v) for v in obj)
+    if _lazy.is_standin(obj):
+        return True
+    if getattr(obj, 'dtype', None) is not None and getattr(obj.dtype, 'hasobject', False):
+        return any(_needs_sympy(v) for v in obj.ravel())
+    return any(c.__module__.startswith('sympy') for c in type(obj).__mro__)
+
+
 def _defer(payload):
-    """`payload` with `pcnr_vector`'s trees pickled apart (`_BLOB`) -- or as
-    it is, where it has none or they hold a function's record."""
-    pv = payload.get('pcnr_vector')
-    if type(pv) is not dict or not any(k in pv for k in _DEFER):
-        return payload
-    trees = {k: pv[k] for k in _DEFER if k in pv}
-    if _has_record(trees):
-        return payload
-    rest = {k: v for k, v in pv.items() if k not in _DEFER}
-    rest[_BLOB] = pickle.dumps(trees, protocol=pickle.HIGHEST_PROTOCOL)
-    return {**payload, 'pcnr_vector': rest}
+    """`payload` with every value rebuilding it would import sympy for taken
+    out, into one pickle (`_TREES`), each left as a `_Ref`: a dict's value
+    holding no function record (a dict's are deferred inside it, so the dict
+    stays), and a function record's `_hdl_limit_par`.  Shared values are
+    taken once, so they come back shared."""
+    trees = []
+    seen = {}
+
+    def take(v):
+        k = seen.get(id(v))
+        if k is None:
+            k = seen[id(v)] = len(trees)
+            trees.append(v)
+        return _Ref(k)
+
+    def walk(obj):
+        if isinstance(obj, tuple) and len(obj) == 5 and obj[0] == _FN:
+            lp = obj[4]
+            if lp is not None and _needs_sympy(lp) and not _has_record(lp):
+                return obj[:4] + (take(lp),)
+            return obj
+        if isinstance(obj, dict):
+            return {k: (v if not _needs_sympy(v) else
+                        walk(v) if isinstance(v, dict) or _has_record(v) else take(v))
+                    for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [walk(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(walk(v) for v in obj)
+        return obj
+
+    out = walk(payload)
+    if trees and isinstance(out, dict):
+        out[_TREES] = pickle.dumps(trees, protocol=pickle.HIGHEST_PROTOCOL)
+    return out
 
 
-def _undefer(info):
-    """A thawed `info` whose `pcnr_vector` carries its trees apart: that
-    dict a `_Deferred`."""
-    pv = info.get('pcnr_vector')
-    if type(pv) is dict and _BLOB in pv:
-        blob = pv.pop(_BLOB)
-        info['pcnr_vector'] = _Deferred(pv, blob)
-    return info
+def _thaw_payload(payload):
+    """`thaw(payload)`, its trees (`_TREES`) loaded on first use."""
+    if isinstance(payload, dict) and _TREES in payload:
+        trees = _Trees(payload[_TREES])
+        payload = {k: v for k, v in payload.items() if k != _TREES}
+        return thaw(payload, None, trees)
+    return thaw(payload)
 
 
 def freeze(obj, memo=None):
@@ -963,7 +1151,7 @@ def freeze(obj, memo=None):
         ## and `_jax` is skipped below for the same reason.
         return (_FN, token, _freeze_function(obj),
                 getattr(obj, '_wants_x', None),
-                getattr(obj, '_hdl_limit_par', None))
+                unlazy(getattr(obj, '_hdl_limit_par', None)))
     if isinstance(obj, dict):
         return {k: freeze(v, memo) for k, v in obj.items()
                 if k not in _RUNTIME_KEYS}
@@ -976,7 +1164,9 @@ def freeze(obj, memo=None):
     return obj
 
 
-def thaw(obj, memo=None):
+def thaw(obj, memo=None, trees=None):
+    """`freeze`'s inverse: every record a function again, every `_Ref` to
+    `trees` (`_thaw_payload`) a value loaded on first use."""
     if memo is None:
         memo = {}
     if isinstance(obj, tuple) and len(obj) == 5 and obj[0] == _FN:
@@ -987,6 +1177,8 @@ def thaw(obj, memo=None):
         if wants_x is not None:
             fn._wants_x = wants_x
         if limit_par is not None:
+            if type(limit_par) is _Ref:
+                limit_par = _LazyTuple(trees, limit_par.i)
             try:
                 fn._hdl_limit_par = limit_par
             except AttributeError:              # pragma: no cover
@@ -994,12 +1186,55 @@ def thaw(obj, memo=None):
         memo[token] = fn
         return fn
     if isinstance(obj, dict):
-        return {k: thaw(v, memo) for k, v in obj.items()}
+        base = {}
+        refs = None
+        for k, v in obj.items():
+            if type(v) is _Ref:
+                if refs is None:
+                    refs = {}
+                refs[k] = v.i
+            else:
+                base[k] = thaw(v, memo, trees)
+        if refs is None:
+            return base
+        return _Deferred(base, trees, refs, tuple(obj))
     if isinstance(obj, list):
-        return [thaw(v, memo) for v in obj]
+        return [thaw(v, memo, trees) for v in obj]
     if isinstance(obj, tuple):
-        return tuple(thaw(v, memo) for v in obj)
+        return tuple(thaw(v, memo, trees) for v in obj)
     return obj
+
+
+## -- unpickling: sympy's evaluation off where the pickle holds its objects --
+
+class _Unpickler(pickle.Unpickler):
+    """An unpickler that turns sympy's evaluation off before it looks up
+    the first class sympy -- or the language (`_hdl_sym`) -- defines: the
+    trees come back as stored (`_read`), and a pickle holding none never
+    imports sympy."""
+    _off = None
+
+    def find_class(self, module, name):
+        if self._off is None and (module == 'sympy' or module.startswith('sympy.')
+                                  or module == 'pycircuit.circuit._hdl_sym'):
+            import sympy
+            off = sympy.evaluate(False)
+            off.__enter__()
+            self._off = off
+        return super().find_class(module, name)
+
+
+def _unpickle(fh):
+    u = _Unpickler(fh)
+    try:
+        return u.load()
+    finally:
+        if u._off is not None:
+            u._off.__exit__(None, None, None)
+
+
+def _loads(blob):
+    return _unpickle(io.BytesIO(blob))
 
 
 ## ----------------------------------------------------------------------
@@ -1014,7 +1249,9 @@ def _read(key):
     why not.  Every failure is a miss; the reason is for the status.
 
     The payload's sympy expressions are rebuilt AS STORED: sympy's
-    evaluation is off while they load.  pickle rebuilds each node through
+    evaluation is off while they load (`_Unpickler`: from the first sympy
+    class the pickle names -- one naming none, as a payload whose trees are
+    apart (`_defer`), leaves sympy unimported).  pickle rebuilds each node through
     its constructor, and an evaluating constructor evaluates again -- every
     Pow's and Relational's evaluation and the assumption queries behind
     them, 0.18 s of the library's 0.32 s of loads.  A stored tree is the
@@ -1028,8 +1265,8 @@ def _read(key):
     if not os.path.exists(path):
         return None, 'no entry'
     try:
-        with open(path, 'rb') as fh, sympy.evaluate(False):
-            entry = pickle.load(fh)
+        with open(path, 'rb') as fh:
+            entry = _unpickle(fh)
     except Exception as e:
         return None, 'unreadable entry: %s' % _brief(e)
     if not isinstance(entry, dict) or entry.get('key') != key or \
@@ -1116,7 +1353,7 @@ def compiled_info(cls, compile_fn):
     payload, why = _read(key)
     if payload is not None:
         try:
-            info = _undefer(thaw(payload))
+            info = _thaw_payload(payload)
         except Exception as e:
             ## An entry that unpickled but will not rebuild -- the
             ## reason goes in the status, because a silent miss here

@@ -15,7 +15,10 @@ value class and can be constructed directly from any sympy expressions.
 """
 
 import numpy as np
-import sympy
+
+from pycircuit.circuit import _lazy
+
+sympy = _lazy.module('sympy')     # imported on first use (`_lazy`)
 
 
 class TransferFunction:
