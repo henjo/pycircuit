@@ -106,6 +106,16 @@ typedef struct {
        `rk.kAx` a real solve of the step made -- each real solve then
        `solve_kept` (`pcx_klu_kept`), and leaves it as that leaves it */
     long rk_held;
+    /* CTX: the pool (pool.c's `pcx_pool`, `_tran_core.pool_address`) and its
+       threads (`_tran_core.THREADS`): the step's first iteration's real solve
+       and complex refactor side by side (radau_tc.c's `tf_pair`) where it
+       runs and more than one thread is asked for; NULL or 1, one after the
+       other */
+    void *pool_fn;
+    long nthreads;
+    /* OUT: the first iterations the pool made side by side, over the
+       struct's life (what the tests read) */
+    long paired;
     pcx_klu_t rk;
     double *rk_A, *rk_y, *rk_t;
     void *rk_dgemv;
@@ -140,6 +150,15 @@ typedef struct {
        made), not read */
     double *e_q, *e_i, *e_C, *e_G, *e_C01, *e_G01, *e_q01;
 } radau_tf_t;
+
+/* the step's two factors as a job of the pool (radau_tc.c's `tf_pair`): its
+   transform, the real factor's size and each item's outcome */
+typedef struct {
+    radau_tf_t *s;        /* the transform */
+    long m;               /* the reduced size */
+    long real;            /* OUT: the real solve's -- 0, or its bail */
+    int complex;          /* OUT: the complex refactor's -- KLU's ok */
+} tf_pair_t;
 long pcx_radau_tc(radau_tf_t *s);
 
 /* pcx_radau_tc's result, left in `status` too (`_tran_radau_tc.BAIL` names the

@@ -582,12 +582,12 @@ def _cir_c_counts(e):
 def _bind_newton(run, e):
     """The loop's radau_tf_t's run constants (`_tran_radau_tc.solve`'s for a
     record): the tableau, V's entries as `_FrozenTransform.v`, the end
-    passes' bits, the complex solver's library entries, handles and the
-    last record's pattern; the product M = diag(lam) Tinv's rows 0 and 1,
+    passes' bits, the pool and its threads, the complex solver's library
+    entries, handles and the last record's pattern; the product M = diag(lam) Tinv's rows 0 and 1,
     numpy's, from which each step's P is made."""
     import ctypes
 
-    from pycircuit.circuit import _cbuild, _tran_radau_tc
+    from pycircuit.circuit import _cbuild, _tran_core, _tran_radau_tc
     ts, tffi, zs = run.tctx.s, run.tctx.ffi, e.zs
     Amat = np.array(e.integ.A, dtype=float)
     for k, v in enumerate(Amat.ravel().tolist()):
@@ -604,6 +604,9 @@ def _bind_newton(run, e):
     s.lam0r, s.lam1r, s.lam1i = float(lam[0].real), float(lam[1].real), float(lam[1].imag)
     ts.end_bits, ts.end_cg = 7 | run.tctx.patbit, 0
     ts.fused = int(_tran_radau_tc._MOD['cmul'])
+    pool = _tran_core.pool_address()
+    ts.pool_fn = tffi.cast('void *', pool) if pool else tffi.NULL
+    ts.nthreads = int(_tran_core.THREADS)
     ts.klu_refactor = tffi.cast('void *', _cbuild.address(zs._lib.klu_z_refactor))
     ts.klu_solve = tffi.cast('void *', _cbuild.address(zs._lib.klu_z_solve))
     ts.Symbolic = tffi.cast('void *', zs._symbolic)

@@ -552,6 +552,28 @@ def test_a_run_on_the_klu_real_factor_is_the_python_one(name, make, setup, kw, m
         assert real[2] > 0, real
 
 
+@pytest.mark.parametrize('build, setup', [(_pulsed, None), (_klu_chain, _klu())],
+                         ids=['dense', 'klu'])
+def test_the_loops_two_factors_side_by_side_are_one_after_the_other(build, setup, monkeypatch):
+    """The C loop's steps with the first iteration's real solve and complex
+    refactor as one job of the pool (four threads): every byte, statistic,
+    warning, count and state of the same loop on one thread -- and the pool
+    made them (the loop's `radau_tf_t.paired`)."""
+    from pycircuit.circuit import _tran_core
+    got = []
+    for th in (1, 4):
+        runs = []
+        with monkeypatch.context() as mp:
+            mp.setattr(_tran_core, 'THREADS', th)
+            _planted(mp, runs.append)
+            a, ca = _run(build, True, mp, setup=setup, **_PULSE)
+        a.pop('family')
+        a['counts'] = {k: v for k, v in a['counts'].items() if 'pool' not in k}
+        got.append((a, sum(int(r.tctx.s.paired) for r in {id(r): r for r in runs}.values()), ca))
+    assert got[0][0] == got[1][0]
+    assert got[0][1] == 0 and got[1][1] > 0 and got[1][2].get('tcloop_c:steps', 0) > 10, got[1][1:]
+
+
 def test_a_steps_real_factor_on_klu_is_refactored_once(monkeypatch):
     """On the analysis solver's StructuralKLU every real solve of a step --
     the Newton's, the early check's, the estimate's -- is on the refactor

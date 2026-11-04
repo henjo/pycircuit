@@ -53,7 +53,10 @@ factor's values at the pattern, taken once a call with `_ours`'s count (a
 nonzero off the pattern declines: `klu_foreign`) -- `solve_kept`'s, no
 refactor, where the step's real solves already made it
 (`_FrozenTransform.kept`, radau_tc.h's `rk_held`: in at each call, out
-where served); the complex factor's KLU on the solver's own handles (the refactor
+where served); at the step's first iteration that real solve and the
+complex factor's refactor side by side on the pool (`_tran_core.THREADS`,
+`pool_address`), their outcomes read in the one-after-the-other order, a
+refactor made beside a bail not counted; the complex factor's KLU on the solver's own handles (the refactor
 `solve_prepared` would make, at most once a record, then `klu_z_solve`);
 ``dY_i = V_i0 w0 + 2 Re(V_i1 w1)``; per stage ``Y_prev + insert(dY_i,
 iref, 0.0)``, the limiter walk's own driver and the limited step's largest
@@ -596,9 +599,14 @@ class _Ctx:
         s.walk_fn = ffi.NULL
         s.wn = 0
         ## (what does not change from step to step is set once: the product
-        ## form, the passes' bits; the rest by `solve`, when it changes)
+        ## form, the passes' bits, the pool and its threads; the rest by
+        ## `solve`, when it changes)
         s.fused = _MOD['cmul']
         s.bits = _MOD['bits']
+        from pycircuit.circuit import _tran_core
+        pool = _tran_core.pool_address()
+        s.pool_fn = ffi.cast('void *', pool) if pool else ffi.NULL
+        s.nthreads = int(_tran_core.THREADS)
         self.A_bytes = self.p_of = self.Ap_obj = self.keep_ap = self.klu_kk = None
         self.lu_addr = self.served = None
         self.walk = self.walk_ok = None

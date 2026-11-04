@@ -56,8 +56,8 @@ def _run(build, on, make=None, **kw):
         with warnings.catch_warnings(record=True) as W:
             warnings.simplefilter('always')
             warnings.simplefilter('ignore', ResourceWarning)
-            tr = Transient(build(), toolkit=circuit.numeric, integrator=RadauIIA3Integrator(),
-                           **(make or {}))
+            tr = _run.last = Transient(build(), toolkit=circuit.numeric,
+                                       integrator=RadauIIA3Integrator(), **(make or {}))
             before = _paths.snapshot()
             res = tr.solve(**kw)
             d = _paths.since(before)
@@ -876,3 +876,74 @@ def test_the_klu_values_a_hair_off_is_another_run(monkeypatch):
     monkeypatch.setattr(TC, '_rk_bind', planted)
     b, db = _klu_run(True, _klu(), **_KLU_PULSE)
     assert db.get('radau_tc:served', 0) > 10 and (a[0] != b[0] or a[1] != b[1])
+
+
+def _on_threads(build, make, threads, monkeypatch, **kw):
+    """One transform-path run on `threads` threads (`_tran_core.THREADS`), the
+    C stepping loop off -- each step's own C call: `(what it made, the
+    counts, the first iterations the pool paired)`."""
+    from pycircuit.circuit import _tran_core
+    with monkeypatch.context() as mp:
+        mp.setattr(_tran_core, 'THREADS', threads)
+        mp.setattr(_tran_tcloop_c, 'ENABLED', False)
+        out, d = _run(build, True, make, **kw)
+        tr = _run.last
+    ctx = tr.__dict__.get('_radau_tc')
+    return out, d, (0 if ctx is None else int(ctx.s.paired))
+
+
+@pytest.mark.parametrize('case', ['mos-transform', 'pulse-40-transform'])
+def test_the_two_factors_side_by_side_are_one_after_the_other(case, monkeypatch):
+    """The step's first iteration's real solve and complex refactor as one
+    job of the pool (radau_tc.c's `tf_pair`, four threads): the run's bytes,
+    statistics, warnings and counts those of the same run on one thread,
+    where they are made one after the other -- and the pool made them."""
+    _on()
+    build, make = CASES[case]
+    kw = {'tend': 6e-7, 'timestep': 2e-8}
+    a, da, pa = _on_threads(build, make, 1, monkeypatch, **kw)
+    b, db, pb = _on_threads(build, make, 4, monkeypatch, **kw)
+    assert a == b
+    assert {k: v for k, v in da.items() if 'pool' not in k} == {k: v for k, v in db.items()
+                                                                if 'pool' not in k}
+    assert pa == 0 and pb > 0 and db.get('radau_tc:served', 0) > 0, (pa, pb, db)
+
+
+def test_a_hand_back_beside_the_pools_refactor_answers_as_the_python(monkeypatch):
+    """The captured step with its first iteration's two factors side by side
+    on the pool (four threads): served, the Python's answer; a singular real
+    factor -- the complex refactor made beside it and not counted, the
+    Python refactoring before its use -- and the refactor failing, each
+    handed back with the Python's answer, counts and factorisations; and
+    the pool made them."""
+    _on()
+    from pycircuit.circuit import _tran_core
+    pool = _tran_core.pool_address()
+    if not pool:
+        pytest.skip('no pool')
+    tr, got = _cap()
+    ## (the step's C context made again on four threads, the captured one
+    ## put back after)
+    monkeypatch.setattr(_tran_core, 'THREADS', 4)
+    monkeypatch.delitem(tr.__dict__, '_radau_tc', raising=False)
+    paired = []
+
+    def both(**kw):
+        out = _both(_seed(), **kw)
+        rec = tr.__dict__['_radau_tc']
+        assert int(rec.s.nthreads) == 4
+        paired.append(int(rec.s.paired))
+        return out
+    a, b, db = both()
+    assert a == b and db.get('radau_tc:served') == 1, db
+    m = len(_seed()[0]) - 1
+    gam = tr._radau_transform_matrices()[0][0].real / got['ctx'].h
+    Gs = np.eye(m)
+    Gs[0, 0] = -gam
+    a, b, db = both(Cr=np.eye(m), Gr=Gs)
+    assert a == b and a[0] == ('LinAlgError', 'Singular matrix'), a[0]
+    _bail(db, 'lu')
+    a, b, db = both(fail='refactor')
+    assert a == b
+    _bail(db, 'refactor')
+    assert paired == sorted(paired) and paired[-1] >= 3, paired

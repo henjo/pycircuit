@@ -22,7 +22,8 @@
    the one counter and the output rows its neighbours write beside its own
    (measured on the gold decks, four threads: 1 or 2 items a take slower
    everywhere, jge under Radau 9.2 -> 10.7 s at 1; 8 jge 1.03x, the rest the
-   same; 16 gm19 and voter25 1-2 % slower; a longer spin no change) */
+   same; 16 gm19 and voter25 1-2 % slower; a longer spin no change); a job of
+   fewer items than a chunk one at a time (radau_tc.c's two factors) */
 enum { POOL_MAX = 31, POOL_CHUNK = 4, POOL_CHUNK_BIG = 8, POOL_SPIN = 1 << 16 };
 
 static pthread_mutex_t pool_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -163,7 +164,8 @@ long pcx_pool(void *range, const void *ctx, long n, long nthreads)
     pool_job.range = range;
     pool_job.ctx = ctx;
     pool_job.n = n;
-    pool_job.chunk = n >= 2 * POOL_CHUNK_BIG * (pool_started + 1) ? POOL_CHUNK_BIG : POOL_CHUNK;
+    pool_job.chunk = n < POOL_CHUNK ? 1
+                     : n >= 2 * POOL_CHUNK_BIG * (pool_started + 1) ? POOL_CHUNK_BIG : POOL_CHUNK;
     pool_run(&pool_job);
     atomic_flag_clear_explicit(&pool_busy, memory_order_release);
     return 1;

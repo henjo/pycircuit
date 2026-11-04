@@ -13223,3 +13223,42 @@ naming `StructuralKLU.solve` now names `_solve` too, the transform's two `solve_
 
 **Gate** (the main tree): the TELL; the suite, 6 145 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 248's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-11-04 — 250. The two factors side by side -- a Radau step's first real solve and its complex refactor as one job of the pool: mux8 under Radau 4.478 -> 4.325 s (1.037x), every result the same
+
+**Why**  Plan g24's `tc/plan_245_next.md`, item C (Andreas: "continue in the your recommended order"): at the step's
+first iteration the transform's real solve (the real factor: numpy's `dgesv` or the analysis solver's KLU) and the
+complex factor's refactor are independent -- each its own factor, numeric and common.  Their overlap in place (radau_tc.c
+timing each iteration's two parts, the sum of the smaller, first iterations alone): jge 0.30 s, mux8 0.18, gm19 0.10,
+voter25 0.12 -- before a hand-off a step (later iterations pair a ~1 us `dgetrs` with a ~4 us complex solve: none).  A
+prototype in a worktree (the two as a pool job, the pool taking a job smaller than a chunk one item at a time; 5
+interleaved rounds against itself without): jge 1.027x, mux8 1.029x, gm19 1.022x, voter25 1.018x, the digests the
+same.  LINE (set after the prototype, before building; one form): mux8 under Radau at least 1.015x against HEAD
+ce9c4a36, the median of 5 interleaved quiet-box pairs; GUARD: the 27 decks' total solve under each method not slower;
+every digest, step, rejection, Newton count and path count the same.  Refused under.
+
+**Built.**  radau_tc.c: the real solve as `tf_real`; where the complex refactor is due, `tf_pair` -- item 0 the real
+solve, item 1 the refactor -- run by the pool (`pool_fn`, `nthreads` in radau_tc.h: `_tran_core.pool_address` and
+`THREADS`, set by `_Ctx` and by the C loop's `_bind_newton`), else by the caller one after the other; the outcomes read
+after both in today's order (the real solve's bail, its step non-finite, the refactor failing) and the refactor
+recorded (`klu_fresh`, `refactored`) only where nothing before it bails -- one made beside a bail is not the Python's
+to count: `_fresh` stays as it was and the Python refactors before its use, the same values on the same pivots.  The
+threads' flags reach the caller through the pool and are cleared with the complex solve's.  pool.c: a job of fewer
+items than a chunk taken one at a time.  radau_tc.h's `paired` counts the first iterations made side by side (the
+tests read it).  `PYCIRCUIT_CORE_THREADS=1`: one after the other, as before.
+
+**Measured** (a quiet box, HEAD ce9c4a36 from its worktree and this tree, interleaved): mux8 under Radau 4.478 -> 4.325 s, 1.037x (1.034 to 1.038, 5 pairs; the line 1.015x) -- met; 3 pairs each: jge 1.030x, gm19 1.018x, voter25 1.018x.  The gate's runs: the 27 decks' solves 1.023x under Radau (30.2 -> 29.5 s), 1.004x under gear2 -- the guard met.
+
+**Tests.**  The suite runs one thread, so these turn four on.  test_radau_tc: two transform-path transients (the MOS
+chain, the 40-stage pulse), the C loop off -- every byte, statistic, warning and count of the one-thread run, the pool
+pairing; the captured step served, a singular real factor (the refactor made beside it, not counted) and a failed
+refactor, each the Python's answer, counts and factorisations, the pool pairing all three.  test_tcloop_c: the C loop's
+runs on the dense and the KLU real factor, every byte, statistic, warning, count and state of the one-thread loop's, the
+pool pairing.  Mutations: the refactor counted beside a bail, the job or the one-after-the-other branch skipping the
+refactor -- each caught; the clear of the threads' flags after the job, unobservable (the complex solve's clear follows
+before any test of them): removed.  The C twins' 461 before eight pinned pairs were re-recorded (radau_tc.c and .h,
+pool.c in the units' texts; no reference moved).
+
+**Gate** (the main tree): the TELL; the suite, 6 150 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks (four threads, the default) -- standalone DC against 249's gate runs, gear2 and Radau against HEAD interleaved:
+every digest, step, rejection, Newton count and path count identical.

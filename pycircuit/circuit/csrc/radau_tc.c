@@ -94,12 +94,59 @@ static void end_G(const radau_tf_t *s, double *G, long bits)
    struct's buffers and the factorisations only the core's and the walk's
    own writes are made (the core's bins; the temperature in the elements'
    parameter rows), as the Python's calls of the same C make them. */
+/* the iteration's real solve (`_FrozenTransform.real_solve`): the analysis
+   solver's StructuralKLU (radau_tc.h), or numpy's kept LU -- `dgesv` at its
+   first solve, `dgetrs` after (`NumpyLU.solve`; lu_info as radau_tc.h says).
+   0, or the bail it hands back.  (LAPACK's and KLU's flags are not numpy's:
+   cleared; a nonzero info is numpy's LinAlgError) */
+static long tf_real(radau_tf_t *s, long m)
+{
+    int64_t m64 = m, one64 = 1, info64 = 0;
+    if (s->rk_on) {
+        long st = pcx_klu_kept(&s->rk, &s->rk_held, s->rk_A, s->b0, s->x0, s->rk_y, s->rk_t, m,
+                               s->rk_dgemv, &s->rk_dense);
+        feclearexcept(FE_ALL_EXCEPT);
+        return st ? RADAU_TC_BAIL_KLUREAL : 0;
+    }
+    memcpy(s->x0, s->b0, (size_t) m * sizeof(double));
+    if (s->lu_info < 0) {
+        ((dgesv64_t) s->dgesv)(&m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0, &m64, &info64);
+        s->lu_info = info64;
+    } else if (s->lu_info == 0) {
+        ((dgetrs64_t) s->dgetrs)("N", &m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0, &m64,
+                                 &info64, (size_t) 1);
+    }
+    feclearexcept(FE_ALL_EXCEPT);
+    return s->lu_info != 0 ? RADAU_TC_BAIL_LU : 0;
+}
+
+/* THE TWO FACTORS SIDE BY SIDE: where the complex factor's refactor is due
+   (the step's first iteration), the real solve (item 0) and that refactor
+   (item 1) -- independent: each its own factor, numeric and common -- as a
+   job of the pool (`pool_fn`, pool.c), each item on whichever thread takes
+   it.  Their results are read after both, in the order the one-after-the-
+   other loop meets them, and the refactor is recorded only where none
+   before it bails: one made beside a bail is not the Python's to count (its
+   numeric is refactored again before use: `_fresh` stays as it was) */
+static void tf_pair(const void *ctx, long lo, long hi)
+{
+    tf_pair_t *p = (tf_pair_t *) ctx;
+    radau_tf_t *s = p->s;
+    long i;
+    for (i = lo; i < hi; i++) {
+        if (i == 0)
+            p->real = tf_real(s, p->m);
+        else
+            p->complex = ((klu_refactor_t) s->klu_refactor)(s->Ap, s->Ai, s->Ax, s->Symbolic,
+                                                           s->Numeric, s->Common);
+    }
+}
+
 static long tf_newton(radau_tf_t *s)
 {
     long n = s->n, m = n - 1, r = s->iref, it, i, j, k, e;
     core_fn_t core = (core_fn_t) s->core_fn;
     walk_fn_t walk = (walk_fn_t) s->walk_fn;
-    int64_t m64 = m, one64 = 1, info64 = 0;
     const double h = s->h;
     s->iters = 0;
     s->status = RADAU_TC_RUNNING;
@@ -176,42 +223,30 @@ static long tf_newton(radau_tf_t *s)
         if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_FLAGS);
         /* a non-finite real right-hand side is the analysis solver's */
         for (k = 0; k < m; k++) if (!isfinite(s->b0[k])) return tf_bail(s, RADAU_TC_BAIL_RHS);
-        if (s->rk_on) {
-            /* the analysis solver's StructuralKLU.solve (radau_tc.h) */
-            if (pcx_klu_kept(&s->rk, &s->rk_held, s->rk_A, s->b0, s->x0, s->rk_y, s->rk_t, m,
-                             s->rk_dgemv, &s->rk_dense))
-                return tf_bail(s, RADAU_TC_BAIL_KLUREAL);
-            feclearexcept(FE_ALL_EXCEPT);
-        } else {
-            /* numpy's kept LU: `dgesv` at its first solve, `dgetrs` after
-               (`NumpyLU.solve`; lu_info as radau_tc.h says) */
-            memcpy(s->x0, s->b0, (size_t) m * sizeof(double));
-            if (s->lu_info < 0) {
-                ((dgesv64_t) s->dgesv)(&m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0, &m64,
-                                       &info64);
-                s->lu_info = info64;
-            } else if (s->lu_info == 0) {
-                ((dgetrs64_t) s->dgetrs)("N", &m64, &one64, s->lu_a, &m64, s->lu_ipiv, s->x0,
-                                       &m64, &info64, (size_t) 1);
+        {
+            /* the real solve, then the complex factor's refactor at most once
+               a record -- side by side on the pool where it is due and the
+               pool runs (`tf_pair`), else one after the other */
+            tf_pair_t pj = {s, m, 0, 1};
+            int both = !s->klu_fresh;
+            if (both && s->pool_fn && s->nthreads > 1
+                && ((pool_fn_t) s->pool_fn)((void *) tf_pair, &pj, 2, s->nthreads))
+                s->paired++;
+            else
+                tf_pair(&pj, 0, both ? 2 : 1);
+            if (pj.real) return tf_bail(s, pj.real);
+            for (k = 0; k < m; k++) if (!isfinite(s->x0[k])) return tf_bail(s, RADAU_TC_BAIL_STEP);
+            if (both) {
+                if (!pj.complex) return tf_bail(s, RADAU_TC_BAIL_REFACTOR);
+                s->klu_fresh = 1;
+                s->refactored++;
             }
-            /* (LAPACK's flags are not numpy's: cleared; a nonzero info is
-               numpy's LinAlgError) */
-            feclearexcept(FE_ALL_EXCEPT);
-            if (s->lu_info != 0) return tf_bail(s, RADAU_TC_BAIL_LU);
-        }
-        for (k = 0; k < m; k++) if (!isfinite(s->x0[k])) return tf_bail(s, RADAU_TC_BAIL_STEP);
-        /* the complex factor: its refactor at most once a record, then the solve */
-        if (!s->klu_fresh) {
-            if (!((klu_refactor_t) s->klu_refactor)(s->Ap, s->Ai, s->Ax, s->Symbolic, s->Numeric,
-                                               s->Common))
-                return tf_bail(s, RADAU_TC_BAIL_REFACTOR);
-            s->klu_fresh = 1;
-            s->refactored++;
         }
         memcpy(s->x1, s->r1, (size_t) (2 * m) * sizeof(double));
         if (!((klu_solve_t) s->klu_solve)(s->Symbolic, s->Numeric, (int) m, 1, s->x1, s->Common))
             return tf_bail(s, RADAU_TC_BAIL_KLUSOLVE);
-        /* (KLU's flags are not numpy's: cleared) */
+        /* (KLU's flags are not numpy's: cleared -- the refactor's too, a
+           worker's raised here by the pool) */
         feclearexcept(FE_ALL_EXCEPT);
         /* the residual check, decided outside the band numpy's `abs` and
            SciPy's product can round apart from these: `solve_prepared`'s
