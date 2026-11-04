@@ -552,6 +552,17 @@ def test_a_run_on_the_klu_real_factor_is_the_python_one(name, make, setup, kw, m
         assert real[2] > 0, real
 
 
+def test_a_steps_real_factor_on_klu_is_refactored_once(monkeypatch):
+    """On the analysis solver's StructuralKLU every real solve of a step --
+    the Newton's, the early check's, the estimate's -- is on the refactor
+    its first made (`_FrozenTransform.kept`, radau_tc.h's `rk_held`): one
+    refactor a step's frozen factors, the C loop's run and the Python's
+    alike (no fallback here; HEAD made three times as many)."""
+    ca = _same(_klu_chain, monkeypatch, steps_min=40, setup=_klu(), **_PULSE)
+    rs = _same.last['state']['real solver'][0]
+    assert rs[1:4] == (1, 0, 0) and rs[0] == ca['radau.frozen:served'], (rs, ca)
+
+
 def test_klu_entries_that_fill_their_outputs_hand_the_numeric_on(monkeypatch):
     """Seven rows an entry on the KLU chain, some residuals failing: the
     numeric each entry ends on the solver's, the next entry's start -- the

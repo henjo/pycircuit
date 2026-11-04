@@ -178,8 +178,8 @@ static long tf_newton(radau_tf_t *s)
         for (k = 0; k < m; k++) if (!isfinite(s->b0[k])) return tf_bail(s, RADAU_TC_BAIL_RHS);
         if (s->rk_on) {
             /* the analysis solver's StructuralKLU.solve (radau_tc.h) */
-            if (pcx_klu_step(&s->rk, s->rk_A, s->b0, s->x0, s->rk_y, s->rk_t, m, s->rk_dgemv, 0,
-                             &s->rk_dense))
+            if (pcx_klu_kept(&s->rk, &s->rk_held, s->rk_A, s->b0, s->x0, s->rk_y, s->rk_t, m,
+                             s->rk_dgemv, &s->rk_dense))
                 return tf_bail(s, RADAU_TC_BAIL_KLUREAL);
             feclearexcept(FE_ALL_EXCEPT);
         } else {

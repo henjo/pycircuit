@@ -50,7 +50,10 @@ AutoSolver whose choice is the circuit's StructuralKLU, `_real_klu`),
 numeric it holds, a fresh factor at a zero pivot or a failed residual --
 the sparse verdict, numpy's dgemv where it does not decide) on the
 factor's values at the pattern, taken once a call with `_ours`'s count (a
-nonzero off the pattern declines: `klu_foreign`); the complex factor's KLU on the solver's own handles (the refactor
+nonzero off the pattern declines: `klu_foreign`) -- `solve_kept`'s, no
+refactor, where the step's real solves already made it
+(`_FrozenTransform.kept`, radau_tc.h's `rk_held`: in at each call, out
+where served); the complex factor's KLU on the solver's own handles (the refactor
 `solve_prepared` would make, at most once a record, then `klu_z_solve`);
 ``dY_i = V_i0 w0 + 2 Re(V_i1 w1)``; per stage ``Y_prev + insert(dY_i,
 iref, 0.0)``, the limiter walk's own driver and the limited step's largest
@@ -847,8 +850,11 @@ def _real_klu(ls, m):
         own = ((_tran_radau._FrozenTransform.real_solve, '_FrozenTransform.real_solve',
                 'pycircuit.circuit._tran_radau'),
                (AutoSolver.solve, 'AutoSolver.solve', L),
+               (AutoSolver.solve_kept, 'AutoSolver.solve_kept', L),
                (AutoSolver._select, 'AutoSolver._select', L),
                (StructuralKLU.solve, 'StructuralKLU.solve', L),
+               (StructuralKLU.solve_kept, 'StructuralKLU.solve_kept', L),
+               (StructuralKLU._solve, 'StructuralKLU._solve', L),
                (StructuralKLU._ours, 'StructuralKLU._ours', L),
                (StructuralKLU._factor, 'StructuralKLU._factor', L),
                (StructuralKLU._analysed, 'StructuralKLU._analysed', L),
@@ -858,15 +864,15 @@ def _real_klu(ls, m):
         g = _MOD['klu_real'] = (_tran_radau, AutoSolver, StructuralKLU,
                                 tuple(o for o, _q, _m in own))
     tr_, AS, SK, pieces = g
-    if (tr_._FrozenTransform.real_solve, AS.solve, AS._select, SK.solve, SK._ours, SK._factor,
-            SK._analysed, SK._free) != pieces:
+    if (tr_._FrozenTransform.real_solve, AS.solve, AS.solve_kept, AS._select, SK.solve,
+            SK.solve_kept, SK._solve, SK._ours, SK._factor, SK._analysed, SK._free) != pieces:
         return 'klu_real'
-    if type(ls) is not AS or 'solve' in ls.__dict__ or '_select' in ls.__dict__:
+    if type(ls) is not AS or any(k in ls.__dict__ for k in ('solve', 'solve_kept', '_select')):
         return 'klu_real'
     sk = ls._choice
     if (type(sk) is not SK or sk.m != m or not sk._symbolic
-            or any(k in sk.__dict__ for k in ('solve', '_ours', '_factor', '_analysed', '_free',
-                                              '_other'))):
+            or any(k in sk.__dict__ for k in ('solve', 'solve_kept', '_solve', '_ours', '_factor',
+                                              '_analysed', '_free', '_other'))):
         return 'klu_real'
     return sk
 
@@ -903,6 +909,7 @@ def _rk_bind(rec, sk, fz):
     k.klu_sym = ffi.cast('void *', sk._symbolic)
     num = sk._numeric
     k.klu_num = ffi.cast('void *', num) if num else ffi.NULL
+    s.rk_held = 1 if fz.kept else 0
     s.rk_on = 1
     return True
 
@@ -935,6 +942,9 @@ def _outcome(tr, rec, fz, status, probe, first, undo):
     if s.rk_on:
         if status in (_CODES['RADAU_TC_CONVERGED'], _CODES['RADAU_TC_MAXITER']):
             _rk_back(rec, fz.ls._choice)
+            ## (the real solves' kept refactor, as `real_solve` leaves it; a
+            ## bail leaves the Python the step's as it entered)
+            fz.kept = bool(s.rk_held)
     elif s.lu_info >= 0:
         lu._info = int(s.lu_info)
     if s.refactored:
@@ -1016,6 +1026,8 @@ def resume(tr, fz, maxit):
     if s.rk_on:
         num = fz.ls._choice._numeric
         s.rk.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
+        ## (the early check's real solve between may have left another)
+        s.rk_held = 1 if fz.kept else 0
     else:
         s.lu_info = -1 if fz.lu._info is None else 0
     s.klu_fresh = 1 if fz.zs._fresh is fz.prep else 0

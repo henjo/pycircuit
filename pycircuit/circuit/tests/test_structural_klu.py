@@ -643,3 +643,76 @@ def test_a_core_without_a_pattern_reduces_j_whole(monkeypatch):
     py, _ = _full_newton_run(monkeypatch, False, sections=260)
     assert c == py
     assert got.get('newton_c:sparse', 0) > 0
+
+
+def test_a_kept_solve_is_the_refactored_one_without_the_refactor():
+    """`solve_kept` on the matrix the last solve refactored: the same bytes
+    as `solve` (the same values on the same pivots), no refactor made nor
+    counted; its residual check and fresh factor stand; a foreign matrix
+    goes to the fallback; AutoSolver delegates, and a solver keeping no
+    numeric solves as `solve`."""
+    c = _ladder()
+    iref, st, s, made = _structural(c)
+    rng = np.random.default_rng(7)
+    x = rng.normal(0.0, 0.5, c.n)
+    J = _reduced(c.G(x, defaultepar), iref) + 1e10 * _reduced(c.C(x, defaultepar), iref)
+    s.solve(J, np.ones(st[0]), numeric)
+    s.solve(J, np.ones(st[0]), numeric)                  # the numeric: a refactor of J
+    counts = (s.refactors, s.factors)
+    for _ in range(3):
+        b = rng.normal(size=st[0])
+        y = s.solve_kept(J, b, numeric)
+        assert (s.refactors, s.factors) == counts
+        assert y.tobytes() == s.solve(J, b, numeric).tobytes()
+        counts = (s.refactors, s.factors)
+    s.REFACTOR_RESIDUAL_TOL = -1.0                       # every reuse fails its check
+    y = s.solve_kept(J, b, numeric)
+    assert s.residual_fallbacks == 1 and (s.refactors, s.factors) == (counts[0], counts[1] + 1)
+    np.testing.assert_allclose(y, np.linalg.solve(J, b), rtol=1e-9)
+    D = rng.normal(size=(st[0], st[0])) + st[0] * np.eye(st[0])
+    np.testing.assert_allclose(s.solve_kept(D, b, numeric), np.linalg.solve(D, b), rtol=1e-9)
+    assert s.foreign == 1 and len(made) == 1
+    dense = linearsolver.DenseSolver()
+    assert dense.solve_kept(J, b, numeric).tobytes() == dense.solve(J, b, numeric).tobytes()
+    auto = linearsolver.AutoSolver(structure=lambda: st, structural_min_n=1)
+    auto.solve(J, b, numeric)
+    auto.solve(J, b, numeric)
+    k = auto._choice
+    assert type(k) is linearsolver.StructuralKLU
+    r = k.refactors
+    assert auto.solve_kept(J, b, numeric).tobytes() == auto.solve(J, b, numeric).tobytes()
+    assert k.refactors == r + 1
+
+
+def test_a_steps_frozen_real_factor_on_klu_is_refactored_once():
+    """`_FrozenTransform.real_solve` on the analysis solver's StructuralKLU:
+    its first solve refactors `rf` and keeps it (`kept`), the step's later
+    solves are `solve_kept` -- the same bytes, no refactor -- until a fresh
+    factor (a failed residual) clears it and the next solve refactors."""
+    from pycircuit.circuit._tran_radau import _SK, _frozen_chain, _FrozenTransform
+    _frozen_chain()
+    assert _SK == [linearsolver.StructuralKLU]
+    c = _ladder()
+    iref, st, _s, _made = _structural(c)
+    x = np.zeros(c.n)
+    rf = _reduced(c.G(x, defaultepar), iref) + 1e10 * _reduced(c.C(x, defaultepar), iref)
+    auto = linearsolver.AutoSolver(structure=lambda: st, structural_min_n=1)
+    auto.solve(rf, np.ones(st[0]), numeric)              # (chosen, analysed, factored)
+    k = auto._choice
+    fz = _FrozenTransform()
+    fz.kept, fz.lu, fz.ls, fz.rf, fz.tk = False, None, auto, rf, numeric
+    rng = np.random.default_rng(11)
+    bs = [rng.normal(size=st[0]) for _ in range(4)]
+    r0 = k.refactors
+    ys = [fz.real_solve(b) for b in bs]
+    assert k.refactors == r0 + 1 and fz.kept
+    ref = linearsolver.StructuralKLU(*st, fallback=linearsolver.SuperLUSolver)
+    for b, y in zip(bs, ys):
+        ref.solve(rf, b, numeric)
+        assert y.tobytes() == ref.solve(rf, b, numeric).tobytes()
+    k.REFACTOR_RESIDUAL_TOL = -1.0
+    fz.real_solve(bs[0])
+    assert not fz.kept and k.residual_fallbacks == 1
+    k.REFACTOR_RESIDUAL_TOL = linearsolver.StructuralKLU.REFACTOR_RESIDUAL_TOL
+    fz.real_solve(bs[1])
+    assert fz.kept and k.refactors == r0 + 2

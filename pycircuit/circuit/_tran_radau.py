@@ -74,21 +74,36 @@ def _transform_back(w0, w1, v):
     return np.concatenate(dY)
 
 
+#: (the analysis solver's StructuralKLU class, once imported: `real_solve`)
+_SK = []
+
+
 class _FrozenTransform:
     """One step's transform, frozen (`_RadauStages._radau_frozen`): its `P`
     entries, `V`'s, the real factor with its kept LU (or the analysis
-    solver to call) and the complex factor marshalled for its solver (or
-    the per-call complex solve)."""
+    solver to call: `kept`, its StructuralKLU's numeric a refactor of `rf`
+    one of these solves made) and the complex factor marshalled for its
+    solver (or the per-call complex solve).  One an attempt."""
 
-    __slots__ = ('__weakref__', 'cf', 'cs', 'ls', 'lu', 'm', 'p', 'prep', 'rf', 'tk', 'v', 'zs')
+    __slots__ = ('__weakref__', 'cf', 'cs', 'kept', 'ls', 'lu', 'm', 'p', 'prep', 'rf', 'tk', 'v',
+                 'zs')
 
     def real_solve(self, b0):
         """``((lam_0 / h) Cr + Gr)^{-1} b0``: the kept LU's for a finite
         right-hand side (numpy's solve, bit for bit), the analysis solver's
-        otherwise."""
+        otherwise -- on its StructuralKLU, the refactor of `rf` its last
+        solve here made kept (`kept`: no fresh factor since): the same
+        values on the same pivots, the same factors (`solve_kept`)."""
         if self.lu is not None and np.isfinite(b0).all():
             return self.lu.solve(b0)
-        return np.asarray(self.ls.solve(self.rf, b0, self.tk), dtype=float)
+        ls = self.ls
+        sk = getattr(ls, '_choice', ls)
+        if sk.__class__ is not _SK[0]:
+            return np.asarray(ls.solve(self.rf, b0, self.tk), dtype=float)
+        f0, r0 = sk.factors, sk.refactors
+        x = (ls.solve_kept if self.kept else ls.solve)(self.rf, b0, self.tk)
+        self.kept = sk.factors == f0 and (self.kept or sk.refactors == r0 + 1)
+        return np.asarray(x, dtype=float)
 
     def solve(self, R3):
         """`_RadauStages._radau_transform_solve(R3, Cr, Gr, h)` against the
@@ -134,6 +149,7 @@ def _frozen_chain():
             AutoSolver,
             ComplexKLUSolver,
             DenseSolver,
+            StructuralKLU,
         )
         from pycircuit.circuit.toolkit import NumericToolkit
         R, L = 'pycircuit.circuit._tran_radau', 'pycircuit.circuit.linearsolver'
@@ -155,6 +171,7 @@ def _frozen_chain():
             return None
         _FROZEN['chain'] = tuple(o for o, _q, _m in own)
         _FROZEN['types'] = (ComplexKLUSolver, AutoSolver, DenseSolver, NumericToolkit, _numeric)
+        _SK[:] = [StructuralKLU]
     return _FROZEN['chain']
 
 
@@ -1232,6 +1249,7 @@ class _RadauStages:
             except FloatingPointError:
                 return _paths.no('radau.frozen:fp')
         fz = _FrozenTransform()
+        fz.kept = False
         fz.m = Cr.shape[0]
         fz.p, fz.v = pc[1], pc[2]
         fz.rf, fz.cf, fz.tk = real_factor, comp_factor, self.toolkit

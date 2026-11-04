@@ -90,13 +90,14 @@ static int pcx_klu_resid_sparse(pcx_klu_t *k, const double *b, const double *x,
    `a_built`, else a buffer the residual's dense test scatters A into from
    the CSC where the sparse one does not decide (counted in `dense`, which
    may be NULL).  The solution in `x`, `y` (m) and `t` (2 m, read only
-   where not `a_built`) scratch */
-static long pcx_klu_step(pcx_klu_t *k, double *A, const double *b, double *x, double *y,
-                         double *t, long m, void *dgemv, int a_built, long *dense)
+   where not `a_built`) scratch.  `kept`: `solve_kept`'s -- the numeric
+   holds a refactor of these very values, none is made (nor counted) */
+static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, double *y,
+                        double *t, long m, void *dgemv, int a_built, long *dense, int kept)
 {
     long i, j, p, st, reused = k->klu_out != NULL;
     int fails = PCX_UNDECIDED;
-    if (reused) {
+    if (reused && !kept) {
         int ok = ((klu_refactor_t) k->klu_refactor)(k->kAp, k->kAi, k->kAx, k->klu_sym,
                                                   k->klu_out, k->klu_common);
         k->refactors++;
@@ -105,7 +106,7 @@ static long pcx_klu_step(pcx_klu_t *k, double *A, const double *b, double *x, do
             if ((st = pcx_klu_fresh(k)) != 0) return st;
             reused = 0;
         }
-    } else if ((st = pcx_klu_fresh(k)) != 0) {
+    } else if (!reused && (st = pcx_klu_fresh(k)) != 0) {
         return st;
     }
     if ((st = pcx_klu_solve_b(k, b, x, m)) != 0) return st;
@@ -133,6 +134,26 @@ static long pcx_klu_step(pcx_klu_t *k, double *A, const double *b, double *x, do
         feclearexcept(FE_ALL_EXCEPT);
     }
     return 0;
+}
+
+/* StructuralKLU.solve(A, b) (`pcx_klu_seq`) */
+static long pcx_klu_step(pcx_klu_t *k, double *A, const double *b, double *x, double *y,
+                         double *t, long m, void *dgemv, int a_built, long *dense)
+{
+    return pcx_klu_seq(k, A, b, x, y, t, m, dgemv, a_built, dense, 0);
+}
+
+/* `_FrozenTransform.real_solve` on the StructuralKLU: `solve_kept` where
+   `*kept` (the numeric holds the refactor of these values an earlier solve
+   of them made), `solve` else; `*kept` then as it leaves it -- set where the
+   solve ended on such a refactor (no fresh factor), cleared where not */
+static inline long pcx_klu_kept(pcx_klu_t *k, long *kept, double *A, const double *b, double *x,
+                                double *y, double *t, long m, void *dgemv, long *dense)
+{
+    long f0 = k->factors, r0 = k->refactors;
+    long st = pcx_klu_seq(k, A, b, x, y, t, m, dgemv, 0, dense, *kept != 0);
+    *kept = st == 0 && k->factors == f0 && (*kept || k->refactors == r0 + 1);
+    return st;
 }
 
 /* the numeric as the outcome leaves it (THE NUMERIC, pcx_klu.h): a

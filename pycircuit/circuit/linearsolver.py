@@ -280,6 +280,13 @@ class LinearSolver(ABC):
     def solve(self, A, b, toolkit):
         """Return ``x`` such that ``A x = b``."""
 
+    def solve_kept(self, A, b, toolkit):
+        """`solve` where the caller's last solve of this very `A` left the
+        solver's numeric holding its refactor (`_FrozenTransform.kept`):
+        `StructuralKLU`'s makes no refactor; a solver keeping no numeric
+        solves as `solve`."""
+        return self.solve(A, b, toolkit)
+
     def chord_factor(self, A, toolkit):
         """The chord Newton's factorisation of the step's matrix: `factor`'s
         here (`StructuralKLU` keeps one from step to step)."""
@@ -796,11 +803,23 @@ class StructuralKLU(KLUSolver):
         self._lib.klu_free_numeric(ctypes.byref(ctypes.c_void_p(num)), ctypes.byref(self._common))
 
     def solve(self, A, b, toolkit):
+        return self._solve(A, b, toolkit, False)
+
+    def solve_kept(self, A, b, toolkit):
+        """`solve` without its refactor: the caller's last solve of this very
+        `A` left the numeric holding a refactor of its values
+        (`_FrozenTransform.kept`: a step's frozen real factor, refactored at
+        its first solve) -- the same values on the same pivots make the same
+        factors, so the refactor is not repeated, nor counted.  The residual
+        check and its fresh factor stand, as in `solve`."""
+        return self._solve(A, b, toolkit, True)
+
+    def _solve(self, A, b, toolkit, kept):
         got = self._ours(A)
         if got is None:
             return self._other().solve(A, b, toolkit)
         if numpy.iscomplexobj(b):
-            return _split_complex(lambda r: self.solve(A, r, toolkit), b)
+            return _split_complex(lambda r: self._solve(A, r, toolkit, kept), b)
         ctypes = self._ct
         arr, Ax = got
         rhs = numpy.asarray(b, dtype=numpy.float64)
@@ -808,7 +827,7 @@ class StructuralKLU(KLUSolver):
         rhs = (numpy.ascontiguousarray(rhs.ravel()) if rhs.ndim < 2
                else numpy.asfortranarray(rhs))
         reused = self._numeric is not None
-        if reused:
+        if reused and not kept:
             ok = self._lib.klu_refactor(
                 self._ptr(self.Ap, ctypes.c_int), self._ptr(self.Ai, ctypes.c_int),
                 self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._analysed()),
@@ -828,7 +847,7 @@ class StructuralKLU(KLUSolver):
                 self._numeric = self._factor(Ax)
                 self.factors += 1
                 reused = False
-        else:
+        elif not reused:
             self._numeric = self._factor(Ax)
             self.factors += 1
         x = rhs.copy(order='F')
@@ -1563,6 +1582,10 @@ class AutoSolver(LinearSolver):
 
     def solve(self, A, b, toolkit):
         return self._select(A).solve(A, b, toolkit)
+
+    def solve_kept(self, A, b, toolkit):
+        """The selected solver's (`LinearSolver.solve_kept`)."""
+        return self._select(A).solve_kept(A, b, toolkit)
 
     def solve_transposed(self, A, B, toolkit):
         """The selected solver's (`LinearSolver.solve_transposed`)."""

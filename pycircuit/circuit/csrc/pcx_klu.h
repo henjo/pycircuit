@@ -6,8 +6,10 @@
  * THE NUMERIC.  `klu_num` is StructuralKLU's `_numeric` at entry, kept
  * unfreed until the solve ends (`pcx_klu_finish`): a hand-back leaves it as
  * it was -- a refactor in place changes its values, never its pivot order,
- * and every use of it starts with a refactor -- so the Python's own solve
- * repeats the same refactors on the same pivot order.  A served outcome
+ * and every use of it starts with a refactor, or is a kept solve on a
+ * refactor of the very values it is given (`pcx_klu_kept`, `solve_kept`) --
+ * so the Python's own solve repeats the same refactors on the same pivot
+ * order.  A served outcome
  * leaves `klu_out`, the numeric the Python's sequence ends with (the
  * entry's freed where another replaced it; NULL after a failed factor, as
  * `_numeric` is None after its LinAlgError). */

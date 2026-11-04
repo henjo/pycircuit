@@ -1208,8 +1208,9 @@ static int tc_rkgather(loop_t *s)
 }
 
 /* `_FrozenTransform.real_solve` of `eb` in place: dgetrs on the kept LU,
-   or the analysis solver's StructuralKLU (`pcx_klu_step`, its sequence on
-   the numeric the attempt holds).  0, or LOOP_BAIL_ESTIMATE where the
+   or the analysis solver's StructuralKLU (`pcx_klu_kept`, its sequence on
+   the numeric the attempt holds: `solve_kept` where its real solves kept
+   their refactor, `rk_held`).  0, or LOOP_BAIL_ESTIMATE where the
    Python raises (a singular factor, the solve failing, a flag numpy
    reports in the residual) */
 static long tc_rsolve(loop_t *s)
@@ -1217,8 +1218,8 @@ static long tc_rsolve(loop_t *s)
     radau_tf_t *tf = (radau_tf_t *) s->tc;
     int64_t m = s->n - 1, one = 1, info = 0;
     if (s->rk_klu) {
-        long st = pcx_klu_step(&tf->rk, tf->rk_A, s->eb, s->rkx, tf->rk_y, tf->rk_t, m,
-                               tf->rk_dgemv, 0, &tf->rk_dense);
+        long st = pcx_klu_kept(&tf->rk, &tf->rk_held, tf->rk_A, s->eb, s->rkx, tf->rk_y, tf->rk_t,
+                               m, tf->rk_dgemv, &tf->rk_dense);
         feclearexcept(FE_ALL_EXCEPT);
         if (st) return LOOP_BAIL_ESTIMATE;
         COPY(s->eb, s->rkx, m);
@@ -1683,6 +1684,9 @@ static long tc_take(loop_t *s, loop_attempt_t *a)
         tf->rk.klu_num = tf->rk.klu_out;
         tf->rk.refactors = tf->rk.factors = tf->rk.pivot_fallbacks = 0;
         tf->rk.residual_fallbacks = tf->rk_dense = 0;
+        /* (an attempt's factors are its own: `_radau_frozen`'s new
+           `_FrozenTransform`, nothing kept) */
+        tf->rk_held = 0;
     }
     tc_start(s, a);
     st = tc_body(s, a);

@@ -84,9 +84,10 @@ typedef struct {
     /* THE REAL FACTOR ON KLU (`rk_on` 1): where `_radau_frozen` keeps no
        dense LU -- the analysis solver an AutoSolver whose choice is the
        circuit's `StructuralKLU` -- each real solve is that solver's `solve`
-       (pcx_kluseq.h's `pcx_klu_step`): `rk.kAx` the real factor's values in
+       (pcx_kluseq.h's `pcx_klu_kept`): `rk.kAx` the real factor's values in
        its pattern's order (taken once a call: the factor is frozen), a
-       refactor of the numeric it holds, a fresh factor on a zero pivot,
+       refactor of the numeric it holds (none where `rk_held`: `solve_kept`),
+       a fresh factor on a zero pivot,
        klu_solve, and after a refactor the residual's verdict -- the sparse
        sum with its rounding bound where it decides, else the dense test on
        the factor scattered into `rk_A` (m x m work: numpy's matmul by
@@ -101,6 +102,10 @@ typedef struct {
     /* (the residual's dense tests its solves made, pcx_kluseq.h's `dense`:
        the caller's to read and reset) */
     long rk_dense;
+    /* `_FrozenTransform.kept` (CALL/OUT): the numeric holds the refactor of
+       `rk.kAx` a real solve of the step made -- each real solve then
+       `solve_kept` (`pcx_klu_kept`), and leaves it as that leaves it */
+    long rk_held;
     pcx_klu_t rk;
     double *rk_A, *rk_y, *rk_t;
     void *rk_dgemv;

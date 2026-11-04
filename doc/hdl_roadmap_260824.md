@@ -13175,3 +13175,51 @@ twins' 181 before the pinned pair "the stage loop and its C" was re-recorded (`_
 
 **Gate** (the main tree): the TELL; the suite, 6 142 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 247's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection and Newton count identical; every path count too but gm19's above.
+
+## 2026-11-04 — 249. The kept refactor -- a step's frozen real factor on the analysis solver's StructuralKLU refactored once, where every real solve of the step refactored the same values again: gm19 under Radau 3.560 -> 3.212 s (1.108x), every result the same
+
+**Why**  Plan g24's `tc/plan_245_next.md`: sizing item C (the two factorisations in parallel; Andreas: "Push then
+continue in the your recommended order") in place -- radau_tc.c timing each iteration's real part against its
+complex part -- put its ceiling at 3.5-4.7 % a deck before a hand-off a step, and showed gm19's later iterations'
+real side at 0.34 s: the real factor on KLU (`rk_on`), where every `pcx_klu_step`, as every `StructuralKLU.solve`,
+refactors before it solves -- and the transform's real factor is frozen for the step: the same values on the same
+pivots, the same bits.  Counted (pcx_kluseq.h in a worktree: refactors whose values are bitwise the numeric's last
+refactor's, no fresh factor between): radau_tc's Newton gm19 8 865 of 12 072 (0.19 s), voter25 25 921 of 35 578 (0.20
+s), mux8 14 355 (0.09 s), jge 1 856 (0.02 s); the loop's own real solves (the estimate's and the early check's) ~0.05
+s more on each.  Ceiling: gm19 0.24 s (6.7 %), voter25 0.25 s (5.3 %), mux8 0.14 s (2.9 %) -- no threads, so before
+C.  LINE (set before building; one form): gm19 under Radau at least 1.03x against HEAD a410bb5d, the median of 5
+interleaved quiet-box pairs; GUARD: the 27 decks' total solve under each method not slower; every digest, step,
+rejection and Newton count the same; the real KLU's refactor counts fewer by the kept solves, every other path count
+the same (listed).  Refused under.
+
+**Built.**  `StructuralKLU.solve_kept`: `solve`'s sequence (now `_solve`) without the refactor -- where the caller's
+last solve of this very matrix left the numeric holding its refactor -- the residual check and its fresh factor
+standing; `LinearSolver.solve_kept` is `solve`, `AutoSolver`'s delegates.  `_FrozenTransform.kept` (one an attempt):
+set where its real solve on the StructuralKLU refactored `rf` without a fresh factor, cleared by any; its later real
+solves -- the Newton's, the early check's, the estimate's -- `solve_kept`.  The C the same: pcx_kluseq.h's
+`pcx_klu_seq` (the sequence, `kept` or not; `pcx_klu_step` its plain form for the other units) and `pcx_klu_kept`,
+the flag in and out as the Python's; radau_tc.h's `rk_held` -- radau_tc.c's Newton and loop.c's `tc_rsolve` on it,
+loop.c's attempt clearing it -- set by the glue at `solve` and at `resume` (the early check between may have left
+another), written back to `fz.kept` where the outcome is served (a hand-back leaves the Python the state it entered
+with: the numeric then a refactor of the same values, or the entry's -- either what the Python would hold).  The two
+readiness checks name the new pieces; pcx_klu.h's numeric contract says so.  Two defects found building it: the C
+sequence's kept branch fell through to a fresh factor (8 199 factors on gm19 where HEAD made 1, every digest still
+the same -- the solver's counts showed it, and the twins' counts would have), and `resume` did not set the flag (the
+standalone path three refactors short of the C loop's on the tight-tolerance KLU chain: test_tcloop_c's twin found
+it).
+
+**Measured** (a quiet box, HEAD a410bb5d from its worktree and this tree, interleaved): gm19 under Radau 3.560 -> 3.212 s, 1.108x (1.103 to 1.116, 5 pairs; the line 1.03x) -- met; 3 pairs each: voter25 1.071x, mux8 1.062x, jge 1.028x.  gm19's real solver: 17 388 refactors and 1 factor -> 3 207 and 1 (one a step's frozen factors).  The gate's runs: the 27 decks' solves 1.056x under Radau (31.9 -> 30.2 s), 1.007x under gear2 -- the guard met.  Every path count the same.  More than sized on every deck (mux8 2.9 % -> 6.2 %): the refactor time alone was counted, not what goes with it -- as 244 found.
+
+**Tests.**  test_structural_klu: `solve_kept` on the matrix the last solve refactored -- `solve`'s bytes, no refactor
+made or counted; its residual fallback standing; a foreign matrix to the fallback; the dense solver's as its solve;
+AutoSolver's delegated; `_FrozenTransform.real_solve` on an AutoSolver's StructuralKLU refactoring `rf` once, the
+later solves kept (each the bytes of a refactor), a failed residual clearing it, the next solve refactoring again.
+test_tcloop_c: the KLU chain's run, the C loop's and the Python's, one refactor a step's frozen factors (HEAD three
+times as many).  Nine mutations (the C or the Python kept branch falling to a fresh factor, `resume` or the bind not
+setting the flag, no write-back, the attempt not clearing it, the C ignoring it, the C or the Python keeping it past a
+fallback), every one caught.  The C twins' 485 before fourteen pinned pairs were re-recorded (pcx_kluseq.h is in the
+units' texts; `StructuralKLU.solve`, `_FrozenTransform.real_solve` and `_radau_frozen` in the references) -- each pair
+naming `StructuralKLU.solve` now names `_solve` too, the transform's two `solve_kept`.
+
+**Gate** (the main tree): the TELL; the suite, 6 145 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 248's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical.
