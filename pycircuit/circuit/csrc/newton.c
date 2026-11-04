@@ -175,6 +175,21 @@ static long limit_step(newton_t *s, walk_fn_t walk, long n, long r)
     return 0;
 }
 
+/* `absJ` as its readers take it -- the convergence test's dense verdict, the
+   rounding floor, the iteration limit's report: none reads it otherwise --
+   with |J| on KLU's pattern written in first where the iteration that
+   formed J left it due (`evaluate`): the same |kAx| at the same places as
+   written at once (zero off them) */
+static const double *absj(newton_t *s)
+{
+    long k;
+    if (s->absj_due) {
+        for (k = 0; k < s->knnz; k++) s->absJ[s->kabs[k]] = fabs(s->kAx[k]);
+        s->absj_due = 0;
+    }
+    return s->absJ;
+}
+
 /* nrsolver's convergence test, entry by entry, in its operations and
    order: `abs(xdiff) < reltol * maximum(ax_next, abs(x)) + xtol`, then --
    only where that holds: the product feeds nothing else and no flag is
@@ -208,7 +223,7 @@ static int converged(newton_t *s, long m)
         if (v != PCX_UNDECIDED) return v == PCX_HOLDS;
         s->vdense++;
     }
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->absJ, m,
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, absj(s), m,
                            s->ax, 1, 0.0, s->Is, 1);
     for (i = 0; i < m; i++) {
         double aF = fabs(s->Fr[i]);
@@ -245,7 +260,7 @@ static double step_size(const newton_t *s, long m)
 static int floor_holds(newton_t *s, long m)
 {
     long n = s->n, r = s->iref, i, j, c, k = 0, lo, kk;
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->absJ, m,
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, absj(s), m,
                            s->ax, 1, 0.0, s->Is, 1);
     for (i = 0; i < m; i++) {
         double aF = fabs(s->Fr[i]);
@@ -431,13 +446,11 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
     pcx_drop_ref(F, s->Fr, n, r);
     for (i = 0; i < m; i++) s->b[i] = -s->Fr[i];
     if (full && s->klu_sym) {
-        /* the pattern's values, and |J| on it (zero off it); the full
-           Newton's validation reads J reduced itself (`R`) */
-        for (k = 0; k < s->knnz; k++) {
-            double v = J[s->kat[k]];
-            s->kAx[k] = v;
-            s->absJ[s->kabs[k]] = fabs(v);
-        }
+        /* the pattern's values -- |J| on it (zero off it) made where it is
+           read, `absj` -- the full Newton's validation reading J
+           reduced itself (`R`) */
+        for (k = 0; k < s->knnz; k++) s->kAx[k] = J[s->kat[k]];
+        s->absj_due = 1;
         if (!s->chord && s->pattern) {
             for (k = 0; k < s->knnz; k++) s->R[s->kabs[k]] = s->kAx[k];
         } else if (!s->chord) {
@@ -531,7 +544,7 @@ static long iterate(newton_t *s, void **num)
     /* the last iteration's residual scale |J| |x_next| (its test made it
        only where the update's held), for the iteration limit's report
        (`nrsolver._worst_row_report`): numpy's own dgemv, as the test's */
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->absJ, m,
+    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, absj(s), m,
                            s->ax, 1, 0.0, s->Is, 1);
     return finish(s, NEWTON_BAIL_MAXITER);
 }

@@ -101,7 +101,8 @@ typedef struct {
                              then its LU in place (the chord's: held) */
            *absJ;         /* (m x m, row-major) |J| reduced, the convergence
                              test's (the chord's: held from its first
-                             iteration); zero where nothing writes it */
+                             iteration; on KLU's pattern made at its first
+                             read, `absj_due`); zero where nothing writes it */
     double *b,            /* (m) -F reduced, then the solve's dx in place */
            *Fr,           /* (m) F reduced */
            *x,            /* (m) the iterate: the reduced seed at entry, the
@@ -153,6 +154,9 @@ typedef struct {
                              zero off the pattern) */
     double *kAx;          /* (knnz) OWN: the entries' values, J's at the
                              first iteration */
+    long absj_due;        /* OWN: 1 while |kAx| is not yet in `absJ` -- the
+                             iteration formed J; its first read scatters it
+                             (newton.c's `absj`) */
     void *klu_sym,        /* its symbolic analysis; NULL: LAPACK's path */
          *klu_common,     /* its klu_common (KLU's calls write it) */
          *klu_factor,     /* KLU's klu_factor (klu_factor_t, pcx_abi.h) */

@@ -13262,3 +13262,30 @@ pool.c in the units' texts; no reference moved).
 **Gate** (the main tree): the TELL; the suite, 6 150 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks (four threads, the default) -- standalone DC against 249's gate runs, gear2 and Radau against HEAD interleaved:
 every digest, step, rejection, Newton count and path count identical.
+
+## 2026-11-04 — 251. The dense |J| where it is read -- the C Newton on KLU's pattern scatters |J| into its dense m x m buffer at the first read after J is formed, where every iteration forming J scattered it: mux8 under gear2 3.062 -> 2.980 s (1.028x), every result the same
+
+**Why**  Plan g24's `tc/plan_245_next.md`, item K (Andreas: "continue in the your recommended order"): on KLU's
+pattern newton.c wrote |J| into the dense, row-major `absJ` at each pattern entry of every iteration that formed J --
+scattered stores over an m x m buffer -- and only three places read it: the convergence test where the sparse verdict
+does not decide, the rounding floor, the iteration limit's report.  Phase 0 put it at ~1 % of gear2.  A prototype in a
+worktree (the scatter made at the first of those reads; the digests of jge, mux8, gm19 and voter25 under gear2 the
+same; 5 interleaved rounds against eager): jge 1.021x, mux8 1.030x, gm19 1.027x, voter25 1.030x -- Phase 0's figure was
+low.  LINE (set after the prototype, before building; one form): mux8 under gear2 at least 1.015x against HEAD
+6ebe550b, the median of 5 interleaved quiet-box pairs; GUARD: the 27 decks' total solve under each method not slower;
+every digest, step, rejection, Newton count and path count the same.  Refused under.
+
+**Built.**  newton.c: the KLU branch of `evaluate` writes the pattern's values (`kAx`) and marks |J| due
+(`absj_due`, newton.h); `absj(s)` is the buffer as its readers take it -- |kAx| scattered in first where due, the same
+values at the same places as written at once -- and every read of it is through that accessor (the three dgemv
+calls), so none can miss the fill.  The dense branch writes it with the reduction, as before.
+
+**Measured** (a quiet box, HEAD 6ebe550b from its worktree and this tree, interleaved): mux8 under gear2 3.062 -> 2.980 s, 1.028x (1.024 to 1.035, 5 pairs; the line 1.015x) -- met; 3 pairs each: jge 1.016x, gm19 1.028x, voter25 1.033x.  The gate's runs: the 27 decks' solves 1.027x under gear2 (16.3 -> 15.9 s), 1.004x under Radau -- the guard met.
+
+**Tests.**  The C Newton's twins as they stand: the accessor never filling, or |J| never marked due, caught (the
+rounding floor's twin, the only fixture reaching a read of it; the fixtures' sparse verdicts decide every convergence
+test -- which is why every read goes through the accessor).  The C twins' 353 before five pinned pairs were
+re-recorded (newton.c and .h in the units' texts; no reference moved).
+
+**Gate** (the main tree): the TELL; the suite, 6 150 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 250's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical.
