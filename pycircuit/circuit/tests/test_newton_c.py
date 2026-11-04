@@ -526,16 +526,18 @@ def test_a_core_pattern_outside_the_klu_pattern_declines(monkeypatch):
 
 def test_the_sparse_comparison_sees_a_planted_difference(monkeypatch):
     """Alive: the first drain's diagonal read from the second's place in J
-    (the C's map planted) -- another run."""
+    (the C's maps planted: `kat` in the full J, `kpp` in J packed on the
+    core's pattern) -- another run."""
     bind = _tran_newton_c._klu_bind
 
     def planted(rec, sk):
         if not bind(rec, sk):
             return False
-        kat, n = rec.klu_keep[1], rec.n
+        kat, kpp, n = rec.klu_keep[1], rec.klu_keep[17], rec.n
         cir = planted.cir
         d0, d1 = (cir.get_node_index(k) * (n + 1) for k in ('d0', 'd1'))
-        kat[np.nonzero(kat == d0)[0][0]] = d1
+        k0, k1 = np.nonzero(kat == d0)[0][0], np.nonzero(kat == d1)[0][0]
+        kat[k0], kpp[k0] = d1, kpp[k1]
         return True
     kw = {'tend': 4e-9, 'timestep': 2e-10}
     a = _sparse_run(True, **dict(kw))
@@ -591,3 +593,52 @@ def test_the_rounding_floor_is_the_python_one(cells, monkeypatch):
     assert sum(seen) >= 10, seen
     assert b[4].get('newton_c:served', 0) == 19, b[4]
     assert (b[4].get('newton_c:sparse', 0) > 0) == (cells > 1), b[4]
+
+
+def _widened(cir, iref, st):
+    """The structure with four entries no stamp writes (the matrix's
+    corners): KLU entries off the core's pattern -- J's +0.0 there."""
+    m, rows, cols = st
+    have = set(zip(np.asarray(rows).tolist(), np.asarray(cols).tolist()))
+    extra = [e for e in ((0, m - 1), (m - 1, 0), (1, m - 2), (m - 2, 1)) if e not in have]
+    assert len(extra) == 4
+    rows, cols = np.asarray(rows), np.asarray(cols)
+    rows = np.concatenate([rows, np.array([e[0] for e in extra], dtype=rows.dtype)])
+    cols = np.concatenate([cols, np.array([e[1] for e in extra], dtype=cols.dtype)])
+    ## (in the structure's own order: by column, then row)
+    order = np.lexsort((rows, cols))
+    return m, rows[order], cols[order]
+
+
+def test_klu_entries_off_the_cores_pattern_are_the_dense_js_zero():
+    """The iterations' J packed on the core's pattern (PCX_WANT_PACKED) and
+    KLU's values gathered from it: an entry the core's pattern lacks is
+    J's +0.0 -- the run on a structure widened by four such entries the
+    Python's, its bytes, steps, iterations and solver counts."""
+    from pycircuit.circuit.tests.test_radau_tc import _klu
+    if _tran_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_tran_newton_c.STATUS}')
+    from pycircuit.circuit import linearsolver as LS
+
+    def run(on):
+        old = _tran_newton_c.ENABLED
+        _tran_newton_c.ENABLED = on
+        before = _paths.snapshot()
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                tr = Transient(_sparse_chain(), toolkit=circuit.numeric)
+                _klu(pattern=_widened)(tr)
+                res = tr.solve(tend=4e-9, timestep=2e-10)
+        finally:
+            _tran_newton_c.ENABLED = old
+        sk = tr._get_linearsolver()._choice
+        st_ = tr.statistics
+        assert type(sk) is LS.StructuralKLU and sk.nnz > 0
+        return ((np.asarray(res.x, float).tobytes(), st_.accepted_steps, st_.rejected_steps,
+                 st_.newton_iterations),
+                (sk.factors, sk.refactors, sk.chord_refactors, sk.chord_factors),
+                _paths.since(before))
+    a, b = run(False), run(True)
+    assert a[:2] == b[:2]
+    assert b[2].get('newton_c:sparse', 0) > 10, b[2]

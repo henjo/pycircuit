@@ -415,6 +415,7 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
     core_fn_t core = (core_fn_t) s->core_fn;
     const double *Cin;
     long bits;
+    int packed;
     double *F, *J, *C, *q, *iq, *Geq;
     if (it == 0) { F = s->F0; J = s->J0; C = s->C0; q = s->q0; iq = s->iq0; Geq = s->Geq0; }
     else { F = s->F; J = s->J; C = s->C; q = s->q; iq = s->iq; Geq = s->Geq; }
@@ -433,9 +434,11 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
         bits = PCX_PASS_I;
         Cin = Cin0 ? Cin0 : s->C0;
     }
-    core(s->core, s->xf, s->T, bits | s->pattern, s->formula, s->a0, s->a1, s->a2, s->h,
-         s->theta,
-         s->q1, s->q2, s->iq1, s->u, Cin, C, q, iq, Geq, F, J);
+    /* (on KLU's pattern, J packed on the core's and no Geq: `kpp`, `Jp`) */
+    packed = s->klu_sym && s->pattern && s->kpp;
+    core(s->core, s->xf, s->T, bits | s->pattern | (packed ? PCX_WANT_PACKED : 0), s->formula,
+         s->a0, s->a1, s->a2, s->h, s->theta,
+         s->q1, s->q2, s->iq1, s->u, Cin, C, q, iq, Geq, F, packed ? s->Jp : J);
     /* the first iterate evaluated, the seed's factors still in place (A is
        written below, the numeric only by the next solve): the early abort's
        check where armed -- the chord on its factors, the full Newton dense */
@@ -449,7 +452,14 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
         /* the pattern's values -- |J| on it (zero off it) made where it is
            read, `absj` -- the full Newton's validation reading J
            reduced itself (`R`) */
-        for (k = 0; k < s->knnz; k++) s->kAx[k] = J[s->kat[k]];
+        if (packed) {
+            for (k = 0; k < s->knnz; k++) {
+                const int64_t p = s->kpp[k];
+                s->kAx[k] = p >= 0 ? s->Jp[p] : 0.0;
+            }
+        } else {
+            for (k = 0; k < s->knnz; k++) s->kAx[k] = J[s->kat[k]];
+        }
         s->absj_due = 1;
         if (!s->chord && s->pattern) {
             for (k = 0; k < s->knnz; k++) s->R[s->kabs[k]] = s->kAx[k];

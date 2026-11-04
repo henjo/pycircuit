@@ -154,6 +154,14 @@ typedef struct {
                              zero off the pattern) */
     double *kAx;          /* (knnz) OWN: the entries' values, J's at the
                              first iteration */
+    const int64_t *kpp;   /* (knnz) each entry's index in the core's pattern,
+                             -1 where it has none (J's +0.0 there); NULL: J
+                             dense (no pattern) */
+    double *Jp;           /* (the pattern's count) OWN: an iteration's J packed
+                             on the core's pattern (PCX_WANT_PACKED: the
+                             iterations on KLU read J only at its entries and
+                             never their Geq -- the step's write-backs read the
+                             fold's) */
     long absj_due;        /* OWN: 1 while |kAx| is not yet in `absJ` -- the
                              iteration formed J; its first read scatters it
                              (newton.c's `absj`) */

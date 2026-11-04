@@ -21,6 +21,13 @@
         if (patt) { for (pk = 0; pk < c->npat; pk++) { s = c->pat[pk]; body; } } \
         else { for (s = 0; s < n * n; s++) { body; } } \
     } while (0)
+/* J packed (PCX_WANT_PACKED): for each pattern entry, `J[pk] = binG[s] +
+   (geq)`, `geq` the companion's entry at `s` as the formula makes it -- the
+   same operations as `Geq[s] = geq` then `J[s] = binG[s] + Geq[s]` -- and
+   no Geq.  It captures `pk`, `s`, `c` and `J` */
+#define PACKED_J(geq) do { \
+        for (pk = 0; pk < c->npat; pk++) { s = c->pat[pk]; J[pk] = c->binG[s] + (geq); } \
+    } while (0)
 /* one element of fused group z into its staging rows, for the passes `zw`:
    its inputs gathered into X, the temperature into its parameter row (as
    the batches' driver, pass.c, writes it), its kernel -- a function of
@@ -267,6 +274,8 @@ long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long fo
        asks (its matrices zero off the pattern, which no stamp reaches), or
        every one */
     const int patt = (want & PCX_WANT_PATTERN) && c->npat;
+    /* J packed on the pattern, no Geq (PCX_WANT_PACKED): only with it */
+    const int packed = patt && (want & PCX_WANT_PACKED);
     const double *Cs;
     fused_groups(c, x, T, want, X);
     for (m = 0; m < 4; m++)
@@ -283,25 +292,29 @@ long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long fo
     if (formula == PCX_FORMULA_GEAR2) {
         /* `a0 * q + a1 * q1 + a2 * q2`, `a0 * C` */
         for (j = 0; j < n; j++) iq[j] = (a0 * q[j] + a1 * q1[j]) + a2 * q2[j];
-        EACH_ENTRY(Geq[s] = a0 * Cs[s]);
+        if (!packed) EACH_ENTRY(Geq[s] = a0 * Cs[s]);
+        else if (want & PCX_PASS_G) PACKED_J(a0 * Cs[s]);
     } else if (formula == PCX_FORMULA_EULER) {
         /* `(q - q1) / h`, `C / h` */
         for (j = 0; j < n; j++) iq[j] = (q[j] - q1[j]) / h;
-        EACH_ENTRY(Geq[s] = Cs[s] / h);
+        if (!packed) EACH_ENTRY(Geq[s] = Cs[s] / h);
+        else if (want & PCX_PASS_G) PACKED_J(Cs[s] / h);
     } else if (formula == PCX_FORMULA_TRAPEZOIDAL) {
         /* `2.0 * (q - q1) / h - iq1`, `2.0 * C / h` */
         for (j = 0; j < n; j++) iq[j] = (2.0 * (q[j] - q1[j])) / h - iq1[j];
-        EACH_ENTRY(Geq[s] = (2.0 * Cs[s]) / h);
+        if (!packed) EACH_ENTRY(Geq[s] = (2.0 * Cs[s]) / h);
+        else if (want & PCX_PASS_G) PACKED_J((2.0 * Cs[s]) / h);
     } else {  /* PCX_FORMULA_THETA */
         /* `th = theta * h`, `(q - q1) / th - ((1.0 - theta) / theta) * iq1`,
            `C / th`: the two scalars once, as Python computes them before
            the array operations */
         double th = theta * h, w = (1.0 - theta) / theta;
         for (j = 0; j < n; j++) iq[j] = (q[j] - q1[j]) / th - w * iq1[j];
-        EACH_ENTRY(Geq[s] = Cs[s] / th);
+        if (!packed) EACH_ENTRY(Geq[s] = Cs[s] / th);
+        else if (want & PCX_PASS_G) PACKED_J(Cs[s] / th);
     }
-    /* `f = (i + iq) + u`, `J = G + Geq` */
+    /* `f = (i + iq) + u`, `J = G + Geq` (packed: made above) */
     if (want & PCX_PASS_I) for (j = 0; j < n; j++) F[j] = (c->bini[j] + iq[j]) + u[j];
-    if (want & PCX_PASS_G) EACH_ENTRY(J[s] = c->binG[s] + Geq[s]);
+    if ((want & PCX_PASS_G) && !packed) EACH_ENTRY(J[s] = c->binG[s] + Geq[s]);
     return 0;
 }

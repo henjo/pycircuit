@@ -13289,3 +13289,40 @@ re-recorded (newton.c and .h in the units' texts; no reference moved).
 
 **Gate** (the main tree): the TELL; the suite, 6 150 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 250's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical.
+
+## 2026-11-04 — 252. The Newton's J packed -- on KLU's path the C Newton's iterations take J from the core packed on the core's pattern and no companion Geq, where every iteration wrote both dense and gathered KLU's values back out: mux8 under gear2 2.994 -> 2.783 s (1.081x), every result the same
+
+**Why**  Plan g24's `tc/plan_245_next.md`, item D (Andreas: "Push, Then D then E"), first part.  Re-sized in place
+after 251 (jge under gear2, a -g build, perf on the main thread): the core's own code ~19 % of the main thread --
+the companion (`J = binG + Geq`, `Geq = a0 C`, Euler's `C / h`) ~0.36 s and the pull's scattered bins ~0.3 s -- all
+scattered stores and loads over dense n x n matrices at the pattern's entries.  A survey of every producer and
+reader of C, G, Geq and J (an Explore agent's map) found that on KLU's path the Newton's per-iteration core call
+writes dense J and Geq that nothing reads dense: the Newton gathers KLU's values (`kAx = J[kat]`: KLU's column order
+over the row-major J, strided), the step's write-backs and the LTE read the fold's own call (`Jj`, `Geqj`: every
+serve evaluates the converged point), and a chord's residual-only iterations made Geq for nothing.  A prototype in a
+worktree (the core writing J straight into `kAx` and no Geq; the digests of jge, mux8, gm19 and voter25 under gear2
+the same; 5 interleaved rounds against itself without): jge 1.081x, mux8 1.084x, gm19 1.141x, voter25 1.102x.  LINE
+(set after the prototype, before building; one form): mux8 under gear2 at least 1.04x against HEAD 56137f66, the
+median of 5 interleaved quiet-box pairs; GUARD: the 27 decks' total solve under each method not slower; every digest,
+step, rejection, Newton count and path count the same.  Refused under.
+
+**Built.**  The core does not take a KLU map (a map in the shared core struct would be a state another Newton could
+leave behind): `PCX_WANT_PACKED` (pcx_abi.h), with the pattern, has it write J PACKED -- entry k the pattern's k-th,
+npat values, each `binG[s] + geq`, the formula's companion entry, the same operations as `Geq[s] = geq` then `J[s] =
+binG[s] + Geq[s]` (core.c's `PACKED_J`) -- and no Geq.  newton.c: on KLU with the pattern (`kpp` bound) every
+iteration asks for it into `Jp` and gathers KLU's values from it (`kpp`: each KLU entry's index in the core's pattern;
+-1, an entry off it, J's +0.0 -- gm19 has 24); `_tran_newton_c._klu_bind` makes `kpp` and `Jp` beside `kat`.  The
+fold's call (`Jj`, `Geqj`, `Cj`) and every other caller unchanged.
+
+**Measured** (a quiet box, HEAD 56137f66 from its worktree and this tree, interleaved): mux8 under gear2 2.994 -> 2.783 s, 1.081x (1.071 to 1.094, 5 pairs; the line 1.04x) -- met; 3 pairs each: jge 1.088x, gm19 1.143x, voter25 1.092x.  The gate's runs: the 27 decks' solves 1.075x under gear2 (15.9 -> 14.8 s), 1.000x under Radau -- the guard met (Radau not on this path).
+
+**Tests.**  test_tran_core: the core's packed J the dense call's J at the pattern, bit for bit, for each formula and
+both C sources (made, held), C, q, iq and F the dense call's, a planted Geq untouched, and a residual-only call
+leaving Geq and J alone.  test_newton_c: a structure widened by four entries no stamp writes (KLU entries off the
+core's pattern) -- the run the Python's, bytes, steps, iterations and solver counts; the liveness test's plant now in
+both maps the C reads (`kat`, `kpp`).  Mutations: an off-pattern entry read as 1.0, the gather at the wrong index,
+the packed J without G, the core asked dense while the Newton reads packed -- each caught.  The C twins' 696 before
+twenty-one pinned pairs were re-recorded (pcx_abi.h, core.c and newton.c in the units' texts; no reference moved).
+
+**Gate** (the main tree): the TELL; the suite, 6 155 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
+decks -- standalone DC against 251's gate runs, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count and path count identical.

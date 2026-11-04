@@ -538,3 +538,50 @@ def test_another_order_fails_the_check(monkeypatch, k):
         monkeypatch.setattr(_tran_core, '_SMALL_GEMV', {})
         monkeypatch.setattr(_tran_core, '_small_formula', wrong)
         assert _tran_core._small_gemv_ok(k) is False
+
+
+def _core_once(core, x, T, bits, formula, Cin, Geq, J):
+    """One call of the core entry as `evaluate` makes it, on fixed inputs:
+    its C, q, iq and F (the Geq and J passed in written in place)."""
+    ffi, cfn, _dgemv = _tran_core.driver()
+    fb, d = ffi.from_buffer, core.dptr
+    n = core.n
+    rng = np.random.default_rng(20261104)
+    q1, q2, iq1, u = (rng.standard_normal(n) for _ in range(4))
+    C, q, iq, F = np.zeros((n, n)), np.empty(n), np.empty(n), np.empty(n)
+    cfn(core.cs, fb(d, x), T, bits, formula, 1.5e9, -2.0e9, 0.5e9, 1e-9, 0.6,
+        fb(d, q1), fb(d, q2), fb(d, iq1), fb(d, u), fb(d, Cin), fb(d, C), fb(d, q), fb(d, iq),
+        fb(d, Geq), fb(d, F), fb(d, J))
+    return C, q, iq, F
+
+
+@pytest.mark.parametrize('formula', ['GEAR2', 'EULER', 'TRAPEZOIDAL', 'THETA'])
+def test_the_packed_j_is_the_dense_one_on_the_pattern(formula):
+    """PCX_WANT_PACKED: J's pattern entries in the pattern's order, each the
+    dense call's bits, for every formula and both C sources (made, held);
+    Geq not touched (a planted value stays); C, q, iq and F the dense
+    call's -- and a residual-only call leaves Geq and J alone."""
+    from pycircuit.circuit.tests.test_newton_c import _sparse_chain
+    tr = Transient(_sparse_chain(), toolkit=cm.numeric, integrator=Gear2Integrator())
+    tr.solve(tend=2e-9, timestep=1e-9)
+    core = _tran_core.core_for(tr)
+    T = core.ready(tr.epar)
+    assert core.npat and T is not None
+    n, pat = core.n, core.arrays['pat']
+    abi = _tran_core._ABI
+    f = abi['PCX_FORMULA_' + formula]
+    x = np.random.default_rng(5).normal(0.0, 0.3, n)
+    held = np.zeros((n, n))
+    held.ravel()[pat] = np.random.default_rng(6).standard_normal(len(pat))
+    pt, pk = abi['PCX_WANT_PATTERN'], abi['PCX_WANT_PACKED']
+    for bits, Cin in ((abi['PCX_WANT_ALL'], held), (abi['PCX_PASS_G'] | abi['PCX_PASS_I'], held)):
+        Gd, Jd = np.zeros((n, n)), np.zeros((n, n))
+        dense = _core_once(core, x, T, bits | pt, f, Cin, Gd, Jd)
+        Gp, Jp = np.full((n, n), 7.0), np.empty(len(pat))
+        packed = _core_once(core, x, T, bits | pt | pk, f, Cin, Gp, Jp)
+        assert all(a.tobytes() == b.tobytes() for a, b in zip(dense, packed))
+        assert Jp.tobytes() == Jd.ravel()[pat].tobytes()
+        assert (Gp == 7.0).all()
+    Gr, Jr = np.full((n, n), 7.0), np.full(len(pat), 7.0)
+    _core_once(core, x, T, abi['PCX_PASS_I'] | pt | pk, f, held, Gr, Jr)
+    assert (Gr == 7.0).all() and (Jr == 7.0).all()

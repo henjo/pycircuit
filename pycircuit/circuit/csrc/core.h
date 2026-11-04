@@ -127,9 +127,12 @@ typedef struct {
    (n) set where the formula and want read them; Cin (n x n) the held C
    where want lacks PCX_PASS_C (it may be C itself); with
    PCX_WANT_PATTERN in want and npat nonzero, C, Geq and J zero off the
-   pattern -- only its entries are written.
+   pattern -- only its entries are written; with PCX_WANT_PACKED as well, J
+   (want G) is packed -- entry k is the pattern's k-th, `pat[k]`, npat values
+   -- and Geq is not written (nor read: it may be any buffer).
    Writes: C (want has C), q (always), iq and Geq (unless the formula is
-   PCX_FORMULA_PASSES), F (want has I), J (want has G); binG (G) and bini
+   PCX_FORMULA_PASSES; Geq not packed), F (want has I), J (want has G; npat
+   values packed); binG (G) and bini
    (i), the core's own; each element's parameter row at its temperature
    slot.  F and J are touched only where written, so a caller may pass
    any buffer of the size otherwise (`_tran_core.evaluate` passes q and

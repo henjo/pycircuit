@@ -378,15 +378,26 @@ def _klu_bind(rec, sk):
     R, rb, ry = np.zeros(m * m), np.empty(m), np.empty(m)
     ## (the chord's numeric's sequence: its residual's sparse verdict's scratch)
     ckt = np.empty(2 * m)
+    ## (the iterations' J packed on the core's pattern, PCX_WANT_PACKED, and
+    ## each entry's place in it: `kpp`, -1 for an entry off the core's
+    ## pattern -- J's +0.0 there)
+    kpp = np.full(max(sk.nnz, 1), -1, dtype=np.int64)
+    if rec.core.npat:
+        at = np.minimum(np.searchsorted(pat, kat), len(pat) - 1)
+        kpp[:sk.nnz] = np.where(pat[at] == kat, at, -1)
+    Jp = np.empty(len(pat) if rec.core.npat else 1)
     keep = (sk, kat, kabs, kAx, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai),
             ffi.from_buffer('int64_t *', kat), ffi.from_buffer('int64_t *', kabs),
             ffi.from_buffer('double *', kAx), R, rb, ry, ffi.from_buffer('double *', R),
             ffi.from_buffer('double *', rb), ffi.from_buffer('double *', ry), ckt,
-            ffi.from_buffer('double *', ckt))
+            ffi.from_buffer('double *', ckt), kpp, Jp, ffi.from_buffer('int64_t *', kpp),
+            ffi.from_buffer('double *', Jp))
     s.knnz = sk.nnz
     s.kAp, s.kAi, s.kat, s.kabs, s.kAx = keep[4:9]
     s.R, s.rb, s.ry = keep[12:15]
     s.ckt = keep[16]
+    s.kpp = keep[19] if rec.core.npat else ffi.NULL
+    s.Jp = keep[20]
     s.klu_factor, s.klu_solve, s.klu_free, s.klu_refactor, s.klu_tsolve = (
         ffi.cast('void *', addr(f)) for f in (lib.klu_factor, lib.klu_solve, lib.klu_free_numeric,
                                               lib.klu_refactor, lib.klu_tsolve))
