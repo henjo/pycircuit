@@ -28,10 +28,85 @@
 #define PACKED_J(geq) do { \
         for (pk = 0; pk < c->npat; pk++) { s = c->pat[pk]; J[pk] = c->binG[s] + (geq); } \
     } while (0)
+/* THE BYPASS (core.h's bp_ fields).  `within`: `now` lies within the
+   bypass's tolerance of `then` (a NaN never does) */
+static int within(const hdl_core_t *c, double now, double then)
+{
+    double a = fabs(now), b = fabs(then);
+    return fabs(now - then) <= c->bp_rt * (a > b ? a : b) + c->bp_vn;
+}
+
+/* y = y0 + M d, M k x k row-major: a bypassed element's output, linear at
+   its reference */
+static void linear(const double *y0, const double *M, const double *d, long k, double *y)
+{
+    long r, j;
+    for (r = 0; r < k; r++) {
+        double t = y0[r];
+        for (j = 0; j < k; j++) t += M[r * k + j] * d[j];
+        y[r] = t;
+    }
+}
+
+/* element e of group z at its inputs X: 1 where it is bypassed -- its
+   passes `zw` made from its reference, linear at X, into its staging rows
+   (G and C the reference's, copied where another call's are there) -- 0
+   where it is to be evaluated */
+static int bypassed(const hdl_core_t *c, long z, long zw, long e, const double *X, double T,
+                    double *G, double *C, double *I, double *Q)
+{
+    const int64_t *zt = c->ztab + ZT_WIDTH * z;
+    long k = zt[ZT_K], g = zt[ZT_PR] + e, j;
+    const double *R, *Gr, *Cr;
+    double dX[CORE_MAX_INPUTS];
+    if (!c->bp_st[g] || c->bp_T[g] != T) return 0;
+    R = c->bp_ref + c->bp_at[z] + e * (3 * k + 2 * k * k);
+    if (!within(c, X[0], R[0])) return 0;
+    for (j = 1; j < k; j++)
+        if (!within(c, X[j] - X[0], R[j] - R[0])) return 0;
+    Gr = R + 3 * k;
+    Cr = Gr + k * k;
+    for (j = 0; j < k; j++) dX[j] = X[j] - R[j];
+    if (zw & PCX_PASS_I) linear(R + k, Gr, dX, k, I);
+    if (zw & PCX_PASS_Q) linear(R + 2 * k, Cr, dX, k, Q);
+    if ((zw & (PCX_PASS_G | PCX_PASS_C)) && c->bp_st[g] == 2) {
+        memcpy(G, Gr, sizeof(double) * (size_t) (k * k));
+        memcpy(C, Cr, sizeof(double) * (size_t) (k * k));
+        c->bp_st[g] = 1;
+    }
+    c->bp_n[g]++;
+    return 1;
+}
+
+/* element e of group z after its kernel made the passes `zw` at X: a full
+   evaluation (every pass its group has) is its reference -- inputs, i, q,
+   G, C and the temperature; a partial one that wrote G or C leaves the
+   staging's another call's */
+static void bypass_keep(const hdl_core_t *c, long z, long zw, long e, const double *X, double T,
+                        const double *G, const double *C, const double *I, const double *Q)
+{
+    const int64_t *zt = c->ztab + ZT_WIDTH * z;
+    long k = zt[ZT_K], g = zt[ZT_PR] + e;
+    double *R;
+    if ((zw & zt[ZT_PASSES]) != zt[ZT_PASSES]) {
+        if ((zw & (PCX_PASS_G | PCX_PASS_C)) && c->bp_st[g]) c->bp_st[g] = 2;
+        return;
+    }
+    R = c->bp_ref + c->bp_at[z] + e * (3 * k + 2 * k * k);
+    memcpy(R, X, sizeof(double) * (size_t) k);
+    memcpy(R + k, I, sizeof(double) * (size_t) k);
+    memcpy(R + 2 * k, Q, sizeof(double) * (size_t) k);
+    memcpy(R + 3 * k, G, sizeof(double) * (size_t) (k * k));
+    memcpy(R + 3 * k + k * k, C, sizeof(double) * (size_t) (k * k));
+    c->bp_T[g] = T;
+    c->bp_st[g] = 1;
+}
+
 /* one element of fused group z into its staging rows, for the passes `zw`:
    its inputs gathered into X, the temperature into its parameter row (as
    the batches' driver, pass.c, writes it), its kernel -- a function of
-   those alone, writing its own rows (any thread may make it) */
+   those alone, writing its own rows (any thread may make it) -- or, the
+   bypass armed, its reference's linear outputs where it is bypassed */
 static void fused_element(const hdl_core_t *c, long z, long zw, long e, const double *x,
                           double T, double *X)
 {
@@ -39,12 +114,14 @@ static void fused_element(const hdl_core_t *c, long z, long zw, long e, const do
     long k = zt[ZT_K], ti = zt[ZT_TI], j;
     const int64_t *NM = c->NMall + zt[ZT_NM];
     double **PR = c->PRall + zt[ZT_PR], *st = c->zst;
+    double *G = st + zt[ZT_G_AT] + e * zt[ZT_G_LEN], *C = st + zt[ZT_C_AT] + e * zt[ZT_C_LEN],
+           *I = st + zt[ZT_I_AT] + e * zt[ZT_I_LEN], *Q = st + zt[ZT_Q_AT] + e * zt[ZT_Q_LEN];
+    const int bp = c->bp_at && c->bp_at[z] >= 0;
     for (j = 0; j < k; j++) X[j] = x[NM[e * k + j]];
     if (ti >= 0) PR[e][ti] = T;
-    ((fused_fn_t) c->z_fn[z])(X, PR[e], zw, st + zt[ZT_G_AT] + e * zt[ZT_G_LEN],
-                              st + zt[ZT_C_AT] + e * zt[ZT_C_LEN],
-                              st + zt[ZT_I_AT] + e * zt[ZT_I_LEN],
-                              st + zt[ZT_Q_AT] + e * zt[ZT_Q_LEN]);
+    if (bp && bypassed(c, z, zw, e, X, T, G, C, I, Q)) return;
+    ((fused_fn_t) c->z_fn[z])(X, PR[e], zw, G, C, I, Q);
+    if (bp) bypass_keep(c, z, zw, e, X, T, G, C, I, Q);
 }
 
 /* the passes this call makes that group z covers (q always); 0 where its

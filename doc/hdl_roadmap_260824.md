@@ -13441,3 +13441,72 @@ not end), the sparse backend eager, the product taken from scipy.sparse, `openbl
 clean; the 27 gold decks -- DC, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count
 and path count identical.  Left in plan 254: S2 (the complex factor's analysis kept per pattern) REFUSED -- gm19's
 1 839 distinct patterns in 1 997 analyses, a cache serves 8 %; device bypass prototyped (jge gear2 1.32x) and next.
+
+## 2026-11-05 — 255. The device bypass -- `Transient(bypass=True)`, Gear-2 runs: a compiled device whose first input, and each other input's difference to it, moved within reltol·|v| + vabstol of its last full evaluation is not evaluated but linearized there (SPICE's bypass, loaded as SPICE loads a bypassed device), for the run's stepping; off by default: jge under gear2 3.55 -> 2.72 s (1.306x), each gold deck's error within the spread a 0.1 % reltol nudge gives
+
+**Why**  Plan g24's `tc/plan_254.md`, R2 (Andreas, 2026-11-04: "Open the answer-changing levers, Long transients and
+big circuit is most important"; 2026-11-05 "2 a": build it as an opt-in option, a default decided later from
+evidence).  Census (counts, gear2): of every device evaluation, those whose voltages moved within SPICE's tolerance of
+the last: gm19 61 %, mux8 56 %, voter25 59 %, jge 77 %.  A prototype (a worktree, `fused_element`) found the form:
+outputs kept without a linear term stall the Newton (gm6 2 370x over tolerance); three references an element break
+the chord Newton's contraction (the linearization's G not its frozen J's: gm19 22x slower); Radau's partial
+evaluations as references cost 1.7-3.4x the steps.  One reference, linearized: jge gear2 1.32x at SPICE's 1e-3;
+sized again at the analysis's own reltol (1e-4 on the gold decks) and 1 uV: jge 1.25x, mux8 1.04x, voter25 1.09x,
+mux8 Radau 1.05x -- the idle devices pass on the absolute term.  The calls the prototype did not bypass, by pass
+mask: jge 3.3 M full, 1.03 M i+q, 0.47 M G+C+q; mux8 Radau 0.72 M full, 4.7 M i+q, 1.3 M C+q -- the partial calls
+writing G or C at another point overwrote the staging the prototype's linearization read: the reference keeps its own.
+
+**Built.**  core.h: the bypass's fields (bp_at NULL: off).  core.c: `fused_element` -- the bypass armed and the
+group eligible, `bypassed` first: the reference held, at the same temperature, and the first input and each other
+input's difference to it within `bp_rt * max(|now|, |then|) + bp_vn` -> i = Ir + G dX and q = Qr + C dX (`linear`),
+the reference's G and C copied into the staging where another call's are there (state 2), the element's count; else
+the kernel, then `bypass_keep`: a full evaluation (every pass its group has) is the reference -- inputs, i, q, G, C,
+temperature -- and a partial one that wrote G or C marks the staging another call's.  `_tran_core._Core.bypass(tol)`
+arms (every reference cleared, the counts zeroed) or disarms; a group bypasses where its passes are all four, its G
+and C k x k, its i and q k wide and every input a node row (`_bypass_arrays`); a pack moved clears its element's
+reference (`_check_elements`); `bypassed()` the count.  `Transient._bypass_arm`: `bypass` on a Gear-2 run of the
+multistep family -> the circuit's core armed with the run's `reltol` and `vabstol` around `_SteppingLoop.execute`,
+disarmed after (a `finally`): the operating point, a shooting, the other methods and every other analysis exact;
+`statistics.bypassed_evaluations`.  A parameter
+changed during a run gives the circuit another core, unarmed: the rest of the run evaluates every device.
+`analysis.py`: `bypasstol` (the Python `Diode`'s own cache) only where asked for by name -- it was derived as
+reltol·1e-8 V whenever `bypass` was set, and its presence switches off the C loops, the C cache and the memos (a
+Python device's values then depend on its history): with it, a bypass run of jge measured 15.5 s against 3.5 s
+off.  The parameters' descriptions say which is which.
+
+**Measured** (a quiet box, interleaved).  LINE (set before building; one form: jge's gear2 solve with `bypass`
+at least 1.15x against without, the median of 3 pairs): 3.55 -> 2.72 s, 1.306x (1.294 to 1.310), 9.09 M of its
+device evaluations bypassed -- met; 2 pairs each: mux8 1.049x, voter25 1.066x, gm19 1.011x.  Off, the 27 decks'
+solves against HEAD 5a00955c, 3 rounds: gear2 0.998x, Radau 0.999x (the guard 0.99x).  ACCURACY, the 27 decks against
+reltol/100 references of the same method (per probe max |y - y_ref| / swing, the max over the probes): the guard as
+first set (each run's error at most 1.25x the run without bypass + reltol) breached on 4 of 50 runs -- gm6 Radau 1.93,
+mux8 gear2 1.79, slowlatch Radau 1.73, rich3 Radau 1.28, while six others moved as far the other way (mux8 Radau 0.37,
+gm19 Radau 0.55) -- and arom under Radau did not finish.  Re-sized before its own measurement (Andreas): null runs
+without bypass at reltol x1.001 and x0.999; each bypass error at most 1.25x the worst of the off run and the nulls +
+reltol, the medians within 1.1x the nulls', every run finished but where a null fails too.  Under gear2: all 25
+judged decks inside (arom's and rich3's reltol/100 runs fail without bypass: no reference; their bypass runs finish),
+the median ratio 1.000 as the nulls' (mux8's 1.79 beside its nulls' 1.80).  Under Radau: 24 of 25 inside, slowlatch
+outside -- one edge, v(4) at 10.07 ns, 0.094 V against 0.054 V of a 6.8 V swing, its nulls 0.054 V (larger nudges
+move it as far: x1.01 0.083 V, x0.97 0.096 V) -- so the bypass is Gear-2's alone (Andreas, "1").  arom under Radau
+fails without bypass at reltol x1.001 (t = 2.1343769e-7, where the bypass run failed) and x0.9999: the deck is
+fragile there; ending the bypass at the rescue and re-making the history exactly did not save it.
+
+**Tests.**  test_device_bypass (new, 11 tests, 12 cases): off by default and disarmed after a run (the operating point the same, no
+`bypasstol` derived); a gear2 run bypasses on its C path with the same steps and each node's error against a
+reltol/100 reference within 1.25x the off run's + reltol (a pulsed gate-charge MOS chain: 3.0e-2 both ways); Radau
+and trapezoidal bypass nothing (the off run's bytes); a bypass run repeats bit for bit (a second run on one transient too); arming
+clears every reference; within the tolerance every device is linear at its reference (i and q the reference's plus
+its G and C times the move; not stale, not a fresh evaluation; G and C the reference's); past it the device is
+evaluated and is the new reference, a common-mode move too (the first input's own test); a partial call (G and C, no
+i) leaves the reference whole; another temperature or pack evaluates; a parameter change ends the bypass (another
+core); a group with a branch-current input never bypasses.  Mutations -- outputs kept without the linear term, no
+copy of the reference's G and C, no test of the first input, no temperature check, references not cleared at
+arming, no clear on a pack move, branch inputs eligible, not disarmed after a run, `bypasstol` derived again, every
+method armed, every multistep formula armed -- each caught.  Pinned pairs re-recorded after their twins' tests (571 passed): 'the transient evaluation and the core',
+"the stage paths' passes and the core's" (core.c), and the DC base and PCNR DC solves (their C includes core.h) --
+the C side alone in each.
+
+**Gate** (the main tree): the TELL; the suite, 6 182 passed (10 skipped, 3 xfailed); the sanitizer fast and deep
+clean; the 27 gold decks with bypass off -- standalone DC against 254's gate runs, gear2 and Radau against HEAD
+5a00955c interleaved: every digest, step, rejection, Newton count and path count identical (made before the method's
+restriction, which acts only where `bypass` is set; the suite after it).

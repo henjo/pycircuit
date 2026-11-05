@@ -146,7 +146,7 @@ class TransientStatistics(object):
                  'force_accepts', 'order_drops', 'breakpoints_hit',
                  'gmin_rescues', 'state_events_hit', 'state_event_cuts',
                  'branch_screens', 'branch_points', 'chord_fallbacks',
-                 'early_aborts',
+                 'early_aborts', 'bypassed_evaluations',
                  'min_step', 'max_step', 'solve_seconds', 'total_seconds')
 
     def __init__(self):
@@ -176,6 +176,9 @@ class TransientStatistics(object):
         ## `early_abort`: attempts abandoned at their first Newton iterate
         ## (each one of `rejected_steps` too)
         self.early_aborts = 0
+        ## `bypass`: device evaluations the bypass skipped (each linearized
+        ## at its device's last full evaluation instead)
+        self.bypassed_evaluations = 0
         self.min_step = None
         self.max_step = None
         self.solve_seconds = 0.0
@@ -1553,8 +1556,23 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
          Parameter(name='minbreak',
                    desc='Minimum time difference for breakpoint events', unit='s',
                    default=1e-14),
+         ## DEVICE BYPASS (SPICE's), OFF BY DEFAULT, GEAR-2 ALONE: a device the
+         ## evaluation core evaluates (compiled, in a circuit the core serves)
+         ## whose terminal voltages each moved within `reltol` * |v| + `vabstol`
+         ## of its last full evaluation is not evaluated: it is LINEARIZED there
+         ## (its currents and charges from that evaluation's, plus its G and C
+         ## times the change) -- a Gear-2 run's stepping only (`_bypass_arm`);
+         ## the operating point, the other methods and every other analysis
+         ## evaluate every device.  An answer change within the run's
+         ## tolerance, measured on the 27 gold decks: each one's error inside
+         ## the spread a 0.1 % `reltol` nudge gives; jge 1.30x, the other large
+         ## decks 1.01-1.07x (`doc/hdl_roadmap_260824.md`, 255; Radau left out
+         ## there: one deck's edge outside its nudges' spread).
+         ## `statistics.bypassed_evaluations` counts the evaluations skipped.
          Parameter(name='bypass',
-                   desc='Enable device model bypassing', unit='',
+                   desc='Device bypass (Gear-2 runs): a device whose terminal voltages '
+                        'moved within reltol and vabstol of its last full evaluation is '
+                        'linearized there instead of evaluated', unit='',
                    default=False),
          Parameter(name='minstep',
                    desc='Minimum timestep to prevent infinite loops', unit='s',
@@ -1642,7 +1660,9 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                    unit='s',
                    default=None),
          Parameter(name='bypasstol',
-                   desc='Bypass tolerance for device models', unit='V',
+                   desc="The Python devices' own bypass tolerance (the Diode's "
+                        'cache), with bypass; unset: none -- not the compiled '
+                        "devices' bypass, which reads reltol and vabstol", unit='V',
                    default=None)]
 
     ## `irefnode` is not an argument: passing it fails loudly (F18).
@@ -2102,9 +2122,33 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         family = self._step_family(run, coupled_lte)
         loop = _SteppingLoop(self, family, run, X, tend, timestep,
                              provided_function)
-        loop.execute()
+        core = self._bypass_arm(family)
+        try:
+            loop.execute()
+        finally:
+            if core is not None:
+                self.statistics.bypassed_evaluations = core.bypassed()
+                core.bypass(None)
         self._warn_run_summary(loop.fixed_fallbacks, loop.forced, timestep)
         return self._finish_result(X, loop.timelist, _t_run_start)
+
+    def _bypass_arm(self, family):
+        """`bypass`: the device bypass armed on the circuit's evaluation core
+        for the run's stepping, with the run's `reltol` and `vabstol` --
+        the core, or None (not asked, a run other than Gear-2's multistep
+        steps -- the method its accuracy was measured on -- or a circuit the
+        core does not serve: nothing bypassed).  Armed after the operating point and disarmed when
+        the stepping ends (`_solve`), so the operating point, a shooting's
+        steps and every other analysis evaluate every device.  (A parameter
+        changed during the run gives the circuit another core, not armed:
+        the rest of the run evaluates every device.)"""
+        if (not self.par.bypass or not _tran_core.CORE or type(family) is not _LMMSteps
+                or type(self.base_integrator).__name__ != 'Gear2Integrator'):
+            return None
+        core = _tran_core.core_for(self)
+        if core is not None:
+            core.bypass((float(self.par.reltol), float(self.par.vabstol)))
+        return core
 
     def _open_run(self, refnode, x0, provided_function, coupled_lte):
         """`_solve`'s start state: the elements' state cleared, the reference

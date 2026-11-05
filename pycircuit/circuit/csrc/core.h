@@ -9,8 +9,8 @@
  * tables b_fn, PRall and z_fn before the calls it readies.  An n x n
  * matrix is row-major.  A call reads the tables and writes only its own
  * scratch (vals beyond its templates, binG, bini), the caller's output
- * buffers, and each element's parameter row (its temperature slot, its held
- * statements). */
+ * buffers, each element's parameter row (its temperature slot, its held
+ * statements) and, the bypass armed, its references and counts. */
 typedef struct {
     long n;                       /* the circuit's size (unknowns) */
     /* THE VALUES every slot of every pass is made from (`_Flat.values`):
@@ -115,6 +115,25 @@ typedef struct {
        `small_gemv`) -- set where `_tran_core._small_gemv_ok` found this
        process's dgemv to make exactly that; clear, the dgemv itself */
     long small_gemv;
+    /* THE BYPASS (`_Core.bypass`; bp_at NULL: off): a fused group's element
+       whose first input, and each other input's difference to it, lie
+       within bp_rt * max(|now|, |then|) + bp_vn of those of its REFERENCE
+       -- its last full evaluation (every pass its group has) -- at the
+       reference's temperature is not evaluated: it is linearized there,
+       i = Ir + G dX and q = Qr + C dX, G and C the reference's (SPICE's
+       bypass, loaded as SPICE loads a bypassed device: its companion at the
+       reference).  Per group z: its references' offset in bp_ref (-1: the
+       group never bypasses), element e's at bp_at[z] + e (3 k + 2 k k): its
+       k inputs, k i, k q, k x k G, k x k C.  Per element ordinal (its row
+       in PRall): the reference's temperature, its state (0 none; 1 held,
+       the staging's G and C its own; 2 held, the staging's G or C another
+       call's) and the evaluations bypassed */
+    const int64_t *bp_at;
+    double *bp_ref;
+    double *bp_T;
+    int64_t *bp_st;
+    int64_t *bp_n;
+    double bp_rt, bp_vn;
 } hdl_core_t;
 /* THE EVALUATION: the passes `want` asks for (q always) at x, then the
    companion `formula` forms, f = (i + iq) + u and J = G + Geq -- bit for
@@ -134,7 +153,8 @@ typedef struct {
    PCX_FORMULA_PASSES; Geq not packed), F (want has I), J (want has G; npat
    values packed); binG (G) and bini
    (i), the core's own; each element's parameter row at its temperature
-   slot.  F and J are touched only where written, so a caller may pass
+   slot; the bypass armed (bp_at), the references, states and counts of
+   the elements evaluated.  F and J are touched only where written, so a caller may pass
    any buffer of the size otherwise (`_tran_core.evaluate` passes q and
    Geq).  Returns 0. */
 long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long formula,

@@ -356,16 +356,16 @@ class Analysis(sim.Analysis):
         except (AttributeError, KeyError):
             bypasstol = None
             
-        if not bypass:
+        ## `bypasstol` (V): the Python devices' own bypass -- the `Diode`'s
+        ## cache, a junction voltage within it of the last not evaluated again
+        ## -- only where asked for by name, with `bypass`; -1.0: never.  Set,
+        ## the memos and the C loops that serve a run decline (a Python
+        ## device's values then depend on its history).  The compiled
+        ## devices' bypass is the evaluation core's, at the analysis's own
+        ## `reltol` and `vabstol` (`Transient._bypass_arm`), and needs no
+        ## `bypasstol`.
+        if not bypass or bypasstol is None:
             bypasstol = -1.0
-        elif bypasstol is None:
-            # Dynamically derive bypasstol from reltol if not explicitly set
-            try:
-                reltol = self.par.reltol
-            except (AttributeError, KeyError):
-                reltol = 1e-4
-            bypasstol = reltol * 1e-8
-            
         epar.bypasstol = bypasstol
 
         if hasattr(toolkit, 'setup_analysis'):

@@ -183,7 +183,7 @@ FORMULA = {'Gear2Integrator': _ABI['PCX_FORMULA_GEAR2'],
            'EulerIntegrator': _ABI['PCX_FORMULA_EULER'],
            'TrapezoidalIntegrator': _ABI['PCX_FORMULA_TRAPEZOIDAL'],
            'ThetaIntegrator': _ABI['PCX_FORMULA_THETA']}
-_G, _C, _I = _ABI['PCX_PASS_G'], _ABI['PCX_PASS_C'], _ABI['PCX_PASS_I']
+_G, _C, _I, _Q = _ABI['PCX_PASS_G'], _ABI['PCX_PASS_C'], _ABI['PCX_PASS_I'], _ABI['PCX_PASS_Q']
 #: the companions by name: Gear-2's (two charges back), theta's (its theta), and
 #: the two whose companion carries the current (`iq`)
 _GEAR2, _THETA = _ABI['PCX_FORMULA_GEAR2'], _ABI['PCX_FORMULA_THETA']
@@ -716,6 +716,9 @@ class _Core:
         self._struct(ffi, dgemv)
         self._index_elements(z_proff)
         self.dptr = ffi.typeof('double *')
+        ## THE BYPASS's arrays (`bypass`): made at its first arming
+        self.nn = len(cir.nodes)
+        self.bp = None
 
     def _struct(self, ffi, dgemv):
         """The C struct (`cs`): the sizes, every array by its field's name,
@@ -887,7 +890,57 @@ class _Core:
                 a = cp[0].ctypes.data
                 for p_ in ps:
                     PR[p_] = a
+                ## (another pack: the element's bypass reference another
+                ## parameter state's)
+                if self.bp is not None:
+                    self.bp[3][list(ps)] = 0
         return None
+
+    def bypass(self, tol):
+        """ARM the device bypass (core.h's bp_ fields) for a run, `tol` its
+        `(reltol, vabstol)` -- every reference cleared, the counts zeroed --
+        or disarm it (`tol` None).  A group bypasses where its passes are
+        all four, its G and C k x k and its i and q k wide, and every input
+        a node row (its first input's value tested too): a branch current
+        among the inputs, or another layout, never."""
+        cs, ffi = self.cs, self.ffi
+        if tol is None:
+            cs.bp_at = ffi.NULL
+            return
+        if self.bp is None:
+            self.bp = self._bypass_arrays()
+            self.bp_handles = [ffi.from_buffer('int64_t *' if a.dtype == np.int64 else 'double *', a)
+                               for a in self.bp]
+        _at, _ref, T, st, n = self.bp
+        T.fill(np.nan)
+        st.fill(0)
+        n.fill(0)
+        cs.bp_rt, cs.bp_vn = float(tol[0]), float(tol[1])
+        cs.bp_ref, cs.bp_T, cs.bp_st, cs.bp_n = self.bp_handles[1:]
+        cs.bp_at = self.bp_handles[0]
+
+    def _bypass_arrays(self):
+        """The bypass's arrays: per group its references' offset (-1: never
+        bypasses), the references, and per element ordinal the reference's
+        temperature, its state and its count."""
+        zt = self.arrays['ztab'].reshape(-1, _ZT_WIDTH) if self.nz else np.zeros((0, _ZT_WIDTH))
+        NM = self.arrays['NMall']
+        at = np.full(max(self.nz, 1), -1, dtype=np.int64)
+        total = 0
+        for z in range(self.nz):
+            ne, k, nm = (int(zt[z, _CAP[f]]) for f in ('ZT_NE', 'ZT_K', 'ZT_NM'))
+            lens = [int(zt[z, _CAP[f'ZT_{m}_LEN']]) for m in ('G', 'C', 'I', 'Q')]
+            if (int(zt[z, _CAP['ZT_PASSES']]) == _G | _C | _I | _Q and lens == [k * k, k * k, k, k]
+                    and bool(np.all(NM[nm:nm + ne * k] < self.nn))):
+                at[z] = total
+                total += ne * (3 * k + 2 * k * k)
+        m = max(len(self.PRall), 1)
+        return (at, np.zeros(max(total, 1)), np.full(m, np.nan), np.zeros(m, dtype=np.int64),
+                np.zeros(m, dtype=np.int64))
+
+    def bypassed(self):
+        """The evaluations the bypass skipped since it was armed."""
+        return 0 if self.bp is None else int(self.bp[4].sum())
 
     def _stamp(self, before, _hdl_batch):
         """Watch what the check read and stamp it (`_watch.arm`): the

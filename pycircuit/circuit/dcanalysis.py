@@ -198,8 +198,9 @@ class DC(Analysis):
                             desc='Enable device model bypassing', unit='',
                             default=False),
                   Parameter(name='bypasstol',
-                            desc='Bypass tolerance for device models', unit='V',
-                            default=None),
+                            desc="The Python devices' own bypass tolerance (the "
+                                 "Diode's cache), with bypass; unset: none",
+                            unit='V', default=None),
                   Parameter(name='epar', desc='Environment parameters',
                             default=defaultepar),
                   ## THE SPICE BENCHMARK PLAN'S STAGE 3 (2026-10-07) -- SPICE's
