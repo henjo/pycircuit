@@ -13720,3 +13720,35 @@ its C.
 **Gate** (the main tree): the suite, 6 204 passed (10 skipped, 3 xfailed); the 27 gold decks under gear2 with
 `lte_jacobian='seed'` against HEAD b7b75aba: every digest, step, rejection and Newton count the same, the paths
 moved on 17 decks alone from `loop_c:bail:lte` to `loop_c:bail:numeric` (1-2 a deck).
+
+## 2026-11-05 — 261. The node bookkeeping -- `Circuit.append_node` decides membership by a set of the node list's names, kept beside the list while it is the same object of the same length, where it scanned the list: building a 4 000-stage chain and its gear2 solve 12.0 -> 9.8 s (1.230x), every result the same
+
+**Why**  Andreas, the compact matrices as a "Scaling project" (plan g24's `tc/plan_261.md`).  A ladder of pulsed MOS
+chains with capacitors (p261/ladder.py, each run memory-capped) found the simulator's cost an attempt growing with the
+square of the size where a sparse 1D chain's should grow linearly: Radau 7.7 ms an attempt at 1 005 unknowns, 32.9 at
+1 105 (its transform loop's buffers past `_tran_tcloop_c._fits`), 97 at 2 005, 465 at 4 005; gear2 7.2, 8.3, 20.4,
+84.5; peak RSS ~250 B per n^2.  Profiled at 2 005 unknowns, the largest single item was not the matrices:
+`append_node`'s `node not in self.nodes` -- `Node.__eq__` 6.0 M calls -- in building the circuit (`_place_instance`
+per element) and in every run's operating point (the PCNR view, `pcnr_view`: 4 002 instances, 2 003 nodes).  Plan
+261's L1; its L2 (gear2's loop handing half the attempts back at size), L3 (Radau's transform loop on the pattern,
+past its cap) and L4 (the Python paths' dense state) sized next.
+
+**Built.**  `append_node`: membership by name -- as `Node.__eq__` decides it -- through a set of the list's names
+kept as `_node_names` (the list, its length, the names), made again where the list is another object or its length
+changed; every edit of the list in `circuit.py` changes its length, keeps its names (a node moved) or, the one
+replacing a node at the same length (`connect_terminals`), drops it (`_nodes_edited`).
+
+**Measured** (a quiet box at the start; LINE set before building, in one form: the 4 000-stage chain's process --
+building it and its 100 ns gear2 solve -- against HEAD cf561ade, the median of 3 interleaved pairs, at least 1.15x):
+build 2.80 -> 1.32 s, solve 9.28 -> 8.52 s, 1.230x (1.229, 1.230, 1.409) -- met; at 2 000 stages 0.96 -> 0.67 s and
+2.21 -> 2.06 s.  The build now grows linearly (1.32 s at 4 000 against 0.67 at 2 000).
+
+**Tests.**  test_node_bookkeeping (new, 6): the node comparisons building ladders of 400 and 800 resistors about
+double (a scan made them 80 000 and 320 000); a node of a name present not appended again, its `nodenames` entry the
+new one as before; `connect_terminals`' same-length replacement dropping the names; a removal (the list shorter)
+making them again; a copy's names its own; a list assigned in place the one membership reads.  Mutations -- the scan
+back, no drop at the replacement, no length check, no identity check -- each caught.
+
+**Gate** (the main tree): the suite, 6 210 passed (10 skipped, 3 xfailed); the 27 gold decks under gear2, Radau and
+DC against HEAD cf561ade interleaved: every digest, count and path count the same; the chain's digest the same at
+2 000 and 4 000 stages.

@@ -415,10 +415,28 @@ class Circuit():
 
     def append_node(self, node):
         """Append node object to circuit"""
-        ## Make a copy of node list so the class is unchanged
-        if node not in self.nodes:
-            self.nodes.append(node)
+        ## MEMBERSHIP BY NAME, AS `Node.__eq__` DECIDES IT, THROUGH A SET OF
+        ## THE LIST'S NAMES -- `node not in self.nodes` scanned the list, O(n)
+        ## a node and O(n^2) a circuit's build (and the operating point's PCNR
+        ## view, `pcnr_view`, every run).  The set is kept beside the list
+        ## while the list is the same object of the same length: every edit of
+        ## it here changes its length, keeps its names (a node moved) or drops
+        ## the set (`_nodes_edited`: a terminal's node replaced).
+        nodes = self.nodes
+        kept = self.__dict__.get('_node_names')
+        if kept is None or kept[0] is not nodes or kept[1] != len(nodes):
+            kept = (nodes, len(nodes), {n.name for n in nodes if isinstance(n, Node)})
+            self._node_names = kept
+        if node.name not in kept[2]:
+            nodes.append(node)
+            kept[2].add(node.name)
+            self._node_names = (nodes, len(nodes), kept[2])
         self.nodenames[node.name] = node
+
+    def _nodes_edited(self):
+        """A node of the list replaced by another, its length the same:
+        `append_node`'s set of its names dropped."""
+        self.__dict__.pop('_node_names', None)
 
     def append_branches(self, *branches):
         """Append node object to circuit"""
@@ -680,6 +698,7 @@ class Circuit():
             
             if node not in self.nodes:
                 self.nodes.insert(self._nterminalnodes, node)
+                self._nodes_edited()
             
             self.nodenames[terminal] = node            
             
