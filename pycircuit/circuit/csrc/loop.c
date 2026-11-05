@@ -1229,6 +1229,34 @@ static int tc_rkgather(loop_t *s)
     return nz != nk;
 }
 
+/* THE COMPLEX FACTOR ON THE STRUCTURAL PATTERN (`zs_struct`): the fold's
+   complex values at the analysis solver's positions -- the real factor's
+   `rk_take` into the reduced m x m factor, row-major -- explicit zeros
+   among them, packed into `zs_ax`, as `ComplexKLUSolver.prepare_structural`
+   gathers them; 1 where a nonzero (a NaN one) lies off them -- the
+   Python's `prepare` then -- by `count_nonzero`'s counts of both */
+static int tc_ckgather(loop_t *s)
+{
+    const radau_fold_t *fo = (const radau_fold_t *) s->fold;
+    const double *cf = fo->cf;
+    long m = s->n - 1, k, nz = 0, nk = 0;
+    /* (on the core's pattern the factor is +0.0 off it) */
+    if (fo->onpat)
+        for (k = 0; k < fo->pn; k++) {
+            const int64_t q = fo->pred[k];
+            nz += cf[2 * q] != 0.0 || cf[2 * q + 1] != 0.0;
+        }
+    else
+        for (k = 0; k < m * m; k++) nz += cf[2 * k] != 0.0 || cf[2 * k + 1] != 0.0;
+    for (k = 0; k < s->rk_nnz; k++) {
+        const int64_t t = s->rk_take[k];
+        s->zs_ax[2 * k] = cf[2 * t];
+        s->zs_ax[2 * k + 1] = cf[2 * t + 1];
+        nk += cf[2 * t] != 0.0 || cf[2 * t + 1] != 0.0;
+    }
+    return nz != nk;
+}
+
 /* `_FrozenTransform.real_solve` of `eb` in place: dgetrs on the kept LU,
    or the analysis solver's StructuralKLU (`pcx_klu_kept`, its sequence on
    the numeric the attempt holds: `solve_kept` where its real solves kept
@@ -1275,7 +1303,9 @@ static long tc_frozen(loop_t *s, loop_attempt_t *a)
     }
     CALL(s->fold_fn, pcx_radau_fold, fo);
     if (fo->status != FOLD_STATUS_MADE) return LOOP_BAIL_FOLD;
-    if (!fo->same) {
+    if (s->zs_struct) {
+        if (tc_ckgather(s)) return LOOP_BAIL_FOLD;
+    } else if (!fo->same) {
         long st = tc_repattern(s, a);
         if (st) return st;
     }

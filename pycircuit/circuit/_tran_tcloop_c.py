@@ -256,12 +256,19 @@ def _eligible(loop, tr, td, rec):
     rk = _real_solver(tr, n)
     if rk.__class__ is str:
         return rk
+    ## (the complex factor on the structural pattern -- roadmap 259 -- where
+    ## its record is the one analysed: the real factor's StructuralKLU, whose
+    ## positions `tc_ckgather` takes its values at)
+    zs = td['_radau_zsolver']
+    zst = zs._skey if zs._skey is not None and zs._pattern == zs._skey[6] else None
+    if zst is not None and zst[0] is not rk:
+        return 'complex'
     ## (the fallback's estimate is the fresh one -- numpy's solve, the
     ## toolkit's, whatever the real factor's solver: bound on KLU too)
     return SimpleNamespace(drv=drv, O=O, tr=tr, rec=rec, n=n, iref=rec.iref, tab=tab,
                            minbreak=minbreak, st=st, screen=None if screen[0] is None else screen,
                            cfg=cfg, sk=None, fam=loop.family, integ=tr.base_integrator, mem=mem,
-                           zs=td['_radau_zsolver'], mats=tr._radau_transform_matrices(),
+                           zs=zs, zst=zst, mats=tr._radau_transform_matrices(),
                            rk=rk, fb=_fb_ready(tr, td, rec, n))
 
 
@@ -368,11 +375,18 @@ def _tc_ready(tr, td):
         return why
     zs = td.get('_radau_zsolver')
     ZS = _tran_radau._FROZEN['types'][0]
-    last = getattr(zs, '_csc_last', None) if type(zs) is ZS else None
-    if (last is None or not (zs._symbolic and zs._numeric) or zs._pattern != last[3]
-            or (ZS.solve, ZS.prepare, ZS.solve_prepared, ZS.prepare_values) != fc[8:12]
+    if type(zs) is not ZS:
+        return 'complex'
+    ## (the record analysed: the last one of nonzeros, or the structural
+    ## pattern's -- roadmap 259, `prepare_structural`)
+    last, sr = zs._csc_last, zs._skey
+    held = ((last is not None and zs._pattern == last[3])
+            or (sr is not None and zs._pattern == sr[6]))
+    if (not held or not (zs._symbolic and zs._numeric)
+            or (ZS.solve, ZS.prepare, ZS.solve_prepared, ZS.prepare_values,
+                ZS.prepare_structural) != fc[8:13]
             or any(k in zs.__dict__ for k in ('solve', 'prepare', 'solve_prepared',
-                                              'prepare_values'))):
+                                              'prepare_values', 'prepare_structural'))):
         return 'complex'
     mats = td.get('_radau_Tmats')
     if mats is None or not _tran_radau._lam_folds(mats[0]):
@@ -461,7 +475,8 @@ def _bound(loop, e):
     run_ = loop.c.run
     scr, zs = e.screen, e.zs
     fb = e.fb or (None, None, None)
-    key = (e.rec, e.tab, zs, zs._symbolic, zs._numeric, zs._csc_last[1],
+    key = (e.rec, e.tab, zs, zs._symbolic, zs._numeric,
+           e.zst[3] if e.zst is not None else zs._csc_last[1],
            None if scr is None else scr[3], None if scr is None else scr[4], e.n,
            e.st[0].shape[0], fb[0], fb[2], e.rk)
     if not (type(run_) is _TcRun and len(run_.key) == len(key)
@@ -612,7 +627,7 @@ def _bind_newton(run, e):
     ts.Symbolic = tffi.cast('void *', zs._symbolic)
     ts.Numeric = tffi.cast('void *', zs._numeric)
     ts.Common = tffi.cast('void *', ctypes.addressof(zs._common))
-    _nz, Ap, Ai, _key = zs._csc_last
+    Ap, Ai = (e.zst[3], e.zst[4]) if e.zst is not None else zs._csc_last[1:3]
     run.tctx.keep_ap = (Ap, Ai, tffi.from_buffer('int *', Ap), tffi.from_buffer('int *', Ai))
     ts.Ap, ts.Ai = run.tctx.keep_ap[2], run.tctx.keep_ap[3]
     ## (a new pattern's analysis, fresh factor and frees, `tc_repattern`)
@@ -677,12 +692,9 @@ def _bind_fold(run, e, m):
     fo, tb = run.fo, run.tbuf
     fffi = _owners()['TC']._fold_driver()[0]
     fo.m, fo.fused = m, int(_owners()['TC']._MOD['cmul'])
-    nz, _Ap, Ai, _key = e.zs._csc_last
-    at = 1 if nz.flags.c_contiguous else 0
     tb['fold_rf'] = np.empty(max(m * m, 1))
     tb['fold_cf'] = np.empty(max(2 * m * m, 2))
     tb['fold_ax'] = np.empty(max(2 * m * m, 2))
-    tb['fold_nz'] = nz if at else nz.T
     keep = run.tkeep
     for k, name in (('Cr', 'crr'), ('Gr', 'grr')):
         keep.append(fffi.cast('double *', _LC._addr(run.ffi, getattr(run.s, name))))
@@ -690,12 +702,29 @@ def _bind_fold(run, e, m):
     for k in ('rf', 'cf', 'ax'):
         keep.append(fffi.from_buffer('double *', tb['fold_' + k]))
         setattr(fo, k, keep[-1])
-    ## (the complex values the Newton's KLU refactors: the fold's `ax`)
     tffi = run.tctx.ffi
-    keep.append(tffi.from_buffer('double *', tb['fold_ax']))
-    run.tctx.s.Ax = keep[-1]
-    keep.append(fffi.from_buffer('uint8_t *', tb['fold_nz']))
-    fo.nz, fo.nz_at, fo.nnz = keep[-1], at, int(Ai.shape[0])
+    if e.zst is not None:
+        ## (the complex factor on the structural pattern: no record's mask
+        ## for the fold to meet -- it gathers nothing -- and `tc_ckgather`
+        ## takes its values at the structure's positions into `zs_ax`, the
+        ## Newton's KLU's Ax)
+        tb['zs_ax'] = np.empty(max(2 * int(e.zst[4].shape[0]), 2))
+        keep.append(tffi.from_buffer('double *', tb['zs_ax']))
+        run.tctx.s.Ax = keep[-1]
+        keep.append(run.ffi.from_buffer('double *', tb['zs_ax']))
+        run.s.zs_ax = keep[-1]
+        fo.nz, fo.nz_at, fo.nnz = fffi.NULL, 0, 0
+        run.s.zs_struct = 1
+    else:
+        nz, _Ap, Ai, _key = e.zs._csc_last
+        at = 1 if nz.flags.c_contiguous else 0
+        tb['fold_nz'] = nz if at else nz.T
+        ## (the complex values the Newton's KLU refactors: the fold's `ax`)
+        keep.append(tffi.from_buffer('double *', tb['fold_ax']))
+        run.tctx.s.Ax = keep[-1]
+        keep.append(fffi.from_buffer('uint8_t *', tb['fold_nz']))
+        fo.nz, fo.nz_at, fo.nnz = keep[-1], at, int(Ai.shape[0])
+        run.s.zs_struct = 0
     fo.onpat = 0
     if e.rec.core.npat:
         _bind_fold_pattern(run, e, m, fffi)
@@ -1060,7 +1089,10 @@ def _count(e, run_, k):
                    ('radau_tc:probe', s.tc_probes), ('radau_tc:end', s.tc_ends - s.tc_pyends),
                    ('radau_tc:klu', s.tc_klu),
                    ('radau.frozen:served', s.tc_frozen), ('radau.frozen:fold', s.tc_folds),
-                   ('radau.frozen:fold.same', s.tc_folds - s.tc_foldoff),
+                   ## (on the structural pattern the fold meets no record's
+                   ## mask: `_radau_frozen` passes none)
+                   ('radau.frozen:fold.same', 0 if e.zst is not None else s.tc_folds - s.tc_foldoff),
+                   ('radau.frozen:structural', s.tc_frozen if e.zst is not None else 0),
                    ('radau.fuse:served', s.tc_ends),
                    ('radau.fuse:handed', s.tc_handed), ('radau.fuse:unhanded', s.tc_unhanded),
                    ('radau.early:checks', s.tc_checks), ('radau.early:aborts', s.tc_aborts),

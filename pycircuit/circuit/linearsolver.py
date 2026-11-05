@@ -1273,10 +1273,16 @@ class ComplexKLUSolver(object):
         self._fresh = None
         ## (the last record's pattern, `_csc_of_dense`'s)
         self._csc_last = None
+        ## (the structural pattern's arrays and key, made once a structure:
+        ## `prepare_structural`)
+        self._skey = None
         self.analyses = 0
         self.factors = 0
         self.refactors = 0
         self.residual_fallbacks = 0
+        ## (refactors on the structural pattern that met a zero pivot: a
+        ## fresh factor made instead)
+        self.pivot_fallbacks = 0
         ## (the analyses and factors freed where they were replaced)
         self.analyses_freed = 0
         self.factors_freed = 0
@@ -1333,6 +1339,41 @@ class ComplexKLUSolver(object):
         ## packed complex: view the complex128 data as 2*nnz interleaved doubles
         Ax = numpy.ascontiguousarray(Acsc.data, dtype=numpy.complex128).view(numpy.float64)
         return (Acsc.dot, n, Ap, Ai, Ax, (n, Ap.tobytes(), Ai.tobytes()))
+
+    #: a record on an analysis solver's structural pattern
+    #: (`prepare_structural`): its key's first entry
+    STRUCTURAL = 'structural'
+
+    def prepare_structural(self, A, sk):
+        """`prepare(A)` on the analysis solver's STRUCTURAL pattern -- `sk`,
+        a `StructuralKLU` that has made its analysis -- for the Radau
+        transform's complex factor (`_RadauStages._radau_frozen`, roadmap
+        259): `A`'s entries at the structure's positions (`take`), explicit
+        zeros among them, in its order; the record's `Ap`, `Ai` and key the
+        structure's, the same at every step -- one analysis a run, refactors
+        after, where a pattern of nonzeros changes as a device's entries
+        turn exactly zero.  None where `A` is not a dense square complex128
+        of the structure's size, has a nonzero off it (NaN one), or SciPy's
+        product is missing: the caller then takes `prepare`."""
+        numpy = self._np
+        mv = _csc_matvec()
+        m = sk.m
+        if (mv is None or type(A) is not numpy.ndarray or A.dtype != numpy.complex128
+                or A.shape != (m, m)):
+            return None
+        sr = self._skey
+        if sr is None or sr[0] is not sk or sr[1] is not sk.Ap or sr[2] is not sk.Ai:
+            Ap = numpy.ascontiguousarray(sk.Ap, dtype=numpy.int32)
+            Ai = numpy.ascontiguousarray(sk.Ai, dtype=numpy.int32)
+            take = numpy.ascontiguousarray(sk.take, dtype=numpy.int64)
+            sr = self._skey = (sk, sk.Ap, sk.Ai, Ap, Ai, take,
+                               (self.STRUCTURAL, m, Ap.tobytes(), Ai.tobytes()))
+        _sk, _ap, _ai, Ap, Ai, take, key = sr
+        data = A.ravel()[take]
+        if numpy.count_nonzero(A) != numpy.count_nonzero(data):
+            return None
+        return (functools.partial(_csc_dot, mv, m, Ap, Ai, data), m, Ap, Ai,
+                data.view(numpy.float64), key)
 
     def prepare_values(self, data, A):
         """`prepare(A)` where `A`'s nonzeros are known to fall in the last
@@ -1406,7 +1447,13 @@ class ComplexKLUSolver(object):
                 ctypes.c_void_p(self._numeric), ctypes.byref(self._common))
             self.refactors += 1
             if not ok:
-                raise numpy.linalg.LinAlgError('Singular matrix')
+                if key[0] != self.STRUCTURAL:
+                    raise numpy.linalg.LinAlgError('Singular matrix')
+                ## (on the structural pattern a pivot the last fresh factor
+                ## chose may be an explicit zero now: a fresh factor on the
+                ## analysis decides, as `StructuralKLU`'s refactor does)
+                self.pivot_fallbacks += 1
+                self._factor_afresh(Ap, Ai, Ax)
             self._fresh = prep
 
         x = rhs.copy()
@@ -1422,14 +1469,7 @@ class ComplexKLUSolver(object):
             if not (resid <= self.REFACTOR_RESIDUAL_TOL):
                 self.residual_fallbacks += 1
                 self._fresh = None
-                self._free_numeric()
-                self._numeric = self._lib.klu_z_factor(
-                    self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
-                    self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._symbolic),
-                    ctypes.byref(self._common))
-                self.factors += 1
-                if not self._numeric:
-                    raise numpy.linalg.LinAlgError('Singular matrix')
+                self._factor_afresh(Ap, Ai, Ax)
                 x = rhs.copy()
                 xv = x.view(numpy.float64)
                 if not self._lib.klu_z_solve(
@@ -1438,10 +1478,25 @@ class ComplexKLUSolver(object):
                     raise numpy.linalg.LinAlgError('klu_z_solve failed')
         return x
 
+    def _factor_afresh(self, Ap, Ai, Ax):
+        """A fresh factor of the values on the analysis held, the factor held
+        freed first -- `solve_prepared`'s fallbacks: a residual the reused
+        pivots failed, a structural refactor's zero pivot; numpy's error
+        where the matrix is singular."""
+        ctypes = self._ct
+        self._free_numeric()
+        self._numeric = self._lib.klu_z_factor(
+            self._ptr(Ap, ctypes.c_int), self._ptr(Ai, ctypes.c_int),
+            self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._symbolic),
+            ctypes.byref(self._common))
+        self.factors += 1
+        if not self._numeric:
+            raise self._np.linalg.LinAlgError('Singular matrix')
+
     def __repr__(self):
         return ('ComplexKLUSolver(analyses=%d, factors=%d, refactors=%d, '
-                'fallbacks=%d)' % (self.analyses, self.factors, self.refactors,
-                                   self.residual_fallbacks))
+                'fallbacks=%d, pivot_fallbacks=%d)' % (self.analyses, self.factors, self.refactors,
+                                                       self.residual_fallbacks, self.pivot_fallbacks))
 
 
 ## Below this many unknowns the sparse path cannot repay its own setup, and

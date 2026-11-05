@@ -13640,3 +13640,59 @@ and its C, the transform loop and its C.
 clean; the 27 gold decks under gear2 with the option against HEAD 39f35555 interleaved: every digest, step,
 rejection and Newton count the same (the loop's path counts moved -- 'loop_c:sparse' gone, 'loop_c:bail:lte' 1-2 a
 deck); with it off, gear2, Radau and standalone DC: every digest, count and path count the same.
+
+## 2026-11-05 — 259. Radau's complex factor on the structural pattern -- where the analysis solver chose `StructuralKLU`, the transform's complex factor is analysed once on its pattern (explicit zeros among its values) and refactored after, where every new pattern of nonzeros was analysed and factored afresh: gm19's Radau solve 3.14 -> 2.74 s (1.146x, against a 1.15x line), rich3 1.19x, arom 1.12x, each gold deck's error within its tolerance nudges' spread -- taken as measured (Andreas)
+
+**Why**  Plan 254's last bit-identical-or-round-off candidate (Andreas: "Push then the Ramsau item" -- Radau;
+"Default" when asked default or opt-in).  254's S2 had found the complex factor's patterns of nonzeros do not
+recur (gm19 1 839 distinct in 1 997 analyses): a device's entries turning exactly zero is a new pattern, and a new
+pattern is `klu_analyze` and a fresh `klu_z_factor` on the main thread.  Sized at HEAD 60527521 (perf, Radau): the
+analyses gm19 6.6 %, arom 3.8 %, rich3 2.9 % of the solve, the fresh factors 4.3 / 2.6 / 2.9 %, the complex refactor
+never on the main thread (the pool, beside the real solve).  On the structural pattern the analysis is made once a
+run and the fresh factors become refactors -- a round-off change, another ordering.
+
+**Built.**  `_tran_radau.STRUCTURAL` (env `PYCIRCUIT_RADAU_STRUCTURAL=0`): `_radau_frozen` takes the analysis
+solver's `StructuralKLU` (its analysis made) and makes the complex factor's record with
+`ComplexKLUSolver.prepare_structural` -- the factor's entries at the structure's positions (`take`), explicit zeros
+among them, its `Ap`, `Ai` and a fixed key (cached a structure); None where a nonzero lies off it, the caller then
+`prepare` -- the structure the circuit's own (`jacobian_structure`), so a run with the evaluation core and one
+without make the same record; the C fold is then asked for no packed values.  `solve_prepared`: on a structural
+record a refactor meeting a zero pivot is factored afresh (`pivot_fallbacks`, as `StructuralKLU`'s refactor;
+`_factor_afresh`, the residual fallback's too); on a pattern of nonzeros it still raises.  The C loop (transform
+mode) on a structural record: loop.h's `zs_struct` and `zs_ax` -- the fold meets no record's mask, `tc_frozen` takes
+the complex values at the real factor's positions (`tc_ckgather`, the `rk_take` map: the same StructuralKLU; a
+nonzero off them handed back) into the Newton's KLU's Ax, and makes no new pattern; `_tran_tcloop_c` binds it where
+the solver's analysed record is the structural one (`_tc_ready`, `_eligible`), and mirrors the Python's counts
+(`radau.frozen:structural`; no `fold.same`).  radau_tc.c unchanged: a failed refactor hands back, the Python makes
+the fresh factor.  The structure is the core's pattern to within 24 entries on gm19, none on rich3 and arom.
+
+**Measured** (a quiet box at the start; LINE set before building, in one form: gm19's Radau solve against HEAD
+60527521, the median of 3 interleaved pairs, at least 1.15x): 3.14 -> 2.74 s, 1.146x (1.146, 1.146, 1.150) --
+UNDER the line by 0.4 %.  Record: rich3 1.187x, arom 1.122x, mux8 1.015x, voter25 0.993x, jge 0.999x.  The line was
+sized from a prototype (C only, every core-pattern entry counted present) that read 1.30x -- its own baseline
+slowed: its switch called getenv() once a pattern entry in `tc_repattern` with the switch off, so its "off" read
+3.49 s where HEAD runs 3.14 s.  GUARD (set before building): gear2 and standalone DC on the 27 decks every digest,
+count and path count the same; Radau on the dense solver the same; ACCURACY, the 27 decks under Radau against 255's
+reltol/100 references, each error at most 1.25x the worst of HEAD's run and six null runs at HEAD (reltol x1.001,
+x0.999, x1.01, x0.99, x1.03, x0.97) + reltol: every judged deck inside (gm19's error halved: 2.45e-2 -> 1.20e-2;
+rich3's 1.37x HEAD's, inside its nulls' 1.63x), the median new/HEAD 1.000 as the nulls', every run finished; time:
+the 27 decks' Radau solves summed 1.032x (1.0x), gear2's 1.003x (0.99x).  Taken as measured (Andreas).
+
+**Tests.**  test_radau_structural (new, 8): one complex analysis a sparse run (two, the first before the structure's
+own analysis), refactors after, nothing structural with the switch off; every path the Python's -- the C fold, the
+C transform served from Python, the C loop (bytes, statistics, both factors' counts, the structural records; the
+fold meeting no record); a dense-solver run unchanged; the structural record (the structure's arrays and key, its
+values with explicit zeros; None for a nonzero off it, another size or a real matrix); a refactor whose held pivot
+became zero (a tridiagonal whose middle pivot cancels, nonsingular) factored afresh, a pattern of nonzeros raising;
+a reltol/100 check over a microsecond.  Mutations -- no structural record, no foreign check, the structural refactor
+raising, the C gather's imaginary parts lost, the loop re-patterning, the loop refusing the record, the Newton's Ax
+not the gather, either count unmirrored, the switch ignored -- each caught; the C gather's off-structure check and
+`_eligible`'s same-solver check are defensive (no run reaches them: the structure holds every entry a device
+writes).  Pinned pairs re-recorded after their twins' tests (`prepare_structural` and `_factor_afresh` named in the
+transform's pairs): the transform solve and its frozen form, the transform Newton and its C, the frozen factors and
+their C, the transform loop and its C, the stepping loop and its C, the multistep walk and its C, the stage loop and
+its C.
+
+**Gate** (the main tree): the TELL; the sanitizer fast and deep, clean but test_c_abi's history-word rule (`roadmap`
+in loop.h's new comment -- fixed); the identity above; the suite after the last edit, 6 203 passed (10 skipped, 3
+xfailed).

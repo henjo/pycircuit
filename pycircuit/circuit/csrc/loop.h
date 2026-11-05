@@ -306,6 +306,15 @@ typedef struct {
     const int64_t *rk_take;
     double *rkx;
     long tc_rkref, tc_rkfac, tc_rkpiv, tc_rkres, tc_rkdense;
+    /* THE COMPLEX FACTOR ON THE STRUCTURAL PATTERN (`zs_struct` 1: the
+       record `ComplexKLUSolver.prepare_structural` made, analysed once a
+       run): the fold meets no record's mask, `tc_frozen`
+       takes the complex values at the real factor's positions (`rk_take`,
+       `rk_nnz`: the same StructuralKLU) into `zs_ax` (2 rk_nnz, packed),
+       the Newton's KLU's Ax, and makes no new pattern; a nonzero off them
+       is the Python's (`prepare`) */
+    long zs_struct;
+    double *zs_ax;
 } loop_t;
 long pcx_loop(loop_t *s);
 

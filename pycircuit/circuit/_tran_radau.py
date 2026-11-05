@@ -38,6 +38,16 @@ from pycircuit.circuit.toolkit import NumericToolkit
 #: the transform's frozen factors made once a step (`_radau_frozen`, speed
 #: round 10, B3.1); env `PYCIRCUIT_RADAU_FROZEN=0` makes them every iteration
 RADAU_FROZEN = os.environ.get('PYCIRCUIT_RADAU_FROZEN', '1') != '0'
+#: the transform's complex factor on the analysis solver's structural pattern
+#: where it chose `StructuralKLU` (`_radau_frozen`, roadmap 259): one analysis
+#: a run, refactors after, where a pattern of nonzeros changed as a device's
+#: entries turned exactly zero -- an analysis and a fresh factor each (gm19
+#: under Radau 6.6 % and 4.3 % of the solve).  Measured at its gate: gm19's
+#: Radau solve 3.14 -> 2.74 s (1.146x), rich3 1.19x, arom 1.12x, the 27 gold
+#: decks' Radau summed 1.03x, each deck's error within its tolerance nudges'
+#: spread -- a round-off change (another ordering); env
+#: `PYCIRCUIT_RADAU_STRUCTURAL=0` keeps the patterns of nonzeros
+STRUCTURAL = os.environ.get('PYCIRCUIT_RADAU_STRUCTURAL', '1') != '0'
 #: the stages' readers' passes in one core call a stage (`_stage_end_passes`,
 #: speed round 10, B3.2); env `PYCIRCUIT_STAGE_FUSE=0` leaves each reader its
 #: own evaluation
@@ -166,7 +176,8 @@ def _frozen_chain():
                (ComplexKLUSolver.solve, 'ComplexKLUSolver.solve', L),
                (ComplexKLUSolver.prepare, 'ComplexKLUSolver.prepare', L),
                (ComplexKLUSolver.solve_prepared, 'ComplexKLUSolver.solve_prepared', L),
-               (ComplexKLUSolver.prepare_values, 'ComplexKLUSolver.prepare_values', L))
+               (ComplexKLUSolver.prepare_values, 'ComplexKLUSolver.prepare_values', L),
+               (ComplexKLUSolver.prepare_structural, 'ComplexKLUSolver.prepare_structural', L))
         if not all(_paths.genuine(*o) for o in own):
             return None
         _FROZEN['chain'] = tuple(o for o, _q, _m in own)
@@ -1227,11 +1238,20 @@ class _RadauStages:
         ## `P` is new (made under that errstate), where the scalars could
         ## raise (a step outside 1e-290..1e290, or `lam` outside
         ## 1e-10..1e10), or where the call declines.
+        ## THE COMPLEX FACTOR ON THE STRUCTURAL PATTERN (roadmap 259): where
+        ## the analysis solver chose `StructuralKLU` (its analysis made), the
+        ## complex factor's record is on its pattern -- one analysis a run,
+        ## refactors after (`ComplexKLUSolver.prepare_structural`) -- so the
+        ## C's packed values of the last pattern of nonzeros are not asked for
+        ls = self._get_linearsolver()
+        sk = ls._choice if STRUCTURAL and type(ls) is AS else None
+        if type(sk) is not _SK[0] or not sk._symbolic:
+            sk = None
         fd = None
         if pc is not None and 1e-290 < h < 1e290 and _lam_folds(lam):
             zs0 = d.get('_radau_zsolver')
             fd = _tran_radau_tc.fold(Cr, Gr, lam[0].real / h, lam[1] / h,
-                                     zs0._csc_last if type(zs0) is ZS else None)
+                                     zs0._csc_last if type(zs0) is ZS and sk is None else None)
         if fd is not None:
             if fd[0]:
                 return _paths.no('radau.frozen:fp')
@@ -1253,7 +1273,7 @@ class _RadauStages:
         fz.m = Cr.shape[0]
         fz.p, fz.v = pc[1], pc[2]
         fz.rf, fz.cf, fz.tk = real_factor, comp_factor, self.toolkit
-        ls = fz.ls = self._get_linearsolver()
+        fz.ls = ls
         fz.lu = None
         ## the real solve is numpy's where the solver is the dense one --
         ## `AutoSolver` once it chose it, or a `DenseSolver` -- on the numeric
@@ -1290,9 +1310,15 @@ class _RadauStages:
         if (type(zs) is ZS and (ZS.solve, ZS.prepare, ZS.solve_prepared) == chain[8:11]
                 and not ('solve' in zs.__dict__ or 'prepare' in zs.__dict__
                          or 'solve_prepared' in zs.__dict__)):
-            ## (the packed values the C made in the last record's pattern:
-            ## `prepare`'s own record of them, as it would make it)
-            if (fd is not None and fd[3] is not None and ZS.prepare_values is chain[11]
+            ## (on the structural pattern where there is one; else the packed
+            ## values the C made in the last record's pattern -- `prepare`'s
+            ## own record of them, as it would make it -- or `prepare`)
+            if (sk is not None and ZS.prepare_structural is chain[12]
+                    and 'prepare_structural' not in zs.__dict__):
+                fz.prep = zs.prepare_structural(comp_factor, sk)
+            if fz.prep is not None:
+                _paths.COUNTS['radau.frozen:structural'] += 1
+            elif (fd is not None and fd[3] is not None and ZS.prepare_values is chain[11]
                     and 'prepare_values' not in zs.__dict__):
                 fz.prep = zs.prepare_values(fd[3], comp_factor)
             else:
