@@ -78,7 +78,7 @@ attempts made before it are written back.
 THE ERROR TEST ON THE PATTERN.  The loop's error test reads its Newton's
 J, which the core writes on its pattern alone (zero off it, the pattern
 within the run's KLU pattern): where both are one StructuralKLU's
-(`_on_pattern`), its sparse solve gathers the values from J itself and
+(`_judge_entry`), its sparse solve gathers the values from J itself and
 takes the validation's verdict from the sparse sum's bound (`lte.h`'s ON
 THE PATTERN; `loop_c:lte_on_pattern`, and `loop_c:lte_dense` where the
 dense test decided).
@@ -100,7 +100,7 @@ import time
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths, _watch
+from pycircuit.circuit import _cbuild, _paths, _watch, func
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -774,16 +774,18 @@ def _bound(loop, tr, rec, tab, rd, screen, judge):
     return run_
 
 
-def _on_pattern(run_, rec):
-    """The error test on the Newton's J -- the core's, on its pattern, which
-    lies within the run's KLU pattern -- where both are the same
-    StructuralKLU's, so the same entries in the same order (`lte.h`'s ON
-    THE PATTERN)."""
+def _judge_entry(run_, rec):
+    """The error test's fields an entry sets: on the Newton's J -- the
+    core's, on its pattern, which lies within the run's KLU pattern -- where
+    both are the same StructuralKLU's, so the same entries in the same order
+    (`lte.h`'s ON THE PATTERN); an underflow no flag where numpy's error
+    state ignores it (`under_ok`, lte.c's `lte_flags`)."""
     le = run_.lte.s
     on = run_.sk is not None and rec.klu is run_.sk and bool(rec.s.pattern)
     le.on_pattern = int(on)
     if on:
         le.kat = rec.s.kat
+    le.under_ok = int(func._underflow_ignored())
 
 
 def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
@@ -836,7 +838,7 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
                           and not getattr(tr, '_continuation_rescue', False))
     s.imposed = int(bool(loop.imposed))
     if adaptive:
-        _on_pattern(run_, td['_newton_c'])
+        _judge_entry(run_, td['_newton_c'])
     s.base = code
     s.zs_ratio = float(O['zs_ratio'])
     s.shrink_guard = int(bool(getattr(base, 'shrink_guard', True)))
@@ -1148,7 +1150,7 @@ def _count(s, run_, rec, adaptive, k):
         if run_.br[0].ncert:
             _PC['branch_c:cert'] += run_.br[0].ncert
     ## the error test (`_tran_lte_c.max_error`; on the Newton's J, its
-    ## pattern's -- `_on_pattern` -- and the dense validations it made)
+    ## pattern's -- `_judge_entry` -- and the dense validations it made)
     ## (an error test on the seed's factors -- `Transient.lte_jacobian` --
     ## solves on the chord's numeric: `_tran_lte_c`'s `held`, no refactor)
     refac = s.ltes - s.lte_seeds

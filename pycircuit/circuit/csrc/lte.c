@@ -8,7 +8,10 @@
    KEEP): each operation a test covers stores its result through a buffer
    of the struct, or decides a branch taken before the test.  Its chain
    runs partly under `np.errstate(divide='ignore', invalid='ignore')`,
-   so a flag there hands back where numpy would not warn.  Every return
+   so a flag there hands back where numpy would not warn.  An underflow is
+   no flag where numpy's error state ignores it (`under_ok`, `lte_flags`):
+   J^-1 Eg decays down a long chain to subnormal entries, which numpy
+   neither warns of nor treats otherwise.  Every return
    leaves the flags clear, as the chain's last numpy call leaves them.
    The early abort's estimate (`lu_quiet`) tests none: its Python
    (`_StepNewton._early_estimate`) runs under `np.errstate(all='ignore')`,
@@ -26,6 +29,14 @@
 #include "lte.h"
 
 /* the flags numpy checks after its operations (inexact is not one) */
+
+/* the flags a test hands back on: numpy's, underflow not among them where
+   numpy's error state ignores it (`under_ok`: an underflow is then no
+   warning, and the values are the IEEE ones either way) */
+static int lte_flags(const lte_t *s)
+{
+    return s->under_ok ? (PCX_FP_FLAGS & ~FE_UNDERFLOW) : PCX_FP_FLAGS;
+}
 
 /* every bail: the flags cleared, `why` in `status` and returned */
 static long lte_bail(lte_t *s, long why)
@@ -86,7 +97,7 @@ static long sparse_solve(lte_t *s, long n, long r)
            it (zero off the pattern), what the sums raised cleared */
         int v = pcx_resid_sparse(s->kAp, s->kAi, s->kAx, s->resid_tol, s->b, s->x, s->y, s->vt,
                                  s->vt + n, m);
-        if (v != PCX_UNDECIDED && !fetestexcept(PCX_FP_FLAGS)) {
+        if (v != PCX_UNDECIDED && !fetestexcept(lte_flags(s))) {
             if (v == PCX_FAILS) return LTE_BAIL_RESIDUAL;
             for (i = 0; i < m; i++) s->b[i] = s->x[i];
             return 0;
@@ -116,7 +127,7 @@ static long sparse_solve(lte_t *s, long n, long r)
         if (isnan(d)) return LTE_BAIL_RESIDUAL;
         if (d > max_r) max_r = d;
     }
-    if (fetestexcept(PCX_FP_FLAGS)) return LTE_BAIL_FLAGS;
+    if (fetestexcept(lte_flags(s))) return LTE_BAIL_FLAGS;
     /* Python's `max(max_b, 1e-300)`: the first argument kept unless the
        second is strictly greater; `not (resid <= tol)` fails a NaN too */
     scale = pcx_py_max(max_b, 1e-300);
@@ -177,7 +188,7 @@ static long charge_lte(lte_t *s, long n)
         double ddb = (d2 - d3) / s->s23;
         s->lte[i] = s->coef * ((dda - ddb) / s->s123);
     }
-    if (fetestexcept(PCX_FP_FLAGS) && !s->lu_quiet) return LTE_BAIL_FLAGS;
+    if (fetestexcept(lte_flags(s)) && !s->lu_quiet) return LTE_BAIL_FLAGS;
     return 0;
 }
 
@@ -344,7 +355,7 @@ static long normalised_error(lte_t *s, long n)
 {
     long i, why;
     double err;
-    if ((why = quotients(s, n, PCX_FP_FLAGS)) != 0) return why;
+    if ((why = quotients(s, n, lte_flags(s))) != 0) return why;
     /* `_normalised`'s mask (`Transient.lte_algebraic`): an unknown not
        judged is +0.0, as `np.where(mask, e, 0.0)` makes it (a mask entry
        is true where nonzero: -0.0 false, NaN true, as `== 0.0` decides) */
@@ -440,13 +451,13 @@ static long stage_norm(lte_t *s, long n, long r, int flags)
 
 /* the stage family's judgement (LTE_FORMULA_STAGE, lte.h): the estimate
    given, `reference_stage`, the quotients (trtol 1.0: `1.0 * x` is x), then
-   `stage_norm` -- an underflow no flag where numpy ignores it (`under_ok`).
+   `stage_norm`.
    LTE_DONE: `err` the RMS, `worst` the largest, `out` the new running
    maximum (relref not POINTLOCAL) */
 static long stage_lte(lte_t *s, long n, long r)
 {
     long why;
-    int flags = s->under_ok ? (PCX_FP_FLAGS & ~FE_UNDERFLOW) : PCX_FP_FLAGS;
+    int flags = lte_flags(s);
     if (!stage_inputs_finite(s, n)) return lte_bail(s, LTE_BAIL_NONFINITE);
     feclearexcept(FE_ALL_EXCEPT);
     reference_stage(s, n);

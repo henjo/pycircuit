@@ -8,7 +8,11 @@
  * on the pattern rounds at most k_i times on any path of any summation tree:
  * its S_i = sum A_ij x_j, in the pattern's order, is within 2 gamma_(k_i + 1)
  * T_i of the dgemv's (T_i = sum |A_ij| |x_j|); e_i = 4 (k_i + 2) eps T_i
- * covers that and the rounding of S_i -+ e_i.  A test monotone in the row's
+ * covers that and the rounding of S_i -+ e_i.  Gradual underflow adds an
+ * absolute error -- at most 2^-1075 a product (a sum whose result is
+ * subnormal is exact) -- to each side's sum and to e_i itself:
+ * 4 (k_i + 2) (eps T_i + 2 DBL_TRUE_MIN) covers it too, so a verdict holds
+ * whether or not a product underflowed.  A test monotone in the row's
  * product then holds where it holds at the bound's worse end and fails where
  * it fails at its better end; elsewhere -- and where a value is not finite
  * or a row's sum reaches 1e300 (there numpy's flags could be raised) -- the
@@ -51,7 +55,7 @@ static int pcx_resid_sparse(const int *Ap, const int *Ai, const double *Ax, doub
     for (i = 0; i < m; i++) {
         double ab = fabs(b[i]), e, u, v, au, av, h, l;
         if (!(t[i] + ab < 1e300)) return PCX_UNDECIDED;
-        e = 4.0 * (cnt[i] + 2.0) * DBL_EPSILON * t[i];
+        e = 4.0 * (cnt[i] + 2.0) * (DBL_EPSILON * t[i] + 2.0 * DBL_TRUE_MIN);
         u = (y[i] + e) - b[i];
         v = (y[i] - e) - b[i];
         au = fabs(u);
@@ -94,7 +98,7 @@ static int pcx_scale_sparse(const int *Ap, const int *Ai, const double *Ax, cons
     for (i = 0; i < m; i++) {
         double aF = fabs(F[i]), e, lo, hi;
         if (!(t[i] + aF < 1e300)) return PCX_UNDECIDED;
-        e = 4.0 * (cnt[i] + 2.0) * DBL_EPSILON * t[i];
+        e = 4.0 * (cnt[i] + 2.0) * (DBL_EPSILON * t[i] + 2.0 * DBL_TRUE_MIN);
         lo = t[i] - e;
         if (lo < 0.0) lo = 0.0;
         hi = t[i] + e;

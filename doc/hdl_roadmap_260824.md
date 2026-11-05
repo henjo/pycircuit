@@ -13752,3 +13752,46 @@ back, no drop at the replacement, no length check, no identity check -- each cau
 **Gate** (the main tree): the suite, 6 210 passed (10 skipped, 3 xfailed); the 27 gold decks under gear2, Radau and
 DC against HEAD cf561ade interleaved: every digest, count and path count the same; the chain's digest the same at
 2 000 and 4 000 stages.
+
+## 2026-11-05 — 262. The multistep error test's underflow rule -- where numpy's error state ignores underflow (its default) the C error test (`lte.c`, the C loop's and the one served from Python) no longer hands back an attempt whose J^-1 Eg decays to subnormal entries, as the stage family's already did: a 4 000-stage chain's 500 ns gear2 solve 20.6 -> 3.83 s (5.28x), every result the same
+
+**Why**  Andreas, plan 261 (the large circuits): "push then L2 and L3", then "L2, then L3 as compact buffers".  At
+1 000+ unknowns gear2's C loop served 56 of 108 attempts of a pulsed MOS chain; every hand-back was the error test's
+`LTE_BAIL_FLAGS`, and the flag UNDERFLOW: J^-1 Eg decays geometrically down the chain (an inverter at a rail passes
+~1e-3 a stage), so its far entries are subnormal -- the multistep test handed back on any flag, underflow included,
+where the stage family's test masks underflow where numpy ignores it (`under_ok`, `func._underflow_ignored`).  It
+raised at two places together -- the third divided difference and the quotients, and the refactor's validation
+(the sparse verdict's sums, which then fell to the dense m x m test, and its dgemv) -- so masking either alone left
+every hand-back.  The 27 gold decks: none underflows (every path count the same, summed 14.91 -> 14.86 s): a
+large-circuit item.
+
+**Built.**  lte.c: one rule, `lte_flags` -- numpy's flags, underflow not among them where `under_ok` -- at every
+flag test of the multistep chain (`charge_lte`, `sparse_solve`'s verdict and dense validation, `quotients`) and the
+stage family's (which had its own copy).  `under_ok` set for the multistep test where it is loaded: per call in
+`_tran_lte_c._load`, per entry in `_tran_loop_c._load`.  pcx_verdict.h: an absolute term in both sparse verdicts'
+bounds, 4 (k + 2) (eps T_i + 2 DBL_TRUE_MIN) -- gradual underflow adds up to 2^-1075 a product, which a relative
+bound does not cover where T_i < ~7e-309; with underflow no longer sending the verdict to the dense test it must
+hold with one.  A wider bound only turns a decided row undecided (the dense test, the Python's twin).
+
+**Measured** (LINE set before building, in one form: the 4 000-stage chain's 500 ns gear2 solve against HEAD
+54a966a6, the median of 3 interleaved pairs, at least 4x): 20.12 -> 3.82, 20.52 -> 3.82, 20.25 -> 3.84 s: 5.280x (5.262, 5.378, 5.280) -- met (started 19:39:49 load 1.39 5.51 6.69).  Sizing, digests identical: at 2 005 unknowns
+4.54 -> 1.30 s, the marginal attempt 10.3 -> 1.33 ms; at 4 005 49.8 -> 2.70 ms (18x).
+
+**Tests.**  test_lte_underflow (new, 4): a 400-stage chain whose error test underflows -- under numpy's default the
+loop hands no error test back and sends none to the dense validation, under `np.errstate(under='warn')` it hands
+them back, each run the Python's (loop and C error test off); the error test served from Python likewise; a linear
+ladder attenuating 1e-6 a stage, whose charges' divided differences underflow too.  test_verdict_c: both verdicts in
+the subnormal range at their thresholds never contradict numpy's.  Mutations -- the rule never or always masking,
+`under_ok` unset in either glue, each of the four flag sites back -- caught; the verdicts' absolute term removed is
+NOT caught: with this BLAS a row whose T_i is below ~7e-309 is the in-order sum exactly (41 382 rows, no
+difference) -- the term is for a dgemv that fuses a product into its sum.
+
+**Also.**  `_tran_lte_c._rows_in` (the mask and the charge rows, out of `_load`) and `_tran_loop_c._judge_entry`
+(`_on_pattern` with the underflow rule) keep both glues within the loop units' 80 lines, each named in its pinned
+pair; test_lte_seed's path test runs under `np.errstate(under='warn')` -- the fast chain's flag hand-backs it counts
+were underflows, which under numpy's default are no flag now.
+
+**Gate** (the main tree): the suite 6 218 passed (10 skipped, 3 xfailed); the pinned pairs re-recorded after its twin tests (eleven, the twin side alone: pcx_verdict.h is expanded
+in every unit that tests a sparse verdict); the 27 gold decks under gear2, Radau and DC against HEAD 54a966a6
+interleaved: every digest, count and path count the same; the chain's digests the same at 2 000 and 4 000 stages,
+100 and 500 ns.

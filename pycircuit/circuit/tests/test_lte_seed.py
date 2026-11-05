@@ -53,13 +53,13 @@ def _chain(n=250, fast=False):
 
 
 def _run(monkeypatch, lte='seed', path='loop', tend=3e-7, step=1e-8, cir=None, rt=None, solve=None,
-         **make):
+         errs=None, **make):
     newton_c, loop_c, lte_c = PATHS[path]
     monkeypatch.setattr(_tran_newton_c, 'ENABLED', newton_c)
     monkeypatch.setattr(_tran_loop_c, 'ENABLED', loop_c)
     monkeypatch.setattr(_tran_lte_c, 'ENABLED', lte_c)
     before = _paths.snapshot()
-    with warnings.catch_warnings():
+    with warnings.catch_warnings(), np.errstate(**(errs or {})):
         warnings.simplefilter('ignore')
         tr = Transient(cir if cir is not None else _chain(), toolkit=circuit.numeric,
                        lte_jacobian=lte, **make)
@@ -103,7 +103,9 @@ def test_every_path_is_the_python_one(monkeypatch, bound):
     counts, the held tests and the error tests handed back on a flag -- at
     a bound holding some of the solves (2) and most (3); each C path
     serving its share, the loop its own full tests after held ones (2), and
-    entering before the run's KLU numeric exists."""
+    entering before the run's KLU numeric exists.  Under
+    `np.errstate(under='warn')`: the fast chain's flags are underflows, which
+    under numpy's default are no flag (test_lte_underflow)."""
     _bound(monkeypatch, bound)
     bound_runs, bound_ = [], _tran_loop_c._bound
 
@@ -112,7 +114,8 @@ def test_every_path_is_the_python_one(monkeypatch, bound):
         bound_runs.append(r)
         return r
     monkeypatch.setattr(_tran_loop_c, '_bound', caught)
-    runs = {p: _run(monkeypatch, path=p, cir=_chain(fast=True), tend=2.4e-8, step=2e-10)
+    runs = {p: _run(monkeypatch, path=p, cir=_chain(fast=True), tend=2.4e-8, step=2e-10,
+                    errs={'under': 'warn'})
             for p in PATHS}
     keys = {p: _key(tr, res) for p, (tr, res, _d) in runs.items()}
     assert all(keys[p] == keys['python'] for p in keys)

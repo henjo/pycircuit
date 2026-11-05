@@ -130,3 +130,53 @@ def test_the_convergence_verdict_never_contradicts_numpys(probe, m):
             dense = bool(np.all(aF < reltol * (np.dot(np.abs(J), ax) + aF) + abstol))
             _tally(seen, probe(1, J, ax, F, reltol, abstol), dense)
     assert seen[_HOLDS] and seen[_FAILS] and seen[_UNDECIDED], seen
+
+
+#: the smallest subnormal, and offsets from a threshold in its multiples
+_TINY = float(np.nextafter(0.0, 1.0))
+_AROUND = (-40000, -4000, -400, -24, -2, -1, 0, 1, 2, 24, 400, 4000, 40000)
+
+
+@pytest.mark.parametrize('m', [3, 17, 64, 250])
+def test_the_verdicts_hold_where_products_underflow(probe, m):
+    """Rows whose products are subnormal -- each rounded by up to half the
+    smallest subnormal, an ABSOLUTE error a relative bound does not cover --
+    drawn at each test's threshold, from a few smallest subnormals either
+    side (undecided: the bound's absolute term, 8 (k + 2) of them) to
+    thousands (decided): neither verdict contradicts numpy's.  (The term is
+    for a dgemv that fuses a product into its sum; with this BLAS a row whose
+    T_i is below ~7e-309 -- where the relative term's slack no longer covers
+    an underflow -- is the sum in order exactly, so the term's removal is not
+    seen here.)"""
+    rng = np.random.default_rng(20261105 + m)
+    tol, reltol = 1e-10, 1e-3
+    seen = {_HOLDS: 0, _FAILS: 0, _UNDECIDED: 0}
+    seen2 = {_HOLDS: 0, _FAILS: 0, _UNDECIDED: 0}
+    for _ in range(40):
+        A = _sparse(rng, m)
+        x = rng.normal(size=m) * 1e-312 * 10.0 ** rng.integers(-2, 3, size=m)
+        y = A @ x
+        u = rng.choice([-1.0, 1.0], size=m) * rng.random(m)
+        u[int(rng.integers(m))] = 1.0
+        ## (max |b| below 1e-300: the scale is 1e-300, the threshold
+        ## tol * 1e-300 subnormal)
+        for j in _AROUND:
+            b = y - (tol * 1e-300 + j * _TINY) * u
+            dense = bool(np.max(np.abs(A @ x - b)) / max(float(np.max(np.abs(b))), 1e-300)
+                         <= tol)
+            _tally(seen, probe(0, A, x, b, tol), dense)
+        ax = np.abs(x)
+        Is = np.dot(np.abs(A), ax)
+        i = int(rng.integers(m))
+        ## (an absolute tolerance of ~2 000 smallest subnormals: the rows
+        ## at zero hold outright)
+        abstol = np.full(m, 1e-320)
+        for j in _AROUND:
+            f = np.zeros(m)
+            f[i] = max((reltol * Is[i] + abstol[i]) / (1.0 - reltol) + j * _TINY, 0.0)
+            F = f * rng.choice([-1.0, 1.0], size=m)
+            aF = np.abs(F)
+            dense = bool(np.all(aF < reltol * (np.dot(np.abs(A), ax) + aF) + abstol))
+            _tally(seen2, probe(1, A, ax, F, reltol, abstol), dense)
+    assert seen[_HOLDS] and seen[_FAILS], seen
+    assert seen2[_HOLDS] and seen2[_FAILS], seen2

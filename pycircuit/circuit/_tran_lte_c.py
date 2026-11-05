@@ -38,8 +38,10 @@ its first factor is made.
 
 EXACT OR NOT AT ALL.  Every input finite; the floating-point flags cleared
 on entry and tested after each part whose numpy calls would check them --
-an overflow, underflow, invalid operation or division by zero, a LAPACK
-info, a non-finite solution, a tolerance that is not positive or a signed
+an overflow, invalid operation or division by zero -- an underflow too
+where numpy's error state does not ignore it (`under_ok`: a long chain's
+J^-1 Eg decays to subnormal entries, no warning under numpy's default) --
+a LAPACK info, a non-finite solution, a tolerance that is not positive or a signed
 zero where numpy's reductions may pair differently hands the attempt back
 before anything is written, and the Python chain runs (numpy's warnings
 and errors and the solve's fallback then happen as they did).  The
@@ -64,7 +66,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths, _watch
+from pycircuit.circuit import _cbuild, _paths, _watch, func
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -559,6 +561,30 @@ def _solver_in(ctx, sk, held):
     return True
 
 
+def _rows_in(st, buf, s, n):
+    """`_normalised`'s mask and `lte_algebraic='charge'`'s rows and charge
+    (`charge_floor`) into the context: False where either is not as the C
+    reads it."""
+    mask = s.lte_mask
+    if mask is None:
+        st.has_mask = 0
+    else:
+        if not (type(mask) is np.ndarray and mask.shape == (n,)):
+            return False
+        np.copyto(buf['mask'], mask)
+        st.has_mask = 1
+    charge, chgtol = s.lte_charge, s.lte_chgtol
+    if charge is None:
+        st.has_charge = 0
+    else:
+        if not (type(charge) is np.ndarray and charge.shape == (n,)
+                and type(chgtol) in (float, int)):
+            return False
+        np.copyto(buf['charge'], charge)
+        st.has_charge, st.chgtol = 1, float(chgtol)
+    return True
+
+
 def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c', held=None):
     """The context (made, or remade for another size or reference row; KLU
     bound where the run is sparse, or to the `held` factors' solver) and
@@ -607,24 +633,8 @@ def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c', held=None):
     else:
         st.abstol = float(ab)
     st.abs_vec = 1 if abs_vec else 0
-    mask = s.lte_mask
-    if mask is None:
-        st.has_mask = 0
-    else:
-        if not (type(mask) is np.ndarray and mask.shape == (n,)):
-            return _no('lte_c:x')
-        np.copyto(buf['mask'], mask)
-        st.has_mask = 1
-    ## (`lte_algebraic='charge'`'s rows and charge, `charge_floor`)
-    charge, chgtol = s.lte_charge, s.lte_chgtol
-    if charge is None:
-        st.has_charge = 0
-    else:
-        if not (type(charge) is np.ndarray and charge.shape == (n,)
-                and type(chgtol) in (float, int)):
-            return _no('lte_c:x')
-        np.copyto(buf['charge'], charge)
-        st.has_charge, st.chgtol = 1, float(chgtol)
+    if not _rows_in(st, buf, s, n):
+        return _no('lte_c:x')
     st.have_run = 0 if run is None else 1
     st.relref = mode
     st.nn = -1 if nn is None else nn
@@ -638,4 +648,7 @@ def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c', held=None):
         st.lu_sym, st.lu_common, st.lu_klu_solve = st.klu_sym, st.klu_common, st.klu_solve
     st.s12, st.s23, st.s123 = s12, s23, s123
     st.reltol, st.trtol = float(reltol), float(trtol)
+    ## (an underflow no flag where numpy ignores it: the Python's chain
+    ## runs under the error state in force now)
+    st.under_ok = 1 if func._underflow_ignored() else 0
     return ctx

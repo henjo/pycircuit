@@ -150,9 +150,10 @@ typedef struct {
     void *lu_klu_solve;         /* klu_solve, klu_solve_t (KLU) */
     void *lu_dgetrs64;          /* numpy's own `scipy_dgetrs_64_`, dgetrs64_t (GETRS64) */
     void *lu_dgetrs32;          /* SciPy's `scipy_dgetrs_`, dgetrs32_t (GETRS32) */
-    long under_ok;              /* [run] STAGE: numpy ignores underflow
+    long under_ok;              /* [run] numpy ignores underflow
                                    (`func._underflow_ignored`): an underflow is
-                                   not a flag it would warn of (0 elsewhere) */
+                                   not a flag it would warn of (0: every flag
+                                   hands back) */
 } lte_t;
 long pcx_lte(lte_t *s);
 
