@@ -363,14 +363,15 @@ static void held_factors(lte_t *le, const newton_t *nt)
    pcx_lte; on the seed's factors where the Newton held them).  A full test
    with no run numeric to refactor -- the loop entered under the seed mark
    before the Python's first full test made it (`_tran_loop_c._judge`) --
-   hands the attempt back, and the Python's test makes it.  0 (`err` set),
-   or LOOP_BAIL_LTE */
+   hands the attempt back, LOOP_BAIL_NUMERIC, and the Python's test makes
+   it (KLU would refuse the NULL numeric too: the test is the loop's own,
+   and named).  0 (`err` set), LOOP_BAIL_NUMERIC or LOOP_BAIL_LTE */
 static long error_test(loop_t *s, loop_attempt_t *a)
 {
     newton_t *nt = (newton_t *) s->newton;
     lte_t *le = (lte_t *) s->lte;
     long st;
-    if (!nt->lte_held && le->klu_sym && !le->klu_num) return LOOP_BAIL_LTE;
+    if (!nt->lte_held && le->klu_sym && !le->klu_num) return LOOP_BAIL_NUMERIC;
     if ((st = lte_setup(s, a, nt->xc, nt->qj, nt->Jj)) != 0) return st;
     if (nt->lte_held) held_factors(le, nt);
     st = CALL(s->lte_fn, pcx_lte, le);

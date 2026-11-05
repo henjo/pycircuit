@@ -451,5 +451,9 @@ enum loop_status {
                                    complex one's nonzeros off the last pattern */
     LOOP_BAIL_TRANSFORM = 16,   /* radau_tc.c handed back, or did not converge where
                                    no fallback is bound (the Python's dense one) */
-    LOOP_BAIL_END = 17          /* the end passes not made (a non-finite stage) */
+    LOOP_BAIL_END = 17,         /* the end passes not made (a non-finite stage) */
+    /* the multistep error test's: a full test (not on the seed's factors)
+       with no run numeric to refactor -- the loop entered under the seed
+       mark before the Python's first full test made it */
+    LOOP_BAIL_NUMERIC = 18
 };

@@ -126,10 +126,8 @@ def test_every_path_is_the_python_one(monkeypatch, bound):
             == d['loop']['lte_c:bail:flags'] > 0)
     assert d['served']['newton_c:lte_seed'] > 0 and d['loop']['loop_c:attempts'] > 0
     assert bound == 3 or d['loop']['loop_c:lte_on_pattern'] > 0
-    ## (the loop entered before the Python's first full test made the run's
-    ## numeric -- never declined for it -- and handed back the attempt whose
-    ## full test needed it)
-    assert d['loop'].get('loop_c:sparse', 0) == 0 and d['loop']['loop_c:bail:lte'] > 0
+    ## (the loop never declined for the run's KLU numeric)
+    assert d['loop'].get('loop_c:sparse', 0) == 0
     ## (the factors in hand are a call's alone: every error test's context
     ## left without them -- the Python's C error test's, the C loop's)
     assert all(r[0].step_controller._lte_c.s.lu_mode == 0 for p, r in runs.items() if p != 'python')
@@ -158,6 +156,27 @@ def test_the_error_test_takes_the_chords_factors_of_the_seed(monkeypatch):
     assert all(not no_j for c, no_j, _f, _w in tests if c is not _tran_newton._Factored)
     assert all(not no_j for _c, no_j, _f, w in seen if w == '_early_estimate')
     assert d['core.c:served'] == d['lte:seed']
+
+
+def test_a_full_test_without_the_run_numeric_is_handed_back(monkeypatch):
+    """The C loop meeting a full error test with no run numeric to refactor
+    -- presented here at every entry -- hands that attempt back by its own
+    test (`numeric`; KLU would refuse the NULL numeric too, as an error
+    test's bail), and the Python's repeat makes the run the plain one.  At
+    bound 2, where the loop makes full tests of its own."""
+    _bound(monkeypatch, 2)
+    plain = _run(monkeypatch, path='loop', cir=_chain(fast=True), tend=2.4e-8, step=2e-10)
+    load = _tran_loop_c._load
+
+    def numeric_missing(loop, tr, td, run_, *a, **k):
+        r = load(loop, tr, td, run_, *a, **k)
+        if run_.sk is not None:
+            run_.lte.s.klu_num = run_.lte.ffi.NULL
+        return r
+    monkeypatch.setattr(_tran_loop_c, '_load', numeric_missing)
+    got = _run(monkeypatch, path='loop', cir=_chain(fast=True), tend=2.4e-8, step=2e-10)
+    assert _key(*got[:2]) == _key(*plain[:2])
+    assert got[2]['loop_c:bail:numeric'] > 0 and got[2]['loop_c:attempts'] > 20
 
 
 class _Stale:

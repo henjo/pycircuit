@@ -71,8 +71,9 @@ unbuilt), the adaptive judge (`_judge`), the bind.
 BAILS (`loop_c:bail:<why>`, `csrc/loop.h`): the C stops before an attempt
 a unit hands back or the Python must make (a source time, the predictor's
 general path or a flag, the Newton, a screen that is not quiet, a
-companion it does not make, the error test, a forced accept); the attempts
-made before it are written back.
+companion it does not make, the error test, a forced accept, a full error
+test with no run numeric yet under the seed mark -- `numeric`); the
+attempts made before it are written back.
 
 THE ERROR TEST ON THE PATTERN.  The loop's error test reads its Newton's
 J, which the core writes on its pattern alone (zero off it, the pattern

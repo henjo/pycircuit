@@ -13696,3 +13696,27 @@ its C.
 **Gate** (the main tree): the TELL; the sanitizer fast and deep, clean but test_c_abi's history-word rule (`roadmap`
 in loop.h's new comment -- fixed); the identity above; the suite after the last edit, 6 203 passed (10 skipped, 3
 xfailed).
+
+## 2026-11-05 — 260. The loop's hand-back without the run's numeric, named and tested -- loop.c's error test returns its own `LOOP_BAIL_NUMERIC` (`loop_c:bail:numeric`) where a full test meets no run numeric, and a test presents the loop none at every entry: 258's gap closed, every result the same
+
+**Why**  Andreas, "Loop hand-back test": 258 recorded that removing loop.c's hand-back was caught by no test, and
+put it down to KLU refusing a NULL numeric itself (the same attempt then handed back as an error test's bail).  The
+gap was wider: 258's twin test asserted `loop_c:bail:lte > 0`, which its fixture's floating-point-flag hand-backs met
+on their own -- no test fixture ever reached the hand-back at all (the Python always made the run's numeric first,
+after a chord break's hand-back), while on the gold decks it is every `bail:lte` the option's runs make.
+
+**Built.**  loop.h's `LOOP_BAIL_NUMERIC` (18), loop.c's `error_test` returning it (`_tran_loop_c`'s bails list
+names it); nothing else moves: the same attempt is handed back, its bail named.
+
+**Tests.**  test_lte_seed's `test_a_full_test_without_the_run_numeric_is_handed_back`: at bound 2 on the fast
+chain (where the loop makes full tests of its own), the loop's run numeric presented as NULL at every entry
+(`_tran_loop_c._load` wrapped): the run the plain one's -- bytes, statistics, KLU's counts -- and
+`loop_c:bail:numeric` counted.  Removing the hand-back is caught: the attempts then bail as error tests
+(`loop_c:bail:lte`), their results still the plain run's -- KLU's own refusal, as 258 said.  The twin test keeps
+its check that the loop never declines for the numeric.  Pinned pairs re-recorded after their twins' tests (C
+side): the stepping loop and its C, the multistep walk and its C, the stage loop and its C, the transform loop and
+its C.
+
+**Gate** (the main tree): the suite, 6 204 passed (10 skipped, 3 xfailed); the 27 gold decks under gear2 with
+`lte_jacobian='seed'` against HEAD b7b75aba: every digest, step, rejection and Newton count the same, the paths
+moved on 17 decks alone from `loop_c:bail:lte` to `loop_c:bail:numeric` (1-2 a deck).
