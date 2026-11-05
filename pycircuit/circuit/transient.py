@@ -364,14 +364,25 @@ class _LMMSteps(_StepFamily):
         th = tr.par.early_abort
         if th and not th >= 1.0:
             raise ValueError(f"early_abort must be 0 (off) or at least 1, not {th!r}")
+        if tr.par.lte_jacobian not in ('converged', 'seed'):
+            raise ValueError("lte_jacobian must be 'converged' or 'seed', "
+                             f"not {tr.par.lte_jacobian!r}")
 
     def judge(self, X, x_new, h, J, clamped):
         tr, run = self.tr, self.run
-        return tr.step_controller.evaluate_step(**tr._lte_inputs(
+        inp = tr._lte_inputs(
             x_new, X[-1], J, h, run.abstol, run.max_step,
             ## STAGE 12A -- a truncated step is not LTE-limited, so Fang's
             ## lower bound must not try to grow it
-            clamped=clamped, x_hist=X[-1:-4:-1]))
+            clamped=clamped, x_hist=X[-1:-4:-1])
+        ## THE ERROR TEST ON THE SEED'S FACTORS (`Transient.lte_jacobian`):
+        ## J^-1 Eg by the chord's own factors the attempt's Newton held
+        ## (`_newton`, `_tran_newton_c`), J not made (None)
+        fac = tr.__dict__.pop('_lte_fac', None)
+        if fac is not None:
+            inp['linsolver'] = fac
+            _paths.COUNTS['lte:seed'] += 1
+        return tr.step_controller.evaluate_step(**inp)
 
     def h_after_force(self, h, _h_next):
         ## the clamp every accepted step obeys -- 4b's point is that the
@@ -731,6 +742,7 @@ _RUN_STATE = {
     '_branch_const': ('run', 'the branch check\'s constant part'),
     '_branch_varying': ('run', 'the branch check\'s varying part'),
     '_j_unread': ('run', 'the loop\'s mark: no attempt reads its Jacobian'),
+    '_lte_seed': ('run', 'the loop\'s mark: the error test on the seed\'s factors (`lte_jacobian`)'),
     '_pred_wmemo': ('run', 'the predictor\'s weights, by step ratios'),
     '_memo_rolling': ('run', 'whether the device memo has started rolling'),
     '_rk_want_est': ('run', 'whether the stage family wants the error estimate'),
@@ -748,6 +760,7 @@ _RUN_STATE = {
     'active_integrator': ('step', 'that integrator'),
     '_dt': ('step', 'the step being attempted'),
     '_early_arm': ('step', 'the early abort armed for the attempt (`_EarlyArm`); removed after it'),
+    '_lte_fac': ('step', 'the chord\'s factors the attempt\'s error test takes (`lte_jacobian`); removed by it'),
     '_radau_arm': ('step', 'the Radau early abort armed for the attempt (`_RadauArm`); removed after it'),
     '_u_memo': ('step', 'the step\'s source values'),
     '_pred_pending': ('step', 'the predictor\'s pending point'),
@@ -866,15 +879,37 @@ class _SteppingLoop:
             and G(Transient.solve_timestep, 'Transient.solve_timestep', me)
             and G(Transient._solve_timestep, 'Transient._solve_timestep', me)
             and G(Transient._attempt_step, 'Transient._attempt_step', me))
+        ## THE ERROR TEST ON THE SEED'S FACTORS (`Transient.lte_jacobian`
+        ## 'seed'): an adaptive Gear-2 run's attempts (the method its
+        ## accuracy was measured on; its order drops' Euler steps with it),
+        ## for this loop and the pieces as defined -- `_newton` (or the C
+        ## Newton) holds the chord's factors for `judge`, and the converged
+        ## point is evaluated without G (`_solve_timestep`); a stand-in for
+        ## any of them, on the instance or the class, may read J, and gets it.
+        self.lte_seed = bool(
+            tr.par.lte_jacobian == 'seed' and not self.fixed and type(self) is _SteppingLoop
+            and type(tr) is Transient and type(family) is _LMMSteps
+            and type(tr.base_integrator).__name__ == 'Gear2Integrator'
+            and not ('solve_timestep' in tr.__dict__ or '_solve_timestep' in tr.__dict__
+                     or '_attempt_step' in tr.__dict__)
+            and all(G(getattr(_SteppingLoop, m), '_SteppingLoop.' + m, me)
+                    for m in ('execute', 'take', 'judge'))
+            and G(_LMMSteps.attempt, '_StepFamily.attempt', me)
+            and G(_LMMSteps.judge, '_LMMSteps.judge', me)
+            and G(Transient.solve_timestep, 'Transient.solve_timestep', me)
+            and G(Transient._solve_timestep, 'Transient._solve_timestep', me)
+            and G(Transient._attempt_step, 'Transient._attempt_step', me))
         ## (the stepping loop in C, `_tran_loop_c`: its state on this loop,
         ## or None where the loop never tries it -- `attach` says which)
         self.c = _tran_loop_c.attach(self)
 
     def execute(self):
-        ## (marked for this loop's attempts alone: `j_unread`)
+        ## (marked for this loop's attempts alone: `j_unread`, `lte_seed`)
         tr = self.tr
         if self.j_unread:
             tr._j_unread = True
+        if self.lte_seed:
+            tr._lte_seed = True
         try:
             while self.t < self.tend:
                 ## (the attempts the stepping loop in C makes, fixed or
@@ -889,6 +924,9 @@ class _SteppingLoop:
         finally:
             if self.j_unread:
                 tr.__dict__.pop('_j_unread', None)
+            if self.lte_seed:
+                tr.__dict__.pop('_lte_seed', None)
+                tr.__dict__.pop('_lte_fac', None)
             self.family.finish()
 
     def where(self):
@@ -1383,6 +1421,31 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         'abandoned there as a rejection (0: never)',
                    unit='',
                    default=1.25),
+         ## THE ERROR TEST'S JACOBIAN, OPT-IN (2026-11-05; Andreas: "1 opt-in
+         ## 2 B' 3 wider nudges"; doc/hdl_roadmap_260824.md, 257).  The
+         ## adaptive Gear-2 error test takes J^-1 Eg; 'converged' (the
+         ## default) evaluates and factors J at the converged point for it --
+         ## a second Jacobian a step beside the chord's at the seed.  'seed':
+         ## an attempt whose sparse chord (KLU) converged within
+         ## `_tran_newton.LTE_SEED_ITERS` iterations solves with the chord's
+         ## own factors instead, its converged point evaluated for C and q
+         ## alone; the Newton itself unchanged.  Gear-2 runs alone (the
+         ## method its accuracy was measured on).  Measured at its gate: jge
+         ## under gear2 3.54 -> 3.11 s (1.138x), gm19 1.21x, voter25 1.12x,
+         ## mux8 1.11x; 24 of 25 judged gold decks within 1.25x the spread
+         ## that tolerance nudges of +-0.1..3 % give, toronto's worst edge
+         ## 2 % past it -- an answer change, so off by default; taken as
+         ## measured (Andreas, "B").  Inert without the sparse chord, on a
+         ## fixed grid, for the other methods and the shooting.
+         Parameter(name='lte_jacobian',
+                   desc="The adaptive Gear-2 error test's Jacobian: "
+                        "'converged' (evaluated and factored at the converged "
+                        "point; the default) or 'seed' (where the sparse chord "
+                        "converged within 3 iterations, the chord's own "
+                        "factors of the seed's Jacobian -- faster, the "
+                        "answers move within the tolerance's spread)",
+                   unit='',
+                   default='converged'),
          ## THE RADAU EARLY ABORT (2026-10-21; roadmap 159): an adaptive
          ## Radau attempt whose embedded estimate at the transform's first
          ## iterate, normalised as the step is judged, is over this is
@@ -1858,9 +1921,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
 
             WHERE NOTHING READS `J` EITHER -- a fixed multistep run, whose loop
             never asks the step controller (`want_j` False:
-            `_SteppingLoop.j_unread`, speed round 9, C0) -- the core evaluates
-            C and q alone and `J` is None too, by the same rule; the numpy
-            path computes G all the same (its warnings stay where they were).
+            `_SteppingLoop.j_unread`, speed round 9, C0), or an attempt whose
+            error test takes the chord's own factors (`_lte_fac`:
+            `Transient.lte_jacobian`) -- the core evaluates C and q alone and
+            `J` is None too, by the same rule; the numpy path computes G all
+            the same (its warnings stay where they were).
 
             History: `doc/transient_history.md`, `Transient.solve_timestep`.
             """
@@ -1870,7 +1935,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 ## (the evaluate core, `_tran_core`: C, q and G in one call
                 ## where it serves, the same state; the path below where not)
                 r = _tran_core.evaluate(self, x, t, provided_function,
-                                        'j' if want_j else 'c')
+                                        'j' if want_j and '_lte_fac' not in self.__dict__
+                                        else 'c')
                 if r is not None:
                     return r
                 _iq, Geq = self._companion_at(x)

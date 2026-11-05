@@ -949,6 +949,16 @@ class StructuralKLU(KLUSolver):
         return _Factored(f, lambda f, b: f.solve(b), lambda f, b: f.solve_transposed(b),
                          sparse=True)
 
+    def chord_held(self):
+        """The chord's factorisation as a C chord left it (`_tran_newton_c`'s
+        serve, `Transient.lte_jacobian`): its numeric as it stands (`_chord`),
+        made -- a solve on it, no refactor -- in the wrapper `chord_factor`
+        returns."""
+        f = _ChordNumeric(self, None, None)
+        f._made = True
+        return _Factored(f, lambda f, b: f.solve(b), lambda f, b: f.solve_transposed(b),
+                         sparse=True)
+
     def _chord_fresh(self, Ax):
         """The chord's numeric made afresh (the held one freed first: None
         after a singular matrix's LinAlgError, as `_numeric` is)."""

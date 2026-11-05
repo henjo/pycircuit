@@ -19,7 +19,7 @@ NUMERIC).  `_paths`: `newton_c:<why>` a decline,
 `newton_c:bail:<why>` a hand-back, `newton_c:maxiter` the iteration limit
 raised from the C, and on a serve `newton_c:served`,
 `newton_c:iterations`, `newton_c:jfold`, `newton_c:j_unread`,
-`newton_c:sparse` -- with the Python's own `chord:chosen` where the Python
+`newton_c:sparse`, `newton_c:lte_seed` -- with the Python's own `chord:chosen` where the Python
 would count it.  Switch: `PYCIRCUIT_NEWTON_C=0` (`ENABLED`, read on every
 call), and the evaluate core's (`PYCIRCUIT_TRAN_CORE`, `_tran_core.CORE`);
 `STATUS` says why the path is off where it is.
@@ -35,7 +35,10 @@ re-taken where a limiter exists; the convergence test in `nrsolver`'s order
 (`|J||x|` through numpy's own `scipy_cblas_dgemv64_`) and the chord's
 shrink test.  Then, in the same call, the converged point's evaluation:
 `jacobian_only`'s G, C and q -- C and q alone where nothing reads the
-step's Jacobian (`want_j` False: a fixed multistep run).
+step's Jacobian (`want_j` False: a fixed multistep run) or where the error
+test takes the sparse chord's own numeric (`Transient.lte_jacobian`:
+newton.h's `lte_seed`; the serve hands it on as `_lte_fac`, as `_newton`
+does).
 
 TRANSACTIONAL.  Nothing is written on the transient or the devices before
 the C has converged; anything unusual -- a LAPACK info, a non-finite value,
@@ -218,6 +221,7 @@ def _mods():
         )
         from pycircuit.circuit.integrator import EulerIntegrator
         from pycircuit.circuit._lte_kernels import bdf2_alphas
+        from pycircuit.circuit._tran_newton import LTE_SEED_ITERS, _Factored
         from pycircuit.circuit.dcanalysis import refnode_removed
         from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
         from pycircuit.circuit.toolkit import NumericToolkit
@@ -228,6 +232,7 @@ def _mods():
                     StructuralKLU=StructuralKLU,
                     NumericToolkit=NumericToolkit,
                     lte_c=_tran_lte_c, Euler=EulerIntegrator,
+                    lte_seed=LTE_SEED_ITERS, Factored=_Factored,
                     u_keys=_U_KEYS + tuple(_stamp_plan._SK['u'].values())
                     + tuple(_stamp_plan._SD.values()))
     return _MOD
@@ -683,6 +688,9 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     last = td.get('_newton_c')
     if last is not None:
         last.served = None
+    ## (the error test's held factors are a converged attempt's alone, as
+    ## `_newton` drops them)
+    td.pop('_lte_fac', None)
     if not ENABLED:
         return _no('newton_c:off')
     adm = _admit(tr, td, provided_function, seed)
@@ -718,6 +726,9 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
         s.maxiter, s.reltol = int(P.maxiter), float(P.reltol)
     s.chord = 1 if chord else 0
     s.fold_j = FOLD_J if want_j else FOLD_C
+    ## (the error test on the sparse chord's own numeric where the stepping
+    ## loop marked the run: `Transient.lte_jacobian`, `_newton`'s rule)
+    s.lte_seed = lte_seed_for(td, M, chord)
     if P is None:
         ## (every read above in full, every check passed: stamp them)
         _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)
@@ -735,6 +746,15 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if status != _CODES['NEWTON_CONVERGED']:
         return _unconverged(tr, td, rec, P, M, status, chord, trace, memo)
     return _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, want_j)
+
+
+def lte_seed_for(td, M, chord):
+    """newton.h's `lte_seed` for a call: `_tran_newton.LTE_SEED_ITERS` on the
+    chord where the stepping loop marked the run (`_lte_seed`:
+    `Transient.lte_jacobian` 'seed'), else 0 -- `_newton`'s rule (the C
+    serves no scaler; it holds the sparse chord's factors alone, as
+    `_newton` holds a sparse `fac`), which the C loop holds its record to."""
+    return M['lte_seed'] if chord and td.get('_lte_seed') else 0
 
 
 def _unconverged(tr, td, rec, P, M, status, chord, trace, memo):
@@ -1099,7 +1119,14 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
     tr.active_integrator = active
     tr._companion_coeffs = active.companion_coefficients(h, h_last)
     tr._effective_method = type(active).__name__
-    fj = (None, buf['Jj'].copy()) if want_j else (None, None)
+    if s.lte_held:
+        ## (the error test takes the sparse chord's own numeric of the seed's
+        ## J, as `ChordNewton.fac`: `_newton`'s `_lte_fac`; Jj not made)
+        tr._lte_fac = M['Factored'](ch.chord_held())
+        _PC['newton_c:lte_seed'] += 1
+        fj = (None, None)
+    else:
+        fj = (None, buf['Jj'].copy()) if want_j else (None, None)
     if tr._branch_on():
         target = stats if stats is not None else tr
         before = getattr(target, 'branch_screens', 0)

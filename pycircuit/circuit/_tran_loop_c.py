@@ -644,9 +644,12 @@ def _why_not_the_run(loop, tr, td, rec, O, adaptive):
     if not O['companion'].U_MEMO:
         return 'umemo'
     ## (the Newton's record as its last call left it: J formed where the
-    ## attempts read it)
+    ## attempts read it, the error test's held factors where this run's
+    ## mark asks for them -- `Transient.lte_jacobian`)
     NC = O['newton_c']
     if rec.s.fold_j != (NC.FOLD_J if adaptive else NC.FOLD_C):
+        return 'newton'
+    if rec.s.lte_seed != NC.lte_seed_for(td, NC._MOD or NC._mods(), rec.s.chord):
         return 'newton'
     return None
 
@@ -1061,7 +1064,8 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
         if ct.have_q:
             ctrl._q_carried = float(ct.q_carried)
         if run_.sk is not None:
-            run_.sk.refactors += s.ltes
+            ## (an error test on the seed's factors refactors nothing)
+            run_.sk.refactors += s.ltes - s.lte_seeds
     loop.t, loop.h = float(s.t), float(s.h)
     loop.landing = bool(s.landing)
     loop.order_drop = bool(s.order_drop)
@@ -1136,9 +1140,12 @@ def _count(s, run_, rec, adaptive, k):
             _PC['branch_c:cert'] += run_.br[0].ncert
     ## the error test (`_tran_lte_c.max_error`; on the Newton's J, its
     ## pattern's -- `_on_pattern` -- and the dense validations it made)
+    ## (an error test on the seed's factors -- `Transient.lte_jacobian` --
+    ## solves on the chord's numeric: `_tran_lte_c`'s `held`, no refactor)
+    refac = s.ltes - s.lte_seeds
     if adaptive and run_.lte.s.on_pattern:
         le = run_.lte.s
-        _PC['loop_c:lte_on_pattern'] += s.ltes
+        _PC['loop_c:lte_on_pattern'] += refac
         if le.vdense:
             _PC['loop_c:lte_dense'] += le.vdense
             le.vdense = 0
@@ -1146,5 +1153,8 @@ def _count(s, run_, rec, adaptive, k):
         _PC['lte_c:served'] += s.ltes
         if s.lte_euler:
             _PC['lte_c:euler'] += s.lte_euler
-        if run_.sk is not None:
-            _PC['lte_c:sparse_served'] += s.ltes
+        if run_.sk is not None and refac:
+            _PC['lte_c:sparse_served'] += refac
+    if s.lte_seeds:
+        _PC['lte:seed'] += s.lte_seeds
+        _PC['lte_c:held'] += s.lte_seeds

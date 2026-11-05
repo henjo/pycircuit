@@ -26,8 +26,8 @@
  * and flag ones (q1, q2, iq1, u, xseed, cx, cC, Cj, Geqj, have_cache)
  * before its call and restores them after, and `solve` sets the six
  * scalars anew every call.  Every other field the loop takes as the last
- * served `solve` left it (T, maxiter, reltol, chord, fold_j, abstol, xtol,
- * the walk, the sparse chord) -- but `ck_defer`, which it sets for each
+ * served `solve` left it (T, maxiter, reltol, chord, fold_j, lte_seed,
+ * abstol, xtol, the walk, the sparse chord) -- but `ck_defer`, which it sets for each
  * call and clears after, and the chord's numeric `ck`, which it takes back
  * to an attempt's entry where it stops in that attempt (loop.h). */
 typedef struct {
@@ -129,6 +129,16 @@ typedef struct {
     long fold_j;          /* CALL: its passes, a PCX_PASS_* mask, not a
                              flag: G | C (3) where the step's J is read, C
                              (2) where nothing reads it; 0: no evaluation */
+    /* THE ERROR TEST ON THE SEED'S FACTORS (`Transient.lte_jacobian`
+       'seed'): a sparse chord (KLU) that converged within `lte_seed`
+       iterations has its converged point evaluated for C (and q) alone --
+       Jj not written -- and its error test takes J^-1 by the chord's own
+       numeric of the seed's J (`ck`), which the call leaves in place */
+    long lte_seed;        /* CALL: the iterations (`_tran_newton.LTE_SEED_ITERS`)
+                             where armed (the chord), 0: never -- held on the
+                             sparse chord alone */
+    long lte_held;        /* OWN: 1 where this call's converged point was
+                             evaluated so, else 0 */
     double *xc,           /* OWN (n): the converged point, full: insert_row
                              of x, +0.0 at iref */
            *Cj,           /* OWN (n x n): C there (LOOP points it at one
@@ -247,8 +257,9 @@ typedef struct {
    Assumes every CTX and CALL field set (WALK and KLU where used), the
    core ready for this call (`_Core.probe`, the caller's), and the n x n
    buffers zero off the circuit's pattern where `pattern` is set.
-   Returns the status, also left in `status`.  NEWTON_CONVERGED: x, iters
-   and (fold_j) the converged point's fields written.  A bail writes none
+   Returns the status, also left in `status`.  NEWTON_CONVERGED: x, iters,
+   lte_held and (fold_j) the converged point's fields written -- Jj where
+   G was evaluated there.  A bail writes none
    of xc .. Jj: only the OWN scratch, x, iters, status and the other OWN
    fields.  Either way the call writes, outside the record, what the
    Python's evaluation writes -- each element's parameter row at its

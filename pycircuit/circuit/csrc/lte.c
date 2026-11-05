@@ -10,7 +10,7 @@
    runs partly under `np.errstate(divide='ignore', invalid='ignore')`,
    so a flag there hands back where numpy would not warn.  Every return
    leaves the flags clear, as the chain's last numpy call leaves them.
-   The early abort's estimate (`lu_mode`) tests none: its Python
+   The early abort's estimate (`lu_quiet`) tests none: its Python
    (`_StepNewton._early_estimate`) runs under `np.errstate(all='ignore')`,
    so its values are the IEEE ones whatever a flag says, and it warns
    about nothing. */
@@ -177,11 +177,12 @@ static long charge_lte(lte_t *s, long n)
         double ddb = (d2 - d3) / s->s23;
         s->lte[i] = s->coef * ((dda - ddb) / s->s123);
     }
-    if (fetestexcept(PCX_FP_FLAGS) && !s->lu_mode) return LTE_BAIL_FLAGS;
+    if (fetestexcept(PCX_FP_FLAGS) && !s->lu_quiet) return LTE_BAIL_FLAGS;
     return 0;
 }
 
-/* J^-1 Eg by the factors in hand (`lu_mode`, the early abort's): the
+/* J^-1 Eg by the factors in hand (`lu_mode`: the early abort's, the
+   error test's on the seed's factors): the
    reduced Eg back-substituted -- dgetrs on dgesv's LU is numpy's solve of
    that matrix, on dgetrf's SciPy's lu_solve, klu_solve the chord's
    `_KLUNumeric.solve`.  0, or why it is handed back (an info, a KLU failure:
@@ -330,10 +331,10 @@ static long quotients(lte_t *s, long n, int flags)
         if (s->has_charge && s->charge[i] != 0.0) ab = pcx_np_maximum(ab, floor);
         s->tq[i] = s->trtol * (s->reltol * s->ref[i] + ab);
     }
-    if (fetestexcept(flags) && !s->lu_mode) return LTE_BAIL_FLAGS;
+    if (fetestexcept(flags) && !s->lu_quiet) return LTE_BAIL_FLAGS;
     for (i = 0; i < n; i++) if (!(s->tq[i] > 0.0 && isfinite(s->tq[i]))) return LTE_BAIL_TOLERANCE;
     for (i = 0; i < n; i++) s->tq[i] = fabs(s->lte[i]) / s->tq[i];
-    if (fetestexcept(flags) && !s->lu_mode) return LTE_BAIL_FLAGS;
+    if (fetestexcept(flags) && !s->lu_quiet) return LTE_BAIL_FLAGS;
     return 0;
 }
 

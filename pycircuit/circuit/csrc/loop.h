@@ -85,6 +85,8 @@ typedef struct {
     double *X, *T;              /* k x n, k */
     double t_break;             /* the last attempt's breakpoint */
     long attempts, rejected, iters, euler_steps, breaks, screens, pred_fast, ltes, lte_euler;
+    long lte_seeds;             /* the error tests (of `ltes`) on the seed's factors
+                                   (newton.h's lte_held): no refactor, no gather */
     long early_aborts;          /* attempts abandoned at their first iterate (each
                                    one of `rejected`, not of `attempts`) */
     long newton_rejects;        /* attempts rejected at their Newton's iteration limit

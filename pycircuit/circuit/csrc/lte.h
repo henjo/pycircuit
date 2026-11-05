@@ -126,12 +126,18 @@ typedef struct {
     const int64_t *kat;         /* knnz: each pattern entry's place in the full J */
     double *vt;                 /* work, 2 n: the bound's sums and counts */
     long vdense;                /* OUT, added to: the dense tests made */
-    /* THE EARLY ABORT'S SOLVE (`Transient.early_abort`; newton.c's check at
-       the first iterate): with `lu_mode` set, J^-1 Eg is by a factorisation
-       in hand -- the Newton's own, of the seed's J -- and `J` is not read.
-       newton.c sets these for its one call and puts `lu_mode` back to
-       LTE_LU_NONE; zero elsewhere (the context's struct is made zeroed) */
+    /* THE SOLVE BY THE FACTORS IN HAND: with `lu_mode` set, J^-1 Eg is by a
+       factorisation in hand -- the Newton's own, of the seed's J -- and `J`
+       is not read.  The early abort's (`Transient.early_abort`; newton.c's
+       check at the first iterate, `lu_quiet` 1) and the error test's on the
+       seed's factors (`Transient.lte_jacobian` 'seed'; loop.c's
+       `error_test`, `lu_quiet` 0).  Each sets these for its one call and
+       puts `lu_mode` and `lu_quiet` back to 0; zero elsewhere (the
+       context's struct is made zeroed) */
     long lu_mode;               /* enum lte_lu */
+    long lu_quiet;              /* 1: no flag tested -- the early abort's
+                                   Python runs under np.errstate(all='ignore');
+                                   0: tested as the full test's */
     const double *luA;          /* m x m: the LU in LAPACK's layout (GETRS64, GETRS32) */
     const int64_t *lu_ipiv64;   /* m: dgesv's pivots (GETRS64) */
     const int *lu_ipiv32;       /* m: dgetrf's pivots (GETRS32) */

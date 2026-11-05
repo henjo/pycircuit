@@ -234,7 +234,9 @@ def _eligible(walks, j0, x, times, hs, mono, Cs):
     ## record bound and its checks made, as the C loop enters)
     if now == -1 or rec is None or rec.served != now:
         return 'served'
-    if rec.s.fold_j != _tran_newton_c.FOLD_J:
+    ## (J formed at every step -- the step map reads it -- never the error
+    ## test's held factors: `Transient.lte_jacobian`)
+    if rec.s.fold_j != _tran_newton_c.FOLD_J or rec.s.lte_seed:
         return 'newton'
     if any(nm in wd for nm in _W_SHADOWS):
         return 'shadow'

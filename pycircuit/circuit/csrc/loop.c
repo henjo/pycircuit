@@ -135,6 +135,7 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
         }
         s->last_err = a->err;
         s->ltes++;
+        s->lte_seeds += nt->lte_held;
         s->lte_euler += a->formula == PCX_FORMULA_EULER;
     }
     s->iters += nt->iters;
@@ -345,15 +346,32 @@ static long lte_setup(loop_t *s, const loop_attempt_t *a, const double *xc, cons
     return 0;
 }
 
+/* THE ERROR TEST ON THE SEED'S FACTORS (newton.h's `lte_held`): J^-1 Eg by
+   the sparse chord's own numeric of the seed's J, which the Newton left in
+   place -- as the Python's `_Factored` solves with the chord's `fac`; its
+   flags tested as the full test's (`lu_quiet` 0) */
+static void held_factors(lte_t *le, const newton_t *nt)
+{
+    le->lu_mode = LTE_LU_KLU;
+    le->lu_num = nt->ck.klu_num;
+    le->lu_sym = nt->klu_sym;
+    le->lu_common = nt->klu_common;
+    le->lu_klu_solve = nt->klu_solve;
+}
+
 /* the error test on the attempt's converged point (`lte_setup`, then
-   pcx_lte).  0 (`err` set), or LOOP_BAIL_LTE */
+   pcx_lte; on the seed's factors where the Newton held them).  0 (`err`
+   set), or LOOP_BAIL_LTE */
 static long error_test(loop_t *s, loop_attempt_t *a)
 {
     newton_t *nt = (newton_t *) s->newton;
     lte_t *le = (lte_t *) s->lte;
     long st;
     if ((st = lte_setup(s, a, nt->xc, nt->qj, nt->Jj)) != 0) return st;
-    if (CALL(s->lte_fn, pcx_lte, le) != LTE_DONE) return LOOP_BAIL_LTE;
+    if (nt->lte_held) held_factors(le, nt);
+    st = CALL(s->lte_fn, pcx_lte, le);
+    le->lu_mode = LTE_LU_NONE;
+    if (st != LTE_DONE) return LOOP_BAIL_LTE;
     a->err = le->err;
     return 0;
 }
@@ -2021,7 +2039,7 @@ long pcx_loop(loop_t *s)
     long st;
     s->k = 0;
     s->attempts = s->rejected = s->iters = s->euler_steps = s->breaks = s->screens = 0;
-    s->pred_fast = s->ltes = s->lte_euler = s->early_aborts = s->early_checks = 0;
+    s->pred_fast = s->ltes = s->lte_seeds = s->lte_euler = s->early_aborts = s->early_checks = 0;
     s->newton_rejects = 0;
     s->maps = 0;
     if (s->walk) {

@@ -477,7 +477,12 @@ class StepController(ABC):
         # 2. Convert charge error into voltage error by multiplying by the
         #    inverse of the Jacobian matrix: lte = J^-1 * Eg
         from pycircuit.circuit.analysis import remove_row_col
-        J_reduced, Eg_reduced = remove_row_col((s.J, Eg), s.irefnode, s.toolkit)
+        if s.J is None:
+            ## (no J made: the linear solver holds its factors --
+            ## `Transient.lte_jacobian`'s `_Factored`, which never reads it)
+            J_reduced, (Eg_reduced,) = None, remove_row_col((Eg,), s.irefnode, s.toolkit)
+        else:
+            J_reduced, Eg_reduced = remove_row_col((s.J, Eg), s.irefnode, s.toolkit)
 
         try:
             ls = s.linsolver

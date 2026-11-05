@@ -59,10 +59,19 @@ class _EarlyAbort(Exception):
         self.err, self.s, self.p = err, s, p
 
 
+#: THE ERROR TEST ON THE SEED'S FACTORS (`Transient.lte_jacobian` 'seed'):
+#: an attempt whose sparse chord converged within this many iterations --
+#: its iterate still near the seed -- takes J^-1 Eg by the chord's own
+#: factors (`_newton`; newton.c's `lte_seed`).  Sized on the prototype
+#: (2026-11-05): within 3, voter25 inside its nudges' spread where every
+#: attempt's measured 1.5x past it; within 2, half the gain.
+LTE_SEED_ITERS = 3
+
+
 class _Factored:
     """A held factorisation as the error test's `linsolver` (`_charge_lte`
     calls ``solve(J, b, toolkit)``): ``J^-1 b`` by the Newton's own factors,
-    `J` -- the matrix they factor -- not read again."""
+    `J` -- the matrix they factor -- not read again (it may be None)."""
 
     __slots__ = ('fac',)
 
@@ -352,6 +361,8 @@ class _StepNewton:
         ## rescue.  `func_s` / `residual_s` are the solve's; the branch check
         ## and the damped retry below see the plain ones.
         arm = self.__dict__.pop('_early_arm', None)
+        ## (the error test's held factors are a converged attempt's alone)
+        self.__dict__.pop('_lte_fac', None)
         func_s, residual_s = func, residual
         if arm is not None:
             seen = []
@@ -490,6 +501,18 @@ class _StepNewton:
             ## dimension mismatch that the diagnostic's own except would eat
             self._branch_after_solve(
                 refnode_removed(func, self.irefnode, self.toolkit), x_res)
+
+        ## THE ERROR TEST ON THE SEED'S FACTORS (`Transient.lte_jacobian`,
+        ## the stepping loop's mark `_lte_seed`): the sparse chord converged
+        ## itself (no fallback) within LTE_SEED_ITERS on the unscaled matrix
+        ## -- its factors, of the seed's J, the attempt's error test takes
+        ## (`_LMMSteps.judge`), and `_solve_timestep` evaluates the converged
+        ## point without G
+        if (chord is not None and chord.fallbacks == 0 and int(_iters) <= LTE_SEED_ITERS
+                and self.__dict__.get('_lte_seed') and getattr(chord.fac, 'sparse', False)):
+            from pycircuit.circuit.scaler import NoneScaler
+            if type(scaler) is NoneScaler:
+                self._lte_fac = _Factored(chord.fac)
 
         x = x_res
         

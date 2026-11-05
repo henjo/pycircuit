@@ -51,7 +51,8 @@ numpy's OpenBLAS not found), another controller or integrator, a patched or
 shadowed piece of the chain (the controller's methods, the module functions
 they call, the integrator's `compute_lte`, the toolkit's solve), a sparse
 solver that is not the run's `AutoSolver` over `StructuralKLU` or has made
-no factor yet, the g-form step (`h_last2` not yet known) and a step with no
+no factor yet, held factors (`Transient.lte_jacobian`) that are not a made
+sparse chord's as defined (`factored`), the g-form step (`h_last2` not yet known) and a step with no
 history, a non-numeric toolkit, an input that is not a float64 array of the
 run's size, a step that is not a float, a `relref` that is not a str.
 
@@ -128,8 +129,10 @@ def _globals():
     if not _G:
         from pycircuit.circuit import _numeric, analysis, integrator
         from pycircuit.circuit import stepcontroller as sc
-        from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
+        from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU, _ChordNumeric
+        from pycircuit.circuit.linearsolver import _Factored as _LSFactored
         from pycircuit.circuit.toolkit import NumericToolkit
+        from pycircuit.circuit._tran_newton import _Factored
         SC, IG, AN, NU = (sc.StepController, 'pycircuit.circuit.integrator',
                           'pycircuit.circuit.analysis', 'pycircuit.circuit._numeric')
         SCM = 'pycircuit.circuit.stepcontroller'
@@ -157,12 +160,19 @@ def _globals():
                (NumericToolkit, 'NumericToolkit', 'pycircuit.circuit.toolkit'),
                (AutoSolver.solve, 'AutoSolver.solve', LS),
                (StructuralKLU.solve, 'StructuralKLU.solve', LS),
-               (StructuralKLU._ours, 'StructuralKLU._ours', LS))
+               (StructuralKLU._ours, 'StructuralKLU._ours', LS),
+               (_Factored.solve, '_Factored.solve', 'pycircuit.circuit._tran_newton'),
+               (_LSFactored.solve, '_Factored.solve', LS),
+               (_ChordNumeric.solve, '_ChordNumeric.solve', LS),
+               (_ChordNumeric._klu, '_ChordNumeric._klu', LS))
         if not all(_paths.genuine(o[0], o[1], o[2] if len(o) > 2 else SCM) for o in own):
             return None
         _G['mods'] = (sc, integrator, analysis)
         _G['controllers'] = (sc.IntegralController, sc.PIController)
         _G['tk'] = NumericToolkit
+        _G['factored'] = _Factored
+        _G['held'] = (_ChordNumeric, _LSFactored, _Factored.solve, _ChordNumeric.solve,
+                      _ChordNumeric._klu, _LSFactored.solve)
         _G['sparse'] = (AutoSolver, StructuralKLU, AutoSolver.solve, StructuralKLU.solve,
                         StructuralKLU._ours)
         _G['chain'] = (SC._charge_lte, SC._normalised, SC._reference, SC.tolerance,
@@ -286,17 +296,19 @@ def max_error(ctrl, s):
     adm = _admit(ctrl, s)
     if adm is None:
         return None    # paths: counted by _admit
-    sk, form, euler = adm
+    sk, form, euler, held = adm
     sc = _scalars(s, form, euler)
     if sc is None:
         return None    # paths: counted by _scalars
-    arr = _arrays(ctrl, s)
+    arr = _arrays(ctrl, s, held)
     if arr is None:
         return None    # paths: counted by _arrays
-    ctx = _load(ctrl, s, drv, sk, euler, sc, arr)
+    ctx = _load(ctrl, s, drv, sk, euler, sc, arr, held=held)
     if ctx is None:
         return None    # paths: counted by _load
     status = drv[1](ctx.s)
+    ## (the factors in hand are this call's alone: `_load` set them last)
+    ctx.s.lu_mode = 0
     if status != _CODES['LTE_DONE']:
         return _no('lte_c:bail:' + BAIL.get(status, str(status)))
     _PC['lte_c:served'] += 1
@@ -305,6 +317,8 @@ def max_error(ctrl, s):
         ## (the refactor `StructuralKLU.solve` counts)
         sk.refactors += 1
         _PC['lte_c:sparse_served'] += 1
+    elif held is not None:
+        _PC['lte_c:held'] += 1
     if euler:
         _PC['lte_c:euler'] += 1
     if ctx.s.relref:
@@ -351,7 +365,7 @@ def early_context(tr, arm, active):
     adm = _admit(ctrl, s)
     if adm is None:
         return None    # paths: counted by _admit
-    _sk, form, euler = adm
+    _sk, form, euler, _held_sk = adm
     ql = s.q_last_hist
     if euler and type(ql) is np.ndarray and ql.ndim == 2 and 1 <= ql.shape[0] < 3:
         ## (an Euler run's ring is shorter than the three charges the
@@ -383,8 +397,14 @@ def _admit(ctrl, s):
     ## `StructuralKLU.solve`, twinned -- its refactor needs the run's numeric,
     ## which only the Python's first factor makes)
     ls = s.linsolver
-    sk = None
-    if ls is not None:
+    sk = held = None
+    if ls is not None and type(ls) is G['factored']:
+        ## (the chord's own factors, held -- `Transient.lte_jacobian`: J^-1 Eg
+        ## by its numeric, `_ChordNumeric.solve`; lte.c's factors in hand)
+        held = _held(ls, G)
+        if held is None:
+            return _no('lte_c:factored')
+    elif ls is not None:
         sk = ls._choice
         AS, SK, as_solve, sk_solve, sk_ours = G['sparse']
         if not (type(ls) is AS and type(sk) is SK and AS.solve is as_solve
@@ -421,7 +441,25 @@ def _admit(ctrl, s):
     if not ((th is float or th is _NPF) and (tl is float or tl is _NPF or (euler and hl is None))
             and (tl2 is float or tl2 is _NPF or euler)):
         return _no('lte_c:h')
-    return sk, form, euler
+    return sk, form, euler, held
+
+
+def _held(ls, G):
+    """The `StructuralKLU` whose chord numeric the held factors `ls` solve
+    with -- `_tran_newton._Factored` over the wrapper `chord_factor` or
+    `chord_held` makes, its numeric made (`Transient.lte_jacobian`) -- the
+    pieces as defined; or None."""
+    CN, LF, f_solve, cn_solve, cn_klu, lf_solve = G['held']
+    f = ls.fac
+    cn = getattr(f, '_f', None)
+    if not (type(f) is LF and type(cn) is CN and cn._made and type(ls).solve is f_solve
+            and CN.solve is cn_solve and CN._klu is cn_klu and LF.solve is lf_solve
+            and 'solve' not in cn.__dict__ and '_klu' not in cn.__dict__):
+        return None
+    sk = cn._solver
+    if type(sk) is not G['sparse'][1] or not (sk._chord and sk._symbolic):
+        return None
+    return sk
 
 
 def _scalars(s, form, euler):
@@ -452,18 +490,22 @@ def _scalars(s, form, euler):
     return h, hl, hl2, coef, s12, s23, s123
 
 
-def _arrays(ctrl, s):
+def _arrays(ctrl, s, held=None):
     """The attempt's arrays and settings checked: `(J, iref, n, x_curr,
     x_last, q_curr, the three past charges, the running reference or None,
     relref's code, abstol, reltol, TRTOL, n_nodes)`, or None: declined
-    (counted)."""
+    (counted).  With `held` factors J may be None (not made: `n` the
+    point's)."""
     J, iref = s.J, s.irefnode
-    if not (type(J) is np.ndarray and J.dtype is _F64 and J.ndim == 2):
-        return _no('lte_c:x')
-    n = J.shape[0]
-    ql = s.q_last_hist
     xc, xl, q = s.x_curr, s.x_last, s.q_curr
-    if not (n >= 2 and J.shape[1] == n and type(iref) is int and 0 <= iref < n
+    if held is not None and J is None:
+        n = xc.shape[0] if type(xc) is np.ndarray and xc.ndim == 1 else 0
+    elif type(J) is np.ndarray and J.dtype is _F64 and J.ndim == 2 and J.shape[1] == J.shape[0]:
+        n = J.shape[0]
+    else:
+        return _no('lte_c:x')
+    ql = s.q_last_hist
+    if not (n >= 2 and type(iref) is int and 0 <= iref < n
             and _vec(xc, n) and _vec(xl, n) and _vec(q, n)):
         return _no('lte_c:x')
     ## (the charge ring: a (k, n) block, most recent first, or a sequence)
@@ -496,12 +538,35 @@ def _arrays(ctrl, s):
     return J, iref, n, xc, xl, q, ql3, run, mode, ab, reltol, trtol, nn
 
 
-def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c'):
+def _solver_in(ctx, sk, held):
+    """The context's sparse solve for a call: KLU bound to the run's solver
+    `sk` -- its numeric as it stands, the validation's bound -- or to the
+    `held` factors' (lte.c's factors in hand, set by `_load` last and
+    cleared by `max_error` after its call), or unbound where neither.
+    False -- declined -- where the solver's size is not the context's."""
+    st = ctx.s
+    kb = sk if sk is not None else held
+    if kb is not None and (ctx.klu is not kb or ctx.klu_sym != kb._symbolic) \
+            and not _klu_bind(ctx, kb):
+        return False
+    if sk is not None:
+        st.klu_num = ctx.ffi.cast('void *', sk._numeric)
+        st.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+    elif held is None and ctx.klu is not None:
+        st.klu_sym = ctx.ffi.NULL
+        ctx.klu = ctx.klu_sym = None
+        ctx.klu_keep = ()
+    return True
+
+
+def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c', held=None):
     """The context (made, or remade for another size or reference row; KLU
-    bound where the run is sparse) and the attempt's arrays and scalars in
-    it -- copied, or J read where it stands: the context, or None: declined
-    (counted).  `key`: the controller's slot for it (the early abort's
-    context is one of its own, `early_context`)."""
+    bound where the run is sparse, or to the `held` factors' solver) and
+    the attempt's arrays and scalars in it -- copied, or J read where it
+    stands (none with `held`: lte.c's factors in hand, the chord's numeric,
+    its flags tested): the context, or None: declined (counted).  `key`:
+    the controller's slot for it (the early abort's context is one of its
+    own, `early_context`)."""
     h, hl, hl2, coef, s12, s23, s123 = sc
     J, iref, n, xc, xl, q, ql3, run, mode, ab, reltol, trtol, nn = arr
     cd = ctrl.__dict__
@@ -510,16 +575,8 @@ def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c'):
         ffi, _cfn, dgesv = drv
         ctx = cd[key] = _Ctx(ffi, dgesv, n, iref)
     buf, st = ctx.buf, ctx.s
-    if sk is not None:
-        if (ctx.klu is not sk or ctx.klu_sym != sk._symbolic) and not _klu_bind(ctx, sk):
-            return _no('lte_c:sparse')
-        ## (the run's numeric as it stands, and the validation's bound)
-        st.klu_num = ctx.ffi.cast('void *', sk._numeric)
-        st.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
-    elif ctx.klu is not None:
-        st.klu_sym = ctx.ffi.NULL
-        ctx.klu = ctx.klu_sym = None
-        ctx.klu_keep = ()
+    if not _solver_in(ctx, sk, held):
+        return _no('lte_c:sparse')
     np.copyto(buf['xc'], xc)
     np.copyto(buf['xl'], xl)
     np.copyto(buf['q'], q)
@@ -533,13 +590,14 @@ def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c'):
             return _no('lte_c:x')
         np.copyto(buf['iq1'], iq1)
     ## (J read where it stands -- the C only reads it: an n x n copy a call
-    ## saved -- else copied, `INPLACE_MIN_ENTRIES`)
-    if ctx.j_inplace and J.flags.c_contiguous:
-        st.J = ctx.ffi.from_buffer('double *', J)
-    else:
-        np.copyto(buf['J'], J)
-        if ctx.j_inplace:
-            st.J = ctx.jbuf
+    ## saved -- else copied, `INPLACE_MIN_ENTRIES`; none read with `held`)
+    if held is None:
+        if ctx.j_inplace and J.flags.c_contiguous:
+            st.J = ctx.ffi.from_buffer('double *', J)
+        else:
+            np.copyto(buf['J'], J)
+            if ctx.j_inplace:
+                st.J = ctx.jbuf
     if run is not None:
         np.copyto(buf['run'], run)
     abs_vec = type(ab) is np.ndarray
@@ -572,6 +630,12 @@ def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c'):
     st.nn = -1 if nn is None else nn
     st.formula = _CODES['LTE_FORMULA_EULER'] if euler else _CODES['LTE_FORMULA_DD3']
     st.h1, st.h2, st.h3, st.coef = h, hl, hl2, coef
+    if held is not None:
+        ## (the held factors: J^-1 Eg on the chord's numeric, lte.c's
+        ## factors in hand -- its flags tested; `max_error` takes it back)
+        st.lu_mode, st.lu_quiet = _CODES['LTE_LU_KLU'], 0
+        st.lu_num = ctx.ffi.cast('void *', held._chord)
+        st.lu_sym, st.lu_common, st.lu_klu_solve = st.klu_sym, st.klu_common, st.klu_solve
     st.s12, st.s23, st.s123 = s12, s23, s123
     st.reltol, st.trtol = float(reltol), float(trtol)
     return ctx

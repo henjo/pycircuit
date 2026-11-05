@@ -299,13 +299,15 @@ static int floor_holds(newton_t *s, long m)
 }
 
 /* `jacobian_only` at the converged point x: G, C, q -- C and q alone where
-   J is unread (fold_j holds the passes).  Cj is both Cin and C: fold_j
-   always has the C pass, so the companion reads the C just made; F is not
-   written (no PCX_PASS_I) */
+   J is unread (fold_j holds the passes) or the error test takes the seed's
+   factors (lte_held: Jj not written).  Cj is both Cin and C: the passes
+   always have C, so the companion reads the C just made; F is not written
+   (no PCX_PASS_I) */
 static void fold(newton_t *s, core_fn_t core, long n, long r)
 {
     pcx_put_ref(s->x, s->xc, n, r);
-    core(s->core, s->xc, s->T, s->fold_j | s->pattern, s->formula, s->a0, s->a1, s->a2, s->h,
+    core(s->core, s->xc, s->T, (s->lte_held ? PCX_PASS_C : s->fold_j) | s->pattern, s->formula,
+         s->a0, s->a1, s->a2, s->h,
          s->theta, s->q1, s->q2, s->iq1, s->u, s->Cj, s->Cj, s->qj, s->iqj, s->Geqj, s->F,
          s->Jj);
 }
@@ -388,6 +390,7 @@ static int early(newton_t *s, const double *q, void *num)
     le->xc = s->xf;
     le->q = q;
     le->lu_mode = s->chord ? (s->klu_sym ? LTE_LU_KLU : LTE_LU_GETRS32) : LTE_LU_GETRS64;
+    le->lu_quiet = 1;
     le->luA = s->A;
     le->lu_ipiv64 = s->ipiv64;
     le->lu_ipiv32 = s->ipiv32;
@@ -399,6 +402,7 @@ static int early(newton_t *s, const double *q, void *num)
     le->lu_dgetrs32 = s->dgetrs;
     st = ((__typeof__(&pcx_lte)) s->early_lte_fn)(le);
     le->lu_mode = LTE_LU_NONE;
+    le->lu_quiet = 0;
     le->xc = xc0;
     le->q = q0;
     if (st != LTE_DONE) return 0;
@@ -506,6 +510,7 @@ static long iterate(newton_t *s, void **num)
     const double *Cin0;  /* cC where the full seed equals cx (a cache hit), else NULL */
     long first_bits;     /* the first evaluation's want bits */
     s->iters = 0;
+    s->lte_held = 0;
     s->early_checks = 0;
     s->status = NEWTON_RUNNING;
     /* the seed, reduced (remove_row_col); a hit evaluates without the C
@@ -542,6 +547,11 @@ static long iterate(newton_t *s, void **num)
         }
         if (st) {
             for (i = 0; i < m; i++) s->x[i] = s->xn[i];
+            /* (the error test on the seed's factors: the sparse chord
+               converged within `lte_seed` iterations -- its numeric is this
+               call's) */
+            s->lte_held = s->fold_j && s->chord && s->klu_sym && s->lte_seed > 0
+                          && s->iters <= s->lte_seed;
             if (s->fold_j) fold(s, core, n, r);
             return finish(s, NEWTON_CONVERGED);
         }

@@ -13539,3 +13539,70 @@ Refused: nothing built.
 and C packed, ~16 KB contiguous where now ~2 000 scattered lines) -- then a pull on the threads writes a few hundred
 lines, and the companion's own stores are sequential; or the bins' readers on the threads too.  Re-measure the pull
 on the pool on top of either.
+
+## 2026-11-05 — 257. The error test on the seed's factors -- `Transient(lte_jacobian='seed')`, Gear-2 runs: an attempt whose sparse chord converged within 3 iterations takes the error test's J^-1 by the chord's own factors of the seed's Jacobian, its converged point evaluated for C and q alone; off by default: jge under gear2 3.54 -> 3.11 s (1.138x) against a 1.15x line, toronto's error 2 % past its guard -- taken as measured (Andreas)
+
+**Why**  Plan 254's R4 (Jacobian reuse; Andreas: "Size Jacobian reuse first", then "1 opt-in 2 B' 3 wider nudges",
+and on the gate "B").  Sized first: the per-step chord (`chord_jacobian='auto'`) already runs on 22 of the 27 gold
+decks under gear2 -- every large one -- yet each attempt made its Jacobian twice: the seed's full evaluation (G, C,
+i, q), factored for the chord, and the converged point's G and C (`jacobian_only`, newton.c's `fold`) for the error
+test, which factored J again for J^-1 Eg.  In the core (jge, gear2, 3.5 s): the seeds 14 431 calls 1.10 s, the
+residual-only iterations 14 689 0.40 s, the converged points 11 059 0.93 s (C alone there: 0.40 s); KLU's
+refactors 0.11-0.12 s a deck in the Newton, 0.07-0.14 s in the error test plus its gather and validation.  Two ways to
+make one Jacobian a step, prototyped (scratch): (A) the seed's matrix from the last converged point's G and C, this
+step's a0 -- the Newton's iterates move: always 0.86-1.10x (voter25 slower, Newton +13..51 %), fresh after a slow
+Newton 1.00-1.10x: not worth it; (B) the error test on the Newton's own factors (as the early abort's estimate,
+roadmap 132): the Newton unchanged, only the estimate's matrix moves -- jge 1.229x, gm19 1.255x, mux8 1.177x,
+voter25 1.143x, but voter25's error 1.5x past its nudges; (B') the same where the chord converged within 3
+iterations (its iterate still near the seed): 1.13-1.22x, voter25 back inside, toronto's one edge ~1.3x past the
+widest (+-3 %) nudge.  Stacks with the bypass (255): jge 2.71 -> 2.42-2.51 s.
+
+**Built.**  Gear-2 runs alone (the method its accuracy was measured on), the sparse chord alone (KLU: no scipy on the
+served path).  `_SteppingLoop.lte_seed` marks an adaptive run whose pieces are as defined (`tr._lte_seed`);
+`_newton` holds `_Factored(chord.fac)` as `tr._lte_fac` where the chord converged itself within
+`_tran_newton.LTE_SEED_ITERS` (3) on the unscaled matrix, and drops any it did not make at its start;
+`jacobian_only` then evaluates C and q alone; `_LMMSteps.judge` takes it as the error test's solver (J None:
+`_charge_lte` reduces Eg alone).  In C: newton.h's `lte_seed` (CALL, `_tran_newton_c.lte_seed_for`) and `lte_held`
+(the fold C-only); loop.c's `held_factors` (lte.c's factors in hand, KLU, on the chord's numeric) and its count
+`lte_seeds`; lte.h's `lu_quiet` -- the early abort's estimate tests no flag (1), the error test on held factors
+tests them as the full test does (0).  Three findings on the way: the C loop enters an adaptive run only after the
+Python's C error test served the last attempt, so `_tran_lte_c` serves held factors too (`_held`, `_solver_in`, the
+factors in hand set last in `_load` and cleared after the call); the C Newton served from Python cannot decline
+(the loop needs its record), so its serve hands the Python error test the chord's numeric
+(`StructuralKLU.chord_held`); and the loop holds its record to the run's mark (`_why_not_the_run`), the shooting's
+walk refusing a record armed so.
+
+**Measured** (a quiet box at the start; LINE set before building, in one form: jge's gear2 solve with the option
+at least 1.15x against without, the median of 3 interleaved pairs): 3.54 -> 3.11-3.14 s, 1.138x in all three pairs
+-- UNDER the line; for the record gm19 1.208x, voter25 1.118x, mux8 1.107x.  Why under: the numerics are the
+prototype's to the step (10 773 steps, 25 765 Newton iterations), but the C loop waits for the run's KLU numeric,
+which only the Python's first FULL error test makes (its pivot order is every later refactor's) -- 257 entries
+declined on jge, ~256 attempts in the Python loop: the prototype 2.89 s against the build 3.12 s, interleaved.  Not
+fixed (what would reopen it: the loop entering under the mark without the numeric and handing back only the attempt
+whose full error test needs it -- bit-identical by construction, the prototype's ~1.22x).  GUARD, the option off:
+the 27 decks' gear2 and Radau solves against HEAD bfc378b0, 3 rounds, 1.000x and 1.003x (0.99x).  ACCURACY, set
+before the build was measured: the 27 decks under gear2 against 255's reltol/100 references, each error at most
+1.25x the worst of the off run and six null runs (reltol x1.001, x0.999, x1.01, x0.99, x1.03, x0.97) + reltol: 24 of
+25 judged decks inside (arom's and rich3's references fail; their runs finish), toronto 4.36e-3 against 4.28e-3 --
+the edge at 1.69 us every run's worst sits on, ~2 % over, as predicted from the prototype before building; the
+median on/off 1.000, the nulls' 1.001.  Taken as measured (Andreas, "B").
+
+**Tests.**  test_lte_seed (new, 13): off by default and the value checked; every path the Python's -- the Python
+step and chain, the C error test, the C Newton served from Python, the C loop -- at bounds 2 and 3 on a fast-edged
+250-stage chain (bytes, statistics, KLU's counts, the held tests, the error tests handed back on a flag; the loop's
+own full tests after held ones; every context's factors in hand cleared); the mechanism (the chord's factors, no J,
+no G at a held attempt's converged point; the early abort's estimates as before); held factors no solve made never
+reach an error test (`_newton`, the C Newton); inert where nothing holds (the chord off, a dense chord, a fixed grid,
+the trapezoid, Radau); the loop held to its record; a reltol/100 check over a microsecond.  Mutations -- no iteration
+bound in C, the loop's test ignoring held factors or keeping them, held tests not testing flags, a solve keeping a
+stale factor (Python, C), every multistep method armed, the C error test without its factors or never holding or
+keeping them, the loop ignoring its record, J reduced when absent, the held count unmirrored, `chord_held` unmade, G
+made at every converged point, the dense chord held in C -- each caught; the early abort's flag exemption is not (no
+test raises a flag at a first iterate: a gap that predates this).  Pinned pairs re-recorded after their twins'
+tests: the stepping loop and its C, the transient evaluation and the core (reference), the Newton solve and its C,
+the error test and its C, the stepping loop and its unread Jacobian (twin), the multistep walk and its C, the stage
+loop and its C, the transform loop and its C (twin).
+
+**Gate** (the main tree): the TELL; the sanitizer fast (5 912) and deep (1 080) clean; the 27 gold decks with the
+option off against HEAD bfc378b0 interleaved -- gear2, Radau and standalone DC: every digest, step, rejection, Newton
+and path count the same; the suite after the last edit, 6 195 passed (10 skipped, 3 xfailed).
