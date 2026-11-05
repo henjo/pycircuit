@@ -50,10 +50,14 @@ def _components(n, r, c):
     return roots.size, labels.astype(np.int32)
 
 
-def _rank_by_blocks(C, tol, band=None):
+def _rank_by_blocks(C, tol, band=None, nz=None, keep=None):
     """The number of singular values of the square `C` above `tol`, one
     block at a time; ``None`` where one lies in the open-closed interval
-    `band` ``(low, high]`` (the caller's ambiguous range).
+    `band` ``(low, high]`` (the caller's ambiguous range).  `keep`: the
+    matrix is `C`'s rows and columns `keep` (``C[ix_(keep, keep)]``, read
+    without the copy); `nz`: its nonzeros' positions ``(rows, cols)`` in
+    `np.nonzero`'s row-major order where the caller holds them (else
+    `np.nonzero`'s scan).
 
     `C` permuted by the connected components of its nonzero pattern is
     block diagonal, and a block-diagonal matrix's singular values are its
@@ -66,8 +70,12 @@ def _rank_by_blocks(C, tol, band=None):
     reference is out, `_BranchCheck._reduced_rank`) 1.0 s.  A `C` whose
     pattern connects everything is still one dense SVD.
     """
-    n = C.shape[0]
-    rows, cols = np.nonzero(C)
+    if keep is None:
+        n = C.shape[0]
+        rows, cols = np.nonzero(C) if nz is None else nz
+    else:
+        n = keep.shape[0]
+        rows, cols = np.nonzero(C[np.ix_(keep, keep)]) if nz is None else nz
     _ncomp, label = _components(n, rows, cols)
     order = np.argsort(label, kind='stable')
     starts = np.flatnonzero(np.r_[True, np.diff(label[order]) != 0])
@@ -75,6 +83,8 @@ def _rank_by_blocks(C, tol, band=None):
     rank = 0
     for k in np.unique(sizes):
         members = order[(starts[sizes == k])[:, None] + np.arange(k)]   # (blocks, k)
+        if keep is not None:
+            members = keep[members]
         if k == 1:
             sv = np.abs(C[members[:, 0], members[:, 0]])
         else:
@@ -84,6 +94,30 @@ def _rank_by_blocks(C, tol, band=None):
             return None
         rank += int((sv > tol).sum())
     return rank
+
+
+def _plan_nonzeros(cir, C):
+    """`C`'s nonzeros from the stamp plan's positions -- ``(rows, cols,
+    values)``, the positions in `np.nonzero`'s row-major order -- or None.
+    The plan makes C as `bincount` over its positions (`_stamp_plan.
+    assemble_matrix`), so its nonzeros lie among them: gathered there, and
+    proven all of them by `count_nonzero` (a NaN a nonzero in both); a
+    nonzero off them -- a matrix the plan did not make -- is None."""
+    plan = cir.__dict__.get('_stamp_plan')
+    mp = None if plan is None else plan.methods.get('C')
+    n = C.shape[0]
+    if mp is None or C.ndim != 2 or C.shape[1] != n or not C.flags.c_contiguous:
+        return None
+    upos = np.unique(mp.flat)
+    if upos.size and not 0 <= int(upos[0]) <= int(upos[-1]) < n * n:
+        return None
+    vals = C.ravel()[upos]
+    on = vals != 0.0
+    vals = vals[on]
+    if vals.size != np.count_nonzero(C):
+        return None
+    rows, cols = np.divmod(upos[on], n)
+    return rows, cols, vals
 
 
 class _Cert:
@@ -263,7 +297,13 @@ class _BranchCheck:
                 continue
             if self.BRANCH_CERT and C.shape[0] <= self.BRANCH_CERT_MAX_N:
                 generic = (C, C != 0) if generic is None else (generic[0], generic[1] | (C != 0))
-            nrm = float(np.max(np.abs(C)))
+            ## (its nonzeros from the stamp plan's positions where they are
+            ## all there: max |C| and the blocks from them, no n x n scan)
+            nz = _plan_nonzeros(self.cir, C)
+            if nz is None:
+                nrm = float(np.max(np.abs(C)))
+            else:
+                nrm = float(np.max(np.abs(nz[2]))) if nz[2].size else 0.0
             scale = max(scale, nrm)
             if nrm > 0:
                 ## the dense SVD's count, found by blocks (`_rank_by_blocks`,
@@ -272,9 +312,10 @@ class _BranchCheck:
                 ## apart) or the reduction's bound of `tol`
                 tol = self.BRANCH_SCREEN_TOL * nrm
                 eps = 8 * C.shape[0] * np.finfo(float).eps * float(np.linalg.norm(C))
-                r = self._reduced_rank(C, tol, eps)
+                r = self._reduced_rank(C, tol, eps, nz)
                 if r is None:
-                    r = _rank_by_blocks(C, tol, band=(tol - eps, tol + eps))
+                    r = _rank_by_blocks(C, tol, band=(tol - eps, tol + eps),
+                                        nz=None if nz is None else nz[:2])
                 if r is None:
                     r = int((np.linalg.svd(C, compute_uv=False) > tol).sum())
                 best = max(best, r)
@@ -320,7 +361,7 @@ class _BranchCheck:
         return (cert is not None and cert.n == C.shape[0]
                 and _certify(C, cert, tol, self.BRANCH_CERT_GROWTH)[0])
 
-    def _reduced_rank(self, C, tol, eps):
+    def _reduced_rank(self, C, tol, eps, nz=None):
         """The count of `C`'s singular values above `tol`, from `C` without
         the reference node's row and column -- or ``None`` where that
         cannot be shown to be the same count.
@@ -341,7 +382,8 @@ class _BranchCheck:
         value of the full one lies in ``[s - delta, m s + delta]`` for `s`
         the reduced one's: the counts agree unless an `s` lies in
         ``((tol - delta - eps) / m, tol + delta + eps]`` (`eps` the SVDs'
-        rounding apart), where ``None`` sends the caller on.
+        rounding apart), where ``None`` sends the caller on.  `nz`: `C`'s
+        nonzeros (`_plan_nonzeros`), the reduced one's read from them.
         """
         g = getattr(self, 'irefnode', None)
         m = len(getattr(self.cir, 'nodes', ()))
@@ -353,8 +395,14 @@ class _BranchCheck:
         if not delta + eps < tol:
             return None
         keep = np.r_[0:g, g + 1:C.shape[0]]
-        return _rank_by_blocks(C[np.ix_(keep, keep)], tol,
-                               band=((tol - delta - eps) / m, tol + delta + eps))
+        rnz = None
+        if nz is not None:
+            rows, cols = nz[0], nz[1]
+            on = (rows != g) & (cols != g)
+            rows, cols = rows[on], cols[on]
+            rnz = (rows - (rows > g), cols - (cols > g))
+        return _rank_by_blocks(C, tol, band=((tol - delta - eps) / m, tol + delta + eps),
+                               nz=rnz, keep=keep)
 
     def _branch_screen(self, x):
         """`(fired, null_direction)` -- has `rank C(x)` fallen below the

@@ -13840,3 +13840,38 @@ fixture's C moved with the state and an entry found no record).
 functions named in the transform loop's pair); the 27 gold decks under gear2, Radau and DC against HEAD fb9c873f
 interleaved: every digest, count and path count the same (no gold deck reaches the packed sets); the chain's
 digests the same at 1 100, 2 000 and 4 000 stages, 100 and 500 ns.
+
+## 2026-11-05 — 264. The branch check's structural rank on C's pattern -- C's nonzeros gathered at the stamp plan's positions (proven all of them by one count) give max |C| and the blocks, the reduced matrix read through its kept indices, where the check scanned and copied n x n matrices three times a run: an 8 000-stage chain's 2 ns gear2 solve 6.23 -> 4.95 s (1.261x), every result the same
+
+**Why**  Andreas, plan 261's L5 (the run's setup at size): "Push then start in L5", then "Rank check (Recommended)".
+With the stepping in C (261-263) a short run at size is mostly setup: at 8 000 stages a 2 ns run 6-8 s of which the
+steps ~0.3 s.  Building the circuit, Transient(), the operating point, the evaluation core and its plans grow
+linearly; the one part growing with the square is the branch screen's structural rank, once a run
+(`_BranchCheck._branch_structural_rank`: 0.11 / 0.46 / 1.83 s at 2 000 / 4 000 / 8 000 stages) -- for each of three
+random states a dense `cir.C` (0.04 s at 8 005 unknowns) and six passes over it: `np.max(np.abs(C))` 0.10 s, the
+Frobenius norm 0.01, the reference row's and column's sums 0.06, the reduced copy `C[ix_(keep, keep)]` 0.17,
+`np.nonzero` 0.21 -- 512 MB a matrix.
+
+**Built.**  `_plan_nonzeros(cir, C)`: the stamp plan makes C as `bincount` over its positions
+(`_stamp_plan.assemble_matrix`), so its nonzeros lie among them -- gathered there, `count_nonzero(C)` proving them
+all (a NaN a nonzero both ways), in `np.nonzero`'s row-major order; None where a nonzero lies off them (a matrix the
+plan did not make), the matrix not contiguous, or no plan.  `_branch_structural_rank` takes max |C| from them, and
+`_reduced_rank` / `_rank_by_blocks` the blocks (`nz`) and the entries through the kept indices (`keep`, no copy);
+the norm and the two sums stay numpy's on the dense C (their rounding order is numpy's).
+
+**Measured** (LINE set before building, in one form: the 8 000-stage chain's 2 ns gear2 solve against HEAD de1ba2df,
+the median of 3 interleaved pairs, at least 1.2x; the ceiling, the check gone, ~1.4x): 6.24 -> 4.95, 6.22 -> 5.02, 6.23 -> 4.94 s: 1.261x (1.261, 1.241, 1.261) -- met (started 21:30:08, load 1.49); at 4 000 stages 2.04 -> 1.71 s (gear2), 3.34 -> 3.00 s (Radau).  What stays of a short Radau run at 8 000 stages (10 s): its Python attempts before the C loop enters, on the dense state (L4).
+
+**Tests.**  test_branch_rank_pattern (new, 4): `_rank_by_blocks` through kept indices, its pattern given or scanned,
+is its count on the copy, the band's None included (200 random block matrices, signed zeros among the zeros);
+`_reduced_rank` from the pattern is the dense one's on reference-embedded matrices; the plan's nonzeros all of them
+or None (a NaN, a signed zero, a nonzero off the positions, positions out of range, a Fortran-ordered matrix, no
+plan); a run's structural rank and scale on a chain with coupling capacitors and an inductor the dense path's, the
+plan serving every state.  Mutations -- no count proof, the kept indices unapplied, the reduced pattern unshifted,
+max without abs, positives only, the reference kept, the plan never used -- each caught.
+
+**Gate** (the main tree): the suite 6 186 passed (10 skipped, 3 xfailed; the pinned pairs aside, then their 88 after the re-record); the branch screen's pinned pair re-recorded on its reference side
+(`_branch_structural_rank`, with `_reduced_rank`, `_rank_by_blocks` and `_plan_nonzeros` named in it) after its
+C twin's tests; the 27 gold decks under gear2, Radau and DC against HEAD de1ba2df interleaved: every digest, count
+and path count the same; the chain's 2 ns digests and structural rank the same at 2 000, 4 000 and 8 000 stages
+under both methods.
