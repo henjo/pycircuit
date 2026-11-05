@@ -140,9 +140,8 @@ def driver():
     if _driver is None:
         _driver = False
         try:
-            import scipy
-            import scipy.linalg  # (its OpenBLAS mapped: the chord's)
-            npl, spl = _cbuild.openblas(np), _cbuild.openblas(scipy)
+            ## (scipy's OpenBLAS by name -- the chord's, scipy not imported)
+            npl, spl = _cbuild.openblas(np), _cbuild.openblas('scipy')
             if npl is None or spl is None:
                 STATUS = "off (numpy's or SciPy's own OpenBLAS not found)"
                 return None

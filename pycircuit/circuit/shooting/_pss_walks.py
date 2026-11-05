@@ -6,9 +6,11 @@ from copy import copy
 from math import factorial
 
 import numpy as np
-import scipy.sparse as _sp
 
-from pycircuit.circuit import _limiting, _paths, _tran_radau_c
+from pycircuit.circuit import _lazy, _limiting, _paths, _tran_radau_c
+
+## (scipy.sparse imported on first use: 0.12 s of a start-up that never reaches a walk)
+_sp = _lazy.deferred('scipy.sparse')
 
 from . import _lmmsens_c, _lmmwalk_c, _pss_inner, _sens_c, _sensklu_c, _stagewalk_c
 from ._factored import _PeriodWalk

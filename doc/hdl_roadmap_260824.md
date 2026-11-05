@@ -13378,3 +13378,66 @@ loading sympy -- each caught.
 **Gate** (the main tree): the TELL; the suite, 6 164 passed (10 skipped, 3 xfailed); the sanitizer builds, fast clean, deep clean; the 27 gold
 decks -- standalone DC against 252's gate runs, gear2 and Radau against HEAD interleaved: every digest, step,
 rejection, Newton count and path count identical.
+
+## 2026-11-05 — 254. The start-up without scipy -- the package imports no scipy and a run reaches none on its served path: the sparse toolkit's backend and the PSS walks' sparse module deferred, the branch check's connected components in numpy, scipy's OpenBLAS mapped by its path at the package's import, the complex factor's product from scipy's own `_sparsetools` loaded alone: the 27 decks' gear2 processes 24.6 -> 23.5 s (1.040x), every result the same
+
+**Why**  Plan g24's `tc/plan_254.md` (Andreas, 2026-11-04: "I need even faster transient and dc analysis", then
+"start as you suggest ... still improve short runs where possible but not at cost of long runs").  Phase 0 (HEAD
+6a38c1f4): a process's fixed cost -- imports 0.21 s and the netlist 0.03-0.09 s -- was more than the DC solve on 26
+of 27 decks and 30-60 % of a short transient's process; `scipy.sparse` (+ `.linalg`) was 0.12 s of every process's
+import (`toolkit` -> `_sparse_numeric`), and `import scipy.linalg` (the C Newton's OpenBLAS) 0.10 s more of most
+runs.  A DC solve uses none of it; a transient uses the connected components of the branch check (3 calls a run,
+whose result is the partition alone), the complex factor's CSC product and one LAPACK library.
+
+**First build (S1): its line met, its guard not.**  LINE (set before building; one form): rca's whole process at
+least 1.15x against HEAD 6a38c1f4, the median of 5 interleaved quiet-box pairs; GUARD: every result the same on the
+27 decks under DC, gear2 and Radau, their solves not slower, the suite, a warm run imports no scipy.sparse (a test).
+Measured: rca 0.375 -> 0.320 s, 1.259x (1.093-1.421) -- met; the 27 decks' solves 14.6 -> 16.5 s (gear2) and 29.5 ->
+31.7 s (Radau) -- the guard VIOLATED, their processes unchanged.  The mechanism (measured: the C Newton's first calls
+53 ms; gone with OPENBLAS_NUM_THREADS=1, OPENBLAS_THREAD_TIMEOUT=4, or the library loaded before the netlist):
+scipy's OpenBLAS, mapped at HEAD's start-up by `import scipy.linalg`, now loaded at the C Newton's first use, and its
+23 threads' start-up spin competed with the solve's own threads, ~0.1 s a run -- the lazy load moved a cost into
+every solve, a long run's cost, rather than removing it.  Not taken: numpy's OpenBLAS (0.3.34, already mapped) for
+the chord instead of scipy's (0.3.31.dev) -- another build may round differently, an answer change.
+
+**Built (S1', Andreas: "Do it" on the preload under a new line).**  `_lazy.deferred(name)` (a module imported on
+first use, nothing settled at a later import); `toolkit`'s sparse backend and `_pss_walks`' `scipy.sparse` deferred;
+`_tran_branch._components` (new): `connected_components(directed=True, connection='weak')`'s count and labels by a
+numpy union-find (each edge's larger root hooked to its smaller, pointers jumped to the roots; a component's root is
+its smallest node, so the labels are scipy's ranks), used by `_rank_by_blocks` and `_cert_data`; `_cbuild.openblas`
+takes a package's name and maps its OpenBLAS from `find_spec(name).origin` without importing it -- the same mapping
+scipy's LAPACK runs when scipy is imported later; the C Newton's driver maps scipy's by name; `pycircuit.circuit`'s
+import maps scipy's OpenBLAS (1.4 ms; its threads start over the start-up, as at HEAD, not mid-solve); the KLU
+solvers' scipy.sparse deferred behind a `find_spec('scipy')` check; the complex factor's product
+(`linearsolver._csc_matvec`) from scipy's own `_sparsetools` -- `sys.modules`' where scipy.sparse is imported, else
+the same extension file loaded alone under a private name.  What still imports scipy mid-run: the branch
+certificate's pivoted QR (`_cert_data`, `scipy.linalg.qr`) and the dense LU's Python path -- 11 of the 81 deck runs
+(27 decks x DC, gear2, Radau; a census of first imports).
+
+**Measured** (S1' LINE, set before building it, one form: the 27 decks' whole processes -- a driver doing what a
+user's run does: the imports, the netlist, the gear2 transient, exit -- summed over one interleaved pair a deck,
+three rounds, the median of the rounds' ratios, at least 1.03x against HEAD 6a38c1f4 on a quiet box; GUARD: the
+solves inside those processes summed at least 0.99x, the gate's 27 decks identical, the suite; refused under).
+Processes 24.6 -> 23.5 s, 1.040x (rounds 1.040, 1.040, 1.050) -- met; rca 0.36 -> 0.32 s (1.140x, 0.044 s less), the
+large decks 0.03-0.05 s less each.  Solves 14.66 -> 14.84 s, **0.988x** (0.987, 0.988, 0.992) -- 0.2 % under the
+guard: the 0.03 s each of five mid-size decks (ab_integ, e1480, g1310, gm6, hussamp), whose branch certificate
+imports scipy.linalg mid-solve (their processes unchanged); the long decks' solves the same (jge 3.53 -> 3.55,
+gm19 1.60 -> 1.59, mux8 2.76 -> 2.77, voter25 2.03 -> 2.03).  Andreas accepted it as measured (2026-11-05, "1 ok")
+over the refusal the guard would have made.  The gate's own runs: the 27 decks' solves 0.994x (gear2), 0.998x
+(Radau), their processes 1.038x and 1.029x.  What would close the guard: scipy's LAPACK by ctypes for `_cert_data`'s
+pivoted QR and the dense LU (`dgeqp3`, `dgetrf`/`dgetrs` from the library already mapped), re-gated bit for bit.
+
+**Tests.**  test_start_up_scipy (new): three gold decks (rca, gm19, voter25) under gear2, Radau and DC by a second
+process import no scipy; `_components` is scipy's (count, labels, dtype) on 802 random, chain and empty patterns; the
+product loaded alone gives `csc_matrix.dot`'s bytes and is scipy's module where scipy.sparse is imported; scipy's
+OpenBLAS by name is the mapping scipy's LAPACK runs (one mapping, `dgetrf` at the address a fresh load gives); the
+sparse toolkit imports its backend on first use; the package maps scipy's OpenBLAS without importing scipy.
+test_startup: the frozen-object threshold 50 000 -> 20 000 (the package's own ~34 000 without scipy, 67 000 with).
+Pinned pairs re-recorded after checking their twins: 'the branch screen and its C' (`_components` in place of
+scipy's) and the complex factor's CSC product.  Mutations: the components hooked to the larger root (the loop does
+not end), the sparse backend eager, the product taken from scipy.sparse, `openblas` importing scipy -- each caught.
+
+**Gate** (the main tree): the TELL; the suite, 6 170 passed (10 skipped, 3 xfailed); the sanitizer fast and deep
+clean; the 27 gold decks -- DC, gear2 and Radau against HEAD interleaved: every digest, step, rejection, Newton count
+and path count identical.  Left in plan 254: S2 (the complex factor's analysis kept per pattern) REFUSED -- gm19's
+1 839 distinct patterns in 1 997 analyses, a cache serves 8 %; device bypass prototyped (jge gear2 1.32x) and next.

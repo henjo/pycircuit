@@ -55,6 +55,7 @@ import contextlib
 import ctypes
 import glob
 import hashlib
+import importlib.util
 import os
 import re
 import shutil
@@ -441,14 +442,24 @@ _openblas_libs = {}
 
 
 def openblas(pkg):
-    """The OpenBLAS `pkg` (numpy, or scipy) itself loaded, as a ctypes
-    library -- `CDLL` on its real path returns the instance already mapped,
-    so its routines are the very code the package's calls run -- or None
-    where the wheel has none.  (SciPy maps its own once `scipy.linalg` is
-    imported: a caller imports it first.)  Raises what `CDLL` raises."""
-    name = pkg.__name__
+    """The OpenBLAS `pkg` (numpy, or scipy -- the module or its name) itself
+    loaded, as a ctypes library, or None where the wheel has none.  `CDLL` on
+    its real path returns the instance already mapped -- and a package mapping
+    it after finds this one, the same file -- so its routines are the very
+    code the package's calls run.  By name the package is not imported
+    (scipy's `scipy.linalg` was 0.1 s of a run's start-up, for this path).
+    Raises what `CDLL` raises; ImportError where the package is absent."""
+    if isinstance(pkg, str):
+        name = pkg
+        if name not in _openblas_libs:
+            spec = importlib.util.find_spec(name)
+            if spec is None or not spec.origin:
+                raise ImportError(f'no package {name!r}')
+            origin = spec.origin
+    else:
+        name, origin = pkg.__name__, pkg.__file__
     if name not in _openblas_libs:
-        d = os.path.join(os.path.dirname(pkg.__file__), '..', name + '.libs')
+        d = os.path.join(os.path.dirname(origin), '..', name + '.libs')
         paths = glob.glob(os.path.join(d, _OPENBLAS[name]))
         _openblas_libs[name] = ctypes.CDLL(os.path.realpath(paths[0])) if paths else None
     return _openblas_libs[name]

@@ -25,6 +25,17 @@ from .shooting import PSS
 
 from .toolkit import numeric, sparse_numeric, symbolic, symbolic_poly
 
+## SCIPY'S OPENBLAS MAPPED NOW, by its path, scipy not imported (`_cbuild.openblas`):
+## the C Newton's chord runs its LAPACK, and the library first mapped mid-solve
+## started 23 threads whose start-up spin competed with the solve's own (~0.1 s
+## a run, 2026-11-04).  Mapped here (1.4 ms) its threads start over the start-up,
+## as `import scipy.linalg` -- 0.1 s more -- started them before.
+from . import _cbuild as _cb
+try:
+    _cb.openblas('scipy')
+except (ImportError, OSError):            # pragma: no cover -- no scipy wheel
+    pass
+
 ## THE START-UP'S OBJECTS FROZEN, OPT-IN (`_freeze`): `freeze_imports()`, or
 ## `PYCIRCUIT_GC_FREEZE=1` at the end of this import and of the device
 ## library's -- a setting of the whole process, off unless asked.

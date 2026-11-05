@@ -29,8 +29,11 @@ import numpy as np
 
 from . import _lazy
 from . import _numeric
-from . import _sparse_numeric
 from .acsolution import NumDenSolution
+
+## The sparse backend imported on first use (`_lazy.deferred`): its scipy.sparse
+## was 0.12 s of every process's start-up, and only the sparse toolkit reads it.
+_sparse_numeric = _lazy.deferred('pycircuit.circuit._sparse_numeric')
 
 ## sympy and the symbolic backend, imported on first use (`_lazy`): a numeric
 ## run never touches them, and sympy's import was ~0.15 s of a short deck's

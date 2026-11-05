@@ -23,6 +23,33 @@ _QUIET, _COLLAPSED = (False, None), (True, None)
 _EPS = float(np.finfo(float).eps)
 
 
+def _components(n, r, c):
+    """`scipy.sparse.csgraph.connected_components`' answer, ``directed=True,
+    connection='weak'``, for the graph on `n` nodes with the edges ``(r[k],
+    c[k])``: ``(count, labels)``, each component labelled by its rank among
+    the components ordered by their smallest node, `int32` -- without scipy,
+    whose import was 0.12 s of every run's start-up.  Each node's parent is
+    hooked to the smaller of an edge's two roots and pointers jumped to the
+    roots until no edge joins two: a component's root is its smallest node,
+    which no hook can move."""
+    parent = np.arange(n, dtype=np.intp)
+    r = np.asarray(r, dtype=np.intp)
+    c = np.asarray(c, dtype=np.intp)
+    while r.size:
+        pr, pc = parent[r], parent[c]
+        apart = pr != pc
+        if not apart.any():
+            break
+        np.minimum.at(parent, np.maximum(pr, pc)[apart], np.minimum(pr, pc)[apart])
+        while True:
+            up = parent[parent]
+            if np.array_equal(up, parent):
+                break
+            parent = up
+    roots, labels = np.unique(parent, return_inverse=True)
+    return roots.size, labels.astype(np.int32)
+
+
 def _rank_by_blocks(C, tol, band=None):
     """The number of singular values of the square `C` above `tol`, one
     block at a time; ``None`` where one lies in the open-closed interval
@@ -39,14 +66,9 @@ def _rank_by_blocks(C, tol, band=None):
     reference is out, `_BranchCheck._reduced_rank`) 1.0 s.  A `C` whose
     pattern connects everything is still one dense SVD.
     """
-    from scipy.sparse import csr_matrix
-    from scipy.sparse.csgraph import connected_components
-
     n = C.shape[0]
     rows, cols = np.nonzero(C)
-    _ncomp, label = connected_components(
-        csr_matrix((np.ones(rows.size, dtype=np.int8), (rows, cols)), shape=(n, n)),
-        directed=True, connection='weak')
+    _ncomp, label = _components(n, rows, cols)
     order = np.argsort(label, kind='stable')
     starts = np.flatnonzero(np.r_[True, np.diff(label[order]) != 0])
     sizes = np.diff(np.r_[starts, n])
@@ -96,8 +118,6 @@ def _cert_data(generic, r0, iref):
     pieces of the generic pattern (the three random states' union):
     singular values of a block-diagonal matrix are its blocks' together."""
     import scipy.linalg as sl
-    from scipy.sparse import csr_matrix
-    from scipy.sparse.csgraph import connected_components
     C0, pat = generic
     nz = pat.any(axis=1) & pat.any(axis=0)
     if 0 <= iref < len(nz):
@@ -112,9 +132,7 @@ def _cert_data(generic, r0, iref):
         piv = sl.qr(C0[np.ix_(core, cols)].T, mode='r', pivoting=True)[1]
         rows = np.sort(core[piv[:r0]])
     r, c = np.nonzero(pat[np.ix_(rows, cols)])
-    nb, lab = connected_components(
-        csr_matrix((np.ones(r.size, dtype=np.int8), (r, c)), shape=(r0, r0)),
-        directed=True, connection='weak')
+    nb, lab = _components(r0, r, c)
     order = np.argsort(lab, kind='stable')
     sizes = np.bincount(lab, minlength=nb)
     return _Cert(C0.shape[0], rows[order], cols[order], np.r_[0, np.cumsum(sizes)], lab[order])

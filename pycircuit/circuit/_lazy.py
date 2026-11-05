@@ -197,6 +197,25 @@ class LazyModule(types.ModuleType):
         return f'<lazy module {self.__name__!r}>'
 
 
+class DeferredModule(LazyModule):
+    """A module that is not sympy's, imported on the first attribute it is
+    asked for and kept: no stand-in waits on it, and sympy's import does not
+    import it (`deferred`)."""
+
+    def _get(self):
+        obj = self.__dict__['_lazy_obj']
+        if obj is _UNSET:
+            obj = self.__dict__['_lazy_obj'] = _import(self.__name__)
+        return obj
+
+
+def deferred(name):
+    """The module `name` where it is imported already, else a
+    `DeferredModule` for it."""
+    mod = sys.modules.get(name)
+    return mod if mod is not None else DeferredModule(name)
+
+
 def _loaded():
     return 'sympy' in sys.modules and (_EXECUTED[0] or _ready('sympy'))
 

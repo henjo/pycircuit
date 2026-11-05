@@ -31,9 +31,15 @@ Python call overhead alone.  A factor/solve split only pays when the factors are
 reused, and on this code path they are not: see the note on ``factor()`` below.
 """
 import functools
+import importlib.machinery
+import importlib.util
+import os
+import sys
 from abc import ABC, abstractmethod
 
 import numpy
+
+from pycircuit.circuit import _lazy
 
 _GETRS = {}
 
@@ -92,15 +98,38 @@ def _numpy_lapack():
     return _NPLU['f']
 
 
+def _scipy_sparsetools():
+    """scipy.sparse's `_sparsetools` extension: scipy's own where scipy.sparse
+    is imported, else the same file loaded alone under a private name -- its
+    routines the very code, without scipy.sparse's package import (0.09 s of
+    a run's start-up, for this one routine; the extension imports nothing)."""
+    mod = sys.modules.get('scipy.sparse._sparsetools')
+    if mod is not None:
+        return mod
+    spec = importlib.util.find_spec('scipy')
+    if spec is None or not spec.origin:
+        raise ImportError('no scipy')
+    d = os.path.join(os.path.dirname(spec.origin), 'sparse')
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        path = os.path.join(d, '_sparsetools' + suffix)
+        if os.path.exists(path):
+            name = 'pycircuit._scipy._sparsetools'
+            loader = importlib.machinery.ExtensionFileLoader(name, path)
+            mod = importlib.util.module_from_spec(
+                importlib.util.spec_from_file_location(name, path, loader=loader))
+            loader.exec_module(mod)
+            return mod
+    raise ImportError('no scipy.sparse._sparsetools')
+
+
 def _csc_matvec():
     """SciPy's own `csc_matvec` (`scipy.sparse._sparsetools`: what a CSC
     matrix's `dot` with a vector runs), or None."""
     if 'mv' not in _NPLU:
         _NPLU['mv'] = None
         try:
-            from scipy.sparse import _sparsetools
-            _NPLU['mv'] = _sparsetools.csc_matvec
-        except (ImportError, AttributeError):
+            _NPLU['mv'] = _scipy_sparsetools().csc_matvec
+        except (ImportError, OSError, AttributeError):
             pass
     return _NPLU['mv']
 
@@ -475,10 +504,10 @@ class KLUSolver(LinearSolver):
             raise ImportError(
                 'KLUSolver needs SuiteSparse KLU (%s); install libklu / '
                 'libsuitesparse, or use SuperLUSolver()' % libname) from e
-        try:
-            import scipy.sparse as _sp
-        except ImportError as e:                              # pragma: no cover
-            raise ImportError('KLUSolver needs scipy.sparse') from e
+        ## (scipy.sparse imported on first use: no served run reaches it)
+        if importlib.util.find_spec('scipy') is None:         # pragma: no cover
+            raise ImportError('KLUSolver needs scipy.sparse')
+        _sp = _lazy.deferred('scipy.sparse')
 
         self._ct = ctypes
         self._sp = _sp
@@ -1197,10 +1226,10 @@ class ComplexKLUSolver(object):
             raise ImportError(
                 'ComplexKLUSolver needs SuiteSparse KLU (%s); install libklu / '
                 'libsuitesparse' % libname) from e
-        try:
-            import scipy.sparse as _sp
-        except ImportError as e:                              # pragma: no cover
-            raise ImportError('ComplexKLUSolver needs scipy.sparse') from e
+        ## (scipy.sparse imported on first use: no served run reaches it)
+        if importlib.util.find_spec('scipy') is None:         # pragma: no cover
+            raise ImportError('ComplexKLUSolver needs scipy.sparse')
+        _sp = _lazy.deferred('scipy.sparse')
         self._ct = ctypes
         self._np = numpy
         self._sp = _sp

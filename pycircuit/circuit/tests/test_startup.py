@@ -90,8 +90,9 @@ def test_the_start_up_objects_are_frozen_only_when_asked():
     """`PYCIRCUIT_GC_FREEZE=1`: the package's import ends with the
     collector's freeze, and the device library's again -- nothing left for
     it to walk after either; unset, nothing frozen until `freeze_imports()`
-    is called."""
-    report = 'print(gc.get_freeze_count() > 50000, len(gc.get_objects()) < 2000)'
+    is called.  (The package's own objects: ~34 000 since its start-up
+    imports no scipy, 2026-11-04 -- 67 000 with it.)"""
+    report = 'print(gc.get_freeze_count() > 20000, len(gc.get_objects()) < 2000)'
     package = f'''
         import gc
         import pycircuit.circuit
