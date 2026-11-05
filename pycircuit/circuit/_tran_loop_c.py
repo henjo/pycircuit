@@ -437,7 +437,7 @@ def _bind_judge(run, tr, n, judge):
         ctx.buf['charge'][:] = charge
         le.chgtol = float(tr.par.lte_chgtol)
     if sk is not None:
-        le.klu_num = lffi.cast('void *', sk._numeric)
+        le.klu_num = lffi.cast('void *', sk._numeric or 0)
         le.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
     run.lte, run.sk = ctx, sk
     _plug(s, ffi, 'lte', lffi, le, lcfn)
@@ -590,7 +590,14 @@ def _judge(loop, tr, O, n):
     sk = tr._sparse_linsolver()
     if sk is not None:
         sk = sk._choice
-        if not (sk._numeric and sk._symbolic):
+        ## (the run's numeric, which a full error test refactors: the
+        ## Python's first full test makes it.  Under the seed mark and the
+        ## chord -- most tests on the chord's factors, `lte_jacobian` -- the
+        ## loop enters without it, and an attempt whose test is a full one
+        ## while it is missing hands back: loop.c's `error_test`)
+        rec = tr.__dict__.get('_newton_c')
+        waits = tr.__dict__.get('_lte_seed') and rec is not None and rec.s.chord
+        if not sk._symbolic or not (sk._numeric or waits):
             return 'sparse'
     return (ctrl, rset, sk, mask, charge)
 
@@ -854,7 +861,8 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
         ct.have_q = int(q is not None)
         ct.q_carried = q if q is not None else 0.0
         if run_.sk is not None:
-            run_.lte.s.klu_num = run_.lte.ffi.cast('void *', run_.sk._numeric)
+            ## (NULL where the Python's first full test is still to make it)
+            run_.lte.s.klu_num = run_.lte.ffi.cast('void *', run_.sk._numeric or 0)
     return retry0
 
 

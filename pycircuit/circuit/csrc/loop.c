@@ -360,13 +360,17 @@ static void held_factors(lte_t *le, const newton_t *nt)
 }
 
 /* the error test on the attempt's converged point (`lte_setup`, then
-   pcx_lte; on the seed's factors where the Newton held them).  0 (`err`
-   set), or LOOP_BAIL_LTE */
+   pcx_lte; on the seed's factors where the Newton held them).  A full test
+   with no run numeric to refactor -- the loop entered under the seed mark
+   before the Python's first full test made it (`_tran_loop_c._judge`) --
+   hands the attempt back, and the Python's test makes it.  0 (`err` set),
+   or LOOP_BAIL_LTE */
 static long error_test(loop_t *s, loop_attempt_t *a)
 {
     newton_t *nt = (newton_t *) s->newton;
     lte_t *le = (lte_t *) s->lte;
     long st;
+    if (!nt->lte_held && le->klu_sym && !le->klu_num) return LOOP_BAIL_LTE;
     if ((st = lte_setup(s, a, nt->xc, nt->qj, nt->Jj)) != 0) return st;
     if (nt->lte_held) held_factors(le, nt);
     st = CALL(s->lte_fn, pcx_lte, le);

@@ -102,7 +102,8 @@ def test_every_path_is_the_python_one(monkeypatch, bound):
     Python and the C loop make the same run -- bytes, statistics, KLU's
     counts, the held tests and the error tests handed back on a flag -- at
     a bound holding some of the solves (2) and most (3); each C path
-    serving its share, the loop its own full tests after held ones (2)."""
+    serving its share, the loop its own full tests after held ones (2), and
+    entering before the run's KLU numeric exists."""
     _bound(monkeypatch, bound)
     bound_runs, bound_ = [], _tran_loop_c._bound
 
@@ -125,6 +126,10 @@ def test_every_path_is_the_python_one(monkeypatch, bound):
             == d['loop']['lte_c:bail:flags'] > 0)
     assert d['served']['newton_c:lte_seed'] > 0 and d['loop']['loop_c:attempts'] > 0
     assert bound == 3 or d['loop']['loop_c:lte_on_pattern'] > 0
+    ## (the loop entered before the Python's first full test made the run's
+    ## numeric -- never declined for it -- and handed back the attempt whose
+    ## full test needed it)
+    assert d['loop'].get('loop_c:sparse', 0) == 0 and d['loop']['loop_c:bail:lte'] > 0
     ## (the factors in hand are a call's alone: every error test's context
     ## left without them -- the Python's C error test's, the C loop's)
     assert all(r[0].step_controller._lte_c.s.lu_mode == 0 for p, r in runs.items() if p != 'python')

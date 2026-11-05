@@ -112,7 +112,10 @@ typedef struct {
         resid_tol;              /* the validation's bound,
                                    StructuralKLU.REFACTOR_RESIDUAL_TOL */
     void *klu_sym,              /* KLU's symbolic analysis; NULL: the dense path */
-        *klu_num,               /* the run's KLU numeric, refactored in place */
+        *klu_num,               /* the run's KLU numeric, refactored in place
+                                   (the C loop's NULL until the Python's first
+                                   full test makes it: loop.c hands that test
+                                   back) */
         *klu_common,            /* the solver's KLU common block */
         *klu_refactor, *klu_solve,  /* KLU's entries (klu_refactor_t, klu_solve_t) */
         *dgemv;                 /* numpy's own cblas dgemv (dgemv64_t), for R x */

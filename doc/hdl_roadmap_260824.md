@@ -13606,3 +13606,37 @@ loop and its C, the transform loop and its C (twin).
 **Gate** (the main tree): the TELL; the sanitizer fast (5 912) and deep (1 080) clean; the 27 gold decks with the
 option off against HEAD bfc378b0 interleaved -- gear2, Radau and standalone DC: every digest, step, rejection, Newton
 and path count the same; the suite after the last edit, 6 195 passed (10 skipped, 3 xfailed).
+
+## 2026-11-05 — 258. The C loop before the run's numeric -- under `lte_jacobian='seed'` and the chord the loop enters before the Python's first full error test has made the run's KLU numeric, an attempt whose full test needs it handed back: jge's gear2 solve with the option 3.14 -> 2.90 s (1.072x), the 27 decks summed 15.4 -> 12.7 s (1.21x), every result the same
+
+**Why**  Andreas, "Push then 1" (257's open item; plan g24's `tc/plan_254.md`).  257's line missed (1.138x) because
+the C loop declined ('sparse') until the run's KLU numeric existed, and only the Python's first FULL error test makes
+it (its pivot order is every later refactor's).  Under the option most tests are held, so the first full one comes
+late -- on jge ~256 attempts in the Python loop, and on several gold decks the whole run: ab_integ's 4 047 attempts,
+mike2's 544, e1480's 181 -- the option then SLOWER than without it (ab_integ 0.25x, mike2 0.24x, gm3 0.40x, the 27
+decks summed 0.968x).  LINE (set before building, one form): jge's gear2 solve with the option, this tree against
+HEAD 39f35555 with the same option, the median of 3 interleaved pairs at least 1.05x.
+
+**Built.**  `_tran_loop_c._judge` lets the loop in without the run's numeric where the run is marked (`_lte_seed`)
+and the Newton's record is the chord's (`waits`); its numeric goes to the C as NULL until made (`or 0`); loop.c's
+`error_test` hands back an attempt whose test is a full one while the numeric is NULL (LOOP_BAIL_LTE) -- the Python
+repeats it, its first full test making the numeric as before, and the loop enters again.  Every result the same by
+construction.
+
+**Measured** (a quiet box at the start).  LINE: 1.072x (1.067, 1.085, 1.072) -- met; for the record mux8 1.033x,
+voter25 1.002x, gm19 0.997x.  Against the option off, single gate runs: jge 3.56 -> 2.89 s (1.23x), rich3 1.27x,
+gm19 1.22x, arom 1.18x, mux8 1.15x, voter25 1.13x, ab_integ 1.12x, mike2 1.30x, the 27 decks summed 14.90 -> 12.73
+s (1.171x; 257's 0.968x).  GUARD, the option off: the 27 decks' gear2 and Radau solves against HEAD, 3 rounds,
+0.998x and 1.001x (0.99x).
+
+**Tests.**  test_lte_seed's twin test also asserts the loop never declined for the numeric and handed back the
+attempt whose full test needed it -- reverting `_judge` is caught.  Removing loop.c's hand-back is not: KLU refuses
+a NULL numeric itself (klu_refactor fails), and lte.c's KLU bail hands the same attempt back -- the line kept as the
+contract, not the library's error path.  Pinned pairs re-recorded after their twins' tests (C side): the stepping
+loop and its C, the Newton solve and its C, the error test and its C, the multistep walk and its C, the stage loop
+and its C, the transform loop and its C.
+
+**Gate** (the main tree): the suite, 6 195 passed (10 skipped, 3 xfailed); the TELL; the sanitizer fast and deep
+clean; the 27 gold decks under gear2 with the option against HEAD 39f35555 interleaved: every digest, step,
+rejection and Newton count the same (the loop's path counts moved -- 'loop_c:sparse' gone, 'loop_c:bail:lte' 1-2 a
+deck); with it off, gear2, Radau and standalone DC: every digest, count and path count the same.

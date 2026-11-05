@@ -1430,13 +1430,15 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
          ## `_tran_newton.LTE_SEED_ITERS` iterations solves with the chord's
          ## own factors instead, its converged point evaluated for C and q
          ## alone; the Newton itself unchanged.  Gear-2 runs alone (the
-         ## method its accuracy was measured on).  Measured at its gate: jge
-         ## under gear2 3.54 -> 3.11 s (1.138x), gm19 1.21x, voter25 1.12x,
-         ## mux8 1.11x; 24 of 25 judged gold decks within 1.25x the spread
-         ## that tolerance nudges of +-0.1..3 % give, toronto's worst edge
-         ## 2 % past it -- an answer change, so off by default; taken as
-         ## measured (Andreas, "B").  Inert without the sparse chord, on a
-         ## fixed grid, for the other methods and the shooting.
+         ## method its accuracy was measured on).  Measured (roadmap 257,
+         ## and 258's gate with the C loop entering before the run's KLU
+         ## numeric exists): jge under gear2 3.56 -> 2.89 s (1.23x), rich3
+         ## 1.27x, gm19 1.22x, mux8 1.15x, voter25 1.13x, the 27 gold decks
+         ## summed 14.9 -> 12.7 s (1.17x); 24 of 25 judged decks within 1.25x
+         ## the spread that tolerance nudges of +-0.1..3 % give, toronto's
+         ## worst edge 2 % past it -- an answer change, so off by default;
+         ## taken as measured (Andreas, "B").  Inert without the sparse
+         ## chord, on a fixed grid, for the other methods and the shooting.
          Parameter(name='lte_jacobian',
                    desc="The adaptive Gear-2 error test's Jacobian: "
                         "'converged' (evaluated and factored at the converged "
