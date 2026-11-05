@@ -13510,3 +13510,32 @@ the C side alone in each.
 clean; the 27 gold decks with bypass off -- standalone DC against 254's gate runs, gear2 and Radau against HEAD
 5a00955c interleaved: every digest, step, rejection, Newton count and path count identical (made before the method's
 restriction, which acts only where `bypass` is set; the suite after it).
+
+## 2026-11-05 — 256 REFUSED. The core's pull on the pool -- each pass's bins summed on the threads: jge and gm19 under gear2 even (0.99-1.00x), mux8 and voter25 ~6 % slower; the bins are scattered entries of dense matrices the main thread reads
+
+**Why**  Andreas, "Start parallel assembly on the pool" (plan g24's `tc/plan_254.md`, S5: the core's assembly on the
+pool, partitioned, the same additions in the same order).  Timed in the core (a cycle-timed core.c at HEAD bfc378b0),
+its serial part -- the pull, the companion, the constant groups' products -- is 0.57 s of jge's 3.6 s gear2 solve
+(14 us a call: pull G .115, C .172, i .027, q .038 s, companion .182, groups .031), gm19 0.36 of 1.6 (19 us), mux8
+0.38 of 2.8 (5.2 us), voter25 0.29 of 2.0 (6.1 us); under Radau (the passes alone) jge 0.92 of 7.8, gm19 0.25 of
+3.2.  The ceiling, every serial part 4x faster for nothing: 10-17 % under gear2, 6-9 % under Radau.
+
+**Measured** (a prototype in a scratch worktree, the pull alone on the pool after the passes' values; every result
+identical in every form -- mux8 against HEAD, jge across the forms).  Against HEAD, interleaved, 4 rounds on a quiet
+box, the pull's chunks one run's bins of at most 16, 32 or 64: the median of pairs jge 0.990-0.998x, gm19
+0.992-1.000x, mux8 0.941-0.946x, voter25 0.933-0.946x.  Timed by phase (the same build, the pull serial against on
+the pool): jge's pull 0.357 -> 0.320 s (chunks taken from the pool's counter) or 0.310 s (a static split, one share
+of the sources a thread) -- at most 1.15x on four threads -- and its companion, which reads the bins, 0.18 -> 0.29 s
+(static: 0.23); mux8's pull 0.21 -> 0.28 s (static 0.25), its companion 0.167 -> 0.275 s (static 0.245).  An empty
+pool round costs 0.5 (mux8) to 1.1 us (jge) a call.  Where the devices' outputs are made is not the cost: one thread
+making the kernels too, the serial pull takes about as long (jge 0.37 against 0.35 s, mux8 0.18 against 0.21).  The
+cost is the bins themselves: G's and C's are ~1 950 (jge) to ~3 700 (gm19) scattered entries of dense n x n arrays
+(476 KB on jge) -- a line each, mostly -- that the main thread's companion, Newton, KLU gather and LTE read; a thread
+summing a bin takes its line from the main core and the main core takes it back (239's finding, the companion's cost
+its scattered stores, seen from the other side).  So the pull barely scales and what reads it slows by as much.
+Refused: nothing built.
+
+**What would reopen it.**  The matrices pattern-ordered between the core and its C callers (239's reopening: binG
+and C packed, ~16 KB contiguous where now ~2 000 scattered lines) -- then a pull on the threads writes a few hundred
+lines, and the companion's own stores are sequential; or the bins' readers on the threads too.  Re-measure the pull
+on the pool on top of either.
