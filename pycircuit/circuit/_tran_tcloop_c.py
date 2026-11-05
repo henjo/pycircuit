@@ -54,8 +54,22 @@ freed.
 
 OWNS: on the `_SteppingLoop`'s C state (`_tran_loop_c.LoopState`) the
 bound run (`_TcRun`).  `_paths`: `tcloop_c:` (the declines, the bails
-`tcloop_c:bail:<why>`, `tcloop_c:attempts`, `tcloop_c:steps`).  Switch:
+`tcloop_c:bail:<why>`, `tcloop_c:attempts`, `tcloop_c:steps`,
+`tcloop_c:packed` an entry on the packed sets).  Switch:
 `PYCIRCUIT_TCLOOP_C=0` (`ENABLED`, read on every entry).
+
+THE PACKED SETS (`PACKED`, loop.h's `tc_packed`): where the transform runs
+on the structural pattern with the real factor on KLU, the core's pattern
+and no coupled fallback, every C and G set the loop holds is the core's
+pattern's values in its order -- x_n's, the end sets' -- the fold reads
+them and writes its factors packed (radau_fold.c by its index arrays: the
+packed positions, the identity, a zero slot the real factor's take reads
+off the core's pattern), and one dense scratch takes every C a dense
+reader needs (the estimate's product, numpy's twin; the screen), written
+on the pattern alone; the work it never writes on fresh pages.  Its
+buffers grow with the pattern, not n^2: `PYCIRCUIT_TCLOOP_PACKED` 'size'
+(the default: where the dense buffers would not fit, `_fits`), 'always'
+(wherever eligible) or 'never'.
 
 History: `doc/transient_history.md`, `_tran_tcloop_c.py`.
 """
@@ -69,6 +83,9 @@ from pycircuit.circuit import _paths, _tran_loop_c, _tran_stageloop_c, _watch
 
 #: `PYCIRCUIT_TCLOOP_C=0` makes the Python attempts every one
 ENABLED = os.environ.get('PYCIRCUIT_TCLOOP_C', '1') != '0'
+#: the packed sets: 'size' (where the dense buffers do not fit), 'always'
+#: (wherever eligible), 'never'
+PACKED = os.environ.get('PYCIRCUIT_TCLOOP_PACKED', '') or 'size'
 _PC = _paths.COUNTS
 _no = _paths.no
 _F64 = np.dtype(np.float64)
@@ -195,6 +212,10 @@ def run(loop):
     if run_ is None:
         return _declined(loop, 'bind')
     _SL._load(loop, e, run_, stage=_load_tc)
+    if 'declined' in e.__dict__:
+        return _declined(loop, e.declined)
+    if e.packed:
+        _PC['tcloop_c:packed'] += 1
     ## (settled whatever happens after the call: the C may have freed the
     ## solver's handles for a new pattern's, moved the stage KLU's numeric)
     status = None
@@ -239,7 +260,7 @@ def _eligible(loop, tr, td, rec):
         return got
     tab, minbreak = got
     n = rec.n
-    if not _fits(n):
+    if not _fits(n) and PACKED == 'never':
         return 'size'
     st = _SL._state_ready(loop, tr, td, n)
     if st.__class__ is str:
@@ -263,13 +284,50 @@ def _eligible(loop, tr, td, rec):
     zst = zs._skey if zs._skey is not None and zs._pattern == zs._skey[6] else None
     if zst is not None and zst[0] is not rk:
         return 'complex'
+    packed = _packed(n, rec, rk, zst)
+    if packed is None:
+        return 'size'
     ## (the fallback's estimate is the fresh one -- numpy's solve, the
-    ## toolkit's, whatever the real factor's solver: bound on KLU too)
+    ## toolkit's, whatever the real factor's solver: bound on KLU too; none
+    ## on the packed sets)
     return SimpleNamespace(drv=drv, O=O, tr=tr, rec=rec, n=n, iref=rec.iref, tab=tab,
                            minbreak=minbreak, st=st, screen=None if screen[0] is None else screen,
                            cfg=cfg, sk=None, fam=loop.family, integ=tr.base_integrator, mem=mem,
-                           zs=zs, zst=zst, mats=tr._radau_transform_matrices(),
-                           rk=rk, fb=_fb_ready(tr, td, rec, n))
+                           zs=zs, zst=zst, mats=tr._radau_transform_matrices(), rk=rk,
+                           packed=packed, fb=None if packed else _fb_ready(tr, td, rec, n))
+
+
+def _packed(n, rec, rk, zst):
+    """Whether the entry runs on the packed sets (`PACKED`): where they are
+    eligible -- the complex factor on the structural pattern, the real one
+    on KLU, the core's pattern -- and asked for ('always'), or the dense
+    buffers do not fit ('size'); None where neither path can bind (too
+    large for the dense, not eligible for the packed)."""
+    ok = zst is not None and rk is not None and bool(rec.core.npat)
+    fits = _fits(n)
+    if ok and (PACKED == 'always' or (PACKED == 'size' and not fits)):
+        return True
+    return False if fits else None
+
+
+def _rk_take(run, e, sk):
+    """The real factor's take: the analysis solver's positions in the
+    reduced m x m factor, row-major (`take`) -- packed, each one's place
+    among the fold's (`fold_rmaj`, which the structure holds), or the zero
+    slot after them where the core's pattern has no entry (an explicit
+    zero of the structure)."""
+    take = np.ascontiguousarray(sk.take, dtype=np.int64)
+    if not e.packed:
+        return take
+    rmaj = run.tbuf['fold_rmaj']
+    o = np.argsort(rmaj, kind='stable')
+    srt = rmaj[o]
+    at = np.searchsorted(srt, take)
+    hit = at < srt.shape[0]
+    hit[hit] = srt[at[hit]] == take[hit]
+    out = np.full(take.shape[0], rmaj.shape[0], dtype=np.int64)
+    out[hit] = o[at[hit]]
+    return out
 
 
 def _fb_ready(tr, td, rec, n):
@@ -297,9 +355,10 @@ def _fb_ready(tr, td, rec, n):
 
 
 def _fits(n):
-    """The loop's buffers for the transform within the C stage Newton's
-    budget for its output sets (`_tran_radau_c.OUT_BYTES`): ten n x n and
-    the fold's three m x m, complex two of them."""
+    """The loop's dense buffers for the transform within the C stage
+    Newton's budget for its output sets (`_tran_radau_c.OUT_BYTES`): ten
+    n x n and the fold's three m x m, complex two of them.  The packed sets
+    have no such bound (`_packed`): theirs grow with the pattern."""
     from pycircuit.circuit import _tran_radau_c
     return (10 * n * n + 5 * (n - 1) * (n - 1)) * 8 <= _tran_radau_c.OUT_BYTES
 
@@ -478,7 +537,7 @@ def _bound(loop, e):
     key = (e.rec, e.tab, zs, zs._symbolic, zs._numeric,
            e.zst[3] if e.zst is not None else zs._csc_last[1],
            None if scr is None else scr[3], None if scr is None else scr[4], e.n,
-           e.st[0].shape[0], fb[0], fb[2], e.rk)
+           e.st[0].shape[0], fb[0], fb[2], e.rk, e.packed)
     if not (type(run_) is _TcRun and len(run_.key) == len(key)
             and all(a is b or (type(a) is int and a == b) for a, b in zip(run_.key, key))):
         run_ = _bind(e)
@@ -498,13 +557,15 @@ def _bind(e):
     s, ffi, n, rec = run.s, run.ffi, e.n, e.rec
     tdrv = _tran_radau_tc.driver()
     cffi_core, cfn_core, _dg = _tran_core.driver()
-    tctx = run.tctx = _tran_radau_tc._Ctx(rec.core, n, e.iref, tdrv[0], cfn_core, cffi_core, tdrv)
+    tctx = run.tctx = _tran_radau_tc._Ctx(rec.core, n, e.iref, tdrv[0], cfn_core, cffi_core, tdrv,
+                                          packed=e.packed)
     _LC._plug(s, ffi, 'tc', tdrv[0], tctx.s, tdrv[1])
     _bind_newton(run, e)
     fdrv = _tran_radau_tc._fold_driver()
     run.fo = fdrv[0].new('radau_fold_t *')
     _LC._plug(s, ffi, 'fold', fdrv[0], run.fo, fdrv[1])
     _bind_buffers(run, e)
+    tctx.s.packed, tctx.s.cs = s.tc_packed, s.cs
     s.fb_ok = 0
     if e.fb is not None:
         _bind_fb(run, e)
@@ -522,11 +583,11 @@ def _bind_rk(run, e):
     analysis; its values' buffer; the residual's dense work; the pattern's
     flat indices for `tc_frozen`'s take; the solves' work (its numeric and
     tolerance each call's, `_load`)."""
-    from pycircuit.circuit import _cbuild
+    from pycircuit.circuit import _cbuild, _tran_radau_tc
     sk, tctx = e.rk, run.tctx
     tffi, ts, s, ffi = tctx.ffi, tctx.s, run.s, run.ffi
     tb, keep = run.tbuf, run.tkeep
-    tb['rk_take'] = np.ascontiguousarray(sk.take, dtype=np.int64)
+    tb['rk_take'] = _rk_take(run, e, sk)
     tb['rk_ax'] = np.empty(max(int(sk.nnz), 1))
     tb['rkx'] = np.empty(max(e.n - 1, 1))
     k = ts.rk
@@ -534,7 +595,8 @@ def _bind_rk(run, e):
                             ('kAx', tb['rk_ax'], 'double *')):
         keep.append(tffi.from_buffer(kind, arr))
         setattr(k, name, keep[-1])
-    tb['rk_A'] = np.empty(max((e.n - 1) ** 2, 1))
+    tb['rk_A'] = (_tran_radau_tc.zero_pages((e.n - 1) ** 2) if e.packed
+                  else np.empty(max((e.n - 1) ** 2, 1)))
     keep.append(tffi.from_buffer('double *', tb['rk_A']))
     ts.rk_A = keep[-1]
     lib = sk._lib
@@ -645,17 +707,22 @@ def _bind_buffers(run, e):
     fold's inputs too), the LU and its pivots, the stages' C, the end
     passes' two sets, the memo's three slots, the last made attempt's
     stages; the fold's outputs and the last record's pattern."""
-    from pycircuit.circuit import _tran_radau_c
+    from pycircuit.circuit import _tran_radau_c, _tran_radau_tc
     ffi, s, n, m = run.ffi, run.s, e.n, e.n - 1
     nn, mm, mx = n * n, max(m * m, 1), _CODES['LOOP_TG_MAX']
+    ## (packed: the C and G sets the core's pattern's values, the unread
+    ## dense ones not made, the scratch on fresh pages -- `PACKED`)
+    pk = int(e.rec.core.npat) if e.packed else 0
+    cg, mm, tcn = (pk, 1, 1) if e.packed else (nn, mm, 2 * nn)
     tb = run.tbuf = {
         'ust': np.empty(5 * n), 'useed': np.empty(3 * n), 'xr_q': np.empty(n),
-        'xr_C': np.zeros(nn), 'xr_G': np.zeros(nn), 'xr_i': np.empty(n), 'eF': np.empty(n),
+        'xr_C': np.zeros(cg), 'xr_G': np.zeros(cg), 'xr_i': np.empty(n), 'eF': np.empty(n),
         'eb': np.empty(max(m, 1)), 'liq': np.empty(n), 'lest': np.empty(n),
-        'crr': np.empty(mm), 'grr': np.empty(mm), 'lua': np.empty(mm), 'tcC': np.zeros(2 * nn),
+        'crr': np.empty(mm), 'grr': np.empty(mm), 'lua': np.empty(mm), 'tcC': np.zeros(tcn),
         'tcq': np.empty(n), 'tcY': np.empty(3 * n),
         'tg': np.empty(_CODES['LOOP_TG_SLOTS'] * mx * n),
-        'tcf0': np.empty(n)}
+        'tcf0': np.empty(n),
+        'cs': _tran_radau_tc.zero_pages(nn if e.packed else 1)}
     run.tkeep = keep = []
     fb = ffi.from_buffer
     for k, a in tb.items():
@@ -665,15 +732,17 @@ def _bind_buffers(run, e):
     keep.append(fb('int64_t *', tb['lupiv']))
     s.lupiv = keep[-1]
     _SL._bind_pattern(run, e.rec.core, keep)
+    s.tc_packed = int(e.packed)
     for o in range(2):
-        for k, size in enumerate((n, n, nn, nn)):
+        for k, size in enumerate((n, n, cg, cg)):
             a = tb[f'te{o}{k}'] = np.zeros(size)
             keep.append(fb('double *', a))
             s.te[o][k] = keep[-1]
-        ## (a new pattern's buffers: Ap, Ai, its mask laid out as A.T)
+        ## (a new pattern's buffers: Ap, Ai, its mask laid out as A.T; none
+        ## made on the structural pattern the packed sets run on)
         tb[f'pAp{o}'] = np.zeros(m + 1, dtype=np.int32)
-        tb[f'pAi{o}'] = np.zeros(max(m * m, 1), dtype=np.int32)
-        tb[f'pnz{o}'] = np.zeros(max(m * m, 1), dtype=np.uint8)
+        tb[f'pAi{o}'] = np.zeros(mm, dtype=np.int32)
+        tb[f'pnz{o}'] = np.zeros(mm, dtype=np.uint8)
         keep.append(fb('int *', tb[f'pAp{o}']))
         s.pAp[o] = keep[-1]
         keep.append(fb('int *', tb[f'pAi{o}']))
@@ -692,9 +761,12 @@ def _bind_fold(run, e, m):
     fo, tb = run.fo, run.tbuf
     fffi = _owners()['TC']._fold_driver()[0]
     fo.m, fo.fused = m, int(_owners()['TC']._MOD['cmul'])
-    tb['fold_rf'] = np.empty(max(m * m, 1))
-    tb['fold_cf'] = np.empty(max(2 * m * m, 2))
-    tb['fold_ax'] = np.empty(max(2 * m * m, 2))
+    ## (packed: the factors at the fold's positions in its order and a zero
+    ## slot after them, `_bind_fold_pattern`; no record's values)
+    mm = max(m * m, 1) if not e.packed else _fold_entries(e) + 1
+    tb['fold_rf'] = np.zeros(mm)
+    tb['fold_cf'] = np.zeros(2 * mm)
+    tb['fold_ax'] = np.empty(2 if e.packed else 2 * mm)
     keep = run.tkeep
     for k, name in (('Cr', 'crr'), ('Gr', 'grr')):
         keep.append(fffi.cast('double *', _LC._addr(run.ffi, getattr(run.s, name))))
@@ -736,19 +808,36 @@ def _bind_fold_pattern(run, e, m, fffi):
     are made at its positions alone -- reduced (the reference row and
     column out), column by column and rows ascending: their flat indices
     into x_n's n x n matrices, into the factors and into their transpose;
-    the factors zeroed off it by the first call."""
+    the factors zeroed off it by the first call.  Packed: x_n's sets are
+    the pattern's values in its order and the factors the fold's in its
+    own -- `pfull` the packed positions, `pred` and `ptr` the identity, the
+    factors made zero (`pclean`) -- and the reduced row-major positions
+    kept for the real factor's take (`_bind_rk`)."""
     fo, tb, keep = run.fo, run.tbuf, run.tkeep
     n, r0 = e.n, e.iref
     i, j = np.divmod(np.asarray(e.rec.core.arrays['pat'], dtype=np.int64), n)
     on = (i != r0) & (j != r0)
-    i, j = i[on], j[on]
+    at, i, j = np.flatnonzero(on), i[on], j[on]
     ri, rj = i - (i > r0), j - (j > r0)
     o = np.lexsort((ri, rj))
-    for name, at in (('pfull', i * n + j), ('pred', ri * m + rj), ('ptr', rj * m + ri)):
-        tb['fold_' + name] = np.ascontiguousarray(at[o], dtype=np.int64)
+    if e.packed:
+        tb['fold_rmaj'] = np.ascontiguousarray((ri * m + rj)[o], dtype=np.int64)
+        ident = np.arange(o.shape[0], dtype=np.int64)
+        idx = (('pfull', at[o]), ('pred', ident), ('ptr', ident))
+    else:
+        idx = (('pfull', (i * n + j)[o]), ('pred', (ri * m + rj)[o]), ('ptr', (rj * m + ri)[o]))
+    for name, a in idx:
+        tb['fold_' + name] = np.ascontiguousarray(a, dtype=np.int64)
         keep.append(fffi.from_buffer('int64_t *', tb['fold_' + name]))
         setattr(fo, name, keep[-1])
-    fo.pn, fo.pclean, fo.onpat = int(o.shape[0]), 0, 1
+    fo.pn, fo.pclean, fo.onpat = int(o.shape[0]), int(e.packed), 1
+
+
+def _fold_entries(e):
+    """The fold's positions on the core's pattern: its entries off the
+    reference row and column."""
+    i, j = np.divmod(np.asarray(e.rec.core.arrays['pat'], dtype=np.int64), e.n)
+    return int(np.count_nonzero((i != e.iref) & (j != e.iref)))
 
 
 def _load_tc(e, run_, xl):
@@ -759,7 +848,9 @@ def _load_tc(e, run_, xl):
     per-run settings; the core's passes' bits; numpy's underflow."""
     from pycircuit.circuit import func
     s, tr, ts = run_.s, e.tr, run_.tctx.s
-    _load_x(e, run_, xl)
+    if not _load_x(e, run_, xl):
+        e.declined = 'memo_pattern'
+        return
     _load_memo(e, run_)
     pc, mats = tr.__dict__.get('_radau_Pc'), e.mats
     s.tc_hp = int(pc is not None and type(pc[0]) is float and pc[3] is mats[0]
@@ -839,10 +930,13 @@ def _load_early(e, run_):
 def _load_x(e, run_, xl):
     """x_n's passes where the memo holds them -- either generation's: the
     values one state gives -- into `xr_*`, their passes in `xfields`;
-    `te_x` -1 (the end sets hold no record yet)."""
+    `te_x` -1 (the end sets hold no record yet).  Packed, C and G at the
+    core's pattern: False where the memo's holds a nonzero off it (the
+    entry declined)."""
     s, tb = run_.s, run_.tbuf
     memo = e.tr.__dict__.get('_dev_memo') or ({}, {})
     key = xl.tobytes()
+    pat = np.asarray(e.rec.core.arrays['pat'], dtype=np.int64) if e.packed else None
     f = 0
     for gen in memo:
         rec = gen.get(key)
@@ -850,9 +944,18 @@ def _load_x(e, run_, xl):
             continue
         for k, name in (('q', 'xr_q'), ('i', 'xr_i'), ('C', 'xr_C'), ('G', 'xr_G')):
             if k in rec and not f & _TG[k]:
-                tb[name][:] = np.asarray(rec[k], dtype=float).reshape(-1)
+                a = np.asarray(rec[k], dtype=float).reshape(-1)
+                if pat is not None and k in ('C', 'G'):
+                    ## (packed: the pattern's values -- the memo's matrix
+                    ## zero off it, as every C and G of the circuit is)
+                    tb[name][:] = a[pat]
+                    if np.count_nonzero(tb[name]) != np.count_nonzero(a):
+                        return False
+                else:
+                    tb[name][:] = a
                 f |= _TG[k]
     s.xfields, s.te_x = f, -1
+    return True
 
 
 def _load_memo(e, run_):

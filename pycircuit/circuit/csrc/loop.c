@@ -1071,13 +1071,33 @@ static void tc_pass(loop_t *s, const double *x, long bits, double *q, double *C,
 {
     radau_tf_t *tf = (radau_tf_t *) s->tc;
     core_fn_t core = (core_fn_t) tf->core_fn;
-    long n = s->n;
+    long n = s->n, k;
+    double *cw = s->tc_packed ? s->cs : C;
     core(tf->core, x, tf->T, bits, PCX_FORMULA_PASSES, 0.0, 0.0, 0.0, 1.0, 0.0,
-         tf->dummy, tf->dummy, tf->dummy, tf->dummy, C, C, q, tf->dummy, tf->dummy, tf->dummy,
+         tf->dummy, tf->dummy, tf->dummy, tf->dummy, cw, cw, q, tf->dummy, tf->dummy, tf->dummy,
          tf->dummy);
-    if (G) pass_G(s, G, tf->binG);
+    if (s->tc_packed) {
+        /* (packed: C gathered from the scratch where a set takes it, G
+           from the bin) */
+        if (C)
+            for (k = 0; k < s->cnpat; k++) C[k] = s->cs[s->cpat[k]];
+        if (G)
+            for (k = 0; k < s->cnpat; k++) G[k] = tf->binG[s->cpat[k]];
+    } else if (G) {
+        pass_G(s, G, tf->binG);
+    }
     if (iv) COPY(iv, tf->bini, n);
     feclearexcept(FE_ALL_EXCEPT);
+}
+
+/* a C set as a dense reader reads it: packed (`tc_packed`), scattered into
+   `cs` -- every pattern entry written, the rest zero -- else itself */
+static const double *tc_cdense(loop_t *s, const double *C)
+{
+    long k;
+    if (!s->tc_packed) return C;
+    for (k = 0; k < s->cnpat; k++) s->cs[s->cpat[k]] = C[k];
+    return s->cs;
 }
 
 /* x_n's passes made into `xr_*` where the C holds none of `need` (one
@@ -1363,7 +1383,7 @@ static long tc_check(loop_t *s, loop_attempt_t *a)
         s->have_f0 = 1;
         s->f0_point = s->npoint - 1;
     }
-    Cn = tc_xv(s, 2);
+    Cn = tc_cdense(s, tc_xv(s, 2));
     feclearexcept(FE_ALL_EXCEPT);
     for (i = 0; i < n; i++)
         F[i] = ((s->dd1 * (Y[i] - x[i]) + s->dd2 * (Y[n + i] - x[i]))
@@ -1545,7 +1565,7 @@ static long tc_screen(loop_t *s, loop_attempt_t *a)
     if (!br) return 0;
     a->screened = 1;
     for (j = 0; j < 3; j++) {
-        const double *y = a->Ys + j * n, *Cj = a->C3;
+        const double *y = a->Ys + j * n, *Cj = j < 2 ? NULL : tc_cdense(s, a->C3);
         if (tg_get(s, y) & LOOP_TG_C) {
             a->mcmemo++;
         } else {
@@ -1555,8 +1575,8 @@ static long tc_screen(loop_t *s, loop_attempt_t *a)
         if (j < 2) {
             /* (C alone: `cir.C`'s, the pattern's where the core has one) */
             tc_pass(s, y, PCX_PASS_C | (s->pass_bits & PCX_WANT_PATTERN), s->tcq,
-                    s->tcC + j * nn, NULL, NULL);
-            Cj = s->tcC + j * nn;
+                    s->tc_packed ? NULL : s->tcC + j * nn, NULL, NULL);
+            Cj = s->tc_packed ? s->cs : s->tcC + j * nn;
         }
         br->C = Cj;
         br->cmax = cm;
@@ -1585,7 +1605,7 @@ static long tc_estimate(loop_t *s, loop_attempt_t *a)
     if ((tg_get(s, x) & need) == need) a->estmemo = 1;
     else a->xpass++;
     tc_xmake(s, need);
-    Cn = tc_xv(s, 2);
+    Cn = tc_cdense(s, tc_xv(s, 2));
     in = tc_xv(s, 1);
     feclearexcept(FE_ALL_EXCEPT);
     for (i = 0; i < n; i++)

@@ -62,7 +62,9 @@ static void cmul(long fused, double ar, double ai, double br, double bi, double 
 static void end_G(const radau_tf_t *s, double *G, long bits)
 {
     long k;
-    if (bits & PCX_WANT_PATTERN)
+    if (s->packed)
+        for (k = 0; k < s->npat; k++) G[k] = s->binG[s->pat[k]];
+    else if (bits & PCX_WANT_PATTERN)
         for (k = 0; k < s->npat; k++) G[s->pat[k]] = s->binG[s->pat[k]];
     else
         memcpy(G, s->binG, (size_t) (s->n * s->n) * sizeof(double));
@@ -398,9 +400,12 @@ static long tf_newton(radau_tf_t *s)
             s->end_done = 0;
             if (s->end_bits) {
                 for (k = 0; k < 3 * n; k++) if (!isfinite(s->Y[k])) return RADAU_TC_CONVERGED;
+                double *ec = s->packed ? s->cs : s->e_C;
                 core(s->core, s->Y + 2 * n, s->T, s->end_bits, PCX_FORMULA_PASSES, 0.0, 0.0, 0.0, 1.0, 0.0,
-                     s->dummy, s->dummy, s->dummy, s->dummy, s->e_C, s->e_C, s->e_q,
+                     s->dummy, s->dummy, s->dummy, s->dummy, ec, ec, s->e_q,
                      s->dummy, s->dummy, s->dummy, s->dummy);
+                if (s->packed)
+                    for (k = 0; k < s->npat; k++) s->e_C[k] = s->cs[s->pat[k]];
                 memcpy(s->e_i, s->bini, (size_t) n * sizeof(double));
                 end_G(s, s->e_G, s->end_bits);
                 if (s->end_cg) {

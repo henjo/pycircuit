@@ -159,7 +159,8 @@ typedef struct {
                                    end and the start */
     double *useed;              /* (3 x n) work: the stage seeds */
     double *xr_q, *xr_C, *xr_G, *xr_i;  /* (n, n x n, n x n, n) the start's passes
-                                   where no record holds them (the core's) */
+                                   where no record holds them (the core's); C and
+                                   G packed where `tc_packed` (cnpat each) */
     long pass_bits, pass_zero;  /* those passes as `_tran_core.passes` asks them:
                                    the want bits (the pattern's where the core has
                                    one: `pass_zero`) */
@@ -218,11 +219,13 @@ typedef struct {
     double *lua;                /* (m x m, column-major) the real factor, then its LU */
     int64_t *lupiv;             /* (m) its pivots */
     double *crr, *grr;          /* (m x m) x_n's C and G reduced, the fold's inputs */
-    double *tcC;                /* (2 x n x n) C at the first two stages (the screen's) */
+    double *tcC;                /* (2 x n x n) C at the first two stages (the screen's;
+                                   not read where `tc_packed`: `cs`) */
     double *tcq;                /* (n) work: a pass's q not kept */
     double *tcY;                /* (3 x n) the last made attempt's stages */
-    double *te[2][4];           /* the end passes' two sets: q, i (n), C, G (n x n); an
-                                   attempt writes the one x_n's record is not in */
+    double *te[2][4];           /* the end passes' two sets: q, i (n), C, G (n x n;
+                                   packed where `tc_packed`); an attempt writes the
+                                   one x_n's record is not in */
     long te_x;                  /* the set holding x_n's record; -1: `xr_*` holds what
                                    the C made or the entry's memo had (`xfields`) */
     long xfields;               /* the passes `xr_*` holds (LOOP_TG_*) */
@@ -315,6 +318,18 @@ typedef struct {
        is the Python's (`prepare`) */
     long zs_struct;
     double *zs_ax;
+    /* THE PACKED SETS (`tc_packed` 1: the transform on the structural
+       pattern, the real factor on KLU, the core's pattern, no coupled
+       fallback bound): every C and G set the transform holds -- x_n's
+       (`xr_C`, `xr_G`), the end sets' (`te[o][2]`, `te[o][3]`) -- is the
+       core's pattern's values in its order (`cnpat` of them, `cpat`'s);
+       the fold reads them there (its `pfull` packed positions).  A dense
+       reader -- the estimate's and the early check's product, the screen
+       -- reads a C scattered into `cs` (n x n, zero off the pattern and
+       written on it alone), where the core's C passes are made and
+       gathered from */
+    long tc_packed;
+    double *cs;
 } loop_t;
 long pcx_loop(loop_t *s);
 

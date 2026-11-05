@@ -513,10 +513,22 @@ def _now(T, cir):
                tr_._transform_back, LU.solve, ZS.solve_prepared))
 
 
+def zero_pages(size, dtype=float):
+    """An array of `size` zeros on fresh anonymous pages -- nothing resident
+    until a page is written, whatever the allocator would reuse (numpy's
+    zeros below glibc's mmap threshold is a memset of reused memory)."""
+    import mmap
+    size = max(int(size), 1)
+    nb = size * np.dtype(dtype).itemsize
+    return np.frombuffer(mmap.mmap(-1, nb), dtype=dtype, count=size)
+
+
 class _Ctx:
     """One transient's struct and buffers for one core, size and reference
     row (the walk's fields named as `_tran_newton_c._Ctx`'s, whose
-    `_walk_ready` sets them)."""
+    `_walk_ready` sets them).  `packed`: the C stepping loop's packed
+    transform (`_tran_tcloop_c`), which points the end sets at its own --
+    the work it never writes on fresh pages (`zero_pages`)."""
 
     __slots__ = (
         'A_bytes',
@@ -549,10 +561,11 @@ class _Ctx:
         'walk_watch',
     )
 
-    def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, drv):
+    def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, drv, packed=False):
         m = n - 1
         self.core, self.n, self.iref, self.ffi = core, n, iref, ffi
         self.s = s = ffi.new('radau_tf_t *')
+        big = zero_pages if packed else np.zeros
         self.buf = buf = {
             'Y': np.empty((3, n)), 'Yp': np.empty((3, n)), 'q': np.empty((3, n)),
             'iv': np.empty((3, n)), 'K': np.empty((3, n)), 'F': np.empty((3, n)),
@@ -560,11 +573,11 @@ class _Ctx:
             'r1': np.empty(2 * m), 'x1': np.empty(2 * m), 'y1': np.empty(2 * m),
             'ab': np.empty(m), 'dY': np.empty(3 * m), 'stp': np.empty(n), 'tolv': np.empty(2),
             'qn': np.empty(n), 'u': np.empty((3, n)), 'seed': np.empty((3, n)),
-            'dummy': np.zeros(max(n * n, 1)),
+            'dummy': big(max(n * n, 1)),
             ## (the step's end passes' outputs: `END` -- the matrices zero off
             ## the core's pattern, which a pattern pass leaves as it finds)
-            'e_q': np.empty(n), 'e_i': np.empty(n), 'e_C': np.zeros(n * n),
-            'e_G': np.zeros(n * n), 'e_C01': np.zeros(2 * n * n), 'e_G01': np.zeros(2 * n * n),
+            'e_q': np.empty(n), 'e_i': np.empty(n), 'e_C': big(n * n),
+            'e_G': big(n * n), 'e_C01': big(2 * n * n), 'e_G01': big(2 * n * n),
             'e_q01': np.empty(n),
             'rk_y': np.empty(max(m, 1)), 'rk_t': np.empty(max(2 * m, 2)),
         }

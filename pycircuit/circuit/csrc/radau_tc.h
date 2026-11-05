@@ -149,6 +149,12 @@ typedef struct {
        e_G01 (2 x n x n); e_q01 (n) the q those two calls make (q is always
        made), not read */
     double *e_q, *e_i, *e_C, *e_G, *e_C01, *e_G01, *e_q01;
+    /* PACKED (the C stepping loop's `tc_packed`, end_cg 0): e_C and e_G
+       the pattern's values in its order (`npat`) -- the end's C made into
+       `cs` (n x n, zero off the pattern, written on it alone) and gathered
+       from it, G gathered from the bin */
+    long packed;
+    double *cs;
 } radau_tf_t;
 
 /* the step's two factors as a job of the pool (radau_tc.c's `tf_pair`): its

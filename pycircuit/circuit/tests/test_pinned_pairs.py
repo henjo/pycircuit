@@ -1139,7 +1139,11 @@ PAIRS = {
                  'pycircuit.circuit._tran_tcloop_c:_bind_rk',
                  'pycircuit.circuit._tran_radau_tc:_real_klu',
                  'pycircuit.circuit._tran_tcloop_c:_bind_fold_pattern',
-                 'pycircuit.circuit._tran_stageloop_c:_bind_pattern'],
+                 'pycircuit.circuit._tran_stageloop_c:_bind_pattern',
+                 'pycircuit.circuit._tran_tcloop_c:_packed',
+                 'pycircuit.circuit._tran_tcloop_c:_fold_entries',
+                 'pycircuit.circuit._tran_tcloop_c:_rk_take',
+                 'pycircuit.circuit._tran_radau_tc:zero_pages'],
     },
 }
 
@@ -1147,7 +1151,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('2d7d9389254e', 'bf63f296eb57'),
+    'the stepping loop and its C': ('2d7d9389254e', '311ee4f71b2c'),
     'the predictor and its C': ('9e611c84de5a', '742900742543'),
     'the branch screen and its C': ('3f86ecdefa49', 'b1e87f1e72ff'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -1173,22 +1177,22 @@ RECORD = {
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
     'the transform solve and its frozen form': ('fc1b0147f90d', '65520f9807d1'),
-    'the transform Newton and its C': ('a673fdffce68', '1fdc1482c212'),
-    "the step's end passes and the C's": ('7313b171a1cd', 'af00bc0bbe72'),
-    'the frozen factors and their C': ('d7712b4b9dea', 'd1ffdf33977c'),
+    'the transform Newton and its C': ('a673fdffce68', '1ced41674317'),
+    "the step's end passes and the C's": ('7313b171a1cd', '4918f7384a04'),
+    'the frozen factors and their C': ('d7712b4b9dea', '19c25d66d9c8'),
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('39f2d0f63b0f', 'd0832a7ac48a'),
     'the KLU step map and its C': ('5b9b1f672523', '391236f7a715'),
     'the stage walk and its C': ('a918e57085a2', '2dc272dbd0b4'),
-    'the multistep walk and its C': ('6fc3f3705622', 'f752c9859380'),
+    'the multistep walk and its C': ('6fc3f3705622', '9271a5255a9a'),
     'the multistep step map and its C': ('985dde19187d', '655a5848539a'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
     'the readiness reads and their stamps': ('df49581ecd32', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('adafe855310f', '7441f35f0f5f'),
-    'the transform loop and its C': ('130b32fa9f2c', '2b568e357057'),
+    'the stage loop and its C': ('adafe855310f', '5e42cc1d1ef4'),
+    'the transform loop and its C': ('130b32fa9f2c', '6e64afa7026b'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

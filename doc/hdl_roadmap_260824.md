@@ -13795,3 +13795,48 @@ were underflows, which under numpy's default are no flag now.
 in every unit that tests a sparse verdict); the 27 gold decks under gear2, Radau and DC against HEAD 54a966a6
 interleaved: every digest, count and path count the same; the chain's digests the same at 2 000 and 4 000 stages,
 100 and 500 ns.
+
+## 2026-11-05 — 263. The transform loop's packed sets -- where Radau's transform runs on the structural pattern with the real factor on KLU and the core's pattern, every C and G set the C loop holds is the pattern's values in its order and one dense scratch takes the C a dense reader needs, so the loop binds past the size its dense buffers capped it at, its memory growing with the pattern: a 4 000-stage chain's 500 ns Radau solve 65.9 -> 4.98 s (13.0x), peak memory below HEAD's at every size, every result the same
+
+**Why**  Andreas, plan 261 (the large circuits), "L2, then L3 as compact buffers", then -- after the sizing found
+the speed is the cap's and the compact rewrite buys memory alone -- "Full compact rewrite".  Above ~1 057 unknowns
+Radau's transform loop declined for its buffers' budget (`_fits`: ten n x n and three m x m within
+`_tran_radau_c.OUT_BYTES`, 128 MiB), so every attempt was the Python's (`tcloop_c:size`): the 4 000-stage chain
+421 ms an attempt.  Lifted alone (sizing), 15.8 ms and 12.6x, but the loop's dense buffers raised peak memory 9-24 %
+-- written whole by the fold's first clear, the entry's copies of x_n's C and G, heap memory numpy's zeros clear,
+and the pattern itself touching 45-71 % of a matrix's pages.
+
+**Built.**  `_tran_tcloop_c.PACKED` ('size', the default: where the dense buffers do not fit; 'always'; 'never';
+`PYCIRCUIT_TCLOOP_PACKED`), on the structural pattern (259) with the real factor on KLU, the core's pattern and no
+coupled fallback (none fits at such sizes; none bound on the packed sets): loop.h's `tc_packed`.  x_n's C and G
+(`xr_C`, `xr_G`) and the end sets' (`te[o][2]`, `te[o][3]`) are the core's pattern's values in its order: the C's
+own passes make C into the scratch `cs` and gather it, G gathered from the core's bin (`tc_pass`); radau_tc.c's end
+passes likewise (`packed`, `cs`; `end_G`); the entry loads the memo's at the pattern (`_load_x`; a memo matrix with
+a nonzero off it declines the entry, `tcloop_c:memo_pattern`).  radau_fold.c unchanged: its index arrays become the
+packed positions (`pfull`), the identity (`pred`, `ptr`) and factors of the fold's own size with a zero slot after
+them, which the real factor's take (`_rk_take`) reads for the structure's entries off the core's pattern.  Every
+dense reader reads a C scattered into the one n x n scratch (`tc_cdense`: the estimate's and the early check's
+dgemv -- numpy's twin, which stays dense -- and the screen's third stage; its first two made there).  The dense
+buffers no packed attempt reads not made; the work it rarely or never writes (the real factor's dense residual
+`rk_A`, the transform context's end sets and dummy) on fresh anonymous pages (`_tran_radau_tc.zero_pages`).
+
+**Measured** (LINE set before building, in one form: the 4 000-stage chain's 500 ns Radau solve against HEAD
+fb9c873f, the median of 3 interleaved pairs, at least 8x; and no memory increase -- peak RSS (100 ns) at most
+HEAD's at 1 100, 2 000 and 4 000 stages): 64.72 -> 4.98, 64.71 -> 4.87, 65.07 -> 5.10 s: 13.006x (13.006, 13.278, 12.748) -- met (started 20:37:27, load 1.24); peak RSS 1 100 stages 400 -> 394 MB, 2 000 1 085 -> 997 MB, 4 000 4 009 -> 3 167 MB (500 ns: 439 -> 396, 1 202 -> 998, 4 013 -> 3 169) -- met.
+What stays O(n^2) an attempt: the estimate's dense product (48 % of the loop's time at 4 005, perf) -- numpy's twin;
+only the reference on the pattern removes it (a round-off change, a later item).
+
+**Tests.**  test_tcloop_packed (new, 7): with the budget below the dense buffers the packed sets serve and make the
+Python's run, 'never' declining for the size; 'always' the dense loop's run and the Python's; an entry finding no
+record of x_n, the loop's own passes (gathers) the Python's run; the buffers about doubling from 250 to 500 stages
+(the dense fourfold), x_n's and the end sets the pattern's size, one n x n scratch; the memo's sets loaded at the
+pattern, one with a nonzero off it refused; the take's map onto the fold and its zero slot; `zero_pages`.  The
+chain has a junction's depletion charge every fifth node, so C_n is not C_n+1.  Mutations -- C or G not gathered,
+no scatter before the product, the screen's third stage unscattered, the end's C not gathered or its G from another
+slot, `pfull` dense, the zero slot 0, the memo's guard gone, 'size' inverted -- each caught (two only once the
+fixture's C moved with the state and an entry found no record).
+
+**Gate** (the main tree): the suite 6 182 passed (10 skipped, 3 xfailed; the pinned pairs aside, then their 88 after the re-record); the pinned pairs re-recorded after their twin tests (seven, the twin side alone; the new
+functions named in the transform loop's pair); the 27 gold decks under gear2, Radau and DC against HEAD fb9c873f
+interleaved: every digest, count and path count the same (no gold deck reaches the packed sets); the chain's
+digests the same at 1 100, 2 000 and 4 000 stages, 100 and 500 ns.
