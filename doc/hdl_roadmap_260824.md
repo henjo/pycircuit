@@ -13998,3 +13998,43 @@ loop's and the stage loop's (reference: `_radau_error_estimate`, `_radau_early_c
 texts), the stage paths' passes (`_radau_error_estimate`); the 27 gold decks under gear2, Radau and DC against HEAD
 a1ab1a79: every digest, count and path count the same; the plain chain's digests the same at 2 000 and 4 000 stages;
 the coupled chain the same steps at 2 000 and 4 000 stages, its values within 3.3e-13 / 5.2e-13 relative (|x| + 1 uV), the step times within 4e-14.
+
+## 2026-11-06 — 268. The chord's fallback in the C Newton -- where Gear-2's chord breaks or meets its limit, newton.c runs the full Newton from the same seed as `ChordNewton.solve_system` does (its first evaluation the chord's first C, no early check past the chord's, its iterations added, `chord_fallbacks` counted), where it handed the attempt back and the Python repeated it on dense state: the 4 000-stage chain's 1 us gear2 solve 8.46 -> 3.37 s (2.517x), every result the same
+
+**Why**  Andreas, plan 261 L4: "yes to L4C and L4d and L4b".  Every Gear-2 Newton hand-back measured was the chord's
+(p261/l4b/census.py): NEWTON_BAIL_CHORDBREAK -- its increments stopped shrinking -- or its MAXITER; the 4 000-stage
+chain's 1 us run 12 of 12, mux8 63, todd3 17, arom 6, slowlatch 1.  The Python's `ChordNewton` falls back there to
+the full Newton from the same seed; the C handed the attempt back, and the Python repeated all of it -- the chord
+and the full Newton on dense n x n state (the core's evaluation 26 ms, the reference row's reduction 10 ms, |J|,
+copies at 4 000 stages): about 6.2 of that run's 8.6 s, and at 8 000 stages a hand-back's Python attempt is what
+pushed a 100 ns run past an 11 GB cap (plan 261's L4d sizing).
+
+**Built.**  newton.h's THE CHORD'S FALLBACK (`fb_on`, `fallbacks`, `fb_iters`, appended): where the chord's
+`iterate` ends at CHORDBREAK or MAXITER after two evaluations or more -- an armed early abort checked the second,
+and `_newton`'s `judged` checks none past it -- `fallback` runs `iterate` again with the chord off and the early
+check disarmed: its first evaluation's C the chord's first (what `_C_lookup` finds at the seed: the chord's
+residual-only evaluations leave the cache; `iterate` takes it as `cin`, and reports the C its first evaluation
+used, `c0`), `iters` the chord's plus its own, the chord's early checks kept.  Converged: `fallbacks` 1, `fb_iters`
+its own (a sparse run's numeric refactored that many times).  Any other bail, or the fallback's own failure,
+hands back as before.  `_tran_newton_c`: `FALLBACK` (env `PYCIRCUIT_CHORD_FALLBACK_C`), `fb_on` set in `_load`
+beside the bypass test it shares (`_bypassing`: under a device bypass `_C_lookup` serves no cached C), `_serve`
+counting `newton_c:fallbacks`, `stats.chord_fallbacks` and the run's refactors; loop.c counting each made
+attempt's (`chord_fallbacks`, `fb_refactors` in loop_t), `_tran_loop_c` adding them to the statistics, the
+counts and the run's KLU.  The runtime map names the switch.
+
+**Measured** (LINE set before building, in one form: the 4 000-stage chain's 1 us gear2 solve, p261/l4/split.py,
+against HEAD 793352cc, the median of 3 interleaved pairs, at least 1.6x; the ceiling ~2x): 8.496 / 8.390 / 8.500 -> 3.375 / 3.370 / 3.375 s, 2.517 / 2.490 / 2.519x, the median 2.517x -- MET (the Python attempts after hand-backs 6.0-6.1 -> 0.88 s; the digest the same; peak 2.89 -> 2.78 GB).  The 8 000-stage chain's 100 ns gear2 solve, killed at an 11 GB cap before (at a hand-back's Python attempt), finishes: 11.7 s, peak 10.35 GB, its one chord fallback in the C.
+
+**Tests.**  test_chord_fallback_c (new, 5): on todd3 (chord breaks and limits) and slowlatch (a limit), on KLU and
+on numpy's dense solve, the C loop's run with the fallback is the all-Python run's and the C loop's without it --
+bytes, steps, rejections, Newton iterations, chord fallbacks, early aborts, the solver's refactors and factors, the
+early checks counted -- with no chord handing an attempt back; the Python loop on the C Newton the same.
+Mutations -- the fallback's iterations not added, the loop's fallbacks or refactors uncounted, the chord left off
+after it, the chord's early checks lost, the served path's statistic or refactors uncounted -- each caught; the
+early check left armed in the fallback is not seen (no fallback's own estimate crosses the threshold on these
+decks, and a sparse full Newton makes none), and the fallback's first C recomputed instead of the chord's is the
+same C.
+
+**Gate** (the main tree): the suite 6 249 passed; the pinned pairs re-recorded after their twins' tests (the Newton solve's, the stepping loop's, the multistep walk's, the transform loop's and the stage loop's: newton.c, newton.h, loop.c, loop.h in their texts, `_tran_newton_c` in the first); the 27
+gold decks under gear2, Radau and DC against HEAD 793352cc: every digest, step, rejection and Newton iteration the
+same, the path counts moved only in the hand-back's keys (`loop_c:bail:newton`, `newton_c:bail:*`, `newton_c:served`, `newton_c:fallbacks`, `loop_c:attempts` / `steps` -- and, where the guard's list fell short, the Python attempts' own evaluation counts falling (`core.fj` / `f` / `j:served`, `plan.q` / `C:served`, `batch.*:served`, `walk:served`) and the C loop's per-attempt counts rising (`loop_c:lte_on_pattern`, `branch_c:served`) on mux8, slowlatch, todd3 and arom, `loop_c:history`'s one decline gone on two of them: every one the hand-backs that no longer happen; Andreas accepted the stage as measured (2026-11-06)); the chain's digests and statistics the same (1 us gear2 at 2 000 and 4 000 stages: 5.33 -> 1.99 s, 9.52 -> 4.14 s; 100 ns Radau at 2 000).

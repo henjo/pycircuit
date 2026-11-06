@@ -98,6 +98,12 @@ _PC = _paths.COUNTS
 _no = _paths.no
 
 ENABLED = os.environ.get('PYCIRCUIT_NEWTON_C', '1') != '0'
+#: the chord's fallback in C (newton.h's THE CHORD'S FALLBACK): a chord that
+#: breaks or meets its limit runs the full Newton from its seed there, as
+#: `ChordNewton.solve_system` does -- not under a device bypass, where
+#: `_C_lookup` serves no cached C (`_load` sets `fb_on`); env
+#: `PYCIRCUIT_CHORD_FALLBACK_C=0` hands such a step back
+FALLBACK = os.environ.get('PYCIRCUIT_CHORD_FALLBACK_C', '1') != '0'
 STATUS = 'not loaded'
 
 NEWTON_C = _cbuild.csrc('newton.c')
@@ -714,7 +720,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if src is None:
         return None    # paths: counted by _source
     u, trace = src
-    tol = _load(tr, td, rec, P, rows, u, seed)
+    tol = _load(tr, td, rec, P, rows, u, seed, chord)
     s = rec.s
     s.T, s.formula = T, formula
     a0, a1, a2, theta = coeffs
@@ -761,9 +767,10 @@ def _unconverged(tr, td, rec, P, M, status, chord, trace, memo):
     """A solve the C did not converge.  THE ITERATION LIMIT IS SERVED: the
     full Newton's exception from the C's last iteration (`_maxiter`), where
     `_newton`'s repeat would raise it and nothing more -- the trace kept, as
-    the repeat leaves it (a chord's limit falls back to the full Newton, and
-    an armed damped retry or rescue runs after the plain failure: both hand
-    back).  Else the trace undone and the step handed back, counted."""
+    the repeat leaves it (a chord's limit falls back to the full Newton in
+    the C, and its limit there, like an armed damped retry or rescue after
+    the plain failure, hands back).  Else the trace undone and the step
+    handed back, counted."""
     if (status == _CODES['NEWTON_BAIL_MAXITER'] and not chord
             and not getattr(tr, '_continuation_rescue', False)
             and not getattr(tr, '_damped_last_resort', False)):
@@ -988,11 +995,17 @@ def _source(tr, M, P, memo, t, n):
     return u, (key, had, cvals)
 
 
-def _load(tr, td, rec, P, rows, u, seed):
+def _bypassing(tr, P):
+    """A device bypass on (`bypasstol` >= 0): `_C_lookup` serves no cached C."""
+    return float((getattr(tr.epar, 'bypasstol', -1.0) if P is None else P.bypass) or -1.0) >= 0.0
+
+
+def _load(tr, td, rec, P, rows, u, seed, chord):
     """The record's inputs: the tolerances (copied when they move), the
     history rows, u, the seed, and `_C_lookup`'s cached state at the seed
     (the multistep memo is empty; no stateful limiter -- declined -- and no
-    bypass: its other routes).  Returns the tolerances."""
+    bypass: its other routes); the chord's fallback here (`fb_on`) where
+    `_C_lookup` would serve it.  Returns the tolerances."""
     s, buf = rec.s, rec.buf
     tol = tr._newton_tolerances() if P is None else P.tol
     if tol is not rec.tol:
@@ -1007,8 +1020,9 @@ def _load(tr, td, rec, P, rows, u, seed):
     np.copyto(buf['xseed'], seed)
     cached = td.get('_C_cache')
     s.have_cache = 0
-    if cached is not None and float((getattr(tr.epar, 'bypasstol', -1.0) if P is None
-                                     else P.bypass) or -1.0) < 0.0:
+    bypass = _bypassing(tr, P)
+    s.fb_on = int(chord and FALLBACK and not bypass)
+    if cached is not None and not bypass:
         cxa, cCa = cached
         n = rec.n
         if (type(cxa) is np.ndarray and cxa.shape == (n,) and type(cCa) is np.ndarray
@@ -1101,6 +1115,14 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
     stats = getattr(tr, 'statistics', None)
     if stats is not None:
         stats.newton_iterations += iters
+    if s.fallbacks:
+        ## (the chord fell back here: `_newton`'s `chord_fallbacks`; the full
+        ## Newton's solves a refactor of the run's numeric each)
+        _PC['newton_c:fallbacks'] += 1
+        if stats is not None:
+            stats.chord_fallbacks += 1
+        if sparse:
+            ch.refactors += int(s.fb_iters)
     x_res = buf['x'].copy()
     ## (the full-width solution the C wrote at the converged point, the
     ## reference row's +0.0 in its place: `insert_row`'s array, byte for

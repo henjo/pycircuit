@@ -250,6 +250,20 @@ typedef struct {
            *Isf;          /* (m) I_scale = |J| |x_next| + |F| */
     int64_t *ipivf,       /* (m) the transposed dgesv's pivots */
             *ffail;       /* (m) the failing unknowns, in order */
+    /* THE CHORD'S FALLBACK (`ChordNewton.solve_system`'s `fallback`): where
+       the chord breaks (NEWTON_BAIL_CHORDBREAK) or meets its limit
+       (NEWTON_BAIL_MAXITER) after two evaluations or more -- an armed early
+       abort checked the second, and `_newton`'s `judged` checks none past it
+       -- the full Newton from the same seed here: its first evaluation the C
+       of the chord's first (`_C_lookup` finds it: the chord's residual-only
+       evaluations leave the cache), no early check; `iters` the chord's and
+       its own.  Any other bail, or the fallback's own, hands back as before */
+    long fb_on;           /* CALL: the fallback here (the glue: the chord, no
+                             device bypass) */
+    long fallbacks;       /* OWN: 1 where this call converged by the fallback,
+                             else 0 */
+    long fb_iters;        /* OWN: the fallback's own iterations (a sparse run's
+                             numeric refactored that many times) */
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and

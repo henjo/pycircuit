@@ -337,6 +337,10 @@ typedef struct {
        `cpat`'s order to +0.0 (`tc_cmul`, `_tran_radau._c_times`); 0, numpy's
        dgemv on the dense C */
     long est_pat;
+    /* the chord's fallbacks the made attempts converged by (newton.h's THE
+       CHORD'S FALLBACK) and the run's numeric's refactors theirs made where
+       the run is sparse -- this call's (zeroed by pcx_loop) */
+    long chord_fallbacks, fb_refactors;
 } loop_t;
 long pcx_loop(loop_t *s);
 

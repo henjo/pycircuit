@@ -89,8 +89,10 @@ armed) on an adaptive step: the C rejects the attempt as `take` rejects
 the exception -- a quarter of the step, imposed where its step was held, a
 rejection counted, nothing of the attempt recorded as made
 (`loop_c:newton_rejects`, and the Python's `newton_c:maxiter`).  Below
-`minstep` (the rescue), on a fixed grid (its fallback's record), a
-chord's limit (the full Newton after it) and every other status: a bail.
+`minstep` (the rescue), on a fixed grid (its fallback's record), the
+chord's fallback's own limit (a chord that breaks or meets its limit falls
+back to the full Newton in the C: newton.h's THE CHORD'S FALLBACK) and every
+other status: a bail.
 History: `doc/transient_history.md`.
 """
 import collections
@@ -836,6 +838,7 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     s.newton_reject = int(adaptive and not td['_newton_c'].s.chord
                           and not getattr(tr, '_damped_last_resort', False)
                           and not getattr(tr, '_continuation_rescue', False))
+    td['_newton_c'].s.fb_on = int(bool(td['_newton_c'].s.chord) and O['newton_c'].FALLBACK)
     s.imposed = int(bool(loop.imposed))
     if adaptive:
         _judge_entry(run_, td['_newton_c'])
@@ -1058,6 +1061,9 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
         ## (the sparse full Newton: a refactor of the run's numeric an
         ## iteration; the chord's counts its own -- `chord_out`)
         rec.klu.refactors += s.iters
+    elif rec.klu is not None:
+        ## (the chord's fallbacks: their full Newtons' refactors)
+        rec.klu.refactors += s.fb_refactors
     if adaptive:
         ctrl, ct = tr.step_controller, run_.ct
         if s.keeps_run and s.have_run:
@@ -1095,6 +1101,7 @@ def _stats_back(stats, s, k):
     stats.rejected_steps += s.rejected
     stats.early_aborts += s.early_aborts
     stats.newton_iterations += s.iters
+    stats.chord_fallbacks += s.chord_fallbacks
     stats.breakpoints_hit += s.breaks
     stats.order_drops += s.euler_steps
     if s.have_hm:
@@ -1115,6 +1122,8 @@ def _count(s, run_, rec, adaptive, k):
         _PC['newton_c:sparse'] += a
     _PC['newton_c:served'] += a
     _PC['newton_c:iterations'] += s.iters
+    if s.chord_fallbacks:
+        _PC['newton_c:fallbacks'] += s.chord_fallbacks
     _PC['newton_c:jfold'] += a
     if not adaptive:
         _PC['newton_c:j_unread'] += a

@@ -494,8 +494,11 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
    `chord_settled`, the full Newton's stalled update its rounding floor --
    `step_size`, `floor_holds` -- then `jacobian_only` there: `fold`), the
    chord's contraction (`chord_breaks`) and its dominant component
-   (`chord_dominant`).  Contract: THE ITERATION, at the top of this file. */
-static long iterate(newton_t *s, void **num)
+   (`chord_dominant`).  Contract: THE ITERATION, at the top of this file.
+   `cin`: the first evaluation's C where the caller knows it (the chord's
+   fallback), else the cache's (`cache_hit`); `c0`, where given, the C the
+   first evaluation used */
+static long iterate(newton_t *s, void **num, const double *cin, const double **c0)
 {
     long n = s->n, m = n - 1, r = s->iref, it, i, st;
     int finite = 1;   /* the last full iteration's J: every entry finite */
@@ -517,7 +520,8 @@ static long iterate(newton_t *s, void **num)
        pass, its C the cached one: as `_tran_core.evaluate` drops its C bit
        on `_C_lookup`'s hit */
     pcx_drop_ref(s->xseed, s->x, n, r);
-    Cin0 = cache_hit(s, m, r);
+    Cin0 = cin ? cin : cache_hit(s, m, r);
+    if (c0) *c0 = Cin0 ? Cin0 : s->C0;
     first_bits = Cin0 ? (PCX_PASS_G | PCX_PASS_I) : PCX_WANT_ALL;
     for (it = 0; it < s->maxiter; it++) {
         /* J evaluated: every iteration of the full Newton, the chord's first */
@@ -569,6 +573,29 @@ static long iterate(newton_t *s, void **num)
     return finish(s, NEWTON_BAIL_MAXITER);
 }
 
+/* THE CHORD'S FALLBACK (newton.h): the full Newton from the same seed, its
+   first evaluation's C the chord's first (`c0`), the early check disarmed
+   (the chord made the one `judged` makes) -- `iters` the chord's and its own,
+   the chord's early checks kept.  Its status */
+static long fallback(newton_t *s, const double *c0)
+{
+    void *none = 0;   /* (the full Newton holds no chord numeric) */
+    void *lte = s->early_lte;
+    const long done = s->iters, checks = s->early_checks;
+    long st;
+    s->chord = 0;
+    s->early_lte = 0;
+    st = iterate(s, &none, c0, 0);
+    s->chord = 1;
+    s->early_lte = lte;
+    s->early_checks = checks;
+    if (st != NEWTON_CONVERGED) return st;
+    s->fb_iters = s->iters;
+    s->iters += done;
+    s->fallbacks = 1;
+    return st;
+}
+
 /* the entry (contract: newton.h): the sparse chord's numeric as the
    outcome leaves it (THE CHORD'S NUMERIC) -- a hand-back's counts as they
    were, the Python's repeat makes its own */
@@ -579,8 +606,13 @@ long pcx_newton(newton_t *s)
     const long r0 = k->refactors, f0 = k->factors, p0 = k->pivot_fallbacks,
                q0 = k->residual_fallbacks;
     long status;
+    const double *c0 = 0;
     k->klu_out = k->klu_num;
-    status = iterate(s, &num);
+    s->fallbacks = s->fb_iters = 0;
+    status = iterate(s, &num, 0, &c0);
+    if (s->chord && s->fb_on && (status == NEWTON_BAIL_CHORDBREAK || status == NEWTON_BAIL_MAXITER)
+        && (!s->early_lte || s->iters >= 2))
+        status = fallback(s, c0);
     if (s->chord && s->klu_sym) {
         const int back = status != NEWTON_CONVERGED && status != NEWTON_EARLY;
         if (back || !s->ck_defer) pcx_klu_finish(k, back);

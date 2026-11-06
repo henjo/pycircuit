@@ -139,6 +139,8 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
         s->lte_euler += a->formula == PCX_FORMULA_EULER;
     }
     s->iters += nt->iters;
+    s->chord_fallbacks += nt->fallbacks;
+    if (nt->klu_sym) s->fb_refactors += nt->fb_iters;
     s->early_checks += a->early_checks;
     if (s->hk >= 2) s->pred_fast++;
     s->attempts++;
@@ -2118,7 +2120,7 @@ long pcx_loop(loop_t *s)
     s->k = 0;
     s->attempts = s->rejected = s->iters = s->euler_steps = s->breaks = s->screens = 0;
     s->pred_fast = s->ltes = s->lte_seeds = s->lte_euler = s->early_aborts = s->early_checks = 0;
-    s->newton_rejects = 0;
+    s->newton_rejects = s->chord_fallbacks = s->fb_refactors = 0;
     s->maps = 0;
     if (s->walk) {
         st = walk(s);
