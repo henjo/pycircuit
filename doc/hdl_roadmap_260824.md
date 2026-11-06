@@ -13908,3 +13908,48 @@ evaluation (weak references).  Each half of the fix undone is caught by its test
 reference side (`_StepNewton._newton`) after its C twin's tests (test_early_abort's three paths bit for bit,
 test_newton_c); the 27 gold decks under gear2, Radau and DC against HEAD 4bd27292: every digest, count and path
 count the same; the chain's digests (1 us gear2, 100 ns Radau) the same at 2 000 and 4 000 stages.
+
+## 2026-11-06 — 266. The branch check's structural rank proves a large block full before its SVD -- a block of 64 or more whose comparison matrix two KLU solves show to be an M-matrix has every singular value past a bound (|B^-1| <= M^-1); where that bound clears the band's top by the SVD's rounding the block is counted whole, as its SVD would count it: a chain with a coupling capacitor at every stage, 2 000 stages, 1 us Radau 9.47 -> 2.15 s (4.412x), every result the same
+
+**Why**  Andreas, plan 261 (large circuits), after L4's prototype for Radau's estimate: "(b) Rank test SVD".  On a
+chain whose stages are joined by gate-drain capacitors the run was the branch check: `_rank_by_blocks` (264) counts
+C's singular values above `tol` block by block -- the connected pieces of C's pattern, the reference out -- and a C
+whose capacitors join every node is ONE block, an SVD of n x n at each of the three random states: 2.5 s a state at
+2 001 unknowns, the 2 000-stage 1 us Radau run 9.7 s of which 7.6 the check; at 4 000 stages a 1 ps run 66 s.  Any
+circuit with coupling or overlap capacitors between its nodes pays it once a run, as n^3.
+
+**Built.**  `_unproved` offers each block of `PROOF_MIN` (64) or more THE FULL-RANK PROOF before its SVD
+(`_full_rank_bound`): B's comparison matrix M (|b_ii| on the diagonal, -|b_ij| off it) is a Z-matrix; u and v, KLU's
+solves of M u = e and M^T v = e (`_m_solves`: libklu through ctypes, `_klu`, no scipy -- a run imports none), both
+>= 0 with M u and M^T v positive past their sums' rounding (`_inverse_norm_bound`) make M a nonsingular M-matrix, so
+|B^-1| <= M^-1 (Ostrowski), ||B^-1||_inf <= max u / min M u, ||B^-1||_1 likewise from v, and sigma_min(B) >=
+1 / sqrt(||B^-1||_1 ||B^-1||_inf).  The solves' accuracy only sharpens the bound; a block that is not an H-matrix
+(missing a diagonal, coupled more strongly than grounded, singular) gets none.  Where the bound exceeds the band's top
+(`tol` without a band) by 8 k eps ||B||_F -- the SVD's rounding as the band reckons it -- every singular value the
+SVD would find lies above the top, none in the band: k counted, no SVD (`branch.rank:proved`).  Else the SVD as
+before.  On the coupled chain the bound is 1.68e-15 against sigma_min 1.83e-15 (tol 4e-20), 2-3 ms at 1 000 to 4 000
+stages.  The 27 gold decks' blocks (census): proved on most blocks of 18-282 (toronto, mux8, nand, ring, gm1, gm3,
+gm17, gm19, rich3, jge, two of voter25's three, two of arom's), never where the SVD has a value at or under the top;
+the rank-deficient blocks (sigma_min 1e-24..1e-30) and the non-dominant ones (ab_integ, opampal, e1480, g1310) keep
+their SVD.
+
+**Measured** (LINE set before building, in one form: the coupled 2 000-stage chain's 1 us Radau solve, p261/l4/
+coupled.py, against HEAD 2d3e1174, the median of 3 interleaved pairs, at least 3.5x; the ceiling, the check's SVDs
+gone, ~4.6x): 9.499 / 9.423 / 9.478 -> 2.145 / 2.136 / 2.155 s, 4.428 / 4.412 / 4.398x, the median 4.412x -- MET (load 1.4; the six runs' digests the same, 213 accepted and 19 rejected steps each).  A 1 ps run of the coupled chain: 1.27 -> 0.51 s at 1 000 stages, 8.8 -> 1.24 at 2 000,
+66 -> 3.7 at 4 000; its structural rank and scale the same.
+
+**Tests.**  test_branch_rank_proof (new, 11): the bound positive and under the SVD's sigma_min on 60 H-matrices of
+every shape and scale, none for a singular block, a missing diagonal, a NaN, a block coupled more strongly than
+grounded; a margin inside M x's rounding not taken; a bound inside the SVD's rounding of the top not taken (the SVD
+decides); `_rank_by_blocks` with the proof the same as without it -- None included, an int -- whole or through kept
+indices, its pattern given or scanned, on 400 x 400 matrices of H, singular, non-dominant and nearly dominant blocks
+under 16 tolerance and band choices, the proof serving; a block inside the band above tol goes to its SVD; a coupled
+MOS chain's structural rank and scale the SVD's, the proof serving its three states, and the SVD's without libklu.
+Mutations -- the sign check, M x's rounding, the SVD's rounding, the band's top, one norm for both, every block
+counted, the transpose's indices, a matrix not Z, the rank a numpy integer -- each caught; the diagonal pre-check is
+redundant (a Z-matrix with a zero diagonal has no such u) and its removal changes nothing.
+
+**Gate** (the main tree): the suite 6 241 passed; the branch screen's pinned pair re-recorded on its reference side
+(`_rank_by_blocks`, with `_unproved`, `_full_rank_bound`, `_inverse_norm_bound`, `_m_solves` and `_klu` named in it)
+after its C twin's tests; the 27 gold decks under gear2, Radau and DC against HEAD 2d3e1174: every digest, count and
+path count the same; the coupled chain's structural rank the same at 1 000, 2 000 and 4 000 stages.

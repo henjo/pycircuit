@@ -7,7 +7,7 @@ import math
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint, _stamp_plan, _tran_branch_c
+from pycircuit.circuit import _evalhint, _paths, _stamp_plan, _tran_branch_c
 from pycircuit.circuit._limiting import state_restore, state_snapshot
 from pycircuit.circuit.analysis import insert_row
 from pycircuit.circuit.simwarnings import (
@@ -50,6 +50,152 @@ def _components(n, r, c):
     return roots.size, labels.astype(np.int32)
 
 
+#: the block size from which `_rank_by_blocks` tries THE FULL-RANK PROOF
+#: before a block's SVD (`_full_rank_bound`)
+PROOF_MIN = 64
+
+#: libklu through ctypes (`_klu`): `KLUSolver`'s library, bound without its
+#: scipy -- a run imports none
+_KLU = {}
+
+
+def _klu():
+    """`(ctypes, lib, common)` for libklu's analysis, factor, solves and
+    frees, or None where it does not load: bound once a process."""
+    got = _KLU.get('lib')
+    if got is None:
+        import ctypes
+        got = False
+        try:
+            lib = ctypes.CDLL('libklu.so.2')
+        except OSError:
+            lib = None
+        if lib is not None:
+            ip, dp, vp, ci = (ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_double),
+                              ctypes.c_void_p, ctypes.c_int)
+            for nm, argt, res in (('klu_defaults', [vp], ci),
+                                  ('klu_analyze', [ci, ip, ip, vp], vp),
+                                  ('klu_factor', [ip, ip, dp, vp, vp], vp),
+                                  ('klu_solve', [vp, vp, ci, ci, dp, vp], ci),
+                                  ('klu_tsolve', [vp, vp, ci, ci, dp, vp], ci),
+                                  ('klu_free_numeric', [vp, vp], ci),
+                                  ('klu_free_symbolic', [vp, vp], ci)):
+                f = getattr(lib, nm)
+                f.argtypes, f.restype = argt, res
+            common = ctypes.create_string_buffer(4096)
+            if lib.klu_defaults(ctypes.byref(common)):
+                got = (ctypes, lib, common)
+        _KLU['lib'] = got
+    return got or None
+
+
+def _m_solves(k, r, c, a):
+    """`(u, v)`: M u = e and M^T v = e by KLU for the k x k matrix with the
+    entries `a` at `(r, c)` (no repeats), or None where KLU does not load or
+    the matrix does not factor."""
+    klu = _klu()
+    if klu is None:
+        return None
+    ct, lib, common = klu
+    o = np.lexsort((r, c))
+    Ai = np.ascontiguousarray(r[o], dtype=np.int32)
+    Ax = np.ascontiguousarray(a[o], dtype=float)
+    Ap = np.zeros(k + 1, dtype=np.int32)
+    np.cumsum(np.bincount(c, minlength=k), out=Ap[1:])
+    ip, dp = ct.POINTER(ct.c_int), ct.POINTER(ct.c_double)
+    sym = lib.klu_analyze(k, Ap.ctypes.data_as(ip), Ai.ctypes.data_as(ip), ct.byref(common))
+    if not sym:
+        return None
+    num = None
+    try:
+        num = lib.klu_factor(Ap.ctypes.data_as(ip), Ai.ctypes.data_as(ip), Ax.ctypes.data_as(dp),
+                             sym, ct.byref(common))
+        if not num:
+            return None
+        u, v = np.ones(k), np.ones(k)
+        if not (lib.klu_solve(sym, num, k, 1, u.ctypes.data_as(dp), ct.byref(common))
+                and lib.klu_tsolve(sym, num, k, 1, v.ctypes.data_as(dp), ct.byref(common))):
+            return None
+        return u, v
+    finally:
+        if num:
+            lib.klu_free_numeric(ct.byref(ct.c_void_p(num)), ct.byref(common))
+        lib.klu_free_symbolic(ct.byref(ct.c_void_p(sym)), ct.byref(common))
+
+
+def _inverse_norm_bound(k, r, c, a, x):
+    """An upper bound on ||M^-1||_inf for the Z-matrix M (entries `a` at
+    `(r, c)`, off the diagonal <= 0) from `x` >= 0 with M x > 0 -- which
+    makes M a nonsingular M-matrix, M^-1 >= 0, so M^-1 e <= x / min(M x):
+    `max x / min M x`, M x bounded below by its sums' rounding (each row's
+    `m` products and sums within (m + 1) eps |M| x).  inf where it fails."""
+    if not (x.size == k and np.all(np.isfinite(x)) and np.all(x >= 0.0)):
+        return math.inf
+    m = int(np.bincount(r, minlength=k).max())
+    mx = np.bincount(r, weights=a * x[c], minlength=k)
+    ax = np.bincount(r, weights=np.abs(a) * x[c], minlength=k)
+    low = float(np.min(mx - (m + 2) * 1.01 * _EPS * ax))
+    if not low > 0.0:
+        return math.inf
+    return float(np.max(x)) / low * (1.0 + 4.0 * _EPS)
+
+
+def _full_rank_bound(k, r, c, b):
+    """THE FULL-RANK PROOF of a block (`_rank_by_blocks`): a lower bound on
+    the smallest singular value of the k x k matrix B (entries `b` at
+    `(r, c)`, row-major, no repeats), or 0.0 where none is shown.
+
+    B an H-matrix: its comparison matrix M (|b_ii| on the diagonal, -|b_ij|
+    off it) a nonsingular M-matrix -- shown by u, v >= 0 with M u > 0 and
+    M^T v > 0, u and v KLU's solves of M u = e and M^T v = e (their accuracy
+    only sharpens the bound) -- gives |B^-1| <= M^-1 (Ostrowski), so
+    ||B^-1||_inf <= ||M^-1||_inf, ||B^-1||_1 <= ||M^-1||_1, and
+    sigma_min(B) = 1 / ||B^-1||_2 >= 1 / sqrt(||B^-1||_1 ||B^-1||_inf).
+    A capacitance matrix whose every piece reaches ground through a
+    capacitor is one; a block missing its diagonal, or coupled more
+    strongly than it is grounded, is not."""
+    diag = r == c
+    if int(np.count_nonzero(diag)) != k:
+        return 0.0
+    a = np.where(diag, np.abs(b), -np.abs(b))
+    got = _m_solves(k, r, c, a)
+    if got is None:
+        return 0.0
+    n_inf = _inverse_norm_bound(k, r, c, a, got[0])
+    n_one = _inverse_norm_bound(k, c, r, a, got[1])
+    if not math.isfinite(n_inf * n_one):
+        return 0.0
+    return (1.0 - 4.0 * _EPS) / math.sqrt(n_inf * n_one)
+
+
+def _unproved(C, rows, cols, label, members, keep, tol, band):
+    """The rows of `members` (blocks of one size k, `_rank_by_blocks`) whose
+    block THE FULL-RANK PROOF does not settle: proved, a block's bound
+    exceeds the band's top (`tol` without a band) by 8 k eps ||B||_F, its
+    SVD's rounding as the band reckons it -- every singular value its SVD
+    finds is then above the top, none in the band, all k counted."""
+    k = members.shape[1]
+    top = float(band[1]) if band is not None else float(tol)
+    lab_r = label[rows]
+    ent = np.argsort(lab_r, kind='stable')
+    lab_s = lab_r[ent]
+    loc = np.empty(label.shape[0], dtype=np.intp)
+    left = []
+    for i, mem in enumerate(members):
+        b0 = label[mem[0]]
+        sel = ent[np.searchsorted(lab_s, b0, 'left'):np.searchsorted(lab_s, b0, 'right')]
+        loc[mem] = np.arange(k)
+        gr, gc = rows[sel], cols[sel]
+        b = (C[gr, gc] if keep is None else C[keep[gr], keep[gc]]).astype(float)
+        bound = _full_rank_bound(k, loc[gr], loc[gc], b)
+        need = (top + 8.0 * k * _EPS * math.sqrt(float(np.dot(b, b)))) * (1.0 + 4.0 * _EPS)
+        if bound > need:
+            _paths.COUNTS['branch.rank:proved'] += 1
+        else:
+            left.append(i)
+    return np.asarray(left, dtype=np.intp)
+
+
 def _rank_by_blocks(C, tol, band=None, nz=None, keep=None):
     """The number of singular values of the square `C` above `tol`, one
     block at a time; ``None`` where one lies in the open-closed interval
@@ -68,7 +214,11 @@ def _rank_by_blocks(C, tol, band=None, nz=None, keep=None):
     run at n = 4681, three calls at O(n^3) -- the time the check took, not
     the step's; by blocks (capacitors to ground are blocks of one once the
     reference is out, `_BranchCheck._reduced_rank`) 1.0 s.  A `C` whose
-    pattern connects everything is still one dense SVD.
+    pattern connects everything is one block -- an SVD of n x n, 2.5 s a
+    state at 2 001 unknowns, ~20 s at 4 001 -- so a block of `PROOF_MIN` or
+    more is first offered THE FULL-RANK PROOF (`_unproved`,
+    `_full_rank_bound`: milliseconds, linear in its nonzeros), its SVD made
+    only where that settles nothing.
     """
     if keep is None:
         n = C.shape[0]
@@ -83,6 +233,15 @@ def _rank_by_blocks(C, tol, band=None, nz=None, keep=None):
     rank = 0
     for k in np.unique(sizes):
         members = order[(starts[sizes == k])[:, None] + np.arange(k)]   # (blocks, k)
+        if k >= PROOF_MIN:
+            ## (THE FULL-RANK PROOF: a block shown to have every singular
+            ## value past the band's top by more than its SVD's rounding is
+            ## counted whole, as its SVD would count it)
+            left = _unproved(C, rows, cols, label, members, keep, tol, band)
+            rank += int(k) * (members.shape[0] - left.size)
+            members = members[left]
+            if not members.shape[0]:
+                continue
         if keep is not None:
             members = keep[members]
         if k == 1:
