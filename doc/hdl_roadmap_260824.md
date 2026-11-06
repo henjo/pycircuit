@@ -14486,3 +14486,37 @@ The pair "the limiting loop and the walk" names `_take_elements` and `_walk_full
 and the pass driver, the readiness reads, the limiting loop and the walk, the limiter laws, the Newton solve); the 27
 gold decks under gear2, Radau and DC against HEAD 526d292c: every digest, count and path count the same; the chain's
 digests the same.
+
+## 2026-11-06 — 281. The thread count, public: `set_threads` / `get_threads` -- the threads the C runs a call's device kernels and limiters on, set from Python (`pycircuit.circuit.set_threads`) for circuits and transients made before as for those after, the default unchanged (four, or half the CPUs where fewer); the pool runs a call on the workers it asks for, the rest resting: every result the same, the default's runs not slower (4 000-stage 1 us 1.002x, 8 000-stage 100 ns 1.000x)
+
+**Why**  Andreas, on L12's sizing (eight threads: the C loop 1.0 -> 0.85 s, the 4 000-stage solve 2.0 -> 1.81 s): "Add it
+without increasing threads. Later the user can set more threads" -- with L12b accepted, "Both".  The count was
+`PYCIRCUIT_CORE_THREADS` at import or `_tran_core.THREADS`, a private name, read where each struct was made: a core
+(`cs.nthreads`) and the Radau C's and the transform loop's `radau_tf_t` kept the count they were made with across solves.
+And pool.c gave every call to every worker ever started -- a count lowered after a higher one ran on the higher.
+
+**Built.**  `_tran_core.set_threads(n=None)`: a positive integer (a numpy one too; anything else ValueError, the count
+left), None the default; `THREADS` set and every live struct that keeps a count written -- `_threaded(cs)` registers
+each in a weak set where it is made (`_Core`, `_tran_radau_tc._Ctx`, `_tran_tcloop_c._bind_newton`); the count before
+returned.  `get_threads()`.  Both exported by `pycircuit.circuit`.  pool.c, THE WORKERS A CALL TAKES: `pool_gen` holds the
+generation above POOL_SHIFT (6) bits and the call's worker count below, published in one store, so a worker reads the
+count of the very call it woke for (a separate count could be paired with the next call's job by a late worker); a call
+takes its `min(nthreads - 1, started)` first workers (`pool_left` that many; the chunk from that count); a worker past
+the count rests on `pool_rest` -- no spin -- woken only by a call taking more workers than the last (`pool_lastk`), so
+a call never wakes the workers it leaves out; a worker's first generation from `pool_seed[index]`.  The docs:
+`_tran_core`'s THE THREADS, `doc/transient_runtime.md`'s Threads row.
+
+**Measured** (GUARD recorded before measuring, one form: at the default four threads the 4 000-stage 1 us and the
+8 000-stage 100 ns Radau solves >= 0.99x, medians of 3 interleaved pairs against HEAD 21d9ff74; every result the same):
+4 000 / 1 us 1.938 -> 1.934 s (pairs 1.002, 1.002, 1.014: median 1.002x), 8 000 / 100 ns 2.596 -> 2.605 s (1.007, 1.000, 0.994: 1.000x) -- met; peaks 925 -> 926 MB and 2 081 -> 2 083 MB; every digest the same.  Outside the guard the 4 000 / 100 ns read 0.953x (0.929, 0.953, 1.022) with another session building on the box (`cc1plus`, `make`; 15-minute load 4.4); on a quiet box, 5 pairs: 1.005, 0.989, 0.992, 1.014, 1.010, median 1.005x, the same digests -- the contention, not the pool.
+
+**Tests.**  test_core_threads (+3): after a call on eight threads, 0.6 s of calls on two run on ONE worker (its CPU 60
+ticks, the six others 0 -- the threads' own `/proc` times), every byte the one thread's, and a call on eight again wakes
+them; a transform transient solved on four, set to two, reads two in every live struct and answers the same bytes, None
+the default again; a non-integer, a bool, zero or less refused.  Mutations -- every worker taking every call, the rest
+never woken (a deadlock: the call on eight never returns), the live structs not written -- each caught.
+
+**Gate** (the main tree): the suite 6 399 passed, 10 skipped, 3 xfailed (829.9 s, a quiet box; the gate's own run, beside that build, 6 398 passed, 11 skipped in 1 075 s -- its extra skip, not recorded by that run, did not recur); the pinned pairs re-recorded after their twins' tests (on the twin side:
+the transient evaluation and the core, the step's end passes, the limiting loop and the walk, the transform loop); the
+27 gold decks under gear2, Radau and DC against HEAD 21d9ff74: every digest, count and path count the same; the chain's
+digests the same.

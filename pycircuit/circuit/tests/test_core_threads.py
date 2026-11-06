@@ -248,3 +248,83 @@ def test_a_large_transform_transient_on_threads_is_the_one_threaded_one():
     one = _run(lambda: _pulsed(1100), RadauIIA3Integrator, 1, None, **kw)
     four = _run(lambda: _pulsed(1100), RadauIIA3Integrator, 4, None, **kw)
     assert one == four
+
+
+def _worker_cpu():
+    """{tid: user + system clock ticks} of this process's pool workers
+    (`pcx-core`)."""
+    out = {}
+    for t in os.listdir('/proc/self/task'):
+        try:
+            with open(f'/proc/self/task/{t}/comm') as fh:
+                if fh.read().strip() != 'pcx-core':
+                    continue
+            with open(f'/proc/self/task/{t}/stat') as fh:
+                f = fh.read().rsplit(')', 1)[1].split()
+        except OSError:
+            continue
+        out[t] = int(f[11]) + int(f[12])
+    return out
+
+
+def test_a_call_takes_only_the_workers_it_asks_for():
+    """pool.c's THE WORKERS A CALL TAKES: after a call on eight threads,
+    calls on two run on one worker -- the others rest, neither spinning nor
+    woken (their CPU time still) -- every byte as one thread's; and a call
+    on eight again wakes them, its bytes the one thread's."""
+    import time
+    _tr, core = _core()
+    rng = np.random.default_rng(222)
+    x = 0.5 * rng.standard_normal(core.n)
+    one = _call(core, x, 15, 1)
+    assert _call(core, x, 15, 8) == one
+    assert _call(core, x, 15, 2) == one
+    ## (the eight-thread call's spins over)
+    time.sleep(0.2)
+    before = _worker_cpu()
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 0.6:
+        assert _call(core, x, 15, 2) == one
+    after = _worker_cpu()
+    grown = sorted((after[t] - before.get(t, 0) for t in after), reverse=True)
+    assert len(grown) >= 7, grown
+    assert grown[0] >= 10 and all(g <= 2 for g in grown[1:]), grown
+    assert _call(core, x, 15, 8) == one
+
+
+def test_set_threads_reaches_the_structs_made_before():
+    """`set_threads` (public as `pycircuit.circuit.set_threads`) writes every
+    live struct that keeps a thread count -- a core's, the transform's --
+    and returns the count before: a transform transient solved on four,
+    set to two, solved again reads two and answers the same bytes; None is
+    the default again."""
+    from pycircuit.circuit import get_threads, set_threads
+    kw = {'tend': 4e-8, 'timestep': 2.5e-10}
+    old = get_threads()
+    try:
+        set_threads(4)
+        tr = Transient(_pulsed(60), toolkit=circuit.numeric, integrator=RadauIIA3Integrator(),
+                       radau_transform=True)
+        a = np.asarray(tr.solve(**kw).x, float).tobytes()
+        live = list(_tran_core._THREADED)
+        assert _tran_core.core_for(tr).cs in live
+        assert live and all(cs.nthreads == 4 for cs in live)
+        assert set_threads(2) == 4 and get_threads() == 2 == _tran_core.THREADS
+        assert all(cs.nthreads == 2 for cs in live)
+        assert np.asarray(tr.solve(**kw).x, float).tobytes() == a
+        assert set_threads(None) == 2 and get_threads() == _tran_core._default_threads()
+    finally:
+        set_threads(old)
+
+
+@pytest.mark.parametrize('bad', [0, -1, 1.5, True, np.bool_(True), '4', np.float64(2.0)])
+def test_set_threads_takes_a_positive_integer(bad):
+    """Anything but a positive integer (a numpy one too) or None is refused,
+    the count left as it was."""
+    from pycircuit.circuit import get_threads, set_threads
+    before = get_threads()
+    with pytest.raises(ValueError):
+        set_threads(bad)
+    assert get_threads() == before
+    assert set_threads(np.int64(3)) == before and get_threads() == 3
+    set_threads(before)

@@ -16,7 +16,16 @@
    flags they raise are raised in the caller's after (the union, as one
    thread leaves them).  One call at a time (a concurrent caller makes its
    items alone: 0); a forked child starts workers of its own; the library
-   pins itself (RTLD_NODELETE) before a worker runs in it. */
+   pins itself (RTLD_NODELETE) before a worker runs in it.
+   THE WORKERS A CALL TAKES: its `nthreads - 1` first started (as many as
+   are running where fewer), published with the call's generation in one
+   value (`pool_gen`: the generation above POOL_SHIFT bits, the count
+   below) so a worker reads the count of the very call it woke for.  A
+   worker past the count leaves the call's items alone and rests asleep on
+   `pool_rest` until a call takes it -- woken only by a call that takes more
+   workers than the call before (`pool_lastk`), never by the calls that do
+   not: a pool once started with more workers runs a call asked for fewer
+   on that many, the rest neither spinning nor woken. */
 /* THE CHUNK: a thread takes POOL_CHUNK items at a time, POOL_CHUNK_BIG where
    every thread gets two chunks that size -- a chunk's cost is its take from
    the one counter and the output rows its neighbours write beside its own
@@ -24,13 +33,16 @@
    everywhere, jge under Radau 9.2 -> 10.7 s at 1; 8 jge 1.03x, the rest the
    same; 16 gm19 and voter25 1-2 % slower; a longer spin no change); a job of
    fewer items than a chunk one at a time (radau_tc.c's two factors) */
-enum { POOL_MAX = 31, POOL_CHUNK = 4, POOL_CHUNK_BIG = 8, POOL_SPIN = 1 << 16 };
+enum { POOL_MAX = 31, POOL_CHUNK = 4, POOL_CHUNK_BIG = 8, POOL_SPIN = 1 << 16, POOL_SHIFT = 6 };
 
 static pthread_mutex_t pool_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pool_wake = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t pool_rest = PTHREAD_COND_INITIALIZER;
+static long pool_lastk;            /* the workers the last call took */
 static long pool_started;
 static pid_t pool_pid;
 static atomic_long pool_gen, pool_next, pool_left;
+static long pool_seed[POOL_MAX];   /* each worker's generation when started */
 static atomic_int pool_flags;
 static atomic_flag pool_busy = ATOMIC_FLAG_INIT;
 static pool_job_t pool_job;
@@ -73,15 +85,30 @@ out:
     return atomic_load_explicit(&pool_gen, memory_order_acquire);
 }
 
-/* a worker: each call (the caller waits for every worker before the
-   next, so none is missed), in the caller's FP environment, its flags
-   handed back */
+/* a worker `me` past the last call's count: asleep until a call after
+   `seen` takes it */
+static long pool_rest_wait(long seen, long me)
+{
+    long g;
+    pthread_mutex_lock(&pool_mu);
+    while (!((g = atomic_load_explicit(&pool_gen, memory_order_acquire)) != seen
+             && me < (g & ((1L << POOL_SHIFT) - 1))))
+        pthread_cond_wait(&pool_rest, &pool_mu);
+    pthread_mutex_unlock(&pool_mu);
+    return g;
+}
+
+/* a worker (`arg` its index): each call it is taken for (the caller waits
+   for every worker it takes before the next, so none of those is missed),
+   in the caller's FP environment, its flags handed back */
 static void *pool_worker(void *arg)
 {
-    long seen = (long) (intptr_t) arg;
-    int fl;
+    long me = (long) (intptr_t) arg, seen = pool_seed[me];
+    int fl, took = 1;
     for (;;) {
-        seen = pool_wait(seen);
+        seen = took ? pool_wait(seen) : pool_rest_wait(seen, me);
+        took = me < (seen & ((1L << POOL_SHIFT) - 1));
+        if (!took) continue;
         fesetenv(&pool_env);
         feclearexcept(FE_ALL_EXCEPT);
         pool_take(&pool_job);
@@ -111,16 +138,18 @@ static int pool_ready(long n)
     if (pool_pid != getpid()) {
         pool_pid = getpid();
         pool_started = 0;
+        pool_lastk = 0;
         pthread_mutex_init(&pool_mu, NULL);
         pthread_cond_init(&pool_wake, NULL);
+        pthread_cond_init(&pool_rest, NULL);
         if (!pool_pin()) pool_pid = 0;
     }
     if (!pool_pid) return 0;
     while (pool_started < want) {
         pthread_attr_init(&at);
         pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
-        if (pthread_create(&t, &at, pool_worker,
-                           (void *) (intptr_t) atomic_load(&pool_gen)) != 0) {
+        pool_seed[pool_started] = atomic_load(&pool_gen);
+        if (pthread_create(&t, &at, pool_worker, (void *) (intptr_t) pool_started) != 0) {
             pthread_attr_destroy(&at);
             break;
         }
@@ -131,18 +160,23 @@ static int pool_ready(long n)
     return pool_started > 0;
 }
 
-/* one call on the pool: the job published, the caller's share taken, every
-   worker's waited for, their flags raised here */
-static void pool_run(const pool_job_t *j)
+/* one call on the pool, on `k` workers: the job published, the caller's
+   share taken, every worker taken waited for, their flags raised here */
+static void pool_run(const pool_job_t *j, long k)
 {
     int fl;
+    long g;
     fegetenv(&pool_env);
     atomic_store_explicit(&pool_next, 0, memory_order_relaxed);
     atomic_store_explicit(&pool_flags, 0, memory_order_relaxed);
-    atomic_store_explicit(&pool_left, pool_started, memory_order_relaxed);
+    atomic_store_explicit(&pool_left, k, memory_order_relaxed);
     pthread_mutex_lock(&pool_mu);
-    atomic_fetch_add_explicit(&pool_gen, 1, memory_order_release);
+    g = atomic_load_explicit(&pool_gen, memory_order_relaxed);
+    atomic_store_explicit(&pool_gen, (((g >> POOL_SHIFT) + 1) << POOL_SHIFT) | k,
+                          memory_order_release);
     pthread_cond_broadcast(&pool_wake);
+    if (k > pool_lastk) pthread_cond_broadcast(&pool_rest);
+    pool_lastk = k;
     pthread_mutex_unlock(&pool_mu);
     pool_take(j);
     while (atomic_load_explicit(&pool_left, memory_order_acquire) > 0) pool_relax();
@@ -155,18 +189,20 @@ static void pool_run(const pool_job_t *j)
    for, the pool another caller's or not running) */
 long pcx_pool(void *range, const void *ctx, long n, long nthreads)
 {
+    long k;
     if (nthreads < 2 || n < 1) return 0;
     if (atomic_flag_test_and_set_explicit(&pool_busy, memory_order_acquire)) return 0;
     if (!pool_ready(nthreads)) {
         atomic_flag_clear_explicit(&pool_busy, memory_order_release);
         return 0;
     }
+    k = nthreads - 1 < pool_started ? nthreads - 1 : pool_started;
     pool_job.range = range;
     pool_job.ctx = ctx;
     pool_job.n = n;
     pool_job.chunk = n < POOL_CHUNK ? 1
-                     : n >= 2 * POOL_CHUNK_BIG * (pool_started + 1) ? POOL_CHUNK_BIG : POOL_CHUNK;
-    pool_run(&pool_job);
+                     : n >= 2 * POOL_CHUNK_BIG * (k + 1) ? POOL_CHUNK_BIG : POOL_CHUNK;
+    pool_run(&pool_job, k);
     atomic_flag_clear_explicit(&pool_busy, memory_order_release);
     return 1;
 }

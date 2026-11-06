@@ -83,7 +83,8 @@ every entry otherwise.
 
 THE THREADS.  A call's fused-group elements may be made on a pool of
 threads (pool.c's, `pool_address`: the limiter walk's too; `THREADS`,
-`PYCIRCUIT_CORE_THREADS`): each element's
+`PYCIRCUIT_CORE_THREADS`, `set_threads` -- public as
+`pycircuit.circuit.set_threads`): each element's
 kernel is a function of its gathered inputs and its parameter row alone,
 writing its own rows of the staging, and the bins are summed after by the
 caller in their order -- every byte, and every floating-point flag, as one
@@ -178,8 +179,54 @@ def _default_threads():
 #: THE DEVICE KERNELS ON THREADS (core.c's pool): a call's fused groups on
 #: this many threads, the caller one of them, where its elements reach the
 #: pool's minimum -- every byte as one thread makes them
-#: (`PYCIRCUIT_CORE_THREADS`; the test suite's 1, its workers filling the box)
+#: (`PYCIRCUIT_CORE_THREADS` at import, `set_threads` after; the test
+#: suite's 1, its workers filling the box)
 THREADS = max(1, int(os.environ.get('PYCIRCUIT_CORE_THREADS', '') or _default_threads()))
+#: the live structs that keep a thread count between calls (a core's `cs`,
+#: the Radau C's and the transform loop's `radau_tf_t`): `set_threads`
+#: writes them (`_threaded`)
+_THREADED = weakref.WeakSet()
+
+
+def _threaded(cs):
+    """`cs` (a cffi struct with `nthreads`) at `THREADS`, and kept there
+    by `set_threads` while it lives; `cs`."""
+    cs.nthreads = THREADS
+    _THREADED.add(cs)
+    return cs
+
+
+def set_threads(n=None):
+    """The threads the simulator's C runs a call's device kernels and
+    limiters on -- the caller and `n - 1` workers (at most 32 in all) --
+    from the next call on, for circuits and transients made before as for
+    those made after: `n` a positive integer (a numpy one too), or None for
+    the default (four,
+    or half the CPUs this process may run on where that is fewer;
+    `PYCIRCUIT_CORE_THREADS` sets the count at import).  1 runs everything
+    on the caller.  Every result is the same bytes whatever the count;
+    the workers spin a while between calls, so more threads hold more of
+    the machine.  The count before, returned."""
+    global THREADS
+    if n is None:
+        n = _default_threads()
+    else:
+        try:
+            k = operator.index(n)
+        except TypeError:
+            k = 0
+        if isinstance(n, (bool, np.bool_)) or k < 1:
+            raise ValueError(f'set_threads: a positive int or None, not {n!r}')
+        n = k
+    old, THREADS = THREADS, int(n)
+    for cs in list(_THREADED):
+        cs.nthreads = THREADS
+    return old
+
+
+def get_threads():
+    """The threads the simulator's C runs a call on (`set_threads`)."""
+    return THREADS
 _WANT_PATTERN = _ABI['PCX_WANT_PATTERN']
 #: the integrators the core's companion enum covers, by class name
 FORMULA = {'Gear2Integrator': _ABI['PCX_FORMULA_GEAR2'],
@@ -749,7 +796,7 @@ class _Core:
         self.handles.append(ffi.from_buffer('double **', self.PRall))
         cs.PRall = self.handles[-1]
         cs.nz = self.nz
-        cs.nthreads = THREADS
+        _threaded(cs)
         cs.pool_fn = ffi.cast('void *', pool_address())
         ## (a constant group's 2 x 2 and 3 x 3 products without a dgemv call
         ## each, where this process's dgemv was found to make them so)

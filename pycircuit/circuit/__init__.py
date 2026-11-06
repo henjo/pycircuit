@@ -24,6 +24,9 @@ from .transient import Transient
 from .shooting import PSS
 
 from .toolkit import numeric, sparse_numeric, symbolic, symbolic_poly
+## THE THREADS the C runs a call's device kernels and limiters on
+## (`_tran_core.set_threads`: four by default, or half the CPUs where fewer)
+from ._tran_core import get_threads as get_threads, set_threads as set_threads
 
 ## SCIPY'S OPENBLAS MAPPED NOW, by its path, scipy not imported (`_cbuild.openblas`):
 ## the C Newton's chord runs its LAPACK, and the library first mapped mid-solve

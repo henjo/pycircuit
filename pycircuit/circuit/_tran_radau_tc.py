@@ -633,7 +633,7 @@ class _Ctx:
         from pycircuit.circuit import _tran_core
         pool = _tran_core.pool_address()
         s.pool_fn = ffi.cast('void *', pool) if pool else ffi.NULL
-        s.nthreads = int(_tran_core.THREADS)
+        _tran_core._threaded(s)
         self.A_bytes = self.p_of = self.Ap_obj = self.keep_ap = self.klu_kk = None
         self.lu_addr = self.served = None
         self.walk = self.walk_ok = None

@@ -710,7 +710,7 @@ def _bind_newton(run, e):
     ts.fused = int(_tran_radau_tc._MOD['cmul'])
     pool = _tran_core.pool_address()
     ts.pool_fn = tffi.cast('void *', pool) if pool else tffi.NULL
-    ts.nthreads = int(_tran_core.THREADS)
+    _tran_core._threaded(ts)
     ts.klu_refactor = tffi.cast('void *', _cbuild.address(zs._lib.klu_z_refactor))
     ts.klu_solve = tffi.cast('void *', _cbuild.address(zs._lib.klu_z_solve))
     ts.Symbolic = tffi.cast('void *', zs._symbolic)
