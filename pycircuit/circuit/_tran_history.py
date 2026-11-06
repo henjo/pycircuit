@@ -37,6 +37,21 @@ def _charge_free(C, nn):
     return ~(np.any(C[:, br] != 0.0, axis=0) | np.any(C[br, :] != 0.0, axis=1))
 
 
+def _node_couplings(C, nn):
+    """`np.nonzero(C[:nn, :nn] != 0.0)`: the node-to-node nonzeros of `C`,
+    row by row -- read at its pattern where `C` is on pattern pages
+    (`_tran_core.pattern_of`: zero off it), in the same order."""
+    from pycircuit.circuit import _tran_core
+    pat = _tran_core.pattern_of(C)
+    if pat is None:
+        return np.nonzero(C[:nn, :nn] != 0.0)
+    p = np.sort(pat)
+    n = C.shape[1]
+    r, c = p // n, p % n
+    on = (r < nn) & (c < nn) & (C.reshape(-1)[p] != 0.0)
+    return r[on], c[on]
+
+
 def capacitive_loop_currents(C, nn, ends):
     """Per unknown of `C`'s circuit, True on the currents MNA's index 2 comes
     from: a branch current no charge depends on (`_charge_free`) whose ends
@@ -54,7 +69,7 @@ def capacitive_loop_currents(C, nn, ends):
             a = root[a]
         return a
 
-    ii, jj = np.nonzero(C[:nn, :nn] != 0.0)
+    ii, jj = _node_couplings(C, nn)
     for a, b in zip(ii.tolist(), jj.tolist()):
         ra, rb = find(a), find(b)
         if ra != rb:
@@ -523,7 +538,8 @@ class _RunHistory:
         circuit cannot evaluate it."""
         xr = np.random.RandomState(20261009).uniform(-1.0, 1.0, self.cir.n)
         try:
-            return np.asarray(self.cir.C(xr, self.epar), dtype=float)
+            ## (`_C_fresh`: at size the core's pass, on pattern pages)
+            return np.asarray(self._C_fresh(xr), dtype=float)
         except Exception:                                      # noqa: BLE001
             return None
 

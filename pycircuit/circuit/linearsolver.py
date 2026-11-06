@@ -167,6 +167,14 @@ def _csc_of_dense(A, mv, last=None):
              data.view(numpy.float64), key), (nz, Ap, Ai, key))
 
 
+def _count_nonzero(arr):
+    """`numpy.count_nonzero(arr)` -- at its pattern where `arr` is a matrix
+    on pattern pages (`_tran_core.pattern_count`), where numpy's would read
+    it whole."""
+    from pycircuit.circuit import _tran_core
+    return _tran_core.pattern_count(arr)
+
+
 def _csc_of_packed(data, m, rows, cols, mv, last=None):
     """`_csc_of_dense(A, mv, last)` for the m x m `A` zero off the positions
     `rows`, `cols` (column by column, rows ascending), `data` its entries
@@ -818,7 +826,7 @@ class StructuralKLU(KLUSolver):
         if arr.shape != (self.m, self.m) or arr.dtype != numpy.float64:
             return None
         Ax = arr.ravel().take(self.take)
-        if numpy.count_nonzero(arr) != numpy.count_nonzero(Ax):
+        if _count_nonzero(arr) != numpy.count_nonzero(Ax):
             return None
         return arr, Ax
 
@@ -1661,7 +1669,7 @@ class AutoSolver(LinearSolver):
             _paths.COUNTS['solver.auto:dense_small'] += 1
             self._choice = self._dense
             return self._choice
-        fill = numpy.count_nonzero(arr) / float(arr.shape[0] * arr.shape[1])
+        fill = _count_nonzero(arr) / float(arr.shape[0] * arr.shape[1])
         if fill > self.max_fill:
             _paths.COUNTS['solver.auto:dense_fill'] += 1
             self._choice = self._dense

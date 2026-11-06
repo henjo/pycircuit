@@ -124,14 +124,22 @@ def pair_kind(cls, m):
     return None
 
 
-def _element_kind(cir, el, m, k):
+def _element_kind(cir, el, m, k, kinds=None):
     """`pair_kind` for this element, with the per-element checks; and its
-    stamp when 'cached'.  Returns `(kind, stamp)`."""
+    stamp when 'cached'.  Returns `(kind, stamp)`.  `kinds`: a build's
+    classes' `pair_kind`s, each made once (no class changes during one
+    build)."""
     if k == 0 or el.toolkit is not cir.toolkit:
         return None, None
     if m in el.__dict__ or _PARTNER[m] in el.__dict__:
         return None, None
-    kind = pair_kind(type(el), m)
+    cls = type(el)
+    if kinds is None:
+        kind = pair_kind(cls, m)
+    else:
+        kind = kinds.get(cls, kinds)
+        if kind is kinds:
+            kind = kinds[cls] = pair_kind(cls, m)
     if kind != 'cached':
         return kind, None
     from pycircuit.circuit.circuit import defaultepar
@@ -149,44 +157,83 @@ class _MatrixPlan:
     __slots__ = ('batches', 'calls', 'flat', 'reduced', 'template')
 
     def __init__(self, cir, m):
+        ## In the elements' order: each constant stamp's nonzeros (their
+        ## flat indices and values, in the stamp's order), each called
+        ## element's slots (its flat indices, zero values) -- the stamps
+        ## of one size read at once (`_stamp_rows`), each element's entries
+        ## placed at its offset.
         n = cir.n
         idxmap = cir._map_indices_2d
         nodemaps = cir.elementnodemap
-        flats, parts, calls = [], [], []
-        pos = 0
+        kinds = {}
+        segs, calls = [], []
+        cached, called = {}, {}
         for inst, el in cir.elements.items():
             nm = nodemaps[inst]
             rc = idxmap.get(inst)
-            kind, S = _element_kind(cir, el, m, len(nm))
+            k = len(nm)
+            kind, S = _element_kind(cir, el, m, k, kinds)
             if kind == 'zero':
                 continue
             if kind == 'cached':
                 if rc is None:
                     continue
-                v = np.asarray(S, dtype=np.float64).ravel()
-                keep = v != 0.0
-                rows, cols = rc
-                flats.append((np.asarray(rows, dtype=np.intp) * n
-                              + np.asarray(cols, dtype=np.intp))[keep])
-                parts.append(v[keep])
-                pos += int(keep.sum())
+                g = cached.setdefault(k, ([], [], []))
+                segs.append((0, k, len(g[0])))
+                g[0].append(S)
+                g[1].append(rc[0])
+                g[2].append(rc[1])
                 continue
             if rc is None:
-                calls.append((inst, el, nm, -1, -1))
+                segs.append((2, (inst, el, nm, -1, -1)))
                 continue
-            rows, cols = rc
-            size = len(rows)
-            flats.append(np.asarray(rows, dtype=np.intp) * n
-                         + np.asarray(cols, dtype=np.intp))
-            parts.append(np.zeros(size))
-            calls.append((inst, el, nm, pos, pos + size))
-            pos += size
-        self.flat = (np.concatenate(flats) if flats
-                     else np.zeros(0, dtype=np.intp))
-        self.template = np.concatenate(parts) if parts else np.zeros(0)
+            size = len(rc[0])
+            g = called.setdefault(size, ([], []))
+            segs.append((1, size, len(g[0]), inst, el, nm))
+            g[0].append(rc[0])
+            g[1].append(rc[1])
+        kept = {k: _stamp_rows(g, k * k, n) for k, g in cached.items()}
+        counts = {k: v[3].tolist() for k, v in kept.items()}
+        offs = {k: np.empty(len(g[0]), dtype=np.intp) for k, g in cached.items()}
+        coffs = {k: np.empty(len(g[0]), dtype=np.intp) for k, g in called.items()}
+        pos = 0
+        for sg in segs:
+            if sg[0] == 0:
+                _t, k, j = sg
+                offs[k][j] = pos
+                pos += counts[k][j]
+            elif sg[0] == 1:
+                _t, size, j, inst, el, nm = sg
+                coffs[size][j] = pos
+                calls.append((inst, el, nm, pos, pos + size))
+                pos += size
+            else:
+                calls.append(sg[1])
+        flat = np.empty(pos, dtype=np.intp)
+        template = np.zeros(pos)
+        for k, (V, K, F, _cnt) in kept.items():
+            dest = (offs[k][:, None] + (np.cumsum(K, axis=1) - 1))[K]
+            flat[dest] = F[K]
+            template[dest] = V[K]
+        for size, (Rs, Cs) in called.items():
+            dest = coffs[size][:, None] + np.arange(size)
+            flat[dest] = (np.asarray(Rs, dtype=np.intp) * n + np.asarray(Cs, dtype=np.intp))
+        self.flat = flat
+        self.template = template
         self.calls, self.batches = _hdl_batch.split(cir, m, calls)
         ## (`_reduced_matrix`'s slots and bins, by the index it drops)
         self.reduced = {}
+
+
+def _stamp_rows(g, kk, n):
+    """One size's constant stamps (`g`: the stamps, their rows and columns,
+    `kk` entries each) at once: `(V, K, F, counts)` -- the values as
+    float64, which are nonzero, the flat indices, each stamp's count."""
+    Ss, Rs, Cs = g
+    V = np.asarray(Ss, dtype=np.float64).reshape(len(Ss), kk)
+    K = V != 0.0
+    F = np.asarray(Rs, dtype=np.intp) * n + np.asarray(Cs, dtype=np.intp)
+    return V, K, F, K.sum(axis=1)
 
 
 class _VectorPlan:
@@ -197,50 +244,81 @@ class _VectorPlan:
 
     def __init__(self, cir, v):
         m = _MATRIX[v]
+        ## In the elements' order: each constant stamp of two or more rows
+        ## its nonzero rows (a group of its size for the batched product:
+        ## the stamps, their nodes, the rows' places in the stacked product
+        ## and in the vector), each called element its slots -- the stamps
+        ## of one size read at once, each element's entries placed at its
+        ## offset; the groups in the order their sizes' first kept stamp
+        ## comes.  (A 1x1 stamp: `np.dot` on it is a scalar product, not
+        ## gemv -- called per element like any other.)
         idxmap = cir._map_indices_1d
         nodemaps = cir.elementnodemap
-        idxs, calls = [], []
-        by_k = {}
-        pos = 0
+        kinds = {}
+        segs, calls = [], []
+        cached, called = {}, {}
         for inst, el in cir.elements.items():
             nm = nodemaps[inst]
             ind = idxmap.get(inst)
-            kind, S = _element_kind(cir, el, m, len(nm))
+            k = len(nm)
+            kind, S = _element_kind(cir, el, m, k, kinds)
             if kind == 'zero':
                 continue
-            if kind == 'cached' and len(nm) >= 2 and ind is not None:
-                rows = np.flatnonzero(np.any(np.asarray(S) != 0, axis=1))
-                if rows.size:
-                    g = by_k.setdefault(len(nm), [[], [], [], []])
-                    g[0].append(np.asarray(S, dtype=np.float64))
-                    g[1].append(np.asarray(nm, dtype=np.intp))
-                    g[2].append(rows + len(g[2]) * len(nm))
-                    g[3].append(np.arange(pos, pos + rows.size))
-                    idxs.append(np.asarray(ind, dtype=np.intp)[rows])
-                    pos += rows.size
+            if kind == 'cached' and k >= 2 and ind is not None:
+                g = cached.setdefault(k, ([], [], [], []))
+                segs.append((0, k, len(g[0])))
+                g[0].append(S)
+                g[1].append(nm)
+                g[2].append(ind)
+                g[3].append(len(segs) - 1)
                 continue
-            if kind == 'cached':
-                ## (a 1x1 stamp: `np.dot` on it is a scalar product, not
-                ## gemv -- called per element like any other)
-                pass
             if ind is None:
-                calls.append((inst, el, nm, -1, -1))
+                segs.append((2, (inst, el, nm, -1, -1)))
                 continue
-            k = len(ind)
-            idxs.append(np.asarray(ind, dtype=np.intp))
-            calls.append((inst, el, nm, pos, pos + k))
-            pos += k
-        groups = []
-        for k, (Ss, IDX, sel, dst) in by_k.items():
-            S = np.ascontiguousarray(np.stack(Ss))
-            I = np.stack(IDX)
-            sel = np.concatenate(sel)
-            dst = np.concatenate(dst)
-            groups.append((S, I, sel, dst, _matmul_ok(k, S)))
-        self.idx = (np.concatenate(idxs) if idxs
-                    else np.zeros(0, dtype=np.intp))
+            size = len(ind)
+            g = called.setdefault(size, [])
+            segs.append((1, size, len(g), inst, el, nm))
+            g.append(ind)
+        rows = {}
+        for k, (Ss, _nm, _ind, _at) in cached.items():
+            S = np.asarray(Ss, dtype=np.float64)
+            R = np.any(S != 0, axis=2)
+            rows[k] = (S, R, R.sum(axis=1).tolist())
+        offs = {k: np.empty(len(g[0]), dtype=np.intp) for k, g in cached.items()}
+        coffs = {k: np.empty(len(g), dtype=np.intp) for k, g in called.items()}
+        pos = 0
+        for sg in segs:
+            if sg[0] == 0:
+                _t, k, j = sg
+                offs[k][j] = pos
+                pos += rows[k][2][j]
+            elif sg[0] == 1:
+                _t, size, j, inst, el, nm = sg
+                coffs[size][j] = pos
+                calls.append((inst, el, nm, pos, pos + size))
+                pos += size
+            else:
+                calls.append(sg[1])
+        idx = np.empty(pos, dtype=np.intp)
+        first, groups = [], []
+        for k, (_Ss, NM, IND, at) in cached.items():
+            S, R, cnt = rows[k]
+            on = np.asarray(cnt) > 0
+            if not on.any():
+                continue
+            Rk = R[on]
+            dst = (offs[k][on][:, None] + (np.cumsum(Rk, axis=1) - 1))[Rk]
+            idx[dst] = np.asarray(IND, dtype=np.intp)[on][Rk]
+            Sk = np.ascontiguousarray(S[on])
+            first.append(int(np.asarray(at)[on][0]))
+            groups.append((k, Sk, np.asarray(NM, dtype=np.intp)[on], np.flatnonzero(Rk), dst))
+        for size, IND in called.items():
+            dest = coffs[size][:, None] + np.arange(size)
+            idx[dest] = np.asarray(IND, dtype=np.intp)
+        self.groups = [(S, I, sel, dst, _matmul_ok(k, S))
+                       for _f, (k, S, I, sel, dst) in sorted(zip(first, groups), key=lambda t: t[0])]
+        self.idx = idx
         self.length = pos
-        self.groups = groups
         self.calls, self.batches = _hdl_batch.split(cir, v, calls)
 
 

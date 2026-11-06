@@ -922,7 +922,8 @@ def _rk_bind(rec, sk, fz):
     if not (type(rf) is np.ndarray and rf.dtype == np.float64 and rf.flags.c_contiguous):
         return False
     ax = rf.ravel().take(sk.take)
-    if np.count_nonzero(rf) != np.count_nonzero(ax):
+    from pycircuit.circuit import _tran_core
+    if _tran_core.pattern_count(rf) != np.count_nonzero(ax):
         return False
     ffi, s, m = rec.ffi, rec.s, rec.n - 1
     k = s.rk

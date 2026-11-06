@@ -1034,6 +1034,25 @@ def pattern_of(a):
     return pat
 
 
+def pattern_count(a):
+    """`np.count_nonzero(a)`: at its pattern where `a` is on pattern pages
+    (`pattern_of`: zero off it), where numpy's would read n x n."""
+    pat = pattern_of(a)
+    if pat is None:
+        return int(np.count_nonzero(a))
+    return int(np.count_nonzero(a.reshape(-1)[pat]))
+
+
+def pattern_equal(a, b):
+    """`np.array_equal(a, b)` for arrays of one shape: at the pattern where
+    both are on pattern pages of one pattern (zero off it), where numpy's
+    would read both whole."""
+    pat = pattern_of(a)
+    if pat is None or pattern_of(b) is not pat:
+        return bool(np.array_equal(a, b))
+    return bool(np.array_equal(a.reshape(-1)[pat], b.reshape(-1)[pat]))
+
+
 def _mapping(a):
     """The `mmap` an array's data is the start of, or None."""
     b = a.base

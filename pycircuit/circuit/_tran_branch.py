@@ -7,7 +7,7 @@ import math
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint, _paths, _stamp_plan, _tran_branch_c
+from pycircuit.circuit import _evalhint, _paths, _stamp_plan, _tran_branch_c, _tran_core
 from pycircuit.circuit._limiting import state_restore, state_snapshot
 from pycircuit.circuit.analysis import insert_row
 from pycircuit.circuit.simwarnings import (
@@ -273,7 +273,8 @@ def _plan_nonzeros(cir, C):
     vals = C.ravel()[upos]
     on = vals != 0.0
     vals = vals[on]
-    if vals.size != np.count_nonzero(C):
+    ## (counted at its pattern where `C` is on pattern pages)
+    if vals.size != _tran_core.pattern_count(C):
         return None
     rows, cols = np.divmod(upos[on], n)
     return rows, cols, vals
@@ -442,7 +443,8 @@ class _BranchCheck:
         for _ in range(3):
             xr = rng.uniform(-1.0, 1.0, self.cir.n)
             try:
-                C = np.asarray(self.cir.C(xr, self.epar), dtype=float)
+                ## (`_C_fresh`: at size the core's pass, on pattern pages)
+                C = np.asarray(self._C_fresh(xr), dtype=float)
             except Exception as exc:                           # noqa: BLE001
                 ## (the check switches itself off for this analysis: said
                 ## once, not silently -- the review's F11, 2026-10-01)

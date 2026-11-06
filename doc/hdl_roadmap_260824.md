@@ -14207,3 +14207,45 @@ factor's fill, the combined product's scale, the packing's order, the C loop's p
 **Gate** (the main tree): the suite 6 310 passed; the pinned pairs re-recorded after their twins' tests (8 of them: the transform solve's and the branch screen's on the twin side, the stage loop's and the step's end passes' on the reference side, the stage paths' passes', the stage walk's, the transform loop's and the transient evaluation's on both (`_tran_core`, `_tran_radau`, `_tran_stages`, `_tran_companion`, `linearsolver` in their texts)); the 27
 gold decks under gear2, Radau and DC against HEAD db038445: every digest, count and path count the same; the chain's
 digests the same (1 us gear2 at 2 000 and 4 000 stages, 100 ns Radau at 2 000 and 4 000; Radau's 2.25 -> 2.00 s and 3.13 -> 2.26 s, its peak 665 -> 531 MB and 1 482 -> 947 MB).
+
+## 2026-11-06 — 273. The first attempt's one-time setup at size, and the stamp plans built by size -- the plans every circuit's evaluation builds (`_MatrixPlan`, `_VectorPlan`, the batch split) read each stamp size's nonzeros and slots at once where each element took its own small numpy operations (half the time a plan, at every size, every plan the same); at size the branch check's structural rank and the error test's generic C come from the core's pass on pattern pages, and pattern-page matrices are counted, compared and scanned at their pattern: the 8 000-stage chain's 100 ns Radau solve 5.25 -> 3.97 s (1.327x), the 4 000-stage's 2.02 -> 1.62 s (1.236x), the 4 000-stage 1 us 3.13 -> 2.72 s (1.149x); every result the same
+
+**Why**  Andreas, plan 261's L7: "Do the item Attempt 1's one-time setup at size".  Sized (p261/l7/first.py, the
+first Python attempt profiled alone; p261/l6/attempts.py unprofiled): at 8 000 stages, 100 ns, the solve 5.29 s held
+1.83 s of operating point and setup and 1.72 s of the FIRST attempt -- its one-time pieces: the transient's evaluation
+core built (its stamp plans: 24 000 elements a plan, per-element numpy operations), the branch check's structural rank
+on three dense `cir.C` at random states (their assembly, `_plan_nonzeros`' n x n count), dense reads of matrices on
+pattern pages (the AutoSolver's fill count, `_ours`, the C Newton's bind, the estimate's `_same_matrix`: each page
+read faulted to the zero page), `_lte_charge`'s generic C and its n x n nonzero scan.  The op's evaluation core cannot
+be the transient's: the PCNR builds its core on `pcnr_view` (each participating device in its affine remainder's
+place), another element set and plan.
+
+**Built.**  (a) `_tran_core.pattern_count` and `pattern_equal`: `np.count_nonzero` and `np.array_equal` at the pattern
+where a matrix is on pattern pages (`pattern_of`); `linearsolver._count_nonzero` (`AutoSolver._select`'s fill,
+`StructuralKLU._ours`), `_tran_radau_tc._rk_bind`'s count and `_tran_radau._same_matrix` through them.  (b)
+`_branch_structural_rank` and `_generic_C` take C from `_C_fresh` (at size the core's pass, the same bits on pattern
+pages); `_plan_nonzeros` counts at the pattern; `capacitive_loop_currents` reads the node couplings at the pattern in
+`np.nonzero`'s order (`_node_couplings`).  The rank's `np.linalg.norm(C)` and its row and column sums stay dense: a
+BLAS dot's and numpy's pairwise sums round by the dense layout.  (c) `_MatrixPlan` and `_VectorPlan`: one pass in the
+elements' order classifies each element and calls its own stamp (each class's `pair_kind` made once a build), then
+each stamp size's values, nonzeros, flat indices and rows are read at once (`_stamp_rows`) and placed at each element's
+offset; the vector plan's groups in the order their sizes' first kept stamp comes.  `_hdl_batch.split` tests each
+class once a split (`_class_kernel`); `Batch` stacks its node maps and slots at once.  Plans compared against HEAD's
+build (its `_stamp_plan` and `_hdl_batch` loaded from copies) on the chains and the 27 gold decks: every flat index,
+template value, call, slot, batch and group the same.
+
+**Measured** (LINE set before building, in one form: the 8 000-stage chain's 100 ns Radau solve >= 1.20x and the
+4 000-stage's >= 1.10x, the 4 000-stage 1 us >= 0.97x, medians of 3 interleaved pairs against HEAD 48cdfb96; no peak
+higher by more than 2 %; every result the same): the 8 000-stage 100 ns Radau solve 5.261 / 5.222 / 5.275 -> 4.011 / 3.936 / 3.962 s, 1.312 / 1.327 / 1.331x, the median 1.327x (the op 1.61-1.64 -> 1.38-1.40 s: its view's plans; the attempts and glue 2.95-2.98 -> 1.91-1.96 s), peak 2 172 -> 2 134 MB -- MET; the 4 000-stage 100 ns 2.014 / 2.050 / 2.003 -> 1.629 / 1.623 / 1.622 s, 1.236 / 1.263 / 1.235x, the median 1.236x, peak 950 -> 943 MB -- MET; the 4 000-stage 1 us 3.134 / 3.121 / 3.147 -> 2.781 / 2.717 / 2.712 s, 1.127 / 1.149 / 1.160x, the median 1.149x -- MET; every digest the same (load 1.44-2.15).
+
+**Tests.**  test_stamp_plan_by_size (new, 4): the matrix and vector plans are a per-element reference build's (flat
+indices, template, calls -- the same objects and slots --, indices, length, groups) on a coupled MOS chain with
+junctions and on a circuit with a 0 F capacitor before an inductor and an instance-shadowed stamp; a zero stamp first
+does not order the groups; a batch's node maps and slots are the per-element stacking's.  test_radau_pattern_pages
+(now 16): the counts, comparisons and node couplings on pattern pages are numpy's (branch entries, a NaN, signed
+zeros).  Mutations -- the stamps' nonzero test, the offsets' rank, the groups' order, the batch slots' order, the
+couplings' branch columns -- each caught.
+
+**Gate** (the main tree): the suite 6 312 passed; the pinned pairs re-recorded after their twins' tests (11 of them: the assembly loops' and the kernel call's on the twin side (`_stamp_plan`, `_hdl_batch`); the DC base solve's, the Newton solve's, the PCNR DC solve's, the branch screen's, the coupled stage Newton's, the error test's, the transform loop's and the transform solve's on the reference side (`linearsolver`'s `_ours`, `_tran_branch`, `_tran_radau`'s `_same_matrix`); the transform Newton's on both); the 27
+gold decks under gear2, Radau and DC against HEAD 48cdfb96: every digest, count and path count the same; the chain's
+digests the same (1 us gear2 at 2 000 and 4 000 stages, 100 ns Radau at 2 000 and 4 000 -- their times taken beside the suite, not read).

@@ -137,6 +137,18 @@ def generated_code():
     return _GEN
 
 
+def _class_kernel(cls, m):
+    """`split`'s test of an element's class for the pass `m`: `(ok, kern)`
+    -- its info chained with no DC pins and `m` the generated method, and
+    the kernel its function holds (or None)."""
+    info = getattr(cls, '_hdl_info', None)
+    if not (info is not None and info.get('chained') and not info['state_meta']['dc_pins']
+            and is_generated(cls, m)):
+        return False, None
+    fn = info['funcs'].get(m)
+    return True, (fn.__dict__.get('_hdl_c') if fn is not None else None)
+
+
 def is_generated(cls, m):
     """Whether `cls`'s method `m` is the one the metaclass generated."""
     code = getattr(getattr(cls, m, None), '__code__', None)
@@ -155,10 +167,12 @@ class Batch:
         self.keys = {r: f'batch.{m}:{r}' for r in _BATCH_KEYS}
         self.entries = entries
         self.els = [e[1] for e in entries]
-        self.NM = np.ascontiguousarray(
-            np.stack([np.asarray(e[2], dtype=np.int64) for e in entries]))
+        self.NM = np.ascontiguousarray(np.asarray([e[2] for e in entries], dtype=np.int64))
         self.slots = [(e[3], e[4]) for e in entries]
-        self.dst = np.concatenate([np.arange(a, b) for a, b in self.slots])
+        ## (every slot of one length, the kernel's output size: `split`)
+        size = entries[0][4] - entries[0][3]
+        self.dst = (np.asarray([e[3] for e in entries], dtype=np.int64)[:, None]
+                    + np.arange(size)).reshape(-1)
         self.n = len(entries)
         self.k, self.shape = kern.nx, kern.shape
         self.so = int(np.prod(kern.shape))
@@ -315,17 +329,18 @@ def split(cir, m, calls):
     mat = m in ('G', 'C')
     groups = {}
     rest = []
+    ## (each class's part of the test -- its info, generated method and
+    ## kernel -- made once a split: no class changes during one)
+    classes = {}
     for c in calls:
         _inst, el, nm, a, b = c
         cls = type(el)
-        info = getattr(cls, '_hdl_info', None)
+        ck = classes.get(cls)
+        if ck is None:
+            ck = classes[cls] = _class_kernel(cls, m)
         kern = None
-        if (a >= 0 and info is not None and info.get('chained')
-                and not info['state_meta']['dc_pins']
-                and el.toolkit is cir.toolkit and m not in el.__dict__
-                and is_generated(cls, m)):
-            fn = info['funcs'].get(m)
-            kern = fn.__dict__.get('_hdl_c') if fn is not None else None
+        if a >= 0 and ck[0] and el.toolkit is cir.toolkit and m not in el.__dict__:
+            kern = ck[1]
             k = len(nm)
             if not (isinstance(kern, cb.CKernel) and kern.nx == k
                     and kern.shape == ((k, k) if mat else (k,))

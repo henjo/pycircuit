@@ -203,7 +203,7 @@ class _FrozenTransform:
 def _same_matrix(a, b):
     """`a` and `b` the same matrix: one object, or equal entries of one
     shape."""
-    return a is b or (np.shape(a) == np.shape(b) and np.array_equal(a, b))
+    return a is b or (np.shape(a) == np.shape(b) and _tran_core.pattern_equal(a, b))
 
 
 def _lam_folds(lam):

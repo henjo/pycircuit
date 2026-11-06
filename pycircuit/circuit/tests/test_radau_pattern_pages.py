@@ -256,3 +256,36 @@ def test_zero_pages_read_maps_no_memory():
     r0 = rss()
     assert float(a.sum()) == 0.0
     assert rss() - r0 < 16 << 20
+
+
+def _paged_matrix(n, rng, monkeypatch):
+    """An n x n matrix on pattern pages of a random pattern -- entries in
+    the branch rows and columns too, a NaN, signed zeros among them."""
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    pat = np.flatnonzero(rng.random(n * n) < 0.08).astype(np.int64)
+    rng.shuffle(pat)
+    full = np.zeros(n * n)
+    full[pat] = rng.standard_normal(len(pat))
+    full[pat[:3]] = 0.0
+    full[pat[3]] = -0.0
+    full[pat[4]] = np.nan
+    return _tran_core.on_pattern(full.reshape(n, n), pat, n), full.reshape(n, n), pat
+
+
+def test_counts_comparisons_and_couplings_on_pattern_pages_are_numpys(monkeypatch):
+    """At a matrix's pattern: its nonzero count, its equality with another on
+    the same pattern (and with one that is not), the node-to-node nonzeros
+    `capacitive_loop_currents` joins, row by row -- numpy's on the whole."""
+    from pycircuit.circuit import _tran_history
+    rng = np.random.default_rng(11)
+    n, nn = 60, 45
+    A, full, pat = _paged_matrix(n, rng, monkeypatch)
+    assert _tran_core.pattern_of(A) is pat
+    assert _tran_core.pattern_count(A) == np.count_nonzero(full)
+    B = _tran_core.on_pattern(np.nan_to_num(full), pat, n)
+    D = _tran_core.on_pattern(np.where(np.isnan(full), 0.0, full), pat, n)
+    for X, Y in ((B, D), (B, A), (A, A.copy())):
+        assert _tran_core.pattern_equal(X, Y) == bool(np.array_equal(np.asarray(X), np.asarray(Y)))
+    got = _tran_history._node_couplings(A, nn)
+    want = np.nonzero(full[:nn, :nn] != 0.0)
+    assert all(np.array_equal(g, w) for g, w in zip(got, want))
