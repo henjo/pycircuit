@@ -197,3 +197,38 @@ def test_the_packing_holds_every_entry_of_the_cores_reduced_pattern(monkeypatch)
     else:
         assert np.all(np.diff(pk.cols * pk.m + pk.rows) > 0)
     assert pk.ok
+
+
+@pytest.mark.parametrize('seed', range(6))
+def test_the_sparse_residual_verdict_is_the_dense_one(seed):
+    """`_resid_sparse` -- the refactor's residual test on the CSC with its
+    rounding bound -- is the dense test's verdict wherever it decides:
+    residuals far under, far over and AT the tolerance (where it must leave
+    the dense test to decide), a non-finite solution undecided."""
+    rng = np.random.default_rng(seed)
+    m = 200
+    tol = linearsolver.StructuralKLU.REFACTOR_RESIDUAL_TOL
+    A = np.zeros((m, m))
+    pat = rng.random((m, m)) < 0.03
+    pat[np.arange(m), np.arange(m)] = True
+    A[pat] = rng.standard_normal(int(pat.sum())) * 10.0 ** rng.integers(-6, 3, int(pat.sum()))
+    cols, rows = np.nonzero(pat.T)
+    Ap = np.zeros(m + 1, dtype=np.int32)
+    Ap[1:] = np.cumsum(np.bincount(cols, minlength=m))
+    Ai = rows.astype(np.int32)
+    Ax = A[rows, cols]
+    x = rng.standard_normal(m)
+    b0 = A @ x
+    decided = 0
+    for scale in (0.0, 1e-3 * tol, 0.5 * tol, tol, 2.0 * tol, 1e3 * tol):
+        r = rng.standard_normal(m)
+        b = b0 + scale * np.abs(b0).max() * r / np.abs(r).max()
+        dense = not (float(np.abs(A @ x - b).max()) / max(float(np.abs(b).max()), 1e-300) <= tol)
+        got = linearsolver._resid_sparse(Ap, Ai, Ax, tol, b, x)
+        if got is not None:
+            decided += 1
+            assert got == dense, (seed, scale)
+    assert decided >= 4
+    xn = x.copy()
+    xn[3] = np.nan
+    assert linearsolver._resid_sparse(Ap, Ai, Ax, tol, b0, xn) is None

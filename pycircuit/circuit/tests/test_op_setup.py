@@ -78,3 +78,50 @@ def test_the_reduced_schur_matrix_on_pattern_pages_is_the_dense_one(monkeypatch)
     assert np.count_nonzero(d) > 0
     assert d.shape == p.shape and d.tobytes() == np.asarray(p).tobytes()
     assert _tran_core.pattern_of(p) is not None
+
+
+def _ref_structure(cir, iref):
+    """The per-element build of `jacobian_structure`."""
+    n = cir.n
+    flats = [np.arange(n, dtype=np.intp) * (n + 1)]
+    for rows, cols in cir._map_indices_2d.values():
+        flats.append(np.asarray(rows, dtype=np.intp) * n + np.asarray(cols, dtype=np.intp))
+    r, c = np.divmod(np.unique(np.concatenate(flats)), n)
+    keep = (r != iref) & (c != iref)
+    r, c = r[keep] - (r[keep] > iref), c[keep] - (c[keep] > iref)
+    order = np.lexsort((r, c))
+    return n - 1, r[order], c[order]
+
+
+def test_the_jacobian_structure_is_the_per_element_one():
+    """`jacobian_structure` -- every element's block concatenated at once --
+    is the per-element build's: size, rows, columns, dtype, CSC order."""
+    from pycircuit.circuit.analysis import jacobian_structure
+    cir = _chain(40)
+    cir.update_node_map()
+    for iref in (0, 3, cir.n - 1):
+        got, want = jacobian_structure(cir, iref), _ref_structure(cir, iref)
+        assert got[0] == want[0]
+        assert all(g.dtype == w.dtype and g.tobytes() == w.tobytes() for g, w in zip(got[1:], want[1:]))
+
+
+def test_the_plans_nonzeros_follow_the_plan_they_read(monkeypatch):
+    """`_plan_nonzeros` keeps its last plan's sorted positions: a C of
+    another circuit, read in turn, gets its own plan's -- the result each
+    time the unkept one's."""
+    from pycircuit.circuit import _tran_branch
+    from pycircuit.circuit.tests.test_radau_pattern_pages import _chain as chain
+    out = []
+    for N in (12, 30, 12):
+        cir = chain(N)
+        cir.toolkit = circuit.numeric
+        x = np.linspace(-0.3, 0.9, cir.n)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            C = np.asarray(cir.C(x), dtype=float)
+        got = _tran_branch._plan_nonzeros(cir, C)
+        monkeypatch.setattr(_tran_branch, '_UPOS', [None])
+        want = _tran_branch._plan_nonzeros(cir, C)
+        assert got is not None and all(np.array_equal(g, w) for g, w in zip(got, want))
+        out.append(len(got[2]))
+    assert out[0] == out[2] != out[1]

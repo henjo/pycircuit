@@ -255,6 +255,10 @@ def _rank_by_blocks(C, tol, band=None, nz=None, keep=None):
     return rank
 
 
+#: `_plan_nonzeros`' last plan's positions: `(its flat indices, np.unique of them)`
+_UPOS = [None]
+
+
 def _plan_nonzeros(cir, C):
     """`C`'s nonzeros from the stamp plan's positions -- ``(rows, cols,
     values)``, the positions in `np.nonzero`'s row-major order -- or None.
@@ -267,7 +271,14 @@ def _plan_nonzeros(cir, C):
     n = C.shape[0]
     if mp is None or C.ndim != 2 or C.shape[1] != n or not C.flags.c_contiguous:
         return None
-    upos = np.unique(mp.flat)
+    ## (its positions, sorted and unique: kept for the plan's flat indices
+    ## they were made of)
+    kept = _UPOS[0]
+    if kept is not None and kept[0] is mp.flat:
+        upos = kept[1]
+    else:
+        upos = np.unique(mp.flat)
+        _UPOS[0] = (mp.flat, upos)
     if upos.size and not 0 <= int(upos[0]) <= int(upos[-1]) < n * n:
         return None
     vals = C.ravel()[upos]

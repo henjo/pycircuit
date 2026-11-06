@@ -225,10 +225,13 @@ def jacobian_structure(cir, iref):
     n = cir.n
     if not (iref is not None and 0 <= iref < n):
         return None
+    ## (every element's block at once: its rows and columns concatenated)
+    rc = list(cir._map_indices_2d.values())
     flats = [numpy.arange(n, dtype=numpy.intp) * (n + 1)]
-    for rows, cols in cir._map_indices_2d.values():
-        flats.append(numpy.asarray(rows, dtype=numpy.intp) * n
-                     + numpy.asarray(cols, dtype=numpy.intp))
+    if rc:
+        rows = numpy.concatenate([numpy.asarray(a, dtype=numpy.intp) for a, _b in rc])
+        cols = numpy.concatenate([numpy.asarray(b, dtype=numpy.intp) for _a, b in rc])
+        flats.append(rows * n + cols)
     r, c = numpy.divmod(numpy.unique(numpy.concatenate(flats)), n)
     keep = (r != iref) & (c != iref)
     r, c = r[keep], c[keep]

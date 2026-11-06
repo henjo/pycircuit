@@ -14280,3 +14280,34 @@ reduced matrix's orientation -- each caught.
 **Gate** (the main tree): the suite 6 325 passed; the pinned pairs re-recorded after their twins' tests (1: the PCNR DC solve's on its twin side (`_pcnr_c`'s reduced Schur matrix)); the 27
 gold decks under gear2, Radau and DC against HEAD 824cccf3: every digest, count and path count the same; the chain's
 digests the same.
+
+## 2026-11-06 — 275. The Python attempts' residual on the CSC, and the structure built at once -- `StructuralKLU`'s refactor residual on a matrix on pattern pages decided on KLU's CSC with its rounding bound where the bound decides (`pcx_kluseq.h`'s rule: the dense test where it does not), `jacobian_structure` from every element's block at once, the branch check's plan positions kept: the 8 000-stage chain's 100 ns Radau solve 3.60 -> 3.30 s (1.090x), the 4 000-stage's 1.50 -> 1.41 s (1.061x); every result the same
+
+**Why**  Andreas, plan 261's L9 (of "Take all three items").  Sized (p261/l9/attempts_prof.py: the first three
+Python attempts profiled): at 8 000 stages attempts 2 and 3 took 0.44 s, their largest piece the Python real solves --
+`StructuralKLU._solve` validating each refactor by `arr @ x` over the real factor's n x n pattern pages (each page
+faulted to the zero page and read); attempt 1 rebuilt `jacobian_structure` element by element (24 000 small arrays)
+and `np.unique` of the branch check's plan positions at each of its three states.
+
+**Built.**  `linearsolver._resid_sparse`: the refactor's residual verdict on A's CSC -- `pcx_verdict.h`'s
+`pcx_resid_sparse` in numpy: row sums by `bincount`, each row's interval `e_i = 4 (cnt_i + 2) (eps t_i + 2 tiny)`
+holding the dense dgemv's sum whatever its order, the test holding where it holds at the upper ends and failing where
+it fails at the lower; undecided (a value not finite, a sum past 1e300, a residual within the band) the dense test as
+before.  `StructuralKLU._solve` takes it for a one-column right-hand side and a matrix on pattern pages
+(`_tran_core.pattern_of`).  `analysis.jacobian_structure`: the elements' rows and columns concatenated once.
+`_tran_branch._plan_nonzeros`: the plan's sorted positions kept for the flat indices they were made of (`_UPOS`).
+
+**Measured** (LINE set before building, in one form: the 8 000-stage chain's 100 ns Radau solve >= 1.04x and the
+4 000-stage's >= 1.03x, the 4 000-stage 1 us >= 0.97x, medians of 3 interleaved pairs against HEAD c3980906; no peak
+higher by more than 2 %; every result the same): the 8 000-stage 100 ns Radau solve 3.583 / 3.620 / 3.599 -> 3.292 / 3.319 / 3.302 s, 1.088 / 1.091 / 1.090x, the median 1.090x, peak 2 139 -> 2 141 MB -- MET; the 4 000-stage 100 ns 1.508 / 1.488 / 1.504 -> 1.421 / 1.412 / 1.408 s, 1.061 / 1.054 / 1.068x, the median 1.061x -- MET; the 4 000-stage 1 us 2.598 / 2.611 / 2.600 -> 2.533 / 2.533 / 2.525 s, 1.026 / 1.031 / 1.030x, the median 1.030x -- MET; every digest the same (load 1.45-1.89).
+
+**Tests.**  test_radau_packed_frozen (+6): `_resid_sparse` is the dense test's verdict wherever it decides --
+residuals far under, far over and at the tolerance (left undecided there), a NaN undecided.  test_op_setup (+2):
+`jacobian_structure` is the per-element build's (size, rows, columns, dtype, order); `_plan_nonzeros` read for two
+circuits in turn is the unkept one's each time.  Mutations -- the verdict inverted, the bound zero, the kept positions
+read for any plan, the off-diagonal blocks dropped -- each caught (rows and columns swapped is an equivalent mutant:
+every element's block is symmetric).
+
+**Gate** (the main tree): the suite 6 326 passed; the pinned pairs re-recorded after their twins' tests (8 of them, each on its reference side (`linearsolver`'s `StructuralKLU._solve`, `_tran_branch`): the DC base solve's, the Newton solve's, the PCNR DC solve's, the branch screen's, the coupled stage Newton's, the error test's, the transform Newton's, the transform loop's); the 27
+gold decks under gear2, Radau and DC against HEAD c3980906: every digest, count and path count the same; the chain's
+digests the same.

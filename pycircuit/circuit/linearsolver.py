@@ -167,6 +167,52 @@ def _csc_of_dense(A, mv, last=None):
              data.view(numpy.float64), key), (nz, Ap, Ai, key))
 
 
+def _on_pattern_pages(arr):
+    """Whether `arr` is a matrix on pattern pages (`_tran_core.pattern_of`)."""
+    from pycircuit.circuit import _tran_core
+    return _tran_core.pattern_of(arr) is not None
+
+
+def _resid_sparse(Ap, Ai, Ax, tol, b, x):
+    """The refactor's residual test -- `not (max|A x - b| / max(max|b|,
+    1e-300) <= tol)`, numpy's `A @ x` on the dense A -- decided on A's CSC
+    (`Ap`, `Ai`, `Ax`; A zero off it) where its rounding bound decides it:
+    True it fails, False it holds, None undecided (the dense test then).
+    `pcx_verdict.h`'s `pcx_resid_sparse`: row i's dense sum lies within
+    `e_i = 4 (cnt_i + 2) (eps t_i + 2 tiny)` of the sparse one (`t_i` the
+    sum of |a| |x|, `cnt_i` the row's stored entries), so the test holds where
+    it holds at the interval's upper end and fails where it fails at the
+    lower; not finite, or a sum past 1e300, is undecided."""
+    m = len(b)
+    if not (numpy.isfinite(b).all() and numpy.isfinite(x).all()):
+        return None
+    col = numpy.repeat(numpy.arange(m), numpy.diff(Ap))
+    with numpy.errstate(all='ignore'):
+        xc = x[col]
+        y = numpy.bincount(Ai, weights=Ax * xc, minlength=m)
+        t = numpy.bincount(Ai, weights=numpy.abs(Ax) * numpy.abs(xc), minlength=m)
+        cnt = numpy.bincount(Ai, minlength=m).astype(numpy.float64)
+        ab = numpy.abs(b)
+        if not (t + ab < 1e300).all():
+            return None
+        e = 4.0 * (cnt + 2.0) * (numpy.finfo(numpy.float64).eps * t
+                                 + 2.0 * numpy.finfo(numpy.float64).smallest_subnormal)
+        u = (y + e) - b
+        v = (y - e) - b
+        au, av = numpy.abs(u), numpy.abs(v)
+        h = numpy.maximum(au, av)
+        same = ((u > 0.0) & (v > 0.0)) | ((u < 0.0) & (v < 0.0))
+        lo_row = numpy.where(same, numpy.minimum(au, av), 0.0)
+    hi = float(h.max()) if m else 0.0
+    lo = float(lo_row.max()) if m else 0.0
+    sc = max(float(ab.max()) if m else 0.0, 1e-300)
+    if hi / sc <= tol:
+        return False
+    if not (lo / sc <= tol):
+        return True
+    return None
+
+
 def _count_nonzero(arr):
     """`numpy.count_nonzero(arr)` -- at its pattern where `arr` is a matrix
     on pattern pages (`_tran_core.pattern_count`), where numpy's would read
@@ -916,10 +962,18 @@ class StructuralKLU(KLUSolver):
             raise numpy.linalg.LinAlgError('klu_solve failed')
         if reused:
             ## (the refactor's validation, as `KLUSolver`'s: the reused pivot
-            ## order checked by the residual, a fresh factor where it fails)
-            scale = max(float(numpy.abs(rhs).max()), 1e-300)
-            resid = float(numpy.abs(arr @ x - rhs).max()) / scale
-            if not (resid <= self.REFACTOR_RESIDUAL_TOL):
+            ## order checked by the residual, a fresh factor where it fails.
+            ## A matrix on pattern pages: the verdict on KLU's CSC with its
+            ## rounding bound where the bound decides -- `pcx_kluseq.h`'s
+            ## rule, `_resid_sparse` -- the dense test where it does not)
+            fails = None
+            if nrhs == 1 and _on_pattern_pages(arr):
+                fails = _resid_sparse(self.Ap, self.Ai, Ax, self.REFACTOR_RESIDUAL_TOL, rhs, x)
+            if fails is None:
+                scale = max(float(numpy.abs(rhs).max()), 1e-300)
+                resid = float(numpy.abs(arr @ x - rhs).max()) / scale
+                fails = not (resid <= self.REFACTOR_RESIDUAL_TOL)
+            if fails:
                 self.residual_fallbacks += 1
                 old, self._numeric = self._numeric, None
                 self._free(old)
