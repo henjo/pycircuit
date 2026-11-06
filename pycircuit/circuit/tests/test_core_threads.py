@@ -220,3 +220,31 @@ def test_the_workers_run():
     _run(lambda: _pulsed(60), RadauIIA3Integrator, 4, {'radau_transform': True},
          tend=4e-8, timestep=2.5e-10)
     assert _workers() >= 3
+
+
+def test_the_pull_on_the_pool_is_the_one_threaded_one():
+    """A core whose passes reach the pull's pool (4 096 bins and more:
+    4 200 stages -- the matrix passes and the vector ones): on four threads
+    every output byte and the flags as on one thread, the bins summed in
+    their order whatever thread takes their block (core.c's THE PULL ON THE
+    POOL)."""
+    _tr, core = _core(stages=4200)
+    assert core.n > 4096 and core.npat > 4096
+    rng = np.random.default_rng(221)
+    n = core.n
+    for scale in (0.5, 50.0, 1e300):
+        for bits in (1, 2, 4, 15):
+            x = scale * rng.standard_normal(n)
+            assert _call(core, x, bits, 1) == _call(core, x, bits, 4), (scale, bits)
+
+
+def test_a_large_transform_transient_on_threads_is_the_one_threaded_one():
+    """Past the transform's two solves' minimum (radau_tc.c's THE TWO SOLVES
+    SIDE BY SIDE: 1 000 unknowns) and the pull's pool (4 096 bins a matrix
+    pass): the C transform loop on four threads -- the real and the complex
+    solve of each iteration side by side, the pull split -- the bytes, the
+    statistics, the warnings and every count as on one."""
+    kw = {'tend': 3e-8, 'timestep': 1e-9}
+    one = _run(lambda: _pulsed(1100), RadauIIA3Integrator, 1, None, **kw)
+    four = _run(lambda: _pulsed(1100), RadauIIA3Integrator, 4, None, **kw)
+    assert one == four

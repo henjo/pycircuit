@@ -16,9 +16,33 @@
  * product then holds where it holds at the bound's worse end and fails where
  * it fails at its better end; elsewhere -- and where a value is not finite
  * or a row's sum reaches 1e300 (there numpy's flags could be raised) -- the
- * dense test decides. */
+ * dense test decides.
+ *
+ * THE RESIDUAL'S SUMS WITH SUBNORMALS FLUSHED (`pcx_resid_sparse`): a solve's
+ * update near convergence holds subnormal entries, and each operation on one
+ * is a microcode assist -- made gradually, the verdict's sums are a sixth of
+ * the C transform loop.  They are made with the SSE unit's flush-to-zero and
+ * denormals-are-zero set (its control bits alone restored after, its flags as
+ * they are), where each operation then lies within DBL_MIN of its gradual
+ * result: a term within (|A_ij| + |x_j| + 1) DBL_MIN (an operand or the
+ * product flushed), each addition within DBL_MIN -- so the bound grows by
+ * (k_i + 2) (amax + xmax + 4) DBL_MIN + 8 DBL_MIN (`amax`, `xmax` the largest
+ * |A| and |x|; the 8 the bound's own, |b|'s and the ends' flushes), which
+ * covers the gradual underflow's 2^-1075 terms too.  A verdict it makes holds
+ * whatever the dense test's rounding -- the dense test's own, as the gradual
+ * sums' is.  Where it does not decide (a residual near its threshold, or one
+ * near 1e-300 whose threshold the flush could hide), the gradual sums are
+ * made (`pcx_resid_gradual`) and theirs is the verdict: the assists paid on
+ * those calls alone.
+ */
 #include <float.h>
 #include <math.h>
+#if defined(__SSE2__)
+#include <xmmintrin.h>
+/* the SSE control register's flush-to-zero (bit 15) and denormals-are-zero
+   (bit 6) */
+#define PCX_FLUSH_BITS 0x8040u
+#endif
 
 /* a test's verdict where a rounding bound decides it: it holds, it fails, or
    the dense test decides */
@@ -32,9 +56,40 @@ enum pcx_verdict { PCX_HOLDS = 0, PCX_FAILS = 1, PCX_UNDECIDED = 2 };
    it, the scale exact -- holds where it holds at the upper end, fails where
    it fails at the lower.  Where it decides, no flag numpy reports is raised
    here or in the dense test.  `y`, `t`, `cnt` (m each) scratch */
+__attribute__((noinline)) static int pcx_resid_flushed(const int *Ap, const int *Ai,
+                                                        const double *Ax, double tol,
+                                                        const double *b, const double *x,
+                                                        double *y, double *t, double *cnt, long m);
+static int pcx_resid_gradual(const int *Ap, const int *Ai, const double *Ax, double tol,
+                             const double *b, const double *x, double *y, double *t,
+                             double *cnt, long m);
+
 static int pcx_resid_sparse(const int *Ap, const int *Ai, const double *Ax, double tol,
                             const double *b, const double *x, double *y, double *t,
                             double *cnt, long m)
+{
+#if defined(__SSE2__)
+    /* (the sums in a call of their own: nothing of theirs moved across the
+       control register's writes) */
+    unsigned int csr = _mm_getcsr();
+    int v;
+    _mm_setcsr(csr | PCX_FLUSH_BITS);
+    v = pcx_resid_flushed(Ap, Ai, Ax, tol, b, x, y, t, cnt, m);
+    _mm_setcsr((_mm_getcsr() & ~PCX_FLUSH_BITS) | (csr & PCX_FLUSH_BITS));
+    /* (its band the wider: where it decides, the gradual one decides alike;
+       where it does not, the gradual one's own verdict) */
+    if (v != PCX_UNDECIDED) return v;
+    return pcx_resid_gradual(Ap, Ai, Ax, tol, b, x, y, t, cnt, m);
+#else
+    return pcx_resid_gradual(Ap, Ai, Ax, tol, b, x, y, t, cnt, m);
+#endif
+}
+
+/* the verdict's sums with gradual underflow, the bound 4 (k_i + 2) (eps T_i
+   + 2 DBL_TRUE_MIN) */
+static int pcx_resid_gradual(const int *Ap, const int *Ai, const double *Ax, double tol,
+                             const double *b, const double *x, double *y, double *t,
+                             double *cnt, long m)
 {
     long i, j, p;
     double max_b = 0.0, hi = 0.0, lo = 0.0, sc;
@@ -56,6 +111,52 @@ static int pcx_resid_sparse(const int *Ap, const int *Ai, const double *Ax, doub
         double ab = fabs(b[i]), e, u, v, au, av, h, l;
         if (!(t[i] + ab < 1e300)) return PCX_UNDECIDED;
         e = 4.0 * (cnt[i] + 2.0) * (DBL_EPSILON * t[i] + 2.0 * DBL_TRUE_MIN);
+        u = (y[i] + e) - b[i];
+        v = (y[i] - e) - b[i];
+        au = fabs(u);
+        av = fabs(v);
+        h = au > av ? au : av;
+        l = (u > 0.0 && v > 0.0) || (u < 0.0 && v < 0.0) ? (au < av ? au : av) : 0.0;
+        if (h > hi) hi = h;
+        if (l > lo) lo = l;
+        if (ab > max_b) max_b = ab;
+    }
+    sc = pcx_py_max(max_b, 1e-300);
+    if (hi / sc <= tol) return PCX_HOLDS;
+    if (!(lo / sc <= tol)) return PCX_FAILS;
+    return PCX_UNDECIDED;
+}
+
+__attribute__((noinline)) static int pcx_resid_flushed(const int *Ap, const int *Ai,
+                                                        const double *Ax, double tol,
+                                                        const double *b, const double *x,
+                                                        double *y, double *t, double *cnt, long m)
+{
+    long i, j, p;
+    double max_b = 0.0, hi = 0.0, lo = 0.0, sc, amax = 0.0, xmax = 0.0, w;
+    for (i = 0; i < m; i++) {
+        if (!isfinite(b[i]) || !isfinite(x[i])) return PCX_UNDECIDED;
+        y[i] = 0.0;
+        t[i] = 0.0;
+        cnt[i] = 0.0;
+        if (fabs(x[i]) > xmax) xmax = fabs(x[i]);
+    }
+    for (j = 0; j < m; j++)
+        for (p = Ap[j]; p < Ap[j + 1]; p++) {
+            double a = Ax[p];
+            i = Ai[p];
+            y[i] += a * x[j];
+            t[i] += fabs(a) * fabs(x[j]);
+            cnt[i] += 1.0;
+            if (fabs(a) > amax) amax = fabs(a);
+        }
+    /* (a flushed operand's, product's or sum's part of the bound) */
+    if (!(amax < 1e300)) return PCX_UNDECIDED;
+    w = (amax + xmax + 4.0) * DBL_MIN;
+    for (i = 0; i < m; i++) {
+        double ab = fabs(b[i]), e, u, v, au, av, h, l;
+        if (!(t[i] + ab < 1e300)) return PCX_UNDECIDED;
+        e = 4.0 * (cnt[i] + 2.0) * (DBL_EPSILON * t[i]) + (cnt[i] + 2.0) * w + 8.0 * DBL_MIN;
         u = (y[i] + e) - b[i];
         v = (y[i] - e) - b[i];
         au = fabs(u);

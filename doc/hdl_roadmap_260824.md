@@ -14365,3 +14365,45 @@ each caught (the first or last G entry dropped are equivalent here: the referenc
 **Gate** (the main tree): the suite 6 332 passed; the pinned pairs re-recorded after their twins' tests (6 of them, each on its twin side (loop.c, loop.h, radau_tc.c, radau_tc.h, `_tran_tcloop_c`, `_tran_stageloop_c` in their texts): the step's end passes', the transform Newton's, the stepping loop's, the stage loop's, the multistep walk's, the transform loop's); the 27
 gold decks under gear2, Radau and DC against HEAD 9deb9bc9: every digest, count and path count the same; the chain's
 digests the same.
+
+## 2026-11-06 — 278. The C loop's own work: the residual verdict with subnormals flushed, the pull and the transform's two solves on the pool -- the refactor's sparse residual verdict made with flush-to-zero and denormals-are-zero, its bound widened by what a flush can drop (a decided verdict still the dense test's); each pass's pull of 4 096 bins or more split across the pool (each bin its own store, the same bits); the estimate's product without a division an entry; each iteration's real and complex solve side by side from 1 000 unknowns: the 4 000-stage chain's 1 us Radau solve 2.29 -> 1.97 s (1.165x), the 8 000-stage 100 ns 2.96 -> 2.62 s (1.132x); every result the same
+
+**Why**  Andreas, plan 261's L11: "The C loops own work".  Sized (perf on the long 4 000-stage 1 us run's C loop window,
+a `-g` build for its lines; CLOCK_MONOTONIC, cpu-clock): on the main thread the HDL kernels 19.8 %, pcx_verdict.h
+16.6 %, core.c 16.4 % (the pull's gathers), radau_tc.c 9.7 %, the KLU solves ~10 %.  The verdict's sixth was
+SUBNORMALS: a real solve near convergence holds them (a sample: ~95 of 10 000 products, ~32 of 2 000 solution
+entries) and each operation on one is a microcode assist -- an experiment flushing them in the verdict alone took the
+C loop 1.25 -> 1.11 s, the same digest.  The pull ran on one thread after the pool's kernels; the real and complex
+solves of an iteration one after the other, though independent (the refactor pair already ran side by side).
+
+**Built.**  (a) pcx_verdict.h: `pcx_resid_sparse` sets the SSE unit's flush-to-zero and denormals-are-zero (its
+control bits alone restored after, its flags as they are) around `pcx_resid_flushed` (a call of its own: nothing moved
+across the register's writes); the bound gains (k_i + 2)(amax + xmax + 4) DBL_MIN + 8 DBL_MIN -- each flushed operand,
+product or sum within DBL_MIN, the gradual underflow's 2^-1075 terms under it -- so a verdict it makes holds whatever the dense test's rounding; where it does not decide, the gradual sums are made
+(`pcx_resid_gradual`, the verdict as it was) and theirs is the verdict -- the assists paid on those calls alone.  (The
+first gate ran without that fallback: test_verdict_c's products-underflow test, its thresholds at ~1e-310 under the
+flushed bound's absolute part, found every verdict there undecided -- sound, but the decisions the gradual sums make
+lost.  The line and the gate below are the fallback's.)  (b) core.c's THE
+PULL ON THE POOL (`pull_pool`, `core_pull_job_t` in core.h): a pass of PULL_POOL_MIN = 4 096 bins or more split in
+blocks of 256 across the pool's threads (1 024 measured 1.5 % more at 4 000 stages but would pool mid-size circuits'
+matrix passes).  (c) loop.c's `tc_cmul` reads each pattern entry's row and column (`crow`, `ccol`, loop.h, bound by
+`_tran_stageloop_c._bind_pattern`).  (d) radau_tc.c's THE TWO SOLVES SIDE BY SIDE (`tf_solves`, `tf_solves_t`): an
+iteration with no refactor due, from TF_SOLVES_MIN = 1 000 unknowns, the real solve and the complex solve with its
+residual check (`tf_complex`, the check's bails now returned to the caller) as a job of the pool, the outcomes read in
+the serial order.
+
+**Measured** (LINE recorded after (a)'s sizing experiment, before the gate, in one form: the 4 000-stage chain's 1 us
+Radau solve >= 1.08x and the 8 000-stage 100 ns >= 1.04x, medians of 3 interleaved pairs against HEAD 72073050; no
+peak higher by more than 2 %; every result the same): the 4 000-stage 1 us 2.292 -> 1.968 s (pairs 1.160, 1.169, 1.165: median 1.165x; its C loop 1.226 -> 1.000 s), the 8 000-stage 100 ns 2.961 -> 2.616 s (1.132, 1.145, 1.119: 1.132x; its C loop 0.510 -> 0.406 s), the 4 000-stage 100 ns 1.119x besides; peaks 925 -> 926 MB and 2 081 -> 2 080 MB; every digest the same.  PASSES.
+
+**Tests.**  test_verdict_flush (new, 13): the flushed verdict compiled alone with its header -- wherever it decides,
+numpy's dense test: solutions with subnormal entries and entries just past DBL_MIN, A with subnormal entries, the whole
+scaled toward the subnormal range, residuals under, at and over the tolerance; a residual far below the bound's
+absolute part left undecided.  test_core_threads (+2): a 4 200-stage core's passes (the pull on the pool) every byte
+and flag as one thread's; an 1 100-stage transform transient on four threads (the solves side by side) the one-thread
+run, its statistics and counts.  Mutations -- the bound's flush term dropped, the tolerance doubled, a block's sources
+shifted, the paired complex solve skipped, the gradual fallback dropped (test_verdict_c) -- each caught.
+
+**Gate** (the main tree): the suite 6 340 passed, 10 skipped, 3 xfailed (the 13 moved pairs the only failures before their re-recording); the pinned pairs re-recorded after their twins' tests (13, every one on its twin side -- pcx_verdict.h, core.c and core.h, radau_tc.c and loop.c in their texts: the transient evaluation and the core, the error test, the Newton solve, the DC base solve, the PCNR DC solve, the step's end passes, the coupled stage Newton, the stage loop, the multistep walk, the transform Newton, the stepping loop, the stage paths' passes, the transform loop); the 27
+gold decks under gear2, Radau and DC against HEAD 72073050: every digest, count and path count the same; the chain's
+digests the same.

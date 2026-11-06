@@ -304,6 +304,61 @@ static void pull_run(const double *V, const int64_t *ix, const int64_t *wb, doub
     }
 }
 
+/* THE PULL ON THE POOL: each written bin is one store of its own sum, its
+   sources' values in their order whatever the thread -- so the pass's bins,
+   in blocks of PULL_BLOCK, split across the pool's threads are every byte
+   the one thread makes (the flags the threads raise raised in the caller's,
+   pool.c).  From PULL_POOL_MIN bins a pass, its runs (CORE_PULL_RMAX at most)
+   mapped once a call; else, or where the pool does not serve, one thread */
+enum { PULL_BLOCK = 256, PULL_POOL_MIN = 4096 };
+
+/* the bins [lo, hi) of the pass, run by run */
+static void pull_bins(const core_pull_job_t *j, long lo, long hi)
+{
+    long r = 0;
+    while (lo >= j->boff[r + 1]) r++;
+    while (lo < hi) {
+        long cnt = j->run[2 * r], end = hi < j->boff[r + 1] ? hi : j->boff[r + 1];
+        pull_run(j->V, j->ix + j->xoff[r] + (lo - j->boff[r]) * cnt, j->wb + lo, j->bin, cnt,
+                 end - lo);
+        lo = end;
+        r++;
+    }
+}
+
+/* the pool job's blocks [lo, hi) (pool_range_t) */
+static void pull_range(const void *jv, long lo, long hi)
+{
+    const core_pull_job_t *j = (const core_pull_job_t *) jv;
+    long b1 = hi * PULL_BLOCK;
+    pull_bins(j, lo * PULL_BLOCK, b1 < j->total ? b1 : j->total);
+}
+
+/* the pass's pull on the pool: 1 where it made it, 0 where the caller makes
+   it alone (too few bins, too many runs, no pool, the pool not serving) */
+static int pull_pool(const hdl_core_t *c, const int64_t *run, const int64_t *ix,
+                     const int64_t *wb, double *bin, long nr)
+{
+    core_pull_job_t j;
+    long r;
+    if (c->nthreads < 2 || !c->pool_fn || nr > CORE_PULL_RMAX) return 0;
+    j.boff[0] = j.xoff[0] = 0;
+    for (r = 0; r < nr; r++) {
+        j.boff[r + 1] = j.boff[r] + run[2 * r + 1];
+        j.xoff[r + 1] = j.xoff[r] + run[2 * r] * run[2 * r + 1];
+    }
+    j.total = j.boff[nr];
+    if (j.total < PULL_POOL_MIN) return 0;
+    j.V = c->vals;
+    j.bin = bin;
+    j.run = run;
+    j.ix = ix;
+    j.wb = wb;
+    j.nr = nr;
+    return (int) ((pool_fn_t) c->pool_fn)((void *) pull_range, &j,
+                                          (j.total + PULL_BLOCK - 1) / PULL_BLOCK, c->nthreads);
+}
+
 /* pass m (0 G, 1 C, 2 i, 3 q) into its bins `bin`: the values its slots
    read made -- the batches that make their own (`batch_into`), the constant
    groups (`groups_into`); the templates are set once, the groups' staging by
@@ -325,6 +380,7 @@ static void one_pass(const hdl_core_t *c, long m, const double *x, double T, dou
         if (c->b_pass[b] == m) batch_into(c, b, m, x, T, X);
     groups_into(c, m, x, xg);
     if (m < 2 && c->npat && !patt) memset(bin, 0, (size_t) (n * n) * sizeof(double));
+    if (pull_pool(c, run, ix, wb, bin, nr)) return;
     for (r = 0; r < nr; r++) {
         long cnt = run[2 * r], nb = run[2 * r + 1];
         pull_run(c->vals, ix, wb, bin, cnt, nb);

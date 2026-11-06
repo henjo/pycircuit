@@ -348,6 +348,9 @@ typedef struct {
        `sets`) */
     long tc_sets;
     double *csp;
+    /* each pattern entry's row and column (`cpat` / n, `cpat` % n: the
+       estimate's product `tc_cmul` reads them, no division an entry) */
+    const int64_t *crow, *ccol;
 } loop_t;
 long pcx_loop(loop_t *s);
 

@@ -201,6 +201,20 @@ typedef struct {
                                      job's numbering; the last the total */
 } core_pool_job_t;
 
+/* THE PULL ON THE POOL's job (core.c's `pull_pool`): a pass's bins split in
+   blocks across the pool's threads -- the values the slots read (`V`), the
+   bins, the pass's runs (CORE_PULL_RMAX at most) with their sources and
+   written bins, and each run's first bin and first source */
+enum core_pull { CORE_PULL_RMAX = 64 };
+typedef struct {
+    const double *V;                 /* the values the pass's slots read (`vals`) */
+    double *bin;                     /* the pass's bins */
+    const int64_t *run, *ix, *wb;    /* its runs (count, bins), sources, written bins */
+    long nr, total;                  /* its runs and bins */
+    long boff[CORE_PULL_RMAX + 1];   /* each run's first bin, in the pass's order */
+    long xoff[CORE_PULL_RMAX + 1];   /* each run's first source index */
+} core_pull_job_t;
+
 /* a fused group's row in `ztab` (`_Core.__init__` writes it, core.c reads
    it): the group's elements, an element's inputs, the temperature's slot
    in a parameter row (-1: none), its passes (a PCX_PASS_* mask, q's bit

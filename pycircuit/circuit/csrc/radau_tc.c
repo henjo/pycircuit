@@ -146,9 +146,112 @@ static void tf_pair(const void *ctx, long lo, long hi)
     }
 }
 
+/* the iteration's complex solve into x1 and its residual check (from r1):
+   0, or the bail it hands back (RADAU_TC_BAIL_KLUSOLVE, _RESIDUAL) -- the
+   caller bails with it; its flags cleared where it passes.  Writes x1 and
+   the check's scratch alone, so it runs beside the real solve (`tf_solves`) */
+static long tf_complex(radau_tf_t *s, long m)
+{
+    long j, k;
+    memcpy(s->x1, s->r1, (size_t) (2 * m) * sizeof(double));
+    if (!((klu_solve_t) s->klu_solve)(s->Symbolic, s->Numeric, (int) m, 1, s->x1, s->Common))
+        return RADAU_TC_BAIL_KLUSOLVE;
+    /* (KLU's flags are not numpy's: cleared -- the refactor's too, a
+       worker's raised here by the pool) */
+    feclearexcept(FE_ALL_EXCEPT);
+    /* the residual check, decided outside the band numpy's `abs` and
+       SciPy's product can round apart from these: `solve_prepared`'s
+       max|A x - b| / max(max|b|, 1e-300) <= rtol passes only where it
+       passes by more than the band; anything else (not finite, a flag,
+       failing or too near) hands back and the Python decides.  Where
+       the product is SciPy's own (`exact`) only `abs` can round apart:
+       the band's product term is zero, its sum not made */
+    {
+        /* the arrays in locals, the inner bound read once: `hypot` is a
+           libm call that may write memory as far as the compiler knows,
+           so a struct field read after one is reloaded -- a local is not
+           (the same values, the same operations in the same order) */
+        const double *r1 = s->r1, *x1 = s->x1, *Ax = s->Ax;
+        const int *Ap = s->Ap, *Ai = s->Ai;
+        const long exact = s->exact;
+        double *y1 = s->y1, *ab = s->ab;
+        double sc = 0.0, res = 0.0, bnd = 0.0, band;
+        for (k = 0; k < m; k++) {
+            double a = hypot(r1[2 * k], r1[2 * k + 1]);
+            if (!(a <= DBL_MAX)) return RADAU_TC_BAIL_RESIDUAL;
+            if (a > sc) sc = a;
+        }
+        /* Python's max(sc, 1e-300); sc is finite here */
+        if (!(sc >= 1e-300)) sc = 1e-300;
+        memset(y1, 0, (size_t) (2 * m) * sizeof(double));
+        memset(ab, 0, (size_t) m * sizeof(double));
+        /* y1 = A x1 and, unless exact, ab_k = sum_j |A_kj| |x1_j|,
+           column by column (exact: ab stays zero) */
+        for (j = 0; j < m; j++) {
+            const double xr = x1[2 * j], xi = x1[2 * j + 1];
+            const long kend = Ap[j + 1];
+            if (exact) {
+                for (k = Ap[j]; k < kend; k++) {
+                    const long row = Ai[k];
+                    const double ar = Ax[2 * k], ai = Ax[2 * k + 1];
+                    y1[2 * row] += ar * xr - ai * xi;
+                    y1[2 * row + 1] += ar * xi + ai * xr;
+                }
+                continue;
+            }
+            const double xa = hypot(xr, xi);
+            for (k = Ap[j]; k < kend; k++) {
+                const long row = Ai[k];
+                const double ar = Ax[2 * k], ai = Ax[2 * k + 1];
+                y1[2 * row] += ar * xr - ai * xi;
+                y1[2 * row + 1] += ar * xi + ai * xr;
+                ab[row] += hypot(ar, ai) * xa;
+            }
+        }
+        for (k = 0; k < m; k++) {
+            const double a = hypot(y1[2 * k] - r1[2 * k], y1[2 * k + 1] - r1[2 * k + 1]);
+            if (!(a <= DBL_MAX)) return RADAU_TC_BAIL_RESIDUAL;
+            if (a > res) res = a;
+            if (ab[k] > bnd) bnd = ab[k];
+        }
+        /* an overflow, invalid or divide in the check's own arithmetic
+           hands back */
+        if (fetestexcept(TC_FLAGS)) return RADAU_TC_BAIL_RESIDUAL;
+        res = res / sc;
+        /* the band: 32 (m + 4) eps of max_k sum_j |A_kj| |x_j| over
+           max|b| (zero where exact), plus 16 eps of the residual */
+        band = (32.0 * (double) (m + 4)) * DBL_EPSILON * (bnd / sc) + 16.0 * DBL_EPSILON * res;
+        if (!(res + band <= s->rtol)) return RADAU_TC_BAIL_RESIDUAL;
+        feclearexcept(FE_ALL_EXCEPT);
+    }
+    return 0;
+}
+
+/* THE TWO SOLVES SIDE BY SIDE: an iteration with no refactor due, the real
+   solve (item 0, `tf_real`) and the complex solve with its residual check
+   (item 1, `tf_complex`) -- independent: each its own factor, numeric,
+   common and buffers -- as a job of the pool, from TF_SOLVES_MIN unknowns.
+   Their outcomes are read after both in the order the one-after-the-other
+   loop meets them (the real's bail first, its step's finiteness, then the
+   complex one's); a complex solve made beside a real bail writes only its
+   scratch, which nothing reads after a bail */
+enum { TF_SOLVES_MIN = 1000 };
+
+static void tf_solves(const void *ctx, long lo, long hi)
+{
+    tf_solves_t *p = (tf_solves_t *) ctx;
+    long i;
+    for (i = lo; i < hi; i++) {
+        if (i == 0)
+            p->real = tf_real(p->s, p->m);
+        else
+            p->complex = tf_complex(p->s, p->m);
+    }
+}
+
 static long tf_newton(radau_tf_t *s)
 {
-    long n = s->n, m = n - 1, r = s->iref, it, i, j, k, e;
+    long n = s->n, m = n - 1, r = s->iref, it, i, j, k, e, cplx;
     core_fn_t core = (core_fn_t) s->core_fn;
     walk_fn_t walk = (walk_fn_t) s->walk_fn;
     const double h = s->h;
@@ -232,12 +335,22 @@ static long tf_newton(radau_tf_t *s)
                a record -- side by side on the pool where it is due and the
                pool runs (`tf_pair`), else one after the other */
             tf_pair_t pj = {s, m, 0, 1};
+            tf_solves_t sj = {s, m, 0, 0};
             int both = !s->klu_fresh;
+            cplx = -1;
             if (both && s->pool_fn && s->nthreads > 1
-                && ((pool_fn_t) s->pool_fn)((void *) tf_pair, &pj, 2, s->nthreads))
+                && ((pool_fn_t) s->pool_fn)((void *) tf_pair, &pj, 2, s->nthreads)) {
                 s->paired++;
-            else
+            } else if (!both && m >= TF_SOLVES_MIN && s->pool_fn && s->nthreads > 1
+                       && ((pool_fn_t) s->pool_fn)((void *) tf_solves, &sj, 2, s->nthreads)) {
+                /* (the flags the items left: none -- each clears its own) */
+                feclearexcept(FE_ALL_EXCEPT);
+                pj.real = sj.real;
+                cplx = sj.complex;
+                s->paired++;
+            } else {
                 tf_pair(&pj, 0, both ? 2 : 1);
+            }
             if (pj.real) return tf_bail(s, pj.real);
             for (k = 0; k < m; k++) if (!isfinite(s->x0[k])) return tf_bail(s, RADAU_TC_BAIL_STEP);
             if (both) {
@@ -246,76 +359,9 @@ static long tf_newton(radau_tf_t *s)
                 s->refactored++;
             }
         }
-        memcpy(s->x1, s->r1, (size_t) (2 * m) * sizeof(double));
-        if (!((klu_solve_t) s->klu_solve)(s->Symbolic, s->Numeric, (int) m, 1, s->x1, s->Common))
-            return tf_bail(s, RADAU_TC_BAIL_KLUSOLVE);
-        /* (KLU's flags are not numpy's: cleared -- the refactor's too, a
-           worker's raised here by the pool) */
-        feclearexcept(FE_ALL_EXCEPT);
-        /* the residual check, decided outside the band numpy's `abs` and
-           SciPy's product can round apart from these: `solve_prepared`'s
-           max|A x - b| / max(max|b|, 1e-300) <= rtol passes only where it
-           passes by more than the band; anything else (not finite, a flag,
-           failing or too near) hands back and the Python decides.  Where
-           the product is SciPy's own (`exact`) only `abs` can round apart:
-           the band's product term is zero, its sum not made */
         {
-            /* the arrays in locals, the inner bound read once: `hypot` is a
-               libm call that may write memory as far as the compiler knows,
-               so a struct field read after one is reloaded -- a local is not
-               (the same values, the same operations in the same order) */
-            const double *r1 = s->r1, *x1 = s->x1, *Ax = s->Ax;
-            const int *Ap = s->Ap, *Ai = s->Ai;
-            const long exact = s->exact;
-            double *y1 = s->y1, *ab = s->ab;
-            double sc = 0.0, res = 0.0, bnd = 0.0, band;
-            for (k = 0; k < m; k++) {
-                double a = hypot(r1[2 * k], r1[2 * k + 1]);
-                if (!(a <= DBL_MAX)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
-                if (a > sc) sc = a;
-            }
-            /* Python's max(sc, 1e-300); sc is finite here */
-            if (!(sc >= 1e-300)) sc = 1e-300;
-            memset(y1, 0, (size_t) (2 * m) * sizeof(double));
-            memset(ab, 0, (size_t) m * sizeof(double));
-            /* y1 = A x1 and, unless exact, ab_k = sum_j |A_kj| |x1_j|,
-               column by column (exact: ab stays zero) */
-            for (j = 0; j < m; j++) {
-                const double xr = x1[2 * j], xi = x1[2 * j + 1];
-                const long kend = Ap[j + 1];
-                if (exact) {
-                    for (k = Ap[j]; k < kend; k++) {
-                        const long row = Ai[k];
-                        const double ar = Ax[2 * k], ai = Ax[2 * k + 1];
-                        y1[2 * row] += ar * xr - ai * xi;
-                        y1[2 * row + 1] += ar * xi + ai * xr;
-                    }
-                    continue;
-                }
-                const double xa = hypot(xr, xi);
-                for (k = Ap[j]; k < kend; k++) {
-                    const long row = Ai[k];
-                    const double ar = Ax[2 * k], ai = Ax[2 * k + 1];
-                    y1[2 * row] += ar * xr - ai * xi;
-                    y1[2 * row + 1] += ar * xi + ai * xr;
-                    ab[row] += hypot(ar, ai) * xa;
-                }
-            }
-            for (k = 0; k < m; k++) {
-                const double a = hypot(y1[2 * k] - r1[2 * k], y1[2 * k + 1] - r1[2 * k + 1]);
-                if (!(a <= DBL_MAX)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
-                if (a > res) res = a;
-                if (ab[k] > bnd) bnd = ab[k];
-            }
-            /* an overflow, invalid or divide in the check's own arithmetic
-               hands back */
-            if (fetestexcept(TC_FLAGS)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
-            res = res / sc;
-            /* the band: 32 (m + 4) eps of max_k sum_j |A_kj| |x_j| over
-               max|b| (zero where exact), plus 16 eps of the residual */
-            band = (32.0 * (double) (m + 4)) * DBL_EPSILON * (bnd / sc) + 16.0 * DBL_EPSILON * res;
-            if (!(res + band <= s->rtol)) return tf_bail(s, RADAU_TC_BAIL_RESIDUAL);
-            feclearexcept(FE_ALL_EXCEPT);
+            long cst = cplx >= 0 ? cplx : tf_complex(s, m);
+            if (cst) return tf_bail(s, cst);
         }
         /* `_transform_back`: dY_i = V_i0 w0 + 2 Re(V_i1 w1), the complex
            product whole (its flags), as numpy makes it; then a w0 and 2.0

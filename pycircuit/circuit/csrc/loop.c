@@ -817,11 +817,10 @@ static long stage_u(loop_t *s, loop_attempt_t *a, double tt, long row)
 static void tc_cmul(const loop_t *s, const double *C, int packed, const double *F, double *y)
 {
     long n = s->n, k;
+    const int64_t *row = s->crow, *col = s->ccol;
     for (k = 0; k < n; k++) y[k] = 0.0;
-    for (k = 0; k < s->cnpat; k++) {
-        long p = (long) s->cpat[k], i = p / n;
-        y[i] += (packed ? C[k] : C[p]) * F[p - i * n];
-    }
+    for (k = 0; k < s->cnpat; k++)
+        y[row[k]] += (packed ? C[k] : C[s->cpat[k]]) * F[col[k]];
 }
 
 /* `_radau_error_estimate` with the cost transform off (a fresh real

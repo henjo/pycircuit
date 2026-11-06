@@ -170,6 +170,16 @@ typedef struct {
     long real;            /* OUT: the real solve's -- 0, or its bail */
     int complex;          /* OUT: the complex refactor's -- KLU's ok */
 } tf_pair_t;
+
+/* the iteration's two solves as a job of the pool (radau_tc.c's
+   `tf_solves`): its transform, the real factor's size and each item's
+   outcome */
+typedef struct {
+    radau_tf_t *s;        /* the transform */
+    long m;               /* the reduced size */
+    long real;            /* OUT: the real solve's -- 0, or its bail */
+    long complex;         /* OUT: the complex solve's and its check's -- 0, or the bail */
+} tf_solves_t;
 long pcx_radau_tc(radau_tf_t *s);
 
 /* pcx_radau_tc's result, left in `status` too (`_tran_radau_tc.BAIL` names the

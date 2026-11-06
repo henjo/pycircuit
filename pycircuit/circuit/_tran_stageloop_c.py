@@ -467,6 +467,14 @@ def _bind_pattern(run, core, keep):
     keep.append(pat)
     keep.append(run.ffi.from_buffer('int64_t *', pat))
     run.s.cpat, run.s.cnpat = keep[-1], int(pat.shape[0])
+    ## (each entry's row and column, for the estimate's product: `tc_cmul`)
+    n = int(run.s.n)
+    row = np.ascontiguousarray(pat // max(n, 1), dtype=np.int64)
+    col = np.ascontiguousarray(pat - row * n, dtype=np.int64)
+    for a, field in ((row, 'crow'), (col, 'ccol')):
+        keep.append(a)
+        keep.append(run.ffi.from_buffer('int64_t *', a))
+        setattr(run.s, field, keep[-1])
     run.s.est_pat = int(run.s.n >= _tran_radau.PATTERN_FROM and bool(core.npat))
 
 
