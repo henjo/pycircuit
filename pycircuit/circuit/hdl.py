@@ -5694,11 +5694,20 @@ def _params_of(self):
     ## Values from the RESOLVED iparv, plus the givenness flags from
     ## `ipar` -- givenness is a property of what the user wrote, and only
     ## `ipar` records that (see ParameterDict.update_values).
-    vals = [getattr(self.iparv, name) for name in self._hdl_paramnames]
+    vals = _param_values(self.iparv, self._hdl_paramnames)
     ipar = self.ipar
     vals += [1.0 if ipar.is_given(nm) else 0.0
              for nm in self._hdl_given_names]
     return vals
+
+
+def _param_values(iparv, names):
+    """`[getattr(iparv, n) for n in names]` -- in bulk where `iparv` is a
+    ParameterDict (`values_of`)."""
+    f = getattr(type(iparv), 'values_of', None)
+    if f is None:
+        return [getattr(iparv, n) for n in names]
+    return f(iparv, names)
 
 
 def _epar_T(epar):

@@ -668,6 +668,28 @@ def _solver(ls, m):
     return ch
 
 
+def _reduced_J(rec):
+    """The Schur matrix J without the reference's row and column, as
+    `J[np.ix_(keep, keep)]` makes it -- at size (`_tran_core.paged`) on
+    pattern pages, its values at the core's pattern reduced (J is zero off
+    it: nothing writes it there), the counts made at that pattern."""
+    from pycircuit.circuit import _tran_core
+    n = rec.n
+    keep = rec.red >= 0
+    J = rec.buf['J']
+    if not _tran_core.paged(rec.core):
+        return J.reshape(n, n)[np.ix_(keep, keep)]
+    pat = np.asarray(rec.core.arrays['pat'], dtype=np.int64)
+    I, K = pat // n, pat % n
+    on = keep[I] & keep[K]
+    m = int(keep.sum())
+    red = np.asarray(rec.red, dtype=np.int64)
+    rp = red[I[on]] * m + red[K[on]]
+    R = _tran_core.pattern_pages(m, rp)
+    R.reshape(-1)[rp] = J[pat[on]]
+    return R
+
+
 def _choose(rec, ls):
     """After PCNRDC_CHOOSE: the AutoSolver's choice on the first reduced
     Schur matrix, as the Python's first solve makes it -- `_select`, and
@@ -675,9 +697,7 @@ def _choose(rec, ls):
     `_analysed` first) -- then the record bound to it.  None, or why not:
     the Python's solve runs ('foreign': `_ours` declines the matrix)."""
     from pycircuit.circuit.linearsolver import StructuralKLU
-    n = rec.n
-    keep = rec.red >= 0
-    R = rec.buf['J'].reshape(n, n)[np.ix_(keep, keep)]
+    R = _reduced_J(rec)
     ch = ls._select(R)
     if ch is ls._dense:
         rec.bind(None)

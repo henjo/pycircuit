@@ -118,8 +118,11 @@ class PcnrDevice(object):
         epoch = ParameterDict._epoch
         if cached is not None and cached[0] is epoch:
             return cached[1]
-        params = {p.name: getattr(element.iparv, p.name)
-                 for p in element.instparams}
+        names = [p.name for p in element.instparams]
+        iparv = element.iparv
+        f = getattr(type(iparv), 'values_of', None)
+        params = dict(zip(names, f(iparv, names) if f is not None
+                          else [getattr(iparv, n) for n in names]))
         ipar = getattr(element, 'ipar', None)
         for nm in getattr(element, '_hdl_given_names', ()) or ():
             params['$given:' + nm] = (1.0 if ipar is not None

@@ -271,6 +271,20 @@ class ParameterDict(ObserverSubject):
             self._parameters[key] = parameter
             self._values[key] = parameter.default
 
+    def values_of(self, names):
+        """`[getattr(self, n) for n in names]`: a parameter's value read
+        from the values where attribute lookup would reach `__getattr__`
+        (no attribute of its name on the instance or its class), each
+        other name by `getattr` itself."""
+        d, vals, params, cls = self.__dict__, self._values, self._parameters, type(self)
+        out = []
+        for n in names:
+            if n in params and n not in d and not hasattr(cls, n):
+                out.append(vals[n])
+            else:
+                out.append(getattr(self, n))
+        return out
+
     def __getattr__(self, key):
         if key != '_parameters' and hasattr(self, '_parameters') and \
                 key in self._parameters:

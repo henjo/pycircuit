@@ -14249,3 +14249,34 @@ couplings' branch columns -- each caught.
 **Gate** (the main tree): the suite 6 312 passed; the pinned pairs re-recorded after their twins' tests (11 of them: the assembly loops' and the kernel call's on the twin side (`_stamp_plan`, `_hdl_batch`); the DC base solve's, the Newton solve's, the PCNR DC solve's, the branch screen's, the coupled stage Newton's, the error test's, the transform loop's and the transform solve's on the reference side (`linearsolver`'s `_ours`, `_tran_branch`, `_tran_radau`'s `_same_matrix`); the transform Newton's on both); the 27
 gold decks under gear2, Radau and DC against HEAD 48cdfb96: every digest, count and path count the same; the chain's
 digests the same (1 us gear2 at 2 000 and 4 000 stages, 100 ns Radau at 2 000 and 4 000 -- their times taken beside the suite, not read).
+
+## 2026-11-06 — 274. The operating point's setup at size -- the node map's 2-D indices by `np.repeat` and `np.tile` (a `meshgrid` an element was most of the map, the circuit's and the PCNR view's), the parameters read in bulk (`ParameterDict.values_of`: the PCNR's device dicts, the C kernels' packs), the PCNR's first reduced Schur matrix on pattern pages: the 8 000-stage chain's 100 ns Radau solve 4.04 -> 3.56 s (1.135x), its op 1.41 -> 0.94 s; the 4 000-stage's 1.65 -> 1.49 s (1.102x); every result the same
+
+**Why**  Andreas, plan 261's L8-L10: "Take all three items" (the op, the first Python attempts, the C loop).  Sized
+(p261/l8/op.py, the op profiled alone, 8 000 stages: 2.51 s profiled, 1.39 s real): the PCNR view's node map
+(`update_node_map`: a list, an array and a `meshgrid` an element) 0.39, the record's device tables 0.42, `v_lim_init`
+0.39 and `refine` 0.38 -- each first reading every device's parameters through `ParameterDict.__getattr__` (624 000
+calls: `pcnr.params`, `hdl._params_of`) --, `_choose` 0.31 (J's reduced copy by `np.ix_`, n x n, and two dense
+counts of it), the C solve 0.24.
+
+**Built.**  `Circuit.update_node_map`: an element's 2-D indices `(np.repeat(nm, k), np.tile(nm, k))` -- `meshgrid(nm,
+nm, indexing='ij')` flattened, the same int64 arrays (the circuit's build too).  `ParameterDict.values_of(names)`:
+`[getattr(self, n) ...]` with a parameter's value read from the values where attribute lookup would reach
+`__getattr__` (no attribute of its name on the instance or its class), every other name by `getattr`;
+`hdl._params_of` (`_param_values`) and `PCNRDevice.params` read through it.  `_pcnr_c._reduced_J`: the first
+reduced Schur matrix as `J[np.ix_(keep, keep)]` makes it, at size on pattern pages at the core's pattern reduced (J
+zero off it: nothing writes it there), `_select`'s and `_ours`' counts made there.
+
+**Measured** (LINE set before building, in one form: the 8 000-stage chain's 100 ns Radau solve >= 1.10x and the
+4 000-stage's >= 1.05x, the 4 000-stage 1 us >= 0.97x, medians of 3 interleaved pairs against HEAD 824cccf3; no peak
+higher by more than 2 %; every result the same): the 8 000-stage 100 ns Radau solve 4.022 / 4.045 / 4.038 -> 3.557 / 3.559 / 3.557 s, 1.131 / 1.137 / 1.135x, the median 1.135x (the op 1.40-1.41 -> 0.94-0.95 s), peak 2 134 -> 2 139-2 141 MB (+0.3 %) -- MET; the 4 000-stage 100 ns 1.642 / 1.653 / 1.651 -> 1.490 / 1.480 / 1.514 s, 1.102 / 1.117 / 1.090x, the median 1.102x -- MET; the 4 000-stage 1 us 2.786 / 2.777 / 2.801 -> 2.616 / 2.615 / 2.613 s, 1.065 / 1.062 / 1.072x, the median 1.065x -- MET; every digest the same (load 1.47-1.87).
+
+**Tests.**  test_op_setup (new, 3): the node map's 2-D indices are `meshgrid`'s (values, dtype, order, no shared
+memory between them) on a chain with branches; `values_of` reads every name as `getattr` does (a parameter, one
+shadowed by an instance attribute, one by a class method, an unknown name's AttributeError); the reduced Schur
+matrix on pattern pages is the dense `np.ix_` one's bytes.  Mutations -- the map's columns, the shadow test, the
+reduced matrix's orientation -- each caught.
+
+**Gate** (the main tree): the suite 6 325 passed; the pinned pairs re-recorded after their twins' tests (1: the PCNR DC solve's on its twin side (`_pcnr_c`'s reduced Schur matrix)); the 27
+gold decks under gear2, Radau and DC against HEAD 824cccf3: every digest, count and path count the same; the chain's
+digests the same.

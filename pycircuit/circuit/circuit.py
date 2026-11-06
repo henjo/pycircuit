@@ -1667,10 +1667,13 @@ class SubCircuit(Circuit):
                 self._map_indices_1d[instance_name] = nodemap
                 
                 # For 2D matrix stamping (e.g. G, C)
-                # We need all (row, col) combinations
-                # meshgrid(nodemap, nodemap, indexing='ij') creates the grid
-                rows, cols = np.meshgrid(nodemap, nodemap, indexing='ij')
-                self._map_indices_2d[instance_name] = (rows.flatten(), cols.flatten())
+                # We need all (row, col) combinations: meshgrid(nodemap,
+                # nodemap, indexing='ij') flattened -- each entry repeated
+                # for every column, the map tiled for every row (the same
+                # arrays, without meshgrid's broadcasting an element)
+                k = len(nodemap)
+                self._map_indices_2d[instance_name] = (np.repeat(nodemap, k),
+                                                       np.tile(nodemap, k))
             else:
                 self._nodemap = None
 
