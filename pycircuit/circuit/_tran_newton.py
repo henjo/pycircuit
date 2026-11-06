@@ -369,8 +369,9 @@ class _StepNewton:
 
             def judged(x, J):
                 ## (the seed's J copied: an evaluation may write the next
-                ## one into the same buffer)
-                seen.append(np.array(J, copy=True) if not seen else J)
+                ## one into the same buffer; a later evaluation counted, its
+                ## J not kept -- the full Newton's are n x n each)
+                seen.append(np.array(J, copy=True) if not seen else None)
                 if len(seen) == 2 and armed:
                     est = self._early_estimate(arm, x, seen[0], chord, linsolver)
                     _paths.COUNTS['early:checks'] += est is not None
@@ -485,7 +486,15 @@ class _StepNewton:
                 raise
         except LinAlgError as e:
             raise SingularMatrix(str(e)) from e
-        
+        finally:
+            ## (the chord's residual is `residual_s`, which judges through
+            ## `judged`, which reads the chord: the residual dropped once the
+            ## solve is done, or the two hold each other -- the seed's J and
+            ## the chord's numeric with them -- until the cycle collector
+            ## runs, n x n arrays piling up an attempt at a time)
+            if chord is not None:
+                chord.eval_F = None
+
         ## Stage 6(c): the Newton iterations, counted.
         ## History: `doc/transient_history.md`, `Transient._newton`.
         stats = getattr(self, 'statistics', None)

@@ -13875,3 +13875,36 @@ max without abs, positives only, the reference kept, the plan never used -- each
 C twin's tests; the 27 gold decks under gear2, Radau and DC against HEAD de1ba2df interleaved: every digest, count
 and path count the same; the chain's 2 ns digests and structural rank the same at 2 000, 4 000 and 8 000 stages
 under both methods.
+
+## 2026-11-06 — 265. The step Newton lets go of its attempt -- the early abort's `judged` keeps the seed's Jacobian alone and the chord's residual is dropped once the solve is done, where the chord, its residual and `judged` held each other and every armed attempt's n x n arrays waited for the cycle collector: a 4 000-stage chain's 1 us gear2 solve peak memory 7.6 -> 2.9 GB, its time the same, every result the same
+
+**Why**  Andreas, plan 261's L4 (the Python paths' dense state): "Start L4".  Sizing found the memory of a long
+Gear-2 run at size climbing with every hand-back of the C loop: at 4 000 stages +850 MB each, a 1 us run from
+2.0 to 7.3 GB resident; at 2 000 +208 MB; at 8 000 ~3.4 GB, a 100 ns run killed at an 11 GB cap.  The memory was
+in unreachable cycles (a collection forced at each hand-back: peak 7.6 -> 3.4 GB, the digest the same): armed by
+the early abort (132), `_StepNewton._newton` judges every evaluation through `judged`, which appended each
+Jacobian to `seen` -- it reads the seed's copy and the count -- and reads the chord; the chord's residual is
+`residual_reduced` -> `residual_s` -> `judged`.  So the chord, the closures, every full-Newton Jacobian of the
+attempt and the chord's dense numeric held each other until the cycle collector ran, which a solve's few container
+allocations seldom trigger.
+
+**Built.**  `judged` appends the seed's J copied and a None for each later evaluation (the count the same, no later
+J kept); a `finally` on the solve drops the chord's residual (`chord.eval_F = None`; nothing reads it after the
+solve -- the statistics, the error test's held factors and the damped retry read `fallbacks`, `fac` and `func`).
+The attempt's arrays go when `_newton` returns, an exception's path included (the early abort, a failed solve).
+
+**Measured** (LINE set before building, in one form: the 4 000-stage chain's 1 us gear2 solve's peak RSS at most
+4.0 GB (HEAD 7.6), and the 8 000-stage chain's 100 ns gear2 solve finishing under the 11 GB cap; GUARD its time
+>= 0.98x, the median of 3 interleaved pairs): peak 7.6 -> 2.9 GB (7 629 / 7 622 / 7 618 -> 2 894 / 2 896 / 2 895 MB),
+time 8.74 / 8.72 / 8.66 -> 8.74 / 8.70 / 8.52 s, 1.002x, the digest the same.  The 8 000-stage 100 ns run is still
+killed: the leak was not that run's only wall -- the operating point's and the loops' dense records, ~9.4 GB resident at that size before a hand-back's Python attempt adds its own -- and Andreas accepted the stage as measured (2026-11-06), that fit left to the records' compact buffers (plan 261's L4d).
+
+**Tests.**  test_step_newton_release (new, 2), on the Python loop and Newton (the C twins off) over a coupled MOS
+chain: an armed chord attempt leaves no chord and no arm to the cycle collector (the collector held off through
+the run, then made to save what it finds); an armed full Newton holds no earlier Jacobian than the seed's at any
+evaluation (weak references).  Each half of the fix undone is caught by its test.
+
+**Gate** (the main tree): the suite 6 230 passed; the pinned pair 'the Newton solve and its C' re-recorded on its
+reference side (`_StepNewton._newton`) after its C twin's tests (test_early_abort's three paths bit for bit,
+test_newton_c); the 27 gold decks under gear2, Radau and DC against HEAD 4bd27292: every digest, count and path
+count the same; the chain's digests (1 us gear2, 100 ns Radau) the same at 2 000 and 4 000 stages.

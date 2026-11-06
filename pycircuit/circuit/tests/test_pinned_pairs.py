@@ -1167,7 +1167,7 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('c040e4958487', '871359358120'),
+    'the Newton solve and its C': ('c007be69194a', '871359358120'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '3aefa105ff7f'),
     'the error test and its C': ('8b8bedeaeee6', '86973b1f9665'),
     'the DC base solve and its C': ('e4b48ddc5ebc', '5fb2c849f8c3'),
