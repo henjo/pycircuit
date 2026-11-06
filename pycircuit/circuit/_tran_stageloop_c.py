@@ -459,11 +459,15 @@ def _bind_pattern(run, core, keep):
     """The core's pattern for the loop's passes (loop.h's `cpat`): where the
     core writes only its pattern (`pass_zero`) C is written there alone and
     G copied from its bin there alone, the buffers zero off it -- as every
-    C and G of the circuit is."""
+    C and G of the circuit is.  The estimate's product on it (`est_pat`) by
+    the Python's rule (`_tran_radau._est_pattern`): `PATTERN_FROM` unknowns
+    or more, the pattern held."""
+    from pycircuit.circuit import _tran_radau
     pat = np.ascontiguousarray(core.arrays['pat'], dtype=np.int64)
     keep.append(pat)
     keep.append(run.ffi.from_buffer('int64_t *', pat))
     run.s.cpat, run.s.cnpat = keep[-1], int(pat.shape[0])
+    run.s.est_pat = int(run.s.n >= _tran_radau.PATTERN_FROM and bool(core.npat))
 
 
 def _bind(e):

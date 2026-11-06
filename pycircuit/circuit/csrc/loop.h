@@ -330,6 +330,13 @@ typedef struct {
        gathered from */
     long tc_packed;
     double *cs;
+    /* THE ESTIMATE ON THE PATTERN (`_tran_radau.PATTERN_FROM` unknowns or
+       more, the core's pattern held: `_tran_radau._est_pattern`): 1, the
+       estimate's and the early check's C F1 -- `tc_estimate`, `tc_check`,
+       `stage_estimate` -- each row's pattern entries' products added in
+       `cpat`'s order to +0.0 (`tc_cmul`, `_tran_radau._c_times`); 0, numpy's
+       dgemv on the dense C */
+    long est_pat;
 } loop_t;
 long pcx_loop(loop_t *s);
 

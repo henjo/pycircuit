@@ -1001,6 +1001,9 @@ PAIRS = {
                       'pycircuit.circuit._tran_radau:_RadauStages._coupled_stage_solver',
                       'pycircuit.circuit._tran_radau:_RadauStages._finish_radau',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_error_estimate',
+                      ## (the estimate's product on C's pattern, roadmap 267)
+                      'pycircuit.circuit._tran_radau:_c_times',
+                      'pycircuit.circuit._tran_radau:_est_pattern',
                       'pycircuit.circuit._tran_branch:_BranchCheck._branch_after_coupled',
                       'pycircuit.circuit._tran_predictor:_StagePredictor._pred_stages',
                       'pycircuit.circuit._tran_predictor:_StagePredictor._pred_note',
@@ -1073,6 +1076,9 @@ PAIRS = {
                       'pycircuit.circuit._tran_radau:_RadauStages._stage_end_passes',
                       'pycircuit.circuit._tran_radau:_RadauStages._finish_radau',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_error_estimate',
+                      ## (the estimate's product on C's pattern, roadmap 267)
+                      'pycircuit.circuit._tran_radau:_c_times',
+                      'pycircuit.circuit._tran_radau:_est_pattern',
                       'pycircuit.circuit._tran_radau:_FrozenTransform.real_solve',
                       'pycircuit.circuit._tran_radau:_FrozenTransform.solve',
                       'pycircuit.circuit._tran_branch:_BranchCheck._branch_after_coupled',
@@ -1160,7 +1166,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('2d7d9389254e', '311ee4f71b2c'),
+    'the stepping loop and its C': ('2d7d9389254e', '1b7d839ec3f4'),
     'the predictor and its C': ('9e611c84de5a', '742900742543'),
     'the branch screen and its C': ('6f02db20ad91', 'b1e87f1e72ff'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -1181,7 +1187,7 @@ RECORD = {
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('452d7ce7ee62', '98eeb58579b3'),
     "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),
-    "the stage paths' passes and the core's": ('6baa9d0e9097', 'bfe7decb7543'),
+    "the stage paths' passes and the core's": ('96a46be591fd', 'bfe7decb7543'),
     'the coupled stage Newton and its C': ('f60e1fbd1b54', 'd9d3affb6e74'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
@@ -1193,15 +1199,15 @@ RECORD = {
     'the stage step map and its C': ('39f2d0f63b0f', 'd0832a7ac48a'),
     'the KLU step map and its C': ('5b9b1f672523', '391236f7a715'),
     'the stage walk and its C': ('a918e57085a2', '2dc272dbd0b4'),
-    'the multistep walk and its C': ('6fc3f3705622', '9271a5255a9a'),
+    'the multistep walk and its C': ('6fc3f3705622', '5fb85a0facd2'),
     'the multistep step map and its C': ('985dde19187d', '655a5848539a'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
     'the readiness reads and their stamps': ('df49581ecd32', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('adafe855310f', '5e42cc1d1ef4'),
-    'the transform loop and its C': ('130b32fa9f2c', '6e64afa7026b'),
+    'the stage loop and its C': ('6f049e4ee8dc', 'e67606212d73'),
+    'the transform loop and its C': ('ecc9dd254ff1', '968464fe4251'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

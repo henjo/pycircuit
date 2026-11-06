@@ -808,6 +808,20 @@ static long stage_u(loop_t *s, loop_attempt_t *a, double tt, long row)
     return 0;
 }
 
+/* C F where `est_pat` (`_tran_radau._c_times`): each row's pattern entries'
+   products C[i, j] F[j] added in `cpat`'s order (row-major) to +0.0 --
+   `np.bincount`'s sequential sums; `packed` C the pattern's values in its
+   order, else n x n */
+static void tc_cmul(const loop_t *s, const double *C, int packed, const double *F, double *y)
+{
+    long n = s->n, k;
+    for (k = 0; k < n; k++) y[k] = 0.0;
+    for (k = 0; k < s->cnpat; k++) {
+        long p = (long) s->cpat[k], i = p / n;
+        y[i] += (packed ? C[k] : C[p]) * F[p - i * n];
+    }
+}
+
 /* `_radau_error_estimate` with the cost transform off (a fresh real
    factor) into the error test's `lte`: F1 = (dd1 Z1 + dd2 Z2 + dd3 Z3) / h
    (Z_i = Y_i - x_n), the right-hand side C_n F1 + f0 (numpy's matmul,
@@ -829,8 +843,11 @@ static long stage_estimate(loop_t *s, const loop_attempt_t *a, const double *Y)
     for (i = 0; i < n; i++)
         F[i] = ((s->dd1 * (Y[i] - x[i]) + s->dd2 * (Y[n + i] - x[i]))
                 + s->dd3 * (Y[2 * n + i] - x[i])) / h;
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, a->rC, n, F, 1,
-                           0.0, rhs, 1);
+    if (s->est_pat)
+        tc_cmul(s, a->rC, 0, F, rhs);
+    else
+        ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, a->rC, n, F, 1,
+                               0.0, rhs, 1);
     for (i = 0; i < n; i++) rhs[i] = rhs[i] + (-(a->ri[i] + u0[i]));
     for (i = 0, ri = 0; i < n; i++) if (i != r) s->eb[ri++] = rhs[i];
     g = s->gamma_r / h;
@@ -1383,13 +1400,16 @@ static long tc_check(loop_t *s, loop_attempt_t *a)
         s->have_f0 = 1;
         s->f0_point = s->npoint - 1;
     }
-    Cn = tc_cdense(s, tc_xv(s, 2));
+    Cn = s->est_pat ? NULL : tc_cdense(s, tc_xv(s, 2));
     feclearexcept(FE_ALL_EXCEPT);
     for (i = 0; i < n; i++)
         F[i] = ((s->dd1 * (Y[i] - x[i]) + s->dd2 * (Y[n + i] - x[i]))
                 + s->dd3 * (Y[2 * n + i] - x[i])) / h;
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, Cn, n, F, 1,
-                           0.0, rhs, 1);
+    if (s->est_pat)
+        tc_cmul(s, tc_xv(s, 2), (int) s->tc_packed, F, rhs);
+    else
+        ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, Cn, n, F, 1,
+                               0.0, rhs, 1);
     for (i = 0; i < n; i++) rhs[i] = rhs[i] + s->tcf0[i];
     if (fetestexcept(flags)) return LOOP_BAIL_ESTIMATE;
     for (i = 0, ri = 0; i < n; i++) if (i != r) s->eb[ri++] = rhs[i];
@@ -1605,14 +1625,17 @@ static long tc_estimate(loop_t *s, loop_attempt_t *a)
     if ((tg_get(s, x) & need) == need) a->estmemo = 1;
     else a->xpass++;
     tc_xmake(s, need);
-    Cn = tc_cdense(s, tc_xv(s, 2));
+    Cn = s->est_pat ? NULL : tc_cdense(s, tc_xv(s, 2));
     in = tc_xv(s, 1);
     feclearexcept(FE_ALL_EXCEPT);
     for (i = 0; i < n; i++)
         F[i] = ((s->dd1 * (Y[i] - x[i]) + s->dd2 * (Y[n + i] - x[i]))
                 + s->dd3 * (Y[2 * n + i] - x[i])) / h;
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, Cn, n, F, 1,
-                           0.0, rhs, 1);
+    if (s->est_pat)
+        tc_cmul(s, tc_xv(s, 2), (int) s->tc_packed, F, rhs);
+    else
+        ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, Cn, n, F, 1,
+                               0.0, rhs, 1);
     for (i = 0; i < n; i++) rhs[i] = rhs[i] + (-(in[i] + u0[i]));
     if (fetestexcept(flags)) return LOOP_BAIL_ESTIMATE;
     for (i = 0, ri = 0; i < n; i++) if (i != r) s->eb[ri++] = rhs[i];

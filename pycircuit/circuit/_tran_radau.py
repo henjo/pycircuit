@@ -62,6 +62,42 @@ _NP_SOLVE = np.linalg.solve
 _DD = (-(13.0 + 7.0 * math.sqrt(6.0)) / 3.0, (-13.0 + 7.0 * math.sqrt(6.0)) / 3.0, -1.0 / 3.0)
 _NOCONV = 'Radau IIA(3) transform (simplified Newton) did not converge'
 _FROZEN = {}
+#: the unknowns from which the error estimate's ``C F1`` (`_radau_error_
+#: estimate`, `_radau_early_check`) sums C's pattern (`_c_times`) where the
+#: run's core holds one, not numpy's dense matmul (roadmap 267): a long
+#: 4 000-stage run 1.43x, its values moved ~1e-13 V at 2 000 stages with a
+#: coupling capacitor at every one (1.6e-9 of the tolerance, the same steps);
+#: every gold deck is under it, bit for bit as before
+PATTERN_FROM = 1000
+
+
+def _est_pattern(tr, n):
+    """``(pat, rows, cols)``: the run's core's pattern (n x n flat positions,
+    sorted: row-major) and its rows and columns where the estimate's product
+    sums it (`PATTERN_FROM` unknowns or more, the core's pattern held), else
+    None -- the rule loop.c's `est_pat` follows (`_tran_tcloop_c`,
+    `_tran_stageloop_c`)."""
+    if n < PATTERN_FROM or type(tr.toolkit) is not NumericToolkit:
+        return None
+    core = _tran_core.core_for(tr)
+    if core is None or not core.npat:
+        return None
+    pat = core.arrays['pat']
+    rows, cols = np.divmod(pat, n)
+    return pat, rows, cols
+
+
+def _c_times(C, F1, ep):
+    """``C F1``: numpy's matmul, or with the pattern `ep` (`_est_pattern`)
+    each row's pattern entries' products ``C[i, j] F1[j]`` added in the
+    pattern's order to +0.0 -- `np.bincount`'s weighted sums are one
+    sequential loop, loop.c's `tc_cmul` the same; an entry off the pattern is
+    zero (the pattern holds every position a matrix pass writes), and a zero
+    adds nothing to a sum of finite products."""
+    if ep is None:
+        return np.asarray(C @ F1)
+    pat, rows, cols = ep
+    return np.bincount(rows, weights=np.ravel(C)[pat] * F1[cols], minlength=F1.shape[0])
 
 
 def _transform_rhs(F0, F1, F2, p):
@@ -1097,7 +1133,7 @@ class _RadauStages:
             finally:
                 if snap is not None:
                     state_restore(snap)
-        rhs = np.asarray(Cn @ F1) + np.asarray(f0)
+        rhs = _c_times(Cn, F1, _est_pattern(self, F1.shape[0])) + np.asarray(f0)
         rhs_r = tk.concatenate((rhs[:iref], rhs[iref + 1:]))
         if (real is not None and type(tk) is NumericToolkit
                 and _same_matrix(Cn, real[0]) and _same_matrix(Gn, real[1])):
@@ -1487,7 +1523,7 @@ class _RadauStages:
                 pt = fam.early_f0 = (x0, -(i_n + ctx.src(ctx.tn)))
             xn = np.asarray(x0, dtype=float)
             F1 = (_DD[0] * (Y[0] - xn) + _DD[1] * (Y[1] - xn) + _DD[2] * (Y[2] - xn)) / h
-            rhs = np.asarray(real[0] @ F1) + pt[1]
+            rhs = _c_times(real[0], F1, _est_pattern(self, F1.shape[0])) + pt[1]
             iref = ctx.iref
             est_r = real[2](np.concatenate((rhs[:iref], rhs[iref + 1:])))
             err, ek = fam.normalised(arm.x_last, Y[2], arm.h, est_r, kept=True)

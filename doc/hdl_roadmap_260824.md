@@ -13953,3 +13953,48 @@ redundant (a Z-matrix with a zero diagonal has no such u) and its removal change
 (`_rank_by_blocks`, with `_unproved`, `_full_rank_bound`, `_inverse_norm_bound`, `_m_solves` and `_klu` named in it)
 after its C twin's tests; the 27 gold decks under gear2, Radau and DC against HEAD 2d3e1174: every digest, count and
 path count the same; the coupled chain's structural rank the same at 1 000, 2 000 and 4 000 stages.
+
+## 2026-11-06 — 267. Radau's error estimate on C's pattern -- from 1 000 unknowns, where the run's core holds its pattern, the estimate's and the early check's C F1 add each row's pattern products in the pattern's order to +0.0 (`np.bincount`'s sequential sums; loop.c's `tc_cmul` in its three twins), where numpy's dense matmul read every n x n entry: the 4 000-stage chain's 1 us Radau solve 6.13 -> 4.13 s (1.501x); under 1 000 unknowns -- every gold deck -- bit for bit as before, above it the values moved at rounding level (Andreas's decision)
+
+**Why**  Andreas, plan 261 L4: "yes to L4C and L4d and L4b", on the numbers of a prototype.  At size Radau's C loop
+was the estimate's product: `C_n F1` twice an attempt (the early check, the estimate) by numpy's dgemv on the dense
+C, its twin in loop.c -- 55 / 71 / 81 % of the loop at 2 000 / 4 000 / 8 000 stages (perf), the rest of an attempt
+linear.  On C's nonzeros the product is exact only in the BLAS's own summation order (lanes, blocks, a horizontal
+sum: tied to one OpenBLAS kernel) -- or in an order of our own, which moves the values at rounding level.  Asked
+what that does to accuracy, Andreas had it measured on a prototype (the C loop alone on the pattern): on a chain
+with a gate-drain capacitor at every stage (C's rows 3-5 entries), 1 us Radau, the same steps at 2 000 and 4 000
+stages (213 accepted, 19 rejected), step times within 4e-14 relative, 0.72 / 0.35 % of the stored values moved at
+all, by at most 9.5e-14 / 2.8e-14 V (1.6e-9 / 1.8e-10 of the tolerance); against a reltol-1e-7 reference both runs'
+errors the same to 2.5e-14 V; the plain chain (one nonzero a row) bit for bit.  Then: "yes".
+
+**Built.**  `_tran_radau.PATTERN_FROM` = 1 000.  `_est_pattern(tr, n)`: from that many unknowns, the numeric toolkit,
+the run's core holding its pattern -- `(pat, rows, cols)`, the core's pattern (sorted n x n positions: row-major) --
+else None.  `_c_times(C, F1, ep)`: numpy's matmul without one; with one ``np.bincount(rows, weights=C.ravel()[pat] *
+F1[cols])`` -- each row's products added in the pattern's order to +0.0, one sequential loop.  An entry off the
+pattern is zero (the pattern holds every position a matrix pass writes) and a zero on it adds nothing to a sum of
+finite products.  `_radau_error_estimate` and `_radau_early_check` take it.  loop.c: `est_pat` (loop.h, appended;
+`_tran_stageloop_c._bind_pattern` sets it by the same rule) and `tc_cmul` -- the same sums, the C packed or dense --
+in `tc_estimate`, `tc_check` and `stage_estimate`; the dense C a packed loop scatters for the product is made only
+where the dgemv reads it.  The C's flag test now sees the sums' flags too (bincount's are not numpy-checked): an
+overflowing sum hands back where numpy would not warn -- the Python's repeat then makes the same.
+
+**Measured** (LINE set before measuring, in one form: the plain 4 000-stage chain's 1 us Radau solve, p261/l4/split.py,
+against HEAD a1ab1a79, the median of 3 interleaved pairs, at least 1.3x): 6.008 / 6.209 / 6.179 -> 4.152 / 4.136 / 4.089 s, 1.447 / 1.501 / 1.511x, the median 1.501x -- MET (its C loop 3.2-3.5 -> 1.4 s; the digest the same: one nonzero a row).  The coupled 2 000-stage chain's
+1 us Radau solve 2.15 -> 1.69 s, its C loop 1.07 -> 0.62 s.
+
+**Tests.**  test_radau_estimate_pattern (new, 7): `_c_times` is each row's products summed in order (rows to 40
+entries, every scale, zeros on the pattern, signed zeros), numpy's matmul without a pattern and where a row has one
+entry; with the pattern from 10 unknowns the C loops make the Python's run bit for bit, their estimates and early
+checks counted alike, every binding with `est_pat` set -- the transform loop (`tc_estimate`, `tc_check`), the stage
+loop with the transform off (`stage_estimate`), the packed sets at 250 stages, and a victim node coupled to every
+other stage (the early check's largest entry on a row of ~20); under the default size `est_pat` 0 and the run
+numpy's, the switch live from 10.  Mutations -- the sums reversed, fused, the estimate's / the early check's /
+the stage estimate's product left dense, the Python's rule off, the glue's flag off, the Python's sums by
+`np.add.at` in reverse -- each caught.
+
+**Gate** (the main tree): the suite 6 244 passed; the pinned pairs re-recorded after their twins' tests -- the transform
+loop's and the stage loop's (reference: `_radau_error_estimate`, `_radau_early_check`, with `_c_times` and
+`_est_pattern` named in them; twin: loop.c), the stepping loop's and the multistep walk's (loop.c, loop.h in their
+texts), the stage paths' passes (`_radau_error_estimate`); the 27 gold decks under gear2, Radau and DC against HEAD
+a1ab1a79: every digest, count and path count the same; the plain chain's digests the same at 2 000 and 4 000 stages;
+the coupled chain the same steps at 2 000 and 4 000 stages, its values within 3.3e-13 / 5.2e-13 relative (|x| + 1 uV), the step times within 4e-14.
