@@ -1,0 +1,211 @@
+"""PATTERN PAGES FOR RADAU'S RECORDS (plan 261's L6a): at size
+(`_tran_core.paged`: a core with a pattern, `PATTERN_PAGES_FROM` entries)
+the n x n matrices a Radau run keeps -- the C transform loop's hand-back
+records (`_tran_tcloop_c._record`) and its `_Geq`, the passes' C and G
+(`_tran_core.passes`), the transform record's end sets and the copies it
+hands back -- go on pattern pages (`_tran_core.pattern_zeros`: private 4 KB
+pages, resident where written), where under huge pages a matrix written on
+its pattern alone was resident whole; and the operating point's PCNR
+scratch kept on the circuit is handed back after a transient's op
+(`_pcnr_c.release`).  Each is the same bytes: the run is the dense run, bit
+for bit."""
+import mmap
+import warnings
+
+import numpy as np
+import pytest
+
+from pycircuit.circuit import _paths, _pcnr_c, _tran_core, circuit
+from pycircuit.circuit import elements_hdl as eh
+from pycircuit.circuit.elements import VS, C, R, SubCircuit, VPulse, gnd
+from pycircuit.circuit.integrator import Gear2Integrator, RadauIIA3Integrator
+from pycircuit.circuit.transient import Transient
+
+
+def _chain(n):
+    """A pulsed MOS chain with gate-drain capacitors, one three stages back
+    at every third stage, and a junction's depletion charge at every fifth
+    node (C moving with the state)."""
+    c = SubCircuit()
+    c.add_node('vdd')
+    c['vdd'] = VS('vdd', gnd, v=1.8)
+    c.add_node('g0')
+    c['vin'] = VPulse('g0', gnd, v1=0.0, v2=1.8, td=2e-9, tr=1e-9, tf=1e-9, pw=2e-8, per=5e-8)
+    for k in range(n):
+        g = 'g0' if k == 0 else f'd{k - 1}'
+        c.add_node(f'd{k}')
+        c[f'rl{k}'] = R('vdd', f'd{k}', r=2e4)
+        c[f'M{k}'] = eh.MosLevel1Hdl(f'd{k}', g, gnd, gnd)
+        c[f'c{k}'] = C(f'd{k}', gnd, c=2e-14)
+        c[f'cm{k}'] = C(f'd{k}', g, c=2e-15)
+        if k >= 3 and k % 3 == 0:
+            c[f'cl{k}'] = C(f'd{k}', f'd{k - 3}', c=1e-15)
+        if k % 5 == 0:
+            c[f'D{k}'] = eh.DiodeSpiceHdl(gnd, f'd{k}', cjo=2e-14, vj=0.7, m=0.5)
+    return c
+
+
+def _b(a):
+    return np.asarray(a, dtype=float).tobytes()
+
+
+def _memo(tr):
+    """The device memo's records: each state's arrays' bytes, by generation."""
+    memo = tr.__dict__.get('_dev_memo') or ({}, {})
+    return tuple(sorted((k, tuple(sorted((m, _b(v)) for m, v in r.items()))) for k, r in g.items())
+                 for g in memo)
+
+
+def _paged(a):
+    """Whether `a`'s data is on pattern pages (a private mapping of its own)."""
+    b = a
+    while isinstance(b, np.ndarray) and b.base is not None:
+        b = b.base
+    if isinstance(b, memoryview):
+        b = b.obj
+    return isinstance(b, mmap.mmap)
+
+
+def _run(monkeypatch, pages, integ=RadauIIA3Integrator, n=300, cir=None, **kw):
+    """The chain's run with the pattern pages from any size, or from none:
+    its bytes and statistics, the state it leaves (its matrices' bytes and
+    whether they are on pages), its paths (the release's own left out)."""
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1 if pages else 1 << 62)
+    before = _paths.snapshot()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(cir if cir is not None else _chain(n), toolkit=circuit.numeric,
+                       integrator=integ())
+        res = tr.solve(**(kw or {'tend': 4e-8, 'timestep': 1e-9}))
+    st = tr.statistics
+    run = (_b(res.x), _b(res.sweep_values), st.accepted_steps, st.rejected_steps,
+           st.newton_iterations)
+    mats = {k: getattr(tr, k, None) for k in ('_Cmat', '_Geq')}
+    left = (tuple((k, _b(v), np.shape(v)) for k, v in mats.items()), _memo(tr),
+            _b(tr._q_cache[1]), _b(tr._iq))
+    on = {k: _paged(v) for k, v in mats.items() if isinstance(v, np.ndarray)}
+    paths = {k: v for k, v in _paths.since(before).items()
+             if not k.startswith('once:') and k != 'pcnr_c:released'}
+    return run, left, on, paths, tr
+
+
+@pytest.fixture(autouse=True)
+def _warm(monkeypatch):
+    """A first run for the process's builds made once."""
+    with monkeypatch.context() as m:
+        _run(m, False, n=20, tend=4e-9, timestep=1e-9)
+
+
+@pytest.mark.parametrize('integ, kw', [
+    (RadauIIA3Integrator, {}),
+    (RadauIIA3Integrator, {'tend': 2e-8, 'timestep': 2e-10, 'fixed_timestep': True}),
+    (Gear2Integrator, {})], ids=['radau', 'radau-fixed', 'gear2'])
+def test_a_run_on_pattern_pages_is_the_dense_run(monkeypatch, integ, kw):
+    """A 305-unknown chain: with the pattern pages its run, its statistics,
+    every path count, the state it leaves -- `_Cmat`, `_Geq`, the device
+    memo's every record, the cached q and iq -- are the dense run's, bytes
+    and shapes; Radau's matrices left on pattern pages, the C loop serving."""
+    a = _run(monkeypatch, False, integ, **kw)
+    b = _run(monkeypatch, True, integ, **kw)
+    assert a[0] == b[0] and a[1] == b[1] and a[3] == b[3]
+    if integ is RadauIIA3Integrator:
+        assert b[3].get('tcloop_c:steps', 0) > 10, b[3]
+        assert b[2] == {'_Cmat': True, '_Geq': True} and not any(a[2].values())
+        recs = [v for g in b[4].__dict__['_dev_memo'] for r in g.values() for k, v in r.items()
+                if k in 'CG']
+        assert recs and all(_paged(v) for v in recs)
+
+
+def test_the_passes_on_pattern_pages_are_the_dense_passes(monkeypatch):
+    """`passes`: C and G on pattern pages at size, their bytes the dense
+    call's; q and i the same."""
+    _r, _l, _o, _p, tr = _run(monkeypatch, False, n=60, tend=2e-9, timestep=1e-9)
+    x = np.asarray(tr._q_cache[0], dtype=float).copy()
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1 << 62)
+    a = _tran_core.passes(tr, x, 'GCiq')
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    b = _tran_core.passes(tr, x, 'GCiq')
+    assert a is not None and b is not None
+    assert all(_b(a[k]) == _b(b[k]) and a[k].shape == b[k].shape for k in 'GCiq')
+    assert _paged(b['C']) and _paged(b['G']) and not _paged(a['C']) and not _paged(a['G'])
+    assert np.count_nonzero(b['G']) > 0 and np.count_nonzero(b['C']) > 0
+
+
+def test_the_ops_pcnr_scratch_is_handed_back_and_the_next_op_is_the_same(monkeypatch):
+    """After a transient's operating point the circuit's PCNR record keeps
+    its tables, its n x n scratch handed back (read as zeros); a second
+    transient on the same circuit -- its op on the handed-back record -- is
+    the first one's."""
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    cir = _chain(80)
+    before = _paths.snapshot()
+    a = _run(monkeypatch, True, cir=cir, tend=1e-8, timestep=1e-9)
+    rec = cir.__dict__.get('_pcnr_c')
+    if not isinstance(rec, _pcnr_c._Rec):
+        pytest.skip('the op is not the PCNR C record\'s')
+    assert _paths.since(before).get('pcnr_c:released') == 1
+    page = 4096
+    for k in ('J', 'R', 'Cs'):
+        v = rec.buf[k]
+        ptr = v.__array_interface__['data'][0]
+        lo = (-ptr) % page // 8
+        hi = (ptr + v.nbytes) // page * page - ptr
+        if hi // 8 > lo:
+            assert not np.any(v[lo:hi // 8]), k
+    b = _run(monkeypatch, True, cir=cir, tend=1e-8, timestep=1e-9)
+    assert a[0] == b[0] and a[1] == b[1]
+
+
+def test_give_back_zeros_whole_pages_and_keeps_the_ends():
+    """`give_back`: the whole pages of the data read as zeros, the partial
+    pages at its ends kept."""
+    page = 4096
+    if getattr(mmap, 'MAP_PRIVATE', None) is None:
+        pytest.skip('no private mappings here')
+    ## (on a mapping of its own: nothing else on its end pages)
+    m = mmap.mmap(-1, 8 * page, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+    a = np.frombuffer(m, dtype=np.float64, count=5 * page // 8 + 7, offset=24)
+    a[:] = 1.5
+    _tran_core.give_back(a)
+    ptr = a.__array_interface__['data'][0]
+    lo = (-ptr) % page // 8
+    hi = ((ptr + a.nbytes) // page * page - ptr) // 8
+    if _tran_core._libc() is None:
+        pytest.skip('no madvise here')
+    assert hi > lo
+    assert not np.any(a[lo:hi]) and np.all(a[:lo] == 1.5) and np.all(a[hi:] == 1.5)
+
+
+@pytest.mark.parametrize('c', [2.5, 0.0, -0.0, -1.5, np.inf, np.nan])
+def test_a_scaled_matrix_on_pattern_pages_is_numpys(c):
+    """`scaled_on_pattern`: `c * G`'s bytes -- on pattern pages where numpy's
+    product is zero off the pattern as they are (`c` finite, its sign +),
+    else numpy's own."""
+    n = 64
+    rng = np.random.default_rng(3)
+    pat = np.flatnonzero(rng.random(n * n) < 0.05)
+    G = np.zeros(n * n)
+    G[pat] = rng.standard_normal(len(pat))
+    G[pat[:3]] = -0.0
+    G = G.reshape(n, n)
+    with np.errstate(all='ignore'):
+        want = c * G
+        got = _tran_core.scaled_on_pattern(c, G, pat, n)
+    assert _b(got) == _b(want) and got.shape == want.shape
+
+
+def test_zero_pages_read_maps_no_memory():
+    """The transform's `zero_pages`: private pages -- a read of all of them
+    makes none resident (a shared mapping's read allocates each)."""
+    from pycircuit.circuit import _tran_radau_tc
+    if getattr(mmap, 'MAP_PRIVATE', None) is None:
+        pytest.skip('no private mappings here')
+
+    def rss():
+        with open('/proc/self/statm') as f:
+            return int(f.read().split()[1]) * 4096
+
+    a = _tran_radau_tc.zero_pages(8 << 20)        # 64 MB
+    r0 = rss()
+    assert float(a.sum()) == 0.0
+    assert rss() - r0 < 16 << 20

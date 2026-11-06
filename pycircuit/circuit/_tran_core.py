@@ -110,6 +110,7 @@ epoch, the circuit's size.
 
 History: `doc/transient_history.md`, `_tran_core.py`.
 """
+import ctypes
 import math
 import operator
 import os
@@ -999,6 +1000,71 @@ def pattern_zeros(size):
     return np.frombuffer(m, dtype=np.float64, count=size)
 
 
+def paged(core):
+    """Whether `core`'s n x n matrices go on pattern pages (`pattern_zeros`):
+    a pattern held, and `PATTERN_PAGES_FROM` entries or more."""
+    return bool(core.npat) and core.n * core.n >= PATTERN_PAGES_FROM
+
+
+def on_pattern(full, pat, n):
+    """The n x n matrix `full` -- zero off the pattern `pat` -- on pattern
+    pages: its pattern's values, the same bytes."""
+    out = pattern_zeros(n * n)
+    out[pat] = full.reshape(-1)[pat]
+    return out.reshape(n, n)
+
+
+def scaled_on_pattern(c, full, pat, n):
+    """`c * full` for `full` zero off the pattern `pat`: on pattern pages
+    where that product is zero off it as numpy's is (`c` finite, its sign
+    +), else numpy's."""
+    if not (math.isfinite(c) and math.copysign(1.0, c) > 0.0):
+        return c * full
+    out = pattern_zeros(n * n)
+    out[pat] = c * full.reshape(-1)[pat]
+    return out.reshape(n, n)
+
+
+def give_back(*arrays):
+    """Hand the whole pages of each array's data to the kernel
+    (`MADV_DONTNEED`): they read as zeros after, made resident again where
+    written -- for scratch whose every read follows a write, or that is zero
+    where unwritten.  The partial pages at the ends are kept.  Nothing where
+    the platform has no `madvise`."""
+    lib = _libc()
+    if lib is None:
+        return
+    for a in arrays:
+        if type(a) is not np.ndarray or not a.flags.c_contiguous:
+            continue
+        ptr = a.__array_interface__['data'][0]
+        lo = (ptr + _PAGE - 1) // _PAGE * _PAGE
+        hi = (ptr + a.nbytes) // _PAGE * _PAGE
+        if hi > lo:
+            lib.madvise(ctypes.c_void_p(lo), ctypes.c_size_t(hi - lo), _MADV_DONTNEED)
+
+
+_PAGE = 4096
+_MADV_DONTNEED = 4
+_LIBC = []
+
+
+def _libc():
+    if not _LIBC:
+        lib = None
+        try:
+            import sys
+            if sys.platform.startswith('linux'):
+                ## (the process's own symbols: the C library's `madvise`)
+                lib = ctypes.CDLL(None, use_errno=True)
+                lib.madvise.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
+                lib.madvise.restype = ctypes.c_int
+        except (OSError, AttributeError):
+            lib = None
+        _LIBC.append(lib)
+    return _LIBC[0]
+
+
 def core_for(tr):
     """The transient's core for its circuit's current plan, or None where
     the circuit cannot be served (remembered until the plan rebuilds).
@@ -1130,7 +1196,12 @@ def passes(tr, x, which):
         dummy = core._pass_dummy = (np.zeros(max(n * n, 1)), )
         dummy = core._pass_dummy = (dummy[0], fb(dptr, dummy[0]))
     q = np.empty(n)
-    C = ((np.zeros if core.npat else np.empty)((n, n))) if bits & _C else None
+    ## (on pattern pages at size: written on the pattern alone -- `paged`)
+    pages = paged(core)
+    C = None
+    if bits & _C:
+        C = (pattern_zeros(n * n).reshape(n, n) if pages
+             else (np.zeros if core.npat else np.empty)((n, n)))
     dC = fb(dptr, C) if C is not None else dummy[1]
     _PC[K['served']] += 1
     cfn(core.cs, fb(dptr, x), T, bits | (_WANT_PATTERN if core.npat else 0), 4,
@@ -1140,7 +1211,9 @@ def passes(tr, x, which):
     out = {}
     for m in which:
         if m == 'G':
-            out['G'] = core.arrays['binG'].reshape(n, n).copy()
+            bG = core.arrays['binG']
+            out['G'] = (on_pattern(bG, core.arrays['pat'], n) if pages
+                        else bG.reshape(n, n).copy())
         elif m == 'C':
             out['C'] = C
         elif m == 'i':

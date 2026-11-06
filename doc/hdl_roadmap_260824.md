@@ -14121,3 +14121,44 @@ unused, lte's packed values, branch's diagonal map, the write-back scatter, the 
 **Gate** (the main tree): the suite 6 265 passed; the pinned pairs re-recorded after their twins' tests (22 of them, core.c, newton.c, lte.c and branch.c in their twins' texts -- 19 on the twin side alone; the frozen factors' on its reference side, the multistep walk's and the step's end passes' on both (`_tran_core`, the walk's glue in their references)); the 27
 gold decks under gear2, Radau and DC against HEAD bebcbdd1 (every one under 1 024 unknowns): every digest, count and
 path count the same; the chain's digests the same (1 us gear2 at 2 000 and 4 000 stages, 100 ns Radau at 2 000 and 4 000; gear2's peak 870 -> 441 MB and 2 785 -> 997 MB).
+
+## 2026-11-06 — 271. Radau's records on pattern pages -- from 1 024 unknowns, where the core holds a pattern, the n x n matrices a Radau run keeps -- the C transform loop's hand-back records (the device memo's C and G at each state) and its Geq, the passes' C and G, the transform record's end sets and the copies it hands back -- go on pattern pages (private 4 KB pages, resident where written), and the operating point's PCNR scratch held on the circuit is handed back after a transient's op: the 8 000-stage chain's 100 ns Radau solve, which the 11 GB cap killed, now runs with a peak of 5.11 GB; the 4 000-stage 100 ns peak 3.07 -> 1.48 GB; the 4 000-stage 1 us Radau solve 4.11 -> 3.98 s (1.030x); every result the same
+
+**Why**  Andreas, "Start with Radau's dense record" (plan 261's L6).  Sized (plan 261's L6 census -- every ndarray of
+n^2/8 bytes or more reachable, its pages' presence and exclusive mapping read from /proc/self/pagemap, at 4 000
+stages where each n^2 array is a mapping of its own): the 8 000-stage 100 ns Radau run was killed at the C transform
+loop's hand-back.  At 4 000 stages, 100 ns, it peaked at 26.7 n^2 there: 12 n^2 of hand-back records (C and G n x n
+for each of six states, written on the core's pattern alone but resident whole under transparent huge pages), the
+operating point's PCNR record held all run (J, R, its core's G bin: 3 n^2, Gear-2's runs too), the first record's end
+sets and the Python's C and G (4 n^2).  Every one of them is zero off the core's pattern, so the same bytes fit on
+pages where only the pattern's are resident.
+
+**Built.**  `_tran_core`: `paged(core)` (a pattern, `PATTERN_PAGES_FROM` entries -- 1 024 unknowns), `on_pattern`
+(a matrix zero off the pattern copied onto `pattern_zeros` pages at it), `scaled_on_pattern` (`c * G` there, where
+numpy's product is zero off the pattern as the pages are: `c` finite and of sign +; else numpy's), `give_back`
+(`MADV_DONTNEED` on an array's whole pages through the process's own `madvise`; the partial end pages kept);
+`passes` at size: C on pattern pages, G its bin's pattern values there.  `_tran_tcloop_c._record` at size: the core's
+call on the pattern into C on pattern pages (no n x n memset of the bins), G from the bin at the pattern; `_stage_back`'s
+`_Geq` by `scaled_on_pattern`.  `_tran_radau_tc`: the Python record's end sets on pattern pages at size, the copies
+it hands back (`_end_copy`) their pattern's values there; `zero_pages` private (`MAP_PRIVATE`, no huge pages) where it
+was shared -- a read of a shared anonymous page allocates it, a private one maps the zero page.  `_pcnr_c.release`
+(called by the transient after its op, at size): the record's J, |J|, dense and reduced matrices, C bins and its core's
+G bin handed back -- each read in a solve follows its write there or reads zeros (J zero off the pattern) -- the
+record kept (`pcnr_c:released`).  Below 1 024 unknowns -- every gold deck -- nothing changes.
+
+**Measured** (LINE set before building, in one form: the 8 000-stage chain's 100 ns Radau solve runs to its end under
+the 11 GB cap, its peak RSS at most 9.5 GB; the 4 000-stage 100 ns Radau peak at most 2.5 GB; the 4 000-stage 1 us
+Radau solve not slower, >= 0.97x, the median of 3 interleaved pairs against HEAD e1598a7e; every result the same):
+the 8 000-stage 100 ns Radau solve 8.69 s, peak 5 109 MB (HEAD killed at the cap: no result) -- MET; the 4 000-stage 100 ns peak 3 074 -> 1 481 MB -- MET; the 4 000-stage 1 us Radau solve 4.086 / 4.135 / 4.109 -> 3.981 / 3.973 / 3.988 s, 1.026 / 1.041 / 1.030x, the median 1.030x (its Python attempts and glue 2.01-2.03 -> 1.89 s), peak 3 080 -> 1 481 MB -- MET; every digest the same (load 1.37-1.42).
+
+**Tests.**  test_radau_pattern_pages (new, 13): a 305-unknown chain with the pages from any size -- Radau adaptive and
+fixed, Gear-2 -- is the dense run: bytes, statistics, every path count, `_Cmat`, `_Geq`, every device-memo record,
+the cached q and iq, Radau's matrices on pattern pages, the C loop serving; `passes` on pages the dense call's bytes;
+the op's PCNR scratch handed back reads zeros and a second transient's op on it is the first's; `give_back` zeros the
+whole pages and keeps the ends; `scaled_on_pattern` numpy's bytes for c = 2.5, +0, -0, -1.5, inf, nan; `zero_pages`
+read maps no memory.  Mutations -- the record's G not scattered, a pattern entry dropped, the sign test, the end
+copies empty, the page rounding -- each caught.
+
+**Gate** (the main tree): the suite 6 294 passed; the pinned pairs re-recorded after their twins' tests (6 of them: the transient evaluation's, the stage paths' passes', the transform Newton's and the transform loop's on the twin side (`_tran_core`, `_tran_radau_tc`, `_tran_tcloop_c` in their texts), the stage loop's on its reference side, the step's end passes' on both); the 27
+gold decks under gear2, Radau and DC against HEAD e1598a7e: every digest, count and path count the same; the chain's
+digests the same (1 us gear2 at 2 000 and 4 000 stages, 100 ns Radau at 2 000 and 4 000; Radau's peak 981 -> 665 MB and 3 073 -> 1 481 MB, gear2's 442 -> 350 MB and 995 -> 631 MB (the op's PCNR scratch handed back)).

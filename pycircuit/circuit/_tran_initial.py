@@ -317,7 +317,7 @@ class _InitialState:
             shared['nodeset'] = self.par.nodeset
         dc = DC(self.cir, toolkit=self.toolkit, refnode=refnode, **shared)
         try:
-            return dc.solve().x
+            x = dc.solve().x
         except (NoConvergenceError, SingularMatrix) as exc:
             raise NoConvergenceError(
                 "Transient could not find a DC operating point to start from: %s\n"
@@ -330,3 +330,8 @@ class _InitialState:
                 "supply.\n"
                 "Both are explicit choices; substituting zeros silently is what this "
                 "error replaced." % (exc,)) from exc
+        ## (the operating point's PCNR scratch held on the circuit, its pages
+        ## handed back for the run: `_pcnr_c.release`)
+        from pycircuit.circuit import _pcnr_c
+        _pcnr_c.release(self.cir)
+        return x

@@ -1075,7 +1075,7 @@ def _stage_back(e, run_):
     tr._q_cache = (Y[2], rec3['q'])
     tr._iq = tb['liq'].copy()
     tr._Cmat = rec3['C']
-    tr._Geq = float(s.a33) * h * rec3['G']
+    tr._Geq = _geq(e, float(s.a33) * h, rec3['G'])
     tr._effective_method = type(e.integ).__name__
     tr._companion_coeffs = None
     tr._dt = h
@@ -1090,6 +1090,16 @@ def _stage_back(e, run_):
     if s.tc_fb:
         _fb_back(e, run_, gens, have)
     return Y[2]
+
+
+def _geq(e, c, G):
+    """`c * G` as numpy makes it -- on pattern pages at size
+    (`_tran_core.scaled_on_pattern`)."""
+    from pycircuit.circuit import _tran_core
+    core = e.rec.core
+    if not _tran_core.paged(core):
+        return c * G
+    return _tran_core.scaled_on_pattern(c, G, core.arrays['pat'], e.n)
 
 
 def _fb_back(e, run_, gens, have):
@@ -1151,7 +1161,9 @@ def _record(e, x, key, f, have):
     """The record of the passes `f` at `x`: the entry's arrays where it held
     them, the rest by one core call (formula 4, every output, C its own; G
     and i from the core's bins), kept in `have` for the state's other
-    records -- nothing counted."""
+    records -- nothing counted.  At size (`_tran_core.paged`) C and G on
+    pattern pages: the call on the core's pattern, G its bin's pattern
+    values -- the same bytes, resident a page or two a row."""
     from pycircuit.circuit import _tran_core
     got = have.setdefault(key, {})
     if any(_TG[k] & f and k not in got for k in _TG):
@@ -1160,12 +1172,17 @@ def _record(e, x, key, f, have):
         fb, dp = ffi.from_buffer, core.dptr
         dummy = np.zeros(max(n * n, 1))
         d = fb(dp, dummy)
-        q, C = np.empty(n), np.empty((n, n))
-        cfn(core.cs, fb(dp, x), float(core.probe(e.tr.epar)), _LC._ABI['PCX_WANT_ALL'], 4, 0.0,
+        pages = _tran_core.paged(core)
+        q = np.empty(n)
+        C = _tran_core.pattern_zeros(n * n).reshape(n, n) if pages else np.empty((n, n))
+        want = _LC._ABI['PCX_WANT_ALL'] | (_LC._ABI['PCX_WANT_PATTERN'] if pages else 0)
+        cfn(core.cs, fb(dp, x), float(core.probe(e.tr.epar)), want, 4, 0.0,
             0.0, 0.0,
             1.0, 0.0, d, d, d, d, d, fb(dp, C), fb(dp, q), d, d, d, d)
+        bG = core.arrays['binG']
         made = {'q': q, 'i': core.arrays['bini'].copy(), 'C': C,
-                'G': core.arrays['binG'].reshape(n, n).copy()}
+                'G': (_tran_core.on_pattern(bG, core.arrays['pat'], n) if pages
+                      else bG.reshape(n, n).copy())}
         for k in _TG:
             got.setdefault(k, made[k])
     return {k: got[k] for k in ('q', 'i', 'C', 'G') if _TG[k] & f}

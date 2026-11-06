@@ -395,6 +395,24 @@ def _tables(devices, kerns, epar):
     return arrs, arrs_f, ntm
 
 
+def release(circuit):
+    """Hand back the whole pages of the n x n scratch `circuit`'s record
+    holds -- J (zero off the pattern: zero again), |J|, the dense and the
+    reduced matrices, the core's C bins, its core's G bin: every read of each
+    in a solve follows its write there, or reads zeros -- where a transient
+    keeps the record on the circuit for the whole run after its operating
+    point.  The record kept (its tables, its analysis); a solve after makes
+    the pages resident again where it writes.  At size alone
+    (`_tran_core.paged`)."""
+    from pycircuit.circuit import _tran_core
+    rec = circuit.__dict__.get('_pcnr_c')
+    if type(rec) is not _Rec or rec.core is None or not _tran_core.paged(rec.core):
+        return
+    b = rec.buf
+    _tran_core.give_back(b['J'], b['Jabs'], b['A'], b['R'], b['Cs'], rec.core.arrays['binG'])
+    _PC['pcnr_c:released'] += 1
+
+
 class _Rec:
     """One circuit's struct (`s`, a `pcnrdc_t`), buffers and device tables
     for one view, stamp plan, participant set, reference row and set of

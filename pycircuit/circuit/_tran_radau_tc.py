@@ -514,13 +514,23 @@ def _now(T, cir):
 
 
 def zero_pages(size, dtype=float):
-    """An array of `size` zeros on fresh anonymous pages -- nothing resident
-    until a page is written, whatever the allocator would reuse (numpy's
-    zeros below glibc's mmap threshold is a memset of reused memory)."""
+    """An array of `size` zeros on fresh private anonymous 4 KB pages --
+    nothing resident until a page is written, whatever the allocator would
+    reuse (numpy's zeros below glibc's mmap threshold is a memset of reused
+    memory); a read of a page never written maps the zero page (a shared
+    mapping, `mmap.mmap(-1, n)`'s, allocates it), and no huge page makes
+    2 MB resident for one entry written."""
     import mmap
     size = max(int(size), 1)
     nb = size * np.dtype(dtype).itemsize
-    return np.frombuffer(mmap.mmap(-1, nb), dtype=dtype, count=size)
+    private = getattr(mmap, 'MAP_PRIVATE', None)
+    if private is None:
+        return np.frombuffer(mmap.mmap(-1, nb), dtype=dtype, count=size)
+    m = mmap.mmap(-1, nb, flags=private | mmap.MAP_ANONYMOUS)
+    nohuge = getattr(mmap, 'MADV_NOHUGEPAGE', None)
+    if nohuge is not None:
+        m.madvise(nohuge)
+    return np.frombuffer(m, dtype=dtype, count=size)
 
 
 class _Ctx:
@@ -565,7 +575,11 @@ class _Ctx:
         m = n - 1
         self.core, self.n, self.iref, self.ffi = core, n, iref, ffi
         self.s = s = ffi.new('radau_tf_t *')
-        big = zero_pages if packed else np.zeros
+        ## (the end sets, written on the core's pattern alone: on pattern
+        ## pages at size, `_tran_core.paged`)
+        from pycircuit.circuit import _tran_core
+        big = (zero_pages if packed
+               else _tran_core.pattern_zeros if _tran_core.paged(core) else np.zeros)
         self.buf = buf = {
             'Y': np.empty((3, n)), 'Yp': np.empty((3, n)), 'q': np.empty((3, n)),
             'iv': np.empty((3, n)), 'K': np.empty((3, n)), 'F': np.empty((3, n)),
@@ -1007,17 +1021,28 @@ def _outcome(tr, rec, fz, status, probe, first, undo):
         ## (fresh arrays, as `passes` returns them, keyed in its order; the
         ## stage list itself the token: `_stage_end_passes` takes them for
         ## these stages only, with the watch counter unmoved)
-        nn = (n, n)
+        cp = _end_copy(rec, n)
         last = {'q': buf['e_q'].copy(), 'i': buf['e_i'].copy(),
-                'C': buf['e_C'].reshape(nn).copy(), 'G': buf['e_G'].reshape(nn).copy()}
+                'C': cp(buf['e_C']), 'G': cp(buf['e_G'])}
         cg = None
         if s.end_cg:
             C01, G01 = buf['e_C01'], buf['e_G01']
-            cg = [{'C': C01[j * n * n:(j + 1) * n * n].reshape(nn).copy(),
-                   'G': G01[j * n * n:(j + 1) * n * n].reshape(nn).copy()} for j in (0, 1)]
+            cg = [{'C': cp(C01[j * n * n:(j + 1) * n * n]),
+                   'G': cp(G01[j * n * n:(j + 1) * n * n])} for j in (0, 1)]
         td['_tc_end'] = (out, _watch.now(), last, cg, rec.core)
         _PC['radau_tc:end'] += 1
     return out
+
+
+def _end_copy(rec, n):
+    """How an end set is handed back: a fresh n x n copy, or at size its
+    pattern's values on pattern pages (`_tran_core.on_pattern`: the set is
+    zero off the core's pattern) -- the same bytes."""
+    from pycircuit.circuit import _tran_core
+    if not _tran_core.paged(rec.core):
+        return lambda a: a.reshape(n, n).copy()
+    pat = rec.core.arrays['pat']
+    return lambda a: _tran_core.on_pattern(a, pat, n)
 
 
 def iterate(tr):
