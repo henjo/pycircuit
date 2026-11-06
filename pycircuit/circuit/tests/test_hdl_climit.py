@@ -536,7 +536,7 @@ def test_a_limiter_that_cannot_be_printed_refuses_itself_only(monkeypatch):
     e = _inst(eh.GummelPoonNpnHdl)
     info = _bound(e)
     status = type(e)._hdl_backend_status
-    monkeypatch.setattr(cl, 'render', lambda info_: (_ for _ in ()).throw(
+    monkeypatch.setattr(cl, 'render', lambda info_, ftail=0: (_ for _ in ()).throw(
         cl.Refused('a node without a C rendering')))
     assert cl.bind(type(e), info) is None
     assert info['_c_limit'] is None
@@ -564,7 +564,7 @@ def test_a_class_with_no_limit_or_no_c_source_is_refused():
 def test_the_object_is_keyed_by_the_limiters_prelude_too(monkeypatch):
     e = _inst(eh.DiodeSpiceHdl)
     info = _bound(e)
-    csrc, _nx, _layout = cl.render(info)
+    csrc, _nx, _layout, _ltail = cl.render(info)
     key = cb.source_key(csrc)
     monkeypatch.setattr(cl, '_LIMIT_C', cl._LIMIT_C + '\n/* moved */\n')
     assert cb.source_key(cl.render(info)[0]) != key
@@ -720,14 +720,14 @@ def test_a_class_s_limiter_rendering_is_kept_beside_its_entry(monkeypatch, tmp_p
     info = cls._hdl_info
     printed = []
     real = cl.render
-    monkeypatch.setattr(cl, 'render', lambda i: printed.append(1) or real(i))
+    monkeypatch.setattr(cl, 'render', lambda i, ftail=0: printed.append(1) or real(i, ftail))
     first = cl._rendered(info, cls)
     assert first == real(info) and len(printed) == 1
     assert cl._rendered(info, cls) == first and len(printed) == 1
     monkeypatch.setattr(cl, '_render_tag', lambda: 'another renderer')
     assert cl._rendered(info, cls) == first and len(printed) == 2
 
-    def refusing(i):
+    def refusing(i, ftail=0):
         printed.append(1)
         raise cl.Refused('planted')
     monkeypatch.setattr(cl, '_render_tag', lambda: 'a refusing renderer')

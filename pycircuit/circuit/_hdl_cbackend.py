@@ -258,8 +258,9 @@ class CKernel(object):
     def pack(self, element):
         """The packed trailing-argument vector for `element`, built
         once per parameter state (the iparv observer drops it), and after
-        it the tail its class's kernel holds its held statements in, their
-        stamp clear (the module note, The held statements)."""
+        it the class's tail -- its kernel's held statements, then its
+        limiter's (`_hdl_climit`, THE HELD STATEMENTS) -- all clear, every
+        stamp with it (the module note, The held statements)."""
         from pycircuit.circuit import hdl
         vals = hdl._params_of(element)
         n_par = len(element._hdl_paramnames)
@@ -270,7 +271,7 @@ class CKernel(object):
             p[self.t_index] = 0.0
         p[n_par + (1 if self.t_index is not None else 0):self.n_p] = vals[n_par:]
         if tail:
-            p[self.n_p + tail - HELD_TAIL] = 0.0
+            p[self.n_p:] = 0.0
         cast = self.ffi.cast('double *', p.ctypes.data)
         return (p, cast)
 
@@ -705,7 +706,9 @@ class FusedKernel:
     """A class's kernel: the loaded function, the chain functions it was
     printed from (`fns`, by pass), each pass's output length (`sizes`), the
     bits of its passes (`mask`), the x length it reads, the pack layout and
-    the pack's tail (`tail`: its held values and their stamp; 0, none)."""
+    the class's pack tail (`tail`: its held values and their stamp -- its
+    own, `stats['tail']` -- then the class limiter's held region; 0,
+    none)."""
 
     __slots__ = ('built_s', 'cfn', 'ffi', 'fns', 'key', 'layout', 'mask', 'nx', 'sizes',
                  'stats', 'tail')
@@ -1199,7 +1202,9 @@ def _resolve(cls, info, explicit):
     ## (the class's limiter, printed from its spec and built beside the
     ## class's kernel; refused on its own, never the class: `_hdl_climit`)
     from pycircuit.circuit import _hdl_climit
-    lsrc = _hdl_climit.source_for(info, cls) if info.get('limit_spec') else None
+    lsrc = (_hdl_climit.source_for(info, cls, ftail=srcs[0].stats['tail'] if srcs[0] is not None
+                                   else 0)
+            if info.get('limit_spec') else None)
     try:
         _build_missing_parallel([s for s in srcs + [lsrc] if s is not None])
         fk, fdk = (bind_fused(s) if s is not None else None for s in srcs)
@@ -1213,6 +1218,10 @@ def _resolve(cls, info, explicit):
                     'running numpy' if explicit else
                     'the C build failed (%s); running numpy') % e)
         return
+    ## (the class's pack: its kernel's tail, then the limiter's held region
+    ## -- every view, and the limiter, carrying the whole)
+    if fk is not None and lsrc is not None:
+        fk.tail += lsrc._ltail
     ## each chain function its pass of the class's kernel (a DC function
     ## that is another function, its pass of the second)
     for k in (fk, fdk):

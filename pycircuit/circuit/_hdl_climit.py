@@ -56,6 +56,25 @@ parameters as `CKernel` does (the element's shared `_hdl_cp`, dropped by
 anything unusual -- a short or non-numeric vector, a 0-d array, a
 declined call -- back to the closure as `None`.
 
+THE HELD STATEMENTS.  The parameter chains' statements no `x` reaches --
+through what they read -- are functions of the parameters and the
+temperature alone (most of a MOSFET limiter's: its logs, exps and square
+roots), and the kernel makes them once a parameter state, as the class's
+kernel makes its own (`_hdl_cbackend`, The held statements): `lim_prep`
+makes them all in their order and stores each that is more than a load or
+a literal in the limiter's own region of the pack -- after the class
+kernel's tail (`render`'s `ftail`), its values, the stamp (stored after
+them, released) and the temperature they were made at (a call whose
+temperature's bits differ makes them again) -- and a call reads them as
+loads.  The values are the statements' own, bit for bit; the flags the
+prep raises are raised once a parameter state, not every call -- the
+walk's and the kernel's callers clear a limiter's flags untested
+(test_hdl_limit_walk's `test_every_caller_clears_the_walk_s_flags_untested`).
+The region widens the class's pack: the class kernel's `tail`, every view's
+and this kernel's are the class's whole tail, and a pack shorter than it
+-- made by another binding -- is declined where it is adopted
+(`CLimitKernel.__call__`, `_take_elements`): never written past.
+
 WHAT IT CHANGES.  Nothing in the answer.  A class whose limiter cannot be
 printed (an unsupported node, `tanh` -- the backend's named ulp
 exception -- a parameter without ingredients, a signature that is not
@@ -71,6 +90,7 @@ History: `doc/transient_history.md`.
 import hashlib
 import json
 import os
+import re
 import sys
 import types
 
@@ -281,14 +301,97 @@ def _singles_c(singles):
     return out
 
 
-def render(info):
-    """`(csrc, nx, layout)` for the class's limiter, or `Refused`.
+_STMT = re.compile(r'(\s*)const double ((?:L_|pv_)\w+) = (.*);$')
+_CHAIN_NAME = re.compile(r'\b(?:L_|pv_)\w+\b')
+#: a statement held only where it is more than this: a parameter's load, a
+#: literal, another statement's name
+_TRIVIAL = re.compile(r'(?:p\[\d+\]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|(?:L_|pv_)\w+)$')
+
+
+def _held_split(text):
+    """The parameter chains' statements (`_parameter_chains`' text) split:
+    `(lines, kept, held)` -- every line; the names of the statements the
+    call makes or reads, in their order; and those of them held: no `x[`
+    reaches them through what they read, they are more than a load or a
+    literal (`_TRIVIAL`), and the call reads them (a probe's parameter, or
+    a statement the call makes reads them)."""
+    lines, rows = text.split('\n'), []
+    xdep = set()
+    for ln in lines:
+        m = _STMT.match(ln)
+        if m is None:
+            raise Refused(f'a parameter chain line the kernel does not take: {ln!r}')
+        name, ex = m.group(2), m.group(3)
+        refs = _CHAIN_NAME.findall(ex)
+        if 'x[' in ex or any(n in xdep for n in refs):
+            xdep.add(name)
+        rows.append((name, ex, refs))
+    ## (what the call reads: every probe's parameter, then back through the
+    ## statements it makes -- those a state reaches and the trivial ones)
+    need = {name for name, _ex, _refs in rows if name.startswith('pv_')}
+    for name, ex, refs in reversed(rows):
+        if name in xdep or (name in need and _TRIVIAL.match(ex)):
+            need.update(refs)
+    held = [name for name, ex, _refs in rows
+            if name not in xdep and name in need and _TRIVIAL.match(ex) is None]
+    kept = [name for name, ex, _refs in rows
+            if name in xdep or (name in need and _TRIVIAL.match(ex))]
+    return lines, kept, held
+
+
+def _held_c(lines, kept, held, base, t_index):
+    """`(prelude, text)`: the held statements' C -- `lim_held` (the stamp
+    and, where the class reads one, the temperature's bits the values were
+    made at) and `lim_prep` (every statement no state reaches, in order,
+    each held one stored at `base` on) -- and the call's statements: the
+    held ones as loads, those it makes as printed, the rest (read by held
+    ones alone) gone."""
+    slot = {n: k for k, n in enumerate(held)}
+    kept = set(kept)
+    S = base + len(held)
+    pre = ['',
+           '#include <string.h>',
+           'static inline int lim_held(const double *p)',
+           '{',
+           '  double s;',
+           f'  __atomic_load(&p[{S}], &s, __ATOMIC_ACQUIRE);',
+           (f'  return s == 1.0 && memcmp(&p[{S + 1}], &p[{t_index}], sizeof(double)) == 0;'
+            if t_index is not None else '  return s == 1.0;'),
+           '}',
+           'static __attribute__((noinline, cold)) void lim_prep(double *p)',
+           '{',
+           '  const double one = 1.0;']
+    body, xdep = [], set()
+    for ln in lines:
+        m = _STMT.match(ln)
+        name, ex = m.group(2), m.group(3)
+        if name in slot:
+            body.append(f'{m.group(1)}const double {name} = p[{base + slot[name]}];')
+        elif name in kept:
+            body.append(ln)
+        if 'x[' in ex or any(n in xdep for n in _CHAIN_NAME.findall(ex)):
+            xdep.add(name)
+        else:
+            pre.append(ln)
+    pre += [f'  p[{base + k}] = {n};' for k, n in enumerate(held)]
+    if t_index is not None:
+        pre.append(f'  p[{S + 1}] = p[{t_index}];')
+    pre += [f'  __atomic_store(&p[{S}], &one, __ATOMIC_RELEASE);', '}', '']
+    return '\n'.join(pre), '\n'.join(body)
+
+
+def render(info, ftail=0):
+    """`(csrc, nx, layout, ltail)` for the class's limiter, or `Refused`.
 
     `csrc` is the prelude above and the class's `hdl_fn`; `nx` the length
     of the local state the kernel reads (`i`'s, the class's `len(xsyms)`:
     the rows of the spec index it, and it is longer than the terminal
     count), `layout` the packed parameters' `(n_p, t_index)` -- `i`'s, and
-    every parameter function's signature is checked against it."""
+    every parameter function's signature is checked against it; `ltail`
+    the length of the limiter's region of the pack (its held values, their
+    stamp and temperature: THE HELD STATEMENTS above), 0 where it holds
+    none -- the region starting `ftail` past the parameters, after the
+    class kernel's tail."""
     from pycircuit.circuit import hdl
     spec = info.get('limit_spec') or []
     if not spec:
@@ -301,6 +404,11 @@ def render(info):
     if nx > 32 or len(spec) > 32:
         raise Refused('more rows or probes than the kernel holds')
     text = _parameter_chains(spec, n_p, t_index)
+    lines, kept, held = _held_split(text) if text else ([], [], [])
+    held_pre, ltail = '', 0
+    if held:
+        held_pre, text = _held_c(lines, kept, held, n_p + ftail, t_index)
+        ltail = len(held) + 2
 
     npr = len(spec)
     groups = info.get('limit_groups') or []
@@ -315,6 +423,10 @@ def render(info):
            '   among the keys to sort: the Python closure answers) */',
            f'int {hdl._C_ENTRY}(const double *x, const double *p, double *out) {{',
            f'  enum {{ NX = {nx}, NP = {npr} }};']
+    if held:
+        ## (the pack is the element's own, writable: its tail is the
+        ## kernels' -- the cast is the prep's alone)
+        out.append('  if (!lim_held(p)) lim_prep((double *) p);')
     out.append(text)
     out.append(f'  static const int RA[NP] = {_c_list(r[0][0] for r in spec)};')
     out.append(f'  static const int RB[NP] = {_c_list(r[0][1] for r in spec)};')
@@ -336,7 +448,7 @@ def render(info):
     out.append('  for (int k = 0; k < NX; k++) out[k] = o[k];')
     out.append('  return 0;')
     out.append('}')
-    return _LIMIT_C + '\n'.join(out) + '\n', nx, (n_p, t_index)
+    return _LIMIT_C + held_pre + '\n'.join(out) + '\n', nx, (n_p, t_index), ltail
 
 
 class CLimitKernel(_cb.CKernel):
@@ -362,6 +474,9 @@ class CLimitKernel(_cb.CKernel):
         if packed is False:
             return _no('climit:pack')
         p, pcast = packed
+        if p.shape[0] < self.n_p + self.tail:
+            ## (made by another binding: its held region not there)
+            return _no('climit:pack')
         t_index = self.t_index
         if t_index is not None:
             T = getattr(epar, 'T', 300.0)
@@ -400,38 +515,46 @@ class CLimitKernel(_cb.CKernel):
         return out
 
 
-def source_for(info, cls=None):
+def source_for(info, cls=None, ftail=None):
     """A `_build_missing_parallel`-shaped object for the class's limit
     kernel, or None where it is refused (the status is set).  With the
-    class, its rendering is kept beside its compiled entry (`_rendered`)."""
+    class, its rendering is kept beside its compiled entry (`_rendered`).
+    `ftail`: the class kernel's own tail, the limiter's region after it
+    (by default the bound kernel's, or none); the object carries it
+    (`_ftail`) and the limiter's (`_ltail`)."""
+    if ftail is None:
+        fk = info.get('_c_fused')
+        ftail = fk.stats.get('tail', 0) if fk is not None else 0
     try:
-        csrc, nx, layout = _rendered(info, cls)
+        csrc, nx, layout, ltail = _rendered(info, cls, ftail)
     except Refused as e:
         info['_c_limit'] = None
         info['_c_limit_status'] = f'numpy ({e})'
         return None
-    return types.SimpleNamespace(_csrc=csrc, _nx=nx, _layout=layout)
+    return types.SimpleNamespace(_csrc=csrc, _nx=nx, _layout=layout, _ftail=ftail,
+                                 _ltail=ltail)
 
 
-def _rendered(info, cls):
-    """`render(info)` -- kept, refusal and all, beside the class's compiled
-    entry (`_hdl_cache.side_text`: the tag this module's text and the
-    prelude's, `_render_tag`), so a process prints a class's limiter through
-    sympy's printer only where its entry has none."""
+def _rendered(info, cls, ftail=0):
+    """`render(info, ftail)` -- kept, refusal and all, beside the class's
+    compiled entry (`_hdl_cache.side_text`: the tag this module's text and
+    the prelude's, `_render_tag`, and the region's place), so a process
+    prints a class's limiter through sympy's printer only where its entry
+    has none."""
     if cls is None:
-        return render(info)
+        return render(info, ftail)
     from pycircuit.circuit import _hdl_cache
 
     def make():
         try:
-            csrc, nx, layout = render(info)
+            csrc, nx, layout, ltail = render(info, ftail)
         except Refused as e:
             return json.dumps({'refused': str(e)})
-        return json.dumps({'csrc': csrc, 'nx': nx, 'layout': list(layout)})
-    rec = json.loads(_hdl_cache.side_text(cls, f'climit-render:{_render_tag()}', make))
+        return json.dumps({'csrc': csrc, 'nx': nx, 'layout': list(layout), 'ltail': ltail})
+    rec = json.loads(_hdl_cache.side_text(cls, f'climit-render:{_render_tag()}:{ftail}', make))
     if 'refused' in rec:
         raise Refused(rec['refused'])
-    return rec['csrc'], rec['nx'], tuple(rec['layout'])
+    return rec['csrc'], rec['nx'], tuple(rec['layout']), rec['ltail']
 
 
 _RENDER_TAG = []
@@ -465,10 +588,10 @@ def bind(cls, info, src=None):
         info['_c_limit'] = None
         info['_c_limit_status'] = f'numpy (compile failed: {e})'
         return None
-    ## (its packs carry the class's kernel's tail: the element's one pack)
-    fk = info.get('_c_fused')
+    ## (its packs carry the class's whole tail -- the class kernel's, then
+    ## the limiter's region: the element's one pack)
     kern = CLimitKernel(ffi, cfn, src._nx, src._layout, key, secs,
-                        tail=fk.tail if fk is not None else 0)
+                        tail=src._ftail + src._ltail)
     info['_c_limit'] = kern
     info['_c_limit_status'] = 'c'
     return kern
@@ -772,7 +895,9 @@ def _take_elements(w, ffi):
             except (TypeError, ValueError):
                 cp = False
             d['_hdl_cp'] = cp
-        if cp is False:
+        if cp is False or cp[0].shape[0] < kern.n_p + kern.tail:
+            ## (unpackable, or made by another binding: shorter than the
+            ## kernel's tail)
             _PC['walk:pack'] += 1
             F[e] = 0
             continue

@@ -624,7 +624,9 @@ def _walk_full(w, ffi):
             except (TypeError, ValueError):
                 cp = False
             d['_hdl_cp'] = cp
-        if cp is False:
+        if cp is False or cp[0].shape[0] < kern.n_p + kern.tail:
+            ## (unpackable, or made by another binding: shorter than the
+            ## kernel's tail -- `_take_elements`' rule)
             return False
         F[e] = addr[e]
         if cp is not mirror[e]:

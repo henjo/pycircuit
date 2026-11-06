@@ -106,7 +106,8 @@ def test_the_held_values_are_made_once_a_parameter_state():
 @needs_cc
 def test_a_pack_carries_its_class_kernel_s_tail():
     """Whichever kernel packs an element -- a pass's or the limiter's (same
-    layout) -- the pack has its class kernel's tail, the stamp clear."""
+    layout) -- the pack has its class's tail (the kernel's own, then the
+    limiter's region: test_climit_held), the kernel's stamp clear."""
     e, cls = _mos()
     with c_backend(cls):
         fk = cls._hdl_info['_c_fused']
@@ -116,7 +117,7 @@ def test_a_pack_carries_its_class_kernel_s_tail():
             if kern is None:
                 continue
             p, _pc = kern.pack(e)
-            assert p.size == n and p[n - cb.HELD_TAIL] == 0.0
+            assert p.size == n and p[fk.layout[0] + fk.stats['tail'] - cb.HELD_TAIL] == 0.0
 
 
 def _numpy_flags(f, x, args):

@@ -14450,3 +14450,39 @@ the first probe alone -- each caught by it (19, 11, 19 classes) and by the closu
 
 **Gate** (the main tree): the suite 6 384 passed, 10 skipped, 3 xfailed; the pinned pair re-recorded after its twin's tests; the 27 gold decks under
 gear2, Radau and DC against HEAD d20d6a4c: every digest, count and path count the same; the chain's digests the same.
+
+## 2026-11-06 — 280. The limiter's held statements, accepted as measured -- a class limiter's parameter-chain statements no state reaches made once a parameter state and temperature into the limiter's own region of the element's pack (after the class kernel's tail) and read as loads: the limiter walk 13.8 % -> 10.2 % of the C transform loop's main thread; the 4 000-stage chain's 1 us Radau solve 1.923 -> 1.920 s (1.002x, under its 1.015x line -- Andreas: "Both"); every result the same
+
+**Why**  Plan 261's L12b, refused in 279 at 1.002x against its 1.015x line (5 quiet-box pairs against L12a).  Andreas,
+offered acceptance as measured beside a public thread setting: "Both".  The line stays recorded as missed; this entry is
+the acceptance.
+
+**Built** (scratch `p261/l12/l12b_refused.patch`, re-applied on 279).  `_hdl_climit`, THE HELD STATEMENTS:
+`_held_split` names the statements the call reads that no `x[` reaches through what they read and that are more than a
+load or a literal (`_TRIVIAL`) -- six for MosLevel1/2/3 (gam, vtT, phiT, vtoT, isbs, isbd), the intermediates only they
+read gone from the call; `_held_c` prints `lim_held` (the stamp, acquired; the temperature's bits the values were made
+at) and `lim_prep` (noinline, cold: every statement no state reaches in order, the held ones stored, the temperature,
+the stamp released), and the call's statements with the held ones as loads.  `render(info, ftail)` places the region
+`ftail` past the parameters -- after the class kernel's own tail -- and returns its length (`ltail`: held + 2);
+`_rendered` keys the kept rendering by `ftail` too; `source_for` carries `_ftail`, `_ltail`; `bind` gives the kernel
+the class's whole tail.  `_hdl_cbackend`: the class kernel's `tail` widened by the limiter's region before any view is
+made (its own in `stats['tail']`); `CKernel.pack` clears the whole tail (every stamp).  A pack shorter than the
+limiter's tail -- another binding's -- is declined where the limiter adopts it: `CLimitKernel.__call__`
+(`climit:pack`), `_take_elements` (`walk:pack`) and the C Newton's `_walk_full` (behind the core, which declines it
+first).  The flags the prep raises are raised once a parameter state rather than every call: the limiter's callers
+clear them untested (`test_every_caller_clears_the_walk_s_flags_untested`).
+
+**Measured** (279's runs; this tree's as information against HEAD 526d292c): 279's: 5 quiet-box pairs against L12a 1.017, 1.001, 1.005, 1.002 (0.80 disturbed), median 1.002x -- the line 1.015x missed.  This tree against HEAD 526d292c (3 interleaved pairs each, information): 4 000 / 1 us 1.923 -> 1.920 s (1.005, 0.990, 1.002: 1.002x), 8 000 / 100 ns 2.595 -> 2.623 s (0.982, 0.989, 1.003: 0.989x -- within the pairs' spread), 4 000 / 100 ns 1.004x; peaks the same; every digest the same.  The walk with both: 10.2 % of the main thread (13.8 % with 279 alone, 20.4 % before).
+
+**Tests.**  test_climit_held (new, 6): the class pack carries the limiter's region, all clear, every kernel the whole
+tail; the values READ (380 K's planted under 300 K's bits give 380 K's answer) and made again where the temperature's
+bits move; a parameter set packs anew; a short pack declined by the kernel, by the walk and by the C Newton's walk
+setup, never written past (a guarded buffer).  test_hdl_held's pack test reads the kernel's stamp at its own tail;
+test_hdl_climit's renderer stand-ins take `ftail`.  Mutations -- the temperature's bits not checked, the pack's
+limiter region left, each of the three length checks dropped, a held value in its neighbour's slot -- each caught.
+The pair "the limiting loop and the walk" names `_take_elements` and `_walk_full` in its twin.
+
+**Gate** (the main tree): the suite 6 390 passed, 10 skipped, 3 xfailed; the pinned pairs re-recorded after their twins' tests (the kernel call
+and the pass driver, the readiness reads, the limiting loop and the walk, the limiter laws, the Newton solve); the 27
+gold decks under gear2, Radau and DC against HEAD 526d292c: every digest, count and path count the same; the chain's
+digests the same.
