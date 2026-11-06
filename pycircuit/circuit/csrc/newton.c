@@ -84,6 +84,9 @@ static long sparse_full(newton_t *s, long m)
         if (v == PCX_FAILS) return NEWTON_BAIL_KLU_RESIDUAL;
         s->vdense++;
     }
+    /* (J reduced, the pattern's values in place: R zero off them) */
+    if (s->pattern)
+        for (k = 0; k < s->knnz; k++) s->R[s->kabs[k]] = s->kAx[k];
     ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m, s->b, 1,
                            0.0, s->ry, 1);
     for (i = 0; i < m; i++) {
@@ -306,7 +309,9 @@ static int floor_holds(newton_t *s, long m)
 static void fold(newton_t *s, core_fn_t core, long n, long r)
 {
     pcx_put_ref(s->x, s->xc, n, r);
-    core(s->core, s->xc, s->T, (s->lte_held ? PCX_PASS_C : s->fold_j) | s->pattern, s->formula,
+    core(s->core, s->xc, s->T,
+         (s->lte_held ? PCX_PASS_C : s->fold_j) | s->pattern | (s->sets ? PCX_WANT_SETS : 0),
+         s->formula,
          s->a0, s->a1, s->a2, s->h,
          s->theta, s->q1, s->q2, s->iq1, s->u, s->Cj, s->Cj, s->qj, s->iqj, s->Geqj, s->F,
          s->Jj);
@@ -440,7 +445,9 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
     }
     /* (on KLU's pattern, J packed on the core's and no Geq: `kpp`, `Jp`) */
     packed = s->klu_sym && s->pattern && s->kpp;
-    core(s->core, s->xf, s->T, bits | s->pattern | (packed ? PCX_WANT_PACKED : 0), s->formula,
+    core(s->core, s->xf, s->T,
+         bits | s->pattern | (packed ? PCX_WANT_PACKED : 0) | (s->sets ? PCX_WANT_SETS : 0),
+         s->formula,
          s->a0, s->a1, s->a2, s->h, s->theta,
          s->q1, s->q2, s->iq1, s->u, Cin, C, q, iq, Geq, F, packed ? s->Jp : J);
     /* the first iterate evaluated, the seed's factors still in place (A is
@@ -465,9 +472,10 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
             for (k = 0; k < s->knnz; k++) s->kAx[k] = J[s->kat[k]];
         }
         s->absj_due = 1;
-        if (!s->chord && s->pattern) {
-            for (k = 0; k < s->knnz; k++) s->R[s->kabs[k]] = s->kAx[k];
-        } else if (!s->chord) {
+        /* (on the pattern the full Newton's reduced J -- `R`, zero off the
+           pattern -- is made where its validation's dense test reads it:
+           `sparse_full`) */
+        if (!s->chord && !s->pattern) {
             /* (no pattern: J reduced whole, and `_ours`'s count -- as many
                nonzeros as the pattern's values, `v != 0.0` counting a NaN
                as numpy's count_nonzero does) */

@@ -154,6 +154,13 @@ typedef struct {
                                    (`func._underflow_ignored`): an underflow is
                                    not a flag it would warn of (0: every flag
                                    hands back) */
+    /* THE PACKED SETS (newton.h's: the C loop's Newton on them): `J` packed
+       on the core's pattern, npat values in its order -- the KLU values
+       through `kpp` (each pattern entry of KLU's: its index in J, -1 for one
+       off the core's pattern, +0.0); only on the pattern and on KLU (the
+       dense paths hand back: LTE_BAIL_FOREIGN) */
+    long sets;                  /* [step] 1: J packed */
+    const int64_t *kpp;         /* knnz: each KLU entry's index in packed J, or -1 */
 } lte_t;
 long pcx_lte(lte_t *s);
 

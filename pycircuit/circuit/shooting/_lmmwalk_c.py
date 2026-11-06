@@ -187,6 +187,10 @@ def walk(walks, j0, x, times, hs, mono, Cs, record):
     e = _eligible(walks, j0, x, times, hs, mono, Cs)
     if e.__class__ is str:
         return _no('pss.lmmwalk:' + e)
+    if e.rec.s.sets:
+        ## (the Newton's sets packed -- newton.h's THE PACKED SETS -- the walk's
+        ## map reads its J n x n: the Python's walk)
+        return _no('pss.lmmwalk:sets')
     c = _bind(walks, e)
     if c is None:
         return _no('pss.lmmwalk:bind')

@@ -567,6 +567,15 @@ class _Flat:
         if fused:
             arrays['ztab'] = np.array(self.ztab, dtype=np.int64)
         arrays.update(self._pull(n, fused, pat if npat else None))
+        ## THE PACKED SETS (core.h): each matrix pass's written bin's index in
+        ## the pattern (they are its entries, in run order), G's packed bins
+        wp = arrays['wball'].copy()
+        if npat:
+            po = arrays['pl_off']
+            for m in range(2):
+                wp[po[m]:po[m + 1]] = np.searchsorted(pat, wp[po[m]:po[m + 1]])
+        arrays['wpall'] = np.ascontiguousarray(wp, dtype=np.int64)
+        arrays['binGp'] = np.zeros(max(npat, 1))
         return arrays, npat
 
     def _pull(self, n, fused, pat):
@@ -966,6 +975,28 @@ def _same_code(c):
     """A class's pass still the code it was at the stamp (a function's
     `__code__` is no dict)."""
     return getattr(c[0], c[1]).__code__ is c[2]
+
+
+#: the entries from which `pattern_zeros` takes fresh small pages (8 MB)
+PATTERN_PAGES_FROM = 1 << 20
+
+
+def pattern_zeros(size):
+    """`size` float64 zeros for a matrix written on its pattern alone: from
+    `PATTERN_PAGES_FROM` entries on fresh private 4 KB pages (no huge pages:
+    one written entry would make 2 MB resident) -- resident only where
+    written, a page or two a row; a read of a page never written maps the
+    zero page.  Below that, or where the platform has no such mapping,
+    numpy's zeros."""
+    import mmap
+    size = int(size)
+    nohuge = getattr(mmap, 'MADV_NOHUGEPAGE', None)
+    private = getattr(mmap, 'MAP_PRIVATE', None)
+    if size < PATTERN_PAGES_FROM or nohuge is None or private is None:
+        return np.zeros(size)
+    m = mmap.mmap(-1, size * 8, flags=private | mmap.MAP_ANONYMOUS)
+    m.madvise(nohuge)
+    return np.frombuffer(m, dtype=np.float64, count=size)
 
 
 def core_for(tr):

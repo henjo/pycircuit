@@ -60,28 +60,46 @@ static long lte_bail(lte_t *s, long why)
    solve refactors it again, from the same values.  Flags: what KLU raised
    is cleared; on 0 the flags hold at most what the last division raised
    (pcx_lte's next test sees it), on a bail the caller clears them. */
-static long sparse_solve(lte_t *s, long n, long r)
+/* KLU's values of J (`kAx`): packed (THE PACKED SETS, through `kpp`), on
+   the pattern (through `kat`), or reduced and counted (`_ours`).  0, or
+   LTE_BAIL_FOREIGN (a nonzero off the pattern; packed off the pattern) */
+static long klu_values(lte_t *s, long n, long r)
 {
-    long m = n - 1, k, i, nz_r = 0, nz_a = 0;
-    double max_b = 0.0, max_r = 0.0, scale;
+    long m = n - 1, k, nz_r, nz_a = 0;
     /* (no finiteness test of J here: a non-finite entry off the pattern is a
        nonzero the count hands back, and one on it reaches the residual,
        which it makes non-finite -- handed back too) */
+    if (s->sets && s->on_pattern) {
+        /* (J packed: the core's pattern's values, zero off it) */
+        for (k = 0; k < s->knnz; k++) {
+            const int64_t p = s->kpp[k];
+            s->kAx[k] = p >= 0 ? s->J[p] : 0.0;
+        }
+        return 0;
+    }
+    if (s->sets) return LTE_BAIL_FOREIGN;
     if (s->on_pattern) {
         /* (J zero off the pattern: `_ours`'s count holds) */
         for (k = 0; k < s->knnz; k++) s->kAx[k] = s->J[s->kat[k]];
-    } else {
-        pcx_reduce_rm(s->J, s->R, n, r);
-        /* `_ours`: the pattern's values, and as many nonzeros as the matrix
-           (`v != 0.0` counts a NaN, as numpy's count_nonzero does) */
-        nz_r = pcx_count_nonzero(s->R, m * m);
-        for (k = 0; k < s->knnz; k++) {
-            double v = s->R[s->ktake[k]];
-            s->kAx[k] = v;
-            nz_a += v != 0.0;
-        }
-        if (nz_r != nz_a) return LTE_BAIL_FOREIGN;
+        return 0;
     }
+    pcx_reduce_rm(s->J, s->R, n, r);
+    /* `_ours`: the pattern's values, and as many nonzeros as the matrix
+       (`v != 0.0` counts a NaN, as numpy's count_nonzero does) */
+    nz_r = pcx_count_nonzero(s->R, m * m);
+    for (k = 0; k < s->knnz; k++) {
+        double v = s->R[s->ktake[k]];
+        s->kAx[k] = v;
+        nz_a += v != 0.0;
+    }
+    return nz_r != nz_a ? LTE_BAIL_FOREIGN : 0;
+}
+
+static long sparse_solve(lte_t *s, long n, long r)
+{
+    long m = n - 1, i, k, why;
+    double max_b = 0.0, max_r = 0.0, scale;
+    if ((why = klu_values(s, n, r)) != 0) return why;
     pcx_drop_ref(s->lte, s->b, n, r);
     for (i = 0; i < m; i++) s->x[i] = s->b[i];
     if (!((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym, s->klu_num,
@@ -240,6 +258,8 @@ static long solve_lte(lte_t *s, long n, long r)
         long why = sparse_solve(s, n, r);
         if (why) return why;
     } else {
+        /* (J packed: the dense solve is the Python's) */
+        if (s->sets) return LTE_BAIL_FOREIGN;
         if (!pcx_reduce_cm(s->J, s->A, n, r)) return LTE_BAIL_NONFINITE;
         pcx_drop_ref(s->lte, s->b, n, r);
         ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv, s->b, &m64, &info64);

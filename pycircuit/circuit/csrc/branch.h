@@ -39,6 +39,11 @@ typedef struct {
     long ncert;             /* out, running: the screens it proved (its
                                callers zero it) */
     double bound;           /* out: the smallest block's bound, where proved */
+    /* THE PACKED SETS (newton.h's): `C` packed on the pattern, npat values in
+       its order -- |C|'s maximum over them, the diagonal through `dpk`; no
+       certificate (none is kept at the sizes the sets serve: the SVD's) */
+    long sets;              /* 1: C packed */
+    const int64_t *dpk;     /* n: each diagonal entry's index in packed C */
 } branch_t;
 long pcx_branch(branch_t *s);
 

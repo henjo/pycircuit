@@ -89,7 +89,12 @@ enum pcx_pass {
     /* (not a pass: with PCX_WANT_PATTERN, J PACKED -- its pattern entries in
        the pattern's order, npat values -- and no Geq: a caller that reads J
        only at the pattern and never reads Geq, the C Newton on KLU) */
-    PCX_WANT_PACKED = 32
+    PCX_WANT_PACKED = 32,
+    /* (not a pass: with PCX_WANT_PATTERN, THE PACKED SETS -- every matrix
+       the call reads or writes packed on the pattern, npat values in its
+       order: G in the core's `binGp`, C, Cin, Geq and J the caller's -- a
+       caller that holds no n x n set, the C paths on KLU) */
+    PCX_WANT_SETS = 64
 };
 /* the companion the core forms: an integrator's, or none at all (the
    passes alone: G in binG, i in bini, C and q in the caller's buffers) */

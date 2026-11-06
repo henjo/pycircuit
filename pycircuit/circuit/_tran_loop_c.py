@@ -294,7 +294,7 @@ class _Run:
     structs it drives -- bound to the C Newton's record, the source table and
     the screen it was made for (and, adaptive, the error test's context)."""
 
-    __slots__ = ('br', 'buf', 'cert', 'ct', 'ffi', 'keep', 'lte', 'npat', 'nrec', 'pr', 's', 'sk',
+    __slots__ = ('br', 'buf', 'cert', 'ct', 'ffi', 'keep', 'lte', 'npat', 'nrec', 'pr', 's', 'sets', 'sk',
                  'tab')
 
 
@@ -313,9 +313,10 @@ def _bind(tr, rec, tab, n, hist_len, screen, judge):
     run = _Run()
     run.ffi, run.nrec, run.tab = ffi, rec, tab
     s = run.s = ffi.new('loop_t *')
-    _bind_buffers(run, n, hist_len)
+    run.sets = sets = int(rec.s.sets)
+    _bind_buffers(run, n, hist_len, rec.core.npat if sets else 0)
     _bind_steps(run, tr, rec, tab, n)
-    _bind_screen(run, tr, n, screen)
+    _bind_screen(run, tr, n, screen, sets)
     run.lte = run.ct = run.sk = None
     s.lte = s.lte_fn = s.ctrl = s.ctrl_fn = ffi.NULL
     if judge is not None and not _bind_judge(run, tr, n, judge):
@@ -331,19 +332,21 @@ def _plug(s, ffi, unit, uffi, state, entry):
     setattr(s, unit + '_fn', ffi.cast('void *', _addr(uffi, entry)))
 
 
-def _bind_buffers(run, n, hist_len):
+def _bind_buffers(run, n, hist_len, npat):
     """The loop's own buffers -- the rings, the predictor's nodes, the two
-    cached C and Geq, the attempt's point, the outputs -- each pointed at by
-    its field and kept (`run.keep`)."""
+    cached C and Geq (npat values each on THE PACKED SETS, `npat` nonzero:
+    newton.h's), the attempt's point, the outputs -- each pointed at by its
+    field and kept (`run.keep`)."""
     ffi, s = run.ffi, run.s
     cap = CAP_MAX
+    nc = npat or n * n
     run.buf = buf = {
         'qring': np.empty(hist_len * n), 'iqring': np.empty(hist_len * n),
         'xlast': np.empty(n), 'ht': np.empty(_HIST_MAX), 'hx': np.empty(_HIST_MAX * n),
         ## (zero off the pattern: where the core writes only the pattern's
         ## entries, the rest stay as the Newton's own buffers keep them)
-        'cC0': np.zeros(n * n), 'cC1': np.zeros(n * n),
-        'Geq0': np.zeros(n * n), 'Geq1': np.zeros(n * n),
+        'cC0': np.zeros(nc), 'cC1': np.zeros(nc),
+        'Geq0': np.zeros(nc), 'Geq1': np.zeros(nc),
         'run': np.empty(n), 'xatt': np.empty(n), 'qatt': np.empty(n), 'iqatt': np.empty(n),
         'X': np.empty(cap * n), 'T': np.empty(cap),
     }
@@ -383,10 +386,11 @@ def _bind_steps(run, tr, rec, tab, n):
         s.src = s.src_fn = ffi.NULL
 
 
-def _bind_screen(run, tr, n, screen):
+def _bind_screen(run, tr, n, screen, sets):
     """The branch screen (`screen`: `(its ffi, its entry, the core's pattern
     or None, the run's certificate data or None, their growth, numpy's
-    dgesv)`), or none: `branch` NULL."""
+    dgesv)`), or none: `branch` NULL; on THE PACKED SETS (`sets`) its C
+    packed."""
     from pycircuit.circuit import _tran_branch_c
     ffi, s = run.ffi, run.s
     run.br, run.npat, run.cert = None, 0, None
@@ -402,6 +406,12 @@ def _bind_screen(run, tr, n, screen):
         bkeep += [pat, bffi.from_buffer('int64_t *', pat)]
         bs.pat, bs.npat = bkeep[-1], len(pat)
         run.npat = len(pat)
+        if sets:
+            ## (THE PACKED SETS: C packed, its diagonal's places -- branch.h)
+            dpk = np.ascontiguousarray(np.searchsorted(pat, np.arange(n, dtype=np.int64) * (n + 1)),
+                                       dtype=np.int64)
+            bkeep += [dpk, bffi.from_buffer('int64_t *', dpk)]
+            bs.dpk, bs.sets = bkeep[-1], 1
     bkeep += _tran_branch_c.cert_bind(bffi, bs, cert, growth, dgesv)
     run.cert = (cert, growth)
     run.br = bkeep
@@ -761,7 +771,7 @@ def _bound(loop, tr, rec, tab, rd, screen, judge):
     ## bound once a loop (again where the Newton's record, the table, the
     ## screen's presence, the sizes or the judge's solver or mask moved)
     run_ = loop.c.run
-    if (run_ is None or run_.nrec is not rec or run_.tab is not tab
+    if (run_ is None or run_.nrec is not rec or run_.tab is not tab or run_.sets != rec.s.sets
             or (run_.br is None) != (screen is None) or len(run_.buf['xlast']) != n
             or (screen is not None and (run_.cert[0] is not screen[3]
                                         or run_.cert[1] != screen[4]))
@@ -787,7 +797,28 @@ def _judge_entry(run_, rec):
     le.on_pattern = int(on)
     if on:
         le.kat = rec.s.kat
+    ## (THE PACKED SETS: J packed, the KLU values through `kpp` -- lte.h)
+    le.sets = int(on and bool(rec.s.sets))
+    if le.sets:
+        le.kpp = rec.s.kpp
     le.under_ok = int(func._underflow_ignored())
+
+
+def _load_cached(run_, buf, cC):
+    """The cached C into the first slot: n x n, or (THE PACKED SETS,
+    newton.h's) its pattern's values."""
+    if run_.sets:
+        np.take(cC.reshape(-1), run_.nrec.core.arrays['pat'], out=buf['cC0'])
+    else:
+        buf['cC0'][:] = cC.reshape(-1)
+
+
+def _slot_back(run_, rec, buf, name, n, O):
+    """A slot as the Python holds it: n x n -- copied, or (THE PACKED SETS)
+    scattered on pattern pages (`_tran_newton_c._scatter`)."""
+    if not run_.sets:
+        return buf[name].reshape(n, n).copy()
+    return O['newton_c']._scatter(buf[name], rec.core.arrays['pat'], n)
 
 
 def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
@@ -809,7 +840,7 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     for i, (tt, xx) in enumerate(hist):
         buf['ht'][i] = tt
         buf['hx'][i * n:(i + 1) * n] = xx
-    buf['cC0'][:] = cC.reshape(-1)
+    _load_cached(run_, buf, cC)
     s.cur = 0
     s.cmax = td.get('_branch_cmax', 0.0)
     if run_.br is not None:
@@ -1028,13 +1059,13 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     ## the last attempt's write-back (`_tran_newton_c`'s), accepted or not
     x = buf['xatt'].copy()
     cur = s.cur
-    Cj = buf[f'cC{cur}'].reshape(n, n).copy()
+    Cj = _slot_back(run_, rec, buf, f'cC{cur}', n, O)
     tr._q_cache = (x, buf['qatt'].copy())
     tr._C_cache = (x, Cj)
     if rec.core.npat:
         tr._C_pattern = (Cj, rec.core.arrays['pat'])
     tr._iq = buf['iqatt'].copy()
-    tr._Geq = buf[f'Geq{cur}'].reshape(n, n).copy()
+    tr._Geq = _slot_back(run_, rec, buf, f'Geq{cur}', n, O)
     tr._Cmat = Cj
     h, h_last = float(s.att_h), float(s.att_h_last)
     base = tr.base_integrator

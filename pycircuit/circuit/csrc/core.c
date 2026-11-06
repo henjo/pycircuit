@@ -11,22 +11,25 @@
    the bins as the slots' bincount makes them.  b_fz, a batch's group (-1:
    none) */
 /* a ztab row: core.h's `core_ztab` names its columns */
-/* `body` for each matrix entry the call writes (`patt`: the pattern's; else
-   all n x n), `s` the entry.  It captures from the function: `patt`, `pk`
-   (the pattern's cursor), `s` (assigned: the entry's row-major index -- an
-   entry index here, not a struct), `c` (the core: npat, pat) and `n`.  The
+/* `body` for each matrix entry the call writes (`sets`: the packed sets'
+   entries, `s` the pattern's index; `patt`: the pattern's; else all n x n),
+   `s` the entry's index in the call's matrices.  It captures from the
+   function: `sets`, `patt`, `pk` (the pattern's cursor), `s` (assigned: the
+   entry's index -- not a struct), `c` (the core: npat, pat) and `n`.  The
    entries off the pattern are left as the caller's buffers hold them
    (zero) */
 #define EACH_ENTRY(body) do { \
-        if (patt) { for (pk = 0; pk < c->npat; pk++) { s = c->pat[pk]; body; } } \
+        if (sets) { for (s = 0; s < c->npat; s++) { body; } } \
+        else if (patt) { for (pk = 0; pk < c->npat; pk++) { s = c->pat[pk]; body; } } \
         else { for (s = 0; s < n * n; s++) { body; } } \
     } while (0)
-/* J packed (PCX_WANT_PACKED): for each pattern entry, `J[pk] = binG[s] +
+/* J packed (PCX_WANT_PACKED): for each pattern entry, `J[pk] = bG[s] +
    (geq)`, `geq` the companion's entry at `s` as the formula makes it -- the
-   same operations as `Geq[s] = geq` then `J[s] = binG[s] + Geq[s]` -- and
-   no Geq.  It captures `pk`, `s`, `c` and `J` */
+   same operations as `Geq[s] = geq` then `J[s] = bG[s] + Geq[s]` -- and no
+   Geq; `s` the pattern's entry, or (`sets`) its index.  It captures `sets`,
+   `pk`, `s`, `c`, `bG` and `J` */
 #define PACKED_J(geq) do { \
-        for (pk = 0; pk < c->npat; pk++) { s = c->pat[pk]; J[pk] = c->binG[s] + (geq); } \
+        for (pk = 0; pk < c->npat; pk++) { s = sets ? pk : c->pat[pk]; J[pk] = bG[s] + (geq); } \
     } while (0)
 /* THE BYPASS (core.h's bp_ fields).  `within`: `now` lies within the
    bypass's tolerance of `then` (a NaN never does) */
@@ -312,10 +315,11 @@ static void pull_run(const double *V, const int64_t *ix, const int64_t *wb, doub
    caller's buffer is not zero off the pattern (`patt` clear where there is
    one) has every entry zeroed first */
 static void one_pass(const hdl_core_t *c, long m, const double *x, double T, double *bin,
-                     int patt, double *X, double *xg)
+                     int patt, int sets, double *X, double *xg)
 {
     const int64_t *run = c->runall + 2 * c->pr_off[m];
-    const int64_t *wb = c->wball + c->pl_off[m], *ix = c->ixall + c->px_off[m];
+    const int64_t *wb = (sets && m < 2 ? c->wpall : c->wball) + c->pl_off[m];
+    const int64_t *ix = c->ixall + c->px_off[m];
     long n = c->n, b, r, nr = c->pr_off[m + 1] - c->pr_off[m];
     for (b = 0; b < c->nb; b++)
         if (c->b_pass[b] == m) batch_into(c, b, m, x, T, X);
@@ -342,7 +346,11 @@ long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long fo
     double X[CORE_MAX_INPUTS], xg[CORE_MAX_INPUTS];
     /* each pass's bins: G's and i's the core's own, C's and q's the
        caller's */
-    double *bins[4] = {c->binG, C, c->bini, q};
+    /* the matrices packed (THE PACKED SETS): only with the pattern */
+    const int sets = (want & PCX_WANT_PATTERN) && c->npat && (want & PCX_WANT_SETS);
+    /* G's bins: the packed ones with the sets, binG untouched */
+    double *bG = sets ? c->binGp : c->binG;
+    double *bins[4] = {bG, C, c->bini, q};
     /* each pass's want bit; q's 0: always made */
     const long bits[4] = {PCX_PASS_G, PCX_PASS_C, PCX_PASS_I, 0};
     /* (`s`: an entry of a matrix -- an index) */
@@ -356,7 +364,7 @@ long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long fo
     const double *Cs;
     fused_groups(c, x, T, want, X);
     for (m = 0; m < 4; m++)
-        if (!bits[m] || (want & bits[m])) one_pass(c, m, x, T, bins[m], patt, X, xg);
+        if (!bits[m] || (want & bits[m])) one_pass(c, m, x, T, bins[m], patt, sets, X, xg);
     /* formula 4: the passes alone (`passes`: G in binG, i in bini, C and q
        in the caller's buffers) -- no companion, no residual, no Jacobian */
     if (formula == PCX_FORMULA_PASSES) return 0;
@@ -392,6 +400,6 @@ long pcx_core(const hdl_core_t *c, const double *x, double T, long want, long fo
     }
     /* `f = (i + iq) + u`, `J = G + Geq` (packed: made above) */
     if (want & PCX_PASS_I) for (j = 0; j < n; j++) F[j] = (c->bini[j] + iq[j]) + u[j];
-    if ((want & PCX_PASS_G) && !packed) EACH_ENTRY(J[s] = c->binG[s] + Geq[s]);
+    if ((want & PCX_PASS_G) && !packed) EACH_ENTRY(J[s] = bG[s] + Geq[s]);
     return 0;
 }

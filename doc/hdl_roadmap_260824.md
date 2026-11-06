@@ -14075,3 +14075,49 @@ and would keep the first attempt's fresh chord numeric, which a real hand-back f
 Radau and DC against HEAD da899e68: every digest, step, rejection and Newton iteration the same, the path counts
 moved only as the first attempt's serving moves them (the class set before building: the decline gone, the C
 Newton's and the C loop's serve counts, the Python attempt's evaluation counts); the chain's digests the same.
+
+## 2026-11-06 — 270. Gear-2's C path on packed sets -- from 1 024 unknowns, where the Newton solves on the StructuralKLU and the core holds its pattern, the C Newton's C, Geq and J sets, the C loop's cached C and Geq slots, and what the error test and the branch screen read of them hold the pattern's values alone (the core asked for them packed: `PCX_WANT_SETS`), where n x n sets written at a few entries a row were resident whole under huge pages: the 8 000-stage chain's 100 ns gear2 solve peak 11.08 -> 3.59 GB, its time 5.13 -> 4.07 s; the 4 000-stage 1 us gear2 solve 3.35 -> 2.71 s (1.239x), its peak 2.79 -> 0.99 GB; every result the same
+
+**Why**  Andreas, plan 261 L4d: "Packed rewrite (Recommended)", then "continue".  Sized (roadmap 269's entry and plan
+261's L4d1): at 8 000 stages a long Gear-2 run's peak was ~22 n x n arrays, ~15 of them the C path's records -- the
+Newton's C, Geq and J sets, the loop's C and Geq slots, the cores' G bins -- each written at a few entries a row
+and resident whole, because transparent huge pages (`always` here; numpy asks for them too) make a write anywhere
+in 2 MB resident.  Small pages make them sparse-resident but cost the time (dTLB misses 15-20x, +8 %: refused);
+only a layout without n x n sets has both.  Every operation the C path makes on them was already the pattern's
+(EACH_ENTRY, PACKED_J, the KLU gathers), so packing changes storage and indexing alone.
+
+**Built.**  (a) THE CORE (core.h, core.c, `_tran_core`): `PCX_WANT_SETS` -- with the pattern, the matrix passes
+pull through `wpall` (each written bin's index in the pattern: they are its entries, in run order) into `binGp`
+(G's packed bins) and the caller's packed C; the companion's Geq and J and the held Cin over the packed index
+(EACH_ENTRY's and PACKED_J's third mode); binG untouched.  (b) newton.c: `sets` (newton.h, appended) asks both core
+calls for them; `sparse_full`'s reduced J (`R`) scattered from KLU's values where its validation's dense test
+reads it, not every iteration (every mode: the values the same when read).  (c) lte.c (`sets`, `kpp`:
+`klu_values`) reads the packed J's KLU values through the Newton's `kpp`, its dense paths handing back; branch.c
+(`sets`, `dpk`) reads |C|'s maximum over the packed values and the diagonal through `dpk`, no certificate (none is
+kept above 1 000 unknowns: `BRANCH_CERT_MAX_N`).  (d) `_tran_newton_c`: `SETS` (env `PYCIRCUIT_PACKED_SETS`),
+`SETS_FROM` = 1 024, `_set_sets` (the record's ten sets npat values each where it binds KLU on the core's pattern
+from that size, n x n otherwise, fresh where it switches), the cached C gathered (`np.take` at the pattern), the
+write-backs (`_C_cache`, `_Cmat`, `_Geq`, J) scattered n x n on `_tran_core.pattern_zeros` -- fresh private 4 KB
+pages, resident a page or two a row, a read of an unwritten page the zero page (Python's `mmap.mmap(-1, n)` is
+MAP_SHARED, shmem, where a read allocates); `_tran_loop_c`: the slots npat values each (`_bind_buffers`), the
+cached C gathered (`_load_cached`), the slots scattered back (`_slot_back`), the screen's `dpk`, the judge's
+`kpp`, a rebind where the record's sets move; the shooting walk declines them (`pss.lmmwalk:sets`: its map reads
+J n x n).  The Radau stage loop keeps its n x n slots.
+
+**Measured** (LINE set before building, in one form: the 8 000-stage chain's 100 ns gear2 solve peak RSS at most
+6.0 GB, and the 4 000-stage 1 us gear2 solve not slower, >= 0.97x, the median of 3 interleaved pairs, against
+HEAD bebcbdd1): the 8 000-stage 100 ns gear2 solve peak 11 082 -> 3 591 MB (5.128 -> 4.072 s) -- MET; the 4 000-stage 1 us gear2 solve 3.359 / 3.395 / 3.297 -> 2.711 / 2.715 / 2.698 s, 1.239 / 1.250 / 1.222x, the median 1.239x (its C loop 1.86-1.92 -> 1.37 s: no scatter across 2 MB pages), peak 2 786 -> 994 MB -- MET; every digest the same (load 1.3-1.5).
+
+**Tests.**  test_core_sets (new, 25): at random states of a chain with ground, gate-drain and long-range capacitors
+and depletion charges, for every formula (gear2, Euler, trapezoid, theta, the passes alone) and want (all, G and
+I, C, I, J packed without Geq), the packed C, Geq and J are the dense pattern call's at the pattern -- the held Cin
+packed -- q, iq and F the same, G in `binGp` the dense bin's at the pattern, the dense bin untouched.
+test_packed_sets (new, 5): with the sets from 100 unknowns a 305-unknown chain's run -- gear2 and the trapezoid
+adaptive, gear2 fixed -- is the n x n run's: bytes, statistics, the solver's counts, every path count, the state
+left the Python (n x n, the same bytes); the record's sets npat each; under the size n x n; a PSS on packed sets
+the n x n one's, its C walk declined.  Mutations -- the core's J from the dense bin, PACKED_J's index, `binGp`
+unused, lte's packed values, branch's diagonal map, the write-back scatter, the entry gather -- each caught.
+
+**Gate** (the main tree): the suite 6 265 passed; the pinned pairs re-recorded after their twins' tests (22 of them, core.c, newton.c, lte.c and branch.c in their twins' texts -- 19 on the twin side alone; the frozen factors' on its reference side, the multistep walk's and the step's end passes' on both (`_tran_core`, the walk's glue in their references)); the 27
+gold decks under gear2, Radau and DC against HEAD bebcbdd1 (every one under 1 024 unknowns): every digest, count and
+path count the same; the chain's digests the same (1 us gear2 at 2 000 and 4 000 stages, 100 ns Radau at 2 000 and 4 000; gear2's peak 870 -> 441 MB and 2 785 -> 997 MB).

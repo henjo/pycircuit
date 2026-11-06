@@ -104,6 +104,18 @@ ENABLED = os.environ.get('PYCIRCUIT_NEWTON_C', '1') != '0'
 #: `_C_lookup` serves no cached C (`_load` sets `fb_on`); env
 #: `PYCIRCUIT_CHORD_FALLBACK_C=0` hands such a step back
 FALLBACK = os.environ.get('PYCIRCUIT_CHORD_FALLBACK_C', '1') != '0'
+#: THE PACKED SETS (newton.h): from `SETS_FROM` unknowns a record whose solve
+#: is the StructuralKLU on the core's pattern holds its C, Geq and J sets on
+#: the pattern, npat values each (`_set_sets`) -- n x n sets, resident whole
+#: under huge pages however few entries are written, no more; its write-backs
+#: n x n on pattern pages (`_scatter`).  Above the branch certificate's sizes
+#: (`BRANCH_CERT_MAX_N`): branch.c's packed screen holds no certificate.  Env
+#: `PYCIRCUIT_PACKED_SETS=0` keeps them n x n
+SETS = os.environ.get('PYCIRCUIT_PACKED_SETS', '1') != '0'
+SETS_FROM = 1024
+#: (the record's sets: the first evaluation's, the iterations', the cached C,
+#: the fold's)
+_SETS = ('J0', 'J', 'C0', 'Geq0', 'C', 'Geq', 'cC', 'Cj', 'Geqj', 'Jj')
 STATUS = 'not loaded'
 
 NEWTON_C = _cbuild.csrc('newton.c')
@@ -269,6 +281,7 @@ class _Ctx:
         'klu',
         'klu_keep',
         'klu_sym',
+        'mats',
         'n',
         'par_arms',
         'par_held',
@@ -319,10 +332,14 @@ class _Ctx:
         self.ipiv64 = np.empty(max(m, 1), dtype=np.int64)
         self.ipiv32 = np.empty(max(m, 1), dtype=np.int32)
         fb = ffi.from_buffer
-        self.keep = []
+        self.keep, self.mats = [], {}
         for k, arr in buf.items():
             h = fb('double *', arr)
-            self.keep.append(h)
+            if k in _SETS:
+                ## (the sets' handles apart: `_set_sets` replaces them)
+                self.mats[k] = h
+            else:
+                self.keep.append(h)
             setattr(s, k, h)
         ## (the cached C's own buffer, where it is copied: below
         ## `_cbuild.INPLACE_MIN_ENTRIES`, or not C-contiguous)
@@ -358,6 +375,35 @@ class _Ctx:
         ## other outcome: the stepping loop in C enters only on a serve
         ## nothing watched has moved since -- `_tran_loop_c`)
         self.served = None
+
+
+def _set_sets(rec, on):
+    """THE PACKED SETS (newton.h): the record's C, Geq and J sets npat values
+    each where `on` -- the core's pattern's order -- n x n where not: fresh
+    zeros, each pointed at by its field, where the record holds the other
+    (every one is written before it is read: a call's evaluations and fold,
+    the cached C by `_load`); the cached C then copied, never read where it
+    stands."""
+    if bool(rec.s.sets) == on:
+        return
+    n, s, fb = rec.n, rec.s, rec.ffi.from_buffer
+    for k in _SETS:
+        a = np.zeros(rec.core.npat) if on else np.zeros((n, n))
+        rec.buf[k] = a
+        rec.mats[k] = h = fb('double *', a)
+        setattr(s, k, h)
+    rec.cC_buf = s.cC
+    rec.cC_inplace = not on and n * n >= _cbuild.INPLACE_MIN_ENTRIES
+    s.sets = int(on)
+
+
+def _scatter(p, pat, n):
+    """The n x n matrix of the packed set `p` (the pattern's values, zero
+    off it), on pattern pages (`_tran_core.pattern_zeros`): the Python's
+    state as the n x n record leaves it."""
+    out = _MOD['core'].pattern_zeros(n * n)
+    out[pat] = p
+    return out.reshape(n, n)
 
 
 def _first_choice(ls, m):
@@ -983,6 +1029,7 @@ def _record(tr, td, M, core, drv, P, nrsolver, residual, ls, ch):
         s.klu_sym = ffi.NULL
         rec.klu = rec.klu_sym = None
         rec.klu_keep = ()
+    _set_sets(rec, bool(sparse and SETS and rec.core.npat and rec.n >= SETS_FROM))
     return rec, T, chord, sparse
 
 
@@ -1047,8 +1094,11 @@ def _load(tr, td, rec, P, rows, u, seed, chord):
                 and (cCa.dtype is _F64 or cCa.dtype == np.float64) and cCa.shape == (n, n)):
             np.copyto(buf['cx'], cxa)
             ## (the cached C read where it stands -- the C only reads it: an
-            ## n x n copy a call saved -- else copied, `INPLACE_MIN_ENTRIES`)
-            if rec.cC_inplace and cCa.flags.c_contiguous:
+            ## n x n copy a call saved -- else copied, `INPLACE_MIN_ENTRIES`;
+            ## packed, its pattern's values)
+            if s.sets:
+                np.take(cCa.reshape(-1), rec.core.arrays['pat'], out=buf['cC'])
+            elif rec.cC_inplace and cCa.flags.c_contiguous:
                 s.cC = rec.ffi.from_buffer('double *', cCa)
             else:
                 np.copyto(buf['cC'], cCa)
@@ -1146,7 +1196,8 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
     ## reference row's +0.0 in its place: `insert_row`'s array, byte for
     ## byte -- every serve evaluates the converged point, `fold_j` never 0)
     x = buf['xc'].copy()
-    Cj = buf['Cj'].copy()
+    pat = core.arrays['pat'] if s.sets else None
+    Cj = buf['Cj'].copy() if pat is None else _scatter(buf['Cj'], pat, rec.n)
     tr._q_cache = (x, buf['qj'].copy())
     tr._C_cache = (x, Cj)
     if core.npat:
@@ -1154,7 +1205,8 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
         tr._C_pattern = (Cj, core.arrays['pat'])
     ## (the step's companion left as `get_diff` leaves it -- the same writes
     ## as `_tran_core._leave`'s; `transient._RUN_STATE`'s 'step' block)
-    tr._iq, tr._Geq = buf['iqj'].copy(), buf['Geqj'].copy()
+    tr._iq = buf['iqj'].copy()
+    tr._Geq = buf['Geqj'].copy() if pat is None else _scatter(buf['Geqj'], pat, rec.n)
     tr._Cmat = Cj
     tr.active_integrator = active
     tr._companion_coeffs = active.companion_coefficients(h, h_last)
@@ -1166,7 +1218,8 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
         _PC['newton_c:lte_seed'] += 1
         fj = (None, None)
     else:
-        fj = (None, buf['Jj'].copy()) if want_j else (None, None)
+        fj = ((None, buf['Jj'].copy() if pat is None else _scatter(buf['Jj'], pat, rec.n))
+              if want_j else (None, None))
     if tr._branch_on():
         target = stats if stats is not None else tr
         before = getattr(target, 'branch_screens', 0)

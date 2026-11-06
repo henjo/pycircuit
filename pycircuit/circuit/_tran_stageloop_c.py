@@ -497,7 +497,7 @@ def bind_common(e, run):
     ffi, _cfn = _LC.driver()
     run.ffi, run.nrec, run.tab = ffi, rec, e.tab
     s = run.s = ffi.new('loop_t *')
-    _LC._bind_buffers(run, n, hist_len)
+    _LC._bind_buffers(run, n, hist_len, 0)
     pffi, pcfn, pdgesv, pdgemv = _tran_pred_c.driver()
     ps, pbuf, pkeep = _tran_pred_c.new_state(pffi, pdgesv, pdgemv, n)
     ps.ht = pffi.cast('double *', _LC._addr(ffi, s.ht))
@@ -507,7 +507,7 @@ def bind_common(e, run):
     run.pr = (ps, pbuf, pkeep)
     _LC._plug(s, ffi, 'pred', pffi, ps, pcfn)
     _LC._plug(s, ffi, 'src', e.tab.ffi, e.tab.s, e.tab.cfn)
-    _LC._bind_screen(run, tr, n, e.screen)
+    _LC._bind_screen(run, tr, n, e.screen, 0)
     s.newton = s.newton_fn = s.ctrl = s.ctrl_fn = ffi.NULL
     s.radau = s.radau_fn = s.tc = s.tc_fn = s.fold = s.fold_fn = ffi.NULL
     lffi, lcfn, ldgesv = _tran_lte_c.driver()

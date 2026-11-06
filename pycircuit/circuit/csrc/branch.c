@@ -84,7 +84,7 @@ long pcx_branch(branch_t *s)
        pattern are +0.0 and change no maximum */
     if (s->npat) {
         for (k = 0; k < s->npat; k++) {
-            double v = fabs(C[s->pat[k]]);
+            double v = fabs(C[s->sets ? k : s->pat[k]]);
             if (!isfinite(v)) return s->verdict = BRANCH_BAIL_NONFINITE;
             if (v > nrm) nrm = v;
         }
@@ -102,9 +102,9 @@ long pcx_branch(branch_t *s)
     /* the diagonal's `d.max()` and `pos.min()` of its positive entries
        (0.0 where there are none, as `... if pos.size else 0.0`): order-free
        on finite values without -0.0 */
-    dmax = fabs(C[0]);
+    dmax = fabs(C[s->sets ? s->dpk[0] : 0]);
     for (i = 0; i < n; i++) {
-        double d = fabs(C[i * (n + 1)]);
+        double d = fabs(C[s->sets ? s->dpk[i] : i * (n + 1)]);
         if (d > dmax) dmax = d;
         if (d > 0.0 && (pmin == 0.0 || d < pmin)) pmin = d;
     }
@@ -113,7 +113,7 @@ long pcx_branch(branch_t *s)
     /* the Python's two tests, in its order */
     if (nrm > tol && dmax > tol && pmin > 1e-6 * ref) return s->verdict = BRANCH_QUIET;
     if (nrm <= tol) return s->verdict = BRANCH_COLLAPSED;
-    if (s->r0 > 0 && certify(s, C, tol)) {
+    if (s->r0 > 0 && !s->sets && certify(s, C, tol)) {
         s->ncert++;
         return s->verdict = BRANCH_QUIET;
     }

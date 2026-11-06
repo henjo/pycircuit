@@ -264,6 +264,11 @@ typedef struct {
                              else 0 */
     long fb_iters;        /* OWN: the fallback's own iterations (a sparse run's
                              numeric refactored that many times) */
+    /* THE PACKED SETS (core.h; the glue's `_sets_on`, KLU on the core's
+       pattern): C0, C, cC, Cj, Geq0, Geq, Geqj, J0, J and Jj hold the core's
+       pattern's values in its order, npat each, and every core call asks for
+       them (PCX_WANT_SETS) -- the same values at the same entries */
+    long sets;            /* CTX: 1 packed, 0 n x n */
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and

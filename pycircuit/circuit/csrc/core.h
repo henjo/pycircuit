@@ -134,6 +134,14 @@ typedef struct {
     int64_t *bp_st;
     int64_t *bp_n;
     double bp_rt, bp_vn;
+    /* THE PACKED SETS (PCX_WANT_SETS): the matrix passes' bins in the
+       pattern -- G's in `binGp`, C's in the caller's packed buffer -- each
+       written bin's place in `pat`; the vector passes' rows as in wball.
+       npat 0: unused (one entry each) */
+    const int64_t *wpall;         /* (as wball) each written bin's index in
+                                     pat (G, C) or its row (i, q) */
+    double *binGp;                /* (npat) G's bins, packed: G stays here
+                                     after a call with the sets */
 } hdl_core_t;
 /* THE EVALUATION: the passes `want` asks for (q always) at x, then the
    companion `formula` forms, f = (i + iq) + u and J = G + Geq -- bit for
@@ -148,7 +156,10 @@ typedef struct {
    PCX_WANT_PATTERN in want and npat nonzero, C, Geq and J zero off the
    pattern -- only its entries are written; with PCX_WANT_PACKED as well, J
    (want G) is packed -- entry k is the pattern's k-th, `pat[k]`, npat values
-   -- and Geq is not written (nor read: it may be any buffer).
+   -- and Geq is not written (nor read: it may be any buffer); with
+   PCX_WANT_SETS as well (THE PACKED SETS), C, Cin and Geq are packed too
+   and G is made in binGp, binG untouched -- the same values at the same
+   entries, each entry's operations the same.
    Writes: C (want has C), q (always), iq and Geq (unless the formula is
    PCX_FORMULA_PASSES; Geq not packed), F (want has I), J (want has G; npat
    values packed); binG (G) and bini
