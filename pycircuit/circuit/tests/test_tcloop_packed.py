@@ -8,6 +8,7 @@ import warnings
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from pycircuit.circuit import (
     _paths,
@@ -197,3 +198,28 @@ def test_zero_pages_are_zero_and_writable():
     assert a[12345] == 1.5 and np.count_nonzero(a) == 1
     b = _tran_radau_tc.zero_pages(10, np.int32)
     assert b.dtype == np.int32 and b.shape == (10,) and not b.any()
+
+
+@pytest.mark.parametrize('no_memo', [False, True], ids=['memo', 'no-memo'])
+def test_the_packed_sets_are_the_packed_loops_run(monkeypatch, no_memo):
+    """THE PACKED SETS (`SETS`, from `SETS_FROM` unknowns: here from any) on
+    the packed transform: its core calls write C packed and read G from the
+    core's packed bin, its screen reads the packed C -- the run the bin's
+    and the Python's, every count the bin's, the loop serving; with x_n's
+    passes the loop's own (no memo record) too."""
+    from pycircuit.circuit import _tran_radau
+    monkeypatch.setattr(_tran_tcloop_c, 'SETS_FROM', 1)
+    ## (the estimate on C's pattern, as from 1 000 unknowns: no dense reader of C)
+    monkeypatch.setattr(_tran_radau, 'PATTERN_FROM', 1)
+    py, _d = _run(monkeypatch, loops=False)
+    with monkeypatch.context() as m:
+        m.setattr(_tran_tcloop_c, 'SETS', False)
+        binds_off = []
+        off, doff = _run(m, packed='always', binds=binds_off, no_memo=[] if no_memo else None)
+    binds_on = []
+    on, don = _run(monkeypatch, packed='always', binds=binds_on, no_memo=[] if no_memo else None)
+    assert on == off == py
+    assert don == doff
+    assert don['tcloop_c:packed'] >= 1 and don['tcloop_c:attempts'] > 20
+    assert all(int(r.s.tc_sets) == 1 for _e, r in binds_on)
+    assert all(int(r.s.tc_sets) == 0 for _e, r in binds_off)

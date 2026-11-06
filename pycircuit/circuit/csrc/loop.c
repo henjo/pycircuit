@@ -1091,6 +1091,19 @@ static void tc_pass(loop_t *s, const double *x, long bits, double *q, double *C,
     radau_tf_t *tf = (radau_tf_t *) s->tc;
     core_fn_t core = (core_fn_t) tf->core_fn;
     long n = s->n, k;
+    if (s->tc_sets) {
+        /* (packed sets: C written packed where a set takes it -- `csp`
+           else -- G copied from the core's packed bin) */
+        double *cp = C ? C : s->csp;
+        core(tf->core, x, tf->T, bits | PCX_WANT_PATTERN | PCX_WANT_SETS, PCX_FORMULA_PASSES, 0.0,
+             0.0, 0.0, 1.0,
+             0.0, tf->dummy, tf->dummy, tf->dummy, tf->dummy, cp, cp, q, tf->dummy, tf->dummy,
+             tf->dummy, tf->dummy);
+        if (G) COPY(G, tf->binGp, s->cnpat);
+        if (iv) COPY(iv, tf->bini, n);
+        feclearexcept(FE_ALL_EXCEPT);
+        return;
+    }
     double *cw = s->tc_packed ? s->cs : C;
     core(tf->core, x, tf->T, bits, PCX_FORMULA_PASSES, 0.0, 0.0, 0.0, 1.0, 0.0,
          tf->dummy, tf->dummy, tf->dummy, tf->dummy, cw, cw, q, tf->dummy, tf->dummy, tf->dummy,
@@ -1587,7 +1600,8 @@ static long tc_screen(loop_t *s, loop_attempt_t *a)
     if (!br) return 0;
     a->screened = 1;
     for (j = 0; j < 3; j++) {
-        const double *y = a->Ys + j * n, *Cj = j < 2 ? NULL : tc_cdense(s, a->C3);
+        const double *y = a->Ys + j * n,
+                     *Cj = j < 2 ? NULL : s->tc_sets ? a->C3 : tc_cdense(s, a->C3);
         if (tg_get(s, y) & LOOP_TG_C) {
             a->mcmemo++;
         } else {
@@ -1597,8 +1611,8 @@ static long tc_screen(loop_t *s, loop_attempt_t *a)
         if (j < 2) {
             /* (C alone: `cir.C`'s, the pattern's where the core has one) */
             tc_pass(s, y, PCX_PASS_C | (s->pass_bits & PCX_WANT_PATTERN), s->tcq,
-                    s->tc_packed ? NULL : s->tcC + j * nn, NULL, NULL);
-            Cj = s->tc_packed ? s->cs : s->tcC + j * nn;
+                    s->tc_sets ? s->csp : s->tc_packed ? NULL : s->tcC + j * nn, NULL, NULL);
+            Cj = s->tc_sets ? s->csp : s->tc_packed ? s->cs : s->tcC + j * nn;
         }
         br->C = Cj;
         br->cmax = cm;

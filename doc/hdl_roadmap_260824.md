@@ -14337,3 +14337,31 @@ Mutation -- the check skipped -- caught.
 **Gate** (the main tree): the suite 6 335 passed; the pinned pairs re-recorded after their twins' tests (1: the transform loop's on its twin side (`_tran_tcloop_c`)); the 27
 gold decks under gear2, Radau and DC against HEAD 990a0d39: every digest, count and path count the same; the chain's
 digests the same.
+
+## 2026-11-06 — 277. Radau's C transform loop on the packed sets -- from 1 024 unknowns, where it runs packed and its error estimate is on C's pattern, the loop's core calls ask the core for its packed sets (`PCX_WANT_SETS`): C written packed into the set taking it, G read from the core's packed bin, the end passes' likewise, the screen on the packed C -- where each pass scattered into the n x n bin and the n x n scratch and gathered back: the 4 000-stage chain's 1 us Radau solve 2.42 -> 2.29 s (1.056x), the 8 000-stage 100 ns 3.06 -> 2.93 s (1.044x); every result the same
+
+**Why**  Andreas, plan 261's L10b: "Start L10b", then "Build L10b anyway" on the re-sized numbers.  Sized: at 8 000
+stages a G pass cost 0.54 ms on the dense bin and 0.45 on the packed (C 0.55 -> 0.46), a vector pass (q, i) 0.30 ms
+on four threads -- untouched -- so ~4-5 % of the C loop was the estimate; measured, the loop's C call fell 11 % (4 000,
+1 us) and 23 % (8 000, 100 ns): the n x n scratch `cs` and the bin's scattered stores and gathers went with it.
+
+**Built.**  loop.h (`tc_sets`, `csp`, appended), loop.c: `tc_pass` on the sets asks `PCX_WANT_PATTERN |
+PCX_WANT_SETS`, C written packed into the set taking it (else `csp`, npat), G copied from the transform's `binGp`;
+the screen's stages read the packed C (branch.c's sets mode, its diagonal by `dpk`) -- `tc_cdense` keeps scattering
+for a dense reader.  radau_tc.h (`sets`, `binGp`, appended), radau_tc.c: the end pass's C written packed into e_C,
+`end_G` from the packed bin.  `_tran_tcloop_c`: `SETS` (env `PYCIRCUIT_TCLOOP_SETS`), `SETS_FROM` = 1 024, `_sets`
+(packed, the core's pattern and packed bin, the estimate on C's pattern -- `_tran_radau.PATTERN_FROM`: no dense reader
+of C left), `csp` sized npat and `cs` not made; `_tran_stageloop_c.bind_common(sets=)` binds the screen's sets.
+
+**Measured** (LINE set before building, in one form: the 4 000-stage chain's 1 us Radau solve >= 1.02x and the
+8 000-stage 100 ns >= 1.03x, medians of 3 interleaved pairs against HEAD 9deb9bc9; no peak higher by more than 2 %;
+every result the same): the 4 000-stage 1 us Radau solve 2.417 / 2.481 / 2.420 -> 2.289 / 2.288 / 2.296 s, 1.056 / 1.084 / 1.054x, the median 1.056x (its C call 1.364 -> 1.230 s), peak 954 -> 925 MB -- MET; the 8 000-stage 100 ns 3.045 / 3.076 / 3.055 -> 2.978 / 2.919 / 2.926 s, 1.022 / 1.054 / 1.044x, the median 1.044x (its C call 0.650 -> 0.522 s), peak 2 140 -> 2 079 MB -- MET; the 4 000-stage 100 ns 1.039x; every digest the same (load 1.31-1.41).
+
+**Tests.**  test_tcloop_packed (+2): on the packed transform with the sets from any size (the estimate on C's
+pattern), with x_n's record in the memo and without it (the loop's own passes), the run is the bin's and the Python's,
+every count the same, the sets bound.  Mutations -- the end pass's G from the dense bin, the loop pass's G shifted --
+each caught (the first or last G entry dropped are equivalent here: the reference row's and a source's zero).
+
+**Gate** (the main tree): the suite 6 332 passed; the pinned pairs re-recorded after their twins' tests (6 of them, each on its twin side (loop.c, loop.h, radau_tc.c, radau_tc.h, `_tran_tcloop_c`, `_tran_stageloop_c` in their texts): the step's end passes', the transform Newton's, the stepping loop's, the stage loop's, the multistep walk's, the transform loop's); the 27
+gold decks under gear2, Radau and DC against HEAD 9deb9bc9: every digest, count and path count the same; the chain's
+digests the same.

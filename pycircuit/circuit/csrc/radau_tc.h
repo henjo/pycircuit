@@ -155,6 +155,11 @@ typedef struct {
        from it, G gathered from the bin */
     long packed;
     double *cs;
+    /* THE PACKED SETS (`sets` 1, where `packed`): the end passes ask the core
+       for them (PCX_WANT_SETS) -- the end's C written packed into e_C, G read
+       from the core's packed bin `binGp` (npat, the pattern's order) */
+    long sets;
+    const double *binGp;
 } radau_tf_t;
 
 /* the step's two factors as a job of the pool (radau_tc.c's `tf_pair`): its

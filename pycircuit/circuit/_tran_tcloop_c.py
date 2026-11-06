@@ -86,6 +86,12 @@ ENABLED = os.environ.get('PYCIRCUIT_TCLOOP_C', '1') != '0'
 #: the packed sets: 'size' (where the dense buffers do not fit), 'always'
 #: (wherever eligible), 'never'
 PACKED = os.environ.get('PYCIRCUIT_TCLOOP_PACKED', '') or 'size'
+#: THE PACKED SETS on the packed transform (loop.h's `tc_sets`, radau_tc.h's
+#: `sets`): from `SETS_FROM` unknowns its core calls ask for them -- C written
+#: packed, G from the core's packed bin, the screen on the packed C -- where
+#: the n x n bin took the scatter; env `PYCIRCUIT_TCLOOP_SETS=0` keeps the bin
+SETS = os.environ.get('PYCIRCUIT_TCLOOP_SETS', '1') != '0'
+SETS_FROM = 1024
 _PC = _paths.COUNTS
 _no = _paths.no
 _F64 = np.dtype(np.float64)
@@ -549,13 +555,26 @@ def _bound(loop, e):
     return run_
 
 
+def _sets(e):
+    """Whether this entry's packed transform runs on THE PACKED SETS
+    (`SETS`): packed, the core holding a pattern (and its packed bin), from
+    `SETS_FROM` unknowns, the estimate's product on C's pattern (`est_pat`:
+    no dense reader of C left -- `_tran_radau.PATTERN_FROM`)."""
+    from pycircuit.circuit import _tran_radau
+    core = e.rec.core
+    return bool(SETS and e.packed and core.npat and e.n >= SETS_FROM
+                and e.n >= _tran_radau.PATTERN_FROM
+                and 'binGp' in core.arrays and 'wpall' in core.arrays)
+
+
 def _bind(e):
     """The transform run for this entry: the stage loop's units
     (`_tran_stageloop_c.bind_common`), the C Newton on a radau_tf_t of the
     loop's own (`_tran_radau_tc._Ctx`, not the transient's), the fold on a
     radau_fold_t of its own, the transform's buffers."""
     from pycircuit.circuit import _tran_core, _tran_radau_tc
-    run = _SL.bind_common(e, _TcRun())
+    sets = _sets(e)
+    run = _SL.bind_common(e, _TcRun(), sets=int(sets))
     s, ffi, n, rec = run.s, run.ffi, e.n, e.rec
     tdrv = _tran_radau_tc.driver()
     cffi_core, cfn_core, _dg = _tran_core.driver()
@@ -566,8 +585,13 @@ def _bind(e):
     fdrv = _tran_radau_tc._fold_driver()
     run.fo = fdrv[0].new('radau_fold_t *')
     _LC._plug(s, ffi, 'fold', fdrv[0], run.fo, fdrv[1])
-    _bind_buffers(run, e)
+    _bind_buffers(run, e, sets)
     tctx.s.packed, tctx.s.cs = s.tc_packed, s.cs
+    tctx.s.sets = s.tc_sets
+    if sets:
+        gp = rec.core.arrays['binGp']
+        tctx.keep.append(gp)
+        tctx.s.binGp = tdrv[0].cast('double *', gp.ctypes.data)
     s.fb_ok = 0
     if e.fb is not None:
         _bind_fb(run, e)
@@ -703,7 +727,7 @@ def _bind_newton(run, e):
         setattr(s, field, ffi.cast('void *', _cbuild.address(getattr(zs._lib, name))))
 
 
-def _bind_buffers(run, e):
+def _bind_buffers(run, e, sets=False):
     """The transform's buffers, each pointed at by its field and kept: the
     stage loop's names (the sources, seeds, x_n's passes, the estimate's
     work, the made attempt's `iq` and estimate), the reduced C and G (the
@@ -725,7 +749,9 @@ def _bind_buffers(run, e):
         'tcq': np.empty(n), 'tcY': np.empty(3 * n),
         'tg': np.empty(_CODES['LOOP_TG_SLOTS'] * mx * n),
         'tcf0': np.empty(n),
-        'cs': _tran_radau_tc.zero_pages(nn if e.packed else 1)}
+        ## (on the packed sets the core writes C packed: `csp`, no n x n `cs`)
+        'cs': _tran_radau_tc.zero_pages(nn if e.packed and not sets else 1),
+        'csp': np.zeros(pk if sets else 1)}
     run.tkeep = keep = []
     fb = ffi.from_buffer
     for k, a in tb.items():
@@ -736,6 +762,7 @@ def _bind_buffers(run, e):
     s.lupiv = keep[-1]
     _SL._bind_pattern(run, e.rec.core, keep)
     s.tc_packed = int(e.packed)
+    s.tc_sets = int(bool(sets))
     for o in range(2):
         for k, size in enumerate((n, n, cg, cg)):
             a = tb[f'te{o}{k}'] = np.zeros(size)

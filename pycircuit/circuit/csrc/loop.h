@@ -341,6 +341,13 @@ typedef struct {
        CHORD'S FALLBACK) and the run's numeric's refactors theirs made where
        the run is sparse -- this call's (zeroed by pcx_loop) */
     long chord_fallbacks, fb_refactors;
+    /* THE PACKED SETS (`tc_sets` 1, where `tc_packed`): the transform's core
+       calls ask the core for them (PCX_WANT_SETS) -- C written packed (into
+       the set taking it, else `csp`, cnpat), G read from the core's packed
+       bin (the transform's `binGp`); the screen reads the packed C (branch.h's
+       `sets`) */
+    long tc_sets;
+    double *csp;
 } loop_t;
 long pcx_loop(loop_t *s);
 

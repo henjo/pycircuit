@@ -486,11 +486,12 @@ def _bind(e):
     return run
 
 
-def bind_common(e, run):
+def bind_common(e, run, sets=0):
     """`run` (a `_StageRun`, or the transform's) bound to what both stage
     modes call: the C loop's buffers, the predictor's state, the sources'
-    table, the screen, an error test of its own (lte.c), the sizes; the
-    Newton's units left to the mode."""
+    table, the screen (on the packed C where `sets`: the transform's packed
+    sets), an error test of its own (lte.c), the sizes; the Newton's units
+    left to the mode."""
     from pycircuit.circuit import _tran_lte_c, _tran_pred_c
     tr, rec, n, iref = e.tr, e.rec, e.n, e.iref
     hist_len = e.st[0].shape[0]
@@ -507,7 +508,7 @@ def bind_common(e, run):
     run.pr = (ps, pbuf, pkeep)
     _LC._plug(s, ffi, 'pred', pffi, ps, pcfn)
     _LC._plug(s, ffi, 'src', e.tab.ffi, e.tab.s, e.tab.cfn)
-    _LC._bind_screen(run, tr, n, e.screen, 0)
+    _LC._bind_screen(run, tr, n, e.screen, sets)
     s.newton = s.newton_fn = s.ctrl = s.ctrl_fn = ffi.NULL
     s.radau = s.radau_fn = s.tc = s.tc_fn = s.fold = s.fold_fn = ffi.NULL
     lffi, lcfn, ldgesv = _tran_lte_c.driver()
