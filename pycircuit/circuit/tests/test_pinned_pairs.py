@@ -203,7 +203,9 @@ PAIRS = {
         'reference': ['pycircuit.circuit._limiting:apply_limit',
                    'pycircuit.circuit._limiting:device_writeback'],
         'twin': ['pycircuit.circuit._hdl_climit:_LIMIT_C',
-              'pycircuit.circuit._hdl_climit:render'],
+              'pycircuit.circuit._hdl_climit:render',
+              'pycircuit.circuit._hdl_climit:_group_c',
+              'pycircuit.circuit._hdl_climit:_singles_c'],
     },
     'the transient evaluation and the core': {
         'why': 'the core evaluates the four passes, the companion in each '
@@ -1173,7 +1175,7 @@ RECORD = {
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
     'the kernel call and the pass driver': ('3eaa0f837ffb', '5a9e89626ca0'),
     'the limiting loop and the walk': ('58c4ce9c8f4d', '5cc28c191b2a'),
-    'the limiter laws and their C prelude': ('9b7944f9c0dd', 'a48b156b4743'),
+    'the limiter laws and their C prelude': ('9b7944f9c0dd', '0cdc6b2abe48'),
     'the transient evaluation and the core': ('9523f23cedda', '31bca7f65b39'),
     'the assembly loops and the plan': ('a822abce557c', '3ff543f303a8'),
     'the sources and their direct pass': ('133b68c3262d', '11e5cf691f59'),

@@ -14407,3 +14407,46 @@ shifted, the paired complex solve skipped, the gradual fallback dropped (test_ve
 **Gate** (the main tree): the suite 6 340 passed, 10 skipped, 3 xfailed (the 13 moved pairs the only failures before their re-recording); the pinned pairs re-recorded after their twins' tests (13, every one on its twin side -- pcx_verdict.h, core.c and core.h, radau_tc.c and loop.c in their texts: the transient evaluation and the core, the error test, the Newton solve, the DC base solve, the PCNR DC solve, the step's end passes, the coupled stage Newton, the stage loop, the multistep walk, the transform Newton, the stepping loop, the stage paths' passes, the transform loop); the 27
 gold decks under gear2, Radau and DC against HEAD 72073050: every digest, count and path count the same; the chain's
 digests the same.
+
+## 2026-11-06 — 279. The limiter's ranking that limits nothing ends its group -- a class's rendered limiter whose ranked `limit_together` group, or its single probes, finds no probe limited in the ranking pass skips the sort, the second pass and the writeback, which would leave the state as they found it: the limiter walk 20.4 % -> 13.8 % of the C transform loop's main thread; the 4 000-stage chain's 1 us Radau solve 1.98 -> 1.93 s (1.026x); every result the same
+
+**Why**  Andreas, plan 261's L12: "Continue with the loop".  Sized after 278 (perf on the 4 000-stage 1 us run's C
+loop window, DWARF stacks; the main thread is the critical path, the pool's three workers spinning half their time):
+`tf_newton` 78 % of the main thread -- the core's calls 30 %, THE LIMITER WALK 20.4 % (`pcx_walk` -> `walk_range` ->
+the class limiter's `hdl_fn` 16.5 %: nearly the device evaluation's 24 %), the solves 17 %, the screen 11 % (its C
+passes at the stages, as `_branch_after_coupled` reads them).  The limiter's ceiling (scratch `l12/lim_ceiling.py`:
+the rendered limiter of MosLevel1/2/3 against copies, 4 000 elements x 200 calls on drawn states with Newton-sized
+updates): 75 ns a call as rendered; a ranking that limits nothing ending the group 46 ns; its parameter-only statements
+held besides 24 ns.  `_lim_pnj`'s log made lazily: nothing.
+
+**Built.**  `_hdl_climit._group_c` (a ranked group) and `_singles_c`: the ranking pass notes whether any probe's law
+moved its value (`vl == vn`, every one: `same`); where none did, the rest is skipped.  Exact: with no shift made the
+second pass recomputes each probe's value (a zero's sign aside: `-0.0 + 0.0` is `+0.0`, which no law and no `==` tells
+apart) and limits none, and the writeback, every limited value its unlimited one, writes nothing -- the state, `moved`
+and the return the whole group's; a NaN is never `==`, so such a group runs whole (and a NaN key's decline, where
+there is one, comes first as before).  A sequential group (no ranking pass) is as it was.  The pinned pair "the
+limiter laws and their C prelude" now names the group and singles printers in its twin (`render` alone did not see
+them move).
+
+**Refused: the limiter's held statements (L12b).**  Its line, set before building: >= 1.015x on L12a's tree.  Built
+(the limiter's own region of the pack after the class kernel's tail: its parameter-only statements made once a
+parameter state and temperature, read as loads -- six values for a MOSFET), measured on a quiet box, 5 interleaved
+pairs against L12a: 1.017, 1.001, 1.005, 1.002 (0.80 a disturbed run) -- median 1.002x.  With both the walk was 10.2 %
+of the main thread (from 20.4 %; L12a alone 13.8 %); the bench's drawn states (unpredictable branches)
+overstated the run's.  Kept as scratch `p261/l12/l12b_refused.patch`.  Would reopen: a limiter whose parameter-only
+statements cost more than a MOSFET level 1-3's, or a run whose walk is a larger share.  Not built either: eight core
+threads (C loop 1.0 -> 0.85 s) -- the default holds half the box by choice (`_tran_core._default_threads`), Andreas's
+call.
+
+**Measured** (LINE recorded before building, one form: the 4 000-stage chain's 1 us Radau solve >= 1.02x, the 8 000-stage
+100 ns >= 0.99x, medians of 3 interleaved quiet-box pairs against HEAD d20d6a4c; no peak higher by more than 2 %; every
+result the same): the first run (its 15-minute load 2.2, just after the test runs) 4 000 / 1 us 1.952 -> 1.915 s (pairs 1.019, 1.018, 1.029: median 1.019x -- under by 0.001), 8 000 / 100 ns 1.023x; a small effect deciding, rerun once the box settled (quiet-box rule; the line unmoved): 4 000 / 1 us 1.983 -> 1.929 s (1.026, 1.043, 1.016: median 1.026x; its C loop 1.010 -> 0.962 s), 8 000 / 100 ns 2.603 -> 2.581 s (1.012x), 4 000 / 100 ns 1.013x besides; the six pairs at 1 us together 1.022x; peaks 925 -> 925 MB and 2 081 -> 2 082 MB; every digest the same.  PASSES on the rerun.
+
+**Tests.**  test_hdl_climit `test_a_ranking_that_limits_nothing_ends_the_group` (31, every limiting library class):
+the kernel as rendered and a copy running every group whole give the same return and bytes on updates no law limits
+(signed zeros among the probes), on steps of every size and on NaN and infinite states; the rendered text carries the
+ending for each ranked group and the singles.  Mutations -- the ranking's test always true (groups; singles), set by
+the first probe alone -- each caught by it (19, 11, 19 classes) and by the closure tests (47, 23, 43 failures).
+
+**Gate** (the main tree): the suite 6 384 passed, 10 skipped, 3 xfailed; the pinned pair re-recorded after its twin's tests; the 27 gold decks under
+gear2, Radau and DC against HEAD d20d6a4c: every digest, count and path count the same; the chain's digests the same.

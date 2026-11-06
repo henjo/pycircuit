@@ -186,12 +186,20 @@ def _parameter_chains(spec, n_p, t_index):
 def _group_c(seq, idx):
     """One `limit_together` group's C (`seq`: sequential, the minus
     terminal moving, in declaration order; else ranked by how far each
-    probe is limited, the terminal that drifted further moving)."""
+    probe is limited, the terminal that drifted further moving).  A ranked
+    group whose ranking pass finds no probe limited (`vl == vn`, every one)
+    leaves the state as it found it, and the rest is skipped: no shift is
+    made, so the second pass meets each probe's value again (its zero's
+    sign aside, which no law and no `==` tells apart) and limits none, and
+    the writeback, every limited value its unlimited one, writes nothing --
+    the state, `moved` and the return the whole group's.  (A NaN is never
+    `==`: such a group runs whole.)"""
     ng = len(idx)
     out = []
     out.append('  {   /* a limit_together group' + (', sequential' if seq else '') + ' */')
     out.append(f'    int order[{ng}] = {_c_list(idx)};')
     if not seq:
+        out.append('    int same = 1;')
         out.append(f'    for (int m = 0; m < {ng}; m++) {{')
         out.append('      int j = order[m];')
         out.append('      double vn = o[RA[j]] - o[RB[j]];')
@@ -200,7 +208,9 @@ def _group_c(seq, idx):
         out.append('      k0[j] = -fabs(vl - vn);')
         if not NAN_KEYS:
             out.append('      if (isnan(k0[j])) return 1;')
+        out.append('      if (!(vl == vn)) same = 0;')
         out.append('    }')
+        out.append('    if (!same) {')
         out.append(f'    _sort_by(order, {ng}, k0, RA, RB);')
     out.append('    double shift[NX]; int taken[NX];')
     out.append('    for (int k = 0; k < NX; k++) { shift[k] = 0.0; taken[k] = 0; }')
@@ -224,17 +234,23 @@ def _group_c(seq, idx):
     out.append('      tra[nt] = ra; trb[nt] = rb; tvn[nt] = vorig; tvl[nt] = vlim; nt++;')
     out.append('    }')
     out.append('    if (_writeback(o, tra, trb, tvn, tvl, nt, drift, moved, NX) < 0) return 1;')
+    if not seq:
+        out.append('    }')
     out.append('  }')
     return out
 
 
 def _singles_c(singles):
     """The single probes' C: ranked by how far each is limited, each
-    limited one moving the terminal that drifted further, or its `MOVE`."""
+    limited one moving the terminal that drifted further, or its `MOVE`.
+    Where the ranking pass finds none limited (`vl == vn`, every one) the
+    rest is skipped: the second pass would meet each probe's value again
+    and move nothing (`_group_c`'s reasoning)."""
     ns = len(singles)
     out = []
     out.append('  {   /* the single probes */')
     out.append(f'    int order[{ns}] = {_c_list(singles)};')
+    out.append('    int same = 1;')
     out.append(f'    for (int m = 0; m < {ns}; m++) {{')
     out.append('      int i = order[m];')
     out.append('      double vn = o[RA[i]] - o[RB[i]];')
@@ -243,7 +259,9 @@ def _singles_c(singles):
     out.append('      k0[i] = -fabs(vl - vn);')
     if not NAN_KEYS:
         out.append('      if (isnan(k0[i])) return 1;')
+    out.append('      if (!(vl == vn)) same = 0;')
     out.append('    }')
+    out.append('    if (!same) {')
     out.append(f'    _sort_by(order, {ns}, k0, RA, RB);')
     out.append(f'    for (int m = 0; m < {ns}; m++) {{')
     out.append('      int i = order[m];')
@@ -257,6 +275,7 @@ def _singles_c(singles):
     out.append('      if (moved[cand]) cand = MOVE[i];')
     out.append('      moved[cand] = 1;')
     out.append('      if (cand == ra) o[ra] = o[rb] + vlim; else o[rb] = o[ra] - vlim;')
+    out.append('    }')
     out.append('    }')
     out.append('  }')
     return out

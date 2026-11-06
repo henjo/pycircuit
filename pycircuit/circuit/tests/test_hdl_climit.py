@@ -287,6 +287,56 @@ def test_the_kernel_answers_the_closure_bit_for_bit(name):
         assert x.tobytes() == xc.tobytes() and x0.tobytes() == x0c.tobytes()
 
 
+@pytest.mark.parametrize('name', _limiting_classes())
+def test_a_ranking_that_limits_nothing_ends_the_group(name):
+    """A ranked group's or the singles' ranking pass that finds no probe
+    limited ends them (`_group_c`, `_singles_c`): the kernel as rendered
+    and a copy of it that runs every group whole give the same return and
+    the same bytes -- on updates no law limits (the state then unchanged,
+    signed zeros among the probes' voltages: `-0.0 - 0.0` is `-0.0`), on
+    steps of every size, and on NaN and infinite states."""
+    cls = getattr(eh, name)
+    e = _inst(cls)
+    info = _bound(e)
+    kern = cl.bind(type(e), info)
+    assert kern is not None, info.get('_c_limit_status')
+    csrc = cl.render(info)[0]
+    fast = csrc.count('    if (!same) {')
+    assert fast >= 1 and fast == csrc.count('    int same = 1;')
+    whole = cb.load_kernel(csrc.replace('    if (!same) {', '    {'), cl.limit_cdef())
+    ffi, cfn = whole[0], whole[1]
+    p, pcast = kern.pack(e)
+    if kern.t_index is not None:
+        p[kern.t_index] = 300.0
+    n = kern.nx
+    rng = np.random.default_rng(len(name) + 31)
+
+    def both(x, x0):
+        a, b = x.copy(), x.copy()
+        ra = kern.cfn(ffi.from_buffer('double *', x0), pcast, ffi.from_buffer('double *', a))
+        rb = cfn(ffi.from_buffer('double *', x0), ffi.cast('double *', p.ctypes.data),
+                 ffi.from_buffer('double *', b))
+        assert ra == rb and a.tobytes() == b.tobytes(), (name, x, x0)
+        return a
+    unchanged = 0
+    for k in range(600):
+        x0 = rng.uniform(-1.0, 1.0, n)
+        if k % 3 == 0:
+            ## (an update no law limits: a few ulps, zeros of both signs)
+            x = x0 + 1e-12 * rng.standard_normal(n)
+            z = rng.integers(0, n, 2)
+            x[z[0]], x[z[1]] = -0.0, 0.0
+            x0[z[0]], x0[z[1]] = 0.0, -0.0
+            unchanged += both(x, x0).tobytes() == x.tobytes()
+        elif k % 3 == 1:
+            both(x0 + rng.choice([1e-3, 0.1, 1.0, 10.0, 100.0]) * rng.standard_normal(n), x0)
+        else:
+            x = x0 + rng.standard_normal(n)
+            x[rng.integers(0, n)] = rng.choice([np.nan, np.inf, -np.inf])
+            both(x, x0)
+    assert unchanged > 150, unchanged
+
+
 def test_the_inputs_the_closure_accepts_are_served():
     """A list, an int vector, a vector longer than the class reads, the
     same array as `x` and `x0` (nothing bites: equal and fresh)."""
