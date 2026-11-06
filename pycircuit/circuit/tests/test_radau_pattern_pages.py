@@ -289,3 +289,45 @@ def test_counts_comparisons_and_couplings_on_pattern_pages_are_numpys(monkeypatc
     got = _tran_history._node_couplings(A, nn)
     want = np.nonzero(full[:nn, :nn] != 0.0)
     assert all(np.array_equal(g, w) for g, w in zip(got, want))
+
+
+@pytest.mark.parametrize('extra', [False, True], ids=['copy', 'off-pattern'])
+def test_the_loop_reads_a_memo_record_zero_off_the_pattern(monkeypatch, extra):
+    """The C transform loop's entry takes x_n's C from the memo at the
+    core's pattern only where the record is zero off it: a dense copy of
+    each record's C serves as the pattern-page one does; with one nonzero
+    off the pattern the entry declines (`tcloop_c:memo_pattern`)."""
+    from pycircuit.circuit import _tran_tcloop_c
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    ## (the loop on its packed sets, as at size: the check is theirs)
+    monkeypatch.setattr(_tran_tcloop_c, 'PACKED', 'always')
+    r0 = _tran_tcloop_c.run
+    done = []
+
+    def run(loop):
+        if not done:
+            done.append(1)
+            memo = loop.tr.__dict__.get('_dev_memo') or ({}, {})
+            pat = set(np.asarray(_tran_core.core_for(loop.tr).arrays['pat']).tolist())
+            for gen in memo:
+                for rec in gen.values():
+                    if 'C' in rec:
+                        C = np.array(rec['C'], dtype=float)
+                        if extra:
+                            n = C.shape[0]
+                            off = next(k for k in range(n * n) if k not in pat)
+                            C.reshape(-1)[off] = 1e-30
+                        rec['C'] = C
+        return r0(loop)
+
+    monkeypatch.setattr(_tran_tcloop_c, 'run', run)
+    before = _paths.snapshot()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(_chain(300), toolkit=circuit.numeric, integrator=RadauIIA3Integrator())
+        tr.solve(tend=1e-8, timestep=1e-9)
+    counts = _paths.since(before)
+    assert done
+    assert (counts.get('tcloop_c:memo_pattern', 0) > 0) == extra, counts
+    if not extra:
+        assert counts.get('tcloop_c:packed', 0) > 0 and counts.get('tcloop_c:steps', 0) > 0, counts

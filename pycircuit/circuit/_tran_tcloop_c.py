@@ -106,7 +106,7 @@ _KEEPS = {
     'switch': True,
     'passes': False, 'table_stale': False, 'toolkit': False, 'rings': False,
     'history': False, 'underflow': False, 'complex': False, 'memo': False, 'mats': False,
-    'unchosen': False,
+    'unchosen': False, 'memo_pattern': False,
 }
 
 _M = 'pycircuit.circuit.'
@@ -936,6 +936,7 @@ def _load_x(e, run_, xl):
     `te_x` -1 (the end sets hold no record yet).  Packed, C and G at the
     core's pattern: False where the memo's holds a nonzero off it (the
     entry declined)."""
+    from pycircuit.circuit import _tran_core
     s, tb = run_.s, run_.tbuf
     memo = e.tr.__dict__.get('_dev_memo') or ({}, {})
     key = xl.tobytes()
@@ -950,9 +951,11 @@ def _load_x(e, run_, xl):
                 a = np.asarray(rec[k], dtype=float).reshape(-1)
                 if pat is not None and k in ('C', 'G'):
                     ## (packed: the pattern's values -- the memo's matrix
-                    ## zero off it, as every C and G of the circuit is)
+                    ## zero off it, as every C and G of the circuit is; its
+                    ## nonzeros counted at its pattern where it is on
+                    ## pattern pages, `_tran_core.pattern_count`)
                     tb[name][:] = a[pat]
-                    if np.count_nonzero(tb[name]) != np.count_nonzero(a):
+                    if np.count_nonzero(tb[name]) != _tran_core.pattern_count(rec[k]):
                         return False
                 else:
                     tb[name][:] = a

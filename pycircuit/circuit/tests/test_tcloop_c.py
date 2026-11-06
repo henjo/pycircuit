@@ -777,7 +777,8 @@ _REASONERS = ('_eligible', '_family_ready', '_tc_ready', '_solver_ready', '_real
 
 
 def _reasons(text):
-    """Every reason `text` declines with: `_declined(loop, '<x>')` and the
+    """Every reason `text` declines with: `_declined(loop, '<x>')`, a load's
+    `e.declined = '<x>'` (`run` declines with it after the load), and the
     strings the reasoners return (`_REASONERS`)."""
     import ast
     out = set()
@@ -785,6 +786,9 @@ def _reasons(text):
         if (isinstance(node, ast.Call) and getattr(node.func, 'id', None) == '_declined'
                 and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)):
             out.add(node.args[1].value)
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                and any(isinstance(t, ast.Attribute) and t.attr == 'declined' for t in node.targets)):
+            out.add(node.value.value)
         if isinstance(node, ast.FunctionDef) and node.name in _REASONERS:
             out |= {r.value.value for r in ast.walk(node) if isinstance(r, ast.Return)
                     and isinstance(r.value, ast.Constant) and type(r.value.value) is str}

@@ -14311,3 +14311,29 @@ every element's block is symmetric).
 **Gate** (the main tree): the suite 6 326 passed; the pinned pairs re-recorded after their twins' tests (8 of them, each on its reference side (`linearsolver`'s `StructuralKLU._solve`, `_tran_branch`): the DC base solve's, the Newton solve's, the PCNR DC solve's, the branch screen's, the coupled stage Newton's, the error test's, the transform Newton's, the transform loop's); the 27
 gold decks under gear2, Radau and DC against HEAD c3980906: every digest, count and path count the same; the chain's
 digests the same.
+
+## 2026-11-06 — 276. The C transform loop's load at size, and its memo-pattern decline -- the entry's check that x_n's memo records are zero off the core's pattern counts a record on pattern pages at its pattern (where it re-read n x n five times), and the decline it makes where one is not (`memo_pattern`) is named among the loop's reasons (it raised `KeyError` at HEAD; the test that names them all now reads the load's form): the 8 000-stage chain's 100 ns Radau solve 3.25 -> 3.06 s (1.064x), the 4 000-stage's 1.38 -> 1.35 s (1.022x); every result the same
+
+**Why**  Andreas, plan 261's L10 (of "Take all three items": the C loop).  Sized (p261/l10/glue.py, the loop's `run`
+profiled; perf on its window, CLOCK_MONOTONIC, cpu-clock): at 8 000 stages, 100 ns, the C call took 0.66 s and the
+Python around it 0.48 s -- `_load_x`'s five `np.count_nonzero` of the memo's n x n records (each proving its zero off
+the pattern by a full read, each page faulted to the zero page) the largest; `_memo_back`'s six records (a core call
+and a G scatter each) next.  Inside the C call the main thread's time is spread: `pcx_core` ~25 % (scatter stores into
+the n x n G bin), the device kernels, the branch screen, the transform, the KLU solves -- no one piece dominant.
+
+**Built.**  `_tran_tcloop_c._load_x`: a record's nonzeros counted by `_tran_core.pattern_count` (at its pattern where
+it is on pattern pages: zero off it by construction), the same comparison.  `_KEEPS` gains `memo_pattern` (False: the
+memo moves every attempt); `test_tcloop_c._reasons` reads a load's `e.declined = '<x>'` as a decline.
+
+**Measured** (LINE set before building, in one form: the 8 000-stage chain's 100 ns Radau solve >= 1.03x and the
+4 000-stage's >= 1.02x, the 4 000-stage 1 us >= 0.97x, medians of 3 interleaved pairs against HEAD 990a0d39; no peak
+higher by more than 2 %; every result the same): the 8 000-stage 100 ns Radau solve 3.259 / 3.251 / 3.245 -> 3.086 / 3.056 / 3.049 s, 1.056 / 1.064 / 1.064x, the median 1.064x -- MET; the 4 000-stage 100 ns 1.380 / 1.376 / 1.382 -> 1.366 / 1.347 / 1.342 s, 1.010 / 1.022 / 1.030x, the median 1.022x -- MET (at the line); the 4 000-stage 1 us 2.505 / 2.463 / 2.473 -> 2.432 / 2.431 / 2.428 s, 1.030 / 1.013 / 1.019x, the median 1.019x -- MET; peaks the same; every digest the same (load 1.45-1.51).
+
+**Tests.**  test_radau_pattern_pages (+2): on the packed loop (`PACKED='always'`), x_n's memo records replaced by dense
+copies serve as the pattern-page ones do; with one nonzero off the pattern the entry declines (`tcloop_c:memo_pattern`)
+-- it raised before.  test_tcloop_c's every-decline test reads the load's form (it fails with the reason left out).
+Mutation -- the check skipped -- caught.
+
+**Gate** (the main tree): the suite 6 335 passed; the pinned pairs re-recorded after their twins' tests (1: the transform loop's on its twin side (`_tran_tcloop_c`)); the 27
+gold decks under gear2, Radau and DC against HEAD 990a0d39: every digest, count and path count the same; the chain's
+digests the same.
