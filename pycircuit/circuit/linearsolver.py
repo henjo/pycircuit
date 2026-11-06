@@ -1636,15 +1636,8 @@ class AutoSolver(LinearSolver):
         ## `min_n`: `MIN_N_FOR_STRUCTURAL_KLU`)
         st = (self.structure() if self.structure is not None
               and n_unknowns >= self.structural_min_n else None)
-        if st is not None and st[0] == n_unknowns:
-            try:
-                self._sparse = self._choice = StructuralKLU(
-                    *st, fallback=lambda: (self._value_sparse(n_unknowns, count=False)
-                                           if n_unknowns >= self.min_n else self._dense))
-                _paths.COUNTS['solver.auto:StructuralKLU'] += 1
-                return self._choice
-            except ImportError:
-                pass
+        if st is not None and st[0] == n_unknowns and self._structural(st, n_unknowns):
+            return self._choice
         if n_unknowns < self.min_n:
             ## (below the floor a sparse solve on the values' pattern was
             ## measured for: dense, as where no structure lowers it)
@@ -1656,6 +1649,46 @@ class AutoSolver(LinearSolver):
             self._sparse = self._choice = sp
             return self._choice
         self._choice = self._dense                          # pragma: no cover
+        return self._choice
+
+    def _structural(self, st, n_unknowns):
+        """The StructuralKLU on the structure `st` chosen (its count): True,
+        or False where KLU is missing."""
+        from pycircuit.circuit import _paths
+        try:
+            self._sparse = self._choice = StructuralKLU(
+                *st, fallback=lambda: (self._value_sparse(n_unknowns, count=False)
+                                       if n_unknowns >= self.min_n else self._dense))
+        except ImportError:
+            return False
+        _paths.COUNTS['solver.auto:StructuralKLU'] += 1
+        return True
+
+    def choose_on_structure(self, m):
+        """`_select`'s choice for an m x m matrix, made before one is seen
+        where no value of it can change the choice -- or None (the first
+        matrix chooses).  Below the floor the size alone chooses: dense.
+        From it, a structure of size m whose own fill is at most `max_fill`
+        -- a matrix whose nonzeros lie in the structure fills no more, so
+        `_select`'s fill test passes, its quotient the same form -- chooses
+        the StructuralKLU on it, as `_select` makes it.  Taken by the C
+        Newton (`_tran_newton_c`), which serves a first attempt only on a
+        choice made."""
+        if self._choice is not None:
+            return self._choice
+        from pycircuit.circuit import _paths
+        floor = (min(self.min_n, self.structural_min_n) if self.structure is not None
+                 else self.min_n)
+        if m < floor:
+            _paths.COUNTS['solver.auto:dense_small'] += 1
+            self._choice = self._dense
+            return self._choice
+        if self.structure is None or m < self.structural_min_n:
+            return None
+        st = self.structure()
+        if (st is None or st[0] != m or len(st[1]) / float(m * m) > self.max_fill
+                or not self._structural(st, m)):
+            return None
         return self._choice
 
     def _value_sparse(self, n_unknowns, count=True):

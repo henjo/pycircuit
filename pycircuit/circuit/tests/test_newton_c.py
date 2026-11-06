@@ -298,6 +298,11 @@ def test_a_sparse_bail_leaves_no_trace(monkeypatch):
     ffi, cfn, lapack = drv
     kw = {'tend': 4e-9, 'timestep': 2e-10}
     a = _sparse_run(False, **dict(kw))
+    ## (the first attempt the Python's, as before the C served it -- roadmap
+    ## 269: a first attempt's chord numeric is the C's own, and the stand-in
+    ## below, which reports a hand-back after a converged solve, would keep
+    ## it where a real hand-back frees it -- `pcx_klu_finish`)
+    monkeypatch.setattr(_tran_newton_c, '_first_choice', lambda ls, m: None)
 
     def bailing(s):
         cfn(s)
@@ -591,7 +596,9 @@ def test_the_rounding_floor_is_the_python_one(cells, monkeypatch):
     b = _run(lambda: _companion_chain(cells), True, **kw)
     assert a[0] == b[0] and a[1] == b[1] and a[2] == b[2] and a[3] == b[3]
     assert sum(seen) >= 10, seen
-    assert b[4].get('newton_c:served', 0) == 19, b[4]
+    ## (every attempt, the first among them on the dense solve -- roadmap
+    ## 269; the sparse full Newton's first solve factors, the Python's)
+    assert b[4].get('newton_c:served', 0) == (20 if cells == 1 else 19), b[4]
     assert (b[4].get('newton_c:sparse', 0) > 0) == (cells > 1), b[4]
 
 

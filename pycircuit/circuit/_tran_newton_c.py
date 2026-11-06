@@ -360,6 +360,20 @@ class _Ctx:
         self.served = None
 
 
+def _first_choice(ls, m):
+    """The AutoSolver not chosen yet: the choice its first matrix would make
+    where the structure decides it (`AutoSolver.choose_on_structure`), a
+    StructuralKLU analysed as its first factor analyses it (its count, the
+    pattern alone) -- or None, the Python's first attempt choosing."""
+    ch = ls.choose_on_structure(m)
+    if ch is not None and ch is not ls._dense:
+        try:
+            ch._analysed()
+        except np.linalg.LinAlgError:
+            return None
+    return ch
+
+
 def _klu_bind(rec, sk):
     """Point the C's sparse solves at `sk`, the run's `StructuralKLU`: its
     pattern's places in the core's full J (`kat`) and in the reduced |J|
@@ -869,9 +883,9 @@ def _admit(tr, td, provided_function, seed):
     if getattr(tr, '_continuation_rescue', False) or nrsolver is not None or scaler is not None:
         return _no('newton_c:solver')
     ls = tr._get_linearsolver() if P is None else P.ls
-    ## (the dense choice -- LAPACK, as the Python's -- or KLU on the circuit's
-    ## pattern: the sparse chord, `_klu_bind`)
-    ch = ls._choice if type(ls) is M['AutoSolver'] else None
+    ## (LAPACK as the Python's, or KLU on the circuit's pattern -- the sparse
+    ## chord, `_klu_bind`; not chosen yet, the structure's: `_first_choice`)
+    ch = (ls._choice or _first_choice(ls, tr.cir.n - 1)) if type(ls) is M['AutoSolver'] else None
     if ch is None or not (ch is ls._dense or type(ch) is M['StructuralKLU']):
         return _no('newton_c:linsolver')
     tc = M['core']
@@ -960,6 +974,10 @@ def _record(tr, td, M, core, drv, P, nrsolver, residual, ls, ch):
             return _no('newton_c:klu')
         ## (the run's numeric as it stands: the Python's solves replace it)
         num = ch._numeric
+        if not num and not chord:
+            ## (none yet: the full Newton's first solve factors one --
+            ## `StructuralKLU._solve` -- the Python's attempt)
+            return _no('newton_c:first_factor')
         s.klu_num = ffi.cast('void *', num) if num else ffi.NULL
     elif rec.klu is not None:
         s.klu_sym = ffi.NULL

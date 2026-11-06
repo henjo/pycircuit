@@ -167,7 +167,19 @@ def _core_or_skip():
 
 
 def _counted(cir):
+    """The counts of a short transient on the Python Newton -- whose
+    evaluations are the core's (`_tran_core.evaluate`); the C Newton serves
+    every attempt where it is on, the first too (roadmap 269)."""
     _core_or_skip()
+    from pycircuit.circuit import _tran_newton_c
+    on, _tran_newton_c.ENABLED = _tran_newton_c.ENABLED, False
+    try:
+        return _counted_on(cir)
+    finally:
+        _tran_newton_c.ENABLED = on
+
+
+def _counted_on(cir):
     before = _paths.snapshot()
     Transient(cir, toolkit=cm.numeric).solve(tend=6 * 2e-8, timestep=2e-8,
                                              fixed_timestep=True)
@@ -233,6 +245,9 @@ def test_the_gate_comparison_names_a_fast_path_that_stopped_serving(pytester, mo
     monkeypatch.setenv('PYTHONPATH', os.pathsep.join(
         [ROOT, os.path.join(ROOT, 'benchmarks', 'tranrec'), os.environ.get('PYTHONPATH', '')]))
     monkeypatch.setenv('TRANREC_FAMILIES', 'paths')
+    ## (the Python Newton, whose evaluations are the core's: the C Newton
+    ## serves every attempt, the first too -- roadmap 269)
+    monkeypatch.setenv('PYCIRCUIT_NEWTON_C', '0')
     out = {}
     for label, plant in (('a', None), ('b', '1')):
         out[label] = str(pytester.path / label)

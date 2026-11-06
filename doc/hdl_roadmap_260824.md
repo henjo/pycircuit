@@ -14038,3 +14038,40 @@ same C.
 **Gate** (the main tree): the suite 6 249 passed; the pinned pairs re-recorded after their twins' tests (the Newton solve's, the stepping loop's, the multistep walk's, the transform loop's and the stage loop's: newton.c, newton.h, loop.c, loop.h in their texts, `_tran_newton_c` in the first); the 27
 gold decks under gear2, Radau and DC against HEAD 793352cc: every digest, step, rejection and Newton iteration the
 same, the path counts moved only in the hand-back's keys (`loop_c:bail:newton`, `newton_c:bail:*`, `newton_c:served`, `newton_c:fallbacks`, `loop_c:attempts` / `steps` -- and, where the guard's list fell short, the Python attempts' own evaluation counts falling (`core.fj` / `f` / `j:served`, `plan.q` / `C:served`, `batch.*:served`, `walk:served`) and the C loop's per-attempt counts rising (`loop_c:lte_on_pattern`, `branch_c:served`) on mux8, slowlatch, todd3 and arom, `loop_c:history`'s one decline gone on two of them: every one the hand-backs that no longer happen; Andreas accepted the stage as measured (2026-11-06)); the chain's digests and statistics the same (1 us gear2 at 2 000 and 4 000 stages: 5.33 -> 1.99 s, 9.52 -> 4.14 s; 100 ns Radau at 2 000).
+
+## 2026-11-06 — 269. The C Newton serves a run's first attempt -- where no value of the first matrix can change the AutoSolver's choice (below its floor; a structure of the matrix's size within `max_fill`) the choice is made before it (`AutoSolver.choose_on_structure`), its StructuralKLU analysed as its first factor would (`_tran_newton_c._first_choice`), where the first attempt was the Python's on dense state: an 8 000-stage chain's 2 ns gear2 solve 4.94 -> 4.48 s (1.109x), every result the same; accepted as measured (built under plan 261's L4d1, whose memory line it does not meet)
+
+**Why**  Andreas, plan 261 L4d: "Start with L4d".  Sizing the memory of a long run at 8 000 stages found the first
+attempt the Python's: `_tran_newton_c` declined it (`newton_c:linsolver`) -- the AutoSolver chooses on the first
+matrix it sees -- so its Newton ran on dense n x n state (J, its reductions, |J|).  It moved no memory peak (the
+peak is the C loop's records', L4d's packed rewrite), but it is time: ~0.45 s of an 8 000-stage short run.  Andreas
+chose: commit this piece as measured, then the packed rewrite.
+
+**Built.**  `AutoSolver.choose_on_structure(m)`: `_select`'s choice for an m x m matrix, made before one is seen
+where no value of it can change the choice -- below the floor the size alone (dense, `solver.auto:dense_small`);
+from it, a structure of size m whose own fill is at most `max_fill` (a matrix whose nonzeros lie in the structure
+fills no more, and `_select`'s quotient has the same form) the StructuralKLU on it, as `_select` makes it
+(`_structural`, now shared by both, its count); else None.  `_tran_newton_c._first_choice`: it, and the
+StructuralKLU analysed as its first factor would analyse it (`_analysed`: the pattern alone, its count once).  The
+full Newton on a sparse run whose numeric is not made yet declines up front (`newton_c:first_factor`: its first
+solve factors one, the Python's attempt) where it would have reached `sparse_full` and handed back.
+
+**Measured** (accepted as measured, its own line not set before building: L4d1's line was the 8 000-stage 100 ns
+run's memory): the 8 000-stage chain's 2 ns gear2 solve, 3 interleaved pairs against HEAD da899e68, 4.872 / 5.009 /
+4.929 -> 4.499 / 4.485 / 4.444 s, 1.083 / 1.117 / 1.109x, the median 1.109x, the digest the same, its peak the same.
+
+**Tests.**  test_first_attempt_c (new, 3): the choice on a structure is the first matrix's (the class, the pattern,
+the count; dense below the floor, counted as `_select` counts it; a choice made returned again); nothing chosen
+where a value could decide (a structure over `max_fill`, its size not the matrix's, no structure); a 302-unknown
+chain's run with the C serving its first attempt is the run with the Python's first attempt -- bytes, statistics
+and every KLU count -- the decline gone, one serve more.  Mutations -- the fill test dropped, the StructuralKLU
+not analysed -- each caught.  Restated for the first attempt's serving: test_paths' two core-counting tests on the
+Python Newton (`PYCIRCUIT_NEWTON_C=0`: the C Newton serves every attempt now), test_newton_c's rounding floor
+expecting 20 serves on the dense solve (19 on the sparse full Newton, its first factor the Python's), and its
+sparse-bail test leaving the first attempt to the Python (its stand-in reports a hand-back after a converged solve
+and would keep the first attempt's fresh chord numeric, which a real hand-back frees: `pcx_klu_finish`).
+
+**Gate** (the main tree): the suite 6 254 passed; the pinned pairs re-recorded (the Newton solve's (twin: `_tran_newton_c`), the PCNR DC solve's (reference: `AutoSolver._select`, with `_structural` named in it), the transform solve's (reference: `AutoSolver`)); the 27 gold decks under gear2,
+Radau and DC against HEAD da899e68: every digest, step, rejection and Newton iteration the same, the path counts
+moved only as the first attempt's serving moves them (the class set before building: the decline gone, the C
+Newton's and the C loop's serve counts, the Python attempt's evaluation counts); the chain's digests the same.
