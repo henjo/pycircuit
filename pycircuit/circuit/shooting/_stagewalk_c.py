@@ -367,6 +367,10 @@ def _eligible(walks, j0, x, times, hs, tab, live, walk_lu):
     rec, Tc, sk, _Y0, rdrv, _M2 = got
     if sk is None or sk is not walk_lu.solver or not sk._symbolic:
         return 'klu'
+    if _tran_core.paged(rec.core):
+        ## (at size the screen's C's are the core's on pattern pages,
+        ## `_C_fresh`: the Python's walk)
+        return 'pages'
     sdrv, pdrv = _sensklu_c.driver(), _tran_pred_c.driver()
     if not sdrv or not pdrv:
         return 'units'

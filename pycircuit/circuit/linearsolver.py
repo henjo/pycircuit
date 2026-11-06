@@ -167,6 +167,28 @@ def _csc_of_dense(A, mv, last=None):
              data.view(numpy.float64), key), (nz, Ap, Ai, key))
 
 
+def _csc_of_packed(data, m, rows, cols, mv, last=None):
+    """`_csc_of_dense(A, mv, last)` for the m x m `A` zero off the positions
+    `rows`, `cols` (column by column, rows ascending), `data` its entries
+    there: the same record -- the nonzeros (`!= 0`: a NaN is one, a signed
+    zero is not) in that order, COPIED, their `Ap`, `Ai`, key and mask, the
+    last pattern's arrays where the mask is its."""
+    keep = data != 0
+    r, c = rows[keep], cols[keep]
+    Ai = numpy.ascontiguousarray(r, dtype=numpy.int32)
+    Ap = numpy.zeros(m + 1, dtype=numpy.int32)
+    numpy.cumsum(numpy.bincount(c, minlength=m), out=Ap[1:])
+    key = (m, Ap.tobytes(), Ai.tobytes())
+    if last is not None and last[0].shape == (m, m) and last[3] == key:
+        nz, Ap, Ai, key = last
+    else:
+        nz = numpy.zeros((m, m), dtype=bool)
+        nz[c, r] = True
+    vals = data[keep]
+    return ((functools.partial(_csc_dot, mv, m, Ap, Ai, vals), m, Ap, Ai,
+             vals.view(numpy.float64), key), (nz, Ap, Ai, key))
+
+
 def _csc_of_values(data, mv, last):
     """`_csc_of_dense`'s record of a matrix whose nonzeros fell in the
     last one's pattern, `last`, given those nonzeros in its order -- `data`,
@@ -1374,6 +1396,43 @@ class ComplexKLUSolver(object):
             return None
         return (functools.partial(_csc_dot, mv, m, Ap, Ai, data), m, Ap, Ai,
                 data.view(numpy.float64), key)
+
+    def prepare_structural_values(self, data, sk):
+        """`prepare_structural(A, sk)` given `A`'s entries at the structure's
+        positions, `data` (complex128, in its order: `take`'s) -- for a
+        caller that made them there alone, `A` zero off the structure: the
+        same record, without the gather and the count.  None where SciPy's
+        product is missing or `data` is not of the structure's size."""
+        numpy = self._np
+        mv = _csc_matvec()
+        if (mv is None or type(data) is not numpy.ndarray or data.dtype != numpy.complex128
+                or data.shape != (sk.nnz,) or not data.flags.c_contiguous):
+            return None
+        m = sk.m
+        sr = self._skey
+        if sr is None or sr[0] is not sk or sr[1] is not sk.Ap or sr[2] is not sk.Ai:
+            Ap = numpy.ascontiguousarray(sk.Ap, dtype=numpy.int32)
+            Ai = numpy.ascontiguousarray(sk.Ai, dtype=numpy.int32)
+            take = numpy.ascontiguousarray(sk.take, dtype=numpy.int64)
+            sr = self._skey = (sk, sk.Ap, sk.Ai, Ap, Ai, take,
+                               (self.STRUCTURAL, m, Ap.tobytes(), Ai.tobytes()))
+        _sk, _ap, _ai, Ap, Ai, _take, key = sr
+        return (functools.partial(_csc_dot, mv, m, Ap, Ai, data), m, Ap, Ai,
+                data.view(numpy.float64), key)
+
+    def prepare_packed(self, data, m, rows, cols):
+        """`prepare(A)` given `A`'s entries `data` (complex128) at the
+        positions `rows`, `cols` -- column by column, rows ascending -- `A`
+        zero off them: the record `_csc_of_dense` makes of `A` (its nonzeros,
+        a NaN one, a signed zero not, their pattern; the last record's
+        arrays where the pattern is its), the last pattern kept as it keeps
+        it.  None where SciPy's product is missing."""
+        numpy = self._np
+        mv = _csc_matvec()
+        if mv is None or type(data) is not numpy.ndarray or data.dtype != numpy.complex128:
+            return None
+        rec, self._csc_last = _csc_of_packed(data, m, rows, cols, mv, self._csc_last)
+        return rec
 
     def prepare_values(self, data, A):
         """`prepare(A)` where `A`'s nonzeros are known to fall in the last

@@ -158,13 +158,25 @@ class _CompanionModel:
         state as well as `x`."""
         C = self._C_lookup(x)
         if C is None:
-            C = self.cir.C(x, self.epar)
+            C = self._C_fresh(x)
             ## (recorded where the memo rolls: the stage paths' branch screen
             ## reads `C` at each stage, and the shooting's stage step then
             ## reads it there again -- `_C_at`)
             if self._memo_ok():
                 self._memo_put(x, {'C': C})
         return C
+
+    def _C_fresh(self, x):
+        """``cir.C(x)`` -- at size (`_tran_core.paged`: the transient's core
+        holds a pattern of `PATTERN_PAGES_FROM` entries) the core's pass, the
+        same bytes on pattern pages (the branch screen reads it on its
+        pattern, `_tran_core.pattern_of`), where the pass serves."""
+        rec = self.__dict__.get('_tran_core')
+        if rec is not None and rec[1] is not None and _tran_core.paged(rec[1]):
+            P = _tran_core.passes(self, x, 'C')
+            if P is not None:
+                return P['C']
+        return self.cir.C(x, self.epar)
 
     def _C_lookup(self, x):
         """The `C` `_C_at_state` would serve at `x` without evaluating, or

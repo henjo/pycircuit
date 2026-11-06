@@ -89,6 +89,52 @@ def _run(monkeypatch, pages, integ=RadauIIA3Integrator, n=300, cir=None, **kw):
     return run, left, on, paths, tr
 
 
+def _moved(a, b):
+    """The path counts that move with the pattern pages, taken out: each
+    fresh C the screen reads (`_C_fresh`) the core's pass where it was
+    `cir.C`'s assembly (`plan.C`, its two batches), each screen served on
+    its pattern where it declined `large`, each frozen transform's factors
+    made at the structure (`radau.frozen:packed`) where some were folded --
+    the rest left to compare."""
+    a, b = dict(a), dict(b)
+    fresh = a.get('plan.C:served', 0) - b.get('plan.C:served', 0)
+    assert fresh >= 0
+    assert a.get('batch.C:served', 0) - b.get('batch.C:served', 0) == 2 * fresh
+    assert b.get('core.p:served', 0) - a.get('core.p:served', 0) == fresh
+    big = a.pop('branch_c:large', 0) - b.pop('branch_c:large', 0)
+    assert b.get('branch_c:pattern', 0) - a.get('branch_c:pattern', 0) == big
+    assert b.get('branch_c:served', 0) - a.get('branch_c:served', 0) == big
+    ## (the frozen factors made at the structure's positions: no fold)
+    assert 'radau.frozen:packed' not in a and 'radau.frozen:fold' not in b
+    assert b.get('radau.frozen:packed', 0) >= a.get('radau.frozen:fold', 0)
+    for k in ('plan.C:served', 'batch.C:served', 'core.p:served', 'branch_c:served',
+              'branch_c:pattern', 'radau.frozen:packed', 'radau.frozen:fold',
+              'radau.frozen:fold.same'):
+        a.pop(k, None)
+        b.pop(k, None)
+    return {k: (a.get(k), b.get(k)) for k in set(a) | set(b) if a.get(k) != b.get(k)}
+
+
+@pytest.mark.parametrize('kw', [{}, {'tend': 2e-8, 'timestep': 2e-10, 'fixed_timestep': True}],
+                         ids=['adaptive', 'fixed'])
+def test_on_pattern_pages_the_c_loop_is_the_python_loop(monkeypatch, kw):
+    """With the pattern pages, the C transform loop's run is the Python
+    loop's -- bytes, state, and every path count the C reproduces for the
+    attempts it makes (the screens on the pattern, the fresh C's the core's
+    pass)."""
+    from pycircuit.circuit import _tran_tcloop_c
+    with monkeypatch.context() as m:
+        m.setattr(_tran_tcloop_c, 'ENABLED', False)
+        a = _run(m, True, **kw)
+    b = _run(monkeypatch, True, **kw)
+    assert b[3].get('tcloop_c:steps', 0) > 10 and 'tcloop_c:steps' not in a[3]
+    loop = ('tcloop_c:', 'loop_c:', 'radau.fuse:handed', 'radau.fuse:unhanded', 'sources_c:')
+    pa = {k: v for k, v in a[3].items() if not k.startswith(loop)}
+    pb = {k: v for k, v in b[3].items() if not k.startswith(loop)}
+    assert a[0] == b[0] and a[1] == b[1]
+    assert {k: (pa.get(k), pb.get(k)) for k in set(pa) | set(pb) if pa.get(k) != pb.get(k)} == {}
+
+
 @pytest.fixture(autouse=True)
 def _warm(monkeypatch):
     """A first run for the process's builds made once."""
@@ -107,7 +153,8 @@ def test_a_run_on_pattern_pages_is_the_dense_run(monkeypatch, integ, kw):
     and shapes; Radau's matrices left on pattern pages, the C loop serving."""
     a = _run(monkeypatch, False, integ, **kw)
     b = _run(monkeypatch, True, integ, **kw)
-    assert a[0] == b[0] and a[1] == b[1] and a[3] == b[3]
+    assert a[0] == b[0] and a[1] == b[1]
+    assert _moved(a[3], b[3]) == {}
     if integ is RadauIIA3Integrator:
         assert b[3].get('tcloop_c:steps', 0) > 10, b[3]
         assert b[2] == {'_Cmat': True, '_Geq': True} and not any(a[2].values())

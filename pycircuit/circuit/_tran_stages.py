@@ -157,14 +157,24 @@ class _SequentialStages:
         self._q_cache = (xnp1, qY)
         self._iq = -(i_n + src(t))
         self._Cmat = Cm
-        self._Geq = a_last * h * Gm
+        ## (C and G on pattern pages of one pattern -- the core's passes at
+        ## size, `_tran_core.pattern_of` -- the companion and J there too)
+        pat = _tran_core.pattern_of(Gm)
+        if pat is not None and _tran_core.pattern_of(Cm) is pat:
+            c = a_last * h
+            n = Gm.shape[0]
+            self._Geq = _tran_core.scaled_on_pattern(c, Gm, pat, n)
+            J = _tran_core.combined_on_pattern(Cm, c, Gm, pat, n)
+        else:
+            self._Geq = a_last * h * Gm
+            J = None
         self._effective_method = type(self.base_integrator).__name__
         self._companion_coeffs = None
         self._rk_Y = list(Y)
         self._pred_pending = (t, list(zip(tstage, list(Y))))
         if K is not None:
             self._rk_K = list(K)
-        return xnp1, Cm + a_last * h * Gm
+        return xnp1, (Cm + a_last * h * Gm) if J is None else J
 
     def _rk_step_dirk(self, x0, t, provided_function=None):
         """One step of a lower-triangular (DIRK/SDIRK/ESDIRK) RK method, solved

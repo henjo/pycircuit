@@ -14162,3 +14162,48 @@ copies empty, the page rounding -- each caught.
 **Gate** (the main tree): the suite 6 294 passed; the pinned pairs re-recorded after their twins' tests (6 of them: the transient evaluation's, the stage paths' passes', the transform Newton's and the transform loop's on the twin side (`_tran_core`, `_tran_radau_tc`, `_tran_tcloop_c` in their texts), the stage loop's on its reference side, the step's end passes' on both); the 27
 gold decks under gear2, Radau and DC against HEAD e1598a7e: every digest, count and path count the same; the chain's
 digests the same (1 us gear2 at 2 000 and 4 000 stages, 100 ns Radau at 2 000 and 4 000; Radau's peak 981 -> 665 MB and 3 073 -> 1 481 MB, gear2's 442 -> 350 MB and 995 -> 631 MB (the op's PCNR scratch handed back)).
+
+## 2026-11-06 — 272. Radau's Python attempts at size -- from 1 024 unknowns, where the core is paged, the first attempts the C transform loop leaves to the Python make no n x n matrix: the frozen factors at the analysis solver's structure alone (no reduced C and G, the real factor on pattern pages, the complex record from its entries), the branch screen's C read on its pattern (pattern pages keep the pattern they were written on; a missed C the core's pass), the stage step's companion and J on pattern pages: the 4 000-stage chain's 100 ns Radau solve 2.82 -> 2.03 s (1.382x), its peak 1.48 -> 0.95 GB; the 8 000-stage's 8.48 -> 5.21 s, its peak 5.11 -> 2.17 GB; every result the same
+
+**Why**  Andreas, plan 261's L6b, "B2 first, then size B1" on the re-sized numbers.  After roadmap 271 the peak of a
+large Radau run was its first three attempts, the Python's (the C transform loop enters after an attempt the C Newton
+served): at 4 000 stages, 100 ns, 13.8 n^2, and 2.2 s of the 2.9 s solve -- dense n x n work: `remove_row_col`'s Cr
+and Gr, the frozen transform's real and complex factors (numpy or `fold`, its own buffers and fresh copies), the
+complex record's gather and nonzero counts, the branch screen's |C| over n^2 (its C screen declined `large`: the
+memo's C carried no pattern mark) and, where the memo lacked a stage, `cir.C`'s dense assembly, the stage step's
+`a h G` and `C + a h G`.
+
+**Built.**  (a) `_tran_core.pattern_pages(n, pat)` (pattern pages keeping their pattern, by their mapping) and
+`pattern_of` (a full n x n matrix on them names it: none for a view, a copy, a transpose); the passes', the records',
+`on_pattern`'s and `scaled_on_pattern`'s matrices made so; `_tran_branch_c.screen` reads such a C on its pattern as it
+reads the stage loop's marked one; `_CompanionModel._C_fresh` -- the screen's C where the memo lacks the stage: at size
+the core's pass (bit for bit `cir.C`, on pattern pages).  (b) `_RadauStages._radau_packing` (`_Packing`: the
+StructuralKLU's structure, or before its choice the core's pattern reduced, column by column, rows ascending, every
+reduced entry of the core's pattern among them; kept for the run) and `_radau_frozen_packed`: C and G at those entries,
+the factors' entries by the same numpy operations under the same errstate (finite scales: an `inf * 0` off them would
+flag), the real factor on pattern pages, the complex record `ComplexKLUSolver.prepare_structural_values` (the
+structural one without its gather and count) or before the choice `prepare_packed` (`_csc_of_packed`:
+`_csc_of_dense`'s record -- the nonzeros, a NaN one, a signed zero not; the last pattern's arrays where the pattern is
+its); None, nothing written or counted, wherever `_radau_frozen` must decide, which then does.  (c)
+`_finish_stage_step`: where C and G are pattern pages of one pattern, `_Geq` and the returned J by
+`scaled_on_pattern` and `combined_on_pattern`.  The C loop's reproduction of the Python attempts' counts follows at
+size: its screens served on the pattern, a missed stage's counts `_C_fresh`'s, each attempt `radau.frozen:packed`
+where it counted folds; the shooting stage walk declines at size (`pss.stagewalk:pages`).  Below 1 024 unknowns --
+every gold deck -- nothing changes.
+
+**Measured** (LINE set before building, in one form: the 4 000-stage 100 ns Radau solve >= 1.25x, the median of 3
+interleaved pairs, with its peak at most 1.0 GB; the 8 000-stage 100 ns Radau peak at most 3.5 GB; the 4 000-stage 1 us
+Radau solve not slower, >= 0.97x, 3 pairs; every result the same; against HEAD db038445): the 4 000-stage 100 ns Radau solve 2.827 / 2.832 / 2.801 -> 2.047 / 2.014 / 2.027 s, 1.381 / 1.406 / 1.382x, the median 1.382x (its Python attempts and glue 1.85-1.88 -> 1.07-1.08 s), peak 1 481 -> 949 MB -- MET; the 8 000-stage 100 ns peak 5 110 -> 2 174 MB (8.482 -> 5.212 s) -- MET; the 4 000-stage 1 us Radau solve 3.932 / 3.950 / 3.926 -> 3.150 / 3.134 / 3.093 s, 1.248 / 1.260 / 1.269x, the median 1.260x, peak 1 485 -> 958 MB -- MET; every digest the same (load 1.36-1.48).
+
+**Tests.**  test_radau_packed_frozen (new, 16): `_csc_of_packed` is `_csc_of_dense`'s record (signed zeros, a NaN,
+the last pattern's arrays kept or not); `prepare_structural_values` is `prepare_structural`'s; the factors' entries by
+numpy at the positions are the dense factors' (the complex product's form); `_radau_frozen_packed` is `_radau_frozen`
+on the dense reduced C and G -- on the StructuralKLU and before its choice; `combined_on_pattern` numpy's bytes; the
+packing holds the core's reduced pattern.  test_radau_pattern_pages (now 15): the moved counts named (`plan.C` to
+`core.p`, `large` to `pattern`, folds to `packed`), every other the same; with the pages the C loop is the Python
+loop, every count the same.  Mutations -- the packing's reference-row shift, the packed record's zeros, the real
+factor's fill, the combined product's scale, the packing's order, the C loop's packed count -- each caught.
+
+**Gate** (the main tree): the suite 6 310 passed; the pinned pairs re-recorded after their twins' tests (8 of them: the transform solve's and the branch screen's on the twin side, the stage loop's and the step's end passes' on the reference side, the stage paths' passes', the stage walk's, the transform loop's and the transient evaluation's on both (`_tran_core`, `_tran_radau`, `_tran_stages`, `_tran_companion`, `linearsolver` in their texts)); the 27
+gold decks under gear2, Radau and DC against HEAD db038445: every digest, count and path count the same; the chain's
+digests the same (1 us gear2 at 2 000 and 4 000 stages, 100 ns Radau at 2 000 and 4 000; Radau's 2.25 -> 2.00 s and 3.13 -> 2.26 s, its peak 665 -> 531 MB and 1 482 -> 947 MB).

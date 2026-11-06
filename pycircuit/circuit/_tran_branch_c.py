@@ -24,10 +24,12 @@ every entry (`_tran_loop_c._screen`).
 
 THE PATTERN.  Where `C` is the one the evaluation core wrote on its
 pattern -- the C Newton's converged point or `_tran_core.evaluate`'s, which
-record it with the pattern (`_C_pattern`) -- only the pattern's entries can
-be nonzero, and only they are read (the largest of the others is +0.0).
-Any other `C` is read whole, up to `_cbuild.INPLACE_MIN_ENTRIES` entries;
-a larger one declines, and numpy's reductions screen it.
+record it with the pattern (`_C_pattern`), or a C on pattern pages, which
+keep the pattern they were written on (`_tran_core.pattern_of`) -- only the
+pattern's entries can be nonzero, and only they are read (the largest of
+the others is +0.0).  Any other `C` is read whole, up to
+`_cbuild.INPLACE_MIN_ENTRIES` entries; a larger one declines, and numpy's
+reductions screen it.
 
 THE CERTIFICATE'S BLOCK (`cert_bind`): the run's data (`_tran_branch._Cert`:
 B's rows and columns, its blocks, the work for its largest) and numpy's own
@@ -48,7 +50,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths
+from pycircuit.circuit import _cbuild, _paths, _tran_core
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -185,7 +187,10 @@ def screen(tr, C):
         if m0 is C or (m0.__class__ is tuple and any(o is C for o in m0)):
             pat = mark[1]
     if pat is None and n * n > _cbuild.INPLACE_MIN_ENTRIES:
-        return _no('branch_c:large')
+        ## (a C on pattern pages: its pattern kept with it, `_tran_core.pattern_of`)
+        pat = _tran_core.pattern_of(C)
+        if pat is None:
+            return _no('branch_c:large')
     cmax = td.get('_branch_cmax', 0.0)
     tol = tr.BRANCH_SCREEN_TOL
     if type(cmax) is not float or type(tol) is not float:

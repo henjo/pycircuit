@@ -121,6 +121,7 @@ _TC_PIECES = (
     (lambda o: o['T']._stage_end_passes, '_RadauStages._stage_end_passes', '_tran_radau'),
     (lambda o: o['T']._C_at_state, '_CompanionModel._C_at_state', '_tran_companion'),
     (lambda o: o['T']._C_lookup, '_CompanionModel._C_lookup', '_tran_companion'),
+    (lambda o: o['T']._C_fresh, '_CompanionModel._C_fresh', '_tran_companion'),
     (lambda o: o['R']._FrozenTransform.real_solve, '_FrozenTransform.real_solve', '_tran_radau'),
     (lambda o: o['R']._FrozenTransform.solve, '_FrozenTransform.solve', '_tran_radau'),
     (lambda o: o['R']._lam_folds, '_lam_folds', '_tran_radau'),
@@ -137,7 +138,8 @@ _TC_PIECES = (
 )
 #: ... and on the transient, these shadowed send its attempts elsewhere
 _TC_SHADOWS = ('_rk_step_transformed', '_radau_frozen', '_radau_early_check',
-               '_stage_end_passes', '_C_at_state', '_C_lookup', '_radau_transform_solve',
+               '_stage_end_passes', '_C_at_state', '_C_lookup', '_C_fresh',
+               '_radau_transform_solve',
                '_radau_complex_solve', '_radau_transform_matrices', '_get_linearsolver',
                '_transform_loop')
 
@@ -642,14 +644,15 @@ def _bind_fb(run, e):
 
 
 def _cir_c_counts(e):
-    """The counts one `cir.C` call makes (the screen's `_C_at_state` where
-    the memo lacks the stage): a second call's at x_n, the first's
-    taken back with it (a first may build) -- nothing left counted."""
+    """The counts one fresh C makes (the screen's `_C_at_state` where the
+    memo lacks the stage: `_C_fresh`, `cir.C` or at size the core's pass):
+    a second call's at x_n, the first's taken back with it (a first may
+    build) -- nothing left counted."""
     tr, x = e.tr, e.st[4]
     out = {}
     for _ in range(2):
         before = _paths.snapshot()
-        tr.cir.C(x, tr.epar)
+        tr._C_fresh(x)
         out = _paths.since(before)
         for k, v in out.items():
             _PC[k] -= v
@@ -1174,7 +1177,7 @@ def _record(e, x, key, f, have):
         d = fb(dp, dummy)
         pages = _tran_core.paged(core)
         q = np.empty(n)
-        C = _tran_core.pattern_zeros(n * n).reshape(n, n) if pages else np.empty((n, n))
+        C = _tran_core.pattern_pages(n, core.arrays['pat']) if pages else np.empty((n, n))
         want = _LC._ABI['PCX_WANT_ALL'] | (_LC._ABI['PCX_WANT_PATTERN'] if pages else 0)
         cfn(core.cs, fb(dp, x), float(core.probe(e.tr.epar)), want, 4, 0.0,
             0.0, 0.0,
@@ -1199,6 +1202,9 @@ def _count(e, run_, k):
     points' charge memo."""
     from pycircuit.circuit import _tran_core
     s = run_.s
+    ## (at size, on the structure, each attempt's factors made at its
+    ## positions alone: `_radau_frozen_packed`, no fold)
+    pk = e.zst is not None and _tran_core.paged(e.rec.core)
     _PC['tcloop_c:attempts'] += int(s.tc_frozen)
     _PC['tcloop_c:steps'] += k
     if s.tc_rkdense:
@@ -1208,7 +1214,9 @@ def _count(e, run_, k):
     for key, v in (('radau_tc:served', s.tc_served), ('radau_tc:iterations', s.tc_iters),
                    ('radau_tc:probe', s.tc_probes), ('radau_tc:end', s.tc_ends - s.tc_pyends),
                    ('radau_tc:klu', s.tc_klu),
-                   ('radau.frozen:served', s.tc_frozen), ('radau.frozen:fold', s.tc_folds),
+                   ('radau.frozen:served', s.tc_frozen),
+                   ('radau.frozen:fold', 0 if pk else s.tc_folds),
+                   ('radau.frozen:packed', s.tc_frozen if pk else 0),
                    ## (on the structural pattern the fold meets no record's
                    ## mask: `_radau_frozen` passes none)
                    ('radau.frozen:fold.same', 0 if e.zst is not None else s.tc_folds - s.tc_foldoff),
@@ -1269,13 +1277,16 @@ def _f0_back(e, run_):
 
 
 def _count_screen(e, run_):
-    """The screen's counts: its memo hits (`memo.C:memo`), the `cir.C`
-    calls where the memo lacked a stage (each counting as one does), and
-    the C screen's own -- three stages a screened attempt, none of their
-    C's marked with the core's pattern (`_C_pattern` is the coupled
-    Newton's): served whole up to `INPLACE_MIN_ENTRIES` entries, else
-    declined `large` (the Python's screen makes it, the same verdict)."""
-    from pycircuit.circuit import _cbuild
+    """The screen's counts: its memo hits (`memo.C:memo`), the fresh C's
+    where the memo lacked a stage (`_C_fresh`'s, each counting as one
+    does), and the C screen's own -- three stages a screened attempt, none
+    of their C's marked with the core's pattern (`_C_pattern` is the
+    coupled Newton's): at size every one on pattern pages, served on its
+    pattern (`_tran_core.pattern_of`: the memo's records and the fresh C's
+    are the core's passes there); else served whole up to
+    `INPLACE_MIN_ENTRIES` entries, else declined `large` (the Python's
+    screen makes it, the same verdict)."""
+    from pycircuit.circuit import _cbuild, _tran_core
     s = run_.s
     if run_.br is None:
         return
@@ -1284,6 +1295,13 @@ def _count_screen(e, run_):
     for key, v in run_.ccounts.items():
         _PC[key] += v * int(s.tc_cpasses)
     a = 3 * int(s.tc_screened)
+    if _tran_core.paged(e.rec.core):
+        if a:
+            _PC['branch_c:served'] += a
+            _PC['branch_c:pattern'] += a
+        if run_.br[0].ncert:
+            _PC['branch_c:cert'] += run_.br[0].ncert
+        return
     if e.n * e.n > _cbuild.INPLACE_MIN_ENTRIES:
         if a:
             _PC['branch_c:large'] += a

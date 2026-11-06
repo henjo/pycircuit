@@ -112,8 +112,10 @@ History: `doc/transient_history.md`, `_tran_core.py`.
 """
 import ctypes
 import math
+import mmap
 import operator
 import os
+import weakref
 
 import numpy as np
 
@@ -1006,12 +1008,58 @@ def paged(core):
     return bool(core.npat) and core.n * core.n >= PATTERN_PAGES_FROM
 
 
+def pattern_pages(n, pat):
+    """An n x n matrix of zeros on pattern pages (`pattern_zeros`) for a
+    matrix written on the pattern `pat` alone, the pattern kept with its
+    mapping: `pattern_of` names it while the matrix lives."""
+    out = pattern_zeros(n * n)
+    mm = _mapping(out)
+    if mm is not None:
+        _PAGES[mm] = pat
+    return out.reshape(n, n)
+
+
+def pattern_of(a):
+    """The pattern an n x n matrix on pattern pages was written on (made by
+    `pattern_pages` -- the passes', the records', `on_pattern`'s), zero off
+    it -- or None: any other array, or a view of part of one."""
+    if type(a) is not np.ndarray or a.ndim != 2 or a.dtype != np.float64:
+        return None
+    mm = _mapping(a)
+    if mm is None:
+        return None
+    pat = _PAGES.get(mm)
+    if pat is None or a.size * 8 != len(mm) or not a.flags.c_contiguous:
+        return None
+    return pat
+
+
+def _mapping(a):
+    """The `mmap` an array's data is the start of, or None."""
+    b = a.base
+    while type(b) is np.ndarray:
+        if b.__array_interface__['data'][0] != a.__array_interface__['data'][0]:
+            return None
+        b = b.base
+    if type(b) is memoryview:
+        b = b.obj
+    if type(b) is not mmap.mmap:
+        return None
+    if a.__array_interface__['data'][0] != ctypes.addressof(ctypes.c_char.from_buffer(b)):
+        return None
+    return b
+
+
+#: the pattern each live pattern-page matrix was written on, by its mapping
+_PAGES = weakref.WeakKeyDictionary()
+
+
 def on_pattern(full, pat, n):
     """The n x n matrix `full` -- zero off the pattern `pat` -- on pattern
     pages: its pattern's values, the same bytes."""
-    out = pattern_zeros(n * n)
-    out[pat] = full.reshape(-1)[pat]
-    return out.reshape(n, n)
+    out = pattern_pages(n, pat)
+    out.reshape(-1)[pat] = full.reshape(-1)[pat]
+    return out
 
 
 def scaled_on_pattern(c, full, pat, n):
@@ -1020,9 +1068,20 @@ def scaled_on_pattern(c, full, pat, n):
     +), else numpy's."""
     if not (math.isfinite(c) and math.copysign(1.0, c) > 0.0):
         return c * full
-    out = pattern_zeros(n * n)
-    out[pat] = c * full.reshape(-1)[pat]
-    return out.reshape(n, n)
+    out = pattern_pages(n, pat)
+    out.reshape(-1)[pat] = c * full.reshape(-1)[pat]
+    return out
+
+
+def combined_on_pattern(A, c, B, pat, n):
+    """`A + c * B` for `A` and `B` zero off the pattern `pat` (`c` a
+    scalar): on pattern pages where numpy's sum is zero off it as they are
+    (`c` finite, its sign +: `+0 + c * +0` is +0), else numpy's."""
+    if not (math.isfinite(c) and math.copysign(1.0, c) > 0.0):
+        return A + c * B
+    out = pattern_pages(n, pat)
+    out.reshape(-1)[pat] = A.reshape(-1)[pat] + c * B.reshape(-1)[pat]
+    return out
 
 
 def give_back(*arrays):
@@ -1200,7 +1259,7 @@ def passes(tr, x, which):
     pages = paged(core)
     C = None
     if bits & _C:
-        C = (pattern_zeros(n * n).reshape(n, n) if pages
+        C = (pattern_pages(n, core.arrays['pat']) if pages
              else (np.zeros if core.npat else np.empty)((n, n)))
     dC = fb(dptr, C) if C is not None else dummy[1]
     _PC[K['served']] += 1

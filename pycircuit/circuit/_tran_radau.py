@@ -124,6 +124,40 @@ def _transform_back(w0, w1, v):
 _SK = []
 
 
+class _Packing:
+    """The positions `_RadauStages._radau_frozen_packed` makes the frozen
+    factors at, for a paged core, a reference row and the analysis solver's
+    choice `sk` (None: not made yet): the StructuralKLU's structure, or the
+    core's pattern reduced -- `rows`, `cols` column by column, rows
+    ascending; `take` the reduced matrix's flat indices, `ftake` the full
+    one's -- `ok` where every entry of the core's reduced pattern is among
+    them (`C` and `G` zero off them: the factors are too)."""
+
+    __slots__ = ('cols', 'core', 'ftake', 'iref', 'm', 'ok', 'rows', 'sk', 'take')
+
+    def __init__(self, core, iref, sk):
+        n = core.n
+        m = n - 1
+        self.core, self.iref, self.sk, self.m = core, iref, sk, m
+        pat = np.asarray(core.arrays['pat'], dtype=np.int64)
+        I, J = pat // n, pat % n
+        keep = (I != iref) & (J != iref)
+        ri = I[keep] - (I[keep] > iref)
+        rj = J[keep] - (J[keep] > iref)
+        red = ri * m + rj
+        if sk is None:
+            order = np.lexsort((ri, rj))
+            rows, cols = ri[order], rj[order]
+            self.ok = True
+        else:
+            take = np.asarray(sk.take, dtype=np.int64)
+            rows, cols = take // m, take % m
+            self.ok = bool(np.isin(red, take).all())
+        self.rows, self.cols = rows, cols
+        self.take = rows * m + cols
+        self.ftake = (rows + (rows >= iref)) * n + (cols + (cols >= iref))
+
+
 class _FrozenTransform:
     """One step's transform, frozen (`_RadauStages._radau_frozen`): its `P`
     entries, `V`'s, the real factor with its kept LU (or the analysis
@@ -213,7 +247,10 @@ def _frozen_chain():
                (ComplexKLUSolver.prepare, 'ComplexKLUSolver.prepare', L),
                (ComplexKLUSolver.solve_prepared, 'ComplexKLUSolver.solve_prepared', L),
                (ComplexKLUSolver.prepare_values, 'ComplexKLUSolver.prepare_values', L),
-               (ComplexKLUSolver.prepare_structural, 'ComplexKLUSolver.prepare_structural', L))
+               (ComplexKLUSolver.prepare_structural, 'ComplexKLUSolver.prepare_structural', L),
+               (ComplexKLUSolver.prepare_structural_values,
+                'ComplexKLUSolver.prepare_structural_values', L),
+               (ComplexKLUSolver.prepare_packed, 'ComplexKLUSolver.prepare_packed', L))
         if not all(_paths.genuine(*o) for o in own):
             return None
         _FROZEN['chain'] = tuple(o for o, _q, _m in own)
@@ -1362,6 +1399,126 @@ class _RadauStages:
         _paths.COUNTS['radau.frozen:served'] += 1
         return fz
 
+    def _radau_packing(self, iref, Cn, Gn):
+        """THE FROZEN FACTORS AT SIZE: where the transient's core is paged
+        (`_tran_core.paged`), `C` and `G` at x_n its n x n float64 arrays and
+        the analysis solver an AutoSolver not yet chosen or on its analysed
+        StructuralKLU, the positions `_radau_frozen_packed` makes the factors
+        at -- the solver's structure, or before its choice the core's
+        pattern reduced (`m`, `rows`, `cols` column by column, rows
+        ascending; `take`, the reduced matrix's flat indices; `ftake`, the
+        full one's), every entry of the core's reduced pattern among them --
+        kept for the run (`_radau_pack`); else None."""
+        rec = self.__dict__.get('_tran_core')
+        core = rec[1] if rec is not None else None
+        if core is None or not _tran_core.paged(core):
+            return None
+        n = core.n
+        for a in (Cn, Gn):
+            if not (type(a) is np.ndarray and a.dtype == np.float64 and a.shape == (n, n)
+                    and a.flags.c_contiguous):
+                return None
+        chain = _FROZEN.get('chain') or _frozen_chain()
+        if chain is None:
+            return None
+        ls = self._get_linearsolver()
+        if type(ls) is not _FROZEN['types'][1]:
+            return None
+        sk = ls._choice
+        if sk is not None and (type(sk) is not _SK[0] or not sk._symbolic or sk.m != n - 1):
+            return None
+        pk = self.__dict__.get('_radau_pack')
+        if pk is not None and pk.core is core and pk.iref == iref and pk.sk is sk:
+            return pk if pk.ok else None
+        pk = self._radau_pack = _Packing(core, iref, sk)
+        return pk if pk.ok else None
+
+    def _radau_frozen_packed(self, pk, Cn, Gn, h):
+        """`_radau_frozen` with its factors made at `pk`'s positions alone
+        (`_radau_packing`): `C` and `G` there, the real and complex factors'
+        entries by the same numpy operations, the real one on pattern pages
+        (zero off them, as numpy's is: `C` and `G` are), the complex one's
+        record `prepare_structural`'s on the solver's structure -- or before
+        its choice `prepare`'s, its own nonzeros -- from those entries.  The
+        same transform, bit for bit, where no n x n matrix is made.  None --
+        nothing written, nothing counted -- wherever `_radau_frozen` itself
+        must decide: a piece shadowed, a scale that is not finite (an
+        `inf * 0` off the positions would flag), a flag under its errstate,
+        no SciPy product."""
+        if not RADAU_FROZEN:
+            return None
+        chain = _FROZEN.get('chain') or _frozen_chain()
+        if chain is None:
+            return None
+        T = type(self)
+        d = self.__dict__
+        if ((T._radau_transform_solve, T._radau_complex_solve, T._radau_transform_matrices,
+             T._get_linearsolver) != chain[:4]
+                or '_radau_transform_solve' in d or '_radau_complex_solve' in d
+                or '_radau_transform_matrices' in d or '_get_linearsolver' in d):
+            return None
+        ZS = _FROZEN['types'][0]
+        lam, V, Tinv = self._radau_transform_matrices()
+        s0, c1 = lam[0].real / h, lam[1] / h
+        if not (math.isfinite(s0) and math.isfinite(c1.real) and math.isfinite(c1.imag)):
+            return None
+        pc = d.get('_radau_Pc')
+        if pc is not None and (pc[0] != h or type(pc[0]) is not type(h) or pc[3] is not lam
+                               or pc[4] is not V or pc[5] is not Tinv):
+            pc = None
+        try:
+            with np.errstate(all='raise'):
+                if pc is None:
+                    P = (np.diag(lam) @ Tinv) / h
+                    pc = (h, (P[0, 0], P[0, 1], P[0, 2], P[1, 0], P[1, 1], P[1, 2]),
+                          tuple((V[i, 0].real, V[i, 1]) for i in range(3)), lam, V, Tinv)
+                Cp = Cn.ravel()[pk.ftake]
+                Gp = Gn.ravel()[pk.ftake]
+                rp = s0 * Cp + Gp
+                cp = c1 * Cp + Gp
+        except FloatingPointError:
+            return None
+        zs = d.get('_radau_zsolver', 'unset')
+        if zs == 'unset':
+            try:
+                zs = ZS()
+            except ImportError:
+                zs = None
+            self._radau_zsolver = zs
+        if not (type(zs) is ZS and (ZS.solve, ZS.prepare, ZS.solve_prepared) == chain[8:11]
+                and not ('solve' in zs.__dict__ or 'prepare' in zs.__dict__
+                         or 'solve_prepared' in zs.__dict__)
+                and ZS.prepare_structural_values is chain[13] and ZS.prepare_packed is chain[14]
+                and 'prepare_structural_values' not in zs.__dict__
+                and 'prepare_packed' not in zs.__dict__):
+            return None
+        if pk.sk is not None:
+            if not (STRUCTURAL and ZS.prepare_structural is chain[12]
+                    and 'prepare_structural' not in zs.__dict__):
+                return None
+            prep = zs.prepare_structural_values(cp, pk.sk)
+        else:
+            prep = zs.prepare_packed(cp, pk.m, pk.rows, pk.cols)
+        if prep is None:
+            return None
+        self._radau_Pc = pc
+        m = pk.m
+        rf = _tran_core.pattern_pages(m, pk.take)
+        rf.reshape(-1)[pk.take] = rp
+        fz = _FrozenTransform()
+        fz.kept = False
+        fz.m = m
+        fz.p, fz.v = pc[1], pc[2]
+        fz.rf, fz.cf, fz.tk = rf, None, self.toolkit
+        fz.ls = self._get_linearsolver()
+        fz.lu = None
+        fz.zs, fz.prep, fz.cs = zs, prep, self._radau_complex_solve
+        if pk.sk is not None:
+            _paths.COUNTS['radau.frozen:structural'] += 1
+        _paths.COUNTS['radau.frozen:packed'] += 1
+        _paths.COUNTS['radau.frozen:served'] += 1
+        return fz
+
     def _rk_step_transformed(self, x0, t, provided_function=None):
         """One Radau IIA(3) step by the COST TRANSFORM -- simplified Newton
         (one Jacobian, evaluated at ``x_n``) with each iteration's coupled
@@ -1401,13 +1558,20 @@ class _RadauStages:
                 Gn = _rec['G'] if 'G' in _rec else arr(self.cir.G(xn, epar))
         if need and self._memo_ok():
             self._memo_put(xn, {'C': Cn, 'G': Gn})
-        (Cr,) = remove_row_col((Cn,), iref, tk)
-        (Gr,) = remove_row_col((Gn,), iref, tk)
-        Cr = np.asarray(Cr, dtype=float)
-        Gr = np.asarray(Gr, dtype=float)
         ## (the transform's factors, once a step: `_radau_frozen`, speed round
-        ## 10, B3.1; None -- each iteration makes them)
-        fz = self._radau_frozen(Cr, Gr, h)
+        ## 10, B3.1; None -- each iteration makes them.  At size made at the
+        ## solver's structure alone, no n x n `Cr`, `Gr` or factor:
+        ## `_radau_frozen_packed`)
+        pk = self._radau_packing(iref, Cn, Gn)
+        fz = self._radau_frozen_packed(pk, Cn, Gn, h) if pk is not None else None
+        if fz is not None:
+            Cr = Gr = None
+        else:
+            (Cr,) = remove_row_col((Cn,), iref, tk)
+            (Gr,) = remove_row_col((Gn,), iref, tk)
+            Cr = np.asarray(Cr, dtype=float)
+            Gr = np.asarray(Gr, dtype=float)
+            fz = self._radau_frozen(Cr, Gr, h)
 
         ## STAGE PREDICTOR.  ⚠ This path is SIMPLIFIED Newton (one Jacobian per
         ## step), so it is the one that benefits most from starting near the
