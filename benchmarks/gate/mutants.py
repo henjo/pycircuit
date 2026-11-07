@@ -10,7 +10,11 @@ does not move, so it need not run again.  Decks fastest first, stopping at the f
     'killed:forced'    only under a forced setting;
     'killed:counts'    every result the same and a path counter moved: what tree against tree reads;
     'killed:tests'     the decks saw nothing and the unit's own tests fail;
+    'killed:static'    no behaviour noticed, and the compile's own check does (a dropped statement leaving a variable unused);
     'survived'         nothing noticed: every one to be READ: an equivalent change, or a gap.
+
+⚠ A TEST THAT READS THE C'S TEXT CATCHES EVERYTHING AND MEANS NOTHING.  A pinned pair fails on any edit, by design, so with it in a unit's tests every mutant reaching them read as caught (the first
+pilot: 7 of 13).  They are left out (`TEXT_TESTS`), and the control proves it: a change with no effect, in every unit, must pass that unit's tests.
 """
 import argparse
 import concurrent.futures
@@ -36,6 +40,10 @@ UNITS = {'loop.c': ('_tran_loop_c', '_tran_tcloop_c', '_tran_stageloop_c'), 'new
 #: a mutant's run: a tight memory cap (a deck takes well under this), and a time from the record
 DECK_CAP = '4G'
 TEST_TIMEOUT = 900
+#: what reads the C's text or the doc's, not what the C does: no catch at all
+TEXT_TESTS = ('test_pinned_pairs.py', 'test_runtime_map.py')
+#: what compiles each unit and reads the compiler's warnings: a catch of its own kind, asked last
+STATIC_TESTS = ('test_c_abi.py',)
 
 
 def csrc_dir(tree):
@@ -48,7 +56,8 @@ def _tests_of(tree, unit):
     def names_it(f):
         with open(os.path.join(d, f)) as fh:
             return pat.search(fh.read())
-    return sorted(os.path.join('pycircuit/circuit/tests', f) for f in os.listdir(d) if f.startswith('test_') and f.endswith('.py') and names_it(f))
+    return sorted(os.path.join('pycircuit/circuit/tests', f) for f in os.listdir(d)
+                  if f.startswith('test_') and f.endswith('.py') and f not in TEXT_TESTS + STATIC_TESTS and names_it(f))
 
 
 def _order(unit, ref):
@@ -113,18 +122,18 @@ def run_decks(unit, ref, wt, store, jobs, reach=()):
     return 'none', None
 
 
-def run_tests(unit, wt, store):
-    tests = _tests_of(wt, unit)
+def run_tests(unit, wt, store, limit=TEST_TIMEOUT, tests=None):
+    """The unit's own tests: None where they pass, else what failed.  Over `limit` seconds (three times their time with nothing changed): a hang the change made."""
+    tests = _tests_of(wt, unit) if tests is None else tests
     if not tests:
         return None
     env = dict(os.environ, PYTHONPATH=wt, PYCIRCUIT_HDL_CACHE_DIR=store, OPENBLAS_NUM_THREADS='1')
-    try:
-        p = subprocess.run(['timeout', str(TEST_TIMEOUT), G.PY, '-m', 'pytest', '-q', '-x', '-p', 'no:cacheprovider', '-n', '8', '--tb=no', '-rf', *tests],
-                           cwd=wt, env=env, capture_output=True, text=True, check=False)
-    except OSError as e:
-        return str(e)
+    p = subprocess.run(['timeout', str(int(limit)), G.PY, '-m', 'pytest', '-q', '-x', '-p', 'no:cacheprovider', '-n', '8', '--tb=no', '-rf', *tests],
+                       cwd=wt, env=env, capture_output=True, text=True, check=False)
     if p.returncode == 0:
         return None
+    if p.returncode == 124:
+        return f'over {int(limit)} s'
     names = re.findall(r'^FAILED \S+::(\S+)', p.stdout, re.MULTILINE)
     return names[:3] or f'exit {p.returncode}'
 
@@ -174,8 +183,9 @@ def one_mutant(m, change, a, ref, store, log):
         else:
             status, what = run_decks(unit, ref, a.wt, store, a.jobs, a.reach or ())
             if status == 'none':
-                failed = run_tests(unit, a.wt, store)
-                status, what = ('killed:tests', failed) if failed else ('survived', None)
+                failed = run_tests(unit, a.wt, store, a.test_limit.get(unit, TEST_TIMEOUT))
+                static = None if failed else run_tests(unit, a.wt, store, tests=[os.path.join('pycircuit/circuit/tests', t) for t in STATIC_TESTS])
+                status, what = ('killed:tests', failed) if failed else ('killed:static', static) if static else ('survived', None)
     _clean_store(store)
     rec = dict(m, status=status, what=what, s=round(time.perf_counter() - t0, 1))
     log.add(**rec)
@@ -217,10 +227,8 @@ def sample(a, ref, store, log):
 
 
 def spec(a, ref, store, log):
-    with open(a.file) as fh:
-        items = json.load(fh)
     tally = {}
-    for it in items:
+    for it in a.spec_items:
         def change(text, it=it):
             assert text.count(it['old']) == 1, it['name']
             return text.replace(it['old'], it['new'])
@@ -237,6 +245,23 @@ def control(ref, a, store):
     print(f'control, nothing changed: {status} ({round(time.perf_counter() - t0, 1)} s)', flush=True)
     if status != 'none':
         raise SystemExit(f'the record does not reproduce here: {status} {what}')
+    a.test_limit = {}
+    for unit in sorted({it['unit'] for it in a.spec_items} if a.spec_items else UNITS):
+        t0 = time.perf_counter()
+        failed = run_tests(unit, a.wt, store)
+        took = time.perf_counter() - t0
+        print(f'control, {unit} tests: {len(_tests_of(a.wt, unit))} files, {round(took, 1)} s, {failed or "pass"}', flush=True)
+        if failed:
+            raise SystemExit(f'the tests of {unit} fail with nothing changed: {failed}')
+        a.test_limit[unit] = max(120, 3 * took)
+        ## (a change with no effect: an empty statement opening the unit's first function.  Whatever fails on it reads the text, and would catch every mutant)
+        with Applied(os.path.join(csrc_dir(a.wt), unit), lambda text: text.replace('\n{\n', '\n{\n    ;\n', 1)):
+            why = compiles(unit, a.wt, store)
+            failed = why or run_tests(unit, a.wt, store)
+        _clean_store(store)
+        print(f'control, {unit}, a change with no effect: {failed or "pass"}', flush=True)
+        if failed:
+            raise SystemExit(f'a change with no effect fails in {unit}: {failed}: this catches every mutant and means nothing')
 
 
 def main():
@@ -258,6 +283,10 @@ def main():
     ref = [r for r in G._rows(a.ref, 'matrix.jsonl') if r['path'] == 'c' and not r['row'].get('failed')]
     store = G.seed_store(os.path.join(a.out, 'store'))
     log = G._Log(a.out, 'mutants.jsonl')
+    a.spec_items = None
+    if a.how == 'spec':
+        with open(a.file) as fh:
+            a.spec_items = json.load(fh)
     control(ref, a, store)
     tally = (sample if a.how == 'sample' else spec)(a, ref, store, log)
     print('tally:', tally)

@@ -14751,3 +14751,32 @@ All MET.  Radau: the same digests, chain 0.999x, active chain 0.999x, mesh 45 x 
 **Tests.**  test_gate_verdict (31): each outcome and its precedence, both of 2026-11-07's false passes, a deck with one side, a failed side, a changed line and a changed arm, a quiet benchmark, a timing line; the coverage build off by default with every key the same, on the units and not the kernels, writing its notes and counts where told.  test_gate_mutate (26): each kind of line change, what is left alone (a pointer, a comment, a preprocessor line, a declaration), a draw reproducible and spread by size; the counters compared where both ran, a `once:` key and a stage's named moves apart.  `mutants.py` and `mutate.py` (stage 2's tool, 289) came in with this entry: the seven above ran through it.  `doc/transient_runtime.md` names the switch, `doc/HANDOVER.md` the gate.
 
 **Standing.**  A pass prints what it reached.  A short run at size must show the code in question was reached.  A fix found on a variant is traced with the variant on before its gate (286's error).
+
+## 2026-11-07 — 289. How much would we notice?  A mutation pilot of the transient's C units: of 56 changes that matter, the decks' results see 46 %, their path counters 18 % more, the units' own tests 27 % more, and 5 get through, 3 of them real gaps
+
+**Why**  Plan `plan_coverage.md`, stage 2: 288's matrix had shown 0 differences and nothing had shown it could fail, and only a broken line says whether a comparison can see one.  `benchmarks/gate/mutants.py` changes one line of a unit in a worktree, builds it, and runs the matrix's C side against the gate's own record (the Python's side does not move), then that unit's tests.  Sample: `--n 60 --seed 288`, drawn from the lines the compiler made code for, spread by size: loop 29, newton 7, lte 5, core 5, radau_tc 5, pcnrdc 4, radau 3, dcnewton 3; a comparison flipped, a condition negated, a statement dropped, a constant off by one, a sign swapped.  Line: no kill-rate line on a first measurement, every survivor read, the result to Andreas before stages 3-5.
+
+**The first attempt was stopped: 7 of its 13 catches by tests were false.**  A pinned pair fails on any edit of a C file, by design, so with it among a unit's tests every mutant reaching them read as caught; an eighth was a compiler warning.  Noticed reading the log for Andreas's "Why does it take so long?".  The tool now leaves out what reads the text (`TEXT_TESTS`), asks the compile's warnings last as a kind of their own, and its control includes a change with no effect in every unit, which must pass: that would have caught this at the start.  A kill can be as hollow as a pass.
+
+**Measured** (61 drawn; one, `floor = 0.0` doubled, changed nothing: a bug in the tool, now fixed and tested, and not counted).  60 real, 88 min alone on the box after a slow start beside other work.
+
+| | mutants | share of the 56 that can matter |
+|---|---|---|
+| a result differs on a deck by default | 24 | |
+| a result differs only under a forcing | 2 | 46 % results |
+| results the same, a path counter moved | 10 | 18 % |
+| the unit's own tests | 13 | 23 % |
+| a compile warning | 2 | 4 % |
+| survived | 9 | 4 equivalent; 5 of 56, 9 % |
+
+60 is a small sample: 85 % caught is +-9 points, and which line a real gap sits on is the finding, not its rate.  The forcings alone caught 2: they reach code, they did not much add detection here.  Counters caught 10 the results could not, a hand-back or a path that stopped serving: 288 restored that comparison after dropping it while moving the gate.
+
+**Every survivor read** (by reading, none yet proven by a test).
+* Equivalent, 4: `info64 = 0` before dgesv writes it (dcnewton.c:211); the loop's `t < tend` where `where` ends at a zero step anyway (loop.c:2141); `< 2^1000` against `<=` (radau.c:225); `tf_pair_t`'s `complex` before an item writes it (radau_tc.c:337).
+* Cost only, 1: `walk_dies` skipping row 0 (loop.c:633) can only call a column dead wrongly, and the Python's prune then decides.
+* A count only, 1: `tc_fbcert` (loop.c:1880), `branch_c:cert` from a fallback's screen, which nothing exercises.
+* **Real gaps, 3.**  **loop.c:2125, `fbx_set`, the record 284's voter25 fix reads:** without it the fix works where the second fallback writes set 0 and not where it writes set 1, and nothing compares that polarity: the fix is half pinned.  **loop.c:1918, the real factor's numeric handed on after a fresh factor replaced it:** a dangling pointer the next refactor reads, seen only where a pivot or residual fallback happens in the transform's real factor.  **loop.c:690, the shooting walk's `cp`:** C at n-1 stale for ever; it can survive only where C does not change between steps, so the walk's fixtures do not test Gear-2's history.
+
+**Recommendation to Andreas** (his to decide): close the 3 gaps with one test each first; stage 3 in its forced-hand-back half, since 2 of the 3 are hand-back or fallback sequences, poison later; stage 4 narrowed to what the sample named, the shooting walk on a C that moves and device bypass as a setting; stage 5 not now, nothing here points at it; repeat the sample on another seed afterwards to measure the change.
+
+**Tests.**  test_gate_mutate (+1): a zero constant really changes.  Suite 6 485.

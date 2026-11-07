@@ -66,6 +66,12 @@ def test_a_comment_on_the_line_is_not_changed():
     assert len([k for k, _x in M.mutations('    x = y;  /* c < 3 */')]) == 1
 
 
+def test_a_zero_constant_really_changes():
+    """Doubling 0.0 leaves the text as it was: the first pilot's one mutant that changed nothing, and survived."""
+    assert _kinds('    double x = 0.0;')['const'] == ['double x = 1.0;']
+    assert all(new != '    double x = 0.0;' for _k, new in M.mutations('    double x = 0.0;'))
+
+
 def test_no_change_comes_twice():
     news = [x for _k, x in M.mutations('    return 0;')]
     assert len(news) == len(set(news))

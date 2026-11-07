@@ -45,7 +45,8 @@ def _number(m):
     t = m.group()
     if t.isdigit():
         return str(int(t) + 1)
-    return repr(2.0 * float(t))
+    v = float(t)
+    return repr(2.0 * v) if v else '1.0'
 
 
 def _negated(line, code):
