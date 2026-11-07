@@ -14598,3 +14598,34 @@ skipped, 3 xfailed; 27 gold decks under gear2, Radau and DC and the chain the sa
 payload, signed zeros, subnormals, infinities), type and layout, the list spent, the heap trimmed; no `malloc_trim`;
 other rows numpy's, unequal ones refused as numpy refuses; a fresh process's peak over the rows' under half the results
 (without the trim the same test reads 0.998); a whole run's bytes gathered or not; another toolkit's `array`.
+
+## 2026-11-07 — 284. The C transform loop's second fallback at a point keeps the point's record: an accepted fallback, then two stalled attempts, the first rejected, overwrote what the error estimate reads -- twelve rejections and a step of `minstep` on voter25; its Radau answer moves onto the Python path's, up to 93 mV; the other 26 decks do not move
+
+**Why**  Found by the census of 283's item 2 (plan 261's L14): instrumenting the Python path gave voter25 7 330 steps where
+gold has 7 232.  Not the instruments: `PYCIRCUIT_TCLOOP_C=0` alone gives the 7 330.  The gates compare a tree with the tree
+before it on the same path, so a C loop parting from its Python twin on one deck is what they cannot see.  The two runs were
+bit-identical to point 2 732 (t = 340.29 ns); there the C took a step of 1e-18 s, the Python 6.76 ps.
+
+**The defect.**  The in-loop fallback has two coupled sets and writes "the set the last made fallback's is not in", and x_n's
+record was documented as "in the coupled set the last made fallback wrote".  A rejected fallback at x_n breaks that: (1) a
+step accepted through a fallback, x_n's record in set A; (2) the next attempt stalls, its fallback writes B and is rejected;
+(3) the retry stalls, its fallback writes A -- over x_n's record, which `stage_estimate` then reads.  Each estimate after is
+wrong, so each retry is rejected, twelve in a row, until a step of `minstep` goes through.  The Python's `_out` is safe: it
+reuses a set only when no record holds a view of it.  Only runs with the in-loop fallback (up to 590 unknowns: `_sets_fit`).
+
+**Fixed.**  `tc_fb_keep_x`: where a fallback is to write the set holding x_n's record (`fbx_set`), the record moves to `xr_*`
+first, the buffers meant for it.  The sets' rule is kept: a stop still finds the last made fallback's set whole.
+
+**Measured** (LINE set before gating, one form: on all 27 decks under Radau the C path's digest is the census's Python path's,
+voter25 moved onto it, the other 26 not moving; gear2 and DC not moving): voter25 54b27d634a55 (7 232 steps, 2 396 rejections,
+`tcloop_c:bail:force` 1) -> da7303d900cf (7 330, 2 438, none), the Python path's -- MET on all 27; gear2 and DC 0 differing; the
+chain the same; suite 6 413 passed, 10 skipped, 3 xfailed.  Its waveforms move by up to 93 mV past 340 ns.
+voter25 has no gold waveform; against its own run at reltol x 0.01 past 340 ns, the new answer's worst 100.6 mV (the old 125.4),
+RMS 1.89 mV (1.99), the median unknown's worst 34.6 mV (34.0): a wrong estimate removed, not an accuracy gain to quote.
+
+**Tests.**  test_tcloop_c `test_a_second_fallback_at_a_point_keeps_the_point_s_record`: voter25 to 350 ns with the C loop on and
+off, the same bytes and statistics, no forced hand-back (before: 2 885 / 964 against 2 883 / 968).  A search for a small
+circuit (`_pulsed` at maxiter 2-4, reltol 3e-4 to 1e-1) did not reproduce it, so the test needs the benchmark data.
+
+**What the gates still cannot see.**  A C twin parting from its Python on a deck: the fixtures' twin tests do not meet every
+sequence.  Comparing the 27 decks' C and Python paths (the census's digests, ~4 minutes) caught this one; not yet in the gates.

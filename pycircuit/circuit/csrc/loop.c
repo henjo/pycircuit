@@ -1659,6 +1659,22 @@ static long tc_estimate(loop_t *s, loop_attempt_t *a)
     return 0;
 }
 
+/* x_n's record into `xr_*`, where a fallback made x_n and wrote the record in
+   the set `o` this one is to write (the set the last made fallback's is not
+   in: another fallback was made at x_n and rejected since): the estimate reads
+   the record after this Newton */
+static void tc_fb_keep_x(loop_t *s, long o)
+{
+    long n = s->n;
+    if (!s->fbx || s->fbx_set != o) return;
+    COPY(s->xr_q, s->fbv[0], n);
+    COPY(s->xr_i, s->fbv[1], n);
+    COPY(s->xr_C, s->fbv[2], n * n);
+    COPY(s->xr_G, s->fbv[3], n * n);
+    s->xfields = LOOP_TG_Q | LOOP_TG_I | LOOP_TG_C | LOOP_TG_G;
+    s->fbx = 0;
+}
+
 /* THE FALLBACK's Newton (`_rk_step_coupled` after the transform's
    NoConvergenceError): the memo rolled again (`tg_roll2`), x_n's charge as
    the coupled context reads it (the memo's, else a 'q' pass, not put), the
@@ -1681,6 +1697,7 @@ static long tc_fb_newton(loop_t *s, loop_attempt_t *a)
     if (a->fast2 < 0) return LOOP_BAIL_PRED;
     for (i = 0; i < 3; i++) if ((st = stage_u(s, a, a->ts[i], i)) != 0) return st;
     o = a->fbset = (s->gen0 == 0) ? 1 : 0;
+    tc_fb_keep_x(s, o);
     COPY(s->hq, tc_xv(s, 0), n);
     rs->qn = s->hq;
     rs->u = s->ust;
@@ -2082,6 +2099,7 @@ static void stage_accept(loop_t *s, const loop_attempt_t *a)
         /* (x_{n+1}'s record: the end set's, or a fallback's coupled set's) */
         s->te_x = a->fb ? -1 : a->set;
         s->fbx = a->fb;
+        s->fbx_set = a->fbset;
         s->fbv[0] = a->q3;
         s->fbv[1] = a->i3;
         s->fbv[2] = a->C3;

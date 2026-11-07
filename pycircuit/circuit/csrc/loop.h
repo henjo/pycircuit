@@ -285,12 +285,13 @@ typedef struct {
        NoConvergenceError: the dense coupled Newton, radau.c on the
        transient's record and its stage KLU, the coupled family's sets
        above): `fb_ok` 1 where the glue bound it (else the loop stops there,
-       the Python's); x_n's record in the coupled set the last made fallback
-       wrote (`fbx`: its q, i, C, G at `fbv`); the last fallback's stages
+       the Python's); x_n's record in the coupled set the fallback that made
+       x_n wrote (`fbx`: its q, i, C, G at `fbv`, that set `fbx_set`), moved
+       to `xr_*` before another fallback writes that set; the last fallback's stages
        made this call (`fbY`, `have_fbY`); the transform Newton's
        non-convergences the Python counts (`radau_tc:noconv`), the fallbacks
        made, the certificates their screens made */
-    long fb_ok, fbx;
+    long fb_ok, fbx, fbx_set;
     const double *fbv[4];
     double *fbY;
     long have_fbY;

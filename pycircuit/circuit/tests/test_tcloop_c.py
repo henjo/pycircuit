@@ -30,7 +30,15 @@ import warnings
 import numpy as np
 import pytest
 
-from pycircuit.circuit import _paths, _tran_loop_c, _tran_radau, _tran_tcloop_c, circuit
+from pycircuit._testing import benchdata
+from pycircuit.circuit import (
+    _paths,
+    _tran_loop_c,
+    _tran_radau,
+    _tran_tcloop_c,
+    circuit,
+    spice_import,
+)
 from pycircuit.circuit import _tran_radau_tc as TC
 from pycircuit.circuit import linearsolver as LS
 from pycircuit.circuit import transient as trmod
@@ -292,6 +300,35 @@ def test_a_fallback_is_made_in_c(kw, make, monkeypatch):
     assert _same.last['state']['fallbacks'] >= ca['tcloop_c:fallbacks']
     if not kw.get('fixed_timestep'):
         assert ca.get('radau.early:checks', 0) > 0, ca
+
+
+def test_a_second_fallback_at_a_point_keeps_the_point_s_record(monkeypatch):
+    """voter25 past 340 ns: a step accepted through a fallback, then at its
+    end two attempts that stall, the first rejected.  The second fallback
+    writes the coupled set the first's is not in -- the set holding the
+    point's own record, which its estimate reads after (`tc_fb_keep_x`): the
+    run the Python's, not twelve rejections and a step of `minstep`."""
+    deck = benchdata.spice_data('Netlists/CircuitSim90/MOS2_LARGE/voter25.cir')
+    if deck is None:
+        pytest.skip('benchmark data not fetched (benchmarks/fetch_spice_suite.py)')
+    monkeypatch.setattr(circuit, 'default_toolkit', circuit.numeric)
+    out = {}
+    for on in (True, False):
+        monkeypatch.setattr(_tran_tcloop_c, 'ENABLED', on)
+        tr, kw = spice_import.import_netlist(deck).transient()
+        tr.par.integrator = RadauIIA3Integrator()
+        kw['tend'] = 3.5e-7
+        before = _paths.snapshot()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = tr.solve(**kw)
+        st = tr.statistics
+        out[on] = (np.asarray(res.x).tobytes(), np.asarray(res.sweep_values).tobytes(),
+                   st.accepted_steps, st.rejected_steps, _paths.since(before))
+    assert out[True][4].get('tcloop_c:fallbacks', 0) > 0, out[True][4]
+    assert not out[True][4].get('tcloop_c:bail:force'), out[True][4]
+    assert out[True][2:4] == out[False][2:4]
+    assert out[True][:2] == out[False][:2]
 
 
 def test_after_the_cs_fallbacks_the_record_reads_its_own_inputs(monkeypatch):
