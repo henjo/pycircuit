@@ -58,17 +58,26 @@ static const double *cache_hit(const newton_t *s, long m, long r)
    matmul calls this dgemv), |R x - rhs|, its maximum (a NaN handed back:
    numpy's max propagates one, and the Python's NaN residual fails its
    test), the scale `max(max |rhs|, 1e-300)` (rhs finite: a running `>`
-   from +0.0 is numpy's maximum in any order), `not (resid <= tol)`.  Every
-   other course is the Python's: no numeric, a non-finite matrix or
-   right-hand side, a zero pivot, a failed solve or validation.  0, or the
-   bail */
+   from +0.0 is numpy's maximum in any order), `not (resid <= tol)`.  With
+   no numeric yet (newton.h's THE RUN'S FIRST NUMERIC) its first solve:
+   `_factor`, klu_solve, no validation.  Every other course is the Python's:
+   a non-finite matrix or right-hand side, a singular matrix, a zero pivot,
+   a failed solve or validation.  0, or the bail */
 static long sparse_full(newton_t *s, long m)
 {
     long i, k;
     double max_b = 0.0, max_r = 0.0, scale;
-    if (!s->klu_num) return NEWTON_BAIL_KLU_NONUMERIC;
     for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) return NEWTON_BAIL_JNONFINITE;
     for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return NEWTON_BAIL_BNONFINITE;
+    if (!s->klu_num) {
+        s->klu_num = ((klu_factor_t) s->klu_factor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
+                                                    s->klu_common);
+        if (!s->klu_num) return NEWTON_BAIL_KLU_FACTOR;
+        s->num_made = 1;
+        if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_num, (int) m, 1, s->b, s->klu_common))
+            return NEWTON_BAIL_KLU_SOLVE;
+        return 0;
+    }
     for (i = 0; i < m; i++) s->rb[i] = s->b[i];
     if (!((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym, s->klu_num,
                                             s->klu_common))
@@ -616,7 +625,7 @@ long pcx_newton(newton_t *s)
     long status;
     const double *c0 = 0;
     k->klu_out = k->klu_num;
-    s->fallbacks = s->fb_iters = 0;
+    s->fallbacks = s->fb_iters = s->num_made = 0;
     status = iterate(s, &num, 0, &c0);
     s->fb_limit = 0;
     if (s->chord && s->fb_on && (status == NEWTON_BAIL_CHORDBREAK || status == NEWTON_BAIL_MAXITER)
@@ -629,6 +638,11 @@ long pcx_newton(newton_t *s)
         if (back || !s->ck_defer) pcx_klu_finish(k, back);
         k->klu_num = k->klu_out;
         if (back) {
+            if (s->num_made) {
+                pcx_klu_free(k, s->klu_num);
+                s->klu_num = 0;
+                s->num_made = 0;
+            }
             k->refactors = r0;
             k->factors = f0;
             k->pivot_fallbacks = p0;

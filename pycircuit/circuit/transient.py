@@ -32,6 +32,7 @@ from pycircuit.circuit.stepcontroller import (LTE_ALGEBRAIC_MODES,
 ## THE THEMES `Transient` is assembled from (`_tran_*.py`, 2026-10-01; the
 ## review's O8) -- the stepping loop, its policy and the Parameters stay
 ## here.
+from pycircuit.circuit import _tran_newton
 from pycircuit.circuit._tran_newton import _EarlyAbort, _EarlyArm, _StepNewton
 from pycircuit.circuit._tran_branch import _BranchCheck
 from pycircuit.circuit.linearsolver import (
@@ -365,8 +366,8 @@ class _LMMSteps(_StepFamily):
         th = tr.par.early_abort
         if th and not th >= 1.0:
             raise ValueError(f"early_abort must be 0 (off) or at least 1, not {th!r}")
-        if tr.par.lte_jacobian not in ('converged', 'seed'):
-            raise ValueError("lte_jacobian must be 'converged' or 'seed', "
+        if tr.par.lte_jacobian not in ('auto', 'converged', 'seed'):
+            raise ValueError("lte_jacobian must be 'auto', 'converged' or 'seed', "
                              f"not {tr.par.lte_jacobian!r}")
 
     def judge(self, X, x_new, h, J, clamped):
@@ -887,8 +888,10 @@ class _SteppingLoop:
         ## Newton) holds the chord's factors for `judge`, and the converged
         ## point is evaluated without G (`_solve_timestep`); a stand-in for
         ## any of them, on the instance or the class, may read J, and gets it.
+        asked = tr.par.lte_jacobian
         self.lte_seed = bool(
-            tr.par.lte_jacobian == 'seed' and not self.fixed and type(self) is _SteppingLoop
+            (asked == 'seed' or (asked == 'auto' and tr.cir.n >= _tran_newton.LTE_SEED_FROM_N))
+            and not self.fixed and type(self) is _SteppingLoop
             and type(tr) is Transient and type(family) is _LMMSteps
             and type(tr.base_integrator).__name__ == 'Gear2Integrator'
             and not ('solve_timestep' in tr.__dict__ or '_solve_timestep' in tr.__dict__
@@ -1440,15 +1443,23 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
          ## worst edge 2 % past it -- an answer change, so off by default;
          ## taken as measured (Andreas, "B").  Inert without the sparse
          ## chord, on a fixed grid, for the other methods and the shooting.
+         ## 'auto', THE DEFAULT (2026-11-07; Andreas, "Start with the seed";
+         ## roadmap 287): 'seed' from `_tran_newton.LTE_SEED_FROM_N` (1 024)
+         ## unknowns, where its refactors are the run's largest cost -- a
+         ## 2-D mesh 1.48-1.53x, an active delay line 1.16x -- and 'converged'
+         ## below, every gold deck's answers as they were.  Above the size its
+         ## edges move as a +-0.1 % `reltol` nudge moves them (3.4 ps at worst
+         ## on a 4 000-stage delay line, against 3.3 ns from a reltol/100 run).
          Parameter(name='lte_jacobian',
                    desc="The adaptive Gear-2 error test's Jacobian: "
                         "'converged' (evaluated and factored at the converged "
-                        "point; the default) or 'seed' (where the sparse chord "
-                        "converged within 3 iterations, the chord's own "
-                        "factors of the seed's Jacobian -- faster, the "
-                        "answers move within the tolerance's spread)",
+                        "point), 'seed' (where the sparse chord converged "
+                        "within 3 iterations, the chord's own factors of the "
+                        "seed's Jacobian -- faster, the answers move within "
+                        "the tolerance's spread) or 'auto' (the default: "
+                        "'seed' from 1 024 unknowns, else 'converged')",
                    unit='',
-                   default='converged'),
+                   default='auto'),
          ## THE RADAU EARLY ABORT (2026-10-21; roadmap 159): an adaptive
          ## Radau attempt whose embedded estimate at the transform's first
          ## iterate, normalised as the step is judged, is over this is

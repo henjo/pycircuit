@@ -606,8 +606,9 @@ def _judge(loop, tr, O, n):
         ## (the run's numeric, which a full error test refactors: the
         ## Python's first full test makes it.  Under the seed mark and the
         ## chord -- most tests on the chord's factors, `lte_jacobian` -- the
-        ## loop enters without it, and an attempt whose test is a full one
-        ## while it is missing hands back: loop.c's `error_test`)
+        ## loop enters without it: a chord's fallback makes it (newton.h's
+        ## THE RUN'S FIRST NUMERIC), and an attempt whose test is a full one
+        ## while it is still missing hands back: loop.c's `error_test`)
         rec = tr.__dict__.get('_newton_c')
         waits = tr.__dict__.get('_lte_seed') and rec is not None and rec.s.chord
         if not sk._symbolic or not (sk._numeric or waits):
@@ -1043,6 +1044,20 @@ def run(loop):
 _CIRCUIT_SHADOWS = ('u', 'G', 'C', 'i', 'q', 'limit', 'next_event', 'accept_step')
 
 
+def _full_counts(rec, s):
+    """The StructuralKLU's counts of the attempts' full Newtons.  Not on the
+    chord: a refactor of the run's numeric an iteration (the chord's counts
+    its own: `chord_out`).  On it, its fallbacks': their refactors, the factor
+    of the numeric one made among them (newton.h's THE RUN'S FIRST NUMERIC)."""
+    if not rec.s.chord:
+        rec.klu.refactors += s.iters
+        return
+    rec.klu.refactors += s.fb_refactors - s.nums_made
+    rec.klu.factors += s.nums_made
+    if s.nums_made:
+        _PC['newton_c:first_numeric'] += s.nums_made
+
+
 def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     """The state after the C's attempts, as the Python attempts leave it
     (the module's THE STATE), and the `_paths` counts their glue would have
@@ -1086,13 +1101,8 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     tr._is_first_step = bool(s.is_first)
     if run_.br is not None:
         tr._branch_cmax = float(s.cmax)
-    if rec.klu is not None and not rec.s.chord:
-        ## (the sparse full Newton: a refactor of the run's numeric an
-        ## iteration; the chord's counts its own -- `chord_out`)
-        rec.klu.refactors += s.iters
-    elif rec.klu is not None:
-        ## (the chord's fallbacks: their full Newtons' refactors)
-        rec.klu.refactors += s.fb_refactors
+    if rec.klu is not None:
+        _full_counts(rec, s)
     if adaptive:
         ctrl, ct = tr.step_controller, run_.ct
         if s.keeps_run and s.have_run:

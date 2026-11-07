@@ -85,15 +85,54 @@ def _bound(monkeypatch, k):
     monkeypatch.setitem(_tran_newton_c._mods(), 'lte_seed', k)
 
 
-def test_off_by_default_and_checked(monkeypatch):
-    """'converged' by default: nothing held, the converged point's G made
-    for every judged attempt; another value raises at the solve."""
+def test_converged_holds_nothing_and_the_value_is_checked(monkeypatch):
+    """'converged': nothing held, the converged point's G made for every
+    judged attempt; another value raises at the solve."""
     tr, _res, d = _run(monkeypatch, lte='converged', path='python', tend=2e-7)
-    assert Transient(_chain(2), toolkit=circuit.numeric).par.lte_jacobian == 'converged'
+    assert Transient(_chain(2), toolkit=circuit.numeric).par.lte_jacobian == 'auto'
     assert d.get('lte:seed', 0) == 0 and d.get('core.c:served', 0) == 0 and d['core.j:served'] > 50
     tr.par.lte_jacobian = 'stale'
     with pytest.raises(ValueError, match='lte_jacobian'):
         tr.solve(tend=1e-8, timestep=1e-9)
+
+
+@pytest.mark.parametrize('frm, same_as', [(1, 'seed'), (1 << 40, 'converged')],
+                         ids=['at-size', 'below-size'])
+def test_auto_is_seed_from_its_size_and_converged_below(monkeypatch, frm, same_as):
+    """'auto' -- the default -- makes the run of 'seed' from
+    `LTE_SEED_FROM_N` unknowns and of 'converged' below: bytes, statistics,
+    the held tests."""
+    monkeypatch.setattr(_tran_newton, 'LTE_SEED_FROM_N', frm)
+    ta, ra, da = _run(monkeypatch, lte='auto', tend=2e-7)
+    tb, rb, db = _run(monkeypatch, lte=same_as, tend=2e-7)
+    assert _key(ta, ra) == _key(tb, rb)
+    assert da.get('lte:seed', 0) == db.get('lte:seed', 0)
+    assert (da.get('lte:seed', 0) > 0) == (same_as == 'seed')
+
+
+@pytest.mark.parametrize('explicit', ['converged', 'seed'])
+def test_an_explicit_value_holds_at_any_size(monkeypatch, explicit):
+    """'converged' and 'seed' asked for are taken whatever the size."""
+    for frm in (1, 1 << 40):
+        monkeypatch.setattr(_tran_newton, 'LTE_SEED_FROM_N', frm)
+        _t, _r, d = _run(monkeypatch, lte=explicit, tend=2e-7)
+        assert (d.get('lte:seed', 0) > 0) == (explicit == 'seed'), (frm, d.get('lte:seed'))
+
+
+def test_the_default_takes_the_seed_s_factors_on_a_large_circuit():
+    """The real size: the default's error tests on the seed's factors from
+    `LTE_SEED_FROM_N` unknowns, on the converged point's below it."""
+    def held(stages):
+        tr = Transient(_chain(stages), toolkit=circuit.numeric)
+        before = _paths.snapshot()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr.solve(tend=3e-8, timestep=1e-9)
+        return tr.cir.n, _paths.since(before).get('lte:seed', 0)
+    n, count = held(_tran_newton.LTE_SEED_FROM_N)
+    assert n >= _tran_newton.LTE_SEED_FROM_N and count > 0
+    n, count = held(_tran_newton.LTE_SEED_FROM_N - 8)
+    assert n < _tran_newton.LTE_SEED_FROM_N and count == 0
 
 
 @pytest.mark.parametrize('bound', [2, 3])
@@ -166,8 +205,11 @@ def test_a_full_test_without_the_run_numeric_is_handed_back(monkeypatch):
     -- presented here at every entry -- hands that attempt back by its own
     test (`numeric`; KLU would refuse the NULL numeric too, as an error
     test's bail), and the Python's repeat makes the run the plain one.  At
-    bound 2, where the loop makes full tests of its own."""
+    bound 2, where the loop makes full tests of its own, and with the chord's
+    fallback the Python's (in C it would make the numeric the test reads:
+    test_chord_fallback_c)."""
     _bound(monkeypatch, 2)
+    monkeypatch.setattr(_tran_newton_c, 'FALLBACK', False)
     plain = _run(monkeypatch, path='loop', cir=_chain(fast=True), tend=2.4e-8, step=2e-10)
     load = _tran_loop_c._load
 

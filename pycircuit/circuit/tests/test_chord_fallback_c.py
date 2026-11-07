@@ -93,7 +93,7 @@ def test_the_python_loops_c_newton_falls_back_too(monkeypatch):
     assert not any(k.startswith('newton_c:bail:') for k in counts)
 
 
-def _active(stages=260):
+def _active(stages=260, vto=0.5, kp=2e-4):
     """A chain whose stage gain is above one -- a pulse travels it -- with 264
     unknowns: KLU and the chord ('auto')."""
     c = SubCircuit()
@@ -104,20 +104,30 @@ def _active(stages=260):
     for k in range(stages):
         c.add_node(f'd{k}')
         c[f'rl{k}'] = R('vdd', f'd{k}', r=2e4)
-        c[f'M{k}'] = eh.MosLevel1Hdl(f'd{k}', 'g0' if k == 0 else f'd{k - 1}', gnd, gnd, vto=0.5,
-                                     kp=2e-4)
+        c[f'M{k}'] = eh.MosLevel1Hdl(f'd{k}', 'g0' if k == 0 else f'd{k - 1}', gnd, gnd, vto=vto,
+                                     kp=kp)
         c[f'c{k}'] = C(f'd{k}', gnd, c=2e-14)
     return c
 
 
-def _limited(monkeypatch, path, maxiter=4, armed=False):
+def _limited(monkeypatch, path, maxiter=4, armed=False, plant=None, mos=(), **par):
     """The active chain with few iterations, on `path`: chord and full Newton
-    both stop at the limit on the steps over the input's edge."""
+    both stop at the limit on the steps over the input's edge.  `mos` its
+    devices' parameters where others, `par` the transient's, `plant` called on
+    each C loop's record as it is loaded."""
     loop, newton, lte = PATHS[path]
     monkeypatch.setattr(_tran_loop_c, 'ENABLED', loop)
     monkeypatch.setattr(_tran_newton_c, 'ENABLED', newton)
     monkeypatch.setattr(_tran_lte_c, 'ENABLED', lte)
-    tr = Transient(_active(), toolkit=circuit.numeric)
+    if plant is not None:
+        load = _tran_loop_c._load
+
+        def planted(loop_, tr_, td, run_, *a, **k):
+            r = load(loop_, tr_, td, run_, *a, **k)
+            plant(run_)
+            return r
+        monkeypatch.setattr(_tran_loop_c, '_load', planted)
+    tr = Transient(_active(**dict(mos)), toolkit=circuit.numeric, **par)
     tr.par.maxiter = maxiter
     if armed:
         tr._damped_last_resort = True
@@ -162,3 +172,57 @@ def test_an_armed_retry_still_hands_the_limit_back(monkeypatch):
     got, gklu, c = _limited(monkeypatch, 'python loop, C Newton', armed=True)
     assert got == want and gklu == wklu
     assert c.get('newton_c:bail:maxiter', 0) > 0 and not c.get('newton_c:maxiter'), c
+
+
+#: the first fallback meets its limit here, at 4 iterations; on the active
+#: chain at 6 it converges -- neither run's numeric made before it
+_GAIN_BELOW_ONE = (('vto', 0.0), ('kp', 2e-5))
+_FIRST = {'converges': (6, ()), 'limit': (4, _GAIN_BELOW_ONE)}
+
+
+def _seeded(monkeypatch, path, case, **k):
+    maxiter, mos = _FIRST[case]
+    return _limited(monkeypatch, path, maxiter, mos=mos, lte_jacobian='seed', **k)
+
+
+@pytest.mark.parametrize('case', _FIRST)
+def test_the_fallback_makes_the_run_s_first_numeric(monkeypatch, case):
+    """The chord's first fallback with no run numeric yet (the seed's error
+    test): its first solve factors one in the C, as `StructuralKLU._solve`, and
+    a full error test after it reads it -- nothing handed back, the run the
+    Python's: bytes, statistics, the KLU's every count (a factor, then
+    refactors) -- whether that fallback converges or meets its limit."""
+    want, wklu, _c = _seeded(monkeypatch, 'python', case)
+    assert wklu[0] == 'StructuralKLU' and wklu[1] > 0 and wklu[2] == 1
+    assert (want[5] > 0) == (case == 'converges')
+    for path in ('python loop, C Newton', 'C loop'):
+        run, klu, c = _seeded(monkeypatch, path, case)
+        assert run == want and klu == wklu, path
+        assert c['newton_c:first_numeric'] == 1, (path, c)
+        assert not any(k.startswith(('newton_c:bail:', 'loop_c:bail:')) for k in c), (path, c)
+    assert c['loop_c:attempts'] > 20
+
+
+def test_a_hand_back_frees_the_first_numeric(monkeypatch):
+    """A fallback handed back after making the numeric (the damped retry armed:
+    the limit is not the attempt's end): the C frees it, and the Python's
+    repeat factors its own from the same values -- a factor, not a refactor of
+    the C's -- the run and its counts the Python's."""
+    want, wklu, _c = _seeded(monkeypatch, 'python', 'limit', armed=True)
+    run, klu, c = _seeded(monkeypatch, 'python loop, C Newton', 'limit', armed=True)
+    assert run == want and klu == wklu and wklu[2] == 1
+    assert c['newton_c:bail:maxiter'] > 0 and 'newton_c:first_numeric' not in c, c
+
+
+def test_an_attempt_the_loop_hands_back_frees_its_first_numeric(monkeypatch):
+    """A fallback that converged and made the numeric, then an error test that
+    hands the attempt back (its validation failing, planted on the C loop's
+    test alone): the attempt is the Python's, so the numeric goes with it and
+    the repeat factors its own -- the run and its counts the Python's."""
+    def failing(run_):
+        if run_.sk is not None:
+            run_.lte.s.resid_tol = 0.0
+    want, wklu, _c = _seeded(monkeypatch, 'python', 'converges')
+    run, klu, c = _seeded(monkeypatch, 'C loop', 'converges', plant=failing)
+    assert run == want and klu == wklu and wklu[2] == 1
+    assert c['loop_c:bail:lte'] > 0, c

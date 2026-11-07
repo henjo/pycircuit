@@ -19,8 +19,8 @@ NUMERIC).  `_paths`: `newton_c:<why>` a decline,
 `newton_c:bail:<why>` a hand-back, `newton_c:maxiter` the iteration limit
 raised from the C, and on a serve `newton_c:served`,
 `newton_c:iterations`, `newton_c:jfold`, `newton_c:j_unread`,
-`newton_c:sparse`, `newton_c:lte_seed` -- with the Python's own `chord:chosen` where the Python
-would count it.  Switch: `PYCIRCUIT_NEWTON_C=0` (`ENABLED`, read on every
+`newton_c:sparse`, `newton_c:lte_seed`, `newton_c:first_numeric` -- with the Python's own
+`chord:chosen` where the Python would count it.  Switch: `PYCIRCUIT_NEWTON_C=0` (`ENABLED`, read on every
 call), and the evaluate core's (`PYCIRCUIT_TRAN_CORE`, `_tran_core.CORE`);
 `STATUS` says why the path is off where it is.
 
@@ -497,6 +497,9 @@ def chord_out(rec):
     calls end with, their counts."""
     sk, ck = rec.klu, rec.s.ck
     sk._chord = int(rec.ffi.cast('uintptr_t', ck.klu_num)) or None
+    ## (the run's numeric: the chord's fallback may have made it -- newton.h's
+    ## THE RUN'S FIRST NUMERIC -- and a hand-back has freed that)
+    sk._numeric = int(rec.ffi.cast('uintptr_t', rec.s.klu_num)) or None
     sk.chord_refactors += ck.refactors
     sk.chord_factors += ck.factors
     sk.chord_pivot_fallbacks += ck.pivot_fallbacks
@@ -846,7 +849,7 @@ def _unconverged(tr, td, rec, P, M, status, chord, trace, memo):
             _PC['chord:chosen'] += 1
         if rec.s.klu_sym != rec.ffi.NULL:
             ## (the full Newton's solves: a refactor of the run's numeric each)
-            rec.klu.refactors += int(rec.s.maxiter)
+            _count_full(rec.klu, rec.s, int(rec.s.maxiter))
         _maxiter(tr, td, rec, P)
     key, had, cvals = trace
     _undo_source(memo, (key,), (had,), dict(zip(M['u_keys'], cvals)))
@@ -854,6 +857,17 @@ def _unconverged(tr, td, rec, P, M, status, chord, trace, memo):
         ## (the walk stopped: its tables are taken again next time)
         rec.walk_ok = None
     return _no('newton_c:bail:' + BAIL.get(status, str(status)))
+
+
+def _count_full(sk, s, solves):
+    """The full Newton's `solves` on the run's numeric: a refactor each -- the
+    first the factor where this call made it (newton.h's THE RUN'S FIRST
+    NUMERIC)."""
+    if s.num_made:
+        _PC['newton_c:first_numeric'] += 1
+        sk.factors += 1
+        solves -= 1
+    sk.refactors += solves
 
 
 def _maxiter(tr, td, rec, P):
@@ -1204,7 +1218,7 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
         if stats is not None:
             stats.chord_fallbacks += 1
         if sparse:
-            ch.refactors += int(s.fb_iters)
+            _count_full(ch, s, int(s.fb_iters))
     x_res = buf['x'].copy()
     ## (the full-width solution the C wrote at the converged point, the
     ## reference row's +0.0 in its place: `insert_row`'s array, byte for

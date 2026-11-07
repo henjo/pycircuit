@@ -66,13 +66,17 @@ static int next_breakpoint(loop_t *s, double t, double *out)
 /* THE ATTEMPT'S CHORD NUMERIC (loop.h): at its Newton's call the entry and
    the counts kept (`ck_open`); a made attempt frees the entry where its
    Newton replaced it (`ck_commit`); the attempt the loop stops in is the
-   Python's, which repeats it from the entry (`ck_back`) */
+   Python's, which repeats it from the entry (`ck_back`) -- and a run numeric
+   its Newton made (newton.h's THE RUN'S FIRST NUMERIC): kept with a made
+   attempt and counted, freed with one the Python repeats */
 static void ck_commit(loop_t *s)
 {
     newton_t *nt = (newton_t *) s->newton;
     if (!s->ck_live) return;
     s->ck_live = 0;
     if (s->ck_entry != nt->ck.klu_num) pcx_klu_free(&nt->ck, s->ck_entry);
+    s->nums_made += nt->num_made;
+    nt->num_made = 0;
 }
 
 static void ck_open(loop_t *s, newton_t *nt)
@@ -95,6 +99,11 @@ static void ck_back(loop_t *s)
     if (!s->ck_live) return;
     k = &nt->ck;
     s->ck_live = 0;
+    if (nt->num_made) {
+        pcx_klu_free(k, nt->klu_num);
+        nt->klu_num = 0;
+        nt->num_made = 0;
+    }
     if (k->klu_num != s->ck_entry) pcx_klu_free(k, k->klu_num);
     k->klu_num = k->klu_out = s->ck_entry;
     k->refactors = s->ck_r0;
@@ -370,17 +379,19 @@ static void held_factors(lte_t *le, const newton_t *nt)
 }
 
 /* the error test on the attempt's converged point (`lte_setup`, then
-   pcx_lte; on the seed's factors where the Newton held them).  A full test
-   with no run numeric to refactor -- the loop entered under the seed mark
-   before the Python's first full test made it (`_tran_loop_c._judge`) --
-   hands the attempt back, LOOP_BAIL_NUMERIC, and the Python's test makes
-   it (KLU would refuse the NULL numeric too: the test is the loop's own,
-   and named).  0 (`err` set), LOOP_BAIL_NUMERIC or LOOP_BAIL_LTE */
+   pcx_lte; on the seed's factors where the Newton held them).  A numeric
+   this attempt's Newton made is the test's too.  A full test with no run
+   numeric to refactor -- the loop entered under the seed mark before
+   anything made it (`_tran_loop_c._judge`) -- hands the attempt back,
+   LOOP_BAIL_NUMERIC, and the Python's test makes it (KLU would refuse the
+   NULL numeric too: the test is the loop's own, and named).  0 (`err` set),
+   LOOP_BAIL_NUMERIC or LOOP_BAIL_LTE */
 static long error_test(loop_t *s, loop_attempt_t *a)
 {
     newton_t *nt = (newton_t *) s->newton;
     lte_t *le = (lte_t *) s->lte;
     long st;
+    if (nt->num_made) le->klu_num = nt->klu_num;
     if (!nt->lte_held && le->klu_sym && !le->klu_num) return LOOP_BAIL_NUMERIC;
     if ((st = lte_setup(s, a, nt->xc, nt->qj, nt->Jj)) != 0) return st;
     if (nt->lte_held) held_factors(le, nt);
@@ -2163,7 +2174,7 @@ long pcx_loop(loop_t *s)
     s->k = 0;
     s->attempts = s->rejected = s->iters = s->euler_steps = s->breaks = s->screens = 0;
     s->pred_fast = s->ltes = s->lte_seeds = s->lte_euler = s->early_aborts = s->early_checks = 0;
-    s->newton_rejects = s->chord_fallbacks = s->fb_refactors = 0;
+    s->newton_rejects = s->chord_fallbacks = s->fb_refactors = s->nums_made = 0;
     s->maps = 0;
     if (s->walk) {
         st = walk(s);

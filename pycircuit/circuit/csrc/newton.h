@@ -202,8 +202,8 @@ typedef struct {
        RUN's numeric (`klu_num`: the StructuralKLU's own, which its every
        solve refactors), klu_solve, the refactor's validation (numpy's
        matmul -- dgemv -- on `R`, against `resid_tol`) -- and it hands back
-       where the Python takes another course: no numeric yet, a zero pivot,
-       a failed or NaN validation (the Python factors afresh), a non-finite
+       where the Python takes another course: a zero pivot, a failed or NaN
+       validation (the Python factors afresh), a non-finite
        matrix or right-hand side.  A refactor writes the numeric's values,
        never its pivot order, so the Python's repeat from the same seed
        refactors it again from the same values.  `R` is J reduced: written
@@ -277,6 +277,14 @@ typedef struct {
     long limit_ok;        /* CALL: 1 the caller rejects or raises at the limit, else 0 */
     long fb_limit;        /* OWN: 1 where the fallback stopped at its limit and
                              `limit_ok`, else 0 */
+    /* THE RUN'S FIRST NUMERIC: under the seed's error test nothing has made
+       `klu_num` when a chord's first fallback comes.  Its first solve is
+       `StructuralKLU._solve`'s first: `_factor` of this matrix, klu_solve, no
+       validation, and `klu_num` holds it after, for the caller to hand on
+       (`chord_out`): a factor where every other iteration counts a refactor.
+       A hand-back frees it -- the Python's repeat factors the same values, as
+       a refactor would not promise -- and leaves `klu_num` NULL as it was */
+    long num_made;        /* OWN: 1 where this call made `klu_num`, else 0 */
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and
@@ -318,8 +326,6 @@ enum newton_status {
     NEWTON_BAIL_KLU_SOLVE = 13,  /* the sparse chord's solve failed */
     NEWTON_EARLY = 14,           /* the early abort's estimate over `early_th`: the
                                     attempt abandoned (not a hand-back) */
-    NEWTON_BAIL_KLU_NONUMERIC = 15, /* the sparse full Newton: the run has no
-                                       numeric yet (the Python factors one) */
     NEWTON_BAIL_KLU_REFACTOR = 16,  /* its refactor met a zero pivot (the
                                        Python factors afresh) */
     NEWTON_BAIL_KLU_RESIDUAL = 17,  /* its validation failed or is NaN (the

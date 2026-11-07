@@ -59,6 +59,10 @@ class _EarlyAbort(Exception):
         self.err, self.s, self.p = err, s, p
 
 
+#: `Transient.lte_jacobian` 'auto' takes the seed's factors from this many
+#: unknowns (the size the C loops' other matrices go on the pattern), the
+#: converged point's below: every gold deck, the largest 519, is below it.
+LTE_SEED_FROM_N = 1024
 #: THE ERROR TEST ON THE SEED'S FACTORS (`Transient.lte_jacobian` 'seed'):
 #: an attempt whose sparse chord converged within this many iterations --
 #: its iterate still near the seed -- takes J^-1 Eg by the chord's own

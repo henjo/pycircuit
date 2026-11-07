@@ -352,6 +352,10 @@ typedef struct {
     /* each pattern entry's row and column (`cpat` / n, `cpat` % n: the
        estimate's product `tc_cmul` reads them, no division an entry) */
     const int64_t *crow, *ccol;
+    /* the run numerics the made attempts' Newtons made (newton.h's THE RUN'S
+       FIRST NUMERIC): a factor each, not one of `fb_refactors`' refactors --
+       this call's (zeroed by pcx_loop) */
+    long nums_made;
 } loop_t;
 long pcx_loop(loop_t *s);
 
