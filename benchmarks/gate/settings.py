@@ -5,8 +5,9 @@ A forcing sets a module's constants or a run's parameters; it moves no line of t
 what it reached on the decks when measured on 866a0300 (roadmap 288): `mi6` (a Newton cut short: hand-backs, the fallback's limit,
 the DC Newton's C) most, `bound` (the error test on the seed's factors whatever the chord's iterations, so no full test
 comes before the first fallback: the C-made first numeric on 7 decks), `low` (every size gate at nothing, so packed sets,
-pattern pages and the results' gathering run on small decks).  Forcing KLU alone, plain 'seed' and `low` with `bound`
-added at most 2 lines and are not in the matrix.
+pattern pages and the results' gathering run on small decks), `bypass` (the core's device bypass, otherwise a fixture's alone).  Forcing KLU alone, plain 'seed' and `low` with
+`bound` added at most 2 lines and are not in the matrix; `fresh` (every refactor's validation failing: a fresh factor at every solve) added 12 arms at 5-10x the time, C = Python on all 54
+runs (roadmap 290), and is run by hand.
 """
 
 DECKS = ('4049osc', 'toronto', 'voter25', 'ab_integ', 'e1480', 'g1310', 'gm6', 'hussamp', 'mosrect', 'mux8', 'nand', 'ring',
@@ -16,7 +17,12 @@ DECKS = ('4049osc', 'toronto', 'voter25', 'ab_integ', 'e1480', 'g1310', 'gm6', '
 #: (method, setting): every deck, the C paths against the Python's
 MATRIX = (('gear2', 'default'), ('gear2', 'mi6'), ('gear2', 'bound'), ('gear2', 'low'),
           ('radau', 'default'), ('radau', 'mi6'), ('radau', 'low'),
-          ('dc', 'default'))
+          ('dc', 'default'),
+          ('gear2', 'bypass'))
+
+#: run on the C path alone, read tree against tree: the device bypass's state follows the sequence of evaluations, which the Python's path does not share, so the two
+#: are not bit for bit by design (on 6 decks 2.4e-3..5.3e-2 of a swing apart, each within what a +-0.1 % reltol nudge moves the C path itself: roadmap 290)
+NO_TWIN = {('gear2', 'bypass')}
 
 #: the switches that take a run off its C stepping paths ('py'), and off every C path that has a Python ('off': slower)
 PATHS = {
@@ -43,6 +49,11 @@ SIZE_RUNS = (('chain', '4000', 'radau', 1e-6), ('achain', '4000', 'gear2', 1e-7)
 def force_modules(setting):
     """A setting's module constants, before the run's objects are made."""
     parts = set(setting.split('+'))
+    if 'fresh' in parts:
+        ## (every refactor's validation fails: a fresh factor at every solve, the real factor's and the complex one's)
+        from pycircuit.circuit import linearsolver
+        linearsolver.KLUSolver.REFACTOR_RESIDUAL_TOL = -1.0
+        linearsolver.ComplexKLUSolver.REFACTOR_RESIDUAL_TOL = -1.0
     if 'bound' in parts:
         from pycircuit.circuit import _tran_newton, _tran_newton_c
         _tran_newton.LTE_SEED_ITERS = 1000
@@ -75,6 +86,8 @@ def force_run(setting, tr):
     parts = set(setting.split('+'))
     if parts & {'seed', 'bound'}:
         tr.par.lte_jacobian = 'seed'
+    if 'bypass' in parts:
+        tr.par.bypass = True
     for p in parts:
         if p.startswith('mi') and p[2:].isdigit():
             tr.par.maxiter = int(p[2:])

@@ -128,7 +128,7 @@ def matrix(a):
             row = _run(_deck_cmd(deck, method, setting), a.tree, env, a.timeout)
             log.add(group=f'{method}/{setting}', deck=deck, path=path, row=row)
         return run
-    tasks = [one(d, m, s, p) for d in decks for m, s in pairs for p in paths]
+    tasks = [one(d, m, s, p) for d in decks for m, s in pairs for p in paths if p == 'c' or (m, s) not in settings.NO_TWIN]
     if a.coverage and tasks:
         tasks[0]()          # (the units built once, not eight times over the locks)
         tasks = tasks[1:]
@@ -155,9 +155,10 @@ def tree(a):
     """This tree against the base, uninstrumented: the decks by default, the circuits at size on the C paths."""
     log = _Log(a.out, 'tree.jsonl')
 
-    def deck(d, method, side, where):
+    def deck(d, method, setting, side, where):
         def run():
-            log.add(group=method, deck=d, path=side, row=_run(_deck_cmd(d, method, 'default'), where, {}, a.timeout))
+            log.add(group=method if setting == 'default' else f'{method}/{setting}', deck=d, path=side,
+                    row=_run(_deck_cmd(d, method, setting), where, {}, a.timeout))
         return run
 
     def circ(spec, side, where):
@@ -165,7 +166,8 @@ def tree(a):
             log.add(group='size', deck=' '.join(map(str, spec)), path=side, row=_run(_size_cmd(spec), where, {}, 1600))
         return run
     sides = (('new', a.tree), ('base', a.base))
-    _pool(a.jobs, [deck(d, m, s, w) for d in settings.DECKS for m in ('gear2', 'radau', 'dc') for s, w in sides])
+    groups = [('gear2', 'default'), ('radau', 'default'), ('dc', 'default'), *sorted(settings.NO_TWIN)]
+    _pool(a.jobs, [deck(d, m, st, s, w) for d in settings.DECKS for m, st in groups for s, w in sides])
     _pool(a.size_jobs, [circ(c, s, w) for c in settings.SIZE_TWINS + settings.SIZE_RUNS for s, w in sides])
 
 

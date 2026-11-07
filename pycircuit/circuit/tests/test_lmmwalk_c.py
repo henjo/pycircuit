@@ -13,6 +13,8 @@ import numpy as np
 import pytest
 
 from pycircuit.circuit import _paths, _tran_loop_c, _tran_newton_c, circuit
+from pycircuit.circuit import elements_hdl as eh
+from pycircuit.circuit.elements import gnd
 from pycircuit.circuit.shooting import PSS, _lmmsens_c, _lmmwalk_c, _pss_walks, _steps
 from pycircuit.circuit.simwarnings import AccuracyWarning, ConvergenceWarning
 from pycircuit.circuit.tests._warnpolicy import quiet
@@ -28,17 +30,27 @@ def _b(a):
     return np.asarray(a, dtype=float).tobytes()
 
 
-def _run(monkeypatch, method, on, patch=None, n=4):
-    """One PSS of an `n`-stage MOSFET chain under `method`, the C walk on or
-    off, `patch(mp)` applied first: `(what it left, the paths counted)` --
-    an error the PSS raised among what it left."""
+def _moving_c(n):
+    """The chain with the MOSFETs' bulk-drain junctions, so C moves with the
+    state from step to step; the plain chain's is constant, where a step map
+    reading an old C cannot show."""
+    c = _mos_chain(n=n, cap=1e-13)
+    for k in range(n):
+        c[f'M{k}'] = eh.MosLevel1Hdl(f'd{k}', 'g0' if k == 0 else f'd{k - 1}', gnd, gnd, cbd=2e-13)
+    return c
+
+
+def _run(monkeypatch, method, on, patch=None, n=4, make=None):
+    """One PSS of an `n`-stage MOSFET chain (or `make(n)`) under `method`, the
+    C walk on or off, `patch(mp)` applied first: `(what it left, the paths
+    counted)` -- an error the PSS raised among what it left."""
     with monkeypatch.context() as mp:
         mp.setattr(circuit, 'default_toolkit', circuit.numeric)
         mp.setattr(_lmmwalk_c, 'LMMWALK_C', on)
         if patch is not None:
             patch(mp)
         before = _paths.snapshot()
-        pss = PSS(_mos_chain(n=n, cap=1e-13), method=method, reltol=1e-10)
+        pss = PSS(make(n) if make else _mos_chain(n=n, cap=1e-13), method=method, reltol=1e-10)
         out = {}
         try:
             ## (the coarse grid's own accuracy warning; the plain map's
@@ -72,11 +84,11 @@ def _strip(counts):
     return {k: v for k, v in counts.items() if not k.startswith('pss.lmmwalk:')}
 
 
-def _twin(monkeypatch, method, patch=None, n=4):
+def _twin(monkeypatch, method, patch=None, n=4, make=None):
     """The PSS without the C walk and with it: what each left and every
     count but the walk's own equal; the second's paths."""
-    a, ca = _run(monkeypatch, method, False, patch, n)
-    b, cb = _run(monkeypatch, method, True, patch, n)
+    a, ca = _run(monkeypatch, method, False, patch, n, make)
+    b, cb = _run(monkeypatch, method, True, patch, n, make)
     assert [k for k in a if a[k] != b[k]] == []
     assert _strip(ca) == _strip(cb)
     return b, cb
@@ -96,6 +108,22 @@ def test_the_c_walk_is_the_python_walk(monkeypatch, method, n):
     assert counts.get('pss.lmmwalk:steps', 0) > 2 * STEPS, counts
     assert counts.get('pss.lmmwalk:walk_prune', 0) > 0, counts
     assert (left['klu'] is not None) == (n == 40)
+
+
+@pytest.mark.parametrize('n', [4, 40])
+def test_the_walk_reads_each_step_s_own_c_where_c_moves(monkeypatch, n):
+    """Gear-2's step map reads C at the step and at the one before: on a chain
+    whose C moves with the state the rings' history shows, dense and on KLU --
+    the plain chain's C is constant, and dropping the C ring's move passes
+    there (roadmap 289's mutation pilot)."""
+    cir = _moving_c(4)
+    ## (not one value at every node: that leaves every junction at zero volts)
+    lo, hi = np.zeros(cir.n), np.linspace(0.0, 1.0, cir.n)
+    with monkeypatch.context() as mp:
+        mp.setattr(circuit, 'default_toolkit', circuit.numeric)
+        assert not np.array_equal(np.asarray(cir.C(lo), float), np.asarray(cir.C(hi), float))
+    _left, counts = _twin(monkeypatch, 'gear', n=n, make=_moving_c)
+    assert counts.get('pss.lmmwalk:steps', 0) > 2 * STEPS, counts
 
 
 @pytest.mark.parametrize('how', ['interleaved', 'chunks'])

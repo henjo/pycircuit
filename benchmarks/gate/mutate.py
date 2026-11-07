@@ -103,3 +103,51 @@ def draw(lines, n, seed, least=3):
                 got.append({'unit': unit, 'line': ln, 'kind': kind, 'old': lines[unit][ln], 'new': new})
         out[unit] = {'want': want, 'drawn': got}
     return out
+
+
+#: a line's guard: an `if` whose whole statement is a return of a hand-back
+_GUARD_RETURN = re.compile(r'^\s*return\s+([^;]*(?:BAIL|_bail\()[^;]*);')
+
+
+def forced_guard(line, site):
+    """A one-line hand-back check, `... if (X) return BAIL...;`, with `pcx_fault(site)` asked first: `if (pcx_fault(site) || (X)) return BAIL...;`.  None for any other line.
+    A hand-back's contract is that the run goes on as if the C had never tried, so a build of these can fire each check where it never fires by itself."""
+    code = _code(line)
+    if code is None:
+        return None
+    m = re.search(r'\bif \(', code)
+    if not m:
+        return None
+    depth, i = 1, m.end()
+    while i < len(code) and depth:
+        depth += (code[i] == '(') - (code[i] == ')')
+        i += 1
+    if depth or not _GUARD_RETURN.match(code[i:]):
+        return None
+    return f'{line[:m.end()]}pcx_fault({site}) || ({line[m.end():i - 1]})){line[i:]}'
+
+
+def force_guards(text, env):
+    """A unit's text with every one-line hand-back check forced by `pcx_fault`, which reads `env` (`line:nth`: the check on that line of the original, at its nth asking):
+    `(text, {line: the check as it stood})`, the original's line numbers the sites.  The text unchanged, and no sites, where it holds no such check."""
+    out, sites = [], {}
+    for k, line in enumerate(text.split('\n'), 1):
+        new = forced_guard(line, k)
+        if new is not None:
+            sites[k] = line
+        out.append(line if new is None else new)
+    if not sites:
+        return text, {}
+    head = ('#include <stdio.h>\n#include <stdlib.h>\n'
+            'static long pcx_fault_line = -2, pcx_fault_at = 0, pcx_fault_seen = 0;\n'
+            'static int pcx_fault(long line)\n{\n'
+            '    if (pcx_fault_line == -2) {\n'
+            f'        const char *e = getenv("{env}");\n'
+            '        pcx_fault_line = -1;\n'
+            '        if (e) sscanf(e, "%ld:%ld", &pcx_fault_line, &pcx_fault_at);\n'
+            '    }\n'
+            '    if (line != pcx_fault_line) return 0;\n'
+            '    if (__atomic_add_fetch(&pcx_fault_seen, 1, __ATOMIC_RELAXED) != pcx_fault_at) return 0;\n'
+            '    fputs("PCX_FAULT_FIRED\\n", stderr);\n'
+            '    return 1;\n}\n')
+    return head + '\n'.join(out), sites

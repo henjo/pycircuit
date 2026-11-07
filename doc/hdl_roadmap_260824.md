@@ -14780,3 +14780,25 @@ All MET.  Radau: the same digests, chain 0.999x, active chain 0.999x, mesh 45 x 
 **Recommendation to Andreas** (his to decide): close the 3 gaps with one test each first; stage 3 in its forced-hand-back half, since 2 of the 3 are hand-back or fallback sequences, poison later; stage 4 narrowed to what the sample named, the shooting walk on a C that moves and device bypass as a setting; stage 5 not now, nothing here points at it; repeat the sample on another seed afterwards to measure the change.
 
 **Tests.**  test_gate_mutate (+1): a zero constant really changes.  Suite 6 485.
+
+## 2026-11-07 — 290. What 289 got through, tested instead of read: one real gap, closed; every hand-back check fired on real decks, 142 of 151 leaving no trace and none wrong; device bypass in the matrix, tree against tree
+
+**Why**  Andreas, on 289's recommendation: "Go ahead as you suggest": close the gaps, fire the hand-backs (stage 3's forced half), move what the sample named onto decks (stage 4, narrowed).
+
+**A correction to 289: reading got 2 of its 3 "real gaps" wrong.**  Tested, as each was to be:
+* **loop.c:690, the shooting walk's `cp`: REAL, CLOSED.**  `_mos_chain`'s C is constant, so a walk reading a stale C at n-1 passes.  `test_the_walk_reads_each_step_s_own_c_where_c_moves` (a chain with bulk-drain junctions, 4 and 40 stages, dense and on KLU; it asserts C moves): the line dropped, these 2 fail and the 13 others pass.
+* **loop.c:2125, `fbx_set`: NOT A GAP.**  289 said 284's voter25 fix was half pinned.  The first fallback at a point always writes the set not holding the record (1 409 of 1 409, 28 runs across 7 decks), and only a later one the set holding it (158), so a stale `fbx_set` only copies earlier, and an earlier copy is harmless: 24 runs at 4 decks and 6 settings, the digests the same.  The line spares a copy.
+* **loop.c:1918, the real factor's numeric: NOT A GAP.**  289 said a dangling pointer.  loop.c:1835 assigns the same at every attempt's start, and `residual-every` (a fresh factor at every solve) passes without it.  Redundant; left as it is.
+So of 289's 60: equivalent 5, cost only 2 (`walk_dies`, `fbx_set`), a count only 1 (`tc_fbcert`), real 1.  Of the 55 that can matter: results 47 %, counters 18 %, tests 24 %, a warning 4 %, through 7 %, and now none of those can move an answer that we know of.
+
+**Forced hand-backs (`benchmarks/gate/handback.py`).**  A hand-back's contract is that the run goes on as if the C had never tried, and most checks had never fired to test it (288: up to 109 of 154).  Each one-line check forced true at its 1st, 3rd and 17th asking on up to 2 decks, in a worktree, against the gate's record of that deck and setting: digest, steps, rejections, Newton iterations, fallbacks, every KLU count.  The control, nothing armed, 81 runs: the record.  151 checks in the units a deck reaches, 1 481 runs in about 4 minutes.
+| | checks |
+|---|---|
+| fired, nothing moved | 142, and `newton.c:93` under `fresh`: 143 |
+| fired, a difference that is the forcing's | 3 |
+| not fired, named | 5 |
+**No check found wrong.**  The 3, read: `lte.c:235` and `lte.c:240` are the error test's solve, and under the early check a failed solve means no abort (`early`, newton.c), as the Python's own failing solve does (`_early_estimate`: None): forcing the C's side alone says something the two cannot disagree on (it moved `gm6`'s digest, 440 steps against 438: the first reading took that for a defect, and the caller's comment says otherwise).  `newton.c:75` is forced after `klu_factor` has succeeded, a state the real failure does not leave.  Not fired: `newton.c:107` and `:111` (the validation's dense test, where the sparse bound decides first), `dcnewton.c:110` (`dense_step`), `pcnrdc.c:187` and `:200` (a nonzero off the pattern, which no deck has): fixtures' or nothing's, and the shooting's 13 checks their tests'.  The condition half of stage 3 (feeding bad values) was not built: this gave it no reason.  Under `bypass` a hand-back does move the run, by design (below).  The planted `chord_refactors` off-by-one (287) did not appear on any fired check, so it stays unexplained: a count, the bytes the same.
+
+**Settings tried.**  `fresh` (every refactor's validation failing): C = Python on all 54 runs, 12 arms new, 5-10x the time: by hand, not in the matrix.  `bypass` (device bypass, otherwise a fixture's alone: +33 arms, all but 2 fixture-only before, 46 lines): **C and Python differ on 25 of 27 decks.**  Not a defect, measured: the bypass's state follows the sequence of evaluations, which the paths do not share; on 6 decks they are 2.4e-3..5.3e-2 of a swing apart, each inside what a +-0.1 % `reltol` nudge moves the C path itself (arom 5.3e-2 against 6.7e-2 and 7.4e-2).  So it joins the matrix on the C path alone, tree against tree (`settings.NO_TWIN`).  A bit-for-bit claim about bypass was never made, and now it is written down.
+
+**Tests.**  test_lmmwalk_c (+2), test_gate_mutate (+3: a hand-back check's forcing, what it leaves alone, sites on the original's lines), test_gate_verdict (+1).  Suite 6 499.

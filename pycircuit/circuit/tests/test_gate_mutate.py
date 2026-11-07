@@ -111,3 +111,26 @@ def test_counters_are_compared_where_both_ran():
             {'group': 'g', 'deck': 'b', 'path': 'new', 'row': {'failed': True}}, {'group': 'g', 'deck': 'b', 'path': 'base', 'row': {'counts': {}}}]
     got = V.compare_counts(rows)
     assert got['g']['runs'] == 1 and got['g']['differ'] == [('a', {'k': (1, 2)})]
+
+
+@pytest.mark.parametrize('line, want', [
+    ('    if (x > 0) return NEWTON_BAIL_X;', '    if (pcx_fault(7) || (x > 0)) return NEWTON_BAIL_X;'),
+    ('    for (i = 0; i < n; i++) if (!isfinite(a[i])) return rc_bail(s, RADAU_BAIL_RBOUND);',
+     '    for (i = 0; i < n; i++) if (pcx_fault(7) || (!isfinite(a[i]))) return rc_bail(s, RADAU_BAIL_RBOUND);'),
+    ('    if ((st = f(a, b)) != 0) return lte_bail(s, st);  /* why */', '    if (pcx_fault(7) || ((st = f(a, b)) != 0)) return lte_bail(s, st);  /* why */'),
+])
+def test_a_hand_back_check_is_asked_first(line, want):
+    assert M.forced_guard(line, 7) == want
+
+
+@pytest.mark.parametrize('line', ['    if (x) return 0;', '    if (x) { return BAIL; }', '    return NEWTON_BAIL_X;', '    if (x > 0)', '    /* if (x) return BAIL; */', '#define F if (x) return BAIL;',
+                                  '    if (x) y = BAIL;'])
+def test_what_is_not_a_one_line_hand_back_is_left(line):
+    assert M.forced_guard(line, 7) is None
+
+
+def test_forcing_a_unit_keeps_its_lines_as_the_sites():
+    text = 'int f(int x)\n{\n    if (x) return A_BAIL;\n    return 0;\n}\n'
+    got, sites = M.force_guards(text, 'PCX_FAULT_F')
+    assert sites == {3: '    if (x) return A_BAIL;'} and 'pcx_fault(3) || (x)' in got and 'getenv("PCX_FAULT_F")' in got
+    assert M.force_guards('int g(void)\n{\n    return 0;\n}\n', 'E') == ('int g(void)\n{\n    return 0;\n}\n', {})
