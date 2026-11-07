@@ -14802,3 +14802,30 @@ So of 289's 60: equivalent 5, cost only 2 (`walk_dies`, `fbx_set`), a count only
 **Settings tried.**  `fresh` (every refactor's validation failing): C = Python on all 54 runs, 12 arms new, 5-10x the time: by hand, not in the matrix.  `bypass` (device bypass, otherwise a fixture's alone: +33 arms, all but 2 fixture-only before, 46 lines): **C and Python differ on 25 of 27 decks.**  Not a defect, measured: the bypass's state follows the sequence of evaluations, which the paths do not share; on 6 decks they are 2.4e-3..5.3e-2 of a swing apart, each inside what a +-0.1 % `reltol` nudge moves the C path itself (arom 5.3e-2 against 6.7e-2 and 7.4e-2).  So it joins the matrix on the C path alone, tree against tree (`settings.NO_TWIN`).  A bit-for-bit claim about bypass was never made, and now it is written down.
 
 **Tests.**  test_lmmwalk_c (+2), test_gate_mutate (+3: a hand-back check's forcing, what it leaves alone, sites on the original's lines), test_gate_verdict (+1).  Suite 6 499.
+
+## 2026-11-07 — 291. A second mutation sample (seed 290), after 290: 48 of 56 caught, none of the 8 through shown to move an answer, and a kind of gap no instrument sees: a leak
+
+**Why**  289's recommendation (Andreas, "Go ahead as you suggest"): sample again after closing the gaps, on another seed, to measure.  Record: a new gate matrix (731 s, 8 settings with `bypass` on its own, 0 differing, SAME).  60 drawn by the same rule (`--seed 290`, 61 with a reserve), 71 min unattended, every control passing (nothing changed: none; a change with no effect in every unit: its tests pass).
+
+| | 289 (seed 288) | 291 (seed 290) |
+|---|---|---|
+| a result differs, by default | 24 | 25 |
+| only under a forced setting | 2 | 5 (3 by `bypass`, new in 290) |
+| a path counter only | 10 | 9 |
+| the unit's tests | 13 | 7 |
+| a compile warning | 2 | 2 |
+| through | 9 (+1 no-op) | 13 |
+| of these, no effect at all | 4 | 5 |
+| caught, of those that can matter | 51 of 55 (93 %) | 48 of 56 (86 %) |
+
+Different lines each time, and 60 a sample: the two rates are inside each other's +-9 points.  What a sample is for is which lines get through, and why.
+
+**Every survivor tested or proved by its readers, not read alone** (289 and 290: reading alone got 2 of 3 wrong).
+* No effect, by their readers (5): `info64 = 1` before dgesv (`newton.c:296`: LAPACK writes INFO); `return -2` for `-1` (`dcnewton.c:225`: its one caller tests `< 0`); `pyloop = 2` (`loop.c:1504`: read as a truth only); `j.nr` (`core.c:357`: the pull's job never reads it); `s->is_first` in the transform's abort (`loop.c:1948`: the stage family reads `is_first` nowhere, and `_is_first_step` is read by the multistep companions alone).
+* Cost or a hand-back only (4): the pull's block count multiplied, not divided (`core.c:359`: the pool's extra jobs start past the end); a flag left set after KLU's solve in the error test (`lte.c:239`: a hand-back, which 290 showed leaves no trace); `have_fbY` (`loop.c:1962`: its memo is made again where absent); **`radau.c:119`** -- `refv`, the reference row's and column's values, read only for their flags.  Its twin line two above (`radau.c:113`, the coupled matrix itself, the same text) changed the same way **differs** on voter25 and rich3 under `radau/mi6`, which no default run reaches: tested directly, after a first reading took 119 for 113.  The G blocks do differ: 3.8-9.4 M assembled entries a run.
+* **A leak and nothing else (2): the instruments cannot see it.**  `newton.c:642` (287's free of the numeric a handed-back fallback made: dropped, the pointer is zeroed, the numeric lost) and `pcnrdc.c:367` negated (the DC PCNR's KLU sequence never finished: a replaced numeric not freed).  The Python factors its own, every result and count the same.  Nothing in the gate, the tests or this tool counts memory.
+* Rare, not shown (2): `ck_commit` in `newton_reject` (`loop.c:489`: deferred, the next attempt's Newton commits it; only a Newton rejection followed at once by a stop before the next Newton -- a predictor's or a source's bail -- would roll a made attempt's chord state back, its counts and, after a fresh chord factor, its pivot order); `s->A0` in a made fallback (`loop.c:1960`: a stale count of the set's assemblies, where only an exact repeat of x could find a wrong record).
+
+**What this says.**  No line of 112 sampled in the two runs is known to move an answer unseen today.  The forcings earn their place (5 catches here, 3 of them `bypass`'s, which 290 added).  The new kind is the leak: a numeric freed on the wrong path is invisible to a comparison of results and counts.
+
+**Left, for Andreas.**  A count of KLU numerics made and freed (the units call KLU through pointers the glue hands them: a counting pair in a test sees every one), on the hand-back and fallback tests; the two rare sequences, provable with the hand-back harness by forcing a stop right after a Newton rejection.  Stage 5 not indicated.
