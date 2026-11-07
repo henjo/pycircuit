@@ -103,6 +103,11 @@ pytest-xdist, pytest-randomly, pytest-replay, detect-test-pollution, pyperf.
   per class or process and are only reported.  A new decline in a fast
   path's entry function returns `_paths.no('<path>.<site>:<reason>')`
   (`test_paths.py` checks every `return None` there).
+- **The gate** (2026-11-07, roadmap 288): `python benchmarks/gate/gate.py all --out DIR --base WORKTREE --since REV` runs what a
+  change to the C or the stepping must show: the suite, this tree against the base, the 27 gold decks under forced settings (C against
+  Python, on the coverage build), the same at size; `--line 'mesh 63x63 gear2 1e-6 >= 1.25'` adds timing pairs.  32 minutes without pairs.
+  Its verdict is SAME, NOT REACHED or DIFFERS, and `--since` classes each changed C line and arm by what compared it: read a NOT REACHED
+  before calling a stage done, and name what stays unreached in its roadmap entry.  `mutants.py` measures what the gate would notice.
 - **The sanitized suite** (2026-10-04): `scripts/sanitize_suite.sh
   [--deep] [OUTDIR]` runs the fast tier (~6 min; `--deep`: the whole suite
   with every Python allocation through ASan, hours) with every C object the package builds (the

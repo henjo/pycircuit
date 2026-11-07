@@ -12,7 +12,8 @@ off): the built objects `c-<key>-<compiler tag>.so`, the precompiled FFIs
 `_loaded` (key -> `(ffi, cfn)`), `_ffis` (declaration -> FFI), `_libs`
 (every library opened, held), `_compiler`.  No `_paths` counts.
 Switches: `PYCIRCUIT_HDL_CC` (then `CC`) names the compiler;
-`PYCIRCUIT_C_SANITIZE=1` makes the sanitizer build; the store's
+`PYCIRCUIT_C_SANITIZE=1` makes the sanitizer build, `PYCIRCUIT_C_COVERAGE=<dir>`
+the coverage build; the store's
 `PYCIRCUIT_HDL_CACHE` and `PYCIRCUIT_HDL_CACHE_DIR` are `_hdl_cache`'s;
 `enabled_env` reads `PYCIRCUIT_HDL_BACKEND` for its callers.
 
@@ -225,6 +226,24 @@ if SANITIZE:
     CFLAGS = CFLAGS + SANITIZE_FLAGS
 
 
+#: THE COVERAGE BUILD: `PYCIRCUIT_C_COVERAGE=<dir>` compiles the runtime units
+#: (`load_unit`: not the HDL kernels, which are generated and many) with gcov,
+#: its notes in `<dir>` and a process's counts where `GCOV_PREFIX` says
+#: (`benchmarks/gate`).  The flags are part of `source_key`: an instrumented
+#: object sits under its own key, and with the switch unset every key is what
+#: it was.  The optimisation stays -O2 and the code what runs, the counters
+#: atomic for the pool's threads.
+COVERAGE_DIR = os.environ.get('PYCIRCUIT_C_COVERAGE', '').strip()
+COVERAGE_FLAGS = (('-g', '--coverage', '-fprofile-update=atomic', '-dumpdir',
+                   COVERAGE_DIR.rstrip('/') + '/') if COVERAGE_DIR else ())
+
+
+def _flags(prelude):
+    """The flags a source compiles with: `CFLAGS`, a runtime unit's
+    (`prelude=False`) the coverage build's too."""
+    return tuple(CFLAGS) if prelude else tuple(CFLAGS) + COVERAGE_FLAGS
+
+
 def _compiler_env():
     """The environment a compiler runs in: this process's, without the
     sanitizer runtime preload (gcc is not built for it)."""
@@ -311,7 +330,7 @@ def source_key(csrc, prelude=True):
     compiler (`find_so`)."""
     from pycircuit.circuit import hdl
     h = hashlib.sha256()
-    for part in ('format=%d' % SO_FORMAT, ' '.join(CFLAGS),
+    for part in ('format=%d' % SO_FORMAT, ' '.join(_flags(prelude)),
                  hdl._KERNEL_C if prelude else '', csrc):
         h.update(part.encode('utf-8'))
         h.update(b'\0')
@@ -410,8 +429,8 @@ def _build(csrc, dest, prelude=True):
             if prelude:
                 fh.write(hdl._KERNEL_C)
             fh.write(csrc)
-        proc = subprocess.run([cc] + list(CFLAGS) + ['-o', sopath, cpath,
-                                                     '-lm'],
+        proc = subprocess.run([cc] + list(_flags(prelude)) + ['-o', sopath, cpath,
+                                                              '-lm'],
                               capture_output=True, text=True, env=_compiler_env())
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or '').strip()
