@@ -14669,3 +14669,33 @@ a served call's records -- `C` and `G` the last assembly's alone, on pattern pag
 all; the slot handed back, `one_slot` left 0.  Bitten: `one_slot` off (3 fail), no hand-back (1), the first solve left to the
 Python (3).  Pinned pairs re-recorded, the twins' tests passing: six on the C side, "the transform loop and its C" on both, its
 reference naming `_tran_radau_c.solve`.
+
+## 2026-11-07 — 286. A chord's fallback that meets the iteration limit ends the attempt in C: the Python repeated a failure it could only reproduce -- 10 s once on an active 4 000-stage chain, its 1 us Gear-2 solve 60 -> 49.5 s (1.214x), its peak 1 791 -> 1 559 MB; every result the same
+
+**Why**  Plan 261's L15: 'seed' as the default (287) missed its line on the quiet chain, 0.806x, on a hand-back only 'seed' met on
+these runs: a larger step at the input's edge, the C Newton out of iterations, the C loop handing the attempt back, the C Newton served
+from Python failing alike, and then `_newton` repeating it all on dense state before the rejection.  Three solves of one failure: 0.7 s on
+the quiet chain, 4.3 s on a mesh of 3 974 unknowns, 23 s on one of 8 105 with its peak 3.5 -> 5.5 GB; and 10 s on the active chain under plain
+Gear-2 (found in 282).  169 and 170 had ended exactly this for a full Newton, and left a chord's limit to the Python because the Python
+chord falls back to the full Newton.  268 then put that fallback in C, so the C's own full Newton had met the limit: `ChordNewton` from
+the same seed could only raise what it raises.
+
+**Built.**  newton.c: `limit_ok` (the caller takes the limit) and `fb_limit` (the fallback met it), at the struct's end; where set, the chord's
+numeric and counts stay as made, as the failed solve leaves them, not rolled back for a repeat.  `_tran_newton_c._unconverged` raises from the C's last
+iteration where the fallback met the limit, counting the chord's choice and the full Newton's refactors; `limit_taken` the one test that no
+damped retry or rescue is armed.  loop.c `limit_rejected` and `newton_reject`: the same in the loop, the early checks and refactors counted.  An armed retry,
+a chord's limit with no fallback, a fixed grid in the loop, a step's quarter under `minstep` and the shooting's walk (`limit_ok` 0) hand back as before.
+
+**Measured** (LINE set before measuring, in one form: results identical on the gate circuits, on the 27 gold decks under gear2, Radau and DC, and between the C paths
+and the Python's on those decks; active chain 4 000 Gear-2 1 us >= 1.15x, its peak not higher; every other gate circuit >= 0.99x, medians of 2 interleaved pairs against
+HEAD 6da77729): active chain 60.4 -> 49.8 s, 1.214x, peak 1 791 -> 1 559 MB, the Python's part 10.7 -> 0.66 s -- MET; digests the same on every circuit, gold 0 differing, the chain
+the same, **the C paths off against on: 54 runs, 0 differing** -- MET; chain Gear-2 0.997x, mesh 63 x 63 Gear-2 1.013x, mesh 45 x 45 Radau 0.996x, active chain Radau 0.996x -- MET.
+The chain's Radau 0.981x in the gate (0.976, 0.986), under: rerun on a settled box, 6 pairs, 1.004x, means 1.957 -> 1.947 s; the active chain's Radau likewise 0.998x -- MET
+on the rerun.  Neither run reaches the change.  Suite 6 418 passed, 10 skipped, 3 xfailed.
+
+**Tests.**  test_chord_fallback_c (+2): an active chain at `maxiter` 4, chord and full Newton both at the limit on the steps over the input's edge: the Python's run on the C Newton and on
+the C loop, bytes, statistics, the KLU's every count, the chord's and the early checks' counts; nothing handed back; an armed damped retry still hands back.  Bitten: the numeric rolled back, the
+refactors uncounted, the chord's choice uncounted, the early checks dropped, never `limit_ok`, an armed retry ignored (each 1 failed).
+
+**A correction to 281.**  It put a 0.953x reading down to another session's build.  Andreas: the other session has been idle for days.  What ran then was not verified; the five
+quiet pairs that replaced it (1.005x) stand.  The 1-minute load figures in 282-285's gates were this session's own suite and pool threads: not contention from elsewhere.

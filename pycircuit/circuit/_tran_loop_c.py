@@ -89,10 +89,10 @@ armed) on an adaptive step: the C rejects the attempt as `take` rejects
 the exception -- a quarter of the step, imposed where its step was held, a
 rejection counted, nothing of the attempt recorded as made
 (`loop_c:newton_rejects`, and the Python's `newton_c:maxiter`).  Below
-`minstep` (the rescue), on a fixed grid (its fallback's record), the
-chord's fallback's own limit (a chord that breaks or meets its limit falls
-back to the full Newton in the C: newton.h's THE CHORD'S FALLBACK) and every
-other status: a bail.
+`minstep` (the rescue), on a fixed grid (its fallback's record), a chord's
+limit with no fallback (a chord that breaks or meets its limit falls back to
+the full Newton in the C, newton.h's THE CHORD'S FALLBACK, whose limit is
+this one) and every other status: a bail.
 History: `doc/transient_history.md`.
 """
 import collections
@@ -863,12 +863,10 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     th = tr.par.early_abort
     s.early_th = float(th) if (adaptive and th and not tr.par.pcnr) else 0.0
     ## (the full Newton's iteration limit rejected in the loop, as `take`
-    ## rejects its exception -- where `_tran_newton_c` would raise it: no
-    ## chord, no damped retry or rescue armed; a fixed grid's failures, and
-    ## their warning's record, stay the Python's)
-    s.newton_reject = int(adaptive and not td['_newton_c'].s.chord
-                          and not getattr(tr, '_damped_last_resort', False)
-                          and not getattr(tr, '_continuation_rescue', False))
+    ## rejects its exception -- where `_tran_newton_c` would raise it; a fixed
+    ## grid's failures, and their warning's record, stay the Python's)
+    s.newton_reject = int(adaptive and O['newton_c'].limit_taken(tr))
+    td['_newton_c'].s.limit_ok = s.newton_reject
     td['_newton_c'].s.fb_on = int(bool(td['_newton_c'].s.chord) and O['newton_c'].FALLBACK)
     s.imposed = int(bool(loop.imposed))
     if adaptive:
@@ -1163,7 +1161,7 @@ def _count(s, run_, rec, adaptive, k):
     _PC['early:checks'] += s.early_checks
     _PC['early:aborts'] += s.early_aborts
     if rec.s.chord:
-        _PC['chord:chosen'] += a + s.early_aborts
+        _PC['chord:chosen'] += a + s.early_aborts + s.newton_rejects
     ## the seed (`_StagePredictor._predict_fast`), the sources
     ## (`_stamp_plan.source_direct`, its `u` calls, the source memo
     ## `_CompanionModel._source_at`), the charge memo (`_CompanionModel._q_at`:

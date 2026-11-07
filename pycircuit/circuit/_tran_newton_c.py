@@ -809,7 +809,7 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     s.early_lte = rec.ffi.NULL
     if status == _CODES['NEWTON_EARLY']:
         _early(tr, rec, early, chord)
-    if early is not None and status == _CODES['NEWTON_CONVERGED']:
+    if early is not None and (status == _CODES['NEWTON_CONVERGED'] or s.fb_limit):
         _PC['early:checks'] += s.early_checks
     if status != _CODES['NEWTON_CONVERGED']:
         return _unconverged(tr, td, rec, P, M, status, chord, trace, memo)
@@ -825,17 +825,28 @@ def lte_seed_for(td, M, chord):
     return M['lte_seed'] if chord and td.get('_lte_seed') else 0
 
 
+def limit_taken(tr):
+    """1 where the Newton's iteration limit ends the attempt: no damped retry or
+    rescue armed to go on from it, else 0."""
+    return int(not getattr(tr, '_continuation_rescue', False)
+               and not getattr(tr, '_damped_last_resort', False))
+
+
 def _unconverged(tr, td, rec, P, M, status, chord, trace, memo):
     """A solve the C did not converge.  THE ITERATION LIMIT IS SERVED: the
     full Newton's exception from the C's last iteration (`_maxiter`), where
     `_newton`'s repeat would raise it and nothing more -- the trace kept, as
-    the repeat leaves it (a chord's limit falls back to the full Newton in
-    the C, and its limit there, like an armed damped retry or rescue after
-    the plain failure, hands back).  Else the trace undone and the step
-    handed back, counted."""
-    if (status == _CODES['NEWTON_BAIL_MAXITER'] and not chord
-            and not getattr(tr, '_continuation_rescue', False)
-            and not getattr(tr, '_damped_last_resort', False)):
+    the repeat leaves it.  A chord that falls back to the full Newton in the C
+    raises what that raises (`fb_limit`: the chord's numeric and counts as the
+    failed solve leaves them); a chord's limit with no fallback, and an armed
+    damped retry or rescue after the plain failure, hand back.  Else the trace
+    undone and the step handed back, counted."""
+    if status == _CODES['NEWTON_BAIL_MAXITER'] and (not chord or rec.s.fb_limit) and limit_taken(tr):
+        if chord:
+            _PC['chord:chosen'] += 1
+        if rec.s.klu_sym != rec.ffi.NULL:
+            ## (the full Newton's solves: a refactor of the run's numeric each)
+            rec.klu.refactors += int(rec.s.maxiter)
         _maxiter(tr, td, rec, P)
     key, had, cvals = trace
     _undo_source(memo, (key,), (had,), dict(zip(M['u_keys'], cvals)))
@@ -1073,6 +1084,7 @@ def _load(tr, td, rec, P, rows, u, seed, chord):
     (the multistep memo is empty; no stateful limiter -- declined -- and no
     bypass: its other routes); the chord's fallback here (`fb_on`) where
     `_C_lookup` would serve it.  Returns the tolerances."""
+    rec.s.limit_ok = limit_taken(tr)
     s, buf = rec.s, rec.buf
     tol = tr._newton_tolerances() if P is None else P.tol
     if tol is not rec.tol:

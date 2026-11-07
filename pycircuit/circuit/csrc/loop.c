@@ -218,6 +218,15 @@ static void arm_early(loop_t *s, const loop_attempt_t *a, newton_t *nt)
     }
 }
 
+/* the Newton's iteration limit rejected here, not handed back: the glue
+   takes it (`newton_reject`), the step's quarter above minstep, and a chord's
+   where its full Newton fallback met the limit (`fb_limit`) */
+static int limit_rejected(const loop_t *s, const newton_t *nt, long st, double h)
+{
+    return st == NEWTON_BAIL_MAXITER && s->newton_reject && h * 0.25 >= s->minstep
+           && (!nt->chord || nt->fb_limit);
+}
+
 static long take(loop_t *s, loop_attempt_t *a)
 {
     newton_t *nt = (newton_t *) s->newton;
@@ -286,10 +295,9 @@ static long take(loop_t *s, loop_attempt_t *a)
     st = CALL(s->newton_fn, pcx_newton, nt);
     nt->ck_defer = 0;
     nt->early_lte = 0;
-    a->early_checks = (st == NEWTON_EARLY || st == NEWTON_CONVERGED) ? nt->early_checks : 0;
+    a->early_checks = (st == NEWTON_EARLY || st == NEWTON_CONVERGED || nt->fb_limit) ? nt->early_checks : 0;
     if (st == NEWTON_EARLY) return LOOP_JUDGE_EARLY;
-    if (st == NEWTON_BAIL_MAXITER && s->newton_reject && h * 0.25 >= s->minstep)
-        return LOOP_JUDGE_NEWTON;
+    if (limit_rejected(s, nt, st, h)) return LOOP_JUDGE_NEWTON;
     if (st != NEWTON_CONVERGED) return LOOP_BAIL_NEWTON;
     if (br) {
         br->C = nt->Cj;
@@ -460,9 +468,13 @@ static void early_reject(loop_t *s, const loop_attempt_t *a)
    the point's rejection counts and the law's record untouched */
 static void newton_reject(loop_t *s, const loop_attempt_t *a)
 {
+    const newton_t *nt = (const newton_t *) s->newton;
     if (s->hk >= 2) s->pred_fast++;
     s->rejected++;
     s->newton_rejects++;
+    s->early_checks += a->early_checks;
+    /* (the full Newton's solves: a refactor of the run's numeric each) */
+    if (nt->klu_sym) s->fb_refactors += nt->maxiter;
     ck_commit(s);
     s->imposed = a->clamped || s->imposed;
     s->landing = a->landing;

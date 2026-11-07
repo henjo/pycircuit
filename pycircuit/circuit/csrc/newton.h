@@ -187,7 +187,7 @@ typedef struct {
        zero pivot or a failed residual -- every later iteration a solve on
        it.  `ck.klu_num` is its `_chord` at a call's entry; every call
        leaves there the one the next starts from: a served solve
-       (NEWTON_CONVERGED, NEWTON_EARLY) the numeric it ended with (the
+       (NEWTON_CONVERGED, NEWTON_EARLY, or `fb_limit`) the numeric it ended with (the
        entry's freed where another replaced it), a hand-back the entry's
        and its counts as they were (pcx_klu.h's THE NUMERIC).  `ck` shares
        the pattern, analysis, common and entries above (`_klu_bind`).
@@ -269,6 +269,14 @@ typedef struct {
        pattern's values in its order, npat each, and every core call asks for
        them (PCX_WANT_SETS) -- the same values at the same entries */
     long sets;            /* CTX: 1 packed, 0 n x n */
+    /* THE FALLBACK'S ITERATION LIMIT: `ChordNewton` falls back from the same
+       seed and raises what its full Newton raises, so a repeat of the attempt
+       could only reproduce this.  Where the caller takes the limit itself
+       (`limit_ok`), the chord's numeric and counts stay as made, as the failed
+       solve leaves them; else, as any hand-back, as they were */
+    long limit_ok;        /* CALL: 1 the caller rejects or raises at the limit, else 0 */
+    long fb_limit;        /* OWN: 1 where the fallback stopped at its limit and
+                             `limit_ok`, else 0 */
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and

@@ -618,11 +618,14 @@ long pcx_newton(newton_t *s)
     k->klu_out = k->klu_num;
     s->fallbacks = s->fb_iters = 0;
     status = iterate(s, &num, 0, &c0);
+    s->fb_limit = 0;
     if (s->chord && s->fb_on && (status == NEWTON_BAIL_CHORDBREAK || status == NEWTON_BAIL_MAXITER)
-        && (!s->early_lte || s->iters >= 2))
+        && (!s->early_lte || s->iters >= 2)) {
         status = fallback(s, c0);
+        s->fb_limit = status == NEWTON_BAIL_MAXITER && s->limit_ok;
+    }
     if (s->chord && s->klu_sym) {
-        const int back = status != NEWTON_CONVERGED && status != NEWTON_EARLY;
+        const int back = status != NEWTON_CONVERGED && status != NEWTON_EARLY && !s->fb_limit;
         if (back || !s->ck_defer) pcx_klu_finish(k, back);
         k->klu_num = k->klu_out;
         if (back) {
