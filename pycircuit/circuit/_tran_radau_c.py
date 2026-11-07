@@ -35,6 +35,12 @@ reduced entry; the convergence test (`_stages_converged`: the step within
 ``reltol`` of the largest reduced stage plus ``abstol``) after the
 assembly at the new stages, as the Python assembles before it tests.
 
+AT SIZE (`_tran_core.paged`: from 1 024 unknowns).  The first solve analyses
+the stage KLU here rather than in the Python's Newton; the C writes every
+assembly's C and G to one slot (`one_slot`); the memo takes the last
+assembly's, on pattern pages (`_put_paged`), `q` and `i` of them all.  Below
+it the memo is as the Python Newton leaves it.
+
 ON A STAGE KLU.  A shooting walk's transient solves the block on the walk's
 StructuralKLU (`tr._stage_klu`, `_InnerTransient._new_transient`), the
 Python Newton by its `solve`: a refactor on the numeric it holds, a fresh
@@ -88,7 +94,7 @@ from itertools import repeat
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths
+from pycircuit.circuit import _cbuild, _paths, _tran_core
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -341,7 +347,11 @@ def _klu_ready(rec, sk):
     if sk.m != M:
         return 'klu_size'
     if not sk._symbolic:
-        return 'klu_unanalysed'
+        ## (a large circuit's first solve analyses here: the Python's would
+        ## hold the block and every stage's C and G dense)
+        if not _tran_core.paged(rec.core):
+            return 'klu_unanalysed'
+        sk._analysed()
     sym = ffi.cast('void *', sk._symbolic)
     if rec.klu is sk and s.klu.klu_sym == sym:
         return None
@@ -489,6 +499,27 @@ def _ready(tr, ctx, seed, provided_function, lims, nobypass, reltol, step_memo=T
     return rec, Tc, sk, Y0, drv, M
 
 
+def _put_paged(rec, put, o, A):
+    """A large circuit's served call's records (`_tran_core.paged`): `q` and
+    `i` of every assembly, `C` and `G` of the last alone -- the C kept them
+    in one slot (`one_slot`) -- on pattern pages, the slot's pages and the
+    core's G bin handed back.  A dense record of each is what ran an 11 GB
+    limit out on a 4 000-unknown mesh: 6 n^2 doubles an assembly, then their
+    copies.  What reads the memo reads the converged stages: an iterate's
+    `C` and `G`, read at no later state, are not kept."""
+    n, core = rec.n, rec.core
+    pat = core.arrays['pat']
+    Ya, qa, ia, Ca, Ga = o['Ya'], o['qa'], o['ia'], o['Ca'], o['Ga']
+    for a in range(A - 1):
+        for j in range(3):
+            put(Ya[a, j], {'q': qa[a, j].copy(), 'i': ia[a, j].copy()})
+    for j in range(3):
+        put(Ya[A - 1, j], {'q': qa[A - 1, j].copy(), 'i': ia[A - 1, j].copy(),
+                           'C': _tran_core.on_pattern(Ca[0, j], pat, n),
+                           'G': _tran_core.on_pattern(Ga[0, j], pat, n)})
+    _tran_core.give_back(Ca[0], Ga[0], core.arrays['binG'])
+
+
 def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol, maxit):
     """`_stage_newton(seed)` (undamped, no shunt) in C: the three converged
     stages as fresh full-width arrays, the device memo and the source memo
@@ -544,10 +575,13 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     s.T = Tc
     s.h, s.reltol, s.abstol, s.maxiter = float(h), float(reltol), float(abstol), int(maxit)
     pre, rec.pre = rec.pre, None
+    paged = _tran_core.paged(rec.core)
     if pre is not None and _held_for(pre, rec, sk, buf, Amat, Tc, h, reltol, abstol, maxit):
         status = _take_held(rec, pre, out[0])
     else:
+        s.one_slot = paged
         status = cfn(s)
+        s.one_slot = 0
     if status != _CODES['RADAU_CONVERGED']:
         NC._undo_source(memo, keys, had, dict(zip(u_keys, cvals)))
         if status == _CODES['RADAU_BAIL_WALKSTOP']:
@@ -559,7 +593,9 @@ def solve(tr, ctx, seed, src, provided_function, lims, nobypass, reltol, abstol,
     o = out[0]
     Ya, qa, ia, Ca, Ga = o['Ya'], o['qa'], o['ia'], o['Ca'], o['Ga']
     put = tr._memo_put
-    if viewed:
+    if paged:
+        _put_paged(rec, put, o, A)
+    elif viewed:
         ## (the slots themselves: `_out`'s set, which no call writes to
         ## again while a record holds one)
         for a in range(A):

@@ -92,6 +92,10 @@ typedef struct {
        RADAU_CONVERGED, then the assemblies made), iters (the iterations
        completed), status (a radau_status, also pcx_radau's result) */
     long assemblies, iters, status;
+    /* per call: 1, every assembly's Ca and Ga in slot 0, so the last's there
+       on RADAU_CONVERGED and the earlier ones' not kept (a large circuit's:
+       each is 6 n^2 doubles); 0, each in its own slot */
+    long one_slot;
 } radau_t;
 long pcx_radau(radau_t *s);
 

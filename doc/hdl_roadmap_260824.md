@@ -14629,3 +14629,43 @@ circuit (`_pulsed` at maxiter 2-4, reltol 3e-4 to 1e-1) did not reproduce it, so
 
 **What the gates still cannot see.**  A C twin parting from its Python on a deck: the fixtures' twin tests do not meet every
 sequence.  Comparing the 27 decks' C and Python paths (the census's digests, ~4 minutes) caught this one; not yet in the gates.
+
+## 2026-11-07 — 285. Radau's coupled Newton at size held to one set: from 1 024 unknowns the first fallback stays in C, every assembly's C and G in one slot, the memo the last assembly's on pattern pages: the mesh's 63 x 63 Radau 1 us runs in 54 s at 1.7 GB (HEAD killed at 11 GB; at a 20 GB cap 68 s, 12.8 GB, the same digest), 90 x 90 100 ns in 30 s at 4.9 GB (HEAD killed); 45 x 45 1 us 1.121x, its peak 3 667 -> 742 MB; every result the same
+
+**Why**  Plan 261's L14, the second wall of 282.  When the transform's simplified Newton stalls, the step falls back to the coupled
+3n Newton.  At size its first call was the Python's (the stage KLU unanalysed: `Jbig` dense, every stage's C and G dense) and the
+rest the C's, whose sets are 2 MAXA 3 n^2 doubles: 6 n^2 written an assembly, eight assemblies, then the memo's copies.  That is
+13 GB at 3 974 unknowns.
+
+**The census decided how.**  The mesh's 18 fallback steps were all rejected after, so a stall could have been a rejection (time
+and memory both gone, the answers moved).  On the 27 gold decks: **191 fallback steps, 103 kept, 88 rejected, none failed**
+(latch 19 of 19 kept, rich3 11 of 14, voter25 52 of 96; gm19 12 of 16 rejected): a stall is not a rejection.  REFUSED; compact
+records instead, the answers the same.  Would reopen: larger real circuits whose fallbacks are all rejected -- at 8 105 unknowns
+a fallback still costs 12.7 s, 41 % of the 1 us run, and all of that mesh's are rejected.
+
+**Built** (at size only, `_tran_core.paged`; below it nothing changes).  radau.c `one_slot`: every assembly's C and G in slot 0,
+set for `_tran_radau_c.solve`'s call alone (the stage loop and the stage walk read slot A - 1).  `_put_paged`: `q` and `i` of every
+assembly, `C` and `G` of the last, on pattern pages (`on_pattern`), the slot and the core's G bin handed back (`give_back`).
+What reads the memo reads the converged stages and checks for `C` and `G`, so an iterate's are not kept.  `_klu_ready`: the first
+solve analyses the stage KLU (`_analysed`) and stays in C, where it was `klu_unanalysed` and the Python's dense Newton.  A C bail
+(`radau_c:bail:*`) still takes the Python's dense Newton: at 8 105 unknowns that would be ~18 GB.  None occurred on these runs.
+
+**Measured** (LINE set before building, in one form: mesh 63 x 63 Radau 1 us reaches its end under the 11 GB cap, peak at most 6 GB;
+mesh 90 x 90 Radau 100 ns reaches its end under the cap; mesh 45 x 45 Radau 1 us peak at most 2.5 GB, digest the same, >= 0.99x,
+2 interleaved pairs against HEAD c14f30ad; mesh 63 x 63 100 ns digest the same; the 27 gold decks not moving): 63 x 63 1 us 54.64 s,
+peak 1 686 MB (HEAD at a 20 GB cap 73.91 s, 12 843 MB, the same digest 3649a5950403) -- MET; 90 x 90 100 ns 29.79 s, 4 887 MB
+-- MET; 45 x 45 1 us 3 670 -> 744 MB, 1.119x (19.67 -> 17.57 s), the same digest -- MET; 63 x 63 100 ns 13.03 -> 7.27 s (1.793x),
+4 645 -> 1 508 MB, the same digest -- MET; 27 gold decks under gear2, Radau and DC 0 differing, the chain the same -- MET.  Beyond
+the line, runs HEAD cannot make at the cap: 90 x 90 1 us 251.2 s, 5 335 MB; 63 x 63 10 us 553.2 s, 2 488 MB, 28 912 steps, the
+99 fallbacks 196 s of it (35 %).  The gates' other circuits, whose runs never reach the change: chain 1.001x, mesh 63 x 63 Gear-2
+1.007x, active chain Gear-2 1.009x.  The active chain's Radau 1 us: with `one_slot` in the middle of `radau_t` 0.972x (0.971, 0.972,
+1.003, on a settled box; 0.987x in the gate) -- with it at the struct's end, every other field's offset unmoved, 0.994, 1.010,
+1.015, 0.988, 0.984 (a sixth pair, 0.967, compiled the C inside its solve), median 0.994x, means 41.82 -> 41.90 s, against a
+run-to-run spread of +-1.5 %.  So at the end: a layout effect, its mechanism not traced.
+Suite 6 416 passed, 10 skipped, 3 xfailed.
+
+**Tests.**  test_radau_pattern_pages (+3): a fallback at size the dense run's bytes and statistics, in C from the first fallback;
+a served call's records -- `C` and `G` the last assembly's alone, on pattern pages, a pass's values at its stages; `q` and `i` of
+all; the slot handed back, `one_slot` left 0.  Bitten: `one_slot` off (3 fail), no hand-back (1), the first solve left to the
+Python (3).  Pinned pairs re-recorded, the twins' tests passing: six on the C side, "the transform loop and its C" on both, its
+reference naming `_tran_radau_c.solve`.

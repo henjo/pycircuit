@@ -50,7 +50,7 @@ static long rc_bail(radau_t *s, long why)
    the blocks in `_coupled_stage_system`'s operations over the full width
    (each result stored, so each operation precedes the flag test).
    Assumes: slot a exists (a < maxa) and Ya[a] holds three stages; u, qn, A,
-   h set.  Writes slot a's qa, ia, Ca, Ga, and K, F, R, and the blocks: Jf
+   h set.  Writes slot a's qa, ia, Ca, Ga (`one_slot`: Ca, Ga in slot 0), and K, F, R, and the blocks: Jf
    (unfactored) and blk, or with the KLU bound the pattern's entries alone
    in klu.kAx -- the same operations on each, and the block zero off it.
    Returns 0; RADAU_BAIL_NONFINITE where a stage is not finite (checked
@@ -62,7 +62,8 @@ static long assemble(radau_t *s, long a)
     long i, j, k, rr, cc, ri, ci;
     core_fn_t core = (core_fn_t) s->core_fn;
     double *Y = s->Ya + a * 3 * n, *q = s->qa + a * 3 * n, *iv = s->ia + a * 3 * n;
-    double *C = s->Ca + a * 3 * nn, *G = s->Ga + a * 3 * nn;
+    const long slot = s->one_slot ? 0 : a;
+    double *C = s->Ca + slot * 3 * nn, *G = s->Ga + slot * 3 * nn;
     double h = s->h;
     for (j = 0; j < 3; j++) {
         /* (a non-finite stage: `passes` declines and the Python evaluates) */

@@ -8,14 +8,24 @@ pages, resident where written), where under huge pages a matrix written on
 its pattern alone was resident whole; and the operating point's PCNR
 scratch kept on the circuit is handed back after a transient's op
 (`_pcnr_c.release`).  Each is the same bytes: the run is the dense run, bit
-for bit."""
+for bit.  So too the coupled Newton in C at size (plan 261's L14c,
+`_tran_radau_c._put_paged`): the fallback analyses the stage KLU and stays in
+C, writes every assembly's C and G to one slot, and the memo takes the last
+assembly's alone, on pattern pages."""
 import mmap
 import warnings
 
 import numpy as np
 import pytest
 
-from pycircuit.circuit import _paths, _pcnr_c, _tran_core, circuit
+from pycircuit.circuit import (
+    _paths,
+    _pcnr_c,
+    _tran_core,
+    _tran_radau_c,
+    _tran_tcloop_c,
+    circuit,
+)
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit.elements import VS, C, R, SubCircuit, VPulse, gnd
 from pycircuit.circuit.integrator import Gear2Integrator, RadauIIA3Integrator
@@ -161,6 +171,67 @@ def test_a_run_on_pattern_pages_is_the_dense_run(monkeypatch, integ, kw):
         recs = [v for g in b[4].__dict__['_dev_memo'] for r in g.values() for k, v in r.items()
                 if k in 'CG']
         assert recs and all(_paged(v) for v in recs)
+
+
+def _fallback_run(monkeypatch, pages, maxiter, reltol, tend=4e-8):
+    """The chain with the Newton's iterations held so the transform stalls,
+    the C transform loop off: each stall the coupled Newton.  `(its bytes and
+    statistics, its paths, the transient)`."""
+    monkeypatch.setattr(_tran_tcloop_c, 'ENABLED', False)
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1 if pages else 1 << 62)
+    before = _paths.snapshot()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(_chain(300), toolkit=circuit.numeric, integrator=RadauIIA3Integrator(),
+                       reltol=reltol)
+        tr.par.maxiter = maxiter
+        res = tr.solve(tend=tend, timestep=1e-9)
+    st = tr.statistics
+    return ((_b(res.x), _b(res.sweep_values), st.accepted_steps, st.rejected_steps),
+            _paths.since(before), tr)
+
+
+@pytest.mark.parametrize('maxiter, reltol', [(2, 3e-2), (3, 1e-3)])
+def test_a_fallback_at_size_is_the_dense_run(monkeypatch, maxiter, reltol):
+    """The coupled Newton at size, one slot and the last assembly's records:
+    the run's bytes and statistics the dense run's, in C from the first
+    fallback where the dense run's first is the Python's (`klu_unanalysed`)."""
+    a, ca, _ta = _fallback_run(monkeypatch, False, maxiter, reltol)
+    b, cb, _tb = _fallback_run(monkeypatch, True, maxiter, reltol)
+    assert a == b
+    assert cb.get('radau_c:served', 0) >= 1, cb
+    assert ca.get('radau_c:klu_unanalysed') == 1 and not cb.get('radau_c:klu_unanalysed'), (ca, cb)
+    assert cb['radau_c:served'] >= ca.get('radau_c:served', 0)
+
+
+def test_a_fallback_at_size_keeps_the_last_assembly_s_matrices(monkeypatch):
+    """Of a served call's records at size the last assembly's alone hold `C`
+    and `G`, on pattern pages, the values a pass at its stages gives; every
+    assembly's hold `q` and `i`; the slot and the core's G bin handed back,
+    the C told one slot for that call alone."""
+    calls = []
+    real = _tran_radau_c._put_paged
+
+    def spy(rec, put, o, A):
+        assert A >= 2
+        puts = []
+        real(rec, lambda y, r: (puts.append((y.copy(), r)), put(y, r)), o, A)
+        calls.append((A, puts))
+        assert rec.s.one_slot == 0
+        ## (the slot handed back: the middle stage's whole pages read zero)
+        assert not np.count_nonzero(o['Ca'][0, 1]) and not np.count_nonzero(o['Ga'][0, 1])
+    monkeypatch.setattr(_tran_radau_c, '_put_paged', spy)
+    _, paths, tr = _fallback_run(monkeypatch, True, 3, 1e-3)
+    assert calls, paths
+    for A, puts in calls:
+        assert len(puts) == 3 * A
+        for y, r in puts[:3 * (A - 1)]:
+            assert set(r) == {'q', 'i'}
+        for y, r in puts[3 * (A - 1):]:
+            assert set(r) == {'q', 'i', 'C', 'G'} and _paged(r['C']) and _paged(r['G'])
+            assert _tran_core.pattern_of(r['C']) is not None
+            P = _tran_core.passes(tr, y, 'CG')
+            assert _b(r['C']) == _b(P['C']) and _b(r['G']) == _b(P['G'])
 
 
 def test_the_passes_on_pattern_pages_are_the_dense_passes(monkeypatch):
