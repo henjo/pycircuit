@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 
 from pycircuit.circuit import _cbuild
@@ -21,6 +22,30 @@ GOOD = {'x': 'a', 'err': None, 'steps': 10, 'rej': 1, 'newton': 20, 'fb': 0, 'kl
 
 def _row(group, deck, path, **over):
     return {'group': group, 'deck': deck, 'path': path, 'row': dict(GOOD, **over)}
+
+
+def test_held_memory_is_compared_where_both_sides_measured_it():
+    """KLU's held bytes (`klumem`): a leak differs; a side that could not measure them (a tree without the reader, no KLU) is not a difference."""
+    assert V.differing(dict(GOOD, kmem=100), dict(GOOD, kmem=140)) == {'kmem': (100, 140)}
+    assert V.differing(dict(GOOD, kmem=100), dict(GOOD, kmem=None)) == {}
+    assert V.differing(dict(GOOD, zmem=None), dict(GOOD, zmem=8)) == {}
+
+
+def test_klu_s_own_memory_count_is_read_and_confirmed():
+    """`klumem` reads `klu_common.memusage` at the offset the compiler gives on the installed header, trusted after KLU's own behaviour confirms it: a factor
+    holds memory, its objects freed hold none."""
+    from pycircuit._testing import klumem
+    if klumem._offset() is None:
+        pytest.skip('KLU, its header or a compiler absent')
+    from pycircuit.circuit.linearsolver import KLUSolver
+    sk = KLUSolver()
+    assert klumem.memusage(sk) == 0
+    sk.solve(np.array([[2.0, 1.0], [1.0, 3.0]]), np.ones(2), None)
+    assert klumem.memusage(sk) > 0
+    sk._free_numeric()
+    sk._free_symbolic()
+    assert klumem.memusage(sk) == 0
+    assert klumem.memusage(object()) is None
 
 
 def test_differing_names_what_differs_and_nothing_else():

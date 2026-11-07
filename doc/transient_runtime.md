@@ -47,6 +47,9 @@ From the outside in. "Called from" is where the Python reaches the glue.
 | Invalidation | -- (a dict watcher) | `csrc/watch.c` | `_watch` | `PYCIRCUIT_WATCH` | -- | every readiness check |
 | Build and load | -- | -- | `_cbuild` | `PYCIRCUIT_C_SANITIZE`, `PYCIRCUIT_C_COVERAGE`, `PYCIRCUIT_HDL_CC`, `PYCIRCUIT_HDL_CACHE` (the store; `PYCIRCUIT_HDL_CACHE_DIR` its place) | -- | every glue module |
 
+For the tests and the gate alone: `klumem` (`pycircuit/_testing/klumem.py`) builds one line of C on the installed KLU header, the offset of `klu_common.memusage`,
+and reads the bytes KLU's objects hold, the C's and the Python's alike: a numeric made and never freed shows there and nowhere else.
+
 Outside the multistep loop, the same rules: the Radau stage solve (`csrc/radau.c`, `_tran_radau_c`,
 `PYCIRCUIT_RADAU_C`, `radau_c:`; `PYCIRCUIT_RADAU_OUT_MB` the MiB its output sets may take, 128 -- the size up to
 which the C stepping loops bind too; on a StructuralKLU of the stage block -- a shooting walk's, or a plain run's from

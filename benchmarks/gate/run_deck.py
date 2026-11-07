@@ -35,6 +35,21 @@ def _swing(x, t):
     return int((s > 0.1).sum())
 
 
+def _held(ls):
+    """The bytes KLU's objects hold at the run's end (`klumem`): the run's linear solver's and, under Radau, the complex factor's.  None where
+    unmeasured (a tree without the reader, no KLU); a leak changes this and nothing else."""
+    try:
+        from pycircuit._testing import klumem
+    except ImportError:
+        return {'kmem': None, 'zmem': None}
+    tr = _held.tr
+    zs = tr.__dict__.get('_radau_zsolver') if tr is not None else None
+    return {'kmem': klumem.memusage(ls), 'zmem': klumem.memusage(zs) if zs is not None else None}
+
+
+_held.tr = None
+
+
 def _dc(imp, rec):
     from pycircuit.circuit.dcanalysis import DC
     tr, _kw = imp.transient()
@@ -51,13 +66,16 @@ def _tran(imp, deck, method, setting, rec):
     if method == 'radau':
         tr.par.integrator = I.RadauIIA3Integrator()
     settings.force_run(setting, tr)
+    _held.tr = tr
     try:
         res = tr.solve(**kw)
         rec.update(x=_sha(res.x, res.sweep_values), swing=_swing(res.x, res.sweep_values))
     except Exception as e:  # noqa: BLE001 -- a run's failure is a result both paths must share
         rec.update(x='raised', err=type(e).__name__ + ': ' + str(e)[:100])
-    st = tr.statistics
-    rec.update(steps=st.accepted_steps, rej=st.rejected_steps, newton=st.newton_iterations, fb=getattr(st, 'chord_fallbacks', 0))
+    ## (none where the run raised before its stepping began)
+    st = tr.__dict__.get('statistics')
+    if st is not None:
+        rec.update(steps=st.accepted_steps, rej=st.rejected_steps, newton=st.newton_iterations, fb=getattr(st, 'chord_fallbacks', 0))
     return tr._get_linearsolver()
 
 
@@ -72,7 +90,7 @@ def main():
     ls = _dc(imp, rec) if method == 'dc' else _tran(imp, deck, method, setting, rec)
     rec['s'] = round(time.perf_counter() - t0, 3)
     ch = getattr(ls, '_choice', ls)
-    rec.update(solver=type(ch).__name__, klu={k: getattr(ch, k, None) for k in KLU}, counts=_paths.since(b))
+    rec.update(solver=type(ch).__name__, klu={k: getattr(ch, k, None) for k in KLU}, counts=_paths.since(b), **_held(ls))
     print(json.dumps(rec))
 
 

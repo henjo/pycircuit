@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import sympy
 
+from pycircuit._testing import klumem
 from pycircuit.circuit import _paths, _pcnr_c, circuit, gnd, pcnr
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit.dcanalysis import DC
@@ -215,7 +216,9 @@ def _klu(on, monkeypatch, build, x0, first=None):
     pattern, the DC held, since the solver reaches its pattern through it
     weakly -- after a solve from `first` where one is given (KLU's numeric
     then held: the next solve refactors).  `(outcome, the C's counts,
-    StructuralKLU's counters and whether it holds a numeric)`."""
+    StructuralKLU's counters, whether it holds a numeric and the bytes KLU's
+    objects hold: a numeric the C replaced and did not free shows there
+    alone)`."""
     from pycircuit.circuit.dcanalysis import DC
     c = build()
     dc = DC(c, toolkit=circuit.numeric, pcnr=True)
@@ -226,7 +229,7 @@ def _klu(on, monkeypatch, build, x0, first=None):
     sk = ls._choice
     assert type(sk).__name__ == 'StructuralKLU'
     return got, counts, (sk.refactors, sk.factors, sk.pivot_fallbacks, sk.residual_fallbacks,
-                         sk._numeric is None)
+                         sk._numeric is None, klumem.memusage(sk))
 
 
 def _poisoned(build, node, value, rest=0.5):
@@ -294,7 +297,7 @@ def test_the_klu_solve_in_c_is_the_pythons():
                 raise
             sk = dc._default_linearsolver._choice
             log.append((type(sk).__name__, sk.refactors, sk.factors, sk.pivot_fallbacks,
-                        sk.residual_fallbacks, sk._numeric is None, sk.analyses))
+                        sk.residual_fallbacks, sk._numeric is None, sk.analyses, klumem.memusage(sk)))
             return x, v, its
         pcnr.solve_dc = spy
         try:

@@ -13,7 +13,7 @@ import warnings
 import numpy as np
 import pytest
 
-from pycircuit._testing import benchdata
+from pycircuit._testing import benchdata, klumem
 from pycircuit.circuit import (
     _paths,
     _tran_loop_c,
@@ -140,9 +140,10 @@ def _limited(monkeypatch, path, maxiter=4, armed=False, plant=None, mos=(), **pa
     run = (np.asarray(res.x, float).tobytes(), np.asarray(res.sweep_values, float).tobytes(),
            st.accepted_steps, st.rejected_steps, st.newton_iterations, st.chord_fallbacks,
            st.early_aborts)
+    ## (and the bytes KLU's objects hold: a numeric made and never freed shows there alone)
     klu = (type(ch).__name__, ch.refactors, ch.factors, ch.pivot_fallbacks, ch.residual_fallbacks,
            ch.chord_refactors, ch.chord_factors, ch.chord_pivot_fallbacks,
-           ch.chord_residual_fallbacks)
+           ch.chord_residual_fallbacks, klumem.memusage(ch))
     return run, klu, _paths.since(before)
 
 
@@ -226,3 +227,30 @@ def test_an_attempt_the_loop_hands_back_frees_its_first_numeric(monkeypatch):
     run, klu, c = _seeded(monkeypatch, 'C loop', 'converges', plant=failing)
     assert run == want and klu == wklu and wklu[2] == 1
     assert c['loop_c:bail:lte'] > 0, c
+
+
+def _stop_after_each_rejection(run_):
+    """The predictor's call right after each Newton rejection the C loop makes said failed (neither PRED_DONE nor PRED_NONE): the loop stops there, before the
+    next attempt's Newton, and the Python makes that attempt -- the one sequence where the rejected attempt's chord state is still open when the loop ends."""
+    s, ffi = run_.s, run_.ffi
+    real = ffi.cast('long(*)(void *)', s.pred_fn)
+    seen = [0]
+
+    def pred(p):
+        if s.newton_rejects != seen[0]:
+            seen[0] = s.newton_rejects
+            return 99
+        return real(p)
+    cb = ffi.callback('long(void *)', pred)
+    run_.keep.append(cb)
+    s.pred_fn = ffi.cast('void *', cb)
+
+
+def test_a_rejection_s_chord_state_stands_when_the_loop_stops_at_once(monkeypatch):
+    """A Newton rejection in the C loop (its iteration limit, 169's) committed at once: the chord's numeric and counts as the rejected attempt left them,
+    even where the loop stops right after it (a predictor's stop, planted) and its end rolls an open attempt back -- the run, the KLU's every count and the
+    bytes it holds the Python's (roadmap 291: the commit dropped, a mutation sample saw nothing)."""
+    want, wklu, _c = _limited(monkeypatch, 'python')
+    got, gklu, c = _limited(monkeypatch, 'C loop', plant=_stop_after_each_rejection)
+    assert got == want and gklu == wklu
+    assert c['loop_c:newton_rejects'] > 0 and c['loop_c:bail:pred'] > 0, c

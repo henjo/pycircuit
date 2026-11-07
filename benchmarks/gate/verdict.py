@@ -10,7 +10,9 @@ import collections
 import re
 
 #: what a C path and its Python must agree on, and two trees on the same path
-KEYS = ('x', 'err', 'steps', 'rej', 'newton', 'fb', 'klu')
+KEYS = ('x', 'err', 'steps', 'rej', 'newton', 'fb', 'klu', 'kmem', 'zmem')
+#: compared where both sides measured them (a tree without the reader leaves None)
+OPTIONAL = ('kmem', 'zmem')
 #: an arm or line's class: taken on a real deck by default, only under a forcing, only at size, only by the suite's tests, by nothing
 CLASSES = ('decks', 'forced', 'size', 'fixture', 'none')
 COMPARED = ('decks', 'forced', 'size')
@@ -22,7 +24,8 @@ def differing(a, b, keys=KEYS):
     """The keys on which rows `a` and `b` differ, `{key: (a's, b's)}`.  A failed row differs from everything, another failed row too."""
     if a is None or b is None or a.get('failed') or b.get('failed'):
         return {'failed': (bool(a is None or a.get('failed')), bool(b is None or b.get('failed')))}
-    return {k: (a.get(k), b.get(k)) for k in keys if a.get(k) != b.get(k)}
+    return {k: (a.get(k), b.get(k)) for k in keys
+            if a.get(k) != b.get(k) and not (k in OPTIONAL and (a.get(k) is None or b.get(k) is None))}
 
 
 def compare(rows, left='c', right='py', keys=KEYS):
