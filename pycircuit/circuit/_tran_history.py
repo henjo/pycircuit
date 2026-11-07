@@ -7,6 +7,56 @@ import numpy as np
 
 from pycircuit.circuit._limiting import limit_sync, stateful_limiters
 
+#: A run's results of this many bytes or more are gathered row by row
+#: (`results_matrix`); below it what numpy's own gathering holds twice is small.
+GATHER_MIN_BYTES = 1 << 26
+#: What the gathering gives back to the system at a time.
+GATHER_TRIM_BYTES = 1 << 26
+
+
+def _malloc_trim():
+    """The C library's `malloc_trim`, or None on one without it."""
+    import ctypes
+    try:
+        return ctypes.CDLL(None).malloc_trim
+    except (OSError, AttributeError):
+        return None
+
+
+def results_matrix(X):
+    """`np.array(X)` for a run's accepted states, a row each: its bytes, and
+    where the results are large holding them once.  `X` is empty after a
+    gathering, and left as it is otherwise.
+
+    numpy's copy holds the matrix and every row at its end: a 4 005-unknown
+    Gear-2 run of 10 us (240 000 steps, 7.7 GB) was killed at an 11 GB limit
+    with all its steps made.  So a large run's rows are copied one at a time,
+    each released as it is copied.  Releasing is not enough: rows this size
+    come from the C heap, which keeps what is freed, so the heap is trimmed as
+    the matrix grows (1.8 GB of results: 1 710 MB over the rows' peak with the
+    rows released, none with the heap trimmed; 0.13 s more).  Rows that are not
+    equal-length float64 arrays are numpy's to gather, or to refuse."""
+    r0 = X[0] if X else None
+    if type(r0) is not np.ndarray or r0.ndim != 1 or len(X) * r0.nbytes < GATHER_MIN_BYTES:
+        return np.array(X)
+    shape = r0.shape
+    if not all(type(r) is np.ndarray and r.dtype == np.float64 and r.shape == shape for r in X):
+        return np.array(X)
+    M = np.empty((len(X), r0.size))
+    trim = _malloc_trim()
+    every = max(GATHER_TRIM_BYTES // max(r0.nbytes, 1), 1)
+    del r0
+    for i, r in enumerate(X):
+        M[i] = r
+        X[i] = None
+        if trim is not None and not (i + 1) % every:
+            trim(0)
+    X.clear()
+    if trim is not None:
+        trim(0)
+    return M
+
+
 ## The clamp the step controller applies to every accepted step, the force-accept
 ## path in `solve()` included: one bound, named once.  `stepcontroller` imports
 ## nothing from this package, so this is import-safe at module level.

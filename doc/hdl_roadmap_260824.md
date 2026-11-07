@@ -14520,3 +14520,81 @@ never woken (a deadlock: the call on eight never returns), the live structs not 
 the transient evaluation and the core, the step's end passes, the limiting loop and the walk, the transform loop); the
 27 gold decks under gear2, Radau and DC against HEAD 21d9ff74: every digest, count and path count the same; the chain's
 digests the same.
+
+## 2026-11-07 — 282. Sized past the chain: the large-circuit gates' chain is nearly static -- 4 of its 4 005 unknowns swing over 100 mV -- so the runs that matter were not being timed; an active chain takes 31-43x the steps at about the same time a step, 10 us of it 416 s under Radau; on a 2-D mesh KLU's refactor is 60-69 % of the C loop, and a parallel refactor and a better ordering are refused on their ceilings
+
+**Why**  Andreas, "push then run the 10us and mesh sizing".  Every stage of plan 261 had been sized on one circuit, the
+pulsed MOS chain, at most 1 us long.  No source changed; the tools and results are in the plan's L13.
+
+**The chain.**  `MosLevel1Hdl`'s SPICE defaults (vto 0, kp 2e-5) with a 20 k load make a stage gain below one: the pulse
+dies within a few stages.  With `vto=0.5, kp=2e-4` (the active chain) every unknown swings.  The mesh: R x C inverters,
+each driven by the node above, each node tied to its four neighbours by 300 k.
+
+**Measured** (sizing, not gate conditions: 1-minute load 1-8, +-10 %):
+
+| circuit, unknowns | method, length | solve | C calls | steps | C ms a step | peak |
+|---|---|---|---|---|---|---|
+| chain, 4 005 | Radau, 10 us | 10.4 s | 9.4 s | 2 013 | 4.7 | 1.0 GB |
+| chain, 4 005 | Gear-2, 10 us | 12.2 s | 11.2 s | 5 416 | 2.06 | 1.0 GB |
+| active chain, 4 005 | Radau, 10 us | 416 s | 409 s | 74 652 | 5.5 | 5.4 GB |
+| active chain, 4 005 | Gear-2, 10 us | killed at an 11 GB cap at ~478 s | | ~241 700 | ~1.9 | |
+| mesh 63 x 63, 3 974 | Gear-2, 10 us | 493 s | 490 s | 64 247 | 7.6 | 4.7 GB |
+| mesh 63 x 63, 3 974 | Radau, 1 us | killed after ~21 s | | | | |
+| mesh 90 x 90, 8 105 | Gear-2, 1 us | 211 s | 208 s | 8 892 | 23.3 | 3.5 GB |
+| mesh 90 x 90, 8 105 | Radau, 100 ns | killed | | | | |
+
+Long runs are linear in their length, the C loop 90-99 % of the solve.  Activity costs steps and not time a step (the
+global step: ~20 edges in flight set h for all the unknowns); the C loop's profile on the active chain has the chain's
+shape.  Multirate or latency would be what breaks that: not sized.  `bypass` 1.10x on the active chain, 1.05x on the
+mesh (300 ns, one run each).
+
+**REFUSED on their ceilings.**  On the mesh `klu_refactor` is 60 % of the C loop's main thread at 3 974 unknowns and 69 %
+at 8 105 (Gear-2).  From KLU's own L and U at the run's matrix: the kernel 0.6-0.7 ns a flop, nothing to tune.  A
+column-level parallel refactor: a critical path of 63-74 % of the flops, a ceiling of 1.36x (63 x 63) and 1.59x (90 x 90)
+at ANY thread count before overhead, at most ~1.3x overall.  Nested dissection from the mesh's geometry: 1.3x MORE flops
+than AMD at these sizes, its refactor 0.78-0.90x; its parallel ceiling 2.1-2.2x is, net of the flops, under AMD's.  Would
+reopen: a circuit with far more fill, much larger meshes.  (A 126 x 126 mesh's count printed nothing: not diagnosed.)
+
+**What does help the mesh.**  Fewer refactors: Gear-2 makes about two an attempt, one the error test's.  `lte_jacobian=
+'seed'`, built and opt-in (257): mesh 63 x 63 1 us 45.01 / 45.73 -> 34.79 / 35.86 s (1.29x, two interleaved pairs), 90 x 90
+211 -> 157 s (1.35x, against the first batch's run), active chain 60.5 -> 51.5 s (1.17x), the waveforms moved by up to
+7.0 mV and 8.4 mV.  The default left as it is; Andreas's call.
+
+**A hand-back seen in passing.**  Once a run on the active chain, step 14: `newton_c:bail:maxiter`, then the Python Newton
+repeats it, ~0.3 s an iteration, dense: 10 s at 4 005 unknowns -- 36 % of 300 ns, 2 % of 10 us.  It made chord off look
+1.44x faster at 300 ns; per step chord on is 1.11x faster.
+
+**From here the gates run these too** (Andreas: "Do 1 to 3"): the chain at 4 000 / 1 us, the active chain at 4 000 / 1 us
+under both methods, the mesh at 63 x 63 / 1 us under Gear-2 and 45 x 45 / 1 us under Radau.
+
+## 2026-11-07 — 283. A run's results held once, accepted as measured: an active Gear-2 10 us run of 7.4 GB of results, killed at an 11 GB cap with all its steps made, ends at 8.4 GB in 467 s; every result the same; its Radau twin's peak 5.38 -> 3.48 GB against a line of 3.3 GB (Andreas: accepted)
+
+**Why**  Plan 261's L14, the first wall of 282.  `Transient._finish_result` made the matrix with `toolkit.array(X)` over
+the run's list of one array a step, so the end of a run held every row and the matrix: peak = what stepping holds + twice
+the results.
+
+**Sized.**  Rows made as the C loop's write-back makes them, 1.8 GB: numpy's array 1 710 MB over the rows' peak; each row
+released as it is copied, 1 709 MB (rows this size come from the C heap, which keeps what is freed); with `malloc_trim` as
+the matrix grows, 0 MB, 0.13 s more.  So the blocks the plan's L13 proposed were not needed: the live stepping code, whose
+rows `is` tests and `_tran_history` writes to, is untouched.
+
+**Built.**  `_tran_history.results_matrix(X)`: under `GATHER_MIN_BYTES` (64 MiB) or for rows that are not equal-length
+float64 arrays, numpy's array and the list as it was; otherwise the rows copied one at a time, each released, the heap
+trimmed every `GATHER_TRIM_BYTES` (64 MiB) -- without a `malloc_trim` in the C library, gathered untrimmed.
+`_finish_result` calls it for the numeric toolkit; another toolkit makes its own `array`.  The list is spent: nothing
+reads it after.
+
+**Measured** (LINE set before building, in one form: the active Gear-2 10 us run finishes under the 11 GB cap; the active
+Radau 10 us peak at most 3.3 GB; digests the same; not slower, >= 0.99x, medians of 2 interleaved pairs against HEAD
+8f29497f on the gates' circuits): Gear-2 10 us 466.8 s, 242 519 steps, peak 8 398 MB (HEAD killed) -- MET; digests the
+same on all five circuits and Radau's 10 us -- MET; chain 0.994x, mesh 45 x 45 Radau 0.997x, mesh 63 x 63 Gear-2 1.000x
+(peak 1 204 -> 1 075 MB), active chain Radau 1.001x, Gear-2 1.004x (peak 2 349 -> 1 791 MB) -- MET; **Radau 10 us peak
+3 476 MB, MISSED by about 5 %** against 5 377 MB at HEAD.  The line's arithmetic was wrong: it took 0.8 GB for what stepping
+holds, read from HEAD's peak; the run holds ~1.19 GB while stepping (1 389 MB at 1 us with 205 MB of results), so its peak
+is now stepping's own, reached before the gathering starts.  Andreas accepted it as measured.  Suite 6 412 passed, 10
+skipped, 3 xfailed; 27 gold decks under gear2, Radau and DC and the chain the same as HEAD.
+
+**Tests.**  test_results_matrix (new, 13): small results numpy's and the list as it was; large ones the same bytes (a NaN's
+payload, signed zeros, subnormals, infinities), type and layout, the list spent, the heap trimmed; no `malloc_trim`;
+other rows numpy's, unequal ones refused as numpy refuses; a fresh process's peak over the rows' under half the results
+(without the trim the same test reads 0.998); a whole run's bytes gathered or not; another toolkit's `array`.

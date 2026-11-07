@@ -1554,6 +1554,8 @@ it raises TypeError instead of being silently discarded.
 
 ### `_finish_result`
 
+2026-11-07: the matrix made by `_tran_history.results_matrix`, a large run's rows held once (roadmap 283).
+
 2026-09-27 (moved from the code):
 
 The docstring, before the move:

@@ -40,7 +40,8 @@ from pycircuit.circuit.linearsolver import (
 )
 from pycircuit.circuit import _paths, _tran_companion, _tran_core, _tran_loop_c, _tran_newton_c
 from pycircuit.circuit._tran_companion import _CompanionModel
-from pycircuit.circuit._tran_history import _RunHistory
+from pycircuit.circuit._tran_history import _RunHistory, results_matrix
+from pycircuit.circuit.toolkit import numeric as _numeric_toolkit
 from pycircuit.circuit._tran_predictor import _StagePredictor
 from pycircuit.circuit._tran_initial import _InitialState
 from pycircuit.circuit._tran_fang import _CoupledLTE
@@ -2052,8 +2053,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         analysis (Stage 6(c), F13), so a caller who kept only the waveform
         can still ask what produced it.
 
+        `X` is the run's list, spent here where its rows are gathered
+        (`results_matrix`): nothing reads it after.
+
         History: `doc/transient_history.md`, `Transient._finish_result`."""
-        X = self.toolkit.array(X).T
+        X = (results_matrix(X) if self.toolkit is _numeric_toolkit else self.toolkit.array(X)).T
         timelist = self.toolkit.array([0.0] + timelist)
         self.statistics.total_seconds = time.perf_counter() - t_start
         self.result = CircuitResult(self.cir, x=X, xdot=None,
