@@ -109,17 +109,20 @@ class OutputGrid:
     inside it, its search finding the same interval and its clamp the run's
     at the run's two ends.  The grid's times are numpy's `arange` from 0 by
     the step, which a longer `arange` starts with (checked at `finish`).
+
+    `rows`: the run's rows to make (`save`'s), None for all; a row's values
+    are its own, whichever others are made.
     """
 
-    def __init__(self, X, T, step, tend):
+    def __init__(self, X, T, step, tend, rows=None):
         step = float(step)
         tend = np.float64(tend)
-        self.X, self.T, self.step = X, T, step
+        self.X, self.T, self.step, self.rows = X, T, step, rows
         ## the grid past `tend`, so a run ending a rounding beyond it is
         ## inside; the grid of a run that ends at `tend`, its size
         self.grid = np.arange(np.float64(0.0), tend + step / 2.0 + 3.0 * step, step)
         self.size = len(_uniform_grid(np.float64(0.0), tend, step))
-        self.n, self.row = X[0].size, X[0].nbytes
+        self.n, self.row = X[0].size if rows is None else len(rows), X[0].nbytes
         self.first = 0
         self.made = 0
         self.out = None
@@ -136,6 +139,12 @@ class OutputGrid:
         T, first = self.T, self.first
         return np.array([0.0] + T[:last] if first == 0 else T[first - 1:last])
 
+    def _points(self, first, last):
+        """Points `first..last` as `resample_uniform` takes them, a row an
+        unknown (`rows`' alone)."""
+        M = np.array(self.X[first:last + 1])
+        return (M if self.rows is None else M[:, self.rows]).T
+
     def _block(self, last):
         """The grid points at or before `t[last]` made from points
         `first..last`, all but the last two of them dropped."""
@@ -145,8 +154,7 @@ class OutputGrid:
         if stop > self.made:
             if self.out is None:
                 self.out = np.empty((self.n, self.size))
-            _g, y = resample_uniform(t, np.array(X[first:last + 1]).T,
-                                     grid=self.grid[self.made:stop])
+            _g, y = resample_uniform(t, self._points(first, last), grid=self.grid[self.made:stop])
             self.out[:, self.made:stop] = y
             self.made = stop
         for k in range(first, last - 1):
@@ -159,7 +167,7 @@ class OutputGrid:
         X, T = self.X, self.T
         if len(X) < 3:
             ## (its refusal, as the whole run's)
-            return resample_uniform(np.array([0.0] + T), np.array(X).T, step=self.step)
+            return resample_uniform(np.array([0.0] + T), self._points(0, len(X) - 1), step=self.step)
         grid = _uniform_grid(np.float64(0.0), np.float64(T[-1]), self.step)
         if len(grid) > len(self.grid) or not np.array_equal(grid, self.grid[:len(grid)]):
             raise RuntimeError('outputstep: the grid made during the run is not the run\'s')
@@ -167,7 +175,7 @@ class OutputGrid:
             raise RuntimeError('outputstep: the grid made during the run passed its end')
         last = len(X) - 1
         t = self._times(last)
-        _g, y = resample_uniform(t, np.array(X[self.first:]).T, grid=grid[self.made:])
+        _g, y = resample_uniform(t, self._points(self.first, last), grid=grid[self.made:])
         if self.out is None:
             return grid, y
         out = self.out
@@ -179,3 +187,42 @@ class OutputGrid:
             X[k] = None
         self.out = None
         return grid, out
+
+
+#: `SavedRows` keeps its rows in blocks of this many points.
+SAVE_CHUNK = 4096
+
+
+class SavedRows:
+    """`save`'s rows of every accepted point, at the solver's own times,
+    without the whole run held: a point's rows kept once it is finished
+    (`FINISHED_AFTER`, as `OutputGrid`), the point dropped from `X` (its
+    entry None).  The values are the point's own, bit for bit."""
+
+    def __init__(self, X, T, rows):
+        self.X, self.T, self.rows = X, T, rows
+        self.kept = 0
+        self.chunks = []
+
+    def advance(self):
+        """After a point is appended to `X` and `T`: the finished points'
+        rows kept."""
+        last = len(self.X) - 1 - FINISHED_AFTER
+        while self.kept <= last:
+            self._keep(self.kept)
+
+    def _keep(self, k):
+        j = k % SAVE_CHUNK
+        if j == 0:
+            self.chunks.append(np.empty((SAVE_CHUNK, len(self.rows))))
+        np.take(self.X[k], self.rows, out=self.chunks[-1][j])
+        self.X[k] = None
+        self.kept = k + 1
+
+    def finish(self):
+        """`(times, values)`, the values a row a saved unknown."""
+        for k in range(self.kept, len(self.X)):
+            self._keep(k)
+        x = np.concatenate(self.chunks)[:self.kept]
+        self.chunks = []
+        return np.array([0.0] + self.T), x.T

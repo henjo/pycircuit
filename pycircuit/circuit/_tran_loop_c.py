@@ -1060,14 +1060,14 @@ def _full_counts(rec, s):
 
 def _append_points(loop, Xo, To, k, n):
     """The C's `k` accepted points, `Xo`'s rows and `To`'s times, appended
-    to the run's `X` and times, the run's output grid (`OutputGrid`) told
-    of each as the Python's accept tells it."""
-    X, tl, grid = loop.X, loop.timelist, loop.grid
+    to the run's `X` and times, the run's store (`OutputGrid`,
+    `SavedRows`) told of each as the Python's accept tells it."""
+    X, tl, store = loop.X, loop.timelist, loop.store
     for i in range(k):
         X.append(Xo[i * n:(i + 1) * n].copy())
         tl.append(float(To[i]))
-        if grid is not None:
-            grid.advance()
+        if store is not None:
+            store.advance()
 
 
 def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):

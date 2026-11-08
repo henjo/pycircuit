@@ -42,7 +42,8 @@ from pycircuit.circuit.linearsolver import (
 from pycircuit.circuit import _paths, _tran_companion, _tran_core, _tran_loop_c, _tran_newton_c
 from pycircuit.circuit._tran_companion import _CompanionModel
 from pycircuit.circuit._tran_history import _RunHistory, results_matrix
-from pycircuit.circuit._tran_grid import OutputGrid, resample_uniform
+from pycircuit.circuit._tran_grid import OutputGrid, SavedRows, resample_uniform
+from pycircuit.circuit._tran_result import TransientResult, resolve_save
 from pycircuit.circuit.toolkit import numeric as _numeric_toolkit
 from pycircuit.circuit._tran_predictor import _StagePredictor
 from pycircuit.circuit._tran_initial import _InitialState
@@ -779,9 +780,9 @@ class _SteppingLoop:
     def __init__(self, tr, family, run, X, tend, timestep, provided_function):
         self.tr, self.family, self.run = tr, family, run
         self.X, self.timelist = X, []
-        ## `outputstep`'s grid made as the run goes (`OutputGrid`), told of
-        ## each accepted point; None: the run keeps its points
-        self.grid = None
+        ## what the run keeps of each accepted point as it goes, told of
+        ## each (`OutputGrid`, `SavedRows`); None: the run keeps them all
+        self.store = None
         self.tend, self.timestep = tend, timestep
         self.fixed = run.fixed
         self.provided_function = provided_function
@@ -1111,8 +1112,8 @@ class _SteppingLoop:
         t = self.t = self.t + h
         self.X.append(copy(self.x_new))
         self.timelist.append(t)
-        if self.grid is not None:
-            self.grid.advance()
+        if self.store is not None:
+            self.store.advance()
         tr.statistics.accepted_steps += 1
         tr.statistics._note_step(h)
         if on_break:
@@ -1606,6 +1607,15 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         'so a long run holds the grid, not every step',
                    unit='s',
                    default=None),
+         ## What a run keeps (`_tran_result`): every unknown by default.
+         Parameter(name='save',
+                   desc="The signals a run keeps, at the solver's own timestamps (on "
+                        "outputstep's grid if one is asked for): a node's name for its "
+                        "voltage, i(term) for a current with the name res.i() takes "
+                        "(i(vin.plus), i(R1.plus)). A device holding charge is refused: "
+                        "the run does not keep its capacitive current. None keeps every "
+                        'unknown',
+                   unit='', default=None),
          ## The commercial-simulator-class VOLTAGE CHECK: on a purely resistive/
          ## algebraic network (a designer exploring an amplifier topology
          ## with Rs and controlled sources, no reactances yet) NO error
@@ -1989,7 +1999,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             return self._solve(refnode, tend, x0, timestep, provided_function,
                                fixed_timestep, coupled_lte)
 
-    def _finish_result(self, X, timelist, t_start, grid=None):
+    def _finish_result(self, X, timelist, t_start, store=None, saved=None):
         """The run's `CircuitResult`.
 
         ⚠ The t=0 point IS part of the result -- SPICE convention, and what
@@ -2001,10 +2011,12 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         STAGE 10.2 -- on a uniform grid if one was asked for, interpolated
         from the solver's own points, deliberately: the adaptive grid is
         what the error control is defined on, so the solver keeps choosing
-        its own steps and only the REPORTED points change.  `grid`, the
-        `OutputGrid` that made it as the run went, finishes it (the run
-        held the grid, not its points); without one the points are
-        resampled here, as `resample_uniform` does, bit for bit the same.
+        its own steps and only the REPORTED points change.  `store`, what
+        the run kept as it went (`OutputGrid`'s grid, `SavedRows`' rows of
+        `save`), finishes it; without one the points are resampled and
+        their saved rows taken here, bit for bit the same.  A
+        `TransientResult`: its `i()` makes a device's current at each
+        point's time (`_tran_result`).
         The statistics are reachable from the result, not only from the
         analysis (Stage 6(c), F13), so a caller who kept only the waveform
         can still ask what produced it.
@@ -2013,22 +2025,19 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         (`results_matrix`): nothing reads it after.
 
         History: `doc/transient_history.md`, `Transient._finish_result`."""
-        if grid is not None:
-            timelist, X = grid.finish()
+        rows = None if saved is None else saved.rows
+        if store is not None:
+            timelist, X = store.finish()
         else:
             X = (results_matrix(X) if self.toolkit is _numeric_toolkit else self.toolkit.array(X)).T
             timelist = self.toolkit.array([0.0] + timelist)
+            if self.par.outputstep is not None:
+                timelist, X = resample_uniform(timelist, X, step=self.par.outputstep)
+            if rows is not None:
+                X = X[rows]
         self.statistics.total_seconds = time.perf_counter() - t_start
-        self.result = CircuitResult(self.cir, x=X, xdot=None,
-                                    sweep_values=timelist,
-                                    sweep_label='time', sweep_unit='s')
-        outputstep = self.par.outputstep
-        if outputstep is not None and grid is None:
-            _grid, _Xg = resample_uniform(self.result.sweep_values,
-                                          self.result.x, step=outputstep)
-            self.result = CircuitResult(self.cir, x=_Xg, xdot=None,
-                                        sweep_values=_grid,
-                                        sweep_label='time', sweep_unit='s')
+        self.result = TransientResult(self.cir, x=X, sweep_values=timelist, rows=rows,
+                                      saved=None if saved is None else saved.names, epar=self.epar)
         self.result.statistics = self.statistics
         return self.result
 
@@ -2107,6 +2116,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         self._reset_pcnr_counts()
         if coupled_lte:
             self._refuse_coupled_on_stage()
+        saved = self._resolve_save(refnode)
         X = self._open_run(refnode, x0, provided_function, coupled_lte)
 
         ## Stage 6(c).  Created per run, so a second `solve()` reports its own
@@ -2153,7 +2163,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         family = self._step_family(run, coupled_lte)
         loop = _SteppingLoop(self, family, run, X, tend, timestep,
                              provided_function)
-        loop.grid = self._output_grid(X, loop.timelist, run.tend)
+        loop.store = self._output_store(X, loop.timelist, run.tend, saved)
         core = self._bypass_arm(family)
         try:
             loop.execute()
@@ -2162,17 +2172,31 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 self.statistics.bypassed_evaluations = core.bypassed()
                 core.bypass(None)
         self._warn_run_summary(loop.fixed_fallbacks, loop.forced, timestep)
-        return self._finish_result(X, loop.timelist, _t_run_start, loop.grid)
+        return self._finish_result(X, loop.timelist, _t_run_start, loop.store, saved)
 
-    def _output_grid(self, X, timelist, tend):
-        """`outputstep`'s grid made as the run goes (`OutputGrid`), for a
-        run of the numeric toolkit's float rows; None otherwise, the run
-        keeping its points (`_finish_result` resamples them at its end)."""
+    def _resolve_save(self, refnode):
+        """`save`'s names against the circuit the result reports on
+        (`resolve_save`), before the run spends anything; None: keep every
+        unknown."""
+        if self.par.save is None:
+            return None
+        cir = getattr(self.cir, '_flat_of', None) or self.cir
+        return resolve_save(cir, self.par.save, cir.get_node_index(refnode))
+
+    def _output_store(self, X, timelist, tend, saved):
+        """What the run keeps as it goes, for a run of the numeric
+        toolkit's float rows: `outputstep`'s grid (`OutputGrid`, of `save`'s
+        rows if given), else `save`'s rows (`SavedRows`); None otherwise,
+        the run keeping its points (`_finish_result` makes the result from
+        them at its end)."""
         step, x0 = self.par.outputstep, X[0]
-        if (step is None or self.toolkit is not _numeric_toolkit or type(x0) is not np.ndarray
+        if (self.toolkit is not _numeric_toolkit or type(x0) is not np.ndarray
                 or x0.ndim != 1 or x0.dtype != np.float64):
             return None
-        return OutputGrid(X, timelist, step, tend)
+        rows = None if saved is None else saved.rows
+        if step is not None:
+            return OutputGrid(X, timelist, step, tend, rows)
+        return None if rows is None else SavedRows(X, timelist, rows)
 
     def _bypass_arm(self, family):
         """`bypass`: the device bypass armed on the circuit's evaluation core
