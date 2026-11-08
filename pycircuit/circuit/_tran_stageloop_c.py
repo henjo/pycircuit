@@ -719,11 +719,8 @@ def _write_back(loop, e, run_, stage=None, count=None):
     the transform's, `_tran_tcloop_c`; else `_stage_back`, `_count`)."""
     s, buf, tr, n = run_.s, run_.buf, e.tr, e.n
     k = int(s.k)
-    Xo, To = buf['X'], buf['T']
-    X, tl = loop.X, loop.timelist
-    for i in range(k):
-        X.append(Xo[i * n:(i + 1) * n].copy())
-        tl.append(float(To[i]))
+    X = loop.X
+    _LC._append_points(loop, buf['X'], buf['T'], k, n)
     _LC._stats_back(tr.statistics, s, k)
     hist_len = e.st[0].shape[0]
     if k:

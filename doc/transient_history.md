@@ -116,6 +116,8 @@ every one.
 
 ### `resample_uniform`
 
+2026-11-08: moved to `_tran_grid`, beside `OutputGrid`, which calls it a block of the run at a time (roadmap 293); `transient` re-exports it.  The step grid's two lines are `_tran_grid._uniform_grid`, shared with `OutputGrid`.
+
 2026-09-27 (moved from the code):
 
 The docstring below its summary line, before the move:
@@ -1553,6 +1555,8 @@ which carries the measured record for both branches.  Deleted, so passing
 it raises TypeError instead of being silently discarded.
 
 ### `_finish_result`
+
+2026-11-08: with `outputstep` the grid comes from `_tran_grid.OutputGrid`, made as the run goes, the run holding the grid and its last few points (roadmap 293).  Until then it was resampled here, after the run, from every point the run held: the same bytes.
 
 2026-11-07: the matrix made by `_tran_history.results_matrix`, a large run's rows held once (roadmap 283).
 

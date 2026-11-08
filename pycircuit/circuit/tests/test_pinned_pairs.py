@@ -92,6 +92,7 @@ PAIRS = {
         'twin': ['pycircuit.circuit._tran_loop_c:LOOP_C',
                  'pycircuit.circuit._tran_loop_c:run',
                  'pycircuit.circuit._tran_loop_c:_write_back',
+                 'pycircuit.circuit._tran_loop_c:_append_points',
                  'pycircuit.circuit._tran_loop_c:_stats_back',
                  'pycircuit.circuit._tran_loop_c:_count',
                  'pycircuit.circuit._tran_loop_c:_why_not_the_run',
@@ -1042,6 +1043,7 @@ PAIRS = {
                  'pycircuit.circuit._tran_stageloop_c:_call',
                  'pycircuit.circuit._tran_stageloop_c:_settle',
                  'pycircuit.circuit._tran_stageloop_c:_write_back',
+                 'pycircuit.circuit._tran_loop_c:_append_points',
                  'pycircuit.circuit._tran_stageloop_c:_stage_back',
                  'pycircuit.circuit._tran_stageloop_c:_memo_back',
                  'pycircuit.circuit._tran_stageloop_c:_rebuild',
@@ -1171,7 +1173,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('5aab31914b08', 'bf3c7b5edafd'),
+    'the stepping loop and its C': ('bc47f10c30db', '5e903b0422a7'),
     'the predictor and its C': ('9e611c84de5a', '9b16bd4e0f30'),
     'the branch screen and its C': ('73a09a49db2e', '41c5e5959ad1'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -1190,7 +1192,7 @@ RECORD = {
     'the DC base solve and its C': ('37b14c0a34a7', '40bc9afea878'),
     'the PCNR DC solve and its C': ('e8cf73fe6e9a', '5938f7bf2288'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
-    'the stepping loop and its unread Jacobian': ('452d7ce7ee62', 'ea3a614c7089'),
+    'the stepping loop and its unread Jacobian': ('982474112326', '11ad397dc1e3'),
     "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),
     "the stage paths' passes and the core's": ('aea1c7cea5ca', '255377c134fe'),
     'the coupled stage Newton and its C': ('c96c88b2391d', 'e043060ead64'),
@@ -1211,7 +1213,7 @@ RECORD = {
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
     'the readiness reads and their stamps': ('a3c7e910bad9', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('1e070b418fbe', 'a453331df05c'),
+    'the stage loop and its C': ('f4a4d5135189', '526b327219a7'),
     'the transform loop and its C': ('a75e06f5b04a', '6fd06c227ac7'),
 }
 

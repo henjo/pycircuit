@@ -42,6 +42,7 @@ from pycircuit.circuit.linearsolver import (
 from pycircuit.circuit import _paths, _tran_companion, _tran_core, _tran_loop_c, _tran_newton_c
 from pycircuit.circuit._tran_companion import _CompanionModel
 from pycircuit.circuit._tran_history import _RunHistory, results_matrix
+from pycircuit.circuit._tran_grid import OutputGrid, resample_uniform
 from pycircuit.circuit.toolkit import numeric as _numeric_toolkit
 from pycircuit.circuit._tran_predictor import _StagePredictor
 from pycircuit.circuit._tran_initial import _InitialState
@@ -57,71 +58,6 @@ from pycircuit.circuit._tran_events import _StepEvents
 ## `shooting.pss` and the API (`blas_single_thread_available`).
 from pycircuit.circuit._blas import _single_threaded_blas
 from pycircuit.circuit._blas import blas_single_thread_available  # noqa: F401 (the API's name)
-
-
-def resample_uniform(t, x, npoints=None, step=None, grid=None):
-    """Interpolate a transient result onto a UNIFORM time grid.
-
-    A transient returns the solver's own adaptive points, so their spacing is
-    whatever the step controller chose.  Anything that needs a uniform grid,
-    above all an FFT, resamples with this rather than with `np.interp`, which
-    is LINEAR and throws away an order of accuracy before the transform.
-
-    QUADRATIC, to match the integrator.  Three-point Lagrange through the
-    interval's neighbours, the same reasoning `TLine._interpolate_history` gives
-    for its own history lookup: a first-order interpolant feeding a second-order
-    method injects error the method never made (measured 14-41x below linear
-    where the grid resolves the signal, 1.3x where it barely does).  Where the
-    adaptive grid is barely resolving the signal, no interpolant recovers what
-    was not sampled, and the right fix there is a smaller `max_step`, not a
-    cleverer resample.
-
-    Give exactly one of ``npoints``, ``step`` or ``grid``.
-
-    ``grid`` takes an explicit set of output times, for a caller whose window
-    this function cannot otherwise express -- an FFT that needs a TRAILING
-    window with ``endpoint=False``, because dropping the duplicated period
-    boundary is what keeps the tones exactly on bins.  Neither ``npoints``
-    (which spans ``t[0]..t[-1]`` inclusive) nor ``step`` (which starts at
-    ``t[0]``) can say that.
-
-    History: `doc/transient_history.md`, `resample_uniform`.
-    """
-    numpy = np
-
-    t = numpy.asarray(t, dtype=float)
-    x = numpy.asarray(x)
-    given = sum(spec is not None for spec in (npoints, step, grid))
-    if given != 1:
-        raise ValueError('give exactly one of npoints, step or grid')
-    if t.size < 3:
-        raise ValueError('need at least 3 points to interpolate quadratically, '
-                         'got %d' % t.size)
-
-    if grid is not None:
-        grid = numpy.asarray(grid, dtype=float)
-    elif npoints is not None:
-        grid = numpy.linspace(t[0], t[-1], int(npoints))
-    else:
-        ## `t[-1] + step/2` so a grid that divides the interval exactly still
-        ## includes the endpoint, without inventing a point beyond it.
-        grid = numpy.arange(t[0], t[-1] + float(step) / 2.0, float(step))
-        grid = grid[grid <= t[-1] * (1 + 1e-12)]
-
-    ## The interval containing each output point, clamped so the three-point
-    ## stencil stays inside the data at both ends.
-    idx = numpy.clip(numpy.searchsorted(t, grid) - 1, 1, t.size - 2)
-    t0, t1, t2 = t[idx - 1], t[idx], t[idx + 1]
-    L0 = (grid - t1) * (grid - t2) / ((t0 - t1) * (t0 - t2))
-    L1 = (grid - t0) * (grid - t2) / ((t1 - t0) * (t1 - t2))
-    L2 = (grid - t0) * (grid - t1) / ((t2 - t0) * (t2 - t1))
-
-    if x.ndim == 1:
-        out = x[idx - 1] * L0 + x[idx] * L1 + x[idx + 1] * L2
-    else:
-        ## Rows are unknowns, columns are time -- the shape a CircuitResult holds.
-        out = (x[:, idx - 1] * L0 + x[:, idx] * L1 + x[:, idx + 1] * L2)
-    return grid, out
 
 
 class TransientStatistics(object):
@@ -843,6 +779,9 @@ class _SteppingLoop:
     def __init__(self, tr, family, run, X, tend, timestep, provided_function):
         self.tr, self.family, self.run = tr, family, run
         self.X, self.timelist = X, []
+        ## `outputstep`'s grid made as the run goes (`OutputGrid`), told of
+        ## each accepted point; None: the run keeps its points
+        self.grid = None
         self.tend, self.timestep = tend, timestep
         self.fixed = run.fixed
         self.provided_function = provided_function
@@ -1172,6 +1111,8 @@ class _SteppingLoop:
         t = self.t = self.t + h
         self.X.append(copy(self.x_new))
         self.timelist.append(t)
+        if self.grid is not None:
+            self.grid.advance()
         tr.statistics.accepted_steps += 1
         tr.statistics._note_step(h)
         if on_break:
@@ -1661,7 +1602,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                    desc='Spacing of a UNIFORM output grid; None returns the '
                         "solver's own adaptive points. Results are interpolated "
                         'quadratically, to match the integrator -- see '
-                        'resample_uniform',
+                        'resample_uniform.  The grid is made as the run goes, '
+                        'so a long run holds the grid, not every step',
                    unit='s',
                    default=None),
          ## The commercial-simulator-class VOLTAGE CHECK: on a purely resistive/
@@ -2047,7 +1989,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             return self._solve(refnode, tend, x0, timestep, provided_function,
                                fixed_timestep, coupled_lte)
 
-    def _finish_result(self, X, timelist, t_start):
+    def _finish_result(self, X, timelist, t_start, grid=None):
         """The run's `CircuitResult`.
 
         ⚠ The t=0 point IS part of the result -- SPICE convention, and what
@@ -2056,11 +1998,14 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         index-aligned backend comparison off by one and leaves
         resample_uniform unable to reproduce the initial value (F12(a)).
 
-        STAGE 10.2 -- resampled onto a uniform grid if one was asked for,
-        after the run rather than inside it, deliberately: the adaptive grid
-        is what the error control is defined on, so the solver keeps
-        choosing its own steps and only the REPORTED points change.  The
-        statistics are reachable from the result, not only from the
+        STAGE 10.2 -- on a uniform grid if one was asked for, interpolated
+        from the solver's own points, deliberately: the adaptive grid is
+        what the error control is defined on, so the solver keeps choosing
+        its own steps and only the REPORTED points change.  `grid`, the
+        `OutputGrid` that made it as the run went, finishes it (the run
+        held the grid, not its points); without one the points are
+        resampled here, as `resample_uniform` does, bit for bit the same.
+        The statistics are reachable from the result, not only from the
         analysis (Stage 6(c), F13), so a caller who kept only the waveform
         can still ask what produced it.
 
@@ -2068,14 +2013,17 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         (`results_matrix`): nothing reads it after.
 
         History: `doc/transient_history.md`, `Transient._finish_result`."""
-        X = (results_matrix(X) if self.toolkit is _numeric_toolkit else self.toolkit.array(X)).T
-        timelist = self.toolkit.array([0.0] + timelist)
+        if grid is not None:
+            timelist, X = grid.finish()
+        else:
+            X = (results_matrix(X) if self.toolkit is _numeric_toolkit else self.toolkit.array(X)).T
+            timelist = self.toolkit.array([0.0] + timelist)
         self.statistics.total_seconds = time.perf_counter() - t_start
         self.result = CircuitResult(self.cir, x=X, xdot=None,
                                     sweep_values=timelist,
                                     sweep_label='time', sweep_unit='s')
         outputstep = self.par.outputstep
-        if outputstep is not None:
+        if outputstep is not None and grid is None:
             _grid, _Xg = resample_uniform(self.result.sweep_values,
                                           self.result.x, step=outputstep)
             self.result = CircuitResult(self.cir, x=_Xg, xdot=None,
@@ -2205,6 +2153,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         family = self._step_family(run, coupled_lte)
         loop = _SteppingLoop(self, family, run, X, tend, timestep,
                              provided_function)
+        loop.grid = self._output_grid(X, loop.timelist, run.tend)
         core = self._bypass_arm(family)
         try:
             loop.execute()
@@ -2213,7 +2162,17 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 self.statistics.bypassed_evaluations = core.bypassed()
                 core.bypass(None)
         self._warn_run_summary(loop.fixed_fallbacks, loop.forced, timestep)
-        return self._finish_result(X, loop.timelist, _t_run_start)
+        return self._finish_result(X, loop.timelist, _t_run_start, loop.grid)
+
+    def _output_grid(self, X, timelist, tend):
+        """`outputstep`'s grid made as the run goes (`OutputGrid`), for a
+        run of the numeric toolkit's float rows; None otherwise, the run
+        keeping its points (`_finish_result` resamples them at its end)."""
+        step, x0 = self.par.outputstep, X[0]
+        if (step is None or self.toolkit is not _numeric_toolkit or type(x0) is not np.ndarray
+                or x0.ndim != 1 or x0.dtype != np.float64):
+            return None
+        return OutputGrid(X, timelist, step, tend)
 
     def _bypass_arm(self, family):
         """`bypass`: the device bypass armed on the circuit's evaluation core
