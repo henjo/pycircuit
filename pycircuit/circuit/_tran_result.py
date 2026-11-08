@@ -132,11 +132,24 @@ class DeviceCurrents:
     device's capacitive current there is not one the run made, so its
     current there is its static part and KCL does not close at that point.
 
+    A stage step (Radau IIA, `w` its `A`'s inverse's last row) hands its
+    step and its stages 1 and 2 (`('stage', h, Y1, Y2, on_rows)`: on
+    `srows`, the saved devices' rows, where `on_rows`, else whole): the
+    derivative is the step's collocation derivative at its end on the
+    device's own stage charges, `sum_j w_j (Q_j - q_n) / h` (stage 3 the
+    point itself).  Summed over a node's devices it is the step's
+    collocation derivative of the node's charge, which the run's own end
+    derivative (the equation's `-(i + u)`) equals only as well as the stage
+    solve converged, divided by the step: on the gold decks up to about 2 %
+    of the node's current at fast edges with the cost transform, a few
+    tenths of a percent with the dense Newton.  The run says so
+    (`transient._RADAU_CURRENTS`).
+
     `extra[k]` is point k's values, in `charged`' order (a store takes them
     beside the point's rows and drops them)."""
 
-    def __init__(self, charged, epar, x0):
-        self.epar, self.devs, self.slots = epar, [], []
+    def __init__(self, charged, epar, x0, w=None):
+        self.epar, self.devs, self.slots, self.w = epar, [], [], w
         at = {}
         for j, (_term, c, local, sub) in enumerate(charged):
             if id(c) not in at:
@@ -145,6 +158,10 @@ class DeviceCurrents:
                 self.devs.append({'c': c, 'sub': np.asarray(sub, dtype=np.intp), 'lims': lims,
                                   'u': type(c).u is not Circuit.u, 'qs': None, 'iq': None})
             self.slots.append((at[id(c)], c.get_node_index(c.nodenames[local])))
+        ## the saved devices' rows, each device's at its place among them
+        self.srows = np.unique(np.concatenate([d['sub'] for d in self.devs]))
+        for d in self.devs:
+            d['pos'] = np.searchsorted(self.srows, d['sub'])
         self.extra = []
         self._point(x0, 0.0, None)
 
@@ -154,17 +171,32 @@ class DeviceCurrents:
             raise RuntimeError('a device current needs its step\'s companion coefficients')
         self._point(x, t, step)
 
+    def _eval(self, d, xe, what):
+        """The device's `what` (its methods' names) at its own `xe`, its
+        stateful limiters at `xe`."""
+        c, epar = d['c'], self.epar
+        if d['lims']:
+            with devices_at(c, xe, epar, d['lims']):
+                return [getattr(c, f)(xe, epar) for f in what]
+        return [getattr(c, f)(xe, epar) for f in what]
+
     def _point(self, x, t, step):
         epar, curs = self.epar, []
+        stage = step is not None and step[0] == 'stage'
+        if stage:
+            _tag, h, Y1, Y2, on_rows = step
+            if not on_rows:
+                Y1, Y2 = Y1[self.srows], Y2[self.srows]
         for d in self.devs:
-            c, xe = d['c'], x[d['sub']]
-            if d['lims']:
-                with devices_at(c, xe, epar, d['lims']):
-                    q, i = c.q(xe, epar), c.i(xe, epar)
-            else:
-                q, i = c.q(xe, epar), c.i(xe, epar)
+            c = d['c']
+            q, i = self._eval(d, x[d['sub']], ('q', 'i'))
             if step is None:
                 iq, d['qs'] = 0.0 * q, [q, q]
+            elif stage:
+                w, qn = self.w, d['qs'][0]
+                (q1,), (q2,) = self._eval(d, Y1[d['pos']], ('q',)), self._eval(d, Y2[d['pos']], ('q',))
+                iq = (w[0] * (q1 - qn) + w[1] * (q2 - qn) + w[2] * (q - qn)) / h
+                d['qs'] = [q, qn]
             else:
                 alphas, b = step
                 iq = alphas[0] * q

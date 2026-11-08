@@ -595,6 +595,7 @@ def _load(loop, e, run_, stage=None):
     s.hmin = stats.min_step if stats.min_step is not None else 0.0
     s.hmax = stats.max_step if stats.max_step is not None else 0.0
     (stage or _load_stage)(e, run_, xl)
+    _LC._stage_rows(run_, loop)
     if e.cfg is not None:
         _load_judge(e, run_, X)
     else:
@@ -720,7 +721,9 @@ def _write_back(loop, e, run_, stage=None, count=None):
     s, buf, tr, n = run_.s, run_.buf, e.tr, e.n
     k = int(s.k)
     X = loop.X
-    _LC._append_points(loop, buf['X'], buf['T'], k, n)
+    cur = getattr(loop.store, 'currents', None)
+    _LC._append_points(loop, buf['X'], buf['T'], k, n,
+                       None if cur is None else _LC._stage_steps(buf, k, len(cur.srows)))
     _LC._stats_back(tr.statistics, s, k)
     hist_len = e.st[0].shape[0]
     if k:

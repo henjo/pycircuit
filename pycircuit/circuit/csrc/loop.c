@@ -2107,7 +2107,8 @@ static long stage_judge(loop_t *s, loop_attempt_t *a)
 
 /* 5. accept, the stage family's (`_roll_history` of a stage step): the
    rings -- the point's charge, its `iq` (`stage_made`'s) -- the stages and
-   the point noted (`_pred_note`'s merge), then the point's bookkeeping */
+   the point noted (`_pred_note`'s merge), the stages on `save`'s device
+   rows, then the point's bookkeeping */
 static void stage_accept(loop_t *s, const loop_attempt_t *a)
 {
     long n = s->n, k;
@@ -2122,6 +2123,13 @@ static void stage_accept(loop_t *s, const loop_attempt_t *a)
     for (k = 0; k < 3; k++) xv[k] = Y + k * n;
     xv[3] = Y + 2 * n;
     pcx_stage_note(&s->hk, s->ht, s->hx, n, a->nodes, xv, a->ord);
+    /* (the first and second stages on `save`'s device rows, the step:
+       `_tran_loop_c._stage_steps`) */
+    for (k = 0; k < s->nsrows; k++) {
+        s->SY[2 * s->k * s->nsrows + k] = Y[s->srows[k]];
+        s->SY[(2 * s->k + 1) * s->nsrows + k] = Y[n + s->srows[k]];
+    }
+    s->SH[s->k] = a->h;
     accept_point(s, a, Y + 2 * n);
     if (s->tmode) {
         /* (x_{n+1}'s record: the end set's, or a fallback's coupled set's) */

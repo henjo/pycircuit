@@ -1074,6 +1074,36 @@ def _append_points(loop, Xo, To, k, n, steps=None):
             store.advance(None if steps is None else steps[i])
 
 
+def _stage_rows(run, loop):
+    """`save`'s device rows the stage family's accept copies its stages at
+    (loop.h's `srows`, `nsrows`, `SY`), from the run's store; none: nothing
+    copied.  The buffer made once for a set of rows, `cap` steps."""
+    cur = getattr(loop.store, 'currents', None)
+    rows = None if cur is None else cur.srows
+    s = run.s
+    if rows is None or not len(rows):
+        s.nsrows = 0
+        return
+    buf = run.buf
+    if buf.get('srows_of') is not rows:
+        fb = run.ffi.from_buffer
+        buf['srows'] = np.ascontiguousarray(rows, dtype=np.int64)
+        buf['SY'] = np.empty(int(s.cap) * 2 * len(rows))
+        run.keep += [fb('int64_t *', buf['srows']), fb('double *', buf['SY'])]
+        s.srows, s.SY = run.keep[-2], run.keep[-1]
+        buf['srows_of'] = rows
+    s.nsrows = len(rows)
+
+
+def _stage_steps(buf, k, m):
+    """Each of the `k` accepted stage steps' `('stage', h, first stage,
+    second stage, True)` on `save`'s `m` device rows, as the C copied them
+    (`SH`, `SY`)."""
+    SY = buf['SY']
+    return [('stage', float(buf['SH'][i]), SY[2 * i * m:(2 * i + 1) * m].copy(),
+             SY[(2 * i + 1) * m:(2 * i + 2) * m].copy(), True) for i in range(k)]
+
+
 def _steps(buf, k, base, O):
     """Each of the `k` accepted steps' companion coefficients, from the
     step, the step before it and the formula the C kept (`SH`, `SHL`,

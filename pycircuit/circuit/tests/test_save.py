@@ -185,15 +185,18 @@ def _w(r, term):
     return np.asarray(r.i(term).y, float)
 
 
-@pytest.mark.parametrize('integ', ['Gear2Integrator', 'TrapezoidalIntegrator', 'EulerIntegrator'])
-def test_a_charge_device_s_current_closes_its_node_s_kcl(integ):
+@pytest.mark.parametrize('integ, par', [('Gear2Integrator', {}), ('TrapezoidalIntegrator', {}), ('EulerIntegrator', {}),
+                                        ('RadauIIA3Integrator', {'radau_transform': False}),
+                                        ('RadauIIA3Integrator', {'radau_transform': True})])
+def test_a_charge_device_s_current_closes_its_node_s_kcl(integ, par):
     """An RC fed a sine current: the capacitor's current, made from its own
-    charge by each step's companion (trap's carries its last current), and
+    charge by each step's companion (trap's carries its last current) or,
+    under Radau, the step's collocation derivative on its stage charges, and
     the resistor's and the source's add to zero at every point to rounding;
     against the analytic `C dv/dt`, off by the method's own error in `v`
     (over R), no more."""
     from pycircuit.circuit import integrator as I
-    res, _tr = _run(_rc_source(), integrator=getattr(I, integ)(), save=['a', 'i(I1.minus)', 'i(R1.plus)', 'i(C1.plus)'])
+    res, _tr = _run(_rc_source(), integrator=getattr(I, integ)(), save=['a', 'i(I1.minus)', 'i(R1.plus)', 'i(C1.plus)'], **par)
     t, v = np.asarray(res.sweep_values, float), np.asarray(res.v('a').y, float)
     iI, iR, iC = _w(res, 'I1.minus'), _w(res, 'R1.plus'), _w(res, 'C1.plus')
     assert np.abs(iC).max() > 1e-4
@@ -208,16 +211,22 @@ def test_a_charge_device_s_current_closes_its_node_s_kcl(integ):
 CHARGED = ['d2', 'i(rl2.minus)', 'i(M2.d)', 'i(M3.g)', 'i(c2.plus)', 'i(M3.d)', 'i(M0.s)']
 
 
-def test_the_c_loop_and_the_python_make_the_same_currents(monkeypatch):
-    """Gear-2 on the MOS chain with capacitors, the C loop writing back every
-    seven steps against the Python's attempts: every current the same bytes;
-    KCL at d2, every device on it saved, within the Newton's tolerance."""
+@pytest.mark.parametrize('case, unit', [('gear2, the C loop', '_tran_loop_c'), ('radau, the C stage loop', '_tran_stageloop_c'),
+                                        ('radau, the C transform loop', '_tran_tcloop_c')])
+def test_the_c_loop_and_the_python_make_the_same_currents(case, unit, monkeypatch):
+    """The MOS chain with capacitors, each C loop writing back every seven
+    steps (the multistep loop its steps' companions, the stage loops their
+    stages on the saved devices' rows) against the Python's attempts: every
+    current the same bytes; KCL at d2, every device on it saved, within the
+    Newton's tolerance."""
+    import importlib
+
     from pycircuit.circuit import _tran_loop_c
     monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', 7)
-    on, _tr, k = _solve('gear2, the C loop', monkeypatch, save=CHARGED)
+    on, _tr, k = _solve(case, monkeypatch, save=CHARGED)
     assert k > 0
-    monkeypatch.setattr(_tran_loop_c, 'ENABLED', False)
-    off, tr, k = _solve('gear2, the C loop', monkeypatch, save=CHARGED)
+    monkeypatch.setattr(importlib.import_module('pycircuit.circuit.' + unit), 'ENABLED', False)
+    off, tr, k = _solve(case, monkeypatch, save=CHARGED)
     assert k == 0
     for name in CHARGED[1:]:
         assert _w(on, name[2:-1]).tobytes() == _w(off, name[2:-1]).tobytes(), name
@@ -233,23 +242,44 @@ def test_saving_currents_changes_nothing_else(monkeypatch):
     assert tr.statistics.accepted_steps == tr0.statistics.accepted_steps
 
 
-def test_the_currents_on_the_grid_are_their_resample(monkeypatch):
+@pytest.mark.parametrize('case', ['gear2, the C loop', 'radau, the C stage loop'])
+def test_the_currents_on_the_grid_are_their_resample(case, monkeypatch):
     """On a grid a charge-holding device's current is its series at the
     solver's times resampled, bit for bit; a device without charge has its
     current made from the grid's rows, as a full result's (S2a's line)."""
     from pycircuit.circuit.transient import resample_uniform
     step = 4e-8 / 137
-    res, _tr, _k = _solve('gear2, the C loop', monkeypatch, save=CHARGED)
+    res, _tr, _k = _solve(case, monkeypatch, save=CHARGED)
     monkeypatch.setattr(_tran_grid, 'GRID_BLOCK_BYTES', 1)
-    grid, _tr, _k = _solve('gear2, the C loop', monkeypatch, save=CHARGED, outputstep=step)
+    grid, _tr, _k = _solve(case, monkeypatch, save=CHARGED, outputstep=step)
     assert set(res.currents) == {n[2:-1] for n in CHARGED[2:]}
     for name in CHARGED[2:]:
         _g, want = resample_uniform(res.sweep_values, _w(res, name[2:-1]), step=step)
         assert _w(grid, name[2:-1]).tobytes() == want.tobytes(), name
 
 
-@pytest.mark.parametrize('case, name, err', [('radau, the C stage loop', 'i(c2.plus)', 'Gear2Integrator'),
-                                             ('idtmod, the Python', 'i(Idtmod.iplus)', 'rewrapped')])
-def test_a_charge_current_this_run_cannot_make_is_refused(case, name, err, monkeypatch):
-    with pytest.raises(ValueError, match=err):
-        _solve(case, monkeypatch, save=[name])
+def test_a_charge_current_this_run_cannot_make_is_refused(monkeypatch):
+    """A stage method other than Radau (TR-BDF2's derivative is not a
+    collocation's), and a device whose state is rewrapped."""
+    from pycircuit.circuit.integrator import TRBDF2Integrator
+    with pytest.raises(ValueError, match='not TRBDF2Integrator'):
+        _run(_rc_source(), integrator=TRBDF2Integrator(), save=['i(C1.plus)'])
+    with pytest.raises(ValueError, match='rewrapped'):
+        _solve('idtmod, the Python', monkeypatch, save=['i(Idtmod.iplus)'])
+
+
+@pytest.mark.parametrize('integ, names, warns', [('RadauIIA3Integrator', ['i(C1.plus)'], True),
+                                                 ('RadauIIA3Integrator', ['a', 'i(R1.plus)'], False),
+                                                 ('Gear2Integrator', ['i(C1.plus)'], False)])
+def test_a_radau_run_saving_charge_currents_says_what_they_are(integ, names, warns):
+    """Radau's device currents close a node only as well as its stage solve
+    converged: a run saving one says so, once; a multistep run, or a Radau
+    run saving no charge current, says nothing of it."""
+    from pycircuit.circuit import integrator as I
+    from pycircuit.circuit.simwarnings import AccuracyWarning
+    with warnings.catch_warnings(record=True) as W:
+        warnings.simplefilter('always')
+        Transient(_rc_source(), toolkit=circuit.numeric, integrator=getattr(I, integ)(), save=names).solve(
+            tend=1e-3, timestep=1e-5)
+    said = [w for w in W if issubclass(w.category, AccuracyWarning) and 'collocation derivative' in str(w.message)]
+    assert len(said) == (1 if warns else 0)

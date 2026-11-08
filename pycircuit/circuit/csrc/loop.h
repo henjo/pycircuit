@@ -364,6 +364,14 @@ typedef struct {
        device's charge by them (`_tran_result.DeviceCurrents`) */
     double *SH, *SHL;
     long *SF;
+    /* EACH ACCEPTED STAGE STEP'S FIRST AND SECOND STAGES ON `save`'S DEVICE ROWS:
+       `srows` (`nsrows` of them; none, nothing copied), into SY (2 * nsrows
+       a step, at its point's index), its step into SH -- the stage family's
+       accept copies them; `_tran_result.DeviceCurrents` takes each device's
+       collocation derivative on its own stage charges */
+    const int64_t *srows;
+    long nsrows;
+    double *SY;
 } loop_t;
 long pcx_loop(loop_t *s);
 

@@ -61,6 +61,19 @@ from pycircuit.circuit._blas import _single_threaded_blas
 from pycircuit.circuit._blas import blas_single_thread_available  # noqa: F401 (the API's name)
 
 
+#: What a Radau run's saved charge-device currents are, said once a run
+#: (`_tran_result.DeviceCurrents`): each device's own collocation derivative,
+#: which at a node add to the run's equation only as well as the stage solve
+#: converged, over the step -- on the gold decks up to about 2 % of the node's
+#: current at fast edges with the cost transform, a few tenths of a percent
+#: with the dense Newton; the multistep methods' close to the run's own.
+_RADAU_CURRENTS = (
+    "save: under Radau a device's charge current is its own collocation derivative, which at a "
+    "node adds up to the circuit's equation only as well as the stage solve converged, divided by "
+    "the step: measured up to about 2 % of the node's current at fast edges with radau_transform "
+    "(a few tenths of a percent without). Gear-2, trap and Euler close to the run's own equations.")
+
+
 class TransientStatistics(object):
     """What a transient run actually did, as opposed to what it returned.
 
@@ -1113,8 +1126,12 @@ class _SteppingLoop:
         self.X.append(copy(self.x_new))
         self.timelist.append(t)
         if self.store is not None:
-            ## (the accepted attempt's companion, for `save`'s device currents)
-            self.store.advance(tr._companion_coeffs)
+            ## (the accepted attempt's companion, for `save`'s device currents;
+            ## a stage step's, its step and stages: `DeviceCurrents`)
+            step = tr._companion_coeffs
+            if step is None and self.store.currents is not None:
+                step = ('stage', h, tr._rk_Y[0], tr._rk_Y[1], False)
+            self.store.advance(step)
         tr.statistics.accepted_steps += 1
         tr.statistics._note_step(h)
         if on_break:
@@ -1614,7 +1631,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         "outputstep's grid if one is asked for): a node's name for its "
                         "voltage, i(term) for a current with the name res.i() takes "
                         "(i(vin.plus), i(M1.d)). A device holding charge has its current "
-                        "made during the run (Euler, trap, Gear-2); at a start the run "
+                        "made during the run (Euler, trap, Gear-2; Radau with a warning: its "
+                        "currents close a node only as well as its stage solve converged); at a start the run "
                         "imposed (uic, ic, x0) its first point is its static current. None "
                         'keeps every unknown',
                    unit='', default=None),
@@ -2181,9 +2199,9 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         self._warn_run_summary(loop.fixed_fallbacks, loop.forced, timestep)
         return self._finish_result(X, loop.timelist, _t_run_start, loop.store, saved)
 
-    #: the methods whose companion `DeviceCurrents` repeats on a device's
-    #: own charge (`iq_n = sum_k alphas[k] q_{n-k} + b iq_{n-1}`)
-    _CURRENT_METHODS = ('EulerIntegrator', 'TrapezoidalIntegrator', 'Gear2Integrator')
+    #: the methods whose derivative `DeviceCurrents` repeats on a device's
+    #: own charge (the multistep companion; Radau IIA's collocation)
+    _CURRENT_METHODS = ('EulerIntegrator', 'TrapezoidalIntegrator', 'Gear2Integrator', 'RadauIIA3Integrator')
 
     def _resolve_save(self, refnode, coupled_lte=False):
         """`save`'s names against the circuit the result reports on
@@ -2213,7 +2231,13 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 or x0.ndim != 1 or x0.dtype != np.float64):
             return None
         rows = None if saved is None else saved.rows
-        currents = DeviceCurrents(saved.charged, self.epar, x0) if saved is not None and saved.charged else None
+        currents = None
+        if saved is not None and saved.charged:
+            A = getattr(self.base_integrator, 'A', None)
+            currents = DeviceCurrents(saved.charged, self.epar, x0,
+                                      None if A is None else np.linalg.inv(np.array(A, dtype=float))[-1])
+            if A is not None:
+                warn(_RADAU_CURRENTS, AccuracyWarning)
         if step is not None:
             return OutputGrid(X, timelist, step, tend, rows, currents)
         return None if rows is None else SavedRows(X, timelist, rows, currents)
