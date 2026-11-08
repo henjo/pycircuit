@@ -43,7 +43,7 @@ from pycircuit.circuit import _paths, _tran_companion, _tran_core, _tran_loop_c,
 from pycircuit.circuit._tran_companion import _CompanionModel
 from pycircuit.circuit._tran_history import _RunHistory, results_matrix
 from pycircuit.circuit._tran_grid import OutputGrid, SavedRows, resample_uniform
-from pycircuit.circuit._tran_result import TransientResult, resolve_save
+from pycircuit.circuit._tran_result import DeviceCurrents, TransientResult, resolve_save
 from pycircuit.circuit.toolkit import numeric as _numeric_toolkit
 from pycircuit.circuit._tran_predictor import _StagePredictor
 from pycircuit.circuit._tran_initial import _InitialState
@@ -1113,7 +1113,8 @@ class _SteppingLoop:
         self.X.append(copy(self.x_new))
         self.timelist.append(t)
         if self.store is not None:
-            self.store.advance()
+            ## (the accepted attempt's companion, for `save`'s device currents)
+            self.store.advance(tr._companion_coeffs)
         tr.statistics.accepted_steps += 1
         tr.statistics._note_step(h)
         if on_break:
@@ -1612,9 +1613,10 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                    desc="The signals a run keeps, at the solver's own timestamps (on "
                         "outputstep's grid if one is asked for): a node's name for its "
                         "voltage, i(term) for a current with the name res.i() takes "
-                        "(i(vin.plus), i(R1.plus)). A device holding charge is refused: "
-                        "the run does not keep its capacitive current. None keeps every "
-                        'unknown',
+                        "(i(vin.plus), i(M1.d)). A device holding charge has its current "
+                        "made during the run (Euler, trap, Gear-2); at a start the run "
+                        "imposed (uic, ic, x0) its first point is its static current. None "
+                        'keeps every unknown',
                    unit='', default=None),
          ## The commercial-simulator-class VOLTAGE CHECK: on a purely resistive/
          ## algebraic network (a designer exploring an amplifier topology
@@ -2026,8 +2028,12 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
 
         History: `doc/transient_history.md`, `Transient._finish_result`."""
         rows = None if saved is None else saved.rows
+        currents = None
         if store is not None:
             timelist, X = store.finish()
+            if saved is not None and saved.charged:
+                X, I = X[:len(rows)], X[len(rows):]
+                currents = {term: I[j] for j, (term, *_rest) in enumerate(saved.charged)}
         else:
             X = (results_matrix(X) if self.toolkit is _numeric_toolkit else self.toolkit.array(X)).T
             timelist = self.toolkit.array([0.0] + timelist)
@@ -2037,7 +2043,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 X = X[rows]
         self.statistics.total_seconds = time.perf_counter() - t_start
         self.result = TransientResult(self.cir, x=X, sweep_values=timelist, rows=rows,
-                                      saved=None if saved is None else saved.names, epar=self.epar)
+                                      saved=None if saved is None else saved.names, epar=self.epar,
+                                      currents=currents)
         self.result.statistics = self.statistics
         return self.result
 
@@ -2116,7 +2123,7 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         self._reset_pcnr_counts()
         if coupled_lte:
             self._refuse_coupled_on_stage()
-        saved = self._resolve_save(refnode)
+        saved = self._resolve_save(refnode, coupled_lte)
         X = self._open_run(refnode, x0, provided_function, coupled_lte)
 
         ## Stage 6(c).  Created per run, so a second `solve()` reports its own
@@ -2174,14 +2181,26 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         self._warn_run_summary(loop.fixed_fallbacks, loop.forced, timestep)
         return self._finish_result(X, loop.timelist, _t_run_start, loop.store, saved)
 
-    def _resolve_save(self, refnode):
+    #: the methods whose companion `DeviceCurrents` repeats on a device's
+    #: own charge (`iq_n = sum_k alphas[k] q_{n-k} + b iq_{n-1}`)
+    _CURRENT_METHODS = ('EulerIntegrator', 'TrapezoidalIntegrator', 'Gear2Integrator')
+
+    def _resolve_save(self, refnode, coupled_lte=False):
         """`save`'s names against the circuit the result reports on
         (`resolve_save`), before the run spends anything; None: keep every
-        unknown."""
+        unknown.  A charge-holding device's current is made during a
+        multistep run of the numeric toolkit (`_CURRENT_METHODS`)."""
         if self.par.save is None:
             return None
         cir = getattr(self.cir, '_flat_of', None) or self.cir
-        return resolve_save(cir, self.par.save, cir.get_node_index(refnode))
+        method = type(self._get_integrator()).__name__
+        charge = None
+        if method not in self._CURRENT_METHODS or coupled_lte:
+            charge = (f'its current is made during the run for {", ".join(self._CURRENT_METHODS)} '
+                      f'(not {method}{" coupled" if coupled_lte else ""})')
+        elif self.toolkit is not _numeric_toolkit:
+            charge = 'its current is made during the run on the numeric toolkit alone'
+        return resolve_save(cir, self.par.save, cir.get_node_index(refnode), charge)
 
     def _output_store(self, X, timelist, tend, saved):
         """What the run keeps as it goes, for a run of the numeric
@@ -2194,9 +2213,10 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 or x0.ndim != 1 or x0.dtype != np.float64):
             return None
         rows = None if saved is None else saved.rows
+        currents = DeviceCurrents(saved.charged, self.epar, x0) if saved is not None and saved.charged else None
         if step is not None:
-            return OutputGrid(X, timelist, step, tend, rows)
-        return None if rows is None else SavedRows(X, timelist, rows)
+            return OutputGrid(X, timelist, step, tend, rows, currents)
+        return None if rows is None else SavedRows(X, timelist, rows, currents)
 
     def _bypass_arm(self, family):
         """`bypass`: the device bypass armed on the circuit's evaluation core

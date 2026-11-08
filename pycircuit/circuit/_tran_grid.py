@@ -111,25 +111,31 @@ class OutputGrid:
     the step, which a longer `arange` starts with (checked at `finish`).
 
     `rows`: the run's rows to make (`save`'s), None for all; a row's values
-    are its own, whichever others are made.
+    are its own, whichever others are made.  `currents`: `save`'s device
+    currents (`_tran_result.DeviceCurrents`), made at each point as it is
+    appended and gridded as rows after `rows`.
     """
 
-    def __init__(self, X, T, step, tend, rows=None):
+    def __init__(self, X, T, step, tend, rows=None, currents=None):
         step = float(step)
         tend = np.float64(tend)
-        self.X, self.T, self.step, self.rows = X, T, step, rows
+        self.X, self.T, self.step, self.rows, self.currents = X, T, step, rows, currents
         ## the grid past `tend`, so a run ending a rounding beyond it is
         ## inside; the grid of a run that ends at `tend`, its size
         self.grid = np.arange(np.float64(0.0), tend + step / 2.0 + 3.0 * step, step)
         self.size = len(_uniform_grid(np.float64(0.0), tend, step))
-        self.n, self.row = X[0].size if rows is None else len(rows), X[0].nbytes
+        self.n = (X[0].size if rows is None else len(rows)) + (0 if currents is None else len(currents.slots))
+        self.row = X[0].nbytes
         self.first = 0
         self.made = 0
         self.out = None
 
-    def advance(self):
-        """After a point is appended to `X` and `T`: a block made when the
-        finished points fill one."""
+    def advance(self, step=None):
+        """After a point is appended to `X` and `T` (`step`: its accepted
+        step's companion, for `currents`): a block made when the finished
+        points fill one."""
+        if self.currents is not None:
+            self.currents.add(self.X[-1], self.T[-1], step)
         last = len(self.X) - 1 - FINISHED_AFTER
         if last - self.first >= 2 and (last - self.first + 1) * self.row >= GRID_BLOCK_BYTES:
             self._block(last)
@@ -143,12 +149,15 @@ class OutputGrid:
         """Points `first..last` as `resample_uniform` takes them, a row an
         unknown (`rows`' alone)."""
         M = np.array(self.X[first:last + 1])
-        return (M if self.rows is None else M[:, self.rows]).T
+        M = M if self.rows is None else M[:, self.rows]
+        if self.currents is not None:
+            M = np.hstack([M, np.array(self.currents.extra[first:last + 1])])
+        return M.T
 
     def _block(self, last):
         """The grid points at or before `t[last]` made from points
         `first..last`, all but the last two of them dropped."""
-        X, first = self.X, self.first
+        first = self.first
         t = self._times(last)
         stop = int(np.searchsorted(self.grid, t[-1], side='right'))
         if stop > self.made:
@@ -157,9 +166,15 @@ class OutputGrid:
             _g, y = resample_uniform(t, self._points(first, last), grid=self.grid[self.made:stop])
             self.out[:, self.made:stop] = y
             self.made = stop
-        for k in range(first, last - 1):
-            X[k] = None
+        self._drop(first, last - 1)
         self.first = last - 1
+
+    def _drop(self, a, b):
+        """Points `a..b-1` dropped, their device currents with them."""
+        for k in range(a, b):
+            self.X[k] = None
+            if self.currents is not None:
+                self.currents.extra[k] = None
 
     def finish(self):
         """`(grid, values)`: the rest of the grid made from the points left,
@@ -183,8 +198,7 @@ class OutputGrid:
             out = np.empty((self.n, len(grid)))
             out[:, :self.made] = self.out[:, :self.made]
         out[:, self.made:] = y
-        for k in range(self.first, last + 1):
-            X[k] = None
+        self._drop(self.first, last + 1)
         self.out = None
         return grid, out
 
@@ -199,14 +213,18 @@ class SavedRows:
     (`FINISHED_AFTER`, as `OutputGrid`), the point dropped from `X` (its
     entry None).  The values are the point's own, bit for bit."""
 
-    def __init__(self, X, T, rows):
-        self.X, self.T, self.rows = X, T, rows
+    def __init__(self, X, T, rows, currents=None):
+        self.X, self.T, self.rows, self.currents = X, T, rows, currents
+        self.width = len(rows) + (0 if currents is None else len(currents.slots))
         self.kept = 0
         self.chunks = []
 
-    def advance(self):
-        """After a point is appended to `X` and `T`: the finished points'
-        rows kept."""
+    def advance(self, step=None):
+        """After a point is appended to `X` and `T` (`step`: its accepted
+        step's companion, for `currents`, `save`'s device currents made at
+        each point as it is appended): the finished points' rows kept."""
+        if self.currents is not None:
+            self.currents.add(self.X[-1], self.T[-1], step)
         last = len(self.X) - 1 - FINISHED_AFTER
         while self.kept <= last:
             self._keep(self.kept)
@@ -214,13 +232,18 @@ class SavedRows:
     def _keep(self, k):
         j = k % SAVE_CHUNK
         if j == 0:
-            self.chunks.append(np.empty((SAVE_CHUNK, len(self.rows))))
-        np.take(self.X[k], self.rows, out=self.chunks[-1][j])
+            self.chunks.append(np.empty((SAVE_CHUNK, self.width)))
+        row, m = self.chunks[-1][j], len(self.rows)
+        np.take(self.X[k], self.rows, out=row[:m])
         self.X[k] = None
+        if self.currents is not None:
+            row[m:] = self.currents.extra[k]
+            self.currents.extra[k] = None
         self.kept = k + 1
 
     def finish(self):
-        """`(times, values)`, the values a row a saved unknown."""
+        """`(times, values)`, the values a row a saved unknown, then a row
+        a device current."""
         for k in range(self.kept, len(self.X)):
             self._keep(k)
         x = np.concatenate(self.chunks)[:self.kept]

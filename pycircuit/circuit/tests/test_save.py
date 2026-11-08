@@ -75,8 +75,8 @@ def test_a_saving_run_holds_a_few_points(monkeypatch):
     held = []
     advance = _tran_grid.SavedRows.advance
 
-    def counted(self):
-        advance(self)
+    def counted(self, step=None):
+        advance(self, step)
         held.append(sum(r is not None for r in self.X))
     monkeypatch.setattr(_tran_grid.SavedRows, 'advance', counted)
     _res, tr, _k = _solve('gear2, the C loop', monkeypatch, save=['d0'])
@@ -108,7 +108,7 @@ def _run(c, **par):
 
 
 @pytest.mark.parametrize('bad, err', [(['nope'], 'not a node'), (['R1.plus'], 'not a node'), (['i(R9.plus)'], 'no terminal'),
-                                      (['i(R1.nope)'], 'no terminal'), (['i(C1.plus)'], 'holds charge'), ('a', 'list of names')])
+                                      (['i(R1.nope)'], 'no terminal'), ('a', 'list of names')])
 def test_a_name_save_cannot_keep_is_refused_before_the_run(bad, err, monkeypatch):
     def never(*a, **k):
         raise AssertionError('the run began')
@@ -177,3 +177,79 @@ def test_a_signal_not_saved_is_refused_naming_save():
         res.v('in')
     with pytest.raises(ValueError, match='save'):
         res.i('R1.plus')
+
+
+## ---- the currents of devices holding charge, made during the run ----
+
+def _w(r, term):
+    return np.asarray(r.i(term).y, float)
+
+
+@pytest.mark.parametrize('integ', ['Gear2Integrator', 'TrapezoidalIntegrator', 'EulerIntegrator'])
+def test_a_charge_device_s_current_closes_its_node_s_kcl(integ):
+    """An RC fed a sine current: the capacitor's current, made from its own
+    charge by each step's companion (trap's carries its last current), and
+    the resistor's and the source's add to zero at every point to rounding;
+    against the analytic `C dv/dt`, off by the method's own error in `v`
+    (over R), no more."""
+    from pycircuit.circuit import integrator as I
+    res, _tr = _run(_rc_source(), integrator=getattr(I, integ)(), save=['a', 'i(I1.minus)', 'i(R1.plus)', 'i(C1.plus)'])
+    t, v = np.asarray(res.sweep_values, float), np.asarray(res.v('a').y, float)
+    iI, iR, iC = _w(res, 'I1.minus'), _w(res, 'R1.plus'), _w(res, 'C1.plus')
+    assert np.abs(iC).max() > 1e-4
+    assert np.abs(iI + iR + iC).max() <= 1e-12 * np.abs(iR).max()
+    w, r, c = 2 * np.pi * 1e3, 1e3, 1e-7
+    vex = 1e-3 * r / (1 + (w * r * c) ** 2) * (np.sin(w * t) - w * r * c * np.cos(w * t) + w * r * c * np.exp(-t / (r * c)))
+    assert np.abs(iC - (1e-3 * np.sin(w * t) - vex / r)).max() <= 1.01 * np.abs(v - vex).max() / r
+
+
+#: (the MOS chain's node d2 and every device on it, the capacitor and a
+#: transistor's other terminals)
+CHARGED = ['d2', 'i(rl2.minus)', 'i(M2.d)', 'i(M3.g)', 'i(c2.plus)', 'i(M3.d)', 'i(M0.s)']
+
+
+def test_the_c_loop_and_the_python_make_the_same_currents(monkeypatch):
+    """Gear-2 on the MOS chain with capacitors, the C loop writing back every
+    seven steps against the Python's attempts: every current the same bytes;
+    KCL at d2, every device on it saved, within the Newton's tolerance."""
+    from pycircuit.circuit import _tran_loop_c
+    monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', 7)
+    on, _tr, k = _solve('gear2, the C loop', monkeypatch, save=CHARGED)
+    assert k > 0
+    monkeypatch.setattr(_tran_loop_c, 'ENABLED', False)
+    off, tr, k = _solve('gear2, the C loop', monkeypatch, save=CHARGED)
+    assert k == 0
+    for name in CHARGED[1:]:
+        assert _w(on, name[2:-1]).tobytes() == _w(off, name[2:-1]).tobytes(), name
+    node = sum(_w(on, n[2:-1]) for n in CHARGED[1:5])
+    scale = max(np.abs(_w(on, n[2:-1])).max() for n in CHARGED[1:5])
+    assert scale > 1e-5 and np.abs(node).max() <= tr.par.reltol * scale + 10 * tr.par.iabstol
+
+
+def test_saving_currents_changes_nothing_else(monkeypatch):
+    full, tr0, _k = _solve('gear2, the C loop', monkeypatch)
+    res, tr, _k = _solve('gear2, the C loop', monkeypatch, save=CHARGED)
+    assert np.asarray(res.x).tobytes() == np.ascontiguousarray(np.asarray(full.x)[res.rows]).tobytes()
+    assert tr.statistics.accepted_steps == tr0.statistics.accepted_steps
+
+
+def test_the_currents_on_the_grid_are_their_resample(monkeypatch):
+    """On a grid a charge-holding device's current is its series at the
+    solver's times resampled, bit for bit; a device without charge has its
+    current made from the grid's rows, as a full result's (S2a's line)."""
+    from pycircuit.circuit.transient import resample_uniform
+    step = 4e-8 / 137
+    res, _tr, _k = _solve('gear2, the C loop', monkeypatch, save=CHARGED)
+    monkeypatch.setattr(_tran_grid, 'GRID_BLOCK_BYTES', 1)
+    grid, _tr, _k = _solve('gear2, the C loop', monkeypatch, save=CHARGED, outputstep=step)
+    assert set(res.currents) == {n[2:-1] for n in CHARGED[2:]}
+    for name in CHARGED[2:]:
+        _g, want = resample_uniform(res.sweep_values, _w(res, name[2:-1]), step=step)
+        assert _w(grid, name[2:-1]).tobytes() == want.tobytes(), name
+
+
+@pytest.mark.parametrize('case, name, err', [('radau, the C stage loop', 'i(c2.plus)', 'Gear2Integrator'),
+                                             ('idtmod, the Python', 'i(Idtmod.iplus)', 'rewrapped')])
+def test_a_charge_current_this_run_cannot_make_is_refused(case, name, err, monkeypatch):
+    with pytest.raises(ValueError, match=err):
+        _solve(case, monkeypatch, save=[name])

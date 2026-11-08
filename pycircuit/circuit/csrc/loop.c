@@ -609,6 +609,11 @@ static void accept(loop_t *s, const loop_attempt_t *a)
         COPY(s->hx + s->hk * n, nt->xc, n);
         s->hk++;
     }
+    /* the step's companion at its point's index (`save`'s device currents:
+       `_tran_loop_c._steps`) */
+    s->SH[s->k] = a->h;
+    s->SHL[s->k] = a->h_last;
+    s->SF[s->k] = a->formula;
     accept_point(s, a, nt->xc);
 }
 /* `remove_row_col` of the full `C` (n x n, row-major) into `dst` (m x m) */

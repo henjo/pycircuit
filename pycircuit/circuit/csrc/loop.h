@@ -356,6 +356,14 @@ typedef struct {
        FIRST NUMERIC): a factor each, not one of `fb_refactors`' refactors --
        this call's (zeroed by pcx_loop) */
     long nums_made;
+    /* EACH ACCEPTED MULTISTEP STEP'S COMPANION, at its point's index in X
+       and T (the glue's `_bind_buffers` binds them for every loop; the
+       multistep family's accept writes them): the step, the step before it
+       as the companion read it (`h_last`: h on a run's first) and the
+       formula (PCX_FORMULA_*) -- `save`'s device currents differentiate each
+       device's charge by them (`_tran_result.DeviceCurrents`) */
+    double *SH, *SHL;
+    long *SF;
 } loop_t;
 long pcx_loop(loop_t *s);
 

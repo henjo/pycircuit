@@ -6,8 +6,10 @@ voltage by its name, a current by `i(term)` with the string `res.i()`
 takes.  A source's or an inductor's current is an unknown (a branch row);
 a device's terminal current is made from the rows the device reads, at
 each point's time and with its stateful limiters at each point.  A device
-holding charge is refused: its capacitive current is the integrator's
-derivative of its own charge, which the run does not keep.
+holding charge has its current made during the run, where `save` names it
+(`DeviceCurrents`): its capacitive current is the integrator's derivative
+of its own charge, which a run that keeps every unknown does not keep, so
+a result's `i()` refuses it otherwise.
 """
 
 import re
@@ -52,25 +54,40 @@ def _refusal(c, term, path):
                 '(a delay line\'s history), so its current cannot be made from the run\'s rows')
     if holds_charge(c):
         return (f'i({path}): the device holds charge, and its capacitive current is the integrator\'s '
-                'derivative of that charge, which the run does not keep; only currents of branches '
-                '(sources, inductors) and of devices without charge can be had from a transient')
+                'derivative of that charge, which a run keeps only for the currents `save` names '
+                f"(save=['i({path})'])")
     return None
 
 
 class Saved:
-    """What `save` resolved to: the names in order and `rows`, the run's
-    rows to keep (sorted, the reference node's always among them)."""
+    """What `save` resolved to: the names in order, `rows`, the run's rows
+    to keep (sorted, the reference node's always among them), and
+    `charged`, the currents of devices holding charge made during the run
+    (`(term, device, its terminal, its rows)` each)."""
 
-    def __init__(self, names, rows):
-        self.names, self.rows = tuple(names), rows
+    def __init__(self, names, rows, charged=()):
+        self.names, self.rows, self.charged = tuple(names), rows, tuple(charged)
 
 
-def resolve_save(cir, names, irefnode):
-    """`save`'s names against the circuit: a `Saved`, or ValueError naming
-    the first that does not resolve -- before the run spends anything."""
+def _charge_refusal(c, path, charge):
+    """Why a device holding charge cannot have its current made in this
+    run (`charge`: the run's reason, or None), or None."""
+    if charge is not None:
+        return f'save: i({path}): the device holds charge, and ' + charge
+    if c.periodic_states():
+        return (f'save: i({path}): the device\'s state is rewrapped as the run goes (a periodic state), '
+                'so its charge has no derivative its rows give')
+    return None
+
+
+def resolve_save(cir, names, irefnode, charge=None):
+    """`save`'s names against the circuit: a `Saved`, or an error naming
+    the first that does not resolve -- before the run spends anything.
+    `charge`: why this run cannot make a charge-holding device's current
+    (its method), or None."""
     if isinstance(names, str):
         raise TypeError(f'save takes a list of names, not the string {names!r}')
-    rows = {int(irefnode)}
+    rows, charged = {int(irefnode)}, []
     for name in names:
         m = _CURRENT.match(str(name).strip())
         if m is None:
@@ -88,11 +105,80 @@ def resolve_save(cir, names, irefnode):
             c, local, sub = device_of(cir, term)
         except (KeyError, ValueError):
             raise ValueError(f'save: {name!r} names no terminal of the circuit') from None
+        sub = np.arange(cir.n) if sub is None else sub
         why = _refusal(c, local, term)
+        if why is not None and holds_charge(c) and local in c.nodenames and not c.hidden_state_elements():
+            why = _charge_refusal(c, term, charge)
+            if why is None:
+                charged.append((term, c, local, sub))
+                continue
+            raise ValueError(why)
         if why is not None:
             raise ValueError('save: ' + why)
-        rows.update(int(r) for r in (np.arange(cir.n) if sub is None else sub))
-    return Saved(names, np.array(sorted(rows), dtype=np.intp))
+        rows.update(int(r) for r in sub)
+    return Saved(names, np.array(sorted(rows), dtype=np.intp), charged)
+
+
+class DeviceCurrents:
+    """`save`'s currents of devices holding charge, made at each accepted
+    point as the run goes: the device's static current, with its sources
+    at the point's time and its stateful limiters at the point, plus its
+    charge's derivative by the step's own companion, `iq_n = sum_k
+    alphas[k] q_{n-k} + b iq_{n-1}` (`companion_coefficients`) on the
+    device's own charges.  The run's `iq` row is the same sum over a node's
+    devices, so the currents at a node close as its KCL does.  The start
+    point's derivative is zero, as the run's ring starts: right at an
+    operating point; at a start the run imposed (`uic`, `ic`, an `x0`) the
+    device's capacitive current there is not one the run made, so its
+    current there is its static part and KCL does not close at that point.
+
+    `extra[k]` is point k's values, in `charged`' order (a store takes them
+    beside the point's rows and drops them)."""
+
+    def __init__(self, charged, epar, x0):
+        self.epar, self.devs, self.slots = epar, [], []
+        at = {}
+        for j, (_term, c, local, sub) in enumerate(charged):
+            if id(c) not in at:
+                lims = [c] if getattr(c, 'reset_limit_state', None) is not None else stateful_limiters(c)
+                at[id(c)] = len(self.devs)
+                self.devs.append({'c': c, 'sub': np.asarray(sub, dtype=np.intp), 'lims': lims,
+                                  'u': type(c).u is not Circuit.u, 'qs': None, 'iq': None})
+            self.slots.append((at[id(c)], c.get_node_index(c.nodenames[local])))
+        self.extra = []
+        self._point(x0, 0.0, None)
+
+    def add(self, x, t, step):
+        """Point k's values, `step` its accepted step's `(alphas, b)`."""
+        if step is None:
+            raise RuntimeError('a device current needs its step\'s companion coefficients')
+        self._point(x, t, step)
+
+    def _point(self, x, t, step):
+        epar, curs = self.epar, []
+        for d in self.devs:
+            c, xe = d['c'], x[d['sub']]
+            if d['lims']:
+                with devices_at(c, xe, epar, d['lims']):
+                    q, i = c.q(xe, epar), c.i(xe, epar)
+            else:
+                q, i = c.q(xe, epar), c.i(xe, epar)
+            if step is None:
+                iq, d['qs'] = 0.0 * q, [q, q]
+            else:
+                alphas, b = step
+                iq = alphas[0] * q
+                for k in range(1, len(alphas)):
+                    iq = iq + alphas[k] * d['qs'][k - 1]
+                if b:
+                    iq = iq + b * d['iq']
+                d['qs'] = [q, d['qs'][0]]
+            d['iq'] = iq
+            cur = i + iq
+            if d['u']:
+                cur = cur + c.u(t, epar=epar, analysis='tran')
+            curs.append(cur)
+        self.extra.append(np.array([curs[dev][k] for dev, k in self.slots], dtype=float))
 
 
 class _Rows:
@@ -125,11 +211,13 @@ class TransientResult(CircuitResult):
     (`devices_at`).  A device holding charge, or carrying state the result
     does not keep, is refused (`_refusal`)."""
 
-    def __init__(self, circuit, x, sweep_values, rows=None, saved=None, epar=None):
+    def __init__(self, circuit, x, sweep_values, rows=None, saved=None, epar=None, currents=None):
         super().__init__(circuit, x, xdot=None, sweep_values=sweep_values, sweep_label='time', sweep_unit='s')
         self.rows = rows
         self.saved = saved
         self.epar = defaultepar if epar is None else epar
+        ## the currents of devices holding charge the run made (`DeviceCurrents`)
+        self.currents = currents or {}
 
     def _x(self):
         return self.x if self.rows is None else _Rows(self.x, self.rows)
@@ -142,6 +230,8 @@ class TransientResult(CircuitResult):
         return self.build_waveform(result, ylabel, 'V')
 
     def i(self, term):
+        if term in self.currents:
+            return self.build_waveform(self.currents[term], f'i({term})', 'A')
         cir, x = self.circuit, self._x()
         if cir.get_terminal_branch(term) is not None:
             result = cir.extract_i(x, term)

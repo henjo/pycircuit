@@ -57,9 +57,9 @@ def _solve(case, monkeypatch, **par):
     seen = []
     append = _tran_loop_c._append_points
 
-    def counted(loop, Xo, To, k, n):
+    def counted(loop, Xo, To, k, n, steps=None):
         seen.append(k)
-        return append(loop, Xo, To, k, n)
+        return append(loop, Xo, To, k, n, steps)
     with monkeypatch.context() as mp:
         mp.setattr(_tran_loop_c, '_append_points', counted)
         with warnings.catch_warnings():
@@ -102,8 +102,8 @@ def test_the_run_holds_a_few_points_not_all(monkeypatch):
     held = []
     advance = _tran_grid.OutputGrid.advance
 
-    def counted(self):
-        advance(self)
+    def counted(self, step=None):
+        advance(self, step)
         held.append(sum(r is not None for r in self.X))
     monkeypatch.setattr(_tran_grid, 'GRID_BLOCK_BYTES', 1)
     monkeypatch.setattr(_tran_grid.OutputGrid, 'advance', counted)

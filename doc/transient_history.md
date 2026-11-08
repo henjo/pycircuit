@@ -1556,6 +1556,8 @@ it raises TypeError instead of being silently discarded.
 
 ### `_finish_result`
 
+2026-11-08: `save`'s charge-holding devices' currents, made during a multistep run by `_tran_result.DeviceCurrents`, split from the store's rows into `TransientResult.currents` (roadmap 295).
+
 2026-11-08: a `TransientResult` (`_tran_result`), holding `save`'s rows when given (roadmap 294).  Its `i()` replaces `CircuitResult.i` for transients, which took a source's own terminal at `t = 0`, a stateful limiter's device at the run's last voltage, and a device holding charge without its capacitive current (`xdot` None): each point's time, each point's device, and a refusal.
 
 2026-11-08: with `outputstep` the grid comes from `_tran_grid.OutputGrid`, made as the run goes, the run holding the grid and its last few points (roadmap 293).  Until then it was resampled here, after the run, from every point the run held: the same bytes.

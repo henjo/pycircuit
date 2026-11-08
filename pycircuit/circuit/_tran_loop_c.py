@@ -349,12 +349,15 @@ def _bind_buffers(run, n, hist_len, npat):
         'Geq0': np.zeros(nc), 'Geq1': np.zeros(nc),
         'run': np.empty(n), 'xatt': np.empty(n), 'qatt': np.empty(n), 'iqatt': np.empty(n),
         'X': np.empty(cap * n), 'T': np.empty(cap),
+        'SH': np.empty(cap), 'SHL': np.empty(cap), 'SF': np.empty(cap, dtype=np.int64),
     }
     keep = run.keep = []
     fb = ffi.from_buffer
-    for k in ('qring', 'iqring', 'xlast', 'ht', 'hx', 'run', 'xatt', 'qatt', 'iqatt', 'X', 'T'):
+    for k in ('qring', 'iqring', 'xlast', 'ht', 'hx', 'run', 'xatt', 'qatt', 'iqatt', 'X', 'T', 'SH', 'SHL'):
         keep.append(fb('double *', buf[k]))
         setattr(s, k, keep[-1])
+    keep.append(fb('long *', buf['SF']))
+    s.SF = keep[-1]
     for i in (0, 1):
         keep.append(fb('double *', buf[f'cC{i}']))
         s.cC[i] = keep[-1]
@@ -1058,16 +1061,31 @@ def _full_counts(rec, s):
         _PC['newton_c:first_numeric'] += s.nums_made
 
 
-def _append_points(loop, Xo, To, k, n):
+def _append_points(loop, Xo, To, k, n, steps=None):
     """The C's `k` accepted points, `Xo`'s rows and `To`'s times, appended
     to the run's `X` and times, the run's store (`OutputGrid`,
-    `SavedRows`) told of each as the Python's accept tells it."""
+    `SavedRows`) told of each as the Python's accept tells it, with its
+    step's companion where `steps` has them (`_steps`)."""
     X, tl, store = loop.X, loop.timelist, loop.store
     for i in range(k):
         X.append(Xo[i * n:(i + 1) * n].copy())
         tl.append(float(To[i]))
         if store is not None:
-            store.advance()
+            store.advance(None if steps is None else steps[i])
+
+
+def _steps(buf, k, base, O):
+    """Each of the `k` accepted steps' companion coefficients, from the
+    step, the step before it and the formula the C kept (`SH`, `SHL`,
+    `SF`), the integrator chosen as the write-back chooses it."""
+    euler, out = None, []
+    for i in range(k):
+        active = base
+        if int(buf['SF'][i]) == _ABI['PCX_FORMULA_EULER'] and type(base) is not O['Euler']:
+            euler = euler or O['Euler']()
+            active = euler
+        out.append(active.companion_coefficients(float(buf['SH'][i]), float(buf['SHL'][i])))
+    return out
 
 
 def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
@@ -1076,7 +1094,8 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     made."""
     k, adaptive = s.k, bool(s.adaptive)
     X = loop.X
-    _append_points(loop, buf['X'], buf['T'], k, n)
+    wants = getattr(loop.store, 'currents', None) is not None
+    _append_points(loop, buf['X'], buf['T'], k, n, _steps(buf, k, tr.base_integrator, O) if wants else None)
     _stats_back(tr.statistics, s, k)
     ## the last attempt's write-back (`_tran_newton_c`'s), accepted or not
     x = buf['xatt'].copy()
