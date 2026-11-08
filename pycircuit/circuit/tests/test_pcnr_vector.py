@@ -1814,3 +1814,33 @@ def test_an_infinite_derivative_at_a_consistent_probe_is_the_steps_nan_unwarned(
         f, J = P.schur_reduce(g_mna, g_lim, J_mm, didv=didv)
     assert np.isnan(f).any() and np.isinf(J).any()
     assert f.tobytes() == f_ref.tobytes() and J.tobytes() == J_ref.tobytes()
+
+
+def test_an_overflowing_rhs_correction_is_the_steps_infinity_unwarned():
+    """The same run-away one step earlier: a derivative of ~1e92 times a
+    limited residual of ~1e255 (the active MOS chain's rungs) overflows the
+    Schur sum's rhs correction -- the infinity kept, the same bytes as numpy
+    makes them unwarned, no warning and no error under a caller's
+    `np.seterr(over='raise')` (roadmap 298: the C twin then ends the solve
+    itself instead of handing it back for the warning)."""
+    import warnings
+    g_mna = np.array([1.0, 0.5, -0.25])
+    g_lim = np.array([4e255, 0.0])
+    J_mm = np.eye(3)
+    didv = [([0, 1, 2], [(1, 0), (2, 0)], np.array([[5e92, 0.1], [-5e92, 0.2], [1.0, -0.3]]))]
+
+    def reference():
+        schur, rhs = J_mm.copy(), np.zeros(3)
+        for rows, probes, block in didv:
+            for j, (ra, rb) in enumerate(probes):
+                np.add.at(schur[:, ra], rows, block[:, j])
+                np.subtract.at(schur[:, rb], rows, block[:, j])
+                np.add.at(rhs, rows, block[:, j] * g_lim[j])
+        return g_mna - rhs, schur
+    with np.errstate(all='ignore'):
+        f_ref, J_ref = reference()
+    with warnings.catch_warnings(), np.errstate(over='raise', invalid='raise'):
+        warnings.simplefilter('error')
+        f, J = P.schur_reduce(g_mna, g_lim, J_mm, didv=didv)
+    assert np.isinf(f[:2]).all() and np.isfinite(J).all()
+    assert f.tobytes() == f_ref.tobytes() and J.tobytes() == J_ref.tobytes()

@@ -710,9 +710,14 @@ def schur_reduce(g_mna, g_lim, J_mm, J_ml=None, J_lm=None, junctions=None,
         ## an infinite `didv` entry times its consistent probe's `g_lim` of 0:
         ## the NaN is kept, and fails the step at the solve or at `solve_dc`'s
         ## non-finite test as before; numpy's warning is not raised -- it was a
-        ## user's only sign of a rung the ladder recovers from.  History:
-        ## `doc/transient_history.md`, `schur_reduce`.)
-        with np.errstate(invalid='ignore'):
+        ## user's only sign of a rung the ladder recovers from.  An OVERFLOW
+        ## here is the same run-away seen one step earlier -- a derivative of
+        ## ~1e92 times a `g_lim` of ~1e255 (the active MOS chain's rungs): the
+        ## infinity is kept, and the step fails at the solve as before,
+        ## unwarned for the same reason; the C's twin (`pcnrdc.c`'s `schur`)
+        ## then ends the solve itself instead of handing it back for this
+        ## warning.  History: `doc/transient_history.md`, `schur_reduce`.)
+        with np.errstate(invalid='ignore', over='ignore'):
             for rows, probes, block in didv:
                 rows = np.asarray(rows, dtype=int)
                 for j, (ra, rb) in enumerate(probes):

@@ -5533,6 +5533,23 @@ Tests: `test_pcnr_vector.py` -- the reported column on a four-row system: the
 bytes numpy makes unwarned, no warning and no error under `invalid='raise'`
 (the old sum raised `FloatingPointError`).
 
+## `pcnr.schur_reduce`, `pcnrdc.c` -- an overflowed rhs correction, unwarned and ended in C (2026-11-09)
+
+2026-11-09 (`doc/hdl_roadmap_260824.md`, 298; plan 261 L17).  The run-away
+of the section above seen one step earlier: on an active MOS chain's DC
+ladders a derivative of ~1e92 times a limited residual of ~1e255 overflowed
+the Schur sum's rhs correction, numpy printed "overflow encountered in
+multiply", and the C handed the solve back for that warning -- its Python
+rerun dense (2.3 s a rung at 8 000 stages) and failing as the C would have,
+KLU's factor `Singular matrix`.  The sum now ignores overflow as it ignores
+invalid; the C's `schur` clears what the sum raised; `solve_klu` carries an
+infinity into KLU's sequence as it carries a NaN, its residual's dense test
+handing back where numpy's would warn.  The same answers and routes; the
+active chain's DC 1.36x at 4 000 stages, 1.53x at 8 000, its peak halved.
+Tests: `test_pcnr_c.py` (a run-away rung's failed factor served, the
+Python's on a fresh circuit; an infinite rhs served), `test_pcnr_vector.py`
+(the overflow's bytes unwarned under `over='raise'`).
+
 ## `_tran_stageloop_c`, `csrc/loop.c`'s stage family -- a plain run's Radau attempts in C (2026-10-24)
 
 2026-10-24 (`doc/hdl_roadmap_260824.md`, 207).  A plain Radau transient --

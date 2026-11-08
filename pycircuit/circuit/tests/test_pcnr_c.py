@@ -264,14 +264,99 @@ def test_a_nan_in_the_klu_solve_is_the_pythons_error(case, monkeypatch):
         assert klu[0] >= 1 and klu[3] >= 1, klu          # (refactored, then refactored again)
 
 
-def test_an_infinite_klu_rhs_is_still_handed_back(monkeypatch):
-    """An infinite value still hands back (unmeasured: the residual's `arr
-    @ x - rhs` may be numpy's warning), the Python's outcome the C off's."""
+def test_an_infinite_klu_rhs_is_the_pythons_error(monkeypatch):
+    """An infinity goes through KLU's sequence in C as a NaN does -- its
+    residual's dense test hands back where the Python's `arr @ x - rhs`
+    would warn -- and the Python's RuntimeError is SERVED, StructuralKLU's
+    counters the same.  Handed back until 2026-11-08 (unmeasured, the
+    residual's possible warning; roadmap 298)."""
     x0 = _poisoned(_ladder, 'n0', np.inf)
     got, counts, klu = _klu(True, monkeypatch, _ladder, x0)
     ref, _counts, klu_ref = _klu(False, monkeypatch, _ladder, x0)
-    assert got == ref and klu == klu_ref, (got, ref)
-    assert counts.get('pcnr_c:bail:flags') == 1 and 'pcnr_c:served' not in counts, counts
+    assert got == ref == ('raise', RuntimeError, pcnr.NONFINITE % 1), (got, ref)
+    assert klu == klu_ref, (klu, klu_ref)
+    assert counts.get('pcnr_c:nonfinite') == 1 and 'pcnr_c:bail:flags' not in counts, counts
+
+
+def _active_chain(stages=800):
+    """A pulsed inverter chain whose stages gain above one (vto 0.5, kp
+    2e-4): its DC fails PCNR's plain solve, and on the ladders' rungs an
+    iterate runs away -- a device derivative of ~1e92 times a limited
+    residual of ~1e255, the Schur sum's rhs correction overflowing."""
+    from pycircuit.circuit.elements import C, VPulse
+    c = SubCircuit()
+    c.add_node('vdd')
+    c['vdd'] = VS('vdd', gnd, v=1.8)
+    c.add_node('g0')
+    c['vin'] = VPulse('g0', gnd, v1=0.0, v2=1.8, td=5e-9, tr=2e-9, tf=2e-9, pw=4e-8, per=1e-7)
+    for k in range(stages):
+        c.add_node(f'd{k}')
+        c[f'rl{k}'] = R('vdd', f'd{k}', r=2e4)
+        c[f'M{k}'] = eh.MosLevel1Hdl(f'd{k}', 'g0' if k == 0 else f'd{k - 1}', gnd, gnd,
+                                     vto=0.5, kp=2e-4)
+        c[f'c{k}'] = C(f'd{k}', gnd, c=2e-14)
+    return c
+
+
+def test_a_schur_overflow_at_a_run_away_rung_is_the_pythons_error(monkeypatch):
+    """The active chain's DC, its PCNR calls recorded: the first one the C
+    ends in KLU's failed factor, replayed on a fresh circuit with the C on
+    and off -- the Python's sum overflows unwarned (`schur_reduce`'s
+    errstate; warnings raised as errors here), the C carries the infinity on
+    and serves its `Singular matrix`, StructuralKLU's counters the same.
+    Handed back on the sum's overflow until 2026-11-08 (roadmap 298): the
+    Python's dense loop reran it to the same failure, 2.3 s a rung at
+    8 000 stages."""
+    calls = []
+    real = pcnr.solve_dc
+
+    def recorded(*a, **k):
+        before = dict(_paths.COUNTS)
+        seed = (a, {n: (v.copy() if isinstance(v, np.ndarray) else v) for n, v in k.items()})
+        try:
+            return real(*a, **k)
+        except Exception:
+            if _paths.COUNTS.get('pcnr_c:singular', 0) > before.get('pcnr_c:singular', 0):
+                calls.append(seed)
+            raise
+    monkeypatch.setattr(pcnr, 'solve_dc', recorded)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        DC(_active_chain(), toolkit=circuit.numeric).solve()
+    monkeypatch.setattr(pcnr, 'solve_dc', real)
+    assert calls, 'no PCNR call ended in a failed factor'
+    (args, kw) = calls[0]
+    sums = []
+    schur = pcnr.schur_reduce
+
+    def watched(*a, **k):
+        f, J = schur(*a, **k)
+        sums.append(bool(np.isinf(f).any()))
+        return f, J
+    out = {}
+    for on in (True, False):
+        c = _active_chain()
+        kk = dict(kw, linsolver=DC(c, toolkit=circuit.numeric)._get_linearsolver())
+        monkeypatch.setattr(_pcnr_c, 'ENABLED', on)
+        if not on:
+            monkeypatch.setattr(pcnr, 'schur_reduce', watched)
+        before = dict(_paths.COUNTS)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', RuntimeWarning)
+            try:
+                pcnr.solve_dc(c, *args[1:], **kk)
+                got = ('ok',)
+            except Exception as e:                           # noqa: BLE001
+                got = ('raise', type(e), str(e))
+        sk = kk['linsolver']._choice
+        out[on] = (got, (sk.refactors, sk.factors, sk.pivot_fallbacks, sk.residual_fallbacks),
+                   {n: v - before.get(n, 0) for n, v in _paths.COUNTS.items()
+                    if n.startswith('pcnr_c:') and v != before.get(n, 0)})
+    assert out[True][:2] == out[False][:2], out
+    assert out[True][0] == ('raise', np.linalg.LinAlgError, 'Singular matrix'), out
+    assert any(sums), 'the Python\'s Schur sum did not overflow'
+    counts = out[True][2]
+    assert counts.get('pcnr_c:singular') == 1 and 'pcnr_c:bail:flags' not in counts, counts
 
 
 def test_the_klu_solve_in_c_is_the_pythons():

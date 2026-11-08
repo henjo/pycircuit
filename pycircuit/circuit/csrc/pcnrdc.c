@@ -4,13 +4,14 @@
    THE FLAG RULE (pcx_fenv.h): what the core's kernels and the devices'
    kernels raise inside is cleared after them -- the Python's calls of them
    (cffi) never report it; a flag numpy would report (the assembly's, the
-   Schur updates', the step's, the refine's, the convergence tests'
-   arithmetic) hands the solve back, and the Python's solve gives its
-   warnings.  A NaN is carried quietly, as numpy carries it, from the
-   assembly through the solve (dense, or KLU's) to x_new, whose test the
-   Python makes (PCNRDC_NONFINITE); an infinite KLU entry or rhs, and a
-   value that is not finite in v_new or g_lim, hands back.  Every return
-   leaves the flags clear. */
+   step's, the refine's, the convergence tests' arithmetic) hands the solve
+   back, and the Python's solve gives its warnings.  The Schur sum's are not
+   reported (`schur_reduce`'s errstate ignores its overflow and invalid) and
+   are cleared.  A NaN or an infinity is carried quietly, as numpy carries
+   it, from the assembly through the solve (dense, or KLU's -- its residual's
+   dense test handing back where numpy's would warn) to x_new, whose test
+   the Python makes (PCNRDC_NONFINITE); a value that is not finite in v_new
+   or g_lim hands back.  Every return leaves the flags clear. */
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
@@ -119,7 +120,11 @@ static long assemble(pcnrdc_t *s)
 
 /* `schur_reduce` in place: each unknown's column added at its probe's ra
    column, subtracted at rb (`np.add.at` / `np.subtract.at` on the device's
-   rows), `col * g_lim` into the rhs corrections; f_eff = F - rc */
+   rows), `col * g_lim` into the rhs corrections; f_eff = F - rc.  What the
+   sum raises -- an overflow, an invalid: a derivative run away at a run-away
+   iterate -- `schur_reduce` does not report (its errstate ignores both): the
+   infinity or NaN is kept for the solve to fail on, as the Python's, and the
+   flags are cleared so the steps after read their own.  Always 0 */
 static long schur(pcnrdc_t *s)
 {
     long n = s->n, i, d, j, r;
@@ -137,7 +142,7 @@ static long schur(pcnrdc_t *s)
         }
     }
     for (i = 0; i < n; i++) s->fe[i] = s->F[i] - s->rc[i];
-    if (fetestexcept(PC_FLAGS)) return PCNRDC_BAIL_FLAGS;
+    feclearexcept(FE_ALL_EXCEPT);
     return 0;
 }
 
@@ -165,24 +170,22 @@ static long solve_dense(pcnrdc_t *s)
 /* StructuralKLU.solve(schur[keep, keep], -f_eff): the reduced matrix (R),
    `_ours`'s test (as many nonzeros on the pattern as in all of it, else
    its fallback solve: handed back), its entries in the pattern's order, its
-   own sequence (pcx_kluseq.h).  A NaN entry or rhs goes through: KLU is the
-   same library on the same values, and the sequence's residual guard
-   propagates a NaN as numpy's max does.  An infinite one hands back (the
-   residual's `arr @ x - rhs` may be numpy's warning).  A failed factor is
-   its LinAlgError (PCNRDC_SINGULAR).  The solution in `kx`.
+   own sequence (pcx_kluseq.h).  A NaN or an infinite entry or rhs goes
+   through: KLU is the same library on the same values, the sequence's
+   residual guard propagates a NaN as numpy's max does, and its dense test
+   hands back where the residual's `arr @ x - rhs` raises numpy's warning
+   (an infinity times a zero).  A failed factor is its LinAlgError
+   (PCNRDC_SINGULAR).  The solution in `kx`.
    On the pattern (`kfull`): the entries gathered from J where they stand,
    the foreign test over the pattern's entries off KLU's (J is zero
    elsewhere: the same count), the residual's test on the CSC -- R is not
    made */
 static long solve_klu(pcnrdc_t *s)
 {
-    long n = s->n, m = s->m, i, j, nz = 0, nzp = 0, fin = 1, st;
+    long n = s->n, m = s->m, i, j, nz = 0, nzp = 0, st;
     const int64_t *red = s->red;
     if (s->kfull) {
-        for (i = 0; i < s->nact; i++) {
-            s->klu.kAx[i] = s->J[s->kfull[i]];
-            fin &= isinf(s->klu.kAx[i]) == 0;
-        }
+        for (i = 0; i < s->nact; i++) s->klu.kAx[i] = s->J[s->kfull[i]];
         for (i = 0; i < s->nfor; i++)
             if (s->J[s->ffull[i]] != 0.0) return PCNRDC_BAIL_FOREIGN;
     } else {
@@ -195,12 +198,9 @@ static long solve_klu(pcnrdc_t *s)
         for (i = 0; i < s->nact; i++) {
             s->klu.kAx[i] = s->R[s->act_r[i]];
             nzp += s->klu.kAx[i] != 0.0;
-            fin &= isinf(s->klu.kAx[i]) == 0;
         }
         if (nz != nzp) return PCNRDC_BAIL_FOREIGN;
     }
-    for (i = 0; i < m; i++) fin &= isinf(s->b[i]) == 0;
-    if (!fin) return PCNRDC_BAIL_FLAGS;
     st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->kt, m, s->dgemv, s->kfull == NULL,
                       &s->dense_resid);
     if (st == PCX_KLU_FACTOR) return PCNRDC_SINGULAR;

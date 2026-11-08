@@ -14968,3 +14968,43 @@ thresholds refused.  Bitten on the final tests: `tc_stall`'s call removed (5 fai
 C-against-Python cases and the never-firing one; the behaviour tests pass on either half alone (the other twin makes the check).  test_radau_early_abort's
 two runs that compare the early abort alone set the stall check off.  Pinned pairs re-recorded with their twins' tests passing: the
 transform loop and its C (`_radau_stall_check`, `stall_threshold` pinned), and the four other pairs on loop.c and loop.h.  Suite 6 580 passed (10 skipped).
+
+## 2026-11-09 — 298. PCNR's DC solve ends a run-away rung in C: the Schur sum's overflow unwarned as its invalid is, an infinity carried into KLU as a NaN is -- the active chain's DC the same answers 1.36x at 4 000 stages (peak 1 035 -> 545 MB) and 1.53x at 8 000 (3 716 -> 1 760 MB), no hand-back left; every other result the same
+
+**Why**  Plan 261's L17 (`tc/plan_261.md`), sized first (scripts p261/l17, no source changed): the transient's operating point is
+`DC(cir).solve()`, PCNR in C with its ladders in Python.  On an active 8 000-stage inverter chain the plain solve fails and the
+ladders take 98 PCNR solves, 18 s, a 3.9 GB peak; 39 % of it three dense Python reruns of solves the C had handed back on a floating-
+point flag, each ending `Singular matrix` (5 of 5 on the chains; none of the 27 gold decks' 486 C solves hands back so).  Every such
+hand-back was one place: the Schur sum's rhs correction `blk * g_lim` overflowing at a run-away iterate (a derivative ~1e92, a limited
+residual ~1e255) -- numpy's "overflow encountered in multiply" at `schur_reduce` -- the system then non-finite on hundreds of kept rows
+and entries; the Python's rerun refactors, meets a zero pivot, factors afresh and raises from KLU's failed factor, no other warning.
+Between the C and that outcome stood two hand-backs: the overflow's (numpy warns there) and `solve_klu`'s infinite-entry bail, kept
+"unmeasured" since 2026-10-19 (`test_an_infinite_klu_rhs_is_still_handed_back`).  Andreas: "1" (the first of four DC stages).
+
+**What.**  `pcnr.schur_reduce`'s sum runs under `np.errstate(invalid='ignore', over='ignore')`: the overflow is the run-away roadmap 206
+left unwarned as an invalid, one step earlier -- a rung the ladder recovers from -- the infinity kept for the solve to fail on.  pcnrdc.c's `schur` reports
+nothing either: its flags cleared after the sum, so the steps after read their own.  `solve_klu` carries an infinite entry or rhs into
+KLU's sequence as it carries a NaN: the same library on the same values, its residual's dense test still handing back where numpy's
+`arr @ x - rhs` would warn (an infinity times a zero).  The one behaviour change a user sees: that overflow's warning no longer printed.
+
+**Measured** (LINE set before building, in `tc/plan_261.md` L17 D3, after a prototype in a worktree):
+* The active chain's DC, HEAD 31576f1c's worktree against this tree, interleaved on a settled box: 800 stages 0.50 -> 0.31 s (1.61x,
+  peak 141 -> 101 MB), 2 000 2.22 -> 1.35 s (1.64x, 336 -> 213 MB), 4 000 **1.364x** (3.52 / 3.51 / 3.55 -> 2.58 / 2.60 / 2.59 s, peak
+  1 035 -> 545 MB), 8 000 **1.534x** (17.99 / 17.71 -> 11.58 / 11.70 s, 3 716 -> 1 760 MB): every answer and route the same, the flag
+  hand-backs 2 / 4 / 2 / 3 -> 0, each such solve now the C's `singular`.  The prototype's Python alone (the C off) the same answer at
+  2 000 stages (256 s).  LINE MET: (a) the same answers and routes, no hand-back, >= 1.35x and <= 600 MB at 4 000, >= 1.45x and
+  <= 2.0 GB at 8 000; (b) the C's outcome the Python's (the test below); (d) the quiet chain 4 000 and the mesh 63 x 63 the same
+  digests, 1.000x each (5 pairs).
+* (c) The gate against 31576f1c: every result the same -- the 27 decks under DC, Gear-2 (and its bypass) and Radau, the 8 size runs --
+  C against Python 0 differing on every deck under every setting and at size; its verdict DIFFERS on counters alone, the active chain's
+  size runs' operating points (Gear-2's and Radau's): `pcnr_c:bail:flags` 2 -> 0, `pcnr_c:singular` 4 -> 6, the Python rerun's passes
+  gone.  The changed C, 3 lines and 2 arms, every one reached by the decks.
+* (e) The one behaviour change: `schur_reduce` no longer prints numpy's overflow warning at a run-away rung.
+
+**Tests.**  test_pcnr_c: `test_a_schur_overflow_at_a_run_away_rung_is_the_pythons_error` -- the 800-stage active chain's DC, its first
+solve the C ends in KLU's failed factor replayed on a fresh circuit with the C on and off (warnings raised as errors): the Python's sum
+overflowed unwarned, the C served `Singular matrix`, StructuralKLU's counters the same; `test_an_infinite_klu_rhs_is_the_pythons_error`
+(was `..._still_handed_back`): served, the Python's RuntimeError.  test_pcnr_vector: `test_an_overflowing_rhs_correction_is_the_steps_
+infinity_unwarned` -- numpy's bytes, no warning, no error under `over='raise'`.  Bitten: the C's Schur flag test restored (1 fails), the
+Python's errstate without `over` (2), the infinite bail restored (2).  The PCNR DC pair re-recorded, its twins' tests passing.
+Suite 6 582 passed (10 skipped).

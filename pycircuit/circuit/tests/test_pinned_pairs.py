@@ -475,7 +475,10 @@ PAIRS = {
                'own first choice), `dx_lim_of`, `refine` -- each class\'s law '
                'parameters, its laws (`apply_limit`) and `limit_block`\'s Kruskal and '
                'potentials -- the three tests, and the iteration limit\'s, a '
-               'non-finite iterate\'s and a singular solve\'s exceptions',
+               'non-finite iterate\'s and a singular solve\'s exceptions.  The Schur '
+               'sum\'s flags unreported on both sides (`schur_reduce`\'s errstate: its '
+               'overflow and invalid), a NaN or an infinity carried into KLU\'s '
+               'sequence (roadmap 298)',
         'reference': ['pycircuit.circuit.pcnr:solve_dc',
                       'pycircuit.circuit.pcnr:augmented_system',
                       'pycircuit.circuit.pcnr:schur_reduce',
@@ -1196,7 +1199,7 @@ RECORD = {
     'the PSP limiter and its C twin': ('8e14bbc903f1', '3aefa105ff7f'),
     'the error test and its C': ('639cab30f2d5', 'c74aa246f41c'),
     'the DC base solve and its C': ('37b14c0a34a7', '40bc9afea878'),
-    'the PCNR DC solve and its C': ('e8cf73fe6e9a', '5938f7bf2288'),
+    'the PCNR DC solve and its C': ('6aa96549b383', '172faf2cf128'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('d417a4cedc1d', '694a1086db84'),
     "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),
