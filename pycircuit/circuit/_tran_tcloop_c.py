@@ -124,6 +124,7 @@ _TC_PIECES = (
     (lambda o: o['T']._rk_step_transformed, '_RadauStages._rk_step_transformed', '_tran_radau'),
     (lambda o: o['T']._radau_frozen, '_RadauStages._radau_frozen', '_tran_radau'),
     (lambda o: o['T']._radau_early_check, '_RadauStages._radau_early_check', '_tran_radau'),
+    (lambda o: o['T']._radau_stall_check, '_RadauStages._radau_stall_check', '_tran_radau'),
     (lambda o: o['T']._stage_end_passes, '_RadauStages._stage_end_passes', '_tran_radau'),
     (lambda o: o['T']._C_at_state, '_CompanionModel._C_at_state', '_tran_companion'),
     (lambda o: o['T']._C_lookup, '_CompanionModel._C_lookup', '_tran_companion'),
@@ -429,6 +430,9 @@ def _tc_ready(tr, td):
         return 'switch'
     th = tr.par.radau_early_abort
     if type(th) not in (float, int) or not th >= 0:
+        return 'early'
+    th = tr.par.radau_stall_check
+    if th != 'auto' and (type(th) not in (float, int) or not th >= 0):
         return 'early'
     T = type(tr)
     fc = _tran_radau._FROZEN.get('chain') or _tran_radau._frozen_chain()
@@ -944,11 +948,14 @@ def _load_fb(e, run_):
 
 
 def _load_early(e, run_):
-    """The early abort's threshold (0 where the loop never arms it: a fixed
-    grid) and the family's `early_f0` where it is this point's (`pt[0] is
+    """The early abort's threshold and the stall check's (`stall_threshold`:
+    'auto' by the run's size) -- 0 where the loop never arms them: a fixed
+    grid -- and the family's `early_f0` where it is this point's (`pt[0] is
     X[-1]`)."""
+    from pycircuit.circuit._tran_radau import stall_threshold
     s, tr = run_.s, e.tr
     s.tc_th = 0.0 if s.adaptive == 0 else float(tr.par.radau_early_abort)
+    s.stall_th = 0.0 if s.adaptive == 0 else stall_threshold(tr)
     pt = getattr(e.fam, 'early_f0', None)
     X = e.st[3]
     s.have_f0 = int(pt is not None and pt[0] is X[-1])
@@ -1254,6 +1261,7 @@ def _count(e, run_, k):
                    ('radau.fuse:served', s.tc_ends),
                    ('radau.fuse:handed', s.tc_handed), ('radau.fuse:unhanded', s.tc_unhanded),
                    ('radau.early:checks', s.tc_checks), ('radau.early:aborts', s.tc_aborts),
+                   ('radau.stall:checks', s.tc_stallchecks), ('radau.stall:aborts', s.tc_stallaborts),
                    ('radau.est:transform', s.tc_ests), ('radau.est:memo', s.st_estmemo),
                    ('pred:fast', s.st_fast), ('radau_tc:noconv', s.tc_noconv)):
         if v:

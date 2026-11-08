@@ -5227,6 +5227,28 @@ Tests: `test_radau_early_abort.py` (abandoned on the latch, none forced; a
 check that never fires changes nothing byte for byte; C and Python loop the
 same run; `judge`'s retry law; the arm's budget).
 
+## `Transient.radau_stall_check` -- a Radau stall judged at its iterate, from 1 024 unknowns (2026-11-08)
+
+2026-11-08 (Andreas: "2", then "1" on its numbers; `doc/hdl_roadmap_260824.md`, 297).
+An armed Radau attempt whose transform Newton ran `maxiter` iterations
+without converging fell back to the coupled 3n Newton; on a 2-D mesh every
+one was the step over a pulse's edge, solved exactly -- 0.4 s at 2 030
+unknowns to 10 s at 8 105 -- and rejected by the error test, which the
+early abort could not foresee (its first iterate reads the step as exact).
+Now `_RadauStages._radau_stall_check` makes the early abort's check at the
+stalled iterate (the C loop's `tc_stall`): over `radau_stall_check` ('auto':
+2 from `_tran_radau.STALL_CHECK_FROM_N`, 1 024, unknowns; off below) the
+attempt is abandoned as an early abort is.  A mesh's Radau 1 us 1.45-1.63x,
+its peak lower; the gold decks, all under the size, as they were -- on at
+every size it turned away fallbacks the small decks keep (todd3 1.2-1.7x
+slower).  A re-baseline of Radau's adaptive answers above the size where a
+stall is abandoned: on the 63 x 63 mesh a linear interpolant of the run 8 %
+of swing off the reference across one accepted step at an edge, its points
+and its edges as before -- accepted as measured.
+Tests: `test_radau_stall_check.py` (abandoned at a stall, the coupled Newton
+not run; never firing changes nothing; 'auto' by size; C and Python loop the
+same run, on pattern pages too; the early abort's arm).
+
 ## `pcnr.solve_dc_continued(raw_seed=)` -- a caller's x0 seeded unclamped first (2026-10-21)
 
 2026-10-21 (a bug report, bisected to 327df7e3; `doc/hdl_roadmap_260824.md`, 160).

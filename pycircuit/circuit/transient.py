@@ -394,6 +394,10 @@ class _StageSteps(_StepFamily):
         th = tr.par.radau_early_abort
         if th and not th >= 1.0:
             raise ValueError(f"radau_early_abort must be 0 (off) or at least 1, not {th!r}")
+        th = tr.par.radau_stall_check
+        if th != 'auto' and (isinstance(th, str) or (th and not th >= 1.0)):
+            raise ValueError(f"radau_stall_check must be 'auto', 0 (off) or at least 1, "
+                             f"not {th!r}")
         ## (x_last, h, worst) of the last rejection, None after an acceptance;
         ## the order the last retry measured, for 'carried'
         self._retry = self._q_carried = None
@@ -1438,6 +1442,32 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         'tolerance is abandoned there as a rejection (0: never)',
                    unit='',
                    default=2.0),
+         ## THE STALL CHECK (2026-11-08; roadmap 297): an attempt the early
+         ## abort armed whose transform Newton ran `maxiter` iterations
+         ## without converging is judged by the early abort's check at the
+         ## iterate it stopped at -- over the threshold it is abandoned as a
+         ## rejection, as an early abort is; else the coupled Newton solves
+         ## the step as before (`_RadauStages._radau_stall_check`).  Why: on a
+         ## 2-D mesh every fallback was the step over a pulse's edge, 45-63x
+         ## over its tolerance, which the coupled Newton solved exactly (0.4 s
+         ## at 2 030 unknowns, 2 s at 3 974, 10 s at 8 105) for the error test
+         ## to reject: the first iterate reads it as exact (1e-10), the
+         ## stalled one 92-130.  'auto', THE DEFAULT (Andreas: "1"): 2 from
+         ## `_tran_radau.STALL_CHECK_FROM_N` (1 024) unknowns, off below --
+         ## on at every size it turned away fallbacks the small gold decks
+         ## keep (todd3 1.2-1.7x slower).  A number: that threshold at every
+         ## size; 0: off.  Armed only where `radau_early_abort` is.
+         Parameter(name='radau_stall_check',
+                   desc='An armed adaptive Radau attempt whose transform Newton '
+                        'stalls (maxiter iterations, not converged) is judged at '
+                        'the iterate it stopped at: an error estimate over this '
+                        'many times the tolerance abandons it there as a '
+                        "rejection, else the coupled Newton solves the step -- 'auto' "
+                        '(the default: 2 from 1 024 unknowns, off below), a number '
+                        '(at every size), 0 (never); armed only where '
+                        'radau_early_abort is on',
+                   unit='',
+                   default='auto'),
          ## STAGE 12A -- Fang's acceptance band (DAC 2013 eq 15) and step-change
          ## damper (eq 16).  The defaults are the historical one-sided test, so
          ## nothing changes until a caller asks; see `StepController.set_lte_band`

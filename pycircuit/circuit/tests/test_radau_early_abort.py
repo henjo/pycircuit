@@ -62,8 +62,10 @@ def test_a_radau_attempt_far_over_at_its_first_iterate_is_abandoned(monkeypatch)
     """The latch, the default (2) against `radau_early_abort=0` (measured:
     56 attempts abandoned, the transform's iterations 5 941 -> 3 288, its
     dense fallbacks 45 -> 19): every abandoned attempt a rejection, none
-    forced, the fallbacks and the transform's iterations fewer."""
-    tr, _res, counts = _latch(monkeypatch)
+    forced, the fallbacks and the transform's iterations fewer.  (The stall
+    check off: its aborts are the early abort's statistic too,
+    test_radau_stall_check.)"""
+    tr, _res, counts = _latch(monkeypatch, radau_stall_check=0)
     off, _r, off_counts = _latch(monkeypatch, radau_early_abort=0)
     st, so = tr.statistics, off.statistics
     assert st.early_aborts == counts['radau.early:aborts'] > 20, (st.early_aborts, counts)
@@ -81,7 +83,7 @@ def test_a_check_that_never_aborts_changes_nothing(monkeypatch):
     off, byte for byte -- the C's first iteration and its resumed rest are
     the iterates one call makes, and the check writes nothing the run
     reads."""
-    tr, res, counts = _latch(monkeypatch, radau_early_abort=1e300)
+    tr, res, counts = _latch(monkeypatch, radau_early_abort=1e300, radau_stall_check=0)
     off, res_off, _c = _latch(monkeypatch, radau_early_abort=0)
     assert counts['radau.early:checks'] > 100 and tr.statistics.early_aborts == 0
     assert counts['radau_tc:probe'] > 100

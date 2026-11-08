@@ -1472,6 +1472,31 @@ static long tc_check(loop_t *s, loop_attempt_t *a)
     return le->err > s->tc_th ? LOOP_JUDGE_EARLY : 0;
 }
 
+/* THE STALL CHECK (`_RadauStages._radau_stall_check`, `radau_stall_check`):
+   an armed attempt whose Newton ran its iterations without converging,
+   `tc_check` at the iterate it stopped at (tf->Y) against the stall's
+   threshold, counted as the stall's (`stalled`, not `checked`): over it
+   LOOP_JUDGE_EARLY, the attempt abandoned as an early abort is (`tc_abort`)
+   and the C Newton's non-convergence counted as `_outcome` counts the
+   Python's (`noconv`, not where the Python loop made it).  0: on to the
+   fallback (or its hand-back), not armed or the threshold 0 included */
+static long tc_stall(loop_t *s, loop_attempt_t *a)
+{
+    long checked = a->checked, st;
+    double th = s->tc_th;
+    if (!a->armed || !(s->stall_th > 0.0)) return 0;
+    s->tc_th = s->stall_th;
+    st = tc_check(s, a);
+    s->tc_th = th;
+    a->checked = checked;
+    a->stalled = 1;
+    if (st == LOOP_JUDGE_EARLY) {
+        a->stallab = 1;
+        a->noconv = !a->pyloop;
+    }
+    return st;
+}
+
 /* radau_tc.c's Newton on the loop's struct for `maxit` iterations from the
    seeds in `useed`, its end passes into the end set `o`: its status, its
    iterations and refactors added to the attempt's */
@@ -1570,8 +1595,10 @@ static long tc_newton(loop_t *s, loop_attempt_t *a)
         a->served = st == RADAU_TC_CONVERGED;
     }
     if (st != RADAU_TC_CONVERGED) {
-        /* (not converged in maxiter: the Python's NoConvergenceError, its
-           dense fallback -- here where it is bound, `tc_fallback`) */
+        /* (not converged in maxiter: the stall check, then the Python's
+           NoConvergenceError, its dense fallback -- here where it is bound,
+           `tc_fallback`) */
+        if (st == RADAU_TC_MAXITER && (it = tc_stall(s, a)) != 0) return it;
         a->fb = st == RADAU_TC_MAXITER && s->fb_ok;
         a->noconv = a->fb && !a->pyloop;
         return LOOP_BAIL_TRANSFORM;
@@ -1824,6 +1851,7 @@ static long tc_take(loop_t *s, loop_attempt_t *a)
     a->tuhit = a->served = a->probed = a->checked = a->screened = a->estimated = 0;
     a->repat = a->pyit = a->pyend = 0;
     a->fb = a->noconv = a->pyloop = a->fast2 = a->fbcert = a->A = 0;
+    a->stalled = a->stallab = 0;
     a->fbset = a->set = -1;
     /* (armed as the stepping loop's `radau_arm` arms it: adaptive, a
        threshold, a full attempt left in the point's budget, above minstep) */
@@ -1886,6 +1914,7 @@ static void tc_count(loop_t *s, const loop_attempt_t *a)
     }
     s->tc_probes += a->probed;
     s->tc_checks += a->checked;
+    s->tc_stallchecks += a->stalled;
     s->tc_xpasses += a->xpass;
     s->tc_cpasses += a->cpass;
     s->tc_ends += a->fuse != 0;
@@ -1943,7 +1972,8 @@ static void tc_abort(loop_t *s, const loop_attempt_t *a)
     double hn = stage_retry(s, a, a->worst, s->pst);
     tc_kept(s, a);
     tc_count(s, a);
-    s->tc_aborts++;
+    if (a->stallab) s->tc_stallaborts++;
+    else s->tc_aborts++;
     s->rejected++;
     s->early_aborts++;
     s->point_retries++;
@@ -2205,7 +2235,7 @@ long pcx_loop(loop_t *s)
     s->tc_symfreed = s->tc_numfreed = 0;
     s->tc_noconv = s->tc_fb = s->tc_fbcert = s->have_fbY = 0;
     s->tc_rkref = s->tc_rkfac = s->tc_rkpiv = s->tc_rkres = s->tc_rkdense = 0;
-    s->tc_pyends = 0;
+    s->tc_pyends = s->tc_stallchecks = s->tc_stallaborts = 0;
     if (s->family == LOOP_FAMILY_STAGE) return s->status = stage_loop(s);
     st = lmm_loop(s);
     ck_back(s);

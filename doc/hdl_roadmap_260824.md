@@ -14912,3 +14912,59 @@ Different lines each time, and 60 a sample: the two rates are inside each other'
 * Timing, on a settled box: the default path against 2d3f5ba9, 3 interleaved pairs, chain 4000 Gear-2 1 us **0.998x**, mesh 63x63 Gear-2 1 us **1.015x**, mesh 63x63 Radau 100 ns **1.004x** (line 0.99); ten charge currents saved on the active chain under Radau at 1 us against none: 3 ABBA pairs 0.980 (one pair 0.944 in a load spike), so measured again, 5 pairs **0.982x**: 1.8 % (line 2 %) -- three charges and a current a device a step.
 
 **Tests.**  test_save (36): KCL and the analytic capacitor current under Radau, the transform off and on; the C stage loop and the C transform loop against the Python's attempts, writing back every seven steps, every current the same bytes and KCL at d2 (the stage loop handing back stage 1 for stage 2: the capacitor's current differs); on Radau's grid the currents their series resampled; TR-BDF2 refused; the warning said once by a Radau run saving a charge current, by no other.  Pinned pairs re-recorded with their twins checked (loop.c's stage accept, the stage glue's load and write-back, the accept).  A C comment saying "stages 1" tripped the C files' history check (`test_c_abi`): reworded.  Suite 6 567 passed (10 skipped).
+
+## 2026-11-08 — 297. Radau's stall judged at its iterate, from 1 024 unknowns: an armed attempt whose transform Newton stalls is abandoned there when its estimate is over 2, not solved by the coupled Newton for the error test to reject -- a 2-D mesh's Radau 1 us 1.45x (2 030 unknowns), 1.53x (3 974), 1.63x (8 105, peak 5.3 -> 3.3 GB); every gold deck as it was (on at every size it cost todd3 1.2-1.7x: Andreas "1"); the amplitude guard's miss on 63 x 63 accepted as measured by Andreas
+
+**Why**  Plan 261's L16 (`tc/plan_261.md`), sized first (scripts p261/l16, no source changed): on the mesh every fallback is one event,
+the step over the pulse's edge (h = 2 ns, the first row switching), which the coupled 3n Newton solved exactly -- 0.43 s at 2 030
+unknowns, 1.8 s at 3 974, 10 s at 8 105, about a third of a 1 us run -- for the error test to reject it (its estimate 45-63) and the
+retry at h x 0.216 to be kept.  The early abort (159) is blind there: at the first iterate the stages have moved as a linear response
+to the ramp, which the embedded pair reads as exact (1e-10); at the stalled iterate the estimate reads 92-130.  At size the C transform
+loop binds no coupled Newton (`fb` None on a packed core), so each stall was also a hand-back: the C's 100 iterations, the Python
+step's 100 again, the coupled Newton.  Set aside on measurement: one threshold for every size -- the estimate at the stall does not
+separate the gold decks' kept fallbacks from their rejected ones (191 on 10 decks: kept median 0.93, p90 6.6, max 50; rejected p10 1.3,
+median 5.2) -- and a cheaper Newton: the transform with its Jacobian remade at the stalled iterate converges on 102 of 103 kept
+fallbacks and on none of the mesh's (the step too big for any Newton).
+
+**What.**  `radau_stall_check` ('auto', the default: 2 from `_tran_radau.STALL_CHECK_FROM_N` (1 024) unknowns, off below; a number: that
+threshold at every size; 0: off; armed only where `radau_early_abort` arms the attempt).  Where an armed attempt's transform Newton runs
+`maxiter` iterations without converging, `_RadauStages._radau_stall_check` makes the early abort's own check (`_radau_early_check`,
+its threshold and its counts' keys passed) at the iterate the loop stopped at -- the C's buffer (`_tran_radau_tc.iterate`) or the
+Python loop's -- and over the threshold raises `_RadauAbort`: the attempt abandoned as an early abort is, its retry by the family's law
+at the iterate's worst unknown (`reject_early`); else NoConvergenceError and the coupled Newton as before.  In C, loop.c's `tc_stall`
+before the hand-back or the fallback (`tc_newton`): `tc_check` at tf->Y against `stall_th`, counted as the stall's (`stalled`,
+`stallab`; loop_t's `stall_th`, `tc_stallchecks`, `tc_stallaborts` at its END), its non-convergence the C Newton's (`noconv`) as
+`_outcome` counts the Python's.  One resolver for both twins' threshold (`_tran_radau.stall_threshold`; the glue's `_load_early`),
+the glue's type guard as the early abort's, the counts `radau.stall:checks` / `:aborts`; the run's `early_aborts` statistic holds
+both aborts.
+
+**Measured** (LINES set before building, in `tc/plan_261.md` L16; Andreas chose "2", on at every size, then "1" on its numbers).
+* On at every size, against HEAD 34a77b55 (the line's form after roadmap 159):
+  (a) the check made and never firing the same bytes on the 27 decks and both meshes -- at 1e300 gm1 still aborted once (its stalled
+  iterate's estimate is infinite); at `inf` its bytes are HEAD's; (b) mesh 45 x 45 Radau 1 us **1.454x** (17.5 -> 12.0 s, peak 744 ->
+  683 MB), 63 x 63 **1.527x** (55.0 -> 36.7 s, 1 689 -> 1 395 MB), 90 x 90 **1.630x** (252.3 -> 154.8 s, 5 337 -> 3 338 MB), 3, 3 and 1
+  interleaved pairs, nine stall aborts each, no fallback; (c) against reltol/100 the edges as the check off and six reltol nudges place
+  them (worst 6.0 / 4.4 ps against 6.1 / 4.5), the solver's own points as accurate (63 x 63: 3.586e-3 of swing, off 3.586e-3, nudges
+  3.594e-3); the AMPLITUDE GUARD (a linear interpolant of the run against the reference) MISSED on 63 x 63, 8.0 % of swing against a
+  limit of 4.25 %: at 705.84 ns, between the run's points at 705.4 and 706.2 ns -- an accepted 0.8 ns step at the input's edge after
+  an abort's retry, read as a 404 ps shift while every edge agrees to ps; (d) the 27 gold decks, best of 3 interleaved: summed 27.49 ->
+  27.35 s, no gold column flipped, no new forced step, none failed, the 19 without a stall abort HEAD's bytes -- but todd3 **1.69x**
+  slower (57 stall aborts turning its kept fallbacks into rejections, 273 -> 377 steps; its reltol-nudge spread 1.2-1.7x against
+  HEAD's 0.105-0.111 s: real), latch +6.3 % (spreads overlapping, ~+3 %), arom +3.3 % (HEAD's run its spread's low end); (e) chain 4000
+  Radau 0.992x, active chain Radau 0.994x and Gear-2 0.997x, mesh 63 x 63 Gear-2 0.994x, the same digests.
+* From 1 024 unknowns (the commit), the gate against 34a77b55: the 27 decks under Radau, Gear-2 and DC 0 differing (todd3 and every
+  deck as they were); C against Python 0 differing on every deck under every setting and at size; the size runs that stall above
+  1 024 unknowns move as measured above (mesh 45 x 45 and 63 x 63 at 100 ns, the active chain at 100 ns, one stall), the rest the
+  same; the meshes' 1 us runs the every-size build's bytes (f379da1954d1, 5ca15ac93a0e), so (b) and (c) stand.  The changed C:
+  every line reached by the decks or at size; of 12 arms, two by neither -- `tc_stall` on an attempt not armed, and a check made
+  that does not fire (the first gate's decks, jge and nand, reached it on at every size) -- both C against Python in the tests.
+
+**Tests.**  test_radau_stall_check (13): on the 10 x 10 mesh (105 unknowns; the check by number or the size lowered) a stalled attempt
+over the threshold abandoned as a rejection, the coupled Newton not run; at an infinite threshold the run with the check off byte for
+byte; 'auto' nothing under its size and the check at 2 above it; the early abort's arm needed; the C transform loop against the
+Python's -- the same bytes, statistics, counts and state, dense, on pattern pages (where a stall was a hand-back: none now) and with
+'auto' at a lowered size; a stall checked and not over an infinite threshold, and the stalls `tc_stall` passes unchecked (threshold 0, not armed, 'auto' under its size), the same in both; bad
+thresholds refused.  Bitten on the final tests: `tc_stall`'s call removed (5 fail), the Python's threshold read as 0 (5 fail) -- the
+C-against-Python cases and the never-firing one; the behaviour tests pass on either half alone (the other twin makes the check).  test_radau_early_abort's
+two runs that compare the early abort alone set the stall check off.  Pinned pairs re-recorded with their twins' tests passing: the
+transform loop and its C (`_radau_stall_check`, `stall_threshold` pinned), and the four other pairs on loop.c and loop.h.  Suite 6 580 passed (10 skipped).

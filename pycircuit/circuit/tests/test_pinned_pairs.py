@@ -1075,10 +1075,16 @@ PAIRS = {
                'early check\'s, the estimate\'s -- `StructuralKLU.solve`\'s sequence on the '
                'numeric the attempt found, kept when the attempt is made, taken back when not; '
                'the fallback (210) made there too -- its estimate the fresh one, numpy\'s solve '
-               'whatever the real factor\'s solver (roadmap 218)',
+               'whatever the real factor\'s solver (roadmap 218).  The stall check before the '
+               'fallback (roadmap 297): the early check at the iterate the Newton stopped at, '
+               '`_radau_stall_check` / `tc_stall`, abandoned as the early abort\'s, counted as '
+               'the stall\'s, no hand-back; its threshold one resolver\'s for both '
+               '(`stall_threshold`: \'auto\' from `STALL_CHECK_FROM_N` unknowns)',
         'reference': ['pycircuit.circuit._tran_radau:_RadauStages._rk_step_transformed',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_frozen',
                       'pycircuit.circuit._tran_radau:_RadauStages._radau_early_check',
+                      'pycircuit.circuit._tran_radau:_RadauStages._radau_stall_check',
+                      'pycircuit.circuit._tran_radau:stall_threshold',
                       'pycircuit.circuit._tran_radau:_RadauStages._transform_loop',
                       'pycircuit.circuit._tran_radau:_RadauStages._stage_end_passes',
                       'pycircuit.circuit._tran_radau:_RadauStages._finish_radau',
@@ -1173,7 +1179,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('9a7232358808', '8a603dfb9596'),
+    'the stepping loop and its C': ('9a7232358808', 'a1cabac76ec4'),
     'the predictor and its C': ('9e611c84de5a', '9b16bd4e0f30'),
     'the branch screen and its C': ('73a09a49db2e', '41c5e5959ad1'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -1194,7 +1200,7 @@ RECORD = {
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('d417a4cedc1d', '694a1086db84'),
     "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),
-    "the stage paths' passes and the core's": ('aea1c7cea5ca', '255377c134fe'),
+    "the stage paths' passes and the core's": ('7706b1247670', '255377c134fe'),
     'the coupled stage Newton and its C': ('c96c88b2391d', 'e043060ead64'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
@@ -1206,15 +1212,15 @@ RECORD = {
     'the stage step map and its C': ('39f2d0f63b0f', '1a163bbf03a3'),
     'the KLU step map and its C': ('5b9b1f672523', '94dfea9dc33d'),
     'the stage walk and its C': ('0e5a8501ce42', 'e4dda69dcb35'),
-    'the multistep walk and its C': ('4ef5185c18ff', '9e86a870d311'),
+    'the multistep walk and its C': ('4ef5185c18ff', '3e2e69b2fbc7'),
     'the multistep step map and its C': ('985dde19187d', 'd6c3dcf5119d'),
     'the stage readers and their one read': ('d25552fe5ede', '08f3606179d1'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
     'the readiness reads and their stamps': ('a3c7e910bad9', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('e683881c671b', '58949e1f8dd8'),
-    'the transform loop and its C': ('a75e06f5b04a', '1df5e38dd8cb'),
+    'the stage loop and its C': ('e683881c671b', '2e43919bcd79'),
+    'the transform loop and its C': ('f6c3df3bcebf', '26b30847fb4f'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

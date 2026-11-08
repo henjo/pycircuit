@@ -259,6 +259,33 @@ def _frozen_chain():
     return _FROZEN['chain']
 
 
+#: the `_paths` counts of `_RadauStages._radau_early_check`'s checks and
+#: aborts: the early abort's, and the stall check's (`_radau_stall_check`)
+_EARLY_KEYS = ('radau.early:checks', 'radau.early:aborts')
+_STALL_KEYS = ('radau.stall:checks', 'radau.stall:aborts')
+
+#: THE STALL CHECK'S SIZE (`radau_stall_check='auto'`): from this many
+#: unknowns the check at `STALL_CHECK_AUTO`, below it none.  Measured (plan
+#: 261 L16): at size a stall's coupled Newton costs seconds (2 s at 3 974
+#: unknowns, 10 s at 8 105) and the mesh's were all rejected after it -- a
+#: 2-D mesh's Radau 1.45-1.63x; on the small gold decks it costs
+#: milliseconds and keeps steps the check would turn away (todd3 1.2-1.7x
+#: slower with the check on).
+STALL_CHECK_FROM_N = 1024
+STALL_CHECK_AUTO = 2.0
+
+
+def stall_threshold(tr):
+    """The stall check's threshold for `tr`'s run (`radau_stall_check`):
+    'auto' -- `STALL_CHECK_AUTO` from `STALL_CHECK_FROM_N` unknowns, else
+    0 (off) -- or the number asked for.  The Python's check and the C
+    loop's (`_tran_tcloop_c._load_early`) both read it here."""
+    th = tr.par.radau_stall_check
+    if isinstance(th, str):
+        return STALL_CHECK_AUTO if tr.cir.n >= STALL_CHECK_FROM_N else 0.0
+    return float(th)
+
+
 class _RadauArm:
     """The early abort armed for one adaptive Radau attempt
     (`Transient.radau_early_abort`; `_SteppingLoop.take` sets it as
@@ -1625,8 +1652,10 @@ class _RadauStages:
                     Y = _tran_radau_tc.seed(self)
                     if not self._transform_loop(ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol,
                                                 maxit - 1):
+                        self._radau_stall_check(arm, ctx, x0, Y, lims, real)
                         raise NoConvergenceError(_NOCONV)
                 elif Yc is False:
+                    self._radau_stall_check(arm, ctx, x0, _tran_radau_tc.iterate(self), lims, real)
                     raise NoConvergenceError(_NOCONV)
                 done = True
             elif Yc is None:
@@ -1641,6 +1670,10 @@ class _RadauStages:
                                       _nobypass, reltol, abstol, maxit)
             if Yc is False or (Yc is None and not self._transform_loop(
                     ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, maxit)):
+                ## (THE STALL CHECK at the iterate the loop stopped at: the
+                ## C's in its buffer, else the Python loop's)
+                self._radau_stall_check(arm, ctx, x0, _tran_radau_tc.iterate(self)
+                                        if Yc is False else Y, lims, real)
                 raise NoConvergenceError(_NOCONV)
         if Yc is not None:
             Y = Yc
@@ -1649,9 +1682,11 @@ class _RadauStages:
             state_restore(S[2])
         return self._finish_radau(ctx, x0, t, provided_function, Y, real=real)
 
-    def _radau_early_check(self, arm, ctx, x0, Y, lims, real):
+    def _radau_early_check(self, arm, ctx, x0, Y, lims, real, th=None, keys=_EARLY_KEYS):
         """THE EARLY ABORT's test (`radau_early_abort`) at the transform's
-        first iterate `Y`, not converged there: the step's embedded estimate
+        first iterate `Y`, not converged there -- the stall check's at the
+        stalled one (`_radau_stall_check`: its threshold `th`, its counts'
+        `keys`): the step's embedded estimate
         at `Y` -- `_radau_error_estimate`'s, ``((lam_0/h) C + G)^-1 (C F1 +
         f0)``, on the step's frozen ``C`` at `x0` and its real solve `real`,
         made in the reduced space; ``f0 = -(i(x0) + u(t_n))`` once a point
@@ -1691,10 +1726,33 @@ class _RadauStages:
             iref = ctx.iref
             est_r = real[2](np.concatenate((rhs[:iref], rhs[iref + 1:])))
             err, ek = fam.normalised(arm.x_last, Y[2], arm.h, est_r, kept=True)
-        _paths.COUNTS['radau.early:checks'] += 1
-        if err > arm.th:
-            _paths.COUNTS['radau.early:aborts'] += 1
+        _paths.COUNTS[keys[0]] += 1
+        if err > (arm.th if th is None else th):
+            _paths.COUNTS[keys[1]] += 1
             raise _RadauAbort(err, float(np.max(np.asarray(ek))), arm.x_last, arm.h)
+
+    def _radau_stall_check(self, arm, ctx, x0, Y, lims, real):
+        """THE STALL CHECK (`radau_stall_check`, roadmap 297): where the
+        transform's Newton ran its iterations on an armed attempt without
+        converging, the early abort's test (`_radau_early_check`) at the
+        iterate it stopped at, `Y`, against the stall's threshold, counted
+        as the stall's: over it `_RadauAbort`, the attempt abandoned as an
+        early abort is; else the caller's NoConvergenceError and the coupled
+        Newton.  Not armed, or the threshold 0 (`stall_threshold`: 'auto'
+        below `STALL_CHECK_FROM_N` unknowns): nothing.
+
+        Why (plan 261 L16): on a 2-D mesh every fallback was the step over a
+        pulse's edge, its estimate 45-63 once the coupled Newton had solved
+        it exactly -- 2 s at 3 974 unknowns, 10 s at 8 105 -- only for the
+        error test to reject it; at the first iterate the stages have moved
+        as a linear response, which the embedded pair reads as exact
+        (1e-10), and at the stalled iterate the estimate reads 92-130.  The
+        loop in C makes it as `tc_stall`."""
+        if arm is None:
+            return
+        th = stall_threshold(self)
+        if th:
+            self._radau_early_check(arm, ctx, x0, Y, lims, real, th, _STALL_KEYS)
 
     def _transform_loop(self, ctx, fz, Y, S, lims, Cr, Gr, reltol, abstol, maxit):
         """The transform's simplified Newton from the stages `Y` (updated in

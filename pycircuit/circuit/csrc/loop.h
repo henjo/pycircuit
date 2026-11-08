@@ -372,6 +372,12 @@ typedef struct {
     const int64_t *srows;
     long nsrows;
     double *SY;
+    /* THE STALL CHECK (`radau_stall_check`; 0 where the loop never arms it):
+       an armed transform attempt whose Newton ran its iterations without
+       converging judged at the iterate it stopped at (`tc_stall`); its checks
+       and aborts this call (zeroed by pcx_loop) */
+    double stall_th;
+    long tc_stallchecks, tc_stallaborts;
 } loop_t;
 long pcx_loop(loop_t *s);
 
@@ -434,6 +440,9 @@ typedef struct {
        loop's own is not, `pyloop`); its seeds' count; the coupled set its
        Newton wrote; its screen's certificates */
     long fb, noconv, pyloop, fast2, fbset, fbcert;
+    /* the stall check's (`tc_stall`): made at the iterate the Newton stopped
+       at; over its threshold (the attempt abandoned as the stall's) */
+    long stalled, stallab;
 } loop_attempt_t;
 
 /* KLU's analysis (`klu_analyze(n, Ap, Ai, Common)`: a symbolic, NULL where
