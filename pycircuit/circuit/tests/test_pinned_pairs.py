@@ -484,7 +484,9 @@ PAIRS = {
                'pattern pages at size (roadmap 299); J packed on the pattern, the '
                'Schur sum\'s, gshunt\'s and the junction term\'s writes and KLU\'s '
                'reads at their positions in it, the AutoSolver\'s first reduced '
-               'matrix at size from all of it (roadmap 300)',
+               'matrix at size from all of it (roadmap 300); the record\'s checks '
+               'each device\'s in turn, a class\'s kernels asked once a call '
+               '(roadmap 301)',
         'reference': ['pycircuit.circuit.pcnr:solve_dc',
                       'pycircuit.circuit.pcnr:augmented_system',
                       'pycircuit.circuit.pcnr:schur_reduce',
@@ -1205,7 +1207,7 @@ RECORD = {
     'the PSP limiter and its C twin': ('8e14bbc903f1', '3aefa105ff7f'),
     'the error test and its C': ('639cab30f2d5', 'c74aa246f41c'),
     'the DC base solve and its C': ('37b14c0a34a7', '0898d2b267a9'),
-    'the PCNR DC solve and its C': ('6aa96549b383', '6d2ca4e8f413'),
+    'the PCNR DC solve and its C': ('6aa96549b383', 'ae21bf455002'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('d417a4cedc1d', '694a1086db84'),
     "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),

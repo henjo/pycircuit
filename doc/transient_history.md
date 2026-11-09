@@ -5590,6 +5590,20 @@ MB).  Tests: `test_pcnr_c.py` (the first reduced matrix holds the Schur
 entries off the core's pattern; KLU's entries and the foreign test at
 their positions in packed J).
 
+## `_pcnr_c._record` -- the C record's checks a class at a time (2026-11-09)
+
+2026-11-09 (`doc/hdl_roadmap_260824.md`, 301; plan 261 L17 D4).  Each PCNR
+C solve re-checks that its record still serves: every participant, in
+turn, for an instance override, its toolkit and its class's kernels.  The
+class check (`_class_ok`) was called once a device, and the override check
+built a generator a device: 7.1 ms of a repeat call's 7.8 at 8 000
+devices, ~0.7 s of an active chain's DC.  The class's kernels are now
+asked once a (class, row count) a call and the names looped plainly; each
+device's checks stay in order, so a decline names the same reason.  The
+same answers, routes and declines; the active chain's DC 1.095x at 8 000
+stages.  Tests: `test_pcnr_c.py` (a later device's override, toolkit or
+class still declines).
+
 ## `_tran_stageloop_c`, `csrc/loop.c`'s stage family -- a plain run's Radau attempts in C (2026-10-24)
 
 2026-10-24 (`doc/hdl_roadmap_260824.md`, 207).  A plain Radau transient --

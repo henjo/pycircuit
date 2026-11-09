@@ -717,6 +717,36 @@ def test_each_decline_is_counted_and_the_python_answers(why, monkeypatch):
     assert _paths.COUNTS['pcnr_c:served'] == before.get('pcnr_c:served', 0)
 
 
+@pytest.mark.parametrize('late', ['own', 'toolkit', 'class'])
+def test_a_later_devices_decline_is_the_solves(late, monkeypatch):
+    """The record's checks are each device's in turn (`_record`: a class's
+    kernels asked once a call): a decline on the 41st of 60 diodes of one
+    class -- its instance's own `i`, a toolkit of another type -- or of a
+    class only that diode has, is still the solve's: counted, not served,
+    the Python's answer."""
+    def build():
+        c = _ladder(60)
+        el = c['d41']
+        if late == 'own':
+            el.i = el.i
+        elif late == 'toolkit':
+            sub = type('_Tk', (type(el.toolkit),), {})
+            tk = object.__new__(sub)
+            tk.__dict__.update(el.toolkit.__dict__)
+            el.toolkit = tk
+        else:
+            el.__class__ = type('_Late', (type(el),), {})
+        return c
+    real = _pcnr_c._class_ok
+    monkeypatch.setattr(_pcnr_c, '_class_ok',
+                        lambda cls, t: 'class' if cls.__name__ == '_Late' else real(cls, t))
+    c, c_ref = build(), build()
+    got, counts = _solve(c, True, monkeypatch, x0=_start(c, 0.5))
+    ref, _c = _solve(c_ref, False, monkeypatch, x0=_start(c_ref, 0.5))
+    assert got == ref and got[0] == 'ok', (got[:1], ref[:1])
+    assert counts.get('pcnr_c:' + late) == 1 and 'pcnr_c:served' not in counts, counts
+
+
 def test_a_one_ulp_fault_in_the_reference_is_seen(monkeypatch):
     """The comparison can see one ulp: the reference's device current moved
     by one ulp on every stamp, and the twin test's two answers differ."""

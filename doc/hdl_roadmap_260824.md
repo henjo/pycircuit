@@ -15113,3 +15113,35 @@ swapped (5), the assembly reversed (20), the dense solve's scatter transposed (1
 (1 each), KLU's positions shifted (9), the zero slot moved, the foreign positions row-major (1 each), `_reduced_J` from the core's
 pattern (1).  The PCNR DC pinned pair re-recorded (its C side), its twins' tests passing, its description naming the packed J.
 Suite 6 587 passed (10 skipped).
+
+## 2026-11-09 — 301. PCNR's C record checked a class at a time: `_record`'s per-device checks with each class's kernels asked once a call -- the active chain's DC 1.087x at 4 000 stages, 1.095x at 8 000 and 1.08x at 16 000; every decline the same in the same device order, every answer the same
+
+**Why**  Plan 261's L17 D4 (`tc/plan_261.md`, "D4 RE-SIZED"): at 10db515a the active chain 8 000's DC took 6.56 s, the C solve 4.32
+s of it, `_pcnr_c._record` 1.19 s over its 98 calls (phase.py: perf_counter around each) -- each repeat 7.8 ms (best of 7), 7.1 ms
+of it the per-device loop: 8 000 calls of `_class_ok` and 8 000 generators over the override names a call.  Andreas: "Start as you
+recommend" (P, then D4); of D4's pieces the repeat check loop (R) first -- the seed's refine in one C call (V, ~0.3 s) and the first
+record build (I, ~0.3-0.4 s) left.
+
+**What.**  `_record` keeps every device's checks in turn -- a scalar device, an instance's own `i` / `G` / `pcnr_limit`, a toolkit
+of another type, its class's kernels -- so the first that fails still names the reason; the class's (`_class_ok`, which reads the
+class and the row count alone) is asked once a (class, row count) a call, the override names looped plainly (`_OWN` read at the
+call: a test empties it).  The same kernel objects in the same order, so the record and its identity checks are as before.
+Repeat: 7.8 -> ~2 ms at 8 000 devices.
+
+**Measured** (LINE set before building; HEAD 10db515a's worktree against this tree, interleaved, per-pair medians):
+* (a)-(b) The DC, every digest, route and PCNR C count HEAD's: the active chain 800 stages 1.037x, 2 000 1.069x, 4 000 **1.087x**
+  (2.00 / 2.00 / 2.01 -> 1.84 / 1.84 / 1.84 s), 8 000 **1.095x** (6.54 / 6.54 / 6.56 -> 5.96 / 6.05 / 5.99 s); the quiet chain 4 000
+  and 8 000 1.000x (one solve: nothing to repeat), the mesh 63 x 63 1.015x; every peak within 2 MB of HEAD's (8 000: 424 both).
+  LINE MET: 8 000 >= 1.05x, 4 000 >= 1.04x, every other >= 0.98x.
+* The wall: the active chain at 16 000 stages, one pair, 38.68 -> 35.81 s (1.08x), peak 785 MB both, the same answer.
+* (d) The transients at size, the same digests, two pairs each: the quiet chain's Radau 1 us 1.003x, the mesh's Gear-2 0.988x and
+  Radau 0.993x, the active chain's Gear-2 0.990x (its operating point 1.95 -> 1.78 s), peaks within 2 MB.  The loads 1.3-2.2 (the
+  DCs) and 1.7-3.9 (the transients, their own core pool among them).
+* (e) The gate against 10db515a: SAME -- every result (the 27 decks under DC, Gear-2 and its bypass, Radau; the 8 size runs) and
+  every path counter, C against Python 0 differing on every deck under every setting and at size; no C line changed.
+
+**Tests.**  test_pcnr_c: `test_a_later_devices_decline_is_the_solves` -- on a 60-diode ladder, the 41st diode's instance holding
+its own `i`, a toolkit of another type, or a class only it has (declined): counted, not served, the Python's answer.  Bitten (2 of
+2): the memo keyed on the row count alone (the late class served: 2 fail, an existing NaN test's two classes among them); the
+per-device checks skipped after a class's first device (5 fail: the late override and toolkit, test_instance_overrides' MOS
+circuits under DC, Gear-2 and Radau).  The PCNR DC pinned pair re-recorded (its C side), its twins' tests passing.  Suite 6 590 passed (10 skipped).

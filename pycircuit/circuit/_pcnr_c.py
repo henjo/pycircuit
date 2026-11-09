@@ -757,16 +757,24 @@ def _record(circuit, devices, iref, epar, drv):
     from pycircuit.circuit import pcnr as _pcnr
     if not _tran_core.CORE:
         return 'core'
-    kerns = []
+    ## each device's checks in turn (the first that fails names the
+    ## reason); `_class_ok` reads the class and the row count alone, so it
+    ## is asked once a pair a call
+    kerns, by_class, own, tk = [], {}, _OWN, type(circuit.toolkit)
     for d in devices:
         if d.scalar or d.rows is None:
             return 'scalar'
-        ed = d.element.__dict__
-        if any(nm in ed for nm in _OWN):
-            return 'own'
-        if type(d.element.toolkit) is not type(circuit.toolkit):
+        el = d.element
+        ed = el.__dict__
+        for nm in own:
+            if nm in ed:
+                return 'own'
+        if type(el.toolkit) is not tk:
             return 'toolkit'
-        kern = _class_ok(type(d.element), d.t)
+        key = (type(el), d.t)
+        kern = by_class.get(key)
+        if kern is None:
+            kern = by_class[key] = _class_ok(*key)
         if type(kern) is str:
             return kern
         kerns.append(kern)
