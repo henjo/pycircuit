@@ -25,6 +25,13 @@
 
 enum pcx_klu_stop { PCX_KLU_FACTOR = 1, PCX_KLU_SOLVE = 2, PCX_KLU_FLAGS = 3 };
 
+/* a step's `a_built`: A made by the caller (PCX_A_BUILT), or scratch the
+   residual's dense test scatters A into from the CSC -- zeroed whole first
+   (PCX_A_SCRATCH), or held zero by the caller (PCX_A_ZERO: zero on entry,
+   the scatter undone after the test, so only KLU's pattern is ever written:
+   m x m pages a caller holds resident a page or two a row) */
+enum pcx_klu_a { PCX_A_SCRATCH = 0, PCX_A_BUILT = 1, PCX_A_ZERO = 2 };
+
 
 static void pcx_klu_free(pcx_klu_t *k, void *num)
 {
@@ -87,10 +94,10 @@ static int pcx_klu_resid_sparse(pcx_klu_t *k, const double *b, const double *x,
 /* StructuralKLU.solve(A, b) on its own sequence, `kAx` A's values in its
    order (gathered by the caller) and `A` the same matrix dense (m x m,
    row-major: the residual's `arr @ x`, numpy's matmul -- its dgemv) where
-   `a_built`, else a buffer the residual's dense test scatters A into from
-   the CSC where the sparse one does not decide (counted in `dense`, which
-   may be NULL).  The solution in `x`, `y` (m) and `t` (2 m, read only
-   where not `a_built`) scratch.  `kept`: `solve_kept`'s -- the numeric
+   `a_built` is PCX_A_BUILT, else a buffer the residual's dense test
+   scatters A into from the CSC where the sparse one does not decide
+   (counted in `dense`, which may be NULL; `enum pcx_klu_a`).  The solution
+   in `x`, `y` (m) and `t` (2 m, read only where not built) scratch.  `kept`: `solve_kept`'s -- the numeric
    holds a refactor of these very values, none is made (nor counted) */
 static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, double *y,
                         double *t, long m, void *dgemv, int a_built, long *dense, int kept)
@@ -113,19 +120,24 @@ static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, dou
     /* (what KLU raised inside: the Python's ctypes calls never see it) */
     feclearexcept(FE_ALL_EXCEPT);
     if (!reused) return 0;
-    if (!a_built) {
+    if (a_built != PCX_A_BUILT) {
         fails = pcx_klu_resid_sparse(k, b, x, y, t, m);
         if (fails == PCX_UNDECIDED) {
             /* (the dense test on A as the Python holds it: zero off the
                pattern; what the sparse sums raised is not the Python's) */
             feclearexcept(FE_ALL_EXCEPT);
-            for (i = 0; i < m * m; i++) A[i] = 0.0;
+            if (a_built == PCX_A_SCRATCH) for (i = 0; i < m * m; i++) A[i] = 0.0;
             for (j = 0; j < m; j++)
                 for (p = k->kAp[j]; p < k->kAp[j + 1]; p++) A[k->kAi[p] * m + j] = k->kAx[p];
             if (dense) (*dense)++;
         }
     }
-    if (fails == PCX_UNDECIDED) fails = pcx_klu_resid_dense(k, A, b, x, y, m, dgemv);
+    if (fails == PCX_UNDECIDED) {
+        fails = pcx_klu_resid_dense(k, A, b, x, y, m, dgemv);
+        if (a_built == PCX_A_ZERO)
+            for (j = 0; j < m; j++)
+                for (p = k->kAp[j]; p < k->kAp[j + 1]; p++) A[k->kAi[p] * m + j] = 0.0;
+    }
     if (fails < 0) return PCX_KLU_FLAGS;
     if (fails) {
         k->residual_fallbacks++;

@@ -82,10 +82,13 @@ typedef struct {
     /* SCRATCH (CTX buffers) */
     double *F,            /* (n) g_MNA */
            *J,            /* (n x n) J_MNA, then the Schur matrix in place */
-           *Jabs,         /* (n x n) |the Schur matrix| */
+           *Jabs,         /* (n x n) |the Schur matrix|: with a pattern zero off it
+                             (allocated zero, written on it alone) */
            *rc,           /* (n) the rhs corrections */
            *A,            /* (m x m, column-major) the dense solve's copy */
-           *R,            /* (m x m, row-major) KLU's: the reduced Schur matrix */
+           *R,            /* (m x m, row-major) KLU's: the reduced Schur matrix;
+                             on the pattern (kfull) zero between its dense
+                             tests (allocated zero: PCX_A_ZERO) */
            *b,            /* (m) the solve's rhs, then the dense solve's solution */
            *kx, *ky, *kt, /* (m, m, 2 m) KLU's solution, the residual's A x, its
                              |A| |x| and its rows' entry counts */

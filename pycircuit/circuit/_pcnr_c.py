@@ -460,12 +460,15 @@ class _Rec:
         mmax = max(d.m for d in devices)
         m = n - 1
         E, Z = np.empty, np.zeros
+        ## (J, |J| and R zero: off the pattern nothing writes them -- pcnrdc.h;
+        ## with one, on pattern pages at size: resident where written)
+        from pycircuit.circuit import _tran_core
+        P0 = _tran_core.pattern_zeros if core.npat else Z
         self.buf = buf = {
             'u': E(n), 'x': E(n), 'v': E(max(k, 1)), 'fe': E(n), 'dx': E(n), 'gl': E(max(k, 1)),
-            ## (J zero: off the pattern nothing writes it -- pcnrdc.h)
-            'F': E(n), 'J': Z(n * n), 'Jabs': E(n * n), 'rc': E(n), 'A': E(max(m * m, 1)),
+            'F': E(n), 'J': P0(n * n), 'Jabs': P0(n * n), 'rc': E(n), 'A': E(max(m * m, 1)),
             'b': E(max(m, 1)), 'xn': E(n), 'ax': E(n), 'Is': E(n), 'vn': E(max(k, 1)),
-            'R': E(max(m * m, 1)), 'kx': E(max(m, 1)), 'ky': E(max(m, 1)), 'kt': E(max(2 * m, 1)),
+            'R': P0(max(m * m, 1)), 'kx': E(max(m, 1)), 'ky': E(max(m, 1)), 'kt': E(max(2 * m, 1)),
             'blk': E(max(ntm, 1)), 'pot': E(tmax), 'cur': E(tmax), 'Gl': E(tmax * tmax),
             'xs': E(tmax), 'rio': E(2 * mmax), 'Cs': Z(n * n), 'q': E(n),
         }

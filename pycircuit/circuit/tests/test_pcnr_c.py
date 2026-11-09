@@ -44,13 +44,14 @@ def _cascode(vdd, vg2, vg1, drive_g2=True):
     return c
 
 
-def _ladder(stages=250):
+def _ladder(stages=250, r1=100.0):
     """A source, then `stages` x (a series resistor, a SPICE diode to
-    ground): 252 unknowns, so the DC's AutoSolver takes StructuralKLU."""
+    ground): 252 unknowns, so the DC's AutoSolver takes StructuralKLU.
+    `r1` the first resistor."""
     c = SubCircuit()
     c['v'] = VS('n0', gnd, v=5.0)
     for k in range(1, stages + 1):
-        c[f'r{k}'] = R(f'n{k - 1}', f'n{k}', r=100.0)
+        c[f'r{k}'] = R(f'n{k - 1}', f'n{k}', r=r1 if k == 1 else 100.0)
         c[f'd{k}'] = eh.DiodeSpiceHdl(f'n{k}', gnd, IS=1e-14 * (1 + k % 7))
     return c
 
@@ -359,13 +360,18 @@ def test_a_schur_overflow_at_a_run_away_rung_is_the_pythons_error(monkeypatch):
     assert counts.get('pcnr_c:singular') == 1 and 'pcnr_c:bail:flags' not in counts, counts
 
 
-def test_the_klu_solve_in_c_is_the_pythons():
+@pytest.mark.parametrize('pattern', [True, False], ids=['pattern', 'no-pattern'])
+def test_the_klu_solve_in_c_is_the_pythons(pattern, monkeypatch):
     """Above the AutoSolver's floor PCNR solves on StructuralKLU: the C
     stops at its first Schur matrix for the AutoSolver's own choice
-    (`_choose`), then runs KLU's sequence.  Two fresh DC analyses, C on
+    (`_choose`), then runs KLU's sequence -- on the core's pattern, or
+    without one (`_tran_core.PATTERN` off: R made dense from J, the
+    residual's dense test on it as built).  Two fresh DC analyses, C on
     and off: every PCNR call's outcome and StructuralKLU's counters and
     numeric after it the same."""
+    from pycircuit.circuit import _tran_core
     from pycircuit.circuit.dcanalysis import DC
+    monkeypatch.setattr(_tran_core, 'PATTERN', pattern)
 
     def run(on):
         _pcnr_c.ENABLED = on
@@ -402,7 +408,7 @@ def test_the_klu_solve_in_c_is_the_pythons():
     assert got[2] == len(got[0]) // 2 and ref[2] == 0
     ## (the C on the pattern: KLU's entries gathered where they stand, the
     ## verdicts the sparse sums' -- pcnrdc.h's THE PATTERN)
-    assert got[3], 'the C did not solve on the pattern'
+    assert got[3] is pattern, 'the C did not solve on the pattern' if pattern else 'a pattern'
 
 
 def test_a_structural_floor_below_the_sparse_one_is_served(monkeypatch):
@@ -428,6 +434,127 @@ def test_a_structural_floor_below_the_sparse_one_is_served(monkeypatch):
     assert got == ref and got[0] == 'ok', (got[:1], ref[:1])
     assert ch == ch_ref == 'StructuralKLU', (ch, ch_ref)
     assert counts.get('pcnr_c:served') == 1, counts
+
+
+## ------------------------------------------------------------------------
+## On pattern pages: the C's n x n matrices resident where written.
+
+def _stiff_ladder(stages=250):
+    """`_ladder` with a first resistor of 1e-300 ohm: that row's sum
+    |J| |x| past 1e300, where neither the convergence test's sparse verdict
+    nor the residual's decides -- both dense tests made, solve after solve
+    (the DC then fails: the point found does not solve its equations)."""
+    return _ladder(stages, r1=1e-300)
+
+
+def _dc_calls(build, on, monkeypatch):
+    """A fresh DC on `build()`, the C on or off: each `pcnr.solve_dc` call's
+    outcome and StructuralKLU's counters after it, the DC's own outcome, the
+    C's counts and the circuit."""
+    from pycircuit.circuit.dcanalysis import DC
+    monkeypatch.setattr(_pcnr_c, 'ENABLED', on)
+    c = build()
+    dc = DC(c, toolkit=circuit.numeric, pcnr=True)
+    log, real = [], pcnr.solve_dc
+
+    def spy(*a, **k):
+        try:
+            x, v, its = real(*a, **k)
+            log.append(('ok', x.tobytes(), v.tobytes(), its))
+        except Exception as e:
+            log.append(('raise', type(e), str(e)))
+            raise
+        finally:
+            sk = dc._default_linearsolver._choice
+            log.append((type(sk).__name__, getattr(sk, 'refactors', None),
+                        getattr(sk, 'factors', None), getattr(sk, 'residual_fallbacks', None)))
+        return x, v, its
+    monkeypatch.setattr(pcnr, 'solve_dc', spy)
+    before = dict(_paths.COUNTS)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        try:
+            log.append(('dc', np.asarray(dc.solve().x, dtype=float).tobytes()))
+        except Exception as e:                           # noqa: BLE001
+            log.append(('dc raise', type(e)))
+    monkeypatch.setattr(pcnr, 'solve_dc', real)
+    counts = {k: v - before.get(k, 0) for k, v in _paths.COUNTS.items()
+              if k.startswith('pcnr_c:') and v != before.get(k, 0)}
+    return log, counts, c
+
+
+def _pcnr_mats(c):
+    """The circuit's PCNR record's n x n matrices: J, |J|, R and its core's
+    G bin."""
+    rec = c.__dict__['_pcnr_c']
+    mats = {k: rec.buf[k] for k in ('J', 'Jabs', 'R')}
+    mats['binG'] = rec.core.arrays['binG']
+    return rec, mats
+
+
+def test_on_pattern_pages_the_dense_tests_are_the_pythons(monkeypatch):
+    """On pattern pages (`_tran_core.paged`, here from any size) the C's J,
+    |J| and R and its core's G bin are pattern pages written on the pattern
+    alone: R held zero -- the residual's dense test scatters KLU's entries
+    in and takes them out after (pcx_kluseq.h's PCX_A_ZERO) -- and |J|
+    written on the pattern where the convergence test goes dense.  On
+    `_stiff_ladder`, both dense tests made solve after solve, every call is
+    the Python's: its outcome and StructuralKLU's counters the same with the
+    C on and off, each call served."""
+    from pycircuit.circuit import _tran_core
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.tests.test_radau_pattern_pages import _paged
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    ## (StructuralKLU from 40 unknowns: the C's KLU on the pattern)
+    monkeypatch.setattr(DC, '_STRUCTURAL_KLU_MIN_N', 40)
+    got, counts, c = _dc_calls(lambda: _stiff_ladder(60), True, monkeypatch)
+    ref, _counts, _c = _dc_calls(lambda: _stiff_ladder(60), False, monkeypatch)
+    assert got[1][0] == 'StructuralKLU', got[1]
+    assert got == ref
+    calls = sum(1 for e in got if e[0] in ('ok', 'raise'))
+    assert calls > 1 and counts.get('pcnr_c:served') == calls, (calls, counts)
+    assert counts.get('pcnr_c:dense_conv', 0) > 0 and counts.get('pcnr_c:dense_resid', 0) > 0
+    rec, mats = _pcnr_mats(c)
+    assert all(_paged(v) for v in mats.values()), {k: _paged(v) for k, v in mats.items()}
+    off = np.ones(c.n * c.n, dtype=bool)
+    off[rec.P] = False
+    assert np.count_nonzero(mats['Jabs']) > 0 and not np.any(mats['Jabs'][off])
+    assert not np.any(mats['J'][off]) and not np.any(mats['R'])
+
+
+def _resident_share(a):
+    """The share of `a`'s pages resident and the process's own -- written:
+    a read of a page never written maps the shared zero page
+    (/proc/self/pagemap: present, bit 63; exclusively mapped, bit 56) --
+    or None where the platform has no such map."""
+    ptr = a.__array_interface__['data'][0]
+    lo, hi = ptr // 4096, (ptr + a.nbytes + 4095) // 4096
+    try:
+        with open('/proc/self/pagemap', 'rb', buffering=0) as f:
+            f.seek(lo * 8)
+            raw = np.frombuffer(f.read((hi - lo) * 8), dtype=np.uint64)
+    except OSError:
+        return None
+    want = (np.uint64(1) << np.uint64(63)) | (np.uint64(1) << np.uint64(56))
+    return np.count_nonzero((raw & want) == want) / (hi - lo)
+
+
+def test_at_size_the_dcs_matrices_are_resident_where_written(monkeypatch):
+    """At size (`_tran_core.paged`: private 4 KB pages, resident where
+    written) the C's J, |J|, R and its core's G bin hold a page or two a
+    row: on `_stiff_ladder` of 1 500 stages (rows of three pages), both
+    dense tests made, each under 3/4 of its pages resident (0.34-0.58
+    measured) -- where a write of every entry (a dense test's zeroed R or
+    |J| made whole) or one entry under a huge page makes all of it."""
+    from pycircuit.circuit import _tran_core
+    _log, counts, c = _dc_calls(lambda: _stiff_ladder(1500), True, monkeypatch)
+    assert counts.get('pcnr_c:dense_conv', 0) > 0 and counts.get('pcnr_c:dense_resid', 0) > 0
+    rec, mats = _pcnr_mats(c)
+    assert _tran_core.paged(rec.core)
+    share = {k: _resident_share(v) for k, v in mats.items()}
+    if None in share.values():
+        pytest.skip('no page map here')
+    assert all(0.0 < s < 0.75 for s in share.values()), share
 
 
 @pytest.mark.parametrize('threads', ['one', 'pool'])

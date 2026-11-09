@@ -15008,3 +15008,53 @@ overflowed unwarned, the C served `Singular matrix`, StructuralKLU's counters th
 infinity_unwarned` -- numpy's bytes, no warning, no error under `over='raise'`.  Bitten: the C's Schur flag test restored (1 fails), the
 Python's errstate without `over` (2), the infinite bail restored (2).  The PCNR DC pair re-recorded, its twins' tests passing.
 Suite 6 582 passed (10 skipped).
+
+## 2026-11-09 — 299. PCNR's DC matrices resident where written: J, |J| and R on pattern pages, R held zero by the residual's dense test, the core's G bin on pattern pages -- the active chain's DC 1.46x at 8 000 stages (peak 1 760 -> 481 MB) and 1.71x at 16 000 (6 396 -> 907 MB), the same answers; every other result the same
+
+**Why**  Plan 261's L17 (`tc/plan_261.md`): after the DC's first C solve three n x n doubles stayed fully resident on every path --
+PCNR's `J` and the reduced `R` (`_pcnr_c._Rec`) and the core's `binG` (`_tran_core` `arrays`): 3 n^2, 1.5 GB at 8 000 unknowns,
+~6 GB at 16 000, the quiet chain's plain solve too.  Census at 441ec9bd (p261/l17d1): J and binG are written on the pattern alone, but
+numpy puts an allocation of 4 MB or more on huge pages and one written entry makes 2 MB resident -- all of each.  R was written whole
+by the KLU residual's dense test (pcx_kluseq.h: m x m zeroed, KLU's CSC scattered in, numpy's dgemv), made where the sparse verdict
+does not decide -- 151 times on the 8 000-stage active chain's DC, 512 MB zeroed each.  |J| (`Jabs`) is made whole the same way by
+the convergence test's dense form (not reached on the chains or the decks; a forcing reaches it).  Andreas: "Continue" (D1, the
+first of the three DC stages left).
+
+**What.**  `_pcnr_c._Rec` allocates J, |J| and R with `_tran_core.pattern_zeros` where its core holds a pattern (private 4 KB pages,
+no huge pages: resident where written; numpy's zeros below `PATTERN_PAGES_FROM`), and `_tran_core`'s `arrays` the core's binG so --
+in every core with a pattern, a pass asking for it writing binG there alone.  pcnrdc.c's dense convergence test writes |J| on the
+pattern alone where there is one (J is zero off it: the same bytes into numpy's dgemv).  The shared KLU sequence gains a third
+`a_built` mode, PCX_A_ZERO (pcx_kluseq.h's `enum pcx_klu_a`): A held zero by the caller, the dense test scattering KLU's entries in
+and zeroing them after -- no m x m zeroing, the same bytes into the dgemv; pcnrdc.c's KLU on the pattern uses it, the other units'
+calls (PCX_A_SCRATCH, PCX_A_BUILT) as they were.  What stays resident: a page or two a row of each (0.24 n^2 at 4 000, ~0.12 n^2
+at 8 000), linear in n.  The time gained is the dense residual test's: no m x m zeroing, its dgemv reading the zero page off the
+pattern.  No answer, route or path counter moves.
+
+**Measured** (LINE set before the line run, in `tc/plan_261.md` L17 D1, after a prototype; HEAD 441ec9bd's worktree against this
+tree, interleaved, per-pair medians):
+* (a)-(c) The DC, every digest, route and PCNR C count HEAD's: the active chain 800 stages 1.016x (peak 102 MB both), 2 000 1.007x
+  (215 -> 165 MB), 4 000 **1.111x** (2.61 / 2.60 / 2.60 -> 2.32 / 2.34 / 2.35 s, 545 -> 270 MB), 8 000 **1.461x** (11.57 / 11.62
+  / 11.58 -> 7.92 / 7.86 / 7.97 s, 1 760 -> 481 MB); the quiet chain 4 000 1.022x (545 -> 269 MB), 8 000 1.102x (1 762 -> 481 MB);
+  the mesh 63 x 63 1.000x (590 -> 328 MB).  LINE MET: 4 000 >= 1.05x and <= 320 MB, 8 000 >= 1.30x and <= 600 MB, the quiet chain's
+  8 000 <= 600 MB, the mesh <= 400 MB, every other >= 0.98x.
+* (g) The wall: the active chain at 16 000 stages (16 005 unknowns), one pair, 87.4 -> 51.3 s (1.71x), peak 6 396 -> 907 MB, the same
+  answer (line <= 1.2 GB).
+* (d) The transients at size, the same digests: the quiet chain's Radau 1 us 1.001x (peak 926 -> 834 MB); in a second round of three
+  pairs each the active chain's Gear-2 1 us 1.013x (1 316 MB both), the mesh's Gear-2 1.008x (953-955 -> 953 MB) and Radau 1.016x
+  (1 394 -> 1 307 MB) -- the first round's two pairs each 0.988x, 1.002x and 0.985x, its mesh Gear-2 peaks 952 / 954 -> 953 / 956
+  MB (HEAD's own runs 2 MB apart).  The loads 1.4-4.5, the runs' own core pool among them.
+* (e) The gate against 441ec9bd: every result the same -- the 27 decks under DC, Gear-2 (and its bypass) and Radau, the 8 size runs --
+  and every path counter; C against Python 0 differing on every deck under every setting and at size.  Its verdict NOT REACHED on 3
+  changed lines and 7 arms the decks do not reach -- the dense convergence test's |J| loop on the pattern and off it, and KLU without
+  a pattern (pcnrdc.c:205) -- each reached by the suite's twin tests (the coverage build's 'fixture' class), which compare the C with
+  the Python bit for bit there; the other 10 lines and 13 arms by the decks (12) and the forced settings (1).
+
+**Tests.**  test_pcnr_c: `test_on_pattern_pages_the_dense_tests_are_the_pythons` -- `_stiff_ladder` (the KLU ladder's first resistor
+1e-300 ohm: that row's |J| |x| past 1e300, where neither sparse verdict decides) on pattern pages from any size: every
+`pcnr.solve_dc` call's outcome and StructuralKLU's counters the same with the C on and off, each served, both dense tests made; J, |J|,
+R and binG pattern pages, R zero after, J and |J| zero off the pattern.  `test_at_size_the_dcs_matrices_are_resident_where_written` --
+the same ladder at 1 500 stages (rows of three pages): each matrix under 3/4 of its pages resident (/proc/self/pagemap; 0.34-0.58
+measured).  `test_the_klu_solve_in_c_is_the_pythons` now with the core's pattern off too (R made dense, PCX_A_BUILT).  Bitten, each
+part reverted in turn (7 of 7 fail one): R's scatter not undone, R zeroed whole, |J| written whole, and each of binG, J, |J| and R on
+numpy's zeros.  Eleven pinned pairs re-recorded (pcx_kluseq.h and `_tran_core` are in them), their twins' tests passing; the PCNR
+DC pair's description names the dense tests on matrices zero off the pattern.  Suite 6 585 passed (10 skipped).

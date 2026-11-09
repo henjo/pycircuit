@@ -604,15 +604,17 @@ class _Flat:
             'g_k': _i64([k for _o, _e, k in g_soff]),
             'Sall': np.ascontiguousarray(np.concatenate(self.S)) if self.S else np.zeros(1),
             'g_soff': _i64([o for o, _e, _k in g_soff]), 'Iall': _cat64(self.I),
-            'g_ioff': _i64(self.g_ioff),
-            'binG': np.zeros(n * n), 'bini': np.empty(n),
+            'g_ioff': _i64(self.g_ioff), 'bini': np.empty(n),
         }
         ## THE PATTERN: every entry a matrix pass can write (G's and C's
-        ## slots) and the diagonal -- `binG` above starts at zero, and a
+        ## slots) and the diagonal -- `binG` below starts at zero, and a
         ## caller's matrices are zero off it where it asks for it
         mats = [f for f, nb in zip(self.flat, self.p_nbins) if nb == n * n]
         pat = np.unique(np.concatenate(mats + [np.arange(n, dtype=np.int64) * (n + 1)]))
         npat = len(pat) if PATTERN and len(pat) <= PATTERN_MAX_FILL * n * n else 0
+        ## (with the pattern on pattern pages at size: a pass asking for it
+        ## writes binG there alone -- resident where written)
+        arrays['binG'] = pattern_zeros(n * n) if npat else np.zeros(n * n)
         arrays['pat'] = np.ascontiguousarray(pat, dtype=np.int64)
         if fused:
             arrays['ztab'] = np.array(self.ztab, dtype=np.int64)

@@ -5550,6 +5550,23 @@ Tests: `test_pcnr_c.py` (a run-away rung's failed factor served, the
 Python's on a fresh circuit; an infinite rhs served), `test_pcnr_vector.py`
 (the overflow's bytes unwarned under `over='raise'`).
 
+## `_pcnr_c`, `pcnrdc.c`, `pcx_kluseq.h` -- the DC's n x n matrices resident where written (2026-11-09)
+
+2026-11-09 (`doc/hdl_roadmap_260824.md`, 299; plan 261 L17).  After the
+DC's first C solve PCNR's J and reduced R and the core's G bin were each
+fully resident on every path -- 3 n^2, 1.5 GB at 8 000 unknowns: J and the
+G bin written on the pattern alone but on numpy's huge pages (one written
+entry makes 2 MB resident), R zeroed whole by the KLU residual's dense test
+once or more a solve.  The three and |J| now go on pattern pages
+(`_tran_core.pattern_zeros`) where the core holds a pattern, |J| is written
+on the pattern alone, and the KLU sequence's dense test runs on an R held
+zero (PCX_A_ZERO: KLU's entries scattered in and taken out after) -- the
+same bytes into every dgemv.  The same answers and routes; the active
+chain's DC 1.46x at 8 000 stages (peak 1 760 -> 481 MB), 1.71x at 16 000
+(6 396 -> 907 MB).  Tests: `test_pcnr_c.py` (a ladder whose stiff first
+row sends both dense tests dense: on pattern pages the Python's, R zero
+after; at 1 500 stages each matrix under 3/4 resident).
+
 ## `_tran_stageloop_c`, `csrc/loop.c`'s stage family -- a plain run's Radau attempts in C (2026-10-24)
 
 2026-10-24 (`doc/hdl_roadmap_260824.md`, 207).  A plain Radau transient --

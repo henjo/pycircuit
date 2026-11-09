@@ -179,7 +179,8 @@ static long solve_dense(pcnrdc_t *s)
    On the pattern (`kfull`): the entries gathered from J where they stand,
    the foreign test over the pattern's entries off KLU's (J is zero
    elsewhere: the same count), the residual's test on the CSC -- R is not
-   made */
+   made: held zero (allocated zero), its dense test scatters KLU's entries
+   into it and takes them out after (PCX_A_ZERO) */
 static long solve_klu(pcnrdc_t *s)
 {
     long n = s->n, m = s->m, i, j, nz = 0, nzp = 0, st;
@@ -201,8 +202,8 @@ static long solve_klu(pcnrdc_t *s)
         }
         if (nz != nzp) return PCNRDC_BAIL_FOREIGN;
     }
-    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->kt, m, s->dgemv, s->kfull == NULL,
-                      &s->dense_resid);
+    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->kt, m, s->dgemv,
+                      s->kfull ? PCX_A_ZERO : PCX_A_BUILT, &s->dense_resid);
     if (st == PCX_KLU_FACTOR) return PCNRDC_SINGULAR;
     if (st == PCX_KLU_SOLVE) return PCNRDC_BAIL_KLU;
     if (st == PCX_KLU_FLAGS) return PCNRDC_BAIL_FLAGS;
@@ -314,7 +315,11 @@ static int converged(pcnrdc_t *s)
     }
     if (verdict == PCX_UNDECIDED) {
         cf = 1;
-        for (i = 0; i < n * n; i++) s->Jabs[i] = fabs(s->J[i]);
+        /* (|J| zero off the pattern as J is: written on it alone) */
+        if (s->np)
+            for (i = 0; i < s->np; i++) s->Jabs[s->P[i]] = fabs(s->J[s->P[i]]);
+        else
+            for (i = 0; i < n * n; i++) s->Jabs[i] = fabs(s->J[i]);
         for (i = 0; i < n; i++) s->ax[i] = fabs(s->xn[i]);
         ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, n, n, 1.0, s->Jabs, n,
                                s->ax, 1, 0.0, s->Is, 1);
