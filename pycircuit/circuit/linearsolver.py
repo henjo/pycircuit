@@ -182,7 +182,86 @@ def _resid_sparse(Ap, Ai, Ax, tol, b, x):
     `e_i = 4 (cnt_i + 2) (eps t_i + 2 tiny)` of the sparse one (`t_i` the
     sum of |a| |x|, `cnt_i` the row's stored entries), so the test holds where
     it holds at the interval's upper end and fails where it fails at the
-    lower; not finite, or a sum past 1e300, is undecided."""
+    lower; a sum past 1e300 is undecided.  Where it does not decide,
+    `_resid_last`: a value not finite, or the wide pass (`pcx_verdict.h`'s
+    WHERE NEITHER DECIDES)."""
+    got = _resid_bound(Ap, Ai, Ax, tol, b, x)
+    return got if got is not None else _resid_last(Ap, Ai, Ax, tol, b, x)
+
+
+def _resid_last(Ap, Ai, Ax, tol, b, x):
+    """`pcx_resid_last`: (N) where a value of x, b or A is not finite, else
+    (W), the wide pass."""
+    if numpy.isfinite(b).all() and numpy.isfinite(x).all() and numpy.isfinite(Ax).all():
+        return _resid_wide(Ap, Ai, Ax, tol, b, x)
+    return _resid_nonfinite(Ap, Ai, Ax, b, x)
+
+
+def _snan(a):
+    """Each NaN of `a` whose quiet bit is clear."""
+    return numpy.isnan(a) & ((a.view(numpy.uint64) & numpy.uint64(1 << 51)) == 0)
+
+
+def _resid_nonfinite(Ap, Ai, Ax, b, x):
+    """`pcx_resid_nonfinite` (N): True (it fails) where no infinity is in A or
+    x, every NaN is quiet and each row's sum of |a| |x| over its finite terms
+    plus a finite |b| is under 1e300 -- the dense test then raises no flag
+    and fails -- else None."""
+    if (numpy.isinf(x).any() or numpy.isinf(Ax).any() or _snan(x).any() or _snan(b).any()
+            or _snan(Ax).any()):
+        return None
+    m = len(b)
+    col = numpy.repeat(numpy.arange(m), numpy.diff(Ap))
+    with numpy.errstate(all='ignore'):
+        xc = x[col]
+        fin = ~numpy.isnan(Ax) & ~numpy.isnan(xc)
+        t = numpy.bincount(Ai, weights=numpy.where(fin, numpy.abs(Ax) * numpy.abs(xc), 0.0),
+                           minlength=m)
+        ok = (t + numpy.where(numpy.isfinite(b), numpy.abs(b), 0.0) < 1e300).all()
+    return True if ok else None
+
+
+def _resid_wide(Ap, Ai, Ax, tol, b, x):
+    """`pcx_resid_wide` (W) on finite values: the rows' sums in numpy's long
+    double (where it holds 64 bits; else None), each row's dense value
+    within `E = k u (1 + 2^-6) T + 2^-60 |b| + (2 k + 4) 2^-1074` of its
+    sum -- the ends rounded to double, then the bound's test."""
+    L = numpy.longdouble
+    if numpy.finfo(L).nmant < 63:
+        return None
+    m = len(b)
+    col = numpy.repeat(numpy.arange(m), numpy.diff(Ap))
+    a, xc = Ax.astype(L), x[col].astype(L)
+    T, S = numpy.zeros(m, dtype=L), numpy.zeros(m, dtype=L)
+    numpy.add.at(T, Ai, numpy.abs(a) * numpy.abs(xc))
+    k = numpy.bincount(Ai, minlength=m).astype(L)
+    ab = numpy.abs(b)
+    if not (T + ab.astype(L) < L(1e300)).all():
+        return None
+    E = (k * (L(0.5) * L(numpy.finfo(numpy.float64).eps)) * (L(1.0) + L(2.0) ** -6) * T
+         + L(2.0) ** -60 * ab.astype(L) + (L(2.0) * k + L(4.0)) * L(2.0) ** -1074)
+    E = E.astype(numpy.float64).astype(L)
+    numpy.add.at(S, Ai, a * xc)
+    bl = b.astype(L)
+    u = ((S + E) - bl).astype(numpy.float64)
+    v = ((S - E) - bl).astype(numpy.float64)
+    au, av = numpy.abs(u), numpy.abs(v)
+    h = numpy.maximum(au, av)
+    same = ((u > 0.0) & (v > 0.0)) | ((u < 0.0) & (v < 0.0))
+    lo_row = numpy.where(same, numpy.minimum(au, av), 0.0)
+    hi = float(h.max()) if m else 0.0
+    lo = float(lo_row.max()) if m else 0.0
+    sc = max(float(ab.max()) if m else 0.0, 1e-300)
+    if hi / sc <= tol:
+        return False
+    if not (lo / sc <= tol):
+        return True
+    return None
+
+
+def _resid_bound(Ap, Ai, Ax, tol, b, x):
+    """`_resid_sparse`'s first pass: the rounding bound on the double sums
+    (`pcx_resid_gradual`), None where it does not decide."""
     m = len(b)
     if not (numpy.isfinite(b).all() and numpy.isfinite(x).all()):
         return None

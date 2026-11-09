@@ -15179,3 +15179,65 @@ pass or an iteration -- as they were; pcx_fenv.h untouched.
 **Tests.**  The C's twin tests are the check: the clear's MXCSR half removed fails 3 (a cascode solve, a NaN in the KLU solve, the
 run-away rung -- a kernel's overflow or invalid left up, a hand-back where the C served).  Its x87 half cannot be bitten: no kernel
 raises an x87 flag.  The PCNR DC pinned pair re-recorded (its C side), its twins' tests passing.  Suite 6 590 passed (10 skipped).
+
+## 2026-11-09 — 303. The KLU residual's sparse verdict decides where it could not: a value not finite proved, and a wide pass in long double where the double sums' band is too wide -- the active chain's DC 1.17-1.21x at 8 000 stages, 1.106x at 4 000, 1.15x at 16 000 (under its line at 8 000 and 16 000: accepted as measured); every answer the same
+
+**Why**  Plan 261's L17 D2 (`tc/plan_261.md`, "D2 (i) RE-SIZED at 6f4b322b"): after a KLU refactor the residual test
+`max |A x - b| / max(max |b|, 1e-300) <= tol` is decided on KLU's CSC with a rounding bound (pcx_verdict.h; the Python's
+`_resid_sparse` on pattern pages), and where the bound does not decide by numpy's dense dgemv -- on an m x m matrix held zero: at
+8 000 unknowns 131 k mostly-zero 4 KB pages, 13 ms a test (perf had put the 151 tests at 1.1 s, clocks in the C 1.96-2.00 s at
+6f4b322b -- an over-count: the wall saving was ~0.9-1.0 s of 5.8, see Measured).  Census (a probe, unchanged since 3fb8f89b): 44 with a NaN in x or b, 3 an infinite b
+-- left undecided outright, each failing in the dense test without a flag -- and 104 in the rounding band, which at |A| |x| ~1e6
+|b| is wider than the tolerance (the dense residual 0.0004-0.09 of it, the bound's end 1.2-9x).  Andreas: "Start D2".
+
+**What.**  Both twins (`pcx_resid_sparse` and linearsolver's `_resid_sparse`: the same rule), where today's passes leave it
+undecided (`pcx_resid_last`):
+* (N) a value not finite in x, b or A: where A and x hold no infinity, every NaN is quiet and each row's sum of |a| |x| over its
+  finite terms plus a finite |b| is under 1e300, the dense dgemv and its `- b` raise no flag numpy reports, and the test fails --
+  a NaN in x reaches every row (0 x NaN), one in A or b its own, and an infinite b without a NaN makes max |.| and max |b| infinite
+  (inf / inf).  An infinity in A or x (0 x inf raises invalid) or a signalling NaN stays the dense test's.
+* (W) a wide pass on finite values, where long double holds 64 bits (LDBL_MANT_DIG; numpy's finfo): the rows' sums in long double
+  -- a product of doubles neither underflows nor overflows there, each rounding 2^-64 -- so the only error to cover is the dgemv's
+  own; E_i = k u (1 + 2^-6) T_L + 2^-60 |b_i| + (2 k + 4) 2^-1074 covers it, the long double sums', T's, the ends' (S_L -+ E_i) - b_i
+  in long double and E_i's to double, for every k < 2^31 (derivation in the header), against today's 4 (k + 2) (eps T + 2 tiny):
+  ~10x narrower at k ~ 7, 7.9x on an 8 001-entry supply row.  The C keeps each row's long double sum as two doubles (its value and
+  remainder: the scratch the units hand it, 3 m doubles, unchanged).
+Today's passes and their verdicts untouched: a verdict changes only from undecided to the dense test's.
+
+**Measured** (LINE set before building; HEAD 6f4b322b's worktree against this tree, interleaved, per-pair medians):
+* (f) ON REAL DATA, a probe making both -- every decided verdict and the dense test beside it -- on the active chain's DC: 2 000
+  stages 1 122 verdicts (15 by the new passes; dense tests 35 -> 20), 4 000 777 (43; 53 -> 10), 8 000 1 109 (117; 151 -> 34): 0
+  disagreements, 0 flagged, every digest HEAD's.
+* (a)-(b) The DC, every digest and route HEAD's, every PCNR C count but `dense_resid` (fewer): the active chain 800 stages 1.041x,
+  2 000 1.046x (35 -> 20 dense tests), 4 000 **1.106x** (1.78 / 1.77 / 1.77 -> 1.60 / 1.60 / 1.61 s; 53 -> 10), 8 000 **1.213x**
+  (5.87 / 5.93 / 5.89 -> 4.84 / 4.86 / 4.87 s; 151 -> 34; loads 2.2-2.9) and on a rerun **1.171x** (1.205 / 1.171 / 1.144; loads
+  1.6-2.6); the quiet chain 4 000 1.047x, 8 000 1.043x, the mesh 63 x 63 1.029x; every peak within 2 MB.  LINE: 4 000 >= 1.10x
+  met; 8 000 >= 1.25x MISSED -- accepted as measured by Andreas.  Why under: the sizing's clock (1.96 s for the 151 dense steps)
+  over-counted their wall share; in this build the 34 left take 0.28 s (8 ms each) and the new passes 0.026 s for their 151 calls
+  (0.17 ms): nothing left in them to make cheaper; the saving ~0.9-1.0 s of 5.8.
+* The wall: the active chain at 16 000 stages, one pair each round, 1.014x (load ~6) and 1.149x (36.18 -> 31.49 s); the new passes
+  decide half there (368 -> 190 dense tests) -- line >= 1.25x MISSED, accepted as measured.
+* (d) The transients at size, the same digests: the quiet chain's Radau 1 us 1.024x, the mesh's Radau 0.975x and the active chain's
+  Gear-2 0.972x (loads 4.8-6.5: another project's tests on the box), the mesh's Gear-2 0.81x there (HEAD's own two runs 12 % apart;
+  its run makes at most one dense test either way) and 0.993x on the rerun (0.993 / 0.978 / 1.12).
+* (e) The gate against 6f4b322b (`--moves dense`): every result the same -- the 27 decks under DC, Gear-2 and its bypass, Radau; the
+  8 size runs -- every counter but the dense tests', which only fall (29 of 116 rows: opampal's DC 270 -> 172, e1480's 157 -> 84,
+  ab_integ's Gear-2 LTE 21 -> 15, the size runs' achain 53 -> 10); C against Python 0 differing on every deck under every setting and
+  at size.  Its verdict NOT REACHED on 13 arms of pcx_verdict.h that no deck, size run or unit reaches (a signalling NaN, an
+  infinity in A or x, a NaN in A): the suite's own verdict probe built with gcov, test_verdict_c's tests run through it, executes all
+  130 lines and every one of those arms but 192#7, which cannot be taken (the upper end is never below the lower); the wide pass's
+  1e300 guard by test_pcnr_c's stiff ladder (the coverage build's 'fixture' class).
+
+**Tests.**  test_verdict_c: `test_the_wide_pass_decides_where_the_double_sums_band_does_not` -- rows whose |A| |x| is 1e5-1e8 |A x|,
+residuals from 0.01 to 10 tolerances and a hair either side of 1: never against numpy's verdict, deciding where the double sums'
+band alone did not (`pcx_resid_gradual` beside it), the Python twin's verdict every time;
+`test_a_value_not_finite_is_decided_where_numpy_raises_nothing` -- a quiet or signalling NaN or an infinity in x, b or A, rows
+ordinary and past 1e300, and an infinity in x whose column holds no entry: undecided wherever numpy's `errstate('raise')` raises,
+numpy's verdict elsewhere, made for every quiet NaN and infinite b on ordinary rows, the Python twin's.  test_radau_packed_frozen:
+a NaN solution now the dense test's verdict (fails), an infinite one undecided.  Bitten (7 of 7): W's bound only its absolute term
+(13 fail: today's tests at the threshold), the route to N and W cut (7), N accepting an infinite x (3: the empty column) or a
+signalling NaN (3) or without its 1e300 guard (3), W's E halved in the C or in the Python (4 each: the twins then disagree --
+numpy's own draws do not reach a halved worst-case bound, the BLAS's rounding far inside it).  Eleven pinned pairs re-recorded
+(pcx_verdict.h is in each unit's C), their twins' tests passing (522).  Also test_radau_pattern_pages' release test, flaky since 10db515a (it listed packed J -- a 5 KB array
+that holds a whole page or not as it lands -- among the n x n scratch handed back): now |J|, R and the core's C and G bins, J
+asserted packed; bitten by the G bin not handed back.  Suite 6 597 passed (10 skipped).

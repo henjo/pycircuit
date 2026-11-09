@@ -34,9 +34,36 @@
  * near 1e-300 whose threshold the flush could hide), the gradual sums are
  * made (`pcx_resid_gradual`) and theirs is the verdict: the assists paid on
  * those calls alone.
+ *
+ * WHERE NEITHER DECIDES (`pcx_resid_last`; linearsolver's `_resid_sparse`
+ * the same rule):
+ *
+ * (N) A VALUE NOT FINITE in x, b or A (`pcx_resid_nonfinite`): where A and x
+ * hold no infinity, every NaN is quiet and each row's sum of |A_ij| |x_j|
+ * over its finite terms, plus a finite |b_i|, is under 1e300, the dense
+ * dgemv and its `- b` raise no flag numpy reports (a quiet NaN's arithmetic
+ * raises none; no partial sum of finite terms can overflow), and the test
+ * FAILS: a NaN in x reaches every row of `A x - b` (its column's zeros too:
+ * 0 x NaN is NaN), a NaN in A or b its own row, and without a NaN an
+ * infinite b_i makes max |.| and max |b| infinite, inf / inf a NaN.  An
+ * infinity in A or x stays the dense test's (0 x inf raises invalid).
+ *
+ * (W) THE WIDE PASS (`pcx_resid_wide`, where long double holds 64 bits): the
+ * row's sums in long double, where a product of doubles neither underflows
+ * nor overflows and rounds by v = 2^-64 at most, so S_L lies within
+ * gamma^L_k T (+ k 2^-1075: each row's sum is kept as two doubles, its
+ * remainder rounded where subnormal) of the exact sum and the dgemv within
+ * gamma_k T + k 2^-1075 of it.  E_i = k u (1 + 2^-6) T_L + 2^-60 |b_i| +
+ * (2 k + 4) 2^-1074 (u = 2^-53, T_L the row's sum of |A_ij| |x_j| made the
+ * same way) covers both, T's own error, the rounding of (S_L -+ E_i) - b_i
+ * in long double and E_i's to double, for every k < 2^31; each end, rounded
+ * to double, bounds `fl(dgemv - b_i)` as the dense test makes it (rounding
+ * is monotone).  About ten times the narrower band at k ~ 7.
  */
 #include <float.h>
 #include <math.h>
+#include <stdint.h>
+#include <string.h>
 #if defined(__SSE2__)
 #include <xmmintrin.h>
 /* the SSE control register's flush-to-zero (bit 15) and denormals-are-zero
@@ -63,25 +90,133 @@ __attribute__((noinline)) static int pcx_resid_flushed(const int *Ap, const int 
 static int pcx_resid_gradual(const int *Ap, const int *Ai, const double *Ax, double tol,
                              const double *b, const double *x, double *y, double *t,
                              double *cnt, long m);
+static int pcx_resid_last(const int *Ap, const int *Ai, const double *Ax, double tol,
+                          const double *b, const double *x, double *y, double *t, double *cnt,
+                          long m);
 
 static int pcx_resid_sparse(const int *Ap, const int *Ai, const double *Ax, double tol,
                             const double *b, const double *x, double *y, double *t,
                             double *cnt, long m)
 {
+    int v;
 #if defined(__SSE2__)
     /* (the sums in a call of their own: nothing of theirs moved across the
        control register's writes) */
     unsigned int csr = _mm_getcsr();
-    int v;
     _mm_setcsr(csr | PCX_FLUSH_BITS);
     v = pcx_resid_flushed(Ap, Ai, Ax, tol, b, x, y, t, cnt, m);
     _mm_setcsr((_mm_getcsr() & ~PCX_FLUSH_BITS) | (csr & PCX_FLUSH_BITS));
     /* (its band the wider: where it decides, the gradual one decides alike;
        where it does not, the gradual one's own verdict) */
     if (v != PCX_UNDECIDED) return v;
-    return pcx_resid_gradual(Ap, Ai, Ax, tol, b, x, y, t, cnt, m);
+#endif
+    v = pcx_resid_gradual(Ap, Ai, Ax, tol, b, x, y, t, cnt, m);
+    if (v != PCX_UNDECIDED) return v;
+    return pcx_resid_last(Ap, Ai, Ax, tol, b, x, y, t, cnt, m);
+}
+
+/* a NaN whose quiet bit is clear: an operation on it raises invalid */
+static inline int pcx_snan(double v)
+{
+    uint64_t u;
+    memcpy(&u, &v, sizeof u);
+    return isnan(v) && !(u & UINT64_C(0x0008000000000000));
+}
+
+/* (N): PCX_FAILS where provable, else PCX_UNDECIDED -- called with a value
+   not finite in x, b or A.  `t` (m) scratch */
+static int pcx_resid_nonfinite(const int *Ap, const int *Ai, const double *Ax, const double *b,
+                               const double *x, double *t, long m)
+{
+    long i, j, p;
+    for (i = 0; i < m; i++) {
+        if (isinf(x[i]) || pcx_snan(x[i]) || pcx_snan(b[i])) return PCX_UNDECIDED;
+        t[i] = 0.0;
+    }
+    for (j = 0; j < m; j++)
+        for (p = Ap[j]; p < Ap[j + 1]; p++) {
+            double a = Ax[p];
+            if (isinf(a) || pcx_snan(a)) return PCX_UNDECIDED;
+            if (!isnan(a) && !isnan(x[j])) t[Ai[p]] += fabs(a) * fabs(x[j]);
+        }
+    for (i = 0; i < m; i++)
+        if (!(t[i] + (isfinite(b[i]) ? fabs(b[i]) : 0.0) < 1e300)) return PCX_UNDECIDED;
+    return PCX_FAILS;
+}
+
+#if LDBL_MANT_DIG >= 64
+/* a row's long double sum kept as two doubles, its value and remainder
+   (the remainder exact but where subnormal: within 2^-1075), plus `v` */
+static inline void pcx_wide_add(double *hi, double *lo, long double v)
+{
+    long double acc = ((long double) *hi + (long double) *lo) + v;
+    double h = (double) acc;
+    *hi = h;
+    *lo = (double) (acc - (long double) h);
+}
+
+/* (W) on finite values.  `y`, `t` (m each): each row's sum, `cnt` (m) its
+   entries, then its E */
+static int pcx_resid_wide(const int *Ap, const int *Ai, const double *Ax, double tol,
+                          const double *b, const double *x, double *y, double *t, double *cnt,
+                          long m)
+{
+    long i, j, p;
+    double max_b = 0.0, hi = 0.0, lo = 0.0, sc;
+    for (i = 0; i < m; i++) y[i] = t[i] = cnt[i] = 0.0;
+    for (j = 0; j < m; j++)
+        for (p = Ap[j]; p < Ap[j + 1]; p++) {
+            i = Ai[p];
+            cnt[i] += 1.0;
+            pcx_wide_add(&y[i], &t[i], (long double) fabs(Ax[p]) * (long double) fabs(x[j]));
+        }
+    for (i = 0; i < m; i++) {
+        long double T = (long double) y[i] + (long double) t[i], k = cnt[i];
+        double ab = fabs(b[i]);
+        if (!(T + ab < (long double) 1e300)) return PCX_UNDECIDED;
+        cnt[i] = (double) (k * (0.5L * DBL_EPSILON) * (1.0L + 0x1p-6L) * T + 0x1p-60L * ab
+                           + (2.0L * k + 4.0L) * (long double) DBL_TRUE_MIN);
+        y[i] = t[i] = 0.0;
+    }
+    for (j = 0; j < m; j++)
+        for (p = Ap[j]; p < Ap[j + 1]; p++)
+            pcx_wide_add(&y[Ai[p]], &t[Ai[p]], (long double) Ax[p] * (long double) x[j]);
+    for (i = 0; i < m; i++) {
+        long double S = (long double) y[i] + (long double) t[i], E = cnt[i];
+        double ab = fabs(b[i]), u, v, au, av, h, l;
+        u = (double) ((S + E) - (long double) b[i]);
+        v = (double) ((S - E) - (long double) b[i]);
+        au = fabs(u);
+        av = fabs(v);
+        h = au > av ? au : av;
+        l = (u > 0.0 && v > 0.0) || (u < 0.0 && v < 0.0) ? (au < av ? au : av) : 0.0;
+        if (h > hi) hi = h;
+        if (l > lo) lo = l;
+        if (ab > max_b) max_b = ab;
+    }
+    sc = pcx_py_max(max_b, 1e-300);
+    if (hi / sc <= tol) return PCX_HOLDS;
+    if (!(lo / sc <= tol)) return PCX_FAILS;
+    return PCX_UNDECIDED;
+}
+#endif
+
+/* where the passes above leave it undecided: (N) where a value is not
+   finite, else (W) */
+static int pcx_resid_last(const int *Ap, const int *Ai, const double *Ax, double tol,
+                          const double *b, const double *x, double *y, double *t, double *cnt,
+                          long m)
+{
+    long i, p;
+    for (i = 0; i < m; i++)
+        if (!isfinite(b[i]) || !isfinite(x[i])) return pcx_resid_nonfinite(Ap, Ai, Ax, b, x, t, m);
+    for (p = 0; p < Ap[m]; p++)
+        if (!isfinite(Ax[p])) return pcx_resid_nonfinite(Ap, Ai, Ax, b, x, t, m);
+#if LDBL_MANT_DIG >= 64
+    return pcx_resid_wide(Ap, Ai, Ax, tol, b, x, y, t, cnt, m);
 #else
-    return pcx_resid_gradual(Ap, Ai, Ax, tol, b, x, y, t, cnt, m);
+    (void) tol, (void) y, (void) cnt;
+    return PCX_UNDECIDED;
 #endif
 }
 

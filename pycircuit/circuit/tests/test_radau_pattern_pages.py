@@ -251,9 +251,10 @@ def test_the_passes_on_pattern_pages_are_the_dense_passes(monkeypatch):
 
 def test_the_ops_pcnr_scratch_is_handed_back_and_the_next_op_is_the_same(monkeypatch):
     """After a transient's operating point the circuit's PCNR record keeps
-    its tables, its n x n scratch handed back (read as zeros); a second
-    transient on the same circuit -- its op on the handed-back record -- is
-    the first one's."""
+    its tables, its n x n scratch handed back (read as zeros: |J|, R, the
+    core's C and G bins; J itself is packed on the pattern, written whole
+    each assembly); a second transient on the same circuit -- its op on the
+    handed-back record -- is the first one's."""
     monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
     cir = _chain(80)
     before = _paths.snapshot()
@@ -263,8 +264,9 @@ def test_the_ops_pcnr_scratch_is_handed_back_and_the_next_op_is_the_same(monkeyp
         pytest.skip('the op is not the PCNR C record\'s')
     assert _paths.since(before).get('pcnr_c:released') == 1
     page = 4096
-    for k in ('J', 'R', 'Cs'):
-        v = rec.buf[k]
+    assert rec.buf['J'].shape == (len(rec.P) + 1,)
+    for k in ('Jabs', 'R', 'Cs', 'binG'):
+        v = rec.core.arrays[k] if k == 'binG' else rec.buf[k]
         ptr = v.__array_interface__['data'][0]
         lo = (-ptr) % page // 8
         hi = (ptr + v.nbytes) // page * page - ptr

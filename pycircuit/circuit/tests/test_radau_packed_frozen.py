@@ -204,7 +204,9 @@ def test_the_sparse_residual_verdict_is_the_dense_one(seed):
     """`_resid_sparse` -- the refactor's residual test on the CSC with its
     rounding bound -- is the dense test's verdict wherever it decides:
     residuals far under, far over and AT the tolerance (where it must leave
-    the dense test to decide), a non-finite solution undecided."""
+    the dense test to decide); a NaN in the solution the dense test's own
+    (it fails: the NaN reaches every row), an infinite one undecided (the
+    dense product raises invalid)."""
     rng = np.random.default_rng(seed)
     m = 200
     tol = linearsolver.StructuralKLU.REFACTOR_RESIDUAL_TOL
@@ -231,4 +233,6 @@ def test_the_sparse_residual_verdict_is_the_dense_one(seed):
     assert decided >= 4
     xn = x.copy()
     xn[3] = np.nan
+    assert linearsolver._resid_sparse(Ap, Ai, Ax, tol, b0, xn) is True
+    xn[3] = np.inf
     assert linearsolver._resid_sparse(Ap, Ai, Ax, tol, b0, xn) is None

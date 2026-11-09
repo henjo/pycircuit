@@ -5616,6 +5616,22 @@ ns), leaving every flag the fenv calls read as glibc's does.  The same
 answers and routes; the active chain's DC 1.10x at 4 000 stages, 1.078x at
 8 000.
 
+## `pcx_verdict.h`, `linearsolver._resid_sparse` -- the residual's verdict decided where its band could not (2026-11-09)
+
+2026-11-09 (`doc/hdl_roadmap_260824.md`, 303; plan 261 L17 D2).  After a
+KLU refactor the residual test is decided on the CSC with a rounding
+bound, and where the bound does not decide by numpy's dense product on an
+m x m matrix -- 8-13 ms a test at 8 000 unknowns, about 1 s of an active
+chain's DC.  Two kinds were left to it: a NaN or an infinity (undecided
+outright, though the dense test then always fails without a flag) and the
+rounding band, wider than the tolerance where |A| |x| is a million times
+|b|.  Both twins now prove the first where numpy would raise no flag, and
+decide the second by a wide pass in long double whose bound covers only
+the dgemv's own rounding (~10x narrower).  The same answers; the active
+chain's DC 1.17-1.21x at 8 000 stages (151 -> 34 dense tests).  Tests:
+`test_verdict_c.py` (the wide pass at the threshold and the values not
+finite, against numpy and the Python twin).
+
 ## `_tran_stageloop_c`, `csrc/loop.c`'s stage family -- a plain run's Radau attempts in C (2026-10-24)
 
 2026-10-24 (`doc/hdl_roadmap_260824.md`, 207).  A plain Radau transient --
