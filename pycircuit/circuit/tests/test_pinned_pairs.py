@@ -490,7 +490,9 @@ PAIRS = {
                'each device\'s in turn, a class\'s kernels asked once a call '
                '(roadmap 301); each participant\'s kernel flags cleared as '
                '`feclearexcept` clears them, without its x87 environment round '
-               'trip (roadmap 302)',
+               'trip (roadmap 302); without `v_lim0` the seed made in C as '
+               '`v_lim_init(limit=True)` makes it, the Python\'s after a hand-back '
+               '(roadmap 304)',
         'reference': ['pycircuit.circuit.pcnr:solve_dc',
                       'pycircuit.circuit.pcnr:augmented_system',
                       'pycircuit.circuit.pcnr:schur_reduce',
@@ -1211,7 +1213,7 @@ RECORD = {
     'the PSP limiter and its C twin': ('8e14bbc903f1', '3aefa105ff7f'),
     'the error test and its C': ('639cab30f2d5', '6f54e05af10a'),
     'the DC base solve and its C': ('37b14c0a34a7', '416ed18f1995'),
-    'the PCNR DC solve and its C': ('6aa96549b383', 'a7a7526be32b'),
+    'the PCNR DC solve and its C': ('9e5246d1a3e7', '0e92898d00a3'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('d417a4cedc1d', '694a1086db84'),
     "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),

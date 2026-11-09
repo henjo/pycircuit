@@ -809,7 +809,9 @@ def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol
     """`pcnr.solve_dc`'s loop in C from its start: `(x, v_lim, iterations)`,
     or its exception raised (the iteration limit's RuntimeError, a non-finite
     iterate's, a singular solve's LinAlgError) -- or None: declined or
-    handed back, nothing written; the Python's loop runs."""
+    handed back, nothing written; the Python's loop runs.  `v_lim` None: the
+    C makes it from x as `v_lim_init(limit=True)` does (pcnrdc.h's THE
+    SEED)."""
     if not ENABLED:
         return _no('pcnr_c:off')
     if maxiter < 1:
@@ -829,7 +831,8 @@ def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol
     T = rec.core.probe(epar)
     if T.__class__ is str:
         return _no('pcnr_c:ready')
-    if not (_vector(x, rec.n) and _vector(v_lim, rec.k) and _vector(u, rec.n)):
+    if not (_vector(x, rec.n) and (v_lim is None or _vector(v_lim, rec.k))
+            and _vector(u, rec.n)):
         return _no('pcnr_c:x')
     if not rec.point_packs():
         return _no('pcnr_c:pack')
@@ -842,7 +845,9 @@ def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol
     red[kept] = np.arange(int(kept.sum()), dtype=np.int64)
     s.m = int(kept.sum())
     np.copyto(buf['x'], x)
-    np.copyto(buf['v'][:rec.k], v_lim)
+    s.seed = v_lim is None
+    if v_lim is not None:
+        np.copyto(buf['v'][:rec.k], v_lim)
     np.copyto(buf['u'], u)
     s.T, s.maxiter = T, int(maxiter)
     s.reltol, s.abstol, s.iabstol, s.gshunt = (float(reltol), float(abstol), float(iabstol),

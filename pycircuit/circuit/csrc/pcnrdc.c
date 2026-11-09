@@ -373,6 +373,32 @@ static int converged(pcnrdc_t *s)
     return cx && cf && cl;
 }
 
+/* `v_lim_init(limit=True)`, where the call gives no v (`seed`): each unknown
+   at its branch's voltage at the start, `x[ra] - x[rb]`, then each device's
+   refine kernel from v_old 0.0 at that x -- `refine` a device at a time
+   through its class's kernel (`_pcnr_c.refine`), the temperature in its
+   slot.  A kernel's decline or a flag numpy reports hands back, as
+   `update`'s refine does.  0, or why not */
+static long seed(pcnrdc_t *s)
+{
+    long d, j, r;
+    for (d = 0; d < s->nd; d++) {
+        long t = s->d_t[d], m = s->d_m[d], off = s->d_off[d];
+        const int64_t *rows = s->rows + s->d_rows[d];
+        for (j = 0; j < m; j++) {
+            long ra = s->prb[2 * (off + j)], rb = s->prb[2 * (off + j) + 1];
+            s->rio[j] = s->x[ra] - s->x[rb];
+            s->rio[m + j] = 0.0;
+        }
+        for (r = 0; r < t; r++) s->xs[r] = s->x[rows[r]];
+        if (s->ti[d] >= 0) s->prow[d][s->ti[d]] = s->T;
+        if (((lim_fn_t) s->rfn[d])(s->xs, s->prow[d], s->rio)) return PCNRDC_BAIL_REFINE;
+        if (fetestexcept(PC_FLAGS)) return PCNRDC_BAIL_FLAGS;
+        for (j = 0; j < m; j++) s->v[off + j] = s->rio[j];
+    }
+    return 0;
+}
+
 /* the loop (`solve_dc`): assemble, the Schur step, the update, the tests;
    `x, v = x_new, v_new` after each.  CONVERGED, MAXITER, SINGULAR, or a
    hand-back */
@@ -405,7 +431,8 @@ long pcx_pcnrdc(pcnrdc_t *s)
     s->klu.residual_fallbacks = 0;
     s->klu.klu_out = s->klu.klu_num;
     feclearexcept(FE_ALL_EXCEPT);
-    st = iterate(s);
+    st = s->seed ? seed(s) : 0;
+    if (st == 0) st = iterate(s);
     if (s->klu.klu_sym) pcx_klu_finish(&s->klu, st >= PCNRDC_CHOOSE);
     feclearexcept(FE_ALL_EXCEPT);
     return s->status = st;

@@ -15241,3 +15241,41 @@ numpy's own draws do not reach a halved worst-case bound, the BLAS's rounding fa
 (pcx_verdict.h is in each unit's C), their twins' tests passing (522).  Also test_radau_pattern_pages' release test, flaky since 10db515a (it listed packed J -- a 5 KB array
 that holds a whole page or not as it lands -- among the n x n scratch handed back): now |J|, R and the core's C and G bins, J
 asserted packed; bitten by the G bin not handed back.  Suite 6 597 passed (10 skipped).
+
+## 2026-11-09 — 304. PCNR's DC seed made in C: without `v_lim0` the C makes `v_lim_init(limit=True)` itself before its first iteration -- the active chain's DC 1.076x at 8 000 stages, 1.104x at 4 000 (1.002-1.009x at 16 000 and the mesh's Radau run 0.966-0.977x on a loaded box, under their lines: accepted as measured); every answer the same
+
+**Why**  Plan 261's L17 D4 (V) (`tc/plan_261.md`, "AFTER D2 ... D4 (V) LINE SET"): a solve without `v_lim0` (the plain solve and
+each source step of `solve_dc_continued`) seeded its limited unknowns in Python -- `v_lim_init(limit=True)`: each unknown's
+branch voltage at the start, then `refine` a device at a time through `_pcnr_c.refine` (a cffi call and its arrays per device):
+~47 ms a call at 8 000 devices, 0.33 s of the active chain's DC at 10db515a (7 calls), ~1 s at 16 000 (13).  The C already runs the
+same kernels for `update`'s refine.  Of what was left in L17 after D2 the largest clean piece (the dense tests left need the BLAS's
+summation order; the record's checks and build smaller).  Andreas: "Continue".
+
+**What.**  `pcnr.solve_dc` hands `_pcnr_c.solve` no seed where it has no `v_lim0`; pcnrdc.c's `seed` (pcnrdc.h's THE SEED, a field
+at the end) makes it before the first iteration -- each unknown's `x[ra] - x[rb]` at the start x, then each device's refine kernel
+from v_old 0.0 at that x, the temperature in its slot: `v_lim_init` -> `refine` -> `_pcnr_c.refine`'s own sequence on the same
+kernels and packs.  A kernel's decline (a NaN key) or a flag numpy reports hands back, as `update`'s refine does, and the Python
+makes its seed after a hand-back -- the same outcome either way.  A CHOOSE run's second call seeds again from the same x.
+
+**Measured** (LINE set before building; HEAD 0c22ef1e's worktree against this tree, interleaved, per-pair medians):
+* (a)-(b) The DC, every digest, route and PCNR C count HEAD's: the active chain 800 stages 1.087x, 2 000 1.115x, 4 000 **1.104x**
+  (1.61 / 1.59 / 1.59 -> 1.44 / 1.44 / 1.44 s), 8 000 **1.076x** (4.89 / 4.83 / 4.83 -> 4.52 / 4.49 / 4.52 s); the quiet chain 4 000
+  1.050x, 8 000 1.045x, the mesh 63 x 63 1.030x; every peak within 2 MB.  LINE MET: 8 000 and 4 000 >= 1.04x, every other >= 0.98x.
+* The wall: the active chain at 16 000 stages 1.002x (one pair, load 3.7) and on a rerun 1.009x (30.51 / 30.73 -> 30.09 / 30.58 s,
+  loads 2.7-3.6) -- line >= 1.02x MISSED within the loaded box's spread; accepted as measured by Andreas.
+* (d) The transients at size, the same digests: the quiet chain's Radau 1 us 1.009x, the mesh's Gear-2 0.998x, the active chain's
+  Gear-2 1.013x (its operating point 1.56 -> 1.38 s); the mesh's Radau 0.966x (loads 4.1-6.4) and on a rerun 0.977x (0.958 / 0.977
+  / 1.021; HEAD's own three 37.6-39.9 s) against 0.98x -- MISSED, its operating point the faster (0.59 -> 0.57 s) and the rest of
+  the run code the change does not touch: accepted as measured.  Another project's simulations on the box throughout (loads 1.4-8).
+* (e) The gate against 0c22ef1e: every result and every path counter the same -- the 27 decks under DC, Gear-2 and its bypass,
+  Radau; the 8 size runs -- C against Python 0 differing on every deck under every setting and at size.  Its verdict NOT REACHED on
+  4 arms of `seed`: the decline's hand-back and the skipped iteration after it reached by the new test (the coverage build's
+  'fixture' class); a class without a temperature slot (no deck's participant) and the flag test's hand-back (none of these classes:
+  see Tests) by none.
+
+**Tests.**  test_pcnr_c: `test_a_seed_its_kernel_declines_is_handed_back` -- a cascode started with a NaN at a device's node: the C
+hands back (`bail:refine`), the Python's seed and loop give the outcome, the C off the same.  The twins' tests are the rest: each
+solve without `v_lim0` now seeded in C.  Bitten (4 of 5): the raw difference's sign (20 fail), v_old not zero (12), never seeding
+(31), the decline not handed back (2: the new test); the flag test after the kernel not handed back passes -- with these classes an
+infinite or NaN raw (the only way the subtraction raises) makes the kernel decline first, and finite raws raise none: kept, as
+`update`'s.  The PCNR DC pinned pair re-recorded (both sides: `solve_dc` moved), its twins' tests passing.  Suite 6 599 passed (10 skipped).

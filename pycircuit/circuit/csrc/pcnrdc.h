@@ -120,6 +120,10 @@ typedef struct {
     const int64_t *dmap;  /* (n) each row's diagonal */
     const int64_t *jmap;  /* (4 nj) each junction pair's (a, a), (a, b), (b, a),
                              (b, b) */
+    /* THE SEED (CALL) */
+    long seed;            /* 1: v_lim0 is not given -- the solve makes it from
+                             x (`v_lim_init(limit=True)`) before its first
+                             iteration; 0: v holds it */
 } pcnrdc_t;
 
 long pcx_pcnrdc(pcnrdc_t *s);

@@ -1092,8 +1092,9 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
     ## `limit=True`: `x0` is the caller's, and may be a wild start.  A
     ## rung of `solve_dc_continued` passes `v_lim0`, the previous rung's
     ## converged unknowns -- a real point, not clamped (`v_lim_init`).
-    v_lim = (v_lim_init(devices, x, epar, limit=True) if v_lim0 is None
-             else np.array(v_lim0, dtype=float, copy=True))
+    ## Without one the C makes the seed where it serves (`_pcnr_c.solve`
+    ## with none), this the Python's after its hand-back
+    v_lim = None if v_lim0 is None else np.array(v_lim0, dtype=float, copy=True)
 
     u = np.asarray(circuit.u(0.0, epar, analysis='dc'), dtype=float)
     if source != 1.0:
@@ -1113,6 +1114,8 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
                         abstol, iabstol, gmin, gshunt, linsolver, jgmin, hrows)
     if got is not None:
         return got
+    if v_lim is None:
+        v_lim = v_lim_init(devices, x, epar, limit=True)
     jpairs = ([(int(p[2]), int(p[3])) for p in pcnr_junction_pairs(circuit)] if jgmin
               else None)
 

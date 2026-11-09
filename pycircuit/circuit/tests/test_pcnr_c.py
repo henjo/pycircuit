@@ -717,6 +717,21 @@ def test_each_decline_is_counted_and_the_python_answers(why, monkeypatch):
     assert _paths.COUNTS['pcnr_c:served'] == before.get('pcnr_c:served', 0)
 
 
+@pytest.mark.parametrize('node', ['mid', 'out'])
+def test_a_seed_its_kernel_declines_is_handed_back(node, monkeypatch):
+    """Without `v_lim0` the C makes the seed (`v_lim_init(limit=True)`:
+    pcnrdc.c's `seed`); where a class's refine kernel declines it -- a
+    NaN key: a start holding a NaN at a device's node -- the C hands the
+    solve back, and the Python's seed and loop give their own outcome."""
+    c, c_ref = _cascode(5.0, 3.0, 1.5), _cascode(5.0, 3.0, 1.5)
+    x0 = _start(c, 0.5)
+    x0[c.get_node_index(node)] = np.nan
+    got, counts = _solve(c, True, monkeypatch, x0=x0)
+    ref, _c = _solve(c_ref, False, monkeypatch, x0=x0)
+    assert got == ref and got[0] == 'raise', (got, ref)
+    assert counts.get('pcnr_c:bail:refine') == 1 and 'pcnr_c:served' not in counts, counts
+
+
 @pytest.mark.parametrize('late', ['own', 'toolkit', 'class'])
 def test_a_later_devices_decline_is_the_solves(late, monkeypatch):
     """The record's checks are each device's in turn (`_record`: a class's

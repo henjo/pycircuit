@@ -5632,6 +5632,17 @@ chain's DC 1.17-1.21x at 8 000 stages (151 -> 34 dense tests).  Tests:
 `test_verdict_c.py` (the wide pass at the threshold and the values not
 finite, against numpy and the Python twin).
 
+## `pcnr.solve_dc`, `pcnrdc.c` -- the DC's seed made in C (2026-11-09)
+
+2026-11-09 (`doc/hdl_roadmap_260824.md`, 304; plan 261 L17 D4).  A PCNR
+solve without `v_lim0` seeded its limited unknowns in Python,
+`v_lim_init(limit=True)`: a refine kernel call through cffi a device at a
+time, ~47 ms at 8 000 devices, made once a source step.  The C solve now
+makes the seed itself before its first iteration on the same kernels --
+the Python's only after a hand-back.  The same answers; the active chain's
+DC 1.076x at 8 000 stages.  Tests: `test_pcnr_c.py` (a seed the kernel
+declines is handed back).
+
 ## `_tran_stageloop_c`, `csrc/loop.c`'s stage family -- a plain run's Radau attempts in C (2026-10-24)
 
 2026-10-24 (`doc/hdl_roadmap_260824.md`, 207).  A plain Radau transient --
