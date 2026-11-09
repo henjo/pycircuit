@@ -397,7 +397,7 @@ def _tables(devices, kerns, epar):
 
 def release(circuit):
     """Hand back the whole pages of the n x n scratch `circuit`'s record
-    holds -- J (zero off the pattern: zero again), |J|, the dense and the
+    holds -- |J| (zero off the pattern: zero again), the dense and the
     reduced matrices, the core's C bins, its core's G bin: every read of each
     in a solve follows its write there, or reads zeros -- where a transient
     keeps the record on the circuit for the whole run after its operating
@@ -409,8 +409,26 @@ def release(circuit):
     if type(rec) is not _Rec or rec.core is None or not _tran_core.paged(rec.core):
         return
     b = rec.buf
-    _tran_core.give_back(b['J'], b['Jabs'], b['A'], b['R'], b['Cs'], rec.core.arrays['binG'])
+    _tran_core.give_back(b['Jabs'], b['A'], b['R'], b['Cs'], rec.core.arrays['binG'])
     _PC['pcnr_c:released'] += 1
+
+
+def _positions(n, devices, pairs):
+    """J'S POSITIONS (pcnrdc.h) row-major in n x n: `smap` each device's
+    Schur positions in `schur`'s order (per unknown its rows at the probe's
+    ra, then at its rb), `dmap` each row's diagonal, `jmap` each junction
+    pair's four entries."""
+    I64 = np.int64
+    sch = []
+    for d in devices:
+        rows = np.asarray(d.rows, dtype=I64) * n
+        for ra, rb in d.probes:
+            sch += [rows + ra, rows + rb]
+    jm = [(a * n + a, a * n + b, b * n + a, b * n + b)
+          for a, b in ((int(p[2]), int(p[3])) for p in pairs)]
+    return {'smap': np.concatenate(sch) if sch else np.zeros(0, dtype=I64),
+            'dmap': np.arange(n, dtype=I64) * (n + 1),
+            'jmap': np.array(jm, dtype=I64).reshape(-1)}
 
 
 class _Rec:
@@ -460,13 +478,28 @@ class _Rec:
         mmax = max(d.m for d in devices)
         m = n - 1
         E, Z = np.empty, np.zeros
-        ## (J, |J| and R zero: off the pattern nothing writes them -- pcnrdc.h;
-        ## with one, on pattern pages at size: resident where written)
+        ## the junction pairs `jgmin` is put across (`pcnr_junction_pairs`)
+        from pycircuit.circuit import pcnr as _pcnr
+        pairs = _pcnr.pcnr_junction_pairs(cir)
+        ## THE PATTERN (pcnrdc.h): the core's, each Schur position -- a
+        ## device row and a probe's ra or rb -- and the junction pairs'
+        ## entries; none where the core writes every entry.  With one J is
+        ## packed on it, and J'S POSITIONS are in that layout
+        self.P, self.kmaps = None, {}
+        maps = _positions(n, devices, pairs)
+        if core.npat:
+            self.P = np.unique(np.concatenate(
+                [np.asarray(core.arrays['pat'], dtype=I64), *maps.values()]))
+            maps = {nm: np.searchsorted(self.P, a) for nm, a in maps.items()}
+        ## (|J| and R zero: off the pattern nothing writes them -- pcnrdc.h;
+        ## with one, on pattern pages at size: resident where written; J
+        ## packed with one, its last entry the zero an entry off P reads)
         from pycircuit.circuit import _tran_core
         P0 = _tran_core.pattern_zeros if core.npat else Z
         self.buf = buf = {
             'u': E(n), 'x': E(n), 'v': E(max(k, 1)), 'fe': E(n), 'dx': E(n), 'gl': E(max(k, 1)),
-            'F': E(n), 'J': P0(n * n), 'Jabs': P0(n * n), 'rc': E(n), 'A': E(max(m * m, 1)),
+            'F': E(n), 'J': Z(n * n if self.P is None else len(self.P) + 1),
+            'Jabs': P0(n * n), 'rc': E(n), 'A': E(max(m * m, 1)),
             'b': E(max(m, 1)), 'xn': E(n), 'ax': E(n), 'Is': E(n), 'vn': E(max(k, 1)),
             'R': P0(max(m * m, 1)), 'kx': E(max(m, 1)), 'ky': E(max(m, 1)), 'kt': E(max(2 * m, 1)),
             'blk': E(max(ntm, 1)), 'pot': E(tmax), 'cur': E(tmax), 'Gl': E(tmax * tmax),
@@ -478,7 +511,8 @@ class _Rec:
             h = fb('double *', a)
             keep += [a, h]
             setattr(s, nm, h)
-        for nm, a in arrs.items():
+        for nm, a in (*arrs.items(), *maps.items()):
+            a = np.ascontiguousarray(a if len(a) else [0], dtype=I64)
             h = fb('int64_t *', a)
             keep += [a, h]
             setattr(s, nm, h)
@@ -514,31 +548,15 @@ class _Rec:
         self.red = np.empty(n, dtype=I64)
         keep += [self.red, fb('int64_t *', self.red)]
         s.red = keep[-1]
-        ## the junction pairs `jgmin` is put across (`pcnr_junction_pairs`)
-        from pycircuit.circuit import pcnr as _pcnr
-        pairs = _pcnr.pcnr_junction_pairs(cir)
         for nm, col in (('ja', 2), ('jb', 3)):
             a = np.array([p[col] for p in pairs], dtype=I64).reshape(-1)
             h = fb('int64_t *', a)
             keep += [a, h]
             setattr(s, nm, h)
         s.nj, s.gjgmin = len(pairs), 0.0
-        ## THE PATTERN (pcnrdc.h): the core's, each Schur position -- a
-        ## device row and a probe's ra or rb -- and the junction pairs'
-        ## entries; none where the core writes every entry
-        self.P, self.kmaps = None, {}
         s.np, s.P = 0, ffi.NULL
-        if core.npat:
-            parts = [np.asarray(core.arrays['pat'], dtype=I64),
-                     np.arange(n, dtype=I64) * (n + 1)]
-            for d in devices:
-                rows = np.asarray(d.rows, dtype=I64) * n
-                for ra, rb in d.probes:
-                    parts += [rows + ra, rows + rb]
-            for p in pairs:
-                a, b = int(p[2]), int(p[3])
-                parts.append(np.array([a * n + a, a * n + b, b * n + a, b * n + b], dtype=I64))
-            self.P = np.ascontiguousarray(np.unique(np.concatenate(parts)), dtype=I64)
+        if self.P is not None:
+            self.P = np.ascontiguousarray(self.P, dtype=I64)
             keep += [self.P, fb('int64_t *', self.P)]
             s.np, s.P = len(self.P), keep[-1]
         self.klu, self.klu_keep = None, ()
@@ -576,7 +594,8 @@ class _Rec:
 
     def on_pattern(self, held):
         """KLU on the pattern (pcnrdc.h's KLU ON THE PATTERN) for the bound
-        solve and this call's reduction: each KLU entry's index in J, and the
+        solve and this call's reduction: each KLU entry's position in packed
+        J (one off P: J's last, the zero), and the positions of the
         pattern's entries in the reduced matrix off KLU's -- made once per
         solver and held set.  Nothing where there is no pattern or no KLU."""
         s, ch = self.s, self.klu
@@ -588,11 +607,16 @@ class _Rec:
             n, m, P, red = self.n, int(s.m), self.P, self.red
             take = self.klu_keep[1]
             unred = np.flatnonzero(red >= 0).astype(np.int64)
-            kfull = np.ascontiguousarray(unred[take // m] * n + unred[take % m], dtype=np.int64)
+            full = unred[take // m] * n + unred[take % m]
+            at = np.searchsorted(P, full)
+            on = at < len(P)
+            on[on] = P[at[on]] == full[on]
+            kfull = np.ascontiguousarray(np.where(on, at, len(P)), dtype=np.int64)
             r, c = P // n, P % n
             act = (red[r] >= 0) & (red[c] >= 0)
             pos = red[r[act]] * m + red[c[act]]
-            ffull = np.ascontiguousarray(P[act][~np.isin(pos, take)], dtype=np.int64)
+            ffull = np.ascontiguousarray(np.flatnonzero(act)[~np.isin(pos, take)],
+                                         dtype=np.int64)
             fb = self.ffi.from_buffer
             got = self.kmaps[key] = (ch, kfull, ffull, fb('int64_t *', kfull),
                                      fb('int64_t *', ffull) if len(ffull) else self.ffi.NULL)
@@ -671,25 +695,38 @@ def _solver(ls, m):
     return ch
 
 
+def _dense_J(rec):
+    """The record's J as the n x n matrix (pcnrdc.h's THE PATTERN: packed J
+    zero off P)."""
+    n, J, P = rec.n, rec.buf['J'], rec.P
+    if P is None:
+        return J.reshape(n, n)
+    full = np.zeros(n * n)
+    full[P] = J[:len(P)]
+    return full.reshape(n, n)
+
+
 def _reduced_J(rec):
     """The Schur matrix J without the reference's row and column, as
     `J[np.ix_(keep, keep)]` makes it -- at size (`_tran_core.paged`) on
-    pattern pages, its values at the core's pattern reduced (J is zero off
-    it: nothing writes it there), the counts made at that pattern."""
+    pattern pages, the pattern P's entries reduced (J is zero off it), the
+    counts made at them.  ⚠ P's, not the core's pattern's: P holds Schur
+    positions off the core's where J is not zero (a MOS drain row at its
+    gate's column), which the AutoSolver's choice (its fill, `_ours`) reads
+    -- `test_pcnr_c`'s "off the core's pattern" test."""
     from pycircuit.circuit import _tran_core
     n = rec.n
     keep = rec.red >= 0
-    J = rec.buf['J']
-    if not _tran_core.paged(rec.core):
-        return J.reshape(n, n)[np.ix_(keep, keep)]
-    pat = np.asarray(rec.core.arrays['pat'], dtype=np.int64)
-    I, K = pat // n, pat % n
+    if rec.P is None or not _tran_core.paged(rec.core):
+        return _dense_J(rec)[np.ix_(keep, keep)]
+    P = rec.P
+    I, K = P // n, P % n
     on = keep[I] & keep[K]
     m = int(keep.sum())
     red = np.asarray(rec.red, dtype=np.int64)
     rp = red[I[on]] * m + red[K[on]]
     R = _tran_core.pattern_pages(m, rp)
-    R.reshape(-1)[rp] = J[pat[on]]
+    R.reshape(-1)[rp] = rec.buf['J'][:len(P)][on]
     return R
 
 

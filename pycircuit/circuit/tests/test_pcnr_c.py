@@ -436,6 +436,74 @@ def test_a_structural_floor_below_the_sparse_one_is_served(monkeypatch):
     assert counts.get('pcnr_c:served') == 1, counts
 
 
+def test_the_first_reduced_matrix_holds_the_schur_entries_off_the_cores_pattern(monkeypatch):
+    """At size the AutoSolver's choice reads the first reduced Schur matrix
+    on pattern pages (`_reduced_J`): the dense one's bytes, `J[np.ix_(keep,
+    keep)]`, the Schur entries off the core's pattern among them -- on a
+    MOS chain a drain row's entry at its gate's column (the view's core
+    holds no element across them), there not zero.  Until 2026-11-09 the
+    matrix was made from the core's pattern alone, short of them."""
+    from pycircuit.circuit import _tran_core
+    from pycircuit.circuit.dcanalysis import DC
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    monkeypatch.setattr(DC, '_STRUCTURAL_KLU_MIN_N', 40)
+    seen, real = [], _pcnr_c._reduced_J
+
+    def spy(rec):
+        R = real(rec)
+        n, P, keep = rec.n, rec.P, rec.red >= 0
+        off = ~np.isin(P, np.asarray(rec.core.arrays['pat'])) & keep[P // n] & keep[P % n]
+        seen.append((R, _pcnr_c._dense_J(rec)[np.ix_(keep, keep)],
+                     np.count_nonzero(rec.buf['J'][:len(P)][off])))
+        return R
+    monkeypatch.setattr(_pcnr_c, '_reduced_J', spy)
+    c = _active_chain(60)
+    ls = DC(c, toolkit=circuit.numeric, pcnr=True)._get_linearsolver()
+    _out, counts = _solve(c, True, monkeypatch, x0=_start(c, 0.9), linsolver=ls)
+    assert len(seen) == 1, counts
+    R, D, nz_off = seen[0]
+    assert nz_off > 0, 'no Schur entry off the core\'s pattern: the test reads none'
+    assert _tran_core.pattern_of(R) is not None
+    assert R.tobytes() == D.tobytes()
+    assert type(ls._choice).__name__ == 'StructuralKLU'
+
+
+def test_klus_entries_are_read_at_their_positions_in_packed_J(monkeypatch):
+    """With a pattern J is packed on P (pcnrdc.h's THE PATTERN): each KLU
+    entry is read at its position in it -- one off P at J's last, the zero
+    -- and the foreign test at the positions of P's entries off KLU's
+    pattern.  The circuits' KLU patterns hold P and no more, so a take made
+    for the test: KLU's own short of a few entries (foreign, then) and with
+    a few of the reduced matrix's entries off P."""
+    from pycircuit.circuit.dcanalysis import DC
+    monkeypatch.setattr(DC, '_STRUCTURAL_KLU_MIN_N', 40)
+    c = _ladder(60)
+    ls = DC(c, toolkit=circuit.numeric, pcnr=True)._get_linearsolver()
+    _out, counts = _solve(c, True, monkeypatch, x0=_start(c, 0.5), linsolver=ls)
+    rec = c.__dict__['_pcnr_c']
+    assert counts.get('pcnr_c:served') == 1 and rec.P is not None and rec.klu is not None
+    n, m, P, red = rec.n, int(rec.s.m), rec.P, rec.red
+    unred = np.flatnonzero(red >= 0)
+    take = rec.klu_keep[1]
+
+    def full(t):
+        return unred[t // m] * n + unred[t % m]
+    on = np.isin(full(np.arange(m * m)), P)
+    off_p = np.flatnonzero(~on)[:5]
+    fake = np.sort(np.concatenate([take[3:], off_p]))
+    rec.klu_keep = (rec.klu_keep[0], fake, *rec.klu_keep[2:])
+    rec.kmaps.clear()
+    rec.on_pattern(())
+    _ch, kfull, ffull = rec.kmaps[(id(rec.klu), ())][:3]
+    want = {f: i for i, f in enumerate(P.tolist())}
+    assert kfull.tolist() == [want.get(f, len(P)) for f in full(fake).tolist()]
+    assert np.count_nonzero(kfull == len(P)) == len(off_p) == 5
+    kept = (red[P // n] >= 0) & (red[P % n] >= 0)
+    foreign = P[kept][~np.isin(red[P[kept] // n] * m + red[P[kept] % n], fake)]
+    assert len(foreign) >= 3 and P[ffull].tolist() == foreign.tolist()
+    assert int(rec.s.nfor) == len(foreign)
+
+
 ## ------------------------------------------------------------------------
 ## On pattern pages: the C's n x n matrices resident where written.
 
@@ -484,23 +552,23 @@ def _dc_calls(build, on, monkeypatch):
 
 
 def _pcnr_mats(c):
-    """The circuit's PCNR record's n x n matrices: J, |J|, R and its core's
-    G bin."""
+    """The circuit's PCNR record's n x n matrices: |J|, R and its core's G
+    bin (J is packed on the pattern: pcnrdc.h's THE PATTERN)."""
     rec = c.__dict__['_pcnr_c']
-    mats = {k: rec.buf[k] for k in ('J', 'Jabs', 'R')}
+    mats = {k: rec.buf[k] for k in ('Jabs', 'R')}
     mats['binG'] = rec.core.arrays['binG']
     return rec, mats
 
 
 def test_on_pattern_pages_the_dense_tests_are_the_pythons(monkeypatch):
-    """On pattern pages (`_tran_core.paged`, here from any size) the C's J,
+    """On pattern pages (`_tran_core.paged`, here from any size) the C's
     |J| and R and its core's G bin are pattern pages written on the pattern
-    alone: R held zero -- the residual's dense test scatters KLU's entries
-    in and takes them out after (pcx_kluseq.h's PCX_A_ZERO) -- and |J|
-    written on the pattern where the convergence test goes dense.  On
-    `_stiff_ladder`, both dense tests made solve after solve, every call is
-    the Python's: its outcome and StructuralKLU's counters the same with the
-    C on and off, each call served."""
+    alone, J packed on it: R held zero -- the residual's dense test scatters
+    KLU's entries in and takes them out after (pcx_kluseq.h's PCX_A_ZERO)
+    -- and |J| written on the pattern where the convergence test goes
+    dense.  On `_stiff_ladder`, both dense tests made solve after solve,
+    every call is the Python's: its outcome and StructuralKLU's counters the
+    same with the C on and off, each call served."""
     from pycircuit.circuit import _tran_core
     from pycircuit.circuit.dcanalysis import DC
     from pycircuit.circuit.tests.test_radau_pattern_pages import _paged
@@ -519,7 +587,9 @@ def test_on_pattern_pages_the_dense_tests_are_the_pythons(monkeypatch):
     off = np.ones(c.n * c.n, dtype=bool)
     off[rec.P] = False
     assert np.count_nonzero(mats['Jabs']) > 0 and not np.any(mats['Jabs'][off])
-    assert not np.any(mats['J'][off]) and not np.any(mats['R'])
+    assert not np.any(mats['R'])
+    J = rec.buf['J']
+    assert J.shape == (len(rec.P) + 1,) and J[-1] == 0.0 and np.count_nonzero(J) > 0
 
 
 def _resident_share(a):
@@ -541,8 +611,8 @@ def _resident_share(a):
 
 def test_at_size_the_dcs_matrices_are_resident_where_written(monkeypatch):
     """At size (`_tran_core.paged`: private 4 KB pages, resident where
-    written) the C's J, |J|, R and its core's G bin hold a page or two a
-    row: on `_stiff_ladder` of 1 500 stages (rows of three pages), both
+    written) the C's |J|, R and its core's G bin hold a page or two a row
+    (J packed: none): on `_stiff_ladder` of 1 500 stages (rows of three pages), both
     dense tests made, each under 3/4 of its pages resident (0.34-0.58
     measured) -- where a write of every entry (a dense test's zeroed R or
     |J| made whole) or one entry under a huge page makes all of it."""

@@ -73,14 +73,16 @@ static void device(pcnrdc_t *s, long d)
 }
 
 /* `augmented_system` and the gshunt rows: the view's core at x (F = i + u,
-   J = G), each participant, then `g[shunt] += gshunt x[shunt]`,
-   `J[shunt, shunt] += gshunt`, then `gjgmin` across each junction pair
-   (`F[a] += g vj`, `F[b] -= g vj`, J's four entries, in pair order).  F and J may carry a NaN on (the kernels'
-   at a wild point); g_lim, from the finite x and v, may not.  0, or
-   PCNRDC_BAIL_FLAGS */
+   J = G: packed, its pattern's entries), each participant, then `g[shunt] +=
+   gshunt x[shunt]`, `J[shunt, shunt] += gshunt`, then `gjgmin` across each
+   junction pair (`F[a] += g vj`, `F[b] -= g vj`, J's four entries, in pair
+   order) -- J at its positions (pcnrdc.h's THE PATTERN).  F and J may carry
+   a NaN on (the kernels' at a wild point); g_lim, from the finite x and v,
+   may not.  0, or PCNRDC_BAIL_FLAGS */
 static long assemble(pcnrdc_t *s)
 {
     const hdl_core_t *c = (const hdl_core_t *) s->core;
+    double *J = s->J;
     long n = s->n, i, d;
     ((core_fn_t) s->core_fn)(s->core, s->x, s->T, PCX_PASS_G | PCX_PASS_I | s->pattern,
                              PCX_FORMULA_PASSES, 0.0, 0.0, 0.0, 0.0, 0.0, NULL, NULL, NULL,
@@ -88,15 +90,15 @@ static long assemble(pcnrdc_t *s)
     feclearexcept(FE_ALL_EXCEPT);
     for (i = 0; i < n; i++) s->F[i] = c->bini[i] + s->u[i];
     if (s->np)
-        for (i = 0; i < s->np; i++) s->J[s->P[i]] = c->binG[s->P[i]];
+        for (i = 0; i < s->np; i++) J[i] = c->binG[s->P[i]];
     else
-        for (i = 0; i < n * n; i++) s->J[i] = c->binG[i];
+        for (i = 0; i < n * n; i++) J[i] = c->binG[i];
     for (d = 0; d < s->nd; d++) device(s, d);
     if (s->gshunt != 0.0) {
         for (i = 0; i < s->nn; i++) {
             if (i == s->iref) continue;
             s->F[i] = s->F[i] + s->gshunt * s->x[i];
-            s->J[i * n + i] = s->J[i * n + i] + s->gshunt;
+            J[s->dmap[i]] = J[s->dmap[i]] + s->gshunt;
         }
     }
     if (s->gjgmin != 0.0) {
@@ -104,13 +106,14 @@ static long assemble(pcnrdc_t *s)
         long j;
         for (j = 0; j < s->nj; j++) {
             long a = s->ja[j], b = s->jb[j];
+            const int64_t *q = s->jmap + 4 * j;
             double vj = s->x[a] - s->x[b];
             s->F[a] = s->F[a] + g * vj;
             s->F[b] = s->F[b] - g * vj;
-            s->J[a * n + a] = s->J[a * n + a] + g;
-            s->J[a * n + b] = s->J[a * n + b] - g;
-            s->J[b * n + a] = s->J[b * n + a] - g;
-            s->J[b * n + b] = s->J[b * n + b] + g;
+            J[q[0]] = J[q[0]] + g;
+            J[q[1]] = J[q[1]] - g;
+            J[q[2]] = J[q[2]] - g;
+            J[q[3]] = J[q[3]] + g;
         }
     }
     if (fetestexcept(PC_FLAGS)) return PCNRDC_BAIL_FLAGS;
@@ -120,24 +123,26 @@ static long assemble(pcnrdc_t *s)
 
 /* `schur_reduce` in place: each unknown's column added at its probe's ra
    column, subtracted at rb (`np.add.at` / `np.subtract.at` on the device's
-   rows), `col * g_lim` into the rhs corrections; f_eff = F - rc.  What the
-   sum raises -- an overflow, an invalid: a derivative run away at a run-away
-   iterate -- `schur_reduce` does not report (its errstate ignores both): the
-   infinity or NaN is kept for the solve to fail on, as the Python's, and the
-   flags are cleared so the steps after read their own.  Always 0 */
+   rows: J's positions `smap`), `col * g_lim` into the rhs corrections;
+   f_eff = F - rc.  What the sum raises -- an overflow, an invalid: a
+   derivative run away at a run-away iterate -- `schur_reduce` does not
+   report (its errstate ignores both): the infinity or NaN is kept for the
+   solve to fail on, as the Python's, and the flags are cleared so the steps
+   after read their own.  Always 0 */
 static long schur(pcnrdc_t *s)
 {
     long n = s->n, i, d, j, r;
+    const int64_t *sm = s->smap;
+    double *J = s->J;
     for (i = 0; i < n; i++) s->rc[i] = 0.0;
     for (d = 0; d < s->nd; d++) {
         long t = s->d_t[d], m = s->d_m[d], off = s->d_off[d];
         const int64_t *rows = s->rows + s->d_rows[d];
         const double *blk = s->blk + s->d_tm[d];
-        for (j = 0; j < m; j++) {
-            long ra = s->prb[2 * (off + j)], rb = s->prb[2 * (off + j) + 1];
+        for (j = 0; j < m; j++, sm += 2 * t) {
             double g = s->gl[off + j];
-            for (r = 0; r < t; r++) s->J[rows[r] * n + ra] += blk[r * m + j];
-            for (r = 0; r < t; r++) s->J[rows[r] * n + rb] -= blk[r * m + j];
+            for (r = 0; r < t; r++) J[sm[r]] += blk[r * m + j];
+            for (r = 0; r < t; r++) J[sm[t + r]] -= blk[r * m + j];
             for (r = 0; r < t; r++) s->rc[rows[r]] += blk[r * m + j] * g;
         }
     }
@@ -147,7 +152,8 @@ static long schur(pcnrdc_t *s)
 }
 
 /* `predict`'s solve, numpy.linalg.solve on the reduced Schur matrix:
-   dgesv on its column-major copy, rhs `-f_eff` (in `b`).  An info is
+   dgesv on its column-major copy (packed J: zero, then P's entries, as
+   the n x n J is zero off P), rhs `-f_eff` (in `b`).  An info is
    numpy's LinAlgError (PCNRDC_SINGULAR, served: the glue raises it); what
    dgesv raises with info 0 numpy's linalg clears (`set_fp_invalid_or_clear`),
    so it is cleared here -- a step that is not finite is `update`'s
@@ -157,10 +163,18 @@ static long solve_dense(pcnrdc_t *s)
     long n = s->n, m = s->m, i, j;
     const int64_t *red = s->red;
     int64_t m64 = m, one64 = 1, info64 = 0;
-    for (i = 0; i < n; i++) {
-        if (red[i] < 0) continue;
-        for (j = 0; j < n; j++)
-            if (red[j] >= 0) s->A[red[j] * m + red[i]] = s->J[i * n + j];
+    if (s->np) {
+        for (i = 0; i < m * m; i++) s->A[i] = 0.0;
+        for (i = 0; i < s->np; i++) {
+            long r = (long) (s->P[i] / n), c = (long) (s->P[i] % n);
+            if (red[r] >= 0 && red[c] >= 0) s->A[red[c] * m + red[r]] = s->J[i];
+        }
+    } else {
+        for (i = 0; i < n; i++) {
+            if (red[i] < 0) continue;
+            for (j = 0; j < n; j++)
+                if (red[j] >= 0) s->A[red[j] * m + red[i]] = s->J[i * n + j];
+        }
     }
     ((dgesv64_t) s->dgesv)(&m64, &one64, s->A, &m64, s->ipiv64, s->b, &m64, &info64);
     feclearexcept(FE_ALL_EXCEPT);
@@ -176,9 +190,10 @@ static long solve_dense(pcnrdc_t *s)
    hands back where the residual's `arr @ x - rhs` raises numpy's warning
    (an infinity times a zero).  A failed factor is its LinAlgError
    (PCNRDC_SINGULAR).  The solution in `kx`.
-   On the pattern (`kfull`): the entries gathered from J where they stand,
-   the foreign test over the pattern's entries off KLU's (J is zero
-   elsewhere: the same count), the residual's test on the CSC -- R is not
+   On the pattern (`kfull`): the entries gathered from J's positions (an
+   entry off P the zero J[np]), the foreign test over the pattern's entries
+   off KLU's (J is zero elsewhere: the same count), the residual's test on
+   the CSC -- R is not
    made: held zero (allocated zero), its dense test scatters KLU's entries
    into it and takes them out after (PCX_A_ZERO) */
 static long solve_klu(pcnrdc_t *s)
@@ -255,8 +270,8 @@ static long update(pcnrdc_t *s)
 }
 
 /* conv_f's verdict on the pattern: each kept row's S_i = sum |J_ij|
-   |x_new_j| over P (J is zero off it; every row holds its diagonal there),
-   in P's order.  A sum rounds only where two operands holding a nonzero
+   |x_new_j| over P (packed J: zero off it; every row holds its diagonal
+   there), in P's order.  A sum rounds only where two operands holding a nonzero
    term meet -- a zero product joins exactly, fused or not -- so with k_i
    entries of P in the row numpy's dgemv (any summation tree of the same
    products, all >= 0) is within 2 gamma_(k_i + 1) S_i of it; with d_i =
@@ -276,7 +291,7 @@ static int cf_sparse(pcnrdc_t *s)
         double S = 0.0, af, d;
         r = (long) (base / n);
         for (k = 0; e < s->np && s->P[e] < base + n; e++, k++)
-            S += fabs(s->J[s->P[e]]) * fabs(s->xn[s->P[e] - base]);
+            S += fabs(s->J[e]) * fabs(s->xn[s->P[e] - base]);
         if (s->red[r] < 0) continue;
         if (!(S < 1e300)) return PCX_UNDECIDED;
         d = 4.0 * ((double) k + 2.0) * DBL_EPSILON;
@@ -315,9 +330,10 @@ static int converged(pcnrdc_t *s)
     }
     if (verdict == PCX_UNDECIDED) {
         cf = 1;
-        /* (|J| zero off the pattern as J is: written on it alone) */
+        /* (|J| zero off the pattern as J is: written on it alone, from
+           packed J) */
         if (s->np)
-            for (i = 0; i < s->np; i++) s->Jabs[s->P[i]] = fabs(s->J[s->P[i]]);
+            for (i = 0; i < s->np; i++) s->Jabs[s->P[i]] = fabs(s->J[i]);
         else
             for (i = 0; i < n * n; i++) s->Jabs[i] = fabs(s->J[i]);
         for (i = 0; i < n; i++) s->ax[i] = fabs(s->xn[i]);

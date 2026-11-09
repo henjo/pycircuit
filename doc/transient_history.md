@@ -5567,6 +5567,29 @@ chain's DC 1.46x at 8 000 stages (peak 1 760 -> 481 MB), 1.71x at 16 000
 row sends both dense tests dense: on pattern pages the Python's, R zero
 after; at 1 500 stages each matrix under 3/4 resident).
 
+## `_pcnr_c`, `pcnrdc.c` -- the DC's J packed on its pattern (2026-11-09)
+
+2026-11-09 (`doc/hdl_roadmap_260824.md`, 300; plan 261 L17).  After D1
+PCNR's J was an n x n matrix on pattern pages, written on its pattern
+alone; the Schur sum's scattered `+=` at a device row and a probe's column
+and the assembly's `J[P] = binG[P]` met a new 4 KB page at almost every
+entry -- about half of the C solve's own time on an 8 000-stage active
+chain.  J is now packed on the pattern P (its entries in P's order, then
+one zero), and every write and read goes to a position made once a record
+by the glue: the Schur sum's (`smap`), gshunt's diagonal (`dmap`), the
+junction term's four (`jmap`), KLU's gather (`kfull`, an entry off P
+reading the zero) and the foreign test's (`ffull`); the dense solve
+scatters it into a zeroed A.  Every add in the same order on the same
+entry: the same bytes.  Found on the way and fixed: at size the
+AutoSolver's first reduced matrix (`_reduced_J`) was made from the core's
+pattern alone since c3980906, short of the Schur entries off it (a MOS
+drain row at its gate's column; no run moved) -- now from all of P, the
+dense matrix's bytes.  The same answers and routes; the active chain's DC
+1.10x at 8 000 stages (peak 482 -> 425 MB), 1.20x at 16 000 (907 -> 783
+MB).  Tests: `test_pcnr_c.py` (the first reduced matrix holds the Schur
+entries off the core's pattern; KLU's entries and the foreign test at
+their positions in packed J).
+
 ## `_tran_stageloop_c`, `csrc/loop.c`'s stage family -- a plain run's Radau attempts in C (2026-10-24)
 
 2026-10-24 (`doc/hdl_roadmap_260824.md`, 207).  A plain Radau transient --

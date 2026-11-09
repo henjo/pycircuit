@@ -479,9 +479,12 @@ PAIRS = {
                'sum\'s flags unreported on both sides (`schur_reduce`\'s errstate: its '
                'overflow and invalid), a NaN or an infinity carried into KLU\'s '
                'sequence (roadmap 298); the dense tests on matrices zero off the '
-               'pattern as the Python\'s are -- J and |J| written on it alone, R '
-               'held zero and KLU\'s entries scattered in and out (PCX_A_ZERO), on '
-               'pattern pages at size (roadmap 299)',
+               'pattern as the Python\'s are -- |J| written on it alone, R held '
+               'zero and KLU\'s entries scattered in and out (PCX_A_ZERO), on '
+               'pattern pages at size (roadmap 299); J packed on the pattern, the '
+               'Schur sum\'s, gshunt\'s and the junction term\'s writes and KLU\'s '
+               'reads at their positions in it, the AutoSolver\'s first reduced '
+               'matrix at size from all of it (roadmap 300)',
         'reference': ['pycircuit.circuit.pcnr:solve_dc',
                       'pycircuit.circuit.pcnr:augmented_system',
                       'pycircuit.circuit.pcnr:schur_reduce',
@@ -1202,7 +1205,7 @@ RECORD = {
     'the PSP limiter and its C twin': ('8e14bbc903f1', '3aefa105ff7f'),
     'the error test and its C': ('639cab30f2d5', 'c74aa246f41c'),
     'the DC base solve and its C': ('37b14c0a34a7', '0898d2b267a9'),
-    'the PCNR DC solve and its C': ('6aa96549b383', 'f9f474d6ecee'),
+    'the PCNR DC solve and its C': ('6aa96549b383', '6d2ca4e8f413'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('d417a4cedc1d', '694a1086db84'),
     "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),

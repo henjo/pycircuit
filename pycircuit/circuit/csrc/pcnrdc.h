@@ -44,14 +44,19 @@ typedef struct {
     const int64_t *act_r; /* (nact) the entry in the reduced, row-major matrix */
     /* THE PATTERN (CTX; np 0: none): every entry of J that can be nonzero --
        the core's pattern (binG is zero off it), each Schur position and the
-       junction pairs' entries.  J is zero off it at every point (allocated
-       zero, written only on it), so a pass over it is the dense pass */
+       junction pairs' entries.  With one J is PACKED: its entries on P in
+       P's order, then one zero (`J[np]`: written by none), the n x n matrix
+       zero off P -- so a pass over it is the dense pass.  J'S POSITIONS
+       (`smap`, `dmap`, `jmap`, `kfull`, `ffull`) index that layout: packed
+       with a pattern, row-major n x n without one */
     long np;
     const int64_t *P;     /* (np) row-major indices of n x n, ascending */
-    /* KLU ON THE PATTERN (CALL; kfull NULL: the reduced R made dense) */
-    const int64_t *kfull; /* (nact) each KLU entry's index in J */
+    /* KLU ON THE PATTERN (CALL; kfull NULL: the reduced R made dense -- with
+       a pattern and KLU always set: `_pcnr_c`'s `on_pattern`) */
+    const int64_t *kfull; /* (nact) each KLU entry's position in J (an entry
+                             off P: J[np], the zero) */
     long nfor;            /* P's entries in the reduced matrix off KLU's pattern */
-    const int64_t *ffull; /* (nfor) their indices in J: `_ours`' foreign test */
+    const int64_t *ffull; /* (nfor) their positions in J: `_ours`' foreign test */
     /* THE PARTICIPANTS (CTX) */
     long nd,              /* devices */
          k;               /* limited unknowns, all devices */
@@ -81,7 +86,9 @@ typedef struct {
            *gl;           /* (k) g_lim */
     /* SCRATCH (CTX buffers) */
     double *F,            /* (n) g_MNA */
-           *J,            /* (n x n) J_MNA, then the Schur matrix in place */
+           *J,            /* J_MNA, then the Schur matrix in place: packed
+                             (np + 1) with a pattern, n x n without (THE
+                             PATTERN) */
            *Jabs,         /* (n x n) |the Schur matrix|: with a pattern zero off it
                              (allocated zero, written on it alone) */
            *rc,           /* (n) the rhs corrections */
@@ -106,6 +113,13 @@ typedef struct {
          dense_resid;     /* the residual tests the dense one decided */
     long iters,           /* the iterations made: the Python's `it + 1` */
          status;          /* enum pcnrdc_status, as returned */
+    /* J'S POSITIONS (CTX; THE PATTERN's layout) */
+    const int64_t *smap;  /* each device's Schur positions in `schur`'s order:
+                             per unknown its t (row, ra) entries, then its t
+                             (row, rb) -- 2 t m a device, device by device */
+    const int64_t *dmap;  /* (n) each row's diagonal */
+    const int64_t *jmap;  /* (4 nj) each junction pair's (a, a), (a, b), (b, a),
+                             (b, b) */
 } pcnrdc_t;
 
 long pcx_pcnrdc(pcnrdc_t *s);

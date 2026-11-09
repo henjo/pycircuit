@@ -15058,3 +15058,58 @@ measured).  `test_the_klu_solve_in_c_is_the_pythons` now with the core's pattern
 part reverted in turn (7 of 7 fail one): R's scatter not undone, R zeroed whole, |J| written whole, and each of binG, J, |J| and R on
 numpy's zeros.  Eleven pinned pairs re-recorded (pcx_kluseq.h and `_tran_core` are in them), their twins' tests passing; the PCNR
 DC pair's description names the dense tests on matrices zero off the pattern.  Suite 6 585 passed (10 skipped).
+
+## 2026-11-09 — 300. PCNR's DC J packed on its pattern: the Schur sum, gshunt, the junction term and KLU's gather at positions made once -- the active chain's DC 1.10x at 4 000 and 8 000 stages (peak 482 -> 425 MB) and 1.20x at 16 000 (907 -> 783 MB); at size the AutoSolver's first reduced matrix from the whole pattern (it missed the Schur entries off the core's); every answer the same
+
+**Why**  Plan 261's L17 (`tc/plan_261.md`, "P SIZED AND LINE SET"): after D1 (299) the active chain 8 000's DC took 8.0 s, the C
+solve's own loops 2.5 s of it -- the Schur sum's scattered `J[rows[r] n + ra] +=` / `rb -=` ~35 %, the assembly's `J[P] = binG[P]`
+~15 %: J an n x n matrix on 4 KB pattern pages, written on its pattern alone, so nearly every entry a new page (D1 moved these loops
+2.15 -> 2.5 s for 1.46x overall).  The pattern is 7 entries a row (56 015 at 8 000 unknowns: 450 KB).  Andreas: "Start as you
+recommend" (P first, then D4).
+
+**What.**  Where the core holds a pattern `_pcnr_c._Rec` allocates J packed: P's entries in P's order, then one zero (np + 1); without
+one n x n as before.  J'S POSITIONS (pcnrdc.h), made once a record by the glue (`_positions`) in J's layout -- packed with a pattern,
+row-major without -- so one code serves both: `smap` each device's Schur positions in `schur`'s order (per unknown its t (row, ra),
+then its t (row, rb)), `dmap` each row's diagonal (gshunt), `jmap` each junction pair's four (jgmin); `on_pattern`'s `kfull` each KLU
+entry's position (one off P reads J's last, the zero -- none on any circuit measured) and `ffull` the foreign test's.  The assembly
+`J[i] = binG[P[i]]`, cf_sparse reads `J[e]`, the dense |J| `Jabs[P[i]] = |J[i]|`, the dense solve with a pattern zeroes A and
+scatters P's kept entries (A zero off P as before).  Every add in the same order on the same entry: the same bytes everywhere.
+New struct fields at the end.  FOUND AND FIXED: at size (`_tran_core.paged`) the first reduced Schur matrix the AutoSolver's choice
+reads (`_reduced_J`, c3980906) was made from the core's pattern alone, but P holds Schur positions off it where J is not zero -- a
+MOS drain row at its gate's column, ~2 a device (the active chain 800: 10 795 nonzeros over its 23 solves, to 3e-4; the quiet chain
+800: 799): the choice's fill and `_ours` read a matrix short of them.  No run moved (the fill at size far under `max_fill`; an entry
+off KLU's pattern would be the C's own foreign hand-back); now P's kept entries, the dense matrix's bytes by construction.  `release`
+no longer hands back J's pages (packed: none to give).
+
+**Measured** (LINE set before building, in `tc/plan_261.md`; HEAD 3fb8f89b's worktree against this tree, interleaved, per-pair
+medians):
+* (a)-(b) The DC, every digest, route and PCNR C count HEAD's: the active chain 800 stages 1.071x (peak 102 -> 101 MB), 2 000 1.099x
+  (166 -> 152 MB), 4 000 **1.099x** (2.22 / 2.22 / 2.20 -> 2.02 / 2.02 / 2.01 s, 269 -> 242 MB), 8 000 **1.103x** (7.28 / 7.23 /
+  7.26 -> 6.57 / 6.56 / 6.58 s, 482 -> 425 MB); the quiet chain 4 000 1.023x (269 -> 242 MB), 8 000 1.022x (481 -> 424 MB); the mesh
+  63 x 63 1.029x (328 -> 297 MB).  LINE MET: 8 000 >= 1.08x, 4 000 >= 1.03x, every other >= 0.98x, the 8 000's peak <= 481 MB.
+* (e) The wall: the active chain at 16 000 stages, one pair, 46.24 -> 38.70 s (**1.195x**), peak 907 -> 783 MB, the same answer
+  (line >= 1.08x).
+* (d) The transients at size, the same digests, three pairs each: the quiet chain's Radau 1 us 0.996x, the mesh's Gear-2 1.004x and
+  Radau 0.995x, the active chain's Gear-2 1.002x (its operating point 2.16 -> 1.95 s).  Their peaks each 1 MB higher (835 -> 836,
+  954 -> 955, 1 307 -> 1 308, 1 316 -> 1 317 MB): the layout kept with the record through the run -- the maps ~1.0 MB at 4 000
+  devices (24 Schur positions and 8 junction entries a device, int64) and packed J 0.2-0.3 MB -- where HEAD's J pages were handed
+  back after the operating point (`release`).  The line's "peaks no higher" not met there by 1 MB: accepted as measured by Andreas.
+  The loads 1.3-2.3 (the DCs) and 1.7-3.8 (the transients, their own core pool among them).
+* (f) The gate against 3fb8f89b: every result the same -- the 27 decks under DC, Gear-2 (and its bypass) and Radau, the 8 size runs
+  -- and every path counter; C against Python 0 differing on every deck under every setting and at size.  Its verdict NOT REACHED
+  on 6 changed lines and 13 arms of pcnrdc.c the decks do not reach -- the assembly's and the dense solve's arms without a pattern
+  (every deck's core holds one) and the dense convergence test's |J| loop on the pattern (no deck sends that test dense) -- each
+  reached by the suite's twin tests (the coverage build's 'fixture' class), which compare the C with the Python bit for bit there;
+  the other 17 by the decks.
+
+**Tests.**  test_pcnr_c: `test_the_first_reduced_matrix_holds_the_schur_entries_off_the_cores_pattern` -- a 60-stage active chain,
+StructuralKLU from 40 unknowns, pattern pages from any size: at the choice the paged reduced matrix is the dense one's bytes, with
+Schur entries off the core's pattern nonzero there (asserted present).  `test_klus_entries_are_read_at_their_positions_in_packed_J`
+-- `on_pattern` on a take made for it (KLU's short of three entries, five entries off P added): each KLU entry's position in packed
+J or the zero, the foreign test's positions those of P's entries off it.  The D1 tests on packed J (its length np + 1, its last
+zero; |J|, R and binG pattern pages).  test_op_setup's dense comparison through `_dense_J`.  Bitten, each part broken in turn (11
+of 11 fail a test): the Schur positions' ra and rb swapped (42 fail), gshunt off the diagonal (6), the junction term's entries
+swapped (5), the assembly reversed (20), the dense solve's scatter transposed (10), cf_sparse and the dense |J| read a shifted entry
+(1 each), KLU's positions shifted (9), the zero slot moved, the foreign positions row-major (1 each), `_reduced_J` from the core's
+pattern (1).  The PCNR DC pinned pair re-recorded (its C side), its twins' tests passing, its description naming the packed J.
+Suite 6 587 passed (10 skipped).

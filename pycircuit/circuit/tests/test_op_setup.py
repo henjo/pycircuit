@@ -62,7 +62,7 @@ def test_the_reduced_schur_matrix_on_pattern_pages_is_the_dense_one(monkeypatch)
     def keep(c):
         rec = c.__dict__['_pcnr_c']
         k = rec.red >= 0
-        seen['dense'] = rec.buf['J'].reshape(rec.n, rec.n)[np.ix_(k, k)].copy()
+        seen['dense'] = _pcnr_c._dense_J(rec)[np.ix_(k, k)].copy()
         seen['paged'] = _pcnr_c._reduced_J(rec)
         return release(c)
 
