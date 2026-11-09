@@ -28,6 +28,27 @@
 /* the flags numpy reports here (pcx_kluseq.h) */
 #define PC_FLAGS PCX_NP_FLAGS
 
+/* `feclearexcept(FE_ALL_EXCEPT)` where it runs once a device: x87's flags
+   (`fnclex`) and MXCSR's (FE_ALL_EXCEPT's bits), what glibc's clears --
+   every flag `fetestexcept` and `fegetexceptflag` read the same after
+   (`fnclex` drops x87's denormal bit too, which FE_ALL_EXCEPT excludes) --
+   without its `fnstenv` / `fldenv` (microcoded, the most of its cost).
+   Each asm clobbers
+   memory, so it is ordered with the kernel's call before it and the
+   device's arithmetic after it as the library call is (THE FLAG RULE) */
+static inline void pc_clear_flags(void)
+{
+#if defined(__x86_64__) && defined(__GNUC__)
+    unsigned int csr;
+    __asm__ volatile ("fnclex" : : : "memory");
+    __asm__ volatile ("stmxcsr %0" : "=m" (csr) : : "memory");
+    csr &= ~(unsigned int) FE_ALL_EXCEPT;
+    __asm__ volatile ("ldmxcsr %0" : : "m" (csr) : "memory");
+#else
+    feclearexcept(FE_ALL_EXCEPT);
+#endif
+}
+
 /* one participant at its own unknowns (`PcnrDevice._kernel_stamp`): the local
    point by its walk and mirrors, its class's kernel there (i and G in one
    call), the affine remainder taken off, `block[:, j] = sum_r G_nl[:, r]
@@ -48,7 +69,7 @@ static void device(pcnrdc_t *s, long d)
     if (s->ti[d] >= 0) s->prow[d][s->ti[d]] = s->T;
     ((fused_fn_t) s->kfn[d])(pot, s->prow[d], PCX_PASS_G | PCX_PASS_I, G, 0, cur, 0);
     /* (the kernels' flags: the Python's cffi calls never report them) */
-    feclearexcept(FE_ALL_EXCEPT);
+    pc_clear_flags();
     if (s->d_lin[d] >= 0) {
         const double *L = s->lin + s->d_lin[d];
         for (r = 0; r < t; r++) {

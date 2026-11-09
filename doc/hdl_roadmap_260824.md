@@ -15145,3 +15145,37 @@ its own `i`, a toolkit of another type, or a class only it has (declined): count
 2): the memo keyed on the row count alone (the late class served: 2 fail, an existing NaN test's two classes among them); the
 per-device checks skipped after a class's first device (5 fail: the late override and toolkit, test_instance_overrides' MOS
 circuits under DC, Gear-2 and Radau).  The PCNR DC pinned pair re-recorded (its C side), its twins' tests passing.  Suite 6 590 passed (10 skipped).
+
+## 2026-11-09 — 302. PCNR's DC clears each participant's kernel flags without glibc's x87 environment round trip -- the active chain's DC 1.10x at 4 000 stages, 1.078x at 8 000 and 1.087x at 16 000; every answer the same
+
+**Why**  Plan 261's L17 F (`tc/plan_261.md`, "F SIZED AND LINE SET"): pcnrdc.c's `device()` clears the floating-point flags after
+each participant's kernel (THE FLAG RULE: the Python's cffi calls never report a kernel's flags), with glibc's
+`feclearexcept(FE_ALL_EXCEPT)` -- `fnstenv` and `fldenv` around the x87 status word, both microcoded, then MXCSR: 67 ns a call on
+this box (fe_bench.c).  At c342744a the active chain 8 000's DC makes 9.31 M clears (an LD_PRELOAD counter: 9.2 M of them
+`device()`'s), ~0.57 s of its 5.99 s; 4 000 3.22 M.  perf had put them at 2.8 % of the main thread: the microcoded stall lands on the
+instructions after the call.  Transients make a clear once a pass or a step (the mesh's Gear-2: 122 k, ~8 ms of 4 s): only their
+operating points gain.  Andreas: "Do F".
+
+**What.**  `device()` clears with `pc_clear_flags`: `fnclex`, then MXCSR's FE_ALL_EXCEPT bits cleared -- what glibc's clears, every
+flag `fetestexcept` and `fegetexceptflag` read the same after (`fnclex` drops x87's denormal bit too, which FE_ALL_EXCEPT excludes
+and nothing reads), 15 ns.  Unconditional: the form that tests x87's status word first (4.5 ns) has an arm no kernel reaches (they
+are SSE code), ~0.1 s at 8 000 not worth an arm no comparison can see.  Each asm clobbers memory, so it is ordered with the kernel's
+call and the device's arithmetic as the library call is.  Off x86-64 / GCC, `feclearexcept`.  The unit's other clears -- once a
+pass or an iteration -- as they were; pcx_fenv.h untouched.
+
+**Measured** (LINE set before building; HEAD c342744a's worktree against this tree, interleaved, per-pair medians):
+* (a)-(b) The DC, every digest, route and PCNR C count HEAD's: the active chain 800 stages 1.146x, 2 000 1.112x, 4 000 **1.101x**
+  (1.85 / 1.84 / 1.84 -> 1.68 / 1.69 / 1.67 s), 8 000 **1.078x** (6.00 / 5.95 / 6.00 -> 5.56 / 5.52 / 5.80 s; the third pair 1.034x);
+  the quiet chain 4 000 1.023x, 8 000 1.000x, the mesh 63 x 63 1.000x; every peak within 2 MB of HEAD's.  LINE MET: 8 000 >= 1.05x,
+  4 000 >= 1.05x, every other >= 0.98x.
+* The wall: the active chain at 16 000 stages, one pair, 35.92 -> 33.05 s (1.087x), peak 785 -> 784 MB, the same answer.
+* (d) The transients at size, the same digests, two pairs each: the quiet chain's Radau 1 us 1.004x, the mesh's Gear-2 0.990x and
+  Radau 0.985x, the active chain's Gear-2 0.997x (its operating point 1.78 -> 1.63 s), peaks within 2 MB.  The loads 1.4-2.0 (the
+  DCs) and 1.4-3.9 (the transients, their own core pool among them).
+* (e) The gate against c342744a: SAME -- every result (the 27 decks under DC, Gear-2 and its bypass, Radau; the 8 size runs) and
+  every path counter, C against Python 0 differing on every deck under every setting and at size; the 7 changed lines (no arm) each
+  compared by the decks.
+
+**Tests.**  The C's twin tests are the check: the clear's MXCSR half removed fails 3 (a cascode solve, a NaN in the KLU solve, the
+run-away rung -- a kernel's overflow or invalid left up, a hand-back where the C served).  Its x87 half cannot be bitten: no kernel
+raises an x87 flag.  The PCNR DC pinned pair re-recorded (its C side), its twins' tests passing.  Suite 6 590 passed (10 skipped).

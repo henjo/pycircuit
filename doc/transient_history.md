@@ -5604,6 +5604,18 @@ same answers, routes and declines; the active chain's DC 1.095x at 8 000
 stages.  Tests: `test_pcnr_c.py` (a later device's override, toolkit or
 class still declines).
 
+## `pcnrdc.c` -- each participant's kernel flags cleared without the x87 environment round trip (2026-11-09)
+
+2026-11-09 (`doc/hdl_roadmap_260824.md`, 302; plan 261 L17 F).  PCNR's C
+solve clears the floating-point flags after every participant's kernel,
+9.2 M times in an 8 000-stage active chain's DC.  glibc's
+`feclearexcept(FE_ALL_EXCEPT)` saves and reloads the whole x87 environment
+(`fnstenv` / `fldenv`, microcoded) to clear its status word: 67 ns a call,
+~0.57 s of the DC.  The clear is now `fnclex` and MXCSR's five flags (15
+ns), leaving every flag the fenv calls read as glibc's does.  The same
+answers and routes; the active chain's DC 1.10x at 4 000 stages, 1.078x at
+8 000.
+
 ## `_tran_stageloop_c`, `csrc/loop.c`'s stage family -- a plain run's Radau attempts in C (2026-10-24)
 
 2026-10-24 (`doc/hdl_roadmap_260824.md`, 207).  A plain Radau transient --
