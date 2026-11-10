@@ -895,3 +895,46 @@ def test_the_remainder_carries_what_flows_not_the_gate_voltage():
     view = P.pcnr_view(c, [dev], P.defaultepar)
     vi = np.asarray(view.i(x, P.defaultepar), dtype=float)
     assert np.max(np.abs(vi[[d, s, di, si]])) < 1e-6, vi[[d, s, di, si]]
+
+
+def _spied(monkeypatch):
+    """`hdl._resolve_through_chain`, its calls' definition counts recorded."""
+    calls, real = [], hdl._resolve_through_chain
+
+    def spy(expr, defs):
+        calls.append(len(defs))
+        return real(expr, defs)
+    monkeypatch.setattr(hdl, '_resolve_through_chain', spy)
+    return calls
+
+
+def test_the_probe_check_substitutes_only_what_reaches_a_probe(monkeypatch):
+    """`_reads_a_probe` follows a chain variable's REFERENCES first: one
+    whose reachable definitions read no probe is answered False with
+    nothing substituted (174 of the library's 175 calls); one that reaches
+    a probe through more than `RESOLVE_MAX_DEFS` definitions is answered
+    True unresolved (PSP's noise conductance, 346, did not finish); one
+    within it is substituted -- its reachable definitions alone -- so
+    Gummel-Poon's folded `rbb` still resolves to a constant."""
+    p, rb, area = sympy.symbols('p rb area')
+    ## a long chain that never reads the probe
+    a = sympy.symbols('a0:200')
+    defs = {a[0]: rb + 1}
+    for k in range(1, 200):
+        defs[a[k]] = a[k - 1] * a[k - 1] + rb
+    calls = _spied(monkeypatch)
+    assert hdl._reads_a_probe({a[199]}, {p}, defs) is False
+    assert calls == []
+    ## a long chain that does
+    b = sympy.symbols('b0:60')
+    defs = {b[0]: p + 1}
+    for k in range(1, 60):
+        defs[b[k]] = b[k - 1] * b[k - 1] + rb
+    assert hdl._reads_a_probe({b[59]}, {p}, defs) is True
+    assert calls == []
+    ## Gummel-Poon's cancellation: rbmx folded to rb, so (rb - rbmx) / qb is
+    ## an exact zero and rbb reads no probe once substituted
+    rbmx, qb, rbb = sympy.symbols('rbmx qb rbb')
+    defs = {qb: 1 + p, rbmx: rb, rbb: (rbmx + (rb - rbmx) / qb) / area}
+    assert hdl._reads_a_probe({rbb}, {p}, defs) is False
+    assert calls == [3]

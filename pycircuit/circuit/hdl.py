@@ -5193,17 +5193,52 @@ def _reads_a_probe(syms, probe_syms, defs_map, _seen=None):
     genuinely does not, and only substitution can tell them apart.
 
     Hence: resolve the chain first, then ask what actually survives.
+
+    ⚠ ONLY WHERE THE REFERENCES REACH A PROBE, AND BOUNDED.  Substitution
+    only removes symbols, so a variable none of whose reachable
+    definitions reads a probe cannot come to read one: the reference walk
+    answers it exactly, with nothing substituted -- 174 of the library's
+    175 calls.  Where the walk does reach a probe only the reachable
+    definitions are substituted, and past `RESOLVE_MAX_DEFS` of them the
+    answer is True unresolved (the lift refuses, the device keeps its
+    refusal): PSP's induced-gate-noise conductance reaches its probes
+    through 346 definitions, and inlining them did not finish -- the class
+    build segfaulted at ~5 min.  The library's largest resolved set is 5
+    (`RThermalHdl`).
     """
     if syms & probe_syms:
         return True
     unresolved = syms & set(defs_map)
     if not unresolved:
         return False
-    defs = list(defs_map.items())
     for s in sorted(unresolved, key=str):
+        reach = _chain_reach(s, defs_map)
+        if not any(defs_map[t].free_symbols & probe_syms for t in reach):
+            continue
+        if len(reach) > RESOLVE_MAX_DEFS:
+            return True
+        defs = [(t, v) for t, v in defs_map.items() if t in reach]
         if _resolve_through_chain(defs_map[s], defs).free_symbols & probe_syms:
             return True
     return False
+
+
+#: the most chain definitions `_reads_a_probe` substitutes to decide whether
+#: a variable reads a probe; past it the answer is True, unresolved
+RESOLVE_MAX_DEFS = 50
+
+
+def _chain_reach(s, defs_map):
+    """The chain variables `s`'s definition reaches, `s` among them,
+    following references through `defs_map`."""
+    seen, stack = set(), [s]
+    while stack:
+        t = stack.pop()
+        if t in seen:
+            continue
+        seen.add(t)
+        stack.extend(u for u in defs_map[t].free_symbols if u in defs_map and u not in seen)
+    return seen
 
 
 def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
@@ -5362,6 +5397,11 @@ def _pcnr_declared_route(limits, ivec, chain_defs, xsyms, xlabels, paramsyms,
             ## linearly says nothing about how it reaches the current.
             ## Only a survivor in a CURRENT is a conductance.
             if split is None or krow is None:
+                ## (the refusal names THIS expression -- not the first that
+                ## read a node, which the lift may have taken: PSP without
+                ## its noise node's probe was refused as "I(g) reads b, g",
+                ## its gate resistor's current)
+                first_why = why
                 linear_terms.clear()
                 break
             linear_terms[label] = (krow, ) + split

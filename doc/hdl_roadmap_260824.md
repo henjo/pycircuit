@@ -15432,3 +15432,27 @@ unset -- active chain 4 000 1.89-1.92 -> 1.37-1.38 s (1.39x; line 1.25x), 8 000 
 dfd26ed2 SAME.  Suite 6 620 passed.
 
 **Tests.**  `test_blas_limit`'s DC case: a 302-unknown diode ladder on KLU is held now (it was pinned unheld); fails with the old hold.
+
+## 2026-11-10 — 310. PCNR's affine check bounded: `_reads_a_probe` follows a chain variable's references first and substitutes only what reaches a probe, at most `RESOLVE_MAX_DEFS` (50) definitions -- a class build can no longer hang inlining a large model's chain; the route's refusal names the expression that refused
+
+**Why**  Plan 261's L18 (hg).  Building PSP's declared limiters (307) without the noise node's identity probe hung the class build:
+the declared-probe route asked whether the noise current's coefficient `gcond` reads a probe, and `_reads_a_probe` answered by
+substituting PSP's whole chain into it (`_resolve_through_chain`) -- the build segfaulted at ~5 min.  307 sidestepped it with the
+probe; Andreas asked for the guard.
+
+**What.**  Substitution only removes symbols, so `_reads_a_probe` walks the variable's references first (`_chain_reach`): where none of
+the reachable definitions reads a probe it answers False with nothing substituted, exactly as the substitution would; where they do,
+it substitutes the reachable definitions alone, and past `RESOLVE_MAX_DEFS` of them answers True unresolved -- the lift refuses and the
+device keeps its refusal.  And the declared-probe route, where an affine split refuses, now names THAT expression (it named the first
+one reading a node, which the lift may have taken).
+
+**Measured** (every `_reads_a_probe` call of the library's cold builds, hg/reach.py): 175 calls, 174 reaching no probe through their
+references, one substituted (`RThermalHdl`, 5 definitions, 0.04 s).  PSP without the noise probe: `gcond` reaches the probes through 346
+definitions; bounded, the class builds in ~30 s and is refused as "I(s) reads b, noi, which no $limit probe limits" (it was named
+"I(g) reads b, g", the gate resistor's liftable current).  Every library class's PCNR verdict and refusal text the same (54 classes).
+The gate against 2cf187f2 SAME.  Suite 6 622 passed.
+
+**Tests.**  `test_pcnr_affine`: a 200-definition chain reaching no probe and a 60-definition one reaching it answered with nothing
+substituted, Gummel-Poon's folded `rbb` substituted (3 definitions) to a constant.  `test_psp_limit_c`: PSP without its noise probe
+builds and is refused naming a current that reads `noi`.  Bitten three ways: the old `_reads_a_probe` (fails), the old refusal naming
+(fails), the bound lifted (the build had not finished at 240 s).

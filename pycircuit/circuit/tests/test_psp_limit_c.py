@@ -94,6 +94,31 @@ def test_psp_declares_spices_group_and_pcnr_takes_it(cls, card):
     assert sorted(info['pcnr_vector']['kinds']) == sorted(['fet', 'vds', 'pnj'] + (['id'] if card else []))
 
 
+def test_without_its_noise_node_probe_psp_is_refused_not_hung():
+    """The induced-gate-noise node's current `gcond * V(noi,s)` read through
+    its plain branch voltage: PCNR's affine check would resolve `gcond`
+    through PSP's chain (346 definitions reach the probes) and did not
+    finish -- the class build segfaulted at ~5 min.  Bounded
+    (`hdl.RESOLVE_MAX_DEFS`), the build finishes and the device is refused
+    naming a current that reads `noi` (the branch's, at its source end),
+    not the gate resistor's, which lifts."""
+    import inspect
+    src = inspect.getsource(compact._psp_mos_analog)
+    probe = "Contribution(br_noi.I,\n                             limit_identity(br_noi.V) * ign['gcond']),"
+    assert src.count(probe) == 1, 'the noise current moved'
+    ns = dict(compact.__dict__)
+    exec(compile(src.replace(probe, "Contribution(br_noi.I, br_noi.V * ign['gcond']),"),  # noqa: S102 -- PSP's own source, edited
+                 '<psp-noi-unprobed>', 'exec'), ns)
+    cls = type('PspNoiUnprobed', (PSP,), {'analog': staticmethod(ns['_psp_mos_analog'](1.0, False)),
+                                          '__module__': __name__})
+    el = cls('d', 'g', 's', 'b', w=10e-6, l=1e-6, rg=10.0, fnt=1.0)
+    info = type(el)._hdl_info
+    assert info['pcnr_vector'] is None
+    why = info['pcnr_refusal']
+    label, reads = why.split(' reads ', 1)
+    assert label != 'I(g)' and 'noi' in reads.split(', which')[0].split(', '), why
+
+
 ## ------------------------------------------------------------------------
 ## The walk and the C Newton.
 
