@@ -22,6 +22,7 @@ from pycircuit.circuit.linearsolver import DenseSolver
 from pycircuit.circuit.shooting import _numerics, _pss_walks, _sens_c
 from pycircuit.circuit.tests.test_newton_c import _mos_chain
 from pycircuit.circuit.tests.test_psp_limit_c import _stage
+from pycircuit.circuit.tests.test_shoot_trim import _bjt_chain
 
 #: Radau IIA(3)'s Butcher matrix
 _A = np.array([[0.19681547722366, -0.06553542585020, 0.02377097434822],
@@ -192,7 +193,8 @@ def _pss(build, on, monkeypatch, **kw):
              np.asarray(p._monodromy, float).tobytes(), sorted(str(w.message) for w in W)), d)
 
 
-@pytest.mark.parametrize('build', [_stage, lambda: _mos_chain(cap=1e-13)], ids=['psp', 'mos'])
+@pytest.mark.parametrize('build', [_stage, lambda: _mos_chain(cap=1e-13), _bjt_chain],
+                         ids=['psp', 'mos', 'bjt'])
 def test_a_radau_pss_is_the_same_with_the_c_off(build, monkeypatch):
     a, da = _pss(build, False, monkeypatch)
     b, db = _pss(build, True, monkeypatch)
@@ -205,12 +207,15 @@ def test_a_radau_pss_is_the_same_with_the_c_off(build, monkeypatch):
     assert da.get('pss.block:served', 0) - db.get('pss.block:served', 0) == served
 
 
-def test_the_c_serves_a_radau_pss(monkeypatch):
-    """The PSP stage's radau PSS: every dense step but the walks' first maps
-    in C.  (Apart from the comparison above: with the other fast paths off
-    the step's memo holds no stage matrices, and this fails.)"""
+@pytest.mark.parametrize('build', [_stage, _bjt_chain], ids=['psp', 'bjt'])
+def test_the_c_serves_a_radau_pss(build, monkeypatch):
+    """A radau PSS -- the PSP stage's, and a BJT chain's (PCNR devices:
+    `_G_at`'s junction branch, which reads the memo): every dense step but
+    the walks' first maps in C.  (Apart from the comparison above: with the
+    other fast paths off the step's memo holds no stage matrices, and this
+    fails.)"""
     _drv()
-    _b, d = _pss(_stage, True, monkeypatch)
+    _b, d = _pss(build, True, monkeypatch)
     assert d.get('pss.sens:served', 0) >= 100, d
 
 

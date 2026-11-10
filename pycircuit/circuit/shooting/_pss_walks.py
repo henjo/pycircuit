@@ -136,19 +136,21 @@ def _stage_reads(walks, Yf):
     `_C_at` and `_G_at` read them at the reduced stages -- read once a
     stage (speed round 11): one lookup of the step's device memo at the
     full stage, each matrix reduced as the readers reduce it, the limit
-    sync counted as skipped where `_G_at`'s would skip.  Where the readers
-    are their modules' own, nothing keeps limiting state (the sync skips),
-    no junction takes `G` through PCNR, each full stage's reference entry
-    is +0.0 (so the readers' key) and the memo holds both matrices at
-    every stage; else None (counted), and the readers run."""
+    sync counted as skipped where `_G_at`'s would skip -- on a circuit
+    without PCNR devices; with them `_G_at` takes its junction branch,
+    which reads the memo with no sync, and so do these.  Where the
+    readers are their modules' own, nothing keeps limiting state (the
+    sync skips), each full stage's reference entry is +0.0 (so the
+    readers' key) and the memo holds both matrices at every stage (else
+    the junction branch would rebuild `G` through PCNR); else None
+    (counted), and the readers run."""
     g = _readers()
     T, d = type(walks), walks.__dict__
     if (g is None or (T._C_at, T._G_at, T._sync_limit_at, T._insert_refnode) != g[:4]
             or '_C_at' in d or '_G_at' in d or '_sync_limit_at' in d
             or '_insert_refnode' in d):
         return _paths.no('pss.reads:patched')
-    if walks._pcnr_junctions():
-        return _paths.no('pss.reads:junctions')
+    junctions = bool(walks._pcnr_junctions())
     tr = walks._transient()
     td = tr.__dict__
     if type(tr)._memo_get is not g[4] or '_memo_get' in td:
@@ -176,7 +178,8 @@ def _stage_reads(walks, Yf):
     Cs = [np.asarray(rr((rec['C'],), iref, tk)[0]) for rec in recs]
     Gs = []
     for rec in recs:
-        _paths.COUNTS['pss.sync:skipped'] += 1
+        if not junctions:
+            _paths.COUNTS['pss.sync:skipped'] += 1
         Gs.append(np.asarray(rr((rec['G'],), iref, tk)[0]))
     _paths.COUNTS['pss.reads:served'] += 1
     return Cs, Gs
@@ -1105,10 +1108,11 @@ class _PeriodWalks(object):
         ## (each step's stages are read (`_C_at`, `_G_at`) right after it
         ## where the walk factors it: the step records their `C` and `G` in
         ## one core call a stage, `Transient._stage_end_passes`, speed round
-        ## 10, B3.2; a junction's `G` is PCNR's, never the memo's)
+        ## 10, B3.2 -- with PCNR devices too: `_G_at`'s junction branch
+        ## reads the memo first, so a stage the memo holds is never rebuilt
+        ## through PCNR's Schur reduce)
         tr_in = self._transient()
-        read_now = (bool(dense or keep or want_dT or Pk is not None or stage_record is None)
-                    and not self._pcnr_junctions())
+        read_now = bool(dense or keep or want_dT or Pk is not None or stage_record is None)
         ## (the shooting Newton's monodromy alone: dense, nothing kept, no
         ## period or event column)
         plain = coupled and dense and not keep and not want_dT and Pk is None

@@ -9,7 +9,8 @@ the `sens_t` struct and its buffers, kept per stage count, size,
 monodromy width and reference row).  `_paths`: `pss.sens:` --
 `pss.sens:<why>` a decline or a hand-back (`BAIL`), `pss.sens:served` --
 and, on a serve, `pss.sync:skipped`, the count the readers' skipped sync
-makes.  Switch: `PYCIRCUIT_SENS_C=0` (`SENS_C`, read on every call);
+makes (none on a circuit with PCNR devices: `_G_at`'s junction branch has
+no sync).  Switch: `PYCIRCUIT_SENS_C=0` (`SENS_C`, read on every call);
 `STATUS` says why the path is off where it is.
 
 THE STEP.  The dense period walk propagates the monodromy through every
@@ -39,9 +40,10 @@ SciPy's `lu_factor`, `_StageStep.solve` and the solves it calls) or
 shadowed on the walk or the transient; a toolkit that is not numeric; a
 linear solver that is not `AutoSolver`'s dense choice or a `DenseSolver`;
 a tableau that is not float64 ``s x s``, ``s <= MAXS``; a stage system
-past `MAXN` unknowns; what the readers would read otherwise -- a junction
-(PCNR's `G`), limiting state kept or the trims off (the sync would run), a
-stage whose reference entry is not +0.0 or that the memo lacks; and the
+past `MAXN` unknowns; what the readers would read otherwise -- limiting
+state kept or the trims off (the sync would run), a stage whose reference
+entry is not +0.0 or that the memo lacks (with PCNR devices, PCNR's `G`
+would be rebuilt there); and the
 C's own hand-backs: a non-finite input (`_stage_block` declines and
 `lu_factor` raises), a floating-point flag in the assembly
 (`_stage_block`'s `errstate`), a non-finite ``C_n P`` (`lu_solve` raises),
@@ -237,8 +239,7 @@ def step(walks, xn, h, tab, P):
     ## (the readers' own conditions: `_stage_reads`)
     if not _pss_inner.SHOOT_TRIM or _limiting.CIRCUIT_LEVEL:
         return _no('pss.sens:limits')
-    if walks._pcnr_junctions():
-        return _no('pss.sens:junctions')
+    junctions = bool(walks._pcnr_junctions())
     tr = walks._transient()
     td = tr.__dict__
     if type(tr)._memo_get is not rd[4] or '_memo_get' in td:
@@ -307,7 +308,9 @@ def step(walks, xn, h, tab, P):
     if type(out) is int:
         return _no('pss.sens:' + BAIL.get(out, str(out)))
     ## the readers' sync, skipped as `_G_at` skips it, counted as it counts
-    _PC['pss.sync:skipped'] += s
+    ## (its junction branch has none)
+    if not junctions:
+        _PC['pss.sync:skipped'] += s
     _PC['pss.sens:served'] += 1
     return out
 

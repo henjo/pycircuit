@@ -2299,6 +2299,30 @@ def test_grid_error_refines_by_any_factor_and_reports_the_methods_order():
         g.grid_error(period, levels=4)
 
 
+def test_radau_s_stages_are_all_the_memo_s_with_pcnr_devices(monkeypatch):
+    """Where the step's fused core takes the stages (a 24-stage BJT chain),
+    it records `C` and `G` at every stage the walk reads (`_walk_stage`'s
+    hint) -- on a circuit of PCNR devices too, so `_G_at`'s junction branch
+    finds each in the memo and builds none through PCNR (238 builds with
+    the hint down)."""
+    from pycircuit.circuit import _paths, pcnr
+    from pycircuit.circuit.tests.test_shoot_trim import _bjt_chain
+    calls = []
+    orig = pcnr.augmented_system
+
+    def counting(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+    monkeypatch.setattr(pcnr, 'augmented_system', counting)
+    pss = PSS(_bjt_chain(24), method='radau', reltol=1e-8)
+    before = _paths.snapshot()
+    pss.solve(period=1e-6, timestep=1e-6 / 40, maxiterations=60)
+    d = _paths.since(before)
+    assert pss.converged and pss._pcnr_junctions()
+    assert d.get('radau.fuse:served', 0) > 100, d
+    assert not calls, len(calls)
+
+
 def test_radau_s_monodromy_reads_the_stage_newton_s_g_where_it_evaluated_the_state(monkeypatch):
     """`_G_at` on a circuit with junctions reads the device memo's `G` where
     the stage Newton evaluated that very state, and builds it through PCNR

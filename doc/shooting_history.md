@@ -12558,3 +12558,22 @@ step lengths written back are the grid's own objects (`hs[j]`, numpy
 floats), as the Python's steps leave them in `_dt`, its history and the
 coefficients made from them.  A Howland current pump testbench's gear PSS
 1.86x (4.05 -> 2.18 s), the orbit and every count bit-identical.
+
+## PSS on circuits with PCNR devices: every stage from the memo (roadmap 306, 2026-11-10)
+
+### `_PeriodWalks._walk_stage`'s `read_now`, `_stage_reads`, `_sens_c.step`
+
+The stage-G hint (`_stage_G_read`) was raised only on circuits without
+PCNR devices -- "a junction's `G` is PCNR's, never the memo's" -- while
+`_InnerTransient._G_at`'s junction branch had read the memo first since
+2026-10-09.  With the hint down, Radau's fused end passes recorded `C` and
+`G` at the last stage alone, so at size (where the fused core takes the
+step) the junction branch rebuilt the internal stages' `G` through PCNR's
+Schur reduce: 238 a PSS on a 24- or 40-stage BJT chain, half its time.
+The stage reads and the C step maps declined such circuits outright.  Now
+the hint is up for them, and the reads and the C maps serve them where the
+memo holds every stage, counting no sync (the junction branch has none).
+Radau PSS: a 40-stage BJT chain 2.15x, a diode ladder 1.17x; waveforms
+bit-identical, the BJT chains' monodromies 1.7e-16 apart (the memo's `G`
+for PCNR's).  Found building PSP's declared limiters (plan 261 L18 (c)),
+which make PSP a PCNR device: its 40-stage chain's PSS went 0.25 -> 0.72 s.

@@ -15312,3 +15312,36 @@ coming back and none singular later -- what the stop needs.
 **Tests.**  test_newton_nonfinite: a non-finite iterate whose step solves ends at its second evaluation with the non-finite text,
 not read as singular; one whose step is singular says "Singular Jacobian", read as singular.  Bitten (2 of 2): the stop before the
 solve (the singular test fails), no stop (the other).  Two pinned pairs re-recorded (their Python sides).  Suite 6 601 passed (10 skipped).
+
+## 2026-11-10 — 306. A periodic steady state on a circuit with PCNR devices reads every stage from the step's memo: Radau's stage `G` recorded, the stage reads and the C step maps served there -- a 40-stage BJT chain's radau PSS 2.15x, 24 stages 1.89x, a 40-section diode ladder 1.17x; every waveform the same
+
+**Why**  Plan 261's L18 (c) -- PSP declaring SPICE's limiter group, which makes it a device vector PCNR admits -- was built and
+then held: on a PSP circuit PSS's monodromy took `_InnerTransient._G_at`'s junction branch, and three PSS fast paths decline every
+circuit with a PCNR device (`_pcnr_junctions()`).  A radau PSS on a 40-stage PSP chain went 0.25 -> 0.72 s, 240 of its 360 `G` reads
+rebuilt through PCNR's Schur reduce (0.42 s).  Circuits of diodes and BJTs pay it today.  Andreas: "Fix PSS first" -- this stage,
+then (c) on top.
+
+**What.**  The junction branch reads the step's device memo first (since 2026-10-09: the 4049 oscillator's radau solve 6.3 ->
+0.8 s); what kept it from the memo was the walk's hint.  (1) `_walk_stage`'s `read_now` (the stage-G hint, `_stage_G_read`, around
+each step) no longer requires a circuit without PCNR devices: Radau's fused end passes (`_tran_radau._stage_end_passes`) record `C`
+and `G` at every stage there too, so `_G_at` finds each stage in the memo and builds none through PCNR.  (2) `_stage_reads` serves such
+a circuit where the memo holds every stage -- as the junction branch reads it, with no sync (that branch has none), so it counts no
+`pss.sync:skipped`.  (3) `_sens_c.step` the same: the C step map serves, counting no sync.  A stage the memo lacks still declines (the
+junction branch would rebuild it through PCNR).
+
+**Measured** (radau PSS, period 1 us, 40 steps, reltol 1e-8, warm min of 3; interleaved pairs against e9f0eca1's worktree, 1-min
+load 1.47-2.06, OPENBLAS_NUM_THREADS=1): Gummel-Poon CE chain 40 stages 0.474-0.492 -> 0.220-0.222 s (2.15x; 238 Schur reduces ->
+0), 24 stages 0.370-0.376 -> 0.198-0.201 s (1.89x); SPICE-diode RC ladder 40 sections 0.196-0.199 -> 0.169-0.170 s (1.17x: no
+Schur reduce before -- the memo hit -- the stage reads and the C maps now serving 199 of 200 steps).  Line (set before building):
+>= 1.6x, >= 1.0x.  A census over 8 circuits with PCNR devices (diode and BJT chains at 4, 24 and 40, the shooting fixtures' two
+`Diode` circuits, a MOS level 1 inverter) x radau / trbdf2 / esdirk43: all 24 converge, every waveform bit-identical; the BJT chains'
+radau monodromies move by 1.7e-16 relative (the memo's `G` where PCNR's Schur-reduced one was), every other monodromy the same; the
+TR-BDF2 and ESDIRK43 walks do not read these paths.  The gate against e9f0eca1 SAME (none of its runs is a PSS: it shows no other
+path moved).  Suite 6 606 passed.
+
+**Tests.**  `test_shoot_trim`: a BJT chain's and a diode ladder's radau PSS the same with the trims off, the stage reads serving with
+no sync counted; the decline test's junction arm now a serve.  `test_sens_c`: the C-off comparison and the C's serve on a BJT
+chain.  `test_shooting_methods`: a 24-stage BJT chain's radau PSS builds no `G` through PCNR (238 with the hint down).  With the
+source as at e9f0eca1 the five new assertions fail; the three twin comparisons pass both ways.  Pinned pairs re-recorded: the stage
+readers and their one read, the stage step map and its C, the stage walk and its C (the C stage walk never asked about PCNR devices:
+its step map reads the stage Newton's own `G`, which the memo now holds at every stage for the Python too).

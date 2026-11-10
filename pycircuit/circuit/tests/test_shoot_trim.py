@@ -43,6 +43,35 @@ def _pss(build, method, on):
             sorted(str(w.message) for w in W)), d, p
 
 
+def _bjt_chain(n=4):
+    """`n` Gummel-Poon common-emitter stages in a row, each base fed from
+    the stage before through 100 kohm: a circuit of PCNR devices."""
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit.elements import VS, C, R, SubCircuit, VSin, gnd
+    c = SubCircuit()
+    c['vdd'] = VS('vdd', gnd, v=5.0)
+    c['vin'] = VSin('c0', gnd, v=2.5, va=0.5, freq=1e6)
+    for k in range(1, n + 1):
+        c[f'rb{k}'] = R(f'c{k - 1}', f'b{k}', r=100e3)
+        c[f'rc{k}'] = R('vdd', f'c{k}', r=5e3)
+        c[f'q{k}'] = eh.GummelPoonNpnHdl(f'c{k}', f'b{k}', gnd)
+        c[f'cc{k}'] = C(f'c{k}', gnd, c=1e-12)
+    return c
+
+
+def _diode_ladder(n=4):
+    """An RC ladder of `n` sections, a SPICE diode to ground at each node."""
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit.elements import C, R, SubCircuit, VSin, gnd
+    c = SubCircuit()
+    c['vin'] = VSin('n0', gnd, v=0.7, va=0.3, freq=1e6)
+    for k in range(1, n + 1):
+        c[f'r{k}'] = R(f'n{k - 1}', f'n{k}', r=1e3)
+        c[f'd{k}'] = eh.DiodeSpiceHdl(f'n{k}', gnd, IS=1e-14)
+        c[f'c{k}'] = C(f'n{k}', gnd, c=1e-12)
+    return c
+
+
 CASES = {
     'psp-radau': (_stage, 'radau', ('pss.sync:skipped', 'pss.block:served')),
     'mos-radau': (lambda: _mos_chain(cap=1e-13), 'radau', ('pss.block:served',)),
@@ -69,6 +98,18 @@ def test_a_pss_is_the_same_with_the_trims_off(case):
         assert pb._Jf is None and pb._C is None and pb._Geq is None
         assert pa._Jf is not None
     assert not pb.__dict__.get('_skip_step_mats')
+
+
+@pytest.mark.parametrize('build', [_bjt_chain, _diode_ladder], ids=['bjt', 'diode'])
+def test_a_pss_with_pcnr_devices_reads_its_stages_once(build):
+    """A circuit of PCNR devices, where `_G_at` takes its junction branch
+    -- the memo first, no sync: the stage reads serve it and count no sync,
+    and the PSS is the same with the trims off."""
+    a, _da, _pa = _pss(build, 'radau', False)
+    b, db, pb = _pss(build, 'radau', True)
+    assert pb._pcnr_junctions()
+    assert a == b
+    assert db.get('pss.reads:served', 0) > 0 and not db.get('pss.sync:skipped'), db
 
 
 def test_the_flag_is_down_after_a_step_that_raises(monkeypatch):
@@ -262,10 +303,12 @@ def _declined(p, Yf):
 
 
 def test_the_reads_decline_where_the_readers_read_otherwise(monkeypatch):
-    """A reader patched (on the instance, on the class), a junction (PCNR's
-    `G`), limiting state kept (a stateful limiter, the circuit level), a
-    full stage whose reference entry is not +0.0 (not the state the readers
-    rebuild), a stage the memo lacks: declined, counted -- the readers run."""
+    """A reader patched (on the instance, on the class), limiting state
+    kept (a stateful limiter, the circuit level), a full stage whose
+    reference entry is not +0.0 (not the state the readers rebuild), a
+    stage the memo lacks: declined, counted -- the readers run.  A circuit
+    with PCNR devices is served, with no sync counted (`_G_at`'s junction
+    branch reads the memo and has none)."""
     p = _solved()
     iref = p.irefnode
     Yf = [np.array(y, dtype=float) for y in p._transient().last_step.Y]
@@ -284,7 +327,10 @@ def test_the_reads_decline_where_the_readers_read_otherwise(monkeypatch):
         assert _declined(p, Yf) == ['pss.reads:patched']
     with monkeypatch.context() as mp:
         mp.setitem(p.__dict__, '_pcnr_junctions_cache', [object()])
-        assert _declined(p, Yf) == ['pss.reads:junctions']
+        before = _paths.snapshot()
+        assert _pss_walks._stage_reads(p, Yf) is not None
+        d = _paths.since(before)
+        assert d.get('pss.reads:served') == 1 and not d.get('pss.sync:skipped'), d
     with monkeypatch.context() as mp:
         mp.setattr(_limiting, 'CIRCUIT_LEVEL', True)
         assert _declined(p, Yf) == ['pss.reads:limits']
