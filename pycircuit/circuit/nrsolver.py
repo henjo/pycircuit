@@ -198,7 +198,12 @@ class StandardNewton(NonLinearSolver):
                 if why is not None:
                     raise SingularMatrix('singular Jacobian: %s' % why) from e
                 raise NoConvergenceError(f"Singular Jacobian: {str(e)}")
-            
+            ## A POINT NOT FINITE, ITS STEP SOLVED: the iteration cannot come
+            ## back from it (`STANDARD_NONFINITE`) -- a solve there that raises
+            ## has raised above, "Singular Jacobian", as a caller reading the
+            ## text as singular expects (`_is_singular_failure`)
+            if not _all_finite(x):
+                raise NoConvergenceError(STANDARD_NONFINITE % (i + 1))
             x_next = x + xdiff
             limited = False
             if limiter is not None:
@@ -251,6 +256,29 @@ class StandardNewton(NonLinearSolver):
             
         raise _standard_failure(F, xdiff, x_next, x, maxiter, reltol, abstol, xtol, row_names,
                                 toolkit, I_scale=I_scale, limited=limited)
+
+
+#: StandardNewton's exception where the point an iteration evaluated is not
+#: finite and its step solved (the iteration's number).  An iterate that is
+#: not finite is evaluated once, its step solved -- a singular solve raises
+#: "Singular Jacobian" there, which callers read as singular -- and the
+#: iteration ends: past it each evaluation is at a point not finite, every
+#: test fails (a NaN compares false) and no limiter brings one back (none
+#: did over the gold decks under every setting, nor on a compact model's
+#: chain where it happens), so going on to `maxiter` only repeats it.  The
+#: text says neither 'Singular' nor 'linearsolver': no caller reads it as
+#: singular, as none read the iteration limit's.
+STANDARD_NONFINITE = ('StandardNewton: the iterate is not finite at iteration %d, its step solved: '
+                      'it cannot converge from there')
+
+
+def _all_finite(x):
+    """Every entry of the iterate `x` finite (an array of numbers; anything
+    numpy cannot read as one counts as finite: that toolkit's course)."""
+    try:
+        return bool(np.isfinite(np.asarray(x, dtype=float)).all())
+    except (TypeError, ValueError):
+        return True
 
 
 def _standard_failure(F, xdiff, x_next, x, maxiter, reltol, abstol, xtol, row_names, toolkit,

@@ -321,7 +321,11 @@ PAIRS = {
                'chord\'s factor (`StructuralKLU.chord_factor`: `solve`\'s sequence on a '
                'numeric the chord keeps from step to step -- newton.c on pcx_kluseq.h\'s '
                '`pcx_klu_step`, a hand-back leaving the entry, `chord_in` and `chord_out` '
-               'handing it over, roadmap 244)',
+               'handing it over, roadmap 244)'
+               '; a point not finite whose step solved ends the solve '
+               '(`STANDARD_NONFINITE`, roadmap 305) -- the C hands back at a non-finite '
+               'step, never evaluating there (its core declines one), and the Python\'s '
+               'rerun ends one evaluation past it',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:ChordNewton.solve_system',
                       'pycircuit.circuit.nrsolver:_chord_settled',
@@ -429,7 +433,11 @@ PAIRS = {
                'and the C declines every circuit with one (`dcnewton_c:unservable`); the '
                'rounding floor (`_step_size`, `_within_rounding`, the solvers\' '
                '`solve_transposed` -- dcnewton.c\'s `step_size` and `floor_holds`, its '
-               'verdict after the flags are read, roadmap 197)',
+               'verdict after the flags are read, roadmap 197)'
+               '; a point not finite whose step solved ends the solve '
+               '(`STANDARD_NONFINITE`, roadmap 305) -- the C hands back at a non-finite '
+               'step, never evaluating there (its core declines one), and the Python\'s '
+               'rerun ends one evaluation past it',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:_standard_failure',
                       'pycircuit.circuit.nrsolver:_step_size',
@@ -1209,10 +1217,10 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('dacc6f8ea686', '2cf193cd03bb'),
+    'the Newton solve and its C': ('8246eb6c38fe', '2cf193cd03bb'),
     'the PSP limiter and its C twin': ('8e14bbc903f1', '3aefa105ff7f'),
     'the error test and its C': ('639cab30f2d5', '6f54e05af10a'),
-    'the DC base solve and its C': ('37b14c0a34a7', '416ed18f1995'),
+    'the DC base solve and its C': ('9af95c14f1ba', '416ed18f1995'),
     'the PCNR DC solve and its C': ('9e5246d1a3e7', '0e92898d00a3'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('d417a4cedc1d', '694a1086db84'),

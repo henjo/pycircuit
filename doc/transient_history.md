@@ -5643,6 +5643,19 @@ the Python's only after a hand-back.  The same answers; the active chain's
 DC 1.076x at 8 000 stages.  Tests: `test_pcnr_c.py` (a seed the kernel
 declines is handed back).
 
+## `nrsolver.StandardNewton` -- an iterate not finite ends the solve one evaluation past it (2026-11-10)
+
+2026-11-10 (`doc/hdl_roadmap_260824.md`, 305; plan 261 L18).  A compact
+model's chain (PSP, no limiter, no PCNR) turns an iterate infinite on its
+DC ladders' rungs; the C DC Newton hands such a solve back and the Python
+iterated on non-finite points to the iteration limit, 3.7 s a rung at
+1 200 stages, 22 of the DC's 24 s.  StandardNewton now evaluates the
+non-finite point once and solves its step -- a singular solve still says
+"Singular Jacobian", which the gmin anchor's rescue reads -- and then
+ends.  None of 68 086 solves over the gold decks under every setting
+reaches such a point.  The PSP chain's DC 9.2x at 1 200 stages, 17.4x at
+2 400; its transient 2.10x.  Tests: `test_newton_nonfinite.py`.
+
 ## `_tran_stageloop_c`, `csrc/loop.c`'s stage family -- a plain run's Radau attempts in C (2026-10-24)
 
 2026-10-24 (`doc/hdl_roadmap_260824.md`, 207).  A plain Radau transient --

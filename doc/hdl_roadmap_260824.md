@@ -15279,3 +15279,36 @@ solve without `v_lim0` now seeded in C.  Bitten (4 of 5): the raw difference's s
 (31), the decline not handed back (2: the new test); the flag test after the kernel not handed back passes -- with these classes an
 infinite or NaN raw (the only way the subtraction raises) makes the kernel decline first, and finite raws raise none: kept, as
 `update`'s.  The PCNR DC pinned pair re-recorded (both sides: `solve_dc` moved), its twins' tests passing.  Suite 6 599 passed (10 skipped).
+
+## 2026-11-10 — 305. StandardNewton ends at an iterate not finite, one evaluation past it: a compact model's DC rungs no longer iterate on NaN to the limit -- a PSP chain's DC 9.2x at 1 200 stages and 17.4x at 2 400, its transient 2.10x; every answer the same
+
+**Why**  Plan 261's L18 (`tc/plan_261.md`, "L18 THE COMPACT-MODEL CIRCUIT" and after): an active chain of PSP MOSFETs
+(`compact.PspMosLongChannel`; plan 261's 'pchain') spends 24 of a 40 s transient at 1 200 stages in its operating point.  PSP is no
+PCNR participant and declares no limiter, so its DC takes the classic route, and on 9 of its 38 `StandardNewton` solves the first step
+turns infinite; the C DC Newton hands those back (`step`'s non-finite x_next) and the Python reran each: 3 ended "Singular Jacobian" at
+the next solve, 6 iterated 99 times on non-finite points to the iteration limit -- 3.7 s each, ~22 s of the 24.  Andreas: "I want a,
+b and c" -- (b): stop at a non-finite iterate; as first stated it would have skipped `GminAnchorNewton`'s rescue, which reads a
+"Singular" failure, so it stops one evaluation later.
+
+**What.**  `StandardNewton.solve_system`: after an iteration's solve, where the point it evaluated was not finite, it raises
+`STANDARD_NONFINITE` ("the iterate is not finite at iteration k, its step solved: it cannot converge from there" -- neither
+'Singular' nor 'linearsolver': no caller reads it as singular); a solve there that raises has raised "Singular Jacobian" as before,
+which the DC and the anchor read as singular.  The C twins unchanged: they hand back at a non-finite step and never evaluate there
+(their core declines such a point), and the Python's rerun now ends after the next evaluation.  CENSUS before building (243 runs:
+every gold deck under every gate setting on the Python paths, every StandardNewton solve watched): 68 086 solves, none reaching a
+non-finite iterate -- nothing on the decks can move; the PSP chain's 9: 3 singular at the first solve after, 6 to the limit, none
+coming back and none singular later -- what the stop needs.
+
+**Measured** (LINE set before building; HEAD f0be766c's worktree against this tree, interleaved, per-pair medians):
+* The PSP chain's DC, the same digest and route (the classic one): 600 stages 6.57 -> 0.75 s (**8.81x**), 1 200 24.58 / 23.93 /
+  24.61 -> 2.66 / 2.69 / 2.66 s (**9.24x**), 2 400 one pair 103.5 -> 5.93 s (**17.4x**).  Its Gear-2 0.1 us transient at 1 200
+  stages the same digest, 40.3 -> 19.3 s (**2.10x**; the operating point 24.2 -> 2.6 s).  LINE MET: 1 200 >= 4x, the transient >=
+  1.8x, 2 400 >= 4x.
+* The other size DCs the same digests and counts: the active chain 4 000 0.993x, 8 000 1.000x, the mesh 63 x 63 0.985x; the
+  transients the quiet chain's Radau 1.009x, the mesh's Gear-2 0.996x.  Loads 1.3-4 (another project's simulations at times).
+* The gate against f0be766c: SAME -- every result (the 27 decks under DC, Gear-2 and its bypass, Radau; the 8 size runs) and every
+  path counter, C against Python 0 differing; no C line changed.
+
+**Tests.**  test_newton_nonfinite: a non-finite iterate whose step solves ends at its second evaluation with the non-finite text,
+not read as singular; one whose step is singular says "Singular Jacobian", read as singular.  Bitten (2 of 2): the stop before the
+solve (the singular test fails), no stop (the other).  Two pinned pairs re-recorded (their Python sides).  Suite 6 601 passed (10 skipped).
