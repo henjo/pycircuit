@@ -15456,3 +15456,33 @@ The gate against 2cf187f2 SAME.  Suite 6 622 passed.
 substituted, Gummel-Poon's folded `rbb` substituted (3 definitions) to a constant.  `test_psp_limit_c`: PSP without its noise probe
 builds and is refused naming a current that reads `noi`.  Bitten three ways: the old `_reads_a_probe` (fails), the old refusal naming
 (fails), the bound lifted (the build had not finished at 240 s).
+
+## 2026-11-10 — 311. PCNR's C record held between solves by a `_watch` stamp, its first build trimmed -- the active chain's DC 1.10x at 8 000 stages, 1.09x at 4 000 and 1.11x at 16 000, the other size DCs 1.04-1.11x; every answer, route and count the same
+
+**Why**  Plan 261's L18 (sm): L17's leftover pieces re-sized at HEAD (the active chain's DC 4.3 s at 8 000 stages, 28.2 s at 16 000):
+the record's repeats 97 x 2.4 ms / 218 x 5.0 ms (5.5 % / 3.9 %), nearly all its per-device checks; its first build 0.38 / 0.76 s
+(9 % / 2.7 %).  (The dense residual tests, the largest at 16 000, are decided exactly only in OpenBLAS's own summation order on this
+CPU: not proposed.)  Andreas: "The record, both parts".
+
+**What.**  (1) `_record`'s per-device checks (`_checked`) are kept on the record after they pass (`_hold`): stamped by `_watch.arm`
+over the participants' element dicts -- their `i` / `G` / `pcnr_limit` overrides and toolkits, each element holding its toolkit itself
+-- with the devices (`pcnr_devices` hands a new list of the same records; a `PcnrDevice` has `__slots__` and is not changed after it is
+made), the element dicts and the classes compared by identity (`__class__` assigned writes no dict), the circuit's toolkit, and each
+class's `_class_ok` asked again; held (`_held`), the record is returned at once where its view, plan, reference and size stand.
+`_watch.counted` / `MAX_ARMS` as the C Newton's; watching off, every call checks in full.  (2) `_tables` asks a device's parameters
+only where its kernel map reads them (an affine remainder, the map not yet kept: `_kernel_map(None, ...)`), and `_positions` takes
+a run of devices with as many rows and probes at once.
+
+**Measured** (interleaved pairs against 284a022e's worktree, OPENBLAS_NUM_THREADS=1; the box loaded 1.3-3.9): the active chain's DC
+4.27-4.30 -> 3.89-3.90 s at 8 000 stages (1.10x; line 1.05x), 1.39-1.40 -> 1.28 s at 4 000 (1.09x; 1.03x), 28.46 -> 25.71 s at 16 000
+(1.11x, one pair; 1.03x); the mesh 63x63 1.09x, the quiet chain 4 000 1.11x, the PSP chain 1 200 1.06x, the PSP mesh 49x49 1.04x, the
+CMOS chain 600 1.06x (line 0.98x) -- every digest, route and PCNR C count HEAD's; the transients at size the same digests, steps,
+rejections and Newton counts, 1.01-1.03x (their operating points).  At 8 000: the repeats 0.236 -> 0.077 s, the first build 0.376 ->
+0.29 s (`_tables` 0.110 -> 0.057, `_positions` 0.050 -> 0.014).  The stamp held 96 of 97 checks at 8 000 and 217 of 218 at 16 000 (the
+first solve's packs, written into the element dicts, break the first).  The gate against 284a022e SAME.  Suite 6 626 passed.
+
+**Tests.**  `test_pcnr_c`: a held check sees a device changed between solves -- its own `i`, a toolkit of another type, a class of
+its own (asked of `_held` before a solve's own caches write a dict: the class compare alone) -- each declined as a full check would,
+the Python's answer; `_positions` against the device-by-device loop on three circuits of mixed shapes.  Bitten: no class compare, no
+stamp, nothing kept, the probe ends swapped -- each fails.  The PCNR DC solve's pinned pair re-recorded, `_checked`, `_held`, `_hold`
+and `_positions` named in its twin.

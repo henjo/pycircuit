@@ -49,12 +49,13 @@ inputs that are not float64 vectors of their sizes.  A singular solve is
 served too: numpy's LinAlgError, its own message (`_singular_text`).  Switch:
 `PYCIRCUIT_PCNR_C=0` (`ENABLED`), read on every call.
 """
+import operator
 import os
 import types
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths
+from pycircuit.circuit import _cbuild, _paths, _watch
 from pycircuit.circuit import _hdl_cbackend as _cb
 
 ENABLED = os.environ.get('PYCIRCUIT_PCNR_C', '1') != '0'
@@ -360,7 +361,9 @@ def _tables(devices, kerns, epar):
     Tm, lin = [], []
     ntm = nwalk = nmir = nrows = nlin = 0
     for d, kern in zip(devices, kerns):
-        G_lin, walk, mirror, T = d._kernel_map(d.params(), epar)
+        ## (its parameters made only where the map reads them: an affine
+        ## remainder, the map not yet kept -- `_kernel_map`)
+        G_lin, walk, mirror, T = d._kernel_map(None, epar)
         tabs['d_t'].append(d.t)
         tabs['d_m'].append(d.m)
         tabs['d_off'].append(d.off)
@@ -419,11 +422,19 @@ def _positions(n, devices, pairs):
     ra, then at its rb), `dmap` each row's diagonal, `jmap` each junction
     pair's four entries."""
     I64 = np.int64
-    sch = []
-    for d in devices:
-        rows = np.asarray(d.rows, dtype=I64) * n
-        for ra, rb in d.probes:
-            sch += [rows + ra, rows + rb]
+    ## a run of devices with as many rows and probes at once: `[d, p, 0]`
+    ## the rows at probe p's ra, `[d, p, 1]` at its rb, in device order
+    sch, i, nd = [], 0, len(devices)
+    while i < nd:
+        t, np_ = devices[i].t, len(devices[i].probes)
+        j = i + 1
+        while j < nd and devices[j].t == t and len(devices[j].probes) == np_:
+            j += 1
+        if np_:
+            R = np.array([d.rows for d in devices[i:j]], dtype=I64) * n
+            Q = np.array([d.probes for d in devices[i:j]], dtype=I64)
+            sch.append((R[:, None, None, :] + Q[:, :, :, None]).reshape(-1))
+        i = j
     jm = [(a * n + a, a * n + b, b * n + a, b * n + b)
           for a, b in ((int(p[2]), int(p[3])) for p in pairs)]
     return {'smap': np.concatenate(sch) if sch else np.zeros(0, dtype=I64),
@@ -440,6 +451,9 @@ class _Rec:
     __slots__ = (
         'P',
         'buf',
+        'chk',
+        'chk_arms',
+        'chk_held',
         'core',
         'els',
         'ffi',
@@ -470,6 +484,7 @@ class _Rec:
         self.view, self.plan, self.core, self.iref, self.n, self.k = view, plan, core, iref, n, k
         self.insts = tuple(d.instance for d in devices)
         self.kerns = tuple(kerns)
+        self.chk, self.chk_arms, self.chk_held = None, 0, 0
         self.ffi = ffi
         self.s = s = ffi.new('pcnrdc_t *')
         I64 = np.int64
@@ -751,15 +766,13 @@ def _choose(rec, ls):
     return None
 
 
-def _record(circuit, devices, iref, epar, drv):
-    """The circuit's record for its view as it stands -- or why not."""
-    from pycircuit.circuit import _evalhint, _stamp_plan, _tran_core
-    from pycircuit.circuit import pcnr as _pcnr
-    if not _tran_core.CORE:
-        return 'core'
-    ## each device's checks in turn (the first that fails names the
-    ## reason); `_class_ok` reads the class and the row count alone, so it
-    ## is asked once a pair a call
+_GETDICT = operator.attrgetter('__dict__')
+
+
+def _checked(circuit, devices):
+    """Each device's checks in turn (the first that fails names the reason):
+    `(kerns, by_class)`, or the reason.  `_class_ok` reads the class and the
+    row count alone, so it is asked once a pair a call."""
     kerns, by_class, own, tk = [], {}, _OWN, type(circuit.toolkit)
     for d in devices:
         if d.scalar or d.rows is None:
@@ -778,12 +791,81 @@ def _record(circuit, devices, iref, epar, drv):
         if type(kern) is str:
             return kern
         kerns.append(kern)
+    return kerns, by_class
+
+
+def _held(rec, circuit, devices):
+    """The last full check's kernels where it still stands, else None
+    (`_hold`'s stamp: no participant's element dict written since, the same
+    devices, element dicts and classes, the circuit's toolkit, and each
+    class's `_class_ok` the same object)."""
+    chk = rec.chk
+    if chk is None:
+        return None
+    stamp, devs, els, dicts, types_, tk, keys, kerns = chk
+    ep = _watch.EPOCH
+    if (ep is None or ep.value != stamp or len(devices) != len(devs)
+            or not all(map(operator.is_, devices, devs)) or type(circuit.toolkit) is not tk
+            or not all(map(operator.is_, map(_GETDICT, els), dicts))
+            or not all(map(operator.is_, map(type, els), types_))):
+        return None
+    for key, kern in keys:
+        if _class_ok(*key) is not kern:
+            return None
+    rec.chk_held += 1
+    return kerns
+
+
+def _hold(rec, circuit, devices, kerns, by_class, before):
+    """Keep a full check that passed on the record, stamped (`_watch.arm`)
+    over the participants' element dicts it read -- their `_OWN` names and
+    toolkits, where each element holds its toolkit itself; else nothing is
+    kept, and the next call checks in full."""
+    rec.chk = None
+    if before < 0:
+        return
+    els = tuple(d.element for d in devices)
+    dicts = tuple(map(_GETDICT, els))
+    if not all('toolkit' in ed for ed in dicts):
+        return
+    rec.chk_arms, rec.chk_held = _watch.counted(rec.chk_arms, rec.chk_held), 0
+    if rec.chk_arms > _watch.MAX_ARMS:
+        return
+    stamp = _watch.arm(dicts, before)
+    if stamp >= 0:
+        rec.chk = (stamp, tuple(devices), els, dicts, tuple(map(type, els)),
+                   type(circuit.toolkit), tuple(by_class.items()), kerns)
+
+
+def _record(circuit, devices, iref, epar, drv):
+    """The circuit's record for its view as it stands -- or why not.  Its
+    participants' checks (`_checked`) are held while nothing they read has
+    moved (`_held`, `_hold`): a ladder's solves ask for the same record a
+    hundred times and more, at ~0.3 us a device each."""
+    from pycircuit.circuit import _evalhint, _stamp_plan, _tran_core
+    from pycircuit.circuit import pcnr as _pcnr
+    if not _tran_core.CORE:
+        return 'core'
+    old = circuit.__dict__.get('_pcnr_c')
+    kerns = _held(old, circuit, devices) if type(old) is _Rec else None
+    held, before = kerns is not None, -1
+    if not held:
+        before = _watch.now()
+        got = _checked(circuit, devices)
+        if type(got) is str:
+            return got
+        kerns, by_class = got
     if _evalhint.current() is not None and not all(
             type(d.element)._hdl_info.get('_c_bound') for d in devices):
         return 'evalhint'
     view = _pcnr.pcnr_view(circuit, devices, epar)
     plan = _stamp_plan._plan_for(view)
     rec = circuit.__dict__.get('_pcnr_c')
+    if (held and rec is old and rec.view is view and rec.plan is plan
+            and rec.iref == iref and rec.n == circuit.n):
+        ## (held on this record: its participants and kernels are the ones
+        ## the check that was kept found here)
+        return rec
     insts = tuple(d.instance for d in devices)
     if (rec is None or rec.view is not view or rec.plan is not plan or rec.iref != iref
             or rec.insts != insts or rec.n != circuit.n
@@ -797,6 +879,8 @@ def _record(circuit, devices, iref, epar, drv):
             return 'unservable'
         rec = circuit.__dict__['_pcnr_c'] = _Rec(circuit, view, plan, core, devices, kerns,
                                                   iref, drv, core_drv, epar)
+    if not held:
+        _hold(rec, circuit, devices, kerns, by_class, before)
     return rec
 
 

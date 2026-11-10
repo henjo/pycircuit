@@ -175,14 +175,16 @@ class PcnrDevice(object):
         rows it does not reach, each with the reached row it mirrors
         (tied through the remainder, so that branch carries exactly
         zero), and `T = d pot / d v` (entries -1, 0, +1).  Cached per
-        temperature."""
+        temperature.  `params` None: the device's own (`params`), made
+        only where the remainder reads them."""
         key = float(getattr(epar, 'T', 300.0))
         if self._kmap is not None and self._kmap[0] == key:
             return self._kmap[1]
         el = self.element
         lin = getattr(el, 'pcnr_lin_G', None)
         G_lin = (None if lin is None else
-                 np.asarray(lin(params, epar, el.toolkit), dtype=float))
+                 np.asarray(lin(self.params() if params is None else params, epar,
+                                el.toolkit), dtype=float))
         t, m = self.t, self.m
         T = np.zeros((t, m))
         reached = [False] * t

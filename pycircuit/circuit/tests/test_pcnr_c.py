@@ -762,6 +762,80 @@ def test_a_later_devices_decline_is_the_solves(late, monkeypatch):
     assert counts.get('pcnr_c:' + late) == 1 and 'pcnr_c:served' not in counts, counts
 
 
+@pytest.mark.parametrize('late', ['own', 'toolkit', 'class'])
+def test_a_held_check_sees_a_device_changed_between_solves(late, monkeypatch):
+    """The record's checks are held between solves (`_held`, `_hold`: a
+    `_watch` stamp over the participants' element dicts, their devices,
+    dicts and classes compared by identity): a second solve with nothing
+    changed is held and served (from the third: the first solve's packs,
+    written into the element dicts, break the first stamp); the 41st diode
+    then given its own `i`, a
+    toolkit of another type -- each a write to its dict -- or a class of
+    its own -- no dict written: the class compared -- and the next solve
+    declines it as a full check would, the Python's answer."""
+    from pycircuit.circuit import _watch
+    if _watch.now() < 0:
+        pytest.skip(f'watching is off: {_watch.STATUS}')
+    real = _pcnr_c._class_ok
+    monkeypatch.setattr(_pcnr_c, '_class_ok',
+                        lambda cls, t: 'class' if cls.__name__ == '_Late' else real(cls, t))
+    c = _ladder(60)
+    el = c['d41']
+    ## (made before the solves: a class's creation may write a dict another
+    ## stamp watches, and only the class compare is to see the change)
+    late_cls = type('_Late', (type(el),), {})
+    x0 = _start(c, 0.5)
+    first, counts = _solve(c, True, monkeypatch, x0=x0)
+    assert first[0] == 'ok' and counts.get('pcnr_c:served') == 1, counts
+    rec = c.__dict__['_pcnr_c']
+    for _ in range(2):
+        held = rec.chk_held
+        again, counts = _solve(c, True, monkeypatch, x0=x0)
+        assert again == first and counts.get('pcnr_c:served') == 1, counts
+    assert rec.chk_held == held + 1 and c.__dict__['_pcnr_c'] is rec
+    if late == 'own':
+        el.i = el.i
+    elif late == 'toolkit':
+        sub = type('_Tk', (type(el.toolkit),), {})
+        tk = object.__new__(sub)
+        tk.__dict__.update(el.toolkit.__dict__)
+        el.toolkit = tk
+    else:
+        el.__class__ = late_cls
+        ## (no dict written: the class compare alone declines the hold,
+        ## asked before a solve's own caches write an element dict)
+        assert _watch.EPOCH.value == rec.chk[0]
+        assert _pcnr_c._held(rec, c, pcnr.pcnr_devices(c)) is None
+    got, counts = _solve(c, True, monkeypatch, x0=x0)
+    ref, _c = _solve(c, False, monkeypatch, x0=x0)
+    assert got == ref and got[0] == 'ok', (got[:1], ref[:1])
+    assert counts.get('pcnr_c:' + late) == 1 and 'pcnr_c:served' not in counts, counts
+
+
+def test_the_positions_are_each_devices_in_turn():
+    """`_positions` takes a run of devices with as many rows and probes at
+    once: its Schur positions are the device-by-device loop's, in order --
+    on circuits mixing devices of different shapes (a BJT mirror, a MOS
+    cascode beside a diode, a diode ladder)."""
+    def loop(n, devices):
+        sch = []
+        for d in devices:
+            rows = np.asarray(d.rows, dtype=np.int64) * n
+            for ra, rb in d.probes:
+                sch += [rows + ra, rows + rb]
+        return np.concatenate(sch) if sch else np.zeros(0, dtype=np.int64)
+    mixed = _cascode(5.0, 3.0, 1.5)
+    mixed['dd'] = eh.DiodeSpiceHdl('out', gnd, IS=1e-14)
+    mixed['m3'] = eh.MosLevel3Hdl('out', 'g1', 'mid', 'bulk', **CARD)
+    shapes = set()
+    for c in (_bjt_mirror_20v()[0], mixed, _ladder(12)):
+        devices = pcnr.pcnr_devices(c)
+        got = _pcnr_c._positions(c.n, devices, pcnr.pcnr_junction_pairs(c))['smap']
+        assert got.dtype == np.int64 and np.array_equal(got, loop(c.n, devices))
+        shapes |= {(d.t, len(d.probes)) for d in devices}
+    assert len(shapes) >= 3, shapes
+
+
 def test_a_one_ulp_fault_in_the_reference_is_seen(monkeypatch):
     """The comparison can see one ulp: the reference's device current moved
     by one ulp on every stamp, and the twin test's two answers differ."""

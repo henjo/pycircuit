@@ -5953,3 +5953,20 @@ Newton records' `walk_hw_els` / `walk_hwk` (the stamped walk's check that a
 hand-written twin was still its class's).  PSP was their only user.  On the
 cascode the old bound was written for, plain Newton converges at 48 biases
 of 48 where it converged at 45, in 350 iterations against 509.
+
+## PCNR's C record held between solves (2026-11-10)
+
+2026-11-10 (`doc/hdl_roadmap_260824.md`, 311; plan 261 L18 (rc)).  A DC's
+ladder asks `_pcnr_c._record` for the same record a hundred times and more,
+and each time it checked every participant in turn (~0.3 us a device: 2.4
+ms a call at 8 000).  Now a check that passed is kept on the record,
+stamped (`_watch.arm`) over the participants' element dicts, and the
+devices, element dicts and classes compared by identity; each class's
+`_class_ok` asked again.  `pcnr_devices` hands a new list of the same
+records, so the devices are compared element by element; a class assigned
+to an element writes no dict, so the classes are compared too.  The first
+solve's packs, written into the element dicts, break the first stamp; from
+the second it held 96 of 97 at 8 000 stages.  The first build's `_tables`
+asks a device's parameters only where its kernel map reads them, and
+`_positions` takes a run of like devices at once.  The active chain's DC
+1.10x at 8 000, 1.09x at 4 000, 1.11x at 16 000.
