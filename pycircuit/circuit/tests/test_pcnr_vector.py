@@ -355,6 +355,25 @@ def test_pcnr_i_is_the_resistive_current_and_didv_its_derivative(card):
         assert abs(np.sum(i_pc)) <= 1e-12 * max(np.max(np.abs(i_pc)), 1e-30)
 
 
+def test_the_class_build_compiles_neither_vector_twin():
+    """A chained model's `pcnr_i` and `pcnr_didv` are compiled on their
+    first call, not at the class build (`generate_code`: no solve reads
+    them -- the stamp takes the kernel route -- and the di/dv was 9.4 s of
+    PSP's 55 s cold build): the info holds None for both, the first call
+    compiles each once (kept as `_numpy`), a second reuses it."""
+    el = _bjt(**NPN)
+    pv = type(el)._hdl_info['pcnr_vector']
+    assert pv['chain'] is not None
+    assert pv['i'] is None and pv['didv'] is None
+    pr = _params(el)
+    v = np.array([0.75, 0.45])
+    a = np.asarray(el.pcnr_didv(v, pr, defaultepar, numeric), float)
+    f = pv['_numpy']['didv']
+    b = np.asarray(el.pcnr_didv(v, pr, defaultepar, numeric), float)
+    assert pv['_numpy']['didv'] is f and a.tobytes() == b.tobytes()
+    assert pv['i'] is None and pv['didv'] is None
+
+
 def test_a_dropped_didv_column_is_caught_by_the_finite_difference_check():
     """Mutation control for the test above: a block missing its second
     column disagrees with FD by the whole ``d/dvbc`` column, which at

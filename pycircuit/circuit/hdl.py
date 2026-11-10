@@ -4102,17 +4102,19 @@ def generate_code(cls):
     ## `_chain_compile`'s forward-accumulation Jacobian over the probe
     ## symbols gives the `t x m` block directly; a flat model takes
     ## `lambdify` + `Matrix.jacobian`, as the legacy route does.
+    ##
+    ## A CHAINED model's `pcnr_i` / `pcnr_didv` are compiled on their first
+    ## use (`_pcnr_vec_compiled`), not here: no solve reads them --
+    ## `PcnrDevice.stamp` evaluates the ordinary kernels at local
+    ## potentials -- and the di/dv was most of a large model's class build
+    ## (PSP's: 9.4 of 55 s cold).  `args` keeps this build's argument list
+    ## for that compile, so it is the same code.
     pcnr_vec = None
     if pcnr_vector is not None:
         _vs = pcnr_vector['vsyms']
         _args_v = _vs + paramsyms + [TEMP] + given_syms
-        _mods = dict(_KERNEL_NUMPY, _wrapfloor=np.floor)
         if chain_defs:
-            _vec_i = _chain_compile(pcnr_vector['defs'], pcnr_vector['i_exprs'],
-                                    _args_v, modules_map=_mods)
-            _vec_d = _chain_compile(pcnr_vector['defs'], pcnr_vector['i_exprs'],
-                                    _args_v, want_jacobian_of=True, xsyms=_vs,
-                                    modules_map=_mods)
+            _vec_i = _vec_d = None
             _vec_sym = None
         else:
             _jac = sympy.Matrix(pcnr_vector['i_exprs']).jacobian(_vs).tolist()
@@ -4125,7 +4127,7 @@ def generate_code(cls):
                         spec_idx=pcnr_vector['spec_idx'],
                         redundant=pcnr_vector['redundant'],
                         m=len(_vs), t=pcnr_vector['t'], vsyms=_vs,
-                        i=_vec_i, didv=_vec_d, sym=_vec_sym,
+                        i=_vec_i, didv=_vec_d, sym=_vec_sym, args=list(_args_v),
                         chain=(dict(defs=pcnr_vector['defs'],
                                     out=pcnr_vector['i_exprs'])
                                if chain_defs else None),
@@ -7064,9 +7066,27 @@ class BehaviouralMeta(type):
                 + [list(c) for _j, _p, _k, c in pv['redundant']]
 
             def _pcnr_vec_compiled(which, toolkit, _pv=pv, _pn=_pn_vec):
-                """The numpy form, or its jax twin for a traced call."""
+                """The numpy form, or its jax twin for a traced call.  A
+                chained model's numpy form is compiled here on its first
+                use, from the class build's chain and argument list
+                (`generate_code`: no solve reads it), and kept beside
+                the info (`_numpy`, not cached)."""
                 if not getattr(toolkit, 'jax', False):
-                    return _pv[which]
+                    f = _pv[which]
+                    if f is None:
+                        cache = _pv.setdefault('_numpy', {})
+                        f = cache.get(which)
+                        if f is None:
+                            ch = _pv['chain']
+                            f = cache[which] = _chain_compile(
+                                ch['defs'], ch['out'], list(_pv['args']),
+                                want_jacobian_of=(True if which == 'didv'
+                                                  else None),
+                                xsyms=(_pv['vsyms'] if which == 'didv'
+                                       else None),
+                                modules_map=dict(_KERNEL_NUMPY,
+                                                 _wrapfloor=np.floor))
+                    return f
                 cache = _pv.setdefault('_jax', {})
                 if which not in cache:
                     import jax.numpy as _jnp

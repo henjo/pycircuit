@@ -693,30 +693,32 @@ def _trees(pv):
 
 
 def test_the_pcnr_trees_load_on_their_first_use(cache_dir):
-    """An entry's sympy trees (`pcnr_vector`'s chain and probe symbols among
-    them, read only for the JAX twin) are stored apart, one pickle (`_defer`):
-    a class served from the cache holds them unloaded through its creation,
-    an instance and a numeric PCNR call (its other keys read: probes, kinds,
-    the limiter's parameters; membership answered); the first read of one
-    loads them as the cold compile made them (srepr).  (The SPICE diode: 25
-    library classes have the route.)"""
+    """An entry's sympy trees (`pcnr_vector`'s chain, probe symbols and
+    argument list among them, read only to compile the vector twins on
+    their first use) are stored apart, one pickle (`_defer`): a class served
+    from the cache holds them unloaded through its creation, an instance and
+    the reads of its other keys (probes, kinds, the limiter's parameters;
+    membership answered); the first numeric `pcnr_i` -- which compiles it --
+    loads them as the cold compile made them (srepr), and gives the cold
+    class's bytes.  (The SPICE diode: 27 library classes have the route.)"""
     from pycircuit.circuit import numeric
     from pycircuit.circuit.circuit import defaultepar
     cold, warm = _vector_pair()
     cpv = cold._hdl_info['pcnr_vector']
     pv = warm._hdl_info['pcnr_vector']
-    assert type(pv) is hc._Deferred and set(pv._refs) == {'vsyms'}
+    assert type(pv) is hc._Deferred and set(pv._refs) == {'vsyms', 'args'}
     trees = pv._trees
     assert trees._vals is None
     e = _instance(warm)
     pr = {q.name: getattr(e.iparv, q.name) for q in e.instparams}
-    v = np.linspace(0.7, -0.2, len(pv['probes']))
-    got = np.asarray(warm.pcnr_i(v, pr, defaultepar, numeric), float)
-    assert got.tobytes() == np.asarray(cold.pcnr_i(v, pr, defaultepar, numeric), float).tobytes()
     assert pv['probes'] == cpv['probes'] and 'kinds' in pv and pv.get('m') == cpv['m']
     assert 'vsyms' in pv and len(pv) == len(cpv)
     assert type(pv['chain']) is hc._Deferred and trees._vals is None
-    assert _trees(pv) == _trees(cpv) and trees._vals is not None
+    v = np.linspace(0.7, -0.2, len(pv['probes']))
+    got = np.asarray(warm.pcnr_i(v, pr, defaultepar, numeric), float)
+    assert trees._vals is not None
+    assert got.tobytes() == np.asarray(cold.pcnr_i(v, pr, defaultepar, numeric), float).tobytes()
+    assert _trees(pv) == _trees(cpv)
 
 
 def test_a_view_of_the_whole_pcnr_vector_loads_its_trees_first(cache_dir):

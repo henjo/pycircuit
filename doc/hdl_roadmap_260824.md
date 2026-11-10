@@ -15389,3 +15389,27 @@ Python, which hold either way).  Fixtures that leaned on the old limiter: `test_
 (no PCNR device), PSP kept as a PCNR case; `test_radau_tc`'s drawn seeds hold every eighth loop to 3 iterations (every draw now
 converges inside 11, from 1e12 V).  Pinned pairs: the PSP limiter's removed, the walk's, the C Newton's, the DC base solve's, the
 coupled stage Newton's, the end passes' and the readiness reads' re-recorded (their records' slots and the walk's entries).
+
+## 2026-11-10 — 308. PCNR's vector-route `pcnr_i` / `pcnr_didv` compiled on their first call, not at the class build -- PSP's cold class build 55 -> 45 s (1.22x), MOS level 2 and 3 0.8 s and 0.55 s shorter; every byte the same
+
+**Why**  Plan 261's L18 (lz).  307 left PSP's cold class build (an empty kernel store) 45 -> 55 s, all of it one compile: the class
+build's forward-accumulation Jacobian of PCNR's vector-route current over the probes (`_chain_compile(..., want_jacobian_of=True)`,
+9.4 s on PSP), which no solve reads -- `PcnrDevice.stamp` takes the kernel route (the ordinary C kernels at local potentials) and only
+`test_pcnr_vector` calls `pcnr_didv`.  Accepted as measured there; Andreas: "Do lazy compile".
+
+**What.**  `generate_code` leaves a chained model's `pcnr_vector['i']` and `['didv']` None and keeps its argument list
+(`pcnr_vector['args']`, deferred with the trees in the store); `_pcnr_vec_compiled` compiles each on its first numpy call from the
+build's chain and that list with the build's modules -- the same code -- and keeps it as `_numpy` (a runtime key, never frozen),
+as its JAX branch already did.  The 27 vector-route library classes are all chained; the flat branch is as it was.
+
+**Measured** (one class a process, an empty store, interleaved pairs against 2126b92a's worktree, 1-min load 1.5-1.9): PSP's n-channel
+variant a circuit gets 55.0-55.5 -> 45.2-45.4 s (1.22x; line <= 47 s); MOS level 2 6.2-6.3 -> 5.45-5.49 s (1.14x), level 3 4.58-4.68 ->
+4.05 s (1.13x), under their 1.15x line -- the seconds the sizing predicted (0.83, 0.58), its ratios taken from totals without the
+uncollapsed base class's build, which a cold store also pays: accepted as measured by Andreas.  Warm builds 0.08 -> 0.07 s.  `pcnr_i` and
+`pcnr_didv` at 8 drawn points on seven classes (MOS levels 1-3, the SPICE diode, EKV, PSP n default card, PSP p with rg / fnt) the same
+bytes as the eager compile's, from a cold store and a warm one.  The gate against 2126b92a SAME.  Suite 6 620 passed.
+
+**Tests.**  `test_pcnr_vector`: the class build compiles neither twin; the first call compiles each once and a second reuses it.
+`test_hdl_cache`: a class served from the store holds the trees (now with the argument list) unloaded through its creation, an
+instance and its other keys' reads; the first numeric `pcnr_i` loads them to compile and gives the cold class's bytes.  Both fail with
+the eager compile restored.

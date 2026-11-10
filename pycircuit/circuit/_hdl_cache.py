@@ -31,7 +31,10 @@ What is cached
 
 What is not cached
     The JAX twins (`eval_i_pure`, the PCNR `_jax` entries) are compiled
-    lazily at first traced use, never at import, and are not stored.  A
+    lazily at first traced use, never at import, and are not stored; so
+    are a chained model's vector-route `pcnr_i` / `pcnr_didv` (`_numpy`),
+    which no solve reads -- the class build leaves them None and keeps its
+    argument list (`args`, with the trees) for their first call.  A
     class whose `analog()` source `inspect` cannot recover (defined in a
     REPL or an `exec` string) compiles cold every time and says so in
     `cls._hdl_cache_status`.  A compile that raises is not cached, so
@@ -859,11 +862,12 @@ _FN = '__hdl_fn__'
 #: the C kernels it binds beside the functions (the class's own and a
 #: DC-pinned class's second, the limiter's, PCNR's refine and `_pcnr_c`'s
 #: table of the kernels it calls --
-#: cffi objects, which do not pickle).  Never frozen -- a fused
+#: cffi objects, which do not pickle), and a chained model's vector-route
+#: `pcnr_i` / `pcnr_didv` compiled on first use (`_numpy`).  Never frozen -- a fused
 #: function has no record (it is not chain-compiled from a `_src` of its
 #: own), so freezing a live class's `info` after a session had run raised
 #: `Uncacheable` (until 2026-10-02).
-_RUNTIME_KEYS = frozenset(('_jax', '_fused', '_fuse_ok', '_c_bound',
+_RUNTIME_KEYS = frozenset(('_jax', '_numpy', '_fused', '_fuse_ok', '_c_bound',
                            '_backend_pending', '_backend_seen',
                            '_c_limit', '_c_limit_status', '_u_zero',
                            '_c_fused', '_c_fused_dc', '_c_fused_status', '_c_pcnr_refine',
