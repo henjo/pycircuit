@@ -252,8 +252,8 @@ class DC(Analysis):
         can see it from ``G``/``i``/``u`` alike -- ``analysis='dc'`` reaches
         only ``u``.  Scoping notes on the shared ``analysis_kind`` helper.
 
-        BLAS is held at one thread for the solve where the AutoSolver's dense
-        LU is past the size OpenBLAS threads (`_blas_held`).
+        BLAS is held at one thread for the solve where the AutoSolver's
+        system is past the size OpenBLAS threads (`_blas_held`).
         """
         self._sync_cir()
         with analysis_kind(self.epar, 'dc'), self._blas_held():
@@ -261,24 +261,19 @@ class DC(Analysis):
 
     def _blas_held(self):
         """One BLAS thread for this solve (`_blas`) where the AutoSolver
-        factors dense from `_blas.THREADED_FROM` unknowns up to its sparse
-        floor -- the C Newton's ladders make hundreds of small solves there,
-        and the threads cost up to 30x; elsewhere a no-op: a smaller system
-        is not threaded, KLU is not reached by the threads, and another
-        solver is the caller's choice (unmeasured)."""
+        solves from `_blas.THREADED_FROM` unknowns.  Where it factors dense
+        (up to its sparse floor) the C Newton's ladders make hundreds of
+        small solves, and the threads cost up to 30x; on KLU the solve still
+        makes dense BLAS calls OpenBLAS threads -- with its default threads
+        on 24 cores an active chain's DC at 4 000 stages ran 1.34x slower, a
+        PSP chain's at 1 200 1.16x, none faster.  Elsewhere a no-op: a
+        smaller system is not threaded, and another solver is the caller's
+        choice (unmeasured)."""
         from pycircuit.circuit.linearsolver import AutoSolver
         ls = self._get_linearsolver()
-        if type(ls) is not AutoSolver:
+        if type(ls) is not AutoSolver or self.cir.n - 1 < _blas.THREADED_FROM:
             return contextlib.nullcontext()
-        m = self.cir.n - 1
-        ## (not yet chosen: dense taken below `min_n` -- between a lower
-        ## structural floor and it the choice reads the first matrix, and the
-        ## hold is harmless to a KLU solve, while a dense one there would
-        ## run threaded)
-        dense = ls._choice is ls._dense if ls._choice is not None else m < ls.min_n
-        if dense and m >= _blas.THREADED_FROM:
-            return _blas._single_threaded_blas()
-        return contextlib.nullcontext()
+        return _blas._single_threaded_blas()
 
     def _solve_dc(self, x0=None):
         ## STAGE 8(d) -- see Circuit.reset_state.  A DC solve must not inherit a

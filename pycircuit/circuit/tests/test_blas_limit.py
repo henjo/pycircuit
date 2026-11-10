@@ -66,15 +66,17 @@ def test_a_pss_solve_holds_blas_at_one_thread(monkeypatch):
     assert seen and all(t == 1 for t in seen[0]), seen
 
 
-@pytest.mark.parametrize('stages,held', [(120, True), (20, False), (300, False)])
+@pytest.mark.parametrize('stages,held', [(120, True), (20, False), (300, True)])
 def test_a_dc_solve_holds_blas_at_one_thread_where_its_dense_lu_is_threaded(
         stages, held, monkeypatch):
-    """`DC.solve` holds the limit where the AutoSolver factors dense from
-    `_blas.THREADED_FROM` unknowns up to its sparse floor -- a diode ladder
-    of 122 -- and leaves the pool alone below it (22) and on KLU (302): the
-    C Newton's ladders make hundreds of small solves there, and the threads
-    cost up to 30x (voter25's operating point, 2026-10-13).  Read inside
-    the solve, the pool opened to 4 threads first."""
+    """`DC.solve` holds the limit where the AutoSolver solves from
+    `_blas.THREADED_FROM` unknowns -- a diode ladder of 122, factored
+    dense, and of 302, on KLU -- and leaves the pool alone below it (22):
+    the C Newton's ladders make hundreds of small dense solves (the threads
+    cost up to 30x: voter25's operating point, 2026-10-13), and at size the
+    solve's other dense calls are threaded too (an active chain's DC at
+    4 000 stages 1.34x).  Read inside the solve, the pool opened to 4
+    threads first."""
     if not tmod.blas_single_thread_available():
         pytest.skip('no threadpoolctl')
     import threadpoolctl

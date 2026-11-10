@@ -15413,3 +15413,22 @@ bytes as the eager compile's, from a cold store and a warm one.  The gate agains
 `test_hdl_cache`: a class served from the store holds the trees (now with the argument list) unloaded through its creation, an
 instance and its other keys' reads; the first numeric `pcnr_i` loads them to compile and gives the cold class's bytes.  Both fail with
 the eager compile restored.
+
+## 2026-11-10 — 309. A DC holds BLAS at one thread at every size under the AutoSolver -- with OpenBLAS's default threads an active chain's DC 1.39x at 4 000 stages and 1.23x at 8 000, a PSP chain's 1.13x at 1 200; every answer the same
+
+**Why**  Plan 261's L18 (bl).  The (c) prototype found PSP's DC 14-18 s with OpenBLAS's default threads against 2.7 s at one; re-sized
+after 307 (PSP on PCNR) the default-thread cost of standalone DCs at size is smaller and real: the active chain 4 000 1.34x, the PSP
+chain 1 200 1.16x, the rest even.  `DC._blas_held` held one thread only where the AutoSolver factors dense from `_blas.THREADED_FROM`
+unknowns up to its sparse floor ("KLU is not reached by the threads"); Transient and PSS hold it for their whole run.  Andreas: "DC's
+BLAS hold at size".
+
+**What.**  `DC._blas_held` holds one thread wherever the AutoSolver solves from `THREADED_FROM` unknowns; another solver stays the
+caller's choice, a smaller system is not threaded.
+
+**Measured** (interleaved pairs against dfd26ed2's worktree; another project loaded the box to 1.4-6.8 during them): OPENBLAS_NUM_THREADS
+unset -- active chain 4 000 1.89-1.92 -> 1.37-1.38 s (1.39x; line 1.25x), 8 000 5.19-5.32 -> 4.25-4.27 s (1.23x; line 1.0x), PSP chain
+1 200 0.68-0.74 -> 0.62 s (1.13x; line 1.10x), PSP mesh 49x49 1.01x, CMOS 600 0.98x, mesh 63x63 0.98x, quiet chain 4 000 0.98x (0.39
+-> 0.40 s: the timer's 10 ms; line 0.97x); OPENBLAS_NUM_THREADS=1 -- 0.98-1.00x (line 0.98x); every digest the same.  The gate against
+dfd26ed2 SAME.  Suite 6 620 passed.
+
+**Tests.**  `test_blas_limit`'s DC case: a 302-unknown diode ladder on KLU is held now (it was pinned unheld); fails with the old hold.

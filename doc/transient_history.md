@@ -114,6 +114,15 @@ gained from the threads (one thread 0.92-1.76x for `solve`, 1.10-1.57x for
 `pnoise`, 53 to 803 unknowns, gear and Radau): `blas_held_methods` holds
 every one.
 
+2026-11-10 (`doc/hdl_roadmap_260824.md`, 309; plan 261 L18 (bl)): `DC.solve` holds the
+limit at EVERY size under the AutoSolver, not only where it factors dense
+below its sparse floor.  The reason that kept KLU out -- "the threads do not
+reach it" -- held for the factor and not for the solve's other dense BLAS
+calls: with OpenBLAS's default threads (24 cores) an active chain's DC ran
+1.89-1.92 s at 4 000 stages against 1.37-1.38 s held (1.39x), 5.2-5.3 against
+4.25 s at 8 000 (1.23x), a PSP chain's at 1 200 1.13x; meshes and a quiet
+chain even; every digest the same either way.
+
 ### `resample_uniform`
 
 2026-11-08: moved to `_tran_grid`, beside `OutputGrid`, which calls it a block of the run at a time (roadmap 293); `transient` re-exports it.  The step grid's two lines are `_tran_grid._uniform_grid`, shared with `OutputGrid`.

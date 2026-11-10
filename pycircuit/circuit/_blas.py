@@ -8,13 +8,14 @@ solves holds BLAS at one thread for its whole run:
 
 * `Transient.solve` -- 1.72x on the leapfrog on 4 cores, 14-20x on 24;
 * `PSS.solve` -- its walks drive the inner transient's steps directly;
-* `DC.solve`, where the AutoSolver's dense LU is past the size OpenBLAS
-  threads (`THREADED_FROM` unknowns) and below its sparse floor -- the C
-  Newton's ladders make hundreds to thousands of solves: over the 26 gold
-  operating points 17.9 -> 11.1 s, voter25 30x, gm17 3.3x, no deck slower,
-  and the 10-30x run-to-run swings of the threaded solve gone.  Smaller
-  systems are not threaded, and the sparse ones factor with KLU, which the
-  threads do not reach: there the limit would only cost its own call.
+* `DC.solve`, where the AutoSolver's system is past the size OpenBLAS
+  threads (`THREADED_FROM` unknowns) -- below its sparse floor the C
+  Newton's ladders make hundreds to thousands of dense solves: over the 26
+  gold operating points 17.9 -> 11.1 s, voter25 30x, gm17 3.3x, no deck
+  slower, and the 10-30x run-to-run swings of the threaded solve gone; on
+  KLU above it the solve's other dense calls are threaded still -- an
+  active chain's DC at 4 000 stages 1.34x, a PSP chain's at 1 200 1.16x,
+  meshes and a quiet chain even.  Smaller systems are not threaded.
 
 * the small-signal analyses -- `AC.solve`, `Noise.solve`,
   `TransimpedanceAnalysis.solve` (`blas_held_below`) and what is built on
