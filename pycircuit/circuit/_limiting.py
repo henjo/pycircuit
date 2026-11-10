@@ -243,15 +243,14 @@ def _limvds(vnew, vold, toolkit):
     below 3.5, `vds` is confined to `[-0.5, 4]`.
 
     This is what stops a saturating model being evaluated at hundreds of
-    volts.  `compact.py`'s `PspMosLongChannel.limit` records what happens
-    without it: `dIds/dVds` falls to 1e-11 by 500 V, so a solver that lands
-    out there has a numerically empty row and is reported singular rather
-    than slow.  That method is worth reading beside this one, and worth
-    reading carefully: it names `DEVfetlim` as the part it plays, but it
-    bounds d, g and b alike by a single symmetric `|delta| <= vlimit = 1 V`
-    about the source, which is neither `fetlim` nor `limvds` -- it is a
-    third, blunter law that happens to cover both jobs.  The failure its
-    docstring describes is specifically the one THIS function exists for.
+    volts.  Without it PSP's `dIds/dVds` falls to 1e-11 by 500 V, so a
+    solver that lands out there has a numerically empty row and is
+    reported singular rather than slow; PSP declares this law on its
+    drain-source probe, with `fetlim` and `pnjlim` beside it
+    (`compact._psp_mos_analog`).  A symmetric `|delta| <= 1 V` on d, g and
+    b about the source (`deltalim`, below) also covers the failure, more
+    bluntly: on `test_limit_fet`'s cascode grid on PSP it converges at 45
+    of 48 biases where the group converges at all 48.
 
     **The `vold < 0` fold is a DELIBERATE addition**, and it is not invented:
     `DEVlimvds` alone assumes a forward-mode device, and clamping at `-0.5`
@@ -292,14 +291,12 @@ def _deltalim(vnew, vold, vmax, toolkit):
     `vmax` volts in one step* -- so it applies to any branch at all,
     including one whose model has no notion of a critical voltage.
 
-    **It is not invented for the DSL.**  `compact.PspMosLongChannel.limit`
-    already does exactly this by hand, and its docstring says why: with
-    the drain voltage limited to `Vdsat` the current saturates, so
-    ``dIds/dVds`` falls to 1e-11 by 500 V and 1e-28 by 1e7 -- a solver
-    that lands out there has a numerically empty row and is reported
-    singular rather than slow.  That method bounds d, g and b alike by a
-    symmetric ``|delta| <= 1 V`` about the source.  This is that law,
-    named and shared.
+    **The failure it guards.**  With the drain voltage limited to `Vdsat`
+    a compact model's current saturates, so ``dIds/dVds`` falls to 1e-11
+    by 500 V and 1e-28 by 1e7 on PSP -- a solver that lands out there has
+    a numerically empty row and is reported singular rather than slow.  A
+    symmetric ``|delta| <= 1 V`` about the source on d, g and b is the
+    oldest hand-written cure; this is that law, named and shared.
 
     Two properties the other kinds also have, and which the write-back
     depends on:

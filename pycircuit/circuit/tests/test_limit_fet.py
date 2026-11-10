@@ -707,10 +707,12 @@ def test_cross_now_reaches_the_chained_code_generator_too():
 
 def _cascode(cls, vdd, vg2, vg1):
     """Two saturating FETs in series, the middle node held by nothing but
-    their two drain conductances.  This is the case `compact.py`'s
-    `PspMosLongChannel.limit` was written for: once both devices
-    saturate, `dIds/dVds` collapses and the middle row goes numerically
-    empty, so a Newton step that walks out there stays."""
+    their two drain conductances.  The case a saturating compact model
+    needs its limiter for (`test_psp_current`'s
+    `test_the_cascode_needs_it_and_gets_the_same_answer` runs it on PSP):
+    once both devices saturate, `dIds/dVds` collapses and the middle row
+    goes numerically empty, so a Newton step that walks out there
+    stays."""
     c = SubCircuit()
     c['vdd'] = VS('vdd', gnd, v=vdd)
     c['vg2'] = VS('g2', gnd, v=vg2)

@@ -473,7 +473,9 @@ def test_drawn_seeds_steps_and_charges_are_the_pythons(data):
 def test_drawn_seeds_reach_the_c_and_both_its_outcomes():
     """Not vacuous: on a walk of drawn seeds the C serves most loops to
     convergence, over one iteration and several, and some to maxiter (the
-    Python's False) -- hand-backs are planted above."""
+    Python's False) -- hand-backs are planted above.  Every eighth loop is
+    held to 3 iterations: under PSP's SPICE limiters every draw converges
+    inside 11, from seeds of 1e12 V."""
     _on()
     rng = np.random.default_rng(5)
     served = noconv = 0
@@ -481,7 +483,7 @@ def test_drawn_seeds_reach_the_c_and_both_its_outcomes():
     for k in range(48):
         sc = (1e-9, 1e-3, 0.05, 0.5, 2.0, 1e3)[k % 6]
         seed = _seed({j: sc * rng.standard_normal(len(_seed()[0])) for j in range(3)})
-        a, b, db = _both(seed)
+        a, b, db = _both(seed, **({'maxit': 3} if k % 8 == 7 else {}))
         assert a == b
         c = _counts(db)
         assert c.get('radau_tc:served') == 1, c

@@ -370,15 +370,6 @@ PAIRS = {
                  'pycircuit.circuit._tran_newton_c:chord_in',
                  'pycircuit.circuit._tran_newton_c:chord_out'],
     },
-    'the PSP limiter and its C twin': {
-        'why': 'the twin is `PspMosLongChannel.limit` transliterated -- d, g, b moved '
-               'about the source in Python\'s order, `(vs + vold) + (+-lim)` -- with '
-               '`vlimit` baked in per value and any non-finite value declined',
-        'reference': ['pycircuit.circuit.compact:PspMosLongChannel.limit'],
-        'twin': ['pycircuit.circuit._hdl_climit:PSP_LIMIT_C',
-                 'pycircuit.circuit._hdl_climit:_handwritten',
-                 'pycircuit.circuit._hdl_climit:_Handwritten'],
-    },
     'the error test and its C': {
         'why': 'the C error test is `_charge_lte` (the trapezoid\'s and Gear-2\'s '
                'charge-form `compute_lte`, numpy\'s own LAPACK on the reduced '
@@ -969,13 +960,12 @@ PAIRS = {
     },
     'the readiness reads and their stamps': {
         'why': 'a stamp stands for a full check while no dict it read has changed: '
-               'every read of the plan lookup, the generated-pass test, the pack, a '
-               'hand-written limiter\'s twin, the linear solver and the tolerances '
-               'must be a watched dict or compared on every call',
+               'every read of the plan lookup, the generated-pass test, the pack, the '
+               'linear solver and the tolerances must be a watched dict or compared on '
+               'every call',
         'reference': ['pycircuit.circuit._stamp_plan:_plan_for',
                       'pycircuit.circuit._hdl_batch:is_generated',
                       'pycircuit.circuit._hdl_cbackend:CKernel.pack',
-                      'pycircuit.circuit._hdl_climit:_Handwritten',
                       'pycircuit.circuit.analysis:Analysis._get_linearsolver',
                       'pycircuit.circuit._tran_newton:_StepNewton._newton_tolerances'],
         'twin': ['pycircuit.circuit._watch:WATCH_C',
@@ -1209,7 +1199,7 @@ RECORD = {
     'the branch screen and its C': ('73a09a49db2e', '41c5e5959ad1'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
     'the kernel call and the pass driver': ('ef3f2c059587', '5a9e89626ca0'),
-    'the limiting loop and the walk': ('6100313c0fdb', '28fd871afee4'),
+    'the limiting loop and the walk': ('6100313c0fdb', 'b3cf8aef45d6'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '89740e765ff7'),
     'the transient evaluation and the core': ('9523f23cedda', '47fc584d9f77'),
     'the assembly loops and the plan': ('a822abce557c', '3ff543f303a8'),
@@ -1217,21 +1207,20 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('8246eb6c38fe', '2cf193cd03bb'),
-    'the PSP limiter and its C twin': ('8e14bbc903f1', '3aefa105ff7f'),
+    'the Newton solve and its C': ('8246eb6c38fe', 'd24ae18be6f3'),
     'the error test and its C': ('639cab30f2d5', '6f54e05af10a'),
-    'the DC base solve and its C': ('9af95c14f1ba', '416ed18f1995'),
+    'the DC base solve and its C': ('9af95c14f1ba', '4407ee890f1c'),
     'the PCNR DC solve and its C': ('9e5246d1a3e7', '0e92898d00a3'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('d417a4cedc1d', '694a1086db84'),
     "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),
     "the stage paths' passes and the core's": ('7706b1247670', '255377c134fe'),
-    'the coupled stage Newton and its C': ('c96c88b2391d', 'aa9ada853562'),
+    'the coupled stage Newton and its C': ('c96c88b2391d', '027f85c1f11b'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
     'the transform solve and its frozen form': ('02b055ed66f9', '02fc0d02aa53'),
     'the transform Newton and its C': ('c3800bb7b9df', 'd5e48532bd47'),
-    "the step's end passes and the C's": ('a0a4d83234f0', 'd394f717f0ba'),
+    "the step's end passes and the C's": ('a0a4d83234f0', 'bfb65fbc0c40'),
     'the frozen factors and their C': ('8e7ddd8d45a0', '19c25d66d9c8'),
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('03f9482bdd72', 'c025357cb495'),
@@ -1242,7 +1231,7 @@ RECORD = {
     'the stage readers and their one read': ('d25552fe5ede', '2798b147a3c5'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
-    'the readiness reads and their stamps': ('a3c7e910bad9', '57a0514222cf'),
+    'the readiness reads and their stamps': ('8f218c25e58a', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
     'the stage loop and its C': ('e683881c671b', '1b8246f03819'),
     'the transform loop and its C': ('f6c3df3bcebf', 'b82d585bf35a'),

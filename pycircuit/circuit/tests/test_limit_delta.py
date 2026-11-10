@@ -10,9 +10,8 @@ than `vmax` volts in one Newton step*, so it applies to any branch at
 all.  Roadmap sec. 3 asked for it ("35 hand-written lines of FET Newton
 limiting per model"); sec. 33 is why it was finally built.
 
-**It is not invented here.**  `compact.PspMosLongChannel.limit` already
-bounds d, g and b by a symmetric ``|delta| <= 1 V`` about the source, by
-hand.  This is that law, named and shared.
+A symmetric ``|delta| <= 1 V`` on d, g and b about the source is the
+oldest hand-written FET limiter; this is that law, named and shared.
 
 The measurement that motivated it is in sec. 33 and repeated at the
 bottom of this file: `EkvNmosHdl` declares `limit_identity` on its bulk

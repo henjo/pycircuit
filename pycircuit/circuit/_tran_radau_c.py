@@ -233,8 +233,6 @@ class _Ctx:
         'walk_dicts',
         'walk_els',
         'walk_held',
-        'walk_hw_els',
-        'walk_hwk',
         'walk_kern',
         'walk_ok',
         'walk_packs',
@@ -289,7 +287,6 @@ class _Ctx:
         s.wn = 0
         self.walk = self.walk_ok = None
         self.walk_els = self.walk_dicts = self.walk_packs = self.walk_kern = ()
-        self.walk_hw_els = self.walk_hwk = ()
         self.walk_stamp, self.walk_arms, self.walk_held = -1, 0, 0
         self.walk_watch = ()
 

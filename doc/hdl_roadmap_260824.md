@@ -4218,7 +4218,8 @@ sixth kind touches three lines rather than eight sites.
 d, g and b alike by a symmetric `|delta| <= 1 V` about the source, by
 hand — and `_limvds`'s docstring already called that out as *"a third,
 blunter law"*. This is that law, named and shared, which is exactly what
-§3 asked for.
+§3 asked for.  *(2026-11-10: PSP's hand-written limiter is retired; PSP
+declares SPICE's group instead -- plan 261 L18 (c).)*
 
 ### The acceptance case: it fixes the EKV diff pair completely
 
@@ -4302,8 +4303,8 @@ delta 50     XX XX XX XX XX XX XX      <- too loose to limit at all
 
 **The working plateau is 3–20 V.** Below 3 it is partial *and
 order-dependent at |vin| = 1*, which is the one property PCNR exists to
-provide. **1 V — the value `compact.PspMosLongChannel.limit` uses by
-hand, and the obvious guess — does not work here.**
+provide. **1 V — the value `compact.PspMosLongChannel.limit` used by
+hand (retired 2026-11-10), and the obvious guess — does not work here.**
 
 5 V was picked from that grid, and the suite caught it. The 40 V cascode
 benchmark (`test_fet_limiting_cuts_the_iteration_count_on_a_hard_solve`)
@@ -15345,3 +15346,46 @@ chain.  `test_shooting_methods`: a 24-stage BJT chain's radau PSS builds no `G` 
 source as at e9f0eca1 the five new assertions fail; the three twin comparisons pass both ways.  Pinned pairs re-recorded: the stage
 readers and their one read, the stage step map and its C, the stage walk and its C (the C stage walk never asked about PCNR devices:
 its step map reads the stage Newton's own `G`, which the memo now holds at every stage for the Python too).
+
+## 2026-11-10 — 307. PSP declares SPICE's MOSFET limiters -- `fetlim`, `limvds` and two `pnjlim`, limited together -- and its noise node an identity probe: vector PCNR admits it, the hand-written step bound and its C twin retired -- a PSP chain's DC 4.24x at 1 200 stages, a PSP mesh's 1.91x, a CMOS chain's 1.26x, the transient 1.11-1.16x; answers within 8e-13 V
+
+**Why**  Plan 261's L18 (`tc/plan_261.md`, "(c)"): PSP (`compact.PspMosLongChannel`) took the classic DC route -- PCNR refused it
+("I(d,s:chan) reads other node voltages"), and its only limiter was hand-written (`limit`: d, g and b held to a 1 V step about the
+source, `vlimit`, with a C twin, `psp_limit.c`, for the C Newton's walk).  Andreas: "I want a, b and c" -- (c) PSP in PCNR through
+SPICE's limiters; "Start the (c) prototype", then "Build it".
+
+**What.**  `_psp_mos_analog` reads its three bulk-referred voltages from SPICE's four MOSFET probes limited as one -- MOS level 1's
+set, in PSP's n-like convention (each probe its branch turned round for a p-channel): `fetlim` on gate-source about a body-biased
+`von = vfb + phib + gamma sqrt(max(phib + vsb, 1e-3 phib))` read at the last accepted iterate, `limvds` on drain-source, `pnjlim` on
+bulk-source and bulk-drain with JUNCAP's `jisat` (floored at 1e-30) and `jphit`; the channel reads the limited gate-, drain- and
+bulk-source voltages, the drain junction its own limited bulk-drain one.  The induced-gate-noise node's resistive current reads
+`limit_identity(V(noi,s))`: its `gcond` moves with the bias, and without its own probe the class build asks whether the current is
+affine in the nodes by resolving `gcond` through PSP's chain -- which does not finish (a segfault at ~5 min; a guard on
+`_reads_a_probe` is a separate item).  Declared, the `limit` is the generated one with its C kernel and PCNR's declared-probe route
+takes the device (both polarities; the gate resistor through the affine lift).  Retired: `PspMosLongChannel.limit`, `vlimit`,
+`csrc/psp_limit.c`, `_hdl_climit`'s `_Handwritten` / `_handwritten` / `PSP_LIMIT*` (`PYCIRCUIT_PSP_LIMIT_C`) and the C Newton
+records' `walk_hw*` slots -- PSP was their only user.  It needed 306 first: PSP joining PCNR had made its PSS 2.9x slower.
+
+**Measured** (interleaved pairs against 27f73abb's worktree, OPENBLAS_NUM_THREADS=1, 1-min load 1.3-2.2 for the DCs): DC -- PSP chain
+1 200 stages 2.68 -> 0.63 s (4.24x; PCNR's gshunt rung), 2 400 5.97 -> 5.68 s (1.05x; the source rung: fetlim lands every gate just
+above threshold and the linearised chain's gain cascades, cond 2.45e17 -- MOS level 1's chain does the same), PSP mesh 49x49 2.58 ->
+1.35 s (1.91x), 35x35 0.72 -> 0.57 s (1.25x), CMOS chain (PSP p over n) 600 0.86 -> 0.69 s (1.26x); every answer within 7.8e-13 V of
+HEAD's; small DCs in a warm process 7-15 -> 22-44 ms (PCNR's own setup).  Transient PSP chain 1 200 Gear-2 0.1 us 1.11-1.16x on a
+box another project loaded (2.7-3.5): the operating point 2.66 -> 0.62 s, the C loop the same, steps 2 770 -> 2 769, rejections 922 ->
+923, Newton 9 287 -> 9 285.  Radau PSS on a 40-stage PSP chain 0.249 -> 0.239-0.249 s (with 306; 0.72 s without it).  The cascode
+the hand-written bound was written for (`test_limit_fet`'s, plain Newton from zero, no rescue, 48 biases): 45 -> 48 converge, 509 ->
+350 iterations (largest 23 -> 12); no limiter 12.  The vendor agreement's worst point 1.304910760e-06 -> 1.304910789e-06 (folded
+1.304910791e-06 both): the reassociated `vdb = vds - vbs`.  The cold class build (empty kernel store) 45 -> 55 s, 1.22x against a
+line of 1.1x -- all of it one compile, PCNR's vector di/dv over the probes, which no solve reads (the stamp takes the ordinary C
+kernels); warm 0.1 s both: accepted as measured by Andreas.  The gate against 27f73abb SAME (the 27 gold decks, none of them PSP; the
+size runs; C against Python), its coverage suite over the limiter's C-path tests.  Suite 6 619 passed.
+
+**Tests.**  `test_psp_limit_c` rewritten (its `_stage` / `_chain` kept: a dozen C-twin tests build PSP from them): the declaration on
+both channel types and cards with PCNR's route; the C Newton serving PSP with the Python's answers (the class kernels off against on),
+a chain driven 6 V a step where the law changes iterates; PSP's refine kernel against `PcnrDevice.limit` and a CMOS chain's PCNR DC, C
+against Python from three starts.  `test_psp_current.TestTheNewtonLimiter` on the declared group, with the cascode needing it (fails
+without a limiter, converges inside 15 with it, on the DC's point).  With the group deleted 20 of the 26 fail (the 6 others C against
+Python, which hold either way).  Fixtures that leaned on the old limiter: `test_shoot_trim`'s sync-skip cases moved to an op-amp stage
+(no PCNR device), PSP kept as a PCNR case; `test_radau_tc`'s drawn seeds hold every eighth loop to 3 iterations (every draw now
+converges inside 11, from 1e12 V).  Pinned pairs: the PSP limiter's removed, the walk's, the C Newton's, the DC base solve's, the
+coupled stage Newton's, the end passes' and the readiness reads' re-recorded (their records' slots and the walk's entries).

@@ -161,8 +161,7 @@ class _Rec:
 
     __slots__ = ('act', 'buf', 'core', 'ffi', 'iref', 'jrows', 'keep', 'klu', 'klu_keep',
                  'limits', 'n', 'plan', 's', 'walk', 'walk_arms', 'walk_dicts', 'walk_els',
-                 'walk_held', 'walk_hw_els', 'walk_hwk', 'walk_kern', 'walk_ok', 'walk_packs',
-                 'walk_stamp', 'walk_watch')
+                 'walk_held', 'walk_kern', 'walk_ok', 'walk_packs', 'walk_stamp', 'walk_watch')
 
     def __init__(self, core, plan, n, iref, drv, core_drv):
         from pycircuit.circuit.nrsolver import FLOOR_ROWS
@@ -202,7 +201,7 @@ class _Rec:
         s.walk_fn, s.wn = ffi.NULL, 0
         self.walk = self.walk_ok = None
         self.walk_els = self.walk_dicts = self.walk_packs = self.walk_kern = ()
-        self.walk_hw_els = self.walk_hwk = self.walk_watch = ()
+        self.walk_watch = ()
         self.walk_stamp, self.walk_arms, self.walk_held = -1, 0, 0
         self.limits = None
         self.jrows = None

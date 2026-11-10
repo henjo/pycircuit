@@ -1506,14 +1506,17 @@ def limit_delta(probe, vmax):
     `deltalim` needs nothing, which makes it the law for a branch whose
     model offers no better one.
 
-    **It is not invented here.** `compact.PspMosLongChannel.limit`
-    already bounds d, g and b alike by a symmetric ``|delta| <= 1 V``
-    about the source, by hand, and its docstring explains the failure it
-    exists for: with the drain limited to `Vdsat` the current saturates,
-    ``dIds/dVds`` falls to 1e-11 by 500 V, and a solver that lands there
-    has a numerically empty row. This is that law, named and shared --
-    which is what roadmap §3 asked for ("35 hand-written lines of FET
-    Newton limiting per model").
+    **The failure it guards is a saturating FET's.** With the drain
+    limited to `Vdsat` PSP's current saturates, ``dIds/dVds`` falls to
+    1e-11 by 500 V, and a solver that lands there has a numerically empty
+    row.  A symmetric ``|delta| <= 1 V`` on d, g and b about the source is
+    the bluntest law that prevents it -- roadmap §3's "35 hand-written
+    lines of FET Newton limiting per model" -- and this is that law,
+    named and shared.  Where a model has a threshold, SPICE's group does
+    better: on `test_limit_fet`'s cascode grid on PSP, plain Newton from
+    zero converges at 45 of 48 biases in 509 iterations under the 1 V
+    bound and at 48 in 350 under `fetlim`, `limvds` and `pnjlim` limited
+    together, which PSP declares (`compact._psp_mos_analog`).
 
     **Its other use is vector PCNR**, and it is why this was built
     (roadmap §33). `limit_identity` admits a device to PCNR by declaring

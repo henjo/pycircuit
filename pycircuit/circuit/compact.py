@@ -14,14 +14,14 @@ Currently: `CapCmomi`.
 
 import numpy as np
 
-from pycircuit.circuit import (_lazy, defaultepar, juncap, psp_kernel,
-                               psp_scaling)
+from pycircuit.circuit import _lazy, juncap, psp_kernel, psp_scaling
 from pycircuit.circuit.constants import (epsRSiO2, kboltzmann,
                                          qelectron)
 from pycircuit.circuit.hdl import (Behavioural, Branch, Collapse,
                                    Contribution, Node,
                                    flicker_noise, white_noise,
-                                   ddt, var, vt)
+                                   ddt, limit_fet, limit_identity, limit_pnj,
+                                   limit_together, limit_vds, var, vt)
 from pycircuit.utilities.param import Parameter
 
 sympy = _lazy.module('sympy')     # imported on first use (`_lazy`)
@@ -277,16 +277,6 @@ def _psp_mos_analog(T, pmos):
         gi = Node('gi')
         br_rg = Branch(g, gi, 'rgate')
 
-        bd, bg, bs = Branch(d, b, 'd'), Branch(gi, b, 'g'), Branch(s, b, 's')
-
-        ## The INTERNAL convention: every voltage below is `T*(node -
-        ## bulk)`, so for a p-channel the whole body runs on
-        ## positive-for-conducting quantities exactly as the n-channel
-        ## does.  `T` is restored on the contributions at the end.
-        vdb = var(T * bd.V, 'vdb')
-        vgb = var(T * bg.V, 'vgb')
-        vsb = var(T * bs.V, 'vsb')
-
         ## Two thermal voltages, deliberately.  The BODY FACTOR is built
         ## on the plain one -- PSP's `G_0` is, and it only moves to the
         ## effective one under `SWFIX`, which defaults off.  Everything
@@ -309,6 +299,62 @@ def _psp_mos_analog(T, pmos):
         cox = var(epsrox * EPS0 / tox, 'cox')                 # noqa: F821
         gamma = var(sympy.sqrt(2.0 * QELE * EPS_SI * nsub)    # noqa: F821
                     / cox, 'gamma')
+
+        ## The INTERNAL convention: every voltage below is `T*(node -
+        ## bulk)`, so for a p-channel the whole body runs on
+        ## positive-for-conducting quantities exactly as the n-channel
+        ## does.  `T` is restored on the contributions at the end.
+        ##
+        ## The three are read from SPICE's four MOSFET probes, LIMITED AS
+        ## ONE: `fetlim` on gate-source, `limvds` on drain-source, `pnjlim`
+        ## on the two bulk junctions -- MOS level 1's set, declared the
+        ## way `elements_hdl`'s level 1 declares it.  Each probe is its
+        ## branch turned round for a p-channel, so it reads `T*(p - m)`
+        ## exactly (a negation, not a product).  Outside a Newton
+        ## iteration every probe is its branch potential and the three
+        ## are the bulk-referred voltages; inside one the channel reads the
+        ## limited gate-, drain- and bulk-source voltages, and the drain
+        ## junction its own limited bulk-drain one, as SPICE's MOSFETs do.
+        ##
+        ## A limiter is not optional for a saturating model.  Once the
+        ## drain is limited to `Vdsat` the current saturates, `dIds/dVds`
+        ## falls to 1e-11 by 500 V, and a Newton step that lands out
+        ## there has a numerically empty row.  On the stacked pair of
+        ## `test_limit_fet`'s cascode, plain Newton from zero converges at
+        ## all 48 biases of its grid with this group and at 12 with no
+        ## limiter.  Declared rather than written by hand, the group also
+        ## admits the device to vector PCNR (every resistive current
+        ## reaches the solution through a probe) and gives the C Newton
+        ## the generated limit kernel.
+        def _ob(p, m):
+            return Branch(p, m) if T > 0 else Branch(m, p)
+
+        bgs, bds, bbs, bbd = _ob(gi, s), _ob(d, s), _ob(b, s), _ob(b, d)
+        ## `von`, the body-biased turn-on SPICE hands `fetlim`: the
+        ## long-channel threshold from this element's own flat band,
+        ## surface potential and body factor, at the RAW bulk-source
+        ## potential (a limiter parameter that reads the solution is
+        ## taken at the last accepted iterate, SPICE's `von`).  `fetlim`
+        ## needs where the device turns on to a few hundred millivolts,
+        ## not PSP's threshold; the floor keeps a forward-biased source's
+        ## root real.
+        vsb_raw = var(-bbs.V, 'lim_vsb')
+        von = var(vfb + phib + gamma * sympy.sqrt(            # noqa: F821
+            sympy.Max(phib + vsb_raw, 1e-3 * phib)), 'lim_von')  # noqa: F821
+        ## JUNCAP's ideal current is `jisat * (exp(V/jphit) - 1)`
+        ## (`juncap.current`), so those are the `IS` and `VT` `pnjlim`
+        ## wants.  Floored: `jisat` defaults to zero, and then the
+        ## critical voltage is ~1.7 V and the law idles at every bias a
+        ## circuit reaches.
+        isj = var(sympy.Max(jisat, 1e-30), 'lim_is')         # noqa: F821
+        vtj = var(sympy.Max(jphit, 1e-3), 'lim_vt')          # noqa: F821
+        lgs, lds, lbs, lbd = limit_together(
+            limit_fet(bgs.V, von), limit_vds(bds.V),
+            limit_pnj(bbs.V, isj, vtj), limit_pnj(bbd.V, isj, vtj))
+        vsb = var(-lbs, 'vsb')
+        vdb = var(lds - lbs, 'vdb')
+        vgb = var(lgs - lbs, 'vgb')
+
         ## BIAS-DEPENDENT BODY FACTOR (`macrodefs:478-484`).  The
         ## depletion charge a real device presents is not that of a
         ## uniformly doped substrate: a pocket implant makes the
@@ -702,7 +748,7 @@ def _psp_mos_analog(T, pmos):
                 jpar['j%s_%s' % (_c, _k)] = _g_['j%s_%s' % (_c, _k)]
 
         vjs = var(-vsb, 'vjun_s')
-        vjd = var(-vdb, 'vjun_d')
+        vjd = var(lbd, 'vjun_d')
         qj_s, qj_d = (juncap.charge(vjs, jpar, 's'),
                       juncap.charge(vjd, jpar, 'd'))
         ij_s = juncap.current(vjs, jpar, 's') + juncap.leakage(vjs, jpar, 's')
@@ -865,7 +911,16 @@ def _psp_mos_analog(T, pmos):
                 ## at once.  Written this way an element built without a
                 ## card is exactly the four-node element it was: the row
                 ## is the price of the physics, not of the option.
-                Contribution(br_noi.I, br_noi.V * ign['gcond']),
+                ##
+                ## The resistive current `gcond * V(noi,s)` moves with
+                ## the bias (`gcond` reads the channel), so its potential
+                ## is a probe of its own with no law: vector PCNR then
+                ## carries it as an unknown the device owns, as it does
+                ## the probes above, instead of asking whether the
+                ## current is affine in the nodes -- a question whose
+                ## answer means resolving `gcond` through PSP's chain.
+                Contribution(br_noi.I,
+                             limit_identity(br_noi.V) * ign['gcond']),
                 Contribution(br_noi.I, ddt(ign['cgeff'] * br_noi.V)),
                 Contribution(br_noi.I, white_noise(ign['pwr'], 'igid')),
                 Collapse(br_noi, swign * fnt <= 0),            # noqa: F821
@@ -1221,12 +1276,6 @@ class PspMosLongChannel(Behavioural):
                   default=0.0),
     ]
 
-    #: Largest per-iteration excursion, in volts, allowed on any of the
-    #: device's branch voltages.  1 V is loose enough to be inactive
-    #: near a solution and tight enough that a Newton step cannot leave
-    #: the region where the device has any gradient at all.
-    vlimit = 1.0
-
     def bias(self, vd, vg, vs=0.0, vb=0.0):
         """The node-voltage vector for a given TERMINAL bias.
 
@@ -1264,47 +1313,15 @@ class PspMosLongChannel(Behavioural):
                 return k
         return 1
 
-    def limit(self, x, x0, epar=defaultepar):
-        """Bound this device's branch voltages per Newton iteration.
-
-        THIS IS NOT OPTIONAL FOR A SATURATING MODEL, which is a thing
-        the core only became when the drain voltage started being
-        limited to `Vdsat`.  Before that the current kept growing with
-        `Vds` and a Newton step that overshot still had a gradient
-        pointing home.  Now the current saturates -- correctly; that is
-        what `Vdse` is for -- and `dIds/dVds` falls to 1e-11 by 500 V and
-        1e-28 by 1e7.  A solver that lands out there is not slow, it is
-        stuck: the row goes numerically empty and the matrix is reported
-        singular.  A stacked pair driving its own internal node was
-        enough to walk out there and stay.
-
-        So this plays the part SPICE gives `DEVfetlim`, in the state-free
-        form the tree prefers (`SubCircuit.limit`): return a limited copy
-        of the sub-vector, so the residual and the Jacobian are always
-        taken at the same point.  The source is left where the solver put
-        it -- it is some other device's drain, and limiting it here would
-        have the two fight -- and the other three terminals are bounded
-        relative to it, which is what SPICE bounds too.
-        """
-        out = np.array(x, dtype=float, copy=True)
-        x0a = np.asarray(x0, dtype=float)
-        vs, vs0 = out[2], x0a[2]
-        lim = self.vlimit
-        for k in (0, 1, 3):
-            vold = x0a[k] - vs0
-            delta = (out[k] - vs) - vold
-            if abs(delta) > lim:
-                out[k] = vs + vold + (lim if delta > 0.0 else -lim)
-        return out
-
     analog = staticmethod(_psp_mos_analog(1.0, False))
 
 
 class PspPmosLongChannel(PspMosLongChannel):
     """The p-channel device: the same core, run in PSP's own way.
 
-    Terminals, parameters and the Newton limiter are inherited
-    unchanged.  The model card supplies the difference and nothing here
+    Terminals and parameters are inherited unchanged, and so is the
+    Newton limiter's declaration, its probes turned round with the
+    branches.  The model card supplies the difference and nothing here
     does: every parameter on IHP's p-channel card is a positive
     magnitude carrying the same signs as the n-channel one -- `vfbo` is
     negative on both -- and the polarity lives in a single `type = -1`

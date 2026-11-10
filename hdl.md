@@ -2343,6 +2343,11 @@ took about sixty lines to extend.
 > never taken at different points). The source is left where the solver
 > put it — it is some other device's drain, and limiting it here would
 > have two elements undo each other.
+> *(2026-11-10, plan 261 L18 (c): retired. PSP now declares SPICE's
+> MOSFET group — `fetlim`, `limvds` and two `pnjlim`, limited together,
+> in `compact._psp_mos_analog` — so its `limit` is the generated one and
+> vector PCNR admits it; on the stacked cascode's 48-bias grid plain
+> Newton converges at 48 against the hand-written bound's 45.)*
 >
 > **One general lesson worth carrying, about the compiler rather than
 > the physics.** `sympy.Max(f, c)` must be applied to an **atom**, never

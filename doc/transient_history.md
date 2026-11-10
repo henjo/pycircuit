@@ -5929,3 +5929,18 @@ on the pool; a forked child starts its own workers; the library pins itself
 half the CPUs where fewer; the test suite's 1.  the 27 gold decks under Radau 73.3 -> 48.4 s, under gear2 36.0 -> 22.0 s.
 Tests: `test_core_threads.py` -- drawn calls (flags included), transients,
 two at once, a forked child, the workers there.
+
+## PSP's hand-written limiter retired: the walk's hand-written entries gone (2026-11-10)
+
+2026-11-10 (`doc/hdl_roadmap_260824.md`, 307; plan 261 L18 (c)).  PSP now
+declares SPICE's MOSFET limiters (`fetlim`, `limvds`, two `pnjlim`, limited
+together), so its `limit` is the generated one and its C kernel the
+generated kernel; the walk takes it as any declared class.  Retired with the
+hand-written `PspMosLongChannel.limit` (a 1 V step bound about the source,
+`vlimit`): its C twin `psp_limit.c` (`PSP_LIMIT_C`, `vlimit` baked in per
+value), `_hdl_climit`'s `_Handwritten` stand-in and `_handwritten`, the
+switch `PYCIRCUIT_PSP_LIMIT_C`, the walk's `vlimit` shadow tests, and the C
+Newton records' `walk_hw_els` / `walk_hwk` (the stamped walk's check that a
+hand-written twin was still its class's).  PSP was their only user.  On the
+cascode the old bound was written for, plain Newton converges at 48 biases
+of 48 where it converged at 45, in 350 iterations against 509.

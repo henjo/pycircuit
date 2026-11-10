@@ -27,8 +27,7 @@ after the arming (a change during the check -- the checker's own write
 into a watched dict, a thread -- leaves the next call to check again).
 What no dict watcher sees each checker compares on every call, cheaply: an
 instance's `__dict__` REASSIGNED (the objects' identities), a class
-attribute (a pass's code, `ParameterDict`'s epoch, a hand-written
-limiter's `vlimit`), a list's length.  (CPython's TYPE watchers fire only
+attribute (a pass's code, `ParameterDict`'s epoch), a list's length.  (CPython's TYPE watchers fire only
 while the type holds a version tag, which no public API can confirm: none
 are used.)
 

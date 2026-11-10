@@ -18,7 +18,6 @@ from pycircuit.circuit import (
     _tran_loop_c,
     _watch,
     circuit,
-    compact,
 )
 from pycircuit.circuit.tests.test_newton_c import _gp_chain, _mos_chain
 from pycircuit.circuit.tests.test_psp_limit_c import _chain
@@ -151,24 +150,6 @@ def test_the_core_lookup_follows_the_plan(monkeypatch):
     el.update_iparv()
     core3 = _tran_core.core_for(tr)
     assert core3 is not core2
-
-
-def test_the_walk_sees_a_class_vlimit(monkeypatch):
-    """PSP's hand-written limiter twin is its class's while `vlimit` is the
-    baked value -- a class attribute no dict watcher of the walk's sees:
-    the stamped walk asks the twin every call."""
-    _on()
-    from pycircuit.circuit import _tran_newton_c
-    tr = Transient(_chain(3, va=0.6), toolkit=circuit.numeric)
-    before = _paths.snapshot()
-    tr.solve(tend=2e-7, timestep=1e-7, fixed_timestep=True)
-    assert _paths.since(before).get('newton_c:served', 0) > 0
-    rec = tr.__dict__['_newton_c']
-    assert rec.walk_stamp >= 0 and rec.walk_hwk
-    assert _tran_newton_c._walk_ready(tr, rec)
-    monkeypatch.setattr(compact.PspMosLongChannel, 'vlimit',
-                        compact.PspMosLongChannel.vlimit * 2.0)
-    assert not _tran_newton_c._walk_ready(tr, rec)
 
 
 def _run(build, watch, monkeypatch, **kw):

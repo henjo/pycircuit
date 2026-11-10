@@ -72,11 +72,34 @@ def _diode_ladder(n=4):
     return c
 
 
+def _opamp_stage():
+    """An inverting op-amp stage (gain -10, its tanh output driven to the
+    rails): nonlinear, and no PCNR device -- `_G_at`'s plain branch, whose
+    limit sync the trims skip."""
+    from pycircuit.circuit import elements_hdl as eh
+    from pycircuit.circuit.elements import VS, C, R, SubCircuit, VSin, gnd
+    c = SubCircuit()
+    c['vcc'] = VS('vcc', gnd, v=5.0)
+    c['vee'] = VS('vee', gnd, v=-5.0)
+    c['vin'] = VSin('in', gnd, v=0.0, va=0.5, freq=1e6)
+    c['r1'] = R('in', 'inn', r=1e3)
+    c['r2'] = R('inn', 'out', r=10e3)
+    c['A'] = eh.OpAmpHdl(gnd, 'inn', 'out', 'vcc', 'vee')
+    c['cl'] = C('out', gnd, c=1e-12)
+    return c
+
+
+#: each case's counts that must have moved; None: a stage walk on PCNR
+#: devices (PSP), where nothing is counted -- `_G_at`'s junction branch has
+#: no sync to skip
 CASES = {
-    'psp-radau': (_stage, 'radau', ('pss.sync:skipped', 'pss.block:served')),
+    'psp-radau': (_stage, 'radau', ('pss.reads:served', 'pss.block:served')),
     'mos-radau': (lambda: _mos_chain(cap=1e-13), 'radau', ('pss.block:served',)),
-    'psp-trbdf2': (_stage, 'trbdf2', ('pss.sync:skipped',)),
-    'psp-esdirk43': (_stage, 'esdirk43', ('pss.sync:skipped',)),
+    'opamp-radau': (_opamp_stage, 'radau', ('pss.sync:skipped', 'pss.block:served')),
+    'opamp-trbdf2': (_opamp_stage, 'trbdf2', ('pss.sync:skipped',)),
+    'opamp-esdirk43': (_opamp_stage, 'esdirk43', ('pss.sync:skipped',)),
+    'psp-trbdf2': (_stage, 'trbdf2', None),
+    'psp-esdirk43': (_stage, 'esdirk43', None),
     'psp-gear': (_stage, 'gear', ()),
 }
 
@@ -87,9 +110,11 @@ def test_a_pss_is_the_same_with_the_trims_off(case):
     a, _da, pa = _pss(build, method, False)
     b, db, pb = _pss(build, method, True)
     assert a == b
-    for k in keys:
+    for k in keys or ():
         assert db.get(k, 0) > 0, (k, db)
-    if not keys:
+    if keys is None:
+        assert not db.get('pss.sync:skipped'), db
+    if keys == ():
         ## (a multistep walk: nothing trimmed, its reduced matrices made)
         assert not any(k.startswith(('pss.sync:', 'pss.block:')) for k in db), db
         assert pb._Jf is not None and pb._C is not None and pb._Geq is not None
@@ -253,10 +278,13 @@ def _solved(build=_stage):
     return p
 
 
-def test_the_reads_are_the_readers(monkeypatch):
+@pytest.mark.parametrize('build,sync', [(_stage, None), (_opamp_stage, 3)], ids=['psp', 'opamp'])
+def test_the_reads_are_the_readers(build, sync, monkeypatch):
     """In every coupled stage step of a radau PSS: each stage's `C` and `G`
     as `_C_at` and `_G_at` read them at the reduced stage, bit for bit, and
-    the sync's skips counted as theirs are."""
+    the sync's skips counted as theirs are -- three a step without PCNR
+    devices (the op-amp stage), none with them (PSP: `_G_at`'s junction
+    branch has no sync)."""
     real = _pss_walks._stage_reads
     seen = []
 
@@ -277,8 +305,8 @@ def test_the_reads_are_the_readers(monkeypatch):
                          d_new.get('pss.sync:skipped'), d_old.get('pss.sync:skipped')))
         return got
     monkeypatch.setattr(_pss_walks, '_stage_reads', both)
-    _solved()
-    assert len(seen) >= 40 and all(x == (True, 3, 3) for x in seen), seen[:3]
+    _solved(build)
+    assert len(seen) >= 40 and all(x == (True, sync, sync) for x in seen), seen[:3]
 
 
 def test_the_reads_serve_a_radau_pss(monkeypatch):

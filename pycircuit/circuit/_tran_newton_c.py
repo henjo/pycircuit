@@ -294,8 +294,6 @@ class _Ctx:
         'walk_dicts',
         'walk_els',
         'walk_held',
-        'walk_hw_els',
-        'walk_hwk',
         'walk_kern',
         'walk_ok',
         'walk_packs',
@@ -367,7 +365,6 @@ class _Ctx:
         self.tol = None
         self.walk = self.walk_ok = None
         self.walk_els = self.walk_dicts = self.walk_packs = self.walk_kern = ()
-        self.walk_hw_els = self.walk_hwk = ()
         self.walk_stamp, self.walk_arms, self.walk_held = -1, 0, 0
         self.walk_watch = ()
         self.par_rec, self.par_arms, self.par_held = None, 0, 0
@@ -588,15 +585,13 @@ def _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol):
 def _walk_fast(rec):
     """The walk's tables still stand as the last full setup left them: each
     class's kernel the one taken, every element's `__dict__` the one seen
-    and without a `limit` shadow (nor a `vlimit` one on a hand-written
-    limiter's element: PSP's), every pack the one mirrored -- tuple compares
-    and mapped tests, at C speed."""
+    and without a `limit` shadow, every pack the one mirrored -- tuple
+    compares and mapped tests, at C speed."""
     for info, kern in rec.walk_kern:
         if info.get('_c_limit') is not kern:
             return False
     dicts = tuple(map(_GETDICT, rec.walk_els))
-    if (dicts != rec.walk_dicts or any(map(operator.contains, dicts, repeat('limit')))
-            or any(map(operator.contains, map(_GETDICT, rec.walk_hw_els), repeat('vlimit')))):
+    if dicts != rec.walk_dicts or any(map(operator.contains, dicts, repeat('limit'))):
         return False
     return all(map(operator.is_, map(_GETPACK, dicts), rec.walk_packs))
 
@@ -606,7 +601,6 @@ def _walk_full(w, ffi):
     True where every limiting element runs its C kernel."""
     entries, capable, kerns, addr, F, PR, mirror = (
         w.entries, w.capable, w.kerns, w.addr, w.F, w.PR, w.mirror)
-    hc = _MOD['climit']
     if w.cF is None:
         w.prepare(ffi)
     for e in w.cap_idx:
@@ -618,7 +612,7 @@ def _walk_full(w, ffi):
         if kern is None:
             return False
         d = el.__dict__
-        if 'limit' in d or (type(capable[e]) is hc._Handwritten and 'vlimit' in d):
+        if 'limit' in d:
             return False
         cp = d.get('_hdl_cp')
         if cp is None:
@@ -641,13 +635,12 @@ def _walk_full(w, ffi):
 def _walk_ready(tr, rec):
     """The struct's walk for this solve: True, or False where a limiting
     element is not its C kernel.  A structural reason (an element whose
-    class has no C limiter at all: PSP's) is kept with the walk object, so
-    such a circuit declines at its first check; the others are re-checked.
-    As stamped (`_watch`): the walk's elements' dicts, their classes' info
-    dicts, the circuit's dict (its plan, which holds the walk) and the
-    limiter module's switches unchanged since it was ready, every element's
-    `__dict__` the object seen and each hand-written limiter's twin its
-    class's still (its `vlimit`, a class attribute) -- ready again.  Where
+    class has no C limiter at all: a hand-written `limit`) is kept with the
+    walk object, so such a circuit declines at its first check; the others
+    are re-checked.  As stamped (`_watch`): the walk's elements' dicts,
+    their classes' info dicts, the circuit's dict (its plan, which holds the
+    walk) and the limiter module's switches unchanged since it was ready,
+    and every element's `__dict__` the object seen -- ready again.  Where
     the counter moved, the tables still standing as the last setup left
     them (`_walk_fast`) are ready and stamped again.  `rec` is a `_Ctx`, or
     another unit's record with the same walk fields (`s`, `ffi`, `walk*`:
@@ -657,8 +650,7 @@ def _walk_ready(tr, rec):
         return False
     ep = _MOD['watch'].EPOCH
     if (ep is not None and rec.walk_stamp == ep.value and rec.walk_ok
-            and tuple(map(_GETDICT, rec.walk_els)) == rec.walk_dicts
-            and all(c.get('_c_limit') is k for c, k in rec.walk_hwk)):
+            and tuple(map(_GETDICT, rec.walk_els)) == rec.walk_dicts):
         rec.walk_held += 1
         return True
     before = _MOD['watch'].now()
@@ -681,8 +673,6 @@ def _walk_ready(tr, rec):
     if ok:
         els = tuple(w.entries[e][1] for e in w.cap_idx)
         rec.walk_els = els
-        rec.walk_hw_els = tuple(w.entries[e][1] for e in w.cap_idx
-                                if type(w.capable[e]) is hc._Handwritten)
         rec.walk_dicts = tuple(map(_GETDICT, els))
         rec.walk_packs = tuple(w.mirror[e] for e in w.cap_idx)
         rec.walk_kern = tuple({id(w.capable[e]): (w.capable[e], w.kerns[e])
@@ -701,9 +691,7 @@ def _walk_ready(tr, rec):
         w.ctx.nthreads = _tran_core.THREADS
         s.wctx = ffi.cast('void *', int(wffi.cast('uintptr_t', w.ctx)))
         infos = {id(c): c for c in w.capable if isinstance(c, dict)}
-        hw = [c.info for c in w.capable if type(c) is hc._Handwritten]
-        rec.walk_hwk = tuple((c, k) for c, k in rec.walk_kern if type(c) is hc._Handwritten)
-        rec.walk_watch = (*rec.walk_dicts, *infos.values(), *hw, tr.cir.__dict__, hc.__dict__)
+        rec.walk_watch = (*rec.walk_dicts, *infos.values(), tr.cir.__dict__, hc.__dict__)
         _walk_arm(rec, before)
     else:
         rec.walk_stamp = -1

@@ -2596,8 +2596,7 @@ def _ekv_analog(T, nmos):
         ## So 5 V -- picked first, from the diff-pair grid alone -- is
         ## the ONE value inside the plateau that costs this solve an
         ## iteration. 10 V is inside both: all fourteen on the pair, and
-        ## it ties the identity probe on the cascode.  1 V -- the value
-        ## `compact.PspMosLongChannel.limit` uses by hand, and the
+        ## it ties the identity probe on the cascode.  1 V -- the
         ## obvious guess -- is the worst of the lot at 20.
         vsb = _var(limit_delta(bsb.V, 10.0), 'vsb')
         von = _var(vtoT + gamma * (sympy.sqrt(_maxc(phiT + vsb, 0.0))  # noqa

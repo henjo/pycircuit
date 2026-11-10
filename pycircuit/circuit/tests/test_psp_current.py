@@ -816,7 +816,9 @@ class TestTheVoltageConditioning(object):
 
 
 class TestTheNewtonLimiter(object):
-    """`PspMosLongChannel.limit`, the part SPICE calls `DEVfetlim`.
+    """PSP's Newton limiter: SPICE's MOSFET group, declared -- `fetlim`
+    on gate-source, `limvds` on drain-source, `pnjlim` on both bulk
+    junctions, limited as one.
 
     A saturating device has no gradient far from its solution, so a
     Newton step that overshoots by a few hundred volts does not come
@@ -833,30 +835,25 @@ class TestTheNewtonLimiter(object):
         return e
 
     def test_it_bounds_a_large_step(self):
+        """A step of hundreds of volts on every probe: `limvds` holds the
+        drain-source voltage to 4 V from 0.5 V, `fetlim` keeps the gate
+        within a volt of where it was, and `pnjlim` holds a junction
+        driven 90 V forward to the knee."""
         e = self._fet()
         x0 = np.array([0.5, 0.5, 0.0, 0.0])
         out = e.limit(np.array([500.0, -300.0, 0.0, 90.0]), x0)
-        assert out[0] == pytest.approx(0.5 + e.vlimit)
-        assert out[1] == pytest.approx(0.5 - e.vlimit)
-        assert out[3] == pytest.approx(0.0 + e.vlimit)
+        vds, vgs, vbs = out[0] - out[2], out[1] - out[2], out[3] - out[2]
+        assert vds == pytest.approx(4.0)
+        assert -1.0 < vgs < 0.5
+        assert 0.0 < vbs < 0.5
 
     def test_it_leaves_a_small_step_alone(self):
-        """It must be inactive near a solution, or it caps convergence."""
+        """It must be inactive near a solution, or it caps convergence:
+        the very bytes Newton proposed."""
         e = self._fet()
         x0 = np.array([0.8, 1.2, 0.1, 0.0])
         x = np.array([0.83, 1.19, 0.1, 0.001])
-        assert np.allclose(e.limit(x, x0), x, rtol=0, atol=0)
-
-    def test_it_does_not_move_the_source(self):
-        """The source is some other device's drain.
-
-        Limiting it here would have two elements fight over the same
-        node, each undoing the other.  SPICE bounds the branch voltages
-        and leaves the reference terminal where the solver put it.
-        """
-        e = self._fet()
-        x = np.array([500.0, 500.0, 400.0, 500.0])
-        assert e.limit(x, np.zeros(4))[2] == 400.0
+        assert e.limit(x.copy(), x0).tobytes() == x.tobytes()
 
     def test_it_does_not_mutate_its_argument(self):
         """The state-free convention: return a limited COPY.
@@ -871,6 +868,37 @@ class TestTheNewtonLimiter(object):
         before = x.copy()
         e.limit(x, np.zeros(4))
         assert np.array_equal(x, before)
+
+    @pytest.mark.filterwarnings('ignore:overflow encountered')
+    @pytest.mark.parametrize('vdd,vg2,vg1', [
+        (1.2, 0.6, 0.3), (3.0, 1.2, 1.0), (5.0, 2.0, 0.3), (20.0, 1.2, 0.6),
+        (20.0, 2.0, 1.8)])
+    def test_the_cascode_needs_it_and_gets_the_same_answer(self, vdd, vg2,
+                                                           vg1):
+        """`test_limit_fet`'s saturated cascode on PSP, plain Newton from
+        zero with no rescue chain: without a limiter it does not converge
+        at these biases (12 of the 48 in that grid converge); with the
+        group it converges inside 15 iterations (all 48, at most 12),
+        on the point the full DC reaches."""
+        from pycircuit.circuit.analysis import SingularMatrix
+        from pycircuit.circuit.nrsolver import NoConvergenceError
+        from pycircuit.circuit.tests.test_limit_fet import _cascode, _plain_newton
+
+        def fet(d, g, s):
+            return PspMosLongChannel(d, g, s, gnd, w=10e-6, l=1e-6)
+        cm.default_toolkit = numeric
+        bare = _cascode(fet, vdd, vg2, vg1)
+        bare.update_iparv()
+        bare.limit = lambda x, x0, epar=None: np.array(x, dtype=float)
+        with pytest.raises((NoConvergenceError, SingularMatrix)):
+            _plain_newton(bare)
+        c = _cascode(fet, vdd, vg2, vg1)
+        c.update_iparv()
+        x, its = _plain_newton(c)
+        assert its <= 15, its
+        ref = DC(_cascode(fet, vdd, vg2, vg1), toolkit=numeric).solve()
+        mid = x[c.get_node_index('mid')]
+        assert mid == pytest.approx(float(ref.v('mid')), rel=1e-6, abs=1e-9)
 
     def test_a_stacked_pair_converges(self):
         """The circuit that found it.

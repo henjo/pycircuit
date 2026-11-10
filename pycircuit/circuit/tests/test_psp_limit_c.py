@@ -1,17 +1,28 @@
-"""PSP's hand-written limiter in C (`_hdl_climit.PSP_LIMIT_C`, speed round 9,
-stage 1): the twin is `compact.PspMosLongChannel.limit` bit for bit or it
-declines; with it the walk serves PSP elements and the C Newton serves PSP
-circuits, with the Python path's answers."""
-import itertools
+"""PSP's limiter in C.  `compact.PspMosLongChannel` declares SPICE's MOSFET
+group -- `fetlim` on gate-source, `limvds` on drain-source, `pnjlim` on the
+two bulk junctions, limited as one -- and an identity probe on its noise
+node, so its `limit` is the generated one, its C kernel the generated
+kernel (`_hdl_climit`) and its PCNR refine the generated refine
+(`_pcnr_c`).  Here: the declaration on both channel types and cards; the
+walk and the C Newton serving PSP circuits with the Python path's answers;
+PCNR's refine kernel and DC solve in C against their Python on PSP.
+`_stage` and `_chain` are the PSP fixtures other C-twin tests share."""
 import warnings
 
 import numpy as np
 import pytest
-from hypothesis import given, settings
-from hypothesis import strategies as st
 
-from pycircuit.circuit import _hdl_climit, _paths, circuit, compact
+from pycircuit.circuit import (
+    _hdl_batch,
+    _hdl_climit,
+    _paths,
+    _pcnr_c,
+    circuit,
+    compact,
+    pcnr,
+)
 from pycircuit.circuit.elements import VS, R, SubCircuit, VSin, gnd
+from pycircuit.circuit.tests.test_pcnr_c import _start, _twin
 from pycircuit.circuit.transient import Transient
 
 PSP = compact.PspMosLongChannel
@@ -46,79 +57,53 @@ def _chain(n=3, va=2e-2):
     return c
 
 
-def _twin(el):
-    cls = type(el)
-    hw = _hdl_climit._handwritten(el, cls, cls._hdl_info)
-    if hw is None:
-        pytest.skip('PSP is not C-bound here (no compiler or store)')
-    return hw.kern
+def _cmos(n=6, vin=0.3, **kw):
+    """`n` PSP inverters in a row, each p over n, the input held at `vin`."""
+    c = SubCircuit()
+    c['vdd'] = VS('vdd', gnd, v=1.2)
+    c['vin'] = VS('d_in', gnd, v=vin)
+    prev = 'd_in'
+    for k in range(n):
+        c[f'MP{k}'] = compact.PspPmosLongChannel(f'd{k}', prev, 'vdd', 'vdd', w=20e-6, l=1e-6, **kw)
+        c[f'MN{k}'] = PSP(f'd{k}', prev, gnd, gnd, w=10e-6, l=1e-6, **kw)
+        prev = f'd{k}'
+    return c
 
 
-def _compare(el, kern, epar, x, x0):
-    """The twin's answer, None where it declines; its bytes are the law's."""
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        ref = PSP.limit(el, x.copy(), x0.copy(), epar)
-    got = kern(el, x.copy(), x0.copy(), epar)
-    if got is not None:
-        assert got.tobytes() == np.asarray(ref, float).tobytes(), (x, x0, ref, got)
-    return got
+## ------------------------------------------------------------------------
+## The declaration.
+
+@pytest.mark.parametrize('card', [{}, {'rg': 10.0, 'fnt': 1.0}], ids=['default', 'rg-fnt'])
+@pytest.mark.parametrize('cls', [PSP, compact.PspPmosLongChannel], ids=['nmos', 'pmos'])
+def test_psp_declares_spices_group_and_pcnr_takes_it(cls, card):
+    """Both channel types, on the default card (gate resistor and noise
+    node collapsed) and with both kept: SPICE's four probes over the four
+    terminals, the noise node's identity probe where it exists, the
+    generated `limit` with its C kernel, and vector PCNR's route --
+    which, without the declaration, refuses the channel current for
+    reading three node voltages."""
+    el = cls('d', 'g', 's', 'b', w=10e-6, l=1e-6, **card)
+    el.update_iparv()
+    info = type(el)._hdl_info
+    kinds = sorted(k for _rows, k, _m, _p in info['limit_spec'])
+    assert kinds == sorted(['fet', 'vds', 'pnj', 'pnj'] + (['id'] if card else [])), kinds
+    assert _hdl_batch.is_generated(type(el), 'limit')
+    if info.get('_c_limit_status') != 'c':
+        pytest.skip(f"no C limit kernel here: {info.get('_c_limit_status')}")
+    assert info['pcnr_refusal'] is None
+    assert sorted(info['pcnr_vector']['kinds']) == sorted(['fet', 'vds', 'pnj'] + (['id'] if card else []))
 
 
-_SPECIAL = [0.0, -0.0, 1.0, -1.0, 1.0 + 2 ** -52, 1.0 - 2 ** -53, 2.0, -0.5, 1e300, -1e300,
-            5e-324, np.inf, -np.inf, np.nan]
-
-
-def test_enumerated_inputs_are_the_law_or_declined():
-    """Every row of x and x0 from a set holding the limit's edges, zeros of
-    both signs, huge values and non-finite ones: the law's bytes, or a
-    decline exactly where a value is not finite."""
-    el = _stage()['M']
-    kern = _twin(el)
-    epar = Transient(_stage(), toolkit=circuit.numeric).epar
-    n = kern.nx
-    rng = np.random.default_rng(5)
-    served = declined = 0
-    for _ in range(6000):
-        x = rng.choice(_SPECIAL, size=n).astype(float)
-        x0 = rng.choice(_SPECIAL, size=n).astype(float)
-        if _compare(el, kern, epar, x, x0) is None:
-            declined += 1
-        else:
-            served += 1
-    assert served > 500 and declined > 500
-    ## the limit itself on each side, with finite values
-    for vs, vold in itertools.product((0.0, -0.0, 0.3), (0.0, -0.0, 1.0)):
-        for delta in (1.0, -1.0, np.nextafter(1.0, 2.0), np.nextafter(-1.0, -2.0), 0.0, -0.0):
-            x0 = np.zeros(n)
-            x0[2], x0[0], x0[1], x0[3] = vs, vs + vold, vs + vold, vs + vold
-            x = x0.copy()
-            x[0] = x[1] = x[3] = vs + vold + delta
-            assert _compare(el, kern, epar, x, x0) is not None
-
-
-@settings(deadline=None)
-@given(data=st.data(), scale=st.sampled_from([0.1, 0.9, 1.0, 1.1, 5.0, 1e3]))
-def test_drawn_steps_are_the_law(data, scale):
-    el = _stage()['M']
-    kern = _twin(el)
-    epar = Transient(_stage(), toolkit=circuit.numeric).epar
-    n = kern.nx
-    fl = st.floats(-3.0, 3.0, allow_nan=False)
-    x0 = np.array(data.draw(st.lists(fl, min_size=n, max_size=n)))
-    step = np.array(data.draw(st.lists(st.floats(-scale, scale, allow_nan=False),
-                                       min_size=n, max_size=n)))
-    assert _compare(el, kern, epar, x0 + step, x0) is not None
-
+## ------------------------------------------------------------------------
+## The walk and the C Newton.
 
 def _run(build, on, monkeypatch, **kw):
-    monkeypatch.setattr(_hdl_climit, 'PSP_LIMIT', on)
+    monkeypatch.setattr(_hdl_climit, 'ENABLED', on)
     before = _paths.snapshot()
     with warnings.catch_warnings(record=True) as W:
         warnings.simplefilter('always')
         ## (a finalizer's warning is not the run's: a file another test left in
-        ## a reference cycle closes whenever the collector runs -- inside either
-        ## run, 2026-10-04)
+        ## a reference cycle closes whenever the collector runs)
         warnings.simplefilter('ignore', ResourceWarning)
         tr = Transient(build(), toolkit=circuit.numeric, **kw.pop('make', {}))
         res = tr.solve(**kw)
@@ -144,40 +129,60 @@ def test_the_c_newton_serves_psp_with_the_python_answers(pmos, fixed, monkeypatc
     if fixed:
         kw['fixed_timestep'] = True
     a, _b = _same(lambda: _stage(pmos), monkeypatch, **kw)
-    assert a[4].get('newton_c:served', 0) == 0 and a[4].get('newton_c:limit', 0) > 0
+    assert a[4].get('newton_c:served', 0) == 0
 
 
 def test_a_chain_driven_hard_enough_to_limit(monkeypatch):
-    """A chain whose first steps move the gates by volts: the law limits,
-    and the walk's twin limits the same rows by the same amounts."""
-    _same(lambda: _chain(3, va=0.6), monkeypatch, tend=1e-6, timestep=1e-7, fixed_timestep=True)
+    """A chain whose gates swing by 6 V a step: the law changes iterates
+    (counted on the Python path), and the walk's kernel changes the same
+    rows by the same amounts."""
+    _same(lambda: _chain(3, va=6.0), monkeypatch, tend=1e-6, timestep=1e-7, fixed_timestep=True)
+    cls = type(_chain(1)['M0'])
+    real, bites = cls.limit, []
+
+    def counting(self, x, *a, **k):
+        out = real(self, x, *a, **k)
+        bites.append(not np.array_equal(np.asarray(out), np.asarray(x)))
+        return out
+    monkeypatch.setattr(cls, 'limit', counting)
+    _run(lambda: _chain(3, va=6.0), True, monkeypatch, tend=1e-6, timestep=1e-7,
+         fixed_timestep=True)
+    assert sum(bites) >= 5, (sum(bites), len(bites))
 
 
-def test_an_instance_vlimit_or_a_patched_limit_takes_the_law(monkeypatch):
-    """`vlimit` set on one element, `limit` patched on the class: the Python
-    law answers (called, and the same answers as with the twin off)."""
-    def shadowed():
-        c = _chain(3, va=0.6)
-        c['M1'].vlimit = 0.4
-        return c
-    _a, b = _same(shadowed, monkeypatch, served_min=0, tend=4e-7, timestep=1e-7, fixed_timestep=True)
-    assert b[4].get('newton_c:served', 0) == 0
-    calls = []
-    real = PSP.limit
+## ------------------------------------------------------------------------
+## PCNR in C.
 
-    def counting(self, *a, **k):
-        calls.append(1)
-        return real(self, *a, **k)
-    monkeypatch.setattr(PSP, 'limit', counting)
-    _, b = _same(lambda: _chain(2), monkeypatch, served_min=0, tend=4e-7, timestep=1e-7,
-                 fixed_timestep=True)
-    assert calls and b[4].get('newton_c:served', 0) == 0
+@pytest.mark.parametrize('card', [{}, {'fnt': 1.0}], ids=['default', 'noise-node'])
+def test_the_refine_kernel_is_the_devices_limit(card):
+    """PSP's refine kernel (`_pcnr_c.render_refine`) gives
+    `PcnrDevice.limit` bit for bit -- `von` at the last accepted
+    sub-vector, the laws, the redundant `(b,d)` probe's Kruskal and
+    potentials, the noise node's identity -- on draws where the laws
+    bite."""
+    c = _cmos(1, vin=0.6, **card)
+    for dev in pcnr.pcnr_devices(c):
+        params, epar = dev.params(), circuit.defaultepar
+        rng = np.random.default_rng(7)
+        scale = np.array([0.8 if k == 'pnj' else 5.0 for k in dev.kinds])
+        bit = 0
+        for _ in range(300):
+            vo = rng.uniform(-1, 1, dev.m) * scale
+            vn = vo + rng.standard_normal(dev.m) * scale * 10.0 ** rng.uniform(-3, 1.5)
+            xs = rng.uniform(-3, 3, dev.t)
+            ref = dev.limit(vn.copy(), vo.copy(), params, epar, xs.copy())
+            got = _pcnr_c.refine(dev, vn, vo, epar, xs)
+            assert got is not None
+            assert np.array_equal(np.asarray(ref).view(np.int64), got.view(np.int64))
+            bit += not np.array_equal(ref, vn)
+        assert bit > 50, bit
 
 
-def test_a_class_vlimit_gets_its_own_twin(monkeypatch):
-    """The class's `vlimit` changed: the old twin steps aside, a new walk
-    builds the twin for the new value, and it is the law at that value."""
-    monkeypatch.setattr(PSP, 'vlimit', 0.25)
-    _same(lambda: _chain(3, va=0.6), monkeypatch, tend=6e-7, timestep=1e-7, fixed_timestep=True)
-    el = _chain(1)['M0']
-    assert _twin(el) is not None
+@pytest.mark.parametrize('card', [{}, {'fnt': 1.0}], ids=['default', 'noise-node'])
+@pytest.mark.parametrize('start', [0.0, 1.2, 5.0])
+def test_a_cmos_chain_solve_in_c_is_the_pythons(card, start, monkeypatch):
+    """PCNR's DC on a PSP CMOS chain, C against Python bit for bit, served
+    by the C, from three starts -- and converged."""
+    c = _cmos(6, **card)
+    got, _counts = _twin(c, monkeypatch, x0=_start(c, start))
+    assert got[0] == 'ok', got
