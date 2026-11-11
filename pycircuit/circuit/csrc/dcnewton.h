@@ -103,6 +103,14 @@ typedef struct {
     /* OUT */
     long iters,           /* the iterations made: the Python's `i + 1` */
          status;          /* enum dcnewton_status, as returned */
+    /* THE SPARSE VERDICTS (pcx_verdict.h), on KLU's pattern: the
+       convergence test's residual and the refactor's, the dense product
+       made where they do not decide.  CTX `vt`; OWN `is_made` (`Is` holds
+       this iteration's |J| |x_next|); OUT the dense tests made */
+    double *vt;           /* (2 m) the verdicts' scratch */
+    long is_made;
+    long dense_conv,      /* the convergence tests made dense */
+         dense_resid;     /* the refactors' residual tests made dense */
 } dcnewton_t;
 
 long pcx_dcnewton(dcnewton_t *s);

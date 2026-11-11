@@ -15623,3 +15623,66 @@ uniform draw misreads that chain); a matched order filling no less is freed and 
 place, its couplings are.  Each bitten (6 of 6).  `doc/transient_runtime.md` names the unit.  Three pinned pairs re-recorded on
 the reference side (the frozen transform's, the PCNR DC solve's, the readiness reads': `Analysis._get_linearsolver` and the DC's
 solver give the stamped places) after their twins' tests.
+
+## 2026-11-11 — 315. The DC Newton's C decides its convergence and refactor tests on KLU's pattern, the generic C registers its bins' places, the branch rank's states share one array -- the whole IBM grid's DC 8.76 -> 2.24 s (3.9x), its 10 ns transient 74.9 -> 57.0 s (1.31x), the merged grid's 2.82 -> 1.46 s and 22.0 -> 18.5 s; every answer the same bytes; a suite flake's cause found (a freed watched dict) and closed in the suite
+
+**Why**  Plan 261's L19.  Andreas: "What should we do next?" -> "Size DC + setup" -> "Build all three".  After 314 the whole
+grid's default transient ran in 74 s and its DC in 8.8 s, neither KLU-bound.  Sized (first calls of the run, scratch
+p261/l19/ds): the plain DC Newton's C made its convergence test (`|F| < reltol (|J| |x| + |F|) + abstol`) as a dense product
+over |J|'s m^2 entries every iteration, and validated each refactor on the dense R -- on 54 265^2 pages never written, faulted
+in on the first pass (~3 s) and read again on every one; the run's setup spent 11.4 s in the branch rank (three states' C, each
+a new m^2 array, read densely) and 4.7 s in `_lte_charge` (the generic C, binned onto small pages by 313 but registered with no
+pattern, scanned whole).
+
+**What.**  (1) `dcnewton.c`: on KLU's pattern the convergence test is first decided by the sparse sums' bound
+(`pcx_scale_sparse`, pcx_verdict.h, the flags as they stood restored where it cannot decide); undecided, the dense test as
+before (`dense_is`).  `Is` -- which the rounding floor and the iteration limit's exception read -- made only where they read it
+and the verdict did not (`is_made`).  The refactor's residual check on the pattern (`PCX_A_ON_PATTERN`, a new pcx_kluseq.h mode:
+the sparse verdict first, the dense test on R itself, which is zero off KLU's pattern).  New LAST fields of dcnewton_t: `vt`
+(2m), `is_made`, `dense_conv`, `dense_resid`; counters `dcnewton_c:dense_conv` / `dense_resid`.  (2) `_stamp_plan.register_bins`:
+the generic C (`_tran_history._generic_C`), made by the plan's bins before the core exists, keeps their places as its pattern
+(`_tran_core.pattern_of`), and `_charge_free` reads them where it is on pattern pages.  (3) `_tran_branch._into_held`: past the
+certificate's size the branch rank's states' C each written into the first one's pattern pages, so the dense reads fault the
+untouched pages in once, not once a state.
+
+**Measured** (interleaved pairs against bbe1d085's worktree, OPENBLAS_NUM_THREADS=1, the box at 1.3-3.9 from another project).
+The whole grid (54 266 unknowns): its DC 8.76 -> 2.24 s (line >= 2.5x: MET, 3.9x), 2.60 -> 1.94 GB; its default 10 ns
+transient 74.94 -> 57.03 s (line >= 1.15x: MET, 1.31x), the same digest, 1 020 steps, 2 012 iterations, 0.43467 mV from the
+benchmark; it reaches its stepping loop at 18.7 s, 35.9 before (the branch rank 11 -> 6 s).  The merged grid (25 850): its DC
+2.82 -> 1.46 s (line >= 1.5x: MET, 1.93x), 1.26 -> 1.04 GB, x the Python's bytes at bbe1d085; its 10 ns 21.96 -> 18.45 s (line
+>= 1.1x: MET, 1.19x), the same digest, steps and iterations, 0.3996 mV.  The whole grid's 10 ns peak read 5.42 GB against 4.24
+-- sampled each second on both trees it is 4.80 against 4.79 GB, a spike in the first C step whose height moves run to run on
+either tree (4.24-5.42 GB); the stepping loops' resident size the same (2.56 -> 2.92 GB on both).  The size transients
+0.993-1.034x, every digest, step count and peak the same.  The size DCs 0.991-1.000x (line >= 0.98x: MET), the same digests
+and peaks -- the active chain at 8 000 stages read 0.972x in the line run at load 3.4, 0.994x (pairs' median 1.011x) on a
+quieter one.  The gate against bbe1d085: every result and every path counter the same,
+C against Python 0 differing (27 decks under 9 settings, 3 size twins, 8 size runs); NOT REACHED on dcnewton.c's new arms,
+which no deck takes (on the decks the DC Newton's C is reached only under forcings, every one on KLU, every verdict decided):
+the undecided convergence test and the dense record compared by twin fixtures (below), one arm by none (a flag raised making
+`Is` for the rounding floor).
+
+**Tests.**  test_dc_newton_c: the convergence and refactor tests decided on the pattern (no dense counter, `Is` never made),
+the operating point the Python's; an undecided refactor residual (the tolerance at the refactor's own residual) the dense test
+on R; an undecided convergence test (`test_pcnr_c._stiff_ladder`: a row's |J| |x| past 1e300) the dense one, every base solve
+the Python's; the iteration limit on KLU's pattern (`Is` made for the exception) and on the dense record, every base solve the
+Python's.  test_radau_pattern_pages: the generic C keeps its bins' places (an entry planted off them is read); the branch
+rank's states share one array.  Bitten seven ways: the convergence test always dense, the refactor check on A as built, an
+undecided convergence read as failing, the limit's `Is` not made, the bins not registered, the charge-free scan dense, the
+states not shared.  Not bitten: the flags' restore after an undecided verdict (no fixture raises a flag there that the dense
+test does not).  Eleven pinned pairs re-recorded after their twins' tests: ten C sides
+(pcx_kluseq.h is in every unit that calls KLU; dcnewton.c) and the branch screen's reference.
+
+**A suite flake, found in verifying.**  The moved pairs' twin tests (23 files) failed about 1 run in 4 in the main tree --
+`radau.fuse:handed` 57 against 58 and one `unhanded` (test_radau_tc, test_radau_tc_end), once
+`test_a_fixed_run_is_the_python_one` -- and never in a clean worktree, nor at bbe1d085 (0 in 24).  The cause is older than this
+stage: watch.c's callback moves the readiness counter on every event of a watched dict, its deallocation included, and the
+cyclic collector freeing an EARLIER test's circuit inside the next test moved it there at a moment the allocations decide -- a
+stamp read stale, one hand-over dropped and recomputed (the same values, one counter more).  This stage shifted the allocations
+and so the moment.  Counting deallocations is the watcher's deliberate guard (it is what catches a reassigned `__dict__`: 5 of 7
+arming checkers watch dicts whose owners they do not compare by identity) and stays.  Closed in the suite (Andreas chose the collection, and asked for the freeze's memory measured first): the root
+conftest collects every unreachable cycle before each test (`pytest_runtest_setup`) and freezes what survives (`gc.freeze`) --
+the twin tests 0 failing runs in 12 collecting alone, 0 in 8 frozen.  Collecting alone walked the whole long-lived heap before
+every test: the suite 905 -> 1 202 s.  Frozen, each collection walks what the tests made since: 901 s, the workers' memory the
+same (at most 13.2 GB over 8 workers frozen, 13.1 collecting alone, each worker's peak within 60 MB; the climb is the suite's
+own).  Frozen referrers are invisible to `gc.get_referrers`: Hypothesis's check on its own random generator warns once a
+process (251 warnings, 248 before), harmlessly -- pycircuit registers none.  Suite 6 648 passed.

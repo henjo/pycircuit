@@ -183,6 +183,8 @@ class _Rec:
             'u': E(n), 'abstol': E(m), 'xtol': E(m),
             ## (the rounding floor's, `nrsolver.FLOOR_ROWS` as the record is made)
             'Tf': E(m * m), 'Ef': E(m * FLOOR_ROWS), 'af': E(m), 'Isf': E(m),
+            ## (the sparse verdicts' scratch -- pcx_verdict.h)
+            'vt': E(2 * m),
         }
         fb = ffi.from_buffer
         self.keep = [fb('double *', a) for a in buf.values()]
@@ -483,6 +485,10 @@ def solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, 
         return _no('dcnewton_c:' + why)
     status = drv[1](rec.s)
     codes, bails = _sources()[2:4]
+    if rec.s.dense_conv:
+        _PC['dcnewton_c:dense_conv'] += int(rec.s.dense_conv)
+    if rec.s.dense_resid:
+        _PC['dcnewton_c:dense_resid'] += int(rec.s.dense_resid)
     if status == codes['DCNEWTON_CONVERGED'] or status == codes['DCNEWTON_MAXITER']:
         _write_back(rec)
         _PC['dcnewton_c:served'] += 1

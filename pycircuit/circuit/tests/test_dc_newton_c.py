@@ -315,3 +315,122 @@ def test_a_klu_record_lays_out_klus_entries_alone(monkeypatch):
     assert rec.klu is sk and len(rec.act[0]) == sk.nnz < (rec.n - 1) ** 2, counts
     for k in ('R', 'absJ', 'Cs'):
         assert _tran_core._mapping(rec.buf[k]) is not None, k
+
+
+def test_the_convergence_and_refactor_tests_are_decided_on_the_pattern(monkeypatch):
+    """On KLU's pattern the C's convergence test (`aF < reltol * (|J| |x| +
+    aF) + abstol`) and the refactor's residual test are decided by the
+    sparse sums' bound (pcx_verdict.h) -- no dense product over the m^2
+    |J| or R, whose untouched pages cost seconds at size -- and the
+    operating point is the Python's, bit for bit; `Is`, which the rounding
+    floor and the iteration limit read, made only there."""
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    py = _first_dc(160, False)
+    got = _first_dc(160, True)
+    assert got[:3] == py[:3]
+    assert got[3].get('dcnewton_c:served', 0) >= 1, got[3]
+    assert 'dcnewton_c:dense_conv' not in got[3] and 'dcnewton_c:dense_resid' not in got[3], got[3]
+    rec = got[4].__dict__['_dc_newton_c']
+    assert int(rec.s.is_made) == 0
+
+
+def test_an_undecided_refactor_residual_is_the_dense_test_on_r(monkeypatch):
+    """The refactor's residual verdict where its bound cannot decide (the
+    solver's tolerance at the refactor's own residual, measured on the
+    Python's solve): the dense test on R itself (pcx_kluseq.h's
+    PCX_A_ON_PATTERN: R zero off KLU's pattern), counted -- the operating
+    point the Python's, bit for bit.  Without the sparse verdict first
+    (R as A built) nothing is counted."""
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    seen = []
+    real = linearsolver.StructuralKLU._solve
+
+    def solve(self, A, b, toolkit, kept):
+        reused = self._numeric is not None
+        x = real(self, A, b, toolkit, kept)
+        if reused:
+            arr, rhs = np.asarray(A), np.asarray(b, float)
+            seen.append(float(np.abs(arr @ np.asarray(x) - rhs).max())
+                        / max(float(np.abs(rhs).max()), 1e-300))
+        return x
+    with monkeypatch.context() as mp:
+        mp.setattr(linearsolver.StructuralKLU, '_solve', solve)
+        _first_dc(160, False)
+    assert seen, 'no refactor to validate'
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', seen[0])
+    py = _first_dc(160, False)
+    got = _first_dc(160, True)
+    assert got[:3] == py[:3]
+    assert got[3].get('dcnewton_c:served', 0) >= 1 and got[3].get('dcnewton_c:dense_resid', 0) >= 1, got[3]
+
+
+def _base_solves(build, on, **kw):
+    """`build()`'s operating point (the DC's parameters `kw`), the C on or
+    off: every base solve's outcome in order -- x's bytes or the exception's
+    type and text -- and the C's counts."""
+    from pycircuit.circuit.dcanalysis import DC
+    log = []
+    real = nrsolver.StandardNewton.solve_system
+
+    def solve_system(self, *a, **k):
+        try:
+            r = real(self, *a, **k)
+        except Exception as e:
+            log.append(('raise', type(e).__name__, str(e)))
+            raise
+        log.append(('ok', np.asarray(r[0]).tobytes(), r[1]))
+        return r
+    kept = _dc_newton_c.ENABLED, nrsolver.StandardNewton.solve_system
+    _dc_newton_c.ENABLED = on
+    nrsolver.StandardNewton.solve_system = solve_system
+    before = _paths.snapshot()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            dc = DC(build(), toolkit=circuit.numeric, **kw)
+            try:
+                dc.solve()
+            except Exception as e:                             # noqa: BLE001
+                log.append(('dc raised', type(e).__name__, str(e)))
+    finally:
+        _dc_newton_c.ENABLED, nrsolver.StandardNewton.solve_system = kept
+    return log, _paths.since(before)
+
+
+@pytest.mark.parametrize('cells, klu', [(160, True), (40, False)])
+def test_the_iteration_limit_is_the_pythons(cells, klu):
+    """An operating point whose Newton meets its iteration limit: on KLU's
+    pattern, the residual's test decided there, the C makes `Is` for the
+    exception's scale; on the dense record its test made it already.  Every
+    base solve -- the limited ones' exceptions, their text, the ladders'
+    rungs after them -- is the Python's."""
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    py, _ = _base_solves(lambda: _ladder(cells), False, maxiter=1)
+    got, counts = _base_solves(lambda: _ladder(cells), True, maxiter=1)
+    assert got == py
+    assert counts.get('dcnewton_c:maxiter', 0) >= 1, counts
+    assert any(e[0] == 'raise' for e in py), py
+    assert (_first_dc(cells, True)[1] == 'StructuralKLU') is klu
+
+
+def test_an_undecided_convergence_test_is_the_dense_one(monkeypatch):
+    """A KLU operating point whose convergence test the sparse verdict
+    cannot decide (`test_pcnr_c._stiff_ladder`: a row's sum |J| |x| past
+    1e300) makes the dense test there, the Python's -- which holds, so the
+    Newton stops where the Python's does (an undecided verdict read as a
+    failure ran on to the iteration limit): every base solve the same with
+    the C on and off, the undecided tests counted."""
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    from pycircuit.circuit.dcanalysis import DC
+    from pycircuit.circuit.tests.test_pcnr_c import _stiff_ladder
+    ## (StructuralKLU from 40 unknowns: the C's KLU on the pattern)
+    monkeypatch.setattr(DC, '_STRUCTURAL_KLU_MIN_N', 40)
+    py, _ = _base_solves(lambda: _stiff_ladder(60), False)
+    got, counts = _base_solves(lambda: _stiff_ladder(60), True)
+    assert got == py
+    assert counts.get('dcnewton_c:served', 0) >= 1, counts
+    assert counts.get('dcnewton_c:dense_conv', 0) >= 1, counts

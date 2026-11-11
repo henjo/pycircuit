@@ -259,6 +259,21 @@ def _rank_by_blocks(C, tol, band=None, nz=None, keep=None):
 _UPOS = [None]
 
 
+
+def _into_held(C, held):
+    """`(C to read, the array to hold)`: at size the states' C each on the
+    same pattern pages (`_tran_core.pattern_of`), each written into the
+    first one's -- zero off that pattern in both, the same bytes -- so the
+    dense reads after fault the untouched pages in once, not once a state;
+    else `C` itself."""
+    pat = _tran_core.pattern_of(C)
+    if pat is None:
+        return C, None
+    if held is not None and _tran_core.pattern_of(held) is pat:
+        held.reshape(-1)[pat] = C.reshape(-1)[pat]
+        return held, held
+    return C, C
+
 def _plan_nonzeros(cir, C):
     """`C`'s nonzeros from the stamp plan's positions -- ``(rows, cols,
     values)``, the positions in `np.nonzero`'s row-major order -- or None.
@@ -451,6 +466,7 @@ class _BranchCheck:
         ## (the certificate's generic C -- the first state's -- and the
         ## three states' pattern, `_branch_cert_data`)
         generic = None
+        held = None
         for _ in range(3):
             xr = rng.uniform(-1.0, 1.0, self.cir.n)
             try:
@@ -469,6 +485,8 @@ class _BranchCheck:
                 continue
             if self.BRANCH_CERT and C.shape[0] <= self.BRANCH_CERT_MAX_N:
                 generic = (C, C != 0) if generic is None else (generic[0], generic[1] | (C != 0))
+            else:
+                C, held = _into_held(C, held)
             ## (its nonzeros from the stamp plan's positions where they are
             ## all there: max |C| and the blocks from them, no n x n scan)
             nz = _plan_nonzeros(self.cir, C)

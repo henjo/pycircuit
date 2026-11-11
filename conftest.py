@@ -448,6 +448,31 @@ import pytest as _pytest
 
 
 @_pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    """Every unreachable cycle collected before a test runs.  The C paths'
+    readiness stamps hold while one counter stands (`_watch`), and that
+    counter moves on any event of a watched dict, its deallocation included
+    -- on purpose: it is what catches a reassigned `__dict__`.  An earlier
+    test's circuit left in a cycle and freed by the collector inside the
+    next test moved it there, at a moment set by the allocations alone: a
+    stamp read stale, one hand-over dropped and recomputed (the same values,
+    one counter more), and a test comparing two runs' counters failed now
+    and then -- Radau's fuse, 1 run in about 4 of its twin tests in one
+    process's order; 0 in 12 with this.  A test's own garbage stays its
+    own.  What survives the collection is then frozen (`gc.freeze`), so the
+    next test's collection walks only what tests made since: collecting
+    alone walked the whole long-lived heap each time, the suite 905 -> 1 202
+    s; frozen, 901 s, the workers' memory the same (13.2 GB at most, 13.1
+    collecting alone).  The cost: a frozen object that later dies in a
+    cycle is never reclaimed (none measurable), and `gc.get_referrers`
+    does not see frozen referrers -- Hypothesis's check on its own random
+    generator warns once a process, harmlessly."""
+    import gc
+    gc.collect()
+    gc.freeze()
+
+
+@_pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(session, config, items):
     """Longest first, from the last full-suite record, IN EVERY PROCESS.
 

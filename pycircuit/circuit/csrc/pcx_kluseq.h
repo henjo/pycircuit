@@ -29,8 +29,10 @@ enum pcx_klu_stop { PCX_KLU_FACTOR = 1, PCX_KLU_SOLVE = 2, PCX_KLU_FLAGS = 3 };
    residual's dense test scatters A into from the CSC -- zeroed whole first
    (PCX_A_SCRATCH), or held zero by the caller (PCX_A_ZERO: zero on entry,
    the scatter undone after the test, so only KLU's pattern is ever written:
-   m x m pages a caller holds resident a page or two a row) */
-enum pcx_klu_a { PCX_A_SCRATCH = 0, PCX_A_BUILT = 1, PCX_A_ZERO = 2 };
+   m x m pages a caller holds resident a page or two a row), or made by the
+   caller and zero off KLU's pattern (PCX_A_ON_PATTERN: the sparse verdict
+   first, as A is not built, the dense test on A itself) */
+enum pcx_klu_a { PCX_A_SCRATCH = 0, PCX_A_BUILT = 1, PCX_A_ZERO = 2, PCX_A_ON_PATTERN = 3 };
 
 
 static void pcx_klu_free(pcx_klu_t *k, void *num)
@@ -126,9 +128,11 @@ static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, dou
             /* (the dense test on A as the Python holds it: zero off the
                pattern; what the sparse sums raised is not the Python's) */
             feclearexcept(FE_ALL_EXCEPT);
-            if (a_built == PCX_A_SCRATCH) for (i = 0; i < m * m; i++) A[i] = 0.0;
-            for (j = 0; j < m; j++)
-                for (p = k->kAp[j]; p < k->kAp[j + 1]; p++) A[k->kAi[p] * m + j] = k->kAx[p];
+            if (a_built != PCX_A_ON_PATTERN) {
+                if (a_built == PCX_A_SCRATCH) for (i = 0; i < m * m; i++) A[i] = 0.0;
+                for (j = 0; j < m; j++)
+                    for (p = k->kAp[j]; p < k->kAp[j + 1]; p++) A[k->kAi[p] * m + j] = k->kAx[p];
+            }
             if (dense) (*dense)++;
         }
     }

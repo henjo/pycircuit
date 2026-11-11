@@ -6013,3 +6013,18 @@ matched on those places) only where that trial reallocates or overfills.
 It fires on the whole grid alone -- 428 -> 74 s -- and every gold deck and
 size circuit keeps KLU's own order, bit for bit.  The grid's DC is not
 KLU-bound (its target missed, accepted as measured).
+
+## The DC Newton's tests on KLU's pattern, and the grid's setup (2026-11-11)
+
+2026-11-11 (`doc/hdl_roadmap_260824.md`, 315; plan 261 L19).  After 314 the
+whole IBM grid's DC took 8.8 s and its transient's setup half a minute,
+neither in KLU: the plain DC Newton's C made its convergence test and its
+refactor check as dense products over m^2 entries never written, and the
+setup read the branch rank's three states and the generic C whole.  The DC
+Newton now decides both tests on KLU's pattern where the rounding bound
+allows (the dense test where it does not), the generic C keeps its places,
+and the branch rank's states share one array: the grid's DC 3.9x, its
+transient 1.3x, every answer the same bytes.  Verifying it surfaced a suite
+flake older than the stage -- an earlier test's watched dict freed by the
+collector inside the next test moved the readiness counter -- closed by
+collecting, then freezing, before each test.

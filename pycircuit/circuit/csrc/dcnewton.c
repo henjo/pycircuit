@@ -86,13 +86,16 @@ static long evaluate(dcnewton_t *s)
 }
 
 /* StructuralKLU.solve(J, -F) on its own sequence (pcx_kluseq.h): J's active
-   entries gathered in its order; the step in `kx`.  0, or why it is handed
-   back (a failed factor or solve is the Python's raise) */
+   entries gathered in its order; the step in `kx`; the refactor's residual
+   by the sparse sum's verdict, R itself the dense test's A where it does not
+   decide (R zero off the active entries: PCX_A_ON_PATTERN).  0, or why it
+   is handed back (a failed factor or solve is the Python's raise) */
 static long klu_step(dcnewton_t *s, long m)
 {
     long i, st;
     for (i = 0; i < s->nact; i++) s->klu.kAx[i] = s->R[s->act_r[i]];
-    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, NULL, m, s->dgemv, 1, NULL);
+    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->vt, m, s->dgemv, PCX_A_ON_PATTERN,
+                      &s->dense_resid);
     if (st == PCX_KLU_FLAGS) return DCNEWTON_BAIL_FLAGS;
     return st ? DCNEWTON_BAIL_SINGULAR : 0;
 }
@@ -139,25 +142,56 @@ static long step(dcnewton_t *s, const double *dx)
     return 0;
 }
 
-/* nrsolver's convergence test, as newton.c's: `I_scale = dot(abs(J),
-   ax_next) + aF` (numpy's own dgemv on the dense |J|: BLAS's summation
-   order), `abs(xdiff) < reltol * maximum(ax_next, abs(x)) + xtol`, `aF <
-   reltol * I_scale + abstol`.  1 converged, 0 not, -1 a flag (np.dot and
-   the arithmetic report it: handed back); `*held` the residual's test */
-static int converged(dcnewton_t *s, long m, int *held)
+/* `I_scale`'s product, `dot(abs(J), ax_next)`: numpy's own dgemv on the
+   dense |J| (BLAS's summation order) into `Is`, `ax` |x_next| -- made where
+   a verdict does not decide or `Is` is read (the rounding floor, the
+   iteration limit's exception) */
+static void dense_is(dcnewton_t *s, long m)
 {
-    long i, k;
-    int conv_x = 1, conv_f = 1;
+    long k;
     for (k = 0; k < s->nact; k++) s->absJ[s->act_r[k]] = fabs(s->R[s->act_r[k]]);
-    for (i = 0; i < m; i++) s->ax[i] = fabs(s->xn[i]);
     ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->absJ, m,
                            s->ax, 1, 0.0, s->Is, 1);
+    s->is_made = 1;
+}
+
+/* nrsolver's convergence test, as newton.c's: `I_scale = dot(abs(J),
+   ax_next) + aF`, `abs(xdiff) < reltol * maximum(ax_next, abs(x)) + xtol`,
+   `aF < reltol * I_scale + abstol`.  On KLU's pattern (|J| zero off it) the
+   residual's verdict by the sparse sum's bound where it decides
+   (pcx_verdict.h: there the dense product raises no flag numpy reports --
+   its terms non-negative, every row's sum under 1e300), else numpy's own
+   dgemv on the dense |J| (`dense_is`), what the sparse sums raised put back
+   first.  1 converged, 0 not, -1 a flag (np.dot and the arithmetic report
+   it: handed back); `*held` the residual's test */
+static int converged(dcnewton_t *s, long m, int *held)
+{
+    long i;
+    int conv_x = 1, conv_f = 1, verdict = PCX_UNDECIDED;
+    fexcept_t entry;
+    for (i = 0; i < m; i++) s->ax[i] = fabs(s->xn[i]);
+    s->is_made = 0;
+    if (s->klu.klu_sym) {
+        fegetexceptflag(&entry, FE_ALL_EXCEPT);
+        verdict = pcx_scale_sparse(s->klu.kAp, s->klu.kAi, s->klu.kAx, s->ax, s->Fr, s->reltol,
+                                   s->abstol, s->vt, s->vt + m, m);
+        if (verdict == PCX_UNDECIDED) {
+            fesetexceptflag(&entry, FE_ALL_EXCEPT);
+            s->dense_conv++;
+        }
+    }
+    if (verdict == PCX_UNDECIDED) {
+        dense_is(s, m);
+        for (i = 0; i < m; i++) {
+            double aF = fabs(s->Fr[i]);
+            if (!(aF < s->reltol * (s->Is[i] + aF) + s->abstol[i])) conv_f = 0;
+        }
+    } else {
+        conv_f = verdict == PCX_HOLDS;
+    }
     for (i = 0; i < m; i++) {
-        double aF = fabs(s->Fr[i]);
-        double Is = s->Is[i] + aF;
         double mx = pcx_np_maximum(s->ax[i], fabs(s->x[i]));
         if (!(fabs(s->xd[i]) < s->reltol * mx + s->xtol[i])) conv_x = 0;
-        if (!(aF < s->reltol * Is + s->abstol[i])) conv_f = 0;
     }
     if (fetestexcept(DC_FLAGS)) return -1;
     *held = conv_f;
@@ -192,6 +226,10 @@ static double step_size(const dcnewton_t *s, long m)
 static int floor_holds(dcnewton_t *s, long m)
 {
     long i, j, c, k = 0, lo, kk;
+    if (!s->is_made) {
+        dense_is(s, m);
+        if (fetestexcept(DC_FLAGS)) return -1;
+    }
     for (i = 0; i < m; i++) s->Isf[i] = s->Is[i] + fabs(s->Fr[i]);
     for (i = 0; i < m; i++) {
         double mx = pcx_np_maximum(s->ax[i], fabs(s->x[i]));
@@ -260,6 +298,11 @@ static long iterate(dcnewton_t *s)
         for (i = 0; i < m; i++) s->x[i] = s->xn[i];
         if (conv) return DCNEWTON_CONVERGED;
     }
+    /* (the exception's scale reads `Is`: made where the verdict did not) */
+    if (!s->is_made) {
+        dense_is(s, m);
+        if (fetestexcept(DC_FLAGS)) return DCNEWTON_BAIL_FLAGS;
+    }
     return DCNEWTON_MAXITER;
 }
 
@@ -269,6 +312,8 @@ long pcx_dcnewton(dcnewton_t *s)
     s->iters = 0;
     s->klu.refactors = s->klu.factors = s->klu.pivot_fallbacks = 0;
     s->klu.residual_fallbacks = 0;
+    s->dense_conv = s->dense_resid = 0;
+    s->is_made = 0;
     s->klu.klu_out = s->klu.klu_num;
     feclearexcept(FE_ALL_EXCEPT);
     return finish(s, iterate(s));

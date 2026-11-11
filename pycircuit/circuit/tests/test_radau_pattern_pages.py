@@ -499,3 +499,75 @@ def test_the_newton_and_error_test_buffers_are_on_small_pages(monkeypatch):
     ctx = tr.step_controller.__dict__.get('_lte_c')
     assert ctx is not None and ctx.klu_keep, 'the controller made no sparse error test'
     assert _tran_core._mapping(ctx.klu_keep[3]) is not None
+
+
+def test_the_generic_c_keeps_its_bins_places(monkeypatch):
+    """The error test's generic C, made by the stamp plan's bins before the
+    core exists, keeps the bins' places as its pattern
+    (`_stamp_plan.register_bins`): its couplings and charge-free scans read
+    them -- each numpy's answer on the whole matrix -- where a count over
+    n^2 untouched pages cost seconds at size."""
+    from pycircuit.circuit import _stamp_plan, _tran_history
+    monkeypatch.setattr(_stamp_plan, 'PAGES_FROM', 1)
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    cir = _chain(30)
+    cir['vx'] = VS('d3', 'd7', v=0.0)
+    tr = Transient(cir, toolkit=circuit.numeric)
+    C = tr._generic_C()
+    assert _tran_core.pattern_of(C) is not None
+    dense = np.array(C, copy=True)
+    nn = len(tr.cir.nodes)
+    for got, want in ((_tran_history._charge_free(C, nn), _tran_history._charge_free(dense, nn)),):
+        assert np.array_equal(got, want)
+    got = _tran_history._node_couplings(C, nn)
+    want = np.nonzero(dense[:nn, :nn] != 0.0)
+    assert all(np.array_equal(g, w) for g, w in zip(got, want))
+    ## (the scan reads the pattern alone: an entry planted off it, in the
+    ## 0 V source's branch column, is not seen -- the dense scan sees it)
+    n = C.shape[0]
+    br = next(i for i, b in enumerate(tr.cir.branches) if b.plus.name == 'd3' and b.minus.name == 'd7')
+    col = nn + br
+    assert _tran_history._charge_free(C, nn)[br]
+    D = _tran_core.on_pattern(dense, _tran_core.pattern_of(C), n)
+    off = next(r for r in range(n) if r * n + col not in set(np.asarray(_tran_core.pattern_of(C)).tolist()))
+    D[off, col] = 1.0
+    assert _tran_history._charge_free(D, nn)[br]
+    assert not _tran_history._charge_free(np.array(D, copy=True), nn)[br]
+
+
+def test_the_branch_ranks_states_share_one_array(monkeypatch):
+    """At size the structural rank's three states' C go into one array
+    (`_tran_branch._into_held`: each on the same pattern pages, zero off
+    it -- the same bytes), so the dense reads fault the untouched pages in
+    once; the rank and scale are those of three fresh arrays."""
+    from pycircuit.circuit import _tran_branch
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    rng = np.random.default_rng(13)
+    n = 40
+    A, _full, pat = _paged_matrix(n, rng, monkeypatch)
+    B = _tran_core.on_pattern(np.where(_full != 0, rng.standard_normal((n, n)), 0.0), pat, n)
+    got, held = _tran_branch._into_held(A, None)
+    assert got is A and held is A
+    want = np.array(B, copy=True)
+    got, held2 = _tran_branch._into_held(B, held)
+    assert got is A and held2 is A and _b(got) == _b(want)
+
+    ## (past the certificate's size, as at size, so the states share one array)
+    monkeypatch.setattr(Transient, 'BRANCH_CERT_MAX_N', 0)
+    seen = []
+    real = _tran_branch._into_held
+
+    def spy(C, h):
+        seen.append(h is not None)
+        return real(C, h)
+
+    def rank(off):
+        monkeypatch.setattr(_tran_branch, '_into_held', (lambda C, h: (C, None)) if off else spy)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr = Transient(_chain(40), toolkit=circuit.numeric)
+            tr.solve(tend=2e-9, timestep=1e-10)
+        return tr._branch_structural_rank()
+    on = rank(False)
+    assert any(seen), seen
+    assert on == rank(True)

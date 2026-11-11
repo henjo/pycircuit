@@ -524,6 +524,27 @@ def _binned(mp, key, flat, w, side):
     return out.reshape(side, side)
 
 
+
+def register_bins(cir, m, arr):
+    """Keep with `arr` -- matrix `m` as the plan's bins just made it at size
+    (`_binned`: small pages, zero off the bins' places) -- those places as
+    its pattern (`_tran_core.pattern_of`), for a caller that owns it and
+    writes nothing into it: its scans then read the places, not n^2
+    entries.  True where kept; False where `arr` is not such a matrix
+    (another plan, already registered, or not on small pages)."""
+    from pycircuit.circuit import _tran_core
+    plan = cir.__dict__.get('_stamp_plan')
+    mp = None if plan is None else plan.methods.get(m)
+    got = None if mp is None else mp.reduced.get(('bins', None))
+    if (got is None or got[0] is not mp.flat or type(arr) is not np.ndarray
+            or arr.shape != (plan.n, plan.n) or _tran_core.pattern_of(arr) is not None):
+        return False
+    mm = _tran_core._mapping(arr)
+    if mm is None:
+        return False
+    _tran_core._PAGES[mm] = got[1]
+    return True
+
 def _reduced_matrix(mp, buf, n, k):
     """The plan's matrix without row and column `k`, from the slots `buf`:
     each kept entry's bin summed from its slots in the plan's order -- the

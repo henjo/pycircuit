@@ -82,9 +82,21 @@ def _ring_push(v, ring, toolkit):
 def _charge_free(C, nn):
     """Per branch current of `C`'s circuit (the unknowns from `nn` on): True
     where no charge depends on it -- its column and row of `C` zero (an
-    inductor's current carries its flux; a voltage source's nothing)."""
-    br = slice(nn, None)
-    return ~(np.any(C[:, br] != 0.0, axis=0) | np.any(C[br, :] != 0.0, axis=1))
+    inductor's current carries its flux; a voltage source's nothing).  Read
+    at its pattern where `C` is on pattern pages (zero off it)."""
+    from pycircuit.circuit import _tran_core
+    pat = _tran_core.pattern_of(C)
+    if pat is None:
+        br = slice(nn, None)
+        return ~(np.any(C[:, br] != 0.0, axis=0) | np.any(C[br, :] != 0.0, axis=1))
+    n = C.shape[1]
+    p = np.asarray(pat, dtype=np.int64)
+    p = p[C.reshape(-1)[p] != 0.0]
+    r, c = p // n, p % n
+    dep = np.zeros(n, dtype=bool)
+    dep[c[c >= nn]] = True
+    dep[r[r >= nn]] = True
+    return ~dep[nn:]
 
 
 def _node_couplings(C, nn, cir=None):
@@ -601,9 +613,15 @@ class _RunHistory:
         xr = np.random.RandomState(20261009).uniform(-1.0, 1.0, self.cir.n)
         try:
             ## (`_C_fresh`: at size the core's pass, on pattern pages)
-            return np.asarray(self._C_fresh(xr), dtype=float)
+            C = np.asarray(self._C_fresh(xr), dtype=float)
         except Exception:                                      # noqa: BLE001
             return None
+        ## (made by the stamp plan's bins before the core exists: their
+        ## places kept with it -- the callers' alone, read only -- so the
+        ## scans read them, not n^2 entries)
+        from pycircuit.circuit import _stamp_plan
+        _stamp_plan.register_bins(self.cir, 'C', C)
+        return C
 
     def residual_dh(self, x, t, h=None):
         """Fang's ``p = df_ckt/dh_m``, at fixed solution ``x``.
