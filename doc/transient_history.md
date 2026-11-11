@@ -5970,3 +5970,17 @@ the second it held 96 of 97 at 8 000 stages.  The first build's `_tables`
 asks a device's parameters only where its kernel map reads them, and
 `_positions` takes a run of like devices at once.  The active chain's DC
 1.10x at 8 000, 1.09x at 4 000, 1.11x at 16 000.
+
+## PCNR's C: J from the core's packed G, the flag clear where a flag was raised (2026-11-11)
+
+2026-11-11 (`doc/hdl_roadmap_260824.md`, 312; plan 261 L18 (op)).  The
+assembly gathered J from the core's n x n G bin at P's positions --
+scattered reads across pattern pages, 17.8 % of pcnrdc's own samples at
+16 000 stages -- while the core already made G in packed bins over its
+pattern (`PCX_WANT_SETS`, the transient's C loops' mode).  PCNR now asks
+for them and gathers through `gmap`; the G bin is never written.  The
+kernel-flag clear after each device (fnclex and an MXCSR write) runs only
+where the kernel raised a flag the unit tests (`PC_FLAGS`).  The active
+chain's DC 1.12x at 8 000, 1.21x at 16 000, peaks 15-16 % lower.  The
+dense residual tests' subset form was sized and refused: most undecided
+verdicts are run-away iterates with most rows over the threshold.

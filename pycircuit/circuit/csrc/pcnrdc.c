@@ -28,7 +28,8 @@
 /* the flags numpy reports here (pcx_kluseq.h) */
 #define PC_FLAGS PCX_NP_FLAGS
 
-/* `feclearexcept(FE_ALL_EXCEPT)` where it runs once a device: x87's flags
+/* `feclearexcept(FE_ALL_EXCEPT)` where a device's kernel raised a flag this
+   unit tests (`pc_clear_raised`): x87's flags
    (`fnclex`) and MXCSR's (FE_ALL_EXCEPT's bits), what glibc's clears --
    every flag `fetestexcept` and `fegetexceptflag` read the same after
    (`fnclex` drops x87's denormal bit too, which FE_ALL_EXCEPT excludes) --
@@ -46,6 +47,25 @@ static inline void pc_clear_flags(void)
     __asm__ volatile ("ldmxcsr %0" : : "m" (csr) : "memory");
 #else
     feclearexcept(FE_ALL_EXCEPT);
+#endif
+}
+
+/* a kernel's flags taken off where it raised one this unit tests
+   (PC_FLAGS, x87's or MXCSR's: what `fetestexcept(PC_FLAGS)` reads), all of
+   them then (`pc_clear_flags`); inexact, underflow and denormal, which
+   nearly every kernel raises and no test here reads, left as they are --
+   so every PC_FLAGS test after reads what it read with the clear made
+   every time, without its serializing MXCSR write on every device */
+static inline void pc_clear_raised(void)
+{
+#if defined(__x86_64__) && defined(__GNUC__)
+    unsigned int csr;
+    unsigned short sw;
+    __asm__ volatile ("stmxcsr %0" : "=m" (csr) : : "memory");
+    __asm__ volatile ("fnstsw %0" : "=m" (sw) : : "memory");
+    if (((unsigned int) sw | csr) & (unsigned int) PC_FLAGS) pc_clear_flags();
+#else
+    if (fetestexcept(PC_FLAGS)) feclearexcept(FE_ALL_EXCEPT);
 #endif
 }
 
@@ -69,7 +89,7 @@ static void device(pcnrdc_t *s, long d)
     if (s->ti[d] >= 0) s->prow[d][s->ti[d]] = s->T;
     ((fused_fn_t) s->kfn[d])(pot, s->prow[d], PCX_PASS_G | PCX_PASS_I, G, 0, cur, 0);
     /* (the kernels' flags: the Python's cffi calls never report them) */
-    pc_clear_flags();
+    pc_clear_raised();
     if (s->d_lin[d] >= 0) {
         const double *L = s->lin + s->d_lin[d];
         for (r = 0; r < t; r++) {
@@ -110,8 +130,9 @@ static long assemble(pcnrdc_t *s)
                              NULL, NULL, s->Cs, s->q, NULL, NULL, NULL, NULL);
     feclearexcept(FE_ALL_EXCEPT);
     for (i = 0; i < n; i++) s->F[i] = c->bini[i] + s->u[i];
-    if (s->np)
-        for (i = 0; i < s->np; i++) J[i] = c->binG[s->P[i]];
+    /* (with the pattern always THE PACKED G: `gmap` set where P is) */
+    if (s->gmap)
+        for (i = 0; i < s->np; i++) J[i] = s->gmap[i] >= 0 ? c->binGp[s->gmap[i]] : 0.0;
     else
         for (i = 0; i < n * n; i++) J[i] = c->binG[i];
     for (d = 0; d < s->nd; d++) device(s, d);

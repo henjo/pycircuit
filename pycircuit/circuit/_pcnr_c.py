@@ -574,6 +574,19 @@ class _Rec:
             self.P = np.ascontiguousarray(self.P, dtype=I64)
             keep += [self.P, fb('int64_t *', self.P)]
             s.np, s.P = len(self.P), keep[-1]
+        ## THE PACKED G (pcnrdc.h): with the pattern, G made in the core's
+        ## packed bins and J gathered from them -- each entry of P's place in
+        ## the core's pattern, -1 off it
+        s.gmap = ffi.NULL
+        if self.P is not None:
+            pat = np.asarray(core.arrays['pat'], dtype=I64)
+            g = np.searchsorted(pat, self.P)
+            on = g < len(pat)
+            on[on] = pat[g[on]] == self.P[on]
+            g = np.ascontiguousarray(np.where(on, g, -1), dtype=I64)
+            keep += [g, fb('int64_t *', g)]
+            s.gmap = keep[-1]
+            s.pattern |= _sources()[4]['PCX_WANT_SETS']
         self.klu, self.klu_keep = None, ()
         s.klu.klu_sym = ffi.NULL
         s.kfull, s.nfor, s.ffull = ffi.NULL, 0, ffi.NULL

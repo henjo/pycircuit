@@ -15486,3 +15486,33 @@ its own (asked of `_held` before a solve's own caches write a dict: the class co
 the Python's answer; `_positions` against the device-by-device loop on three circuits of mixed shapes.  Bitten: no class compare, no
 stamp, nothing kept, the probe ends swapped -- each fails.  The PCNR DC solve's pinned pair re-recorded, `_checked`, `_held`, `_hold`
 and `_positions` named in its twin.
+
+## 2026-11-11 — 312. PCNR's C gathers J from the core's packed G bins and clears a kernel's flags only where it raised one it tests -- the active chain's DC 1.12x at 8 000 stages, 1.10x at 4 000 and 1.21x at 16 000, its peak 15-16 % lower; every answer, route and count the same; the dense residual tests' subset form refused by measurement
+
+**Why**  Plan 261's L18 (op): the pieces L17 left, after 311.  Andreas: "do the open pieces".  The active chain's DC at 16 000 stages
+(28.2 s): the dense residual tests' dgemv ~17 %, the assembly's gather `J[i] = binG[P[i]]` from the core's n x n G bin ~5 % (17.8 %
+of pcx_pcnrdc's samples: scattered reads across 2 GB of pattern pages), the kernel-flag clear after each device ~2.5 %.
+
+**What.**  (G) The core already makes G in packed bins over its pattern (`PCX_WANT_SETS`: `binGp`, the same values at the same entries,
+each entry's operations the same -- the transient's C loops use it).  With a pattern PCNR's record asks for them and gathers
+`J[i] = binGp[gmap[i]]` (`gmap`, a new last field of `pcnrdc_t`: each entry of P's index in the core's pattern, -1 off it, where J is
+zero as binG is); the n x n G bin is never written.  (F) Every flag test in pcnrdc.c and pcx_kluseq.h is `PC_FLAGS` (overflow,
+invalid, divide-by-zero) and the residual verdicts test none, so after a device's kernel the flags are cleared only where it raised
+one of those (`pc_clear_raised`: MXCSR and x87's status read, the clear then) -- inexact, underflow and denormal, which nearly every
+kernel raises and nothing here reads, left; each `PC_FLAGS` test reads what it read with the clear made every time.  (D) NOT BUILT:
+an exact subset form of the dense test -- numpy's dgemv itself on blocks of only the rows whose wide-pass bound crosses the threshold,
+aligned as the full call groups rows, on one BLAS thread, behind a per-machine self-test -- sized on the active chain 4 000 (the
+Python path asking the twin verdict): of 10 undecided verdicts 7 had 3 114-3 900 of 4 004 rows over the threshold (run-away iterates),
+2 values not finite (the dense product needed), 1 the supply row alone: ~1/10 of the tests' time, ~1-2 % of the 16 000 DC.
+
+**Measured** (interleaved pairs against d528bdb0's worktree, OPENBLAS_NUM_THREADS=1, the box loaded 1.3-3.9): the active chain's DC
+3.89-3.92 -> 3.49-3.50 s at 8 000 stages (1.12x; line 1.07x), 1.27-1.29 -> 1.16-1.18 s at 4 000 (1.10x; 1.04x), 26.54 -> 22.01 s at
+16 000 (1.21x, one pair; 1.05x) -- more than the gather's share: the core's own writes go compact too; peaks 409 -> 349, 234 -> 205,
+756 -> 635 MB (the G bin's pages never resident); the other size DCs 0.99-1.03x (line 0.98x), every peak lower; every digest, route
+and PCNR C count HEAD's; the transients at size the same digests, steps and counts, 0.997-1.004x.  The gate against d528bdb0: every
+result the same, C against Python 0 differing; NOT REACHED for the gather's packed arm on the decks (none is at size) -- compared by
+the coverage suite's tests at size; its old binG arm with a pattern was dead and is gone.  Suite 6 626 passed.
+
+**Tests.**  `test_pcnr_c`: at size the DC's n x n G bin has no page resident (G made in the packed bins; 0.34-0.58 before the
+change, as |J| and R still are).  The clear never made: 5 twin tests fail (kernels raise reported flags in served solves).  The PCNR
+DC solve's pinned pair re-recorded.

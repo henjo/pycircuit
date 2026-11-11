@@ -493,7 +493,9 @@ PAIRS = {
                '`v_lim_init(limit=True)` makes it, the Python\'s after a hand-back '
                '(roadmap 304); the record\'s checks held by a `_watch` stamp over the '
                'participants\' element dicts, their devices, dicts and classes '
-               'compared, each class\'s `_class_ok` asked again',
+               'compared, each class\'s `_class_ok` asked again; with the pattern G made '
+               'in the core\'s packed bins and J gathered from them (`gmap`), a kernel\'s '
+               'flags cleared only where it raised one the unit tests (PC_FLAGS)',
         'reference': ['pycircuit.circuit.pcnr:solve_dc',
                       'pycircuit.circuit.pcnr:augmented_system',
                       'pycircuit.circuit.pcnr:schur_reduce',
@@ -1216,7 +1218,7 @@ RECORD = {
     'the Newton solve and its C': ('8246eb6c38fe', 'd24ae18be6f3'),
     'the error test and its C': ('639cab30f2d5', '6f54e05af10a'),
     'the DC base solve and its C': ('9af95c14f1ba', '4407ee890f1c'),
-    'the PCNR DC solve and its C': ('c06cd94cb510', '3fb9c296b84a'),
+    'the PCNR DC solve and its C': ('c06cd94cb510', 'ea9af8a46f42'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('d417a4cedc1d', '694a1086db84'),
     "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),

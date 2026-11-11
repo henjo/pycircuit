@@ -124,6 +124,12 @@ typedef struct {
     long seed;            /* 1: v_lim0 is not given -- the solve makes it from
                              x (`v_lim_init(limit=True)`) before its first
                              iteration; 0: v holds it */
+    /* THE PACKED G (CTX): with the pattern, the core makes G in its packed
+       bins (PCX_WANT_SETS in `pattern`: binGp, the same values at the same
+       entries) and J is gathered from them */
+    const int64_t *gmap;  /* (np) each entry of P's index in the core's
+                             pattern, -1 off it (G zero there); set where P
+                             is -- NULL (no pattern): J gathered from binG */
 } pcnrdc_t;
 
 long pcx_pcnrdc(pcnrdc_t *s);
