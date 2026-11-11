@@ -6041,3 +6041,15 @@ same solution -- and every C twin of its solve keeps the same buffers, with
 a checkpoint a hand-back restores so the Python's repeat decides as before.
 The grid's 10 ns transient 57 -> 29 s, the merged grid's 18 -> 11 s; every
 answer the same bytes, every other circuit as it was.
+
+## The branch check's rank decided on the nonzeros (2026-11-11)
+
+2026-11-11 (`doc/hdl_roadmap_260824.md`, 317; plan 261 L19).  After 316 the
+IBM grid's branch check -- the structural rank of C, once a run -- was the
+largest piece of its setup, 5.8 s: a norm and two sums over its 54 265^2
+array, whose values only decide whether a rank is clear of rounding.  They
+are now made over C's nonzeros with a rigorous bound on how far any order
+of the same sums can round, each decision taken for the whole bound and the
+dense passes kept for an edge inside it.  The check 5.8 -> 0.3 s, the grid's
+10 ns transient 28.9 -> 23.7 s with 1.1 GB less at its peak; every rank and
+answer the same.

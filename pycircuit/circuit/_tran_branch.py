@@ -54,6 +54,10 @@ def _components(n, r, c):
 #: before a block's SVD (`_full_rank_bound`)
 PROOF_MIN = 64
 
+#: THE STRUCTURAL RANK DECIDED ON THE NONZEROS (`_rank_bounded`): on where
+#: the plan's nonzeros are all of `C`'s, else the dense passes alone
+BOUNDED = True
+
 #: libklu through ctypes (`_klu`): `KLUSolver`'s library, bound without its
 #: scipy -- a run imports none
 _KLU = {}
@@ -168,7 +172,7 @@ def _full_rank_bound(k, r, c, b):
     return (1.0 - 4.0 * _EPS) / math.sqrt(n_inf * n_one)
 
 
-def _unproved(C, rows, cols, label, members, keep, tol, band):
+def _unproved(C, rows, cols, label, members, keep, tol, band, count=True):
     """The rows of `members` (blocks of one size k, `_rank_by_blocks`) whose
     block THE FULL-RANK PROOF does not settle: proved, a block's bound
     exceeds the band's top (`tol` without a band) by 8 k eps ||B||_F, its
@@ -190,20 +194,25 @@ def _unproved(C, rows, cols, label, members, keep, tol, band):
         bound = _full_rank_bound(k, loc[gr], loc[gc], b)
         need = (top + 8.0 * k * _EPS * math.sqrt(float(np.dot(b, b)))) * (1.0 + 4.0 * _EPS)
         if bound > need:
-            _paths.COUNTS['branch.rank:proved'] += 1
+            if count is True:
+                _paths.COUNTS['branch.rank:proved'] += 1
+            elif count:
+                count[0] += 1
         else:
             left.append(i)
     return np.asarray(left, dtype=np.intp)
 
 
-def _rank_by_blocks(C, tol, band=None, nz=None, keep=None):
+def _rank_by_blocks(C, tol, band=None, nz=None, keep=None, count=True):
     """The number of singular values of the square `C` above `tol`, one
     block at a time; ``None`` where one lies in the open-closed interval
     `band` ``(low, high]`` (the caller's ambiguous range).  `keep`: the
     matrix is `C`'s rows and columns `keep` (``C[ix_(keep, keep)]``, read
     without the copy); `nz`: its nonzeros' positions ``(rows, cols)`` in
     `np.nonzero`'s row-major order where the caller holds them (else
-    `np.nonzero`'s scan).
+    `np.nonzero`'s scan).  `count`: the full-rank proofs counted in `_paths`,
+    or in `count[0]` (a list: `_blocks_bounded`, which counts the call whose
+    answer it takes).
 
     `C` permuted by the connected components of its nonzero pattern is
     block diagonal, and a block-diagonal matrix's singular values are its
@@ -237,7 +246,7 @@ def _rank_by_blocks(C, tol, band=None, nz=None, keep=None):
             ## (THE FULL-RANK PROOF: a block shown to have every singular
             ## value past the band's top by more than its SVD's rounding is
             ## counted whole, as its SVD would count it)
-            left = _unproved(C, rows, cols, label, members, keep, tol, band)
+            left = _unproved(C, rows, cols, label, members, keep, tol, band, count)
             rank += int(k) * (members.shape[0] - left.size)
             members = members[left]
             if not members.shape[0]:
@@ -304,6 +313,116 @@ def _plan_nonzeros(cir, C):
         return None
     rows, cols = np.divmod(upos[on], n)
     return rows, cols, vals
+
+
+def _gamma(k):
+    """Higham's gamma_k: k unit roundoffs -- a sum of k + 1 terms, made in any
+    order or tree, lies within gamma_k of the exact sum of their magnitudes
+    (an added zero rounds nothing); inf past any use."""
+    t = k * (_EPS / 2.0)
+    return t / (1.0 - t) if t < 0.25 else math.inf
+
+
+def _norm_range(vals):
+    """`(lo, hi)` holding `float(np.linalg.norm(C))` -- numpy's `sqrt(x.dot(x))`
+    over every entry -- for a `C` whose nonzeros are `vals`, or None (one not
+    finite): BLAS's sum of the squares, in its order or fused, and this one's
+    each within gamma_{k+1} of the exact sum (the zeros add nothing, exactly);
+    the square root correctly rounded, so monotone."""
+    s = float(np.dot(vals, vals))
+    g = _gamma(vals.size + 1)
+    if not (math.isfinite(s) and g < 0.01):
+        return None
+    lo = s * (1.0 - g) / (1.0 + g) * (1.0 - 4.0 * _EPS)
+    hi = s * (1.0 + g) / (1.0 - g) * (1.0 + 4.0 * _EPS)
+    return math.sqrt(max(lo, 0.0)), math.sqrt(hi)
+
+
+def _sums_norm_range(idx, vals, n):
+    """`(lo, hi)` holding the norm of the dense sums `_reduced_rank` makes
+    (`C[:m].sum(axis=0)`: each column's entries; `C[:, :m].sum(axis=1)`: each
+    row's), the entries `vals` at `idx` (their column, or row), or None: each
+    dense sum and `bincount`'s of the same terms within gamma_{k+1} of the
+    exact one (k the most terms an index has), so within `b` of each other;
+    their norms within `||b||`, each norm's own rounding gamma_{n+2}."""
+    if not idx.size:
+        return 0.0, 0.0
+    r = np.bincount(idx, weights=vals, minlength=n)
+    a = np.bincount(idx, weights=np.abs(vals), minlength=n)
+    g = _gamma(int(np.bincount(idx, minlength=n).max()) + 1)
+    gn = _gamma(n + 2)
+    if not (g < 0.01 and gn < 0.01):
+        return None
+    rn = float(np.linalg.norm(r))
+    bn = float(np.linalg.norm(a)) * 2.0 * g * (1.0 + g) * (1.0 + gn)
+    if not (math.isfinite(rn) and math.isfinite(bn)):
+        return None
+    lo = max(rn / (1.0 + gn) - bn, 0.0) * (1.0 - gn) * (1.0 - 4.0 * _EPS)
+    hi = (rn / (1.0 - gn) + bn) * (1.0 + gn) * (1.0 + 4.0 * _EPS)
+    return lo, hi
+
+
+#: `_rank_bounded`'s word that the bounds settled nothing: the dense passes
+UNDECIDED = object()
+
+
+def _blocks_bounded(C, tol, lo, hi, nz, keep=None):
+    """`_rank_by_blocks` with a band whose ends are known to lie in `lo` and
+    `hi` (each a `(min, max)`): its answer for every such band, or
+    `UNDECIDED`.  A wider band proves fewer blocks and catches more singular
+    values, so a count on the widest band is every band's, and None on the
+    narrowest is every band's.  The full-rank proofs of the call whose
+    answer it takes counted (`_rank_by_blocks`' count)."""
+    proved = [0]
+    r = _rank_by_blocks(C, tol, band=(lo[0], hi[1]), nz=nz, keep=keep, count=proved)
+    if r is None:
+        proved = [0]
+        if not (lo[1] < hi[0] and _rank_by_blocks(C, tol, band=(lo[1], hi[0]), nz=nz, keep=keep,
+                                                  count=proved) is None):
+            return UNDECIDED
+    if proved[0]:
+        _paths.COUNTS['branch.rank:proved'] += proved[0]
+    return r
+
+
+def _rank_bounded(C, tol, nz, g, m):
+    """THE STRUCTURAL RANK DECIDED ON THE NONZEROS: `_branch_structural_rank`'s
+    count for one state -- its rounding margin `eps` (`np.linalg.norm(C)`
+    over n^2 entries) and `_reduced_rank`'s KCL residual `delta` (two n x m
+    sums) known only within their bounds from the nonzeros `nz` -- or
+    `UNDECIDED` (the dense passes decide).  They feed decisions alone, each
+    monotone in them as the floats round: `delta + eps < tol`, and the
+    bands' ends, `_blocks_bounded`'s.  At size the dense passes were the
+    check's cost: the IBM power grid's (54 266 unknowns) three states'
+    5.8 s, a first touch of the n^2 array's pages ~3 s of it."""
+    rows, cols, vals = nz
+    nrm = _norm_range(vals)
+    if nrm is None:
+        return UNDECIDED
+    c = 8 * C.shape[0] * np.finfo(float).eps
+    eps = (c * nrm[0], c * nrm[1])
+    r = None
+    if g is not None and 0 <= g < m <= C.shape[0]:
+        a = _sums_norm_range(cols[rows < m], vals[rows < m], C.shape[0])
+        b = _sums_norm_range(rows[cols < m], vals[cols < m], C.shape[0])
+        if a is None or b is None:
+            return UNDECIDED
+        delta = (a[0] + b[0], a[1] + b[1])
+        if delta[1] + eps[1] < tol:
+            on = (rows != g) & (cols != g)
+            rr, rc = rows[on], cols[on]
+            keep = np.r_[0:g, g + 1:C.shape[0]]
+            r = _blocks_bounded(C, tol, ((tol - delta[1] - eps[1]) / m, (tol - delta[0] - eps[0]) / m),
+                                (tol + delta[0] + eps[0], tol + delta[1] + eps[1]),
+                                (rr - (rr > g), rc - (rc > g)), keep)
+            if r is UNDECIDED:
+                return r
+        elif not delta[0] + eps[0] >= tol:
+            return UNDECIDED
+    if r is None:
+        r = _blocks_bounded(C, tol, (tol - eps[1], tol - eps[0]), (tol + eps[0], tol + eps[1]),
+                            (rows, cols))
+    return UNDECIDED if r is None else r
 
 
 class _Cert:
@@ -499,15 +618,22 @@ class _BranchCheck:
                 ## the dense SVD's count, found by blocks (`_rank_by_blocks`,
                 ## `_reduced_rank`) unless a singular value lies within
                 ## rounding (`eps`: a block's SVD and the whole's round
-                ## apart) or the reduction's bound of `tol`
+                ## apart) or the reduction's bound of `tol` -- decided on the
+                ## nonzeros where their bounds settle it (`_rank_bounded`)
                 tol = self.BRANCH_SCREEN_TOL * nrm
-                eps = 8 * C.shape[0] * np.finfo(float).eps * float(np.linalg.norm(C))
-                r = self._reduced_rank(C, tol, eps, nz)
-                if r is None:
-                    r = _rank_by_blocks(C, tol, band=(tol - eps, tol + eps),
-                                        nz=None if nz is None else nz[:2])
-                if r is None:
-                    r = int((np.linalg.svd(C, compute_uv=False) > tol).sum())
+                r = UNDECIDED
+                if BOUNDED and nz is not None:
+                    r = _rank_bounded(C, tol, nz, getattr(self, 'irefnode', None),
+                                      len(getattr(self.cir, 'nodes', ())))
+                    _paths.COUNTS['branch.rank:' + ('dense' if r is UNDECIDED else 'bounded')] += 1
+                if r is UNDECIDED:
+                    eps = 8 * C.shape[0] * np.finfo(float).eps * float(np.linalg.norm(C))
+                    r = self._reduced_rank(C, tol, eps, nz)
+                    if r is None:
+                        r = _rank_by_blocks(C, tol, band=(tol - eps, tol + eps),
+                                            nz=None if nz is None else nz[:2])
+                    if r is None:
+                        r = int((np.linalg.svd(C, compute_uv=False) > tol).sum())
                 best = max(best, r)
         self._branch_generic = generic
         self._branch_rank0 = (best, scale)

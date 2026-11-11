@@ -1211,7 +1211,7 @@ RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
     'the stepping loop and its C': ('8e89e8b8ac61', '9fe7b075e728'),
     'the predictor and its C': ('9e611c84de5a', '9b16bd4e0f30'),
-    'the branch screen and its C': ('9fe8a3d08523', '41c5e5959ad1'),
+    'the branch screen and its C': ('0159aa778735', '41c5e5959ad1'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
     'the kernel call and the pass driver': ('ef3f2c059587', '5a9e89626ca0'),
     'the limiting loop and the walk': ('6100313c0fdb', 'b3cf8aef45d6'),

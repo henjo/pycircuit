@@ -15741,3 +15741,38 @@ missed it: the fallback's fresh factor of J gave the refactor's very bytes -- no
 error test's and the shared sequence's rule off in C, the loop counting no reuses.  test_structural_klu's two counts restated
 (a repeated matrix now reuses).  Twelve pinned pairs re-recorded after their twins' tests (766 passed); the Newton pair names
 `_held_call` and `_outcome`.  `doc/transient_runtime.md` names pcx_held.h.
+
+## 2026-11-11 — 317. The branch check's structural rank decided on C's nonzeros, within rigorous rounding bounds -- the IBM grid's check 5.84 -> 0.28 s, its 10 ns transient 28.9 -> 23.7 s (1.22x), the merged grid's 11.5 -> 10.0 s; every rank, answer and count the dense passes'
+
+**Why**  Plan 261's L19.  Andreas: "What is next?" -> "Size, then branch rank".  Sized at 8fc7e8df (scratch p261/l19/s3): the whole
+grid's 10 ns 29.2 s, the setup before the stepping loop 11.4 s of it, the branch check's structural rank (`Transient.
+_branch_structural_rank`, once a run, three drawn states) 5.84 s -- its last dense passes over the 54 265^2 held array: a first
+touch of its pages, `np.linalg.norm(C)` (BLAS's ddot over n^2: the rounding margin `eps`) and `_reduced_rank`'s two KCL sums
+(`C[:m].sum(axis=0)`, `C[:, :m].sum(axis=1)`: the residual `delta`), each state.  Their values feed decisions alone: `delta +
+eps < tol` and `_rank_by_blocks`' band ends.
+
+**What.**  `_tran_branch._rank_bounded`: the same sequence of decisions on intervals.  `_norm_range`: numpy's norm is
+`sqrt(x.dot(x))`, and any sum of the same squares -- BLAS's order, fused or not, or this one's over the nonzeros -- lies within
+gamma_{k+1} of the exact one (an added zero rounds nothing); `_sums_norm_range`: each dense sum and `bincount`'s of the same
+terms within gamma_{kmax+1}, their norms within the vector of those bounds, each norm's own rounding gamma_{n+2}.  Every
+expression the decisions read is monotone as the floats round, so the dense code's own expressions at the intervals' ends bound
+its values.  `_blocks_bounded`: a count on the widest band is every band's (a wider band proves fewer blocks and catches more
+singular values), None on the narrowest is every band's, else undecided.  Undecided anywhere: the dense passes, unchanged
+(`branch.rank:dense`; decided: `branch.rank:bounded`).  The full-rank proofs of the call whose answer is taken counted as before
+(`_rank_by_blocks`' `count`).  `BOUNDED` the switch.
+
+**Measured** (interleaved pairs against 8fc7e8df's worktree, OPENBLAS_NUM_THREADS=1).  The whole grid: its branch rank's first
+call 5.84 -> 0.28 s (line <= 0.6 s: MET); its default 10 ns 28.88 -> 23.66 s (line >= 1.15x: MET, 1.22x), the same digest,
+steps, iterations, 0.43467 mV, peak 5.42 -> 4.30 GB (the n^2 pages never faulted in).  The merged grid's 11.51 -> 10.01 s (line
+>= 1.05x: MET, 1.15x), the same digest, peak 2.68 -> 2.41 GB.  The size runs, every digest and peak the same: the DCs 0.988-1.029x, the transients 1.000-1.037x -- the 63 x 63 mesh's Radau 0.958x and the 4 000-stage chain's DC 0.972x in the line run (one pair each) were 1.012x and 1.029x on three quieter pairs each (medians 0.996x, 1.000x; line >= 0.98x: MET).  The gate
+against 8fc7e8df: every result the same tree against tree, C against Python 0 differing; its verdict DIFFERS on one path counter
+alone, `branch.rank:bounded` (3, 0) on every run -- the new count, every state of every deck and size circuit decided on the
+nonzeros, `branch.rank:proved` the same everywhere.  Suite 6 664 passed.
+
+**Tests.**  `test_branch_rank_bounded` (new, 11): the bounded rank the dense passes' on two layered grids, a 400-stage MOS
+chain and a ladder with coupling capacitors and an inductor, with the certificate's generic C and past it (one held array),
+every state decided and the proofs counted alike; the bounds hold numpy's dense norm and sums on drawn matrices cancelling over
+up to 24 decades (where the orders part in their last bits); an edge inside the bound, and a singular value between a band's
+widest and narrowest ends, undecided -- inside the narrowest, None; an undecided state the dense passes'.  Five bites, each bit
+(no rounding allowed for, an edge inside the bound decided, the narrowest band not tried, the proofs not counted, the norm taken
+as exact).  The branch screen's pinned pair re-recorded on its reference side after its twins' tests.
