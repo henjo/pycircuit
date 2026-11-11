@@ -15686,3 +15686,58 @@ every test: the suite 905 -> 1 202 s.  Frozen, each collection walks what the te
 same (at most 13.2 GB over 8 workers frozen, 13.1 collecting alone, each worker's peak within 60 MB; the climb is the suite's
 own).  Frozen referrers are invisible to `gc.get_referrers`: Hypothesis's check on its own random generator warns once a
 process (251 warnings, 248 before), harmlessly -- pycircuit registers none.  Suite 6 648 passed.
+
+## 2026-11-11 — 316. The same values reuse the numeric: StructuralKLU and every C twin of its solve make no refactor where the values are, bit for bit, those the run numeric was last refactored on -- the whole IBM grid's 10 ns transient 57.4 -> 28.5 s (2.0x), the merged grid's 18.4 -> 11.3 s (1.6x), every answer the same bytes
+
+**Why**  Plan 261's L19.  Andreas: "Continue" -> (sized) "Build it".  After 315 the whole grid's default 10 ns took 58 s; a
+perf split at the stepping loop put KLU at 75 % of the loop's ~47 s, `klu_refactor` alone 63 %.  The grid is linear: its matrix
+G + a0/h C has the same values whenever the step's coefficients repeat -- each step's second Newton iteration, its error test
+(the step's last matrix), every step after one with the same step and order -- and the full sparse Newton and the error test
+refactored on every solve.  A prototype in newton.c alone (scratch, a static copy): 1 777 of the Newton's 2 011 refactors
+repeated the last refactor's values; skipping them 57.8 -> 40 s; with lte.c's 1 019 too, 31-33 s, the same digest.  KLU's
+refactor of the same values on the same symbolic and pivot order is the same numeric, so the solve and its residual check after
+it are what the refactor's would be.
+
+**What.**  `StructuralKLU` holds the values `_numeric` was last REFACTORED on (`_held_v`, with a checkpoint's backup) and their
+state (`_held_st`: OK, REUSED, and a C call's checkpoint -- `linearsolver.HELD_*`); `_solve` makes no refactor where OK and the
+values are the same bit for bit (int64 views: -0.0 is not 0.0, as C's memcmp), counted in `reused`; a refactor made holds its
+values; a failed refactor, the first factor and the residual fallback's fresh factor hold none (a fresh factor's numeric is no
+refactor's).  The C twins of that solve on the run numeric keep the same buffers (new csrc/pcx_held.h; new last fields `held_v`,
+`held_st` and a unit's own count or owner flag): newton.c's sparse full Newton, lte.c's sparse solve, pcx_kluseq.h's sequence
+(dcnewton, pcnrdc, radau.c's stage system, radau_tc.c's and loop.c's real factor); the chord's numeric, the walk's, sensklu's and
+the complex factor are their own.  THE CHECKPOINT: a C call the Python may repeat leaves the held values, the count and the
+numeric as it found them -- the numeric refactored on the backup again where the values moved (the same values on the same
+pivots: the same numeric), so the Python's repeat decides refactor by refactor as a run without the C.  The units that decide
+their hand-back in C open and close it there (dcnewton, pcnrdc, radau.c, radau_tc.c); the Newton's and the error test's glue
+around their calls (`_tran_newton_c._held_call`, the Newton's `solve` split for the 80-line rule into it and `_outcome`); the C
+loop an attempt at a time (`ck_open` / `ck_commit`; the stage loop's `held_open_attempt`), a stop leaving it open for the glue
+(`linearsolver.held_back`; the stage system's kept where its converged Newton is held for the Python, `held_settle`); the
+shooting walk too.  A numeric REPLACED inside a checkpoint (a fallback's fresh factor: the old one is freed) is not restored --
+the hand-back holds nothing, the repeat refactors: the same answer, a refactor counted where a run without the C may reuse (a
+fallback inside an attempt then handed back, on a circuit whose values repeat).  Counts: `refactors` the refactors made; the
+loop's full Newton refactors `iters - full_reused` (`fb_refactors - fb_reused` on the chord), its error tests `ltes - lte_seeds
+- lte_reused`.  The gate records `klu['refactors']` as made plus spared (a tree with the rule compares with one without) and
+the spared apart, `kreu`, C against Python (`verdict.klu_counts`).
+
+**Measured** (interleaved pairs against 50c93537's worktree, OPENBLAS_NUM_THREADS=1, the box at 1.4-3.9).  The whole grid's
+default 10 ns 57.44 -> 28.52 s (line >= 1.35x: MET, 2.01x), the same digest, 1 020 steps, 2 012 iterations, 0.43467 mV, peak
+5.42 GB on both.  The merged grid's 18.43 -> 11.30 s (line >= 1.15x: MET, 1.63x), the same digest.  The grids' DCs 0.97x and
+0.99x (one pair each, not in the line: the DC's Newton refactors twice).  The size DCs 0.983-1.029x and transients 0.989-1.019x
+(line >= 0.98x: MET), every digest, step count and peak the same: off the grids nothing refactors often (the seed chord holds)
+nor repeats.  The gate against 50c93537: every result and every path counter the same tree against tree, C against Python 0
+differing (27 decks under 9 settings, 3 size twins, 8 size runs); the gold decks reuse under the device bypass (14: a bypassed
+device stamps the same values) and on one under `low`.  NOT REACHED on 13 changed lines and arms no deck takes: the C units'
+hand-back restores (dcnewton, pcnrdc, radau_tc.c), a failed refactor's bail (newton.c, lte.c), the pivot fallback's arm in
+pcx_kluseq.h, a dense rejection's arm in loop.c -- the C restore compared by no twin (it moves counts alone; no deck repeats
+values across a hand-back).  Suite 6 653 passed.
+
+**Tests.**  `test_held_values` (new, 5): the same values reuse the numeric bit for bit, one ulp off or a -0.0 at an always-zero
+place refactor; a fresh factor holds none; a checkpoint handed back leaves the held values, the count and the numeric as found
+(the reuse after it passes its residual check, the very bytes), a commit keeps, a nested open is not the owner, a replaced
+numeric is not restored; a linear circuit's run under Gear-2 (the stepping loop, its Newton and error test) and Radau (the stage
+loop's stage system) the same answer, statistics and counts -- `reused` among them -- with every C path on as with none.  Seven
+bites, each bit: the values compared as floats, a fallback keeping its values, the restore's refactor skipped (the test first
+missed it: the fallback's fresh factor of J gave the refactor's very bytes -- now no fallback is asserted), the Newton's, the
+error test's and the shared sequence's rule off in C, the loop counting no reuses.  test_structural_klu's two counts restated
+(a repeated matrix now reuses).  Twelve pinned pairs re-recorded after their twins' tests (766 passed); the Newton pair names
+`_held_call` and `_outcome`.  `doc/transient_runtime.md` names pcx_held.h.

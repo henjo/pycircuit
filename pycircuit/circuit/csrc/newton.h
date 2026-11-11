@@ -286,6 +286,13 @@ typedef struct {
        A hand-back frees it -- the Python's repeat factors the same values, as
        a refactor would not promise -- and leaves `klu_num` NULL as it was */
     long num_made;        /* OWN: 1 where this call made `klu_num`, else 0 */
+    /* THE HELD VALUES (pcx_held.h): StructuralKLU's `_held_v` and
+       `_held_st` where the record is bound to its run numeric (NULL: the
+       rule off) -- the checkpoint the glue's, or the C loop's an attempt;
+       OUT `reused`, this call's refactors not made (the values held) */
+    double *held_v;
+    int64_t *held_st;
+    long reused;
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and

@@ -167,6 +167,13 @@ typedef struct {
        reduce fills it (J not on the pattern) `r_full` is set, and the next
        scatter zeroes it whole first */
     long r_full;                /* OWN: 1 where R holds a dense reduce */
+    /* THE HELD VALUES (pcx_held.h): StructuralKLU's `_held_v` and
+       `_held_st` where the record is bound to its run numeric (NULL: the
+       rule off) -- the checkpoint the glue's, or the C loop's an attempt;
+       OUT `reused`, this call's refactors not made (the values held) */
+    double *held_v;
+    int64_t *held_st;
+    long reused;
 } lte_t;
 long pcx_lte(lte_t *s);
 

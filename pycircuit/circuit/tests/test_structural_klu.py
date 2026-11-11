@@ -91,7 +91,10 @@ def test_it_solves_what_the_dense_solver_solves():
         f = s.factor(J, numeric)
         np.testing.assert_allclose(f.solve(b), la.solve(J, b), rtol=1e-9, atol=1e-12)
         np.testing.assert_allclose(f.solve_transposed(b), la.solve(J.T, b), rtol=1e-9, atol=1e-12)
-    assert s.analyses == 1 and s.foreign == 0 and s.refactors >= 3
+    ## (the reused numeric: refactored, or held where the values repeat --
+    ## this ladder's matrix repeats across the draws, its diodes barely on)
+    assert s.analyses == 1 and s.foreign == 0 and s.refactors >= 1
+    assert s.refactors + s.reused >= 3 and s.reused >= 1
 
 
 def test_a_matrix_it_does_not_cover_goes_to_the_fallback_and_leaves_its_factors():
@@ -679,9 +682,10 @@ def test_a_kept_solve_is_the_refactored_one_without_the_refactor():
     auto.solve(J, b, numeric)
     k = auto._choice
     assert type(k) is linearsolver.StructuralKLU
-    r = k.refactors
+    r, u = k.refactors, k.reused
     assert auto.solve_kept(J, b, numeric).tobytes() == auto.solve(J, b, numeric).tobytes()
-    assert k.refactors == r + 1
+    ## (the plain solve of the same values: no refactor either -- held)
+    assert (k.refactors, k.reused) == (r, u + 1)
 
 
 def test_a_steps_frozen_real_factor_on_klu_is_refactored_once():

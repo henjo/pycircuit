@@ -211,6 +211,7 @@ def run(loop):
     if run_ is None:
         return _declined(loop, 'bind')
     _load(loop, e, run_)
+    _LC.held_ptrs(run_, run_.s, None, e.sk)
     status = _call(e, run_)
     s = run_.s
     if status not in (_CODES['LOOP_DONE'], _CODES['LOOP_FULL']):
@@ -687,6 +688,16 @@ def _call(e, run_):
         e.tr.statistics.solve_seconds += time.perf_counter() - t0
 
 
+def held_settle(sk, kept):
+    """The stage system's held values as the attempt the loop stopped in
+    left them (loop.h): its checkpoint kept where that attempt's converged
+    Newton is held for the Python (`kept`), else as found -- the Python's
+    repeat makes that Newton again."""
+    from pycircuit.circuit import linearsolver
+    if sk._held_st[linearsolver.HELD_OPEN]:
+        (linearsolver.held_commit if kept else linearsolver.held_back)(sk, 1)
+
+
 def _settle(e, run_, status):
     """The stage KLU as the attempts leave it -- its numeric, the made
     attempts' counts -- and where the loop stopped after an attempt's
@@ -705,6 +716,7 @@ def _settle(e, run_, status):
         sk.factors += s.st_klu_factors
         sk.pivot_fallbacks += s.st_klu_pivot
         sk.residual_fallbacks += s.st_klu_resid
+        held_settle(sk, s.held and status in _AFTER)
     if s.held and status in _AFTER:
         sb, rs = run_.sbuf, rec.s
         o = 1 if s.gen0 == 0 else 0

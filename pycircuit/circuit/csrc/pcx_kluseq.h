@@ -3,8 +3,8 @@
  * refactor on the numeric it holds, a fresh factor on a zero pivot,
  * klu_solve, and after a refactor the residual `max |A x - b| / max(max |b|,
  * 1e-300)` against REFACTOR_RESIDUAL_TOL -- a fresh factor where it fails.
- * The struct and THE NUMERIC: pcx_klu.h, the verdicts pcx_verdict.h (both
- * included before this).
+ * The struct and THE NUMERIC: pcx_klu.h, the verdicts pcx_verdict.h, THE
+ * HELD VALUES pcx_held.h (all included before this).
  *
  * A step returns 0, or what stopped it: PCX_KLU_FACTOR (a fresh factor
  * failed: `_factor`'s LinAlgError('Singular matrix'), `klu_out` NULL),
@@ -100,23 +100,31 @@ static int pcx_klu_resid_sparse(pcx_klu_t *k, const double *b, const double *x,
    scatters A into from the CSC where the sparse one does not decide
    (counted in `dense`, which may be NULL; `enum pcx_klu_a`).  The solution
    in `x`, `y` (m) and `t` (2 m, read only where not built) scratch.  `kept`: `solve_kept`'s -- the numeric
-   holds a refactor of these very values, none is made (nor counted) */
+   holds a refactor of these very values, none is made (nor counted).  `hv`, `hst`: StructuralKLU's held
+   values (pcx_held.h) where `k` is its run numeric -- no refactor of the values held, counted there; NULL
+   `hst` (the chord's numeric) the rule off */
 static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, double *y,
-                        double *t, long m, void *dgemv, int a_built, long *dense, int kept)
+                        double *t, long m, void *dgemv, int a_built, long *dense, int kept,
+                        double *hv, int64_t *hst)
 {
-    long i, j, p, st, reused = k->klu_out != NULL;
+    long i, j, p, st, reused = k->klu_out != NULL, nnz = k->kAp[m];
     int fails = PCX_UNDECIDED;
-    if (reused && !kept) {
+    if (reused && !kept && pcx_held_same(hst, hv, k->kAx, nnz)) {
+        /* (THE SAME VALUES: the numeric is their refactor already) */
+    } else if (reused && !kept) {
         int ok = ((klu_refactor_t) k->klu_refactor)(k->kAp, k->kAi, k->kAx, k->klu_sym,
                                                   k->klu_out, k->klu_common);
         k->refactors++;
+        pcx_held_refactored(hst, hv, k->kAx, nnz, ok);
         if (!ok) {
             k->pivot_fallbacks++;
+            pcx_held_lost(hst, hv, nnz);
             if ((st = pcx_klu_fresh(k)) != 0) return st;
             reused = 0;
         }
-    } else if (!reused && (st = pcx_klu_fresh(k)) != 0) {
-        return st;
+    } else if (!reused) {
+        pcx_held_lost(hst, hv, nnz);
+        if ((st = pcx_klu_fresh(k)) != 0) return st;
     }
     if ((st = pcx_klu_solve_b(k, b, x, m)) != 0) return st;
     /* (what KLU raised inside: the Python's ctypes calls never see it) */
@@ -145,6 +153,7 @@ static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, dou
     if (fails < 0) return PCX_KLU_FLAGS;
     if (fails) {
         k->residual_fallbacks++;
+        pcx_held_lost(hst, hv, nnz);
         if ((st = pcx_klu_fresh(k)) != 0) return st;
         if ((st = pcx_klu_solve_b(k, b, x, m)) != 0) return st;
         feclearexcept(FE_ALL_EXCEPT);
@@ -154,9 +163,10 @@ static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, dou
 
 /* StructuralKLU.solve(A, b) (`pcx_klu_seq`) */
 static long pcx_klu_step(pcx_klu_t *k, double *A, const double *b, double *x, double *y,
-                         double *t, long m, void *dgemv, int a_built, long *dense)
+                         double *t, long m, void *dgemv, int a_built, long *dense, double *hv,
+                         int64_t *hst)
 {
-    return pcx_klu_seq(k, A, b, x, y, t, m, dgemv, a_built, dense, 0);
+    return pcx_klu_seq(k, A, b, x, y, t, m, dgemv, a_built, dense, 0, hv, hst);
 }
 
 /* `_FrozenTransform.real_solve` on the StructuralKLU: `solve_kept` where
@@ -164,10 +174,11 @@ static long pcx_klu_step(pcx_klu_t *k, double *A, const double *b, double *x, do
    of them made), `solve` else; `*kept` then as it leaves it -- set where the
    solve ended on such a refactor (no fresh factor), cleared where not */
 static inline long pcx_klu_kept(pcx_klu_t *k, long *kept, double *A, const double *b, double *x,
-                                double *y, double *t, long m, void *dgemv, long *dense)
+                                double *y, double *t, long m, void *dgemv, long *dense,
+                                double *hv, int64_t *hst)
 {
     long f0 = k->factors, r0 = k->refactors;
-    long st = pcx_klu_seq(k, A, b, x, y, t, m, dgemv, 0, dense, *kept != 0);
+    long st = pcx_klu_seq(k, A, b, x, y, t, m, dgemv, 0, dense, *kept != 0, hv, hst);
     *kept = st == 0 && k->factors == f0 && (*kept || k->refactors == r0 + 1);
     return st;
 }

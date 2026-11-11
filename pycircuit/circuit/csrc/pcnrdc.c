@@ -22,6 +22,7 @@
 #include "core.h"
 #include "pcx_klu.h"
 #include "pcx_verdict.h"
+#include "pcx_held.h"
 #include "pcx_kluseq.h"
 #include "pcnrdc.h"
 
@@ -260,7 +261,8 @@ static long solve_klu(pcnrdc_t *s)
         if (nz != nzp) return PCNRDC_BAIL_FOREIGN;
     }
     st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->kt, m, s->dgemv,
-                      s->kfull ? PCX_A_ZERO : PCX_A_BUILT, &s->dense_resid);
+                      s->kfull ? PCX_A_ZERO : PCX_A_BUILT, &s->dense_resid, s->held_v,
+                      s->held_st);
     if (st == PCX_KLU_FACTOR) return PCNRDC_SINGULAR;
     if (st == PCX_KLU_SOLVE) return PCNRDC_BAIL_KLU;
     if (st == PCX_KLU_FLAGS) return PCNRDC_BAIL_FLAGS;
@@ -451,10 +453,21 @@ long pcx_pcnrdc(pcnrdc_t *s)
     s->klu.refactors = s->klu.factors = s->klu.pivot_fallbacks = 0;
     s->klu.residual_fallbacks = 0;
     s->klu.klu_out = s->klu.klu_num;
+    s->held_own = s->klu.klu_sym ? pcx_held_open(s->held_st, s->klu.klu_num) : 0;
     feclearexcept(FE_ALL_EXCEPT);
     st = s->seed ? seed(s) : 0;
     if (st == 0) st = iterate(s);
-    if (s->klu.klu_sym) pcx_klu_finish(&s->klu, st >= PCNRDC_CHOOSE);
+    if (s->klu.klu_sym) {
+        const int back = st >= PCNRDC_CHOOSE;
+        pcx_klu_finish(&s->klu, back);
+        /* (the held values as the outcome leaves them: pcx_held.h) */
+        if (back)
+            pcx_held_back(s->held_st, s->held_v, s->klu.kAp[s->m], s->held_own,
+                          s->klu.klu_refactor, s->klu.kAp, s->klu.kAi, s->klu.klu_sym,
+                          s->klu.klu_common);
+        else
+            pcx_held_commit(s->held_st, s->held_own);
+    }
     feclearexcept(FE_ALL_EXCEPT);
     return s->status = st;
 }

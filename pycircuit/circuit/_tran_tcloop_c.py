@@ -228,6 +228,7 @@ def run(loop):
     ## (settled whatever happens after the call: the C may have freed the
     ## solver's handles for a new pattern's, moved the stage KLU's numeric)
     status = None
+    _LC.held_ptrs(run_, run_.s, e.rk, None if e.fb is None else e.fb[2])
     try:
         status = _call(e, run_)
     finally:
@@ -635,6 +636,11 @@ def _bind_rk(run, e):
         for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))
     k.klu_common = tffi.cast('void *', sk._ct.addressof(sk._common))
     k.klu_sym = tffi.cast('void *', sk._symbolic)
+    ## (the run numeric's held values, pcx_held.h)
+    keep.append(tffi.from_buffer('double *', sk._held_v))
+    ts.held_v = keep[-1]
+    keep.append(tffi.from_buffer('int64_t *', sk._held_st))
+    ts.held_st = keep[-1]
     keep.append(ffi.from_buffer('int64_t *', tb['rk_take']))
     s.rk_take = keep[-1]
     keep.append(ffi.from_buffer('double *', tb['rkx']))
@@ -1044,6 +1050,9 @@ def _settle(e, run_):
         ## made attempts' sequences end on, their counts)
         sk, kr = e.rk, run_.tctx.s.rk
         sk._numeric = int(run_.tctx.ffi.cast('uintptr_t', kr.klu_out)) or None
+        ## (an attempt the loop stopped in: the Python's repeat makes its
+        ## real solves again -- the held values as it found them, loop.h)
+        _SL.held_settle(sk, False)
         sk.refactors += int(s.tc_rkref)
         sk.factors += int(s.tc_rkfac)
         sk.pivot_fallbacks += int(s.tc_rkpiv)
@@ -1088,6 +1097,7 @@ def _fb_settle(e, run_, status):
         sk.factors += s.st_klu_factors
         sk.pivot_fallbacks += s.st_klu_pivot
         sk.residual_fallbacks += s.st_klu_resid
+        _SL.held_settle(sk, bool(s.held) and status in _SL._AFTER)
     if s.held and status in _SL._AFTER:
         tb, rs = run_.tbuf, rec.s
         o = 1 if s.gen0 == 0 else 0

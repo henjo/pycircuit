@@ -167,6 +167,94 @@ def _csc_of_dense(A, mv, last=None):
              data.view(numpy.float64), key), (nz, Ap, Ai, key))
 
 
+#: THE HELD VALUES' STATE (`StructuralKLU._held_st`, int64; csrc/pcx_held.h
+#: reads and writes the same buffer): OK -- the held values are those the
+#: run's numeric was last refactored on; REUSED -- the refactors `solve`
+#: did not make; and a C call's checkpoint (OPEN, CK_OK, MOVED, CK_REUSED,
+#: CK_NUM: the state, the count and the numeric at its open, and whether
+#: the held values moved since), which the Python never opens
+HELD_OK, HELD_REUSED, HELD_OPEN, HELD_CK_OK, HELD_MOVED, HELD_CK_REUSED, HELD_CK_NUM = range(7)
+HELD_N = 7
+
+
+def _same_bits(a, b):
+    """`a` and `b` (float64, the same length) the same bit for bit -- as C's
+    memcmp: -0.0 is not 0.0, a NaN equals a NaN of its own bits."""
+    return numpy.array_equal(a.view(numpy.int64), b.view(numpy.int64))
+
+
+def _held_move(sk):
+    """`sk`'s held state about to change (pcx_held.h's `pcx_held_move`): an
+    open checkpoint keeps what it found."""
+    st = sk._held_st
+    if st[HELD_OPEN] and not st[HELD_MOVED]:
+        if st[HELD_CK_OK]:
+            nnz = sk.nnz
+            sk._held_v[nnz:2 * nnz] = sk._held_v[:nnz]
+        st[HELD_MOVED] = 1
+
+
+def _held_lost(sk):
+    """`sk`'s numeric made afresh or replaced (`pcx_held_lost`): no values
+    held, and an open checkpoint's numeric, which the replacement frees, no
+    longer restored."""
+    _held_move(sk)
+    st = sk._held_st
+    st[HELD_OK] = 0
+    if st[HELD_OPEN]:
+        st[HELD_CK_OK] = 0
+
+
+def held_open(sk):
+    """A checkpoint of `sk`'s held values (pcx_held.h: THE CHECKPOINT)
+    before a C call on its run numeric that the glue may hand back: 1 where
+    this call owns it (none was open), else 0."""
+    st = sk._held_st
+    if st[HELD_OPEN]:
+        return 0
+    num = sk._numeric
+    st[HELD_OPEN] = 1
+    st[HELD_CK_OK] = int(bool(st[HELD_OK]) and bool(num))
+    st[HELD_MOVED] = 0
+    st[HELD_CK_REUSED] = st[HELD_REUSED]
+    st[HELD_CK_NUM] = int(num or 0)
+    return 1
+
+
+def held_commit(sk, own):
+    """The owner's checkpoint closed on a served outcome."""
+    if own:
+        sk._held_st[HELD_OPEN] = 0
+
+
+def held_back(sk, own):
+    """The owner's checkpoint closed on a hand-back (`pcx_held_back`): the
+    state, the count and the numeric as it found them -- the numeric
+    recorded at the open refactored on the backup again where the held
+    values moved and were valid then (the same values on the same pivots:
+    the same numeric), so the Python's repeat decides as a run without the
+    C."""
+    if not own:
+        return
+    st = sk._held_st
+    st[HELD_REUSED] = st[HELD_CK_REUSED]
+    if st[HELD_MOVED]:
+        num, ok = int(st[HELD_CK_NUM]), 0
+        ## (the numeric found must be the run's still: a replaced one was
+        ## freed, and `_held_lost` cleared CK_OK for it)
+        if st[HELD_CK_OK] and num and num == (sk._numeric or 0):
+            ct, nnz = sk._ct, sk.nnz
+            bak = sk._held_v[nnz:2 * nnz]
+            ok = sk._lib.klu_refactor(
+                sk._ptr(sk.Ap, ct.c_int), sk._ptr(sk.Ai, ct.c_int), sk._ptr(bak, ct.c_double),
+                ct.c_void_p(sk._symbolic), ct.c_void_p(num), ct.byref(sk._common))
+            if ok:
+                sk._held_v[:nnz] = bak
+        st[HELD_OK] = int(bool(ok))
+    st[HELD_OPEN] = 0
+    st[HELD_MOVED] = 0
+
+
 def _on_pattern_pages(arr):
     """Whether `arr` is a matrix on pattern pages (`_tran_core.pattern_of`)."""
     from pycircuit.circuit import _tran_core
@@ -920,6 +1008,19 @@ class StructuralKLU(KLUSolver):
     counts them).  Measured (2026-10-10, gear, 15 % of the run): rich3
     (269 unknowns) 2.71 -> 2.02 s, arom (295) 2.64 -> 1.98 s against
     SuperLU; the answers' last bits move (the plan's one re-baseline).
+
+    THE SAME VALUES REUSE THE NUMERIC.  `solve` makes no refactor where the
+    values are, bit for bit, those `_numeric` was last refactored on
+    (`_held_v`; `reused` counts them): KLU's refactor of the same values on
+    the same symbolic and pivot order is the same numeric, so the solve and
+    its validation are what the refactor's would be.  A linear circuit's
+    matrix repeats whenever its step's coefficients do -- the IBM power
+    grid's 10 ns transient refactored the same values in 1 777 of its
+    Newton's 2 011 refactors.  Only a refactor's values are held: a fresh
+    factor's numeric (the first, a fallback's) is not a refactor's, and
+    clears them.  The C units that repeat `solve`'s sequence on `_numeric`
+    keep the same buffers (csrc/pcx_held.h), and one that hands back
+    restores them, and the numeric, as its checkpoint found them.
     """
 
     def __init__(self, m, rows, cols, fallback, libname='libklu.so.2', stamped=None):
@@ -945,6 +1046,17 @@ class StructuralKLU(KLUSolver):
         self.chord_factors = 0
         self.chord_pivot_fallbacks = 0
         self.chord_residual_fallbacks = 0
+        ## THE HELD VALUES (the class's note): the values `_numeric` was last
+        ## refactored on, then a C checkpoint's backup of them; their state
+        ## (`HELD_*`).  Buffers the C units bind for the run: never replaced
+        self._held_v = numpy.zeros(2 * max(self.nnz, 1))
+        self._held_st = numpy.zeros(HELD_N, dtype=numpy.int64)
+
+    @property
+    def reused(self):
+        """The refactors `solve` did not make: the values were those
+        `_numeric` was last refactored on."""
+        return int(self._held_st[HELD_REUSED])
 
     def _ours(self, A):
         """`(A as an array, its values in CSC order)` where `A` is this
@@ -1036,12 +1148,22 @@ class StructuralKLU(KLUSolver):
         rhs = (numpy.ascontiguousarray(rhs.ravel()) if rhs.ndim < 2
                else numpy.asfortranarray(rhs))
         reused = self._numeric is not None
-        if reused and not kept:
+        st = self._held_st
+        if reused and not kept and st[HELD_OK] and _same_bits(Ax, self._held_v[:self.nnz]):
+            ## (THE SAME VALUES: the numeric is their refactor already)
+            st[HELD_REUSED] += 1
+        elif reused and not kept:
             ok = self._lib.klu_refactor(
                 self._ptr(self.Ap, ctypes.c_int), self._ptr(self.Ai, ctypes.c_int),
                 self._ptr(Ax, ctypes.c_double), ctypes.c_void_p(self._analysed()),
                 ctypes.c_void_p(self._numeric), ctypes.byref(self._common))
             self.refactors += 1
+            _held_move(self)
+            st[HELD_OK] = int(ok)
+            if ok:
+                self._held_v[:self.nnz] = Ax
+            else:
+                _held_lost(self)
             if not ok:
                 ## ⚠ THE REUSED PIVOT ORDER MET A ZERO PIVOT: the matrix may
                 ## well be regular under another, so a fresh factor decides --
@@ -1057,6 +1179,7 @@ class StructuralKLU(KLUSolver):
                 self.factors += 1
                 reused = False
         elif not reused:
+            _held_lost(self)
             self._numeric = self._factor(Ax)
             self.factors += 1
         x = rhs.copy(order='F')
@@ -1079,6 +1202,7 @@ class StructuralKLU(KLUSolver):
                 fails = not (resid <= self.REFACTOR_RESIDUAL_TOL)
             if fails:
                 self.residual_fallbacks += 1
+                _held_lost(self)
                 old, self._numeric = self._numeric, None
                 self._free(old)
                 self._numeric = self._factor(Ax)
@@ -1176,7 +1300,8 @@ class StructuralKLU(KLUSolver):
 
     def __repr__(self):
         return (f'StructuralKLU(m={self.m}, nnz={self.nnz}, analyses={self.analyses}, '
-                f'factors={self.factors}, refactors={self.refactors}, numerics={self.numerics}, '
+                f'factors={self.factors}, refactors={self.refactors}, reused={self.reused}, '
+                f'numerics={self.numerics}, '
                 f'fallbacks={self.residual_fallbacks}, pivot_fallbacks={self.pivot_fallbacks}, '
                 f'foreign={self.foreign}, chord={self.chord_refactors}/{self.chord_factors}/'
                 f'{self.chord_pivot_fallbacks}/{self.chord_residual_fallbacks})')

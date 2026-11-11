@@ -257,9 +257,13 @@ def _klu_bind(rec, sk):
         return False
     rec._set_active(sk.take, act_f)
     ffi, s, lib = rec.ffi, rec.s, sk._lib
-    keep = (sk, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai))
+    ## (and its held values, pcx_held.h: the same buffers the Python's
+    ## `solve` reads and writes)
+    keep = (sk, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai),
+            ffi.from_buffer('double *', sk._held_v), ffi.from_buffer('int64_t *', sk._held_st))
     k = s.klu
-    k.kAp, k.kAi = keep[1:]
+    k.kAp, k.kAi = keep[1:3]
+    s.held_v, s.held_st = keep[3:]
     k.klu_factor, k.klu_refactor, k.klu_solve, k.klu_free = (
         ffi.cast('void *', _cbuild.address(f))
         for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))

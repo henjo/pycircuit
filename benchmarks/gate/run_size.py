@@ -13,6 +13,7 @@ import warnings
 warnings.simplefilter('ignore')
 import circuits
 import numpy as np
+import verdict
 
 import pycircuit
 from pycircuit.circuit import (
@@ -61,11 +62,12 @@ def main():
     ax = 0 if x.shape[0] == t.size else -1
     st = tr.statistics
     ch = tr._get_linearsolver()._choice
+    klu, kreu = verdict.klu_counts(ch, KLU)
     print(json.dumps({'kind': kind, 'size': size, 'method': method, 'tend': tend, 'n': tr.cir.n, 'x': h.hexdigest()[:12], 'file': pycircuit.__file__,
                           'solve': round(tot, 3), 'op': round(T['op'], 3), 'c_call': round(T['loop_call'] + T['tc_call'], 3),
                           'python': round(tot - T['op'] - T['run'], 3), 'steps': st.accepted_steps, 'rej': st.rejected_steps,
                           'newton': st.newton_iterations, 'fb': getattr(st, 'chord_fallbacks', 0),
-                          'klu': {k: getattr(ch, k, None) for k in KLU}, 'swing': int(((x.max(axis=ax) - x.min(axis=ax)) > 0.1).sum()),
+                          'klu': klu, 'kreu': kreu, 'swing': int(((x.max(axis=ax) - x.min(axis=ax)) > 0.1).sum()),
                           'peak': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024, 'load': os.getloadavg()[0],
                           'counts': _paths.since(b)}))
 

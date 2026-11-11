@@ -10,14 +10,28 @@ import collections
 import re
 
 #: what a C path and its Python must agree on, and two trees on the same path
-KEYS = ('x', 'err', 'steps', 'rej', 'newton', 'fb', 'klu', 'kmem', 'zmem')
-#: compared where both sides measured them (a tree without the reader leaves None)
-OPTIONAL = ('kmem', 'zmem')
+KEYS = ('x', 'err', 'steps', 'rej', 'newton', 'fb', 'klu', 'kreu', 'kmem', 'zmem')
+#: compared where both sides measured them (a tree without the reader leaves None; `kreu`, the
+#: refactors the held values spared, a tree without them)
+OPTIONAL = ('kreu', 'kmem', 'zmem')
 #: an arm or line's class: taken on a real deck by default, only under a forcing, only at size, only by the suite's tests, by nothing
 CLASSES = ('decks', 'forced', 'size', 'fixture', 'none')
 COMPARED = ('decks', 'forced', 'size')
 #: the fewest unknowns of a benchmark that should move before it says much about a long run
 QUIET_SHARE = 0.01
+
+
+def klu_counts(ch, keys):
+    """The run solver's counts `keys`, and the refactors its held values
+    spared (`StructuralKLU.reused`; None on a tree without them): a spared
+    refactor counted as the refactor it stands for, so a tree with the held
+    values compares with one without -- the spared ones apart (`kreu`), C
+    against Python."""
+    klu = {k: getattr(ch, k, None) for k in keys}
+    reu = getattr(ch, 'reused', None)
+    if reu is not None and klu.get('refactors') is not None:
+        klu['refactors'] += reu
+    return klu, reu
 
 
 def differing(a, b, keys=KEYS):

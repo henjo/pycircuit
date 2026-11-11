@@ -8,6 +8,7 @@
 #include "pcx_dense.h"
 #include "pcx_verdict.h"
 #include "pcx_klu.h"
+#include "pcx_held.h"
 #include "pcx_kluseq.h"
 #include "newton.h"
 #include "lte.h"
@@ -51,7 +52,8 @@ static const double *cache_hit(const newton_t *s, long m, long r)
 }
 
 /* The sparse full Newton's solve (newton.h): `StructuralKLU.solve` on its
-   refactor path, in `b` -- klu_refactor of the run's numeric, klu_solve,
+   refactor path, in `b` -- klu_refactor of the run's numeric (none where it
+   holds these very values: pcx_held.h, counted in `reused`), klu_solve,
    then the validation in numpy's operations and order -- its verdict by
    the sparse sum's bound where that decides (pcx_verdict.h; R is zero off
    the pattern), else: `arr @ x` (numpy's
@@ -70,6 +72,7 @@ static long sparse_full(newton_t *s, long m)
     for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) return NEWTON_BAIL_JNONFINITE;
     for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return NEWTON_BAIL_BNONFINITE;
     if (!s->klu_num) {
+        pcx_held_lost(s->held_st, s->held_v, s->knnz);
         s->klu_num = ((klu_factor_t) s->klu_factor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
                                                     s->klu_common);
         if (!s->klu_num) return NEWTON_BAIL_KLU_FACTOR;
@@ -79,9 +82,14 @@ static long sparse_full(newton_t *s, long m)
         return 0;
     }
     for (i = 0; i < m; i++) s->rb[i] = s->b[i];
-    if (!((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym, s->klu_num,
-                                            s->klu_common))
-        return NEWTON_BAIL_KLU_REFACTOR;
+    if (pcx_held_same(s->held_st, s->held_v, s->kAx, s->knnz)) {
+        s->reused++;
+    } else {
+        const int ok = ((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
+                                                          s->klu_num, s->klu_common);
+        pcx_held_refactored(s->held_st, s->held_v, s->kAx, s->knnz, ok);
+        if (!ok) return NEWTON_BAIL_KLU_REFACTOR;
+    }
     if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_num, (int) m, 1, s->b, s->klu_common))
         return NEWTON_BAIL_KLU_SOLVE;
     /* the validation's verdict by the sparse sum's bound where it decides
@@ -137,7 +145,9 @@ static long solve_step(newton_t *s, long it, int finite, void **num)
                kept for the residual (`rb`), the step into `b`; R the dense
                test's scratch (the full Newton's J reduced: not this call's) */
             for (i = 0; i < m; i++) s->rb[i] = s->b[i];
-            st = pcx_klu_step(&s->ck, s->R, s->rb, s->b, s->ry, s->ckt, m, s->dgemv, 0, NULL);
+            /* (the chord's own numeric: no values held -- pcx_held.h) */
+            st = pcx_klu_step(&s->ck, s->R, s->rb, s->b, s->ry, s->ckt, m, s->dgemv, 0, NULL,
+                              NULL, NULL);
             if (st == PCX_KLU_FACTOR) return NEWTON_BAIL_KLU_FACTOR;
             if (st == PCX_KLU_SOLVE) return NEWTON_BAIL_KLU_SOLVE;
             if (st) return NEWTON_BAIL_KLU_RESIDUAL;
@@ -626,6 +636,7 @@ long pcx_newton(newton_t *s)
     const double *c0 = 0;
     k->klu_out = k->klu_num;
     s->fallbacks = s->fb_iters = s->num_made = 0;
+    s->reused = 0;
     status = iterate(s, &num, 0, &c0);
     s->fb_limit = 0;
     if (s->chord && s->fb_on && (status == NEWTON_BAIL_CHORDBREAK || status == NEWTON_BAIL_MAXITER)

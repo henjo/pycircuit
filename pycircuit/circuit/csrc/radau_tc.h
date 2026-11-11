@@ -160,6 +160,12 @@ typedef struct {
        from the core's packed bin `binGp` (npat, the pattern's order) */
     long sets;
     const double *binGp;
+    /* THE HELD VALUES (pcx_held.h): StructuralKLU's `_held_v` and
+       `_held_st` where `rk` is bound to its run numeric (NULL: the rule off);
+       OWN `held_own`, whether this call opened the checkpoint */
+    double *held_v;
+    int64_t *held_st;
+    long held_own;
 } radau_tf_t;
 
 /* the step's two factors as a job of the pool (radau_tc.c's `tf_pair`): its

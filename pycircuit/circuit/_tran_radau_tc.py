@@ -928,10 +928,14 @@ def _rk_bind(rec, sk, fz):
     if keep is None or keep[0] is not sk:
         lib = sk._lib
         work = np.empty(max(m * m, 1))
+        ## (and the run numeric's held values, pcx_held.h)
         keep = rec.rk_keep = [sk, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai),
-                              None, work, ffi.from_buffer('double *', work)]
+                              None, work, ffi.from_buffer('double *', work),
+                              ffi.from_buffer('double *', sk._held_v),
+                              ffi.from_buffer('int64_t *', sk._held_st)]
         k.kAp, k.kAi = keep[1], keep[2]
         s.rk_A = keep[5]
+        s.held_v, s.held_st = keep[6], keep[7]
         k.klu_factor, k.klu_refactor, k.klu_solve, k.klu_free = (
             ffi.cast('void *', _cbuild.address(f))
             for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))

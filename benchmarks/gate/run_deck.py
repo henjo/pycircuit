@@ -13,12 +13,14 @@ sys.path.insert(0, 'benchmarks')
 import numpy as np
 import settings
 import spice_suite
+import verdict
 
 import pycircuit
 from pycircuit.circuit import _paths, circuit, spice_import
 from pycircuit.circuit import integrator as I
 
 KLU = ('factors', 'refactors', 'pivot_fallbacks', 'residual_fallbacks', 'chord_factors', 'chord_refactors')
+
 
 
 def _sha(*arrays):
@@ -90,7 +92,8 @@ def main():
     ls = _dc(imp, rec) if method == 'dc' else _tran(imp, deck, method, setting, rec)
     rec['s'] = round(time.perf_counter() - t0, 3)
     ch = getattr(ls, '_choice', ls)
-    rec.update(solver=type(ch).__name__, klu={k: getattr(ch, k, None) for k in KLU}, counts=_paths.since(b), **_held(ls))
+    klu, kreu = verdict.klu_counts(ch, KLU)
+    rec.update(solver=type(ch).__name__, klu=klu, kreu=kreu, counts=_paths.since(b), **_held(ls))
     print(json.dumps(rec))
 
 

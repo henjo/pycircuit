@@ -18,6 +18,7 @@
 #include "pcx_fenv.h"
 #include "pcx_klu.h"
 #include "pcx_verdict.h"
+#include "pcx_held.h"
 #include "pcx_kluseq.h"
 #include "radau.h"
 
@@ -35,11 +36,17 @@
    may not. */
 #define RC_FLAGS (FE_OVERFLOW | FE_INVALID | FE_DIVBYZERO)
 
-/* every hand-back: the KLU's numeric the entry's (THE NUMERIC, pcx_klu.h),
-   the flags cleared, `status` set; returns `why` */
+/* every hand-back: the KLU's numeric the entry's (THE NUMERIC, pcx_klu.h)
+   and its held values (pcx_held.h), the flags cleared, `status` set;
+   returns `why` */
 static long rc_bail(radau_t *s, long why)
 {
-    if (s->klu.klu_sym) pcx_klu_finish(&s->klu, 1);
+    if (s->klu.klu_sym) {
+        pcx_klu_finish(&s->klu, 1);
+        pcx_held_back(s->held_st, s->held_v, s->klu.kAp[3 * (s->n - 1)], s->held_own,
+                      s->klu.klu_refactor, s->klu.kAp, s->klu.kAi, s->klu.klu_sym,
+                      s->klu.klu_common);
+    }
     feclearexcept(FE_ALL_EXCEPT);
     s->status = why;
     return why;
@@ -157,7 +164,8 @@ static long assemble(radau_t *s, long a)
    arithmetic) */
 static long stage_klu(radau_t *s, long M)
 {
-    long st = pcx_klu_step(&s->klu, s->Ad, s->b, s->kx, s->ky, s->kt, M, s->dgemv, 0, NULL);
+    long st = pcx_klu_step(&s->klu, s->Ad, s->b, s->kx, s->ky, s->kt, M, s->dgemv, 0, NULL,
+                           s->held_v, s->held_st);
     if (st == PCX_KLU_FLAGS) return RADAU_BAIL_FLAGS;
     if (st) return RADAU_BAIL_KLU;
     return 0;
@@ -198,6 +206,7 @@ long pcx_radau(radau_t *s)
     s->klu.refactors = s->klu.factors = s->klu.pivot_fallbacks = 0;
     s->klu.residual_fallbacks = 0;
     s->klu.klu_out = s->klu.klu_num;
+    s->held_own = s->klu.klu_sym ? pcx_held_open(s->held_st, s->klu.klu_num) : 0;
     s->assemblies = 0;
     s->iters = 0;
     s->status = RADAU_RUNNING;
@@ -298,6 +307,7 @@ long pcx_radau(radau_t *s)
         if (scale <= s->tolv[1]) {
             if (s->klu.klu_sym) {
                 pcx_klu_finish(&s->klu, 0);
+                pcx_held_commit(s->held_st, s->held_own);
                 s->fin_ok = klu_finite(s);
             }
             s->assemblies = a + 1;

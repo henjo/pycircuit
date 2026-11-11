@@ -484,7 +484,11 @@ def _klu_bind(rec, sk):
     ck.klu_factor, ck.klu_refactor = s.klu_factor, s.klu_refactor
     ck.klu_solve, ck.klu_free = s.klu_solve, s.klu_free
     ck.resid_tol = s.resid_tol
-    rec.klu, rec.klu_sym, rec.klu_keep = sk, sk._symbolic, keep
+    ## (the run numeric's held values, pcx_held.h: the buffers the Python's
+    ## `solve` reads and writes -- the chord's own numeric holds none)
+    held = (ffi.from_buffer('double *', sk._held_v), ffi.from_buffer('int64_t *', sk._held_st))
+    s.held_v, s.held_st = held
+    rec.klu, rec.klu_sym, rec.klu_keep = sk, sk._symbolic, keep + held
     return True
 
 
@@ -801,6 +805,32 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     _arm_set(rec, M, early)
     if sparse:
         chord_in(rec)
+    return _held_call(ch if sparse else None, _outcome, tr, td, func, M, P, rec, drv, core, iref,
+                      active, h, h_last, chord, sparse, ch, want_j, early, trace, memo)
+
+
+def _held_call(sk, call, *args):
+    """`call(*args)` -- the C call and its outcome -- with the held values
+    of `sk`'s run numeric checkpointed (pcx_held.h; None: no sparse solve):
+    a hand-back (None) leaves them as found; a serve, or the iteration
+    limit's raise, keeps what the C did."""
+    from pycircuit.circuit import linearsolver
+    own = linearsolver.held_open(sk) if sk is not None else 0
+    try:
+        out = call(*args)
+    except BaseException:
+        linearsolver.held_commit(sk, own)
+        raise
+    (linearsolver.held_back if out is None else linearsolver.held_commit)(sk, own)
+    return out
+
+
+def _outcome(tr, td, func, M, P, rec, drv, core, iref, active, h, h_last, chord, sparse, ch,
+             want_j, early, trace, memo):
+    """The call and what it leaves (`solve`): the chord's numeric taken back,
+    the early abort's stop, a solve not converged (`_unconverged`) or the
+    serve (`_serve`)."""
+    s = rec.s
     status = drv[1](s)
     if sparse:
         chord_out(rec)
@@ -857,12 +887,13 @@ def _unconverged(tr, td, rec, P, M, status, chord, trace, memo):
 def _count_full(sk, s, solves):
     """The full Newton's `solves` on the run's numeric: a refactor each -- the
     first the factor where this call made it (newton.h's THE RUN'S FIRST
-    NUMERIC)."""
+    NUMERIC), none where it held the values (`reused`, pcx_held.h: counted
+    in the solver's own state)."""
     if s.num_made:
         _PC['newton_c:first_numeric'] += 1
         sk.factors += 1
         solves -= 1
-    sk.refactors += solves
+    sk.refactors += solves - s.reused
 
 
 def _maxiter(tr, td, rec, P):

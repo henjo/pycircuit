@@ -294,8 +294,8 @@ class _Run:
     structs it drives -- bound to the C Newton's record, the source table and
     the screen it was made for (and, adaptive, the error test's context)."""
 
-    __slots__ = ('br', 'buf', 'cert', 'ct', 'ffi', 'keep', 'lte', 'npat', 'nrec', 'pr', 's', 'sets', 'sk',
-                 'tab')
+    __slots__ = ('br', 'buf', 'cert', 'ct', 'ffi', 'held_keep', 'keep', 'lte', 'npat', 'nrec', 'pr',
+                 's', 'sets', 'sk', 'tab')
 
 
 def _addr(ffi, obj):
@@ -1029,7 +1029,13 @@ def run(loop):
         ## Python's solves replace it -- newton.h; and the chord's own)
         num = rec.klu._numeric
         rec.s.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
+    hsk = _held_bind(run_, rec, s)
     status = _call(drv, rec, s, tr.statistics)
+    from pycircuit.circuit import linearsolver
+    if hsk is not None and hsk._held_st[linearsolver.HELD_OPEN]:
+        ## (the attempt the loop stopped in left its held values' checkpoint
+        ## open: as it found them, for the Python's repeat -- loop.h)
+        linearsolver.held_back(hsk, 1)
     if status not in (_CODES['LOOP_DONE'], _CODES['LOOP_FULL']):
         _no('loop_c:bail:' + BAIL.get(status, str(status)))
     if not s.attempts:
@@ -1047,15 +1053,40 @@ def run(loop):
 _CIRCUIT_SHADOWS = ('u', 'G', 'C', 'i', 'q', 'limit', 'next_event', 'accept_step')
 
 
+def held_ptrs(run_, s, run_sk, stage_sk=None):
+    """The loop `s` bound for its attempts' checkpoints of the held values
+    (loop.h, pcx_held.h): the run numeric's StructuralKLU `run_sk` and the
+    stage system's `stage_sk` (`held2_*`), NULL where None."""
+    ffi, keep = run_.ffi, []
+    for sk, fv, fs in ((run_sk, 'held_v', 'held_st'), (stage_sk, 'held2_v', 'held2_st')):
+        if sk is None:
+            setattr(s, fv, ffi.NULL)
+            setattr(s, fs, ffi.NULL)
+            continue
+        pv, ps = ffi.from_buffer('double *', sk._held_v), ffi.from_buffer('int64_t *', sk._held_st)
+        keep += [pv, ps]
+        setattr(s, fv, pv)
+        setattr(s, fs, ps)
+    run_.held_keep = tuple(keep)
+
+
+def _held_bind(run_, rec, s):
+    """The run numeric's StructuralKLU -- the full Newton's, or the error
+    test's -- bound for the attempts' checkpoints (`held_ptrs`), or None."""
+    sk = rec.klu if rec.klu is not None else run_.sk
+    held_ptrs(run_, s, sk)
+    return sk
+
+
 def _full_counts(rec, s):
     """The StructuralKLU's counts of the attempts' full Newtons.  Not on the
     chord: a refactor of the run's numeric an iteration (the chord's counts
     its own: `chord_out`).  On it, its fallbacks': their refactors, the factor
     of the numeric one made among them (newton.h's THE RUN'S FIRST NUMERIC)."""
     if not rec.s.chord:
-        rec.klu.refactors += s.iters
+        rec.klu.refactors += s.iters - s.full_reused
         return
-    rec.klu.refactors += s.fb_refactors - s.nums_made
+    rec.klu.refactors += s.fb_refactors - s.fb_reused - s.nums_made
     rec.klu.factors += s.nums_made
     if s.nums_made:
         _PC['newton_c:first_numeric'] += s.nums_made
@@ -1178,8 +1209,9 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
         if ct.have_q:
             ctrl._q_carried = float(ct.q_carried)
         if run_.sk is not None:
-            ## (an error test on the seed's factors refactors nothing)
-            run_.sk.refactors += s.ltes - s.lte_seeds
+            ## (an error test on the seed's factors refactors nothing, nor one
+            ## whose values the numeric held: pcx_held.h)
+            run_.sk.refactors += s.ltes - s.lte_seeds - s.lte_reused
     loop.t, loop.h = float(s.t), float(s.h)
     loop.landing = bool(s.landing)
     loop.order_drop = bool(s.order_drop)

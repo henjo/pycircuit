@@ -271,7 +271,11 @@ def _klu_bind(ctx, sk):
                                    for f in (lib.klu_refactor, lib.klu_solve))
     s.klu_common = ffi.cast('void *', ct.addressof(sk._common))
     s.klu_sym = ffi.cast('void *', sk._symbolic)
-    ctx.klu, ctx.klu_sym, ctx.klu_keep = sk, sk._symbolic, keep
+    ## (the run numeric's held values, pcx_held.h: the buffers the Python's
+    ## `solve` reads and writes)
+    held = (fb('double *', sk._held_v), fb('int64_t *', sk._held_st))
+    s.held_v, s.held_st = held
+    ctx.klu, ctx.klu_sym, ctx.klu_keep = sk, sk._symbolic, keep + held
     return True
 
 
@@ -315,16 +319,25 @@ def max_error(ctrl, s):
     ctx = _load(ctrl, s, drv, sk, euler, sc, arr, held=held)
     if ctx is None:
         return None    # paths: counted by _load
+    ## (the run numeric's held values checkpointed: a hand-back leaves them
+    ## as found -- pcx_held.h)
+    from pycircuit.circuit import linearsolver
+    own = linearsolver.held_open(sk) if sk is not None else 0
     status = drv[1](ctx.s)
     ## (the factors in hand are this call's alone: `_load` set them last)
     ctx.s.lu_mode = 0
     if status != _CODES['LTE_DONE']:
+        if own:
+            linearsolver.held_back(sk, own)
         return _no('lte_c:bail:' + BAIL.get(status, str(status)))
+    if own:
+        linearsolver.held_commit(sk, own)
     _PC['lte_c:served'] += 1
     ctx.served = _watch.now()
     if sk is not None:
-        ## (the refactor `StructuralKLU.solve` counts)
-        sk.refactors += 1
+        ## (the refactor `StructuralKLU.solve` counts -- none where it held
+        ## the values: pcx_held.h)
+        sk.refactors += 1 - int(ctx.s.reused)
         _PC['lte_c:sparse_served'] += 1
     elif held is not None:
         _PC['lte_c:held'] += 1

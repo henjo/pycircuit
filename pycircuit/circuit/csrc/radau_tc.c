@@ -17,6 +17,7 @@
 #include "pcx_fenv.h"
 #include "pcx_klu.h"
 #include "pcx_verdict.h"
+#include "pcx_held.h"
 #include "pcx_kluseq.h"
 #include "radau_tc.h"
 
@@ -108,7 +109,7 @@ static long tf_real(radau_tf_t *s, long m)
     int64_t m64 = m, one64 = 1, info64 = 0;
     if (s->rk_on) {
         long st = pcx_klu_kept(&s->rk, &s->rk_held, s->rk_A, s->b0, s->x0, s->rk_y, s->rk_t, m,
-                               s->rk_dgemv, &s->rk_dense);
+                               s->rk_dgemv, &s->rk_dense, s->held_v, s->held_st);
         feclearexcept(FE_ALL_EXCEPT);
         return st ? RADAU_TC_BAIL_KLUREAL : 0;
     }
@@ -496,7 +497,18 @@ long pcx_radau_tc(radau_tf_t *s)
         s->rk.klu_out = s->rk.klu_num;
         s->rk.refactors = s->rk.factors = s->rk.pivot_fallbacks = s->rk.residual_fallbacks = 0;
     }
+    s->held_own = own ? pcx_held_open(s->held_st, s->rk.klu_num) : 0;
     status = tf_newton(s);
-    if (own) pcx_klu_finish(&s->rk, status != RADAU_TC_CONVERGED && status != RADAU_TC_MAXITER);
+    if (own) {
+        const int back = status != RADAU_TC_CONVERGED && status != RADAU_TC_MAXITER;
+        pcx_klu_finish(&s->rk, back);
+        /* (the held values as the outcome leaves them: pcx_held.h) */
+        if (back)
+            pcx_held_back(s->held_st, s->held_v, s->rk.kAp[s->n - 1], s->held_own,
+                          s->rk.klu_refactor, s->rk.kAp, s->rk.kAi, s->rk.klu_sym,
+                          s->rk.klu_common);
+        else
+            pcx_held_commit(s->held_st, s->held_own);
+    }
     return status;
 }

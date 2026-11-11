@@ -111,6 +111,12 @@ typedef struct {
     long is_made;
     long dense_conv,      /* the convergence tests made dense */
          dense_resid;     /* the refactors' residual tests made dense */
+    /* THE HELD VALUES (pcx_held.h): StructuralKLU's `_held_v` and
+       `_held_st` where the record is bound to its run numeric (NULL: the
+       rule off); OWN `held_own`, whether this call opened the checkpoint */
+    double *held_v;
+    int64_t *held_st;
+    long held_own;
 } dcnewton_t;
 
 long pcx_dcnewton(dcnewton_t *s);

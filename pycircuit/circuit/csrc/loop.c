@@ -18,6 +18,7 @@
 #include "ctrl.h"
 #include "lmmsens.h"
 #include "pcx_verdict.h"
+#include "pcx_held.h"
 #include "pcx_kluseq.h"
 #include "radau.h"
 #include "radau_tc.h"
@@ -74,6 +75,8 @@ static void ck_commit(loop_t *s)
     newton_t *nt = (newton_t *) s->newton;
     if (!s->ck_live) return;
     s->ck_live = 0;
+    pcx_held_commit(s->held_st, s->held_own);
+    s->held_own = 0;
     if (s->ck_entry != nt->ck.klu_num) pcx_klu_free(&nt->ck, s->ck_entry);
     s->nums_made += nt->num_made;
     nt->num_made = 0;
@@ -90,6 +93,9 @@ static void ck_open(loop_t *s, newton_t *nt)
     s->ck_q0 = k->residual_fallbacks;
     s->ck_live = 1;
     nt->ck_defer = 1;
+    /* (and the held values' checkpoint, on the run numeric as it stands:
+       left open by a stop, for the glue -- loop.h) */
+    s->held_own = pcx_held_open(s->held_st, nt->klu_num);
 }
 
 static void ck_back(loop_t *s)
@@ -145,9 +151,12 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
         s->last_err = a->err;
         s->ltes++;
         s->lte_seeds += nt->lte_held;
+        s->lte_reused += le->reused;
         s->lte_euler += a->formula == PCX_FORMULA_EULER;
     }
     s->iters += nt->iters;
+    if (nt->chord) s->fb_reused += nt->reused;
+    else s->full_reused += nt->reused;
     s->chord_fallbacks += nt->fallbacks;
     if (nt->klu_sym) s->fb_refactors += nt->fb_iters;
     s->early_checks += a->early_checks;
@@ -456,6 +465,8 @@ static void early_reject(loop_t *s, const loop_attempt_t *a)
     ct->point = s->npoint - 1;
     CALL(s->ctrl_fn, pcx_ctrl, ct);
     s->iters += nt->iters;
+    if (nt->chord) s->fb_reused += nt->reused;
+    else s->full_reused += nt->reused;
     s->early_checks += a->early_checks;
     if (s->hk >= 2) s->pred_fast++;
     s->rejected++;
@@ -484,8 +495,12 @@ static void newton_reject(loop_t *s, const loop_attempt_t *a)
     s->rejected++;
     s->newton_rejects++;
     s->early_checks += a->early_checks;
-    /* (the full Newton's solves: a refactor of the run's numeric each) */
-    if (nt->klu_sym) s->fb_refactors += nt->maxiter;
+    /* (the full Newton's solves: a refactor of the run's numeric each, but
+       where it held the values: pcx_held.h) */
+    if (nt->klu_sym) {
+        s->fb_refactors += nt->maxiter;
+        s->fb_reused += nt->reused;
+    }
     ck_commit(s);
     s->imposed = a->clamped || s->imposed;
     s->landing = a->landing;
@@ -1349,7 +1364,7 @@ static long tc_rsolve(loop_t *s)
     int64_t m = s->n - 1, one = 1, info = 0;
     if (s->rk_klu) {
         long st = pcx_klu_kept(&tf->rk, &tf->rk_held, tf->rk_A, s->eb, s->rkx, tf->rk_y, tf->rk_t,
-                               m, tf->rk_dgemv, &tf->rk_dense);
+                               m, tf->rk_dgemv, &tf->rk_dense, tf->held_v, tf->held_st);
         feclearexcept(FE_ALL_EXCEPT);
         if (st) return LOOP_BAIL_ESTIMATE;
         COPY(s->eb, s->rkx, m);
@@ -2176,6 +2191,23 @@ static void stage_accept(loop_t *s, const loop_attempt_t *a)
 /* the stage family's loop (`_SteppingLoop.execute` over `_StageSteps`):
    where, take, judge, accept -- the multistep family's `where` and point
    bookkeeping; its early abort and Newton rejection are not this family's */
+/* THE HELD VALUES' CHECKPOINTS of an attempt (loop.h): opened before its
+   take on the numerics as they stand -- the run numeric's (the transform's
+   real factor) and the stage system's -- and committed where it is made */
+static void held_open_attempt(loop_t *s)
+{
+    void *run = s->rk_klu ? ((radau_tf_t *) s->tc)->rk.klu_num : NULL;
+    s->held_own = pcx_held_open(s->held_st, run);
+    s->held2_own = pcx_held_open(s->held2_st, s->klu_cur);
+}
+
+static void held_commit_attempt(loop_t *s)
+{
+    pcx_held_commit(s->held_st, s->held_own);
+    pcx_held_commit(s->held2_st, s->held2_own);
+    s->held_own = s->held2_own = 0;
+}
+
 static long stage_loop(loop_t *s)
 {
     loop_attempt_t a;
@@ -2184,19 +2216,26 @@ static long stage_loop(loop_t *s)
         if (!(s->t < s->tend)) return LOOP_DONE;
         if (s->k >= s->cap) return LOOP_FULL;
         if ((st = where(s, &a)) != 0) return st;
+        held_open_attempt(s);
         if ((st = s->tmode ? tc_take(s, &a) : stage_take(s, &a)) != 0) {
             if (st != LOOP_JUDGE_EARLY) return st;
             tc_abort(s, &a);
+            held_commit_attempt(s);
             continue;
         }
         st = stage_judge(s, &a);
-        if (st == LOOP_JUDGE_RETRY) continue;
+        if (st == LOOP_JUDGE_RETRY) {
+            held_commit_attempt(s);
+            continue;
+        }
         if (st != LOOP_JUDGE_ACCEPT) {
-            /* (the transform's attempt not made: its memo roll taken back) */
+            /* (the transform's attempt not made: its memo roll taken back;
+               the held values left to the glue -- loop.h) */
             if (s->tmode) tc_undo(s, &a);
             return st;
         }
         stage_accept(s, &a);
+        held_commit_attempt(s);
     }
 }
 
@@ -2218,6 +2257,7 @@ long pcx_loop(loop_t *s)
     s->attempts = s->rejected = s->iters = s->euler_steps = s->breaks = s->screens = 0;
     s->pred_fast = s->ltes = s->lte_seeds = s->lte_euler = s->early_aborts = s->early_checks = 0;
     s->newton_rejects = s->chord_fallbacks = s->fb_refactors = s->nums_made = 0;
+    s->full_reused = s->fb_reused = s->lte_reused = 0;
     s->maps = 0;
     if (s->walk) {
         st = walk(s);

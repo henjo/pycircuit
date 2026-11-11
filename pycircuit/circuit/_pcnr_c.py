@@ -601,17 +601,22 @@ class _Rec:
         if ch is None:
             self.klu, self.klu_keep = None, ()
             s.klu.klu_sym = ffi.NULL
+            s.held_v, s.held_st = ffi.NULL, ffi.NULL
             return
         if self.klu is ch and s.klu.klu_sym == ffi.cast('void *', ch._symbolic):
             return
         take = np.ascontiguousarray(ch.take, dtype=np.int64)
         kAx = np.empty(max(len(take), 1))
+        ## (and its held values, pcx_held.h: the buffers the Python's `solve`
+        ## reads and writes)
         keep = (ch, take, kAx, ffi.from_buffer('int64_t *', take),
                 ffi.from_buffer('double *', kAx), ffi.from_buffer('int *', ch.Ap),
-                ffi.from_buffer('int *', ch.Ai))
+                ffi.from_buffer('int *', ch.Ai), ffi.from_buffer('double *', ch._held_v),
+                ffi.from_buffer('int64_t *', ch._held_st))
         s.nact, s.act_r, s.klu.kAx = len(take), keep[3], keep[4]
         k, lib = s.klu, ch._lib
-        k.kAp, k.kAi = keep[5:]
+        k.kAp, k.kAi = keep[5:7]
+        s.held_v, s.held_st = keep[7:]
         k.klu_factor, k.klu_refactor, k.klu_solve, k.klu_free = (
             ffi.cast('void *', _cbuild.address(f))
             for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))

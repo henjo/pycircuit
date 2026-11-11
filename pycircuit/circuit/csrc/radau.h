@@ -96,6 +96,13 @@ typedef struct {
        on RADAU_CONVERGED and the earlier ones' not kept (a large circuit's:
        each is 6 n^2 doubles); 0, each in its own slot */
     long one_slot;
+    /* THE HELD VALUES (pcx_held.h): the stage system's StructuralKLU's
+       `_held_v` and `_held_st` where `klu` is bound to its numeric (NULL:
+       the rule off); OWN `held_own`, whether this call opened the
+       checkpoint (the C loop opens one an attempt) */
+    double *held_v;
+    int64_t *held_st;
+    long held_own;
 } radau_t;
 long pcx_radau(radau_t *s);
 

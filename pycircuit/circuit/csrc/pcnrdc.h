@@ -130,6 +130,12 @@ typedef struct {
     const int64_t *gmap;  /* (np) each entry of P's index in the core's
                              pattern, -1 off it (G zero there); set where P
                              is -- NULL (no pattern): J gathered from binG */
+    /* THE HELD VALUES (pcx_held.h): StructuralKLU's `_held_v` and
+       `_held_st` where the record is bound to its run numeric (NULL: the
+       rule off); OWN `held_own`, whether this solve opened the checkpoint */
+    double *held_v;
+    int64_t *held_st;
+    long held_own;
 } pcnrdc_t;
 
 long pcx_pcnrdc(pcnrdc_t *s);

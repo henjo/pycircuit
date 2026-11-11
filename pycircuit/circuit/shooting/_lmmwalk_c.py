@@ -484,11 +484,11 @@ def _chunks(c, e, j0, x, times, hs, want_pts):
     """The calls, a chunk of steps each, its tables made first (`_table`),
     the chunks growing: what they made (a namespace), each step's point and
     time kept for the records."""
-    from pycircuit.circuit import _watch
+    from pycircuit.circuit import _watch, linearsolver
     s, buf, n, iref, rec = c.run.s, c.run.buf, e.n, e.iref, e.rec
     stats = getattr(e.tr, 'statistics', None) or _NOSTATS
     run = SimpleNamespace(status=_DONE, made=0, j=j0, prev=x, before=x, pts=[], iters=0,
-                          attempts=0, screens=0, pred_fast=0, maps=0)
+                          attempts=0, screens=0, pred_fast=0, maps=0, full_reused=0)
     s.t = float(times[j0])
     size = CHUNK_FIRST
     while run.j < e.nsteps:
@@ -507,7 +507,12 @@ def _chunks(c, e, j0, x, times, hs, want_pts):
             ## (the run's numeric as it stands, for the sparse full Newton)
             num = rec.klu._numeric
             rec.s.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
+        hsk = _tran_loop_c._held_bind(c.run, rec, s)
         run.status = _tran_loop_c._call(e.drv, rec, s, stats)
+        if hsk is not None and hsk._held_st[linearsolver.HELD_OPEN]:
+            ## (the attempt the loop stopped in: its held values as it found
+            ## them, for the Python's repeat -- loop.h)
+            linearsolver.held_back(hsk, 1)
         k = int(s.k)
         _undo(e, rows, k)
         for r in range(k):
@@ -519,6 +524,7 @@ def _chunks(c, e, j0, x, times, hs, want_pts):
         run.made += k
         run.j += k
         run.iters += int(s.iters)
+        run.full_reused += int(s.full_reused)
         run.attempts += int(s.attempts)
         run.screens += int(s.screens)
         run.pred_fast += int(s.pred_fast)
@@ -540,8 +546,9 @@ def _settle(c, e, run):
     rec, a = e.rec, run.attempts
     if rec.klu is not None:
         if not rec.s.chord:
-            ## (the chord's counts its own: `_tran_newton_c.chord_out`)
-            rec.klu.refactors += run.iters
+            ## (the chord's counts its own: `_tran_newton_c.chord_out`; none
+            ## where the numeric held the values: pcx_held.h)
+            rec.klu.refactors += run.iters - run.full_reused
         _PC['newton_c:sparse'] += a
     _PC['newton_c:served'] += a
     _PC['newton_c:iterations'] += run.iters

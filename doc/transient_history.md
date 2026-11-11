@@ -6028,3 +6028,16 @@ transient 1.3x, every answer the same bytes.  Verifying it surfaced a suite
 flake older than the stage -- an earlier test's watched dict freed by the
 collector inside the next test moved the readiness counter -- closed by
 collecting, then freezing, before each test.
+
+## The same values reuse the numeric (2026-11-11)
+
+2026-11-11 (`doc/hdl_roadmap_260824.md`, 316; plan 261 L19).  On the whole IBM
+grid KLU's refactor was two thirds of the stepping loop, and most of those
+refactors factored values the numeric already held a refactor of: the grid
+is linear, so its matrix repeats whenever the step's coefficients do.
+`StructuralKLU` now keeps the values its numeric was last refactored on and
+makes no refactor of the very same values again -- the same numeric, so the
+same solution -- and every C twin of its solve keeps the same buffers, with
+a checkpoint a hand-back restores so the Python's repeat decides as before.
+The grid's 10 ns transient 57 -> 29 s, the merged grid's 18 -> 11 s; every
+answer the same bytes, every other circuit as it was.

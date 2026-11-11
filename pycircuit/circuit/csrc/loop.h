@@ -378,6 +378,23 @@ typedef struct {
        and aborts this call (zeroed by pcx_loop) */
     double stall_th;
     long tc_stallchecks, tc_stallaborts;
+    /* THE HELD VALUES (pcx_held.h), an attempt's checkpoint: CTX the run
+       numeric's StructuralKLU's `_held_v` / `_held_st` (the full Newton's,
+       the error test's, the transform's real factor's) and the stage
+       system's (`held2_*`), NULL where not bound; each attempt opens both
+       before its take and commits them where it is made -- an attempt the
+       loop stops in leaves them open, and the glue restores them as they
+       were (`linearsolver.held_back`) before the Python repeats it.  OWN
+       `held_own`, `held2_own`; OUT the made attempts' refactors not made:
+       the full Newton's among its iterations (`full_reused`) or among the
+       chord's fallbacks' (`fb_reused`), the error tests' (`lte_reused`) --
+       zeroed by pcx_loop */
+    double *held_v;
+    int64_t *held_st;
+    double *held2_v;
+    int64_t *held2_st;
+    long held_own, held2_own;
+    long full_reused, fb_reused, lte_reused;
 } loop_t;
 long pcx_loop(loop_t *s);
 

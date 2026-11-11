@@ -22,6 +22,7 @@
 #include <math.h>
 #include <fenv.h>
 #include "pcx_abi.h"
+#include "pcx_held.h"
 #include "pcx_minmax.h"
 #include "pcx_fenv.h"
 #include "pcx_dense.h"
@@ -103,9 +104,15 @@ static long sparse_solve(lte_t *s, long n, long r)
     if ((why = klu_values(s, n, r)) != 0) return why;
     pcx_drop_ref(s->lte, s->b, n, r);
     for (i = 0; i < m; i++) s->x[i] = s->b[i];
-    if (!((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym, s->klu_num,
-                                            s->klu_common))
-        return LTE_BAIL_KLU;
+    /* (none where the numeric holds these very values: pcx_held.h) */
+    if (pcx_held_same(s->held_st, s->held_v, s->kAx, s->knnz)) {
+        s->reused++;
+    } else {
+        const int ok = ((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
+                                                          s->klu_num, s->klu_common);
+        pcx_held_refactored(s->held_st, s->held_v, s->kAx, s->knnz, ok);
+        if (!ok) return LTE_BAIL_KLU;
+    }
     if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_num, (int) m, 1, s->x, s->klu_common))
         return LTE_BAIL_KLU;
     /* (what KLU raised inside: the Python's ctypes call never sees it) */
@@ -510,6 +517,7 @@ static long stage_lte(lte_t *s, long n, long r)
 long pcx_lte(lte_t *s)
 {
     long n = s->n, r = s->iref, why;
+    s->reused = 0;
     if (s->formula == LTE_FORMULA_STAGE) return stage_lte(s, n, r);
     if (!inputs_finite(s, n)) return lte_bail(s, LTE_BAIL_NONFINITE);
     if ((why = charge_lte(s, n)) != 0) return lte_bail(s, why);

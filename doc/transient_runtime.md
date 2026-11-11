@@ -96,6 +96,9 @@ signatures, the LAPACK, BLAS and KLU typedefs, the pass bits and formula codes);
 `csrc/pcx_klu.h` the run's StructuralKLU as a unit holds it (a struct `dcnewton.h` and `pcnrdc.h`
 embed: their cdef is its text and then their own) and `csrc/pcx_kluseq.h` StructuralKLU.solve's
 own sequence, written once for `dcnewton.c` and `pcnrdc.c`;
+`csrc/pcx_held.h` the values StructuralKLU's run numeric was last refactored on, which every C twin
+of that sequence keeps in the solver's own buffers (a refactor of the very same values not made
+again), and a C call's checkpoint of them, restored where it hands back;
 `csrc/pcx_fenv.h` the floating-point flags a unit tests and THE FLAG RULE every such unit keeps
 (each operation a flag test covers stores its result before the test).
 `csrc/pcx_minmax.h` min and max as Python and numpy pick them (which operand a tie or a NaN

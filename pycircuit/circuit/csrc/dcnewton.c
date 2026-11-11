@@ -22,6 +22,7 @@
 #include "core.h"
 #include "pcx_klu.h"
 #include "pcx_verdict.h"
+#include "pcx_held.h"
 #include "pcx_kluseq.h"
 #include "dcnewton.h"
 
@@ -30,11 +31,21 @@
 #define DC_FLAGS (FE_OVERFLOW | FE_INVALID | FE_DIVBYZERO)
 
 /* every return: the numeric as the outcome leaves it (`pcx_klu_finish`: a
-   hand-back the entry's, CONVERGED and MAXITER the sequence's) -- the flags
-   clear */
+   hand-back the entry's, CONVERGED and MAXITER the sequence's), and the
+   held values (pcx_held.h: a hand-back's as the entry found them) -- the
+   flags clear */
 static long finish(dcnewton_t *s, long status)
 {
-    if (s->klu.klu_sym) pcx_klu_finish(&s->klu, status >= DCNEWTON_BAIL_FLAGS);
+    if (s->klu.klu_sym) {
+        const int back = status >= DCNEWTON_BAIL_FLAGS;
+        pcx_klu_finish(&s->klu, back);
+        if (back)
+            pcx_held_back(s->held_st, s->held_v, s->klu.kAp[s->n - 1], s->held_own,
+                          s->klu.klu_refactor, s->klu.kAp, s->klu.kAi, s->klu.klu_sym,
+                          s->klu.klu_common);
+        else
+            pcx_held_commit(s->held_st, s->held_own);
+    }
     feclearexcept(FE_ALL_EXCEPT);
     return s->status = status;
 }
@@ -95,7 +106,7 @@ static long klu_step(dcnewton_t *s, long m)
     long i, st;
     for (i = 0; i < s->nact; i++) s->klu.kAx[i] = s->R[s->act_r[i]];
     st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->vt, m, s->dgemv, PCX_A_ON_PATTERN,
-                      &s->dense_resid);
+                      &s->dense_resid, s->held_v, s->held_st);
     if (st == PCX_KLU_FLAGS) return DCNEWTON_BAIL_FLAGS;
     return st ? DCNEWTON_BAIL_SINGULAR : 0;
 }
@@ -315,6 +326,7 @@ long pcx_dcnewton(dcnewton_t *s)
     s->dense_conv = s->dense_resid = 0;
     s->is_made = 0;
     s->klu.klu_out = s->klu.klu_num;
+    s->held_own = s->klu.klu_sym ? pcx_held_open(s->held_st, s->klu.klu_num) : 0;
     feclearexcept(FE_ALL_EXCEPT);
     return finish(s, iterate(s));
 }
