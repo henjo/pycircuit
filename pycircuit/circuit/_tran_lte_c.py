@@ -194,7 +194,7 @@ class _Ctx:
     every pointer the C holds is a buffer of this context's, set once."""
 
     __slots__ = ('buf', 'ffi', 'ipiv', 'iref', 'j_inplace', 'jbuf', 'keep', 'klu', 'klu_keep',
-                 'klu_sym', 'n', 's', 'served')
+                 'klu_sym', 'n', 'pat_kat', 's', 'served')
 
     def __init__(self, ffi, dgesv, n, iref):
         m = n - 1
@@ -236,6 +236,9 @@ class _Ctx:
         s.klu_sym = ffi.NULL
         self.klu = self.klu_sym = None
         self.klu_keep = ()
+        ## (J's pattern, the solver, KLU's places in J and their pointer --
+        ## None where the pattern is not within KLU's: `_pattern_in`)
+        self.pat_kat = None
 
 
 def _klu_bind(ctx, sk):
@@ -254,12 +257,16 @@ def _klu_bind(ctx, sk):
     s.dgemv = ffi.cast('void *', nd[2]['dgemv'])
     ct, lib = sk._ct, sk._lib
     ktake = np.ascontiguousarray(sk.take, dtype=np.int64)
-    kAx, R, x, y = np.empty(max(sk.nnz, 1)), np.empty(m * m), np.empty(m), np.empty(m)
+    from pycircuit.circuit import _tran_core
+    ## (R held zero: on pattern pages, written on the pattern alone -- lte.h)
+    R = _tran_core.pattern_zeros(m * m)
+    kAx, x, y = np.empty(max(sk.nnz, 1)), np.empty(m), np.empty(m)
     keep = (sk, ktake, kAx, R, x, y, fb('int *', sk.Ap), fb('int *', sk.Ai),
             fb('int64_t *', ktake), fb('double *', kAx), fb('double *', R), fb('double *', x),
             fb('double *', y))
     s.knnz = sk.nnz
     s.kAp, s.kAi, s.ktake, s.kAx, s.R, s.x, s.y = keep[6:]
+    s.r_full = 0
     s.klu_refactor, s.klu_solve = (ffi.cast('void *', _cbuild.address(f))
                                    for f in (lib.klu_refactor, lib.klu_solve))
     s.klu_common = ffi.cast('void *', ct.addressof(sk._common))
@@ -585,6 +592,37 @@ def _rows_in(st, buf, s, n):
     return True
 
 
+def _pattern_in(ctx, sk, J):
+    """lte.h's ON THE PATTERN for a call of the controller's: J -- n x n,
+    never packed here -- read at the places of KLU's entries in it (`kat`,
+    from its `take`, as the C Newton's `_klu_bind` makes them) where J is
+    on pattern pages (`_tran_core.pattern_of`: zero off its pattern) and
+    that pattern, the reference row and column out, lies within KLU's: J's
+    nonzeros all KLU's, as `_ours` counts them -- the loop's rule
+    (`_tran_loop_c._judge_entry`).  Else J reduced whole and counted.  The
+    places and the check kept on the context for the pattern and solver."""
+    from pycircuit.circuit import _tran_core
+    st = ctx.s
+    st.sets = 0
+    pat = _tran_core.pattern_of(J) if sk is not None else None
+    kat = None
+    if pat is not None:
+        got = ctx.pat_kat
+        if got is None or got[0] is not pat or got[1] is not sk:
+            n, iref, m = ctx.n, ctx.iref, ctx.n - 1
+            r, c = np.divmod(np.asarray(sk.take, dtype=np.int64), m)
+            places = np.ascontiguousarray((r + (r >= iref)) * n + (c + (c >= iref)),
+                                          dtype=np.int64)
+            pr, pc = np.divmod(np.asarray(pat, dtype=np.int64), n)
+            inside = bool(np.isin(pat[(pr != iref) & (pc != iref)], places).all())
+            got = ctx.pat_kat = (pat, sk, places if inside else None,
+                                 ctx.ffi.from_buffer('int64_t *', places) if inside else None)
+        kat = got[3]
+    st.on_pattern = int(kat is not None)
+    if kat is not None:
+        st.kat = kat
+
+
 def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c', held=None):
     """The context (made, or remade for another size or reference row; KLU
     bound where the run is sparse, or to the `held` factors' solver) and
@@ -624,6 +662,7 @@ def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c', held=None):
             np.copyto(buf['J'], J)
             if ctx.j_inplace:
                 st.J = ctx.jbuf
+        _pattern_in(ctx, sk, J)
     if run is not None:
         np.copyto(buf['run'], run)
     abs_vec = type(ab) is np.ndarray

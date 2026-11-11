@@ -306,13 +306,16 @@ def _dc_solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scal
               row_names, linsolver):
     """`_dc_newton_c.solve`, the module imported at the first solve it may
     serve: a solve below `DC_C_MIN_N` unknowns, or the run's first (its
-    solver not chosen yet: `AutoSolver` decides on its first matrix), is
-    declined here -- before the import, 0.2 ms: a small operating point's
-    3 %."""
+    solver not chosen yet: `AutoSolver` decides on its first matrix) below
+    the solver's structural floor, is declined here -- before the import,
+    0.2 ms: a small operating point's 3 %.  From the floor the structure
+    may choose first (`_dc_newton_c.first_choice`)."""
     global _DC
     if len(x0) < DC_C_MIN_N:
         return _paths.no('dcnewton_c:small')
-    if getattr(linsolver, '_choice', None) is None:
+    if (getattr(linsolver, '_choice', None) is None
+            and not (getattr(linsolver, 'structure', None) is not None
+                     and len(x0) >= getattr(linsolver, 'structural_min_n', len(x0) + 1))):
         return _paths.no('dcnewton_c:linsolver')
     if _DC is None:
         from pycircuit.circuit import _dc_newton_c as _DC

@@ -492,7 +492,36 @@ def assemble_matrix(cir, m, x, args, drop=None):
     if not mp.flat.size:
         ## (an EMPTY bincount is int64 even with weights: the loop's zeros)
         return np.zeros((n, n))
-    return np.bincount(mp.flat, weights=buf, minlength=n * n).reshape(n, n)
+    return _binned(mp, None, mp.flat, buf, n)
+
+
+#: the entries from which `_binned` puts a matrix on small pages:
+#: `_tran_core.PATTERN_PAGES_FROM` (a test holds the two equal; read here
+#: without importing it, as an assembly imports nothing)
+PAGES_FROM = 1 << 20
+
+
+def _binned(mp, key, flat, w, side):
+    """`np.bincount(flat, weights=w, minlength=side * side)` as a side x side
+    matrix.  From `_tran_core.PATTERN_PAGES_FROM` entries on small pages
+    (`_tran_core.pattern_zeros`): each bin summed over its slots in their
+    order from +0.0, as bincount sums it, and only the bins' pages written
+    -- bincount's own output, written where its bins land, is resident by
+    whole huge pages at size.  The pattern is not kept with it
+    (`pattern_of` names none): a caller may write it anywhere.  `key` names
+    the layout in the plan's cache (`mp.reduced`)."""
+    size = side * side
+    if size < PAGES_FROM:
+        return np.bincount(flat, weights=w, minlength=size).reshape(side, side)
+    from pycircuit.circuit import _tran_core
+    got = mp.reduced.get(('bins', key))
+    if got is None or got[0] is not flat:
+        uniq, inv = np.unique(flat, return_inverse=True)
+        got = mp.reduced[('bins', key)] = (flat, uniq, inv.reshape(-1))
+    _flat, uniq, inv = got
+    out = _tran_core.pattern_zeros(size)
+    out[uniq] = np.bincount(inv, weights=w, minlength=len(uniq))
+    return out.reshape(side, side)
 
 
 def _reduced_matrix(mp, buf, n, k):
@@ -512,7 +541,7 @@ def _reduced_matrix(mp, buf, n, k):
     if not rflat.size:
         ## (an EMPTY bincount is int64 even with weights: the cut zeros)
         return np.zeros((m, m))
-    return np.bincount(rflat, weights=buf[keep], minlength=m * m).reshape(m, m)
+    return _binned(mp, k, rflat, buf[keep], m)
 
 
 def _dropped(A, k, cir):

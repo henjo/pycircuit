@@ -303,6 +303,23 @@ def test_the_sparse_solve_is_structural_klu_bit_for_bit(data, m, width, kind, h,
     drawn charges and steps: the same `(err, p)` bits, running reference,
     warnings and exception, and the solver's own counts, the C serving or
     handing back -- each side on its own solver, primed alike."""
+    out, _flags = _sparse_case(data, m, width, kind, h, r2, r3)
+    assert out[0][:5] == out[1][:5]
+
+
+def _band_full(rows, cols, iref, n):
+    """The band's places in the full n x n J, the reference row and column
+    inserted."""
+    rows, cols = np.asarray(rows), np.asarray(cols)
+    return (rows + (rows >= iref)) * n + (cols + (cols >= iref))
+
+
+def _sparse_case(data, m, width, kind, h, r2, r3, registered=False):
+    """The drawn sparse error test (`test_the_sparse_solve_is_structural_klu_
+    bit_for_bit`): each side's `(verdict, exception, running reference,
+    warnings, counts, x)` and, C on, its context's `on_pattern` -- J on
+    pattern pages of its own pattern where `registered` (the reference
+    entry, the band, the off-band entry where one is drawn)."""
     from pycircuit.circuit import linearsolver
     n = m + 1
     iref = data.draw(st.integers(0, n - 1))
@@ -320,13 +337,20 @@ def test_the_sparse_solve_is_structural_klu_bit_for_bit(data, m, width, kind, h,
             Jr[i, j] = 0.25
     J = np.insert(np.insert(Jr, iref, 0.0, axis=0), iref, 0.0, axis=1)
     J[iref, iref] = 1.0
+    if registered:
+        from pycircuit.circuit import _tran_core
+        ## (J's own nonzeros -- the off-band entry among them where drawn --
+        ## the band and the reference entry)
+        pat = np.unique(np.r_[np.flatnonzero(J), iref * n + iref, _band_full(rows, cols, iref, n)])
+        J = _tran_core.on_pattern(J, pat.astype(np.int64), n)
+        assert _tran_core.pattern_of(J) is not None
     tol = data.draw(st.sampled_from([linearsolver.KLUSolver.REFACTOR_RESIDUAL_TOL] * 4 + [1e-30]))
     q = _vec(data, n)
     ql = np.array([_vec(data, n) for _ in range(3)])
     iql = np.array([_vec(data, n) for _ in range(3)])
     integ = {'gear': ig.Gear2Integrator, 'trap': ig.TrapezoidalIntegrator,
              'euler': ig.EulerIntegrator}[kind]
-    out = []
+    out, flags = [], []
     for on in (False, True):
         ls = linearsolver.AutoSolver(min_n=2, max_fill=1.0, structure=lambda: (m, rows, cols))
         ls.solve(J0, np.ones(m), circuit.numeric)          # (the run's first factor)
@@ -353,8 +377,124 @@ def test_the_sparse_solve_is_structural_klu_bit_for_bit(data, m, width, kind, h,
         finally:
             _tran_lte_c.ENABLED = old
         got = getattr(ctrl, '_ref_running', None)
+        ctx = ctrl.__dict__.get('_lte_c')
+        flags.append(None if ctx is None else int(ctx.s.on_pattern))
         counts = (sk.analyses, sk.factors, sk.refactors, sk.residual_fallbacks, sk.foreign)
         out.append((None if r is None else (float(r[0]).hex(), r[1]), exc,
                     None if got is None else got.tobytes(), [str(w.message) for w in W], counts,
                     (kw['x_curr'], kw['x_last'])))
+    return out, flags
+
+
+@settings(deadline=None)
+@given(data=st.data(), m=st.integers(3, 9), width=st.integers(0, 2),
+       kind=st.sampled_from(['gear', 'trap', 'euler']), h=st.floats(1e-12, 1e-6),
+       r2=st.floats(0.1, 10.0), r3=st.floats(0.1, 10.0))
+def test_a_controller_call_reads_a_j_on_its_pattern(data, m, width, kind, h, r2, r3):
+    """The controller's own call (the first attempts', before the C loop
+    takes the run) with J on pattern pages: J read at KLU's places in it
+    (`_tran_lte_c._pattern_in`, lte.h's ON THE PATTERN) where its pattern,
+    the reference row and column out, lies within KLU's -- the same bits as
+    the Python's -- and reduced whole where an off-band entry puts it
+    outside (the Python's fallback solver then; `lte_c` hands back).  At an
+    IBM grid's 25 850 unknowns the reduce wrote all m^2 of the error test's
+    R (5 GB resident)."""
+    from pycircuit.circuit import _stamp_plan, _tran_core
+    kept = _tran_core.PATTERN_PAGES_FROM, _stamp_plan.PAGES_FROM
+    _tran_core.PATTERN_PAGES_FROM = _stamp_plan.PAGES_FROM = 1
+    try:
+        out, flags = _sparse_case(data, m, width, kind, h, r2, r3, registered=True)
+    finally:
+        _tran_core.PATTERN_PAGES_FROM, _stamp_plan.PAGES_FROM = kept
     assert out[0][:5] == out[1][:5]
+    off_band = out[1][4][4] > 0
+    assert flags[1] == (0 if off_band else 1), (flags, out[1][4])
+
+
+def _filled_then_on_pattern(on, tol=None, spy=None):
+    """Two error tests on one controller and one StructuralKLU: J with an
+    off-band entry, not on pattern pages (reduced whole -- R filled -- and
+    found foreign: handed back), then J on its pattern pages, its
+    validation's tolerance `tol`.  Each call's `(verdict, exception,
+    running reference, the solver's counts)`, the context's dense tests
+    and the C's counts."""
+    from pycircuit.circuit import _stamp_plan, _tran_core, linearsolver
+    m, width, iref = 6, 1, 2
+    n = m + 1
+    rows, cols = _banded(m, width)
+    rng = np.random.default_rng(31)
+    Jr = np.zeros((m, m))
+    Jr[rows, cols] = rng.uniform(-1.0, 1.0, len(rows))
+    Jr += 3.0 * np.eye(m)
+    J = np.insert(np.insert(Jr, iref, 0.0, axis=0), iref, 0.0, axis=1)
+    J[iref, iref] = 1.0
+    far = J.copy()
+    far[0, 5] = 0.25
+    ls = linearsolver.AutoSolver(min_n=2, max_fill=1.0, structure=lambda: (m, rows, cols))
+    ls.solve(Jr, np.ones(m), circuit.numeric)
+    sk = ls._choice
+    vec = lambda k: rng.uniform(-1.0, 1.0, (k, n)) * 1e-12
+    base = {'x_curr': rng.uniform(-1.0, 1.0, n), 'x_last': rng.uniform(-1.0, 1.0, n),
+            'q_curr': vec(1)[0], 'q_last_hist': vec(3), 'iq_last_hist': vec(3), 'h_curr': 1e-9,
+            'h_last': 1.3e-9, 'h_last2': 0.8e-9, 'no_history': False,
+            'active_integrator': ig.Gear2Integrator(), 'irefnode': iref, 'reltol': 1e-3,
+            'abstol': 1e-9, 'toolkit': circuit.numeric, 'max_step': 1.0, 'n_nodes': None,
+            'linsolver': ls}
+    ctrl = sc.IntegralController()
+    kept = _tran_lte_c.ENABLED, _tran_core.PATTERN_PAGES_FROM, _stamp_plan.PAGES_FROM
+    _tran_lte_c.ENABLED = on
+    _tran_core.PATTERN_PAGES_FROM = _stamp_plan.PAGES_FROM = 1
+    pat = np.unique(np.r_[np.flatnonzero(J), iref * n + iref]).astype(np.int64)
+    out, before = [], _paths.snapshot()
+    try:
+        for k, Jk in enumerate((far, _tran_core.on_pattern(J, pat, n))):
+            if k == 1 and tol is not None:
+                sk.REFACTOR_RESIDUAL_TOL = tol
+            if k == 1 and spy is not None:
+                spy(sk)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                try:
+                    r, exc = ctrl._max_error(sc.StepLTEInputs(J=Jk, **base)), None
+                except Exception as e:                       # noqa: BLE001
+                    r, exc = None, (type(e), str(e))
+            got = getattr(ctrl, '_ref_running', None)
+            out.append((None if r is None else (float(r[0]).hex(), r[1]), exc,
+                        None if got is None else got.tobytes(),
+                        (sk.factors, sk.refactors, sk.residual_fallbacks, sk.foreign)))
+    finally:
+        _tran_lte_c.ENABLED, _tran_core.PATTERN_PAGES_FROM, _stamp_plan.PAGES_FROM = kept
+    ctx = ctrl.__dict__.get('_lte_c')
+    return out, None if ctx is None else int(ctx.s.vdense), _paths.since(before)
+
+
+def test_a_dense_test_after_a_dense_reduce_zeroes_r_first(monkeypatch):
+    """lte.h's R HELD ZERO across a dense reduce: a call whose J is not on
+    the pattern reduces it whole into R (an off-band entry among it, found
+    foreign: handed back), and the next call's dense test -- J on its
+    pattern pages, its residual tolerance at the solve's own residual so
+    that the sparse sum's bound cannot decide -- zeroes R before scattering
+    KLU's entries (`r_full`): every call the Python's, the second served by
+    the C on its dense test.  Without the zeroing the off-band entry stays
+    in R, the residual fails and the call is handed back."""
+    from pycircuit.circuit import linearsolver
+    seen = []
+    real = linearsolver.StructuralKLU._solve
+
+    def solve(self, A, b, toolkit, kept):
+        x = real(self, A, b, toolkit, kept)
+        arr, rhs = np.asarray(A), np.asarray(b, float)
+        seen.append(float(np.abs(arr @ np.asarray(x) - rhs).max()) / max(float(np.abs(rhs).max()), 1e-300))
+        return x
+    with monkeypatch.context() as mp:
+        mp.setattr(linearsolver.StructuralKLU, '_solve', solve)
+        _filled_then_on_pattern(False, spy=lambda sk: seen.clear())
+    ## (the solve's own residual -- exactly 0.0 here: the sparse sum's bound,
+    ## its rounding term above zero, cannot decide either way at it)
+    assert len(seen) == 1, seen
+    tol = seen[0]
+    py, _, _ = _filled_then_on_pattern(False, tol)
+    got, vdense, counts = _filled_then_on_pattern(True, tol)
+    assert got == py
+    assert counts.get('lte_c:bail:foreign', 0) == 1, counts
+    assert counts.get('lte_c:sparse_served', 0) == 1 and vdense == 1, (counts, vdense)

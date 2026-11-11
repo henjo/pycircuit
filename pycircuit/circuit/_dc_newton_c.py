@@ -44,7 +44,8 @@ served: the last iteration's arrays, and the Python's own exception
 
 DECLINES (`_paths.no`): before this module is imported (`nrsolver._dc_solve`)
 a solve below `nrsolver.DC_C_MIN_N` unknowns and the run's first (its
-solver not chosen yet); here the switch, no build, the rounding floor's
+solver not chosen yet) below its structural floor; here a first solve the
+structure does not choose for (`first_choice`), the switch, no build, the rounding floor's
 helpers patched, a scaler that is not NoneScaler, a limiter that is not the DC's, a linear solver that is not
 the DC's AutoSolver over its dense solve or an analysed StructuralKLU whose
 pattern holds the core's, a toolkit that is not numeric, numpy not ignoring
@@ -164,14 +165,17 @@ class _Rec:
                  'walk_held', 'walk_kern', 'walk_ok', 'walk_packs', 'walk_stamp', 'walk_watch')
 
     def __init__(self, core, plan, n, iref, drv, core_drv):
+        from pycircuit.circuit import _tran_core
         from pycircuit.circuit.nrsolver import FLOOR_ROWS
         ffi, _cfn, dgesv, dgemv, ddot = drv
         cffi_core, cfn_core, _dg = core_drv
         m = n - 1
         self.core, self.plan, self.n, self.iref, self.ffi = core, plan, n, iref, ffi
         self.s = s = ffi.new('dcnewton_t *')
-        E, Z = np.empty, np.zeros
-        ## (R and |J| start at zero: only their active entries are written)
+        E = np.empty
+        ## (R and |J| start at zero: only their active entries are written --
+        ## on pattern pages, resident only where written: `_tran_core.pattern_zeros`)
+        Z = _tran_core.pattern_zeros
         self.buf = buf = {
             'x': E(m), 'Fr': E(m), 'xn': E(m), 'xd': E(m), 'xf': E(n), 'Ff': E(n), 'xnf': E(n),
             'x0f': E(n), 'Cs': Z(n * n), 'q': E(n), 'R': Z(m * m), 'absJ': Z(m * m),
@@ -207,7 +211,11 @@ class _Rec:
         self.jrows = None
         self.klu = None
         self.klu_keep = ()
-        self._dense_active()
+        ## (the active entries as the solve binds them -- KLU's pattern, or
+        ## every entry for the dense solve -- in `_solver`: m^2 of them made
+        ## only where the dense solve is chosen)
+        self.act = None
+        s.nact = 0
 
     def _dense_active(self):
         """Every entry active (the dense solve): the reduced row-major
@@ -323,13 +331,17 @@ def _solver(rec, ls):
     """The record bound to the solve `ls` makes: its dense solve, or its
     analysed StructuralKLU -- or why not."""
     from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
-    ch = ls._choice if type(ls) is AutoSolver else None
+    ch = None
+    if type(ls) is AutoSolver:
+        ch = ls._choice or first_choice(ls, rec.n - 1)
     if ch is None:
         return 'linsolver'
     if ch is ls._dense:
         if rec.klu is not None:
             rec.klu, rec.klu_keep = None, ()
             rec.s.klu.klu_sym = rec.ffi.NULL
+            rec.act = None
+        if rec.act is None:
             rec._dense_active()
         return None
     if type(ch) is not StructuralKLU:
@@ -337,6 +349,28 @@ def _solver(rec, ls):
     if rec.klu is ch and rec.s.klu.klu_sym == rec.ffi.cast('void *', ch._symbolic or 0):
         return None
     return None if _klu_bind(rec, ch) else 'klu'
+
+
+def structure_chooses(ls, m):
+    """Whether the AutoSolver `ls`, not chosen yet, is at its structural
+    floor for an m x m matrix or above, where the circuit's structure may
+    choose before the first matrix does (`first_choice`)."""
+    return (getattr(ls, 'structure', None) is not None
+            and m >= getattr(ls, 'structural_min_n', m + 1))
+
+
+def first_choice(ls, m):
+    """The run's first solve, its AutoSolver not chosen yet: the
+    StructuralKLU its first matrix would choose where the structure decides
+    it, from the structural floor -- analysed as its first factor analyses
+    it (`_tran_newton_c._first_choice`) -- or None: below the floor (the size
+    alone chooses there, on the first matrix) or where a value could decide.
+    pcx_kluseq.h then factors afresh with no numeric yet, as
+    `StructuralKLU._solve`'s first solve does."""
+    if not structure_chooses(ls, m):
+        return None
+    from pycircuit.circuit import _tran_newton_c
+    return _tran_newton_c._first_choice(ls, m)
 
 
 def _walk(rec, cir):

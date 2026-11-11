@@ -597,9 +597,10 @@ def test_the_rounding_floor_is_the_python_one(cells, monkeypatch):
     assert a[0] == b[0] and a[1] == b[1] and a[2] == b[2] and a[3] == b[3]
     assert sum(seen) >= 10, seen
     ## (every attempt, the first among them on the dense solve -- roadmap
-    ## 269; the sparse full Newton's first solve factors, the Python's)
-    assert b[4].get('newton_c:served', 0) == (20 if cells == 1 else 19), b[4]
+    ## 269; on the sparse one too, its first solve making the run's numeric)
+    assert b[4].get('newton_c:served', 0) == 20, b[4]
     assert (b[4].get('newton_c:sparse', 0) > 0) == (cells > 1), b[4]
+    assert b[4].get('newton_c:first_numeric', 0) == (1 if cells > 1 else 0), b[4]
 
 
 def _widened(cir, iref, st):

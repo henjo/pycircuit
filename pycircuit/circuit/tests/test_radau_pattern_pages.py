@@ -404,3 +404,98 @@ def test_the_loop_reads_a_memo_record_zero_off_the_pattern(monkeypatch, extra):
     assert (counts.get('tcloop_c:memo_pattern', 0) > 0) == extra, counts
     if not extra:
         assert counts.get('tcloop_c:packed', 0) > 0 and counts.get('tcloop_c:steps', 0) > 0, counts
+
+
+def test_a_matrix_on_pattern_pages_is_reduced_on_them(monkeypatch):
+    """`remove_row_col` of a matrix on pattern pages -- the step's J the
+    first attempts' error test reduces (plan 261's L19: the dense reduce
+    wrote all (n-1)^2 entries of an IBM power grid's J, 5 GB resident): on
+    pattern pages itself, its pattern the reduced one, the dense reduce's
+    bytes -- the reference row first, inside and last; a NaN and signed
+    zeros among the entries."""
+    from pycircuit.circuit import _stamp_plan, analysis
+    monkeypatch.setattr(_stamp_plan, 'PAGES_FROM', 1)
+    rng = np.random.default_rng(5)
+    n = 40
+    A, full, _pat = _paged_matrix(n, rng, monkeypatch)
+    for k in (0, 17, n - 1):
+        got = analysis.remove_row_col((A,), k, circuit.numeric)[0]
+        want = analysis.remove_row_col((full.copy(),), k, circuit.numeric)[0]
+        assert _b(got) == _b(want), k
+        assert _tran_core.pattern_of(got) is not None, k
+        assert _tran_core.pattern_count(got) == np.count_nonzero(want), k
+
+
+def test_the_plans_matrices_at_size_are_on_small_pages(monkeypatch):
+    """The stamp plan's G and C at size (`_stamp_plan.PAGES_FROM` entries),
+    and the DC's reduced G: each bin summed in bincount's order from +0.0
+    onto small pages -- bincount's bytes, only the bins' pages written
+    (bincount's own n^2 output, written where its bins land, was resident by
+    huge pages: an IBM grid's C 2.7 GB) -- and no pattern kept with them (a
+    caller may write them anywhere)."""
+    from pycircuit.circuit import _stamp_plan
+    cir = _chain(30)
+    x = np.random.default_rng(3).uniform(-1.0, 1.0, cir.n)
+    ep = circuit.defaultepar
+    want = {m: _b(_stamp_plan.assemble_matrix(cir, m, x, (ep,))) for m in ('G', 'C')}
+    wred = _b(_stamp_plan.assemble_matrix(cir, 'G', x, (ep,), drop=0))
+    monkeypatch.setattr(_stamp_plan, 'PAGES_FROM', 1)
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    for m in ('G', 'C'):
+        got = _stamp_plan.assemble_matrix(cir, m, x, (ep,))
+        assert _b(got) == want[m], m
+        assert _tran_core._mapping(got) is not None and _tran_core.pattern_of(got) is None, m
+    red = _stamp_plan.assemble_matrix(cir, 'G', x, (ep,), drop=0)
+    assert _b(red) == wred and _tran_core._mapping(red) is not None
+
+
+def test_the_plans_pages_threshold_is_the_cores():
+    """`_stamp_plan.PAGES_FROM`, read there without importing `_tran_core`
+    (an assembly imports nothing), is `_tran_core.PATTERN_PAGES_FROM`."""
+    from pycircuit.circuit import _stamp_plan
+    assert _stamp_plan.PAGES_FROM == _tran_core.PATTERN_PAGES_FROM
+
+
+def test_the_couplings_are_read_at_the_plans_positions(monkeypatch):
+    """`capacitive_loop_currents` given the circuit, on a C its stamp plan
+    made and not on pattern pages: the node-to-node nonzeros read at the
+    plan's positions (`_tran_branch._plan_nonzeros`, proven all of them by
+    their count) -- numpy's `nonzero` of the whole block, row by row, which
+    at an IBM grid's 25 850 unknowns wrote a 0.6 GB mask."""
+    from pycircuit.circuit import _tran_branch, _tran_history
+    cir = _chain(30)
+    x = np.random.default_rng(4).uniform(-1.0, 1.0, cir.n)
+    C = np.asarray(cir.C(x))
+    nn = cir.n - 3
+    calls, real = [], _tran_branch._plan_nonzeros
+
+    def counted(c, M):
+        calls.append(1)
+        return real(c, M)
+    monkeypatch.setattr(_tran_branch, '_plan_nonzeros', counted)
+    got = _tran_history._node_couplings(C, nn, cir)
+    want = np.nonzero(C[:nn, :nn] != 0.0)
+    assert calls and all(np.array_equal(g, w) for g, w in zip(got, want))
+
+
+def test_the_newton_and_error_test_buffers_are_on_small_pages(monkeypatch):
+    """At size the C Newton's record keeps its zeroed m x m buffers -- |J|,
+    the sparse full Newton's R -- and the error test's R on small pages
+    (`_tran_core.pattern_zeros`), each written on the pattern alone (lte.h's
+    R HELD ZERO: its dense test zeroed all m^2 entries first): under huge
+    pages each was resident whole, an IBM grid's run 6.5 GB through its
+    loop."""
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(_chain(60), toolkit=circuit.numeric, chord_jacobian=False)
+        tr.solve(tend=2e-9, timestep=1e-10)
+    rec = tr.__dict__['_newton_c']
+    m = rec.n - 1
+    assert rec.klu is not None
+    assert _tran_core._mapping(rec.buf['absJ']) is not None
+    big = [a for a in rec.klu_keep if type(a) is np.ndarray and a.size == m * m]
+    assert big and all(_tran_core._mapping(a) is not None for a in big)
+    ctx = tr.step_controller.__dict__.get('_lte_c')
+    assert ctx is not None and ctx.klu_keep, 'the controller made no sparse error test'
+    assert _tran_core._mapping(ctx.klu_keep[3]) is not None

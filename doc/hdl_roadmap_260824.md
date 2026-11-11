@@ -15516,3 +15516,62 @@ the coverage suite's tests at size; its old binG arm with a pattern was dead and
 **Tests.**  `test_pcnr_c`: at size the DC's n x n G bin has no page resident (G made in the packed bins; 0.34-0.58 before the
 change, as |J| and R still are).  The clear never made: 5 twin tests fail (kernels raise reported flags in served solves).  The PCNR
 DC solve's pinned pair re-recorded.
+
+## 2026-11-11 — 313. The IBM power grid runs by default: a DC's first solve in C from the structural floor, the transient's first numeric in C, the C records and the error test resident only where written -- the grid's DC 12.9 s / 10.7 GB -> 2.8 s / 1.26 GB with the same bytes, its own 10 ns transient run whole where it was killed (peak 2.2-2.9 GB, under its 2.5 GB line: accepted as measured), every answer elsewhere the same
+
+**Why**  Plan 261's L19.  Andreas: "What is next?", then "Both, grid first" and "Grid walls 1-4".  The IBM power grid ibmpg1t
+(a published benchmark: its 10 ns transient, 20 printed nodes and its own output), merged (`merge_shorts`, 25 850 unknowns), had
+been refused on 2026-10-08 at a predicted ~61 GB; plan 261 has since taken the n x n arrays out of PCNR's DC and the transient's
+C loops.  At 0d72ef1b it imports in 5 s and, with the chord on, its whole 10 ns runs in 17 s within 0.40 mV of the benchmark's
+output, every step in C on KLU.  By default it did not run: its DC took the Python's dense Newton (13-38 s by the box's
+load, 10.3-10.7 GB: the first
+solve declined -- no solver chosen -- and the C's record laid out every m^2 entry before KLU bound), and the transient was killed
+at an 11 GB cap in its operating point (`_dc_newton_c._Rec._dense_active`: int64 index arrays, 5.3 GB each) and, from a given
+x0, in its first step (`newton_c:first_factor`: the Python's dense step).  Transparent huge pages ('always' here) made every
+zeroed m^2 buffer the C writes on its pattern resident whole: one written entry makes 2 MB resident.
+
+**What.**  (W1) A DC's first solve from the AutoSolver's structural floor (150 unknowns): the StructuralKLU its first matrix
+would choose, chosen and analysed from the circuit's structure first (`_dc_newton_c.first_choice`: `_tran_newton_c._first_choice`
+at the floor; `nrsolver._dc_solve` lets it through), the C's sequence then factoring afresh with no numeric yet, as
+`StructuralKLU._solve`'s first solve; below the floor, and where a value could decide, the Python's first solve as before.
+(W2) The DC record lays out the m^2 active entries only where the dense solve is chosen; its R, |J| and C on small pages
+(`_tran_core.pattern_zeros`).  (W3) The transient's full Newton makes the run's first numeric in C (newton.c's `sparse_full`
+already did; `_tran_newton_c` declined it) and counts it a factor (`_count_full`).  (M3) lte.c's dense residual test zeroed all
+m^2 of its R before scattering KLU's entries: R now starts zero on small pages and only KLU's entries are written (the same ones
+each time), zeroed whole only after a dense reduce filled it (`r_full`, a new last field of `lte_t`).  The C Newton's record keeps
+its zeroed n x n and m x m buffers on small pages too.  (M4) A controller call's J on the core's pattern pages is read on the
+pattern (`_tran_lte_c._pattern_in`: where that pattern, the reference row and column out, lies within KLU's -- the loop's rule),
+and `remove_row_col` keeps a matrix on pattern pages on them (`analysis._reduce_on_pattern`); the C Newton's scattered state is
+registered with the core's pattern, as the passes' is.  (M5) The stamp plan's G and C at size are binned onto small pages
+(`_stamp_plan._binned`: each bin summed in bincount's order from +0.0; no pattern kept -- a caller may write them anywhere),
+and the error test's capacitive-loop scan reads C's couplings at the plan's positions (`_tran_branch._plan_nonzeros`) where
+it scanned the whole n x n.  LEFT: the branch check's sums and `norm(C)` over n^2 zero pages (time, not memory: ~2 s at 25 850);
+Radau at this size (`_tran_radau_c`'s context asks for (8, 3, n, n) arrays: a MemoryError raised, not a decline).
+
+**Measured** (interleaved pairs against 0d72ef1b's worktree, OPENBLAS_NUM_THREADS=1, the box loaded 1.4-3.8 by another
+project).  The merged grid's `DC().solve()` 12.94 -> 2.76 / 2.78 s (4.7x, one pair), peak 10.7 -> 1.26 GB, x the same bytes
+(line <= 9.5 s, <= 3 GB: MET).  The whole grid (54 266 unknowns, the default import): its DC served in C, 8.5 s, 2.59 GB (the
+dense Newton's one array alone 23.6 GB; line < 3 GB: MET).  The deck's own 10 ns transient (Gear-2, its operating point, no
+chord): killed at the 11 GB cap at HEAD; now whole, 21.8 s twice with one digest, 1 060 steps, every step in C, within 0.40 mV of
+the benchmark's output (lines: whole, in C, 0.5 mV, wall <= 22 s: MET); its peak 2.18-2.94 GB (2.94 in the plain runs, 2.18
+under a 0.25 s sampler: ~0.8 GB, three pattern-page state matrices' worth, held across a step at varying times) against a 2.5 GB
+line: MISSED, accepted as measured by Andreas -- through the C loop ~1.5 GB, 6.5 GB before the error test's R was held zero.
+With the chord, from the DC's x: HEAD's digest, peak 4.68 -> 2.41 GB.  The other size DCs 0.987-1.009x, the same digests,
+routes and PCNR C counts (through PCNR: not this code); the size transients the same digests, steps and iterations -- the active
+chain 4 000 Gear-2 1.000x (peak 1 309 -> 1 218 MB), the chain 4 000 Radau 1.002x, the 63 x 63 mesh's Gear-2 1.067x (31.6 -> 29.6
+s: no m^2 zeroing before a dense test; peak 829 -> 742 MB), its Radau 0.993x.  The gate against 0d72ef1b: every result and
+path counter the same, C against Python 0 differing; NOT REACHED for lte.c's `r_full` arm on the decks -- compared by a twin
+fixture at the coverage suite (`test_lte_c`).  Suite 6 636 passed.
+
+**Tests.**  `test_dc_newton_c`: a 160-cell nonlinear ladder's first solve the C's (x, solver and counts the Python's), a 40-cell
+one's still the Python's; the KLU record never lays out m^2 and keeps its buffers on small pages.  `test_first_attempt_c`: with
+the chord off, the full Newton's first numeric made in C, the run and its KLU counts those of the Python's first attempt.
+`test_newton_c`: the rounding-floor run served whole (20 of 20), its first numeric the C's.  `test_radau_pattern_pages`: a reduce
+of a matrix on pattern pages on them, the dense reduce's bytes; the plan's G, C and reduced G at size on small pages,
+bincount's bytes, no pattern kept; the two thresholds equal; the couplings at the plan's positions; the Newton's and the error
+test's buffers on small pages.  `test_lte_c`: drawn controller calls on a J on its pattern pages bit for bit the Python's, read
+on the pattern -- and not where an off-band entry puts the pattern outside KLU's; a dense test after a dense reduce (its
+tolerance at the solve's own residual: the bound cannot decide) zeroing R first, served -- without the zeroing the reduce's
+off-band entry fails the residual and the call is handed back.  Each bitten (14 of 14: the feature removed, its test failed).  Ten pinned pairs re-recorded after their twins' tests (the transient evaluation and the core's, the multistep
+walk's, the assembly loops', the reduce's on the reference side; the error test's, the transform, stage and stepping loops',
+the DC base solve's and the Newton solve's on the twin side).

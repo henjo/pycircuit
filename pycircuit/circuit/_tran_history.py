@@ -87,14 +87,24 @@ def _charge_free(C, nn):
     return ~(np.any(C[:, br] != 0.0, axis=0) | np.any(C[br, :] != 0.0, axis=1))
 
 
-def _node_couplings(C, nn):
+def _node_couplings(C, nn, cir=None):
     """`np.nonzero(C[:nn, :nn] != 0.0)`: the node-to-node nonzeros of `C`,
     row by row -- read at its pattern where `C` is on pattern pages
-    (`_tran_core.pattern_of`: zero off it), in the same order."""
+    (`_tran_core.pattern_of`: zero off it), else at the stamp plan's
+    positions where `cir`'s plan made it (`_tran_branch._plan_nonzeros`:
+    proven all its nonzeros by their count), in the same order."""
     from pycircuit.circuit import _tran_core
     pat = _tran_core.pattern_of(C)
     if pat is None:
-        return np.nonzero(C[:nn, :nn] != 0.0)
+        nz = None
+        if cir is not None:
+            from pycircuit.circuit._tran_branch import _plan_nonzeros
+            nz = _plan_nonzeros(cir, C)
+        if nz is None:
+            return np.nonzero(C[:nn, :nn] != 0.0)
+        r, c = nz[0], nz[1]
+        on = (r < nn) & (c < nn)
+        return r[on], c[on]
     p = np.sort(pat)
     n = C.shape[1]
     r, c = p // n, p % n
@@ -102,14 +112,16 @@ def _node_couplings(C, nn):
     return r[on], c[on]
 
 
-def capacitive_loop_currents(C, nn, ends):
+def capacitive_loop_currents(C, nn, ends, cir=None):
     """Per unknown of `C`'s circuit, True on the currents MNA's index 2 comes
     from: a branch current no charge depends on (`_charge_free`) whose ends
     `ends[k]` (node indices) are joined by capacitive couplings -- a nonzero
     of `C` between two node rows -- and the other such currents: a loop of
     capacitors and voltage-defined branches.  Such a current is the slope of
     capacitor voltages (a source driving a gate's charge), not a quantity a
-    step integrates.  A branch with both ends on one node closes nothing."""
+    step integrates.  A branch with both ends on one node closes nothing.
+    `cir`: the circuit whose stamp plan made `C`, where known -- its
+    couplings read at the plan's positions (`_node_couplings`)."""
     out = np.zeros(C.shape[0], dtype=bool)
     root = list(range(nn))
 
@@ -119,7 +131,7 @@ def capacitive_loop_currents(C, nn, ends):
             a = root[a]
         return a
 
-    ii, jj = _node_couplings(C, nn)
+    ii, jj = _node_couplings(C, nn, cir)
     for a, b in zip(ii.tolist(), jj.tolist()):
         ra, rb = find(a), find(b)
         if ra != rb:
@@ -575,7 +587,7 @@ class _RunHistory:
             except (KeyError, AttributeError):
                 ends = None
             if C is not None and ends is not None:
-                rows = capacitive_loop_currents(C, nn, ends)
+                rows = capacitive_loop_currents(C, nn, ends, self.cir)
                 if not rows.any():
                     rows = None
         self._lte_charge_cache = (n, rows)

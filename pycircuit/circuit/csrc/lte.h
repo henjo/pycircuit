@@ -161,6 +161,12 @@ typedef struct {
        dense paths hand back: LTE_BAIL_FOREIGN) */
     long sets;                  /* [step] 1: J packed */
     const int64_t *kpp;         /* knnz: each KLU entry's index in packed J, or -1 */
+    /* R HELD ZERO: `R` (m x m) starts zero and each dense test writes KLU's
+       entries alone (the same ones each time), so it stays zero off them and
+       pattern pages keep it resident a page or two a row; where J's dense
+       reduce fills it (J not on the pattern) `r_full` is set, and the next
+       scatter zeroes it whole first */
+    long r_full;                /* OWN: 1 where R holds a dense reduce */
 } lte_t;
 long pcx_lte(lte_t *s);
 

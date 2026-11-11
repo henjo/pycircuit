@@ -277,8 +277,9 @@ typedef struct {
     long limit_ok;        /* CALL: 1 the caller rejects or raises at the limit, else 0 */
     long fb_limit;        /* OWN: 1 where the fallback stopped at its limit and
                              `limit_ok`, else 0 */
-    /* THE RUN'S FIRST NUMERIC: under the seed's error test nothing has made
-       `klu_num` when a chord's first fallback comes.  Its first solve is
+    /* THE RUN'S FIRST NUMERIC: nothing has made `klu_num` at a run's first
+       full Newton, nor, under the seed's error test, when a chord's first
+       fallback comes.  Its first solve is
        `StructuralKLU._solve`'s first: `_factor` of this matrix, klu_solve, no
        validation, and `klu_num` holds it after, for the caller to hand on
        (`chord_out`): a factor where every other iteration counts a refactor.

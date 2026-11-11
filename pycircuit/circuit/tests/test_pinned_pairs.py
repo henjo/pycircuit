@@ -380,7 +380,9 @@ PAIRS = {
                '`lte_charge` marks the absolute tolerance is `charge_floor`\'s; the early '
                'abort\'s estimate (`_early_estimate`) is the same chain at the first iterate, '
                'J^-1 by factors in hand (lte.c\'s `factored_solve`, its context '
-               '`early_context`); on the C loop\'s pattern (`on_pattern`) the sparse solve\'s '
+               '`early_context`); on the C loop\'s pattern (`on_pattern`), and on a '
+               'controller call\'s J on pattern pages within KLU\'s (`_pattern_in`, roadmap '
+               '313), the sparse solve\'s '
                'values from J itself and its validation\'s verdict from the sparse sum\'s '
                'bound (pcx_verdict.h; a value not finite and the wide pass where its band '
                'does not decide, roadmap 303), the dense test where none does',
@@ -428,7 +430,10 @@ PAIRS = {
                '; a point not finite whose step solved ends the solve '
                '(`STANDARD_NONFINITE`, roadmap 305) -- the C hands back at a non-finite '
                'step, never evaluating there (its core declines one), and the Python\'s '
-               'rerun ends one evaluation past it',
+               'rerun ends one evaluation past it; a run\'s first solve from the '
+               'structural floor its too, the StructuralKLU chosen and analysed from the '
+               'structure first (`first_choice`) and its first factor the fresh one '
+               'StructuralKLU\'s first solve makes (roadmap 313)',
         'reference': ['pycircuit.circuit.nrsolver:StandardNewton.solve_system',
                       'pycircuit.circuit.nrsolver:_standard_failure',
                       'pycircuit.circuit.nrsolver:_step_size',
@@ -1202,22 +1207,22 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('9a7232358808', 'fc7aa0cc90a7'),
+    'the stepping loop and its C': ('9a7232358808', 'cafdd0e9e002'),
     'the predictor and its C': ('9e611c84de5a', '9b16bd4e0f30'),
     'the branch screen and its C': ('73a09a49db2e', '41c5e5959ad1'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
     'the kernel call and the pass driver': ('ef3f2c059587', '5a9e89626ca0'),
     'the limiting loop and the walk': ('6100313c0fdb', 'b3cf8aef45d6'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '89740e765ff7'),
-    'the transient evaluation and the core': ('9523f23cedda', '47fc584d9f77'),
-    'the assembly loops and the plan': ('a822abce557c', '3ff543f303a8'),
+    'the transient evaluation and the core': ('9a5655b48d70', '47fc584d9f77'),
+    'the assembly loops and the plan': ('a822abce557c', 'd90c86c051df'),
     'the sources and their direct pass': ('133b68c3262d', '11e5cf691f59'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
-    'the reduce and its small take': ('f4d40012ff79', '41b65c2ead50'),
+    'the reduce and its small take': ('b7d4c26c7581', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('8246eb6c38fe', 'd24ae18be6f3'),
-    'the error test and its C': ('639cab30f2d5', '6f54e05af10a'),
-    'the DC base solve and its C': ('9af95c14f1ba', '4407ee890f1c'),
+    'the Newton solve and its C': ('8246eb6c38fe', 'f17f5d173e55'),
+    'the error test and its C': ('639cab30f2d5', '8b54ded33882'),
+    'the DC base solve and its C': ('9af95c14f1ba', 'dbefcc9caabb'),
     'the PCNR DC solve and its C': ('c06cd94cb510', 'ea9af8a46f42'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('d417a4cedc1d', '694a1086db84'),
@@ -1234,15 +1239,15 @@ RECORD = {
     'the stage step map and its C': ('03f9482bdd72', 'c025357cb495'),
     'the KLU step map and its C': ('5b9b1f672523', '94dfea9dc33d'),
     'the stage walk and its C': ('9eac79d2187c', 'e4dda69dcb35'),
-    'the multistep walk and its C': ('4ef5185c18ff', '1ec9133628c2'),
+    'the multistep walk and its C': ('6f035c8a752b', '18f5bb37b19e'),
     'the multistep step map and its C': ('985dde19187d', 'd6c3dcf5119d'),
     'the stage readers and their one read': ('d25552fe5ede', '2798b147a3c5'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
     'the readiness reads and their stamps': ('8f218c25e58a', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('e683881c671b', '1b8246f03819'),
-    'the transform loop and its C': ('f6c3df3bcebf', 'b82d585bf35a'),
+    'the stage loop and its C': ('e683881c671b', '9d483052857e'),
+    'the transform loop and its C': ('f6c3df3bcebf', '00c955d8bfc9'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

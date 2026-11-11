@@ -5984,3 +5984,18 @@ where the kernel raised a flag the unit tests (`PC_FLAGS`).  The active
 chain's DC 1.12x at 8 000, 1.21x at 16 000, peaks 15-16 % lower.  The
 dense residual tests' subset form was sized and refused: most undecided
 verdicts are run-away iterates with most rows over the threshold.
+
+## The IBM power grid by default: first solves in C, buffers resident where written (2026-11-11)
+
+2026-11-11 (`doc/hdl_roadmap_260824.md`, 313; plan 261 L19).  The IBM power
+grid ibmpg1t (25 850 unknowns merged) ran its 10 ns benchmark in C only with
+the chord on; by default its DC took the dense Python Newton (10.7 GB) and its
+transient was killed in its operating point and first step.  Both Newtons in
+C now serve the run's first solve from the circuit's structure (the DC from
+the structural floor, 150 unknowns; the transient makes its first KLU numeric
+itself), and the C records and the error test keep their zeroed m^2 buffers
+on small pages written only on the pattern -- transparent huge pages had made
+each resident whole, and the error test zeroed all of its R before every
+dense test.  The grid's DC 4.7x at 1/8 the memory with the same bytes; its
+own 10 ns transient runs, within 0.4 mV of the published answer.  Every other
+answer the same; the 63 x 63 mesh's Gear-2 transient 1.07x faster.

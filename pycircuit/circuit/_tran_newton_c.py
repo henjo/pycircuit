@@ -302,14 +302,19 @@ class _Ctx:
     )
 
     def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, lapack):
+        from pycircuit.circuit import _tran_core
         from pycircuit.circuit.nrsolver import FLOOR_ROWS
         m = n - 1
         nn = (n, n)
         self.core, self.n, self.iref, self.ffi = core, n, iref, ffi
         self.s = s = ffi.new('newton_t *')
         ## (the n x n buffers start at zero: where the core writes only the
-        ## circuit's pattern -- `s.pattern` -- the entries off it stay so)
-        Z = np.zeros
+        ## circuit's pattern -- `s.pattern` -- the entries off it stay so; on
+        ## pattern pages, resident only where written: `_tran_core.pattern_zeros`)
+
+        def Z(shape):
+            size = int(np.prod(shape))
+            return _tran_core.pattern_zeros(size).reshape(shape)
         self.buf = buf = {
             'xf': np.empty(n), 'xnf': np.empty(n), 'x0f': np.empty(n),
             'A': np.empty(m * m), 'absJ': Z(m * m),
@@ -385,7 +390,7 @@ def _set_sets(rec, on):
         return
     n, s, fb = rec.n, rec.s, rec.ffi.from_buffer
     for k in _SETS:
-        a = np.zeros(rec.core.npat) if on else np.zeros((n, n))
+        a = np.zeros(rec.core.npat) if on else _MOD['core'].pattern_zeros(n * n).reshape(n, n)
         rec.buf[k] = a
         rec.mats[k] = h = fb('double *', a)
         setattr(s, k, h)
@@ -396,11 +401,12 @@ def _set_sets(rec, on):
 
 def _scatter(p, pat, n):
     """The n x n matrix of the packed set `p` (the pattern's values, zero
-    off it), on pattern pages (`_tran_core.pattern_zeros`): the Python's
-    state as the n x n record leaves it."""
-    out = _MOD['core'].pattern_zeros(n * n)
-    out[pat] = p
-    return out.reshape(n, n)
+    off it), on pattern pages with the pattern kept (`_tran_core.
+    pattern_pages`: `pattern_of` names it, as it names the passes'): the
+    Python's state as the n x n record leaves it."""
+    out = _MOD['core'].pattern_pages(n, pat)
+    out.reshape(-1)[pat] = p
+    return out
 
 
 def _first_choice(ls, m):
@@ -440,9 +446,10 @@ def _klu_bind(rec, sk):
     addr = _cbuild.address
     kabs = np.ascontiguousarray(sk.take, dtype=np.int64)
     kAx = np.empty(max(sk.nnz, 1))
-    ## (the sparse full Newton's: J reduced, zero off the pattern, and its
-    ## validation's two vectors -- newton.h)
-    R, rb, ry = np.zeros(m * m), np.empty(m), np.empty(m)
+    ## (the sparse full Newton's: J reduced, zero off the pattern -- on pattern
+    ## pages, resident only where written -- and its validation's two vectors:
+    ## newton.h)
+    R, rb, ry = _MOD['core'].pattern_zeros(m * m), np.empty(m), np.empty(m)
     ## (the chord's numeric's sequence: its residual's sparse verdict's scratch)
     ckt = np.empty(2 * m)
     ## (the iterations' J packed on the core's pattern, PCX_WANT_PACKED, and
@@ -1033,12 +1040,11 @@ def _record(tr, td, M, core, drv, P, nrsolver, residual, ls, ch):
         ## validated by its residual: newton.h's THE SPARSE FULL NEWTON)
         if (rec.klu is not ch or ch._symbolic != rec.klu_sym) and not _klu_bind(rec, ch):
             return _no('newton_c:klu')
-        ## (the run's numeric as it stands: the Python's solves replace it)
+        ## (the run's numeric as it stands: the Python's solves replace it;
+        ## none yet, the full Newton's first solve makes it as
+        ## `StructuralKLU._solve`'s first does -- newton.h's THE RUN'S FIRST
+        ## NUMERIC)
         num = ch._numeric
-        if not num and not chord:
-            ## (none yet: the full Newton's first solve factors one --
-            ## `StructuralKLU._solve` -- the Python's attempt)
-            return _no('newton_c:first_factor')
         s.klu_num = ffi.cast('void *', num) if num else ffi.NULL
     elif rec.klu is not None:
         s.klu_sym = ffi.NULL
@@ -1187,9 +1193,10 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
         _PC['chord:chosen'] += 1
     if sparse:
         if not chord:
-            ## (the full Newton's solves: a refactor of the run's numeric each;
-            ## the chord's counts: `chord_out`)
-            ch.refactors += iters
+            ## (the full Newton's solves: a refactor of the run's numeric each,
+            ## the first a factor where this call made it; the chord's counts:
+            ## `chord_out`)
+            _count_full(ch, s, iters)
         _PC['newton_c:sparse'] += 1
     _PC['newton_c:served'] += 1
     _PC['newton_c:iterations'] += iters

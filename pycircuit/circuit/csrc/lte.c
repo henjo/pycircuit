@@ -84,6 +84,7 @@ static long klu_values(lte_t *s, long n, long r)
         return 0;
     }
     pcx_reduce_rm(s->J, s->R, n, r);
+    s->r_full = 1;
     /* `_ours`: the pattern's values, and as many nonzeros as the matrix
        (`v != 0.0` counts a NaN, as numpy's count_nonzero does) */
     nz_r = pcx_count_nonzero(s->R, m * m);
@@ -121,7 +122,12 @@ static long sparse_solve(lte_t *s, long n, long r)
             return 0;
         }
         feclearexcept(FE_ALL_EXCEPT);
-        for (i = 0; i < m * m; i++) s->R[i] = 0.0;
+        /* (R HELD ZERO, lte.h: zero off the pattern as it stands, unless a
+           dense reduce filled it) */
+        if (s->r_full) {
+            for (i = 0; i < m * m; i++) s->R[i] = 0.0;
+            s->r_full = 0;
+        }
         for (k = 0; k < s->knnz; k++) s->R[s->ktake[k]] = s->kAx[k];
         s->vdense++;
     }

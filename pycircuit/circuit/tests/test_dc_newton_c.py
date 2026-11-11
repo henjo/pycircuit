@@ -15,6 +15,7 @@ from pycircuit._testing import benchdata
 from pycircuit.circuit import (
     _dc_newton_c,
     _paths,
+    _tran_core,
     _tran_initial,
     circuit,
     linearsolver,
@@ -234,3 +235,83 @@ def test_the_rounding_floor_is_the_python_one(cells, solver):
     assert sum(seen) >= 2 and counts.get('dcnewton_c:served', 0) == 1, (seen, counts)
     refused = _floor_dc(cells, False, lambda *a: False)[0]
     assert refused == ['NoConvergenceError'] * 2
+
+
+def _ladder(cells):
+    """`cells` resistors in a row from a 1 V source, each node to ground
+    through a cubic conductance (a behavioural current, no limiter): a
+    nonlinear operating point of cells + 2 unknowns."""
+    from pycircuit.circuit.elements import VS, R, SubCircuit, gnd
+    from pycircuit.circuit.elements_hdl import BSourceHdl
+    c = SubCircuit()
+    c['vs'] = VS('n0', gnd, v=1.0)
+    for k in range(cells):
+        c[f'r{k}'] = R(f'n{k}', f'n{k + 1}', r=1e3)
+        c[f'g{k}'] = BSourceHdl(f'n{k + 1}', gnd, f'n{k + 1}', gnd,
+                                i_func=lambda v: 1e-4 * v + 1e-3 * v ** 3)
+    return c
+
+
+def _first_dc(cells, on):
+    """`_ladder(cells)`'s operating point, the analysis's first solve, the
+    C on or off: `(x bytes, the solver's class, its counts, the run's
+    counts, the analysis)`."""
+    from pycircuit.circuit.dcanalysis import DC
+    kept = _dc_newton_c.ENABLED
+    _dc_newton_c.ENABLED = on
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            dc = DC(_ladder(cells), toolkit=circuit.numeric)
+            before = _paths.snapshot()
+            x = np.asarray(dc.solve().x, float).tobytes()
+            counts = _paths.since(before)
+    finally:
+        _dc_newton_c.ENABLED = kept
+    ch = dc._get_linearsolver()._choice
+    klu = tuple(getattr(ch, k, None) for k in ('analyses', 'factors', 'refactors',
+                                                'pivot_fallbacks', 'residual_fallbacks'))
+    return x, type(ch).__name__, klu, counts, dc
+
+
+def test_the_first_solve_is_the_cs_where_the_structure_chooses():
+    """From the AutoSolver's structural floor (150) the circuit's structure
+    chooses the StructuralKLU before the first matrix does
+    (`_dc_newton_c.first_choice`), so the C serves the operating point's
+    first solve too -- the factor its sequence makes with no numeric yet, as
+    StructuralKLU's first solve -- x, the solver and its counts the
+    Python's; below the floor the first solve is still the Python's
+    (`dcnewton_c:linsolver`)."""
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    py = _first_dc(160, False)
+    got = _first_dc(160, True)
+    assert got[:3] == py[:3] and got[1] == 'StructuralKLU', (got[1:3], py[1:3])
+    assert got[3].get('dcnewton_c:served', 0) >= 1, got[3]
+    assert 'dcnewton_c:linsolver' not in got[3], got[3]
+    small = _first_dc(40, True)
+    assert small[1] == 'DenseSolver' and small[3].get('dcnewton_c:linsolver', 0) >= 1, small[3]
+
+
+def test_a_klu_record_lays_out_klus_entries_alone(monkeypatch):
+    """The record bound to KLU makes its active entries KLU's -- never the
+    m^2 index arrays the dense solve alone lays out -- and keeps its R,
+    |J| and C on small pages (`_tran_core.pattern_zeros`: resident where
+    written; under huge pages one written entry made 2 MB resident, the
+    whole m^2 of an IBM power grid's 25 850 unknowns)."""
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    monkeypatch.setattr(_tran_core, 'PATTERN_PAGES_FROM', 1)
+    laid, real = [], _dc_newton_c._Rec._dense_active
+
+    def dense_active(self):
+        laid.append(self.n)
+        return real(self)
+    monkeypatch.setattr(_dc_newton_c._Rec, '_dense_active', dense_active)
+    *_, counts, dc = _first_dc(160, True)
+    assert not laid, laid
+    rec = dc.__dict__['_dc_newton_c']
+    sk = dc._get_linearsolver()._choice
+    assert rec.klu is sk and len(rec.act[0]) == sk.nnz < (rec.n - 1) ** 2, counts
+    for k in ('R', 'absJ', 'Cs'):
+        assert _tran_core._mapping(rec.buf[k]) is not None, k

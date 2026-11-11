@@ -127,6 +127,38 @@ class CircuitResult(IVResultDict, InternalResultDict):
         result = self.circuit.extract_i(self.x, term, xdot = self.xdot)    
         return self.build_waveform(result, 'i(%s)'%(str(term)), 'A')
 
+_STAMP_PLAN = []
+
+
+def _stamp_plan_pages_from():
+    """`_stamp_plan.PAGES_FROM` (the module imported once)."""
+    if not _STAMP_PLAN:
+        from pycircuit.circuit import _stamp_plan
+        _STAMP_PLAN.append(_stamp_plan)
+    return _STAMP_PLAN[0].PAGES_FROM
+
+
+def _reduce_on_pattern(A, n):
+    """`A` without row and column `n`, where `A` is a matrix on pattern pages
+    (`_tran_core.pattern_of`: zero off its pattern) -- on pattern pages
+    itself, its pattern's entries moved and the rest zero: the bytes the
+    dense reduce makes, only the pattern's pages written (the dense one
+    writes every entry, (n-1)^2 resident at size) -- or None."""
+    from pycircuit.circuit import _tran_core
+    pat = _tran_core.pattern_of(A)
+    if pat is None or type(n) is not int or not 0 <= n < A.shape[0]:
+        return None
+    N = A.shape[0]
+    m = N - 1
+    r, c = numpy.divmod(numpy.asarray(pat, dtype=numpy.int64), N)
+    keep = (r != n) & (c != n)
+    rk, ck = r[keep], c[keep]
+    rpat = (rk - (rk > n)) * m + (ck - (ck > n))
+    out = _tran_core.pattern_pages(m, rpat)
+    out.reshape(-1)[rpat] = A.reshape(-1)[pat[keep]]
+    return out
+
+
 def _reduce_ndarray(A, n):
     """Drop index ``n`` from every axis of a numpy array, in one pass per array.
 
@@ -160,6 +192,12 @@ def _reduce_ndarray(A, n):
         return out
 
     if A.ndim == 2 and A.shape[0] == A.shape[1]:
+        ## (pattern pages from `_tran_core.PATTERN_PAGES_FROM` entries only:
+        ## `_stamp_plan.PAGES_FROM`, no import below it)
+        if A.size >= _stamp_plan_pages_from():
+            out = _reduce_on_pattern(A, n)
+            if out is not None:
+                return out
         m = A.shape[0] - 1
         out = numpy.empty((m, m), dtype=A.dtype)
         out[:n, :n] = A[:n, :n]

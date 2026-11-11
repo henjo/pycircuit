@@ -79,14 +79,14 @@ def _chain(n=300):
     return c
 
 
-def _run(monkeypatch, first):
+def _run(monkeypatch, first, **make):
     from pycircuit.circuit.transient import Transient
     if not first:
         monkeypatch.setattr(_tran_newton_c, '_first_choice', lambda ls, m: None)
     before = _paths.snapshot()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        tr = Transient(_chain(), toolkit=circuit.numeric)
+        tr = Transient(_chain(), toolkit=circuit.numeric, **make)
         res = tr.solve(tend=6e-8, timestep=1e-9)
     st, ch = tr.statistics, tr._get_linearsolver()._choice
     run = (np.asarray(res.x, float).tobytes(), np.asarray(res.sweep_values, float).tobytes(),
@@ -106,5 +106,20 @@ def test_the_c_newton_serves_the_first_attempt_as_the_python_makes_it(monkeypatc
         want, wklu, wcounts = _run(m, first=False)
     assert wcounts.get('newton_c:linsolver') == 1
     assert 'newton_c:linsolver' not in counts
+    assert counts['newton_c:served'] == wcounts['newton_c:served'] + 1
+    assert got == want and gklu == wklu and gklu[0] == 'StructuralKLU'
+
+
+def test_the_full_newton_makes_the_runs_first_numeric_as_the_python(monkeypatch):
+    """With the chord off the first attempt is a full Newton with no
+    numeric yet: the C makes it (newton.c's `sparse_full`: the factor, the
+    solve, no validation -- `StructuralKLU._solve`'s first) and counts it a
+    factor, the rest refactors (`_count_full`) -- the run, its statistics
+    and its KLU counts those of the run whose first attempt is the
+    Python's."""
+    got, gklu, counts = _run(monkeypatch, first=True, chord_jacobian=False)
+    with monkeypatch.context() as m:
+        want, wklu, wcounts = _run(m, first=False, chord_jacobian=False)
+    assert counts.get('newton_c:first_numeric') == 1, counts
     assert counts['newton_c:served'] == wcounts['newton_c:served'] + 1
     assert got == want and gklu == wklu and gklu[0] == 'StructuralKLU'
