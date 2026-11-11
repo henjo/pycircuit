@@ -5999,3 +5999,17 @@ each resident whole, and the error test zeroed all of its R before every
 dense test.  The grid's DC 4.7x at 1/8 the memory with the same bytes; its
 own 10 ns transient runs, within 0.4 mV of the published answer.  Every other
 answer the same; the 63 x 63 mesh's Gear-2 transient 1.07x faster.
+
+## KLU's order where the structural pattern's zeros mislead it (2026-11-11)
+
+2026-11-11 (`doc/hdl_roadmap_260824.md`, 314; plan 261 L19).  The whole IBM
+power grid (54 266 unknowns, 14 308 voltage sources, nearly all 0 V vias)
+ran its default transient in 421 s, KLU's refactor two thirds of it: the
+structural pattern stores the vias' zero branch diagonals, KLU's BTF pivots
+on them, and the factor fills thirteen times past its estimate.
+`StructuralKLU`'s one analysis now tries KLU's own order on circuit-like
+values made from the places an element stamps, and re-orders (a transversal
+matched on those places) only where that trial reallocates or overfills.
+It fires on the whole grid alone -- 428 -> 74 s -- and every gold deck and
+size circuit keeps KLU's own order, bit for bit.  The grid's DC is not
+KLU-bound (its target missed, accepted as measured).

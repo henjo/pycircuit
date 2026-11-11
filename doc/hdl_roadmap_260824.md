@@ -15575,3 +15575,51 @@ tolerance at the solve's own residual: the bound cannot decide) zeroing R first,
 off-band entry fails the residual and the call is handed back.  Each bitten (14 of 14: the feature removed, its test failed).  Ten pinned pairs re-recorded after their twins' tests (the transient evaluation and the core's, the multistep
 walk's, the assembly loops', the reduce's on the reference side; the error test's, the transform, stage and stepping loops',
 the DC base solve's and the Newton solve's on the twin side).
+
+## 2026-11-11 — 314. KLU's order tried against the structural pattern's always-zero places, and made again where they mislead it -- the whole IBM power grid's default 10 ns transient 428.6 -> 74 s (5.8x), its refactor 86 -> 10 ms; every gold deck and size circuit KLU's own order, the same bytes; the grid's DC not KLU-bound (its 2x line missed, accepted as measured)
+
+**Why**  Plan 261's L19.  Andreas: "What is next?" -> "First look, then size" -> "Size it" -> "Build it".  The whole IBM grid
+ibmpg1t (54 266 unknowns, the default import: 14 308 voltage sources, 14 031 of them 0 V vias between two metal layers) ran its
+own 10 ns transient by default after 313, every step in C, within 0.43 mV of the benchmark -- in 421 s, 0.41 s a step against
+the merged grid's 20 ms; KLU's refactor 68 % of it.  `StructuralKLU` factors the circuit's structural pattern
+(`jacobian_structure`: every place an element can stamp and the whole diagonal) -- on the grid 43 235 places that hold zero in
+every matrix, 14 619 of them the vias' branch diagonals.  KLU's BTF takes that structural diagonal as its transversal; its
+pivots are zeros; the factor pivots off the diagonal and fills: 3.12e8 flops and 86.6 ms a refactor, against 6.6 ms on the same
+matrix's nonzeros.
+
+**Sized** (no tree change; scratch fl/order2.py): on 20 gold decks (41-519 unknowns, every one on KLU), chains and a mesh of
+~4 000 unknowns and both grids, five rules on each circuit's own J at its operating point.  No fixed alternative: the plan's
+pattern's order up to 27x KLU's flops (jge), COLAMD up to 123x (rich3), the nonzeros' order up to 112x (jge); KLU's own is the
+cheapest or near it on every ordinary circuit.  A TRANSVERSAL MATCHED ON THE PLACES AN ELEMENT STAMPS, KLU's BTF and AMD on the
+pattern with those columns: 0.76-1.10x KLU's flops on every ordinary circuit, 0.08x on the whole grid (a refactor 9.8 ms).  And a
+TRIAL tells them apart with no values: KLU's own symbolic factored on seeded values at the stamped places, each stamped diagonal
+dominating its row as a circuit's conductances do, zero at every other place -- fill 0.89-1.22x KLU's estimate and no
+reallocation on all but the whole grid (4.69x, 20 reallocations); uniform values misfired (a MOS chain 281x).
+
+**What.**  `_klu_order` (new): at a `StructuralKLU`'s one analysis (`_analysed`, which the C units' paths and the Python's share,
+so the twins cannot part), where the solver knows the stamped places (`analysis.stamped_places`, given by the transient's and the
+DC's solvers: the stamp plan's G and C places, G's alone for a DC; None where the plan places not every element, and where the
+circuit's branch rows are under `BRANCH_SHARE`, 1 %, of its unknowns -- no plan read) the trial is made; where it reallocated or
+filled past twice the estimate the order is made again (a maximum matching on the stamped places, `klu_analyze_given` on the
+pattern) and kept where its own trial fills less.  Else KLU's own analysis stands, untouched.  KLU's structs are read at offsets
+the compiler gives on the installed `suitesparse/klu.h`, trusted once KLU's behaviour confirms them (`klumem`'s way); without them
+no trial.  `_paths` prefix `klu_order:`.
+
+**Measured** (interleaved pairs against 26b7b01b's worktree, OPENBLAS_NUM_THREADS=1, the box at 1.3-3.7 from another
+project).  The whole grid's default 10 ns transient 427.95 -> 73.95 / 74.2 s (5.8x; line >= 3x: MET), 1 020 steps and 2 012
+iterations as before, within 0.43467 mV of the benchmark (its last digits moved: the order changed; line 0.5 mV: MET), peak
+4.2-4.3 GB as before.  Its DC 8.54 -> 8.76 s (line >= 2x: MISSED -- the DC is not KLU-bound: its time is the plain DC Newton's
+dense convergence and validation products over 54 265^2 untouched pages; ACCEPTED AS MEASURED by Andreas).  The merged grid
+(25 850): tried, KLU's order kept, HEAD's digest.  The gate against 26b7b01b: every result the same, C against Python 0
+differing; its counters differ by `klu_order:trial` alone (made on the decks over the branch share), `reordered` on none.  The
+size DCs 0.991-1.059x and the size transients 0.984-1.013x (the 63 x 63 mesh's Gear-2 1.006x on a quieter rerun), every digest
+the same, peaks within 2 MB.  A first build read the transient's stamp plan for every DC (the C plan, which a DC never needs:
+the size DCs 0.87-0.97x); the DC now reads G's places alone and the branch-share skip reads none.  Suite 6 641 passed.
+
+**Tests.**  `test_klu_order` (new, 5): two resistor meshes joined at every node by a 0 V via (the grids' form; it fires from 6 x 6)
+take the matched order, whose trial fills less than KLU's, the run the same with the C paths as without; a 400-stage MOS chain
+under the branch share makes no trial, and made all the same it passes and keeps KLU's own P and Q; the trial's dominance (a
+uniform draw misreads that chain); a matched order filling no less is freed and KLU's kept; a via's branch diagonal is no stamped
+place, its couplings are.  Each bitten (6 of 6).  `doc/transient_runtime.md` names the unit.  Three pinned pairs re-recorded on
+the reference side (the frozen transform's, the PCNR DC solve's, the readiness reads': `Analysis._get_linearsolver` and the DC's
+solver give the stamped places) after their twins' tests.

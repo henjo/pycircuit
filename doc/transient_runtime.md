@@ -49,6 +49,10 @@ From the outside in. "Called from" is where the Python reaches the glue.
 
 For the tests and the gate alone: `klumem` (`pycircuit/_testing/klumem.py`) builds one line of C on the installed KLU header, the offset of `klu_common.memusage`,
 and reads the bytes KLU's objects hold, the C's and the Python's alike: a numeric made and never freed shows there and nowhere else.
+`_klu_order` (`pycircuit/circuit/_klu_order.py`) builds one unit the same way, the offsets of `klu_common.nrealloc`, `klu_symbolic`'s
+`lnz`, `unz`, `P`, `Q` and `klu_numeric`'s `lnz`, `unz`, trusted once KLU's behaviour confirms them: a `StructuralKLU`'s one analysis
+(the C units' and the Python's alike) tries KLU's order on values made from the stamp plan's places, and re-orders where it fills
+past its estimate (`klu_order:`).  No header, compiler or confirmation: no trial, KLU's own order.
 
 Outside the multistep loop, the same rules: the Radau stage solve (`csrc/radau.c`, `_tran_radau_c`,
 `PYCIRCUIT_RADAU_C`, `radau_c:`; `PYCIRCUIT_RADAU_OUT_MB` the MiB its output sets may take, 128 -- the size up to

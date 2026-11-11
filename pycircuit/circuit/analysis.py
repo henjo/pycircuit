@@ -279,6 +279,40 @@ def jacobian_structure(cir, iref):
     return n - 1, r[order], c[order]
 
 
+
+def stamped_places(cir, iref, rows, cols, methods=('G', 'C')):
+    """Per entry of the reduced structural pattern `(rows, cols)`
+    (`jacobian_structure`'s), whether an element of `cir` can stamp it: a
+    place in the stamp plan's matrices `methods` -- G and C, a transient's;
+    G alone, a DC's (`_stamp_plan._MatrixPlan`: each constant stamp's
+    nonzeros, each called element's block).  The others --
+    the diagonal only the ladders add to, a constant stamp's zeros -- hold
+    zero in every matrix the circuit makes, which KLU's order is tried
+    against (`_klu_order`).  None where the plan does not place every
+    element, or cannot be made -- and, no plan read, where the circuit's
+    branch rows are under `_klu_order.BRANCH_SHARE` of its unknowns."""
+    from pycircuit.circuit import _klu_order, _stamp_plan
+    n = cir.n
+    if len(getattr(cir, 'branches', ())) < _klu_order.BRANCH_SHARE * n:
+        return None
+    try:
+        plan = _stamp_plan._plan_for(cir)
+        flats = []
+        for m in methods:
+            mp = plan.methods.get(m)
+            if mp is None:
+                mp = plan.methods[m] = _stamp_plan._MatrixPlan(cir, m)
+            if any(c[3] < 0 for c in mp.calls):
+                return None
+            flats.append(numpy.asarray(mp.flat, dtype=numpy.intp))
+    except Exception:                                   # noqa: BLE001 -- no plan: no trial
+        return None
+    pos = numpy.unique(numpy.concatenate(flats))
+    rows = numpy.asarray(rows, dtype=numpy.intp)
+    cols = numpy.asarray(cols, dtype=numpy.intp)
+    full = (rows + (rows >= iref)) * n + (cols + (cols >= iref))
+    return numpy.isin(full, pos)
+
 def remove_row_col(matrices, n, toolkit):
     result = []
     for A in matrices:
@@ -469,8 +503,14 @@ class Analysis(sim.Analysis):
                     a = ref()
                     return None if a is None else jacobian_structure(
                         a.cir, getattr(a, 'irefnode', None))
+
+                def stamped(rows, cols):
+                    a = ref()
+                    return None if a is None else stamped_places(
+                        a.cir, getattr(a, 'irefnode', None), rows, cols)
                 solver = self._default_linearsolver = AutoSolver(
-                    structure=structure, structural_min_n=self._STRUCTURAL_KLU_MIN_N)
+                    structure=structure, structural_min_n=self._STRUCTURAL_KLU_MIN_N,
+                    stamped=stamped)
             return solver
         if not isinstance(solver, LinearSolver):
             raise TypeError(

@@ -922,8 +922,11 @@ class StructuralKLU(KLUSolver):
     SuperLU; the answers' last bits move (the plan's one re-baseline).
     """
 
-    def __init__(self, m, rows, cols, fallback, libname='libklu.so.2'):
+    def __init__(self, m, rows, cols, fallback, libname='libklu.so.2', stamped=None):
         super().__init__(libname)
+        ## (a callable `(rows, cols) -> per entry, whether an element stamps
+        ## it, or None`: the analysis trials KLU's order on it -- `_klu_order`)
+        self._stamped = stamped
         self.m = m = int(m)
         rows = numpy.asarray(rows, dtype=numpy.intp)
         cols = numpy.asarray(cols, dtype=numpy.intp)
@@ -964,13 +967,35 @@ class StructuralKLU(KLUSolver):
     def _analysed(self):
         ctypes = self._ct
         if self._symbolic is None:
-            self._symbolic = self._lib.klu_analyze(
+            sym = self._lib.klu_analyze(
                 self.m, self._ptr(self.Ap, ctypes.c_int), self._ptr(self.Ai, ctypes.c_int),
                 ctypes.byref(self._common))
             self.analyses += 1
-            if not self._symbolic:
+            if not sym:
                 raise numpy.linalg.LinAlgError('klu_analyze failed (singular structure?)')
+            ## (KLU's order tried where the pattern's always-zero places could
+            ## mislead it, another kept where they do: `_klu_order`)
+            got = self._order_tried(sym)
+            if got is not None:
+                self._lib.klu_free_symbolic(ctypes.byref(ctypes.c_void_p(sym)),
+                                            ctypes.byref(self._common))
+                sym = got
+            self._symbolic = sym
         return self._symbolic
+
+    def _order_tried(self, sym):
+        """The symbolic to keep in place of KLU's own `sym`, or None
+        (`_klu_order.better`): asked where the places an element stamps are
+        known (`stamped`, given by the analysis that made the solver)."""
+        if self._stamped is None:
+            return None
+        rows = self.Ai.astype(numpy.intp)
+        cols = numpy.repeat(numpy.arange(self.m), numpy.diff(self.Ap))
+        mask = self._stamped(rows, cols)
+        if mask is None:
+            return None
+        from pycircuit.circuit import _klu_order
+        return _klu_order.better(self, sym, mask)
 
     def _factor(self, Ax):
         ctypes = self._ct
@@ -1774,8 +1799,11 @@ class AutoSolver(LinearSolver):
     """
 
     def __init__(self, min_n=MIN_N_FOR_SPARSE, max_fill=MAX_FILL_FOR_SPARSE, structure=None,
-                 structural_min_n=None):
+                 structural_min_n=None, stamped=None):
         self.min_n = min_n
+        ## (with `structure`: which of its places an element stamps --
+        ## `StructuralKLU`'s `stamped`, `analysis.stamped_places`)
+        self.stamped = stamped
         ## (the floor of `StructuralKLU` alone, where a structure is given:
         ## `MIN_N_FOR_STRUCTURAL_KLU` -- `min_n` unless an analysis asks)
         self.structural_min_n = min_n if structural_min_n is None else structural_min_n
@@ -1858,7 +1886,8 @@ class AutoSolver(LinearSolver):
         try:
             self._sparse = self._choice = StructuralKLU(
                 *st, fallback=lambda: (self._value_sparse(n_unknowns, count=False)
-                                       if n_unknowns >= self.min_n else self._dense))
+                                       if n_unknowns >= self.min_n else self._dense),
+                stamped=self.stamped)
         except ImportError:
             return False
         _paths.COUNTS['solver.auto:StructuralKLU'] += 1

@@ -16,7 +16,7 @@ def _circuit_solver(cir, iref, floor):
     weakly: the circuit holds the solver)."""
     import weakref
 
-    from pycircuit.circuit.analysis import jacobian_structure
+    from pycircuit.circuit.analysis import jacobian_structure, stamped_places
     from pycircuit.circuit.linearsolver import AutoSolver
     nodemap = cir.elementnodemap
     key = (cir.n, iref, floor)
@@ -28,7 +28,11 @@ def _circuit_solver(cir, iref, floor):
     def structure():
         c = ref()
         return None if c is None else jacobian_structure(c, iref)
-    solver = AutoSolver(structure=structure, structural_min_n=floor)
+
+    def stamped(rows, cols):
+        c = ref()
+        return None if c is None else stamped_places(c, iref, rows, cols, ('G',))
+    solver = AutoSolver(structure=structure, structural_min_n=floor, stamped=stamped)
     cir.__dict__['_dc_solver'] = (nodemap, key, solver)
     return solver
 
