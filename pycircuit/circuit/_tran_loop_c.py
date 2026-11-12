@@ -122,6 +122,16 @@ BAIL = _cbuild.bails(_CODES, 'LOOP_BAIL_')
 _ABI = _cbuild.constants(_cbuild.csrc('pcx_abi.h'))
 #: the outputs' rows an entry holds (full: written back, entered again)
 CAP_MAX = 4096
+#: and their bytes at most: at size an entry holds fewer (each row a step's
+#: point, n values -- 1.3 MB at 165 k unknowns), written back and entered
+#: again as at CAP_MAX; below 8 192 unknowns CAP_MAX
+CAP_BYTES = 256 << 20
+
+
+def _cap(n):
+    """The rows an entry holds for n unknowns (`CAP_MAX`, `CAP_BYTES`)."""
+    return max(1, min(CAP_MAX, CAP_BYTES // (8 * n)))
+
 #: the most Python attempts made between two entries after entries that
 #: made none (`run`'s backoff)
 BACKOFF_MAX = 256
@@ -321,7 +331,7 @@ def _bind(tr, rec, tab, n, hist_len, screen, judge):
     s.lte = s.lte_fn = s.ctrl = s.ctrl_fn = ffi.NULL
     if judge is not None and not _bind_judge(run, tr, n, judge):
         return None
-    s.n, s.hist_len, s.cap = n, hist_len, CAP_MAX
+    s.n, s.hist_len, s.cap = n, hist_len, _cap(n)
     return run
 
 
@@ -338,7 +348,7 @@ def _bind_buffers(run, n, hist_len, npat):
     newton.h's), the attempt's point, the outputs -- each pointed at by its
     field and kept (`run.keep`)."""
     ffi, s = run.ffi, run.s
-    cap = CAP_MAX
+    cap = _cap(n)
     nc = npat or n * n
     run.buf = buf = {
         'qring': np.empty(hist_len * n), 'iqring': np.empty(hist_len * n),
@@ -430,7 +440,7 @@ def _bind_judge(run, tr, n, judge):
     ffi, s = run.ffi, run.s
     ctrl, rset, sk, mask, charge = judge
     lffi, lcfn, ldgesv = _tran_lte_c.driver()
-    ctx = _tran_lte_c._Ctx(lffi, ldgesv, n, tr.irefnode)
+    ctx = _tran_lte_c._Ctx(lffi, ldgesv, n, tr.irefnode, run.nrec.core.packed)
     if sk is not None and not _tran_lte_c._klu_bind(ctx, sk):
         return False
     le = ctx.s
@@ -753,9 +763,12 @@ def _read(loop, tr, td, rec, adaptive):
     if cached is None or float(getattr(tr.epar, 'bypasstol', -1.0) or -1.0) >= 0.0:
         return 'cache'
     cx, cC = cached
+    ## (THE PACKED LAYOUT: the cache's C on the plan's pattern, the record's)
+    pk = td['_newton_c'].pk
     if not (type(xl) is np.ndarray and xl.dtype is _F64 and xl.shape == (n,)
             and type(cx) is np.ndarray and cx.dtype is _F64 and cx.shape == (n,)
-            and type(cC) is np.ndarray and cC.dtype is _F64 and cC.shape == (n, n)):
+            and ((type(cC) is _packed.PatternMatrix and cC.pat is pk[0]) if pk is not None else
+                 (type(cC) is np.ndarray and cC.dtype is _F64 and cC.shape == (n, n)))):
         return 'cache'
     dl, dl2 = tr._dt_last, tr._dt_last2
     stats = tr.statistics
@@ -812,8 +825,12 @@ def _judge_entry(run_, rec):
 
 def _load_cached(run_, buf, cC):
     """The cached C into the first slot: n x n, or (THE PACKED SETS,
-    newton.h's) its pattern's values."""
-    if run_.sets:
+    newton.h's) its pattern's values -- on THE PACKED LAYOUT gathered from
+    the plan's pattern into the core's order (`_tran_core.packed_order`)."""
+    pk = run_.nrec.pk
+    if pk is not None:
+        np.take(cC.v, pk[2], out=buf['cC0'])
+    elif run_.sets:
         np.take(cC.reshape(-1), run_.nrec.core.arrays['pat'], out=buf['cC0'])
     else:
         buf['cC0'][:] = cC.reshape(-1)
@@ -821,7 +838,10 @@ def _load_cached(run_, buf, cC):
 
 def _slot_back(run_, rec, buf, name, n, O):
     """A slot as the Python holds it: n x n -- copied, or (THE PACKED SETS)
-    scattered on pattern pages (`_tran_newton_c._scatter`)."""
+    scattered on pattern pages (`_tran_newton_c._scatter`), or on THE PACKED
+    LAYOUT a PatternMatrix on the plan's pattern."""
+    if rec.pk is not None:
+        return _packed.PatternMatrix(rec.pk[0], buf[name][rec.pk[1]])
     if not run_.sets:
         return buf[name].reshape(n, n).copy()
     return O['newton_c']._scatter(buf[name], rec.core.arrays['pat'], n)
@@ -983,7 +1003,7 @@ def run(loop):
     ENTRY."""
     if not ENABLED:
         return False
-    if _packed.any_active():               # THE PACKED LAYOUT: the C mirrors the dense one
+    if _packed.any_active() and not _packed.active(loop.tr.cir):    # another circuit's scope
         return _declined(loop, 'packed')
     if loop.c.stage:
         ## (the transform's C Newton served last: its loop, `_tran_tcloop_c`;
@@ -1168,7 +1188,7 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     Cj = _slot_back(run_, rec, buf, f'cC{cur}', n, O)
     tr._q_cache = (x, buf['qatt'].copy())
     tr._C_cache = (x, Cj)
-    if rec.core.npat:
+    if rec.core.npat and rec.pk is None:
         tr._C_pattern = (Cj, rec.core.arrays['pat'])
     tr._iq = buf['iqatt'].copy()
     tr._Geq = _slot_back(run_, rec, buf, f'Geq{cur}', n, O)
@@ -1224,7 +1244,7 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     loop.x_new, loop.J = x, None
     loop.h_next = loop.timestep if not adaptive else loop.h
     loop.clamped, loop.hold, loop.imposed = False, not adaptive, bool(s.imposed)
-    _count(s, run_, rec, adaptive, k)
+    _count(s, run_, rec, adaptive, k, tr)
 
 
 def _stats_back(stats, s, k):
@@ -1241,7 +1261,7 @@ def _stats_back(stats, s, k):
         stats.min_step, stats.max_step = float(s.hmin), float(s.hmax)
 
 
-def _count(s, run_, rec, adaptive, k):
+def _count(s, run_, rec, adaptive, k, tr):
     """The `_paths` counts the Python attempts' calls make, made for the C's
     attempts -- each where the Python makes it.  An A/B of the loop compares
     them all (test_loop_c): a count a unit adds on its served path is added
@@ -1284,7 +1304,14 @@ def _count(s, run_, rec, adaptive, k):
     _PC['memo.q:same'] += k + (s.ltes if adaptive else 0)
     ## the branch screen (`_tran_branch_c.screen`, its C from
     ## `_CompanionModel._C_lookup`)
-    if s.screens:
+    ## (THE PACKED LAYOUT: that screen's C declines on the pattern, the
+    ## Python's screens it -- none where its verdict on a constant C is
+    ## kept, `_branch_screen`)
+    if s.screens and rec.pk is not None:
+        if tr.__dict__.get('_branch_const') is None:
+            _PC['branch_c:packed'] += s.screens
+        _PC['memo.C:equal'] += s.screens
+    elif s.screens:
         _PC['branch_c:served'] += s.screens
         _PC['memo.C:equal'] += s.screens
         if run_.npat:

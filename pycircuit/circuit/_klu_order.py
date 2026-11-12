@@ -34,9 +34,21 @@ header (`suitesparse/klu.h`), as `pycircuit._testing.klumem` reads its one
 field, and only once KLU's own behaviour confirms them; without the header,
 a compiler or that confirmation, no trial is made and KLU's own order stands.
 
+FROM A SIZE, NESTED DISSECTION.  From `ND_FROM` unknowns a third order is
+tried: a nested dissection of A + A' (CHOLMOD's: METIS's node bisector
+applied recursively, then CCOLAMD on the constraint sets -- `pcx_ndorder`,
+CHOLMOD opened at its first use), given to KLU as P = Q, kept where its own
+trial fills less than the order otherwise kept.  On a large 2-D mesh AMD
+fills past a dissection: the IBM grid ibmpg2t (164 897 unknowns, few
+always-zero places -- no reorder) 9.04 M entries and a 441 ms refactor on
+KLU's order, 6.83 M and 231 ms on the dissection; ibmpg1t's matched order
+(1.02 M) stays.  At that size the mask of stamped places is made whatever the
+branch share (`analysis.stamped_places`).
+
 `_paths` prefix `klu_order:`: `trial`, `reordered`, `kept_own` (the matched
 order filled no less), `unread` (the offsets not had), `no_matching`,
-`failed` (the trial's factor)."""
+`failed` (the trial's factor); `dissection` (tried), `dissected` (kept),
+`no_cholmod`."""
 import ctypes
 
 import numpy as np
@@ -48,6 +60,9 @@ from pycircuit.circuit import _paths
 FILL = 2.0
 #: the trial values' seed
 SEED = 7919
+#: the unknowns from which a nested dissection is tried (`dissected`): above
+#: every circuit of the gate's size set -- the IBM grids
+ND_FROM = 32768
 #: the share of a circuit's unknowns its branch rows (a voltage source's,
 #: an inductor's: a diagonal no element need stamp) must reach for the
 #: trial to be made -- below it so few zero diagonals cannot mislead KLU
@@ -80,6 +95,96 @@ long pcx_kluord(int k)
 '''
 
 _OFF = []
+
+_ND_SRC = '''#include <stddef.h>
+#include <stdint.h>
+#include <dlfcn.h>
+#include <suitesparse/cholmod.h>
+typedef int (*c_start_t)(cholmod_common *);
+typedef cholmod_sparse *(*c_alloc_t)(size_t, size_t, size_t, int, int, int, int, cholmod_common *);
+typedef cholmod_sparse *(*c_trans_t)(cholmod_sparse *, int, cholmod_common *);
+typedef cholmod_sparse *(*c_add_t)(cholmod_sparse *, cholmod_sparse *, double *, double *, int, int,
+                                   cholmod_common *);
+typedef int64_t (*c_nd_t)(cholmod_sparse *, int32_t *, size_t, int32_t *, int32_t *, int32_t *,
+                          cholmod_common *);
+typedef int (*c_free_t)(cholmod_sparse **, cholmod_common *);
+/* a nested-dissection order of A + A' (CHOLMOD's) for the m x m CSC pattern
+   (Ap, Ai) into Perm; CParent, Cmember (m) scratch.  1, or 0: CHOLMOD not
+   had or failed */
+long pcx_ndorder(long m, const int32_t *Ap, const int32_t *Ai, int32_t *Perm, int32_t *CParent,
+                 int32_t *Cmember)
+{
+    cholmod_common cm;
+    cholmod_sparse *A, *At = NULL, *B = NULL;
+    long j, p, ok = 0;
+    void *h = dlopen("libcholmod.so.5", RTLD_NOW | RTLD_LOCAL);
+    c_start_t start, finish; c_alloc_t alloc; c_trans_t trans; c_add_t add; c_nd_t nd; c_free_t fr;
+    if (!h) h = dlopen("libcholmod.so", RTLD_NOW | RTLD_LOCAL);
+    if (!h) return 0;
+    start = (c_start_t) dlsym(h, "cholmod_start"); finish = (c_start_t) dlsym(h, "cholmod_finish");
+    alloc = (c_alloc_t) dlsym(h, "cholmod_allocate_sparse");
+    trans = (c_trans_t) dlsym(h, "cholmod_transpose"); add = (c_add_t) dlsym(h, "cholmod_add");
+    nd = (c_nd_t) dlsym(h, "cholmod_nested_dissection"); fr = (c_free_t) dlsym(h, "cholmod_free_sparse");
+    if (!(start && finish && alloc && trans && add && nd && fr) || !start(&cm)) return 0;
+    A = alloc((size_t) m, (size_t) m, (size_t) Ap[m], 1, 1, 0, CHOLMOD_PATTERN, &cm);
+    if (A) {
+        for (j = 0; j <= m; j++) ((int32_t *) A->p)[j] = Ap[j];
+        for (p = 0; p < Ap[m]; p++) ((int32_t *) A->i)[p] = Ai[p];
+        At = trans(A, 0, &cm);
+        if (At) B = add(A, At, NULL, NULL, 0, 1, &cm);
+        if (B) {
+            B->stype = 1;
+            ok = nd(B, NULL, 0, Perm, CParent, Cmember, &cm) >= 0;
+        }
+    }
+    fr(&A, &cm); fr(&At, &cm); fr(&B, &cm);
+    finish(&cm);
+    return ok;
+}
+'''
+_ND = []
+
+
+def _nd_fn():
+    """`(ffi, pcx_ndorder)` once built, or None (no header or compiler)."""
+    if not _ND:
+        _ND.append(None)
+        try:
+            from pycircuit.circuit import _cbuild
+            ffi, fn, _key, _cold, _s = _cbuild.load_unit(
+                _ND_SRC, 'long pcx_ndorder(long m, const int32_t *Ap, const int32_t *Ai, '
+                         'int32_t *Perm, int32_t *CParent, int32_t *Cmember);', 'pcx_ndorder')
+            _ND[0] = (ffi, fn)
+        except Exception:       # noqa: BLE001 -- no header or compiler: no dissection tried
+            return None
+    return _ND[0]
+
+
+def dissected(sk):
+    """The pattern's symbolic on a nested dissection of A + A' (`pcx_ndorder`)
+    given to KLU as P = Q -- or None (CHOLMOD not had, an analysis failed)."""
+    got = _nd_fn()
+    m = sk.m
+    perm = np.empty(m, dtype=np.int32)
+    if got is not None:
+        ffi, fn = got
+        cp, cmem = np.empty(m, dtype=np.int32), np.empty(m, dtype=np.int32)
+        fb = ffi.from_buffer
+        Ap = np.ascontiguousarray(sk.Ap, dtype=np.int32)
+        Ai = np.ascontiguousarray(sk.Ai, dtype=np.int32)
+        ok = fn(m, fb('int32_t *', Ap), fb('int32_t *', Ai), fb('int32_t *', perm),
+                fb('int32_t *', cp), fb('int32_t *', cmem))
+    if got is None or not ok or not np.array_equal(np.sort(perm), np.arange(m, dtype=np.int32)):
+        _PC['klu_order:no_cholmod'] += 1
+        return None
+    lib, ct = sk._lib, sk._ct
+    given = lib.klu_analyze_given
+    given.argtypes = [ct.c_int, ct.POINTER(ct.c_int), ct.POINTER(ct.c_int), ct.POINTER(ct.c_int),
+                      ct.POINTER(ct.c_int), ct.c_void_p]
+    given.restype = ct.c_void_p
+    sym = given(m, sk._ptr(sk.Ap, ct.c_int), sk._ptr(sk.Ai, ct.c_int), sk._ptr(perm, ct.c_int),
+                sk._ptr(perm, ct.c_int), ct.byref(sk._common))
+    return sym or None
 
 
 def _offsets():
@@ -234,9 +339,10 @@ def _matched(sk, off, stamped):
 
 def better(sk, sym, stamped):
     """The symbolic `sk` should keep in place of KLU's own `sym` -- the
-    matched order's, where the trial says `sym` misleads KLU -- or None:
-    keep `sym`.  `stamped`: per entry of `sk`'s pattern, whether an element
-    stamps it."""
+    matched order's, where the trial says `sym` misleads KLU; from `ND_FROM`
+    unknowns a nested dissection's, where it fills less than the order kept
+    -- or None: keep `sym`.  `stamped`: per entry of `sk`'s pattern, whether
+    an element stamps it."""
     if stamped is None or len(stamped) != sk.nnz:
         return None
     off = _offsets()
@@ -250,16 +356,31 @@ def better(sk, sym, stamped):
         _PC['klu_order:failed'] += 1
         return None
     realloc, fill, est = own
-    if not (realloc > 0 or fill > FILL * max(est, 1.0)):
-        return None
-    got = _matched(sk, off, stamped)
-    if got is None:
-        return None
-    ## (kept only where its own trial fills less than KLU's order did)
-    mine = _trial(sk, got, off, stamped)
-    if mine is None or not mine[1] < fill:
-        sk._lib.klu_free_symbolic(sk._ct.byref(sk._ct.c_void_p(got)), sk._ct.byref(sk._common))
-        _PC['klu_order:kept_own'] += 1
-        return None
-    _PC['klu_order:reordered'] += 1
+    got = None
+    if realloc > 0 or fill > FILL * max(est, 1.0):
+        got = _matched(sk, off, stamped)
+        ## (kept only where its own trial fills less than KLU's order did)
+        mine = _trial(sk, got, off, stamped) if got is not None else None
+        if got is not None and (mine is None or not mine[1] < fill):
+            _free(sk, got)
+            got = None
+            _PC['klu_order:kept_own'] += 1
+        elif got is not None:
+            fill = mine[1]
+            _PC['klu_order:reordered'] += 1
+    if sk.m >= ND_FROM:
+        _PC['klu_order:dissection'] += 1
+        nd = dissected(sk)
+        mine = _trial(sk, nd, off, stamped) if nd is not None else None
+        if nd is not None and mine is not None and mine[1] < fill:
+            if got is not None:
+                _free(sk, got)
+            got = nd
+            _PC['klu_order:dissected'] += 1
+        elif nd is not None:
+            _free(sk, nd)
     return got
+
+
+def _free(sk, sym):
+    sk._lib.klu_free_symbolic(sk._ct.byref(sk._ct.c_void_p(sym)), sk._ct.byref(sk._common))

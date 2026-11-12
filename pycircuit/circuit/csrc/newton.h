@@ -293,6 +293,15 @@ typedef struct {
     double *held_v;
     int64_t *held_st;
     long reused;
+    /* THE PACKED LAYOUT (`_packed`; CTX): 1 where the record holds no dense
+       matrix -- KLU always, J packed on the core's pattern (`kpp`, `Jp`),
+       the sets packed -- and the verdicts' dense tests are THE CSC KERNEL
+       on KLU's arrays (pcx_kluseq.h `pcx_csc_mv`, the reference's order at
+       size): the convergence scale |J| |x_next| (`abs_product`: the test,
+       the rounding floor, the iteration limit's report), the full Newton's
+       refactor residual (`sparse_full`) and the chord's (PCX_A_PACKED); R,
+       absJ, A and Tf unread */
+    long packed;
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and

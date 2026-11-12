@@ -173,3 +173,110 @@ def test_a_matched_order_that_fills_no_less_is_not_kept(monkeypatch):
     before = _paths.snapshot()
     assert _klu_order.better(own, own_sym, mask) is None
     assert _paths.since(before).get('klu_order:kept_own') == 1
+
+
+def _mesh(k):
+    """A k x k resistor mesh with a capacitor and a sink at every node and a
+    pad to the supply at each corner: a 2-D grid, its one branch row the
+    supply's (under `BRANCH_SHARE`)."""
+    c = SubCircuit()
+    c['vdd'] = VS('s', gnd, v=1.8)
+    for i in range(k):
+        for j in range(k):
+            if i + 1 < k:
+                c[f'h{i}_{j}'] = R(f'n{i}_{j}', f'n{i + 1}_{j}', r=0.5)
+            if j + 1 < k:
+                c[f'v{i}_{j}'] = R(f'n{i}_{j}', f'n{i}_{j + 1}', r=0.5)
+            c[f'c{i}_{j}'] = C(f'n{i}_{j}', gnd, c=1e-14)
+            c[f'i{i}_{j}'] = IS(f'n{i}_{j}', gnd, i=1e-4 * (1 + (i * j) % 5))
+    for i, j in ((0, 0), (0, k - 1), (k - 1, 0), (k - 1, k - 1)):
+        c[f'p{i}_{j}'] = R('s', f'n{i}_{j}', r=0.25)
+    return c
+
+
+def _analysed(cir):
+    """`(the solver analysed as the analyses make it -- the stamped places
+    given --, its symbolic, its size, the stamped places, the counts)`."""
+    iref = cir.get_node_index(circuit.gnd)
+    m, rows, cols = jacobian_structure(cir, iref)
+    before = _paths.snapshot()
+    sk = StructuralKLU(m, rows, cols, fallback=None,
+                       stamped=lambda r, c: stamped_places(cir, iref, r, c))
+    sym = sk._analysed()
+    counts = _paths.since(before)
+    mask = stamped_places(cir, iref, sk.Ai.astype(np.intp), np.repeat(np.arange(m), np.diff(sk.Ap)))
+    return sk, sym, m, mask, counts
+
+
+@pytest.mark.parametrize('build, kept', [(lambda: _mesh(70), 'dissected'), (lambda: _mesh(40), 'own'),
+                                         (lambda: _layers(30), 'reordered')],
+                         ids=['mesh70', 'mesh40', 'layers30'])
+def test_from_its_size_a_dissection_is_tried_and_the_least_fill_kept(build, kept, monkeypatch):
+    """From `ND_FROM` unknowns (lowered here) a nested dissection of A + A' is
+    tried -- the stamped places made whatever the branch share -- and the
+    order kept is the one whose trial fills least: on a 70 x 70 mesh the
+    dissection (AMD fills past it), on a 40 x 40 one KLU's own, on layered
+    meshes joined by 0 V vias the matched order (it beats the dissection
+    there, as on the IBM grid ibmpg1t); the same order every time."""
+    off = _offsets()
+    if _klu_order._nd_fn() is None:
+        pytest.skip('no CHOLMOD header: no dissection tried')
+    monkeypatch.setattr(_klu_order, 'ND_FROM', 1000)
+    sk, sym, m, mask, counts = _analysed(build())
+    assert mask is not None and counts.get('klu_order:dissection') == 1, counts
+    plain = StructuralKLU(m, sk.Ai, np.repeat(np.arange(m), np.diff(sk.Ap)), fallback=None)
+    psym = plain._analysed()
+    nd, mt = _klu_order.dissected(plain), _klu_order._matched(plain, off, mask)
+    fills = {'own': _klu_order._trial(plain, psym, off, mask)[1],
+             'dissected': _klu_order._trial(plain, nd, off, mask)[1]}
+    if mt is not None:
+        fills['reordered'] = _klu_order._trial(plain, mt, off, mask)[1]
+    for extra in (nd, mt):
+        if extra is not None:
+            _klu_order._free(plain, extra)
+    assert _klu_order._trial(sk, sym, off, mask)[1] == fills[kept]
+    assert (kept == 'dissected') is ('klu_order:dissected' in counts), counts
+    assert (kept == 'reordered') is ('klu_order:reordered' in counts), counts
+    ## (the second solver kept alive: its symbolic is freed with it)
+    sk2, again = _analysed(build())[:2]
+    for key in ('s_P', 's_Q'):
+        assert np.array_equal(_klu_order._perm(sym, off, key, m), _klu_order._perm(again, off, key, m))
+    del sk2
+
+
+def test_below_its_size_no_dissection_is_tried():
+    """Below `ND_FROM` the 70 x 70 mesh -- its branch rows under
+    `BRANCH_SHARE` -- makes no trial at all (no stamped places read), and
+    its symbolic is KLU's own."""
+    off = _offsets()
+    sk, sym, m, mask, counts = _analysed(_mesh(70))
+    assert mask is None and not any(k.startswith('klu_order:') for k in counts), counts
+    plain = StructuralKLU(m, sk.Ai, np.repeat(np.arange(m), np.diff(sk.Ap)), fallback=None)
+    psym = plain._analysed()
+    for key in ('s_P', 's_Q'):
+        assert np.array_equal(_klu_order._perm(sym, off, key, m), _klu_order._perm(psym, off, key, m))
+
+
+def test_a_run_on_the_dissection_is_the_same_with_the_c(monkeypatch):
+    """The 70 x 70 mesh's transient on the dissection (`ND_FROM` lowered):
+    the C paths and the Python share the one analysis -- the same run with
+    them as without, bit for bit -- and the dissection kept."""
+    if _klu_order._nd_fn() is None:
+        pytest.skip('no CHOLMOD header: no dissection tried')
+    monkeypatch.setattr(_klu_order, 'ND_FROM', 1000)
+
+    def run(on):
+        for mod in (_tran_newton_c, _tran_loop_c, _tran_lte_c, _dc_newton_c, _tran_branch_c):
+            monkeypatch.setattr(mod, 'ENABLED', on)
+        before = _paths.snapshot()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr = Transient(_mesh(70), toolkit=circuit.numeric)
+            res = tr.solve(tend=1e-10, timestep=1e-11)
+        st = tr.statistics
+        return ((np.asarray(res.x, float).tobytes(), st.accepted_steps, st.rejected_steps,
+                 st.newton_iterations), _paths.since(before))
+    py, _cpy = run(False)
+    got, counts = run(True)
+    assert got == py
+    assert counts.get('klu_order:dissected', 0) >= 1 and counts.get('newton_c:served', 0) > 0, counts

@@ -193,17 +193,21 @@ class _Ctx:
     """One controller's struct and buffers for one size and reference row:
     every pointer the C holds is a buffer of this context's, set once."""
 
-    __slots__ = ('buf', 'ffi', 'ipiv', 'iref', 'j_inplace', 'jbuf', 'keep', 'klu', 'klu_keep',
-                 'klu_sym', 'n', 'pat_kat', 's', 'served')
+    __slots__ = ('buf', 'ffi', 'ipiv', 'iref', 'j_inplace', 'jbuf', 'jref', 'keep', 'klu',
+                 'klu_keep', 'klu_sym', 'n', 'packed', 'pat_kat', 's', 'served')
 
-    def __init__(self, ffi, dgesv, n, iref):
+    def __init__(self, ffi, dgesv, n, iref, packed=False):
         m = n - 1
         self.n, self.iref, self.ffi = n, iref, ffi
         self.s = s = ffi.new('lte_t *')
+        ## (THE PACKED LAYOUT: J read on its pattern where it stands, no dense
+        ## buffer -- lte.h)
+        self.packed, self.jref = packed, None
+        D = (lambda *_a: np.empty(1)) if packed else np.empty
         self.buf = buf = {
             'xc': np.empty(n), 'xl': np.empty(n), 'q': np.empty(n), 'ql': np.empty((3, n)),
-            'J': np.empty((n, n)), 'run': np.empty(n),
-            'abst': np.empty(n), 'A': np.empty(m * m), 'b': np.empty(m), 'lte': np.empty(n),
+            'J': D((n, n)), 'run': np.empty(n),
+            'abst': np.empty(n), 'A': D(m * m), 'b': np.empty(m), 'lte': np.empty(n),
             'ref': np.empty(n), 'out': np.empty(n), 'tq': np.empty(n),
             'mask': np.empty(n), 'charge': np.empty(n), 'iq1': np.empty(n),
             'vt': np.empty(2 * n),
@@ -228,6 +232,7 @@ class _Ctx:
         ## `_cbuild.INPLACE_MIN_ENTRIES`, or not C-contiguous)
         self.jbuf = s.J
         self.j_inplace = n * n >= _cbuild.INPLACE_MIN_ENTRIES
+        s.packed = int(packed)
         ## (the watch counter at this context's last serve, None after any
         ## other outcome: the adaptive loop in C enters only on a serve
         ## nothing watched has moved since -- `_tran_loop_c`)
@@ -258,8 +263,9 @@ def _klu_bind(ctx, sk):
     ct, lib = sk._ct, sk._lib
     ktake = np.ascontiguousarray(sk.take, dtype=np.int64)
     from pycircuit.circuit import _tran_core
-    ## (R held zero: on pattern pages, written on the pattern alone -- lte.h)
-    R = _tran_core.pattern_zeros(m * m)
+    ## (R held zero: on pattern pages, written on the pattern alone -- lte.h;
+    ## packed, none)
+    R = np.empty(1) if ctx.packed else _tran_core.pattern_zeros(m * m)
     kAx, x, y = np.empty(max(sk.nnz, 1)), np.empty(m), np.empty(m)
     keep = (sk, ktake, kAx, R, x, y, fb('int *', sk.Ap), fb('int *', sk.Ai),
             fb('int64_t *', ktake), fb('double *', kAx), fb('double *', R), fb('double *', x),
@@ -303,9 +309,6 @@ def max_error(ctrl, s):
         last.served = None
     if not ENABLED:
         return _no('lte_c:off')
-    ## (THE PACKED LAYOUT, `_packed`: the C mirrors the dense one)
-    if _packed.any_active():
-        return _no('lte_c:packed')
     drv = _driver or driver()
     if not drv:
         return _no('lte_c:driver')
@@ -374,7 +377,12 @@ def early_context(tr, arm, active):
     n = len(arm.x_last)
     cd = ctrl.__dict__
     J0 = cd.get('_lte_c_early_J')
-    if J0 is None or J0.shape != (n, n):
+    if _packed.any_active():
+        ## (THE PACKED LAYOUT: a zero J on the diagonal alone, unread too)
+        if type(J0) is not _packed.PatternMatrix or J0.shape != (n, n):
+            J0 = cd['_lte_c_early_J'] = _packed.PatternMatrix(
+                _packed.Pattern(n, np.arange(n), np.arange(n)), np.zeros(n))
+    elif type(J0) is not np.ndarray or J0.shape != (n, n):
         J0 = cd['_lte_c_early_J'] = np.zeros((n, n))
     dl = tr._dt_last
     s = StepLTEInputs(
@@ -523,8 +531,15 @@ def _arrays(ctrl, s, held=None):
     point's)."""
     J, iref = s.J, s.irefnode
     xc, xl, q = s.x_curr, s.x_last, s.q_curr
+    ## (THE PACKED LAYOUT, `_packed`: inside a scope J is a PatternMatrix --
+    ## a dense one there is another circuit's: declined)
+    packed = _packed.any_active()
     if held is not None and J is None:
         n = xc.shape[0] if type(xc) is np.ndarray and xc.ndim == 1 else 0
+    elif packed and type(J) is _packed.PatternMatrix:
+        n = J.shape[0]
+    elif packed:
+        return _no('lte_c:packed')
     elif type(J) is np.ndarray and J.dtype is _F64 and J.ndim == 2 and J.shape[1] == J.shape[0]:
         n = J.shape[0]
     else:
@@ -639,6 +654,29 @@ def _pattern_in(ctx, sk, J):
         st.kat = kat
 
 
+def _pattern_packed(ctx, sk, J):
+    """lte.h's packed J on THE PACKED LAYOUT: J (a PatternMatrix) read on its
+    pattern where it stands (`sets`), each KLU entry's index in its values
+    (`kpp`, -1 off J's pattern: J's +0.0 there) -- made once a pattern and
+    solver; no solver (the early abort's context, its J unread): none."""
+    st = ctx.s
+    ctx.jref = J
+    st.J = ctx.ffi.from_buffer('double *', J.v)
+    st.sets = 1
+    st.on_pattern = 0
+    if sk is None:
+        return
+    got = ctx.pat_kat
+    if got is None or got[0] is not J.pat or got[1] is not sk:
+        iref, m = ctx.iref, ctx.n - 1
+        r, c = np.divmod(np.asarray(sk.take, dtype=np.int64), m)
+        kpp = np.ascontiguousarray(J.pat.index_of(r + (r >= iref), c + (c >= iref)),
+                                   dtype=np.int64)
+        got = ctx.pat_kat = (J.pat, sk, kpp, ctx.ffi.from_buffer('int64_t *', kpp))
+    st.kpp = got[3]
+    st.on_pattern = 1
+
+
 def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c', held=None):
     """The context (made, or remade for another size or reference row; KLU
     bound where the run is sparse, or to the `held` factors' solver) and
@@ -651,9 +689,10 @@ def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c', held=None):
     J, iref, n, xc, xl, q, ql3, run, mode, ab, reltol, trtol, nn = arr
     cd = ctrl.__dict__
     ctx = cd.get(key)
-    if ctx is None or ctx.n != n or ctx.iref != iref:
+    packed = _packed.any_active()
+    if ctx is None or ctx.n != n or ctx.iref != iref or ctx.packed != packed:
         ffi, _cfn, dgesv = drv
-        ctx = cd[key] = _Ctx(ffi, dgesv, n, iref)
+        ctx = cd[key] = _Ctx(ffi, dgesv, n, iref, packed)
     buf, st = ctx.buf, ctx.s
     if not _solver_in(ctx, sk, held):
         return _no('lte_c:sparse')
@@ -671,7 +710,9 @@ def _load(ctrl, s, drv, sk, euler, sc, arr, key='_lte_c', held=None):
         np.copyto(buf['iq1'], iq1)
     ## (J read where it stands -- the C only reads it: an n x n copy a call
     ## saved -- else copied, `INPLACE_MIN_ENTRIES`; none read with `held`)
-    if held is None:
+    if held is None and ctx.packed:
+        _pattern_packed(ctx, sk, J)
+    elif held is None:
         if ctx.j_inplace and J.flags.c_contiguous:
             st.J = ctx.ffi.from_buffer('double *', J)
         else:

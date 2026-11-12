@@ -39,8 +39,7 @@ holds no dense matrix: its own core (`_tran_core._Core(packed=True)`: no
 n x n bin) makes G in its packed bin, J is made at KLU's entries alone, the
 layers at theirs, and the convergence scale and the refactor's residual by
 the reference's CSC kernel on KLU's arrays -- the Python's on the pattern,
-bit for bit; KLU on the structure whatever the size (`AutoSolver.
-choose_packed`, `_select`'s own choice for a PatternMatrix).
+bit for bit; KLU on the structure whatever the size (`_packed.choice`).
 
 EXACT OR NOT AT ALL.  A flag numpy would report, a non-finite value, a
 failed factor or solve, or a limiter the walk stops at hands the solve back
@@ -405,7 +404,7 @@ def _solver(rec, ls):
     from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
     ch = None
     if type(ls) is AutoSolver and rec.packed:
-        ch = _packed_choice(ls, rec.n - 1)
+        ch = _packed.choice(ls, rec.n - 1)
         if type(ch) is not StructuralKLU:
             return 'linsolver'
     elif type(ls) is AutoSolver:
@@ -425,20 +424,6 @@ def _solver(rec, ls):
     if rec.klu is ch and rec.s.klu.klu_sym == rec.ffi.cast('void *', ch._symbolic or 0):
         return None
     return None if _klu_bind(rec, ch) else 'klu'
-
-
-def _packed_choice(ls, m):
-    """THE PACKED LAYOUT's solver: KLU on the structure whatever the size
-    (`AutoSolver.choose_packed`, `_select`'s own choice for a PatternMatrix),
-    analysed as its first factor analyses it -- or None."""
-    ch = ls.choose_packed(m)
-    if ch is None or ch is ls._dense:
-        return None
-    try:
-        ch._analysed()
-    except np.linalg.LinAlgError:
-        return None
-    return ch
 
 
 def structure_chooses(ls, m):

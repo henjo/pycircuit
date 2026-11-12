@@ -93,19 +93,26 @@ static long sparse_full(newton_t *s, long m)
     if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_num, (int) m, 1, s->b, s->klu_common))
         return NEWTON_BAIL_KLU_SOLVE;
     /* the validation's verdict by the sparse sum's bound where it decides
-       (pcx_verdict.h; R is J reduced, zero off the pattern) */
-    {
+       (pcx_verdict.h; R is J reduced, zero off the pattern); packed, the
+       CSC kernel's own value decides, every time */
+    if (!s->packed) {
         int v = pcx_resid_sparse(s->kAp, s->kAi, s->kAx, s->resid_tol, s->rb, s->b, s->ry,
                                  s->Is, s->ax, m);
         if (v == PCX_HOLDS) return 0;
         if (v == PCX_FAILS) return NEWTON_BAIL_KLU_RESIDUAL;
         s->vdense++;
     }
-    /* (J reduced, the pattern's values in place: R zero off them) */
-    if (s->pattern)
-        for (k = 0; k < s->knnz; k++) s->R[s->kabs[k]] = s->kAx[k];
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m, s->b, 1,
-                           0.0, s->ry, 1);
+    if (s->packed) {
+        /* (THE PACKED LAYOUT: `A x` by the CSC kernel on KLU's arrays,
+           `StructuralKLU._packed_residual`'s) */
+        pcx_csc_mv(s->kAp, s->kAi, s->kAx, s->b, s->ry, m, 0);
+    } else {
+        /* (J reduced, the pattern's values in place: R zero off them) */
+        if (s->pattern)
+            for (k = 0; k < s->knnz; k++) s->R[s->kabs[k]] = s->kAx[k];
+        ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m,
+                               s->b, 1, 0.0, s->ry, 1);
+    }
     for (i = 0; i < m; i++) {
         double a = fabs(s->rb[i]);
         if (a > max_b) max_b = a;
@@ -146,8 +153,8 @@ static long solve_step(newton_t *s, long it, int finite, void **num)
                test's scratch (the full Newton's J reduced: not this call's) */
             for (i = 0; i < m; i++) s->rb[i] = s->b[i];
             /* (the chord's own numeric: no values held -- pcx_held.h) */
-            st = pcx_klu_step(&s->ck, s->R, s->rb, s->b, s->ry, s->ckt, m, s->dgemv, 0, NULL,
-                              NULL, NULL);
+            st = pcx_klu_step(&s->ck, s->R, s->rb, s->b, s->ry, s->ckt, m, s->dgemv,
+                              s->packed ? PCX_A_PACKED : PCX_A_SCRATCH, NULL, NULL, NULL);
             if (st == PCX_KLU_FACTOR) return NEWTON_BAIL_KLU_FACTOR;
             if (st == PCX_KLU_SOLVE) return NEWTON_BAIL_KLU_SOLVE;
             if (st) return NEWTON_BAIL_KLU_RESIDUAL;
@@ -212,6 +219,18 @@ static const double *absj(newton_t *s)
     return s->absJ;
 }
 
+/* `toolkit.dot(abs(J), ax_next)` into `Is`: numpy's own dgemv on |J|
+   (row-major, as np.dot calls it on a C-ordered matrix) -- on THE PACKED
+   LAYOUT the CSC kernel on KLU's arrays, `_packed.PatternMatrix.matvec`'s */
+static void abs_product(newton_t *s, long m)
+{
+    if (s->packed)
+        pcx_csc_mv(s->kAp, s->kAi, s->kAx, s->ax, s->Is, m, 1);
+    else
+        ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, absj(s), m,
+                               s->ax, 1, 0.0, s->Is, 1);
+}
+
 /* nrsolver's convergence test, entry by entry, in its operations and
    order: `abs(xdiff) < reltol * maximum(ax_next, abs(x)) + xtol`, then --
    only where that holds: the product feeds nothing else and no flag is
@@ -237,16 +256,16 @@ static int converged(newton_t *s, long m)
     /* (the residual's test only where the step's holds: its product feeds
        nothing else, and no flag is read here) */
     if (!conv_x) return 0;
-    if (s->klu_sym) {
+    if (s->klu_sym && !s->packed) {
         /* on KLU's pattern (|J| zero off it): the verdict by the sparse
-           sum's bound where it decides (pcx_verdict.h) */
+           sum's bound where it decides (pcx_verdict.h); packed, the CSC
+           kernel's own value decides, every time */
         int v = pcx_scale_sparse(s->kAp, s->kAi, s->kAx, s->ax, s->Fr, s->reltol, s->abstol,
                                  s->Is, s->ry, m);
         if (v != PCX_UNDECIDED) return v == PCX_HOLDS;
         s->vdense++;
     }
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, absj(s), m,
-                           s->ax, 1, 0.0, s->Is, 1);
+    abs_product(s, m);
     for (i = 0; i < m; i++) {
         double aF = fabs(s->Fr[i]);
         double Is = s->Is[i] + aF;
@@ -282,8 +301,7 @@ static double step_size(const newton_t *s, long m)
 static int floor_holds(newton_t *s, long m)
 {
     long n = s->n, r = s->iref, i, j, c, k = 0, lo, kk;
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, absj(s), m,
-                           s->ax, 1, 0.0, s->Is, 1);
+    abs_product(s, m);
     for (i = 0; i < m; i++) {
         double aF = fabs(s->Fr[i]);
         s->Isf[i] = s->Is[i] + aF;
@@ -594,9 +612,8 @@ static long iterate(newton_t *s, void **num, const double *cin, const double **c
     }
     /* the last iteration's residual scale |J| |x_next| (its test made it
        only where the update's held), for the iteration limit's report
-       (`nrsolver._worst_row_report`): numpy's own dgemv, as the test's */
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, absj(s), m,
-                           s->ax, 1, 0.0, s->Is, 1);
+       (`nrsolver._worst_row_report`): as the test's */
+    abs_product(s, m);
     return finish(s, NEWTON_BAIL_MAXITER);
 }
 

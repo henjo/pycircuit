@@ -93,6 +93,9 @@ _OWN_COUNTS = ('once:', 'sources_c:', 'loop_c:', 'pred_c:', 'branch_c:bail')
 def _norm(v, depth=0):
     if isinstance(v, np.ndarray):
         return ('nd', v.dtype.str, v.shape, v.tobytes())
+    if type(v).__name__ == 'PatternMatrix':
+        ## (THE PACKED LAYOUT: its pattern's places and its values)
+        return ('pm', v.shape, v.pat.key.tobytes(), v.v.tobytes())
     if isinstance(v, (list, tuple)) and depth < 4:
         return (type(v).__name__, tuple(_norm(e, depth + 1) for e in v))
     if isinstance(v, dict) and depth < 4:

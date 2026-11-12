@@ -117,10 +117,11 @@ static long sparse_solve(lte_t *s, long n, long r)
         return LTE_BAIL_KLU;
     /* (what KLU raised inside: the Python's ctypes call never sees it) */
     feclearexcept(FE_ALL_EXCEPT);
-    if (s->on_pattern) {
+    if (s->on_pattern && !s->packed) {
         /* the validation's verdict by the bound where it decides and its
            sums raised no flag; else the dense test on R as the Python holds
-           it (zero off the pattern), what the sums raised cleared */
+           it (zero off the pattern), what the sums raised cleared; packed,
+           the CSC kernel's own value decides, every time */
         int v = pcx_resid_sparse(s->kAp, s->kAi, s->kAx, s->resid_tol, s->b, s->x, s->y, s->vt,
                                  s->vt + n, m);
         if (v != PCX_UNDECIDED && !fetestexcept(lte_flags(s))) {
@@ -130,19 +131,24 @@ static long sparse_solve(lte_t *s, long n, long r)
         }
         feclearexcept(FE_ALL_EXCEPT);
         /* (R HELD ZERO, lte.h: zero off the pattern as it stands, unless a
-           dense reduce filled it) */
-        if (s->r_full) {
+           dense reduce filled it; packed, no R) */
+        if (s->r_full && !s->packed) {
             for (i = 0; i < m * m; i++) s->R[i] = 0.0;
             s->r_full = 0;
         }
-        for (k = 0; k < s->knnz; k++) s->R[s->ktake[k]] = s->kAx[k];
+        if (!s->packed)
+            for (k = 0; k < s->knnz; k++) s->R[s->ktake[k]] = s->kAx[k];
         s->vdense++;
     }
     /* the refactor's validation, numpy's operations in their order: R x
-       is `arr @ x` (numpy's matmul calls this dgemv), then |R x - b|, its
-       maximum, the scale */
-    ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m, s->x, 1,
-                           0.0, s->y, 1);
+       is `arr @ x` (numpy's matmul calls this dgemv; THE PACKED LAYOUT's
+       `_packed_residual` the CSC kernel), then |R x - b|, its maximum, the
+       scale */
+    if (s->packed)
+        pcx_csc_mv(s->kAp, s->kAi, s->kAx, s->x, s->y, m, 0);
+    else
+        ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m,
+                               s->x, 1, 0.0, s->y, 1);
     /* (np.max of |b|: b is finite -- the estimate passed its flag test --
        and no |.| is -0.0, so a running `>` from +0.0 is numpy's maximum
        in any order) */

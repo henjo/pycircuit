@@ -174,6 +174,12 @@ typedef struct {
     double *held_v;
     int64_t *held_st;
     long reused;
+    /* THE PACKED LAYOUT (`_packed`; [ctx]): 1 where the context holds no
+       dense matrix -- J packed (`sets`, `kpp`), KLU always -- and the
+       refactor's validation, where its bound does not decide, is THE CSC
+       KERNEL on KLU's arrays (pcx_verdict.h `pcx_csc_mv`, the reference's
+       order at size); R and A unread */
+    long packed;
 } lte_t;
 long pcx_lte(lte_t *s);
 

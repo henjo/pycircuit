@@ -213,11 +213,7 @@ static void dense_is(dcnewton_t *s, long m)
    by row, KLU's other entries zero: they add +0.0) */
 static void packed_is(dcnewton_t *s, long m)
 {
-    const int *Ap = s->klu.kAp, *Ai = s->klu.kAi;
-    long i, j, p;
-    for (i = 0; i < m; i++) s->Is[i] = 0.0;
-    for (j = 0; j < m; j++)
-        for (p = Ap[j]; p < Ap[j + 1]; p++) s->Is[Ai[p]] += fabs(s->klu.kAx[p]) * s->ax[j];
+    pcx_csc_mv(s->klu.kAp, s->klu.kAi, s->klu.kAx, s->ax, s->Is, m, 1);
     s->is_made = 1;
 }
 

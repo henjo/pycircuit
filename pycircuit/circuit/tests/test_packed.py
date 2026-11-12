@@ -14,11 +14,19 @@ import warnings
 import numpy as np
 import pytest
 
-from pycircuit.circuit import _dc_newton_c, _packed, _paths, analysis, circuit, nrsolver
+from pycircuit.circuit import (
+    _dc_newton_c,
+    _packed,
+    _paths,
+    _tran_newton_c,
+    analysis,
+    circuit,
+    nrsolver,
+)
 from pycircuit.circuit import linearsolver as _ls
 from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit.dcanalysis import DC
-from pycircuit.circuit.elements import VS, R, SubCircuit, gnd
+from pycircuit.circuit.elements import VS, C, R, SubCircuit, gnd
 from pycircuit.circuit.tests.test_first_attempt_c import _chain
 from pycircuit.circuit.tests.test_klu_order import _layers
 from pycircuit.circuit.transient import Transient
@@ -171,13 +179,14 @@ def test_a_packed_run_is_the_dense_one(build, kw, monkeypatch):
 
 @pytest.mark.parametrize('build, kw, keys', [
     (lambda: _layers(8), {'tend': 3e-10, 'timestep': 1e-11},
-     ('dcnewton_c:served', 'newton_c:packed', 'loop_c:packed', 'core:packed')),
-    (lambda: _chain(30), {'tend': 4e-9, 'timestep': 1e-10}, ('pcnr_c:packed', 'loop_c:packed')),
+     ('dcnewton_c:served', 'newton_c:served', 'lte_c:served', 'loop_c:steps')),
+    (lambda: _chain(30), {'tend': 4e-9, 'timestep': 1e-10},
+     ('pcnr_c:packed', 'newton_c:served', 'lte_c:served', 'loop_c:steps')),
 ], ids=['grid', 'mos-chain'])
 def test_the_c_paths_on_the_pattern(build, kw, keys, monkeypatch):
-    """With the C on, inside the scope the DC Newton's C serves and every
-    other C entry declines, counted -- PCNR, the Newton, the loop, the core:
-    the run the Python's on the pattern."""
+    """With the C on, inside the scope the DC Newton's C, the transient
+    Newton's, the error test's and the stepping loop's serve, PCNR's
+    declines, counted: the run the packed Python's, bit for bit."""
     _same_solver(monkeypatch)
     py, _c = _run(build, True, monkeypatch, **kw)
     got, counts = _run(build, True, monkeypatch, c_on=True, **kw)
@@ -472,3 +481,134 @@ def test_an_overflowing_matrix_on_the_pattern_hands_back(monkeypatch, ordinary_d
         py, _c = run(False, scale)
         got, counts = run(True, scale)
         assert got == py and counts.get(key, 0) > 0, (scale, counts)
+
+
+def _vccs_chain(k=6):
+    """A pulse driving k VCCS stages, each loaded by R || C: G's places
+    one-way (a stage's output row, its input column) -- an unsymmetric
+    pattern, whose map between the core's order and the plan's is not its
+    own inverse (on a symmetric one it is)."""
+    from pycircuit.circuit.elements import VCCS, VPulse
+    c = SubCircuit()
+    c['vin'] = VPulse('n0', gnd, v1=0.0, v2=1.0, td=2e-9, tr=1e-9, tf=1e-9, pw=5e-9, per=2e-8)
+    for i in range(k):
+        c[f'g{i}'] = VCCS(f'n{i}', gnd, f'n{i + 1}', gnd, gm=1e-3 * (1 + i % 3))
+        c[f'r{i}'] = R(f'n{i + 1}', gnd, r=1e3)
+        c[f'c{i}'] = C(f'n{i + 1}', gnd, c=1e-12)
+    return c
+
+
+def _loop_cases():
+    from pycircuit.circuit.integrator import EulerIntegrator, TrapezoidalIntegrator
+    from pycircuit.circuit.tests import test_loop_c as L
+    fixed = [
+        ('mos1', L._mos, None, {'tend': 60 * 2e-8, 'timestep': 2e-8}),
+        ('gp-chord', L._gp, None, {'tend': 60 * 2e-8, 'timestep': 2e-8}),
+        ('psp-screen', L._psp_stage, None, {'tend': 60 * 2e-8, 'timestep': 2e-8}),
+        ('sparse', lambda: L._mos(250, cap=1e-13), None, {'tend': 20 * 2e-10, 'timestep': 2e-10}),
+        ('pulse', L._pulsed, None, {'tend': 4e-8, 'timestep': 2.5e-10}),
+        ('trap', L._pulsed, {'integrator': TrapezoidalIntegrator()},
+         {'tend': 3e-8, 'timestep': 2.5e-10}),
+        ('euler', L._pulsed, {'integrator': EulerIntegrator()},
+         {'tend': 3e-8, 'timestep': 2.5e-10}),
+        ('vccs', _vccs_chain, None, {'tend': 3e-8, 'timestep': 2.5e-10}),
+    ]
+    adaptive = [
+        ('a-gear', L._hard_mos, None, {'tend': 4e-6, 'timestep': 2e-8}),
+        ('a-pulse', L._pulsed, None, {'tend': 6e-8, 'timestep': 1e-9}),
+        ('a-gp-chord', L._gp, None, {'tend': 3e-6, 'timestep': 2e-8}),
+        ('a-psp-screen', L._psp_stage, None, {'tend': 3e-6, 'timestep': 2e-8}),
+        ('a-sparse', lambda: L._mos(250, cap=1e-13), {'reltol': 1e-5},
+         {'tend': 1e-8, 'timestep': 2e-10}),
+        ('a-judge', L._pulsed, {'lte_algebraic': 'judge'}, {'tend': 4e-8, 'timestep': 1e-9}),
+        ('a-charge', L._pulsed_load, None, {'tend': 4e-8, 'timestep': 1e-9}),
+        ('a-vccs', _vccs_chain, None, {'tend': 4e-8, 'timestep': 1e-9}),
+    ]
+    return ([(nm, b, mk, kw) for nm, b, mk, kw in fixed]
+            + [(nm, b, mk, dict(kw, fixed_timestep=False)) for nm, b, mk, kw in adaptive])
+
+
+@pytest.mark.parametrize('name, build, make, kw', _loop_cases(), ids=[c[0] for c in _loop_cases()])
+def test_the_c_loop_on_the_pattern_is_the_python_loop(name, build, make, kw, monkeypatch):
+    """The stepping loop's C on the pattern (THE PACKED LAYOUT from any size)
+    against the Python loop with the transient Newton's C on it: every
+    attempt -- accepted, rejected and retried, the screen's, the chord's --
+    the same bytes, statistics, warnings, tallies and run state (its C, Geq
+    and charges as PatternMatrix on the plan's pattern) and controller; the
+    loop serving."""
+    from pycircuit.circuit.tests import test_loop_c as L
+    if _tran_newton_c.driver() is None:
+        pytest.skip('the C Newton is off')
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    ## (a short run first: a process's first run can meet its source table's
+    ## stamp moved by first-use work and leave the loop -- dense too)
+    L._run(build, True, monkeypatch, make=make, **dict(kw, tend=3 * kw['timestep']))
+    ca = L._same(build, monkeypatch, steps_min=10, make=make, **kw)
+    assert ca.get('loop_c:steps', 0) >= 10, ca
+
+
+def test_the_write_backs_and_records_on_the_pattern(monkeypatch):
+    """After a run the stepping loop's C served on the pattern: the cache's C,
+    Geq and the companion's C PatternMatrix on the plan's own pattern (no
+    `_C_pattern`: the Python on the pattern sets none); the core packed, and
+    none of the Newton's record's, the error test's or the core's buffers
+    an n x n or m x m one."""
+    from pycircuit.circuit import _stamp_plan
+    from pycircuit.circuit.tests import test_loop_c as L
+    if _tran_newton_c.driver() is None:
+        pytest.skip('the C Newton is off')
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    cir = L._mos(250, cap=1e-13)
+    before = _paths.snapshot()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(cir, toolkit=numeric)
+        tr.solve(tend=20 * 2e-10, timestep=2e-10, fixed_timestep=True)
+    assert _paths.since(before).get('loop_c:steps', 0) > 10
+    pat = _stamp_plan._plan_for(cir).pattern
+    for v in (tr._C_cache[1], tr._Geq, tr._Cmat):
+        assert type(v) is _packed.PatternMatrix and v.pat is pat
+    assert tr.__dict__.get('_C_pattern') is None
+    n = cir.n
+    core = tr.__dict__['_tran_core'][1]
+    rec = tr.__dict__['_newton_c']
+    lte = tr.step_controller.__dict__.get('_lte_c') if tr.step_controller else None
+    assert core.packed and core.arrays['binG'].size == 1
+    assert rec.s.packed == 1 and rec.s.sets == 1 and rec.pk is not None
+    bufs = [*rec.buf.values(), *core.arrays.values()] + ([] if lte is None else [*lte.buf.values()])
+    assert max(a.size for a in bufs) < (n - 1) * (n - 1)
+
+
+def test_an_entry_bounded_by_bytes_comes_back(monkeypatch):
+    """The stepping loop's outputs an entry holds bounded by their bytes
+    (`_tran_loop_c.CAP_BYTES`: at size fewer rows than CAP_MAX), written
+    back and entered again: the same run as at CAP_MAX."""
+    from pycircuit.circuit import _tran_loop_c
+    from pycircuit.circuit.tests import test_loop_c as L
+    if _tran_newton_c.driver() is None:
+        pytest.skip('the C Newton is off')
+    assert _tran_loop_c._cap(1000) == _tran_loop_c.CAP_MAX
+    assert _tran_loop_c._cap(164898) == _tran_loop_c.CAP_BYTES // (8 * 164898) < 300
+    n = L._mos().n
+    monkeypatch.setattr(_tran_loop_c, 'CAP_BYTES', 8 * n * 7)
+    assert _tran_loop_c._cap(n) == 7
+    L._same(L._mos, monkeypatch, steps_min=40, tend=60 * 2e-8, timestep=2e-8)
+
+
+
+def test_the_refactor_residuals_on_the_stepping_path_are_the_pythons(monkeypatch):
+    """The Newton's and the error test's refactor residuals on the pattern
+    (newton.c `sparse_full`, lte.c, the CSC kernel deciding every one) at a
+    tolerance near their values -- most holding, some failing to a fresh
+    factor (the C hands those back): the loop's run the Python loop's, the
+    fallbacks made."""
+    from pycircuit.circuit import linearsolver
+    from pycircuit.circuit.tests import test_loop_c as L
+    if _tran_newton_c.driver() is None:
+        pytest.skip('the C Newton is off')
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    monkeypatch.setattr(linearsolver.KLUSolver, 'REFACTOR_RESIDUAL_TOL', 1e-16)
+    kw = {'tend': 6e-8, 'timestep': 1e-9, 'fixed_timestep': False}
+    L._run(L._pulsed, True, monkeypatch, **dict(kw, tend=3e-9))
+    ca = L._same(L._pulsed, monkeypatch, steps_min=10, **kw)
+    assert ca.get('newton_c:bail:klu_residual', 0) > 0 and ca.get('lte_c:bail:residual', 0) > 0, ca

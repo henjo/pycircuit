@@ -169,7 +169,7 @@ def test_what_has_no_twin_is_in_the_matrix_and_read_tree_against_tree():
     settings = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(settings)
     assert settings.NO_TWIN <= set(settings.MATRIX)
-    assert all(setting == 'default' or (method, setting) in settings.NO_TWIN or setting in ('mi6', 'bound', 'low', 'packed+plain') for method, setting in settings.MATRIX)
+    assert all(setting == 'default' or (method, setting) in settings.NO_TWIN or setting in ('mi6', 'bound', 'low', 'packed+plain', 'packed') for method, setting in settings.MATRIX)
 
 
 def test_the_coverage_build_is_off_and_moves_no_key_by_default(monkeypatch):

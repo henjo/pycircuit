@@ -286,6 +286,7 @@ class _Ctx:
         'par_arms',
         'par_held',
         'par_rec',
+        'pk',
         's',
         'served',
         'tol',
@@ -302,36 +303,11 @@ class _Ctx:
     )
 
     def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, lapack):
-        from pycircuit.circuit import _tran_core
         from pycircuit.circuit.nrsolver import FLOOR_ROWS
         m = n - 1
-        nn = (n, n)
         self.core, self.n, self.iref, self.ffi = core, n, iref, ffi
         self.s = s = ffi.new('newton_t *')
-        ## (the n x n buffers start at zero: where the core writes only the
-        ## circuit's pattern -- `s.pattern` -- the entries off it stay so; on
-        ## pattern pages, resident only where written: `_tran_core.pattern_zeros`)
-
-        def Z(shape):
-            size = int(np.prod(shape))
-            return _tran_core.pattern_zeros(size).reshape(shape)
-        self.buf = buf = {
-            'xf': np.empty(n), 'xnf': np.empty(n), 'x0f': np.empty(n),
-            'A': np.empty(m * m), 'absJ': Z(m * m),
-            'b': np.empty(m), 'Fr': np.empty(m), 'x': np.empty(m), 'xn': np.empty(m),
-            'xd': np.empty(m), 'ax': np.empty(m), 'Is': np.empty(m),
-            'F0': np.empty(n), 'F': np.empty(n), 'J0': Z(nn), 'J': Z(nn),
-            'C0': Z(nn), 'q0': np.empty(n), 'iq0': np.empty(n), 'Geq0': Z(nn),
-            'C': Z(nn), 'q': np.empty(n), 'iq': np.empty(n), 'Geq': Z(nn),
-            'q1': np.empty(n), 'q2': np.empty(n), 'iq1': np.empty(n), 'u': np.empty(n),
-            'abstol': np.empty(m), 'xtol': np.empty(m), 'xseed': np.empty(n),
-            'cx': np.empty(n), 'cC': Z(nn),
-            'xc': np.empty(n), 'Cj': Z(nn), 'qj': np.empty(n), 'iqj': np.empty(n),
-            'Geqj': Z(nn), 'Jj': Z(nn),
-            ## (the rounding floor's, `nrsolver.FLOOR_ROWS` as the record is made)
-            'Tf': np.empty(m * m), 'Ef': np.empty(m * FLOOR_ROWS),
-            'af': np.empty(m), 'Isf': np.empty(m),
-        }
+        self.buf = buf = _buffers(core, n)
         self.ipiv64 = np.empty(max(m, 1), dtype=np.int64)
         self.ipiv32 = np.empty(max(m, 1), dtype=np.int32)
         fb = ffi.from_buffer
@@ -347,7 +323,9 @@ class _Ctx:
         ## (the cached C's own buffer, where it is copied: below
         ## `_cbuild.INPLACE_MIN_ENTRIES`, or not C-contiguous)
         self.cC_buf = s.cC
-        self.cC_inplace = n * n >= _cbuild.INPLACE_MIN_ENTRIES
+        self.cC_inplace = not core.packed and n * n >= _cbuild.INPLACE_MIN_ENTRIES
+        s.sets = s.packed = int(core.packed)
+        self.pk = None
         self.keep.append(fb('int64_t *', self.ipiv64))
         s.ipiv64 = self.keep[-1]
         self.keep.append(fb('int *', self.ipiv32))
@@ -379,6 +357,37 @@ class _Ctx:
         self.served = None
 
 
+def _buffers(core, n):
+    """The record's buffers (newton.h).  The n x n ones start at zero: where
+    the core writes only the circuit's pattern -- `s.pattern` -- the entries
+    off it stay so; on pattern pages, resident only where written
+    (`_tran_core.pattern_zeros`).  On THE PACKED LAYOUT the sets npat each
+    from the start and no dense buffer (newton.h)."""
+    from pycircuit.circuit import _tran_core
+    from pycircuit.circuit.nrsolver import FLOOR_ROWS
+    m, nn, E = n - 1, (n, n), np.empty
+
+    def Z(shape):
+        if core.packed:
+            return np.zeros(core.npat if shape == nn else 1)
+        return _tran_core.pattern_zeros(int(np.prod(shape))).reshape(shape)
+
+    def D(size):
+        return E(1) if core.packed else E(size)
+    return {
+        'xf': E(n), 'xnf': E(n), 'x0f': E(n), 'A': D(m * m), 'absJ': Z(m * m),
+        'b': E(m), 'Fr': E(m), 'x': E(m), 'xn': E(m), 'xd': E(m), 'ax': E(m), 'Is': E(m),
+        'F0': E(n), 'F': E(n), 'J0': Z(nn), 'J': Z(nn),
+        'C0': Z(nn), 'q0': E(n), 'iq0': E(n), 'Geq0': Z(nn),
+        'C': Z(nn), 'q': E(n), 'iq': E(n), 'Geq': Z(nn),
+        'q1': E(n), 'q2': E(n), 'iq1': E(n), 'u': E(n),
+        'abstol': E(m), 'xtol': E(m), 'xseed': E(n), 'cx': E(n), 'cC': Z(nn),
+        'xc': E(n), 'Cj': Z(nn), 'qj': E(n), 'iqj': E(n), 'Geqj': Z(nn), 'Jj': Z(nn),
+        ## (the rounding floor's, `nrsolver.FLOOR_ROWS` as the record is made)
+        'Tf': D(m * m), 'Ef': E(m * FLOOR_ROWS), 'af': E(m), 'Isf': E(m),
+    }
+
+
 def _set_sets(rec, on):
     """THE PACKED SETS (newton.h): the record's C, Geq and J sets npat values
     each where `on` -- the core's pattern's order -- n x n where not: fresh
@@ -407,6 +416,29 @@ def _scatter(p, pat, n):
     out = _MOD['core'].pattern_pages(n, pat)
     out.reshape(-1)[pat] = p
     return out
+
+
+def _back(rec, name, pat):
+    """A set of the converged point as the Python holds it: n x n (copied),
+    on pattern pages (the packed sets: `_scatter`), or on THE PACKED
+    LAYOUT a PatternMatrix on the plan's pattern (`_tran_core.
+    packed_order`: the core's values in its order)."""
+    p = rec.buf[name]
+    if rec.pk is not None:
+        return _packed.PatternMatrix(rec.pk[0], p[rec.pk[1]])
+    return p.copy() if pat is None else _scatter(p, pat, rec.n)
+
+
+def _choice(tr, ls, M):
+    """The solver an AutoSolver `ls` gives the C: chosen, or the structure's
+    where not yet (`_first_choice`); on THE PACKED LAYOUT KLU on the
+    structure whatever the size (`_packed.choice`) -- or None."""
+    if type(ls) is not M['AutoSolver']:
+        return None
+    m = tr.cir.n - 1
+    if _packed.active(tr.cir):
+        return _packed.choice(ls, m)
+    return ls._choice or _first_choice(ls, m)
 
 
 def _first_choice(ls, m):
@@ -449,7 +481,8 @@ def _klu_bind(rec, sk):
     ## (the sparse full Newton's: J reduced, zero off the pattern -- on pattern
     ## pages, resident only where written -- and its validation's two vectors:
     ## newton.h)
-    R, rb, ry = _MOD['core'].pattern_zeros(m * m), np.empty(m), np.empty(m)
+    R = np.empty(1) if rec.core.packed else _MOD['core'].pattern_zeros(m * m)
+    rb, ry = np.empty(m), np.empty(m)
     ## (the chord's numeric's sequence: its residual's sparse verdict's scratch)
     ckt = np.empty(2 * m)
     ## (the iterations' J packed on the core's pattern, PCX_WANT_PACKED, and
@@ -764,7 +797,9 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     if not ENABLED:
         return _no('newton_c:off')
     ## (THE PACKED LAYOUT, `_packed`: the C mirrors the dense one)
-    if _packed.any_active():
+    ## (THE PACKED LAYOUT, `_packed`: its circuit's scope the record on the
+    ## pattern; another circuit's scope declines)
+    if _packed.any_active() and not _packed.active(tr.cir):
         return _no('newton_c:packed')
     adm = _admit(tr, td, provided_function, seed)
     if adm is None:
@@ -986,8 +1021,8 @@ def _admit(tr, td, provided_function, seed):
         return _no('newton_c:solver')
     ls = tr._get_linearsolver() if P is None else P.ls
     ## (LAPACK as the Python's, or KLU on the circuit's pattern -- the sparse
-    ## chord, `_klu_bind`; not chosen yet, the structure's: `_first_choice`)
-    ch = (ls._choice or _first_choice(ls, tr.cir.n - 1)) if type(ls) is M['AutoSolver'] else None
+    ## chord, `_klu_bind`; not chosen yet, the structure's: `_choice`)
+    ch = _choice(tr, ls, M)
     if ch is None or not (ch is ls._dense or type(ch) is M['StructuralKLU']):
         return _no('newton_c:linsolver')
     tc = M['core']
@@ -1051,6 +1086,10 @@ def _record(tr, td, M, core, drv, P, nrsolver, residual, ls, ch):
         cffi_core, cfn_core, _dg = M['core'].driver()
         rec = _Ctx(core, n, iref, ffi, cfn_core, cffi_core, lapack)
         td['_newton_c'] = rec
+        if core.packed:
+            rec.pk = M['core'].packed_order(core, tr.cir)
+    if core.packed and rec.pk is None:
+        return _no('newton_c:pattern')
     s = rec.s
     if has_limiter:
         if not _walk_ready(tr, rec):
@@ -1084,7 +1123,10 @@ def _record(tr, td, M, core, drv, P, nrsolver, residual, ls, ch):
         s.klu_sym = ffi.NULL
         rec.klu = rec.klu_sym = None
         rec.klu_keep = ()
-    _set_sets(rec, bool(sparse and SETS and rec.core.npat and rec.n >= SETS_FROM))
+    if core.packed and not sparse:
+        return _no('newton_c:packed_dense')
+    _set_sets(rec, bool(core.packed or (sparse and SETS and rec.core.npat
+                                         and rec.n >= SETS_FROM)))
     return rec, T, chord, sparse
 
 
@@ -1143,7 +1185,16 @@ def _load(tr, td, rec, P, rows, u, seed, chord):
     s.have_cache = 0
     bypass = _bypassing(tr, P)
     s.fb_on = int(chord and FALLBACK and not bypass)
-    if cached is not None and not bypass:
+    if cached is not None and not bypass and rec.pk is not None:
+        ## (THE PACKED LAYOUT: the cache's C on the plan's pattern, gathered
+        ## into the core's order)
+        cxa, cCa = cached
+        if (type(cxa) is np.ndarray and cxa.shape == (rec.n,) and type(cCa) is _packed.PatternMatrix
+                and cCa.pat is rec.pk[0]):
+            np.copyto(buf['cx'], cxa)
+            np.take(cCa.v, rec.pk[2], out=buf['cC'])
+            s.have_cache = 1
+    elif cached is not None and not bypass:
         cxa, cCa = cached
         n = rec.n
         if (type(cxa) is np.ndarray and cxa.shape == (n,) and type(cCa) is np.ndarray
@@ -1254,16 +1305,16 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
     ## byte -- every serve evaluates the converged point, `fold_j` never 0)
     x = buf['xc'].copy()
     pat = core.arrays['pat'] if s.sets else None
-    Cj = buf['Cj'].copy() if pat is None else _scatter(buf['Cj'], pat, rec.n)
+    Cj = _back(rec, 'Cj', pat)
     tr._q_cache = (x, buf['qj'].copy())
     tr._C_cache = (x, Cj)
-    if core.npat:
+    if core.npat and rec.pk is None:
         ## (written on the core's pattern: the branch screen reads only it)
         tr._C_pattern = (Cj, core.arrays['pat'])
     ## (the step's companion left as `get_diff` leaves it -- the same writes
     ## as `_tran_core._leave`'s; `transient._RUN_STATE`'s 'step' block)
     tr._iq = buf['iqj'].copy()
-    tr._Geq = buf['Geqj'].copy() if pat is None else _scatter(buf['Geqj'], pat, rec.n)
+    tr._Geq = _back(rec, 'Geqj', pat)
     tr._Cmat = Cj
     tr.active_integrator = active
     tr._companion_coeffs = active.companion_coefficients(h, h_last)
@@ -1275,8 +1326,7 @@ def _serve(tr, func, M, rec, core, iref, active, h, h_last, chord, sparse, ch, w
         _PC['newton_c:lte_seed'] += 1
         fj = (None, None)
     else:
-        fj = ((None, buf['Jj'].copy() if pat is None else _scatter(buf['Jj'], pat, rec.n))
-              if want_j else (None, None))
+        fj = (None, _back(rec, 'Jj', pat)) if want_j else (None, None)
     if tr._branch_on():
         target = stats if stats is not None else tr
         before = getattr(target, 'branch_screens', 0)

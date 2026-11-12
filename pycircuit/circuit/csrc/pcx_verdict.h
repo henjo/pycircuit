@@ -308,6 +308,24 @@ __attribute__((noinline)) static int pcx_resid_flushed(const int *Ap, const int 
     return PCX_UNDECIDED;
 }
 
+/* THE CSC KERNEL (THE PACKED LAYOUT, `_packed`: the reference's order at
+   size): `y = A x` (`absv` 0) or `|A| x` (`absv` 1) on CSC arrays -- each
+   row from 0.0, each product rounded, then added column by column
+   (`_packed.PatternMatrix.matvec`'s np.bincount; on KLU's arrays a matrix
+   zero at KLU's entries off its own pattern, which add +0.0) */
+static inline void pcx_csc_mv(const int *Ap, const int *Ai, const double *Ax, const double *x,
+                              double *y, long m, int absv)
+{
+    long i, j, p;
+    for (i = 0; i < m; i++) y[i] = 0.0;
+    if (absv)
+        for (j = 0; j < m; j++)
+            for (p = Ap[j]; p < Ap[j + 1]; p++) y[Ai[p]] += fabs(Ax[p]) * x[j];
+    else
+        for (j = 0; j < m; j++)
+            for (p = Ap[j]; p < Ap[j + 1]; p++) y[Ai[p]] += Ax[p] * x[j];
+}
+
 /* nrsolver's residual test, `aF < reltol * (dot(abs(J), ax) + aF) +
    abstol` row by row (all rows: `alltrue`), on J's CSC (|J| zero off the
    pattern): every term non-negative, so T_i = S_i and the dgemv's row lies

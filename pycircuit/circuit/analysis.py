@@ -290,10 +290,11 @@ def stamped_places(cir, iref, rows, cols, methods=('G', 'C')):
     zero in every matrix the circuit makes, which KLU's order is tried
     against (`_klu_order`).  None where the plan does not place every
     element, or cannot be made -- and, no plan read, where the circuit's
-    branch rows are under `_klu_order.BRANCH_SHARE` of its unknowns."""
+    branch rows are under `_klu_order.BRANCH_SHARE` of its unknowns below
+    `_klu_order.ND_FROM` (from it a nested dissection is tried)."""
     from pycircuit.circuit import _klu_order, _stamp_plan
     n = cir.n
-    if len(getattr(cir, 'branches', ())) < _klu_order.BRANCH_SHARE * n:
+    if len(getattr(cir, 'branches', ())) < _klu_order.BRANCH_SHARE * n and n < _klu_order.ND_FROM:
         return None
     try:
         plan = _stamp_plan._plan_for(cir)

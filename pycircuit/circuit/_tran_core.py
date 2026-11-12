@@ -1215,9 +1215,13 @@ def core_for(tr):
     cir = tr.cir
     rec = tr.__dict__.get('_tran_core')
     ep = _watch.EPOCH
+    ## (THE PACKED LAYOUT: inside its circuit's scope a packed core -- no n x n
+    ## bin, its callers on the packed sets -- made again where the scope moved)
+    packed = _packed.active(cir)
     if (rec is not None and ep is not None and rec[2] == ep.value
             and cir.__dict__.get('_stamp_plan') is rec[0] and rec[3]._epoch is rec[0].epoch
-            and rec[0].n == len(cir.nodes) + len(cir.branches)):
+            and rec[0].n == len(cir.nodes) + len(cir.branches)
+            and (rec[1] is None or rec[1].packed == packed)):
         ## (the record `[plan, core, stamp, ParameterDict, arms, held]`: its
         ## checks passed since armed counted, `_watch.counted`)
         rec[5] += 1
@@ -1226,7 +1230,7 @@ def core_for(tr):
     from pycircuit.circuit import _stamp_plan
     from pycircuit.utilities.param import ParameterDict
     plan = _stamp_plan._plan_for(cir)
-    if rec is not None and rec[0] is plan:
+    if rec is not None and rec[0] is plan and (rec[1] is None or rec[1].packed == packed):
         arms = _watch.counted(rec[4], rec[5])
         tr.__dict__['_tran_core'] = [plan, rec[1], _plan_stamp(cir, before, arms),
                                      ParameterDict, arms, 0]
@@ -1236,13 +1240,32 @@ def core_for(tr):
     if drv is not None:
         ffi, _cfn, dgemv = drv
         try:
-            core = _Core(cir, plan, ffi, dgemv)
+            core = _Core(cir, plan, ffi, dgemv, packed=packed)
         except Unservable:
             core = None
     _PC['once:core.build:' + ('nodriver' if drv is None else
                               'unservable' if core is None else 'built')] += 1
     tr.__dict__['_tran_core'] = [plan, core, _plan_stamp(cir, before, 1), ParameterDict, 1, 0]
     return core
+
+
+def packed_order(core, cir):
+    """THE PACKED LAYOUT (`_packed`): `(the plan's pattern, order, inverse)`
+    for a packed core -- the plan pattern's j-th entry the core pattern's
+    `order[j]`-th, so the core's packed values `v` are the PatternMatrix's
+    `v[order]` and a PatternMatrix's `w` the core's `w[inverse]` -- or None
+    where the two are not the same places.  Made once a core."""
+    got = core.__dict__.get('pk_order')
+    if got is None:
+        from pycircuit.circuit import _stamp_plan
+        pat = _stamp_plan.packed_pattern(cir, core.plan, _packed)
+        cp = np.asarray(core.arrays['pat'], dtype=np.int64)
+        flat = pat.rows * core.n + pat.cols
+        order = np.minimum(np.searchsorted(cp, flat), max(len(cp) - 1, 0))
+        ok = len(cp) == pat.nnz and bool((cp[order] == flat).all())
+        got = core.__dict__['pk_order'] = ((pat, order, np.argsort(order, kind='stable'))
+                                           if ok else (None,))
+    return got if got[0] is not None else None
 
 
 def _plan_stamp(cir, before, arms):

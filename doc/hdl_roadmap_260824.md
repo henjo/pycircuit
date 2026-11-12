@@ -15879,3 +15879,63 @@ Python's ladders' outcome the same).  Thirteen bites, each bit (the residual's f
 1e-8 on the pattern -- the 1e-14 test added for it; the choice's size check's first missed: a held solve came before any
 choice -- the order test added).  Fourteen pinned pairs re-recorded after their twins' tests (804 passed): pcx_kluseq.h is in
 every KLU sequence's twin.  `test_gate_verdict` knows the new twin forcing.
+
+## 2026-11-12 — 320. THE PACKED LAYOUT, P2b: the Gear-2 stepping path in C on the circuit's pattern -- the transient Newton's, the error test's and the stepping loop's C serve inside the packed scope, no dense matrix on the path; and from 32 768 unknowns a nested-dissection order tried for KLU -- ibmpg2t's 10 ns 579 s (packed Python, battery) -> 145 s
+
+**Why**  Plan 261 L20 (tc/plan_l20_packed.md), P2's second sub-stage.  Andreas: "Continue" -> "Build P2b" -> "Size KLU
+first" -> "ND order inside P2b".  Sized first: on the packed Python path the cost is the Python stepping loop, not the matrices
+(ibmpg1t 1 ns at load 17: 15.0 of 38.6 s in the loop's per-step event scan over every source, KLU 4.3 s) -- so the stage put
+the whole C loop on the pattern.  Most of it already ran on the core's packed sets; what held it to the dense layout was the
+allocation of n x n and m x m buffers it then left unread, the dense tests' fallbacks and the write-backs.  Measured built,
+ibmpg2t's C was KLU-bound (perf: klu_refactor 44 % of the process; 313 refactors of 441 ms in its 10 ns, 2 291 solves on held
+values): KLU's own AMD order fills 9.04 M entries on its 2-D mesh, a nested dissection 6.83 M (not 314's misleading zeros:
+ibmpg2t has few, no reorder trial ran) -- Andreas took the order into the stage.
+
+**What.**  The transient's core packed inside its circuit's scope (`_tran_core.core_for`: made again where the scope moved),
+`_tran_core.packed_order` (the core's row-major pattern against the plan's CSC one: the same places, checked once a core; a
+permutation and its inverse -- its own inverse on a symmetric pattern).  The Newton (newton.h's new last field `packed`): its
+record on the packed sets from the start, no m x m buffer (`_buffers`), KLU always (`_choice` -> `_packed.choice`, moved from
+`_dc_newton_c`); on the pattern newton.c's tests by THE CSC KERNEL, every time (`pcx_csc_mv`, now pcx_verdict.h's, shared with
+dcnewton.c, lte.c and the KLU sequence): the convergence scale |J| |x_next| (`abs_product`: the test, the rounding floor, the
+iteration limit's report), the full Newton's refactor residual (`sparse_full`), the chord's (PCX_A_PACKED); its write-backs --
+the converged point's C, Geq and J -- PatternMatrix on the plan's pattern (`_back`), the cache's C gathered in, no `_C_pattern`
+(the Python on the pattern sets none).  The error test (lte.h's new last field `packed`): its context without the n x n J and
+m x m A, J read on its pattern where it stands (`_pattern_packed`), its refactor's validation the kernel's; the early abort's
+unread zero J a diagonal PatternMatrix.  The loop: its cached C and write-backs on the plan's pattern, its judge's context
+packed, its screens counted as the Python's attempts count them there (`branch_c:packed`, none where a constant C's verdict is
+kept); its outputs an entry bounded by bytes (`CAP_BYTES`, 256 MB: CAP_MAX's 4 096 rows below 8 192 unknowns, ibmpg2t 194) --
+the point store alone held 1.4 GB of ibmpg2t's run.  The declines lifted (`newton_c`, `lte_c`, `loop_c` inside their circuit's
+scope; another's declines).  KLU's order (`_klu_order`): from `ND_FROM` (32 768) unknowns a nested dissection of A + A' tried
+(CHOLMOD's, opened at first use: `pcx_ndorder`), kept where its trial fills least -- the stamped places made at that size
+whatever the branch share (`analysis.stamped_places`).  The gate: ('gear2', 'packed') in its matrix.
+
+**Measured.**  The gate against 5dc06d1f: every result and path counter the same tree against tree, C against Python 0
+differing on every matrix entry -- `gear2/packed` the 27 decks' transients on the pattern, the loop serving (gm19 3 861 steps);
+NOT REACHED on the dense fallbacks the edits re-indented (newton.c's and lte.c's residual test where the bound does not
+decide: no deck takes them).  ibmpg1t's 1 ns at threshold 0 with the C: no allocation of n^2/4 or more (the s5 trace: zero sites),
+the loop serving 117 of 120 steps.  ibmpg1t's 10 ns at threshold 0 on the packed C (line (c'), AC, interleaved): 20.58 / 20.78
+s against the dense C's 24.03 / 24.98 s (1.17-1.20x FASTER), peak 1.20 against 4.2-5.4 GB, the same digest a8a17180546e --
+MET; its matched order kept against the dissection (1.02 M against 1.30 M on its J), its digest unchanged.  ibmpg2t's 10 ns:
+before the order, the packed C 208.05 / 205.66 s against the packed Python's 366.26 / 364.90 s (1.76-1.78x); on the dissection
+(a refactor 441 -> 231 ms) the packed C 144.62 / 146.60 s (1.42x on itself) against the packed Python's 302.81 / 301.81 s:
+2.06-2.09x -- line (c)'s >= 3x MISSED (KLU-bound: a better order speeds both paths), its peak 3.26-3.27 GB (<= 3.5 GB MET);
+its digest moved by the order (d330f823bfc1 -> 865362f1f55d, the pivots), its error against the benchmark the same 0.35376 mV;
+on the final code 142.20 / 141.06 s (2.1x the packed Python) -- ACCEPTED AS MEASURED by Andreas.  ibmpg1t's default (dense C)
+10 ns 24.43 / 24.32 s against 5dc06d1f's 23.38 / 23.30 s (0.957x: the dissection trial it rejects ~0.3 s, one more loop entry
+under the byte cap ~0.4 s, measured apart), its peak 5.5 -> 4.0-4.9 GB, its digest the same.  Below the threshold: the size DCs 0.983-1.034x (the 4 000-stage chain's 0.971x one pair at 10 ms resolution, 1.000x
+on three), transients 0.989-1.036x, every digest the same, on AC.  Suite 6 710 passed.
+
+**Tests.**  `test_packed` (+5 functions, 16 loop cases): the C loop on the pattern against the Python loop (7 fixed, 8
+adaptive -- the chord, the screen, Euler, trapezoidal, the charge floor, a VCCS chain whose pattern is unsymmetric, so the
+core-to-plan map is not its own inverse), every attempt's bytes, statistics, warnings, tallies and run state (PatternMatrix
+compared by its places and values: `test_loop_c._norm`); the C paths on the pattern all serving; the write-backs on the plan's
+pattern and no dense buffer in any record; an entry bounded by bytes; the refactor residuals at 1e-16 (both the Newton's and
+the error test's failing where they do).  `test_klu_order` (+3): the dissection tried from its size and the least fill kept --
+a 70 x 70 mesh the dissection, a 40 x 40 one KLU's own, layered meshes the matched order -- the same order every time; none
+below its size; a run on it the same with the C as without.  Twenty-four bites, each bit (seven first missed: the order bites
+on symmetric patterns -- the VCCS chain added; the kernels behind the bounded verdicts -- the kernel made to decide every test
+on the pattern, as dcnewton.c's already did, and the 1e-16 test added; the signed-scale bite bit by hanging).  Ten pinned pairs
+re-recorded after their twins' tests (896 passed).
+Found and not chased (older than the stage, dense too): the C loop's count emulation adds a screen count per C screen where
+the Python's screen keeps a constant C's verdict and calls none (`branch_c:served` 120 against 1 on the VCCS chain, results
+the same); a process's first run can leave the loop on `loop_c:sources` (the source table's stamp moved by first-use work).

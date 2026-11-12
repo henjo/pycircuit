@@ -97,12 +97,10 @@ static int pcx_klu_resid_dense(pcx_klu_t *k, const double *A, const double *b,
 static int pcx_klu_resid_packed(pcx_klu_t *k, const double *b, const double *x, double *y,
                                 long m)
 {
-    long i, j, p;
+    long i;
     double max_b = 0.0, max_r = 0.0;
     int nan_r = 0;
-    for (i = 0; i < m; i++) y[i] = 0.0;
-    for (j = 0; j < m; j++)
-        for (p = k->kAp[j]; p < k->kAp[j + 1]; p++) y[k->kAi[p]] += k->kAx[p] * x[j];
+    pcx_csc_mv(k->kAp, k->kAi, k->kAx, x, y, m, 0);
     for (i = 0; i < m; i++) y[i] = y[i] - b[i];
     if (fetestexcept(PCX_NP_FLAGS)) return -1;
     for (i = 0; i < m; i++) {

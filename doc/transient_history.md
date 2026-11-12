@@ -6082,3 +6082,18 @@ there, and junction gmin and a nodeset's held solve would have raised.  All
 three now take the pattern.  On the linear grid's two-iteration DC the C
 gains little (its own core costs about the Python's Newton); its use is the
 transient's stepping, which builds on it next.
+
+## The packed layout, P2b: the stepping loop's C on the pattern, and a dissection order (2026-11-12)
+
+2026-11-12 (`doc/hdl_roadmap_260824.md`, 320; plan 261 L20).  The Gear-2
+stepping path -- the transient Newton, the error test and the stepping loop
+in C -- now runs on the circuit's pattern inside the packed scope, with no
+dense matrix anywhere on it, and gives the packed Python's bytes.  On the
+IBM grid ibmpg1t (with the layout forced on) it runs faster than the dense C
+path and in a quarter of the memory.  On ibmpg2t, where nothing dense can
+run, the C was bound by KLU: its own AMD order fills a 2-D power mesh far
+more than a nested dissection does, so from 32 768 unknowns a dissection is
+tried as a third order and kept where it fills least -- ibmpg2t's refactor
+441 -> 231 ms, its 10 ns transient 145 s.  The C is about twice the packed
+Python's speed there, not the three times the stage aimed at: both pay the
+same factorisations.

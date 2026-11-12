@@ -353,6 +353,22 @@ def own_solver(A):
     return sk
 
 
+def choice(ls, m):
+    """The solver THE PACKED LAYOUT's m x m matrices take on `ls` (an
+    AutoSolver) where a C path binds one: KLU on the circuit's structure
+    whatever the size (`AutoSolver.choose_packed`, `_select`'s own choice
+    for a PatternMatrix), analysed as its first factor analyses it -- or
+    None (no structure of that size: the C declines)."""
+    ch = ls.choose_packed(m)
+    if ch is None or ch is ls._dense:
+        return None
+    try:
+        ch._analysed()
+    except np.linalg.LinAlgError:
+        return None
+    return ch
+
+
 def is_packed(a):
     return isinstance(a, PatternMatrix)
 
