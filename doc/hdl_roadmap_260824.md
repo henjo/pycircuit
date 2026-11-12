@@ -15939,3 +15939,21 @@ re-recorded after their twins' tests (896 passed).
 Found and not chased (older than the stage, dense too): the C loop's count emulation adds a screen count per C screen where
 the Python's screen keeps a constant C's verdict and calls none (`branch_c:served` 120 against 1 on the VCCS chain, results
 the same); a process's first run can leave the loop on `loop_c:sources` (the source table's stamp moved by first-use work).
+
+## 2026-11-12 — 321. THE PACKED LAYOUT, P2d: the threshold to 32 768 -- ibmpg1t's DC and transient on the packed C by default, its 10 ns 24.2 -> 20.1 s and 4.0 -> 1.2 GB, the same digest
+
+**Why**  Plan 261 L20 (tc/plan_l20_packed.md).  Andreas: "do it" (P2c and P2d after P2b's push).  P1 held `PACKED_FROM` at
+65 536 while the C paths declined on the layout, so ibmpg1t (54 266 unknowns) kept its dense C path; with the DC Newton's
+(P2a) and the stepping path's (P2b) C on the pattern, the packed C beat the dense one on ibmpg1t (P2b's line (c'), measured at
+the threshold 0).
+
+**What.**  `_packed.PACKED_FROM` 32 768: above every circuit of the gate's size set (to 8 200 unknowns); of the benchmark grids
+ibmpg1t crosses (the merged ibmpg1t is 25 850, ibmpg2t was above already).  `ND_FROM` stays 32 768.
+
+**Measured** (the line set before: (a) below 32 768 nothing changes, the size runs >= 0.98x; (b) ibmpg1t's default 10 ns its
+digest, >= 1.10x faster than 84c65722, peak <= 1.5 GB; (c) its DC no slower than 1.05x; (d) the suite).  The gate against
+84c65722 SAME (every result and path counter; C against Python 0 differing).  The size runs on AC: DCs 0.994-1.000x (the
+4 000-stage chain 0.34 against 0.35 s, the 10 ms resolution -- the code it runs unchanged), transients 0.987-1.012x, every
+digest the same.  ibmpg1t's default 10 ns: 20.12 / 20.12 s against 24.31 / 24.13 s (1.20x), peak 1.20 against 4.04 GB, the
+digest a8a17180546e and 0.43467 mV the same -- MET; its DC 2.25 / 2.25 s against 2.50 / 2.49 s (1.11x), 0.70 against 1.94 GB,
+its error against the benchmark the same.  Suite 6 710 passed.  Every line met.

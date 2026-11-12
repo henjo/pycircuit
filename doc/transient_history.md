@@ -6097,3 +6097,11 @@ tried as a third order and kept where it fills least -- ibmpg2t's refactor
 441 -> 231 ms, its 10 ns transient 145 s.  The C is about twice the packed
 Python's speed there, not the three times the stage aimed at: both pay the
 same factorisations.
+
+## The packed layout, P2d: ibmpg1t on it by default (2026-11-12)
+
+2026-11-12 (`doc/hdl_roadmap_260824.md`, 321; plan 261 L20).  With the DC's
+and the stepping path's C on the circuit's pattern, the packed layout now
+starts at 32 768 unknowns: the IBM grid ibmpg1t takes it by default, its
+10 ns transient 1.2x faster than on the dense layout in under a third of
+the memory, its answer the same to the bit.  Nothing smaller moves.

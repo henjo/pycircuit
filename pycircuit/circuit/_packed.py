@@ -32,12 +32,11 @@ import threading
 import numpy as np
 
 #: the unknowns from which the DC and the multistep transient hold their
-#: matrices on the pattern (`scope`); above every circuit of the gate's
-#: size set (chains and meshes of 4 000 - 8 000) -- a gate forcing sets 0.
-#: 65 536 while the C paths decline on the layout: ibmpg1t (54 266) keeps
-#: its C path, and the grids that cannot run dense (ibmpg2t's 164 898 on)
-#: take it; 32 768 once the C serves it (plan 261 L20 P2)
-PACKED_FROM = 65536
+#: matrices on the pattern (`scope`): above every circuit of the gate's
+#: size set (chains and meshes of 4 000 - 8 000) -- a gate forcing sets 0;
+#: the IBM grids from ibmpg1t (54 266) on, whose stepping in C runs faster
+#: on the pattern than on the dense layout, in a quarter of its memory
+PACKED_FROM = 32768
 
 #: the unknowns below which `to_dense` makes a dense copy (a fallback no
 #: packed form exists for, on a small circuit); from here it raises
