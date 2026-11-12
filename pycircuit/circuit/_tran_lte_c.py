@@ -258,8 +258,6 @@ def _klu_bind(ctx, sk):
     if sk.m != m or nd is None:
         return False
     ffi, s, fb = ctx.ffi, ctx.s, ctx.ffi.from_buffer
-    ## (numpy's `cblas_dgemv`, as the C Newton's: `arr @ x` is that call)
-    s.dgemv = ffi.cast('void *', nd[2]['dgemv'])
     ct, lib = sk._ct, sk._lib
     ktake = np.ascontiguousarray(sk.take, dtype=np.int64)
     from pycircuit.circuit import _tran_core

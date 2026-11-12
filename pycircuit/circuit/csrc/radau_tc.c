@@ -108,8 +108,8 @@ static long tf_real(radau_tf_t *s, long m)
 {
     int64_t m64 = m, one64 = 1, info64 = 0;
     if (s->rk_on) {
-        long st = pcx_klu_kept(&s->rk, &s->rk_held, s->rk_A, s->b0, s->x0, s->rk_y, s->rk_t, m,
-                               s->rk_dgemv, &s->rk_dense, s->held_v, s->held_st);
+        long st = pcx_klu_kept(&s->rk, &s->rk_held, s->b0, s->x0, s->rk_y, s->rk_t, m,
+                               &s->rk_dense, s->held_v, s->held_st);
         feclearexcept(FE_ALL_EXCEPT);
         return st ? RADAU_TC_BAIL_KLUREAL : 0;
     }

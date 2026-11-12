@@ -93,9 +93,8 @@ typedef struct {
                              (allocated zero, written on it alone) */
            *rc,           /* (n) the rhs corrections */
            *A,            /* (m x m, column-major) the dense solve's copy */
-           *R,            /* (m x m, row-major) KLU's: the reduced Schur matrix;
-                             on the pattern (kfull) zero between its dense
-                             tests (allocated zero: PCX_A_ZERO) */
+           *R,            /* (m x m, row-major) KLU's: the reduced Schur matrix,
+                             off the pattern (kfull: unread) */
            *b,            /* (m) the solve's rhs, then the dense solve's solution */
            *kx, *ky, *kt, /* (m, m, 2 m) KLU's solution, the residual's A x, its
                              |A| |x| and its rows' entry counts */
@@ -140,7 +139,7 @@ typedef struct {
        matrix -- J packed on P, KLU on the pattern (`kfull`) always -- and
        the residual's scale is P's row sums themselves (`cf_packed`: the CSC
        kernel's order by row, the reference's at size), the refactor's
-       residual the KLU sequence's CSC kernel (PCX_A_PACKED); Jabs, A, R and
+       residual the KLU sequence's CSC kernel at once; Jabs, A, R and
        Cs unread */
     long packed;
 } pcnrdc_t;

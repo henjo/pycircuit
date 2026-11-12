@@ -16034,3 +16034,22 @@ sums' first missed on the mirror -- the active chain added); seven for R -- the 
 sequence, newton.c and lte.c each put back on another order, each bit (newton.c's reversed sum missed -- its edge row
 rounds the same reversed -- its old dgemv bit, lte.c's too).  Twelve pinned pairs re-recorded after their twins' tests
 (P2c's three, R's eleven, two of them both; 824 passed).
+
+## 2026-11-12 — 323. The KLU sequence's dense-test leftovers pruned: no dense A, no dgemv where the refactor check reads none
+
+**Why**  After 322 (R) no refactor check reads a dense matrix: the KLU sequence's `A` and `dgemv` arguments, its operand modes
+(`enum pcx_klu_a`) and the buffers callers kept only for the dense test were dead -- among them Radau's `Ad`, an
+`np.empty(M * M)` of the coupled stage system (about 1.1 GB of address space on the 63x63 mesh).  Andreas: "Continue with the
+open items".  Line (set before): nothing changes -- the gate SAME, C against Python 0 differing, the size runs >= 0.98x, the
+suite green.
+
+**What.**  pcx_kluseq.h: `pcx_klu_seq` / `pcx_klu_step` / `pcx_klu_kept` without `A` and `dgemv`, `a_built` a `bound` flag (the
+sparse sums' bound first, its undecided verdicts counted, then the CSC kernel's test; at once where 0) -- the six calls (dcnewton.c,
+newton.c's chord, pcnrdc.c, radau.c, radau_tc.c, loop.c) as their modes were.  Fields gone with their glue: radau.h's `dgemv`
+and `Ad` (`_tran_radau_c`'s M x M buffer), radau_tc.h's `rk_A` (m x m: `_tran_radau_tc`'s work, `_tran_tcloop_c`'s) and
+`rk_dgemv`, lte.h's `dgemv`.  The notes and tests that named the dense test or the modes (`test_dc_newton_c`'s undecided-
+residual test re-aimed at the CSC kernel's residual and renamed).
+
+**Measured.**  The gate against 49bb3a19: every result and path counter the same, C against Python 0 differing on every entry;
+NOT REACHED on one fixture-only arm (pcnrdc.c's call: PCNR on KLU's full pattern on the dense layout, which no deck takes).
+The size runs on AC (one BLAS thread, interleaved): DCs 0.994-1.026x (the chain 4 000 1.000x on six pairs: its one pair read 0.971x, one 10 ms tick), transients 0.991-1.020x, the Radau runs -- whose struct lost two fields mid-way -- 1.001x and 1.003x on three pairs each; every digest and peak the same..  Suite 6 727 passed.  Twelve pinned pairs re-recorded after their twins' tests (823 passed).

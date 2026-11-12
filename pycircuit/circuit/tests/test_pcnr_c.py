@@ -562,11 +562,10 @@ def _pcnr_mats(c):
 
 def test_on_pattern_pages_the_dense_tests_are_the_pythons(monkeypatch):
     """On pattern pages (`_tran_core.paged`, here from any size) the C's
-    |J| and R and its core's G bin are pattern pages written on the pattern
-    alone, J packed on it: R held zero -- the residual's dense test scatters
-    KLU's entries in and takes them out after (pcx_kluseq.h's PCX_A_ZERO)
-    -- and |J| written on the pattern where the convergence test goes
-    dense.  On `_stiff_ladder`, both dense tests made solve after solve,
+    |J| and its core's G bin are pattern pages written on the pattern alone,
+    J packed on it: |J| written on the pattern where the convergence test
+    goes dense, the residual's test the CSC kernel's where its bound does
+    not decide (R unread).  On `_stiff_ladder`, both made solve after solve,
     every call is the Python's: its outcome and StructuralKLU's counters the
     same with the C on and off, each call served."""
     from pycircuit.circuit import _tran_core

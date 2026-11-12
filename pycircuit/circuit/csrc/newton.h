@@ -302,7 +302,7 @@ typedef struct {
        on KLU's arrays (pcx_kluseq.h `pcx_csc_mv`, the reference's order at
        size): the convergence scale |J| |x_next| (`abs_product`: the test,
        the rounding floor, the iteration limit's report), the full Newton's
-       refactor residual (`sparse_full`) and the chord's (PCX_A_PACKED); R,
+       refactor residual (`sparse_full`) and the chord's, at once; R,
        absJ, A and Tf unread */
     long packed;
 } newton_t;

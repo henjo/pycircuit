@@ -611,10 +611,10 @@ def _bind(e):
 def _bind_rk(run, e):
     """The real factor on KLU (radau_tc.h's `rk`, the loop's to hold:
     `rk_hold`): the analysis solver's pattern, library entries, common and
-    analysis; its values' buffer; the residual's dense work; the pattern's
-    flat indices for `tc_frozen`'s take; the solves' work (its numeric and
-    tolerance each call's, `_load`)."""
-    from pycircuit.circuit import _cbuild, _tran_radau_tc
+    analysis; its values' buffer; the pattern's flat indices for
+    `tc_frozen`'s take; the solves' work (its numeric and tolerance each
+    call's, `_load`)."""
+    from pycircuit.circuit import _cbuild
     sk, tctx = e.rk, run.tctx
     tffi, ts, s, ffi = tctx.ffi, tctx.s, run.s, run.ffi
     tb, keep = run.tbuf, run.tkeep
@@ -626,10 +626,6 @@ def _bind_rk(run, e):
                             ('kAx', tb['rk_ax'], 'double *')):
         keep.append(tffi.from_buffer(kind, arr))
         setattr(k, name, keep[-1])
-    tb['rk_A'] = (_tran_radau_tc.zero_pages((e.n - 1) ** 2) if e.packed
-                  else np.empty(max((e.n - 1) ** 2, 1)))
-    keep.append(tffi.from_buffer('double *', tb['rk_A']))
-    ts.rk_A = keep[-1]
     lib = sk._lib
     k.klu_factor, k.klu_refactor, k.klu_solve, k.klu_free = (
         tffi.cast('void *', _cbuild.address(f))

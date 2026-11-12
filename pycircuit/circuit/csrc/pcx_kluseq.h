@@ -13,9 +13,10 @@
  *
  * The residual's test needs only its verdict: `A x` by the CSC kernel on
  * KLU's own arrays, one order on every layout (`pcx_klu_resid_csc`,
- * `StructuralKLU._csc_residual`); on KLU's CSC (`a_built` neither BUILT nor
- * PACKED) a sparse sum with its rounding bound first, which decides it
- * where it does whatever the order (`pcx_klu_resid_sparse`). */
+ * `StructuralKLU._csc_residual`); where the caller asks (`bound`) a sparse
+ * sum with its rounding bound first, which decides it where it does
+ * whatever the order (`pcx_klu_resid_sparse`: its sums with subnormals
+ * flushed, pcx_verdict.h). */
 #include <float.h>
 #include <math.h>
 #include <fenv.h>
@@ -26,13 +27,6 @@
 
 enum pcx_klu_stop { PCX_KLU_FACTOR = 1, PCX_KLU_SOLVE = 2, PCX_KLU_FLAGS = 3 };
 
-/* a step's `a_built` -- the residual's test reads no dense A (`A` unread,
-   whatever the mode): the CSC kernel's test at once where the caller made A
-   (PCX_A_BUILT) or holds none (PCX_A_PACKED, THE PACKED LAYOUT); the sparse
-   sums' bound first where A is scratch (PCX_A_SCRATCH), held zero
-   (PCX_A_ZERO) or made zero off KLU's pattern (PCX_A_ON_PATTERN) */
-enum pcx_klu_a { PCX_A_SCRATCH = 0, PCX_A_BUILT = 1, PCX_A_ZERO = 2, PCX_A_ON_PATTERN = 3,
-                 PCX_A_PACKED = 4 };
 
 
 static void pcx_klu_free(pcx_klu_t *k, void *num)
@@ -96,21 +90,18 @@ static int pcx_klu_resid_sparse(pcx_klu_t *k, const double *b, const double *x,
 }
 
 /* StructuralKLU.solve(A, b) on its own sequence, `kAx` A's values in its
-   order (gathered by the caller); `A` and `dgemv` unread (`enum
-   pcx_klu_a`); the sparse sums' bound undecided counted in `dense`, which
-   may be NULL -- the CSC kernel's test then.  The solution in `x`, `y` (m)
-   and `t` (2 m, read only where the bound is tried) scratch.  `kept`: `solve_kept`'s -- the numeric
+   order (gathered by the caller); `bound` 1 the sparse sums' bound first,
+   its undecided verdicts counted in `dense` (which may be NULL) -- the CSC
+   kernel's test then, at once where `bound` is 0.  The solution in `x`, `y`
+   (m) and `t` (2 m, read only where the bound is tried) scratch.  `kept`: `solve_kept`'s -- the numeric
    holds a refactor of these very values, none is made (nor counted).  `hv`, `hst`: StructuralKLU's held
    values (pcx_held.h) where `k` is its run numeric -- no refactor of the values held, counted there; NULL
    `hst` (the chord's numeric) the rule off */
-static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, double *y,
-                        double *t, long m, void *dgemv, int a_built, long *dense, int kept,
-                        double *hv, int64_t *hst)
+static long pcx_klu_seq(pcx_klu_t *k, const double *b, double *x, double *y, double *t, long m,
+                        int bound, long *dense, int kept, double *hv, int64_t *hst)
 {
     long st, reused = k->klu_out != NULL, nnz = k->kAp[m];
     int fails = PCX_UNDECIDED;
-    (void) A;
-    (void) dgemv;
     if (reused && !kept && pcx_held_same(hst, hv, k->kAx, nnz)) {
         /* (THE SAME VALUES: the numeric is their refactor already) */
     } else if (reused && !kept) {
@@ -132,7 +123,7 @@ static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, dou
     /* (what KLU raised inside: the Python's ctypes calls never see it) */
     feclearexcept(FE_ALL_EXCEPT);
     if (!reused) return 0;
-    if (a_built != PCX_A_PACKED && a_built != PCX_A_BUILT) {
+    if (bound) {
         fails = pcx_klu_resid_sparse(k, b, x, y, t, m);
         if (fails == PCX_UNDECIDED) {
             /* (what the sparse sums raised is not the Python's) */
@@ -153,23 +144,22 @@ static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, dou
 }
 
 /* StructuralKLU.solve(A, b) (`pcx_klu_seq`) */
-static long pcx_klu_step(pcx_klu_t *k, double *A, const double *b, double *x, double *y,
-                         double *t, long m, void *dgemv, int a_built, long *dense, double *hv,
-                         int64_t *hst)
+static long pcx_klu_step(pcx_klu_t *k, const double *b, double *x, double *y, double *t, long m,
+                         int bound, long *dense, double *hv, int64_t *hst)
 {
-    return pcx_klu_seq(k, A, b, x, y, t, m, dgemv, a_built, dense, 0, hv, hst);
+    return pcx_klu_seq(k, b, x, y, t, m, bound, dense, 0, hv, hst);
 }
 
 /* `_FrozenTransform.real_solve` on the StructuralKLU: `solve_kept` where
    `*kept` (the numeric holds the refactor of these values an earlier solve
    of them made), `solve` else; `*kept` then as it leaves it -- set where the
-   solve ended on such a refactor (no fresh factor), cleared where not */
-static inline long pcx_klu_kept(pcx_klu_t *k, long *kept, double *A, const double *b, double *x,
-                                double *y, double *t, long m, void *dgemv, long *dense,
-                                double *hv, int64_t *hst)
+   solve ended on such a refactor (no fresh factor), cleared where not.  The
+   residual's bound first */
+static inline long pcx_klu_kept(pcx_klu_t *k, long *kept, const double *b, double *x, double *y,
+                                double *t, long m, long *dense, double *hv, int64_t *hst)
 {
     long f0 = k->factors, r0 = k->refactors;
-    long st = pcx_klu_seq(k, A, b, x, y, t, m, dgemv, 0, dense, *kept != 0, hv, hst);
+    long st = pcx_klu_seq(k, b, x, y, t, m, 1, dense, *kept != 0, hv, hst);
     *kept = st == 0 && k->factors == f0 && (*kept || k->refactors == r0 + 1);
     return st;
 }

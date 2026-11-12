@@ -129,7 +129,7 @@ def _bytes(run_):
     """The loop's bound buffers' bytes, the scratch and the fresh pages'
     work (never or rarely written) aside."""
     return sum(a.nbytes for k, a in run_.tbuf.items()
-               if isinstance(a, np.ndarray) and k not in ('cs', 'rk_A'))
+               if isinstance(a, np.ndarray) and k != 'cs')
 
 
 def test_the_packed_buffers_grow_with_the_pattern(monkeypatch):

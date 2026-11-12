@@ -619,7 +619,6 @@ class _Ctx:
         self.patbit = _tran_core._WANT_PATTERN if core.npat else 0
         s.n, s.iref = n, iref
         s.rk_on = 0
-        s.rk_dgemv = ffi.cast('void *', _MOD['RC'].driver()[3])
         self.rk_keep = None
         s.walk_fn = ffi.NULL
         s.wn = 0
@@ -922,20 +921,18 @@ def _rk_bind(rec, sk, fz):
     from pycircuit.circuit import _tran_core
     if _tran_core.pattern_count(rf) != np.count_nonzero(ax):
         return False
-    ffi, s, m = rec.ffi, rec.s, rec.n - 1
+    ffi, s = rec.ffi, rec.s
     k = s.rk
     keep = rec.rk_keep
     if keep is None or keep[0] is not sk:
         lib = sk._lib
-        work = np.empty(max(m * m, 1))
-        ## (and the run numeric's held values, pcx_held.h)
+        ## (the factor's values `ax` in slot 3, kept per call below; and the
+        ## run numeric's held values, pcx_held.h)
         keep = rec.rk_keep = [sk, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai),
-                              None, work, ffi.from_buffer('double *', work),
-                              ffi.from_buffer('double *', sk._held_v),
+                              None, ffi.from_buffer('double *', sk._held_v),
                               ffi.from_buffer('int64_t *', sk._held_st)]
         k.kAp, k.kAi = keep[1], keep[2]
-        s.rk_A = keep[5]
-        s.held_v, s.held_st = keep[6], keep[7]
+        s.held_v, s.held_st = keep[4], keep[5]
         k.klu_factor, k.klu_refactor, k.klu_solve, k.klu_free = (
             ffi.cast('void *', _cbuild.address(f))
             for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))

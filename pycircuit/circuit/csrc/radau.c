@@ -164,8 +164,8 @@ static long assemble(radau_t *s, long a)
    arithmetic) */
 static long stage_klu(radau_t *s, long M)
 {
-    long st = pcx_klu_step(&s->klu, s->Ad, s->b, s->kx, s->ky, s->kt, M, s->dgemv, 0, NULL,
-                           s->held_v, s->held_st);
+    long st = pcx_klu_step(&s->klu, s->b, s->kx, s->ky, s->kt, M, 1, NULL, s->held_v,
+                           s->held_st);
     if (st == PCX_KLU_FLAGS) return RADAU_BAIL_FLAGS;
     if (st) return RADAU_BAIL_KLU;
     return 0;

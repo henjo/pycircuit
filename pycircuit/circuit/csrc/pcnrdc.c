@@ -236,9 +236,7 @@ static long solve_dense(pcnrdc_t *s)
    On the pattern (`kfull`): the entries gathered from J's positions (an
    entry off P the zero J[np]), the foreign test over the pattern's entries
    off KLU's (J is zero elsewhere: the same count), the residual's test on
-   the CSC -- R is not
-   made: held zero (allocated zero), its dense test scatters KLU's entries
-   into it and takes them out after (PCX_A_ZERO) */
+   the CSC, its bound first -- R is not made (nor read) */
 static long solve_klu(pcnrdc_t *s)
 {
     long n = s->n, m = s->m, i, j, nz = 0, nzp = 0, st;
@@ -260,8 +258,7 @@ static long solve_klu(pcnrdc_t *s)
         }
         if (nz != nzp) return PCNRDC_BAIL_FOREIGN;
     }
-    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->kt, m, s->dgemv,
-                      s->packed ? PCX_A_PACKED : s->kfull ? PCX_A_ZERO : PCX_A_BUILT,
+    st = pcx_klu_step(&s->klu, s->b, s->kx, s->ky, s->kt, m, !s->packed && s->kfull,
                       &s->dense_resid, s->held_v, s->held_st);
     if (st == PCX_KLU_FACTOR) return PCNRDC_SINGULAR;
     if (st == PCX_KLU_SOLVE) return PCNRDC_BAIL_KLU;

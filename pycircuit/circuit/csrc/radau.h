@@ -30,9 +30,8 @@ typedef struct {
     void *walk_fn; void **wF; double **wPR; const int64_t *wTI, *wNM, *wOFF, *wK; long wn;
     void *wctx;           /* the walk's context (walk.h's walk_ctx_t), or NULL */
     /* wiring, set once: numpy's own OpenBLAS `scipy_dgesv_64_` (64-bit
-       integers, a dgesv64_t) and `scipy_cblas_dgemv64_` (a dgemv64_t: the
-       KLU solve's dense residual test), by address (`_tran_newton_c.driver`) */
-    void *dgesv, *dgemv;
+       integers, a dgesv64_t), by address (`_tran_newton_c.driver`) */
+    void *dgesv;
     /* n, iref (0 <= iref < n, n >= 2) and maxa (the assembly slots of Ya..Ga:
        `MAXA`) set once by `_Ctx.__init__`; maxiter (the Newton's iterations)
        per call */
@@ -74,14 +73,13 @@ typedef struct {
        row and column, made into refv (nref) for their flags alone (the
        Python makes the full blocks before it drops them).
        kx (M) the solution, the step dY; ky (M) and kt (2 M) the residual
-       test's scratch; Ad (M x M) the dense residual test's matrix,
-       scattered from the CSC where the sparse test does not decide.  THE
+       test's scratch.  THE
        NUMERIC (pcx_klu.h): a hand-back leaves the entry's; on
        RADAU_CONVERGED klu.klu_out is the one the Python's sequence ends
        with, and the counters are this call's */
     long nact, nref;
     const int64_t *act_b, *act_f, *ref_b, *ref_f;
-    double *kx, *ky, *kt, *Ad, *refv;
+    double *kx, *ky, *kt, *refv;
     pcx_klu_t klu;
     /* output on RADAU_CONVERGED with the KLU bound: fin_ok 1 where the
        converged stages' block -- the last assembly, klu.kAx, unfactored: the

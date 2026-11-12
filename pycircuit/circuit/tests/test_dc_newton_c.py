@@ -335,13 +335,12 @@ def test_the_convergence_and_refactor_tests_are_decided_on_the_pattern(monkeypat
     assert int(rec.s.is_made) == 0
 
 
-def test_an_undecided_refactor_residual_is_the_dense_test_on_r(monkeypatch):
+def test_an_undecided_refactor_residual_is_the_csc_kernels_test(monkeypatch):
     """The refactor's residual verdict where its bound cannot decide (the
-    solver's tolerance at the refactor's own residual, measured on the
-    Python's solve): the dense test on R itself (pcx_kluseq.h's
-    PCX_A_ON_PATTERN: R zero off KLU's pattern), counted -- the operating
-    point the Python's, bit for bit.  Without the sparse verdict first
-    (R as A built) nothing is counted."""
+    solver's tolerance at the refactor's own residual by the CSC kernel,
+    measured on the Python's solve): the CSC kernel's test on KLU's arrays
+    (pcx_kluseq.h's `pcx_klu_resid_csc`, `StructuralKLU._csc_residual`),
+    counted -- the operating point the Python's, bit for bit."""
     if _dc_newton_c.driver() is None:
         pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
     seen = []
@@ -351,9 +350,9 @@ def test_an_undecided_refactor_residual_is_the_dense_test_on_r(monkeypatch):
         reused = self._numeric is not None
         x = real(self, A, b, toolkit, kept)
         if reused:
-            arr, rhs = np.asarray(A), np.asarray(b, float)
-            seen.append(float(np.abs(arr @ np.asarray(x) - rhs).max())
-                        / max(float(np.abs(rhs).max()), 1e-300))
+            arr, rhs, cols, xa = np.asarray(A), np.asarray(b, float), self._csc_cols(), np.asarray(x)
+            r = np.bincount(self.Ai, weights=arr[self.Ai, cols] * xa[cols], minlength=self.m) - rhs
+            seen.append(float(np.abs(r).max()) / max(float(np.abs(rhs).max()), 1e-300))
         return x
     with monkeypatch.context() as mp:
         mp.setattr(linearsolver.StructuralKLU, '_solve', solve)

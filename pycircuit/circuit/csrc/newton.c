@@ -144,8 +144,8 @@ static long solve_step(newton_t *s, long it, int finite, void **num)
                test's scratch (the full Newton's J reduced: not this call's) */
             for (i = 0; i < m; i++) s->rb[i] = s->b[i];
             /* (the chord's own numeric: no values held -- pcx_held.h) */
-            st = pcx_klu_step(&s->ck, s->R, s->rb, s->b, s->ry, s->ckt, m, s->dgemv,
-                              s->packed ? PCX_A_PACKED : PCX_A_SCRATCH, NULL, NULL, NULL);
+            st = pcx_klu_step(&s->ck, s->rb, s->b, s->ry, s->ckt, m, !s->packed, NULL, NULL,
+                              NULL);
             if (st == PCX_KLU_FACTOR) return NEWTON_BAIL_KLU_FACTOR;
             if (st == PCX_KLU_SOLVE) return NEWTON_BAIL_KLU_SOLVE;
             if (st) return NEWTON_BAIL_KLU_RESIDUAL;

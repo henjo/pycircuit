@@ -488,7 +488,7 @@ PAIRS = {
                'overflow and invalid), a NaN or an infinity carried into KLU\'s '
                'sequence (roadmap 298); the dense tests on matrices zero off the '
                'pattern as the Python\'s are -- |J| written on it alone, R held '
-               'zero and KLU\'s entries scattered in and out (PCX_A_ZERO), on '
+               'zero (unread since the residual\'s test is the CSC kernel\'s), on '
                'pattern pages at size (roadmap 299); J packed on the pattern, the '
                'Schur sum\'s, gshunt\'s and the junction term\'s writes and KLU\'s '
                'reads at their positions in it, the AutoSolver\'s first reduced '
@@ -1209,7 +1209,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('a3f6dd20c612', '2137bcd90c83'),
+    'the stepping loop and its C': ('a3f6dd20c612', 'cb6991f0a1d7'),
     'the predictor and its C': ('9e611c84de5a', '9b16bd4e0f30'),
     'the branch screen and its C': ('6f15ab9b3ac5', '3ffd4f896ce9'),
     'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
@@ -1222,34 +1222,34 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('b7d4c26c7581', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('ebc707b158e8', '43ab761e5c17'),
-    'the error test and its C': ('4739d940aeaf', '7172037024c1'),
-    'the DC base solve and its C': ('0718ea246ab0', '6d70b2b0ea92'),
-    'the PCNR DC solve and its C': ('257d4aa97f1f', '72e92a807f99'),
+    'the Newton solve and its C': ('ebc707b158e8', '7d8e31ef47d7'),
+    'the error test and its C': ('4739d940aeaf', '1de2648603e8'),
+    'the DC base solve and its C': ('0718ea246ab0', '54e6dac483a6'),
+    'the PCNR DC solve and its C': ('257d4aa97f1f', '6a7df831355c'),
     'the stage predictor and its multistep fast path': ('c010f907bf3e', '2820336205dd'),
     'the stepping loop and its unread Jacobian': ('d417a4cedc1d', '694a1086db84'),
     "the printed passes and the class's kernel": ('e61140203114', '3372d6f113e4'),
     "the stage paths' passes and the core's": ('7706b1247670', '26539fc972e9'),
-    'the coupled stage Newton and its C': ('23ecb30a53e0', '9e3404b39a85'),
+    'the coupled stage Newton and its C': ('23ecb30a53e0', 'b2dcfabba6f4'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
     'the transform solve and its frozen form': ('c51ded4375d9', '02fc0d02aa53'),
-    'the transform Newton and its C': ('b7644663c802', 'e105a40ac3b6'),
-    "the step's end passes and the C's": ('e81243efba17', 'd74230819bd1'),
+    'the transform Newton and its C': ('b7644663c802', 'e3ad62f4ba9f'),
+    "the step's end passes and the C's": ('e81243efba17', 'a17bf1949e15'),
     'the frozen factors and their C': ('e2f3d26349c0', '19c25d66d9c8'),
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('03f9482bdd72', 'c025357cb495'),
     'the KLU step map and its C': ('5b9b1f672523', '94dfea9dc33d'),
-    'the stage walk and its C': ('804355de1d72', '8b17db481ab5'),
-    'the multistep walk and its C': ('610c04582db5', '058cb58036b7'),
+    'the stage walk and its C': ('804355de1d72', 'c289a7d8c0cb'),
+    'the multistep walk and its C': ('610c04582db5', '7079179f7623'),
     'the multistep step map and its C': ('985dde19187d', 'd6c3dcf5119d'),
     'the stage readers and their one read': ('d25552fe5ede', '2798b147a3c5'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
     'the readiness reads and their stamps': ('35c243c27ffd', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('61e556d8ebee', 'e5e06e21d246'),
-    'the transform loop and its C': ('4e409e577743', '0b7f2e09117e'),
+    'the stage loop and its C': ('61e556d8ebee', 'c32cea986e69'),
+    'the transform loop and its C': ('1f60fc9731c2', '01db3f2d5783'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

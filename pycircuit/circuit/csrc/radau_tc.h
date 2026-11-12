@@ -89,9 +89,8 @@ typedef struct {
        refactor of the numeric it holds (none where `rk_held`: `solve_kept`),
        a fresh factor on a zero pivot,
        klu_solve, and after a refactor the residual's verdict -- the sparse
-       sum with its rounding bound where it decides, else the dense test on
-       the factor scattered into `rk_A` (m x m work: numpy's matmul by
-       `rk_dgemv`) -- with a fresh factor where it fails.  `rk.klu_num` its numeric at entry; on return
+       sum with its rounding bound where it decides, else the CSC kernel's
+       test -- with a fresh factor where it fails.  `rk.klu_num` its numeric at entry; on return
        `rk.klu_out` as `pcx_klu_finish` leaves it -- a bail the entry's (any
        other freed: the Python loop makes the sequence again from it), else
        the sequence's -- and the counts this call's.  `rk_y` (m) and `rk_t`
@@ -99,8 +98,8 @@ typedef struct {
        stepping loop's): the numeric and the counts the caller's -- a call
        neither starts them nor finishes them, the caller's attempt does */
     long rk_on, rk_hold;
-    /* (the residual's dense tests its solves made, pcx_kluseq.h's `dense`:
-       the caller's to read and reset) */
+    /* (the residual's verdicts its bound left to the CSC kernel's test,
+       pcx_kluseq.h's `dense`: the caller's to read and reset) */
     long rk_dense;
     /* `_FrozenTransform.kept` (CALL/OUT): the numeric holds the refactor of
        `rk.kAx` a real solve of the step made -- each real solve then
@@ -117,8 +116,7 @@ typedef struct {
        struct's life (what the tests read) */
     long paired;
     pcx_klu_t rk;
-    double *rk_A, *rk_y, *rk_t;
-    void *rk_dgemv;
+    double *rk_y, *rk_t;
     /* work and outputs (`_Ctx.buf`): Y (3 x n) the stages -- the seed
        copied in, the converged stages out; Yp (3 x n) the stages before the
        update; q, iv, K, F (3 x n) the stages' q and i, -(i + u), the full

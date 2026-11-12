@@ -240,7 +240,7 @@ class _Ctx:
         'walk_watch',
     )
 
-    def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, dgesv, dgemv):
+    def __init__(self, core, n, iref, ffi, cfn_core, cffi_core, dgesv):
         m = n - 1
         M = 3 * m
         A = MAXA
@@ -264,7 +264,7 @@ class _Ctx:
         buf['ipiv'] = ipiv
         self.keep.append(fb('int64_t *', ipiv))
         s.ipiv = self.keep[-1]
-        s.dgesv, s.dgemv = ffi.cast('void *', dgesv), ffi.cast('void *', dgemv)
+        s.dgesv = ffi.cast('void *', dgesv)
         self.klu, self.klu_keep = None, ()
         ## (the last served call's converged block for the walk's
         ## sensitivities: `final_block`)
@@ -372,7 +372,7 @@ def _klu_ready(rec, sk):
     ints = (3 * bi + bj, (rk + (rk >= iref)) * n + (ck + (ck >= iref)),
             np.repeat(np.arange(9, dtype=np.int64), len(edge)), np.tile(edge, 9))
     ints = tuple(np.ascontiguousarray(a, dtype=np.int64) for a in ints)
-    dbls = (np.empty(len(take)), np.empty(M), np.empty(M), np.empty(2 * M), np.empty(M * M),
+    dbls = (np.empty(len(take)), np.empty(M), np.empty(M), np.empty(2 * M),
             np.empty(max(len(ints[2]), 1)))
     fb = ffi.from_buffer
     ip = tuple(fb('int64_t *', a) for a in ints)
@@ -380,7 +380,7 @@ def _klu_ready(rec, sk):
     keep = (sk, fb('int *', sk.Ap), fb('int *', sk.Ai)) + ints + dbls + ip + dp
     s.nact, s.nref = len(take), len(ints[2])
     s.act_b, s.act_f, s.ref_b, s.ref_f = ip
-    s.klu.kAx, s.kx, s.ky, s.kt, s.Ad, s.refv = dp
+    s.klu.kAx, s.kx, s.ky, s.kt, s.refv = dp
     k = s.klu
     k.kAp, k.kAi = keep[1:3]
     lib = sk._lib
@@ -421,7 +421,7 @@ def _ready(tr, ctx, seed, provided_function, lims, nobypass, reltol, step_memo=T
         return 'driver'
     if not _MOD['func']._underflow_ignored():
         return 'underflow'
-    ffi, _cfn, dgesv, dgemv = drv
+    ffi, _cfn, dgesv, _dgemv = drv
     chain = _MOD.get('chain') or _chain()
     if chain is None:
         return 'patched'
@@ -480,7 +480,7 @@ def _ready(tr, ctx, seed, provided_function, lims, nobypass, reltol, step_memo=T
     rec = td.get('_radau_c')
     if rec is None or rec.core is not core or rec.n != n or rec.iref != iref:
         cffi_core, cfn_core, _dg = tc.driver()
-        rec = _Ctx(core, n, iref, ffi, cfn_core, cffi_core, dgesv, dgemv)
+        rec = _Ctx(core, n, iref, ffi, cfn_core, cffi_core, dgesv)
         td['_radau_c'] = rec
     s = rec.s
     if has_limiter:

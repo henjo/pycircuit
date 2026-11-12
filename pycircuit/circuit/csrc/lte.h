@@ -118,9 +118,7 @@ typedef struct {
                                    full test makes it: loop.c hands that test
                                    back) */
         *klu_common,            /* the solver's KLU common block */
-        *klu_refactor, *klu_solve,  /* KLU's entries (klu_refactor_t, klu_solve_t) */
-        *dgemv;                 /* numpy's own cblas dgemv (dgemv64_t): unread (the
-                                   validation's A x is the CSC kernel's) */
+        *klu_refactor, *klu_solve;  /* KLU's entries (klu_refactor_t, klu_solve_t) */
     /* ON THE PATTERN (the C loop's: `J` is its Newton's, which the core writes
        on its pattern alone -- zero off it -- and the pattern lies within
        KLU's): the values gathered from J by `kat`, no reduce and no count;

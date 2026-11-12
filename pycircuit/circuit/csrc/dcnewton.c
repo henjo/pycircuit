@@ -137,17 +137,16 @@ static long evaluate(dcnewton_t *s)
 
 /* StructuralKLU.solve(J, -F) on its own sequence (pcx_kluseq.h): J's active
    entries gathered in its order; the step in `kx`; the refactor's residual
-   by the sparse sum's verdict, R itself the dense test's A where it does not
-   decide (R zero off the active entries: PCX_A_ON_PATTERN).  0, or why it
+   by the sparse sum's verdict, the CSC kernel's test where it does not
+   decide (packed: that test at once).  0, or why it
    is handed back (a failed factor or solve is the Python's raise) */
 static long klu_step(dcnewton_t *s, long m)
 {
     long i, st;
     if (!s->packed)
         for (i = 0; i < s->nact; i++) s->klu.kAx[i] = s->R[s->act_r[i]];
-    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->vt, m, s->dgemv,
-                      s->packed ? PCX_A_PACKED : PCX_A_ON_PATTERN, &s->dense_resid, s->held_v,
-                      s->held_st);
+    st = pcx_klu_step(&s->klu, s->b, s->kx, s->ky, s->vt, m, !s->packed, &s->dense_resid,
+                      s->held_v, s->held_st);
     if (st == PCX_KLU_FLAGS) return DCNEWTON_BAIL_FLAGS;
     return st ? DCNEWTON_BAIL_SINGULAR : 0;
 }

@@ -1363,8 +1363,8 @@ static long tc_rsolve(loop_t *s)
     radau_tf_t *tf = (radau_tf_t *) s->tc;
     int64_t m = s->n - 1, one = 1, info = 0;
     if (s->rk_klu) {
-        long st = pcx_klu_kept(&tf->rk, &tf->rk_held, tf->rk_A, s->eb, s->rkx, tf->rk_y, tf->rk_t,
-                               m, tf->rk_dgemv, &tf->rk_dense, tf->held_v, tf->held_st);
+        long st = pcx_klu_kept(&tf->rk, &tf->rk_held, s->eb, s->rkx, tf->rk_y, tf->rk_t, m,
+                               &tf->rk_dense, tf->held_v, tf->held_st);
         feclearexcept(FE_ALL_EXCEPT);
         if (st) return LOOP_BAIL_ESTIMATE;
         COPY(s->eb, s->rkx, m);

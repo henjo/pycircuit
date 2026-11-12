@@ -655,7 +655,7 @@ def test_pcnr_on_the_pattern_is_the_dense_ones_and_the_cs(deform, monkeypatch):
     tolerances where the residual's test binds and the iteration limit: the packed Python's outcome the dense Python's
     on the same solver, the C's the packed Python's, served but for gmin's
     (the C declines it) (pcnrdc.c on the pattern: its row sums the CSC
-    kernel's, the refactor's residual PCX_A_PACKED)."""
+    kernel's, the refactor's residual the KLU sequence's CSC kernel)."""
     from pycircuit.circuit import _pcnr_c
     from pycircuit.circuit.tests.test_dc_pcnr import _bjt_mirror_20v
     if _pcnr_c.driver() is None:
