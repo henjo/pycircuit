@@ -16,7 +16,9 @@
  * product then holds where it holds at the bound's worse end and fails where
  * it fails at its better end; elsewhere -- and where a value is not finite
  * or a row's sum reaches 1e300 (there numpy's flags could be raised) -- the
- * dense test decides.
+ * whole computation decides (the residual's: the CSC kernel's test,
+ * `pcx_klu_resid_csc`, `StructuralKLU._csc_residual` -- the bounds below
+ * cover a row's sum in any order, its too).
  *
  * THE RESIDUAL'S SUMS WITH SUBNORMALS FLUSHED (`pcx_resid_sparse`): a solve's
  * update near convergence holds subnormal entries, and each operation on one
@@ -29,8 +31,8 @@
  * (k_i + 2) (amax + xmax + 4) DBL_MIN + 8 DBL_MIN (`amax`, `xmax` the largest
  * |A| and |x|; the 8 the bound's own, |b|'s and the ends' flushes), which
  * covers the gradual underflow's 2^-1075 terms too.  A verdict it makes holds
- * whatever the dense test's rounding -- the dense test's own, as the gradual
- * sums' is.  Where it does not decide (a residual near its threshold, or one
+ * whatever the order's rounding -- the CSC kernel's, as the gradual sums'
+ * is.  Where it does not decide (a residual near its threshold, or one
  * near 1e-300 whose threshold the flush could hide), the gradual sums are
  * made (`pcx_resid_gradual`) and theirs is the verdict: the assists paid on
  * those calls alone.
@@ -40,24 +42,24 @@
  *
  * (N) A VALUE NOT FINITE in x, b or A (`pcx_resid_nonfinite`): where A and x
  * hold no infinity, every NaN is quiet and each row's sum of |A_ij| |x_j|
- * over its finite terms, plus a finite |b_i|, is under 1e300, the dense
- * dgemv and its `- b` raise no flag numpy reports (a quiet NaN's arithmetic
- * raises none; no partial sum of finite terms can overflow), and the test
- * FAILS: a NaN in x reaches every row of `A x - b` (its column's zeros too:
- * 0 x NaN is NaN), a NaN in A or b its own row, and without a NaN an
- * infinite b_i makes max |.| and max |b| infinite, inf / inf a NaN.  An
- * infinity in A or x stays the dense test's (0 x inf raises invalid).
+ * over its finite terms, plus a finite |b_i|, is under 1e300, the CSC
+ * kernel's sums and their `- b` raise no flag numpy reports (a quiet NaN's
+ * arithmetic raises none; no partial sum of finite terms can overflow), and
+ * the test FAILS: a NaN in x reaches its column's rows (each column holds an
+ * entry), a NaN in A or b its own row, and without a NaN an infinite b_i
+ * makes max |.| and max |b| infinite, inf / inf a NaN.  An infinity in A or
+ * x stays the kernel's test (0 x inf raises invalid).
  *
  * (W) THE WIDE PASS (`pcx_resid_wide`, where long double holds 64 bits): the
  * row's sums in long double, where a product of doubles neither underflows
  * nor overflows and rounds by v = 2^-64 at most, so S_L lies within
  * gamma^L_k T (+ k 2^-1075: each row's sum is kept as two doubles, its
- * remainder rounded where subnormal) of the exact sum and the dgemv within
- * gamma_k T + k 2^-1075 of it.  E_i = k u (1 + 2^-6) T_L + 2^-60 |b_i| +
+ * remainder rounded where subnormal) of the exact sum and any double sum of
+ * the row's k terms (the CSC kernel's) within gamma_k T + k 2^-1075 of it.  E_i = k u (1 + 2^-6) T_L + 2^-60 |b_i| +
  * (2 k + 4) 2^-1074 (u = 2^-53, T_L the row's sum of |A_ij| |x_j| made the
  * same way) covers both, T's own error, the rounding of (S_L -+ E_i) - b_i
  * in long double and E_i's to double, for every k < 2^31; each end, rounded
- * to double, bounds `fl(dgemv - b_i)` as the dense test makes it (rounding
+ * to double, bounds `fl(sum - b_i)` as the kernel's test makes it (rounding
  * is monotone).  About ten times the narrower band at k ~ 7.
  */
 #include <float.h>

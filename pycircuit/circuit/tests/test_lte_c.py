@@ -468,33 +468,40 @@ def _filled_then_on_pattern(on, tol=None, spy=None):
     return out, None if ctx is None else int(ctx.s.vdense), _paths.since(before)
 
 
-def test_a_dense_test_after_a_dense_reduce_zeroes_r_first(monkeypatch):
-    """lte.h's R HELD ZERO across a dense reduce: a call whose J is not on
-    the pattern reduces it whole into R (an off-band entry among it, found
-    foreign: handed back), and the next call's dense test -- J on its
-    pattern pages, its residual tolerance at the solve's own residual so
-    that the sparse sum's bound cannot decide -- zeroes R before scattering
-    KLU's entries (`r_full`): every call the Python's, the second served by
-    the C on its dense test.  Without the zeroing the off-band entry stays
-    in R, the residual fails and the call is handed back."""
+@pytest.mark.parametrize('edge', ['at', 'below'])
+def test_the_validation_after_a_dense_reduce_reads_no_r(edge, monkeypatch):
+    """A call whose J is not on the pattern reduces it whole into R (an
+    off-band entry among it, found foreign: handed back), and the next
+    call's validation -- J on its pattern pages, its residual tolerance at
+    the solve's own residual by the CSC kernel (or one ulp below it) so that
+    the sparse sum's bound cannot decide -- is the CSC kernel's on KLU's
+    arrays (`StructuralKLU._csc_residual`), which reads no R: the off-band
+    entry R still holds does not reach it.  Every call the Python's; at the
+    residual the second served by the C on that test (a validation reading R
+    would fail and hand it back), below it handed back (`lte_c:bail:
+    residual`, the Python alone factors again) -- so a validation summing in
+    another order parts from the C's at one edge or the other."""
     from pycircuit.circuit import linearsolver
     seen = []
     real = linearsolver.StructuralKLU._solve
 
     def solve(self, A, b, toolkit, kept):
-        x = real(self, A, b, toolkit, kept)
-        arr, rhs = np.asarray(A), np.asarray(b, float)
-        seen.append(float(np.abs(arr @ np.asarray(x) - rhs).max()) / max(float(np.abs(rhs).max()), 1e-300))
+        x = np.asarray(real(self, A, b, toolkit, kept))
+        arr, rhs, cols = np.asarray(A), np.asarray(b, float), self._csc_cols()
+        r = np.bincount(self.Ai, weights=arr[self.Ai, cols] * x[cols], minlength=self.m) - rhs
+        seen.append(float(np.abs(r).max()) / max(float(np.abs(rhs).max()), 1e-300))
         return x
     with monkeypatch.context() as mp:
         mp.setattr(linearsolver.StructuralKLU, '_solve', solve)
         _filled_then_on_pattern(False, spy=lambda sk: seen.clear())
-    ## (the solve's own residual -- exactly 0.0 here: the sparse sum's bound,
-    ## its rounding term above zero, cannot decide either way at it)
-    assert len(seen) == 1, seen
-    tol = seen[0]
+    ## (the solve's own residual: the sparse sum's bound, its rounding term
+    ## above zero, cannot decide either way at it)
+    assert len(seen) == 1 and seen[0] > 0.0, seen
+    tol = seen[0] if edge == 'at' else float(np.nextafter(seen[0], 0.0))
     py, _, _ = _filled_then_on_pattern(False, tol)
     got, vdense, counts = _filled_then_on_pattern(True, tol)
     assert got == py
     assert counts.get('lte_c:bail:foreign', 0) == 1, counts
-    assert counts.get('lte_c:sparse_served', 0) == 1 and vdense == 1, (counts, vdense)
+    served = (edge == 'at')
+    assert counts.get('lte_c:sparse_served', 0) == served and vdense == 1, (counts, vdense)
+    assert counts.get('lte_c:bail:residual', 0) == (not served), counts

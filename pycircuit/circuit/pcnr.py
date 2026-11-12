@@ -46,6 +46,7 @@ protocols are accepted:
 """
 import numpy as np
 
+from pycircuit.circuit import _packed
 from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit._limiting import _pnjlim
 from pycircuit.circuit.linearsolver import AutoSolver
@@ -633,14 +634,16 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
     ## built on it repeats bit for bit.
     view = pcnr_view(circuit, devices, epar)
     g_mna = np.array(view.i(x, epar), dtype=float)
-    J_mm = np.array(view.G(x, epar), dtype=float)
+    J_mm = (_packed_G(circuit, view, x, epar) if _packed.active(circuit)
+            else np.array(view.G(x, epar), dtype=float))
     if u_extra is not None:
         g_mna = g_mna + np.asarray(u_extra, dtype=float)
     if J_extra is not None:
         ## The transient's companion terms: `f = i(x) + iq + u`, `J = G + Geq`.
         ## They are passed in rather than recomputed because `solve_timestep`
         ## already has them and `get_diff` is not free.
-        J_mm = J_mm + np.asarray(J_extra, dtype=float)
+        J_mm = J_mm + (J_extra if type(J_extra) is _packed.PatternMatrix
+                       else np.asarray(J_extra, dtype=float))
 
     ## `dense_blocks=False` skips the (n,k) and (k,n) allocations entirely.
     ## `predict`'s sparse path never reads them -- each column of J_ml has t
@@ -678,6 +681,54 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
     return g_mna, g_lim, J_mm, J_ml, J_lm, didv_list
 
 
+def _packed_G(circuit, view, x, epar):
+    """THE PACKED LAYOUT (`_packed`): the view's G on the circuit's own pattern
+    -- the view assembled inside a scope of its own (on its plan's pattern),
+    each value at its place in the circuit's, which holds every participant's
+    places (the Schur positions, the junction pairs), zero at the others: the
+    dense `np.array(view.G(x))`'s bytes at every place."""
+    from pycircuit.circuit import _stamp_plan
+    with _packed.scope(view):
+        Gv = view.G(x, epar)
+    if type(Gv) is not _packed.PatternMatrix:
+        raise TypeError('PCNR on the pattern: the view assembled dense')
+    target = _stamp_plan.packed_pattern(circuit, _stamp_plan._plan_for(circuit), _packed)
+    idx = target._red.get(('view', Gv.pat))
+    if idx is None:
+        idx = target.index_of(Gv.pat.rows, Gv.pat.cols)
+        if (idx < 0).any():
+            raise IndexError("PCNR on the pattern: a place of the view's off the circuit's")
+        target._red[('view', Gv.pat)] = idx
+    v = np.zeros(target.nnz)
+    v[idx] = Gv.v
+    return _packed.PatternMatrix(target, v)
+
+
+def _schur_packed(g_mna, g_lim, J_mm, didv):
+    """`schur_reduce`'s rank-one terms on THE PACKED LAYOUT: each probe's
+    column added at (rows, ra) and taken at (rows, rb) on the pattern's
+    values in the dense form's order (`np.add.at`, then `np.subtract.at`),
+    a place off the pattern raising."""
+    schur = J_mm.copy()
+    pat, v = schur.pat, schur.v
+    rhs_corr = np.zeros(len(g_mna))
+    off = 0
+    with np.errstate(invalid='ignore', over='ignore'):
+        for rows, probes, block in didv:
+            rows = np.asarray(rows, dtype=int)
+            for j, (ra, rb) in enumerate(probes):
+                col = block[:, j]
+                ia = pat.index_of(rows, np.full(len(rows), ra))
+                ib = pat.index_of(rows, np.full(len(rows), rb))
+                if (ia < 0).any() or (ib < 0).any():
+                    raise IndexError('PCNR on the pattern: a Schur position off the pattern')
+                np.add.at(v, ia, col)
+                np.subtract.at(v, ib, col)
+                np.add.at(rhs_corr, rows, col * g_lim[off + j])
+            off += len(probes)
+    return g_mna - rhs_corr, schur
+
+
 def schur_reduce(g_mna, g_lim, J_mm, J_ml=None, J_lm=None, junctions=None,
                  didv=None):
     """The augmented system collapsed onto the original MNA size.
@@ -703,6 +754,8 @@ def schur_reduce(g_mna, g_lim, J_mm, J_ml=None, J_lm=None, junctions=None,
     the ``t = 2, m = 1`` case: the same four entries as before, in the same
     order.  (``junctions`` is accepted and ignored: ``didv`` carries the rows.)
     """
+    if didv is not None and type(J_mm) is _packed.PatternMatrix:
+        return _schur_packed(g_mna, g_lim, J_mm, didv)
     if didv is not None:
         schur = np.array(J_mm, copy=True)
         rhs_corr = np.zeros(len(g_mna))
@@ -790,7 +843,11 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
     ##     still one whose NEXT Jacobian is singular.  A line search
     ##     controls the step; it cannot condition the matrix.
     ## Only regularising the matrix addresses a rank deficiency.
-    if gmin:
+    packed = type(schur) is _packed.PatternMatrix
+    if gmin and packed:
+        schur = schur.copy()
+        schur.v[schur.pat.diagonal()] += gmin
+    elif gmin:
         schur = np.array(schur, dtype=float, copy=True)
         d = np.arange(schur.shape[0])
         schur[d, d] += gmin
@@ -799,8 +856,13 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
     keep = [i for i in range(len(g_mna)) if i not in out]
     ## (`linsolver`: the DC's own -- dense below its floor, StructuralKLU on
     ## the circuit's pattern above -- which the C unit repeats; numpy's
-    ## dense solve where none is given)
-    if linsolver is None:
+    ## dense solve where none is given; THE PACKED LAYOUT KLU, on the
+    ## matrix's own pattern where none is given)
+    if packed:
+        A = schur.kept(np.asarray(keep, dtype=np.int64))
+        ls = linsolver if linsolver is not None else _packed.own_solver(A)
+        dx_r = np.asarray(ls.solve(A, rhs[keep], toolkit), dtype=float).ravel()
+    elif linsolver is None:
         dx_r = np.linalg.solve(schur[np.ix_(keep, keep)], rhs[keep])
     else:
         dx_r = np.asarray(linsolver.solve(schur[np.ix_(keep, keep)], rhs[keep],
@@ -971,6 +1033,19 @@ def lim_converged(g_lim, v_new, reltol, abstol):
 NONFINITE = 'PCNR iterate not finite at iteration %d: it cannot converge from there'
 
 
+def _jgmin_packed(J, a, b, g):
+    """A junction pair's four entries on THE PACKED LAYOUT, as the dense loop
+    writes them: each the same numpy scalar operation, in its order."""
+    i = J.pat.index_of([a, a, b, b], [a, b, a, b])
+    if (i < 0).any():
+        raise IndexError('PCNR on the pattern: a junction entry off the pattern')
+    v = J.v
+    v[i[0]] = v[i[0]] + g
+    v[i[1]] = v[i[1]] - g
+    v[i[2]] = v[i[2]] - g
+    v[i[3]] = v[i[3]] + g
+
+
 def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
              reltol=1e-6, abstol=1e-12, iabstol=1e-12, gmin=0.0,
              gshunt=0.0, source=1.0, v_lim0=None, linsolver=None, jgmin=0.0, held=None,
@@ -1127,7 +1202,10 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
         if shunt is not None:
             ## (a conductance from every node to ground, IN the equations)
             g_mna[shunt] += gshunt * x[shunt]
-            J_mm[shunt, shunt] += gshunt
+            if type(J_mm) is _packed.PatternMatrix:
+                J_mm.add_at(shunt, shunt, gshunt)
+            else:
+                J_mm[shunt, shunt] += gshunt
         if jpairs is not None:
             ## (a conductance across every junction pair, IN the equations:
             ## C's `assemble`, in its order)
@@ -1135,6 +1213,9 @@ def solve_dc(circuit, refnode, x0=None, epar=defaultepar, maxiter=200,
                 vj = x[a] - x[b]
                 g_mna[a] = g_mna[a] + jgmin * vj
                 g_mna[b] = g_mna[b] - jgmin * vj
+                if type(J_mm) is _packed.PatternMatrix:
+                    _jgmin_packed(J_mm, a, b, jgmin)
+                    continue
                 J_mm[a, a] = J_mm[a, a] + jgmin
                 J_mm[a, b] = J_mm[a, b] - jgmin
                 J_mm[b, a] = J_mm[b, a] - jgmin

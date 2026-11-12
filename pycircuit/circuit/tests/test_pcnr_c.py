@@ -611,12 +611,14 @@ def _resident_share(a):
 
 def test_at_size_the_dcs_matrices_are_resident_where_written(monkeypatch):
     """At size (`_tran_core.paged`: private 4 KB pages, resident where
-    written) the C's |J| and R hold a page or two a row (J packed: none): on
-    `_stiff_ladder` of 1 500 stages (rows of three pages), both dense tests
-    made, each under 3/4 of its pages resident (0.34-0.58 measured) -- where
-    a write of every entry (a dense test's zeroed R or |J| made whole) or
-    one entry under a huge page makes all of it; and its core's n x n G bin
-    none at all: G is made in the core's packed bins (THE PACKED G)."""
+    written) the C's |J| holds a page or two a row (J packed: none): on
+    `_stiff_ladder` of 1 500 stages (rows of three pages), the convergence
+    test's dense test made, under 3/4 of its pages resident (0.58 measured)
+    -- where a write of every entry (|J| made whole) or one entry under a
+    huge page makes all of it; R none at all: the refactor's residual test
+    the bound leaves is the CSC kernel's on KLU's arrays (`pcx_klu_resid_csc`),
+    which reads and writes no R; and its core's n x n G bin none: G is made
+    in the core's packed bins (THE PACKED G)."""
     from pycircuit.circuit import _tran_core
     _log, counts, c = _dc_calls(lambda: _stiff_ladder(1500), True, monkeypatch)
     assert counts.get('pcnr_c:dense_conv', 0) > 0 and counts.get('pcnr_c:dense_resid', 0) > 0
@@ -625,7 +627,7 @@ def test_at_size_the_dcs_matrices_are_resident_where_written(monkeypatch):
     share = {k: _resident_share(v) for k, v in mats.items()}
     if None in share.values():
         pytest.skip('no page map here')
-    assert share.pop('binG') == 0.0, share
+    assert share.pop('binG') == 0.0 and share.pop('R') == 0.0, share
     assert all(0.0 < s < 0.75 for s in share.values()), share
 
 

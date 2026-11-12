@@ -269,10 +269,11 @@ def _on_pattern_pages(arr):
 
 def _resid_sparse(Ap, Ai, Ax, tol, b, x):
     """The refactor's residual test -- `not (max|A x - b| / max(max|b|,
-    1e-300) <= tol)`, numpy's `A @ x` on the dense A -- decided on A's CSC
-    (`Ap`, `Ai`, `Ax`; A zero off it) where its rounding bound decides it:
-    True it fails, False it holds, None undecided (the dense test then).
-    `pcx_verdict.h`'s `pcx_resid_sparse`: row i's dense sum lies within
+    1e-300) <= tol)`, `A x` in any order (`StructuralKLU._csc_residual`'s
+    CSC kernel among them) -- decided on A's CSC (`Ap`, `Ai`, `Ax`; A zero
+    off it) where its rounding bound decides it: True it fails, False it
+    holds, None undecided (the CSC kernel's test then).
+    `pcx_verdict.h`'s `pcx_resid_sparse`: row i's sum in any order lies within
     `e_i = 4 (cnt_i + 2) (eps t_i + 2 tiny)` of the sparse one (`t_i` the
     sum of |a| |x|, `cnt_i` the row's stored entries), so the test holds where
     it holds at the interval's upper end and fails where it fails at the
@@ -299,8 +300,8 @@ def _snan(a):
 def _resid_nonfinite(Ap, Ai, Ax, b, x):
     """`pcx_resid_nonfinite` (N): True (it fails) where no infinity is in A or
     x, every NaN is quiet and each row's sum of |a| |x| over its finite terms
-    plus a finite |b| is under 1e300 -- the dense test then raises no flag
-    and fails -- else None."""
+    plus a finite |b| is under 1e300 -- the CSC kernel's test then raises no
+    flag and fails -- else None."""
     if (numpy.isinf(x).any() or numpy.isinf(Ax).any() or _snan(x).any() or _snan(b).any()
             or _snan(Ax).any()):
         return None
@@ -317,9 +318,9 @@ def _resid_nonfinite(Ap, Ai, Ax, b, x):
 
 def _resid_wide(Ap, Ai, Ax, tol, b, x):
     """`pcx_resid_wide` (W) on finite values: the rows' sums in numpy's long
-    double (where it holds 64 bits; else None), each row's dense value
-    within `E = k u (1 + 2^-6) T + 2^-60 |b| + (2 k + 4) 2^-1074` of its
-    sum -- the ends rounded to double, then the bound's test."""
+    double (where it holds 64 bits; else None), each row's double sum in any
+    order within `E = k u (1 + 2^-6) T + 2^-60 |b| + (2 k + 4) 2^-1074` of
+    its sum -- the ends rounded to double, then the bound's test."""
     L = numpy.longdouble
     if numpy.finfo(L).nmant < 63:
         return None
@@ -1089,9 +1090,7 @@ class StructuralKLU(KLUSolver):
             return None
         got = self.__dict__.get('_pk_map')
         if got is None or got[0] is not A.pat:
-            if self.__dict__.get('_pk_key') is None:
-                kcols = numpy.repeat(numpy.arange(self.m, dtype=numpy.int64), numpy.diff(self.Ap))
-                self._pk_key = (kcols * self.m + self.Ai.astype(numpy.int64), kcols)
+            self._csc_cols()
             key = self._pk_key[0]
             want = A.pat.key
             i = numpy.minimum(numpy.searchsorted(key, want), max(key.size - 1, 0))
@@ -1105,12 +1104,26 @@ class StructuralKLU(KLUSolver):
         Ax[idx[~off]] = A.v[~off]
         return A, Ax
 
-    def _packed_residual(self, Ax, rhs, x):
-        """The refactor's residual test on a `_packed.PatternMatrix` --
-        `not (max|A x - b| / max(max|b|, 1e-300) <= tol)`, `A x` THE PACKED
-        LAYOUT's CSC kernel on KLU's own arrays (`_packed`: the reference's
-        order at size), a NaN failing it as numpy's max propagates one."""
-        cols = self._pk_key[1]
+    def _csc_cols(self):
+        """Each of KLU's CSC entries' column (and `_pk_key`, its place's key
+        row-major), made once."""
+        if self.__dict__.get('_pk_key') is None:
+            kcols = numpy.repeat(numpy.arange(self.m, dtype=numpy.int64), numpy.diff(self.Ap))
+            self._pk_key = (kcols * self.m + self.Ai.astype(numpy.int64), kcols)
+        return self._pk_key[1]
+
+    def _csc_residual(self, Ax, rhs, x):
+        """The refactor's residual test, whatever the matrix's layout --
+        `not (max|A x - b| / max(max|b|, 1e-300) <= tol)`, `A x` by the CSC
+        kernel on KLU's own arrays (each row from 0.0, each product rounded,
+        added in KLU's CSC order: np.bincount's), a NaN failing it as numpy's
+        max propagates one.  ONE ORDER ON EVERY LAYOUT: the residual can be
+        rounding itself -- opampal's source ladder, where two orders' sums of
+        the same values read 9.0e-9 and 1.15e-8 against 1e-8 -- and then the
+        order decides: the dense `arr @ x` sums in BLAS's order (its CPU
+        kernel's), which THE PACKED LAYOUT (`_packed`), holding no dense
+        matrix, cannot repeat."""
+        cols = self._csc_cols()
         if rhs.ndim < 2:
             r = numpy.bincount(self.Ai, weights=Ax * x[cols], minlength=self.m) - rhs
         else:
@@ -1238,19 +1251,16 @@ class StructuralKLU(KLUSolver):
             raise numpy.linalg.LinAlgError('klu_solve failed')
         if reused:
             ## (the refactor's validation, as `KLUSolver`'s: the reused pivot
-            ## order checked by the residual, a fresh factor where it fails.
-            ## A matrix on pattern pages: the verdict on KLU's CSC with its
-            ## rounding bound where the bound decides -- `pcx_kluseq.h`'s
-            ## rule, `_resid_sparse` -- the dense test where it does not)
+            ## order checked by the residual, a fresh factor where it fails --
+            ## the CSC kernel's sums, one order on every layout
+            ## (`_csc_residual`).  A matrix on pattern pages: the verdict by
+            ## their rounding bound where it decides -- whatever the order,
+            ## the kernel's too: `pcx_kluseq.h`'s rule, `_resid_sparse`)
             fails = None
-            if type(arr) is _packed_cls():
-                fails = self._packed_residual(Ax, rhs, x)
-            elif nrhs == 1 and _on_pattern_pages(arr):
+            if nrhs == 1 and type(arr) is not _packed_cls() and _on_pattern_pages(arr):
                 fails = _resid_sparse(self.Ap, self.Ai, Ax, self.REFACTOR_RESIDUAL_TOL, rhs, x)
             if fails is None:
-                scale = max(float(numpy.abs(rhs).max()), 1e-300)
-                resid = float(numpy.abs(arr @ x - rhs).max()) / scale
-                fails = not (resid <= self.REFACTOR_RESIDUAL_TOL)
+                fails = self._csc_residual(Ax, rhs, x)
             if fails:
                 self.residual_fallbacks += 1
                 _held_lost(self)
@@ -1302,13 +1312,13 @@ class StructuralKLU(KLUSolver):
         same pivots, the same arithmetic), a fresh factor where none is held
         or the refactor meets a zero pivot, the refactor's residual tested
         as `solve` tests it (a fresh factor where it fails); every later
-        solve on the numeric as it stands.  The matrix kept for the test (it
-        is the step's; the chord holds one at a time).  Another matrix
+        solve on the numeric as it stands.  KLU's values kept for the test
+        (the step's; the chord holds one at a time).  Another matrix
         (`_ours`: None) is the fallback's `factor`."""
         got = self._ours(A)
         if got is None:
             return self._other().factor(A, toolkit)
-        f = _ChordNumeric(self, got[0], numpy.ascontiguousarray(got[1], dtype=numpy.float64))
+        f = _ChordNumeric(self, numpy.ascontiguousarray(got[1], dtype=numpy.float64))
         return _Factored(f, lambda f, b: f.solve(b), lambda f, b: f.solve_transposed(b),
                          sparse=True)
 
@@ -1317,7 +1327,7 @@ class StructuralKLU(KLUSolver):
         serve, `Transient.lte_jacobian`): its numeric as it stands (`_chord`),
         made -- a solve on it, no refactor -- in the wrapper `chord_factor`
         returns."""
-        f = _ChordNumeric(self, None, None)
+        f = _ChordNumeric(self, None)
         f._made = True
         return _Factored(f, lambda f, b: f.solve(b), lambda f, b: f.solve_transposed(b),
                          sparse=True)
@@ -1403,8 +1413,8 @@ class _ChordNumeric:
     chord's kept numeric; every later one a solve on it.  Owns nothing: the
     numeric is the solver's (`_chord`)."""
 
-    def __init__(self, solver, arr, Ax):
-        self._solver, self._arr, self._Ax, self._made = solver, arr, Ax, False
+    def __init__(self, solver, Ax):
+        self._solver, self._Ax, self._made = solver, Ax, False
 
     def _make(self, rhs):
         """`solve`'s refactor path on the chord's numeric for `rhs`: the
@@ -1426,13 +1436,12 @@ class _ChordNumeric:
         else:
             sk._chord_fresh(Ax)
         x = self._klu(sk._lib.klu_solve, rhs)
-        if reused:
-            scale = max(float(numpy.abs(rhs).max()), 1e-300)
-            resid = float(numpy.abs(self._arr @ x - rhs).max()) / scale
-            if not (resid <= sk.REFACTOR_RESIDUAL_TOL):
-                sk.chord_residual_fallbacks += 1
-                sk._chord_fresh(Ax)
-                x = self._klu(sk._lib.klu_solve, rhs)
+        ## (the refactor's validation: `solve`'s, the CSC kernel's sums --
+        ## `StructuralKLU._csc_residual`)
+        if reused and sk._csc_residual(Ax, rhs, x):
+            sk.chord_residual_fallbacks += 1
+            sk._chord_fresh(Ax)
+            x = self._klu(sk._lib.klu_solve, rhs)
         return x
 
     def _klu(self, fn, b):

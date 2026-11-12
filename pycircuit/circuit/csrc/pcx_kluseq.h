@@ -11,11 +11,11 @@
  * PCX_KLU_SOLVE (klu_solve failed: its LinAlgError('klu_solve failed')),
  * PCX_KLU_FLAGS (a flag numpy reports in the residual's arithmetic).
  *
- * The residual's test needs only its verdict: on KLU's own CSC (`a_built`
- * 0: the dense A not made) a sparse sum with its rounding bound decides it
- * where the bound does, the dense test where it does not
- * (`pcx_klu_resid_sparse`); on THE PACKED LAYOUT (PCX_A_PACKED) the
- * reference's own CSC kernel decides it (`pcx_klu_resid_packed`). */
+ * The residual's test needs only its verdict: `A x` by the CSC kernel on
+ * KLU's own arrays, one order on every layout (`pcx_klu_resid_csc`,
+ * `StructuralKLU._csc_residual`); on KLU's CSC (`a_built` neither BUILT nor
+ * PACKED) a sparse sum with its rounding bound first, which decides it
+ * where it does whatever the order (`pcx_klu_resid_sparse`). */
 #include <float.h>
 #include <math.h>
 #include <fenv.h>
@@ -26,14 +26,11 @@
 
 enum pcx_klu_stop { PCX_KLU_FACTOR = 1, PCX_KLU_SOLVE = 2, PCX_KLU_FLAGS = 3 };
 
-/* a step's `a_built`: A made by the caller (PCX_A_BUILT), or scratch the
-   residual's dense test scatters A into from the CSC -- zeroed whole first
-   (PCX_A_SCRATCH), or held zero by the caller (PCX_A_ZERO: zero on entry,
-   the scatter undone after the test, so only KLU's pattern is ever written:
-   m x m pages a caller holds resident a page or two a row), or made by the
-   caller and zero off KLU's pattern (PCX_A_ON_PATTERN: the sparse verdict
-   first, as A is not built, the dense test on A itself), or no dense A at
-   all (PCX_A_PACKED, THE PACKED LAYOUT: `A` unread, the CSC kernel's test) */
+/* a step's `a_built` -- the residual's test reads no dense A (`A` unread,
+   whatever the mode): the CSC kernel's test at once where the caller made A
+   (PCX_A_BUILT) or holds none (PCX_A_PACKED, THE PACKED LAYOUT); the sparse
+   sums' bound first where A is scratch (PCX_A_SCRATCH), held zero
+   (PCX_A_ZERO) or made zero off KLU's pattern (PCX_A_ON_PATTERN) */
 enum pcx_klu_a { PCX_A_SCRATCH = 0, PCX_A_BUILT = 1, PCX_A_ZERO = 2, PCX_A_ON_PATTERN = 3,
                  PCX_A_PACKED = 4 };
 
@@ -65,37 +62,15 @@ static long pcx_klu_solve_b(pcx_klu_t *k, const double *b, double *x, long m)
     return 0;
 }
 
-/* the residual's test as the Python makes it on the dense A: `arr @ x`
-   (numpy's matmul: this dgemv), `- rhs`, |.|, the maxima -- numpy's max
-   propagates a NaN: so does `nan_r` -- against the tolerance.  1 it fails (a
-   fresh factor), 0 it holds, -1 a flag numpy reports */
-static int pcx_klu_resid_dense(pcx_klu_t *k, const double *A, const double *b,
-                               const double *x, double *y, long m, void *dgemv)
-{
-    long i;
-    double max_b = 0.0, max_r = 0.0;
-    int nan_r = 0;
-    ((dgemv64_t) dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, A, m, x, 1,
-                        0.0, y, 1);
-    for (i = 0; i < m; i++) y[i] = y[i] - b[i];
-    if (fetestexcept(PCX_NP_FLAGS)) return -1;
-    for (i = 0; i < m; i++) {
-        double a = fabs(b[i]), d = fabs(y[i]);
-        if (a > max_b) max_b = a;
-        if (isnan(d)) nan_r = 1;
-        else if (d > max_r) max_r = d;
-    }
-    return nan_r || !(max_r / pcx_py_max(max_b, 1e-300) <= k->resid_tol);
-}
-
-/* the residual's test on THE PACKED LAYOUT (`StructuralKLU._packed_residual`,
-   the reference's at size): `A x` by the CSC kernel on KLU's own arrays --
-   each row from 0.0, each product rounded, then added in KLU's CSC order
-   (np.bincount's) --, `- rhs`, |.|, the maxima as the dense test's.  1 it
-   fails, 0 it holds, -1 a flag (the kernel's sums' too, which numpy's
-   bincount does not report: a hand-back, the safe side) */
-static int pcx_klu_resid_packed(pcx_klu_t *k, const double *b, const double *x, double *y,
-                                long m)
+/* the residual's test (`StructuralKLU._csc_residual`, every layout's): `A x`
+   by the CSC kernel on KLU's own arrays -- each row from 0.0, each product
+   rounded, then added in KLU's CSC order (np.bincount's) --, `- rhs`, |.|,
+   the maxima -- numpy's max propagates a NaN: so does `nan_r` -- against the
+   tolerance.  1 it fails (a fresh factor), 0 it holds, -1 a flag (the
+   kernel's sums' too, which numpy's bincount does not report: a hand-back,
+   the safe side) */
+static int pcx_klu_resid_csc(pcx_klu_t *k, const double *b, const double *x, double *y,
+                             long m)
 {
     long i;
     double max_b = 0.0, max_r = 0.0;
@@ -121,12 +96,10 @@ static int pcx_klu_resid_sparse(pcx_klu_t *k, const double *b, const double *x,
 }
 
 /* StructuralKLU.solve(A, b) on its own sequence, `kAx` A's values in its
-   order (gathered by the caller) and `A` the same matrix dense (m x m,
-   row-major: the residual's `arr @ x`, numpy's matmul -- its dgemv) where
-   `a_built` is PCX_A_BUILT, else a buffer the residual's dense test
-   scatters A into from the CSC where the sparse one does not decide
-   (counted in `dense`, which may be NULL; `enum pcx_klu_a`).  The solution
-   in `x`, `y` (m) and `t` (2 m, read only where not built) scratch.  `kept`: `solve_kept`'s -- the numeric
+   order (gathered by the caller); `A` and `dgemv` unread (`enum
+   pcx_klu_a`); the sparse sums' bound undecided counted in `dense`, which
+   may be NULL -- the CSC kernel's test then.  The solution in `x`, `y` (m)
+   and `t` (2 m, read only where the bound is tried) scratch.  `kept`: `solve_kept`'s -- the numeric
    holds a refactor of these very values, none is made (nor counted).  `hv`, `hst`: StructuralKLU's held
    values (pcx_held.h) where `k` is its run numeric -- no refactor of the values held, counted there; NULL
    `hst` (the chord's numeric) the rule off */
@@ -134,8 +107,10 @@ static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, dou
                         double *t, long m, void *dgemv, int a_built, long *dense, int kept,
                         double *hv, int64_t *hst)
 {
-    long i, j, p, st, reused = k->klu_out != NULL, nnz = k->kAp[m];
+    long st, reused = k->klu_out != NULL, nnz = k->kAp[m];
     int fails = PCX_UNDECIDED;
+    (void) A;
+    (void) dgemv;
     if (reused && !kept && pcx_held_same(hst, hv, k->kAx, nnz)) {
         /* (THE SAME VALUES: the numeric is their refactor already) */
     } else if (reused && !kept) {
@@ -157,28 +132,15 @@ static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, dou
     /* (what KLU raised inside: the Python's ctypes calls never see it) */
     feclearexcept(FE_ALL_EXCEPT);
     if (!reused) return 0;
-    if (a_built == PCX_A_PACKED) {
-        fails = pcx_klu_resid_packed(k, b, x, y, m);
-    } else if (a_built != PCX_A_BUILT) {
+    if (a_built != PCX_A_PACKED && a_built != PCX_A_BUILT) {
         fails = pcx_klu_resid_sparse(k, b, x, y, t, m);
         if (fails == PCX_UNDECIDED) {
-            /* (the dense test on A as the Python holds it: zero off the
-               pattern; what the sparse sums raised is not the Python's) */
+            /* (what the sparse sums raised is not the Python's) */
             feclearexcept(FE_ALL_EXCEPT);
-            if (a_built != PCX_A_ON_PATTERN) {
-                if (a_built == PCX_A_SCRATCH) for (i = 0; i < m * m; i++) A[i] = 0.0;
-                for (j = 0; j < m; j++)
-                    for (p = k->kAp[j]; p < k->kAp[j + 1]; p++) A[k->kAi[p] * m + j] = k->kAx[p];
-            }
             if (dense) (*dense)++;
         }
     }
-    if (fails == PCX_UNDECIDED) {
-        fails = pcx_klu_resid_dense(k, A, b, x, y, m, dgemv);
-        if (a_built == PCX_A_ZERO)
-            for (j = 0; j < m; j++)
-                for (p = k->kAp[j]; p < k->kAp[j + 1]; p++) A[k->kAi[p] * m + j] = 0.0;
-    }
+    if (fails == PCX_UNDECIDED) fails = pcx_klu_resid_csc(k, b, x, y, m);
     if (fails < 0) return PCX_KLU_FLAGS;
     if (fails) {
         k->residual_fallbacks++;

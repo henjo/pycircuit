@@ -410,7 +410,8 @@ def release(circuit):
     (`_tran_core.paged`)."""
     from pycircuit.circuit import _tran_core
     rec = circuit.__dict__.get('_pcnr_c')
-    if type(rec) is not _Rec or rec.core is None or not _tran_core.paged(rec.core):
+    if (type(rec) is not _Rec or rec.core is None or rec.core.packed
+            or not _tran_core.paged(rec.core)):
         return
     b = rec.buf
     _tran_core.give_back(b['Jabs'], b['A'], b['R'], b['Cs'], rec.core.arrays['binG'])
@@ -512,14 +513,18 @@ class _Rec:
         ## packed with one, its last entry the zero an entry off P reads)
         from pycircuit.circuit import _tran_core
         P0 = _tran_core.pattern_zeros if core.npat else Z
+        Dn, W = E, Z
+        if core.packed:
+            ## (THE PACKED LAYOUT: no dense matrix -- pcnrdc.h)
+            P0 = Dn = W = lambda _size: E(1)
         self.buf = buf = {
             'u': E(n), 'x': E(n), 'v': E(max(k, 1)), 'fe': E(n), 'dx': E(n), 'gl': E(max(k, 1)),
             'F': E(n), 'J': Z(n * n if self.P is None else len(self.P) + 1),
-            'Jabs': P0(n * n), 'rc': E(n), 'A': E(max(m * m, 1)),
+            'Jabs': P0(n * n), 'rc': E(n), 'A': Dn(max(m * m, 1)),
             'b': E(max(m, 1)), 'xn': E(n), 'ax': E(n), 'Is': E(n), 'vn': E(max(k, 1)),
             'R': P0(max(m * m, 1)), 'kx': E(max(m, 1)), 'ky': E(max(m, 1)), 'kt': E(max(2 * m, 1)),
             'blk': E(max(ntm, 1)), 'pot': E(tmax), 'cur': E(tmax), 'Gl': E(tmax * tmax),
-            'xs': E(tmax), 'rio': E(2 * mmax), 'Cs': Z(n * n), 'q': E(n),
+            'xs': E(tmax), 'rio': E(2 * mmax), 'Cs': W(n * n), 'q': E(n),
         }
         fb = ffi.from_buffer
         keep = []
@@ -558,6 +563,7 @@ class _Rec:
         s.core = ffi.cast('void *', int(cffi_core.cast('uintptr_t', core.cs)))
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
         s.pattern = _sources()[4]['PCX_WANT_PATTERN'] if core.npat else 0
+        s.packed = int(core.packed)
         s.n, s.iref, s.nn, s.nd, s.k = n, iref, len(cir.nodes), nd, k
         ## each row's reduced index (`solve` sets it per call: the reference
         ## and the held rows out)
@@ -701,15 +707,19 @@ def _settings(circuit, gmin):
     return None
 
 
-def _solver(ls, m):
+def _solver(ls, m, packed=False):
     """The solve `ls` makes on an m x m matrix: None (numpy's dense solve),
     an analysed StructuralKLU, 'choose' (an AutoSolver that has not chosen:
-    its first matrix decides) -- or why not (a reason)."""
+    its first matrix decides) -- or why not (a reason).  `packed` (THE
+    PACKED LAYOUT): KLU on the structure, `_packed.choice`, or why not."""
     from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
     if ls is None:
-        return None
+        return 'linsolver' if packed else None
     if type(ls) is not AutoSolver:
         return 'linsolver'
+    if packed:
+        ch = _layout.choice(ls, m)
+        return ch if type(ch) is StructuralKLU else 'linsolver'
     ch = ls._choice
     floor = min(ls.min_n, ls.structural_min_n) if ls.structure is not None else ls.min_n
     if ch is None and m < floor:
@@ -856,7 +866,7 @@ def _hold(rec, circuit, devices, kerns, by_class, before):
                    type(circuit.toolkit), tuple(by_class.items()), kerns)
 
 
-def _record(circuit, devices, iref, epar, drv):
+def _record(circuit, devices, iref, epar, drv, packed=False):
     """The circuit's record for its view as it stands -- or why not.  Its
     participants' checks (`_checked`) are held while nothing they read has
     moved (`_held`, `_hold`): a ladder's solves ask for the same record a
@@ -881,19 +891,19 @@ def _record(circuit, devices, iref, epar, drv):
     plan = _stamp_plan._plan_for(view)
     rec = circuit.__dict__.get('_pcnr_c')
     if (held and rec is old and rec.view is view and rec.plan is plan
-            and rec.iref == iref and rec.n == circuit.n):
+            and rec.iref == iref and rec.n == circuit.n and rec.core.packed == packed):
         ## (held on this record: its participants and kernels are the ones
         ## the check that was kept found here)
         return rec
     insts = tuple(d.instance for d in devices)
     if (rec is None or rec.view is not view or rec.plan is not plan or rec.iref != iref
-            or rec.insts != insts or rec.n != circuit.n
+            or rec.insts != insts or rec.n != circuit.n or rec.core.packed != packed
             or any(a is not b for a, b in zip(rec.kerns, kerns))):
         core_drv = _tran_core.driver()
         if core_drv is None:
             return 'core'
         try:
-            core = _tran_core._Core(view, plan, core_drv[0], core_drv[2])
+            core = _tran_core._Core(view, plan, core_drv[0], core_drv[2], packed=packed)
         except _tran_core.Unservable:
             return 'unservable'
         rec = circuit.__dict__['_pcnr_c'] = _Rec(circuit, view, plan, core, devices, kerns,
@@ -918,21 +928,23 @@ def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol
     if not ENABLED:
         return _no('pcnr_c:off')
     ## (THE PACKED LAYOUT, `_packed` -- here `_layout`: `_packed` is the
-    ## elements' parameters -- the C mirrors the dense one)
-    if _layout.any_active():
+    ## elements' parameters -- its circuit's scope the record on the
+    ## pattern, KLU on the structure whatever the size; another's declines)
+    packed = _layout.active(circuit)
+    if _layout.any_active() and not packed:
         return _no('pcnr_c:packed')
     if maxiter < 1:
         return _no('pcnr_c:maxiter')
     why = _settings(circuit, gmin)
     if why is None:
-        ch = _solver(linsolver, circuit.n - 1 - len(held))
+        ch = _solver(linsolver, circuit.n - 1 - len(held), packed)
         why = ch if type(ch) is str and ch != 'choose' else None
     if why is not None:
         return _no('pcnr_c:' + why)
     drv = _driver or driver()
     if not drv:
         return _no('pcnr_c:driver')
-    rec = _record(circuit, devices, irefnode, epar, drv)
+    rec = _record(circuit, devices, irefnode, epar, drv, packed)
     if type(rec) is str:
         return _no('pcnr_c:' + rec)
     T = rec.core.probe(epar)

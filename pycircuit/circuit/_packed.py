@@ -234,6 +234,15 @@ class PatternMatrix:
         pat, sel = got if got is not None else self.pat.kept(keep)
         return PatternMatrix(pat, self.v[sel])
 
+    def add_at(self, rows, cols, d):
+        """`A[rows, cols] += d` in place for distinct places (numpy's fancy
+        `+=`: each place its value plus d, the same bytes); a place off the
+        pattern raises (no element stamps there)."""
+        idx = self.pat.index_of(rows, cols)
+        if (idx < 0).any():
+            raise IndexError('PatternMatrix: a place off the pattern')
+        self.v[idx] += d
+
     def plus_diagonal(self, d):
         """`J + eye(n) * d` for `d` finite and not negative (a scalar or a
         vector of n): every entry `+ 0.0` (a -0.0 made +0.0, as the dense

@@ -161,14 +161,51 @@ def _cert(drv, tr, n, data):
     return True
 
 
+#: THE PACKED LAYOUT's pattern and its diagonal's places, pointed at while
+#: the pattern stands (`_screen_packed`)
+_PK = [None, None, None]
+
+
+def _screen_packed(tr, C, drv):
+    """`screen` on THE PACKED LAYOUT: branch.c's packed sets (branch.h) on
+    the PatternMatrix's values -- |C|'s largest entry over them, the
+    diagonal through its places in the pattern.  The sets make no
+    certificate: where the cheap level fires the Python's screen runs
+    (its certificate, its SVD) -- handed back, `branch_c:bail:packed_svd`."""
+    cmax = tr.__dict__.get('_branch_cmax', 0.0)
+    tol = tr.BRANCH_SCREEN_TOL
+    if type(cmax) is not float or type(tol) is not float:
+        return _no('branch_c:x')
+    ffi, cfn, s = drv[0], drv[1], drv[2]
+    pat = C.pat
+    if _PK[0] is not pat:
+        dpk = np.ascontiguousarray(pat.diagonal(), dtype=np.int64)
+        _PK[:] = [pat, dpk, ffi.from_buffer('int64_t *', dpk)]
+    s.sets, s.n, s.npat, s.dpk = 1, pat.n, pat.nnz, _PK[2]
+    s.C = ffi.from_buffer('double *', C.v)
+    s.cmax, s.tol_rel = cmax, tol
+    s.ncert = 0
+    code = cfn(s)
+    if code == SVD:
+        return _no('branch_c:bail:packed_svd')
+    if code > SVD:
+        return _no('branch_c:bail:' + BAIL.get(code, str(code)))
+    _PC['branch_c:served'] += 1
+    _PC['branch_c:pattern'] += 1
+    return code, s.nrm, s.ref
+
+
 def screen(tr, C):
     """`(verdict, nrm, ref)` -- `_branch_screen_C`'s cheap level for `tr` on
     `C`: QUIET, COLLAPSED or SVD, |C|'s largest entry, the new running
     maximum -- or None: declined or handed back, nothing written."""
     if not ENABLED:
         return _no('branch_c:off')
-    ## (THE PACKED LAYOUT, `_packed`: the C mirrors the dense one)
-    if _packed.any_active():
+    ## (THE PACKED LAYOUT, `_packed`: a C on the pattern screened on its
+    ## values, `_screen_packed`; a dense one inside a scope is another
+    ## circuit's)
+    packed = type(C) is _packed.PatternMatrix
+    if _packed.any_active() and not packed:
         return _no('branch_c:packed')
     drv = _driver or driver()
     if not drv:
@@ -176,6 +213,8 @@ def screen(tr, C):
     own = _OWN or _own()
     if own is None or _patched(tr, own):
         return _no('branch_c:patched')
+    if packed:
+        return _screen_packed(tr, C, drv)
     if not (type(C) is np.ndarray and C.dtype is _F64 and C.ndim == 2
             and C.shape[0] == C.shape[1] and C.shape[0] > 0 and C.flags.c_contiguous):
         return _no('branch_c:C')
@@ -199,6 +238,7 @@ def screen(tr, C):
     if type(cmax) is not float or type(tol) is not float:
         return _no('branch_c:x')
     ffi, cfn, s = drv[0], drv[1], drv[2]
+    s.sets = 0
     if pat is None:
         s.npat = 0
     else:

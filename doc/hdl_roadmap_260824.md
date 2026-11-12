@@ -15957,3 +15957,80 @@ digest, >= 1.10x faster than 84c65722, peak <= 1.5 GB; (c) its DC no slower than
 digest the same.  ibmpg1t's default 10 ns: 20.12 / 20.12 s against 24.31 / 24.13 s (1.20x), peak 1.20 against 4.04 GB, the
 digest a8a17180546e and 0.43467 mV the same -- MET; its DC 2.25 / 2.25 s against 2.50 / 2.49 s (1.11x), 0.70 against 1.94 GB,
 its error against the benchmark the same.  Suite 6 710 passed.  Every line met.
+
+## 2026-11-12 — 322. THE PACKED LAYOUT, P2c: PCNR's DC on the pattern -- its Python reference and its C -- and the standalone branch screen's C there; with it KLU's refactor check summed in one order on every layout (R)
+
+**Why**  Plan 261 L20 (tc/plan_l20_packed.md).  Andreas: "do it" (P2c, P2d) -> after P2d, told P2c was larger than proposed and
+gained no benchmark circuit -> "Build P2c anyway".  PCNR -- the DC's default chain wherever a device takes part -- did not
+take the layout at all: its Python assembled J from the circuit's view (`pcnr_view`, another circuit object, outside the
+packed scope) as a dense n x n matrix, wrote it in place (junction gmin, gshunt) and made the Schur reduction densely; its C
+declined inside the scope.  At 32 768 unknowns and more a nonlinear circuit's operating point made n^2 matrices again.
+
+**What.**  The Python reference (`pcnr`): the view's G assembled inside a scope of its own and put on the circuit's own pattern,
+which holds every participant's places (`_packed_G`: the dense `np.array(view.G(x))`'s bytes at every place); the Schur terms
+on it (`_schur_packed`: `np.add.at` / `np.subtract.at` at the pattern's places, in the dense form's order); gshunt
+(`PatternMatrix.add_at`) and junction gmin (`_jgmin_packed`) at their places; `predict`'s gmin damper on the diagonal and its
+gather of the kept rows (`kept`), KLU on the matrix's own pattern where no solver is given.  The C (pcnrdc.h's new last field
+`packed`): the record and its core on the view packed (no |J|, dense or reduced matrix, no core C bins); the residual's scale
+P's row sums themselves (`cf_packed`: within a row the CSC kernel's order, decided every time), the refactor's residual
+PCX_A_PACKED; KLU on the structure whatever the size (`_packed.choice`).  The standalone branch screen's C on the pattern
+(`_tran_branch_c._screen_packed`: branch.c's packed sets on the PatternMatrix's values, the diagonal through its places;
+where the cheap level fires the Python's screen runs -- certificate, SVD -- handed back, `branch_c:bail:packed_svd`), and the
+C loop's count of its screens back to the served ones.  The gate: ('dc', 'packed') in its matrix (the default chain, PCNR's).
+
+**R: KLU's refactor check in one order.**  Line (b) first MISSED on opampal (below); Andreas: "Hold for a closer look", then
+after the study "Fold R into P2c".  The check `not (max|A x - b| / max(max|b|, 1e-300) <= 1e-8)` after a refactor summed
+`A x` in the CSC order in the plain KLUSolver, the walk, the complex solver and the packed layout, in BLAS's (dgemv) in
+StructuralKLU's dense test, the chord's, and their C (pcx_kluseq.h's dense modes, newton.c's full Newton, lte.c's error
+test) -- and where the residual is rounding itself the order decides.  A census of the 27 decks' default runs (~250 000
+checks; the rounding bound decides all but ~1 000): BLAS's verdict parts from the CSC kernel's on opampal (16 / 8 / 8 in DC,
+Gear-2, Radau) and e1480 (4 / 2 / 2, its bytes the same).  The dense result was not portable anyway: opampal's DC lands on
+other bytes under `OPENBLAS_CORETYPE=SandyBridge` (42 fallbacks against 94) -- in both layouts, with the CSC rule too:
+another BLAS reduction both share decides there; R does not claim kernel portability.  Now every layout's last resort is the
+CSC kernel on KLU's arrays (`StructuralKLU._csc_residual`, `_csc_cols`; pcx_kluseq.h's `pcx_klu_resid_csc`, the dense test
+and its A scatter gone, `A` and `dgemv` unread; newton.c's and lte.c's `pcx_csc_mv`, R no longer scattered or zeroed for it);
+the rounding-bound passes stay first where they ran (their verdicts hold for any order, the kernel's too).  The chord keeps
+KLU's values, not the matrix (`_ChordNumeric`).
+
+**A gap the gate found, older than the stage** (94e24d09): the C loop put a full Newton's iteration-limit rejection's
+solves (loop.c's `newton_reject`, written for the chord's fallback) among the fallbacks' counts, which the glue reads on the
+chord alone -- gm2 under the packed Gear-2 forcing, which the stage moved onto a trajectory with such a rejection, counted
+3 510 refactors on the C loop against the Python loop's 3 610, the run, its statistics and answer the same.  `_full_counts`
+reads them off the chord too (on it only `newton_reject` writes them).
+
+**Measured** (the final code; scratch p261/l19/p2c, run3).  The gate against c5e103f8, ('dc', 'packed') new in its matrix: C
+against Python 0 differing on every entry, the DC's packed forcing (PCNR's C on the pattern) among them; the tree against the
+base every result and path counter the same but opampal's dc, gear2, gear2/bypass and radau runs (R): their digests, the DC's
+KLU counts (94 -> 54 residual fallbacks, 105 -> 67 factors) and PCNR's path counters (its DC ladder 82 -> 58 solves) --
+opampal's operating point within 1.5e-12 V of c5e103f8's (35 V the largest node), its Gear-2 and Radau runs the same steps,
+rejections and iterations (1 012 / 2 / 1 128, 1 010 / 0), within 1.8e-12 and 1.9e-12 (line <= 1e-11 V MET); NOT REACHED on two
+arms of rewritten lines (pcnrdc.c's dense record's KLU operand and its sparse sums' test), which no deck reaches (KLU and
+pattern pages from about 1 024 unknowns; the decks 519 at most): the fixtures compare them.  The 27 decks dense against packed
+on the same solver, every C path off: EVERY ONE the same bytes, DC and transient, statistics too, PCNR's packed Python reached
+on each (line MET; before R opampal's DC parted at one solve: the CSC kernel's sum and BLAS's on the same values 9.0e-9 and
+1.15e-8 at 1e-8).  The 8 000-stage active chain's DC on the pattern (the threshold at 0) with the C on: no allocation of n^2/4
+or more (zero sites), PCNR's C serving 98 solves (and ending 47 as the Python's own errors).  PCNR's DC C there against its
+dense C on that chain (the default env, interleaved): 3.15 / 3.16 s against 3.21 / 3.24 s (1.02x; line >= 0.95x MET; 1.10-1.14x
+before R, whose dense C at size no longer scatters R and makes a dgemv where the bound leaves the check) at a 285 against
+346 MB peak (line lower MET); at 4 000 stages 1.10 / 1.13 against 1.13 / 1.16 s, 174 against 205 MB; the same digest both ways.
+Below the threshold the size DCs 1.015-1.100x (the active chain at 8 000 1.10x: R's) and transients 1.006-1.010x on AC (the
+mesh's Gear-2 and Radau 1.006x and 1.009x on four pairs each: their first pairs read 0.963x and 0.985x at load 3.5), every
+digest the same.  Suite 6 727 passed.  No benchmark circuit past 32 768 unknowns takes PCNR (the IBM grids are linear): the stage is
+what a nonlinear circuit at size needs, measured on the active chain under the forcing.
+
+**Tests.**  `test_packed` (+4 functions, 9 cases): the BJT mirror's PCNR solve on the pattern under every deformation the
+ladders make, a held node, the gmin damper, tolerances where the residual's test binds and the iteration limit -- the packed
+Python's outcome the dense Python's on the same solver, the C's the packed Python's, served (gmin's declined); the active
+chain's operating point (the residual's test binding: signed row sums move it); PCNR's record holding no dense matrix; the C
+loop on the pattern at an iteration limit of two (`a-limit`: the run solver's counts -- it failed on the code before the
+count's fix); the Python loop's screen on the pattern -- served where quiet, handed back where it fires, the run and
+`branch_screens` the same as with its C off.  R's: `test_structural_klu` (+1, two cases) -- a refactor whose BLAS and CSC
+residuals straddle the tolerance takes a fresh factor exactly where the CSC sum fails, either side; `test_newton_c` (+1, two
+cases) -- the sparse full Newton's validation at the run's largest residual (nothing handed back) and one ulp below (one
+fresh factor), the run the Python's; `test_lte_c`'s dense-reduce test re-aimed at its residual and one ulp below (R still
+holds the dense reduce; the validation reads none); the chord's tight-tolerance test's second case 3e-16 -> 1.5e-16 (the CSC
+sums refuse none from 2e-16); `test_pcnr_c`'s residency at size: R's pages none.  Bites: eleven for P2c, each bit (the row
+sums' first missed on the mirror -- the active chain added); seven for R -- the Python dense test, the chord, the KLU
+sequence, newton.c and lte.c each put back on another order, each bit (newton.c's reversed sum missed -- its edge row
+rounds the same reversed -- its old dgemv bit, lte.c's too).  Twelve pinned pairs re-recorded after their twins' tests
+(P2c's three, R's eleven, two of them both; 824 passed).

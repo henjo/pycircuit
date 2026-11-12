@@ -6105,3 +6105,18 @@ and the stepping path's C on the circuit's pattern, the packed layout now
 starts at 32 768 unknowns: the IBM grid ibmpg1t takes it by default, its
 10 ns transient 1.2x faster than on the dense layout in under a third of
 the memory, its answer the same to the bit.  Nothing smaller moves.
+
+## The packed layout, P2c: PCNR on the pattern (2026-11-12)
+
+2026-11-12 (`doc/hdl_roadmap_260824.md`, 322; plan 261 L20).  PCNR, the
+operating point's default method wherever a device takes part, now runs on
+the circuit's pattern too: its Python reference (which had assembled a dense
+matrix from a view of the circuit outside the layout) and its C give the
+same bytes as on the dense layout, so a large nonlinear circuit's operating
+point needs no n x n matrix.  None of the benchmark circuits that size is
+nonlinear yet; the active MOS chain, forced onto the layout, shows it.
+With it, KLU's check of a reused pivot order (the residual of the solve
+against 1e-8) now sums in one order whatever the layout: on opampal that
+residual is rounding itself, so the order had decided which solves took a
+fresh factor -- and BLAS's order is the CPU kernel's.  opampal's results
+moved by about 1e-12 V, its operating point in fewer source steps.

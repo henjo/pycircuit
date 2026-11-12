@@ -121,7 +121,9 @@ typedef struct {
     long iters,           /* the iterations made: the Python's count */
          status;          /* the result (enum newton_status), as returned */
     long vdense;          /* OUT, added to: the verdicts on a KLU path the sparse
-                             bound left to the dense dgemv (pcx_verdict.h) */
+                             bound left to the whole computation (pcx_verdict.h):
+                             the convergence test's dgemv, the validation's CSC
+                             kernel */
     /* THE CONVERGED POINT: `jacobian_only` there, in the same call.  xc ..
        Jj are written only on NEWTON_CONVERGED with fold_j nonzero, and hold
        until the next Newton call (`solve` copies them out; loop.c copies
@@ -200,22 +202,23 @@ typedef struct {
     /* THE SPARSE FULL NEWTON (KLU, chord 0): each iteration's solve is
        `StructuralKLU.solve` on its refactor path -- klu_refactor of the
        RUN's numeric (`klu_num`: the StructuralKLU's own, which its every
-       solve refactors), klu_solve, the refactor's validation (numpy's
-       matmul -- dgemv -- on `R`, against `resid_tol`) -- and it hands back
+       solve refactors), klu_solve, the refactor's validation (`A x` by the
+       CSC kernel on KLU's arrays, `StructuralKLU._csc_residual`, against
+       `resid_tol`) -- and it hands back
        where the Python takes another course: a zero pivot, a failed or NaN
        validation (the Python factors afresh), a non-finite
        matrix or right-hand side.  A refactor writes the numeric's values,
        never its pivot order, so the Python's repeat from the same seed
-       refactors it again from the same values.  `R` is J reduced: written
-       on StructuralKLU's pattern where `pattern` is set (the core writes
-       the pattern alone, J zero off it), else J reduced whole and `_ours`'s
-       count made (a nonzero off the pattern: the Python's fallback solver,
-       handed back). */
+       refactors it again from the same values.  `R` is J reduced whole where
+       `pattern` is not set, `_ours`'s count made on it (a nonzero off the
+       pattern: the Python's fallback solver, handed back); where it is (the
+       core writes the pattern alone, J zero off it) the values are gathered
+       and `R` unread. */
     void *klu_num,        /* CALL: the run's numeric (`StructuralKLU._numeric`), NULL: none yet */
          *klu_refactor;   /* KLU: klu_refactor (klu_refactor_t) */
-    double *R,            /* (m x m, row-major) J reduced, written on the pattern (zero off it) */
+    double *R,            /* (m x m, row-major) J reduced, off the pattern (unread on it) */
            *rb,           /* (m) OWN: the right-hand side, kept for the validation */
-           *ry;           /* (m) OWN: R x */
+           *ry;           /* (m) OWN: A x, the validation's */
     double resid_tol;     /* KLU: `StructuralKLU.REFACTOR_RESIDUAL_TOL` */
     /* THE EARLY ABORT (`Transient.early_abort`; the caller arms it for one
        call, NULL `early_lte` otherwise): at the solve's evaluation of its

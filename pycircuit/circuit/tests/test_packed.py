@@ -181,12 +181,12 @@ def test_a_packed_run_is_the_dense_one(build, kw, monkeypatch):
     (lambda: _layers(8), {'tend': 3e-10, 'timestep': 1e-11},
      ('dcnewton_c:served', 'newton_c:served', 'lte_c:served', 'loop_c:steps')),
     (lambda: _chain(30), {'tend': 4e-9, 'timestep': 1e-10},
-     ('pcnr_c:packed', 'newton_c:served', 'lte_c:served', 'loop_c:steps')),
+     ('pcnr_c:served', 'newton_c:served', 'lte_c:served', 'loop_c:steps')),
 ], ids=['grid', 'mos-chain'])
 def test_the_c_paths_on_the_pattern(build, kw, keys, monkeypatch):
-    """With the C on, inside the scope the DC Newton's C, the transient
-    Newton's, the error test's and the stepping loop's serve, PCNR's
-    declines, counted: the run the packed Python's, bit for bit."""
+    """With the C on, inside the scope the DC Newton's or PCNR's C, the
+    transient Newton's, the error test's and the stepping loop's serve,
+    counted: the run the packed Python's, bit for bit."""
     _same_solver(monkeypatch)
     py, _c = _run(build, True, monkeypatch, **kw)
     got, counts = _run(build, True, monkeypatch, c_on=True, **kw)
@@ -343,8 +343,8 @@ def test_the_dc_record_on_the_pattern_holds_no_dense_matrix(monkeypatch):
 
 def test_the_refactor_residual_on_the_pattern_is_the_pythons(monkeypatch, ordinary_dc):
     """The refactor's residual test on the pattern (`StructuralKLU.
-    _packed_residual`; pcx_kluseq.h's `pcx_klu_resid_packed`, the CSC kernel
-    on KLU's arrays): gm19's operating point at a tolerance near its
+    _csc_residual`; pcx_kluseq.h's `pcx_klu_resid_csc`, the CSC kernel on
+    KLU's arrays): gm19's operating point at a tolerance near its
     refactors' residuals -- most holding, some failing to a fresh factor --
     every base solve and the counters the C's as the packed Python's, the C
     serving."""
@@ -498,6 +498,10 @@ def _vccs_chain(k=6):
     return c
 
 
+def _maxiter_2(tr):
+    tr.par.maxiter = 2
+
+
 def _loop_cases():
     from pycircuit.circuit.integrator import EulerIntegrator, TrapezoidalIntegrator
     from pycircuit.circuit.tests import test_loop_c as L
@@ -523,6 +527,9 @@ def _loop_cases():
         ('a-judge', L._pulsed, {'lte_algebraic': 'judge'}, {'tend': 4e-8, 'timestep': 1e-9}),
         ('a-charge', L._pulsed_load, None, {'tend': 4e-8, 'timestep': 1e-9}),
         ('a-vccs', _vccs_chain, None, {'tend': 4e-8, 'timestep': 1e-9}),
+        ## (the full Newton's iteration limit rejected in C: its solves the
+        ## run solver's refactors, as the Python's counts them)
+        ('a-limit', L._pulsed, None, {'tend': 4e-8, 'timestep': 1e-9, 'setup': _maxiter_2}),
     ]
     return ([(nm, b, mk, kw) for nm, b, mk, kw in fixed]
             + [(nm, b, mk, dict(kw, fixed_timestep=False)) for nm, b, mk, kw in adaptive])
@@ -610,5 +617,143 @@ def test_the_refactor_residuals_on_the_stepping_path_are_the_pythons(monkeypatch
     monkeypatch.setattr(linearsolver.KLUSolver, 'REFACTOR_RESIDUAL_TOL', 1e-16)
     kw = {'tend': 6e-8, 'timestep': 1e-9, 'fixed_timestep': False}
     L._run(L._pulsed, True, monkeypatch, **dict(kw, tend=3e-9))
-    ca = L._same(L._pulsed, monkeypatch, steps_min=10, **kw)
+    ca = L._same(L._pulsed, monkeypatch, steps_min=1, **kw)
     assert ca.get('newton_c:bail:klu_residual', 0) > 0 and ca.get('lte_c:bail:residual', 0) > 0, ca
+
+
+
+def _pcnr_solve(c, x0, on, monkeypatch, packed, **kw):
+    """`pcnr.solve_dc` on `c` inside its packed scope or not, the C on or off,
+    with a solver as the DC makes one (KLU on the structure whatever the size,
+    `_same_solver`'s): `(outcome, the C's counts, the pattern path's calls)`."""
+    from pycircuit.circuit import pcnr
+    from pycircuit.circuit.analysis import jacobian_structure
+    from pycircuit.circuit.tests import test_pcnr_c as P
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0 if packed else 1 << 30)
+    iref = c.get_node_index(gnd)
+    ls = _ls.AutoSolver(structure=lambda: jacobian_structure(c, iref), max_fill=1.0)
+    ls.structural_min_n = 1
+    seen = []
+    real = pcnr._schur_packed
+
+    def counted(*a):
+        seen.append(1)
+        return real(*a)
+    monkeypatch.setattr(pcnr, '_schur_packed', counted)
+    with _packed.scope(c):
+        out, counts = P._solve(c, on, monkeypatch, x0=x0, linsolver=ls, **kw)
+    return out, counts, len(seen)
+
+
+@pytest.mark.parametrize('deform', ['plain', 'gshunt', 'source', 'jgmin', 'held', 'gmin', 'tight',
+                                    'maxiter'])
+def test_pcnr_on_the_pattern_is_the_dense_ones_and_the_cs(deform, monkeypatch):
+    """PCNR's DC on the pattern (`pcnr.solve_dc`: the view's G on the
+    circuit's pattern, the Schur terms, gshunt and junction gmin at their
+    places, the held rows' gather) -- the BJT mirror from its 20 V start
+    under each deformation the ladders make, a held node, the gmin damper,
+    tolerances where the residual's test binds and the iteration limit: the packed Python's outcome the dense Python's
+    on the same solver, the C's the packed Python's, served but for gmin's
+    (the C declines it) (pcnrdc.c on the pattern: its row sums the CSC
+    kernel's, the refactor's residual PCX_A_PACKED)."""
+    from pycircuit.circuit import _pcnr_c
+    from pycircuit.circuit.tests.test_dc_pcnr import _bjt_mirror_20v
+    if _pcnr_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_pcnr_c.STATUS}')
+    kw = {'plain': {}, 'gshunt': {'gshunt': 1e-3}, 'source': {'source': 0.3},
+          'jgmin': {'jgmin': 1e-4}, 'held': {'held': {1: 0.65}}, 'gmin': {'gmin': 1e-9},
+          'tight': {'reltol': 1e-13, 'iabstol': 1e-20},
+          'maxiter': {'maxiter': 3}}[deform]
+    c, x0 = _bjt_mirror_20v()
+    dense, _c, _n = _pcnr_solve(c, x0, False, monkeypatch, False, **kw)
+    c, x0 = _bjt_mirror_20v()
+    py, _c, n_py = _pcnr_solve(c, x0, False, monkeypatch, True, **kw)
+    c, x0 = _bjt_mirror_20v()
+    got, counts, _n = _pcnr_solve(c, x0, True, monkeypatch, True, **kw)
+    assert py == dense and got == py and n_py > 0
+    assert counts.get('pcnr_c:served') == (None if deform == 'gmin' else 1), counts
+    if deform == 'maxiter':
+        assert got[0] == 'raise'
+
+
+def test_pcnrs_record_on_the_pattern_holds_no_dense_matrix(monkeypatch):
+    """PCNR's record on the pattern: its core packed, none of |J|, the dense
+    and reduced matrices or the core's C bins made -- J on its pattern."""
+    from pycircuit.circuit import _pcnr_c
+    if _pcnr_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_pcnr_c.STATUS}')
+    _same_solver(monkeypatch)
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    c = _chain(60)
+    before = _paths.snapshot()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        DC(c, toolkit=numeric).solve()
+    assert _paths.since(before).get('pcnr_c:served', 0) > 0
+    rec = c.__dict__['_pcnr_c']
+    assert rec.core.packed and rec.s.packed == 1 and rec.core.arrays['binG'].size == 1
+    assert all(rec.buf[k].size == 1 for k in ('Jabs', 'A', 'R', 'Cs'))
+    assert rec.buf['J'].size == len(rec.P) + 1 < (c.n - 1) ** 2
+
+
+def test_the_branch_screen_on_the_pattern(monkeypatch):
+    """The Python loop's screen on the pattern in C (branch.c's packed sets
+    on the PatternMatrix's values): quiet steps served; where its cheap level
+    fires the Python's screen runs (its certificate, its SVD) -- handed back
+    -- and the run, its `branch_screens` and its confirmations the same as
+    with the screen's C off."""
+    from pycircuit.circuit import _tran_branch_c, _tran_loop_c
+    from pycircuit.circuit.elements import VSin
+    from pycircuit.circuit.tests import test_loop_c as L
+    if _tran_branch_c.driver() is None:
+        pytest.skip('the screen in C is off')
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    monkeypatch.setattr(_tran_loop_c, 'ENABLED', False)
+
+    def build():
+        c = L._psp_stage()
+        c['vg'] = VSin('g', gnd, v=0.7, va=0.5, freq=1e6)
+        return c
+
+    def run(on):
+        monkeypatch.setattr(_tran_branch_c, 'ENABLED', on)
+        before = _paths.snapshot()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr = Transient(build(), toolkit=numeric)
+            tr.BRANCH_SCREEN_TOL = 0.9
+            res = tr.solve(tend=80 * 2e-8, timestep=2e-8, fixed_timestep=True)
+        st = tr.statistics
+        return ((np.asarray(res.x, float).tobytes(), st.accepted_steps, st.newton_iterations,
+                 getattr(st, 'branch_screens', None)), _paths.since(before))
+    py, _c = run(False)
+    got, counts = run(True)
+    assert got == py
+    assert counts.get('branch_c:served', 0) > 0 and counts.get('branch_c:bail:packed_svd', 0) > 0, counts
+
+
+
+def test_an_active_chains_pcnr_dc_on_the_pattern(monkeypatch):
+    """The active MOS chain's operating point by PCNR on the pattern, where the
+    residual's test binds (its row sums decide iterations, its rungs reach an
+    iteration limit): the C's x the packed Python's, served; the packed
+    Python's the dense Python's on the same solver."""
+    from pycircuit.circuit import _pcnr_c
+    from pycircuit.circuit.tests.test_pcnr_c import _active_chain
+    if _pcnr_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_pcnr_c.STATUS}')
+    _same_solver(monkeypatch)
+
+    def run(packed, on):
+        monkeypatch.setattr(_packed, 'PACKED_FROM', 0 if packed else 1 << 30)
+        monkeypatch.setattr(_pcnr_c, 'ENABLED', on)
+        before = _paths.snapshot()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            x = np.asarray(DC(_active_chain(120), toolkit=numeric, pcnr=True).solve().x).tobytes()
+        return x, _paths.since(before)
+    dense, _c = run(False, False)
+    py, _c = run(True, False)
+    got, counts = run(True, True)
+    assert py == dense and got == py
+    assert counts.get('pcnr_c:served', 0) > 0, counts

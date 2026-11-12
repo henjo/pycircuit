@@ -55,9 +55,9 @@ static const double *cache_hit(const newton_t *s, long m, long r)
    refactor path, in `b` -- klu_refactor of the run's numeric (none where it
    holds these very values: pcx_held.h, counted in `reused`), klu_solve,
    then the validation in numpy's operations and order -- its verdict by
-   the sparse sum's bound where that decides (pcx_verdict.h; R is zero off
-   the pattern), else: `arr @ x` (numpy's
-   matmul calls this dgemv), |R x - rhs|, its maximum (a NaN handed back:
+   the sparse sum's bound where that decides (pcx_verdict.h: whatever the
+   order), else: `A x` by the CSC kernel on KLU's arrays
+   (`StructuralKLU._csc_residual`), |A x - rhs|, its maximum (a NaN handed back:
    numpy's max propagates one, and the Python's NaN residual fails its
    test), the scale `max(max |rhs|, 1e-300)` (rhs finite: a running `>`
    from +0.0 is numpy's maximum in any order), `not (resid <= tol)`.  With
@@ -93,8 +93,9 @@ static long sparse_full(newton_t *s, long m)
     if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_num, (int) m, 1, s->b, s->klu_common))
         return NEWTON_BAIL_KLU_SOLVE;
     /* the validation's verdict by the sparse sum's bound where it decides
-       (pcx_verdict.h; R is J reduced, zero off the pattern); packed, the
-       CSC kernel's own value decides, every time */
+       (pcx_verdict.h: whatever the order); else -- packed, every time -- the
+       CSC kernel's own value (`StructuralKLU._csc_residual`: one order on
+       every layout) */
     if (!s->packed) {
         int v = pcx_resid_sparse(s->kAp, s->kAi, s->kAx, s->resid_tol, s->rb, s->b, s->ry,
                                  s->Is, s->ax, m);
@@ -102,17 +103,7 @@ static long sparse_full(newton_t *s, long m)
         if (v == PCX_FAILS) return NEWTON_BAIL_KLU_RESIDUAL;
         s->vdense++;
     }
-    if (s->packed) {
-        /* (THE PACKED LAYOUT: `A x` by the CSC kernel on KLU's arrays,
-           `StructuralKLU._packed_residual`'s) */
-        pcx_csc_mv(s->kAp, s->kAi, s->kAx, s->b, s->ry, m, 0);
-    } else {
-        /* (J reduced, the pattern's values in place: R zero off them) */
-        if (s->pattern)
-            for (k = 0; k < s->knnz; k++) s->R[s->kabs[k]] = s->kAx[k];
-        ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m,
-                               s->b, 1, 0.0, s->ry, 1);
-    }
+    pcx_csc_mv(s->kAp, s->kAi, s->kAx, s->b, s->ry, m, 0);
     for (i = 0; i < m; i++) {
         double a = fabs(s->rb[i]);
         if (a > max_b) max_b = a;

@@ -99,7 +99,7 @@ static long klu_values(lte_t *s, long n, long r)
 
 static long sparse_solve(lte_t *s, long n, long r)
 {
-    long m = n - 1, i, k, why;
+    long m = n - 1, i, why;
     double max_b = 0.0, max_r = 0.0, scale;
     if ((why = klu_values(s, n, r)) != 0) return why;
     pcx_drop_ref(s->lte, s->b, n, r);
@@ -118,10 +118,10 @@ static long sparse_solve(lte_t *s, long n, long r)
     /* (what KLU raised inside: the Python's ctypes call never sees it) */
     feclearexcept(FE_ALL_EXCEPT);
     if (s->on_pattern && !s->packed) {
-        /* the validation's verdict by the bound where it decides and its
-           sums raised no flag; else the dense test on R as the Python holds
-           it (zero off the pattern), what the sums raised cleared; packed,
-           the CSC kernel's own value decides, every time */
+        /* the validation's verdict by the bound where it decides (whatever
+           the order) and its sums raised no flag; else the CSC kernel's test
+           below, what the sums raised cleared; packed, that test every
+           time */
         int v = pcx_resid_sparse(s->kAp, s->kAi, s->kAx, s->resid_tol, s->b, s->x, s->y, s->vt,
                                  s->vt + n, m);
         if (v != PCX_UNDECIDED && !fetestexcept(lte_flags(s))) {
@@ -130,25 +130,12 @@ static long sparse_solve(lte_t *s, long n, long r)
             return 0;
         }
         feclearexcept(FE_ALL_EXCEPT);
-        /* (R HELD ZERO, lte.h: zero off the pattern as it stands, unless a
-           dense reduce filled it; packed, no R) */
-        if (s->r_full && !s->packed) {
-            for (i = 0; i < m * m; i++) s->R[i] = 0.0;
-            s->r_full = 0;
-        }
-        if (!s->packed)
-            for (k = 0; k < s->knnz; k++) s->R[s->ktake[k]] = s->kAx[k];
         s->vdense++;
     }
-    /* the refactor's validation, numpy's operations in their order: R x
-       is `arr @ x` (numpy's matmul calls this dgemv; THE PACKED LAYOUT's
-       `_packed_residual` the CSC kernel), then |R x - b|, its maximum, the
-       scale */
-    if (s->packed)
-        pcx_csc_mv(s->kAp, s->kAi, s->kAx, s->x, s->y, m, 0);
-    else
-        ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, s->R, m,
-                               s->x, 1, 0.0, s->y, 1);
+    /* the refactor's validation, numpy's operations in their order: `A x`
+       by the CSC kernel on KLU's arrays (`StructuralKLU._csc_residual`: one
+       order on every layout), then |A x - b|, its maximum, the scale */
+    pcx_csc_mv(s->kAp, s->kAi, s->kAx, s->x, s->y, m, 0);
     /* (np.max of |b|: b is finite -- the estimate passed its flag test --
        and no |.| is -0.0, so a running `>` from +0.0 is numpy's maximum
        in any order) */

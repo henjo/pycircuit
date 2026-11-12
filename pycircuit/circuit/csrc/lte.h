@@ -93,8 +93,9 @@ typedef struct {
        (`R`, remove_row_col's copy), its pattern's values (`kAx`, by `ktake`:
        a matrix with a nonzero off the pattern is handed back, its fallback
        solver is the Python's), `klu_refactor` on the run's numeric
-       (`klu_num`), `klu_solve`, and the refactor's validation -- max|R x - b|
-       / max(max|b|, 1e-300) <= `resid_tol`, R x numpy's `dgemv`; a failure is
+       (`klu_num`), `klu_solve`, and the refactor's validation -- max|A x - b|
+       / max(max|b|, 1e-300) <= `resid_tol`, A x by the CSC kernel on KLU's
+       arrays (`StructuralKLU._csc_residual`); a failure is
        handed back too (the Python alone factors again).  Set by
        `_tran_lte_c._klu_bind` once a binding (the buffers are the binding's
        own), but `klu_num` and `resid_tol`: `max_error` sets both at each
@@ -108,7 +109,7 @@ typedef struct {
                                    KLU's Ax */
         *R,                     /* work, m x m: the reduced J row-major */
         *x,                     /* work, m: the solution, KLU's in place */
-        *y,                     /* work, m: R x, for the validation */
+        *y,                     /* work, m: A x, for the validation */
         resid_tol;              /* the validation's bound,
                                    StructuralKLU.REFACTOR_RESIDUAL_TOL */
     void *klu_sym,              /* KLU's symbolic analysis; NULL: the dense path */
@@ -118,7 +119,8 @@ typedef struct {
                                    back) */
         *klu_common,            /* the solver's KLU common block */
         *klu_refactor, *klu_solve,  /* KLU's entries (klu_refactor_t, klu_solve_t) */
-        *dgemv;                 /* numpy's own cblas dgemv (dgemv64_t), for R x */
+        *dgemv;                 /* numpy's own cblas dgemv (dgemv64_t): unread (the
+                                   validation's A x is the CSC kernel's) */
     /* ON THE PATTERN (the C loop's: `J` is its Newton's, which the core writes
        on its pattern alone -- zero off it -- and the pattern lies within
        KLU's): the values gathered from J by `kat`, no reduce and no count;
@@ -161,11 +163,8 @@ typedef struct {
        dense paths hand back: LTE_BAIL_FOREIGN) */
     long sets;                  /* [step] 1: J packed */
     const int64_t *kpp;         /* knnz: each KLU entry's index in packed J, or -1 */
-    /* R HELD ZERO: `R` (m x m) starts zero and each dense test writes KLU's
-       entries alone (the same ones each time), so it stays zero off them and
-       pattern pages keep it resident a page or two a row; where J's dense
-       reduce fills it (J not on the pattern) `r_full` is set, and the next
-       scatter zeroes it whole first */
+    /* `R` (m x m): J's dense reduce where J is not on the pattern (`r_full`
+       set), read by the gather and its count; the validation reads no R */
     long r_full;                /* OWN: 1 where R holds a dense reduce */
     /* THE HELD VALUES (pcx_held.h): StructuralKLU's `_held_v` and
        `_held_st` where the record is bound to its run numeric (NULL: the

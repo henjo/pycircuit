@@ -261,8 +261,8 @@ static long solve_klu(pcnrdc_t *s)
         if (nz != nzp) return PCNRDC_BAIL_FOREIGN;
     }
     st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->kt, m, s->dgemv,
-                      s->kfull ? PCX_A_ZERO : PCX_A_BUILT, &s->dense_resid, s->held_v,
-                      s->held_st);
+                      s->packed ? PCX_A_PACKED : s->kfull ? PCX_A_ZERO : PCX_A_BUILT,
+                      &s->dense_resid, s->held_v, s->held_st);
     if (st == PCX_KLU_FACTOR) return PCNRDC_SINGULAR;
     if (st == PCX_KLU_SOLVE) return PCNRDC_BAIL_KLU;
     if (st == PCX_KLU_FLAGS) return PCNRDC_BAIL_FLAGS;
@@ -347,6 +347,27 @@ static int cf_sparse(pcnrdc_t *s)
     return open ? PCX_UNDECIDED : PCX_HOLDS;
 }
 
+/* conv_f on THE PACKED LAYOUT: each kept row's S_i = sum |J_ij| |x_new_j|
+   over P in P's order -- row by row, columns ascending: the CSC kernel's
+   order within a row (`_packed.PatternMatrix.matvec`), J zero off P, its
+   terms adding +0.0 -- the test on S itself.  1 holds, 0 fails */
+static int cf_packed(pcnrdc_t *s)
+{
+    long n = s->n, e = 0, r;
+    int ok = 1;
+    while (e < s->np) {
+        int64_t base = (s->P[e] / n) * n;
+        double S = 0.0, af;
+        r = (long) (base / n);
+        for (; e < s->np && s->P[e] < base + n; e++)
+            S += fabs(s->J[e]) * fabs(s->xn[s->P[e] - base]);
+        if (s->red[r] < 0) continue;
+        af = fabs(s->fe[r]);
+        if (!(af < s->reltol * (S + af) + s->iabstol)) ok = 0;
+    }
+    return ok;
+}
+
 /* the three tests (`solve_dc`): conv_x, conv_f with `I = |J_eff| |x_new|`
    (numpy's own dgemv on the full |J_eff|: BLAS's summation order; on the
    pattern its verdict, `cf_sparse`, where that decides) + |f_eff| -- each
@@ -362,7 +383,11 @@ static int converged(pcnrdc_t *s)
         if (!(fabs(s->dx[i]) < s->reltol * pcx_np_maximum(fabs(s->xn[i]), fabs(s->x[i]))
                                + s->abstol)) cx = 0;
     }
-    if (s->np) {
+    if (s->packed) {
+        /* (THE PACKED LAYOUT: the CSC kernel's sums decide, every time) */
+        cf = cf_packed(s);
+        verdict = cf ? PCX_HOLDS : PCX_FAILS;
+    } else if (s->np) {
         fegetexceptflag(&entry, FE_ALL_EXCEPT);
         verdict = cf_sparse(s);
         if (verdict == PCX_UNDECIDED) {

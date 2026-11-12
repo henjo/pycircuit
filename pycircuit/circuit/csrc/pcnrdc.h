@@ -136,6 +136,13 @@ typedef struct {
     double *held_v;
     int64_t *held_st;
     long held_own;
+    /* THE PACKED LAYOUT (`_packed`; CTX): 1 where the record holds no dense
+       matrix -- J packed on P, KLU on the pattern (`kfull`) always -- and
+       the residual's scale is P's row sums themselves (`cf_packed`: the CSC
+       kernel's order by row, the reference's at size), the refactor's
+       residual the KLU sequence's CSC kernel (PCX_A_PACKED); Jabs, A, R and
+       Cs unread */
+    long packed;
 } pcnrdc_t;
 
 long pcx_pcnrdc(pcnrdc_t *s);

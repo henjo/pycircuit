@@ -289,6 +289,43 @@ def test_the_sparse_chord_is_the_python_one(integ, fixed):
     assert b[2].get('newton_c:sparse', 0) > 10 and a[2].get('newton_c:sparse', 0) == 0
 
 
+@pytest.mark.parametrize('edge', ['at', 'below'])
+def test_the_sparse_full_newtons_validation_sums_in_the_csc_order(edge, monkeypatch):
+    """The sparse full Newton's refactor validation (newton.c's
+    `sparse_full`: the bound where it decides, else `A x` by the CSC kernel
+    on KLU's arrays -- `StructuralKLU._csc_residual`), its tolerance at the
+    largest residual a fixed-step run validates (each validation holds, the
+    largest beyond the bound's reach) or one ulp below it (that one fails: a
+    hand-back, the Python's fresh factor): the run the Python's, byte for
+    byte and count for count; at the residual nothing handed back, below it
+    one fresh factor -- a validation summing in another order parts from the
+    Python's at one edge or the other."""
+    from pycircuit.circuit import linearsolver
+    kw = {'tend': 4e-9, 'timestep': 2e-10, 'fixed_timestep': True}
+    seen = []
+    real = linearsolver.StructuralKLU._csc_residual
+
+    def spy(self, Ax, rhs, x):
+        cols = self._csc_cols()
+        r = np.bincount(self.Ai, weights=Ax * x[cols], minlength=self.m) - rhs
+        seen.append(float(np.abs(r).max()) / max(float(np.abs(rhs).max()), 1e-300))
+        return real(self, Ax, rhs, x)
+    with monkeypatch.context() as mp:
+        mp.setattr(linearsolver.StructuralKLU, '_csc_residual', spy)
+        mp.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', float('inf'))
+        _sparse_run(False, make={'chord_jacobian': False}, **kw)
+    top = max(seen)
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL',
+                        top if edge == 'at' else float(np.nextafter(top, 0.0)))
+    a = _sparse_run(False, make={'chord_jacobian': False}, **kw)
+    b = _sparse_run(True, make={'chord_jacobian': False}, **kw)
+    assert a[0] == b[0] and a[1] == b[1]
+    ## (the factors: the run's first, and below the edge the fresh one)
+    assert a[1][2] == (1 if edge == 'at' else 2), a[1]
+    bails = sum(v for k, v in b[2].items() if k.startswith(('newton_c:bail', 'loop_c:bail')))
+    assert (bails == 0) == (edge == 'at') and b[2].get('newton_c:sparse', 0) > 10, b[2]
+
+
 def test_a_sparse_bail_leaves_no_trace(monkeypatch):
     """Every sparse C solve runs to its end -- its numeric made and freed
     -- and hands the step back: the Python's answer and counts."""
@@ -321,15 +358,16 @@ def test_a_sparse_bail_leaves_no_trace(monkeypatch):
 
 ## -- the chord's numeric (roadmap 244) --------------------------------------
 
-@pytest.mark.parametrize('tol', [1e-16, 3e-16])
+@pytest.mark.parametrize('tol', [1e-16, 1.5e-16])
 def test_the_chord_s_residual_fallbacks_in_c_are_the_python_s(tol, monkeypatch):
     """The chord's numeric (`StructuralKLU.chord_factor`) under a validation
     tight enough to refuse some refactors: the C makes those fresh factors
     itself (no KLU hand-back), and where the loop stops in an attempt whose
     Newton it served (`loop_c:bail:lte`) it takes the attempt's numeric back
-    (loop.c's `ck_back`; measured 2026-11-03 with a print: at 1e-16 four
-    such attempts, each numeric replaced, at 3e-16 two replaced and two
-    refactored in place) -- the bytes and every count the Python's."""
+    (loop.c's `ck_back`) -- the bytes and every count the Python's.  The
+    validation the CSC kernel's sums (`StructuralKLU._csc_residual`): five
+    refactors refused at 1e-16 (14 such stops), three at 1.5e-16 (nine),
+    none from 2e-16."""
     from pycircuit.circuit import linearsolver
     monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', tol)
     kw = {'tend': 8e-9, 'timestep': 2e-10}

@@ -1106,9 +1106,12 @@ def _full_counts(rec, s):
     """The StructuralKLU's counts of the attempts' full Newtons.  Not on the
     chord: a refactor of the run's numeric an iteration (the chord's counts
     its own: `chord_out`).  On it, its fallbacks': their refactors, the factor
-    of the numeric one made among them (newton.h's THE RUN'S FIRST NUMERIC)."""
+    of the numeric one made among them (newton.h's THE RUN'S FIRST NUMERIC).
+    Not on the chord the fallbacks' counts are the iteration limit's rejected
+    attempts' alone (loop.c's `newton_reject`: a refactor a solve, where the
+    values were not held), which count no iteration."""
     if not rec.s.chord:
-        rec.klu.refactors += s.iters - s.full_reused
+        rec.klu.refactors += s.iters - s.full_reused + s.fb_refactors - s.fb_reused
         return
     rec.klu.refactors += s.fb_refactors - s.fb_reused - s.nums_made
     rec.klu.factors += s.nums_made
@@ -1304,12 +1307,12 @@ def _count(s, run_, rec, adaptive, k, tr):
     _PC['memo.q:same'] += k + (s.ltes if adaptive else 0)
     ## the branch screen (`_tran_branch_c.screen`, its C from
     ## `_CompanionModel._C_lookup`)
-    ## (THE PACKED LAYOUT: that screen's C declines on the pattern, the
-    ## Python's screens it -- none where its verdict on a constant C is
-    ## kept, `_branch_screen`)
+    ## (THE PACKED LAYOUT: that screen's C on the pattern -- none where its
+    ## verdict on a constant C is kept, `_branch_screen`)
     if s.screens and rec.pk is not None:
         if tr.__dict__.get('_branch_const') is None:
-            _PC['branch_c:packed'] += s.screens
+            _PC['branch_c:served'] += s.screens
+            _PC['branch_c:pattern'] += s.screens
         _PC['memo.C:equal'] += s.screens
     elif s.screens:
         _PC['branch_c:served'] += s.screens

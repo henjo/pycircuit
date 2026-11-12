@@ -720,3 +720,52 @@ def test_a_steps_frozen_real_factor_on_klu_is_refactored_once():
     k.REFACTOR_RESIDUAL_TOL = linearsolver.StructuralKLU.REFACTOR_RESIDUAL_TOL
     fz.real_solve(bs[1])
     assert fz.kept and k.refactors == r0 + 2
+
+
+def _refactor_case(seed, m=48, band=4):
+    """A banded matrix A0 (entries over nine decades, its diagonal dominant),
+    A1 its entries moved by 30 %, a small b: the second solve a refactor of
+    A1 on A0's pivot order, whose residual cancels to rounding."""
+    rng = np.random.default_rng(seed)
+    A0 = np.zeros((m, m))
+    for i in range(m):
+        for j in range(max(0, i - band), min(m, i + band + 1)):
+            A0[i, j] = rng.standard_normal() * 10.0 ** rng.integers(-2, 7)
+        A0[i, i] = np.abs(A0[i]).sum() + 1.0
+    A1 = A0 * (1.0 + 0.3 * rng.standard_normal((m, m))) * (A0 != 0)
+    return A0, A1, rng.standard_normal(m) * 1e-3
+
+
+def _refactored(A0, A1, b, tol):
+    m = len(b)
+    cols, rows = np.nonzero((A0 != 0).T)                     # (CSC order: by column)
+    s = linearsolver.StructuralKLU(m, rows, cols, fallback=linearsolver.SuperLUSolver)
+    s.REFACTOR_RESIDUAL_TOL = tol
+    s.solve(A0, b, numeric)
+    return s, np.asarray(s.solve(A1, b, numeric))
+
+
+@pytest.mark.parametrize('csc_side', ['below', 'above'])
+def test_the_refactor_check_sums_in_the_csc_order_on_a_dense_matrix(csc_side):
+    """The refactor's residual test on a dense matrix decides by the CSC
+    kernel's sums on KLU's arrays (`StructuralKLU._csc_residual`), as THE
+    PACKED LAYOUT's does -- not by numpy's `A @ x` (BLAS's order, its CPU
+    kernel's; opampal's source ladder, where the residual is rounding itself,
+    took 40 more fresh factors by it): with the tolerance between the two
+    orders' residuals of the same refactored solve, a fresh factor exactly
+    where the CSC sum fails it, whichever side of BLAS's it lies."""
+    for seed in range(50):
+        A0, A1, b = _refactor_case(seed)
+        s, x = _refactored(A0, A1, b, np.inf)
+        sc = max(float(np.abs(b).max()), 1e-300)
+        r_blas = float(np.abs(A1 @ x - b).max()) / sc
+        cols = s._csc_cols()
+        r_csc = float(np.abs(np.bincount(s.Ai, weights=A1[s.Ai, cols] * x[cols], minlength=len(b))
+                             - b).max()) / sc
+        if r_csc != r_blas and (r_csc < r_blas) == (csc_side == 'below'):
+            break
+    else:
+        pytest.skip('no refactor whose two orders part here')
+    tol = float(np.sqrt(r_blas * r_csc))
+    s, _x = _refactored(A0, A1, b, tol)
+    assert (s.refactors, s.residual_fallbacks) == (1, int(r_csc > tol)), (r_blas, r_csc, tol)
