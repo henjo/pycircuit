@@ -6067,3 +6067,18 @@ defined order.  Every gold deck gives the dense run's bytes on it, ibmpg1t
 its exact digest, and ibmpg2t runs: its DC in 7 s, its 10 ns transient
 within 0.35 mV of the benchmark.  The C paths step aside on the layout
 until they learn it (P2).
+
+## The packed layout, P2a: the DC Newton's C on the pattern (2026-11-12)
+
+2026-11-12 (`doc/hdl_roadmap_260824.md`, 319; plan 261 L20).  The first C
+path to learn the packed layout is the DC operating point's Newton: inside
+its circuit's packed scope it keeps no dense matrix -- its own core makes G
+in its packed bin, J is made at KLU's entries alone, and the convergence
+scale and the refactor's residual are summed in the reference's one order
+(the CSC kernel) -- and gives the packed Python's bytes.  Reading the C for
+it found two places where P1's Python reference was not yet on the
+pattern, none reached by any deck: the rounding floor was silently off
+there, and junction gmin and a nodeset's held solve would have raised.  All
+three now take the pattern.  On the linear grid's two-iteration DC the C
+gains little (its own core costs about the Python's Newton); its use is the
+transient's stepping, which builds on it next.

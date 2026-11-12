@@ -14,7 +14,8 @@
  * The residual's test needs only its verdict: on KLU's own CSC (`a_built`
  * 0: the dense A not made) a sparse sum with its rounding bound decides it
  * where the bound does, the dense test where it does not
- * (`pcx_klu_resid_sparse`). */
+ * (`pcx_klu_resid_sparse`); on THE PACKED LAYOUT (PCX_A_PACKED) the
+ * reference's own CSC kernel decides it (`pcx_klu_resid_packed`). */
 #include <float.h>
 #include <math.h>
 #include <fenv.h>
@@ -31,8 +32,10 @@ enum pcx_klu_stop { PCX_KLU_FACTOR = 1, PCX_KLU_SOLVE = 2, PCX_KLU_FLAGS = 3 };
    the scatter undone after the test, so only KLU's pattern is ever written:
    m x m pages a caller holds resident a page or two a row), or made by the
    caller and zero off KLU's pattern (PCX_A_ON_PATTERN: the sparse verdict
-   first, as A is not built, the dense test on A itself) */
-enum pcx_klu_a { PCX_A_SCRATCH = 0, PCX_A_BUILT = 1, PCX_A_ZERO = 2, PCX_A_ON_PATTERN = 3 };
+   first, as A is not built, the dense test on A itself), or no dense A at
+   all (PCX_A_PACKED, THE PACKED LAYOUT: `A` unread, the CSC kernel's test) */
+enum pcx_klu_a { PCX_A_SCRATCH = 0, PCX_A_BUILT = 1, PCX_A_ZERO = 2, PCX_A_ON_PATTERN = 3,
+                 PCX_A_PACKED = 4 };
 
 
 static void pcx_klu_free(pcx_klu_t *k, void *num)
@@ -74,6 +77,32 @@ static int pcx_klu_resid_dense(pcx_klu_t *k, const double *A, const double *b,
     int nan_r = 0;
     ((dgemv64_t) dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_NO_TRANS, m, m, 1.0, A, m, x, 1,
                         0.0, y, 1);
+    for (i = 0; i < m; i++) y[i] = y[i] - b[i];
+    if (fetestexcept(PCX_NP_FLAGS)) return -1;
+    for (i = 0; i < m; i++) {
+        double a = fabs(b[i]), d = fabs(y[i]);
+        if (a > max_b) max_b = a;
+        if (isnan(d)) nan_r = 1;
+        else if (d > max_r) max_r = d;
+    }
+    return nan_r || !(max_r / pcx_py_max(max_b, 1e-300) <= k->resid_tol);
+}
+
+/* the residual's test on THE PACKED LAYOUT (`StructuralKLU._packed_residual`,
+   the reference's at size): `A x` by the CSC kernel on KLU's own arrays --
+   each row from 0.0, each product rounded, then added in KLU's CSC order
+   (np.bincount's) --, `- rhs`, |.|, the maxima as the dense test's.  1 it
+   fails, 0 it holds, -1 a flag (the kernel's sums' too, which numpy's
+   bincount does not report: a hand-back, the safe side) */
+static int pcx_klu_resid_packed(pcx_klu_t *k, const double *b, const double *x, double *y,
+                                long m)
+{
+    long i, j, p;
+    double max_b = 0.0, max_r = 0.0;
+    int nan_r = 0;
+    for (i = 0; i < m; i++) y[i] = 0.0;
+    for (j = 0; j < m; j++)
+        for (p = k->kAp[j]; p < k->kAp[j + 1]; p++) y[k->kAi[p]] += k->kAx[p] * x[j];
     for (i = 0; i < m; i++) y[i] = y[i] - b[i];
     if (fetestexcept(PCX_NP_FLAGS)) return -1;
     for (i = 0; i < m; i++) {
@@ -130,7 +159,9 @@ static long pcx_klu_seq(pcx_klu_t *k, double *A, const double *b, double *x, dou
     /* (what KLU raised inside: the Python's ctypes calls never see it) */
     feclearexcept(FE_ALL_EXCEPT);
     if (!reused) return 0;
-    if (a_built != PCX_A_BUILT) {
+    if (a_built == PCX_A_PACKED) {
+        fails = pcx_klu_resid_packed(k, b, x, y, m);
+    } else if (a_built != PCX_A_BUILT) {
         fails = pcx_klu_resid_sparse(k, b, x, y, t, m);
         if (fails == PCX_UNDECIDED) {
             /* (the dense test on A as the Python holds it: zero off the

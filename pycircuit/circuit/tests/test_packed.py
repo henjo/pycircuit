@@ -4,14 +4,17 @@ Every operation the analyses make is the dense one's bytes per entry; the
 products the decisions read are summed in one defined order (the CSC
 kernel); a run on the pattern is the dense run's, bit for bit, with the same
 solver; a numpy function not made on the pattern raises where it meets one;
-below the size nothing changes; the C paths decline inside the scope."""
+below the size nothing changes.  The DC Newton's C serves on the pattern --
+the packed Python's bytes, its record and core holding no dense matrix;
+the other C paths decline inside the scope."""
 import importlib
+import json
 import warnings
 
 import numpy as np
 import pytest
 
-from pycircuit.circuit import _packed, _paths, analysis, circuit, nrsolver
+from pycircuit.circuit import _dc_newton_c, _packed, _paths, analysis, circuit, nrsolver
 from pycircuit.circuit import linearsolver as _ls
 from pycircuit.circuit.circuit import defaultepar
 from pycircuit.circuit.dcanalysis import DC
@@ -41,7 +44,8 @@ def _drawn(rng, n, nnz):
 
 def test_every_operation_is_the_dense_ones_bytes():
     """Sums, scales, abs, negation, the cut, a gather, the nonzeros, the
-    largest entry, the diagonal, `+ eye(n) d` -- each the dense matrix's
+    largest entry, the diagonal, `+ eye(n) d`, the kept rows and columns
+    (`np.ix_`) -- each the dense matrix's
     bytes at every entry of the pattern (and zero off it)."""
     rng = np.random.default_rng(1)
     A, Da = _drawn(rng, 40, 120)
@@ -71,6 +75,8 @@ def test_every_operation_is_the_dense_ones_bytes():
     for g in (0.25, d):
         assert same(A.plus_diagonal(g), nrsolver._plus_diagonal(Da, g, numeric))
     assert A.count_nonzero() == np.count_nonzero(Da)
+    keep = np.flatnonzero(rng.uniform(size=40) < 0.7)
+    assert same(A.kept(keep), Da[np.ix_(keep, keep)])
 
 
 def test_the_csc_kernel_is_the_defined_order():
@@ -165,13 +171,13 @@ def test_a_packed_run_is_the_dense_one(build, kw, monkeypatch):
 
 @pytest.mark.parametrize('build, kw, keys', [
     (lambda: _layers(8), {'tend': 3e-10, 'timestep': 1e-11},
-     ('dcnewton_c:packed', 'newton_c:packed', 'loop_c:packed', 'core:packed')),
+     ('dcnewton_c:served', 'newton_c:packed', 'loop_c:packed', 'core:packed')),
     (lambda: _chain(30), {'tend': 4e-9, 'timestep': 1e-10}, ('pcnr_c:packed', 'loop_c:packed')),
 ], ids=['grid', 'mos-chain'])
-def test_the_c_paths_decline_on_the_pattern(build, kw, keys, monkeypatch):
-    """With the C on, inside the scope each C entry declines, counted --
-    the DC's plain Newton and PCNR, the Newton, the loop, the core: the run
-    the Python's on the pattern."""
+def test_the_c_paths_on_the_pattern(build, kw, keys, monkeypatch):
+    """With the C on, inside the scope the DC Newton's C serves and every
+    other C entry declines, counted -- PCNR, the Newton, the loop, the core:
+    the run the Python's on the pattern."""
     _same_solver(monkeypatch)
     py, _c = _run(build, True, monkeypatch, **kw)
     got, counts = _run(build, True, monkeypatch, c_on=True, **kw)
@@ -201,3 +207,268 @@ def test_held_nodes_and_singular_rows_on_the_pattern(monkeypatch):
     E = _packed.PatternMatrix(A.pat, v)
     assert nrsolver._structural_singularity(E, None, numeric) == \
         nrsolver._structural_singularity(E.to_dense(), None, numeric)
+
+
+def test_junction_gmin_on_the_pattern_is_the_dense_loops():
+    """`nrsolver._junction_gmin` on a PatternMatrix: F and J the dense
+    loop's bytes, a junction pair given twice summing in the loop's order;
+    a junction entry off the pattern raises."""
+    rng = np.random.default_rng(6)
+    n = 12
+    rows = [(1, 4), (4, 7), (1, 4), (9, 2)]
+    r = np.r_[np.arange(n), [a for a, b in rows] * 2, [b for a, b in rows] * 2]
+    c = np.r_[np.arange(n), [a for a, b in rows] + [b for a, b in rows],
+              [b for a, b in rows] + [a for a, b in rows]]
+    extra = rng.integers(0, n, (2, 15))
+    key = np.unique(np.r_[c, extra[1]] * n + np.r_[r, extra[0]])
+    pat = _packed.Pattern(n, key % n, key // n)
+    v = rng.normal(size=pat.nnz) * 10.0 ** rng.uniform(-3, 3, pat.nnz)
+    A = _packed.PatternMatrix(pat, v.copy())
+    D = A.to_dense()
+    x = rng.normal(size=n)
+    F1, F2 = rng.normal(size=n), None
+    F2 = F1.copy()
+    g = 1e-3
+    nrsolver._junction_gmin(F1, D, x, g, rows, nrsolver._junction_tables(rows))
+    nrsolver._junction_gmin(F2, A, x, g, rows, nrsolver._junction_tables(rows))
+    assert F2.tobytes() == F1.tobytes()
+    assert A.v.tobytes() == D[pat.rows, pat.cols].tobytes()
+    off = _packed.PatternMatrix(_packed.Pattern(n, np.arange(n), np.arange(n)), np.ones(n))
+    with pytest.raises(IndexError):
+        nrsolver._junction_gmin(F2, off, x, g, rows, nrsolver._junction_tables(rows))
+
+
+@pytest.mark.parametrize('name', ['mike2', 'gm3', 'gm19'])
+def test_the_dc_newtons_c_on_the_pattern_is_the_pythons(name, monkeypatch, ordinary_dc):
+    """The decks' operating points on the pattern (the threshold at 0): every
+    base solve -- junction gmin, gshunt and source stepping over the base;
+    refactors, fallbacks, failing and singular solves -- its outcome, the
+    counters, x0 and the warnings the C's as the packed Python's, the C
+    serving; gm3 and gm19 reach junction gmin on the pattern (mike2's plain
+    solve converges there, on KLU)."""
+    from pycircuit.circuit.tests import test_dc_newton_c as T
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    seen = []
+    real = nrsolver._junction_gmin_packed
+
+    def counted(*a):
+        seen.append(1)
+        return real(*a)
+    monkeypatch.setattr(nrsolver, '_junction_gmin_packed', counted)
+    py, _c = T._record(name, monkeypatch, False)
+    jg = len(seen)
+    got, counts = T._record(name, monkeypatch, True)
+    assert got == py
+    assert counts.get('dcnewton_c:served', 0) > 0, counts
+    assert (jg > 0) is (name != 'mike2'), jg
+
+
+def test_the_rounding_floor_on_the_pattern_is_the_dense_ones_and_the_cs(monkeypatch):
+    """The rounding floor on the pattern (`_within_rounding` by KLU's
+    transposed solve; dcnewton.c's `floor_holds` with the CSC kernel's
+    scale): the packed Python's operating points the dense Python's bytes
+    on the same solver, the floor deciding them (neither converges without
+    it); the C's the packed Python's, served."""
+    from pycircuit.circuit.tests import test_dc_newton_c as T
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    dense, _c, kind = T._floor_dc(130, False)
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    seen, orig = [], nrsolver._within_rounding
+
+    def within(*a):
+        seen.append(orig(*a))
+        return seen[-1]
+    py, _c, _k = T._floor_dc(130, False, within)
+    got, counts, _k = T._floor_dc(130, True)
+    assert kind == 'StructuralKLU' and all(type(x) is bytes for x in py)
+    assert py == dense and got == py
+    assert sum(seen) >= 2 and counts.get('dcnewton_c:served', 0) == 1, (seen, counts)
+    assert T._floor_dc(130, False, lambda *a: False)[0] == ['NoConvergenceError'] * 2
+
+
+def test_the_iteration_limit_on_the_pattern_is_the_pythons(monkeypatch):
+    """An operating point whose Newton meets its iteration limit on the
+    pattern: the C's `Is` for the exception's scale the CSC kernel's, every
+    base solve -- the limited ones' exceptions and their text -- the packed
+    Python's."""
+    from pycircuit.circuit.tests import test_dc_newton_c as T
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    py, _c = T._base_solves(lambda: T._ladder(160), False, maxiter=1)
+    got, counts = T._base_solves(lambda: T._ladder(160), True, maxiter=1)
+    assert got == py and any(e[0] == 'raise' for e in py), py
+    assert counts.get('dcnewton_c:maxiter', 0) >= 1, counts
+
+
+def test_the_dc_record_on_the_pattern_holds_no_dense_matrix(monkeypatch):
+    """The DC Newton's record on the pattern: its core has no n x n G bin
+    and is called for its packed sets; none of the record's buffers is
+    m x m; its J at KLU's entries -- and below the size the dense record as
+    before."""
+    from pycircuit.circuit import _tran_core
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    _same_solver(monkeypatch)
+    sets = _dc_newton_c._sources()[4]['PCX_WANT_SETS']
+
+    def record(packed):
+        monkeypatch.setattr(_packed, 'PACKED_FROM', 0 if packed else 1 << 30)
+        dc = DC(_layers(20), toolkit=numeric)
+        before = _paths.snapshot()
+        dc.solve()
+        assert _paths.since(before).get('dcnewton_c:served', 0) > 0
+        return dc.__dict__['_dc_newton_c'], dc.cir.n - 1
+    rec, m = record(True)
+    assert rec.packed and rec.core.packed and rec.core.arrays['binG'].size == 1
+    assert rec.s.pattern & sets and rec.s.packed == 1
+    assert max(a.size for a in rec.buf.values()) < m * m
+    assert len(rec.pk[0]) == rec.s.nact == rec.klu.nnz
+    dense, m = record(False)
+    assert not dense.packed and dense.buf['R'].size == m * m and not dense.s.pattern & sets
+    assert type(_tran_core._Core).__name__ == 'type'
+
+
+def test_the_refactor_residual_on_the_pattern_is_the_pythons(monkeypatch, ordinary_dc):
+    """The refactor's residual test on the pattern (`StructuralKLU.
+    _packed_residual`; pcx_kluseq.h's `pcx_klu_resid_packed`, the CSC kernel
+    on KLU's arrays): gm19's operating point at a tolerance near its
+    refactors' residuals -- most holding, some failing to a fresh factor --
+    every base solve and the counters the C's as the packed Python's, the C
+    serving."""
+    from pycircuit.circuit import linearsolver
+    from pycircuit.circuit.tests import test_dc_newton_c as T
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    monkeypatch.setattr(linearsolver.KLUSolver, 'REFACTOR_RESIDUAL_TOL', 1e-14)
+    py, _c = T._record('gm19', monkeypatch, False)
+    got, counts = T._record('gm19', monkeypatch, True)
+    assert got == py and counts.get('dcnewton_c:served', 0) > 0, counts
+    klu = json.loads(py)['klu']
+    assert any(k[3] > 0 for k in klu) and any(k[0] > 2 * k[3] for k in klu), klu
+
+
+
+def test_a_held_solve_runs_on_the_pattern(monkeypatch, ordinary_dc):
+    """A nodeset's held solve (`dcanalysis._Held`) on the pattern: the kept
+    rows and columns gathered there (`PatternMatrix.kept`), KLU on the held
+    matrix's own pattern -- the structure describes the unheld one, whose
+    choice the held solve leaves to the unheld solve -- each state of a latch
+    picked, the dense run's operating point to its tolerance."""
+    from pycircuit.circuit import dcanalysis, linearsolver
+    from pycircuit.circuit.tests.test_dc_held import _latch
+    seen = []
+    real = dcanalysis._Held.system
+
+    def system(self, F, J):
+        seen.append(type(J) is _packed.PatternMatrix)
+        return real(self, F, J)
+    monkeypatch.setattr(dcanalysis._Held, 'system', system)
+    for hi, lo in (('q', 'qb'), ('qb', 'q')):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            monkeypatch.setattr(_packed, 'PACKED_FROM', 1 << 30)
+            dense = DC(_latch(), nodeset={hi: 5.0, lo: 0.0}).solve()
+            monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+            dc = DC(_latch(), nodeset={hi: 5.0, lo: 0.0})
+            got = dc.solve()
+        assert got.v(hi) > 4.0 and got.v(lo) < 1.0
+        assert np.allclose(np.asarray(got.x), np.asarray(dense.x), rtol=1e-9, atol=1e-12)
+        ch = dc._get_linearsolver()._choice
+        assert type(ch) is linearsolver.StructuralKLU and ch.m == dc.cir.n - 1
+    assert any(seen) and not all(seen)
+
+
+def test_a_matrix_the_structure_does_not_describe_takes_its_own_klu():
+    """The AutoSolver on the pattern: a matrix of the structure's size takes
+    KLU on the structure (the choice, kept); one of another size -- a held
+    solve's -- KLU on its own pattern, before the choice and after it, which
+    it leaves as it was; each solve numpy's to rounding."""
+    from pycircuit.circuit import linearsolver
+    rng = np.random.default_rng(7)
+    A, D = _drawn(rng, 12, 20)
+    A = A.plus_diagonal(1e4)
+    D = A.to_dense()
+    keep = np.array([0, 1, 3, 4, 6, 7, 9, 10, 11])
+    B = A.kept(keep)
+    ls = linearsolver.AutoSolver(structure=lambda: (12, A.pat.rows, A.pat.cols))
+    b = rng.normal(size=12)
+    held = ls._select(B)
+    assert ls._choice is None and held is _packed.own_solver(B) and held.m == 9
+    x = ls.solve(A, b, numeric)
+    assert type(ls._choice) is linearsolver.StructuralKLU and ls._choice.m == 12
+    assert ls._select(B) is held and ls._choice.m == 12
+    xb = ls.solve(B, b[keep], numeric)
+    assert np.allclose(x, np.linalg.solve(D, b), rtol=1e-10)
+    assert np.allclose(xb, np.linalg.solve(D[np.ix_(keep, keep)], b[keep]), rtol=1e-10)
+
+
+def test_drawn_starts_on_the_pattern_are_the_pythons(monkeypatch, ordinary_dc):
+    """gm3's operating point on the pattern from rough drawn starts: the
+    ladders' rungs, the C's hand-backs on a flag or a singular factor, its
+    iteration limits -- every base solve, the counters, x0 and the warnings
+    the C's as the packed Python's."""
+    from pycircuit.circuit.tests import test_dc_newton_c as T
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    rng = np.random.default_rng(11)
+    starts = [(10.0 ** rng.uniform(1, 4), int(rng.integers(1 << 30))) for _ in range(6)]
+    bails = 0
+    for scale, seed in (starts[0], starts[5]):
+        def x0(n, scale=scale, seed=seed):
+            return np.random.default_rng(seed).standard_normal(n) * scale
+        py, _c = T._record('gm3', monkeypatch, False, x0)
+        got, counts = T._record('gm3', monkeypatch, True, x0)
+        assert got == py and counts.get('dcnewton_c:served', 0) > 0, counts
+        bails += counts.get('dcnewton_c:bail:flags', 0) + counts.get('dcnewton_c:bail:singular', 0)
+    assert bails > 0
+
+
+def _exp_chain(cells=40):
+    """A resistor chain loaded by exponential sources (1e-14 (exp(v / 25 mV)
+    - 1) A): from a wild start their conductances overflow."""
+    import sympy
+
+    from pycircuit.circuit.elements_hdl import BSourceHdl
+    c = SubCircuit()
+    c['vs'] = VS('s', gnd, v=1.0)
+    prev = 's'
+    for k in range(cells):
+        c[f'r{k}'] = R(prev, f'n{k}', r=1e3)
+        c[f'd{k}'] = BSourceHdl(f'n{k}', gnd, f'n{k}', gnd,
+                                i_func=lambda u: 1e-14 * (sympy.exp(u / 0.025) - 1))
+        prev = f'n{k}'
+    return c
+
+
+def test_an_overflowing_matrix_on_the_pattern_hands_back(monkeypatch, ordinary_dc):
+    """THE GUARDS on the pattern: from a start where the sources' conductances
+    overflow, the C hands each solve back on the flag (or the non-finite
+    entry) and the packed Python's ladders run -- their outcome, x or the
+    exception, the same with the C as without; from a milder start the C
+    serves."""
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+
+    def run(on, scale):
+        monkeypatch.setattr(_dc_newton_c, 'ENABLED', on)
+        before = _paths.snapshot()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            dc = DC(_exp_chain(), toolkit=numeric)
+            try:
+                x0 = np.random.default_rng(3).standard_normal(dc.cir.n) * scale
+                out = np.asarray(dc.solve(x0=x0).x).tobytes()
+            except Exception as e:                             # noqa: BLE001
+                out = (type(e).__name__, str(e))
+        return out, _paths.since(before)
+    for scale, key in ((20.0, 'dcnewton_c:bail:flags'), (5.0, 'dcnewton_c:served')):
+        py, _c = run(False, scale)
+        got, counts = run(True, scale)
+        assert got == py and counts.get(key, 0) > 0, (scale, counts)

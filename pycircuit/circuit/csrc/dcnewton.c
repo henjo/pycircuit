@@ -50,11 +50,49 @@ static long finish(dcnewton_t *s, long status)
     return s->status = status;
 }
 
+/* `evaluate`'s matrix and layers on THE PACKED LAYOUT: J at KLU's entries
+   (`kAx`) from the core's packed G bin, zero where the core's pattern has
+   none; gshunt's `F + x g`, `J + 0.0` and g at each diagonal entry
+   (`_packed.PatternMatrix.plus_diagonal`'s); junction gmin's terms at their
+   entries, junction by junction, as the dense loop's (F made by the
+   caller up to the layers) */
+static long evaluate_packed(dcnewton_t *s, const hdl_core_t *c, long m)
+{
+    double *v = s->klu.kAx;
+    long i, k;
+    for (k = 0; k < s->nact; k++) v[k] = s->gmap[k] >= 0 ? c->binGp[s->gmap[k]] : 0.0;
+    if (s->has_gshunt) {
+        double g = s->gshunt;
+        for (i = 0; i < m; i++) s->Fr[i] = s->Fr[i] + s->x[i] * g;
+        for (k = 0; k < s->nact; k++) v[k] = v[k] + 0.0;
+        for (i = 0; i < m; i++) v[s->kdiag[i]] += g;
+    }
+    if (s->has_jgmin) {
+        double g = s->gjgmin;
+        for (k = 0; k < s->nj; k++) {
+            long a = s->ja[k], b = s->jb[k];
+            const int64_t *q = s->jk + 4 * k;
+            double vj = s->x[a] - s->x[b];
+            s->Fr[a] += g * vj;
+            s->Fr[b] -= g * vj;
+            v[q[0]] += g;
+            v[q[1]] -= g;
+            v[q[2]] -= g;
+            v[q[3]] += g;
+        }
+    }
+    if (fetestexcept(DC_FLAGS)) return DCNEWTON_BAIL_FLAGS;
+    for (i = 0; i < m; i++) if (!isfinite(s->Fr[i])) return DCNEWTON_BAIL_FLAGS;
+    for (k = 0; k < s->nact; k++) if (!isfinite(v[k])) return DCNEWTON_BAIL_FLAGS;
+    return 0;
+}
+
 /* `x` (reduced) evaluated as the composition: the core's G and i at
    insert_row(x); F = cut(i + u) or cut(i + lam * u), J = cut(G) on the
-   active entries; gshunt's `F + x g`, `J + 0.0` and g on the diagonal;
-   junction gmin's terms, junction by junction.  0, or DCNEWTON_BAIL_FLAGS
-   (a flag, or a value that is not finite) */
+   active entries (packed: at KLU's, from the core's packed bin); gshunt's
+   `F + x g`, `J + 0.0` and g on the diagonal; junction gmin's terms,
+   junction by junction.  0, or DCNEWTON_BAIL_FLAGS (a flag, or a value
+   that is not finite) */
 static long evaluate(dcnewton_t *s)
 {
     const hdl_core_t *c = (const hdl_core_t *) s->core;
@@ -70,6 +108,7 @@ static long evaluate(dcnewton_t *s)
     else
         for (i = 0; i < n; i++) s->Ff[i] = c->bini[i] + s->u[i];
     pcx_drop_ref(s->Ff, s->Fr, n, r);
+    if (s->packed) return evaluate_packed(s, c, m);
     for (k = 0; k < s->nact; k++) s->R[s->act_r[k]] = c->binG[s->act_f[k]];
     if (s->has_gshunt) {
         double g = s->gshunt;
@@ -104,9 +143,11 @@ static long evaluate(dcnewton_t *s)
 static long klu_step(dcnewton_t *s, long m)
 {
     long i, st;
-    for (i = 0; i < s->nact; i++) s->klu.kAx[i] = s->R[s->act_r[i]];
-    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->vt, m, s->dgemv, PCX_A_ON_PATTERN,
-                      &s->dense_resid, s->held_v, s->held_st);
+    if (!s->packed)
+        for (i = 0; i < s->nact; i++) s->klu.kAx[i] = s->R[s->act_r[i]];
+    st = pcx_klu_step(&s->klu, s->R, s->b, s->kx, s->ky, s->vt, m, s->dgemv,
+                      s->packed ? PCX_A_PACKED : PCX_A_ON_PATTERN, &s->dense_resid, s->held_v,
+                      s->held_st);
     if (st == PCX_KLU_FLAGS) return DCNEWTON_BAIL_FLAGS;
     return st ? DCNEWTON_BAIL_SINGULAR : 0;
 }
@@ -166,6 +207,27 @@ static void dense_is(dcnewton_t *s, long m)
     s->is_made = 1;
 }
 
+/* the same product on THE PACKED LAYOUT -- `toolkit.dot(abs(J), ax_next)`,
+   `_packed.PatternMatrix.matvec`'s CSC kernel: each row from 0.0, each
+   product rounded, then added in KLU's CSC order (J's own pattern's order
+   by row, KLU's other entries zero: they add +0.0) */
+static void packed_is(dcnewton_t *s, long m)
+{
+    const int *Ap = s->klu.kAp, *Ai = s->klu.kAi;
+    long i, j, p;
+    for (i = 0; i < m; i++) s->Is[i] = 0.0;
+    for (j = 0; j < m; j++)
+        for (p = Ap[j]; p < Ap[j + 1]; p++) s->Is[Ai[p]] += fabs(s->klu.kAx[p]) * s->ax[j];
+    s->is_made = 1;
+}
+
+/* `Is` made, as the record holds J */
+static void make_is(dcnewton_t *s, long m)
+{
+    if (s->packed) packed_is(s, m);
+    else dense_is(s, m);
+}
+
 /* nrsolver's convergence test, as newton.c's: `I_scale = dot(abs(J),
    ax_next) + aF`, `abs(xdiff) < reltol * maximum(ax_next, abs(x)) + xtol`,
    `aF < reltol * I_scale + abstol`.  On KLU's pattern (|J| zero off it) the
@@ -173,8 +235,9 @@ static void dense_is(dcnewton_t *s, long m)
    (pcx_verdict.h: there the dense product raises no flag numpy reports --
    its terms non-negative, every row's sum under 1e300), else numpy's own
    dgemv on the dense |J| (`dense_is`), what the sparse sums raised put back
-   first.  1 converged, 0 not, -1 a flag (np.dot and the arithmetic report
-   it: handed back); `*held` the residual's test */
+   first; packed, the CSC kernel's product decides (`packed_is`).  1
+   converged, 0 not, -1 a flag (np.dot and the arithmetic report it: handed
+   back); `*held` the residual's test */
 static int converged(dcnewton_t *s, long m, int *held)
 {
     long i;
@@ -182,7 +245,7 @@ static int converged(dcnewton_t *s, long m, int *held)
     fexcept_t entry;
     for (i = 0; i < m; i++) s->ax[i] = fabs(s->xn[i]);
     s->is_made = 0;
-    if (s->klu.klu_sym) {
+    if (s->klu.klu_sym && !s->packed) {
         fegetexceptflag(&entry, FE_ALL_EXCEPT);
         verdict = pcx_scale_sparse(s->klu.kAp, s->klu.kAi, s->klu.kAx, s->ax, s->Fr, s->reltol,
                                    s->abstol, s->vt, s->vt + m, m);
@@ -192,7 +255,7 @@ static int converged(dcnewton_t *s, long m, int *held)
         }
     }
     if (verdict == PCX_UNDECIDED) {
-        dense_is(s, m);
+        make_is(s, m);
         for (i = 0; i < m; i++) {
             double aF = fabs(s->Fr[i]);
             if (!(aF < s->reltol * (s->Is[i] + aF) + s->abstol[i])) conv_f = 0;
@@ -238,7 +301,7 @@ static int floor_holds(dcnewton_t *s, long m)
 {
     long i, j, c, k = 0, lo, kk;
     if (!s->is_made) {
-        dense_is(s, m);
+        make_is(s, m);
         if (fetestexcept(DC_FLAGS)) return -1;
     }
     for (i = 0; i < m; i++) s->Isf[i] = s->Is[i] + fabs(s->Fr[i]);
@@ -311,7 +374,7 @@ static long iterate(dcnewton_t *s)
     }
     /* (the exception's scale reads `Is`: made where the verdict did not) */
     if (!s->is_made) {
-        dense_is(s, m);
+        make_is(s, m);
         if (fetestexcept(DC_FLAGS)) return DCNEWTON_BAIL_FLAGS;
     }
     return DCNEWTON_MAXITER;

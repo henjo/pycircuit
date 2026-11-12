@@ -5,7 +5,9 @@ A forcing sets a module's constants or a run's parameters; it moves no line of t
 what it reached on the decks when measured on 866a0300 (roadmap 288): `mi6` (a Newton cut short: hand-backs, the fallback's limit,
 the DC Newton's C) most, `bound` (the error test on the seed's factors whatever the chord's iterations, so no full test
 comes before the first fallback: the C-made first numeric on 7 decks), `low` (every size gate at nothing, so packed sets,
-pattern pages and the results' gathering run on small decks), `bypass` (the core's device bypass, otherwise a fixture's alone).  Forcing KLU alone, plain 'seed' and `low` with
+pattern pages and the results' gathering run on small decks), `bypass` (the core's device bypass, otherwise a fixture's alone),
+`packed+plain` on the DC (the decks' operating points on the circuit's pattern -- THE PACKED LAYOUT from any size, plan 261
+L20 -- by the ordinary Newton chain, `plain`, PCNR's C not on the pattern yet: the DC Newton's C there against the packed Python).  Forcing KLU alone, plain 'seed' and `low` with
 `bound` added at most 2 lines and are not in the matrix; `fresh` (every refactor's validation failing: a fresh factor at every solve) added 12 arms at 5-10x the time, C = Python on all 54
 runs (roadmap 290), and is run by hand.
 """
@@ -17,7 +19,7 @@ DECKS = ('4049osc', 'toronto', 'voter25', 'ab_integ', 'e1480', 'g1310', 'gm6', '
 #: (method, setting): every deck, the C paths against the Python's
 MATRIX = (('gear2', 'default'), ('gear2', 'mi6'), ('gear2', 'bound'), ('gear2', 'low'),
           ('radau', 'default'), ('radau', 'mi6'), ('radau', 'low'),
-          ('dc', 'default'),
+          ('dc', 'default'), ('dc', 'packed+plain'),
           ('gear2', 'bypass'))
 
 #: run on the C path alone, read tree against tree: the device bypass's state follows the sequence of evaluations, which the Python's path does not share, so the two
@@ -58,6 +60,10 @@ def force_modules(setting):
         from pycircuit.circuit import _tran_newton, _tran_newton_c
         _tran_newton.LTE_SEED_ITERS = 1000
         _tran_newton_c._mods()['lte_seed'] = 1000
+    if 'plain' in parts:
+        ## (the DC's operating point by the ordinary Newton chain, PCNR off)
+        from pycircuit.circuit.dcanalysis import DC
+        next(p for p in DC.parameters if p.name == 'pcnr').default = False
     if 'packed' in parts:
         ## (THE PACKED LAYOUT from any size: the DC and the multistep
         ## transient on the circuit's pattern -- plan 261 L20)

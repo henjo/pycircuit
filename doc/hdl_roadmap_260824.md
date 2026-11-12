@@ -15819,3 +15819,63 @@ declining, the DC's plain Newton and PCNR among them; held nodes and an empty co
 them a slip the lint found first: `_pcnr_c` names its own `_packed` (the elements' parameters), so the decline read the wrong
 name and every PCNR C solve fell back with an AttributeError; the module is `_layout` there.  Fourteen pinned pairs re-recorded
 after their twins' tests.
+
+## 2026-11-12 — 319. THE PACKED LAYOUT, P2a: the DC Newton's C on the circuit's pattern -- its record and its own core hold no dense matrix, J made at KLU's entries from the core's packed G, the convergence scale and the refactor's residual by the reference's CSC kernel; ibmpg2t's DC served in C, the packed Python's bytes (1.02x: its >= 2x line missed, accepted as measured); the Python reference's rounding floor, junction gmin and held solves on the pattern
+
+**Why**  Plan 261 L20 (tc/plan_l20_packed.md), P2's first sub-stage.  Andreas: "Continue" -> "Build P2a" -> "Accept as
+measured".  P1 left the C
+paths declining inside the packed scope; the DC Newton's C (dcnewton.c) is the first to learn the layout.  Reading it for that
+found two gaps in P1's Python reference, which no deck had reached: the rounding floor (`nrsolver._within_rounding`) returned
+False for any J not an ndarray -- the floor silently off on the pattern -- and junction gmin wrote `J[a, a] += g` (and its
+layer copied J with `np.array`), which a PatternMatrix refuses: the ladder would have raised on the pattern.  The gate's new
+DC entry found a third: a nodeset's held solve (`dcanalysis._Held.system`) gathered J with `np.ix_` -- hussamp's and jge's
+operating points raised on the pattern (P1's deck runs took PCNR's chain, which never held a node there).
+
+**What.**  Python reference: `_within_rounding` on a PatternMatrix -- the rows of J^-1 by KLU's transposed solve (the run's
+solver's; where none was given, the matrix's own, `_default_solve`'s numeric for the step); `_junction_gmin` on a
+PatternMatrix -- the loop itself, J's four entries a junction at their indices in its pattern (`_junction_gmin_packed`: the
+same numpy scalar operations in the same order; a junction entry off the pattern raises), the layer copying J with
+`PatternMatrix.copy`; `AutoSolver.choose_packed` (`_select`'s choice for a PatternMatrix, made before one is seen);
+`nrsolver._dc_solve` lets the run's first solve through on the pattern (the structure chooses whatever the size); the held
+solve on the pattern (`Pattern.kept`, `PatternMatrix.kept`: `A[np.ix_(keep, keep)]`'s bytes) and its solver (`AutoSolver.
+_select`: a PatternMatrix of a size the structure does not describe -- a held solve's -- KLU on its own pattern,
+`_packed.own_solver`, the choice left to the unheld solve).  C:
+`_tran_core._Core(packed=True)` -- the pattern whatever its fill, no n x n G bin (`binG` one entry), `wball` the packed
+table's (core.c reads its vector rows alone there); dcnewton.h's new last fields `packed`, `gmap` (each KLU entry's index in
+the core's pattern), `kdiag`, `jk` (junction gmin's entries in KLU's arrays); dcnewton.c's `evaluate_packed` (J at KLU's
+entries from the core's packed bin `binGp`, gshunt's `+ 0.0` and diagonal, junction gmin's entries, the layers in the
+Python's order) and `packed_is` (|J| |x_next| by the CSC kernel on KLU's arrays: each row from 0.0, each product rounded,
+then added in CSC order -- `PatternMatrix.matvec`'s bincount, J zero at KLU's other entries, which add +0.0), the
+convergence test decided by it, no dense fallback; pcx_kluseq.h's `PCX_A_PACKED` and `pcx_klu_resid_packed` (the refactor's
+residual by the CSC kernel on KLU's arrays, `StructuralKLU._packed_residual`'s).  Glue: `_dc_newton_c` builds a record of its
+own kind inside its circuit's scope (`_Rec(packed=True)`: R, |J|, A, Tf and Cs one entry each; `_packed_maps`,
+`_junction_entries`, `_packed_choice`), declining inside another circuit's.  The gate: a `plain` forcing (the DC's ordinary
+Newton chain, PCNR off -- PCNR's C is not on the pattern yet) and `('dc', 'packed+plain')` in its matrix.
+
+**Measured.**  The gate against 65255eb3: every result and path counter the same tree against tree, C against Python 0
+differing on every matrix entry -- `dc/packed+plain` the 27 decks' operating points on the pattern by the ordinary chain, the C
+serving on most (gm19 142 solves, 8 280 iterations); NOT REACHED on seven changed arms no deck or forcing takes: the packed
+evaluation's flag and non-finite-J hand-backs (an exponential's current overflows with its conductance: the F check hands back
+first, compared by a fixture), the packed residual's flag, NaN and short-circuit arms, a record arm compared by fixtures
+alone, and pcx_kluseq.h's PCX_A_BUILT arm, whose line the restructuring moved.  ibmpg1t's DC on the pattern (the threshold at
+0) with the C on: the C serving its two iterations, no allocation of n^2/4 or more (the s5 trace: zero sites).  ibmpg2t's DC: the C serving, x the packed Python's bytes (and P1's);
+on AC, two interleaved pairs: C 6.91 / 6.96 s against the packed Python's 7.08 / 7.05 s (1.02x: its >= 2x line MISSED), peak
+2.57-2.58 GB against 2.43-2.48 GB (+0.1 GB: "no higher" MISSED) -- a linear grid's DC is two iterations, and the C's own core
+(~2.5 s, its arrays 87 MB) costs about the Python's whole Newton; accepted as measured by Andreas, the stage the C path P2b's
+stepping builds on.  Where iterations are many it pays: the 4 000-stage active chain's DC on the pattern (229 served
+iterations) 1.35-1.40x in two pairs at load 14, the same digest.  Below the threshold nothing moves: the size DCs 0.983-1.009x
+and transients 0.991-1.011x on AC, every digest the same.  Suite 6 686 passed.
+
+**Tests.**  `test_packed` (+12, two restated): the kept rows and columns among the operations; junction gmin on the pattern the dense loop's bytes (a pair given twice; an
+entry off the pattern raises); the decks' operating points on the pattern, C against packed Python (mike2, gm3, gm19 on the
+ordinary chain: every base solve, the counters, x0, the warnings; gm3 and gm19 reach junction gmin there, mike2's plain solve
+converges on KLU); the rounding floor on the pattern the dense Python's bytes on the same solver, deciding (neither converges
+without it), the C's the packed Python's; the iteration limit on the pattern (the C's `Is` for the exception's scale); gm19's
+refactor residuals at 1e-14 (some holding, some failing to a fresh factor) the C's as the Python's; the record and its core
+holding no dense matrix; a nodeset's held solve on the pattern (each latch state, KLU on the held matrix's own pattern, the
+unheld solve's choice the structural one); the AutoSolver's choice by size; gm3 from rough drawn starts (the C's hand-backs on
+flags and singular factors); an exponential chain from a start where it overflows (the C hands every solve back, the
+Python's ladders' outcome the same).  Thirteen bites, each bit (the residual's first missed: no deck's served refactor failed its check at
+1e-8 on the pattern -- the 1e-14 test added for it; the choice's size check's first missed: a held solve came before any
+choice -- the order test added).  Fourteen pinned pairs re-recorded after their twins' tests (804 passed): pcx_kluseq.h is in
+every KLU sequence's twin.  `test_gate_verdict` knows the new twin forcing.

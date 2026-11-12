@@ -117,6 +117,21 @@ typedef struct {
     double *held_v;
     int64_t *held_st;
     long held_own;
+    /* THE PACKED LAYOUT (`_packed`; CTX): `packed` 1 where the record holds
+       no dense matrix -- the core called for its packed sets (`pattern` has
+       PCX_WANT_SETS: G in its packed bin), J made at KLU's entries alone
+       (`klu.kAx`, each from that bin through `gmap`, zero off the core's
+       pattern), gshunt's diagonal at `kdiag`, junction gmin's entries at
+       `jk` (CALL); the convergence scale |J| |x_next| and the refactor's
+       residual by THE CSC KERNEL on KLU's arrays (the reference's order at
+       size), the rounding floor's rows by klu_tsolve; R, absJ, A, Tf and
+       Cs unread.  Always with KLU */
+    long packed;
+    const int64_t *gmap;  /* (nact) each KLU entry's index in the core's
+                             pattern, -1 off it */
+    const int64_t *kdiag; /* (m) each row's diagonal entry in KLU's arrays */
+    const int64_t *jk;    /* (4 nj) each junction's entries (a, a), (a, b),
+                             (b, a), (b, b) in KLU's arrays, in its order */
 } dcnewton_t;
 
 long pcx_dcnewton(dcnewton_t *s);

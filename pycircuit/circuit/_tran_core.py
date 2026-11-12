@@ -591,9 +591,11 @@ class _Flat:
                     fo += len(rows)
         return z_proff
 
-    def arrays(self, n, fused):
+    def arrays(self, n, fused, packed=False):
         """The struct's arrays by their `hdl_core_t` names, the pattern among
-        them (and, `fused`, the fused groups' tables): `(arrays, npat)`."""
+        them (and, `fused`, the fused groups' tables): `(arrays, npat)`.
+        `packed` (THE PACKED LAYOUT, `_Core`): the pattern whatever its fill,
+        and no n x n G bin."""
         g_soff, batches = self.g_soff, self.batches
         arrays = {
             'b_pass': _i64(self.b_pass), 'b_ne': _i64([bt.n for bt in batches]),
@@ -611,22 +613,29 @@ class _Flat:
         ## caller's matrices are zero off it where it asks for it
         mats = [f for f, nb in zip(self.flat, self.p_nbins) if nb == n * n]
         pat = np.unique(np.concatenate(mats + [np.arange(n, dtype=np.int64) * (n + 1)]))
-        npat = len(pat) if PATTERN and len(pat) <= PATTERN_MAX_FILL * n * n else 0
+        npat = (len(pat) if packed or (PATTERN and len(pat) <= PATTERN_MAX_FILL * n * n)
+                else 0)
         ## (with the pattern on pattern pages at size: a pass asking for it
-        ## writes binG there alone -- resident where written)
-        arrays['binG'] = pattern_zeros(n * n) if npat else np.zeros(n * n)
+        ## writes binG there alone -- resident where written; packed, none:
+        ## every call makes G in the packed bin `binGp`)
+        arrays['binG'] = (np.zeros(1) if packed else pattern_zeros(n * n) if npat
+                          else np.zeros(n * n))
         arrays['pat'] = np.ascontiguousarray(pat, dtype=np.int64)
         if fused:
             arrays['ztab'] = np.array(self.ztab, dtype=np.int64)
         arrays.update(self._pull(n, fused, pat if npat else None))
         ## THE PACKED SETS (core.h): each matrix pass's written bin's index in
-        ## the pattern (they are its entries, in run order), G's packed bins
-        wp = arrays['wball'].copy()
+        ## the pattern (they are its entries, in run order), G's packed bins;
+        ## packed, the one table (core.c reads wball for the vector passes
+        ## alone there, the rows both hold)
+        wp = arrays['wball'] if packed else arrays['wball'].copy()
         if npat:
             po = arrays['pl_off']
             for m in range(2):
                 wp[po[m]:po[m + 1]] = np.searchsorted(pat, wp[po[m]:po[m + 1]])
         arrays['wpall'] = np.ascontiguousarray(wp, dtype=np.int64)
+        if packed:
+            arrays['wball'] = arrays['wpall']
         arrays['binGp'] = np.zeros(max(npat, 1))
         return arrays, npat
 
@@ -731,9 +740,12 @@ class _Core:
     `Unservable` where an element is neither constant nor C-bound, a
     constant group is not matmul-exact, or an element is wider than the
     core holds.  `npat` is the pattern's size, 0 where the core writes
-    every entry; `arrays['pat']` the pattern."""
+    every entry; `arrays['pat']` the pattern.  `packed` (THE PACKED LAYOUT,
+    `_packed`: a record holding no dense matrix builds its own): the pattern
+    whatever its fill and no n x n G bin -- every call must ask for the
+    packed sets (PCX_WANT_PATTERN | PCX_WANT_SETS), G made in `binGp`."""
 
-    def __init__(self, cir, plan, ffi, dgemv):
+    def __init__(self, cir, plan, ffi, dgemv, packed=False):
         from pycircuit.circuit import _hdl_cbackend as cb
         from pycircuit.circuit import _stamp_plan
         self.plan = plan
@@ -769,7 +781,8 @@ class _Core:
         self.b_fn = np.zeros(max(self.nb, 1), dtype=np.uintp)
         self.PRall = np.zeros(max(fl.pr_len, 1), dtype=np.uintp)
         self.b_proff = fl.b_proff
-        arrays, self.npat = fl.arrays(n, bool(zgroups))
+        self.packed = packed
+        arrays, self.npat = fl.arrays(n, bool(zgroups), packed)
         if any(bt.k > _MAX_IN or bt.so > _MAX_OUT for bt in batches) \
                 or any(k > _MAX_IN for _o, _e, k in fl.g_soff):
             raise Unservable('an element wider than the core holds')

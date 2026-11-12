@@ -34,6 +34,14 @@ run's StructuralKLU, its `_numeric` and its `refactors`, `factors`,
 (`dcnewton_c:bail:<why>`).  Switch: `ENABLED` (env `PYCIRCUIT_DCNEWTON_C=0`),
 read on every call.
 
+THE PACKED LAYOUT (`_packed`).  Inside the scope of its circuit the record
+holds no dense matrix: its own core (`_tran_core._Core(packed=True)`: no
+n x n bin) makes G in its packed bin, J is made at KLU's entries alone, the
+layers at theirs, and the convergence scale and the refactor's residual by
+the reference's CSC kernel on KLU's arrays -- the Python's on the pattern,
+bit for bit; KLU on the structure whatever the size (`AutoSolver.
+choose_packed`, `_select`'s own choice for a PatternMatrix).
+
 EXACT OR NOT AT ALL.  A flag numpy would report, a non-finite value, a
 failed factor or solve, or a limiter the walk stops at hands the solve back
 -- the numeric StructuralKLU held at entry kept, nothing of the analysis's
@@ -51,7 +59,9 @@ the DC's AutoSolver over its dense solve or an analysed StructuralKLU whose
 pattern holds the core's, a toolkit that is not numeric, numpy not ignoring
 underflow, the circuit-level limiter or a limiting element the walk cannot
 take, a circuit the core cannot serve or its readiness (`_Core.probe`), x0
-and the tolerances not float64 vectors of the reduced size.
+and the tolerances not float64 vectors of the reduced size; on the pattern
+a solve no structure chooses KLU for, a junction entry off KLU's pattern;
+inside another circuit's packed scope (`dcnewton_c:packed`).
 
 `STATUS` says why the path is off where it is."""
 import os
@@ -161,28 +171,35 @@ class _Rec:
     solve; `limits` whether any element of the circuit limits."""
 
     __slots__ = ('act', 'buf', 'core', 'ffi', 'iref', 'jrows', 'keep', 'klu', 'klu_keep',
-                 'limits', 'n', 'plan', 's', 'walk', 'walk_arms', 'walk_dicts', 'walk_els',
-                 'walk_held', 'walk_kern', 'walk_ok', 'walk_packs', 'walk_stamp', 'walk_watch')
+                 'limits', 'n', 'packed', 'pk', 'plan', 's', 'walk', 'walk_arms', 'walk_dicts',
+                 'walk_els', 'walk_held', 'walk_kern', 'walk_ok', 'walk_packs', 'walk_stamp',
+                 'walk_watch')
 
-    def __init__(self, core, plan, n, iref, drv, core_drv):
+    def __init__(self, core, plan, n, iref, drv, core_drv, packed=False):
         from pycircuit.circuit import _tran_core
         from pycircuit.circuit.nrsolver import FLOOR_ROWS
         ffi, _cfn, dgesv, dgemv, ddot = drv
         cffi_core, cfn_core, _dg = core_drv
         m = n - 1
         self.core, self.plan, self.n, self.iref, self.ffi = core, plan, n, iref, ffi
+        self.packed, self.pk = packed, ()
         self.s = s = ffi.new('dcnewton_t *')
         E = np.empty
         ## (R and |J| start at zero: only their active entries are written --
-        ## on pattern pages, resident only where written: `_tran_core.pattern_zeros`)
+        ## on pattern pages, resident only where written: `_tran_core.pattern_zeros`;
+        ## THE PACKED LAYOUT reads none of the dense ones)
         Z = _tran_core.pattern_zeros
+        if packed:
+            Z = D = lambda _size: E(1)
+        else:
+            D = E
         self.buf = buf = {
             'x': E(m), 'Fr': E(m), 'xn': E(m), 'xd': E(m), 'xf': E(n), 'Ff': E(n), 'xnf': E(n),
             'x0f': E(n), 'Cs': Z(n * n), 'q': E(n), 'R': Z(m * m), 'absJ': Z(m * m),
-            'A': E(m * m), 'b': E(m), 'kx': E(m), 'ax': E(m), 'Is': E(m), 'ky': E(m),
+            'A': D(m * m), 'b': E(m), 'kx': E(m), 'ax': E(m), 'Is': E(m), 'ky': E(m),
             'u': E(n), 'abstol': E(m), 'xtol': E(m),
             ## (the rounding floor's, `nrsolver.FLOOR_ROWS` as the record is made)
-            'Tf': E(m * m), 'Ef': E(m * FLOOR_ROWS), 'af': E(m), 'Isf': E(m),
+            'Tf': D(m * m), 'Ef': E(m * FLOOR_ROWS), 'af': E(m), 'Isf': E(m),
             ## (the sparse verdicts' scratch -- pcx_verdict.h)
             'vt': E(2 * m),
         }
@@ -202,7 +219,13 @@ class _Rec:
         s.klu_tsolve = ffi.NULL
         s.core = ffi.cast('void *', int(cffi_core.cast('uintptr_t', core.cs)))
         s.core_fn = ffi.cast('void *', int(cffi_core.cast('uintptr_t', cfn_core)))
-        s.pattern = _sources()[4]['PCX_WANT_PATTERN'] if core.npat else 0
+        abi = _sources()[4]
+        s.pattern = abi['PCX_WANT_PATTERN'] if core.npat else 0
+        ## (THE PACKED LAYOUT: the core's packed sets, G in its packed bin)
+        s.packed = int(packed)
+        if packed:
+            s.pattern |= abi['PCX_WANT_SETS']
+        s.gmap = s.kdiag = s.jk = ffi.NULL
         s.n, s.iref = n, iref
         s.walk_fn, s.wn = ffi.NULL, 0
         self.walk = self.walk_ok = None
@@ -255,7 +278,10 @@ def _klu_bind(rec, sk):
     pr, pc = np.divmod(pat, n)
     if not np.isin(pat[(pr != iref) & (pc != iref)], act_f).all():
         return False
-    rec._set_active(sk.take, act_f)
+    if rec.packed and not _packed_maps(rec, sk, act_f):
+        return False
+    ## (packed, the C reads `gmap` for the core's places: no act_f kept)
+    rec._set_active(sk.take, np.zeros(1, np.int64) if rec.packed else act_f)
     ffi, s, lib = rec.ffi, rec.s, sk._lib
     ## (and its held values, pcx_held.h: the same buffers the Python's
     ## `solve` reads and writes)
@@ -273,6 +299,44 @@ def _klu_bind(rec, sk):
     k.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
     rec.klu, rec.klu_keep = sk, keep
     return True
+
+
+def _packed_maps(rec, sk, act_f):
+    """THE PACKED LAYOUT's maps (dcnewton.h) for `sk`: each KLU entry's index
+    in the core's pattern (-1 off it), each row's diagonal entry in KLU's
+    arrays -- False where a row has none (the core's pattern, within KLU's,
+    holds the whole diagonal: never so)."""
+    m, ffi = rec.n - 1, rec.ffi
+    pat = rec.core.arrays['pat']
+    g = np.searchsorted(pat, act_f)
+    on = g < len(pat)
+    on[on] = pat[g[on]] == act_f[on]
+    gmap = np.ascontiguousarray(np.where(on, g, -1), dtype=np.int64)
+    r, c = np.divmod(np.asarray(sk.take, dtype=np.int64), m)
+    kdiag = np.full(m, -1, dtype=np.int64)
+    at = np.flatnonzero(r == c)
+    kdiag[r[at]] = at
+    if (kdiag < 0).any():
+        return False
+    rec.pk = (gmap, kdiag, ffi.from_buffer('int64_t *', gmap),
+              ffi.from_buffer('int64_t *', kdiag), sk)
+    rec.s.gmap, rec.s.kdiag = rec.pk[2], rec.pk[3]
+    return True
+
+
+def _junction_entries(rec, ja, jb):
+    """Each junction's entries (a, a), (a, b), (b, a), (b, b) in KLU's
+    arrays, in the loop's order (THE PACKED LAYOUT) -- or None where one is
+    off its pattern (the Python's on the pattern raises there)."""
+    m = rec.n - 1
+    key = np.asarray(rec.pk[4].take, dtype=np.int64)
+    order = np.argsort(key, kind='stable')
+    skey = key[order]
+    want = np.stack((ja * m + ja, ja * m + jb, jb * m + ja, jb * m + jb), axis=1).reshape(-1)
+    i = np.minimum(np.searchsorted(skey, want), max(skey.size - 1, 0))
+    if want.size and not (skey[i] == want).all():
+        return None
+    return np.ascontiguousarray(order[i], dtype=np.int64)
 
 
 #: the rounding floor's helpers as `nrsolver` defines them, read once
@@ -307,10 +371,11 @@ def _settings(dc, toolkit, limiter, scaler):
     return None
 
 
-def _record(dc, drv, linsolver):
+def _record(dc, drv, linsolver, packed=False):
     """The DC analysis's record for its circuit as it stands -- its core
     (built again where the stamp plan was), the solver bound, the walk
-    ready -- or why not (a reason)."""
+    ready -- or why not (a reason).  `packed`: on THE PACKED LAYOUT (a record
+    and core of its own kind)."""
     from pycircuit.circuit import _stamp_plan, _tran_core
     cir = dc.cir
     n, iref = cir.n, dc.irefnode
@@ -318,15 +383,16 @@ def _record(dc, drv, linsolver):
         return 'core'
     plan = _stamp_plan._plan_for(cir)
     rec = dc.__dict__.get('_dc_newton_c')
-    if rec is None or rec.plan is not plan or rec.n != n or rec.iref != iref:
+    if (rec is None or rec.plan is not plan or rec.n != n or rec.iref != iref
+            or rec.packed != packed):
         core_drv = _tran_core.driver()
         if core_drv is None:
             return 'core'
         try:
-            core = _tran_core._Core(cir, plan, core_drv[0], core_drv[2])
+            core = _tran_core._Core(cir, plan, core_drv[0], core_drv[2], packed=packed)
         except _tran_core.Unservable:
             return 'unservable'
-        rec = dc.__dict__['_dc_newton_c'] = _Rec(core, plan, n, iref, drv, core_drv)
+        rec = dc.__dict__['_dc_newton_c'] = _Rec(core, plan, n, iref, drv, core_drv, packed)
     why = _solver(rec, linsolver)
     if why is None:
         why = _walk(rec, cir)
@@ -338,7 +404,11 @@ def _solver(rec, ls):
     analysed StructuralKLU -- or why not."""
     from pycircuit.circuit.linearsolver import AutoSolver, StructuralKLU
     ch = None
-    if type(ls) is AutoSolver:
+    if type(ls) is AutoSolver and rec.packed:
+        ch = _packed_choice(ls, rec.n - 1)
+        if type(ch) is not StructuralKLU:
+            return 'linsolver'
+    elif type(ls) is AutoSolver:
         ch = ls._choice or first_choice(ls, rec.n - 1)
     if ch is None:
         return 'linsolver'
@@ -355,6 +425,20 @@ def _solver(rec, ls):
     if rec.klu is ch and rec.s.klu.klu_sym == rec.ffi.cast('void *', ch._symbolic or 0):
         return None
     return None if _klu_bind(rec, ch) else 'klu'
+
+
+def _packed_choice(ls, m):
+    """THE PACKED LAYOUT's solver: KLU on the structure whatever the size
+    (`AutoSolver.choose_packed`, `_select`'s own choice for a PatternMatrix),
+    analysed as its first factor analyses it -- or None."""
+    ch = ls.choose_packed(m)
+    if ch is None or ch is ls._dense:
+        return None
+    try:
+        ch._analysed()
+    except np.linalg.LinAlgError:
+        return None
+    return ch
 
 
 def structure_chooses(ls, m):
@@ -431,16 +515,20 @@ def _load(rec, dc, x0, lam, gs, jg, maxiter, reltol, abstol, xtol):
         s.has_jgmin, s.gjgmin, s.nj = 0, 0.0, 0
     else:
         g, rows = jg
-        if rec.jrows is None or rec.jrows[0] is not rows:
+        if rec.jrows is None or rec.jrows[0] is not rows or rec.jrows[5] is not rec.pk:
             ja = np.ascontiguousarray([a for a, _b in rows], dtype=np.int64)
             jb = np.ascontiguousarray([b for _a, b in rows], dtype=np.int64)
             if len(ja) and not ((ja >= 0) & (ja < m) & (jb >= 0) & (jb < m)).all():
                 return 'junctions'
             ffi = rec.ffi
+            jk = _junction_entries(rec, ja, jb) if rec.packed else np.zeros(1, np.int64)
+            if jk is None:
+                return 'junctions'
             rec.jrows = (rows, ja, jb, ffi.from_buffer('int64_t *', ja),
-                         ffi.from_buffer('int64_t *', jb))
+                         ffi.from_buffer('int64_t *', jb), rec.pk, jk,
+                         ffi.from_buffer('int64_t *', jk))
         s.has_jgmin, s.gjgmin, s.nj = 1, float(g), len(rows)
-        s.ja, s.jb = rec.jrows[3], rec.jrows[4]
+        s.ja, s.jb, s.jk = rec.jrows[3], rec.jrows[4], rec.jrows[7]
     if rec.klu is not None:
         num = rec.klu._numeric
         s.klu.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
@@ -473,10 +561,12 @@ def solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, 
         return None    # paths: not a decline (not a DC composition)
     if not ENABLED:
         return _no('dcnewton_c:off')
-    ## (THE PACKED LAYOUT, `_packed`: the C mirrors the dense one)
-    if _packed.any_active():
-        return _no('dcnewton_c:packed')
     dc, lam, gs, jg = comp
+    ## (THE PACKED LAYOUT, `_packed`: its circuit's scope the record on the
+    ## pattern; another circuit's scope declines)
+    packed = _packed.active(dc.cir)
+    if not packed and _packed.any_active():
+        return _no('dcnewton_c:packed')
     ## (the cheap checks first: a solve they decline never loads the unit)
     why = _settings(dc, toolkit, limiter, scaler)
     if why is not None:
@@ -484,7 +574,7 @@ def solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, 
     drv = _driver or driver()
     if not drv:
         return _no('dcnewton_c:driver')
-    rec = _record(dc, drv, linsolver)
+    rec = _record(dc, drv, linsolver, packed)
     if type(rec) is str:
         return _no('dcnewton_c:' + rec)
     why = _load(rec, dc, x0, lam, gs, jg, maxiter, reltol, abstol, xtol)

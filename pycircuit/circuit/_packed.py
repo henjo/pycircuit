@@ -120,6 +120,20 @@ class Pattern:
             got = self._red[drop] = (Pattern(self.n - 1, r - (r > drop), c - (c > drop)), keep)
         return got
 
+    def kept(self, keep):
+        """`(the pattern on the rows and columns `keep` -- ascending --
+        renumbered in its order, the kept entries' indices here)` -- as
+        `A[np.ix_(keep, keep)]` gathers a dense matrix (the order kept: the
+        entries stay in CSC order)."""
+        keep = np.asarray(keep, dtype=np.int64)
+        if keep.size > 1 and not (np.diff(keep) > 0).all():
+            raise ValueError('kept rows and columns not ascending')
+        pos = np.full(self.n, -1, dtype=np.int64)
+        pos[keep] = np.arange(keep.size)
+        r, c = pos[self.rows], pos[self.cols]
+        sel = np.flatnonzero((r >= 0) & (c >= 0))
+        return Pattern(keep.size, r[sel], c[sel]), sel
+
     def diagonal(self):
         """The diagonal's entries' indices, row by row (every one a place)."""
         got = self._red.get('diag')
@@ -213,6 +227,13 @@ class PatternMatrix:
         """Without row and column `drop`: the same bytes as the dense cut."""
         pat, keep = self.pat.reduced(drop)
         return PatternMatrix(pat, self.v[keep])
+
+    def kept(self, keep, got=None):
+        """`A[np.ix_(keep, keep)]` (`keep` ascending): the kept rows and
+        columns gathered, the same bytes -- `got` the pattern's `kept(keep)`
+        where a caller holds it."""
+        pat, sel = got if got is not None else self.pat.kept(keep)
+        return PatternMatrix(pat, self.v[sel])
 
     def plus_diagonal(self, d):
         """`J + eye(n) * d` for `d` finite and not negative (a scalar or a

@@ -1996,17 +1996,15 @@ class AutoSolver(LinearSolver):
         self._held = {}
 
     def _select(self, A):
-        if self._choice is not None:
-            return self._choice
         from pycircuit.circuit import _packed, _paths
         if type(A) is _packed.PatternMatrix:
-            ## (THE PACKED LAYOUT: KLU on the circuit's structure whatever the
-            ## size or the fill -- the dense solvers need the dense matrix)
-            n_unknowns = A.shape[0]
-            st = self.structure() if self.structure is not None else None
-            if st is not None and st[0] == n_unknowns and self._structural(st, n_unknowns):
-                return self._choice
-            raise TypeError('PatternMatrix: no structural pattern to factor it on')
+            ## (a matrix the structure does not describe -- a held solve's,
+            ## its held rows and columns out: KLU on its own pattern, no
+            ## choice made)
+            ch = self.choose_packed(A.shape[0])
+            return ch if ch is not None else _packed.own_solver(A)
+        if self._choice is not None:
+            return self._choice
         arr = numpy.asarray(A)
         floor = (min(self.min_n, self.structural_min_n) if self.structure is not None
                  else self.min_n)
@@ -2076,6 +2074,21 @@ class AutoSolver(LinearSolver):
             return False
         _paths.COUNTS['solver.auto:StructuralKLU'] += 1
         return True
+
+    def choose_packed(self, m):
+        """`_select`'s choice for THE PACKED LAYOUT's m x m matrix (`_packed`):
+        KLU on the circuit's structure whatever the size or the fill -- the
+        dense solvers need the dense matrix -- made before one is seen (the
+        DC Newton's C on the pattern takes it there), or None where no
+        structure of that size is given, or the choice made is not one of
+        that size (`_select` takes KLU on the matrix's own pattern there)."""
+        ch = self._choice
+        if ch is not None:
+            return ch if type(ch) is StructuralKLU and ch.m == m else None
+        st = self.structure() if self.structure is not None else None
+        if st is not None and st[0] == m and self._structural(st, m):
+            return self._choice
+        return None
 
     def choose_on_structure(self, m):
         """`_select`'s choice for an m x m matrix, made before one is seen

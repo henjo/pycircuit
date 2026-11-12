@@ -721,6 +721,8 @@ class _Held:
         self.values = np.array([0.0 if i == irefnode else held[i] for i in out])
         self.n = n
         self.lam = 1.0
+        ## (THE PACKED LAYOUT's kept pattern, by the pattern it was made from)
+        self._pk = {}
 
     def full(self, xr):
         x = np.empty(self.n)
@@ -732,6 +734,11 @@ class _Held:
         return np.asarray(x)[self.keep]
 
     def system(self, F, J):
+        if type(J) is _packed.PatternMatrix:
+            got = self._pk.get(J.pat)
+            if got is None:
+                got = self._pk[J.pat] = J.pat.kept(self.keep)
+            return np.asarray(F)[self.keep], J.kept(self.keep, got)
         return np.asarray(F)[self.keep], np.asarray(J)[np.ix_(self.keep, self.keep)]
 
 

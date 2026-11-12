@@ -326,11 +326,12 @@ def _dc_solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scal
     solver not chosen yet: `AutoSolver` decides on its first matrix) below
     the solver's structural floor, is declined here -- before the import,
     0.2 ms: a small operating point's 3 %.  From the floor the structure
-    may choose first (`_dc_newton_c.first_choice`)."""
+    may choose first (`_dc_newton_c.first_choice`); on THE PACKED LAYOUT it
+    chooses whatever the size (`_dc_newton_c._packed_choice`)."""
     global _DC
     if len(x0) < DC_C_MIN_N:
         return _paths.no('dcnewton_c:small')
-    if (getattr(linsolver, '_choice', None) is None
+    if (getattr(linsolver, '_choice', None) is None and not _packed.any_active()
             and not (getattr(linsolver, 'structure', None) is not None
                      and len(x0) >= getattr(linsolver, 'structural_min_n', len(x0) + 1))):
         return _paths.no('dcnewton_c:linsolver')
@@ -416,8 +417,12 @@ def _within_rounding(J, xdiff, tol_x, I_scale, linsolver, scaler, toolkit):
     of J^T otherwise; each floor ``eps * np.dot(|row|, I_scale)`` (ddot, as
     the C Newtons make it: newton.c's and dcnewton.c's `floor_holds`); the
     first block with an unknown over its floor decides.  False too for a J
-    that is not a float64 array and for a solve that fails."""
-    if type(J) is not np.ndarray or J.dtype != np.float64 or J.ndim != 2:
+    that is not a float64 array and for a solve that fails.  On THE PACKED
+    LAYOUT (`_packed`) the same rows by KLU's transposed solve: the run's
+    solver's, or where none was given the matrix's own (`_default_solve`'s
+    numeric for this step); a scaled one takes no dense J^T there."""
+    packed = type(J) is _packed.PatternMatrix
+    if not packed and (type(J) is not np.ndarray or J.dtype != np.float64 or J.ndim != 2):
         return False
     fail = np.flatnonzero(~(abs(xdiff) < tol_x))
     if not fail.size:
@@ -429,9 +434,12 @@ def _within_rounding(J, xdiff, tol_x, I_scale, linsolver, scaler, toolkit):
         E = np.zeros((J.shape[0], k))
         E[part, np.arange(k)] = 1.0
         try:
-            Y = (linsolver.solve_transposed(J, E, toolkit)
-                 if linsolver is not None and type(scaler) is NoneScaler
-                 else np.linalg.solve(J.T, E))
+            if linsolver is not None and type(scaler) is NoneScaler:
+                Y = linsolver.solve_transposed(J, E, toolkit)
+            elif packed and linsolver is None:
+                Y = _packed.own_solver(J).solve_transposed(J, E, toolkit)
+            else:
+                Y = np.linalg.solve(J.T, E)
         except np.linalg.LinAlgError:
             return False
         floor = np.array([eps * np.dot(np.abs(Y[:, c]), I_scale) for c in range(k)])
@@ -761,8 +769,13 @@ def _junction_gmin(F, J, x, g, rows, tables):
     entry touched below 1e300 in magnitude -- no sum of them can overflow,
     no NaN can arise.  Anything else -- another array type, a non-finite or
     huge value, fewer than `_JUNCTION_VECTOR_MIN` junctions -- takes the
-    loop."""
+    loop.  On THE PACKED LAYOUT (`_packed`) the loop itself, J's four entries
+    a junction at their places in its pattern (a place off it raises: no
+    element stamps there)."""
     ra, rb, fidx, by_n = tables
+    if type(J) is _packed.PatternMatrix:
+        _junction_gmin_packed(F, J, x, g, rows, ra, rb, by_n)
+        return
     n = len(F)
     if (len(rows) >= _JUNCTION_VECTOR_MIN and type(x) is np.ndarray and x.dtype == np.float64 and x.ndim == 1
             and type(J) is np.ndarray and J.dtype == np.float64 and J.shape == (n, n)
@@ -788,6 +801,29 @@ def _junction_gmin(F, J, x, g, rows, tables):
         F[b] -= g * vj
         J[a, a] += g; J[a, b] -= g
         J[b, a] -= g; J[b, b] += g
+
+
+def _junction_gmin_packed(F, J, x, g, rows, ra, rb, by_pat):
+    """`_junction_gmin`'s loop on THE PACKED LAYOUT: F as the loop makes
+    it, J's entries (a, a), (a, b), (b, a), (b, b) at their indices in its
+    pattern -- each the same numpy scalar operation as the dense loop's, in
+    its order.  The indices made once a pattern (`by_pat`)."""
+    idx = by_pat.get(J.pat)
+    if idx is None:
+        r4 = np.stack((ra, ra, rb, rb), axis=1).reshape(-1)
+        c4 = np.stack((ra, rb, ra, rb), axis=1).reshape(-1)
+        idx = J.pat.index_of(r4, c4)
+        if (idx < 0).any():
+            raise IndexError('junction gmin: a junction entry off the pattern')
+        idx = by_pat[J.pat] = idx.tolist()
+    v = J.v
+    for k, (a, b) in enumerate(rows):
+        vj = x[a] - x[b]
+        F[a] += g * vj
+        F[b] -= g * vj
+        i = 4 * k
+        v[idx[i]] += g; v[idx[i + 1]] -= g
+        v[idx[i + 2]] -= g; v[idx[i + 3]] += g
 
 
 class JunctionGminSteppingNewton(NonLinearSolver):
@@ -824,7 +860,8 @@ class JunctionGminSteppingNewton(NonLinearSolver):
             def eval_FJ_with_gmin(x):
                 F, J = eval_FJ(x)
                 F = _np.array(F, dtype=float, copy=True)
-                J = _np.array(J, dtype=float, copy=True)
+                J = (J.copy() if type(J) is _packed.PatternMatrix
+                     else _np.array(J, dtype=float, copy=True))
                 _junction_gmin(F, J, x, g, rows, tables)
                 return F, J
             ## (what it is: `_dc_newton_c.composition`)
