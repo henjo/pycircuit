@@ -757,3 +757,88 @@ def test_an_active_chains_pcnr_dc_on_the_pattern(monkeypatch):
     got, counts = run(True, True)
     assert py == dense and got == py
     assert counts.get('pcnr_c:served', 0) > 0, counts
+
+
+def test_the_screens_svd_by_blocks_is_the_dense_svds():
+    """`_tran_branch._svd_by_blocks` (the screen's SVD past `_packed.DENSE_MAX`):
+    on block matrices permuted -- blocks of one to six, some with a planted
+    rank drop, some zero -- the count above each tolerance clear of the
+    rounding is the dense SVD's (within it two SVDs part: the structural
+    rank's band), its vector a unit left
+    singular vector of the smallest (|u^T C| that value), and None from a
+    component of `kmax` unknowns."""
+    from pycircuit.circuit import _tran_branch as B
+    rng = np.random.default_rng(7)
+    for _trial in range(40):
+        sizes = rng.integers(1, 7, size=12)
+        n = int(sizes.sum())
+        A = np.zeros((n, n))
+        off = 0
+        for k in sizes:
+            blk = rng.standard_normal((k, k)) * 10.0 ** rng.integers(-3, 3)
+            if k > 1 and rng.random() < 0.4:
+                blk[-1] = blk[0] * 2.0
+            if rng.random() < 0.15:
+                blk[:] = 0.0
+            A[off:off + k, off:off + k] = blk
+            off += k
+        p = rng.permutation(n)
+        A = A[np.ix_(p, p)]
+        r, c = np.nonzero(np.ones((n, n)))
+        pat = _packed.Pattern(n, r.astype(np.int64), c.astype(np.int64))
+        pm = _packed.PatternMatrix(pat, A[pat.rows, pat.cols].copy())
+        sv = np.linalg.svd(A, compute_uv=False)
+        ## (tolerances clear of the rounding: between two singular values both
+        ## past 1e-10 of the largest, and 1e-9 of it where none lies near --
+        ## a planted drop's singular value is rounding, ~1e-15 of the largest,
+        ## and two SVDs of the same matrix round it apart)
+        tols = list(np.sqrt(sv[:-1] * sv[1:])[sv[1:] > 1e-10 * sv[0]])
+        if not ((sv > 1e-11 * sv[0]) & (sv < 1e-7 * sv[0])).any():
+            tols.append(1e-9 * sv[0])
+        for tol in tols:
+            assert B._svd_by_blocks(pm, float(tol))[0] == int((sv > tol).sum())
+        _count, u = B._svd_by_blocks(pm, 1.0)
+        assert abs(np.linalg.norm(u) - 1.0) < 1e-12
+        assert abs(np.linalg.norm(u @ A) - sv[-1]) <= 1e-14 * sv[0]
+        on = pm.v != 0.0
+        big = int(np.bincount(B._components(n, pat.rows[on], pat.cols[on])[1]).max())
+        assert B._svd_by_blocks(pm, 1.0, kmax=big) is None
+        assert B._svd_by_blocks(pm, 1.0, kmax=big + 1) is not None
+
+
+def test_the_branch_screen_past_dense_max_by_blocks(monkeypatch):
+    """Past `_packed.DENSE_MAX` -- here from any size -- with the certificate
+    off (as past `BRANCH_CERT_MAX_N`), the screen's SVD where its cheap level
+    fires is made by blocks (`_svd_by_blocks`, `branch.screen:blocks`): the
+    run, its `branch_screens` and its confirmations the dense SVD's, and the
+    check never switched off (it was, with no dense copy to make)."""
+    from pycircuit.circuit import _tran_branch, _tran_loop_c
+    from pycircuit.circuit.elements import VSin
+    from pycircuit.circuit.tests import test_loop_c as L
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    monkeypatch.setattr(_tran_loop_c, 'ENABLED', False)
+    monkeypatch.setattr(Transient, 'BRANCH_CERT_MAX_N', 0)
+
+    def build():
+        c = L._psp_stage()
+        c['vg'] = VSin('g', gnd, v=0.7, va=0.5, freq=1e6)
+        return c
+
+    def run(dense_max):
+        monkeypatch.setattr(_packed, 'DENSE_MAX', dense_max)
+        before = _paths.snapshot()
+        with warnings.catch_warnings(record=True) as W:
+            warnings.simplefilter('always')
+            tr = Transient(build(), toolkit=numeric)
+            tr.BRANCH_SCREEN_TOL = 0.9
+            res = tr.solve(tend=80 * 2e-8, timestep=2e-8, fixed_timestep=True)
+        st = tr.statistics
+        off = [str(w.message) for w in W if 'branch check' in str(w.message)]
+        return ((np.asarray(res.x, float).tobytes(), st.accepted_steps, st.newton_iterations,
+                 getattr(st, 'branch_screens', None)), off, _paths.since(before))
+    dense, off_d, counts_d = run(1 << 14)
+    blocks, off_b, counts_b = run(1)
+    assert blocks == dense and dense[3], (dense[1:], blocks[1:])
+    assert not off_d and not off_b, (off_d, off_b)
+    assert counts_b.get('branch.screen:blocks', 0) > 0 and 'branch.screen:blocks' not in counts_d, counts_b
+    assert _tran_branch.SCREEN_BLOCK_MAX > 6

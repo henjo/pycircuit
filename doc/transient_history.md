@@ -6120,3 +6120,13 @@ against 1e-8) now sums in one order whatever the layout: on opampal that
 residual is rounding itself, so the order had decided which solves took a
 fresh factor -- and BLAS's order is the CPU kernel's.  opampal's results
 moved by about 1e-12 V, its operating point in fewer source steps.
+
+## The packed layout, P3: the branch check at size (2026-11-12)
+
+2026-11-12 (`doc/hdl_roadmap_260824.md`, 324; plan 261 L20).  The setup
+passes were checked for any n x n allocation left on the packed path --
+none on the IBM grid ibmpg2t or on the decks forced onto the layout.  One
+gap: past 16 384 unknowns the branch check's screen could not make the
+dense SVD it needs where its cheap test fires, and switched itself off.  It
+now takes the SVD by the blocks C's nonzeros fall into, the count the dense
+SVD's, so a large nonlinear circuit keeps its branch check.

@@ -16053,3 +16053,36 @@ residual test re-aimed at the CSC kernel's residual and renamed).
 **Measured.**  The gate against 49bb3a19: every result and path counter the same, C against Python 0 differing on every entry;
 NOT REACHED on one fixture-only arm (pcnrdc.c's call: PCNR on KLU's full pattern on the dense layout, which no deck takes).
 The size runs on AC (one BLAS thread, interleaved): DCs 0.994-1.026x (the chain 4 000 1.000x on six pairs: its one pair read 0.971x, one 10 ms tick), transients 0.991-1.020x, the Radau runs -- whose struct lost two fields mid-way -- 1.001x and 1.003x on three pairs each; every digest and peak the same..  Suite 6 727 passed.  Twelve pinned pairs re-recorded after their twins' tests (823 passed).
+
+## 2026-11-12 — 324. THE PACKED LAYOUT, P3: the branch screen's SVD by blocks past DENSE_MAX; P3's sizing -- no n^2 left on the path
+
+**Why**  Plan 261 L20, P3 ("the setup packed": no n^2 left on the path from `PACKED_FROM`).  Andreas: "Continue with the open
+items", then on the sizing "Screen by blocks".  SIZING (scratch p261/l19/p3): every allocation of (n-1)^2/4 or more by site over
+20 decks x dc/gear2 under the packed forcing -- the n^2 ones the branch check's dense copies alone, the certificate's below
+BRANCH_CERT_MAX_N (1 000) and the screen's SVD; ibmpg2t's DC and 2 ns none at all (DC 8.4 s at 2.38 GB, 2 ns 58.6 s at
+3.59 GB); the 27 decks x dc/gear2 with `_packed.DENSE_MAX = 1` (no dense copy at any size) every answer and error the same --
+P3's original line MET by P1/P2.  The gap: with the certificate off as past 1 000 unknowns, the screen's SVD where its cheap
+level fires (4 of 6 gear2 decks) refused its dense copy, and the branch check switched itself OFF for the run with a warning
+-- what a nonlinear circuit past DENSE_MAX (16 384) meets the first time its screen fires (the grids are linear: no screens).
+
+**What.**  `_tran_branch._svd_by_blocks`: the screen's SVD of a PatternMatrix by the connected components of its nonzeros
+(block diagonal once permuted: the dense SVD's singular values its blocks' together, as `_rank_by_blocks` counts the
+structural rank) -- the count above the tolerance and a left singular vector of the smallest (its block's; among equals the
+last in component order: the dense SVD's `U[:, -1]` is one of a degenerate set there too), 1 x 1 blocks their entries'
+magnitudes, blocks of one size one stacked SVD; a component of `SCREEN_BLOCK_MAX` (2 000) or more not taken, the check off with
+its warning as before.  `_branch_svd` takes it past `_packed.DENSE_MAX` alone (`branch.screen:blocks`); below, the dense SVD
+as it was.
+
+**Measured.**  Line (set before): (a) below DENSE_MAX nothing changes; (b) as at size (no dense copy, the certificate off) no
+deck's check switched off, `branch_screens` and every answer the dense SVD's; (c) the block count the dense SVD's wherever
+both decide; (d) the size runs >= 0.98x; (e) the suite, bites.  (b): the 27 decks' gear2 under packed, the certificate off,
+DENSE_MAX 1 against the default: every answer and `branch_screens` the same, no check off, no dense copy asked; screens by
+blocks on five (ab_integ 4 050, mosrect 1 010, g1310 535, e1480 188, rich3 1).  (c): 40 random block matrices (blocks of one to
+six, planted rank drops, zero blocks), every tolerance clear of the rounding the dense count, the vector's |u^T C| the
+smallest singular value within 2e-17 of the largest (at a tolerance within rounding of a drop's ~1e-15 singular value the two
+SVDs part -- the structural rank's band; a screen's tolerance is far from it).  (a): the gate against 5780137f SAME -- every result and path counter, C against Python 0 differing.  (d): the size runs on AC, DCs 0.998-1.009x (the active chain at 8 000 1.003x on four pairs: its first pair read 0.960x),
+transients 0.991-1.007x (Radau on three pairs each), every digest the same.  Suite 6 729 passed.
+
+**Tests.**  `test_packed` +2: the block SVD against the dense one (counts, vector, the cap), and the PSP stage's screen as at
+size against the dense SVD (the run, `branch_screens`, no check off, blocks counted).  Four bites, each bit (1 x 1 blocks
+uncounted, the wrong singular vector, the dense copy past DENSE_MAX, the blocks' local indices scrambled).

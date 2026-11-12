@@ -271,6 +271,62 @@ def _rank_by_blocks(C, tol, band=None, nz=None, keep=None, count=True):
     return rank
 
 
+#: THE SCREEN BY BLOCKS (`_svd_by_blocks`): a component of this many unknowns
+#: or more is not taken -- its SVD k x k (~1 s at 2 000); the check then off
+SCREEN_BLOCK_MAX = 2000
+
+
+def _svd_by_blocks(C, tol, kmax=None):
+    """The screen's SVD of the `_packed.PatternMatrix` `C` where no dense
+    copy is made (THE PACKED LAYOUT past `_packed.DENSE_MAX`), by the
+    connected components of its nonzeros: `C` permuted by them is block
+    diagonal, its singular values its blocks' together (`_rank_by_blocks`)
+    -- `(count above tol, u)`, `u` a left singular vector of the smallest
+    singular value (its block's, zero elsewhere; among equal smallest the
+    last block in component order: the dense SVD's `U[:, -1]` is one of a
+    degenerate set there too); a 1 x 1 block's value its entry's magnitude,
+    blocks of one size one stacked SVD.  None where a component has `kmax`
+    unknowns or more (`SCREEN_BLOCK_MAX`)."""
+    kmax = SCREEN_BLOCK_MAX if kmax is None else kmax
+    n = C.pat.n
+    on = C.v != 0.0
+    rows, cols, vals = C.pat.rows[on], C.pat.cols[on], C.v[on]
+    _ncomp, label = _components(n, rows, cols)
+    order = np.argsort(label, kind='stable')
+    starts = np.flatnonzero(np.r_[True, np.diff(label[order]) != 0])
+    sizes = np.diff(np.r_[starts, n])
+    if int(sizes.max()) >= kmax:
+        return None
+    nb = starts.size
+    block = np.empty(n, dtype=np.intp)
+    block[order] = np.repeat(np.arange(nb), sizes)
+    local = np.empty(n, dtype=np.intp)
+    local[order] = np.arange(n) - np.repeat(starts, sizes)
+    count, low, last, u = 0, np.inf, -1, None
+    for k in np.unique(sizes):
+        k = int(k)
+        sel = np.flatnonzero(sizes == k)
+        slot = np.full(nb, -1, dtype=np.intp)
+        slot[sel] = np.arange(sel.size)
+        b = slot[block[rows]]
+        m = b >= 0
+        A = np.zeros((sel.size, k, k))
+        A[b[m], local[rows[m]], local[cols[m]]] = vals[m]
+        if k == 1:
+            sv, U = np.abs(A[:, :, 0]), np.ones((sel.size, 1, 1))
+        else:
+            U, sv, _Vt = np.linalg.svd(A)
+        count += int((sv > tol).sum())
+        mins = sv[:, -1]
+        m0 = float(mins.min())
+        j = int(np.flatnonzero(mins == m0)[-1])
+        if m0 < low or (m0 == low and sel[j] > last):
+            low, last = m0, int(sel[j])
+            u = np.zeros(n)
+            u[order[starts[last] + np.arange(k)]] = U[j, :, -1]
+    return count, u
+
+
 #: `_plan_nonzeros`' last plan's positions: `(its flat indices, np.unique of them)`
 _UPOS = [None]
 
@@ -854,12 +910,23 @@ class _BranchCheck:
         """The screen's verdict where its cheap level fired: `C`'s rank by
         the SVD against the running maximum `ref` -- fired with the null
         direction where it fell below `r0` (on THE PACKED LAYOUT a small
-        circuit's dense copy; at size `to_dense` refuses)."""
-        U, sv, _Vt = np.linalg.svd(C.to_dense() if type(C) is _packed.PatternMatrix else C)
-        r = int((sv > self.BRANCH_SCREEN_TOL * ref).sum())
+        circuit's dense copy; past `_packed.DENSE_MAX`, where none is made,
+        by the components of C's nonzeros, `_svd_by_blocks`: a component of
+        `SCREEN_BLOCK_MAX` or more raises, the check off as the caller
+        says)."""
+        tol = self.BRANCH_SCREEN_TOL * ref
+        if type(C) is _packed.PatternMatrix and C.pat.n >= _packed.DENSE_MAX:
+            got = _svd_by_blocks(C, tol)
+            if got is None:
+                raise MemoryError(f'the screen: a component of {SCREEN_BLOCK_MAX} unknowns or more')
+            _paths.COUNTS['branch.screen:blocks'] += 1
+            r, u = got
+        else:
+            U, sv, _Vt = np.linalg.svd(C.to_dense() if type(C) is _packed.PatternMatrix else C)
+            r, u = int((sv > tol).sum()), U[:, -1]
         if r >= r0:
             return (False, None)
-        return (True, U[:, -1])
+        return (True, u)
 
     def _branch_confirm(self, func, x_res, direction):
         """Re-solve the SAME step from a perturbed seed; return the other root
