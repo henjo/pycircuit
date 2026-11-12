@@ -110,3 +110,86 @@ def test_a_list_put_in_place_is_the_one_its_names_come_from():
     c.nodes = [Node('q'), Node('r'), Node('s')]
     c.append_node(Node('q'))
     assert [nd.name for nd in c.nodes] == ['q', 'r', 's']
+
+
+def _scan_index(c, name):
+    """`get_node_index`'s answer by the list scan it made before the map."""
+    nd = Node(name)
+    return c.nodes.index(nd) if nd in c.nodes else None
+
+
+def _all_agree(c, extra=()):
+    """Every node name of `c` (and the names `extra`) found where the scan
+    finds it; a name absent raising as the scan's did."""
+    import pytest
+    for name in [nd.name for nd in c.nodes] + list(extra):
+        want = _scan_index(c, name)
+        if want is None:
+            with pytest.raises(ValueError, match='is not in circuit node list'):
+                c.get_node_index(name)
+        else:
+            assert c.get_node_index(name) == want, name
+
+
+def test_a_nodes_index_is_found_by_its_name_in_constant_comparisons(monkeypatch):
+    """`get_node_index` through the map of the list's places by name kept
+    beside it (`_node_index_of`): on a ladder of 4 000 nodes, after the map is
+    made, 200 lookups compare two nodes each at most -- the scan compared
+    n / 2 on average (~400 000 for these)."""
+    c = _ladder(4000)
+    c.get_node_index('n1')
+    calls = [0]
+    eq = Node.__eq__
+
+    def counted(self, a):
+        calls[0] += 1
+        return eq(self, a)
+    monkeypatch.setattr(Node, '__eq__', counted)
+    for k in range(0, 4000, 20):
+        assert c.get_node_index(f'n{k}') == k
+    assert calls[0] <= 2 * 200, calls[0]
+
+
+def test_the_index_follows_every_edit_of_the_list():
+    """The lookups the scan's answers through each edit of the list: a node
+    moved (`add_terminals`), replaced in place (`connect_terminals`), removed
+    (`del`), a list put in place of the circuit's, a copy; with the
+    reference node removed too; and a name absent raising as before."""
+    import copy
+
+    c = _Two()
+    c.append_node(Node('x'))
+    _all_agree(c, extra=('nope',))
+    c.connect_terminals(a=Node('n1'))
+    ## (the replacing name first: a map kept past the edit lacks it, and a
+    ## moved node looked up before it would remake the map)
+    assert c.get_node_index('n1') == _scan_index(c, 'n1')
+    _all_agree(c, extra=('a', 'nope'))
+
+    class Pair(SubCircuit):
+        terminals = ('p', 'm')
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.add_node('mid')
+            self['r1'] = R('p', 'mid', r=1.0)
+            self['r2'] = R('mid', 'm', r=1.0)
+    d = SubCircuit()
+    d.add_nodes('in', 'out')
+    d['x1'] = Pair('in', 'out')
+    d['rg'] = R('out', gnd, r=1.0)
+    _all_agree(d)
+    assert d.get_node_index('out', gnd) == _scan_index(d, 'out') - (_scan_index(d, 'out') > _scan_index(d, gnd.name))
+    del d['x1']
+    _all_agree(d, extra=('x1.mid',))
+    e = copy.copy(d)
+    e.append_node(Node('late'))
+    _all_agree(e)
+    _all_agree(d, extra=('late',))
+    d.nodes = [Node('q'), Node('r'), Node('s')]
+    _all_agree(d, extra=('in',))
+    p = SubCircuit()
+    p.add_nodes('u', 'v', 'w')
+    p.get_node_index('w')
+    p.nodes.insert(0, p.nodes.pop())
+    _all_agree(p)

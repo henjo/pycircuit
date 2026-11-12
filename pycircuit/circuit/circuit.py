@@ -435,8 +435,35 @@ class Circuit():
 
     def _nodes_edited(self):
         """A node of the list replaced by another, its length the same:
-        `append_node`'s set of its names dropped."""
+        `append_node`'s set of its names dropped, and `_node_index_of`'s map."""
         self.__dict__.pop('_node_names', None)
+        self.__dict__.pop('_node_index', None)
+
+    def _node_index_of(self, node):
+        """`self.nodes.index(node)`, or None where no item equals `node`:
+        THE LIST'S PLACES BY NAME, a map kept beside it as `append_node`'s set
+        is (the same list object of the same length; a replaced node drops
+        it, `_nodes_edited`) -- each hit checked against the list (a node
+        moved within it: the map made again), a name the map lacks absent.
+        `node in self.nodes` scanned the list, O(n) a name."""
+        nodes = self.nodes
+        kept = self.__dict__.get('_node_index')
+        for _attempt in range(2):
+            if kept is None or kept[0] is not nodes or kept[1] != len(nodes):
+                ix = {}
+                for i, item in enumerate(nodes):
+                    name = getattr(item, 'name', None)
+                    if isinstance(name, str):
+                        ix.setdefault(name, i)
+                kept = self._node_index = (nodes, len(nodes), ix)
+            i = kept[2].get(node.name)
+            if i is None:
+                return None
+            if nodes[i] == node:
+                return i
+            kept = None
+        ## (the map made again and its place still another item's: the scan)
+        return nodes.index(node) if node in nodes else None
 
     def append_branches(self, *branches):
         """Append node object to circuit"""
@@ -492,10 +519,12 @@ class Circuit():
         if refnode and not isinstance(refnode, Node):
             refnode = Node(str(refnode))
 
-        if node in self.nodes:
-            index = self.nodes.index(node)
+        index = self._node_index_of(node)
+        if index is not None:
             if refnode is not None:
-                irefnode = self.nodes.index(refnode)
+                irefnode = self._node_index_of(refnode)
+                if irefnode is None:
+                    irefnode = self.nodes.index(refnode)
                 if index == irefnode:
                     return None
                 if index > irefnode:

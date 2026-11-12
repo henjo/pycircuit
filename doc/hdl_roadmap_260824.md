@@ -16086,3 +16086,23 @@ transients 0.991-1.007x (Radau on three pairs each), every digest the same.  Sui
 **Tests.**  `test_packed` +2: the block SVD against the dense one (counts, vector, the cap), and the PSP stage's screen as at
 size against the dense SVD (the run, `branch_screens`, no check off, blocks counted).  Four bites, each bit (1 x 1 blocks
 uncounted, the wrong singular vector, the dense copy past DENSE_MAX, the blocks' local indices scrambled).
+
+## 2026-11-12 — 325. Bulk elements, B1: a node's index by its name in constant time
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md: the IBM grids past ibmpg2t -- ibmpg3t's import alone fills the 11 GB cap at ~5 KB a
+Python element; array-backed bulk elements proposed, four stages).  Andreas: "Size bulk elements", then "Start B1".
+`get_node_index` scanned the node list (`node in self.nodes`, then `.index`): O(n) a name -- at a million nodes every result
+read by name, every `save=` node, initial condition and nodeset a pass over the list.  Line (set before): ibmpg2t's import and
+results byte-identical, name lookups constant-time, the gate SAME, the size runs >= 0.98x, the suite green.
+
+**What.**  `Circuit._node_index_of`: the list's places by name, a map kept beside it as `append_node`'s set of names is (the
+same list object of the same length; `_nodes_edited` drops both) -- each hit checked against the list (a node moved within it:
+the map made again), a name the map lacks absent; `get_node_index` through it (the reference node too), its messages as they
+were.
+
+**Measured.**  The gate against 9f022990 SAME -- every result and path counter, C against Python 0 differing.  The size runs on AC 0.994-1.027x (Radau on three pairs each), every digest the same.  ibmpg2t's default 10 ns the same digest (d79039c4ad34), its import 22.1 s at 1.83 GB, the run 135.1 s at 3.16 GB, 0.354 mV.  Suite 6 731 passed.
+
+**Tests.**  `test_node_bookkeeping` +2: 200 lookups on a 4 000-node ladder compare two nodes each at most (the scan ~400 000);
+every name the scan's index through a move, a replacement (`connect_terminals`), a removal, a copy, a list put in place, with the
+reference node removed, and an absent name raising as before.  Three bites, each bit (the hit unchecked, an edit keeping the map
+-- missed first: a moved name looked up before the replacing one remade the map; that one now first -- the lookup by scan).
