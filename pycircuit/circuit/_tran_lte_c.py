@@ -66,7 +66,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths, _watch, func
+from pycircuit.circuit import _cbuild, _packed, _paths, _watch, func
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -303,6 +303,9 @@ def max_error(ctrl, s):
         last.served = None
     if not ENABLED:
         return _no('lte_c:off')
+    ## (THE PACKED LAYOUT, `_packed`: the C mirrors the dense one)
+    if _packed.any_active():
+        return _no('lte_c:packed')
     drv = _driver or driver()
     if not drv:
         return _no('lte_c:driver')

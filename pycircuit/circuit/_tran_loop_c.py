@@ -102,7 +102,7 @@ import time
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths, _watch, func
+from pycircuit.circuit import _cbuild, _packed, _paths, _watch, func
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -474,6 +474,8 @@ _KEEPS = {
     'events': True, 'state': True, 'circuit': True, 'integrator': True, 'predictor': True,
     'umemo': True, 'sources': True, 'table': True, 'breakpoints': True, 'minbreak': True,
     'screen': True, 'pred': True, 'bind': True,
+    ## (THE PACKED LAYOUT, `_packed`: the run's matrices on the pattern)
+    'packed': True,
     ## (the adaptive judge's, `_judge`)
     'controller': True, 'veto': True, 'mask': True, 'charge': True, 'abstol': True,
     'step_bounds': True,
@@ -981,6 +983,8 @@ def run(loop):
     ENTRY."""
     if not ENABLED:
         return False
+    if _packed.any_active():               # THE PACKED LAYOUT: the C mirrors the dense one
+        return _declined(loop, 'packed')
     if loop.c.stage:
         ## (the transform's C Newton served last: its loop, `_tran_tcloop_c`;
         ## else the coupled Newton's)

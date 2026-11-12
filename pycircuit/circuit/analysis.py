@@ -323,6 +323,10 @@ def remove_row_col(matrices, n, toolkit):
         reduced = None
         if isinstance(A, numpy.ndarray) and A.dtype != object:
             reduced = _reduce_ndarray(A, n)
+        elif type(A).__name__ == 'PatternMatrix':
+            ## (THE PACKED LAYOUT, `_packed`: the cut as a gather -- the bytes
+            ## the dense cut keeps)
+            reduced = A.reduced(n)
         if reduced is None:
             reduced = A
             for axis in range(len(A.shape)):

@@ -15776,3 +15776,46 @@ up to 24 decades (where the orders part in their last bits); an edge inside the 
 widest and narrowest ends, undecided -- inside the narrowest, None; an undecided state the dense passes'.  Five bites, each bit
 (no rounding allowed for, an edge inside the bound decided, the narrowest band not tried, the proofs not counted, the norm taken
 as exact).  The branch screen's pinned pair re-recorded on its reference side after its twins' tests.
+
+## 2026-11-11 — 318. THE PACKED LAYOUT, P1: the Python reference holds the DC's and the multistep transient's matrices on the circuit's structural pattern from a size up -- the IBM grid ibmpg2t (164 898 unknowns), which could not start, runs its DC (7 s, 2.4 GB, within 0.0003 mV of the benchmark); every gold deck the dense run's bytes on the pattern
+
+**Why**  Plan 261 L20 (tc/plan_l20_packed.md).  Andreas: "Bigger grid first look" -> "Size the packed layout" -> "Design P0
+first" -> "B" -> "Build P1" -> "65 536 until P2".  ibmpg2t stopped at its first n x n buffer: 164 898^2 doubles is 217 GB of
+address space, which the kernel's heuristic overcommit refuses; the Python reference held the DC's and the transient's matrices
+dense, and every C path mirrored that layout (~25 n^2 buffers on ibmpg1t's DC and Gear-2 path, scratch s5).
+
+**What.**  `_packed` (new): `Pattern` (a structural pattern in CSC order, its reductions, the map of places) and
+`PatternMatrix` (a square float64 on it: its values), and `scope` -- from `PACKED_FROM` unknowns the DC (`DC.solve`) and the
+multistep transient of the C loop's formulas (`Transient.solve`) assemble on the pattern.  Every operation the analyses make is the
+dense one's bytes per entry (sums, scales, abs, the cut as a gather, `+ eye d` as `+ 0.0` then d); the products the decisions
+read are summed in ONE order, the CSC kernel (products rounded, then added in the pattern's order, `np.bincount` -- the C twins
+of P2 repeat it).  It is no ndarray: a numpy function not made on the pattern raises where it meets one, and the suite, the decks
+and the grids found every consumer that way.  The stamp plan assembles on it (`packed_pattern`, `_packed_matrix`: the plan's
+bincount over pattern indices, each place's bytes); the C entries decline inside the scope (`*:packed`: the DC's plain Newton,
+PCNR, the Newton, the loop -- a run's reason --, the error test, the branch screen, the core's evaluation and passes) until P2.
+Converted: `AutoSolver._select` (KLU on the structure), `StructuralKLU._ours` / `_packed_values` (the matrix at KLU's places) and
+the refactor's residual check (`_packed_residual`: the CSC kernel on KLU's arrays), `nrsolver` (`_plus_diagonal`,
+`_structural_singularity`, `_default_solve`: KLU on the matrix's own pattern where no solver is given), `analysis.remove_row_col`,
+`_tran_companion._as_float`, `_tran_history` (the generic C, the charge-free scan), `_tran_branch` (the plan's nonzeros, the rank's
+states, the screen's cheap level; the certificate and the SVD dense below `DENSE_MAX`), the Newton's early hook, `DC._source_held`.
+The gate gains a `packed` forcing (the threshold at 0), for P2's matrix.  `PACKED_FROM` 65 536 until P2: ibmpg1t keeps its C
+path; P2 lowers it to 32 768.
+
+**Measured.**  The 27 gold decks under the threshold at 0, the DC twice and the default Gear-2, every C path off, the same solver
+both ways (StructuralKLU whatever the size): EVERY ONE the dense run's bytes, steps, rejections and iterations -- no decision
+flipped -- and no consumer met unconverted (rich3's branch confirmation swallowed one in its `except` until `_default_solve`).
+ibmpg1t on the packed Python path: no allocation of n^2/4 or more (the s5 trace: zero sites); its 10 ns 68.1 s at a 0.88 GB peak
+with the dense C run's digest a8a17180546e (0.43467 mV) -- its decisions all the same, no re-baseline.  ibmpg2t's DC on it:
+164 898 unknowns, 6.97 s, 2.42 GB, within 0.0003 mV of the benchmark's t = 0 on its 20 nodes; its default 10 ns transient 579 s
+(on battery, in Python), peak 2.84 GB, 1 057 steps, 1 536 iterations, within 0.354 mV of the benchmark on its 20 nodes -- its
+first transient answer.  Below the threshold nothing moves: the gate against 0146a931 SAME (every result and path counter, C
+against Python 0 differing); the size DCs 1.000-1.042x and transients 0.983-1.015x on AC power, every digest the same (the 63 x
+63 mesh's Radau, 0.944x on one pair on battery, 0.983x min and 0.992x median over three on AC).  Suite 6 674 passed.
+
+**Tests.**  `test_packed` (new, 10): every operation the dense one's bytes on the pattern; the CSC kernel the loop written out;
+nothing dense made unseen (a numpy function raises; no dense copy from DENSE_MAX); the plan's assembly on the pattern and
+dense below the size; a packed run the dense run's bytes on a layered grid (adaptive and fixed) and a MOS chain; the C entries
+declining, the DC's plain Newton and PCNR among them; held nodes and an empty column read alike.  Seven bites, each bit -- one of
+them a slip the lint found first: `_pcnr_c` names its own `_packed` (the elements' parameters), so the decline read the wrong
+name and every PCNR C solve fell back with an AttributeError; the module is `_layout` there.  Fourteen pinned pairs re-recorded
+after their twins' tests.

@@ -61,6 +61,7 @@ import contextlib
 import itertools
 import operator
 import os
+import sys
 
 import numpy as np
 
@@ -338,7 +339,7 @@ def _matmul_ok(k, S):
 
 
 class _Plan:
-    __slots__ = ('builds', 'elements', 'epoch', 'methods', 'n', 'nodemap')
+    __slots__ = ('builds', 'elements', 'epoch', 'methods', 'n', 'nodemap', 'pattern')
 
     def __init__(self, cir, epoch, builds):
         self.epoch = epoch
@@ -349,6 +350,8 @@ class _Plan:
         self.n = cir.n
         self.methods = {}
         self.builds = builds
+        ## (THE PACKED LAYOUT's pattern, `packed_pattern`: made where asked)
+        self.pattern = None
 
 
 def _plan_for(cir):
@@ -487,6 +490,9 @@ def assemble_matrix(cir, m, x, args, drop=None):
         return _dropped(_legacy_matrix(cir, m, x, args, mp, got), drop, cir)
     _PC[K['served']] += 1
     n = plan.n
+    pk = sys.modules.get('pycircuit.circuit._packed')
+    if pk is not None and pk.active(cir):
+        return _packed_matrix(cir, plan, mp, buf, drop, pk)
     if drop is not None:
         return _reduced_matrix(mp, buf, n, drop)
     if not mp.flat.size:
@@ -563,6 +569,40 @@ def _reduced_matrix(mp, buf, n, k):
         ## (an EMPTY bincount is int64 even with weights: the cut zeros)
         return np.zeros((m, m))
     return _binned(mp, k, rflat, buf[keep], m)
+
+
+def packed_pattern(cir, plan, pk):
+    """THE PACKED LAYOUT's pattern for `plan` (`_packed`): the places its G
+    and C put values, and the diagonal -- made once a plan."""
+    pat = plan.pattern
+    if pat is None:
+        n = plan.n
+        flats = [np.arange(n, dtype=np.int64) * (n + 1)]
+        for m in ('G', 'C'):
+            mp = plan.methods.get(m)
+            if mp is None:
+                mp = plan.methods[m] = _MatrixPlan(cir, m)
+            flats.append(np.asarray(mp.flat, dtype=np.int64))
+        u = np.unique(np.concatenate(flats))
+        pat = plan.pattern = pk.Pattern(n, u // n, u % n)
+    return pat
+
+
+def _packed_matrix(cir, plan, mp, buf, drop, pk):
+    """The plan's matrix on the pattern (`_packed.PatternMatrix`): each
+    place's value its slots summed in the plan's order from +0.0, as the
+    dense bincount sums its bin -- the same bytes at every place; `drop`
+    cut as `remove_row_col` cuts (`PatternMatrix.reduced`)."""
+    pat = packed_pattern(cir, plan, pk)
+    got = mp.reduced.get(('packed', None))
+    if got is None or got[0] is not pat:
+        rows, cols = np.divmod(np.asarray(mp.flat, dtype=np.int64), plan.n)
+        got = mp.reduced[('packed', None)] = (pat, pat.index_of(rows, cols))
+    idx = got[1]
+    v = (np.bincount(idx, weights=buf, minlength=pat.nnz).astype(np.float64, copy=False)
+         if idx.size else np.zeros(pat.nnz))
+    out = pk.PatternMatrix(pat, v)
+    return out if drop is None else out.reduced(drop)
 
 
 def _dropped(A, k, cir):

@@ -7,7 +7,14 @@ import math
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint, _paths, _stamp_plan, _tran_branch_c, _tran_core
+from pycircuit.circuit import (
+    _evalhint,
+    _packed,
+    _paths,
+    _stamp_plan,
+    _tran_branch_c,
+    _tran_core,
+)
 from pycircuit.circuit._limiting import state_restore, state_snapshot
 from pycircuit.circuit.analysis import insert_row
 from pycircuit.circuit.simwarnings import (
@@ -274,7 +281,9 @@ def _into_held(C, held):
     same pattern pages (`_tran_core.pattern_of`), each written into the
     first one's -- zero off that pattern in both, the same bytes -- so the
     dense reads after fault the untouched pages in once, not once a state;
-    else `C` itself."""
+    else `C` itself (and a `_packed.PatternMatrix`: no pages)."""
+    if type(C) is _packed.PatternMatrix:
+        return C, None
     pat = _tran_core.pattern_of(C)
     if pat is None:
         return C, None
@@ -290,6 +299,10 @@ def _plan_nonzeros(cir, C):
     assemble_matrix`), so its nonzeros lie among them: gathered there, and
     proven all of them by `count_nonzero` (a NaN a nonzero in both); a
     nonzero off them -- a matrix the plan did not make -- is None."""
+    if type(C) is _packed.PatternMatrix:
+        ## (THE PACKED LAYOUT: the nonzeros are its pattern's, in the order
+        ## `np.nonzero` gives)
+        return C.values_rowmajor()
     plan = cir.__dict__.get('_stamp_plan')
     mp = None if plan is None else plan.methods.get('C')
     n = C.shape[0]
@@ -589,8 +602,11 @@ class _BranchCheck:
         for _ in range(3):
             xr = rng.uniform(-1.0, 1.0, self.cir.n)
             try:
-                ## (`_C_fresh`: at size the core's pass, on pattern pages)
-                C = np.asarray(self._C_fresh(xr), dtype=float)
+                ## (`_C_fresh`: at size the core's pass, on pattern pages; a
+                ## `_packed.PatternMatrix` as it comes -- THE PACKED LAYOUT)
+                C = self._C_fresh(xr)
+                if type(C) is not _packed.PatternMatrix:
+                    C = np.asarray(C, dtype=float)
             except Exception as exc:                           # noqa: BLE001
                 ## (the check switches itself off for this analysis: said
                 ## once, not silently -- the review's F11, 2026-10-01)
@@ -603,7 +619,10 @@ class _BranchCheck:
             if C.size == 0:
                 continue
             if self.BRANCH_CERT and C.shape[0] <= self.BRANCH_CERT_MAX_N:
-                generic = (C, C != 0) if generic is None else (generic[0], generic[1] | (C != 0))
+                ## (the certificate's data dense: BRANCH_CERT_MAX_N is below
+                ## `_packed.DENSE_MAX`)
+                Cd = C.to_dense() if type(C) is _packed.PatternMatrix else C
+                generic = (Cd, Cd != 0) if generic is None else (generic[0], generic[1] | (Cd != 0))
             else:
                 C, held = _into_held(C, held)
             ## (its nonzeros from the stamp plan's positions where they are
@@ -627,6 +646,10 @@ class _BranchCheck:
                                       len(getattr(self.cir, 'nodes', ())))
                     _paths.COUNTS['branch.rank:' + ('dense' if r is UNDECIDED else 'bounded')] += 1
                 if r is UNDECIDED:
+                    ## (the dense passes: on THE PACKED LAYOUT a small circuit's
+                    ## dense copy -- at size `to_dense` refuses, said)
+                    if type(C) is _packed.PatternMatrix:
+                        C = C.to_dense()
                     eps = 8 * C.shape[0] * np.finfo(float).eps * float(np.linalg.norm(C))
                     r = self._reduced_rank(C, tol, eps, nz)
                     if r is None:
@@ -674,6 +697,8 @@ class _BranchCheck:
         which the screen does not resolve either.  It never fires: what it
         cannot prove, the SVD decides."""
         cert = self._branch_cert_data()
+        if cert is not None and type(C) is _packed.PatternMatrix:
+            C = C.to_dense()
         return (cert is not None and cert.n == C.shape[0]
                 and _certify(C, cert, tol, self.BRANCH_CERT_GROWTH)[0])
 
@@ -746,7 +771,7 @@ class _BranchCheck:
         ## first, `_tran_newton_c`)
         if cached is None or _C is not cached[1]:
             self._C_cache = (x, _C)
-        C = np.asarray(_C, dtype=float)
+        C = _C if type(_C) is _packed.PatternMatrix else np.asarray(_C, dtype=float)
         if C.size == 0:
             return False, None
         ## ⚠ A CONSTANT `C` (every stamp in the plan constant) has one largest
@@ -806,6 +831,8 @@ class _BranchCheck:
         ## times: the same reductions of the same arrays, so the same
         ## values; speed round 10, B3.2)
         Ca = np.abs(C)
+        ## (on THE PACKED LAYOUT its largest entry and diagonal are the
+        ## pattern's: zero off it, the diagonal on it)
         nrm = float(Ca.max())
         ref = max(getattr(self, '_branch_cmax', 0.0), nrm)
         self._branch_cmax = ref
@@ -826,8 +853,9 @@ class _BranchCheck:
     def _branch_svd(self, C, r0, ref):
         """The screen's verdict where its cheap level fired: `C`'s rank by
         the SVD against the running maximum `ref` -- fired with the null
-        direction where it fell below `r0`."""
-        U, sv, _Vt = np.linalg.svd(C)
+        direction where it fell below `r0` (on THE PACKED LAYOUT a small
+        circuit's dense copy; at size `to_dense` refuses)."""
+        U, sv, _Vt = np.linalg.svd(C.to_dense() if type(C) is _packed.PatternMatrix else C)
         r = int((sv > self.BRANCH_SCREEN_TOL * ref).sum())
         if r >= r0:
             return (False, None)

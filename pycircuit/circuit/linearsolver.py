@@ -177,6 +177,12 @@ HELD_OK, HELD_REUSED, HELD_OPEN, HELD_CK_OK, HELD_MOVED, HELD_CK_REUSED, HELD_CK
 HELD_N = 7
 
 
+def _packed_cls():
+    """`_packed.PatternMatrix` (THE PACKED LAYOUT), imported where first asked."""
+    from pycircuit.circuit import _packed
+    return _packed.PatternMatrix
+
+
 def _same_bits(a, b):
     """`a` and `b` (float64, the same length) the same bit for bit -- as C's
     memcmp: -0.0 is not 0.0, a NaN equals a NaN of its own bits."""
@@ -1061,7 +1067,11 @@ class StructuralKLU(KLUSolver):
     def _ours(self, A):
         """`(A as an array, its values in CSC order)` where `A` is this
         circuit's reduced Jacobian -- `m x m` float64 with no nonzero off
-        the pattern -- else None."""
+        the pattern -- else None.  A `_packed.PatternMatrix` is its own `A`,
+        its values put at their places in KLU's (`_packed_values`)."""
+        from pycircuit.circuit import _packed
+        if type(A) is _packed.PatternMatrix:
+            return self._packed_values(A)
         arr = numpy.asarray(A)
         if arr.shape != (self.m, self.m) or arr.dtype != numpy.float64:
             return None
@@ -1069,6 +1079,45 @@ class StructuralKLU(KLUSolver):
         if _count_nonzero(arr) != numpy.count_nonzero(Ax):
             return None
         return arr, Ax
+
+    def _packed_values(self, A):
+        """`(A, KLU's values)` for a `_packed.PatternMatrix` of this size, its
+        entries at their places in KLU's CSC order (zero at KLU's others), or
+        None where a nonzero lies off KLU's pattern -- the map made once a
+        pattern."""
+        if A.shape != (self.m, self.m):
+            return None
+        got = self.__dict__.get('_pk_map')
+        if got is None or got[0] is not A.pat:
+            if self.__dict__.get('_pk_key') is None:
+                kcols = numpy.repeat(numpy.arange(self.m, dtype=numpy.int64), numpy.diff(self.Ap))
+                self._pk_key = (kcols * self.m + self.Ai.astype(numpy.int64), kcols)
+            key = self._pk_key[0]
+            want = A.pat.key
+            i = numpy.minimum(numpy.searchsorted(key, want), max(key.size - 1, 0))
+            idx = numpy.where(key[i] == want, i, -1) if key.size else numpy.full(want.size, -1)
+            got = self._pk_map = (A.pat, idx)
+        idx = got[1]
+        off = idx < 0
+        if off.any() and numpy.count_nonzero(A.v[off]):
+            return None
+        Ax = numpy.zeros(self.nnz)
+        Ax[idx[~off]] = A.v[~off]
+        return A, Ax
+
+    def _packed_residual(self, Ax, rhs, x):
+        """The refactor's residual test on a `_packed.PatternMatrix` --
+        `not (max|A x - b| / max(max|b|, 1e-300) <= tol)`, `A x` THE PACKED
+        LAYOUT's CSC kernel on KLU's own arrays (`_packed`: the reference's
+        order at size), a NaN failing it as numpy's max propagates one."""
+        cols = self._pk_key[1]
+        if rhs.ndim < 2:
+            r = numpy.bincount(self.Ai, weights=Ax * x[cols], minlength=self.m) - rhs
+        else:
+            r = numpy.stack([numpy.bincount(self.Ai, weights=Ax * x[cols, j], minlength=self.m)
+                             for j in range(rhs.shape[1])], axis=1) - rhs
+        scale = max(float(numpy.abs(rhs).max()), 1e-300)
+        return not (float(numpy.abs(r).max()) / scale <= self.REFACTOR_RESIDUAL_TOL)
 
     def _other(self):
         self.foreign += 1
@@ -1194,7 +1243,9 @@ class StructuralKLU(KLUSolver):
             ## rounding bound where the bound decides -- `pcx_kluseq.h`'s
             ## rule, `_resid_sparse` -- the dense test where it does not)
             fails = None
-            if nrhs == 1 and _on_pattern_pages(arr):
+            if type(arr) is _packed_cls():
+                fails = self._packed_residual(Ax, rhs, x)
+            elif nrhs == 1 and _on_pattern_pages(arr):
                 fails = _resid_sparse(self.Ap, self.Ai, Ax, self.REFACTOR_RESIDUAL_TOL, rhs, x)
             if fails is None:
                 scale = max(float(numpy.abs(rhs).max()), 1e-300)
@@ -1947,7 +1998,15 @@ class AutoSolver(LinearSolver):
     def _select(self, A):
         if self._choice is not None:
             return self._choice
-        from pycircuit.circuit import _paths
+        from pycircuit.circuit import _packed, _paths
+        if type(A) is _packed.PatternMatrix:
+            ## (THE PACKED LAYOUT: KLU on the circuit's structure whatever the
+            ## size or the fill -- the dense solvers need the dense matrix)
+            n_unknowns = A.shape[0]
+            st = self.structure() if self.structure is not None else None
+            if st is not None and st[0] == n_unknowns and self._structural(st, n_unknowns):
+                return self._choice
+            raise TypeError('PatternMatrix: no structural pattern to factor it on')
         arr = numpy.asarray(A)
         floor = (min(self.min_n, self.structural_min_n) if self.structure is not None
                  else self.min_n)

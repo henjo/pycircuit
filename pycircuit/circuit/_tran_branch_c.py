@@ -50,7 +50,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths, _tran_core
+from pycircuit.circuit import _cbuild, _packed, _paths, _tran_core
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -167,6 +167,9 @@ def screen(tr, C):
     maximum -- or None: declined or handed back, nothing written."""
     if not ENABLED:
         return _no('branch_c:off')
+    ## (THE PACKED LAYOUT, `_packed`: the C mirrors the dense one)
+    if _packed.any_active():
+        return _no('branch_c:packed')
     drv = _driver or driver()
     if not drv:
         return _no('branch_c:driver')

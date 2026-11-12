@@ -92,7 +92,7 @@ from itertools import repeat
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths
+from pycircuit.circuit import _cbuild, _packed, _paths
 
 _PC = _paths.COUNTS
 _no = _paths.no
@@ -763,6 +763,9 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     td.pop('_lte_fac', None)
     if not ENABLED:
         return _no('newton_c:off')
+    ## (THE PACKED LAYOUT, `_packed`: the C mirrors the dense one)
+    if _packed.any_active():
+        return _no('newton_c:packed')
     adm = _admit(tr, td, provided_function, seed)
     if adm is None:
         return None    # paths: counted by _admit

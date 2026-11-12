@@ -120,7 +120,7 @@ import weakref
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _lte_kernels, _paths, _watch
+from pycircuit.circuit import _cbuild, _lte_kernels, _packed, _paths, _watch
 from pycircuit.circuit import toolkit as _toolkit
 
 _PC = _paths.COUNTS
@@ -1283,6 +1283,9 @@ def passes(tr, x, which):
     `evaluate` counts its own.  For the stage methods (Radau, the DIRKs),
     whose step evaluates the passes at several points a step."""
     K = _K['p']
+    ## (THE PACKED LAYOUT, `_packed`: the C mirrors the dense one)
+    if _packed.any_active():
+        return _no('core.p:packed')
     if not (CORE and CORE_PASSES):
         return _no(K['off'])
     if type(tr.toolkit) is not (_NTK[0] if _NTK else _ntk()):
@@ -1475,6 +1478,9 @@ def evaluate(tr, x, t, provided_function, want):
     K = _K[want]
     if not CORE:
         return _no(K['off'])
+    ## (THE PACKED LAYOUT, `_packed`: the C mirrors the dense one)
+    if _packed.any_active():
+        return _no('core:packed')
     if type(tr.toolkit) is not _toolkit.NumericToolkit:
         return _no(K['toolkit'])
     ## THE METHODS THE CORE STANDS IN FOR MUST BE THE ONES IT MIRRORS: an

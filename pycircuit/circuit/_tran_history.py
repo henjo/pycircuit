@@ -5,6 +5,7 @@ theme of `Transient` (see `transient.py`).
 
 import numpy as np
 
+from pycircuit.circuit import _packed
 from pycircuit.circuit._limiting import limit_sync, stateful_limiters
 
 #: A run's results of this many bytes or more are gathered row by row
@@ -83,16 +84,20 @@ def _charge_free(C, nn):
     """Per branch current of `C`'s circuit (the unknowns from `nn` on): True
     where no charge depends on it -- its column and row of `C` zero (an
     inductor's current carries its flux; a voltage source's nothing).  Read
-    at its pattern where `C` is on pattern pages (zero off it)."""
+    at its pattern where `C` is on pattern pages (zero off it), or is a
+    `_packed.PatternMatrix` (THE PACKED LAYOUT)."""
     from pycircuit.circuit import _tran_core
-    pat = _tran_core.pattern_of(C)
-    if pat is None:
-        br = slice(nn, None)
-        return ~(np.any(C[:, br] != 0.0, axis=0) | np.any(C[br, :] != 0.0, axis=1))
     n = C.shape[1]
-    p = np.asarray(pat, dtype=np.int64)
-    p = p[C.reshape(-1)[p] != 0.0]
-    r, c = p // n, p % n
+    if type(C) is _packed.PatternMatrix:
+        r, c = C.nonzero()
+    else:
+        pat = _tran_core.pattern_of(C)
+        if pat is None:
+            br = slice(nn, None)
+            return ~(np.any(C[:, br] != 0.0, axis=0) | np.any(C[br, :] != 0.0, axis=1))
+        p = np.asarray(pat, dtype=np.int64)
+        p = p[C.reshape(-1)[p] != 0.0]
+        r, c = p // n, p % n
     dep = np.zeros(n, dtype=bool)
     dep[c[c >= nn]] = True
     dep[r[r >= nn]] = True
@@ -612,8 +617,11 @@ class _RunHistory:
         circuit cannot evaluate it."""
         xr = np.random.RandomState(20261009).uniform(-1.0, 1.0, self.cir.n)
         try:
-            ## (`_C_fresh`: at size the core's pass, on pattern pages)
-            C = np.asarray(self._C_fresh(xr), dtype=float)
+            ## (`_C_fresh`: at size the core's pass, on pattern pages; a
+            ## `_packed.PatternMatrix` as it comes -- THE PACKED LAYOUT)
+            C = self._C_fresh(xr)
+            if type(C) is not _packed.PatternMatrix:
+                C = np.asarray(C, dtype=float)
         except Exception:                                      # noqa: BLE001
             return None
         ## (made by the stamp plan's bins before the core exists: their

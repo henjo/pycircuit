@@ -58,7 +58,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _paths
+from pycircuit.circuit import _cbuild, _packed, _paths
 
 ENABLED = os.environ.get('PYCIRCUIT_DCNEWTON_C', '1') != '0'
 STATUS = 'not loaded'
@@ -473,6 +473,9 @@ def solve(x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter, scaler, 
         return None    # paths: not a decline (not a DC composition)
     if not ENABLED:
         return _no('dcnewton_c:off')
+    ## (THE PACKED LAYOUT, `_packed`: the C mirrors the dense one)
+    if _packed.any_active():
+        return _no('dcnewton_c:packed')
     dc, lam, gs, jg = comp
     ## (the cheap checks first: a solve they decline never loads the unit)
     why = _settings(dc, toolkit, limiter, scaler)

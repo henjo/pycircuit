@@ -6,7 +6,7 @@
 import numpy as np
 from numpy.linalg import LinAlgError
 
-from pycircuit.circuit import _paths
+from pycircuit.circuit import _packed, _paths
 from pycircuit.circuit._limiting import stateful_limiters
 from pycircuit.circuit.analysis import (
     NoConvergenceError,
@@ -375,7 +375,8 @@ class _StepNewton:
                 ## (the seed's J copied: an evaluation may write the next
                 ## one into the same buffer; a later evaluation counted, its
                 ## J not kept -- the full Newton's are n x n each)
-                seen.append(np.array(J, copy=True) if not seen else None)
+                seen.append((J.copy() if type(J) is _packed.PatternMatrix else np.array(J, copy=True))
+                            if not seen else None)
                 if len(seen) == 2 and armed:
                     est = self._early_estimate(arm, x, seen[0], chord, linsolver)
                     _paths.COUNTS['early:checks'] += est is not None

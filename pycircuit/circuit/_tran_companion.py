@@ -4,7 +4,7 @@
 
 import numpy as np
 
-from pycircuit.circuit import _evalhint, _paths, _tran_core
+from pycircuit.circuit import _evalhint, _packed, _paths, _tran_core
 
 _PC = _paths.COUNTS
 
@@ -35,8 +35,9 @@ _F64 = np.dtype('float64')
 def _as_float(a, toolkit):
     """`toolkit.array(a, dtype=float)` without the copy when `a` is already
     a float64 ndarray: the sums a step builds (`i + iq + u`, `G + Geq`) are
-    fresh and nobody else holds them (speed round 4, stage C)."""
-    if type(a) is np.ndarray and a.dtype is _F64:
+    fresh and nobody else holds them (speed round 4, stage C) -- a
+    `_packed.PatternMatrix` too (THE PACKED LAYOUT: float64 by its type)."""
+    if type(a) is np.ndarray and a.dtype is _F64 or type(a) is _packed.PatternMatrix:
         return a
     return toolkit.array(a, dtype=float)
 

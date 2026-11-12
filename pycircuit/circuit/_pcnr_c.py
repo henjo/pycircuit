@@ -57,6 +57,7 @@ import numpy as np
 
 from pycircuit.circuit import _cbuild, _paths, _watch
 from pycircuit.circuit import _hdl_cbackend as _cb
+from pycircuit.circuit import _packed as _layout
 
 ENABLED = os.environ.get('PYCIRCUIT_PCNR_C', '1') != '0'
 STATUS = 'not loaded'
@@ -916,6 +917,10 @@ def solve(circuit, irefnode, devices, x, v_lim, u, epar, maxiter, reltol, abstol
     SEED)."""
     if not ENABLED:
         return _no('pcnr_c:off')
+    ## (THE PACKED LAYOUT, `_packed` -- here `_layout`: `_packed` is the
+    ## elements' parameters -- the C mirrors the dense one)
+    if _layout.any_active():
+        return _no('pcnr_c:packed')
     if maxiter < 1:
         return _no('pcnr_c:maxiter')
     why = _settings(circuit, gmin)

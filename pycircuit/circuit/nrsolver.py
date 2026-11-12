@@ -2,8 +2,17 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix
-from pycircuit.circuit import _limiting, _paths
+from pycircuit.circuit import _limiting, _packed, _paths
 from pycircuit.circuit.scaler import NoneScaler
+
+def _default_solve(J, b, toolkit):
+    """The Newton's solve where its caller gave no solver: the toolkit's
+    (numpy's dense solve) -- and on THE PACKED LAYOUT, which no dense solve
+    takes, KLU on the matrix's own pattern (`_packed.own_solver`)."""
+    if type(J) is _packed.PatternMatrix:
+        return _packed.own_solver(J).solve(J, b, toolkit)
+    return toolkit.linearsolver(J, b)
+
 
 def _structural_singularity(J, row_names, toolkit):
     """Name a structurally singular row or column, or return None.
@@ -36,26 +45,34 @@ def _structural_singularity(J, row_names, toolkit):
     exception precisely because nothing else does, and decides which of the two
     cases it had by asking whether the column is still empty AT THE ANSWER.
     """
-    try:
-        A = abs(np.asarray(J, dtype=float))
-    except (TypeError, ValueError):
-        return None            # symbolic: no numeric structure to inspect
-    if A.ndim != 2 or A.shape[0] != A.shape[1]:
-        return None
+    if type(J) is _packed.PatternMatrix:
+        ## (THE PACKED LAYOUT: |J|'s column and row sums over its pattern --
+        ## non-negative terms sum to zero where every one is zero, in any order)
+        av, n = np.abs(J.v), J.shape[0]
+        col_sum = np.bincount(J.pat.cols, weights=av, minlength=n)
+        row_sum = np.bincount(J.pat.rows, weights=av, minlength=n)
+    else:
+        try:
+            A = abs(np.asarray(J, dtype=float))
+        except (TypeError, ValueError):
+            return None            # symbolic: no numeric structure to inspect
+        if A.ndim != 2 or A.shape[0] != A.shape[1]:
+            return None
+        col_sum, row_sum = A.sum(axis=0), A.sum(axis=1)
 
     def _name(i):
         if row_names is not None and 0 <= i < len(row_names):
             return "'%s'" % row_names[i]
         return 'row %d' % i
 
-    col_dead = np.flatnonzero(A.sum(axis=0) == 0.0)
+    col_dead = np.flatnonzero(col_sum == 0.0)
     if len(col_dead):
         i = int(col_dead[0])
         return ('%s appears in no equation, so nothing determines it -- for a node '
                 'that means no DC path to ground (add a resistor, or use uic=True '
                 'to skip the operating point)' % _name(i))
 
-    row_dead = np.flatnonzero(A.sum(axis=1) == 0.0)
+    row_dead = np.flatnonzero(row_sum == 0.0)
     if len(row_dead):
         i = int(row_dead[0])
         return ('the equation at %s constrains nothing -- every entry in its row '
@@ -186,7 +203,7 @@ class StandardNewton(NonLinearSolver):
                 ## STAGE 7b.  `linsolver is None` keeps the exact call this made
                 ## before, so nothing moves unless a caller asks for a strategy.
                 if linsolver is None:
-                    xdiff = toolkit.linearsolver(J_s, -F_s)
+                    xdiff = _default_solve(J_s, -F_s, toolkit)
                 else:
                     xdiff = linsolver.solve(J_s, -F_s, toolkit)
                 xdiff = scaler.unscale_solution(xdiff, s_vec, toolkit)
@@ -485,7 +502,7 @@ class ChordNewton(NonLinearSolver):
                 elif linsolver is not None:
                     xdiff = linsolver.solve(J_s, -F_s, toolkit)
                 else:
-                    xdiff = toolkit.linearsolver(J_s, -F_s)
+                    xdiff = _default_solve(J_s, -F_s, toolkit)
             except Exception:                                  # noqa: BLE001
                 ## a held matrix that will not factor, or a non-finite
                 ## right-hand side: the full Newton reports it properly
@@ -553,7 +570,7 @@ class DampedNewton(NonLinearSolver):
                 ## STAGE 7b.  `linsolver is None` keeps the exact call this made
                 ## before, so nothing moves unless a caller asks for a strategy.
                 if linsolver is None:
-                    xdiff = toolkit.linearsolver(J_s, -F_s)
+                    xdiff = _default_solve(J_s, -F_s, toolkit)
                 else:
                     xdiff = linsolver.solve(J_s, -F_s, toolkit)
                 xdiff = scaler.unscale_solution(xdiff, s_vec, toolkit)
@@ -702,6 +719,8 @@ def _plus_diagonal(J, d, toolkit):
     any other `d`, a J that is not a C-ordered float64 matrix (another
     toolkit's), or one below `_DIAGONAL_INPLACE_MIN`, takes the expression
     itself."""
+    if type(J) is _packed.PatternMatrix:
+        return J.plus_diagonal(d)
     n = len(J)
     if (n >= _DIAGONAL_INPLACE_MIN and type(J) is np.ndarray and J.dtype == np.float64 and J.ndim == 2 and J.shape[1] == n
             and J.flags.c_contiguous):

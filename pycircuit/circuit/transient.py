@@ -39,7 +39,7 @@ from pycircuit.circuit.linearsolver import (
     MIN_N_FOR_STRUCTURAL_KLU,
     MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES,
 )
-from pycircuit.circuit import _paths, _tran_companion, _tran_core, _tran_loop_c, _tran_newton_c
+from pycircuit.circuit import _packed, _paths, _tran_companion, _tran_core, _tran_loop_c, _tran_newton_c
 from pycircuit.circuit._tran_companion import _CompanionModel
 from pycircuit.circuit._tran_history import _RunHistory, results_matrix
 from pycircuit.circuit._tran_grid import OutputGrid, SavedRows, resample_uniform
@@ -2045,7 +2045,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         ## not produce the measured 1.72x.  The cost is thread-pool overhead spread
         ## across the many small numpy operations in assembly, and that is only
         ## avoided by setting the limit once, outside the loop.
-        with _single_threaded_blas():
+        ## THE PACKED LAYOUT (`_packed`): from `PACKED_FROM` unknowns a run of
+        ## the C stepping loop's multistep methods (`_tran_core.FORMULA`) holds
+        ## its matrices on the circuit's pattern
+        packed = not coupled_lte and type(self._get_integrator()).__name__ in _tran_core.FORMULA
+        with _single_threaded_blas(), _packed.scope(self.cir, packed):
             return self._solve(refnode, tend, x0, timestep, provided_function,
                                fixed_timestep, coupled_lte)
 

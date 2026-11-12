@@ -6053,3 +6053,17 @@ of the same sums can round, each decision taken for the whole bound and the
 dense passes kept for an edge inside it.  The check 5.8 -> 0.3 s, the grid's
 10 ns transient 28.9 -> 23.7 s with 1.1 GB less at its peak; every rank and
 answer the same.
+
+## The packed layout, P1: matrices on the circuit's pattern (2026-11-12)
+
+2026-11-12 (`doc/hdl_roadmap_260824.md`, 318; plan 261 L20).  The IBM grids
+past ibmpg1t could not start: the simulator held the DC's and the
+transient's matrices as dense n x n arrays -- in the Python reference and,
+mirroring it, in every C path -- and at ibmpg2t's 164 898 unknowns one such
+array is 217 GB of address space.  From a size up the Python reference now
+holds them on the circuit's sparsity pattern (`_packed`): every operation
+the dense matrix's bytes per entry, the few sums that feed decisions in one
+defined order.  Every gold deck gives the dense run's bytes on it, ibmpg1t
+its exact digest, and ibmpg2t runs: its DC in 7 s, its 10 ns transient
+within 0.35 mV of the benchmark.  The C paths step aside on the layout
+until they learn it (P2).

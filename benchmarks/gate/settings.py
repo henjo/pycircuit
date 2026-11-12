@@ -58,6 +58,11 @@ def force_modules(setting):
         from pycircuit.circuit import _tran_newton, _tran_newton_c
         _tran_newton.LTE_SEED_ITERS = 1000
         _tran_newton_c._mods()['lte_seed'] = 1000
+    if 'packed' in parts:
+        ## (THE PACKED LAYOUT from any size: the DC and the multistep
+        ## transient on the circuit's pattern -- plan 261 L20)
+        from pycircuit.circuit import _packed
+        _packed.PACKED_FROM = 0
     if 'low' in parts:
         from pycircuit.circuit import (
             _cbuild,

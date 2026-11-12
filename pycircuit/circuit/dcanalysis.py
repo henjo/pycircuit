@@ -5,7 +5,7 @@ import numpy as np
 from numpy.linalg import LinAlgError
 
 from pycircuit.circuit.analysis import *
-from pycircuit.circuit import _blas, _stamp_plan
+from pycircuit.circuit import _blas, _packed, _stamp_plan
 from pycircuit.circuit.circuit import SubCircuit
 from pycircuit.circuit.linearsolver import MIN_N_FOR_STRUCTURAL_KLU_OP_AND_STAGES
 
@@ -257,10 +257,12 @@ class DC(Analysis):
         only ``u``.  Scoping notes on the shared ``analysis_kind`` helper.
 
         BLAS is held at one thread for the solve where the AutoSolver's
-        system is past the size OpenBLAS threads (`_blas_held`).
+        system is past the size OpenBLAS threads (`_blas_held`).  From
+        `_packed.PACKED_FROM` unknowns its matrices are held on the circuit's
+        pattern (`_packed.scope`).
         """
         self._sync_cir()
-        with analysis_kind(self.epar, 'dc'), self._blas_held():
+        with analysis_kind(self.epar, 'dc'), self._blas_held(), _packed.scope(self.cir):
             return self._solve_dc(x0)
 
     def _blas_held(self):
@@ -548,15 +550,29 @@ class DC(Analysis):
     def _source_held(self, held, x):
         """The held nodes (`held`: {index: volts}) whose branch current only
         their own rows saw at `x`: nothing is left to fix it."""
-        J = np.asarray(self.cir.G(x, self.epar))
+        J = self.cir.G(x, self.epar)
         keep = [i for i in range(self.cir.n) if i != self.irefnode and i not in held]
-        Jr = J[np.ix_(keep, keep)]
         nodes, out = len(self.cir.nodes), []
-        for k in np.flatnonzero(~Jr.any(axis=0)):
-            col = keep[k]
+        if type(J) is _packed.PatternMatrix:
+            ## (THE PACKED LAYOUT: the kept columns no kept row's nonzero
+            ## reaches, and each one's rows, from the pattern -- ascending, as
+            ## the dense scan meets them)
+            r, c = J.nonzero()
+            kept = np.zeros(self.cir.n, dtype=bool)
+            kept[keep] = True
+            reached = np.zeros(self.cir.n, dtype=bool)
+            reached[c[kept[r] & kept[c]]] = True
+            dead = [col for col in keep if not reached[col]]
+            rows_of = lambda col: np.sort(r[c == col])
+        else:
+            J = np.asarray(J)
+            Jr = J[np.ix_(keep, keep)]
+            dead = [keep[k] for k in np.flatnonzero(~Jr.any(axis=0))]
+            rows_of = lambda col: np.flatnonzero(J[:, col])
+        for col in dead:
             if col >= nodes:
-                out += [str(self.cir.nodes[r].name) for r in np.flatnonzero(J[:, col])
-                        if r in held and str(self.cir.nodes[r].name) not in out]
+                out += [str(self.cir.nodes[r_].name) for r_ in rows_of(col)
+                        if r_ in held and str(self.cir.nodes[r_].name) not in out]
         return out
 
     def _held(self, nodes):
