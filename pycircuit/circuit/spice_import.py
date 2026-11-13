@@ -392,7 +392,7 @@ for (_level, _mtype), _cls in (list(MOS_CLASSES.items()) + list(MOS_CHARGE_CLASS
 
 
 def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qpart=1.0,
-                   gmin=None, mos_charge='conserving'):
+                   gmin=None, mos_charge='conserving', bulk=False):
     """Read and map the netlist `path` (see the module note).  `dialect`
     (``'xyce'`` or ``'ngspice'``) chooses where the two read a deck
     differently: the option and temperature statements.  `merge_shorts`:
@@ -412,20 +412,51 @@ def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qp
     capacitance -- 'conserving' (the default: the charge-conserving gate
     charge whose capacitances follow Meyer's, `_mos_gate_charge`) or 'meyer'
     (SPICE's own integration of Meyer's capacitances, conserving nothing:
-    `MOS_MEYER_CLASSES`, levels 2 and 3), for parity with SPICE."""
+    `MOS_MEYER_CLASSES`, levels 2 and 3), for parity with SPICE.  `bulk`:
+    the plain resistors and capacitors (a number their only parameter) held
+    as BULK ELEMENTS (`_bulk`: one bank of each, after every element) rather
+    than an element object each -- the IBM power grids' millions; such an
+    element has no object of its own to read results by."""
     if dialect not in ('xyce', 'ngspice'):
         raise ValueError(f'dialect {dialect!r}: xyce or ngspice')
     if mos_charge not in ('conserving', 'meyer'):
         raise ValueError(f"mos_charge {mos_charge!r}: 'conserving' or 'meyer'")
     return _Importer(spicenetlist.read(path), dialect, strict, merge_shorts, mos_qpart,
-                     gmin, mos_charge).run()
+                     gmin, mos_charge, bulk).run()
+
+
+def _bankable(m):
+    """'R' or 'C' where the mapped element `m` can be a BULK element
+    (`import_netlist`'s `bulk`): a resistor or capacitor whose one parameter
+    is a number; else None."""
+    from pycircuit.circuit import elements
+    for cls, kind, key in ((elements.R, 'R', 'r'), (elements.C, 'C', 'c')):
+        if m.cls is cls and len(m.params) == 1 and type(m.params.get(key)) in (float, int):
+            return kind
+    return None
+
+
+def _add_banks(cir, banks):
+    """The gathered resistors and capacitors as banks of `cir`
+    (`SubCircuit.add_bank`): their nodes in the order they first come."""
+    for kind, (a, b, value) in banks.items():
+        if not value:
+            continue
+        code, nodes = {}, []
+        for nd in a + b:
+            if nd not in code:
+                code[nd] = len(nodes)
+                nodes.append(nd)
+        cir.add_bank(f'bank:{kind}', kind, nodes, [code[nd] for nd in a],
+                     [code[nd] for nd in b], value)
 
 
 class _Importer:
 
     def __init__(self, net, dialect, strict, merge_shorts=False, mos_qpart=None, gmin=None,
-                 mos_charge='conserving'):
+                 mos_charge='conserving', bulk=False):
         self.net = net
+        self.bulk = bulk
         self.mos_charge = mos_charge
         self.dialect = dialect
         self.strict = strict
@@ -558,13 +589,23 @@ class _Importer:
 
     def build(self):
         cir = SubCircuit()
+        banks = {'R': ([], [], []), 'C': ([], [], [])} if self.bulk else None
         for m in self.out.elements:
             nodes = [gnd if n == '0' else n for n in m.nodes]
             params = m.params
+            kind = _bankable(m) if banks is not None else None
+            if kind is not None:
+                g = banks[kind]
+                g[0].append(nodes[0])
+                g[1].append(nodes[1])
+                g[2].append(params['r' if kind == 'R' else 'c'])
+                continue
             if 'gmin' not in params and any(p.name == 'gmin'
                                             for p in getattr(m.cls, 'instparams', ())):
                 params = {**params, 'gmin': self.out.gmin}
             cir[m.name] = m.cls(*nodes, **params)
+        if banks is not None:
+            _add_banks(cir, banks)
         return cir
 
     def add(self, f, kind, nodes, cls, params, model=None):

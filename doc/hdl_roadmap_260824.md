@@ -16106,3 +16106,55 @@ were.
 every name the scan's index through a move, a replacement (`connect_terminals`), a removal, a copy, a list put in place, with the
 reference node removed, and an absent name raising as before.  Three bites, each bit (the hit unchecked, an edit keeping the map
 -- missed first: a moved name looked up before the replacing one remade the map; that one now first -- the lookup by scan).
+
+## 2026-11-13 — 326. Bulk elements, B2: resistor and capacitor banks, an opt-in import
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md), after B1 (325).  An element costs ~4-5 KB of Python objects; ibmpg2t's 245 163
+resistors and 36 838 capacitors are most of its 1.83 GB import, and ibmpg3t's two million elements fill the 11 GB cap before its
+DC starts.  Andreas: "Build B2 to that line".  Line (set before): (a) without the flag nothing changes (the gate SAME, the suite);
+(b) ibmpg2t with its R and C banked: its DC and default 10 ns within 1e-9 V of the per-element run at every saved point (the
+summation order moves: rounding), 0.354 mV against the benchmark, steps within 1 %; (c) its import peak at most 40 % of today's
+1.83 GB; (d) the C paths serving the banked run as the per-element one, C against Python 0 differing on it; (e) the size runs
+>= 0.98x, the suite, bites.
+
+**What.**  `_bulk.Bank`: `len(a)` resistors ('R', the values their resistances) or capacitors ('C') as arrays -- element e
+between `nodes[a[e]]` and `nodes[b[e]]`, its stamp the element's own `[[g, -g], [-g, g]]` (`g = 1.0 / r`, or `c`).
+`SubCircuit.add_bank` keeps a circuit's banks BESIDE its elements (`_banks`), so no walk over the elements meets one; the node map
+resolves their ends to rows (`_bulk.resolve`, `_bank_index`).  Everything that assembles a matrix or a vector takes a bank's
+entries after every element: the stamp plan's constant groups (`_MatrixPlan`, `_VectorPlan`: a bank a run of 2 x 2 stamps,
+segment kind 3, its rows after the elements' of the size; `_matmul_ok` checks a kernel on the first 1 024 stamps), its fallbacks
+(`_legacy_matrix`, `_legacy_vector`), the legacy loops (`_add_element_submatrices`, `_add_element_subvectors`) and the Jacobian's
+structure (`jacobian_structure`).  A copy, the flat view (`_flat_view_of`) and PCNR's view (`pcnr_view`) carry them.  A bank is
+constant -- no parameters, no initial condition, no element to read results by -- and `CY` (noise) refuses a circuit holding a
+resistor bank (`elements.R` is noisy by default).  `import_netlist(..., bulk=False)`: with `bulk=True` the resistors and
+capacitors whose one parameter is a number go into one bank of each (`bank:R`, `bank:C`, their nodes in the order they first
+come), added after every element; a capacitor with `ic=`, an expression or a model stays an element.  Built the same circuit
+both ways, with the banks after the elements in both, a banked circuit gives the element-built one's bytes; where a netlist puts
+its resistors among other elements, the sums move by rounding.
+
+**Measured.**  (a) The gate against b57b72af SAME -- every result and path counter, C against Python 0 differing; ibmpg2t's
+per-element DC the base's bytes (25e089ebcb7f), its default 10 ns from that DC the base's digest (865362f1f55d; B1's d79039c4ad34
+started from an older stored DC).
+(b) MET -- ibmpg2t with `bulk=True`: 37 498 elements (36 838 PULSE sources, 330 V, 330 L) and two banks (245 163 R, 36 838 C);
+its DC within 8.9e-16 V of the per-element one at all 164 238 nodes by name (70 620 differ, by rounding), the 660 branch currents
+within 1.1e-15 A, 0.00031 mV from the benchmark both ways; its default 10 ns within 1.2e-14 V at the 20 printed nodes' 1 001
+points, the same 1 057 steps, 13 rejections and 1 536 Newton iterations, 0.3538 mV both ways; the run 131.3 s at a 1.89 GB peak
+against 137.6 s at 3.17 GB.  (c) MISSED, Andreas: "Accept as measured" -- the import 8.1 s at 793 MB against 22.4 s at 1.83 GB
+(43 %, the line 40 %): the netlist's parsed and mapped records 400 MB (kept for every line, B4), the 37 498 elements that stay
+276 MB (the PULSE sources ~7.4 KB each, B3), the banks 36 MB where the same resistors and capacitors took ~1 060 MB as elements;
+the node map after it 15 MB against 233 MB.  (d) MET -- the C paths' counts on the 10 ns the per-element run's (C Newton 1 070,
+error test 1 068, loop 1 054 steps); the banked DC and a 1 ns transient with every C switch off the C's bytes and statistics.
+(e) The size runs on AC, DCs 0.982-1.059x on a quiet box, transients 0.999-1.007x, mesh Radau 1.004x the per-pair median of
+nine (0.939-1.026: other sessions loaded the box to 2.3-3.5 through them), every digest the same.  Suite 6 742 passed.
+
+**Tests.**  `test_bulk` (new, 11 cases): a bank's G, C, i and q at a random x and the Jacobian's structure the element-built
+grid's bytes, through the plan and the legacy loops, at two sizes (a 0 F capacitor: a stamp with no entries); the plan's
+fallback with an element answering object arrays (`plan.G:legacy`, `plan.i:legacy`); the operating point and an adaptive Gear-2
+run dense and packed the element-built bytes and steps, the C paths serving, and with them off the C's bytes (`core:packed` on
+the pattern); noise refused; a copy, the flat view (a transient through it by the C) and PCNR's view (its C and with it off its
+Python, the view's banks counted); the bank's refusals; the importer's banks (a capacitor with `ic=` an element) by node name
+within rounding.  Eighteen bites, each bit (the R stamp, the ends' rows, the matrix and the vector plan's runs, the runs' offsets
+-- a uniform-count bite was vacuous until the 0 F stamp, the two fallbacks, the two loops, the structure, the copy, the flat
+view, PCNR's view, the noise refusal, an end outside, a bank's name, `_bankable`, the importer's node codes).  Three pinned pairs
+re-recorded after their twins' tests (232 passed): the assembly loops and the plan, the PCNR DC solve and its C (`pcnr_view`),
+the sources and their direct pass (`_add_element_subvectors`; a bank stamps no `u`).

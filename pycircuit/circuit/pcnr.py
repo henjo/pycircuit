@@ -408,6 +408,9 @@ def pcnr_view(circuit, devices, epar=defaultepar):
     view.toolkit = circuit.toolkit
     for node in circuit.nodes:
         view.append_node(node)
+    ## (THE BULK ELEMENTS: constant, on the same nodes -- `_bulk`)
+    if circuit.__dict__.get('_banks'):
+        view._banks = list(circuit._banks)
     for inst, el in circuit.elements.items():
         dev = part.get(inst)
         if dev is None:

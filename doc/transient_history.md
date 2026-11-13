@@ -6130,3 +6130,20 @@ gap: past 16 384 unknowns the branch check's screen could not make the
 dense SVD it needs where its cheap test fires, and switched itself off.  It
 now takes the SVD by the blocks C's nonzeros fall into, the count the dense
 SVD's, so a large nonlinear circuit keeps its branch check.
+
+## Bulk elements, B2: resistor and capacitor banks (2026-11-13)
+
+2026-11-13 (`doc/hdl_roadmap_260824.md`, 326; plan 261 L21).  The solver
+now carries the IBM grid ibmpg2t's 164 898 unknowns, but reading a grid
+builds a Python object of a few kilobytes for every element, and past
+ibmpg2t that alone fills the memory.  A circuit can now hold many
+resistors or capacitors as one array-backed bank beside its elements
+(`SubCircuit.add_bank`), stamped wherever matrices and vectors are
+assembled, and `import_netlist(path, bulk=True)` gathers a netlist's plain
+resistors and capacitors into two banks.  On ibmpg2t the import takes
+8 s and 0.79 GB instead of 22 s and 1.83 GB, the 10 ns transient's peak
+falls from 3.2 to 1.9 GB, and the answers move only by rounding (the sums
+are taken in another order): within 1e-14 V, the same steps.  The rest of
+the import's memory is the current sources, still elements, and the
+netlist's parsed records, which the next stages take on.  Without the
+flag nothing changes.

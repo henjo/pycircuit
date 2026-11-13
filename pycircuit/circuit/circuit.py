@@ -11,7 +11,7 @@ import sys
 import weakref
 from .toolkit import numeric
 from .toolkit import symbolic
-from . import _hdl_batch, _limiting, _paths, _stamp_plan
+from . import _bulk, _hdl_batch, _limiting, _paths, _stamp_plan
 import numpy as np
 
 ## The process-wide fallback toolkit used when a circuit is built without an
@@ -208,6 +208,9 @@ def _flat_view_of(cir):
     view._flat_of = cir
     ## (parameters resolve in the hierarchy, never against the view's own)
     view.update_iparv = cir.update_iparv
+    ## (THE BULK ELEMENTS: the circuit's own, on the same nodes)
+    if cir.__dict__.get('_banks'):
+        view._banks = list(cir._banks)
     return view
 
 
@@ -1279,6 +1282,9 @@ class SubCircuit(Circuit):
                 el._parented(newc, instance_name)
         newc.elementnodemap = copy(self.elementnodemap)
         newc.term_node_map = copy(self.term_node_map)
+        ## (THE BULK ELEMENTS: constant, shared)
+        if self.__dict__.get('_banks'):
+            newc._banks = list(self._banks)
         
         newc.update_node_map()
 
@@ -1334,6 +1340,24 @@ class SubCircuit(Circuit):
 
     def __str__(self):
         return self.netlist(top=False)
+
+    def add_bank(self, name, kind, nodes, a, b, value):
+        """THE BULK LINEAR ELEMENTS (`_bulk`): `len(a)` resistors (`kind`
+        'R', `value` their resistances) or capacitors ('C') held as arrays,
+        element e between `nodes[a[e]]` and `nodes[b[e]]` (names or `Node`s,
+        each added as a connection's is) -- kept beside the elements, its
+        stamps taken from the arrays wherever a matrix or vector is
+        assembled.  Returns the `_bulk.Bank`."""
+        if name in self.elements or any(bk.name == name for bk in _bulk.banks(self)):
+            raise ValueError(f'{name!r}: the circuit holds an element or a bank of that name')
+        objs = [nd if isinstance(nd, Node) else Node(str(nd)) for nd in nodes]
+        bank = _bulk.Bank(name, kind, objs, a, b, value)
+        for nd in objs:
+            self.append_node(nd)
+        self._banks = list(_bulk.banks(self)) + [bank]
+        self._nodemap_dirty = True
+        self._restructured()
+        return bank
 
     def add_instance(self, instancename, instance, **connection):
         """Add instance to the circuit.
@@ -1705,6 +1729,9 @@ class SubCircuit(Circuit):
                                                        np.tile(nodemap, k))
             else:
                 self._nodemap = None
+        ## (THE BULK ELEMENTS' ends as rows, with the map: `_bulk.resolve`)
+        if self.__dict__.get('_banks'):
+            _bulk.resolve(self, node_index)
 
     def update_iparv(self, parent_ipar=None, globalparams=None, 
                      ignore_errors = False):
@@ -2138,6 +2165,19 @@ class SubCircuit(Circuit):
                 ## call, and `pending_val` does not outlive it.
                 pending_val.append(np.asarray(rhs).ravel())
 
+        ## (THE BULK ELEMENTS: each bank's entries after the elements, `_bulk`)
+        for bk, ia, ib in _bulk.of(self, methodname):
+            b_rows, b_cols, b_vals = _bulk.matrix_entries(bk, ia, ib)
+            if build_sparse:
+                all_data.append(b_vals)
+                all_rows.append(b_rows)
+                all_cols.append(b_cols)
+            elif has_add_at:
+                lhs = toolkit.add_at(lhs, (b_rows, b_cols), b_vals)
+            else:
+                pending_rc.append((b_rows, b_cols))
+                pending_val.append(b_vals)
+
         if pending_rc:
             lhs = self._scatter_2d(lhs, pending_rc, pending_val, n)
 
@@ -2252,6 +2292,16 @@ class SubCircuit(Circuit):
                 ## `flatten`'s unconditional copy, and `_scatter_1d`'s
                 ## `np.concatenate` is the only consumer.
                 pending_val.append(np.asarray(rhs).ravel())
+
+        ## (THE BULK ELEMENTS: each bank's entries after the elements, `_bulk`)
+        if x is not None:
+            for bk, ia, ib in _bulk.of(self, methodname):
+                b_idx, b_vals = _bulk.vector_entries(bk, ia, ib, x)
+                if has_add_at:
+                    lhs = toolkit.add_at(lhs, b_idx, b_vals)
+                else:
+                    pending_idx.append(b_idx)
+                    pending_val.append(b_vals)
 
         if default_src:
             ## (`_paths`: the elements a source pass CALLED, once per pass --

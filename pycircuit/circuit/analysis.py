@@ -265,6 +265,11 @@ def jacobian_structure(cir, iref):
         return None
     ## (every element's block at once: its rows and columns concatenated)
     rc = list(cir._map_indices_2d.values())
+    ## (THE BULK ELEMENTS: each bank's blocks, `_bulk`)
+    from pycircuit.circuit import _bulk
+    for bk, ia, ib in [*_bulk.of(cir, 'G'), *_bulk.of(cir, 'C')]:
+        b_rows, b_cols, _v = _bulk.matrix_entries(bk, ia, ib)
+        rc.append((b_rows, b_cols))
     flats = [numpy.arange(n, dtype=numpy.intp) * (n + 1)]
     if rc:
         rows = numpy.concatenate([numpy.asarray(a, dtype=numpy.intp) for a, _b in rc])

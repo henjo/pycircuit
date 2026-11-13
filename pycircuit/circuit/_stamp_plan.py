@@ -65,7 +65,7 @@ import sys
 
 import numpy as np
 
-from pycircuit.circuit import _hdl_batch, _paths, _watch
+from pycircuit.circuit import _bulk, _hdl_batch, _paths, _watch
 from pycircuit.circuit import toolkit as _toolkit
 from pycircuit.utilities import param as _param
 
@@ -193,10 +193,22 @@ class _MatrixPlan:
             segs.append((1, size, len(g[0]), inst, el, nm))
             g[0].append(rc[0])
             g[1].append(rc[1])
-        kept = {k: _stamp_rows(g, k * k, n) for k, g in cached.items()}
-        counts = {k: v[3].tolist() for k, v in kept.items()}
-        offs = {k: np.empty(len(g[0]), dtype=np.intp) for k, g in cached.items()}
+        ## THE BULK ELEMENTS (`_bulk`): each bank a run of 2 x 2 constant
+        ## stamps after every element, its rows after the elements' of the
+        ## size (their blocks' rows and columns as `update_node_map` makes
+        ## an element's)
+        chunks = {}
+        for bk, ia, ib in _bulk.of(cir, m):
+            cached.setdefault(2, ([], [], []))
+            ch = chunks.setdefault(2, [])
+            segs.append((3, 2, len(ch)))
+            ch.append((bk.stamps(), np.stack([ia, ia, ib, ib], axis=1),
+                       np.stack([ia, ib, ia, ib], axis=1)))
+        kept = {k: _stamp_rows(g, k * k, n, chunks.get(k, ())) for k, g in cached.items()}
+        counts = {k: v[3][:len(cached[k][0])].tolist() for k, v in kept.items()}
+        offs = {k: np.empty(len(v[3]), dtype=np.intp) for k, v in kept.items()}
         coffs = {k: np.empty(len(g[0]), dtype=np.intp) for k, g in called.items()}
+        starts = _chunk_starts(cached, chunks)
         pos = 0
         for sg in segs:
             if sg[0] == 0:
@@ -208,6 +220,8 @@ class _MatrixPlan:
                 coffs[size][j] = pos
                 calls.append((inst, el, nm, pos, pos + size))
                 pos += size
+            elif sg[0] == 3:
+                pos = _chunk_offsets(offs, kept[sg[1]][3], starts, sg, pos)
             else:
                 calls.append(sg[1])
         flat = np.empty(pos, dtype=np.intp)
@@ -226,15 +240,42 @@ class _MatrixPlan:
         self.reduced = {}
 
 
-def _stamp_rows(g, kk, n):
+def _stamp_rows(g, kk, n, chunks=()):
     """One size's constant stamps (`g`: the stamps, their rows and columns,
     `kk` entries each) at once: `(V, K, F, counts)` -- the values as
-    float64, which are nonzero, the flat indices, each stamp's count."""
+    float64, which are nonzero, the flat indices, each stamp's count.
+    `chunks`: the banks' runs `(S, rows, cols)` of the size, their rows
+    after the elements'."""
     Ss, Rs, Cs = g
     V = np.asarray(Ss, dtype=np.float64).reshape(len(Ss), kk)
+    F = (np.asarray(Rs, dtype=np.intp) * n + np.asarray(Cs, dtype=np.intp)).reshape(len(Ss), kk)
+    if chunks:
+        V = np.concatenate([V] + [S.reshape(-1, kk) for S, _r, _c in chunks])
+        F = np.concatenate([F] + [r.astype(np.intp) * n + c.astype(np.intp) for _S, r, c in chunks])
     K = V != 0.0
-    F = np.asarray(Rs, dtype=np.intp) * n + np.asarray(Cs, dtype=np.intp)
     return V, K, F, K.sum(axis=1)
+
+
+def _chunk_starts(cached, chunks):
+    """Per size, each bank run's first row in the size's rows (after the
+    elements'), and the end: `{k: [start_0, ..., end]}`."""
+    out = {}
+    for k, ch in chunks.items():
+        st = [len(cached[k][0])]
+        for c in ch:
+            st.append(st[-1] + len(c[0]))
+        out[k] = st
+    return out
+
+
+def _chunk_offsets(offs, cnt, starts, sg, pos):
+    """A bank run's rows placed from `pos` in order, each its `cnt` entries
+    (the elements' loop, at once): the next position."""
+    _t, k, c = sg
+    j0, j1 = starts[k][c], starts[k][c + 1]
+    w = cnt[j0:j1]
+    offs[k][j0:j1] = pos + np.cumsum(w) - w
+    return pos + int(w.sum())
 
 
 class _VectorPlan:
@@ -280,39 +321,61 @@ class _VectorPlan:
             g = called.setdefault(size, [])
             segs.append((1, size, len(g), inst, el, nm))
             g.append(ind)
+        ## THE BULK ELEMENTS (`_bulk`): each bank a run of 2 x 2 constant
+        ## stamps after every element (its nodes its ends' rows)
+        chunks = {}
+        for bk, ia, ib in _bulk.of(cir, v):
+            cached.setdefault(2, ([], [], [], []))
+            ch = chunks.setdefault(2, [])
+            segs.append((3, 2, len(ch)))
+            ch.append((bk.stamps(), np.stack([ia, ib], axis=1), len(segs) - 1))
         rows = {}
         for k, (Ss, _nm, _ind, _at) in cached.items():
-            S = np.asarray(Ss, dtype=np.float64)
+            S = np.asarray(Ss, dtype=np.float64).reshape(len(Ss), k, k)
+            if k in chunks:
+                S = np.concatenate([S] + [c[0] for c in chunks[k]])
             R = np.any(S != 0, axis=2)
-            rows[k] = (S, R, R.sum(axis=1).tolist())
-        offs = {k: np.empty(len(g[0]), dtype=np.intp) for k, g in cached.items()}
+            cnt = R.sum(axis=1)
+            rows[k] = (S, R, cnt, cnt[:len(Ss)].tolist())
+        offs = {k: np.empty(len(r[2]), dtype=np.intp) for k, r in rows.items()}
         coffs = {k: np.empty(len(g), dtype=np.intp) for k, g in called.items()}
+        starts = _chunk_starts(cached, chunks)
         pos = 0
         for sg in segs:
             if sg[0] == 0:
                 _t, k, j = sg
                 offs[k][j] = pos
-                pos += rows[k][2][j]
+                pos += rows[k][3][j]
             elif sg[0] == 1:
                 _t, size, j, inst, el, nm = sg
                 coffs[size][j] = pos
                 calls.append((inst, el, nm, pos, pos + size))
                 pos += size
+            elif sg[0] == 3:
+                pos = _chunk_offsets(offs, rows[sg[1]][2], starts, sg, pos)
             else:
                 calls.append(sg[1])
         idx = np.empty(pos, dtype=np.intp)
         first, groups = [], []
         for k, (_Ss, NM, IND, at) in cached.items():
-            S, R, cnt = rows[k]
-            on = np.asarray(cnt) > 0
+            S, R, cnt, _el = rows[k]
+            NMa = np.asarray(NM, dtype=np.intp).reshape(len(NM), k)
+            INDa = np.asarray(IND, dtype=np.intp).reshape(len(IND), k)
+            ata = np.asarray(at, dtype=np.intp)
+            if k in chunks:
+                NMa = np.concatenate([NMa] + [c[1].astype(np.intp) for c in chunks[k]])
+                INDa = np.concatenate([INDa] + [c[1].astype(np.intp) for c in chunks[k]])
+                ata = np.concatenate([ata] + [np.full(len(c[1]), c[2], dtype=np.intp)
+                                              for c in chunks[k]])
+            on = cnt > 0
             if not on.any():
                 continue
             Rk = R[on]
             dst = (offs[k][on][:, None] + (np.cumsum(Rk, axis=1) - 1))[Rk]
-            idx[dst] = np.asarray(IND, dtype=np.intp)[on][Rk]
+            idx[dst] = INDa[on][Rk]
             Sk = np.ascontiguousarray(S[on])
-            first.append(int(np.asarray(at)[on][0]))
-            groups.append((k, Sk, np.asarray(NM, dtype=np.intp)[on], np.flatnonzero(Rk), dst))
+            first.append(int(ata[on][0]))
+            groups.append((k, Sk, NMa[on], np.flatnonzero(Rk), dst))
         for size, IND in called.items():
             dest = coffs[size][:, None] + np.arange(size)
             idx[dest] = np.asarray(IND, dtype=np.intp)
@@ -328,6 +391,8 @@ def _matmul_ok(k, S):
     stamps of size `k` in this process -- checked once, on these stamps."""
     ok = _MATMUL_OK.get(k)
     if ok is None:
+        ## (its first 1 024 stamps: a bank's run is millions)
+        S = S[:1024]
         rng = np.random.default_rng(0)
         X = rng.standard_normal((S.shape[0], k)) * 10.0 ** rng.integers(
             -8, 3, (S.shape[0], 1))
@@ -1191,6 +1256,10 @@ def _legacy_matrix(cir, m, x, args, mp, got):
                else getattr(el, m)(x[cir.elementnodemap[inst]], *args))
         pending_rc.append(rc)
         pending_val.append(np.asarray(rhs).ravel())
+    for bk, ia, ib in _bulk.of(cir, m):
+        b_rows, b_cols, b_vals = _bulk.matrix_entries(bk, ia, ib)
+        pending_rc.append((b_rows, b_cols))
+        pending_val.append(b_vals)
     n = cir.n
     return cir._scatter_2d(cir.toolkit.zeros((n, n)), pending_rc, pending_val,
                            n)
@@ -1211,5 +1280,9 @@ def _legacy_vector(cir, v, x, args, vp, got):
                else getattr(el, v)(x[cir.elementnodemap[inst]], *args))
         pending_idx.append(ind)
         pending_val.append(np.asarray(rhs).ravel())
+    for bk, ia, ib in _bulk.of(cir, v):
+        b_idx, b_vals = _bulk.vector_entries(bk, ia, ib, x)
+        pending_idx.append(b_idx)
+        pending_val.append(b_vals)
     n = cir.n
     return cir._scatter_1d(cir.toolkit.zeros(n), pending_idx, pending_val, n)
