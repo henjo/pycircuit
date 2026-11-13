@@ -16158,3 +16158,66 @@ within rounding.  Eighteen bites, each bit (the R stamp, the ends' rows, the mat
 view, PCNR's view, the noise refusal, an end outside, a bank's name, `_bankable`, the importer's node codes).  Three pinned pairs
 re-recorded after their twins' tests (232 passed): the assembly loops and the plan, the PCNR DC solve and its C (`pcnr_view`),
 the sources and their direct pass (`_add_element_subvectors`; a bank stamps no `u`).
+
+## 2026-11-13 — 327. K1a: a refactor whose residual test fails kept on KLU's pivot growth
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, K1).  With B2's flag the IBM grid ibmpg3t (1 043 445 unknowns) imports in 50 s at
+4.3 GB, its operating point within 0.002 mV of the benchmark, its transient within the 11 GB cap -- but at ~45 s a step: the C
+Newton handed back on KLU's refactor check on 32 of 49 attempts (`newton_c:bail:klu_residual`), each a fresh ~9 s factor in the
+Python.  Andreas: "Size the KLU bail first", then "Build K1a to that line".  Sizing (wrappers, no source changed): the check
+`max|A x - b| / max|b| <= 1e-8` fails there on rounding alone -- |b| ~1e-5 beside |A||x| ~1e4, every solve's backward error
+~1e-15 -- and the fresh factor gives the refactor's answer to the bit (or within 1e-21).  On the gold decks the check is real:
+over 299 648 checks it fell back 327 times (e1480, gm19, opampal), 158 of them moving the answer, up to 1e26 (a stale pivot
+order).  Refuted by census: the backward error (a broken factor's huge x reads as a tiny one: gm19 0.0) and one refinement step
+(~1e-6 on ibmpg3t: the grid's conditioning).  KLU's reciprocal pivot growth (`klu_rgrowth`, its own documented test after a
+refactor) separates them: every breakdown 1.1e-4 .. 3e-13 against its fresh factor's ~1, every useless fallback's equal to its
+fresh factor's, ibmpg3t's 5.9e-3 .. 0.76; the chord's 87 850 checks on the decks none failing.  Line (set before): (a) the decks:
+only e1480, gm19 and opampal change a decision, their results within 1e-9 V and steps the same or each change shown, every
+other deck the same bytes and counters, C against Python 0 differing everywhere; (b) ibmpg3t's 0.2 ns: no `klu_residual`
+hand-back where the growth keeps, its answer within 1e-12 V of today's, the C path >= 2x a step; (c) ibmpg2t the same digest,
+size >= 0.98x, suite, bites, pinned pairs after their twins' tests.
+
+**What.**  THE REFACTOR KEPT ON ITS GROWTH: where the refactor check fails, `StructuralKLU._growth_keeps` keeps the refactor
+when KLU's reciprocal pivot growth of it is at least `REFACTOR_RGROWTH_KEEP` (1e-3) and the values and the solution are all
+finite (KLU's growth passes over a column a NaN reaches: a non-finite matrix or answer meets the fresh factor, and its failure,
+as before); otherwise the fresh factor as before.  A check that passes today is untouched: no new fallback anywhere.  `solve`
+and the chord's `_ChordNumeric._make`; `klu_rgrowth` bound with KLU's other entries; the common's offset of its result compiled
+from the installed header (`_klu_order.rgrowth_offset`, confirmed on a diagonal factor whose growth is exactly 1 -- none: the
+rule off).  The C twins the same rule (pcx_verdict.h `pcx_rgrowth_keeps`): the shared sequence (pcx_kluseq.h: the DC Newton,
+PCNR, Radau's stage system, the transform's real factor, the chord's numeric), the full Newton (newton.c `full_kept`) and the
+error test (lte.c `lte_kept`) -- a NaN residual through the rule as the Python's, the finite test deciding it; the entry, the
+offset and the threshold new last fields of pcx_klu.h, newton.h and lte.h (`StructuralKLU.growth_gate`, set where each
+binds KLU; the Newton's tolerance and threshold now read at each call, `_tran_newton_c._klu_rules` -- bound once, a tolerance
+an instance set between runs was not seen).  Counted where the Python counts it: the run numeric's held state (`HELD_KEPT`,
+with its checkpoint's `HELD_CK_KEPT`, restored by a hand-back -- pcx_held.h, `linearsolver.held_back`; `residual_kept`), the
+chord's numeric on the solver (`chord_residual_kept`; newton.c's and loop.c's checkpoints `k0`, `ck_k0`).
+
+**Measured.**  (a) The gate against 76a0c938 DIFFERS on e1480, gm19 and opampal alone, as the census said -- every other deck's results and path counters the same under dc, gear2, gear2/bypass and radau, the size runs the same, C against Python 0 differing on every deck's eleven forcings and at size; the changed C lines' 52 arms by the decks 18, forced 2, size 1, the fixtures 21, NOT REACHED 10 (the rule's guards -- no entry, no offset, no numeric, a failed `klu_rgrowth`; a held state unbound; the NaN residual's arms in newton.c and lte.c, whose finite test refuses as the hand-back before).  The three decks (both trees, every array saved): opampal's DC within 2.9e-12 V, its Gear-2
+and Radau runs within 3.1e-12 / 3.2e-12 V, the same steps; e1480's DC within 5.2e-14 V, its Gear-2 and Radau runs the same 184
+and 124 steps, their time points moved by rounding (<= 1.3e-14 s) and the values with them (2.5e-7 / 3.3e-6 V at an edge, 2.3e-9 /
+2.3e-8 V after the slope x the shift); gm19's DC within 3.6e-15 V, its Gear-2 and Radau runs 3 849 / 2 374 steps against 3 866 /
+2 383 (the stepping parted; the waveforms within the base's own interpolation error, the ends 6.7e-3 / 1.9e-3 V on a 10 V
+swing; it has no gold); against the gold the metrics the same to nine digits (e1480 5.868038e-5, opampal 0.0136157 both trees).
+Their DC fallbacks: opampal 54 -> 0 (factors 67 -> 9), e1480 101 -> 53, gm19 12 -> 4.  (b) MET -- ibmpg3t's 0.2 ns from its banked DC: 476.6 s against 1 954.6 s (10.8 against 44.4 s a step: 4.1x), the same 44 steps, 5 rejections and 93 iterations, no `klu_residual` hand-back against 32, one factor against 70 (69 checks failing on rounding kept), the C loop 41 steps against 4, the peak 8.92 GB either way; the printed nodes' waveforms BYTE-IDENTICAL (the fallbacks gave the refactors' own answers), 0.0325 mV against the benchmark.  (c) ibmpg2t's default 10 ns the same digest (865362f1f55d; no check failed there);
+the size runs on AC: DCs 0.971-1.022x on a quiet box (achain and chain at 4 000 1.000x the median of three more pairs each), transients 0.956-1.019x under other sessions' load (the mesh's Gear-2 1.009x and Radau 1.004x the medians of three pairs, the chain's Radau 1.001-1.009x), every digest the same.  Suite 6 759 passed.
+
+**Tests.**  `test_structural_klu` +3 (the kept refactor: its answer a fresh factor's, counted, its checkpoint restored, the
+chord's, no offset no rule; a stale pivot order and a non-finite right-hand side falling back; the C's full Newton, error test
+and operating point keeping as the Python), `test_newton_c` +5 (the chord's kept refactors at two tolerances; a hand-back after
+a kept chord refactor, with the C loop and without; a hand-back after a kept full-Newton solve; a loop stop after a kept chord
+refactor; the threshold read at each run), `test_lte_c` +1, `test_dc_newton_c` +2 (kept; a hand-back restoring the kept count
+in C), `test_pcnr_c` +1, `test_radau_c` +1, the transform's real factor's `kept-every` case in `test_radau_tc` and
+`test_tcloop_c`; the tests that force a residual failure to test the fallback switch the rule off (the threshold infinite).
+Twenty-six bites, twenty-three bit (the Python's rule, its threshold, its finite test, its checkpoint; the offset's confirmation;
+the C's rule, threshold, finite test and checkpoint; the full Newton's, the error test's; the loop's chord checkpoint; each
+glue site's fields; the error test's and the Newton's per-call reads); three missed and kept as the code they mirror:
+`pcx_newton`'s chord count restore (the glue zeroes the chord's counts each call and adds them on a served one -- as its
+`q0` twin's), and the C loop's and the transform loop's per-run threshold reads (an earlier per-call read sets the same value
+-- as their `resid_tol` twins').  Twenty-one pinned pairs re-recorded after their twins' tests (the shared headers).  (A first suite read 44 skipped
+against 10: the verdict tests compile pcx_verdict.h alone and skip where it does not build -- the helper used pcx_abi.h's
+type; it carries its own, `pcx_rgrowth_fn`.)
+
+**Found on the way, not changed:** the toolkit's attribute cache (`toolkit.__getattr__` writing a watched dict at an
+attribute's first use) moves `_watch`'s epoch mid-run where a first use comes after the direct source pass's stamp, and the C
+loop then declines that run (`loop_c:sources`): a fresh process's first run of a circuit can run without the C loop; in the
+suite earlier tests have filled the cache (`test_loop_c`'s fixed runs, run alone, fail on one case at 76a0c938 too).

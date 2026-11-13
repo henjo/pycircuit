@@ -230,7 +230,7 @@ def _klu(on, monkeypatch, build, x0, first=None):
     sk = ls._choice
     assert type(sk).__name__ == 'StructuralKLU'
     return got, counts, (sk.refactors, sk.factors, sk.pivot_fallbacks, sk.residual_fallbacks,
-                         sk._numeric is None, klumem.memusage(sk))
+                         sk._numeric is None, klumem.memusage(sk), sk.residual_kept)
 
 
 def _poisoned(build, node, value, rest=0.5):
@@ -238,6 +238,23 @@ def _poisoned(build, node, value, rest=0.5):
     x0 = _start(c, rest)
     x0[c.get_node_index(node)] = value
     return x0
+
+
+def test_a_refactor_failing_on_rounding_is_kept_in_c_as_in_the_python(monkeypatch):
+    """Every refactor's validation refused (a tolerance of 0: the residual is
+    rounding) on a pivot order that fits: PCNR's solves kept on their growth
+    (THE REFACTOR KEPT ON ITS GROWTH) by the C's sequence as by the Python
+    -- served, the answer and StructuralKLU's counters (the kept ones in the
+    held state) the Python's."""
+    from pycircuit.circuit.linearsolver import StructuralKLU
+    monkeypatch.setattr(StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 0.0)
+    first, x0 = _start(_ladder(), 0.5), _start(_ladder(), 0.45)
+    got, counts, klu = _klu(True, monkeypatch, _ladder, x0, first)
+    ref, _counts, klu_ref = _klu(False, monkeypatch, _ladder, x0, first)
+    assert got == ref and got[0] == 'ok', (got, ref)
+    assert klu == klu_ref, (klu, klu_ref)
+    assert klu[6] > 0 and klu[3] == 0, klu
+    assert counts.get('pcnr_c:served', 0) >= 1, counts
 
 
 @pytest.mark.parametrize('case', ['rhs', 'matrix', 'refactor'])

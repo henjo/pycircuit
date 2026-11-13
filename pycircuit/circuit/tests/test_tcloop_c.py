@@ -565,6 +565,7 @@ def _setups(*fns):
     ('residual-every', _TIGHT, _klu(tol=-1.0), _PULSE),
     ('residual-some', None, _klu(tol=1e-16), dict(_PULSE, fixed_timestep=True)),
     ('residual-some-tight', _TIGHT, _klu(tol=1e-16), _PULSE),
+    ('kept-every', _TIGHT, _klu(tol=-1.0, grow=True), _PULSE),
     ('zero-pivots', _TIGHT, _klu(fail=_crc(3)), _PULSE),
 ])
 def test_a_run_on_the_klu_real_factor_is_the_python_one(name, make, setup, kw, monkeypatch):
@@ -585,6 +586,8 @@ def test_a_run_on_the_klu_real_factor_is_the_python_one(name, make, setup, kw, m
         assert real[3] == real[0] > 0, real
     if name.startswith('residual-some'):
         assert 0 < real[3] < real[0] and ca.get('tcloop_c:klu_dense', 0) > 0, (real, ca)
+    if name == 'kept-every':
+        assert real[6] >= real[0] > 0 and real[3] == 0, real
     if name == 'zero-pivots':
         assert real[2] > 0, real
 

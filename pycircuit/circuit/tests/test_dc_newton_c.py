@@ -270,7 +270,8 @@ def _first_dc(cells, on):
         _dc_newton_c.ENABLED = kept
     ch = dc._get_linearsolver()._choice
     klu = tuple(getattr(ch, k, None) for k in ('analyses', 'factors', 'refactors',
-                                                'pivot_fallbacks', 'residual_fallbacks'))
+                                                'pivot_fallbacks', 'residual_fallbacks',
+                                                'residual_kept'))
     return x, type(ch).__name__, klu, counts, dc
 
 
@@ -363,6 +364,60 @@ def test_an_undecided_refactor_residual_is_the_csc_kernels_test(monkeypatch):
     got = _first_dc(160, True)
     assert got[:3] == py[:3]
     assert got[3].get('dcnewton_c:served', 0) >= 1 and got[3].get('dcnewton_c:dense_resid', 0) >= 1, got[3]
+
+
+def test_a_refactor_failing_on_rounding_is_kept_in_c_as_in_the_python(monkeypatch):
+    """Every refactor's validation refused (a tolerance of 0: the residual is
+    rounding) on a pivot order that fits: kept on its growth (THE REFACTOR
+    KEPT ON ITS GROWTH) by the C's sequence (pcx_kluseq.h) as by the Python
+    -- served, the operating point and the counts (the kept ones in the held
+    state) the Python's."""
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 0.0)
+    py = _first_dc(160, False)
+    got = _first_dc(160, True)
+    assert got[:3] == py[:3]
+    assert py[2][5] > 0 and py[2][4] == 0, py[2]
+    assert got[3].get('dcnewton_c:served', 0) >= 1, got[3]
+
+
+def test_a_hand_back_takes_the_kept_solves_back_in_c(monkeypatch):
+    """Every refactor's validation refused (a tolerance of 0), the refactors
+    kept on their growth, the C's KLU solves failing on about half the
+    right-hand sides (their CRC): each such operating point handed back
+    after a kept solve, and the C's own checkpoint (pcx_held.h
+    `pcx_held_back`) takes the kept count back with the held values -- the
+    Python's repeat is the answer and every count."""
+    import ctypes
+    import zlib
+    if _dc_newton_c.driver() is None:
+        pytest.skip(f'the C solve is off: {_dc_newton_c.STATUS}')
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 0.0)
+    c_void_p, c_int = ctypes.c_void_p, ctypes.c_int
+    proto = ctypes.CFUNCTYPE(c_int, c_void_p, c_void_p, c_int, c_int, c_void_p, c_void_p)
+    real = proto(ctypes.cast(linearsolver.KLUSolver()._lib.klu_solve, c_void_p).value)
+    calls = [0]
+
+    def failing(sym, num, m, nrhs, b, common):
+        calls[0] += 1
+        if calls[0] > 1 and zlib.crc32(bytes((ctypes.c_double * m).from_address(b))) % 2 == 0:
+            return 0
+        return real(sym, num, m, nrhs, b, common)
+    stand_in = proto(failing)
+    bind = _dc_newton_c._klu_bind
+
+    def binding(rec, sk):
+        ok = bind(rec, sk)
+        if ok:
+            rec.s.klu.klu_solve = rec.ffi.cast('void *', ctypes.cast(stand_in, c_void_p).value)
+        return ok
+    py = _first_dc(160, False)
+    monkeypatch.setattr(_dc_newton_c, '_klu_bind', binding)
+    got = _first_dc(160, True)
+    assert got[:3] == py[:3]
+    assert py[2][5] > 0, py[2]
+    assert any(k.startswith('dcnewton_c:bail') for k in got[3]), got[3]
 
 
 def _base_solves(build, on, **kw):

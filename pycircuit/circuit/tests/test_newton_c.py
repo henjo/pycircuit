@@ -268,7 +268,7 @@ def _sparse_run(on, **kw):
              st_.accepted_steps, st_.rejected_steps, st_.newton_iterations),
             (type(sk).__name__, sk.analyses, sk.factors, sk.refactors, sk.numerics, sk.foreign,
              sk.chord_refactors, sk.chord_factors, sk.chord_pivot_fallbacks,
-             sk.chord_residual_fallbacks),
+             sk.chord_residual_fallbacks, sk.chord_residual_kept, sk.residual_kept),
             _paths.since(before))
 
 
@@ -317,6 +317,8 @@ def test_the_sparse_full_newtons_validation_sums_in_the_csc_order(edge, monkeypa
     top = max(seen)
     monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL',
                         top if edge == 'at' else float(np.nextafter(top, 0.0)))
+    ## (the residual's verdict alone: none kept on its growth)
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RGROWTH_KEEP', float('inf'))
     a = _sparse_run(False, make={'chord_jacobian': False}, **kw)
     b = _sparse_run(True, make={'chord_jacobian': False}, **kw)
     assert a[0] == b[0] and a[1] == b[1]
@@ -352,7 +354,7 @@ def test_a_sparse_bail_leaves_no_trace(monkeypatch):
     monkeypatch.setattr(_tran_newton_c, '_driver', (ffi, bailing, lapack))
     b = _sparse_run(True, **dict(kw))
     assert a[0] == b[0] and a[1] == b[1]
-    assert a[1][6] > 10 and a[1][8:] == (0, 0)
+    assert a[1][6] > 10 and a[1][8:10] == (0, 0)
     assert b[2].get('newton_c:served', 0) == 0 and b[2].get('newton_c:bail:x', 0) > 10
 
 
@@ -370,6 +372,7 @@ def test_the_chord_s_residual_fallbacks_in_c_are_the_python_s(tol, monkeypatch):
     none from 2e-16."""
     from pycircuit.circuit import linearsolver
     monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', tol)
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RGROWTH_KEEP', float('inf'))
     kw = {'tend': 8e-9, 'timestep': 2e-10}
     a = _sparse_run(False, **dict(kw))
     b = _sparse_run(True, **dict(kw))
@@ -377,6 +380,24 @@ def test_the_chord_s_residual_fallbacks_in_c_are_the_python_s(tol, monkeypatch):
     assert a[1][9] > 0 and a[1][6] > a[1][9] and a[1][7] == a[1][9] + 1
     assert b[2].get('loop_c:bail:lte', 0) > 0 and b[2].get('newton_c:served', 0) > 10
     assert not any(k.startswith('newton_c:bail:klu') for k in b[2]), b[2]
+
+
+@pytest.mark.parametrize('tol', [1e-16, 1.5e-16])
+def test_the_chord_s_refactors_kept_on_their_growth_in_c_are_the_python_s(tol, monkeypatch):
+    """The same tight validation with THE REFACTOR KEPT ON ITS GROWTH: the
+    refactors it refuses kept (none a stale pivot order) -- by the C as by
+    the Python, no fresh factor and nothing handed back (no error test's
+    fallback either: the loop stops nowhere); the bytes and every count the
+    Python's."""
+    from pycircuit.circuit import linearsolver
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', tol)
+    kw = {'tend': 8e-9, 'timestep': 2e-10}
+    a = _sparse_run(False, **dict(kw))
+    b = _sparse_run(True, **dict(kw))
+    assert a[0] == b[0] and a[1] == b[1]
+    assert a[1][10] > 0 and a[1][9] == 0, a[1]
+    assert b[2].get('newton_c:served', 0) > 10 and b[2].get('loop_c:steps', 0) > 10, b[2]
+    assert not any(k.startswith(('newton_c:bail:klu', 'loop_c:bail')) for k in b[2]), b[2]
 
 
 def test_a_chord_refactor_refused_in_c_is_factored_as_the_python_s(monkeypatch):
@@ -455,6 +476,7 @@ def test_a_chord_solve_handed_back_after_a_fresh_factor_leaves_the_entry(monkeyp
 
     from pycircuit.circuit import linearsolver
     monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 1e-16)
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RGROWTH_KEEP', float('inf'))
     c_void_p, c_int = ctypes.c_void_p, ctypes.c_int
     proto = ctypes.CFUNCTYPE(c_int, c_void_p, c_void_p, c_int, c_int, c_void_p, c_void_p)
     real = proto(ctypes.cast(linearsolver.KLUSolver()._lib.klu_solve, c_void_p).value)
@@ -484,6 +506,137 @@ def test_a_chord_solve_handed_back_after_a_fresh_factor_leaves_the_entry(monkeyp
     assert a[0] == b[0] and a[1] == b[1]
     assert a[1][9] > 0
     assert b[2].get('newton_c:bail:klu_solve', 0) > 3 and b[2].get('newton_c:served', 0) > 10
+
+
+def _crc_failing_solve(pick):
+    """A klu_solve stand-in refusing, on about half the right-hand sides
+    (their CRC), the numerics `pick(num)` names: `(stand-in, its address)`."""
+    import ctypes
+    import zlib
+
+    from pycircuit.circuit import linearsolver
+    c_void_p, c_int = ctypes.c_void_p, ctypes.c_int
+    proto = ctypes.CFUNCTYPE(c_int, c_void_p, c_void_p, c_int, c_int, c_void_p, c_void_p)
+    real = proto(ctypes.cast(linearsolver.KLUSolver()._lib.klu_solve, c_void_p).value)
+
+    def failing(sym, num, m, nrhs, b, common):
+        if pick(num) and zlib.crc32(bytes((ctypes.c_double * m).from_address(b))) % 2 == 0:
+            return 0
+        return real(sym, num, m, nrhs, b, common)
+    stand_in = proto(failing)
+    return stand_in, ctypes.cast(stand_in, c_void_p).value
+
+
+@pytest.mark.parametrize('loop', [True, False], ids=['loop', 'no-loop'])
+def test_a_hand_back_takes_the_chord_s_kept_refactors_back(loop, monkeypatch):
+    """THE REFACTOR KEPT ON ITS GROWTH under a validation that refuses some
+    of the chord's refactors (kept, none stale), the C's chord solves
+    failing on about half the right-hand sides: each such call handed back
+    (`klu_solve`) after its refactor was kept, and `pcx_newton` takes the
+    kept count back with the rest -- with the C loop off, its own restore
+    alone (the loop's `ck_back` restores an attempt's too) -- the Python's
+    repeat is the run, byte for byte and count for count."""
+    from pycircuit.circuit import _tran_loop_c, linearsolver
+    monkeypatch.setattr(_tran_loop_c, 'ENABLED', loop)
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 1e-16)
+    _alive, addr = _crc_failing_solve(lambda num: True)   # (the callback the C calls: held)
+    bind = _tran_newton_c._klu_bind
+
+    def binding(rec, sk):
+        ok = bind(rec, sk)
+        if ok:
+            rec.s.ck.klu_solve = rec.ffi.cast('void *', addr)
+        return ok
+    kw = {'tend': 8e-9, 'timestep': 2e-10}
+    a = _sparse_run(False, **dict(kw))
+    monkeypatch.setattr(_tran_newton_c, '_klu_bind', binding)
+    b = _sparse_run(True, **dict(kw))
+    assert a[0] == b[0] and a[1] == b[1]
+    assert a[1][10] > 0 and a[1][9] == 0, a[1]
+    assert b[2].get('newton_c:bail:klu_solve', 0) > 3 and b[2].get('newton_c:served', 0) > 10
+
+
+def test_a_hand_back_takes_the_run_numeric_s_kept_solves_back(monkeypatch):
+    """The full Newton (no chord) under a validation that refuses its
+    refactors (kept on their growth, none stale), its C solves failing on
+    about half the right-hand sides: each such call handed back after a kept
+    solve, and the held state's checkpoint takes the kept count back with
+    the rest (pcx_held.h `pcx_held_back`, `linearsolver.held_back`) -- the
+    Python's repeat is the run, byte for byte and count for count."""
+    from pycircuit.circuit import linearsolver
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 1e-16)
+    _alive, addr = _crc_failing_solve(lambda num: True)   # (the callback the C calls: held)
+    bind = _tran_newton_c._klu_bind
+
+    def binding(rec, sk):
+        ok = bind(rec, sk)
+        if ok:
+            rec.s.klu_solve = rec.ffi.cast('void *', addr)
+        return ok
+    kw = {'tend': 8e-9, 'timestep': 2e-10, 'make': {'chord_jacobian': False}}
+    a = _sparse_run(False, **dict(kw))
+    monkeypatch.setattr(_tran_newton_c, '_klu_bind', binding)
+    b = _sparse_run(True, **dict(kw))
+    assert a[0] == b[0] and a[1] == b[1]
+    assert a[1][11] > 0, a[1]
+    assert b[2].get('newton_c:bail:klu_solve', 0) > 3 and b[2].get('newton_c:served', 0) > 10, b[2]
+
+
+def test_the_loop_reads_the_growth_threshold_at_each_run(monkeypatch):
+    """Two runs of one transient on its StructuralKLU, every validation
+    refused (a tolerance of -1): the first with the refactors kept on their
+    growth, the second with the threshold out of reach -- the C Newton reads
+    the tolerance and the threshold at each call (`_tran_newton_c.
+    _klu_rules`; bound once, it validated the second run against the first
+    run's tolerance), so the second falls back as the Python's does: both
+    runs and the counts the Python's."""
+    from pycircuit.circuit import _tran_loop_c
+
+    def runs(on):
+        monkeypatch.setattr(_tran_newton_c, 'ENABLED', on)
+        monkeypatch.setattr(_tran_loop_c, 'ENABLED', on)
+        before = _paths.snapshot()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr = Transient(_sparse_chain(), toolkit=circuit.numeric, chord_jacobian=False)
+            out = [np.asarray(tr.solve(tend=4e-9, timestep=2e-10).x, float).tobytes()]
+            sk = tr._get_linearsolver()._choice
+            sk.REFACTOR_RESIDUAL_TOL = -1.0
+            out.append(np.asarray(tr.solve(tend=4e-9, timestep=2e-10).x, float).tobytes())
+            kept = (sk.residual_kept, sk.residual_fallbacks)
+            sk.REFACTOR_RGROWTH_KEEP = np.inf
+            out.append(np.asarray(tr.solve(tend=4e-9, timestep=2e-10).x, float).tobytes())
+        return out, kept, (sk.residual_kept, sk.residual_fallbacks, sk.factors), _paths.since(before)
+    a = runs(False)
+    b = runs(True)
+    assert a[:3] == b[:3], (a[1:3], b[1:3])
+    assert a[1][0] > 0 and a[2][1] > 0, (a[1], a[2])
+    assert b[3].get('loop_c:steps', 0) > 10 and b[3].get('lte_c:sparse_served', 0) > 0, b[3]
+
+
+def test_a_loop_stop_takes_the_attempt_s_kept_refactors_back(monkeypatch):
+    """The same kept chord refactors, the C loop's error test failing its
+    solve on about half the right-hand sides: the loop stops in attempts
+    whose Newton it served (`loop_c:bail:lte`) and takes the attempt's kept
+    count back with its numeric (loop.c's `ck_back`) -- the run the
+    Python's, byte for byte and count for count."""
+    from pycircuit.circuit import _tran_lte_c, linearsolver
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 1e-16)
+    _alive, addr = _crc_failing_solve(lambda num: True)   # (the callback the C calls: held)
+    bind = _tran_lte_c._klu_bind
+
+    def binding(ctx, sk):
+        ok = bind(ctx, sk)
+        if ok:
+            ctx.s.klu_solve = ctx.ffi.cast('void *', addr)
+        return ok
+    kw = {'tend': 8e-9, 'timestep': 2e-10}
+    a = _sparse_run(False, **dict(kw))
+    monkeypatch.setattr(_tran_lte_c, '_klu_bind', binding)
+    b = _sparse_run(True, **dict(kw))
+    assert a[0] == b[0] and a[1] == b[1]
+    assert a[1][10] > 0, a[1]
+    assert b[2].get('loop_c:bail:lte', 0) > 3 and b[2].get('newton_c:served', 0) > 10, b[2]
 
 
 def _counted(monkeypatch, fail=None):
@@ -525,6 +678,7 @@ def test_the_chord_s_numerics_are_freed_as_the_python_s(tol, refuse, monkeypatch
     from pycircuit.circuit import linearsolver
     if tol is not None:
         monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', tol)
+        monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RGROWTH_KEEP', float('inf'))
 
     def fail(ax):
         return refuse and zlib.crc32(ax.tobytes()) % 4 == 0

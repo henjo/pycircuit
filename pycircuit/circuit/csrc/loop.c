@@ -91,6 +91,7 @@ static void ck_open(loop_t *s, newton_t *nt)
     s->ck_f0 = k->factors;
     s->ck_p0 = k->pivot_fallbacks;
     s->ck_q0 = k->residual_fallbacks;
+    s->ck_k0 = k->residual_kept;
     s->ck_live = 1;
     nt->ck_defer = 1;
     /* (and the held values' checkpoint, on the run numeric as it stands:
@@ -116,6 +117,7 @@ static void ck_back(loop_t *s)
     k->factors = s->ck_f0;
     k->pivot_fallbacks = s->ck_p0;
     k->residual_fallbacks = s->ck_q0;
+    k->residual_kept = s->ck_k0;
 }
 
 /* What every attempt the loop makes leaves -- accepted or rejected, as the

@@ -24,4 +24,12 @@ typedef struct {
     void *klu_out;        /* OUT: its `_numeric` after; through the solve the one
                              the Python's sequence holds now */
     long refactors, factors, pivot_fallbacks, residual_fallbacks;   /* OUT */
+    /* CTX: THE REFACTOR KEPT ON ITS GROWTH (`StructuralKLU.growth_gate`):
+       klu_rgrowth (NULL: the rule off), the common's offset of its result
+       (-1: off), `REFACTOR_RGROWTH_KEEP`; OUT the refactors kept so where
+       no held state counts them (the chord's numeric) */
+    void *klu_rgrowth;
+    long rg_off;
+    double rg_keep;
+    long residual_kept;
 } pcx_klu_t;

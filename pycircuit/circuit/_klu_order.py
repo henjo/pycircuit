@@ -89,6 +89,8 @@ long pcx_kluord(int k)
     case 9: return (long) offsetof(klu_symbolic, n);
     case 10: return (long) sizeof(((klu_symbolic *) 0)->lnz);
     case 11: return (long) sizeof(((klu_common *) 0)->nrealloc);
+    case 12: return (long) offsetof(klu_common, rgrowth);
+    case 13: return (long) sizeof(((klu_common *) 0)->rgrowth);
     }
     return -1;
 }
@@ -197,7 +199,7 @@ def _offsets():
         from pycircuit.circuit import _cbuild
         _ffi, fn, _key, _cold, _s = _cbuild.load_unit(_SRC, 'long pcx_kluord(int k);', 'pcx_kluord')
         names = ('c_nrealloc', 's_lnz', 's_unz', 's_P', 's_Q', 'n_lnz', 'n_unz', 'n_lnz_size',
-                 's_P_size', 's_n', 's_lnz_size', 'c_nrealloc_size')
+                 's_P_size', 's_n', 's_lnz_size', 'c_nrealloc_size', 'c_rgrowth', 'c_rgrowth_size')
         off = {nm: int(fn(k)) for k, nm in enumerate(names)}
     except Exception:       # noqa: BLE001 -- no header, compiler or KLU: no trial, not a failure
         return None
@@ -249,6 +251,54 @@ def _confirmed(off):
             lib.klu_free_numeric(ct.byref(ct.c_void_p(num)), ct.byref(com))
         lib.klu_free_symbolic(ct.byref(ct.c_void_p(sym)), ct.byref(com))
     return ok
+
+
+_RG = []
+
+
+def rgrowth_offset():
+    """The byte offset of `klu_common`'s `rgrowth` -- where `klu_rgrowth`
+    leaves the reciprocal pivot growth of a numeric -- from the compiler on
+    the installed header (`_offsets`), confirmed on a diagonal matrix's
+    factor, whose growth is exactly 1 -- or None (no header, compiler or
+    KLU, or a value not as KLU's own: the refactor check's growth rule
+    off, `linearsolver.StructuralKLU._growth_keeps`)."""
+    if _RG:
+        return _RG[0]
+    _RG.append(None)
+    off = _offsets()
+    if off is None or off.get('c_rgrowth_size') != 8:
+        return None
+    from pycircuit.circuit.linearsolver import KLUSolver
+    try:
+        sk = KLUSolver()
+    except ImportError:
+        return None
+    lib, ct = sk._lib, sk._ct
+    Ap = np.array([0, 1, 2], dtype=np.int32)
+    Ai = np.array([0, 1], dtype=np.int32)
+    Ax = np.array([2.0, 3.0])
+    com = ct.create_string_buffer(4096)
+    lib.klu_defaults(ct.byref(com))
+    sym = lib.klu_analyze(2, sk._ptr(Ap, ct.c_int), sk._ptr(Ai, ct.c_int), ct.byref(com))
+    if not sym:
+        return None
+    num = lib.klu_factor(sk._ptr(Ap, ct.c_int), sk._ptr(Ai, ct.c_int), sk._ptr(Ax, ct.c_double),
+                         ct.c_void_p(sym), ct.byref(com))
+    try:
+        cell = ct.c_double.from_buffer(com, off['c_rgrowth'])
+        cell.value = -1.0
+        ok = (bool(num) and lib.klu_rgrowth(sk._ptr(Ap, ct.c_int), sk._ptr(Ai, ct.c_int),
+                                            sk._ptr(Ax, ct.c_double), ct.c_void_p(sym),
+                                            ct.c_void_p(num), ct.byref(com)) == 1
+              and cell.value == 1.0)
+    finally:
+        if num:
+            lib.klu_free_numeric(ct.byref(ct.c_void_p(num)), ct.byref(com))
+        lib.klu_free_symbolic(ct.byref(ct.c_void_p(sym)), ct.byref(com))
+    if ok:
+        _RG[0] = off['c_rgrowth']
+    return _RG[0]
 
 
 def trial_values(m, rows, cols, stamped):

@@ -632,6 +632,8 @@ def _bind_rk(run, e):
         for f in (lib.klu_factor, lib.klu_refactor, lib.klu_solve, lib.klu_free_numeric))
     k.klu_common = tffi.cast('void *', sk._ct.addressof(sk._common))
     k.klu_sym = tffi.cast('void *', sk._symbolic)
+    g = sk.growth_gate()
+    k.klu_rgrowth, k.rg_off, k.rg_keep = tffi.cast('void *', g[0]), g[1], g[2]
     ## (the run numeric's held values, pcx_held.h)
     keep.append(tffi.from_buffer('double *', sk._held_v))
     ts.held_v = keep[-1]
@@ -930,6 +932,7 @@ def _load_tc(e, run_, xl):
         num = e.rk._numeric
         k.klu_num = k.klu_out = tffi.cast('void *', num) if num else tffi.NULL
         k.resid_tol = float(e.rk.REFACTOR_RESIDUAL_TOL)
+        k.rg_keep = float(e.rk.REFACTOR_RGROWTH_KEEP)
 
 
 def _load_fb(e, run_):

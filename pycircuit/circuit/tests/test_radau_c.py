@@ -75,7 +75,7 @@ def _run(build, on, make=None, stage_klu=None, **kw):
            st_, sorted(str(w.message) for w in W), _memo(tr))
     if sk is not None:
         out += ((sk.refactors, sk.factors, sk.pivot_fallbacks, sk.residual_fallbacks,
-                 sk.foreign, sk._numeric is not None),)
+                 sk.foreign, sk._numeric is not None, sk.residual_kept),)
     return out, d
 
 
@@ -138,6 +138,27 @@ def test_on_a_stage_klu_the_c_newton_is_the_pythons(case):
     assert a == b
     assert db.get('radau_c:on_klu', 0) > 0 and db.get('radau_c:klu_unanalysed') == 1, db
     assert not da.get('radau_c:on_klu')
+
+
+def test_on_a_stage_klu_a_refactor_failing_on_rounding_is_kept_as_in_the_python():
+    """The stage block's StructuralKLU with every refactor's validation
+    refused (a tolerance of 0: the residual is rounding), no pivot order
+    stale: kept on its growth (THE REFACTOR KEPT ON ITS GROWTH) by the C's
+    sequence as by the Python Newton -- the run and the KLU's counters (the
+    kept ones in the held state) the Python's."""
+    _on()
+    build, make = CASES[next(iter(CASES))]
+    kw = {'tend': 6e-7, 'timestep': 2e-8, 'fixed_timestep': True}
+
+    def tight(tr):
+        sk = _stage_klu(tr)
+        sk.REFACTOR_RESIDUAL_TOL = 0.0
+        return sk
+    a, _da = _run(build, False, make, stage_klu=tight, **dict(kw))
+    b, db = _run(build, True, make, stage_klu=tight, **dict(kw))
+    assert a == b
+    assert a[5][6] > 0 and a[5][3] == 0, a[5]
+    assert db.get('radau_c:on_klu', 0) > 0, db
 
 
 def test_a_stage_klu_without_the_cores_pattern_declines():

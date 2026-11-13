@@ -278,9 +278,30 @@ def test_a_failed_residual_hands_the_solve_back(monkeypatch):
     run the Python's."""
     from pycircuit.circuit import linearsolver
     monkeypatch.setattr(linearsolver.KLUSolver, 'REFACTOR_RESIDUAL_TOL', -1.0)
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RGROWTH_KEEP', float('inf'))
     _, b = _same(_sparse_chain, monkeypatch, served_min=0, make={'reltol': 1e-5},
                  tend=6e-9, timestep=2e-10)
     assert b[5].get('lte_c:bail:residual', 0) > 5 and b[5].get('lte_c:sparse_served', 0) == 0
+
+
+def test_a_failed_residual_kept_on_its_growth_is_served(monkeypatch):
+    """The refactor's validation failing on every call, no pivot order
+    stale: each refactor kept on its growth (THE REFACTOR KEPT ON ITS
+    GROWTH) -- served by the C as the Python keeps it, the run the Python's,
+    the kept refactors counted in the held state."""
+    from pycircuit.circuit import linearsolver
+    monkeypatch.setattr(linearsolver.KLUSolver, 'REFACTOR_RESIDUAL_TOL', -1.0)
+    made, init = [], linearsolver.StructuralKLU.__init__
+
+    def recorded(self, *a, **k):
+        init(self, *a, **k)
+        made.append(self)
+    monkeypatch.setattr(linearsolver.StructuralKLU, '__init__', recorded)
+    _, b = _same(_sparse_chain, monkeypatch, served_min=5, make={'reltol': 1e-5},
+                 tend=6e-9, timestep=2e-10)
+    assert not b[5].get('lte_c:bail:residual', 0) and b[5].get('lte_c:sparse_served', 0) > 5, b[5]
+    assert made and sum(sk.residual_kept for sk in made) > 0
+    assert sum(sk.residual_fallbacks for sk in made) == 0
 
 
 def _banded(m, width):
@@ -450,6 +471,7 @@ def _filled_then_on_pattern(on, tol=None, spy=None):
         for k, Jk in enumerate((far, _tran_core.on_pattern(J, pat, n))):
             if k == 1 and tol is not None:
                 sk.REFACTOR_RESIDUAL_TOL = tol
+                sk.REFACTOR_RGROWTH_KEEP = np.inf        # (none kept on its growth)
             if k == 1 and spy is not None:
                 spy(sk)
             with warnings.catch_warnings():

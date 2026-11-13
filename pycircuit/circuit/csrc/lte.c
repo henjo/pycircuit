@@ -97,6 +97,20 @@ static long klu_values(lte_t *s, long n, long r)
     return nz_r != nz_a ? LTE_BAIL_FOREIGN : 0;
 }
 
+/* THE REFACTOR KEPT ON ITS GROWTH (`StructuralKLU._growth_keeps`): the
+   refactored numeric whose validation failed kept where KLU's reciprocal
+   pivot growth of it reaches `rg_keep` (pcx_rgrowth_keeps), counted, the
+   solution taken; 0 the hand-back as before */
+static int lte_kept(lte_t *s, long m)
+{
+    long i;
+    if (!pcx_rgrowth_keeps(s->klu_rgrowth, s->rg_off, s->rg_keep, s->kAp, s->kAi, s->kAx,
+                           s->klu_sym, s->klu_num, s->klu_common, s->x, m)) return 0;
+    if (s->held_st) s->held_st[PCX_HELD_KEPT]++;
+    for (i = 0; i < m; i++) s->b[i] = s->x[i];
+    return 1;
+}
+
 static long sparse_solve(lte_t *s, long n, long r)
 {
     long m = n - 1, i, why;
@@ -125,7 +139,7 @@ static long sparse_solve(lte_t *s, long n, long r)
         int v = pcx_resid_sparse(s->kAp, s->kAi, s->kAx, s->resid_tol, s->b, s->x, s->y, s->vt,
                                  s->vt + n, m);
         if (v != PCX_UNDECIDED && !fetestexcept(lte_flags(s))) {
-            if (v == PCX_FAILS) return LTE_BAIL_RESIDUAL;
+            if (v == PCX_FAILS) return lte_kept(s, m) ? 0 : LTE_BAIL_RESIDUAL;
             for (i = 0; i < m; i++) s->b[i] = s->x[i];
             return 0;
         }
@@ -144,18 +158,21 @@ static long sparse_solve(lte_t *s, long n, long r)
         if (a > max_b) max_b = a;
     }
     /* (numpy's max propagates a NaN, which a running `>` would drop: a NaN
-       is handed back -- the Python's NaN residual fails its test and it
-       factors afresh) */
+       fails the test -- the Python's NaN residual fails it -- and the
+       refactor's growth decides, `lte_kept`, after the flags' test) */
     for (i = 0; i < m; i++) {
         double d = fabs(s->y[i] - s->b[i]);
-        if (isnan(d)) return LTE_BAIL_RESIDUAL;
+        if (isnan(d)) {
+            max_r = d;
+            break;
+        }
         if (d > max_r) max_r = d;
     }
     if (fetestexcept(lte_flags(s))) return LTE_BAIL_FLAGS;
     /* Python's `max(max_b, 1e-300)`: the first argument kept unless the
        second is strictly greater; `not (resid <= tol)` fails a NaN too */
     scale = pcx_py_max(max_b, 1e-300);
-    if (!(max_r / scale <= s->resid_tol)) return LTE_BAIL_RESIDUAL;
+    if (!(max_r / scale <= s->resid_tol)) return lte_kept(s, m) ? 0 : LTE_BAIL_RESIDUAL;
     for (i = 0; i < m; i++) s->b[i] = s->x[i];
     return 0;
 }

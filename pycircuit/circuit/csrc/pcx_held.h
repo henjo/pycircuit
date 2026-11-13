@@ -34,7 +34,7 @@
 
 enum pcx_held_index {
     PCX_HELD_OK = 0, PCX_HELD_REUSED, PCX_HELD_OPEN, PCX_HELD_CK_OK, PCX_HELD_MOVED,
-    PCX_HELD_CK_REUSED, PCX_HELD_CK_NUM, PCX_HELD_N
+    PCX_HELD_CK_REUSED, PCX_HELD_CK_NUM, PCX_HELD_KEPT, PCX_HELD_CK_KEPT, PCX_HELD_N
 };
 
 /* whether the numeric holds a refactor of exactly `Ax` (bit for bit: -0.0
@@ -85,6 +85,7 @@ static inline int pcx_held_open(int64_t *st, void *num)
     st[PCX_HELD_CK_OK] = st[PCX_HELD_OK] && num;
     st[PCX_HELD_MOVED] = 0;
     st[PCX_HELD_CK_REUSED] = st[PCX_HELD_REUSED];
+    st[PCX_HELD_CK_KEPT] = st[PCX_HELD_KEPT];
     st[PCX_HELD_CK_NUM] = (int64_t) (intptr_t) num;
     return 1;
 }
@@ -103,6 +104,7 @@ static inline void pcx_held_back(int64_t *st, double *hv, long nnz, int own, voi
 {
     if (!st || !own) return;
     st[PCX_HELD_REUSED] = st[PCX_HELD_CK_REUSED];
+    st[PCX_HELD_KEPT] = st[PCX_HELD_CK_KEPT];
     if (st[PCX_HELD_MOVED]) {
         void *num = (void *) (intptr_t) st[PCX_HELD_CK_NUM];
         int ok = 0;

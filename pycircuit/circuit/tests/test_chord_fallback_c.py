@@ -217,12 +217,13 @@ def test_a_hand_back_frees_the_first_numeric(monkeypatch):
 
 def test_an_attempt_the_loop_hands_back_frees_its_first_numeric(monkeypatch):
     """A fallback that converged and made the numeric, then an error test that
-    hands the attempt back (its validation failing, planted on the C loop's
-    test alone): the attempt is the Python's, so the numeric goes with it and
-    the repeat factors its own -- the run and its counts the Python's."""
+    hands the attempt back (its validation failing and no refactor kept on
+    its growth, planted on the C loop's test alone): the attempt is the
+    Python's, so the numeric goes with it and the repeat factors its own --
+    the run and its counts the Python's."""
     def failing(run_):
         if run_.sk is not None:
-            run_.lte.s.resid_tol = 0.0
+            run_.lte.s.resid_tol, run_.lte.s.rg_keep = 0.0, float('inf')
     want, wklu, _c = _seeded(monkeypatch, 'python', 'converges')
     run, klu, c = _seeded(monkeypatch, 'C loop', 'converges', plant=failing)
     assert run == want and klu == wklu and wklu[2] == 1

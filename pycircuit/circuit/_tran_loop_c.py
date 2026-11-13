@@ -465,6 +465,7 @@ def _bind_judge(run, tr, n, judge):
     if sk is not None:
         le.klu_num = lffi.cast('void *', sk._numeric or 0)
         le.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+        le.rg_keep = float(sk.REFACTOR_RGROWTH_KEEP)
     run.lte, run.sk = ctx, sk
     _plug(s, ffi, 'lte', lffi, le, lcfn)
     cffi_, ccfn = _tran_ctrl_c.driver()

@@ -133,6 +133,16 @@ static long pcx_klu_seq(pcx_klu_t *k, const double *b, double *x, double *y, dou
     }
     if (fails == PCX_UNDECIDED) fails = pcx_klu_resid_csc(k, b, x, y, m);
     if (fails < 0) return PCX_KLU_FLAGS;
+    /* (THE REFACTOR KEPT ON ITS GROWTH: pcx_rgrowth_keeps) */
+    if (fails && pcx_rgrowth_keeps(k->klu_rgrowth, k->rg_off, k->rg_keep, k->kAp, k->kAi, k->kAx,
+                                   k->klu_sym, k->klu_out, k->klu_common, x, m)) {
+        /* (counted where the Python counts it: the run numeric's held
+           state, pcx_held.h, its checkpoint's to restore -- the chord's
+           numeric, which holds none, in its struct) */
+        if (hst) hst[PCX_HELD_KEPT]++;
+        else k->residual_kept++;
+        fails = 0;
+    }
     if (fails) {
         k->residual_fallbacks++;
         pcx_held_lost(hst, hv, nnz);

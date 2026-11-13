@@ -6147,3 +6147,19 @@ are taken in another order): within 1e-14 V, the same steps.  The rest of
 the import's memory is the current sources, still elements, and the
 netlist's parsed records, which the next stages take on.  Without the
 flag nothing changes.
+
+## K1a: KLU's refactor kept on its pivot growth (2026-11-13)
+
+2026-11-13 (`doc/hdl_roadmap_260824.md`, 327; plan 261 L21).  With the bulk
+elements the IBM grid ibmpg3t's million unknowns fit in memory, but its
+transient crawled: after each refactorisation KLU's answer is checked by
+its residual against the right-hand side, and at that size the check fails
+on rounding alone -- the right-hand side is tiny beside the matrix times the
+answer -- so every few steps a full factorisation was made afresh, at about
+nine seconds, only to give the very same answer.  On the benchmark decks the
+same check catches real breakdowns, where a reused pivot order has gone
+stale.  KLU's own measure of a factor's pivot growth tells the two apart: a
+refactor whose check fails is now kept where its growth shows a sound pivot
+order, and falls back as before where it does not.  The three decks where the
+check fails move only by rounding (one takes a slightly different step
+sequence); none of the others moves.

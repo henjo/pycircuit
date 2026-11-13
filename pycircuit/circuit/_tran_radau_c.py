@@ -390,6 +390,8 @@ def _klu_ready(rec, sk):
     k.klu_common = ffi.cast('void *', sk._ct.addressof(sk._common))
     k.klu_sym = sym
     k.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+    g = sk.growth_gate()
+    k.klu_rgrowth, k.rg_off, k.rg_keep = ffi.cast('void *', g[0]), g[1], g[2]
     ## (the stage system's held values, pcx_held.h: the buffers the Python's
     ## `solve` reads and writes)
     held = (fb('double *', sk._held_v), fb('int64_t *', sk._held_st))

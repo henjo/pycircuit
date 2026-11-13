@@ -177,6 +177,14 @@ typedef struct {
        KERNEL on KLU's arrays (pcx_verdict.h `pcx_csc_mv`, the reference's
        order at size); R and A unread */
     long packed;
+    /* THE REFACTOR KEPT ON ITS GROWTH (`StructuralKLU.growth_gate`): the
+       sparse solve's refactor whose validation failed kept where KLU's
+       reciprocal pivot growth of it reaches `rg_keep` -- klu_rgrowth (NULL:
+       the rule off), the common's offset of its result (-1: off) -- those
+       kept counted in the run numeric's held state (pcx_held.h) */
+    void *klu_rgrowth;
+    long rg_off;
+    double rg_keep;
 } lte_t;
 long pcx_lte(lte_t *s);
 

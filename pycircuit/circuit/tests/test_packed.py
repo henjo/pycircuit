@@ -615,6 +615,7 @@ def test_the_refactor_residuals_on_the_stepping_path_are_the_pythons(monkeypatch
         pytest.skip('the C Newton is off')
     monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
     monkeypatch.setattr(linearsolver.KLUSolver, 'REFACTOR_RESIDUAL_TOL', 1e-16)
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RGROWTH_KEEP', float('inf'))
     kw = {'tend': 6e-8, 'timestep': 1e-9, 'fixed_timestep': False}
     L._run(L._pulsed, True, monkeypatch, **dict(kw, tend=3e-9))
     ca = L._same(L._pulsed, monkeypatch, steps_min=1, **kw)

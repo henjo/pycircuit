@@ -509,6 +509,8 @@ def _klu_bind(rec, sk):
         ffi.cast('void *', addr(f)) for f in (lib.klu_factor, lib.klu_solve, lib.klu_free_numeric,
                                               lib.klu_refactor, lib.klu_tsolve))
     s.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+    g = sk.growth_gate()
+    s.klu_rgrowth, s.rg_off, s.rg_keep = ffi.cast('void *', g[0]), g[1], g[2]
     s.klu_common = ffi.cast('void *', ct.addressof(sk._common))
     s.klu_sym = ffi.cast('void *', sk._symbolic)
     ck = s.ck
@@ -517,6 +519,7 @@ def _klu_bind(rec, sk):
     ck.klu_factor, ck.klu_refactor = s.klu_factor, s.klu_refactor
     ck.klu_solve, ck.klu_free = s.klu_solve, s.klu_free
     ck.resid_tol = s.resid_tol
+    ck.klu_rgrowth, ck.rg_off, ck.rg_keep = s.klu_rgrowth, s.rg_off, s.rg_keep
     ## (the run numeric's held values, pcx_held.h: the buffers the Python's
     ## `solve` reads and writes -- the chord's own numeric holds none)
     held = (ffi.from_buffer('double *', sk._held_v), ffi.from_buffer('int64_t *', sk._held_st))
@@ -525,12 +528,22 @@ def _klu_bind(rec, sk):
     return True
 
 
+def _klu_rules(s, sk):
+    """The refactor check's tolerance and the growth's threshold as `sk`
+    holds them now -- the full Newton's and the chord's -- read at each call
+    as the Python's `solve` reads them (an instance may set its own between
+    runs)."""
+    s.resid_tol = s.ck.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
+    s.rg_keep = s.ck.rg_keep = float(sk.REFACTOR_RGROWTH_KEEP)
+
+
 def chord_in(rec):
     """The chord's numeric (`StructuralKLU._chord`) handed to the C, its
     counts zeroed (newton.h's THE CHORD'S NUMERIC)."""
     ck, num = rec.s.ck, rec.klu._chord
     ck.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
     ck.refactors = ck.factors = ck.pivot_fallbacks = ck.residual_fallbacks = 0
+    ck.residual_kept = 0
 
 
 def chord_out(rec):
@@ -545,6 +558,7 @@ def chord_out(rec):
     sk.chord_factors += ck.factors
     sk.chord_pivot_fallbacks += ck.pivot_fallbacks
     sk.chord_residual_fallbacks += ck.residual_fallbacks
+    sk.chord_residual_kept += ck.residual_kept
 
 
 class _ParRec:
@@ -1119,6 +1133,7 @@ def _record(tr, td, M, core, drv, P, nrsolver, residual, ls, ch):
         ## NUMERIC)
         num = ch._numeric
         s.klu_num = ffi.cast('void *', num) if num else ffi.NULL
+        _klu_rules(s, ch)
     elif rec.klu is not None:
         s.klu_sym = ffi.NULL
         rec.klu = rec.klu_sym = None

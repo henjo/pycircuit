@@ -123,6 +123,7 @@ def test_a_refactor_that_fails_its_residual_is_factored_again():
     b = np.ones(st[0])
     s.solve(J, b, numeric)
     s.REFACTOR_RESIDUAL_TOL = -1.0                       # every reuse fails its check
+    s.REFACTOR_RGROWTH_KEEP = np.inf                     # (and none is kept on its growth)
     y = s.solve(2.0 * J, b, numeric)
     np.testing.assert_allclose(y, np.linalg.solve(2.0 * J, b), rtol=1e-9)
     assert s.residual_fallbacks == 1 and s.factors == 2
@@ -474,11 +475,73 @@ def test_a_chord_refactor_that_fails_its_residual_is_factored_again():
     b = np.ones(st[0])
     s.chord_factor(J1, numeric).solve(b)
     s.REFACTOR_RESIDUAL_TOL = -1.0                       # every reuse fails its check
+    s.REFACTOR_RGROWTH_KEEP = np.inf                     # (and none is kept on its growth)
     f = s.chord_factor(J2, numeric)
     y = f.solve(b)
     assert y.tobytes() == s.factor(J2, numeric).solve(b).tobytes()
     assert f.solve(2.0 * b).tobytes() == s.factor(J2, numeric).solve(2.0 * b).tobytes()
     assert (s.chord_factors, s.chord_refactors, s.chord_residual_fallbacks) == (2, 1, 1)
+
+
+def test_a_refactor_failing_on_rounding_is_kept_on_its_growth():
+    """THE REFACTOR KEPT ON ITS GROWTH: a refactor whose residual test fails
+    (a tolerance of 0 -- the residual is rounding) on a pivot order that
+    still fits (KLU's reciprocal growth at least `REFACTOR_RGROWTH_KEEP`):
+    kept, no fresh factor -- its answer a fresh factor's (the same pivots on
+    a diagonally dominant matrix), counted in the held state (`residual_kept`)
+    and restored with it by a C call's checkpoint; the chord's the same
+    (`chord_residual_kept`).  Without the offset KLU's growth is read at, the
+    fresh factor as before."""
+    from pycircuit.circuit import _klu_order
+    c = _ladder()
+    iref, st, s, _made = _structural(c)
+    x = np.zeros(c.n)
+    J = _reduced(c.G(x, defaultepar), iref) + 1e10 * _reduced(c.C(x, defaultepar), iref)
+    b = np.ones(st[0])
+    s.solve(J, b, numeric)
+    s.REFACTOR_RESIDUAL_TOL = 0.0
+    y = s.solve(2.0 * J, b, numeric)
+    assert (s.residual_kept, s.residual_fallbacks, s.factors, s.refactors) == (1, 0, 1, 1)
+    np.testing.assert_allclose(y, s.factor(2.0 * J, numeric).solve(b), rtol=1e-12)
+    ## (a C call's checkpoint takes the count back with the rest)
+    own = linearsolver.held_open(s)
+    s.solve(3.0 * J, b, numeric)
+    assert s.residual_kept == 2
+    linearsolver.held_back(s, own)
+    assert s.residual_kept == 1
+    ## (the chord's numeric: counted on the solver)
+    s.chord_factor(J, numeric).solve(b)
+    s.chord_factor(2.0 * J, numeric).solve(b)
+    assert (s.chord_residual_kept, s.chord_residual_fallbacks, s.chord_factors) == (1, 0, 1)
+    ## (no offset: no growth read, the fresh factor)
+    saved = list(_klu_order._RG)
+    _klu_order._RG[:] = [None]
+    try:
+        s.solve(4.0 * J, b, numeric)
+    finally:
+        _klu_order._RG[:] = saved
+    assert (s.residual_kept, s.residual_fallbacks) == (1, 1)
+
+
+def test_a_stale_pivot_order_falls_back_whatever_its_residual():
+    """A refactor on a pivot order gone stale -- the first matrix's
+    diagonal pivots, the second's diagonal 1e-14 against off-diagonal ones:
+    KLU's reciprocal growth ~1e-14 -- falls back to a fresh factor where its
+    residual fails, the answer the fresh factor's; and a non-finite
+    right-hand side (KLU's growth would pass over its NaN columns) falls
+    back as before too."""
+    m = 2
+    cols, rows = np.nonzero(np.ones((m, m)))
+    s = linearsolver.StructuralKLU(m, rows, cols, fallback=linearsolver.SuperLUSolver)
+    b = np.array([1.0, 2.0])
+    s.solve(np.array([[1.0, 0.5], [0.5, 1.0]]), b, None)
+    A = np.array([[1e-14, 1.0], [1.0, 1.0]])
+    s.REFACTOR_RESIDUAL_TOL = 0.0
+    y = s.solve(A, b, None)
+    assert (s.residual_kept, s.residual_fallbacks, s.factors) == (0, 1, 2)
+    np.testing.assert_allclose(y, np.linalg.solve(A, b), rtol=1e-12)
+    s.solve(A, np.array([np.nan, 1.0]), None)
+    assert (s.residual_kept, s.residual_fallbacks) == (0, 2)
 
 
 def test_a_chord_refactor_that_meets_a_zero_pivot_factors_again():
@@ -587,7 +650,7 @@ def _full_newton_run(monkeypatch, c_on, sections=300):
     st = tr.statistics
     return ((np.asarray(res.x).tobytes(), st.accepted_steps, st.rejected_steps,
              st.newton_iterations, ch.analyses, ch.factors, ch.refactors, ch.residual_fallbacks,
-             ch.pivot_fallbacks, ch.foreign), got)
+             ch.pivot_fallbacks, ch.foreign, ch.residual_kept), got)
 
 
 def test_the_full_newton_on_a_sparse_run_is_solved_in_c_byte_for_byte(monkeypatch):
@@ -608,10 +671,28 @@ def test_a_refactor_its_validation_refuses_is_handed_back(monkeypatch):
     each such solve back (`klu_residual`) and the Python factors afresh --
     the run the Python's byte for byte, its fallbacks counted once."""
     monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 0.0)
+    ## (and none kept on its growth: the C reads the threshold too)
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RGROWTH_KEEP', np.inf)
     c, got = _full_newton_run(monkeypatch, True, sections=260)
     py, _ = _full_newton_run(monkeypatch, False, sections=260)
     assert c == py
     assert got.get('newton_c:bail:klu_residual', 0) > 0 and c[7] > 0
+
+
+def test_a_refactor_failing_on_rounding_is_kept_in_c_as_in_the_python(monkeypatch):
+    """Every refactor's validation refused (a tolerance of 0: the residual is
+    rounding) but no pivot order stale: each refactor kept on its growth
+    (`REFACTOR_RGROWTH_KEEP`) -- the C's full Newton, error test and
+    operating point keeping it as the Python does, nothing handed back, the
+    run and every count (the kept ones in the held state) the Python's."""
+    monkeypatch.setattr(linearsolver.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 0.0)
+    c, got = _full_newton_run(monkeypatch, True, sections=260)
+    py, _ = _full_newton_run(monkeypatch, False, sections=260)
+    assert c == py
+    assert c[10] > 0 and c[7] == 0, c[1:]
+    assert got.get('newton_c:sparse', 0) > 0 and got.get('loop_c:steps', 0) > 0, got
+    assert got.get('lte_c:sparse_served', 0) > 0, got
+    assert not any(k.startswith('newton_c:bail:klu') or k == 'lte_c:bail:residual' for k in got), got
 
 
 def test_a_refactor_that_fails_in_c_is_handed_back(monkeypatch):
@@ -669,6 +750,7 @@ def test_a_kept_solve_is_the_refactored_one_without_the_refactor():
         assert y.tobytes() == s.solve(J, b, numeric).tobytes()
         counts = (s.refactors, s.factors)
     s.REFACTOR_RESIDUAL_TOL = -1.0                       # every reuse fails its check
+    s.REFACTOR_RGROWTH_KEEP = np.inf                     # (and none is kept on its growth)
     y = s.solve_kept(J, b, numeric)
     assert s.residual_fallbacks == 1 and (s.refactors, s.factors) == (counts[0], counts[1] + 1)
     np.testing.assert_allclose(y, np.linalg.solve(J, b), rtol=1e-9)
@@ -714,10 +796,10 @@ def test_a_steps_frozen_real_factor_on_klu_is_refactored_once():
     for b, y in zip(bs, ys):
         ref.solve(rf, b, numeric)
         assert y.tobytes() == ref.solve(rf, b, numeric).tobytes()
-    k.REFACTOR_RESIDUAL_TOL = -1.0
+    k.REFACTOR_RESIDUAL_TOL, k.REFACTOR_RGROWTH_KEEP = -1.0, np.inf
     fz.real_solve(bs[0])
     assert not fz.kept and k.residual_fallbacks == 1
-    k.REFACTOR_RESIDUAL_TOL = linearsolver.StructuralKLU.REFACTOR_RESIDUAL_TOL
+    del k.REFACTOR_RESIDUAL_TOL, k.REFACTOR_RGROWTH_KEEP
     fz.real_solve(bs[1])
     assert fz.kept and k.refactors == r0 + 2
 
@@ -741,6 +823,7 @@ def _refactored(A0, A1, b, tol):
     cols, rows = np.nonzero((A0 != 0).T)                     # (CSC order: by column)
     s = linearsolver.StructuralKLU(m, rows, cols, fallback=linearsolver.SuperLUSolver)
     s.REFACTOR_RESIDUAL_TOL = tol
+    s.REFACTOR_RGROWTH_KEEP = np.inf                     # (the residual's verdict alone)
     s.solve(A0, b, numeric)
     return s, np.asarray(s.solve(A1, b, numeric))
 

@@ -172,9 +172,12 @@ def _csc_of_dense(A, mv, last=None):
 #: run's numeric was last refactored on; REUSED -- the refactors `solve`
 #: did not make; and a C call's checkpoint (OPEN, CK_OK, MOVED, CK_REUSED,
 #: CK_NUM: the state, the count and the numeric at its open, and whether
-#: the held values moved since), which the Python never opens
-HELD_OK, HELD_REUSED, HELD_OPEN, HELD_CK_OK, HELD_MOVED, HELD_CK_REUSED, HELD_CK_NUM = range(7)
-HELD_N = 7
+#: the held values moved since), which the Python never opens; KEPT -- the
+#: solves on a refactored numeric whose residual test failed and were kept
+#: (`StructuralKLU._growth_keeps`), with its checkpoint's CK_KEPT
+HELD_OK, HELD_REUSED, HELD_OPEN, HELD_CK_OK, HELD_MOVED, HELD_CK_REUSED, HELD_CK_NUM, \
+    HELD_KEPT, HELD_CK_KEPT = range(9)
+HELD_N = 9
 
 
 def _packed_cls():
@@ -223,6 +226,7 @@ def held_open(sk):
     st[HELD_CK_OK] = int(bool(st[HELD_OK]) and bool(num))
     st[HELD_MOVED] = 0
     st[HELD_CK_REUSED] = st[HELD_REUSED]
+    st[HELD_CK_KEPT] = st[HELD_KEPT]
     st[HELD_CK_NUM] = int(num or 0)
     return 1
 
@@ -244,6 +248,7 @@ def held_back(sk, own):
         return
     st = sk._held_st
     st[HELD_REUSED] = st[HELD_CK_REUSED]
+    st[HELD_KEPT] = st[HELD_CK_KEPT]
     if st[HELD_MOVED]:
         num, ok = int(st[HELD_CK_NUM]), 0
         ## (the numeric found must be the run's still: a replaced one was
@@ -781,7 +786,9 @@ class KLUSolver(LinearSolver):
                 ('klu_free_numeric', [ctypes.c_void_p, ctypes.c_void_p],
                  ctypes.c_int),
                 ('klu_free_symbolic', [ctypes.c_void_p, ctypes.c_void_p],
-                 ctypes.c_int)):
+                 ctypes.c_int),
+                ('klu_rgrowth', [c_int_p, c_int_p, c_dbl_p, ctypes.c_void_p,
+                                 ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int)):
             f = getattr(lib, nm)
             f.argtypes = argt
             f.restype = rest
@@ -1028,7 +1035,19 @@ class StructuralKLU(KLUSolver):
     clears them.  The C units that repeat `solve`'s sequence on `_numeric`
     keep the same buffers (csrc/pcx_held.h), and one that hands back
     restores them, and the numeric, as its checkpoint found them.
+
+    THE REFACTOR KEPT ON ITS GROWTH (`_growth_keeps`).  A refactor whose
+    residual test fails is kept where KLU's reciprocal pivot growth of it is
+    at least `REFACTOR_RGROWTH_KEEP`: at a million unknowns the test fails on
+    the products' rounding against a small right-hand side, and the fresh
+    factor gives the same answer (roadmap 327).
     """
+
+    #: the reciprocal pivot growth (`klu_rgrowth`) from which a refactor whose
+    #: residual test failed is kept: over the gold decks' fallbacks every
+    #: stale pivot order read 1.1e-4 or less, every refactor its fresh factor
+    #: matched read what that factor did; the IBM grid ibmpg3t's 5.9e-3 and up
+    REFACTOR_RGROWTH_KEEP = 1e-3
 
     def __init__(self, m, rows, cols, fallback, libname='libklu.so.2', stamped=None):
         super().__init__(libname)
@@ -1053,6 +1072,10 @@ class StructuralKLU(KLUSolver):
         self.chord_factors = 0
         self.chord_pivot_fallbacks = 0
         self.chord_residual_fallbacks = 0
+        ## THE REFACTOR KEPT ON ITS GROWTH (`_growth_keeps`): the chord's
+        ## refactors whose residual test failed and which were kept (`solve`'s:
+        ## `residual_kept`, in the held state)
+        self.chord_residual_kept = 0
         ## THE HELD VALUES (the class's note): the values `_numeric` was last
         ## refactored on, then a C checkpoint's backup of them; their state
         ## (`HELD_*`).  Buffers the C units bind for the run: never replaced
@@ -1064,6 +1087,50 @@ class StructuralKLU(KLUSolver):
         """The refactors `solve` did not make: the values were those
         `_numeric` was last refactored on."""
         return int(self._held_st[HELD_REUSED])
+
+    @property
+    def residual_kept(self):
+        """The solves on a refactored numeric whose residual test failed and
+        which `solve` kept (`_growth_keeps`) -- a refactor or a reuse of the
+        values it holds -- counted in the held state, as the C units count
+        them (pcx_held.h)."""
+        return int(self._held_st[HELD_KEPT])
+
+    def _growth_keeps(self, Ax, num, x):
+        """THE REFACTOR KEPT ON ITS GROWTH: whether the numeric `num`,
+        refactored on `Ax`, whose residual test failed, is kept -- KLU's
+        reciprocal pivot growth of it (`klu_rgrowth`, read from the common at
+        `_klu_order.rgrowth_offset()`) at least `REFACTOR_RGROWTH_KEEP`.  The
+        test reads `max|A x - b| / max|b|`: against a right-hand side small
+        beside |A| |x| it fails on the products' rounding alone, and a fresh
+        factor -- the same pivots where the matrix keeps its diagonal -- gives
+        the same answer; a stale pivot order shows as growth instead.  Only
+        where the values `Ax` and the solution `x` are all finite (KLU's
+        growth passes over a column a NaN reaches: a non-finite matrix or
+        answer meets the fresh factor, and its failure, as before).  No
+        offset (`rgrowth_offset` None), no numeric, a failed call or a NaN:
+        not kept either.  The C twins' rule: pcx_verdict.h
+        `pcx_rgrowth_keeps`."""
+        from pycircuit.circuit import _klu_order
+        off = _klu_order.rgrowth_offset()
+        if off is None or not num or not (numpy.isfinite(Ax).all() and numpy.isfinite(x).all()):
+            return False
+        ct = self._ct
+        if not self._lib.klu_rgrowth(self._ptr(self.Ap, ct.c_int), self._ptr(self.Ai, ct.c_int),
+                                     self._ptr(Ax, ct.c_double), ct.c_void_p(self._analysed()),
+                                     ct.c_void_p(num), ct.byref(self._common)):
+            return False
+        return ct.c_double.from_buffer(self._common, off).value >= self.REFACTOR_RGROWTH_KEEP
+
+    def growth_gate(self):
+        """`_growth_keeps`'s inputs as a C twin reads them: `(klu_rgrowth's
+        address, the common's offset of its result or -1, the threshold)` --
+        pcx_klu.h's, newton.h's and lte.h's `klu_rgrowth`, `rg_off`,
+        `rg_keep`."""
+        from pycircuit.circuit import _cbuild, _klu_order
+        off = _klu_order.rgrowth_offset()
+        return (_cbuild.address(self._lib.klu_rgrowth), -1 if off is None else int(off),
+                float(self.REFACTOR_RGROWTH_KEEP))
 
     def _ours(self, A):
         """`(A as an array, its values in CSC order)` where `A` is this
@@ -1261,6 +1328,9 @@ class StructuralKLU(KLUSolver):
                 fails = _resid_sparse(self.Ap, self.Ai, Ax, self.REFACTOR_RESIDUAL_TOL, rhs, x)
             if fails is None:
                 fails = self._csc_residual(Ax, rhs, x)
+            if fails and self._growth_keeps(Ax, self._numeric, x):
+                self._held_st[HELD_KEPT] += 1
+                fails = False
             if fails:
                 self.residual_fallbacks += 1
                 _held_lost(self)
@@ -1439,9 +1509,12 @@ class _ChordNumeric:
         ## (the refactor's validation: `solve`'s, the CSC kernel's sums --
         ## `StructuralKLU._csc_residual`)
         if reused and sk._csc_residual(Ax, rhs, x):
-            sk.chord_residual_fallbacks += 1
-            sk._chord_fresh(Ax)
-            x = self._klu(sk._lib.klu_solve, rhs)
+            if sk._growth_keeps(Ax, sk._chord, x):
+                sk.chord_residual_kept += 1
+            else:
+                sk.chord_residual_fallbacks += 1
+                sk._chord_fresh(Ax)
+                x = self._klu(sk._lib.klu_solve, rhs)
         return x
 
     def _klu(self, fn, b):

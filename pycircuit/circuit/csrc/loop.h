@@ -395,6 +395,9 @@ typedef struct {
     int64_t *held2_st;
     long held_own, held2_own;
     long full_reused, fb_reused, lte_reused;
+    /* OWN: the chord's numeric's kept refactors at the attempt's checkpoint
+       (`ck_q0`'s twin: THE REFACTOR KEPT ON ITS GROWTH, pcx_klu.h) */
+    long ck_k0;
 } loop_t;
 long pcx_loop(loop_t *s);
 

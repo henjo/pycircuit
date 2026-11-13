@@ -96,10 +96,10 @@ def test_a_fresh_factor_holds_no_values():
     sk.solve(J, b, numeric)
     sk.solve(J, b, numeric)
     assert sk._held_st[HELD_OK] == 1
-    sk.REFACTOR_RESIDUAL_TOL = -1.0
+    sk.REFACTOR_RESIDUAL_TOL, sk.REFACTOR_RGROWTH_KEEP = -1.0, np.inf
     sk.solve(J, b, numeric)
     assert (sk.reused, sk.residual_fallbacks, sk._held_st[HELD_OK]) == (1, 1, 0)
-    del sk.REFACTOR_RESIDUAL_TOL
+    del sk.REFACTOR_RESIDUAL_TOL, sk.REFACTOR_RGROWTH_KEEP
     r = sk.refactors
     sk.solve(J, b, numeric)
     assert (sk.refactors, sk.reused, sk._held_st[HELD_OK]) == (r + 1, 1, 1)
@@ -139,9 +139,9 @@ def test_a_hand_back_leaves_the_held_values_and_the_numeric_as_found():
     held_commit(sk, own)
     assert _held(sk).tobytes() != held.tobytes() and sk._held_st[HELD_OK] == 1
     own = held_open(sk)
-    sk.REFACTOR_RESIDUAL_TOL = -1.0
+    sk.REFACTOR_RESIDUAL_TOL, sk.REFACTOR_RGROWTH_KEEP = -1.0, np.inf
     sk.solve(J, b, numeric)
-    del sk.REFACTOR_RESIDUAL_TOL
+    del sk.REFACTOR_RESIDUAL_TOL, sk.REFACTOR_RGROWTH_KEEP
     f = sk.factors
     held_back(sk, own)
     assert sk._held_st[HELD_OK] == 0 and sk.factors == f

@@ -305,6 +305,15 @@ typedef struct {
        refactor residual (`sparse_full`) and the chord's, at once; R,
        absJ, A and Tf unread */
     long packed;
+    /* THE REFACTOR KEPT ON ITS GROWTH (`StructuralKLU.growth_gate`): the full
+       Newton's refactor (`sparse_full`) whose validation failed kept where
+       KLU's reciprocal pivot growth of it reaches `rg_keep` -- klu_rgrowth
+       (NULL: the rule off), the common's offset of its result (-1: off) --
+       those kept counted in the run numeric's held state (pcx_held.h), the
+       chord's in `ck` */
+    void *klu_rgrowth;
+    long rg_off;
+    double rg_keep;
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and

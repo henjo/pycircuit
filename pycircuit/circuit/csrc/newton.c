@@ -51,20 +51,34 @@ static const double *cache_hit(const newton_t *s, long m, long r)
     return s->cC;
 }
 
+/* THE REFACTOR KEPT ON ITS GROWTH (`StructuralKLU._growth_keeps`): the full
+   Newton's refactored numeric whose validation failed kept where KLU's
+   reciprocal pivot growth of it reaches `rg_keep` (pcx_rgrowth_keeps),
+   counted; 0 the hand-back as before */
+static int full_kept(newton_t *s)
+{
+    if (!pcx_rgrowth_keeps(s->klu_rgrowth, s->rg_off, s->rg_keep, s->kAp, s->kAi, s->kAx,
+                           s->klu_sym, s->klu_num, s->klu_common, s->b, s->n - 1)) return 0;
+    if (s->held_st) s->held_st[PCX_HELD_KEPT]++;
+    return 1;
+}
+
 /* The sparse full Newton's solve (newton.h): `StructuralKLU.solve` on its
    refactor path, in `b` -- klu_refactor of the run's numeric (none where it
    holds these very values: pcx_held.h, counted in `reused`), klu_solve,
    then the validation in numpy's operations and order -- its verdict by
    the sparse sum's bound where that decides (pcx_verdict.h: whatever the
    order), else: `A x` by the CSC kernel on KLU's arrays
-   (`StructuralKLU._csc_residual`), |A x - rhs|, its maximum (a NaN handed back:
+   (`StructuralKLU._csc_residual`), |A x - rhs|, its maximum (a NaN fails it:
    numpy's max propagates one, and the Python's NaN residual fails its
    test), the scale `max(max |rhs|, 1e-300)` (rhs finite: a running `>`
-   from +0.0 is numpy's maximum in any order), `not (resid <= tol)`.  With
+   from +0.0 is numpy's maximum in any order), `not (resid <= tol)` -- a
+   failure kept where the refactor's growth keeps it (`full_kept`).  With
    no numeric yet (newton.h's THE RUN'S FIRST NUMERIC) its first solve:
    `_factor`, klu_solve, no validation.  Every other course is the Python's:
    a non-finite matrix or right-hand side, a singular matrix, a zero pivot,
    a failed solve or validation.  0, or the bail */
+static int full_kept(newton_t *s);
 static long sparse_full(newton_t *s, long m)
 {
     long i, k;
@@ -100,7 +114,7 @@ static long sparse_full(newton_t *s, long m)
         int v = pcx_resid_sparse(s->kAp, s->kAi, s->kAx, s->resid_tol, s->rb, s->b, s->ry,
                                  s->Is, s->ax, m);
         if (v == PCX_HOLDS) return 0;
-        if (v == PCX_FAILS) return NEWTON_BAIL_KLU_RESIDUAL;
+        if (v == PCX_FAILS) return full_kept(s) ? 0 : NEWTON_BAIL_KLU_RESIDUAL;
         s->vdense++;
     }
     pcx_csc_mv(s->kAp, s->kAi, s->kAx, s->b, s->ry, m, 0);
@@ -110,11 +124,11 @@ static long sparse_full(newton_t *s, long m)
     }
     for (i = 0; i < m; i++) {
         double d = fabs(s->ry[i] - s->rb[i]);
-        if (isnan(d)) return NEWTON_BAIL_KLU_RESIDUAL;
+        if (isnan(d)) return full_kept(s) ? 0 : NEWTON_BAIL_KLU_RESIDUAL;
         if (d > max_r) max_r = d;
     }
     scale = pcx_py_max(max_b, 1e-300);
-    if (!(max_r / scale <= s->resid_tol)) return NEWTON_BAIL_KLU_RESIDUAL;
+    if (!(max_r / scale <= s->resid_tol)) return full_kept(s) ? 0 : NEWTON_BAIL_KLU_RESIDUAL;
     return 0;
 }
 
@@ -639,7 +653,7 @@ long pcx_newton(newton_t *s)
     void *num = 0;
     pcx_klu_t *k = &s->ck;
     const long r0 = k->refactors, f0 = k->factors, p0 = k->pivot_fallbacks,
-               q0 = k->residual_fallbacks;
+               q0 = k->residual_fallbacks, k0 = k->residual_kept;
     long status;
     const double *c0 = 0;
     k->klu_out = k->klu_num;
@@ -666,6 +680,7 @@ long pcx_newton(newton_t *s)
             k->factors = f0;
             k->pivot_fallbacks = p0;
             k->residual_fallbacks = q0;
+            k->residual_kept = k0;
         }
     }
     return status;

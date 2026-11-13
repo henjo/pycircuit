@@ -739,12 +739,14 @@ def _klu_chain():
     return _pulsed(40)
 
 
-def _klu(fail=None, tol=None, pattern=None):
+def _klu(fail=None, tol=None, pattern=None, grow=False):
     """A setup putting the transient on an AutoSolver of its own whose
     choice is the circuit's StructuralKLU (the analyses' floor is 250
     unknowns): the transform's real factor on KLU, chosen before the run,
-    its library a `_KLULib`; `tol` its residual tolerance, `pattern(cir,
-    iref, structure)` the structure it is given."""
+    its library a `_KLULib`; `tol` its residual tolerance -- the refactors
+    it refuses kept on their growth where `grow` (THE REFACTOR KEPT ON ITS
+    GROWTH), none else --, `pattern(cir, iref, structure)` the structure it
+    is given."""
     def setup(tr):
         cir, iref = tr.cir, tr.irefnode
 
@@ -757,6 +759,8 @@ def _klu(fail=None, tol=None, pattern=None):
         sk._lib = _KLULib(sk, fail)
         if tol is not None:
             sk.REFACTOR_RESIDUAL_TOL = tol
+            if not grow:
+                sk.REFACTOR_RGROWTH_KEEP = np.inf        # (none kept on its growth)
     return setup
 
 
@@ -783,7 +787,7 @@ def _klu_state(tr):
     if type(sk) is not LS.StructuralKLU or type(sk._lib) is not _KLULib:
         return None
     return ((sk.refactors, sk.factors, sk.pivot_fallbacks, sk.residual_fallbacks, sk.foreign,
-             sk.analyses), (len(sk._lib.live), sk._lib.live == {sk._numeric}))
+             sk.analyses, sk.residual_kept), (len(sk._lib.live), sk._lib.live == {sk._numeric}))
 
 
 #: (the pulse's corners on the KLU chain)
@@ -819,6 +823,7 @@ def _klu_run(on, setup, **kw):
     ('adaptive', _klu(), False),
     ('residual-every', _klu(tol=-1.0), False),
     ('residual-some', _klu(tol=1e-16), True),
+    ('kept-every', _klu(tol=-1.0, grow=True), False),
     ('zero-pivots', _klu(fail=_crc(3)), False),
 ])
 def test_the_real_factor_on_klu_is_the_same_with_the_c_off(name, setup, fixed):
@@ -840,6 +845,8 @@ def test_the_real_factor_on_klu_is_the_same_with_the_c_off(name, setup, fixed):
         assert real[3] == real[0] > 0, real
     if name == 'residual-some':
         assert 0 < real[3] < real[0], real
+    if name == 'kept-every':
+        assert real[6] >= real[0] > 0 and real[3] == 0, real
     if name == 'zero-pivots':
         assert real[2] > 0, real
 

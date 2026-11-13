@@ -66,6 +66,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
+#include <fenv.h>
 #if defined(__SSE2__)
 #include <xmmintrin.h>
 /* the SSE control register's flush-to-zero (bit 15) and denormals-are-zero
@@ -362,4 +363,30 @@ static int pcx_scale_sparse(const int *Ap, const int *Ai, const double *Ax, cons
         if (!(aF < reltol * (lo + aF) + abstol[i])) undecided = 1;
     }
     return undecided ? PCX_UNDECIDED : PCX_HOLDS;
+}
+
+/* THE REFACTOR KEPT ON ITS GROWTH (`StructuralKLU._growth_keeps`): whether
+   a refactored numeric `num` whose residual test failed is kept -- KLU's
+   reciprocal pivot growth of it (`klu_rgrowth`, pcx_rgrowth_fn, read from the
+   common at `rg_off`) at least `rg_keep` -- only where its values `Ax`
+   (`Ap[m]` of them) and the solution `x` (m) are all finite.  No entry, no
+   offset (-1), no numeric, a failed call or a NaN: not kept.  What the call
+   raised is cleared, as the Python's ctypes call never sees it */
+typedef int (*pcx_rgrowth_fn)(int *, int *, double *, void *, void *, void *);
+
+static inline int pcx_rgrowth_keeps(void *rgrowth, long rg_off, double rg_keep, int *Ap, int *Ai,
+                                    double *Ax, void *sym, void *num, void *common,
+                                    const double *x, long m)
+{
+    double g;
+    long i;
+    int ok;
+    if (!rgrowth || rg_off < 0 || !num) return 0;
+    for (i = 0; i < Ap[m]; i++) if (!isfinite(Ax[i])) return 0;
+    for (i = 0; i < m; i++) if (!isfinite(x[i])) return 0;
+    ok = ((pcx_rgrowth_fn) rgrowth)(Ap, Ai, Ax, sym, num, common);
+    feclearexcept(FE_ALL_EXCEPT);
+    if (!ok) return 0;
+    memcpy(&g, (char *) common + rg_off, sizeof g);
+    return g >= rg_keep;
 }

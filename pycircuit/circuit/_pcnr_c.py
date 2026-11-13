@@ -630,6 +630,8 @@ class _Rec:
         k.klu_common = ffi.cast('void *', ch._ct.addressof(ch._common))
         k.klu_sym = ffi.cast('void *', ch._symbolic)
         k.resid_tol = float(ch.REFACTOR_RESIDUAL_TOL)
+        g = ch.growth_gate()
+        k.klu_rgrowth, k.rg_off, k.rg_keep = ffi.cast('void *', g[0]), g[1], g[2]
         self.klu, self.klu_keep = ch, keep
 
     def on_pattern(self, held):
