@@ -16222,6 +16222,74 @@ attribute's first use) moves `_watch`'s epoch mid-run where a first use comes af
 loop then declines that run (`loop_c:sources`): a fresh process's first run of a circuit can run without the C loop; in the
 suite earlier tests have filled the cache (`test_loop_c`'s fixed runs, run alone, fail on one case at 76a0c938 too).
 
+## 2026-11-14 — 328. K1b: a linear grid's transient matrix on CHOLMOD, through its exact SPD reduction
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, K1).  After K1a ibmpg3t's 10 ns ran in 4 736 s at 9.06 GB, its time KLU's: a
+refactor 7.1 s (493 of them), the analysis 49 s, a solve 0.23 s.  Sized (no source changed): the grid's transient matrix is
+exactly symmetric and reduces, without approximation, to a symmetric positive definite one on its free nodes; CHOLMOD's
+supernodal Cholesky of that factors in 1.05 s, analyses in 6.3 s and solves in 0.10 s (33 M entries in L; eight threads barely
+help); on ibmpg2t the two are at parity.  Andreas: "Size K1b", "Plan K1b with C twins at once", then "Build K1b to that line".
+Line (set before): (a) nothing changes where it does not apply -- the gate against 06dcb606 SAME, ibmpg2t the same digest; (b)
+ibmpg3t's 10 ns from its banked DC >= 2.5x K1a's, measured back to back on a quiet box with the new path switched off as the
+base, within 0.25 mV of the benchmark, its waveforms within 1e-6 V of K1a's, the steps within 1 %, the peak <= 9.06 GB; (c) C
+against Python byte for byte on a linear grid fixture forced onto the new path, its solves KLU's to the matrix's rounding,
+every decline (a device, a floating voltage source, the DC, not positive definite) counted and KLU's; (d) size >= 0.98x,
+suite, bites on each piece, pinned pairs after their twins' tests.
+
+**What.**  `_cholklu` (new): inline C that takes KLU's own signatures -- `klu_factor`, `klu_refactor`, `klu_solve`, `klu_tsolve`
+(the matrix symmetric: the solve), the frees, `klu_rgrowth` (1.0 at the common's `rgrowth`: a Cholesky of a positive definite
+matrix has no pivot order to go stale, so K1a's rule keeps every refactor) -- and an analysis of its own on the rows' kinds
+(`analyze(m, Ap, Ai, kind, rg_off)`), over CHOLMOD's supernodal LL' (the library opened at its first use; the ordering CHOLMOD
+chooses, METIS on ibmpg3t) of the exact reduction: a voltage source's node fixed by its branch row, each inductor's current
+eliminated (K' = K + sum_l g_l b_l b_l', g_l = -1/J[l,l] > 0), the free nodes' system solved, the inductor and source currents
+recovered from their rows.  `plan(cir, iref)` gives the rows' kinds where every leaf element is a resistor, a capacitor, an
+inductor, a current source (the classes' own `G` and `C`, no instance override), a bank or a voltage source with one end on the
+reference fixing a node not fixed already, the circuit flat; else the reason.  `StructuralKLU(..., cholmod=kinds)` holds it as
+its `_lib` -- the same class (the glue sites take KLU's entries from a `StructuralKLU` by its exact type), so the Python and
+every C unit that binds KLU through the solver run the reduction with no change of their own -- analysed at construction, so
+the library is settled before any call reads `_lib`; a pattern the analysis refuses is KLU's from the start
+(`solver.cholmod:pattern`), a factor CHOLMOD refuses (not positive definite, a zero inductor diagonal, a non-finite value) KLU's
+singular one, and the solve then goes to a plain `StructuralKLU` twin on the same pattern (`solver.cholmod:klu`).
+`AutoSolver(spd_plan=...)` asks for the plan at a structural choice from `CHOLMOD_FROM` (500 000) unknowns
+(`solver.auto:cholmod`; a refusal counted by its reason, `solver.cholmod:<why>`); `Analysis._SPD_PLAN`, true for `Transient`
+alone (the DC's inductors are shorts, its matrix not the reduction's).  Switch `PYCIRCUIT_CHOLMOD=0`; the runtime map's new row.
+
+**Measured.**  (a) MET -- the gate against 06dcb606 SAME: every deck's results and path counters the same under dc, gear2,
+gear2/bypass and radau, the size runs the same, no executable C line changed (no deck reaches the threshold); ibmpg2t (164 897
+unknowns) the same digest 865362f1f55d, 135.7 s, 0.3538 mV.  (b) MET but one criterion -- ibmpg3t's 10 ns, back to back on a
+quiet box (load 1.2-1.5), `PYCIRCUIT_CHOLMOD=0` the base: 1 076.9 s against 4 548.7 s (4.2x), 1 166 steps / 12 rejections / 1 961
+iterations against 1 167 / 14 / 1 947, 0.2362 mV from the benchmark against 0.2306, peak 8.86 GB against 9.05; 494 refactors,
+one factor, no fallback.  MISSED: the waveforms within 1e-6 V of K1a's -- 2.7e-12 V to 1 ns, then 0.254 mV; Andreas
+"Investigate first", then "Accept, and plan the sliver fix next".  Traced (every attempt's start, size, iterations, normalised
+error and decision; the traced run CHOLMOD's C-loop run byte for byte): the decisions the same to t = 1.26 ns, where the next
+step parts (10 against 9.885 ps) and at the 1.30 ns corner K1a lands a 10 ps step and rejects it, CHOLMOD a 0.115 ps sliver.
+The mechanism: each solve's rounding moves the error estimate ~1e-8, the step ~1e-9, the step times ~1e-19 s; a step cut to land
+on a source corner (h = t_corner - t, 0.03-2 ps) turns that into a relative difference of 1e-3 .. 1e-1 (2.6e-3 at 1.10 ns, 0.115 at
+1.248 ns), the doubling steps after it carry it, and it grows a few-fold a corner.  Controls: KLU on its own order against K1a's
+KLU on the dissection parts at the same attempt (1.26 ns); CHOLMOD on AMD against CHOLMOD's METIS at 1.35 ns; a one-time 1-ulp
+change of the DC keeps every decision to 1.6 ns (a single seed decays, a factorization reseeds at every solve).  Over 10 ns
+CHOLMOD on AMD (1 159 steps, 0.2351 mV) is 0.085 mV from CHOLMOD's METIS and 0.179 mV from K1a: the 0.254 mV is two valid step
+sequences' integration error, not the solver's.  (c) MET -- a 20 x 20 RC grid with supplies, inductors and current sources
+forced onto the reduction: its solves within 1.7e-16 of a dense solve (backward error 7.6e-17), its chord and full-Newton
+transients KLU's within 3.4e-15 V in the same 127 steps / 22 rejections / 269 iterations, C against Python byte for byte with
+the C Newton, error test and loop serving; each decline counted and KLU's.  (d) the size runs on AC 0.971-1.031x under load
+(DCs, the chain's Radau and the mesh's Radau again on a quiet box: 1.000x, 1.000x, 0.995x, 0.995x the medians of three pairs),
+every digest the same.
+
+**Tests.**  `test_cholklu` (new, six functions, seven cases): the reduction against a dense solve (factor, refactor, several
+right-hand sides, the transposed solve, an owned factor); a failing refactor check kept on the reduction's growth; the plan's
+declines (a device, a floating source, a source fixing a fixed node, a hierarchy, an instance override); a matrix CHOLMOD refuses
+(the inductors' diagonals zero) and a pattern the analysis refuses going to KLU, counted; the threshold, the switch, the DC and AC keeping KLU; a forced grid transient (chord,
+full Newton) KLU's run, its C the Python.  Fifteen bites, fourteen bit (the inductor's sign, its right-hand side, its fixed
+terms, its current; the fixed nodes' right-hand side and values; the source current; the growth entry; the floating-source and
+current-source checks of the plan; the threshold; the switch; the transient-only plan; the KLU twin); one missed and kept: the
+reduction's own zero-diagonal guard, which CHOLMOD's refusal of a matrix not positive definite covers.  Nine pinned pairs
+re-recorded after their twins' tests (`linearsolver`).  Suite 6 766 passed, 10 skipped.
+
+**Found on the way, not changed:** the corner-landing sliver.  A step cut to land on a breakpoint takes whatever remains, down to
+0.03 ps beside 10 ps steps, and that sliver magnifies any difference in the step times by its own smallness; the runs of any two
+equally valid solvers part at it.  Planned next (Andreas): a step that would leave a sliver before a breakpoint stretched onto it.
+
 ## 2026-11-16 — 329. A PCNR transient counts its Newton iterations
 
 **Why**  Ported from a branch that diverged from this one at 8048e424 (`cna-jax-vectorization-pre-port`, b792883), where the

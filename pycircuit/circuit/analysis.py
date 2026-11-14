@@ -412,6 +412,10 @@ class Analysis(sim.Analysis):
     #: `AutoSolver` (`linearsolver.MIN_N_FOR_STRUCTURAL_KLU`); None: its
     #: `min_n`, as every analysis but the transient
     _STRUCTURAL_KLU_MIN_N = None
+    #: whether the default `AutoSolver` is asked THE SPD REDUCTION's plan
+    #: (`_cholklu`: a linear grid's transient matrix on CHOLMOD) -- the
+    #: transient's alone (the DC's inductors are shorts)
+    _SPD_PLAN = False
 
     def __init__(self, cir, toolkit=None, **kvargs):
         
@@ -518,9 +522,15 @@ class Analysis(sim.Analysis):
                     a = ref()
                     return None if a is None else stamped_places(
                         a.cir, getattr(a, 'irefnode', None), rows, cols)
+                def spd_plan():
+                    a = ref()
+                    if a is None:
+                        return 'gone'
+                    from pycircuit.circuit import _cholklu
+                    return _cholklu.plan(a.cir, getattr(a, 'irefnode', None))
                 solver = self._default_linearsolver = AutoSolver(
                     structure=structure, structural_min_n=self._STRUCTURAL_KLU_MIN_N,
-                    stamped=stamped)
+                    stamped=stamped, spd_plan=spd_plan if self._SPD_PLAN else None)
             return solver
         if not isinstance(solver, LinearSolver):
             raise TypeError(

@@ -1049,7 +1049,7 @@ class StructuralKLU(KLUSolver):
     #: matched read what that factor did; the IBM grid ibmpg3t's 5.9e-3 and up
     REFACTOR_RGROWTH_KEEP = 1e-3
 
-    def __init__(self, m, rows, cols, fallback, libname='libklu.so.2', stamped=None):
+    def __init__(self, m, rows, cols, fallback, libname='libklu.so.2', stamped=None, cholmod=None):
         super().__init__(libname)
         ## (a callable `(rows, cols) -> per entry, whether an element stamps
         ## it, or None`: the analysis trials KLU's order on it -- `_klu_order`)
@@ -1081,6 +1081,22 @@ class StructuralKLU(KLUSolver):
         ## (`HELD_*`).  Buffers the C units bind for the run: never replaced
         self._held_v = numpy.zeros(2 * max(self.nnz, 1))
         self._held_st = numpy.zeros(HELD_N, dtype=numpy.int64)
+        ## THE SPD REDUCTION ON CHOLMOD (`_cholklu`): KLU's entries over
+        ## CHOLMOD's supernodal Cholesky where `cholmod` -- the rows' kinds,
+        ## `_cholklu.plan` -- is given and the library loads; confirmed by the
+        ## analysis (a pattern not a grid's: KLU, nothing made yet), a matrix
+        ## it will not factor then solved by KLU on the same pattern
+        ## (`_ck_klu`), so no numeric of one library meets the other's frees.
+        ## Analysed here, so the library is settled before any call reads
+        ## `_lib` (a call's arguments are evaluated after its callee)
+        self._ck_kind = self._ck_twin = None
+        if cholmod is not None:
+            from pycircuit.circuit import _cholklu
+            lib = _cholklu.library(self._lib)
+            if lib is not None:
+                self._klu_lib, self._lib = self._lib, lib
+                self._ck_kind = numpy.ascontiguousarray(cholmod, dtype=numpy.int32)
+                self._analysed()
 
     @property
     def reused(self):
@@ -1207,6 +1223,18 @@ class StructuralKLU(KLUSolver):
 
     def _analysed(self):
         ctypes = self._ct
+        if self._symbolic is None and self._ck_kind is not None:
+            from pycircuit.circuit import _klu_order, _paths
+            off = _klu_order.rgrowth_offset()
+            sym = self._lib.analyze(self.m, self._ptr(self.Ap, ctypes.c_int),
+                                    self._ptr(self.Ai, ctypes.c_int),
+                                    self._ptr(self._ck_kind, ctypes.c_int), -1 if off is None else off)
+            if sym:
+                self.analyses += 1
+                self._symbolic = sym
+                return sym
+            _paths.COUNTS['solver.cholmod:pattern'] += 1
+            self._lib, self._ck_kind = self._klu_lib, None
         if self._symbolic is None:
             sym = self._lib.klu_analyze(
                 self.m, self._ptr(self.Ap, ctypes.c_int), self._ptr(self.Ai, ctypes.c_int),
@@ -1264,7 +1292,33 @@ class StructuralKLU(KLUSolver):
         check and its fresh factor stand, as in `solve`."""
         return self._solve(A, b, toolkit, True)
 
+    @property
+    def cholmod(self):
+        """Whether this solver's entries are THE SPD REDUCTION's (`_cholklu`)."""
+        return self._ck_kind is not None
+
+    def _ck_klu(self):
+        """KLU on this pattern, for the matrices CHOLMOD will not factor
+        (made at the first, kept)."""
+        if self._ck_twin is None:
+            cols = numpy.repeat(numpy.arange(self.m), numpy.diff(self.Ap))
+            self._ck_twin = StructuralKLU(self.m, self.Ai.astype(numpy.intp), cols,
+                                          fallback=self._fallback, stamped=self._stamped)
+        return self._ck_twin
+
     def _solve(self, A, b, toolkit, kept):
+        if self._ck_kind is not None:
+            try:
+                return self._solve_on(A, b, toolkit, kept)
+            except numpy.linalg.LinAlgError:
+                ## (a matrix CHOLMOD will not factor -- not positive definite,
+                ## an inductor's diagonal zero: KLU's, counted)
+                from pycircuit.circuit import _paths
+                _paths.COUNTS['solver.cholmod:klu'] += 1
+                return self._ck_klu()._solve(A, b, toolkit, kept)
+        return self._solve_on(A, b, toolkit, kept)
+
+    def _solve_on(self, A, b, toolkit, kept):
         got = self._ours(A)
         if got is None:
             return self._other().solve(A, b, toolkit)
@@ -1430,7 +1484,8 @@ class StructuralKLU(KLUSolver):
         return _KLUWalk(self)
 
     def __repr__(self):
-        return (f'StructuralKLU(m={self.m}, nnz={self.nnz}, analyses={self.analyses}, '
+        return (f'StructuralKLU({"cholmod, " if self.cholmod else ""}m={self.m}, nnz={self.nnz}, '
+                f'analyses={self.analyses}, '
                 f'factors={self.factors}, refactors={self.refactors}, reused={self.reused}, '
                 f'numerics={self.numerics}, '
                 f'fallbacks={self.residual_fallbacks}, pivot_fallbacks={self.pivot_fallbacks}, '
@@ -2057,8 +2112,12 @@ class AutoSolver(LinearSolver):
     """
 
     def __init__(self, min_n=MIN_N_FOR_SPARSE, max_fill=MAX_FILL_FOR_SPARSE, structure=None,
-                 structural_min_n=None, stamped=None):
+                 structural_min_n=None, stamped=None, spd_plan=None):
         self.min_n = min_n
+        ## (a transient's: the rows' kinds where its matrix is THE SPD
+        ## REDUCTION's -- `_cholklu.plan` -- or why not; asked from
+        ## `_cholklu.CHOLMOD_FROM` unknowns)
+        self.spd_plan = spd_plan
         ## (with `structure`: which of its places an element stamps --
         ## `StructuralKLU`'s `stamped`, `analysis.stamped_places`)
         self.stamped = stamped
@@ -2147,15 +2206,33 @@ class AutoSolver(LinearSolver):
         """The StructuralKLU on the structure `st` chosen (its count): True,
         or False where KLU is missing."""
         from pycircuit.circuit import _paths
+        plan = self._spd(st[0])
         try:
             self._sparse = self._choice = StructuralKLU(
                 *st, fallback=lambda: (self._value_sparse(n_unknowns, count=False)
                                        if n_unknowns >= self.min_n else self._dense),
-                stamped=self.stamped)
+                stamped=self.stamped, cholmod=plan)
         except ImportError:
             return False
         _paths.COUNTS['solver.auto:StructuralKLU'] += 1
+        if self._choice.cholmod:
+            _paths.COUNTS['solver.auto:cholmod'] += 1
         return True
+
+    def _spd(self, m):
+        """`spd_plan`'s rows' kinds for an m x m structure from
+        `_cholklu.CHOLMOD_FROM` unknowns (`_cholklu.ENABLED`), or None -- a
+        reason counted (`solver.cholmod:<why>`)."""
+        if self.spd_plan is None:
+            return None
+        from pycircuit.circuit import _cholklu, _paths
+        if not _cholklu.ENABLED or m < _cholklu.CHOLMOD_FROM:
+            return None
+        got = self.spd_plan()
+        if isinstance(got, str) or got is None or len(got) != m:
+            _paths.COUNTS['solver.cholmod:' + (got if isinstance(got, str) else 'size')] += 1
+            return None
+        return got
 
     def choose_packed(self, m):
         """`_select`'s choice for THE PACKED LAYOUT's m x m matrix (`_packed`):

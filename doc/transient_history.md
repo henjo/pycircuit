@@ -6163,3 +6163,25 @@ refactor whose check fails is now kept where its growth shows a sound pivot
 order, and falls back as before where it does not.  The three decks where the
 check fails move only by rounding (one takes a slightly different step
 sequence); none of the others moves.
+
+## K1b: a linear grid's transient matrix on CHOLMOD (2026-11-14)
+
+2026-11-14 (`doc/hdl_roadmap_260824.md`, 328; plan 261 L21).  After K1a,
+ibmpg3t's time was KLU's: seven seconds a refactorisation of a matrix with a
+million unknowns.  A grid of resistors, capacitors, inductors, supplies and
+current sources has a transient matrix that is exactly symmetric, and fixing
+each supply's node and eliminating each inductor's current turns it, with no
+approximation, into a symmetric positive definite matrix on the free nodes,
+which a Cholesky factorisation takes in a seventh of the time.  The new path
+offers KLU's own entry points over that, so the solver, the Python and every
+C unit that reaches KLU through it use it unchanged; it is chosen for a
+transient's matrix from half a million unknowns, and anything that is not
+such a grid -- a device, a floating source, a matrix the factorisation
+refuses -- stays on KLU.  ibmpg3t's 10 ns now runs in 18 minutes instead of
+76, as accurate against the benchmark.  Its waveforms are not K1a's to the
+microvolt, as the line asked, but 0.25 mV apart after 1.26 ns: the rounding
+of any other factorisation moves the step times by 1e-19 s, and a step cut
+to land on a source corner, which can be tens of femtoseconds long, magnifies
+that until the step sequences part.  KLU on another ordering parts from K1a
+at the very same step, and two equally valid runs end that far apart, each
+as far from the benchmark.  The corner sliver is the next item.

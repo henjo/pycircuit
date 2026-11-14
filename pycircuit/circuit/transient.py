@@ -1227,6 +1227,10 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 "TrapezoidalIntegrator(), Gear2Integrator()), not %r" % (integrator,))
         return integrator
 
+    #: THE SPD REDUCTION (`_cholklu`): a linear grid's matrix on CHOLMOD
+    #: from `_cholklu.CHOLMOD_FROM` unknowns (`analysis.Analysis._SPD_PLAN`)
+    _SPD_PLAN = True
+
     @property
     def _STRUCTURAL_KLU_MIN_N(self):
         """KLU on the circuit's structure from `MIN_N_FOR_STRUCTURAL_KLU`
