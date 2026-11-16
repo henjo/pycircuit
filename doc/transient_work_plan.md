@@ -6496,7 +6496,43 @@ it says.
 - **14-6e (suites)**, under both interpreters.
 - **Injection.** Stop forwarding `pcnr`: the 14-6a test must go red.
 
-OUTCOME 14-6:
+OUTCOME 14-6 (2026-11-16): **PASS, after one declared premise was REFUTED during
+implementation, and a pre-existing defect under it was found and fixed.**
+
+- **14-6a: PASS.** Under `Transient(pcnr=True)` the operating point runs PCNR (1 to 3
+  assemblies before the first step), and classic limiter calls over the whole run are **0**
+  on all five circuits (entry: 1 to 3).
+- **14-6b: PASS, better than declared.** All ten runs, PCNR and classic, on the rectifier,
+  mains, clipper, BJT switch and JFET stage, are **bit-identical** to entry, waveforms and
+  step counts both. On these circuits the PCNR operating point lands on the same bits as
+  the classic one. The 13-6 and 14-3a step-identity tests pass.
+- **THE DECLARED PREMISE WAS FALSE.** The gate said forwarding `pcnr` would extend PCNR's
+  silent disregard of `nrsolver` "to the one place `nrsolver` is still honoured under
+  `pcnr=True`", the operating point. An injection meant to show a duplicate warning
+  produced none. Spying on `DC.__init__` showed why: **the operating point never received
+  `nrsolver`, or `scaler`, at all.** On `fdb7349` it was built with neither, whatever the
+  transient was given.
+- **The pre-existing defect.** `_solve_operating_point` filtered what it forwards by
+  `DC.parameters`. That list lacks the `Analysis` base's `nrsolver`, `scaler` and
+  `linearsolver`, which are merged into each instance only at construction. So the
+  operating point never received the steps' Newton strategy, which is the very mismatch the
+  method's docstring says it exists to remove. **Fixed:** the filter is the union of both
+  lists, and `linearsolver` is forwarded as well. Pinned by
+  `test_gate_14_6_the_operating_point_gets_the_steps_solver_strategy`.
+- **14-6c, broadened: PASS.** The same probe showed that PCNR's own loop (`solve_dc`,
+  `predict`, the PCNR timestep) also ignores `scaler` and `linearsolver`, not only `nrsolver`.
+  So under `pcnr=True` with a PCNR device, `DC` and `Transient` warn once, naming whichever
+  of the three were set, and the operating point is not handed them, so `DC` does not
+  repeat the warning. There is no warning without them, or with PCNR off. The coupled path
+  writes its own Newton whatever `pcnr` is; that is not PCNR's doing and is not reported.
+- **14-6d: PASS.** `uic=True`: 0 operating-point assemblies, 0 limiter calls.
+- **14-6e: PASS.** System python3: **990 passed, 19 skipped, 3 xfailed, 2 failed** (the
+  `jax` pair). Repo `.venv`: **1014 passed, 7 skipped, 3 xfailed, 0 failed**, plus the 4
+  `cds` modules. Against the end of stage 14, the +15/+1 and +16 are exactly the new tests:
+  1 for the Newton-count fix, 11 for 14-5 (one autodiff), 4 for 14-6.
+- **Injections: PASS.** Each of these turns its test red: not forwarding `pcnr`, removing the
+  transient's warning, filtering by `DC.parameters` alone, and still forwarding the
+  strategies under PCNR.
 
 ---
 

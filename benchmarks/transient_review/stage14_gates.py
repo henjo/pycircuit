@@ -411,6 +411,85 @@ def jfet_tran():
           '| max |dt| %.2e | JFET calls after the op %s' % (nc, np_, ap, d, dt, cp))
 
 
+## ------------------------------------------------------------ 14-6
+
+TRAN_CASES = [('rect', Gx.G89.rect, 'b', 2e-3, 1e-5), ('mains', Gx.G89.mains, 2, 40e-3, 1e-4),
+              ('clipper', Gx.clipper, 2, 2e-3, 1e-5),
+              ('bjt_switch', Gx.switching_stage, 'c', 1.6e-6, 2.5e-9),
+              ('jfet_stage', jfet_stage, 'd', 1.6e-6, 2.5e-9)]
+
+
+def _run_counted(build, node, tend, ts, pcnr):
+    """Waveform and counts, plus classic limiter calls over the WHOLE run and PCNR
+    assemblies before the first timestep (i.e. inside the operating point)."""
+    from pycircuit.circuit.elements import Diode
+    from pycircuit.circuit.semiconductors import JFET
+    lim = {'n': 0}
+    pre = {'aug': 0, 'stepping': False}
+    reals = [(cls, cls.limit) for cls in (Diode, BJT, JFET)]
+    real_aug, real_step = P.augmented_system, Transient._solve_timestep_pcnr
+    real_ts = Transient.solve_timestep
+
+    def mk(real):
+        def spy(*a, **k):
+            lim['n'] += 1
+            return real(*a, **k)
+        return spy
+
+    def aug(*a, **k):
+        if not pre['stepping']:
+            pre['aug'] += 1
+        return real_aug(*a, **k)
+
+    def ts_spy(self, *a, **k):
+        pre['stepping'] = True
+        return real_ts(self, *a, **k)
+    for cls, real in reals:
+        cls.limit = mk(real)
+    P.augmented_system, Transient.solve_timestep = aug, ts_spy
+    try:
+        t = Transient(build(), toolkit=numeric, reltol=1e-5, pcnr=pcnr)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            res = t.solve(tend=tend, timestep=ts)
+    finally:
+        for cls, real in reals:
+            cls.limit = real
+        P.augmented_system, Transient.solve_timestep = real_aug, real_ts
+    w = res.v(node)
+    st = t.statistics
+    return (np.concatenate([np.asarray(w.x, float).ravel(), np.asarray(w.y, float).ravel()]),
+            [st.accepted_steps, st.rejected_steps, st.newton_iterations, lim['n'], pre['aug']])
+
+
+def snapshot(path):
+    data = {}
+    for name, b, node, tend, ts in TRAN_CASES:
+        for pc in (False, True):
+            key = '%s_%s' % (name, 'pcnr' if pc else 'classic')
+            vec, counts = _run_counted(b, node, tend, ts, pc)
+            data[key], data[key + '__counts'] = vec, np.array(counts, dtype=float)
+            print('%-20s accepted/rejected/newton/limiter calls/op assemblies %s'
+                  % (key, counts), flush=True)
+    np.savez(path, **data)
+
+
+def compare(pa, pb):
+    a, b = np.load(pa), np.load(pb)
+    for name in sorted(k for k in a.files if not k.endswith('__counts')):
+        x, y = a[name], b[name]
+        ca, cb = a[name + '__counts'].astype(int).tolist(), b[name + '__counts'].astype(int).tolist()
+        if x.shape != y.shape:
+            v = 'shape %s -> %s' % (x.shape, y.shape)
+        elif np.array_equal(x, y):
+            v = 'bit-identical'
+        else:
+            v = 'max rel diff %.3e' % (np.max(np.abs(x - y)) / np.max(np.abs(x)))
+        print('%-20s %-24s %s -> %s' % (name, v, ca, cb))
+
+
 if __name__ == '__main__':
     {'matrix': matrix, 'dc': dc, 'jax': jax, 'tran': tran, 'jacobian': jacobian,
-     'coupled': coupled, 'jfet': jfet, 'jfet_tran': jfet_tran}[sys.argv[1]]()
+     'coupled': coupled, 'jfet': jfet, 'jfet_tran': jfet_tran,
+     'snapshot': lambda: snapshot(sys.argv[2]),
+     'compare': lambda: compare(sys.argv[2], sys.argv[3])}[sys.argv[1]]()

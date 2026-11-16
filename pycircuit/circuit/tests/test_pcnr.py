@@ -1166,3 +1166,120 @@ def test_gate_14_5_every_classic_limiter_takes_part_in_pcnr():
     assert {'Diode', 'BJT', 'JFET'} <= set(checked), checked
     assert not offenders, \
         'classic limiter but no pcnr_junctions (unlimited under pcnr=True): %s' % offenders
+
+
+## ---------------------------------------------------------------------------
+## GATE 14-6 -- the transient's operating point honours `pcnr`, and an
+## `nrsolver` that PCNR does not use is reported rather than silently ignored.
+## ---------------------------------------------------------------------------
+
+def _op_counts(pcnr, uic=False):
+    """Classic limiter calls over the whole run, and PCNR assemblies made before
+    the first timestep (i.e. inside the operating point)."""
+    import warnings
+    from pycircuit.circuit.semiconductors import BJT
+    from pycircuit.circuit.transient import Transient
+    lim = {'n': 0}
+    pre = {'aug': 0, 'stepping': False}
+    real_lim, real_aug, real_ts = BJT.limit, P.augmented_system, Transient.solve_timestep
+
+    def spy_lim(*a, **k):
+        lim['n'] += 1
+        return real_lim(*a, **k)
+
+    def spy_aug(*a, **k):
+        if not pre['stepping']:
+            pre['aug'] += 1
+        return real_aug(*a, **k)
+
+    def spy_ts(self, *a, **k):
+        pre['stepping'] = True
+        return real_ts(self, *a, **k)
+    BJT.limit, P.augmented_system, Transient.solve_timestep = spy_lim, spy_aug, spy_ts
+    try:
+        tran = Transient(_bjt_switch(), toolkit=numeric, reltol=1e-5, pcnr=pcnr, uic=uic)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tran.solve(tend=0.3e-6, timestep=2.5e-9)
+    finally:
+        BJT.limit, P.augmented_system, Transient.solve_timestep = real_lim, real_aug, real_ts
+    return lim['n'], pre['aug']
+
+
+def test_gate_14_6_the_operating_point_runs_pcnr():
+    """Entry: under `pcnr=True` the operating point alone was classic -- 3
+    `BJT.limit` calls on this circuit -- while every step after it was PCNR."""
+    limiter_calls, op_assemblies = _op_counts(pcnr=True)
+    assert op_assemblies > 0, 'the operating point did not run PCNR'
+    assert limiter_calls == 0, '%d classic limiter calls under pcnr=True' % limiter_calls
+    ## and the classic run still limits classically
+    assert _op_counts(pcnr=False)[0] > 0
+
+
+def test_gate_14_6_uic_has_no_operating_point_to_change():
+    limiter_calls, op_assemblies = _op_counts(pcnr=True, uic=True)
+    assert op_assemblies == 0 and limiter_calls == 0
+
+
+def test_gate_14_6_an_unused_solver_strategy_is_reported_once():
+    """Under `pcnr=True`, PCNR's own Newton loop and `np.linalg.solve` replace
+    `nrsolver`, `scaler` and `linearsolver`.  They were ignored without a word;
+    now once per run (the operating point is not handed them, so DC does not
+    repeat it), and never when PCNR is off or has nothing to do."""
+    import warnings
+    from pycircuit.circuit.nrsolver import DampedNewton
+    from pycircuit.circuit.scaler import RowMaxScaler
+    from pycircuit.circuit.transient import Transient
+
+    def unused_warnings(fn):
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter('always')
+            fn()
+        return [str(w.message) for w in rec if 'not used' in str(w.message)]
+
+    def tran(pcnr, **kw):
+        Transient(_rectifier(), toolkit=numeric, reltol=1e-5, pcnr=pcnr,
+                  **kw).solve(tend=2e-4, timestep=1e-5)
+
+    got = unused_warnings(lambda: tran(True, nrsolver=DampedNewton()))
+    assert len(got) == 1 and 'nrsolver' in got[0], got
+    got = unused_warnings(lambda: tran(True, nrsolver=DampedNewton(), scaler=RowMaxScaler()))
+    assert len(got) == 1 and 'nrsolver' in got[0] and 'scaler' in got[0], got
+    assert not unused_warnings(lambda: tran(True))
+    assert not unused_warnings(lambda: tran(False, nrsolver=DampedNewton()))
+    got = unused_warnings(lambda: DC(_fig1(), toolkit=numeric, pcnr=True,
+                                     scaler=RowMaxScaler()).solve())
+    assert len(got) == 1 and 'scaler' in got[0], got
+    assert not unused_warnings(lambda: DC(_fig1(), toolkit=numeric, pcnr=True).solve())
+
+
+def test_gate_14_6_the_operating_point_gets_the_steps_solver_strategy():
+    """PRE-EXISTING, found by 14-6: `_solve_operating_point` filtered what it
+    forwards by `DC.parameters`, which lacks the `Analysis` base's `nrsolver`,
+    `scaler` and `linearsolver` -- so the operating point never received the
+    steps' Newton strategy, though its docstring says that is what it is for."""
+    import warnings
+    from pycircuit.circuit import dcanalysis
+    from pycircuit.circuit.nrsolver import DampedNewton
+    from pycircuit.circuit.scaler import RowMaxScaler
+    from pycircuit.circuit.transient import Transient
+    seen = []
+    real = dcanalysis.DC.__init__
+
+    def spy(self, *a, **k):
+        seen.append(set(k))
+        return real(self, *a, **k)
+    dcanalysis.DC.__init__ = spy
+    try:
+        for pcnr in (False, True):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                Transient(_rectifier(), toolkit=numeric, reltol=1e-5, pcnr=pcnr,
+                          nrsolver=DampedNewton(), scaler=RowMaxScaler()
+                          ).solve(tend=1e-4, timestep=1e-5)
+    finally:
+        dcanalysis.DC.__init__ = real
+    classic, pcnr = seen
+    assert {'nrsolver', 'scaler'} <= classic, classic
+    assert not ({'nrsolver', 'scaler', 'linearsolver'} & pcnr), pcnr
+    assert pcnr >= {'pcnr'}

@@ -109,6 +109,14 @@ class DC(Analysis):
         if self.par.pcnr:
             from pycircuit.circuit import pcnr as _pcnr
             if _pcnr.pcnr_junctions(self.cir):
+                ## GATE 14-6 -- PCNR's Newton is its own loop; a caller's
+                ## `nrsolver`/`scaler`/`linearsolver` would otherwise be ignored
+                ## without a word.
+                unused = _pcnr.unused_strategies(self.par)
+                if unused:
+                    import warnings
+                    warnings.warn(_pcnr.unused_strategy_message(unused),
+                                  RuntimeWarning, stacklevel=2)
                 x, _v_lim, _its = _pcnr.solve_dc(
                     self.cir, self.cir.nodes[self.irefnode], x0=x0,
                     epar=self.epar, maxiter=self.par.maxiter,

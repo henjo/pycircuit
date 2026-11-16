@@ -111,7 +111,11 @@ that every device class with a classic limiter declares ``pcnr_junctions``. With
 it, a new device's limiter would be silently dropped under ``pcnr=True``. (An earlier
 version of this page said ``Varactor`` had a classic limiter; it does not.)
 
-The transient's own DC operating point still uses classic limiting.
+The transient's DC operating point uses PCNR too (gate 14-6); it used to be
+the one classic solve in a PCNR run. PCNR's Newton is its own loop with its own
+linear solve, so under ``pcnr=True`` the ``nrsolver``, ``scaler`` and
+``linearsolver`` parameters are not used. Setting one produces a
+``RuntimeWarning`` rather than appearing to be honoured.
 
 What PCNR removes, stated correctly
 ===================================

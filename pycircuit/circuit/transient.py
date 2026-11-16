@@ -926,10 +926,23 @@ class Transient(Analysis):
         ## Only forward what DC actually declares, so a parameter that exists on
         ## Transient but not on DC (e.g. `integrator`) does not raise a KeyError,
         ## and so this keeps working if either parameter list changes.
-        dc_par_names = {p.name for p in DC.parameters}
+        ## GATE 14-6 -- THE NAMES DC ACCEPTS INCLUDE ITS BASE CLASS'S.
+        ## `nrsolver`, `scaler` and `linearsolver` are declared on `Analysis` and
+        ## merged into each instance; filtering by `DC.parameters` alone dropped
+        ## them, so the operating point NEVER received the steps' Newton strategy
+        ## -- the very mismatch this method's docstring says it exists to remove.
+        from pycircuit.circuit.analysis import Analysis as _Analysis
+        dc_par_names = ({p.name for p in DC.parameters}
+                        | {p.name for p in _Analysis.parameters})
         shared = {}
-        for name in ('reltol', 'iabstol', 'vabstol', 'maxiter',
-                     'bypass', 'bypasstol', 'epar', 'nrsolver', 'scaler'):
+        ## GATE 14-6 -- `pcnr` is forwarded too.  It was not, so under `pcnr=True`
+        ## the operating point alone was solved by classic limiting (1 limiter
+        ## call on a diode circuit, 3 on a BJT switch) while every step after it
+        ## was PCNR.  DC's PCNR converged on all 18 circuits measured where its
+        ## classic Newton did, so nothing the default could do is given up.
+        for name in ('reltol', 'iabstol', 'vabstol', 'maxiter', 'bypass',
+                     'bypasstol', 'epar', 'nrsolver', 'scaler', 'linearsolver',
+                     'pcnr'):
             if name not in dc_par_names:
                 continue
             try:
@@ -938,6 +951,13 @@ class Transient(Analysis):
                 continue
             if value is not None:
                 shared[name] = value
+        ## PCNR runs its own Newton loop and linear solve, so these would go
+        ## unused here exactly as they do in every PCNR step; `_solve` says so,
+        ## once, for the whole run.  Not forwarded, so DC does not say it again.
+        if shared.get('pcnr') and self._pcnr_active():
+            from pycircuit.circuit import pcnr as _pcnr
+            for name in _pcnr.STRATEGY_PARAMETERS:
+                shared.pop(name, None)
 
         dc = DC(self.cir, toolkit=self.toolkit, refnode=refnode, **shared)
         try:
@@ -1752,6 +1772,14 @@ class Transient(Analysis):
             return self._solve(refnode, tend, x0, timestep, provided_function,
                                fixed_timestep, coupled_lte, analytical_eh)
 
+    def _pcnr_active(self):
+        """True when `pcnr=True` AND the circuit has a PCNR device -- otherwise
+        PCNR has nothing to do and every path falls through to classic."""
+        if not getattr(self.par, 'pcnr', False):
+            return False
+        from pycircuit.circuit import pcnr as _pcnr
+        return bool(_pcnr.pcnr_junctions(self.cir))
+
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False, analytical_eh=True):
         ## STAGE 8(d) -- clear per-analysis element state BEFORE anything seeds it.
         ##
@@ -1762,6 +1790,19 @@ class Transient(Analysis):
         ## state must be reset before the run seeds them, not after.
         if hasattr(self.cir, 'reset_state'):
             self.cir.reset_state(self.epar)
+
+        ## GATE 14-6 -- a parameter that silently does nothing is a defect (13-7).
+        ## Under PCNR the standard path's Newton is PCNR's own loop, so a caller's
+        ## solver strategies are not used -- say so rather than let them look
+        ## honoured.  (The coupled path writes its own Newton either way; that is
+        ## not PCNR's doing and not reported here.)
+        if not coupled_lte and self._pcnr_active():
+            from pycircuit.circuit import pcnr as _pcnr
+            unused = _pcnr.unused_strategies(self.par)
+            if unused:
+                warnings.warn(_pcnr.unused_strategy_message(unused) +
+                              ', neither for the operating point nor for the steps',
+                              RuntimeWarning, stacklevel=3)
 
         if coupled_lte:
             return self._solve_coupled(refnode, tend, x0, timestep,

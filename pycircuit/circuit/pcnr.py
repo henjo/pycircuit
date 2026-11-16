@@ -137,6 +137,23 @@ def _params(element):
     return params
 
 
+## GATE 14-6 -- the solver-strategy parameters PCNR's own loop does not use.  Its
+## Newton is `solve_dc`/`predict`, which solve with `np.linalg.solve` and scale
+## nothing, so a caller's `nrsolver`, `scaler` or `linearsolver` goes unused.
+STRATEGY_PARAMETERS = ('nrsolver', 'scaler', 'linearsolver')
+
+
+def unused_strategies(par):
+    """The strategy parameters set on ``par`` that a PCNR run will not use."""
+    return [name for name in STRATEGY_PARAMETERS
+            if getattr(par, name, None) is not None]
+
+
+def unused_strategy_message(names):
+    return ('pcnr=True runs its own Newton loop and linear solve; %s %s not used'
+            % (', '.join(names), 'is' if len(names) == 1 else 'are'))
+
+
 def has_charge(element):
     """STAGE 14-3 -- does this PCNR device store charge it can evaluate at its
     own unknowns?  (A charge model in `eval_q_pure` and the `pcnr_q` form.)"""
