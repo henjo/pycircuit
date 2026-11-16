@@ -155,12 +155,72 @@ class Semiconductor(Circuit):
         return self.toolkit.jacobian(self.eval_q_pure, x,
                                      self._model_params(), epar)
 
+    ## STAGE 14-2 -- PCNR FOR ANY DEVICE WHOSE JUNCTIONS SPAN ITS TERMINALS.
+    ##
+    ## Under PCNR a device is evaluated ENTIRELY at its own unknowns -- one per
+    ## entry of `pcnr_junctions`, an `(anode, cathode)` pair -- never at the node
+    ## voltages.  That is only possible if those junction voltages determine every
+    ## terminal voltage DIFFERENCE, i.e. the pairs form a spanning tree over the
+    ## terminals: then `x = M v` (one terminal held at 0) reproduces the device's
+    ## terminal voltages up to a common offset, which a model of voltage
+    ## differences cannot see.  The model still lives once, in `eval_i_pure`;
+    ## these forms only change the coordinates it is called in.
+    ##
+    ## Not to be confused with `junctions` above, which is classic limiting's
+    ## table and carries a `move` terminal PCNR has no use for.
+    @classmethod
+    def _pcnr_map(cls):
+        """``M`` (terminals x junctions) with ``x = M v`` -- built once per
+        class, and the place a declaration that is not a spanning tree is
+        refused."""
+        M = cls.__dict__.get('_pcnr_map_cache')
+        if M is not None:
+            return M
+        pairs = tuple(getattr(cls, 'pcnr_junctions', ()))
+        n_t, n_j = len(cls.terminals), len(pairs)
+        A = np.zeros((n_j, n_t))
+        for k, (anode, cathode) in enumerate(pairs):
+            A[k, anode] += 1.0
+            A[k, cathode] -= 1.0
+        others = list(range(1, n_t))
+        ## A tree's reduced incidence matrix is square with determinant +-1.
+        if n_j != n_t - 1 or abs(abs(np.linalg.det(A[:, others])) - 1.0) > 1e-9:
+            raise ValueError(
+                '%s.pcnr_junctions %r do not form a spanning tree over its %d '
+                'terminals, so its terminal voltages cannot be rebuilt from its '
+                'own unknowns' % (cls.__name__, pairs, n_t))
+        M = np.zeros((n_t, n_j))
+        ## Entries are 0 or +-1 for a tree; rint removes LU rounding.
+        M[others, :] = np.rint(np.linalg.inv(A[:, others]))
+        cls._pcnr_map_cache = M
+        return M
+
+    @classmethod
+    def pcnr_i(cls, v, params, epar, toolkit):
+        """Terminal currents as a function of the device's own unknowns."""
+        x = cls._pcnr_map() @ np.asarray(v, dtype=float)
+        return cls.eval_i_pure(x, params, epar, toolkit)
+
+    @classmethod
+    def pcnr_didv(cls, v, params, epar, toolkit):
+        """Terminals x junctions: the device's own Jacobian in terminal
+        coordinates, chained through the (linear) map from its unknowns."""
+        M = cls._pcnr_map()
+        x = M @ np.asarray(v, dtype=float)
+        G = np.asarray(toolkit.jacobian(cls.eval_i_pure, x, params, epar),
+                       dtype=float)
+        return G @ M
+
 class BJT(Semiconductor):
     """NPN Bipolar Junction Transistor (Ebers-Moll Level 1)"""
     terminals = ('c', 'b', 'e')
     ## B-E moves the base; B-C moves the collector.  See `junctions` on the base
     ## class for why the two must not both move the base.
     junctions = ((1, 2, 1), (1, 0, 0))
+    ## STAGE 14-2 -- under PCNR the same two junctions are the device's own
+    ## unknowns, v_be and v_bc.  They span c, b, e, so the whole Ebers-Moll model
+    ## is a function of them.
+    pcnr_junctions = ((1, 2), (1, 0))
     instparams = [
         Parameter('IS', 'Saturation current', default=1e-14, unit='A'),
         Parameter('BF', 'Forward beta', default=100.0),

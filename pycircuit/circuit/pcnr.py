@@ -49,6 +49,11 @@ def pcnr_junctions(circuit):
         declared = getattr(element, 'pcnr_junctions', ())
         if not declared:
             continue
+        ## STAGE 14-2 -- a multi-junction device is refused HERE, at discovery,
+        ## if its junctions cannot reproduce its terminal voltages.
+        validate = getattr(element, '_pcnr_map', None)
+        if validate is not None:
+            validate()
         rows = [int(r) for r in nodemap[instance]]
         k0 = len(found)
         for anode, cathode in declared:

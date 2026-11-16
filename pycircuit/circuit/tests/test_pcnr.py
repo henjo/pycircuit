@@ -670,3 +670,159 @@ def test_gate_13_11_batched_skip_matches_per_element_skip():
         assert np.array_equal(
             np.asarray(getattr(batched, method)(x, defaultepar, skip=frozenset())),
             np.asarray(getattr(batched, method)(x, defaultepar)))
+
+
+## ---------------------------------------------------------------------------
+## STAGE 14-2 -- a BJT under PCNR, in DC.
+##
+## `Semiconductor` derives `pcnr_i`/`pcnr_didv` from its own `eval_i_pure`
+## through `x = M v`, so the model still lives once.  Asserted on the MATRIX as
+## well as on answers (design study section 9): answers within Newton tolerance
+## cannot see a Jacobian that is wrong but convergent.
+## ---------------------------------------------------------------------------
+
+_BJT_P = {'IS': 1e-14, 'BF': 100.0, 'BR': 1.0, 'VA': 100.0}
+
+
+def _ebers_moll_didv(vbe, vbc):
+    """Analytic d(ic, ib, ie)/d(vbe, vbc) of BJT.eval_i_pure, Early factor included."""
+    VT = numeric.kboltzmann * defaultepar.T / numeric.qelectron
+    IS, BF, BR, VA = (_BJT_P[k] for k in ('IS', 'BF', 'BR', 'VA'))
+    ebe, ebc = np.exp(vbe / VT), np.exp(vbc / VT)
+    i_be, i_bc = IS * (ebe - 1.0), IS * (ebc - 1.0)
+    g_be, g_bc = IS * ebe / VT, IS * ebc / VT
+    early = 1.0 + (vbe - vbc) / VA
+    dbe = g_be * early + (i_be - i_bc) / VA
+    dbc = -g_bc * early - (i_be - i_bc) / VA
+    return np.array([[dbe, dbc - g_bc / BR],
+                     [g_be / BF, g_bc / BR],
+                     [-dbe - g_be / BF, -dbc]])
+
+
+_BIASES = [(0.70, -4.30), (0.75, 0.60), (-1.0, -5.0), (-3.0, 0.70)]
+
+
+@pytest.mark.parametrize('vbe,vbc', _BIASES,
+                         ids=['forward', 'saturated', 'cutoff', 'reverse'])
+def test_gate_14_2_bjt_pcnr_didv_is_the_device_jacobian_through_the_map(vbe, vbc):
+    """Exactly the toolkit's own Jacobian chained through M -- the adapter adds
+    nothing -- and that Jacobian is Ebers-Moll's to central-difference accuracy.
+    In cut-off every conductance is ~6e-30 S and the difference quotient returns
+    0 (`IS*(exp(-38.7) - 1)` cannot resolve the exponential), so there the check
+    is absolute."""
+    from pycircuit.circuit.semiconductors import BJT
+    v = np.array([vbe, vbc])
+    M = BJT._pcnr_map()
+    D = np.asarray(BJT.pcnr_didv(v, _BJT_P, defaultepar, numeric), dtype=float)
+    GM = np.asarray(numeric.jacobian(BJT.eval_i_pure, M @ v, _BJT_P, defaultepar),
+                    dtype=float) @ M
+    assert np.array_equal(D, GM)
+    A = _ebers_moll_didv(vbe, vbc)
+    if np.max(np.abs(A)) > 1e-20:
+        assert np.max(np.abs(D - A)) / np.max(np.abs(A)) < 1e-6
+    else:
+        assert np.max(np.abs(D - A)) < 1e-20
+
+
+@pytest.mark.parametrize('vbe,vbc', _BIASES,
+                         ids=['forward', 'saturated', 'cutoff', 'reverse'])
+def test_gate_14_2_bjt_pcnr_didv_is_ebers_moll_under_autodiff(vbe, vbc):
+    """With exact differentiation the chain rule itself is checked, with no
+    difference quotient in the way: measured <= 1.1e-14 at all four biases."""
+    pytest.importorskip('jax')
+    from pycircuit.circuit.semiconductors import BJT
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    D = np.asarray(BJT.pcnr_didv(np.array([vbe, vbc]), _BJT_P, defaultepar,
+                                 jaxtoolkit), dtype=float)
+    A = _ebers_moll_didv(vbe, vbc)
+    assert np.max(np.abs(D - A)) / np.max(np.abs(A)) < 1e-12
+
+
+def test_gate_14_2_pcnr_i_reproduces_the_model_at_any_common_offset():
+    from pycircuit.circuit.semiconductors import BJT
+    for vbe, vbc in _BIASES:
+        xb = 1.234
+        x = np.array([xb - vbc, xb, xb - vbe])
+        ref = np.asarray(BJT.eval_i_pure(x, _BJT_P, defaultepar, numeric), dtype=float)
+        got = np.asarray(BJT.pcnr_i(np.array([vbe, vbc]), _BJT_P, defaultepar,
+                                    numeric), dtype=float)
+        np.testing.assert_allclose(got, ref, rtol=1e-13, atol=1e-30)
+
+
+def test_gate_14_2_a_non_spanning_declaration_is_refused_at_discovery():
+    from pycircuit.circuit.semiconductors import BJT
+
+    class TwoOnOnePair(BJT):
+        pcnr_junctions = ((1, 2), (2, 1))     # the same pair twice: c is unreached
+
+    c = SubCircuit()
+    c['Q'] = TwoOnOnePair('c', 'b', gnd)
+    with pytest.raises(ValueError, match='spanning tree'):
+        P.pcnr_junctions(c)
+
+
+def _ce(rb):
+    from pycircuit.circuit.semiconductors import BJT
+    cir = SubCircuit(toolkit=numeric)
+    cir['VCC'] = VS('vcc', gnd, v=5.0)
+    cir['VIN'] = VS('vin', gnd, v=0.8)
+    cir['RB'] = R('vin', 'b', r=rb)
+    cir['RC'] = R('vcc', 'c', r=1e3)
+    cir['Q1'] = BJT('c', 'b', gnd)
+    return cir
+
+
+@pytest.mark.parametrize('rb', [10.0, 100.0, 1000.0])
+def test_gate_14_2_pcnr_solves_the_common_emitter_stage(rb):
+    """Entry: `P.solve_dc` refused this circuit outright.  It must now land on
+    classic's operating point (measured <= 1.5e-12, in the same iteration
+    counts), satisfy the unlimited equations, and never touch the device's
+    classic limiter or its node-voltage stamps."""
+    import warnings
+    from pycircuit.circuit.semiconductors import BJT
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ref = np.asarray(DC(_ce(rb), toolkit=numeric).solve().x, dtype=float).ravel()
+    c = _ce(rb)
+    calls = {'limit': 0, 'G': 0, 'i': 0}
+    real = {k: getattr(BJT, k) for k in calls}
+
+    def counted(name):
+        def spy(*a, **k):
+            calls[name] += 1
+            return real[name](*a, **k)
+        return spy
+    for k in calls:
+        setattr(BJT, k, counted(k))
+    try:
+        x, _v, _its = P.solve_dc(c, gnd)
+    finally:
+        for k in calls:
+            setattr(BJT, k, real[k])
+    assert calls == {'limit': 0, 'G': 0, 'i': 0}, calls
+    x = np.asarray(x, dtype=float)
+    np.testing.assert_allclose(x, ref, rtol=1e-9, atol=1e-12)
+    f = (np.asarray(c.i(x, defaultepar), dtype=float)
+         + np.asarray(c.u(0, analysis='dc', epar=defaultepar), dtype=float))
+    assert np.max(np.abs(np.delete(f, c.get_node_index(gnd)))) < 1e-9
+    assert 0.4 < float(x[c.get_node_index('b')]) < 0.9
+
+
+def test_gate_14_2_dc_with_pcnr_runs_pcnr_on_a_bjt_circuit():
+    """Entry: `DC(pcnr=True)` silently ran classic limiting here -- 0 PCNR
+    assemblies against 18 limiter calls."""
+    import warnings
+    real = P.augmented_system
+    hits = {'n': 0}
+
+    def spy(*a, **k):
+        hits['n'] += 1
+        return real(*a, **k)
+    P.augmented_system = spy
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            DC(_ce(100.0), toolkit=numeric, pcnr=True).solve()
+    finally:
+        P.augmented_system = real
+    assert hits['n'] > 5

@@ -6287,6 +6287,34 @@ the channel, not a junction, and that has not been validated.
   limiter but no PCNR junctions (`JFET`, `Varactor`) is not limited at all. That was already
   true of any non-diode device; this stage makes it true of fewer.
 
+OUTCOME 14-2 (2026-11-16): **PASS on b-e. 14-2a FAILED AS DECLARED at one of four biases;
+the instrument was wrong there, and it is restated and passed.**
+- **14-2a.** Against the analytic Ebers-Moll derivative, relative to its largest entry: 3.9e-10
+  forward-active, 2.6e-10 saturated, 2.5e-10 reverse-active, and **1.000 in cut-off**. In
+  cut-off every conductance is about 6.4e-30 S, and the numeric toolkit's central difference
+  returns exactly 0, because `IS*(exp(-38.7) - 1)` cannot resolve the exponential next to 1.
+  The absolute error is 6.4e-30 S. That is a limit of differencing the device's own current,
+  which the classic path shares, not of the adapter. Restated on two instruments that
+  isolate the adapter:
+  - **`D == jacobian(eval_i_pure) @ M` exactly** at all four biases, so the adapter adds
+    nothing to the toolkit's own differentiation;
+  - **with exact differentiation (JAX autodiff, x64), against analytic: <= 1.1e-14** at all
+    four.
+
+  `pcnr_i(v(x))` matches `eval_i_pure(x)` within 1.1e-14 at an arbitrary common offset.
+- **14-2b: PASS.** CE stage at rb = 10, 100, 1000: PCNR takes **the same iteration counts as
+  classic (18, 18, 17)**, answers within 8.3e-14, 2.6e-14 and 1.5e-12 relative, unlimited
+  residual <= 2.1e-11, and bias physical (v(b) 0.696-0.730 V, v(c) inside the rails).
+- **14-2c: PASS.** `BJT.limit`, `BJT.G` and `BJT.i` are called 0 times during `P.solve_dc`.
+- **14-2d: PASS.** `DC(pcnr=True)` runs PCNR: 17 assemblies and 0 limiter calls, where entry
+  had 0 and 18.
+- **14-2e: PASS.** On JAX the CE stage takes the same counts, with answers within 2.3e-16.
+- **Injection: PASS.** With the map's sign flipped, 13 of the 14 tests go red; the 14th is
+  the refusal test, which the map does not touch. Without validation at discovery, the
+  refusal test goes red.
+- **Intermediate state, until 14-3.** A BJT transient under `pcnr=True` now raises
+  `NotImplementedError` (charge on a PCNR junction) instead of silently running classic.
+
 ## Gate 14-3 — charge on the limited unknowns (transient)
 
 **Work.** `SubCircuit.q`/`C` take `skip`. `Semiconductor` gets `pcnr_q`/`pcnr_dqdv` from
