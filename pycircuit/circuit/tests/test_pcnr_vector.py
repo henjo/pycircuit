@@ -1863,3 +1863,159 @@ def test_an_overflowing_rhs_correction_is_the_steps_infinity_unwarned():
         f, J = P.schur_reduce(g_mna, g_lim, J_mm, didv=didv)
     assert np.isinf(f[:2]).all() and np.isfinite(J).all()
     assert f.tobytes() == f_ref.tobytes() and J.tobytes() == J_ref.tobytes()
+
+
+## ---------------------------------------------------------------------------
+## Roadmap sec. 331 -- the hand-written `semiconductors.BJT` and `JFET` as
+## vector participants.  Before it, neither declared a probe: `DC` reported
+## `pcnr_status 'off'` on a common-emitter stage and solved it by the classic
+## limiter (17-18 `BJT.limit` calls), and `Transient(pcnr=True)` said
+## 'no-participants'.
+## ---------------------------------------------------------------------------
+
+def _ce_stage(rb):
+    from pycircuit.circuit.semiconductors import BJT
+    c = SubCircuit(toolkit=numeric)
+    c['VCC'] = VS('vcc', gnd, v=5.0)
+    c['VIN'] = VS('vin', gnd, v=0.8)
+    c['RB'] = R('vin', 'b', r=rb)
+    c['RC'] = R('vcc', 'c', r=1e3)
+    c['Q1'] = BJT('c', 'b', gnd)
+    return c
+
+
+_JFET_P = {'VTO': -2.0, 'BETA': 1e-3, 'LAMBDA': 0.01, 'IS': 1e-14}
+
+
+def _jfet_stage(vg, vdd=10.0, rd=2e3, rg=1e6):
+    from pycircuit.circuit.semiconductors import JFET
+    c = SubCircuit(toolkit=numeric)
+    c['VDD'] = VS('vdd', gnd, v=vdd)
+    c['VG'] = VS('vg', gnd, v=vg)
+    c['RD'] = R('vdd', 'd', r=rd)
+    c['RG'] = R('vg', 'g', r=rg)
+    c['J1'] = JFET('d', 'g', gnd, **_JFET_P)
+    return c
+
+
+_SEMI_CASES = {'ce_rb10': lambda: _ce_stage(10.0), 'ce_rb1000': lambda: _ce_stage(1000.0),
+               'jfet_saturation': lambda: _jfet_stage(-1.0),
+               'jfet_gate_forward': lambda: _jfet_stage(2.0, rg=1e3)}
+
+
+@pytest.mark.parametrize('case', sorted(_SEMI_CASES))
+def test_a_hand_written_bjt_and_jfet_take_part_in_pcnr(case):
+    """DC's default runs PCNR on them now, never touches their classic
+    limiter, and lands where `pcnr=False` does (measured <= 1.7e-12)."""
+    from pycircuit.circuit.semiconductors import BJT, JFET
+    build = _SEMI_CASES[case]
+    devs = P.pcnr_devices(build())
+    assert [(d.scalar, d.m, d.kinds) for d in devs] == [(False, 2, ('pnj', 'pnj'))]
+    ref = np.asarray(DC(build(), pcnr=False).solve().x, dtype=float).ravel()
+    calls = {'n': 0}
+    reals = {cls: cls.limit for cls in (BJT, JFET)}
+
+    def spy(real):
+        def f(*a, **k):
+            calls['n'] += 1
+            return real(*a, **k)
+        return f
+    for cls, real in reals.items():
+        cls.limit = spy(real)
+    try:
+        dc = DC(build())
+        x = np.asarray(dc.solve().x, dtype=float).ravel()
+    finally:
+        for cls, real in reals.items():
+            cls.limit = real
+    assert dc.pcnr_status == 'used'
+    assert calls['n'] == 0
+    assert_allclose(x, ref, rtol=1e-9, atol=1e-12)
+
+
+def test_the_bjt_block_is_the_ebers_moll_jacobian():
+    """Asserted on the matrix: the block `PcnrDevice.stamp` returns at the
+    device's own (v_be, v_bc) against Ebers-Moll's derivative written out by
+    hand, Early factor included -- forward active and saturated."""
+    c = _ce_stage(100.0)
+    dev = P.pcnr_devices(c)[0]
+    p = dev.params()
+    VT = numeric.kboltzmann * defaultepar.T / numeric.qelectron
+    IS, BF, BR, VA = p['IS'], p['BF'], p['BR'], p['VA']
+    for vbe, vbc in ((0.70, -4.30), (0.75, 0.60)):
+        ebe, ebc = np.exp(vbe / VT), np.exp(vbc / VT)
+        i_be, i_bc = IS * (ebe - 1.0), IS * (ebc - 1.0)
+        g_be, g_bc = IS * ebe / VT, IS * ebc / VT
+        early = 1.0 + (vbe - vbc) / VA
+        dbe = g_be * early + (i_be - i_bc) / VA
+        dbc = -g_bc * early - (i_be - i_bc) / VA
+        A = np.array([[dbe, dbc - g_bc / BR], [g_be / BF, g_bc / BR],
+                      [-dbe - g_be / BF, -dbc]])
+        block = dev.stamp(np.array([vbe, vbc]), p, defaultepar, np.zeros(c.n))
+        assert np.max(np.abs(block - A)) / np.max(np.abs(A)) < 1e-6, (vbe, vbc)
+
+
+def test_their_law_is_the_classic_limiters():
+    """The CORRECT phase applies `pnjlim` at the device's own IS to each
+    probe -- what classic `limit` applies to the same junctions.  A
+    non-default IS, and a v_be step that lands BETWEEN the two critical
+    voltages (0.822 V at IS 3e-16, 0.730 V at the default 1e-14): above both,
+    `pnjlim`'s compression does not depend on IS, so a hard-coded IS passed
+    this test's first version (bite 4)."""
+    from pycircuit.circuit.semiconductors import BJT
+    c = SubCircuit(toolkit=numeric)
+    c['Q1'] = BJT('c', 'b', gnd, IS=3e-16)
+    dev = P.pcnr_devices(c)[0]
+    VT = numeric.kboltzmann * defaultepar.T / numeric.qelectron
+    v_old, v_new = np.array([0.60, -2.0]), np.array([0.78, 0.95])
+    got = dev.limit(v_new, v_old, dev.params(), defaultepar, None)
+    want = [_pnjlim(vn, vo, VT, 3e-16, numeric) for vn, vo in zip(v_new, v_old)]
+    assert list(got) == want
+    assert got[0] == v_new[0], 'below its own critical voltage: untouched'
+    assert got[1] != v_new[1], 'the case does not exercise the law'
+
+
+def test_a_bjt_transient_under_pcnr_takes_the_limiters_steps():
+    """13-6's standard: the route to a converged point must not move it, so
+    the steps are the same.  The early abort is off on both sides, because it
+    is gated on the `pcnr` PARAMETER (sec. 331): with it on, even a circuit
+    with no participant takes different steps under `pcnr=True`.  Measured:
+    260 accepted, 41 rejected, 694 Newton iterations either way, the
+    waveform within 4.8e-11."""
+    from pycircuit.circuit.elements import VPulse
+    from pycircuit.circuit.semiconductors import BJT
+    from pycircuit.circuit.transient import Transient
+
+    def switch():
+        per = 1e-6
+        c = SubCircuit(toolkit=numeric)
+        c['VCC'] = VS('vcc', gnd, v=5.0)
+        c['VB'] = VPulse('vb', gnd, v1=0.0, v2=0.9, td=per / 10, tr=per / 1000,
+                         tf=per / 1000, pw=per / 2, per=per)
+        c['RB'] = R('vb', 'b', r=1e3)
+        c['RC'] = R('vcc', 'c', r=1e3)
+        c['Q1'] = BJT('c', 'b', gnd)
+        return c
+    runs = {}
+    for pcnr in (False, True):
+        t = Transient(switch(), toolkit=numeric, reltol=1e-5, pcnr=pcnr,
+                      early_abort=0.0)
+        res = t.solve(tend=1.6e-6, timestep=2.5e-9)
+        runs[pcnr] = (t, np.asarray(res.v('c').y, dtype=float).ravel())
+    (tc, yc), (tp, yp) = runs[False], runs[True]
+    assert tp.pcnr_status == 'used' and tp.pcnr_fallbacks == 0
+    s, p = tc.statistics, tp.statistics
+    assert (p.accepted_steps, p.rejected_steps) == (s.accepted_steps, s.rejected_steps)
+    assert yp.shape == yc.shape
+    assert np.max(np.abs(yp - yc)) / np.max(np.abs(yc)) < 1e-8
+
+
+def test_the_refine_kernel_declines_a_class_that_is_not_hdl():
+    """`_pcnr_c.refine_kernel` read `cls._hdl_info` unguarded: a vector
+    participant that is not an HDL class raised AttributeError there, the
+    solve fell back, and PCNR ran on none of its solves ('fell-back' on all
+    301 of a BJT switch's).  No kernel now: the device's own law."""
+    from pycircuit.circuit import _pcnr_c
+    from pycircuit.circuit.semiconductors import BJT, JFET
+    assert _pcnr_c.refine_kernel(BJT) is None
+    assert _pcnr_c.refine_kernel(JFET) is None

@@ -155,12 +155,31 @@ class Semiconductor(Circuit):
         return self.toolkit.jacobian(self.eval_q_pure, x,
                                      self._model_params(), epar)
 
+    ## PCNR (roadmap sec. 331).  A class that declares `pcnr_probes` -- the
+    ## junctions of its classic `junctions`, without the `move` field PCNR has
+    ## no use for -- is a VECTOR participant: `pcnr.PcnrDevice` evaluates its
+    ## ordinary `i`/`G` at the potentials its probe tree rebuilds from its own
+    ## unknowns, so the model is still written once; its charge stays in the
+    ## MNA block at the node voltages (phase A1).  This is the CORRECT phase:
+    ## the law and the IS classic `limit` applies to the same junctions.
+    def pcnr_limit(self, v_new, v_old, params, epar, toolkit, x_old_sub):
+        """Each probe's `pnjlim`, at the device's IS; a step the law leaves
+        alone comes back unchanged, bit for bit."""
+        VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
+        IS = params.get('IS', 0.0)
+        return np.array([_pnjlim(float(vn), float(vo), VT, IS, toolkit)
+                         for vn, vo in zip(v_new, v_old)])
+
 class BJT(Semiconductor):
     """NPN Bipolar Junction Transistor (Ebers-Moll Level 1)"""
     terminals = ('c', 'b', 'e')
     ## B-E moves the base; B-C moves the collector.  See `junctions` on the base
     ## class for why the two must not both move the base.
     junctions = ((1, 2, 1), (1, 0, 0))
+    ## Under PCNR the same two junctions are the device's own unknowns, v_be and
+    ## v_bc: they span c, b, e, so the whole Ebers-Moll model is a function of
+    ## them (roadmap sec. 331).
+    pcnr_probes = (((1, 2), 'pnj'), ((1, 0), 'pnj'))
     instparams = [
         Parameter('IS', 'Saturation current', default=1e-14, unit='A'),
         Parameter('BF', 'Forward beta', default=100.0),
@@ -292,6 +311,10 @@ class JFET(Semiconductor):
     terminals = ('d', 'g', 's')
     ## terminals ('d', 'g', 's'): G-S moves the gate, G-D moves the drain.
     junctions = ((1, 2, 1), (1, 0, 0))
+    ## Under PCNR the gate junctions are the device's own unknowns, so PCNR
+    ## limits exactly what classic limiting limits -- the channel by neither --
+    ## and they span d, g, s: v_ds = v_gs - v_gd (roadmap sec. 331).
+    pcnr_probes = (((1, 2), 'pnj'), ((1, 0), 'pnj'))
     instparams = [
         Parameter('VTO', 'Threshold voltage', default=-2.0, unit='V'),
         Parameter('BETA', 'Transconductance parameter', default=1e-4, unit='A/V^2'),

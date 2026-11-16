@@ -16275,3 +16275,51 @@ fallback -- which is DC's own rule and is not changed here.
 
 **Tests.**  `test_strategy_objects` +1 (the inner `DC`'s keyword arguments, by identity); three bites, three bit (the filter
 back to `DC.parameters`, `nrsolver` dropped from the list, `scaler` dropped).
+
+## 2026-11-16 — 331. The hand-written BJT and JFET take part in PCNR
+
+**Why**  Ported from the branch that diverged at 8048e424 (its stage 14, 64344a1..4216352), as origin's protocol rather than
+that branch's: there it took a device-level representation, a spanning-tree map and charge on the limited unknowns; here the
+vector protocol (sec. 15), `PcnrDevice`'s probe-tree walk and phase A1's rule (charge in the MNA block at the node voltages)
+already exist, and only the declarations were missing.  Measured here before: `semiconductors.BJT` and `JFET` declared no
+probe, so `DC` reported `pcnr_status 'off'` on a common-emitter stage and solved it by the classic limiter (17-18 `BJT.limit`
+calls; a JFET 3-11), and `Transient(pcnr=True)` said 'no-participants'.  Line (set before): (a) DC's default runs PCNR on
+them, with no classic limiter call, within 1e-9 of `pcnr=False`; (b) the block is the device's Jacobian (asserted on the
+matrix, against Ebers-Moll's by hand); (c) a transient under `pcnr=True` takes the limiter's steps (13-6's standard), its
+accuracy against a tight reference not worse; (d) nothing moves where they do not take part, and no deck uses them
+(`spice_import` reads Q as `GummelPoon*Hdl` and does not read J); (e) suite, bites.
+
+**What.**  `BJT` and `JFET` declare `pcnr_probes`: their classic `junctions` without the `move` field, as `'pnj'` --
+B-E and B-C, G-S and G-D; each pair spans the three terminals, so the walk rebuilds every potential (`v_ds = v_gs - v_gd`).
+`Semiconductor.pcnr_limit` is the CORRECT phase: `pnjlim` at the device's IS on each probe, the law and the IS classic `limit`
+applies to the same junctions -- so PCNR limits exactly what limiting did, and a JFET's channel is limited by neither.
+**And a guard in the C refine:** `_pcnr_c.refine_kernel` read `cls._hdl_info` unguarded, so a vector participant that is not an
+HDL class raised `AttributeError` there; the solve's fallback swallowed it and PCNR carried NONE of the solves (`pcnr_status
+'fell-back'`, 301 fallbacks on a BJT switch).  A class without `_hdl_info` has no kernel now -- `None`, the device's own law,
+as for a declined kernel; nothing that reached the line before changes.
+
+**Measured.**  (a) MET: three CE stages (rb 10, 100, 1000 ohm) and four JFET stages (saturation, triode, gate forward, cut
+off): `pcnr_status 'used'`, 0 classic limiter calls, within 1.7e-12 of `pcnr=False`.  (b) MET: forward-active and saturated,
+the block against the hand-written Ebers-Moll derivative within 1e-6 (the device's own `G` is a central difference on this
+toolkit).  (c) MET, with the early abort off on both sides (see below): the BJT switch 260 accepted / 41 rejected / 694
+iterations either way, 301 PCNR solves, 0 fallbacks, the waveform within 4.8e-11; the JFET stage 255 / 32 / 615 either way,
+1.1e-11; against a reltol-1e-8 run (1998 / 1850 steps) both paths' errors the same, 3.100e-2 V and 1.025e-2 V.  (d) MET:
+`pcnr=False` DC on all seven and the two transients (every default) bit-identical to 7436c53e; the gold decks not run, by
+construction.  Their `'pnj'` probes are gmin targets of the junction ladder on the `pcnr=False` path as well
+(`pcnr_junction_pairs`) -- SPICE's own gmin, across a BJT's and a JFET's junctions -- reached only by a rescue, so no solve
+above moved.  (e) Suite: see the commit.
+
+**Tests.**  `test_pcnr_vector` +8 (participation and answers on four circuits; the Ebers-Moll block; the law at a
+non-default IS; the BJT switch's steps; the refine kernel's decline).  Six bites, six bit -- BJT's probes dropped, JFET's
+dropped, the law a no-op, IS hard-coded, the kernel guard removed, BJT's probe order swapped -- the fourth only after the law
+test was rewritten: above both critical voltages `pnjlim`'s compression does not depend on IS, and the first version's step
+was there; it now lands between them (0.730 V at the default IS, 0.822 V at the test's).  (A first suite failed `test_runtime_map`'s
+history check: the guard's comment in `_pcnr_c` cited this section, and a module that builds or loads C states contracts; it
+does now.)
+
+**Found, not changed:** (1) **the early abort is gated on the `pcnr` PARAMETER, not on participation** (`_tran_loop_c`'s
+`not tr.par.pcnr`, `_SteppingLoop.early_arm`'s `tr.par.pcnr`): `Transient(pcnr=True)` on a circuit with NO participant takes different steps
+from `pcnr=False` -- the BJT switch before this section, 260 / 41 against 266 / 43, the waveform 1.4e-3 apart -- and with the
+early abort off the two are bit-identical.  (2) `JAXTransient` cannot run a `semiconductors.BJT` circuit at all, with or
+without PCNR: `BJT.eval_i_pure`'s `if VA > 0` is a Python branch on a traced parameter (`TracerBoolConversionError`); it was
+so before and is unchanged.

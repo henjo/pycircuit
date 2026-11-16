@@ -245,7 +245,12 @@ def refine_kernel(cls):
     its info (`_c_pcnr_refine`, `_c_pcnr_refine_status`), or None where it
     is refused or does not build."""
     from pycircuit.circuit import _hdl_climit
-    info = cls._hdl_info
+    ## (a vector participant that is not an HDL class -- a hand-written
+    ## device declaring `pcnr_probes` -- has no kernel: its own law,
+    ## `PcnrDevice.limit`, as for a declined one)
+    info = getattr(cls, '_hdl_info', None)
+    if info is None:
+        return None
     if '_c_pcnr_refine' in info:
         return info['_c_pcnr_refine']
     try:
