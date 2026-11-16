@@ -6210,6 +6210,126 @@ OUTCOME (2026-11-16): **PASS on all seven, and the prediction in 12-6c held.**
 
 ---
 
+# STAGE 14 — PCNR for a BJT: multi-junction devices, and charge on limited unknowns
+
+**Added 2026-11-16, on the maintainer's choice of the "BJT route"** from the costing in
+`doc/pcnr_native_design.md` §6(b): about three to five days, against two for a diode. The
+recorded case against it still stands: nothing on record shows a BJT circuit that needs PCNR
+to converge. The maintainer chose it knowingly.
+
+**Entry, measured on `756af41`.** PCNR cannot take a BJT. `P.solve_dc` on the CE stage raises
+"no device in this circuit declares a PCNR junction". With `pcnr=True`, both `DC` and
+`Transient` silently run classic limiting: 0 PCNR assemblies, with 18 and 2585 `BJT.limit`
+calls respectively. That is the documented fall-through for a circuit without PCNR devices,
+not a defect, but it means `pcnr=True` on a bipolar circuit has never meant anything.
+
+**What changes in the PCNR layer.** There are two things a two-terminal, one-junction,
+charge-free diode never exercised:
+- **(a) Multi-junction devices.** A BJT's currents depend on both junction voltages, so the
+  device must be evaluated from a vector of its own unknowns. Column `k` of `J_ml` has an
+  entry on every terminal (three), not two. Row `k` of `J_lm` keeps two (`-1`, `+1`), and
+  `J_ll` stays the identity. The Schur update stays a sum of rank-one terms.
+- **(b) Charge.** Every integrator's companion is `geq = alpha0 * C`, so a junction's charge
+  moves onto its unknown in three steps: assemble `q`/`C` without the device, add its
+  `q(v_lim)` before `get_diff`, and put `alpha0 * dq/dv` into its column.
+
+## Gate 14-1 — the device-level representation (a refactor: the diode must not move)
+
+**Work.** The PCNR device API takes the vector `v` of the device's junction unknowns:
+`pcnr_i(v)` returns terminal currents, and `pcnr_didv(v)` a terminals x junctions matrix.
+`Diode` is converted to it. `didv` becomes, per junction, the `(rows, vals)` column of `J_ml`.
+The rank-k update is written once, in `pcnr`, and used by both `schur_reduce` and the 13-6
+controller Jacobian; gate 13-6 happened because a second consumer open-coded it.
+
+- **14-1a.** All nine diode PCNR cases are **bit-identical** to the entry snapshot (the
+  `stage13_10_11_gates.py` snapshot at `756af41`): six DC, three transient. PCNR on JAX is
+  unchanged as well.
+- **14-1b.** No open-coded `(dia, dib)` update is left anywhere.
+
+OUTCOME 14-1 (2026-11-16): **PASS.**
+- **14-1a:** all 25 snapshot cases are bit-identical to `756af41`, all nine diode PCNR
+  cases included. PCNR on JAX is unchanged: the same counts, and diffs <= 1.1e-17.
+- **14-1b:** `border_update` is the only place the rank-k form is written. The 13-6
+  controller-Jacobian site calls it.
+- **Cost, recorded because it moved.** The first version made `augmented_system` 40%
+  dearer on 60 diodes: it regrouped junctions on every call, and built a 2-D column per
+  device. Building the device table once in `pcnr_junctions` (a `Junctions` list carrying
+  `.devices`), slicing `v` instead of copying it, and letting a single-junction device
+  return a 1-D column brought it back to 0.73-0.74x classic assembly, against 0.65x at
+  entry (interleaved A/B, same process load). The rest is the general form's Python
+  bookkeeping, about 1.3 us per device. PCNR remains cheaper per iteration than limiting.
+
+## Gate 14-2 — a BJT in DC
+
+**Work.** A generic adapter on `Semiconductor`. A class that declares `pcnr_junctions`
+as `(anode, cathode)` pairs gets `pcnr_i`/`pcnr_didv` from its own `eval_i_pure`, provided
+the pairs form a spanning tree over its terminals. Terminal voltages are rebuilt as
+`x = M v`, with one terminal held at 0, and the Jacobian is `dI/dx @ M`, so the model still
+lives once. A declaration that is not a spanning tree is refused when junctions are
+discovered. `BJT` declares B-E and B-C. JFET is **not** enabled: its main nonlinearity is
+the channel, not a junction, and that has not been validated.
+
+- **14-2a (assert on the matrix).** `BJT.pcnr_didv` matches an analytic Ebers-Moll
+  derivative (with the Early factor) at forward-active, saturated, cut-off and
+  reverse-active biases, within central-difference accuracy: **declared 1e-6** relative to
+  the largest entry. `pcnr_i(v(x))` reproduces `eval_i_pure(x)` within 1e-15 relative.
+- **14-2b.** On the CE stage at rb = 10, 100 and 1000 ohm, PCNR DC converges to classic's
+  operating point within 1e-9 relative. The answer satisfies the unlimited equations
+  (`< 1e-9`, gate 5's check) and stays physical (gate 5-1's bounds). Iteration counts are
+  reported; classic entry is 18, 18, 17.
+- **14-2c (counted).** During `P.solve_dc` on the CE stage, `BJT.limit`, `BJT.G` and `BJT.i`
+  are called **0** times. The device enters only through its `pcnr_*` forms.
+- **14-2d.** `DC(pcnr=True)` on the CE stage runs PCNR. Entry: 0 assemblies, 18 limiter
+  calls.
+- **14-2e.** On the JAX toolkit, the CE stage under PCNR agrees with the numeric toolkit
+  within 1e-9 (autodiff against central difference changes only the iteration path).
+- **Recorded limitation, pre-existing.** Under `pcnr=True`, a device that has a classic
+  limiter but no PCNR junctions (`JFET`, `Varactor`) is not limited at all. That was already
+  true of any non-diode device; this stage makes it true of fewer.
+
+## Gate 14-3 — charge on the limited unknowns (transient)
+
+**Work.** `SubCircuit.q`/`C` take `skip`. `Semiconductor` gets `pcnr_q`/`pcnr_dqdv` from
+`eval_q_pure` through the same map. Both PCNR transient paths (`_solve_timestep_pcnr` and the
+coupled `_residual_and_jacobian_pcnr`) change the same way:
+- assemble `q`/`C` without the PCNR devices;
+- add each device's `q(v_lim)` at its terminal rows before `get_diff`, so the history, the
+  LTE and the step controller still see one `q`;
+- read `alpha0` from the active integrator, with `C = 1` and `get_diff`'s own arguments (the
+  kernels are pure);
+- have `augmented_system` add `alpha0 * dq/dv` to each junction column.
+
+The refusal stays for any device that has charge but provides no `pcnr_q`.
+
+- **14-3a (13-6's standard, the sharpest instrument available).** On the standard path, PCNR
+  and classic limiting take **identical** steps on the BJT switching stage (accepted and
+  rejected), and the waveforms agree within Newton tolerance (declared 1e-6 relative). This
+  could not be measured at entry: `pcnr=True` ran classic.
+- **14-3b (assert on the matrix).** At converged PCNR time points, the Jacobian handed to
+  the step controller equals a finite difference of the full transient residual
+  `i(x) + iq(x) + u`, within 1e-6 relative. Tests on answers cannot see assembly defects
+  that cancel, and that is how 13-6 survived three gates.
+- **14-3c (counted).** Between the DC operating point and the end of the run, `BJT.limit`,
+  `BJT.G`, `BJT.i`, `BJT.C` and `BJT.q` are not called through assembly.
+- **14-3d (coupled path).** With `coupled_lte=True` and `pcnr=True` the BJT switch converges,
+  and against a tight standard-path reference (reltol 1e-8; the switch has charge, so its
+  LTE is real) it is not more than 10% less accurate than the classic coupled run. This is
+  13-7b's standard.
+- **14-3e.** The diode PCNR cases are bit-identical to 14-1. They have no charge, so nothing
+  new should run.
+- **14-3f (suites)**, under both interpreters.
+- **Injections.** Drop the `alpha0 * dq/dv` column: 14-3a/b must go red. Drop the device's
+  charge from `q`: 14-3a must go red.
+
+## Gate 14-4 — records
+
+`pcnr_limiting.rst` and the design study's §6 table say what a BJT now does under PCNR, and
+what it still does not.
+
+OUTCOME:
+
+---
+
 ## Order and dependencies
 
 ```

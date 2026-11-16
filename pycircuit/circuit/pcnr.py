@@ -36,18 +36,100 @@ def pcnr_junctions(circuit):
 
     Returns a list of ``(instance, device, row_anode, row_cathode)`` in circuit
     row coordinates.  A device opts in by declaring ``pcnr_junctions`` as a
-    sequence of ``(anode, cathode)`` indices into its own terminals.
+    sequence of ``(anode, cathode)`` indices into its own terminals.  A device
+    with several junctions (a BJT) contributes one entry per junction, in its
+    declared order and contiguously; :func:`pcnr_devices` regroups them.
     """
-    found = []
+    found = Junctions()
     elements = getattr(circuit, 'elements', None)
     if not elements:
         return found
     nodemap = circuit.elementnodemap
     for instance, element in elements.items():
-        for anode, cathode in getattr(element, 'pcnr_junctions', ()):
-            rows = nodemap[instance]
-            found.append((instance, element, int(rows[anode]), int(rows[cathode])))
+        declared = getattr(element, 'pcnr_junctions', ())
+        if not declared:
+            continue
+        rows = [int(r) for r in nodemap[instance]]
+        k0 = len(found)
+        for anode, cathode in declared:
+            found.append((instance, element, rows[anode], rows[cathode]))
+        found.devices.append((instance, element, rows, k0, len(found)))
     return found
+
+
+class Junctions(list):
+    """The junction list, plus the per-device table built alongside it.
+
+    STAGE 14-1.  ``devices`` holds ``(instance, element, rows, k0, k1)``: the
+    device's terminal rows, and the slice ``v_lim[k0:k1]`` of its own unknowns
+    (a device's junctions are emitted contiguously).  Built once per solve,
+    because regrouping on every Newton iteration made `augmented_system` 40%
+    dearer on 60 diodes.  It is still a plain list of 4-tuples to everyone who
+    iterates it.
+    """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.devices = []
+
+
+def pcnr_devices(junctions, circuit=None):
+    """STAGE 14-1 -- the junctions regrouped by device.
+
+    Returns ``[(instance, element, rows, k0, k1), ...]``: the device's terminal
+    rows and the slice ``[k0:k1]`` of ``junctions`` (and so of ``v_lim``) that
+    it owns.  A device is evaluated ONCE per iteration, from the vector of all
+    its own unknowns: a BJT's terminal currents depend on both junction
+    voltages, so evaluating it junction by junction is not possible, and for a
+    diode the vector has one entry and nothing changes.
+
+    Read from :class:`Junctions` when the list came from :func:`pcnr_junctions`;
+    rebuilt (needing ``circuit``) for a hand-made list.
+    """
+    devices = getattr(junctions, 'devices', None)
+    if devices is not None:
+        return devices
+    nodemap = circuit.elementnodemap
+    out = []
+    for k, (instance, element, _ra, _rb) in enumerate(junctions):
+        if out and out[-1][0] == instance:
+            out[-1] = out[-1][:4] + (k + 1,)
+        else:
+            out.append((instance, element,
+                        [int(r) for r in nodemap[instance]], k, k + 1))
+    return out
+
+
+def border_update(J, junctions, didv, g_lim=None, rhs_corr=None):
+    """``J -= J_ml J_lm`` in place, in the rank-k form; optionally
+    ``rhs_corr += J_ml g_lim``.
+
+    STAGE 14-1 -- THE ONE PLACE THIS IS WRITTEN.  It has two consumers, the Schur
+    reduction and the Jacobian the transient hands its step controller, and gate
+    13-6 was a second consumer that open-coded it.  ``didv[k]`` is column ``k``
+    of ``J_ml`` as ``(rows, vals)``: one entry per terminal of the device that
+    owns junction ``k`` -- two for a diode, three for a BJT.  Row ``k`` of
+    ``J_lm`` is always ``-1`` at the anode and ``+1`` at the cathode, so their
+    outer product is two entries per terminal.
+    """
+    for idx, (_inst, _el, ra, rb) in enumerate(junctions):
+        rows, vals = didv[idx]
+        for r, val in zip(rows, vals):
+            J[r, ra] += val
+            J[r, rb] -= val
+            if rhs_corr is not None:
+                rhs_corr[r] += val * g_lim[idx]
+
+
+def _params(element):
+    ## Cached: rebuilding this per device per Newton iteration is 60 dict
+    ## comprehensions over `getattr` on a 60-device circuit, every iteration.
+    params = getattr(element, '_pcnr_params', None)
+    if params is None:
+        params = {p.name: getattr(element.iparv, p.name)
+                  for p in element.instparams}
+        element._pcnr_params = params
+    return params
 
 
 def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
@@ -102,38 +184,45 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
                     'not implemented' % instance)
 
     ## `dense_blocks=False` skips the (n,k) and (k,n) allocations entirely.
-    ## `predict`'s sparse path never reads them -- each column of J_ml has two
-    ## nonzeros and each row of J_lm has two, so the rank-one form carries the
-    ## same information in `didv` plus the junction rows.  Allocating and filling
-    ## them anyway was 2 x n x k doubles per Newton iteration for nothing.
+    ## `predict`'s sparse path never reads them -- each column of J_ml has one
+    ## nonzero per device terminal and each row of J_lm has two, so the rank-k
+    ## form carries the same information in `didv` plus the junction rows.
+    ## Allocating and filling them anyway was 2 x n x k doubles per Newton
+    ## iteration for nothing.
     J_ml = np.zeros((n, k)) if dense_blocks else None
     J_lm = np.zeros((k, n)) if dense_blocks else None
     g_lim = np.zeros(k)
-    didv_list = []
+    didv_list = [None] * k
 
-    for idx, (instance, element, ra, rb) in enumerate(junctions):
-        v = float(v_lim[idx])
-        ## Cached: rebuilding this per junction per Newton iteration is 60 dict
-        ## comprehensions over `getattr` on a 60-device circuit, every iteration.
-        params = getattr(element, '_pcnr_params', None)
-        if params is None:
-            params = {p.name: getattr(element.iparv, p.name)
-                      for p in element.instparams}
-            element._pcnr_params = params
+    v_lim = np.asarray(v_lim, dtype=float)
+    for instance, element, rows, k0, k1 in pcnr_devices(junctions, circuit):
+        ## STAGE 14-1 -- the device is evaluated once, from ALL its own
+        ## unknowns, and its current enters through them: its contribution to
+        ## J_MNA/MNA is zero and all of it lands in J_MNA/lim.
+        v = v_lim[k0:k1]
+        params = _params(element)
         i_terms = element.pcnr_i(v, params, epar, element.toolkit)
-        di_terms = element.pcnr_didv(v, params, epar, element.toolkit)
+        di = np.asarray(element.pcnr_didv(v, params, epar, element.toolkit),
+                        dtype=float)
+        for r, it in zip(rows, np.asarray(i_terms, dtype=float).tolist()):
+            g_mna[r] += it
+        if k1 - k0 == 1:
+            ## The single-junction fast path, which is every diode.  It may
+            ## return its one column as a 1-D (terminals,) array; building a
+            ## (terminals, 1) array and transposing it per device per
+            ## iteration cost ~10% of this function on 60 diodes.
+            columns = (di.reshape(-1).tolist(),)
+        else:
+            columns = di.reshape(len(rows), k1 - k0).T.tolist()
+        for local, vals in enumerate(columns):
+            didv_list[k0 + local] = (rows, vals)
+            if dense_blocks:
+                for r, val in zip(rows, vals):
+                    J_ml[r, k0 + local] += val
 
-        ## The device's current now enters through its OWN unknown, so its
-        ## contribution to J_MNA/MNA is zero and all of it lands in J_MNA/lim.
-        g_mna[ra] += float(i_terms[0])
-        g_mna[rb] += float(i_terms[1])
-        if dense_blocks:
-            J_ml[ra, idx] += float(di_terms[0])
-            J_ml[rb, idx] += float(di_terms[1])
-        didv_list.append((float(di_terms[0]), float(di_terms[1])))
-
+    for idx, (_instance, _element, ra, rb) in enumerate(junctions):
         ## g_lim = v - (e_a - e_b)
-        g_lim[idx] = v - (float(x[ra]) - float(x[rb]))
+        g_lim[idx] = float(v_lim[idx]) - (float(x[ra]) - float(x[rb]))
         if dense_blocks:
             J_lm[idx, ra] = -1.0
             J_lm[idx, rb] = +1.0
@@ -164,16 +253,7 @@ def schur_reduce(g_mna, g_lim, J_mm, J_ml=None, J_lm=None, junctions=None,
     if junctions is not None and didv is not None:
         schur = np.array(J_mm, copy=True)
         rhs_corr = np.zeros(len(g_mna))
-        for idx, (_inst, _el, ra, rb) in enumerate(junctions):
-            dia, dib = didv[idx]
-            ## column k of J_ml is (dia at ra, dib at rb); row k of J_lm is
-            ## (-1 at ra, +1 at rb).  Their outer product is these four entries.
-            schur[ra, ra] += dia
-            schur[ra, rb] -= dia
-            schur[rb, ra] += dib
-            schur[rb, rb] -= dib
-            rhs_corr[ra] += dia * g_lim[idx]
-            rhs_corr[rb] += dib * g_lim[idx]
+        border_update(schur, junctions, didv, g_lim, rhs_corr)
         return g_mna - rhs_corr, schur
     return g_mna - J_ml @ g_lim, J_mm - J_ml @ J_lm
 
@@ -194,7 +274,8 @@ def predict(g_mna, g_lim, J_mm, J_ml, J_lm, irefnode, junctions=None,
     gate-13-4 failure that was entirely the implementation's. Each column of
     ``J_ml`` has two nonzeros and each row of ``J_lm`` has two, so the product is
     a sum of ``k`` rank-one terms touching four entries each: ``O(k)`` work, not
-    ``O(n^2 k)``. Pass ``junctions``/``didv`` to take that path.
+    ``O(n^2 k)``. Pass ``junctions``/``didv`` to take that path.  (A BJT's
+    column has three nonzeros, not two: still ``O(k)``.)
     """
     f_eff, schur = schur_reduce(g_mna, g_lim, J_mm, J_ml, J_lm, junctions, didv)
     rhs = -f_eff

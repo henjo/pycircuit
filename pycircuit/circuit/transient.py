@@ -1602,12 +1602,7 @@ class Transient(Analysis):
                     u_extra=np.asarray(iq, dtype=float),
                     dense_blocks=False, J_extra=Geq)
                 J = np.array(J_mm2, dtype=float)
-                for idx, (_inst, _el, ra, rb) in enumerate(junctions):
-                    dia, dib = didv2[idx]
-                    J[ra, ra] += dia
-                    J[ra, rb] -= dia
-                    J[rb, ra] += dib
-                    J[rb, rb] -= dib
+                _pcnr.border_update(J, junctions, didv2)
                 J = self.toolkit.array(J, dtype=float)
                 f = self.toolkit.array(
                     self.cir.i(x, self.epar) + iq

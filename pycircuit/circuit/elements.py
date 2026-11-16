@@ -969,20 +969,24 @@ class Diode(Circuit):
     ## STAGE 13(13-3) -- this device's PCNR unknown: one junction, plus to minus.
     pcnr_junctions = ((0, 1),)
 
+    ## STAGE 14-1 -- `v` is the VECTOR of the device's own unknowns, one per
+    ## entry of `pcnr_junctions` (here one), so the same interface carries a
+    ## device whose currents depend on several (a BJT).
     @staticmethod
     def pcnr_i(v, params, epar, toolkit):
-        """Terminal currents as a function of the device's OWN unknown."""
+        """Terminal currents as a function of the device's OWN unknowns."""
         VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
-        i = params.get('IS', 1e-13) * (toolkit.exp(v / VT) - 1.0)
+        i = params.get('IS', 1e-13) * (toolkit.exp(v[0] / VT) - 1.0)
         return toolkit.array([i, -i])
 
     @staticmethod
     def pcnr_didv(v, params, epar, toolkit):
         """d(terminal currents)/dv -- the whole of this device's Jacobian
         contribution, which under PCNR lands in J_MNA/lim rather than in
-        J_MNA/MNA."""
+        J_MNA/MNA.  Terminals x junctions in general; with one junction the
+        single column may be, and here is, a 1-D array."""
         VT = toolkit.kboltzmann * epar.T / toolkit.qelectron
-        g = params.get('IS', 1e-13) * toolkit.exp(v / VT) / VT
+        g = params.get('IS', 1e-13) * toolkit.exp(v[0] / VT) / VT
         return toolkit.array([g, -g])
 
     def limit(self, x, x0, epar=defaultepar):

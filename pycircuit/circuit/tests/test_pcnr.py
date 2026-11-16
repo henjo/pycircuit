@@ -68,8 +68,8 @@ def test_the_currents_split_by_the_saturation_current_ratio():
     c = _fig1(is1=1e-15, is2=1e-12)
     _x, v_lim, _its = P.solve_dc(c, gnd)
     d1, d2 = c.elements['D1'], c.elements['D2']
-    i1 = float(d1.pcnr_i(v_lim[0], {'IS': 1e-15}, defaultepar, numeric)[0])
-    i2 = float(d2.pcnr_i(v_lim[1], {'IS': 1e-12}, defaultepar, numeric)[0])
+    i1 = float(d1.pcnr_i(v_lim[[0]], {'IS': 1e-15}, defaultepar, numeric)[0])
+    i2 = float(d2.pcnr_i(v_lim[[1]], {'IS': 1e-12}, defaultepar, numeric)[0])
     assert i2 / i1 == pytest.approx(1e3, rel=1e-6)
 
 
