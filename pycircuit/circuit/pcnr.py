@@ -61,11 +61,20 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
     n = circuit.n
     k = len(junctions)
 
-    ## Ordinary assembly, then remove each PCNR device's own contribution -- the
-    ## device is about to be re-stamped at its own `v_lim` instead of at the node
-    ## voltage difference.
-    g_mna = np.array(circuit.i(x, epar), dtype=float)
-    J_mm = np.array(circuit.G(x, epar), dtype=float)
+    ## STAGE 13-8 -- ordinary assembly WITHOUT the PCNR devices; each is stamped
+    ## below at its own `v_lim` instead of at the node voltage difference.
+    ##
+    ## This used to assemble them and subtract them out again.  That was exact in
+    ## exact arithmetic and survived floating point only because `Diode` read a
+    ## stale `_vlim` and so presented a tiny affine companion: the cancelled term
+    ## was ~1e-13 A on the rectifiers.  An honest diode at an UNLIMITED node
+    ## voltage -- 2.58e11 V on the first predict of a 1 A source -- overflows
+    ## `exp`, and inf - inf is nan (benchmarks/transient_review/pcnr_narrow_fix.py).
+    ## It also assembled every PCNR device twice per iteration, which was most of
+    ## gate 13-4's cost.
+    skip = frozenset(instance for instance, _e, _ra, _rb in junctions)
+    g_mna = np.array(circuit.i(x, epar, skip=skip), dtype=float)
+    J_mm = np.array(circuit.G(x, epar, skip=skip), dtype=float)
     if u_extra is not None:
         g_mna = g_mna + np.asarray(u_extra, dtype=float)
     if J_extra is not None:
@@ -74,29 +83,23 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
         ## already has them and `get_diff` is not free.
         J_mm = J_mm + np.asarray(J_extra, dtype=float)
 
-    nodemap = circuit.elementnodemap
-    seen = set()
-    for instance, element, _ra, _rb in junctions:
-        if instance in seen:
-            continue
-        seen.add(instance)
-        rows = nodemap[instance]
-        sub = x[rows]
-        ## A participating device with charge storage would also contribute to
-        ## `iq`/`Geq`, and that contribution would have to move to its own
-        ## unknown too -- which is not implemented.  Refused rather than silently
-        ## left in the MNA block, where it would be evaluated at the node voltage
-        ## while the current is evaluated at `v_lim`: the exact inconsistency
-        ## PCNR exists to remove, reintroduced through the charge.
-        if J_extra is not None:
-            Csub = np.asarray(element.C(sub, epar), dtype=float)
+    ## A participating device with charge storage would also contribute to
+    ## `iq`/`Geq`, and that contribution would have to move to its own unknown
+    ## too -- which is not implemented.  Refused rather than silently left in the
+    ## MNA block, where it would be evaluated at the node voltage while the
+    ## current is evaluated at `v_lim`: the exact inconsistency PCNR exists to
+    ## remove, reintroduced through the charge.  `skip` does not cover this: the
+    ## charge is assembled whole, by the caller, into `J_extra`.
+    if J_extra is not None:
+        nodemap = circuit.elementnodemap
+        for instance in sorted(skip):
+            element = circuit.elements[instance]
+            Csub = np.asarray(element.C(x[nodemap[instance]], epar), dtype=float)
             if np.any(np.abs(Csub) > 0.0):
                 raise NotImplementedError(
                     '%r has charge storage and a PCNR junction; the charge term '
                     'would also have to move to the limited unknown, which is '
                     'not implemented' % instance)
-        g_mna[rows] -= np.asarray(element.i(sub, epar), dtype=float)
-        J_mm[np.ix_(rows, rows)] -= np.asarray(element.G(sub, epar), dtype=float)
 
     ## `dense_blocks=False` skips the (n,k) and (k,n) allocations entirely.
     ## `predict`'s sparse path never reads them -- each column of J_ml has two

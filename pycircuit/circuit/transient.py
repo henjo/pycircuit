@@ -13,6 +13,7 @@ from numpy.linalg import LinAlgError
 from pycircuit.circuit.analysis import *
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.dcanalysis import refnode_removed
+from pycircuit.circuit._limiting import classic_limiting
 ## The clamp the step controller applies to every accepted step.  The force-accept
 ## path in `solve()` is the one place that used to bypass it, and 4b's whole point
 ## is that it must not: one bound, named once.  `stepcontroller` imports nothing
@@ -507,20 +508,22 @@ class Transient(Analysis):
         scaler = self._get_scaler()
         linsolver = self._get_linearsolver()
         try:
-            x_res, _iters = solver.solve_system(
-                x0,
-                refnode_removed(func, self.irefnode, self.toolkit),
-                self.toolkit,
-                self.par.reltol,
-                abstol,
-                xtol,
-                self.par.maxiter,
-                limiter=limiter_func,
-                scaler=scaler,
-                linsolver=linsolver,
-                ## Stage 6: lets the solver name a node instead of a row index.
-                row_names=reduced_row_names(self.cir, self.irefnode),
-            )
+            ## STAGE 13-9 -- see the matching note in `DC._newton`.
+            with classic_limiting(self.cir):
+                x_res, _iters = solver.solve_system(
+                    x0,
+                    refnode_removed(func, self.irefnode, self.toolkit),
+                    self.toolkit,
+                    self.par.reltol,
+                    abstol,
+                    xtol,
+                    self.par.maxiter,
+                    limiter=limiter_func,
+                    scaler=scaler,
+                    linsolver=linsolver,
+                    ## Stage 6: lets the solver name a node instead of a row index.
+                    row_names=reduced_row_names(self.cir, self.irefnode),
+                )
         ## NARROW, deliberately.  This used to be `except Exception`, which turned
         ## every failure inside a device model into "the circuit did not converge" --
         ## a `ZeroDivisionError` from a source with `tr=0`, a `TypeError` from a
@@ -1011,10 +1014,25 @@ class Transient(Analysis):
         return (self.toolkit.array(f_eff, dtype=float),
                 self.toolkit.array(J_eff, dtype=float), g_lim)
 
-    def fang_timestep(self, x_prev, t_prev, h, x_hist, refnode=gnd,
-                      provided_function=None, gamma_min=0.7, gamma_max=3.0,
-                      eta=0.15, maxiter=None, hmin=None, max_step=None,
-                      hold_h=False, grid_locked=False, method='approx'):
+    def fang_timestep(self, *args, **kwargs):
+        """One time point of Fang's coupled method -- see `_fang_timestep`.
+
+        STAGE 13-9.  The classic branch calls `cir.limit` inside the loop and
+        evaluates the next iterate at the `_vlim` that call left, so the whole
+        time point runs in a classic-limiting scope.  The PCNR branch must not:
+        its devices are not limited through `cir.limit` at all.  The condition is
+        the one `_fang_timestep` uses to pick its branch.
+        """
+        from pycircuit.circuit import pcnr as _pcnr
+        if self.par.pcnr and _pcnr.pcnr_junctions(self.cir):
+            return self._fang_timestep(*args, **kwargs)
+        with classic_limiting(self.cir):
+            return self._fang_timestep(*args, **kwargs)
+
+    def _fang_timestep(self, x_prev, t_prev, h, x_hist, refnode=gnd,
+                       provided_function=None, gamma_min=0.7, gamma_max=3.0,
+                       eta=0.15, maxiter=None, hmin=None, max_step=None,
+                       hold_h=False, grid_locked=False, method='approx'):
         """One time point of Fang's coupled method: solve for ``(x, h)`` together.
 
         STAGE 12B.  Figure 4 of DAC 2013, and the structure is the substance:

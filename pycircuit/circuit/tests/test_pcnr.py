@@ -432,3 +432,149 @@ def test_gate_13_7_pcnr_is_honoured_on_the_coupled_path():
         'pcnr=True still called the classic limiter %d times against %d ' \
         '-- device limiting is active under PCNR' \
         % (counts[True]['limit'], counts[False]['limit'])
+
+
+## ---------------------------------------------------------------------------
+## GATE 13-8 -- the PCNR devices leave the ordinary assembly.
+##
+## `augmented_system` used to assemble every device and then subtract the PCNR
+## ones out again.  That survived floating point only because `Diode` read a
+## stale `_vlim` and so presented a tiny companion; an honest diode at an
+## unlimited node voltage overflows `exp` and the subtraction becomes nan
+## (benchmarks/transient_review/pcnr_narrow_fix.py).  These tests pin the
+## replacement: a `skip` set that assembly honours, and refuses where it cannot.
+## ---------------------------------------------------------------------------
+
+def test_gate_13_8_pcnr_devices_are_not_assembled():
+    """Counted, not inferred: the two forms agree to rounding, so no answer can
+    tell "skipped" from "assembled and subtracted".  Entry: 2 calls of each per
+    device per iteration (fig1: 32 and 32)."""
+    hits = {'G': 0, 'i': 0}
+    real_G, real_i = Diode.G, Diode.i
+
+    def spy_G(self, *a, **k):
+        hits['G'] += 1
+        return real_G(self, *a, **k)
+
+    def spy_i(self, *a, **k):
+        hits['i'] += 1
+        return real_i(self, *a, **k)
+
+    Diode.G, Diode.i = spy_G, spy_i
+    try:
+        x, _v, its = P.solve_dc(_fig1(), gnd)
+    finally:
+        Diode.G, Diode.i = real_G, real_i
+    assert its > 1
+    assert hits == {'G': 0, 'i': 0}, \
+        'PCNR assembled its own devices through Diode.G/i: %r' % hits
+
+
+def test_gate_13_8_skip_leaves_out_exactly_the_named_instances():
+    """The reference is built by stamping the REMAINING elements directly, not
+    by subtracting D2 from the full assembly -- this test's first version did
+    that, and failed at 8.9e-11 relative: D1's 1.6e-20 S does not survive
+    `(D1 + D2) - D2` when D2 is larger.  Which is the 13-8 point in miniature."""
+    c = _fig1()
+    x = np.array([0.0, 1.0, 0.62, -1e-3])[:c.n]
+    G_ref = np.zeros((c.n, c.n))
+    i_ref = np.zeros(c.n)
+    for name, element in c.elements.items():
+        if name == 'D2':
+            continue
+        rows = c.elementnodemap[name]
+        G_ref[np.ix_(rows, rows)] += np.asarray(element.G(x[rows], defaultepar))
+        i_ref[rows] += np.asarray(element.i(x[rows], defaultepar))
+    G_skip = np.asarray(c.G(x, defaultepar, skip={'D2'}), dtype=float)
+    i_skip = np.asarray(c.i(x, defaultepar, skip={'D2'}), dtype=float)
+    np.testing.assert_allclose(G_skip, G_ref, rtol=1e-15, atol=1e-300)
+    np.testing.assert_allclose(i_skip, i_ref, rtol=1e-15, atol=1e-300)
+    ## And an empty skip is the ordinary assembly, exactly.
+    assert np.array_equal(np.asarray(c.G(x, defaultepar, skip=frozenset())),
+                          np.asarray(c.G(x, defaultepar)))
+
+
+def test_gate_13_8_skip_of_an_unknown_instance_is_an_error():
+    """A typo would otherwise skip nothing and look like it worked."""
+    with pytest.raises(KeyError):
+        _fig1().G(np.zeros(4), defaultepar, skip={'D3'})
+
+
+def test_gate_13_8_skip_refuses_a_batched_class():
+    """A grouped class is stamped by one vmapped call before the per-element
+    loop runs, so a skipped instance of it would still be stamped -- a wrong
+    matrix, not a crash.  JAX is not needed to show the refusal: the group map
+    is what the check reads, so it is stubbed directly."""
+    c = _fig1()
+    c._eval_groups = {Diode: None}
+    with pytest.raises(NotImplementedError, match='batch'):
+        c.G(np.zeros(c.n), defaultepar, skip={'D1'})
+    with pytest.raises(NotImplementedError, match='batch'):
+        c.i(np.zeros(c.n), defaultepar, skip={'D1'})
+
+
+## ---------------------------------------------------------------------------
+## GATE 13-9 -- `Diode` reads `_vlim` only inside a classic-limiting scope.
+##
+## Outside the three Newton loops that call `cir.limit`, nothing moves `_vlim`,
+## so every other caller of `cir.G`/`cir.i` used to get a frozen companion: a
+## valid tangent of a linearisation nobody asked for.  13-6 met it as a 6.6x
+## step error; 13-9 met it as PSS returning 0.000 V for a rectifier.
+## ---------------------------------------------------------------------------
+
+def test_gate_13_9_cir_G_is_honest_after_a_classic_dc_op():
+    """Entry: after the DC op `_vlim` = 0.0 and `cir.G` carried g(0 V) =
+    3.87e-12 S at EVERY voltage -- 15.5 S was the right answer at 0.75 V."""
+    import warnings
+    c = _mains_rectifier()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        DC(c, toolkit=numeric).solve()
+    d = c['D1']
+    rows = c.elementnodemap['D1']
+    VT = numeric.kboltzmann * defaultepar.T / numeric.qelectron
+    for v in (-1.0, 0.3, 0.6, 0.75):
+        x = np.zeros(c.n)
+        x[rows[0]] = v
+        G = np.asarray(c.G(x, defaultepar), dtype=float)
+        i = np.asarray(c.i(x, defaultepar), dtype=float)
+        g_true = d.iparv.IS * np.exp(v / VT) / VT
+        i_true = d.iparv.IS * (np.exp(v / VT) - 1.0)
+        assert G[rows[0], rows[0]] == pytest.approx(g_true, rel=1e-12), v
+        assert i[rows[0]] == pytest.approx(i_true, rel=1e-12, abs=1e-30), v
+
+
+def test_gate_13_9_diode_writes_no_state_outside_limiting():
+    """A plain evaluation must not plant the `_vlim` the next one would read."""
+    d = Diode(1, 2, toolkit=numeric)
+    d.G(np.array([0.3, 0.0]), defaultepar)
+    d.i(np.array([0.6, 0.0]), defaultepar)
+    assert '_vlim' not in d.__dict__
+    VT = numeric.kboltzmann * defaultepar.T / numeric.qelectron
+    assert float(d.G(np.array([0.6, 0.0]), defaultepar)[0, 0]) == \
+        pytest.approx(d.iparv.IS * np.exp(0.6 / VT) / VT, rel=1e-12)
+
+
+def test_gate_13_9_inside_the_scope_the_limiter_state_is_used():
+    """The classic path is unchanged: inside the scope `G` is taken at `_vlim`."""
+    from pycircuit.circuit._limiting import classic_limiting
+    d = Diode(1, 2, toolkit=numeric)
+    VT = numeric.kboltzmann * defaultepar.T / numeric.qelectron
+    with classic_limiting(d):
+        d.G(np.array([0.0, 0.0]), defaultepar)          # seeds _vlim = 0
+        d.limit(np.array([5.0, 0.0]), np.array([0.0, 0.0]), defaultepar)
+        g = float(d.G(np.array([5.0, 0.0]), defaultepar)[0, 0])
+    assert 0.0 < d._vlim < 5.0, 'the limiter did not hold the junction back'
+    assert g == pytest.approx(d.iparv.IS * np.exp(d._vlim / VT) / VT, rel=1e-12)
+
+
+def test_gate_13_9_scope_is_depth_counted():
+    from pycircuit.circuit._limiting import classic_limiting
+    c = _fig1()
+    with classic_limiting(c):
+        with classic_limiting(c):
+            pass
+        assert c['D1']._classic_limiting == 1, 'an inner scope ended the outer one'
+    assert c['D1']._classic_limiting == 0
+    with pytest.raises(RuntimeError):
+        c['D1'].set_classic_limiting(False)

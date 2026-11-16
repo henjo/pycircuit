@@ -4,6 +4,7 @@ import numpy as np
 from numpy.linalg import LinAlgError
 
 from pycircuit.circuit.analysis import *
+from pycircuit.circuit._limiting import classic_limiting
 
 class DC(Analysis):
     """DC analyis class
@@ -161,19 +162,22 @@ class DC(Analysis):
 
         try:
             scaler = self._get_scaler()
-            x_res, _ = solver.solve_system(
-                x0,
-                refnode_removed(func, self.irefnode, self.toolkit),
-                self.toolkit,
-                self.par.reltol,
-                abstol,
-                xtol,
-                self.par.maxiter,
-                limiter=limiter_func,
-                scaler=scaler,
-                ## Stage 6: lets the solver name a node instead of a row index.
-                row_names=reduced_row_names(self.cir, self.irefnode),
-            )
+            ## STAGE 13-9 -- the solve calls `cir.limit`, so devices that keep
+            ## limiter state may use it here and nowhere else.
+            with classic_limiting(self.cir):
+                x_res, _ = solver.solve_system(
+                    x0,
+                    refnode_removed(func, self.irefnode, self.toolkit),
+                    self.toolkit,
+                    self.par.reltol,
+                    abstol,
+                    xtol,
+                    self.par.maxiter,
+                    limiter=limiter_func,
+                    scaler=scaler,
+                    ## Stage 6: lets the solver name a node instead of a row index.
+                    row_names=reduced_row_names(self.cir, self.irefnode),
+                )
         ## NARROW, deliberately -- see the matching note in `transient.py:_newton`.
         ## `except Exception` here reported every device-model bug as a convergence
         ## failure, which is the wrong diagnosis and points the reader at the bias

@@ -110,12 +110,16 @@ What it costs, and what it does not buy
 
 PCNR converges everywhere classic limiting does, including six circuits chosen to
 make limiting matter, and agrees with it to 1e-6 relative. Iteration counts are
-within one throughout, so the extra consistency buys no extra iterations. The
-cost is per-iteration assembly work, and it is not free: devices still stamp
-their nonlinear part into ``G`` and it has to be subtracted again. Reaching the
-paper's cost would mean devices not stamping that part at all — an assembly
-change, and the one this implementation deliberately avoided in order to remain a
-layer.
+within one throughout, so the extra consistency buys no extra iterations.
+
+The PCNR devices are left out of the ordinary assembly (``SubCircuit.G`` and
+``SubCircuit.i`` take a ``skip`` set) and stamped once, at their own unknowns. On
+60 diodes a PCNR Newton iteration costs 772 µs against 1081 µs for classic
+limiting. Until gate 13-8 it cost 1774 µs: every PCNR device was assembled at the
+node voltage and then subtracted out again. That only stayed finite because of the
+trap described below. A toolkit that evaluates a device class in a batch (JAX)
+refuses a ``skip`` of that class rather than stamping it anyway; masking a batch
+is not implemented.
 
 **In transient, PCNR and classic limiting produce identical results** — the same
 step count, the same step times, and the same waveform to nine figures on a
@@ -130,31 +134,41 @@ difference in transient step count between the two paths is a defect signature,
 not a feature.** It is asserted as such by
 ``test_gate_13_6_pcnr_and_limiting_take_the_same_steps``.
 
-A trap for anyone extending this
-================================
+The trap that was here, and how it was closed
+=============================================
 
-``Diode.G`` linearises around ``self._vlim``, which only ``Diode.limit`` writes —
-and PCNR never calls ``limit``, since limiting is what it replaces. During a PCNR
-run ``_vlim`` therefore holds a stale value and **``cir.G(x)`` returns a Jacobian
-with no diode conductance in it**.
+``Diode`` keeps the limiter's output in ``_vlim`` and linearises around it. Only
+``Diode.limit`` moves ``_vlim``, and only the three Newton loops that call
+``cir.limit`` call that. Until gate 13-9, every *other* caller of ``cir.G`` or
+``cir.i`` got the companion around whatever ``_vlim`` was last written. That is a
+valid tangent of a frozen linearisation, with the type and magnitude of a
+Jacobian. It surfaced twice:
 
-Inside ``augmented_system`` this cancels exactly: the same wrong value is added by
-``cir.G(x)`` and subtracted again by the per-device loop, so the system that gets
-solved is correct and every converged voltage is right. That is why the defect
-survived every DC test. It escaped through one door only — the matrix handed to
-the transient step controller, which forms ``lte = J⁻¹ Eg`` — and there it changed
-the step count by 6.6x.
+- **PCNR's step controller**: ``cir.G(x)`` carried no diode conductance, which
+  changed the transient step count by 6.6x (gate 13-6). Inside
+  ``augmented_system`` the same wrong value was added and subtracted, so every
+  DC test passed.
+- **PSS**: its Newton has no limiter, so the diode was frozen at 0 V for the
+  whole solve. A half-wave rectifier whose steady state peaks at 4.25 V came out
+  as **0.000 V everywhere**.
 
-It applies on the coupled (Fang) path too, where ``pcnr=True`` is now honoured
-rather than silently ignored. That path solves for the step size *inside* the
-Newton loop, so unlike the standard path it does **not** reproduce classic
-limiting step for step — the LTE is evaluated at a mid-iteration iterate, which is
-the limited point under limiting and the full update under PCNR. The two grids
-diverge slightly and legitimately. What must hold, and is measured, is that
-neither is less accurate against an independent reference.
+Now the three limiting loops (``DC``, the standard transient and the classic
+branch of the coupled path) run inside a classic-limiting scope. Inside it
+``Diode`` behaves exactly as before. Outside it ``Diode`` is a plain function of
+the node voltage and writes no state, so ``cir.G(x)`` is an honest Jacobian for
+any caller. Classic DC and transient results are unchanged, bit for bit on all
+but one test circuit. On a mains rectifier the waveform moves by 3.2e-14 with
+the same steps: there, the step controller's Jacobian used to be taken up to
+1.3e-12 V away from the converged point, and is now taken at it.
 
-So: **do not call ``cir.G(x)`` on the PCNR path and expect a usable Jacobian.**
-The matrix to use is the Schur matrix that ``predict`` already factorises; at
-convergence ``v_lim == e_a − e_b``, so it *is* the Jacobian of the residual with
-respect to ``x``. The underlying hazard is only contained, not removed — the clean
-fix is the assembly change described above.
+The order mattered. Making ``Diode`` honest **before** PCNR stopped
+assembling-and-subtracting breaks PCNR outright. On a 1 A source the first
+predict puts the node at 2.6e11 V, an honest diode overflows ``exp``, and the
+subtraction is nan.
+
+The coupled (Fang) path honours ``pcnr=True``. It solves for the step size
+*inside* the Newton loop, so unlike the standard path it does **not** reproduce
+classic limiting step for step. The LTE is evaluated at a mid-iteration iterate,
+which is the limited point under limiting and the full update under PCNR, so the
+two grids diverge slightly and legitimately. What must hold, and is measured, is
+that neither is less accurate against an independent reference.

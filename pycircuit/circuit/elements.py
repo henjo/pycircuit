@@ -935,6 +935,26 @@ class Diode(Circuit):
     ## that exists, the stateful form stays.
     ##
     ## What is kept: both devices now call one `_pnjlim`, in `_limiting.py`.
+    ##
+    ## STAGE 13-9 -- `_vlim` IS READ ONLY INSIDE A CLASSIC-LIMITING SCOPE.
+    ##
+    ## `limit` is the only thing that moves `_vlim`, and only the three Newton
+    ## loops that call `cir.limit` ever call it.  Everything else -- PSS, the
+    ## PCNR paths, the step controller, any caller of `cir.G(x)` -- used to get
+    ## the companion around whatever `_vlim` was last written: a valid tangent of
+    ## a frozen linearisation, with the type and magnitude of a Jacobian.  Gate
+    ## 13-6 found it as a 6.6x step error; 13-9 found PSS returning 0.000 V for a
+    ## rectifier.  Outside the scope (see `_limiting.classic_limiting`) this
+    ## device is now a plain function of the node voltage, and writes no state.
+    _classic_limiting = 0
+
+    def set_classic_limiting(self, active):
+        """Depth-counted, so a nested scope cannot end an outer one."""
+        self._classic_limiting = self._classic_limiting + (1 if active else -1)
+        if self._classic_limiting < 0:
+            self._classic_limiting = 0
+            raise RuntimeError('classic-limiting scope left more often than entered')
+
     def reset_state(self, epar=None):
         """Forget the limiter's remembered junction voltage -- stage 10.1.
 
@@ -991,10 +1011,12 @@ class Diode(Circuit):
         if self.toolkit.supports('autodiff'):
             return self.toolkit.jacobian(self.eval_i_pure, x,
                                          {'IS': self.iparv.IS}, epar)
-        if not hasattr(self, '_vlim'):
-            self._vlim = x[0] - x[1]
-
-        VD = self._vlim
+        if self._classic_limiting:
+            if not hasattr(self, '_vlim'):
+                self._vlim = x[0] - x[1]
+            VD = self._vlim
+        else:
+            VD = x[0] - x[1]      # STAGE 13-9 -- see the class note
         try:
             bypasstol = epar.bypasstol
         except (AttributeError, KeyError):
@@ -1023,10 +1045,13 @@ class Diode(Circuit):
     def i(self, x, epar=defaultepar):
         if self.toolkit.supports('autodiff'):
             return self.eval_i_pure(x, {'IS': self.iparv.IS}, epar, self.toolkit)
-        if not hasattr(self, '_vlim'):
-            self._vlim = x[0]-x[1]
-
-        VD = self._vlim
+        limiting = self._classic_limiting
+        if limiting:
+            if not hasattr(self, '_vlim'):
+                self._vlim = x[0]-x[1]
+            VD = self._vlim
+        else:
+            VD = x[0] - x[1]      # STAGE 13-9 -- see the class note
         try:
             bypasstol = epar.bypasstol
         except (AttributeError, KeyError):
@@ -1047,6 +1072,12 @@ class Diode(Circuit):
             self._g_cached = g
             self._vlim_cached_i = VD
             
+        if not limiting:
+            ## VD is the node voltage, so the companion is just I.  Returned
+            ## directly rather than as `I - g*0.0`, which is the same number
+            ## whenever g is finite and nan when exp has overflowed.
+            return self.toolkit.array([I, -I])
+
         v_nodes = x[0] - x[1]
         I_eff = I - g * (VD - v_nodes)
         

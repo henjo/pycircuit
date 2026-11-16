@@ -301,3 +301,30 @@ def test_pss_still_matches_the_ac_reference_with_a_fine_step():
         amp = 0.5 * (v.max() - v.min())
         assert amp == pytest.approx(ref, rel=0.02), \
             '%s gives %.6f against the AC reference %.6f' % (method, amp, ref)
+
+
+def test_pss_sees_the_real_diode():
+    """STAGE 13-9 (gate 13-9f) -- PSS on a half-wave rectifier.
+
+    PSS runs its own Newton with no limiter, so `Diode.limit` was never called
+    and every evaluation reused the `_vlim` the first one wrote: the diode was a
+    frozen companion at 0 V, i.e. an open circuit.  PSS returned **v(b) = 0.000 V
+    everywhere**.  The reference, 0.005258 to 4.248518 V, is the last of 20
+    periods of a classic transient at reltol 1e-6
+    (benchmarks/transient_review/stage13_8_9_gates.py, `pss`); Euler at 100
+    steps per period lands 9.2e-5 below its peak.
+    """
+    import warnings
+    from pycircuit.circuit.elements import Diode
+    circuit.default_toolkit = circuit.numeric
+    c = SubCircuit()
+    c['vs'] = VSin('a', gnd, va=5.0, freq=1e3)
+    c['D'] = Diode('a', 'b', IS=1e-15)
+    c['R'] = R('b', gnd, r=1e3)
+    c['C'] = C('b', gnd, c=1e-7)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = PSS(c).solve(period=1e-3, timestep=1e-5)
+    v = np.asarray(res['tpss'].v('b', gnd), dtype=float)
+    assert v.max() == pytest.approx(4.248518, rel=1e-3)
+    assert 0.0 < v.min() < 0.02

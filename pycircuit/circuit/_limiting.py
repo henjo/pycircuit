@@ -76,3 +76,34 @@ def limit_junctions(x, x0, junctions, VT, IS_for, toolkit):
         else:
             out[cathode] = out[anode] - vlim
     return out
+
+
+class classic_limiting:
+    """Context manager: classic Newton limiting is active on ``circuit``.
+
+    STAGE 13-9.  `Diode` keeps the limiter's output in `_vlim` and linearises
+    around it.  That is right *inside* a Newton loop that calls `cir.limit`, and
+    wrong everywhere else: nothing outside such a loop updates `_vlim`, so every
+    later `G`/`i` call saw a frozen companion.  Measured: `cir.G(x)` after a DC op
+    carried g(0 V) = 3.87e-12 S at every voltage, and PSS -- which never limits --
+    returned v = 0.000 V for a rectifier whose steady state peaks at 4.25 V.
+
+    The three loops that call `cir.limit` (`DC._newton`, `Transient._newton`,
+    and the classic branch of `Transient.fang_timestep`) enter this scope; outside it a
+    `Diode` is a plain function of the node voltage.  Leaving the scope does NOT
+    clear `_vlim`: the classic transient carries it across timesteps as the
+    limiter's `vold`.  Depth-counted in the device, so nesting cannot end it early.
+    """
+
+    def __init__(self, circuit):
+        self._setter = getattr(circuit, 'set_classic_limiting', None)
+
+    def __enter__(self):
+        if self._setter is not None:
+            self._setter(True)
+        return self
+
+    def __exit__(self, *exc):
+        if self._setter is not None:
+            self._setter(False)
+        return False

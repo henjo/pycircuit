@@ -1,6 +1,9 @@
 # Native PCNR in pycircuit — what it would take, and what it would touch
 
-**Status:** design study. Nothing here is implemented. PCNR ships today as a
+**Status:** design study, written when nothing in it was implemented. **Since
+2026-11-16 two parts are:** the numeric-only skip set (gate 13-8) and the narrow
+fix behind a classic-limiting scope (gate 13-9). Their measured outcomes are in
+`doc/transient_work_plan.md`. Everything else here is still a design. PCNR ships as a
 *layer* (`pycircuit/circuit/pcnr.py`, `pcnr=True`, off by default); this document
 describes what it would mean to support it *natively* instead, what that costs,
 and what else in pycircuit moves when it happens.
@@ -332,7 +335,16 @@ per-element loop in `_add_element_submatrices`/`_add_element_subvectors`. A skip
 set that covers that loop, and refuses when a skipped instance belongs to a
 batched group, is enough for PCNR. The batched/JAX threading that made A "days"
 can wait until something needs it. *(The size of that numeric-only skip is a
-reading of the code. It has not been implemented.)*
+reading of the code. It has not been implemented.)* **Implemented as gate 13-8.**
+It was a loop guard plus a refusal, as read. It took `augmented_system` from
+2.35x classic assembly to 0.65x, and a PCNR iteration from +65% to −29% against
+classic limiting on 60 diodes.
+
+**The narrow fix then landed as gate 13-9**, and turned up a consumer this study
+never listed. PSS runs a Newton with no limiter, so its diode was frozen at the
+first `_vlim` for the whole solve. A half-wave rectifier came out at 0.000 V
+where the steady state peaks at 4.25 V. §7's consumer list named
+`shooting.py:136` but filed nothing under it; that was the miss.
 
 ---
 

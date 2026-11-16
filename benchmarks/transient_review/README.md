@@ -55,6 +55,7 @@ their output.
 |---|---|---|
 | `companion_consistency.py` | Is `Diode.G` the exact derivative of `Diode.i`? | Yes, to 5.0e-10 by central difference. The documented claim that they are taken at different points was false. |
 | `pcnr_narrow_fix.py` (+ `.log`) | Can `Diode` stop reading a stale `_vlim` without touching PCNR assembly? | No. On a 1 A diode the PCNR node reaches 2.58e11 V, an honest diode overflows `exp`, and 199 of 200 assemblies are nan. The narrow fix needs the skip set first. |
+| `stage13_8_9_gates.py` | Gates 13-8/13-9: the skip set, then the classic-limiting scope. `snapshot`/`compare` check bit-identity over 18 cases; `probes` measures call counts, assembly cost, Jacobian honesty and PSS. | Classic paths bit-identical except one explained 3.2e-14; PCNR iterations 29% cheaper than limiting; `cir.G` exact outside limiting; PSS on a rectifier 0.000 V → 4.2481 V (reference 4.2485). |
 
 The numerical lens's own scripts (`e1`-`e15`: error constants, the trapezoidal `(-1)^n`
 contamination, PI-controller stability, BDF-2 step-ratio limits, DAE index) were not

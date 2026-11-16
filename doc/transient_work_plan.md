@@ -5780,6 +5780,184 @@ exactly the assembly change gate 13-4 declined in order to keep PCNR a layer. **
 if** a second consumer of `cir.G` appears on the PCNR path, or if PCNR is ever made default;
 either turns this from a latent trap into an active one.
 
+**CLOSED by gates 13-8 and 13-9 (2026-11-16)**, in that order, which was forced (see 13-8's
+preamble). It had a second consumer after all, and not on the PCNR path: PSS.
+
+## Gates 13-8 and 13-9 — close the residual hazard, in the only order that works
+
+**Added 2026-11-16, on the maintainer's choice** after `586d6ce` refuted the design study's
+"narrow fix first" (`doc/pcnr_native_design.md` §5 correction). Measured, an honest `Diode`
+inside PCNR's add-then-subtract overflows on a 1 A diode. So the PCNR devices must leave the
+ordinary assembly first (13-8). Only then can `Diode` stop reading a stale `_vlim` (13-9).
+
+Instrument: `benchmarks/transient_review/stage13_8_9_gates.py`. Its `snapshot` mode runs 18
+cases: six DC circuits (gates 13-4/13-5), each classic and PCNR, plus a 5 V rectifier, a
+mains rectifier and a coupled rectifier, each classic and PCNR. It stores every answer and
+every `Diode.G`/`i`/`limit` call count. `compare` reports bit-identity case by case. `probes`
+measures the rest.
+
+**Entry measurements, 2026-11-16, before any code** (tree at `586d6ce`):
+
+| probe | value |
+|---|---|
+| `Diode.G`/`Diode.i` calls per `P.solve_dc` | 2 per device per iteration: fig1 32/32, 60 diodes 1680/1680 |
+| `augmented_system` vs classic `i`+`G`, 60 diodes, best of 200 | 1372 µs vs 585 µs, **2.35x** |
+| `stage13_pcnr.py`, 60 diodes, per Newton iteration | limiting 1077 µs, PCNR 1774 µs (**+65%**) |
+| `cir.G(x)` after a classic DC op on the mains rectifier | `_vlim = 0.0`; g = 3.87e-12 S **at every voltage** (true 15.5 S at 0.75 V) |
+| the same after a PCNR transient | `_vlim = 0.0`; rel err 1.000 at 0.7 V |
+
+### Gate 13-8 — the skip set
+
+**Work.** `SubCircuit.i`/`SubCircuit.G` take `skip=None`, a set of top-level instance names
+that `_add_element_subvectors`/`_add_element_submatrices` leave out. `augmented_system`
+passes its junction instances and deletes the subtraction. The charge refusal stays: it is
+about `C`, which is still assembled whole. If a toolkit batches a class that has a skipped
+instance, assembly **raises** `NotImplementedError`. Masking a vmapped group is real Design A
+work, and a silent scatter would be worse than a refusal.
+
+- **13-8a (no answer moves).** Every classic case is bit-identical: `skip=None` adds one
+  falsy test to the loop. Every PCNR case keeps its iteration or step count, with answers
+  within 1e-12 relative. They are not expected to be bit-identical: today's cancellation
+  is `(rest + c) - c` with `|c| ~ 1e-13 A`, which can round.
+- **13-8b (skipped means skipped).** Zero `Diode.G`/`Diode.i` calls during `P.solve_dc` on
+  all six circuits. Entry: 2 per device per iteration. Counted rather than inferred, for
+  gate 13-7's reason: answers within rounding cannot show whether an element was skipped.
+- **13-8c (bill 1).** Predicted: `augmented_system` falls to about 1.2x classic assembly.
+  It no longer assembles 60 diodes twice. What remains is the per-junction `pcnr_i`/`pcnr_didv`
+  loop. **Declared: <= 1.5x** (entry 2.35x).
+- **13-8d (the refusal fires).** A stub toolkit that groups `Diode` makes a skip of a diode
+  raise `NotImplementedError`. JAX is not installed on this machine, so this cannot be tested
+  against the real batched path; that limit is recorded, not hidden.
+- **13-8e (suite).** `pytest pycircuit -m ""`, against the entry run taken the same day.
+- **Injection.** Ignore `skip` in the loop: 13-8b must go red. Put `R` in the skip set: the
+  answer must move.
+
+OUTCOME (2026-11-16): **PASS on all five, and bill 1 is closed on the numeric path, by more
+than predicted.**
+
+- **13-8a: PASS.** All 9 classic cases are bit-identical, and so are all 6 PCNR DC cases.
+  The three PCNR transients keep their step counts, with max rel diff 1.4e-14 (rectifier),
+  6.2e-16 (mains) and 9.7e-20 (coupled).
+- **13-8b: PASS.** `Diode.G`/`Diode.i` calls during `P.solve_dc` are **0** on all six
+  circuits. Entry: 2 per device per iteration, 1680/1680 on 60 diodes.
+- **13-8c: PASS, and the prediction was wrong in the good direction.** `augmented_system`
+  now costs **0.65x** classic assembly (387 against 591 µs), down from 2.35x. I predicted
+  about 1.2x. The per-junction loop is cheap; what was being paid for was assembling 60
+  diodes twice. Per Newton iteration (`stage13_pcnr.py`, 60 diodes), PCNR is **772 µs
+  against 1081 µs for limiting, 29% cheaper**, where it was 1774 µs (+65%). So gate 13-4's
+  original "within 15% of classic" criterion, failed on 2026-08-02, now passes with room
+  to spare.
+- **13-8d: PASS, with the recorded limit.** `test_gate_13_8_skip_refuses_a_batched_class`
+  shows the refusal firing on a stubbed group map. It has not been run against real JAX,
+  which is not installed here.
+- **13-8e: PASS.** 957 passed, 11 skipped, 3 xfailed, 2 failed. The entry run on an export
+  of `586d6ce` was 948/11/3/2. The difference is exactly the 9 new tests. Both failures are
+  in `test_vectorized_stamping` and are `jax` not being installed, identical before and
+  after. (An earlier "entry" run was discarded: it overlapped the edits and the injection
+  runs, so it measured nothing in particular.)
+- **Injection.** Making the loops ignore `skip` turns 5 tests red, including both 13-8 tests
+  and 13-6's step-identity test. Adding `R` to the skip set turns 4 red.
+- **The new test found the effect it pins.** Its first version built the reference by
+  subtracting D2 from the full assembly. It failed at 8.9e-11 relative, because D1's
+  1.6e-20 S does not survive `(D1 + D2) - D2`. The reference is now stamped directly.
+- **Noticed, not acted on.** The PCNR transient still calls `Diode.i` 4498 times outside
+  `augmented_system`, for the `f` that `_solve_timestep_pcnr` returns at convergence. That
+  `f` is unpacked and never read (2+.2's note, rechecked: the later uses of `f` near
+  `solve_timestep`'s call site are f-strings). After 13-9 it is an honest value anyway.
+
+### Gate 13-9 — `Diode` reads `_vlim` only inside classic limiting
+
+**Work.** A classic-limiting scope, entered around the Newton solve by the three loops that
+call `cir.limit`: `DC._newton`, `Transient._newton`, and the classic branch of
+`_solve_coupled`. It propagates through `SubCircuit` like `reset_state` does, and it counts
+depth so that nesting cannot clear it early. Inside the scope `Diode` behaves exactly as
+today. Outside it, `G` and `i` evaluate at the node voltage and **do not write `_vlim`**.
+Leaving the scope does not touch `_vlim`, because the classic transient carries it across
+timesteps as the limiter's `vold`.
+
+**The prediction this rests on.** Outside the scope there are now honest evaluations where
+there used to be stale ones. Classic transients call `G` more often than `i` (14152 vs 9655
+on the rectifier), so there are calls outside the Newton loop: the step controller's
+Jacobian. Those calls are bit-identical only if `_vlim` equals the node voltage at a
+converged point. That should hold: a limited iterate moves by more than `2 VT` and cannot
+pass the `xdiff` test, `_pnjlim` returns `vnew` unchanged when it does not limit, and
+`I - g*0.0 == I`. **If 13-9c finds a difference, it is a finding to explain, not a
+threshold to widen.**
+
+- **13-9a (honest after classic DC).** On the mains rectifier after a classic DC op,
+  `cir.G(x)` at -18, -1, 0.3, 0.6 and 0.75 V equals `IS/VT exp(v/VT)`, to the bypass
+  tolerance. Entry: 3.87e-12 S everywhere.
+- **13-9b (honest after a PCNR transient).** The same at 0.7 V. Entry: rel err 1.000.
+- **13-9c (classic paths bit-identical).** All nine classic cases are bit-identical to the
+  entry snapshot, with the same `Diode.limit` counts.
+- **13-9d (PCNR paths unchanged).** All nine PCNR cases are identical to the 13-8 snapshot.
+  After 13-8, PCNR no longer reaches `Diode.G`/`i` through assembly, so nothing should move.
+- **13-9e (suite).**
+- **13-9f (NEW, found while auditing consumers before writing the code): PSS on a diode
+  circuit is a silent wrong answer today.** `PSS.solve_timestep` runs `analysis.fsolve`
+  with no limiter, so `Diode.limit` is never called. Every `G`/`i` evaluation in the solve
+  then sees the `_vlim` written by the first one, so the diode is a frozen linear companion
+  for the whole solve. Measured on the 5 V half-wave rectifier (`probes`, `pss`): **PSS
+  returns v(b) = 0.000000 V at every point**, and `Diode.G` saw exactly one `_vlim`, 0.0 V.
+  The steady state from a classic transient run 20 periods is **0.005 to 4.249 V**. The
+  rectifier's diode was effectively an open circuit. **Prediction after 13-9:** PSS sees the
+  real diode. Either its unlimited Newton converges, and the PSS maximum is within 5% of the
+  reference (Euler, 100 steps per period, so not tighter), or it fails loudly. Either outcome
+  replaces a silent wrong answer and is recorded as measured. Giving PSS the classic limiter
+  is **not** in 13-9's scope.
+  `taylor_coefficients` and `volterra` were checked and are unaffected. The first requires
+  `eval_i_pure`, and the second works symbolically, where the companion reduces to the same
+  expression.
+- **Injection.** Drop the scope from `DC._newton`: classic DC then sees an honest diode
+  while limiting only moves `_vlim`, so `current_driven` must change or fail. Then drop it
+  from `Transient._newton` the same way.
+
+OUTCOME (2026-11-16): **PASS. The one difference is explained to the bit, and a silent
+wrong answer in PSS is fixed as a side effect.**
+
+- **13-9a: PASS.** `cir.G(x)` after a classic DC op is **exact** (rel err 0.0) at -18, -1,
+  0.3, 0.6 and 0.75 V. Entry: 3.87e-12 S at all of them.
+- **13-9b: PASS.** Exact at 0.7 V after a PCNR transient. Entry: rel err 1.000.
+- **13-9c: PASS, after an explanation rather than a looser threshold.** 8 of 9 classic cases
+  are bit-identical with identical `G`/`i`/`limit` counts. `tran_classic_mains` keeps its
+  steps and counts but moves by **3.174e-14** relative. I instrumented every converged
+  classic Newton solve. On the mains rectifier (IS = 1e-13, `vc` = 0.6701 V), **1518 of 2671
+  converged solves leave `_vlim != v`**, by at most **1.285e-12 V**, and every one of them
+  has v > `vc` (the lowest is 0.6702 V). On the 5 V rectifier (`vc` = 0.7891 V) no converged
+  point exceeds `vc`, so there are 0 mismatches and the result is bit-identical. **The
+  cause:** this `_pnjlim` remaps *every* step above `vc`, because it lacks SPICE's
+  `|vnew - vold| > 2 VT` condition. So the last limit call of a converged solve returns
+  `vold + VT ln(1 + Δ/VT)`, not `vnew`. Before 13-9 the step controller's Jacobian was taken
+  at that point, up to 1.3e-12 V away from the solution it describes. Now it is taken at
+  the solution. The declared prediction ("`_pnjlim` returns `vnew` unchanged when it does
+  not limit") was true, but it missed that this port limits whenever v > `vc`. **The missing
+  `2 VT` condition is recorded, not fixed.** It is harmless at this size, and changing the
+  limiter is not this gate's job. **Reconsider if** a limiter change is ever made for
+  another reason. It is also a deviation from SPICE that a reader of `_pnjlim`'s docstring
+  would not expect.
+- **13-9d: PASS.** All 9 PCNR cases are bit-identical to the 13-8 snapshot.
+- **13-9e: PASS.** The same run as 13-8e, which covers both gates together.
+- **13-9f: PASS. PSS on a diode circuit now works.** The maximum is **4.248129 V** against a
+  4.248518 V reference (9.2e-5), and the minimum is 0.005109 V against 0.005258 V. Entry:
+  **0.000000 V**, with all 796 `Diode.G` calls seeing `_vlim = 0.0`; after, 0 of 1409 calls
+  see a `_vlim`. PSS's unlimited Newton converges on the real diode, so the alternative
+  outcome (failing loudly) did not occur. Pinned by
+  `test_analysis_shooting.py::test_pss_sees_the_real_diode`.
+- **Injection.** Each of the three scope sites, and the device change itself, was removed
+  in turn, and each is caught by an existing or new test:
+  - `DC._newton` → `test_continuation_cuts_the_work_and_not_the_answer` (no convergence,
+    even after gmin stepping);
+  - `Transient._newton` → `test_stress_charge_pump` (residual 2.9e28);
+  - the coupled path → `test_stress_charge_pump` (fails at t = 0);
+  - `Diode` always reading `_vlim` → `test_gate_13_9_cir_G_is_honest_after_a_classic_dc_op`.
+- **How the coupled path got its scope.** `fang_timestep` is now a thin wrapper that enters
+  the scope on the classic branch only (the same `junctions` condition the loop uses). The
+  body moved to `_fang_timestep`, which avoided re-indenting 350 lines.
+- **Not affected, checked:** `taylor_coefficients` (uses `eval_i_pure`), `volterra` (symbolic:
+  the companion reduces to the same expression), `Semiconductor`/BJT (state-free limiter,
+  no `_vlim`). A `Diode` wrapped in `CircuitProxy` was never limited, because the proxy does
+  not forward `limit`, and is now honest rather than frozen.
+
 ---
 
 ## Order and dependencies
