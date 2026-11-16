@@ -1354,8 +1354,11 @@ class SubCircuit(Circuit):
         return self._add_element_submatrices('G', x, (epar,), params_tree=params_tree,
                                              skip=skip)
 
-    def C(self, x, epar=defaultepar, params_tree=None):
-        return self._add_element_submatrices('C', x, (epar,), params_tree=params_tree)
+    def C(self, x, epar=defaultepar, params_tree=None, skip=None):
+        """Assembled capacitance matrix; ``skip`` as for :meth:`G` (STAGE 14-3:
+        PCNR moves a device's charge onto its own unknowns too)."""
+        return self._add_element_submatrices('C', x, (epar,), params_tree=params_tree,
+                                             skip=skip)
 
     def u(self, t=0.0, epar=defaultepar, analysis=None, params_tree=None):
         dtype = None
@@ -1377,8 +1380,10 @@ class SubCircuit(Circuit):
                                             skip=skip)
 
     #This seemed to be missing
-    def q(self, x, epar=defaultepar, params_tree=None):
-        return self._add_element_subvectors('q', x, (epar,), params_tree=params_tree)
+    def q(self, x, epar=defaultepar, params_tree=None, skip=None):
+        """Assembled charge vector; ``skip`` as for :meth:`G`."""
+        return self._add_element_subvectors('q', x, (epar,), params_tree=params_tree,
+                                            skip=skip)
 
     def limit(self, x, x0, epar=defaultepar):
         """Apply each element's Newton limiter and WRITE THE RESULT BACK.

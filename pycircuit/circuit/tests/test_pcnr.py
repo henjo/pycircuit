@@ -826,3 +826,171 @@ def test_gate_14_2_dc_with_pcnr_runs_pcnr_on_a_bjt_circuit():
     finally:
         P.augmented_system = real
     assert hits['n'] > 5
+
+
+## ---------------------------------------------------------------------------
+## STAGE 14-3 -- charge on the limited unknowns: a BJT transient under PCNR.
+##
+## The charge is evaluated where the current is, at the device's own unknowns:
+## `q`/`C` are assembled without it, its `q(v_lim)` is added back before
+## `get_diff`, and `alpha0 * dq/dv` joins its J_ml columns.  Entry: this
+## transient silently ran classic limiting (then, after 14-2, refused).
+## ---------------------------------------------------------------------------
+
+def _bjt_switch():
+    from pycircuit.circuit.elements import VPulse
+    from pycircuit.circuit.semiconductors import BJT
+    per = 1e-6
+    cir = SubCircuit(toolkit=numeric)
+    cir['VCC'] = VS('vcc', gnd, v=5.0)
+    cir['VB'] = VPulse('vb', gnd, v1=0.0, v2=0.9, td=per / 10, tr=per / 1000,
+                       tf=per / 1000, pw=per / 2, per=per)
+    cir['RB'] = R('vb', 'b', r=1e3)
+    cir['RC'] = R('vcc', 'c', r=1e3)
+    cir['Q1'] = BJT('c', 'b', gnd)
+    return cir
+
+
+def _bjt_run(pcnr, coupled=False):
+    import warnings
+    from pycircuit.circuit.transient import Transient
+    tran = Transient(_bjt_switch(), toolkit=numeric, reltol=1e-5, pcnr=pcnr)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = tran.solve(tend=1.6e-6, timestep=2.5e-9, coupled_lte=coupled)
+    w = res.v('c')
+    return (tran, np.asarray(w.x, dtype=float).ravel(),
+            np.asarray(w.y, dtype=float).ravel())
+
+
+def test_gate_14_3_pcnr_and_limiting_take_the_same_steps_on_a_bjt_switch():
+    """13-6's standard: the route to a converged solution must not change the
+    solution, so equal solutions give equal LTE and equal steps.  Measured: the
+    same 1136 accepted and 36 rejected steps, time points within 4.7e-10
+    relative, waveform within 1.1e-10."""
+    tc, t_c, y_c = _bjt_run(False)
+    tp, t_p, y_p = _bjt_run(True)
+    assert tp.statistics.accepted_steps == tc.statistics.accepted_steps
+    assert tp.statistics.rejected_steps == tc.statistics.rejected_steps
+    np.testing.assert_allclose(t_p, t_c, rtol=1e-8, atol=0)
+    assert np.max(np.abs(y_p - y_c)) / np.max(np.abs(y_c)) < 1e-6
+
+
+def test_gate_14_3_the_bjt_is_never_evaluated_at_node_voltages_under_pcnr():
+    """From the first PCNR timestep on (the DC operating point still limits
+    classically, as recorded at 13-7): no limiter, no node-voltage stamp."""
+    from pycircuit.circuit.semiconductors import BJT
+    from pycircuit.circuit.transient import Transient
+    names = ('limit', 'G', 'i', 'C', 'q')
+    calls = dict.fromkeys(names, 0)
+    real = {k: getattr(BJT, k) for k in names}
+    real_step = Transient._solve_timestep_pcnr
+    armed = {'on': False}
+
+    def step(self, *a, **k):
+        armed['on'] = True
+        return real_step(self, *a, **k)
+
+    def counted(name):
+        def spy(*a, **k):
+            if armed['on']:
+                calls[name] += 1
+            return real[name](*a, **k)
+        return spy
+    Transient._solve_timestep_pcnr = step
+    for k in names:
+        setattr(BJT, k, counted(k))
+    try:
+        _bjt_run(True)
+    finally:
+        Transient._solve_timestep_pcnr = real_step
+        for k in names:
+            setattr(BJT, k, real[k])
+    assert armed['on'], 'the PCNR timestep path never ran'
+    assert calls == dict.fromkeys(names, 0), calls
+
+
+def test_gate_14_3_controller_jacobian_is_the_residual_jacobian():
+    """Assert on the MATRIX (design study section 9): at converged time points
+    the Jacobian handed to the step controller must equal a central difference
+    of the full residual i(x) + iq(x) + u.  Measured worst 7.5e-10 over 40
+    points; a dropped `alpha0 * dq/dv` column is invisible to every waveform
+    test that agrees within truncation error, but not to this."""
+    from pycircuit.circuit.transient import Transient
+    real = Transient._solve_timestep_pcnr
+    worst = {'rel': 0.0, 'n': 0, 'seen': 0}
+
+    def spy(self, x0, t, *a, **k):
+        x, feval, J, f = real(self, x0, t, *a, **k)
+        worst['seen'] += 1
+        if worst['seen'] % 97 or worst['n'] >= 6:
+            return x, feval, J, f
+        cir, ep = self.cir, self.epar
+        h_last = getattr(self, '_dt_last', self._dt)
+
+        def F(xx):
+            q = np.asarray(cir.q(xx, ep), dtype=float)
+            iq, _g = self.active_integrator.compute_derivatives(
+                q_curr=q, C_curr=1.0, h_curr=self._dt, q_last=self._qlast,
+                iq_last=self._iqlast, h_last=h_last,
+                is_first_step=getattr(self, '_is_first_step', False),
+                toolkit=self.toolkit)
+            return (np.asarray(cir.i(xx, ep), dtype=float) + np.asarray(iq, dtype=float)
+                    + np.asarray(cir.u(t, ep, analysis=self.par.analysis), dtype=float))
+        xx = np.asarray(x, dtype=float)
+        n = len(xx)
+        FD = np.zeros((n, n))
+        for j in range(n):
+            dl = 1e-7 * max(1.0, abs(xx[j]))
+            xp, xm = xx.copy(), xx.copy()
+            xp[j] += dl
+            xm[j] -= dl
+            FD[:, j] = (F(xp) - F(xm)) / (2 * dl)
+        keep = [i for i in range(n) if i != self.irefnode]
+        Jr = np.asarray(J, dtype=float)[np.ix_(keep, keep)]
+        FDr = FD[np.ix_(keep, keep)]
+        worst['rel'] = max(worst['rel'], float(np.max(np.abs(Jr - FDr)) / np.max(np.abs(FDr))))
+        worst['n'] += 1
+        return x, feval, J, f
+    Transient._solve_timestep_pcnr = spy
+    try:
+        _bjt_run(True)
+    finally:
+        Transient._solve_timestep_pcnr = real
+    assert worst['n'] >= 6
+    assert worst['rel'] < 1e-6, worst
+
+
+def test_gate_14_3_pcnr_runs_on_the_coupled_path_with_a_bjt():
+    from pycircuit.circuit.semiconductors import BJT
+    hits = {'aug': 0, 'limit': 0}
+    ra, rl = P.augmented_system, BJT.limit
+
+    def sa(*a, **k):
+        hits['aug'] += 1
+        return ra(*a, **k)
+
+    def sl(*a, **k):
+        hits['limit'] += 1
+        return rl(*a, **k)
+    P.augmented_system, BJT.limit = sa, sl
+    try:
+        _tc, t_p, y_p = _bjt_run(True, coupled=True)
+    finally:
+        P.augmented_system, BJT.limit = ra, rl
+    assert hits['aug'] > 100
+    assert hits['limit'] < 10, 'the coupled loop is limiting classically'
+    _tc2, t_c, y_c = _bjt_run(False, coupled=True)
+    assert t_p[-1] == t_c[-1] == 1.6e-6
+    assert abs(y_p[-1] - y_c[-1]) < 1e-6
+
+
+def test_gate_14_3_a_caller_that_does_not_move_the_charge_is_refused():
+    """`augmented_system` with `J_extra` but no `charge_scale` on a charge-
+    storing PCNR device would leave its charge at the node voltages."""
+    c = _bjt_switch()
+    js = P.pcnr_junctions(c)
+    x = np.zeros(c.n)
+    v = np.zeros(len(js))
+    with pytest.raises(NotImplementedError, match='caller did not'):
+        P.augmented_system(c, x, v, js, defaultepar, J_extra=np.zeros((c.n, c.n)))

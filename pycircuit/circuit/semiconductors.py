@@ -211,6 +211,26 @@ class Semiconductor(Circuit):
                        dtype=float)
         return G @ M
 
+    ## STAGE 14-3 -- THE CHARGE, IN THE SAME COORDINATES.  A device that is
+    ## evaluated at its own unknowns must store its charge there too, or the
+    ## charge sits at the node voltage while the current sits at `v_lim`: the
+    ## inconsistency PCNR exists to remove, reintroduced through `q`.  Only for a
+    ## class with a charge model (`eval_q_pure`); `pcnr.has_charge` asks.
+    @classmethod
+    def pcnr_q(cls, v, params, epar, toolkit):
+        """Terminal charges as a function of the device's own unknowns."""
+        return cls.eval_q_pure(cls._pcnr_map() @ np.asarray(v, dtype=float),
+                               params, epar, toolkit)
+
+    @classmethod
+    def pcnr_dqdv(cls, v, params, epar, toolkit):
+        """Terminals x junctions: the capacitance, chained through the map."""
+        M = cls._pcnr_map()
+        x = M @ np.asarray(v, dtype=float)
+        C = np.asarray(toolkit.jacobian(cls.eval_q_pure, x, params, epar),
+                       dtype=float)
+        return C @ M
+
 class BJT(Semiconductor):
     """NPN Bipolar Junction Transistor (Ebers-Moll Level 1)"""
     terminals = ('c', 'b', 'e')

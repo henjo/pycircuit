@@ -583,6 +583,47 @@ class Transient(Analysis):
         self._effective_method = type(self.active_integrator).__name__
         return iq, geq
 
+    def _companion_scale(self, q):
+        """``alpha0`` in ``geq = alpha0 * C`` for the integrator `get_diff` just
+        used -- STAGE 14-3.
+
+        Every companion kernel is linear in ``C`` (Euler ``C/h``, trapezoidal
+        ``2C/h``, BDF-2 ``a0 C``) and pure, so calling the ACTIVE integrator
+        again with ``C = 1`` and `get_diff`'s own arguments reads the scale off.
+        Calling `get_diff` a second time instead would repeat its side effects
+        (the order-drop choice, `_iq`).  Must be called after `get_diff`.
+        """
+        h_last = getattr(self, '_dt_last', self._dt)
+        _iq, alpha0 = self.active_integrator.compute_derivatives(
+            q_curr=q, C_curr=1.0, h_curr=self._dt,
+            q_last=self._qlast, iq_last=self._iqlast, h_last=h_last,
+            is_first_step=getattr(self, '_is_first_step', False),
+            toolkit=self.toolkit)
+        return float(alpha0)
+
+    def _pcnr_charge_terms(self, x, v_lim, junctions):
+        """``(iq, Geq, alpha0)`` for a PCNR iterate ``(x, v_lim)`` -- STAGE 14-3.
+
+        ``q`` and ``C`` are assembled WITHOUT the PCNR devices, and each
+        charge-storing device's ``q(v_lim)`` is added back at its terminals, so the
+        companion current, the history and the LTE see one charge vector with each
+        device's charge where its current is.  ``Geq`` therefore holds only the
+        other elements; the devices' ``alpha0 * dq/dv`` goes into their ``J_ml``
+        columns, via `augmented_system`'s ``charge_scale``.  ``alpha0`` is None
+        when no device stores charge, which leaves a diode-only circuit exactly
+        as before.  The one home for this: both PCNR paths and the converged-point
+        Jacobian call it.
+        """
+        from pycircuit.circuit import pcnr as _pcnr
+        skip = frozenset(instance for instance, _e, _ra, _rb in junctions)
+        C = self.cir.C(x, self.epar, skip=skip)
+        q = np.array(self.cir.q(x, self.epar, skip=skip), dtype=float)
+        charged = _pcnr.device_charge(q, v_lim, junctions, self.epar)
+        self._q_cache = (x, q)
+        iq, Geq = self.get_diff(q, C)
+        alpha0 = self._companion_scale(q) if charged else None
+        return iq, Geq, alpha0
+
     
     
     def _opening_step(self, timestep):
@@ -998,17 +1039,14 @@ class Transient(Analysis):
         (N+1) extension too**, which reuses the same factors for ``dxh``.
         """
         from pycircuit.circuit import pcnr as _pcnr
-        C = self.cir.C(x, self.epar)
-        q = self.cir.q(x, self.epar)
-        self._q_cache = (x, q)
-        iq, Geq = self.get_diff(q, C)
+        iq, Geq, alpha0 = self._pcnr_charge_terms(x, v_lim, junctions)
         u = self.cir.u(t, self.epar, analysis=self.par.analysis)
         if provided_function is not None:
             u = u + provided_function(t)
         g_mna, g_lim, J_mm, J_ml, J_lm, didv = _pcnr.augmented_system(
             self.cir, x, v_lim, junctions, self.epar,
             u_extra=np.asarray(iq, dtype=float) + np.asarray(u, dtype=float),
-            dense_blocks=False, J_extra=Geq)
+            dense_blocks=False, J_extra=Geq, charge_scale=alpha0)
         f_eff, J_eff = _pcnr.schur_reduce(g_mna, g_lim, J_mm, J_ml, J_lm,
                                           junctions, didv)
         return (self.toolkit.array(f_eff, dtype=float),
@@ -1531,10 +1569,9 @@ class Transient(Analysis):
         feval = 0
 
         for _it in range(self.par.maxiter):
-            C = self.cir.C(x, self.epar)
-            q = self.cir.q(x, self.epar)
-            self._q_cache = (x, q)
-            iq, Geq = self.get_diff(q, C)
+            ## STAGE 14-3 -- the charge of a PCNR device is evaluated at its own
+            ## unknowns, like its current: see `_pcnr_charge_terms`.
+            iq, Geq, alpha0 = self._pcnr_charge_terms(x, v_lim, junctions)
             u = self.cir.u(t, self.epar, analysis=self.par.analysis)
             if provided_function is not None:
                 u = u + provided_function(t)
@@ -1542,7 +1579,7 @@ class Transient(Analysis):
             g_mna, g_lim, J_mm, J_ml, J_lm, didv = _pcnr.augmented_system(
                 self.cir, x, v_lim, junctions, self.epar,
                 u_extra=np.asarray(iq, dtype=float) + np.asarray(u, dtype=float),
-                dense_blocks=False, J_extra=Geq)
+                dense_blocks=False, J_extra=Geq, charge_scale=alpha0)
             feval += 1
 
             dx_mna, dx_lim = _pcnr.predict(g_mna, g_lim, J_mm, J_ml, J_lm,
@@ -1571,10 +1608,7 @@ class Transient(Analysis):
                 abs(dx_mna) < reltol * abs(x_new) + xtol))
             x, v_lim = x_new, v_new
             if done:
-                C = self.cir.C(x, self.epar)
-                q = self.cir.q(x, self.epar)
-                self._q_cache = (x, q)
-                iq, Geq = self.get_diff(q, C)
+                iq, Geq, alpha0 = self._pcnr_charge_terms(x, v_lim, junctions)
 
                 ## THE JACOBIAN HANDED TO THE STEP CONTROLLER MUST BE THE ONE
                 ## THIS PATH ACTUALLY SOLVED, and `cir.G(x) + Geq` is not it.
@@ -1597,16 +1631,24 @@ class Transient(Analysis):
                 ## part plus each junction's `didv` as a rank-one update.  At
                 ## convergence `v_lim == e_a - e_b`, so it is exactly the
                 ## Jacobian of the residual with respect to `x`.
+                ##
+                ## STAGE 14-3 -- and with a charge-storing device, its
+                ## `alpha0 * dq/dv` is part of that matrix: it rides in `didv2`.
                 _g2, _gl2, J_mm2, _Jml2, _Jlm2, didv2 = _pcnr.augmented_system(
                     self.cir, x, v_lim, junctions, self.epar,
                     u_extra=np.asarray(iq, dtype=float),
-                    dense_blocks=False, J_extra=Geq)
+                    dense_blocks=False, J_extra=Geq, charge_scale=alpha0)
                 J = np.array(J_mm2, dtype=float)
                 _pcnr.border_update(J, junctions, didv2)
                 J = self.toolkit.array(J, dtype=float)
+                ## The residual this path solved, not `cir.i(x) + ...`: that would
+                ## evaluate every PCNR device at the node voltages, which is what
+                ## this path exists not to do.  (Neither caller reads `f` -- see
+                ## 2+.2 -- so this moves no result.)
                 f = self.toolkit.array(
-                    self.cir.i(x, self.epar) + iq
-                    + self.cir.u(t, self.epar, analysis=self.par.analysis),
+                    np.asarray(_g2, dtype=float)
+                    + np.asarray(self.cir.u(t, self.epar, analysis=self.par.analysis),
+                                 dtype=float),
                     dtype=float)
                 return x, feval, J, f
 

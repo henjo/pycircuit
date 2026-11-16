@@ -137,13 +137,48 @@ def _params(element):
     return params
 
 
+def has_charge(element):
+    """STAGE 14-3 -- does this PCNR device store charge it can evaluate at its
+    own unknowns?  (A charge model in `eval_q_pure` and the `pcnr_q` form.)"""
+    return (hasattr(element, 'pcnr_q')
+            and getattr(type(element), 'eval_q_pure', None) is not None)
+
+
+def device_charge(q, v_lim, junctions, epar=defaultepar):
+    """Add each charge-storing PCNR device's ``q(v_lim)`` into ``q`` in place.
+
+    STAGE 14-3.  The caller assembles ``q`` WITHOUT the PCNR devices (``skip``)
+    and calls this before ``get_diff``, so the companion current, the history and
+    the LTE all see one charge vector -- with each device's charge where its
+    current is, at its own unknowns.  At convergence ``v_lim`` equals the branch
+    voltages and this is ``cir.q(x)``.  Returns whether any device had charge.
+    """
+    v_lim = np.asarray(v_lim, dtype=float)
+    charged = False
+    for _instance, element, rows, k0, k1 in pcnr_devices(junctions):
+        if not has_charge(element):
+            continue
+        qd = element.pcnr_q(v_lim[k0:k1], _params(element), epar, element.toolkit)
+        for r, val in zip(rows, np.asarray(qd, dtype=float).tolist()):
+            q[r] += val
+        charged = True
+    return charged
+
+
 def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
-                     u_extra=None, dense_blocks=True, J_extra=None):
+                     u_extra=None, dense_blocks=True, J_extra=None,
+                     charge_scale=None):
     """Residual and Jacobian blocks of the coupled ``[x_MNA ; x_lim]`` system.
 
     Returns ``(g_mna, g_lim, J_mm, J_ml, J_lm)``.  ``J_ll`` is not returned: it
     is the identity by construction, and materialising it would invite someone to
     use it.
+
+    ``charge_scale`` -- STAGE 14-3 -- is the integrator's ``alpha0`` in
+    ``geq = alpha0 * C``.  When given, each charge-storing device's
+    ``alpha0 * dq/dv`` joins its ``J_ml`` columns; the caller must then have built
+    ``J_extra`` from ``C`` assembled WITHOUT the PCNR devices, and their charge
+    into ``u_extra`` via :func:`device_charge`.
     """
     n = circuit.n
     k = len(junctions)
@@ -170,23 +205,26 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
         ## already has them and `get_diff` is not free.
         J_mm = J_mm + np.asarray(J_extra, dtype=float)
 
-    ## A participating device with charge storage would also contribute to
-    ## `iq`/`Geq`, and that contribution would have to move to its own unknown
-    ## too -- which is not implemented.  Refused rather than silently left in the
-    ## MNA block, where it would be evaluated at the node voltage while the
+    ## A participating device with charge storage contributes to `iq`/`Geq`, and
+    ## that contribution has to move to its own unknowns too.  With
+    ## `charge_scale` it does (below, STAGE 14-3).  Without it -- or for a device
+    ## that has charge but no `pcnr_q` -- it is REFUSED rather than silently left
+    ## in the MNA block, where it would be evaluated at the node voltage while the
     ## current is evaluated at `v_lim`: the exact inconsistency PCNR exists to
-    ## remove, reintroduced through the charge.  `skip` does not cover this: the
-    ## charge is assembled whole, by the caller, into `J_extra`.
+    ## remove, reintroduced through the charge.
     if J_extra is not None:
         nodemap = circuit.elementnodemap
         for instance in sorted(skip):
             element = circuit.elements[instance]
+            if has_charge(element) and charge_scale is not None:
+                continue
             Csub = np.asarray(element.C(x[nodemap[instance]], epar), dtype=float)
             if np.any(np.abs(Csub) > 0.0):
                 raise NotImplementedError(
                     '%r has charge storage and a PCNR junction; the charge term '
-                    'would also have to move to the limited unknown, which is '
-                    'not implemented' % instance)
+                    'would also have to move to the limited unknown, which %s'
+                    % (instance, 'this caller did not do' if has_charge(element)
+                       else 'this device cannot do (no pcnr_q)'))
 
     ## `dense_blocks=False` skips the (n,k) and (k,n) allocations entirely.
     ## `predict`'s sparse path never reads them -- each column of J_ml has one
@@ -219,6 +257,12 @@ def augmented_system(circuit, x, v_lim, junctions, epar=defaultepar,
             columns = (di.reshape(-1).tolist(),)
         else:
             columns = di.reshape(len(rows), k1 - k0).T.tolist()
+        if charge_scale is not None and J_extra is not None and has_charge(element):
+            ## STAGE 14-3 -- d(iq)/dv = alpha0 * dq/dv joins the current's column.
+            dq = np.asarray(element.pcnr_dqdv(v, params, epar, element.toolkit),
+                            dtype=float).reshape(len(rows), k1 - k0).T.tolist()
+            columns = [[a + charge_scale * b for a, b in zip(col, dcol)]
+                       for col, dcol in zip(columns, dq)]
         for local, vals in enumerate(columns):
             didv_list[k0 + local] = (rows, vals)
             if dense_blocks:

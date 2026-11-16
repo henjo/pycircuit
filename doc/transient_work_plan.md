@@ -6349,12 +6349,54 @@ The refusal stays for any device that has charge but provides no `pcnr_q`.
 - **Injections.** Drop the `alpha0 * dq/dv` column: 14-3a/b must go red. Drop the device's
   charge from `q`: 14-3a must go red.
 
+OUTCOME 14-3 (2026-11-16): **PASS on all six.**
+- **14-3a: PASS.** On the BJT switching stage, PCNR and classic limiting take **the same 1136
+  accepted and 36 rejected steps**. Time points agree within **3.1e-16 s** (4.7e-10
+  relative; 96 of 1136 are bit-equal), and the waveform within **1.1e-10**.
+- **14-3b: PASS.** The controller Jacobian matches a central difference of the full residual
+  `i(x) + iq(x) + u`, with every device at the node voltages, within **7.5e-10** over 40
+  converged points.
+- **14-3c: PASS.** From the first PCNR timestep on, `BJT.limit`, `BJT.G`, `BJT.i`, `BJT.C`
+  and `BJT.q` are each called **0** times. The unused `f` the converged block returns is now
+  built from the PCNR residual, not `cir.i(x)`, which would have evaluated the BJT at the
+  node voltages.
+- **14-3d: PASS.** On the coupled path, PCNR runs (3890 PCNR assemblies, and `BJT.limit`
+  called 3 times, all in the DC operating point). Against a reltol 1e-8 standard-path
+  reference (18712 steps), its error equals the classic coupled run's to five figures:
+  max 1.1523e-2 V, median 3.501e-4 V. The two Newton counts are also identical (3890).
+  That is not a bypass, as the call counts show. On this circuit no per-iteration junction
+  step exceeds 2 VT, so neither limiter changes a Newton step, and both iterate on the same
+  equations.
+- **14-3e: PASS.** All 25 snapshot cases are bit-identical to 14-1. A diode stores no charge,
+  so `alpha0` is None and nothing new runs.
+- **14-3f: PASS.** System python3: **975 passed, 18 skipped, 3 xfailed, 2 failed**, the
+  `jax`-absent pair, against 960/14/3/2 before stage 14. Repo `.venv`: **998 passed,
+  7 skipped, 3 xfailed, 0 failed**, plus the 4 uncollectable `cds` modules, against 979.
+  The deltas are exactly stage 14's 19 tests, four of which are autodiff tests that skip
+  without JAX.
+- **Injections: PASS.** Dropping the `alpha0 * dq/dv` column, or the device's charge from `q`,
+  turns 4 of the 5 tests red and the run collapses: the timestep shrinks below 1e-18 s. The
+  fifth is the refusal test, which neither touches.
+
 ## Gate 14-4 — records
 
 `pcnr_limiting.rst` and the design study's §6 table say what a BJT now does under PCNR, and
 what it still does not.
 
-OUTCOME:
+OUTCOME 14-4 (2026-11-16): **DONE.**
+- `pcnr_limiting.rst` has a "Which devices take part" section: what joins and how, what
+  happens to charge, and what does not take part (JFET and Varactor are unlimited under
+  `pcnr=True`; the DC operating point is still classic). The doc build shows the same six
+  environmental warnings as before, none from this page.
+- In the design study, the §6 table's BJT row is updated. §6(b) records the outcome, and a
+  correction to (a): `schur_reduce` was not alone in hardcoding a two-terminal column; the
+  13-6 controller-Jacobian site did too.
+
+**Found along the way, not fixed in this stage.** The standard PCNR path never adds to
+`statistics.newton_iterations`, so the statistic reads 0. A statistic that is silently zero
+is the class the coupled path's comment calls worse than an absent one. It is fixed
+separately, so that 14-3e's bit-identity comparison, which includes the counts, is not
+mixed up with it.
 
 ---
 

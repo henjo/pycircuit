@@ -167,5 +167,120 @@ def Gx_jax(builder):
         cm.default_toolkit = saved
 
 
+def _tran(pcnr, coupled=False, reltol=1e-5, build=None):
+    t = Transient((build or Gx.switching_stage)(), toolkit=numeric, reltol=reltol, pcnr=pcnr)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = t.solve(tend=1.6e-6, timestep=2.5e-9, coupled_lte=coupled)
+    w = res.v('c')
+    s = t.statistics
+    return (np.asarray(w.x, float).ravel(), np.asarray(w.y, float).ravel(),
+            (s.accepted_steps, s.rejected_steps, s.newton_iterations))
+
+
+def tran():
+    """14-3a (13-6's standard) and 14-3c."""
+    tc, yc, nc = _tran(False)
+    names = ('limit', 'G', 'i', 'C', 'q')
+    calls = dict.fromkeys(names, 0)
+    real_m = {k: getattr(BJT, k) for k in names}
+    real_step = Transient._solve_timestep_pcnr
+    armed = {'on': False}
+
+    def step(self, *a, **k):
+        armed['on'] = True
+        return real_step(self, *a, **k)
+
+    def counted(name):
+        def spy(*a, **k):
+            if armed['on']:
+                calls[name] += 1
+            return real_m[name](*a, **k)
+        return spy
+    Transient._solve_timestep_pcnr = step
+    for k in names:
+        setattr(BJT, k, counted(k))
+    try:
+        tp, yp, np_ = _tran(True)
+    finally:
+        Transient._solve_timestep_pcnr = real_step
+        for k in names:
+            setattr(BJT, k, real_m[k])
+    print('BJT switch, standard path: classic accepted/rejected/newton %s | PCNR %s' % (nc, np_))
+    if tc.shape == tp.shape and np.array_equal(tc, tp):
+        d = float(np.max(np.abs(yc - yp)) / np.max(np.abs(yc)))
+        print('  identical time grids; waveform max rel diff %.3e' % d)
+    else:
+        d = float(np.max(np.abs(np.interp(tc, tp, yp) - yc)) / np.max(np.abs(yc)))
+        print('  grids DIFFER (%d vs %d points); interpolated max rel diff %.3e'
+              % (tc.size, tp.size, d))
+    print('  BJT calls from the first PCNR timestep on: %s' % calls)
+
+
+def jacobian(samples=40):
+    """14-3b: the controller Jacobian against a central difference of the full
+    transient residual F(x) = i(x) + iq(x) + u(t), with every device evaluated
+    at the node voltages -- which at convergence is where v_lim is."""
+    real = Transient._solve_timestep_pcnr
+    worst = {'rel': 0.0, 'n': 0, 'seen': 0}
+
+    def spy(self, x0, t, *a, **k):
+        x, feval, J, f = real(self, x0, t, *a, **k)
+        worst['seen'] += 1
+        if worst['seen'] % 7 or worst['n'] >= samples:
+            return x, feval, J, f
+        cir, ep = self.cir, self.epar
+        h_last = getattr(self, '_dt_last', self._dt)
+
+        def F(xx):
+            q = np.asarray(cir.q(xx, ep), float)
+            iq, _g = self.active_integrator.compute_derivatives(
+                q_curr=q, C_curr=1.0, h_curr=self._dt, q_last=self._qlast,
+                iq_last=self._iqlast, h_last=h_last,
+                is_first_step=getattr(self, '_is_first_step', False),
+                toolkit=self.toolkit)
+            return (np.asarray(cir.i(xx, ep), float) + np.asarray(iq, float)
+                    + np.asarray(cir.u(t, ep, analysis=self.par.analysis), float))
+        xx = np.asarray(x, float)
+        n = len(xx)
+        FD = np.zeros((n, n))
+        for j in range(n):
+            dl = 1e-7 * max(1.0, abs(xx[j]))
+            xp, xm = xx.copy(), xx.copy()
+            xp[j] += dl
+            xm[j] -= dl
+            FD[:, j] = (F(xp) - F(xm)) / (2 * dl)
+        keep = [i for i in range(n) if i != self.irefnode]
+        Jr = np.asarray(J, float)[np.ix_(keep, keep)]
+        FDr = FD[np.ix_(keep, keep)]
+        rel = float(np.max(np.abs(Jr - FDr)) / np.max(np.abs(FDr)))
+        worst['rel'] = max(worst['rel'], rel)
+        worst['n'] += 1
+        return x, feval, J, f
+    Transient._solve_timestep_pcnr = spy
+    try:
+        _tran(True)
+    finally:
+        Transient._solve_timestep_pcnr = real
+    print('controller Jacobian vs central difference of the residual: worst rel %.3e over '
+          '%d converged time points' % (worst['rel'], worst['n']))
+
+
+def coupled():
+    """14-3d: both coupled runs against a tight standard-path reference."""
+    tr, yr, nr = _tran(False, reltol=1e-8)
+    print('reference (standard, reltol 1e-8): %d accepted steps' % nr[0])
+    for label, pc in (('classic', False), ('PCNR', True)):
+        try:
+            t, y, n = _tran(pc, coupled=True)
+        except Exception as e:  # noqa: BLE001
+            print('coupled %-7s FAILED %s: %s' % (label, type(e).__name__, str(e)[:100]))
+            continue
+        e = np.abs(y - np.interp(t, tr, yr))
+        print('coupled %-7s steps %s | max err %.4e V | median err %.3e V | last t - tend %+.1e'
+              % (label, n, float(e.max()), float(np.median(e)), t[-1] - 1.6e-6))
+
+
 if __name__ == '__main__':
-    {'matrix': matrix, 'dc': dc, 'jax': jax}[sys.argv[1]]()
+    {'matrix': matrix, 'dc': dc, 'jax': jax, 'tran': tran, 'jacobian': jacobian,
+     'coupled': coupled}[sys.argv[1]]()

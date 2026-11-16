@@ -71,6 +71,38 @@ default**:
    because the ``lim/lim`` block is the identity, so the linear system actually
    solved stays the size of the original MNA system.
 
+Which devices take part
+=======================
+
+``Diode`` and ``BJT`` (stage 14). A device opts in by declaring
+``pcnr_junctions``, a list of ``(anode, cathode)`` terminal pairs. Each pair
+becomes one of the device's own unknowns, and the device is evaluated entirely at
+them: its current, its Jacobian and its charge.
+
+A BJT has two such unknowns, ``v_be`` and ``v_bc``. Its currents depend on both, so
+PCNR evaluates a device once per iteration from the vector of its unknowns, and
+each one's column in the enlarged Jacobian has an entry on every terminal (three,
+not two). Any ``Semiconductor`` gets this from its own ``eval_i_pure`` and
+``eval_q_pure``, provided its junction pairs form a spanning tree over its
+terminals. The terminal voltages are then rebuilt from the unknowns, and the model
+is still written once. A declaration that is not a spanning tree is refused when
+the junctions are discovered.
+
+**Charge.** In transient, a participating device's charge is evaluated where its
+current is, at its own unknowns. Otherwise the charge would sit at the node
+voltage while the current sits at ``v_lim``, which is the inconsistency PCNR
+exists to remove. The rest of the circuit's charge is assembled without the
+device, the device's ``q(v_lim)`` is added back before the integrator sees it,
+and its ``alpha0 * dq/dv`` joins its Jacobian column (``geq = alpha0 * C`` for
+every integrator). On a BJT switching stage, PCNR and classic limiting take the
+same 1136 accepted and 36 rejected steps. The Jacobian given to the step
+controller matches a finite difference of the full transient residual to 7.5e-10.
+
+**What does not take part, and what that means.** ``JFET`` and ``Varactor`` have
+classic limiters but no PCNR junctions. Under ``pcnr=True`` they are not limited
+at all, and the same holds for any device without ``pcnr_junctions``. The
+transient's own DC operating point still uses classic limiting.
+
 What PCNR removes, stated correctly
 ===================================
 

@@ -372,7 +372,7 @@ Native support needs this from **every** nonlinear device. The current inventory
 | device | file | has `pcnr_*` | junctions | charge |
 |---|---|---|---|---|
 | `Diode` | elements.py | **yes** | 1 | no |
-| `BJT` | semiconductors.py | no | 2 (B-E, B-C) | yes |
+| `BJT` | semiconductors.py | **yes, since stage 14** (generic `Semiconductor` adapter) | 2 (B-E, B-C) | yes — on its own unknowns, since 14-3 |
 | `JFET` | semiconductors.py | no | 2 | yes |
 | `ZenerDiode` | semiconductors.py | no | 0 *(deliberate)* | no |
 | `Varactor` | semiconductors.py | no | — | yes |
@@ -439,6 +439,15 @@ both junction voltages, so it needs a device-level function of its junction vect
 terminals x junctions Jacobian. `schur_reduce`, `predict` and the `dx_lim` back-substitution
 all hardcode a two-terminal column. **About three to five days.** Nothing on record shows a
 BJT circuit that needs PCNR to converge, which is this document's own reconsider-if.
+
+*Outcome, 2026-11-16.* The maintainer chose **Route B**, and it is done as stage 14
+(`doc/transient_work_plan.md`). 14-1 introduced the device-level representation; 14-2 the
+spanning-tree adapter and BJT in DC; 14-3 charge on the limited unknowns. The costing held
+in shape: the charge mechanism was as small as this section said, and the multi-junction
+generalisation was where the work went. **(a)'s claim needs one correction:** `J_ml`'s
+column for a BJT junction has three nonzeros, as stated, but it is not `schur_reduce`
+alone that hardcoded two. So did the 13-6 controller-Jacobian site, and both now call one
+`border_update`.
 
 *Recommendation, if PCNR is to be extended at all:* **A first.** It delivers the charge
 mechanism that B would reuse, at a size that can be gated. Do B only on demand. The case for
