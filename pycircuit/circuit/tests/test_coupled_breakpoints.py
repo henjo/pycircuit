@@ -222,3 +222,73 @@ def test_the_standard_paths_own_controller_is_not_mistaken_for_an_injection():
         warnings.simplefilter('ignore')
         res = tran.solve(tend=2e-4, timestep=1e-5, coupled_lte=True)
     assert len(np.asarray(res.v('b').x, dtype=float).ravel()) > 10
+
+
+## ---------------------------------------------------------------------------
+## GATE 12-6 -- the step `fang_timestep` SOLVES for must not cross the next event.
+##
+## Gate 12-4's `hold_h` covers a step truncated onto an edge at entry.  A step
+## that was not truncated could still GROW across one, because the solver's own
+## ceiling is relative to the step's entry size, never to where the next event
+## is.  Found when `test_stress_deep_forward_clipper` failed under gate 13-10:
+## the coupled path's last point lay PAST `tend` on 4 of 5 circuits (up to
+## 9.05e-4 of `tend`), so its "final value" was taken at a different time from
+## the standard path's.
+## ---------------------------------------------------------------------------
+
+def test_gate_12_6_the_coupled_path_ends_exactly_at_tend():
+    """Entry: the 5 V rectifier's coupled run ended 1.81e-6 s past 2 ms."""
+    from pycircuit.circuit.elements import VSin, Diode
+    c = SubCircuit()
+    c['vs'] = VSin('a', gnd, va=5.0, freq=1e3)
+    c['D'] = Diode('a', 'b', IS=1e-15)
+    c['R'] = R('b', gnd, r=1e3)
+    c['C'] = C('b', gnd, c=1e-7)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(c, toolkit=numeric).solve(tend=2e-3, timestep=1e-5,
+                                                  coupled_lte=True)
+    t = np.asarray(res.sweep_values, dtype=float).ravel()
+    assert t[-1] == 2e-3, 'last point at %r, %g s from tend' % (t[-1], t[-1] - 2e-3)
+    assert np.all(t <= 2e-3)
+
+
+def _fast_pulsed_rc():
+    c = SubCircuit()
+    c['vs'] = VPulse('a', gnd, v1=0.0, v2=1.0, td=1e-6, tr=1e-8, tf=1e-8,
+                     pw=3e-6, per=7e-6)
+    c['R'] = R('a', 'b', r=1e3)
+    c['C'] = C('b', gnd, c=1e-9)
+    return c
+
+
+def test_gate_12_6_a_grown_step_cannot_cross_an_edge():
+    """Entry: this LINEAR circuit failed to converge on the coupled path at
+    t = 1.01435e-6 s, just past the end of the first rise, with `h` collapsed to
+    1.3e-13 s.  It must now converge, place a point on every edge, and agree with
+    the standard path."""
+    tend = 40e-6
+    edges, t0 = [], 0.0
+    probe = _fast_pulsed_rc()
+    while True:
+        nb = probe.next_event(t0)
+        if nb is None or not np.isfinite(nb) or nb > tend:
+            break
+        edges.append(nb)
+        t0 = nb * (1 + 1e-12) + 1e-18
+    assert len(edges) > 20
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r_cpl = Transient(_fast_pulsed_rc(), toolkit=numeric, reltol=1e-5).solve(
+            tend=tend, timestep=1e-6, coupled_lte=True)
+        r_std = Transient(_fast_pulsed_rc(), toolkit=numeric, reltol=1e-5).solve(
+            tend=tend, timestep=1e-6, coupled_lte=False)
+    tc = np.asarray(r_cpl.v('b').x, dtype=float).ravel()
+    vc = np.asarray(r_cpl.v('b').y, dtype=float).ravel()
+    for e in edges:
+        assert float(np.min(np.abs(tc - e))) < 1e-12 * max(e, 1e-12), 'jumped %g' % e
+    assert tc[-1] == tend
+    ts = np.asarray(r_std.v('b').x, dtype=float).ravel()
+    vs = np.asarray(r_std.v('b').y, dtype=float).ravel()
+    ## Median, for the reason given in the gate 12-4 waveform test above.
+    assert float(np.median(np.abs(np.interp(ts, tc, vc) - vs))) < 5e-3

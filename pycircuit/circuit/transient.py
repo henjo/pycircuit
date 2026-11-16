@@ -2328,6 +2328,18 @@ class Transient(Analysis):
             if t + h > tend:
                 h = tend - t
 
+            ## GATE 12-6 -- THE STEP `fang_timestep` SOLVES FOR MUST NOT CROSS THE
+            ## NEXT EVENT.  Its own ceiling is `min(max_step, h_entry * growth)`:
+            ## relative to where the step started, never to where the next
+            ## breakpoint or `tend` is.  `hold_h` covers a step truncated onto an
+            ## event at entry; a step that was NOT truncated could still grow
+            ## across one.  Measured before this: the coupled path ended up to
+            ## 9.05e-4 of `tend` PAST `tend` on 4 of 5 circuits, and jumped 2 of 20
+            ## breakpoints on a charge pump.  `t_b - t` is exact for
+            ## `t >= t_b/2`, so a step clamped here lands ON the event.
+            t_event = min(next_t_break, tend)
+            step_cap = min(max_step, t_event - t)
+
             ## Co-determine (x, h): converge the circuit at h_curr, evaluate the
             ## LTE, and while it is above the band shrink the step (Gear-predicted
             ## by the controller) and re-solve.
@@ -2373,7 +2385,7 @@ class Transient(Analysis):
                         gamma_max=(self.par.lte_gamma_max
                                    if self.par.lte_gamma_max != 1.0 else 3.0),
                         eta=self.par.lte_eta or 0.15,
-                        hmin=minstep, max_step=max_step)
+                        hmin=minstep, max_step=step_cap)
                 except NoConvergenceError:
                     ## A device that cannot be evaluated at this step is the same
                     ## situation as a Newton that will not converge, and gets the
@@ -2406,6 +2418,12 @@ class Transient(Analysis):
                     "standard adaptive controller on this circuit."
                     % (t, h_curr, MAX_LTE_ITERS))
 
+            ## GATE 12-6 -- a step the cap brought exactly onto a breakpoint is a
+            ## breakpoint step, whether or not it was truncated at entry: the next
+            ## step must drop order across the discontinuity, as it would have.
+            if not was_break_step and next_t_break < tend and \
+                    t + h_curr >= next_t_break:
+                was_break_step = True
             t += h_curr
             self.statistics.accepted_steps += 1
             self.statistics._note_step(h_curr)
