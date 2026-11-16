@@ -31,11 +31,24 @@ def _pnjlim(vnew, vold, VT, IS, toolkit):
     Above it the update is compressed logarithmically, which is what bounds the
     step without changing where the solution is -- the limiter only moves the
     point the next Jacobian is taken at, never the equations.
+
+    STAGE 13-10 -- AND ONLY WHEN THE STEP EXCEEDS 2 VT, as SPICE does
+    (ngspice-47 `devsup.c:54`: `(vnew > vcrit) && (fabs(vnew - vold) > (vt + vt))`).
+    Without that condition every step above `vc` was compressed however small:
+    a 20 mV step at 0.74 V came out as 14.85 mV, holding Newton back exactly
+    where it was about to converge, and a converged solve could leave the
+    device's linearisation point 1e-12 V off its node voltage (gate 13-9c).
+
+    Only the condition is taken from ngspice-47.  Its compression has since
+    become `vold + vt*(2 + log(arg - 2))` (`devsup.c:58`), which steps BACKWARDS
+    for a forward request just above 2 VT (2.01 VT -> -2.6 VT); the classic
+    `vold + VT ln(1 + dv/VT)` is kept.  Its negative-voltage limiting is not
+    adopted either.
     """
     if IS <= 0.0:
         return vnew
     vc = VT * toolkit.log(VT / (IS * 1.414213562))
-    if vnew > vc and vnew > 0.0:
+    if vnew > vc and vnew > 0.0 and abs(vnew - vold) > 2.0 * VT:
         if vold > 0.0:
             arg = 1.0 + (vnew - vold) / VT
             return vold + VT * toolkit.log(arg) if arg > 0.0 else vc

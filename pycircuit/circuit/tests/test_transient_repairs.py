@@ -2557,3 +2557,44 @@ def test_resample_reproduces_a_quadratic_exactly():
     g, v = resample_uniform(t, quad(t), npoints=37)
     assert np.abs(v - quad(g)).max() < 1e-12, \
         'not exact for a quadratic: max err %.3e' % np.abs(v - quad(g)).max()
+
+
+# ---------------------------------------------------------------------------
+# Gate 13-10 -- `_pnjlim` limits only steps larger than 2 VT, as SPICE does
+# (ngspice-47 devsup.c:54).  Without the condition every step above `vc` was
+# compressed, however small, and a converged solve could leave the device's
+# linearisation point 1e-12 V off its node voltage (gate 13-9c).
+# ---------------------------------------------------------------------------
+
+def test_gate_13_10_pnjlim_leaves_steps_within_2vt_alone():
+    from pycircuit.circuit._limiting import _pnjlim
+    from pycircuit.circuit.circuit import defaultepar
+    VT = numeric.kboltzmann * defaultepar.T / numeric.qelectron
+    IS = 1e-14
+    vc = VT * np.log(VT / (IS * 1.414213562))
+    for vold in (vc - 0.01, vc + 0.01):
+        for dv in (0.001, 0.02, 0.05):
+            assert dv <= 2 * VT
+            assert _pnjlim(vold + dv, vold, VT, IS, numeric) == vold + dv, (vold, dv)
+    ## Beyond 2 VT the classic compression applies, unchanged.
+    vold = vc + 0.01
+    assert _pnjlim(vold + 0.2, vold, VT, IS, numeric) == \
+        pytest.approx(vold + VT * np.log(1 + 0.2 / VT), rel=1e-15)
+
+
+def test_gate_13_10_a_converged_solve_leaves_the_diode_at_its_node_voltage():
+    """1 A into a diode settles at ~0.83 V, above `vc` (0.67 V at IS = 1e-13).
+    Before 13-10 the last limit call still compressed its sub-microvolt step, so
+    `_vlim` -- the point the converged Jacobian is taken at -- missed the answer."""
+    import warnings as _w
+    from pycircuit.circuit.elements import IS as ISrc, Diode
+    from pycircuit.circuit.dcanalysis import DC
+    c = SubCircuit()
+    c['is'] = ISrc(gnd, 1, i=1.0)
+    c['D1'] = Diode(1, gnd)
+    with _w.catch_warnings():
+        _w.simplefilter('ignore')
+        res = DC(c, toolkit=numeric).solve()
+    v = float(res.v(1))
+    assert v > 0.67
+    assert float(c['D1']._vlim) == v
