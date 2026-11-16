@@ -5534,7 +5534,15 @@ consequence I predicted from it is not, on this circuit.
 asserting an implementation that does not exist, whatever else happens in this stage. A
 documented-but-absent feature is the same class of defect as a silent wrong answer — this is
 the second one found in this project, after the Fang citation in `_solve_coupled`.
-OUTCOME:
+OUTCOME: **MET in `261cbdc`** (2026-08-02). This line was left blank when the gate was met
+and is filled in on 2026-11-16 from that commit. The page was rewritten to describe classic
+`pnjlim`, with a note saying what it used to claim and why that was false. None of its three
+specifics held: there were no extra unknowns for limited quantities, no
+prediction/correction split, and the only Schur-complement code in the tree was
+`SchurCoupledNewton`, which solves for the time step (Fang) and has nothing to do with
+limiting. 13-3 to 13-7 later made PCNR real, and the page was updated to match. `8048e42`
+then retired a second false claim from it: that `Diode.G` and `Diode.i` are taken at
+different points.
 
 **Gate 13-2 (one convention, not two).** `Diode` and `Semiconductor` must limit through the
 same mechanism. Declared: the state-free form, because private per-device state cannot cross

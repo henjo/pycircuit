@@ -11,8 +11,16 @@ This is the reasoning document, not a plan. It is written to be argued with.
 names are the durable part. Every measured number below names the script that
 produces it, so it can be re-measured rather than trusted:
 `benchmarks/transient_review/companion_consistency.py` (§2),
-`benchmarks/transient_review/stage13_pcnr.py` (§4 bill 1), and the gate 13-6
-instrumentation recorded in `doc/transient_work_plan.md` (§4 bill 2).
+`benchmarks/transient_review/stage13_pcnr.py` (§4 bill 1), the gate 13-6
+instrumentation recorded in `doc/transient_work_plan.md` (§4 bill 2), and
+`benchmarks/transient_review/pcnr_narrow_fix.py` (the §5 correction).
+
+**Corrected 2026-11-16.** The narrow fix in §5 was recommended here as an
+independent, hours-sized change to do first. Measured, it breaks PCNR on its own.
+It is only safe together with Design A (or at least the part of A that keeps the
+PCNR devices out of `augmented_system`'s ordinary assembly). §4, §5 and §8 carry
+the correction where the original claims were made. The original text is kept
+so the reasoning that failed stays visible.
 
 ---
 
@@ -190,6 +198,16 @@ and every converged voltage is right. **The correctness of the solve does not
 depend on `_vlim` being meaningful; it depends only on the two calls agreeing.**
 Nothing in the solve can therefore detect that it is garbage.
 
+> **Corrected 2026-11-16: true in exact arithmetic only.** In floating point the
+> solve also depends on the agreed value staying *small* next to the rest of the
+> row, and the stale `_vlim` is what keeps it small. The diode's companion is
+> affine in the node voltage, with slope `g(_vlim)`, and `_vlim` is
+> frozen near 0 V, so the term that is added and subtracted again is about 1e-13 A
+> on the rectifiers. PCNR does not limit node voltages, and on a 1 A source the
+> node reaches 2.58e11 V on the first predict. Today the frozen companion turns
+> that into 1 A. An honest diode turns it into `exp` overflow. So the garbage
+> is load-bearing: it is the reason the subtraction is harmless. See §5.
+
 The consequence is that **`cir.G(x)` on the PCNR path is not a Jacobian. It is
 half of an expression** — and it has the type, shape and plausible magnitude of a
 Jacobian, which is what makes it dangerous. It escaped through the one consumer
@@ -274,6 +292,47 @@ contract, and it makes `cir.G(x)` an honest Jacobian for every caller.
 hazard that has actually cost debugging time.** It does nothing for bill 1.
 *(This argument is static reasoning about the cancellation; it has not been
 implemented or measured.)*
+
+#### CORRECTION, 2026-11-16: refuted by measurement. It is not independent of Design A
+
+The flaw is the sentence "the cancellation in `augmented_system` is invariant to
+what `G` returns provided both calls agree." Under the narrow fix, every PCNR
+assembly is outside classic limiting. So `cir.i(x)` / `cir.G(x)` would evaluate
+the diode honestly at the **node** voltage, and PCNR never bounds node voltages.
+It bounds only each device's own unknown, in `refine`. The diode term that is
+added and subtracted again is then the true device current at an unlimited
+voltage.
+
+Measured by `benchmarks/transient_review/pcnr_narrow_fix.py` on the tree at
+`8048e42`. It switches the diode to node-voltage evaluation inside every
+`augmented_system` call and records what is cancelled:
+
+| circuit (PCNR) | largest node voltage seen | cancelled diode current, today | under the narrow fix | outcome under the narrow fix |
+|---|---|---|---|---|
+| DC, 1 A into a diode | 2.58e11 V | 1 A | **inf** | **199 of 200 assemblies non-finite; no convergence** (today: 4 iterations) |
+| DC, fig1 two diodes | 1.0 V | 3.9e-8 A | 6.4e7 A | same answer, 5.6e-17 |
+| tran, 5 V rectifier | 0.79 V | 2.0e-13 A | 0.020 A | same 4453 steps, 7.3e-12 |
+| tran, mains rectifier | 0.75 V | 7.1e-11 A | 0.40 A | same 2629 steps, 1.9e-13 |
+| coupled, 5 V rectifier | 0.76 V | 2.0e-13 A | 0.0052 A | same 2301 steps, 5.2e-17 |
+
+The first row is decisive. The first predict on a 1 A source pushes 1 A through
+the diode's off-conductance `IS/VT = 3.9e-12 S`, which is exactly the overshoot
+PCNR exists to absorb. Today the frozen companion is affine and turns 2.6e11 V
+into 1 A. The narrow fix overflows `exp`, and inf − inf = nan. The other rows
+converge, but only because the rounding happened to be small: in fig1 the
+cancellation runs through terms 6e10 times the current being solved for.
+
+**What survives.** The hazard is real and the goal is right. What is wrong is the
+dependency claim. The narrow fix is safe only once `augmented_system` stops
+putting the PCNR devices through `cir.i`/`cir.G` at all, which is the core of
+Design A. It also makes A smaller than §5 estimated, for this use: PCNR assembles
+through numpy only (`np.array(circuit.G(...))`), and `NumericToolkit` batches
+nothing (`evaluation_groups` returns `{}`), so every element goes through the
+per-element loop in `_add_element_submatrices`/`_add_element_subvectors`. A skip
+set that covers that loop, and refuses when a skipped instance belongs to a
+batched group, is enough for PCNR. The batched/JAX threading that made A "days"
+can wait until something needs it. *(The size of that numeric-only skip is a
+reading of the code. It has not been implemented.)*
 
 ---
 
@@ -391,6 +450,24 @@ test in gate 13-7 needs a different probe.
 
 ## 8. Recommendation
 
+> **Corrected 2026-11-16.** The recommendation below, "do the narrow fix now", is
+> **withdrawn**. The bills are **not** independent. The narrow fix on its own
+> stops PCNR converging on a 1 A diode (§5 correction). The corrected ordering is:
+>
+> | what hurts | the fix | size |
+> |---|---|---|
+> | bill 2 (wrong Jacobian to other callers) | numeric-only skip set in `augmented_system`, **then** the narrow fix | the skip is a loop guard plus a refusal; the narrow fix needs a "classic limiting active" scope that does not exist yet |
+> | bill 1 (assembly cost) | the same skip set | the PCNR devices stop being assembled twice |
+> | the batched/JAX path | full Design A | still days; nothing needs it yet |
+>
+> So the skip comes first, and it pays part of bill 1 as a side effect. The
+> narrow fix also needs a way to say when classic limiting is active, which the
+> original text took for granted. It does not exist. The candidate is a scope
+> entered by the three Newton loops that call `cir.limit` (DC `_newton`,
+> transient `_newton`, the classic coupled loop). It must leave `_vlim` intact
+> on exit, because the classic path carries it across timesteps as the
+> limiter's `vold`. The original text follows, unedited.
+
 **Do the narrow fix from §5 now; do not do native PCNR yet.**
 
 The two bills are **independent**, and that is the useful structure — the linear
@@ -448,7 +525,8 @@ removal option deserves re-reading first.
 - **PCNR becomes the default** → the layer is the wrong shape; Design A becomes
   necessary and bill 1 becomes a bill someone pays.
 - **A second consumer of `cir.G` appears on the PCNR path** → bill 2 goes from
-  latent to active; the narrow fix becomes urgent rather than advisable.
+  latent to active; the narrow fix becomes urgent rather than advisable —
+  *and, per the §5 correction, it must land after the skip set, not alone.*
 - **A BJT or MOSFET circuit needs PCNR to converge** → §6b is the project, and
   this document underestimates it; re-survey before planning.
 - **The numeric toolkit is retired in favour of autodiff everywhere** → `_vlim`

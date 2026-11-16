@@ -46,6 +46,16 @@ PYTHONPATH=<repo>:<repo>/benchmarks MPLBACKEND=Agg python3 -u <script>
 `stage0_2a` and `stage0_2b` each run several full transients on the leapfrog and take
 5-10 minutes; `stage0_1d` is seconds.
 
+## PCNR design-study evidence (`doc/pcnr_native_design.md`)
+
+Like the stage 0 scripts, these run against the tree as it is, and the design study quotes
+their output.
+
+| script | question | result |
+|---|---|---|
+| `companion_consistency.py` | Is `Diode.G` the exact derivative of `Diode.i`? | Yes, to 5.0e-10 by central difference. The documented claim that they are taken at different points was false. |
+| `pcnr_narrow_fix.py` (+ `.log`) | Can `Diode` stop reading a stale `_vlim` without touching PCNR assembly? | No. On a 1 A diode the PCNR node reaches 2.58e11 V, an honest diode overflows `exp`, and 199 of 200 assemblies are nan. The narrow fix needs the skip set first. |
+
 The numerical lens's own scripts (`e1`-`e15`: error constants, the trapezoidal `(-1)^n`
 contamination, PI-controller stability, BDF-2 step-ratio limits, DAE index) were not
 recovered before the scratchpad was reused. Their results are recorded in

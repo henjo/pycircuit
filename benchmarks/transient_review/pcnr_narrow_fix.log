@@ -1,0 +1,10 @@
+dc   1 A into a diode | TODAY  aug     4 | max v_node  2.584e+11 V | max |i_D| cancelled          1 A | non-finite    0
+dc   1 A into a diode | NARROW aug   200 | max v_node  2.584e+11 V | max |i_D| cancelled        inf A | non-finite  199 | ref=ok(4)  narrow=RuntimeError: PCNR did not converge in 200 iterations: max|g_lim| = nan
+dc   fig1 two diodes  | TODAY  aug     8 | max v_node          1 V | max |i_D| cancelled  3.869e-08 A | non-finite    0
+dc   fig1 two diodes  | NARROW aug     8 | max v_node          1 V | max |i_D| cancelled  6.378e+07 A | non-finite    0 | n 8 -> 8 | max rel diff 5.551e-17
+tran 5 V rectifier    | TODAY  aug 14144 | max v_node     0.7918 V | max |i_D| cancelled  1.964e-13 A | non-finite    0
+tran 5 V rectifier    | NARROW aug 14144 | max v_node     0.7918 V | max |i_D| cancelled    0.02026 A | non-finite    0 | n 4453 -> 4453 | max rel diff 7.268e-12
+tran mains rectifier  | TODAY  aug  8687 | max v_node     0.7499 V | max |i_D| cancelled  7.148e-11 A | non-finite    0
+tran mains rectifier  | NARROW aug  8687 | max v_node     0.7499 V | max |i_D| cancelled     0.4005 A | non-finite    0 | n 2629 -> 2629 | max rel diff 1.925e-13
+coup 5 V rectifier    | TODAY  aug  6007 | max v_node     0.7565 V | max |i_D| cancelled  1.963e-13 A | non-finite    0
+coup 5 V rectifier    | NARROW aug  6007 | max v_node     0.7565 V | max |i_D| cancelled   0.005159 A | non-finite    0 | n 2301 -> 2301 | max rel diff 5.226e-17
