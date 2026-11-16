@@ -88,9 +88,16 @@ class _PCNRSteps:
         xtol = self._newton_xtol_vector()
         reltol = self.par.reltol
         feval = 0
+        ## Each iteration counted as it is taken -- a failed solve's too, as
+        ## the coupled path counts a failed attempt's: they are real work.
+        ## Neither family's caller reads `feval`, so uncounted here a PCNR
+        ## run reported 0 Newton iterations (roadmap sec. 329).
+        stats = getattr(self, 'statistics', None)
         for _it in range(int(self.par.maxiter)):
             g_mna, g_lim, J_mm, J_ml, J_lm, didv = assemble(x, v_lim)
             feval += 1
+            if stats is not None:
+                stats.newton_iterations += 1
 
             dx_mna, dx_lim = _pcnr.predict(g_mna, g_lim, J_mm, J_ml, J_lm,
                                            irefnode, junctions=junctions,

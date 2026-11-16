@@ -16221,3 +16221,32 @@ type; it carries its own, `pcx_rgrowth_fn`.)
 attribute's first use) moves `_watch`'s epoch mid-run where a first use comes after the direct source pass's stamp, and the C
 loop then declines that run (`loop_c:sources`): a fresh process's first run of a circuit can run without the C loop; in the
 suite earlier tests have filled the cache (`test_loop_c`'s fixed runs, run alone, fail on one case at 76a0c938 too).
+
+## 2026-11-16 — 329. A PCNR transient counts its Newton iterations
+
+**Why**  Ported from a branch that diverged from this one at 8048e424 (`cna-jax-vectorization-pre-port`, b792883), where the
+same gap was found and closed.  Measured here before any change: on a half-wave rectifier at reltol 1e-5 a `pcnr=True` run of
+417 PCNR solves (383 accepted, 34 rejected) reported **0** Newton iterations where `pcnr=False` reported 833.
+`_pcnr_newton` -- the loop the multistep step (`_solve_timestep_pcnr`) and a diagonally implicit stage (`_rk_stage_pcnr`)
+both run -- returns its count to callers that discard it (`transient.py`'s `x_new, _feval, J, _f`), and counts nothing
+itself; the ordinary path counts in `_newton`.  A statistic that is silently zero.  Line (set before): (a) a PCNR run's
+`newton_iterations` the sum of what its PCNR solves spent, on the multistep step and a TR-BDF2 stage, a failed solve's
+`maxiter` included (the coupled path counts a failed attempt's); (b) no result moves -- the gold decks do not reach it (no deck
+runs a transient with `pcnr=True`); (c) suite, bites.
+
+**What.**  `_pcnr_newton` adds one to `statistics.newton_iterations` per iteration as it is taken.
+
+**Measured.**  (a) MET: `_tran_diode` (the PCNR counter tests' circuit) at 2 ns -- the default integrator 58 PCNR solves,
+58 iterations, against `pcnr=False`'s 58; TR-BDF2 114 against 114 (each `pcnr_solves` also 58 / 114, `pcnr_fallbacks` 0); a
+forced failure (the probe test never passing) adds exactly `maxiter`.  (b) Not run: `_pcnr_newton` is unreachable from the
+gate (`run_deck` and `settings` set no transient's `pcnr`; `settings` turns DC's off for one forcing), and no C unit runs a
+PCNR transient step (both C loops decline, `_tran_stageloop_c` / `_tran_tcloop_c`: 'pcnr').  (c) Suite: see below.
+
+**Tests.**  `test_dc_pcnr` +2: the count is the PCNR solves' sum on both families; a failed solve adds `maxiter`.  Four bites,
+four bit: the increment dropped, doubled, its guard inverted, and moved to the converged return (success only -- the second
+test's).
+
+**Found, not changed:** Radau IIA's stage Newton counts nothing on EITHER path -- `pcnr=False` and `pcnr=True` both report 0
+Newton iterations on the same circuit (57 steps) -- because the coupled stage Newton (`_coupled_stage_solver`) and its PCNR
+twin (`_rk_step_coupled_pcnr`) are loops of their own, and neither adds to the statistic.  Counting them changes a reported
+number of every Radau run, PCNR or not, which is a decision about Radau's statistics and not a port item.

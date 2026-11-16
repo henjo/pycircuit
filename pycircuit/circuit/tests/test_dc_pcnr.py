@@ -323,6 +323,61 @@ def test_a_transient_counts_the_steps_pcnr_carried():
     assert on.pcnr_fallbacks == 0
 
 
+def test_a_pcnr_transient_counts_its_newton_iterations():
+    """Roadmap sec. 329.  `_pcnr_newton` -- the loop both of its step
+    families run (the multistep step and a diagonally implicit stage, here
+    TR-BDF2's) -- returned its iteration count to callers that discard it,
+    and counted nothing itself: a PCNR run of 417 solves reported 0 Newton
+    iterations where `pcnr=False` reported 833.  Now each iteration is
+    counted as it is taken, so the run's count is the sum of what its PCNR
+    solves spent.  (Radau IIA's coupled stage Newton is a loop of its own
+    and counts nothing on EITHER path -- sec. 329, found, not changed.)"""
+    from pycircuit.circuit.circuit import gnd
+    from pycircuit.circuit.integrator import TRBDF2Integrator
+    from pycircuit.circuit.transient import Transient
+
+    for kw in ({}, {'integrator': TRBDF2Integrator()}):
+        t = Transient(_tran_diode(), pcnr=True, **kw)
+        real = t._pcnr_newton
+        spent = {'n': 0, 'calls': 0}
+
+        def spy(*a, _real=real, **k):
+            spent['calls'] += 1
+            out = _real(*a, **k)
+            spent['n'] += out[2]
+            return out
+        t._pcnr_newton = spy
+        t.solve(refnode=gnd, tend=2e-9, timestep=2e-10)
+        assert spent['calls'] > 0, 'no PCNR solve ran: %r' % (kw,)
+        assert t.pcnr_fallbacks == 0
+        assert t.statistics.newton_iterations == spent['n'] > 0, (
+            kw, t.statistics.newton_iterations, spent)
+
+
+def test_a_failed_pcnr_solve_counts_the_iterations_it_spent():
+    """The other half of sec. 329: a PCNR solve that does not converge has
+    still taken `maxiter` iterations, and they are counted -- as the coupled
+    path counts a failed attempt's.  Forced: the probe test never passes."""
+    import numpy as np
+    from pycircuit.circuit import pcnr
+    from pycircuit.circuit.analysis import NoConvergenceError
+    from pycircuit.circuit.circuit import gnd
+    from pycircuit.circuit.transient import Transient
+
+    t = Transient(_tran_diode(), pcnr=True)
+    res = t.solve(refnode=gnd, tend=2e-9, timestep=2e-10)
+    x0 = np.asarray(res.x[:, -1], dtype=float)
+    before = t.statistics.newton_iterations
+    real = pcnr.lim_converged
+    pcnr.lim_converged = lambda *a, **k: False
+    try:
+        with pytest.raises(NoConvergenceError):
+            t._solve_timestep_pcnr(x0, 2.1e-9)
+    finally:
+        pcnr.lim_converged = real
+    assert t.statistics.newton_iterations - before == int(t.par.maxiter)
+
+
 def test_a_transient_says_when_nothing_participates():
     """`pcnr=True` on an all-linear circuit is indistinguishable from
     `pcnr=False` unless it says so.  Same defect DC carried."""
