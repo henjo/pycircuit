@@ -500,17 +500,9 @@ def test_gate_13_8_skip_of_an_unknown_instance_is_an_error():
         _fig1().G(np.zeros(4), defaultepar, skip={'D3'})
 
 
-def test_gate_13_8_skip_refuses_a_batched_class():
-    """A grouped class is stamped by one vmapped call before the per-element
-    loop runs, so a skipped instance of it would still be stamped -- a wrong
-    matrix, not a crash.  JAX is not needed to show the refusal: the group map
-    is what the check reads, so it is stubbed directly."""
-    c = _fig1()
-    c._eval_groups = {Diode: None}
-    with pytest.raises(NotImplementedError, match='batch'):
-        c.G(np.zeros(c.n), defaultepar, skip={'D1'})
-    with pytest.raises(NotImplementedError, match='batch'):
-        c.i(np.zeros(c.n), defaultepar, skip={'D1'})
+## (`test_gate_13_8_skip_refuses_a_batched_class` lived here.  13-8 refused a
+## skip of a batched class; 13-11 implements it, so the refusal test became the
+## three gate 13-11 tests at the end of this module.)
 
 
 ## ---------------------------------------------------------------------------
@@ -578,3 +570,103 @@ def test_gate_13_9_scope_is_depth_counted():
     assert c['D1']._classic_limiting == 0
     with pytest.raises(RuntimeError):
         c['D1'].set_classic_limiting(False)
+
+
+## ---------------------------------------------------------------------------
+## GATE 13-11 -- `skip` on the batched (JAX) path.
+##
+## 13-8 refused it, which made PCNR on a JAX-toolkit circuit fail outright --
+## and before 13-8 PCNR on JAX went nan on any overshoot, because autodiff makes
+## the diode honest and the old add-then-subtract then cancels inf.  These need
+## JAX and are skipped without it.
+## ---------------------------------------------------------------------------
+
+def _jax_circuit(builder):
+    from pycircuit.circuit import circuit as cm
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    saved = cm.default_toolkit
+    cm.default_toolkit = jaxtoolkit
+    try:
+        c = builder()
+        c.toolkit = jaxtoolkit
+        c.update_iparv()
+        return c
+    finally:
+        cm.default_toolkit = saved
+
+
+def _one_amp():
+    from pycircuit.circuit.elements import IS as ISrc
+    c = SubCircuit()
+    c['is'] = ISrc(gnd, 1, i=1.0)
+    c['D1'] = Diode(1, gnd)
+    return c
+
+
+def test_gate_13_11_pcnr_runs_on_a_jax_circuit():
+    """Including the 1 A case, which went nan here before 13-8 and raised after."""
+    pytest.importorskip('jax')
+    for builder in (_fig1, _one_amp):
+        cj = _jax_circuit(builder)
+        assert cj._eval_groups, 'nothing is batched; the test proves nothing'
+        xj, _vj, itj = P.solve_dc(cj, gnd)
+        xn, _vn, itn = P.solve_dc(builder(), gnd)
+        assert itj == itn
+        np.testing.assert_allclose(np.asarray(xj, dtype=float), xn,
+                                   rtol=1e-12, atol=1e-15)
+
+
+def test_gate_13_11_skipped_instances_are_not_evaluated_in_a_batch():
+    pytest.importorskip('jax')
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    sizes = []
+    real = jaxtoolkit.generate_batched_eval
+
+    def spy(cls, method='i'):
+        f = real(cls, method)
+
+        def g(X, p, epar):
+            sizes.append((cls.__name__, int(np.shape(X)[0])))
+            return f(X, p, epar)
+        return g
+
+    jaxtoolkit.generate_batched_eval = spy
+    try:
+        P.solve_dc(_jax_circuit(_fig1), gnd)
+    finally:
+        jaxtoolkit.generate_batched_eval = real
+    assert not [s for s in sizes if s[0] == 'Diode'], sizes
+
+
+def test_gate_13_11_batched_skip_matches_per_element_skip():
+    """A PARTIAL skip -- some instances of a class kept -- is the case where node
+    maps, parameters and scatter indices must be sliced alike.  Checked against
+    the numeric toolkit's per-element loop, on every stamp."""
+    pytest.importorskip('jax')
+    from pycircuit.circuit.elements import C as Cap
+
+    def build():
+        cir = SubCircuit()
+        cir['R1'] = R('a', 'b', r=1e3)
+        cir['D1'] = Diode('a', gnd, IS=1e-14)
+        cir['D2'] = Diode('b', gnd, IS=3e-13)
+        cir['D3'] = Diode('a', 'b', IS=2e-12)
+        cir['C1'] = Cap('a', gnd, c=1e-9)
+        return cir
+
+    batched, per_element = _jax_circuit(build), build()
+    assert Diode in batched._eval_groups
+    x = np.array([0.61, 0.33, 0.0])[:batched.n]
+    for skip in ({'D2'}, {'D1', 'D3'}, {'D1', 'D2', 'D3'}, {'C1'}, {'D3', 'C1'}):
+        for method in ('G', 'i'):
+            a = np.asarray(getattr(batched, method)(x, defaultepar, skip=skip),
+                           dtype=float)
+            b = np.asarray(getattr(per_element, method)(x, defaultepar, skip=skip),
+                           dtype=float)
+            np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-18,
+                                       err_msg='%s skip=%r' % (method, skip))
+    ## No skip is exactly the ordinary batched assembly.
+    for method in ('G', 'i'):
+        assert np.array_equal(
+            np.asarray(getattr(batched, method)(x, defaultepar, skip=frozenset())),
+            np.asarray(getattr(batched, method)(x, defaultepar)))

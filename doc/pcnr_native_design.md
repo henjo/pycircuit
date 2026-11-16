@@ -335,8 +335,14 @@ per-element loop in `_add_element_submatrices`/`_add_element_subvectors`. A skip
 set that covers that loop, and refuses when a skipped instance belongs to a
 batched group, is enough for PCNR. The batched/JAX threading that made A "days"
 can wait until something needs it. *(The size of that numeric-only skip is a
-reading of the code. It has not been implemented.)* **Implemented as gate 13-8.**
-It was a loop guard plus a refusal, as read. It took `augmented_system` from
+reading of the code. It has not been implemented.)* **Implemented as gate 13-8**,
+and on the batched path as **gate 13-11**. That answers the "construction-time
+partition or per-call argument?" question in Design A: a per-call argument, with
+the sliced indices cached per group and skip set, which amounts to a lazily built
+partition. The scatter-misalignment risk Design A warned about is pinned by a
+partial-skip test against the per-element loop, and a mismatched slice fails
+loudly, since `vmap` rejects unequal batch axes.
+On the numeric path it was a loop guard plus a refusal, as read. It took `augmented_system` from
 2.35x classic assembly to 0.65x, and a PCNR iteration from +65% to −29% against
 classic limiting on 60 diodes.
 
@@ -398,6 +404,46 @@ future MOSFET) **has charge**. So native PCNR for anything beyond a diode
 requires solving the charge problem first. **This is the single largest piece of
 work in this document and it is easy to miss**, because the diode-only prototype
 never encounters it.
+
+**(b), COSTED 2026-11-16, before any code.**
+
+*What exists today.* `BJT` has had charge since 5+.1 (CJE, CJC and TF default to non-zero),
+and `JFET` and `Varactor` have charge too. **`Diode` has no charge model at all** (`C = 0`).
+So no device today has both a PCNR junction and charge. The refusal in `augmented_system`
+guards a combination that cannot yet be built.
+
+*The mechanism, which is the same for any device, is smaller than this section implied.*
+Every integrator's companion is **linear in `C`**: `geq = alpha0 * C`, with `alpha0` equal to
+`1/h` for Euler, `2/h` for trapezoidal and `a0` for BDF-2 (`_lte_kernels.py`). Moving a
+junction's charge onto its own unknown therefore means four things:
+- assembling `q` and `C` with `skip` (the batched path already honours it, since 13-11);
+- adding the device's `q(v_lim)` into the `q` vector at its rows before `get_diff`, so the
+  history, the LTE and the step controller still see one `q`, which equals `cir.q(x)` at
+  convergence;
+- putting `alpha0 * dq/dv` into the junction's `J_ml` column, next to `didv`;
+- the same in `_residual_and_jacobian_pcnr`, for the coupled path.
+
+**The one design point:** `get_diff` mutates integrator state (it selects the order drop and
+sets `_iq`), so `alpha0` must be exposed by the integrator rather than recovered from a second
+`get_diff` call. Estimate: about a day, including gates.
+
+*Route A, a diode.* It first needs a diode charge model: SPICE's CJO, VJ, M, FC and TT, with
+defaults of 0 so that nothing existing moves. That can reuse `_depletion_charge`, which BJT
+already uses. About half a day to a day, so **about two days in all**. The instrument is
+13-6's: on the standard path, PCNR and classic limiting must take identical steps. That is
+sharper than any accuracy comparison.
+
+*Route B, a BJT.* All of Route A's mechanism, plus the multi-junction generalisation in (a).
+`pcnr_i`/`pcnr_didv` take one scalar per junction, but a BJT's terminal currents depend on
+both junction voltages, so it needs a device-level function of its junction vector and a
+terminals x junctions Jacobian. `schur_reduce`, `predict` and the `dx_lim` back-substitution
+all hardcode a two-terminal column. **About three to five days.** Nothing on record shows a
+BJT circuit that needs PCNR to converge, which is this document's own reconsider-if.
+
+*Recommendation, if PCNR is to be extended at all:* **A first.** It delivers the charge
+mechanism that B would reuse, at a size that can be gated. Do B only on demand. The case for
+removing PCNR (§8) is unchanged by this costing; 13-8 to 13-11 have made PCNR cheaper and
+safer, but no circuit here needs it.
 
 **(c) `ZenerDiode` declares no junctions deliberately.** A forward-junction
 limiter would step through the breakdown knee, which is a second exponential

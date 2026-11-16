@@ -1530,27 +1530,21 @@ class SubCircuit(Circuit):
         for element in self.elements.values():
             element.update_iparv(self.iparv, ignore_errors=True)
         
-    def _check_skip(self, skip, groups):
-        """STAGE 13-8.  Refuse a skip the batched path would silently ignore.
+    def _check_skip(self, skip):
+        """STAGE 13-8 / 13-11.  Normalise ``skip`` to a frozenset, or None.
 
-        Grouped classes are stamped by one vmapped call per class, before the
-        per-element loop that honours ``skip`` ever runs, so a skipped instance
-        of a grouped class would still be stamped -- not a crash, a wrong
-        matrix.  Masking the group is real work (Design A in
-        doc/pcnr_native_design.md) and nothing needs it yet, so it is refused.
+        An unknown name is an error: a typo would otherwise skip nothing and look
+        as if it had worked.  Grouped classes are stamped by the toolkit's
+        batched path before the per-element loop runs, so the toolkit must honour
+        ``skip`` too (13-8 refused it there; 13-11 implements it).
         """
         if not skip:
-            return
-        missing = [name for name in skip if name not in self.elements]
+            return None
+        skip = frozenset(skip)
+        missing = sorted(name for name in skip if name not in self.elements)
         if missing:
             raise KeyError('skip names no instance of this circuit: %r' % (missing,))
-        if groups:
-            batched = sorted(name for name in skip
-                             if self.elements[name].__class__ in groups)
-            if batched:
-                raise NotImplementedError(
-                    'cannot skip %r: this toolkit stamps their class in a batch, and '
-                    'masking a batch is not implemented' % (batched,))
+        return skip
 
     def _add_element_submatrices(self, methodname, x, args, params_tree=None,
                                  skip=None):
@@ -1568,7 +1562,7 @@ class SubCircuit(Circuit):
         groups = getattr(self, '_eval_groups', None)
         idxmap = self._map_indices_2d
         elementnodemap = self.elementnodemap
-        self._check_skip(skip, groups)
+        skip = self._check_skip(skip)
 
         if build_sparse:
             all_data, all_rows, all_cols = [], [], []
@@ -1579,7 +1573,7 @@ class SubCircuit(Circuit):
         ## loop below then skips them.  A toolkit that cannot batch returns
         ## None and everything goes through the loop.
         batched = toolkit.batched_contributions(
-            self, groups, methodname, x, args, params_tree, ndim=2)
+            self, groups, methodname, x, args, params_tree, ndim=2, skip=skip)
         if batched is not None:
             values, (rows, cols) = batched
             if build_sparse:
@@ -1670,10 +1664,10 @@ class SubCircuit(Circuit):
         groups = getattr(self, '_eval_groups', None)
         idxmap = self._map_indices_1d
         elementnodemap = self.elementnodemap
-        self._check_skip(skip, groups if x is not None else None)
+        skip = self._check_skip(skip)
 
         batched = toolkit.batched_contributions(
-            self, groups, methodname, x, args, params_tree, ndim=1)
+            self, groups, methodname, x, args, params_tree, ndim=1, skip=skip)
         if batched is not None:
             values, indices = batched
             lhs = toolkit.add_at(lhs, indices, values)

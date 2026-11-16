@@ -5958,6 +5958,256 @@ wrong answer in PSS is fixed as a side effect.**
   no `_vlim`). A `Diode` wrapped in `CircuitProxy` was never limited, because the proxy does
   not forward `limit`, and is now honest rather than frozen.
 
+## Gate 13-10 — `_pnjlim` gets SPICE's `2 VT` condition
+
+**Added 2026-11-16, on the maintainer's instruction to continue with the open items** that
+13-8/13-9 left. Gate 13-9c traced its one 3.2e-14 difference to this.
+
+**The defect.** `_pnjlim` calls itself "SPICE's `pnjlim`", but it limits whenever
+`vnew > vc`. SPICE limits only when the step is also larger than `2 VT`. The condition, read
+from the source on this machine, `~/source/ngspice-47/src/spicelib/devices/devsup.c:54`:
+`if((vnew > vcrit) && (fabs(vnew - vold) > (vt + vt)))`. Without it, every step above `vc`
+is compressed, however small. That holds back Newton exactly where it is about to converge,
+and leaves `_vlim` off the converged node voltage (13-9c: 1518 of 2671 solves on the mains
+rectifier).
+
+**What is NOT adopted, and why.** ngspice-47 has also changed the compression itself, to
+`vold + vt*(2 + log(arg - 2))` with `arg = (vnew - vold)/vt` (`devsup.c:58`). Computed from
+that line as written, a forward request of 2.01 VT becomes a step of **-2.6 VT**: backwards,
+and non-monotonic just above the threshold. It also adds negative-voltage limiting (Alan
+Gillespie, per its header comment). pycircuit keeps the classic compression
+`vold + VT ln(1 + Δ/VT)`; I recalled that form as SPICE3's and could not check it against a
+primary source here, since the ngspice checkout is shallow. Only the condition is adopted. It
+is the one deviation that is a defect against the docstring, rather than a choice.
+
+**Work.** One condition in `_pnjlim`. It reaches all three consumers: `Diode.limit`,
+`Semiconductor.limit` (via `limit_junctions`; BJT, JFET, Varactor) and `pcnr.refine`.
+
+**Entry measurements, 2026-11-16, tree at `11dcb6d`**
+(`benchmarks/transient_review/stage13_10_11_gates.py`):
+
+- `table`, IS = 1e-14, `vc` = 0.7296 V. From `vold` = 0.7396 V, a 1 mV step (0.04 VT) is
+  altered (0.740621 V), and a 20 mV step (0.77 VT) is cut to 14.85 mV. Below `vc` nothing
+  is limited until the step reaches 77 VT.
+- `snapshot`, 25 cases: six DC circuits, classic and PCNR; the common-emitter stage at three
+  base resistances; six classic transients (rectifier, mains, bridge, charge pump, clipper,
+  BJT switch); one classic coupled transient; three PCNR transients. Classic DC Newton
+  iterations: 8, 3, 8, 12, 12, 13; CE stage 17, 17, 17. All DC answers satisfy the
+  unlimited equations to <= 2.3e-8 (the 1 A case) and otherwise <= 1.3e-9.
+- `mismatch`: mains 1518 of 2671 converged solves with `_vlim != v` (max 1.285e-12 V);
+  rectifier 0 of 4497.
+
+**Gates, declared before the change:**
+
+- **13-10a (the condition holds, and nothing else moves).** `_pnjlim` returns `vnew` exactly
+  when `|vnew - vold| <= 2 VT`. On every grid point with a larger step it returns the same
+  value as at entry, because the formula is untouched.
+- **13-10b (no convergence lost).** All 25 cases still complete. Every DC answer still
+  satisfies the unlimited equations (`< 1e-7`), and the CE stage keeps its physical bias
+  point (gate 5-1).
+- **13-10c (Newton is not slowed).** **Predicted: equal or fewer iterations everywhere**,
+  since steps of up to 2 VT above `vc` now get the full Newton update. **Declared:** no DC
+  case gains more than one iteration, and total Newton iterations over the classic
+  transients do not increase. Accepted steps within 5% per transient.
+- **13-10d (answers move by Newton tolerance only).** Classic DC answers within 1e-6
+  relative. Transients compared on their final value, within 1e-4 relative, because a
+  changed step sequence makes a pointwise comparison meaningless.
+- **13-10e (13-9c's explanation, tested).** The mains mismatch count goes from 1518 to **0**.
+  If it does not, the explanation recorded at 13-9c was wrong.
+- **13-10f (PCNR still agrees with limiting step for step).**
+  `test_gate_13_6_pcnr_and_limiting_take_the_same_steps` passes. PCNR DC iteration counts
+  are reported.
+- **13-10g (suite),** under both interpreters: system python3 (covers `cds`) and the repo
+  `.venv` (covers JAX).
+- **Injection.** Remove the condition: the 13-10a test must go red.
+
+OUTCOME (2026-11-16): **PASS on every declared threshold. The stated prediction, "equal or
+fewer iterations everywhere", is REFUTED in three places, and the mechanism is traced.**
+
+- **13-10a: PASS.** On the `table` grid, only the steps of `<= 2 VT` changed, and they now
+  return `vnew` exactly (e.g. 0.7396 -> 0.7596: 0.754452586 before, 0.759639866 now). Every
+  larger step returns the same value as at entry. Pinned by
+  `test_gate_13_10_pnjlim_leaves_steps_within_2vt_alone`.
+- **13-10b: PASS.** All 25 cases complete. DC residuals against the unlimited equations are
+  <= 2.29e-8 (the 1 A case) and otherwise <= 6.2e-10. The CE stage keeps its bias point:
+  answers moved <= 6.0e-11.
+- **13-10c: PASS as declared; the prediction behind it was wrong.**
+  - No DC case gained more than one iteration, but two gained exactly one: the CE stage at
+    rb = 10 and 100 ohm, 17 -> 18.
+  - Classic-transient Newton iterations fell in total, **37243 -> 36914 (-0.9%)**. Charge
+    pump 4499 -> 4134 (-8%), bridge -4, mains -4, but **clipper 608 -> 652 (+7%)**.
+  - Accepted steps are unchanged everywhere except the charge pump, 1095 -> 1109 (+1.3%).
+  **Why the prediction failed, traced on the CE stage at rb = 10** (`trace_ce`, per-iteration
+  v_be on both trees): at iteration 11 Newton asks for a 38 mV step, under 2 VT = 51.7 mV.
+  The old limiter compressed it, landing 44.6 mV past the solution. SPICE's rule lets it
+  through, landing 59.4 mV past, and Newton then needs one more iteration to come down from
+  above. On a convex exponential a full step from below overshoots, and the unconditional
+  compression had been damping exactly those steps. **This is SPICE's own trade-off, so it
+  is recorded, not tuned away.**
+- **13-10d: PASS.** Classic DC answers within 6.0e-11. Transients on an unchanged grid within
+  4.2e-9 (bridge). The charge pump, whose grid changed, ends 8.449239172 -> 8.449243222 V
+  (4.8e-7).
+- **13-10e: PASS, and it confirms 13-9c's explanation.** Mains-rectifier converged solves
+  with `_vlim != v`: **1518 -> 0**. Pinned by
+  `test_gate_13_10_a_converged_solve_leaves_the_diode_at_its_node_voltage`.
+- **13-10f: PASS.** PCNR DC iteration counts are unchanged on all six circuits (hard drive
+  moved 4.2e-13). The PCNR transients move like their classic twins: clipper 1.15e-9 on
+  both paths, mains 7.1e-12 against 5.1e-12, same steps. The 13-6 step-identity test is in
+  13-10g.
+- **13-10g: FAILED ON FIRST RUN, and the failure was not 13-10's.** On the frozen 13-10
+  tree the system-python suite failed `test_stress_deep_forward_clipper` (0.1136 V against
+  a 0.1 V limit). Traced to a pre-existing coupled-path defect, the solved step crossing
+  `tend`; see gate 12-6, which fixes it without touching the threshold. On the final tree
+  (13-10 + 13-11 + 12-6): system python3 **960 passed, 14 skipped, 3 xfailed, 2 failed**
+  (the two `jax`-absent tests, as at entry); repo `.venv` **979 passed, 7 skipped,
+  3 xfailed, 0 failed**, with 4 `cds` modules uncollectable because that venv has no
+  `pexpect`. Entry at `11dcb6d`: 957/11/3/2 and 973/7/3/0. The deltas, +3 and +6, are
+  exactly the new tests: 2 for 13-10, 2 for 12-6, 3 JAX tests for 13-11 (skipped without
+  JAX), minus 13-8's stubbed refusal test.
+- **Injection: PASS.** Both new tests fail when run against the entry code (the `11dcb6d`
+  export), and pass on the new code.
+
+## Gate 13-11 — `skip` on the batched (JAX) path
+
+**The defect, measured.** 13-8 made a `skip` of a batched class raise. That turned PCNR on a
+JAX-toolkit circuit from wrong to refused. On the tree **before** 13-8 (`586d6ce`), PCNR DC on
+JAX versions of the six circuits ran four and went **nan on two**: "current driven" and
+"hard drive 20V". This is the overflow `586d6ce` predicted for an honest diode inside the
+add-then-subtract. On the JAX path the diode was always honest (autodiff), so that failure
+had been live there all along, unseen because no test runs PCNR on JAX. At `11dcb6d` all
+six raise `NotImplementedError`.
+
+**Work.** `JAXToolkit.evaluation_groups` records each group's instance names.
+`batched_contributions` takes `skip` and evaluates only the kept instances: node maps,
+parameters (including a caller's `params_tree`) and scatter indices are sliced together,
+cached per group and skip set. A group with nothing kept is not evaluated at all. The base
+`Toolkit.batched_contributions` accepts `skip` too. `SubCircuit` passes it through, and the
+13-8 refusal is removed. The `KeyError` for an unknown name stays.
+
+**Gates, declared before the change:**
+
+- **13-11a (PCNR runs on JAX).** On all six circuits, PCNR DC converges in the same
+  iteration count as the numeric toolkit, with answers within 1e-12 relative. At
+  `586d6ce`, where four ran, the worst was 7.8e-16.
+- **13-11b (skipped means skipped).** No `Diode` batch is evaluated during PCNR DC on JAX.
+  Entry, at `586d6ce`: every Diode was evaluated, in batches of the full group size.
+- **13-11c (exact on the batched path).** `G`/`C`/`i`/`q` with a partial skip on a mixed JAX
+  circuit equal the numeric toolkit's per-element skip within 1e-12. `skip=None` changes
+  nothing: the existing batched-vs-per-element test passes.
+- **13-11d (suite)** under `.venv`.
+- **Injection.** Make the batched path ignore `skip`: 13-11b and 13-11c must go red.
+
+OUTCOME (2026-11-16): **PASS on all four.**
+
+- **13-11a: PASS.** All six circuits run PCNR DC on JAX in the numeric toolkit's iteration
+  counts (8, 4, 8, 13, 13, 14), with answers within **1.1e-17** relative (declared 1e-12).
+  That includes the two that went nan before 13-8 and were refused after it.
+- **13-11b: PASS.** No `Diode` batch is evaluated during PCNR DC on JAX. Entry, at
+  `586d6ce`: full-size batches.
+- **13-11c: PASS.** `test_gate_13_11_batched_skip_matches_per_element_skip` uses a mixed
+  circuit (R, three diodes with different IS, C) and five skip sets, including partial ones
+  that keep some instances of a batched class. `G` and `i` match the numeric per-element
+  skip within 1e-12, and an empty skip is bit-identical to the ordinary batched assembly.
+  The existing batched-vs-per-element test passes. The numeric path is untouched: all 25
+  cases of the 13-10 snapshot are bit-identical with 13-11 in place.
+- **13-11d: PASS.** See 13-10g: venv 979 passed, 0 failed.
+- **Injection: PASS.** With the batched path ignoring `skip`, all three 13-11 tests go red. A
+  partial slice that missed one of node maps, parameters or indices would fail loudly
+  rather than scatter wrongly, because `vmap` rejects unequal batch axes.
+- **What this means for 13-8.** 13-8 turned PCNR on JAX from wrong-on-overshoot into
+  refused; 13-11 makes it work. The `KeyError` for an unknown skip name stays.
+
+## Gate 12-6 — the coupled path's solved step crosses `tend` and breakpoints (found by 13-10g)
+
+**How it was found.** 13-10's suite run failed `test_stress_deep_forward_clipper`, which
+had passed at entry: the coupled and standard final values differed by 0.1136 V against a
+0.1 V limit. **It is not a 13-10 defect.** The coupled path's last point lies **past
+`tend`**:
+- at entry, `t = 2.000147 ms` for `tend = 2 ms`; on the 13-10 tree, 2.000181 ms;
+- v(2) there equals the source exactly, at a time when the source moves at 6.3e5 V/s;
+- 0.147 µs gave 0.092 V and passed by 8 mV; 13-10 nudged the coupled step sequence
+  (711 -> 718 points), and 0.181 µs gave 0.114 V.
+
+The test compared the two paths at different times and passed by luck until the step
+sequence moved.
+
+**Entry measurements, all pre-existing (tree `11dcb6d`, re-measured on the 13-10 tree):**
+- **`last t - tend` on the coupled path:**
+
+  | circuit | at entry | 13-10 tree |
+  |---|---|---|
+  | clipper | +1.47e-7 s | +1.81e-7 s |
+  | bridge | +1.0e-5 s | +9.7e-6 s |
+  | 5 V rectifier | +1.81e-6 s (**9.05e-4 of tend**) | +1.81e-6 s |
+  | mains | +2.25e-5 s | +2.25e-5 s |
+  | charge pump | 0 | 0 |
+
+  The standard path lands exactly on `tend` in every case.
+- **Breakpoints jumped:** charge pump 2 of 20 at entry, 0 of 20 on the 13-10 tree, so it
+  depends on the step sequence.
+- **A linear RC driven by a pulse** (td = 1 µs, tr = 10 ns) **fails to converge on the
+  coupled path** at t = 1.01435 µs on both trees, just past the end of the first rise
+  (1.01 µs), with `h` collapsed to 1.3e-13 s.
+- **Accuracy, with the right instrument.** The clipper is algebraic, so its exact answer at
+  any `t` is a scalar root. Against it, the coupled path's error is 8.2e-7 V and the
+  standard path's 9.6e-10 V. **A first instrument reported 0.676 V and is withdrawn.** It
+  interpolated a tight standard-path run, but an algebraic circuit has no LTE, so that run
+  steps at `max_step` (10 µs) whatever `reltol` is. Its grid cannot be interpolated across
+  a 2.5 µs zero crossing. The 5 V rectifier, which does have a capacitor, is 5.86e-3 V
+  from a reltol 1e-8 standard-path reference.
+
+**Cause.** `_solve_coupled` truncates a step onto `tend` without telling `fang_timestep`
+to hold it, and `fang_timestep` caps the step it solves for at
+`min(max_step, h_entry * MAX_GROWTH_RATIO)`. That ceiling is relative to the step's entry
+size and never to the distance to the next event. Stage 12's `hold_h` fixed the truncated
+breakpoint step ("0 of 10 pulse edges landed on"). It could not cover a step that was not
+truncated at entry and then grew across an event.
+
+**Work.** The driver passes the distance to the next event, `min(next breakpoint, tend) - t`,
+as the ceiling. A solved step that lands exactly on a breakpoint is treated as a break step
+(order drop at the next step, counted in `breakpoints_hit`). Landing is exact: for
+`t >= t_b/2`, `t_b - t` is computed exactly, so `t + (t_b - t) == t_b`. That is how the
+standard path lands too.
+
+**Gates, declared before the change:**
+- **12-6a.** The coupled path ends exactly at `tend` on all five circuits.
+- **12-6b.** No breakpoint is jumped on the charge pump or the pulsed RC.
+- **12-6c.** **Predicted:** the pulsed RC converges, because its failure begins right after
+  a breakpoint. If it still fails, that is a separate defect: recorded, not chased here.
+- **12-6d (accuracy not worse).** Coupled rectifier against the tight reference (entry
+  5.86e-3 V), coupled clipper against the exact answer (entry 8.2e-7 V). A number more than
+  10% worse must be explained.
+- **12-6e.** The standard path is untouched: the non-coupled cases of the 13-10 snapshot are
+  bit-identical.
+- **12-6f.** `test_stress_deep_forward_clipper` passes on the merits, with both paths
+  ending at `tend` and no threshold touched.
+- **12-6g (suites).**
+- **Injection.** Drop the ceiling: the 12-6a/b tests must go red.
+
+OUTCOME (2026-11-16): **PASS on all seven, and the prediction in 12-6c held.**
+
+- **12-6a: PASS.** The coupled path now ends **exactly** at `tend` (`last t - tend = 0.0`) on
+  all five circuits, from up to 9.05e-4 of `tend` past it.
+- **12-6b: PASS.** No breakpoint is jumped on the charge pump (0 of 20) or the pulsed RC
+  (0 of 29).
+- **12-6c: PASS, as predicted.** The linear pulsed RC that failed at t = 1.01435 µs
+  converges, places a point on every edge, and agrees with the standard path
+  (`test_gate_12_6_a_grown_step_cannot_cross_an_edge`).
+- **12-6d: PASS.** Accuracy is unchanged: rectifier 5.8568e-3 V against the tight reference
+  both before and after, and clipper 8.231e-7 V against the exact answer both before and
+  after. Point counts are identical (718, 1106, 857, 808, 1114), so the cap acted only where
+  a step would have crossed an event.
+- **12-6e: PASS.** 24 of 25 snapshot cases are bit-identical. The coupled rectifier moved
+  5.7e-7 with identical counts, because its last point is now at `tend` instead of past it.
+- **12-6f: PASS.** `test_stress_deep_forward_clipper` passes with its threshold untouched:
+  both paths now report the value at the same time.
+- **12-6g: PASS.** See 13-10g.
+- **Injection: PASS.** Without the ceiling, both 12-6 tests and the deep-clipper stress
+  test go red.
+- **Recorded, not acted on: the stress test compares the wrong thing.** It compares the
+  two paths' last values. That is only meaningful if both end at `tend`, which is now
+  guaranteed. On a sine at a zero crossing it is still a fragile instrument.
+
 ---
 
 ## Order and dependencies

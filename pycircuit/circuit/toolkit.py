@@ -183,7 +183,7 @@ class Toolkit:
         return {}
 
     def batched_contributions(self, circuit, groups, methodname, x, args,
-                              params_tree, ndim):
+                              params_tree, ndim, skip=None):
         """Stamp contributions for grouped elements, or None if not batching.
 
         Returning ``None`` -- the base behaviour -- tells the circuit that
@@ -197,6 +197,9 @@ class Toolkit:
             args: Extra arguments the element method takes (``epar`` first).
             params_tree: Optional parameter override tree.
             ndim: 2 for a matrix stamp, 1 for a vector stamp.
+            skip: STAGE 13-11 -- a frozenset of instance names to leave out,
+                or None.  A batching toolkit must honour it: the circuit's own
+                loop never sees a grouped instance, so nothing else would.
 
         Returns:
             ``(values, indices)`` where ``indices`` is ``(rows, cols)`` for
@@ -318,9 +321,10 @@ class JAXToolkit(Toolkit):
             if not (hasattr(cls, 'eval_i_pure') or hasattr(cls, 'eval_q_pure')):
                 continue
             group = groups.setdefault(cls, {
-                'instances': [], 'nodemaps_2d': [], 'params': {},
+                'instances': [], 'names': [], 'nodemaps_2d': [], 'params': {},
                 'rows': [], 'cols': [], '1d_indices': []})
             group['instances'].append(element)
+            group['names'].append(instance_name)
             group['nodemaps_2d'].append(circuit._map_indices_1d[instance_name])
             rows, cols = circuit._map_indices_2d[instance_name]
             group['rows'].append(rows)
@@ -410,11 +414,39 @@ class JAXToolkit(Toolkit):
 
         return batched_eval_func
 
+    @staticmethod
+    def _kept(group, skip):
+        """STAGE 13-11 -- the slice of a group that survives ``skip``.
+
+        Returns ``None`` when nothing in the group is skipped (the common case,
+        and the one that must stay exactly as before), else ``(keep, rows,
+        cols, flat)``: the kept instance positions and their scatter indices.
+        Node maps, parameters and indices are sliced by the SAME positions --
+        slicing one and not the others is a scatter into the wrong entries,
+        which is a plausible wrong matrix rather than a crash.  Cached per
+        group and skip set, since PCNR passes the same set every iteration.
+        """
+        if not skip or skip.isdisjoint(group['names']):
+            return None
+        cache = group.setdefault('_skip_cache', {})
+        hit = cache.get(skip)
+        if hit is None:
+            n = len(group['names'])
+            keep = np.array([k for k, name in enumerate(group['names'])
+                             if name not in skip], dtype=int)
+            hit = (keep,
+                   np.asarray(group['rows']).reshape(n, -1)[keep].ravel(),
+                   np.asarray(group['cols']).reshape(n, -1)[keep].ravel(),
+                   np.asarray(group['1d_indices']).reshape(n, -1)[keep].ravel())
+            cache[skip] = hit
+        return hit
+
     def batched_contributions(self, circuit, groups, methodname, x, args,
-                              params_tree, ndim):
+                              params_tree, ndim, skip=None):
         """Evaluate every grouped class in one vmapped call per class."""
         if not groups or x is None:
             return None
+        import jax
 
         method_key = 'i' if methodname in ('G', 'i') else 'q'
         want_jacobian = methodname in ('G', 'C')
@@ -422,20 +454,29 @@ class JAXToolkit(Toolkit):
 
         values, rows, cols, flat = [], [], [], []
         for cls, group in groups.items():
-            evaluate = self.generate_batched_eval(cls, method_key)
             params = group['params']
             if params_tree is not None and cls.__name__ in params_tree:
                 params = params_tree[cls.__name__]
-            value_batch, jacobian_batch = evaluate(
-                x[group['nodemaps_2d']], params, epar)
+            nodemaps = group['nodemaps_2d']
+            g_rows, g_cols, g_flat = group['rows'], group['cols'], group['1d_indices']
+            count = len(group['instances'])
+            kept = self._kept(group, skip)
+            if kept is not None:
+                keep, g_rows, g_cols, g_flat = kept
+                count = len(keep)
+                if count == 0:
+                    continue        # the whole class is skipped: not evaluated
+                nodemaps = nodemaps[keep]
+                params = jax.tree_util.tree_map(lambda a: a[keep], params)
+            evaluate = self.generate_batched_eval(cls, method_key)
+            value_batch, jacobian_batch = evaluate(x[nodemaps], params, epar)
             batch = jacobian_batch if want_jacobian else value_batch
-            values.append(self.reshape(
-                batch, (len(group['instances']), -1)).flatten())
+            values.append(self.reshape(batch, (count, -1)).flatten())
             if ndim == 2:
-                rows.append(group['rows'])
-                cols.append(group['cols'])
+                rows.append(g_rows)
+                cols.append(g_cols)
             else:
-                flat.append(group['1d_indices'])
+                flat.append(g_flat)
 
         if not values:
             return None

@@ -117,9 +117,11 @@ The PCNR devices are left out of the ordinary assembly (``SubCircuit.G`` and
 60 diodes a PCNR Newton iteration costs 772 µs against 1081 µs for classic
 limiting. Until gate 13-8 it cost 1774 µs: every PCNR device was assembled at the
 node voltage and then subtracted out again. That only stayed finite because of the
-trap described below. A toolkit that evaluates a device class in a batch (JAX)
-refuses a ``skip`` of that class rather than stamping it anyway; masking a batch
-is not implemented.
+trap described below. The JAX toolkit, which evaluates each device class in one
+batch, honours ``skip`` by slicing the batch (gate 13-11). PCNR therefore runs on
+a JAX-toolkit circuit with the numeric toolkit's iteration counts and answers.
+Before 13-8 it went nan there on any large overshoot, because autodiff makes the
+diode honest and the old subtraction then cancelled an overflowed current.
 
 **In transient, PCNR and classic limiting produce identical results** — the same
 step count, the same step times, and the same waveform to nine figures on a
