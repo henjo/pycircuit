@@ -1650,6 +1650,12 @@ class Transient(Analysis):
                     + np.asarray(self.cir.u(t, self.epar, analysis=self.par.analysis),
                                  dtype=float),
                     dtype=float)
+                ## Counted here as `_newton` counts on the classic path.  It was
+                ## not counted at all, so a PCNR run reported 0 Newton iterations
+                ## -- the silently-zero statistic stage 6 removed elsewhere.
+                stats = getattr(self, 'statistics', None)
+                if stats is not None:
+                    stats.newton_iterations += int(feval)
                 return x, feval, J, f
 
         raise NoConvergenceError(

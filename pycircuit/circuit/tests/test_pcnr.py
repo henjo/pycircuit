@@ -994,3 +994,14 @@ def test_gate_14_3_a_caller_that_does_not_move_the_charge_is_refused():
     v = np.zeros(len(js))
     with pytest.raises(NotImplementedError, match='caller did not'):
         P.augmented_system(c, x, v, js, defaultepar, J_extra=np.zeros((c.n, c.n)))
+
+
+def test_the_pcnr_timestep_path_counts_its_newton_iterations():
+    """It counted none, so a PCNR run reported 0 Newton iterations.  Measured
+    after the fix: 9647 on the 5 V rectifier against classic's 9654."""
+    tran = Transient(_rectifier(), toolkit=numeric, reltol=1e-5, pcnr=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tran.solve(tend=2e-3, timestep=1e-5)
+    s = tran.statistics
+    assert s.newton_iterations >= s.accepted_steps > 0
