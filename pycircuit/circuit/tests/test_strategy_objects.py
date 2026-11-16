@@ -80,3 +80,30 @@ def test_analysis_rejects_the_old_string_form_clearly():
     dc2 = DC(_rc_circuit(), scaler='none')
     with pytest.raises(TypeError, match='Scaler instance'):
         dc2._get_scaler()
+
+
+def test_the_operating_point_gets_the_transients_solver_and_scaler():
+    """Roadmap sec. 330.  `_solve_operating_point` forwards its solver and
+    scaler -- "the same Newton strategy as every step that follows it" --
+    but filtered what it forwards by `DC.parameters`, which lacks the
+    `Analysis` base's `nrsolver` and `scaler`: the operating point never got
+    either.  Asserted on the objects the inner `DC` is built with, the same
+    instances, and not on the source text."""
+    from pycircuit.circuit import dcanalysis
+    seen = []
+    real = dcanalysis.DC.__init__
+
+    def spy(self, *a, **k):
+        seen.append(k)
+        return real(self, *a, **k)
+    nr, sc = DampedNewton(), RowMaxScaler()
+    dcanalysis.DC.__init__ = spy
+    try:
+        Transient(_rc_circuit(), nrsolver=nr, scaler=sc).solve(tend=1e-6,
+                                                               timestep=1e-7)
+        Transient(_rc_circuit()).solve(tend=1e-6, timestep=1e-7)
+    finally:
+        dcanalysis.DC.__init__ = real
+    given, unset = seen
+    assert given.get('nrsolver') is nr and given.get('scaler') is sc, given
+    assert 'nrsolver' not in unset and 'scaler' not in unset, unset

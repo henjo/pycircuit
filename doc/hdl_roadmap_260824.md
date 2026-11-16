@@ -16250,3 +16250,28 @@ test's).
 Newton iterations on the same circuit (57 steps) -- because the coupled stage Newton (`_coupled_stage_solver`) and its PCNR
 twin (`_rk_step_coupled_pcnr`) are loops of their own, and neither adds to the statistic.  Counting them changes a reported
 number of every Radau run, PCNR or not, which is a decision about Radau's statistics and not a port item.
+
+## 2026-11-16 — 330. The transient's operating point gets its solver and scaler
+
+**Why**  Ported from the branch that diverged at 8048e424 (15a2ff2 there), where it was found when an injection meant to show a
+duplicate warning produced none.  `Transient._solve_operating_point`'s docstring says the inner `DC` is built "with the same
+Newton strategy as every step that follows it", and it forwards `nrsolver` and `scaler` -- but filtered what it forwards by
+`DC.parameters`, the class's own list, which lacks the `Analysis` base's `nrsolver`, `scaler` and `linearsolver` (merged into
+each instance at construction).  Measured here before any change: `Transient(nrsolver=DampedNewton(), scaler=RowMaxScaler())`
+built its operating point's `DC` with neither.  Line (set before): (a) the operating point's `DC` gets the transient's own
+`nrsolver` and `scaler` objects when they are set, and nothing it did not get before when they are not; (b) no deck moves --
+none sets either; (c) suite, bites.
+
+**What.**  The filter is the union of `DC.parameters` and `Analysis.parameters`; the list it filters is unchanged.
+`linearsolver`, the base's third parameter, is not added: the list is the method's own declaration of what the operating
+point shares, and handing it the transient's linear solver changes which solver every such run's DC uses -- a decision of
+its own (the diverged branch forwarded it; it is not ported).
+
+**Measured.**  (a) MET: the same `DampedNewton` and `RowMaxScaler` instances reach the inner `DC`; with neither set, neither
+key is passed.  (b) Not run, by construction: no deck, forcing or override passes `nrsolver` or `scaler`
+(`run_deck`, `settings.force_run`, `spice_suite.OVERRIDES`).  (c) Suite: see the commit.  Under DC's default (`pcnr=None`,
+PCNR where a device takes part) a forwarded `nrsolver` is used where the ordinary chain is -- no participant, or PCNR's
+fallback -- which is DC's own rule and is not changed here.
+
+**Tests.**  `test_strategy_objects` +1 (the inner `DC`'s keyword arguments, by identity); three bites, three bit (the filter
+back to `DC.parameters`, `nrsolver` dropped from the list, `scaler` dropped).

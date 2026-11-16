@@ -293,8 +293,14 @@ class _InitialState:
 
         ## Only forward what DC actually declares, so a parameter that exists on
         ## Transient but not on DC (e.g. `integrator`) does not raise a KeyError,
-        ## and so this keeps working if either parameter list changes.
-        dc_par_names = {p.name for p in DC.parameters}
+        ## and so this keeps working if either parameter list changes.  What DC
+        ## declares includes its base's: `nrsolver` and `scaler` are `Analysis`
+        ## parameters, merged into each instance, and filtering by
+        ## `DC.parameters` alone dropped them -- the operating point never got
+        ## the steps' solver or scaler (roadmap sec. 330).
+        from pycircuit.circuit.analysis import Analysis
+        dc_par_names = ({p.name for p in DC.parameters}
+                        | {p.name for p in Analysis.parameters})
         shared = {}
         for name in ('reltol', 'iabstol', 'vabstol', 'maxiter',
                      'bypass', 'bypasstol', 'epar', 'nrsolver', 'scaler'):
