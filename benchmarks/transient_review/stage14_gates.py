@@ -172,7 +172,7 @@ def _tran(pcnr, coupled=False, reltol=1e-5, build=None):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         res = t.solve(tend=1.6e-6, timestep=2.5e-9, coupled_lte=coupled)
-    w = res.v('c')
+    w = res.v('d' if build is jfet_stage else 'c')
     s = t.statistics
     return (np.asarray(w.x, float).ravel(), np.asarray(w.y, float).ravel(),
             (s.accepted_steps, s.rejected_steps, s.newton_iterations))
@@ -281,6 +281,136 @@ def coupled():
               % (label, n, float(e.max()), float(np.median(e)), t[-1] - 1.6e-6))
 
 
+## ------------------------------------------------------------ 14-5: JFET
+
+JP = {'VTO': -2.0, 'BETA': 1e-3, 'LAMBDA': 0.01, 'IS': 1e-14}
+
+
+def jfet_sat_didv(vgs, vgd, p=JP):
+    """Analytic d(id, ig, is)/d(vgs, vgd) in forward saturation (vds > 0)."""
+    VTO, B, L, IS = p['VTO'], p['BETA'], p['LAMBDA'], p['IS']
+    vds = vgs - vgd
+    ov = vgs - VTO
+    did_gs = 2 * B * ov * (1 + L * vds) + B * ov ** 2 * L
+    did_gd = -B * ov ** 2 * L
+    ggs, ggd = IS * np.exp(vgs / VT) / VT, IS * np.exp(vgd / VT) / VT
+    return np.array([[did_gs, did_gd - ggd],
+                     [ggs, ggd],
+                     [-did_gs - ggs, -did_gd]])
+
+
+def jfet_cs(vg, vdd=10.0, rd=2e3, rg=1e6):
+    from pycircuit.circuit.circuit import SubCircuit
+    from pycircuit.circuit.elements import R, VS
+    from pycircuit.circuit.semiconductors import JFET
+    c = SubCircuit(toolkit=numeric)
+    c['VDD'] = VS('vdd', gnd, v=vdd)
+    c['VG'] = VS('vg', gnd, v=vg)
+    c['RD'] = R('vdd', 'd', r=rd)
+    c['RG'] = R('vg', 'g', r=rg)
+    c['J1'] = JFET('d', 'g', gnd, **JP)
+    return c
+
+
+JFET_CASES = [('saturation', lambda: jfet_cs(-1.0)),
+              ('triode', lambda: jfet_cs(0.0, vdd=1.0, rd=100.0)),
+              ('gate forward', lambda: jfet_cs(2.0, rg=1e3)),
+              ('cut off', lambda: jfet_cs(-3.0))]
+
+
+def jfet_stage():
+    """A JFET stage with a capacitive load and a pulsed gate -- the device has no
+    charge model, so the LTE comes from the load."""
+    from pycircuit.circuit.circuit import SubCircuit
+    from pycircuit.circuit.elements import R, C, VS, VPulse
+    from pycircuit.circuit.semiconductors import JFET
+    per = 1e-6
+    c = SubCircuit(toolkit=numeric)
+    c['VDD'] = VS('vdd', gnd, v=10.0)
+    c['VG'] = VPulse('vg', gnd, v1=-3.0, v2=1.0, td=per / 10, tr=per / 100,
+                     tf=per / 100, pw=per / 2, per=per)
+    c['RG'] = R('vg', 'g', r=1e3)
+    c['RD'] = R('vdd', 'd', r=2e3)
+    c['CL'] = C('d', gnd, c=1e-11)
+    c['J1'] = JFET('d', 'g', gnd, **JP)
+    return c
+
+
+def jfet():
+    from pycircuit.circuit.semiconductors import JFET
+    try:
+        import jax  # noqa: F401
+        from pycircuit.circuit.toolkit import jaxtoolkit
+    except Exception:  # noqa: BLE001
+        jaxtoolkit = None
+    M = JFET._pcnr_map()
+    print('14-5a')
+    for label, vgs, vgd in (('saturation', -1.0, -8.5), ('triode', 0.0, -0.05),
+                            ('cut off', -3.0, -13.0), ('gate forward', 0.7, -7.0)):
+        v = np.array([vgs, vgd])
+        D = np.asarray(JFET.pcnr_didv(v, JP, defaultepar, numeric), dtype=float)
+        GM = np.asarray(numeric.jacobian(JFET.eval_i_pure, M @ v, JP, defaultepar),
+                        dtype=float) @ M
+        line = '  %-13s D == G@M %s' % (label, bool(np.array_equal(D, GM)))
+        if jaxtoolkit is not None:
+            DJ = np.asarray(JFET.pcnr_didv(v, JP, defaultepar, jaxtoolkit), dtype=float)
+            line += ' | autodiff vs numeric rel %.2e' % (
+                float(np.max(np.abs(DJ - D)) / np.max(np.abs(DJ))))
+            if label == 'saturation':
+                A = jfet_sat_didv(vgs, vgd)
+                line += ' | autodiff vs analytic rel %.2e' % (
+                    float(np.max(np.abs(DJ - A)) / np.max(np.abs(A))))
+        print(line)
+    print('14-5b')
+    for label, b in JFET_CASES:
+        xc, its_c = Gx.dc_classic(b)
+        c = b()
+        with Count(JFET, ('limit', 'G', 'i')) as cnt:
+            xp, _vp, its_p = P.solve_dc(c, gnd, maxiter=500)
+        rel = float(np.max(np.abs(np.asarray(xp, float) - xc)) / np.max(np.abs(xc)))
+        print('  %-13s classic %2d its | PCNR %2d its | max rel diff %.3e | JFET calls %s'
+              % (label, its_c[0], its_p, rel, cnt.n))
+
+
+def jfet_tran():
+    """14-5c."""
+    from pycircuit.circuit.semiconductors import JFET
+    out = {}
+    for pc in (False, True):
+        names = ('limit', 'G', 'i')
+        calls = dict.fromkeys(names, 0)
+        real_m = {k: getattr(JFET, k) for k in names}
+        real_step = Transient._solve_timestep_pcnr
+        armed = {'on': False}
+
+        def step(self, *a, **k):
+            armed['on'] = True
+            return real_step(self, *a, **k)
+
+        def counted(name):
+            def spy(*a, **k):
+                if armed['on']:
+                    calls[name] += 1
+                return real_m[name](*a, **k)
+            return spy
+        Transient._solve_timestep_pcnr = step
+        for k in names:
+            setattr(JFET, k, counted(k))
+        try:
+            t, y, n = _tran(pc, build=jfet_stage)
+        finally:
+            Transient._solve_timestep_pcnr = real_step
+            for k in names:
+                setattr(JFET, k, real_m[k])
+        out[pc] = (t, y, n, dict(calls), armed['on'])
+    (tc, yc, nc, _c, _a), (tp, yp, np_, cp, ap) = out[False], out[True]
+    same = tc.shape == tp.shape
+    d = float(np.max(np.abs(yc - yp)) / np.max(np.abs(yc))) if same else float('nan')
+    dt = float(np.max(np.abs(tc - tp))) if same else float('nan')
+    print('JFET stage: classic %s | PCNR %s (PCNR path ran: %s) | waveform max rel diff %.3e '
+          '| max |dt| %.2e | JFET calls after the op %s' % (nc, np_, ap, d, dt, cp))
+
+
 if __name__ == '__main__':
     {'matrix': matrix, 'dc': dc, 'jax': jax, 'tran': tran, 'jacobian': jacobian,
-     'coupled': coupled}[sys.argv[1]]()
+     'coupled': coupled, 'jfet': jfet, 'jfet_tran': jfet_tran}[sys.argv[1]]()

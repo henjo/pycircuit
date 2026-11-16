@@ -1005,3 +1005,164 @@ def test_the_pcnr_timestep_path_counts_its_newton_iterations():
         tran.solve(tend=2e-3, timestep=1e-5)
     s = tran.statistics
     assert s.newton_iterations >= s.accepted_steps > 0
+
+
+## ---------------------------------------------------------------------------
+## GATE 14-5 -- JFET under PCNR, and the guard that keeps every classic limiter
+## inside PCNR.  Entry: `pcnr=True` on a JFET circuit silently ran classic
+## limiting (3-11 `JFET.limit` calls) and `P.solve_dc` refused it.
+## ---------------------------------------------------------------------------
+
+_JFET_P = {'VTO': -2.0, 'BETA': 1e-3, 'LAMBDA': 0.01, 'IS': 1e-14}
+
+
+def _jfet_cs(vg, vdd=10.0, rd=2e3, rg=1e6):
+    from pycircuit.circuit.semiconductors import JFET
+    c = SubCircuit(toolkit=numeric)
+    c['VDD'] = VS('vdd', gnd, v=vdd)
+    c['VG'] = VS('vg', gnd, v=vg)
+    c['RD'] = R('vdd', 'd', r=rd)
+    c['RG'] = R('vg', 'g', r=rg)
+    c['J1'] = JFET('d', 'g', gnd, **_JFET_P)
+    return c
+
+
+_JFET_CIRCUITS = {'saturation': (-1.0, 10.0, 2e3, 1e6), 'triode': (0.0, 1.0, 100.0, 1e6),
+                  'gate_forward': (2.0, 10.0, 2e3, 1e3), 'cut_off': (-3.0, 10.0, 2e3, 1e6)}
+
+
+@pytest.mark.parametrize('vgs,vgd', [(-1.0, -8.5), (0.0, -0.05), (-3.0, -13.0), (0.7, -7.0)],
+                         ids=['saturation', 'triode', 'cutoff', 'gate_forward'])
+def test_gate_14_5_jfet_pcnr_didv_is_the_device_jacobian_through_the_map(vgs, vgd):
+    from pycircuit.circuit.semiconductors import JFET
+    v = np.array([vgs, vgd])
+    M = JFET._pcnr_map()
+    D = np.asarray(JFET.pcnr_didv(v, _JFET_P, defaultepar, numeric), dtype=float)
+    GM = np.asarray(numeric.jacobian(JFET.eval_i_pure, M @ v, _JFET_P, defaultepar),
+                    dtype=float) @ M
+    assert np.array_equal(D, GM)
+
+
+def test_gate_14_5_jfet_pcnr_didv_is_shichman_hodges_under_autodiff():
+    """Forward saturation, where the analytic form is short.  Measured 1.2e-17."""
+    pytest.importorskip('jax')
+    from pycircuit.circuit.semiconductors import JFET
+    from pycircuit.circuit.toolkit import jaxtoolkit
+    vgs, vgd = -1.0, -8.5
+    VT = numeric.kboltzmann * defaultepar.T / numeric.qelectron
+    VTO, B, L, IS = (_JFET_P[k] for k in ('VTO', 'BETA', 'LAMBDA', 'IS'))
+    vds, ov = vgs - vgd, vgs - VTO
+    dgs, dgd = 2 * B * ov * (1 + L * vds) + B * ov ** 2 * L, -B * ov ** 2 * L
+    ggs, ggd = IS * np.exp(vgs / VT) / VT, IS * np.exp(vgd / VT) / VT
+    A = np.array([[dgs, dgd - ggd], [ggs, ggd], [-dgs - ggs, -dgd]])
+    D = np.asarray(JFET.pcnr_didv(np.array([vgs, vgd]), _JFET_P, defaultepar,
+                                  jaxtoolkit), dtype=float)
+    assert np.max(np.abs(D - A)) / np.max(np.abs(A)) < 1e-12
+
+
+@pytest.mark.parametrize('case', sorted(_JFET_CIRCUITS))
+def test_gate_14_5_pcnr_solves_jfet_circuits(case):
+    import warnings
+    from pycircuit.circuit.semiconductors import JFET
+    vg, vdd, rd, rg = _JFET_CIRCUITS[case]
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        ref = np.asarray(DC(_jfet_cs(vg, vdd, rd, rg), toolkit=numeric).solve().x,
+                         dtype=float).ravel()
+    calls = {'limit': 0, 'G': 0, 'i': 0}
+    real = {k: getattr(JFET, k) for k in calls}
+
+    def counted(name):
+        def spy(*a, **k):
+            calls[name] += 1
+            return real[name](*a, **k)
+        return spy
+    for k in calls:
+        setattr(JFET, k, counted(k))
+    try:
+        x, _v, _its = P.solve_dc(_jfet_cs(vg, vdd, rd, rg), gnd)
+    finally:
+        for k in calls:
+            setattr(JFET, k, real[k])
+    assert calls == {'limit': 0, 'G': 0, 'i': 0}, calls
+    np.testing.assert_allclose(np.asarray(x, dtype=float), ref, rtol=1e-9, atol=1e-12)
+
+
+def test_gate_14_5_jfet_stage_takes_the_same_steps_under_pcnr():
+    """13-6's standard on a JFET stage with a capacitive load.  Measured: the
+    same 1427 accepted, 26 rejected steps and 2785 Newton iterations; waveform
+    within 2.2e-12."""
+    import warnings
+    from pycircuit.circuit.elements import C as Cap, VPulse
+    from pycircuit.circuit.semiconductors import JFET
+    from pycircuit.circuit.transient import Transient
+
+    def stage():
+        per = 1e-6
+        c = SubCircuit(toolkit=numeric)
+        c['VDD'] = VS('vdd', gnd, v=10.0)
+        c['VG'] = VPulse('vg', gnd, v1=-3.0, v2=1.0, td=per / 10, tr=per / 100,
+                         tf=per / 100, pw=per / 2, per=per)
+        c['RG'] = R('vg', 'g', r=1e3)
+        c['RD'] = R('vdd', 'd', r=2e3)
+        c['CL'] = Cap('d', gnd, c=1e-11)
+        c['J1'] = JFET('d', 'g', gnd, **_JFET_P)
+        return c
+    runs = {}
+    real_step = Transient._solve_timestep_pcnr
+    pcnr_steps = {'n': 0}
+
+    def step(self, *a, **k):
+        pcnr_steps['n'] += 1
+        return real_step(self, *a, **k)
+    Transient._solve_timestep_pcnr = step
+    try:
+        for pc in (False, True):
+            tran = Transient(stage(), toolkit=numeric, reltol=1e-5, pcnr=pc)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                res = tran.solve(tend=1.6e-6, timestep=2.5e-9)
+            runs[pc] = (tran.statistics, np.asarray(res.v('d').y, dtype=float).ravel())
+    finally:
+        Transient._solve_timestep_pcnr = real_step
+    ## Identical runs agree trivially: without this, a JFET that silently fell
+    ## through to classic limiting would pass (gate 13-7's lesson, re-learned by
+    ## this test's own injection run).
+    assert pcnr_steps['n'] > 100, 'the PCNR timestep path never ran'
+    (sc, yc), (sp, yp) = runs[False], runs[True]
+    assert (sp.accepted_steps, sp.rejected_steps) == (sc.accepted_steps, sc.rejected_steps)
+    assert yp.shape == yc.shape
+    assert np.max(np.abs(yp - yc)) / np.max(np.abs(yc)) < 1e-6
+
+
+def test_gate_14_5_every_classic_limiter_takes_part_in_pcnr():
+    """THE GUARD.  A device class with a classic limiter -- a non-empty
+    `junctions`, or its own `limit` -- that declares no `pcnr_junctions` is
+    silently UNLIMITED under `pcnr=True`.  That is how JFET went unnoticed.
+    `Semiconductor` (generic, a no-op without junctions) and `SubCircuit` (it
+    only propagates) are the two exemptions, and they are named.  Only package
+    classes are checked: test modules define limiter subclasses of their own."""
+    import pycircuit.circuit.elements  # noqa: F401  -- register the classes
+    import pycircuit.circuit.semiconductors as semi
+    from pycircuit.circuit.circuit import Circuit, SubCircuit as Sub
+
+    exempt = {semi.Semiconductor, Sub}
+
+    def all_subclasses(cls):
+        for sub in cls.__subclasses__():
+            yield sub
+            yield from all_subclasses(sub)
+
+    offenders, checked = [], []
+    for cls in set(all_subclasses(Circuit)):
+        mod = cls.__module__
+        if not mod.startswith('pycircuit.circuit') or '.tests' in mod or cls in exempt:
+            continue
+        has_limiter = bool(getattr(cls, 'junctions', ())) or 'limit' in cls.__dict__
+        if has_limiter:
+            checked.append(cls.__name__)
+            if not getattr(cls, 'pcnr_junctions', ()):
+                offenders.append(cls.__name__)
+    assert {'Diode', 'BJT', 'JFET'} <= set(checked), checked
+    assert not offenders, \
+        'classic limiter but no pcnr_junctions (unlimited under pcnr=True): %s' % offenders

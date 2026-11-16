@@ -98,10 +98,20 @@ every integrator). On a BJT switching stage, PCNR and classic limiting take the
 same 1136 accepted and 36 rejected steps. The Jacobian given to the step
 controller matches a finite difference of the full transient residual to 7.5e-10.
 
-**What does not take part, and what that means.** ``JFET`` and ``Varactor`` have
-classic limiters but no PCNR junctions. Under ``pcnr=True`` they are not limited
-at all, and the same holds for any device without ``pcnr_junctions``. The
-transient's own DC operating point still uses classic limiting.
+``JFET`` takes part too (gate 14-5). Its unknowns are the gate-source and
+gate-drain junctions its classic limiter acts on, so PCNR limits exactly what
+classic limiting limits; the channel is limited by neither.
+
+**What does not take part, and why that is not a gap.** ``ZenerDiode`` and
+``Varactor`` have no classic limiter. The Zener is deliberately left unlimited
+(a forward-junction limiter would step through its breakdown knee), and the
+varactor has nothing to limit: its current is zero. Under ``pcnr=True`` they are
+treated exactly as classic limiting treats them. A test enforces the invariant
+that every device class with a classic limiter declares ``pcnr_junctions``. Without
+it, a new device's limiter would be silently dropped under ``pcnr=True``. (An earlier
+version of this page said ``Varactor`` had a classic limiter; it does not.)
+
+The transient's own DC operating point still uses classic limiting.
 
 What PCNR removes, stated correctly
 ===================================

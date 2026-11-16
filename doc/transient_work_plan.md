@@ -6286,6 +6286,8 @@ the channel, not a junction, and that has not been validated.
 - **Recorded limitation, pre-existing.** Under `pcnr=True`, a device that has a classic
   limiter but no PCNR junctions (`JFET`, `Varactor`) is not limited at all. That was already
   true of any non-diode device; this stage makes it true of fewer.
+  > **Corrected at gate 14-5: half false.** `Varactor` has no classic limiter. It declares no
+  > `junctions`, and its current is zero. `JFET` was the only real gap, and 14-5 closes it.
 
 OUTCOME 14-2 (2026-11-16): **PASS on b-e. 14-2a FAILED AS DECLARED at one of four biases;
 the instrument was wrong there, and it is restated and passed.**
@@ -6397,6 +6399,104 @@ OUTCOME 14-4 (2026-11-16): **DONE.**
 is the class the coupled path's comment calls worse than an absent one. It is fixed
 separately, so that 14-3e's bit-identity comparison, which includes the counts, is not
 mixed up with it.
+
+## Gate 14-5 — JFET under PCNR, and a correction to stage 14's record
+
+**Added 2026-11-16, on the maintainer's instruction to address the two items stage 14 left
+open.**
+
+**A CORRECTION FIRST.** 14-2's recorded limitation and `pcnr_limiting.rst` said "`JFET` and
+`Varactor` have classic limiters but no PCNR junctions". **That is half false.**
+`Varactor` declares no `junctions`, its current is identically zero, and its only
+nonlinearity is a charge with SPICE's FC linearisation. Classic limiting does nothing to it,
+so being unlimited under `pcnr=True` is not a gap. The claim came from reading the design
+study's §6 table, which lists Varactor's charge but not a limiter, as if it listed one. It was
+not checked against the class. **`JFET` is the one real gap.** Its classic limiter applies
+`pnjlim` to v_gs and v_gd, and nothing under `pcnr=True` does. The full list of classes with
+a classic limiter is `Diode`, `BJT` and `JFET`. `ZenerDiode` declares none deliberately
+(gate 5(a)), and `Varactor` declares none because it has nothing to limit.
+
+**Entry, measured on `b792883`.** On four JFET circuits (common-source in saturation and in
+triode, gate forward-biased, cut off), `DC(pcnr=True)` silently runs classic limiting, with 3
+to 11 `JFET.limit` calls, and `P.solve_dc` refuses: "no device in this circuit declares a
+PCNR junction".
+
+**Work.** `JFET` declares `pcnr_junctions = ((1, 2), (1, 0))`, the same gate-source and
+gate-drain junctions its classic limiter acts on. PCNR then limits exactly what classic
+limiting limits; the channel is limited by neither. JFET has no charge model, so 14-3's
+mechanism is not exercised. A static test pins the invariant: **every class in the package
+with a classic limiter (a non-empty `junctions`, or its own `limit`) declares
+`pcnr_junctions`.** A new device that adds one cannot then silently go unlimited under
+`pcnr=True`.
+
+- **14-5a (assert on the matrix).** `JFET.pcnr_didv == jacobian(eval_i_pure) @ M` exactly,
+  in saturation, triode, cut-off and gate-forward. In saturation, under autodiff, it
+  matches the analytic Shichman-Hodges-plus-gate-diodes derivative within 1e-12.
+- **14-5b (DC).** On the four circuits, PCNR converges to classic's point within 1e-9
+  relative, with `JFET.limit`/`G`/`i` called 0 times during `P.solve_dc`, and
+  `DC(pcnr=True)` runs PCNR. Iteration counts are reported.
+- **14-5c (transient).** A JFET stage with a capacitive load, under a pulsed gate: PCNR
+  and classic take identical step counts (13-6's standard), and no JFET node-voltage
+  evaluation happens after the operating point.
+- **14-5d (the guard).** The static test passes. With `JFET.pcnr_junctions` removed, it fails.
+- **Records.** The false Varactor claim is corrected in the plan and on the doc page, with
+  the original kept visible.
+
+OUTCOME 14-5 (2026-11-16): **PASS on all four.**
+- **14-5a: PASS.** `D == G @ M` exactly in saturation, triode, cut-off and gate-forward. In
+  saturation, autodiff against the analytic derivative: **1.2e-17**. (Autodiff against the
+  numeric difference is 3.8e-10 to 9.9e-10 where conductances are real, and 1.0 in cut-off.
+  That is the same ~1e-30 S floor as the BJT at 14-2a, and was not a declared instrument.)
+- **14-5b: PASS.** All four circuits converge to classic's point within **1.3e-13**, with
+  `JFET.limit`/`G`/`i` called 0 times. Iterations are classic's, except gate-forward,
+  11 -> 12 (+1).
+- **14-5c: PASS.** On the JFET stage, PCNR and classic take **identical** counts: 1427
+  accepted, 26 rejected, 2785 Newton iterations. Waveform within 2.2e-12, time points
+  within 4e-19 s, and 0 JFET node-voltage calls after the operating point.
+- **14-5d: PASS.** The guard checks `Diode`, `BJT` and `JFET` and finds no offender.
+- **Injection: PASS, after the test was fixed by its own injection.** Removing
+  `JFET.pcnr_junctions` first turned 10 of 11 tests red. **The 14-5c test stayed green,**
+  because without PCNR junctions both runs fall through to classic, and identical runs
+  agree trivially: 13-7's lesson again. The test now also asserts that the PCNR timestep path
+  ran, and all 11 go red.
+- **Records corrected:** the plan (beside the original 14-2 text) and `pcnr_limiting.rst`.
+
+## Gate 14-6 — the transient's DC operating point honours `pcnr`
+
+**Entry, measured on `b792883`.** `Transient._solve_operating_point` forwards
+`reltol`/`iabstol`/`vabstol`/`maxiter`/`bypass`/`bypasstol`/`epar`/`nrsolver`/`scaler` to
+`DC`, but not `pcnr`. So under `pcnr=True` the operating point is classic: 13-7 measured 1
+`Diode.limit` call there, and 14-3d measured 3 `BJT.limit` calls. Whether PCNR's DC is robust
+enough to take over was measured, not assumed. `DC(pcnr=True)` converges on **all 18**
+circuits where classic does: the six 13-4/13-5 circuits, the CE stage at three base
+resistances, five transient circuits' operating points, and the four JFET circuits. Thirteen
+answers are bit-identical, and the rest are within 6.0e-7 relative (the CE stage at rb = 1000).
+The classic DC's default solver is a plain `StandardNewton` with no continuation, so PCNR's
+DC gives up no fallback the default had.
+
+**A second silently-ignored parameter, found doing this.** `DC(pcnr=True)` runs its own Newton
+loop and ignores `nrsolver` without saying so. The PCNR transient timestep does the same.
+Forwarding `pcnr` to the operating point would extend that to the one place `nrsolver` is
+still honoured under `pcnr=True`. **Declared fix:** with `pcnr=True` and an explicit
+`nrsolver`, both `DC` and `Transient` emit a `RuntimeWarning` naming the solver as unused. A
+warning rather than an error, because the combination is harmless: it simply does not do what
+it says.
+
+- **14-6a.** Under `Transient(pcnr=True)` the operating point runs PCNR, so `augmented_system`
+  is called before the first step. Classic limiter calls over the whole run are **0** (entry:
+  1 for a diode, 3 for the BJT switch).
+- **14-6b.** On the PCNR transient cases (three diode, the BJT switch, the JFET stage), step
+  counts are unchanged and waveforms move by no more than the operating point's own
+  tolerance (declared 1e-6 relative). The 13-6 and 14-3a step-identity tests still pass, and
+  they now compare a PCNR operating point with a classic one. A changed step count is a
+  finding to explain.
+- **14-6c.** `DC(pcnr=True, nrsolver=...)` and `Transient(pcnr=True, nrsolver=...)` warn;
+  without `nrsolver` there is no warning.
+- **14-6d.** `uic=True` is unaffected: it has no operating point.
+- **14-6e (suites)**, under both interpreters.
+- **Injection.** Stop forwarding `pcnr`: the 14-6a test must go red.
+
+OUTCOME 14-6:
 
 ---
 

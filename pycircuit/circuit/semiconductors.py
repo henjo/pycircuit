@@ -372,6 +372,11 @@ class JFET(Semiconductor):
     terminals = ('d', 'g', 's')
     ## terminals ('d', 'g', 's'): G-S moves the gate, G-D moves the drain.
     junctions = ((1, 2, 1), (1, 0, 0))
+    ## STAGE 14-5 -- under PCNR the same gate-source and gate-drain junctions are
+    ## the device's own unknowns, so PCNR limits exactly what classic limiting
+    ## limits (the gate diodes; the channel is limited by neither).  They span
+    ## d, g, s, so the channel current is a function of them too: v_ds = v_gs - v_gd.
+    pcnr_junctions = ((1, 2), (1, 0))
     instparams = [
         Parameter('VTO', 'Threshold voltage', default=-2.0, unit='V'),
         Parameter('BETA', 'Transconductance parameter', default=1e-4, unit='A/V^2'),
