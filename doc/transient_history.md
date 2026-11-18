@@ -6208,3 +6208,28 @@ after it are new step sizes, each a fresh factorization, and ibmpg3t runs
 which had scaled the time from the step count, and Andreas accepted it as
 measured.  On the way, a C loop's session of rejections alone, which the
 Python then repeats, had its chord counts added twice; it is taken back now.
+
+## Bulk elements, B3: pulse current-source banks (2026-11-18)
+
+2026-11-18 (`doc/hdl_roadmap_260824.md`, 333; plan 261 L21).  After B2's
+resistor and capacitor banks, the IBM grids' import was led by their pulse
+current sources, each still a Python object of about 7 KB: 276 MB of
+ibmpg2t's 793 MB, 1.5 GB of ibmpg3t's 4.3 GB.  A bank can now hold pulse
+current sources too, as arrays of their pulse values, evaluated for all of
+them at once exactly as each source evaluates itself, and the C source table
+the stepping loops read takes a bank's sources as it takes the elements', so
+the C serves a banked run unchanged.  `import_netlist(bulk=True)` banks a
+pulse current source whose values are plain numbers and which has no AC
+value.  ibmpg2t's import now takes 4.5 s and 0.57 GB (22 s and 1.83 GB as
+elements), its 10 ns run peaks at 1.6 GB instead of 3.2, and its answers are
+the per-element run's within 2e-15 V, in the same steps.  ibmpg3t's import
+peak falls from 4.3 to 3.1 GB, over the 3.0 GB line set before: the estimate
+had counted everything the build added before the resistor bank as the
+sources', but part of it stays (the lists the banks are built from), and the
+resistor bank's node bookkeeping had fitted into memory the elements'
+construction had freed.  Andreas accepted it as measured.  What remains at
+the peak is reading and mapping the netlist, 2.7 GB before anything is
+built.  ibmpg3t's 10 ns run takes the per-element run's steps at the same
+times, within 6e-13 V, and peaks at 7.3 GB instead of 8.8.  Without the flag
+nothing changes, and the JAX transient now refuses a circuit holding a bank,
+by name, instead of failing obscurely.

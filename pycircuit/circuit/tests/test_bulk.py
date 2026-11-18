@@ -224,12 +224,17 @@ def test_a_copy_and_the_views_carry_the_banks(monkeypatch):
 
 
 def test_a_bank_refuses_what_it_cannot_be():
-    """A kind other than R or C, ends outside its nodes, arrays of unequal
-    length, and a name an element or a bank holds."""
+    """A kind other than R, C or I, ends outside its nodes, arrays of
+    unequal length, a current source bank without a pulse for each source,
+    a waveform on a resistor bank, and a name an element or a bank holds."""
     c = SubCircuit()
     c['r0'] = R('a', gnd, r=1.0)
-    with pytest.raises(ValueError, match='R or C'):
+    with pytest.raises(ValueError, match='R, C or I'):
         c.add_bank('lb', 'L', ['a', gnd], [0], [1], [1.0])
+    with pytest.raises(ValueError, match='a pulse'):
+        c.add_bank('ib', 'I', ['a', gnd], [0, 0], [1, 1], [0.0, 0.0], [[0, 1, 0, 1, 1, 1, 0]])
+    with pytest.raises(ValueError, match='no waveform'):
+        c.add_bank('rb', 'R', ['a', gnd], [0], [1], [1.0], [[0, 1, 0, 1, 1, 1, 0]])
     with pytest.raises(ValueError, match='outside'):
         c.add_bank('rb', 'R', ['a', gnd], [0], [2], [1.0])
     with pytest.raises(ValueError, match='one length'):
@@ -251,6 +256,9 @@ c1 2 0 1p
 c2 3 0 2p
 c3 4 0 1p ic=0.25
 i1 0 4 pulse(0 1m 1n 0.1n 0.1n 1n 4n)
+i2 0 3 dc 1u ac 1
+i3 0 2 pulse(0 0.5m 0.5n 0.2n 0.1n 1n 3n) ac 1
+i4 2 0 pulse(0.1m 0.3m 0.7n 0.1n 0.3n 0.5n 2n)
 .tran 10p 5n uic
 .end
 """
@@ -258,11 +266,12 @@ i1 0 4 pulse(0 1m 1n 0.1n 0.1n 1n 4n)
 
 def test_the_importer_banks_the_plain_resistors_and_capacitors(tmp_path):
     """`import_netlist(..., bulk=True)`: the resistors and the capacitors
-    whose one parameter is a number held as two banks (a capacitor with an
-    initial condition stays an element), the operating point and the
-    transient by node name the element-built import's within rounding (the
-    deck's resistors sit among its sources, a bank's after them: node 4's
-    voltage one ulp apart), the same steps."""
+    whose one parameter is a number, and the pulse current sources without
+    an AC value, held as three banks (a capacitor with an initial condition,
+    a DC current source and a pulse source with an AC value stay elements),
+    the operating point and the transient by node name the element-built
+    import's within rounding (the deck's resistors and sources sit among
+    each other, a bank's after them), the same steps."""
     from pycircuit.circuit.spice_import import import_netlist
     p = tmp_path / 'bulk.cir'
     p.write_text(_DECK)
@@ -277,11 +286,239 @@ def test_the_importer_banks_the_plain_resistors_and_capacitors(tmp_path):
             res = tr.solve(**kw)
         got[bulk] = (sorted(cir.elements), {n: float(dc.v(n)) for n in ('1', '2', '3', '4')},
                      {n: np.asarray(res.v(n).y, float) for n in ('2', '3', '4')}, tr.statistics.accepted_steps)
-    assert got[True][0] == ['c3', 'i1', 'v1']
-    assert [bk.kind for bk in imp.circuit._banks] == ['R', 'C']
-    assert [len(bk) for bk in imp.circuit._banks] == [4, 2]
+    assert got[True][0] == ['c3', 'i2', 'i3', 'v1']
+    assert [bk.kind for bk in imp.circuit._banks] == ['R', 'C', 'I']
+    assert [len(bk) for bk in imp.circuit._banks] == [4, 2, 2]
     assert got[True][3] == got[False][3]
     for n in ('1', '2', '3', '4'):
         assert abs(got[True][1][n] - got[False][1][n]) <= 1e-14, n
     for n in ('2', '3', '4'):
         assert np.max(np.abs(got[True][2][n] - got[False][2][n])) <= 1e-12, n
+
+
+## -- THE CURRENT SOURCE BANKS (`_bulk`, kind 'I'; plan 261 L21 B3) ------------
+
+def _sources(m=14, seed=3):
+    """`m` pulse current sources' nodes and values: random levels, edges
+    and periods -- no period, zero rise and fall (the floor), a zero delay,
+    a delay longer than the period (its next event from the period before
+    the one `t` falls in) among them -- and a DC value on some."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for k in range(m):
+        a, b = f'n{int(rng.integers(1, 9))}', ('0' if k % 3 else f'n{int(rng.integers(1, 9))}')
+        i1, i2 = (float(x) for x in rng.uniform(-1e-3, 1e-3, 2))
+        td, tr, tf, pw = (float(x) for x in rng.uniform(0.0, 2e-9, 4))
+        if k == 1:
+            tr = tf = 0.0
+        if k == 2:
+            td = 0.0
+        per = (0.0, 5e-9, 7.3e-9, 3.1e-9)[k % 4]
+        if k == 5:
+            ## (between one period and two: the period before `t`'s gives
+            ## the next event just after each period's start)
+            td, per = 2.55e-9, 1.7e-9
+        elif per:
+            per = max(per, td + tr + pw + tf + 1e-10)
+        out.append((a, b if b != a else '0', 0.0 if k % 2 else float(rng.uniform(-1e-4, 1e-4)),
+                    (i1, i2, td, tr, tf, pw, per)))
+    return out
+
+
+def _pulsed(banked, srcs=None, int_source=False):
+    """An RC chain with a supply and a pulsed voltage source (`int_source`:
+    and a constant current source of an int value, which the direct pass
+    adds as `u` does, in ints), then the pulse current sources `srcs`
+    (`_sources`) LAST: elements, or one current source bank -- the same
+    sources in the same order either way."""
+    srcs = _sources() if srcs is None else srcs
+    c = SubCircuit()
+    if int_source:
+        c['iint'] = IS('n2', gnd, i=1)
+    c['vdd'] = VS('n0', gnd, v=1.0)
+    for k in range(1, 9):
+        c[f'r{k}'] = R(f'n{k}', f'n{k - 1}', r=50.0 + 7 * k)
+        c[f'c{k}'] = C(f'n{k}', gnd, c=2e-13 * k)
+    from pycircuit.circuit.elements import VPulse
+    c['vp'] = VPulse('n9', gnd, v1=0.0, v2=0.5, td=0.3e-9, tr=0.2e-9, tf=0.2e-9, pw=1e-9, per=4e-9)
+    c['r9'] = R('n9', 'n4', r=500.0)
+    node = lambda n: gnd if n == '0' else n
+    if banked:
+        names, code = [], {}
+        for a, b, _i, _w in srcs:
+            for n in (a, b):
+                if n not in code:
+                    code[n] = len(names)
+                    names.append(node(n))
+        c.add_bank('ib', 'I', names, [code[a] for a, _b, _i, _w in srcs],
+                   [code[b] for _a, b, _i, _w in srcs], [i for _a, _b, i, _w in srcs],
+                   [w for _a, _b, _i, w in srcs])
+    else:
+        for k, (a, b, i, w) in enumerate(srcs):
+            c[f'i{k}'] = IPulse(node(a), node(b), i=i, i1=w[0], i2=w[1], td=w[2], tr=w[3],
+                                tf=w[4], pw=w[5], per=w[6])
+    return c
+
+
+def _corner_times(srcs):
+    """Times on, just before and just after every source's edges in its
+    first periods (as `Pulse` sums them), and some between."""
+    ts = {0.0, 1e-12, 2.5e-9, 1.37e-8, 4.1e-8}
+    for _a, _b, _i, (_i1, _i2, td, tr, tf, pw, per) in srcs:
+        tr, tf = max(tr, 1e-18), max(tf, 1e-18)
+        edges = (td, td + tr, td + tr + pw, td + tr + pw + tf)
+        for j in range(3 if per else 1):
+            for e in edges + ((per,) if per else ()):
+                t = j * per + e
+                ts.update((t, np.nextafter(t, -1.0), np.nextafter(t, 1.0), t + 3e-11))
+    return sorted(float(t) for t in ts if t >= 0.0)
+
+
+@pytest.mark.parametrize('path', ['direct', 'direct-int', 'plan', 'loop'])
+def test_a_source_bank_is_its_sources(path, monkeypatch):
+    """u, dudt and the next breakpoint of a current source bank: the same
+    sources as elements give the same bytes at every edge of every source,
+    a hair either side of it and between -- through the direct source pass
+    (its Python floats, and its arrays where a source's value is an int),
+    the plan's source loop and the legacy loop -- and nothing outside the
+    time domain."""
+    if path in ('plan', 'loop'):
+        monkeypatch.setattr(_stamp_plan, 'SOURCE_DIRECT', False)
+    if path == 'loop':
+        monkeypatch.setattr(_stamp_plan, 'SOURCE_PLAN', False)
+    arrays = []
+    real = _stamp_plan._SourceDirect._arrays
+    monkeypatch.setattr(_stamp_plan._SourceDirect, '_arrays',
+                        lambda self, *a: arrays.append(1) or real(self, *a))
+    from pycircuit.circuit import _tran_sources
+    monkeypatch.setattr(_tran_sources, 'ENABLED', False)
+    srcs = _sources()
+    e, b = (_pulsed(k, srcs, int_source=path == 'direct-int') for k in (False, True))
+    assert e.n == b.n and [n.name for n in e.nodes] == [n.name for n in b.nodes]
+    ts = _corner_times(srcs)
+    assert len(ts) > 300
+    before = _paths.snapshot()
+    for t in ts:
+        for an in ('tran', 'dc'):
+            assert e.u(t, analysis=an).tobytes() == b.u(t, analysis=an).tobytes(), (t, an)
+        assert e.dudt(t, analysis='tran').tobytes() == b.dudt(t, analysis='tran').tobytes(), t
+        assert e.next_event(t) == b.next_event(t), t
+    d = _paths.since(before)
+    key = {'direct': 'src.direct:served', 'direct-int': 'src.direct:served', 'plan': 'src.u:served',
+           'loop': 'u:called'}[path]
+    assert d.get(key, 0) >= 2 * len(ts), d
+    assert (len(arrays) >= 2 * len(ts)) == (path == 'direct-int'), len(arrays)
+    for an in ('ac', None):
+        assert np.array_equal(e.u(0.0, analysis=an), b.u(0.0, analysis=an)), an
+    ## (and the breakpoints walked as a run feeds them back: every corner)
+    t, seen = 0.0, 0
+    while t < 2e-8:
+        nxt = e.next_event(t)
+        assert nxt == b.next_event(t) and nxt > t
+        t, seen = nxt, seen + 1
+    assert seen > 60
+
+
+def test_the_source_table_holds_a_bank():
+    """The C sources' table (`_tran_sources`) built from the direct pass's
+    program holds the bank's sources after the elements': its `u` and its
+    earliest event the Python pass's bytes; a bank alone (no element source)
+    makes one too; a bank's arrays replaced, it no longer holds."""
+    from pycircuit.circuit import _tran_sources
+    srcs = _sources()
+    for c in (_pulsed(True, srcs), _bank_alone(srcs)):
+        c.u(0.0, analysis='tran')
+        sd = c._stamp_plan.methods['src:u'].direct
+        assert len(sd.banks) == 1
+        tab = _tran_sources.table_for(sd)
+        assert tab is not None and tab.ns == len(sd.ent) + len(srcs) and tab.holds()
+        for t in _corner_times(srcs)[::7]:
+            assert tab.u(t).tobytes() == sd.run(c, (t, None, 'tran')).tobytes(), t
+            assert tab.next_event(t) == _bank_next(c, t), t
+        bk = c._banks[0]
+        bk.wave = bk.wave.copy()
+        assert not tab.holds()
+
+
+def _bank_alone(srcs):
+    """The current source bank with resistors to ground and no source element."""
+    c = SubCircuit()
+    names = sorted({n for a, b, _i, _w in srcs for n in (a, b)} - {'0'})
+    for k, n in enumerate(names):
+        c[f'r{k}'] = R(n, gnd, r=100.0 + k)
+    full = names + [gnd]
+    ix = {n: k for k, n in enumerate(names)}
+    ix['0'] = len(names)
+    c.add_bank('ib', 'I', full, [ix[a] for a, _b, _i, _w in srcs], [ix[b] for _a, b, _i, _w in srcs],
+               [i for _a, _b, i, _w in srcs], [w for _a, _b, _i, w in srcs])
+    return c
+
+
+def _bank_next(c, t):
+    """The circuit's earliest event before `SubCircuit.next_event`'s
+    `maximum` with `t`: its elements' and its banks'."""
+    from pycircuit.circuit import _bulk
+    events = [el.next_event(t) for _i, el in c._hook_elements('next_event')]
+    return min(events + [_bulk.next_event(c, t)])
+
+
+@pytest.mark.parametrize('method', ['gear2', 'stage', 'transform'])
+def test_a_source_bank_run_is_its_sources_run(method, monkeypatch):
+    """The operating point and an adaptive run (Gear-2: the multistep C
+    loop; Radau: the stage loop, the transform loop) with the sources as
+    elements and as a bank: the same bytes and steps, the C loop and the C
+    table serving both; with the loops' C, then the table's, switched off
+    the banked run's bytes the same."""
+    from pycircuit.circuit import (
+        _tran_loop_c,
+        _tran_sources,
+        _tran_stageloop_c,
+        _tran_tcloop_c,
+    )
+    from pycircuit.circuit.integrator import RadauIIA3Integrator
+    srcs = _sources()
+
+    def run(banked):
+        c = _pulsed(banked, srcs)
+        before = _paths.snapshot()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            dc = DC(c, toolkit=numeric).solve()
+            kw = ({} if method == 'gear2' else
+                  {'integrator': RadauIIA3Integrator(), 'radau_transform': method == 'transform'})
+            tr = Transient(c, toolkit=numeric, **kw)
+            res = tr.solve(tend=1.2e-8, timestep=1e-10)
+        d = _paths.since(before)
+        st = tr.statistics
+        return (_h(dc.x), _h(res.x), st.accepted_steps, st.rejected_steps), d
+    (e, de), (b, db) = run(False), run(True)
+    assert e == b, (e, b)
+    loop = {'gear2': 'loop_c:steps', 'stage': 'stageloop_c:steps',
+            'transform': 'tcloop_c:steps'}[method]
+    for d in (de, db):
+        assert d.get('sources_c:built', 0) >= 1 and d.get(loop, 0) > 0.8 * e[2], (loop, d)
+    for mod in (_tran_loop_c, _tran_stageloop_c, _tran_tcloop_c):
+        monkeypatch.setattr(mod, 'ENABLED', False)
+    off, d = run(True)
+    assert off == b and not d.get(loop) and d.get('src.direct:served', 0) > e[2], d
+    monkeypatch.setattr(_tran_sources, 'ENABLED', False)
+    off, d = run(True)
+    assert off == b and not d.get('sources_c:built'), d
+
+
+@pytest.mark.parametrize('i1, i2', [(1e-3, 0.4e-3), (0.4e-3, 1e-3), (-0.5e-3, 0.6e-3)])
+def test_the_auto_excursion_scale_reads_a_source_bank(i1, i2):
+    """`max_di_step='auto'`'s current scale (`_source_signal_scales`) the
+    sources' largest swing as elements and as a bank -- the first level,
+    the second and their difference each the largest once."""
+    srcs = [(a, b, i, (i1, i2) + w[2:]) for a, b, i, w in _sources()[:3]]
+    got = [Transient(_pulsed(b, srcs), toolkit=numeric)._source_signal_scales() for b in (False, True)]
+    assert got[0] == got[1] and got[1][1] == max(abs(i1), abs(i2), abs(i2 - i1)), got
+
+
+def test_jax_refuses_a_bank():
+    """`JAXTransient` on a circuit holding a bank: refused, naming it."""
+    pytest.importorskip('jax')
+    from pycircuit.circuit.jaxtransient import JAXTransient
+    with pytest.raises(NotImplementedError, match=r"bulk elements.*\['ib'\]"):
+        JAXTransient(_pulsed(True))

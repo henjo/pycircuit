@@ -23,10 +23,14 @@ class _StepEvents:
 
     def _source_signal_scales(self):
         """(v_scale, i_scale): the largest swing any source declares, via
-        the signal_scale element hook, walked recursively."""
+        the signal_scale element hook, walked recursively -- a current
+        source bank's too (`_bulk.current_scale`)."""
+        from pycircuit.circuit import _bulk
         vs, is_ = 0.0, 0.0
         def walk(circuit):
             nonlocal vs, is_
+            if _bulk.banks(circuit):
+                is_ = max(is_, _bulk.current_scale(circuit))
             for element in getattr(circuit, 'elements', {}).values():
                 hook = getattr(element, 'signal_scale', None)
                 if hook is not None:

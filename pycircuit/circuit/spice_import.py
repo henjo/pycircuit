@@ -413,10 +413,11 @@ def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qp
     charge whose capacitances follow Meyer's, `_mos_gate_charge`) or 'meyer'
     (SPICE's own integration of Meyer's capacitances, conserving nothing:
     `MOS_MEYER_CLASSES`, levels 2 and 3), for parity with SPICE.  `bulk`:
-    the plain resistors and capacitors (a number their only parameter) held
-    as BULK ELEMENTS (`_bulk`: one bank of each, after every element) rather
-    than an element object each -- the IBM power grids' millions; such an
-    element has no object of its own to read results by."""
+    the plain resistors and capacitors (a number their only parameter) and
+    the pulse current sources (numbers, no AC value) held as BULK ELEMENTS
+    (`_bulk`: one bank of each kind, after every element) rather than an
+    element object each -- the IBM power grids' millions; such an element
+    has no object of its own to read results by."""
     if dialect not in ('xyce', 'ngspice'):
         raise ValueError(f'dialect {dialect!r}: xyce or ngspice')
     if mos_charge not in ('conserving', 'meyer'):
@@ -425,21 +426,32 @@ def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qp
                      gmin, mos_charge, bulk).run()
 
 
+#: a pulse current source's parameters as `source` maps them, in the bank's
+#: waveform order after its DC value `i` and its AC value `iac`
+_IPULSE_KEYS = ('i', 'iac', 'i1', 'i2', 'td', 'tr', 'tf', 'pw', 'per')
+
+
 def _bankable(m):
-    """'R' or 'C' where the mapped element `m` can be a BULK element
+    """'R', 'C' or 'I' where the mapped element `m` can be a BULK element
     (`import_netlist`'s `bulk`): a resistor or capacitor whose one parameter
-    is a number; else None."""
+    is a number; a pulse current source whose parameters are numbers, its AC
+    value 0 (a bank holds none); else None."""
     from pycircuit.circuit import elements
     for cls, kind, key in ((elements.R, 'R', 'r'), (elements.C, 'C', 'c')):
         if m.cls is cls and len(m.params) == 1 and type(m.params.get(key)) in (float, int):
             return kind
+    if (m.cls is elements.IPulse and len(m.params) == len(_IPULSE_KEYS)
+            and all(type(m.params.get(k)) in (float, int) for k in _IPULSE_KEYS)
+            and m.params['iac'] == 0):
+        return 'I'
     return None
 
 
 def _add_banks(cir, banks):
-    """The gathered resistors and capacitors as banks of `cir`
-    (`SubCircuit.add_bank`): their nodes in the order they first come."""
-    for kind, (a, b, value) in banks.items():
+    """The gathered resistors, capacitors and pulse current sources as banks
+    of `cir` (`SubCircuit.add_bank`): their nodes in the order they first
+    come."""
+    for kind, (a, b, value, wave) in banks.items():
         if not value:
             continue
         code, nodes = {}, []
@@ -448,7 +460,7 @@ def _add_banks(cir, banks):
                 code[nd] = len(nodes)
                 nodes.append(nd)
         cir.add_bank(f'bank:{kind}', kind, nodes, [code[nd] for nd in a],
-                     [code[nd] for nd in b], value)
+                     [code[nd] for nd in b], value, wave if kind == 'I' else None)
 
 
 class _Importer:
@@ -589,7 +601,7 @@ class _Importer:
 
     def build(self):
         cir = SubCircuit()
-        banks = {'R': ([], [], []), 'C': ([], [], [])} if self.bulk else None
+        banks = ({k: ([], [], [], []) for k in ('R', 'C', 'I')} if self.bulk else None)
         for m in self.out.elements:
             nodes = [gnd if n == '0' else n for n in m.nodes]
             params = m.params
@@ -598,7 +610,11 @@ class _Importer:
                 g = banks[kind]
                 g[0].append(nodes[0])
                 g[1].append(nodes[1])
-                g[2].append(params['r' if kind == 'R' else 'c'])
+                if kind == 'I':
+                    g[2].append(params['i'])
+                    g[3].append([params[k] for k in _IPULSE_KEYS[2:]])
+                else:
+                    g[2].append(params['r' if kind == 'R' else 'c'])
                 continue
             if 'gmin' not in params and any(p.name == 'gmin'
                                             for p in getattr(m.cls, 'instparams', ())):

@@ -3241,6 +3241,14 @@ class JAXTransient(Analysis):
     ]
 
     def __init__(self, cir, **kwargs):
+        ## (THE BULK ELEMENTS, `_bulk`: a bank's stamps and sources are taken
+        ## from numpy arrays the traced loop does not read)
+        from pycircuit.circuit import _bulk
+        held = [bk.name for bk in _bulk.banks(cir)]
+        if held:
+            raise NotImplementedError(
+                f"JAXTransient does not run bulk elements: the circuit holds the banks {held} "
+                "(SubCircuit.add_bank, import_netlist's bulk). Use Transient for it.")
         super().__init__(cir, **kwargs)
         self.toolkit = getattr(self.cir, 'toolkit', None)
         if not (self.toolkit and self.toolkit.supports('autodiff')):

@@ -1203,6 +1203,24 @@ PAIRS = {
                  'pycircuit.circuit._tran_tcloop_c:_rk_take',
                  'pycircuit.circuit._tran_radau_tc:zero_pages'],
     },
+    'the pulse and its arrays': {
+        'why': 'a current source bank evaluates its sources on arrays as `Pulse` does '
+               'for one: the period folded by Python\'s float `%` (numpy\'s `remainder`), '
+               'the edges summed left to right, the `where` chain in its order, the next '
+               'event from the period index by Python\'s `//` with the periods on either '
+               'side and the first candidate strictly after `t`; `IS.u`\'s DC value plus '
+               '`f(t)` into the first node and its negative into the second, `dudt` its '
+               '`dfdt`, the floors at `MIN_EDGE` as `__init__` takes them, the swing as '
+               '`IPulse.signal_scale` declares it',
+        'reference': ['pycircuit.circuit.func:Pulse.__init__', 'pycircuit.circuit.func:Pulse.f',
+                      'pycircuit.circuit.func:Pulse.dfdt', 'pycircuit.circuit.func:Pulse.next_event',
+                      'pycircuit.circuit.elements:IS.u', 'pycircuit.circuit.elements:IS.dudt',
+                      'pycircuit.circuit.elements:IPulse.signal_scale'],
+        'twin': ['pycircuit.circuit._bulk:Bank.__init__', 'pycircuit.circuit._bulk:_pulse_fold',
+                 'pycircuit.circuit._bulk:pulse_values', 'pycircuit.circuit._bulk:pulse_slopes',
+                 'pycircuit.circuit._bulk:pulse_next', 'pycircuit.circuit._bulk:source_entries',
+                 'pycircuit.circuit._bulk:next_event', 'pycircuit.circuit._bulk:current_scale'],
+    },
 }
 
 #: `pair name: (reference digest, twin digest)` -- re-made by running this
@@ -1212,13 +1230,13 @@ RECORD = {
     'the stepping loop and its C': ('d261e8ede738', '359aa7299a8b'),
     'the predictor and its C': ('9e611c84de5a', '9b16bd4e0f30'),
     'the branch screen and its C': ('6f15ab9b3ac5', '3ffd4f896ce9'),
-    'the sources and their C': ('55cf2d3441f8', '53a6ff6587d7'),
+    'the sources and their C': ('635a8af4da45', 'f88ea8344a32'),
     'the kernel call and the pass driver': ('ef3f2c059587', '5a9e89626ca0'),
     'the limiting loop and the walk': ('6100313c0fdb', 'b3cf8aef45d6'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '89740e765ff7'),
     'the transient evaluation and the core': ('706d3004b647', '31c1d40db3e2'),
-    'the assembly loops and the plan': ('f9495d408883', 'fc3a13c7d29b'),
-    'the sources and their direct pass': ('b987a3c35574', '11e5cf691f59'),
+    'the assembly loops and the plan': ('699f39caddd9', '8d6122f53d51'),
+    'the sources and their direct pass': ('66a124c5ad7c', '168ced19b4fc'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('b7d4c26c7581', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
@@ -1250,6 +1268,7 @@ RECORD = {
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
     'the stage loop and its C': ('2cd5a041a8a1', 'd951456c5f49'),
     'the transform loop and its C': ('a27ed786186b', 'e6b5393ddee3'),
+    'the pulse and its arrays': ('7bdf4ed87d73', '21f3cc79de17'),
 }
 
 #: The generated methods a batch and the walk tell from their doubles by

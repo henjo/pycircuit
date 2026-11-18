@@ -38,6 +38,12 @@ value): stale, it is not used; nor is it once a class's `f` or
 `next_event` (or `_sin_scalar`) is patched after its build (`genuine`,
 checked by `holds` and by every call).
 
+A CURRENT SOURCE BANK (`_bulk`, kind 'I': pulse sources held as arrays)
+is read from the pass's program too (`_SourceDirect.banks`): its sources as
+pulse rows after the elements', in its order -- their DC values and
+waveforms the bank's own arrays, which `holds` checks by identity (a bank is
+constant).  `entries` stays the elements' (what the loops count as calls).
+
 `Table.u` and `Table.next_event` are the Python entries (the twin's tests);
 the C loop checks what `_call` checks once an entry (`_tran_loop_c.run`);
 the direct pass keeps a table on its program and calls `_call` itself
@@ -151,17 +157,16 @@ class Table:
     """One direct source pass's sources as the C reads them, and what they
     were read from (`holds`)."""
 
-    __slots__ = ('arrays', 'cfn', 'entries', 'ffi', 'funcs', 'has_sin', 'kinds', 'n', 'ns', 'out',
-                 'pts', 's', 'sin_scalar', 'tk', 'uses_libm')
+    __slots__ = ('arrays', 'banks', 'cfn', 'entries', 'ffi', 'funcs', 'has_sin', 'kinds', 'n', 'ns',
+                 'out', 'pts', 's', 'sin_scalar', 'tk', 'uses_libm')
 
-    def __init__(self, ffi, cfn, n, rows, kinds, a, params, npts, entries, tk):
-        self.ffi, self.cfn, self.n, self.ns = ffi, cfn, n, len(kinds)
+    def __init__(self, ffi, cfn, n, rows, kinds, a, params, npts, entries, tk, banks=()):
         poff, off = [], 0
         for p in params:
             poff.append(off)
             off += len(p)
         i64 = np.int64
-        self.arrays = arr = {
+        cols = {
             'kind': np.array(kinds, dtype=i64),
             'isv': np.array([r[0] for r in rows], dtype=i64),
             'row0': np.array([r[1] for r in rows], dtype=i64),
@@ -170,8 +175,26 @@ class Table:
             'poff': np.array(poff, dtype=i64),
             'npts': np.array(npts, dtype=i64),
             'a': np.array(a, dtype=float),
-            'par': np.array([x for p in params for x in p] or [0.0], dtype=float),
+            'par': np.array([x for p in params for x in p], dtype=float),
         }
+        ## (each bank's sources after the elements': pulse rows, its seven
+        ## values each, read from its arrays)
+        pulse = _CODES['SOURCES_PULSE']
+        for bk, ia, ib in banks:
+            m = len(bk)
+            z = np.zeros(m, dtype=i64)
+            add = {'kind': np.full(m, pulse, dtype=i64), 'isv': z, 'row0': ia, 'row1': ib,
+                   'row2': z, 'poff': off + 7 * np.arange(m, dtype=i64), 'npts': z,
+                   'a': bk.value, 'par': bk.wave.reshape(-1)}
+            off += 7 * m
+            for k, v in add.items():
+                cols[k] = np.concatenate([cols[k], np.asarray(v, dtype=cols[k].dtype)])
+            kinds = list(kinds) + [pulse]
+        if not cols['par'].size:
+            cols['par'] = np.zeros(1)
+        self.arrays = arr = {k: np.ascontiguousarray(v) for k, v in cols.items()}
+        self.ffi, self.cfn, self.n, self.ns = ffi, cfn, n, int(arr['kind'].size)
+        self.banks = tuple((bk, bk.value, bk.wave) for bk, _ia, _ib in banks)
         self.out = np.empty(max(n, 1))
         self.s = s = ffi.new('sources_t *')
         s.n, s.ns = n, self.ns
@@ -207,6 +230,9 @@ class Table:
         (`genuine`)."""
         if not self.genuine():
             return False
+        for bk, value, wave in self.banks:
+            if bk.value is not value or bk.wave is not wave:
+                return False
         for el, key, fn, cls, attrs, pts, a in self.entries:
             d = el.__dict__
             if d.get('function', fn) is not fn or type(fn) is not cls:
@@ -331,8 +357,12 @@ def table_for(sd, quiet=False):
     from pycircuit.circuit import func
     from pycircuit.circuit.toolkit import NumericToolkit
     n = sd.n
-    if not sd.ent:
+    banks = getattr(sd, 'banks', ())
+    if not sd.ent and not banks:
         return no('sources_c:empty')
+    if not sd.ent and _genuine() is None:
+        ## (the waveforms' own pieces read once, as an element's check reads them)
+        return no('sources_c:patched')
     rows, kinds, avals, params, npts, entries = [], [], [], [], [], []
     tk0 = None
     for el, key, _desc, r in sd.ent:
@@ -377,6 +407,11 @@ def table_for(sd, quiet=False):
         params.append(p)
         npts.append(npt)
         entries.append((el, key, fn, type(fn), tuple(fn.__dict__.items()), pts, a))
+    if tk0 is None:
+        ## (a bank's sources alone: the C makes what the bank's arrays make,
+        ## no toolkit read -- the numeric one stands in for the checks)
+        from pycircuit.circuit import circuit
+        tk0 = circuit.numeric
     if not quiet:
         _PC['sources_c:built'] += 1
-    return Table(ffi, cfn, n, rows, kinds, avals, params, npts, entries, tk0)
+    return Table(ffi, cfn, n, rows, kinds, avals, params, npts, entries, tk0, banks)

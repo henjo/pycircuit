@@ -1341,17 +1341,19 @@ class SubCircuit(Circuit):
     def __str__(self):
         return self.netlist(top=False)
 
-    def add_bank(self, name, kind, nodes, a, b, value):
+    def add_bank(self, name, kind, nodes, a, b, value, wave=None):
         """THE BULK LINEAR ELEMENTS (`_bulk`): `len(a)` resistors (`kind`
-        'R', `value` their resistances) or capacitors ('C') held as arrays,
-        element e between `nodes[a[e]]` and `nodes[b[e]]` (names or `Node`s,
-        each added as a connection's is) -- kept beside the elements, its
-        stamps taken from the arrays wherever a matrix or vector is
-        assembled.  Returns the `_bulk.Bank`."""
+        'R', `value` their resistances), capacitors ('C') or pulse current
+        sources ('I', `value` their DC currents, `wave` their pulses: i1,
+        i2, td, tr, tf, pw, per) held as arrays, element e between
+        `nodes[a[e]]` and `nodes[b[e]]` (names or `Node`s, each added as a
+        connection's is) -- kept beside the elements, its stamps or sources
+        taken from the arrays wherever a matrix or vector is assembled.
+        Returns the `_bulk.Bank`."""
         if name in self.elements or any(bk.name == name for bk in _bulk.banks(self)):
             raise ValueError(f'{name!r}: the circuit holds an element or a bank of that name')
         objs = [nd if isinstance(nd, Node) else Node(str(nd)) for nd in nodes]
-        bank = _bulk.Bank(name, kind, objs, a, b, value)
+        bank = _bulk.Bank(name, kind, objs, a, b, value, wave)
         for nd in objs:
             self.append_node(nd)
         self._banks = list(_bulk.banks(self)) + [bank]
@@ -1946,10 +1948,14 @@ class SubCircuit(Circuit):
     def next_event(self, t):
         """Returns the time of the next event given the current time t
         by polling the elements that declare one (`_hook_elements`; the
-        others answer `inf`, which changes no minimum)."""
-        if not self.elements:
+        others answer `inf`, which changes no minimum) -- and its current
+        source banks' earliest (`_bulk.next_event`)."""
+        bks = _bulk.banks(self)
+        if not self.elements and not bks:
             return self.toolkit.inf
         events = [el.next_event(t) for _inst, el in self._hook_elements('next_event')]
+        if bks:
+            events.append(_bulk.next_event(self, t))
         ## (`maximum` as before: the result stays what the full poll gave,
         ## `inf` included when no element declares an event)
         return self.toolkit.maximum(t, min(events) if events else self.toolkit.inf)
@@ -2308,6 +2314,18 @@ class SubCircuit(Circuit):
             ## the two skips above leave out the rest, so a skip that stops
             ## serving shows as more calls; nothing per element)
             _paths.COUNTS[methodname + ':called'] += len(pending_val)
+        ## (THE CURRENT SOURCE BANKS: their sources after the elements)
+        if x is None and methodname in ('u', 'dudt'):
+            for bk, ia, ib in _bulk.of(self, methodname):
+                got = _bulk.source_entries(bk, ia, ib, args[0], args[2] if len(args) > 2 else None,
+                                           methodname == 'dudt')
+                if got is None:
+                    continue
+                if has_add_at:
+                    lhs = toolkit.add_at(lhs, got[0], got[1])
+                else:
+                    pending_idx.append(got[0])
+                    pending_val.append(got[1])
         if pending_idx:
             lhs = self._scatter_1d(lhs, pending_idx, pending_val, n)
 

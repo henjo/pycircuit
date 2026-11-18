@@ -16465,3 +16465,75 @@ Suite 6 785 passed, 10 skipped, 5 xfailed under JAX_PLATFORMS=cpu.
 (2) On a linear circuit the branch check's `branch_c:served` counts each C step and the Python's once, with or without these
 rules.  (3) On a linear grid at max_step the time follows the number of distinct step sizes, not the attempts: (b) and (c)'s cost
 is refactors, and that is where a later stage would look.
+
+## 2026-11-18 — 333. Bulk elements, B3: pulse current source banks
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, B3); Andreas "Size B3 first" (2026-11-13), then, after K1a, K1b and S1, "Continue".
+With B2's resistor and capacitor banks the IBM grids' import was led by their pulse current sources: ibmpg2t's 36 838 `IPulse`
+elements 276 MB of the banked import's 793 MB peak, ibmpg3t's 201 054 1.47 GB of its 4.26 GB (7.3 KB each).  Line (set before;
+refreshed for S1's numbers before any source change): (a) without the flag nothing changes -- the gate against c4b12418 SAME, the
+suite; (b) ibmpg2t with R, C and I banked: its DC and default 10 ns within 1e-9 V of the per-element run at every saved point,
+steps within 1 %, 0.056 mV against the benchmark; (c) ibmpg2t's import peak <= 32 % of 1.83 GB, ibmpg3t's <= 3.0 GB; (d) the C
+paths serving the banked run -- the sources' C table holding the bank -- C against Python 0 differing, the bank's values,
+derivatives and breakpoints the per-element ones bit for bit on a fixture; (e) size >= 0.98x, the suite, bites; JAX refuses a bank
+by name; a source with an AC value is never banked.
+
+**What.**  `_bulk.Bank` kind 'I': pulse current sources -- `value` each one's DC current (`IS`'s `i`), `wave` its pulse (i1, i2,
+td, tr, tf, pw, per; tr and tf floored at `Pulse.MIN_EDGE` as `Pulse.__init__` floors them), no AC value, no noise.  On its arrays
+as `func.Pulse` makes them for one source, operation for operation (numpy's `remainder` and `floor_divide` are Python's float `%`
+and `//`): `pulse_values` (`f`), `pulse_slopes` (`dfdt`), `pulse_next` (`next_event`: the period index and the periods on either
+side, the first candidate strictly after `t`, the earliest over the bank; a period index past 2**52 asks each source's own
+`Pulse`); `source_entries` -- in the time domain each source's `i + f(t)` on its first node and its negative on its second
+(`dudt`: `dfdt(t)`), the sources in order, after every element -- taken by `SubCircuit._add_element_subvectors` (u and dudt, no
+x), the plan's source loop (`assemble_source`) and the direct source pass (`_SourceDirect.banks`; its Python floats' bins then
+each entry added in order, `np.add.at`; its array path the same); `SubCircuit.next_event` and the 'auto' excursion scale
+(`_bulk.current_scale`) take the banks too.  The C sources' table (`_tran_sources.Table`) appends a bank's sources as pulse rows
+after the elements', read from its arrays, which `holds` checks by identity -- so the direct pass's C, the multistep loop, the
+stage loop and the transform loop serve a banked circuit as they serve its elements; `entries` stays the elements' (the loops
+count calls by it).  `import_netlist(..., bulk=True)` banks an `IPulse` whose values are numbers and whose AC value is 0
+(`bank:I`, after the R and C banks); a DC current source, a pulse source with an AC value and every other waveform stay elements.
+`JAXTransient` refuses a circuit holding any bank, naming them (it raised an obscure error on B2's banks).
+
+**Measured.**  (a) MET -- the gate against c4b12418 SAME: every deck's results and path counters under dc, gear2, gear2/bypass and
+radau, and the size runs; C against Python 0 differing on every deck and setting and at size; no executable C line changed.  (b)
+MET -- ibmpg2t with `bulk=True`: 660 elements (330 V, 330 L) and three banks (245 163 R, 36 838 C, 36 838 I); its DC within
+8.9e-16 V of the per-element one by name, 0.00031 mV from the benchmark both ways; its default 10 ns the same 1 290 steps, 0
+rejections and 1 899 Newton iterations, within 1.8e-15 V at the 20 printed nodes' 1 001 points, 0.0560 mV both ways; the run 243.2
+s at a 1.56 GB peak against 251.9 s at 3.16 GB (load 1.5-1.8, not a timed comparison).  (c) ibmpg2t MET -- the import 4.5 s at 569
+MB against 22.5 s at 1 834 MB per element (31.0 %, the line 32 %; B2's flag 8.1 s at 793 MB). ibmpg3t MISSED, Andreas: "Accept as
+measured" -- the import's peak 3 123 MB against 4 276 MB with B2's flag (the same phase script on the same box, back to back; 28.8
+s against 49.9 s), the line 3.0 GB.  By phase: reading the netlist a 1 663 MB high-water and mapping it 2 704 MB, both unchanged;
+the build up to the resistor bank +190 MB against +1 497 MB; the resistor bank +229 MB against +75 MB.  The line's ~2.8 GB took
+that whole 1.47 GB as the sources', but 190 MB of it stays (the lists the banks are built from, the 1 910 elements left), and the
+resistor bank's node bookkeeping -- 221.7 MB at its peak, 201.3 MB kept, by tracemalloc, the same in both trees -- had fitted into
+heap the 201 054 elements' construction freed.  The current-source bank keeps 33 MB. ibmpg3t's banked DC 82.6 s, 0.00215 mV from
+the benchmark at t = 0 (dcnewton_c served, 3 iterations); its 10 ns from it 1 292 steps / 2 rejections / 2 194 iterations, the
+step times byte for byte those of S1's per-element run (sec. 332), the printed nodes within 5.9e-13 V, 0.0490 mV against the
+benchmark, CHOLMOD's refactors 716 either way; 1 359.1 s against 1 372.2 s (not a timed comparison), the peak 7.34 GB against 8.83
+GB.  (d) MET -- ibmpg2t banked, its DC and a 1 ns transient with every C switch on and with every one off: the same bytes (DC
+1d264951cb40, 1 ns 7c744fb74056) and statistics (138 / 0 / 210); with the C on, the sources' C table built once holding the bank
+and serving the direct pass (140), the C Newton 138, the error test 136; with it off, the Python direct pass (141) over the bank's
+arrays.  On the 10 ns the C paths' counts are the per-element run's (`sources_c:built` 1, the direct pass 1 290, the C Newton 1
+290, the loop's C 1 287 steps); the fixtures under Tests.  (e) MET -- the size runs on AC, every digest and step count the same:
+the DCs 0.991-1.029x on a quiet box (achain 4000 1.000x, the median of four pairs on a re-run: its first pair held a 1.41 s
+outlier); the transients re-run on a quiet box (each run started under a 1-min load of 1.5) 0.995-1.018x, after a first pass under
+load 2.7-4.0 at 0.992-1.013x -- achain gear2 1.007x, chain Radau 1.005x, mesh gear2 1.018x, mesh Radau 0.995x (each Radau the
+median of three pairs).  The bites, JAX's refusal and the AC source kept as an element below.
+
+**Tests.**  `test_bulk` +12 cases (23 in all): a bank's u (tran and dc), dudt and next event the same sources' as elements at
+every edge of every source, a hair either side and between, through the direct pass (its float bins and its array path), the
+plan's loop and the legacy loop, nothing in 'ac' or with no analysis, the breakpoints walked as a run feeds them back; the C table
+holding a bank (with element sources and alone): its `u` and next event the Python pass's, stale once a bank's array is replaced;
+DC and an adaptive run on Gear-2, Radau's stage loop and its transform loop the element-built bytes and steps with the C loop and
+the table serving, and the same bytes with the loops' C, then the table's, off; the 'auto' scale with each of |i1|, |i2|, |i2 -
+i1| the largest; JAX's refusal; the importer test now banking pulse sources (a DC source and one with an AC value kept).
+Twenty-six bites, twenty-six bit -- two only after the fixture gained a source whose delay lies between one period and two (the
+period before `t`'s gives its next event) and the scale test its three cases.  Pinned pairs re-recorded after their twins' tests
+(the sources and their C, the assembly loops and the plan, the sources and their direct pass) and one new: the pulse and its
+arrays (`func.Pulse` and `IS.u` / `dudt` / `IPulse.signal_scale` against `_bulk`'s).  Suite 6 799 passed, 10 skipped, 5 xfailed
+under JAX_PLATFORMS=cpu (the base 6 785 with sec. 332).
+
+**Found, not changed:** what remains of ibmpg3t's import peak is the netlist's reading and mapping, 2.70 GB of the 3.12 before
+anything is built (B4); a memory line sized by subtracting a phase's growth counts what stays and misses what reused the heap
+freed before it; `u:called` counts the elements' calls and not a bank's sources (425 700 on the banked ibmpg2t's 10 ns, the 330
+voltage sources a step, against 47 946 720).

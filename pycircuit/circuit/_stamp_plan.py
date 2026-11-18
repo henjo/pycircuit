@@ -958,10 +958,12 @@ def source_memo(cir):
 class _SourceDirect:
     """`source_direct`'s program for one source plan: per source its element,
     its parameter's key and its class's `function` descriptor, its rows --
-    and what a full check read, stamped."""
+    and what a full check read, stamped; the circuit's current source banks
+    with their rows (`banks`: `(bank, ia, ib)`), their sources after the
+    elements'."""
 
-    __slots__ = ('arms', 'dicts', 'els', 'ent', 'held', 'n', 'others', 'same_cls', 'stamp',
-                 'tab', 'tab_at', 'types')
+    __slots__ = ('arms', 'banks', 'dicts', 'els', 'ent', 'held', 'n', 'others', 'same_cls',
+                 'stamp', 'tab', 'tab_at', 'types')
 
     @classmethod
     def build(cls, cir, sp, n):
@@ -972,7 +974,7 @@ class _SourceDirect:
         G = _genuine()
         self = cls()
         self.n, self.arms, self.held, self.stamp = n, 0, 0, -1
-        self.els = self.dicts = self.types = self.same_cls = self.others = ()
+        self.els = self.dicts = self.types = self.same_cls = self.others = self.banks = ()
         self.ent = None
         ## (the C sources' table and the stamp it was checked at: `_direct_c`)
         self.tab, self.tab_at = None, -2
@@ -991,7 +993,12 @@ class _SourceDirect:
             if len(rows) != size or not all(0 <= k < n for k in rows):
                 return self
             ent.append((el, key, desc, rows))
-        self.ent = tuple(ent)
+        banks = tuple(_bulk.of(cir, 'u'))
+        for _bk, ia, ib in banks:
+            if ia.size and not (0 <= min(int(ia.min()), int(ib.min()))
+                                and max(int(ia.max()), int(ib.max())) < n):
+                return self
+        self.ent, self.banks = tuple(ent), banks
         return self
 
     def check(self, NumericToolkit):
@@ -1082,7 +1089,7 @@ class _SourceDirect:
         an = args[2] if len(args) > 2 else None
         n, ent = self.n, self.ent
         if an not in _LAZY['gen']['cir'].timedomain_analyses:
-            ## (`u`'s integer zeros: +0.0 in every bin)
+            ## (`u`'s integer zeros: +0.0 in every bin; a bank puts nothing)
             _PC['u:called'] += len(ent)
             return np.zeros(n)
         vals = []
@@ -1118,17 +1125,29 @@ class _SourceDirect:
                     out[rows[0]] += v
                     out[rows[1]] += -v
         _PC['u:called'] += len(ent)
-        return np.array(out) if floats else self._arrays(cir, vals)
+        if not floats:
+            return self._arrays(cir, vals, t, an)
+        out = np.array(out)
+        ## (the banks' sources after the elements', each entry added in
+        ## order onto the bins as they stand -- the C table's sum)
+        for bk, ia, ib in self.banks:
+            rows, v = _bulk.source_entries(bk, ia, ib, t, an)
+            np.add.at(out, rows, v)
+        return out
 
-    def _arrays(self, cir, vals):
+    def _arrays(self, cir, vals, t, an):
         """A value not a float: the arrays each `u` returns for it and the
-        loop's scatter -- the loop's own answer."""
+        loop's scatter -- the loop's own answer, the banks' after it."""
         pending_idx, pending_val = [], []
         for (el, key, _desc, rows), v in zip(self.ent, vals):
             tk = el.__dict__['toolkit']
             rhs = tk.array([0, 0, -v]) if key == 'v' else tk.array([v, -v])
             pending_idx.append(np.array(rows, dtype=int))
             pending_val.append(np.asarray(rhs).ravel())
+        for bk, ia, ib in self.banks:
+            rows, v = _bulk.source_entries(bk, ia, ib, t, an)
+            pending_idx.append(rows)
+            pending_val.append(v)
         n = self.n
         if not pending_idx:
             return cir.toolkit.zeros(n)
@@ -1234,6 +1253,13 @@ def assemble_source(cir, m, args):
         pending_idx.append(indices)
         pending_val.append(np.asarray(rhs).ravel())
     _paths.COUNTS[m + ':called'] += len(pending_val)
+    ## (the current source banks' sources after the elements: `_bulk`)
+    for bk, ia, ib in _bulk.of(cir, m):
+        got = _bulk.source_entries(bk, ia, ib, args[0], args[2] if len(args) > 2 else None,
+                                   m == 'dudt')
+        if got is not None:
+            pending_idx.append(got[0])
+            pending_val.append(got[1])
     if pending_idx:
         lhs = cir._scatter_1d(lhs, pending_idx, pending_val, n)
     return lhs
