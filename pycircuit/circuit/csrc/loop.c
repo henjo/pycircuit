@@ -31,6 +31,8 @@
 #define CALL(fn, entry, p) (((__typeof__(&entry)) (fn))(p))
 /* `integrator.SHRINK_GUARD_RATIO` (test_loop_c holds the two together) */
 #define SHRINK_GUARD_RATIO 0.1
+/* `transient.LAND_STRETCH` (test_loop_c holds the two together) */
+#define LAND_STRETCH 1.1
 #define COPY(dst, src, n) memcpy((dst), (src), (size_t) (n) * sizeof(double))
 
 /* `_next_breakpoint` on the table: `cir.next_event` is numpy's maximum of t
@@ -167,6 +169,24 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
     ck_commit(s);
 }
 
+/* an adaptive attempt's size against the breakpoint ahead
+   (`_SteppingLoop._corner_size`): THE CORNER'S START -- from the breakpoint
+   just landed on, at most `corner_cut` x min(the size, the gap) -- then
+   LANDING AHEAD -- a breakpoint beyond the step but within two of it, before
+   the run's end, stretched onto (1: a landing) within `LAND_STRETCH` x the
+   size and `max_step`, else half the way to it */
+static int corner_size(const loop_t *s, double t, double *h, double t_break, int on_corner)
+{
+    double rem = t_break - t;
+    if (s->corner_cut != 0.0 && on_corner)
+        *h = pcx_py_min(*h, s->corner_cut * pcx_py_min(*h, rem));
+    if (s->land_ahead && *h < rem && rem < 2.0 * *h && rem < s->tend - t) {
+        if (rem <= LAND_STRETCH * *h && rem <= s->max_step) return 1;
+        *h = 0.5 * rem;
+    }
+    return 0;
+}
+
 /* 1. where (`_SteppingLoop.where`): the order drop a landing or a force
    asks for, the breakpoint -- a grid crosses it, an adaptive step lands on
    it -- and the run's end.  0, or the status to stop with */
@@ -174,16 +194,20 @@ static long where(loop_t *s, loop_attempt_t *a)
 {
     double t = s->t, h = s->h;
     double mb = s->minbreak * pcx_py_max(fabs(s->tend), 1.0);
+    int on_corner;
     /* (an adaptive run's residue under `minbreak` at its end is rounding,
        not a step: the run is over, nothing written -- the Python's) */
     if (s->adaptive && s->tend - t <= mb) return LOOP_DONE;
+    /* (this attempt starts on the breakpoint the last one landed on) */
+    on_corner = s->landing && fabs(t - s->t_break) <= 1e-12 * pcx_py_max(fabs(t), 1e-300);
     a->t = t;
     a->have_tn = 0;
     a->is_first = s->is_first || s->landing || s->order_drop;
     a->clamped = 0;
     if (!next_breakpoint(s, t, &a->t_break)) return LOOP_BAIL_SOURCES;
     if (s->adaptive) {
-        if (t + h > a->t_break) {
+        int ahead = corner_size(s, t, &h, a->t_break, on_corner);
+        if (t + h > a->t_break || ahead) {
             h = a->t_break - t;
             a->landing = 1;
         } else {

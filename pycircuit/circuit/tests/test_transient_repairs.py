@@ -1826,18 +1826,32 @@ def test_gate_5p1d_transit_time_lengthens_the_turn_off():
 
     `TF` is the forward transit time -- minority carriers in transit through the
     base -- so it must show up as storage time when the drive is removed.
-    Measured: 13.63 ps / 14.98 ps / 16.83 ps as TF doubles twice.
+    Measured on a drive slow enough to switch the stage (5p1a's slow period;
+    the collector down to 0.09 V): the drive's fall to the collector's rise
+    through half its swing, interpolated -- 13.85 / 15.19 / 17.80 ns as TF
+    doubles twice (with a 1e-10 s step cap 13.90 / 15.22 / 17.81).  At the
+    2e-8 s period this gate once used the stage never switches (the collector
+    stays above 4.7 V), and it read the first step after the fall instead.
     """
-    per = 2e-8
+    from pycircuit.circuit.integrator import EulerIntegrator
+    per = 1e-6
     t_fall = per / 10 + per / 1000 + per / 2
 
-    def recovery(tf):
-        tv, vc = _switch_run(per, tf)
-        after = tv > t_fall
-        hi = vc.max()
-        return tv[after][np.asarray(vc[after] > 0.5 * hi).argmax()] - t_fall
+    def storage(tf):
+        tran = Transient(_switching_stage(per, tf), toolkit=numeric, integrator=EulerIntegrator())
+        with quiet():
+            res = tran.solve(refnode=gnd, tend=per * 0.8, timestep=per / 400)
+        t = np.asarray(res.sweep_values, dtype=float)
+        v = np.asarray(res.v('c'), dtype=float)
+        lo, hi = v[t < t_fall].min(), v.max()
+        assert lo < 1.0, 'the stage never switched on: v(c) min %.4g' % lo
+        half = 0.5 * (lo + hi)
+        tt, vv = t[t > t_fall], v[t > t_fall]
+        i = int(np.argmax(vv > half))
+        assert i > 0, 'the collector was already up at the first point after the fall'
+        return tt[i - 1] + (half - vv[i - 1]) * (tt[i] - tt[i - 1]) / (vv[i] - vv[i - 1]) - t_fall
 
-    r1, r2, r3 = recovery(3e-10), recovery(6e-10), recovery(1.2e-9)
+    r1, r2, r3 = storage(3e-10), storage(6e-10), storage(1.2e-9)
     assert r2 > r1 and r3 > r2, \
         'turn-off does not lengthen with TF: %.4g / %.4g / %.4g' % (r1, r2, r3)
 
@@ -2427,9 +2441,13 @@ def test_tline_propagation_delay_is_right_when_resolved():
     final = vb[-1] if abs(vb[-1]) > 1e-12 else vb.max()
     rising = vb > 0.1 * final
     assert rising.any(), 'the line never delivered anything'
-    delay = t[int(np.argmax(rising))] - 2e-9
-    assert delay == pytest.approx(_TD, rel=0.15), \
-        'propagation delay %.4e against TD %.4e' % (delay, _TD)
+    ## (bracketed by the run's own points, steps up to TD/2 apart: the arrival
+    ## -- the source's 1 ps edge, TD after its corner at 2 ns -- lies between
+    ## the last point below the level and the first above it; the values at
+    ## the points are exact, against a 2 ps reference)
+    i = int(np.argmax(rising))
+    assert i > 0 and t[i - 1] <= 2e-9 + _TD * (1 + 1e-9) + 1e-12 and t[i] >= 2e-9 + _TD * (1 - 1e-9), \
+        f'the arrival is not between {t[i - 1] - 2e-9:.4e} and {t[i] - 2e-9:.4e} s after the corner (TD {_TD:.4e})'
 
 
 def test_fixed_timestep_too_coarse_for_a_delay_line_warns():

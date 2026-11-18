@@ -589,6 +589,7 @@ def _load(loop, e, run_, stage=None):
     s.tend, s.timestep, s.minbreak = float(loop.tend), float(loop.timestep), e.minbreak
     s.adaptive = int(not loop.fixed)
     s.max_step, s.minstep = float(loop.run.max_step), float(loop.minstep)
+    _tran_loop_c._corners(s, loop, tr)
     s.max_retries, s.max_reject = e.fam.max_retries, e.fam.max_reject
     s.early_th, s.newton_reject = 0.0, 0
     stats = tr.statistics

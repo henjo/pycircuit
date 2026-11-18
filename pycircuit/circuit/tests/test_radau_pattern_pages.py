@@ -182,8 +182,10 @@ def _fallback_run(monkeypatch, pages, maxiter, reltol, tend=4e-8):
     before = _paths.snapshot()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
+        ## (the corner cut off: the Newton's limit this reaches comes at the
+        ## pulse's corners, which its short first steps smooth away)
         tr = Transient(_chain(300), toolkit=circuit.numeric, integrator=RadauIIA3Integrator(),
-                       reltol=reltol)
+                       reltol=reltol, corner_cut=0.0)
         tr.par.maxiter = maxiter
         res = tr.solve(tend=tend, timestep=1e-9)
     st = tr.statistics

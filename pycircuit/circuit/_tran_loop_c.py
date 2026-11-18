@@ -848,6 +848,34 @@ def _slot_back(run_, rec, buf, name, n, O):
     return O['newton_c']._scatter(buf[name], rec.core.arrays['pat'], n)
 
 
+#: the chord's counts on the StructuralKLU (`_tran_newton_c.chord_out`)
+_CHORD_COUNTS = ('chord_refactors', 'chord_factors', 'chord_pivot_fallbacks',
+                 'chord_residual_fallbacks', 'chord_residual_kept')
+
+
+def _chord_counts(rec, put=None):
+    """The chord's counts read, or put back.  A session whose attempts are
+    all rejections (early aborts, the Newton's limit) and that stops is not
+    written back: the Python repeats it whole, so the counts its rejections
+    committed -- `chord_out` adds them -- are taken back (one counted twice
+    otherwise)."""
+    sk = rec.klu
+    if sk is None:
+        return None
+    if put is None:
+        return tuple(getattr(sk, k) for k in _CHORD_COUNTS)
+    for k, v in zip(_CHORD_COUNTS, put):
+        setattr(sk, k, v)
+
+
+def _corners(s, loop, tr):
+    """The size against the breakpoint ahead (`_SteppingLoop._corner_size`)
+    loaded: the last attempt's breakpoint and the run's two settings -- the
+    multistep and the stage loops' (`_tran_stageloop_c._load`)."""
+    s.t_break = float(loop.__dict__.get('t_break', 0.0))
+    s.land_ahead, s.corner_cut = int(bool(tr.par.land_ahead)), float(tr.par.corner_cut or 0.0)
+
+
 def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     """The struct loaded with the state as the Python loop leaves it -- the
     rings, the history, the cached C, the step record, the run's constants
@@ -883,6 +911,7 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     s.adaptive = int(adaptive)
     s.max_step = float(loop.run.max_step)
     s.minstep = float(loop.minstep)
+    _corners(s, loop, tr)
     s.max_retries, s.max_reject = loop.family.max_retries, loop.family.max_reject
     ## (the early abort's threshold where `_SteppingLoop.early_arm` arms it:
     ## the loop's integral controller and band are this loop's own
@@ -1054,7 +1083,7 @@ def run(loop):
         ## Python's solves replace it -- newton.h; and the chord's own)
         num = rec.klu._numeric
         rec.s.klu_num = rec.ffi.cast('void *', num) if num else rec.ffi.NULL
-    hsk = _held_bind(run_, rec, s)
+    hsk, chord0 = _held_bind(run_, rec, s), _chord_counts(rec)
     status = _call(drv, rec, s, tr.statistics)
     from pycircuit.circuit import linearsolver
     if hsk is not None and hsk._held_st[linearsolver.HELD_OPEN]:
@@ -1064,8 +1093,8 @@ def run(loop):
     if status not in (_CODES['LOOP_DONE'], _CODES['LOOP_FULL']):
         _no('loop_c:bail:' + BAIL.get(status, str(status)))
     if not s.attempts:
-        loop.c.backoff = min(2 * loop.c.backoff + 1, BACKOFF_MAX)
-        loop.c.skip = loop.c.backoff
+        _chord_counts(rec, chord0)
+        loop.c.skip = loop.c.backoff = min(2 * loop.c.backoff + 1, BACKOFF_MAX)
         return False
     loop.c.backoff = 0
     _write_back(loop, tr, rec, run_, s, run_.buf, n, rd.hist_len, O, retry0)

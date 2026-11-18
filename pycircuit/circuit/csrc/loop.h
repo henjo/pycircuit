@@ -398,6 +398,11 @@ typedef struct {
     /* OWN: the chord's numeric's kept refactors at the attempt's checkpoint
        (`ck_q0`'s twin: THE REFACTOR KEPT ON ITS GROWTH, pcx_klu.h) */
     long ck_k0;
+    /* the run: the size against the breakpoint ahead (`_SteppingLoop.
+       _corner_size`) -- `Transient.land_ahead` (0 or 1) and
+       `Transient.corner_cut` (0.0: no cut) */
+    long land_ahead;
+    double corner_cut;
 } loop_t;
 long pcx_loop(loop_t *s);
 

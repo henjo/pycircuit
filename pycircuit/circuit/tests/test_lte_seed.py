@@ -85,6 +85,23 @@ def _bound(monkeypatch, k):
     monkeypatch.setitem(_tran_newton_c._mods(), 'lte_seed', k)
 
 
+@pytest.mark.parametrize('bound', [2, 3])
+def test_a_session_of_rejections_alone_is_the_pythons_to_repeat(monkeypatch, bound):
+    """A C loop session whose attempts are all rejections (an early abort here)
+    and that then stops (its error test handed back) is not written back: the
+    Python repeats it whole, so the chord's counts its rejection committed are
+    taken back (`_tran_loop_c._chord_counts`) -- the run, its statistics and
+    the KLU's every count the Python's, at the corners' defaults (one chord
+    refactor counted twice otherwise)."""
+    _bound(monkeypatch, bound)
+    runs = {p: _run(monkeypatch, path=p, cir=_chain(fast=True), tend=2.4e-8, step=2e-10,
+                    errs={'under': 'warn'}) for p in ('python', 'loop')}
+    keys = {p: _key(tr, res) for p, (tr, res, _d) in runs.items()}
+    assert keys['loop'] == keys['python']
+    d = runs['loop'][2]
+    assert d.get('loop_c:bail:lte', 0) > 0 and d.get('early:aborts', 0) > 0, d
+
+
 def test_converged_holds_nothing_and_the_value_is_checked(monkeypatch):
     """'converged': nothing held, the converged point's G made for every
     judged attempt; another value raises at the solve."""
@@ -153,8 +170,10 @@ def test_every_path_is_the_python_one(monkeypatch, bound):
         bound_runs.append(r)
         return r
     monkeypatch.setattr(_tran_loop_c, '_bound', caught)
+    ## (the corner cut off: its short first steps after the pulse's corners
+    ## leave this chain no held test before the loop's own full ones)
     runs = {p: _run(monkeypatch, path=p, cir=_chain(fast=True), tend=2.4e-8, step=2e-10,
-                    errs={'under': 'warn'})
+                    errs={'under': 'warn'}, corner_cut=0.0)
             for p in PATHS}
     keys = {p: _key(tr, res) for p, (tr, res, _d) in runs.items()}
     assert all(keys[p] == keys['python'] for p in keys)

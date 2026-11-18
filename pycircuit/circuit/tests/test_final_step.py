@@ -75,10 +75,14 @@ def test_next_breakpoint_merges_only_a_corner_within_minbreak_of_the_end():
 
 def _loop(t, h, tend, fixed=False):
     """Just what `_SteppingLoop.where` reads: no breakpoint ahead."""
-    tr = SimpleNamespace(par=SimpleNamespace(minbreak=1e-14), _is_first_step=False)
+    tr = SimpleNamespace(par=SimpleNamespace(minbreak=1e-14, land_ahead=True, corner_cut=0.25),
+                         _is_first_step=False)
     family = SimpleNamespace(next_breakpoint=lambda _t: float('inf'))
-    return SimpleNamespace(tr=tr, t=t, h=h, tend=tend, fixed=fixed, timestep=h, landing=False,
-                           order_drop=False, imposed=False, family=family)
+    lp = SimpleNamespace(tr=tr, t=t, h=h, tend=tend, fixed=fixed, timestep=h, landing=False,
+                         order_drop=False, imposed=False, family=family)
+    ## (the size against the breakpoint ahead: none ahead, the size as asked)
+    lp._corner_size = lambda *a: trmod._SteppingLoop._corner_size(lp, *a)
+    return lp
 
 
 def test_a_step_ending_an_ulp_or_two_short_of_the_end_ends_at_it():

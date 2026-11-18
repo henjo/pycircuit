@@ -165,7 +165,9 @@ def test_jax_coupled_tline_matches_cpu_standard():
         c['Rl'] = R('b', gnd, r=50.0)
         return c
 
-    cpu = Transient(line(), toolkit=numeric, reltol=1e-4,
+    ## (the corners' rules off on the CPU side: the JAX transient has neither
+    ## landing ahead nor the corner cut, and like is compared with like)
+    cpu = Transient(line(), toolkit=numeric, reltol=1e-4, land_ahead=False, corner_cut=0.0,
                     integrator=Gear2Integrator(), uic=True,
                     timestep_max=2e-10)
     with quiet():

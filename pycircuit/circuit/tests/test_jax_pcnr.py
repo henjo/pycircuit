@@ -228,7 +228,9 @@ def test_pcnr_with_tline_matches_cpu():
         c['Rl'] = R('c', gnd, r=50.0)
         return c
 
-    tran_c = Transient(line_diode(), toolkit=numeric, pcnr=True,
+    ## (the corners' rules off on the CPU side: the JAX transient has neither
+    ## landing ahead nor the corner cut, and like is compared with like)
+    tran_c = Transient(line_diode(), toolkit=numeric, pcnr=True, land_ahead=False, corner_cut=0.0,
                        reltol=1e-4, uic=True, timestep_max=2e-10)
     with quiet():
         res_c = tran_c.solve(tend=8e-9, timestep=2e-10)

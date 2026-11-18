@@ -71,7 +71,9 @@ def _run(**par):
     """The mesh under Radau's defaults (the C loops where they serve), with
     `par` set: `(the transient, its record, the paths counted)`."""
     circuit.default_toolkit = circuit.numeric
-    tr = Transient(_mesh(), toolkit=circuit.numeric, integrator=RadauIIA3Integrator())
+    ## (the corner cut off: the rejections and limits this reaches come at
+    ## the pulse's corners, which its short first steps smooth away)
+    tr = Transient(_mesh(), toolkit=circuit.numeric, integrator=RadauIIA3Integrator(), corner_cut=0.0)
     for k, v in par.items():
         setattr(tr.par, k, v)
     before = _paths.snapshot()

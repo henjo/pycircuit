@@ -6185,3 +6185,26 @@ to land on a source corner, which can be tens of femtoseconds long, magnifies
 that until the step sequences part.  KLU on another ordering parts from K1a
 at the very same step, and two equally valid runs end that far apart, each
 as far from the benchmark.  The corner sliver is the next item.
+
+## S1: no sliver before a breakpoint, and a short first step after one (2026-11-18)
+
+2026-11-18 (`doc/hdl_roadmap_260824.md`, 332; plan 261 L21).  A step that would
+cross a source's corner used to be cut to land on it, taking whatever
+remained, however small: down to a few hundred-thousandths of the step asked
+on the gold decks, and 0.03 ps beside 10 ps steps on ibmpg3t.  That remainder
+magnifies the rounding in the step times, so two equally valid runs part at
+it.  Now a corner beyond the next step but within two of it is stretched onto
+(by at most a tenth) or reached in two equal steps, so no step before a
+corner is a sliver; and the first step after a corner is at most a quarter of
+the size asked, SPICE's classic short start.  ibmpg3t's two orderings of its
+factorization now take the same steps for all 10 ns, and it lands five to
+seven times closer to the benchmark (0.049 mV at worst instead of 0.236;
+ibmpg2t 0.056 instead of 0.354).  The gold decks take 2.6 % fewer attempts
+under Gear-2 and the same under Radau, with no gold column failing that
+passed.  The price is on the linear grids, where nearly every step is at the
+step cap and so reuses one factorization: the short start and the regrowth
+after it are new step sizes, each a fresh factorization, and ibmpg3t runs
+1.25 times as long, ibmpg2t 1.75 times.  That was over the line set before,
+which had scaled the time from the step count, and Andreas accepted it as
+measured.  On the way, a C loop's session of rejections alone, which the
+Python then repeats, had its chord counts added twice; it is taken back now.

@@ -909,6 +909,9 @@ def test_the_two_factors_side_by_side_are_one_after_the_other(case, monkeypatch)
     where they are made one after the other -- and the pool made them."""
     _on()
     build, make = CASES[case]
+    ## (the corner cut off: the pulse's corners give the pool its paired
+    ## first iterations, which the cut's short first steps smooth away)
+    make = dict(make or {}, corner_cut=0.0)
     kw = {'tend': 6e-7, 'timestep': 2e-8}
     a, da, pa = _on_threads(build, make, 1, monkeypatch, **kw)
     b, db, pb = _on_threads(build, make, 4, monkeypatch, **kw)

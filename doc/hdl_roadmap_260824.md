@@ -16391,3 +16391,77 @@ from `pcnr=False` -- the BJT switch before this section, 260 / 41 against 266 / 
 early abort off the two are bit-identical.  (2) `JAXTransient` cannot run a `semiconductors.BJT` circuit at all, with or
 without PCNR: `BJT.eval_i_pure`'s `if VA > 0` is a Python branch on a traced parameter (`TracerBoolConversionError`); it was
 so before and is unchanged.
+
+## 2026-11-18 — 332. S1: no sliver before a breakpoint, and a short first step after one
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, S1); found in K1b (sec. 328).  A step cut to land on a breakpoint took whatever
+remained -- down to 6e-5 of the size asked on the gold decks, 0.03 ps beside 10 ps steps on ibmpg3t -- and that remainder,
+t_corner - t, is a cancellation: it turns the ~1e-19 s rounding drift of the step times into a relative difference of 1e-3 ..
+1e-1, so the runs of any two equally valid factorizations part at a corner.  Sized (no source changed): slivers (a landing under
+half the size asked) 953 gear2 / 951 Radau on 20 of 27 decks, 57 of ibmpg3t's 82 landings.  A look-ahead prototype alone held
+ibmpg3t's A/A (CHOLMOD on METIS and on AMD identical over 10 ns) and took gear2's attempts down 2.4 %, but its largest error
+against the benchmark rose from 0.236 to 0.267 mV: K1b's 0.23 mV is the first step after each corner, taken at max_step and
+accepted.  With SPICE's classic short start after a breakpoint (a quarter of the step here): 0.049 mV, the A/A holding, gear2
+-2.7 %, Radau +0.2 %, ibmpg3t +9.8 % attempts.  Andreas: "Accept, and plan the sliver fix next", "Size a corner-accuracy
+variant first", "Build rule + cut F=0.25".  Line (set before): (a) the gate against d13765c8 DIFFERS only on decks with
+corners, C against Python 0 differing everywhere; no gold column crosses its pass line, none worsens by more than 0.05 of its
+line; attempts summed over the 27 decks gear2 <= 0.985x the base's, Radau <= 1.01x; (b) ibmpg3t's 10 ns on CHOLMOD: METIS and AMD
+identical decisions, waveforms within 1e-9 V; max error against the benchmark <= 0.06 mV, mean <= 0.02 mV; attempts <= 1.12x
+K1b's 1 178 and the C-loop run's time <= 1.12x K1b's, measured back to back against the rules off; (c) ibmpg2t within its
+benchmark's 0.36 mV, attempts <= 1.12x today's; (d) the size runs >= 0.98x where their steps are unchanged, each shown with its
+steps and time where they change; suite, bites, the loop's pinned pairs after their twins' tests.
+
+**What.**  `_SteppingLoop._corner_size`, called by `where` before its truncation, adaptive runs only (a fixed grid wins; state
+events untouched).  LANDING AHEAD (`Transient.land_ahead`, default True): a breakpoint beyond this step but within two of it
+(h < rem < 2h, rem = t_break - t, not the run's end) is stretched onto -- a landing -- where rem <= `LAND_STRETCH` (1.1) x h and
+rem <= max_step, else reached in two equal steps (h = rem / 2).  THE CORNER'S START (`Transient.corner_cut`, default 0.25, 0
+off): an attempt that starts on the breakpoint the last one landed on takes at most corner_cut x min(the size asked, the gap to
+the next breakpoint); the gap is exact, so the size does not inherit the step times' rounding.  loop.c `corner_size` the same,
+used by the multistep loop and the stage loop's `where`; `land_ahead` and `corner_cut` the last fields of loop.h's `loop_t`;
+both glues load them and the loop's `t_break` (`_tran_loop_c._corners`).  **And a count gap in the C loop:** a session of
+rejections alone (an early abort, then the retry's error test bailing) committed the chord's counts and handed back with no
+attempt written, so the Python repeated the session and the chord counts were added twice -- a refactor here and there; results,
+steps and iterations were never affected.  `_tran_loop_c.run` now takes them back (`_chord_counts`).
+
+**Measured.**  (a) MET -- the gate against d13765c8 DIFFERS on 25 decks under gear2, gear2/bypass and radau, every one with
+breakpoints (counted in the Python loop: the cut fires on all 25, landing ahead on 24 -- rca's one corner needs neither); 4049osc
+and ring, which have none, the same; every DC the same; C against Python 0 differing on every deck and setting and at size.
+Changed C: 11 executable lines, 24 arms -- decks 22, fixtures 1 (the cut off), none 1 (landing ahead off: the C-against-Python
+tests that switch it off are not in the gate's coverage suite).  The gold metric on both trees (54 runs each): no column crosses
+its pass line, none worsens by more than 0.05 of it (of 198 columns 87 better, 73 worse, the largest worsening gm1 gear2 v(21)
+3.631 -> 3.664 and latch Radau v(5) 0.021 -> 0.048; the largest change gm17 Radau v(5), 27.88 -> 27.36, failing before and after);
+attempts gear2 98 901 against 101 571 (0.974x), Radau 90 833 against 90 949 (0.999x).  (b) MET but the time -- ibmpg3t's 10 ns on
+a quiet box (load 1.1-1.5), back to back against the rules off: 1 292 steps / 2 rejections / 2 194 iterations against 1 166 / 12
+/ 1 961 (attempts 1 294, 1.098x K1b's 1 178); against the benchmark max 0.0490 mV against 0.2362, mean 0.0165 against 0.1146, 95th
+percentile 0.0414 against 0.2074; CHOLMOD on AMD the same 1 292 / 2 / 2 194, the waveforms within 1.9e-12 V.  MISSED: the time,
+1 372.2 s against 1 096.0 s (1.25x; 1.27x K1b's 1 076.9 s).  CHOLMOD refactorizations 716 against 494: a step at a new size
+refactors (~1.05 s here), a step at the last size reuses the factor, and each corner now starts at a quarter and grows back
+through new sizes; the 222 more refactors are ~233 s of the 276 s.  (c) MET but the attempts -- ibmpg2t back to back: 0.0560 mV
+from the benchmark against 0.3538; 1 290 steps / 0 rejections against 1 057 / 13.  MISSED: attempts 1.206x; the time 239.8 s
+against 136.7 s (1.75x), KLU refactors 711 against 313.  The line scaled the time from the attempts; on a linear grid at
+max_step it follows the number of new step sizes.  Andreas: "Accept as measured".  (d) The DCs the same digests, 0.991-1.018x;
+every transient size run has corners, and each one's steps change.  Base / new interleaved, under load 3-4: achain gear2
+23 958 / 3 618 -> 23 931 / 3 576, 1.009x; chain Radau 213 / 19 -> 260 / 0, 0.964x; mesh gear2 6 439 / 1 180 -> 6 402 / 1 077,
+1.082x; mesh Radau 2 875 / 743 -> 2 900 / 700, 1.069x (each Radau run the median of three pairs).
+
+**Tests.**  `test_corner_steps` (new, six functions, eight cases): the window, the stretch and the split, max_step and the run's
+end; the cut and its gap; one `LAND_STRETCH` in C and Python; every outcome reached in the Python run of two pulse circuits, and
+the C loop's runs of them the Python's; the same for the stage loop and the transform loop at the rules' defaults; no sliver
+before a corner (1 of 80 landings against 31 of 80 with landing ahead off).  `test_lte_seed` +1 (two cases): a session of
+rejections alone is the Python's to repeat, its counts the Python run's.  About twenty tests in the C-loop suites, the chord
+fallback, the Radau stall check, the pattern pages and the error test on the seed's factors expect rejections, fallbacks or early
+aborts at a pulse's corners; they run with the cut off, some with landing ahead off too.  Two tests repaired that measured their
+own step grid: the BJT turn-off test drove the transistor too fast to switch and read the first step after the fall; it now
+switches and reads the storage time, 13.85 / 15.19 / 17.80 ns as TF doubles (13.90 / 15.22 / 17.81 under a fine step cap); the
+transmission line's delay test brackets the arrival between the run's own points.  The hysteresis test's minimum sample count
+4 -> 3 (how many land inside the loop is the controller's).  The two JAX-against-CPU tests run the CPU side with both rules off
+(Andreas "CPU side rules off"): `JAXTransient` has neither.  Nineteen bites, nineteen bit (the Python's cut gap, corner test,
+window, run's end, max_step, split, landing and both defaults; the C's cut gap, window, max_step, split, corner test and landing;
+the glue's `t_break`, `land_ahead` and `corner_cut`; the chord counts' take-back).  Five pinned pairs re-recorded after their
+twins' tests (the multistep walk, the stage loop, the stepping loop, the stepping loop's unread Jacobian, the transform loop).
+Suite 6 785 passed, 10 skipped, 5 xfailed under JAX_PLATFORMS=cpu.
+
+**Found, not changed:** (1) `JAXTransient` has neither rule (its own stepping; its parity tests switch them off on the CPU side).
+(2) On a linear circuit the branch check's `branch_c:served` counts each C step and the Python's once, with or without these
+rules.  (3) On a linear grid at max_step the time follows the number of distinct step sizes, not the attempts: (b) and (c)'s cost
+is refactors, and that is where a later stage would look.

@@ -75,7 +75,11 @@ _OWN = _OWN_COUNTS + ('stageloop_c:', 'tcloop_c:', 'radau_c:held')
 _PULSE = {'tend': 4e-8, 'timestep': 2.5e-10}
 #: (the cost transform asked for: 'auto' leaves the MOSFET chains, their
 #: Jacobians bound to C kernels, on the coupled Newton)
-_TRANSFORM = {'radau_transform': True}
+#: (the corner cut off: the C loop's rejections at the pulse's corners --
+#: retries, forces, early aborts -- are what these runs reach, and the cut's
+#: short first step after each corner smooths them away; the defaults' runs
+#: in C against Python: test_corner_steps)
+_TRANSFORM = {'radau_transform': True, 'corner_cut': 0.0}
 #: (steps across the pulse's edges three Newton iterations at most: the
 #: transform's frozen Jacobian does not converge where the dense Newton's
 #: does -- its fallback -- on a fixed grid and, the early abort armed, on an
@@ -213,8 +217,9 @@ def test_the_early_abort_and_a_new_pattern_are_made_in_c(monkeypatch):
     the complex factor's pattern moving -- both made in C (the checks and
     aborts counted as the Python's; the new patterns' analyses and fresh
     factors on the complex solver, the ones they replaced freed), the run
-    the Python's."""
-    ca = _same(_pulsed, monkeypatch, steps_min=10, **_PULSE)
+    the Python's.  (Landing ahead off too: its steps onto the corners leave
+    this chain no attempt the early abort fires on.)"""
+    ca = _same(_pulsed, monkeypatch, steps_min=10, make={'land_ahead': False}, **_PULSE)
     assert ca.get('radau.early:checks', 0) > 0 and ca.get('radau.early:aborts', 0) > 0, ca
     assert ca.get('radau_tc:klu', 0) > 0, ca
     assert not ca.get('tcloop_c:bail:fold'), ca
@@ -511,8 +516,9 @@ def test_the_declines(monkeypatch):
 @pytest.mark.parametrize('field', ['tcm', 'lam0r'])
 def test_p_or_the_factors_a_hair_off_is_another_run(field, monkeypatch):
     """Alive: P's first entry or the real factor's eigenvalue a ulp off in
-    the C -- the comparison sees another run."""
-    a, _ = _run(_pulsed, False, monkeypatch, **_PULSE)
+    the C -- the comparison sees another run.  (Landing ahead off too: with
+    it this chain's run does not reach what the plant moves.)"""
+    a, _ = _run(_pulsed, False, monkeypatch, make={'land_ahead': False}, **_PULSE)
     load = _tran_tcloop_c._load_tc
 
     def planted(e, run_, xl):
@@ -523,7 +529,7 @@ def test_p_or_the_factors_a_hair_off_is_another_run(field, monkeypatch):
         else:
             s.lam0r = math.nextafter(s.lam0r, 0.0)
     monkeypatch.setattr(_tran_tcloop_c, '_load_tc', planted)
-    b, cb = _run(_pulsed, True, monkeypatch, **_PULSE)
+    b, cb = _run(_pulsed, True, monkeypatch, make={'land_ahead': False}, **_PULSE)
     assert cb.get('tcloop_c:steps', 0) > 10 and (a['x'] != b['x'] or a['t'] != b['t'])
 
 

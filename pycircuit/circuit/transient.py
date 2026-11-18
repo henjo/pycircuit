@@ -729,6 +729,13 @@ _RUN_STATE = {
 }
 
 
+#: LANDING AHEAD's stretch (`_SteppingLoop._corner_size`): a breakpoint at most
+#: this many times the size asked away is landed on in one step -- the error
+#: test's aim is 0.9**p of its tolerance, so a 1.1x step of order 2 meets
+#: ~0.97 of it where the prediction holds
+LAND_STRETCH = 1.1
+
+
 class _SteppingLoop:
     """THE ONE STEPPING LOOP of `Transient._solve`, over a step family
     (`_LMMSteps`, `_StageSteps`, `_CoupledSteps`), the same for every
@@ -814,7 +821,7 @@ class _SteppingLoop:
         self.h = timestep if self.fixed else min(tr._opening_step(timestep),
                                                  run.max_step)
         self.t = 0.0
-        self.landing = self.order_drop = False
+        self.landing = self.order_drop = self.landing_ahead = False
         self.rejects = self.point_retries = 0
         self.fixed_fallbacks, self.forced = [], []
         self.ev_iter = 0
@@ -907,10 +914,14 @@ class _SteppingLoop:
         mb = tr.par.minbreak * max(abs(self.tend), 1.0)
         if not self.fixed and self.tend - t <= mb:
             return False
+        ## (this attempt starts on the breakpoint the last one landed on)
+        on_corner = self.landing and abs(t - self.t_break) <= 1e-12 * max(abs(t), 1e-300)
         if self.landing or self.order_drop:
             tr._is_first_step = True
         self.order_drop = False
         t_break = self.t_break = self.family.next_breakpoint(t)
+        if not self.fixed:
+            h = self._corner_size(t, h, t_break, on_corner)
         if self.fixed:
             ## STAGE 4h -- UNDER `fixed_timestep` THE GRID WINS: a breakpoint
             ## does not move it (a truncation would be permanent and
@@ -920,7 +931,7 @@ class _SteppingLoop:
             ## the drop fired at the first edge and missed every later one).
             ## History: `doc/transient_history.md`, `Transient._solve`.
             self.landing = t_break <= t + h * (1.0 + 1e-9)
-        elif t + h > t_break:
+        elif t + h > t_break or self.landing_ahead:
             h = float(t_break - t)
             self.landing = True
         else:
@@ -947,6 +958,40 @@ class _SteppingLoop:
         ## step grew past `tend` in 5 of 6 configurations)
         self.hold = clamped or self.fixed or self.imposed
         return True
+
+    def _corner_size(self, t, h, t_break, on_corner):
+        """An adaptive attempt's size against the breakpoint ahead.
+
+        THE CORNER'S START (`Transient.corner_cut`): the first step from the
+        breakpoint just landed on is at most `corner_cut` x min(the size
+        asked, the gap to the next breakpoint) -- the first-order step after a
+        corner, taken at the size asked, carried the run's largest error
+        against a reference (ibmpg3t: 0.236 mV, 0.049 with the cut), and the
+        cut reads exact corner times and the controller's size alone.
+
+        LANDING AHEAD (`Transient.land_ahead`): a breakpoint beyond this step
+        but within two of it (and before the run's end) is stretched onto --
+        a landing -- where it is at most `LAND_STRETCH` x the size asked and
+        within `max_step`, else reached in two equal steps (half the way
+        now).  Without it the step ending just short of a corner left the
+        remainder, down to 1e-4 of a step, as the next one: a size that is
+        the difference t_break - t turns the step times' rounding (~1e-19 s)
+        into differences of 1e-3 .. 1e-1 between two runs whose solves round
+        differently, and the steps after it ramp up at the growth cap.
+
+        Returns the size; `landing_ahead` set where it stretched."""
+        par = self.tr.par
+        self.landing_ahead = False
+        rem = float(t_break - t)
+        cut = par.corner_cut
+        if cut and on_corner:
+            h = min(h, cut * min(h, rem))
+        if par.land_ahead and h < rem < 2.0 * h and rem < self.tend - t:
+            if rem <= LAND_STRETCH * h and rem <= self.run.max_step:
+                self.landing_ahead = True
+            else:
+                h = 0.5 * rem
+        return h
 
     def take(self):
         """2. Take it: smaller on a Newton failure, or where the attempt was
@@ -1627,6 +1672,18 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
          Parameter(name='minbreak',
                    desc='Minimum time difference for breakpoint events', unit='s',
                    default=1e-14),
+         ## LANDING AHEAD and THE CORNER'S START (`_SteppingLoop._corner_size`):
+         ## an adaptive run's steps around a breakpoint (a source corner)
+         Parameter(name='land_ahead',
+                   desc='A breakpoint beyond the next step but within two of it is '
+                        'stretched onto (at most 1.1x the step, within max_step) or '
+                        'reached in two equal steps, so no step before it is a sliver',
+                   unit='', default=True),
+         Parameter(name='corner_cut',
+                   desc='The first step from a breakpoint just landed on is at most '
+                        'this fraction of the smaller of the size asked and the gap '
+                        'to the next breakpoint (0: no cut)',
+                   unit='', default=0.25),
          ## DEVICE BYPASS (SPICE's), OFF BY DEFAULT, GEAR-2 ALONE: a device the
          ## evaluation core evaluates (compiled, in a circuit the core serves)
          ## whose terminal voltages each moved within `reltol` * |v| + `vabstol`

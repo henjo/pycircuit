@@ -398,7 +398,9 @@ def test_the_adaptive_declines(monkeypatch):
 def test_a_law_a_hair_off_is_another_adaptive_run(monkeypatch):
     """Alive: the shrink's floor a ulp off in the C's law (its rejections
     retry at another step) -- the comparison sees another run."""
-    kw = {'tend': 6e-8, 'timestep': 1e-9, 'fixed_timestep': False}
+    ## (the corner cut off: the plant acts on the retries after the pulse's
+    ## rejections, which the cut's short first steps smooth away)
+    kw = {'tend': 6e-8, 'timestep': 1e-9, 'fixed_timestep': False, 'make': {'corner_cut': 0.0}}
     a, _ = _run(_pulsed, False, monkeypatch, **dict(kw))
     bind = _tran_loop_c._bind
 

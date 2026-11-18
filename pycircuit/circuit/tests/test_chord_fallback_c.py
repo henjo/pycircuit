@@ -127,7 +127,9 @@ def _limited(monkeypatch, path, maxiter=4, armed=False, plant=None, mos=(), **pa
             plant(run_)
             return r
         monkeypatch.setattr(_tran_loop_c, '_load', planted)
-    tr = Transient(_active(**dict(mos)), toolkit=circuit.numeric, **par)
+    ## (the corner cut off: the rejections and limits this reaches come at
+    ## the pulse's corners, which its short first steps smooth away)
+    tr = Transient(_active(**dict(mos)), toolkit=circuit.numeric, **dict({'corner_cut': 0.0}, **par))
     tr.par.maxiter = maxiter
     if armed:
         tr._damped_last_resort = True
@@ -183,7 +185,8 @@ _FIRST = {'converges': (6, ()), 'limit': (4, _GAIN_BELOW_ONE)}
 
 def _seeded(monkeypatch, path, case, **k):
     maxiter, mos = _FIRST[case]
-    return _limited(monkeypatch, path, maxiter, mos=mos, lte_jacobian='seed', **k)
+    ## (landing ahead off too: with it the 'limit' case's fallback converges)
+    return _limited(monkeypatch, path, maxiter, mos=mos, lte_jacobian='seed', land_ahead=False, **k)
 
 
 @pytest.mark.parametrize('case', _FIRST)

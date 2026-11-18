@@ -52,7 +52,11 @@ _NOT_STATE_S = _NOT_STATE | {'_pred_c'}
 ## holds the Python's repeats take)
 _OWN = _OWN_COUNTS + ('stageloop_c:', 'radau_c:held')
 #: (the cost transform off: 'auto' leaves it on for the PSP's compiled Jacobian)
-_PLAIN = {'radau_transform': False}
+#: (the corner cut off: the C loop's rejections at the pulse's corners --
+#: retries, forces, early aborts -- are what these runs reach, and the cut's
+#: short first step after each corner smooths them away; the defaults' runs
+#: in C against Python: test_corner_steps)
+_PLAIN = {'radau_transform': False, 'corner_cut': 0.0}
 #: (a pulse's corners: rejections at a point, landings, order drops)
 _PULSE = {'tend': 4e-8, 'timestep': 2.5e-10}
 #: (... and, this tight, two at a point: the retry's order measured)

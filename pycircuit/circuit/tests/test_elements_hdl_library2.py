@@ -678,8 +678,10 @@ def test_hysteresis_latches_in_a_transient_both_directions():
     ## after the first edge, so the uic start-up is not counted: `uic`
     ## puts the latch at q = 0, its metastable point, and the first
     ## fifteen samples are it resolving off that.
+    ## (at least three such samples: how many fall there is the step
+    ## controller's too -- four before the corners' rules, three with them)
     inside = (np.abs(vi) < 0.5 * vth) & (t > t[edges[0] + 1])
-    assert inside.sum() >= 4, inside.sum()
+    assert inside.sum() >= 3, inside.sum()
     assert np.all(np.abs(vo[inside]) > 0.9), np.abs(vo[inside]).min()
 
 
