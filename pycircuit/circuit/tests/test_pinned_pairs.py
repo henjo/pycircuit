@@ -1251,7 +1251,7 @@ RECORD = {
     'the coupled stage Newton and its C': ('516563e96a5c', 'be13ccc892c6'),
     "the walk's stage block and the C stage Newton's last assembly": ('7210b37a2ef6', 'a14a1a484071'),
     "the converged stage replay and the shooting's last walk": ('9d058eee8b3d', '5bc8e5eeda8c'),
-    'the transform solve and its frozen form': ('b87ba71b7062', '02fc0d02aa53'),
+    'the transform solve and its frozen form': ('9938d5b3b58e', '02fc0d02aa53'),
     'the transform Newton and its C': ('811fd575b711', 'de2c75084970'),
     "the step's end passes and the C's": ('e81243efba17', '1e3ebc864a6b'),
     'the frozen factors and their C': ('e2f3d26349c0', '19c25d66d9c8'),

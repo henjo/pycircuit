@@ -271,3 +271,42 @@ def test_a_kept_klu_solver_answers_as_a_fresh_one_to_the_rounding():
             structure=None)).solve(x0=x).x, dtype=float)
     assert np.allclose(kept, fresh, rtol=1e-12, atol=1e-15)
 
+
+def test_a_transient_on_a_large_circuit_releases_the_kept_dc_factor(monkeypatch):
+    """From `dcanalysis.DC_FACTOR_KEPT_BELOW` unknowns a transient frees the
+    factor of the DC solver kept on its circuit -- its held solves' too --
+    once its start state is known: a transient's matrix is not the DC's, and
+    on ibmpg3t that factor is 911 MB no step reads.  The solver, its choice
+    and KLU's analysis stay, and a DC after it factors afresh on them: the
+    first DC's answer.  Below the size the factor is kept (a sweep's DC ->
+    transient -> DC refactors on its pivots).  The ladder with a capacitor
+    at its end and a node held by a nodeset (PCNR's held solve, a child
+    solver with a factor of its own), the size lowered to the ladder's."""
+    from pycircuit.circuit import dcanalysis
+    from pycircuit.circuit.elements import C
+    from pycircuit.circuit.linearsolver import StructuralKLU
+    from pycircuit.circuit.transient import Transient
+
+    def run(size):
+        monkeypatch.setattr(dcanalysis, 'DC_FACTOR_KEPT_BELOW', size)
+        cir = _ladder()
+        cir['C'] = C('n160', gnd, c=1e-9)
+        with quiet():
+            first = np.asarray(DC(cir, nodeset={'n80': 0.5}).solve().x, dtype=float)
+        kept = cir.__dict__['_dc_solver'][2]
+        held = list(kept._held.values())
+        assert type(kept._sparse) is StructuralKLU and len(held) == 1
+        assert kept._sparse._numeric and held[0]._sparse._numeric
+        with quiet():
+            Transient(cir, toolkit=numeric).solve(tend=1e-8, timestep=1e-9)
+        assert cir.__dict__['_dc_solver'][2] is kept and kept._choice is kept._sparse
+        state = (bool(kept._sparse._numeric), bool(held[0]._sparse._numeric), bool(kept._sparse._symbolic))
+        with quiet():
+            again = np.asarray(DC(cir, nodeset={'n80': 0.5}).solve().x, dtype=float)
+        assert np.allclose(again, first, rtol=1e-12, atol=1e-15)
+        return cir.n, state
+
+    n, released = run(_ladder().n)
+    assert released == (False, False, True)
+    n_kept, kept = run(n + 1)
+    assert n_kept == n and kept == (True, True, True)

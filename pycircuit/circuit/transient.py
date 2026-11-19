@@ -2402,6 +2402,11 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                 ## becoming a vector of zeros.
                 x0 = self._solve_operating_point(refnode)
         x = x0
+        ## A large circuit's kept DC solver holds a factor no step reads
+        ## (`dcanalysis.release_kept_factor`)
+        from pycircuit.circuit import dcanalysis
+        if n >= dcanalysis.DC_FACTOR_KEPT_BELOW:
+            dcanalysis.release_kept_factor(self.cir)
 
         ## Without `uic` the analysis-level `ic` HOLDS the operating point
         ## (SPICE's `.ic`, released at t = 0 -- `_solve_operating_point`);

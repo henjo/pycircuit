@@ -16701,3 +16701,41 @@ forgotten (B4's test), the variable not set, the variable not removed.  Suite 6 
 bits tied to the thread count; a setting for it is not built.  scipy's own OpenBLAS libraries start at the cores' count when the
 variable is unset (numpy loads them) and are held at one in every analysis; what that costs a run is not measured apart (the
 1 ns 1.007-1.010x with CHOLMOD's alone started at one).
+
+## 2026-11-19 — 336. M1: a transient releases the factor of the DC solver kept on a large circuit
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, M1); found in B4 (sec. 334), Andreas "For item 1 ... yes, do it" (size it), then
+"Free the factor".  A DC keeps its default solver on the circuit (`dcanalysis._circuit_solver`, sec. 187: a sweep's DCs reuse
+the choice, KLU's analysis and the pivots) for as long as the circuit lives, so through a transient -- whose matrix is G + C/h,
+on a large grid CHOLMOD's reduction -- it holds a factor no step reads.  Sized (freed part by part, RSS after gc and
+malloc_trim): ibmpg3t / 5t / 6t keep 1 048 / 584 / 810 MB -- KLU's factor 911 / 460 / 621, its analysis 20 / 20 / 29, the
+structure arrays 117 / 113 / 172.  A transient with its operating point in the run (0.2 ns) peaked at 5 676 / 5 714 / 8 405 MB
+kept and 4 704 / 5 200 / 7 582 dropped, the same steps and waveform bytes; a DC after it on the same circuit took 7.0 / 6.9 /
+12.0 s kept, 24.3 / 11.0 / 16.0 with only the factor freed and 77.7 / 32.9 / 44.8 with everything dropped (a fresh DC's), the
+first DC's bytes in each.  Every gold deck and gate size case is under ~16 000 unknowns (ibmpg1t 54 266, ibmpg2t 164 898).
+With the factor freed on a prototype: peaks 4 783 / 5 263 / 7 784 MB, a later DC with the transient alive 24.2 / 13.9 / 25.7 s
+against 7.5 / 10.6 / 24.5, and the peak after that DC 5 616 / 5 664 / 8 408 MB against 5 966 / 6 051 / 8 986 today (today's
+later DC refactors beside the live transient).  Line (set before): (a) below the size nothing changes -- the gate against
+67f24843 SAME, the suite; (b) ibmpg3t / 5t / 6t 0.2 ns with the operating point in the run: today's steps and waveform digests,
+the peak <= 4 879 / 5 368 / 7 940 MB, time within 3 %; (c) a DC after it, the transient alive: the operating point's bytes, <=
+26.7 / 15.3 / 28.3 s, the peak after it <= 5 728 / 5 777 / 8 576 MB; (d) a test, the size lowered, bitten; (e) size >= 0.98x,
+ruff.
+
+**What.**  `AutoSolver.release_factor()` frees the sparse solver's factorisation (KLU's `_free_numeric`) and its held solves'
+(`held`), keeping the choice, the analysis and the structure: the next solve factors afresh on the kept analysis, with fresh
+pivots.  `dcanalysis.release_kept_factor(cir)` calls it on the solver kept on the circuit, and `Transient._solve` (`_open_run`),
+once its start state is known -- the operating point solved or `x0` given -- calls that where the circuit has at least
+`dcanalysis.DC_FACTOR_KEPT_BELOW` (100 000) unknowns.  Below the size a sweep's DC -> transient -> DC keeps refactoring on its
+pivots, as before.
+
+**Measured.**  (a) MET -- the gate against 67f24843 SAME (every deck's results and path counters under dc, gear2, gear2/bypass, radau; size; C against Python 0 differing; no executable C line changed).  (b) MET -- the tree against 67f24843, interleaved per grid on a quiet box, 0.2 ns with the operating point in the run: the same 44 / 2 / 87, 44 / 2 / 89, 44 / 2 / 89 and waveform digests; peaks 4 764 / 5 266 / 7 795 MB against 5 680 / 5 772 / 8 416 (0.839 / 0.912 / 0.926x; the line 4 879 / 5 368 / 7 940); 169.4 / 107.0 / 163.8 s against 168.7 / 107.4 / 162.5 (1.004 / 0.996 / 1.008x).  (c) MET -- the DC after, the transient alive: the operating point's bytes in both trees; 24.4 / 10.8 / 23.0 s against 7.0 / 7.4 / 19.4 (the line 26.7 / 15.3 / 28.3); the peak after it 5 637 / 5 669 / 8 413 MB against 5 967 / 6 073 / 8 951 (the line 5 728 / 5 777 / 8 576).  (d) MET -- the test below, six bites bitten.  (e) MET -- every digest and step count the same; new / head time DCs 0.971-1.017, transients 0.968-1.022 on single pairs, the achain 4000 gear2 pair (1.022) re-run three pairs on a quiet box: 0.998 / 1.004 / 0.999 (no size case reaches the release: all under 100 000 unknowns).
+
+**Tests.**  `test_dcsweep` +1 (`test_a_transient_on_a_large_circuit_releases_the_kept_dc_factor`): the 160-section ladder with
+a capacitor at its end and a node held by a nodeset (PCNR's held solve, a child solver with its own factor), the size lowered
+to its 163 unknowns -- after a transient the kept solver's factor and its held solve's freed, the solver, its choice and KLU's
+analysis kept, a DC after it the first DC's answer to 1e-12; with the size one above, every factor kept.  Six bites, six bit:
+no release, `>` for `>=`, the size ignored, the held solves not released, the analysis freed too, the whole entry dropped.
+The pinned pair 'the transform solve and its frozen form' names the whole `AutoSolver` on its reference side and moved with `release_factor`, which its twin never calls; re-recorded after the twin's tests passed (eight files, 275 passed).  Suite 6 813 passed, 10 skipped, 5 xfailed.
+
+**Found, not changed:** today a DC after a transient on a large circuit raises the process's peak (it refactors beside the live
+transient's solver: ibmpg6t 8.42 -> 8.95 GB); with the factor released it factors afresh into the freed memory instead.

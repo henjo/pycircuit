@@ -2303,6 +2303,18 @@ class AutoSolver(LinearSolver):
         """The selected solver's (`LinearSolver.solve_transposed`)."""
         return self._select(A).solve_transposed(A, B, toolkit)
 
+    def release_factor(self):
+        """The sparse solver's factorisation freed (KLU's `_free_numeric`),
+        its held solves' too (`held`); the choice, the analysis and the
+        structure kept, so the next solve factors afresh on the kept
+        analysis, with fresh pivots.  The dense solver keeps no factor
+        between solves."""
+        free = getattr(self._sparse, '_free_numeric', None)
+        if free is not None:
+            free()
+        for held in self._held.values():
+            held.release_factor()
+
     def held(self, drop):
         """The AutoSolver of this one's matrices with the rows and columns
         `drop` removed -- a DC's held nodes, which PCNR eliminates: this

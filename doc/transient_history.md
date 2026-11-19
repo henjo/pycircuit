@@ -6277,3 +6277,18 @@ within 1.5 % of the one-thread time, with the same bits every time.  Eight
 threads would have been 5 % faster on the whole run, with bits tied to the
 thread count and eight cores taken on a shared machine; Andreas chose one
 thread.
+
+## M1: a transient releases the factor of the DC solver kept on a large circuit (2026-11-19)
+
+2026-11-19 (`doc/hdl_roadmap_260824.md`, 336; plan 261 L21).  A DC keeps
+its linear solver on the circuit so that the next DC -- a sweep's next
+point -- can reuse it, and that solver lives as long as the circuit does.
+On the million-node power grids it is 0.6-1 GB, nearly all of it KLU's
+factorisation of the DC matrix, and a transient never reads it: its own
+matrix is a different one, solved by CHOLMOD.  A transient on a circuit of
+100 000 unknowns or more now frees that factor once its starting point is
+known, keeping the cheap part (the solver's choice and KLU's ordering), so
+a DC run afterwards factors again in 11-24 s rather than starting from
+scratch (33-79 s).  The runs' peaks fall to 0.84-0.93x with the same steps and
+answers.  Smaller circuits, every test and benchmark deck among them, are
+untouched.

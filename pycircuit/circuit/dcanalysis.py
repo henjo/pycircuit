@@ -37,6 +37,26 @@ def _circuit_solver(cir, iref, floor):
     return solver
 
 
+#: the size, in unknowns, from which a transient releases the factor of the
+#: DC solver kept on its circuit (`release_kept_factor`); below it a sweep's
+#: DC -> transient -> DC keeps refactoring on its pivots.  The kept solver is
+#: ~0.6-1 KB an unknown, nearly all KLU's factor: 911 of ibmpg3t's 1 048 MB
+DC_FACTOR_KEPT_BELOW = 100_000
+
+
+def release_kept_factor(cir):
+    """The factor of the DC solver kept on `cir` (`_circuit_solver`) freed,
+    its held solves' too (`AutoSolver.release_factor`); its choice, KLU's
+    analysis and the structure kept.  A transient's matrix is not the DC's
+    (G + C/h; CHOLMOD's reduction on a large grid), so through the run that
+    factor is memory no step reads: freed, ibmpg3t's 0.2 ns peak 5.68 ->
+    4.78 GB with the same steps and bits, and a DC after it 24 s against 7.5
+    (a fresh one's 79), the same bytes."""
+    kept = cir.__dict__.get('_dc_solver')
+    if kept is not None:
+        kept[2].release_factor()
+
+
 class DC(Analysis):
     """DC analyis class
     
