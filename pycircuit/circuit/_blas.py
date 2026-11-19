@@ -70,7 +70,16 @@ def blas_single_thread_available():
 ## package.  So one, rebuilt when `len(sys.modules)` moved; a library loaded
 ## through ctypes alone is not seen until then.  The limit itself is the same
 ## call on it.  In a container: the leak detector reads module-level scalars.
+## A library its loader opens itself (`dlopen`) comes with no import: that
+## loader says so (`library_loaded`) -- CHOLMOD brings the system's OpenBLAS.
 _BLAS_CONTROLLER = {}
+
+
+def library_loaded():
+    """A shared library opened by its loader rather than with a package (a
+    BLAS can come with it): the kept controller forgotten, so the next hold
+    builds one that sees it."""
+    _BLAS_CONTROLLER.clear()
 
 
 def _single_threaded_blas():

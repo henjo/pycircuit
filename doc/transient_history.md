@@ -6233,3 +6233,26 @@ built.  ibmpg3t's 10 ns run takes the per-element run's steps at the same
 times, within 6e-13 V, and peaks at 7.3 GB instead of 8.8.  Without the flag
 nothing changes, and the JAX transient now refuses a circuit holding a bank,
 by name, instead of failing obscurely.
+
+## Bulk elements, B4: the bulk read, and bulk from a netlist's size (2026-11-19)
+
+2026-11-19 (`doc/hdl_roadmap_260824.md`, 334; plan 261 L21).  After B3 what
+was left of a large grid's import was reading and mapping the netlist: a
+parsed record (three, in fact) for each of its two million lines, kept for
+the whole run -- 2.7 GB on ibmpg3t before anything was built, and enough on
+ibmpg6t that its 10 ns run hit the 11 GB cap within 0.2 ns.  Now, under
+`bulk`, a plain resistor, capacitor or pulse current-source line is read
+straight into its bank as the file streams past, with no record; anything
+less plain (an expression, a parameter, a subcircuit's element) still goes
+through the records, and the banks are put back together in file order, so
+the circuit is the same one, byte for byte.  Where that could not be
+guaranteed up front (a name used twice, a pulse needing a missing `.tran`)
+the import is redone the old way and the report says why.  `bulk` now
+switches on by itself from 200 000 lines, and `write_ngspice` writes a
+bank's elements from its arrays.  The imports of ibmpg2t-6t take 19-27 % of
+the memory (ibmpg3t 0.61 instead of 3.1 GB) in 0.61-0.69x the
+time, and ibmpg4t, 5t and 6t run their full 10 ns for the first time, under
+9 GB, 0.03-0.13 mV from the benchmark.  On the way, the BLAS hold was found
+not to see the OpenBLAS that CHOLMOD brings with it, opened outside any
+import, so a later held run could leave it threaded; CHOLMOD's loader now
+tells the hold.

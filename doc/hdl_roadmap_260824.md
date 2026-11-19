@@ -16537,3 +16537,112 @@ under JAX_PLATFORMS=cpu (the base 6 785 with sec. 332).
 anything is built (B4); a memory line sized by subtracting a phase's growth counts what stays and misses what reused the heap
 freed before it; `u:called` counts the elements' calls and not a bank's sources (425 700 on the banked ibmpg2t's 10 ns, the 330
 voltage sources a step, against 47 946 720).
+
+## 2026-11-19 — 334. Bulk elements, B4: the bulk read, and bulk from a netlist's size
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, B4); Andreas "Continue as you recommend" (size first), then "Build B4 to that line",
+"Auto from 200 000 lines", "Write banks from arrays", "Keep explicit" (merge_shorts).  After B3 what was left of ibmpg3t's import
+peak was the netlist's reading and mapping: 1.66 GB high-water reading it, 2.70 GB mapping it, before anything was built -- a
+`Card`, a `Flat` and a `Mapped` record (a `Where` each) for each of its two million lines, the records kept for the whole run
+(1.05 GB on ibmpg3t, 2.07 GB on ibmpg6t merged).  ibmpg4t-6t were fetched (UCSB, into the cache, never vendored): ibmpg6t's
+import reached 7.2 GB and its 10 ns run was killed at the 11 GB cap inside 0.2 ns.  Sized on a prototype read per phase (VmHWM,
+not by subtraction): reading the plain lines straight into the banks built the same circuit byte for byte on every grid, its
+import peak 21-29 % of today's in a bit over half the time, and ibmpg4t-6t ran their full 10 ns for the first
+time.  Line (set before any source change): (a) below the threshold and with `bulk=False` nothing changes -- the gate against
+22a28d81 SAME, ibmpg1t's import the same circuit, the suite; (b) with bulk the same circuit as 22a28d81's `bulk=True` import (n,
+nodes in order, elements by name and class, every bank's arrays byte for byte, merged, tran, the report less B4's lines) on
+ibmpg2t, 3t, 4t (merge_shorts off and on), 5t and 6t (on), and on a fixture taking every branch; (c) the import's peak (its own
+process) <= 1.2x the prototype's -- 2t 0.20, 3t 0.80, 4t 1.00, 5t merged 1.48, 6t merged 2.38 GB -- and its time <= 0.70x
+22a28d81's bulk import, interleaved on a quiet box; (d) the 10 ns runs, merged: 4t, 5t, 6t the prototype's steps (1 114 / 3 /
+2 015, 1 292 / 2 / 2 485, 1 292 / 2 / 2 326), waveforms within 1e-12 V of its, peaks <= 6.26 / 5.91 / 9.50 GB; 3t B3's 1 292 /
+2 / 2 194 within 1e-12 V, peak <= 5.6 GB; (e) `write_ngspice` of a banked import read back per element gives the per-element
+import's elements bit for bit (the fixture, ibmpg2t); size >= 0.98x; the suite (SKIPPED 10); bites; ruff.
+
+**What.**  Under `bulk` the importer reads a plain bankable line straight into its bank, with no record of its own.
+`spicenetlist.read(path, take=None)`: a reader's own use of some element lines -- called with each top-level element line outside
+a `.control` block before a `Card` is made of it, a true return keeping the line; `take.mark()` stored on every top-level `Card`
+made (`Card.mark`, a field at the end) to put the two back in file order.  `spicecard._numbered_lines` streams the file instead of
+reading it whole.  `spice_import._Take` is the importer's `take`: a line that `map_r`, `map_c` or `source` would make, on its own
+words alone, into an element `_bankable` takes -- `r name a b number` (not 0), `c name a b number`, `i name a b [number]
+pulse(7 numbers)` (no AC value, no parameter) -- held as it is read: per kind its two nodes (lower case, interned) and its values
+in `array('d')` (a pulse's seven as written), its name's 64-bit hash.  A resistor's or a capacitor's line holding a character
+`_items` reads apart (`( ) , = { } ' "`), an expression, a parameter, r = 0, a '.' in a name or a node, a node written as an
+expression, and every other form stays a record.  `Flat` and `Mapped` carry the mark (a subcircuit's elements their instance
+card's), and `build` banks the taken lines among the records' bankable elements in file order (`bank_taken`: nodes through
+`merged`, `0` the ground, a pulse's DC current 0.0 and its zero edges `.tran`'s -- `waveform`'s TSTEP / TSTOP); a bank's values
+and pulses are gathered in `array('d')` (B3's lists of lists before).  Where the record path's circuit could differ, the import
+is done again with every line a record and the report says why, last (`_RecordPath`): an element name taken twice, or taken and
+a record's (the record path renames one; a hash collision says so too and costs only time); a taken pulse whose edge is
+`.tran`'s in a netlist without one (the record path refuses it).  `import_netlist(..., bulk=None)` is the new default: bulk
+where the file has `BULK_FROM` (200 000) lines or more -- ibmpg1t's 76 940 below, ibmpg2t's 320 613 above; `True` / `False`
+as before; `BULK_READ = False` reads every line as a record first (the tests' reference, B3's bulk).  The report says how many of
+each kind the banks hold; `Imported.bulk_read` counts the lines read with no record (not in `elements`: the benchmarks' element
+counts add them).  `write_ngspice` writes a bulk import's banks from their arrays after the elements, a banked record not written
+twice, each element named by its kind, `bank` and its place, the prefix lengthened by `_` until no element's written name begins
+with it; a banked element has no current to print.  `merge_shorts` stays the caller's.  A banked element has no object, so
+`cir['r1']` is gone for it under the automatic threshold (its node voltages are not).
+
+And the BLAS hold (Andreas: "Fix it in B4's commit"): its kept controller (`_blas._BLAS_CONTROLLER`, rebuilt when
+`len(sys.modules)` moves) did not see the system OpenBLAS that CHOLMOD brings, opened by `_cholklu`'s C (`dlopen`, no import), so
+a hold whose controller was kept from before CHOLMOD loaded left that library at its threads.  B4's first suite run failed two
+`test_blas_limit` cases on it (`[[1, 1, 4]]`: an xdist worker that had run a CHOLMOD test first); B4 only moved which worker ran
+what, and it reproduces on 22a28d81 (a held DC, CHOLMOD loaded, a held DC again).  `_blas.library_loaded()` forgets the kept
+controller; `_cholklu.library` calls it once it has tried CHOLMOD.
+
+**Measured.**  (a) MET -- the gate against 22a28d81 SAME: every deck's results and path counters under dc, gear2,
+gear2/bypass and radau, and the size runs; C against Python 0 differing on every deck and setting and at size; no executable
+C line changed; its coverage suite test_bulk_read, test_spice_import, test_bulk, test_blas_limit and test_cholklu.  ibmpg1t (`bulk=None`, below the threshold): the same circuit as 22a28d81's, 5.65 s / 487 MB against
+5.56 s / 486 MB.  (b) MET -- the same circuit as 22a28d81's `bulk=True` import, every check, on ibmpg2t, 3t and 4t with
+merge_shorts off and on and 5t and 6t on (the report B4's last line apart); the lines read with no record: ibmpg2t 245 163 R /
+36 838 C / 36 838 I (660 records mapped against 319 499), 3t 1 602 626 / 201 054 / 201 054 (1 910 against 2 006 644), 4t 1 826 589
+/ 265 944 / 265 944, 5t 1 550 048 / 473 200 / 473 200, 6t 2 410 486 / 761 484 / 761 484 (513 elements left from 3 933 967
+mapped); the fixture's cases under Tests.  (c) MET -- each import in its own process, 22a28d81 and the tree interleaved, three
+pairs on a quiet box (1-min load 1.0-1.5, AC, one BLAS thread; merge_shorts on 5t and 6t):
+
+| grid | peak B4 / 22a28d81 | line | import B4 / 22a28d81 | ratio (median) | line |
+|---|---|---|---|---|---|
+| ibmpg2t | 147 / 561 MB | <= 200 | 2.70 / 4.42 s | 0.611x | <= 0.70 |
+| ibmpg3t | 613 / 3 137 MB | <= 800 | 18.4 / 28.5 s | 0.645x | <= 0.70 |
+| ibmpg4t | 690 / 3 701 MB | <= 1 000 | 21.1 / 34.0 s | 0.621x | <= 0.70 |
+| ibmpg5t | 1 135 / 4 234 MB | <= 1 480 | 32.4 / 47.5 s | 0.682x | <= 0.70 |
+| ibmpg6t | 1 775 / 7 136 MB | <= 2 380 | 53.5 / 77.8 s | 0.688x | <= 0.70 |
+
+The peaks fall below the prototype's (162 / 664 / 834 / 1 234 / 1 985 MB; it kept each name, B4 keeps its hash; not traced
+further), the times within 6 % of its at sizing (2.6 / 17.5 / 20.0 / 31.3 / 50.9 s); the ratios sit nearer the line than the
+prototype's 0.53-0.58x because 22a28d81 here, in a plain import interleaved, took 28.5 s on 3t against the sizing's per-phase
+script's 33.0 s.  (d) MET -- the default 10 ns,
+merged, CHOLMOD, OPENBLAS_NUM_THREADS=1, the tree and the prototype in two lanes (load 1.6-2.8: not a timed comparison): ibmpg4t
+1 114 / 3 / 2 015, 5t 1 292 / 2 / 2 485, 6t 1 292 / 2 / 2 326, each the prototype's step times byte for byte and its waveforms at
+0 V at every saved point of the printed nodes (0.133 / 0.0309 / 0.0358 mV from the benchmark); 6t's operating point, solved in the
+run, the prototype's bytes (55.6 s; 0.00050 mV); peaks 5.48 / 5.35 / 8.61 GB against the prototype's 5.61 / 5.41 / 8.66; runs
+1 087 / 1 292 / 1 850 s.  ibmpg3t from B3's stored operating point: 1 292 / 2 / 2 194, the step times and waveforms B3's byte for
+byte (0.0490 mV), the peak 4.77 GB against B3's 7.34.  (e) ibmpg2t written by `write_ngspice` (18.4 MB in 3.2 s) and read back
+per element: its 319 499 elements the per-element import's by class, nodes and values, bit for bit; size MET -- interleaved pairs on AC, one BLAS thread, every digest and step count 22a28d81's: the DCs
+0.982-1.029x (1-min load 1.45-1.68; achain 4000 1.12 against 1.10 s, timed to 0.01 s), the transients 0.987-1.012x (load 2.8-3.5,
+the box busy again; each Radau the median of three); by construction no size run reaches B4's code (no netlist is read, and
+`library_loaded` is called only where CHOLMOD loads).  The fixture's round
+trip and the bites under Tests.
+
+**Tests.**  `test_bulk_read` (new, seven functions, ten cases): a deck taking every form and leaving every other -- taken R
+(upper case, a continuation, one from an `.include`), C, I (a DC value, commas, zero edges from `.tran`); left a parameter, an IC,
+an expression, brackets, a `dc` word, a pulse of two values, an AC value, a subcircuit's, a node written as an expression, and
+the refused (a '.' in a name and in a node, a source's parameter); r = 0 a source merged away (a taken capacitor's end with it);
+the `.control` block and lines after `.end` read by neither -- the circuit read with records first byte for byte, merge_shorts off
+and on; the banks in file order; a name read twice (three ways) and a pulse needing a missing `.tran` (strict and not) read
+every line as a record, the report saying why; `bulk=None` at the threshold's line count and one past it; `write_ngspice` writing
+the banks from their arrays, read back bit for bit; a bank's prefix lengthened past an element's name.  `test_blas_limit` +1: in
+a process of its own, a hold kept from a held DC, CHOLMOD loaded (the BLAS count 2 -> 3), then a DC held with the pool opened to
+4 threads first -- all three libraries at one thread.  Twenty-two bites, twenty-two bit: each refused form (the characters, the
+'.', r = 0, the DC value, a source's parameter, a source's expression node), the order merge, the merged nodes (after the
+fixture's capacitor gained the merged node), the zero edges, both fallbacks and the cross check, a subcircuit's mark, the
+threshold, the banks' writing (skip, write, prefix), node case, no mark, a take inside a subcircuit and inside `.control`, and
+`library_loaded`'s call (`[[1, 1, 4]]`).  No C twin, so no pinned pair.  Suite 6 810 passed, 10 skipped, 5 xfailed under JAX_PLATFORMS=cpu (the base 6 799 with sec. 333).
+
+**Found, not changed:** (1) a solved DC keeps its solver through the transient (`cir._dc_solver`, the DC's KLU, which the
+transient does not use: 593 MB on ibmpg5t, with `_stamp_plan` 378 MB, `_node_index` 58, `_bank_index` 31 and ~560 MB not
+returned); ibmpg6t's run 1.51 GB before its DC, 3.14 GB after.  (2) The run that loads CHOLMOD does so inside its own hold, which
+took its libraries on entry, so that run's CHOLMOD BLAS keeps its threads (24 here); the next hold holds it (a 16 x 16 grid at
+the threshold 0: 24, then 1).  Every timed run here sets OPENBLAS_NUM_THREADS=1; whether CHOLMOD at a million unknowns is better
+threaded is not measured.  (3) 0 V voltage sources stay records (ibmpg5t 539 087, ibmpg6t 836 239, merged away after mapping).
+(4) ibmpg4t's operating point takes 121 s on KLU against 35-56 s on 5t and 6t, and its 10 ns is 0.133 mV from the benchmark
+against 0.03-0.05 mV on the others (266 CHOLMOD refactors against 716): neither traced.

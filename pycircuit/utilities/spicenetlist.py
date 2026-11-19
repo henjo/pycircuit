@@ -48,11 +48,14 @@ class Card:
     """One element line: its name (lower case), its positional words and
     its `name=value` parameters, raw -- parentheses and commas separate
     words, as SPICE reads an element line; a `{...}` or quoted expression
-    is one word."""
+    is one word.  `mark`: with `read`'s `take`, what it returned from its
+    `mark()` when this top-level line was read (the lines it took and the
+    cards placed in file order); else None."""
     name: str
     words: list
     params: dict
     where: Where
+    mark: object = None
 
     @property
     def kind(self):
@@ -198,16 +201,22 @@ class Netlist:
         return self.models.get(key)
 
 
-def read(path):
-    """Read the netlist `path` (see the module note)."""
+def read(path, take=None):
+    """Read the netlist `path` (see the module note).  `take`: a reader's
+    own use of some element lines -- called with each TOP-LEVEL element
+    line outside a `.control` block (its text and its first word in lower
+    case) before a `Card` is made of it, a true return keeping the line
+    (no `Card`: the caller holds it); `take.mark()` is stored on every
+    top-level `Card` made (`Card.mark`), so that the two can be put back
+    in file order."""
     net = Netlist()
     with open(path, errors='replace') as fh:
         net.title = fh.readline().strip()
-    _read_file(net, path, title=True, seen=frozenset(), stack=[])
+    _read_file(net, path, title=True, seen=frozenset(), stack=[], take=take)
     return net
 
 
-def _read_file(net, path, title, seen, stack):
+def _read_file(net, path, title, seen, stack, take=None):
     real = os.path.realpath(path)
     if real in seen:
         raise SpiceNetlistError(f'circular .include of {path}')
@@ -220,7 +229,6 @@ def _read_file(net, path, title, seen, stack):
                 net.comps.append((m.group(1).strip(), Where(path, n)))
     skipping = None                     # a `.control` block's start
     for text, here, lineno in spicecard._numbered_lines(path, title=title):
-        where = Where(path, lineno)
         head = text.split(None, 1)[0].lower()
         if skipping is not None:
             if head == '.endc':
@@ -228,9 +236,14 @@ def _read_file(net, path, title, seen, stack):
             continue
         if head == '.end':
             break
+        if take is not None and not stack and not head.startswith('.') and take(text, head):
+            continue
+        where = Where(path, lineno)
         if not head.startswith('.'):
             words, params = _items(text, where)
             card = Card(words[0].lower(), _lower(words[1:]), params, where)
+            if take is not None and not stack:
+                card.mark = take.mark()
             (stack[-1].cards if stack else net.cards).append(card)
             continue
         name = head[1:]
@@ -258,7 +271,8 @@ def _read_file(net, path, title, seen, stack):
             words = body.split()
             if not words:
                 raise SpiceNetlistError(f'{where}: .include names no file')
-            _read_file(net, os.path.join(here, words[0].strip('"\'')), False, seen, stack)
+            _read_file(net, os.path.join(here, words[0].strip('"\'')), False, seen, stack,
+                       take)
         elif name == 'lib' and len(body.split()) >= 2:
             _read_library(net, os.path.join(here, body.split()[0].strip('"\'')),
                           body.split()[1], stack, seen, where)

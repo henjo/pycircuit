@@ -141,7 +141,7 @@ def mesh_one(nx, ny, steps):
     t0 = time.perf_counter()
     imp = _import(path)
     rec = {'nx': nx, 'ny': ny, 'build_s': time.perf_counter() - t0,
-           'elements': len(imp.elements), 'unknowns': imp.circuit.n}
+           'elements': len(imp.elements) + sum(imp.bulk_read.values()), 'unknowns': imp.circuit.n}
     rec['per_element_us'] = rec['build_s'] / rec['elements'] * 1e6
     tr, kw = imp.transient()
     # the branch check timed on its own (its structural rank, once a run;
@@ -207,8 +207,8 @@ def ibm(fraction, merge_shorts):
     t0 = time.perf_counter()
     imp = _import(path, merge_shorts)
     rec['import_s'] = time.perf_counter() - t0
-    rec['per_element_us'] = rec['import_s'] / max(len(imp.elements), 1) * 1e6
-    rec['elements'] = len(imp.elements)
+    rec['elements'] = len(imp.elements) + sum(imp.bulk_read.values())
+    rec['per_element_us'] = rec['import_s'] / max(rec['elements'], 1) * 1e6
     n = rec['unknowns'] = imp.circuit.n
     rec['nodes'] = len(imp.circuit.nodes)
     rec['rss_mb'] = _rss_mb()

@@ -42,9 +42,12 @@ does a second element of one flat name (renamed ``name#1``).  A name
 with a ``.`` is refused.  The SPICE benchmark plan's stage 2.
 """
 import re
+from array import array
 from dataclasses import dataclass
 
-from pycircuit.circuit import elements, elements_hdl
+import numpy as np
+
+from pycircuit.circuit import _bulk, elements, elements_hdl
 from pycircuit.circuit.circuit import SubCircuit, defaultepar, gnd
 from pycircuit.utilities import spicecard, spicenetlist
 from pycircuit.utilities.spicecard import SpiceCardError
@@ -156,6 +159,7 @@ class Flat:
     prefix: str
     ports: dict
     overrides: dict
+    mark: object = None             # its top-level card's `Card.mark`
 
     def node(self, word):
         if word in self.ports:
@@ -167,7 +171,7 @@ class Flat:
 class Mapped:
     """An element as mapped: its flat name, SPICE kind and flat nodes, the
     pycircuit class and its keyword arguments, and (for a device) the model
-    it was given -- what `write_ngspice` writes back."""
+    it was given -- what `write_ngspice` writes back; `mark` its Flat's."""
     name: str
     kind: str
     nodes: list
@@ -175,6 +179,7 @@ class Mapped:
     params: dict
     model: object
     where: object
+    mark: object = None
 
 
 class Imported:
@@ -185,7 +190,9 @@ class Imported:
     node -> volts; `temp`, degrees C or None; `options`, the Transient's
     keywords the options ask for; `report`, what was read without effect
     (and, with ``strict=False``, what was refused); `netlist`, the read
-    `spicenetlist.Netlist`."""
+    `spicenetlist.Netlist`; `bulk_read`, per bank kind ('R', 'C', 'I') the
+    lines read straight into the banks -- no `Mapped` of their own, so not
+    in `elements` (`import_netlist`'s `bulk`)."""
 
     def __init__(self, netlist):
         self.netlist = netlist
@@ -199,6 +206,7 @@ class Imported:
         self.integrator = None
         self.merged = {}
         self.report = []
+        self.bulk_read = {}
         ## SPICE's junction gmin (`CKTgmin`), 1e-12 unless `.options gmin`
         ## sets it: every element that takes `gmin` is built with it
         self.gmin = 1e-12
@@ -256,7 +264,10 @@ class Imported:
         every node).  Names are made ngspice's (an element's starts with its
         kind; ``:`` becomes ``_``): returns the map from each flat node to
         its name in the deck, and from each current probe to its column in
-        ngspice's output (``name#branch``)."""
+        ngspice's output (``name#branch``).  A bulk import's banks are
+        written from their arrays, after the elements, each element named
+        by its kind, ``bank`` and its place (`_bank_lines`); a banked
+        element has no current to print."""
         nodes = _NameMap()
         lines, models = [f'* {self.netlist.title} -- flat, written by pycircuit', ''], {}
         names = _NameMap()
@@ -266,7 +277,10 @@ class Imported:
                          else f'{kind}_{m.name}')
 
         written = {}
+        banks = _bulk.banks(self.circuit) if self.circuit is not None else ()
         for m in self.elements:
+            if banks and _bankable(m):
+                continue                # (in a bank: written from it)
             n = [nodes(x) for x in m.nodes]
             p = m.params
             written[m.name] = name(m, {elements.R: 'r', elements.C: 'c', elements.L: 'l',
@@ -302,6 +316,8 @@ class Imported:
                 lines.append(f'{written[m.name]} {" ".join(n)} {models[key]} {ip}'.rstrip())
             else:
                 raise SpiceImportError(f'{m.name}: no ngspice form for {m.cls.__name__}')
+        for bk in banks:
+            lines += _bank_lines(bk, nodes, names.taken)
         lines.append('')
         for (mtype, spec), mname in models.items():
             lines.append(f'.model {mname} {mtype} ({spec})')
@@ -376,6 +392,29 @@ def _source_spec(cls, p):
     return out
 
 
+def _bank_lines(bk, nodes, taken):
+    """A bank's elements as ngspice's lines, in its order: each named by
+    its kind, ``bank`` and its place, the prefix lengthened by ``_`` until
+    no name in `taken` (the elements' written names) begins with it; its
+    ends by `nodes` (ground ``0``); its values in full precision -- a pulse
+    current source's DC current, AC value 0 and pulse as `_source_spec`
+    writes an element's (its edges as the bank holds them: floored at
+    `Pulse.MIN_EDGE`)."""
+    pre = bk.kind.lower() + 'bank'
+    while any(t.startswith(pre) for t in taken):
+        pre += '_'
+    ends = ['0' if nd is gnd else nodes(str(nd.name)) for nd in bk.nodes]
+    a, b = bk.a.tolist(), bk.b.tolist()
+    if bk.kind != 'I':
+        return [f'{pre}{e} {ends[a[e]]} {ends[b[e]]} {v!r}'
+                for e, v in enumerate(bk.value.tolist())]
+    out = []
+    for e, (i, w) in enumerate(zip(bk.value.tolist(), bk.wave.tolist())):
+        p = dict(zip(_IPULSE_KEYS, [i, 0.0] + w))
+        out.append(f'{pre}{e} {ends[a[e]]} {ends[b[e]]} ' + _source_spec(elements.IPulse, p))
+    return out
+
+
 #: A device class: its SPICE kind and model type, its parameters' SPICE
 #: names (where not its own), its instance parameters' SPICE names.
 _DEVICE_CLASSES = {
@@ -392,7 +431,7 @@ for (_level, _mtype), _cls in (list(MOS_CLASSES.items()) + list(MOS_CHARGE_CLASS
 
 
 def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qpart=1.0,
-                   gmin=None, mos_charge='conserving', bulk=False):
+                   gmin=None, mos_charge='conserving', bulk=None):
     """Read and map the netlist `path` (see the module note).  `dialect`
     (``'xyce'`` or ``'ngspice'``) chooses where the two read a deck
     differently: the option and temperature statements.  `merge_shorts`:
@@ -417,13 +456,162 @@ def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qp
     the pulse current sources (numbers, no AC value) held as BULK ELEMENTS
     (`_bulk`: one bank of each kind, after every element) rather than an
     element object each -- the IBM power grids' millions; such an element
-    has no object of its own to read results by."""
+    has no object of its own to read results by.  None (the default): bulk
+    where the file `path` has `BULK_FROM` lines or more.  Under bulk a
+    top-level line that is such an element on its own words alone is read
+    straight into its bank, with no record (`_Take`; `Imported.bulk_read`
+    counts them) -- the same circuit as reading every line as a record
+    first; where that cannot be shown before building (an element name
+    read twice, a pulse whose defaults need a `.tran` the netlist lacks)
+    every line is read as a record, and the report says why.  The report
+    says how many of each kind the banks hold."""
     if dialect not in ('xyce', 'ngspice'):
         raise ValueError(f'dialect {dialect!r}: xyce or ngspice')
     if mos_charge not in ('conserving', 'meyer'):
         raise ValueError(f"mos_charge {mos_charge!r}: 'conserving' or 'meyer'")
-    return _Importer(spicenetlist.read(path), dialect, strict, merge_shorts, mos_qpart,
-                     gmin, mos_charge, bulk).run()
+    if bulk is None:
+        bulk = _lines(path) >= BULK_FROM
+    args = (dialect, strict, merge_shorts, mos_qpart, gmin, mos_charge, bulk)
+    if not (bulk and BULK_READ):
+        return _Importer(spicenetlist.read(path), *args).run()
+    take = _Take()
+    try:
+        return _Importer(spicenetlist.read(path, take), *args, take=take).run()
+    except _RecordPath as e:
+        why = str(e)
+    del take
+    out = _Importer(spicenetlist.read(path), *args).run()
+    out.report.append(f'{path}: bulk: every line read as a record ({why})')
+    return out
+
+
+#: `import_netlist`'s `bulk=None`: bulk from this many lines of the file
+#: (its `.include`s not counted) -- ibmpg1t's 76 940 below, ibmpg2t's
+#: 320 613 above
+BULK_FROM = 200_000
+
+#: under bulk, the plain lines read straight into the banks (`_Take`);
+#: False reads every line as a record first (the same circuit)
+BULK_READ = True
+
+
+def _lines(path):
+    """The lines of the file `path` (0 where it cannot be read: the read
+    says why)."""
+    try:
+        with open(path, 'rb') as fh:
+            return sum(chunk.count(b'\n') for chunk in iter(lambda: fh.read(1 << 20), b''))
+    except OSError:
+        return 0
+
+
+class _RecordPath(Exception):
+    """A bulk read whose circuit could differ from the record path's: the
+    import is done again with every line a record (its reason)."""
+
+
+#: `_Take`'s kinds: a line's first letter -> its bank (0 R, 1 C, 2 I)
+_TAKE_KIND = {'r': 0, 'c': 1, 'i': 2}
+
+
+class _Take:
+    """`spicenetlist.read`'s `take` under bulk: a TOP-LEVEL line that
+    `map_r`, `map_c` or `source` would make, on its own words alone, into
+    an element `_bankable` takes -- ``r name a b number`` (not 0), ``c name
+    a b number``, ``i name a b [number] pulse(7 numbers)`` (no AC value, no
+    parameter) -- held here as it is read, with no `Card`, `Flat` or
+    `Mapped`: per kind (0 R, 1 C, 2 I) its two nodes (lower case,
+    interned) and its values (a pulse's seven as written: its zero edges
+    are `.tran`'s, filled in when built), and its name's hash.  Left to the
+    record path: a resistor's or a capacitor's line holding a character
+    `_items` reads apart (``( ) , = { } ' "``), an expression, a parameter,
+    r = 0, a '.' in a name or a node, any other form.  `mark()`: the lines
+    of each kind taken so far."""
+
+    _APART = re.compile(r'[(),={}\'"]')
+
+    def __init__(self):
+        self.interned = {}
+        self.a, self.b = ([], [], []), ([], [], [])
+        self.value = (array('d'), array('d'), array('d'))
+        self.names = array('q')
+        self.zero_edges = False         # a pulse taking an edge from .tran
+        self._mark = (0, 0, 0)
+
+    def mark(self):
+        return self._mark
+
+    def __call__(self, text, head):
+        k = _TAKE_KIND.get(head[0])
+        if k is None:
+            return False
+        got = self._pulse(text) if k == 2 else self._plain(text, k)
+        if got is None:
+            return False
+        name, n1, n2, vals = got
+        if '.' in name or '.' in n1 or '.' in n2:
+            return False
+        if k == 2 and 0.0 in vals[3:7]:
+            self.zero_edges = True
+        self.a[k].append(self.interned.setdefault(n1, n1))
+        self.b[k].append(self.interned.setdefault(n2, n2))
+        self.value[k].extend(vals)
+        self.names.append(hash(name))
+        m = list(self._mark)
+        m[k] += 1
+        self._mark = tuple(m)
+        return True
+
+    def _plain(self, text, k):
+        """A resistor's or a capacitor's line: (name, a, b, (value,)) or None."""
+        if self._APART.search(text) is not None:
+            return None
+        words = text.split()
+        if len(words) != 4:
+            return None
+        raw = words[3].lower()
+        if spicecard._NUMBER.match(raw) is None:
+            return None
+        v = spicecard.number(raw)
+        if k == 0 and v == 0:
+            return None
+        return words[0].lower(), words[1].lower(), words[2].lower(), (v,)
+
+    def _pulse(self, text):
+        """A pulse current source's line: (name, a, b, its 7 values) or None."""
+        if 'pulse' not in text.lower():
+            return None
+        try:
+            words, params = spicenetlist._items(text, None)
+        except SpiceCardError:
+            return None
+        if params or len(words) < 4 or any(w[0] in '{\'"' for w in words[:3]):
+            return None
+        rest = [w.lower() for w in words[3:]]
+        if rest[0] != 'pulse' and spicecard._NUMBER.match(rest[0]):
+            rest = rest[1:]             # a DC value: none beside a waveform
+        if (len(rest) != 8 or rest[0] != 'pulse'
+                or any(spicecard._NUMBER.match(w) is None for w in rest[1:])):
+            return None
+        return (words[0].lower(), words[1].lower(), words[2].lower(),
+                [spicecard.number(w) for w in rest[1:]])
+
+    def check(self, names, tran):
+        """Why the record path's circuit could differ (None: it cannot):
+        a pulse taken whose edge is `.tran`'s where there is none (the
+        record path refuses it); an element name taken twice, or taken and
+        also a record's (the record path renames one -- a 64-bit hash's
+        collision says so too, and costs only the record path's time)."""
+        if self.zero_edges and tran is None:
+            return "a pulse's defaults need a .tran, which this netlist lacks"
+        h = np.sort(np.frombuffer(self.names, dtype=np.int64))
+        if h.size > 1 and bool(np.any(h[1:] == h[:-1])):
+            return 'an element name read twice'
+        if h.size and names:
+            r = np.fromiter((hash(n) for n in names), np.int64, len(names))
+            if bool(np.any(h[np.searchsorted(h, r).clip(0, h.size - 1)] == r)):
+                return 'an element name read twice'
+        return None
 
 
 #: a pulse current source's parameters as `source` maps them, in the bank's
@@ -466,9 +654,10 @@ def _add_banks(cir, banks):
 class _Importer:
 
     def __init__(self, net, dialect, strict, merge_shorts=False, mos_qpart=None, gmin=None,
-                 mos_charge='conserving', bulk=False):
+                 mos_charge='conserving', bulk=False, take=None):
         self.net = net
         self.bulk = bulk
+        self.take = take            # the lines read straight into the banks (`_Take`)
         self.mos_charge = mos_charge
         self.dialect = dialect
         self.strict = strict
@@ -518,6 +707,10 @@ class _Importer:
             except SpiceCardError as e:
                 self.refuse(f.card.where, f'{f.name}: {e}')
         self.couple()
+        if self.take is not None:
+            why = self.take.check(self.names, self.out.tran)
+            if why is not None:
+                raise _RecordPath(why)
         self.initial_conditions()
         if self.merge_shorts:
             self.merge()
@@ -601,18 +794,23 @@ class _Importer:
 
     def build(self):
         cir = SubCircuit()
-        banks = ({k: ([], [], [], []) for k in ('R', 'C', 'I')} if self.bulk else None)
+        banks = ({k: ([], [], array('d'), array('d')) for k in 'RCI'} if self.bulk else None)
+        done = [0, 0, 0]            # the lines of each kind `take` held, already banked
         for m in self.out.elements:
             nodes = [gnd if n == '0' else n for n in m.nodes]
             params = m.params
             kind = _bankable(m) if banks is not None else None
             if kind is not None:
+                if self.take is not None and m.mark is not None:
+                    ## (the lines read before this one's card first: file order)
+                    k = 'RCI'.index(kind)
+                    self.bank_taken(banks, k, m.mark[k], done)
                 g = banks[kind]
                 g[0].append(nodes[0])
                 g[1].append(nodes[1])
                 if kind == 'I':
                     g[2].append(params['i'])
-                    g[3].append([params[k] for k in _IPULSE_KEYS[2:]])
+                    g[3].extend([params[k] for k in _IPULSE_KEYS[2:]])
                 else:
                     g[2].append(params['r' if kind == 'R' else 'c'])
                 continue
@@ -620,9 +818,43 @@ class _Importer:
                                             for p in getattr(m.cls, 'instparams', ())):
                 params = {**params, 'gmin': self.out.gmin}
             cir[m.name] = m.cls(*nodes, **params)
-        if banks is not None:
-            _add_banks(cir, banks)
+        if banks is None:
+            return cir
+        if self.take is not None:
+            self.out.bulk_read = dict(zip('RCI', (len(x) for x in self.take.a)))
+            for k in range(3):
+                self.bank_taken(banks, k, len(self.take.a[k]), done)
+                self.take.a[k].clear()
+                self.take.b[k].clear()
+        _add_banks(cir, banks)
+        counts = [len(banks[k][2]) for k in 'RCI']
+        if any(counts):
+            self.note(self.net.files[0], 'bulk: {} resistors, {} capacitors, {} pulse current '
+                                         'sources held as banks, no element each'.format(*counts))
         return cir
+
+    def bank_taken(self, banks, k, upto, done):
+        """The lines of kind `k` (0 R, 1 C, 2 I) `take` held, from the
+        first not yet banked to `upto`, into `banks` as `build` banks a
+        record's element: their nodes through `merged`, ``0`` the ground; a
+        pulse's DC current 0.0 and its zero edges `.tran`'s (TSTEP for tr
+        and tf, TSTOP for pw and per: `waveform`'s)."""
+        lo = done[k]
+        if upto <= lo:
+            return
+        g, take, merged = banks['RCI'[k]], self.take, self.out.merged or {}
+        for side, src in ((g[0], take.a[k]), (g[1], take.b[k])):
+            side.extend(gnd if n == '0' else n for n in (merged.get(x, x) for x in src[lo:upto]))
+        if k < 2:
+            g[2].extend(take.value[k][lo:upto])
+        else:
+            w, tran = take.value[2], self.out.tran
+            for e in range(lo, upto):
+                v1, v2, td, tr, tf, pw, per = w[7 * e:7 * e + 7]
+                g[2].append(0.0)
+                g[3].extend((v1, v2, td, tr or tran['tstep'], tf or tran['tstep'],
+                             pw or tran['tstop'], per or tran['tstop']))
+        done[k] = upto
 
     def add(self, f, kind, nodes, cls, params, model=None):
         for n in [f.name] + nodes:
@@ -635,7 +867,7 @@ class _Importer:
         if name != f.name:
             self.note(f.card.where, f'{f.name}: a second element of that name, renamed {name}')
         self.names.add(name)
-        m = Mapped(name, kind, nodes, cls, params, model, f.card.where)
+        m = Mapped(name, kind, nodes, cls, params, model, f.card.where, f.mark)
         self.out.elements.append(m)
         return m
 
@@ -645,12 +877,14 @@ class _Importer:
         """Every element of the netlist, subcircuit instances expanded."""
         out = []
 
-        def walk(cards, sub, prefix, ports, overrides, depth):
+        def walk(cards, sub, prefix, ports, overrides, depth, mark=None):
             for card in cards:
+                ## (a subcircuit's elements are placed by their instance's card)
+                at = card.mark if sub is None else mark
                 if card.kind != 'x':
-                    out.append(Flat(prefix + card.name, card, sub, prefix, ports, overrides))
+                    out.append(Flat(prefix + card.name, card, sub, prefix, ports, overrides, at))
                     continue
-                f = Flat(prefix + card.name, card, sub, prefix, ports, overrides)
+                f = Flat(prefix + card.name, card, sub, prefix, ports, overrides, at)
                 words = [w for w in card.words if w != 'params:']
                 if not words:
                     self.refuse(card.where, f'{f.name}: names no subcircuit')
@@ -673,7 +907,7 @@ class _Importer:
                     self.refuse(card.where, f'{f.name}: {e}')
                     continue
                 walk(s.cards, s, f.name + ':', {p: f.node(n) for p, n in zip(s.ports, nodes)},
-                     inst, depth + 1)
+                     inst, depth + 1, at)
 
         walk(self.net.cards, None, '', {}, {}, 0)
         return out

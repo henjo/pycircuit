@@ -204,3 +204,70 @@ def test_the_periodic_small_signal_analysis_holds_blas_at_one_thread(surface, mo
                    if lc.user_api == 'blas']
     assert seen and all(t == 1 for s in seen for t in s), seen
     assert outside and all(t == 4 for t in outside), outside
+
+
+#: a process of its own: warm every import, keep the hold's controller (a held
+#: DC), then load CHOLMOD, then read the pool inside a held DC
+_DLOPEN_SCRIPT = """
+import threadpoolctl
+from pycircuit.circuit import _cholklu, circuit, gnd, linearsolver
+from pycircuit.circuit import elements_hdl as eh
+from pycircuit.circuit.dcanalysis import DC
+from pycircuit.circuit.elements import VS, R, SubCircuit
+def ladder(stages):
+    c = SubCircuit()
+    c['v'] = VS('n0', gnd, v=5.0)
+    for k in range(1, stages + 1):
+        c[f'r{k}'] = R(f'n{k - 1}', f'n{k}', r=100.0)
+        c[f'd{k}'] = eh.DiodeSpiceHdl(f'n{k}', gnd, IS=1e-14 * (1 + k % 7))
+    return c
+probe = threadpoolctl.ThreadpoolController
+before = len([c for c in probe().lib_controllers if c.user_api == 'blas'])
+klu = linearsolver.KLUSolver()._lib
+DC(ladder(300), toolkit=circuit.numeric).solve()
+DC(ladder(120), toolkit=circuit.numeric).solve()
+if _cholklu.library(klu) is None:
+    print('SKIP', _cholklu.STATUS)
+    raise SystemExit
+pool = probe()
+after = len([c for c in pool.lib_controllers if c.user_api == 'blas'])
+if after <= before:
+    print('SKIP CHOLMOD brings no BLAS of its own here')
+    raise SystemExit
+seen, orig = [], DC._solve_dc
+def spy(self, x0=None):
+    seen.append([c.num_threads for c in pool.lib_controllers if c.user_api == 'blas'])
+    return orig(self, x0)
+DC._solve_dc = spy
+with pool.limit(limits=4, user_api='blas'):
+    DC(ladder(300), toolkit=circuit.numeric).solve()
+print('SEEN', before, after, seen)
+"""
+
+
+def test_a_blas_a_loader_opens_is_held_too():
+    """CHOLMOD, opened by `_cholklu`'s C (`dlopen`, no import), brings the
+    system's OpenBLAS: a hold whose controller was kept from before -- every
+    module imported, a held DC solved -- holds that library too once CHOLMOD
+    has loaded (`_blas.library_loaded`), read inside a DC at 302 unknowns
+    with the pool opened to 4 threads first.  In a process of its own: a
+    worker may have loaded CHOLMOD already (the suite failed on that order)."""
+    import ast
+    import os
+    import subprocess
+    import sys
+
+    import pycircuit
+    if not tmod.blas_single_thread_available():
+        pytest.skip('no threadpoolctl')
+    root = os.path.dirname(os.path.dirname(os.path.abspath(pycircuit.__file__)))
+    r = subprocess.run([sys.executable, '-c', _DLOPEN_SCRIPT], capture_output=True, text=True, timeout=600, check=False,
+                       cwd=root, env={**os.environ, 'PYTHONPATH': root})
+    out = r.stdout.strip().splitlines()
+    assert r.returncode == 0 and out, r.stderr[-2000:]
+    if out[-1].startswith('SKIP'):
+        pytest.skip(out[-1][5:])
+    _, before, after, seen = out[-1].split(' ', 3)
+    seen = ast.literal_eval(seen)
+    assert int(after) > int(before), out[-1]
+    assert seen and len(seen[0]) == int(after) and all(t == 1 for t in seen[0]), out[-1]

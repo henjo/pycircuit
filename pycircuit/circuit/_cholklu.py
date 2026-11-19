@@ -40,7 +40,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild
+from pycircuit.circuit import _blas, _cbuild
 
 ENABLED = os.environ.get('PYCIRCUIT_CHOLMOD', '1') != '0'
 #: the unknowns from which a linear grid's transient matrix is CHOLMOD's
@@ -562,7 +562,11 @@ def library(klu):
     except Exception as e:  # noqa: BLE001 -- no CHOLMOD header or compiler: KLU stays
         STATUS = f'off ({type(e).__name__})'
         return None
-    if not int(ffi.cast('long', entry(8))):
+    loaded = int(ffi.cast('long', entry(8)))
+    ## (CHOLMOD brings a BLAS of its own, opened with it: the BLAS hold must
+    ## see it, or a held solve leaves it threaded)
+    _blas.library_loaded()
+    if not loaded:
         STATUS = 'off (no libcholmod)'
         return None
     _LIB.append(_Lib(ffi, entry, klu))

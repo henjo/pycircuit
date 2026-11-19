@@ -358,29 +358,29 @@ def _numbered_lines(path, seen=None, title=False):
         raise SpiceCardError('no such file: %s' % path)
 
     here = os.path.dirname(os.path.abspath(path))
-    with open(path, errors='replace') as fh:
-        raw = fh.readlines()
-
     pending, start = None, 0
-    for lineno, line in enumerate(raw + ['\n'], 1):
-        if title and lineno == 1:
-            continue
-        text = _strip_comments(line)
-        stripped = text.strip()
-        if not stripped:
-            ## A comment or a blank line does NOT end a continued
-            ## statement -- real cards put commentary between `+` lines,
-            ## and flushing here silently truncated the card.
-            continue
-        if stripped.startswith('+'):
-            if pending is None:
-                raise SpiceCardError('continuation with nothing to continue '
-                                     'in %s: %r' % (path, line))
-            pending += ' ' + stripped[1:]
-            continue
-        if pending is not None and pending.strip():
-            yield pending.strip(), here, start
-        pending, start = text, lineno
+    ## (the file streamed, not read whole: a power grid's netlist is
+    ## millions of lines)
+    with open(path, errors='replace') as fh:
+        for lineno, line in enumerate(fh, 1):
+            if title and lineno == 1:
+                continue
+            text = _strip_comments(line)
+            stripped = text.strip()
+            if not stripped:
+                ## A comment or a blank line does NOT end a continued
+                ## statement -- real cards put commentary between `+` lines,
+                ## and flushing here silently truncated the card.
+                continue
+            if stripped.startswith('+'):
+                if pending is None:
+                    raise SpiceCardError('continuation with nothing to continue '
+                                         'in %s: %r' % (path, line))
+                pending += ' ' + stripped[1:]
+                continue
+            if pending is not None and pending.strip():
+                yield pending.strip(), here, start
+            pending, start = text, lineno
     if pending is not None and pending.strip():
         yield pending.strip(), here, start
 

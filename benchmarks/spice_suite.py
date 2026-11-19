@@ -145,7 +145,8 @@ def run_one(name, peers, qpart=None, mos_charge='conserving'):
     imp = spice_import.import_netlist(deck, mos_charge=mos_charge,
                                       **({} if qpart is None else {'mos_qpart': qpart}))
     rec['import_s'] = time.perf_counter() - t0
-    rec['elements'], rec['unknowns'] = len(imp.elements), imp.circuit.n
+    rec['elements'] = len(imp.elements) + sum(imp.bulk_read.values())
+    rec['unknowns'] = imp.circuit.n
     tr, kw = imp.transient(**OVERRIDES.get(name, {}))
     t0 = time.perf_counter()
     with warnings.catch_warnings():
