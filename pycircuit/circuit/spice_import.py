@@ -460,10 +460,12 @@ def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qp
     where the file `path` has `BULK_FROM` lines or more.  Under bulk a
     top-level line that is such an element on its own words alone is read
     straight into its bank, with no record (`_Take`; `Imported.bulk_read`
-    counts them) -- the same circuit as reading every line as a record
-    first; where that cannot be shown before building (an element name
-    read twice, a pulse whose defaults need a `.tran` the netlist lacks)
-    every line is read as a record, and the report says why.  The report
+    counts them), and with `merge_shorts` a plain 0 V source's line into
+    the merge -- the same circuit as reading every line as a record first;
+    where that cannot be shown before building (an element name read
+    twice, a pulse whose defaults need a `.tran` the netlist lacks, a 0 V
+    source whose current a `.print` reads) every line is read as a record,
+    and the report says why.  The report
     says how many of each kind the banks hold."""
     if dialect not in ('xyce', 'ngspice'):
         raise ValueError(f'dialect {dialect!r}: xyce or ngspice')
@@ -474,7 +476,7 @@ def import_netlist(path, dialect='xyce', strict=True, merge_shorts=False, mos_qp
     args = (dialect, strict, merge_shorts, mos_qpart, gmin, mos_charge, bulk)
     if not (bulk and BULK_READ):
         return _Importer(spicenetlist.read(path), *args).run()
-    take = _Take()
+    take = _Take(shorts=merge_shorts)
     try:
         return _Importer(spicenetlist.read(path, take), *args, take=take).run()
     except _RecordPath as e:
@@ -522,26 +524,34 @@ class _Take:
     parameter) -- held here as it is read, with no `Card`, `Flat` or
     `Mapped`: per kind (0 R, 1 C, 2 I) its two nodes (lower case,
     interned) and its values (a pulse's seven as written: its zero edges
-    are `.tran`'s, filled in when built), and its name's hash.  Left to the
-    record path: a resistor's or a capacitor's line holding a character
-    `_items` reads apart (``( ) , = { } ' "``), an expression, a parameter,
-    r = 0, a '.' in a name or a node, any other form.  `mark()`: the lines
-    of each kind taken so far."""
+    are `.tran`'s, filled in when built), and its name's hash.  With
+    `shorts` (`merge_shorts`) also a 0 V source, ``v name a b number`` with
+    the number 0, which the merge leaves out: its two nodes (`sa`, `sb`)
+    and its name's hash (`short_names`), for `_Importer.merge`.  Left to
+    the record path: a line holding a character `_items` reads apart (``(
+    ) , = { } ' "``), an expression, a parameter, r = 0, a '.' in a name or
+    a node, any other form.  `mark()`: the lines of each bank's kind taken
+    so far."""
 
     _APART = re.compile(r'[(),={}\'"]')
 
-    def __init__(self):
+    def __init__(self, shorts=False):
         self.interned = {}
         self.a, self.b = ([], [], []), ([], [], [])
         self.value = (array('d'), array('d'), array('d'))
         self.names = array('q')
         self.zero_edges = False         # a pulse taking an edge from .tran
         self._mark = (0, 0, 0)
+        self.shorts = shorts
+        self.sa, self.sb = [], []
+        self.short_names = array('q')
 
     def mark(self):
         return self._mark
 
     def __call__(self, text, head):
+        if head[0] == 'v':
+            return self.shorts and self._short(text)
         k = _TAKE_KIND.get(head[0])
         if k is None:
             return False
@@ -577,6 +587,26 @@ class _Take:
             return None
         return words[0].lower(), words[1].lower(), words[2].lower(), (v,)
 
+    def _short(self, text):
+        """A 0 V source's line (``v name a b number``, the number 0): its
+        nodes and its name's hash taken, True -- else False."""
+        if self._APART.search(text) is not None:
+            return False
+        words = text.split()
+        if len(words) != 4:
+            return False
+        raw = words[3].lower()
+        if spicecard._NUMBER.match(raw) is None or spicecard.number(raw) != 0:
+            return False
+        name, n1, n2 = (w.lower() for w in words[:3])
+        if '.' in name or '.' in n1 or '.' in n2:
+            return False
+        self.sa.append(self.interned.setdefault(n1, n1))
+        self.sb.append(self.interned.setdefault(n2, n2))
+        self.names.append(hash(name))
+        self.short_names.append(hash(name))
+        return True
+
     def _pulse(self, text):
         """A pulse current source's line: (name, a, b, its 7 values) or None."""
         if 'pulse' not in text.lower():
@@ -596,14 +626,19 @@ class _Take:
         return (words[0].lower(), words[1].lower(), words[2].lower(),
                 [spicecard.number(w) for w in rest[1:]])
 
-    def check(self, names, tran):
+    def check(self, names, tran, printed=()):
         """Why the record path's circuit could differ (None: it cannot):
         a pulse taken whose edge is `.tran`'s where there is none (the
-        record path refuses it); an element name taken twice, or taken and
-        also a record's (the record path renames one -- a 64-bit hash's
-        collision says so too, and costs only the record path's time)."""
+        record path refuses it); a 0 V source taken whose current a
+        `.print` reads (`printed`: the merge keeps it); an element name
+        taken twice, or taken and also a record's (the record path renames
+        one -- a 64-bit hash's collision says so too, and costs only the
+        record path's time)."""
         if self.zero_edges and tran is None:
             return "a pulse's defaults need a .tran, which this netlist lacks"
+        if self.short_names and printed and not set(self.short_names).isdisjoint(
+                hash(n) for n in printed):
+            return 'a 0 V source whose current a .print reads'
         h = np.sort(np.frombuffer(self.names, dtype=np.int64))
         if h.size > 1 and bool(np.any(h[1:] == h[:-1])):
             return 'an element name read twice'
@@ -708,7 +743,7 @@ class _Importer:
                 self.refuse(f.card.where, f'{f.name}: {e}')
         self.couple()
         if self.take is not None:
-            why = self.take.check(self.names, self.out.tran)
+            why = self.take.check(self.names, self.out.tran, self.printed_currents())
             if why is not None:
                 raise _RecordPath(why)
         self.initial_conditions()
@@ -728,14 +763,22 @@ class _Importer:
         self.unholdable()
         return self.out
 
-    def merge(self):
-        """`merge_shorts` (see `import_netlist`): union-find over the 0 V
-        sources no `.print` reads, ground the representative of its class;
-        refused where a merge would short a source left in."""
+    def printed_currents(self):
+        """The element names whose current a `.print` reads (``i(name)``),
+        lower case."""
         read = set()
         for d in self.net.prints:
             for w in d.words:
                 read.update(m.lower() for m in re.findall(r'[iI]\(\s*([^,()\s]+)', w))
+        return read
+
+    def merge(self):
+        """`merge_shorts` (see `import_netlist`): union-find over the 0 V
+        sources no `.print` reads -- the records' and those the bulk read
+        took (`_Take.sa`, `sb`) -- the least name of each class, ground
+        first, its representative (whatever the order of the unions);
+        refused where a merge would short a source left in."""
+        read = self.printed_currents()
         parent = {}
 
         def find(n):
@@ -747,11 +790,19 @@ class _Importer:
                   if m.cls is elements.VS and m.params.get('v') == 0.0
                   and not m.params.get('vac') and not m.params.get('phase')
                   and m.name not in read]
-        for m in shorts:
-            a, b = find(m.nodes[0]), find(m.nodes[1])
+        taken = 0
+        pairs = [m.nodes for m in shorts]
+        if self.take is not None:
+            taken = len(self.take.sa)
+            pairs += zip(self.take.sa, self.take.sb)
+        for p, q in pairs:
+            a, b = find(p), find(q)
             if a != b:
                 keep, gone = (a, b) if a == '0' or (b != '0' and a < b) else (b, a)
                 parent[gone] = keep
+        if self.take is not None:
+            self.take.sa.clear()
+            self.take.sb.clear()
         dropped = {id(m) for m in shorts}
         self.out.elements = [m for m in self.out.elements if id(m) not in dropped]
         merged = {n: find(n) for n in parent}
@@ -764,7 +815,7 @@ class _Importer:
                 if n in merged:
                     target.setdefault(merged[n], target.pop(n))
         self.out.merged = merged
-        self.note(self.net.files[0], f'merge_shorts: {len(shorts)} 0 V sources left out, '
+        self.note(self.net.files[0], f'merge_shorts: {len(shorts) + taken} 0 V sources left out, '
                                      f'{len(merged)} nodes merged')
 
     def unholdable(self):
@@ -775,6 +826,10 @@ class _Importer:
         deck then passes its gold.)"""
         tran = self.out.tran
         if tran is None or tran['start'] != 'op':
+            return
+        ## (none given: no set of every node's name -- 1.5 M on ibmpg6t, a
+        ## transient spike on the import's peak)
+        if not (self.out.ic or self.out.nodeset):
             return
         from pycircuit.circuit.dcanalysis import DC
         names = {str(n.name) for n in self.out.circuit.nodes}

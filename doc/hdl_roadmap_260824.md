@@ -16739,3 +16739,43 @@ The pinned pair 'the transform solve and its frozen form' names the whole `AutoS
 
 **Found, not changed:** today a DC after a transient on a large circuit raises the process's peak (it refactors beside the live
 transient's solver: ibmpg6t 8.42 -> 8.95 GB); with the factor released it factors afresh into the freed memory instead.
+
+## 2026-11-19 — 337. M2: 0 V sources on the bulk read
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, M2); found in B4 (sec. 334), Andreas "0 voltage sources", then "Build M2 to that
+line".  B4's bulk read left the 0 V sources to the records -- a `Card`, a `Flat` and a `Mapped` each -- although under
+`merge_shorts` the merge leaves them out right after mapping, and the netlist keeps every record's `Card` for as long as the
+import lives.  ibmpg5t has 538 987 of them and ibmpg6t 836 107 (ibmpg2t 210, ibmpg4t 650), every one a plain ``v name a b 0``;
+5t and 6t need `merge_shorts` (CHOLMOD refuses their floating sources).  Sized on a prototype (patched in-process: the lines
+taken, their pairs union-found with the records'): the same circuit on both grids; the import 32.5 -> 29.7 s and 53.4 -> 49.3
+s, its peak 1 175 -> 803 MB and 1 772 -> 1 194 MB, what it leaves 960 -> 645 MB and 1 458 -> 958 MB (5t after its import: 539
+364 `Card` and 539 368 `Where` objects alive); a 0.2 ns run with its operating point (M1 in the tree) 5 272 -> 4 982 MB and 7 772
+-> 7 334 MB at its peak, the same steps and waveforms.  Line (set before): (a) without `merge_shorts`, and below bulk, nothing
+changes -- the gate against 9161fc35 SAME, the suite; (b) with `merge_shorts` under bulk, the circuit 9161fc35 builds (n, nodes,
+elements, every bank's arrays byte for byte, merged, tran, report) on ibmpg2t, 4t, 5t and 6t, and a fixture taking every
+branch; (c) the import's peak <= 0.82 / 1.22 GB on 5t / 6t, its time <= 0.95x 9161fc35's, interleaved; (d) the run's peak <=
+5 082 / 7 481 MB, the same steps and digests; (e) size >= 0.98x, ruff, bites.
+
+**What.**  `_Take(shorts=True)` -- `import_netlist` passes `merge_shorts` -- takes a top-level ``v name a b number`` line, the
+number 0, with no character `_items` reads apart and no '.', with no record: its two nodes (interned, `sa` / `sb`) and its
+name's hash, in the duplicate check too (`short_names`).  `_Importer.merge` union-finds those pairs beside the records' 0 V
+sources -- the least name of each class, ground first, its representative, whatever the order of the unions -- and counts both
+in its report line.  `_Take.check` sends the import to the record path where a taken source's current a `.print` reads
+(`_Importer.printed_currents`: the merge keeps such a source, an element), the report saying why.  Without `merge_shorts` a
+0 V source is an element and stays a record.  And `_Importer.unholdable` returns before its set of every node's name where the
+import has no `.ic` and no `.nodeset` (the loop after it had nothing to do): that set, 1.5 M names on ibmpg6t, was a transient
+spike on the import's peak, landing by the heap's layout (below).
+
+**Measured.**  As first built every line was met but 6t's import peak, 1 235 / 1 236 MB: the build ends at the prototype's level (1 193 against 1 190 MB), and the peak was `unholdable`'s set, landing by the heap's layout (the prototype 1 188 timed, 1 236 with phase readings); with the early return patched in, 1 182 / 1 182 MB (Andreas "Add the early return").  With it: (a) MET -- the gate against 9161fc35 SAME (every deck's results and path counters under dc, gear2, gear2/bypass, radau; size; C against Python 0 differing; no executable C line changed), before and after the early return.  (b) MET -- the same circuit on ibmpg2t, 4t, 5t and 6t, and the fixture.  (c) MET -- peaks 797 / 801 MB (5t) and 1 188 / 1 206 MB (6t) against 1 160 / 1 168 and 1 773 / 1 772 (0.68x); time 29.47 / 29.77 / 29.48 s against 34.06 / 32.71 / 32.61 (three interleaved pairs, median 0.904x; a first run after the suite, the file read cold, 32.53 s) on 5t, 48.9 / 48.9 s against 53.7 / 53.8 (0.911x) on 6t.  (d) MET -- 0.2 ns with the operating point in the run (M1 in the tree): peaks 4 962 / 7 284 MB against 5 272 / 7 772, the same 44 / 2 / 89 and digests.  (e) MET -- size digests and steps the same, medians 0.983-1.012 new / head (no size case imports a netlist: not re-timed for the early return); ruff the base's; the bites below.
+
+**Tests.**  `test_bulk_read` +2 functions (four cases): `test_a_0v_source_is_read_into_the_merge` (with and without
+`merge_shorts`: plain shorts in a chain and to ground, a value written 0.0, and left to the records a `dc` word, an AC value,
+nonzero values, a '.' in a node; the records' circuit byte for byte, which lines kept a `Card`, the merged nodes, the report's
+count) and `test_a_0v_source_the_merge_cannot_take_reads_every_line_as_a_record` (a printed short, a name a record has too).
+Nine bites, nine bit: nothing taken, taken without `merge_shorts`, the taken not merged, a nonzero source taken, a '.' taken, a
+five-word line taken, the names left out of the duplicate check, a printed short taken, the report's count without the
+taken.  Suite 6 817 passed, 10 skipped, 5 xfailed.
+
+The early return changes nothing observable (no test; the 6t peak measures it).
+
+**Found, not changed:** ibmpg5t's import leaves 2 197 967 `Node` objects for 1 014 175 unknowns.

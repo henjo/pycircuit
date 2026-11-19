@@ -184,6 +184,70 @@ def test_a_pulse_needing_a_missing_tran_reads_every_line_as_a_record(tmp_path, m
     assert a == b
 
 
+#: 0 V sources: plain lines (vs1 and VS2 in a chain, vs3 to ground, a value
+#: written 0.0) and, left to the records, a `dc` word (vs4: a 0 V source
+#: all the same), an AC value (vs5), nonzero values (v1, vs6), a '.' in a
+#: node (vs7: refused on either path)
+_SHORTS = """* 0 V sources
+.tran 10p 2n
+v1 1 0 1.8
+vs1 1 1b 0
+VS2 1B 1c 0.0
+vs3 2 0 0
+r1 1c 2 10
+r2 1c 3 20
+vs4 3 3b dc 0
+vs5 3b 4 0 ac 1
+vs6 4 5 1
+c1 5 0 1p
+r3 5 0 1k
+vs7 5 n.5 0
+{extra}.end
+"""
+
+
+def _v_cards(imp):
+    return sorted(c.name for c in imp.netlist.cards if c.kind == 'v')
+
+
+@pytest.mark.parametrize('merge', [False, True])
+def test_a_0v_source_is_read_into_the_merge(tmp_path, monkeypatch, merge):
+    """With `merge_shorts` a plain 0 V source's line is taken with no
+    record -- its nodes into the merge, beside the records' 0 V sources --
+    the records' circuit byte for byte (the merged nodes, the report's
+    count of the sources left out); without, every source a record (an
+    element: nothing taken)."""
+    rec, got = _both(monkeypatch, _write(tmp_path, deck=_SHORTS.replace('{extra}', '')), strict=False,
+                     merge_shorts=merge)
+    assert _snap(got) == _snap(rec)
+    assert got.bulk_read == {'R': 3, 'C': 1, 'I': 0}
+    assert sum('vs7' in r for r in got.report) == 1
+    every = ['v1', 'vs1', 'vs2', 'vs3', 'vs4', 'vs5', 'vs6', 'vs7']
+    assert _v_cards(rec) == every
+    assert _v_cards(got) == (['v1', 'vs4', 'vs5', 'vs6', 'vs7'] if merge else every)
+    if merge:
+        assert got.merged == {'1b': '1', '1c': '1', '2': '0', '3b': '3'}
+        assert any('merge_shorts: 4 0 V sources left out, 4 nodes merged' in r for r in got.report)
+        assert sorted(got.circuit.elements) == ['v1', 'vs5', 'vs6']
+
+
+@pytest.mark.parametrize('extra, why', [
+    ('.print tran i(vs1)\n', 'a 0 V source whose current a .print reads'),
+    ('vs1 4 0 dc 0\n', 'an element name read twice')])
+def test_a_0v_source_the_merge_cannot_take_reads_every_line_as_a_record(tmp_path, monkeypatch, extra, why):
+    """A taken 0 V source whose current a `.print` reads (the merge keeps
+    it: an element), or whose name a record has too: every line read as a
+    record, the report saying why last."""
+    rec, got = _both(monkeypatch, _write(tmp_path, deck=_SHORTS.replace('{extra}', extra)), strict=False,
+                     merge_shorts=True)
+    assert got.bulk_read == {}
+    assert got.report[-1].endswith(f'bulk: every line read as a record ({why})')
+    a, b = _snap(rec), _snap(got)
+    assert b.pop('report')[:-1] == a.pop('report')
+    assert a == b
+    assert ('vs1' in got.circuit.elements) == extra.startswith('.print')
+
+
 def test_bulk_follows_the_size_of_the_netlist(tmp_path, monkeypatch):
     """`bulk=None`: banks from `BULK_FROM` lines of the file (its lines
     counted, the boundary included), none below; `bulk=True` and `False`

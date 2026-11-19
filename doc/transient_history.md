@@ -6292,3 +6292,17 @@ a DC run afterwards factors again in 11-24 s rather than starting from
 scratch (33-79 s).  The runs' peaks fall to 0.84-0.93x with the same steps and
 answers.  Smaller circuits, every test and benchmark deck among them, are
 untouched.
+
+## M2: 0 V sources on the bulk read (2026-11-19)
+
+2026-11-19 (`doc/hdl_roadmap_260824.md`, 337; plan 261 L21).  Two of the IBM
+power grids join their metal layers through hundreds of thousands of 0 V
+voltage sources -- 538 987 on ibmpg5t, 836 107 on ibmpg6t -- which the
+import, told to merge shorts, throws away at once, making one node of the
+two each joins.  Until now each was still read as a full record first, and
+the netlist kept that record for as long as the import lived.  Under
+`merge_shorts` the bulk read now takes such a line as it streams past,
+keeping only its two nodes for the merge; the circuit is the same one,
+byte for byte, and where a `.print` reads one of their currents the import
+falls back to reading every line as a record.  The imports of the two
+grids take 0.68x the memory and 0.90-0.91x the time, and their runs peak about 6 % lower.
