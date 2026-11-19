@@ -6256,3 +6256,24 @@ time, and ibmpg4t, 5t and 6t run their full 10 ns for the first time, under
 not to see the OpenBLAS that CHOLMOD brings with it, opened outside any
 import, so a later held run could leave it threaded; CHOLMOD's loader now
 tells the hold.
+
+## T1: a BLAS that loads inside a hold is held, and CHOLMOD's starts at one thread (2026-11-19)
+
+2026-11-19 (`doc/hdl_roadmap_260824.md`, 335; plan 261 L21).  The analyses
+hold BLAS at one thread for their whole run, by limiting every BLAS library
+loaded when the hold starts.  CHOLMOD, which a large linear grid's transient
+uses, loads only when that transient builds its solver -- inside the hold --
+and brings a BLAS of its own, so in the first such run of a process it ran on
+all the cores: on ibmpg3t its refactorisation 1.42x slower than on one
+thread, the run 1.30x slower than the same run later in the process, and
+with other rounding, because each thread count gives its own bits.  A
+library that loads while a hold is open is now held too, to the end of the
+outermost hold, and released to its own thread count after.  That alone
+left the run 3.5 % slower than with OPENBLAS_NUM_THREADS=1: an OpenBLAS
+started on every core and then held at one still solves CHOLMOD's system
+6.5 % slower.  So CHOLMOD is now opened with the variable set to one, when
+the user has not set it, and its BLAS starts at one thread; the run is
+within 1.5 % of the one-thread time, with the same bits every time.  Eight
+threads would have been 5 % faster on the whole run, with bits tied to the
+thread count and eight cores taken on a shared machine; Andreas chose one
+thread.

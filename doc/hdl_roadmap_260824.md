@@ -16646,3 +16646,58 @@ the threshold 0: 24, then 1).  Every timed run here sets OPENBLAS_NUM_THREADS=1;
 threaded is not measured.  (3) 0 V voltage sources stay records (ibmpg5t 539 087, ibmpg6t 836 239, merged away after mapping).
 (4) ibmpg4t's operating point takes 121 s on KLU against 35-56 s on 5t and 6t, and its 10 ns is 0.133 mV from the benchmark
 against 0.03-0.05 mV on the others (266 CHOLMOD refactors against 716): neither traced.
+
+## 2026-11-19 — 335. T1: a BLAS that loads inside a hold is held, and CHOLMOD's starts at one thread
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, T1); found in B4 (sec. 334), Andreas "Continue as ypu suggest", then "One thread,
+build to line".  CHOLMOD loads when a transient's solver is built, inside the transient's own BLAS hold, after the hold's limit
+was set; the system OpenBLAS it brings (which only CHOLMOD uses here) therefore ran on its own threads for that whole run -- 24
+with no OPENBLAS_NUM_THREADS -- while every later hold in the process held it at one.  Sized (every timing before had set
+OPENBLAS_NUM_THREADS=1): CHOLMOD's factor on ibmpg3t's reduction (K1b's bench, m = 1 040 579, one process, three rotated rounds)
+refactors in 1.086 s on one BLAS thread, 0.943 s on 4, 0.885 s on 8 and 1.539 s on 24 (1.42x slower); its OpenMP threads change
+nothing; and the solution's bytes differ for each BLAS thread count.  In a run (ibmpg3t 1 ns from B3's stored operating point,
+two interleaved rounds, a probe reading the libraries as the C loop starts): 174.1 / 174.3 s at OPENBLAS_NUM_THREADS=1, 164.9 /
+165.2 s at 8, 230.0 / 224.1 s unset (CHOLMOD's BLAS at 24 in the run), the same 140 steps / 2 rejections / 248 iterations, each
+count its own bytes run to run, 3.8e-15 V (8) and 5.1e-15 V (24) from one thread's, the refactors the residual check kept 52 /
+48 / 55.  So a user's first large transient in a process ran 1.30x slower than the runs after it and computed other bits.  Line
+(set before): (a) ibmpg3t 1 ns with OPENBLAS_NUM_THREADS unset -- the probe CHOLMOD's BLAS at 1 inside the run, the waveforms
+and kept refactors the OPENBLAS_NUM_THREADS=1 run's bit for bit, the time within 3 % of 174 s, the library back at its own
+count after; (b) a test in a process of its own, CHOLMOD loaded inside a hold, bitten; B4's test still passing; (c) nothing else
+moves -- the gate against 15d06aad SAME, a hold <= 5.5 us (4.5 us before), size >= 0.98x, the suite, ruff.  Eight threads (1.055x
+on the run, bits tied to the count, 8 cores of a shared box) left as a possible explicit setting.  The hold as built met every
+criterion but the time: 181.5 / 180.8 s against 174.8 / 175.0 s interleaved (1.033-1.038x).  Traced (K1b's bench at one thread,
+one process each, interleaved): an OpenBLAS started on 24 threads and held at one solves CHOLMOD's system in 0.0987-0.0991 s
+against 0.0923-0.0932 s started at one (6.5 %), its refactor up to 3 % slower, the same bytes; CHOLMOD's library alone started
+at one (the variable set in the process around its load, scipy's libraries started at 24): 0.089-0.092 s, and the 1 ns 176.8 /
+176.3 s against 175.1 s, the same bytes.  Andreas "Add the start-at-one", line (set before): (a') as (a), the time <= 179.2 s,
+and after the run CHOLMOD's library at 1, scipy's at their own count, the variable not in the environment; (b') a case in a
+process of its own, the variable unset, bitten; (c) as before.
+
+**What.**  `_blas` keeps the holds open now, outermost first (`_OPEN_HOLDS`): `_single_threaded_blas()` returns a `_Hold`, which
+sets the kept controller's one-thread limit on entry (not on construction, as the limiter did) and on exit restores, last in
+first out, any limit added while it was the outermost hold open, then its own.  `library_loaded()`, besides forgetting the kept
+controller (sec. 334), enters a fresh controller's one-thread limit on the outermost open hold: a library reported inside a hold
+is held from then to the end of the outermost hold -- a caller's hold around a transient still holds it after the transient's
+own has closed -- and is back at its own count after.  And `_cholklu.library` opens CHOLMOD with OPENBLAS_NUM_THREADS=1 in the
+environment when the environment does not set it, removing it after: OpenBLAS reads the variable as it loads, so CHOLMOD's BLAS
+starts at one thread and stays there outside holds too; a variable the user set is left alone, and the hold holds that library
+at one inside the run.  CHOLMOD therefore runs on one thread in every run, the run that loads it included, whatever the
+environment or the order of loading, at the speed of a process started with OPENBLAS_NUM_THREADS=1.
+
+**Measured.**  (a) The hold alone -- ibmpg3t 1 ns with OPENBLAS_NUM_THREADS unset, interleaved with =1 runs, each started on a quiet box: the probe CHOLMOD's BLAS at 1 at every start of the C loop, the waveforms w_1_1.npz's bytes (0 V), 140 / 2 / 248, 52 refactors kept, every library back at 24 after; 181.5 / 180.8 s against 174.8 / 175.0 s -- the time MISSED.  (a') With the start-at-one MET -- the same bytes, 140 / 2 / 248, 52 kept, the probe at 1, 176.2 / 176.7 s against 174.4 / 174.2 s interleaved (1.010-1.014x; the line 179.2 s), after the run CHOLMOD's library at 1 and scipy's at 24.  (b) MET -- the tests below, seven bites bitten; B4's test passing.  (c) MET -- the gate against 15d06aad SAME (every deck's results and path counters under dc, gear2, gear2/bypass, radau; size; C against Python 0 differing; no executable C line changed), run on the hold and again with the start-at-one; a hold 4.75 us with OPENBLAS_NUM_THREADS=1 and 4.81 us unset against the base's 4.51 / 4.61 us (six interleaved processes each, the minimum of nine runs of 100 000 holds); size every digest and step count the same, new / head time DCs 0.967-1.024 on single pairs (pchain re-run, six pairs: median 0.987), transients 0.981-1.005 (no size run reaches `_cholklu.library`: not re-timed for the start-at-one); ruff the base's.
+
+**Tests.**  `test_blas_limit` +2.  `test_a_blas_loaded_inside_a_hold_is_held_to_its_end`: in a process of its own with every
+OpenBLAS at 4 threads (fewer cores: as many; one core skips), the first transient on CHOLMOD (the CHOLMOD tests' grid at the
+threshold 0) run inside a hold of the caller's -- read as the C loop starts in that run and in the next, and inside the caller's
+hold after the first: every BLAS library at one thread, CHOLMOD's among them; after both, scipy's libraries at their counts
+before and CHOLMOD's at 4.  `test_cholmods_blas_starts_at_one_thread_unless_the_environment_says`: in a process of its own with
+OPENBLAS_NUM_THREADS unset and OMP_NUM_THREADS (OpenBLAS's fallback) at 4, CHOLMOD loaded outside any hold -- the libraries
+loaded before at 4 before and after, CHOLMOD's at one, the variable gone.  The three in-a-process tests share `_in_a_process`
+(variables set or removed).  Seven bites, seven bit: no limit added, the limit on the innermost hold (bit only once the test ran
+the transient inside a caller's hold), the added limits not restored, a hold not recorded as open, the kept controller not
+forgotten (B4's test), the variable not set, the variable not removed.  Suite 6 812 passed, 10 skipped, 5 xfailed (6 811 with the hold alone).
+
+**Found, not changed:** eight BLAS threads make CHOLMOD's refactor on ibmpg3t 1.23x faster (the 1 ns run 1.055x) at the price of
+bits tied to the thread count; a setting for it is not built.  scipy's own OpenBLAS libraries start at the cores' count when the
+variable is unset (numpy loads them) and are held at one in every analysis; what that costs a run is not measured apart (the
+1 ns 1.007-1.010x with CHOLMOD's alone started at one).

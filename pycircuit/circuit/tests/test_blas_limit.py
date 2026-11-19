@@ -245,14 +245,10 @@ print('SEEN', before, after, seen)
 """
 
 
-def test_a_blas_a_loader_opens_is_held_too():
-    """CHOLMOD, opened by `_cholklu`'s C (`dlopen`, no import), brings the
-    system's OpenBLAS: a hold whose controller was kept from before -- every
-    module imported, a held DC solved -- holds that library too once CHOLMOD
-    has loaded (`_blas.library_loaded`), read inside a DC at 302 unknowns
-    with the pool opened to 4 threads first.  In a process of its own: a
-    worker may have loaded CHOLMOD already (the suite failed on that order)."""
-    import ast
+def _in_a_process(script, **environ):
+    """`script`'s last line, run by a Python of its own on this tree
+    (`environ`: variables set in its environment, None removing one); a line
+    starting SKIP skips."""
     import os
     import subprocess
     import sys
@@ -261,13 +257,142 @@ def test_a_blas_a_loader_opens_is_held_too():
     if not tmod.blas_single_thread_available():
         pytest.skip('no threadpoolctl')
     root = os.path.dirname(os.path.dirname(os.path.abspath(pycircuit.__file__)))
-    r = subprocess.run([sys.executable, '-c', _DLOPEN_SCRIPT], capture_output=True, text=True, timeout=600, check=False,
-                       cwd=root, env={**os.environ, 'PYTHONPATH': root})
+    env = {**os.environ, 'PYTHONPATH': root}
+    for name, value in environ.items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = str(value)
+    r = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True, timeout=600, check=False,
+                       cwd=root, env=env)
     out = r.stdout.strip().splitlines()
     assert r.returncode == 0 and out, r.stderr[-2000:]
     if out[-1].startswith('SKIP'):
         pytest.skip(out[-1][5:])
-    _, before, after, seen = out[-1].split(' ', 3)
+    return out[-1]
+
+
+def test_a_blas_a_loader_opens_is_held_too():
+    """CHOLMOD, opened by `_cholklu`'s C (`dlopen`, no import), brings the
+    system's OpenBLAS: a hold whose controller was kept from before -- every
+    module imported, a held DC solved -- holds that library too once CHOLMOD
+    has loaded (`_blas.library_loaded`), read inside a DC at 302 unknowns
+    with the pool opened to 4 threads first.  In a process of its own: a
+    worker may have loaded CHOLMOD already (the suite failed on that order)."""
+    import ast
+    line = _in_a_process(_DLOPEN_SCRIPT)
+    _, before, after, seen = line.split(' ', 3)
     seen = ast.literal_eval(seen)
-    assert int(after) > int(before), out[-1]
-    assert seen and len(seen[0]) == int(after) and all(t == 1 for t in seen[0]), out[-1]
+    assert int(after) > int(before), line
+    assert seen and len(seen[0]) == int(after) and all(t == 1 for t in seen[0]), line
+
+
+#: a process of its own, every OpenBLAS at the threads the test asks: the
+#: first transient on CHOLMOD (a grid, the threshold at 0), run inside a hold
+#: of the caller's, loads it inside the transient's own hold; the BLAS
+#: libraries' thread counts read as the C loop starts, in that run and the
+#: next, after the first inside the caller's hold, then after both
+_LOAD_IN_HOLD_SCRIPT = """
+import contextlib, threadpoolctl
+from pycircuit.circuit import _blas, _cholklu, _tran_loop_c, numeric
+from pycircuit.circuit.elements import IPulse
+from pycircuit.circuit.tests.test_cholklu import _grid
+from pycircuit.circuit.transient import Transient
+_cholklu.CHOLMOD_FROM = 0
+def blas():
+    return {c.filepath: c.num_threads for c in threadpoolctl.ThreadpoolController().lib_controllers
+            if c.user_api == 'blas'}
+before = blas()
+seen, orig = [], _tran_loop_c.run
+def spy(loop):
+    seen.append(blas())
+    return orig(loop)
+_tran_loop_c.run = spy
+runs = []
+for k in range(2):
+    c = _grid(16, 16)
+    c['ip'] = IPulse('n8_8', 'n0_0', i1=0.0, i2=5e-3, td=1e-10, tr=1e-10, tf=1e-10, pw=4e-10, per=2e-9)
+    tr = Transient(c, toolkit=numeric)
+    with _blas._single_threaded_blas() if k == 0 else contextlib.nullcontext():
+        tr.solve(tend=1e-9, timestep=1e-11)
+        if k == 0:
+            outer = blas()
+    if not tr._get_linearsolver()._choice.cholmod or not seen:
+        print('SKIP', 'CHOLMOD ' + _cholklu.STATUS + ' or no C loop')
+        raise SystemExit
+    runs.append(seen[-1])
+new = sorted(set(runs[0]) - set(before))
+if not new:
+    print('SKIP CHOLMOD brings no BLAS of its own here')
+    raise SystemExit
+print('SEEN', repr([before, runs + [outer], blas(), new]).replace(' ', ''))
+"""
+
+
+def test_a_blas_loaded_inside_a_hold_is_held_to_its_end():
+    """The first transient on CHOLMOD loads it inside the transient's own
+    hold, after the hold's limit was set: the BLAS it brings is held at one
+    thread from then to the outermost hold's end (`_blas.library_loaded`) --
+    a hold of the caller's around the transient still holds it after the
+    transient's own has closed -- and back at its own count after.  On ibmpg3t that library ran on 24 threads in the
+    run that loaded it (1.30x the time of one thread, other bits than the runs
+    after it).  Every OpenBLAS at 4 threads here (fewer cores: as many),
+    read as the C loop starts in that run and in the next, and in the
+    caller's hold after the first."""
+    import ast
+    import os
+    k = min(4, os.cpu_count() or 1)
+    if k < 2:
+        pytest.skip('one core: no thread count to tell apart')
+    line = _in_a_process(_LOAD_IN_HOLD_SCRIPT, OPENBLAS_NUM_THREADS=k)
+    before, runs, after, new = ast.literal_eval(line.split(' ', 1)[1])
+    for run in runs:
+        assert set(run) == set(after) and all(t == 1 for t in run.values()), line
+    assert all(after[f] == t for f, t in before.items()), line
+    assert all(after[f] == k for f in new), line
+
+
+#: a process of its own: the BLAS libraries' thread counts before and after
+#: CHOLMOD loads (outside any hold), and whether OPENBLAS_NUM_THREADS is in
+#: the environment after
+_START_AT_ONE_SCRIPT = """
+import os, threadpoolctl
+from pycircuit.circuit import _cholklu, linearsolver
+def blas():
+    return {c.filepath: c.num_threads for c in threadpoolctl.ThreadpoolController().lib_controllers
+            if c.user_api == 'blas'}
+klu = linearsolver.KLUSolver()._lib
+before = blas()
+if _cholklu.library(klu) is None:
+    print('SKIP', _cholklu.STATUS)
+    raise SystemExit
+after = blas()
+new = sorted(set(after) - set(before))
+if not new:
+    print('SKIP CHOLMOD brings no BLAS of its own here')
+    raise SystemExit
+print('SEEN', repr([before, after, new, 'OPENBLAS_NUM_THREADS' in os.environ]).replace(' ', ''))
+"""
+
+
+def test_cholmods_blas_starts_at_one_thread_unless_the_environment_says():
+    """CHOLMOD's BLAS (the system OpenBLAS, opened with it by `_cholklu`'s C)
+    reads OPENBLAS_NUM_THREADS as it loads; started on every core and held at
+    one, CHOLMOD's solve on ibmpg3t ran 6.5 % slower.  So `_cholklu.library`
+    sets the variable to 1 for that load alone when the environment does not
+    set it.  In a process of its own with OPENBLAS_NUM_THREADS unset and
+    OMP_NUM_THREADS -- OpenBLAS's fallback -- at 4 (fewer cores: as many):
+    the libraries loaded before at 4, which is where CHOLMOD's would start
+    without the variable; after, those at 4 still, CHOLMOD's at one, the
+    variable gone.  (Set, as in the test above, CHOLMOD's follows it.)"""
+    import ast
+    import os
+    k = min(4, os.cpu_count() or 1)
+    if k < 2:
+        pytest.skip('one core: no thread count to tell apart')
+    line = _in_a_process(_START_AT_ONE_SCRIPT, OPENBLAS_NUM_THREADS=None, GOTO_NUM_THREADS=None, OMP_NUM_THREADS=k)
+    before, after, new, still_set = ast.literal_eval(line.split(' ', 1)[1])
+    assert before and all(t == k for t in before.values()), line
+    assert all(after[f] == t for f, t in before.items()), line
+    assert all(after[f] == 1 for f in new), line
+    assert not still_set, line

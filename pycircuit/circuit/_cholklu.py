@@ -562,9 +562,20 @@ def library(klu):
     except Exception as e:  # noqa: BLE001 -- no CHOLMOD header or compiler: KLU stays
         STATUS = f'off ({type(e).__name__})'
         return None
-    loaded = int(ffi.cast('long', entry(8)))
-    ## (CHOLMOD brings a BLAS of its own, opened with it: the BLAS hold must
-    ## see it, or a held solve leaves it threaded)
+    ## CHOLMOD brings a BLAS of its own (the system OpenBLAS, which reads
+    ## OPENBLAS_NUM_THREADS as it loads), started at one thread unless the
+    ## environment says: started on every core and held at one, CHOLMOD's
+    ## solve on ibmpg3t ran 6.5 % slower, the same bits
+    unset = 'OPENBLAS_NUM_THREADS' not in os.environ
+    if unset:
+        os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    try:
+        loaded = int(ffi.cast('long', entry(8)))
+    finally:
+        if unset:
+            os.environ.pop('OPENBLAS_NUM_THREADS', None)
+    ## (the BLAS hold must see that library, or a held solve leaves it
+    ## threaded)
     _blas.library_loaded()
     if not loaded:
         STATUS = 'off (no libcholmod)'

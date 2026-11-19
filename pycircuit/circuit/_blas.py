@@ -74,12 +74,48 @@ def blas_single_thread_available():
 ## loader says so (`library_loaded`) -- CHOLMOD brings the system's OpenBLAS.
 _BLAS_CONTROLLER = {}
 
+## THE HOLDS OPEN NOW, outermost first.  A library reported while one is open
+## arrived inside it (CHOLMOD loads when a transient's solver is built, in the
+## transient's own hold), so the limit the hold set on entry missed it: it is
+## held from then to the outermost hold's end.  Unheld, ibmpg3t's CHOLMOD ran
+## on 24 threads, its refactor 1.42x slower than on one, and the run that
+## loaded it computed other bits than the runs after it.
+_OPEN_HOLDS = []
+
 
 def library_loaded():
     """A shared library opened by its loader rather than with a package (a
     BLAS can come with it): the kept controller forgotten, so the next hold
-    builds one that sees it."""
+    builds one that sees it, and inside a hold the library held at one thread
+    to the outermost hold's end (its own count back then)."""
     _BLAS_CONTROLLER.clear()
+    if _OPEN_HOLDS and _threadpool_limits is not None:
+        from threadpoolctl import ThreadpoolController
+        _OPEN_HOLDS[0].later.append(ThreadpoolController().limit(limits=1, user_api='blas'))
+
+
+class _Hold:
+    """One hold: the kept controller's one-thread limit, set on entry and
+    restored on exit -- after the limits `library_loaded` added while it was
+    the outermost hold open, restored last in first out."""
+    __slots__ = ('controller', 'later', 'limit')
+
+    def __init__(self, controller):
+        self.controller = controller
+        self.later = []
+        self.limit = None
+
+    def __enter__(self):
+        self.limit = self.controller.limit(limits=1, user_api='blas')
+        _OPEN_HOLDS.append(self)
+        return self
+
+    def __exit__(self, *exc):
+        _OPEN_HOLDS.remove(self)
+        while self.later:
+            self.later.pop().restore_original_limits()
+        self.limit.restore_original_limits()
+        return False
 
 
 def _single_threaded_blas():
@@ -98,7 +134,7 @@ def _single_threaded_blas():
     if rec is None or rec[0] != n:
         from threadpoolctl import ThreadpoolController
         rec = _BLAS_CONTROLLER['blas'] = (n, ThreadpoolController())
-    return rec[1].limit(limits=1, user_api='blas')
+    return _Hold(rec[1])
 
 
 #: the size from which the small-signal analyses' dense complex solve, one a
