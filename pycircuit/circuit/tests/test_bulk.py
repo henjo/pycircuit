@@ -264,6 +264,34 @@ i4 2 0 pulse(0.1m 0.3m 0.7n 0.1n 0.3n 0.5n 2n)
 """
 
 
+def test_a_bank_takes_the_circuits_own_node_for_a_name():
+    """One Node object a name: a bank given a name the circuit holds -- a
+    record's terminal, an earlier bank's node -- takes the circuit's own
+    Node, the one in its list and in `nodenames`; a name it does not hold
+    makes one (the list's from then); a Node given is kept as given; a
+    global name (``x!``) makes its own, as before.  (An element added after
+    a name is held points `nodenames` at its own terminal's Node: a bank
+    after it takes that one.)  A Node made per name per bank was a copy in
+    each bank after the first, `nodenames` pointing at the last: on
+    ibmpg5t 1.18 M copies, 118 MB."""
+    from pycircuit.circuit import _bulk
+    c = SubCircuit()
+    c['r1'] = R('a', 'b', r=1.0)
+    c.add_bank('rb', 'R', ['a', 'b', 'c', gnd], [0, 1, 2], [1, 2, 3], [1.0, 2.0, 3.0])
+    c.add_bank('cb', 'C', ['c', 'a', gnd], [0, 1], [2, 2], [1e-12, 2e-12])
+    rb, cb = _bulk.banks(c)
+    own = {n.name: n for n in c.nodes}
+    assert sorted(own) == ['a', 'b', 'c', 'gnd']
+    for bk in (rb, cb):
+        for nd in bk.nodes:
+            assert nd is own[nd.name] and nd is c.nodenames[nd.name], (bk.name, nd.name)
+    assert rb.nodes[3] is gnd and cb.nodes[2] is gnd
+    c['r2'] = R('x', 'c', r=2.0)
+    c.add_bank('gb', 'R', ['x!', 'c'], [0], [1], [5.0])
+    gb = _bulk.banks(c)[2]
+    assert gb.nodes[0].isglobal and gb.nodes[0].name == 'x' and gb.nodes[1] is c.nodenames['c']
+
+
 def test_the_importer_banks_the_plain_resistors_and_capacitors(tmp_path):
     """`import_netlist(..., bulk=True)`: the resistors and the capacitors
     whose one parameter is a number, and the pulse current sources without

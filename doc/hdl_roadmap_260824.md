@@ -16779,3 +16779,31 @@ taken.  Suite 6 817 passed, 10 skipped, 5 xfailed.
 The early return changes nothing observable (no test; the 6t peak measures it).
 
 **Found, not changed:** ibmpg5t's import leaves 2 197 967 `Node` objects for 1 014 175 unknowns.
+
+## 2026-11-20 — 338. M3: one Node object a name in a bank
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, M3); found in M2 (sec. 337: ibmpg5t's import left 2 197 967 `Node` objects for
+1 014 175 unknowns), Andreas "size the Node objects", then "Build M3 to that line".  `SubCircuit.add_bank` made a new `Node`
+for every name it was given and kept it in `bank.nodes`; `append_node` left the circuit's list as it was for a name it held but
+pointed `nodenames[name]` at the new object -- so each bank after the first held its own copy of every node it touched (equal by
+name, so nothing computed differently), and `nodenames` mapped most names to the last bank's copy (5t: 67 021 of 1 013 798 the
+list's object).  Sized (one `Node` 104 bytes): copies beyond the list 472 235 / 1 184 169 / 1 709 765 on ibmpg3t / 5t / 6t,
+47 / 118 / 170 MB; a prototype taking `nodenames.get(name)` first built the same circuit, the import leaving 460 -> 415 / 647
+-> 534 / 974 -> 796 MB and a 0.2 ns run with its operating point peaking 4 754 -> 4 701 / 4 993 -> 4 885 / 7 284 -> 7 113 MB,
+the same steps and waveforms.  Line (set before): (a) the gate against 01e865b5 SAME, the suite; (b) the same circuit on
+ibmpg2t-6t and a fixture -- one object a name, a global name as before -- bitten; (c) what the import leaves <= 419 / 539 / 804
+MB, one Node a name; (d) the runs' peaks not above today's, the same steps and digests, time within 3 %; (e) size >= 0.98x,
+ruff.
+
+**What.**  `SubCircuit.add_bank` takes the circuit's own `Node` for a name it holds (`nodenames`), so a bank's node is the
+circuit's object; a name it does not hold makes one (the list's from then), a `Node` given is kept as given, and a global name
+(``x!``, its `Node` global) makes its own as before.  (Found while testing, not changed: adding an element points
+`nodenames[name]` at its own terminal's `Node` as well, so a bank added after such an element takes that one; the importer adds
+every record before the banks.)
+
+**Measured.**  (a) MET -- the gate against 01e865b5 SAME (every deck's results and path counters under dc, gear2, gear2/bypass, radau; size; C against Python 0 differing; no executable C line changed).  (b) MET -- the same circuit on ibmpg2t, 3t, 4t, 5t and 6t (n, nodes, elements, every bank's arrays and node names, merged, tran, report); the fixture below.  (c) MISSED as written, Andreas "Accept as measured": what the import leaves (gc + trim) 450 / 450 (3t), 536 / 537 (5t), 816 / 816 MB (6t) against 463 / 645 / 974 at 01e865b5 and a line of 419 / 539 / 804; interleaved in one session the prototype gave 448 / 459 on 3t (its 415 / 416 from an earlier session not reproduced) and on 6t, patched onto the build's own tree, 791-802 against the build's 816 -- the same objects, the heap's layout moved ~20 MB by the function being patched in or built (the build's `str(nd)` lookup patched in alone: 792 / 796), so the line's 1 % was finer than the instrument.  And its census criterion, nothing beyond the circuit's list, was written wrong: every bank node is the list's object and `nodenames'` (no bank copy left), and what is left beyond the list -- 4 813 / 892 / 1 196 -- is the elements' own terminal Nodes (3 820 / 754 / 1 026: an element is a SubCircuit) and the element classes' templates (993 / 138 / 170).  (d) MET -- 0.2 ns with the operating point in the run: peaks 4 709 / 4 908 / 7 114 MB against 4 777 / 4 977 / 7 264, the peak after a later DC 5 502 / 5 266 / 7 724 against 5 637 / 5 336 / 7 897, the same steps and digests, the same times.  (e) MET -- size every digest and step count the same, new / head DCs 0.988-1.029 on one or two pairs at load 1.4-2.2 (dc chain 4000 re-run, six pairs on a quiet box: median 1.000, its 1.029 pairs 0.35 s against 0.34; pchain 1200 rc six pairs: median 1.003), transients 0.968-1.011 (no size case builds a bank); ruff the base's.
+
+**Tests.**  `test_bulk` +1 (`test_a_bank_takes_the_circuits_own_node_for_a_name`: a record's nodes, a bank over them and a new
+one, a second bank sharing them -- every bank node the list's object and `nodenames`'; ground given as a `Node` kept; a global
+name after an element holds it, its own global `Node`).  Two bites, two bit: a `Node` made per name, a global name reusing
+the held one.  Suite 6 818 passed, 10 skipped, 5 xfailed.  Found verifying, not changed: `test_corner_steps`' trains case failed in 2 of the first 3 suites with M3 (the C loop never entered and nothing counted, the results the Python run's; M3's change is not on its path), then passed 14 (the failing runs' own orders among them) and the base tree 5; the cause not found -- the case now names why the C loop kept out (the commit before this one).

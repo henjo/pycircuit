@@ -6306,3 +6306,14 @@ keeping only its two nodes for the merge; the circuit is the same one,
 byte for byte, and where a `.print` reads one of their currents the import
 falls back to reading every line as a record.  The imports of the two
 grids take 0.68x the memory and 0.90-0.91x the time, and their runs peak about 6 % lower.
+
+## M3: one Node object a name in a bank (2026-11-20)
+
+2026-11-20 (`doc/hdl_roadmap_260824.md`, 338; plan 261 L21).  A bank of bulk
+elements made a node object of its own for every node it touched, so on a
+power grid, where the resistor, capacitor and current-source banks share
+most nodes, the circuit held up to three objects for each node -- 1.7
+million spare ones on ibmpg6t, 170 MB -- and its map from names to nodes
+pointed at the last bank's copy rather than the circuit's own.  A bank now
+takes the circuit's node for a name it already holds.  The circuit is the
+same; the imports leave 13-158 MB less behind, and the runs peak 1-2 % lower.

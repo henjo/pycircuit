@@ -1352,7 +1352,12 @@ class SubCircuit(Circuit):
         Returns the `_bulk.Bank`."""
         if name in self.elements or any(bk.name == name for bk in _bulk.banks(self)):
             raise ValueError(f'{name!r}: the circuit holds an element or a bank of that name')
-        objs = [nd if isinstance(nd, Node) else Node(str(nd)) for nd in nodes]
+        ## ONE NODE OBJECT A NAME: a name the circuit holds takes its own Node
+        ## (`nodenames`) -- a Node made per name per bank was a copy in each
+        ## bank after the first, `nodenames` pointing at the last (ibmpg5t:
+        ## 1.18 M copies, 118 MB); a Node given is kept as given
+        have = self.nodenames
+        objs = [nd if isinstance(nd, Node) else have.get(str(nd)) or Node(str(nd)) for nd in nodes]
         bank = _bulk.Bank(name, kind, objs, a, b, value, wave)
         for nd in objs:
             self.append_node(nd)
