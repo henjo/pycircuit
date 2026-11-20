@@ -91,7 +91,26 @@ class Node():
             return self.__class__.__name__ + '(' + repr(self.name) + ', ' \
                 'isglobal=True)'
         else:
-            return self.__class__.__name__ + '(' + repr(self.name) + ')'            
+            return self.__class__.__name__ + '(' + repr(self.name) + ')'
+
+
+def _held_node(have, nd):
+    """ONE NODE OBJECT A NAME: `nd` as the `Node` a circuit connects -- a
+    `Node` given, as given; a name the circuit holds (`have`, its
+    `nodenames`) under that very name and not global, the circuit's own
+    object; else a new one (a new name, a global name ``x!``, or a name
+    `connect_terminals` made an alias of another node).  A Node made per
+    name per use was a copy in each element and bank after the first, and
+    `append_node` pointed `nodenames` at the newest (ibmpg2t read per
+    element: 1.20 M Node objects for 164 238 nodes)."""
+    if isinstance(nd, Node):
+        return nd
+    s = str(nd)
+    held = have.get(s)
+    if held is not None and held.name == s and not held.isglobal:
+        return held
+    return Node(s)
+
 
 class Branch():
     """A branch connects two nodes.
@@ -1352,12 +1371,11 @@ class SubCircuit(Circuit):
         Returns the `_bulk.Bank`."""
         if name in self.elements or any(bk.name == name for bk in _bulk.banks(self)):
             raise ValueError(f'{name!r}: the circuit holds an element or a bank of that name')
-        ## ONE NODE OBJECT A NAME: a name the circuit holds takes its own Node
-        ## (`nodenames`) -- a Node made per name per bank was a copy in each
-        ## bank after the first, `nodenames` pointing at the last (ibmpg5t:
-        ## 1.18 M copies, 118 MB); a Node given is kept as given
+        ## ONE NODE OBJECT A NAME (`_held_node`): a name the circuit holds
+        ## takes its own Node -- a Node made per name per bank was a copy in
+        ## each bank after the first (ibmpg5t: 1.18 M copies, 118 MB)
         have = self.nodenames
-        objs = [nd if isinstance(nd, Node) else have.get(str(nd)) or Node(str(nd)) for nd in nodes]
+        objs = [nd if isinstance(nd, Node) else _held_node(have, nd) for nd in nodes]
         bank = _bulk.Bank(name, kind, objs, a, b, value, wave)
         for nd in objs:
             self.append_node(nd)
@@ -1479,12 +1497,12 @@ class SubCircuit(Circuit):
         ## Create term_node_map entry for the new instance
         term_node_map = self.term_node_map[instancename] = {}
 
-        ## Connect terminal to node
+        ## Connect terminal to node: a name the circuit holds, its own Node
+        ## (ONE NODE OBJECT A NAME, `_held_node`)
+        have = self.nodenames
         for terminal, node in connection.items():
-            ## Create a node object if it is not already
-            if not isinstance(node, Node):
-                node = Node(str(node))
-            
+            node = _held_node(have, node)
+
             ## Add node
             self.append_node(node)
 

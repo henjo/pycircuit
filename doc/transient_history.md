@@ -6331,3 +6331,14 @@ mislead it, and then it only underestimates.  So the dissection is now tried
 first, and the default order is not tried where its estimate already loses.
 The same order is kept on every grid, so the answers are the same to the
 last bit, and ibmpg4t's DC takes 56 seconds instead of 120, and a quarter less memory at its peak.
+
+## D2: an element's terminal takes the circuit's own Node (2026-11-20)
+
+2026-11-20 (`doc/hdl_roadmap_260824.md`, 340; plan 261 L21).  M3's fix for
+banks of elements, made for ordinary elements: each element connected by
+node names made its own object for every node it touched, so a circuit read
+element by element held several objects per node -- 1.2 million for the
+164 000 nodes of the IBM grid ibmpg2t -- and its map from names to nodes
+pointed at whichever element came last.  Every element and bank now takes
+the circuit's own node for a name it already holds.  The circuit and its
+answers are the same; a per-element circuit takes 2-4 % less memory.

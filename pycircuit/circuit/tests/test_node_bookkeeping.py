@@ -53,6 +53,39 @@ class _Two(SubCircuit):
     terminals = ('a', 'b')
 
 
+def test_an_element_takes_the_circuits_own_node_for_a_name():
+    """ONE NODE OBJECT A NAME (`circuit._held_node`): an element's terminal
+    given by a name the circuit holds is the circuit's own Node -- the
+    list's, `nodenames` still pointing at it; a new name makes one (the
+    list's from then); a Node given is kept as given; a global name
+    (``x!``), a local name where the circuit holds it global, and a name
+    `connect_terminals` made an alias of another node make their own, as
+    before.  A Node made per terminal was a copy in each element and
+    `nodenames` pointed at the newest: ibmpg2t read per element held 1.20 M
+    Node objects for 164 238 nodes."""
+    c = _ladder(3)
+    own = {nd.name: nd for nd in c.nodes}
+    assert sorted(own) == ['gnd', 'n0', 'n1', 'n2', 'n3']
+    for inst, conn in c.term_node_map.items():
+        for term, nd in conn.items():
+            assert nd is own[nd.name], (inst, term)
+    assert all(c.nodenames[name] is nd for name, nd in own.items())
+    assert c.term_node_map['rg']['minus'] is gnd
+    given = Node('n3')
+    c['rn'] = R(given, 'n0', r=1.0)
+    assert c.term_node_map['rn']['plus'] is given and c.term_node_map['rn']['minus'] is own['n0']
+    c['rx'] = R('n1!', 'n2', r=1.0)
+    g = c.term_node_map['rx']['plus']
+    assert g.isglobal and g.name == 'n1' and g is not own['n1'] and c.term_node_map['rx']['minus'] is own['n2']
+    c['ry'] = R('n1', 'n2', r=1.0)
+    loc = c.term_node_map['ry']['plus']
+    assert loc.name == 'n1' and not loc.isglobal and loc is not g
+    t = _Two()
+    t.connect_terminals(a=Node('n1'))
+    t['r'] = R('a', 'b', r=1.0)
+    assert t.term_node_map['r']['plus'].name == 'a' and t.term_node_map['r']['minus'].name == 'b'
+
+
 def test_an_edit_in_place_drops_the_names():
     """`connect_terminals` replaces a terminal's node -- the list's length
     the same -- and a name it removed is appended again after it."""

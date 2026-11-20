@@ -14,7 +14,7 @@ import pytest
 from pycircuit.circuit import _packed, _paths, _pcnr_c, _stamp_plan, numeric, pcnr
 from pycircuit.circuit import elements_hdl as eh
 from pycircuit.circuit.analysis import jacobian_structure
-from pycircuit.circuit.circuit import SubCircuit, gnd
+from pycircuit.circuit.circuit import Node, SubCircuit, gnd
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.elements import IS, VS, C, IPulse, R
 from pycircuit.circuit.transient import Transient
@@ -269,11 +269,12 @@ def test_a_bank_takes_the_circuits_own_node_for_a_name():
     record's terminal, an earlier bank's node -- takes the circuit's own
     Node, the one in its list and in `nodenames`; a name it does not hold
     makes one (the list's from then); a Node given is kept as given; a
-    global name (``x!``) makes its own, as before.  (An element added after
-    a name is held points `nodenames` at its own terminal's Node: a bank
-    after it takes that one.)  A Node made per name per bank was a copy in
-    each bank after the first, `nodenames` pointing at the last: on
-    ibmpg5t 1.18 M copies, 118 MB."""
+    global name (``x!``) and a name `connect_terminals` made an alias of
+    another node make their own, as before (`circuit._held_node`, which an
+    element's terminals take too: a bank after an element still takes the
+    list's).  A Node made per name per bank was a copy in each bank after
+    the first, `nodenames` pointing at the last: on ibmpg5t 1.18 M copies,
+    118 MB."""
     from pycircuit.circuit import _bulk
     c = SubCircuit()
     c['r1'] = R('a', 'b', r=1.0)
@@ -289,7 +290,17 @@ def test_a_bank_takes_the_circuits_own_node_for_a_name():
     c['r2'] = R('x', 'c', r=2.0)
     c.add_bank('gb', 'R', ['x!', 'c'], [0], [1], [5.0])
     gb = _bulk.banks(c)[2]
-    assert gb.nodes[0].isglobal and gb.nodes[0].name == 'x' and gb.nodes[1] is c.nodenames['c']
+    assert gb.nodes[0].isglobal and gb.nodes[0].name == 'x'
+    assert gb.nodes[1] is own['c'] and c.nodenames['c'] is own['c']
+    ## (a terminal `connect_terminals` pointed at another node: its name is
+    ## not that node's, and the bank makes its own, as before)
+
+    class Two(SubCircuit):
+        terminals = ('a', 'b')
+    t = Two()
+    t.connect_terminals(a=Node('n1'))
+    t.add_bank('ab', 'R', ['a', 'b'], [0], [1], [1.0])
+    assert _bulk.banks(t)[0].nodes[0].name == 'a'
 
 
 def test_the_importer_banks_the_plain_resistors_and_capacitors(tmp_path):

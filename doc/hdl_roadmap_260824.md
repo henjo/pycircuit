@@ -16840,3 +16840,35 @@ mesh's estimate is under it; the layered meshes are misled) -- and a fourth case
 matched order beating KLU's own and the dissection beating it: the branch the 70 x 70 mesh took before).  Five bites, five
 bit: the skip always (40 x 40 and both layered cases), never (70 x 70), the skip keeping KLU's order (70 x 70), the estimate
 without `unz` (70 x 70, 40 x 40), the comparison after KLU's trial gone (layers 60).  Suite 6 819 passed, 10 skipped, 5 xfailed.
+
+## 2026-11-20 — 340. D2: an element's terminal takes the circuit's own Node
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, D2); found in M3 (sec. 338: adding an element points `nodenames[name]` at its
+own terminal's `Node`), Andreas "... then the elements re-pointing a node name", then "Build D2 to that line".
+`SubCircuit._place_instance` made a `Node` for every terminal given by name, so each element held its own copy of each
+node it touched; `append_node` kept the list's first and pointed `nodenames[name]` at the newest, and `term_node_map`
+kept the element's copy -- equal by name, so nothing computed differently.  And M3's lookup in `add_bank`
+(`nodenames.get(name)`) would take a held object in two corners the old code did not: a terminal `connect_terminals` made
+an alias of another node (`nodenames['a']` -> `Node('n1')`), and a node held global for a local name.  Sized (today /
+prototype interleaved, two pairs): the same circuit -- nodes with names and globality, branches, every terminal's node by
+name, `nodenames` by name, the DC's bytes -- on ibmpg1t and ibmpg2t read per element, achain 8000 and mesh 63 x 63; Node
+objects 286 k -> 194 k, 1.20 M -> 0.80 M, 112 k -> 72 k, 87 k -> 51 k; the terminals' objects one a name; `nodenames` the
+list's object for every name (35 / 209 / 1 / 1 before); RSS after the build 2-4 % less; the build's time the same.  Line
+(set before): (a) the gate against 486e0786 SAME, the suite; (b) the same circuit and DC bytes on those four and the bulk
+imports ibmpg2t-6t; (c) on the four every terminal given by name and every `nodenames` entry the list's object; (d) RSS
+after the build not above today's, the build's time within 3 % -- the census the measure (M3: RSS moves ~20 MB with the
+heap's layout); (e) a test for elements and banks, bitten; (f) size >= 0.98x, ruff.
+
+**What.**  `circuit._held_node(have, nd)`: a `Node` given, as given; a name the circuit holds (`nodenames`) under that
+very name and not global, the circuit's own object; else a new `Node` (a new name, a global name ``x!``, a name
+`connect_terminals` made an alias of another node).  `SubCircuit._place_instance` connects an element's terminals through
+it, and `add_bank` its nodes (M3's lookup, the two corners now as before M3).
+
+**Measured.**  (a) MET -- the gate against 486e0786 SAME (every deck's results and path counters under dc, gear2, gear2/bypass, radau; size; C against Python 0 differing; no executable C line changed).  (b) MET -- the same circuit and DC bytes against 486e0786 on ibmpg1t and ibmpg2t read per element, achain 8000 and mesh 63 x 63 (nodes with names and globality, branches, every terminal's node by name, `nodenames` by name); the bulk imports of ibmpg2t-6t the same circuit (n, nodes, elements, every bank's arrays and node names, merged, tran, report).  (c) MET -- every terminal given by name the list's object (61 505 -> 153 868 of 153 868 on 1t, 238 243 -> 638 998 of 638 998 on 2t, 24 002 -> 64 004 on achain, 11 909 -> 47 380 on mesh) and every `nodenames` entry the list's (35 -> 39 681, 209 -> 164 238, 1 -> 8 003, 1 -> 3 972); Node objects 285 950 -> 193 587, 1 204 029 -> 803 274, 112 047 -> 72 045, 86 861 -> 51 390.  (d) MET -- RSS after the build 436.1 -> 427.7, 1 760.3 -> 1 723.4, 144.2 -> 139.0, 110.0 -> 106.0 MB; the build's time 1t 5.65 -> 5.65 s, mesh 1.64 -> 1.63 s, and re-timed on a quiet box (three interleaved pairs, load under 1.0; the first pairs at load 1.1-1.5 read +2.0 to +2.9 %) achain 8000 median 0.996x, ibmpg2t 0.987x.  (e) MET -- below.  (f) MET -- size every digest and step count the same, medians new / head 0.961-1.014; ruff the base's.
+
+**Tests.**  `test_node_bookkeeping` +1 (`test_an_element_takes_the_circuits_own_node_for_a_name`: a ladder's terminals the
+list's objects and `nodenames`'; a `Node` given kept; ``n1!`` its own global `Node`; a local ``n1`` after it its own local
+one; a terminal aliased by `connect_terminals` making its own); `test_bulk`'s bank test: after an element the bank's node
+the list's object and `nodenames`' too, and an aliased terminal's name making its own.  Five bites, five bit: the lookup
+always making a new `Node` (both), no same-name check (both), no globality check (elements), elements bypassing it (both),
+banks bypassing it (banks).  Suite 6 820 passed, 10 skipped, 5 xfailed.
