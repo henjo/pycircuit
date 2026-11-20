@@ -149,37 +149,44 @@ def _run_rank(monkeypatch, tol_rel, dense_max):
     return tr.__dict__.get('_branch_rank0', (None,))[0], counts, off, getattr(tr, '_branch_error', None)
 
 
-def test_past_dense_max_the_count_holds_no_whole_matrix_margin(monkeypatch):
-    """Past `_packed.DENSE_MAX` (here from one unknown) no dense SVD is made,
-    so the count holds no margin for one (`_no_dense_svd`): at a tolerance
-    the margin `8 n eps ||C||` passes (1e-15 of the largest entry at 17
-    unknowns -- as at 563 000 unknowns and the default tolerance) the count
-    is the blocks', the check on, r0 the dense SVD's; below DENSE_MAX the
-    dense passes decide it as before.  And the reduction's band stays: at a
-    tolerance between a reduced singular value and the full matrix's (the
-    reference's row joins them), the full matrix's count."""
+def test_past_dense_max_the_count_is_the_reduced_cs(monkeypatch):
+    """Past `_packed.DENSE_MAX` (here from one unknown) the structural rank
+    reads C without the reference node, by blocks with no band
+    (`_reduced_count`, `branch.rank:reduced`): at a tolerance the dense
+    passes' rounding margin `8 n eps ||C||` passes (1e-15 of the largest
+    entry at 17 unknowns -- as at 563 000 unknowns and the default) the check
+    on, r0 the reduced matrix's dense SVD count; below DENSE_MAX the dense
+    passes decide as before.  And at a tolerance between the reduced and
+    the full matrices' second singular values (the full counting 2, the
+    reduced 1): the reduced matrix's 1 past DENSE_MAX, the full one's 2
+    below it."""
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         tr = Transient(_coupled(), toolkit=circuit.numeric)
     Cd = np.asarray(tr._C_fresh(np.zeros(tr.cir.n)), dtype=float)
-    scale = float(np.abs(Cd).max())
-    full = np.linalg.svd(Cd, compute_uv=False)
     g = tr.irefnode
     keep = np.r_[0:g, g + 1:Cd.shape[0]]
+    off = Cd.copy()
+    off[g, g] = 0.0
+    scale = float(np.abs(off).max())
+    full = np.linalg.svd(Cd, compute_uv=False)
     reduced = np.linalg.svd(Cd[np.ix_(keep, keep)], compute_uv=False)
     tiny = 1e-15
     assert 8 * Cd.shape[0] * np.finfo(float).eps * np.linalg.norm(Cd) > tiny * scale
-    want = int((full > tiny * scale).sum())
-    r0, counts, off, err = _run_rank(monkeypatch, tiny, 1 << 14)
-    assert (r0, counts.get('branch.rank:dense'), off, err) == (want, 3, [], None), (r0, counts, off, err)
-    r0, counts, off, err = _run_rank(monkeypatch, tiny, 1)
-    assert (r0, counts.get('branch.rank:bounded'), off, err) == (want, 3, [], None), (r0, counts, off, err)
-    ## (the band: 1e-2 of the largest entry lies between the reduced and the
-    ## full matrices' second singular values)
+    want = int((reduced > tiny * scale).sum())
+    assert want == int((full > tiny * scale).sum())
+    r0, counts, warned, err = _run_rank(monkeypatch, tiny, 1 << 14)
+    assert (r0, counts.get('branch.rank:dense'), warned, err) == (want, 3, [], None), (r0, counts, warned, err)
+    r0, counts, warned, err = _run_rank(monkeypatch, tiny, 1)
+    assert (r0, counts.get('branch.rank:reduced'), warned, err) == (want, 3, [], None), (r0, counts, warned, err)
+    ## (1e-2 of the largest entry lies between the reduced and the full
+    ## matrices' second singular values)
     tol = 1e-2 * scale
     assert int((full > tol).sum()) == 2 and int((reduced > tol).sum()) == 1
-    r0, counts, off, err = _run_rank(monkeypatch, 1e-2, 1)
-    assert (r0, counts.get('branch.rank:bounded'), off, err) == (2, 3, [], None), (r0, counts, off, err)
+    r0, counts, warned, err = _run_rank(monkeypatch, 1e-2, 1)
+    assert (r0, counts.get('branch.rank:reduced'), warned, err) == (1, 3, [], None), (r0, counts, warned, err)
+    r0, counts, warned, err = _run_rank(monkeypatch, 1e-2, 1 << 14)
+    assert (r0, warned, err) == (2, [], None), (r0, counts, warned, err)
 
 
 def test_an_undecided_state_is_the_dense_passes(monkeypatch):

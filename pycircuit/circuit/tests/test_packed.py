@@ -810,13 +810,15 @@ def test_the_screens_svd_by_blocks_is_the_dense_svds():
 def test_the_branch_screen_past_dense_max_by_blocks(monkeypatch):
     """Past `_packed.DENSE_MAX` -- here from any size -- with the certificate
     off (as past `BRANCH_CERT_MAX_N`), the screen's SVD where its cheap level
-    fires is made by blocks (`_svd_by_blocks`, `branch.screen:blocks`): the
-    run, its `branch_screens` and its confirmations the dense SVD's, and the
-    check never switched off (it was, with no dense copy to make)."""
-    from pycircuit.circuit import _tran_branch, _tran_loop_c
+    fires is made by blocks (`_svd_by_blocks`, `branch.screen:blocks`) of C
+    without the reference node's row and column (`_reduced_count`): the run,
+    its `branch_screens` and its confirmations those of a dense SVD of the
+    same reduced C, and the check never switched off."""
+    from pycircuit.circuit import _tran_branch, _tran_branch_c, _tran_loop_c
     from pycircuit.circuit.elements import VSin
     from pycircuit.circuit.tests import test_loop_c as L
     monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    monkeypatch.setattr(_packed, 'DENSE_MAX', 1)
     monkeypatch.setattr(_tran_loop_c, 'ENABLED', False)
     monkeypatch.setattr(Transient, 'BRANCH_CERT_MAX_N', 0)
 
@@ -825,21 +827,93 @@ def test_the_branch_screen_past_dense_max_by_blocks(monkeypatch):
         c['vg'] = VSin('g', gnd, v=0.7, va=0.5, freq=1e6)
         return c
 
-    def run(dense_max):
-        monkeypatch.setattr(_packed, 'DENSE_MAX', dense_max)
+    def dense_svd(self, C, r0, ref):
+        """The oracle: numpy's SVD of the same reduced C, densely."""
+        n = C.pat.n
+        D = np.zeros((n, n))
+        D[C.pat.rows, C.pat.cols] = C.v
+        g = _tran_branch_c.ref_index(self, n)
+        keep = np.r_[0:g, g + 1:n]
+        U, sv, _Vt = np.linalg.svd(D[np.ix_(keep, keep)])
+        if int((sv > self.BRANCH_SCREEN_TOL * ref).sum()) >= r0:
+            return (False, None)
+        u = np.zeros(n)
+        u[keep] = U[:, -1]
+        return (True, u)
+
+    def run(oracle):
+        if oracle:
+            monkeypatch.setattr(_tran_branch._BranchCheck, '_branch_svd', dense_svd)
         before = _paths.snapshot()
         with warnings.catch_warnings(record=True) as W:
             warnings.simplefilter('always')
             tr = Transient(build(), toolkit=numeric)
-            tr.BRANCH_SCREEN_TOL = 0.9
+            tr.BRANCH_SCREEN_TOL = 0.5
             res = tr.solve(tend=80 * 2e-8, timestep=2e-8, fixed_timestep=True)
         st = tr.statistics
         off = [str(w.message) for w in W if 'branch check' in str(w.message)]
         return ((np.asarray(res.x, float).tobytes(), st.accepted_steps, st.newton_iterations,
                  getattr(st, 'branch_screens', None)), off, _paths.since(before))
-    dense, off_d, counts_d = run(1 << 14)
-    blocks, off_b, counts_b = run(1)
+    blocks, off_b, counts_b = run(False)
+    dense, off_d, counts_d = run(True)
     assert blocks == dense and dense[3], (dense[1:], blocks[1:])
     assert not off_d and not off_b, (off_d, off_b)
     assert counts_b.get('branch.screen:blocks', 0) > 0 and 'branch.screen:blocks' not in counts_d, counts_b
+    assert counts_b.get('branch.rank:reduced', 0) == 3, counts_b
     assert _tran_branch.SCREEN_BLOCK_MAX > 6
+
+
+def _grounded_ladder(n, small):
+    """A power grid's C in small: `n` nodes on a resistor chain, each 1 pF to
+    ground, and one more node with `small` to ground -- the reference's
+    diagonal n pF, every other entry 1 pF or less (the reference not the
+    first node)."""
+    c = SubCircuit()
+    c['vs'] = VS('n0', gnd, v=1.0)
+    for k in range(n):
+        c[f'r{k}'] = R(f'n{k}', f'n{k + 1}', r=10.0)
+        c[f'c{k}'] = C(f'n{k + 1}', gnd, c=1e-12)
+    c['rs'] = R(f'n{n}', 'ns', r=10.0)
+    c['cs'] = C('ns', gnd, c=small)
+    return c
+
+
+@pytest.mark.parametrize('small, fires', [(1e-15, False), (1e-19, True)], ids=['quiet', 'svd'])
+def test_past_dense_max_the_check_reads_c_without_the_reference(small, fires, monkeypatch):
+    """PAST DENSE_MAX THE CHECK READS C WITHOUT THE REFERENCE NODE
+    (`_tran_branch._reduced_count`, `_off_reference`, branch.h's `iref1`):
+    2 100 nodes, each 1 pF to ground -- the reference's diagonal 2.1 nF --
+    and one capacitor `small`; packed past DENSE_MAX (forced to 1), the
+    certificate off (as past BRANCH_CERT_MAX_N), the C loop on.  1 fF: under
+    1e-6 of the reference's diagonal, not of any other entry -- quiet at the
+    cheap level on every step, no SVD, the running scale 1 pF.  1e-19 F:
+    under the cheap level's threshold either way -- its SVD by blocks of the
+    reduced C runs (components of one) and finds the rank r0.  The check on
+    in both: with the reference in, the cheap level fired on both and the
+    SVD by blocks of the full C met one component through the reference
+    (past SCREEN_BLOCK_MAX) and switched the check off."""
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    monkeypatch.setattr(_packed, 'DENSE_MAX', 1)
+    monkeypatch.setattr(Transient, 'BRANCH_CERT_MAX_N', 0)
+    ## (a short run first: a process's first run can meet its source table's
+    ## stamp moved by first-use work and leave the loop)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        Transient(_grounded_ladder(2100, small), toolkit=numeric).solve(
+            tend=3e-10, timestep=1e-10, fixed_timestep=True)
+    before = _paths.snapshot()
+    with warnings.catch_warnings(record=True) as W:
+        warnings.simplefilter('always')
+        tr = Transient(_grounded_ladder(2100, small), toolkit=numeric)
+        ## (30 steps: the C loop serves from the second)
+        tr.solve(tend=3e-9, timestep=1e-10, fixed_timestep=True)
+    counts = _paths.since(before)
+    off = [str(w.message) for w in W if 'branch check' in str(w.message)]
+    assert tr.irefnode != 0
+    ## (the SVD's runs counted by `branch.screen:blocks`: a wrapped
+    ## `_branch_svd` would keep the C loop out)
+    got = (off, getattr(tr, '_branch_error', None), counts.get('branch.screen:blocks', 0) > 0,
+           tr._branch_cmax, getattr(tr.statistics, 'branch_screens', 0), tr._branch_rank0[0])
+    assert got == ([], None, fires, 1e-12, 0, 2101), repr(got)
+    assert counts.get('branch.rank:reduced', 0) == 3, repr(counts)
+    assert counts.get('loop_c:steps', 0) > 0 or fires, repr(counts)

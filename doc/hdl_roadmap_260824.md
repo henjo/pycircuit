@@ -16987,3 +16987,72 @@ would fire it, and the screen's SVD by blocks of the full C then meets one compo
 the check off.  (2) The C loop screens a constant C on every attempt where the Python keeps a constant C's verdict
 (`_branch_const`): ~15 ms an attempt at a million unknowns, now paid on 3t-6t.  (3) `Transient.solve` given an `x0` of
 the wrong length (a merge-off operating point on a merged import) did not refuse it and ended in a dense n x n allocation.
+
+## 2026-11-21 — 343. SC: past DENSE_MAX the branch check reads C without the reference node
+
+**Why**  Plan 261 L22 (tc/plan_l22_branch_margin.md, SC); found sizing BM (sec. 342).  Andreas "Start with the first item",
+"Do it", then on the first build's flaw "Size option B first" and "build it".  The screen's scale is C's largest entry,
+and on the power grids that entry is the reference node's diagonal -- every capacitance to ground summed -- so the screen's
+tolerance (1e-9 of it) and its cheap level (a positive diagonal entry under 1e-6 of it fires) grew with the grid: the
+smallest capacitor's margin over the cheap level 107 / 37 / 5.1 / 7.5 / 2.65 / 1.03x on ibmpg1t-6t.  And where the cheap
+level fires past DENSE_MAX, the screen's SVD by blocks of the full C meets one component through the reference -- 5 388 /
+18 420 / 100 528 / 132 917 / 236 601 / 380 743 unknowns, past SCREEN_BLOCK_MAX -- and switches the check off, on every one
+of these grids.  A first build took the reference's diagonal out of the scale everywhere (the line approved); its packed
+ladder test found the tolerance then falls under the structural rank's reduction residual -- the reference's column summed,
+its rounding bound 1.3e-17 to 7.7e-17 against the new 1e-18 on 2t-6t, the residual itself 4e-20 to 4.3e-19 -- so the check
+would have been off on 2t-6t.  Halted, the tree back at HEAD.  Option B sized in process: on all six grids the reduced
+C's count (the reference's row and column out, by blocks, no band) is today's r0, in 0.01-0.49 s, and the screen's SVD by
+blocks of the reduced C agrees with it, by components of at most 2.  Line (set before): (a) below DENSE_MAX nothing changes
+-- the gate against 7c8d9ab3 SAME (results and every path counter), C against Python 0 differing, the suite; (b) ibmpg1t-6t
+1 ns: r0 today's, the running scale 4.0e-9 / 1e-9, the check on, screens 0, the steps and digests today's, 3t and 6t time
+within 1 %, peak <= +50 MB; (c) the screen's SVD forced on each grid: the count r0 by components of 2 (today: off); (d)
+tests, bitten; (e) the pinned pair re-recorded after its twin's tests, size >= 0.98x, ruff.
+
+**What.**  Past DENSE_MAX alone (`_no_dense_svd`: a PatternMatrix of DENSE_MAX unknowns or more -- PACKED_FROM, 32 768, is
+above it, so such a C is on the packed sets): `_tran_branch._off_reference` -- the screen's scale (`_branch_screen_C`'s
+|C| largest entry, the running maximum) and its cheap level's diagonal tests leave out the reference's diagonal; branch.c
+the same through branch.h's `iref1` (a new field at the END: the index + 1, 0 none -- a struct cffi zeroes leaves nothing
+out; read on the packed sets alone), set by `_tran_branch_c._screen_packed` and `_tran_loop_c._bind_screen` from
+`_tran_branch_c.ref_index` (-1 below DENSE_MAX), the dense screen zeroing it; `_tran_branch._reduced_count` -- the
+structural rank's states: tol from that scale, r0 the reduced C's count by blocks (`_rank_by_blocks`, the reference's row and
+column out, no band; `branch.rank:reduced`), in place of `_rank_bounded` and the dense passes; `_svd_by_blocks(skip=)` --
+the screen's SVD by blocks with the reference's row and column out (its node out of the count and of the smallest, the
+vector 0 there).  BM's rounding margin of 0 in `_rank_bounded` (sec. 342) is no longer reached and is gone.  Below DENSE_MAX
+nothing changes.  r0 past DENSE_MAX is now the reduced C's count.
+
+**Measured.**  (a) Every comparison 0 differing -- the gate against 7c8d9ab3 (every deck's results and path counters under
+dc, gear2, gear2/bypass, radau; size; C against Python under every setting); its verdict NOT REACHED: branch.c's changed
+lines run past DENSE_MAX alone, where none of the gate's settings goes.  As first built, 8 lines and 14 arms changed, 3 arms
+reached by nothing (a C not packed with a reference, which no filler makes); the skip then confined to the packed sets and
+the guards given a fixture: 7 lines, 12 arms, every one reached -- 4 by the decks, 3 by forced settings, 5 arms and a line by
+the fixtures alone.  Those compared on the decks past DENSE_MAX instead (scratch l22/scb/fdeck.py): the 27 decks under gear2
+and radau, THE PACKED LAYOUT from any size, DENSE_MAX 1, the certificate off, the C screen against the Python's -- 0
+differing in results, steps, screens, r0 and scale, the C screen serving on 39 of the 54, no check off.  Suite 6 825 passed,
+10 skipped, 5 xfailed.  (b) MET -- 1 ns from D1's operating points, tree / base: r0 9 045 / 37 002 / 189 953 / 258 784 /
+473 477 / 696 691 as the base's (`branch.rank:reduced` 3), the running scale 4.03e-9 / 1e-9 against the base's 7.38e-7 /
+7.97e-7 / 6.92e-7 / 3.09e-8 / 7.89e-8 / 2.28e-7, the check on, screens 0, steps and printed nodes' digests the base's;
+time, each run on a quiet box after a warm-up: 3t 176.14 / 175.95 s against 176.12 / 177.54 (1.000 / 0.991x), 6t 224.64 /
+220.25 against 223.74 / 224.74 (1.004 / 0.980x), and after the C's change 3t 175.52 against 175.18 (1.002x), 6t 220.04
+against 225.41 (0.976x); peaks 3t and 6t within 4 MB; one pair each on 1t, 2t, 4t, 5t (5t's peak 4 864 against 4 805 MB,
++59: BM's pair read -40).  (c) MET -- the screen's SVD called on each grid's C (l22/scb/forced.py): quiet, its count r0, in
+0.008 / 0.034 / 0.19 / 0.25 / 0.36 / 0.51 s; the base's raised on all six (a component of 2 000 unknowns or more).  (d)
+MET -- below.  (e) MET -- six pinned pairs re-recorded after their twins' tests (212 passed): the branch screen, the stepping
+loop, the transform loop, the stage loop, the stage walk, the multistep walk; size every digest and step count the same,
+medians new / head 0.983-1.010 but achain 4000 gear2 1.020 (one pair at load 3.1), re-run three pairs: median 1.001; ruff
+the base's.
+
+**Tests.**  `test_branch_c` +2: the C screen and the Python's with a reference drawn, packed past DENSE_MAX (the same
+verdict, largest entry and running maximum), a dense C there and the packed C below DENSE_MAX leaving nothing out; the
+reference's diagonal the largest entry by far -- quiet past DENSE_MAX, fired below or without a reference -- and branch.c's
+guards (an index past n, a C not packed).  `test_packed` +1 (two cases): a 2 100-node ladder, each node 1 pF to ground,
+past DENSE_MAX with the C loop serving -- with 1 fF quiet, the scale 1 pF; with 1e-19 F the SVD by blocks of the reduced C
+running; the check on in both (with the reference in, off).  `test_the_branch_screen_past_dense_max_by_blocks` (sec.
+324's) now against a dense SVD of the same reduced C (at tolerance 0.5: 4 screens); `test_branch_rank_bounded`'s BM test
+is `test_past_dense_max_the_count_is_the_reduced_cs` (the band case reads the reduced count past DENSE_MAX, the full one
+below).  Six bites, six bit: the reference in the Python's scale, in the C's; the packed glue's and the C loop's filler not
+setting `iref1`; the SVD of the full C; r0 of the full C.
+
+**Found, not changed:** the four gold decks that fire the cheap level every step (mosrect, ab_integ, e1480, g1310) do so on
+a small capacitance against a large element (1 uF, 1e-7), not the reference; below DENSE_MAX the scale still holds the
+reference's diagonal (the gold decks' scale 1.0-3.5x above the reduced C's; with it out, only rich3's screens moved -- 2 / 1
+cheap-level fires whose confirmations found no second root).

@@ -44,6 +44,13 @@ typedef struct {
        certificate (none is kept at the sizes the sets serve: the SVD's) */
     long sets;              /* 1: C packed */
     const int64_t *dpk;     /* n: each diagonal entry's index in packed C */
+    /* PAST DENSE_MAX THE CHECK READS C WITHOUT THE REFERENCE NODE: its
+       diagonal -- every capacitance to ground summed -- out of |C|'s largest
+       entry and of the diagonal's tests (read, its finiteness tested).  Set
+       by the fillers past DENSE_MAX alone (`_tran_branch_c.ref_index`), on
+       the packed sets, and read there alone; a zeroed struct, or an index
+       past n, leaves nothing out. */
+    long iref1;             /* the reference node's index + 1; 0: none */
 } branch_t;
 long pcx_branch(branch_t *s);
 

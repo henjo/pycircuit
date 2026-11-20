@@ -276,7 +276,7 @@ def _rank_by_blocks(C, tol, band=None, nz=None, keep=None, count=True):
 SCREEN_BLOCK_MAX = 2000
 
 
-def _svd_by_blocks(C, tol, kmax=None):
+def _svd_by_blocks(C, tol, kmax=None, skip=-1):
     """The screen's SVD of the `_packed.PatternMatrix` `C` where no dense
     copy is made (THE PACKED LAYOUT past `_packed.DENSE_MAX`), by the
     connected components of its nonzeros: `C` permuted by them is block
@@ -286,10 +286,15 @@ def _svd_by_blocks(C, tol, kmax=None):
     last block in component order: the dense SVD's `U[:, -1]` is one of a
     degenerate set there too); a 1 x 1 block's value its entry's magnitude,
     blocks of one size one stacked SVD.  None where a component has `kmax`
-    unknowns or more (`SCREEN_BLOCK_MAX`)."""
+    unknowns or more (`SCREEN_BLOCK_MAX`).  `skip` (or -1): C without that
+    node's row and column -- the reference's, past DENSE_MAX
+    (`_reduced_count`) -- its node out of the count and of the smallest, the
+    vector 0 there."""
     kmax = SCREEN_BLOCK_MAX if kmax is None else kmax
     n = C.pat.n
     on = C.v != 0.0
+    if skip >= 0:
+        on &= (C.pat.rows != skip) & (C.pat.cols != skip)
     rows, cols, vals = C.pat.rows[on], C.pat.cols[on], C.v[on]
     _ncomp, label = _components(n, rows, cols)
     order = np.argsort(label, kind='stable')
@@ -316,8 +321,17 @@ def _svd_by_blocks(C, tol, kmax=None):
             sv, U = np.abs(A[:, :, 0]), np.ones((sel.size, 1, 1))
         else:
             U, sv, _Vt = np.linalg.svd(A)
-        count += int((sv > tol).sum())
         mins = sv[:, -1]
+        if skip >= 0 and k == 1 and slot[block[skip]] >= 0:
+            ## (the skipped node: its entries out, a 1 x 1 block of 0 -- no
+            ## singular value of C's, so neither counted nor the smallest)
+            sv = sv.copy()
+            sv[slot[block[skip]]] = 0.0
+            mins = sv[:, -1].copy()
+            mins[slot[block[skip]]] = np.inf
+            if not np.isfinite(mins).any():
+                continue
+        count += int((sv > tol).sum())
         m0 = float(mins.min())
         j = int(np.flatnonzero(mins == m0)[-1])
         if m0 < low or (m0 == low and sel[j] > last):
@@ -441,6 +455,57 @@ def _no_dense_svd(C):
     return type(C) is _packed.PatternMatrix and C.pat.n >= _packed.DENSE_MAX
 
 
+def _off_reference(Ca, g):
+    """`Ca` -- a fresh |C|, dense or a `_packed.PatternMatrix` -- with the
+    reference node's diagonal (`g`, or -1: none) zeroed where it is finite:
+    out of the screen's scale (|C|'s largest entry) and of its cheap level's
+    diagonal.  That one entry sums every capacitance to ground; each other
+    entry of the reference's row and column is one node's capacitance to
+    ground, under that node's own diagonal (passive capacitors), so off the
+    diagonal alone the largest entry is the reduced C's -- on all 27 gold
+    decks and the IBM grids.  A non-finite one stays, as branch.c hands it
+    back."""
+    if g >= 0:
+        if type(Ca) is _packed.PatternMatrix:
+            k = Ca.pat.diagonal()[g]
+            if math.isfinite(Ca.v[k]):
+                Ca.v[k] = 0.0
+        elif math.isfinite(Ca[g, g]):
+            Ca[g, g] = 0.0
+    return Ca
+
+
+def _reduced_count(C, nz, tol_rel, g):
+    """PAST DENSE_MAX THE CHECK READS C WITHOUT THE REFERENCE NODE (`g`, or
+    -1: none): `(the scale, the count)` of one state's `C` (a PatternMatrix,
+    its nonzeros `nz` in `np.nonzero`'s order) -- the scale |C|'s largest
+    entry off the reference's diagonal (`_off_reference`), the count the
+    reduced C's singular values above `tol_rel` of it, by blocks
+    (`_rank_by_blocks`, the reference's row and column out), with no band:
+    no dense SVD of C is made there to agree with, and the reduction's
+    residual -- the reference's row sums every capacitance to ground, its
+    rounding growing with the circuit -- does not enter.  The screen's SVD
+    there reads the same reduced C (`_svd_by_blocks`' `skip`).  Counted
+    `branch.rank:reduced`; a non-finite entry raises."""
+    rows, cols, vals = nz
+    a = np.abs(vals)
+    if not np.isfinite(a).all():
+        raise FloatingPointError('the structural rank: C not finite at a generic state')
+    if g >= 0:
+        a[(rows == g) & (cols == g)] = 0.0
+    nrm = float(np.max(a)) if a.size else 0.0
+    _paths.COUNTS['branch.rank:reduced'] += 1
+    if not nrm > 0.0:
+        return nrm, 0
+    tol = tol_rel * nrm
+    if g < 0:
+        return nrm, _rank_by_blocks(C, tol, nz=(rows, cols))
+    on = (rows != g) & (cols != g)
+    rr, rc = rows[on], cols[on]
+    keep = np.r_[0:g, g + 1:C.shape[0]]
+    return nrm, _rank_by_blocks(C, tol, nz=(rr - (rr > g), rc - (rc > g)), keep=keep)
+
+
 def _blocks_bounded(C, tol, lo, hi, nz, keep=None):
     """`_rank_by_blocks` with a band whose ends are known to lie in `lo` and
     `hi` (each a `(min, max)`): its answer for every such band, or
@@ -471,22 +536,17 @@ def _rank_bounded(C, tol, nz, g, m):
     check's cost: the IBM power grid's (54 266 unknowns) three states'
     5.8 s, a first touch of the n^2 array's pages ~3 s of it.
 
-    ⚠ NO ROUNDING MARGIN WHERE NO DENSE SVD IS MADE (`_no_dense_svd`): `eps`
-    is the margin within which a dense SVD of the whole `C` could count
-    otherwise, and past `_packed.DENSE_MAX` none is made -- `to_dense`
-    refuses, and the screen there counts by blocks with no margin
-    (`_svd_by_blocks`) -- so `eps` is 0 there: the blocks' count is the
-    count, the reduction's `delta` and its band as below.  The margin
-    passes the tolerance, `BRANCH_SCREEN_TOL * max|C|`, from at most
-    1e-9 / (8 eps_mach) = 563 000 unknowns on any circuit (||C|| >= max|C|):
-    its band then reaches below zero and holds every zero singular value,
-    undecided by construction (ibmpg3t: `eps` 1.28e-15, `tol` 6.92e-16).
+    Below `_packed.DENSE_MAX` alone: past it the structural rank reads C
+    without the reference node, with no band (`_reduced_count`) -- the
+    margin `8 n eps ||C||` passes the tolerance from at most 1e-9 / (8
+    eps_mach) = 563 000 unknowns on any circuit, and the reduction's
+    residual grows with the reference's diagonal.
     History: `doc/transient_history.md`, `_tran_branch._rank_bounded`."""
     rows, cols, vals = nz
     nrm = _norm_range(vals)
     if nrm is None:
         return UNDECIDED
-    c = 0.0 if _no_dense_svd(C) else 8 * C.shape[0] * np.finfo(float).eps
+    c = 8 * C.shape[0] * np.finfo(float).eps
     eps = (c * nrm[0], c * nrm[1])
     r = None
     if g is not None and 0 <= g < m <= C.shape[0]:
@@ -702,6 +762,12 @@ class _BranchCheck:
             ## (its nonzeros from the stamp plan's positions where they are
             ## all there: max |C| and the blocks from them, no n x n scan)
             nz = _plan_nonzeros(self.cir, C)
+            if _no_dense_svd(C):
+                ## (past DENSE_MAX, C without the reference node: `_reduced_count`)
+                nrm, r = _reduced_count(C, nz, self.BRANCH_SCREEN_TOL,
+                                        _tran_branch_c.ref_index(self, C.shape[0]))
+                scale, best = max(scale, nrm), max(best, r)
+                continue
             if nz is None:
                 nrm = float(np.max(np.abs(C)))
             else:
@@ -904,7 +970,14 @@ class _BranchCheck:
         ## diagonal, the positive part -- where they were made up to three
         ## times: the same reductions of the same arrays, so the same
         ## values; speed round 10, B3.2)
-        Ca = np.abs(C)
+        ## ⚠ PAST DENSE_MAX, C WITHOUT THE REFERENCE NODE (`_off_reference`,
+        ## `_reduced_count`): its diagonal sums every capacitance to ground,
+        ## so a scale holding it grows with the circuit -- on ibmpg6t 2.28e-7
+        ## against 1e-9 for any other entry, the cheap level's threshold, 1e-6
+        ## of it, 3 % under the grid's smallest capacitor.
+        ## History: `doc/transient_history.md`, `_tran_branch._reduced_count`.
+        g = _tran_branch_c.ref_index(self, C.shape[0]) if _no_dense_svd(C) else -1
+        Ca = _off_reference(np.abs(C), g)
         ## (on THE PACKED LAYOUT its largest entry and diagonal are the
         ## pattern's: zero off it, the diagonal on it)
         nrm = float(Ca.max())
@@ -934,7 +1007,7 @@ class _BranchCheck:
         says)."""
         tol = self.BRANCH_SCREEN_TOL * ref
         if _no_dense_svd(C):
-            got = _svd_by_blocks(C, tol)
+            got = _svd_by_blocks(C, tol, skip=_tran_branch_c.ref_index(self, C.pat.n))
             if got is None:
                 raise MemoryError(f'the screen: a component of {SCREEN_BLOCK_MAX} unknowns or more')
             _paths.COUNTS['branch.screen:blocks'] += 1

@@ -6362,3 +6362,23 @@ ever made, the margin had nothing to agree with -- the screen there already
 counts by blocks with none -- so it is 0 there; the reduction's own band
 stays.  The check stays on through those runs, the answers the same to the
 last bit, at the check's ordinary cost (1-3 % of the run on these grids).
+
+## SC: past DENSE_MAX the branch check reads C without the reference node (2026-11-21)
+
+### `_tran_branch._reduced_count`, `_tran_branch._off_reference`, `_tran_branch._svd_by_blocks`
+
+2026-11-21 (`doc/hdl_roadmap_260824.md`, 343; plan 261 L22).  The branch
+check measured "a capacitance vanished" against C's largest entry, and on a
+power grid that entry is the ground node's own diagonal -- every capacitor
+to ground added up -- so the yardstick grew with the grid: on ibmpg6t the
+smallest capacitor sat 3 % above the screen's quick threshold.  And when
+that quick test does fire on such a grid, the screen's fallback found one
+block of hundreds of thousands of unknowns through the ground node and
+switched the check off.  Taking only the yardstick off the ground node
+broke the rank count instead (its reduction's rounding grew with the
+ground node), so at the sizes where no dense copy is made the check now
+reads the matrix the step solves -- C without the ground node's row and
+column -- for its yardstick, its rank count and its fallback.  The answers
+are the same; on the grids the count is unchanged, the fallback works in a
+fraction of a second, and the margin no longer shrinks as grids grow.
+Smaller circuits are unchanged.

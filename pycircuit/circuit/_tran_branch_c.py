@@ -126,6 +126,24 @@ def _patched(tr, own):
             or tb._certify is not own[1] or tb._cert_data is not own[2])
 
 
+def ref_index(tr, n):
+    """The reference node's index where the check reads `C` without its row
+    and column -- `C` of `n` unknowns past `_packed.DENSE_MAX`, packed
+    (`_tran_branch._no_dense_svd`) -- else -1: `tr.irefnode`, checked.  The
+    Python's screen reads it here, and branch.c's fillers set its `iref1`
+    from it (+ 1; 0: none)."""
+    if n < _packed.DENSE_MAX:
+        return -1
+    g = getattr(tr, 'irefnode', None)
+    if g is None or isinstance(g, bool):
+        return -1
+    try:
+        g = int(g)
+    except (TypeError, ValueError):
+        return -1
+    return g if 0 <= g < n else -1
+
+
 def cert_bind(ffi, s, cert, growth, dgesv):
     """THE CERTIFICATE's block on the struct `s` (made by `ffi`): the run's
     data `cert` (`_tran_branch._Cert`), the growth, numpy's dgesv -- the
@@ -182,6 +200,7 @@ def _screen_packed(tr, C, drv):
         dpk = np.ascontiguousarray(pat.diagonal(), dtype=np.int64)
         _PK[:] = [pat, dpk, ffi.from_buffer('int64_t *', dpk)]
     s.sets, s.n, s.npat, s.dpk = 1, pat.n, pat.nnz, _PK[2]
+    s.iref1 = ref_index(tr, pat.n) + 1
     s.C = ffi.from_buffer('double *', C.v)
     s.cmax, s.tol_rel = cmax, tol
     s.ncert = 0
@@ -249,6 +268,8 @@ def screen(tr, C):
             s.pat = drv[4]
         s.npat = len(pat)
     s.n = n
+    ## (a dense C: nothing left out -- the struct is the process's, so said)
+    s.iref1 = 0
     s.C = ffi.from_buffer('double *', C)
     s.cmax, s.tol_rel = cmax, tol
     known, data = tr._branch_cert_kept()

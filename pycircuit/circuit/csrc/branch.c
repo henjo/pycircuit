@@ -78,15 +78,21 @@ long pcx_branch(branch_t *s)
 {
     long n = s->n, k, i;
     const double *C = s->C;
-    double nrm = 0.0, ref, tol, dmax, pmin = 0.0;
-    /* `Ca.max()`: no NaN (tested) and no -0.0 (a fabs), so a running `>`
-       from +0.0 is numpy's maximum in any order; the entries off the
-       pattern are +0.0 and change no maximum */
+    double nrm = 0.0, ref, tol, dmax = 0.0, pmin = 0.0;
+    /* the reference's diagonal (`iref1`, branch.h: set on the packed sets
+       alone, ignored elsewhere): its place in packed C, or -1 */
+    long g = (s->sets && s->iref1 >= 1 && s->iref1 <= n) ? s->iref1 - 1 : -1;
+    long skip = g < 0 ? -1 : (long) s->dpk[g];
+    /* `Ca.max()` with the reference's diagonal zeroed: no NaN (tested) and
+       no -0.0 (a fabs), so a running `>` from +0.0 is numpy's maximum in
+       any order; the entries off the pattern are +0.0 and change no
+       maximum, nor does the zeroed one */
     if (s->npat) {
         for (k = 0; k < s->npat; k++) {
-            double v = fabs(C[s->sets ? k : s->pat[k]]);
+            long at = s->sets ? k : (long) s->pat[k];
+            double v = fabs(C[at]);
             if (!isfinite(v)) return s->verdict = BRANCH_BAIL_NONFINITE;
-            if (v > nrm) nrm = v;
+            if (at != skip && v > nrm) nrm = v;
         }
     } else {
         for (k = 0; k < n * n; k++) {
@@ -101,9 +107,10 @@ long pcx_branch(branch_t *s)
     tol = s->tol_rel * ref;
     /* the diagonal's `d.max()` and `pos.min()` of its positive entries
        (0.0 where there are none, as `... if pos.size else 0.0`): order-free
-       on finite values without -0.0 */
-    dmax = fabs(C[s->sets ? s->dpk[0] : 0]);
+       on finite values without -0.0, from +0.0; the reference's diagonal
+       zeroed (`Ca`'s), so in neither */
     for (i = 0; i < n; i++) {
+        if (i == g) continue;
         double d = fabs(C[s->sets ? s->dpk[i] : i * (n + 1)]);
         if (d > dmax) dmax = d;
         if (d > 0.0 && (pmin == 0.0 || d < pmin)) pmin = d;

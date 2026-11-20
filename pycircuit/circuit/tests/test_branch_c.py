@@ -33,18 +33,22 @@ class _Screen(_BranchCheck):
         return _SVD
 
 
-def _python(C, cmax):
+def _python(C, cmax, g=None):
     t = _Screen()
     if cmax is not None:
         t._branch_cmax = cmax
-    verdict, nrm = t._branch_screen_C(C, len(C))
+    if g is not None:
+        t.irefnode = g
+    verdict, nrm = t._branch_screen_C(C, C.shape[0])
     return verdict, nrm, t._branch_cmax
 
 
-def _c(C, cmax, pat=None):
+def _c(C, cmax, pat=None, g=None):
     t = _Screen()
     if cmax is not None:
         t._branch_cmax = cmax
+    if g is not None:
+        t.irefnode = g
     if pat is not None:
         t._C_pattern = (C, pat)
     got = _tran_branch_c.screen(t, C)
@@ -82,6 +86,93 @@ def test_the_screen_is_the_python_one_bit_for_bit(data, n, cmax):
         assert got[0] == py[0]
         assert float(got[1]).hex() == float(py[1]).hex()
         assert float(got[2]).hex() == float(py[2]).hex()
+
+
+def _packed_of(C, mask):
+    """`C` on the pattern `mask` as a `_packed.PatternMatrix` (its values in
+    the pattern's own order)."""
+    from pycircuit.circuit import _packed
+    rows, cols = np.nonzero(mask)
+    pt = _packed.Pattern(C.shape[0], rows.astype(np.int64), cols.astype(np.int64))
+    return _packed.PatternMatrix(pt, C[pt.rows, pt.cols].copy())
+
+
+def _same(got, py):
+    assert got is not None
+    assert got[0] == py[0]
+    assert float(got[1]).hex() == float(py[1]).hex()
+    assert float(got[2]).hex() == float(py[2]).hex()
+
+
+@settings(deadline=None)
+@given(data=st.data(), n=st.integers(1, 8), cmax=_cmax)
+def test_past_dense_max_the_screen_without_the_reference_is_the_python_one(data, n, cmax):
+    """Past `_packed.DENSE_MAX` (here from one unknown) on the packed C, a
+    reference node drawn (`irefnode`): its diagonal out of the scale and of
+    the diagonal's tests on both sides (`_tran_branch._off_reference`,
+    branch.h's `iref1`) -- the same verdict, |C|'s largest entry and running
+    maximum (where the C serves: the packed sets hand a fired cheap level
+    back); a dense C there, and the packed C below DENSE_MAX, leave nothing
+    out, the same as without a reference."""
+    from pycircuit.circuit import _packed
+    mask = np.array(data.draw(st.lists(st.booleans(), min_size=n * n, max_size=n * n)))
+    mask = mask.reshape(n, n) | np.eye(n, dtype=bool)
+    vals = np.array(data.draw(st.lists(_entry, min_size=n * n, max_size=n * n))).reshape(n, n)
+    g = data.draw(st.integers(0, n - 1))
+    C = np.where(mask, vals, 0.0)
+    pm = _packed_of(C, mask)
+    pat = np.flatnonzero(mask).astype(np.int64)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_packed, 'DENSE_MAX', 1)
+        py = _python(pm, cmax, g)
+        got = _c(pm, cmax, g=g)
+        if not (got is None and py[0] == _SVD):
+            _same(got, py)
+        ## (a dense C past DENSE_MAX: nothing left out)
+        dense = _python(C, cmax, g)
+        assert dense[0] == _python(C, cmax)[0] and float(dense[1]).hex() == float(_python(C, cmax)[1]).hex()
+        _same(_c(C, cmax, g=g), dense)
+        _same(_c(C, cmax, pat, g=g), dense)
+    ## (below DENSE_MAX: nothing left out, packed or dense)
+    below = _python(pm, cmax, g)
+    plain = _python(pm, cmax)
+    assert below[0] == plain[0] and float(below[1]).hex() == float(plain[1]).hex()
+    got = _c(pm, cmax, g=g)
+    if not (got is None and below[0] == _SVD):
+        _same(got, below)
+
+
+def test_past_dense_max_the_reference_diagonal_is_out_of_the_scale(monkeypatch):
+    """The reference's diagonal the largest entry by far (a grid's: every
+    capacitance to ground summed) and a capacitor under 1e-6 of it but not
+    of the rest: past DENSE_MAX, packed, quiet at the cheap level with |C|'s
+    largest entry the rest's, on both sides; below it, or without a
+    reference, the cheap level fires on it (the packed sets handing the SVD
+    back), as it did."""
+    from pycircuit.circuit import _packed
+    n, g = 6, 2
+    C = np.diag([1e-12, 2e-12, 0.0, 1e-12, 1e-12, 3e-17])
+    C[g, g] = 5e-11
+    pm = _packed_of(C, np.ones((n, n), dtype=bool))
+    assert _python(pm, None, g)[0] == _SVD and _c(pm, None, g=g) is None
+    monkeypatch.setattr(_packed, 'DENSE_MAX', 1)
+    assert _python(pm, None, g) == ((False, None), 2e-12, 2e-12)
+    assert _c(pm, None, g=g) == ((False, None), 2e-12, 2e-12)
+    assert _python(pm, None)[0] == _SVD and _c(pm, None) is None
+    assert _python(C, None, g)[0] == _SVD and _c(C, None, g=g)[0] == _SVD
+    ## (branch.c's own guards: an index past n, or a C not packed, leaves
+    ## nothing out)
+    assert _c(pm, None, g=g) is not None
+    drv = _tran_branch_c.driver()
+    s, cfn = drv[2], drv[1]
+    assert s.sets == 1 and s.iref1 == g + 1
+    for iref1, sets in ((n + 1, 1), (g + 1, 0)):
+        s.iref1, s.sets, s.cmax = iref1, sets, 0.0
+        if not sets:
+            s.npat = 0
+            buf = np.ascontiguousarray(C)
+            s.C = drv[0].from_buffer('double *', buf)
+        assert cfn(s) == _tran_branch_c.SVD and s.nrm == 5e-11, (iref1, sets, s.nrm)
 
 
 def test_a_non_finite_entry_hands_the_screen_back():
