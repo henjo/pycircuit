@@ -1,6 +1,7 @@
 """Steps around a breakpoint (`_SteppingLoop._corner_size`): LANDING AHEAD
 (`Transient.land_ahead`) and THE CORNER'S START (`Transient.corner_cut`), in
 the Python and in the C loop (loop.c `corner_size`)."""
+import collections
 import re
 import types
 
@@ -95,6 +96,43 @@ def _reached(build, monkeypatch, make=None, **kw):
     return seen
 
 
+def _entries(mp):
+    """THE C LOOP'S ENTRIES over a run, for the message where it served
+    none: `_tran_loop_c.attach` and `.run` wrapped -- what `attach` gave the
+    stepping loop, and at each entry which of `run`'s uncounted returns
+    held (switched off, the entries spaced out, watching off, a kept
+    decline, the C Newton's or the C error test's last call not served
+    since the watch counter moved) and what the entry returned.  A decline
+    is a `loop_c:` count; these returns are not, so a run one of them kept
+    out says nothing else.  (The labels restate `run`'s gate; the run
+    itself is the real one's.)"""
+    seen = collections.Counter()
+    L = _tran_loop_c
+    attach, run = L.attach, L.run
+
+    def attached(loop):
+        got = attach(loop)
+        seen[f'attach {type(loop.family).__name__}: '
+             f'{"a state" if got is not None else "None"}'] += 1
+        return got
+
+    def entered(loop):
+        now, c, tr = L._watch.now(), loop.c, loop.tr
+        rec = tr.__dict__.get('_newton_c')
+        ctrl = tr.step_controller
+        lte = ctrl.__dict__.get('_lte_c') if ctrl is not None else None
+        held = [why for why, on in (
+            ('off', not L.ENABLED), ('spaced', bool(c.skip)), ('watching off', now == -1),
+            ('kept', c.kept == now), ('newton not served', rec is None or rec.served != now),
+            ('lte not served', lte is None or lte.served != now)) if on]
+        got = run(loop)
+        seen[f'entry {" + ".join(held) or "open"}: {bool(got)}'] += 1
+        return got
+    mp.setattr(L, 'attach', attached)
+    mp.setattr(L, 'run', entered)
+    return seen
+
+
 @pytest.mark.parametrize('name, build, kw', [
     ('trains', _trains, {'tend': 4e-8, 'timestep': 1e-10}),
     ('pulse', _pulsed, {'tend': 6e-8, 'timestep': 1e-9}),
@@ -111,11 +149,20 @@ def test_the_c_loop_sizes_corners_as_the_python(name, build, kw, monkeypatch):
         _same(build, monkeypatch, steps_min=10, fixed_timestep=False, **kw)
         return
     assert seen['stretch'] > 0, seen
-    a, ca = _run(build, True, monkeypatch, fixed_timestep=False, **kw)
+    with monkeypatch.context() as mp:
+        entries = _entries(mp)
+        a, ca = _run(build, True, monkeypatch, fixed_timestep=False, **kw)
+        watching = _tran_loop_c._watch.STATUS
     b, _cb = _run(build, False, monkeypatch, fixed_timestep=False, **kw)
     for k in ('x', 't', 'stats', 'warnings', 'state'):
         assert a[k] == b[k], k
-    assert ca.get('loop_c:steps', 0) >= 100, ca
+    ## (the message a string, whole: a dict's repr pytest cuts short, and
+    ## the C loop kept out by an uncounted return names it only here)
+    assert ca.get('loop_c:steps', 0) >= 100, (
+        f"the C loop served {ca.get('loop_c:steps', 0)} steps; watching {watching}; "
+        f"entries {dict(entries)}; counts {dict(sorted(ca.items()))}")
+    ## (and served through the wrapped entry: the message reads the run's path)
+    assert entries['entry open: True'] >= 1, dict(entries)
 
 
 @pytest.mark.parametrize('loop', ['stage', 'transform'])
