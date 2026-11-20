@@ -6317,3 +6317,17 @@ million spare ones on ibmpg6t, 170 MB -- and its map from names to nodes
 pointed at the last bank's copy rather than the circuit's own.  A bank now
 takes the circuit's node for a name it already holds.  The circuit is the
 same; the imports leave 13-158 MB less behind, and the runs peak 1-2 % lower.
+
+## D1: the DC's order choice does not factor an order that cannot win (2026-11-20)
+
+2026-11-20 (`doc/hdl_roadmap_260824.md`, 339; plan 261 L21).  Before a large
+DC, the solver picks the order in which to eliminate unknowns by trying the
+candidates on made-up values and keeping the one that fills the factor
+least.  On the IBM power grid ibmpg4t the default order would fill 180
+million entries, and trying it took more than half of the DC's two minutes,
+only for a nested dissection (87 million) to win.  But the default order's
+own estimate of its fill is exact on these trial values unless zero entries
+mislead it, and then it only underestimates.  So the dissection is now tried
+first, and the default order is not tried where its estimate already loses.
+The same order is kept on every grid, so the answers are the same to the
+last bit, and ibmpg4t's DC takes 56 seconds instead of 120, and a quarter less memory at its peak.

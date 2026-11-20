@@ -16807,3 +16807,36 @@ every record before the banks.)
 one, a second bank sharing them -- every bank node the list's object and `nodenames`'; ground given as a `Node` kept; a global
 name after an element holds it, its own global `Node`).  Two bites, two bit: a `Node` made per name, a global name reusing
 the held one.  Suite 6 818 passed, 10 skipped, 5 xfailed.  Found verifying, not changed: `test_corner_steps`' trains case failed in 2 of the first 3 suites with M3 (the C loop never entered and nothing counted, the results the Python run's; M3's change is not on its path), then passed 14 (the failing runs' own orders among them) and the base tree 5; the cause not found -- the case now names why the C loop kept out (the commit before this one).
+
+## 2026-11-20 — 339. D1: the DC's order choice does not factor an order that cannot win
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, D1); found in B4 (sec. 334: ibmpg4t's DC 121 s against 5t's 35 s and 6t's 48 s,
+untraced), Andreas "do the slow dc", then "Build D1 to that line".  Traced: of ibmpg4t's DC, 69 s of 132 was
+`_klu_order.better` factoring KLU's OWN order with the trial's values -- AMD fills 180 M entries on that grid -- only to keep
+the nested dissection (86.7 M), whose own trial followed.  The trial's values are diagonally dominant, so its pivots stay on
+the diagonal and its fill is KLU's symbolic estimate (to 0.002 % on every IBM grid) unless the order is misled by zero
+diagonals, when it fills past it (ibmpg1t: an estimate of 0.76 M, a fill of 4.03 M).  Per grid, the own trial / its fill /
+the dissection and its trial / its fill / kept: 1t 0.22 s / 4.03 M / 0.22 s / 1.48 M / the matched order (1.02 M); 2t
+0.59 / 9.04 M / 1.14 / 6.84 M / dissection; 3t 34.0 / 117.7 M / 14.4 / 65.2 M / dissection; 4t 69.2 / 180.2 M / 20.9 / 86.7
+M / dissection; 5t 5.9 / 37.5 M / 9.7 / 35.5 M / dissection; 6t 4.6 / 48.2 M / 12.9 / 47.2 M / dissection.  A prototype
+(patched in-process) kept the same order with the DC's bytes on all six: 4t 119.6 -> 55.6 s, peak 4 059 -> 3 053 MB; 3t
+78.5 -> 46.5 s.  Line (set before): (a) below ND_FROM nothing changes -- the gate against 7c25be18 SAME, the suite; (b)
+ibmpg1t-6t the same order and the DC's bytes, interleaved; (c) the DC's time 4t <= 0.55x, 3t <= 0.68x, 2t / 5t / 6t <=
+0.97x; (d) its peak 4t <= 0.80x, the others not above +3 %; (e) the dissection test asserting the skip on the 70 x 70 mesh
+and not on the 40 x 40 or layered meshes, the same order in each, bitten; (f) size >= 0.98x, ruff.
+
+**What.**  From `ND_FROM` unknowns `_klu_order.better` tries the dissection and its trial first, and where KLU's own
+estimate (`_estimate`: the symbolic's `lnz + unz`) already exceeds the dissection's fill it keeps the dissection without
+factoring KLU's order (`klu_order:own_skipped`); otherwise its steps as before, in their order of comparison (KLU's order
+factored, the matched order where it misleads, the dissection kept where it fills less).  Below `ND_FROM` nothing changes.
+If KLU's own trial then fails, the dissection made is freed and KLU's order kept, as before (the `dissection` count now
+made first).
+
+**Measured.**  (a) MET -- the gate against 7c25be18 SAME (every deck's results and path counters under dc, gear2, gear2/bypass, radau; size; C against Python 0 differing; no executable C line changed).  (b) MET -- interleaved against 7c25be18 on a quiet box: the same order kept on every grid (the dissection on 2t-6t, KLU's own order skipped; the matched order on 1t, KLU's factored as before) and the DC's bytes identical on 1t-6t, its agreement with the benchmark the same (0.0003-0.0022 mV).  (c) MET -- the DC 4t 119.6 / 119.8 -> 55.9 / 55.7 s (0.467 / 0.465x), 3t 78.5 / 78.6 -> 46.5 / 45.7 s (0.592 / 0.581x), 5t 33.5 / 33.4 -> 28.1 / 28.1 s (0.84x), 6t 46.9 / 46.5 -> 42.9 / 42.8 s (0.915 / 0.920x), 2t 3.6 -> 3.1 s (0.861x), 1t 2.3 -> 2.3 s.  (d) MET -- the DC's peak 4t 4 059 -> 3 118 / 3 089 MB (0.768 / 0.761x), 3t 3 102 -> 2 785 (0.898x), 5t 2 426 -> 2 430, 6t 3 634 -> 3 634 / 3 690 (+1.5 %), 2t 462 -> 453, 1t 693 -> 690.  (e) MET -- below.  (f) MET -- size every digest and step count the same, medians new / head 0.992-1.013 (no size case reaches ND_FROM); ruff clean, as the base.
+
+**Tests.**  `test_klu_order`'s dissection test: whether the matched order beat KLU's own and whether KLU's order was
+skipped, per case -- the skip decided by its estimate against the dissection's fill (the 70 x 70 mesh skips; the 40 x 40
+mesh's estimate is under it; the layered meshes are misled) -- and a fourth case, layered meshes at 60 x 60 (misled, the
+matched order beating KLU's own and the dissection beating it: the branch the 70 x 70 mesh took before).  Five bites, five
+bit: the skip always (40 x 40 and both layered cases), never (70 x 70), the skip keeping KLU's order (70 x 70), the estimate
+without `unz` (70 x 70, 40 x 40), the comparison after KLU's trial gone (layers 60).  Suite 6 819 passed, 10 skipped, 5 xfailed.

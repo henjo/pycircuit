@@ -208,16 +208,24 @@ def _analysed(cir):
     return sk, sym, m, mask, counts
 
 
-@pytest.mark.parametrize('build, kept', [(lambda: _mesh(70), 'dissected'), (lambda: _mesh(40), 'own'),
-                                         (lambda: _layers(30), 'reordered')],
-                         ids=['mesh70', 'mesh40', 'layers30'])
-def test_from_its_size_a_dissection_is_tried_and_the_least_fill_kept(build, kept, monkeypatch):
+@pytest.mark.parametrize('build, kept, matched, skipped', [
+    (lambda: _mesh(70), 'dissected', False, True), (lambda: _mesh(40), 'own', False, False),
+    (lambda: _layers(30), 'reordered', True, False), (lambda: _layers(60), 'dissected', True, False)],
+    ids=['mesh70', 'mesh40', 'layers30', 'layers60'])
+def test_from_its_size_a_dissection_is_tried_and_the_least_fill_kept(build, kept, matched, skipped,
+                                                                     monkeypatch):
     """From `ND_FROM` unknowns (lowered here) a nested dissection of A + A' is
     tried -- the stamped places made whatever the branch share -- and the
     order kept is the one whose trial fills least: on a 70 x 70 mesh the
     dissection (AMD fills past it), on a 40 x 40 one KLU's own, on layered
     meshes joined by 0 V vias the matched order (it beats the dissection
-    there, as on the IBM grid ibmpg1t); the same order every time."""
+    there, as on the IBM grid ibmpg1t) -- at 60 x 60 the matched order beats
+    KLU's own and the dissection beats it; the same order every time.  The
+    dissection comes first, and KLU's own order is not factored where its
+    estimate exceeds the dissection's fill (`own_skipped`): on the 70 x 70
+    mesh; on the 40 x 40 one its estimate is under the dissection's fill,
+    and on the layered meshes it is misled -- an estimate far under what it
+    fills."""
     off = _offsets()
     if _klu_order._nd_fn() is None:
         pytest.skip('no CHOLMOD header: no dissection tried')
@@ -236,7 +244,10 @@ def test_from_its_size_a_dissection_is_tried_and_the_least_fill_kept(build, kept
             _klu_order._free(plain, extra)
     assert _klu_order._trial(sk, sym, off, mask)[1] == fills[kept]
     assert (kept == 'dissected') is ('klu_order:dissected' in counts), counts
-    assert (kept == 'reordered') is ('klu_order:reordered' in counts), counts
+    assert matched is ('klu_order:reordered' in counts), counts
+    ## (the skip decided by KLU's own estimate against the dissection's fill)
+    assert (_klu_order._estimate(psym, off) > fills['dissected']) is skipped
+    assert ('klu_order:own_skipped' in counts) is skipped, counts
     ## (the second solver kept alive: its symbolic is freed with it)
     sk2, again = _analysed(build())[:2]
     for key in ('s_P', 's_Q'):

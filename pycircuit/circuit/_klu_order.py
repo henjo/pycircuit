@@ -45,10 +45,22 @@ KLU's order, 6.83 M and 231 ms on the dissection; ibmpg1t's matched order
 (1.02 M) stays.  At that size the mask of stamped places is made whatever the
 branch share (`analysis.stamped_places`).
 
+THE DISSECTION FIRST, AND KLU'S OWN ORDER FACTORED ONLY WHERE IT COULD WIN.
+The trial's values are diagonally dominant, so its pivots stay on the
+diagonal and its fill IS KLU's symbolic estimate (`lnz + unz`) -- unless the
+order is misled by zero diagonals, when it fills past it.  So from `ND_FROM`
+the dissection and its trial come first, and where KLU's own estimate
+already exceeds the dissection's fill, the dissection is kept without
+factoring KLU's order (`own_skipped`); else the steps above, in their order.
+Measured on the IBM grids, the same order kept on each: ibmpg4t's AMD order
+fills 180 M entries (its trial 64 s) against the dissection's 86.7 M -- the
+DC 120 s -> 56 s, its peak 4.06 -> 3.05 GB; ibmpg3t 78 -> 47 s; ibmpg1t,
+misled (an estimate of 0.76 M, a fill of 4.03 M), still factored.
+
 `_paths` prefix `klu_order:`: `trial`, `reordered`, `kept_own` (the matched
 order filled no less), `unread` (the offsets not had), `no_matching`,
 `failed` (the trial's factor); `dissection` (tried), `dissected` (kept),
-`no_cholmod`."""
+`own_skipped` (kept without KLU's order factored), `no_cholmod`."""
 import ctypes
 
 import numpy as np
@@ -313,6 +325,14 @@ def trial_values(m, rows, cols, stamped):
     return v
 
 
+def _estimate(sym, off):
+    """KLU's estimate of the entries in L and U on the symbolic `sym` (its
+    `lnz + unz`; -2 for an order given to `klu_analyze_given`, which makes
+    none)."""
+    return (ctypes.c_double.from_address(sym + off['s_lnz']).value
+            + ctypes.c_double.from_address(sym + off['s_unz']).value)
+
+
 def _trial(sk, sym, off, stamped):
     """The trial's factor of the symbolic `sym`: `(reallocations, entries
     in L and U, KLU's estimate of them)`, or None where the factor failed."""
@@ -330,8 +350,7 @@ def _trial(sk, sym, off, stamped):
         realloc = ctypes.c_int32.from_buffer(com, off['c_nrealloc']).value
         fill = (_int(num + off['n_lnz'], off['n_lnz_size'])
                 + _int(num + off['n_unz'], off['n_lnz_size']))
-        est = (ctypes.c_double.from_address(sym + off['s_lnz']).value
-               + ctypes.c_double.from_address(sym + off['s_unz']).value)
+        est = _estimate(sym, off)
     finally:
         lib.klu_free_numeric(ct.byref(ct.c_void_p(num)), ct.byref(com))
     return realloc, fill, est
@@ -391,8 +410,9 @@ def better(sk, sym, stamped):
     """The symbolic `sk` should keep in place of KLU's own `sym` -- the
     matched order's, where the trial says `sym` misleads KLU; from `ND_FROM`
     unknowns a nested dissection's, where it fills less than the order kept
-    -- or None: keep `sym`.  `stamped`: per entry of `sk`'s pattern, whether
-    an element stamps it."""
+    (tried first, and kept without factoring `sym` where `sym`'s estimate
+    already exceeds its fill) -- or None: keep `sym`.  `stamped`: per entry
+    of `sk`'s pattern, whether an element stamps it."""
     if stamped is None or len(stamped) != sk.nnz:
         return None
     off = _offsets()
@@ -401,9 +421,23 @@ def better(sk, sym, stamped):
         return None
     _PC['klu_order:trial'] += 1
     stamped = np.asarray(stamped, dtype=bool)
+    ## (from `ND_FROM` the dissection first: KLU's own order is not factored
+    ## where its estimate -- what its trial fills unless misled, and past it
+    ## where misled -- already exceeds the dissection's fill)
+    nd = nd_trial = None
+    if sk.m >= ND_FROM:
+        _PC['klu_order:dissection'] += 1
+        nd = dissected(sk)
+        nd_trial = _trial(sk, nd, off, stamped) if nd is not None else None
+        if nd_trial is not None and _estimate(sym, off) > nd_trial[1]:
+            _PC['klu_order:own_skipped'] += 1
+            _PC['klu_order:dissected'] += 1
+            return nd
     own = _trial(sk, sym, off, stamped)
     if own is None:
         _PC['klu_order:failed'] += 1
+        if nd is not None:
+            _free(sk, nd)
         return None
     realloc, fill, est = own
     got = None
@@ -418,16 +452,13 @@ def better(sk, sym, stamped):
         elif got is not None:
             fill = mine[1]
             _PC['klu_order:reordered'] += 1
-    if sk.m >= ND_FROM:
-        _PC['klu_order:dissection'] += 1
-        nd = dissected(sk)
-        mine = _trial(sk, nd, off, stamped) if nd is not None else None
-        if nd is not None and mine is not None and mine[1] < fill:
+    if nd is not None:
+        if nd_trial is not None and nd_trial[1] < fill:
             if got is not None:
                 _free(sk, got)
             got = nd
             _PC['klu_order:dissected'] += 1
-        elif nd is not None:
+        else:
             _free(sk, nd)
     return got
 
