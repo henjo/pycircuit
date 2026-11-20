@@ -126,6 +126,62 @@ def test_an_edge_inside_the_bound_is_left_to_the_dense_passes():
     assert _blocks_bounded(D, 2.5, (2.1, 2.2), (2.6, 2.7), nz) == 2
 
 
+def _run_rank(monkeypatch, tol_rel, dense_max):
+    """`_coupled`'s run on THE PACKED LAYOUT at `BRANCH_SCREEN_TOL` `tol_rel`
+    and `_packed.DENSE_MAX` `dense_max`: `(r0, the branch.rank counts, the
+    check's own warnings, its error)`."""
+    from pycircuit.circuit import _packed
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    monkeypatch.setattr(_packed, 'DENSE_MAX', dense_max)
+    before = _paths.snapshot()
+    with warnings.catch_warnings(record=True) as W:
+        warnings.simplefilter('always')
+        tr = Transient(_coupled(), toolkit=circuit.numeric)
+        tr.BRANCH_SCREEN_TOL = tol_rel
+        if dense_max <= tr.BRANCH_CERT_MAX_N:
+            ## (as at size: the certificate's data are dense, kept below
+            ## BRANCH_CERT_MAX_N, itself below DENSE_MAX)
+            tr.BRANCH_CERT_MAX_N = 0
+        tr.solve(tend=5e-10, timestep=1e-10, fixed_timestep=True)
+    counts = {k: v for k, v in _paths.since(before).items() if k.startswith('branch.rank')}
+    off = [str(w.message) for w in W if 'branch check' in str(w.message)]
+    ## (no rank where the check switched itself off: the warning says why)
+    return tr.__dict__.get('_branch_rank0', (None,))[0], counts, off, getattr(tr, '_branch_error', None)
+
+
+def test_past_dense_max_the_count_holds_no_whole_matrix_margin(monkeypatch):
+    """Past `_packed.DENSE_MAX` (here from one unknown) no dense SVD is made,
+    so the count holds no margin for one (`_no_dense_svd`): at a tolerance
+    the margin `8 n eps ||C||` passes (1e-15 of the largest entry at 17
+    unknowns -- as at 563 000 unknowns and the default tolerance) the count
+    is the blocks', the check on, r0 the dense SVD's; below DENSE_MAX the
+    dense passes decide it as before.  And the reduction's band stays: at a
+    tolerance between a reduced singular value and the full matrix's (the
+    reference's row joins them), the full matrix's count."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(_coupled(), toolkit=circuit.numeric)
+    Cd = np.asarray(tr._C_fresh(np.zeros(tr.cir.n)), dtype=float)
+    scale = float(np.abs(Cd).max())
+    full = np.linalg.svd(Cd, compute_uv=False)
+    g = tr.irefnode
+    keep = np.r_[0:g, g + 1:Cd.shape[0]]
+    reduced = np.linalg.svd(Cd[np.ix_(keep, keep)], compute_uv=False)
+    tiny = 1e-15
+    assert 8 * Cd.shape[0] * np.finfo(float).eps * np.linalg.norm(Cd) > tiny * scale
+    want = int((full > tiny * scale).sum())
+    r0, counts, off, err = _run_rank(monkeypatch, tiny, 1 << 14)
+    assert (r0, counts.get('branch.rank:dense'), off, err) == (want, 3, [], None), (r0, counts, off, err)
+    r0, counts, off, err = _run_rank(monkeypatch, tiny, 1)
+    assert (r0, counts.get('branch.rank:bounded'), off, err) == (want, 3, [], None), (r0, counts, off, err)
+    ## (the band: 1e-2 of the largest entry lies between the reduced and the
+    ## full matrices' second singular values)
+    tol = 1e-2 * scale
+    assert int((full > tol).sum()) == 2 and int((reduced > tol).sum()) == 1
+    r0, counts, off, err = _run_rank(monkeypatch, 1e-2, 1)
+    assert (r0, counts.get('branch.rank:bounded'), off, err) == (2, 3, [], None), (r0, counts, off, err)
+
+
 def test_an_undecided_state_is_the_dense_passes(monkeypatch):
     """Every state's edge inside the bound (`_rank_bounded` undecided): the
     dense passes decide, counted, the same rank."""

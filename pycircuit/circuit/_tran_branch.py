@@ -435,6 +435,12 @@ def _sums_norm_range(idx, vals, n):
 UNDECIDED = object()
 
 
+def _no_dense_svd(C):
+    """`C` a `_packed.PatternMatrix` of `_packed.DENSE_MAX` unknowns or more:
+    no dense copy of it is made (`to_dense` refuses), so no dense SVD."""
+    return type(C) is _packed.PatternMatrix and C.pat.n >= _packed.DENSE_MAX
+
+
 def _blocks_bounded(C, tol, lo, hi, nz, keep=None):
     """`_rank_by_blocks` with a band whose ends are known to lie in `lo` and
     `hi` (each a `(min, max)`): its answer for every such band, or
@@ -463,12 +469,24 @@ def _rank_bounded(C, tol, nz, g, m):
     monotone in them as the floats round: `delta + eps < tol`, and the
     bands' ends, `_blocks_bounded`'s.  At size the dense passes were the
     check's cost: the IBM power grid's (54 266 unknowns) three states'
-    5.8 s, a first touch of the n^2 array's pages ~3 s of it."""
+    5.8 s, a first touch of the n^2 array's pages ~3 s of it.
+
+    ⚠ NO ROUNDING MARGIN WHERE NO DENSE SVD IS MADE (`_no_dense_svd`): `eps`
+    is the margin within which a dense SVD of the whole `C` could count
+    otherwise, and past `_packed.DENSE_MAX` none is made -- `to_dense`
+    refuses, and the screen there counts by blocks with no margin
+    (`_svd_by_blocks`) -- so `eps` is 0 there: the blocks' count is the
+    count, the reduction's `delta` and its band as below.  The margin
+    passes the tolerance, `BRANCH_SCREEN_TOL * max|C|`, from at most
+    1e-9 / (8 eps_mach) = 563 000 unknowns on any circuit (||C|| >= max|C|):
+    its band then reaches below zero and holds every zero singular value,
+    undecided by construction (ibmpg3t: `eps` 1.28e-15, `tol` 6.92e-16).
+    History: `doc/transient_history.md`, `_tran_branch._rank_bounded`."""
     rows, cols, vals = nz
     nrm = _norm_range(vals)
     if nrm is None:
         return UNDECIDED
-    c = 8 * C.shape[0] * np.finfo(float).eps
+    c = 0.0 if _no_dense_svd(C) else 8 * C.shape[0] * np.finfo(float).eps
     eps = (c * nrm[0], c * nrm[1])
     r = None
     if g is not None and 0 <= g < m <= C.shape[0]:
@@ -915,7 +933,7 @@ class _BranchCheck:
         `SCREEN_BLOCK_MAX` or more raises, the check off as the caller
         says)."""
         tol = self.BRANCH_SCREEN_TOL * ref
-        if type(C) is _packed.PatternMatrix and C.pat.n >= _packed.DENSE_MAX:
+        if _no_dense_svd(C):
             got = _svd_by_blocks(C, tol)
             if got is None:
                 raise MemoryError(f'the screen: a component of {SCREEN_BLOCK_MAX} unknowns or more')

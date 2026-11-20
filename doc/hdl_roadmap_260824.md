@@ -16928,3 +16928,62 @@ check, said once.  The band guards agreement with the dense SVD's rounding, whic
 block past it is the evident change, not sized.  (2) ibmpg1t, read per element (76 940 lines), peaks at 2.2 GB in its run,
 against 2t's 1.15 GB banked at six times the unknowns: not traced.  (3) CH, an explicit CHOLMOD thread setting, was sized
 before this census and refused (sec. 335's note).
+
+## 2026-11-20 — 342. BM: the branch check's count past DENSE_MAX holds no whole-matrix margin
+
+**Why**  Plan 261 L22 (tc/plan_l22_branch_margin.md, BM); found in the L21 census (sec. 341: the branch check switched
+itself off on ibmpg3t-6t), Andreas "push the the branch-check margin", then "Build it".  `_branch_structural_rank` counts
+`rank C` at three generic states; on THE PACKED LAYOUT it first decides on the nonzeros (`_rank_bounded`), taking the count by blocks only where no singular value lies within the band that would let a dense SVD of
+the whole C count otherwise -- the reduction's `delta` and the rounding margin `eps = 8 n eps_mach ||C||`.  As ||C|| >=
+max|C|, `eps` passes the tolerance `BRANCH_SCREEN_TOL * max|C|` from at most 1e-9 / (8 eps_mach) = 563 000 unknowns on any
+circuit: the band reaches below zero and holds every zero singular value, so the count is undecided by construction and
+the dense pass after it refuses its copy past DENSE_MAX -- the check off for the run with its warning (ibmpg3t: `eps`
+1.28e-15 against `tol` 6.92e-16).  The margin is there to agree with a dense SVD that past DENSE_MAX is never made (the
+screen there counts by blocks with no margin, `_svd_by_blocks`).  Sized on a prototype patched in the process (1 ns from
+D1's operating points): the check on through the run on 3t-6t, every step and printed node the same, 1.0-2.7 % slower --
+the check's own cost (a setup of ~0.4 s, and the C loop's cheap screen on every attempt, ~15 ms on 3t), which today's runs
+skipped because the check was off.  Line (set before): (a) below DENSE_MAX nothing changes -- the gate against 08fc7322
+SAME, the suite; (b) 3t-6t 1 ns: the check on (no warning, `branch.rank:bounded` 3, screens 0, points 0), r0 189 953 /
+258 784 / 473 477 / 696 691, the steps and printed nodes' digests today's; (c) on 1t and 2t, where today's bound decides,
+r0 today's, and an independent count on 3t, no singular value in the band; (d) 3t and 6t interleaved: time <= 1.03x, peak
+<= +50 MB; (e) a test, bitten; (f) size >= 0.98x, ruff.
+
+**What.**  `_tran_branch._no_dense_svd(C)`: C a `_packed.PatternMatrix` of `_packed.DENSE_MAX` unknowns or more, of which
+no dense copy is made.  `_rank_bounded` holds no rounding margin there (`eps` 0): the blocks' count is the count, the
+reduction's `delta` and its band as before, and an undecided reduction falls to the full C by blocks, as before.
+`_branch_svd`'s test past DENSE_MAX is the same function.
+
+**Measured.**  (a) MET -- the gate against 08fc7322 SAME (every deck's results and path counters under dc, gear2,
+gear2/bypass, radau; size; C against Python 0 differing; no executable C line changed).  (b) MET -- 1 ns from D1's
+operating points (3t read with merge off, as they were made; 4t-6t merged), tree / base: the check on in every tree run, r0
+as the line, `branch.rank:bounded` 3, screens 0, points 0, no warning (the base: `branch.rank:dense` 1 and the check off);
+steps 140 / 2 / 248, 110 / 0 / 110, 140 / 2 / 260, 140 / 2 / 234 and the 20 printed nodes' digests the base's on 3t / 4t /
+5t / 6t.  (c) MET -- 1t r0 9 045 and 2t 37 002 the base's (each decided on the bounds both ways), the steps and digests
+the same; 3t counted apart (scratch l22/bm/indep.py: the C the check read at its first state, the reference's row and
+column out, scipy's connected components -- 954 973, the largest of 2 -- each component's SVD by numpy): 189 953, the
+run's r0; no singular value in the reduction's band (6.6e-22, 6.9e-16], the nearest 3.7 decades from its ends.  (d) MET
+-- each run on a quiet box after an untimed warm-up, two interleaved pairs: 3t 175.91 / 176.41 s against 174.13 / 175.57 s
+(1.010 / 1.005x), 6t 223.17 / 220.45 s against 219.26 / 220.24 s (1.018 / 1.001x); peaks 4 623 / 4 624 against 4 628 MB
+and 7 016 / 7 018 against 6 983 MB (+35 MB); one pair each on 4t 88.6 / 86.9 s, 5t 150.6 / 149.0 s.  (e) MET -- below,
+with one case changed from the line's: the line's second case -- a tolerance on a capacitor's value, the check off with
+its warning -- cannot occur on a small circuit, as an undecided reduction falls to the full C by blocks, which with no
+margin decides; the case kept pins the reduction's band instead.  (f) MET -- size every digest and step count the same,
+medians new / head 0.976-1.018 but dc chain 4000 1.029 (0.35 s against 0.34 s, one 10 ms tick), re-run six pairs on a
+quiet box: median 0.986 (no size case reaches DENSE_MAX, and no DC reads the branch check); ruff the base's.
+
+**Tests.**  `test_branch_rank_bounded` +1 (`test_past_dense_max_the_count_holds_no_whole_matrix_margin`, `_coupled`'s
+run on THE PACKED LAYOUT): at a tolerance the margin passes (1e-15 of the largest entry at 17 unknowns) the dense passes
+decide below DENSE_MAX (`branch.rank:dense` 3) and the blocks at DENSE_MAX 1 (`branch.rank:bounded` 3), the check on, r0
+numpy's SVD count of C both ways; at 1e-2 of it, between the reduced matrix's second singular value and the full one's
+(the full counting 2, the reduced 1), r0 2 -- the full matrix's.  At DENSE_MAX 1 the certificate is off (its data are
+dense below BRANCH_CERT_MAX_N, itself below DENSE_MAX at the defaults).  Three bites, three bit: the margin kept past
+DENSE_MAX (the check off with "no dense copy", the grids' failure), the margin dropped below it (bounded where the dense
+passes decide), the band dropped (r0 1).  Suite 6 821 passed, 10 skipped, 5 xfailed.
+
+**Found, not changed:** (1) C's largest entry on the power grids is the reference node's diagonal -- the sum of every
+capacitor to ground (3t 6.92e-7; 1e-9 without the reference) -- so the screen's tolerance and its cheap level (`1e-6 *
+ref`) grow with the grid: on 3t the smallest capacitor (3.5e-12) sits 5x above the cheap level's 6.9e-13; a larger grid
+would fire it, and the screen's SVD by blocks of the full C then meets one component through the reference and switches
+the check off.  (2) The C loop screens a constant C on every attempt where the Python keeps a constant C's verdict
+(`_branch_const`): ~15 ms an attempt at a million unknowns, now paid on 3t-6t.  (3) `Transient.solve` given an `x0` of
+the wrong length (a merge-off operating point on a merged import) did not refuse it and ended in a dense n x n allocation.

@@ -6342,3 +6342,23 @@ element by element held several objects per node -- 1.2 million for the
 pointed at whichever element came last.  Every element and bank now takes
 the circuit's own node for a name it already holds.  The circuit and its
 answers are the same; a per-element circuit takes 2-4 % less memory.
+
+## BM: the branch check's count past DENSE_MAX holds no whole-matrix margin (2026-11-20)
+
+### `_tran_branch._rank_bounded`, `_tran_branch._no_dense_svd`
+
+2026-11-20 (`doc/hdl_roadmap_260824.md`, 342; plan 261 L22).  The transient's
+branch check (on by default) first counts the rank of the capacitance
+matrix at a few made-up states, and accepts the count it makes block by
+block only where no value lies close enough to its tolerance that a dense
+SVD of the whole matrix could count otherwise.  That margin grows with the
+circuit -- 8 n eps times the matrix's norm -- and from at most 563 000
+unknowns it is larger than the tolerance itself, so its band reaches below
+zero and every zero singular value falls inside it: the count could never
+be accepted, the dense SVD it falls back to refuses a matrix of that size,
+and the check switched itself off at the first step of ibmpg3t to 6t
+(found by the L21 census, sec. 341).  Past the size where no dense copy is
+ever made, the margin had nothing to agree with -- the screen there already
+counts by blocks with none -- so it is 0 there; the reduction's own band
+stays.  The check stays on through those runs, the answers the same to the
+last bit, at the check's ordinary cost (1-3 % of the run on these grids).
