@@ -16698,7 +16698,11 @@ the transient inside a caller's hold), the added limits not restored, a hold not
 forgotten (B4's test), the variable not set, the variable not removed.  Suite 6 812 passed, 10 skipped, 5 xfailed (6 811 with the hold alone).
 
 **Found, not changed:** eight BLAS threads make CHOLMOD's refactor on ibmpg3t 1.23x faster (the 1 ns run 1.055x) at the price of
-bits tied to the thread count; a setting for it is not built.  scipy's own OpenBLAS libraries start at the cores' count when the
+bits tied to the thread count; a setting for it is not built.  Sized in runs on 2026-11-20 (plan
+CH, Andreas "size Cholmod"; refused, Andreas "Follow your recommendation"): CHOLMOD's factor on 3t's reduction, its library alone
+raised in one process, at best 1.17x at six threads (1.033 s -> 0.881 s; 0.892 s at eight); in a run (ibmpg3t-6t's 1 ns from D1's
+operating points, CHOLMOD's library alone raised to N in every hold, two rounds) six threads 0.95x / 0.96x / 1.04-1.06x / 0.98-0.99x
+on 3t / 4t / 5t / 6t (5t SLOWER), four threads 0.94-1.03x, the same steps on every grid, each count its own bytes (to 3.1e-14 V).  scipy's own OpenBLAS libraries start at the cores' count when the
 variable is unset (numpy loads them) and are held at one in every analysis; what that costs a run is not measured apart (the
 1 ns 1.007-1.010x with CHOLMOD's alone started at one).
 
@@ -16872,3 +16876,55 @@ one; a terminal aliased by `connect_terminals` making its own); `test_bulk`'s ba
 the list's object and `nodenames`' too, and an aliased terminal's name making its own.  Five bites, five bit: the lookup
 always making a new `Node` (both), no same-name check (both), no globality check (elements), elements bypassing it (both),
 banks bypassing it (banks).  Suite 6 820 passed, 10 skipped, 5 xfailed.
+
+## 2026-11-20 — 341. CL: the closing census of bulk elements -- ibmpg1t-6t's 10 ns at e97554e3
+
+**Why**  Plan 261 L21 (tc/plan_l21_bulk.md, CL), Andreas "Close L21: 10 ns census".  The arc's stages (secs. 325-340) each
+measured a grid or two at its own commit, several from stored operating points; this runs all six the way a user runs them,
+at one commit, nothing changed.  Expected before running (M1-M3, D1 and D2 changed no answer on them): B4's steps (sec. 334)
+and their distances from the benchmark, 2t B3's (sec. 333); the peaks at or below B4's sizing (5.69 / 5.37 / 8.63 GB, 3t
+7.34); the DCs D1's (sec. 339); a step count that differs a finding to trace before this record.
+
+**How.**  One process a grid (scratch p261/l19/cen/census.py): `import_netlist(strict=False, merge_shorts=True)` -- bulk by
+itself from 200 000 lines, so 1t (76 940) per element and 2t-6t banked --, the operating point `DC(cir, epar=imp.epar())`
+solved in the process, then the deck's own `.tran` (`imp.transient`) for 10 ns from it, CHOLMOD from 500 000 unknowns, the
+benchmark's 20 printed nodes kept at 10 ps; VmHWM after each phase; the DC and the waveforms against the benchmark's own
+output (the largest difference over the printed nodes, ours interpolated at its points).  Each grid started on a quiet box
+(1-min load < 1.5, AC, >= 13 GB available), OPENBLAS_NUM_THREADS=1, an 11 GB cap, one after another (15:33-17:10).
+
+| grid | n | import | DC, vs benchmark | 10 ns | steps / rejected / iterations | refactors | vs benchmark | peak: import / DC / run |
+|---|---|---|---|---|---|---|---|---|
+| ibmpg1t | 25 850 | 4.7 s | 1.3 s, 0.00042 mV | 11.8 s | 1 290 / 0 / 1 904 | 713 (KLU) | 0.0719 mV | 410 / 1 023 / 2 224 MB |
+| ibmpg2t | 164 478 | 2.7 s | 3.0 s, 0.00031 mV | 237.1 s | 1 290 / 0 / 1 899 | 711 (KLU) | 0.0560 mV | 146 / 475 / 1 153 MB |
+| ibmpg3t | 1 042 523 | 18.3 s | 44.0 s, 0.00215 mV | 1 331.8 s | 1 292 / 2 / 2 194 | 716 | 0.0490 mV | 587 / 2 757 / 4 845 MB |
+| ibmpg4t | 1 212 989 | 21.4 s | 55.2 s, 0.00049 mV | 986.9 s | 1 114 / 3 / 2 015 | 266 | 0.133 mV | 716 / 3 089 / 5 551 MB |
+| ibmpg5t | 1 014 175 | 29.8 s | 27.9 s, 0.00041 mV | 1 195.4 s | 1 292 / 2 / 2 485 | 716 | 0.0309 mV | 709 / 2 426 / 4 952 MB |
+| ibmpg6t | 1 531 589 | 49.3 s | 44.9 s, 0.0005 mV | 1 732.7 s | 1 292 / 2 / 2 326 | 716 | 0.0358 mV | 1 132 / 3 663 / 7 272 MB |
+
+**Read.**  Every step count and every distance from the benchmark the one expected.  4t, 5t and 6t's printed waveforms are
+B4's byte for byte (its saved w_new_<grid>.npz); 3t's step times B4's byte for byte and its printed nodes within 5.3e-15 V
+(B4 started 3t from B3's stored operating point, read with merge off; here `merge_shorts` merges -- 922 unknowns fewer --
+and its DC is solved in the process).  2t's steps, iterations and distance B3's banked run's, its run 243.2 s at
+1.56 GB then.  The waveforms' digests (sha256 of the printed nodes' times and values, 12 hex): b8148169f205, d23b6dc4b1ba,
+ca18f0b108fb, b74c4f60a04d, d32fdcc795e2, 0d7f384e34ed for 1t-6t.  Peaks below the line's figures on every grid; against B4's
+committed runs 5t 5 351 -> 4 952 MB and 6t 8 606 -> 7 272 MB (6t's operating point solved in the run both times: 0.845x, M1-M3),
+3t 4 767 -> 4 845 and 4t 5 480 -> 5 551 MB (+1.6 / +1.3 %), where B4 started from a stored operating point and the census
+solves it in the process (the DC's own peak 2 757 / 3 089 MB, under the run's; not traced further).  The DCs 1.3 / 3.0 / 44.0 /
+55.2 / 27.9 / 44.9 s against D1's 2.3 / 3.1 / 45.7-46.5 / 55.7-55.9 / 28.1 / 42.8-42.9 s (D1's interleaved on their own; here
+after the import in the same process).  The runs 1 332 / 987 / 1 195 / 1 733 s on 3t-6t against B4's 1 418 / 1 087 / 1 292 /
+1 850 s in two lanes at load 1.6-2.8 (not a timed comparison).  Over the arc: ibmpg3t's import 50 s at 4.3 GB (B2's flag) ->
+18.3 s at 0.59 GB, its 10 ns 79 minutes at 9 GB (K1a) -> 22 minutes at 4.8 GB; 4t-6t, which first ran their 10 ns in B4
+(6t's import alone 7.2 GB before it, its run killed at the 11 GB cap inside 0.2 ns), now in 16-29 minutes under 7.3 GB.
+
+**Found, not changed:** (1) the transient's branch check (on by default) switches itself off on 3t-6t with its warning ("the
+branch check itself failed (MemoryError('PatternMatrix: no dense copy ...'))", the solve unaffected): the structural rank's
+decision on the nonzeros (`_rank_bounded`) comes back undecided and the dense pass after it refuses its copy past DENSE_MAX.
+Traced on 3t (cen/bc/diag.py, two steps): max |C| 6.92e-7, the screen's tolerance 1e-9 times that, 6.92e-16, and the rounding
+margin `8 n eps ||C||` 1.28e-15 -- larger than the tolerance, so the band (tol - eps, tol + eps] reaches below zero and holds
+every zero singular value (a row without capacitance, a branch row): undecided by construction.  As ||C|| >= max |C|, the
+margin passes the tolerance from at most 1e-9 / (8 eps) = 563 000 unknowns on any circuit; 2t (164 478) decides on the bounds.
+On these linear grids nothing is lost (a linear step equation has one root); a nonlinear circuit of that size runs without the
+check, said once.  The band guards agreement with the dense SVD's rounding, which nobody computes past DENSE_MAX: a margin a
+block past it is the evident change, not sized.  (2) ibmpg1t, read per element (76 940 lines), peaks at 2.2 GB in its run,
+against 2t's 1.15 GB banked at six times the unknowns: not traced.  (3) CH, an explicit CHOLMOD thread setting, was sized
+before this census and refused (sec. 335's note).
