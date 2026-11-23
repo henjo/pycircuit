@@ -127,13 +127,10 @@ def _patched(tr, own):
 
 
 def ref_index(tr, n):
-    """The reference node's index where the check reads `C` without its row
-    and column -- `C` of `n` unknowns past `_packed.DENSE_MAX`, packed
-    (`_tran_branch._no_dense_svd`) -- else -1: `tr.irefnode`, checked.  The
-    Python's screen reads it here, and branch.c's fillers set its `iref1`
-    from it (+ 1; 0: none)."""
-    if n < _packed.DENSE_MAX:
-        return -1
+    """The reference node's index in `tr`'s n x n `C` (`irefnode`, checked),
+    or -1: the check reads `C` without its row and column
+    (`_tran_branch._reduced_count`).  The Python's screen reads it here, and
+    branch.c's fillers set its `iref1` from it (+ 1; 0: none)."""
     g = getattr(tr, 'irefnode', None)
     if g is None or isinstance(g, bool):
         return -1
@@ -268,8 +265,7 @@ def screen(tr, C):
             s.pat = drv[4]
         s.npat = len(pat)
     s.n = n
-    ## (a dense C: nothing left out -- the struct is the process's, so said)
-    s.iref1 = 0
+    s.iref1 = ref_index(tr, n) + 1
     s.C = ffi.from_buffer('double *', C)
     s.cmax, s.tol_rel = cmax, tol
     known, data = tr._branch_cert_kept()

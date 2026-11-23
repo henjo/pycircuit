@@ -1395,49 +1395,97 @@ def _reference_embedded(R, g, m):
     return M @ R @ M.T
 
 
-def test_the_reduced_structural_rank_is_the_full_count_or_declines():
-    """`_BranchCheck._reduced_rank` -- the rank without the reference row
-    and column, which is what lets a power grid split into blocks -- gives
-    the dense count of the FULL `C` or ``None``: never another number.  The
-    fixture that showed the danger (2026-10-07: a 1 pF capacitor to ground
-    beside 1 mH, `tol` = 1 pF; singular value 2 pF full, 1 pF reduced) and
-    planted conservative matrices with singular values put near `tol`;
-    a grid's `C` (capacitors to ground, an inductor) takes the fast path."""
-    from types import SimpleNamespace
+def test_the_structural_rank_reads_c_without_the_reference():
+    """`_tran_branch._reduced_count` -- the rank of C without the reference
+    row and column, the matrix the step solves (and what lets a power grid
+    split into blocks) -- is that matrix's dense count, not the full one's
+    where they part.  The fixture that parts them (a capacitor to ground
+    beside 1 mH, the tolerance 1 pF: 0.7 pF here, its singular value 1.4 pF
+    in the full matrix and 0.7 pF in the reduced one -- the full count was
+    the one taken until the SD change) reads 1 where the full matrix reads
+    2; a grid's C (capacitors to ground, an inductor); planted conservative
+    matrices with singular values near the tolerance."""
+    from pycircuit.circuit._tran_branch import _reduced_count
 
-    from pycircuit.circuit._tran_branch import _BranchCheck
+    def reduced(C, g, tol):
+        keep = np.r_[0:g, g + 1:C.shape[0]]
+        return int((np.linalg.svd(C[np.ix_(keep, keep)], compute_uv=False) > tol).sum())
 
-    def checker(g, m):
-        return SimpleNamespace(irefnode=g, cir=SimpleNamespace(nodes=[None] * m))
-
-    def dense(C, tol):
-        return int((np.linalg.svd(C, compute_uv=False) > tol).sum())
+    def nonzeros(C):
+        r, c = np.nonzero(C)
+        return r, c, C[r, c]
 
     C = np.zeros((5, 5))
-    C[np.ix_([0, 2], [0, 2])] = 1e-12 * np.array([[1.0, -1.0], [-1.0, 1.0]])
+    C[np.ix_([0, 2], [0, 2])] = 0.7e-12 * np.array([[1.0, -1.0], [-1.0, 1.0]])
     C[4, 4] = -1e-3
-    tol = 1e-9 * 1e-3
-    got = _BranchCheck._reduced_rank(checker(0, 3), C, tol, 0.0)
-    assert got in (None, dense(C, tol)) and dense(C, tol) == 2
+    full = int((np.linalg.svd(C, compute_uv=False) > 1e-12).sum())
+    assert _reduced_count(C, nonzeros(C), 1e-9, 0) == (1e-3, 1) and full == 2
 
     grid = _reference_embedded(np.diag(np.r_[np.full(30, 1e-14), -1e-9]), 0, 31)
-    assert _BranchCheck._reduced_rank(checker(0, 31), grid, 1e-18, 1e-30) == dense(grid, 1e-18)
+    assert _reduced_count(grid, nonzeros(grid), 1e-9, 0) == (1e-9, reduced(grid, 0, 1e-18)) \
+        and reduced(grid, 0, 1e-18) == 31
 
     rng = np.random.default_rng(20261008)
-    declined = 0
+    checked = 0
     for _ in range(300):
         n = int(rng.integers(2, 12))
         m = int(rng.integers(1, n + 1))
         g = int(rng.integers(0, m))
-        R = _planted_c(rng, n - 1)
-        C = _reference_embedded(R, g, m)
-        sv = np.linalg.svd(C, compute_uv=False)
-        for tol in (sv[sv > 0][-1] if np.any(sv > 0) else 1.0, 1e-9, 0.7):
-            eps = 8 * n * np.finfo(float).eps * float(np.linalg.norm(C))
-            got = _BranchCheck._reduced_rank(checker(g, m), C, tol, eps)
-            declined += got is None
-            assert got in (None, dense(C, tol)), (n, m, g, tol)
-    assert declined < 600                   # of 900: the fast path is not vacuous
+        C = _reference_embedded(_planted_c(rng, n - 1), g, m)
+        off = np.abs(C)
+        off[g, g] = 0.0
+        scale = float(off.max())
+        if not scale > 0.0:
+            continue
+        keep = np.r_[0:g, g + 1:n]
+        sv = np.linalg.svd(C[np.ix_(keep, keep)], compute_uv=False)
+        for tol_rel in (1e-9, 0.7, (sv[sv > 0][-1] / scale) if np.any(sv > 0) else 1.0):
+            tol = tol_rel * scale
+            if np.any(np.abs(sv - tol) <= 1e-12 * scale):
+                continue    # (within rounding of the tolerance: two SVDs part)
+            nrm, r = _reduced_count(C, nonzeros(C), tol_rel, g)
+            assert (nrm, r) == (scale, int((sv > tol).sum())), (n, m, g, tol_rel)
+            checked += 1
+    assert checked > 500                    # of 900: the comparison is not vacuous
+
+
+def test_the_screens_svd_reads_c_without_the_reference(monkeypatch):
+    """`_BranchCheck._branch_svd` -- where the cheap level fired -- counts C
+    without the reference node, as r0 is counted: on the fixture where the
+    counts part (0.7 pF to ground beside 1 mH, the tolerance 1 pF: the
+    reduced C's rank 1, the full one's 2), against r0 2 it fires -- the
+    full matrix's SVD would read quiet, missing the drop -- its direction a
+    singular vector of the reduced C's smallest singular value (under the
+    tolerance), 0 at the reference; densely below
+    `_packed.DENSE_MAX` (`branch.screen:dense`), by blocks past it
+    (`branch.screen:blocks`)."""
+    from pycircuit.circuit import _packed, _paths
+    from pycircuit.circuit._tran_branch import _BranchCheck
+
+    class _Check(_BranchCheck):
+        irefnode = 0
+
+    C = np.zeros((5, 5))
+    C[np.ix_([0, 2], [0, 2])] = 0.7e-12 * np.array([[1.0, -1.0], [-1.0, 1.0]])
+    C[4, 4] = -1e-3
+    C[1, 1] = C[3, 3] = 2e-3
+    keep = np.r_[1:5]
+    assert int((np.linalg.svd(C, compute_uv=False) > 1e-12).sum()) == 4
+    assert int((np.linalg.svd(C[np.ix_(keep, keep)], compute_uv=False) > 1e-12).sum()) == 3
+    rows, cols = np.nonzero(np.ones((5, 5)))
+    pt = _packed.Pattern(5, rows.astype(np.int64), cols.astype(np.int64))
+    pm = _packed.PatternMatrix(pt, C[pt.rows, pt.cols].copy())
+    for M, dense_max, counter in ((C, 1 << 14, 'branch.screen:dense'), (pm, 1, 'branch.screen:blocks')):
+        with monkeypatch.context() as mp:
+            mp.setattr(_packed, 'DENSE_MAX', dense_max)
+            before = _paths.snapshot()
+            fired, u = _Check()._branch_svd(M, 4, 1e-3)
+            assert _paths.since(before).get(counter, 0) == 1
+        assert fired and u[0] == 0.0 and abs(np.linalg.norm(u) - 1.0) < 1e-12
+        assert abs(np.linalg.norm(u[keep] @ C[np.ix_(keep, keep)]) - 0.7e-12) <= 1e-27
+        with monkeypatch.context() as mp:
+            mp.setattr(_packed, 'DENSE_MAX', dense_max)
+            assert _Check()._branch_svd(M, 3, 1e-3) == (False, None)
 
 
 def test_a_confirmation_leaves_the_device_bypass_as_it_found_it():

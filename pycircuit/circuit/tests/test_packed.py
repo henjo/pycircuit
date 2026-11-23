@@ -807,18 +807,22 @@ def test_the_screens_svd_by_blocks_is_the_dense_svds():
         assert B._svd_by_blocks(pm, 1.0, kmax=big + 1) is not None
 
 
-def test_the_branch_screen_past_dense_max_by_blocks(monkeypatch):
-    """Past `_packed.DENSE_MAX` -- here from any size -- with the certificate
-    off (as past `BRANCH_CERT_MAX_N`), the screen's SVD where its cheap level
-    fires is made by blocks (`_svd_by_blocks`, `branch.screen:blocks`) of C
-    without the reference node's row and column (`_reduced_count`): the run,
-    its `branch_screens` and its confirmations those of a dense SVD of the
-    same reduced C, and the check never switched off."""
+@pytest.mark.parametrize('dense_max, tol, counter', [(1, 0.5, 'branch.screen:blocks'),
+                                                     (1 << 14, 0.9, 'branch.screen:dense')],
+                         ids=['past-dense-max', 'below-dense-max'])
+def test_the_branch_screen_of_c_without_the_reference(dense_max, tol, counter, monkeypatch):
+    """With the certificate off (as past `BRANCH_CERT_MAX_N`), the screen's
+    SVD where its cheap level fires reads C without the reference node's
+    row and column (`_reduced_count`) -- past `_packed.DENSE_MAX` (here from
+    any size) by blocks (`_svd_by_blocks`), below it densely: the run, its
+    `branch_screens` and its confirmations those of numpy's dense SVD of the
+    same reduced C, and the check never switched off.  (At 0.9 the full
+    matrix's count parts from the reduced one's.)"""
     from pycircuit.circuit import _tran_branch, _tran_branch_c, _tran_loop_c
     from pycircuit.circuit.elements import VSin
     from pycircuit.circuit.tests import test_loop_c as L
     monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
-    monkeypatch.setattr(_packed, 'DENSE_MAX', 1)
+    monkeypatch.setattr(_packed, 'DENSE_MAX', dense_max)
     monkeypatch.setattr(_tran_loop_c, 'ENABLED', False)
     monkeypatch.setattr(Transient, 'BRANCH_CERT_MAX_N', 0)
 
@@ -848,18 +852,18 @@ def test_the_branch_screen_past_dense_max_by_blocks(monkeypatch):
         with warnings.catch_warnings(record=True) as W:
             warnings.simplefilter('always')
             tr = Transient(build(), toolkit=numeric)
-            tr.BRANCH_SCREEN_TOL = 0.5
+            tr.BRANCH_SCREEN_TOL = tol
             res = tr.solve(tend=80 * 2e-8, timestep=2e-8, fixed_timestep=True)
         st = tr.statistics
         off = [str(w.message) for w in W if 'branch check' in str(w.message)]
         return ((np.asarray(res.x, float).tobytes(), st.accepted_steps, st.newton_iterations,
                  getattr(st, 'branch_screens', None)), off, _paths.since(before))
-    blocks, off_b, counts_b = run(False)
-    dense, off_d, counts_d = run(True)
-    assert blocks == dense and dense[3], (dense[1:], blocks[1:])
-    assert not off_d and not off_b, (off_d, off_b)
-    assert counts_b.get('branch.screen:blocks', 0) > 0 and 'branch.screen:blocks' not in counts_d, counts_b
-    assert counts_b.get('branch.rank:reduced', 0) == 3, counts_b
+    got, off_g, counts_g = run(False)
+    oracle, off_o, counts_o = run(True)
+    assert got == oracle, (oracle[1:], got[1:])
+    assert not off_o and not off_g, (off_o, off_g)
+    assert counts_g.get(counter, 0) > 0 and counter not in counts_o, counts_g
+    assert counts_g.get('branch.rank:reduced', 0) == 3, counts_g
     assert _tran_branch.SCREEN_BLOCK_MAX > 6
 
 
@@ -878,42 +882,49 @@ def _grounded_ladder(n, small):
     return c
 
 
-@pytest.mark.parametrize('small, fires', [(1e-15, False), (1e-19, True)], ids=['quiet', 'svd'])
-def test_past_dense_max_the_check_reads_c_without_the_reference(small, fires, monkeypatch):
-    """PAST DENSE_MAX THE CHECK READS C WITHOUT THE REFERENCE NODE
-    (`_tran_branch._reduced_count`, `_off_reference`, branch.h's `iref1`):
-    2 100 nodes, each 1 pF to ground -- the reference's diagonal 2.1 nF --
-    and one capacitor `small`; packed past DENSE_MAX (forced to 1), the
-    certificate off (as past BRANCH_CERT_MAX_N), the C loop on.  1 fF: under
-    1e-6 of the reference's diagonal, not of any other entry -- quiet at the
-    cheap level on every step, no SVD, the running scale 1 pF.  1e-19 F:
-    under the cheap level's threshold either way -- its SVD by blocks of the
-    reduced C runs (components of one) and finds the rank r0.  The check on
-    in both: with the reference in, the cheap level fired on both and the
-    SVD by blocks of the full C met one component through the reference
-    (past SCREEN_BLOCK_MAX) and switched the check off."""
-    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
-    monkeypatch.setattr(_packed, 'DENSE_MAX', 1)
+@pytest.mark.parametrize('layout, n, small, fires', [
+    ('packed-past-dense-max', 2100, 1e-15, False), ('packed-past-dense-max', 2100, 1e-19, True),
+    ('dense', 600, 3e-16, False), ('dense', 600, 1e-19, True)],
+    ids=['packed-quiet', 'packed-svd', 'dense-quiet', 'dense-svd'])
+def test_the_check_reads_c_without_the_reference(layout, n, small, fires, monkeypatch):
+    """THE CHECK READS C WITHOUT THE REFERENCE NODE (`_tran_branch.
+    _reduced_count`, `_off_reference`, branch.h's `iref1`): `n` nodes, each
+    1 pF to ground -- the reference's diagonal n pF -- and one capacitor
+    `small`, the certificate off (as past BRANCH_CERT_MAX_N); packed past
+    DENSE_MAX (forced to 1, the C loop serving), or dense below it.  1 fF
+    (3e-16 F dense): under 1e-6 of the reference's diagonal, not of any
+    other entry -- quiet at the cheap level on every step, no SVD, the
+    running scale 1 pF.  1e-19 F: under the cheap level's threshold either
+    way -- its SVD of the reduced C runs and finds the rank r0.  The check
+    on in each: with the reference in, the cheap level fired on all four --
+    packed, the SVD by blocks of the full C met one component through the
+    reference (past SCREEN_BLOCK_MAX) and switched the check off; dense,
+    a dense SVD of the full C."""
+    packed = layout.startswith('packed')
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0 if packed else 1 << 30)
+    if packed:
+        monkeypatch.setattr(_packed, 'DENSE_MAX', 1)
     monkeypatch.setattr(Transient, 'BRANCH_CERT_MAX_N', 0)
     ## (a short run first: a process's first run can meet its source table's
     ## stamp moved by first-use work and leave the loop)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        Transient(_grounded_ladder(2100, small), toolkit=numeric).solve(
+        Transient(_grounded_ladder(n, small), toolkit=numeric).solve(
             tend=3e-10, timestep=1e-10, fixed_timestep=True)
     before = _paths.snapshot()
     with warnings.catch_warnings(record=True) as W:
         warnings.simplefilter('always')
-        tr = Transient(_grounded_ladder(2100, small), toolkit=numeric)
+        tr = Transient(_grounded_ladder(n, small), toolkit=numeric)
         ## (30 steps: the C loop serves from the second)
         tr.solve(tend=3e-9, timestep=1e-10, fixed_timestep=True)
     counts = _paths.since(before)
     off = [str(w.message) for w in W if 'branch check' in str(w.message)]
     assert tr.irefnode != 0
-    ## (the SVD's runs counted by `branch.screen:blocks`: a wrapped
-    ## `_branch_svd` would keep the C loop out)
-    got = (off, getattr(tr, '_branch_error', None), counts.get('branch.screen:blocks', 0) > 0,
+    ## (the SVD's runs counted by `branch.screen:blocks` / `:dense`: a
+    ## wrapped `_branch_svd` would keep the C loop out)
+    svd = counts.get('branch.screen:blocks' if packed else 'branch.screen:dense', 0)
+    got = (off, getattr(tr, '_branch_error', None), svd > 0,
            tr._branch_cmax, getattr(tr.statistics, 'branch_screens', 0), tr._branch_rank0[0])
-    assert got == ([], None, fires, 1e-12, 0, 2101), repr(got)
+    assert got == ([], None, fires, 1e-12, 0, n + 1), repr(got)
     assert counts.get('branch.rank:reduced', 0) == 3, repr(counts)
-    assert counts.get('loop_c:steps', 0) > 0 or fires, repr(counts)
+    assert not packed or fires or counts.get('loop_c:steps', 0) > 0, repr(counts)

@@ -11,7 +11,7 @@ import numpy as np
 
 from pycircuit.circuit import _tran_branch, circuit
 from pycircuit.circuit import elements_hdl as eh
-from pycircuit.circuit._tran_branch import _BranchCheck, _plan_nonzeros, _rank_by_blocks
+from pycircuit.circuit._tran_branch import _plan_nonzeros, _rank_by_blocks
 from pycircuit.circuit.elements import VS, C, L, R, SubCircuit, VPulse, gnd
 from pycircuit.circuit.transient import Transient
 
@@ -34,10 +34,6 @@ def _blocks(rng, n):
     z = rng.random((n, n)) < 0.05
     C[z & (C == 0.0)] = -0.0
     return C
-
-
-def _checker(g, m):
-    return SimpleNamespace(irefnode=g, cir=SimpleNamespace(nodes=[None] * m))
 
 
 def test_the_blocks_read_through_kept_indices_are_the_copys():
@@ -69,9 +65,13 @@ def test_the_blocks_read_through_kept_indices_are_the_copys():
     assert nones > 20
 
 
-def test_the_reduced_rank_from_the_pattern_is_the_dense_ones():
-    """`_reduced_rank` with C's nonzeros gives what it gives without them,
-    on reference-embedded matrices of every size and reference."""
+def test_the_reduced_count_is_numpys_on_the_reduced_matrix():
+    """`_reduced_count` -- C without the reference node's row and column,
+    by blocks through the kept indices, from C's nonzeros -- on
+    reference-embedded matrices of every size and reference: its scale |C|'s
+    largest entry off the reference's diagonal, its count numpy's dense SVD
+    count of the reduced matrix above `tol_rel` of that, at tolerances in
+    the blocks' spread and far from it."""
     rng = np.random.default_rng(20261106)
     for _ in range(200):
         n = int(rng.integers(2, 30))
@@ -84,10 +84,19 @@ def test_the_reduced_rank_from_the_pattern_is_the_dense_ones():
         Cm[:m, g] = -Cm[:m, :m].sum(axis=1)
         rows, cols = np.nonzero(Cm)
         nz = (rows, cols, Cm[rows, cols])
-        for tol in (1e-9, 1e-14, 0.3):
-            eps = 8 * n * np.finfo(float).eps * float(np.linalg.norm(Cm))
-            assert (_BranchCheck._reduced_rank(_checker(g, m), Cm, tol, eps, nz)
-                    == _BranchCheck._reduced_rank(_checker(g, m), Cm, tol, eps))
+        off = np.abs(Cm)
+        off[g, g] = 0.0
+        scale = float(off.max())
+        keep = np.r_[0:g, g + 1:n]
+        sv = np.linalg.svd(Cm[np.ix_(keep, keep)], compute_uv=False)
+        for tol_rel in (1e-9, 1e-14, 0.3):
+            nrm, r = _tran_branch._reduced_count(Cm, nz, tol_rel, g)
+            assert nrm == scale
+            tol = tol_rel * scale
+            ## (a singular value within rounding of the tolerance: the two
+            ## SVDs may part -- not a case the count resolves)
+            if not np.any(np.abs(sv - tol) <= 1e-12 * max(scale, 1e-300)):
+                assert r == int((sv > tol).sum()), (n, m, g, tol_rel)
 
 
 def test_the_plans_nonzeros_are_all_of_them_or_none():

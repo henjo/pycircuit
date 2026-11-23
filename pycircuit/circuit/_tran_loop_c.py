@@ -413,6 +413,8 @@ def _bind_screen(run, tr, n, screen, sets):
     bffi, bcfn, pat, cert, growth, dgesv = screen
     bs = bffi.new('branch_t *')
     bs.n, bs.npat = n, 0
+    ## (C without the reference node: branch.h's `iref1`)
+    bs.iref1 = _tran_branch_c.ref_index(tr, n) + 1
     bs.tol_rel = float(tr.BRANCH_SCREEN_TOL)
     bkeep = [bs]
     if pat is not None:
@@ -425,8 +427,6 @@ def _bind_screen(run, tr, n, screen, sets):
                                        dtype=np.int64)
             bkeep += [dpk, bffi.from_buffer('int64_t *', dpk)]
             bs.dpk, bs.sets = bkeep[-1], 1
-            ## (past DENSE_MAX, C without the reference: branch.h's `iref1`)
-            bs.iref1 = _tran_branch_c.ref_index(tr, n) + 1
     bkeep += _tran_branch_c.cert_bind(bffi, bs, cert, growth, dgesv)
     run.cert = (cert, growth)
     run.br = bkeep

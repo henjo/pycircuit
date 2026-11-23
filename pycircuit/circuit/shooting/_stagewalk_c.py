@@ -458,6 +458,8 @@ def _bind(e, walks, x, live, walk_lu):
         bdrv, data, cmax, tol, growth = e.scr
         bffi, bs = bdrv[0], c.bs
         bs.n, bs.tol_rel, bs.ncert = n, tol, 0
+        ## (C without the reference node: branch.h's `iref1`)
+        bs.iref1 = _tran_branch_c.ref_index(tr, n) + 1
         ## (the core's pattern where it has one, as the C loop's screen)
         pat = rec.core.arrays['pat'] if rec.core.npat else None
         c.pkeep_pat = () if pat is None else (pat, bffi.from_buffer('int64_t *', pat))

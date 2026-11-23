@@ -17097,3 +17097,66 @@ bytes); the held states put back as they were (1) -- the unit test alone: on the
 evaluated after a confirmation before any bypass reads the staging, so no run shows it.  Four pinned pairs re-recorded
 after their twins' tests (176 passed): the transient evaluation and the core, the transform loop, the stage loop, the
 stage walk.
+
+## 2026-11-23 — 345. SD: the branch check reads C without the reference node at every size; r0 the reduced C's rank
+
+**Why**  Plan 261 L22 (tc/plan_l22_branch_margin.md, SD); SC (sec. 343) had done this past DENSE_MAX alone.  Andreas "Start
+on the below dense_max item", then "I accept and want you to implement SD as you propose".  Below DENSE_MAX the screen's
+scale still held the reference's diagonal, every capacitance to ground summed, so a small capacitor among many to ground
+fired the cheap level -- and above BRANCH_CERT_MAX_N, with no certificate, the screen's SVD was a dense one of the full C,
+once a run where C is constant (its verdict kept), every step where it varies.  Sized on a grounded ladder below
+DENSE_MAX (each node 1 pF to ground, one 1 fF; dense): 2 000 nodes 2.4 s against 0.2 s, 8 000 nodes 174.8 s (the one SVD
+174.0 s) against 0.79 s.  The scale alone off the reference does not do there either: the structural rank fell to the
+dense passes, whose rounding margin `8 n eps ||C||` held the reference's diagonal (4.2 s against 0.009 s on 2 000 nodes)
+-- BM's and SC's first build's mechanism.  C without the reference node at every size, prototyped (scratch l22/bd): the 27
+gold decks under gear2 and radau every answer and r0 count the same, the screens the same but rich3's (2 / 1 -> 0, their
+confirmations finding no second root), the time the same; the size circuits the same.  It REVERSES the recorded decision
+(2026-10-07, `test_the_reduced_structural_rank_is_the_full_count_or_declines`) that r0 is the FULL matrix's count, the
+reduced count taken only where shown equal: the step solves the reduced C, so its rank is the one a vanishing capacitance
+drops -- accepted by Andreas.  Line (set before): (a) the gate against 629fe884 -- every deck's results the same under every
+setting, the counters the same but `branch.rank:bounded` / `:dense` reading `branch.rank:reduced` and rich3's screens and
+confirmations; C against Python 0 differing; the suite; (b) every deck's r0 count the same, the size circuits' too (their
+setup within 25 %), ibmpg3t and 6t one 1 ns pair each the bytes and r0 the same; (c) the 8 000-node ladder under 1 s from
+174.8 s, the same waveforms; (d) tests, bitten; (e) the retired code's tests replaced, the pinned pairs re-recorded after
+their twins' tests, size >= 0.98x, ruff.
+
+**What.**  `_BranchCheck._branch_structural_rank`: r0 by `_reduced_count` at every size (the nonzeros the plan's, else
+the dense C's).  `_branch_screen_C` and branch.c: the scale and the cheap level's diagonal off the reference's diagonal at
+every size; `_tran_branch_c.ref_index` at every size, `iref1` set by every filler (the dense screen, the packed screen, the
+C loop in either mode, the stage walk) and read by branch.c in every mode.  `_branch_svd`: below DENSE_MAX the dense SVD of
+the reduced C (`branch.screen:dense`), its vector 0 at the reference; past it SC's SVD by blocks.  Retired, unused: the
+structural rank's bounded and dense paths -- `_rank_bounded`, `_blocks_bounded`, `_norm_range`, `_sums_norm_range`,
+`_gamma`, `UNDECIDED`, `BOUNDED`, `_BranchCheck._reduced_rank` -- about 500 lines with their tests.
+
+**Measured.**  (a) As first verified against 629fe884 the line MISSED on one deck-setting: rich3's results under
+gear2/bypass (3 512 / 1 083 against 3 524 / 1 126) -- traced to the branch check's confirmation moving the device bypass's
+references (with the check off both trees the same bytes), a defect of its own, fixed first as BX (sec. 344, Andreas "Fix
+bypass leak first").  Against BX (b6f41407) MET -- every deck's results the same under every setting, gear2/bypass included; the path
+counters the same but the `branch.rank` rename (89 runs: the 27 decks under gear2, gear2/bypass and radau, the 8 size
+runs) and rich3's screens and their confirmations under gear2, gear2/bypass and radau; C against Python 0 differing
+under every setting and at size; branch.c's 3 changed executable lines and 8 arms every one reached (5 by the decks).  (b) MET -- every deck's r0 count the same (54 runs, tree
+and base, every path at its default), the answers the same, the screens the same but rich3's; ibmpg3t and 6t from D1's
+operating points the bytes and r0 the same (189 953 / 696 691), the running scale 1e-9 as SC's; the size circuits' r0 and
+results the same.  (c) MET -- the ladders below DENSE_MAX: 2 000 nodes 2.47 -> 0.20 s, 8 000 nodes 173.5 -> 0.71 s, the
+waveforms the same bytes, r0 2 001 / 8 001.  (d) MET -- below.  (e) MET -- the retired code's tests replaced (below); six
+pinned pairs re-recorded after their twins' tests (212 passed; again on BX after the rebase), the branch screen's pair now
+naming `_off_reference`, `_reduced_count`, `_screen_packed` and `ref_index`, no longer `_reduced_rank`; size every digest
+and step count the same, medians new / head 0.997-1.017; ruff the base's.
+
+**Tests.**  `test_branch_rank_bounded.py` is `test_branch_rank_reduced.py`: r0 and the scale numpy's of the reduced C at
+the run's own three generic states on four fixtures (with the certificate and on a held array); the count the reduced one
+at a tolerance a whole matrix's margin would pass and at one between the reduced and full counts, below and past
+DENSE_MAX; a non-finite C raising.  `test_branch_rank_pattern`: `_reduced_count` numpy's on reference-embedded matrices.
+`test_transient_branch_and_dae`: the recorded decision's test reversed -- 0.7 pF to ground beside 1 mH, the tolerance 1 pF,
+the reduced count 1 where the full one is 2 -- with a grid's C and planted matrices; and `_branch_svd` on that fixture
+against r0 2: fired (the full matrix's SVD would read quiet, missing the drop), its vector a singular vector of the reduced
+C, dense and by blocks.  `test_branch_c`: the C screen and the Python's with a reference drawn at every size, dense, on
+the pattern and packed; the reference's diagonal out of the scale, each C screen right after one without a reference
+(a filler not setting `iref1` shows), branch.c's guards.  `test_packed`: the screen's SVD of the reduced C against
+numpy's on both sides of DENSE_MAX (0.5 by blocks, 0.9 densely, where the full count parts); the grounded ladder packed
+past DENSE_MAX and dense below it, quiet and firing.  Seven bites, seven bit: the reference in the Python's scale below
+DENSE_MAX; in the C's dense mode; the dense screen's, the C loop's and the stage walk's filler not setting `iref1`; r0 of
+the full C; the screen's dense SVD of the full C (the last bit only `_branch_svd`'s own test: with r0 the reduced count the
+full matrix's SVD differs only where it misses a drop, which no run here makes).  Suite 6 830 passed, 10 skipped, 5 xfailed.
+
+**Found, not changed:** none new.

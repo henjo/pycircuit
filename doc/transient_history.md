@@ -6398,3 +6398,21 @@ answer: on the gold deck rich3 the run took 3 524 steps with the check on
 and 3 519 with it off.  The core's bypass references are now held and put
 back around every confirmation; with the check on or off the answers are
 the same to the last bit.
+
+## SD: the branch check reads C without the reference node at every size (2026-11-23)
+
+### `_BranchCheck._branch_structural_rank`, `_tran_branch._reduced_count`, `_BranchCheck._branch_svd`
+
+2026-11-23 (`doc/hdl_roadmap_260824.md`, 345; plan 261 L22).  SC made the
+branch check read the capacitance matrix without the ground node's row and
+column at the sizes where no dense copy is made; below them the old view
+stayed, with the ground node's total capacitance as its yardstick, so one
+small capacitor among many to ground made the check take a dense SVD of the
+whole matrix -- 174 seconds once a run on an 8 000-node ladder, or every
+step where the capacitances vary.  The check now reads the matrix the step
+solves at every size, and its reference rank is that matrix's rank.  That
+reverses a decision of 2026-10-07, which held the full matrix's rank as the
+definition: where the two counts differ -- a capacitor to ground right at
+the tolerance -- the solved matrix's is now taken (Andreas's decision).  On
+every gold deck the rank and the answers are unchanged; the old machinery
+that had kept the two counts provably equal is gone.
