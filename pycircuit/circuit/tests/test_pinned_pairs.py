@@ -1234,7 +1234,7 @@ RECORD = {
     'the kernel call and the pass driver': ('ef3f2c059587', '5a9e89626ca0'),
     'the limiting loop and the walk': ('6100313c0fdb', 'b3cf8aef45d6'),
     'the limiter laws and their C prelude': ('9b7944f9c0dd', '89740e765ff7'),
-    'the transient evaluation and the core': ('706d3004b647', '31c1d40db3e2'),
+    'the transient evaluation and the core': ('706d3004b647', '0650a880ee8d'),
     'the assembly loops and the plan': ('699f39caddd9', '8d6122f53d51'),
     'the sources and their direct pass': ('66a124c5ad7c', '168ced19b4fc'),
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
@@ -1258,7 +1258,7 @@ RECORD = {
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('03f9482bdd72', 'c025357cb495'),
     'the KLU step map and its C': ('5b9b1f672523', '94dfea9dc33d'),
-    'the stage walk and its C': ('804355de1d72', '13ae057a62c6'),
+    'the stage walk and its C': ('065ef4fd6de1', '13ae057a62c6'),
     'the multistep walk and its C': ('610c04582db5', '2a5054eed9d2'),
     'the multistep step map and its C': ('985dde19187d', 'd6c3dcf5119d'),
     'the stage readers and their one read': ('d25552fe5ede', '2798b147a3c5'),
@@ -1266,8 +1266,8 @@ RECORD = {
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
     'the readiness reads and their stamps': ('8ee74f103a32', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('2cd5a041a8a1', '2c082ba42c2d'),
-    'the transform loop and its C': ('a27ed786186b', '777bc7aa2483'),
+    'the stage loop and its C': ('91d50c728a8a', '2c082ba42c2d'),
+    'the transform loop and its C': ('231bcba1babb', '777bc7aa2483'),
     'the pulse and its arrays': ('7bdf4ed87d73', '21f3cc79de17'),
 }
 

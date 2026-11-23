@@ -1112,11 +1112,11 @@ class _BranchCheck:
             ## the stored state and lands short above a junction's critical
             ## voltage (`state_snapshot`).
             ## History: `doc/transient_history.md`, `Transient._branch_after_solve`.
-            _snap = state_snapshot(self.cir)
+            _snap = self._branch_hold()
             try:
                 alt = self._branch_confirm(func, x_res, direction)
             finally:
-                state_restore(_snap)
+                self._branch_put_back(_snap)
             if alt is None:
                 return
             self._branch_count('branch_points')
@@ -1143,6 +1143,28 @@ class _BranchCheck:
                 'several valid ones and the choice was made by the Newton '
                 'seed. See branch_points in the statistics; set '
                 'branch_check="off" to skip this test.', ModelWarning)
+
+    def _branch_hold(self):
+        """What a confirmation's speculative solves write, held to be put
+        back EXACTLY (`_branch_put_back`): the elements' state
+        (`state_snapshot`: a stateful limiter's `_vlim`) and the evaluation
+        core's bypass (`_tran_core`'s `bypass_state`: each device's last full
+        evaluation, which a bypassed one is linearized at).  ⚠ Under the
+        bypass the confirmation's evaluations moved those references, and the
+        run after the check took other values: rich3 under gear2 with the
+        bypass, 3 524 steps with the check on against 3 519 with it off.
+        History: `doc/transient_history.md`, `Transient._branch_hold`."""
+        rec = self.__dict__.get('_tran_core')
+        core = rec[1] if rec is not None else None
+        hold = getattr(core, 'bypass_state', None)
+        return state_snapshot(self.cir), core, (hold() if hold is not None else None)
+
+    def _branch_put_back(self, held):
+        """Put back what `_branch_hold` held."""
+        snap, core, bypass = held
+        state_restore(snap)
+        if bypass is not None:
+            core.bypass_restore(bypass)
 
     def _warn_branch_error(self, exc):
         """The branch check's own failure, warned ONCE a run."""
@@ -1211,14 +1233,14 @@ class _BranchCheck:
                                                                dtype=float)))
                                       for Yi in Y])), 1.0)
             base = np.array([np.asarray(Yi, dtype=float) for Yi in Y])
-            _snap = state_snapshot(self.cir)
+            _snap = self._branch_hold()
             try:
                 gap = self._branch_coupled_scan(stage_newton, seed0, base, d,
                                                 scale, residual)
             finally:
                 ## ⚠ ALWAYS, however the scan leaves: every speculative solve
-                ## has written the devices' limiting state
-                state_restore(_snap)
+                ## has written the devices' limiting state and the bypass's
+                self._branch_put_back(_snap)
             if gap is None:
                 return
             self._branch_count('branch_points')

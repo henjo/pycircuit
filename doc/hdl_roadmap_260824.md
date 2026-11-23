@@ -17056,3 +17056,44 @@ setting `iref1`; the SVD of the full C; r0 of the full C.
 a small capacitance against a large element (1 uF, 1e-7), not the reference; below DENSE_MAX the scale still holds the
 reference's diagonal (the gold decks' scale 1.0-3.5x above the reduced C's; with it out, only rich3's screens moved -- 2 / 1
 cheap-level fires whose confirmations found no second root).
+
+## 2026-11-23 — 344. BX: the branch check's confirmation leaves the device bypass as it found it
+
+**Why**  Plan 261 L22 (tc/plan_l22_branch_margin.md, BX); found verifying SD (the next section): the gate against 629fe884
+moved rich3's ANSWER under gear2/bypass.  Traced: with the check off the two trees gave the same bytes (c85458729433,
+3 519 steps / 1 106 rejected); with it on each moved off its own check-off answer -- 629fe884 3 524 / 1 126 (two
+confirmations), SD 3 512 / 1 083 (one).  A confirmation re-solves a step from perturbed seeds; `state_snapshot` puts the
+elements' dicts back (a stateful limiter's `_vlim`), but the evaluation core's device bypass keeps its references -- each
+device's last full evaluation, at which a bypassed device is linearized -- in the core's arrays, and the confirmation's
+evaluations overwrote them: under the bypass the diagnostic changed the simulation.  Andreas "Fix bypass leak first".
+Prototyped on 629fe884: the core's references, temperatures and states copied before a confirmation and put back after
+it -- rich3 then the same bytes on and off, the C loop handing the screened step to the Python changing nothing.  A
+test-sized fixture: the PSP stage with a sine drive, the bypass on, the screen's tolerance forced to 0.99 (61 steps, 15
+confirmations): on 3cbfd11fc487 against off 10c4889a2a24, with the restore both 10c4889a2a24.  Line (set before): (a)
+under the bypass the check changes no answer -- the fixture and rich3 on and off the same bytes; (b) without the bypass
+nothing changes -- the gate against 629fe884 the same on every deck and setting but gear2/bypass, where a deck whose
+confirmations ran reads its check-off answer; C against Python 0 differing; the suite; (c) a test, bitten; (d) size >=
+0.98x, ruff.
+
+**What.**  `_tran_core`'s core: `bypass_state()` -- the bypass's references, their temperatures and their states (core.h's
+bp_ref, bp_T, bp_st), copied, or None where it is disarmed -- and `bypass_restore(saved)` -- put back, every held state 2
+(core.c: the staging's G and C another call's, so a bypassed device reloads them from its reference, the same bytes, rather
+than take what the confirmation left in the staging); the counts stay.  `Transient._branch_hold` / `_branch_put_back` hold
+the elements' state and the bypass together, at both confirmation sites (`_branch_after_solve`, `_branch_after_coupled`).
+
+**Measured.**  (a) MET -- the fixture on and off 10c4889a2a24 (15 confirmations); rich3 under gear2/bypass on (two
+confirmations) and off c85458729433, 3 519 / 1 106.  (b) MET -- the gate against 629fe884: every deck's results and path
+counters the same under dc, gear2, radau and their forced settings and on size, C against Python 0 differing, no executable
+C line changed; under gear2/bypass the same but rich3, which now reads its check-off answer (c85458729433, 3 519 / 1 106,
+against 629fe884's 957c7812501d, 3 524 / 1 126) with its counters as that run's.  Suite 6 827 passed, 10 skipped, 5
+xfailed.  (c) MET -- below.  (d) MET -- size every digest and step count the same, medians new / head 0.992-1.018 (no size
+run arms the bypass); ruff the base's.
+
+**Tests.**  `test_transient_branch_and_dae` +2: `test_a_confirmation_leaves_the_device_bypass_as_it_found_it` (the
+fixture: on and off byte for byte, at least ten confirmations, the bypass skipping in both) and
+`test_the_bypass_is_put_back_with_its_staging_not_trusted` (`bypass_restore`'s copies back exactly, every held state 2;
+disarmed, none).  Two bites, two bit: no restore (the fixture's runs part: 82 against 11 bypassed evaluations and other
+bytes); the held states put back as they were (1) -- the unit test alone: on the fixture and rich3 each device is fully
+evaluated after a confirmation before any bypass reads the staging, so no run shows it.  Four pinned pairs re-recorded
+after their twins' tests (176 passed): the transient evaluation and the core, the transform loop, the stage loop, the
+stage walk.

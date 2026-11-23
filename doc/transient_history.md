@@ -6382,3 +6382,19 @@ column -- for its yardstick, its rank count and its fallback.  The answers
 are the same; on the grids the count is unchanged, the fallback works in a
 fraction of a second, and the margin no longer shrinks as grids grow.
 Smaller circuits are unchanged.
+
+## BX: the branch check's confirmation leaves the device bypass as it found it (2026-11-23)
+
+### `Transient._branch_hold`, `_tran_core`'s `bypass_state` and `bypass_restore`
+
+2026-11-23 (`doc/hdl_roadmap_260824.md`, 344; plan 261 L22).  When the
+branch check suspects a step had several solutions it re-solves that step
+from nudged starting points, then puts the devices back as they were.  But
+with the device bypass on -- which skips re-evaluating a device whose
+voltages barely moved and reuses its last evaluation -- those "last
+evaluations" live in the evaluation core, not in the devices, and the
+re-solves overwrote them.  So the check, meant only to watch, changed the
+answer: on the gold deck rich3 the run took 3 524 steps with the check on
+and 3 519 with it off.  The core's bypass references are now held and put
+back around every confirmation; with the check on or off the answers are
+the same to the last bit.

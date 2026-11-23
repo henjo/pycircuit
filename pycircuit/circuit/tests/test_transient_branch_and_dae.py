@@ -1440,6 +1440,76 @@ def test_the_reduced_structural_rank_is_the_full_count_or_declines():
     assert declined < 600                   # of 900: the fast path is not vacuous
 
 
+def test_a_confirmation_leaves_the_device_bypass_as_it_found_it():
+    """The branch check changes no answer under the device bypass
+    (`Transient._branch_hold`, `_tran_core`'s `bypass_state` /
+    `bypass_restore`): a confirmation's speculative solves move the
+    evaluation core's bypass references, and they are put back.  The PSP
+    stage driven by a sine, the bypass on, the screen's tolerance forced up
+    to 0.99 so it fires and confirms on many steps: the run with the check
+    on is the run with it off, byte for byte (with the references left as
+    the confirmations moved them it was another run), the bypass skipping
+    evaluations in both."""
+    import warnings
+
+    from pycircuit.circuit.elements import VSin
+    from pycircuit.circuit.tests import test_loop_c as L
+
+    def run(check):
+        c = L._psp_stage()
+        c['vg'] = VSin('g', gnd, v=0.7, va=0.5, freq=1e6)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr = Transient(c, toolkit=circuit.numeric)
+            tr.par.bypass = True
+            tr.BRANCH_SCREEN_TOL = 0.99
+            tr.branch_check = check
+            res = tr.solve(tend=1.6e-6, timestep=2e-8)
+        core = tr.__dict__['_tran_core'][1]
+        return (np.asarray(res.x, float).tobytes(), tr.statistics.accepted_steps,
+                getattr(tr.statistics, 'branch_screens', 0), core.bypassed())
+    on, off = run('on'), run('off')
+    assert on[:2] == off[:2], (on[1:], off[1:])
+    assert on[2] >= 10 and off[2] == 0 and on[3] > 0 and off[3] > 0, (on[1:], off[1:])
+
+
+def test_the_bypass_is_put_back_with_its_staging_not_trusted():
+    """`_tran_core`'s `bypass_restore` puts back `bypass_state`'s copies --
+    the references and their temperatures exactly, every held state as 2
+    (core.h: the staging's G and C another call's), since the evaluations
+    in between wrote the staging: an element bypassed next reloads its G
+    and C from its reference instead of taking what a confirmation left
+    there.  Disarmed: no state, nothing put back."""
+    import warnings
+
+    from pycircuit.circuit.elements import VSin
+    from pycircuit.circuit.tests import test_loop_c as L
+    c = L._psp_stage()
+    c['vg'] = VSin('g', gnd, v=0.7, va=0.5, freq=1e6)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(c, toolkit=circuit.numeric)
+        tr.par.bypass = True
+        tr.solve(tend=2e-7, timestep=2e-8)
+    core = tr.__dict__['_tran_core'][1]
+    core.bypass((1e-3, 1e-6))
+    _at, ref, T, st, _n = core.bp
+    ref[...] = np.arange(ref.size, dtype=float)
+    T[...] = 300.15
+    st[...] = np.arange(st.size) % 3
+    saved = core.bypass_state()
+    assert saved is not None and all(a is not b for a, b in zip(saved, (ref, T, st)))
+    ref[...] = -1.0
+    T[...] = 0.0
+    st[...] = 1
+    core.bypass_restore(saved)
+    assert np.array_equal(ref, np.arange(ref.size, dtype=float)) and np.all(T == 300.15)
+    assert np.array_equal(st, np.where(np.arange(st.size) % 3 != 0, 2, 0))
+    core.bypass(None)
+    assert core.bypass_state() is None
+    core.bypass_restore(None)
+
+
 def test_the_branch_screen_of_a_constant_c_is_made_once_and_again_after_a_write(monkeypatch):
     """`_branch_screen` keeps its verdict where every `C` stamp is constant
     (`_stamp_plan.constant_matrix`): its reductions were 64 ms of an 829 ms

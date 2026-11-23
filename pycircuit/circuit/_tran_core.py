@@ -1012,6 +1012,28 @@ class _Core:
         return (at, np.zeros(max(total, 1)), np.full(m, np.nan), np.zeros(m, dtype=np.int64),
                 np.zeros(m, dtype=np.int64))
 
+    def bypass_state(self):
+        """The bypass's references, their temperatures and their states
+        (core.h's bp_ref, bp_T, bp_st), copied -- or None where it is
+        disarmed: what a speculative solve's evaluations overwrite, for
+        `bypass_restore` to put back."""
+        if self.bp is None or self.cs.bp_at == self.ffi.NULL:
+            return None
+        return tuple(self.bp[i].copy() for i in (1, 2, 3))
+
+    def bypass_restore(self, saved):
+        """Put back `bypass_state`'s copies -- every held state 2 (core.c:
+        the staging's G and C another call's, so a bypassed element reloads
+        them from its reference, the same bytes): the evaluations between
+        wrote the staging.  None: nothing.  The counts stay (`bypassed`:
+        what was skipped)."""
+        if saved is None or self.bp is None:
+            return
+        ref, T, st = saved
+        self.bp[1][...] = ref
+        self.bp[2][...] = T
+        self.bp[3][...] = np.where(st != 0, 2, 0)
+
     def bypassed(self):
         """The evaluations the bypass skipped since it was armed."""
         return 0 if self.bp is None else int(self.bp[4].sum())
