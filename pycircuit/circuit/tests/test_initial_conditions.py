@@ -165,6 +165,38 @@ def test_a_hold_that_could_not_act_is_refused(kw, solve_kw, says):
         Transient(ck, toolkit=numeric, **kw).solve(tend=1e-9, timestep=1e-10, **solve_kw)
 
 
+def _rc():
+    ck = SubCircuit()
+    ck['R'] = R(1, gnd, r=1e3)
+    ck['C'] = C(1, gnd, c=1e-9)
+    return ck
+
+
+@pytest.mark.parametrize('shape', [(1,), (3,), (2, 1)], ids=['one-short', 'one-long', 'column'])
+def test_an_x0_that_is_not_the_whole_state_is_refused(shape):
+    """`x0` IS THE WHOLE STATE, `(cir.n,)` (`Transient._refuse_x0`): one of
+    another shape went in as given and failed deep in the step -- an
+    IndexError, a broadcast error, or on a million-node grid a dense
+    fallback's 7.9 TiB allocation -- naming neither x0 nor n.  Refused before
+    the run, naming both; one short asks whether it is the reduced state."""
+    with pytest.raises(ValueError) as got:
+        Transient(_rc(), toolkit=numeric).solve(tend=1e-9, timestep=1e-10, x0=np.zeros(shape))
+    said = str(got.value)
+    assert said.startswith(f'x0 has shape {shape}; the circuit has 2 unknowns, so x0 must '
+                           'have shape (2,)'), said
+    assert ('the reduced state, without the reference node?' in said) == (shape == (1,)), said
+
+
+def test_an_x0_of_the_whole_state_starts_the_run():
+    ck = _rc()
+    x0 = np.zeros(2)
+    x0[ck.get_node_index('1')] = 1.0
+    res = Transient(ck, toolkit=numeric).solve(tend=1e-9, timestep=1e-10, x0=x0)
+    v = np.asarray(res.v(1, gnd).y, dtype=float).ravel()
+    ## (1 ns into a 1 us decay from 1 V)
+    assert v[-1] == pytest.approx(np.exp(-1e-3), rel=1e-9), v[-1]
+
+
 ## ---------------------------------------------------------------------------
 ## STAGE 10.3, element initial conditions: `L(..., ic=...)`.
 ##

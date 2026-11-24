@@ -17160,3 +17160,34 @@ the full C; the screen's dense SVD of the full C (the last bit only `_branch_svd
 full matrix's SVD differs only where it misses a drop, which no run here makes).  Suite 6 830 passed, 10 skipped, 5 xfailed.
 
 **Found, not changed:** none new.
+
+## 2026-11-24 — 346. X0: `Transient.solve` refuses an x0 that is not the whole state
+
+**Why**  Plan 261 L22 (tc/plan_l22_branch_margin.md, X0); found on D1's ibmpg3t runs (sec. 339).  `_solve` took `x0` as
+given, and a wrong length surfaced deep in the step: on `_coupled` (17 unknowns) 16 -> IndexError "index 16 is out of
+bounds for axis 0 with size 16", 18 -> ValueError "operands could not be broadcast together with shapes (17,) (16,)", 14
+-> IndexError; on ibmpg3t (D1's merge-off operating point, 1 043 445 unknowns, on the merged import's 1 042 523) the C
+and packed paths declined and the dense fallback asked for a 1 042 523 x 1 042 523 array (7.9 TiB) -- a MemoryError
+naming none of it.  Surveyed (a pytest plugin over the full suite, no source edited): all 265 x0 that reach
+`Transient._solve` are 1-D ndarrays of length n -- PSS hands its inner transients the full state, its own reduced x0 its
+business.  Andreas "start with the next steps you just mentioned", then "Yes build both".  Line (set before): (a) a
+wrong-length or 2-D x0 raises ValueError at the start of `solve`, naming both, before any work; (b) nothing else changes
+-- the gate against ee210fdb the same, the suite; (c) a test, bitten: n - 1, n + 1 and a column (n, 1) refused with the
+message, (n,) accepted; (d) size (no size run passes an x0), ruff the base's.
+
+**What.**  `Transient.solve`, where `x0` is given: `_refuse_x0` -- a ValueError unless its shape is `(n,)`, "x0 has
+shape S; the circuit has n unknowns, so x0 must have shape (n,)", one short adding "(one short: the reduced state,
+without the reference node?)" -- before `_solve`.
+
+**Measured.**  (a) MET -- the three shapes refused at the start of `solve` with the message (the test).  (b) MET -- the
+gate against ee210fdb (on the tree with CK, the next section): every deck's results and path counters the same under
+every setting and on size, C against Python 0 differing; the suite on that tree 6 831 passed, 10 skipped, 5 xfailed; on
+X0 alone the pinned pairs and `test_initial_conditions` 116 passed.  (c) MET -- below.  (d) MET -- size every digest and
+step count the same, medians new / head 0.995-1.010; ruff the base's.
+
+**Tests.**  `test_initial_conditions` +2 (4 cases): `test_an_x0_that_is_not_the_whole_state_is_refused` (an RC, n = 2:
+one short, one long, a column; the message, its hint one short alone) and `test_an_x0_of_the_whole_state_starts_the_run`
+(the RC from 1 V: exp(-1) at one time constant, rel 1e-9).  One bite, it bit: the guard gone (the three refused cases
+fail).
+
+**Found, not changed:** none new.

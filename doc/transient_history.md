@@ -6416,3 +6416,15 @@ definition: where the two counts differ -- a capacitor to ground right at
 the tolerance -- the solved matrix's is now taken (Andreas's decision).  On
 every gold deck the rank and the answers are unchanged; the old machinery
 that had kept the two counts provably equal is gone.
+
+## X0: Transient.solve refuses an x0 that is not the whole state (2026-11-24)
+
+### `Transient._refuse_x0`
+
+2026-11-24 (`doc/hdl_roadmap_260824.md`, 346; plan 261 L22).  A transient
+started from a given state took that state as handed in.  One of the wrong
+length -- one short, say: the state without the reference node -- failed
+deep in the first step, as an index or a broadcast error, or on a
+million-node grid as a request for 7.9 TiB from a dense fallback, none of
+them naming the state or its length.  `solve` now checks the shape first and
+says what it got, what the circuit needs and, one short, the likely cause.

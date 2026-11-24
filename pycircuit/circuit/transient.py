@@ -2099,6 +2099,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         ## (the caller may have changed the circuit since the last run --
         ## its flat view too, `Analysis._sync_cir`)
         self._sync_cir()
+        if x0 is not None:
+            self._refuse_x0(x0)
         self._memo_clear()
         ## Stage 2a: hold BLAS to one thread for the whole run.  It wraps the whole
         ## transient rather than just the linear solve because the win is not in the
@@ -2226,6 +2228,21 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         if self._is_stage_family(self.base_integrator):
             return _StageSteps(self, run)
         return _LMMSteps(self, run)
+
+    def _refuse_x0(self, x0):
+        """A ValueError unless `x0` is the whole state, `(cir.n,)`.  ⚠ One of
+        another shape went in as given and failed deep in the step -- an
+        IndexError or a broadcast error, or past the sparse paths' sizes a
+        dense fallback's allocation (7.9 TiB on a million-node grid) --
+        naming neither x0 nor n."""
+        n = self.cir.n
+        shape = np.shape(x0)
+        if shape == (n,):
+            return
+        hint = (' (one short: the reduced state, without the reference node?)'
+                if shape == (n - 1,) else '')
+        raise ValueError(f'x0 has shape {shape}; the circuit has {n} unknowns, so x0 '
+                         f'must have shape ({n},){hint}')
 
     def _solve(self, refnode=gnd, tend=1e-3, x0=None, timestep=1e-6, provided_function=None, fixed_timestep=False, coupled_lte=False):
         """`solve`'s run, inside its single-threaded BLAS: the start state
