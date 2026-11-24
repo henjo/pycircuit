@@ -6456,3 +6456,16 @@ pages written only where the pattern is, and the reduction, the magnitude
 and the copy stay on them: the grid's 0.3 ns run peaks at 3.2 GB with the
 compiled loop's exact answers.  Below that size they stay numpy's, where
 small pages cost more faults than they save.  Every answer is unchanged.
+
+## LA: CHOLMOD keeps factors (2026-11-24)
+
+### `_cholklu`'s kept factors, `StructuralKLU.keep_factors`, `StructuralKLU.kept_counts`
+
+2026-11-24 (`doc/hdl_roadmap_260824.md`, 349; plan 261 L24).  On the large
+power grids almost every new step size makes a new matrix, and CHOLMOD
+factors each one from scratch -- a third to a half of the transient.  The
+glue can now keep several earlier factors beside the current one and, when
+a matrix comes back exactly, swap its factor in instead of factoring again:
+the same bytes either way.  It is off by default (one factor, as before);
+the next stage turns it on for the grids, together with a step-size ladder
+that makes the matrices come back.

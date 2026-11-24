@@ -34,6 +34,21 @@ element is one of the kinds above, a voltage source with one end on the
 reference and no node fixed twice; else the reason (a str).  Switch:
 `ENABLED` (env `PYCIRCUIT_CHOLMOD=0`); taken by `AutoSolver` for a
 transient's matrix from `CHOLMOD_FROM` unknowns.
+
+THE KEPT FACTORS.  A numeric may keep up to `keep - 1` earlier factors
+beside its own (`ck_keep` on the symbolic: `StructuralKLU.keep_factors`;
+`KEEP`, `KEEP_BYTES` the defaults a solver starts with -- 1, none kept).
+A refactor of values one of them was made on swaps it in -- L's values and
+J's, by pointer -- and factors nothing: CHOLMOD's factor of the same values
+on the same symbolic is the same bytes, so every caller (the Python's
+`solve`, the C units through KLU's entries, a hand-back's restore) has the
+answer a refactor gives.  Any other refactor keeps the numeric's factor in
+a slot (a new one while `keep - 1` and `KEEP_BYTES` allow, else the least
+recently used) and factors into the buffers that come back.  A slot is L's
+values (`xsize` doubles, CHOLMOD's allocator) and J's -- hundreds of MB on
+a grid of a million unknowns -- for the factors a step-size ladder
+revisits around every corner (plan 261 L24).  Counted on the numeric
+(`num_info`: `StructuralKLU.kept_counts`).
 """
 import ctypes
 import os
@@ -45,6 +60,10 @@ from pycircuit.circuit import _blas, _cbuild
 ENABLED = os.environ.get('PYCIRCUIT_CHOLMOD', '1') != '0'
 #: the unknowns from which a linear grid's transient matrix is CHOLMOD's
 CHOLMOD_FROM = 500_000
+#: THE KEPT FACTORS a solver starts with: the factors a numeric holds, its
+#: own among them (1: none kept), and the most bytes its kept ones may take
+KEEP = 1
+KEEP_BYTES = 3.5 * 2 ** 30
 STATUS = 'not loaded'
 
 _SRC = r'''#include <stddef.h>
@@ -54,6 +73,11 @@ _SRC = r'''#include <stddef.h>
 #include <math.h>
 #include <dlfcn.h>
 #include <suitesparse/cholmod.h>
+
+/* the most factors a numeric keeps, and the entries of J's values a
+   comparison reads before the whole */
+#define CK_KEEP_MAX 32
+#define CK_NSIG 64
 
 typedef int (*ck_start_t)(cholmod_common *);
 typedef cholmod_sparse *(*ck_asp_t)(size_t, size_t, size_t, int, int, int, int, cholmod_common *);
@@ -65,12 +89,16 @@ typedef int (*ck_ff_t)(cholmod_factor **, cholmod_common *);
 typedef cholmod_dense *(*ck_ad_t)(size_t, size_t, size_t, int, cholmod_common *);
 typedef int (*ck_fd_t)(cholmod_dense **, cholmod_common *);
 typedef cholmod_dense *(*ck_sv_t)(int, cholmod_factor *, cholmod_dense *, cholmod_common *);
+typedef void *(*ck_mal_t)(size_t, size_t, cholmod_common *);
+typedef void *(*ck_fre_t)(size_t, size_t, void *, cholmod_common *);
 
 static struct {
     int tried, ok;
     ck_start_t start, finish;
     ck_asp_t asp; ck_fsp_t fsp; ck_an_t an; ck_fz_t fz; ck_cpf_t cpf; ck_ff_t ff;
     ck_ad_t ad; ck_fd_t fd; ck_sv_t sv;
+    /* CHOLMOD's own allocator, for the kept factors' values (NULL: none kept) */
+    ck_mal_t mal; ck_fre_t fre;
 } C_;
 
 static int ck_load(void)
@@ -92,7 +120,9 @@ static int ck_load(void)
     C_.ad = (ck_ad_t) dlsym(h, "cholmod_allocate_dense");
     C_.fd = (ck_fd_t) dlsym(h, "cholmod_free_dense");
     C_.sv = (ck_sv_t) dlsym(h, "cholmod_solve");
-    C_.ok = C_.start && C_.finish && C_.asp && C_.fsp && C_.an && C_.fz && C_.cpf && C_.ff
+    C_.mal = (ck_mal_t) dlsym(h, "cholmod_malloc");
+    C_.fre = (ck_fre_t) dlsym(h, "cholmod_free");
+    C_.ok =C_.start && C_.finish && C_.asp && C_.fsp && C_.an && C_.fz && C_.cpf && C_.ff
             && C_.ad && C_.fd && C_.sv;
     return C_.ok;
 }
@@ -108,7 +138,22 @@ typedef struct {
     int32_t *Kp, *Ki;
     cholmod_common cm;
     cholmod_factor *Lsym;
+    /* THE KEPT FACTORS (`ck_keep`): the factors a numeric keeps, its own
+       among them (1: none kept), the bytes its kept ones may take, and the
+       entries of J's values a comparison reads first */
+    long keep;
+    double keep_bytes;
+    long nsig;
+    long sig[CK_NSIG];
 } ck_sym;
+
+/* a kept factor: L's values and J's (the solve reads J's), and whether they
+   are a factor of those values, and when it was last the numeric's */
+typedef struct {
+    double *x, *Ax;
+    int valid;
+    int64_t used;
+} ck_slot;
 
 typedef struct {
     double *Ax, *Kx, *x, *rhs;
@@ -116,6 +161,14 @@ typedef struct {
     cholmod_sparse *K;
     cholmod_factor *L;
     cholmod_dense *B;
+    /* THE KEPT FACTORS: the slots (`nslot` made, each `slot_xsize` of L's
+       values), whether the numeric's own values are a factor of its `Ax`,
+       the clock, the refactors served by a slot and the factorizations made */
+    ck_slot slot[CK_KEEP_MAX];
+    long nslot;
+    size_t slot_xsize;
+    int valid;
+    int64_t clock, hits, facts;
 } ck_num;
 
 static void *ck_alloc(size_t n, size_t s) { return calloc(n ? n : 1, s); }
@@ -344,11 +397,25 @@ fail:
     return NULL;
 }
 
+/* THE KEPT FACTORS: the slots freed (L's values by CHOLMOD's allocator, which
+   made them -- or made the numeric's own, swapped into a slot) */
+static void ck_drop(ck_num *n)
+{
+    long i;
+    for (i = 0; i < n->nslot; i++) {
+        if (n->slot[i].x) C_.fre(n->slot_xsize, sizeof(double), n->slot[i].x, &n->cm);
+        free(n->slot[i].Ax);
+        memset(&n->slot[i], 0, sizeof(ck_slot));
+    }
+    n->nslot = 0;
+}
+
 static int ck_free_numeric(void **pn, void *common)
 {
     ck_num *n = (ck_num *) *pn;
     (void) common;
     if (!n) return 1;
+    ck_drop(n);
     if (n->B) C_.fd(&n->B, &n->cm);
     if (n->L) C_.ff(&n->L, &n->cm);
     if (n->K) C_.fsp(&n->K, &n->cm);
@@ -406,18 +473,146 @@ static void *ck_factor(int *Ap, int *Ai, double *Ax, void *sym, void *common)
     if (n->Ax && n->x && n->rhs && n->K && n->L && n->B) {
         memcpy(n->K->p, s->Kp, (size_t) (s->nf + 1) * sizeof(int32_t));
         memcpy(n->K->i, s->Ki, (size_t) s->nk * sizeof(int32_t));
-        if (ck_values(s, n, Ax)) return n;
+        if (ck_values(s, n, Ax)) {
+            n->valid = 1;
+            n->facts = 1;
+            return n;
+        }
     }
     v = n;
     ck_free_numeric(&v, common);
     return NULL;
 }
 
+/* THE KEPT FACTORS.  Whether J's values `a` and `b` are the same, bit for bit
+   (-0.0 is not 0.0) -- the signature's entries first */
+static int ck_same(const ck_sym *s, const double *a, const double *b)
+{
+    long k;
+    for (k = 0; k < s->nsig; k++)
+        if (memcmp(a + s->sig[k], b + s->sig[k], sizeof(double)) != 0) return 0;
+    return memcmp(a, b, (size_t) s->nnz * sizeof(double)) == 0;
+}
+
+/* the numeric's factor and a slot's exchanged: L's values, J's, and whether
+   they are a factor of them -- pointers, no copy */
+static void ck_swap(ck_num *n, ck_slot *t)
+{
+    double *p = (double *) n->L->x;
+    int v = n->valid;
+    n->L->x = t->x; t->x = p;
+    p = n->Ax; n->Ax = t->Ax; t->Ax = p;
+    n->valid = t->valid; t->valid = v;
+}
+
+/* the slots a numeric may make: `keep` - 1, CK_KEEP_MAX at most, within
+   `keep_bytes` (a slot is L's values and J's); none where CHOLMOD's
+   allocator was not found or L is not a supernodal numeric */
+static long ck_cap(const ck_sym *s, const ck_num *n)
+{
+    long cap = s->keep - 1;
+    double one;
+    if (cap <= 0 || !C_.mal || !C_.fre || !n->L || !n->L->x || !n->L->is_super) return 0;
+    if (cap > CK_KEEP_MAX) cap = CK_KEEP_MAX;
+    one = 8.0 * ((double) n->L->xsize + (double) s->nnz);
+    if (s->keep_bytes < one * (double) cap) cap = (long) (s->keep_bytes / one);
+    return cap > 0 ? cap : 0;
+}
+
+/* a refactor where factors are kept: a slot holding a factor of exactly
+   `Ax` swapped in, no factorization (CHOLMOD's factor of the same values on
+   the same symbolic: the same bytes); else the numeric's factor swapped into
+   a new slot (room) or the least recently used one -- one holding none
+   first -- and CHOLMOD's factor of `Ax` made in place on the buffers that
+   came back.  1, or 0 as `ck_values` */
+static int ck_kept(const ck_sym *s, ck_num *n, const double *Ax)
+{
+    long i, pick = -1, cap;
+    int ok;
+    /* (L's values another size: the slots do not fit it) */
+    if (n->nslot && n->L->xsize != n->slot_xsize) ck_drop(n);
+    cap = ck_cap(s, n);
+    n->clock++;
+    for (i = 0; i < n->nslot; i++)
+        if (n->slot[i].valid && ck_same(s, n->slot[i].Ax, Ax)) {
+            ck_swap(n, &n->slot[i]);
+            n->slot[i].used = n->clock;
+            n->hits++;
+            return 1;
+        }
+    if (n->nslot < cap) {
+        ck_slot *t = &n->slot[n->nslot];
+        t->x = (double *) C_.mal(n->L->xsize, sizeof(double), &n->cm);
+        t->Ax = (double *) ck_alloc((size_t) s->nnz, sizeof(double));
+        if (t->x && t->Ax) {
+            t->valid = 0;
+            t->used = 0;
+            n->slot_xsize = n->L->xsize;
+            pick = n->nslot++;
+        } else {
+            if (t->x) C_.fre(n->L->xsize, sizeof(double), t->x, &n->cm);
+            free(t->Ax);
+            t->x = NULL;
+            t->Ax = NULL;
+        }
+    }
+    if (pick < 0)
+        for (i = 0; i < n->nslot; i++)
+            if (pick < 0 || (n->slot[pick].valid
+                             && (!n->slot[i].valid || n->slot[i].used < n->slot[pick].used)))
+                pick = i;
+    if (pick >= 0) {
+        ck_swap(n, &n->slot[pick]);
+        n->slot[pick].used = n->clock;
+    }
+    ok = ck_values(s, n, Ax);
+    n->facts++;
+    n->valid = ok;
+    return ok;
+}
+
 static int ck_refactor(int *Ap, int *Ai, double *Ax, void *sym, void *num, void *common)
 {
+    const ck_sym *s = (const ck_sym *) sym;
+    ck_num *n = (ck_num *) num;
+    int ok;
     (void) Ap; (void) Ai; (void) common;
     if (!sym || !num) return 0;
-    return ck_values((const ck_sym *) sym, (ck_num *) num, Ax);
+    if (s->keep > 1) return ck_kept(s, n, Ax);
+    ok = ck_values(s, n, Ax);
+    n->facts++;
+    n->valid = ok;
+    return ok;
+}
+
+/* THE KEPT FACTORS set on the symbolic: `keep` factors a numeric holds, its
+   own among them (1: none kept), `bytes` the most its kept ones take; the
+   signature's entries spread over J's values */
+static void ck_keep(void *sym, long keep, double bytes)
+{
+    ck_sym *s = (ck_sym *) sym;
+    long k;
+    if (!s) return;
+    s->keep = keep < 1 ? 1 : keep;
+    s->keep_bytes = bytes > 0.0 ? bytes : 0.0;
+    s->nsig = s->nnz < CK_NSIG ? s->nnz : CK_NSIG;
+    for (k = 0; k < s->nsig; k++)
+        s->sig[k] = (long) (((double) k + 0.5) * (double) s->nnz / (double) s->nsig);
+}
+
+/* a numeric's kept factors: [the refactors a slot served, the factorizations
+   made, the slots made, those holding a factor, L's values a slot] */
+static void ck_num_info(void *num, double *out)
+{
+    const ck_num *n = (const ck_num *) num;
+    long i, v = 0;
+    if (!n) {
+        out[0] = out[1] = out[2] = out[3] = out[4] = -1.0;
+        return;
+    }
+    for (i = 0; i < n->nslot; i++) v += n->slot[i].valid != 0;
+    out[0] = (double) n->hits; out[1] = (double) n->facts; out[2] = (double) n->nslot;
+    out[3] = (double) v; out[4] = (double) n->slot_xsize;
 }
 
 /* J x = b for each of the `nrhs` columns of `B` (n x nrhs, column-major), in place */
@@ -516,6 +711,8 @@ void *pcx_cholklu(int which)
     case 6: return (void *) ck_rgrowth;
     case 7: return (void *) ck_info;
     case 8: return (void *) (long) ck_load();
+    case 9: return (void *) ck_keep;
+    case 10: return (void *) ck_num_info;
     }
     return NULL;
 }
@@ -548,6 +745,10 @@ class _Lib:
         self.klu_free_symbolic = fn(5, ct.c_int, vp, vp)
         self.klu_rgrowth = fn(6, ct.c_int, ip, ip, dp, vp, vp, vp)
         self.info = fn(7, None, vp, dp)
+        ## THE KEPT FACTORS: `keep(sym, keep, bytes)` and a numeric's counts
+        ## `num_info(num, out)` (the module's note)
+        self.keep = fn(9, None, vp, ct.c_long, ct.c_double)
+        self.num_info = fn(10, None, vp, dp)
         self.klu_defaults = klu.klu_defaults
 
 

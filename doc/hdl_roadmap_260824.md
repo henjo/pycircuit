@@ -17302,3 +17302,47 @@ check's scale (`_tran_branch`, `np.abs(J) @ ...`) take numpy's |J| -- not reache
 in 1t's 0.3 ns).  The dense layout's Python path at 25 850 unknowns runs, but ~60x the C loop: a sizing on it takes the
 packed layout (`_packed.PACKED_FROM = 0`).  Unpinned wall-clock pairs on this hybrid CPU spread +-3-6 % on 1.5-4.4 s
 runs; pinned to a P-core the counters repeat within 1 %.
+
+## 2026-11-24 — 349. LA: CHOLMOD keeps factors (off by default)
+
+**Why**  Plan 261 L24 (tc/plan_l24_step_ladder.md), from L23's profile of the IBM grids (CHOLMOD's factorization
+35-46 % of their transient; 716 refactors in ibmpg3t's 10 ns, almost every one a new step size) and its prototype
+(tc/plan_l23_ladder_proto.md): rounding the step size down to a ladder makes the matrices recur (3t 91 -> 32 distinct
+in 2 ns), and with eight factors kept that ran 0.778x (3t) and 0.843x (6t) at the ladder's own answers -- the factors
+kept as their values alone, ~450 MB each (whole numerics, 0.6 GB each, missed the prototype's memory line).
+Andreas "build the plan", then "1 on by default 2 ok 3 ok".  LA is the first stage: the glue keeps factors, off by
+default; LB adds the ladder.  Line (set before): (a) KEEP 1 -- the gate against 6d190b56 SAME; (b) KEEP 8, the C loop,
+3t and 6t 2 ns from D1's operating points, against KEEP 1: the bytes and steps the same, the factorizations the
+replayed LRU-8 of today's stepping, time <= 1.00x, VmHWM + <= 3.3 GB on 3t, 6t under the 11 GB cap; (c) tests, bitten;
+(d) the suite, ruff, the pins.
+
+**What.**  `_cholklu`: the numeric (`ck_num`) gains, at its end, up to `keep - 1` slots (`CK_KEEP_MAX` 32), each L's
+values (`xsize` doubles, CHOLMOD's own allocator, `cholmod_malloc`) and J's (the solve reads them).  `ck_refactor`
+where `keep > 1` (`ck_kept`): a slot holding a factor of exactly these values (64 entries compared first, then every
+byte) is swapped in by pointer and nothing is factored -- CHOLMOD's factor of the same values on the same symbolic is
+the same bytes; else the numeric's factor goes into a new slot (while `keep - 1` and `KEEP_BYTES` allow) or the least
+recently used one, and CHOLMOD factors into the buffers that come back.  `ck_keep` sets `keep` and the bytes on the
+symbolic, `ck_num_info` reads a numeric's counts.  `_cholklu.KEEP` (1: today's path) and `KEEP_BYTES` (3.5 GB a
+numeric) are what a solver starts with; `StructuralKLU.keep_factors(keep, max_bytes)` and `kept_counts()` (hits,
+factorizations, slots).  Every caller -- the Python's `solve`, the C units through KLU's entries, pcx_held.h's
+hand-back restore -- goes through `ck_refactor`, so each is served alike.
+
+**Measured.**  (a) MET -- the gate against 6d190b56 SAME (tree, matrix, size; 0 csrc lines changed: the glue's C is
+`_cholklu._SRC`, reached by the tests).  (b) MET -- 3t: KEEP 1 299.68 / 298.28 s, KEEP 8 282.07 / 280.62 s (0.941 /
+0.941); every digest cccf4258b918, 268 / 2 / 441; 157 factorizations, 139 kept (18 refactors served by a kept factor;
+the replay's 156 -> 138 had not counted the first factor); VmHWM 4 737 / 4 696 -> 7 844 MB (+3.1 GB).  6t: 381.79 ->
+363.02 s (0.951), digest 24ff03d9c986 both, VmHWM 7 000 -> 10 010 MB, under the cap.  On today's stepping the kept
+factors serve the step sizes a corner returns to; the ladder (LB) is what makes them recur.  (c) MET -- below.  (d)
+MET -- suite 6 846 passed, 10 skipped, 5 xfailed; ruff the base's; no pin moved.
+
+**Tests.**  `test_cholklu` +6: `test_kept_factors_give_a_refactors_bytes` (14 step sizes revisiting five matrices:
+KEEP 2, 3, 8 every solution the bytes of KEEP 1's, the factorizations the least-recently-used replay's, hits and
+factorizations the refactor calls); `test_kept_factors_stay_within_their_bytes` (KEEP 8 under one slot's bytes: none
+kept); `test_a_hand_back_is_restored_from_a_kept_factor` (a checkpoint handed back: the restore a hit, J's bytes
+after); `test_a_grid_transient_keeping_factors_is_its_run` (the 16 x 16 grid's Gear-2 run, C loop and Python: KEEP 8
+every byte, step and count of KEEP 1's, hits > 0); `test_a_kept_factor_is_matched_on_every_value` (two matrices
+differing from J only at diagonals outside the 64 entries compared first: no hit, KEEP 1's bytes, no refactor check
+failing).  Five bites, five bit: no hit; a hit not swapped; the comparison always true (caught only by the last test,
+added for it); the byte cap ignored; KEEP ignored.
+
+**Found, not changed:** none new.

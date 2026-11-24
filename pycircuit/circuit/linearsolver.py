@@ -1092,6 +1092,8 @@ class StructuralKLU(KLUSolver):
         self._ck_kind = self._ck_twin = None
         if cholmod is not None:
             from pycircuit.circuit import _cholklu
+            ## (THE KEPT FACTORS the analysis sets: `keep_factors`)
+            self._ck_keep = (int(_cholklu.KEEP), float(_cholklu.KEEP_BYTES))
             lib = _cholklu.library(self._lib)
             if lib is not None:
                 self._klu_lib, self._lib = self._lib, lib
@@ -1232,6 +1234,7 @@ class StructuralKLU(KLUSolver):
             if sym:
                 self.analyses += 1
                 self._symbolic = sym
+                self._lib.keep(ctypes.c_void_p(sym), *self._ck_keep)
                 return sym
             _paths.COUNTS['solver.cholmod:pattern'] += 1
             self._lib, self._ck_kind = self._klu_lib, None
@@ -1296,6 +1299,36 @@ class StructuralKLU(KLUSolver):
     def cholmod(self):
         """Whether this solver's entries are THE SPD REDUCTION's (`_cholklu`)."""
         return self._ck_kind is not None
+
+    def keep_factors(self, keep, max_bytes=None):
+        """THE KEPT FACTORS (`_cholklu`'s note): each numeric of the
+        reduction keeps up to `keep - 1` earlier factors beside its own, at
+        most `max_bytes` of them (`_cholklu.KEEP_BYTES` where None); 1 keeps
+        none.  The answers are a refactor's either way.  Nothing where the
+        solver is not the reduction's."""
+        if not self.cholmod:
+            return
+        from pycircuit.circuit import _cholklu
+        self._ck_keep = (max(int(keep), 1),
+                         float(_cholklu.KEEP_BYTES if max_bytes is None else max_bytes))
+        if self._symbolic is not None:
+            self._lib.keep(self._ct.c_void_p(self._symbolic), *self._ck_keep)
+
+    def kept_counts(self):
+        """THE KEPT FACTORS' counts over the run's numeric and the chord's:
+        `hits` (refactors a kept factor served), `factorizations` (made, the
+        first factor's included), `slots` (made), `held` (holding a factor);
+        None where the solver is not the reduction's."""
+        if not self.cholmod:
+            return None
+        out = numpy.zeros(5)
+        got = {'hits': 0, 'factorizations': 0, 'slots': 0, 'held': 0}
+        for num in (self._numeric, self._chord):
+            if num:
+                self._lib.num_info(self._ct.c_void_p(num), self._ptr(out, self._ct.c_double))
+                for k, v in zip(got, out[:4]):
+                    got[k] += int(v)
+        return got
 
     def _ck_klu(self):
         """KLU on this pattern, for the matrices CHOLMOD will not factor

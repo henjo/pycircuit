@@ -222,7 +222,7 @@ def _run(chol, c_on, monkeypatch, **make):
     sk = tr._get_linearsolver()._choice
     return (x, hashlib.sha1(x.tobytes()).hexdigest(), (st.accepted_steps, st.rejected_steps,
             st.newton_iterations), (sk.cholmod, sk.factors, sk.refactors, sk.residual_fallbacks,
-            sk.chord_factors, sk.chord_refactors), _paths.since(before))
+            sk.chord_factors, sk.chord_refactors), _paths.since(before), sk.kept_counts())
 
 
 @pytest.mark.parametrize('chord', [True, False], ids=['chord', 'full'])
@@ -242,3 +242,143 @@ def test_a_grid_transient_on_cholmod_is_its_klu_run_and_its_c_the_python(chord, 
     assert d.get('solver.auto:cholmod') == 1 and d.get('loop_c:steps', 0) > 50, d
     assert d.get('newton_c:served', 0) > 50 and d.get('lte_c:sparse_served', 0) > 50, d
     assert not any(key.startswith(('newton_c:bail', 'lte_c:bail', 'solver.cholmod:')) for key in d), d
+
+
+## THE KEPT FACTORS (`_cholklu`'s note, plan 261 L24)
+
+#: a step-size sequence that revisits its matrices, as a ladder's corners do
+_HS = tuple(h * 1e-12 for h in (1, 2, 4, 1, 2, 8, 1, 4, 2, 8, 16, 1, 2, 4))
+
+
+def _replay(hs, keep):
+    """The factorizations `keep` held factors make on the sequence of step
+    sizes (each a matrix; the last one's repeat none): the least recently
+    used kept, the first factor counted."""
+    held, made = [], 0
+    for h in hs:
+        if held and held[-1] == h:
+            continue
+        if h in held:
+            held.remove(h)
+        else:
+            made += 1
+            if len(held) >= keep:
+                held.pop(0)
+        held.append(h)
+    return made
+
+
+def _kept_solves(keep, max_bytes=None, c=None):
+    c = _grid() if c is None else c
+    sk = _solver(c)
+    sk.keep_factors(keep, max_bytes)
+    b = np.random.default_rng(1).standard_normal(sk.m)
+    xs = []
+    for h in _HS:
+        J, _iref = _matrix(c, h)
+        xs.append(np.asarray(sk.solve(J, b, None)).tobytes())
+    return xs, sk
+
+
+def test_kept_factors_give_a_refactors_bytes():
+    """A sequence revisiting its matrices: with 2, 3 and 8 factors kept
+    every solution is the bytes of the run keeping none; the factorizations
+    those the least recently used kept make, the rest served by a kept
+    factor (no factorization: CHOLMOD's factor of the same values on the
+    same symbolic is the same bytes)."""
+    want, sk1 = _kept_solves(1)
+    ## (the refactor calls: a step size other than the last one's)
+    calls = sum(1 for i, h in enumerate(_HS) if i == 0 or h != _HS[i - 1])
+    assert sk1.kept_counts() == {'hits': 0, 'factorizations': calls, 'slots': 0, 'held': 0}
+    for keep in (2, 3, 8):
+        got, sk = _kept_solves(keep)
+        assert got == want, keep
+        k = sk.kept_counts()
+        assert k['factorizations'] == _replay(_HS, keep), (keep, k)
+        assert k['hits'] + k['factorizations'] == calls, (keep, k)
+        assert k['slots'] == min(keep - 1, len(set(_HS)) - 1), (keep, k)
+    assert _replay(_HS, 8) < _replay(_HS, 3) < calls
+
+
+def test_kept_factors_stay_within_their_bytes():
+    """Factors kept only within the bytes allowed: below one slot (L's values
+    and J's) none is kept, every refactor a factorization, the same bytes."""
+    want, _sk1 = _kept_solves(1)
+    got, sk = _kept_solves(8, max_bytes=1.0)
+    assert got == want
+    assert sk.kept_counts()['slots'] == 0 and sk.kept_counts()['hits'] == 0
+
+
+def test_a_hand_back_is_restored_from_a_kept_factor():
+    """A checkpoint opened on J held, a refactor of J' made inside it, then
+    handed back (`linearsolver.held_back`): the restore -- a refactor of J on
+    the backup values -- is served by the factor kept for J, no
+    factorization; J solved next is the bytes it was."""
+    from pycircuit.circuit.linearsolver import held_back, held_open
+    c = _grid()
+    sk = _solver(c)
+    sk.keep_factors(3)
+    J, _iref = _matrix(c, 1e-12)
+    J1, _iref = _matrix(c, 2e-12)
+    b = np.random.default_rng(2).standard_normal(sk.m)
+    sk.solve(J, b, None)
+    xa = np.asarray(sk.solve(J, b, None)).tobytes()
+    own = held_open(sk)
+    sk.solve(J1, b, None)
+    before = sk.kept_counts()
+    held_back(sk, own)
+    after = sk.kept_counts()
+    assert after['hits'] == before['hits'] + 1, (before, after)
+    assert after['factorizations'] == before['factorizations'], (before, after)
+    assert np.asarray(sk.solve(J, b, None)).tobytes() == xa
+
+
+@pytest.mark.parametrize('c_on', [True, False], ids=['c', 'python'])
+def test_a_grid_transient_keeping_factors_is_its_run(c_on, monkeypatch):
+    """The grid's Gear-2 run on the reduction with eight factors kept: every
+    byte, step and count the run keeping none makes, its C loop's and its
+    Python's alike; the step sizes it comes back to after each corner
+    served by a kept factor."""
+    a = _run(True, c_on, monkeypatch)
+    monkeypatch.setattr(_cholklu, 'KEEP', 8)
+    b = _run(True, c_on, monkeypatch)
+    assert a[1:4] == b[1:4], (a[2:4], b[2:4])
+    assert a[5]['hits'] == 0 and b[5]['hits'] > 0, (a[5], b[5])
+    assert b[5]['factorizations'] < a[5]['factorizations'], (a[5], b[5])
+
+
+def test_a_kept_factor_is_matched_on_every_value():
+    """A kept factor is served only to the very values it was made on: J'
+    and J'' each differ from J at one free node's diagonal, both places
+    outside the entries the comparison reads first (`ck_keep`'s 64) -- J''
+    meets J's kept factor and is factored anew, its bytes the run keeping
+    none makes, no refactor check failing."""
+    c = _grid()
+    iref = c.get_node_index(gnd)
+
+    def sequence(keep):
+        sk = _solver(c)
+        sk.keep_factors(keep)
+        nnz = sk.nnz
+        nsig = min(64, nnz)
+        sig = {int((k + 0.5) * nnz / nsig) for k in range(nsig)}
+        J, _iref = _matrix(c, 1e-12)
+        places = []
+        for name in ('n2_3', 'n3_2', 'n4_1', 'n1_4'):
+            i = c.get_node_index(name)
+            r = i - (i > iref)
+            p = sk.Ap[r] + int(np.flatnonzero(sk.Ai[sk.Ap[r]:sk.Ap[r + 1]] == r)[0])
+            if p not in sig:
+                places.append(r)
+        assert len(places) >= 2, places
+        J1, J2 = J.copy(), J.copy()
+        J1[places[0], places[0]] *= 1.5
+        J2[places[1], places[1]] *= 1.5
+        b = np.random.default_rng(4).standard_normal(sk.m)
+        xs = [np.asarray(sk.solve(A, b, None)).tobytes() for A in (J, J1, J2)]
+        return xs, sk
+    want, _sk1 = sequence(1)
+    got, sk = sequence(3)
+    assert got == want
+    assert sk.kept_counts()['hits'] == 0 and sk.kept_counts()['factorizations'] == 3, sk.kept_counts()
+    assert (sk.residual_fallbacks, sk.residual_kept) == (0, 0)
