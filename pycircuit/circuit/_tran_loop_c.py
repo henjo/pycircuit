@@ -878,6 +878,23 @@ def _corners(s, loop, tr):
     s.land_ahead, s.corner_cut = int(bool(tr.par.land_ahead)), float(tr.par.corner_cut or 0.0)
 
 
+def _kept(tr, td, x, cmax):
+    """1 where the Python keeps a QUIET verdict for a constant `C` that
+    still answers (`_branch_screen`'s own test, `_branch_kept`) and the
+    running maximum `cmax` stands as kept: every screen of the entry would
+    read that `C` at that maximum, so branch.c answers QUIET without reading
+    it (branch.h's `kept`, counted `loop_c:screen_kept`) -- else 0."""
+    kept = td.get('_branch_const')
+    if kept is None or kept[4][0]:
+        return 0
+    const = tr._branch_constant(x)
+    hit = tr._branch_kept(const, tr._branch_structural_rank()[0]) if const is not None else None
+    if hit is None or hit[0][0] or hit[1] != cmax:
+        return 0
+    _PC['loop_c:screen_kept'] += 1
+    return 1
+
+
 def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     """The struct loaded with the state as the Python loop leaves it -- the
     rings, the history, the cached C, the step record, the run's constants
@@ -902,6 +919,7 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     s.cmax = td.get('_branch_cmax', 0.0)
     if run_.br is not None:
         run_.br[0].ncert = 0
+        run_.br[0].kept = _kept(tr, td, cx, s.cmax)
     s.t, s.h = loop.t, loop.h
     s.landing, s.is_first = int(bool(loop.landing)), int(bool(tr._is_first_step))
     s.order_drop = int(bool(loop.order_drop))

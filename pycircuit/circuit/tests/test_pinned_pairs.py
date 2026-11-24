@@ -1231,9 +1231,9 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('d261e8ede738', '84f57a70a524'),
+    'the stepping loop and its C': ('d261e8ede738', 'f6843ae59a64'),
     'the predictor and its C': ('9e611c84de5a', '9b16bd4e0f30'),
-    'the branch screen and its C': ('4bdc811d2897', '52d419666eb9'),
+    'the branch screen and its C': ('7b733bcef5f0', 'c6a3d7888dea'),
     'the sources and their C': ('635a8af4da45', 'f88ea8344a32'),
     'the kernel call and the pass driver': ('ef3f2c059587', '5a9e89626ca0'),
     'the limiting loop and the walk': ('6100313c0fdb', 'b3cf8aef45d6'),
@@ -1262,16 +1262,16 @@ RECORD = {
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('03f9482bdd72', 'c025357cb495'),
     'the KLU step map and its C': ('5b9b1f672523', '94dfea9dc33d'),
-    'the stage walk and its C': ('065ef4fd6de1', '093e0853fc7d'),
-    'the multistep walk and its C': ('610c04582db5', '05185ae2c6cf'),
+    'the stage walk and its C': ('fc9149f0b806', 'aa4131af99f2'),
+    'the multistep walk and its C': ('610c04582db5', 'dd3421ee957c'),
     'the multistep step map and its C': ('985dde19187d', 'd6c3dcf5119d'),
     'the stage readers and their one read': ('d25552fe5ede', '2798b147a3c5'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
     'the readiness reads and their stamps': ('8ee74f103a32', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('91d50c728a8a', '56984981dd4c'),
-    'the transform loop and its C': ('231bcba1babb', 'f53bce7f70b0'),
+    'the stage loop and its C': ('91d50c728a8a', 'f2f0ada03c5b'),
+    'the transform loop and its C': ('231bcba1babb', '282c8d294d38'),
     'the pulse and its arrays': ('7bdf4ed87d73', '21f3cc79de17'),
 }
 

@@ -50,6 +50,12 @@ typedef struct {
        (`_tran_branch_c.ref_index`), read in every mode; a zeroed struct, or
        an index past n, leaves nothing out. */
     long iref1;             /* the reference node's index + 1; 0: none */
+    /* A VERDICT KEPT: the Python keeps a QUIET verdict for a constant C
+       (`_branch_kept`) and the running maximum stands as kept, so every
+       screen would read that C at that maximum -- QUIET, C not read, `ref`
+       the maximum as it stands, `nrm` not written.  Set by the C loop at
+       each entry (`_tran_loop_c._load`); a zeroed struct keeps nothing. */
+    long kept;              /* 1: answer QUIET */
 } branch_t;
 long pcx_branch(branch_t *s);
 

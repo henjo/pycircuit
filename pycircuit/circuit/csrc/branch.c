@@ -83,6 +83,12 @@ long pcx_branch(branch_t *s)
        entries read -- packed, or in C's n * n -- or -1 */
     long g = (s->iref1 >= 1 && s->iref1 <= n) ? s->iref1 - 1 : -1;
     long skip = g < 0 ? -1 : (s->sets ? (long) s->dpk[g] : g * (n + 1));
+    /* a verdict kept (`kept`, branch.h): `max(cmax, nrm)` is cmax, the
+       kept C's largest entry within it */
+    if (s->kept) {
+        s->ref = s->cmax;
+        return s->verdict = BRANCH_QUIET;
+    }
     /* `Ca.max()` with the reference's diagonal zeroed: no NaN (tested) and
        no -0.0 (a fabs), so a running `>` from +0.0 is numpy's maximum in
        any order; the entries off the pattern are +0.0 and change no

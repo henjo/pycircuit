@@ -205,6 +205,30 @@ def test_a_pattern_missing_the_largest_entry_is_another_screen():
     assert full[1] == 5.0 and short[1] != full[1]
 
 
+def test_a_kept_verdict_answers_quiet_without_reading_c():
+    """branch.h's `kept` (the C loop's, where the Python keeps a quiet
+    verdict for a constant C -- `_tran_loop_c._kept`): QUIET at once, `ref`
+    the running maximum as it stands, `nrm` not written, C not read -- a
+    NaN in it, a bail unkept, unread.  A zeroed struct keeps nothing."""
+    drv = _tran_branch_c.driver()
+    if drv is None:
+        pytest.skip(_tran_branch_c.STATUS)
+    ffi, cfn = drv[0], drv[1]
+    C = np.eye(3) * 1e-3
+    C[1, 1] = 0.0
+    C[2, 2] = np.nan
+
+    def call(kept=None):
+        s = ffi.new('branch_t *')
+        s.n, s.C, s.cmax, s.tol_rel, s.nrm = 3, ffi.from_buffer('double *', C), 1e-3, 1e-9, -1.0
+        if kept is not None:
+            s.kept = kept
+        return cfn(s), s.ref, s.nrm
+
+    assert _tran_branch_c.BAIL.get(call()[0]) == _tran_branch_c.BAIL.get(call(0)[0]) == 'nonfinite'
+    assert call(1) == (_tran_branch_c.QUIET, 1e-3, -1.0)
+
+
 ## -- whole runs ---------------------------------------------------------------
 
 def _mos_chain(n=6, cap=1e-13):
@@ -246,5 +270,8 @@ def test_a_run_is_the_same_with_the_screen_in_c(name, build, kw, monkeypatch):
     on = _run(build, True, monkeypatch, **dict(kw))
     assert on[:4] == off[:4]
     assert on[4].get('branch_c:served', 0) > 5
+    ## (a MOS's charge: C never constant, no verdict kept -- every attempt
+    ## screens in C, `_tran_loop_c._screen`)
+    assert on[4].get('loop_c:screen_kept', 0) == 0
     if name == 'sparse':
         assert on[4].get('branch_c:pattern', 0) > 5

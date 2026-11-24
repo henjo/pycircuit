@@ -6428,3 +6428,16 @@ deep in the first step, as an index or a broadcast error, or on a
 million-node grid as a request for 7.9 TiB from a dense fallback, none of
 them naming the state or its length.  `solve` now checks the shape first and
 says what it got, what the circuit needs and, one short, the likely cause.
+
+## CK: the C loop does not re-screen a constant C (2026-11-24)
+
+### `_tran_loop_c._kept`, branch.h's `kept`, `_BranchCheck._branch_kept`
+
+2026-11-24 (`doc/hdl_roadmap_260824.md`, 347; plan 261 L22).  Where the
+capacitance matrix is constant, the branch check's verdict cannot change
+during a run, and the Python keeps it after its first screen.  The compiled
+stepping loop screened anyway, every attempt -- about 1 % of a run on the
+million-node grids -- and where the verdict had needed an SVD it handed
+every attempt back to the Python.  It now takes the Python's kept verdict,
+by the Python's own test, at each entry; every answer and count is
+unchanged.

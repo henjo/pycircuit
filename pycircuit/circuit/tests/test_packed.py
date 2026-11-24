@@ -928,3 +928,41 @@ def test_the_check_reads_c_without_the_reference(layout, n, small, fires, monkey
     assert got == ([], None, fires, 1e-12, 0, n + 1), repr(got)
     assert counts.get('branch.rank:reduced', 0) == 3, repr(counts)
     assert not packed or fires or counts.get('loop_c:steps', 0) > 0, repr(counts)
+
+
+@pytest.mark.parametrize('small', [1e-15, 1e-19], ids=['cheap-level-quiet', 'svd-quiet'])
+def test_the_c_loop_keeps_a_constant_cs_quiet_verdict(small, monkeypatch):
+    """A CONSTANT C'S QUIET VERDICT IS NOT SCREENED AGAIN IN C
+    (`_tran_loop_c._kept`, branch.h's `kept`, `_branch_kept`): the grounded
+    ladder packed past DENSE_MAX, the C loop serving.  The Python's first
+    screen keeps its verdict and the loop's entries answer it
+    (`loop_c:screen_kept`); with nothing kept (`_branch_kept` answering
+    None) every attempt screens in C -- where the cheap level fires (1e-19
+    F), handing each attempt back to the Python's SVD.  The run's bytes and
+    running maximum the same either way."""
+    monkeypatch.setattr(_packed, 'PACKED_FROM', 0)
+    monkeypatch.setattr(_packed, 'DENSE_MAX', 1)
+    monkeypatch.setattr(Transient, 'BRANCH_CERT_MAX_N', 0)
+    ## (a short run first: a process's first run can leave the loop)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        Transient(_grounded_ladder(2100, small), toolkit=numeric).solve(
+            tend=3e-10, timestep=1e-10, fixed_timestep=True)
+
+    def run(keep):
+        before = _paths.snapshot()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tr = Transient(_grounded_ladder(2100, small), toolkit=numeric)
+            if not keep:
+                tr._branch_kept = lambda const, r0: None
+            res = tr.solve(tend=3e-9, timestep=1e-10, fixed_timestep=True)
+        return np.asarray(res.x, float).tobytes(), tr._branch_cmax, _paths.since(before)
+
+    kept, made = run(True), run(False)
+    assert kept[:2] == made[:2]
+    ck, cm = kept[2], made[2]
+    assert ck.get('loop_c:steps', 0) >= 29 and ck.get('loop_c:bail:screen', 0) == 0, repr(ck)
+    assert ck.get('loop_c:screen_kept', 0) > 0 and cm.get('loop_c:screen_kept', 0) == 0, \
+        repr((ck, cm))
+    assert (cm.get('loop_c:bail:screen', 0) > 0) == (small == 1e-19), repr(cm)

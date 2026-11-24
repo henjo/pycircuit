@@ -207,7 +207,7 @@ def _rc():
 _PATHS = {'python': (False, False), 'python loop, C screen': (True, False), 'C loop': (True, True)}
 
 
-def _run(monkeypatch, path, cert, build=_rc, **kw):
+def _run(monkeypatch, path, cert, build=_rc, keep=True, **kw):
     screen, loop = _PATHS[path]
     monkeypatch.setattr(_tran_branch_c, 'ENABLED', screen)
     monkeypatch.setattr(_tran_loop_c, 'ENABLED', loop)
@@ -216,6 +216,8 @@ def _run(monkeypatch, path, cert, build=_rc, **kw):
         warnings.simplefilter('ignore')
         tr = Transient(build(), toolkit=circuit.numeric)
         tr.BRANCH_CERT = cert
+        if not keep:
+            tr._branch_kept = lambda const, r0: None
         res = tr.solve(tend=3e-8, timestep=2e-10, **kw)
     st = tr.statistics
     return tr, (np.asarray(res.x, float).tobytes(), st.accepted_steps, st.rejected_steps,
@@ -225,15 +227,17 @@ def _run(monkeypatch, path, cert, build=_rc, **kw):
 def test_a_run_is_the_same_with_the_certificate_on_every_path(monkeypatch):
     """The circuit the certificate proves: the waveform and the counts the
     same with it off and on, on the three paths; on, every screen the C
-    makes is proved, and the C loop takes the attempts it handed back."""
-    _tr, off, off_counts = _run(monkeypatch, 'C loop', False)
+    makes is proved, and the C loop takes the attempts it handed back.
+    (Every screen made: this C is constant, its verdict otherwise kept --
+    `_branch_kept` -- and the C loop's screens answered by it.)"""
+    _tr, off, off_counts = _run(monkeypatch, 'C loop', False, keep=False)
     assert off_counts.get('loop_c:bail:screen', 0) > 0
     for path in _PATHS:
-        _tr, on, counts = _run(monkeypatch, path, True)
+        _tr, on, counts = _run(monkeypatch, path, True, keep=False)
         assert on == off, path
         if path != 'python':
             assert counts['branch_c:cert'] == counts['branch_c:served'] > 0, (path, counts)
-    _tr, _on, counts = _run(monkeypatch, 'C loop', True)
+    _tr, _on, counts = _run(monkeypatch, 'C loop', True, keep=False)
     assert counts.get('loop_c:bail:screen', 0) == 0
     assert counts['loop_c:attempts'] > 0.9 * off[1]
 

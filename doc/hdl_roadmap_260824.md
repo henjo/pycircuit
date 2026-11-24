@@ -17191,3 +17191,56 @@ one short, one long, a column; the message, its hint one short alone) and `test_
 fail).
 
 **Found, not changed:** none new.
+
+## 2026-11-24 — 347. CK: the C loop does not re-screen a constant C
+
+**Why**  Plan 261 L22 (tc/plan_l22_branch_margin.md, CK); found by BM (sec. 342).  The Python's screen keeps a constant
+C's verdict after a run's first screen (`_branch_const`: the same plan's C, r0 and running maximum); the C loop screened
+anyway at every attempt -- branch.c's cheap level over C's entries, ~15 ms an attempt at a million unknowns -- and,
+where the kept verdict was the SVD's (the cheap level firing on a constant C), handed every attempt back to the Python.
+Andreas "start with the next steps you just mentioned", then "Yes build both".  Prototyped (no screen bound where the
+kept verdict is quiet), 1 ns from D1's operating points, two interleaved pairs each: ibmpg3t 0.982 / 0.993x, ibmpg6t
+0.978 / 0.999x, the steps, digests and r0 the same, the screen kept on 5 / 7 loop entries.  Line (set before): (a) the
+gate against ee210fdb -- every deck's results the same, the counters the same but on decks whose C is constant (the C
+loop's screens, `memo.C:equal`, gone; `loop_c:screen_kept` new); C against Python 0 differing; the suite; (b) ibmpg3t
+and 6t 1 ns, two interleaved pairs each: the bytes the same, 3t's median <= 0.995x, 6t's <= 1.00x; (c) a test, bitten:
+the grounded ladder packed past DENSE_MAX with the C loop serving -- the screen kept, the run's bytes those with the
+screen made; a varying C still screened in C; (d) size >= 0.98x, ruff the base's.
+
+**What.**  The prototype's design changed, the line kept.  Binding no screen moved `memo.C:equal`: the C loop makes the
+Python's counts for its attempts (`_tran_loop_c._count`), and the Python's kept path still reads C before it answers --
+so the loop's A/B against the Python (test_loop_c, test_packed) failed wherever C is constant, the sparse MOS chain's
+too (MOS level 1, no charge).  Built: the screen stays bound; branch.h's `branch_t` gains `kept` (at its end), on which
+`pcx_branch` answers QUIET without reading C, `ref` the running maximum as it stands, `nrm` not written;
+`_tran_loop_c._kept` sets it at each loop entry by the Python's own test -- `_BranchCheck._branch_constant` and
+`_branch_kept`, factored out of `_branch_screen`, which calls them -- counted `loop_c:screen_kept`.  Every count the
+Python makes stays the same: (a)'s "`memo.C:equal` gone" became "nothing gone".  The screen's other users (the stage and
+transform loops, the shooting walks) bind structs of their own, zeroed, and keep nothing.
+
+**Measured.**  (a) MET -- the gate against ee210fdb: every deck's results and path counters the same under dc, gear2,
+radau, their forced settings and on size; C against Python 0 differing on the decks and at size.  branch.c's 3 changed
+executable lines and 2 arms: the arm not taken reached by the decks, the kept arm by the fixtures alone -- the gate's
+NOT REACHED.  Compared by a forced run instead: the grounded ladder (2 100 nodes, packed past DENSE_MAX forced to 1, the
+certificate off) under test_loop_c's A/B, the C loop against the Python's -- x, t, statistics, warnings, counts, the
+run's state -- 4 / 4 the same, fixed and adaptive, the kept verdict the cheap level's (1 fF) and the SVD's (1e-19 F),
+the kept arm reached in each (`loop_c:screen_kept` 1: every C step in that entry); and by (b)'s grids, tree against
+base.  Suite 6 831 passed, 10 skipped, 5 xfailed (with X0, the previous section).  (b) MET -- ibmpg3t 175.03 / 174.70 s
+against 176.27 / 175.84 s (0.993 / 0.994x, median 0.993x), ibmpg6t 224.73 / 224.33 s against 230.16 / 227.15 s (0.976 /
+0.988x, median 0.982x); the bytes, steps and r0 the same (a50c274f798d, 00bcf01bf93e); the screen kept on 5 / 7 entries;
+the peak memory +5 / +13 MB of 4.7 / 7.0 GB, the same in each tree's two runs (the heap's layout: M3's ~20 MB, sec.
+338).  (c) MET -- below.  (d) MET -- size every digest and step count the same, medians new / head 0.995-1.010; ruff the
+base's.
+
+**Tests.**  `test_packed` +1 (2 cases): `test_the_c_loop_keeps_a_constant_cs_quiet_verdict` -- the grounded ladder
+packed past DENSE_MAX, the C loop serving, quiet at the cheap level (1 fF) and by the SVD (1e-19 F): kept, the bytes and
+the running maximum those with nothing kept (`_branch_kept` answering None), `loop_c:screen_kept` counted only kept, no
+attempt handed back kept, the SVD-quiet attempts handed back with nothing kept.  `test_branch_c` +1:
+`test_a_kept_verdict_answers_quiet_without_reading_c` (a C with a NaN on its diagonal: not kept, the bail; kept, QUIET
+with the maximum as it stands, `nrm` not written); the C screen's run test asserts nothing kept there.
+`test_branch_certificate`: its every-path test makes every screen (its circuit's C is constant, its verdict otherwise
+kept).  Three bites, three bit: `kept` never set (both packed cases); branch.c ignoring it (the unit test and the
+SVD-quiet case); kept on a varying C's run (four MOS-chain tests).  Six pinned pairs re-recorded after their twins'
+tests (88 passed): the stepping loop, the branch screen, the stage walk, the multistep walk, the stage loop, the
+transform loop.
+
+**Found, not changed:** none new.

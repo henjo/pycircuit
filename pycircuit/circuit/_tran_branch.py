@@ -739,18 +739,12 @@ class _BranchCheck:
         ## instructions a screen in situ, +1.6 % on the 4049 oscillator
         ## (whose MOS `C` is never constant), so a NO is kept for the
         ## parameter epoch -- a stale no only forgoes the shortcut.
-        const = None
-        epoch = _param.ParameterDict._epoch
-        if self.__dict__.get('_branch_varying') is not epoch:
-            const = _stamp_plan.constant_matrix(self.cir, 'C', x)
-            if const is None:
-                self._branch_varying = epoch
-        kept = self.__dict__.get('_branch_const')
-        if const is not None and kept is not None and kept[0] is const and kept[1] == r0:
-            ref = max(getattr(self, '_branch_cmax', 0.0), kept[2])
-            if ref == kept[3]:
-                self._branch_cmax = ref
-                return kept[4]
+        const = self._branch_constant(x)
+        if const is not None:
+            hit = self._branch_kept(const, r0)
+            if hit is not None:
+                self._branch_cmax = hit[1]
+                return hit[0]
         ## (the cheap level in C where it serves, the certificate with it:
         ## the same verdict, the SVD the Python's -- `_tran_branch_c`, the C
         ## loop plan's stage 3)
@@ -766,6 +760,33 @@ class _BranchCheck:
         if const is not None:
             self._branch_const = (const, r0, nrm, self._branch_cmax, verdict)
         return verdict
+
+    def _branch_constant(self, x):
+        """The plan's constant `C` (`_stamp_plan.constant_matrix`, served at
+        `x`), or None -- a NO kept for the parameter epoch
+        (`_branch_varying`)."""
+        epoch = _param.ParameterDict._epoch
+        if self.__dict__.get('_branch_varying') is epoch:
+            return None
+        const = _stamp_plan.constant_matrix(self.cir, 'C', x)
+        if const is None:
+            self._branch_varying = epoch
+        return const
+
+    def _branch_kept(self, const, r0):
+        """`(verdict, the running maximum with it)` where the verdict kept
+        for a constant `C` still answers -- `const` the plan's constant C
+        (`_stamp_plan.constant_matrix`) and the kept one's object, `r0` the
+        same, the running maximum unmoved by its largest entry -- else
+        None.  `_branch_screen`'s test, and the C loop's
+        (`_tran_loop_c._kept`: branch.h's `kept`, its screens answered
+        QUIET without reading C)."""
+        kept = self.__dict__.get('_branch_const')
+        if kept is not None and kept[0] is const and kept[1] == r0:
+            ref = max(getattr(self, '_branch_cmax', 0.0), kept[2])
+            if ref == kept[3]:
+                return kept[4], ref
+        return None
 
     def _branch_screen_C(self, C, r0):
         """`_branch_screen`'s verdict on the dense `C` and `C`'s largest
