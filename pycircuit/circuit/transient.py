@@ -735,6 +735,27 @@ _RUN_STATE = {
 #: ~0.97 of it where the prediction holds
 LAND_STRETCH = 1.1
 
+#: THE STEP LADDER's kept factors (`Transient.step_ladder`, `_cholklu`'s THE
+#: KEPT FACTORS): around a corner a run on the ladder cycles through ~7-8
+#: matrices -- the cut's step, the regrowth at each ratio, the approach and
+#: the landing -- so eight held let the next corner find them all
+LADDER_KEEP = 8
+
+
+def _ladder_rung(h, anchor, minstep):
+    """THE STEP LADDER's rung for an asked size `h`: the largest `anchor` x
+    2^-k not over `h` (within 1e-9 of it: that rung), halved exactly --
+    loop.c's `ladder_rung` bit for bit -- or `h` itself where `h` is not
+    below the anchor, not positive, or the rung would fall under
+    `minstep`."""
+    if not (h > 0.0 and anchor > 0.0) or h >= anchor:
+        return h
+    r = anchor
+    lim = h * (1.0 + 1e-9)
+    while r > lim:
+        r *= 0.5
+    return r if r >= minstep else h
+
 
 class _SteppingLoop:
     """THE ONE STEPPING LOOP of `Transient._solve`, over a step family
@@ -820,6 +841,9 @@ class _SteppingLoop:
         ## History: `doc/transient_history.md`, `Transient._solve`.
         self.h = timestep if self.fixed else min(tr._opening_step(timestep),
                                                  run.max_step)
+        ## THE STEP LADDER's anchor (`Transient.step_ladder`): the run's
+        ## `max_step` where on, 0.0 where off -- `_corner_size` reads it
+        self.ladder = 0.0 if self.fixed else tr._step_ladder(family, run)
         self.t = 0.0
         self.landing = self.order_drop = self.landing_ahead = False
         self.rejects = self.point_retries = 0
@@ -979,18 +1003,32 @@ class _SteppingLoop:
         into differences of 1e-3 .. 1e-1 between two runs whose solves round
         differently, and the steps after it ramp up at the growth cap.
 
+        THE STEP LADDER (`Transient.step_ladder`, `ladder` the run's anchor):
+        first the size asked is rounded down to a rung, `max_step` x 2^-k
+        (`_ladder_rung`), the cut's size after it too, and the approach to a
+        breakpoint is a rung at most half the way (then the landing) in place
+        of two equal halves -- so a run comes back to the same few step sizes,
+        and on a linear grid to the same matrices, whose factors are kept
+        (`LADDER_KEEP`).  A smaller step than the error test allows: none
+        larger is taken.
+
         Returns the size; `landing_ahead` set where it stretched."""
         par = self.tr.par
         self.landing_ahead = False
+        a = self.ladder
+        if a:
+            h = _ladder_rung(h, a, self.minstep)
         rem = float(t_break - t)
         cut = par.corner_cut
         if cut and on_corner:
             h = min(h, cut * min(h, rem))
+            if a:
+                h = _ladder_rung(h, a, self.minstep)
         if par.land_ahead and h < rem < 2.0 * h and rem < self.tend - t:
             if rem <= LAND_STRETCH * h and rem <= self.run.max_step:
                 self.landing_ahead = True
             else:
-                h = 0.5 * rem
+                h = _ladder_rung(0.5 * rem, a, self.minstep) if a else 0.5 * rem
         return h
 
     def take(self):
@@ -1684,6 +1722,17 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         'this fraction of the smaller of the size asked and the gap '
                         'to the next breakpoint (0: no cut)',
                    unit='', default=0.25),
+         ## THE STEP LADDER (`_SteppingLoop._corner_size`, `_step_ladder`;
+         ## `doc/hdl_roadmap_260824.md`, 350): an adaptive step's size rounded
+         ## down to `max_step` x 2^-k, so the matrices of a linear grid recur
+         ## and CHOLMOD's kept factors serve them -- on by default where the
+         ## run's matrix is the SPD reduction's (Andreas, 2026-11-24)
+         Parameter(name='step_ladder',
+                   desc="An adaptive step's size is rounded down to max_step / 2**k "
+                        "(the corner cut's and the approach to a breakpoint too), and "
+                        "its CHOLMOD factors are kept: 'auto' -- a multistep run whose "
+                        "matrix is the linear grid's SPD reduction --, True or False",
+                   unit='', default='auto'),
          ## DEVICE BYPASS (SPICE's), OFF BY DEFAULT, GEAR-2 ALONE: a device the
          ## evaluation core evaluates (compiled, in a circuit the core serves)
          ## whose terminal voltages each moved within `reltol` * |v| + `vabstol`
@@ -1846,8 +1895,42 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         ## run has been accepted, and it is what the step controller is given.
         self._no_history = True
 
-    
-    
+
+
+    def _step_ladder(self, family, run):
+        """THE STEP LADDER's anchor for an adaptive run (`step_ladder`): the
+        run's `max_step` where the ladder is on, 0.0 where off.  True: on.
+        'auto': on for a multistep run (`_LMMSteps`) whose matrix is the
+        linear grid's SPD reduction -- an AutoSolver's choice, made here as
+        its first matrix would make it (`_packed.choice`, or
+        `AutoSolver.choose_on_structure`: `_tran_newton_c._choice`'s), the
+        StructuralKLU on CHOLMOD (`_cholklu`, from `CHOLMOD_FROM` unknowns)
+        -- whose factors are then kept (`LADDER_KEEP`, within
+        `_cholklu.KEEP_BYTES`).  Below `CHOLMOD_FROM`, or with CHOLMOD off,
+        nothing is chosen early."""
+        mode = self.par.step_ladder
+        if mode is True:
+            return float(run.max_step)
+        if mode is False or mode is None:
+            return 0.0
+        if mode != 'auto':
+            raise ValueError(f"step_ladder must be 'auto', True or False, not {mode!r}")
+        if type(family) is not _LMMSteps:
+            return 0.0
+        from pycircuit.circuit import _cholklu, linearsolver
+        m = self.cir.n - 1
+        if not _cholklu.ENABLED or m < _cholklu.CHOLMOD_FROM:
+            return 0.0
+        ls = self._get_linearsolver()
+        if type(ls) is not linearsolver.AutoSolver:
+            return 0.0
+        ch = (_packed.choice(ls, m) if _packed.active(self.cir)
+              else ls._choice or ls.choose_on_structure(m))
+        if type(ch) is not linearsolver.StructuralKLU or not ch.cholmod:
+            return 0.0
+        ch.keep_factors(LADDER_KEEP)
+        return float(run.max_step)
+
     def _opening_step(self, timestep):
         """The size of the first step of a run.
 

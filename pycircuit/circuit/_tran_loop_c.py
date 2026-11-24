@@ -876,6 +876,8 @@ def _corners(s, loop, tr):
     multistep and the stage loops' (`_tran_stageloop_c._load`)."""
     s.t_break = float(loop.__dict__.get('t_break', 0.0))
     s.land_ahead, s.corner_cut = int(bool(tr.par.land_ahead)), float(tr.par.corner_cut or 0.0)
+    ## (THE STEP LADDER's anchor the run holds: `Transient._step_ladder`)
+    s.ladder = float(getattr(loop, 'ladder', 0.0))
 
 
 def _kept(tr, td, x, cmax):

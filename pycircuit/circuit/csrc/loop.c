@@ -169,8 +169,23 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
     ck_commit(s);
 }
 
+/* THE STEP LADDER's rung for an asked size `h` (`transient._ladder_rung`):
+   the largest anchor x 2^-k not over h (within 1e-9 of it: that rung),
+   halved exactly -- the Python's bit for bit -- or h itself where h is not
+   below the anchor, not positive, or the rung would fall under `minstep` */
+static double ladder_rung(double h, double anchor, double minstep)
+{
+    double r = anchor, lim;
+    if (!(h > 0.0 && anchor > 0.0) || h >= anchor) return h;
+    lim = h * (1.0 + 1e-9);
+    while (r > lim) r *= 0.5;
+    return r >= minstep ? r : h;
+}
+
 /* an adaptive attempt's size against the breakpoint ahead
-   (`_SteppingLoop._corner_size`): THE CORNER'S START -- from the breakpoint
+   (`_SteppingLoop._corner_size`): THE STEP LADDER first, where on -- the
+   size asked rounded down to a rung, the cut's and the approach's too --
+   then THE CORNER'S START -- from the breakpoint
    just landed on, at most `corner_cut` x min(the size, the gap) -- then
    LANDING AHEAD -- a breakpoint beyond the step but within two of it, before
    the run's end, stretched onto (1: a landing) within `LAND_STRETCH` x the
@@ -178,11 +193,14 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
 static int corner_size(const loop_t *s, double t, double *h, double t_break, int on_corner)
 {
     double rem = t_break - t;
-    if (s->corner_cut != 0.0 && on_corner)
+    if (s->ladder != 0.0) *h = ladder_rung(*h, s->ladder, s->minstep);
+    if (s->corner_cut != 0.0 && on_corner) {
         *h = pcx_py_min(*h, s->corner_cut * pcx_py_min(*h, rem));
+        if (s->ladder != 0.0) *h = ladder_rung(*h, s->ladder, s->minstep);
+    }
     if (s->land_ahead && *h < rem && rem < 2.0 * *h && rem < s->tend - t) {
         if (rem <= LAND_STRETCH * *h && rem <= s->max_step) return 1;
-        *h = 0.5 * rem;
+        *h = s->ladder != 0.0 ? ladder_rung(0.5 * rem, s->ladder, s->minstep) : 0.5 * rem;
     }
     return 0;
 }

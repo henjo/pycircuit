@@ -403,6 +403,10 @@ typedef struct {
        `Transient.corner_cut` (0.0: no cut) */
     long land_ahead;
     double corner_cut;
+    /* the run: THE STEP LADDER's anchor (`Transient.step_ladder`, the run's
+       `max_step`; 0.0: off) -- an adaptive attempt's size, the corner cut's
+       and the approach's rounded down to anchor x 2^-k (`ladder_rung`) */
+    double ladder;
 } loop_t;
 long pcx_loop(loop_t *s);
 

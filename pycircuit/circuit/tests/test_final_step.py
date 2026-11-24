@@ -79,7 +79,7 @@ def _loop(t, h, tend, fixed=False):
                          _is_first_step=False)
     family = SimpleNamespace(next_breakpoint=lambda _t: float('inf'))
     lp = SimpleNamespace(tr=tr, t=t, h=h, tend=tend, fixed=fixed, timestep=h, landing=False,
-                         order_drop=False, imposed=False, family=family)
+                         order_drop=False, imposed=False, family=family, ladder=0.0, minstep=1e-18)
     ## (the size against the breakpoint ahead: none ahead, the size as asked)
     lp._corner_size = lambda *a: trmod._SteppingLoop._corner_size(lp, *a)
     return lp

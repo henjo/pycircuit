@@ -204,13 +204,13 @@ def test_the_threshold_the_switch_and_the_dc_keep_klu(monkeypatch):
     assert not choice(tran)._choice.cholmod
 
 
-def _run(chol, c_on, monkeypatch, **make):
+def _run(chol, c_on, monkeypatch, edge=1e-10, **make):
     from pycircuit.circuit import _tran_loop_c, _tran_lte_c, _tran_newton_c
     monkeypatch.setattr(_cholklu, 'CHOLMOD_FROM', 0 if chol else 1 << 40)
     for mod in (_tran_loop_c, _tran_lte_c, _tran_newton_c):
         monkeypatch.setattr(mod, 'ENABLED', c_on)
     c = _grid(16, 16)
-    c['ip'] = IPulse('n8_8', 'n0_0', i1=0.0, i2=5e-3, td=1e-10, tr=1e-10, tf=1e-10, pw=4e-10,
+    c['ip'] = IPulse('n8_8', 'n0_0', i1=0.0, i2=5e-3, td=1e-10, tr=edge, tf=edge, pw=4e-10,
                      per=2e-9)
     before = _paths.snapshot()
     with warnings.catch_warnings():
@@ -231,7 +231,8 @@ def test_a_grid_transient_on_cholmod_is_its_klu_run_and_its_c_the_python(chord, 
     Newton, error test and stepping loop serve (their KLU entries the
     reduction's), the run the Python's byte for byte; against KLU's run the
     same steps, the answers within rounding."""
-    make = {'chord_jacobian': chord}
+    ## (today's stepping on both: the ladder is the reduction's alone -- its own tests below)
+    make = {'chord_jacobian': chord, 'step_ladder': False}
     k = _run(False, True, monkeypatch, **make)
     c = _run(True, True, monkeypatch, **make)
     p = _run(True, False, monkeypatch, **make)
@@ -339,9 +340,10 @@ def test_a_grid_transient_keeping_factors_is_its_run(c_on, monkeypatch):
     byte, step and count the run keeping none makes, its C loop's and its
     Python's alike; the step sizes it comes back to after each corner
     served by a kept factor."""
-    a = _run(True, c_on, monkeypatch)
+    ## (today's stepping: the ladder, which keeps factors of its own accord, off)
+    a = _run(True, c_on, monkeypatch, step_ladder=False)
     monkeypatch.setattr(_cholklu, 'KEEP', 8)
-    b = _run(True, c_on, monkeypatch)
+    b = _run(True, c_on, monkeypatch, step_ladder=False)
     assert a[1:4] == b[1:4], (a[2:4], b[2:4])
     assert a[5]['hits'] == 0 and b[5]['hits'] > 0, (a[5], b[5])
     assert b[5]['factorizations'] < a[5]['factorizations'], (a[5], b[5])
@@ -382,3 +384,122 @@ def test_a_kept_factor_is_matched_on_every_value():
     assert got == want
     assert sk.kept_counts()['hits'] == 0 and sk.kept_counts()['factorizations'] == 3, sk.kept_counts()
     assert (sk.residual_fallbacks, sk.residual_kept) == (0, 0)
+
+
+## THE STEP LADDER (`Transient.step_ladder`, `transient._ladder_rung`, loop.c's twin; plan 261 L24 stage LB)
+
+def test_a_ladder_rung_is_the_largest_power_of_two_below():
+    """`_ladder_rung`: the largest anchor x 2^-k not over the size asked --
+    within 1e-9 of a rung, that rung -- exact (each a halving); the size
+    itself where it is not below the anchor, not positive, or the rung would
+    fall under `minstep`."""
+    from pycircuit.circuit.transient import _ladder_rung
+    a = 1e-11
+    for h, want in ((1e-11, 1e-11), (9.9e-12, 5e-12), (5e-12, 5e-12), (4.99e-12, 2.5e-12),
+                    (1e-11 * (1 - 1e-12), 1e-11), (5e-12 * (1 - 1e-12), 5e-12), (1.3e-12, 1.25e-12)):
+        assert _ladder_rung(h, a, 1e-18) == want, (h, want)
+    assert _ladder_rung(2e-11, a, 1e-18) == 2e-11
+    assert _ladder_rung(0.0, a, 1e-18) == 0.0 and np.isnan(_ladder_rung(np.nan, a, 1e-18))
+    assert _ladder_rung(1.3e-12, a, 1.26e-12) == 1.3e-12
+    r = _ladder_rung(3e-14, a, 1e-18)
+    assert r == a * 2.0 ** -round(np.log2(a / r)) and r <= 3e-14 < 2 * r
+
+
+def _ladder_run(c_on, monkeypatch, chol=True, edge=1e-10, **make):
+    """The grid's run (`_run`'s, the threshold at 0 where `chol`): x, digest,
+    statistics, counts as `_run`, the paths, the kept counts -- and the
+    accepted steps' sizes, their end times, the pulse's corners, the anchor."""
+    from pycircuit.circuit import transient as trmod
+    got = {}
+    real = trmod._SteppingLoop.__init__
+
+    def init(self, *a, **k):
+        real(self, *a, **k)
+        got['loop'] = self
+    monkeypatch.setattr(trmod._SteppingLoop, '__init__', init)
+    out = _run(chol, c_on, monkeypatch, edge=edge, **make)
+    loop = got['loop']
+    t = np.asarray(loop.timelist, float)
+    hs = np.diff(np.concatenate(([0.0], t)))
+    ## (the run's own breakpoints -- the pulse's corners and its period's
+    ## starts -- and the end)
+    corners, tt = {3e-9}, 0.0
+    while True:
+        nb = float(loop.family.next_breakpoint(tt))
+        if not nb > tt or nb > 3e-9:
+            break
+        corners.add(nb)
+        tt = nb
+    return out, hs, t, np.asarray(sorted(corners)), loop.ladder
+
+
+@pytest.mark.parametrize('edge', [1e-10, 1e-11], ids=['edge', 'short-edge'])
+@pytest.mark.parametrize('c_on', [True, False], ids=['c', 'python'])
+def test_a_grid_on_the_ladder_steps_on_its_rungs(c_on, edge, monkeypatch):
+    """The grid's Gear-2 run on the reduction, the ladder 'auto' (on: the
+    matrix is the SPD reduction's): every accepted step a rung of the run's
+    `max_step` (x 2^-k) or one landing on a corner or the end -- a pulse's
+    edges shorter than the step too, where the corner cut's size is a
+    quarter of the gap, rounded down; the run keeps `LADDER_KEEP` factors and
+    its corners' matrices are served by them."""
+    from pycircuit.circuit.transient import LADDER_KEEP
+    out, hs, t, corners, anchor = _ladder_run(c_on, monkeypatch, edge=edge)
+    assert anchor > 0.0
+    k = np.round(np.log2(anchor / hs))
+    ## (relative alone: numpy's default atol, 1e-8, would take every picosecond step for a rung)
+    rung = np.isclose(hs, anchor * 2.0 ** -k, rtol=1e-9, atol=0.0)
+    landing = np.array([np.min(np.abs(corners - ti)) <= 1e-12 * ti for ti in t])
+    assert np.all(rung | landing), [(float(ti), float(h)) for ti, h, r, l in zip(t, hs, rung, landing) if not (r or l)][:5]
+    assert rung.sum() > 0.8 * len(hs), (rung.sum(), len(hs))
+    kept = out[5]
+    assert kept['hits'] > 0 and kept['factorizations'] > 0 and kept['slots'] == LADDER_KEEP - 1, kept
+
+
+def test_the_ladders_c_loop_is_its_python(monkeypatch):
+    """On the ladder the C stepping loop's run is the Python's, byte for
+    byte -- the same steps (loop.c's `ladder_rung`, `corner_size`), the same
+    counts and kept factors; off the ladder another run."""
+    c = _ladder_run(True, monkeypatch)
+    p = _ladder_run(False, monkeypatch)
+    assert c[0][1:4] == p[0][1:4] and c[0][5] == p[0][5], (c[0][2:4], p[0][2:4])
+    assert np.array_equal(c[1], p[1])
+    off = _ladder_run(True, monkeypatch, step_ladder=False)
+    assert off[0][1] != c[0][1] and off[4] == 0.0
+
+
+def test_the_ladder_is_off_where_the_matrix_is_not_the_reductions(monkeypatch):
+    """'auto' off below `CHOLMOD_FROM` (KLU's run: the run with the ladder
+    off, byte for byte, no anchor), and for a circuit the reduction declines
+    (a diode in the grid); True puts it on a KLU run too -- its C loop the
+    Python's."""
+    klu = _ladder_run(True, monkeypatch, chol=False)
+    off = _ladder_run(True, monkeypatch, chol=False, step_ladder=False)
+    assert klu[4] == 0.0 and klu[0][1] == off[0][1] and not klu[0][3][0]
+    on_c = _ladder_run(True, monkeypatch, chol=False, step_ladder=True)
+    on_p = _ladder_run(False, monkeypatch, chol=False, step_ladder=True)
+    assert on_c[4] > 0.0 and on_c[0][1] != off[0][1]
+    assert on_c[0][1:4] == on_p[0][1:4]
+    from pycircuit.circuit import transient as trmod
+    monkeypatch.setattr(_cholklu, 'CHOLMOD_FROM', 0)
+    c = _grid(6, 5)
+    c['d'] = Diode('n2_2', gnd)
+    got, real = [], trmod._SteppingLoop.__init__
+
+    def init(self, *a, **k):
+        real(self, *a, **k)
+        got.append(self.ladder)
+    monkeypatch.setattr(trmod._SteppingLoop, '__init__', init)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(c, toolkit=numeric)
+        tr.solve(tend=3e-10, timestep=1e-11)
+    assert got == [0.0] and not getattr(tr._get_linearsolver()._choice, 'cholmod', False)
+
+
+def test_a_ladder_setting_not_known_is_refused():
+    """`step_ladder` other than 'auto', True or False: refused, named."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(_grid(), toolkit=numeric, step_ladder='on')
+    with pytest.raises(ValueError, match='step_ladder'):
+        tr._step_ladder(None, type('R', (), {'max_step': 1e-11})())

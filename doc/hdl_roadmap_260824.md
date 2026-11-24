@@ -17346,3 +17346,80 @@ failing).  Five bites, five bit: no hit; a hit not swapped; the comparison alway
 added for it); the byte cap ignored; KEEP ignored.
 
 **Found, not changed:** none new.
+
+## 2026-11-24 — 350. LB: the step ladder -- the grids' step sizes on max_step x 2^-k, their factors kept
+
+**Why**  Plan 261 L24 (tc/plan_l24_step_ladder.md), stage LB after LA (sec. 349).  On ibmpg3t 716 of 1 292 steps
+refactor CHOLMOD, almost every one a new step size; rounded down to a ladder the sizes recur (3t's 2 ns: 91 -> 32
+distinct matrices) and the factors LA keeps serve them.  Andreas, 2026-11-24, "1 on by default 2 ok 3 ok": the ladder on
+by default for the CHOLMOD grids ('auto'), KEEP 8 within KEEP_BYTES 3.5 GB, the ladder's approach in place of S1's two
+equal halves where it runs.  Lines (set before): (a) every gold deck SAME against LA's tree under the default settings;
+under a forced 'ladder' C against Python 0 differing on every deck; (b) the census, 10 ns, ibmpg1t-6t one process each,
+against LA's tree in the same session: 3t <= 0.80x, 6t <= 0.88x; 4t, 5t reported; 1t, 2t (KLU) SAME; VmHWM 3t <= 8.5 GB,
+6t <= 10.6 GB; each grid's max error against the benchmark <= its census figure + 0.01 mV; steps <= +3 %; (c) the tests,
+bitten; the pins re-recorded after their twins; (d) the suite, ruff, the census re-recorded as the grids' reference.
+
+**What.**  `Transient.step_ladder` ('auto', True, False).  On, `_SteppingLoop._corner_size` and loop.c's `corner_size`
+(`loop_t.ladder` at its END, the anchor; 0.0 off) round the size asked down to a rung, `max_step` x 2^-k by exact
+halving (`_ladder_rung` / `ladder_rung`: a size within 1e-9 of a rung is that rung; a rung under `minstep` keeps the
+size), the corner cut's size again after the cut, and LANDING AHEAD's approach to a breakpoint is the largest rung at
+most half the gap (then the landing) in place of the two equal halves.  'auto' (`Transient._step_ladder`) is on for a
+multistep run (`_LMMSteps`) whose AutoSolver chooses -- here, as its first matrix would (`_packed.choice` /
+`choose_on_structure`) -- the StructuralKLU on CHOLMOD (from `CHOLMOD_FROM` unknowns): then that solver keeps
+`LADDER_KEEP` = 8 factors (LA's `keep_factors`).  Off everywhere else: a fixed step, a stage method, KLU, dense, a
+solver given.  `_tran_loop_c` writes the anchor into the loop's struct for the multistep and the stage loop alike.  The
+gate: 'ladder' (`step_ladder=True` on every deck) under Gear-2 and Radau in `settings.MATRIX`.
+
+**Measured.**  (a) MET -- the gate against dd283c86 (gate350): this tree against the base 0 differing on dc, gear2,
+gear2/bypass, radau and the 8 size runs, results and path counters; C against Python 0 differing on every setting,
+gear2/ladder and radau/ladder included (27 decks each), and at size.  VERDICT NOT REACHED on three changed arms:
+`ladder_rung`'s h <= 0 and anchor <= 0 (dead: no step asks a size <= 0, and the anchor is `max_step` > 0 wherever the
+ladder is on; the guard keeps the halving loop finite) and `corner_size`'s `corner_cut` 0 arm (its line re-braced only;
+fixtures reach it).  The decks' moves under 'ladder' (C path, against default; reported): every digest moves; Gear-2
+78 393 -> 102 163 steps (1.30x, up to 1.54x on arom), rejections 20 508 -> 10 383, Newton iterations 1.13x; Radau
+73 644 -> 81 929 steps (1.11x), rejections 17 189 -> 11 634 -- why the ladder stays off for them.  The coverage suite
+(test_cholklu, test_loop_c) 55 passed and 1 failed: test_loop_c's fixed 'sparse' run takes no C step when run first in
+a worker under the coverage build -- the known flake of sec. 332's run: run alone (the 8 fixed runs, -n 0) it fails
+the same way on dd283c86 and on this tree.
+(b) MET -- the census (scratch p261/l19/cen/census.py, 10 ns from the operating point solved in the process, 11 GB cap,
+each run quiet-gated, base = dd283c86 in its worktree, in the order B3 N3 N6 B6 B4 N4 N5 B5 B1 N1 N2 B2, 19:01-21:44;
+peaks VmHWM in MiB):
+
+| grid | 10 ns base -> ladder | ratio | steps / rejected / iterations | refactor calls | vs benchmark | peak (run) |
+|---|---|---|---|---|---|---|
+| ibmpg1t | 11.1 -> 11.2 s | SAME | 1 290/0/1 904 both | 713 (KLU) both | 0.0719 mV both | 2 224 -> 2 225 MB |
+| ibmpg2t | 235.5 -> 235.0 s | SAME | 1 290/0/1 899 both | 711 (KLU) both | 0.0560 mV both | 1 158 -> 1 151 MB |
+| ibmpg3t | 1 329.0 -> 726.3 s | **0.547x** | 1 292/2/2 194 -> 1 297/2/2 184 | 716 -> 709 | 0.0490 -> 0.0491 mV | 4 911 -> 7 996 MB |
+| ibmpg4t | 987.1 -> 854.5 s | 0.866x | 1 114/3/2 015 -> 1 139/1/2 052 | 266 -> 268 | 0.133 -> 0.1363 mV | 5 601 -> 9 004 MB |
+| ibmpg5t | 1 187.4 -> 743.0 s | 0.626x | 1 292/2/2 485 -> 1 301/1/2 491 | 716 -> 713 | 0.0309 -> 0.0307 mV | 4 991 -> 7 163 MB |
+| ibmpg6t | 1 713.5 -> 1 078.6 s | **0.629x** | 1 292/2/2 326 -> 1 297/1/2 312 | 716 -> 709 | 0.0358 -> 0.0361 mV | 7 309 -> 10 272 MB |
+
+The base reproduces sec. 341's digests (b8148169f205, d23b6dc4b1ba, ca18f0b108fb, b74c4f60a04d, d32fdcc795e2,
+0d7f384e34ed for 1t-6t) and its step counts; 1t and 2t (KLU: 'auto' off) are those bytes on this tree too.  With the
+ladder the waveforms' digests are 3t 6b8ddddf43f9, 4t 03e67bc61c4b, 5t fea756792da0, 6t d08e2778f4d7 -- the grids'
+new reference with 1t's and 2t's.  Steps at most +2.2 % accepted, +1.8 % attempts (4t); every distance from the
+benchmark within 0.0033 mV of the base's (4t; the others within 0.0003).  The refactor calls barely move (a corner
+still asks a new matrix at about the same places); what the ladder changes is that most of them find their factor
+kept.  4t gains least: its sizes recurred already (266 refactors in 1 114 steps).  Memory: the kept factors +3.0 (3t)
+/ +2.1 (5t) / +2.9 (6t) / +3.3 (4t) GiB, inside the lines (6t 10 272 MiB, 0.97 GiB under the 11 GiB cap); the DCs,
+their digests and the imports unchanged.
+(c) MET -- below.  (d) MET -- suite 6 854 passed, 10 skipped, 5 xfailed; ruff the base's; five pins re-recorded after
+their twins (the stepping loop, its unread Jacobian, the multistep walk, the transform loop, the stage loop).
+
+**Tests.**  `test_cholklu` +6 (21): `test_a_ladder_rung_is_the_largest_power_of_two_below` (the rung's arithmetic,
+the 1e-9 snap, `minstep`); `test_a_grid_on_the_ladder_steps_on_its_rungs[c|python x edge|short-edge]` (the 16 x 16
+grid under a pulse, CHOLMOD from 0: every accepted step a rung or a landing on a breakpoint -- the run's own
+`next_breakpoint`s --, compared with `atol=0`; over 80 % rungs; seven slots kept and hits > 0);
+`test_the_ladders_c_loop_is_its_python` (every byte, step and count; off the ladder another run);
+`test_the_ladder_is_off_where_the_matrix_is_not_the_reductions` ('auto' on KLU below `CHOLMOD_FROM`: no anchor, the
+ladder-off run byte for byte; on a grid with a diode, which the reduction declines: off; True on the KLU run: on, its C
+loop the Python's); `test_a_ladder_setting_not_known_is_refused`.  Two grid tests of sec. 349 run with
+`step_ladder=False` (they pin KEEP's bytes against today's stepping).  Stand-ins in test_corner_steps / test_final_step
+gain `ladder`, test_gate_verdict the setting.  Seven bites, seven bit: the size not snapped (Python; C); the cut not
+snapped again; the approach two halves; 'auto' on where the choice is not CHOLMOD's; 'auto' on below `CHOLMOD_FROM`;
+KEEP not set.  The rung check first passed the cut's bite (np.isclose's default atol 1e-8 against ps steps); with
+atol=0 it bit, and showed a hand-made breakpoint list missing the pulse's period starts.
+
+**Found, not changed:** (1) test_loop_c's fixed 'sparse' run takes no C step when it runs first or alone (the known
+flake above, on the base too): its reach assertion depends on the order, not traced.  (2) The census does not record the kept factors' hits (the refactor calls include
+them); LA's line (b) counted them on 2 ns (sec. 349).

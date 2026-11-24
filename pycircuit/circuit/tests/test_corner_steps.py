@@ -19,7 +19,8 @@ def _size(t, h, t_break, on_corner=False, land_ahead=True, corner_cut=0.25, max_
     lp = types.SimpleNamespace(
         tr=types.SimpleNamespace(par=types.SimpleNamespace(land_ahead=land_ahead,
                                                            corner_cut=corner_cut)),
-        run=types.SimpleNamespace(max_step=max_step), tend=tend, landing_ahead=None)
+        run=types.SimpleNamespace(max_step=max_step), tend=tend, landing_ahead=None,
+        ladder=0.0, minstep=1e-18)
     got = trmod._SteppingLoop._corner_size(lp, t, h, t_break, on_corner)
     return got, lp.landing_ahead
 

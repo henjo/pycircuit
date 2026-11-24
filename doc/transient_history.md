@@ -6469,3 +6469,18 @@ a matrix comes back exactly, swap its factor in instead of factoring again:
 the same bytes either way.  It is off by default (one factor, as before);
 the next stage turns it on for the grids, together with a step-size ladder
 that makes the matrices come back.
+
+## LB: the step ladder (2026-11-24)
+
+### `Transient.step_ladder`, `_ladder_rung`, `LADDER_KEEP`
+
+2026-11-24 (`doc/hdl_roadmap_260824.md`, 350; plan 261 L24).  An adaptive run
+asks a new step size at almost every step, and on a large linear power grid
+each new size is a new matrix for CHOLMOD to factor.  With the step ladder
+each size asked is rounded down to the largest `max_step` / 2**k not over it
+(the corner cut's size and the approach to a breakpoint too), so the run
+comes back to the same few sizes, and the eight factors the solver now keeps
+serve them.  It is on by default ('auto') only where the run's matrix is the
+grid's SPD reduction on CHOLMOD; every other circuit steps as before.  On the
+IBM grids' 10 ns the transient ran in 0.55x (ibmpg3t) and 0.63x (ibmpg6t) of
+its time, at the same distance from the benchmark, for about 3 GB more memory.

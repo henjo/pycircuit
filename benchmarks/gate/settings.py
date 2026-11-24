@@ -22,7 +22,7 @@ DECKS = ('4049osc', 'toronto', 'voter25', 'ab_integ', 'e1480', 'g1310', 'gm6', '
 MATRIX = (('gear2', 'default'), ('gear2', 'mi6'), ('gear2', 'bound'), ('gear2', 'low'),
           ('radau', 'default'), ('radau', 'mi6'), ('radau', 'low'),
           ('dc', 'default'), ('dc', 'packed'), ('dc', 'packed+plain'), ('gear2', 'packed'),
-          ('gear2', 'bypass'))
+          ('gear2', 'bypass'), ('gear2', 'ladder'), ('radau', 'ladder'))
 
 #: run on the C path alone, read tree against tree: the device bypass's state follows the sequence of evaluations, which the Python's path does not share, so the two
 #: are not bit for bit by design (on 6 decks 2.4e-3..5.3e-2 of a swing apart, each within what a +-0.1 % reltol nudge moves the C path itself: roadmap 290)
@@ -102,6 +102,10 @@ def force_run(setting, tr):
         tr.par.lte_jacobian = 'seed'
     if 'bypass' in parts:
         tr.par.bypass = True
+    if 'ladder' in parts:
+        ## (THE STEP LADDER on every deck: off on all of them by default --
+        ## 'auto' is the linear grids' at size -- so its C twin compared here)
+        tr.par.step_ladder = True
     for p in parts:
         if p.startswith('mi') and p[2:].isdigit():
             tr.par.maxiter = int(p[2:])
