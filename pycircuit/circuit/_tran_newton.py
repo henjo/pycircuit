@@ -59,6 +59,17 @@ class _EarlyAbort(Exception):
         self.err, self.s, self.p = err, s, p
 
 
+def _seed_copy(J):
+    """The early abort's copy of the seed's J: the packed layout's own; on
+    J's pattern pages where J is on them (`_tran_core.pattern_copy`: the
+    same bytes, the pattern's pages alone written, where numpy's copy
+    writes all n x n entries); else numpy's."""
+    if type(J) is _packed.PatternMatrix:
+        return J.copy()
+    from pycircuit.circuit import _tran_core
+    return _tran_core.pattern_copy(J)
+
+
 #: `Transient.lte_jacobian` 'auto' takes the seed's factors from this many
 #: unknowns (the size the C loops' other matrices go on the pattern), the
 #: converged point's below: every gold deck, the largest 519, is below it.
@@ -374,9 +385,8 @@ class _StepNewton:
             def judged(x, J):
                 ## (the seed's J copied: an evaluation may write the next
                 ## one into the same buffer; a later evaluation counted, its
-                ## J not kept -- the full Newton's are n x n each)
-                seen.append((J.copy() if type(J) is _packed.PatternMatrix else np.array(J, copy=True))
-                            if not seen else None)
+                ## J not kept -- the full Newton's are n x n each: `_seed_copy`)
+                seen.append(_seed_copy(J) if not seen else None)
                 if len(seen) == 2 and armed:
                     est = self._early_estimate(arm, x, seen[0], chord, linsolver)
                     _paths.COUNTS['early:checks'] += est is not None

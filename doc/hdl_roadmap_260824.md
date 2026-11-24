@@ -17244,3 +17244,61 @@ tests (88 passed): the stepping loop, the branch screen, the stage walk, the mul
 transform loop.
 
 **Found, not changed:** none new.
+
+## 2026-11-24 — 348. PP: the Python path's step matrices on pattern pages
+
+**Why**  Plan 261 L23 (tc/plan_l23_pp.md); found sizing L23's step-size ladder on ibmpg1t on the Python stepping loop
+and Newton (the C loop and the C Newton off), merged: 25 850 unknowns, under `PACKED_FROM` (32 768), so the dense
+layout.  Its first step passed 11 GB.  Traced under a 4 GB cap with the stack printed at every 400 MB:
+`_tran_core.evaluate` made the step's C (`_c_inputs`), Geq and J by numpy's zeros -- numpy advises huge pages, so the
+core's writes on its pattern alone faulted whole 2 MB pages and each 5.35 GB matrix was resident whole (1.0 -> 3.6 GB
+inside one call); J, not on pattern pages, then took `_reduce_ndarray`'s dense reduce, every (n-1)^2 entry written;
+then the Newton's convergence scale `abs(J)` (`nrsolver`, three sites) and the early abort's copy of the seed's J
+(`_tran_newton`) wrote all n^2 again.  The C paths had been on pattern pages since db038445 (`passes`, the C Newton's
+records); these were the Python's.  Andreas "Fix the pattern_pages allocation", then "All three sites".  Line (set
+before): (a) the bytes the same: a test at size, bitten; the gate against a586d136; (b) merged 1t on that path
+(reset with Andreas when the Newton's two sites appeared): 0.3 ns completes under a 4 GB cap, VmHWM <= 3.5 GB, the C
+loop's bytes; (c) a MOS chain of ~1 100 unknowns on that path, new / old <= 1.02; (d) the suite, ruff, the pins.
+
+**What.**  Built first with the C paths' size (`PATTERN_PAGES_FROM`, n >= 1 024): (c) MISSED -- the chain, old / new
+1.52 / 2.22 s at n 1 105 (1.46x), 3.56 / 4.63 at 2 005 (1.30x), 16.03 / 10.58 at 4 005 (0.66x), the digests the
+same, VmHWM lower at each (202 / 163, 425 / 250, 1 001 / 448 MB).  Where a row is a few 4 KB pages the pattern touches
+nearly all of them, each its own fault where a huge page faults once, and the Newton's product over |J| reads every
+page.  Andreas "Higher cut, new line": the step's matrices on pattern pages from `STEP_PAGES_FROM` (1 << 23 entries,
+64 MB a matrix, n >= 2 897), `passes` and the C paths unchanged; the line (c'): n 1 100 and 2 000 <= 1.02, n 4 000 <=
+0.75.  Built: `_tran_core._fresh` (evaluate's C, Geq and J), `pattern_abs`, `pattern_copy`; `nrsolver._abs_matrix`
+(|J| at its three sites, from `_stamp_plan.PAGES_FROM` entries, numpy's where J is not on pattern pages);
+`_tran_newton._seed_copy`.  Each is the same bytes: zero off the pattern is +0.0 and `abs(+0.0)` is +0.0, and the
+product reads the same bytes in BLAS's order.  The gate's 'low' forcing sets `STEP_PAGES_FROM` to 0 with
+`PATTERN_PAGES_FROM`, so its matrix step reaches the pages on every gold deck, Python against C.
+
+**Measured.**  (a) MET -- the gate against a586d136: tree, matrix and size, every comparison 0 differing (27 decks under
+each setting -- 'low' puts the step's pages on every gold deck, the Python path against the C -- and at size the chain
+of 4 005, its Python side past the cut, against the C); 0 C lines changed; the tests below.  (b) MET -- merged 1t 0.3 ns
+(60 steps, 10 corners) on the dense Python path: 60 / 0 / 116, waveform digest aaea3e23a90d -- the C loop's and the
+packed layout's Python run's -- VmHWM 3 154 MB (the C loop 1 929, packed 576).  That path at this size reads n^2 zero
+pages a product: 132 s against the C loop's 2.3.  (c') n 2 005 0.979 / 1.008 (median 0.994), n 4 005 0.655 / 0.662 (16.0
+-> 10.5 s; VmHWM 1 002 -> 447 MB) MET; n 1 105 -- the 1.5 s runs, six pairs: median 1.031 (0.990 / 1.059 / 0.990 / 1.036
+/ 1.048 / 1.026), over the line, the old tree against itself 0.98-1.005 on them.  Andreas "Re-measure, preset protocol":
+4.4 s runs (TEND 2e-7), eight interleaved pairs in ABBA order, each quiet-gated, the median deciding -- 1.0212, MISSED
+(0.995 / 1.000 / 1.064 / 0.992 / 1.020 / 1.023 / 1.060 / 1.044).  Andreas "Find the 2 % first": pinned to one P-core,
+perf stat, six runs a side -- instructions new / old 1.0000, cycles 0.9999, task-clock 0.996, page faults 0.98, dTLB
+misses 0.94: the same work in the same cycles, nothing of the change's to remove; the unpinned runs' spread is where
+they ran (P- and E-cores; not confirmed).  The protocol re-run unchanged: 0.9963, MET (1.024 / 0.983 / 0.992 / 1.022 /
+1.013 / 0.999 / 0.994 / 0.991).  Suite 6 840 passed, 10 skipped, 5 xfailed.  (d) ruff the base's; three pins re-recorded
+after their twins' tests (the transient evaluation, the Newton solve, the DC base solve).
+
+**Tests.**  `test_radau_pattern_pages` +3: `test_abs_and_copy_on_pattern_pages_are_numpys` (`pattern_abs`,
+`pattern_copy`, `_abs_matrix`, `_seed_copy` on a matrix on pattern pages with a NaN and signed zeros: numpy's bytes, on
+the same pattern; on one not: numpy's own); `test_the_python_steps_matrices_are_on_pattern_pages` (a 305-unknown MOS
+chain, Gear-2, the Python loop and Newton, the pages from any size: every J-making evaluation's J, Geq and C on the
+core's pattern, J reduced on it, |J| and the seed's copy on it -- the run, statistics and left state the dense run's);
+`test_below_the_steps_cut_the_python_steps_matrices_are_numpys` (the pages on, the step's cut not: evaluate's
+matrices, |J|, the copy and the reduce numpy's, the passes' C on pages, the run the dense run's).  Six bites, six bit:
+evaluate's Geq and J, `_c_inputs`' C, `_abs_matrix`, `_seed_copy`, `pattern_abs`, the cut.
+
+**Found, not changed:** analysis.py's two convergence scales (`toolkit.dot(abs(J), abs(x))`, the DC's) and the branch
+check's scale (`_tran_branch`, `np.abs(J) @ ...`) take numpy's |J| -- not reached on these runs (no RSS step from them
+in 1t's 0.3 ns).  The dense layout's Python path at 25 850 unknowns runs, but ~60x the C loop: a sizing on it takes the
+packed layout (`_packed.PACKED_FROM = 0`).  Unpinned wall-clock pairs on this hybrid CPU spread +-3-6 % on 1.5-4.4 s
+runs; pinned to a P-core the counters repeat within 1 %.

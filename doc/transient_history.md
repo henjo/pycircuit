@@ -6441,3 +6441,18 @@ million-node grids -- and where the verdict had needed an SVD it handed
 every attempt back to the Python.  It now takes the Python's kept verdict,
 by the Python's own test, at each entry; every answer and count is
 unchanged.
+
+## PP: the Python path's step matrices on pattern pages (2026-11-24)
+
+### `_tran_core._fresh`, `STEP_PAGES_FROM`, `pattern_abs`, `pattern_copy`, `nrsolver._abs_matrix`, `_tran_newton._seed_copy`
+
+2026-11-24 (`doc/hdl_roadmap_260824.md`, 348; plan 261 L23).  On the dense
+layout the Python stepping path made the step's matrices with numpy's zeros,
+which take huge pages: written on the circuit's pattern alone, each was
+resident whole, and the Newton then reduced, copied and took the magnitude of
+the Jacobian at full size too.  A power grid of 25 850 unknowns on that path
+passed 11 GB in its first step.  From 64 MB a matrix these now go on small
+pages written only where the pattern is, and the reduction, the magnitude
+and the copy stay on them: the grid's 0.3 ns run peaks at 3.2 GB with the
+compiled loop's exact answers.  Below that size they stay numpy's, where
+small pages cost more faults than they save.  Every answer is unchanged.

@@ -86,6 +86,7 @@ def force_modules(setting):
         _tran_tcloop_c.SETS_FROM = 0
         _tran_tcloop_c.PACKED = 'always'
         _tran_core.PATTERN_PAGES_FROM = 0
+        _tran_core.STEP_PAGES_FROM = 0
         _tran_radau.PATTERN_FROM = 0
         _tran_radau_c.OUT_BYTES = 1
         _tran_history.GATHER_MIN_BYTES = 0

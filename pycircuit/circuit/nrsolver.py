@@ -1,9 +1,21 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
-from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix
+from pycircuit.circuit.analysis import NoConvergenceError, SingularMatrix, _stamp_plan_pages_from
 from pycircuit.circuit import _limiting, _packed, _paths
 from pycircuit.circuit.scaler import NoneScaler
+
+
+def _abs_matrix(J):
+    """`abs(J)` -- on J's pattern pages where J is on them
+    (`_tran_core.pattern_abs`: the same bytes, the pattern's pages alone
+    written), where numpy's writes all n x n entries; the convergence
+    scale's product then reads the same bytes."""
+    if type(J) is np.ndarray and J.ndim == 2 and J.size >= _stamp_plan_pages_from():
+        from pycircuit.circuit import _tran_core
+        return _tran_core.pattern_abs(J)
+    return abs(J)
+
 
 def _default_solve(J, b, toolkit):
     """The Newton's solve where its caller gave no solver: the toolkit's
@@ -249,7 +261,7 @@ class StandardNewton(NonLinearSolver):
             ## (each magnitude once: `abs(F)` and `abs(x_next)` were taken
             ## twice an iteration -- speed round 4, stage C)
             aF, ax_next = abs(F), abs(x_next)
-            I_scale = toolkit.dot(abs(J), ax_next) + aF
+            I_scale = toolkit.dot(_abs_matrix(J), ax_next) + aF
             tol_x = reltol * toolkit.maximum(ax_next, abs(x)) + xtol
             
             conv_x = toolkit.alltrue(abs(xdiff) < tol_x)
@@ -489,7 +501,7 @@ class ChordNewton(NonLinearSolver):
         F, J = eval_FJ(x)
         ## (the held Jacobian's magnitudes, once: the chord's test reads them
         ## at every iteration -- speed round 4, stage C)
-        absJ = abs(J)
+        absJ = _abs_matrix(J)
         fac = None
         prev = None
         ## (the last increment and its tolerances, for `_chord_settled`)
@@ -625,7 +637,7 @@ class DampedNewton(NonLinearSolver):
             ## (each magnitude once: `abs(F)` and `abs(x_next)` were taken
             ## twice an iteration -- speed round 4, stage C)
             aF, ax_next = abs(F), abs(x_next)
-            I_scale = toolkit.dot(abs(J), ax_next) + aF
+            I_scale = toolkit.dot(_abs_matrix(J), ax_next) + aF
 
             conv_x = toolkit.alltrue(abs(alpha * xdiff) < reltol * toolkit.maximum(ax_next, abs(x)) + xtol)
             conv_f = toolkit.alltrue(aF < reltol * I_scale + abstol)

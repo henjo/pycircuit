@@ -573,3 +573,111 @@ def test_the_branch_ranks_states_share_one_array(monkeypatch):
     on = rank(False)
     assert any(seen), seen
     assert on == rank(True)
+
+
+def test_abs_and_copy_on_pattern_pages_are_numpys(monkeypatch):
+    """`pattern_abs` and `pattern_copy` of a matrix on pattern pages -- the
+    Newton's convergence scale |J| (`nrsolver._abs_matrix`) and the early
+    abort's copy of the seed's J (`_tran_newton._seed_copy`): numpy's
+    bytes, on pattern pages of the same pattern (numpy's abs or copy writes
+    all n^2 entries, resident whole at size); a NaN and signed zeros among
+    the entries.  A matrix not on them: numpy's own, not on pages."""
+    from pycircuit.circuit import _stamp_plan, _tran_newton, nrsolver
+    monkeypatch.setattr(_stamp_plan, 'PAGES_FROM', 1)
+    rng = np.random.default_rng(17)
+    n = 40
+    A, full, pat = _paged_matrix(n, rng, monkeypatch)
+    for f, want in ((_tran_core.pattern_abs, abs(full)), (nrsolver._abs_matrix, abs(full)),
+                    (_tran_core.pattern_copy, np.array(full, copy=True)),
+                    (_tran_newton._seed_copy, np.array(full, copy=True))):
+        got = f(A)
+        assert got is not A and _b(got) == _b(want), f.__name__
+        assert _tran_core.pattern_of(got) is pat, f.__name__
+        plain = f(full)
+        assert _b(plain) == _b(want) and _tran_core._mapping(plain) is None, f.__name__
+
+
+
+def _python_steps(monkeypatch, step_pages):
+    """The chain's Gear-2 run on the Python stepping loop and Newton (the C
+    loop and the C Newton off), dense and then at size -- the pattern pages
+    from any size, the step's own (`STEP_PAGES_FROM`) from any size or from
+    none -- with what each J-making evaluation leaves (its J, Geq and C on
+    pattern pages or not), whether J was reduced on them, the convergence
+    scale's |J| and the early abort's seed copy made on them, and the passes'
+    C on them: `(the dense run, the run at size, what was seen)`."""
+    from pycircuit.circuit import (
+        _stamp_plan,
+        _tran_loop_c,
+        _tran_newton,
+        _tran_newton_c,
+        analysis,
+        nrsolver,
+    )
+    monkeypatch.setattr(_tran_loop_c, 'ENABLED', False)
+    monkeypatch.setattr(_tran_newton_c, 'ENABLED', False)
+    a = _run(monkeypatch, False, Gear2Integrator)
+    seen = {'evaluate': [], 'reduce': [], 'abs': [], 'seed': [], 'passes': []}
+
+    def spied(name, real, got):
+        def f(*args):
+            out = real(*args)
+            seen[name].append(got(out, *args))
+            return out
+        return f
+    ## (the served calls that make a J: 'fj' and 'j' -- `(f, J)`, `(None, J)`)
+    monkeypatch.setattr(_tran_core, 'evaluate', spied('evaluate', _tran_core.evaluate, lambda out, tr, x, t, pf, want: (
+        None if want not in ('fj', 'j') or out is None else
+        (_tran_core.pattern_of(out[1]), _tran_core.pattern_of(tr._Geq), _tran_core.pattern_of(tr._Cmat)))))
+    monkeypatch.setattr(_tran_core, 'passes', spied('passes', _tran_core.passes, lambda out, *a: (
+        None if out is None or out.get('C') is None else _tran_core.pattern_of(out['C']) is not None)))
+    monkeypatch.setattr(analysis, '_reduce_on_pattern', spied(
+        'reduce', analysis._reduce_on_pattern, lambda out, *a: out is not None))
+    monkeypatch.setattr(nrsolver, '_abs_matrix', spied(
+        'abs', nrsolver._abs_matrix, lambda out, *a: _tran_core.pattern_of(out) is not None))
+    monkeypatch.setattr(_tran_newton, '_seed_copy', spied(
+        'seed', _tran_newton._seed_copy, lambda out, *a: _tran_core.pattern_of(out) is not None))
+    monkeypatch.setattr(_stamp_plan, 'PAGES_FROM', 1)
+    if step_pages:
+        monkeypatch.setattr(_tran_core, 'STEP_PAGES_FROM', 1)
+    b = _run(monkeypatch, True, Gear2Integrator)
+    seen['evaluate'] = [r for r in seen['evaluate'] if r is not None]
+    seen['passes'] = [r for r in seen['passes'] if r is not None]
+    return a, b, seen
+
+
+def test_the_python_steps_matrices_are_on_pattern_pages(monkeypatch):
+    """The Python stepping loop and Newton at size (`STEP_PAGES_FROM`
+    entries; a Gear-2 run on the dense layout): the core's evaluation makes
+    the step's C, Geq and J on pattern pages (`_tran_core._fresh`), J is
+    reduced on them, the convergence scale's |J| and the early abort's copy
+    of the seed's J are made on them -- under numpy's huge pages each was
+    resident whole, 8 n^2 bytes (an IBM grid of 25 850 unknowns passed
+    11 GB in its first step) -- and the run, its statistics and the
+    matrices it leaves are the dense run's, bytes and shapes."""
+    a, b, seen = _python_steps(monkeypatch, True)
+    assert a[0] == b[0] and a[1] == b[1]
+    assert b[2] == {'_Cmat': True, '_Geq': True} and not any(a[2].values())
+    ev = seen['evaluate']
+    bad = [(i, j is None, g is None, c is None) for i, (j, g, c) in enumerate(ev)
+           if not (j is not None and j is g and c is not None)]
+    assert len(ev) > 20 and not bad, (len(ev), bad[:8])
+    for k in ('reduce', 'abs', 'seed'):
+        assert len(seen[k]) > 5 and all(seen[k]), (k, seen[k][:5])
+
+
+def test_below_the_steps_cut_the_python_steps_matrices_are_numpys(monkeypatch):
+    """Below `STEP_PAGES_FROM` (the pattern pages themselves from any size):
+    the step's C, Geq and J the core's evaluation makes are numpy's zeros --
+    a row a few pages long, the pattern touches nearly every page, each its
+    own fault on pattern pages where huge pages fault once -- so J is
+    reduced, its |J| and the seed's copy made, by numpy; the passes' C stay
+    on pattern pages; the run the dense run's."""
+    a, b, seen = _python_steps(monkeypatch, False)
+    assert a[0] == b[0] and a[1] == b[1]
+    ev = seen['evaluate']
+    assert len(ev) > 20 and all(j is None and g is None for j, g, _c in ev), ev[:3]
+    for k in ('abs', 'seed'):
+        assert len(seen[k]) > 5 and not any(seen[k]), (k, seen[k][:5])
+    assert not any(seen['reduce']), seen['reduce'][:5]
+    assert seen['passes'] and all(seen['passes']), seen['passes'][:5]

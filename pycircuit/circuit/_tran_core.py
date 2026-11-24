@@ -1103,6 +1103,27 @@ def pattern_pages(n, pat):
     return out.reshape(n, n)
 
 
+#: the entries from which the step's matrices `evaluate` makes go on pattern
+#: pages (`_fresh`): 64 MB a matrix.  Below it a row is a few 4 KB pages and
+#: the pattern touches nearly all of them, each its own fault, where numpy's
+#: zeros fault once per huge page -- and the Newton's product over |J| reads
+#: every page; above it a row spans many pages the pattern leaves untouched
+STEP_PAGES_FROM = 1 << 23
+
+
+def _fresh(n, core):
+    """An n x n matrix of the step `evaluate` makes: from `STEP_PAGES_FROM`
+    entries (`paged` too) on pattern pages, written on the core's pattern
+    alone and named by `pattern_of` -- numpy's zeros take huge pages, so a
+    matrix written on its pattern there is resident whole (8 n^2 bytes),
+    and a J not on pattern pages is reduced densely, every entry written;
+    else zeros where the core writes its pattern alone (`npat`), else
+    uninitialised (it writes every entry)."""
+    if paged(core) and n * n >= STEP_PAGES_FROM:
+        return pattern_pages(n, core.arrays['pat'])
+    return (np.zeros if core.npat else np.empty)((n, n))
+
+
 def pattern_of(a):
     """The pattern an n x n matrix on pattern pages was written on (made by
     `pattern_pages` -- the passes', the records', `on_pattern`'s), zero off
@@ -1135,6 +1156,28 @@ def pattern_equal(a, b):
     if pat is None or pattern_of(b) is not pat:
         return bool(np.array_equal(a, b))
     return bool(np.array_equal(a.reshape(-1)[pat], b.reshape(-1)[pat]))
+
+
+def pattern_abs(a):
+    """`abs(a)`: on `a`'s pattern pages where `a` is on them (zero off its
+    pattern, +0.0 there, and `abs(+0.0)` is +0.0) -- the same bytes, only
+    the pattern's pages written, where numpy's writes all n x n entries."""
+    pat = pattern_of(a)
+    if pat is None:
+        return abs(a)
+    out = pattern_pages(a.shape[0], pat)
+    out.reshape(-1)[pat] = abs(a.reshape(-1)[pat])
+    return out
+
+
+def pattern_copy(a):
+    """A copy of `a` (`np.array(a, copy=True)`): on `a`'s pattern pages
+    where `a` is on them -- the same bytes, only the pattern's pages
+    written, where numpy's copy writes all n x n entries."""
+    pat = pattern_of(a)
+    if pat is None:
+        return np.array(a, copy=True)
+    return on_pattern(a, pat, a.shape[0])
 
 
 def _mapping(a):
@@ -1497,7 +1540,7 @@ def _c_inputs(tr, x, want, n, core, K):
             bits &= ~_C
             C = Cin
         else:
-            C = (np.zeros if core.npat else np.empty)((n, n))
+            C = _fresh(n, core)
             Cin = C
     return bits, Cin, C
 
@@ -1580,11 +1623,11 @@ def evaluate(tr, x, t, provided_function, want):
     _PC[K['served']] += 1
     ffi, cfn, _dgemv = driver()
     fb, dptr = ffi.from_buffer, core.dptr
-    ## (the matrices zero off the pattern where the core writes only that)
-    mat = np.zeros if core.npat else np.empty
-    q, iq, Geq = np.empty(n), np.empty(n), mat((n, n))
+    ## (the matrices zero off the pattern where the core writes only that,
+    ## on pattern pages at size: `_fresh`)
+    q, iq, Geq = np.empty(n), np.empty(n), _fresh(n, core)
     F = np.empty(n) if bits & _I else q
-    J = mat((n, n)) if bits & _G else Geq
+    J = _fresh(n, core) if bits & _G else Geq
     cfn(core.cs, fb(dptr, x), T, bits | (_WANT_PATTERN if core.npat else 0), formula, a0, a1, a2,
         float(h), theta,
         fb(dptr, q1), fb(dptr, q2), fb(dptr, iq1), fb(dptr, u if u is not None else q1),
