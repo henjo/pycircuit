@@ -3,6 +3,8 @@
 `transient.py`).
 """
 
+import os
+
 import numpy as np
 from numpy.linalg import LinAlgError
 
@@ -30,6 +32,11 @@ from pycircuit.circuit.dcanalysis import refnode_removed
 #: declared const: 11x (SPICE diode, 37 -> 3.3 us) to 142x (PSP, 3.2 ms ->
 #: 22 us), and the placement it sets measured again (`AUTO_JACOBIAN_CODE`).
 C_KERNEL_SHARE = 1.0 / 100.0
+
+#: THE FIRST ITERATE ACCEPTED (`Transient.linear_newton`): env
+#: `PYCIRCUIT_LINEAR_NEWTON=0` turns it off whatever the parameter asks (an
+#: A/B of the same run); read at each run's decision
+LINEAR_NEWTON = os.environ.get('PYCIRCUIT_LINEAR_NEWTON', '1') != '0'
 
 
 class _EarlyArm:
@@ -424,6 +431,16 @@ class _StepNewton:
             _paths.COUNTS['chord:chosen'] += 1
         scaler = self._get_scaler()
         linsolver = self._get_linearsolver()
+        ## THE FIRST ITERATE ACCEPTED (`Transient.linear_newton`): the
+        ## stepping loop marked the run (`_first_iterate`: its circuit
+        ## affine), and this is the default full Newton with nothing
+        ## limiting -- not the chord, the rescue or a caller's solver
+        ## (newton.c's `first_iter`, `_tran_newton_c.first_iter_for`)
+        first = {}
+        if (self.__dict__.get('_first_iterate') and limiter_func is None
+                and chord is None and self.par.nrsolver is None
+                and not getattr(self, '_continuation_rescue', False)):
+            first['first_iterate'] = True
         if arm is not None:
             from pycircuit.circuit.linearsolver import AutoSolver
             from pycircuit.circuit.scaler import NoneScaler
@@ -443,6 +460,7 @@ class _StepNewton:
                 linsolver=linsolver,
                 ## Stage 6: lets the solver name a node instead of a row index.
                 row_names=self._reduced_row_names(),
+                **first,
             )
         ## NARROW, deliberately.  A broad `except Exception` would report every
         ## failure inside a device model (a `ZeroDivisionError`, a `TypeError`, an

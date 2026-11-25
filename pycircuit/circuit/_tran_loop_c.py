@@ -684,11 +684,14 @@ def _why_not_the_run(loop, tr, td, rec, O, adaptive):
         return 'umemo'
     ## (the Newton's record as its last call left it: J formed where the
     ## attempts read it, the error test's held factors where this run's
-    ## mark asks for them -- `Transient.lte_jacobian`)
+    ## mark asks for them -- `Transient.lte_jacobian` -- and the first
+    ## iterate taken where it marks that -- `Transient.linear_newton`)
     NC = O['newton_c']
     if rec.s.fold_j != (NC.FOLD_J if adaptive else NC.FOLD_C):
         return 'newton'
     if rec.s.lte_seed != NC.lte_seed_for(td, NC._MOD or NC._mods(), rec.s.chord):
+        return 'newton'
+    if rec.s.first_iter != NC.first_iter_for(td, rec.s.chord):
         return 'newton'
     return None
 

@@ -17514,3 +17514,96 @@ the distance from the benchmark.  (2) L25's first report divided the solve's tim
 199 ms a solve); the error test solves once a step too.  (3) The remaining gap to the streaming bound (~21 / ~31 ms
 a solve) is not vectorisation (-O3 bought 2 %): the gathers and scatters through L->s, the dependent triangular
 solves, 312 k one-column supernodes on 6t -- not measured further.
+
+## 2026-11-25 — 352. LN: the first Newton iterate taken on an affine circuit
+
+**Why**  Plan 261 L26 (tc/plan_l26_profile.md).  After SV the IBM grids' transient is three roughly equal parts -- our C
+stepping code, the solve, CHOLMOD's factorization (2 ns at d34c02b3, perf).  A linear grid's step took 1.6 Newton
+iterations (the census: 3t 2 184 in 1 299 attempts, 6t 2 312 in 1 298): `newton.c`'s test (nrsolver's) accepts an
+iterate where the update is within `reltol * max(|x_next|, |x|) + xtol` AND the residual at the point evaluated within
+`reltol * I_scale + abstol` -- so where the predictor is further than that from the step's solution, the first iterate,
+on an affine residual already the solution to the solve's rounding, was evaluated and solved once more to confirm it.  A
+one-line prototype (the first iterate of a full Newton accepted, unconditionally, in wt2) ran 2 ns in 0.870 / 0.873x
+(3t, two pairs) and 0.845x (6t) of the time, the same steps, the waveforms within 6.5e-9 V (3t: the second iteration is
+a step of iterative refinement on its ill-conditioned K') and 1.1e-15 V (6t).  Andreas, "Build it": the recommendations
+taken -- 'auto' as the step ladder's, a `Transient` parameter, an env switch.  Lines (set before): (a) every gold deck
+SAME against d34c02b3, and the first iterate forced on the decks the certificate accepts, reported; (b) the census, 10
+ns, ibmpg1t-6t one process each, against d34c02b3 in the same session: 3t <= 0.90x, 6t <= 0.88x; 4t, 5t reported; 1t,
+2t (KLU) SAME; each grid's max error against the benchmark <= its census figure + 0.01 mV (sec. 351: 3t 0.0491, 4t
+0.1363, 5t 0.0307, 6t 0.0361 mV); steps <= +3 %; VmHWM within 1 %; (c) the tests, bitten, C = Python with it on; (d)
+the suite, ruff, the census as the grids' reference.
+
+**What.**  THE FIRST ITERATE ACCEPTED: `Transient.linear_newton` ('auto', True, False).  `_SteppingLoop` decides it
+once a run (`first_iterate`, `Transient._linear_newton`) and marks the run (`_first_iterate`, run state); a multistep
+step's full Newton then takes its first iterate as the solution, untested -- `StandardNewton.solve_system(...,
+first_iterate=True)` (`_newton` passes it where the mark is set, nothing limits, the solver is the default full Newton:
+not the chord, the rescue or a caller's) and newton.c's `iterate` (`first_iter`, newton.h's last field, set every call
+by `_tran_newton_c.first_iter_for`: 1 on the full Newton under the mark; `st = (it == 0 && first_iter && !chord &&
+!walk) ? 1 : converged(s, m)`); a non-finite iterate goes on as before (the C hands back first).  The C stepping loop
+enters only where its record's `first_iter` is the run's (`_tran_loop_c._why_not_the_run`, as `lte_seed`).  THE
+CERTIFICATE (`Transient._affine`): the stamp plan's G and C each one matrix for every x, t and epar
+(`_stamp_plan.constant_matrix`: every element's G and C a constant stamp by method identity, its i and q `Circuit`'s own
+products, no instance shadow) and nothing limiting (`_newton_limiter() is None`) -- the sources and a provided function
+are x's free terms, the multistep companion linear in q.  `Circuit.linear` is not read (an element that is not linear
+need not say so).  'auto': the certificate AND the run's matrix the grid's SPD reduction on CHOLMOD (`_grid_cholmod`,
+the step ladder's condition, taken out of `_step_ladder` without its kept factors); True: the certificate alone; a
+stage method's run never (`_LMMSteps` alone).  `_tran_newton.LINEAR_NEWTON` (env `PYCIRCUIT_LINEAR_NEWTON=0`) turns it
+off whatever the parameter says.  `doc/transient_runtime.md` names the switch.
+
+**Measured.**  (a) MET -- the gate against d34c02b3 (gate352): this tree against the base 0 differing on dc, gear2,
+gear2/bypass, radau and the 8 size runs; C against Python 0 differing on every setting (27 decks each) and the 3 size
+twins; the coverage suite (test_cholklu, test_loop_c) passed.  VERDICT NOT REACHED: newton.c's changed line's arms by
+the decks 3 (`converged` as before), the fixtures 3 (the first iterate taken: test_cholklu's C = Python runs), none 2
+-- the first iterate on the chord (`first_iter_for` gives the chord 0) and under a limiter walk (the certificate refuses
+a limiter): guards no run reaches.  No gold deck is affine -- every one has MOS, bipolar or diode models, each with a
+limiter (`_affine` refuses all 27) -- so the forced run of (a) has no deck to run on, and the gate's size circuits are
+MOS too: the first iterate's reach is the tests' and line (b)'s.
+(b) MET -- the census (scratch p261/l19/cen/census.py, 10 ns from the operating point solved in the process, 11 GB
+cap, each run quiet-gated, base = d34c02b3 in its worktree, in the order B3 N3 N6 B6 B4 N4 N5 B5 B1 N1 N2 B2,
+10:25-12:13; peaks VmHWM in MiB):
+
+| grid | 10 ns base -> first iterate | ratio | steps / rejected / iterations | refactor calls | vs benchmark | peak (run) |
+|---|---|---|---|---|---|---|
+| ibmpg1t | 11.2 -> 11.2 s | SAME | 1 290/0/1 904 both | 713 (KLU) both | 0.0719 mV both | 2 219 -> 2 218 MB |
+| ibmpg2t | 235.2 -> 236.1 s | SAME | 1 290/0/1 899 both | 711 (KLU) both | 0.0560 mV both | 1 154 -> 1 158 MB |
+| ibmpg3t | 645.6 -> 519.0 s | **0.804x** | 1 297/2/2 184 -> 1 297/2/1 299 | 709 -> 708 | 0.0491 mV both | 8 009 -> 7 950 MB |
+| ibmpg4t | 770.4 -> 620.7 s | 0.806x | 1 139/1/2 052 -> 1 139/1/1 140 | 268 both | 0.1363 mV both | 9 074 -> 8 955 MB |
+| ibmpg5t | 621.3 -> 473.6 s | 0.762x | 1 301/1/2 491 -> 1 301/1/1 302 | 713 -> 712 | 0.0307 mV both | 7 198 -> 7 121 MB |
+| ibmpg6t | 893.2 -> 695.9 s | **0.779x** | 1 297/1/2 312 -> 1 297/1/1 298 | 709 -> 708 | 0.0361 mV both | 10 277 -> 10 174 MB |
+
+The base reproduces sec. 351's digests (b8148169f205, d23b6dc4b1ba, 2b2ea58c3f59, dbcb4767b194, 2c8f9408712e,
+573d1fc249b2 for 1t-6t) and its times to 0.6 %; 1t and 2t (KLU: 'auto' not taken) are those bytes on this tree too.
+On the CHOLMOD grids every attempt is one Newton iteration (iterations = steps + rejected), the steps and the times
+sampled are the base's, and the waveforms' digests are 3t fdbfc2c29817, 4t 4de6bbddb907, 5t 4d3090c9390a, 6t
+b8b9d2aa8f92 -- the grids' new reference with 1t's and 2t's; the voltages at every benchmark node within 6.6e-9 V of the
+base's on 3t (the confirming iteration's refinement, as the prototype's 6.5e-9), 1.7e-14 on 4t, 8.9e-15 on 5t, 1.8e-15
+on 6t, so the distances from the benchmark agree to every digit printed.  The DCs and their digests unchanged.  The
+whole run (import, DC, 10 ns): 0.821x (3t), 0.824x (4t), 0.783x (5t), 0.798x (6t).  An iteration saved is 143 ms (3t),
+164 ms (4t), 124 ms (5t), 195 ms (6t): a solve and the iteration's C, as the prototype's 142 / 190 ms.  The memory line
+bounded growth: every CHOLMOD grid's peak FELL, 0.7-1.3 % (59-119 MB; the prototype's -44 / -74 MB at 2 ns), read
+literally as +-1 % 4t's -1.31 % and 5t's -1.07 % are outside it -- not traced; 1t and 2t, unchanged code, within
+0.4 %.
+(c) MET -- below.  (d) suite 6 865 passed, 10 skipped, 5 xfailed; ruff the base's (44 = 44 on the seven files, the same findings).
+
+**Tests.**  `test_cholklu` +7 (32): `test_the_certificate_is_the_constant_stamps_with_nothing_limiting` (the grid
+with a pulse affine; a capacitor of its own `C`, a resistor of its own `i`, one that limits, a diode, a resistor's `G`
+shadowed on the instance, and the stamp plan off each refused); `test_the_first_iterate_is_taken_on_the_reduction_and_where_asked[c|python]`
+('auto' on CHOLMOD: one iteration an attempt, the steps of the run without it, within 1e-12; on KLU 'auto' not taken,
+True taken, the switch off never; the mark gone after the run); `test_the_first_iterate_s_c_is_the_python[cholmod|klu|dense]`
+(the C Newton and loop serving, the Python's bytes); `test_the_first_iterate_is_neither_the_chord_s_nor_a_non_affine_run_s`
+(the chord under 'auto' as without it; True with a diode as without it; a TR-BDF2 run never marked).  The test of the
+grid on CHOLMOD against KLU (`..._is_its_klu_run_and_its_c_the_python`) runs with `linear_newton=False`, as with
+`step_ladder=False`: its iterations are KLU's.  Thirteen bites: eleven bit (the C ignoring `first_iter`; the Python
+ignoring the mark; `solve` not setting the field; the certificate without C, without the limiter; 'auto' without
+CHOLMOD; the mark not removed; the switch ignored; the family check dropped; both chord guards at once); two did not:
+the chord guards one at a time (`first_iter_for`'s and newton.c's: each covers the other), and the C loop's record
+check (`first_iter` against the run's) -- every run's first attempts are the Python-driven C Newton's, which set the
+field before the loop enters (measured: a run after one with the other setting is a fresh run's bytes, with and
+without the check), so it guards a course no run takes, as its `lte_seed` twin.  Seven pinned pairs re-recorded (the
+Newton solve; the DC base solve, through `StandardNewton.solve_system`; the stage loop, the transform loop and the
+multistep walk, through newton.h in `LOOP_C`; the stepping loop and its unread Jacobian) after the gate.
+
+**Found, not changed:** (1) the C loop's record check on `first_iter` guards a course no run takes (Tests, above),
+kept as `lte_seed`'s twin.  (2) After it a CHOLMOD grid's step is one evaluation, one solve, the fold and the error
+test; how the run's time now divides (factorization, solve, our C) is not measured -- plan L26's candidates 2-6 are
+sized by the 2 ns profile before it, a new profile first.

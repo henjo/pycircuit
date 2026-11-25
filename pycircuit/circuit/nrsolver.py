@@ -188,9 +188,15 @@ class StandardNewton(NonLinearSolver):
     """
     Standard Full-Matrix Newton-Raphson Solver.
     Used natively by DCAnalysis and standard adaptive Transient simulations.
+
+    `first_iterate=True` (THE FIRST ITERATE ACCEPTED: `Transient.
+    linear_newton`, newton.c's `first_iter`): the caller has certified the
+    residual affine in x, so the first iterate is its solution to the
+    solve's rounding -- returned as it is, one iteration, untested, where it
+    is finite and no limiter is given (else the iteration goes on as ever).
     """
     
-    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None):
+    def solve_system(self, x0, eval_FJ, toolkit, reltol, abstol, xtol, maxiter, limiter=None, scaler=None, row_names=None, linsolver=None, first_iterate=False):
         if (getattr(eval_FJ, 'dc_layer', None) is not None
                 or getattr(eval_FJ, 'dc_base', None) is not None):
             ## (a DC operating point's composition: the solve in C where it
@@ -241,6 +247,10 @@ class StandardNewton(NonLinearSolver):
                 # Recompute xdiff based on limited step
                 xdiff = x_next - x
                 limited = _limiting.limited_since(n0)
+
+            ## THE FIRST ITERATE ACCEPTED (`first_iterate`, the class note)
+            if first_iterate and i == 0 and limiter is None and _all_finite(x_next):
+                return x_next, 1
                 
             # --- CONVERGENCE CRITERIA ---
             # To declare victory, three conditions must be met:

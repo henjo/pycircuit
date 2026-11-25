@@ -699,6 +699,7 @@ _RUN_STATE = {
     '_branch_varying': ('run', 'the branch check\'s varying part'),
     '_j_unread': ('run', 'the loop\'s mark: no attempt reads its Jacobian'),
     '_lte_seed': ('run', 'the loop\'s mark: the error test on the seed\'s factors (`lte_jacobian`)'),
+    '_first_iterate': ('run', 'the loop\'s mark: the full Newton takes its first iterate (`linear_newton`)'),
     '_pred_wmemo': ('run', 'the predictor\'s weights, by step ratios'),
     '_memo_rolling': ('run', 'whether the device memo has started rolling'),
     '_rk_want_est': ('run', 'whether the stage family wants the error estimate'),
@@ -891,6 +892,9 @@ class _SteppingLoop:
             and G(Transient.solve_timestep, 'Transient.solve_timestep', me)
             and G(Transient._solve_timestep, 'Transient._solve_timestep', me)
             and G(Transient._attempt_step, 'Transient._attempt_step', me))
+        ## THE FIRST ITERATE ACCEPTED (`Transient.linear_newton`): this
+        ## run's multistep steps -- `_newton` and the C Newton read the mark
+        self.first_iterate = tr._linear_newton(family)
         ## (the stepping loop in C, `_tran_loop_c`: its state on this loop,
         ## or None where the loop never tries it -- `attach` says which)
         self.c = _tran_loop_c.attach(self)
@@ -902,6 +906,8 @@ class _SteppingLoop:
             tr._j_unread = True
         if self.lte_seed:
             tr._lte_seed = True
+        if self.first_iterate:
+            tr._first_iterate = True
         try:
             while self.t < self.tend:
                 ## (the attempts the stepping loop in C makes, fixed or
@@ -919,6 +925,8 @@ class _SteppingLoop:
             if self.lte_seed:
                 tr.__dict__.pop('_lte_seed', None)
                 tr.__dict__.pop('_lte_fac', None)
+            if self.first_iterate:
+                tr.__dict__.pop('_first_iterate', None)
             self.family.finish()
 
     def where(self):
@@ -1733,6 +1741,20 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
                         "its CHOLMOD factors are kept: 'auto' -- a multistep run whose "
                         "matrix is the linear grid's SPD reduction --, True or False",
                    unit='', default='auto'),
+         ## THE FIRST ITERATE ACCEPTED (`_linear_newton`, `_affine`;
+         ## `doc/hdl_roadmap_260824.md`, 352): on a circuit whose step
+         ## residual is affine in x the full Newton's first iterate is the
+         ## step's solution to the solve's rounding, and the convergence test
+         ## would spend a second evaluation and solve confirming it -- taken
+         ## as it is where the step ladder's 'auto' takes CHOLMOD; a small
+         ## circuit keeps the second iteration's refinement (it is cheap)
+         Parameter(name='linear_newton',
+                   desc="A multistep step's full Newton takes its first iterate as the "
+                        "solution where the circuit is affine (every element's G and C "
+                        "constant stamps, i and q their products, nothing limiting): "
+                        "'auto' -- where the run's matrix is the linear grid's SPD "
+                        "reduction on CHOLMOD --, True (any affine circuit) or False",
+                   unit='', default='auto'),
          ## DEVICE BYPASS (SPICE's), OFF BY DEFAULT, GEAR-2 ALONE: a device the
          ## evaluation core evaluates (compiled, in a circuit the core serves)
          ## whose terminal voltages each moved within `reltol` * |v| + `vabstol`
@@ -1915,21 +1937,69 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
             return 0.0
         if mode != 'auto':
             raise ValueError(f"step_ladder must be 'auto', True or False, not {mode!r}")
-        if type(family) is not _LMMSteps:
-            return 0.0
-        from pycircuit.circuit import _cholklu, linearsolver
-        m = self.cir.n - 1
-        if not _cholklu.ENABLED or m < _cholklu.CHOLMOD_FROM:
-            return 0.0
-        ls = self._get_linearsolver()
-        if type(ls) is not linearsolver.AutoSolver:
-            return 0.0
-        ch = (_packed.choice(ls, m) if _packed.active(self.cir)
-              else ls._choice or ls.choose_on_structure(m))
-        if type(ch) is not linearsolver.StructuralKLU or not ch.cholmod:
+        ch = self._grid_cholmod(family)
+        if ch is None:
             return 0.0
         ch.keep_factors(LADDER_KEEP)
         return float(run.max_step)
+
+    def _grid_cholmod(self, family):
+        """The run's StructuralKLU on CHOLMOD where a multistep run's matrix
+        is the linear grid's SPD reduction (`step_ladder`'s and
+        `linear_newton`'s 'auto'), else None -- an AutoSolver's choice, made
+        here as its first matrix would make it (`_packed.choice`, or
+        `AutoSolver.choose_on_structure`: `_tran_newton_c._choice`'s), on
+        CHOLMOD (`_cholklu`, from `CHOLMOD_FROM` unknowns).  Below
+        `CHOLMOD_FROM`, or with CHOLMOD off, nothing is chosen early."""
+        if type(family) is not _LMMSteps:
+            return None
+        from pycircuit.circuit import _cholklu, linearsolver
+        m = self.cir.n - 1
+        if not _cholklu.ENABLED or m < _cholklu.CHOLMOD_FROM:
+            return None
+        ls = self._get_linearsolver()
+        if type(ls) is not linearsolver.AutoSolver:
+            return None
+        ch = (_packed.choice(ls, m) if _packed.active(self.cir)
+              else ls._choice or ls.choose_on_structure(m))
+        if type(ch) is not linearsolver.StructuralKLU or not ch.cholmod:
+            return None
+        return ch
+
+    def _linear_newton(self, family):
+        """THE FIRST ITERATE ACCEPTED for a run (`linear_newton`): True
+        where its multistep steps' full Newton takes its first iterate as
+        the solution -- the switch on (`_tran_newton.LINEAR_NEWTON`), a
+        multistep run (`_LMMSteps`), the circuit affine (`_affine`); 'auto'
+        also its matrix the linear grid's SPD reduction on CHOLMOD
+        (`_grid_cholmod`).  True never takes it where the circuit is not
+        affine."""
+        mode = self.par.linear_newton
+        if mode is False or mode is None:
+            return False
+        if mode is not True and mode != 'auto':
+            raise ValueError(f"linear_newton must be 'auto', True or False, not {mode!r}")
+        if not _tran_newton.LINEAR_NEWTON or type(family) is not _LMMSteps:
+            return False
+        if mode == 'auto' and self._grid_cholmod(family) is None:
+            return False
+        return self._affine()
+
+    def _affine(self):
+        """Whether every step residual of this circuit is affine in x: the
+        stamp plan's G and C each one matrix for every x, t and epar
+        (`_stamp_plan.constant_matrix`: every element's stamps constant by
+        method identity, its `i` and `q` `Circuit`'s own products of them,
+        no instance override) and nothing limiting (`_newton_limiter`).  The
+        sources (`u`, a provided function) are x's free terms; the multistep
+        companion is linear in q.  `Circuit.linear` is not read: an element
+        that is not linear need not say so.  False where the plan does not
+        serve the circuit (another toolkit, the plan off)."""
+        from pycircuit.circuit import _stamp_plan
+        x = np.zeros(self.cir.n)
+        return (_stamp_plan.constant_matrix(self.cir, 'G', x) is not None
+                and _stamp_plan.constant_matrix(self.cir, 'C', x) is not None
+                and self._newton_limiter() is None)
 
     def _opening_step(self, timestep):
         """The size of the first step of a run.

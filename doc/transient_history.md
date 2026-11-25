@@ -6502,3 +6502,27 @@ grids' 10 ns the waveforms moved by about 1e-15 V and the runs took the
 same steps.  The transient ran in 0.89x (ibmpg3t) and 0.83x (ibmpg6t) of
 its time, at the same distance from the benchmark and the same memory.
 `PYCIRCUIT_CHOLMOD_OWN_SOLVE=0` restores CHOLMOD's own solve.
+
+
+## LN: the first Newton iterate taken on an affine circuit (2026-11-25)
+
+### `Transient.linear_newton`, `Transient._affine`, `_tran_newton.LINEAR_NEWTON`
+
+2026-11-25 (`doc/hdl_roadmap_260824.md`, 352; plan 261 L26).  On a circuit
+whose every stamp is constant and where nothing limits Newton's step, a
+transient step's equations are affine, so the full Newton's first iterate
+is already the step's solution to the solve's rounding.  The convergence
+test still asked for a second iteration to confirm it on about 40 % of the
+IBM grids' steps -- an extra evaluation and solve each time.  Such a run
+now takes the first iterate as it is.  The circuit has to earn it: the
+stamp plan must find every element's G and C stamps constant and its
+currents and charges the circuit's own products of them, with no limiter
+anywhere (`Circuit.linear` is not trusted for this).  It is on by default
+('auto') only where the run's matrix is a large grid's reduction on
+CHOLMOD, as the step ladder; `linear_newton=True` takes it on any such
+circuit stepped by a multistep method (the stage methods never), and
+smaller circuits keep the confirming iteration, which refines the answer
+slightly.  On the IBM grids' 10 ns the transient ran in 0.80x
+(ibmpg3t) and 0.78x (ibmpg6t) of its time with the same steps, the
+waveforms within 7e-9 V of before and the same distance from the
+benchmark.  `PYCIRCUIT_LINEAR_NEWTON=0` turns it off.

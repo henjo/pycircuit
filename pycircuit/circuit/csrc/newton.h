@@ -27,7 +27,7 @@
  * before its call and restores them after, and `solve` sets the six
  * scalars anew every call.  Every other field the loop takes as the last
  * served `solve` left it (T, maxiter, reltol, chord, fold_j, lte_seed,
- * abstol, xtol, the walk, the sparse chord) -- but `ck_defer`, which it sets for each
+ * first_iter, abstol, xtol, the walk, the sparse chord) -- but `ck_defer`, which it sets for each
  * call and clears after, and the chord's numeric `ck`, which it takes back
  * to an attempt's entry where it stops in that attempt (loop.h). */
 typedef struct {
@@ -314,6 +314,14 @@ typedef struct {
     void *klu_rgrowth;
     long rg_off;
     double rg_keep;
+    /* THE FIRST ITERATE ACCEPTED (`Transient.linear_newton`): on a circuit
+       whose step residual is affine in x -- every stamp constant, nothing
+       limiting (`Transient._affine`) -- the full Newton's first iterate is
+       the step's solution to the solve's rounding, and is taken as it is:
+       no convergence test, no second evaluation.  The chord and a limiting
+       walk never; a non-finite iterate hands back before it, as ever */
+    long first_iter;      /* CALL: 1 where the stepping loop marked the run
+                             (`_tran_newton_c.first_iter_for`), else 0 */
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and

@@ -4,17 +4,26 @@ the voltage sources' nodes fixed, the inductors' currents eliminated, the
 free nodes' symmetric positive definite system factored -- as a dense solve
 makes it; the plan declining what is not a grid; a matrix CHOLMOD will not
 factor KLU's; a transient on it its KLU run, its C the Python's; the kept
-factors, the step ladder, and the glue's own solve on CHOLMOD's factor."""
+factors, the step ladder, the glue's own solve on CHOLMOD's factor, and the
+first Newton iterate taken on an affine circuit."""
 import ctypes
 import hashlib
+import types
 import warnings
 
 import numpy as np
 import pytest
 
-from pycircuit.circuit import _cholklu, _paths, linearsolver, numeric
+from pycircuit.circuit import (
+    _cholklu,
+    _paths,
+    _stamp_plan,
+    _tran_newton,
+    linearsolver,
+    numeric,
+)
 from pycircuit.circuit.analysis import jacobian_structure
-from pycircuit.circuit.circuit import SubCircuit, gnd
+from pycircuit.circuit.circuit import SubCircuit, defaultepar, gnd
 from pycircuit.circuit.dcanalysis import DC
 from pycircuit.circuit.elements import IS, VS, C, Diode, IPulse, R
 from pycircuit.circuit.elements import L as Ind
@@ -234,8 +243,9 @@ def test_a_grid_transient_on_cholmod_is_its_klu_run_and_its_c_the_python(chord, 
     Newton, error test and stepping loop serve (their KLU entries the
     reduction's), the run the Python's byte for byte; against KLU's run the
     same steps, the answers within rounding."""
-    ## (today's stepping on both: the ladder is the reduction's alone -- its own tests below)
-    make = {'chord_jacobian': chord, 'step_ladder': False}
+    ## (today's stepping on both: the ladder and the first iterate taken are
+    ## the reduction's alone -- their own tests below)
+    make = {'chord_jacobian': chord, 'step_ladder': False, 'linear_newton': False}
     k = _run(False, True, monkeypatch, **make)
     c = _run(True, True, monkeypatch, **make)
     p = _run(True, False, monkeypatch, **make)
@@ -626,3 +636,140 @@ def test_a_grid_transient_on_the_own_solve_is_its_cholmod_solve_run(c_on, monkey
     assert a[5]['hits'] > 0, a[5]
     assert a[6]['own'] > 50 and a[6]['cholmod'] == 0, a[6]
     assert b[6] == {'own': 0, 'cholmod': a[6]['own']}, (a[6], b[6])
+
+
+## THE FIRST ITERATE ACCEPTED (`Transient.linear_newton`, plan 261 L26)
+
+class _VaractorC(C):
+    """A capacitor whose C moves with its voltage: its own `C`."""
+
+    def C(self, x, epar=defaultepar, params_tree=None):
+        return super().C(x, epar) * (1.0 + (x[0] - x[1]) ** 2)
+
+
+class _LeakyR(R):
+    """A resistor with a cubic leak: its own `i`, the class's `G`."""
+
+    def i(self, x, epar=defaultepar, params_tree=None):
+        d = x[0] - x[1]
+        return super().i(x, epar) + 1e-3 * d ** 3 * np.array([1.0, -1.0])
+
+
+class _ClampR(R):
+    """A resistor that limits its Newton step."""
+
+    def limit(self, x, x0, epar=defaultepar):
+        return x
+
+
+def test_the_certificate_is_the_constant_stamps_with_nothing_limiting(monkeypatch):
+    """`Transient._affine`: the grid -- resistors, capacitors, inductors,
+    sources, a pulse -- is affine; with a capacitor of its own `C`, a
+    resistor of its own `i`, one that limits, a diode, or a resistor's `G`
+    shadowed on the instance it is not; nor any circuit with the stamp plan
+    off."""
+    def affine(c):
+        return Transient(c, toolkit=numeric)._affine()
+    c = _grid()
+    c['ip'] = IPulse('n2_2', 'n0_0', i1=0.0, i2=1e-3, td=1e-10, tr=1e-10, tf=1e-10, pw=4e-10)
+    assert affine(c)
+    for name, el in (('cv', _VaractorC('n1_1', gnd, c=1e-12)),
+                     ('rl', _LeakyR('n1_1', 'n2_2', r=5.0)),
+                     ('rc', _ClampR('n1_1', 'n2_2', r=5.0)),
+                     ('d', Diode('n1_1', gnd))):
+        c = _grid()
+        c[name] = el
+        assert not affine(c), name
+    c = _grid()
+    r = c['r0']
+    r.G = types.MethodType(type(r).G, r)
+    assert not affine(c)
+    monkeypatch.setattr(_stamp_plan, 'ENABLED', False)
+    assert not affine(_grid())
+
+
+def _ln_run(chol, c_on, monkeypatch, nx=16, diode=False, **make):
+    """The grid's run (`_run`'s, on an `nx` x `nx` mesh; a diode across it
+    where asked): x, digest, (accepted, rejected, Newton iterations), the
+    paths, the loop's `first_iterate`, whether the run's mark outlived it."""
+    from pycircuit.circuit import _tran_loop_c, _tran_lte_c, _tran_newton_c
+    from pycircuit.circuit import transient as trmod
+    monkeypatch.setattr(_cholklu, 'CHOLMOD_FROM', 0 if chol else 1 << 40)
+    for mod in (_tran_loop_c, _tran_lte_c, _tran_newton_c):
+        monkeypatch.setattr(mod, 'ENABLED', c_on)
+    got = {}
+    real = trmod._SteppingLoop.__init__
+
+    def init(self, *a, **k):
+        real(self, *a, **k)
+        got['loop'] = self
+    monkeypatch.setattr(trmod._SteppingLoop, '__init__', init)
+    c = _grid(nx, nx)
+    c['ip'] = IPulse(f'n{nx // 2}_{nx // 2}', 'n0_0', i1=0.0, i2=5e-3, td=1e-10, tr=1e-10,
+                     tf=1e-10, pw=4e-10, per=2e-9)
+    if diode:
+        c['d'] = Diode('n2_2', 'n0_0')
+    before = _paths.snapshot()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        tr = Transient(c, toolkit=numeric, **make)
+        res = tr.solve(tend=3e-9, timestep=1e-11)
+    st = tr.statistics
+    x = np.asarray(res.x, float)
+    return (x, hashlib.sha1(x.tobytes()).hexdigest(),
+            (st.accepted_steps, st.rejected_steps, st.newton_iterations), _paths.since(before),
+            got['loop'].first_iterate, '_first_iterate' in tr.__dict__)
+
+
+@pytest.mark.parametrize('c_on', [True, False], ids=['c', 'python'])
+def test_the_first_iterate_is_taken_on_the_reduction_and_where_asked(c_on, monkeypatch):
+    """'auto': on the reduction (CHOLMOD) one Newton iteration an attempt,
+    the steps those of the run without it, the answers within 1e-12; below
+    the threshold (KLU) not taken -- True takes it there, the switch off
+    never; the run's mark gone after it."""
+    off = _ln_run(True, c_on, monkeypatch, linear_newton=False)
+    on = _ln_run(True, c_on, monkeypatch)
+    assert on[4] and not off[4] and not on[5] and not off[5]
+    acc, rej, its = on[2]
+    assert its == acc + rej and on[2][:2] == off[2][:2] and off[2][2] > its + 20, (on[2], off[2])
+    assert float(np.max(np.abs(on[0] - off[0]))) <= 1e-12
+    klu = _ln_run(False, c_on, monkeypatch)
+    forced = _ln_run(False, c_on, monkeypatch, linear_newton=True)
+    assert not klu[4] and forced[4] and not forced[5]
+    assert forced[2][2] == sum(forced[2][:2]) and klu[2][2] > forced[2][2] + 20, (klu[2], forced[2])
+    assert float(np.max(np.abs(forced[0] - klu[0]))) <= 1e-12
+    monkeypatch.setattr(_tran_newton, 'LINEAR_NEWTON', False)
+    sw = _ln_run(False, c_on, monkeypatch, linear_newton=True)
+    assert not sw[4] and sw[1] == klu[1]
+
+
+@pytest.mark.parametrize('kind', ['cholmod', 'klu', 'dense'])
+def test_the_first_iterate_s_c_is_the_python(kind, monkeypatch):
+    """With the first iterate taken -- on the reduction ('auto'), on KLU and
+    on a dense matrix (True) -- the C Newton and stepping loop serve the
+    run, and it is the Python's byte for byte."""
+    chol, nx = kind == 'cholmod', 6 if kind == 'dense' else 16
+    make = {} if chol else {'linear_newton': True}
+    c = _ln_run(chol, True, monkeypatch, nx=nx, **make)
+    p = _ln_run(chol, False, monkeypatch, nx=nx, **make)
+    assert c[4] and p[4]
+    assert c[1:3] == p[1:3] and c[2][2] == sum(c[2][:2]), (c[2], p[2])
+    d = c[3]
+    assert d.get('loop_c:steps', 0) > 50 and d.get('newton_c:served', 0) > 50, d
+    assert not any(k.startswith(('newton_c:bail', 'newton_c:no')) for k in d), d
+
+
+def test_the_first_iterate_is_neither_the_chord_s_nor_a_non_affine_run_s(monkeypatch):
+    """The chord on the reduction ('auto' marks the run) iterates as it did;
+    True on the grid with a diode across it is the run without it; a
+    stage method's run is never marked."""
+    from pycircuit.circuit.integrator import TRBDF2Integrator
+    a = _ln_run(True, True, monkeypatch, chord_jacobian=True)
+    b = _ln_run(True, True, monkeypatch, chord_jacobian=True, linear_newton=False)
+    assert a[4] and a[1:3] == b[1:3], (a[2], b[2])
+    a = _ln_run(False, True, monkeypatch, nx=8, diode=True, linear_newton=True)
+    b = _ln_run(False, True, monkeypatch, nx=8, diode=True, linear_newton=False)
+    assert not a[4] and a[1:3] == b[1:3], (a[2], b[2])
+    a = _ln_run(False, True, monkeypatch, nx=6, integrator=TRBDF2Integrator(),
+                linear_newton=True)
+    assert not a[4] and not a[5]

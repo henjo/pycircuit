@@ -540,7 +540,8 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
    reduced system `_newton` hands them): per iteration the evaluation at
    insert_row(x) (`evaluate`: the core's residual, and J where the
    iteration forms it), the step (`solve_step`), x_next and the limiter
-   (`limit_step`), the convergence test (`converged`, a chord's also
+   (`limit_step`), the convergence test (`converged` -- none on the first
+   iterate where `first_iter` takes it, newton.h -- a chord's also
    `chord_settled`, the full Newton's stalled update its rounding floor --
    `step_size`, `floor_holds` -- then `jacobian_only` there: `fold`), the
    chord's contraction (`chord_breaks`) and its dominant component
@@ -586,7 +587,9 @@ static long iterate(newton_t *s, void **num, const double *cin, const double **c
            the core's (and the test below reads every |x| and |x_next|
            finite) */
         for (i = 0; i < m; i++) if (!isfinite(s->xn[i])) return finish(s, NEWTON_BAIL_XNEXT);
-        st = converged(s, m);
+        /* (THE FIRST ITERATE ACCEPTED, newton.h `first_iter`: the full
+           Newton's first iterate on an affine residual, untested) */
+        st = (it == 0 && s->first_iter && !s->chord && !walk) ? 1 : converged(s, m);
         /* the Python's count: `i + 1`, the chord's `done` */
         s->iters = it + 1;
         /* (and a chord iterate settled: `_chord_settled`) */

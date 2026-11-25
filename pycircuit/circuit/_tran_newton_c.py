@@ -851,6 +851,9 @@ def solve(tr, func, t, provided_function, seed, residual, want_j=True):
     ## (the error test on the sparse chord's own numeric where the stepping
     ## loop marked the run: `Transient.lte_jacobian`, `_newton`'s rule)
     s.lte_seed = lte_seed_for(td, M, chord)
+    ## (the first iterate taken where the stepping loop marked the run:
+    ## `Transient.linear_newton`, `_newton`'s rule)
+    s.first_iter = first_iter_for(td, chord)
     if P is None:
         ## (every read above in full, every check passed: stamp them)
         _par_stamp(tr, td, par, rec, before, nrsolver, scaler, ls, tol)
@@ -903,6 +906,15 @@ def lte_seed_for(td, M, chord):
     serves no scaler; it holds the sparse chord's factors alone, as
     `_newton` holds a sparse `fac`), which the C loop holds its record to."""
     return M['lte_seed'] if chord and td.get('_lte_seed') else 0
+
+
+def first_iter_for(td, chord):
+    """newton.h's `first_iter` for a call: 1 on the full Newton where the
+    stepping loop marked the run (`_first_iterate`: `Transient.linear_newton`,
+    its circuit affine), else 0 -- `_newton`'s rule (the chord's fallback
+    takes none, as `ChordNewton`'s full Newton is handed none), which the C
+    loop holds its record to."""
+    return 1 if not chord and td.get('_first_iterate') else 0
 
 
 def limit_taken(tr):
