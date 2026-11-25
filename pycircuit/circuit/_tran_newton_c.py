@@ -455,6 +455,21 @@ def _first_choice(ls, m):
     return ch
 
 
+def _within(pat, kat, n, iref):
+    """Whether every place of the core's pattern `pat` (sorted, each once)
+    off the reference row and column is one of the structure's `kat` (each
+    once, none on them): `np.isin`'s `all()` counted on the search the
+    places in the core's J need -- each of kat's places found in pat is a
+    distinct one of pat's off the reference, so all of those are there
+    exactly where as many are found.  `(inside, at, found)`: the answer,
+    the search's places, its hits."""
+    pr, pc = np.divmod(pat, n)
+    at = np.minimum(np.searchsorted(pat, kat), len(pat) - 1)
+    found = pat[at] == kat
+    inside = int(np.count_nonzero(found)) == int(np.count_nonzero((pr != iref) & (pc != iref)))
+    return inside, at, found
+
+
 def _klu_bind(rec, sk):
     """Point the C's sparse solves at `sk`, the run's `StructuralKLU`: its
     pattern's places in the core's full J (`kat`) and in the reduced |J|
@@ -470,8 +485,8 @@ def _klu_bind(rec, sk):
     r, c = np.divmod(sk.take, m)
     kat = np.ascontiguousarray((r + (r >= iref)) * n + (c + (c >= iref)), dtype=np.int64)
     pat = rec.core.arrays['pat']
-    pr, pc = np.divmod(pat, n)
-    if not np.isin(pat[(pr != iref) & (pc != iref)], kat).all():
+    inside, at, found = _within(pat, kat, n, iref)
+    if not inside:
         return False
     ffi, s = rec.ffi, rec.s
     lib, ct = sk._lib, sk._ct
@@ -490,8 +505,7 @@ def _klu_bind(rec, sk):
     ## pattern -- J's +0.0 there)
     kpp = np.full(max(sk.nnz, 1), -1, dtype=np.int64)
     if rec.core.npat:
-        at = np.minimum(np.searchsorted(pat, kat), len(pat) - 1)
-        kpp[:sk.nnz] = np.where(pat[at] == kat, at, -1)
+        kpp[:sk.nnz] = np.where(found, at, -1)
     Jp = np.empty(len(pat) if rec.core.npat else 1)
     keep = (sk, kat, kabs, kAx, ffi.from_buffer('int *', sk.Ap), ffi.from_buffer('int *', sk.Ai),
             ffi.from_buffer('int64_t *', kat), ffi.from_buffer('int64_t *', kabs),

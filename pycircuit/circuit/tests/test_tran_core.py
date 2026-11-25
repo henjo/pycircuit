@@ -585,3 +585,36 @@ def test_the_packed_j_is_the_dense_one_on_the_pattern(formula):
     Gr, Jr = np.full((n, n), 7.0), np.full(len(pat), 7.0)
     _core_once(core, x, T, abi['PCX_PASS_I'] | pt | pk, f, held, Gr, Jr)
     assert (Gr == 7.0).all() and (Jr == 7.0).all()
+
+
+def test_the_core_s_pattern_is_the_plan_s_one_sort():
+    """The core's pattern (`arrays['pat']`) is the plan's places
+    (`_stamp_plan.places`: its G and C slots and the diagonal, sorted once)
+    -- the same object, `np.unique` of the slots the core pulls -- and the
+    packed layout's pattern is made from those places; a G plan replaced,
+    they are sorted again."""
+    from pycircuit.circuit import _packed, _stamp_plan
+    from pycircuit.circuit.elements import C
+    cir = SubCircuit()
+    cir['vs'] = VSin('a', gnd, v=0.0, va=1.0, freq=1e6)
+    cir['r1'] = R('a', 'b', r=1e3)
+    cir['c1'] = C('b', gnd, c=1e-12)
+    cir['r2'] = R('b', 'c', r=2e3)
+    cir['c2'] = C('c', gnd, c=2e-12)
+    tr, _x = _tr(cir)
+    core_ = _tran_core.core_for(tr)
+    assert core_ is not None
+    plan, n = core_.plan, cir.n
+    u = _stamp_plan.places(cir, plan)
+    assert core_.arrays['pat'] is u
+    slots = [plan.methods['G'].flat, plan.methods['C'].flat]
+    assert np.array_equal(u, np.unique(np.concatenate(slots + [np.arange(n) * (n + 1)])))
+    pat = _stamp_plan.packed_pattern(cir, plan, _packed)
+    assert np.array_equal(np.sort(pat.rows * n + pat.cols), u)
+    old = plan.methods['G']
+    try:
+        plan.methods['G'] = _stamp_plan._MatrixPlan(cir, 'G')
+        v = _stamp_plan.places(cir, plan)
+        assert v is not u and np.array_equal(v, u)
+    finally:
+        plan.methods['G'] = old

@@ -404,7 +404,7 @@ def _matmul_ok(k, S):
 
 
 class _Plan:
-    __slots__ = ('builds', 'elements', 'epoch', 'methods', 'n', 'nodemap', 'pattern')
+    __slots__ = ('builds', 'elements', 'epoch', 'methods', 'n', 'nodemap', 'pattern', 'places')
 
     def __init__(self, cir, epoch, builds):
         self.epoch = epoch
@@ -415,8 +415,9 @@ class _Plan:
         self.n = cir.n
         self.methods = {}
         self.builds = builds
-        ## (THE PACKED LAYOUT's pattern, `packed_pattern`: made where asked)
-        self.pattern = None
+        ## (THE PACKED LAYOUT's pattern, `packed_pattern`: made where asked;
+        ## its places with the G and C plans they were sorted from, `places`)
+        self.pattern = self.places = None
 
 
 def _plan_for(cir):
@@ -636,19 +637,35 @@ def _reduced_matrix(mp, buf, n, k):
     return _binned(mp, k, rflat, buf[keep], m)
 
 
+def places(cir, plan):
+    """The places `plan`'s G and C put values at, and the diagonal's: their
+    flat indices (row x n + column), sorted, each once -- one sort a plan,
+    read by the packed layout's pattern (`packed_pattern`) and the transient
+    core's (`_tran_core._Flat.arrays`).  Kept with the two plans' slot
+    arrays it was sorted from, and sorted again where either was replaced."""
+    mps = []
+    for m in ('G', 'C'):
+        mp = plan.methods.get(m)
+        if mp is None:
+            mp = plan.methods[m] = _MatrixPlan(cir, m)
+        mps.append(mp)
+    held = plan.places
+    if held is not None and held[0] is mps[0].flat and held[1] is mps[1].flat:
+        return held[2]
+    n = plan.n
+    u = np.unique(np.concatenate([np.arange(n, dtype=np.int64) * (n + 1)]
+                                 + [np.asarray(mp.flat, dtype=np.int64) for mp in mps]))
+    plan.places = (mps[0].flat, mps[1].flat, u)
+    return u
+
+
 def packed_pattern(cir, plan, pk):
     """THE PACKED LAYOUT's pattern for `plan` (`_packed`): the places its G
-    and C put values, and the diagonal -- made once a plan."""
+    and C put values, and the diagonal (`places`) -- made once a plan."""
     pat = plan.pattern
     if pat is None:
         n = plan.n
-        flats = [np.arange(n, dtype=np.int64) * (n + 1)]
-        for m in ('G', 'C'):
-            mp = plan.methods.get(m)
-            if mp is None:
-                mp = plan.methods[m] = _MatrixPlan(cir, m)
-            flats.append(np.asarray(mp.flat, dtype=np.int64))
-        u = np.unique(np.concatenate(flats))
+        u = places(cir, plan)
         pat = plan.pattern = pk.Pattern(n, u // n, u % n)
     return pat
 

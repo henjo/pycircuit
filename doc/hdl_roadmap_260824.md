@@ -17705,3 +17705,39 @@ behind `_watch.EPOCH`), the run the Python's -- the same bytes, slower; the test
 112 factorizations in the C loop -- the run's 115 less the Python-driven attempts' -- Belady's optimum 79; no
 buildable policy tried does better at 8 (LFU 112, segmented LRU 115, keep-on-second-visit 110); 10 factors 61, 12
 factors 43, at ~0.5 GB a factor on 3t -- a memory decision, 6t peaks at 10.0 of its 11 GB.
+
+## 2026-11-25 — 354. U: the pattern sorted once a plan, the bind's check counted on its search
+
+**Why**  Plan 261 L28 (tc/plan_l28_next.md), its first item after the profile P0.  A grid transient's set-up sorted
+the same pattern three times and searched it once more: `_stamp_plan.packed_pattern`, `_tran_core._Flat.arrays` and
+`analysis.jacobian_structure` each made an `np.unique` of their places (~2.2-2.5 s each on ibmpg3t), and
+`_tran_newton_c._klu_bind` checked the core's pattern against the structure's with `np.isin` (1.9 s: two more sorts
+inside) beside the `searchsorted` it already made for `kpp`.  Lines (set before building, the first restated before
+measuring -- "7 -> <= 3" miscounted the calls): every output the same bytes (gate, suite); the pattern-sized sorts in a
+grid's solve window 5 -> 2 (counted); the set-up timed pinned before and after, reported.
+
+**What.**  `_stamp_plan.places(cir, plan)`: the places the plan's G and C put values at and the diagonal's, sorted
+once, kept on the plan (`_Plan.places`) with the two plans' slot arrays it was sorted from (made again where either is
+replaced); `packed_pattern` makes its `Pattern` from it, and the transient core's pattern is it
+(`_Flat.arrays(..., places)`: the core's G and C slots are the plan's own).  `_tran_newton_c._within`: the bind's
+check as a count on the search the core's places need -- each of the structure's places found in the core's sorted
+pattern is a distinct one of its places off the reference row and column, so all of those lie within the structure
+exactly where as many are found; `kpp` from the same search.  `jacobian_structure` keeps its own sort: its places are
+every element's whole block, a superset.
+
+**Measured.**  (a) gate_u against 0d0d990a: 0 differing on every comparison (27), VERDICT SAME (no C changed).
+(b) Counted under cProfile, ibmpg3t's solve window (0.2 ns from D1's point): `np.unique` + `np.isin` calls of the
+pattern's size 5 -> 2 (`places`, `jacobian_structure`), 8.85 + 1.91 s -> 5.10 s.  Timed pinned to one P-core, B N N
+B: 73.76 / 69.42 / 69.33 / 73.81 s -- 4.4 s off ibmpg3t's set-up, ~1 % of its 10 ns; the same steps, VmHWM within
+heap noise (+15-28 MB).  (c) Tests, bitten.  (d) suite 6 868 passed, 10 skipped, 5 xfailed, with four pinned pairs
+failing until re-recorded (below; `test_pinned_pairs` then 88 passed); ruff the base's (1 = 1 on the six files).
+
+**Tests.**  `test_tran_core::test_the_core_s_pattern_is_the_plan_s_one_sort` (the core's `pat` the plan's places,
+the same object, `np.unique` of its slots; the packed pattern from them; a G plan replaced, sorted again);
+`test_newton_c::test_the_pattern_check_is_isin_s_answer` (36 random patterns, half with a place missing from the
+structure: `np.isin`'s answer, and the search's hits).  Five bites, five bit (the core sorting again; the places
+kept past a replaced G plan; the check counting the reference row; the check always inside -- also caught by the
+existing `test_a_core_pattern_outside_the_klu_pattern_declines`; the places without the diagonal).  Four pinned pairs
+re-recorded: the transient evaluation and the core, the Newton solve and its C (twin sides: `_tran_core`,
+`_tran_newton_c`), the step's end passes and the C's, the frozen factors and their C (reference sides, through
+`_tran_core`); the C twins unchanged, the gate's C against Python 0 differing.

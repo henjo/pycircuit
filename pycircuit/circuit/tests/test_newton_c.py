@@ -842,3 +842,29 @@ def test_klu_entries_off_the_cores_pattern_are_the_dense_js_zero():
     a, b = run(False), run(True)
     assert a[:2] == b[:2]
     assert b[2].get('newton_c:sparse', 0) > 10, b[2]
+
+
+def test_the_pattern_check_is_isin_s_answer():
+    """`_klu_bind`'s check (`_tran_newton_c._within`) answers as
+    `np.isin(pat_off_reference, kat).all()` -- the core's places inside the
+    structure's, one of them missing from it, the structure holding places
+    the core has not -- and its hits are the search's: `kpp`'s."""
+    rng = np.random.default_rng(7)
+    n, iref = 40, 3
+    answers = set()
+    for trial in range(36):
+        pat = np.unique(np.concatenate([rng.integers(0, n * n, 300), np.arange(n) * (n + 1)]))
+        pr, pc = np.divmod(pat, n)
+        off = pat[(pr != iref) & (pc != iref)]
+        extra = rng.integers(0, n * n, 50)
+        er, ec = np.divmod(extra, n)
+        kat = np.union1d(off, extra[(er != iref) & (ec != iref)])
+        if trial % 2:
+            kat = kat[kat != off[rng.integers(off.size)]]
+        kat = rng.permutation(kat)
+        want = bool(np.isin(off, kat).all())
+        inside, at, found = _tran_newton_c._within(pat, kat, n, iref)
+        assert inside == want, trial
+        assert np.array_equal(found, pat[at] == kat)
+        answers.add(want)
+    assert answers == {True, False}

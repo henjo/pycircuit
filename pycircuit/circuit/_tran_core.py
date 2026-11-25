@@ -591,11 +591,12 @@ class _Flat:
                     fo += len(rows)
         return z_proff
 
-    def arrays(self, n, fused, packed=False):
+    def arrays(self, n, fused, packed=False, places=None):
         """The struct's arrays by their `hdl_core_t` names, the pattern among
         them (and, `fused`, the fused groups' tables): `(arrays, npat)`.
         `packed` (THE PACKED LAYOUT, `_Core`): the pattern whatever its fill,
-        and no n x n G bin."""
+        and no n x n G bin.  `places`: the pattern already sorted from the
+        same G and C slots (`_stamp_plan.places`), else sorted here."""
         g_soff, batches = self.g_soff, self.batches
         arrays = {
             'b_pass': _i64(self.b_pass), 'b_ne': _i64([bt.n for bt in batches]),
@@ -611,8 +612,10 @@ class _Flat:
         ## THE PATTERN: every entry a matrix pass can write (G's and C's
         ## slots) and the diagonal -- `binG` below starts at zero, and a
         ## caller's matrices are zero off it where it asks for it
-        mats = [f for f, nb in zip(self.flat, self.p_nbins) if nb == n * n]
-        pat = np.unique(np.concatenate(mats + [np.arange(n, dtype=np.int64) * (n + 1)]))
+        if places is None:
+            mats = [f for f, nb in zip(self.flat, self.p_nbins) if nb == n * n]
+            places = np.unique(np.concatenate(mats + [np.arange(n, dtype=np.int64) * (n + 1)]))
+        pat = places
         npat = (len(pat) if packed or (PATTERN and len(pat) <= PATTERN_MAX_FILL * n * n)
                 else 0)
         ## (with the pattern on pattern pages at size: a pass asking for it
@@ -782,7 +785,7 @@ class _Core:
         self.PRall = np.zeros(max(fl.pr_len, 1), dtype=np.uintp)
         self.b_proff = fl.b_proff
         self.packed = packed
-        arrays, self.npat = fl.arrays(n, bool(zgroups), packed)
+        arrays, self.npat = fl.arrays(n, bool(zgroups), packed, _stamp_plan.places(cir, plan))
         if any(bt.k > _MAX_IN or bt.so > _MAX_OUT for bt in batches) \
                 or any(k > _MAX_IN for _o, _e, k in fl.g_soff):
             raise Unservable('an element wider than the core holds')

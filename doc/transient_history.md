@@ -6544,3 +6544,15 @@ results are the same to the bit.  On the IBM grids' 10 ns
 the transient ran in 0.886x (ibmpg3t) and 0.882x (ibmpg6t) of its time with
 the same steps and waveforms.  `PYCIRCUIT_AFFINE_STEP=0`
 turns it off.
+
+
+## U: the pattern sorted once (2026-11-25)
+
+### `_stamp_plan.places`, `_tran_newton_c._within`
+
+2026-11-25 (`doc/hdl_roadmap_260824.md`, 354; plan 261 L28).  Setting up a
+large circuit's transient sorted the same matrix pattern three times and
+searched it once more.  The pattern is now sorted once and shared, and the
+check that the solver's pattern covers the circuit's counts matches on a
+search it already makes.  Nothing a run computes changes; ibmpg3t's set-up
+is 4.4 s shorter.
