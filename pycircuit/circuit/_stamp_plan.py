@@ -863,45 +863,18 @@ def source_direct(cir, args):
         if got is not None:
             _PC[K['memo']] += 1
             return got.copy()
-    if not (ENABLED and SOURCE_DIRECT):
-        return _no(K['off'])
-    Circuit, NumericToolkit = _SRC['t'] if _SRC else _src_types()
-    if type(cir.toolkit) is not NumericToolkit:
-        return _no(K['toolkit'])
-    if not _hdl_batch.SKIP_ZERO_SOURCE or (len(args) >= 3 and args[2] == 'ac'):
-        return _no(K['gate'])
-    if getattr(cir, '_eval_groups', None):
-        return _no(K['groups'])
+    why = _direct_gate(cir, len(args) >= 3 and args[2] == 'ac')
+    if why is not None:
+        return _no(K[why])
+    Circuit, NumericToolkit = _SRC['t']
     plan = cir.__dict__.get('_stamp_plan')
     sp = plan.methods.get('src:u') if plan is not None else None
     sd = sp.direct if sp is not None else None
     ep = _watch.EPOCH
     if sd is None or ep is None or sd.stamp != ep.value or not sd.same(cir, Circuit):
-        ## the full check: the plan's, as `assemble_source` makes it, the
-        ## program's facts again, then the stamp -- a program that cannot
-        ## be (`ent` None) stamped as well: its decline is then this cheap
-        before = _watch.now()
-        plan = _plan_for(cir)
-        sp = plan.methods.get('src:u')
-        if sp is None:
-            sp = plan.methods['src:u'] = _SourcePlan(cir, 'u')
-        why = _source_unfit(cir, sp, 'u', Circuit)
-        if why is not None:
-            return _no(K[why])
-        ## (the loop and its scatter, which the pass stands in for, as
-        ## defined: not shadowed on the circuit nor replaced on its class)
-        G = _genuine()
-        cd, cc = cir.__dict__, type(cir)
-        if ('_add_element_subvectors' in cd or '_scatter_1d' in cd
-                or cc._add_element_subvectors is not G['loop']
-                or cc._scatter_1d is not G['scatter']):
-            return _no(K['patched'])
-        sd = sp.direct
-        if sd is None:
-            sd = sp.direct = _SourceDirect.build(cir, sp, plan.n)
-        if sd.ent is not None and not sd.check(NumericToolkit):
-            return _no(K['kind'])
-        sd.arm(cir, sp, Circuit, before)
+        sd = direct_checked(cir, Circuit, NumericToolkit)
+        if type(sd) is str:
+            return _no(K[sd])
     else:
         sd.held += 1
     if sd.ent is None:
@@ -915,6 +888,66 @@ def source_direct(cir, args):
         held[0][key] = out.copy()
     _PC[K['served']] += 1
     return out
+
+
+def _direct_gate(cir, ac):
+    """Why the direct pass is not taken whatever its program (`_SD`'s key),
+    or None: the switches, the toolkit, the zero-source rule (and an 'ac'
+    pass), the circuit's evaluation groups."""
+    if not (ENABLED and SOURCE_DIRECT):
+        return 'off'
+    _Circuit, NumericToolkit = _SRC['t'] if _SRC else _src_types()
+    if type(cir.toolkit) is not NumericToolkit:
+        return 'toolkit'
+    if not _hdl_batch.SKIP_ZERO_SOURCE or ac:
+        return 'gate'
+    if getattr(cir, '_eval_groups', None):
+        return 'groups'
+    return None
+
+
+def direct_rechecked(cir):
+    """The direct pass's program checked afresh where the C stepping loop
+    finds its stamp no longer holding (`_tran_loop_c._sources`): the gates
+    and the full check `source_direct` would make at its next call -- the
+    program stamped, or None."""
+    if _direct_gate(cir, False) is not None:
+        return None
+    Circuit, NumericToolkit = _SRC['t']
+    sd = direct_checked(cir, Circuit, NumericToolkit)
+    return None if type(sd) is str or sd.ent is None else sd
+
+
+def direct_checked(cir, Circuit, NumericToolkit):
+    """The direct pass's FULL CHECK (`source_direct`'s, where its stamp no
+    longer holds -- and the C stepping loop's, `_tran_loop_c._sources`):
+    the plan's, as `assemble_source` makes it, the program's facts again,
+    then the stamp -- a program that cannot be (`ent` None) stamped as well:
+    its decline is then this cheap.  The program (`_SourceDirect`), or why
+    not (`_SD`'s key)."""
+    before = _watch.now()
+    plan = _plan_for(cir)
+    sp = plan.methods.get('src:u')
+    if sp is None:
+        sp = plan.methods['src:u'] = _SourcePlan(cir, 'u')
+    why = _source_unfit(cir, sp, 'u', Circuit)
+    if why is not None:
+        return why
+    ## (the loop and its scatter, which the pass stands in for, as
+    ## defined: not shadowed on the circuit nor replaced on its class)
+    G = _genuine()
+    cd, cc = cir.__dict__, type(cir)
+    if ('_add_element_subvectors' in cd or '_scatter_1d' in cd
+            or cc._add_element_subvectors is not G['loop']
+            or cc._scatter_1d is not G['scatter']):
+        return 'patched'
+    sd = sp.direct
+    if sd is None:
+        sd = sp.direct = _SourceDirect.build(cir, sp, plan.n)
+    if sd.ent is not None and not sd.check(NumericToolkit):
+        return 'kind'
+    sd.arm(cir, sp, Circuit, before)
+    return sd
 
 
 def _direct_c(sd, args, ep):

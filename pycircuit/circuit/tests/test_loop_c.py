@@ -454,3 +454,52 @@ def test_the_shrink_guard_is_one_value():
     from pycircuit.circuit import _cbuild, integrator
     m = re.search(r'^#define SHRINK_GUARD_RATIO (\S+)$', _cbuild.csrc('loop.c'), re.MULTILINE)
     assert m and float(m.group(1)) == integrator.SHRINK_GUARD_RATIO
+
+
+#: (a fresh interpreter's first fixed-grid run of the 16 x 16 grid -- the
+#: sparse full Newton's: the 6 x 6's dense one did not leave the stamp behind --
+#: the C loop on and off: its digest, the loop's steps)
+_FIRST_FIXED = """
+import hashlib, json, sys, warnings
+import numpy as np
+from pycircuit.circuit import _paths, _tran_loop_c, _tran_lte_c, _tran_newton_c
+from pycircuit.circuit.elements import IPulse
+from pycircuit.circuit.tests.test_cholklu import _grid
+from pycircuit.circuit.toolkit import numeric
+from pycircuit.circuit.transient import Transient
+out = {}
+for on in (True, False):
+    for mod in (_tran_loop_c, _tran_lte_c, _tran_newton_c):
+        mod.ENABLED = on
+    c = _grid(16, 16)
+    c['ip'] = IPulse('n2_3', 'n0_0', i1=0.0, i2=5e-3, td=1e-10, tr=1e-10, tf=1e-10, pw=4e-10, per=2e-9)
+    b = _paths.snapshot()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        res = Transient(c, toolkit=numeric).solve(tend=3e-9, timestep=1e-11, fixed_timestep=True)
+    x = np.asarray(res.x, float)
+    out[on] = (hashlib.sha1(x.tobytes()).hexdigest(), _paths.since(b).get('loop_c:steps', 0))
+print(json.dumps(out))
+"""
+
+
+def test_a_process_s_first_fixed_grid_run_is_the_c_loop_s():
+    """A fresh process's first fixed-grid run: its toolkit's first lookups
+    of backend names, cached in the toolkit's watched dict, leave the direct
+    source pass's stamp behind -- the loop checks the pass afresh
+    (`_stamp_plan.direct_rechecked`) and serves the run, the bytes of the
+    run without the C."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    import pycircuit
+    root = os.path.dirname(os.path.dirname(pycircuit.__file__))
+    env = dict(os.environ, PYTHONPATH=root, JAX_PLATFORMS='cpu')
+    r = subprocess.run([sys.executable, '-c', _FIRST_FIXED], cwd=root, env=env,
+                       capture_output=True, text=True, timeout=600, check=False)
+    assert r.returncode == 0, r.stderr[-2000:]
+    got = json.loads(r.stdout.strip().splitlines()[-1])
+    (d_on, steps_on), (d_off, steps_off) = got['true'], got['false']
+    assert steps_on > 200 and steps_off == 0 and d_on == d_off, got

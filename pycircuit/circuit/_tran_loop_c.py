@@ -710,8 +710,17 @@ def _sources(loop, tr, O):
     sp = plan.methods.get('src:u') if plan is not None else None
     sd = sp.direct if sp is not None else None
     ep = _watch.EPOCH
-    if sd is None or ep is None or sd.stamp != ep.value or not sd.same(cir, O['Circuit']):
+    if ep is None:
         return 'sources'
+    if sd is None or sd.stamp != ep.value or not sd.same(cir, O['Circuit']):
+        ## (the stamp no longer holds -- a watched dict written since the
+        ## pass last ran: a toolkit's first lookup of a backend name caches
+        ## it in the toolkit's dict -- so the pass's own full check, as its
+        ## next call would make it)
+        from pycircuit.circuit import _stamp_plan
+        sd = _stamp_plan.direct_rechecked(cir)
+        if sd is None or sd.stamp != ep.value:
+            return 'sources'
     ct_ = loop.c.tab
     if ct_ is not None and ct_[0] is sd:
         tab = ct_[1]

@@ -17741,3 +17741,37 @@ existing `test_a_core_pattern_outside_the_klu_pattern_declines`; the places with
 re-recorded: the transient evaluation and the core, the Newton solve and its C (twin sides: `_tran_core`,
 `_tran_newton_c`), the step's end passes and the C's, the frozen factors and their C (reference sides, through
 `_tran_core`); the C twins unchanged, the gate's C against Python 0 differing.
+
+## 2026-11-25 — 355. FX: a process's first fixed-grid run gets the C stepping loop
+
+**Why**  Found building AS (sec. 353): a fresh process's first `fixed_timestep` run of the 16 x 16 grid declined the C
+stepping loop ('sources') and ran in Python -- the same bytes, slower -- while its second run was served.  The loop
+takes the direct source pass's table only while the one watch counter (`_watch.EPOCH`) still stands at the pass's
+stamp (`_tran_loop_c._sources`), and declined where it did not.  Traced (scratch p261/l28/fx, `sys.setprofile` on the
+counter): the counter moved at `Toolkit.__getattr__`'s return -- the toolkit memoises a backend name into its own
+`__dict__` at its first lookup, and the pass watches that dict (`_SourceDirect.arm`: each source's toolkit's) -- after
+the pass's last stamp and before the loop's check, on the sparse full Newton's first run in a process (the 6 x 6
+grid's dense one did not).  The pass itself checks afresh where its stamp no longer holds; the loop declined instead.
+Plan 261 L28's FX.  Lines (set before): the first fixed-grid run in a fresh process served by the loop (`loop_c:steps`
+> 0), the bytes of the run without the C; a test in a fresh interpreter, bitten (it fails on 0d0d990a); gate, suite.
+
+**What.**  `_stamp_plan`: `source_direct`'s gates (`_direct_gate`: the switches, the toolkit, the zero-source rule, an
+'ac' pass, evaluation groups) and its full check (`direct_checked`: the plan, `_source_unfit`, the loop and scatter as
+defined, the program's facts, the stamp) out of it, the same code; `direct_rechecked(cir)` -- the two as the pass's
+next call would make them, the program or None.  `_tran_loop_c._sources`: where the stamp no longer holds (or `same`
+fails), the program checked afresh (`direct_rechecked`) and the loop goes on where it passes; declined, as before,
+where it does not, or where watching is off.
+
+**Measured.**  (a) gate_fx against 1b419a11: 0 differing on every comparison (27),
+VERDICT SAME (no C changed; the grids' adaptive runs find the stamp holding at the loop's entry -- untouched).
+(b) The fresh process's first fixed-grid run of the 16 x 16 grid: 0 loop steps ('sources') before, 299 after, the
+same bytes as the run without the C.  (c) Tested, bitten.  (d) suite 6 870 passed, 10 skipped, 5 xfailed, with three
+pinned pairs failing until re-recorded (the stepping loop and its C, the sources and their direct pass -- twin sides:
+`_tran_loop_c._sources`, `_stamp_plan.source_direct` -- the multistep walk and its C, reference side); after it
+`test_pinned_pairs` and the test 89 passed; ruff the base's (0 = 0 on the four files, once `check=False` was written
+in the test's `subprocess.run`).
+
+**Tests.**  `test_loop_c::test_a_process_s_first_fixed_grid_run_is_the_c_loop_s`: a fresh interpreter (PYTHONPATH the
+tree's) runs the 16 x 16 grid with a pulse on the fixed grid, the C on then off: the first served (> 200 loop steps),
+the second not (0), the same digest.  Bitten: without the re-check the first run's loop steps are 0 (the test's
+first version, a 12-node RC ladder, did not reproduce the decline -- passed both ways -- and was replaced by the grid).

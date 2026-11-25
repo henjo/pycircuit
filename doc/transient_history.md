@@ -6556,3 +6556,17 @@ searched it once more.  The pattern is now sorted once and shared, and the
 check that the solver's pattern covers the circuit's counts matches on a
 search it already makes.  Nothing a run computes changes; ibmpg3t's set-up
 is 4.4 s shorter.
+
+
+## FX: a process's first fixed-step run gets the C loop (2026-11-25)
+
+### `_stamp_plan.direct_rechecked`, `_tran_loop_c._sources`
+
+2026-11-25 (`doc/hdl_roadmap_260824.md`, 355; plan 261 L28).  The fast C
+stepping loop declined a fresh process's first fixed-step run of a large
+enough circuit, which then ran in Python -- the same answers, slower.  The
+loop trusts the source table only while nothing it depends on has changed
+since the sources were last checked, and the toolkit's habit of caching a
+name on its first use counted as a change.  The loop now checks the
+sources again itself, as their own next evaluation would, instead of
+giving up.
