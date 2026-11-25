@@ -153,6 +153,37 @@ def _is_int(v):
     return type(v) is int
 
 
+#: THE PULSE GROUPS (csrc/sources.h): the PULSE sources of one timing share
+#: its next event and the period's piece, made once a group a call -- the
+#: same answers; env `PYCIRCUIT_SOURCE_GROUPS=0` turns them off (an A/B)
+GROUPS = os.environ.get('PYCIRCUIT_SOURCE_GROUPS', '1') != '0'
+
+
+def _groups(kind, poff, par, pulse):
+    """THE PULSE GROUPS' arrays for a table's columns: per source its
+    group (`grp`, -1 for a source not PULSE), per group its first source
+    (`gfirst`) -- one group per timing (td, tr, tf, pw, per) bit for bit,
+    in the order of their first sources -- and a call's work (`gt`,
+    `gpiece`, `gnext`); none (one -1 per source, no group) where `GROUPS`
+    is off or no PULSE is in the table."""
+    ns = kind.size
+    grp = np.full(max(ns, 1), -1, dtype=np.int64)
+    first = np.zeros(1, dtype=np.int64)
+    pul = np.flatnonzero(kind == pulse)
+    if GROUPS and pul.size:
+        at = poff[pul][:, None] + np.arange(2, 7)
+        timing = np.ascontiguousarray(par[at]).view(np.int64)
+        _u, idx, inv = np.unique(timing, axis=0, return_index=True, return_inverse=True)
+        order = np.argsort(idx, kind='stable')
+        rank = np.empty_like(order)
+        rank[order] = np.arange(order.size)
+        grp[pul] = rank[inv.reshape(-1)]
+        first = pul[idx[order]].astype(np.int64)
+    ng = first.size
+    return {'grp': grp, 'gfirst': first, 'gt': np.zeros(ng), 'gpiece': np.zeros(ng, dtype=np.int64),
+            'gnext': np.zeros(ng)}
+
+
 class Table:
     """One direct source pass's sources as the C reads them, and what they
     were read from (`holds`)."""
@@ -192,6 +223,7 @@ class Table:
             kinds = list(kinds) + [pulse]
         if not cols['par'].size:
             cols['par'] = np.zeros(1)
+        cols.update(_groups(cols['kind'], cols['poff'], cols['par'], pulse))
         self.arrays = arr = {k: np.ascontiguousarray(v) for k, v in cols.items()}
         self.ffi, self.cfn, self.n, self.ns = ffi, cfn, n, int(arr['kind'].size)
         self.banks = tuple((bk, bk.value, bk.wave) for bk, _ia, _ib in banks)
@@ -202,6 +234,7 @@ class Table:
         self.pts = [fb('int64_t *' if v.dtype == i64 else 'double *', v) for v in arr.values()]
         for (k, _v), h in zip(arr.items(), self.pts):
             setattr(s, k, h)
+        s.ng = int(arr['gfirst'].size) if arr['grp'].size and arr['grp'].max() >= 0 else 0
         self.pts.append(fb('double *', self.out))
         s.out = self.pts[-1]
         self.kinds = frozenset(kinds)

@@ -198,6 +198,33 @@ static int pulse_next(const double *p, double t, double *tn)
     return 1;
 }
 
+/* THE PULSE GROUPS (sources.h): a group's folded time and piece at t --
+   `pulse_f`'s fold and its `where` chain, the last piece whose condition
+   holds the one it keeps */
+static void pulse_piece(const double *p, double t, double *tp, int64_t *piece)
+{
+    const double td = p[2], tr = p[3], tf = p[4], pw = p[5], per = p[6];
+    int64_t pc = SOURCES_PIECE_V1;
+    if (per != 0) t = py_mod(t, per);
+    if (t < ((td + tr) + pw) + tf) pc = SOURCES_PIECE_FALL;
+    if (t < (td + tr) + pw) pc = SOURCES_PIECE_V2;
+    if (t < td + tr) pc = SOURCES_PIECE_RISE;
+    if (t < td) pc = SOURCES_PIECE_V1;
+    *tp = t;
+    *piece = pc;
+}
+
+/* a grouped PULSE's value at its group's folded time `t` and piece: the
+   piece's expression of `pulse_f`, the same operations */
+static double pulse_at(const double *p, double t, int64_t piece)
+{
+    const double v1 = p[0], v2 = p[1], td = p[2], tr = p[3], tf = p[4], pw = p[5];
+    if (piece == SOURCES_PIECE_RISE) return v1 + ((v2 - v1) / tr) * (t - td);
+    if (piece == SOURCES_PIECE_V2) return v2;
+    if (piece == SOURCES_PIECE_FALL) return v2 + ((v1 - v2) / tf) * (t - ((td + tr) + pw));
+    return v1;
+}
+
 /* a source's `next_event(t)` into *tn (inf: none), as func.py's: 1, or 0
    (pulse_next's) */
 static int next_event(long kind, const double *p, long np_, double t, double *tn)
@@ -238,13 +265,26 @@ long pcx_sources(sources_t *s)
     const double t = s->t;
     long k;
     s->bad = -1;
+    long g;
     if (s->mode == SOURCES_NEXT) {
         /* `Circuit.next_event`'s `min(events)`: the first of equal values
            kept, as the strict `<` from inf keeps it (no source answers a
-           NaN) */
+           NaN); a grouped PULSE's its group's, made once (THE PULSE
+           GROUPS), its bail at the group's first source in element order */
         double best = INFINITY;
+        for (g = 0; g < s->ng; g++)
+            s->gpiece[g] = pulse_next(s->par + s->poff[s->gfirst[g]], t, &s->gnext[g]);
         for (k = 0; k < s->ns; k++) {
             double tn;
+            if (s->ng && s->grp[k] >= 0) {
+                if (!s->gpiece[s->grp[k]]) {
+                    s->bad = k;
+                    return s->status = SOURCES_BAIL_VALUE;
+                }
+                tn = s->gnext[s->grp[k]];
+                if (tn < best) best = tn;
+                continue;
+            }
             if (!next_event(s->kind[k], s->par + s->poff[k], s->npts[k], t, &tn)) {
                 s->bad = k;
                 return s->status = SOURCES_BAIL_VALUE;
@@ -255,12 +295,17 @@ long pcx_sources(sources_t *s)
         return s->status = SOURCES_DONE;
     }
     for (k = 0; k < s->n; k++) s->out[k] = 0.0;
+    /* (THE PULSE GROUPS: each group's folded time and piece, once) */
+    for (g = 0; g < s->ng; g++) pulse_piece(s->par + s->poff[s->gfirst[g]], t, &s->gt[g], &s->gpiece[g]);
     for (k = 0; k < s->ns; k++) {
         const double *p = s->par + s->poff[k], a = s->a[k];
         double b = 0.0, v;
         long nan = 0;
         int ok;
-        switch (s->kind[k]) {
+        if (s->ng && s->grp[k] >= 0) {
+            b = pulse_at(p, s->gt[s->grp[k]], s->gpiece[s->grp[k]]);
+            ok = 1;
+        } else switch (s->kind[k]) {
         case SOURCES_DC: ok = 1; break;
         case SOURCES_SIN: ok = sin_f(p, t, &b); break;
         case SOURCES_PULSE: ok = pulse_f(p, t, &b); break;

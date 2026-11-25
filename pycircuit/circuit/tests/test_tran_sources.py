@@ -353,3 +353,46 @@ def test_the_class_check_sees_a_patch_the_c_ignores(monkeypatch):
     monkeypatch.setattr(ts, '_patched', lambda cls: False)
     monkeypatch.setattr(ts.Table, 'genuine', lambda self: True)
     assert _rc_run('sin', True, 'gear') != _rc_run('sin', False, 'gear')
+
+
+def _pulse_groups():
+    """Thirty pulses on four timings -- two of them the all-kinds circuit's
+    pulses' own, two alike but for a delay of +0.0 against -0.0 -- among
+    other waveforms, V and I."""
+    c = _all_kinds()
+    timings = [(1e-9, 1e-10, 2e-10, 5e-9, 2e-8), (2e-9, 1e-10, 1e-10, 3e-9, 1e-8),
+               (0.0, 3e-10, 1e-10, 2e-9, 7e-9), (-0.0, 3e-10, 1e-10, 2e-9, 7e-9)]
+    for k in range(30):
+        td, tr, tf, pw, per = timings[k % 4]
+        node = f'p{k % 7}'
+        if k % 3:
+            c[f'ip{k}'] = E.IPulse(node, gnd, i1=1e-5 * k, i2=1e-3 * (1 + k % 5), td=td, tr=tr, tf=tf,
+                                   pw=pw, per=per)
+        else:
+            c[f'vp{k}'] = E.VPulse(f'q{k}', gnd, v1=0.1 * k, v2=-0.3 * k, td=td, tr=tr, tf=tf, pw=pw,
+                                   per=per)
+            c[f'Rq{k}'] = E.R(f'q{k}', gnd, r=1e3)
+    return _with_loads(c, [f'p{k}' for k in range(7)])
+
+
+@pytest.mark.parametrize('groups', [True, False], ids=['grouped', 'each'])
+def test_pulses_of_one_timing_answer_as_the_python(groups, monkeypatch):
+    """THE PULSE GROUPS (csrc/sources.h): pulses of one timing, bit for bit,
+    share a group -- four here, the circuit's two pulses in two of them, the
+    +0.0 and -0.0 delays apart -- and u(t)
+    and the next event are the Python's byte for byte over a dense grid and
+    the timings' edges a ulp either side; the switch off, no group and the
+    same answers."""
+    monkeypatch.setattr(ts, 'GROUPS', groups)
+    c = _pulse_groups()
+    tab = ts.table_for(_direct(c))
+    assert tab is not None
+    assert tab.s.ng == (4 if groups else 0), tab.s.ng
+    fns = _functions(c)
+    edges = []
+    for e in (0.0, 1e-9, 1.1e-9, 1.3e-9, 6.3e-9, 2e-9, 2.1e-9, 2.2e-9, 5.2e-9, 3e-10, 4e-10, 2.4e-9,
+              2e-8, 1e-8, 7e-9, 1.4e-8, 2.1e-8):
+        edges += [e, math.nextafter(e, -math.inf), math.nextafter(e, math.inf)]
+    times = [float(t) for t in np.linspace(0.0, 6e-8, 1201)] + edges + [-0.0]
+    got = [_same(c, tab, t, fns) for t in times]
+    assert got.count('declined') == 0, got.count('declined')

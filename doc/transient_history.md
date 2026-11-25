@@ -6570,3 +6570,19 @@ since the sources were last checked, and the toolkit's habit of caching a
 name on its first use counted as a change.  The loop now checks the
 sources again itself, as their own next evaluation would, instead of
 giving up.
+
+
+## S1: the pulses of one timing grouped (2026-11-26)
+
+### `_tran_sources.GROUPS`, sources.h's pulse groups
+
+2026-11-26 (`doc/hdl_roadmap_260824.md`, 356; plan 261 L28).  The IBM
+power grids drive every load with a pulse current source, and ibmpg6t's
+761 484 sources share just 25 distinct timings, yet each step worked out
+every source's position in its period and its next breakpoint separately.
+The C source evaluation now works out the position and the next
+breakpoint once for each group of pulses with the same timing, and each
+source's value from its own levels.  The results are the same to the bit.
+On the IBM grids' 10 ns the transient ran in 0.953x (ibmpg6t) and 0.982x
+(ibmpg3t) of its time with the same steps and waveforms.
+`PYCIRCUIT_SOURCE_GROUPS=0` turns it off.

@@ -30,6 +30,19 @@ typedef struct {
     double *out;            /* OUT (SOURCES_U), n: u(t) */
     long status,            /* OUT: pcx_sources's result, enum sources_status */
         bad;                /* OUT: the source a bail stopped at, -1 otherwise */
+    /* THE PULSE GROUPS (`_tran_sources.GROUPS`): the PULSE sources of one
+       timing (td, tr, tf, pw, per, bit for bit) share what depends on the
+       timing and t alone -- the next event, the period's folded time and
+       which piece of the waveform holds -- made once a group a call; each
+       source's own value from its v1, v2 in `pulse_f`'s operations.  The
+       same answers; ng 0: none */
+    const int64_t *grp,     /* ns: a PULSE source's group, -1 otherwise */
+        *gfirst;            /* ng: a group's first source (its timing read there) */
+    long ng;                /* the groups */
+    double *gt;             /* ng: OWN, a call's folded time a group */
+    int64_t *gpiece;        /* ng: OWN, a call's piece a group (enum below), or its
+                               next event's verdict in SOURCES_NEXT */
+    double *gnext;          /* ng: OWN, a call's next event a group */
 } sources_t;
 long pcx_sources(sources_t *s);
 
@@ -51,6 +64,15 @@ enum sources_mode {
 };
 /* pcx_sources's result, left in `status` too (`_tran_sources.BAIL` names the
    bails from these; `bad` the source): */
+/* a PULSE's piece at a time (THE PULSE GROUPS): `pulse_f`'s `where` chain
+   resolved */
+enum sources_piece {
+    SOURCES_PIECE_V1 = 0,   /* before td, or past the fall: v1 */
+    SOURCES_PIECE_RISE = 1, /* v1 + ((v2 - v1) / tr) * (t - td) */
+    SOURCES_PIECE_V2 = 2,   /* v2 */
+    SOURCES_PIECE_FALL = 3  /* v2 + ((v1 - v2) / tf) * (t - ((td + tr) + pw)) */
+};
+
 enum sources_status {
     SOURCES_DONE = 1,
     SOURCES_BAIL_VALUE = 2,     /* a value the Python would make otherwise:

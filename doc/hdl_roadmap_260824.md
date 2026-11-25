@@ -17775,3 +17775,65 @@ in the test's `subprocess.run`).
 tree's) runs the 16 x 16 grid with a pulse on the fixed grid, the C on then off: the first served (> 200 loop steps),
 the second not (0), the same digest.  Bitten: without the re-check the first run's loop steps are 0 (the test's
 first version, a 12-node RC ladder, did not reproduce the decline -- passed both ways -- and was replaced by the grid).
+
+## 2026-11-26 — 356. S1: the pulses of one timing grouped -- their next event and piece made once a group
+
+**Why**  Plan 261 L28 (tc/plan_l28_next.md), CP's first item.  P0's 10 ns profile at 0d0d990a: `pcx_sources` 36.1 s on
+ibmpg6t (5.9 %), 9.7 s on ibmpg3t.  6t's 761 484 current sources are all PULSE, with 25 distinct timings (td, tr, tf,
+pw, per), yet every step evaluated each of them twice -- u(t) (`SOURCES_U`: Python's `%` of the period, `pulse_f`'s
+`where` chain) and the next breakpoint (`SOURCES_NEXT`: `pulse_next`, a floor division and fifteen candidates) --
+28 ms an attempt, most of it `fmod` per source.  KF (the affine J, plan L28) was built before it and refused on its
+own line (2 ns pinned 0.986x / 0.989x against <= 0.985x: a formed J still pays the solver's refactor path; scratch
+l28/kf, the plan's record).  Lines (set before measuring): 2 ns pinned 6t <= 0.99x, 3t reported; the census, 10 ns,
+against fe5ce5e8: 6t <= 0.97x, 3t reported (<= 1.00x), every grid's waveforms the SAME bytes, steps SAME, VmHWM <=
++1 %; gate, suite, pins, tests bitten.
+
+**What.**  THE PULSE GROUPS (csrc/sources.h): `_tran_sources._groups` gives each PULSE source its timing's group --
+the five parameters' bit patterns (`np.unique` over the rows viewed as int64: a delay of -0.0 is not +0.0's group), in
+the order of the groups' first sources -- and each group its first source (`grp`, `gfirst`, `ng`, a call's work
+`gt`, `gpiece`, `gnext`: new fields at `sources_t`'s end).  `pcx_sources`: SOURCES_NEXT makes `pulse_next` once a
+group and takes each grouped source's from it (a group's bail at its first source in element order, as the loop
+found it); SOURCES_U makes each group's folded time and piece once (`pulse_piece`: `pulse_f`'s fold and its `where`
+chain resolved) and each source's value from its own v1, v2 in that piece's expression (`pulse_at`: the same
+operations; the pieces not taken were never observable -- no flag is tested).  `_tran_sources.GROUPS` (env
+`PYCIRCUIT_SOURCE_GROUPS=0`: no groups); `doc/transient_runtime.md` names it.
+
+**Measured.**  (a) MET -- the gate against fe5ce5e8 (scratch l28/s1/gate_s1): C against Python 0 differing on every
+setting (27 decks each) and the 3 size twins; this tree against the base 0 differing on dc, gear2, gear2/bypass, radau
+and the 8 size runs; the instrument 81 decks, 0 differing; the coverage suite (test_tran_sources and the loop's) 78
+passed.  VERDICT NOT REACHED: of the 38 changed arms 32 the decks', 5 the fixtures' -- an aperiodic group's fold
+(`per` 0: every deck's pulse is periodic), a group's bail on a non-finite next event, the grouped test's other
+operands -- and 1 none (a compiler-made arm of the grouped test).  (b) MET -- 2 ns, pinned to the P-core threads (0-15),
+in one session, the switch's two sides in the same tree: 6t 179.99 / 180.26 -> 175.40 / 174.41 s (**0.971x**, two pairs),
+3t 144.11 -> 143.54 s (0.996x, one pair, reported); the same steps and bytes.  (c) MET -- the census (scratch
+l19/cen/census.py, 10 ns from the operating point solved in the process, 11 GB cap, each run quiet-gated, base =
+fe5ce5e8 in its worktree, in the order B3 N3 N6 B6 B4 N4 N5 B5 B1 N1 N2 B2, 22:48-00:14; peaks VmHWM in MiB):
+
+| grid | 10 ns base -> groups | ratio | steps / rejected / iterations | refactor calls | vs benchmark | peak (run) |
+|---|---|---|---|---|---|---|
+| ibmpg1t | 11.1 -> 10.7 s | 0.964x | 1 290/0/1 904 both | 713 (KLU) both | 0.0719 mV both | 2 221 -> 2 217 MB |
+| ibmpg2t | 236.4 -> 235.9 s | 0.998x | 1 290/0/1 899 both | 711 (KLU) both | 0.0560 mV both | 1 143 -> 1 143 MB |
+| ibmpg3t | 455.2 -> 447.1 s | **0.982x** | 1 297/2/1 299 both | 708 both | 0.0491 mV both | 7 885 -> 7 861 MB |
+| ibmpg4t | 538.9 -> 530.8 s | 0.985x | 1 139/1/1 140 both | 268 both | 0.1363 mV both | 8 858 -> 8 896 MB |
+| ibmpg5t | 412.4 -> 391.5 s | 0.949x | 1 301/1/1 302 both | 712 both | 0.0307 mV both | 7 055 -> 7 068 MB |
+| ibmpg6t | 596.3 -> 568.5 s | **0.953x** | 1 297/1/1 298 both | 708 both | 0.0361 mV both | 10 103 -> 10 105 MB |
+
+Every grid's waveforms are the base's bytes -- the digests sec. 352 recorded (b8148169f205, d23b6dc4b1ba,
+fdbfc2c29817, 4de6bbddb907, 4d3090c9390a, b8b9d2aa8f92 for 1t-6t) -- and the steps, refactor calls and DC digests the
+same.  The base against sec. 353's census at 0d0d990a: 3t 462.1 -> 455.2 s, 6t 610.8 -> 596.3 s (U's set-up, FX
+not reached here, run-to-run spread).  Per attempt the groups saved 21 ms on 6t (the 2 ns pinned pairs' 19 ms; P0 put
+`pcx_sources` at 28 ms), 6 ms on 3t (P0: 7.5 ms), 16 ms on 5t; 1t's 0.4 s is within its spread.  The census pairs are
+unpinned (P/E placement, a single pair a grid): 6t's 0.953x against the pinned 2 ns 0.971x is the census's spread on top
+of a real 3 %, not a larger effect -- the line (<= 0.97x) is met either way.  The whole run (import, DC, 10 ns): 0.975x
+(3t), 0.987x (4t), 0.956x (5t), 0.954x (6t).  Memory: within +0.43 % (4t), the others +0.2 % or lower.
+(d) suite 6 875 passed, 10 skipped, 5 xfailed; ruff the base's (0 = 0 on the three Python files: "All checks passed"
+both sides, a planted unused import caught).
+
+**Tests.**  `test_tran_sources::test_pulses_of_one_timing_answer_as_the_python[grouped|each]`: thirty pulses, V and I,
+on four timings (two the all-kinds circuit's own pulses', two alike but for a delay of +0.0 against -0.0) among every
+other waveform -- four groups, none with the switch off -- u(t) and the next event the Python's byte for byte over
+1 201 times and the timings' edges a ulp either side; the drawn-pulse tests (hypothesis) take the grouped course (a
+group of one).  Seven bites, seven bit (the rise before the high; the rise regrouped; the period not folded; the
+group's next event lost; the timing by value -- -0.0 and +0.0 merged, caught by the group count; no groups told to
+the C; the fall regrouped).  Five pinned pairs re-recorded, twin sides alone (the sources and their C; the stepping,
+stage and transform loops and the multistep walk, sources.h in each's text).
