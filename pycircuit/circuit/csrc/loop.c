@@ -155,10 +155,12 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
         s->last_err = a->err;
         s->ltes++;
         s->lte_seeds += nt->lte_held;
+        s->lte_affine += nt->lte_affine;
         s->lte_reused += le->reused;
         s->lte_euler += a->formula == PCX_FORMULA_EULER;
     }
     s->iters += nt->iters;
+    s->jkey_held += nt->jkey_held;
     if (nt->chord) s->fb_reused += nt->reused;
     else s->full_reused += nt->reused;
     s->chord_fallbacks += nt->fallbacks;
@@ -420,12 +422,14 @@ static long lte_setup(loop_t *s, const loop_attempt_t *a, const double *xc, cons
 
 /* THE ERROR TEST ON THE SEED'S FACTORS (newton.h's `lte_held`): J^-1 Eg by
    the sparse chord's own numeric of the seed's J, which the Newton left in
-   place -- as the Python's `_Factored` solves with the chord's `fac`; its
-   flags tested as the full test's (`lu_quiet` 0) */
+   place -- as the Python's `_Factored` solves with the chord's `fac` -- or,
+   THE AFFINE STEP's (`lte_affine`), by the full Newton's numeric of the
+   seed's J, the converged point's bit for bit; its flags tested as the full
+   test's (`lu_quiet` 0) */
 static void held_factors(lte_t *le, const newton_t *nt)
 {
     le->lu_mode = LTE_LU_KLU;
-    le->lu_num = nt->ck.klu_num;
+    le->lu_num = nt->lte_affine ? nt->klu_num : nt->ck.klu_num;
     le->lu_sym = nt->klu_sym;
     le->lu_common = nt->klu_common;
     le->lu_klu_solve = nt->klu_solve;
@@ -2303,6 +2307,10 @@ long pcx_loop(loop_t *s)
     s->newton_rejects = s->chord_fallbacks = s->fb_refactors = s->nums_made = 0;
     s->full_reused = s->fb_reused = s->lte_reused = 0;
     s->maps = 0;
+    s->lte_affine = s->jkey_held = 0;
+    /* (THE AFFINE STEP's key: none at the entry -- what the Python did
+       since the loop last ran may have moved kAx or the numeric) */
+    if (s->newton) ((newton_t *) s->newton)->jkey_have = 0;
     if (s->walk) {
         st = walk(s);
         ck_back(s);
@@ -2321,7 +2329,11 @@ long pcx_loop(loop_t *s)
     s->tc_rkref = s->tc_rkfac = s->tc_rkpiv = s->tc_rkres = s->tc_rkdense = 0;
     s->tc_pyends = s->tc_stallchecks = s->tc_stallaborts = 0;
     if (s->family == LOOP_FAMILY_STAGE) return s->status = stage_loop(s);
+    /* (THE AFFINE STEP, newton.h: the Newton's `affine` for the loop's calls
+       alone -- set for them, cleared for the Python's) */
+    if (s->newton) ((newton_t *) s->newton)->affine = s->affine;
     st = lmm_loop(s);
+    if (s->newton) ((newton_t *) s->newton)->affine = 0;
     ck_back(s);
     return s->status = st;
 }

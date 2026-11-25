@@ -32,6 +32,9 @@
 /* the result, left in `status` too */
 static long finish(newton_t *s, long code)
 {
+    /* (THE AFFINE STEP's key, newton.h: kept on a converged call alone --
+       a hand-back may leave the numeric on other values) */
+    if (code != NEWTON_CONVERGED) s->jkey_have = 0;
     s->status = code;
     return code;
 }
@@ -83,7 +86,9 @@ static long sparse_full(newton_t *s, long m)
 {
     long i, k;
     double max_b = 0.0, max_r = 0.0, scale;
-    for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) return NEWTON_BAIL_JNONFINITE;
+    /* (THE AFFINE STEP: kAx as it was -- scanned when gathered) */
+    if (!s->jkey_held)
+        for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) return NEWTON_BAIL_JNONFINITE;
     for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return NEWTON_BAIL_BNONFINITE;
     if (!s->klu_num) {
         pcx_held_lost(s->held_st, s->held_v, s->knnz);
@@ -96,7 +101,13 @@ static long sparse_full(newton_t *s, long m)
         return 0;
     }
     for (i = 0; i < m; i++) s->rb[i] = s->b[i];
-    if (pcx_held_same(s->held_st, s->held_v, s->kAx, s->knnz)) {
+    if (s->jkey_held && s->held_st && s->held_st[PCX_HELD_OK]) {
+        /* (THE AFFINE STEP: the numeric holds kAx -- refactored on it, or
+           found holding it, by the call that gathered it, and nothing since:
+           `pcx_held_same`'s verdict and count without its compare) */
+        s->held_st[PCX_HELD_REUSED]++;
+        s->reused++;
+    } else if (pcx_held_same(s->held_st, s->held_v, s->kAx, s->knnz)) {
         s->reused++;
     } else {
         const int ok = ((klu_refactor_t) s->klu_refactor)(s->kAp, s->kAi, s->kAx, s->klu_sym,
@@ -417,6 +428,42 @@ static int chord_settled(const newton_t *s, long m, long k, double d)
     return w * (lam / (1.0 - lam)) < 1.0;
 }
 
+/* THE AFFINE STEP's held J (newton.h): 1 where this evaluation takes the J
+   kAx holds -- the loop's call, the first iterate's run, the sparse full
+   Newton's first evaluation on the pattern, the key the last gather's --
+   in `jkey_held`, which `sparse_full` reads too */
+static int jkey_take(newton_t *s, long it, int full)
+{
+    s->jkey_held = s->affine && it == 0 && full && s->first_iter && !s->chord && s->klu_sym
+                   && s->pattern && s->jkey_have && s->jkey_formula == s->formula
+                   && s->jkey_a0 == s->a0 && s->jkey_h == s->h && s->jkey_theta == s->theta;
+    return (int) s->jkey_held;
+}
+
+/* the gather's turn (THE AFFINE STEP, newton.h): 0 where kAx is held, else 1
+   with the key of the J about to be gathered -- the loop's call's first
+   evaluation where the first iterate is taken, else none */
+static int jkey_gather(newton_t *s, long it)
+{
+    if (s->jkey_held) return 0;
+    s->jkey_have = s->affine && it == 0 && s->first_iter && !s->chord;
+    s->jkey_formula = s->formula;
+    s->jkey_a0 = s->a0;
+    s->jkey_h = s->h;
+    s->jkey_theta = s->theta;
+    return 1;
+}
+
+/* THE AFFINE STEP's error test (newton.h): 1 where the loop's call took the
+   first iterate on the sparse full Newton and the fold feeds a test -- the
+   test then solves on the Newton's own numeric (`lte_held`) */
+static int affine_test(newton_t *s, long it, walk_fn_t walk)
+{
+    s->lte_affine = s->affine && it == 0 && s->first_iter && !s->chord && !walk && s->fold_j
+                    && s->klu_sym;
+    return (int) s->lte_affine;
+}
+
 /* One evaluation at insert_row(x) (`_tran_core.evaluate`): the
    iteration's buffers (the first's kept apart -- the chord's companion and
    the write-back read them), the full x, the core's passes -- every one
@@ -487,6 +534,10 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
     }
     /* (on KLU's pattern, J packed on the core's and no Geq: `kpp`, `Jp`) */
     packed = s->klu_sym && s->pattern && s->kpp;
+    /* (THE AFFINE STEP, newton.h: kAx holds this attempt's J -- its key the
+       last gather's -- so the core makes no G pass and no J: PCX_WANT_PACKED
+       with no PCX_PASS_G writes neither Geq nor J) */
+    if (jkey_take(s, it, full)) bits = (bits & ~PCX_PASS_G) | PCX_WANT_PACKED;
     core(s->core, s->xf, s->T,
          bits | s->pattern | (packed ? PCX_WANT_PACKED : 0) | (s->sets ? PCX_WANT_SETS : 0),
          s->formula,
@@ -504,13 +555,13 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
     if (full && s->klu_sym) {
         /* the pattern's values -- |J| on it (zero off it) made where it is
            read, `absj` -- the full Newton's validation reading J
-           reduced itself (`R`) */
-        if (packed) {
+           reduced itself (`R`); none where THE AFFINE STEP holds them */
+        if (jkey_gather(s, it) && packed) {
             for (k = 0; k < s->knnz; k++) {
                 const int64_t p = s->kpp[k];
                 s->kAx[k] = p >= 0 ? s->Jp[p] : 0.0;
             }
-        } else {
+        } else if (!s->jkey_held) {
             for (k = 0; k < s->knnz; k++) s->kAx[k] = J[s->kat[k]];
         }
         s->absj_due = 1;
@@ -564,7 +615,7 @@ static long iterate(newton_t *s, void **num, const double *cin, const double **c
     const double *Cin0;  /* cC where the full seed equals cx (a cache hit), else NULL */
     long first_bits;     /* the first evaluation's want bits */
     s->iters = 0;
-    s->lte_held = 0;
+    s->lte_held = s->lte_affine = s->jkey_held = 0;
     s->early_checks = 0;
     s->status = NEWTON_RUNNING;
     /* the seed, reduced (remove_row_col); a hit evaluates without the C
@@ -609,6 +660,8 @@ static long iterate(newton_t *s, void **num, const double *cin, const double **c
                call's) */
             s->lte_held = s->fold_j && s->chord && s->klu_sym && s->lte_seed > 0
                           && s->iters <= s->lte_seed;
+            /* (THE AFFINE STEP's: on the Newton's own numeric) */
+            if (affine_test(s, it, walk)) s->lte_held = 1;
             if (s->fold_j) fold(s, core, n, r);
             return finish(s, NEWTON_CONVERGED);
         }

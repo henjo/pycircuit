@@ -38,6 +38,12 @@ C_KERNEL_SHARE = 1.0 / 100.0
 #: A/B of the same run); read at each run's decision
 LINEAR_NEWTON = os.environ.get('PYCIRCUIT_LINEAR_NEWTON', '1') != '0'
 
+#: THE AFFINE STEP (csrc/newton.h): on the C stepping loop's attempts that
+#: take the first iterate, the error test on the Newton's own numeric and no
+#: J formed again where kAx holds it -- the same bytes either way; env
+#: `PYCIRCUIT_AFFINE_STEP=0` turns it off (an A/B), read at each loop's load
+AFFINE_STEP = os.environ.get('PYCIRCUIT_AFFINE_STEP', '1') != '0'
+
 
 class _EarlyArm:
     """The early abort armed for one multistep attempt (`Transient.

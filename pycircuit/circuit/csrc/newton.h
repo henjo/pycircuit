@@ -28,7 +28,8 @@
  * scalars anew every call.  Every other field the loop takes as the last
  * served `solve` left it (T, maxiter, reltol, chord, fold_j, lte_seed,
  * first_iter, abstol, xtol, the walk, the sparse chord) -- but `ck_defer`, which it sets for each
- * call and clears after, and the chord's numeric `ck`, which it takes back
+ * call and clears after, `affine`, set and cleared around its multistep attempts, and the chord's
+ * numeric `ck`, which it takes back
  * to an attempt's entry where it stops in that attempt (loop.h). */
 typedef struct {
     /* THE CORE (CTX): `_tran_core._Core.cs` and core.c's entry */
@@ -322,6 +323,33 @@ typedef struct {
        walk never; a non-finite iterate hands back before it, as ever */
     long first_iter;      /* CALL: 1 where the stepping loop marked the run
                              (`_tran_newton_c.first_iter_for`), else 0 */
+    /* THE AFFINE STEP (`_tran_newton.AFFINE_STEP`): on an attempt the C
+       stepping loop serves where the first iterate is taken (`first_iter`:
+       every stamp constant, nothing limiting), what the affine residual
+       would make again the same is not made again.  The error test solves
+       on the full Newton's own numeric (`lte_held`, `klu_num`: J at the
+       converged point is the seed's, bit for bit) and the fold makes C and
+       q alone; and an evaluation whose J is the one kAx holds -- the same
+       key: the companion's formula, a0, h and theta, which alone move an
+       affine circuit's J (Gear-2's `a0 C`, Euler's `C / h`, the trapezoid's
+       `2 C / h`, theta's `C / (theta h)`) -- forms none: no G pass, no gather, no finiteness scan,
+       no held-value compare (the numeric holds those values: the key is
+       gathered by the loop's calls alone, and dropped by any other gather,
+       any status but NEWTON_CONVERGED and the loop's entry).  The answers
+       are the same bytes either way */
+    long affine;          /* CALL: 1 while the loop's multistep attempts run with
+                             the affine step on (loop.c, `loop_t.affine`), else 0 */
+    long lte_affine;      /* OWN: 1 where `lte_held` is the affine step's */
+    long jkey_have;       /* OWN (the loop clears it at its entry): 1 where kAx
+                             holds the J of the key below, gathered by a call
+                             of the loop's */
+    long jkey_formula;    /* OWN: that J's formula (PCX_FORMULA_*) */
+    double jkey_a0;       /* OWN: its a0 (Gear-2's; 0.0 for the others) */
+    double jkey_h;        /* OWN: its h (Euler's, the trapezoid's and theta's
+                             companions read h, not a0) */
+    long jkey_held;       /* OWN: 1 where this call's evaluation took kAx as it
+                             was (the key the same), else 0 */
+    double jkey_theta;    /* OWN: the key's theta (theta's companion reads it) */
 } newton_t;
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and

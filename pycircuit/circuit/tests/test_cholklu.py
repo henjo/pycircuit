@@ -4,8 +4,8 @@ the voltage sources' nodes fixed, the inductors' currents eliminated, the
 free nodes' symmetric positive definite system factored -- as a dense solve
 makes it; the plan declining what is not a grid; a matrix CHOLMOD will not
 factor KLU's; a transient on it its KLU run, its C the Python's; the kept
-factors, the step ladder, the glue's own solve on CHOLMOD's factor, and the
-first Newton iterate taken on an affine circuit."""
+factors, the step ladder, the glue's own solve on CHOLMOD's factor, the
+first Newton iterate taken on an affine circuit, and the affine step."""
 import ctypes
 import hashlib
 import types
@@ -688,10 +688,11 @@ def test_the_certificate_is_the_constant_stamps_with_nothing_limiting(monkeypatc
     assert not affine(_grid())
 
 
-def _ln_run(chol, c_on, monkeypatch, nx=16, diode=False, **make):
+def _ln_run(chol, c_on, monkeypatch, nx=16, diode=False, fixed=False, **make):
     """The grid's run (`_run`'s, on an `nx` x `nx` mesh; a diode across it
-    where asked): x, digest, (accepted, rejected, Newton iterations), the
-    paths, the loop's `first_iterate`, whether the run's mark outlived it."""
+    where asked; on the fixed grid where asked): x, digest, (accepted,
+    rejected, Newton iterations), the paths, the loop's `first_iterate`,
+    whether the run's mark outlived it."""
     from pycircuit.circuit import _tran_loop_c, _tran_lte_c, _tran_newton_c
     from pycircuit.circuit import transient as trmod
     monkeypatch.setattr(_cholklu, 'CHOLMOD_FROM', 0 if chol else 1 << 40)
@@ -713,7 +714,7 @@ def _ln_run(chol, c_on, monkeypatch, nx=16, diode=False, **make):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         tr = Transient(c, toolkit=numeric, **make)
-        res = tr.solve(tend=3e-9, timestep=1e-11)
+        res = tr.solve(tend=3e-9, timestep=1e-11, **({'fixed_timestep': True} if fixed else {}))
     st = tr.statistics
     x = np.asarray(res.x, float)
     return (x, hashlib.sha1(x.tobytes()).hexdigest(),
@@ -773,3 +774,39 @@ def test_the_first_iterate_is_neither_the_chord_s_nor_a_non_affine_run_s(monkeyp
     a = _ln_run(False, True, monkeypatch, nx=6, integrator=TRBDF2Integrator(),
                 linear_newton=True)
     assert not a[4] and not a[5]
+
+
+@pytest.mark.parametrize('chol, trap, fixed', [(True, False, False), (False, False, False),
+                                               (True, True, False), (False, True, False),
+                                               (False, True, True)],
+                         ids=['cholmod', 'klu', 'cholmod-trap', 'klu-trap', 'klu-trap-fixed'])
+def test_the_affine_step_is_the_run_s_bytes_and_makes_nothing_twice(chol, trap, fixed,
+                                                                     monkeypatch):
+    """THE AFFINE STEP (csrc/newton.h) on the first iterate's run -- on the
+    reduction ('auto') and on KLU (True), Gear-2's and the trapezoid's (whose
+    J reads h and the formula, not a0: on the fixed grid Euler's restart
+    after a corner and the trapezoid's next step share a0 = 0 and h): the
+    run without it byte for byte; every error test of the C loop's attempts
+    (an adaptive run's) on the Newton's own numeric (none refactors, none
+    counted as the seed's), and the evaluations whose J kAx held forming
+    none -- some, not all (the step sizes or the formula move); the switch
+    off, neither."""
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    make = {} if chol else {'linear_newton': True}
+    if trap:
+        make = dict(make, integrator=TrapezoidalIntegrator(), linear_newton=True)
+    ## (off first: a process's first fixed-grid run declines the C loop --
+    ## `_sources`' stamp one behind the epoch -- not this test's subject)
+    monkeypatch.setattr(_tran_newton, 'AFFINE_STEP', False)
+    off = _ln_run(chol, True, monkeypatch, fixed=fixed, **make)
+    monkeypatch.setattr(_tran_newton, 'AFFINE_STEP', True)
+    on = _ln_run(chol, True, monkeypatch, fixed=fixed, **make)
+    assert on[4] and on[1:3] == off[1:3], (on[2], off[2])
+    d, e = on[3], off[3]
+    steps = d.get('loop_c:steps', 0)
+    assert steps > 50 and 0 < d.get('loop_c:affine_j', 0) < steps, d
+    assert not any('affine' in k for k in e), e
+    if not fixed:
+        assert d.get('loop_c:affine_lte', 0) >= steps, d
+        assert not d.get('loop_c:lte_on_pattern') and not d.get('lte:seed'), d
+        assert e.get('loop_c:lte_on_pattern', 0) >= steps, e

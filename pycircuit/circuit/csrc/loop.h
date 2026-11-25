@@ -407,6 +407,16 @@ typedef struct {
        `max_step`; 0.0: off) -- an adaptive attempt's size, the corner cut's
        and the approach's rounded down to anchor x 2^-k (`ladder_rung`) */
     double ladder;
+    /* the run: THE AFFINE STEP (newton.h; `_tran_newton.AFFINE_STEP`): 1
+       where the Newton's `affine` is set around the multistep attempts, 0
+       never */
+    long affine;
+    /* OWN, this call's: the error tests the affine step held on the Newton's
+       numeric (of `lte_seeds`, which counts every held one) */
+    long lte_affine;
+    /* OWN, this call's: the evaluations that took the J kAx held (newton.h's
+       `jkey_held`) */
+    long jkey_held;
 } loop_t;
 long pcx_loop(loop_t *s);
 

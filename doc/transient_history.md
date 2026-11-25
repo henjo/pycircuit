@@ -6526,3 +6526,21 @@ slightly.  On the IBM grids' 10 ns the transient ran in 0.80x
 (ibmpg3t) and 0.78x (ibmpg6t) of its time with the same steps, the
 waveforms within 7e-9 V of before and the same distance from the
 benchmark.  `PYCIRCUIT_LINEAR_NEWTON=0` turns it off.
+
+
+## AS: the affine step (2026-11-25)
+
+### `_tran_newton.AFFINE_STEP`, newton.h's affine step, `loop_c:affine_lte`, `loop_c:affine_j`
+
+2026-11-25 (`doc/hdl_roadmap_260824.md`, 353; plan 261 L27).  On a circuit
+whose stamps are all constant, a transient step's matrix depends on the
+step size alone, yet each step rebuilt it twice -- once for the Newton
+solve and once for the error test -- and the error test looked its
+factorization up again.  In the C stepping loop, on a run that takes the
+first Newton iterate (LN), the error test now solves with the factorization
+the Newton just used, and the Newton skips rebuilding the matrix when the
+step size and integration formula are the ones it last built for.  The
+results are the same to the bit.  On the IBM grids' 10 ns
+the transient ran in 0.886x (ibmpg3t) and 0.882x (ibmpg6t) of its time with
+the same steps and waveforms.  `PYCIRCUIT_AFFINE_STEP=0`
+turns it off.

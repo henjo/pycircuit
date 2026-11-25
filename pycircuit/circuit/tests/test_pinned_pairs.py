@@ -1231,7 +1231,7 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('31357bd97386', 'f36d3d7fbb3d'),
+    'the stepping loop and its C': ('31357bd97386', 'db3c8dc163c6'),
     'the predictor and its C': ('9e611c84de5a', '9b16bd4e0f30'),
     'the branch screen and its C': ('7b733bcef5f0', 'c6a3d7888dea'),
     'the sources and their C': ('635a8af4da45', 'f88ea8344a32'),
@@ -1244,7 +1244,7 @@ RECORD = {
     'the sine and its scalar form': ('5096cada457f', '827ecf798b4d'),
     'the reduce and its small take': ('b7d4c26c7581', '41b65c2ead50'),
     'the insert and its small copy': ('8b4df58556f0', '4827f496e6dd'),
-    'the Newton solve and its C': ('e218a1a287da', '0b4231bf34bb'),
+    'the Newton solve and its C': ('e218a1a287da', '8c38297e8ef1'),
     'the error test and its C': ('c0cae58efcea', '8daadbe000bf'),
     'the DC base solve and its C': ('593876e975ff', '454283058c1e'),
     'the PCNR DC solve and its C': ('1620fe1991b0', '4fd19789eba5'),
@@ -1263,15 +1263,15 @@ RECORD = {
     'the stage step map and its C': ('03f9482bdd72', 'c025357cb495'),
     'the KLU step map and its C': ('5b9b1f672523', '94dfea9dc33d'),
     'the stage walk and its C': ('fc9149f0b806', 'aa4131af99f2'),
-    'the multistep walk and its C': ('610c04582db5', 'd482615e4c42'),
+    'the multistep walk and its C': ('610c04582db5', '01f49bb8f51d'),
     'the multistep step map and its C': ('985dde19187d', 'd6c3dcf5119d'),
     'the stage readers and their one read': ('d25552fe5ede', '2798b147a3c5'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
     'the readiness reads and their stamps': ('8ee74f103a32', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('91d50c728a8a', '77a260911e31'),
-    'the transform loop and its C': ('231bcba1babb', '4e5cfb35d23b'),
+    'the stage loop and its C': ('91d50c728a8a', '23744d53cf58'),
+    'the transform loop and its C': ('231bcba1babb', '66f847e3ff09'),
     'the pulse and its arrays': ('7bdf4ed87d73', '21f3cc79de17'),
 }
 

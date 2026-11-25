@@ -17607,3 +17607,101 @@ multistep walk, through newton.h in `LOOP_C`; the stepping loop and its unread J
 kept as `lte_seed`'s twin.  (2) After it a CHOLMOD grid's step is one evaluation, one solve, the fold and the error
 test; how the run's time now divides (factorization, solve, our C) is not measured -- plan L26's candidates 2-6 are
 sized by the 2 ns profile before it, a new profile first.
+
+## 2026-11-25 — 353. AS: the affine step -- what an affine residual makes again the same is not made again
+
+**Why**  Plan 261 L27 (tc/plan_l27_profile.md).  After LN (sec. 352) the IBM grids' 10 ns runs in 519 s (3t) and
+696 s (6t); perf over the whole 10 ns at a4e956c5: on 3t the solve 34.4 %, our C 30.9 %, CHOLMOD's factorization
+19.6 %; on 6t our C 40.6 % (219 ms an attempt), the solve 27.9 %, the factorization 14.7 %.  An attempt evaluates the
+core twice -- at the seed and at the converged point (`fold`, G and C: the adaptive error test reads the step's
+Jacobian) -- and each pulls every resistor's four stamp values into the pattern's bins, assembles `Geq = a0 C` and
+`J = G + Geq`, and the J is gathered onto the factor's pattern and compared with the values the numeric holds, twice.
+On a certified-affine circuit (`_affine`) G and C never change: J is its companion's alone (the formula, a0, h
+and theta), and the converged point's J is the seed's bit for bit.  Prototyped in a worktree (env-switched, 2 ns,
+quiet-gated; the same bytes in every mode): the error test on the Newton's own numeric and the fold making C and q
+alone, 0.937 / 0.948x (3t, two pairs) and 0.945 / 0.941x (6t); with the evaluation taking kAx as it was where the
+key is the last gather's (43 % of the attempts), 0.928x (3t) and 0.917x (6t).  Andreas, "Measure first", then "1"
+(the recommendation: prototype the second half, build the two together).  Lines (set before building): (a) every
+gold deck SAME against a4e956c5 (none affine: NOT REACHED expected, reported); (b) the census, 10 ns, against
+a4e956c5 in one session: 3t <= 0.93x, 6t <= 0.92x; 4t, 5t reported; every grid's waveforms the SAME bytes as
+a4e956c5's (b8148169f205, d23b6dc4b1ba, fdbfc2c29817, 4de6bbddb907, 4d3090c9390a, b8b9d2aa8f92 for 1t-6t); the steps
+SAME; VmHWM not over +1 %; (c) the tests, bitten, on and off the same bytes, C = Python; (d) the suite, ruff, pins.
+
+**What.**  THE AFFINE STEP (csrc/newton.h): on an attempt the C stepping loop serves where the first iterate is
+taken (`first_iter`) on the sparse full Newton.  (1) The error test solves on the full Newton's own numeric:
+newton.c sets `lte_held` with `lte_affine`, the fold makes C and q alone (no G pass, no Geq, no J), and loop.c's
+`held_factors` hands the test `klu_num` (the chord's numeric where the seed's mark held it, as before) -- no gather,
+no held-value compare, no refactor lookup, no residual validation in the test.  (2) The Newton's evaluation where kAx
+already holds this attempt's J -- the key (formula, a0, h, theta) the last gather's -- makes no G pass and no J
+(`PCX_WANT_PACKED` without `PCX_PASS_G`), and `sparse_full` neither scans kAx nor compares it with the held values
+(`pcx_held_same`'s count without its compare): the numeric holds them.  The key is set only by the loop's calls
+(`affine`, which loop.c sets around its multistep attempts and clears after), dropped by any other gather, by any status but
+NEWTON_CONVERGED (`finish`) and at the loop's entry.  The answers are the same bytes either way: J is the same
+values, the numeric the same factor.  `loop_t.affine` from `_tran_newton.AFFINE_STEP` (env
+`PYCIRCUIT_AFFINE_STEP=0`: off); counts `loop_c:affine_lte`, `loop_c:affine_j` (`lte:seed` no longer counts the
+affine step's held tests).  New fields at the structs' ends (newton.h 8, loop.h 3).  `doc/transient_runtime.md`
+names the switch.
+
+**Measured.**  (a) MET -- the gate against a4e956c5 (gate353, after the refactor below): this tree against the base 0 differing on
+dc, gear2, gear2/bypass, radau and the 8 size runs; C against Python 0 differing on every setting (27 decks each)
+and the 3 size twins; the instrument 81 decks, 0 differing; the coverage suite (test_cholklu, test_loop_c,
+test_newton_c, test_lte_seed) passed.  VERDICT NOT REACHED: no gold deck or size circuit is affine, so the changed
+lines' arms are the fixtures' (29: the affine step taken, held, refused) or none (14: the guards' short-circuits --
+the key's parts in their order, `held_st` absent, a non-converged finish -- and a NULL `newton` around the loop).
+(b) MET -- the census (scratch p261/l19/cen/census.py, 10 ns from the operating point solved in the process, 11 GB
+cap, each run quiet-gated, base = a4e956c5 in its worktree, in the order B3 N3 N6 B6 B4 N4 N5 B5 B1 N1 N2 B2,
+15:42-17:14; peaks VmHWM in MiB):
+
+| grid | 10 ns base -> affine step | ratio | steps / rejected / iterations | refactor calls | vs benchmark | peak (run) |
+|---|---|---|---|---|---|---|
+| ibmpg1t | 11.1 -> 11.1 s | SAME | 1 290/0/1 904 both | 713 (KLU) both | 0.0719 mV both | 2 219 -> 2 218 MB |
+| ibmpg2t | 235.9 -> 243.2 s | SAME bytes* | 1 290/0/1 899 both | 711 (KLU) both | 0.0560 mV both | 1 154 -> 1 154 MB |
+| ibmpg3t | 521.4 -> 462.1 s | **0.886x** | 1 297/2/1 299 both | 708 both | 0.0491 mV both | 7 920 -> 7 922 MB |
+| ibmpg4t | 616.8 -> 548.4 s | 0.889x | 1 139/1/1 140 both | 268 both | 0.1363 mV both | 8 960 -> 8 883 MB |
+| ibmpg5t | 474.6 -> 416.0 s | 0.877x | 1 301/1/1 302 both | 712 both | 0.0307 mV both | 7 138 -> 7 087 MB |
+| ibmpg6t | 692.9 -> 610.8 s | **0.882x** | 1 297/1/1 298 both | 708 both | 0.0361 mV both | 10 179 -> 10 114 MB |
+
+Every grid's waveforms are the base's bytes -- the digests sec. 352 recorded (b8148169f205, d23b6dc4b1ba,
+fdbfc2c29817, 4de6bbddb907, 4d3090c9390a, b8b9d2aa8f92 for 1t-6t), every saved node's voltage within 0.0 V -- and the
+steps, refactor calls and DC digests the same: the step changes what is made, not what it is.  The base reproduces
+sec. 352's times (3t 519.0, 6t 695.9 s) within 0.5 %.  *2t's pair read 1.031x on code the step does not reach (KLU:
+'auto' takes no first iterate there); again pinned to one P-core, N B B N (scratch l27/ab/r2): 241.6 / 241.4 / 241.5
+/ 240.3 s, 0.998x -- the census pair's spread (the unpinned P/E placement), not the step.  The whole run (import, DC, 10 ns): 0.898x (3t), 0.901x
+(4t), 0.890x (5t), 0.895x (6t).  Per attempt (1 299 / 1 140 / 1 302 / 1 298) the step saved 46 ms (3t), 60 ms (4t),
+45 ms (5t), 63 ms (6t) -- the 2 ns prototype's 42 / 63 ms (3t / 6t), as extrapolated.  Memory: within +0.03 %,
+0.6-0.9 % lower on 4t-6t (not traced).
+(c) MET -- below.  (d) suite 6 870 passed, 10 skipped, 5 xfailed; ruff the base's (0 = 0 on the four Python files: "All checks
+passed" both sides, a planted unused import caught).
+
+**Tests.**  `test_cholklu` +5 (37): `test_the_affine_step_is_the_run_s_bytes_and_makes_nothing_twice[cholmod|klu|cholmod-trap|
+klu-trap|klu-trap-fixed]` (the first iterate's run on the reduction, 'auto', and on KLU, True, Gear-2's and the
+trapezoid's, adaptive and on a fixed grid: with the step and without it byte for byte;
+every C-loop attempt's error test held on the Newton's numeric, none refactored or counted as the seed's; some
+evaluations, not all, taking kAx as it was; the switch off, neither).  The LN tests' C = Python run with it on.
+Nineteen bites: twelve bit (the test on the chord's numeric; `lte_affine` never; the key never held; the key without
+a0, without h, without the formula; the J gathered though held -- KLU's packed J, unassembled, read; the loop setting
+no `affine`; the switch ignored; the load setting none; the seed's count taking the affine step's; the held count
+dropped); seven did not: the key's resets -- at a finish not converged, at the loop's entry, on another gather -- and
+`affine` left set after the loop guard a hand-back's course no test takes (a hand-back's repeat is the Python's, whose
+C calls gather with `affine` 0); the held-values check (`held_st[OK]`) is the invariant's restatement; theta is no
+loop formula; and the G pass kept when held is the same bytes, a speed choice line (b) judges.
+**The bites found a defect first.**  As first written the key compared h for Euler alone, the only formula whose a0
+is 0 -- I had not counted the trapezoid's (`2 C / h`, a0 0.0 too).  "The key without Euler's h" did not bite; asked
+why, a trapezoidal run with the step on gave other bytes than without (steps of another h taking the held J, and the
+first iterate accepted untested).  The key now compares the formula, a0, h and theta; the test runs the trapezoid,
+adaptive and on a fixed grid (where Euler's restart after a corner and the trapezoid's next step share a0 and h: the
+only place the formula part bites).  The 80-line limit of the loop's functions (`test_runtime_map`) then moved the
+step's parts into `jkey_take`, `jkey_gather`, `affine_test` (newton.c), `_affine_counted` (`_tran_loop_c`), the
+Newton's `affine` set around `lmm_loop` (pcx_loop) and the held count into `attempt_made`; the bites and the gate
+were made again on that text.  Five pinned pairs re-recorded, their C sides alone (the stepping loop, the Newton
+solve, the multistep walk, the stage loop, the transform loop: newton.h is in each's text).
+
+**Found, not changed:** (1) keying the kept factors per step matrix would let every attempt -- not only one whose
+key is the last gather's -- skip its J (prototype extrapolation ~19 s on 3t, ~30 s on 6t at 10 ns): the glue's
+lookup compares values today; a later candidate, to prototype first.  (2) The fold still makes the C pass, constant
+on an affine circuit.  (3) A process's first fixed-grid run declines the C loop ('sources': the direct source pass stamped one
+behind `_watch.EPOCH`), the run the Python's -- the same bytes, slower; the test runs the switch-off side first.
+(4) FP (plan L27): 3t's 10 ns asks 40 distinct step matrices; today's LRU of 8 factors makes
+112 factorizations in the C loop -- the run's 115 less the Python-driven attempts' -- Belady's optimum 79; no
+buildable policy tried does better at 8 (LFU 112, segmented LRU 115, keep-on-second-visit 110); 10 factors 61, 12
+factors 43, at ~0.5 GB a factor on 3t -- a memory decision, 6t peaks at 10.0 of its 11 GB.
