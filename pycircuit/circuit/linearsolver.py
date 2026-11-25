@@ -1092,8 +1092,10 @@ class StructuralKLU(KLUSolver):
         self._ck_kind = self._ck_twin = None
         if cholmod is not None:
             from pycircuit.circuit import _cholklu
-            ## (THE KEPT FACTORS the analysis sets: `keep_factors`)
+            ## (THE KEPT FACTORS and THE OWN SOLVE the analysis sets:
+            ## `keep_factors`, `_cholklu.OWN_SOLVE`)
             self._ck_keep = (int(_cholklu.KEEP), float(_cholklu.KEEP_BYTES))
+            self._ck_own = bool(_cholklu.OWN_SOLVE)
             lib = _cholklu.library(self._lib)
             if lib is not None:
                 self._klu_lib, self._lib = self._lib, lib
@@ -1235,6 +1237,7 @@ class StructuralKLU(KLUSolver):
                 self.analyses += 1
                 self._symbolic = sym
                 self._lib.keep(ctypes.c_void_p(sym), *self._ck_keep)
+                self._lib.own(ctypes.c_void_p(sym), int(self._ck_own))
                 return sym
             _paths.COUNTS['solver.cholmod:pattern'] += 1
             self._lib, self._ck_kind = self._klu_lib, None
@@ -1321,14 +1324,32 @@ class StructuralKLU(KLUSolver):
         None where the solver is not the reduction's."""
         if not self.cholmod:
             return None
-        out = numpy.zeros(5)
         got = {'hits': 0, 'factorizations': 0, 'slots': 0, 'held': 0}
+        for out in self._ck_num_infos():
+            for k, v in zip(got, out[:4]):
+                got[k] += int(v)
+        return got
+
+    def solve_counts(self):
+        """THE OWN SOLVE's counts (`_cholklu`'s note) over the run's numeric
+        and the chord's: the solves `own` made and those `cholmod_solve`
+        made; None where the solver is not the reduction's."""
+        if not self.cholmod:
+            return None
+        got = {'own': 0, 'cholmod': 0}
+        for out in self._ck_num_infos():
+            got['own'] += int(out[5])
+            got['cholmod'] += int(out[6])
+        return got
+
+    def _ck_num_infos(self):
+        """The reduction's numerics' counts (`_cholklu`'s `num_info`), the
+        run's and the chord's where made."""
         for num in (self._numeric, self._chord):
             if num:
+                out = numpy.zeros(7)
                 self._lib.num_info(self._ct.c_void_p(num), self._ptr(out, self._ct.c_double))
-                for k, v in zip(got, out[:4]):
-                    got[k] += int(v)
-        return got
+                yield out
 
     def _ck_klu(self):
         """KLU on this pattern, for the matrices CHOLMOD will not factor

@@ -3,7 +3,9 @@ matrix solved through KLU's entries over CHOLMOD's supernodal Cholesky --
 the voltage sources' nodes fixed, the inductors' currents eliminated, the
 free nodes' symmetric positive definite system factored -- as a dense solve
 makes it; the plan declining what is not a grid; a matrix CHOLMOD will not
-factor KLU's; a transient on it its KLU run, its C the Python's."""
+factor KLU's; a transient on it its KLU run, its C the Python's; the kept
+factors, the step ladder, and the glue's own solve on CHOLMOD's factor."""
+import ctypes
 import hashlib
 import warnings
 
@@ -222,7 +224,8 @@ def _run(chol, c_on, monkeypatch, edge=1e-10, **make):
     sk = tr._get_linearsolver()._choice
     return (x, hashlib.sha1(x.tobytes()).hexdigest(), (st.accepted_steps, st.rejected_steps,
             st.newton_iterations), (sk.cholmod, sk.factors, sk.refactors, sk.residual_fallbacks,
-            sk.chord_factors, sk.chord_refactors), _paths.since(before), sk.kept_counts())
+            sk.chord_factors, sk.chord_refactors), _paths.since(before), sk.kept_counts(),
+            sk.solve_counts())
 
 
 @pytest.mark.parametrize('chord', [True, False], ids=['chord', 'full'])
@@ -503,3 +506,123 @@ def test_a_ladder_setting_not_known_is_refused():
         tr = Transient(_grid(), toolkit=numeric, step_ladder='on')
     with pytest.raises(ValueError, match='step_ladder'):
         tr._step_ladder(None, type('R', (), {'max_step': 1e-11})())
+
+
+## THE OWN SOLVE (`_cholklu`'s note, plan 261 L25)
+
+def _own_solves(own, monkeypatch):
+    """The reduction's solves on the grid with THE OWN SOLVE on or off: a
+    factor, a refactor (h doubled), one right-hand side and three, the
+    transposed solve and an owned factor's, each with its matrix and its
+    right-hand side."""
+    monkeypatch.setattr(_cholklu, 'OWN_SOLVE', own)
+    c = _grid(16, 16)
+    sk = _solver(c)
+    rng = np.random.default_rng(5)
+    got = []
+    for h in (1e-12, 2e-12):
+        J, _iref = _matrix(c, h)
+        b = rng.standard_normal(J.shape[0])
+        B = rng.standard_normal((J.shape[0], 3))
+        got += [(J, b, np.asarray(sk.solve(J, b, None))), (J, B, np.asarray(sk.solve(J, B, None))),
+                (J.T, B, np.asarray(sk.solve_transposed(J, B, None))),
+                (J, b, np.asarray(sk.factor(J, None).solve(b)))]
+    return got, sk
+
+
+def _near(x, xr, A, b):
+    """`x` the solve `xr` is to rounding, its backward error at the arithmetic's."""
+    assert np.max(np.abs(x - xr)) <= 1e-13 * np.max(np.abs(xr))
+    r = A @ x - b
+    assert np.max(np.abs(r)) <= 1e-15 * np.max(abs(A) @ np.abs(x) + np.abs(b))
+
+
+def test_the_own_solve_is_cholmod_solves_to_rounding(monkeypatch):
+    """Every solve the reduction makes -- a factor's, a refactor's, several
+    right-hand sides, the transposed solve, an owned factor's -- the one
+    `cholmod_solve` makes to rounding, its backward error at the
+    arithmetic's; counted as the own solve's and none `cholmod_solve`'s, and
+    `OWN_SOLVE` off the other way round."""
+    own, sko = _own_solves(True, monkeypatch)
+    ref, skc = _own_solves(False, monkeypatch)
+    for (A, b, x), (_A, _b, xr) in zip(own, ref):
+        _near(x, xr, A, b)
+    so, sc = sko.solve_counts(), skc.solve_counts()
+    assert so['own'] > 0 and so['cholmod'] == 0, so
+    assert sc == {'own': 0, 'cholmod': so['own']}, (so, sc)
+
+
+def _laplacian(n, seed=7):
+    """An n x n mesh's conductances (each between 1 and 2 S) with a small
+    conductance from every node to ground: symmetric positive definite, CSC
+    with both triangles and sorted rows -- a grid's node block."""
+    import scipy.sparse as sp
+    rng = np.random.default_rng(seed)
+    idx = np.arange(n * n).reshape(n, n)
+    a = np.concatenate([idx[:, :-1].ravel(), idx[:-1, :].ravel()])
+    b = np.concatenate([idx[:, 1:].ravel(), idx[1:, :].ravel()])
+    g = 1.0 + rng.random(a.size)
+    off = sp.coo_matrix((-g, (a, b)), shape=(n * n, n * n))
+    off = off + off.T
+    diag = -np.asarray(off.sum(axis=1)).ravel() + 1e-3 * (1.0 + rng.random(n * n))
+    A = (off + sp.diags(diag)).tocsc()
+    A.sort_indices()
+    return A
+
+
+def _entries(A, own, B):
+    """`_cholklu`'s own entries on `A` (every row a node): the symbolic with
+    THE OWN SOLVE on or off, a factor, the columns of `B` solved; the
+    answers, the numeric's counts and the factor's statistics."""
+    lib = _cholklu.library(linearsolver.KLUSolver()._lib)
+    ip = lambda a: a.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    dp = lambda a: a.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    m = A.shape[0]
+    Ap, Ai = A.indptr.astype(np.int32), A.indices.astype(np.int32)
+    Ax, kind = np.ascontiguousarray(A.data, dtype=np.float64), np.zeros(m, dtype=np.int32)
+    sym = lib.analyze(m, ip(Ap), ip(Ai), ip(kind), -1)
+    assert sym
+    lib.own(ctypes.c_void_p(sym), int(own))
+    num = lib.klu_factor(ip(Ap), ip(Ai), dp(Ax), ctypes.c_void_p(sym), None)
+    assert num
+    X = np.asfortranarray(B, dtype=np.float64).copy(order='F')
+    assert lib.klu_solve(ctypes.c_void_p(sym), ctypes.c_void_p(num), m, X.shape[1], dp(X), None)
+    counts, info = np.zeros(7), np.zeros(7)
+    lib.num_info(ctypes.c_void_p(num), dp(counts))
+    lib.info(ctypes.c_void_p(sym), dp(info))
+    lib.klu_free_numeric(ctypes.byref(ctypes.c_void_p(num)), None)
+    lib.klu_free_symbolic(ctypes.byref(ctypes.c_void_p(sym)), None)
+    return X, counts, info
+
+
+def test_the_own_solve_reads_narrow_and_wide_supernodes():
+    """A 100 x 100 mesh's factor: thousands of supernodes below
+    `CK_BLAS_FROM` columns (the plain loops) and wide ones with rows below
+    their triangle (the BLAS calls, their gather and scatter) -- three
+    right-hand sides each the one `cholmod_solve` makes to rounding, its
+    backward error at the arithmetic's; one own solve a column, none
+    `cholmod_solve`'s."""
+    A = _laplacian(100)
+    B = np.random.default_rng(11).standard_normal((A.shape[0], 3))
+    X, counts, info = _entries(A, True, B)
+    Xr, counts_r, _info = _entries(A, False, B)
+    assert info[4] > 1000 and info[6] >= 2, info
+    _near(X, Xr, A, B)
+    assert tuple(counts[5:]) == (3, 0) and tuple(counts_r[5:]) == (0, 3), (counts, counts_r)
+
+
+@pytest.mark.parametrize('c_on', [True, False], ids=['c', 'python'])
+def test_a_grid_transient_on_the_own_solve_is_its_cholmod_solve_run(c_on, monkeypatch):
+    """The grid's Gear-2 run on the reduction as a large grid runs (the
+    ladder on, eight factors kept): every solve -- the Newton's, the error
+    test's, the Python's -- the own solve's, the run the one on
+    `cholmod_solve` step for step, the answers within rounding."""
+    monkeypatch.setattr(_cholklu, 'OWN_SOLVE', True)
+    a = _run(True, c_on, monkeypatch)
+    monkeypatch.setattr(_cholklu, 'OWN_SOLVE', False)
+    b = _run(True, c_on, monkeypatch)
+    assert a[2:4] == b[2:4] and a[3][0], (a[2:4], b[2:4])
+    assert float(np.max(np.abs(a[0] - b[0]))) <= 1e-12
+    assert a[5]['hits'] > 0, a[5]
+    assert a[6]['own'] > 50 and a[6]['cholmod'] == 0, a[6]
+    assert b[6] == {'own': 0, 'cholmod': a[6]['own']}, (a[6], b[6])

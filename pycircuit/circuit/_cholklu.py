@@ -49,6 +49,21 @@ values (`xsize` doubles, CHOLMOD's allocator) and J's -- hundreds of MB on
 a grid of a million unknowns -- for the factors a step-size ladder
 revisits around every corner (plan 261 L24).  Counted on the numeric
 (`num_info`: `StructuralKLU.kept_counts`).
+
+THE OWN SOLVE.  K' x = b on CHOLMOD's supernodal factor L L' = P K' P' is
+solved here, not by `cholmod_solve`, which calls the BLAS for every
+supernode -- twice each way -- where a grid's factor has hundreds of
+thousands of them, most a few columns wide: a supernode below
+`CK_BLAS_FROM` columns in plain loops (its rows below the triangle four
+columns at a time), one of `CK_BLAS_FROM` columns or more by `dtrsv` and
+`dgemv` of the BLAS CHOLMOD loads, as `cholmod_solve` calls them.  The
+answer is `cholmod_solve`'s to rounding (another order of the sums), not
+its bytes.  Switch: `OWN_SOLVE` (env `PYCIRCUIT_CHOLMOD_OWN_SOLVE=0`:
+`cholmod_solve`), set on the symbolic at its analysis (`own`); a factor
+the loops do not read (not supernodal, not int32, no BLAS entries found)
+is `cholmod_solve`'s.  Counted on the numeric (`num_info`:
+`StructuralKLU.solve_counts`); the factor's supernodes, and those of
+`CK_BLAS_FROM` columns or more, in `info`.
 """
 import ctypes
 import os
@@ -58,6 +73,8 @@ import numpy as np
 from pycircuit.circuit import _blas, _cbuild
 
 ENABLED = os.environ.get('PYCIRCUIT_CHOLMOD', '1') != '0'
+#: THE OWN SOLVE (the module's note) in place of `cholmod_solve`
+OWN_SOLVE = os.environ.get('PYCIRCUIT_CHOLMOD_OWN_SOLVE', '1') != '0'
 #: the unknowns from which a linear grid's transient matrix is CHOLMOD's
 CHOLMOD_FROM = 500_000
 #: THE KEPT FACTORS a solver starts with: the factors a numeric holds, its
@@ -91,6 +108,12 @@ typedef int (*ck_fd_t)(cholmod_dense **, cholmod_common *);
 typedef cholmod_dense *(*ck_sv_t)(int, cholmod_factor *, cholmod_dense *, cholmod_common *);
 typedef void *(*ck_mal_t)(size_t, size_t, cholmod_common *);
 typedef void *(*ck_fre_t)(size_t, size_t, void *, cholmod_common *);
+/* the BLAS CHOLMOD loads (Fortran: the characters' lengths last) */
+typedef void (*ck_trsv_t)(const char *, const char *, const char *, const int *, const double *,
+                          const int *, double *, const int *, size_t, size_t, size_t);
+typedef void (*ck_gemv_t)(const char *, const int *, const int *, const double *, const double *,
+                          const int *, const double *, const int *, const double *, double *,
+                          const int *, size_t);
 
 static struct {
     int tried, ok;
@@ -99,6 +122,8 @@ static struct {
     ck_ad_t ad; ck_fd_t fd; ck_sv_t sv;
     /* CHOLMOD's own allocator, for the kept factors' values (NULL: none kept) */
     ck_mal_t mal; ck_fre_t fre;
+    /* THE OWN SOLVE's BLAS entries, from CHOLMOD's (NULL: cholmod_solve) */
+    ck_trsv_t trsv; ck_gemv_t gemv;
 } C_;
 
 static int ck_load(void)
@@ -122,6 +147,8 @@ static int ck_load(void)
     C_.sv = (ck_sv_t) dlsym(h, "cholmod_solve");
     C_.mal = (ck_mal_t) dlsym(h, "cholmod_malloc");
     C_.fre = (ck_fre_t) dlsym(h, "cholmod_free");
+    C_.trsv = (ck_trsv_t) dlsym(h, "dtrsv_");
+    C_.gemv = (ck_gemv_t) dlsym(h, "dgemv_");
     C_.ok =C_.start && C_.finish && C_.asp && C_.fsp && C_.an && C_.fz && C_.cpf && C_.ff
             && C_.ad && C_.fd && C_.sv;
     return C_.ok;
@@ -145,6 +172,8 @@ typedef struct {
     double keep_bytes;
     long nsig;
     long sig[CK_NSIG];
+    /* THE OWN SOLVE for this symbolic's numerics (`ck_own`; 0: cholmod_solve) */
+    int own;
 } ck_sym;
 
 /* a kept factor: L's values and J's (the solve reads J's), and whether they
@@ -169,6 +198,11 @@ typedef struct {
     size_t slot_xsize;
     int valid;
     int64_t clock, hits, facts;
+    /* THE OWN SOLVE: its work vectors (the free nodes; the most rows below a
+       supernode's triangle), made at its first solve, and the solves made by
+       it and by cholmod_solve */
+    double *w, *e;
+    int64_t own_solves, ck_solves;
 } ck_num;
 
 static void *ck_alloc(size_t n, size_t s) { return calloc(n ? n : 1, s); }
@@ -421,6 +455,7 @@ static int ck_free_numeric(void **pn, void *common)
     if (n->K) C_.fsp(&n->K, &n->cm);
     C_.finish(&n->cm);
     free(n->Ax); free(n->x); free(n->rhs);
+    free(n->w); free(n->e);
     free(n);
     *pn = NULL;
     return 1;
@@ -601,18 +636,145 @@ static void ck_keep(void *sym, long keep, double bytes)
 }
 
 /* a numeric's kept factors: [the refactors a slot served, the factorizations
-   made, the slots made, those holding a factor, L's values a slot] */
+   made, the slots made, those holding a factor, L's values a slot], then its
+   solves: [by THE OWN SOLVE, by cholmod_solve] */
 static void ck_num_info(void *num, double *out)
 {
     const ck_num *n = (const ck_num *) num;
     long i, v = 0;
     if (!n) {
-        out[0] = out[1] = out[2] = out[3] = out[4] = -1.0;
+        out[0] = out[1] = out[2] = out[3] = out[4] = out[5] = out[6] = -1.0;
         return;
     }
     for (i = 0; i < n->nslot; i++) v += n->slot[i].valid != 0;
     out[0] = (double) n->hits; out[1] = (double) n->facts; out[2] = (double) n->nslot;
     out[3] = (double) v; out[4] = (double) n->slot_xsize;
+    out[5] = (double) n->own_solves; out[6] = (double) n->ck_solves;
+}
+
+/* THE OWN SOLVE (the module's note): a supernode of CK_BLAS_FROM columns or
+   more by the BLAS, a narrower one in plain loops */
+#define CK_BLAS_FROM 32
+
+/* whether the loops read L: supernodal, real doubles, int32, and the BLAS
+   entries found */
+static int ck_own_reads(const cholmod_factor *L)
+{
+    return L && L->is_super && L->is_ll && L->xtype == CHOLMOD_REAL && L->dtype == CHOLMOD_DOUBLE
+           && L->itype == CHOLMOD_INT && L->x && L->Perm && C_.trsv && C_.gemv;
+}
+
+/* the work vectors, made at the numeric's first own solve: 1, or 0 (no memory) */
+static int ck_own_ready(ck_num *n)
+{
+    const cholmod_factor *L = n->L;
+    const int32_t *super = (const int32_t *) L->super, *pi = (const int32_t *) L->pi;
+    long k, most = 0;
+    if (n->w && n->e) return 1;
+    for (k = 0; k < (long) L->nsuper; k++) {
+        long below = (long) (pi[k + 1] - pi[k]) - (long) (super[k + 1] - super[k]);
+        if (below > most) most = below;
+    }
+    n->w = (double *) ck_alloc(L->n, sizeof(double));
+    n->e = (double *) ck_alloc((size_t) most, sizeof(double));
+    if (n->w && n->e) return 1;
+    free(n->w); free(n->e);
+    n->w = n->e = NULL;
+    return 0;
+}
+
+/* L y = w on one supernode (`Lx` its values, column-major with `nsrow` rows,
+   `Ls` its rows; its columns k1 ..): the triangle, then its rows below it
+   into `e` and out of w */
+static void ck_own_down(const double *Lx, const int32_t *Ls, long k1, long nscol, long nsrow,
+                        double *w, double *e)
+{
+    long below = nsrow - nscol, i, j;
+    if (nscol >= CK_BLAS_FROM) {
+        const int nc = (int) nscol, nr = (int) nsrow, nb = (int) below, one = 1;
+        const double d1 = 1.0, d0 = 0.0;
+        C_.trsv("L", "N", "N", &nc, Lx, &nr, w + k1, &one, 1, 1, 1);
+        if (nb > 0) {
+            C_.gemv("N", &nb, &nc, &d1, Lx + nscol, &nr, w + k1, &one, &d0, e, &one, 1);
+            for (i = 0; i < below; i++) w[Ls[nscol + i]] -= e[i];
+        }
+        return;
+    }
+    for (j = 0; j < nscol; j++) {
+        const double *c = Lx + j * nsrow;
+        const double xj = w[k1 + j] / c[j];
+        w[k1 + j] = xj;
+        for (i = j + 1; i < nscol; i++) w[k1 + i] -= c[i] * xj;
+    }
+    if (below <= 0) return;
+    for (i = 0; i < below; i++) e[i] = 0.0;
+    for (j = 0; j + 4 <= nscol; j += 4) {
+        const double *c0 = Lx + j * nsrow + nscol, *c1 = c0 + nsrow, *c2 = c1 + nsrow, *c3 = c2 + nsrow;
+        const double x0 = w[k1 + j], x1 = w[k1 + j + 1], x2 = w[k1 + j + 2], x3 = w[k1 + j + 3];
+        for (i = 0; i < below; i++) e[i] += (c0[i] * x0 + c1[i] * x1) + (c2[i] * x2 + c3[i] * x3);
+    }
+    for (; j < nscol; j++) {
+        const double *c = Lx + j * nsrow + nscol;
+        const double xj = w[k1 + j];
+        for (i = 0; i < below; i++) e[i] += c[i] * xj;
+    }
+    for (i = 0; i < below; i++) w[Ls[nscol + i]] -= e[i];
+}
+
+/* L' z = w on one supernode: its rows below the triangle gathered into `e`
+   and their sums out of its columns, then the triangle transposed */
+static void ck_own_up(const double *Lx, const int32_t *Ls, long k1, long nscol, long nsrow,
+                      double *w, double *e)
+{
+    long below = nsrow - nscol, i, j;
+    for (i = 0; i < below; i++) e[i] = w[Ls[nscol + i]];
+    if (nscol >= CK_BLAS_FROM) {
+        const int nc = (int) nscol, nr = (int) nsrow, nb = (int) below, one = 1;
+        const double d1 = 1.0, dm1 = -1.0;
+        if (nb > 0) C_.gemv("T", &nb, &nc, &dm1, Lx + nscol, &nr, e, &one, &d1, w + k1, &one, 1);
+        C_.trsv("L", "T", "N", &nc, Lx, &nr, w + k1, &one, 1, 1, 1);
+        return;
+    }
+    for (j = 0; j + 4 <= nscol; j += 4) {
+        const double *c0 = Lx + j * nsrow + nscol, *c1 = c0 + nsrow, *c2 = c1 + nsrow, *c3 = c2 + nsrow;
+        double t0 = 0.0, t1 = 0.0, t2 = 0.0, t3 = 0.0;
+        for (i = 0; i < below; i++) {
+            const double ei = e[i];
+            t0 += c0[i] * ei; t1 += c1[i] * ei; t2 += c2[i] * ei; t3 += c3[i] * ei;
+        }
+        w[k1 + j] -= t0; w[k1 + j + 1] -= t1; w[k1 + j + 2] -= t2; w[k1 + j + 3] -= t3;
+    }
+    for (; j < nscol; j++) {
+        const double *c = Lx + j * nsrow + nscol;
+        double t = 0.0;
+        for (i = 0; i < below; i++) t += c[i] * e[i];
+        w[k1 + j] -= t;
+    }
+    for (j = nscol - 1; j >= 0; j--) {
+        const double *c = Lx + j * nsrow;
+        double t = w[k1 + j];
+        for (i = j + 1; i < nscol; i++) t -= c[i] * w[k1 + i];
+        w[k1 + j] = t / c[j];
+    }
+}
+
+/* x = P' L'^-1 L^-1 P b on L (`ck_own_reads`), `w` and `e` the work vectors */
+static void ck_own_solve(const cholmod_factor *L, const double *b, double *x, double *w, double *e)
+{
+    const int32_t *super = (const int32_t *) L->super, *pi = (const int32_t *) L->pi;
+    const int32_t *px = (const int32_t *) L->px, *ls = (const int32_t *) L->s;
+    const int32_t *perm = (const int32_t *) L->Perm;
+    const double *lx = (const double *) L->x;
+    const long n = (long) L->n, ns = (long) L->nsuper;
+    long k, sn;
+    for (k = 0; k < n; k++) w[k] = b[perm[k]];
+    for (sn = 0; sn < ns; sn++)
+        ck_own_down(lx + px[sn], ls + pi[sn], super[sn], super[sn + 1] - super[sn],
+                    pi[sn + 1] - pi[sn], w, e);
+    for (sn = ns - 1; sn >= 0; sn--)
+        ck_own_up(lx + px[sn], ls + pi[sn], super[sn], super[sn + 1] - super[sn],
+                  pi[sn + 1] - pi[sn], w, e);
+    for (k = 0; k < n; k++) x[perm[k]] = w[k];
 }
 
 /* J x = b for each of the `nrhs` columns of `B` (n x nrhs, column-major), in place */
@@ -621,7 +783,7 @@ static int ck_solve(void *sym, void *num, int n_, int nrhs, double *B, void *com
     const ck_sym *s = (const ck_sym *) sym;
     ck_num *nm = (ck_num *) num;
     const double *Ax;
-    double *x, *rhs;
+    double *x, *rhs, *sol;
     long j, k, r, c;
     int64_t p;
     (void) common;
@@ -653,12 +815,22 @@ static int ck_solve(void *sym, void *num, int n_, int nrhs, double *B, void *com
                 if (s->kind[r] == 0 && s->fidx[r] >= 0) rhs[s->fidx[r]] -= Ax[p] * x[c];
             }
         }
-        memcpy(nm->B->x, rhs, (size_t) s->nf * sizeof(double));
-        X = C_.sv(CHOLMOD_A, nm->L, nm->B, &nm->cm);
-        if (!X) return 0;
+        X = NULL;
+        if (s->own && ck_own_reads(nm->L)) {
+            if (!ck_own_ready(nm)) return 0;
+            sol = (double *) nm->B->x;
+            ck_own_solve(nm->L, rhs, sol, nm->w, nm->e);
+            nm->own_solves++;
+        } else {
+            memcpy(nm->B->x, rhs, (size_t) s->nf * sizeof(double));
+            X = C_.sv(CHOLMOD_A, nm->L, nm->B, &nm->cm);
+            if (!X) return 0;
+            sol = (double *) X->x;
+            nm->ck_solves++;
+        }
         for (r = 0; r < s->m; r++)
-            if (s->kind[r] == 0 && s->fidx[r] >= 0) x[r] = ((double *) X->x)[s->fidx[r]];
-        C_.fd(&X, &nm->cm);
+            if (s->kind[r] == 0 && s->fidx[r] >= 0) x[r] = sol[s->fidx[r]];
+        if (X) C_.fd(&X, &nm->cm);
         for (k = 0; k < s->nl; k++) {
             double v = b[s->l_row[k]];
             if (s->l_n1[k] >= 0) v -= Ax[s->l_p1[k]] * x[s->l_n1[k]];
@@ -690,13 +862,35 @@ static int ck_rgrowth(int *Ap, int *Ai, double *Ax, void *sym, void *num, void *
     return 1;
 }
 
-/* the factor's statistics: [the free nodes, K's entries, L's entries, the ordering CHOLMOD chose] */
+/* the factor's statistics: [the free nodes, K's entries, L's entries, the
+   ordering CHOLMOD chose, its supernodes, those of CK_BLAS_FROM columns or
+   more, of those the ones with rows below their triangle] (-1: none known) */
 static void ck_info(void *sym, double *out)
 {
     const ck_sym *s = (const ck_sym *) sym;
+    const cholmod_factor *L = s->Lsym;
     out[0] = (double) s->nf; out[1] = (double) s->nk;
-    out[2] = s->Lsym ? (double) s->cm.lnz : -1.0;
+    out[2] = L ? (double) s->cm.lnz : -1.0;
     out[3] = (double) s->cm.selected;
+    out[4] = out[5] = out[6] = -1.0;
+    if (L && L->is_super && L->itype == CHOLMOD_INT && L->super && L->pi) {
+        const int32_t *super = (const int32_t *) L->super, *pi = (const int32_t *) L->pi;
+        long k, wide = 0, below = 0;
+        for (k = 0; k < (long) L->nsuper; k++) {
+            const long nscol = super[k + 1] - super[k];
+            if (nscol < CK_BLAS_FROM) continue;
+            wide++;
+            below += pi[k + 1] - pi[k] > nscol;
+        }
+        out[4] = (double) L->nsuper; out[5] = (double) wide; out[6] = (double) below;
+    }
+}
+
+/* THE OWN SOLVE (1) or cholmod_solve (0) for the symbolic's numerics */
+static void ck_own(void *sym, int on)
+{
+    ck_sym *s = (ck_sym *) sym;
+    if (s) s->own = on != 0;
 }
 
 void *pcx_cholklu(int which)
@@ -713,6 +907,7 @@ void *pcx_cholklu(int which)
     case 8: return (void *) (long) ck_load();
     case 9: return (void *) ck_keep;
     case 10: return (void *) ck_num_info;
+    case 11: return (void *) ck_own;
     }
     return NULL;
 }
@@ -726,8 +921,9 @@ class _Lib:
     """KLU's entries over the reduction (`klu_factor`, `klu_refactor`,
     `klu_solve`, `klu_tsolve`, `klu_free_numeric`, `klu_free_symbolic`,
     `klu_rgrowth`, KLU's prototypes), `klu_defaults` the KLU library's own,
-    `analyze(m, Ap, Ai, kind, rg_off)` the symbolic and `info(sym)` its
-    statistics."""
+    `analyze(m, Ap, Ai, kind, rg_off)` the symbolic and `info(sym, out)` its
+    statistics (seven doubles: `ck_info`); `num_info(num, out)` a numeric's
+    counts (seven: `ck_num_info`)."""
 
     def __init__(self, ffi, entry, klu):
         ct = ctypes
@@ -749,6 +945,8 @@ class _Lib:
         ## `num_info(num, out)` (the module's note)
         self.keep = fn(9, None, vp, ct.c_long, ct.c_double)
         self.num_info = fn(10, None, vp, dp)
+        ## THE OWN SOLVE: `own(sym, on)` (the module's note)
+        self.own = fn(11, None, vp, ct.c_int)
         self.klu_defaults = klu.klu_defaults
 
 

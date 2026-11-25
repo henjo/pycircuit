@@ -17423,3 +17423,94 @@ atol=0 it bit, and showed a hand-made breakpoint list missing the pulse's period
 **Found, not changed:** (1) test_loop_c's fixed 'sparse' run takes no C step when it runs first or alone (the known
 flake above, on the base too): its reach assertion depends on the order, not traced.  (2) The census does not record the kept factors' hits (the refactor calls include
 them); LA's line (b) counted them on 2 ns (sec. 349).
+
+## 2026-11-25 — 351. SV: the glue's own solve on CHOLMOD's factor
+
+**Why**  Plan 261 L25 (tc/plan_l25_profile.md).  With the step ladder (sec. 350) the IBM grids' largest phase is
+CHOLMOD's solve, ~43 % of a 10 ns run (L25's profile: 32-33 % of 2 ns, a solve ~90 ms on 3t and ~126 ms on 6t -- the
+Newton's solves and the error test's, one a step).  `cholmod_solve` on a supernodal factor calls the BLAS for every
+supernode, a `dtrsv` and a `dgemv` each way: 834 978 calls a solve on 3t (208 746 supernodes), 1 844 072 on 6t
+(461 019, 312 322 of one column).  A micro-benchmark on the grids' real factors (scratch p261/l25/sb: K' dumped from
+the glue, refactored standalone to the glue's bytes) measured, pinned, 15 interleaved rounds: `cholmod_solve` 87.5 /
+115.0 ms; `cholmod_solve2` with its workspace kept (the same bytes) 0.987 / 0.986; plain loops below 32 columns and
+CHOLMOD's BLAS calls from 32 67.3 / 73.0 ms (0.769 / 0.635); a streaming bound 46.0 / 42.5 ms.  Andreas, "Do as you
+suggest": the own solve, `cholmod_solve` kept behind a switch.  Lines (set before): (a) every gold deck SAME against
+LB's tree (none reaches CHOLMOD unforced); (b) the census, 10 ns, ibmpg1t-6t one process each, against LB's tree in the
+same session: 3t <= 0.94x, 6t <= 0.90x; 4t, 5t reported; 1t, 2t (KLU) SAME; each grid's max error against the
+benchmark <= its census figure + 0.01 mV; steps <= +3 %; VmHWM within 1 %; (c) the tests, bitten, the forced grids'
+solve against `cholmod_solve` to a residual bound; (d) the suite, ruff, the census as the grids' reference.
+
+**What.**  THE OWN SOLVE in `_cholklu`: `ck_solve` solves K' x = b on CHOLMOD's supernodal L L' = P K' P' itself
+(`ck_own_solve`: the permutation, `ck_own_down` a supernode forward, `ck_own_up` backward, the permutation back).  A
+supernode below `CK_BLAS_FROM` = 32 columns in plain loops -- the triangle by columns, its rows below the triangle
+four columns at a time (four independent sums backward); one of 32 columns or more by `dtrsv_` and `dgemv_` of the
+BLAS CHOLMOD loads (dlsym'd from CHOLMOD's handle), the calls `cholmod_solve` makes, with their gather and scatter.
+The answers are `cholmod_solve`'s to rounding, not its bytes.  `_cholklu.OWN_SOLVE` (env
+`PYCIRCUIT_CHOLMOD_OWN_SOLVE=0`: `cholmod_solve`) is read by a `StructuralKLU` at its making and set on the symbolic
+at its analysis (`own`, entry 11; `ck_sym.own` at the struct's END); a factor the loops do not read (not supernodal
+LL', not real doubles, not int32, no BLAS entries) is `cholmod_solve`'s.  The work vectors and the counts on the
+numeric (`ck_num.w, e, own_solves, ck_solves` at its END), made at its first own solve; `num_info` seven doubles,
+`StructuralKLU.solve_counts()` ({'own', 'cholmod'} over the run's numeric and the chord's); `info` seven (the
+supernodes, those of 32 columns or more, of those the ones with rows below their triangle).  `doc/transient_runtime.md`
+names the switch.
+
+**Measured.**  (a) MET -- the gate against d78e7886 (gate351): this tree against the base 0 differing on dc, gear2,
+gear2/bypass, radau and the 8 size runs, results and path counters; C against Python 0 differing on every setting
+(27 decks each) and at size; the coverage suite (test_cholklu, test_loop_c) 60 passed.  VERDICT SAME with "0
+executable lines, 0 arms" changed: the gate's instrument reads csrc/, and the own solve is the inline C of
+`_cholklu` -- no gold deck reaches CHOLMOD unforced, so this SAME says the decks did not move and nothing of the
+own solve's reach; its reach is the tests' (their bites) and line (b)'s.
+(b) MET -- the census (scratch p261/l19/cen/census.py, 10 ns from the operating point solved in the process, 11 GB cap,
+each run quiet-gated, base = d78e7886 in its worktree, in the order B3 N3 N6 B6 B4 N4 N5 B5 B1 N1 N2 B2, 01:11-03:15;
+peaks VmHWM in MiB):
+
+| grid | 10 ns base -> own solve | ratio | steps / rejected / iterations | refactor calls | vs benchmark | peak (run) |
+|---|---|---|---|---|---|---|
+| ibmpg1t | 11.2 -> 11.2 s | SAME | 1 290/0/1 904 both | 713 (KLU) both | 0.0719 mV both | 2 224 -> 2 224 MB |
+| ibmpg2t | 236.0 -> 236.1 s | SAME | 1 290/0/1 899 both | 711 (KLU) both | 0.0560 mV both | 1 159 -> 1 156 MB |
+| ibmpg3t | 724.5 -> 647.3 s | **0.893x** | 1 297/2/2 184 both | 709 both | 0.0491 mV both | 7 995 -> 7 997 MB |
+| ibmpg4t | 855.4 -> 765.5 s | 0.895x | 1 139/1/2 052 both | 268 both | 0.1363 mV both | 9 060 -> 9 025 MB |
+| ibmpg5t | 746.0 -> 620.5 s | 0.832x | 1 301/1/2 491 both | 713 both | 0.0307 mV both | 7 168 -> 7 175 MB |
+| ibmpg6t | 1 074.8 -> 894.2 s | **0.832x** | 1 297/1/2 312 both | 709 both | 0.0361 mV both | 10 264 -> 10 283 MB |
+
+The base reproduces sec. 350's digests (b8148169f205, d23b6dc4b1ba, 6b8ddddf43f9, 03e67bc61c4b, fea756792da0,
+d08e2778f4d7 for 1t-6t); 1t and 2t (KLU) are those bytes on this tree too.  With the own solve the waveforms' digests
+are 3t 2b2ea58c3f59, 4t dbcb4767b194, 5t 2c8f9408712e, 6t 573d1fc249b2 -- the grids' new reference with 1t's and 2t's;
+the times sampled are the base's, the voltages within 1.1e-15 V of the base's at every benchmark node (3t; 4t-6t
+within 8.9e-16), so the distances from the benchmark agree to every digit printed.  The steps did not part on any
+grid (a change of the solve's rounding can part them at a corner-landing sliver; here it did not).  The whole run
+(import, DC, 10 ns): 0.902x (3t), 0.903x (4t), 0.845x (5t), 0.844x (6t); the DCs and their digests unchanged.  Per
+solve (the Newton's iterations and the error test's, one a step: ~3 480 on 3t, ~3 610 on 6t) the run saved 22 ms
+(3t), 28 ms (4t), 33 ms (5t), 50 ms (6t), more than the benchmark's standalone difference (20 / 42 ms on 3t / 6t);
+which side moves in the process was not measured.  Memory within 0.4 % (the work vectors: a double a row and one
+supernode's rows below its triangle).  The census does not record the route: the time and the changed digests show
+the own solve ran, the sanity run (below) counted it.
+
+3t's first 0.5 ns (D1's operating point, the profile's import): the own solve 113.9 s against `cholmod_solve` 119.8 s
+(268 solves), the same steps (95 / 2 / 172) and kept-factor counts, the waveforms within 6.7e-16 V; `OWN_SOLVE` off,
+the run is LB's tree's byte for byte (digest b69756abf6e1, the waveforms' .npz identical).
+(c) MET -- below.  (d) suite 6 858 passed, 10 skipped, 5 xfailed; ruff the base's (14 = 14 on the three files).
+
+**Tests.**  `test_cholklu` +4 (25): `test_the_own_solve_is_cholmod_solves_to_rounding` (the reduction's solves on the
+16 x 16 grid -- a factor, a refactor, one and three right-hand sides, the transposed solve, an owned factor -- each
+`cholmod_solve`'s to 1e-13 with a backward error under 1e-15; the counts own and none `cholmod_solve`'s, the switch
+off the other way round); `test_the_own_solve_reads_narrow_and_wide_supernodes` (`_cholklu`'s entries on a 100 x 100
+mesh, sparse: over 1 000 supernodes and at least two wide ones with rows below their triangle -- the 16 x 16 grid's
+factor has none of 32 columns, and a long 40 x 120 grid's only its root, which has no rows below; three right-hand
+sides against `cholmod_solve`'s; one own solve a column); `test_a_grid_transient_on_the_own_solve_is_its_cholmod_solve_run[c|python]`
+(the grid's run as a large grid runs -- the ladder on, eight factors kept: the steps and counts of the run on
+`cholmod_solve`, the answers within 1e-12, every solve the own one's).  `_run` returns the solve counts last.  Ten
+bites: nine defects bit (the switch not set by the solver; the switch not read by the C; the forward remainder
+columns skipped; the BLAS arm's scatter dropped; its backward `dgemv` dropped; the permutation inverted; the backward
+gather zeroed; the counter not counted; a wrong column in the backward block); the tenth, the backward four-column
+block skipped, is the same bytes (the remainder loop makes each column's sum in the same order) -- a speed choice no
+answer can see, judged by line (b).  The inverted permutation HANGS the transient tests (their steps collapse) rather
+than failing them: its bite ran on the two fast tests.
+
+**Found, not changed:** (1) 3t's K' magnifies rounding: on a test vector `cholmod_solve`'s own answer is 1.3e-3 from
+the exact one at a residual of 1.4e-15 (6t: 3.3e-12) -- the own solve's answers differ from `cholmod_solve`'s by up to
+1.5e-5 of max |x| there, both backward stable; in the transient the Newton solves for updates, and the census measures
+the distance from the benchmark.  (2) L25's first report divided the solve's time by the Newton's solves alone (145 /
+199 ms a solve); the error test solves once a step too.  (3) The remaining gap to the streaming bound (~21 / ~31 ms
+a solve) is not vectorisation (-O3 bought 2 %): the gathers and scatters through L->s, the dependent triangular
+solves, 312 k one-column supernodes on 6t -- not measured further.

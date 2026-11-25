@@ -6484,3 +6484,21 @@ serve them.  It is on by default ('auto') only where the run's matrix is the
 grid's SPD reduction on CHOLMOD; every other circuit steps as before.  On the
 IBM grids' 10 ns the transient ran in 0.55x (ibmpg3t) and 0.63x (ibmpg6t) of
 its time, at the same distance from the benchmark, for about 3 GB more memory.
+
+
+## SV: the glue's own solve on CHOLMOD's factor (2026-11-25)
+
+### `_cholklu`'s own solve, `_cholklu.OWN_SOLVE`, `StructuralKLU.solve_counts`
+
+2026-11-25 (`doc/hdl_roadmap_260824.md`, 351; plan 261 L25).  With the step
+ladder, solving with CHOLMOD's factor became the largest part of a large
+power grid's transient.  CHOLMOD's solve calls the BLAS library for every
+block of the factor, and these grids' factors have hundreds of thousands
+of blocks, most a few columns wide: about a million library calls a solve.
+The glue now solves on CHOLMOD's factor itself -- the narrow blocks in
+plain loops, the wide ones through the same BLAS calls CHOLMOD makes.  The
+answers agree with CHOLMOD's to rounding, not to the last bit: on the IBM
+grids' 10 ns the waveforms moved by about 1e-15 V and the runs took the
+same steps.  The transient ran in 0.89x (ibmpg3t) and 0.83x (ibmpg6t) of
+its time, at the same distance from the benchmark and the same memory.
+`PYCIRCUIT_CHOLMOD_OWN_SOLVE=0` restores CHOLMOD's own solve.
