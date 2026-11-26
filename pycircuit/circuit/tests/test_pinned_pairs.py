@@ -1231,8 +1231,8 @@ PAIRS = {
 #: module as a script, after the twin was checked.
 RECORD = {
     'the controller law and its C': ('1524666662a6', '716b6f29ec13'),
-    'the stepping loop and its C': ('31357bd97386', '7f57d60d95b0'),
-    'the predictor and its C': ('9e611c84de5a', '9b16bd4e0f30'),
+    'the stepping loop and its C': ('31357bd97386', '518aaba73a00'),
+    'the predictor and its C': ('9e611c84de5a', '49df8eff4fb2'),
     'the branch screen and its C': ('7b733bcef5f0', 'c6a3d7888dea'),
     'the sources and their C': ('635a8af4da45', '2ac53b5a61c6'),
     'the kernel call and the pass driver': ('ef3f2c059587', '5a9e89626ca0'),
@@ -1262,16 +1262,16 @@ RECORD = {
     'the stage block and its one pass': ('44fabd10376c', '24be0c26211b'),
     'the stage step map and its C': ('03f9482bdd72', 'c025357cb495'),
     'the KLU step map and its C': ('5b9b1f672523', '94dfea9dc33d'),
-    'the stage walk and its C': ('fc9149f0b806', 'aa4131af99f2'),
-    'the multistep walk and its C': ('f8ceafa5c424', '0db2d68e13c6'),
+    'the stage walk and its C': ('fc9149f0b806', 'ee6f220c87d3'),
+    'the multistep walk and its C': ('f8ceafa5c424', '0293b9850939'),
     'the multistep step map and its C': ('985dde19187d', 'd6c3dcf5119d'),
     'the stage readers and their one read': ('d25552fe5ede', '2798b147a3c5'),
     "numpy's solve and its kept LU": ('1f8908b895c7', '119066a97f50'),
     "the complex factor's CSC, SciPy's and numpy's": ('2e7218131272', '1eb473b35968'),
     'the readiness reads and their stamps': ('8ee74f103a32', '57a0514222cf'),
     'the behavioural source and its HDL form': ('eb811b119033', '6428eaf454a9'),
-    'the stage loop and its C': ('91d50c728a8a', '2e57bc59cf5e'),
-    'the transform loop and its C': ('231bcba1babb', 'aaf0c61ec6cd'),
+    'the stage loop and its C': ('91d50c728a8a', 'da6b498dac05'),
+    'the transform loop and its C': ('231bcba1babb', 'cfbbdcc04cd7'),
     'the pulse and its arrays': ('7bdf4ed87d73', '21f3cc79de17'),
 }
 

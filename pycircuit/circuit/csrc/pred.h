@@ -12,8 +12,10 @@
  * and the shooting's stage walk, `under_ok` where numpy's error state
  * ignores underflow; or, in the C loop, `_tran_loop_c._bind` points `ht` and
  * `hx` at the loop's own history buffers and sets `deg` and `clamp` once a
- * run, and loop.c sets `hk` and `ttarget` at each attempt (it keeps the
- * history's contents: the accepted points, the newest eight).
+ * run, and loop.c sets `hk`, `ho` and `ttarget` at each attempt (it keeps
+ * the history's contents: the accepted points, the newest eight, rotated in
+ * `hx` -- node j at row (ho + j) % 8 -- and puts them back in order at the
+ * loop's exit).  Every other caller leaves `ho` 0: the nodes in order.
  *
  * CAPACITIES, which the glue assumes too.  The fit takes at most 5 nodes:
  * `deg` <= 4 (`_tran_pred_c.MAX_DEG`) -- `tau`, `w`, `ipiv` hold 5, `V` 25
@@ -26,7 +28,8 @@ typedef struct {
     long n;                 /* unknowns */
     long hk;                /* the history's nodes, oldest first (`_pred_hist`) */
     const double *ht;       /* their times, hk */
-    const double *hx;       /* their states, hk x n row-major */
+    const double *hx;       /* their states, rows of n row-major (node j at
+                               row (ho + j) % PRED_HIST_MAX) */
     double ttarget;         /* the time predicted for: the attempt's end */
     long deg;               /* the fit's degree (`_pred_degree`), <= 4 */
     double clamp;           /* PRED_CLAMP */
@@ -46,6 +49,8 @@ typedef struct {
     int64_t ipiv[5];        /* work: dgesv's pivots */
     void *dgesv, *dgemv;    /* numpy's own (`scipy_dgesv_64_`, `scipy_cblas_dgemv64_`) */
     long status;            /* OUT: pcx_pred's result, enum pred_status */
+    long ho;                /* IN: the nodes' rotation in `hx` -- node j at
+                               row (ho + j) % PRED_HIST_MAX; 0 in order */
 } pred_t;
 long pcx_pred(pred_t *s);
 

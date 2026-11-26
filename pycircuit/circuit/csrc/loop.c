@@ -34,6 +34,12 @@
 /* `transient.LAND_STRETCH` (test_loop_c holds the two together) */
 #define LAND_STRETCH 1.1
 #define COPY(dst, src, n) memcpy((dst), (src), (size_t) (n) * sizeof(double))
+/* a ring's logical slot r (0 the newest): its physical row under the
+   rotation `ring_o` */
+static inline double *ring_slot(const loop_t *s, double *ring, long r)
+{
+    return ring + ((s->ring_o + r) % s->hist_len) * s->n;
+}
 
 /* `_next_breakpoint` on the table: `cir.next_event` is numpy's maximum of t
    and the sources' earliest event after it (every other element's answer
@@ -269,7 +275,9 @@ static long lte_setup(loop_t *s, const loop_attempt_t *a, const double *xc, cons
    it: history (two accepted points), a full attempt left in the point's
    budget, above minstep -- the error test set up for the attempt, its x, q
    and J the Newton's at its first iterate (a 2nd-order step with no third
-   point is not armed: `lte_setup`) */
+   point is not armed: `lte_setup`).  The charge handed here is a
+   placeholder: the Newton's check sets the iterate's own, and the judge's
+   set-up the attempt's */
 static void arm_early(loop_t *s, const loop_attempt_t *a, newton_t *nt)
 {
     nt->early_lte = 0;
@@ -320,6 +328,7 @@ static long take(loop_t *s, loop_attempt_t *a)
         a->a2 = h / (h_last * (h + h_last));
     }
     pr->hk = s->hk;
+    pr->ho = s->hx_o;
     pr->ttarget = a->tn;
     st = CALL(s->pred_fn, pcx_pred, pr);
     if (st == PRED_DONE) seed = pr->out;
@@ -341,10 +350,10 @@ static long take(loop_t *s, loop_attempt_t *a)
     nt->a2 = a->a2;
     nt->h = h;
     nt->theta = 0.0;
-    nt->q1 = s->qring;
-    nt->q2 = (a->formula == PCX_FORMULA_GEAR2) ? s->qring + n : s->qring;
+    nt->q1 = ring_slot(s, s->qring, 0);
+    nt->q2 = (a->formula == PCX_FORMULA_GEAR2) ? ring_slot(s, s->qring, 1) : ring_slot(s, s->qring, 0);
     nt->iq1 = (a->formula == PCX_FORMULA_TRAPEZOIDAL || a->formula == PCX_FORMULA_THETA)
-              ? s->iqring : s->qring;
+              ? ring_slot(s, s->iqring, 0) : ring_slot(s, s->qring, 0);
     nt->xseed = seed;
     nt->have_cache = s->cur >= 0;
     a->nxt = (s->cur == 0) ? 1 : 0;
@@ -382,7 +391,6 @@ static long lte_setup(loop_t *s, const loop_attempt_t *a, const double *xc, cons
                       const double *J)
 {
     lte_t *le = (lte_t *) s->lte;
-    long n = s->n;
     double h = a->h;
     double coef, hl = a->h_last, hl2 = 0.0, s12 = 0.0, s23 = 0.0, s123 = 0.0;
     int euler = a->formula == PCX_FORMULA_EULER;
@@ -410,10 +418,10 @@ static long lte_setup(loop_t *s, const loop_attempt_t *a, const double *xc, cons
     le->xc = xc;
     le->xl = s->xlast;
     le->q = q;
-    le->q1 = s->qring;
-    le->q2 = s->qring + n;
-    le->q3 = s->qring + 2 * n;
-    le->iq1 = s->iqring;
+    le->q1 = ring_slot(s, s->qring, 0);
+    le->q2 = ring_slot(s, s->qring, 1);
+    le->q3 = ring_slot(s, s->qring, 2);
+    le->iq1 = ring_slot(s, s->iqring, 0);
     le->J = J;
     le->run = s->run;
     le->have_run = s->have_run;
@@ -643,17 +651,15 @@ static void accept_point(loop_t *s, const loop_attempt_t *a, const double *x)
 static void accept(loop_t *s, const loop_attempt_t *a)
 {
     newton_t *nt = (newton_t *) s->newton;
-    long n = s->n, r;
+    long n = s->n;
     double tn = a->tn;
     attempt_made(s, a, (int) s->adaptive);
     s->euler_steps += (a->formula == PCX_FORMULA_EULER && s->base != PCX_FORMULA_EULER);
-    /* the rings (`_ring_push`): the newest first, the oldest dropped */
-    for (r = s->hist_len - 1; r > 0; r--) {
-        COPY(s->qring + r * n, s->qring + (r - 1) * n, n);
-        COPY(s->iqring + r * n, s->iqring + (r - 1) * n, n);
-    }
-    COPY(s->qring, nt->qj, n);
-    COPY(s->iqring, nt->iqj, n);
+    /* the rings (`_ring_push`): the newest first, the oldest dropped -- the
+       oldest slot written, the rotation moved on (`ring_slot`) */
+    s->ring_o = (s->ring_o + s->hist_len - 1) % s->hist_len;
+    COPY(ring_slot(s, s->qring, 0), nt->qj, n);
+    COPY(ring_slot(s, s->iqring, 0), nt->iqj, n);
     /* the predictor's node (`_pred_note`: appended past every node, so its
        sort keeps it last and its dedupe -- `1e-14 * max(abs(t), 1.0)`,
        `_StagePredictor`'s -- compares it with the one before alone; the
@@ -665,11 +671,11 @@ static void accept(loop_t *s, const loop_attempt_t *a)
             s->hk--;
         } else if (s->hk == PRED_HIST_MAX) {
             memmove(s->ht, s->ht + 1, (PRED_HIST_MAX - 1) * sizeof(double));
-            memmove(s->hx, s->hx + n, (size_t) ((PRED_HIST_MAX - 1) * n) * sizeof(double));
+            s->hx_o = (s->hx_o + 1) % PRED_HIST_MAX;
             s->hk = PRED_HIST_MAX - 1;
         }
         s->ht[s->hk] = tn;
-        COPY(s->hx + s->hk * n, nt->xc, n);
+        COPY(s->hx + ((s->hx_o + s->hk) % PRED_HIST_MAX) * n, nt->xc, n);
         s->hk++;
     }
     /* the step's companion at its point's index (`save`'s device currents:
@@ -2298,6 +2304,45 @@ static long stage_loop(loop_t *s)
    this call's (zeroed here). */
 static long lmm_loop(loop_t *s);
 
+/* rows i and j (n each) of `a` exchanged */
+static void swap_rows(double *a, long n, long i, long j)
+{
+    double *p = a + i * n, *q = a + j * n;
+    long k;
+    for (k = 0; k < n; k++) {
+        const double t = p[k];
+        p[k] = q[k];
+        q[k] = t;
+    }
+}
+
+/* rows [lo, hi) of `a` in reverse order */
+static void reverse_rows(double *a, long n, long lo, long hi)
+{
+    for (hi--; lo < hi; lo++, hi--) swap_rows(a, n, lo, hi);
+}
+
+/* a rotated ring (`L` rows of n, logical row r at physical (o + r) % L) put
+   back in order: rotated left by o, by three reversals */
+static void unrotate(double *a, long n, long L, long o)
+{
+    if (o == 0) return;
+    reverse_rows(a, n, 0, o);
+    reverse_rows(a, n, o, L);
+    reverse_rows(a, n, 0, L);
+}
+
+/* the rings and the predictor's nodes put back in order at the loop's exit
+   (the glue reads them so, and writes them so at the entry; the predictor's
+   `ho` is set again at each attempt, `take`) */
+static void loop_unrotate(loop_t *s)
+{
+    unrotate(s->qring, s->n, s->hist_len, s->ring_o);
+    unrotate(s->iqring, s->n, s->hist_len, s->ring_o);
+    unrotate(s->hx, s->n, PRED_HIST_MAX, s->hx_o);
+    s->ring_o = s->hx_o = 0;
+}
+
 long pcx_loop(loop_t *s)
 {
     long st;
@@ -2313,6 +2358,7 @@ long pcx_loop(loop_t *s)
     if (s->newton) ((newton_t *) s->newton)->jkey_have = 0;
     if (s->walk) {
         st = walk(s);
+        loop_unrotate(s);
         ck_back(s);
         return s->status = st;
     }
@@ -2333,6 +2379,7 @@ long pcx_loop(loop_t *s)
        alone -- set for them, cleared for the Python's) */
     if (s->newton) ((newton_t *) s->newton)->affine = s->affine;
     st = lmm_loop(s);
+    loop_unrotate(s);
     if (s->newton) ((newton_t *) s->newton)->affine = 0;
     ck_back(s);
     return s->status = st;

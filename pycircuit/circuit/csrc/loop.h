@@ -64,10 +64,12 @@ typedef struct {
                                    no hold; the glue writes it back) */
     long rejects, point_retries;    /* this point's, as `judge` counts them */
     long npoint;                /* the accepted points (`X`'s length) */
-    double *qring, *iqring;     /* hist_len x n each, newest first */
+    double *qring, *iqring;     /* hist_len x n each, newest first (rotated by
+                                   `ring_o` inside a call, in order at its exit) */
     double *xlast;              /* the last accepted point, full */
     long hk;                    /* the predictor's nodes, oldest first, <= 8 */
-    double *ht, *hx;            /* their times (8), their states (8 x n) */
+    double *ht, *hx;            /* their times (8), their states (8 x n; rotated
+                                   by `hx_o` inside a call, in order at its exit) */
     double *cC[2], *Geq[2];     /* the last attempt's converged C and Geq,
                                    alternating: an attempt handed back after
                                    its Newton leaves the last one's in place */
@@ -417,6 +419,12 @@ typedef struct {
     /* OWN, this call's: the evaluations that took the J kAx held (newton.h's
        `jkey_held`) */
     long jkey_held;
+    /* OWN: the rings' rotation -- logical slot r (0 the newest) at physical
+       slot (ring_o + r) % hist_len; put back to 0 at every exit (`pcx_loop`) */
+    long ring_o;
+    /* OWN: the predictor's nodes' rotation in `hx` -- node j at physical
+       slot (hx_o + j) % PRED_HIST_MAX; put back to 0 at every exit */
+    long hx_o;
 } loop_t;
 long pcx_loop(loop_t *s);
 

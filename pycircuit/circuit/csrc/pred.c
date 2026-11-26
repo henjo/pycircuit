@@ -132,7 +132,8 @@ static long clamped_product(pred_t *s, const long *nodes, long take, const doubl
     /* w @ X, X the nodes taken, newest first: copied into `xt` as the
        Python's fresh (take, n) array lays them out (`hx` is oldest first,
        with duplicates), then numpy's own dgemv, the call its matmul makes */
-    for (j = 0; j < take; j++) memcpy(s->xt + j * n, s->hx + nodes[j] * n, (size_t) n * sizeof(double));
+    for (j = 0; j < take; j++)
+        memcpy(s->xt + j * n, s->hx + ((s->ho + nodes[j]) % PRED_HIST_MAX) * n, (size_t) n * sizeof(double));
     ((dgemv64_t) s->dgemv)(PCX_CBLAS_ROW_MAJOR, PCX_CBLAS_TRANS, take, n, 1.0, s->xt, n, s->w, 1,
                            0.0, s->out, 1);
     /* the clamp: the newest node, widened by the motion and the reach --
@@ -182,8 +183,8 @@ long pcx_pred(pred_t *s)
     take = s->deg + 1 < k ? s->deg + 1 : k;
     if (take < 2) return done(s, PRED_NONE);
     feclearexcept(FE_ALL_EXCEPT);
-    x0 = s->hx + nodes[0] * n;
-    x1 = s->hx + nodes[1] * n;
+    x0 = s->hx + ((s->ho + nodes[0]) % PRED_HIST_MAX) * n;
+    x1 = s->hx + ((s->ho + nodes[1]) % PRED_HIST_MAX) * n;
     for (i = 0; i < n; i++) s->motion[i] = fabs(x0[i] - x1[i]);
     if (fetestexcept(PRED_FLAGS(s))) return done(s, PRED_BAIL_FLAGS);
     if ((st = fit(s, nodes, take)) != 0) return done(s, st);

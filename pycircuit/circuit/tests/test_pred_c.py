@@ -109,6 +109,35 @@ def test_a_moved_clamp_is_another_prediction(monkeypatch):
     assert moved is not _GENERAL and moved.tobytes() != c.tobytes()
 
 
+def test_a_rotated_history_reads_as_the_one_in_order():
+    """THE ROTATED NODES (pred.h's `ho`): the C loop keeps the predictor's
+    nodes in a ring of rows -- node j at row (ho + j) % 8 -- and moves the
+    rotation on instead of the rows.  Every rotation of a full history
+    predicts the in-order history's bytes; the same rows read as if in
+    order are another prediction (the fit reads the nodes through `ho`)."""
+    ffi, cfn, dgesv, dgemv = _tran_pred_c.driver()
+    rng = np.random.default_rng(7)
+    n, hk = 5, _tran_pred_c.HIST_MAX
+    ht = np.cumsum(rng.uniform(0.5, 1.5, hk)) * 1e-9
+    hx = rng.standard_normal((hk, n))
+
+    def predicted(rows, ho):
+        s, buf, _keep = _tran_pred_c.new_state(ffi, dgesv, dgemv, n)
+        s.hk, s.deg, s.ttarget, s.clamp = hk, 3, float(ht[-1] + 1e-9), float(_P.PRED_CLAMP)
+        s.ht = ffi.from_buffer('double *', ht)
+        s.hx = ffi.from_buffer('double *', rows)
+        s.ho = ho
+        assert cfn(s) == _tran_pred_c.DONE
+        return buf['out'].copy()
+    want = predicted(hx.copy(), 0)
+    for ho in range(1, hk):
+        rows = np.empty_like(hx)
+        for j in range(hk):
+            rows[(ho + j) % hk] = hx[j]
+        assert predicted(rows, ho).tobytes() == want.tobytes(), ho
+        assert predicted(rows, 0).tobytes() != want.tobytes(), ho
+
+
 def test_the_capacities_are_one_declaration():
     """pred.h's `PRED_HIST_MAX` and `PRED_FIT_MAX` are the reference's
     history capacity, the struct's arrays' lengths and the glue's limits --

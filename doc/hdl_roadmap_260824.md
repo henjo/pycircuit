@@ -17874,3 +17874,33 @@ divisions, built without `UNIT_FLAGS` none -- x86-64); `test_a_clang_build_of_a_
 clang is installed: `_build` succeeds, clang handed the flags whole refuses).  Seven bites, seven bit (no unit flags;
 the kernels flagged too; clang keeping the flag; every compiler dropping it; the build ignoring the compiler; the
 switch ignored; the flag left out of the key).
+
+## 2026-11-26 — 358. RG: the rings and the predictor's nodes circular -- an accepted step moves no history
+
+**Why**  Plan 261 L28 (tc/plan_l28_next.md), CP's third item (the copies).  `memmove`'s callers on VC's profile (6t
+2 ns, the runtime units built with -g, DWARF stacks): 4.24 % of the samples, half of it the stepping loop's `accept`.
+The predictor keeps the newest PRED_HIST_MAX = 8 accepted points, and once it held eight every accepted step moved
+seven whole states one row down (`memmove`, ~86 MB on 6t's 1.53 M unknowns); the charge rings (`qring`, `iqring`,
+newest first) moved every older slot down by a copy before writing the newest.  On the same profile the iterate's own
+passes were refused fused (CP2 FU: 2 ns pinned 6t 0.993x against a 0.99x line, 3t 1.002x; diff l28/fu) and the error
+test's zero-row skip dropped (VC halved its loop; ceiling 0.3 %).  Prototype (scratch l28/rg, wt8; 2 ns, pinned to the
+P-core threads, two pairs a grid, a 6t warm-up first): 6t 173.03 / 173.22 -> 169.98 / 169.88 s (0.982x), 3t 141.80 /
+141.58 -> 139.84 / 139.17 s (0.985x), the same digests and steps.  Lines (set before measuring the build): (a) the
+gate against 630a8dc2 0 differing, its changed lines and arms reached; (b) the census, 10 ns, pinned on both sides,
+against 630a8dc2: 6t <= 0.985x, 3t <= 0.99x, the other grids reported, every grid's waveforms the SAME bytes, steps
+SAME, VmHWM <= +1 %; (c) the tests bitten, the suite, ruff, the pins re-recorded after their twins.
+
+**What.**  The rings rotate (`loop_t.ring_o`, at the struct's end): logical slot r -- 0 the newest -- is physical row
+(ring_o + r) % hist_len (`ring_slot`), so a push moves the rotation on and writes the oldest row; every reader takes
+its slot by `ring_slot` (the Newton's q1, q2, iq1; the error test's q1-q3, iq1).  The early abort's set-up still hands
+`qring` itself: a placeholder nothing reads (the Newton's check sets the iterate's own charge, the judge's set-up the
+attempt's), now said so beside it.  The
+predictor's nodes rotate the same way (`loop_t.hx_o`; `pred_t.ho`, at its end, which loop.c sets at each attempt):
+node j is row (ho + j) % 8, and pred.c reads its nodes so -- every other caller leaves `ho` 0, the nodes in order.
+At every exit of the multistep loop and of its walk (`pcx_loop`: `loop_unrotate`) both are put back in order (a left
+rotation by three reversals of whole rows) and the rotations set to 0, so the glue reads and writes them as before.
+The same values reach the same operations: the same bytes by construction.  `ht` (eight doubles) still shifts.
+
+**Measured.**  (a) The gate against 630a8dc2 (scratch l28/rg/gate_rg): C against Python 13 settings x 27 decks and 3 at size, this tree against the base 27 + 27 + 27 + 27 decks and 8 at size, its path counters the same, the instrument's 81 decks on the coverage build against without it: 0 differing.  Changed since 630a8dc2: 44 executable lines, 12 arms, 11 compared by decks; reached by fixtures only are line loop.c:356 (the trapezoid's and theta's charge-current slot: the decks run gear2 and radau; `test_newton_c`'s trapezoidal chord takes it), line 2361 (the walk's exit: `test_lmmwalk_c`) and arm 661#1 (a compiler-made arm of the push's copy) -- the verdict reads NOT REACHED on those three, which (a) allows; nothing unreached.  A first gate had found three changed arms nothing took -- the early abort's charge read through `ring_slot` (the placeholder above: reverted), a guard in `unrotate` that could not fire (now `o == 0` alone), a reset of `ho` at the exit that no attempt reads (removed) -- and a first suite a variable left unused in `lte_setup` (`test_c_abi`'s unit-alone build, -Werror): fixed, then gate and suite run again.  MET.  (b) The census, 10 ns, `taskset -c 0-15` on both sides, interleaved (B3 N3 N6 B6 B4 N4 N5 B5 B1 N1 N2 B2, 1-min load 1.06-1.46, AC), against 630a8dc2, transient seconds: 6t 557.4 -> 543.2 (**0.975x**), 3t 438.2 -> 431.0 (**0.984x**), 4t 521.8 -> 512.4 (0.982x), 5t 382.9 -> 373.7 (0.976x), 2t 232.6 -> 233.9 (1.006x), 1t 10.4 -> 10.3 s.  Every grid's waveform digest the base's (the six of 357), its DC digest the base's, its steps the base's.  VmHWM: 6t 10 102 -> 10 076 MB (-0.26 %), 3t -0.62 %, 4t +0.23 %, 5t +0.50 %, 2t +0.17 %, 1t +0.27 %.  MET.  (c) The suite 6880 passed, 10 skipped, 5 xfailed; ruff "All checks passed" on both sides (live on a planted F401).  2t gains nothing: KLU-bound, its states 164 478 long, 1.3 MB a row against 6t's 12 MB.
+
+**Tests.**  `test_pred_c` +1: `test_a_rotated_history_reads_as_the_one_in_order` (eight nodes of five unknowns, degree 3: for each rotation 1-7 the rows rotated and read with `ho` give the in-order bytes; read with `ho` 0 they differ) -- three bites, three bit (the two-node rows unrotated, the fit's rows unrotated, both).  The existing comparisons (the C loop and walk against the Python, the predictor, the pinned pairs; `-x`, 240 s a test): fourteen bites, thirteen bit (the multistep loop's or the walk's exit not put back; the predictor's rows, or the loop's `ho`, unrotated; `ring_slot` ignoring the rotation; the rotation put back the wrong way; a node written unrotated; the error test's q3 or iq1, or the Newton's q2 or iq1, read raw; a push not moving the rotation) and the fourteenth, the early abort's charge, was the dead placeholder (reverted above); after the gate's fixes the four bites on the changed code (both exits, `ho`, the rotation's direction) bit again.  Six pinned pairs re-recorded on their C side after their twins' tests passed (the stepping loop, the predictor, the stage walk, the multistep walk, the stage loop, the transform loop); the reference sides unchanged.

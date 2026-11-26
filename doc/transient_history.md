@@ -6603,3 +6603,23 @@ On the IBM power grids (10 ns, pinned to the performance cores,
 against c6b0b0bb): ibmpg6t 568.5 -> 555.6 s (0.977x), ibmpg3t 447.7 ->
 440.6 s (0.984x), the other grids 0.978x-0.995x, every waveform the same
 bytes, memory within +0.35 %.  `PYCIRCUIT_C_VECTORIZE=0` builds the units as before.
+
+
+## RG: the rings and the predictor's nodes circular (2026-11-26)
+
+### `loop_t.ring_o`, `loop_t.hx_o`, `pred_t.ho`, loop.c's `ring_slot` and `loop_unrotate`
+
+2026-11-26 (`doc/hdl_roadmap_260824.md`, 358; plan 261 L28).  The C
+stepping loop keeps the last few charges (the rings) and the predictor's
+last eight accepted points, newest first or oldest first, and each
+accepted step moved all of them one place along -- on ibmpg6t that moved
+about 86 MB of the predictor's states every step.  Now the loop writes
+the new entry over the oldest and remembers where the newest is; the
+readers look each entry up through that offset, and the loop puts the
+buffers back in their usual order when it hands back.  The results are
+the same to the bit.
+On the IBM power grids (10 ns, pinned to the performance cores,
+against 630a8dc2): ibmpg6t 557.4 -> 543.2 s (0.975x), ibmpg3t 438.2 ->
+431.0 s (0.984x), ibmpg4t and 5t 0.982x and 0.976x, the small grids
+unchanged (1t 0.990x, 2t 1.006x), every waveform the same bytes,
+memory within +0.5 %.
