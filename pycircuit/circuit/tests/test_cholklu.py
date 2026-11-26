@@ -559,7 +559,7 @@ def test_the_own_solve_is_cholmod_solves_to_rounding(monkeypatch):
         _near(x, xr, A, b)
     so, sc = sko.solve_counts(), skc.solve_counts()
     assert so['own'] > 0 and so['cholmod'] == 0, so
-    assert sc == {'own': 0, 'cholmod': so['own']}, (so, sc)
+    assert sc == {'own': 0, 'cholmod': so['own'], 'threaded': 0}, (so, sc)
 
 
 def _laplacian(n, seed=7):
@@ -597,7 +597,7 @@ def _entries(A, own, B):
     assert num
     X = np.asfortranarray(B, dtype=np.float64).copy(order='F')
     assert lib.klu_solve(ctypes.c_void_p(sym), ctypes.c_void_p(num), m, X.shape[1], dp(X), None)
-    counts, info = np.zeros(7), np.zeros(7)
+    counts, info = np.zeros(8), np.zeros(7)
     lib.num_info(ctypes.c_void_p(num), dp(counts))
     lib.info(ctypes.c_void_p(sym), dp(info))
     lib.klu_free_numeric(ctypes.byref(ctypes.c_void_p(num)), None)
@@ -618,7 +618,7 @@ def test_the_own_solve_reads_narrow_and_wide_supernodes():
     Xr, counts_r, _info = _entries(A, False, B)
     assert info[4] > 1000 and info[6] >= 2, info
     _near(X, Xr, A, B)
-    assert tuple(counts[5:]) == (3, 0) and tuple(counts_r[5:]) == (0, 3), (counts, counts_r)
+    assert tuple(counts[5:]) == (3, 0, 0) and tuple(counts_r[5:]) == (0, 3, 0), (counts, counts_r)
 
 
 @pytest.mark.parametrize('c_on', [True, False], ids=['c', 'python'])
@@ -635,7 +635,119 @@ def test_a_grid_transient_on_the_own_solve_is_its_cholmod_solve_run(c_on, monkey
     assert float(np.max(np.abs(a[0] - b[0]))) <= 1e-12
     assert a[5]['hits'] > 0, a[5]
     assert a[6]['own'] > 50 and a[6]['cholmod'] == 0, a[6]
-    assert b[6] == {'own': 0, 'cholmod': a[6]['own']}, (a[6], b[6])
+    assert b[6] == {'own': 0, 'cholmod': a[6]['own'], 'threaded': 0}, (a[6], b[6])
+
+
+
+## THE THREADS (`_cholklu`'s note): the own solve's subtrees on the C units' pool
+
+def _laplacian3(n, seed=5):
+    """An n x n x n mesh's conductances (each between 1 and 2 S), a small
+    conductance from every node to ground: a factor whose supernodal tree
+    branches at every level -- many subtrees, their updates to the rows
+    above them, a top of wide separators."""
+    import scipy.sparse as sp
+    rng = np.random.default_rng(seed)
+    idx = np.arange(n ** 3).reshape(n, n, n)
+    pairs = [(idx[:-1].ravel(), idx[1:].ravel()), (idx[:, :-1].ravel(), idx[:, 1:].ravel()),
+             (idx[:, :, :-1].ravel(), idx[:, :, 1:].ravel())]
+    a = np.concatenate([q[0] for q in pairs])
+    b = np.concatenate([q[1] for q in pairs])
+    off = sp.coo_matrix((-(1.0 + rng.random(a.size)), (a, b)), shape=(n ** 3, n ** 3))
+    off = off + off.T
+    diag = -np.asarray(off.sum(axis=1)).ravel() + 1e-3 * (1.0 + rng.random(n ** 3))
+    A = (off + sp.diags(diag)).tocsc()
+    A.sort_indices()
+    return A
+
+
+@pytest.fixture
+def _threads(monkeypatch):
+    """`set_threads` for the test, a factor of any size taken on the pool
+    (`THREADS_FROM` 0); the count put back after."""
+    from pycircuit.circuit import _tran_core
+    monkeypatch.setattr(_cholklu, 'THREADS_FROM', 0)
+    old = _tran_core.get_threads()
+    yield _tran_core.set_threads
+    _tran_core.set_threads(old)
+
+
+def _differ(x, y):
+    """How many of `x`'s values are not `y`'s, bit for bit."""
+    return int(np.sum(np.asarray(x).view(np.uint64) != np.asarray(y).view(np.uint64)))
+
+
+@pytest.mark.parametrize('nthreads', [2, 3, 4, 8])
+@pytest.mark.parametrize('mesh', ['plane', 'cube'])
+def test_the_solve_on_threads_is_the_solve_on_one(mesh, nthreads, _threads):
+    """A mesh's factor solved with its subtrees on the pool -- each
+    subtree's forward updates to the rows above it kept, then replayed with
+    the top's supernodes in the serial order; the backward top first, then
+    the subtrees -- three right-hand sides the bytes of the solve on one
+    thread; every own solve the pool's, none on one."""
+    A = _laplacian(100) if mesh == 'plane' else _laplacian3(22)
+    B = np.random.default_rng(11).standard_normal((A.shape[0], 3))
+    _threads(1)
+    X1, c1, _info = _entries(A, True, B)
+    _threads(nthreads)
+    X, c, info = _entries(A, True, B)
+    assert info[5] >= 1, info
+    assert _differ(X, X1) == 0, _differ(X, X1)
+    assert tuple(c1[5:]) == (3, 0, 0) and tuple(c[5:]) == (3, 0, 3), (c1, c)
+
+
+def test_the_threads_take_a_factor_from_their_size_and_their_switch(monkeypatch, _threads):
+    """A factor of fewer than `THREADS_FROM` values, or the switch off, is
+    solved on the caller alone -- the same bytes."""
+    A = _laplacian(100)
+    B = np.random.default_rng(11).standard_normal((A.shape[0], 3))
+    _threads(4)
+    X, c, _info = _entries(A, True, B)
+    monkeypatch.setattr(_cholklu, 'THREADS_FROM', 1 << 40)
+    _threads(4)
+    Xs, cs, _info = _entries(A, True, B)
+    monkeypatch.setattr(_cholklu, 'THREADS_FROM', 0)
+    monkeypatch.setattr(_cholklu, 'THREADS', False)
+    _threads(4)
+    Xo, co, _info = _entries(A, True, B)
+    assert c[7] == 3 and cs[7] == 0 and co[7] == 0, (c, cs, co)
+    assert _differ(Xs, X) == 0 and _differ(Xo, X) == 0
+
+
+#: the own solve's answers on `_laplacian(18)` (three right-hand sides), as
+#: the loops made them before a one-column supernode was taken inline and the
+#: backward sums eight columns at a time: their bytes, kept (CHOLMOD's
+#: ordering of the mesh moves them too -- its supernodes in `info` first)
+OWN_SOLVE_BYTES = '6028ff72719e8574'
+
+
+@pytest.mark.parametrize('nthreads', [1, 4])
+def test_the_own_solve_keeps_the_bytes_it_had(nthreads, _threads):
+    """An 18 x 18 mesh's factor -- one-column supernodes, others of eight
+    columns or more with rows below, none wide enough for the BLAS (so the
+    bytes are the loops' alone) -- solved on one thread and on four: the
+    answers the loops made before, bit for bit."""
+    import hashlib
+    A = _laplacian(18)
+    B = np.random.default_rng(11).standard_normal((A.shape[0], 3))
+    _threads(nthreads)
+    X, c, info = _entries(A, True, B)
+    assert info[5] == 0, info
+    assert hashlib.sha1(X.tobytes()).hexdigest()[:16] == OWN_SOLVE_BYTES
+    assert c[7] == (3 if nthreads > 1 else 0), c
+
+
+@pytest.mark.parametrize('c_on', [True, False], ids=['c', 'python'])
+def test_a_grid_transient_on_threads_is_its_run_on_one(c_on, monkeypatch, _threads):
+    """The grid's Gear-2 run with the own solve on four threads: every
+    solve the pool's, the run the one on one thread byte for byte -- its
+    answers, steps and counts."""
+    _threads(1)
+    one = _run(True, c_on, monkeypatch)
+    _threads(4)
+    four = _run(True, c_on, monkeypatch)
+    assert four[1] == one[1] and four[2:4] == one[2:4], (four[2:4], one[2:4])
+    assert one[6]['threaded'] == 0 and four[6]['threaded'] == four[6]['own'] > 50, (one[6], four[6])
 
 
 ## THE FIRST ITERATE ACCEPTED (`Transient.linear_newton`, plan 261 L26)

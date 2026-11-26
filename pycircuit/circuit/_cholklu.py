@@ -63,7 +63,25 @@ its bytes.  Switch: `OWN_SOLVE` (env `PYCIRCUIT_CHOLMOD_OWN_SOLVE=0`:
 the loops do not read (not supernodal, not int32, no BLAS entries found)
 is `cholmod_solve`'s.  Counted on the numeric (`num_info`:
 `StructuralKLU.solve_counts`); the factor's supernodes, and those of
-`CK_BLAS_FROM` columns or more, in `info`.
+`CK_BLAS_FROM` columns or more, in `info`.  A one-column supernode is taken
+inline, and the backward pass's rows-below sums eight columns at a time:
+each column's sum the same operations in the same order.
+
+THE THREADS.  The own solve on a factor of `THREADS_FROM` values or more
+runs on the C units' pool (`_tran_core.pool_address`, the count
+`set_threads`'s) where it has two threads or more -- the bytes of the solve
+on one.  The supernodal tree is cut into subtrees (32 a thread, none above
+twice its share, or a leaf) below a top of their ancestors (a plan per
+symbolic and count, made at its first solve on threads).  The backward pass
+makes the top, then the subtrees on the threads: a supernode reads only its
+ancestors' rows and writes only its own, so any order after its parent is
+the serial one's bytes.  The forward pass makes the subtrees on the threads
+first, each keeping its updates to the rows above it in its own order, then
+in the serial order of positions each subtree's kept updates and each top
+supernode -- every row taking its updates as the serial pass gives them.
+Switch: `THREADS` (env `PYCIRCUIT_CHOLMOD_THREADS=0`: the solve on the
+caller alone).  Counted on the numeric (`StructuralKLU.solve_counts`'
+`threaded`: the own solves whose passes the pool took).
 """
 import ctypes
 import os
@@ -77,6 +95,10 @@ ENABLED = os.environ.get('PYCIRCUIT_CHOLMOD', '1') != '0'
 OWN_SOLVE = os.environ.get('PYCIRCUIT_CHOLMOD_OWN_SOLVE', '1') != '0'
 #: the unknowns from which a linear grid's transient matrix is CHOLMOD's
 CHOLMOD_FROM = 500_000
+#: THE THREADS (the module's note): the own solve on the C units' pool, from
+#: a factor of `THREADS_FROM` values
+THREADS = os.environ.get('PYCIRCUIT_CHOLMOD_THREADS', '1') != '0'
+THREADS_FROM = 1 << 20
 #: THE KEPT FACTORS a solver starts with: the factors a numeric holds, its
 #: own among them (1: none kept), and the most bytes its kept ones may take
 KEEP = 1
@@ -88,6 +110,7 @@ _SRC = r'''#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 #include <dlfcn.h>
 #include <suitesparse/cholmod.h>
 
@@ -154,6 +177,10 @@ static int ck_load(void)
     return C_.ok;
 }
 
+/* THE THREADS: a row above a subtree and its update, kept for the replay; the plan */
+typedef struct { int32_t r; double v; } ck_upd;
+struct ck_par;
+
 /* the symbolic: the rows' kinds, the reduction's maps, K' (the free nodes' upper
    triangle, CSC) and CHOLMOD's analysis of it */
 typedef struct {
@@ -174,6 +201,11 @@ typedef struct {
     long sig[CK_NSIG];
     /* THE OWN SOLVE for this symbolic's numerics (`ck_own`; 0: cholmod_solve) */
     int own;
+    /* THE THREADS' plan for its factors (`ck_par_for`, made at the first solve
+       on threads, for one count of them), and the count a plan could not be
+       made for (0: none) */
+    struct ck_par *par;
+    long par_failed;
 } ck_sym;
 
 /* a kept factor: L's values and J's (the solve reads J's), and whether they
@@ -203,6 +235,13 @@ typedef struct {
        it and by cholmod_solve */
     double *w, *e;
     int64_t own_solves, ck_solves;
+    /* THE THREADS: the updates each subtree keeps for rows above it (at the
+       plan's `soff`) and their counts, made for the plan `ub_for` (its
+       `gen`); the own solves whose passes the pool took */
+    ck_upd *ub;
+    int64_t *ucnt;
+    long ub_for;
+    int64_t par_solves;
 } ck_num;
 
 static void *ck_alloc(size_t n, size_t s) { return calloc(n ? n : 1, s); }
@@ -233,12 +272,35 @@ static int64_t ck_kpos(const ck_sym *s, long i, long j)
     return -1;
 }
 
+/* THE THREADS' plan for a symbolic's factor and a count of threads (`T`):
+   the subtrees of its supernodal tree (each its first descendant .. its
+   root in CHOLMOD's postorder), heaviest first, and each one's offset in a
+   numeric's buffer of the updates to rows above it (`soff`, `nsub` + 1); the
+   top (the supernodes in no subtree: their ancestors), descending; the
+   forward pass's replay by position -- a subtree (>= 0) or a top supernode
+   (-1 - it); the most rows below a triangle; the factor it was made on
+   (`ns` supernodes, `xsize` values) and its generation */
+typedef struct ck_par {
+    long T, nsub, ntop, nitem, most, ns, gen;
+    size_t xsize;
+    int32_t *sfirst, *sroot, *top, *item;
+    int64_t *soff;
+} ck_par;
+
+static void ck_par_free(ck_par *P)
+{
+    if (!P) return;
+    free(P->sfirst); free(P->sroot); free(P->top); free(P->item); free(P->soff);
+    free(P);
+}
+
 static int ck_free_symbolic(void **ps, void *common)
 {
     ck_sym *s = (ck_sym *) *ps;
     (void) common;
     if (!s) return 1;
     if (s->Lsym) C_.ff(&s->Lsym, &s->cm);
+    ck_par_free(s->par);
     C_.finish(&s->cm);
     free(s->Ap); free(s->Ai); free(s->kind); free(s->fidx);
     free(s->v_row); free(s->v_node); free(s->l_row); free(s->l_n1); free(s->l_n2);
@@ -456,6 +518,7 @@ static int ck_free_numeric(void **pn, void *common)
     C_.finish(&n->cm);
     free(n->Ax); free(n->x); free(n->rhs);
     free(n->w); free(n->e);
+    free(n->ub); free(n->ucnt);
     free(n);
     *pn = NULL;
     return 1;
@@ -637,19 +700,21 @@ static void ck_keep(void *sym, long keep, double bytes)
 
 /* a numeric's kept factors: [the refactors a slot served, the factorizations
    made, the slots made, those holding a factor, L's values a slot], then its
-   solves: [by THE OWN SOLVE, by cholmod_solve] */
+   solves: [by THE OWN SOLVE, by cholmod_solve, the own ones the pool took
+   (THE THREADS)] */
 static void ck_num_info(void *num, double *out)
 {
     const ck_num *n = (const ck_num *) num;
     long i, v = 0;
     if (!n) {
-        out[0] = out[1] = out[2] = out[3] = out[4] = out[5] = out[6] = -1.0;
+        out[0] = out[1] = out[2] = out[3] = out[4] = out[5] = out[6] = out[7] = -1.0;
         return;
     }
     for (i = 0; i < n->nslot; i++) v += n->slot[i].valid != 0;
     out[0] = (double) n->hits; out[1] = (double) n->facts; out[2] = (double) n->nslot;
     out[3] = (double) v; out[4] = (double) n->slot_xsize;
     out[5] = (double) n->own_solves; out[6] = (double) n->ck_solves;
+    out[7] = (double) n->par_solves;
 }
 
 /* THE OWN SOLVE (the module's note): a supernode of CK_BLAS_FROM columns or
@@ -683,22 +748,20 @@ static int ck_own_ready(ck_num *n)
     return 0;
 }
 
-/* L y = w on one supernode (`Lx` its values, column-major with `nsrow` rows,
-   `Ls` its rows; its columns k1 ..): the triangle, then its rows below it
-   into `e` and out of w */
-static void ck_own_down(const double *Lx, const int32_t *Ls, long k1, long nscol, long nsrow,
-                        double *w, double *e)
+/* L y = w on one supernode of two columns or more (`Lx` its values,
+   column-major with `nsrow` rows; its columns k1 ..): the triangle, then its
+   rows below it summed into `e` -- how many, returned: the caller takes them
+   out of w (`ck_out`) */
+static long ck_own_down(const double *Lx, long k1, long nscol, long nsrow, double *w, double *e)
 {
     long below = nsrow - nscol, i, j;
     if (nscol >= CK_BLAS_FROM) {
         const int nc = (int) nscol, nr = (int) nsrow, nb = (int) below, one = 1;
         const double d1 = 1.0, d0 = 0.0;
         C_.trsv("L", "N", "N", &nc, Lx, &nr, w + k1, &one, 1, 1, 1);
-        if (nb > 0) {
-            C_.gemv("N", &nb, &nc, &d1, Lx + nscol, &nr, w + k1, &one, &d0, e, &one, 1);
-            for (i = 0; i < below; i++) w[Ls[nscol + i]] -= e[i];
-        }
-        return;
+        if (nb <= 0) return 0;
+        C_.gemv("N", &nb, &nc, &d1, Lx + nscol, &nr, w + k1, &one, &d0, e, &one, 1);
+        return below;
     }
     for (j = 0; j < nscol; j++) {
         const double *c = Lx + j * nsrow;
@@ -706,7 +769,7 @@ static void ck_own_down(const double *Lx, const int32_t *Ls, long k1, long nscol
         w[k1 + j] = xj;
         for (i = j + 1; i < nscol; i++) w[k1 + i] -= c[i] * xj;
     }
-    if (below <= 0) return;
+    if (below <= 0) return 0;
     for (i = 0; i < below; i++) e[i] = 0.0;
     for (j = 0; j + 4 <= nscol; j += 4) {
         const double *c0 = Lx + j * nsrow + nscol, *c1 = c0 + nsrow, *c2 = c1 + nsrow, *c3 = c2 + nsrow;
@@ -718,11 +781,67 @@ static void ck_own_down(const double *Lx, const int32_t *Ls, long k1, long nscol
         const double xj = w[k1 + j];
         for (i = 0; i < below; i++) e[i] += c[i] * xj;
     }
-    for (i = 0; i < below; i++) w[Ls[nscol + i]] -= e[i];
+    return below;
 }
 
-/* L' z = w on one supernode: its rows below the triangle gathered into `e`
-   and their sums out of its columns, then the triangle transposed */
+/* the terms `e` of a supernode's rows below (`Lr`, `below` of them) out of
+   w -- or, a row at or past `lim` (above a subtree: THE THREADS), the row
+   and its term kept in `ub` in this order for the replay */
+static inline void ck_out(const int32_t *Lr, long below, const double *e, double *w, long lim,
+                          ck_upd *ub, int64_t *nu)
+{
+    long i;
+    for (i = 0; i < below; i++) {
+        const int32_t r = Lr[i];
+        if (r >= lim) {
+            ub[*nu].r = r;
+            ub[*nu].v = e[i];
+            (*nu)++;
+        } else {
+            w[r] -= e[i];
+        }
+    }
+}
+
+/* L y = w over the supernodes a .. b in order: a one-column one inline --
+   its unknown over the diagonal, each row below's term the one a wider
+   supernode's sum makes (0.0 + l x) -- the others by `ck_own_down`; the rows
+   below out of w as `ck_out` takes them (`lim`, `ub`, `nu`) */
+static void ck_down_range(const cholmod_factor *L, long a, long b, double *w, double *e, long lim,
+                          ck_upd *ub, int64_t *nu)
+{
+    const int32_t *super = (const int32_t *) L->super, *pi = (const int32_t *) L->pi;
+    const int32_t *px = (const int32_t *) L->px, *ls = (const int32_t *) L->s;
+    const double *lx = (const double *) L->x;
+    long sn, i;
+    for (sn = a; sn <= b; sn++) {
+        const long k1 = super[sn], nc = super[sn + 1] - k1, nr = pi[sn + 1] - pi[sn];
+        const double *c = lx + px[sn];
+        const int32_t *Ls = ls + pi[sn];
+        if (nc == 1) {
+            const double xj = w[k1] / c[0];
+            w[k1] = xj;
+            for (i = 1; i < nr; i++) {
+                const double ei = 0.0 + c[i] * xj;
+                const int32_t r = Ls[i];
+                if (r >= lim) {
+                    ub[*nu].r = r;
+                    ub[*nu].v = ei;
+                    (*nu)++;
+                } else {
+                    w[r] -= ei;
+                }
+            }
+            continue;
+        }
+        ck_out(Ls + nc, ck_own_down(c, k1, nc, nr, w, e), e, w, lim, ub, nu);
+    }
+}
+
+/* L' z = w on one supernode of two columns or more: its rows below the
+   triangle gathered into `e` and their sums out of its columns -- each
+   column's sum 0.0 then its rows in order, eight columns at a time, then
+   four, then one -- then the triangle transposed */
 static void ck_own_up(const double *Lx, const int32_t *Ls, long k1, long nscol, long nsrow,
                       double *w, double *e)
 {
@@ -735,7 +854,19 @@ static void ck_own_up(const double *Lx, const int32_t *Ls, long k1, long nscol, 
         C_.trsv("L", "T", "N", &nc, Lx, &nr, w + k1, &one, 1, 1, 1);
         return;
     }
-    for (j = 0; j + 4 <= nscol; j += 4) {
+    for (j = 0; j + 8 <= nscol; j += 8) {
+        const double *c0 = Lx + j * nsrow + nscol, *c1 = c0 + nsrow, *c2 = c1 + nsrow, *c3 = c2 + nsrow;
+        const double *c4 = c3 + nsrow, *c5 = c4 + nsrow, *c6 = c5 + nsrow, *c7 = c6 + nsrow;
+        double t0 = 0.0, t1 = 0.0, t2 = 0.0, t3 = 0.0, t4 = 0.0, t5 = 0.0, t6 = 0.0, t7 = 0.0;
+        for (i = 0; i < below; i++) {
+            const double ei = e[i];
+            t0 += c0[i] * ei; t1 += c1[i] * ei; t2 += c2[i] * ei; t3 += c3[i] * ei;
+            t4 += c4[i] * ei; t5 += c5[i] * ei; t6 += c6[i] * ei; t7 += c7[i] * ei;
+        }
+        w[k1 + j] -= t0; w[k1 + j + 1] -= t1; w[k1 + j + 2] -= t2; w[k1 + j + 3] -= t3;
+        w[k1 + j + 4] -= t4; w[k1 + j + 5] -= t5; w[k1 + j + 6] -= t6; w[k1 + j + 7] -= t7;
+    }
+    for (; j + 4 <= nscol; j += 4) {
         const double *c0 = Lx + j * nsrow + nscol, *c1 = c0 + nsrow, *c2 = c1 + nsrow, *c3 = c2 + nsrow;
         double t0 = 0.0, t1 = 0.0, t2 = 0.0, t3 = 0.0;
         for (i = 0; i < below; i++) {
@@ -758,29 +889,335 @@ static void ck_own_up(const double *Lx, const int32_t *Ls, long k1, long nscol, 
     }
 }
 
-/* x = P' L'^-1 L^-1 P b on L (`ck_own_reads`), `w` and `e` the work vectors */
-static void ck_own_solve(const cholmod_factor *L, const double *b, double *x, double *w, double *e)
+/* L' z = w over the supernodes b down to a: a one-column one inline (its
+   rows' sum 0.0 then in order, out of its unknown, over the diagonal) */
+static void ck_up_range(const cholmod_factor *L, long a, long b, double *w, double *e)
 {
     const int32_t *super = (const int32_t *) L->super, *pi = (const int32_t *) L->pi;
     const int32_t *px = (const int32_t *) L->px, *ls = (const int32_t *) L->s;
-    const int32_t *perm = (const int32_t *) L->Perm;
     const double *lx = (const double *) L->x;
+    long sn, i;
+    for (sn = b; sn >= a; sn--) {
+        const long k1 = super[sn], nc = super[sn + 1] - k1, nr = pi[sn + 1] - pi[sn];
+        const double *c = lx + px[sn];
+        const int32_t *Ls = ls + pi[sn];
+        if (nc == 1) {
+            double t = 0.0, u;
+            for (i = 1; i < nr; i++) t += c[i] * w[Ls[i]];
+            u = w[k1] - t;
+            w[k1] = u / c[0];
+            continue;
+        }
+        ck_own_up(c, Ls, k1, nc, nr, w, e);
+    }
+}
+
+/* x = P' L'^-1 L^-1 P b on L (`ck_own_reads`), `w` and `e` the work vectors */
+static void ck_own_solve(const cholmod_factor *L, const double *b, double *x, double *w, double *e)
+{
+    const int32_t *perm = (const int32_t *) L->Perm;
     const long n = (long) L->n, ns = (long) L->nsuper;
-    long k, sn;
+    int64_t nu = 0;
+    long k;
     for (k = 0; k < n; k++) w[k] = b[perm[k]];
-    for (sn = 0; sn < ns; sn++)
-        ck_own_down(lx + px[sn], ls + pi[sn], super[sn], super[sn + 1] - super[sn],
-                    pi[sn + 1] - pi[sn], w, e);
-    for (sn = ns - 1; sn >= 0; sn--)
-        ck_own_up(lx + px[sn], ls + pi[sn], super[sn], super[sn + 1] - super[sn],
-                  pi[sn + 1] - pi[sn], w, e);
+    ck_down_range(L, 0, ns - 1, w, e, LONG_MAX, NULL, &nu);
+    ck_up_range(L, 0, ns - 1, w, e);
     for (k = 0; k < n; k++) x[perm[k]] = w[k];
+}
+
+/* THE THREADS (the module's note): pool.c's entry, the threads a solve may
+   take, and the factor's values from which it takes them (`ck_threads`) */
+typedef long (*ck_pool_t)(void *range, const void *ctx, long n, long nthreads);
+static ck_pool_t ck_pool;
+static long ck_nthreads = 1, ck_threads_from = 1L << 20, ck_par_gen;
+/* the most rows below a triangle a plan takes (its passes' `e` on the stack) */
+#define CK_PAR_ESIZE 8192
+
+static void ck_threads(void *pool, long n, long from)
+{
+    ck_pool = (ck_pool_t) pool;
+    ck_nthreads = n < 1 ? 1 : n;
+    ck_threads_from = from < 0 ? 0 : from;
+}
+
+/* the supernodal tree: each supernode's parent (the one holding its first
+   row below the triangle; -1 a root), its subtree's first supernode and its
+   work (its values and a supernode's cost, summed over the subtree); 0
+   where a parent does not follow its child (not CHOLMOD's postorder) or a
+   subtree is not the range first .. it */
+static int ck_tree(const cholmod_factor *L, int32_t *parent, int32_t *first, double *work)
+{
+    const int32_t *super = (const int32_t *) L->super, *pi = (const int32_t *) L->pi;
+    const int32_t *ls = (const int32_t *) L->s;
+    const long ns = (long) L->nsuper, n = (long) L->n;
+    int32_t *col = (int32_t *) malloc((size_t) (n ? n : 1) * sizeof(int32_t)), *cnt;
+    long sn, k;
+    int ok = 1;
+    if (!col) return 0;
+    for (sn = 0; sn < ns; sn++) for (k = super[sn]; k < super[sn + 1]; k++) col[k] = (int32_t) sn;
+    for (sn = 0; sn < ns; sn++) {
+        const long nc = super[sn + 1] - super[sn], nr = pi[sn + 1] - pi[sn];
+        parent[sn] = nr > nc ? col[ls[pi[sn] + nc]] : -1;
+        if (parent[sn] >= 0 && parent[sn] <= sn) ok = 0;
+        first[sn] = (int32_t) sn;
+        work[sn] = (double) nc * (double) nr + 40.0;
+    }
+    free(col);
+    cnt = (int32_t *) calloc((size_t) (ns ? ns : 1), sizeof(int32_t));
+    if (!ok || !cnt) { free(cnt); return 0; }
+    for (sn = 0; sn < ns; sn++) {
+        cnt[sn]++;
+        if (parent[sn] < 0) continue;
+        work[parent[sn]] += work[sn];
+        cnt[parent[sn]] += cnt[sn];
+        if (first[sn] < first[parent[sn]]) first[parent[sn]] = first[sn];
+    }
+    for (sn = 0; sn < ns && ok; sn++) ok = cnt[sn] == sn - first[sn] + 1;
+    free(cnt);
+    return ok;
+}
+
+/* a max-heap of subtree roots by their work */
+static void ck_heap_push(int32_t *h, long *nh, const double *work, int32_t r)
+{
+    long k = (*nh)++;
+    while (k > 0 && work[h[(k - 1) / 2]] < work[r]) { h[k] = h[(k - 1) / 2]; k = (k - 1) / 2; }
+    h[k] = r;
+}
+
+static int32_t ck_heap_pop(int32_t *h, long *nh, const double *work)
+{
+    const int32_t top = h[0], last = h[--(*nh)];
+    long k = 0, c;
+    while ((c = 2 * k + 1) < *nh) {
+        if (c + 1 < *nh && work[h[c + 1]] > work[h[c]]) c++;
+        if (work[h[c]] <= work[last]) break;
+        h[k] = h[c];
+        k = c;
+    }
+    if (*nh > 0) h[k] = last;
+    return top;
+}
+
+/* the subtrees: from the roots, the heaviest split into its children (its
+   root to the top) while fewer than 32 a thread, or one weighs more than
+   twice its share of that many, and it has children; their roots in `h`
+   (`nh`), the top's in `top` (`ntop`) */
+static void ck_split(long ns, const int32_t *parent, const double *work, long T, int32_t *h, long *nh,
+                     int32_t *top, long *ntop)
+{
+    int32_t *kid0 = (int32_t *) calloc((size_t) ns + 2, sizeof(int32_t));
+    int32_t *kids = (int32_t *) malloc((size_t) (ns ? ns : 1) * sizeof(int32_t));
+    const long want = 32 * T;
+    double total = 0.0;
+    long sn, c;
+    *nh = *ntop = 0;
+    if (!kid0 || !kids) { free(kid0); free(kids); return; }
+    for (sn = 0; sn < ns; sn++) if (parent[sn] >= 0) kid0[parent[sn] + 2]++;
+    for (sn = 0; sn < ns; sn++) kid0[sn + 2] += kid0[sn + 1];
+    for (sn = 0; sn < ns; sn++) if (parent[sn] >= 0) kids[kid0[parent[sn] + 1]++] = (int32_t) sn;
+    for (sn = 0; sn < ns; sn++)
+        if (parent[sn] < 0) { ck_heap_push(h, nh, work, (int32_t) sn); total += work[sn]; }
+    while (*nh > 0) {
+        const int32_t r = h[0];
+        if ((*nh >= want && work[r] <= 2.0 * total / (double) want) || kid0[r] == kid0[r + 1]) break;
+        ck_heap_pop(h, nh, work);
+        top[(*ntop)++] = r;
+        for (c = kid0[r]; c < kid0[r + 1]; c++) ck_heap_push(h, nh, work, kids[c]);
+    }
+    free(kid0); free(kids);
+}
+
+/* sort keys: a subtree by its work (heaviest first, then its root), a
+   position (ascending) */
+typedef struct { double key; int32_t a, b; } ck_key;
+
+static int ck_by_work(const void *x, const void *y)
+{
+    const ck_key *p = (const ck_key *) x, *q = (const ck_key *) y;
+    if (p->key != q->key) return p->key > q->key ? -1 : 1;
+    return (p->a > q->a) - (p->a < q->a);
+}
+
+static int ck_by_key_up(const void *x, const void *y)
+{
+    const ck_key *p = (const ck_key *) x, *q = (const ck_key *) y;
+    return (p->key > q->key) - (p->key < q->key);
+}
+
+/* the plan's subtrees heaviest first, each one's buffer offset (the rows
+   above it its supernodes update), the top descending and the replay by
+   position, from the split's roots `h` and top; 1, or 0 (no memory) */
+static int ck_plan_fill(const cholmod_factor *L, ck_par *P, const int32_t *first, const double *work,
+                        const int32_t *h, const int32_t *top)
+{
+    const int32_t *super = (const int32_t *) L->super, *pi = (const int32_t *) L->pi;
+    const int32_t *ls = (const int32_t *) L->s;
+    ck_key *k = (ck_key *) malloc((size_t) (P->nsub + P->ntop + 1) * sizeof(ck_key));
+    long q, sn, i;
+    if (!k) return 0;
+    for (q = 0; q < P->nsub; q++) { k[q].key = work[h[q]]; k[q].a = h[q]; k[q].b = 0; }
+    qsort(k, (size_t) P->nsub, sizeof(ck_key), ck_by_work);
+    P->soff[0] = 0;
+    for (q = 0; q < P->nsub; q++) {
+        const long lim = super[k[q].a + 1];
+        int64_t c = 0;
+        P->sroot[q] = k[q].a;
+        P->sfirst[q] = first[k[q].a];
+        for (sn = P->sfirst[q]; sn <= P->sroot[q]; sn++)
+            for (i = pi[sn] + (super[sn + 1] - super[sn]); i < pi[sn + 1]; i++) c += ls[i] >= lim;
+        P->soff[q + 1] = P->soff[q] + c;
+    }
+    for (q = 0; q < P->ntop; q++) { k[q].key = -(double) top[q]; k[q].a = top[q]; }
+    qsort(k, (size_t) P->ntop, sizeof(ck_key), ck_by_key_up);
+    for (q = 0; q < P->ntop; q++) P->top[q] = k[q].a;
+    for (q = 0; q < P->nsub; q++) { k[q].key = (double) P->sfirst[q]; k[q].a = (int32_t) q; }
+    for (q = 0; q < P->ntop; q++) { k[P->nsub + q].key = (double) P->top[q]; k[P->nsub + q].a = -1 - P->top[q]; }
+    qsort(k, (size_t) P->nitem, sizeof(ck_key), ck_by_key_up);
+    for (q = 0; q < P->nitem; q++) P->item[q] = k[q].a;
+    free(k);
+    return 1;
+}
+
+/* THE THREADS' plan for L on `T` threads (`ck_par`), or NULL: no memory, not
+   CHOLMOD's postorder, a triangle with more rows below it than
+   CK_PAR_ESIZE */
+static ck_par *ck_plan(const cholmod_factor *L, long T)
+{
+    const int32_t *super = (const int32_t *) L->super, *pi = (const int32_t *) L->pi;
+    const long ns = (long) L->nsuper;
+    int32_t *parent = (int32_t *) malloc((size_t) (ns ? ns : 1) * sizeof(int32_t));
+    int32_t *first = (int32_t *) malloc((size_t) (ns ? ns : 1) * sizeof(int32_t));
+    int32_t *h = (int32_t *) malloc((size_t) (ns ? ns : 1) * sizeof(int32_t));
+    int32_t *top = (int32_t *) malloc((size_t) (ns ? ns : 1) * sizeof(int32_t));
+    double *work = (double *) malloc((size_t) (ns ? ns : 1) * sizeof(double));
+    ck_par *P = (ck_par *) calloc(1, sizeof(ck_par));
+    long k, nh = 0, ntop = 0;
+    int ok = parent && first && h && top && work && P && ck_tree(L, parent, first, work);
+    if (ok) {
+        for (k = 0; k < ns; k++) {
+            const long below = (pi[k + 1] - pi[k]) - (super[k + 1] - super[k]);
+            if (below > P->most) P->most = below;
+        }
+        ck_split(ns, parent, work, T, h, &nh, top, &ntop);
+        P->T = T; P->nsub = nh; P->ntop = ntop; P->nitem = nh + ntop; P->ns = ns; P->xsize = L->xsize;
+        P->gen = ++ck_par_gen;
+        P->sfirst = (int32_t *) malloc((size_t) (nh + 1) * sizeof(int32_t));
+        P->sroot = (int32_t *) malloc((size_t) (nh + 1) * sizeof(int32_t));
+        P->soff = (int64_t *) malloc((size_t) (nh + 1) * sizeof(int64_t));
+        P->top = (int32_t *) malloc((size_t) (ntop + 1) * sizeof(int32_t));
+        P->item = (int32_t *) malloc((size_t) (nh + ntop + 1) * sizeof(int32_t));
+        ok = P->most <= CK_PAR_ESIZE && nh > 0 && P->sfirst && P->sroot && P->soff && P->top && P->item
+             && ck_plan_fill(L, P, first, work, h, top);
+    }
+    free(parent); free(first); free(h); free(top); free(work);
+    if (ok) return P;
+    ck_par_free(P);
+    return NULL;
+}
+
+/* the plan a numeric's solve takes, its buffers made -- or NULL, the solve on
+   the caller alone: fewer than two threads, a factor of fewer than
+   `ck_threads_from` values, no plan for this count (tried once), fewer than
+   two subtrees, no memory */
+static const ck_par *ck_par_for(ck_sym *s, ck_num *nm)
+{
+    const cholmod_factor *L = nm->L;
+    const ck_par *P;
+    if (ck_nthreads < 2 || (double) L->xsize < (double) ck_threads_from) return NULL;
+    if (s->par && (s->par->T != ck_nthreads || s->par->ns != (long) L->nsuper || s->par->xsize != L->xsize)) {
+        ck_par_free(s->par);
+        s->par = NULL;
+    }
+    if (!s->par && s->par_failed != ck_nthreads) {
+        s->par = ck_plan(L, ck_nthreads);
+        if (!s->par) s->par_failed = ck_nthreads;
+    }
+    P = s->par;
+    if (!P || P->nsub < 2) return NULL;
+    if (nm->ub_for != P->gen) {
+        free(nm->ub); free(nm->ucnt);
+        nm->ub = (ck_upd *) malloc((size_t) (P->soff[P->nsub] + 1) * sizeof(ck_upd));
+        nm->ucnt = (int64_t *) malloc((size_t) P->nsub * sizeof(int64_t));
+        nm->ub_for = nm->ub && nm->ucnt ? P->gen : 0;
+        if (!nm->ub_for) return NULL;
+    }
+    return P;
+}
+
+/* a solve on the pool: the factor, the plan, the work vector, the buffers */
+typedef struct {
+    const cholmod_factor *L;
+    const ck_par *P;
+    double *w;
+    ck_upd *ub;
+    int64_t *ucnt;
+} ck_job;
+
+/* the forward pass on a job's subtrees lo .. hi - 1 (pool.c's range): each in
+   order, its updates to the rows above it kept in its buffer */
+static void ck_fwd_items(const void *ctx, long lo, long hi)
+{
+    const ck_job *j = (const ck_job *) ctx;
+    const int32_t *super = (const int32_t *) j->L->super;
+    double e[j->P->most + 1];
+    long k;
+    for (k = lo; k < hi; k++) {
+        int64_t nu = 0;
+        ck_down_range(j->L, j->P->sfirst[k], j->P->sroot[k], j->w, e, super[j->P->sroot[k] + 1],
+                      j->ub + j->P->soff[k], &nu);
+        j->ucnt[k] = nu;
+    }
+}
+
+/* the backward pass on a job's subtrees lo .. hi - 1: each from its root down */
+static void ck_bwd_items(const void *ctx, long lo, long hi)
+{
+    const ck_job *j = (const ck_job *) ctx;
+    double e[j->P->most + 1];
+    long k;
+    for (k = lo; k < hi; k++) ck_up_range(j->L, j->P->sfirst[k], j->P->sroot[k], j->w, e);
+}
+
+/* x = P' L'^-1 L^-1 P b with the subtrees on the pool, the bytes of
+   `ck_own_solve`: the forward pass's subtrees first, then in position order
+   each subtree's kept updates and each top supernode (every row takes its
+   updates in the serial order); the backward pass's top descending, then
+   its subtrees (each reads only its ancestors, writes only its columns).  1
+   where the pool took a pass, 0 where the caller made both alone */
+static int ck_par_solve(const cholmod_factor *L, const ck_par *P, const double *b, double *x,
+                        double *w, double *e, ck_upd *ub, int64_t *ucnt)
+{
+    const int32_t *perm = (const int32_t *) L->Perm;
+    const long n = (long) L->n;
+    ck_job j;
+    long k, q;
+    int took = 0;
+    int64_t nu = 0;
+    j.L = L; j.P = P; j.w = w; j.ub = ub; j.ucnt = ucnt;
+    for (k = 0; k < n; k++) w[k] = b[perm[k]];
+    if (ck_pool && ck_pool((void *) ck_fwd_items, &j, P->nsub, P->T)) took = 1;
+    else ck_fwd_items(&j, 0, P->nsub);
+    for (q = 0; q < P->nitem; q++) {
+        const long it = P->item[q];
+        if (it < 0) {
+            ck_down_range(L, -1 - it, -1 - it, w, e, LONG_MAX, NULL, &nu);
+        } else {
+            const ck_upd *u = ub + P->soff[it];
+            for (k = 0; k < ucnt[it]; k++) w[u[k].r] -= u[k].v;
+        }
+    }
+    for (q = 0; q < P->ntop; q++) ck_up_range(L, P->top[q], P->top[q], w, e);
+    if (ck_pool && ck_pool((void *) ck_bwd_items, &j, P->nsub, P->T)) took = 1;
+    else ck_bwd_items(&j, 0, P->nsub);
+    for (k = 0; k < n; k++) x[perm[k]] = w[k];
+    return took;
 }
 
 /* J x = b for each of the `nrhs` columns of `B` (n x nrhs, column-major), in place */
 static int ck_solve(void *sym, void *num, int n_, int nrhs, double *B, void *common)
 {
-    const ck_sym *s = (const ck_sym *) sym;
+    ck_sym *s = (ck_sym *) sym;
     ck_num *nm = (ck_num *) num;
     const double *Ax;
     double *x, *rhs, *sol;
@@ -818,8 +1255,10 @@ static int ck_solve(void *sym, void *num, int n_, int nrhs, double *B, void *com
         X = NULL;
         if (s->own && ck_own_reads(nm->L)) {
             if (!ck_own_ready(nm)) return 0;
+            const ck_par *P = ck_par_for(s, nm);
             sol = (double *) nm->B->x;
-            ck_own_solve(nm->L, rhs, sol, nm->w, nm->e);
+            if (P) nm->par_solves += ck_par_solve(nm->L, P, rhs, sol, nm->w, nm->e, nm->ub, nm->ucnt);
+            else ck_own_solve(nm->L, rhs, sol, nm->w, nm->e);
             nm->own_solves++;
         } else {
             memcpy(nm->B->x, rhs, (size_t) s->nf * sizeof(double));
@@ -908,6 +1347,7 @@ void *pcx_cholklu(int which)
     case 9: return (void *) ck_keep;
     case 10: return (void *) ck_num_info;
     case 11: return (void *) ck_own;
+    case 12: return (void *) ck_threads;
     }
     return NULL;
 }
@@ -947,7 +1387,32 @@ class _Lib:
         self.num_info = fn(10, None, vp, dp)
         ## THE OWN SOLVE: `own(sym, on)` (the module's note)
         self.own = fn(11, None, vp, ct.c_int)
+        ## THE THREADS: `threads(pool, n, from)` -- pool.c's entry, the count,
+        ## the factor's values from which a solve takes them
+        self.threads = fn(12, None, vp, ct.c_long, ct.c_long)
         self.klu_defaults = klu.klu_defaults
+
+
+class _Threads:
+    """THE THREADS' count, as `_tran_core.set_threads` writes every live
+    struct's (`nthreads`): handed to the C with pool.c's entry and
+    `THREADS_FROM` -- one thread where `THREADS` is off or the pool cannot
+    be had."""
+
+    def __init__(self, lib):
+        self._lib = lib
+        self._n = 1
+
+    @property
+    def nthreads(self):
+        return self._n
+
+    @nthreads.setter
+    def nthreads(self, n):
+        from pycircuit.circuit import _tran_core
+        self._n = int(n)
+        pool = _tran_core.pool_address() if THREADS and self._n > 1 else 0
+        self._lib.threads(pool or None, self._n if pool else 1, int(THREADS_FROM))
 
 
 def library(klu):
@@ -979,7 +1444,11 @@ def library(klu):
     if not loaded:
         STATUS = 'off (no libcholmod)'
         return None
-    _LIB.append(_Lib(ffi, entry, klu))
+    lib = _Lib(ffi, entry, klu)
+    ## THE THREADS: the count `set_threads` keeps (held on the library)
+    from pycircuit.circuit import _tran_core
+    lib.threads_count = _tran_core._threaded(_Threads(lib))
+    _LIB.append(lib)
     STATUS = 'on'
     return _LIB[0]
 

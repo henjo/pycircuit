@@ -1332,14 +1332,16 @@ class StructuralKLU(KLUSolver):
 
     def solve_counts(self):
         """THE OWN SOLVE's counts (`_cholklu`'s note) over the run's numeric
-        and the chord's: the solves `own` made and those `cholmod_solve`
-        made; None where the solver is not the reduction's."""
+        and the chord's: the solves `own` made, those `cholmod_solve` made,
+        and the own ones whose passes the pool took (`threaded`, THE
+        THREADS); None where the solver is not the reduction's."""
         if not self.cholmod:
             return None
-        got = {'own': 0, 'cholmod': 0}
+        got = {'own': 0, 'cholmod': 0, 'threaded': 0}
         for out in self._ck_num_infos():
             got['own'] += int(out[5])
             got['cholmod'] += int(out[6])
+            got['threaded'] += int(out[7])
         return got
 
     def _ck_num_infos(self):
@@ -1347,7 +1349,7 @@ class StructuralKLU(KLUSolver):
         run's and the chord's where made."""
         for num in (self._numeric, self._chord):
             if num:
-                out = numpy.zeros(7)
+                out = numpy.zeros(8)
                 self._lib.num_info(self._ct.c_void_p(num), self._ptr(out, self._ct.c_double))
                 yield out
 

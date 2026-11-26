@@ -6623,3 +6623,23 @@ against 630a8dc2): ibmpg6t 557.4 -> 543.2 s (0.975x), ibmpg3t 438.2 ->
 431.0 s (0.984x), ibmpg4t and 5t 0.982x and 0.976x, the small grids
 unchanged (1t 0.990x, 2t 1.006x), every waveform the same bytes,
 memory within +0.5 %.
+
+
+## SB: the own solve on threads (2026-11-26)
+
+### `_cholklu`'s THE THREADS: `ck_plan`, `ck_par_solve`, `_cholklu._Threads`
+
+2026-11-26 (`doc/hdl_roadmap_260824.md`, 359; plan 261 L28).  On the IBM
+power grids the linear solve on CHOLMOD's factor was about 40 % of the
+transient, and it ran one thread.  Its factor is a tree of blocks: the
+blocks of separate branches do not touch each other's unknowns.  The
+solve now hands the branches to the C units' threads (four by default,
+`set_threads`), and puts each update to a shared unknown in the order the
+one-thread solve made it, so the answers are the same to the bit.  The
+one-thread loop was also tightened (one-column blocks inline, more sums
+in flight), again with the same bytes.
+On the IBM power grids (10 ns, four threads, pinned to the performance
+cores, against bb925fdd): ibmpg6t 543.6 -> 437.4 s (0.805x), ibmpg3t
+430.0 -> 340.0 s (0.791x), ibmpg4t and 5t 0.823x and 0.813x, the small
+grids (KLU) unchanged, every waveform the same bytes, memory within
++0.3 %.  `PYCIRCUIT_CHOLMOD_THREADS=0` keeps the solve on one thread.
