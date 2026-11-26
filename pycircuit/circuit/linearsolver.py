@@ -1310,14 +1310,16 @@ class StructuralKLU(KLUSolver):
         unbounded where `limit` is set); 1 keeps none.  `limit`, THE BUDGET:
         a new slot only while the process's resident memory, the slot and
         `margin` (`_cholklu.KEEP_MARGIN` where None) fit under it, in bytes
-        (None: no limit).  The answers are a refactor's either way.  Nothing
-        where the solver is not the reduction's."""
+        (None: no limit; 0 or less: no slot).  The answers are a refactor's
+        either way.  Nothing where the solver is not the reduction's."""
         if not self.cholmod:
             return
         from pycircuit.circuit import _cholklu
         if max_bytes is None:
             max_bytes = _cholklu.KEEP_BYTES if limit is None else float('inf')
-        self._ck_keep = (max(int(keep), 1), float(max_bytes), float(limit or 0.0),
+        ## (the C's limit 0 is none: a limit of 0 or less a byte, no slot)
+        self._ck_keep = (max(int(keep), 1), float(max_bytes),
+                         0.0 if limit is None else max(float(limit), 1.0),
                          float(_cholklu.KEEP_MARGIN if margin is None else margin))
         if self._symbolic is not None:
             self._lib.keep(self._ct.c_void_p(self._symbolic), *self._ck_keep)

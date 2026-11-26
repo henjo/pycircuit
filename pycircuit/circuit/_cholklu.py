@@ -51,7 +51,9 @@ revisits around every corner (plan 261 L24).  Counted on the numeric
 (`num_info`: `StructuralKLU.kept_counts`).
 
 THE BUDGET.  Where a limit is set (`keep_factors`' `limit`; the step
-ladder's is `memory_limit()`: the least of the `memory.max` up this
+ladder's is `memory_limit()`: the least of `KEEP_MEMORY`, the user's (env
+`PYCIRCUIT_CHOLMOD_KEEP_MEMORY`: bytes, or a number with K, M, G or T --
+powers of 1024, as systemd's `MemoryMax`), the `memory.max` up this
 process's cgroup tree and its resident memory plus the machine's
 MemAvailable, read as the run starts), a new slot is made only while the
 process's resident memory (/proc/self/statm, read at that slot), the slot
@@ -100,7 +102,7 @@ import os
 
 import numpy as np
 
-from pycircuit.circuit import _blas, _cbuild
+from pycircuit.circuit import _blas, _cbuild, simwarnings
 
 ENABLED = os.environ.get('PYCIRCUIT_CHOLMOD', '1') != '0'
 #: THE OWN SOLVE (the module's note) in place of `cholmod_solve`
@@ -118,6 +120,36 @@ KEEP = 1
 KEEP_BYTES = 3.5 * 2 ** 30
 #: THE BUDGET's margin: the bytes a new slot leaves under the limit
 KEEP_MARGIN = 1.5 * 2 ** 30
+
+
+def parse_bytes(text):
+    """Bytes from `text`: a number, or one with K, M, G or T (powers of
+    1024, as systemd's `MemoryMax`); None for ''.  ValueError for anything
+    else, a negative or a non-finite number among them."""
+    t = text.strip()
+    if not t:
+        return None
+    scale = {'K': 2 ** 10, 'M': 2 ** 20, 'G': 2 ** 30, 'T': 2 ** 40}.get(t[-1].upper())
+    v = float(t[:-1] if scale else t) * (scale or 1)
+    if not 0.0 <= v < float('inf'):
+        raise ValueError(f'{text!r}: not a number of bytes')
+    return v
+
+
+def _keep_memory():
+    text = os.environ.get('PYCIRCUIT_CHOLMOD_KEEP_MEMORY', '')
+    try:
+        return parse_bytes(text)
+    except ValueError:
+        simwarnings.warn(f'PYCIRCUIT_CHOLMOD_KEEP_MEMORY={text!r} is not a number of bytes '
+                         '(a number, or one with K, M, G or T): not used', simwarnings.UsageWarning)
+        return None
+
+
+#: THE BUDGET's limit the user sets (env `PYCIRCUIT_CHOLMOD_KEEP_MEMORY`,
+#: `parse_bytes`): the most the process may hold with a new slot, the least
+#: of it, the cgroup's and the machine's binding (0: no slot); None: unset
+KEEP_MEMORY = _keep_memory()
 STATUS = 'not loaded'
 
 _SRC = r'''#include <stddef.h>
@@ -1435,10 +1467,11 @@ class _Lib:
 
 
 def memory_limit(proc='/proc', cgroup='/sys/fs/cgroup'):
-    """THE BUDGET's limit (the module's note), in bytes: the least of the
-    `memory.max` up this process's cgroup (v2) tree and its resident memory
-    plus the machine's MemAvailable; None where neither can be read."""
-    got = []
+    """THE BUDGET's limit (the module's note), in bytes: the least of
+    `KEEP_MEMORY`, the `memory.max` up this process's cgroup (v2) tree and
+    its resident memory plus the machine's MemAvailable; None where none is
+    set or can be read."""
+    got = [] if KEEP_MEMORY is None else [float(KEEP_MEMORY)]
     try:
         with open(os.path.join(proc, 'self', 'statm')) as f:
             rss = int(f.read().split()[1]) * os.sysconf('SC_PAGESIZE')

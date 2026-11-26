@@ -17989,3 +17989,35 @@ scaled by the page size; VmSize read for the resident memory; the margin ignored
 stored; `keep_factors` dropping the limit; `KEEP_BYTES` binding under a limit; the default margin not `KEEP_MARGIN`;
 the ladder passing no limit; `memory_limit` the largest; it skipping the leaf cgroup; it without MemAvailable.  The
 one untested arm: the resident memory unreadable in the C (no new slot), unreachable where /proc is.
+
+## 2026-11-26 — 361. KM: THE BUDGET's limit settable -- `PYCIRCUIT_CHOLMOD_KEEP_MEMORY`; the census at 13 GB
+
+**Why**  Plan 261 L28 (tc/plan_l28_next.md), after FP (360).  Andreas (2026-11-26): the census's scope 13 GB, so
+ibmpg6t keeps eleven factors as 3t does; asked whether the limit is user-settable -- it was only through the process's
+cgroup (`memory.max`: `systemd-run --scope -p MemoryMax=...`, a container's limit) or the machine's free memory, the
+ladder passing `memory_limit()` itself as the run starts -- and said "Do it".  Found while adding it: `keep_factors`'
+limit 0 was the C's "no limit" (`ck_room` reads 0 as none), so a limit of 0 kept every slot `keep` allowed.
+
+**What.**  `_cholklu.KEEP_MEMORY` (env `PYCIRCUIT_CHOLMOD_KEEP_MEMORY`; `parse_bytes`: a number of bytes, or one with K,
+M, G or T -- powers of 1024, as systemd's `MemoryMax`; a negative, non-finite or other value: ValueError, and from the
+environment `simwarnings`' `UsageWarning` and unused): `memory_limit()` the least of it, the `memory.max` up the cgroup tree and the
+resident memory plus MemAvailable -- it can lower the limit, never raise it past what is there; 0 keeps no slot.
+`StructuralKLU.keep_factors`: a limit of 0 or less is a byte (no slot), None still no limit.  The default (unset) is
+the limit it was: no census of its own.
+
+**The census at 13 GB** (l28/fp13/cen: census_fp.py, 10 ns, pinned 0-15, 13 GB scope both sides, 27a526ef against FP
+b4058e70, its limit read 13.00 GiB; lines set before measuring: 6t eleven slots and <= 0.90x, 3t and 5t eleven, every
+grid the same bytes and steps, VmHWM <= 12 390 MiB -- every one met): ibmpg6t 436.5 -> 363.1 s, **0.832x** (7 -> 11
+slots, 117 -> 47 factorizations, VmHWM 10 120 -> 11 811 MiB); ibmpg4t 421.3 -> 320.5 s, **0.761x** (6 -> 11, 153 ->
+70, 11 768 MiB); ibmpg3t 342.5 -> 275.7 s, 0.805x (11, 9 679 MiB); ibmpg5t 304.0 -> 245.9 s, 0.809x (11, 8 339 MiB);
+ibmpg2t 0.999x; ibmpg1t 12.8 -> 10.3 s (the base's run slow: both 10.3 s in 360's census; nothing kept).  Every
+grid's waveforms and DC operating point the same bytes, the same steps.  The census's scope is 13 GB from here.
+
+**Tests.**  `test_cholklu` +1 (55 in all): `test_the_memory_limit_the_user_sets` (`parse_bytes` on bytes, K, M, G, T
+and six values refused; `memory_limit` the least of `KEEP_MEMORY` and a fake cgroup's, it alone with nothing
+readable; the environment read at import in a subprocess, `2G` taken, `8GB` warned of and unused);
+`test_the_ladder_keeps_its_factors_within_the_memory_left` a run at `KEEP_MEMORY` 0 through `memory_limit()` itself:
+no slot, the bytes and steps of the run with room.  Six bites, six bit (l28/km/bites_km.py): `memory_limit` without
+the user's; K, M, G, T powers of 1000; the environment not read; a negative accepted; a value not bytes not warned
+of; a limit of 0 no limit.  ruff: the base's twelve findings in the three files, the same twelve.  The suite
+6 898 passed, 10 skipped (the first run failed `test_no_library_module_warns_outside_the_policy`: the warning was a plain `warnings.warn`; now `simwarnings`', its bite re-run).

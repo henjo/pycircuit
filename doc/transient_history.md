@@ -6669,3 +6669,23 @@ eight, where the budget stopped it.  ibmpg6t kept seven, as before, and
 took the same time (0.993x); its peak memory stayed at 10.1 GB.  The two
 smaller grids, which keep no factors, were unchanged.  Every waveform
 was the same to the bit, with the same steps.
+
+
+## KM: the kept factors' memory settable (2026-11-26)
+
+### `_cholklu.KEEP_MEMORY` (`PYCIRCUIT_CHOLMOD_KEEP_MEMORY`); the census at 13 GB
+
+2026-11-26 (`doc/hdl_roadmap_260824.md`, 361).  The kept factors' memory
+limit (FP, above) can now be set: `PYCIRCUIT_CHOLMOD_KEEP_MEMORY=8G` (or
+`_cholklu.KEEP_MEMORY` in code) is the most memory the kept factors may
+grow the process to, in systemd's units (K, M, G, T, powers of 1024).
+The least of it, the process's cgroup limit and the machine's free
+memory binds, so it can lower the limit but never raise it past what is
+there; 0 keeps none.  A limit of 0 given to `keep_factors` used to mean
+no limit; it now keeps none.
+
+Run under a 13 GB memory limit (10 ns, pinned), the IBM grids keep
+eleven factors each: ibmpg6t's transient went from 436.5 to 363.1 s
+(0.832x) and ibmpg4t's from 421.3 to 320.5 s (0.761x) against SB's,
+ibmpg3t and 5t as under 11 GB (0.805x, 0.809x), peaking at 11.8 GB.
+Every waveform was the same to the bit, with the same steps.

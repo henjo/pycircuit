@@ -380,6 +380,47 @@ def test_the_memory_limit_is_the_least_of_the_cgroups_and_the_machines(tmp_path)
     assert _cholklu.memory_limit(str(tmp_path / 'none'), str(tmp_path / 'none')) is None
 
 
+def test_the_memory_limit_the_user_sets(tmp_path, monkeypatch):
+    """THE BUDGET's limit the user sets (`KEEP_MEMORY`, env
+    PYCIRCUIT_CHOLMOD_KEEP_MEMORY): bytes, or K, M, G, T (powers of 1024);
+    the least of it, the cgroup's and the machine's binding, it alone where
+    neither can be read; a value not bytes warned of and not used."""
+    import os
+    import subprocess
+    import sys
+    pb = _cholklu.parse_bytes
+    assert (pb('123'), pb('8G'), pb(' 1.5k'), pb('2T'), pb('3M'), pb('0'), pb('')) == (
+        123.0, 8.0 * 2 ** 30, 1536.0, 2.0 * 2 ** 40, 3.0 * 2 ** 20, 0.0, None)
+    for bad in ('8GB', 'lots', '-1G', 'nan', 'inf', 'G'):
+        with pytest.raises(ValueError):
+            pb(bad)
+    proc, cg = tmp_path / 'proc', tmp_path / 'cg'
+    (proc / 'self').mkdir(parents=True)
+    (proc / 'self' / 'statm').write_text(f'900000 {2 ** 30 // os.sysconf("SC_PAGESIZE")} 1000 1 0 1 0\n')
+    (proc / 'meminfo').write_text('MemAvailable:    8388608 kB\n')
+    (proc / 'self' / 'cgroup').write_text('0::/run-1.scope\n')
+    (cg / 'run-1.scope').mkdir(parents=True)
+    (cg / 'run-1.scope' / 'memory.max').write_text(f'{6 * 2 ** 30}\n')
+    monkeypatch.setattr(_cholklu, 'KEEP_MEMORY', 4.0 * 2 ** 30)
+    assert _cholklu.memory_limit(str(proc), str(cg)) == 4 * 2 ** 30
+    monkeypatch.setattr(_cholklu, 'KEEP_MEMORY', 7.0 * 2 ** 30)
+    assert _cholklu.memory_limit(str(proc), str(cg)) == 6 * 2 ** 30
+    assert _cholklu.memory_limit(str(tmp_path / 'none'), str(tmp_path / 'none')) == 7 * 2 ** 30
+    code = ('import warnings; warnings.simplefilter("always"); '
+            'from pycircuit.circuit import _cholklu; print(repr(_cholklu.KEEP_MEMORY))')
+
+    def read(value):
+        env = dict(os.environ, PYCIRCUIT_CHOLMOD_KEEP_MEMORY=value, JAX_PLATFORMS='cpu')
+        r = subprocess.run([sys.executable, '-c', code], env=env, capture_output=True, text=True, timeout=300,
+                           check=False)
+        assert r.returncode == 0, r.stderr[-2000:]
+        return r.stdout.split()[-1], r.stderr
+    got, err = read('2G')
+    assert got == repr(2.0 * 2 ** 30) and 'PYCIRCUIT_CHOLMOD_KEEP_MEMORY' not in err, (got, err[-2000:])
+    got, err = read('8GB')
+    assert got == 'None' and "PYCIRCUIT_CHOLMOD_KEEP_MEMORY='8GB' is not a number of bytes" in err, (got, err[-2000:])
+
+
 def test_a_hand_back_is_restored_from_a_kept_factor():
     """A checkpoint opened on J held, a refactor of J' made inside it, then
     handed back (`linearsolver.held_back`): the restore -- a refactor of J on
@@ -528,9 +569,14 @@ def test_a_grid_on_the_ladder_steps_on_its_rungs(c_on, edge, monkeypatch):
 def test_the_ladder_keeps_its_factors_within_the_memory_left(monkeypatch):
     """The ladder's kept factors under THE BUDGET, its limit
     `memory_limit()`: one no slot fits under, or one leaving less than
-    `KEEP_MARGIN`, keeps none, the run the bytes, steps and counts of the
-    run with room; none read: `KEEP_BYTES` binds."""
+    `KEEP_MARGIN`, or the user's `KEEP_MEMORY` at 0, keeps none, the run the
+    bytes, steps and counts of the run with room; none read: `KEEP_BYTES`
+    binds."""
     room = _ladder_run(True, monkeypatch)[0]
+    ## (the user's limit through `memory_limit()` itself: 0 is no slot, not no limit)
+    monkeypatch.setattr(_cholklu, 'KEEP_MEMORY', 0.0)
+    held = _ladder_run(True, monkeypatch)[0]
+    monkeypatch.setattr(_cholklu, 'KEEP_MEMORY', None)
     monkeypatch.setattr(_cholklu, 'memory_limit', lambda: 1.0)
     none = _ladder_run(True, monkeypatch)[0]
     ## (room for the slots, not for `KEEP_MARGIN` beside them)
@@ -543,6 +589,7 @@ def test_the_ladder_keeps_its_factors_within_the_memory_left(monkeypatch):
     assert none[5]['slots'] == 0 and none[5]['hits'] == 0, none[5]
     assert tight[5]['slots'] == 0 and capped[5]['slots'] == 0, (tight[5], capped[5])
     assert none[1:3] == room[1:3] and capped[1:3] == room[1:3], (none[2], room[2], capped[2])
+    assert held[5]['slots'] == 0 and held[5]['hits'] == 0 and held[1:3] == room[1:3], held[5]
 
 
 def test_the_ladders_c_loop_is_its_python(monkeypatch):
