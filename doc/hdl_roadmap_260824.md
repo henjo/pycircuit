@@ -18063,3 +18063,31 @@ not opened (also with the cache's build hidden from the test's own process, wher
 caught it first); no fallback after a path; the build not looked for; the environment not read; no warning on the
 fallback; `STATUS` not naming the library; the build under XDG_CACHE_HOME not looked for.  ruff: clean both sides
 (proved live by a planted error in the same run).
+
+## 2026-11-26 — 363. CF: a linear grid's transient on CHOLMOD from 20 000 unknowns (`_cholklu.CHOLMOD_FROM`, 500 000 before)
+
+**Why**  Andreas ("What is next" -> "Do it", then "Lower to 20 000"), plan 261 L29 (tc/plan_l29_cholmod_from.md).
+K1b (328, 2026-11-14) set the threshold at 500 000 unknowns on parity at ibmpg2t.  Every CHOLMOD-side gain came after
+it, and the KLU path has none of them: the kept factors (LA 349, FP 360, KM 361), the step ladder (LB 350: on the
+reduction's matrix only), the own solve (SV 351), the affine step (AS 353: ibmpg1t and 2t "KLU, which AS does not
+reach"), the threads (SB 359), CHOLMOD without OpenMP (NO 362).  At f08349ac ibmpg2t (164 478 unknowns, KLU) took 233
+s for its 10 ns transient against ibmpg3t's 256 s (1 042 523, CHOLMOD).  Measured first (scratch l29/cf, no source
+changed: census_cf.py, env CKFROM setting `_cholklu.CHOLMOD_FROM` for one run -- every read of it is at call time;
+the tree at f08349ac, 13 GB, pinned 0-15, 10 ns, two interleaved pairs a grid, each quiet-gated; the A/A pairs the
+same bytes on both sides): ibmpg2t KLU 231.3 / 232.0 s -> CHOLMOD 36.3 / 36.3 s, **0.157x / 0.156x** (the whole run
+0.177x); ibmpg1t 10.4 -> 6.5 s, **0.625x** both pairs.  The error from the benchmark's own output: 2t 0.0560 -> 0.0556
+mV, 1t 0.0719 -> 0.0652; DC the same bytes (the DC keeps KLU).  The answers move: the two solvers' waveforms differ by
+at most 0.0120 mV (2t) and 0.0144 mV (1t), 0.21 / 0.20 of the benchmark error and far inside reltol on the 1.8 V
+rail; 2t's steps 1290 accepted with 1899 Newton iterations on KLU, 1297 with 1297 on CHOLMOD (the ladder's rungs, one
+iterate a step); 661 kept-factor hits and 47 factorizations against KLU's 711 refactors; VmHWM 2t 1140 -> 1912 MiB (the
+kept factors), 1t 2222 -> 2284.  Lines (set before): (a) ibmpg2t <= 0.85x in both pairs; (b) the benchmark error <=
+1.05x, DC the same bytes -- met; the bytes moving was Andreas's to accept: "Lower to 20 000", just under ibmpg1t, the
+smallest linear grid measured (below it not measured).
+
+**What.**  `_cholklu.CHOLMOD_FROM = 20_000`, its comment the measurement.  Nothing else: every read of the threshold
+(`AutoSolver._spd`, `Transient`'s early choice) compares against it at call time.  Linear grids (R, C, L, sources: the
+reduction's `plan`) of 20 000 to 500 000 unknowns now run their transients on CHOLMOD with the ladder and the kept
+factors; the DC, every other analysis and anything not a grid are as before.  No new test: the value is a constant;
+the threshold's mechanism (`test_the_threshold_the_switch_and_the_dc_keep_klu`, a 10 x 10 grid KLU's by default) holds.
+
+**Measured.**  The gate against f08349ac (l28/wt8): SAME, 0 executable lines (the decks far below 20 000 unknowns).  The suite 6899 passed, 10 skipped.  ruff clean both sides (the base side live on a planted error).  The census (cen/; B f08349ac, N the tree, no CKFROM; 13 GB, pinned 0-15, 10 ns, two interleaved pairs, quiet-gated): ibmpg2t 231.6 / 232.4 s -> 36.4 / 36.3 s, **0.157x / 0.156x** (the whole run 0.177x); ibmpg1t 10.3 -> 6.5 s, **0.631x** both pairs (0.771 / 0.770x).  The benchmark error 2t 0.0560 -> 0.0556 mV, 1t 0.0719 -> 0.0652; DC the same bytes; N's waveforms the same bytes as the measurement's CKFROM runs, B's as its KLU runs (the build is the configuration measured); `solver.auto:cholmod` 1 on N; the records read the threshold 500 000 (B) and 20 000 (N); no warning; VmHWM 2t 1149 -> 1908 MiB, 1t 2222 -> 2283.  Lines (set before: 2t <= 0.20x, 1t <= 0.70x in both pairs; the benchmark error <= 1.05x, DC the same bytes, N's waveforms the measurement's; the gate SAME, 10 skipped) MET.  3t-6t not run: at >= 500 000 unknowns they are CHOLMOD's under either threshold.

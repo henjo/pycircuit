@@ -121,8 +121,11 @@ from pycircuit.circuit import _blas, _cbuild, simwarnings
 ENABLED = os.environ.get('PYCIRCUIT_CHOLMOD', '1') != '0'
 #: THE OWN SOLVE (the module's note) in place of `cholmod_solve`
 OWN_SOLVE = os.environ.get('PYCIRCUIT_CHOLMOD_OWN_SOLVE', '1') != '0'
-#: the unknowns from which a linear grid's transient matrix is CHOLMOD's
-CHOLMOD_FROM = 500_000
+#: the unknowns from which a linear grid's transient matrix is CHOLMOD's (a
+#: 10 ns transient against KLU's: ibmpg1t's 25 850 unknowns 0.625x the time,
+#: ibmpg2t's 164 478 0.157x -- the kept factors, which KLU's run has none of;
+#: under 25 850 not measured)
+CHOLMOD_FROM = 20_000
 #: THE THREADS (the module's note): the own solve on the C units' pool, from
 #: a factor of `THREADS_FROM` values
 THREADS = os.environ.get('PYCIRCUIT_CHOLMOD_THREADS', '1') != '0'

@@ -6708,3 +6708,22 @@ pycircuit runs on it as before; one given or built but not usable
 falls back to it with a warning.  The answers are the same to the bit.
 On the IBM grids' 10 ns transients a run takes 0.90-0.94x the time
 (ibmpg6t's 366 -> 336 s).
+
+
+## CF: linear grids on CHOLMOD from 20 000 unknowns (2026-11-26)
+
+### `_cholklu.CHOLMOD_FROM` 500 000 -> 20 000
+
+2026-11-26 (`doc/hdl_roadmap_260824.md`, 363).  A linear grid's
+transient went to CHOLMOD only from 500 000 unknowns, a line drawn when
+CHOLMOD and KLU were level on the IBM grid ibmpg2t.  Every speedup
+since -- kept factors, the step ladder, the own solve, the affine step,
+threads, no OpenMP -- landed on the CHOLMOD side only, so smaller grids
+were left far behind: ibmpg2t's 10 ns transient took 233 s on KLU and
+36 s on CHOLMOD.  The threshold is now 20 000 unknowns, just under the
+smallest grid measured (ibmpg1t, 10.4 -> 6.5 s).  The answers are no
+longer the same bytes on those grids: they move by about a hundredth
+of a millivolt, a fifth of the distance to the benchmark's own
+waveforms, which got no worse.
+Measured on the tree: ibmpg2t 232 -> 36 s (0.157x), ibmpg1t 10.3 -> 6.5 s
+(0.631x).
