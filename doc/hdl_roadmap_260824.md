@@ -18021,3 +18021,45 @@ no slot, the bytes and steps of the run with room.  Six bites, six bit (l28/km/b
 the user's; K, M, G, T powers of 1000; the environment not read; a negative accepted; a value not bytes not warned
 of; a limit of 0 no limit.  ruff: the base's twelve findings in the three files, the same twelve.  The suite
 6 898 passed, 10 skipped (the first run failed `test_no_library_module_warns_outside_the_policy`: the warning was a plain `warnings.warn`; now `simwarnings`', its bite re-run).
+
+## 2026-11-26 — 362. NO: CHOLMOD without OpenMP -- `scripts/build_cholmod.sh`, THE LIBRARY opened before the system's
+
+**Why**  Plan 261 L28 (tc/plan_l28_next.md), Andreas's item 2 (2026-11-26): a CHOLMOD built without OpenMP, "but
+should run with a CHOLMOD with OpenMP also".  P0 (10 ns, before FP): the factorize 95.9 s of ibmpg6t's run, 23.5 s of
+it in libgomp (3t 14.0 s).  CHOLMOD 5.3.4's supernodal numeric (`t_cholmod_super_numeric_worker.c`) opens an OpenMP
+region for each descendant's update of a supernode -- the relative map and the assembly, `#pragma omp parallel for
+num_threads(n) if (ndrow > 64)` -- and GCC calls `GOMP_parallel` whatever `n` or the `if`: a team made and freed.
+Those loops write disjoint entries, so the bytes cannot depend on it.  Measured first (scratch l28/nomp, no source
+change: SuiteSparse 7.12.2 -- the system's, libcholmod5 1:7.12.2+dfsg-1ubuntu1, CHOLMOD 5.3.4 -- CHOLMOD alone with
+`CHOLMOD_USE_OPENMP=OFF` against the system's AMD, CAMD, COLAMD, CCOLAMD, SuiteSparse_config and BLAS/LAPACK, opened
+through LD_LIBRARY_PATH; fz.c on l25/sb's K' dumps, a factorization timed, pinned 0-15 as the census, OPENBLAS 1,
+interleaved): ibmpg6t's matrix 1.089 -> 0.435 s a factorization, **0.40x** (three pairs 0.399 / 0.399 / 0.402);
+ibmpg3t's 0.983 -> 0.635 s, 0.646x; the factor's bytes the glue's and `cholmod_solve`'s the same, every run (prototype
+lines: the bytes, and >= 0.10 s on 6t -- met).  Attributed (6t, two rounds): the system's 1.08 s; the system's with
+OMP_NUM_THREADS=1 1.04; ours with OpenMP ON at -O3 1.09; OFF at -O2 0.433, OFF at -O3 0.435 -- OpenMP, not the
+compile flags, and no thread count removes it; three times the profile's libgomp time (the rest counted in
+libcholmod's outlined loops).  Build lines (set before measuring the build): (a) the census (13 GB, pinned 0-15, 10
+ns) of the tree with the script's build in the cache against KM's commit (c94f9969, the system's CHOLMOD): 6t <=
+0.96x, 3t <= 0.97x, 4t and 5t reported; every grid the same wave and DC digests, steps and kept counts; VmHWM <= 12
+390 MiB; (b) the suite twice -- with the build and with `PYCIRCUIT_CHOLMOD_LIB` the system's; (c) the bites, ruff.
+
+**What.**  THE LIBRARY (`_cholklu`'s note): CHOLMOD opened from `LIB_PATH` (env `PYCIRCUIT_CHOLMOD_LIB`, a path) where
+set, else `built_library()` (`${XDG_CACHE_HOME:-~/.cache}/pycircuit/cholmod/lib/libcholmod.so.5`), else the system's
+libcholmod.so.5 / .so; `ck_open` keeps a library only at the header's exact version (`cholmod_version`: the common's
+layout is the version's) and closes another; `ck_load(path)` falls back to the system's where the path is not had
+(`C_.which`: 1 the path, 2 the system's, 0 none -- at the struct's end); the fallback is `simwarnings`' `CostWarning`
+(the same answers, slower); `STATUS` names the library (`on (<path>)`, `on (the system's libcholmod)`).
+`scripts/build_cholmod.sh [DIR]`: the system's SuiteSparse version (SuiteSparse_config.h) fetched from GitHub,
+CHOLMOD built with OpenMP off into pycircuit's cache, refused where it still calls OpenMP; rerun after the system's
+SuiteSparse is upgraded (another version is not opened: warned, the system's taken).  ~20 s here.
+
+**Measured.**  The gate (the gold decks, the tree against c94f9969): SAME, 0 executable lines changed.  The suite: 6899 passed, 10 skipped with the build (the default here); 6899 passed, 10 skipped with `PYCIRCUIT_CHOLMOD_LIB` the system's.  The census (scratch l28/nomp/cen; the 13 GB scope, pinned 0-15, 10 ns, B and N interleaved, each started at a 1-min load < 1.5; N the tree, its record naming the cache's build, B c94f9969 on the system's), the transient's time: 6t 365.5 -> 335.6 s, **0.918x**; 5t 246.4 -> 222.6, 0.903x; 4t 318.7 -> 289.8, 0.909x; 3t 272.7 -> 256.1, **0.939x** (the whole run 0.936 / 0.920 / 0.926 / 0.949x); 2t 1.005x, 1t 1.010x (no CHOLMOD on either side: noise).  Every grid the same wave and DC digests, steps and kept counts (46-70 factorizations, 11 slots); VmHWM at most 11 824 MiB (6t, B).  Every line met.  The gain is the factorizations', as the prototype gave it: 6t's 47 x 0.654 s = 30.7 s against 29.9 s measured, 3t's 46 x 0.348 s = 16.0 s against 16.6 s -- the rest of a run (the kept factors' solves, the stamps) never entered OpenMP.  N's runs map both libraries: `_klu_order`'s nested dissection (`pcx_ndorder`, an order made once) opens the system's itself, `RTLD_LOCAL`, as before -- each library's calls bind within itself; that order is the same either way.
+
+**Tests.**  `test_cholklu` +1 (56 in all): `test_cholmod_is_the_library_given_or_built_else_the_systems` (each case a
+process: none given -- the system's; a copy of it given -- that copy, named and mapped; a copy in a fake cache --
+that; a path given beside the build -- the path; a missing path, and a shim whose `cholmod_version` says 4.0.0 linked
+over the system's -- the system's, `CostWarning`).  Eight bites, eight bit (bites_no.py): no version check; the path
+not opened (also with the cache's build hidden from the test's own process, where the fixture's warning would have
+caught it first); no fallback after a path; the build not looked for; the environment not read; no warning on the
+fallback; `STATUS` not naming the library; the build under XDG_CACHE_HOME not looked for.  ruff: clean both sides
+(proved live by a planted error in the same run).

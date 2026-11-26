@@ -6689,3 +6689,22 @@ eleven factors each: ibmpg6t's transient went from 436.5 to 363.1 s
 (0.832x) and ibmpg4t's from 421.3 to 320.5 s (0.761x) against SB's,
 ibmpg3t and 5t as under 11 GB (0.805x, 0.809x), peaking at 11.8 GB.
 Every waveform was the same to the bit, with the same steps.
+
+
+## NO: CHOLMOD without OpenMP (2026-11-26)
+
+### `scripts/build_cholmod.sh`; `_cholklu`'s THE LIBRARY (`PYCIRCUIT_CHOLMOD_LIB`, the cache's build, the system's)
+
+2026-11-26 (`doc/hdl_roadmap_260824.md`, 362).  The system's CHOLMOD
+(Ubuntu's, built with OpenMP) opens an OpenMP region for every update
+of a supernode, even on one thread, and on the IBM grids that made each
+factorization about two and a half times slower than it needs to be.
+`scripts/build_cholmod.sh` builds the system's version of CHOLMOD
+without OpenMP into pycircuit's cache (about 20 s), and pycircuit now
+opens that one first: a library named by `PYCIRCUIT_CHOLMOD_LIB`, else
+the cache's build, else the system's, each only at the exact version
+pycircuit was compiled against.  Where none but the system's is there,
+pycircuit runs on it as before; one given or built but not usable
+falls back to it with a warning.  The answers are the same to the bit.
+On the IBM grids' 10 ns transients a run takes 0.90-0.94x the time
+(ibmpg6t's 366 -> 336 s).

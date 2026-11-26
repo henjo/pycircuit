@@ -35,6 +35,20 @@ reference and no node fixed twice; else the reason (a str).  Switch:
 `ENABLED` (env `PYCIRCUIT_CHOLMOD=0`); taken by `AutoSolver` for a
 transient's matrix from `CHOLMOD_FROM` unknowns.
 
+THE LIBRARY.  CHOLMOD is opened (`dlopen`, its entries looked up) from
+`LIB_PATH` (env `PYCIRCUIT_CHOLMOD_LIB`, a path) where set, else from the
+build `scripts/build_cholmod.sh` makes in pycircuit's cache
+(`built_library()`), else the system's libcholmod.so.5 (or .so) -- each
+only where its version is the header's this C is built against (the
+common's layout is the version's); one given or built but not had falls
+back to the system's, warned.  `STATUS` names the library.  The system's
+(Debian's, Ubuntu's) is built with OpenMP, and its supernodal factorize
+opens an OpenMP region for each update of a supernode -- a team made and
+freed whatever the thread count (no setting removes it); the script builds
+the system's version without OpenMP, which factors ibmpg6t's matrix in
+0.40x the time and ibmpg3t's in 0.65x, the same bytes (those regions'
+loops write disjoint entries).
+
 THE KEPT FACTORS.  A numeric may keep up to `keep - 1` earlier factors
 beside its own (`ck_keep` on the symbolic: `StructuralKLU.keep_factors`;
 `KEEP`, `KEEP_BYTES` the defaults a solver starts with -- 1, none kept).
@@ -150,6 +164,8 @@ def _keep_memory():
 #: `parse_bytes`): the most the process may hold with a new slot, the least
 #: of it, the cgroup's and the machine's binding (0: no slot); None: unset
 KEEP_MEMORY = _keep_memory()
+#: THE LIBRARY (the module's note): the CHOLMOD opened first where set
+LIB_PATH = os.environ.get('PYCIRCUIT_CHOLMOD_LIB', '')
 STATUS = 'not loaded'
 
 _SRC = r'''#include <stddef.h>
@@ -196,16 +212,37 @@ static struct {
     ck_mal_t mal; ck_fre_t fre;
     /* THE OWN SOLVE's BLAS entries, from CHOLMOD's (NULL: cholmod_solve) */
     ck_trsv_t trsv; ck_gemv_t gemv;
+    /* THE LIBRARY opened: 1 the path given, 2 the system's, 0 none */
+    int which;
 } C_;
 
-static int ck_load(void)
+/* a CHOLMOD at the header's version, or NULL (closed where another) */
+static void *ck_open(const char *name)
 {
-    void *h;
-    if (C_.tried) return C_.ok;
+    void *h = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+    int (*ver)(int *), v[3] = {0, 0, 0};
+    if (!h) return NULL;
+    ver = (int (*)(int *)) dlsym(h, "cholmod_version");
+    if (ver) ver(v);
+    if (v[0] != CHOLMOD_MAIN_VERSION || v[1] != CHOLMOD_SUB_VERSION || v[2] != CHOLMOD_SUBSUB_VERSION) {
+        dlclose(h);
+        return NULL;
+    }
+    return h;
+}
+
+/* THE LIBRARY: `path` (NULL or "": none given) where it is had, else the
+   system's; which one (`C_.which`), 0 where none or an entry is missing */
+static int ck_load(const char *path)
+{
+    void *h = NULL;
+    if (C_.tried) return C_.which;
     C_.tried = 1;
-    h = dlopen("libcholmod.so.5", RTLD_NOW | RTLD_LOCAL);
-    if (!h) h = dlopen("libcholmod.so", RTLD_NOW | RTLD_LOCAL);
-    if (!h) return 0;
+    if (path && *path) h = ck_open(path);
+    C_.which = h ? 1 : 2;
+    if (!h) h = ck_open("libcholmod.so.5");
+    if (!h) h = ck_open("libcholmod.so");
+    if (!h) return C_.which = 0;
     C_.start = (ck_start_t) dlsym(h, "cholmod_start");
     C_.finish = (ck_start_t) dlsym(h, "cholmod_finish");
     C_.asp = (ck_asp_t) dlsym(h, "cholmod_allocate_sparse");
@@ -223,7 +260,8 @@ static int ck_load(void)
     C_.gemv = (ck_gemv_t) dlsym(h, "dgemv_");
     C_.ok =C_.start && C_.finish && C_.asp && C_.fsp && C_.an && C_.fz && C_.cpf && C_.ff
             && C_.ad && C_.fd && C_.sv;
-    return C_.ok;
+    if (!C_.ok) C_.which = 0;
+    return C_.which;
 }
 
 /* THE THREADS: a row above a subtree and its update, kept for the replay; the plan */
@@ -375,7 +413,7 @@ static void *ck_analyze(int m_, const int32_t *Ap, const int32_t *Ai, const int3
     long m = m_, c, r, k, nnz = Ap[m_], nf = 0, nv = 0, nl = 0, npair = 0, j;
     int64_t p, *pairs = NULL, *key = NULL;
     ck_sym *s;
-    if (!ck_load()) return NULL;
+    if (!ck_load(NULL)) return NULL;
     s = (ck_sym *) calloc(1, sizeof(ck_sym));
     if (!s) return NULL;
     C_.start(&s->cm);
@@ -1415,7 +1453,7 @@ void *pcx_cholklu(int which)
     case 5: return (void *) ck_free_symbolic;
     case 6: return (void *) ck_rgrowth;
     case 7: return (void *) ck_info;
-    case 8: return (void *) (long) ck_load();
+    case 8: return (void *) ck_load;
     case 9: return (void *) ck_keep;
     case 10: return (void *) ck_num_info;
     case 11: return (void *) ck_own;
@@ -1519,9 +1557,18 @@ class _Threads:
         self._lib.threads(pool or None, self._n if pool else 1, int(THREADS_FROM))
 
 
+def built_library():
+    """THE LIBRARY `scripts/build_cholmod.sh` builds: its path in
+    pycircuit's cache (`$XDG_CACHE_HOME` or ~/.cache, then
+    pycircuit/cholmod/lib), or None where there is none."""
+    base = os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache')
+    path = os.path.join(base, 'pycircuit', 'cholmod', 'lib', 'libcholmod.so.5')
+    return path if os.path.exists(path) else None
+
+
 def library(klu):
     """The `_Lib` (built once a process), or None (`STATUS`): no CHOLMOD, no
-    compiler, no header."""
+    compiler, no header.  CHOLMOD from THE LIBRARY (the module's note)."""
     global STATUS
     if _LIB:
         return _LIB[0]
@@ -1537,8 +1584,9 @@ def library(klu):
     unset = 'OPENBLAS_NUM_THREADS' not in os.environ
     if unset:
         os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    path = LIB_PATH or built_library() or ''
     try:
-        loaded = int(ffi.cast('long', entry(8)))
+        loaded = int(ffi.cast('int (*)(const char *)', entry(8))(path.encode() if path else ffi.NULL))
     finally:
         if unset:
             os.environ.pop('OPENBLAS_NUM_THREADS', None)
@@ -1548,12 +1596,15 @@ def library(klu):
     if not loaded:
         STATUS = 'off (no libcholmod)'
         return None
+    if path and loaded != 1:
+        simwarnings.warn(f'CHOLMOD {path!r} could not be opened at the version of the header pycircuit is '
+                         'built against: the system\'s libcholmod is used', simwarnings.CostWarning)
     lib = _Lib(ffi, entry, klu)
     ## THE THREADS: the count `set_threads` keeps (held on the library)
     from pycircuit.circuit import _tran_core
     lib.threads_count = _tran_core._threaded(_Threads(lib))
     _LIB.append(lib)
-    STATUS = 'on'
+    STATUS = f'on ({path})' if loaded == 1 else 'on (the system\'s libcholmod)'
     return _LIB[0]
 
 

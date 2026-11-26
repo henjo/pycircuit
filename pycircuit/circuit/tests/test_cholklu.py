@@ -421,6 +421,63 @@ def test_the_memory_limit_the_user_sets(tmp_path, monkeypatch):
     assert got == 'None' and "PYCIRCUIT_CHOLMOD_KEEP_MEMORY='8GB' is not a number of bytes" in err, (got, err[-2000:])
 
 
+def test_cholmod_is_the_library_given_or_built_else_the_systems(tmp_path):
+    """THE LIBRARY: `PYCIRCUIT_CHOLMOD_LIB` opened first, else the build in
+    pycircuit's cache, else the system's; one not had -- missing, or a
+    CHOLMOD of another version -- falls back to the system's, warned;
+    `STATUS` names the one opened (each case a process of its own: CHOLMOD
+    is opened once a process)."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    from pycircuit.circuit import _hdl_cache
+    code = ('import warnings; warnings.simplefilter("always"); '
+            'from pycircuit.circuit import _cholklu, linearsolver; '
+            '_cholklu.library(linearsolver.KLUSolver()._lib); print(_cholklu.STATUS); '
+            'print(sorted({ln.split()[-1] for ln in open("/proc/self/maps") if "libcholmod" in ln}))')
+
+    def run(lib=None, py=None):
+        env = {k: v for k, v in os.environ.items() if k != 'PYCIRCUIT_CHOLMOD_LIB'}
+        env.update(JAX_PLATFORMS='cpu', XDG_CACHE_HOME=str(tmp_path / 'xdg'),
+                   PYCIRCUIT_HDL_CACHE_DIR=_hdl_cache.cache_dir())
+        if lib is not None:
+            env['PYCIRCUIT_CHOLMOD_LIB'] = lib
+        r = subprocess.run([sys.executable, '-c', py or code], env=env, capture_output=True, text=True,
+                           timeout=300, check=False)
+        assert r.returncode == 0, r.stderr[-2000:]
+        return r.stdout.splitlines()[-2:], r.stderr
+    ## the system's, its path as the loader finds it
+    system = run(py='import ctypes; ctypes.CDLL("libcholmod.so.5"); print("-"); '
+                    'print([ln.split()[-1] for ln in open("/proc/self/maps") if "libcholmod" in ln][0])')[0][1]
+    (out, err) = run()
+    assert out == ["on (the system's libcholmod)", repr([system])] and 'CHOLMOD' not in err, (out, err[-2000:])
+    given = tmp_path / 'given' / 'libcholmod.so.5'
+    given.parent.mkdir()
+    shutil.copy(system, given)
+    (out, err) = run(str(given))
+    assert out == [f'on ({given})', repr([str(given)])] and 'CHOLMOD' not in err, (out, err[-2000:])
+    built = tmp_path / 'xdg' / 'pycircuit' / 'cholmod' / 'lib' / 'libcholmod.so.5'
+    built.parent.mkdir(parents=True)
+    shutil.copy(system, built)
+    (out, err) = run()
+    assert out == [f'on ({built})', repr([str(built)])] and 'CHOLMOD' not in err, (out, err[-2000:])
+    ## a path given wins over the build; one missing, or another version's, falls back to the system's
+    (out, err) = run(str(given))
+    assert out == [f'on ({given})', repr([str(given)])], (out, err[-2000:])
+    built.unlink()
+    shim = tmp_path / 'shim'
+    shim.mkdir()
+    (shim / 'v.c').write_text('int cholmod_version(int *v) { v[0] = 4; v[1] = 0; v[2] = 0; return 4000; }\n')
+    subprocess.run([shutil.which('cc') or 'gcc', '-shared', '-fPIC', '-o', str(shim / 'libshim.so'),
+                    str(shim / 'v.c'), system], check=True, capture_output=True)
+    for bad in (tmp_path / 'missing.so', shim / 'libshim.so'):
+        (out, err) = run(str(bad))
+        assert out[0] == "on (the system's libcholmod)" and system in out[1], (bad, out, err[-2000:])
+        assert f"CHOLMOD '{bad}' could not be opened at the version of the header" in err, (bad, err[-2000:])
+
+
 def test_a_hand_back_is_restored_from_a_kept_factor():
     """A checkpoint opened on J held, a refactor of J' made inside it, then
     handed back (`linearsolver.held_back`): the restore -- a refactor of J on
