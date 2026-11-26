@@ -282,10 +282,10 @@ def _replay(hs, keep):
     return made
 
 
-def _kept_solves(keep, max_bytes=None, c=None):
+def _kept_solves(keep, max_bytes=None, c=None, **budget):
     c = _grid() if c is None else c
     sk = _solver(c)
-    sk.keep_factors(keep, max_bytes)
+    sk.keep_factors(keep, max_bytes, **budget)
     b = np.random.default_rng(1).standard_normal(sk.m)
     xs = []
     for h in _HS:
@@ -321,6 +321,63 @@ def test_kept_factors_stay_within_their_bytes():
     got, sk = _kept_solves(8, max_bytes=1.0)
     assert got == want
     assert sk.kept_counts()['slots'] == 0 and sk.kept_counts()['hits'] == 0
+
+
+def _resident():
+    """This process's resident bytes, as THE BUDGET reads them."""
+    import os
+    with open('/proc/self/statm') as f:
+        return int(f.read().split()[1]) * os.sysconf('SC_PAGESIZE')
+
+
+def test_kept_factors_stay_within_the_memory_left(monkeypatch):
+    """THE BUDGET: a new slot only while the process's resident memory, the
+    slot and the margin fit under the limit -- a limit below the memory
+    already resident, or a margin over the room the limit leaves, keeps
+    none; a limit with room keeps every slot `keep` allows, `KEEP_BYTES`
+    then not binding (a `max_bytes` given still does); the answers the run
+    keeping none gives each time."""
+    want, _sk1 = _kept_solves(1)
+    room = min(7, len(set(_HS)) - 1)
+    for limit, margin, slots in ((_resident() - 64 * 2 ** 20, 0.0, 0),
+                                 (_resident() + 2 ** 30, 2.0 * 2 ** 30, 0),
+                                 (_resident() + 2 ** 30, 0.0, room)):
+        got, sk = _kept_solves(8, limit=limit, margin=margin)
+        assert got == want, (limit, margin)
+        assert sk.kept_counts()['slots'] == slots, (limit, margin, slots, sk.kept_counts())
+    monkeypatch.setattr(_cholklu, 'KEEP_BYTES', 1.0)
+    for budget, slots in (({'limit': _resident() + 2 ** 30, 'margin': 0.0}, room), ({}, 0),
+                          ({'max_bytes': 1.0, 'limit': _resident() + 2 ** 30, 'margin': 0.0}, 0)):
+        got, sk = _kept_solves(8, **budget)
+        assert got == want, budget
+        assert sk.kept_counts()['slots'] == slots, (budget, slots, sk.kept_counts())
+
+
+def test_the_memory_limit_is_the_least_of_the_cgroups_and_the_machines(tmp_path):
+    """THE BUDGET's limit: the least of the `memory.max` up the process's
+    cgroup tree ('max' none) and its resident memory plus MemAvailable;
+    None where neither can be read."""
+    import os
+    proc, cg = tmp_path / 'proc', tmp_path / 'cg'
+    (proc / 'self').mkdir(parents=True)
+    (proc / 'self' / 'statm').write_text(f'900000 {2 ** 30 // os.sysconf("SC_PAGESIZE")} 1000 1 0 1 0\n')
+    (proc / 'meminfo').write_text('MemTotal:       32000000 kB\nMemAvailable:    8388608 kB\n')
+    (proc / 'self' / 'cgroup').write_text('0::/user.slice/run-1.scope\n')
+    (cg / 'user.slice' / 'run-1.scope').mkdir(parents=True)
+    (cg / 'user.slice' / 'memory.max').write_text('max\n')
+
+    def limit():
+        return _cholklu.memory_limit(str(proc), str(cg))
+    assert limit() == 9 * 2 ** 30
+    (cg / 'user.slice' / 'run-1.scope' / 'memory.max').write_text(f'{6 * 2 ** 30}\n')
+    assert limit() == 6 * 2 ** 30
+    (cg / 'user.slice' / 'memory.max').write_text(f'{5 * 2 ** 30}\n')
+    assert limit() == 5 * 2 ** 30
+    (proc / 'meminfo').write_text('MemAvailable:    1048576 kB\n')
+    assert limit() == 2 * 2 ** 30
+    (proc / 'self' / 'statm').unlink()
+    assert limit() == 5 * 2 ** 30
+    assert _cholklu.memory_limit(str(tmp_path / 'none'), str(tmp_path / 'none')) is None
 
 
 def test_a_hand_back_is_restored_from_a_kept_factor():
@@ -468,6 +525,26 @@ def test_a_grid_on_the_ladder_steps_on_its_rungs(c_on, edge, monkeypatch):
     assert kept['hits'] > 0 and kept['factorizations'] > 0 and kept['slots'] == LADDER_KEEP - 1, kept
 
 
+def test_the_ladder_keeps_its_factors_within_the_memory_left(monkeypatch):
+    """The ladder's kept factors under THE BUDGET, its limit
+    `memory_limit()`: one no slot fits under, or one leaving less than
+    `KEEP_MARGIN`, keeps none, the run the bytes, steps and counts of the
+    run with room; none read: `KEEP_BYTES` binds."""
+    room = _ladder_run(True, monkeypatch)[0]
+    monkeypatch.setattr(_cholklu, 'memory_limit', lambda: 1.0)
+    none = _ladder_run(True, monkeypatch)[0]
+    ## (room for the slots, not for `KEEP_MARGIN` beside them)
+    monkeypatch.setattr(_cholklu, 'memory_limit', lambda: _resident() + 0.5 * _cholklu.KEEP_MARGIN)
+    tight = _ladder_run(True, monkeypatch)[0]
+    monkeypatch.setattr(_cholklu, 'memory_limit', lambda: None)
+    monkeypatch.setattr(_cholklu, 'KEEP_BYTES', 1.0)
+    capped = _ladder_run(True, monkeypatch)[0]
+    assert room[5]['slots'] > 0 and room[5]['hits'] > 0, room[5]
+    assert none[5]['slots'] == 0 and none[5]['hits'] == 0, none[5]
+    assert tight[5]['slots'] == 0 and capped[5]['slots'] == 0, (tight[5], capped[5])
+    assert none[1:3] == room[1:3] and capped[1:3] == room[1:3], (none[2], room[2], capped[2])
+
+
 def test_the_ladders_c_loop_is_its_python(monkeypatch):
     """On the ladder the C stepping loop's run is the Python's, byte for
     byte -- the same steps (loop.c's `ladder_rung`, `corner_size`), the same
@@ -603,6 +680,45 @@ def _entries(A, own, B):
     lib.klu_free_numeric(ctypes.byref(ctypes.c_void_p(num)), None)
     lib.klu_free_symbolic(ctypes.byref(ctypes.c_void_p(sym)), None)
     return X, counts, info
+
+
+def test_the_budget_counts_the_slot_it_would_make():
+    """THE BUDGET counts the slot it would make (L's values and J's): a 300
+    x 300 mesh's factor, its slot tens of MB -- with the limit half a slot
+    over the resident memory no slot is made (the least recently used one
+    takes the factor), with it two slots over one is."""
+    import math
+    A = _laplacian(300)
+    lib = _cholklu.library(linearsolver.KLUSolver()._lib)
+    ip = lambda a: a.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    dp = lambda a: a.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    m = A.shape[0]
+    Ap, Ai, kind = A.indptr.astype(np.int32), A.indices.astype(np.int32), np.zeros(m, dtype=np.int32)
+    vals = [np.ascontiguousarray(A.data * (1.0 + 0.125 * k), dtype=np.float64) for k in range(4)]
+    sym = ctypes.c_void_p(lib.analyze(m, ip(Ap), ip(Ai), ip(kind), -1))
+    assert sym
+    lib.keep(sym, 3, math.inf, 0.0, 0.0)
+    num = ctypes.c_void_p(lib.klu_factor(ip(Ap), ip(Ai), dp(vals[0]), sym, None))
+    assert num
+
+    def refactor(k):
+        assert lib.klu_refactor(ip(Ap), ip(Ai), dp(vals[k]), sym, num, None)
+        out = np.zeros(8)
+        lib.num_info(num, dp(out))
+        return out
+    try:
+        out = refactor(1)
+        one = 8.0 * (out[4] + A.nnz)
+        assert out[2] == 1 and one > 16 * 2 ** 20, out
+        lib.keep(sym, 3, math.inf, _resident() + 0.5 * one, 0.0)
+        out = refactor(2)
+        assert out[2] == 1 and out[1] == 3, out
+        lib.keep(sym, 3, math.inf, _resident() + 2.0 * one, 0.0)
+        out = refactor(3)
+        assert out[2] == 2 and out[1] == 4, out
+    finally:
+        lib.klu_free_numeric(ctypes.byref(num), None)
+        lib.klu_free_symbolic(ctypes.byref(sym), None)
 
 
 def test_the_own_solve_reads_narrow_and_wide_supernodes():

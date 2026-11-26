@@ -1094,7 +1094,7 @@ class StructuralKLU(KLUSolver):
             from pycircuit.circuit import _cholklu
             ## (THE KEPT FACTORS and THE OWN SOLVE the analysis sets:
             ## `keep_factors`, `_cholklu.OWN_SOLVE`)
-            self._ck_keep = (int(_cholklu.KEEP), float(_cholklu.KEEP_BYTES))
+            self._ck_keep = (int(_cholklu.KEEP), float(_cholklu.KEEP_BYTES), 0.0, float(_cholklu.KEEP_MARGIN))
             self._ck_own = bool(_cholklu.OWN_SOLVE)
             lib = _cholklu.library(self._lib)
             if lib is not None:
@@ -1303,17 +1303,22 @@ class StructuralKLU(KLUSolver):
         """Whether this solver's entries are THE SPD REDUCTION's (`_cholklu`)."""
         return self._ck_kind is not None
 
-    def keep_factors(self, keep, max_bytes=None):
+    def keep_factors(self, keep, max_bytes=None, limit=None, margin=None):
         """THE KEPT FACTORS (`_cholklu`'s note): each numeric of the
         reduction keeps up to `keep - 1` earlier factors beside its own, at
-        most `max_bytes` of them (`_cholklu.KEEP_BYTES` where None); 1 keeps
-        none.  The answers are a refactor's either way.  Nothing where the
-        solver is not the reduction's."""
+        most `max_bytes` of them (where None: `_cholklu.KEEP_BYTES`, or
+        unbounded where `limit` is set); 1 keeps none.  `limit`, THE BUDGET:
+        a new slot only while the process's resident memory, the slot and
+        `margin` (`_cholklu.KEEP_MARGIN` where None) fit under it, in bytes
+        (None: no limit).  The answers are a refactor's either way.  Nothing
+        where the solver is not the reduction's."""
         if not self.cholmod:
             return
         from pycircuit.circuit import _cholklu
-        self._ck_keep = (max(int(keep), 1),
-                         float(_cholklu.KEEP_BYTES if max_bytes is None else max_bytes))
+        if max_bytes is None:
+            max_bytes = _cholklu.KEEP_BYTES if limit is None else float('inf')
+        self._ck_keep = (max(int(keep), 1), float(max_bytes), float(limit or 0.0),
+                         float(_cholklu.KEEP_MARGIN if margin is None else margin))
         if self._symbolic is not None:
             self._lib.keep(self._ct.c_void_p(self._symbolic), *self._ck_keep)
 

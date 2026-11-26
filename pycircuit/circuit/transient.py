@@ -737,10 +737,12 @@ _RUN_STATE = {
 LAND_STRETCH = 1.1
 
 #: THE STEP LADDER's kept factors (`Transient.step_ladder`, `_cholklu`'s THE
-#: KEPT FACTORS): around a corner a run on the ladder cycles through ~7-8
-#: matrices -- the cut's step, the regrowth at each ratio, the approach and
-#: the landing -- so eight held let the next corner find them all
-LADDER_KEEP = 8
+#: KEPT FACTORS, within its BUDGET): around a corner a run on the ladder
+#: cycles through ~7-8 matrices -- the cut's step, the regrowth at each
+#: ratio, the approach and the landing -- and its first steps make one
+#: matrix each; twelve held keep the corners' while the first steps' age
+#: out (the IBM grids' factorizations: `doc/hdl_roadmap_260824.md`, 360)
+LADDER_KEEP = 12
 
 
 def _ladder_rung(h, anchor, minstep):
@@ -1927,9 +1929,10 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         its first matrix would make it (`_packed.choice`, or
         `AutoSolver.choose_on_structure`: `_tran_newton_c._choice`'s), the
         StructuralKLU on CHOLMOD (`_cholklu`, from `CHOLMOD_FROM` unknowns)
-        -- whose factors are then kept (`LADDER_KEEP`, within
-        `_cholklu.KEEP_BYTES`).  Below `CHOLMOD_FROM`, or with CHOLMOD off,
-        nothing is chosen early."""
+        -- whose factors are then kept (`LADDER_KEEP`, within the memory
+        left: `_cholklu`'s THE BUDGET, its limit `memory_limit()`, or
+        `KEEP_BYTES` where none can be read).  Below `CHOLMOD_FROM`, or with
+        CHOLMOD off, nothing is chosen early."""
         mode = self.par.step_ladder
         if mode is True:
             return float(run.max_step)
@@ -1940,7 +1943,8 @@ class Transient(_StepNewton, _BranchCheck, _CompanionModel, _RunHistory, _StageP
         ch = self._grid_cholmod(family)
         if ch is None:
             return 0.0
-        ch.keep_factors(LADDER_KEEP)
+        from pycircuit.circuit import _cholklu
+        ch.keep_factors(LADDER_KEEP, limit=_cholklu.memory_limit())
         return float(run.max_step)
 
     def _grid_cholmod(self, family):

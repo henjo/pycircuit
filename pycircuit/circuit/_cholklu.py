@@ -43,12 +43,24 @@ J's, by pointer -- and factors nothing: CHOLMOD's factor of the same values
 on the same symbolic is the same bytes, so every caller (the Python's
 `solve`, the C units through KLU's entries, a hand-back's restore) has the
 answer a refactor gives.  Any other refactor keeps the numeric's factor in
-a slot (a new one while `keep - 1` and `KEEP_BYTES` allow, else the least
-recently used) and factors into the buffers that come back.  A slot is L's
+a slot (a new one while `keep - 1`, `KEEP_BYTES` and THE BUDGET allow, else
+the least recently used) and factors into the buffers that come back.  A slot is L's
 values (`xsize` doubles, CHOLMOD's allocator) and J's -- hundreds of MB on
 a grid of a million unknowns -- for the factors a step-size ladder
 revisits around every corner (plan 261 L24).  Counted on the numeric
 (`num_info`: `StructuralKLU.kept_counts`).
+
+THE BUDGET.  Where a limit is set (`keep_factors`' `limit`; the step
+ladder's is `memory_limit()`: the least of the `memory.max` up this
+process's cgroup tree and its resident memory plus the machine's
+MemAvailable, read as the run starts), a new slot is made only while the
+process's resident memory (/proc/self/statm, read at that slot), the slot
+and `KEEP_MARGIN` fit under it -- the bytes of `KEEP_BYTES` then
+unbounded.  A ladder run makes its slots in its first steps, one matrix a
+step as the sizes double up from the first; on the IBM grids (10 ns,
+eleven slots) the run grows by 0.53 GiB (ibmpg3t) and 0.58 GiB (ibmpg6t)
+after its last slot, so the margin leaves about 0.9 GiB.  The answers are
+a refactor's however many slots the budget allows.
 
 THE OWN SOLVE.  K' x = b on CHOLMOD's supernodal factor L L' = P K' P' is
 solved here, not by `cholmod_solve`, which calls the BLAS for every
@@ -101,8 +113,11 @@ THREADS = os.environ.get('PYCIRCUIT_CHOLMOD_THREADS', '1') != '0'
 THREADS_FROM = 1 << 20
 #: THE KEPT FACTORS a solver starts with: the factors a numeric holds, its
 #: own among them (1: none kept), and the most bytes its kept ones may take
+#: where no limit is set (THE BUDGET)
 KEEP = 1
 KEEP_BYTES = 3.5 * 2 ** 30
+#: THE BUDGET's margin: the bytes a new slot leaves under the limit
+KEEP_MARGIN = 1.5 * 2 ** 30
 STATUS = 'not loaded'
 
 _SRC = r'''#include <stddef.h>
@@ -111,6 +126,8 @@ _SRC = r'''#include <stddef.h>
 #include <string.h>
 #include <math.h>
 #include <limits.h>
+#include <stdio.h>
+#include <unistd.h>
 #include <dlfcn.h>
 #include <suitesparse/cholmod.h>
 
@@ -206,6 +223,9 @@ typedef struct {
        made for (0: none) */
     struct ck_par *par;
     long par_failed;
+    /* THE BUDGET (`ck_room`): the bytes under which a new slot leaves the
+       process's resident memory, and the margin it keeps (0: no limit) */
+    double keep_limit, keep_margin;
 } ck_sym;
 
 /* a kept factor: L's values and J's (the solve reads J's), and whether they
@@ -617,6 +637,23 @@ static long ck_cap(const ck_sym *s, const ck_num *n)
     return cap > 0 ? cap : 0;
 }
 
+/* THE BUDGET: whether a new slot (L's values and J's) leaves the process's
+   resident memory and `keep_margin` under `keep_limit` -- 1 where no limit
+   is set, 0 where the resident memory cannot be read */
+static int ck_room(const ck_sym *s, const ck_num *n)
+{
+    long size = 0, pages = -1;
+    FILE *f;
+    if (s->keep_limit <= 0.0) return 1;
+    f = fopen("/proc/self/statm", "r");
+    if (!f) return 0;
+    if (fscanf(f, "%ld %ld", &size, &pages) != 2) pages = -1;
+    fclose(f);
+    if (pages < 0) return 0;
+    return (double) pages * (double) sysconf(_SC_PAGESIZE)
+           + 8.0 * ((double) n->L->xsize + (double) s->nnz) + s->keep_margin <= s->keep_limit;
+}
+
 /* a refactor where factors are kept: a slot holding a factor of exactly
    `Ax` swapped in, no factorization (CHOLMOD's factor of the same values on
    the same symbolic: the same bytes); else the numeric's factor swapped into
@@ -638,7 +675,7 @@ static int ck_kept(const ck_sym *s, ck_num *n, const double *Ax)
             n->hits++;
             return 1;
         }
-    if (n->nslot < cap) {
+    if (n->nslot < cap && ck_room(s, n)) {
         ck_slot *t = &n->slot[n->nslot];
         t->x = (double *) C_.mal(n->L->xsize, sizeof(double), &n->cm);
         t->Ax = (double *) ck_alloc((size_t) s->nnz, sizeof(double));
@@ -684,15 +721,18 @@ static int ck_refactor(int *Ap, int *Ai, double *Ax, void *sym, void *num, void 
 }
 
 /* THE KEPT FACTORS set on the symbolic: `keep` factors a numeric holds, its
-   own among them (1: none kept), `bytes` the most its kept ones take; the
-   signature's entries spread over J's values */
-static void ck_keep(void *sym, long keep, double bytes)
+   own among them (1: none kept), `bytes` the most its kept ones take, THE
+   BUDGET's `limit` (0: none) and `margin`; the signature's entries spread
+   over J's values */
+static void ck_keep(void *sym, long keep, double bytes, double limit, double margin)
 {
     ck_sym *s = (ck_sym *) sym;
     long k;
     if (!s) return;
     s->keep = keep < 1 ? 1 : keep;
     s->keep_bytes = bytes > 0.0 ? bytes : 0.0;
+    s->keep_limit = limit > 0.0 ? limit : 0.0;
+    s->keep_margin = margin > 0.0 ? margin : 0.0;
     s->nsig = s->nnz < CK_NSIG ? s->nnz : CK_NSIG;
     for (k = 0; k < s->nsig; k++)
         s->sig[k] = (long) (((double) k + 0.5) * (double) s->nnz / (double) s->nsig);
@@ -1381,9 +1421,10 @@ class _Lib:
         self.klu_free_symbolic = fn(5, ct.c_int, vp, vp)
         self.klu_rgrowth = fn(6, ct.c_int, ip, ip, dp, vp, vp, vp)
         self.info = fn(7, None, vp, dp)
-        ## THE KEPT FACTORS: `keep(sym, keep, bytes)` and a numeric's counts
-        ## `num_info(num, out)` (the module's note)
-        self.keep = fn(9, None, vp, ct.c_long, ct.c_double)
+        ## THE KEPT FACTORS: `keep(sym, keep, bytes, limit, margin)` (THE
+        ## BUDGET's limit and margin) and a numeric's counts `num_info(num,
+        ## out)` (the module's note)
+        self.keep = fn(9, None, vp, ct.c_long, ct.c_double, ct.c_double, ct.c_double)
         self.num_info = fn(10, None, vp, dp)
         ## THE OWN SOLVE: `own(sym, on)` (the module's note)
         self.own = fn(11, None, vp, ct.c_int)
@@ -1391,6 +1432,36 @@ class _Lib:
         ## the factor's values from which a solve takes them
         self.threads = fn(12, None, vp, ct.c_long, ct.c_long)
         self.klu_defaults = klu.klu_defaults
+
+
+def memory_limit(proc='/proc', cgroup='/sys/fs/cgroup'):
+    """THE BUDGET's limit (the module's note), in bytes: the least of the
+    `memory.max` up this process's cgroup (v2) tree and its resident memory
+    plus the machine's MemAvailable; None where neither can be read."""
+    got = []
+    try:
+        with open(os.path.join(proc, 'self', 'statm')) as f:
+            rss = int(f.read().split()[1]) * os.sysconf('SC_PAGESIZE')
+        with open(os.path.join(proc, 'meminfo')) as f:
+            avail = next(int(ln.split()[1]) * 1024 for ln in f if ln.startswith('MemAvailable:'))
+        got.append(rss + avail)
+    except (OSError, ValueError, IndexError, StopIteration, AttributeError):
+        pass
+    try:
+        with open(os.path.join(proc, 'self', 'cgroup')) as f:
+            parts = next(ln[3:].strip().strip('/') for ln in f if ln.startswith('0::')).split('/')
+    except (OSError, StopIteration):
+        parts = None
+    if parts is not None:
+        for k in range(len(parts), -1, -1):
+            try:
+                with open(os.path.join(cgroup, *[q for q in parts[:k] if q], 'memory.max')) as f:
+                    v = f.read().strip()
+                if v != 'max':
+                    got.append(int(v))
+            except (OSError, ValueError):
+                pass
+    return float(min(got)) if got else None
 
 
 class _Threads:

@@ -17945,3 +17945,47 @@ buffers (`ck_num.ub`, `ucnt`, `ub_for`) and counts the solves the pool took (`pa
 **Measured.**  (a) The gate against bb925fdd (l28/wt8): the decks C against Python (13 configurations, 27 runs each), at size, the tree against the base, its path counters, the instrument -- 0 differing, VERDICT SAME.  What it reached: none of the change -- its diff classes `csrc`, and the changed C is `_cholklu`'s string (0 lines, 0 arms), and the decks are far below CHOLMOD_FROM; the change is reached by the tests below (the threaded solve against one thread's bytes on two meshes, a grid transient on four threads) and by the census, where every solve of the four large grids went to the pool.  MET as set (fixtures allowed).  (b) The census (census_sb.sh, 10 ns, four threads, pinned 0-15 both sides, a process a run, quiet-gated, against bb925fdd), the transient: ibmpg6t 543.6 -> 437.4 s (**0.805x**), ibmpg3t 430.0 -> 340.0 s (**0.791x**), 4t 516.0 -> 424.5 (0.823x), 5t 374.1 -> 304.2 (0.813x), 2t 231.5 -> 230.9 (0.997x; KLU), 1t 10.3 -> 10.3 (1.000x; KLU); the whole run (import, DC, transient) 6t 635.1 -> 529.5 s (0.834x), 3t 492.0 -> 401.8 (0.817x).  Every grid's waveforms and DC the same bytes, the steps the same; `solve_counts`' threaded = own on all four large grids (6t 2595, 3t 2597, 4t 2279, 5t 2603).  About 41 ms saved a solve on 6t and 35 on 3t, near the micro-benchmark's 44 / 38.  VmHWM 6t -0.07 %, 3t -0.49 %, 4t +0.28 %, 5t +0.20 %, 2t -0.17 %, 1t 0.00 %.  MET.  (c) The suite 6893 passed, 10 skipped, 5 xfailed; ruff 12 = 12 (the base side live on a planted error); the pinned pairs pass, none re-recorded.
 
 **Tests.**  `test_cholklu` +12 (50 in all), with `THREADS_FROM` 0 and the count set for the test: `test_the_solve_on_threads_is_the_solve_on_one` (a 100 x 100 and a 22^3 mesh at 2, 3, 4 and 8 threads: three right-hand sides the one-thread bytes, every solve the pool's), `test_the_threads_take_a_factor_from_their_size_and_their_switch` (below `THREADS_FROM`, or `THREADS` off, the solve on the caller, the same bytes), `test_the_own_solve_keeps_the_bytes_it_had[1|4]` (an 18 x 18 mesh, no supernode wide enough for the BLAS: its answers' digest `6028ff72719e8574`, recorded from the loops at bb925fdd before the port, on one thread and four), `test_a_grid_transient_on_threads_is_its_run_on_one[c|python]` (the grid's Gear-2 run on four threads, the C loop and the Python: its answers, steps and counts those on one, every solve the pool's); the existing counts gain `threaded`.  Thirteen bites, thirteen bit (bites_sb.py): the replay dropped; the replay reversed in a subtree; every kept update before the top, not by position; the backward top after its subtrees; a subtree's limit its root's first column; no size threshold; the switch not read; the threaded solves not counted; the count not kept by `set_threads`; the backward 8-block's rows reversed; the one-column backward sum reversed; a one-column forward row out by an fma; the forward rows below kept but not taken out.
+
+## 2026-11-26 — 360. FP: the kept factors within a memory budget -- a new slot only while the memory left keeps a margin
+
+**Why**  Plan 261 L28 (tc/plan_l28_next.md), FP.  Andreas decided (2026-11-26): spend memory on more kept factors
+where it is free, from a budget.  L27's replay of ibmpg3t's 10 ns: least recently used of 8 factors 112 factorizations,
+of 12 factors 43; `KEEP_BYTES` (3.5 GiB) bound first (3t's slot, L's values and J's, 0.44 GiB: seven slots), and
+ibmpg6t peaked at 10.1 of the census's 11 GiB scope -- a fixed fraction of the room cannot serve both.  Measured first
+(scratch l28/fp, M1: fp_mem.py, the census with `ck_kept` logging the resident memory at each refactor and new slot;
+`LADDER_KEEP` 12, the bytes unbounded, 10 ns, 14 / 15 GB scopes): a ladder run makes all its slots in its first ~15
+steps (~30 s: the sizes doubling up from the first, one matrix a step) -- 3t at 3.25 .. 8.55 GiB resident, 6t at 4.84 ..
+10.55 -- and grows by 0.53 / 0.58 GiB after the last besides that slot (VmHWM 9.52 / 11.55 GiB with eleven); the rest
+of a run's growth comes before its first slot (the transient's set-up, 1.47 / 2.24 GiB).  So a check at each new slot
+sees nearly all of the run's memory, and a margin of 1.5 GiB leaves ~0.9 GiB: under the census's 11 GiB scope 3t keeps
+eleven and 6t seven (its eighth would be made at 9.25 GiB, over 11 - 0.42 - 1.5).  The waveforms the bytes of SB's
+census (a kept factor is a refactor's), 46 / 47 factorizations.  Build lines (set before measuring the build): (a) the
+gate against 27a526ef 0 differing (the decks far below CHOLMOD_FROM: the change reached by the tests and the census);
+(b) the census, 10 ns, pinned 0-15, 11 GB scope both sides, against 27a526ef: 3t <= 0.90x with eleven slots, 6t seven
+slots and its time 0.99x-1.01x, every grid's waveforms and steps the same, VmHWM <= 10.1 GiB on every grid; (c) the
+tests bitten, the suite, ruff.
+
+**What.**  `_cholklu`'s THE BUDGET: `ck_room` (the resident memory, /proc/self/statm, + the slot's bytes, L's values
+and J's, + `keep_margin` <= `keep_limit`) asked in `ck_kept` before a new slot -- the least recently used one takes the
+factor otherwise; `ck_keep` takes the limit and the margin (`ck_sym.keep_limit`, `keep_margin`, at the end);
+`KEEP_MARGIN` 1.5 GiB; `memory_limit()`: the least of the `memory.max` up the process's cgroup (v2) tree and its
+resident memory plus the machine's MemAvailable, None where neither can be read.  `StructuralKLU.keep_factors(keep,
+max_bytes, limit, margin)`: under a limit `KEEP_BYTES` does not bind (a `max_bytes` given does).
+`transient.LADDER_KEEP` 12, the step ladder passing `memory_limit()` as the run starts.
+
+**Measured.**  The census (scratch l28/fp/cen: census_fp.py, 10 ns, pinned 0-15, 11 GB scope both sides -- `memory_limit()` read it, 11.0 GiB -- order B3 N3 N6 B6 B4 N4 N5 B5 B1 N1 N2 B2, against 27a526ef): ibmpg3t's transient 339.9 -> 271.0 s, **0.797x** (seven slots -> eleven, 115 -> 46 factorizations, VmHWM 7 892 -> 9 679 MiB); ibmpg6t 437.5 -> 434.5 s, **0.993x** (seven slots both, 117 factorizations, 10 120 -> 10 130 MiB); ibmpg5t 303.8 -> 246.4 s, 0.811x (seven -> eleven, 130 -> 52, 7 054 -> 8 331 MiB); ibmpg4t 422.5 -> 368.4 s, 0.872x (six -> eight, the budget stopping it: 153 -> 109, 8 857 -> 10 032 MiB); ibmpg1t / 2t 1.000x / 1.001x (KLU: nothing kept).  Every grid's waveforms and DC operating point the same bytes (digests), the same steps and errors against the benchmark.  Every line met: (a) the gate SAME, 0 changed executable lines reached (as set: the decks below CHOLMOD_FROM); (b) above, the highest VmHWM 10 130 MiB <= 10 342; (c) the suite 6 897 passed, 10 skipped; ruff 29 = 29 (the base side proved live).  6t keeps seven because its eighth slot would need ~13 GB of scope (eleven: VmHWM 11.55 GiB, ~0.83x unpinned in M1) -- the census's scope is Andreas's to change.  The solve no longer dominates 6t's run: profile before the next speed item.
+
+**Tests.**  `test_cholklu` +4 (54 in all): `test_kept_factors_stay_within_the_memory_left` (a limit 64 MB below the
+resident memory, or a margin over the room a limit leaves, keeps no slot; a limit with room keeps every slot `keep`
+allows, `KEEP_BYTES` at one byte not binding under it, a `max_bytes` given binding; the answers those keeping none),
+`test_the_memory_limit_is_the_least_of_the_cgroups_and_the_machines` (a fake /proc and cgroup tree: no `memory.max`,
+the scope's, its parent's lower, MemAvailable lower, the resident memory unreadable, nothing readable), 
+`test_the_budget_counts_the_slot_it_would_make` (a 300 x 300 mesh's factor, its slot tens of MB: the limit half a slot
+over the resident memory makes none, two slots over makes one), `test_the_ladder_keeps_its_factors_within_the_memory_left`
+(the ladder's run with `memory_limit()` one byte, or room for the slots but not `KEEP_MARGIN`, keeps none, no limit
+read: `KEEP_BYTES` binds; the bytes, steps and counts of the run with room); `test_a_grid_on_the_ladder_steps_on_its_rungs`
+asserts its eleven slots.  Thirteen bites, thirteen bit (bites_fp.py): the budget not asked; the resident pages not
+scaled by the page size; VmSize read for the resident memory; the margin ignored; the slot not counted; the limit not
+stored; `keep_factors` dropping the limit; `KEEP_BYTES` binding under a limit; the default margin not `KEEP_MARGIN`;
+the ladder passing no limit; `memory_limit` the largest; it skipping the leaf cgroup; it without MemAvailable.  The
+one untested arm: the resident memory unreadable in the C (no new slot), unreachable where /proc is.

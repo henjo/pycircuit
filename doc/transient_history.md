@@ -6643,3 +6643,29 @@ cores, against bb925fdd): ibmpg6t 543.6 -> 437.4 s (0.805x), ibmpg3t
 430.0 -> 340.0 s (0.791x), ibmpg4t and 5t 0.823x and 0.813x, the small
 grids (KLU) unchanged, every waveform the same bytes, memory within
 +0.3 %.  `PYCIRCUIT_CHOLMOD_THREADS=0` keeps the solve on one thread.
+
+
+## FP: the kept factors within a memory budget (2026-11-26)
+
+### `_cholklu`'s THE BUDGET: `ck_room`, `memory_limit`, `KEEP_MARGIN`; `transient.LADDER_KEEP` 12
+
+2026-11-26 (`doc/hdl_roadmap_260824.md`, 360; plan 261 L28).  A run on
+the step ladder keeps the factors of the matrices it comes back to, so
+they are not factored again.  On the IBM power grids each kept factor
+costs about 0.44 GB, and a fixed cap of 3.5 GB held a run to seven of
+them.  The cap is now the memory left: a factor is kept only while the
+process's memory, the new factor and a margin of 1.5 GB fit under the
+process's limit (the smaller of its cgroup's memory limit and what the
+machine had free when the run started), up to eleven.  A run makes its
+kept factors in its first few steps, and grows by only about half a GB
+after them, so the check sees nearly all of its memory.  The answers are
+the same to the bit however many are kept.
+
+Measured on a 10 ns run of each grid, pinned, under the census's 11 GB
+memory limit, against 27a526ef: ibmpg3t's transient went from 339.9 to
+271.0 s (0.797x) with eleven kept factors, ibmpg5t from 303.8 to 246.4 s
+(0.811x) with eleven, and ibmpg4t from 422.5 to 368.4 s (0.872x) with
+eight, where the budget stopped it.  ibmpg6t kept seven, as before, and
+took the same time (0.993x); its peak memory stayed at 10.1 GB.  The two
+smaller grids, which keep no factors, were unchanged.  Every waveform
+was the same to the bit, with the same steps.
