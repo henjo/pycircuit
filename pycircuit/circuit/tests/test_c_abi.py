@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 import cffi
 import pytest
@@ -247,6 +248,89 @@ def test_where_the_cpu_has_fma_no_unit_calls_libm_for_it(tmp_path):
     without = tuple(f for f in _cbuild.CFLAGS if f != '-mfma')
     assert 'fma' in _left_to_libraries(cc, without, _cbuild.csrc(smallest + '.c'),
                                        tmp_path / 'planted.so')
+
+
+def test_the_vectorising_flag_is_the_runtime_units_and_gcc_s(monkeypatch):
+    """`UNIT_FLAGS` (GCC's cheap vectorisation cost model) are a runtime
+    unit's flags and part of its key, never an HDL kernel's; a build by
+    clang drops them, by GCC (whatever its version line calls it) keeps
+    them."""
+    if not _cbuild.VECTORIZE:
+        pytest.skip('PYCIRCUIT_C_VECTORIZE=0')
+    assert _cbuild.UNIT_FLAGS == ('-fvect-cost-model=cheap',) == _cbuild.GCC_ONLY
+    unit, kernel = _cbuild._flags(False), _cbuild._flags(True)
+    assert set(_cbuild.UNIT_FLAGS) <= set(unit) and not set(_cbuild.UNIT_FLAGS) & set(kernel)
+    without = tuple(f for f in unit if f not in _cbuild.GCC_ONLY)
+    assert _cbuild._for_compiler(unit, 'Ubuntu clang version 21.1.8 (6ubuntu1)') == without
+    assert _cbuild._for_compiler(unit, 'Apple clang version 15.0.0') == without
+    for gcc in ('cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0', 'gcc (GCC) 13.2.1', None):
+        assert _cbuild._for_compiler(unit, gcc) == unit
+    key = _cbuild.source_key('int f(void) { return 0; }\n', prelude=False)
+    monkeypatch.setattr(_cbuild, 'UNIT_FLAGS', ())
+    assert _cbuild.source_key('int f(void) { return 0; }\n', prelude=False) != key
+
+
+def test_the_vectorising_switch_builds_the_units_without_it():
+    """`PYCIRCUIT_C_VECTORIZE=0`, read at import: no `UNIT_FLAGS`."""
+    code = 'from pycircuit.circuit import _cbuild; print(repr(_cbuild.UNIT_FLAGS))'
+    out = {}
+    for v in ('0', '1'):
+        env = dict(os.environ, PYCIRCUIT_C_VECTORIZE=v)
+        out[v] = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
+                                env=env, check=True).stdout.strip()
+    assert out == {'0': '()', '1': "('-fvect-cost-model=cheap',)"}
+
+
+def _divisions(cc, flags, path):
+    """The packed and the scalar double divisions in the object `flags`
+    build from the LTE unit (`objdump -d`)."""
+    src = path.with_suffix('.c')
+    src.write_text(_cbuild.csrc('lte.c'))
+    proc = subprocess.run([cc, *flags, '-o', str(path), str(src), '-lm'], capture_output=True,
+                          text=True, check=False, env=_cbuild._compiler_env())
+    assert proc.returncode == 0, proc.stderr
+    text = subprocess.run(['objdump', '-d', '--no-show-raw-insn', str(path)], capture_output=True,
+                          text=True, check=True).stdout
+    return len(re.findall(r'\bv?divpd\b', text)), len(re.findall(r'\bv?divsd\b', text))
+
+
+def test_the_error_test_s_divided_difference_divides_packed(tmp_path):
+    """Built by GCC with a runtime unit's flags, the LTE unit divides two or
+    four unknowns at once (`divpd`: the third divided difference's five
+    divisions an unknown, `charge_lte`); built without `UNIT_FLAGS` it
+    divides one at a time -- the check sees the difference.  The object a
+    process builds without the coverage build: that build's counters, an
+    atomic update in every loop, keep GCC from vectorising (its objects
+    divide one at a time, and the gate's instrument compares the two)."""
+    cc, version = _cbuild.find_compiler()
+    if cc is None or 'clang' in version.lower() or shutil.which('objdump') is None:
+        pytest.skip('no GCC or no objdump')
+    if os.uname().machine != 'x86_64' or not _cbuild.VECTORIZE:
+        pytest.skip('not x86-64, or PYCIRCUIT_C_VECTORIZE=0')
+    unit = _cbuild._for_compiler(tuple(_cbuild.CFLAGS) + _cbuild.UNIT_FLAGS, version)
+    packed, _ = _divisions(cc, unit, tmp_path / 'with.so')
+    packed0, scalar0 = _divisions(cc, tuple(_cbuild.CFLAGS), tmp_path / 'without.so')
+    assert packed >= 5 and packed0 == 0 and scalar0 >= 5, (packed, packed0, scalar0)
+
+
+def test_a_clang_build_of_a_runtime_unit_drops_gcc_s_flag(tmp_path, monkeypatch):
+    """clang refuses `-fvect-cost-model`: a runtime unit built by clang
+    (`_build`, the compiler `find_compiler` names) is built without it --
+    and clang handed the unit's flags whole refuses, so the check sees it."""
+    clang = shutil.which('clang')
+    if clang is None:
+        pytest.skip('no clang')
+    version = subprocess.run([clang, '--version'], capture_output=True, text=True,
+                             check=True).stdout.splitlines()[0]
+    monkeypatch.setattr(_cbuild, '_compiler', (clang, version))
+    dest = tmp_path / 'unit.so'
+    _cbuild._build('int pcx_f(void) { return 0; }\n', str(dest), prelude=False)
+    assert dest.exists()
+    src = tmp_path / 'u.c'
+    src.write_text('int pcx_f(void) { return 0; }\n')
+    proc = subprocess.run([clang, *_cbuild._flags(False), '-o', str(tmp_path / 'u.so'), str(src)],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode != 0 and 'vect-cost-model' in proc.stderr, proc.stderr
 
 
 def test_no_c_file_declares_a_type_and_no_header_includes_another():

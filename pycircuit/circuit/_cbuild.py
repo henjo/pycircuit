@@ -13,7 +13,8 @@ off): the built objects `c-<key>-<compiler tag>.so`, the precompiled FFIs
 (every library opened, held), `_compiler`.  No `_paths` counts.
 Switches: `PYCIRCUIT_HDL_CC` (then `CC`) names the compiler;
 `PYCIRCUIT_C_SANITIZE=1` makes the sanitizer build, `PYCIRCUIT_C_COVERAGE=<dir>`
-the coverage build; the store's
+the coverage build, `PYCIRCUIT_C_VECTORIZE=0` the runtime units without
+`UNIT_FLAGS`; the store's
 `PYCIRCUIT_HDL_CACHE` and `PYCIRCUIT_HDL_CACHE_DIR` are `_hdl_cache`'s;
 `enabled_env` reads `PYCIRCUIT_HDL_BACKEND` for its callers.
 
@@ -38,7 +39,10 @@ CONTRACT
     no `-march`, every transcendental a real libm call -- the bit
     identity with the numpy path rests on them.  `-mfma` where numpy
     finds the FMA instruction on this CPU (`fma_flags`): the C's own
-    `fma()` calls inlined, no result moved.  With
+    `fma()` calls inlined, no result moved.  The runtime units add
+    `UNIT_FLAGS` (GCC's cheap vectorisation cost model: loops of unknown
+    length vectorised, no result moved), dropped for clang at the build
+    (`_for_compiler`), kept in the key.  With
     `PYCIRCUIT_C_SANITIZE=1` the sanitizer flags are added (their own
     keys) and the import refuses without the ASan runtime preloaded.
     An object's file name carries the compiler's version tag, and
@@ -238,10 +242,39 @@ COVERAGE_FLAGS = (('-g', '--coverage', '-fprofile-update=atomic', '-dumpdir',
                    COVERAGE_DIR.rstrip('/') + '/') if COVERAGE_DIR else ())
 
 
+#: THE VECTORISED UNITS.  GCC at -O2 vectorises a loop only where vector
+#: code replaces the scalar code whole (its `very-cheap` cost model): a
+#: loop of unknown length, which needs a scalar epilogue, never -- so the
+#: runtime units' loops over the unknowns ran one double at a time (the
+#: error test's divided difference five scalar divisions an unknown).
+#: `-fvect-cost-model=cheap` lets GCC vectorise such a loop, with its
+#: epilogue and, where two arrays might overlap, a runtime check, as clang
+#: does at -O2.  No result moves: an elementwise IEEE operation rounds the
+#: same packed or scalar, and GCC reorders no floating-point sum without
+#: `-fassociative-math` (it vectorises one in its order or not at all).
+#: The runtime units alone (`load_unit`), the code it was measured on;
+#: part of their keys.  `PYCIRCUIT_C_VECTORIZE=0` builds them without.
+VECTORIZE = os.environ.get('PYCIRCUIT_C_VECTORIZE', '1').strip().lower() not in _FALSE
+UNIT_FLAGS = ('-fvect-cost-model=cheap',) if VECTORIZE else ()
+#: the flags GCC alone takes: a clang build drops them (`_for_compiler`) --
+#: clang refuses `-fvect-cost-model`, and vectorises as it asks already
+GCC_ONLY = ('-fvect-cost-model=cheap',)
+
+
 def _flags(prelude):
     """The flags a source compiles with: `CFLAGS`, a runtime unit's
-    (`prelude=False`) the coverage build's too."""
-    return tuple(CFLAGS) if prelude else tuple(CFLAGS) + COVERAGE_FLAGS
+    (`prelude=False`) `UNIT_FLAGS` and the coverage build's too."""
+    return tuple(CFLAGS) if prelude else tuple(CFLAGS) + UNIT_FLAGS + COVERAGE_FLAGS
+
+
+def _for_compiler(flags, version):
+    """`flags` as the compiler whose version line is `version` takes them:
+    a clang's without `GCC_ONLY`.  The key keeps them whatever the
+    compiler (`source_key`), so an object one compiler built is served
+    for the same source where the other is absent (`find_so`)."""
+    if 'clang' in (version or '').lower():
+        return tuple(f for f in flags if f not in GCC_ONLY)
+    return tuple(flags)
 
 
 def _compiler_env():
@@ -418,9 +451,9 @@ def _build(csrc, dest, prelude=True):
     """Compile `csrc` (the HDL kernels' prelude added here unless
     `prelude=False`) to `dest`, atomically."""
     from pycircuit.circuit import hdl
-    cc, _version = find_compiler()
+    cc, version = find_compiler()
     if cc is None:
-        raise CompileError(_version)
+        raise CompileError(version)
     d = os.path.dirname(dest)
     fd, cpath = tempfile.mkstemp(suffix='.c', dir=d)
     sopath = cpath[:-2] + '.so.tmp'
@@ -429,8 +462,8 @@ def _build(csrc, dest, prelude=True):
             if prelude:
                 fh.write(hdl._KERNEL_C)
             fh.write(csrc)
-        proc = subprocess.run([cc] + list(_flags(prelude)) + ['-o', sopath, cpath,
-                                                              '-lm'],
+        proc = subprocess.run([cc] + list(_for_compiler(_flags(prelude), version))
+                              + ['-o', sopath, cpath, '-lm'],
                               capture_output=True, text=True, env=_compiler_env())
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or '').strip()

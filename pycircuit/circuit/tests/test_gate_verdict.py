@@ -173,9 +173,10 @@ def test_what_has_no_twin_is_in_the_matrix_and_read_tree_against_tree():
 
 
 def test_the_coverage_build_is_off_and_moves_no_key_by_default(monkeypatch):
-    """Unset, a runtime unit compiles with `CFLAGS` alone, so its key is the one a tree without the switch makes."""
+    """Unset, a runtime unit compiles with `CFLAGS` and `UNIT_FLAGS` alone, so its key is the one a tree without the switch makes."""
     monkeypatch.setattr(_cbuild, 'COVERAGE_FLAGS', ())
-    assert _cbuild._flags(False) == tuple(_cbuild.CFLAGS) == _cbuild._flags(True)
+    assert _cbuild._flags(False) == tuple(_cbuild.CFLAGS) + _cbuild.UNIT_FLAGS
+    assert _cbuild._flags(True) == tuple(_cbuild.CFLAGS)
     key = _cbuild.source_key('int f(void);', False)
     monkeypatch.setattr(_cbuild, 'COVERAGE_FLAGS', ('--coverage',))
     assert _cbuild.source_key('int f(void);', False) != key

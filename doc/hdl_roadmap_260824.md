@@ -17837,3 +17837,40 @@ group of one).  Seven bites, seven bit (the rise before the high; the rise regro
 group's next event lost; the timing by value -- -0.0 and +0.0 merged, caught by the group count; no groups told to
 the C; the fall regrouped).  Five pinned pairs re-recorded, twin sides alone (the sources and their C; the stepping,
 stage and transform loops and the multistep walk, sources.h in each's text).
+
+## 2026-11-26 — 357. VC: the runtime units vectorised -- GCC's cheap cost model, the loops of unknown length
+
+**Why**  Plan 261 L28 (tc/plan_l28_next.md), CP's second item (the vector passes).  P0's line profile (6t 2 ns, the
+runtime units built with -g, DWARF stacks): the error test's third divided difference (lte.c's `charge_lte`) is 36 %
+of `pcx_lte`, and every division in the LTE object is scalar (`vdivsd`) -- five an unknown, 1.5 M unknowns on 6t.
+GCC 15 at -O2 vectorises a loop only where the vector code replaces the scalar code whole (its `very-cheap` cost
+model), so never one whose length is not known at compile time: every loop over the unknowns ran one double at a time
+(13 loops vectorised in the transient's units, of 142 the `cheap` model takes).  A micro-benchmark of the divided
+difference (n = 1.53 M): 9.73 ms scalar, 4.86 ms vectorised (`-fvect-cost-model=cheap` takes the loop as written;
+clang vectorises it at -O2 by default, 4.86 ms), the same bytes.  Prototype (the flag on the runtime units alone,
+2 ns, pinned to the P-core threads, two pairs a grid, scratch l28/cp2): 6t 176.12 / 175.42 -> 172.53 / 172.13 s
+(0.980x), 3t 143.61 / 143.11 -> 140.92 / 141.35 s (0.984x), the same digests and steps.  Lines (set before measuring
+the build): (a) the gate against c6b0b0bb, 0 differing; (b) the census, 10 ns, pinned to the P-core threads on both
+sides, against c6b0b0bb: 6t <= 0.99x, 3t <= 0.99x, the other grids reported, every grid's waveforms the SAME bytes,
+steps SAME, VmHWM <= +1 %; (c) the tests bitten, the suite, ruff, pins.
+
+**What.**  `_cbuild.UNIT_FLAGS` (`-fvect-cost-model=cheap`): a runtime unit's flags (`load_unit`: `_flags(False)`),
+part of its key, never an HDL kernel's (the code measured is the runtime's).  GCC may then vectorise a loop of unknown
+length with a scalar epilogue and, where two arrays might overlap, a runtime check.  No result moves: an elementwise
+IEEE operation rounds the same packed or scalar, and GCC reorders no floating-point sum without `-fassociative-math`
+-- it vectorises one in its order or not at all (a vectorised k-term row sum: 0 of 200 000 random rows differ from the
+scalar one).  `GCC_ONLY`: clang refuses the flag (and vectorises so already), so `_build` drops it for a compiler whose
+version line names clang (`_for_compiler`); the key keeps it whatever the compiler, so an object one compiler built is
+still served where the other is absent (`find_so`).  `PYCIRCUIT_C_VECTORIZE=0` builds the units without it;
+`doc/transient_runtime.md` names it.
+
+**Measured.**  (a) The gate against c6b0b0bb (scratch l28/vc/gate_vc): C against Python 13 settings x 27 decks and 3 at size, this tree against the base 27 + 27 + 27 + 27 decks and 8 at size, its path counters the same: 0 differing, VERDICT SAME (0 executable lines changed: the change is a flag).  The instrument's 81 decks, the coverage build against the normal one, 0 differing -- and that compared SCALAR against VECTORISED code: the coverage build's counters (an atomic increment in every loop) keep GCC from vectorising any loop, so the instrument check is a second, whole-deck comparison of the two codes.  (b) The census, 10 ns, `taskset -c 0-15` on both sides, interleaved (B3 N3 N6 B6 B4 N4 N5 B5 B1 N1 N2 B2, 1-min load 1.09-1.45, AC), against c6b0b0bb, transient seconds: 6t 568.5 -> 555.6 (**0.977x**), 3t 447.7 -> 440.6 (**0.984x**), 4t 532.0 -> 523.1 (0.983x), 5t 393.1 -> 384.6 (0.978x), 2t 234.6 -> 233.5 (0.995x), 1t 10.7 -> 10.5 s.  Every grid's waveform digest the base's (1t-6t b8148169f205, d23b6dc4b1ba, fdbfc2c29817, 4de6bbddb907, 4d3090c9390a, b8b9d2aa8f92), its DC digest the base's, its steps the base's.  VmHWM: 6t 10 090 -> 10 102 MB (+0.12 %), 3t +0.06 %, 5t +0.34 %, 2t +0.35 %, 4t -0.06 %, 1t -0.27 %.  MET.  (c) The suite 6879 passed, 10 skipped, 5 xfailed; no pinned pair moved (the waveforms are the same bytes); ruff 10 = 10 against the base.  2t gains least: it is KLU-bound, and KLU's objects are its own, not built with this flag.
+
+**Tests.**  `test_c_abi` +4: `test_the_vectorising_flag_is_the_runtime_units_and_gcc_s` (in a unit's flags and key,
+not a kernel's; clang's build without it, GCC's with it, whatever its version line says);
+`test_the_vectorising_switch_builds_the_units_without_it` (a fresh interpreter each way);
+`test_the_error_test_s_divided_difference_divides_packed` (the LTE object built by GCC with a unit's flags has packed
+divisions, built without `UNIT_FLAGS` none -- x86-64); `test_a_clang_build_of_a_runtime_unit_drops_gcc_s_flag` (where
+clang is installed: `_build` succeeds, clang handed the flags whole refuses).  Seven bites, seven bit (no unit flags;
+the kernels flagged too; clang keeping the flag; every compiler dropping it; the build ignoring the compiler; the
+switch ignored; the flag left out of the key).

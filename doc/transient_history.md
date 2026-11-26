@@ -6586,3 +6586,20 @@ source's value from its own levels.  The results are the same to the bit.
 On the IBM grids' 10 ns the transient ran in 0.953x (ibmpg6t) and 0.982x
 (ibmpg3t) of its time with the same steps and waveforms.
 `PYCIRCUIT_SOURCE_GROUPS=0` turns it off.
+
+
+## VC: the runtime units vectorised (2026-11-26)
+
+### `_cbuild.UNIT_FLAGS`, `_cbuild.GCC_ONLY`, `_cbuild._for_compiler`
+
+2026-11-26 (`doc/hdl_roadmap_260824.md`, 357; plan 261 L28).  GCC, at the
+optimisation level the C units are built with, works through a loop one
+number at a time unless it knows the loop's length in advance -- and the
+transient's loops run over the circuit's unknowns, whose number it never
+knows.  The C runtime units are now built so that GCC processes such
+loops two or four numbers at a time, as clang already does; each number
+is computed exactly as before.  The results are the same to the bit.
+On the IBM power grids (10 ns, pinned to the performance cores,
+against c6b0b0bb): ibmpg6t 568.5 -> 555.6 s (0.977x), ibmpg3t 447.7 ->
+440.6 s (0.984x), the other grids 0.978x-0.995x, every waveform the same
+bytes, memory within +0.35 %.  `PYCIRCUIT_C_VECTORIZE=0` builds the units as before.
