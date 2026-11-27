@@ -425,6 +425,20 @@ typedef struct {
     /* OWN: the predictor's nodes' rotation in `hx` -- node j at physical
        slot (hx_o + j) % PRED_HIST_MAX; put back to 0 at every exit */
     long hx_o;
+    /* the run: THE KEPT KEYS (newton.h; `_tran_newton.KEPT_KEYS`): 1 where
+       the Newton's `kept_keys` is set around the multistep attempts, 0
+       never */
+    long kept_keys;
+    /* OWN, this call's: the evaluations that took a kept factor's J values
+       by their key (newton.h's `kept_held`) */
+    long kept_held;
+    /* CALL, this entry's: THE KEPT KEYS' tags held from the stepping loop's
+       last entry (1) -- nothing watched has moved since and the Newton's
+       record stands: an affine run's J is its step key's alone, and
+       whatever factors the numeric between two entries keeps each tag with
+       its factor (`_cholklu`) -- or dropped at the entry (0): the loop's
+       first, or either moved (`_tran_loop_c._corners`) */
+    long kept_hold;
 } loop_t;
 long pcx_loop(loop_t *s);
 

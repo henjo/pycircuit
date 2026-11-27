@@ -508,12 +508,14 @@ class LoopState:
     before the next entry; `backoff`: the spacing that set it); `stage`:
     the stage family's loop (`_tran_stageloop_c`); `tkept`: its transform
     mode's own kept decline (`_tran_tcloop_c`: the coupled mode's does not
-    keep it out)."""
+    keep it out); `tags`: the watch counter and the Newton record at the
+    last entry's load (THE KEPT KEYS' tags held from it while both stand,
+    `_corners`)."""
 
-    __slots__ = ('backoff', 'kept', 'run', 'skip', 'stage', 'tab', 'tkept')
+    __slots__ = ('backoff', 'kept', 'run', 'skip', 'stage', 'tab', 'tags', 'tkept')
 
     def __init__(self, stage=False):
-        self.run = self.tab = self.kept = self.tkept = None
+        self.run = self.tab = self.kept = self.tkept = self.tags = None
         self.skip = self.backoff = 0
         self.stage = stage
 
@@ -891,9 +893,18 @@ def _corners(s, loop, tr):
     s.land_ahead, s.corner_cut = int(bool(tr.par.land_ahead)), float(tr.par.corner_cut or 0.0)
     ## (THE STEP LADDER's anchor the run holds: `Transient._step_ladder`)
     s.ladder = float(getattr(loop, 'ladder', 0.0))
-    ## (THE AFFINE STEP, csrc/newton.h: its switch -- the same bytes either way)
+    ## (THE AFFINE STEP and THE KEPT KEYS, csrc/newton.h: their switches --
+    ## the same bytes either way -- and the kept keys' tags held from the
+    ## loop's last entry while nothing watched has moved and its Newton
+    ## record stands: loop.h's `kept_hold`; dropped at its first entry and
+    ## wherever either moved)
     from pycircuit.circuit import _tran_newton
     s.affine = 1 if _tran_newton.AFFINE_STEP else 0
+    s.kept_keys = 1 if _tran_newton.KEPT_KEYS else 0
+    now, rec = _watch.now(), tr.__dict__.get('_newton_c')
+    last = loop.c.tags
+    s.kept_hold = int(last is not None and last[0] == now and last[1] is rec)
+    loop.c.tags = (now, rec)
 
 
 def _kept(tr, td, x, cmax):
@@ -1336,12 +1347,14 @@ def _stats_back(stats, s, k):
 def _affine_counted(s):
     """THE AFFINE STEP's counts of the loop's call (csrc/newton.h) -- its
     error tests held on the full Newton's numeric, its evaluations that took
-    the J kAx held -- and the held tests that are the seed's (`lte_seeds`
-    less the affine step's)."""
+    the J kAx held, and THE KEPT KEYS' that took a kept factor's -- and the
+    held tests that are the seed's (`lte_seeds` less the affine step's)."""
     if s.lte_affine:
         _PC['loop_c:affine_lte'] += s.lte_affine
     if s.jkey_held:
         _PC['loop_c:affine_j'] += s.jkey_held
+    if s.kept_held:
+        _PC['loop_c:kept_key'] += s.kept_held
     return s.lte_seeds - s.lte_affine
 
 

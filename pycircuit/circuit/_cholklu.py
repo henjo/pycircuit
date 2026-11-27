@@ -64,6 +64,19 @@ a grid of a million unknowns -- for the factors a step-size ladder
 revisits around every corner (plan 261 L24).  Counted on the numeric
 (`num_info`: `StructuralKLU.kept_counts`).
 
+THE KEPT KEYS.  Each factor a numeric holds -- its own and each slot's --
+may carry a tag: the step key (the companion's formula, a0, h and theta)
+of the J whose values it is a factor of.  The C Newton tags the numeric
+after a refactor of a J its stepping loop gathered with a key
+(`ck_tag_set`), takes a tagged factor's values for a later step of the
+same key without forming J (`ck_tag_find`: csrc/newton.h's THE KEPT KEYS),
+and drops every tag where its run starts, anything watched moved or the
+Newton's record was made again (`ck_tag_clear`; csrc/loop.h's
+`kept_hold`).  A tag moves
+with its factor (`ck_swap`) and is dropped where CHOLMOD factors other
+values into those buffers (`ck_values`), so a tag names the values it
+stands beside, whoever refactored the numeric.
+
 THE BUDGET.  Where a limit is set (`keep_factors`' `limit`; the step
 ladder's is `memory_limit()`: the least of `KEEP_MEMORY`, the user's (env
 `PYCIRCUIT_CHOLMOD_KEEP_MEMORY`: bytes, or a number with K, M, G or T --
@@ -307,6 +320,10 @@ typedef struct {
     double *x, *Ax;
     int valid;
     int64_t used;
+    /* THE KEPT KEYS: the step key (formula, a0, h, theta) of the J whose
+       values `Ax` are, where `tagged` */
+    double tag[4];
+    int tagged;
 } ck_slot;
 
 typedef struct {
@@ -335,6 +352,10 @@ typedef struct {
     int64_t *ucnt;
     long ub_for;
     int64_t par_solves;
+    /* THE KEPT KEYS: the step key of the J whose values the numeric's own
+       `Ax` are, where `tagged` */
+    double tag[4];
+    int tagged;
 } ck_num;
 
 static void *ck_alloc(size_t n, size_t s) { return calloc(n ? n : 1, s); }
@@ -624,6 +645,8 @@ static int ck_values(const ck_sym *s, ck_num *n, const double *Ax)
 {
     long k;
     double *Kx = (double *) n->K->x;
+    /* (THE KEPT KEYS: other values in these buffers -- no tag) */
+    n->tagged = 0;
     for (k = 0; k < s->nnz; k++) {
         if (!isfinite(Ax[k])) return 0;
         n->Ax[k] = Ax[k];
@@ -685,15 +708,60 @@ static int ck_same(const ck_sym *s, const double *a, const double *b)
     return memcmp(a, b, (size_t) s->nnz * sizeof(double)) == 0;
 }
 
-/* the numeric's factor and a slot's exchanged: L's values, J's, and whether
-   they are a factor of them -- pointers, no copy */
+/* the numeric's factor and a slot's exchanged: L's values, J's, whether
+   they are a factor of them and their tag -- pointers, no copy */
 static void ck_swap(ck_num *n, ck_slot *t)
 {
-    double *p = (double *) n->L->x;
+    double *p = (double *) n->L->x, tag[4];
     int v = n->valid;
     n->L->x = t->x; t->x = p;
     p = n->Ax; n->Ax = t->Ax; t->Ax = p;
     n->valid = t->valid; t->valid = v;
+    memcpy(tag, n->tag, sizeof(tag));
+    memcpy(n->tag, t->tag, sizeof(tag));
+    memcpy(t->tag, tag, sizeof(tag));
+    v = n->tagged; n->tagged = t->tagged; t->tagged = v;
+}
+
+/* THE KEPT KEYS: whether two step keys are the same -- each double by ==,
+   as the C Newton compares its own key's */
+static int ck_tag_same(const double *a, const double *b)
+{
+    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
+}
+
+/* the J values of the factor -- the numeric's own, else a slot's -- that is
+   a factor of the J of step key `key`, or NULL */
+static const double *ck_tag_find(void *num, const double *key)
+{
+    ck_num *n = (ck_num *) num;
+    long i;
+    if (!n) return NULL;
+    if (n->valid && n->tagged && ck_tag_same(n->tag, key)) return n->Ax;
+    for (i = 0; i < n->nslot; i++)
+        if (n->slot[i].valid && n->slot[i].tagged && ck_tag_same(n->slot[i].tag, key))
+            return n->slot[i].Ax;
+    return NULL;
+}
+
+/* the numeric's own values tagged with `key` (none where they are not a
+   factor's) */
+static void ck_tag_set(void *num, const double *key)
+{
+    ck_num *n = (ck_num *) num;
+    if (!n || !n->valid) return;
+    memcpy(n->tag, key, sizeof(n->tag));
+    n->tagged = 1;
+}
+
+/* every tag dropped: the numeric's and its slots' */
+static void ck_tag_clear(void *num)
+{
+    ck_num *n = (ck_num *) num;
+    long i;
+    if (!n) return;
+    n->tagged = 0;
+    for (i = 0; i < n->nslot; i++) n->slot[i].tagged = 0;
 }
 
 /* the slots a numeric may make: `keep` - 1, CK_KEEP_MAX at most, within
@@ -1461,6 +1529,9 @@ void *pcx_cholklu(int which)
     case 10: return (void *) ck_num_info;
     case 11: return (void *) ck_own;
     case 12: return (void *) ck_threads;
+    case 13: return (void *) ck_tag_find;
+    case 14: return (void *) ck_tag_set;
+    case 15: return (void *) ck_tag_clear;
     }
     return NULL;
 }
@@ -1504,6 +1575,9 @@ class _Lib:
         ## THE THREADS: `threads(pool, n, from)` -- pool.c's entry, the count,
         ## the factor's values from which a solve takes them
         self.threads = fn(12, None, vp, ct.c_long, ct.c_long)
+        ## THE KEPT KEYS: the addresses of `ck_tag_find`, `ck_tag_set` and
+        ## `ck_tag_clear`, which the C Newton calls (csrc/newton.h)
+        self.tags = tuple(int(ffi.cast('uintptr_t', entry(k))) for k in (13, 14, 15))
         self.klu_defaults = klu.klu_defaults
 
 

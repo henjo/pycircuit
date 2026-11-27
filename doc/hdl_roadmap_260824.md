@@ -18091,3 +18091,92 @@ factors; the DC, every other analysis and anything not a grid are as before.  No
 the threshold's mechanism (`test_the_threshold_the_switch_and_the_dc_keep_klu`, a 10 x 10 grid KLU's by default) holds.
 
 **Measured.**  The gate against f08349ac (l28/wt8): SAME, 0 executable lines (the decks far below 20 000 unknowns).  The suite 6899 passed, 10 skipped.  ruff clean both sides (the base side live on a planted error).  The census (cen/; B f08349ac, N the tree, no CKFROM; 13 GB, pinned 0-15, 10 ns, two interleaved pairs, quiet-gated): ibmpg2t 231.6 / 232.4 s -> 36.4 / 36.3 s, **0.157x / 0.156x** (the whole run 0.177x); ibmpg1t 10.3 -> 6.5 s, **0.631x** both pairs (0.771 / 0.770x).  The benchmark error 2t 0.0560 -> 0.0556 mV, 1t 0.0719 -> 0.0652; DC the same bytes; N's waveforms the same bytes as the measurement's CKFROM runs, B's as its KLU runs (the build is the configuration measured); `solver.auto:cholmod` 1 on N; the records read the threshold 500 000 (B) and 20 000 (N); no warning; VmHWM 2t 1149 -> 1908 MiB, 1t 2222 -> 2283.  Lines (set before: 2t <= 0.20x, 1t <= 0.70x in both pairs; the benchmark error <= 1.05x, DC the same bytes, N's waveforms the measurement's; the gate SAME, 10 skipped) MET.  3t-6t not run: at >= 500 000 unknowns they are CHOLMOD's under either threshold.
+
+## 2026-11-27 — 364. KH: every kept hit held -- the kept factors tagged with their step key, no J formed for a tagged one
+
+**Why**  Plan 261 L30 (tc/plan_l30_profile.md, the profile after CF) ranked it first; plan L32 (tc/plan_l32_kh.md)
+measured it; Andreas: "1 Test", then "yes" to the build.  On a certified-affine run 662 of 708 refactors on ibmpg6t at
+10 ns found a kept factor holding exactly the values asked (`ck_kept`'s compare) -- the J formed (the G pass's pull,
+J on the pattern, the gather into kAx, the finiteness scan) only to be compared.  The affine step (353) held J only
+where the attempt's key was the LAST gather's.  The prototype (scratch l32/kh.diff on 95703b5f, env-switched, one
+build A/B) at 10 ns, pinned 0-15, two pairs each: ibmpg3t 0.934x / 0.904x, ibmpg6t 0.929x / 0.903x (medians 0.919x /
+0.916x), the same waveforms, DC, steps, factorizations and kept hits, VmHWM +0.0-0.1 %; 683 / 689 holds, ~42 ms a
+hold on 6t (the affine step's own measured hold, 43 ms).  Build lines (set before measuring the build): the gate
+against 95703b5f SAME; the suite green with 10 skipped; ruff no new finding; every new test bitten; the pinned pairs
+re-recorded on their C sides; the census, 10 ns, pinned 0-15, 13 GB scope, against 95703b5f: 3t <= 0.95x and 6t <=
+0.95x, 4t and 5t <= 1.00x, every grid's wave and DC digests, steps, factorizations and kept hits the same, VmHWM <=
++1 %.
+
+**What.**  `_cholklu`'s THE KEPT KEYS: a tag on the numeric's own factor and on each slot (`tag[4]`, `tagged` at the
+end of `ck_num` and `ck_slot`) -- the step key, the companion's formula, a0, h and theta, of the J whose values the
+factor is of; swapped with the factor (`ck_swap`), dropped where CHOLMOD factors other values into those buffers
+(`ck_values`), so a tag names the values beside it whoever refactored the numeric; entries `ck_tag_find` (the values
+of the factor tagged with a key, the numeric's own first, else a slot's), `ck_tag_set`, `ck_tag_clear`
+(`_Lib.tags`).  csrc/newton.h's THE KEPT KEYS (`kept_keys` CALL, `tag_find`, `tag_set`, `tag_clear`, `kept_held`,
+`kept_src` at the end; `pcx_tag_*_t`): `kept_take` beside the affine step's `jkey_take` -- its conditions but the
+last gather's key -- takes a tagged factor's values into kAx (`gather`, evaluate's gather moved out of it), the core
+called with no G pass and no J, no finiteness scan of those values; the refactor's compare then finds the factor as
+it would the formed J's (a factor of the same values on the same symbolic: the same bytes); `kept_tag` tags the
+numeric after each refactor or reuse of a J the loop's call gathered (or held) with a key.  loop.c sets the Newton's
+`kept_keys` beside `affine` for its calls and drops every tag at an entry that holds none (`ke_entry`,
+`loop_t.kept_hold`): `_tran_loop_c._corners` holds them from the stepping loop's last entry while the watch counter
+and the Newton's record stand (`LoopState.tags`), and drops them at the loop's first entry, wherever anything watched
+moved and wherever the record was made again.  A second
+solve of one Transient keeps its solver, numeric and slots -- with 32 kept and no drop, a run after every capacitor was
+written took the first run's factors for the same keys (other waveforms, measured); and the loop enters again each
+time its outputs fill (`CAP_BYTES` / 8n rows: 32 on ibmpg3t, 41 entries a 10 ns run; 21 on 6t, 62 entries; 203 on
+2t, 7; ibmpg1t one), the Python's attempts between two entries factoring through the same layer, which keeps each tag
+with its factor.  `loop_t.kept_keys`, `kept_held`, `kept_hold` at the end; `_tran_newton.KEPT_KEYS` (env
+`PYCIRCUIT_KEPT_KEYS=0` off), read at each loop's load; `_tran_newton_c._klu_bind` binds the tag entries where the
+solver has them (none on KLU's); count `loop_c:kept_key`.
+
+**Tests.**  `test_cholklu` +6: `test_the_kept_keys_tag_each_factor_with_its_step_key` (the library, one slot: a tag
+found by its key, moved with its factor into the slot, dropped by a factor made in place, gone with an evicted slot;
+a key differing in any one double finds nothing; the clear drops every tag),
+`test_the_kept_keys_are_the_run_s_bytes_and_form_no_kept_j[gear2|trap]` (the ladder's run on the reduction with and
+without the kept keys: the same bytes, steps, refactors and kept counts; holds counted with, none without, none on
+KLU), `test_the_kept_keys_are_dropped_where_the_run_starts` (one Transient solved, every capacitor written, solved
+again with 32 kept: the solver and numeric the same, the second run a fresh Transient's bytes),
+`test_the_kept_keys_hold_over_the_loop_s_entries` (the ladder's run with its outputs full every 8 points, `CAP_MAX`,
+entering the loop 5 times or more: the one-entry run's bytes, steps, refactors and kept counts, more kept-key holds and
+as many J's held in all -- the affine step's key dropped at each entry, the numeric's tag takes its turn),
+`test_the_kept_keys_are_held_while_nothing_moved_since_the_last_entry` (`_corners` itself: held at a second entry of
+one loop, dropped at its first, after the watch counter moved, after the record was made again, in another loop).
+Bitten (l32/build/bites_kh3.py, each planted alone in the source, the module's tests run): 17 of 17 -- the tag not
+swapped with its factor, a factor in place keeping its tag, the key compared without h (the run hung: a factor of
+another step size taken, killed at 240 s), the clear leaving the slots, no take, no tag set, the take's key without
+h, kAx not copied, no clear at the loop's entry, the switch ignored, the tags not bound, a clear at every entry (C),
+held never and held always (the glue), held past a watched move, held past a new record, the last entry not kept.  An end-to-end form of the last -- every capacitor written between two entries of one run -- did not bite:
+holding the tags past the write left the bytes as they were.  Traced as far as this: with the kept keys OFF, that run's
+C loop already parts from the Python loop's after the write (other waveforms, 69 against 65 factorizations; the entry
+after the write still on the record made before it), so the C path takes a mid-run write its own way, and such a run
+cannot judge the tags; nothing writes a circuit's values mid-run but such a hook.  Not traced further (recorded in
+plan L32).  Five pinned pairs re-recorded, their C sides alone (the stepping loop,
+the Newton solve, the multistep walk, the stage loop, the transform loop: newton.h and loop.h moved); the Python
+twins unchanged -- the kept keys are the C's own, the same bytes.
+
+**Measured.**  The first build dropped every tag at each entry of the loop (measured only on ibmpg1t's one-entry run
+before building): its census (l32/build/cen, 12:03-12:57) MISSED the line -- 3t 254.5 -> 245.8 s 0.966x, 6t 330.8 ->
+320.5 s 0.969x (4t 0.985x, 5t 0.979x, 2t 0.956x, 1t 0.969x), every digest, step, factorization and kept hit the base's
+-- holding 433 of 663 kept hits on 3t and 367 of 662 on 6t (the prototype 683, 689): each of the 41 / 62 entries
+formed each kept factor's J once again before its tag was back.  Held over the entries (`kept_hold`), the line
+unchanged, the census again: 3t 255.0 -> 254.9 s **1.000x**, 6t 333.8 -> 325.3 s **0.975x** (4t 288.1 -> 283.3 s 0.983x, 5t 225.7 -> 210.2 s
+0.931x, 2t 0.953x, 1t 0.969x), every digest, step, factorization and kept hit the base's, VmHWM -0.5 to +0.1 %, and
+now 683 / 689 kept-key holds, the prototype's exactly -- yet 3t saved 0.1 s.  The build's newton.c and `_cholklu`
+read against the prototype's diff: the same code.  A diagnosis (l32/build/d1, 3t, perf stat counting, interleaved B
+A K K A B -- B 95703b5f, A the build with `PYCIRCUIT_KEPT_KEYS=0`, K the build): B 256.6 / 256.2 s, A 255.1 / 254.5
+s, K 240.6 / 240.8 s; K/B 0.938 / 0.940, A/B 0.99 (the build costs nothing with the keys off); the kept keys remove
+104 G of 2 680 G user instructions (3.9 %) -- 21 ms a hold, as the first census gave per hold (433 x 21 ms = 9 s: its
+8.7 s).  So that census's 3t pair (and 6t's, ~15 s above the prototype's in the same way, the next run) cannot be
+the build's normal time: its scope's CPU saved 13 s where D1's saves 31 s, the run doing less work in as long.  The
+line was not moved; a decider was set before running (plan L32): the census script as the census ran it, perf stat
+counting added, 3t B N N B, 6t N B B N, each grid met where both pairs are <= 0.95x, refused where both are above, a
+third pair where they split.  Measured (l32/build/dec, 16:38-17:31): **3t 255.6 -> 237.7 s 0.930x, 266.1 -> 240.9 s
+0.905x** (B3b's 266 s high on its own -- its cycles were not: against B3a both pairs are 0.930x / 0.942x); **6t 335.9
+-> 310.4 s 0.924x, 336.0 -> 311.5 s 0.927x**; user instructions 3t 2 681 -> 2 575 G (-3.9 %), 6t 3 639 -> 3 469 G
+(-4.7 %); every run's wave and DC digests the base's (fdbfc2c29817 / cae98ab2e32c, b8b9d2aa8f92 / abed2272b536),
+steps 1297/2 and 1297/1, factorizations 46 / 47, kept hits 663 / 662, holds 683 / 689; VmHWM within 0.05 %.  Every
+build line met: the gate against 95703b5f every comparison 0 differing (its coverage: the kept-key lines reached by
+test_cholklu alone, 'fixture' -- no gold deck or gate circuit runs CHOLMOD); the suite 6 905 passed, 10 skipped;
+ruff the base's one finding (I001 in `_tran_newton_c`, both sides); 17 of 17 bites (below); the census's 4t, 5t,
+digest and memory lines from census 2.

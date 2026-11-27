@@ -825,6 +825,63 @@ def test_the_budget_counts_the_slot_it_would_make():
         lib.klu_free_symbolic(ctypes.byref(sym), None)
 
 
+def test_the_kept_keys_tag_each_factor_with_its_step_key():
+    """THE KEPT KEYS on the library (one slot kept): the numeric's values
+    tagged with a step key are found by it, and move with their factor into
+    the slot at the next refactor; a factor made in place drops the buffers'
+    tag; an evicted slot's tag goes with its values; a key differing in any
+    one of its four doubles finds nothing; the clear drops every tag."""
+    A = _laplacian(100)
+    lib = _cholklu.library(linearsolver.KLUSolver()._lib)
+    ip = lambda a: a.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+    dp = lambda a: a.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    vp = ctypes.c_void_p
+    find = ctypes.CFUNCTYPE(vp, vp, ctypes.POINTER(ctypes.c_double))(lib.tags[0])
+    tag = ctypes.CFUNCTYPE(None, vp, ctypes.POINTER(ctypes.c_double))(lib.tags[1])
+    clear = ctypes.CFUNCTYPE(None, vp)(lib.tags[2])
+    m, nnz = A.shape[0], A.nnz
+    Ap, Ai, kind = A.indptr.astype(np.int32), A.indices.astype(np.int32), np.zeros(m, dtype=np.int32)
+    vals = [np.ascontiguousarray(A.data * (1.0 + 0.125 * k), dtype=np.float64) for k in range(3)]
+    keys = [np.array([0.0, 1.5e11 * (k + 1), 1e-11 / (k + 1), 0.5]) for k in range(3)]
+    sym = vp(lib.analyze(m, ip(Ap), ip(Ai), ip(kind), -1))
+    assert sym
+    lib.keep(sym, 2, float('inf'), 0.0, 0.0)
+    num = vp(lib.klu_factor(ip(Ap), ip(Ai), dp(vals[0]), sym, None))
+    assert num
+
+    def found(key):
+        at = find(num, dp(key))
+        return None if not at else np.ctypeslib.as_array((ctypes.c_double * nnz).from_address(at)).copy()
+
+    def refactor(k):
+        assert lib.klu_refactor(ip(Ap), ip(Ai), dp(vals[k]), sym, num, None)
+
+    try:
+        assert found(keys[0]) is None
+        tag(num, dp(keys[0]))
+        assert np.array_equal(found(keys[0]), vals[0])
+        for i in range(4):
+            other = keys[0].copy()
+            other[i] += 1.0
+            assert found(other) is None, i
+        refactor(1)
+        counts = np.zeros(8)
+        lib.num_info(num, dp(counts))
+        assert counts[2] == 1, counts
+        assert np.array_equal(found(keys[0]), vals[0]) and found(keys[1]) is None
+        tag(num, dp(keys[1]))
+        refactor(2)
+        assert found(keys[0]) is None and found(keys[2]) is None
+        assert np.array_equal(found(keys[1]), vals[1])
+        refactor(1)
+        assert np.array_equal(found(keys[1]), vals[1])
+        clear(num)
+        assert found(keys[1]) is None
+    finally:
+        lib.klu_free_numeric(ctypes.byref(num), None)
+        lib.klu_free_symbolic(ctypes.byref(sym), None)
+
+
 def test_the_own_solve_reads_narrow_and_wide_supernodes():
     """A 100 x 100 mesh's factor: thousands of supernodes below
     `CK_BLAS_FROM` columns (the plain loops) and wide ones with rows below
@@ -1142,3 +1199,136 @@ def test_the_affine_step_is_the_run_s_bytes_and_makes_nothing_twice(chol, trap, 
         assert d.get('loop_c:affine_lte', 0) >= steps, d
         assert not d.get('loop_c:lte_on_pattern') and not d.get('lte:seed'), d
         assert e.get('loop_c:lte_on_pattern', 0) >= steps, e
+
+
+@pytest.mark.parametrize('trap', [False, True], ids=['gear2', 'trap'])
+def test_the_kept_keys_are_the_run_s_bytes_and_form_no_kept_j(trap, monkeypatch):
+    """THE KEPT KEYS (csrc/newton.h) on the ladder's run on the reduction (its
+    kept factors), Gear-2's and the trapezoid's (whose J reads h, not a0):
+    the run without them byte for byte -- the same steps, refactors and kept
+    counts; evaluations that took a kept factor's J by its key counted; the
+    switch off, none; on KLU (no tags), none."""
+    from pycircuit.circuit.integrator import TrapezoidalIntegrator
+    make = {'integrator': TrapezoidalIntegrator()} if trap else {}
+    monkeypatch.setattr(_tran_newton, 'KEPT_KEYS', False)
+    off = _ladder_run(True, monkeypatch, **make)[0]
+    monkeypatch.setattr(_tran_newton, 'KEPT_KEYS', True)
+    on = _ladder_run(True, monkeypatch, **make)[0]
+    klu = _ladder_run(True, monkeypatch, chol=False, **make)[0]
+    assert on[1:4] == off[1:4] and on[5] == off[5], (on[2:4], off[2:4], on[5], off[5])
+    d, e = on[4], off[4]
+    assert on[5]['hits'] > 0 and d.get('loop_c:kept_key', 0) > 0, (on[5], d)
+    assert d.get('loop_c:kept_key', 0) + d.get('loop_c:affine_j', 0) < d.get('loop_c:steps', 0), d
+    assert 'loop_c:kept_key' not in e and 'loop_c:kept_key' not in klu[4], (e, klu[4])
+
+
+def test_the_kept_keys_are_dropped_where_the_run_starts(monkeypatch):
+    """THE KEPT KEYS' tags dropped at a run's first entry of the C loop
+    (loop.h's `kept_hold`): a second solve of one Transient after every
+    capacitor is written keeps the solver, its numeric and kept factors
+    (room for all of them: 32 kept), and its run is a fresh Transient's byte
+    for byte -- a tag kept from the first run would name the first run's J
+    for the same step key."""
+    from pycircuit.circuit import _tran_loop_c, _tran_lte_c, _tran_newton_c
+    from pycircuit.circuit import transient as trmod
+    monkeypatch.setattr(_cholklu, 'CHOLMOD_FROM', 0)
+    monkeypatch.setattr(trmod, 'LADDER_KEEP', 32)
+    for mod in (_tran_loop_c, _tran_lte_c, _tran_newton_c):
+        monkeypatch.setattr(mod, 'ENABLED', True)
+
+    def grid():
+        c = _grid(16, 16)
+        c['ip'] = IPulse('n8_8', 'n0_0', i1=0.0, i2=5e-3, td=1e-10, tr=1e-10, tf=1e-10,
+                         pw=4e-10, per=2e-9)
+        return c
+
+    def written(c):
+        for i in range(16):
+            for j in range(16):
+                c[f'c{i}_{j}'].ipar.c = 3e-12
+        return c
+
+    def solve(tr):
+        before = _paths.snapshot()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            x = np.asarray(tr.solve(tend=3e-9, timestep=1e-11).x, float)
+        sk = tr._get_linearsolver()._choice
+        return x.tobytes(), sk, sk._numeric, _paths.since(before)
+
+    c = grid()
+    tr = Transient(c, toolkit=numeric)
+    first = solve(tr)
+    second = solve(Transient(written(grid()), toolkit=numeric))
+    written(c)
+    again = solve(tr)
+    assert again[1] is first[1] and again[2] == first[2] and first[1].kept_counts()['slots'] > 11
+    assert first[3].get('loop_c:kept_key', 0) > 0 and again[3].get('loop_c:kept_key', 0) > 0
+    assert again[0] == second[0] and again[0] != first[0]
+
+
+def _loop_calls(monkeypatch):
+    """The C loop's entries counted (`_tran_loop_c._call` wrapped): the list
+    each call appends to."""
+    from pycircuit.circuit import _tran_loop_c
+    calls, real = [], _tran_loop_c._call
+
+    def call(*a):
+        calls.append(1)
+        return real(*a)
+    monkeypatch.setattr(_tran_loop_c, '_call', call)
+    return calls
+
+
+def _held(paths):
+    """The evaluations that formed no J: the affine step's and the kept keys'."""
+    return paths.get('loop_c:affine_j', 0) + paths.get('loop_c:kept_key', 0)
+
+
+def test_the_kept_keys_hold_over_the_loop_s_entries(monkeypatch):
+    """THE KEPT KEYS' tags held from one entry of the C loop to the next while
+    nothing watched moves (loop.h's `kept_hold`): the ladder's run entering
+    again and again (its outputs full every 8 points, `CAP_MAX`) is the run
+    entering once byte for byte, and forms J no more often -- the attempt
+    after an entry, whose key the affine step dropped, takes the numeric's
+    own values by its tag; dropping the tags at every entry would form each
+    kept factor's J again."""
+    from pycircuit.circuit import _tran_loop_c
+    calls = _loop_calls(monkeypatch)
+    once = _ladder_run(True, monkeypatch)[0]
+    n_once = len(calls)
+    monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', 8)
+    many = _ladder_run(True, monkeypatch)[0]
+    n_many = len(calls) - n_once
+    assert n_once <= 2 and n_many >= 5, (n_once, n_many)
+    assert many[1:4] == once[1:4] and many[5] == once[5], (many[2:4], once[2:4])
+    assert many[4].get('loop_c:kept_key', 0) > once[4].get('loop_c:kept_key', 0) > 0, (many[4], once[4])
+    assert _held(many[4]) == _held(once[4]), (many[4], once[4])
+
+
+def test_the_kept_keys_are_held_while_nothing_moved_since_the_last_entry(monkeypatch):
+    """THE KEPT KEYS' tags held at an entry of the C loop (loop.h's
+    `kept_hold`, `_tran_loop_c._corners`) only where the stepping loop's last
+    entry loaded at the same watch counter with the same Newton record:
+    dropped at its first entry, where anything watched moved, where the
+    record was made again (another core, size or reference row), and in
+    another run's loop."""
+    from pycircuit.circuit import _tran_loop_c, _watch
+    epoch = [7]
+    monkeypatch.setattr(_watch, 'now', lambda: epoch[0])
+    par = types.SimpleNamespace(land_ahead=False, corner_cut=0.0)
+    rec, other = object(), object()
+    tr = types.SimpleNamespace(par=par, _newton_c=rec)
+
+    def hold(loop):
+        s = types.SimpleNamespace()
+        _tran_loop_c._corners(s, loop, tr)
+        return s.kept_hold
+
+    loop = types.SimpleNamespace(c=_tran_loop_c.LoopState())
+    assert hold(loop) == 0 and hold(loop) == 1 and hold(loop) == 1
+    epoch[0] += 1
+    assert hold(loop) == 0 and hold(loop) == 1
+    tr._newton_c = other
+    assert hold(loop) == 0 and hold(loop) == 1
+    assert hold(types.SimpleNamespace(c=_tran_loop_c.LoopState())) == 0

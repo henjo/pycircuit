@@ -44,6 +44,12 @@ LINEAR_NEWTON = os.environ.get('PYCIRCUIT_LINEAR_NEWTON', '1') != '0'
 #: `PYCIRCUIT_AFFINE_STEP=0` turns it off (an A/B), read at each loop's load
 AFFINE_STEP = os.environ.get('PYCIRCUIT_AFFINE_STEP', '1') != '0'
 
+#: THE KEPT KEYS (csrc/newton.h): beside the affine step, an attempt whose
+#: step key a kept factor's tag carries (`_cholklu`'s THE KEPT KEYS) takes
+#: that factor's J values and forms no J -- the same bytes either way; env
+#: `PYCIRCUIT_KEPT_KEYS=0` turns it off (an A/B), read at each loop's load
+KEPT_KEYS = os.environ.get('PYCIRCUIT_KEPT_KEYS', '1') != '0'
+
 
 class _EarlyArm:
     """The early abort armed for one multistep attempt (`Transient.

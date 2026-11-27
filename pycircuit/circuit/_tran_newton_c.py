@@ -522,6 +522,11 @@ def _klu_bind(rec, sk):
     s.klu_factor, s.klu_solve, s.klu_free, s.klu_refactor, s.klu_tsolve = (
         ffi.cast('void *', addr(f)) for f in (lib.klu_factor, lib.klu_solve, lib.klu_free_numeric,
                                               lib.klu_refactor, lib.klu_tsolve))
+    ## (THE KEPT KEYS, csrc/newton.h: the solver's tag entries -- CHOLMOD's
+    ## layer has them, KLU none)
+    tags = getattr(lib, 'tags', None)
+    s.tag_find, s.tag_set, s.tag_clear = (
+        [ffi.cast('void *', a) for a in tags] if tags else [ffi.NULL] * 3)
     s.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
     g = sk.growth_gate()
     s.klu_rgrowth, s.rg_off, s.rg_keep = ffi.cast('void *', g[0]), g[1], g[2]

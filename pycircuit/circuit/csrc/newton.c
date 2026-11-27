@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <float.h>
 #include <math.h>
+#include <string.h>
 #include "pcx_abi.h"
 #include "pcx_minmax.h"
 #include "pcx_dense.h"
@@ -82,12 +83,14 @@ static int full_kept(newton_t *s)
    a non-finite matrix or right-hand side, a singular matrix, a zero pivot,
    a failed solve or validation.  0, or the bail */
 static int full_kept(newton_t *s);
+static void kept_tag(const newton_t *s);
 static long sparse_full(newton_t *s, long m)
 {
     long i, k;
     double max_b = 0.0, max_r = 0.0, scale;
-    /* (THE AFFINE STEP: kAx as it was -- scanned when gathered) */
-    if (!s->jkey_held)
+    /* (THE AFFINE STEP: kAx as it was -- scanned when gathered; THE KEPT
+       KEYS: a factor's values) */
+    if (!s->jkey_held && !s->kept_src)
         for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) return NEWTON_BAIL_JNONFINITE;
     for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return NEWTON_BAIL_BNONFINITE;
     if (!s->klu_num) {
@@ -115,6 +118,7 @@ static long sparse_full(newton_t *s, long m)
         pcx_held_refactored(s->held_st, s->held_v, s->kAx, s->knnz, ok);
         if (!ok) return NEWTON_BAIL_KLU_REFACTOR;
     }
+    kept_tag(s);
     if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_num, (int) m, 1, s->b, s->klu_common))
         return NEWTON_BAIL_KLU_SOLVE;
     /* the validation's verdict by the sparse sum's bound where it decides
@@ -454,6 +458,58 @@ static int jkey_gather(newton_t *s, long it)
     return 1;
 }
 
+/* THE KEPT KEYS (newton.h): 1 where this evaluation takes the J values of
+   the kept factor its key's tag names (`kept_src`) -- the affine step's
+   conditions but the last gather's key: the loop's call, the first
+   iterate's run, the sparse full Newton's first evaluation on the pattern,
+   a numeric to look in */
+static int kept_take(newton_t *s, long it, int full)
+{
+    double key[4];
+    if (!(s->kept_keys && s->tag_find && s->affine && it == 0 && full && s->first_iter && !s->chord
+          && s->klu_sym && s->pattern && s->klu_num)) return 0;
+    key[0] = (double) s->formula;
+    key[1] = s->a0;
+    key[2] = s->h;
+    key[3] = s->theta;
+    s->kept_src = ((pcx_tag_find_t) s->tag_find)(s->klu_num, key);
+    s->kept_held = s->kept_src != 0;
+    return (int) s->kept_held;
+}
+
+/* THE KEPT KEYS: the numeric -- a factor of kAx now -- tagged with kAx's key
+   where the loop's call gathered (or held) one */
+static void kept_tag(const newton_t *s)
+{
+    double key[4];
+    if (!(s->kept_keys && s->tag_set && s->jkey_have)) return;
+    key[0] = (double) s->jkey_formula;
+    key[1] = s->jkey_a0;
+    key[2] = s->jkey_h;
+    key[3] = s->jkey_theta;
+    ((pcx_tag_set_t) s->tag_set)(s->klu_num, key);
+}
+
+/* the pattern's values into kAx (|J| on it made where read, `absj`): a kept
+   factor's (THE KEPT KEYS -- their key then the one kAx holds, as a gather
+   keys it), none where THE AFFINE STEP holds them, else J's -- packed
+   (`kpp`, the core's pattern), or through `kat` */
+static void gather(newton_t *s, long it, int packed, const double *J)
+{
+    long k;
+    if (s->kept_src) {
+        memcpy(s->kAx, s->kept_src, (size_t) s->knnz * sizeof(double));
+        (void) jkey_gather(s, it);
+    } else if (jkey_gather(s, it) && packed) {
+        for (k = 0; k < s->knnz; k++) {
+            const int64_t p = s->kpp[k];
+            s->kAx[k] = p >= 0 ? s->Jp[p] : 0.0;
+        }
+    } else if (!s->jkey_held) {
+        for (k = 0; k < s->knnz; k++) s->kAx[k] = J[s->kat[k]];
+    }
+}
+
 /* THE AFFINE STEP's error test (newton.h): 1 where the loop's call took the
    first iterate on the sparse full Newton and the fold feeds a test -- the
    test then solves on the Newton's own numeric (`lte_held`) */
@@ -535,9 +591,12 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
     /* (on KLU's pattern, J packed on the core's and no Geq: `kpp`, `Jp`) */
     packed = s->klu_sym && s->pattern && s->kpp;
     /* (THE AFFINE STEP, newton.h: kAx holds this attempt's J -- its key the
-       last gather's -- so the core makes no G pass and no J: PCX_WANT_PACKED
-       with no PCX_PASS_G writes neither Geq nor J) */
-    if (jkey_take(s, it, full)) bits = (bits & ~PCX_PASS_G) | PCX_WANT_PACKED;
+       last gather's -- or THE KEPT KEYS: a kept factor's values are its J;
+       so the core makes no G pass and no J: PCX_WANT_PACKED with no
+       PCX_PASS_G writes neither Geq nor J) */
+    s->kept_src = 0;
+    if (jkey_take(s, it, full) || kept_take(s, it, full))
+        bits = (bits & ~PCX_PASS_G) | PCX_WANT_PACKED;
     core(s->core, s->xf, s->T,
          bits | s->pattern | (packed ? PCX_WANT_PACKED : 0) | (s->sets ? PCX_WANT_SETS : 0),
          s->formula,
@@ -553,17 +612,9 @@ static long evaluate(newton_t *s, long it, int full, long first_bits, const doub
     pcx_drop_ref(F, s->Fr, n, r);
     for (i = 0; i < m; i++) s->b[i] = -s->Fr[i];
     if (full && s->klu_sym) {
-        /* the pattern's values -- |J| on it (zero off it) made where it is
-           read, `absj` -- the full Newton's validation reading J
-           reduced itself (`R`); none where THE AFFINE STEP holds them */
-        if (jkey_gather(s, it) && packed) {
-            for (k = 0; k < s->knnz; k++) {
-                const int64_t p = s->kpp[k];
-                s->kAx[k] = p >= 0 ? s->Jp[p] : 0.0;
-            }
-        } else if (!s->jkey_held) {
-            for (k = 0; k < s->knnz; k++) s->kAx[k] = J[s->kat[k]];
-        }
+        /* the pattern's values (`gather`), the full Newton's validation
+           reading J reduced itself (`R`) */
+        gather(s, it, packed, J);
         s->absj_due = 1;
         /* (on the pattern the full Newton's reduced J -- `R`, zero off the
            pattern -- is made where its validation's dense test reads it:
@@ -615,7 +666,8 @@ static long iterate(newton_t *s, void **num, const double *cin, const double **c
     const double *Cin0;  /* cC where the full seed equals cx (a cache hit), else NULL */
     long first_bits;     /* the first evaluation's want bits */
     s->iters = 0;
-    s->lte_held = s->lte_affine = s->jkey_held = 0;
+    s->lte_held = s->lte_affine = s->jkey_held = s->kept_held = 0;
+    s->kept_src = 0;
     s->early_checks = 0;
     s->status = NEWTON_RUNNING;
     /* the seed, reduced (remove_row_col); a hit evaluates without the C

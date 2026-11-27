@@ -6727,3 +6727,28 @@ of a millivolt, a fifth of the distance to the benchmark's own
 waveforms, which got no worse.
 Measured on the tree: ibmpg2t 232 -> 36 s (0.157x), ibmpg1t 10.3 -> 6.5 s
 (0.631x).
+
+
+## KH: the kept factors tagged with their step key (2026-11-27)
+
+### `_cholklu`'s THE KEPT KEYS (`ck_tag_find`, `ck_tag_set`, `ck_tag_clear`); newton.h's `kept_take`; `_tran_newton.KEPT_KEYS`
+
+2026-11-27 (`doc/hdl_roadmap_260824.md`, 364).  On a certified-affine
+run most refactors find a kept factor of exactly the values asked, so
+forming J for them only fed a compare.  Each factor the CHOLMOD layer
+holds now carries the step key (formula, a0, h, theta) of the J it is a
+factor of; an attempt whose key a tag carries takes that factor's J
+values and forms no J.  The answers are the same bytes.  Measured on the
+tree against 95703b5f at 10 ns: ibmpg3t 0.930x / 0.905x, ibmpg6t 0.924x
+/ 0.927x (about 4 % fewer instructions), 5t 0.931x, 4t 0.983x; a census
+pair that had read 3t 1.000x was contradicted by an instrumented
+re-measurement (0.94x), and a decider set before running settled
+it.  `PYCIRCUIT_KEPT_KEYS=0` turns it off.  The tags are dropped at a
+run's first entry of the C loop, wherever anything watched moved and
+wherever the Newton's record was made again, and held over the loop's
+other entries (it enters again each time its outputs fill: 41 times on
+ibmpg3t): a second solve of the same Transient keeps the solver and its
+kept factors, and a tag from the first run would name the first run's J
+(measured: other waveforms after the capacitors were written, with 32
+kept).  A first build that dropped them at every entry held only 433 of
+663 kept hits on ibmpg3t and missed its census line (0.966x).

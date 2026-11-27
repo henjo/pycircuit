@@ -350,7 +350,31 @@ typedef struct {
     long jkey_held;       /* OWN: 1 where this call's evaluation took kAx as it
                              was (the key the same), else 0 */
     double jkey_theta;    /* OWN: the key's theta (theta's companion reads it) */
+    /* THE KEPT KEYS (`_tran_newton.KEPT_KEYS`): beside the affine step, an
+       evaluation whose key (the one above) a kept factor's tag carries --
+       the CHOLMOD layer tags its numeric and each slot with the key of the J
+       it is a factor of (`_cholklu`'s THE KEPT KEYS) -- takes that factor's
+       J values into kAx: no G pass, no J, no gather, no finiteness scan (a
+       factor's values are finite); the refactor then finds that factor by
+       its values' compare, as it would the formed J's.  An affine circuit's
+       J is its key's alone, so the answers are the same bytes either way.
+       The numeric is tagged after a refactor (or reuse) of a J the loop's
+       calls gathered with a key; the loop drops every tag at its entry but
+       where it holds them from its last (loop.h's `kept_hold`) */
+    long kept_keys;       /* CALL: 1 while the loop's multistep attempts run with
+                             the kept keys on (loop.c, `loop_t.kept_keys`), else 0 */
+    void *tag_find, *tag_set, *tag_clear;   /* the run: `_cholklu`'s
+                             `ck_tag_find`, `ck_tag_set`, `ck_tag_clear`
+                             (pcx_tag_*_t); NULL: a solver with none (KLU) */
+    long kept_held;       /* OWN: 1 where this call's evaluation took a kept
+                             factor's J values by its key, else 0 */
+    const double *kept_src;   /* OWN: those values, this evaluation's (NULL: none) */
 } newton_t;
+
+/* THE KEPT KEYS' entries (newton_t's `tag_find`, `tag_set`, `tag_clear`) */
+typedef const double *(*pcx_tag_find_t)(void *, const double *);
+typedef void (*pcx_tag_set_t)(void *, const double *);
+typedef void (*pcx_tag_clear_t)(void *);
 /* THE SOLVE: `_newton`'s Newton on the reduced system -- `StandardNewton`
    (chord 0), or `ChordNewton` up to its fallback (chord 1) -- and
    `jacobian_only` at the converged point (fold_j), bit for bit.

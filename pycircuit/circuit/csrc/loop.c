@@ -167,6 +167,7 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
     }
     s->iters += nt->iters;
     s->jkey_held += nt->jkey_held;
+    s->kept_held += nt->kept_held;
     if (nt->chord) s->fb_reused += nt->reused;
     else s->full_reused += nt->reused;
     s->chord_fallbacks += nt->fallbacks;
@@ -2332,6 +2333,15 @@ static void unrotate(double *a, long n, long L, long o)
     reverse_rows(a, n, 0, L);
 }
 
+/* the Newton at the loop's entry: no key held (THE AFFINE STEP), and no tag
+   on the run's numeric or its kept factors where the entry holds none
+   (THE KEPT KEYS, `kept_hold`) */
+static void ke_entry(newton_t *nt, long hold)
+{
+    nt->jkey_have = 0;
+    if (!hold && nt->tag_clear && nt->klu_num) ((pcx_tag_clear_t) nt->tag_clear)(nt->klu_num);
+}
+
 /* the rings and the predictor's nodes put back in order at the loop's exit
    (the glue reads them so, and writes them so at the entry; the predictor's
    `ho` is set again at each attempt, `take`) */
@@ -2352,10 +2362,12 @@ long pcx_loop(loop_t *s)
     s->newton_rejects = s->chord_fallbacks = s->fb_refactors = s->nums_made = 0;
     s->full_reused = s->fb_reused = s->lte_reused = 0;
     s->maps = 0;
-    s->lte_affine = s->jkey_held = 0;
+    s->lte_affine = s->jkey_held = s->kept_held = 0;
     /* (THE AFFINE STEP's key: none at the entry -- what the Python did
-       since the loop last ran may have moved kAx or the numeric) */
-    if (s->newton) ((newton_t *) s->newton)->jkey_have = 0;
+       since the loop last ran may have moved kAx or the numeric; THE KEPT
+       KEYS' tags none where the entry holds none -- the circuit's values
+       may have moved) */
+    if (s->newton) ke_entry((newton_t *) s->newton, s->kept_hold);
     if (s->walk) {
         st = walk(s);
         loop_unrotate(s);
@@ -2375,12 +2387,16 @@ long pcx_loop(loop_t *s)
     s->tc_rkref = s->tc_rkfac = s->tc_rkpiv = s->tc_rkres = s->tc_rkdense = 0;
     s->tc_pyends = s->tc_stallchecks = s->tc_stallaborts = 0;
     if (s->family == LOOP_FAMILY_STAGE) return s->status = stage_loop(s);
-    /* (THE AFFINE STEP, newton.h: the Newton's `affine` for the loop's calls
-       alone -- set for them, cleared for the Python's) */
-    if (s->newton) ((newton_t *) s->newton)->affine = s->affine;
+    /* (THE AFFINE STEP and THE KEPT KEYS, newton.h: the Newton's `affine`
+       and `kept_keys` for the loop's calls alone -- set for them, cleared
+       for the Python's) */
+    if (s->newton) {
+        ((newton_t *) s->newton)->affine = s->affine;
+        ((newton_t *) s->newton)->kept_keys = s->kept_keys;
+    }
     st = lmm_loop(s);
     loop_unrotate(s);
-    if (s->newton) ((newton_t *) s->newton)->affine = 0;
+    if (s->newton) ((newton_t *) s->newton)->affine = ((newton_t *) s->newton)->kept_keys = 0;
     ck_back(s);
     return s->status = st;
 }
