@@ -524,7 +524,7 @@ def bind_common(e, run, sets=0):
     run.lctx = _tran_lte_c._Ctx(lffi, ldgesv, n, iref)
     _LC._plug(s, ffi, 'lte', lffi, run.lctx.s, lcfn)
     run.lte = run.ct = run.sk = None
-    s.n, s.hist_len, s.cap, s.iref = n, hist_len, _LC.CAP_MAX, iref
+    s.n, s.hist_len, s.cap, s.iref = n, hist_len, _LC._cap(n), iref
     s.family = _CODES['LOOP_FAMILY_STAGE']
     return run
 

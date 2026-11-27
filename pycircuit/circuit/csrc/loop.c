@@ -134,15 +134,23 @@ static void ck_back(loop_t *s)
    Newton wrote), the step and companion it was made with, the screen's
    maximum, and where it was judged the error test's running reference and
    error.  The Newton's `xc`, `qj`, `iqj` hold only until its next call:
-   copied here. */
-static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged)
+   copied here into xatt, qatt, iqatt -- but an accepted multistep
+   attempt's (`accepted`), which `accept` copies into the rings' newest slot
+   and the predictor's newest node and points xatt_p, qatt_p, iqatt_p at
+   (THE ATTEMPT POINTED, loop.h). */
+static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged, int accepted)
 {
     newton_t *nt = (newton_t *) s->newton;
     branch_t *br = (branch_t *) s->branch;
     long n = s->n;
-    COPY(s->xatt, nt->xc, n);
-    COPY(s->qatt, nt->qj, n);
-    COPY(s->iqatt, nt->iqj, n);
+    if (!accepted) {
+        COPY(s->xatt, nt->xc, n);
+        COPY(s->qatt, nt->qj, n);
+        COPY(s->iqatt, nt->iqj, n);
+        s->xatt_p = s->xatt;
+        s->qatt_p = s->qatt;
+        s->iqatt_p = s->iqatt;
+    }
     s->cur = a->nxt;
     s->att_h = a->h;
     s->att_h_last = a->h_last;
@@ -359,7 +367,7 @@ static long take(loop_t *s, loop_attempt_t *a)
     nt->have_cache = s->cur >= 0;
     a->nxt = (s->cur == 0) ? 1 : 0;
     if (s->cur >= 0) {
-        nt->cx = s->xatt;
+        nt->cx = s->xatt_p;
         nt->cC = s->cC[s->cur];
     }
     nt->Cj = s->cC[a->nxt];
@@ -500,7 +508,7 @@ static int retry_at_point(loop_t *s, loop_attempt_t *a)
 {
     ctrl_t *ct = (ctrl_t *) s->ctrl;
     if (!retry_fits(s, a, ct->h_next)) return 0;
-    attempt_made(s, a, 1);
+    attempt_made(s, a, 1, 0);
     retry_note(s, a, ct->h_next);
     return 1;
 }
@@ -616,8 +624,10 @@ static long judge(loop_t *s, loop_attempt_t *a)
 /* the accepted point's bookkeeping either family makes (`_SteppingLoop.
    accept`): its step into X and T, the statistics' extremes (set first,
    then replaced only when strictly beyond), the landing (`on_break`'s
-   tolerance is `accept`'s), the point, the step history, the next step */
-static void accept_point(loop_t *s, const loop_attempt_t *a, const double *x)
+   tolerance is `accept`'s), the point (into xlast where `copy_xlast`: the
+   stage family's; the multistep family's points xlast at its node), the
+   step history, the next step */
+static void accept_point(loop_t *s, const loop_attempt_t *a, const double *x, int copy_xlast)
 {
     long n = s->n;
     double h = a->h, tn = a->tn;
@@ -628,13 +638,22 @@ static void accept_point(loop_t *s, const loop_attempt_t *a, const double *x)
     s->is_first = 0;
     s->order_drop = 0;
     s->t = tn;
-    COPY(s->X + s->k * n, x, n);
+    if (s->nout) {
+        /* THE SAVED ROWS: the point's x[out_rows], and the point full in
+           the ring of the newest */
+        double *o = s->XO + s->k * s->nout;
+        long j;
+        for (j = 0; j < s->nout; j++) o[j] = x[s->out_rows[j]];
+        COPY(s->X + (s->k % LOOP_XRING) * n, x, n);
+    } else {
+        COPY(s->X + s->k * n, x, n);
+    }
     s->T[s->k] = tn;
     if (!s->have_hm || h < s->hmin) s->hmin = h;
     if (!s->have_hm || h > s->hmax) s->hmax = h;
     s->have_hm = 1;
     s->breaks += on_break;
-    COPY(s->xlast, x, n);
+    if (copy_xlast) COPY(s->xlast, x, n);
     s->have_dt_last2 = s->have_dt_last;
     s->dt_last2 = s->dt_last;
     s->dt_last = h;
@@ -654,13 +673,16 @@ static void accept(loop_t *s, const loop_attempt_t *a)
     newton_t *nt = (newton_t *) s->newton;
     long n = s->n;
     double tn = a->tn;
-    attempt_made(s, a, (int) s->adaptive);
+    double *node;
+    attempt_made(s, a, (int) s->adaptive, 1);
     s->euler_steps += (a->formula == PCX_FORMULA_EULER && s->base != PCX_FORMULA_EULER);
     /* the rings (`_ring_push`): the newest first, the oldest dropped -- the
        oldest slot written, the rotation moved on (`ring_slot`) */
     s->ring_o = (s->ring_o + s->hist_len - 1) % s->hist_len;
     COPY(ring_slot(s, s->qring, 0), nt->qj, n);
     COPY(ring_slot(s, s->iqring, 0), nt->iqj, n);
+    s->qatt_p = ring_slot(s, s->qring, 0);
+    s->iqatt_p = ring_slot(s, s->iqring, 0);
     /* the predictor's node (`_pred_note`: appended past every node, so its
        sort keeps it last and its dedupe -- `1e-14 * max(abs(t), 1.0)`,
        `_StagePredictor`'s -- compares it with the one before alone; the
@@ -676,15 +698,19 @@ static void accept(loop_t *s, const loop_attempt_t *a)
             s->hk = PRED_HIST_MAX - 1;
         }
         s->ht[s->hk] = tn;
-        COPY(s->hx + ((s->hx_o + s->hk) % PRED_HIST_MAX) * n, nt->xc, n);
+        node = s->hx + ((s->hx_o + s->hk) % PRED_HIST_MAX) * n;
+        COPY(node, nt->xc, n);
         s->hk++;
+        /* (the attempt's point and the last accepted one: this node) */
+        s->xatt_p = node;
+        s->xlast = node;
     }
     /* the step's companion at its point's index (`save`'s device currents:
        `_tran_loop_c._steps`) */
     s->SH[s->k] = a->h;
     s->SHL[s->k] = a->h_last;
     s->SF[s->k] = a->formula;
-    accept_point(s, a, nt->xc);
+    accept_point(s, a, node, 0);
 }
 /* `remove_row_col` of the full `C` (n x n, row-major) into `dst` (m x m) */
 static void reduce_mat(const double *C, double *dst, long n, long r)
@@ -2230,7 +2256,7 @@ static void stage_accept(loop_t *s, const loop_attempt_t *a)
         s->SY[(2 * s->k + 1) * s->nsrows + k] = Y[n + s->srows[k]];
     }
     s->SH[s->k] = a->h;
-    accept_point(s, a, Y + 2 * n);
+    accept_point(s, a, Y + 2 * n, 1);
     if (s->tmode) {
         /* (x_{n+1}'s record: the end set's, or a fallback's coupled set's) */
         s->te_x = a->fb ? -1 : a->set;
@@ -2342,11 +2368,29 @@ static void ke_entry(newton_t *nt, long hold)
     if (!hold && nt->tag_clear && nt->klu_num) ((pcx_tag_clear_t) nt->tag_clear)(nt->klu_num);
 }
 
+/* THE ATTEMPT POINTED at the loop's exit (loop.h): xatt, qatt, iqatt made
+   to hold what their pointers point at and the pointers put back at them --
+   before the rings and nodes are put back in order, which moves what they
+   point at -- and xlast put back at its own buffer (which no glue reads
+   after an exit: each writes it at the entry) */
+static void att_settle(loop_t *s)
+{
+    long n = s->n;
+    if (s->xatt_p != s->xatt) COPY(s->xatt, s->xatt_p, n);
+    if (s->qatt_p != s->qatt) COPY(s->qatt, s->qatt_p, n);
+    if (s->iqatt_p != s->iqatt) COPY(s->iqatt, s->iqatt_p, n);
+    s->xatt_p = s->xatt;
+    s->qatt_p = s->qatt;
+    s->iqatt_p = s->iqatt;
+    s->xlast = s->xlast_own;
+}
+
 /* the rings and the predictor's nodes put back in order at the loop's exit
    (the glue reads them so, and writes them so at the entry; the predictor's
    `ho` is set again at each attempt, `take`) */
 static void loop_unrotate(loop_t *s)
 {
+    att_settle(s);
     unrotate(s->qring, s->n, s->hist_len, s->ring_o);
     unrotate(s->iqring, s->n, s->hist_len, s->ring_o);
     unrotate(s->hx, s->n, PRED_HIST_MAX, s->hx_o);
@@ -2363,6 +2407,10 @@ long pcx_loop(loop_t *s)
     s->full_reused = s->fb_reused = s->lte_reused = 0;
     s->maps = 0;
     s->lte_affine = s->jkey_held = s->kept_held = 0;
+    s->xatt_p = s->xatt;
+    s->qatt_p = s->qatt;
+    s->iqatt_p = s->iqatt;
+    s->xlast_own = s->xlast;
     /* (THE AFFINE STEP's key: none at the entry -- what the Python did
        since the loop last ran may have moved kAx or the numeric; THE KEPT
        KEYS' tags none where the entry holds none -- the circuit's values

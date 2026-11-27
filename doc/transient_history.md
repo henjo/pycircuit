@@ -6752,3 +6752,26 @@ kept factors, and a tag from the first run would name the first run's J
 (measured: other waveforms after the capacitors were written, with 32
 kept).  A first build that dropped them at every entry held only 433 of
 663 kept hits on ibmpg3t and missed its census line (0.966x).
+
+## SC: the step's copies and the loop's outputs (2026-11-27)
+
+### loop.c's THE ATTEMPT POINTED (`xatt_p`, `qatt_p`, `iqatt_p`, `att_settle`) and THE SAVED ROWS (`nout`, `out_rows`, `XO`, `LOOP_XRING`); `_tran_loop_c.SAVED_ROWS`
+
+2026-11-27 (`doc/hdl_roadmap_260824.md`, 365).  An accepted multistep
+step copied the same long vectors about nine times, and the C loop
+stored the full state at every point, so on a large circuit its output
+buffer filled every few dozen steps and it handed back to Python (62
+times in an ibmpg6t 10 ns run).  The step now points at the copies it
+already made (the attempt's x, q and iq are the predictor's newest node
+and the rings' slot 0), copying them back only at the loop's exit; and
+where the run saves only some rows (as every IBM run does), the loop
+stores those rows at each point and the newest four points in full, so
+it runs to the end in one entry.  The answers are the same bytes.
+Measured on the tree against 33a229e7 at 10 ns: ibmpg3t 0.966x, 6t
+0.949x, 4t 0.960x, 5t 0.945x, 2t 0.936x, 1t 0.968x, peak memory 300-475
+MB lower; on nonlinear circuits nothing measurable (their copies are
+under 1 % of the loop).  `PYCIRCUIT_SAVED_ROWS=0` turns the saved rows
+off; a saved device current of a charge-holding device keeps every
+point full.  The stage glue's output cap now matches its buffer (an
+overflow past 8 192 unknowns, unreachable at the default Radau output
+budget).

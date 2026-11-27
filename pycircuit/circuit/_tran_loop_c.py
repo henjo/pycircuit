@@ -102,17 +102,21 @@ import time
 
 import numpy as np
 
-from pycircuit.circuit import _cbuild, _packed, _paths, _watch, func
+from pycircuit.circuit import _cbuild, _packed, _paths, _tran_grid, _watch, func
 
 _PC = _paths.COUNTS
 _no = _paths.no
 
 ENABLED = os.environ.get('PYCIRCUIT_LOOP_C', '1') != '0'
+#: THE SAVED ROWS (loop.h): the outputs a store with `save`'s rows reads
+#: hold those rows alone
+SAVED_ROWS = os.environ.get('PYCIRCUIT_SAVED_ROWS', '1') != '0'
 STATUS = 'not loaded'
 
 LOOP_C = _cbuild.csrc('loop.c')
 LOOP_CDEF = _cbuild.csrc('loop.h')
 _CODES = _cbuild.constants(LOOP_CDEF)
+_XRING = _CODES['LOOP_XRING']
 #: (the law's mark for a kept point that is none of the loop's: ctrl.h)
 _POINT_OTHER = _cbuild.constants(_cbuild.csrc('ctrl.h'))['CTRL_POINT_OTHER']
 #: (the predictor's history capacity: pred.h)
@@ -358,8 +362,8 @@ def _bind_buffers(run, n, hist_len, npat):
         'cC0': np.zeros(nc), 'cC1': np.zeros(nc),
         'Geq0': np.zeros(nc), 'Geq1': np.zeros(nc),
         'run': np.empty(n), 'xatt': np.empty(n), 'qatt': np.empty(n), 'iqatt': np.empty(n),
-        'X': np.empty(cap * n), 'T': np.empty(cap),
-        'SH': np.empty(cap), 'SHL': np.empty(cap), 'SF': np.empty(cap, dtype=np.int64),
+        'X': np.empty(max(cap, _XRING) * n), 'T': np.empty(CAP_MAX),
+        'SH': np.empty(CAP_MAX), 'SHL': np.empty(CAP_MAX), 'SF': np.empty(CAP_MAX, dtype=np.int64),
     }
     keep = run.keep = []
     fb = ffi.from_buffer
@@ -926,9 +930,9 @@ def _kept(tr, td, x, cmax):
 
 def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     """The struct loaded with the state as the Python loop leaves it -- the
-    rings, the history, the cached C, the step record, the run's constants
-    and, adaptive, the controller's record.  Returns the controller's retry
-    record as it was (`_write_back` reads it)."""
+    rings, the history, the cached C, the step record, the run's constants,
+    the outputs (`_saved_rows`), adaptive the controller's record.  Returns
+    the controller's retry record as it was (`_write_back` reads it)."""
     n, ql, iql, _hist_len, hist, X, xl, cx, cC, dl, dl2 = rd
     base = tr.base_integrator
     code = O['integrators'][type(base)]
@@ -954,12 +958,12 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
     s.order_drop = int(bool(loop.order_drop))
     s.rejects, s.point_retries = loop.rejects, loop.point_retries
     s.npoint = len(X)
+    _saved_rows(loop, run_, n)
     s.dt_last, s.have_dt_last = dl, 1
     s.dt_last2, s.have_dt_last2 = (dl2, 1) if dl2 is not None else (0.0, 0)
     s.tend, s.timestep, s.minbreak = float(loop.tend), float(loop.timestep), minbreak
     s.adaptive = int(adaptive)
-    s.max_step = float(loop.run.max_step)
-    s.minstep = float(loop.minstep)
+    s.max_step, s.minstep = float(loop.run.max_step), float(loop.minstep)
     _corners(s, loop, tr)
     s.max_retries, s.max_reject = loop.family.max_retries, loop.family.max_reject
     ## (the early abort's threshold where `_SteppingLoop.early_arm` arms it:
@@ -1004,6 +1008,30 @@ def _load(loop, tr, td, run_, rd, minbreak, adaptive, judge, O):
             ## (NULL where the Python's first full test is still to make it)
             run_.lte.s.klu_num = run_.lte.ffi.cast('void *', run_.sk._numeric or 0)
     return retry0
+
+
+def _saved_rows(loop, run_, n):
+    """THE SAVED ROWS (loop.h) for this entry: on where the run's store keeps
+    `save`'s rows alone (`OutputGrid` or `SavedRows` with rows, no device
+    currents) -- XO the rows of cap points, cap by their bytes -- else off,
+    X every point full."""
+    s, buf = run_.s, run_.buf
+    store = loop.store
+    rows = getattr(store, 'rows', None)
+    if (not SAVED_ROWS or rows is None or getattr(store, 'currents', None) is not None
+            or type(store) not in (_tran_grid.OutputGrid, _tran_grid.SavedRows) or not 0 < len(rows) < n):
+        s.nout, s.cap = 0, _cap(n)
+        return
+    if buf.get('rows_of') is not rows:
+        m = len(rows)
+        cap = max(1, min(CAP_MAX, CAP_BYTES // (8 * m)))
+        buf['orows'] = np.ascontiguousarray(rows, dtype=np.int64)
+        buf['XO'] = np.empty(cap * m)
+        fb = run_.ffi.from_buffer
+        run_.keep += [fb('int64_t *', buf['orows']), fb('double *', buf['XO'])]
+        s.out_rows, s.XO = run_.keep[-2], run_.keep[-1]
+        buf['rows_of'], buf['ocap'] = rows, cap
+    s.nout, s.cap = len(rows), buf['ocap']
 
 
 def _call(drv, rec, s, stats):
@@ -1198,12 +1226,27 @@ def _full_counts(rec, s):
         _PC['newton_c:first_numeric'] += s.nums_made
 
 
-def _append_points(loop, Xo, To, k, n, steps=None):
+def _append_points(loop, Xo, To, k, n, steps=None, XO=None, nout=0):
     """The C's `k` accepted points, `Xo`'s rows and `To`'s times, appended
     to the run's `X` and times, the run's store (`OutputGrid`,
     `SavedRows`) told of each as the Python's accept tells it, with its
-    step's companion where `steps` has them (`_steps`)."""
+    step's companion where `steps` has them (`_steps`).  THE SAVED ROWS
+    (`nout`): the newest LOOP_XRING - 1 full from `Xo`'s ring, each earlier
+    one None in `X` with its rows, `XO`'s, handed to the store."""
     X, tl, store = loop.X, loop.timelist, loop.store
+    if nout:
+        full0 = k - (_XRING - 1)
+        for i in range(k):
+            rows = None
+            if i >= full0:
+                r = i % _XRING
+                X.append(Xo[r * n:(r + 1) * n].copy())
+            else:
+                X.append(None)
+                rows = XO[i * nout:(i + 1) * nout].copy()
+            tl.append(float(To[i]))
+            store.advance(None if steps is None else steps[i], rows=rows)
+        return
     for i in range(k):
         X.append(Xo[i * n:(i + 1) * n].copy())
         tl.append(float(To[i]))
@@ -1262,7 +1305,8 @@ def _write_back(loop, tr, rec, run_, s, buf, n, hist_len, O, retry0):
     k, adaptive = s.k, bool(s.adaptive)
     X = loop.X
     wants = getattr(loop.store, 'currents', None) is not None
-    _append_points(loop, buf['X'], buf['T'], k, n, _steps(buf, k, tr.base_integrator, O) if wants else None)
+    _append_points(loop, buf['X'], buf['T'], k, n, _steps(buf, k, tr.base_integrator, O) if wants else None,
+                   buf.get('XO'), int(s.nout))
     _stats_back(tr.statistics, s, k)
     ## the last attempt's write-back (`_tran_newton_c`'s), accepted or not
     x = buf['xatt'].copy()

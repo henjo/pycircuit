@@ -18180,3 +18180,70 @@ build line met: the gate against 95703b5f every comparison 0 differing (its cove
 test_cholklu alone, 'fixture' -- no gold deck or gate circuit runs CHOLMOD); the suite 6 905 passed, 10 skipped;
 ruff the base's one finding (I001 in `_tran_newton_c`, both sides); 17 of 17 bites (below); the census's 4t, 5t,
 digest and memory lines from census 2.
+
+## 2026-11-27 — 365. SC: the step's copies and the loop's outputs -- the attempt pointed, the saved rows alone
+
+**Why**  Plan 261 L35 (tc/plan_l35_profile.md, the profile after KH) ranked it first: an accepted step copied the
+same full-length vectors about nine times (`attempt_made`, `accept`, `accept_point`), and the C loop's output buffer
+held the full state at every point, so it filled every `CAP_BYTES` / 8n rows (21 on ibmpg6t, 32 on 3t) and handed
+back to Python -- 62 / 41 entries a 10 ns run, ~0.15 s each on 6t.  Andreas: "Go ahead with sc".  Plan L36
+(tc/plan_l36_sc.md) prototyped it (scratch l36/sc.diff on 33a229e7, in a worktree) under a decider set before
+measuring: 3t <= 0.98x and 6t <= 0.97x in both interleaved pairs, every digest, step, factorization and kept hit the
+base's, VmHWM no higher, the two nonlinear size circuits' digests the same.  Measured (pinned 0-15, perf stat): 3t
+0.959x / 0.952x, 6t 0.953x / 0.929x, the same bytes, VmHWM -424 / -430 MB; achain 4000 and mesh 90 x 90 Gear-2 the
+base's digests and entries (their entries are hand-backs, not the cap).  The pointing alone (the rows switched off)
+~1.3-1.5 %; the saved rows the rest and all the memory.  Andreas: "Build".  On nonlinear circuits (Andreas: "Does
+this also apply on nonlinear circuits?", measured in L35): no -- the copies are 0.1-0.6 % of the C loop on the
+active chain and the inverter mesh, whose step does 2.5-10x the work per unknown with its vectors in cache.  Build
+lines (the plan's CENSUS RULE, set before the census): the six grids at 10 ns against 33a229e7, every grid's wave
+and DC digests, steps and factorizations the base's, VmHWM <= +1 %, 3t <= 0.98x and 6t <= 0.97x.
+
+**What.**  loop.c's THE ATTEMPT POINTED: after a multistep accept the attempt's x, q and iq are the predictor's
+newest node and the q / iq rings' slot 0, so `loop_t`'s `xatt_p`, `qatt_p`, `iqatt_p` point at them instead of
+copying (`accept`), and `xlast` points at the node; `attempt_made` copies only an attempt not accepted, pointing back
+at the own buffers; the C cache's key `nt->cx` follows `xatt_p` (`take`); `att_settle`, first in `loop_unrotate`,
+copies the pointed vectors into the own buffers at the exit (the glue reads them there) and puts xlast's pointer
+back (its own buffer is written by every glue at the entry and read by none after an exit).  THE SAVED ROWS: where
+the run's store keeps only some rows (`OutputGrid` or `SavedRows` with rows, no device currents -- a charge-holding
+device's current needs the full point -- and fewer rows than unknowns, the reference row always among them),
+`_tran_loop_c._saved_rows` binds `nout`, `out_rows` and `XO`: each accepted point's x[out_rows] goes into XO and the
+point in full into X, now a ring of the newest `LOOP_XRING` = 4 (a restart reads the newest three); the cap is then
+`CAP_BYTES` / 8 nout (at most `CAP_MAX`, 4 096), so an IBM run saving 20 nodes runs to its end in one entry.
+`_append_points` hands the store the last `LOOP_XRING` - 1 points in full and the earlier ones as their rows
+(`OutputGrid.advance(step, rows=)`, `SavedRows.advance(step, rows=)`: the given rows where the point is None).
+`loop_t` fields at the end: `xatt_p`, `qatt_p`, `iqatt_p`, `xlast_own`, `nout`, `out_rows`, `XO`;
+`_tran_loop_c.SAVED_ROWS` (env `PYCIRCUIT_SAVED_ROWS=0` off).  The stage glue's `s.cap` is `_cap(n)`: it was
+`CAP_MAX` against an X of `_cap(n)` rows -- an overflow past 8 192 unknowns, unreachable at the default
+`PYCIRCUIT_RADAU_OUT_MB` (~590 unknowns), the same value wherever reachable.  The multistep walk
+(`shooting/_lmmwalk_c`) binds a loop of its own: no rows, unchanged.  doc/transient_runtime.md: the switch, and
+"The loop's outputs".
+
+**Tests.**  `test_loop_c` +8: `test_a_run_saving_rows_holds_them_alone_through_its_entries[saved|grid-step|
+grid-block x fixed|adaptive]` (`CAP_MAX` 7, two nodes saved: the C loop against the Python loop -- bytes,
+statistics, tallies, state -- with 3 rows bound at every entry, the reference row among them, and more than 20
+points held as rows alone), `test_a_run_saving_a_current_holds_every_point_full` (a capacitor's current saved: no
+rows bound, the full points), `test_the_saved_rows_switch_off_is_the_same_run`.  `test_output_grid`, `test_save`:
+their wrappers of `advance` and `_append_points` take the new keywords.  Bitten (each planted alone, the module's
+tests run): the ring's index, the rows' offset in XO, the C gather's row, `att_settle`'s xatt copy, its qatt copy,
+iqatt_p not pointed -- each caught (7-30 tests fail).  The C cache's key left at the own xatt was NOT caught, and
+cannot be: a stale key only turns a hit into a miss (C made again at the same point: the same bytes and tallies,
+more work); a false hit, the side that would move the bytes, is what the key's reading rules out (cx points at the
+accepted node, which only the next accept writes).  Four pinned pairs re-recorded on their C sides (the stepping
+loop, the multistep walk, the stage loop, the transform loop: loop.h moved), their twins' A/B modules green first;
+the Python twins unchanged.
+
+**Measured.**  The gate against 33a229e7: every comparison 0 differing (C against Python on the decks 13 x 27 runs
+and at size 3, tree against tree 116 runs, the path counters the same); VERDICT NOT REACHED, as KH's: of the 43
+changed executable lines `accept_point`'s rows branch (the gather into XO and the ring) is reached by the suite's
+fixture alone -- no gold deck or gate circuit saves a subset of rows -- and is compared C against Python by the new
+tests and tree against tree by the census (every IBM run saves 20 nodes).  The suite 6 913 passed, 10 skipped.
+Ruff: no new finding.  The census (l36/build/cen, 22:43-23:33, B = 33a229e7, pinned 0-15, 13 GB scope, perf stat,
+every start at a 1-min load < 1.5): **3t 238.8 -> 230.6 s 0.966x, 6t 310.7 -> 294.7 s 0.949x**, 4t 284.3 -> 272.9 s
+0.960x, 5t 208.2 -> 196.7 s 0.945x, 2t 34.5 -> 32.3 s 0.936x, 1t 6.2 -> 6.0 s 0.968x; every grid's wave and DC
+digests, steps, factorizations and kept hits the base's, the errors against the benchmark the same; VmHWM (1t..6t)
+2 281 -> 1 965, 1 905 -> 1 531, 9 668 -> 9 232, 11 755 -> 11 365, 8 344 -> 7 869, 11 827 -> 11 382 MB; C-loop
+entries 1, 7, 41, 43, 40, 62 -> 1 on every grid; user instructions 0.2-0.7 % fewer, cycles 0.7-2.6 % fewer -- the
+saving is memory traffic and the re-entries' numpy work, not instructions.  One count moves, explained:
+`loop_c:kept_key` gives way to `loop_c:affine_j` (3t 683 / 570 -> 663 / 590, 6t 689 / 562 -> 662 / 589), the sum
+the same -- every entry clears the held key (`ke_entry`), so the base, entering again, took the kept slot's copy
+where the build, not entering, holds kAx: the same values either way.

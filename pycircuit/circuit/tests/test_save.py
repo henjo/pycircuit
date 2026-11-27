@@ -75,8 +75,8 @@ def test_a_saving_run_holds_a_few_points(monkeypatch):
     held = []
     advance = _tran_grid.SavedRows.advance
 
-    def counted(self, step=None):
-        advance(self, step)
+    def counted(self, step=None, **kw):
+        advance(self, step, **kw)
         held.append(sum(r is not None for r in self.X))
     monkeypatch.setattr(_tran_grid.SavedRows, 'advance', counted)
     _res, tr, _k = _solve('gear2, the C loop', monkeypatch, save=['d0'])

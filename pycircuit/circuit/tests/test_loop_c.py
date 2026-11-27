@@ -6,9 +6,10 @@ transient (`transient._RUN_STATE`, its memos and counters aside) -- on the
 chains of the speed cases (MOS level 1, Gummel-Poon on the chord, the PSP
 stage behind the branch screen), a sparse run, a pulse's landings and
 order drops, the trapezoid and Euler, a grid that does not divide `tend`,
-an entry that fills its outputs; through its hand-backs (a screen that
-fires, a Newton that fails); its declines; and alive: a seed a hair off is
-another run.
+an entry that fills its outputs, a run saving rows that holds them alone
+(THE SAVED ROWS) and one saving a current that holds every point full;
+through its hand-backs (a screen that fires, a Newton that fails); its
+declines; and alive: a seed a hair off is another run.
 """
 import math
 import warnings
@@ -178,6 +179,68 @@ def test_an_entry_that_fills_its_outputs_comes_back(monkeypatch):
     """Seven rows an entry: the run in many entries, the same run."""
     monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', 7)
     _same(_mos, monkeypatch, steps_min=40, tend=60 * 2e-8, timestep=2e-8)
+
+
+def _write_backs(monkeypatch):
+    """Each C write-back's `(k, nout)` (`_append_points`): its points, and
+    THE SAVED ROWS' row count (0: every point full)."""
+    seen = []
+    append = _tran_loop_c._append_points
+
+    def counted(loop, Xo, To, k, n, steps=None, XO=None, nout=0):
+        seen.append((k, nout))
+        return append(loop, Xo, To, k, n, steps, XO, nout)
+    monkeypatch.setattr(_tran_loop_c, '_append_points', counted)
+    return seen
+
+
+@pytest.mark.parametrize('fixed', [True, False], ids=['fixed', 'adaptive'])
+@pytest.mark.parametrize('grid', [None, 1, 'block'], ids=['saved', 'grid-step', 'grid-block'])
+def test_a_run_saving_rows_holds_them_alone_through_its_entries(grid, fixed, monkeypatch):
+    """THE SAVED ROWS (loop.h): a run saving two nodes -- `SavedRows`, or
+    with `outputstep` the grid's `OutputGrid` (a block a step, one at the
+    end) -- holds their rows alone at each point, seven points an entry: the
+    same run as the Python's, every byte, statistic, tally and state; every
+    write-back held the rows, and points went through them (beyond a
+    write-back's newest LOOP_XRING - 1, which go full)."""
+    from pycircuit.circuit import _tran_grid
+    monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', 7)
+    kw = {'tend': 4e-8, 'timestep': 2.5e-10 if fixed else 1e-9, 'fixed_timestep': fixed}
+    make = {'save': ['d0', 'd3']}
+    if grid is not None:
+        make['outputstep'] = 4e-8 / 137
+        if grid == 1:
+            monkeypatch.setattr(_tran_grid, 'GRID_BLOCK_BYTES', 1)
+    seen = _write_backs(monkeypatch)
+    _same(_pulsed, monkeypatch, steps_min=30, make=make, **kw)
+    ## (two nodes and the reference row, `_tran_result.resolve_save`'s)
+    assert len(seen) > 4 and all(m == 3 for _k, m in seen), seen
+    assert sum(max(0, k - (_tran_loop_c._XRING - 1)) for k, _m in seen) > 20, seen
+
+
+def test_a_run_saving_a_current_holds_every_point_full(monkeypatch):
+    """`save`'s current of a device holding charge reads the full point
+    (`_tran_result.DeviceCurrents`): THE SAVED ROWS off, every write-back's
+    points full -- the same run as the Python's."""
+    monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', 7)
+    seen = _write_backs(monkeypatch)
+    _same(_pulsed, monkeypatch, steps_min=30, make={'save': ['d0', 'i(c2.plus)']},
+          tend=4e-8, timestep=2.5e-10)
+    assert len(seen) > 4 and all(m == 0 for _k, m in seen), seen
+
+
+def test_the_saved_rows_switch_off_is_the_same_run(monkeypatch):
+    """`PYCIRCUIT_SAVED_ROWS=0` (`SAVED_ROWS`): every point full, the same
+    bytes as with the rows held."""
+    monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', 7)
+    seen = _write_backs(monkeypatch)
+    kw = {'tend': 4e-8, 'timestep': 2.5e-10, 'make': {'save': ['d0', 'd3']}}
+    on, _c = _run(_pulsed, True, monkeypatch, **kw)
+    monkeypatch.setattr(_tran_loop_c, 'SAVED_ROWS', False)
+    off, _c = _run(_pulsed, True, monkeypatch, **kw)
+    assert on == off
+    m = [nout for _k, nout in seen]
+    assert 0 in m and 3 in m, seen
 
 
 def test_a_screen_that_fires_hands_the_step_back(monkeypatch):

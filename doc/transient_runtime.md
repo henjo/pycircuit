@@ -29,7 +29,7 @@ From the outside in. "Called from" is where the Python reaches the glue.
 
 | Layer | Python reference | C unit | Glue module | Switch | `_paths` | Called from |
 |---|---|---|---|---|---|---|
-| Stepping loop | `_SteppingLoop.where / take / judge / accept` with a multistep family | `csrc/loop.c` | `_tran_loop_c` | `PYCIRCUIT_LOOP_C` | `loop_c:` | `_SteppingLoop.execute` |
+| Stepping loop | `_SteppingLoop.where / take / judge / accept` with a multistep family | `csrc/loop.c` | `_tran_loop_c` | `PYCIRCUIT_LOOP_C` (`PYCIRCUIT_SAVED_ROWS`) | `loop_c:` | `_SteppingLoop.execute` |
 | Stepping loop, the transform | `_SteppingLoop.where / take / judge / accept` with `_StageSteps` where `_rk_step_coupled` takes `_rk_step_transformed` (the cost transform: 'auto' on a compiled Jacobian of 10 KB or more): `_radau_frozen`, `_radau_early_check`, `_stage_end_passes`, the estimate on `real_solve` (numpy's kept LU, or the analysis solver's StructuralKLU) | `csrc/loop.c` (`tmode`: `tc_take`, its fallback `tc_fallback`; radau_tc.c, radau_fold.c, radau.c and the complex solver's KLU through their entries; the real factor's StructuralKLU through `csrc/pcx_kluseq.h`) | `_tran_tcloop_c` | `PYCIRCUIT_TCLOOP_C` | `tcloop_c:` | `_tran_loop_c.run` |
 | Stepping loop, stage family | `_SteppingLoop.where / take / judge / accept` with `_StageSteps` (Radau IIA(3), the cost transform off): `_rk_step_coupled`, `_radau_error_estimate`, `_StageSteps.judge` | `csrc/loop.c` (`stage_loop`; `csrc/pcx_stagestep.h`, shared with `stagewalk.c`; `lte.c`'s STAGE judgement) | `_tran_stageloop_c` | `PYCIRCUIT_STAGELOOP_C` | `stageloop_c:` | `_tran_loop_c.run` |
 | Controller law | `IntegralController._evaluate` (past its error test) | `csrc/ctrl.c` | `_tran_ctrl_c` | `PYCIRCUIT_CTRL_C` | -- | `loop.c` |
@@ -174,6 +174,20 @@ is the one exception: it stands in for the Python loop calling the same C units,
 `u:called`, `pred:`, `branch_c:`, `memo.C:`, `memo.q:`). The A/B tests compare, between a unit on
 and off: the bytes of every output, the times, the statistics, the warnings, every `_RUN_STATE`
 attribute and the controller's state -- and, for the loop, every count but its own `loop_c:`.
+
+**The loop's outputs.** The multistep loop writes each accepted point into an output buffer of
+`cap` rows and returns (`LOOP_FULL`) when it is full; the glue appends the points and enters again.
+`cap` is `_tran_loop_c.CAP_MAX` (4 096) rows, or as many as `CAP_BYTES` (256 MB) hold. Where the
+run's store keeps `save`'s rows alone -- `SavedRows`, or `OutputGrid` with `rows`, no device
+currents -- the loop holds those rows of each point and only the newest `LOOP_XRING` (4) points
+full (THE SAVED ROWS, loop.h; `PYCIRCUIT_SAVED_ROWS=0` holds every point full), so `cap` counts the
+saved rows' bytes: a large grid saving a few nodes runs in one entry. The write-back appends the
+newest `LOOP_XRING - 1` points full and each earlier one as None in the run's `X`, its rows handed
+to the store (`advance(step, rows=)`), which takes them where the full point is gone -- the same
+doubles. Inside a call the last attempt's point, charge and current, and the last accepted point,
+are not copied at an accept: they are pointed at where the accept puts them (the rings' newest
+slot, the predictor's newest node -- THE ATTEMPT POINTED, loop.h), and copied into the glue's
+buffers at the exit (`att_settle`), where the write-back reads them.
 
 ## How each unit is proven
 

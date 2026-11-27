@@ -129,11 +129,15 @@ class OutputGrid:
         self.first = 0
         self.made = 0
         self.out = None
+        self.given = {}
 
-    def advance(self, step=None):
+    def advance(self, step=None, rows=None):
         """After a point is appended to `X` and `T` (`step`: its accepted
-        step's companion, for `currents`): a block made when the finished
-        points fill one."""
+        step's companion, for `currents`; `rows`: its `rows`' values where
+        `X` holds None for it -- the C loop's saved rows): a block made when
+        the finished points fill one."""
+        if rows is not None:
+            self.given[len(self.X) - 1] = rows
         if self.currents is not None:
             self.currents.add(self.X[-1], self.T[-1], step)
         last = len(self.X) - 1 - FINISHED_AFTER
@@ -148,8 +152,12 @@ class OutputGrid:
     def _points(self, first, last):
         """Points `first..last` as `resample_uniform` takes them, a row an
         unknown (`rows`' alone)."""
-        M = np.array(self.X[first:last + 1])
-        M = M if self.rows is None else M[:, self.rows]
+        if self.given:
+            X, g, r = self.X, self.given, self.rows
+            M = np.array([g[k] if X[k] is None else X[k][r] for k in range(first, last + 1)])
+        else:
+            M = np.array(self.X[first:last + 1])
+            M = M if self.rows is None else M[:, self.rows]
         if self.currents is not None:
             M = np.hstack([M, np.array(self.currents.extra[first:last + 1])])
         return M.T
@@ -173,6 +181,7 @@ class OutputGrid:
         """Points `a..b-1` dropped, their device currents with them."""
         for k in range(a, b):
             self.X[k] = None
+            self.given.pop(k, None)
             if self.currents is not None:
                 self.currents.extra[k] = None
 
@@ -218,11 +227,15 @@ class SavedRows:
         self.width = len(rows) + (0 if currents is None else len(currents.slots))
         self.kept = 0
         self.chunks = []
+        self.given = {}
 
-    def advance(self, step=None):
+    def advance(self, step=None, rows=None):
         """After a point is appended to `X` and `T` (`step`: its accepted
         step's companion, for `currents`, `save`'s device currents made at
-        each point as it is appended): the finished points' rows kept."""
+        each point as it is appended; `rows`: its rows' values where `X`
+        holds None for it): the finished points' rows kept."""
+        if rows is not None:
+            self.given[len(self.X) - 1] = rows
         if self.currents is not None:
             self.currents.add(self.X[-1], self.T[-1], step)
         last = len(self.X) - 1 - FINISHED_AFTER
@@ -234,7 +247,10 @@ class SavedRows:
         if j == 0:
             self.chunks.append(np.empty((SAVE_CHUNK, self.width)))
         row, m = self.chunks[-1][j], len(self.rows)
-        np.take(self.X[k], self.rows, out=row[:m])
+        if self.X[k] is None:
+            row[:m] = self.given.pop(k)
+        else:
+            np.take(self.X[k], self.rows, out=row[:m])
         self.X[k] = None
         if self.currents is not None:
             row[m:] = self.currents.extra[k]

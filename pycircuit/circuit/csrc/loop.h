@@ -66,7 +66,9 @@ typedef struct {
     long npoint;                /* the accepted points (`X`'s length) */
     double *qring, *iqring;     /* hist_len x n each, newest first (rotated by
                                    `ring_o` inside a call, in order at its exit) */
-    double *xlast;              /* the last accepted point, full */
+    double *xlast;              /* the last accepted point, full (inside a call,
+                                   after a multistep accept, the predictor's
+                                   newest node: THE ATTEMPT POINTED) */
     long hk;                    /* the predictor's nodes, oldest first, <= 8 */
     double *ht, *hx;            /* their times (8), their states (8 x n; rotated
                                    by `hx_o` inside a call, in order at its exit) */
@@ -84,7 +86,8 @@ typedef struct {
     /* out: the steps taken, and the counts the Python's tallies are made
        from (zeroed at entry) */
     long k;                     /* accepted */
-    double *X, *T;              /* k x n, k */
+    double *X, *T;              /* k x n (THE SAVED ROWS, `nout`: a ring of
+                                   LOOP_XRING full points), k */
     double t_break;             /* the last attempt's breakpoint */
     long attempts, rejected, iters, euler_steps, breaks, screens, pred_fast, ltes, lte_euler;
     long lte_seeds;             /* the error tests (of `ltes`) on the seed's factors
@@ -439,6 +442,23 @@ typedef struct {
        its factor (`_cholklu`) -- or dropped at the entry (0): the loop's
        first, or either moved (`_tran_loop_c._corners`) */
     long kept_hold;
+    /* OWN, this entry's: THE ATTEMPT POINTED -- where the last attempt made
+       keeps its point, charge and companion current: xatt, qatt, iqatt, or,
+       an accepted multistep attempt's, the rings' newest slot and the
+       predictor's newest node, which nothing writes before the next attempt
+       is made; copied into xatt, qatt, iqatt and pointed back at them at the
+       exit (loop.c `att_settle`): the glue reads them there */
+    const double *xatt_p, *qatt_p, *iqatt_p;
+    /* OWN, this entry's: xlast's own buffer as the entry found it -- after a
+       multistep accept xlast points at the predictor's newest node; put
+       back at this buffer at the exit (loop.c `att_settle`) */
+    double *xlast_own;
+    /* CALL, this entry's: THE SAVED ROWS -- 0: X holds every accepted point,
+       full (cap rows); else X a ring of LOOP_XRING full points (point k at
+       row k % LOOP_XRING) and XO (cap x nout) each point's x[out_rows] */
+    long nout;
+    const int64_t *out_rows;
+    double *XO;
 } loop_t;
 long pcx_loop(loop_t *s);
 
@@ -523,6 +543,10 @@ enum loop_tg {
 /* the memo's slots (`tg`): the made attempts' two generations, an
    attempt's own, a fallback's second roll */
 enum loop_tg_slots { LOOP_TG_SLOTS = 4 };
+
+/* THE SAVED ROWS' ring of full points in X (`nout` nonzero): the newest
+   three a write-back hands the Python's store as full rows */
+enum loop_xring { LOOP_XRING = 4 };
 
 /* `family`: whose attempts the loop makes */
 enum loop_family {
