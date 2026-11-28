@@ -898,7 +898,7 @@ def _corners(s, loop, tr):
     s.land_ahead, s.corner_cut = int(bool(tr.par.land_ahead)), float(tr.par.corner_cut or 0.0)
     ## (THE STEP LADDER's anchor the run holds: `Transient._step_ladder`)
     s.ladder = float(getattr(loop, 'ladder', 0.0))
-    ## (THE AFFINE STEP and THE KEPT KEYS, csrc/newton.h: their switches --
+    ## (THE AFFINE STEP, THE KEPT KEYS and THE AFFINE C, csrc/newton.h: their switches --
     ## the same bytes either way -- and the kept keys' tags held from the
     ## loop's last entry while nothing watched has moved and its Newton
     ## record stands: loop.h's `kept_hold`; dropped at its first entry and
@@ -906,6 +906,7 @@ def _corners(s, loop, tr):
     from pycircuit.circuit import _tran_newton
     s.affine = 1 if _tran_newton.AFFINE_STEP else 0
     s.kept_keys = 1 if _tran_newton.KEPT_KEYS else 0
+    s.affine_c = 1 if _tran_newton.AFFINE_C else 0
     now, rec = _watch.now(), tr.__dict__.get('_newton_c')
     last = loop.c.tags
     s.kept_hold = int(last is not None and last[0] == now and last[1] is rec)
@@ -1393,13 +1394,16 @@ def _affine_counted(s):
     """THE AFFINE STEP's counts of the loop's call (csrc/newton.h) -- its
     error tests held on the full Newton's numeric, its evaluations that took
     the J kAx held, and THE KEPT KEYS' that took a kept factor's -- and the
-    held tests that are the seed's (`lte_seeds` less the affine step's)."""
+    held tests that are the seed's (`lte_seeds` less the affine step's) --
+    and THE AFFINE C's C passes spared."""
     if s.lte_affine:
         _PC['loop_c:affine_lte'] += s.lte_affine
     if s.jkey_held:
         _PC['loop_c:affine_j'] += s.jkey_held
     if s.kept_held:
         _PC['loop_c:kept_key'] += s.kept_held
+    if s.c_spared:
+        _PC['loop_c:affine_c'] += s.c_spared
     return s.lte_seeds - s.lte_affine
 
 

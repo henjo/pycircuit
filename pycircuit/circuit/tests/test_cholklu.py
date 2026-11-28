@@ -393,6 +393,59 @@ def test_a_non_finite_c_solve_on_the_reduction_meets_the_pythons_course(where, m
         assert d.get(why, 0) > 0, d
 
 
+def _loop_entries(monkeypatch):
+    """The C loop's entries a run makes (`_tran_loop_c._call`), counted."""
+    from pycircuit.circuit import _tran_loop_c
+    seen, call = [0], _tran_loop_c._call
+
+    def counted(*a, **k):
+        seen[0] += 1
+        return call(*a, **k)
+    monkeypatch.setattr(_tran_loop_c, '_call', counted)
+    return seen
+
+
+@pytest.mark.parametrize('chol', [True, False], ids=['cholmod', 'klu'])
+@pytest.mark.parametrize('cap', [None, 7], ids=['one-entry', 'entries'])
+def test_an_affine_run_holds_its_one_c_and_is_its_run(cap, chol, monkeypatch):
+    """THE AFFINE C (newton.h): the grid's Gear-2 run, the first iterate
+    taken (on the reduction; on KLU where asked), in the C loop -- the C a
+    fold on the affine step made serves every later attempt's first
+    evaluation and fold: two C passes an attempt spared (`loop_c:affine_c`)
+    but the first three of each entry, whose buffers the glue loads (the
+    flags cleared there; seven rows an entry: eleven entries).  The run the
+    Python's byte for byte, and the run with the held C off (`AFFINE_C`):
+    its steps and every other count alike."""
+    from pycircuit.circuit import _tran_loop_c, _tran_newton
+    if cap:
+        monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', cap)
+    make = {'step_ladder': False, 'linear_newton': 'auto' if chol else True}
+    seen = _loop_entries(monkeypatch)
+    c = _run(chol, True, monkeypatch, **make)
+    E = seen[0]
+    p = _run(chol, False, monkeypatch, **make)
+    monkeypatch.setattr(_tran_newton, 'AFFINE_C', False)
+    o = _run(chol, True, monkeypatch, **make)
+    assert c[1:4] == p[1:4] == o[1:4] and c[3][0] == chol, (c[2:4], p[2:4], o[2:4])
+    d = dict(c[4])
+    spared, A = d.pop('loop_c:affine_c', 0), d['loop_c:attempts']
+    assert (E > 10) == bool(cap) and 2 * A - 3 * E - 4 <= spared <= 2 * A - 3 * E, (A, E, spared)
+    assert d == dict(o[4]), (d, o[4])
+
+
+def test_a_run_off_the_affine_step_holds_no_c(monkeypatch):
+    """THE AFFINE C off the affine step: the grid's run on the reduction
+    with the first iterate not taken (`linear_newton` False) -- in the C
+    loop, no C pass spared, the run the one with the held C off."""
+    from pycircuit.circuit import _tran_newton
+    make = {'step_ladder': False, 'linear_newton': False}
+    a = _run(True, True, monkeypatch, **make)
+    monkeypatch.setattr(_tran_newton, 'AFFINE_C', False)
+    b = _run(True, True, monkeypatch, **make)
+    assert a[1:4] == b[1:4] and a[3][0], (a[2:4], b[2:4])
+    assert 'loop_c:affine_c' not in a[4] and a[4].get('loop_c:attempts', 0) > 50, a[4]
+
+
 ## THE KEPT FACTORS (`_cholklu`'s note, plan 261 L24)
 
 #: a step-size sequence that revisits its matrices, as a ladder's corners do

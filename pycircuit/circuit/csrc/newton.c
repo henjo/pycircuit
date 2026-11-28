@@ -375,9 +375,16 @@ static int floor_holds(newton_t *s, long m)
    (no PCX_PASS_I) */
 static void fold(newton_t *s, core_fn_t core, long n, long r)
 {
+    long want = s->lte_held ? PCX_PASS_C : s->fold_j;
+    /* (THE AFFINE C: Cj holding the run's one C, q alone -- Geqj from it) */
+    if (s->lte_affine && s->cj_held) {
+        want &= ~PCX_PASS_C;
+        s->c_spared++;
+    }
+    s->c_made = (want & PCX_PASS_C) != 0;
     pcx_put_ref(s->x, s->xc, n, r);
     core(s->core, s->xc, s->T,
-         (s->lte_held ? PCX_PASS_C : s->fold_j) | s->pattern | (s->sets ? PCX_WANT_SETS : 0),
+         want | s->pattern | (s->sets ? PCX_WANT_SETS : 0),
          s->formula,
          s->a0, s->a1, s->a2, s->h,
          s->theta, s->q1, s->q2, s->iq1, s->u, s->Cj, s->Cj, s->qj, s->iqj, s->Geqj, s->F,
@@ -523,6 +530,27 @@ static void gather(newton_t *s, long it, int packed, const double *J)
 /* THE AFFINE STEP's error test (newton.h): 1 where the loop's call took the
    first iterate on the sparse full Newton and the fold feeds a test -- the
    test then solves on the Newton's own numeric (`lte_held`) */
+/* THE AFFINE C (newton.h): the affine step's conditions on the call --
+   `affine_test`'s, the iteration's apart */
+static int affine_c(const newton_t *s)
+{
+    return s->affine && s->first_iter && !s->chord && !s->walk_fn && s->klu_sym;
+}
+
+/* the first evaluation's C where the call holds one: the chord fallback's
+   (`cin`), the cache's at its own point (`cache_hit`), or THE AFFINE C's --
+   the cache's C the run's one, at any seed (counted in `c_spared`); else
+   NULL: the evaluation makes C */
+static const double *first_c(newton_t *s, const double *cin, long m, long r)
+{
+    const double *c = cin ? cin : cache_hit(s, m, r);
+    if (!c && s->have_cache && s->cc_held && affine_c(s)) {
+        c = s->cC;
+        s->c_spared++;
+    }
+    return c;
+}
+
 static int affine_test(newton_t *s, long it, walk_fn_t walk)
 {
     s->lte_affine = s->affine && it == 0 && s->first_iter && !s->chord && !walk && s->fold_j
@@ -678,13 +706,14 @@ static long iterate(newton_t *s, void **num, const double *cin, const double **c
     s->iters = 0;
     s->lte_held = s->lte_affine = s->jkey_held = s->kept_held = 0;
     s->kept_src = 0;
+    s->c_made = s->c_spared = 0;
     s->early_checks = 0;
     s->status = NEWTON_RUNNING;
     /* the seed, reduced (remove_row_col); a hit evaluates without the C
        pass, its C the cached one: as `_tran_core.evaluate` drops its C bit
        on `_C_lookup`'s hit */
     pcx_drop_ref(s->xseed, s->x, n, r);
-    Cin0 = cin ? cin : cache_hit(s, m, r);
+    Cin0 = first_c(s, cin, m, r);
     if (c0) *c0 = Cin0 ? Cin0 : s->C0;
     first_bits = Cin0 ? (PCX_PASS_G | PCX_PASS_I) : PCX_WANT_ALL;
     for (it = 0; it < s->maxiter; it++) {

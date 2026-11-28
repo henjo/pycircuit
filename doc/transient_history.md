@@ -6796,3 +6796,21 @@ counted the rounding failures kept: 324 of ibmpg3t's solves).  Measured
 on the tree against 7372f042 at 10 ns: ibmpg3t 0.959x, 6t
 0.947x, 4t 0.976x, 5t 0.969x, 2t 0.934x, 1t 0.950x, about 3 % fewer
 instructions, the same peak memory.
+
+## CH: the affine run's C held (2026-11-28)
+
+### THE AFFINE C (newton.h `cc_held`, `cj_held`, `c_spared`; loop.h `c_have`, `affine_c`); `_tran_newton.AFFINE_C`
+
+2026-11-28 (`doc/hdl_roadmap_260824.md`, 367).  The C time loop rebuilt
+the circuit's capacitance matrix twice an attempt -- when each step's
+Newton started (its cache is keyed by the state, and the predicted state
+never matches) and at each converged point -- about 2 600 times in an
+ibmpg6t run, though on a linear grid C never changes.  On runs the
+transient certifies affine (the stamp plan's G and C constant: the same
+certificate the loop's affine step rests on) the loop now keeps the C it
+made: once one of its two C buffers holds it, the next Newton's first
+evaluation and the fold use it instead of rebuilding.  A run makes about
+three C passes an entry.  The answers are the same bytes; the Python
+reference is unchanged.  `PYCIRCUIT_AFFINE_C=0` turns it off.  Measured
+on the tree against 775076d9 at 10 ns: ibmpg6t 0.926x, 5t
+0.921x, 4t 0.950x, 3t 0.967x, 1t 0.965x, 2t 1.000x, the same peak memory.

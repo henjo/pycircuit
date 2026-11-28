@@ -18318,3 +18318,66 @@ factorizations, kept hits and fallbacks the base's, the errors against the bench
 same; VmHWM within -0.2 .. +0.4 % (1t..6t 1 963 -> 1 959, 1 529 -> 1 533, 9 250 -> 9 255, 11 335 -> 11 357, 7 892 ->
 7 925, 11 379 -> 11 363 MB); user instructions 2.4-3.5 % fewer (3t -88 G, 6t -110 G), cycles 2-5 % fewer.  The one
 count that moves, by design: `residual_kept` 324 -> 0 on 3t (0 on every other grid on both trees).
+
+## 2026-11-28 — 367. CH: the affine run's C held -- no C pass where the loop's buffer holds the run's one C
+
+**Why**  Plan 261 L38 (tc/plan_l38_cl.md), CL's micro-benchmark, counted the IBM runs' core calls (a counting patch
+in a scratch worktree): 6t 2 598 calls, of them 2 592 with the C pass -- the converged point's fold (newton.c `fold`)
+and each attempt's first evaluation (the C cache keyed by the state misses: the predictor's seed is not the cached
+point) -- each pulling 7 610 895 packed entries from constant templates, 7.53 ms on the pool: ~19.5 s of 6t's
+main-thread wall, ~7 s of 3t's.  On these runs C is one matrix: `Transient._affine()` certifies the stamp plan's G
+and C constant for every x, t and epar, the certificate the C loop's affine step (KH, 364) already rests on.
+Andreas: "1" (the design read before CL's prototype).  Plan L39 (tc/plan_l39_ch.md) read every maker and reader of
+the loop's C (the first evaluation's cache, the fold, the two alternating buffers, the branch screen, the walks, the
+glue at the entry and the exit) and prototyped it (scratch l39/ch.diff on 775076d9, in a worktree) under a decider
+set before measuring: 6t <= 0.965x and 3t <= 0.985x in both interleaved pairs with fewer instructions, every digest,
+step, factorization, kept hit and fallback the base's, VmHWM <= +1 %.  Q0: the C passes of a 1t run 9 of 2 601.
+Measured (pinned 0-15, perf stat): 6t 0.913x / 0.911x, 3t 0.969x / 0.966x, instructions -3.7 % / -2.7 %, cycles -13 % /
+-8 %, the same bytes, VmHWM +0.2 %.  Andreas: "Build".  Build lines (the plan's CENSUS RULE, set before the census):
+the six grids at 10 ns against 775076d9, every grid's wave and DC digests, steps, factorizations, kept hits and
+fallbacks the base's, VmHWM <= +1 %, 3t <= 0.985x and 6t <= 0.965x with fewer instructions.
+
+**What.**  THE AFFINE C (newton.h): on the affine step's attempts (`affine_test`'s conditions: `affine`, the first
+iterate taken, the full Newton, no walk, KLU) a C buffer of the loop's that a fold on the affine step made since the
+loop's entry holds the run's one C -- the bytes any C pass would make -- so the first evaluation takes the cache's
+C at any seed where `cC` holds it (newton.c `first_c`, as a cache hit: no C pass, the companion and J from it), and
+the fold makes q alone where `Cj` holds it (Geqj from Cj, as before).  loop.h `c_have[2]` flags the two alternating
+buffers, set from newton's OWN `c_made` (a C pass into Cj) as its `lte_affine`, cleared at every entry (the glue
+loads cC0 there); newton's LOOP `cc_held`, `cj_held` set from them around each attempt's Newton (loop.c
+`newton_call`), read only with `affine`.  A run's C passes: about three an entry instead of two an attempt.  C-only,
+as the affine step: the Python's course and bytes stand.  Switch `_tran_newton.AFFINE_C` (env
+`PYCIRCUIT_AFFINE_C=0` off, loop.h `affine_c`); count newton.h `c_spared`, loop.h `c_spared`, the path counter
+`loop_c:affine_c`.  New fields at the ends of newton_t and loop_t.
+
+**Tests.**  test_cholklu: `test_an_affine_run_holds_its_one_c_and_is_its_run[one-entry|entries x cholmod|klu]` (the
+grid's Gear-2 run with the first iterate taken -- on KLU where asked -- in one entry and in eleven (CAP_MAX 7):
+`2 A - 3 E - 4 <= spared <= 2 A - 3 E` -- 148 of 76 attempts in one entry, 118 in eleven -- the run the Python's byte
+for byte and the run with AFFINE_C off, every other count the same); `test_a_run_off_the_affine_step_holds_no_c`
+(linear_newton False: none spared, the same run).  test_loop_c: `test_a_nonlinear_run_holds_no_c` (a sparse MOS chain
+in the loop: none spared, the Python's run).  Bitten, each planted alone: the first evaluation's rule, the fold's,
+the entry's clear, the loop's switch, the glue's switch, the glue's count, a wrong held C, the flag's update after
+the call -- each caught.  Not caught, and it cannot be: the flag set without the affine step (the flags are read only
+under newton's affine conditions, under which a fold that makes C does it on the affine step).  A first non-affine
+case, a diode on the grid, never reached the C loop and was replaced -- it would have passed on code it never ran.
+Five pinned pairs re-recorded on their C sides (the stepping loop, the Newton solve, the multistep walk, the stage
+loop, the transform loop), their twins' modules green first.
+
+**Measured.**  The gate against 775076d9: every comparison 0 differing (C against Python on the decks 13 x 27 runs
+and at size 3, tree against tree 116 runs, the path counters the same, the instrument 81 decks 0); VERDICT NOT
+REACHED, as KH's, SC's and VA's: of the 27 changed executable lines and 40 arms, 17 arms are reached by the decks
+(the flags made around every loop attempt), 2 forced, 14 by the suite's fixtures alone -- the affine step runs on
+the reduction's grids and on KLU where the first iterate is forced, which no gold deck asks -- and 7 by none: the
+defensive conjuncts the flags' origin implies (`affine_c`'s later conditions and `first_c`'s `have_cache` once
+`cc_held` is set, which the loop sets only from a fold on the affine step; `cur < 0` with the switch on, an entry
+with no cached C), each false arm the flag off, the course the base's.  The changed lines are compared C against
+Python by the new tests and tree against tree by the census.  The suite 6 926 passed, 10 skipped.  Ruff: no
+finding.
+
+The census (l39/build/cen, 13:02-13:50, B = 775076d9, pinned 0-15, 13 GB scope, perf stat, every start
+at a 1-min load < 1.5): **3t 218.9 -> 211.7 s 0.967x, 6t 278.3 -> 257.6 s 0.926x**, 4t 268.3 -> 254.9 s 0.950x, 5t
+192.1 -> 177.0 s 0.921x, 1t 5.7 -> 5.5 s 0.965x, 2t 31.0 -> 31.0 s 1.000x (its instructions 3.1 % and cycles 4.5 %
+fewer: the spread of a short run); every grid's wave and DC digests, steps, factorizations, kept hits and fallbacks
+the base's, the errors against the benchmark the same; VmHWM within -0.5 .. +0.7 % (1t..6t 1 965 -> 1 958, 1 527 ->
+1 529, 9 271 -> 9 229, 11 330 -> 11 345, 7 882 -> 7 933, 11 361 -> 11 365 MB); user instructions 1.5-3.6 % fewer (6t
+-120 G), cycles 2-13 % fewer -- the pass was memory traffic.  The one count that moves: `loop_c:affine_c` 2 584-2 594
+a run (4t 2 270), two an attempt but the entry's first few; every other path counter the base's.

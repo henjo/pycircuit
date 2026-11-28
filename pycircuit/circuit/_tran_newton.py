@@ -50,6 +50,12 @@ AFFINE_STEP = os.environ.get('PYCIRCUIT_AFFINE_STEP', '1') != '0'
 #: `PYCIRCUIT_KEPT_KEYS=0` turns it off (an A/B), read at each loop's load
 KEPT_KEYS = os.environ.get('PYCIRCUIT_KEPT_KEYS', '1') != '0'
 
+#: THE AFFINE C (csrc/newton.h): on the affine step's attempts a C buffer of
+#: the loop's holding the run's one C serves the first evaluation at any seed
+#: and the fold, no C pass made again -- the same bytes either way; env
+#: `PYCIRCUIT_AFFINE_C=0` turns it off (an A/B), read at each loop's load
+AFFINE_C = os.environ.get('PYCIRCUIT_AFFINE_C', '1') != '0'
+
 
 class _EarlyArm:
     """The early abort armed for one multistep attempt (`Transient.

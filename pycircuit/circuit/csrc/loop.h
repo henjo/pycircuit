@@ -459,6 +459,16 @@ typedef struct {
     long nout;
     const int64_t *out_rows;
     double *XO;
+    /* OWN, this entry's: THE AFFINE C (newton.h) -- 1 where cC[i] holds the
+       run's one C, made by a fold on the affine step since the entry (the
+       entry's buffers are the glue's: none), else 0 */
+    long c_have[2];
+    /* the run: THE AFFINE C (newton.h; `_tran_newton.AFFINE_C`): 1 where the
+       Newton's `cc_held` and `cj_held` are set from `c_have`, 0 never */
+    long affine_c;
+    /* OWN, this call's: the C passes the held C spared (newton.h's
+       `c_spared`) */
+    long c_spared;
 } loop_t;
 long pcx_loop(loop_t *s);
 

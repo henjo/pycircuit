@@ -18,9 +18,10 @@
  *         choice);
  *   CALL  `_tran_newton_c.solve`, before every entry;
  *   OWN   newton.c, during the call: its scratch, its outputs, the status.
- * LOOP marks the 16 fields csrc/loop.c sets before each of its attempts:
+ * LOOP marks the 18 fields csrc/loop.c sets before each of its attempts:
  * formula, a0, a1, a2, h, theta (0.0), q1, q2, iq1, u, xseed, have_cache,
- * cx, cC, Cj, Geqj.  It points those pointers at its own buffers (its
+ * cx, cC, Cj, Geqj, cc_held, cj_held (these two read only with `affine`,
+ * which the loop clears at its exit).  It points those pointers at its own buffers (its
  * rings, the source table's output, the predictor's output or its last
  * point, its two C and Geq buffers); `_tran_loop_c` saves the ten pointer
  * and flag ones (q1, q2, iq1, u, xseed, cx, cC, Cj, Geqj, have_cache)
@@ -377,6 +378,17 @@ typedef struct {
        of a factored matrix holds a nonzero), so `sparse_full` takes x's
        finiteness for the verdict and makes no residual */
     long growth_one;      /* CALL: 1 on such a solver (`_tran_newton_c._klu_rules`), else 0 */
+    /* THE AFFINE C (`Transient._affine`: the stamp plan's C one matrix for
+       every x, t and epar): on the affine step's attempts (`affine_test`'s
+       conditions) a C buffer of the loop's that a fold on the affine step
+       made since the loop's entry holds the run's one C -- the bytes any C
+       pass would make -- so the first evaluation takes the cache's C at any
+       seed where cC holds it, and the fold makes q alone where Cj does.
+       Read only with `affine` (the loop's multistep attempts) */
+    long cc_held;         /* LOOP: 1 where cC holds that C, else 0 */
+    long cj_held;         /* LOOP: 1 where Cj holds it, else 0 */
+    long c_made;          /* OWN: 1 where this call's fold made a C pass into Cj */
+    long c_spared;        /* OWN: the C passes the held C spared this call (0-2) */
 } newton_t;
 
 /* THE KEPT KEYS' entries (newton_t's `tag_find`, `tag_set`, `tag_clear`) */

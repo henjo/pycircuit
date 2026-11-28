@@ -176,6 +176,7 @@ static void attempt_made(loop_t *s, const loop_attempt_t *a, int judged, int acc
     s->iters += nt->iters;
     s->jkey_held += nt->jkey_held;
     s->kept_held += nt->kept_held;
+    s->c_spared += nt->c_spared;
     if (nt->chord) s->fb_reused += nt->reused;
     else s->full_reused += nt->reused;
     s->chord_fallbacks += nt->fallbacks;
@@ -308,6 +309,20 @@ static int limit_rejected(const loop_t *s, const newton_t *nt, long st, double h
            && (!nt->chord || nt->fb_limit);
 }
 
+/* the attempt's Newton (`pcx_newton`) with THE AFFINE C's flags around it
+   (newton.h): before, which of the two C buffers holds the run's one C
+   (`c_have`, under the switch `affine_c`); after, a C pass made into Cj, that
+   C where the affine step made it */
+static long newton_call(loop_t *s, const loop_attempt_t *a, newton_t *nt)
+{
+    long st;
+    nt->cc_held = s->affine_c && s->cur >= 0 && s->c_have[s->cur];
+    nt->cj_held = s->affine_c && s->c_have[a->nxt];
+    st = CALL(s->newton_fn, pcx_newton, nt);
+    if (nt->c_made) s->c_have[a->nxt] = nt->lte_affine;
+    return st;
+}
+
 static long take(loop_t *s, loop_attempt_t *a)
 {
     newton_t *nt = (newton_t *) s->newton;
@@ -374,7 +389,7 @@ static long take(loop_t *s, loop_attempt_t *a)
     nt->Geqj = s->Geq[a->nxt];
     arm_early(s, a, nt);
     ck_open(s, nt);
-    st = CALL(s->newton_fn, pcx_newton, nt);
+    st = newton_call(s, a, nt);
     nt->ck_defer = 0;
     nt->early_lte = 0;
     a->early_checks = (st == NEWTON_EARLY || st == NEWTON_CONVERGED || nt->fb_limit) ? nt->early_checks : 0;
@@ -2406,11 +2421,12 @@ long pcx_loop(loop_t *s)
     s->newton_rejects = s->chord_fallbacks = s->fb_refactors = s->nums_made = 0;
     s->full_reused = s->fb_reused = s->lte_reused = 0;
     s->maps = 0;
-    s->lte_affine = s->jkey_held = s->kept_held = 0;
+    s->lte_affine = s->jkey_held = s->kept_held = s->c_spared = 0;
     s->xatt_p = s->xatt;
     s->qatt_p = s->qatt;
     s->iqatt_p = s->iqatt;
     s->xlast_own = s->xlast;
+    s->c_have[0] = s->c_have[1] = 0;
     /* (THE AFFINE STEP's key: none at the entry -- what the Python did
        since the loop last ran may have moved kAx or the numeric; THE KEPT
        KEYS' tags none where the entry holds none -- the circuit's values

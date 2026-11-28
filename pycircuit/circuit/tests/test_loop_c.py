@@ -175,6 +175,15 @@ def test_a_fixed_run_is_the_python_one(name, build, make, kw, monkeypatch):
         assert ca.get('loop_c:steps', 0) > 100
 
 
+def test_a_nonlinear_run_holds_no_c(monkeypatch):
+    """THE AFFINE C (newton.h) on the affine step alone: a sparse MOS chain
+    (KLU; not affine, no first iterate taken) in the C loop -- no C pass
+    spared, the run the Python's."""
+    ca = _same(lambda: _mos(250, cap=1e-13), monkeypatch, steps_min=10, tend=20 * 2e-10,
+               timestep=2e-10)
+    assert 'loop_c:affine_c' not in ca and ca.get('loop_c:attempts', 0) > 10, ca
+
+
 def test_an_entry_that_fills_its_outputs_comes_back(monkeypatch):
     """Seven rows an entry: the run in many entries, the same run."""
     monkeypatch.setattr(_tran_loop_c, 'CAP_MAX', 7)
