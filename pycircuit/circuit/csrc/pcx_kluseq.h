@@ -2,7 +2,9 @@
  * written once for the units that repeat it (dcnewton.c, pcnrdc.c): a
  * refactor on the numeric it holds, a fresh factor on a zero pivot,
  * klu_solve, and after a refactor the residual `max |A x - b| / max(max |b|,
- * 1e-300)` against REFACTOR_RESIDUAL_TOL -- a fresh factor where it fails.
+ * 1e-300)` against REFACTOR_RESIDUAL_TOL -- a fresh factor where it fails
+ * (on a solver whose growth is one, pcx_klu.h's THE GROWTH OF ONE, the
+ * finiteness of the values and the solution).
  * The struct and THE NUMERIC: pcx_klu.h, the verdicts pcx_verdict.h, THE
  * HELD VALUES pcx_held.h (all included before this).
  *
@@ -89,6 +91,17 @@ static int pcx_klu_resid_sparse(pcx_klu_t *k, const double *b, const double *x,
     return pcx_resid_sparse(k->kAp, k->kAi, k->kAx, k->resid_tol, b, x, y, t, t + m, m);
 }
 
+/* THE GROWTH OF ONE (pcx_klu.h): 1 where the solution `x` and the values
+   `kAx` are all finite, else 0 -- the residual's and the growth's verdict
+   together (`StructuralKLU.growth_one`) */
+static int pcx_klu_finite(const pcx_klu_t *k, const double *x, long m)
+{
+    long i;
+    for (i = 0; i < m; i++) if (!isfinite(x[i])) return 0;
+    for (i = 0; i < k->kAp[m]; i++) if (!isfinite(k->kAx[i])) return 0;
+    return 1;
+}
+
 /* StructuralKLU.solve(A, b) on its own sequence, `kAx` A's values in its
    order (gathered by the caller); `bound` 1 the sparse sums' bound first,
    its undecided verdicts counted in `dense` (which may be NULL) -- the CSC
@@ -123,7 +136,10 @@ static long pcx_klu_seq(pcx_klu_t *k, const double *b, double *x, double *y, dou
     /* (what KLU raised inside: the Python's ctypes calls never see it) */
     feclearexcept(FE_ALL_EXCEPT);
     if (!reused) return 0;
-    if (bound) {
+    /* (THE GROWTH OF ONE: finite values and solution held or kept, not
+       counted; else a failure the growth refuses -- no residual) */
+    if (k->growth_one) fails = !pcx_klu_finite(k, x, m);
+    if (bound && fails == PCX_UNDECIDED) {
         fails = pcx_klu_resid_sparse(k, b, x, y, t, m);
         if (fails == PCX_UNDECIDED) {
             /* (what the sparse sums raised is not the Python's) */

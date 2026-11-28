@@ -637,6 +637,7 @@ class _Rec:
         k.resid_tol = float(ch.REFACTOR_RESIDUAL_TOL)
         g = ch.growth_gate()
         k.klu_rgrowth, k.rg_off, k.rg_keep = ffi.cast('void *', g[0]), g[1], g[2]
+        k.growth_one = int(ch.growth_one())
         self.klu, self.klu_keep = ch, keep
 
     def on_pattern(self, held):

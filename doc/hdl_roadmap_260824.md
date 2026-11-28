@@ -18247,3 +18247,74 @@ saving is memory traffic and the re-entries' numpy work, not instructions.  One 
 `loop_c:kept_key` gives way to `loop_c:affine_j` (3t 683 / 570 -> 663 / 590, 6t 689 / 562 -> 662 / 589), the sum
 the same -- every entry clears the held key (`ke_entry`), so the base, entering again, took the kept slot's copy
 where the build, not entering, holds kAx: the same values either way.
+
+## 2026-11-28 — 366. VA: the refactor's verdict on the reduction -- the solution's finiteness, no residual
+
+**Why**  Plan 261 L35 (tc/plan_l35_profile.md) ranked it second after SC: the full Newton's sparse solve
+(newton.c `sparse_full`) validated every solve on a refactored, held or kept numeric -- `max|A x - b| / max|b|`
+against `REFACTOR_RESIDUAL_TOL` (1e-8), a CSC product over every entry (the IBM runs are packed: the dense test every
+time), two scans and the right-hand side's copy -- 46.6 % of `iterate` on 6t's line profile, ~13.7 s of its main
+thread (~8.9 s on 3t).  On the reduction (`_cholklu`) that test decides nothing: the growth entry `ck_rgrowth` reports
+1.0 for every factor (a Cholesky of a positive definite matrix has no pivot order to go stale), so THE REFACTOR KEPT
+ON ITS GROWTH (327) keeps every failure whose values and solution are finite, and refuses every non-finite
+solution, whose residual always fails (each column of a factored matrix holds a nonzero, so a non-finite x_j reaches
+its rows).  The verdict is the solution's finiteness; only `residual_kept` (the held state's HELD_KEPT) differs, and
+on the reduction it counted the rounding failures 327 keeps (324 of ibmpg3t's solves, none of 6t's).  Andreas:
+"Continue as you suggest".  Plan L37 (tc/plan_l37_va.md) prototyped it (scratch l37/va.diff on 7372f042, in a
+worktree) under a decider set before measuring: 6t <= 0.98x and 3t <= 0.985x in both interleaved pairs with fewer
+instructions, every digest, step, factorization, kept hit and fallback the base's, VmHWM <= +1 %.  Measured (pinned
+0-15, perf stat): 3t 0.977x / 0.955x, 6t 0.955x / 0.932x, instructions -3.4 %, the same bytes, VmHWM +0.2 % / -0.0 %.
+Andreas: "Do it".  Build lines (the plan's CENSUS RULE, set before the census): the six grids at 10 ns against
+7372f042, every grid's wave and DC digests, steps, factorizations, kept hits and residual fallbacks the base's,
+VmHWM <= +1 %, 3t <= 0.985x and 6t <= 0.98x with fewer instructions.
+
+**What.**  THE GROWTH OF ONE: `StructuralKLU.growth_one()` -- the solver's entries say their growth is one
+(`_cholklu`'s `_Lib.growth_one`), the common's offset is known (`_klu_order.rgrowth_offset()`) and
+`REFACTOR_RGROWTH_KEEP` <= 1.0; there `solve`'s refactor path and the chord's (`_ChordNumeric._make`) take
+`not (isfinite(x).all() and isfinite(Ax).all())` for the residual's verdict, a failure meeting `_growth_keeps`, which
+refuses it as before (a fresh factor).  The C units read it as a flag set beside `growth_gate`: newton.h
+`growth_one` (end of `newton_t`; `sparse_full` makes no rb copy and, after the solve, takes x's finiteness -- kAx is
+finite there, scanned at the call's start, as gathered, or a kept factor's values -- for the verdict:
+NEWTON_BAIL_KLU_RESIDUAL where it is not), pcx_klu.h `growth_one` (end of `pcx_klu_t`: `pcx_klu_seq`'s verdict
+`pcx_klu_finite` for the chord's sequence and the DC, PCNR, Radau and transform units), lte.h `growth_one` (end of
+`lte_t`: `sparse_solve` serves x where x and kAx are finite, else LTE_BAIL_RESIDUAL).  Bound in `_tran_newton_c`
+(`_klu_bind`, and `_klu_rules` at each serve), `_tran_lte_c` (`_klu_bind`, `_solver_in` at each call),
+`_tran_loop_c` (once a run), `_dc_newton_c`, `_pcnr_c`, `_tran_radau_c`, `_tran_radau_tc`, `_tran_tcloop_c`.  KLU
+unchanged: its growth is read, the residual made, as before.  One course changes, off the reduction's hot path and
+toward the Python's: where the base's C residual raised a flag on finite values (an overflow of A x), it handed back
+and the Python kept x; now both keep it.
+
+**Tests.**  test_cholklu: `test_a_refactor_check_failing_on_the_reduction_is_kept` rewritten as
+`test_a_refactor_on_the_reduction_is_judged_by_its_finiteness` (a tolerance of 0: the refactor kept, nothing
+counted, the bytes those of the residual's course, which counts one); `test_a_non_finite_refactor_on_the_reduction_
+still_factors_afresh` (a NaN in b: the fresh factor, as the residual's course); `test_the_growth_of_one_is_the_
+reductions_with_its_offset_and_a_threshold_of_one` (KLU, a threshold of 2 -- a failure then meets a fresh factor --
+and no offset: off); `test_a_grid_transient_judged_by_finiteness_is_its_c_and_its_pythons[chord|full]` (a tolerance
+of 0 everywhere: the C Newton, chord and error test the Python's byte for byte, neither counting a kept residual,
+and the bytes, steps and factorizations those of the residual's course, which counts them);
+`test_a_non_finite_c_solve_on_the_reduction_meets_the_pythons_course[full|chord|lte]` (the reduction's klu_solve
+stood in for, a NaN written into the first solve of about a third of the right-hand sides: newton.c hands back as
+`klu_residual`, lte.c as `residual`, the chord's sequence factors afresh and solves again; the run the Python's).
+Bitten (each planted alone): the Python's finiteness, its threshold and offset conditions, newton.c's scan, lte.c's
+scan, `pcx_klu_seq`'s verdict, the newton glue's flag, the loop's and the error test's lte flags, the Python chord's
+verdict -- each caught.  Twelve pinned pairs re-recorded (eleven on their C sides -- newton.h, pcx_klu.h,
+pcx_kluseq.h, lte.c/lte.h moved -- and the Newton solve on both, linearsolver's `solve` and chord too), their twins'
+modules green first.
+
+**Measured.**  The gate against 7372f042: every comparison 0 differing (C against Python on the decks 13 x 27 runs
+and at size 3, tree against tree 116 runs, the path counters the same, the instrument 81 decks 0); VERDICT NOT
+REACHED, as KH's and SC's: of the 15 changed executable lines and 34 arms, 7 arms are reached by the decks, 1 forced,
+24 by the suite's fixtures alone -- THE GROWTH OF ONE runs on the reduction, which no gold deck or gate circuit
+reaches -- and 2 by none: the values' scans' non-finite arms (lte.c `sparse_solve`, `pcx_klu_finite`), which a
+factored matrix cannot reach (a non-finite value reaches the solution, whose scan comes first) and which mirror the
+Python's `isfinite(Ax)`; their course is the base's either way (the hand-back, the fresh factor).  The changed lines
+are compared C against Python by the new tests and tree against tree by the census.  The suite 6 920 passed, 10
+skipped.  Ruff: no new finding.
+
+The census (l37/build/cen, 09:37-10:27, B = 7372f042, pinned 0-15, 13 GB scope, perf stat, every start
+at a 1-min load < 1.5): **3t 230.2 -> 220.7 s 0.959x, 6t 294.2 -> 278.7 s 0.947x**, 4t 271.3 -> 264.9 s 0.976x, 5t
+198.5 -> 192.3 s 0.969x, 2t 33.3 -> 31.1 s 0.934x, 1t 6.0 -> 5.7 s 0.950x; every grid's wave and DC digests, steps,
+factorizations, kept hits and fallbacks the base's, the errors against the benchmark the same, the path counters the
+same; VmHWM within -0.2 .. +0.4 % (1t..6t 1 963 -> 1 959, 1 529 -> 1 533, 9 250 -> 9 255, 11 335 -> 11 357, 7 892 ->
+7 925, 11 379 -> 11 363 MB); user instructions 2.4-3.5 % fewer (3t -88 G, 6t -110 G), cycles 2-5 % fewer.  The one
+count that moves, by design: `residual_kept` 324 -> 0 on 3t (0 on every other grid on both trees).

@@ -77,7 +77,9 @@ static int full_kept(newton_t *s)
    numpy's max propagates one, and the Python's NaN residual fails its
    test), the scale `max(max |rhs|, 1e-300)` (rhs finite: a running `>`
    from +0.0 is numpy's maximum in any order), `not (resid <= tol)` -- a
-   failure kept where the refactor's growth keeps it (`full_kept`).  With
+   failure kept where the refactor's growth keeps it (`full_kept`) -- on a
+   solver whose growth is one (newton.h's THE GROWTH OF ONE) the solution's
+   finiteness, the verdict that test and that rule make together.  With
    no numeric yet (newton.h's THE RUN'S FIRST NUMERIC) its first solve:
    `_factor`, klu_solve, no validation.  Every other course is the Python's:
    a non-finite matrix or right-hand side, a singular matrix, a zero pivot,
@@ -103,7 +105,8 @@ static long sparse_full(newton_t *s, long m)
             return NEWTON_BAIL_KLU_SOLVE;
         return 0;
     }
-    for (i = 0; i < m; i++) s->rb[i] = s->b[i];
+    if (!s->growth_one)
+        for (i = 0; i < m; i++) s->rb[i] = s->b[i];
     if (s->jkey_held && s->held_st && s->held_st[PCX_HELD_OK]) {
         /* (THE AFFINE STEP: the numeric holds kAx -- refactored on it, or
            found holding it, by the call that gathered it, and nothing since:
@@ -121,6 +124,13 @@ static long sparse_full(newton_t *s, long m)
     kept_tag(s);
     if (!((klu_solve_t) s->klu_solve)(s->klu_sym, s->klu_num, (int) m, 1, s->b, s->klu_common))
         return NEWTON_BAIL_KLU_SOLVE;
+    if (s->growth_one) {
+        /* THE GROWTH OF ONE: kAx finite (scanned above, or as gathered, or a
+           factor's values), a finite x is held or kept, a non-finite one fails
+           and is not kept (pcx_rgrowth_keeps) */
+        for (i = 0; i < m; i++) if (!isfinite(s->b[i])) return NEWTON_BAIL_KLU_RESIDUAL;
+        return 0;
+    }
     /* the validation's verdict by the sparse sum's bound where it decides
        (pcx_verdict.h: whatever the order); else -- packed, every time -- the
        CSC kernel's own value (`StructuralKLU._csc_residual`: one order on

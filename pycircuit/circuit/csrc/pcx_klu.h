@@ -32,4 +32,9 @@ typedef struct {
     long rg_off;
     double rg_keep;
     long residual_kept;
+    /* CTX: THE GROWTH OF ONE (`StructuralKLU.growth_one`, newton.h's): 1 on a
+       solver whose growth entry reports 1.0 for every factor -- there a
+       refactor's verdict is its values' and its solution's finiteness, no
+       residual made (`pcx_klu_seq`) -- else 0 */
+    long growth_one;
 } pcx_klu_t;

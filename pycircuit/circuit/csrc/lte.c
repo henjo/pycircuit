@@ -113,7 +113,7 @@ static int lte_kept(lte_t *s, long m)
 
 static long sparse_solve(lte_t *s, long n, long r)
 {
-    long m = n - 1, i, why;
+    long m = n - 1, i, k, why;
     double max_b = 0.0, max_r = 0.0, scale;
     if ((why = klu_values(s, n, r)) != 0) return why;
     pcx_drop_ref(s->lte, s->b, n, r);
@@ -131,6 +131,14 @@ static long sparse_solve(lte_t *s, long n, long r)
         return LTE_BAIL_KLU;
     /* (what KLU raised inside: the Python's ctypes call never sees it) */
     feclearexcept(FE_ALL_EXCEPT);
+    if (s->growth_one) {
+        /* THE GROWTH OF ONE (lte.h): finite values and solution held or
+           kept, not counted; else a failure the growth refuses, handed back */
+        for (i = 0; i < m; i++) if (!isfinite(s->x[i])) return LTE_BAIL_RESIDUAL;
+        for (k = 0; k < s->knnz; k++) if (!isfinite(s->kAx[k])) return LTE_BAIL_RESIDUAL;
+        for (i = 0; i < m; i++) s->b[i] = s->x[i];
+        return 0;
+    }
     if (s->on_pattern && !s->packed) {
         /* the validation's verdict by the bound where it decides (whatever
            the order) and its sums raised no flag; else the CSC kernel's test

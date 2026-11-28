@@ -941,6 +941,7 @@ def _rk_bind(rec, sk, fz):
     k.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
     g = sk.growth_gate()
     k.klu_rgrowth, k.rg_off, k.rg_keep = ffi.cast('void *', g[0]), g[1], g[2]
+    k.growth_one = int(sk.growth_one())
     k.kAx = ffi.from_buffer('double *', ax)
     k.klu_sym = ffi.cast('void *', sk._symbolic)
     num = sk._numeric

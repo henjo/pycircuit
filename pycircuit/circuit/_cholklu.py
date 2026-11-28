@@ -1564,6 +1564,9 @@ class _Lib:
         self.klu_free_numeric = fn(4, ct.c_int, vp, vp)
         self.klu_free_symbolic = fn(5, ct.c_int, vp, vp)
         self.klu_rgrowth = fn(6, ct.c_int, ip, ip, dp, vp, vp, vp)
+        ## (`klu_rgrowth` reports 1.0 for every factor: linearsolver's THE
+        ## GROWTH OF ONE, `StructuralKLU.growth_one`)
+        self.growth_one = True
         self.info = fn(7, None, vp, dp)
         ## THE KEPT FACTORS: `keep(sym, keep, bytes, limit, margin)` (THE
         ## BUDGET's limit and margin) and a numeric's counts `num_info(num,

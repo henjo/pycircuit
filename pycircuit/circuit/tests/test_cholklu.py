@@ -104,20 +104,72 @@ def test_the_reduction_solves_as_a_dense_solve():
     assert sk.factors == 1 and sk.refactors >= 1 and sk.cholmod
 
 
-def test_a_refactor_check_failing_on_the_reduction_is_kept():
-    """The refactor's residual check refused (a tolerance of 0): the
-    reduction's growth entry reports a sound factor (a Cholesky of a positive
-    definite matrix has no pivot order to go stale), so the refactor is
-    kept (THE REFACTOR KEPT ON ITS GROWTH) -- no fresh factor, counted."""
+def _refactored(growth=True, b=None, **rules):
+    """Two solves of the grid on the reduction, the second a refactor, the
+    refactor's residual tolerance 0 (every residual test fails) unless
+    `rules` set it: the solutions' bytes and the solver.  `growth` False:
+    THE GROWTH OF ONE off -- the residual's course."""
     c = _grid()
     sk = _solver(c)
     sk.REFACTOR_RESIDUAL_TOL = 0.0
-    b = np.random.default_rng(3).standard_normal(sk.m)
+    for k, v in rules.items():
+        setattr(sk, k, v)
+    if not growth:
+        sk.growth_one = lambda: False
+    b = np.random.default_rng(3).standard_normal(sk.m) if b is None else b(sk.m)
+    xs = []
     for h in (1e-12, 2e-12):
         J, _iref = _matrix(c, h)
         x = np.asarray(sk.solve(J, b, None))
-        assert np.max(np.abs(x - np.linalg.solve(J, b))) <= 1e-13 * np.max(np.abs(x))
-    assert (sk.factors, sk.refactors, sk.residual_fallbacks, sk.residual_kept) == (1, 1, 0, 1)
+        xs.append(x.tobytes())
+        assert not np.isfinite(x).all() or (
+            np.max(np.abs(x - np.linalg.solve(J, b))) <= 1e-13 * np.max(np.abs(x)))
+    return xs, sk
+
+
+def test_a_refactor_on_the_reduction_is_judged_by_its_finiteness():
+    """THE GROWTH OF ONE (`StructuralKLU.growth_one`): the reduction's growth
+    entry reports 1.0 for every factor (a Cholesky of a positive definite
+    matrix has no pivot order to go stale), so a refactor whose residual test
+    fails (a tolerance of 0) is kept on its growth wherever its values and
+    solution are finite (THE REFACTOR KEPT ON ITS GROWTH) -- the solution's
+    finiteness is the verdict, no residual is made, and nothing is counted.
+    The bytes are those of the residual's course, which keeps and counts it."""
+    xs, sk = _refactored()
+    ys, rk = _refactored(growth=False)
+    assert sk.growth_one() and xs == ys
+    assert (sk.factors, sk.refactors, sk.residual_fallbacks, sk.residual_kept) == (1, 1, 0, 0)
+    assert (rk.factors, rk.refactors, rk.residual_fallbacks, rk.residual_kept) == (1, 1, 0, 1)
+
+
+def test_a_non_finite_refactor_on_the_reduction_still_factors_afresh():
+    """THE GROWTH OF ONE refuses what the growth's rule refuses: a
+    right-hand side holding a NaN leaves a refactor's solution non-finite,
+    which meets the fresh factor (its solution the same bytes) -- on the
+    residual's course alike."""
+    nan = lambda m: np.where(np.arange(m) == 3, np.nan, 1.0)
+    xs, sk = _refactored(b=nan)
+    ys, rk = _refactored(growth=False, b=nan)
+    assert sk.growth_one() and xs == ys
+    assert (sk.factors, sk.refactors, sk.residual_fallbacks, sk.residual_kept) == (2, 1, 1, 0)
+    assert (rk.factors, rk.refactors, rk.residual_fallbacks, rk.residual_kept) == (2, 1, 1, 0)
+
+
+def test_the_growth_of_one_is_the_reductions_with_its_offset_and_a_threshold_of_one(monkeypatch):
+    """THE GROWTH OF ONE holds on the reduction alone, with the common's
+    offset known (else the growth's rule keeps nothing) and the growth's
+    threshold at most 1.0 (above, the growth of one keeps nothing either):
+    where it does not hold, the residual's course -- a failure at a threshold
+    of 2 meets a fresh factor."""
+    from pycircuit.circuit import _klu_order
+    assert _refactored()[1].growth_one()
+    assert not _solver(_grid(), plan=False).growth_one()
+    xs, sk = _refactored(REFACTOR_RGROWTH_KEEP=2.0)
+    assert not sk.growth_one()
+    assert (sk.factors, sk.refactors, sk.residual_fallbacks, sk.residual_kept) == (2, 1, 1, 0)
+    assert xs == _refactored()[0]
+    monkeypatch.setattr(_klu_order, 'rgrowth_offset', lambda: None)
+    assert not _refactored()[1].growth_one()
 
 
 def test_the_plan_declines_what_is_not_a_grid():
@@ -215,11 +267,13 @@ def test_the_threshold_the_switch_and_the_dc_keep_klu(monkeypatch):
     assert not choice(tran)._choice.cholmod
 
 
-def _run(chol, c_on, monkeypatch, edge=1e-10, **make):
+def _run(chol, c_on, monkeypatch, edge=1e-10, c_loop=None, **make):
     from pycircuit.circuit import _tran_loop_c, _tran_lte_c, _tran_newton_c
     monkeypatch.setattr(_cholklu, 'CHOLMOD_FROM', 0 if chol else 1 << 40)
     for mod in (_tran_loop_c, _tran_lte_c, _tran_newton_c):
         monkeypatch.setattr(mod, 'ENABLED', c_on)
+    if c_loop is not None:
+        monkeypatch.setattr(_tran_loop_c, 'ENABLED', c_loop)
     c = _grid(16, 16)
     c['ip'] = IPulse('n8_8', 'n0_0', i1=0.0, i2=5e-3, td=1e-10, tr=edge, tf=edge, pw=4e-10,
                      per=2e-9)
@@ -234,7 +288,8 @@ def _run(chol, c_on, monkeypatch, edge=1e-10, **make):
     return (x, hashlib.sha1(x.tobytes()).hexdigest(), (st.accepted_steps, st.rejected_steps,
             st.newton_iterations), (sk.cholmod, sk.factors, sk.refactors, sk.residual_fallbacks,
             sk.chord_factors, sk.chord_refactors), _paths.since(before), sk.kept_counts(),
-            sk.solve_counts())
+            sk.solve_counts(), (sk.residual_kept, sk.chord_residual_kept,
+                                sk.chord_residual_fallbacks))
 
 
 @pytest.mark.parametrize('chord', [True, False], ids=['chord', 'full'])
@@ -256,6 +311,86 @@ def test_a_grid_transient_on_cholmod_is_its_klu_run_and_its_c_the_python(chord, 
     assert d.get('solver.auto:cholmod') == 1 and d.get('loop_c:steps', 0) > 50, d
     assert d.get('newton_c:served', 0) > 50 and d.get('lte_c:sparse_served', 0) > 50, d
     assert not any(key.startswith(('newton_c:bail', 'lte_c:bail', 'solver.cholmod:')) for key in d), d
+
+
+@pytest.mark.parametrize('chord', [True, False], ids=['chord', 'full'])
+def test_a_grid_transient_judged_by_finiteness_is_its_c_and_its_pythons(chord, monkeypatch):
+    """THE GROWTH OF ONE in the C Newton, its chord and the error test
+    (newton.c `sparse_full`, pcx_kluseq.h `pcx_klu_seq`, lte.c
+    `sparse_solve`): every refactor's residual test refused (a tolerance of
+    0), the run on the reduction the Python's byte for byte, neither counting
+    a kept residual nor a fallback -- and the bytes, steps and factorizations
+    those of the residual's course (`growth_one` off), which keeps and counts
+    the refactors."""
+    from pycircuit.circuit import linearsolver as ls
+    monkeypatch.setattr(ls.StructuralKLU, 'REFACTOR_RESIDUAL_TOL', 0.0)
+    make = {'chord_jacobian': chord, 'step_ladder': False, 'linear_newton': False}
+    c = _run(True, True, monkeypatch, **make)
+    p = _run(True, False, monkeypatch, **make)
+    assert c[1:4] == p[1:4] and c[3][0], (c[2:4], p[2:4])
+    assert c[7] == p[7] == (0, 0, 0) and c[3][3] == 0, (c[7], p[7], c[3])
+    d = c[4]
+    assert d.get('newton_c:served', 0) > 50 and d.get('lte_c:sparse_served', 0) > 50, d
+    assert not any(key.startswith(('newton_c:bail', 'lte_c:bail', 'solver.cholmod:')) for key in d), d
+    monkeypatch.setattr(ls.StructuralKLU, 'growth_one', lambda self: False)
+    r = _run(True, True, monkeypatch, **make)
+    assert r[1:4] == c[1:4], (r[2:4], c[2:4])
+    assert r[7][1 if chord else 0] > 0 and r[7][2] == 0, r[7]
+
+
+@pytest.mark.parametrize('where', ['full', 'chord', 'lte'])
+def test_a_non_finite_c_solve_on_the_reduction_meets_the_pythons_course(where, monkeypatch):
+    """THE GROWTH OF ONE's other verdict in the C: a solve whose solution is
+    not finite -- the reduction's klu_solve stood in for, a NaN written into
+    the first solve of each of about a third of the right-hand sides (their
+    CRC) -- fails, and the growth refuses it: the full Newton hands it back
+    as its residual's (`klu_residual`), the error test as its own
+    (`residual`), the chord's sequence factors afresh and solves again, clean
+    (`chord_residual_fallbacks`; its bytes a refactor's).  The run the
+    Python's byte for byte (C loop off: the units' own hand-backs)."""
+    import ctypes
+    import zlib
+
+    from pycircuit.circuit import _cbuild, _tran_lte_c, _tran_newton_c
+    c_void_p, c_int = ctypes.c_void_p, ctypes.c_int
+    proto = ctypes.CFUNCTYPE(c_int, c_void_p, c_void_p, c_int, c_int, c_void_p, c_void_p)
+    seen, poisoned, keep = set(), [0], []
+
+    def stand_in(sk):
+        real = proto(_cbuild.address(sk._lib.klu_solve))
+
+        def solve(sym, num, m, nrhs, b, common):
+            arr = (ctypes.c_double * m).from_address(b)
+            crc = zlib.crc32(bytes(arr))
+            ok = real(sym, num, m, nrhs, b, common)
+            if ok and crc % 3 == 0 and crc not in seen:
+                seen.add(crc)
+                arr[0] = float('nan')
+                poisoned[0] += 1
+            return ok
+        keep.append((real, proto(solve)))
+        return ctypes.cast(keep[-1][1], c_void_p).value
+
+    mod = _tran_lte_c if where == 'lte' else _tran_newton_c
+    bind = mod._klu_bind
+
+    def binding(rec, sk):
+        ok = bind(rec, sk)
+        if ok:
+            st = rec.s.ck if where == 'chord' else rec.s
+            st.klu_solve = rec.ffi.cast('void *', stand_in(sk))
+        return ok
+    make = {'chord_jacobian': where == 'chord', 'step_ladder': False, 'linear_newton': False}
+    p = _run(True, False, monkeypatch, **make)
+    monkeypatch.setattr(mod, '_klu_bind', binding)
+    c = _run(True, True, monkeypatch, c_loop=False, **make)
+    assert c[1] == p[1] and c[2] == p[2] and poisoned[0] > 3, (c[2], p[2], poisoned)
+    d = c[4]
+    if where == 'chord':
+        assert c[7][2] > 0 and p[7][2] == 0, (c[7], p[7])
+    else:
+        why = 'newton_c:bail:klu_residual' if where == 'full' else 'lte_c:bail:residual'
+        assert d.get(why, 0) > 0, d
 
 
 ## THE KEPT FACTORS (`_cholklu`'s note, plan 261 L24)

@@ -298,6 +298,7 @@ def _klu_bind(rec, sk):
     k.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
     g = sk.growth_gate()
     k.klu_rgrowth, k.rg_off, k.rg_keep = ffi.cast('void *', g[0]), g[1], g[2]
+    k.growth_one = int(sk.growth_one())
     rec.klu, rec.klu_keep = sk, keep
     return True
 

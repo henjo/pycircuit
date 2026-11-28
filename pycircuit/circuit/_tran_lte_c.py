@@ -277,6 +277,7 @@ def _klu_bind(ctx, sk):
     s.klu_sym = ffi.cast('void *', sk._symbolic)
     g = sk.growth_gate()
     s.klu_rgrowth, s.rg_off, s.rg_keep = ffi.cast('void *', g[0]), g[1], g[2]
+    s.growth_one = int(sk.growth_one())
     ## (the run numeric's held values, pcx_held.h: the buffers the Python's
     ## `solve` reads and writes)
     held = (fb('double *', sk._held_v), fb('int64_t *', sk._held_st))
@@ -593,6 +594,7 @@ def _solver_in(ctx, sk, held):
         st.klu_num = ctx.ffi.cast('void *', sk._numeric)
         st.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
         st.rg_keep = float(sk.REFACTOR_RGROWTH_KEEP)
+        st.growth_one = int(sk.growth_one())
     elif held is None and ctx.klu is not None:
         st.klu_sym = ctx.ffi.NULL
         ctx.klu = ctx.klu_sym = None

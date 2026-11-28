@@ -1152,6 +1152,22 @@ class StructuralKLU(KLUSolver):
         return (_cbuild.address(self._lib.klu_rgrowth), -1 if off is None else int(off),
                 float(self.REFACTOR_RGROWTH_KEEP))
 
+    def growth_one(self):
+        """THE GROWTH OF ONE: whether this solver's growth entry reports 1.0
+        for every factor (`_cholklu`'s `growth_one`: a Cholesky has no pivot
+        order to go stale), with the common's offset known and
+        `REFACTOR_RGROWTH_KEEP` <= 1.0.  There `_growth_keeps` keeps every
+        refactored solve whose values and solution are finite and refuses
+        every other -- whose residual always fails (each column of a factored
+        matrix holds a nonzero, so a non-finite x reaches its rows) -- so the
+        solution's finiteness is the residual test's and that rule's verdict
+        together, and `solve` makes no residual (nor the C units: newton.h's
+        `growth_one`)."""
+        from pycircuit.circuit import _klu_order
+        return bool(getattr(self._lib, 'growth_one', False)
+                    and _klu_order.rgrowth_offset() is not None
+                    and self.REFACTOR_RGROWTH_KEEP <= 1.0)
+
     def _ours(self, A):
         """`(A as an array, its values in CSC order)` where `A` is this
         circuit's reduced Jacobian -- `m x m` float64 with no nonzero off
@@ -1441,7 +1457,12 @@ class StructuralKLU(KLUSolver):
             ## their rounding bound where it decides -- whatever the order,
             ## the kernel's too: `pcx_kluseq.h`'s rule, `_resid_sparse`)
             fails = None
-            if nrhs == 1 and type(arr) is not _packed_cls() and _on_pattern_pages(arr):
+            if self.growth_one():
+                ## (THE GROWTH OF ONE: the finiteness the residual and the
+                ## growth's rule decide by together; a failure meets
+                ## `_growth_keeps`, which refuses it: a fresh factor)
+                fails = not (numpy.isfinite(x).all() and numpy.isfinite(Ax).all())
+            elif nrhs == 1 and type(arr) is not _packed_cls() and _on_pattern_pages(arr):
                 fails = _resid_sparse(self.Ap, self.Ai, Ax, self.REFACTOR_RESIDUAL_TOL, rhs, x)
             if fails is None:
                 fails = self._csc_residual(Ax, rhs, x)
@@ -1625,8 +1646,10 @@ class _ChordNumeric:
             sk._chord_fresh(Ax)
         x = self._klu(sk._lib.klu_solve, rhs)
         ## (the refactor's validation: `solve`'s, the CSC kernel's sums --
-        ## `StructuralKLU._csc_residual`)
-        if reused and sk._csc_residual(Ax, rhs, x):
+        ## `StructuralKLU._csc_residual`; on a solver whose growth is one the
+        ## finiteness, THE GROWTH OF ONE: `StructuralKLU.growth_one`)
+        if reused and (not (numpy.isfinite(x).all() and numpy.isfinite(Ax).all())
+                       if sk.growth_one() else sk._csc_residual(Ax, rhs, x)):
             if sk._growth_keeps(Ax, sk._chord, x):
                 sk.chord_residual_kept += 1
             else:

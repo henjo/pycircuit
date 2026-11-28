@@ -539,6 +539,7 @@ def _klu_bind(rec, sk):
     ck.klu_solve, ck.klu_free = s.klu_solve, s.klu_free
     ck.resid_tol = s.resid_tol
     ck.klu_rgrowth, ck.rg_off, ck.rg_keep = s.klu_rgrowth, s.rg_off, s.rg_keep
+    s.growth_one = ck.growth_one = int(sk.growth_one())
     ## (the run numeric's held values, pcx_held.h: the buffers the Python's
     ## `solve` reads and writes -- the chord's own numeric holds none)
     held = (ffi.from_buffer('double *', sk._held_v), ffi.from_buffer('int64_t *', sk._held_st))
@@ -551,9 +552,11 @@ def _klu_rules(s, sk):
     """The refactor check's tolerance and the growth's threshold as `sk`
     holds them now -- the full Newton's and the chord's -- read at each call
     as the Python's `solve` reads them (an instance may set its own between
-    runs)."""
+    runs) -- and whether the full Newton's verdict is the solution's
+    finiteness (newton.h's THE GROWTH OF ONE: `StructuralKLU.growth_one`)."""
     s.resid_tol = s.ck.resid_tol = float(sk.REFACTOR_RESIDUAL_TOL)
     s.rg_keep = s.ck.rg_keep = float(sk.REFACTOR_RGROWTH_KEEP)
+    s.growth_one = s.ck.growth_one = int(sk.growth_one())
 
 
 def chord_in(rec):

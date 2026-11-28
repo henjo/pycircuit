@@ -95,8 +95,9 @@ typedef struct {
        solver is the Python's), `klu_refactor` on the run's numeric
        (`klu_num`), `klu_solve`, and the refactor's validation -- max|A x - b|
        / max(max|b|, 1e-300) <= `resid_tol`, A x by the CSC kernel on KLU's
-       arrays (`StructuralKLU._csc_residual`); a failure is
-       handed back too (the Python alone factors again).  Set by
+       arrays (`StructuralKLU._csc_residual`), on a solver whose growth is
+       one the finiteness of the values and x (THE GROWTH OF ONE, below); a
+       failure is handed back too (the Python alone factors again).  Set by
        `_tran_lte_c._klu_bind` once a binding (the buffers are the binding's
        own), but `klu_num` and `resid_tol`: `max_error` sets both at each
        call, `_tran_loop_c` both once a run and `klu_num` again at each loop
@@ -185,6 +186,11 @@ typedef struct {
     void *klu_rgrowth;
     long rg_off;
     double rg_keep;
+    /* THE GROWTH OF ONE (`StructuralKLU.growth_one`, newton.h's): 1 on a
+       solver whose growth entry reports 1.0 for every factor -- there the
+       sparse solve's verdict is its values' and its solution's finiteness,
+       no residual made -- else 0; set with `rg_keep` */
+    long growth_one;
 } lte_t;
 long pcx_lte(lte_t *s);
 

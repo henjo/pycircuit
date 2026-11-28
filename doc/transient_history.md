@@ -6775,3 +6775,24 @@ off; a saved device current of a charge-holding device keeps every
 point full.  The stage glue's output cap now matches its buffer (an
 overflow past 8 192 unknowns, unreachable at the default Radau output
 budget).
+
+## VA: the refactor's verdict on the reduction (2026-11-28)
+
+### THE GROWTH OF ONE (`StructuralKLU.growth_one`; newton.h, pcx_klu.h, lte.h `growth_one`)
+
+2026-11-28 (`doc/hdl_roadmap_260824.md`, 366).  Every solve on a reused
+factorization was checked by multiplying the answer back through the
+matrix (the refactor's residual test), and a failed check was kept where
+the factorization's pivot growth looked sound (roadmap 327).  On the
+CHOLMOD reduction that a large linear grid's transient uses, the growth
+is one by construction -- a Cholesky has no pivot order to go stale --
+so every failure with finite numbers was kept and every non-finite answer
+refused: the check's outcome was the answer's finiteness.  The solver,
+its chord and the C units (the Newton, the error test, the shared KLU
+sequence) now test that finiteness on the reduction and make no
+residual; KLU is unchanged.  The answers, steps and factorizations are
+the same bytes; `residual_kept` counts nothing on the reduction (it
+counted the rounding failures kept: 324 of ibmpg3t's solves).  Measured
+on the tree against 7372f042 at 10 ns: ibmpg3t 0.959x, 6t
+0.947x, 4t 0.976x, 5t 0.969x, 2t 0.934x, 1t 0.950x, about 3 % fewer
+instructions, the same peak memory.

@@ -369,6 +369,14 @@ typedef struct {
     long kept_held;       /* OWN: 1 where this call's evaluation took a kept
                              factor's J values by its key, else 0 */
     const double *kept_src;   /* OWN: those values, this evaluation's (NULL: none) */
+    /* THE GROWTH OF ONE (`StructuralKLU.growth_one`): a solver whose growth
+       entry reports 1.0 for every factor (`_cholklu`'s: a Cholesky has no
+       pivot order to go stale), its offset known and `rg_keep` <= 1.0 --
+       there a refactored solve's validation fails only to be kept wherever
+       kAx and x are finite, and fails unkept wherever x is not (each column
+       of a factored matrix holds a nonzero), so `sparse_full` takes x's
+       finiteness for the verdict and makes no residual */
+    long growth_one;      /* CALL: 1 on such a solver (`_tran_newton_c._klu_rules`), else 0 */
 } newton_t;
 
 /* THE KEPT KEYS' entries (newton_t's `tag_find`, `tag_set`, `tag_clear`) */
